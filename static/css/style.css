@@ -122,6 +122,16 @@ input, select { font-family: inherit; }
 
 .nav-dropdown-menu.open { display: block; }
 
+.nav-dropdown-section {
+  display: block;
+  padding: 10px 16px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #aaa;
+  text-transform: uppercase;
+}
+
 .nav-dropdown-item {
   display: block;
   padding: 9px 16px;

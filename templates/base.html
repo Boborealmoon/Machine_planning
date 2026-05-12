@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  {% block extra_css %}{% endblock %}
 </head>
 <body>
 
@@ -36,10 +37,11 @@
           PLANNING DATA <span class="nav-caret">▾</span>
         </button>
         <div class="nav-dropdown-menu" id="dd-planning-data">
-          <a href="/planning-data?section=parts" class="nav-dropdown-item">Parts</a>
-          <a href="/planning-data?section=inventory" class="nav-dropdown-item">Inventory</a>
-          <a href="/planning-data?section=routes" class="nav-dropdown-item">Routes</a>
-          <a href="/planning-data?section=work-centres" class="nav-dropdown-item">Work Centres</a>
+          <span class="nav-dropdown-section">INVENTORY &amp; PLANNING</span>
+          <a href="/planning-data/inventory-bom" class="nav-dropdown-item">Inventory BOM</a>
+          <a href="/planning-data/program-tool-list" class="nav-dropdown-item">Program / Tool List</a>
+          <a href="/planning-data/machines" class="nav-dropdown-item">Machines</a>
+          <a href="/planning-data/materials" class="nav-dropdown-item">Materials</a>
         </div>
       </div>
 
@@ -68,7 +70,7 @@
   </div>
 </nav>
 
-<main class="app-main">
+<main class="app-main {% block main_class %}{% endblock %}">
   {% block content %}{% endblock %}
 </main>
 

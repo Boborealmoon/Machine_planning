@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/inventory_bom.css') }}" />
+{% endblock %}
+
+{% block main_class %}app-main--split{% endblock %}
+
+{% block content %}
+<div class="pf-page">
+
+  <!-- Page header -->
+  <div class="pf-header">
+    <h1 class="pf-title">Parts &amp; Flows</h1>
+    <button class="btn btn-dark" id="btn-add-part">Add Part</button>
+  </div>
+
+  <!-- Two-panel layout -->
+  <div class="pf-layout">
+
+    <!-- Left: parts list -->
+    <aside class="pf-sidebar">
+      <div class="pf-search-wrap">
+        <svg class="pf-search-icon" viewBox="0 0 16 16" fill="none">
+          <circle cx="6.5" cy="6.5" r="5" stroke="#aaa" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="#aaa" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input type="text" id="part-search" class="pf-search-input" placeholder="Search parts..." autocomplete="off" />
+      </div>
+      <div class="pf-parts-list" id="parts-list">
+        <div class="pf-list-loading">Loading...</div>
+      </div>
+    </aside>
+
+    <!-- Right: flows panel -->
+    <section class="pf-content" id="flows-panel">
+      <div class="pf-empty-state" id="empty-state">
+        Select a flow to edit its steps
+      </div>
+
+      <!-- Part header (hidden until a part is selected) -->
+      <div class="pf-part-header" id="part-header" style="display:none">
+        <div class="pf-part-meta">
+          <span class="pf-part-number" id="selected-part-number"></span>
+          <span class="pf-part-desc" id="selected-part-desc"></span>
+        </div>
+        <div class="pf-part-actions">
+          <button class="btn-text" id="btn-edit-part">Edit Part</button>
+          <button class="btn btn-dark btn-sm" id="btn-add-flow">Add Flow</button>
+        </div>
+      </div>
+
+      <!-- Flows list (hidden until part selected) -->
+      <div class="pf-flows-list" id="flows-list" style="display:none"></div>
+    </section>
+
+  </div>
+</div>
+
+<!-- ── Add / Edit Part modal ─────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-part" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-part-title">Add Part</h2>
+      <button class="modal-close" data-close="modal-part">&times;</button>
+    </div>
+    <div class="modal-body">
+      <label class="form-label">Part Number <span class="req">*</span></label>
+      <input type="text" id="input-part-number" class="form-input" placeholder="e.g. 0021022342" />
+      <label class="form-label" style="margin-top:14px">Description</label>
+      <input type="text" id="input-part-desc" class="form-input" placeholder="e.g. CAP SCR M6x40" />
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-light" data-close="modal-part">Cancel</button>
+      <button class="btn btn-dark" id="btn-save-part">Save</button>
+    </div>
+    <p class="modal-error" id="part-error"></p>
+  </div>
+</div>
+
+<!-- ── Add Flow modal ────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-flow" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title">Add Flow</h2>
+      <button class="modal-close" data-close="modal-flow">&times;</button>
+    </div>
+    <div class="modal-body">
+      <label class="form-label">Flow Name <span class="req">*</span></label>
+      <input type="text" id="input-flow-name" class="form-input" placeholder="e.g. Standard Route" />
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-light" data-close="modal-flow">Cancel</button>
+      <button class="btn btn-dark" id="btn-save-flow">Save</button>
+    </div>
+    <p class="modal-error" id="flow-error"></p>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/inventory_bom.js') }}"></script>
+{% endblock %}
