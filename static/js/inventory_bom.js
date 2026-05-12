@@ -1,280 +1,314 @@
-/* Parts & Flows — Inventory BOM */
+/* Inventory BOM — Parts & Flows */
 
-let selectedPartId = null;
-let selectedPartEl = null;
-let editingPartId = null;
+let selectedSource = null;
+let selectedSourceEl = null;
+let activeBom = null;
+let defaultBom = null;
 let debounceTimer = null;
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
-  loadParts();
+  loadSources();
 
   document.getElementById("part-search").addEventListener("input", (e) => {
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => loadParts(e.target.value.trim()), 280);
+    debounceTimer = setTimeout(() => loadSources(e.target.value.trim()), 280);
   });
 
-  document.getElementById("btn-add-part").addEventListener("click", () => {
-    editingPartId = null;
-    document.getElementById("modal-part-title").textContent = "Add Part";
-    document.getElementById("input-part-number").value = "";
-    document.getElementById("input-part-desc").value = "";
-    document.getElementById("part-error").textContent = "";
-    showModal("modal-part");
+  document.getElementById("btn-set-default").addEventListener("click", setDefaultBom);
+  document.getElementById("btn-save-flow").addEventListener("click", saveFlowMeta);
+  document.getElementById("btn-duplicate").addEventListener("click", () => {
+    alert("Duplicate flow — coming soon.");
   });
-
-  document.getElementById("btn-edit-part").addEventListener("click", () => {
-    if (!selectedPartId) return;
-    editingPartId = selectedPartId;
-    document.getElementById("modal-part-title").textContent = "Edit Part";
-    document.getElementById("input-part-number").value =
-      document.getElementById("selected-part-number").textContent;
-    document.getElementById("input-part-desc").value =
-      document.getElementById("selected-part-desc").textContent;
-    document.getElementById("part-error").textContent = "";
-    showModal("modal-part");
-  });
-
-  document.getElementById("btn-save-part").addEventListener("click", savePart);
-
   document.getElementById("btn-add-flow").addEventListener("click", () => {
-    document.getElementById("input-flow-name").value = "";
-    document.getElementById("flow-error").textContent = "";
-    showModal("modal-flow");
+    alert("Add Flow — coming soon.");
+  });
+  document.getElementById("btn-edit-part").addEventListener("click", () => {
+    alert("Edit Part — coming soon.");
+  });
+  document.getElementById("btn-add-part").addEventListener("click", () => {
+    alert("Add Part — coming soon.");
+  });
+  document.getElementById("btn-add-step").addEventListener("click", () => {
+    alert("Add Step — coming soon.");
   });
 
-  document.getElementById("btn-save-flow").addEventListener("click", saveFlow);
-
-  // Close buttons
-  document.querySelectorAll("[data-close]").forEach((btn) => {
-    btn.addEventListener("click", () => hideModal(btn.dataset.close));
-  });
-
-  // Close on overlay click
-  document.querySelectorAll(".modal-overlay").forEach((overlay) => {
-    overlay.addEventListener("click", (e) => {
-      if (e.target === overlay) hideModal(overlay.id);
-    });
-  });
-
-  // Enter key in modals
-  document.getElementById("input-part-desc").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") savePart();
-  });
-  document.getElementById("input-flow-name").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") saveFlow();
+  // Sync Default? dropdown with Set Default button
+  document.getElementById("select-default").addEventListener("change", (e) => {
+    if (e.target.value === "yes") setDefaultBom();
   });
 });
 
-// ── Parts ─────────────────────────────────────────────────────────────────
+// ── Sources (left panel) ──────────────────────────────────────────────────
 
-async function loadParts(search = "") {
+async function loadSources(search = "") {
   const list = document.getElementById("parts-list");
   list.innerHTML = '<div class="pf-list-loading">Loading...</div>';
   try {
-    const url = "/api/parts" + (search ? `?search=${encodeURIComponent(search)}` : "");
+    const url = "/api/bom/sources" + (search ? `?search=${encodeURIComponent(search)}` : "");
     const res = await fetch(url);
-    const parts = await res.json();
-    if (parts.error) throw new Error(parts.error);
-    renderPartsList(parts);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    renderSourcesList(data);
   } catch (err) {
     list.innerHTML = `<div class="pf-list-empty">Error: ${err.message}</div>`;
   }
 }
 
-function renderPartsList(parts) {
+function renderSourcesList(sources) {
   const list = document.getElementById("parts-list");
-  if (!parts.length) {
+  if (!sources.length) {
     list.innerHTML = '<div class="pf-list-empty">No parts found.</div>';
     return;
   }
-  list.innerHTML = parts
-    .map(
-      (p) => `
-    <div class="part-item${p.id === selectedPartId ? " part-item--selected" : ""}"
-         data-id="${p.id}"
-         data-number="${esc(p.part_number)}"
-         data-desc="${esc(p.description)}">
-      <div class="part-number">${esc(p.part_number)}</div>
-      ${p.description ? `<div class="part-desc">${esc(p.description)}</div>` : ""}
-      <div class="part-flows">${p.flow_count} flow(s)</div>
+  list.innerHTML = sources.map((s) => `
+    <div class="part-item${s.source_code === selectedSource ? " part-item--selected" : ""}"
+         data-source="${esc(s.source_code)}">
+      <div class="part-number">${esc(s.source_code)}</div>
+      <div class="part-desc">No description</div>
+      <div class="part-boms">${s.bom_count} bom(s)</div>
     </div>`
-    )
-    .join("");
+  ).join("");
 
   list.querySelectorAll(".part-item").forEach((el) => {
-    el.addEventListener("click", () => selectPart(el));
+    el.addEventListener("click", () => selectSource(el));
   });
 
-  // Re-select the previously selected item if it still exists
-  if (selectedPartId) {
-    const el = list.querySelector(`[data-id="${selectedPartId}"]`);
-    if (el) {
-      selectedPartEl = el;
-      el.classList.add("part-item--selected");
-    }
+  // Re-highlight previously selected source after reload
+  if (selectedSource) {
+    const el = list.querySelector(`[data-source="${CSS.escape(selectedSource)}"]`);
+    if (el) { selectedSourceEl = el; el.classList.add("part-item--selected"); }
   }
 }
 
-function selectPart(el) {
-  // Deselect previous
-  if (selectedPartEl) selectedPartEl.classList.remove("part-item--selected");
-
+async function selectSource(el) {
+  if (selectedSourceEl) selectedSourceEl.classList.remove("part-item--selected");
   el.classList.add("part-item--selected");
-  selectedPartEl = el;
-  selectedPartId = parseInt(el.dataset.id);
+  selectedSourceEl = el;
+  selectedSource = el.dataset.source;
+  activeBom = null;
 
-  document.getElementById("selected-part-number").textContent = el.dataset.number;
-  document.getElementById("selected-part-desc").textContent = el.dataset.desc;
-
+  document.getElementById("selected-part-number").textContent = selectedSource;
   document.getElementById("empty-state").style.display = "none";
-  document.getElementById("part-header").style.display = "flex";
-  document.getElementById("flows-list").style.display = "flex";
 
-  loadFlows(selectedPartId);
+  const detail = document.getElementById("part-detail");
+  detail.style.display = "flex";
+
+  await loadBomTabs(selectedSource);
 }
 
-async function savePart() {
-  const partNumber = document.getElementById("input-part-number").value.trim();
-  const description = document.getElementById("input-part-desc").value.trim();
-  const errEl = document.getElementById("part-error");
-  errEl.textContent = "";
+// ── BOM tabs ──────────────────────────────────────────────────────────────
 
-  if (!partNumber) {
-    errEl.textContent = "Part number is required.";
-    return;
-  }
+async function loadBomTabs(source) {
+  const tabsEl = document.getElementById("bom-tabs");
+  tabsEl.innerHTML = "";
+  document.getElementById("bom-detail").style.display = "none";
+  document.getElementById("bom-no-boms").style.display = "none";
 
   try {
-    let res;
-    if (editingPartId) {
-      res = await fetch(`/api/parts/${editingPartId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ part_number: partNumber, description }),
-      });
-    } else {
-      res = await fetch("/api/parts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ part_number: partNumber, description }),
-      });
-    }
-
+    const res = await fetch(`/api/bom/sources/${encodeURIComponent(source)}/boms`);
     const data = await res.json();
-    if (!res.ok) { errEl.textContent = data.error || "Failed to save."; return; }
+    if (data.error) throw new Error(data.error);
 
-    hideModal("modal-part");
+    defaultBom = data.default_bom;
 
-    // Update the header if we edited the currently selected part
-    if (editingPartId && editingPartId === selectedPartId) {
-      document.getElementById("selected-part-number").textContent = data.part_number;
-      document.getElementById("selected-part-desc").textContent = data.description;
-      if (selectedPartEl) {
-        selectedPartEl.dataset.number = data.part_number;
-        selectedPartEl.dataset.desc = data.description;
-      }
+    if (!data.bom_codes.length) {
+      document.getElementById("bom-no-boms").style.display = "flex";
+      return;
     }
 
-    // Reload list, keep selection
-    await loadParts(document.getElementById("part-search").value.trim());
+    renderBomTabs(data.bom_codes, defaultBom);
 
-    // Auto-select newly created part
-    if (!editingPartId) {
-      selectedPartId = data.id;
-      const newEl = document.getElementById("parts-list").querySelector(`[data-id="${data.id}"]`);
-      if (newEl) selectPart(newEl);
-    }
+    // Auto-select the default (or first) tab
+    const autoSelect = defaultBom || data.bom_codes[0];
+    selectBomTab(autoSelect);
   } catch (err) {
-    errEl.textContent = err.message;
+    tabsEl.innerHTML = `<span style="font-size:12px;color:#e74c3c">Error: ${err.message}</span>`;
   }
 }
 
-// ── Flows ─────────────────────────────────────────────────────────────────
+function renderBomTabs(bomCodes, currentDefault) {
+  const tabsEl = document.getElementById("bom-tabs");
+  tabsEl.innerHTML = bomCodes.map((code) => {
+    const isDefault = code === currentDefault;
+    const isActive = code === activeBom;
+    return `
+      <button class="bom-tab${isActive ? " bom-tab--active" : ""}" data-bom="${esc(code)}">
+        ${esc(code)}${isDefault ? '<span class="tab-default-label">Default</span>' : ""}
+      </button>`;
+  }).join("");
 
-async function loadFlows(partId) {
-  const list = document.getElementById("flows-list");
-  list.innerHTML = '<div class="pf-list-loading" style="padding:12px 0">Loading...</div>';
-  try {
-    const res = await fetch(`/api/parts/${partId}/flows`);
-    const flows = await res.json();
-    if (flows.error) throw new Error(flows.error);
-    renderFlows(flows, partId);
-  } catch (err) {
-    list.innerHTML = `<div class="pf-list-empty">Error: ${err.message}</div>`;
-  }
-}
-
-function renderFlows(flows, partId) {
-  const list = document.getElementById("flows-list");
-  if (!flows.length) {
-    list.innerHTML = '<div class="pf-flows-empty">No flows yet. Click "Add Flow" to create one.</div>';
-    return;
-  }
-  list.innerHTML = flows
-    .map(
-      (f) => `
-    <div class="flow-item" data-flow-id="${f.id}">
-      <span class="flow-name">${esc(f.name)}</span>
-      <button class="flow-delete" data-flow-id="${f.id}" title="Delete flow">&times;</button>
-    </div>`
-    )
-    .join("");
-
-  list.querySelectorAll(".flow-delete").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      deleteFlow(parseInt(btn.dataset.flowId), partId);
-    });
+  tabsEl.querySelectorAll(".bom-tab").forEach((btn) => {
+    btn.addEventListener("click", () => selectBomTab(btn.dataset.bom));
   });
 }
 
-async function saveFlow() {
-  if (!selectedPartId) return;
-  const name = document.getElementById("input-flow-name").value.trim();
-  const errEl = document.getElementById("flow-error");
-  errEl.textContent = "";
+function selectBomTab(bomCode) {
+  activeBom = bomCode;
 
-  if (!name) { errEl.textContent = "Flow name is required."; return; }
+  // Update tab highlight
+  document.querySelectorAll(".bom-tab").forEach((btn) => {
+    btn.classList.toggle("bom-tab--active", btn.dataset.bom === bomCode);
+  });
+
+  // Update flow header
+  document.getElementById("flow-code-display").textContent = bomCode;
+  document.getElementById("input-bom-code").value = bomCode;
+
+  const isDefault = bomCode === defaultBom;
+  const badge = document.getElementById("badge-default");
+  badge.style.display = isDefault ? "inline-flex" : "none";
+
+  document.getElementById("select-default").value = isDefault ? "yes" : "no";
+
+  document.getElementById("bom-detail").style.display = "flex";
+
+  // Load flow name metadata, operations, and materials
+  loadFlowMeta(selectedSource, bomCode);
+  loadOperations(selectedSource, bomCode);
+  loadMaterials(selectedSource, bomCode);
+}
+
+// ── Flow metadata ─────────────────────────────────────────────────────────
+
+async function loadFlowMeta(source, bom) {
+  try {
+    const res = await fetch(
+      `/api/bom/meta?source=${encodeURIComponent(source)}&bom=${encodeURIComponent(bom)}`
+    );
+    const data = await res.json();
+    document.getElementById("input-flow-name").value = data.flow_name || "";
+  } catch (_) {
+    document.getElementById("input-flow-name").value = "";
+  }
+}
+
+async function saveFlowMeta() {
+  if (!selectedSource || !activeBom) return;
+  const flowName = document.getElementById("input-flow-name").value.trim();
+  const isDefault = document.getElementById("select-default").value === "yes";
 
   try {
-    const res = await fetch(`/api/parts/${selectedPartId}/flows`, {
+    await fetch("/api/bom/meta", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ source: selectedSource, bom: activeBom, flow_name: flowName }),
     });
-    const data = await res.json();
-    if (!res.ok) { errEl.textContent = data.error || "Failed to save."; return; }
-
-    hideModal("modal-flow");
-    await loadFlows(selectedPartId);
-    await loadParts(document.getElementById("part-search").value.trim());
+    if (isDefault) await setDefaultBom(true);
+    // Visual confirmation
+    const btn = document.getElementById("btn-save-flow");
+    btn.textContent = "Saved ✓";
+    setTimeout(() => { btn.textContent = "Save Flow"; }, 1800);
   } catch (err) {
-    errEl.textContent = err.message;
+    alert("Save failed: " + err.message);
   }
 }
 
-async function deleteFlow(flowId, partId) {
-  if (!confirm("Delete this flow?")) return;
+// ── Default BOM ───────────────────────────────────────────────────────────
+
+async function setDefaultBom(silent = false) {
+  if (!selectedSource || !activeBom) return;
   try {
-    await fetch(`/api/flows/${flowId}`, { method: "DELETE" });
-    await loadFlows(partId);
-    await loadParts(document.getElementById("part-search").value.trim());
+    const res = await fetch(`/api/bom/sources/${encodeURIComponent(selectedSource)}/default`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bom_code: activeBom }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+
+    defaultBom = activeBom;
+
+    // Re-render tabs so Default label moves
+    const tabsEl = document.getElementById("bom-tabs");
+    tabsEl.querySelectorAll(".bom-tab").forEach((btn) => {
+      const isDefault = btn.dataset.bom === defaultBom;
+      const code = btn.dataset.bom;
+      btn.innerHTML = `${esc(code)}${isDefault ? '<span class="tab-default-label">Default</span>' : ""}`;
+    });
+
+    // Update badge
+    document.getElementById("badge-default").style.display = "inline-flex";
+    document.getElementById("select-default").value = "yes";
+
+    // Update parts list count label (no change needed, just visual feedback)
+    if (!silent) {
+      const btn = document.getElementById("btn-set-default");
+      btn.textContent = "Default Set ✓";
+      setTimeout(() => { btn.textContent = "Set Default"; }, 1800);
+    }
   } catch (err) {
-    alert("Failed to delete flow: " + err.message);
+    if (!silent) alert("Failed to set default: " + err.message);
   }
+}
+
+// ── Operations table (SQLite planner.db) ─────────────────────────────────
+
+async function loadOperations(source, bom) {
+  const tbody = document.getElementById("ops-tbody");
+  tbody.innerHTML = '<tr><td colspan="5" class="steps-empty">Loading...</td></tr>';
+  try {
+    const res = await fetch(
+      `/api/bom/operations?source=${encodeURIComponent(source)}&bom=${encodeURIComponent(bom)}`
+    );
+    const rows = await res.json();
+    if (rows.error) throw new Error(rows.error);
+    renderOperations(rows);
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="5" class="steps-empty" style="color:#e74c3c">Error: ${err.message}</td></tr>`;
+  }
+}
+
+function renderOperations(rows) {
+  const tbody = document.getElementById("ops-tbody");
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="steps-empty">No operations for this BOM.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => `
+    <tr>
+      <td class="col-drag">⠿</td>
+      <td>${esc(String(r.stage_no))}</td>
+      <td>${r.op_no != null ? esc(String(r.op_no)) : "—"}</td>
+      <td>${esc(r.stage_desc)}</td>
+      <td>${esc(r.machine_no)}</td>
+    </tr>`
+  ).join("");
+}
+
+// ── Materials table (PostgreSQL) ──────────────────────────────────────────
+
+async function loadMaterials(source, bom) {
+  const tbody = document.getElementById("steps-tbody");
+  tbody.innerHTML = '<tr><td colspan="2" class="steps-empty">Loading...</td></tr>';
+  try {
+    const res = await fetch(
+      `/api/bom/materials?source=${encodeURIComponent(source)}&bom=${encodeURIComponent(bom)}`
+    );
+    const rows = await res.json();
+    if (rows.error) throw new Error(rows.error);
+    renderMaterials(rows);
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="2" class="steps-empty" style="color:#e74c3c">Error: ${err.message}</td></tr>`;
+  }
+}
+
+function renderMaterials(rows) {
+  const tbody = document.getElementById("steps-tbody");
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="2" class="steps-empty">No materials for this BOM.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => `
+    <tr>
+      <td>${esc(r.material_inventory_code)}</td>
+      <td>${esc(r.description)}</td>
+    </tr>`
+  ).join("");
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────
-
-function showModal(id) {
-  document.getElementById(id).style.display = "flex";
-}
-
-function hideModal(id) {
-  document.getElementById(id).style.display = "none";
-}
 
 function esc(str) {
   return String(str ?? "")

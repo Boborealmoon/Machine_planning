@@ -1,29 +1,17 @@
--- Run this once to set up the planning data tables
+-- Run once to set up supporting tables for the planning app.
+-- The inventory_bom_listing table/view is assumed to already exist in your DB.
 
-CREATE TABLE IF NOT EXISTS parts (
-    id          SERIAL PRIMARY KEY,
-    part_number VARCHAR(100) NOT NULL UNIQUE,
-    description TEXT,
-    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+-- Tracks which bom_code is the default for each source_inventory_code
+CREATE TABLE IF NOT EXISTS bom_defaults (
+    source_inventory_code VARCHAR(200) PRIMARY KEY,
+    default_bom_code      VARCHAR(200) NOT NULL,
+    updated_at            TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS flows (
-    id         SERIAL PRIMARY KEY,
-    part_id    INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
-    name       VARCHAR(100) NOT NULL,
-    sort_order INTEGER DEFAULT 0,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+-- Stores optional metadata (flow name) for each source+bom combination
+CREATE TABLE IF NOT EXISTS bom_metadata (
+    source_inventory_code VARCHAR(200),
+    bom_code              VARCHAR(200),
+    flow_name             VARCHAR(200) DEFAULT '',
+    PRIMARY KEY (source_inventory_code, bom_code)
 );
-
-CREATE TABLE IF NOT EXISTS flow_steps (
-    id          SERIAL PRIMARY KEY,
-    flow_id     INTEGER NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
-    step_order  INTEGER NOT NULL DEFAULT 0,
-    operation   VARCHAR(100),
-    machine     VARCHAR(100),
-    description TEXT,
-    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_flows_part_id       ON flows(part_id);
-CREATE INDEX IF NOT EXISTS idx_flow_steps_flow_id  ON flow_steps(flow_id);

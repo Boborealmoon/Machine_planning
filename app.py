@@ -98,136 +98,307 @@ def health():
         return jsonify({"status": "ok", "db": "disconnected", "error": str(e)})
 
 
-# ── API: parts ─────────────────────────────────────────────────────────────
+# ── API: Inventory BOM — sources (left panel) ──────────────────────────────
 
-@app.get("/api/parts")
-def api_parts():
+@app.get("/api/bom/sources")
+def api_bom_sources():
     search = request.args.get("search", "").strip()
     try:
+        base = """
+            SELECT
+                source_inventory_code,
+                COUNT(DISTINCT bom_code) AS bom_count
+            FROM public.inventory_bom_listing
+            WHERE source_inventory_code IS NOT NULL
+              AND material_inventory_code NOT IN (
+                  SELECT source_inventory_code
+                  FROM public.inventory_bom_listing
+                  WHERE source_inventory_code IS NOT NULL
+              )
+        """
         if search:
             rows = db_query(
-                """
-                SELECT p.id, p.part_number, p.description, COUNT(f.id) AS flow_count
-                FROM parts p
-                LEFT JOIN flows f ON f.part_id = p.id
-                WHERE p.part_number ILIKE %s OR p.description ILIKE %s
-                GROUP BY p.id
-                ORDER BY p.part_number
-                """,
-                (f"%{search}%", f"%{search}%"),
-                fetchall=True,
+                base + " AND source_inventory_code ILIKE %s "
+                       "GROUP BY source_inventory_code ORDER BY source_inventory_code",
+                (f"%{search}%",), fetchall=True
             )
         else:
             rows = db_query(
-                """
-                SELECT p.id, p.part_number, p.description, COUNT(f.id) AS flow_count
-                FROM parts p
-                LEFT JOIN flows f ON f.part_id = p.id
-                GROUP BY p.id
-                ORDER BY p.part_number
-                """,
-                fetchall=True,
+                base + " GROUP BY source_inventory_code ORDER BY source_inventory_code",
+                fetchall=True
             )
         return jsonify([
-            {"id": r[0], "part_number": r[1], "description": r[2] or "", "flow_count": r[3]}
+            {"source_code": r[0], "bom_count": r[1]}
             for r in (rows or [])
         ])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-@app.post("/api/parts")
-def api_create_part():
-    data = request.get_json()
-    part_number = (data.get("part_number") or "").strip()
-    description = (data.get("description") or "").strip()
-    if not part_number:
-        return jsonify({"error": "part_number is required"}), 400
-    try:
-        row = db_query(
-            "INSERT INTO parts (part_number, description) VALUES (%s, %s) RETURNING id, part_number, description",
-            (part_number, description),
-            fetchone=True,
-            commit=True,
-        )
-        return jsonify({"id": row[0], "part_number": row[1], "description": row[2] or "", "flow_count": 0}), 201
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+# ── API: Inventory BOM — bom codes for a source (tabs) ────────────────────
 
-
-@app.put("/api/parts/<int:part_id>")
-def api_update_part(part_id):
-    data = request.get_json()
-    part_number = (data.get("part_number") or "").strip()
-    description = (data.get("description") or "").strip()
-    if not part_number:
-        return jsonify({"error": "part_number is required"}), 400
-    try:
-        db_query(
-            "UPDATE parts SET part_number = %s, description = %s WHERE id = %s",
-            (part_number, description, part_id),
-            commit=True,
-        )
-        return jsonify({"id": part_id, "part_number": part_number, "description": description})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.delete("/api/parts/<int:part_id>")
-def api_delete_part(part_id):
-    try:
-        db_query("DELETE FROM parts WHERE id = %s", (part_id,), commit=True)
-        return jsonify({"ok": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# ── API: flows ─────────────────────────────────────────────────────────────
-
-@app.get("/api/parts/<int:part_id>/flows")
-def api_part_flows(part_id):
+@app.get("/api/bom/sources/<path:source>/boms")
+def api_source_boms(source):
     try:
         rows = db_query(
-            "SELECT id, name, sort_order FROM flows WHERE part_id = %s ORDER BY sort_order, id",
-            (part_id,),
-            fetchall=True,
+            """
+            SELECT DISTINCT bom_code
+            FROM public.inventory_bom_listing
+            WHERE source_inventory_code = %s
+              AND bom_code IS NOT NULL
+            ORDER BY bom_code
+            """,
+            (source,), fetchall=True
+        )
+        bom_codes = [r[0] for r in (rows or [])]
+
+        # Look up which one is default
+        default_row = db_query(
+            "SELECT default_bom_code FROM bom_defaults WHERE source_inventory_code = %s",
+            (source,), fetchone=True
+        )
+        default_bom = default_row[0] if default_row else (bom_codes[0] if bom_codes else None)
+
+        return jsonify({
+            "bom_codes": bom_codes,
+            "default_bom": default_bom
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: Inventory BOM — materials for source + bom (steps table) ──────────
+
+@app.get("/api/bom/materials")
+def api_bom_materials():
+    source = request.args.get("source", "").strip()
+    bom = request.args.get("bom", "").strip()
+    if not source or not bom:
+        return jsonify({"error": "source and bom are required"}), 400
+    try:
+        rows = db_query(
+            """
+            SELECT DISTINCT
+                bom_code,
+                source_inventory_code,
+                material_inventory_code,
+                description
+            FROM public.inventory_bom_listing
+            WHERE material_inventory_code NOT IN (
+                SELECT source_inventory_code
+                FROM public.inventory_bom_listing
+                WHERE source_inventory_code IS NOT NULL
+            )
+            AND source_inventory_code = %s
+            AND bom_code = %s
+            ORDER BY material_inventory_code
+            """,
+            (source, bom), fetchall=True
         )
         return jsonify([
-            {"id": r[0], "name": r[1], "sort_order": r[2]}
+            {
+                "bom_code": r[0],
+                "source_inventory_code": r[1],
+                "material_inventory_code": r[2],
+                "description": r[3] or "",
+            }
             for r in (rows or [])
         ])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-@app.post("/api/parts/<int:part_id>/flows")
-def api_create_flow(part_id):
+# ── API: Inventory BOM — set default bom for a source ─────────────────────
+
+@app.post("/api/bom/sources/<path:source>/default")
+def api_set_default_bom(source):
     data = request.get_json()
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "name is required"}), 400
+    bom_code = (data.get("bom_code") or "").strip()
+    if not bom_code:
+        return jsonify({"error": "bom_code is required"}), 400
     try:
-        row = db_query(
-            "INSERT INTO flows (part_id, name) VALUES (%s, %s) RETURNING id, name, sort_order",
-            (part_id, name),
-            fetchone=True,
-            commit=True,
+        db_query(
+            """
+            INSERT INTO bom_defaults (source_inventory_code, default_bom_code)
+            VALUES (%s, %s)
+            ON CONFLICT (source_inventory_code)
+            DO UPDATE SET default_bom_code = EXCLUDED.default_bom_code,
+                          updated_at = NOW()
+            """,
+            (source, bom_code), commit=True
         )
-        return jsonify({"id": row[0], "name": row[1], "sort_order": row[2]}), 201
+        return jsonify({"ok": True, "default_bom": bom_code})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-@app.delete("/api/flows/<int:flow_id>")
-def api_delete_flow(flow_id):
+# ── API: BOM metadata (flow name) ──────────────────────────────────────────
+
+@app.get("/api/bom/meta")
+def api_bom_meta():
+    source = request.args.get("source", "").strip()
+    bom = request.args.get("bom", "").strip()
+    if not source or not bom:
+        return jsonify({"error": "source and bom are required"}), 400
     try:
-        db_query("DELETE FROM flows WHERE id = %s", (flow_id,), commit=True)
+        row = db_query(
+            "SELECT flow_name FROM bom_metadata WHERE source_inventory_code = %s AND bom_code = %s",
+            (source, bom), fetchone=True
+        )
+        return jsonify({"flow_name": row[0] if row else ""})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/bom/meta")
+def api_save_bom_meta():
+    data = request.get_json()
+    source = (data.get("source") or "").strip()
+    bom = (data.get("bom") or "").strip()
+    flow_name = (data.get("flow_name") or "").strip()
+    if not source or not bom:
+        return jsonify({"error": "source and bom are required"}), 400
+    try:
+        db_query(
+            """
+            INSERT INTO bom_metadata (source_inventory_code, bom_code, flow_name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (source_inventory_code, bom_code)
+            DO UPDATE SET flow_name = EXCLUDED.flow_name
+            """,
+            (source, bom, flow_name), commit=True
+        )
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# ── API: other stubs ───────────────────────────────────────────────────────
+# ── API: BOM operations (PostgreSQL) ──────────────────────────────────────
+
+@app.get("/api/bom/operations")
+def api_bom_operations():
+    source = request.args.get("source", "").strip()
+    bom    = request.args.get("bom",    "").strip()
+    if not source or not bom:
+        return jsonify({"error": "source and bom are required"}), 400
+    try:
+        rows = db_query(
+            """
+            WITH wt_raw AS (
+                SELECT
+                    t2.source_pp_no,
+                    t2.inventory_code,
+                    t1.voucher_no,
+                    t1.machine_no,
+                    t2.stage_desc,
+                    t3.total_acc_qty_produced,
+                    t1.status AS raw_status
+                FROM mfg_wo_comp_vch t1
+                LEFT JOIN mfg_mps_vch t2
+                    ON  t1.voucher_no = t2.wo_voucher_no
+                LEFT JOIN mfg_wo_vch t3
+                    ON  t1.voucher_no = t3.voucher_no
+                WHERE t2.inventory_code = %s
+                  AND (
+                      t2.stage_desc LIKE 'Turning%%'
+                   OR t2.stage_desc LIKE 'Milling%%'
+                   OR t2.stage_desc LIKE 'Turnmill%%'
+                  )
+            ),
+
+            wt_with_bom AS (
+                SELECT
+                    r.*,
+                    p.bom_code
+                FROM wt_raw r
+                LEFT JOIN public.mfg_pp_vch p
+                    ON  p.pp_voucher_no = r.source_pp_no
+                WHERE p.bom_code = %s OR p.bom_code IS NULL
+            ),
+
+            wt_ranked AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY voucher_no
+                        ORDER BY
+                            total_acc_qty_produced DESC,
+                            CASE WHEN raw_status = 'H' THEN 1 ELSE 0 END DESC
+                    ) AS rn
+                FROM wt_with_bom
+            ),
+
+            workorder_tracker AS (
+                SELECT source_pp_no, inventory_code, voucher_no, machine_no, stage_desc, bom_code
+                FROM wt_ranked
+                WHERE rn = 1
+            ),
+
+            workorder_tracker_slim AS (
+                SELECT
+                    inventory_code,
+                    bom_code,
+                    stage_desc,
+                    MIN(machine_no) AS machine_no
+                FROM workorder_tracker
+                GROUP BY inventory_code, bom_code, stage_desc
+            ),
+
+            bom_machining AS (
+                SELECT
+                    inventory_code,
+                    bom_code,
+                    stage_no,
+                    stage_desc,
+                    CASE
+                        WHEN SPLIT_PART(stage_desc, ' ', 2) ~ '^\\d+$'
+                        THEN SPLIT_PART(stage_desc, ' ', 2)::INTEGER
+                        ELSE NULL
+                    END AS op_no
+                FROM public.mt_inventory_bom_stage
+                WHERE stage_desc IS NOT NULL
+                  AND (
+                      stage_desc LIKE 'Turning%%'
+                   OR stage_desc LIKE 'Milling%%'
+                   OR stage_desc LIKE 'Turnmill%%'
+                  )
+                  AND inventory_code = %s
+                  AND bom_code = %s
+            )
+
+            SELECT
+                b.inventory_code,
+                b.bom_code,
+                b.stage_no,
+                b.stage_desc,
+                b.op_no,
+                w.machine_no
+            FROM bom_machining b
+            LEFT JOIN workorder_tracker_slim w
+                ON  w.inventory_code = b.inventory_code
+                AND w.bom_code       = b.bom_code
+                AND w.stage_desc     = b.stage_desc
+            ORDER BY
+                b.stage_no  ASC,
+                b.op_no     ASC NULLS LAST
+            """,
+            (source, bom, source, bom), fetchall=True
+        )
+        return jsonify([
+            {
+                "inventory_code": r[0],
+                "bom_code":       r[1],
+                "stage_no":       r[2],
+                "stage_desc":     r[3] or "",
+                "op_no":          r[4],
+                "machine_no":     r[5] or "",
+            }
+            for r in (rows or [])
+        ])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: stubs ─────────────────────────────────────────────────────────────
 
 @app.get("/api/process-sheets")
 def api_process_sheets():

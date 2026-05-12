@@ -78,15 +78,9 @@
   transition: border-color 0.15s, background 0.15s;
 }
 
-.pf-search-input:focus {
-  border-color: #aaa;
-  background: #fff;
-}
+.pf-search-input:focus { border-color: #aaa; background: #fff; }
 
-.pf-parts-list {
-  flex: 1;
-  overflow-y: auto;
-}
+.pf-parts-list { flex: 1; overflow-y: auto; }
 
 .pf-list-loading,
 .pf-list-empty {
@@ -105,37 +99,17 @@
 
 .part-item:hover { background: #f7f7f7; }
 
-.part-item--selected {
-  background: #2d2d2d !important;
-}
+.part-item--selected { background: #2d2d2d !important; }
 
 .part-item--selected .part-number,
 .part-item--selected .part-desc,
-.part-item--selected .part-flows {
-  color: #fff !important;
-}
+.part-item--selected .part-boms { color: #fff !important; }
 
-.part-number {
-  font-size: 13px;
-  font-weight: 600;
-  color: #111;
-  line-height: 1.3;
-}
+.part-number { font-size: 13px; font-weight: 600; color: #111; line-height: 1.3; }
+.part-desc   { font-size: 11.5px; color: #777; margin-top: 1px; line-height: 1.3; }
+.part-boms   { font-size: 11px; color: #aaa; margin-top: 3px; }
 
-.part-desc {
-  font-size: 11.5px;
-  color: #777;
-  margin-top: 1px;
-  line-height: 1.3;
-}
-
-.part-flows {
-  font-size: 11px;
-  color: #aaa;
-  margin-top: 3px;
-}
-
-/* ── Right content panel ──────────────────────────────────────────────── */
+/* ── Right panel ──────────────────────────────────────────────────────── */
 
 .pf-content {
   flex: 1;
@@ -154,6 +128,14 @@
   color: #bbb;
 }
 
+#part-detail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Part name row */
 .pf-part-header {
   background: #fff;
   border-bottom: 1px solid #e4e4e4;
@@ -164,28 +146,7 @@
   flex-shrink: 0;
 }
 
-.pf-part-meta {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-
-.pf-part-number {
-  font-size: 14px;
-  font-weight: 700;
-  color: #111;
-}
-
-.pf-part-desc {
-  font-size: 13px;
-  color: #888;
-}
-
-.pf-part-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
+.pf-part-number { font-size: 16px; font-weight: 700; color: #111; }
 
 .btn-text {
   background: none;
@@ -196,146 +157,245 @@
   padding: 4px 2px;
   transition: color 0.15s;
 }
-
 .btn-text:hover { color: #111; }
 
-.btn-sm {
-  padding: 6px 14px;
-  font-size: 12px;
-  border-radius: 20px;
-}
-
-/* ── Flows list ───────────────────────────────────────────────────────── */
-
-.pf-flows-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.pf-flows-empty {
-  font-size: 12px;
-  color: #bbb;
-  padding: 12px 0;
-}
-
-.flow-item {
+/* BOM tabs row */
+.bom-tabs-bar {
   background: #fff;
-  border: 1px solid #e4e4e4;
-  border-radius: 8px;
-  padding: 12px 16px;
+  border-bottom: 1px solid #e4e4e4;
+  padding: 10px 24px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  transition: box-shadow 0.15s;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
-.flow-item:hover { box-shadow: 0 2px 8px rgba(0,0,0,.07); }
+.bom-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: 1;
+}
 
-.flow-name {
-  font-size: 13px;
+.bom-tab {
+  padding: 5px 14px;
+  border-radius: 20px;
+  font-size: 12px;
   font-weight: 600;
-  color: #111;
+  border: 1.5px solid #ccc;
+  background: #fff;
+  color: #444;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
 }
 
-.flow-delete {
-  background: none;
-  border: none;
-  font-size: 16px;
-  color: #ccc;
-  line-height: 1;
-  padding: 2px 4px;
-  transition: color 0.15s;
+.bom-tab:hover { border-color: #888; color: #111; }
+
+.bom-tab--active {
+  background: #2d2d2d;
+  border-color: #2d2d2d;
+  color: #fff;
 }
 
-.flow-delete:hover { color: #e74c3c; }
+.bom-tab--active:hover { background: #111; border-color: #111; }
 
-/* ── Modals ───────────────────────────────────────────────────────────── */
+.tab-default-label {
+  font-size: 10px;
+  font-weight: 700;
+  opacity: 0.75;
+  margin-left: 4px;
+  letter-spacing: 0.03em;
+}
 
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,.35);
+.btn-sm { padding: 6px 14px; font-size: 12px; border-radius: 20px; }
+
+/* BOM detail area */
+.bom-detail {
+  flex: 1;
+  overflow-y: auto;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+}
+
+.bom-no-boms {
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 500;
+  font-size: 13px;
+  color: #bbb;
 }
 
-.modal {
-  background: #fff;
-  border-radius: 10px;
-  width: 420px;
-  max-width: calc(100vw - 32px);
-  box-shadow: 0 8px 32px rgba(0,0,0,.16);
-}
-
-.modal-header {
+/* Flow header row */
+.flow-header-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 20px 14px;
+  padding: 14px 24px;
   border-bottom: 1px solid #f0f0f0;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.modal-title {
-  font-size: 16px;
+.flow-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flow-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  color: #888;
+}
+
+.flow-code-display {
+  font-size: 13px;
   font-weight: 700;
   color: #111;
 }
 
-.modal-close {
-  background: none;
-  border: none;
-  font-size: 20px;
-  color: #aaa;
-  line-height: 1;
-  padding: 0 2px;
-  transition: color 0.15s;
+.badge-default {
+  background: #e6f9ef;
+  color: #1a8a46;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  border-radius: 10px;
 }
 
-.modal-close:hover { color: #333; }
+.flow-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
-.modal-body {
-  padding: 18px 20px 4px;
+/* Flow form */
+.flow-form {
+  display: flex;
+  gap: 16px;
+  padding: 16px 24px;
+  border-bottom: 1px solid #f0f0f0;
+  flex-wrap: wrap;
+}
+
+.flow-form-field {
   display: flex;
   flex-direction: column;
+  gap: 5px;
+  min-width: 180px;
+  flex: 1;
 }
 
-.form-label {
-  font-size: 12px;
+.flow-field-label {
+  font-size: 11px;
   font-weight: 600;
-  color: #444;
-  margin-bottom: 5px;
+  color: #666;
 }
 
-.req { color: #e74c3c; }
-
-.form-input {
-  padding: 8px 12px;
+.flow-field-input {
+  padding: 8px 10px;
   border: 1px solid #ddd;
   border-radius: 6px;
   font-size: 13px;
   color: #333;
+  background: #fafafa;
+  font-family: inherit;
   outline: none;
   transition: border-color 0.15s;
 }
 
-.form-input:focus { border-color: #888; }
+.flow-field-input:focus { border-color: #aaa; background: #fff; }
 
-.modal-footer {
+.flow-field-input[readonly] {
+  background: #f3f3f3;
+  color: #666;
+  cursor: default;
+}
+
+.flow-field-select { cursor: pointer; }
+
+/* Steps section */
+.steps-section {
+  padding: 16px 24px 24px;
   display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 16px 20px;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.modal-error {
-  font-size: 12px;
-  color: #e74c3c;
-  padding: 0 20px 12px;
-  min-height: 20px;
+.steps-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  color: #888;
 }
+
+.steps-table-wrap {
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.steps-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.steps-table thead tr {
+  background: #f8f8f8;
+  border-bottom: 1px solid #e8e8e8;
+}
+
+.steps-table th {
+  padding: 9px 12px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: #777;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.steps-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f3f3f3;
+  color: #333;
+  vertical-align: middle;
+}
+
+.steps-table tbody tr:last-child td { border-bottom: none; }
+
+.steps-table tbody tr:hover { background: #fafafa; }
+
+.col-drag { width: 28px; color: #ccc; font-size: 14px; cursor: grab; text-align: center; }
+
+.steps-empty {
+  padding: 24px;
+  text-align: center;
+  color: #bbb;
+  font-size: 12px;
+}
+
+.btn-add-step {
+  background: none;
+  border: 1.5px dashed #ccc;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #888;
+  cursor: pointer;
+  align-self: flex-start;
+  transition: border-color 0.15s, color 0.15s;
+  font-family: inherit;
+}
+
+.btn-add-step:hover { border-color: #888; color: #333; }
