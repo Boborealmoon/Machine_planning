@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Production Planning</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="navbar-inner">
+    <a href="/" class="navbar-logo">
+      <span class="logo-top">PRODUCTION</span>
+      <span class="logo-bottom">PLANNING</span>
+    </a>
+    <div class="navbar-links">
+      <a href="/process-sheets"
+         class="nav-link {% if active == 'process_sheets' %}nav-link--active{% endif %}">
+        PROCESS SHEETS
+      </a>
+      <a href="/machine-schedule"
+         class="nav-link {% if active == 'machine_schedule' %}nav-link--active{% endif %}">
+        MACHINE SCHEDULE
+      </a>
+      <a href="/summary"
+         class="nav-link {% if active == 'summary' %}nav-link--active{% endif %}">
+        SUMMARY
+      </a>
+
+      <div class="nav-dropdown {% if active == 'planning_data' %}nav-dropdown--active{% endif %}">
+        <button class="nav-dropdown-trigger" data-dropdown="planning-data">
+          PLANNING DATA <span class="nav-caret">▾</span>
+        </button>
+        <div class="nav-dropdown-menu" id="dd-planning-data">
+          <a href="/planning-data?section=parts" class="nav-dropdown-item">Parts</a>
+          <a href="/planning-data?section=inventory" class="nav-dropdown-item">Inventory</a>
+          <a href="/planning-data?section=routes" class="nav-dropdown-item">Routes</a>
+          <a href="/planning-data?section=work-centres" class="nav-dropdown-item">Work Centres</a>
+        </div>
+      </div>
+
+      <div class="nav-dropdown {% if active == 'operations' %}nav-dropdown--active{% endif %}">
+        <button class="nav-dropdown-trigger" data-dropdown="operations">
+          OPERATIONS <span class="nav-caret">▾</span>
+        </button>
+        <div class="nav-dropdown-menu" id="dd-operations">
+          <a href="/operations?section=actual-output" class="nav-dropdown-item">Actual Output</a>
+          <a href="/operations?section=warnings" class="nav-dropdown-item">Warnings</a>
+          <a href="/operations?section=audit-log" class="nav-dropdown-item">Audit Log</a>
+        </div>
+      </div>
+
+      <div class="nav-dropdown {% if active == 'system' %}nav-dropdown--active{% endif %}">
+        <button class="nav-dropdown-trigger" data-dropdown="system">
+          SYSTEM <span class="nav-caret">▾</span>
+        </button>
+        <div class="nav-dropdown-menu" id="dd-system">
+          <a href="/system?section=users" class="nav-dropdown-item">Users</a>
+          <a href="/system?section=settings" class="nav-dropdown-item">Settings</a>
+          <a href="/system?section=about" class="nav-dropdown-item">About</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<main class="app-main">
+  {% block content %}{% endblock %}
+</main>
+
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

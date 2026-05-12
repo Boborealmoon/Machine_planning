@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="page">
+  <div class="page-header">
+    <h1 class="page-title">Process Sheets</h1>
+    <div class="page-actions">
+      <button class="btn btn-dark">Add Process Sheet</button>
+      <button class="btn btn-green">Auto Plan Active PS</button>
+      <button class="btn btn-red">Unplan All Unlocked PS</button>
+      <button class="btn btn-light">Cleanup Legacy Blocks</button>
+    </div>
+  </div>
+
+  <section class="section">
+    <div class="section-heading">
+      <h2 class="section-title">Active Job Control</h2>
+      <p class="section-desc">
+        Manage process sheets, production timing, route steps and schedule risk from one operational queue.
+      </p>
+    </div>
+
+    <!-- Queue Filters -->
+    <div class="card">
+      <div class="card-bar">
+        <span class="card-label">QUEUE FILTERS</span>
+        <span class="card-hint">Slice the active queue by status, planning state and material risk.</span>
+      </div>
+      <div class="filters-row">
+        <div class="search-wrap">
+          <svg class="search-icon" viewBox="0 0 16 16" fill="none">
+            <circle cx="6.5" cy="6.5" r="5" stroke="#999" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="#999" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input type="text" class="search-input" placeholder="Search PS ID, part, Inv code, description..." />
+        </div>
+        <select class="filter-select">
+          <option>All Statuses</option>
+          <option>Unplanned</option>
+          <option>Partially Planned</option>
+          <option>Planned</option>
+          <option>Needs Review</option>
+          <option>Completed</option>
+          <option>Overdue</option>
+        </select>
+        <select class="filter-select">
+          <option>All Planner Status</option>
+        </select>
+        <select class="filter-select">
+          <option>All Material</option>
+          <option>Shortage Only</option>
+        </select>
+        <label class="checkbox-label"><input type="checkbox" /> Overdue Only</label>
+        <label class="checkbox-label"><input type="checkbox" /> Shortage Only</label>
+        <label class="checkbox-label"><input type="checkbox" /> Show Completed</label>
+      </div>
+    </div>
+
+    <!-- Status Summary Cards -->
+    <div class="status-cards">
+      <div class="status-card">
+        <span class="status-label">UNPLANNED</span>
+        <span class="status-dash" style="color:#999">—</span>
+      </div>
+      <div class="status-card">
+        <span class="status-label">PARTIALLY PLANNED</span>
+        <span class="status-dash" style="color:#f5a623">—</span>
+      </div>
+      <div class="status-card">
+        <span class="status-label">PLANNED</span>
+        <span class="status-dash" style="color:#999">—</span>
+      </div>
+      <div class="status-card">
+        <span class="status-label">NEEDS REVIEW</span>
+        <span class="status-dash" style="color:#f5a623">—</span>
+      </div>
+      <div class="status-card">
+        <span class="status-label">COMPLETED</span>
+        <span class="status-dash" style="color:#27ae60">—</span>
+      </div>
+      <div class="status-card">
+        <span class="status-label">OVERDUE</span>
+        <span class="status-dash" style="color:#e74c3c">—</span>
+      </div>
+    </div>
+
+    <!-- Production Queue -->
+    <div class="card card--flush">
+      <div class="card-bar">
+        <span class="card-label">PRODUCTION QUEUE</span>
+        <span class="card-hint">Expand a row to edit route steps, planning blocks, actual output and warnings.</span>
+      </div>
+      <div class="queue-empty">No process sheets found.</div>
+    </div>
+  </section>
+</div>
+
+{% endblock %}
