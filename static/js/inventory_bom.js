@@ -3,7 +3,6 @@
 let selectedSource = null;
 let selectedSourceEl = null;
 let activeBom = null;
-let defaultBom = null;
 let debounceTimer = null;
 
 // ── Boot ──────────────────────────────────────────────────────────────────
@@ -16,7 +15,6 @@ document.addEventListener("DOMContentLoaded", () => {
     debounceTimer = setTimeout(() => loadSources(e.target.value.trim()), 280);
   });
 
-  document.getElementById("btn-set-default").addEventListener("click", setDefaultBom);
   document.getElementById("btn-save-flow").addEventListener("click", saveFlowMeta);
   document.getElementById("btn-duplicate").addEventListener("click", () => {
     alert("Duplicate flow — coming soon.");
@@ -32,11 +30,6 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("btn-add-step").addEventListener("click", () => {
     alert("Add Step — coming soon.");
-  });
-
-  // Sync Default? dropdown with Set Default button
-  document.getElementById("select-default").addEventListener("change", (e) => {
-    if (e.target.value === "yes") setDefaultBom();
   });
 });
 
@@ -111,33 +104,25 @@ async function loadBomTabs(source) {
     const data = await res.json();
     if (data.error) throw new Error(data.error);
 
-    defaultBom = data.default_bom;
-
     if (!data.bom_codes.length) {
       document.getElementById("bom-no-boms").style.display = "flex";
       return;
     }
 
-    renderBomTabs(data.bom_codes, defaultBom);
-
-    // Auto-select the default (or first) tab
-    const autoSelect = defaultBom || data.bom_codes[0];
-    selectBomTab(autoSelect);
+    renderBomTabs(data.bom_codes);
+    selectBomTab(data.bom_codes[0]);
   } catch (err) {
     tabsEl.innerHTML = `<span style="font-size:12px;color:#e74c3c">Error: ${err.message}</span>`;
   }
 }
 
-function renderBomTabs(bomCodes, currentDefault) {
+function renderBomTabs(bomCodes) {
   const tabsEl = document.getElementById("bom-tabs");
-  tabsEl.innerHTML = bomCodes.map((code) => {
-    const isDefault = code === currentDefault;
-    const isActive = code === activeBom;
-    return `
-      <button class="bom-tab${isActive ? " bom-tab--active" : ""}" data-bom="${esc(code)}">
-        ${esc(code)}${isDefault ? '<span class="tab-default-label">Default</span>' : ""}
-      </button>`;
-  }).join("");
+  tabsEl.innerHTML = bomCodes.map((code) => `
+    <button class="bom-tab${code === activeBom ? " bom-tab--active" : ""}" data-bom="${esc(code)}">
+      ${esc(code)}
+    </button>`
+  ).join("");
 
   tabsEl.querySelectorAll(".bom-tab").forEach((btn) => {
     btn.addEventListener("click", () => selectBomTab(btn.dataset.bom));
@@ -155,12 +140,6 @@ function selectBomTab(bomCode) {
   // Update flow header
   document.getElementById("flow-code-display").textContent = bomCode;
   document.getElementById("input-bom-code").value = bomCode;
-
-  const isDefault = bomCode === defaultBom;
-  const badge = document.getElementById("badge-default");
-  badge.style.display = isDefault ? "inline-flex" : "none";
-
-  document.getElementById("select-default").value = isDefault ? "yes" : "no";
 
   document.getElementById("bom-detail").style.display = "flex";
 
@@ -187,16 +166,12 @@ async function loadFlowMeta(source, bom) {
 async function saveFlowMeta() {
   if (!selectedSource || !activeBom) return;
   const flowName = document.getElementById("input-flow-name").value.trim();
-  const isDefault = document.getElementById("select-default").value === "yes";
-
   try {
     await fetch("/api/bom/meta", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ source: selectedSource, bom: activeBom, flow_name: flowName }),
     });
-    if (isDefault) await setDefaultBom(true);
-    // Visual confirmation
     const btn = document.getElementById("btn-save-flow");
     btn.textContent = "Saved ✓";
     setTimeout(() => { btn.textContent = "Save Flow"; }, 1800);
@@ -205,43 +180,6 @@ async function saveFlowMeta() {
   }
 }
 
-// ── Default BOM ───────────────────────────────────────────────────────────
-
-async function setDefaultBom(silent = false) {
-  if (!selectedSource || !activeBom) return;
-  try {
-    const res = await fetch(`/api/bom/sources/${encodeURIComponent(selectedSource)}/default`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bom_code: activeBom }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
-
-    defaultBom = activeBom;
-
-    // Re-render tabs so Default label moves
-    const tabsEl = document.getElementById("bom-tabs");
-    tabsEl.querySelectorAll(".bom-tab").forEach((btn) => {
-      const isDefault = btn.dataset.bom === defaultBom;
-      const code = btn.dataset.bom;
-      btn.innerHTML = `${esc(code)}${isDefault ? '<span class="tab-default-label">Default</span>' : ""}`;
-    });
-
-    // Update badge
-    document.getElementById("badge-default").style.display = "inline-flex";
-    document.getElementById("select-default").value = "yes";
-
-    // Update parts list count label (no change needed, just visual feedback)
-    if (!silent) {
-      const btn = document.getElementById("btn-set-default");
-      btn.textContent = "Default Set ✓";
-      setTimeout(() => { btn.textContent = "Set Default"; }, 1800);
-    }
-  } catch (err) {
-    if (!silent) alert("Failed to set default: " + err.message);
-  }
-}
 
 // ── Operations table (SQLite planner.db) ─────────────────────────────────
 

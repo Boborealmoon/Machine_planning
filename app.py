@@ -110,16 +110,17 @@ def api_bom_sources():
                 COUNT(DISTINCT bom_code) AS bom_count
             FROM public.inventory_bom_listing
             WHERE source_inventory_code IS NOT NULL
-              AND material_inventory_code NOT IN (
-                  SELECT source_inventory_code
-                  FROM public.inventory_bom_listing
-                  WHERE source_inventory_code IS NOT NULL
-              )
+            AND material_inventory_code NOT IN (
+                SELECT source_inventory_code
+                FROM public.inventory_bom_listing
+                WHERE source_inventory_code IS NOT NULL
+            )
+            GROUP BY source_inventory_code
+            ORDER BY source_inventory_code
         """
         if search:
             rows = db_query(
-                base + " AND source_inventory_code ILIKE %s "
-                       "GROUP BY source_inventory_code ORDER BY source_inventory_code",
+                base + " AND source_inventory_code ILIKE %s GROUP BY source_inventory_code ORDER BY source_inventory_code",
                 (f"%{search}%",), fetchall=True
             )
         else:
@@ -151,23 +152,15 @@ def api_source_boms(source):
             (source,), fetchall=True
         )
         bom_codes = [r[0] for r in (rows or [])]
-
-        # Look up which one is default
-        default_row = db_query(
-            "SELECT default_bom_code FROM bom_defaults WHERE source_inventory_code = %s",
-            (source,), fetchone=True
-        )
-        default_bom = default_row[0] if default_row else (bom_codes[0] if bom_codes else None)
-
-        return jsonify({
-            "bom_codes": bom_codes,
-            "default_bom": default_bom
-        })
+        return jsonify({"bom_codes": bom_codes})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 # ── API: Inventory BOM — materials for source + bom (steps table) ──────────
+
+# SELECT *
+# FROM public.mt_inventory_item_view;
 
 @app.get("/api/bom/materials")
 def api_bom_materials():
@@ -207,29 +200,6 @@ def api_bom_materials():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
-# ── API: Inventory BOM — set default bom for a source ─────────────────────
-
-@app.post("/api/bom/sources/<path:source>/default")
-def api_set_default_bom(source):
-    data = request.get_json()
-    bom_code = (data.get("bom_code") or "").strip()
-    if not bom_code:
-        return jsonify({"error": "bom_code is required"}), 400
-    try:
-        db_query(
-            """
-            INSERT INTO bom_defaults (source_inventory_code, default_bom_code)
-            VALUES (%s, %s)
-            ON CONFLICT (source_inventory_code)
-            DO UPDATE SET default_bom_code = EXCLUDED.default_bom_code,
-                          updated_at = NOW()
-            """,
-            (source, bom_code), commit=True
-        )
-        return jsonify({"ok": True, "default_bom": bom_code})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 
 # ── API: BOM metadata (flow name) ──────────────────────────────────────────
