@@ -464,6 +464,63 @@ def api_ptl_data():
         for row in rows:
             row["part_no_erp"] = part_no_erp_map.get(row.get("ps_no") or "", "") or ""
 
+        # Enrich with actual machine_no from WO completion history (by part_no_erp + stage_desc)
+        actual_machine_map = {}
+        part_no_erp_list = list({row["part_no_erp"] for row in rows if row.get("part_no_erp")})
+        if part_no_erp_list:
+            try:
+                wo_rows = db_query(
+                    """
+                    WITH wt_raw AS (
+                        SELECT
+                            t2.inventory_code,
+                            t1.voucher_no,
+                            t1.machine_no,
+                            t2.stage_desc,
+                            t3.total_acc_qty_produced,
+                            CASE WHEN t1.status = 'H' THEN 1 ELSE 0 END AS status_rank
+                        FROM mfg_wo_comp_vch t1
+                        LEFT JOIN mfg_mps_vch t2 ON t1.voucher_no = t2.wo_voucher_no
+                        LEFT JOIN mfg_wo_vch t3 ON t1.voucher_no = t3.voucher_no
+                        WHERE t2.inventory_code = ANY(%s)
+                          AND (
+                              t2.stage_desc LIKE 'Turning%%'
+                           OR t2.stage_desc LIKE 'Milling%%'
+                           OR t2.stage_desc LIKE 'Turnmill%%'
+                          )
+                    ),
+                    wt_ranked AS (
+                        SELECT *,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY voucher_no
+                                ORDER BY total_acc_qty_produced DESC, status_rank DESC
+                            ) AS rn
+                        FROM wt_raw
+                    ),
+                    workorder_tracker AS (
+                        SELECT inventory_code, machine_no, stage_desc
+                        FROM wt_ranked
+                        WHERE rn = 1
+                    )
+                    SELECT inventory_code, stage_desc, MIN(machine_no) AS machine_no
+                    FROM workorder_tracker
+                    GROUP BY inventory_code, stage_desc
+                    """,
+                    (part_no_erp_list,), fetchall=True
+                )
+                if wo_rows:
+                    for wr in wo_rows:
+                        actual_machine_map[(wr[0], wr[1])] = wr[2]
+            except Exception:
+                pass  # PostgreSQL unavailable — leave blank
+
+        for row in rows:
+            part_no_erp = row.get("part_no_erp") or ""
+            op_type     = row.get("operation_type") or ""
+            op_no       = row.get("operation_no") or row.get("operation_no_2") or ""
+            stage       = f"{op_type} {op_no}".strip() if op_no else op_type
+            row["actual_machine_no"] = actual_machine_map.get((part_no_erp, stage), "")
+
         return jsonify({"rows": rows, "last_synced": last_synced()})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

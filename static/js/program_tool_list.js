@@ -1,6 +1,6 @@
 /* Program / Tool List */
 
-const COLSPAN    = 20;
+const COLSPAN    = 21;
 const PAGE_SIZE  = 100;
 
 let debounceTimer = null;
@@ -296,6 +296,7 @@ function renderTable(rows) {
       <td>${esc(r.program_no)}</td>
 
       <td class="ptl-group-start">${esc(r.cnc_machine_no || r.cnc_machine_no_2)}</td>
+      <td class="ptl-actual-machine">${esc(r.actual_machine_no)}</td>
       <td>${esc(r.operation_no || r.operation_no_2)}</td>
       <td>${esc(r.operation_type)}</td>
       <td>${esc(r.setup_time)}</td>
