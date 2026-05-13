@@ -1,11 +1,473 @@
 {% extends "base.html" %}
+
+{% block extra_css %}
+<style>
+/* ── Program / Tool List page ─────────────────────────────────────────── */
+.ptl-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ptl-count {
+  font-size: 12px;
+  color: #999;
+  white-space: nowrap;
+}
+
+.ptl-sync-info {
+  font-size: 11px;
+  color: #bbb;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* Scrollable table wrapper */
+.ptl-wrap {
+  overflow-x: auto;
+  overflow-y: visible;
+}
+
+.ptl-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.ptl-table thead th {
+  padding: 9px 14px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #888;
+  border-bottom: 1px solid #e8e8e8;
+  white-space: nowrap;
+  background: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+/* Corner cells: sticky on both axes */
+.ptl-table thead th.ptl-sticky-1,
+.ptl-table thead th.ptl-sticky-2 {
+  z-index: 4;
+}
+
+.ptl-table td {
+  padding: 9px 14px;
+  border-bottom: 1px solid #f4f4f4;
+  white-space: nowrap;
+  color: #333;
+  vertical-align: middle;
+}
+
+.ptl-table tbody tr:hover td { background: #fafafa; }
+
+/* Sticky left columns */
+.ptl-sticky-1 {
+  position: sticky;
+  left: 0;
+  background: #fff;
+  z-index: 2;
+  min-width: 100px;
+}
+.ptl-sticky-2 {
+  position: sticky;
+  left: 100px;
+  background: #fff;
+  z-index: 2;
+  border-right: 1px solid #ececec;
+  min-width: 130px;
+}
+.ptl-table tbody tr:hover td.ptl-sticky-1,
+.ptl-table tbody tr:hover td.ptl-sticky-2 { background: #fafafa; }
+
+/* Column group dividers */
+.ptl-table th.ptl-group-start,
+.ptl-table td.ptl-group-start {
+  border-left: 1px solid #ececec;
+}
+
+.ptl-part-no {
+  font-weight: 600;
+  color: #111;
+  min-width: 110px;
+}
+
+.ptl-link {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 4px;
+  background: #f0f0f0;
+  color: #333;
+  font-size: 11px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.12s;
+}
+.ptl-link:hover { background: #ddd; }
+
+.ptl-dash { color: #ccc; }
+
+.ptl-empty {
+  padding: 56px 20px;
+  text-align: center;
+  color: #bbb;
+  font-size: 13px;
+}
+
+.btn-syncing {
+  opacity: 0.6;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ── Filter bar ──────────────────────────────────────────────────── */
+.ptl-filters {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  border-top: 1px solid #f0f0f0;
+  margin-top: 8px;
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #aaa;
+  white-space: nowrap;
+}
+
+.filter-chips { display: flex; gap: 4px; }
+
+.filter-chip {
+  padding: 4px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 20px;
+  background: #fff;
+  font-size: 11px;
+  color: #555;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+.filter-chip:hover { background: #f5f5f5; }
+.filter-chip--active { background: #111; color: #fff; border-color: #111; }
+
+/* Machine picker */
+.machine-picker { position: relative; }
+
+.machine-picker-btn {
+  padding: 4px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 20px;
+  background: #fff;
+  font-size: 11px;
+  color: #555;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+.machine-picker-btn:hover { background: #f5f5f5; }
+.machine-picker-btn--active { background: #111; color: #fff; border-color: #111; }
+
+.machine-dd {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+  z-index: 100;
+  min-width: 160px;
+}
+
+.machine-dd-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #f0f0f0;
+}
+.machine-dd-actions button {
+  font-size: 11px;
+  color: #666;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+.machine-dd-actions button:hover { color: #111; }
+
+.machine-cb-list { max-height: 220px; overflow-y: auto; padding: 6px 0; }
+
+.machine-cb-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  font-size: 12px;
+  color: #333;
+  cursor: pointer;
+}
+.machine-cb-label:hover { background: #fafafa; }
+
+/* ── Summary modal ──────────────────────────────────────── */
+.ptl-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.35);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ptl-modal-backdrop[hidden] { display: none; }
+.ptl-modal {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  width: 500px;
+  max-width: 92vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ptl-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid #f0f0f0;
+  flex-shrink: 0;
+}
+.ptl-modal-title { font-size: 13px; font-weight: 700; color: #111; }
+.ptl-modal-subtitle { font-size: 11px; color: #aaa; margin-top: 2px; }
+.ptl-modal-close {
+  background: none; border: none; cursor: pointer;
+  color: #bbb; font-size: 20px; padding: 0; line-height: 1;
+}
+.ptl-modal-close:hover { color: #333; }
+.ptl-modal-search {
+  padding: 10px 16px;
+  border-bottom: 1px solid #f0f0f0;
+  flex-shrink: 0;
+}
+.ptl-modal-search-input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #333;
+  outline: none;
+  box-sizing: border-box;
+}
+.ptl-modal-search-input:focus { border-color: #bbb; }
+.ptl-modal-body { overflow-y: auto; flex: 1; }
+.ptl-summary-table { width: 100%; border-collapse: collapse; }
+.ptl-summary-table th {
+  padding: 8px 16px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #888;
+  border-bottom: 1px solid #e8e8e8;
+  white-space: nowrap;
+  background: #fafafa;
+  position: sticky;
+  top: 0;
+}
+.ptl-summary-table td {
+  padding: 7px 16px;
+  border-bottom: 1px solid #f4f4f4;
+  font-size: 12px;
+  color: #333;
+  vertical-align: top;
+}
+.ptl-summary-table tbody tr:hover td { background: #fafafa; }
+.ptl-summary-group-first td { border-top: 1px solid #e8e8e8; }
+.ptl-summary-table tbody tr:first-child td { border-top: none; }
+.ptl-summary-count { font-weight: 600; text-align: right; }
+.ptl-summary-part  { font-weight: 600; color: #111; white-space: nowrap; }
+
+/* ── Pagination ──────────────────────────────────────────── */
+.ptl-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid #f0f0f0;
+}
+.ptl-page-info {
+  font-size: 12px;
+  color: #666;
+  min-width: 110px;
+  text-align: center;
+}
+.ptl-page-btn {
+  padding: 4px 14px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  color: #333;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.ptl-page-btn:hover:not(:disabled) { background: #f5f5f5; }
+.ptl-page-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="page">
+
+  <!-- Header -->
   <div class="page-header">
     <h1 class="page-title">Program / Tool List</h1>
+    <div class="page-actions">
+      <button class="btn" id="btn-summary">Part × Machine ▸</button>
+      <button class="btn btn-dark" id="btn-sync">Sync from Google Sheets</button>
+    </div>
   </div>
-  <div class="card empty-state">
-    <p>Program and tool list content coming soon.</p>
+
+  <!-- Toolbar -->
+  <div class="card">
+    <div class="ptl-toolbar">
+      <div class="search-wrap" style="max-width:360px">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input class="search-input" id="ptl-search" type="text"
+               placeholder="Search part, program, programmer, machine…" />
+      </div>
+      <span class="ptl-count" id="ptl-count"></span>
+      <span class="ptl-sync-info" id="ptl-sync-info"></span>
+    </div>
+
+    <!-- Filters -->
+    <div class="ptl-filters">
+      <div class="filter-group">
+        <span class="filter-label">OP TYPE</span>
+        <div class="filter-chips" id="optype-chips">
+          <button class="filter-chip filter-chip--active" data-val="">All</button>
+          <button class="filter-chip" data-val="Turning">Turning</button>
+          <button class="filter-chip" data-val="Milling">Milling</button>
+          <button class="filter-chip" data-val="Turnmill">Turnmill</button>
+        </div>
+      </div>
+      <div class="filter-group">
+        <span class="filter-label">CNC MACHINE</span>
+        <div class="machine-picker">
+          <button class="machine-picker-btn" id="machine-picker-btn">All machines ▾</button>
+          <div class="machine-dd" id="machine-dd" hidden>
+            <div class="machine-dd-actions">
+              <button id="machine-select-all">Select all</button>
+              <button id="machine-clear-all">Clear</button>
+            </div>
+            <div class="machine-cb-list" id="machine-cb-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div class="card card--flush">
+    <div class="ptl-wrap">
+      <table class="ptl-table">
+        <thead>
+          <tr>
+            <!-- Frozen identity -->
+            <th class="ptl-sticky-1">P/S NO.</th>
+            <th class="ptl-sticky-2">PART NO. (ERP)</th>
+            <!-- Identity -->
+            <th>PROGRAM NO.</th>
+            <!-- Op 1 -->
+            <th class="ptl-group-start">CNC MACHINE</th>
+            <th>OP NO.</th>
+            <th>OP TYPE</th>
+            <th>SET-UP TIME</th>
+            <th>CYCLE TIME</th>
+            <th>ORIG. SETUP</th>
+            <!-- Pricing -->
+            <th class="ptl-group-start">QUOTED SETUP</th>
+            <th>QUOTED C/T</th>
+            <!-- Op 2 -->
+            <th class="ptl-group-start">QUOTED C/T 2</th>
+            <!-- Dims & Assembly -->
+            <th class="ptl-group-start">MAT. EXT. (mm)</th>
+            <th>SETUP DIAG. (mm)</th>
+            <th>KIT / ASSY NO.</th>
+            <!-- People -->
+            <th class="ptl-group-start">PROGRAMMER</th>
+            <th>DATE</th>
+            <th>VERIFIED</th>
+            <!-- Files -->
+            <th class="ptl-group-start">PROGRAM FILE</th>
+            <th>TOOL LIST</th>
+          </tr>
+        </thead>
+        <tbody id="ptl-tbody">
+          <tr><td colspan="20" class="ptl-empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="ptl-pagination" id="ptl-pagination" hidden>
+      <button class="ptl-page-btn" id="btn-prev-page">← Prev</button>
+      <span class="ptl-page-info" id="ptl-page-info"></span>
+      <button class="ptl-page-btn" id="btn-next-page">Next →</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- Part × Machine summary modal -->
+<div class="ptl-modal-backdrop" id="ptl-modal-backdrop" hidden>
+  <div class="ptl-modal">
+    <div class="ptl-modal-header">
+      <div>
+        <div class="ptl-modal-title">Part × Machine Summary</div>
+        <div class="ptl-modal-subtitle">Reflects current filters</div>
+      </div>
+      <button class="ptl-modal-close" id="ptl-modal-close">✕</button>
+    </div>
+    <div class="ptl-modal-search">
+      <input class="ptl-modal-search-input" id="ptl-summary-search" type="text"
+             placeholder="Filter by part no. (ERP)…" />
+    </div>
+    <div class="ptl-modal-body">
+      <table class="ptl-summary-table">
+        <thead>
+          <tr>
+            <th>PART NO. (ERP)</th>
+            <th>MACHINE</th>
+            <th>COUNT</th>
+          </tr>
+        </thead>
+        <tbody id="ptl-summary-tbody"></tbody>
+      </table>
+    </div>
   </div>
 </div>
+
+<script src="{{ url_for('static', filename='js/program_tool_list.js') }}"></script>
 {% endblock %}

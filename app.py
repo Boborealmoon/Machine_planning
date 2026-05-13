@@ -8,6 +8,11 @@ app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 
+@app.get("/favicon.ico")
+def favicon():
+    return "", 204
+
+
 # ── DB helper ──────────────────────────────────────────────────────────────
 
 def db_query(sql, params=(), fetchone=False, fetchall=False, commit=False):
@@ -104,12 +109,16 @@ def health():
 def api_bom_sources():
     search = request.args.get("search", "").strip()
     try:
-        base = """
+        search_clause = "AND source_inventory_code ILIKE %s" if search else ""
+        params = (f"%{search}%",) if search else ()
+        rows = db_query(
+            f"""
             SELECT
                 source_inventory_code,
                 COUNT(DISTINCT bom_code) AS bom_count
             FROM public.inventory_bom_listing
             WHERE source_inventory_code IS NOT NULL
+            {search_clause}
             AND material_inventory_code NOT IN (
                 SELECT source_inventory_code
                 FROM public.inventory_bom_listing
@@ -117,17 +126,9 @@ def api_bom_sources():
             )
             GROUP BY source_inventory_code
             ORDER BY source_inventory_code
-        """
-        if search:
-            rows = db_query(
-                base + " AND source_inventory_code ILIKE %s GROUP BY source_inventory_code ORDER BY source_inventory_code",
-                (f"%{search}%",), fetchall=True
-            )
-        else:
-            rows = db_query(
-                base + " GROUP BY source_inventory_code ORDER BY source_inventory_code",
-                fetchall=True
-            )
+            """,
+            params, fetchall=True
+        )
         return jsonify([
             {"source_code": r[0], "bom_count": r[1]}
             for r in (rows or [])
@@ -364,6 +365,106 @@ def api_bom_operations():
             }
             for r in (rows or [])
         ])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: Program / Tool List ───────────────────────────────────────────────
+
+_PTL_SHEET_ID  = "1e7_ahcp15jLHOKhX6W1b6TLUvbZr-wM5H_MzMzYXIXg"
+_PTL_SHEET_GID = 606390196
+
+
+@app.post("/api/program-tool-list/sync")
+def api_ptl_sync():
+    import urllib.request
+    import urllib.parse
+    import urllib.error
+    import json as _json
+    from tool_list_db import init_db, replace_all, COLUMNS
+
+    api_key = os.getenv("tool_list_secret_key", "").strip()
+
+    def sheets_get(url, params):
+        full = url + "?" + urllib.parse.urlencode(params)
+        try:
+            with urllib.request.urlopen(full, timeout=30) as r:
+                return _json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode()
+            try:
+                msg = _json.loads(body)["error"]["message"]
+            except Exception:
+                msg = body or str(e)
+            raise RuntimeError(f"Google API {e.code}: {msg}")
+
+    try:
+        if not api_key:
+            return jsonify({"error": "tool_list_secret_key is not set in .env"}), 500
+        # Resolve tab name from GID (Sheets API needs the name, not the numeric GID)
+        meta = sheets_get(
+            f"https://sheets.googleapis.com/v4/spreadsheets/{_PTL_SHEET_ID}",
+            {"key": api_key, "fields": "sheets(properties(sheetId,title))"},
+        )
+        sheet_name = next(
+            (s["properties"]["title"]
+             for s in meta.get("sheets", [])
+             if s["properties"]["sheetId"] == _PTL_SHEET_GID),
+            None,
+        )
+        if not sheet_name:
+            return jsonify({"error": f"Tab with gid={_PTL_SHEET_GID} not found in spreadsheet"}), 400
+
+        data = sheets_get(
+            f"https://sheets.googleapis.com/v4/spreadsheets/{_PTL_SHEET_ID}/values/{urllib.parse.quote(sheet_name)}",
+            {"key": api_key},
+        )
+        values = data.get("values", [])
+        if not values:
+            return jsonify({"synced": 0, "message": "Sheet is empty"})
+
+        n = len(COLUMNS)
+        # Skip two header rows (row1 = form question text, row2 = short labels)
+        rows = [tuple((list(r) + [""] * n)[:n]) for r in values[2:]]
+
+        init_db()
+        replace_all(rows)
+        return jsonify({"synced": len(rows)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.get("/api/program-tool-list")
+def api_ptl_data():
+    from tool_list_db import init_db, fetch_all, last_synced
+    search = request.args.get("search", "").strip()
+    try:
+        init_db()
+        rows = fetch_all(search)
+
+        # Enrich with ERP part number from PostgreSQL using ps_no as key
+        ps_nos = list({r["ps_no"] for r in rows if r.get("ps_no")})
+        part_no_erp_map = {}
+        if ps_nos:
+            try:
+                erp_rows = db_query(
+                    """
+                    SELECT DISTINCT process_sheet_no, inventory_code
+                    FROM public.mfg_process_sheet_info_v1_view
+                    WHERE process_sheet_no = ANY(%s)
+                    """,
+                    (ps_nos,), fetchall=True
+                )
+                if erp_rows:
+                    for er in erp_rows:
+                        part_no_erp_map[er[0]] = er[1]
+            except Exception:
+                pass  # PostgreSQL unavailable — leave column blank
+
+        for row in rows:
+            row["part_no_erp"] = part_no_erp_map.get(row.get("ps_no") or "", "") or ""
+
+        return jsonify({"rows": rows, "last_synced": last_synced()})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

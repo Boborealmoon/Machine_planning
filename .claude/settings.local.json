@@ -3,7 +3,8 @@
     "allow": [
       "PowerShell(py --version)",
       "PowerShell(py -m pip install -r \"C:\\\\Users\\\\zhenyue\\\\Documents\\\\GitHub\\\\Machine_planning\\\\requirements.txt\" -q)",
-      "PowerShell(Start-Sleep -Seconds 1; try { $r = Invoke-WebRequest -Uri \"http://localhost:5000/\" -UseBasicParsing -TimeoutSec 5; Write-Host \"Status: $\\($r.StatusCode\\)\" } catch { Write-Host \"Error: $_\" })"
+      "PowerShell(Start-Sleep -Seconds 1; try { $r = Invoke-WebRequest -Uri \"http://localhost:5000/\" -UseBasicParsing -TimeoutSec 5; Write-Host \"Status: $\\($r.StatusCode\\)\" } catch { Write-Host \"Error: $_\" })",
+      "PowerShell(Get-Command py -ErrorAction SilentlyContinue | Select-Object Source; \\(py --version\\) 2>&1)"
     ]
   }
 }
