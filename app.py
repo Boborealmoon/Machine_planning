@@ -255,66 +255,7 @@ def api_bom_operations():
     try:
         rows = db_query(
             """
-            WITH wt_raw AS (
-                SELECT
-                    t2.source_pp_no,
-                    t2.inventory_code,
-                    t1.voucher_no,
-                    t1.machine_no,
-                    t2.stage_desc,
-                    t3.total_acc_qty_produced,
-                    t1.status AS raw_status
-                FROM mfg_wo_comp_vch t1
-                LEFT JOIN mfg_mps_vch t2
-                    ON  t1.voucher_no = t2.wo_voucher_no
-                LEFT JOIN mfg_wo_vch t3
-                    ON  t1.voucher_no = t3.voucher_no
-                WHERE t2.inventory_code = %s
-                  AND (
-                      t2.stage_desc LIKE 'Turning%%'
-                   OR t2.stage_desc LIKE 'Milling%%'
-                   OR t2.stage_desc LIKE 'Turnmill%%'
-                  )
-            ),
-
-            wt_with_bom AS (
-                SELECT
-                    r.*,
-                    p.bom_code
-                FROM wt_raw r
-                LEFT JOIN public.mfg_pp_vch p
-                    ON  p.pp_voucher_no = r.source_pp_no
-                WHERE p.bom_code = %s OR p.bom_code IS NULL
-            ),
-
-            wt_ranked AS (
-                SELECT *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY voucher_no
-                        ORDER BY
-                            total_acc_qty_produced DESC,
-                            CASE WHEN raw_status = 'H' THEN 1 ELSE 0 END DESC
-                    ) AS rn
-                FROM wt_with_bom
-            ),
-
-            workorder_tracker AS (
-                SELECT source_pp_no, inventory_code, voucher_no, machine_no, stage_desc, bom_code
-                FROM wt_ranked
-                WHERE rn = 1
-            ),
-
-            workorder_tracker_slim AS (
-                SELECT
-                    inventory_code,
-                    bom_code,
-                    stage_desc,
-                    MIN(machine_no) AS machine_no
-                FROM workorder_tracker
-                GROUP BY inventory_code, bom_code, stage_desc
-            ),
-
-            bom_machining AS (
+            WITH bom_machining AS (
                 SELECT
                     inventory_code,
                     bom_code,
@@ -334,6 +275,41 @@ def api_bom_operations():
                   )
                   AND inventory_code = %s
                   AND bom_code = %s
+            ),
+
+            wt_raw AS (
+                SELECT
+                    t2.inventory_code,
+                    t1.voucher_no,
+                    t1.machine_no,
+                    t2.stage_desc,
+                    t3.total_acc_qty_produced,
+                    CASE WHEN t1.status = 'H' THEN 1 ELSE 0 END AS status_rank
+                FROM mfg_wo_comp_vch t1
+                LEFT JOIN mfg_mps_vch t2 ON t1.voucher_no = t2.wo_voucher_no
+                LEFT JOIN mfg_wo_vch  t3 ON t1.voucher_no = t3.voucher_no
+                WHERE t2.inventory_code = %s
+                  AND (
+                      t2.stage_desc LIKE 'Turning%%'
+                   OR t2.stage_desc LIKE 'Milling%%'
+                   OR t2.stage_desc LIKE 'Turnmill%%'
+                  )
+            ),
+
+            wt_ranked AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY voucher_no
+                        ORDER BY total_acc_qty_produced DESC, status_rank DESC
+                    ) AS rn
+                FROM wt_raw
+            ),
+
+            wo_machines AS (
+                SELECT inventory_code, stage_desc, MIN(machine_no) AS machine_no
+                FROM wt_ranked
+                WHERE rn = 1
+                GROUP BY inventory_code, stage_desc
             )
 
             SELECT
@@ -344,15 +320,14 @@ def api_bom_operations():
                 b.op_no,
                 w.machine_no
             FROM bom_machining b
-            LEFT JOIN workorder_tracker_slim w
+            LEFT JOIN wo_machines w
                 ON  w.inventory_code = b.inventory_code
-                AND w.bom_code       = b.bom_code
                 AND w.stage_desc     = b.stage_desc
             ORDER BY
                 b.stage_no  ASC,
                 b.op_no     ASC NULLS LAST
             """,
-            (source, bom, source, bom), fetchall=True
+            (source, bom, source), fetchall=True
         )
         return jsonify([
             {
