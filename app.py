@@ -40,6 +40,11 @@ def db_query(sql, params=(), fetchone=False, fetchall=False, commit=False):
 # ── Pages ──────────────────────────────────────────────────────────────────
 
 @app.get("/")
+@app.get("/scheduler")
+def scheduler():
+    return render_template("scheduler.html", active="scheduler")
+
+
 @app.get("/process-sheets")
 def process_sheets():
     return render_template("process_sheets.html", active="process_sheets")

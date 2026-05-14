@@ -1,3 +1,14 @@
+/* ── Design tokens ────────────────────────────────────────────────────── */
+:root {
+  --text:      #1a1c1d;
+  --text2:     #555f6b;
+  --text3:     #8b9aaa;
+  --border:    #e2e6eb;
+  --bg2:       #f5f7fa;
+  --bg3:       #eef0f3;
+  --shadow-lg: 0 20px 40px rgba(26,28,29,0.08);
+}
+
 /* ── Reset & base ─────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
