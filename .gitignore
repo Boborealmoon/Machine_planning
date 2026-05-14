@@ -47,3 +47,4 @@ instance/
 htmlcov/
 
 .claude/
+.claude/settings.local.json
