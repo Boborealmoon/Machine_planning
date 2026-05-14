@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── COMAIN pool ────────────────────────────────────────────────────────────
+
 _pool = None
 
 
@@ -28,3 +30,31 @@ def get_conn():
 
 def release_conn(conn):
     get_pool().putconn(conn)
+
+
+# ── Supabase pool ──────────────────────────────────────────────────────────
+
+_supa_pool = None
+
+
+def get_supa_pool():
+    global _supa_pool
+    if _supa_pool is None:
+        _supa_pool = psycopg2.pool.SimpleConnectionPool(
+            1, 10,
+            host=os.getenv("SUPABASE_DB_HOST"),
+            port=int(os.getenv("SUPABASE_DB_PORT", 5432)),
+            dbname=os.getenv("SUPABASE_DB_NAME", "postgres"),
+            user=os.getenv("SUPABASE_DB_USER", "postgres"),
+            password=os.getenv("SUPABASE_DB_PASSWORD"),
+            sslmode="require",
+        )
+    return _supa_pool
+
+
+def get_supa_conn():
+    return get_supa_pool().getconn()
+
+
+def release_supa_conn(conn):
+    get_supa_pool().putconn(conn)
