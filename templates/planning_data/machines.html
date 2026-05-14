@@ -1,11 +1,486 @@
 {% extends "base.html" %}
+{% block title %}Machines — Planning Data{% endblock %}
 {% block content %}
-<div class="page">
-  <div class="page-header">
-    <h1 class="page-title">Machines</h1>
+
+<style>
+.machines-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.machines-title { font-size: 20px; font-weight: 700; color: var(--text); }
+
+/* Stats strip */
+.machine-stats {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.machine-stat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+}
+.machine-stat-num  { font-size: 18px; font-weight: 800; color: var(--text); }
+.machine-stat-label{ color: var(--text2); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+
+/* Category badge colors */
+.badge-cat { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:700; letter-spacing:0.04em; }
+.cat-TURNING  { background:#dbeafe; color:#1d4ed8; }
+.cat-MILLING  { background:#dcfce7; color:#15803d; }
+.cat-TURNMILL { background:#fff7ed; color:#c2410c; }
+.cat-MPP      { background:#f3e8ff; color:#7e22ce; }
+
+.badge-active   { background:#dcfce7; color:#15803d; font-size:11px; font-weight:600; padding:2px 7px; border-radius:4px; }
+.badge-inactive { background:#fee2e2; color:#b91c1c; font-size:11px; font-weight:600; padding:2px 7px; border-radius:4px; }
+
+/* Table */
+.machines-table-wrap { background:#fff; border:1.5px solid var(--border); border-radius:10px; overflow:hidden; }
+.machines-table { width:100%; border-collapse:collapse; }
+.machines-table thead th {
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text2);
+  border-bottom: 1.5px solid var(--border);
+  background: var(--bg2);
+}
+.machines-table tbody tr {
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+.machines-table tbody tr:last-child { border-bottom: none; }
+.machines-table tbody tr:hover { background: var(--bg2); }
+.machines-table td { padding: 10px 14px; font-size: 13px; vertical-align: middle; }
+
+/* Edit row */
+.row-edit-form { display:none; }
+.row-edit-form.open { display:table-row; }
+.row-edit-form td { padding: 12px 14px; background: #f8fafc; border-bottom: 2px solid #3b82f6; }
+.edit-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 10px;
+  align-items: end;
+}
+.edit-field label { display:block; font-size:11px; font-weight:600; color:var(--text2); margin-bottom:4px; text-transform:uppercase; letter-spacing:0.04em; }
+.edit-field input,
+.edit-field select {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+  background: #fff;
+  color: var(--text);
+  transition: border-color 0.15s;
+}
+.edit-field input:focus,
+.edit-field select:focus { outline: none; border-color: #3b82f6; }
+.edit-actions { display:flex; gap:8px; padding-bottom:1px; }
+
+/* Buttons */
+.btn { display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:6px; border:1.5px solid transparent; font:inherit; font-size:13px; font-weight:600; cursor:pointer; transition:all 0.15s; white-space:nowrap; }
+.btn-primary   { background:#1a1c1d; color:#fff; border-color:#1a1c1d; }
+.btn-primary:hover { background:#2d2f31; }
+.btn-ghost     { background:#fff; color:var(--text); border-color:var(--border); }
+.btn-ghost:hover { background:var(--bg2); }
+.btn-danger    { background:#fff; color:#b91c1c; border-color:#fca5a5; }
+.btn-danger:hover { background:#fee2e2; }
+.btn-sm { padding:5px 10px; font-size:12px; }
+.btn-icon { padding:5px 8px; }
+
+/* Modal */
+.modal-backdrop {
+  display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35);
+  z-index:200; align-items:center; justify-content:center;
+}
+.modal-backdrop.open { display:flex; }
+.modal-box {
+  background:#fff; border-radius:12px; padding:28px 32px;
+  width:440px; max-width:95vw; box-shadow:0 20px 50px rgba(0,0,0,0.18);
+}
+.modal-title { font-size:17px; font-weight:700; margin-bottom:20px; }
+.modal-field { margin-bottom:14px; }
+.modal-field label { display:block; font-size:12px; font-weight:600; color:var(--text2); margin-bottom:5px; text-transform:uppercase; letter-spacing:0.04em; }
+.modal-field input,
+.modal-field select {
+  width:100%; padding:8px 11px;
+  border:1.5px solid var(--border); border-radius:6px;
+  font:inherit; font-size:14px; color:var(--text); background:#fff;
+}
+.modal-field input:focus,
+.modal-field select:focus { outline:none; border-color:#3b82f6; }
+.modal-actions { display:flex; gap:10px; justify-content:flex-end; margin-top:22px; }
+.error-msg { color:#b91c1c; font-size:12px; margin-top:8px; display:none; }
+.error-msg.show { display:block; }
+
+/* Toast */
+#toast { position:fixed; bottom:24px; right:24px; background:#1a1c1d; color:#fff; padding:10px 18px; border-radius:8px; font-size:13px; font-weight:500; box-shadow:0 4px 16px rgba(0,0,0,0.25); z-index:999; opacity:0; transition:opacity 0.2s; pointer-events:none; }
+#toast.show { opacity:1; }
+
+.empty-row td { text-align:center; color:var(--text3); padding:32px; font-size:13px; }
+</style>
+
+<div class="page" style="padding:28px 32px; max-width:1100px; margin:0 auto;">
+
+  <div class="machines-header">
+    <div class="machines-title">Machines</div>
+    <button class="btn btn-primary" onclick="openAddModal()">+ Add Machine</button>
   </div>
-  <div class="card empty-state">
-    <p>Machines content coming soon.</p>
+
+  <div class="machine-stats" id="stats-row">
+    <div class="machine-stat"><div><div class="machine-stat-num" id="stat-total">—</div><div class="machine-stat-label">Total</div></div></div>
+    <div class="machine-stat"><div><div class="machine-stat-num" id="stat-TURNING" style="color:#1d4ed8">—</div><div class="machine-stat-label">Turning</div></div></div>
+    <div class="machine-stat"><div><div class="machine-stat-num" id="stat-MILLING" style="color:#15803d">—</div><div class="machine-stat-label">Milling</div></div></div>
+    <div class="machine-stat"><div><div class="machine-stat-num" id="stat-TURNMILL" style="color:#c2410c">—</div><div class="machine-stat-label">Turnmill</div></div></div>
+    <div class="machine-stat"><div><div class="machine-stat-num" id="stat-MPP" style="color:#7e22ce">—</div><div class="machine-stat-label">MPP</div></div></div>
+    <div class="machine-stat"><div><div class="machine-stat-num" id="stat-inactive" style="color:var(--text3)">—</div><div class="machine-stat-label">Inactive</div></div></div>
+  </div>
+
+  <div class="machines-table-wrap">
+    <table class="machines-table" id="machines-table">
+      <thead>
+        <tr>
+          <th style="width:170px">Machine No</th>
+          <th>Category</th>
+          <th>Shift Profile</th>
+          <th>Status</th>
+          <th>Notes</th>
+          <th style="width:130px; text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="machines-tbody">
+        <tr class="empty-row"><td colspan="6">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<!-- Add Machine Modal -->
+<div class="modal-backdrop" id="add-modal">
+  <div class="modal-box">
+    <div class="modal-title">Add Machine</div>
+    <div class="modal-field">
+      <label>Machine No</label>
+      <input id="add-machine-no" type="text" placeholder="e.g. CNC 41" autocomplete="off">
+    </div>
+    <div class="modal-field">
+      <label>Category</label>
+      <select id="add-category">
+        <option value="">— Select —</option>
+        <option value="TURNING">TURNING</option>
+        <option value="MILLING">MILLING</option>
+        <option value="TURNMILL">TURNMILL</option>
+        <option value="MPP">MPP</option>
+      </select>
+    </div>
+    <div class="modal-field">
+      <label>Shift Profile</label>
+      <select id="add-shift">
+        <option value="STANDARD">STANDARD — Weekday day/night</option>
+        <option value="24HR">24HR — Around the clock</option>
+      </select>
+    </div>
+    <div class="modal-field">
+      <label>Notes <span style="font-weight:400;text-transform:none">(optional)</span></label>
+      <input id="add-notes" type="text" placeholder="Any notes…" autocomplete="off">
+    </div>
+    <div class="error-msg" id="add-error"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeAddModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAdd()">Add Machine</button>
+    </div>
   </div>
 </div>
+
+<div id="toast"></div>
+
+<script>
+const CATEGORIES    = ['TURNING', 'MILLING', 'TURNMILL', 'MPP'];
+const CAT_CLASS     = { TURNING:'cat-TURNING', MILLING:'cat-MILLING', TURNMILL:'cat-TURNMILL', MPP:'cat-MPP' };
+let machines        = [];
+let editingId       = null;
+
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function api(method, url, body) {
+  const opts = { method, headers: {'Content-Type':'application/json'} };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const r = await fetch(url, opts);
+  const text = await r.text();
+  let data; try { data = text ? JSON.parse(text) : {}; } catch { data = {error: text}; }
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+function toast(msg, isError) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.background = isError ? '#b91c1c' : '#1a1c1d';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2800);
+}
+
+async function loadMachines() {
+  try {
+    const data = await api('GET', '/api/planner/machines');
+    machines = data.machines || [];
+    renderStats();
+    renderTable();
+  } catch(e) {
+    document.getElementById('machines-tbody').innerHTML =
+      `<tr class="empty-row"><td colspan="6" style="color:#b91c1c">Error loading machines: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function renderStats() {
+  document.getElementById('stat-total').textContent = machines.length;
+  for (const cat of CATEGORIES) {
+    document.getElementById('stat-' + cat).textContent = machines.filter(m => m.machine_category === cat).length;
+  }
+  document.getElementById('stat-inactive').textContent = machines.filter(m => !m.active).length;
+}
+
+function catBadge(cat) {
+  const cls = CAT_CLASS[cat] || '';
+  return `<span class="badge-cat ${cls}">${esc(cat)}</span>`;
+}
+
+function shiftLabel(profile) {
+  return profile === '24HR'
+    ? '<span style="font-weight:600;color:#7e22ce">24HR</span>'
+    : '<span style="color:var(--text2)">STANDARD</span>';
+}
+
+function statusBadge(active) {
+  return active
+    ? '<span class="badge-active">Active</span>'
+    : '<span class="badge-inactive">Inactive</span>';
+}
+
+function renderTable() {
+  const tbody = document.getElementById('machines-tbody');
+  if (!machines.length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No machines found. Add one above.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = machines.map(m => {
+    const id = m.machine_id;
+    return `
+    <tr id="row-${id}">
+      <td><strong>${esc(m.machine_no)}</strong></td>
+      <td>${catBadge(m.machine_category)}</td>
+      <td>${shiftLabel(m.shift_profile)}</td>a
+      <td>${statusBadge(m.active)}</td>
+      <td style="color:var(--text2);font-size:12px">${esc(m.notes || '')}</td>
+      <td style="text-align:right">
+        <button class="btn btn-ghost btn-sm btn-icon" title="Edit" onclick="openEdit(${id})">✏</button>
+        <button class="btn btn-danger btn-sm btn-icon" title="${m.active ? 'Deactivate' : 'Activate'}"
+          onclick="toggleActive(${id}, ${!m.active})">
+          ${m.active ? '⏸' : '▶'}
+        </button>
+        <button class="btn btn-danger btn-sm btn-icon" title="Delete" onclick="deleteMachine(${id})">🗑</button>
+      </td>
+    </tr>
+    <tr class="row-edit-form" id="edit-row-${id}">
+      <td colspan="6">
+        <div class="edit-grid">
+          <div class="edit-field">
+            <label>Machine No</label>
+            <input id="edit-no-${id}" type="text" value="${esc(m.machine_no)}">
+          </div>
+          <div class="edit-field">
+            <label>Category</label>
+            <select id="edit-cat-${id}">
+              ${CATEGORIES.map(c => `<option value="${c}"${m.machine_category===c?' selected':''}>${c}</option>`).join('')}
+            </select>
+          </div>
+          <div class="edit-field">
+            <label>Shift Profile</label>
+            <select id="edit-shift-${id}">
+              <option value="STANDARD"${m.shift_profile==='STANDARD'?' selected':''}>STANDARD</option>
+              <option value="24HR"${m.shift_profile==='24HR'?' selected':''}>24HR</option>
+            </select>
+          </div>
+          <div class="edit-field">
+            <label>Notes</label>
+            <input id="edit-notes-${id}" type="text" value="${esc(m.notes || '')}">
+          </div>
+          <div class="edit-actions">
+            <button class="btn btn-primary btn-sm" onclick="saveEdit(${id})">Save</button>
+            <button class="btn btn-ghost btn-sm" onclick="closeEdit(${id})">Cancel</button>
+          </div>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function openEdit(id) {
+  if (editingId && editingId !== id) closeEdit(editingId);
+  editingId = id;
+  document.getElementById(`edit-row-${id}`)?.classList.add('open');
+  document.getElementById(`edit-no-${id}`)?.focus();
+}
+
+function closeEdit(id) {
+  document.getElementById(`edit-row-${id}`)?.classList.remove('open');
+  if (editingId === id) editingId = null;
+}
+
+async function saveEdit(id) {
+  const machine_no       = (document.getElementById(`edit-no-${id}`)?.value || '').trim();
+  const machine_category = document.getElementById(`edit-cat-${id}`)?.value || '';
+  const shift_profile    = document.getElementById(`edit-shift-${id}`)?.value || '';
+  const notes            = (document.getElementById(`edit-notes-${id}`)?.value || '').trim();
+
+  if (!machine_no) { toast('Machine No cannot be empty', true); return; }
+
+  try {
+    await api('PATCH', `/api/planner/machines/${id}`, { machine_no, machine_category, shift_profile, notes });
+    toast(`${machine_no} updated`);
+    await loadMachines();
+  } catch(e) {
+    toast(e.message, true);
+  }
+}
+
+async function toggleActive(id, newActive) {
+  const m = machines.find(x => x.machine_id === id);
+  const label = newActive ? 'activate' : 'deactivate';
+  if (!confirm(`${label.charAt(0).toUpperCase() + label.slice(1)} ${m?.machine_no || 'this machine'}?`)) return;
+  try {
+    await api('PATCH', `/api/planner/machines/${id}`, { active: newActive });
+    toast(`Machine ${newActive ? 'activated' : 'deactivated'}`);
+    await loadMachines();
+  } catch(e) {
+    toast(e.message, true);
+  }
+}
+
+async function deleteMachine(id) {
+  const m = machines.find(x => x.machine_id === id);
+  if (!confirm(`Delete ${m?.machine_no || 'this machine'}? This cannot be undone.`)) return;
+  try {
+    await api('DELETE', `/api/planner/machines/${id}`);
+    toast(`${m?.machine_no || 'Machine'} deleted`);
+    await loadMachines();
+  } catch(e) {
+    toast(e.message, true);
+  }
+}
+
+function openAddModal() {
+  document.getElementById('add-machine-no').value = '';
+  document.getElementById('add-category').value   = '';
+  document.getElementById('add-shift').value      = 'STANDARD';
+  document.getElementById('add-notes').value      = '';
+  setAddError('');
+  document.getElementById('add-modal').classList.add('open');
+  document.getElementById('add-machine-no').focus();
+}
+
+function closeAddModal() {
+  document.getElementById('add-modal').classList.remove('open');
+}
+
+function setAddError(msg) {
+  const el = document.getElementById('add-error');
+  el.textContent = msg;
+  el.classList.toggle('show', !!msg);
+}
+
+async function submitAdd() {
+  const machine_no       = (document.getElementById('add-machine-no').value || '').trim();
+  const machine_category = document.getElementById('add-category').value || '';
+  const shift_profile    = document.getElementById('add-shift').value || 'STANDARD';
+  const notes            = (document.getElementById('add-notes').value || '').trim();
+
+  if (!machine_no)       { setAddError('Machine No is required.'); return; }
+  if (!machine_category) { setAddError('Please select a category.'); return; }
+
+  try {
+    setAddError('');
+    await api('POST', '/api/planner/machines', { machine_no, machine_category, shift_profile, notes });
+    closeAddModal();
+    toast(`${machine_no} added`);
+    await loadMachines();
+  } catch(e) {
+    setAddError(e.message);
+  }
+}
+
+// Close modal on backdrop click
+document.getElementById('add-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeAddModal();
+});
+
+// Enter key submits add modal
+document.getElementById('add-machine-no').addEventListener('keydown', e => { if (e.key === 'Enter') submitAdd(); });
+
+document.addEventListener('DOMContentLoaded', loadMachines);
+
+document.addEventListener('DOMContentLoaded', () => {
+    // Adjust selector if your table has a different ID or class
+    const tbody = document.querySelector('#machines-table tbody') || 
+                  document.querySelector('table tbody');
+
+    if (!tbody) return;
+
+    async function loadMachines() {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center">Loading...</td></tr>';
+        try {
+            const res = await fetch('/api/planner/machines');
+            if (!res.ok) throw new Error(`Server returned ${res.status}`);
+            
+            const data = await res.json();
+            const machines = data.machines || [];
+
+            tbody.innerHTML = '';
+            if (machines.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center">No machines found.</td></tr>';
+                return;
+            }
+
+            machines.forEach(m => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${m.machine_no}</td>
+                    <td>${m.machine_category}</td>
+                    <td>${m.shift_profile}</td>
+                    <td>${m.active ? 'Active' : 'Inactive'}</td>
+                    <td>${m.notes || '-'}</td>
+                    <td>
+                        <button class="btn btn-sm btn-warning edit-btn" data-id="${m.machine_id}">Edit</button>
+                        <button class="btn btn-sm btn-danger delete-btn" data-id="${m.machine_id}">Delete</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        } catch (err) {
+            tbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger">Failed to load: ${err.message}</td></tr>`;
+            console.error('Machine load error:', err);
+        }
+    }
+
+    loadMachines();
+});
+</script>
 {% endblock %}

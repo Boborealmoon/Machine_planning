@@ -58,11 +58,29 @@ CREATE TABLE IF NOT EXISTS public.mfg_wo_status (
     -- Aggregated work order execution status per PP voucher.
     -- Loaded from COMAIN mfg_wo_vch, grouped by source_mps_no.
     -- Priority: P (In Process) > R (Ready to Start) > I (Pending SI) > C (Completed)
-    source_mps_no       TEXT        NOT NULL,
-    execution_status    TEXT,
-    _loaded_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    source_mps_no           TEXT        NOT NULL,
+    execution_status        TEXT,
+    wo_qty_required         NUMERIC,
+    total_acc_qty_produced  NUMERIC,
+    total_rej_qty_produced  NUMERIC,
+    stage_no                TEXT,
+    plan_start_date         DATE,
+    plan_end_date           DATE,
+    po_due_date             DATE,       -- origin_rsd from mfg_wo_vch
+    so_no                   TEXT,       -- origin_voucher_no from mfg_wo_vch
+    _loaded_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (source_mps_no)
 );
+
+-- Run these ALTER TABLE statements if the table already exists in Supabase:
+-- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS wo_qty_required        NUMERIC;
+-- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS total_acc_qty_produced NUMERIC;
+-- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS total_rej_qty_produced NUMERIC;
+-- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS stage_no               TEXT;
+-- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS plan_start_date        DATE;
+-- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS plan_end_date          DATE;
+-- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS po_due_date            DATE;
+-- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS so_no                  TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_mfg_wo_status_source_mps
     ON public.mfg_wo_status (source_mps_no);

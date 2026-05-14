@@ -5,6 +5,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
+
+# ── Planning blueprints ────────────────────────────────────────────────────
+from planning.process_sheets import process_sheets_bp
+from planning.summary import trial_summary_bp
+from planning.flows import flows_bp, trial_prefixed_flows_bp
+
+app.register_blueprint(process_sheets_bp)
+app.register_blueprint(trial_summary_bp)
+app.register_blueprint(flows_bp)
+app.register_blueprint(trial_prefixed_flows_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 
@@ -678,24 +688,148 @@ def api_ptl_data():
 
 # ── API: stubs ─────────────────────────────────────────────────────────────
 
-@app.get("/api/process-sheets")
-def api_process_sheets():
-    return jsonify([])
-
-
 @app.get("/api/machine-schedule")
 def api_machine_schedule():
     return jsonify([])
 
 
-@app.get("/api/summary")
-def api_summary():
-    return jsonify({})
-
-
 @app.get("/api/operations")
 def api_operations():
     return jsonify([])
+
+
+# ── API: Planner — Machines ────────────────────────────────────────────────
+
+def _supa_get(path, params=None):
+    import requests as req
+    from db import supa_url, supa_headers
+    r = req.get(f"{supa_url()}/{path}", headers=supa_headers(), params=params, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+def _supa_post(path, payload):
+    import requests as req
+    from db import supa_url, supa_headers
+    hdrs = {**supa_headers(write=True), "Prefer": "return=representation"}
+    r = req.post(f"{supa_url()}/{path}", headers=hdrs, json=payload, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+def _supa_patch(path, params, payload):
+    import requests as req
+    from db import supa_url, supa_headers
+    hdrs = {**supa_headers(write=True), "Prefer": "return=representation"}
+    r = req.patch(f"{supa_url()}/{path}", headers=hdrs, params=params, json=payload, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+def _supa_delete(path, params):
+    import requests as req
+    from db import supa_url, supa_headers
+    r = req.delete(f"{supa_url()}/{path}", headers=supa_headers(write=True), params=params, timeout=15)
+    r.raise_for_status()
+
+
+_MACHINE_CATEGORIES = ["TURNING", "MILLING", "TURNMILL", "MPP"]
+_SHIFT_PROFILES     = ["STANDARD", "24HR"]
+
+
+@app.get("/api/planner/machines")
+def api_planner_machines_list():
+    try:
+        rows = _supa_get("planner_machines", {
+            "select": "machine_id,machine_no,machine_category,shift_profile,active,notes",
+            "order":  "machine_no",
+        })
+        return jsonify({
+            "machines":           rows or [],
+            "machine_categories": _MACHINE_CATEGORIES,
+            "shift_profiles":     _SHIFT_PROFILES,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/planner/machines")
+def api_planner_machines_create():
+    data = request.get_json(silent=True) or {}
+    machine_no       = (data.get("machine_no") or "").strip()
+    machine_category = (data.get("machine_category") or "").strip().upper()
+    shift_profile    = (data.get("shift_profile") or "STANDARD").strip().upper()
+    notes            = (data.get("notes") or "").strip()
+
+    if not machine_no:
+        return jsonify({"error": "machine_no is required"}), 400
+    if machine_category not in _MACHINE_CATEGORIES:
+        return jsonify({"error": f"machine_category must be one of {_MACHINE_CATEGORIES}"}), 400
+    if shift_profile not in _SHIFT_PROFILES:
+        return jsonify({"error": f"shift_profile must be one of {_SHIFT_PROFILES}"}), 400
+
+    try:
+        result = _supa_post("planner_machines", {
+            "machine_no":       machine_no,
+            "machine_category": machine_category,
+            "shift_profile":    shift_profile,
+            "active":           True,
+            "notes":            notes,
+        })
+        return jsonify(result[0] if isinstance(result, list) else result), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.patch("/api/planner/machines/<int:machine_id>")
+def api_planner_machines_update(machine_id):
+    data = request.get_json(silent=True) or {}
+    payload = {}
+
+    if "machine_no" in data:
+        val = (data["machine_no"] or "").strip()
+        if not val:
+            return jsonify({"error": "machine_no cannot be empty"}), 400
+        payload["machine_no"] = val
+
+    if "machine_category" in data:
+        val = (data["machine_category"] or "").strip().upper()
+        if val not in _MACHINE_CATEGORIES:
+            return jsonify({"error": f"machine_category must be one of {_MACHINE_CATEGORIES}"}), 400
+        payload["machine_category"] = val
+
+    if "shift_profile" in data:
+        val = (data["shift_profile"] or "").strip().upper()
+        if val not in _SHIFT_PROFILES:
+            return jsonify({"error": f"shift_profile must be one of {_SHIFT_PROFILES}"}), 400
+        payload["shift_profile"] = val
+
+    if "active" in data:
+        payload["active"] = bool(data["active"])
+
+    if "notes" in data:
+        payload["notes"] = (data["notes"] or "").strip()
+
+    if not payload:
+        return jsonify({"error": "No fields to update"}), 400
+
+    payload["updated_at"] = "now()"
+
+    try:
+        result = _supa_patch(
+            "planner_machines",
+            {"machine_id": f"eq.{machine_id}"},
+            payload,
+        )
+        return jsonify(result[0] if isinstance(result, list) else result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.delete("/api/planner/machines/<int:machine_id>")
+def api_planner_machines_delete(machine_id):
+    try:
+        _supa_delete("planner_machines", {"machine_id": f"eq.{machine_id}"})
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":

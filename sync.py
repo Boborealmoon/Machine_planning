@@ -595,14 +595,33 @@ SELECT
         WHEN bool_or(execution_status = 'R') THEN 'R'
         WHEN bool_or(execution_status = 'I') THEN 'I'
         ELSE 'C'
-    END AS execution_status
+    END                               AS execution_status,
+    MAX(wo_qty_required)              AS wo_qty_required,
+    MAX(total_acc_qty_produced)       AS total_acc_qty_produced,
+    SUM(total_rej_qty_produced)       AS total_rej_qty_produced,
+    MAX(stage_no)                     AS stage_no,
+    MIN(plan_start_date)              AS plan_start_date,
+    MAX(plan_end_date)                AS plan_end_date,
+    MAX(origin_rsd)                   AS po_due_date,
+    MAX(origin_voucher_no)            AS so_no
 FROM public.mfg_wo_vch
 WHERE source_mps_no IS NOT NULL
 GROUP BY source_mps_no
 ORDER BY source_mps_no
 """
 
-_MFG_WO_STATUS_COLS = ["source_mps_no", "execution_status"]
+_MFG_WO_STATUS_COLS = [
+    "source_mps_no",
+    "execution_status",
+    "wo_qty_required",
+    "total_acc_qty_produced",
+    "total_rej_qty_produced",
+    "stage_no",
+    "plan_start_date",
+    "plan_end_date",
+    "po_due_date",
+    "so_no",
+]
 
 
 def run_mfg_wo_status_sync(force: bool = False) -> dict:

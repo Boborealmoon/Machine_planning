@@ -33,14 +33,14 @@
 -- Machine registry. Replaces the hard-coded TRIAL_MACHINES list in constants.py.
 CREATE TABLE IF NOT EXISTS public.planner_machines (
     machine_id        BIGSERIAL    PRIMARY KEY,
-    machine_code      TEXT         NOT NULL,
-    machine_category  TEXT         NOT NULL,       -- TURNING, MILLING, TURNMILL, MPP
-    shift_profile     TEXT         NOT NULL DEFAULT 'STANDARD',  -- STANDARD, 24HR
+    machine_no        TEXT         NOT NULL,        -- e.g. 'CNC 10', 'CNC 30'
+    machine_category  TEXT         NOT NULL,        -- TURNING | MILLING | TURNMILL | MPP
+    shift_profile     TEXT         NOT NULL DEFAULT 'STANDARD',  -- STANDARD | 24HR
     active            BOOLEAN      NOT NULL DEFAULT TRUE,
     notes             TEXT         NOT NULL DEFAULT '',
     created_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    UNIQUE (machine_code)
+    UNIQUE (machine_no)
 );
 
 -- Shift capacity profiles (replaces hard-coded CAPACITY_PROFILES in constants.py).
@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS public.planner_operation_seq (
     machine_category  TEXT         NOT NULL,   -- TURNING | MILLING | TURNMILL | MPP
     cycle_time        NUMERIC      NOT NULL DEFAULT 1,    -- minutes per piece
     setup_time        NUMERIC      NOT NULL DEFAULT 0,    -- minutes (one-off per block)
-    preferred_machine TEXT         NOT NULL DEFAULT '',   -- planner_machines.machine_code
+    preferred_machine TEXT         NOT NULL DEFAULT '',   -- planner_machines.machine_no
     is_last_op        BOOLEAN      NOT NULL DEFAULT FALSE,
     UNIQUE (bom_id, seq_no, op_no)
 );
@@ -495,11 +495,11 @@ VALUES
 ON CONFLICT (profile_name) DO NOTHING;
 
 -- Machines (from Vanessa's constants.py TRIAL_MACHINES).
--- Edit machine_code / machine_category / shift_profile to match your actual fleet.
+-- Edit machine_no / machine_category / shift_profile to match your actual fleet.
 -- shift_profile must match a profile_name in planner_capacity_profile.
 -- STANDARD machines use NORMAL_DAY_NIGHT on weekdays, SATURDAY on Saturdays.
 -- 24HR machines use FULL_24H every day.
-INSERT INTO public.planner_machines (machine_code, machine_category, shift_profile, active)
+INSERT INTO public.planner_machines (machine_no, machine_category, shift_profile, active)
 VALUES
     ('CNC 10', 'TURNING',  'STANDARD', TRUE),
     ('CNC 15', 'TURNING',  'STANDARD', TRUE),
@@ -519,7 +519,7 @@ VALUES
     ('CNC 38', 'TURNMILL', 'STANDARD', TRUE),
     ('CNC 39', 'TURNMILL', 'STANDARD', TRUE),
     ('CNC 40', 'TURNMILL', 'STANDARD', TRUE)
-ON CONFLICT (machine_code) DO NOTHING;
+ON CONFLICT (machine_no) DO NOTHING;
 
 
 -- =============================================================================
