@@ -54,6 +54,67 @@ CREATE TABLE IF NOT EXISTS public.pp_partial (
     PRIMARY KEY (pp_voucher_no, pp_partial_no)
 );
 
+CREATE TABLE IF NOT EXISTS public.mfg_wo_status (
+    -- Aggregated work order execution status per PP voucher.
+    -- Loaded from COMAIN mfg_wo_vch, grouped by source_mps_no.
+    -- Priority: P (In Process) > R (Ready to Start) > I (Pending SI) > C (Completed)
+    source_mps_no       TEXT        NOT NULL,
+    execution_status    TEXT,
+    _loaded_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source_mps_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mfg_wo_status_source_mps
+    ON public.mfg_wo_status (source_mps_no);
+
+
+-- ── material_per_bom ─────────────────────────────────────────────────────
+-- Loaded from the material_per_bom Power Query (inventory_bom_listing view,
+-- filtered to leaf materials only — rows where material_inventory_code does
+-- not appear as a source_inventory_code).
+
+CREATE TABLE IF NOT EXISTS public.material_per_bom (
+    source_inventory_code   TEXT        NOT NULL,
+    bom_code                TEXT        NOT NULL,
+    material_inventory_code TEXT        NOT NULL,
+    description             TEXT,
+    _loaded_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source_inventory_code, bom_code, material_inventory_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_material_per_bom_source
+    ON public.material_per_bom (source_inventory_code);
+
+CREATE INDEX IF NOT EXISTS idx_material_per_bom_material
+    ON public.material_per_bom (material_inventory_code);
+
+
+-- ── bom_op_stage ──────────────────────────────────────────────────────────
+-- Loaded from the bom_op_stage Power Query (mt_inventory_bom_stage,
+-- filtered to Turning / Milling / Turnmill stages only).
+-- op_no   : integer extracted from stage_desc (number after the first space)
+-- op_index: sequential position within each inventory_code + bom_code group
+-- machine_no : last known machine from the Workorder Tracker (nullable)
+-- setup_time : minutes; defaults to 180 when source has no value
+-- cycle_time : minutes/pc; defaults to 20 when source value is 0
+
+CREATE TABLE IF NOT EXISTS public.bom_op_stage (
+    inventory_code  TEXT        NOT NULL,
+    bom_code        TEXT        NOT NULL,
+    stage_no        INTEGER     NOT NULL,
+    stage_desc      TEXT        NOT NULL,
+    op_no           INTEGER,
+    op_index        INTEGER     NOT NULL,
+    machine_no      TEXT,
+    setup_time      NUMERIC     NOT NULL DEFAULT 180,
+    cycle_time      NUMERIC     NOT NULL DEFAULT 20,
+    _loaded_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (inventory_code, bom_code, stage_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bom_op_stage_inv_bom
+    ON public.bom_op_stage (inventory_code, bom_code);
+
 
 -- ── Indexes on foreign-key columns ────────────────────────────────────────
 
@@ -70,17 +131,18 @@ CREATE INDEX IF NOT EXISTS idx_pp_partial_pp_voucher
 -- ── Cache table (written by Flask auto-sync, read by /api/pp-vouchers) ───
 
 CREATE TABLE IF NOT EXISTS public.pp_vouchers_cache (
-    ps_id           TEXT,
-    pp_partial_no   INTEGER,
-    part_no         TEXT,
-    description     TEXT,
-    total_qty       NUMERIC,
-    partial_qty     NUMERIC,
-    due_date        DATE,
-    order_date      DATE,
-    bom_code        TEXT,
-    status          TEXT,
-    _synced_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    ps_id               TEXT,
+    pp_partial_no       INTEGER,
+    part_no             TEXT,
+    description         TEXT,
+    total_qty           NUMERIC,
+    partial_qty         NUMERIC,
+    due_date            DATE,
+    order_date          DATE,
+    bom_code            TEXT,
+    status              TEXT,
+    execution_status    TEXT,
+    _synced_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_pp_vouchers_cache_ps_id
@@ -154,6 +216,13 @@ with_desc AS (
     FROM with_partial wp
     LEFT JOIN public.part_desc pd ON wp.final_inventory_code = pd.inventory_code
 ),
+with_wo_status AS (
+    SELECT
+        wd.*,
+        ws.execution_status
+    FROM with_desc wd
+    LEFT JOIN public.mfg_wo_status ws ON ws.source_mps_no = wd.pp_voucher_no
+),
 computed AS (
     SELECT DISTINCT
         ps_id,
@@ -187,8 +256,15 @@ computed AS (
             WHEN status = 'H'          THEN 'History'
             WHEN status = 'O'          THEN 'Outstanding'
             ELSE status
-        END                     AS status
-    FROM with_desc
+        END                     AS status,
+        CASE execution_status
+            WHEN 'P' THEN 'In Process'
+            WHEN 'R' THEN 'Ready to Start'
+            WHEN 'I' THEN 'Pending SI'
+            WHEN 'C' THEN 'Completed'
+            ELSE execution_status
+        END                     AS execution_status
+    FROM with_wo_status
 )
 SELECT * FROM computed
 ORDER BY ps_id, pp_partial_no;

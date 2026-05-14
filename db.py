@@ -32,29 +32,23 @@ def release_conn(conn):
     get_pool().putconn(conn)
 
 
-# ── Supabase pool ──────────────────────────────────────────────────────────
+# ── Supabase REST helpers ──────────────────────────────────────────────────
 
-_supa_pool = None
-
-
-def get_supa_pool():
-    global _supa_pool
-    if _supa_pool is None:
-        _supa_pool = psycopg2.pool.SimpleConnectionPool(
-            1, 10,
-            host=os.getenv("SUPABASE_DB_HOST"),
-            port=int(os.getenv("SUPABASE_DB_PORT", 5432)),
-            dbname=os.getenv("SUPABASE_DB_NAME", "postgres"),
-            user=os.getenv("SUPABASE_DB_USER", "postgres"),
-            password=os.getenv("SUPABASE_DB_PASSWORD"),
-            sslmode="require",
-        )
-    return _supa_pool
+def supa_url() -> str:
+    return os.getenv("Supa_base_url", "").rstrip("/")
 
 
-def get_supa_conn():
-    return get_supa_pool().getconn()
-
-
-def release_supa_conn(conn):
-    get_supa_pool().putconn(conn)
+def supa_headers(write: bool = False) -> dict:
+    """Return Supabase REST headers.
+    write=True uses the service role key (required for INSERT/DELETE).
+    """
+    if write:
+        key = os.getenv("supa_base_secret_key", os.getenv("Supa_base_publishable_key", ""))
+    else:
+        key = os.getenv("Supa_base_publishable_key", "")
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }

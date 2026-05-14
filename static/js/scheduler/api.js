@@ -53,6 +53,7 @@ async function loadTrial() {
     total_qty:      row.total_qty,
     partial_qty:    row.partial_qty,
     status:         row.status,
+    execution_status: row.execution_status || null,
     planner_status: null,
     ops:            [],
     op_cards:       [],

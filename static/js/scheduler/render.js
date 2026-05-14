@@ -358,10 +358,12 @@ function renderTrialCatalog() {
   const rawQuery = String(queryInput ? queryInput.value : trialCatalogSearch || '').trim().toLowerCase();
   trialCatalogSearch = rawQuery;
 
+  const ACTIVE_EXEC_STATUSES = new Set(['In Process', 'Ready to Start', 'Pending SI']);
   const catalog = (trialState.catalog || []).filter(ps => {
     const psStatus = String(ps.status || '').toUpperCase();
     const plannerStatus = String(ps.planner_status || '').toUpperCase();
     if (!trialShowCompleted && (psStatus === 'COMPLETED' || plannerStatus === 'COMPLETED')) return false;
+    if (!ACTIVE_EXEC_STATUSES.has(ps.execution_status)) return false;
     if (!rawQuery) return true;
     const haystack = [
       ps.ps_id, ps.part_name, ps.part_no, ps.part_desc, ps.due_date, ps.status, ps.planner_status,

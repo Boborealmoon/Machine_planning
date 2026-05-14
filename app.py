@@ -38,6 +38,8 @@ def db_query(sql, params=(), fetchone=False, fetchall=False, commit=False):
 
 
 def supabase_query(sql, params=(), fetchone=False, fetchall=False, commit=False):
+    # Legacy shim — only the pp_vouchers_cache SELECT still calls this path.
+    # New syncs write via REST (sync.py); reads below go via REST too.
     from db import get_supa_conn, release_supa_conn
     conn = get_supa_conn()
     try:
@@ -122,25 +124,28 @@ def system():
 _PP_VOUCHERS_COLS = [
     "ps_id", "pp_partial_no", "part_no", "description",
     "total_qty", "partial_qty", "due_date", "order_date",
-    "bom_code", "status",
+    "bom_code", "status", "execution_status",
 ]
 
-_SUPA_SELECT = """
-    SELECT ps_id, pp_partial_no, part_no, description,
-           total_qty, partial_qty, due_date, order_date,
-           bom_code, status
-    FROM public.pp_vouchers_cache
-    ORDER BY ps_id, pp_partial_no
-"""
 
 @app.get("/api/pp-vouchers")
 def api_pp_vouchers():
+    import requests as req
+    from db import supa_url, supa_headers
     from sync import run_sync, is_sync_needed
     try:
         if is_sync_needed():
             run_sync()
-        rows = supabase_query(_SUPA_SELECT, fetchall=True)
-        return jsonify([dict(zip(_PP_VOUCHERS_COLS, r)) for r in (rows or [])])
+        r = req.get(
+            f"{supa_url()}/pp_vouchers_cache",
+            headers=supa_headers(write=True),
+            params={
+                "select": ",".join(_PP_VOUCHERS_COLS),
+                "order": "ps_id,pp_partial_no",
+            },
+        )
+        r.raise_for_status()
+        return jsonify(r.json())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -152,6 +157,110 @@ def api_pp_vouchers_sync():
     try:
         result = run_sync(force=True)
         return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: mfg_wo_status sync ───────────────────────────────────────────────
+
+@app.post("/api/mfg-wo-status/sync")
+def api_mfg_wo_status_sync():
+    from sync import run_mfg_wo_status_sync
+    try:
+        result = run_mfg_wo_status_sync(force=True)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: material_per_bom sync ────────────────────────────────────────────
+
+@app.post("/api/material-per-bom/sync")
+def api_material_per_bom_sync():
+    from sync import run_material_per_bom_sync
+    try:
+        result = run_material_per_bom_sync(force=True)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: bom_op_stage sync ────────────────────────────────────────────────
+
+@app.post("/api/bom-op-stage/sync")
+def api_bom_op_stage_sync():
+    from sync import run_bom_op_stage_sync
+    try:
+        result = run_bom_op_stage_sync(force=True)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: PP staging table syncs (COMAIN → Supabase) ───────────────────────
+
+@app.post("/api/pp-voucher/sync")
+def api_pp_voucher_sync():
+    from sync import run_pp_voucher_sync
+    try:
+        return jsonify(run_pp_voucher_sync(force=True))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/process-sheet/sync")
+def api_process_sheet_sync():
+    from sync import run_process_sheet_sync
+    try:
+        return jsonify(run_process_sheet_sync(force=True))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/workorder-status/sync")
+def api_workorder_status_sync():
+    from sync import run_workorder_status_sync
+    try:
+        return jsonify(run_workorder_status_sync(force=True))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/part-desc/sync")
+def api_part_desc_sync():
+    from sync import run_part_desc_sync
+    try:
+        return jsonify(run_part_desc_sync(force=True))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/pp-partial/sync")
+def api_pp_partial_sync():
+    from sync import run_pp_partial_sync
+    try:
+        return jsonify(run_pp_partial_sync(force=True))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/pp-staging/sync")
+def api_pp_staging_sync():
+    """Run all 5 PP staging syncs then rebuild the pp_vouchers_cache."""
+    from sync import (
+        run_pp_voucher_sync, run_process_sheet_sync, run_workorder_status_sync,
+        run_part_desc_sync, run_pp_partial_sync, run_sync,
+    )
+    try:
+        results = {
+            "pp_voucher":            run_pp_voucher_sync(force=True),
+            "mfg_process_sheet_info": run_process_sheet_sync(force=True),
+            "workorder_status":      run_workorder_status_sync(force=True),
+            "part_desc":             run_part_desc_sync(force=True),
+            "pp_partial":            run_pp_partial_sync(force=True),
+            "pp_vouchers_cache":     run_sync(force=True),
+        }
+        return jsonify(results)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
