@@ -287,7 +287,7 @@ function renderTable() {
     <tr id="row-${id}">
       <td><strong>${esc(m.machine_no)}</strong></td>
       <td>${catBadge(m.machine_category)}</td>
-      <td>${shiftLabel(m.shift_profile)}</td>a
+      <td>${shiftLabel(m.shift_profile)}</td>
       <td>${statusBadge(m.active)}</td>
       <td style="color:var(--text2);font-size:12px">${esc(m.notes || '')}</td>
       <td style="text-align:right">
@@ -435,52 +435,7 @@ document.getElementById('add-modal').addEventListener('click', function(e) {
 // Enter key submits add modal
 document.getElementById('add-machine-no').addEventListener('keydown', e => { if (e.key === 'Enter') submitAdd(); });
 
+// Initial load
 document.addEventListener('DOMContentLoaded', loadMachines);
-
-document.addEventListener('DOMContentLoaded', () => {
-    // Adjust selector if your table has a different ID or class
-    const tbody = document.querySelector('#machines-table tbody') || 
-                  document.querySelector('table tbody');
-
-    if (!tbody) return;
-
-    async function loadMachines() {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center">Loading...</td></tr>';
-        try {
-            const res = await fetch('/api/planner/machines');
-            if (!res.ok) throw new Error(`Server returned ${res.status}`);
-            
-            const data = await res.json();
-            const machines = data.machines || [];
-
-            tbody.innerHTML = '';
-            if (machines.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="text-center">No machines found.</td></tr>';
-                return;
-            }
-
-            machines.forEach(m => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td>${m.machine_no}</td>
-                    <td>${m.machine_category}</td>
-                    <td>${m.shift_profile}</td>
-                    <td>${m.active ? 'Active' : 'Inactive'}</td>
-                    <td>${m.notes || '-'}</td>
-                    <td>
-                        <button class="btn btn-sm btn-warning edit-btn" data-id="${m.machine_id}">Edit</button>
-                        <button class="btn btn-sm btn-danger delete-btn" data-id="${m.machine_id}">Delete</button>
-                    </td>
-                `;
-                tbody.appendChild(tr);
-            });
-        } catch (err) {
-            tbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger">Failed to load: ${err.message}</td></tr>`;
-            console.error('Machine load error:', err);
-        }
-    }
-
-    loadMachines();
-});
 </script>
 {% endblock %}

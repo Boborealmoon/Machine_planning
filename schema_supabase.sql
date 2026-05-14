@@ -286,3 +286,20 @@ computed AS (
 )
 SELECT * FROM computed
 ORDER BY ps_id, pp_partial_no;
+
+
+CREATE TABLE planner_program_tools (
+    id BIGSERIAL PRIMARY KEY,
+    ps_no TEXT,                   -- Internal key for upserting (hidden from exports)
+    program_file TEXT,
+    tool_list_files TEXT,
+    part_no_erp TEXT,
+    programmer_name TEXT,
+    cnc_machine_no TEXT,
+    wo_machine TEXT,
+    synced_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(ps_no, cnc_machine_no) -- Ensures clean upserts
+);
+
+CREATE INDEX idx_ptl_part ON planner_program_tools(part_no_erp);
+CREATE INDEX idx_ptl_programmer ON planner_program_tools(programmer_name);

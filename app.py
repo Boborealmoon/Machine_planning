@@ -685,6 +685,113 @@ def api_ptl_data():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.post("/api/program-tool-list/sync-to-supabase")
+def api_ptl_sync_to_supabase():
+    try:
+        from tool_list_db import init_db, fetch_all
+        import requests as req
+        from db import supa_url, supa_headers
+
+        init_db()
+        rows = fetch_all()
+        if not rows:
+            return jsonify({"synced": 0, "message": "No rows in SQLite"})
+
+        # Enrich part_no_erp
+        part_no_erp_map = {}
+        ps_nos = list({r.get("ps_no") for r in rows if r.get("ps_no")})
+        if ps_nos:
+            try:
+                erp_rows = db_query(
+                    "SELECT DISTINCT process_sheet_no, inventory_code FROM public.mfg_process_sheet_info_v1_view WHERE process_sheet_no = ANY(%s)",
+                    (ps_nos,), fetchall=True
+                )
+                if erp_rows:
+                    part_no_erp_map = {er[0]: er[1] for er in erp_rows}
+            except Exception:
+                pass
+
+        # Enrich wo_machine
+        actual_machine_map = {}
+        part_no_erp_list = list(set(part_no_erp_map.values()))
+        if part_no_erp_list:
+            try:
+                wo_rows = db_query(
+                    """
+                    WITH wt_raw AS (
+                        SELECT t2.inventory_code, t1.voucher_no, t1.machine_no,
+                               t2.stage_desc, t3.total_acc_qty_produced,
+                               CASE WHEN t1.status = 'H' THEN 1 ELSE 0 END AS status_rank
+                        FROM mfg_wo_comp_vch t1
+                        LEFT JOIN mfg_mps_vch t2 ON t1.voucher_no = t2.wo_voucher_no
+                        LEFT JOIN mfg_wo_vch t3 ON t1.voucher_no = t3.voucher_no
+                        WHERE t2.inventory_code = ANY(%s)
+                          AND (t2.stage_desc LIKE 'Turning%%' OR t2.stage_desc LIKE 'Milling%%' OR t2.stage_desc LIKE 'Turnmill%%')
+                    ),
+                    wt_ranked AS (
+                        SELECT *, ROW_NUMBER() OVER(PARTITION BY voucher_no ORDER BY total_acc_qty_produced DESC, status_rank DESC) AS rn
+                        FROM wt_raw
+                    )
+                    SELECT inventory_code, stage_desc, MIN(machine_no) AS machine_no
+                    FROM wt_ranked WHERE rn = 1
+                    GROUP BY inventory_code, stage_desc
+                    """,
+                    (part_no_erp_list,), fetchall=True
+                )
+                if wo_rows:
+                    actual_machine_map = {(wr[0], wr[1]): wr[2] for wr in wo_rows}
+            except Exception:
+                pass
+
+        # Build payload (your 6 fields + operation_no)
+        payload = []
+        for r in rows:
+            ps_no = r.get("ps_no") or ""
+            part_no_erp = (part_no_erp_map.get(ps_no) or "").strip()
+            cnc_machine = (r.get("cnc_machine_no") or "").strip()
+            op_no = (r.get("operation_no") or r.get("operation_no_2") or "").strip()
+            op_type = (r.get("operation_type") or "").strip()
+            stage = f"{op_type} {op_no}".strip() if op_no else op_type
+            wo_machine = (actual_machine_map.get((part_no_erp, stage)) or "").strip()
+            program_file = (r.get("program_file") or "").strip()
+            tool_list_files = (r.get("tool_list_files") or "").strip()
+            programmer_name = (r.get("programmer_name") or "").strip()
+
+            # Skip completely empty rows
+            if not any([program_file, tool_list_files, part_no_erp, programmer_name, cnc_machine, wo_machine, op_no]):
+                continue
+
+            payload.append({
+                "program_file": program_file,
+                "tool_list_files": tool_list_files,
+                "part_no_erp": part_no_erp,
+                "programmer_name": programmer_name,
+                "cnc_machine_no": cnc_machine,
+                "wo_machine": wo_machine,
+                "operation_no": op_no,  # ✅ Added
+            })
+
+        if not payload:
+            return jsonify({"synced": 0, "message": "No valid rows to sync"})
+
+        # DELETE all + INSERT fresh (no conflicts)
+        hdrs = supa_headers(write=True)
+        req.delete(f"{supa_url()}/planner_program_tools", headers=hdrs, params={"id": "gt.0"}, timeout=30)
+        
+        # Batch insert (Supabase limit: 1000 rows/request)
+        BATCH_SIZE = 1000
+        for i in range(0, len(payload), BATCH_SIZE):
+            batch = payload[i:i+BATCH_SIZE]
+            r = req.post(f"{supa_url()}/planner_program_tools", headers={**hdrs, "Prefer": "return=representation"}, json=batch, timeout=60)
+            r.raise_for_status()
+        
+        return jsonify({"synced": len(payload)})
+
+    except Exception as e:
+        import traceback, sys
+        print(f"❌ SYNC ERROR: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return jsonify({"error": str(e)}), 500
 
 # ── API: stubs ─────────────────────────────────────────────────────────────
 

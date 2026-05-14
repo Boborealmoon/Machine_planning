@@ -347,6 +347,7 @@
     <h1 class="page-title">Program / Tool List</h1>
     <div class="page-actions">
       <button class="btn" id="btn-summary">Part × Machine ▸</button>
+      <button id="btn-sync-supabase" class="btn btn-ghost" style="margin-left:8px">↗ Sync to Supabase</button>
       <button class="btn btn-dark" id="btn-sync">Sync from Google Sheets</button>
     </div>
   </div>
@@ -473,4 +474,37 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/program_tool_list.js') }}"></script>
+
+<script>
+// ── Sync to Supabase (DELETE + INSERT) ─────────────────────────────────
+document.getElementById("btn-sync-supabase")?.addEventListener("click", async () => {
+  const btn = document.getElementById("btn-sync-supabase");
+  if (!btn) return;
+  const orig = btn.textContent;
+  btn.textContent = "Syncing…";
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/program-tool-list/sync-to-supabase", { method: "POST" });
+    
+    // Catch HTML error pages (404/500)
+    const ct = res.headers.get("content-type");
+    if (!ct || !ct.includes("application/json")) {
+      const text = await res.text();
+      throw new Error(`Server ${res.status}: ${text.substring(0, 150)}`);
+    }
+    
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    btn.textContent = `✓ Synced ${data.synced}`;
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+  } catch (err) {
+    console.error("Supabase sync failed:", err);
+    alert("Supabase sync error: " + err.message);
+    btn.textContent = "Sync Failed";
+    btn.disabled = false;
+  }
+});
+// ── End ────────────────────────────────────────────────────────────────
+</script>
+
 {% endblock %}
