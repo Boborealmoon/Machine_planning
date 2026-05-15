@@ -33,6 +33,30 @@ _wo_status_sync_lock = threading.Lock()
 
 # ── REST helpers ───────────────────────────────────────────────────────────
 
+_SUPA_PAGE_SIZE = 1000
+
+
+def _supa_fetch_all(url: str, headers: dict, params: dict) -> list:
+    """Paginate through a Supabase REST endpoint, returning all rows.
+
+    PostgREST silently truncates to 1000 rows by default; this loops with
+    limit/offset until a short page signals the end.
+    """
+    all_rows = []
+    offset = 0
+    base_params = {k: v for k, v in params.items() if k not in ("limit", "offset")}
+    while True:
+        page_params = {**base_params, "limit": _SUPA_PAGE_SIZE, "offset": offset}
+        r = requests.get(url, headers=headers, params=page_params)
+        r.raise_for_status()
+        page = r.json()
+        all_rows.extend(page)
+        if len(page) < _SUPA_PAGE_SIZE:
+            break
+        offset += _SUPA_PAGE_SIZE
+    return all_rows
+
+
 def _supa_reload(table: str, clear_col: str, columns: list, rows: list) -> None:
     """Clear a Supabase table then insert rows in batches via REST API."""
     from db import supa_url, supa_headers
@@ -203,6 +227,7 @@ _PP_VOUCHERS_COLS = [
     "ps_id", "pp_partial_no", "part_no", "description",
     "total_qty", "partial_qty", "due_date", "order_date",
     "bom_code", "status", "execution_status",
+    "stage_no", "stage_desc", "op_no",
 ]
 
 
@@ -224,13 +249,13 @@ def run_sync(force: bool = False) -> dict:
         from db import supa_url, supa_headers
 
         t0 = time.monotonic()
-        r = requests.get(
+        hdrs = supa_headers(write=True)
+        raw = _supa_fetch_all(
             f"{supa_url()}/vw_pp_vouchers",
-            headers=supa_headers(write=True),
+            headers=hdrs,
             params={"select": ",".join(_PP_VOUCHERS_COLS), "order": "ps_id,pp_partial_no"},
         )
-        r.raise_for_status()
-        rows = [tuple(row[c] for c in _PP_VOUCHERS_COLS) for row in r.json()]
+        rows = [tuple(row[c] for c in _PP_VOUCHERS_COLS) for row in raw]
 
         _supa_reload("pp_vouchers_cache", "_synced_at", _PP_VOUCHERS_COLS, rows)
 
@@ -387,13 +412,43 @@ def run_bom_op_stage_sync(force: bool = False) -> dict:
 # ── pp_voucher staging ─────────────────────────────────────────────────────
 
 _PP_VOUCHER_SQL = """
-SELECT pp_voucher_no, inventory_code, bom_code, pp_qty,
-       source_voucher_no, source_rsd, source_line_item_no, status
-FROM public.mfg_pp_vch
+WITH stage AS (
+    SELECT
+        inventory_code,
+        bom_code,
+        stage_no,
+        stage_desc,
+        CASE
+            WHEN stage_desc ~ ' [0-9]+$'
+            THEN substring(stage_desc FROM ' ([0-9]+)$')::INTEGER
+            ELSE NULL
+        END AS op_no
+    FROM public.mt_inventory_bom_stage
+    WHERE stage_desc LIKE 'Turning%%'
+       OR stage_desc LIKE 'Milling%%'
+       OR stage_desc LIKE 'Turnmill%%'
+)
+SELECT
+    v.pp_voucher_no,
+    v.inventory_code,
+    v.bom_code,
+    v.pp_qty,
+    v.source_voucher_no,
+    v.source_rsd,
+    v.source_line_item_no,
+    v.status,
+    s.stage_no,
+    s.stage_desc,
+    s.op_no
+FROM public.mfg_pp_vch v
+JOIN stage s ON s.inventory_code = v.inventory_code
+            AND s.bom_code       = v.bom_code
+ORDER BY v.pp_voucher_no, s.stage_no
 """
 _PP_VOUCHER_COLS = [
     "pp_voucher_no", "inventory_code", "bom_code", "pp_qty",
     "source_voucher_no", "source_rsd", "source_line_item_no", "status",
+    "stage_no", "stage_desc", "op_no",
 ]
 
 _last_pp_voucher_sync_at: float = 0.0
@@ -585,29 +640,30 @@ def run_pp_partial_sync(force: bool = False) -> dict:
 
 # ── mfg_wo_status ──────────────────────────────────────────────────────────
 # Reads mfg_wo_vch from COMAIN and aggregates execution_status per PP voucher.
-# Priority: P (In Process) > R (Ready to Start) > I (Pending SI) > C (Completed)
+# Priority: I (In Process) > R (Ready to Start) > P (Pending SI) > C (Completed)
 
 _MFG_WO_STATUS_SQL = """
 SELECT
-    source_mps_no,
+    t2.source_pp_no                   AS source_mps_no,
     CASE
-        WHEN bool_or(execution_status = 'P') THEN 'P'
-        WHEN bool_or(execution_status = 'R') THEN 'R'
-        WHEN bool_or(execution_status = 'I') THEN 'I'
+        WHEN bool_or(t3.execution_status = 'I') THEN 'I'
+        WHEN bool_or(t3.execution_status = 'R') THEN 'R'
+        WHEN bool_or(t3.execution_status = 'P') THEN 'P'
         ELSE 'C'
     END                               AS execution_status,
-    MAX(wo_qty_required)              AS wo_qty_required,
-    MAX(total_acc_qty_produced)       AS total_acc_qty_produced,
-    SUM(total_rej_qty_produced)       AS total_rej_qty_produced,
-    MAX(stage_no)                     AS stage_no,
-    MIN(plan_start_date)              AS plan_start_date,
-    MAX(plan_end_date)                AS plan_end_date,
-    MAX(origin_rsd)                   AS po_due_date,
-    MAX(origin_voucher_no)            AS so_no
-FROM public.mfg_wo_vch
-WHERE source_mps_no IS NOT NULL
-GROUP BY source_mps_no
-ORDER BY source_mps_no
+    SUM(t3.wo_qty_required)           AS wo_qty_required,
+    SUM(t3.total_acc_qty_produced)    AS total_acc_qty_produced,
+    SUM(t3.total_rej_qty_produced)    AS total_rej_qty_produced,
+    MAX(t2.stage_no)                  AS stage_no,
+    MIN(t3.plan_start_date)           AS plan_start_date,
+    MAX(t3.plan_end_date)             AS plan_end_date,
+    MAX(t3.origin_rsd)                AS po_due_date,
+    MAX(t2.origin_voucher_no)         AS so_no
+FROM mfg_mps_vch t2
+JOIN mfg_wo_vch t3 ON t2.wo_voucher_no = t3.voucher_no
+WHERE t2.source_pp_no IS NOT NULL
+GROUP BY t2.source_pp_no
+ORDER BY t2.source_pp_no
 """
 
 _MFG_WO_STATUS_COLS = [

@@ -1,5 +1,9 @@
 // All DOM-rendering functions for the scheduler board and catalog.
 
+function fmt(value, decimals) {
+  return Number(value).toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+
 function trialMaterialStatusClass(status) {
   const severity = String(status?.severity || '').toLowerCase();
   if (severity === 'pending') return 'material-pending';
@@ -69,13 +73,71 @@ function trialOpQtyLabel(op) {
   return `Qty ${fmt(remaining, 0)}`;
 }
 
+// ── PS type helpers ───────────────────────────────────────────────────────────
+
+const _PS_TYPES = [
+  { key: 'A', label: 'Aerospace' },
+  { key: 'M', label: 'MRO' },
+  { key: 'N', label: 'Non-Aerospace' },
+];
+
+function trialGetPsType(psId) {
+  return String(psId || '').trim().toUpperCase()[0] || '?';
+}
+
+function renderTrialPsTypeFilter() {
+  const shell = document.getElementById('trial-ps-type-filter');
+  if (!shell) return;
+  const checkboxes = _PS_TYPES.map(t => {
+    const checked = trialPsTypeFilter.has(t.key);
+    return `
+      <label class="trial-ps-type-checkbox trial-ps-type-${t.key.toLowerCase()}">
+        <input type="checkbox" ${checked ? 'checked' : ''}
+          onchange="toggleTrialPsTypeFilter('${t.key}', this.checked)">
+        <span>${escapeHtml(t.label)}</span>
+      </label>`;
+  }).join('');
+  shell.innerHTML = `
+    <div class="trial-ps-type-filter-row">
+      ${checkboxes}
+      <div class="trial-machine-checkbox-actions">
+        <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialPsTypesVisible(true)">All</button>
+        <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialPsTypesVisible(false)">None</button>
+      </div>
+    </div>
+  `;
+}
+
+function toggleTrialPsTypeFilter(key, visible) {
+  if (visible) trialPsTypeFilter.add(key);
+  else trialPsTypeFilter.delete(key);
+  renderTrialCatalog();
+}
+
+function setAllTrialPsTypesVisible(visible) {
+  _PS_TYPES.forEach(t => visible ? trialPsTypeFilter.add(t.key) : trialPsTypeFilter.delete(t.key));
+  renderTrialCatalog();
+}
+
 // ── Filters ───────────────────────────────────────────────────────────────────
 
 function renderTrialMachineCategoryFilter() {
   const categories = trialMachineCategories();
+  const machines = trialMachinesInCategory();
+
+  const machineCheckboxes = machines.map(m => {
+    const code = m.machine_code || '';
+    const checked = !trialMachineHiddenSet.has(code);
+    return `<label class="trial-machine-checkbox">
+        <input type="checkbox" ${checked ? 'checked' : ''}
+          onchange="toggleTrialMachineFilter('${escapeHtml(code)}', this.checked)">
+        <span>${escapeHtml(code)}</span>
+      </label>`;
+  }).join('');
+
   return `
     <div class="trial-filter-section">
-      <div class="trial-filter-label">Machine</div>
+      <div class="trial-filter-label">Type</div>
       <div class="trial-machine-filter">
         ${categories.map(category => `
           <button type="button"
@@ -86,11 +148,42 @@ function renderTrialMachineCategoryFilter() {
         `).join('')}
       </div>
     </div>
+    ${machines.length > 0 ? `
+    <div class="trial-filter-section">
+      <div class="trial-filter-label">Machine</div>
+      <div class="trial-machine-checkbox-list">
+        ${machineCheckboxes}
+        <div class="trial-machine-checkbox-actions">
+          <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialMachinesVisible(true)">All</button>
+          <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialMachinesVisible(false)">None</button>
+        </div>
+      </div>
+    </div>
+    ` : ''}
   `;
 }
 
 function setTrialMachineCategoryFilter(category) {
   trialMachineCategoryFilter = String(category || 'ALL').toUpperCase();
+  renderTrial();
+}
+
+function toggleTrialMachineFilter(machineCode, visible) {
+  if (visible) {
+    trialMachineHiddenSet.delete(machineCode);
+  } else {
+    trialMachineHiddenSet.add(machineCode);
+  }
+  renderTrial();
+}
+
+function setAllTrialMachinesVisible(visible) {
+  const machines = trialMachinesInCategory();
+  if (visible) {
+    machines.forEach(m => trialMachineHiddenSet.delete(m.machine_code));
+  } else {
+    machines.forEach(m => trialMachineHiddenSet.add(m.machine_code));
+  }
   renderTrial();
 }
 
@@ -349,36 +442,62 @@ function renderTrial() {
   bindTrialLaneOpDrops();
 }
 
+function trialExecStatusBadge(execStatus) {
+  const s = String(execStatus || '').toLowerCase();
+  if (s === 'pending si')     return `<span class="exec-badge exec-badge-pending-si">Material pending</span>`;
+  if (s === 'ready to start') return `<span class="exec-badge exec-badge-ready">Ready to start</span>`;
+  if (s === 'in process')     return `<span class="exec-badge exec-badge-in-process">In Process</span>`;
+  if (s === 'completed')      return `<span class="exec-badge exec-badge-completed">Completed</span>`;
+  return '';
+}
+
 // ── Catalog render ────────────────────────────────────────────────────────────
 
+const _PS_TYPE_ORDER = { A: 0, M: 1, N: 2 };
+
 function renderTrialCatalog() {
+  renderTrialPsTypeFilter();
   const root = document.getElementById('trial-catalog');
   if (!root) return;
   const queryInput = document.getElementById('trial-catalog-search');
   const rawQuery = String(queryInput ? queryInput.value : trialCatalogSearch || '').trim().toLowerCase();
   trialCatalogSearch = rawQuery;
 
-  const ACTIVE_EXEC_STATUSES = new Set(['In Process', 'Ready to Start', 'Pending SI']);
   const catalog = (trialState.catalog || []).filter(ps => {
+    const psType = trialGetPsType(ps.ps_id);
+    if (!trialPsTypeFilter.has(psType)) return false;
     const psStatus = String(ps.status || '').toUpperCase();
-    const plannerStatus = String(ps.planner_status || '').toUpperCase();
-    if (!trialShowCompleted && (psStatus === 'COMPLETED' || plannerStatus === 'COMPLETED')) return false;
-    if (!ACTIVE_EXEC_STATUSES.has(ps.execution_status)) return false;
+    const execStatus = String(ps.execution_status || '').toUpperCase();
+    if (!trialShowCompleted) {
+      // execution_status is authoritative — only fall back to status when there's no exec signal
+      const activeExec = execStatus && execStatus !== 'COMPLETED';
+      if (!activeExec && (execStatus === 'COMPLETED' || psStatus === 'HISTORY')) return false;
+    }
     if (!rawQuery) return true;
     const haystack = [
-      ps.ps_id, ps.part_name, ps.part_no, ps.part_desc, ps.due_date, ps.status, ps.planner_status,
+      ps.ps_id, ps.part_name, ps.part_no, ps.part_desc, ps.due_date, ps.status, ps.execution_status,
       ...(ps.ops || []).flatMap(op => [op.op_no, op.op_type, op.machine_category, op.preferred_machine, op.source_op_no]),
     ].join(' ').toLowerCase();
     return haystack.includes(rawQuery);
+  }).sort((a, b) => {
+    const ta = _PS_TYPE_ORDER[trialGetPsType(a.ps_id)] ?? 9;
+    const tb = _PS_TYPE_ORDER[trialGetPsType(b.ps_id)] ?? 9;
+    return ta !== tb ? ta - tb : String(a.ps_id).localeCompare(String(b.ps_id));
   });
 
   const plannedCatalog = (trialState.planned || []).filter(ps => {
+    const psType = trialGetPsType(ps.ps_id);
+    if (!trialPsTypeFilter.has(psType)) return false;
     const psStatus = String(ps.status || '').toUpperCase();
     const plannerStatus = String(ps.planner_status || '').toUpperCase();
     if (!trialShowCompleted && (psStatus === 'COMPLETED' || plannerStatus === 'COMPLETED')) return false;
     if (!rawQuery) return true;
     const haystack = [ps.ps_id, ps.part_name, ps.part_no, ps.part_desc, ps.due_date, ps.status, ps.planner_status].join(' ').toLowerCase();
     return haystack.includes(rawQuery);
+  }).sort((a, b) => {
+    const ta = _PS_TYPE_ORDER[trialGetPsType(a.ps_id)] ?? 9;
+    const tb = _PS_TYPE_ORDER[trialGetPsType(b.ps_id)] ?? 9;
+    return ta !== tb ? ta - tb : String(a.ps_id).localeCompare(String(b.ps_id));
   });
 
   if (!catalog.length && !plannedCatalog.length) {
@@ -396,13 +515,11 @@ function renderTrialCatalog() {
         data-ps-id="${escapeHtml(ps.ps_id || '')}"
         data-base-ps-id="${escapeHtml(basePsId)}"
         data-partial-text="${escapeHtml(partialText)}"
-        data-part-name="${escapeHtml(ps.part_name || '')}"
+        data-part-name="${escapeHtml(ps.part_no || ps.part_name || '')}"
         data-inv-desc="${escapeHtml(ps.part_desc || '')}"
-        data-due-date="${escapeHtml(ps.due_date || '')}">
-        <summary>
-          <span>${escapeHtml(basePsId)}</span>
-          <span class="trial-catalog-ps-meta trial-catalog-ps-date">${escapeHtml(ps.due_date || 'No due date')}</span>
-        </summary>
+        data-due-date="${escapeHtml(ps.due_date || '')}"
+        data-exec-status="${escapeHtml(ps.execution_status || '')}">
+        <summary></summary>
         <div class="trial-catalog-bom-bar">
           ${trialFlowSelectHtml(ps)}
           <button class="btn btn-ghost btn-sm trial-catalog-bom-btn" type="button"
@@ -468,6 +585,7 @@ function decorateTrialCatalogCards() {
     const basePsId = card.dataset.basePsId || '';
     const partialText = card.dataset.partialText || '';
     const dueDate = card.dataset.dueDate || 'No due date';
+    const execStatus = card.dataset.execStatus || '';
     const dayDiff = trialDateDiffDays(dueDate);
     card.classList.remove('overdue', 'due-soon');
     if (dayDiff != null) {
@@ -478,8 +596,9 @@ function decorateTrialCatalogCards() {
       <div class="trial-catalog-ps-main">
         <div class="trial-catalog-ps-id">${escapeHtml(basePsId)}</div>
         ${partialText ? `<div class="trial-catalog-ps-partial">${escapeHtml(partialText)}</div>` : ''}
-        <div class="trial-catalog-ps-part">${escapeHtml(card.dataset.partName || 'Part No')}</div>
+        <div class="trial-catalog-ps-part">${escapeHtml(card.dataset.partName || '')}</div>
         ${card.dataset.invDesc ? `<div class="trial-catalog-ps-desc">${escapeHtml(card.dataset.invDesc)}</div>` : ''}
+        ${trialExecStatusBadge(execStatus)}
       </div>
       <span class="trial-catalog-ps-meta trial-catalog-ps-date">${escapeHtml(dueDate)}</span>
     `;

@@ -7,7 +7,9 @@
       "PowerShell(Get-Command py -ErrorAction SilentlyContinue | Select-Object Source; \\(py --version\\) 2>&1)",
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\zhenyue\\\\Documents\\\\GitHub\\\\Machine_planning\" -Recurse -Force)",
       "Bash(Select-Object FullName)",
-      "Bash(python -)"
+      "Bash(python -)",
+      "Bash(python -m json.tool)",
+      "Bash(python app.py)"
     ]
   }
 }

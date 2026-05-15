@@ -31,8 +31,12 @@
             <div class="trial-sidebar-title">Available PS / Ops</div>
             <div class="trial-sidebar-note">Combine ops inside the PS, then drag op cards to a machine lane.</div>
           </div>
-          <button id="trial-completed-toggle" class="btn btn-ghost btn-sm" onclick="toggleTrialCompletedCatalog()">Show completed</button>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button id="trial-sync-btn" class="btn btn-ghost btn-sm" onclick="syncPpVouchers()">Sync ERP</button>
+            <button id="trial-completed-toggle" class="btn btn-ghost btn-sm" onclick="toggleTrialCompletedCatalog()">Show completed</button>
+          </div>
         </div>
+        <div id="trial-ps-type-filter"></div>
         <input id="trial-catalog-search" class="trial-catalog-search" type="search" placeholder="Search PS, part, op..." oninput="renderTrialCatalog()">
         <div id="trial-catalog" class="trial-catalog"></div>
       </div>

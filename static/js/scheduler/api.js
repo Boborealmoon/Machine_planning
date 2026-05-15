@@ -35,49 +35,62 @@ async function DEL(url) {
   return res.json();
 }
 
+async function syncPpVouchers() {
+  const btn = document.getElementById('trial-sync-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+  try {
+    await POST('/api/pp-vouchers/sync', {});
+    const erpVouchers = await GET('/api/pp-vouchers/with-ops');
+    trialState.catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
+    renderTrialCatalog();
+    if (btn) btn.textContent = 'Synced ✓';
+    setTimeout(() => { if (btn) btn.textContent = 'Sync ERP'; }, 2000);
+  } catch (err) {
+    if (btn) btn.textContent = 'Sync failed';
+    setTimeout(() => { if (btn) btn.textContent = 'Sync ERP'; }, 3000);
+    console.error('pp-vouchers sync failed:', err);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function loadTrial() {
   const resolved = trialNormalizeScheduleDates(trialScheduleDateFilter.start, trialScheduleDateFilter.end);
   trialScheduleDateFilter = resolved;
   trialSyncScheduleUrl();
 
-  const [ppRows, machinesData] = await Promise.all([
-    GET('/api/pp-vouchers'),
+  const startParam = trialScheduleDateFilter.start ? `?start=${trialScheduleDateFilter.start}&end=${trialScheduleDateFilter.end}` : '';
+
+  const [scheduleResult, erpVouchers, machinesResult] = await Promise.all([
+    GET(`/api/trial/schedule${startParam}`).catch(() => null),
+    GET('/api/pp-vouchers/with-ops').catch(() => []),
     GET('/api/planner/machines'),
   ]);
 
-  const machines = (machinesData.machines || [])
-    .filter(m => m.active !== false)
-    .map(m => ({ ...m, machine_code: m.machine_no }));
+  const scheduleData = scheduleResult || {};
 
-  const catalog = ppRows.map(row => ({
-    ps_id: Number(row.pp_partial_no) > 1 ? `${row.ps_id}::${row.pp_partial_no}` : row.ps_id,
-    part_no:        row.part_no,
-    part_name:      row.part_no,
-    part_desc:      row.description,
-    due_date:       row.due_date,
-    order_date:     row.order_date,
-    bom_code:       row.bom_code,
-    total_qty:      row.total_qty,
-    partial_qty:    row.partial_qty,
-    status:         row.status,
-    execution_status: row.execution_status || null,
-    planner_status: null,
-    ops:            [],
-    op_cards:       [],
-    flow_options:   [],
-  }));
+  // Prefer schedule machines (richer); fall back to /api/planner/machines
+  const rawMachines = (scheduleData.machines && scheduleData.machines.length)
+    ? scheduleData.machines
+    : (machinesResult.machines || []);
+  const machines = rawMachines
+    .filter(m => m.active !== false)
+    .map(m => ({ ...m, machine_code: m.machine_no || m.machine_code }));
+
+  // Available panel is sourced entirely from pp_vouchers_cache (ERP truth)
+  const catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
 
   trialState = {
     machines,
-    blocks:         trialState.blocks         || [],
-    block_groups:   trialState.block_groups   || [],
-    segments:       trialState.segments       || [],
-    actuals:        trialState.actuals        || [],
-    capacities:     trialState.capacities     || [],
-    profiles:       trialState.profiles       || [],
+    blocks:         scheduleData.blocks         || [],
+    block_groups:   scheduleData.block_groups   || [],
+    segments:       scheduleData.segments       || [],
+    actuals:        scheduleData.actuals        || [],
+    capacities:     scheduleData.capacities     || [],
+    profiles:       scheduleData.profiles       || [],
     catalog,
-    planned:        trialState.planned        || [],
-    planning_cards: trialState.planning_cards || [],
+    planned:        scheduleData.planned        || [],
+    planning_cards: scheduleData.planning_cards || [],
   };
   renderTrial();
 }

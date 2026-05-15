@@ -55,7 +55,7 @@ def trial_catalog_items(con, include_completed=False):
                    ps.planned_qty AS total_qty,
                    sf.bom_code AS selected_bom_code,
                    pvc.part_no, pvc.description AS part_desc, pvc.part_no AS part_name,
-                   pvc.due_date,
+                   pvc.due_date, pvc.status AS erp_status, pvc.execution_status,
                    pfs.op_seq_id AS op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
                    pfs.machine_category, pfs.preferred_machine,
                    pfs.cycle_time, pfs.setup_time, pfs.is_last_op
@@ -68,6 +68,7 @@ def trial_catalog_items(con, include_completed=False):
               AND (%s = 1 OR (
                 COALESCE(ps.planner_status, '') <> 'COMPLETED'
                 AND COALESCE(ps.status, '') <> 'COMPLETED'
+                AND UPPER(COALESCE(pvc.status, '')) <> 'HISTORY'
               ))
             ORDER BY pvc.due_date, ps.planner_ps_id, pfs.seq_no, pfs.op_seq_id
             """,
@@ -83,7 +84,7 @@ def trial_catalog_items(con, include_completed=False):
                    ps.planned_qty AS total_qty,
                    '' AS selected_bom_code,
                    pvc.part_no, pvc.description AS part_desc, pvc.part_no AS part_name,
-                   pvc.due_date
+                   pvc.due_date, pvc.status AS erp_status, pvc.execution_status
             FROM planner_process_sheet ps
             LEFT JOIN pp_vouchers_cache pvc
                    ON pvc.ps_id = ps.source_ps_id AND pvc.pp_partial_no = ps.pp_partial_no
@@ -91,6 +92,7 @@ def trial_catalog_items(con, include_completed=False):
               AND (%s = 1 OR (
                 COALESCE(ps.planner_status, '') <> 'COMPLETED'
                 AND COALESCE(ps.status, '') <> 'COMPLETED'
+                AND UPPER(COALESCE(pvc.status, '')) <> 'HISTORY'
               ))
             ORDER BY pvc.due_date, ps.planner_ps_id
             """,
@@ -118,7 +120,8 @@ def trial_catalog_items(con, include_completed=False):
                 "part_desc": row["part_desc"] or "",
                 "due_date": str(row["due_date"]) if row["due_date"] else "",
                 "total_qty": float(row["total_qty"] or 0),
-                "status": row["status"] or "",
+                "status": row.get("erp_status") or row["status"] or "",
+                "execution_status": row.get("execution_status") or None,
                 "planner_status": row["planner_status"] or "",
                 "selected_bom_id": int(row["selected_bom_id"] or 0),
                 "selected_bom_code": row["selected_bom_code"] or "",
@@ -274,7 +277,8 @@ def trial_catalog_items(con, include_completed=False):
                 "part_desc": row["part_desc"] or "",
                 "due_date": str(row["due_date"]) if row["due_date"] else "",
                 "total_qty": float(row["total_qty"] or 0),
-                "status": row["status"] or "",
+                "status": row.get("erp_status") or row["status"] or "",
+                "execution_status": row.get("execution_status") or None,
                 "planner_status": row["planner_status"] or "",
                 "selected_bom_id": int(row["selected_bom_id"] or 0),
                 "selected_bom_code": row["selected_bom_code"] or "",

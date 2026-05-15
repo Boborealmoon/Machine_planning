@@ -290,7 +290,8 @@ async function saveTrialOrder(lane, reload = true) {
   }
 }
 
-async function toggleTrialCompletedCatalog() {
+function toggleTrialCompletedCatalog() {
   trialShowCompleted = !trialShowCompleted;
-  await loadTrial();
+  updateTrialCompletedButton();
+  renderTrialCatalog();
 }

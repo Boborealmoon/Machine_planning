@@ -14,9 +14,22 @@ CREATE TABLE IF NOT EXISTS public.pp_voucher (
     source_rsd              DATE,
     source_line_item_no     TEXT,
     status                  TEXT,
+    -- bom_op_stage columns (one row per machining stage)
+    stage_no                INTEGER     NOT NULL,
+    stage_desc              TEXT,
+    op_no                   INTEGER,
     _loaded_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (pp_voucher_no)
+    PRIMARY KEY (pp_voucher_no, stage_no)
 );
+
+-- Run these if the table already exists in Supabase:
+-- TRUNCATE TABLE public.pp_voucher;
+-- ALTER TABLE public.pp_voucher ADD COLUMN IF NOT EXISTS stage_no   INTEGER;
+-- ALTER TABLE public.pp_voucher ADD COLUMN IF NOT EXISTS stage_desc TEXT;
+-- ALTER TABLE public.pp_voucher ADD COLUMN IF NOT EXISTS op_no      INTEGER;
+-- ALTER TABLE public.pp_voucher ALTER COLUMN stage_no SET NOT NULL;
+-- ALTER TABLE public.pp_voucher DROP CONSTRAINT IF EXISTS pp_voucher_pkey;
+-- ALTER TABLE public.pp_voucher ADD PRIMARY KEY (pp_voucher_no, stage_no);
 
 CREATE TABLE IF NOT EXISTS public.mfg_process_sheet_info (
     -- Loaded from mfg_process_sheet_info_v1_view on COMAIN.
@@ -57,7 +70,7 @@ CREATE TABLE IF NOT EXISTS public.pp_partial (
 CREATE TABLE IF NOT EXISTS public.mfg_wo_status (
     -- Aggregated work order execution status per PP voucher.
     -- Loaded from COMAIN mfg_wo_vch, grouped by source_mps_no.
-    -- Priority: P (In Process) > R (Ready to Start) > I (Pending SI) > C (Completed)
+    -- Priority: I (In Process) > R (Ready to Start) > P (Pending SI) > C (Completed)
     source_mps_no           TEXT        NOT NULL,
     execution_status        TEXT,
     wo_qty_required         NUMERIC,
@@ -160,8 +173,16 @@ CREATE TABLE IF NOT EXISTS public.pp_vouchers_cache (
     bom_code            TEXT,
     status              TEXT,
     execution_status    TEXT,
+    stage_no            INTEGER,
+    stage_desc          TEXT,
+    op_no               INTEGER,
     _synced_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Run these if the table already exists in Supabase:
+-- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS stage_no   INTEGER;
+-- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS stage_desc TEXT;
+-- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS op_no      INTEGER;
 
 CREATE INDEX IF NOT EXISTS idx_pp_vouchers_cache_ps_id
     ON public.pp_vouchers_cache (ps_id);
@@ -181,6 +202,9 @@ joined AS (
         b.source_rsd,
         b.source_line_item_no,
         b.status,
+        b.stage_no,
+        b.stage_desc,
+        b.op_no,
         ps.process_sheet_no                                 AS ps_id_raw,
         ps.inventory_code                                   AS ps_inventory_code,
         ps.total_qty                                        AS ps_total_qty,
@@ -239,7 +263,7 @@ with_wo_status AS (
         wd.*,
         ws.execution_status
     FROM with_desc wd
-    LEFT JOIN public.mfg_wo_status ws ON ws.source_mps_no = wd.pp_voucher_no
+    LEFT JOIN public.mfg_wo_status ws ON ws.source_mps_no = wd.ps_id
 ),
 computed AS (
     SELECT DISTINCT
@@ -270,22 +294,25 @@ computed AS (
         ps_order_date           AS order_date,
         bom_code,
         CASE
-            WHEN ws_status IS NOT NULL THEN ws_status
             WHEN status = 'H'          THEN 'History'
+            WHEN ws_status IS NOT NULL THEN ws_status
             WHEN status = 'O'          THEN 'Outstanding'
             ELSE status
         END                     AS status,
         CASE execution_status
-            WHEN 'P' THEN 'In Process'
+            WHEN 'P' THEN 'Pending SI'
             WHEN 'R' THEN 'Ready to Start'
-            WHEN 'I' THEN 'Pending SI'
+            WHEN 'I' THEN 'In Process'
             WHEN 'C' THEN 'Completed'
             ELSE execution_status
-        END                     AS execution_status
+        END                     AS execution_status,
+        stage_no,
+        stage_desc,
+        op_no
     FROM with_wo_status
 )
 SELECT * FROM computed
-ORDER BY ps_id, pp_partial_no;
+ORDER BY ps_id, pp_partial_no, stage_no;
 
 
 CREATE TABLE planner_program_tools (

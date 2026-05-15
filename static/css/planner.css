@@ -57,6 +57,51 @@
     color: var(--text3);
     line-height: 1.35;
   }
+  .trial-ps-type-filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 6px;
+  }
+  .trial-ps-type-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 10px 4px 8px;
+    background: rgba(255,255,255,0.75);
+    user-select: none;
+    transition: background 0.1s, border-color 0.1s;
+  }
+  .trial-ps-type-checkbox input[type="checkbox"] {
+    width: 13px;
+    height: 13px;
+    margin: 0;
+    cursor: pointer;
+  }
+  .trial-ps-type-checkbox.trial-ps-type-a:has(input:checked) {
+    background: rgba(59,130,246,0.10);
+    border-color: rgba(59,130,246,0.35);
+    color: #1a4db5;
+  }
+  .trial-ps-type-checkbox.trial-ps-type-a input { accent-color: #3b82f6; }
+  .trial-ps-type-checkbox.trial-ps-type-m:has(input:checked) {
+    background: rgba(22,163,74,0.10);
+    border-color: rgba(22,163,74,0.35);
+    color: #15683a;
+  }
+  .trial-ps-type-checkbox.trial-ps-type-m input { accent-color: #16a34a; }
+  .trial-ps-type-checkbox.trial-ps-type-n:has(input:checked) {
+    background: rgba(234,88,12,0.10);
+    border-color: rgba(234,88,12,0.35);
+    color: #c2410c;
+  }
+  .trial-ps-type-checkbox.trial-ps-type-n input { accent-color: #ea580c; }
   .trial-catalog-search {
     width: 100%;
     background: var(--bg2);
@@ -165,6 +210,32 @@
     font-weight: 600;
     line-height: 1.35;
     overflow-wrap: anywhere;
+  }
+  .exec-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 800;
+    white-space: nowrap;
+    margin-top: 4px;
+  }
+  .exec-badge-pending-si {
+    background: rgba(245,158,11,0.12);
+    color: rgba(146,64,14,0.95);
+  }
+  .exec-badge-ready {
+    background: rgba(34,197,94,0.1);
+    color: rgba(22,101,52,0.95);
+  }
+  .exec-badge-in-process {
+    background: rgba(59,130,246,0.1);
+    color: rgba(30,64,175,0.95);
+  }
+  .exec-badge-completed {
+    background: rgba(107,114,128,0.1);
+    color: rgba(55,65,81,0.85);
   }
   .trial-catalog-actions {
     display: flex;
@@ -592,6 +663,58 @@
     background: rgba(59,130,246,0.12);
     border-color: rgba(59,130,246,0.28);
     color: #1f4ea2;
+  }
+  .trial-machine-checkbox-list {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+  }
+  .trial-machine-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 10px 4px 8px;
+    background: rgba(255,255,255,0.75);
+    user-select: none;
+    transition: background 0.1s, border-color 0.1s;
+  }
+  .trial-machine-checkbox:has(input:checked) {
+    background: rgba(59,130,246,0.10);
+    border-color: rgba(59,130,246,0.28);
+    color: #1f4ea2;
+  }
+  .trial-machine-checkbox input[type="checkbox"] {
+    width: 13px;
+    height: 13px;
+    margin: 0;
+    accent-color: #3b82f6;
+    cursor: pointer;
+  }
+  .trial-machine-checkbox-actions {
+    display: flex;
+    gap: 4px;
+    margin-left: 4px;
+  }
+  .trial-machine-toggle-btn {
+    border: none;
+    background: transparent;
+    color: var(--text3);
+    font-size: 11px;
+    font-weight: 800;
+    cursor: pointer;
+    padding: 2px 4px;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .trial-machine-toggle-btn:hover {
+    color: var(--text2);
   }
   .trial-board-filter-card {
     display: grid;

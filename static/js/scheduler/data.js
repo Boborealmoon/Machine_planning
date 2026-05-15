@@ -18,12 +18,20 @@ function trialMachineCategories() {
   return ['ALL', ...Array.from(categories).sort()];
 }
 
-function trialVisibleMachines() {
+function trialMachinesInCategory() {
   const selected = String(trialMachineCategoryFilter || 'ALL').toUpperCase();
   if (selected === 'ALL') return trialState.machines || [];
   return (trialState.machines || []).filter(m =>
     String(m.machine_category || '').trim().toUpperCase() === selected
   );
+}
+
+function trialVisibleMachines() {
+  let machines = trialMachinesInCategory();
+  if (trialMachineHiddenSet.size > 0) {
+    machines = machines.filter(m => !trialMachineHiddenSet.has(m.machine_code));
+  }
+  return machines;
 }
 
 function trialHasActiveDateFilter() {

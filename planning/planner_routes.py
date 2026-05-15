@@ -195,8 +195,128 @@ def _calendar_window_payload(row):
     }
 
 
+def _trial_schedule_via_rest():
+    """Fallback: build the schedule response using Supabase REST API instead of direct DB."""
+    import requests as req
+    from db import supa_url, supa_headers
+    from collections import defaultdict
+
+    def rget(table, params=None):
+        r = req.get(
+            f"{supa_url()}/{table}",
+            headers={**supa_headers(), "Prefer": "return=representation"},
+            params=params or {},
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+
+    machines_raw   = rget("planner_machines",           {"select": "machine_id,machine_no,machine_category,shift_profile,active", "active": "eq.true", "order": "machine_id"})
+    blocks_raw     = rget("planner_run_block",           {"select": "*", "order": "machine_id,queue_position,block_id"})
+    ops_raw        = rget("planner_operation",           {"select": "*"})
+    groups_raw     = rget("planner_run_block_group",     {"select": "*"})
+    segments_raw   = rget("planner_run_block_segment",   {"select": "*", "order": "segment_id"})
+    actuals_raw    = rget("planner_production_actual",   {"select": "*", "status": "eq.ACTIVE", "order": "report_date,actual_id"})
+    caps_raw       = rget("planner_machine_capacity_day",{"select": "*", "order": "work_date,machine_id"})
+    profiles_raw   = rget("planner_capacity_profile",    {"select": "*", "order": "profile_id"})
+    cards_raw      = rget("planner_planning_card",       {"select": "*"})
+
+    ops_by_id      = {o["operation_id"]: o for o in ops_raw}
+    machines_by_id = {m["machine_id"]: m for m in machines_raw}
+    groups_by_id   = {g["group_id"]: g for g in groups_raw}
+    profiles_by_id = {p["profile_id"]: p for p in profiles_raw}
+
+    active_block_ids = set()
+    blocks = []
+    for b in blocks_raw:
+        if b.get("active") is False:
+            continue
+        active_block_ids.add(b["block_id"])
+        op      = ops_by_id.get(b.get("operation_id") or 0, {})
+        machine = machines_by_id.get(b.get("machine_id") or 0, {})
+        group   = groups_by_id.get(b.get("group_id") or 0, {})
+        blocks.append({
+            **b,
+            "job_no":                   op.get("job_no"),
+            "operation_name":           op.get("operation_name"),
+            "total_qty":                op.get("total_qty"),
+            "setup_minutes":            op.get("setup_minutes"),
+            "cycle_minutes_per_qty":    op.get("cycle_minutes_per_qty"),
+            "compatible_machine_group": op.get("compatible_machine_group"),
+            "source_ps_id":             op.get("source_ps_id"),
+            "source_op_seq_id":         op.get("source_op_seq_id"),
+            "source_op_no":             op.get("source_op_no"),
+            "machine_code":             machine.get("machine_no"),
+            "machine_category":         machine.get("machine_category"),
+            "shift_profile":            machine.get("shift_profile"),
+            "group_label":              group.get("group_label"),
+            "group_type":               group.get("group_type"),
+            "visual_start_datetime":    compact_text(b.get("calculated_start_datetime")) or "",
+            "visual_end_datetime":      compact_text(b.get("calculated_end_datetime")) or "",
+            "visual_parts":             [],
+            "break_windows":            [],
+            "material_status":          {"status": "NOT_REQUIRED", "label": "", "expected_ready_date": "", "severity": "none"},
+            "anchor_datetime":          compact_text(b.get("anchor_datetime")),
+            "calculated_start_datetime": compact_text(b.get("calculated_start_datetime")),
+            "calculated_end_datetime":  compact_text(b.get("calculated_end_datetime")),
+            "updated_at":               compact_text(b.get("updated_at")),
+        })
+
+    segments = []
+    for s in segments_raw:
+        if s.get("block_id") not in active_block_ids:
+            continue
+        segments.append({
+            **s,
+            "operation_id":          ops_by_id.get((next((b for b in blocks_raw if b["block_id"] == s["block_id"]), {}) or {}).get("operation_id") or 0, {}).get("operation_id"),
+            "visual_start_datetime": compact_text(s.get("start_datetime")) or "",
+            "visual_end_datetime":   compact_text(s.get("end_datetime")) or "",
+            "visual_parts":          [],
+            "break_windows":         [],
+            "segment_date":          compact_text(s.get("segment_date")),
+            "start_datetime":        compact_text(s.get("start_datetime")),
+            "end_datetime":          compact_text(s.get("end_datetime")),
+        })
+
+    capacities = [{**c, "profile_name": profiles_by_id.get(c.get("profile_id") or 0, {}).get("profile_name", ""), "work_date": compact_text(c.get("work_date"))} for c in caps_raw]
+
+    block_group_ids = {b.get("group_id") for b in blocks if b.get("group_id")}
+    block_groups = []
+    for g in groups_raw:
+        if g["group_id"] not in block_group_ids:
+            continue
+        block_groups.append({**g, "material_status": {"status": "NOT_REQUIRED", "label": "", "expected_ready_date": "", "severity": "none"}})
+
+    planning_cards = [{**c, "ps_id": c.get("planner_ps_id")} for c in cards_raw]
+
+    for actual in actuals_raw:
+        actual["report_date"]  = compact_text(actual.get("report_date"))
+        actual["reported_at"]  = compact_text(actual.get("reported_at"))
+
+    return jsonify({
+        "machines":        machines_raw,
+        "blocks":          blocks,
+        "segments":        segments,
+        "actuals":         actuals_raw,
+        "capacities":      capacities,
+        "profiles":        profiles_raw,
+        "block_groups":    block_groups,
+        "catalog":         [],
+        "planned":         [],
+        "planning_cards":  planning_cards,
+        "calendar_windows": [],
+    })
+
+
 @trial_bp.get("/api/trial/schedule")
 def api_trial_schedule():
+    try:
+        return _api_trial_schedule_db()
+    except Exception:
+        return _trial_schedule_via_rest()
+
+
+def _api_trial_schedule_db():
     include_completed = int(request.args.get("include_completed") or 0)
     start_iso = compact_text(request.args.get("start") or request.args.get("from")) or date.today().isoformat()
     end_iso = compact_text(request.args.get("end") or request.args.get("to")) or (date.today() + timedelta(days=7)).isoformat()
