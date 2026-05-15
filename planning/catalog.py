@@ -1,11 +1,31 @@
+"""planning/catalog.py — process-sheet catalog & planning-card helpers (PostgreSQL port).
+
+Key changes vs SQLite original:
+  process_sheet / parts JOIN  → planner_process_sheet + pp_vouchers_cache JOIN
+  ps.ps_id                    → ps.planner_ps_id (aliased AS ps_id in queries)
+  bom_variation.part_id       → planner_bom_variation.inventory_code
+  operation_seq               → planner_operation_seq
+  machines.machine_code       → planner_machines.machine_no AS machine_code
+  planning_card.ps_id         → planner_planning_card.planner_ps_id (aliased AS ps_id)
+  planning_card_operation     → planner_planning_card_operation
+  run_block_group             → planner_run_block_group
+  run_block                   → planner_run_block
+  operation                   → planner_operation
+  cur.lastrowid               → RETURNING + one(cur)["pk"]
+  active = 1                  → active = TRUE
+  Bug fix: combined_group_summary returned undefined `paired_output_qty` → now `paired_good_qty`
+"""
 from __future__ import annotations
 
 from .actuals import actual_totals_for_block
-from .blocks import trial_block_row
-from .db import one, rows
-from .imports import trial_catalog_op_key
-from .utils import compact_text, parse_number
+from .blocks import trial_block_row  # noqa: F401  (re-exported for route convenience)
+from .helpers import one, rows
+from .utils import compact_text, parse_number, trial_catalog_op_key
 
+
+# ---------------------------------------------------------------------------
+# Catalog: process sheets with remaining operations
+# ---------------------------------------------------------------------------
 
 def trial_catalog_items(con, include_completed=False):
     planned_qty_by_op = {}
@@ -14,10 +34,10 @@ def trial_catalog_items(con, include_completed=False):
             """
             SELECT o.source_ps_id, o.source_op_no, o.source_op_seq_id AS source_op_seq_id,
                    COALESCE(SUM(COALESCE(b.scheduled_qty, 0)), 0) AS planned_qty
-            FROM operation o
-            JOIN run_block b ON b.operation_id = o.operation_id
+            FROM planner_operation o
+            JOIN planner_run_block b ON b.operation_id = o.operation_id
             WHERE COALESCE(o.source_ps_id, '') <> ''
-              AND COALESCE(b.active, 1) = 1
+              AND COALESCE(b.active, TRUE) = TRUE
               AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
             GROUP BY o.source_ps_id, o.source_op_no, o.source_op_seq_id
             """
@@ -26,35 +46,53 @@ def trial_catalog_items(con, include_completed=False):
         key = trial_catalog_op_key(row["source_ps_id"], row["source_op_no"], row["source_op_seq_id"])
         planned_qty_by_op[key] = float(row["planned_qty"] or 0)
 
+    # Process sheets that have a selected BOM (have ops to schedule)
     records = rows(
         con.execute(
             """
-            SELECT ps.ps_id, ps.part_id, ps.part_no AS part_no, ps.part_desc AS part_desc, ps.due_date, ps.total_qty, ps.status, ps.planner_status, ps.selected_bom_id AS selected_bom_id,
+            SELECT ps.planner_ps_id AS ps_id, ps.inventory_code,
+                   ps.selected_bom_id, ps.planner_status, ps.status,
+                   ps.planned_qty AS total_qty,
                    sf.bom_code AS selected_bom_code,
-                   p.part_no AS part_name, pfs.op_seq_id AS op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type, pfs.machine_category, pfs.preferred_machine,
+                   pvc.part_no, pvc.description AS part_desc, pvc.part_no AS part_name,
+                   pvc.due_date,
+                   pfs.op_seq_id AS op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
+                   pfs.machine_category, pfs.preferred_machine,
                    pfs.cycle_time, pfs.setup_time, pfs.is_last_op
-            FROM process_sheet ps
-            LEFT JOIN parts p ON p.part_id = ps.part_id
-            LEFT JOIN bom_variation sf ON sf.bom_id = ps.selected_bom_id
-            LEFT JOIN operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
+            FROM planner_process_sheet ps
+            LEFT JOIN pp_vouchers_cache pvc
+                   ON pvc.ps_id = ps.source_ps_id AND pvc.pp_partial_no = ps.pp_partial_no
+            LEFT JOIN planner_bom_variation sf ON sf.bom_id = ps.selected_bom_id
+            LEFT JOIN planner_operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
             WHERE COALESCE(ps.selected_bom_id, 0) > 0
-              AND (? = 1 OR (COALESCE(ps.planner_status, '') <> 'COMPLETED' AND COALESCE(ps.status, '') <> 'COMPLETED'))
-            ORDER BY ps.due_date, ps.ps_id, pfs.seq_no, pfs.op_seq_id
+              AND (%s = 1 OR (
+                COALESCE(ps.planner_status, '') <> 'COMPLETED'
+                AND COALESCE(ps.status, '') <> 'COMPLETED'
+              ))
+            ORDER BY pvc.due_date, ps.planner_ps_id, pfs.seq_no, pfs.op_seq_id
             """,
             (1 if include_completed else 0,),
         )
     )
+    # Process sheets without a BOM yet
     unassigned_records = rows(
         con.execute(
             """
-            SELECT ps.ps_id, ps.part_id, ps.part_no AS part_no, ps.part_desc AS part_desc, ps.due_date, ps.total_qty, ps.status, ps.planner_status, ps.selected_bom_id AS selected_bom_id,
+            SELECT ps.planner_ps_id AS ps_id, ps.inventory_code,
+                   ps.selected_bom_id, ps.planner_status, ps.status,
+                   ps.planned_qty AS total_qty,
                    '' AS selected_bom_code,
-                   p.part_no AS part_name
-            FROM process_sheet ps
-            LEFT JOIN parts p ON p.part_id = ps.part_id
+                   pvc.part_no, pvc.description AS part_desc, pvc.part_no AS part_name,
+                   pvc.due_date
+            FROM planner_process_sheet ps
+            LEFT JOIN pp_vouchers_cache pvc
+                   ON pvc.ps_id = ps.source_ps_id AND pvc.pp_partial_no = ps.pp_partial_no
             WHERE COALESCE(ps.selected_bom_id, 0) = 0
-              AND (? = 1 OR (COALESCE(ps.planner_status, '') <> 'COMPLETED' AND COALESCE(ps.status, '') <> 'COMPLETED'))
-            ORDER BY ps.due_date, ps.ps_id
+              AND (%s = 1 OR (
+                COALESCE(ps.planner_status, '') <> 'COMPLETED'
+                AND COALESCE(ps.status, '') <> 'COMPLETED'
+              ))
+            ORDER BY pvc.due_date, ps.planner_ps_id
             """,
             (1 if include_completed else 0,),
         )
@@ -62,6 +100,7 @@ def trial_catalog_items(con, include_completed=False):
 
     grouped = {}
     flow_cache = {}
+
     for row in records:
         ps_id = compact_text(row["ps_id"])
         op_seq_id = int(row["op_seq_id"] or 0)
@@ -73,11 +112,11 @@ def trial_catalog_items(con, include_completed=False):
             ps_id,
             {
                 "ps_id": ps_id,
-                "part_id": int(row["part_id"] or 0),
+                "inventory_code": row["inventory_code"] or "",
                 "part_name": row["part_name"] or "",
                 "part_no": row["part_no"] or "",
                 "part_desc": row["part_desc"] or "",
-                "due_date": row["due_date"] or "",
+                "due_date": str(row["due_date"]) if row["due_date"] else "",
                 "total_qty": float(row["total_qty"] or 0),
                 "status": row["status"] or "",
                 "planner_status": row["planner_status"] or "",
@@ -115,24 +154,29 @@ def trial_catalog_items(con, include_completed=False):
     planning_cards_map = planning_cards_by_ps(con)
     covered_map = planning_card_covered_op_keys(con)
 
-    def flow_options_for_part(part_id):
-        part_id = int(part_id or 0)
-        if not part_id:
+    def flow_options_for_inventory_code(inventory_code):
+        inventory_code = compact_text(inventory_code)
+        if not inventory_code:
             return []
-        if part_id not in flow_cache:
-            flow_cache[part_id] = [dict(flow) for flow in rows(con.execute(
-                """
-                SELECT bom_id AS bom_id, bom_code AS bom_code, bom_desc AS bom_desc, is_default
-                FROM bom_variation
-                WHERE part_id = ?
-                ORDER BY is_default DESC, bom_id
-                """,
-                (part_id,),
-            ))]
-        return flow_cache[part_id]
+        if inventory_code not in flow_cache:
+            flow_cache[inventory_code] = [
+                dict(flow)
+                for flow in rows(
+                    con.execute(
+                        """
+                        SELECT bom_id, bom_code, bom_desc, is_default
+                        FROM planner_bom_variation
+                        WHERE inventory_code = %s
+                        ORDER BY is_default DESC, bom_id
+                        """,
+                        (inventory_code,),
+                    )
+                )
+            ]
+        return flow_cache[inventory_code]
 
     for item in grouped.values():
-        item["flow_options"] = flow_options_for_part(item["part_id"])
+        item["flow_options"] = flow_options_for_inventory_code(item["inventory_code"])
         item["planning_cards"] = planning_cards_map.get(item["ps_id"], [])
         covered_keys = covered_map.get(item["ps_id"], set())
         op_cards = []
@@ -201,7 +245,7 @@ def trial_catalog_items(con, include_completed=False):
             planned.append(
                 {
                     "ps_id": item["ps_id"],
-                    "part_id": item["part_id"],
+                    "inventory_code": item["inventory_code"],
                     "part_name": item["part_name"],
                     "part_no": item["part_no"],
                     "part_desc": item["part_desc"],
@@ -219,16 +263,16 @@ def trial_catalog_items(con, include_completed=False):
 
     for row in unassigned_records:
         ps_id = compact_text(row["ps_id"])
-        part_id = int(row["part_id"] or 0)
-        flow_options = flow_options_for_part(part_id)
+        inventory_code = compact_text(row["inventory_code"])
+        flow_options = flow_options_for_inventory_code(inventory_code)
         planned.append(
             {
                 "ps_id": ps_id,
-                "part_id": part_id,
+                "inventory_code": inventory_code,
                 "part_name": row["part_name"] or "",
                 "part_no": row["part_no"] or "",
                 "part_desc": row["part_desc"] or "",
-                "due_date": row["due_date"] or "",
+                "due_date": str(row["due_date"]) if row["due_date"] else "",
                 "total_qty": float(row["total_qty"] or 0),
                 "status": row["status"] or "",
                 "planner_status": row["planner_status"] or "",
@@ -243,6 +287,10 @@ def trial_catalog_items(con, include_completed=False):
     return {"available": available, "planned": planned}
 
 
+# ---------------------------------------------------------------------------
+# Combined group summary
+# ---------------------------------------------------------------------------
+
 def combined_group_summary(con, group_id):
     group_id = int(group_id or 0)
     if not group_id:
@@ -252,8 +300,7 @@ def combined_group_summary(con, group_id):
         con.execute(
             """
             SELECT group_id, group_label, group_type, created_at
-            FROM run_block_group
-            WHERE group_id = ?
+            FROM planner_run_block_group WHERE group_id = %s
             """,
             (group_id,),
         )
@@ -266,11 +313,11 @@ def combined_group_summary(con, group_id):
             """
             SELECT b.*, o.job_no, o.operation_name, o.total_qty, o.setup_minutes, o.cycle_minutes_per_qty,
                    o.compatible_machine_group, o.source_ps_id, o.source_op_seq_id, o.source_op_no,
-                   m.machine_code, m.machine_category, m.shift_profile
-            FROM run_block b
-            JOIN operation o ON o.operation_id = b.operation_id
-            JOIN machines m ON m.machine_id = b.machine_id
-            WHERE b.group_id = ?
+                   m.machine_no AS machine_code, m.machine_category, m.shift_profile
+            FROM planner_run_block b
+            JOIN planner_operation o ON o.operation_id = b.operation_id
+            JOIN planner_machines m ON m.machine_id = b.machine_id
+            WHERE b.group_id = %s
             ORDER BY b.queue_position, b.block_id
             """,
             (group_id,),
@@ -312,6 +359,15 @@ def combined_group_summary(con, group_id):
         scheduled_qty = max(0.0, float(block["scheduled_qty"] or 0))
         valid_done = max(0.0, output_qty - reject_qty)
         remaining_qty = max(0.0, scheduled_qty - valid_done)
+
+        def _dt_str(v):
+            if v is None:
+                return ""
+            from datetime import datetime as _dt
+            if isinstance(v, _dt):
+                return v.isoformat(sep=" ", timespec="seconds")
+            return str(v)
+
         member_rows.append(
             {
                 "block_id": int(block["block_id"]),
@@ -332,9 +388,9 @@ def combined_group_summary(con, group_id):
                 "planning_status": block["planning_status"] or "",
                 "execution_status": block["execution_status"] or "",
                 "status": block["status"] or "",
-                "anchor_datetime": block["anchor_datetime"] or "",
-                "calculated_start_datetime": block["calculated_start_datetime"] or "",
-                "calculated_end_datetime": block["calculated_end_datetime"] or "",
+                "anchor_datetime": _dt_str(block["anchor_datetime"]),
+                "calculated_start_datetime": _dt_str(block["calculated_start_datetime"]),
+                "calculated_end_datetime": _dt_str(block["calculated_end_datetime"]),
                 "block_type": block["block_type"] or "ORIGINAL",
                 "machine_code": block["machine_code"] or "",
                 "machine_category": block["machine_category"] or "",
@@ -346,6 +402,7 @@ def combined_group_summary(con, group_id):
     cycle_sum = sum(row["cycle_minutes_per_qty"] for row in member_rows)
     actual_good_qty = sum(row["valid_done_qty"] for row in member_rows)
     actual_reject_qty = sum(row["reject_qty"] for row in member_rows)
+    # paired_good_qty = the bottleneck output (minimum across members)
     paired_good_qty = min((row["valid_done_qty"] for row in member_rows), default=0.0)
     remaining_qty = max(0.0, target_qty - paired_good_qty)
     remaining_minutes = remaining_qty * cycle_sum
@@ -357,8 +414,16 @@ def combined_group_summary(con, group_id):
     ends = [row["calculated_end_datetime"] for row in member_rows if compact_text(row["calculated_end_datetime"])]
     status_values = [compact_text(row["execution_status"] or row["status"]).upper() for row in member_rows]
     planning_values = [compact_text(row["planning_status"]).upper() for row in member_rows]
-    status = "DONE" if status_values and all(text == "DONE" for text in status_values) else ("IN_PROGRESS" if any(text in {"IN_PROGRESS", "DONE"} for text in status_values) else "NOT_STARTED")
-    planning_status = "PARTIALLY_PLANNED" if "PARTIALLY_PLANNED" in planning_values else ("PLANNED" if planning_values and all(text == "PLANNED" for text in planning_values) else (planning_values[0] if planning_values else "UNPLANNED"))
+    status = (
+        "DONE" if status_values and all(t == "DONE" for t in status_values)
+        else ("IN_PROGRESS" if any(t in {"IN_PROGRESS", "DONE"} for t in status_values)
+              else "NOT_STARTED")
+    )
+    planning_status = (
+        "PARTIALLY_PLANNED" if "PARTIALLY_PLANNED" in planning_values
+        else ("PLANNED" if planning_values and all(t == "PLANNED" for t in planning_values)
+              else (planning_values[0] if planning_values else "UNPLANNED"))
+    )
     ps_id = compact_text(first_block["job_no"] or first_block["source_ps_id"] or "")
     operation_label = group["group_label"] or " & ".join(
         compact_text(row["source_op_no"] or row["operation_name"] or f"Block {row['block_id']}")
@@ -381,7 +446,7 @@ def combined_group_summary(con, group_id):
         "cycle_minutes_per_qty": cycle_sum,
         "actual_good_qty": actual_good_qty,
         "actual_reject_qty": actual_reject_qty,
-        "paired_output_qty": paired_output_qty,
+        "paired_output_qty": paired_good_qty,   # bug fix: was undefined `paired_output_qty` in original
         "paired_remaining_qty": remaining_qty,
         "paired_remaining_minutes": remaining_minutes,
         "remaining_qty": remaining_qty,
@@ -393,14 +458,18 @@ def combined_group_summary(con, group_id):
     }
 
 
+# ---------------------------------------------------------------------------
+# Planning card helpers
+# ---------------------------------------------------------------------------
+
 def planning_card_row(con, card_id):
     return one(
         con.execute(
             """
-            SELECT c.*, m.machine_code
-            FROM planning_card c
-            LEFT JOIN machines m ON m.machine_id = c.machine_id
-            WHERE c.card_id = ?
+            SELECT c.*, c.planner_ps_id AS ps_id, m.machine_no AS machine_code
+            FROM planner_planning_card c
+            LEFT JOIN planner_machines m ON m.machine_id = c.machine_id
+            WHERE c.card_id = %s
             """,
             (int(card_id),),
         )
@@ -415,8 +484,8 @@ def planning_card_payload(con, card_id):
         con.execute(
             """
             SELECT *
-            FROM planning_card_operation
-            WHERE card_id = ?
+            FROM planner_planning_card_operation
+            WHERE card_id = %s
             ORDER BY op_sequence, card_op_id
             """,
             (int(card_id),),
@@ -426,7 +495,9 @@ def planning_card_payload(con, card_id):
     label = compact_text(card["operation_label"])
     if not label:
         label = " & ".join(
-            compact_text(op["source_op_no"] or f"Op {op['op_sequence']}") for op in op_rows if compact_text(op["source_op_no"])
+            compact_text(op["source_op_no"] or f"Op {op['op_sequence']}")
+            for op in op_rows
+            if compact_text(op["source_op_no"])
         )
     operation_name = " + ".join(
         compact_text(op.get("op_type") or op.get("operation_name") or op.get("source_op_no"))
@@ -471,27 +542,26 @@ def planning_cards_by_ps(con):
     cards = rows(
         con.execute(
             """
-            SELECT c.*, m.machine_code
-            FROM planning_card c
-            LEFT JOIN machines m ON m.machine_id = c.machine_id
-            ORDER BY c.ps_id, c.card_id
+            SELECT c.*, c.planner_ps_id AS ps_id, m.machine_no AS machine_code
+            FROM planner_planning_card c
+            LEFT JOIN planner_machines m ON m.machine_id = c.machine_id
+            ORDER BY c.planner_ps_id, c.card_id
             """
         )
     )
     if not cards:
         return {}
     card_ids = [int(card["card_id"]) for card in cards]
-    placeholders = ",".join("?" for _ in card_ids)
     ops_by_card = {}
     for op in rows(
         con.execute(
-            f"""
+            """
             SELECT *
-            FROM planning_card_operation
-            WHERE card_id IN ({placeholders})
+            FROM planner_planning_card_operation
+            WHERE card_id = ANY(%s)
             ORDER BY card_id, op_sequence, card_op_id
             """,
-            card_ids,
+            (card_ids,),
         )
     ):
         ops_by_card.setdefault(int(op["card_id"]), []).append(op)
@@ -515,9 +585,10 @@ def planning_cards_by_ps(con):
         target_qty = float(card["target_qty"] or 0)
         setup_minutes = max((float(op["setup_minutes"] or 0) for op in op_rows), default=0.0)
         cycle_minutes_per_qty = sum(float(op["cycle_minutes_per_qty"] or 0) for op in op_rows)
+        ps_id = card["ps_id"] or ""
         item = {
             "card_id": card_id,
-            "ps_id": card["ps_id"] or "",
+            "ps_id": ps_id,
             "operation_label": label,
             "operation_name": operation_name,
             "target_qty": target_qty,
@@ -544,7 +615,7 @@ def planning_cards_by_ps(con):
                 for op in op_rows
             ],
         }
-        grouped.setdefault(card["ps_id"] or "", []).append(item)
+        grouped.setdefault(ps_id, []).append(item)
     return grouped
 
 
@@ -553,9 +624,9 @@ def planning_card_covered_op_keys(con):
     for row in rows(
         con.execute(
             """
-            SELECT pc.ps_id, pco.source_op_seq_id AS source_op_seq_id, pco.source_op_no
-            FROM planning_card pc
-            JOIN planning_card_operation pco ON pco.card_id = pc.card_id
+            SELECT pc.planner_ps_id AS ps_id, pco.source_op_seq_id AS source_op_seq_id, pco.source_op_no
+            FROM planner_planning_card pc
+            JOIN planner_planning_card_operation pco ON pco.card_id = pc.card_id
             """
         )
     ):
@@ -587,12 +658,7 @@ def create_planning_card(con, ps_id, ops, target_qty=None):
         raise ValueError("Choose at least two operations.")
     ps = one(
         con.execute(
-            """
-            SELECT ps.*, p.part_no AS part_name
-            FROM process_sheet ps
-            LEFT JOIN parts p ON p.part_id = ps.part_id
-            WHERE ps.ps_id = ?
-            """,
+            "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
             (ps_id,),
         )
     )
@@ -626,11 +692,7 @@ def create_planning_card(con, ps_id, ops, target_qty=None):
         if source_op_seq_id:
             step = one(
                 con.execute(
-                    """
-                    SELECT *
-                    FROM operation_seq
-                    WHERE op_seq_id = ? AND bom_id = ?
-                    """,
+                    "SELECT * FROM planner_operation_seq WHERE op_seq_id = %s AND bom_id = %s",
                     (source_op_seq_id, selected_bom_id),
                 )
             )
@@ -638,11 +700,9 @@ def create_planning_card(con, ps_id, ops, target_qty=None):
             step = one(
                 con.execute(
                     """
-                    SELECT *
-                    FROM operation_seq
-                    WHERE bom_id = ? AND op_no = ?
-                    ORDER BY seq_no, op_seq_id
-                    LIMIT 1
+                    SELECT * FROM planner_operation_seq
+                    WHERE bom_id = %s AND op_no = %s
+                    ORDER BY seq_no, op_seq_id LIMIT 1
                     """,
                     (selected_bom_id, source_op_no),
                 )
@@ -661,19 +721,21 @@ def create_planning_card(con, ps_id, ops, target_qty=None):
     card_type = "COMBINED"
     card_cur = con.execute(
         """
-        INSERT INTO planning_card (
-          ps_id, operation_label, target_qty, planning_status, card_type, created_at, updated_at
-        ) VALUES (?, ?, ?, 'UNSCHEDULED', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO planner_planning_card (
+          planner_ps_id, operation_label, target_qty, planning_status, card_type, created_at, updated_at
+        ) VALUES (%s, %s, %s, 'UNSCHEDULED', %s, NOW(), NOW())
+        RETURNING card_id
         """,
         (ps_id, operation_label, actual_target_qty, card_type),
     )
-    card_id = int(card_cur.lastrowid)
+    card_id = int(one(card_cur)["card_id"])
     for idx, step, source_op_no in resolved_ops:
         con.execute(
             """
-            INSERT INTO planning_card_operation (
-              card_id, source_ps_id, source_op_seq_id, source_op_no, op_sequence, setup_minutes, cycle_minutes_per_qty, target_qty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO planner_planning_card_operation (
+              card_id, source_ps_id, source_op_seq_id, source_op_no, op_sequence,
+              setup_minutes, cycle_minutes_per_qty, target_qty
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 card_id,
@@ -700,7 +762,7 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
         raise ValueError("Machine is required")
     machine = one(
         con.execute(
-            "SELECT * FROM machines WHERE machine_id = ? AND active = 1",
+            "SELECT * FROM planner_machines WHERE machine_id = %s AND active = TRUE",
             (machine_id,),
         )
     )
@@ -709,9 +771,8 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
     ops = rows(
         con.execute(
             """
-            SELECT *
-            FROM planning_card_operation
-            WHERE card_id = ?
+            SELECT * FROM planner_planning_card_operation
+            WHERE card_id = %s
             ORDER BY op_sequence, card_op_id
             """,
             (int(card_id),),
@@ -722,19 +783,24 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
 
     group_label = compact_text(card["operation_label"])
     if not group_label:
-        group_label = " & ".join(compact_text(op["source_op_no"] or f"Op {op['op_sequence']}") for op in ops if compact_text(op["source_op_no"]))
+        group_label = " & ".join(
+            compact_text(op["source_op_no"] or f"Op {op['op_sequence']}")
+            for op in ops
+            if compact_text(op["source_op_no"])
+        )
     if not group_label:
         group_label = "Planned card"
 
     group_cur = con.execute(
-        "INSERT INTO run_block_group (group_label, group_type) VALUES (?, 'PLANNED_CARD')",
+        "INSERT INTO planner_run_block_group (group_label, group_type) VALUES (%s, 'PLANNED_CARD') RETURNING group_id",
         (group_label,),
     )
-    group_id = int(group_cur.lastrowid)
+    group_id = int(one(group_cur)["group_id"])
+
     max_position = float(
         one(
             con.execute(
-                "SELECT COALESCE(MAX(queue_position), 0) AS mx FROM run_block WHERE machine_id = ?",
+                "SELECT COALESCE(MAX(queue_position), 0) AS mx FROM planner_run_block WHERE machine_id = %s",
                 (machine_id,),
             )
         )["mx"]
@@ -742,19 +808,21 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
     )
     if queue_position <= 0:
         queue_position = max_position + 1
+
     created_block_ids = []
     for idx, op in enumerate(ops, 1):
-        ps_id = compact_text(op["source_ps_id"])
-        ps = one(con.execute("SELECT * FROM process_sheet WHERE ps_id = ?", (ps_id,)))
+        op_ps_id = compact_text(op["source_ps_id"])
+        ps = one(
+            con.execute(
+                "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
+                (op_ps_id,),
+            )
+        )
         if not ps:
-            raise ValueError(f"Process sheet not found: {ps_id}")
+            raise ValueError(f"Process sheet not found: {op_ps_id}")
         step = one(
             con.execute(
-                """
-                SELECT *
-                FROM operation_seq
-                WHERE op_seq_id = ? AND bom_id = ?
-                """,
+                "SELECT * FROM planner_operation_seq WHERE op_seq_id = %s AND bom_id = %s",
                 (int(op["source_op_seq_id"] or 0), int(ps["selected_bom_id"] or 0)),
             )
         )
@@ -762,11 +830,9 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
             step = one(
                 con.execute(
                     """
-                    SELECT *
-                    FROM operation_seq
-                    WHERE bom_id = ? AND op_no = ?
-                    ORDER BY seq_no, op_seq_id
-                    LIMIT 1
+                    SELECT * FROM planner_operation_seq
+                    WHERE bom_id = %s AND op_no = %s
+                    ORDER BY seq_no, op_seq_id LIMIT 1
                     """,
                     (int(ps["selected_bom_id"] or 0), compact_text(op["source_op_no"])),
                 )
@@ -777,53 +843,53 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
         op_name = f"{step['op_no'] or ''} {step['op_type'] or ''}".strip()
         op_cur = con.execute(
             """
-            INSERT INTO operation (
-              job_no, operation_name, total_qty, setup_minutes, cycle_minutes_per_qty, compatible_machine_group,
-              source_ps_id, source_op_seq_id, source_op_no, status, remarks, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', '', CURRENT_TIMESTAMP)
+            INSERT INTO planner_operation (
+              job_no, operation_name, total_qty, setup_minutes, cycle_minutes_per_qty,
+              compatible_machine_group, source_ps_id, source_op_seq_id, source_op_no,
+              status, remarks, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'ACTIVE', '', NOW())
+            RETURNING operation_id
             """,
             (
-                ps_id,
+                op_ps_id,
                 op_name,
                 float(card["target_qty"] or 0),
                 parse_number(step["setup_time"], 0),
                 parse_number(step["cycle_time"], 0),
                 compact_text(step["machine_category"]) or compact_text(machine["machine_category"]) or "UNKNOWN",
-                ps_id,
+                op_ps_id,
                 int(step["op_seq_id"] or 0),
                 compact_text(step["op_no"]),
             ),
         )
-        operation_id = int(op_cur.lastrowid)
+        operation_id = int(one(op_cur)["operation_id"])
+
         block_cur = con.execute(
             """
-            INSERT INTO run_block (
+            INSERT INTO planner_run_block (
               operation_id, machine_id, queue_position, scheduled_qty, include_setup,
-              status, planning_status, execution_status, anchor_datetime,
-              calculated_start_datetime, calculated_end_datetime,
+              status, planning_status, execution_status,
+              anchor_datetime, calculated_start_datetime, calculated_end_datetime,
               actual_good_qty, actual_reject_qty, remarks, group_id, updated_at
-            ) VALUES (?, ?, ?, ?, ?, 'NOT_STARTED', 'PLANNED', 'NOT_STARTED', '',
-                      '', '', 0, 0, '', ?, CURRENT_TIMESTAMP)
+            ) VALUES (%s, %s, %s, %s, TRUE, 'NOT_STARTED', 'PLANNED', 'NOT_STARTED',
+                      NULL, NULL, NULL, 0, 0, '', %s, NOW())
+            RETURNING block_id
             """,
             (
                 operation_id,
                 machine_id,
                 float(queue_position) + idx - 1,
                 float(card["target_qty"] or 0),
-                1,
                 group_id,
             ),
         )
-        created_block_ids.append(int(block_cur.lastrowid))
+        created_block_ids.append(int(one(block_cur)["block_id"]))
 
     con.execute(
         """
-        UPDATE planning_card
-        SET planning_status = 'SCHEDULED',
-            machine_id = ?,
-            scheduled_block_group_id = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE card_id = ?
+        UPDATE planner_planning_card
+        SET planning_status = 'SCHEDULED', machine_id = %s, scheduled_block_group_id = %s, updated_at = NOW()
+        WHERE card_id = %s
         """,
         (machine_id, group_id, int(card_id)),
     )

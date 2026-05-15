@@ -111,3 +111,32 @@ def trial_process_sheet_completed(row):
         compact_text(row.get("status")).upper() == "COMPLETED"
         or compact_text(row.get("planner_status")).upper() == "COMPLETED"
     )
+
+
+def date_text(d):
+    """Return ISO date string from a date or datetime object."""
+    if isinstance(d, datetime):
+        return d.date().isoformat()
+    if isinstance(d, date):
+        return d.isoformat()
+    return str(d)
+
+
+def trial_catalog_op_key(source_ps_id, source_op_no="", source_op_seq_id=0):
+    """Unique key for a catalog operation entry — used to correlate planned qty."""
+    ps_key = compact_text(source_ps_id)
+    op_key = compact_text(source_op_no)
+    if op_key:
+        return (ps_key, op_key)
+    op_seq_id = int(source_op_seq_id or 0)
+    if op_seq_id > 0:
+        return (ps_key, f"step:{op_seq_id}")
+    return (ps_key, "")
+
+
+def validate_cycle_minutes(total_qty, scheduled_qty, cycle_minutes):
+    qty = max(parse_number(total_qty, 0), parse_number(scheduled_qty, 0))
+    cycle = parse_number(cycle_minutes, 0)
+    if qty > 0 and cycle <= 0:
+        return "Cycle Minutes / Qty must be greater than 0 when quantity is greater than 0"
+    return ""

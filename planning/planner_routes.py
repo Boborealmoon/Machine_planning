@@ -1,11 +1,32 @@
+"""planning/planner_routes.py — Planner schedule API (PostgreSQL port of Vanessa's routes/planner.py).
+
+Key changes vs SQLite original:
+  db()                      → planner_db()
+  planning_card.ps_id       → planner_planning_card.planner_ps_id  (aliased ps_id in queries)
+  run_block                 → planner_run_block
+  operation                 → planner_operation
+  machines m.machine_code   → planner_machines m.machine_no AS machine_code
+  run_block_segment         → planner_run_block_segment
+  run_block_group           → planner_run_block_group
+  production_actual         → planner_production_actual
+  machine_calendar_window   → planner_machine_calendar_window
+  machine_capacity_day      → planner_machine_capacity_day
+  capacity_profile          → planner_capacity_profile
+  cur.lastrowid             → RETURNING + one(cur)["pk"]
+  CURRENT_TIMESTAMP         → NOW()
+  active = 1 / 0            → TRUE / FALSE
+  ? IN (?,?)                → = ANY(%s) with list param
+  '', '' for TIMESTAMPTZ    → NULL
+  include_setup 1/0         → Python bool
+"""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
 from flask import Blueprint, jsonify, request
 
-from ..actuals import refresh_block_actual_status
-from ..blocks import (
+from .actuals import refresh_block_actual_status
+from .blocks import (
     apply_output_delta_to_block_tail,
     create_rework_from_reject,
     delete_rework_from_reject_segment,
@@ -17,7 +38,7 @@ from ..blocks import (
     trial_block_payload,
     trial_block_row,
 )
-from ..catalog import (
+from .catalog import (
     combined_group_summary,
     create_planning_card,
     planning_card_row,
@@ -25,11 +46,11 @@ from ..catalog import (
     schedule_planning_card,
     trial_catalog_items,
 )
-from ..db import db, one, rows, parse_dt_text
-from ..materials import material_status_map_for_ps_ids, sync_material_requirements_for_ps_ids
-from ..machines import default_profile_for_weekday, fetch_machines, is_public_holiday
-from ..visual_time import visual_timing_for_segment
-from ..utils import (
+from .helpers import planner_db, one, rows, parse_dt_text
+from .materials import material_status_map_for_ps_ids, sync_material_requirements_for_ps_ids
+from .machines import default_profile_for_weekday, fetch_machines, is_public_holiday
+from .visual_time import visual_timing_for_segment
+from .utils import (
     compact_text,
     format_qty,
     normalize_block_status_inputs,
@@ -56,9 +77,9 @@ def _visual_minutes_of_day(value):
 def _void_actual(con, actual_id):
     con.execute(
         """
-        UPDATE production_actual
-        SET status = 'VOIDED', updated_at = CURRENT_TIMESTAMP
-        WHERE actual_id = ?
+        UPDATE planner_production_actual
+        SET status = 'VOIDED', updated_at = NOW()
+        WHERE actual_id = %s
         """,
         (int(actual_id),),
     )
@@ -67,11 +88,12 @@ def _void_actual(con, actual_id):
 def _insert_actual(con, *, segment_id, block_id, report_date, output_qty, reject_qty, remarks, target_qty, machine_id, entry_type, correction_of_actual_id=None, created_by=""):
     cur = con.execute(
         """
-        INSERT INTO production_actual (
+        INSERT INTO planner_production_actual (
           segment_id, block_id, machine_id, report_date, remarks, reported_at,
           output_qty, reject_qty, target_qty_at_report, status, entry_type,
           correction_of_actual_id, good_qty_at_report, created_by
-        ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?)
+        ) VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s, %s, 'ACTIVE', %s, %s, %s, %s)
+        RETURNING actual_id
         """,
         (
             segment_id,
@@ -88,7 +110,7 @@ def _insert_actual(con, *, segment_id, block_id, report_date, output_qty, reject
             created_by,
         ),
     )
-    return int(cur.lastrowid)
+    return int(one(cur)["actual_id"])
 
 
 def _active_actual_for_segment(con, segment_id):
@@ -96,8 +118,8 @@ def _active_actual_for_segment(con, segment_id):
         con.execute(
             """
             SELECT *
-            FROM production_actual
-            WHERE segment_id = ?
+            FROM planner_production_actual
+            WHERE segment_id = %s
               AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
             ORDER BY actual_id DESC
             LIMIT 1
@@ -112,9 +134,9 @@ def _active_actual_for_block_date(con, block_id, report_date):
         con.execute(
             """
             SELECT *
-            FROM production_actual
-            WHERE block_id = ?
-              AND report_date = ?
+            FROM planner_production_actual
+            WHERE block_id = %s
+              AND report_date = %s
               AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
             ORDER BY CASE WHEN segment_id IS NULL THEN 1 ELSE 0 END, actual_id DESC
             LIMIT 1
@@ -128,27 +150,27 @@ def _calendar_window_rows(con, start_iso=None, end_iso=None, machine_id=None, ac
     clauses = []
     params = []
     if machine_id:
-        clauses.append("w.machine_id = ?")
+        clauses.append("w.machine_id = %s")
         params.append(int(machine_id))
     if start_iso:
-        clauses.append("w.end_at > ?")
+        clauses.append("w.end_at > %s")
         params.append(start_iso)
     if end_iso:
-        clauses.append("w.start_at < ?")
+        clauses.append("w.start_at < %s")
         params.append(end_iso)
     if active is not None:
-        clauses.append("w.active = ?")
-        params.append(1 if int(active) else 0)
+        clauses.append("w.active = %s")
+        params.append(bool(int(active)))
     if window_type:
-        clauses.append("w.window_type = ?")
+        clauses.append("w.window_type = %s")
         params.append(compact_text(window_type).upper())
     where_clause = " AND ".join(clauses) if clauses else "1 = 1"
     return rows(
         con.execute(
             f"""
-            SELECT w.*, m.machine_code
-            FROM machine_calendar_window w
-            LEFT JOIN machines m ON m.machine_id = w.machine_id
+            SELECT w.*, m.machine_no AS machine_code
+            FROM planner_machine_calendar_window w
+            LEFT JOIN planner_machines m ON m.machine_id = w.machine_id
             WHERE {where_clause}
             ORDER BY w.start_at, w.window_id
             """,
@@ -168,7 +190,7 @@ def _calendar_window_payload(row):
         "window_type": window_type,
         "capacity_minutes": int(row.get("capacity_minutes") or 0),
         "note": compact_text(row.get("note") or ""),
-        "active": int(row.get("active") or 0),
+        "active": int(bool(row.get("active"))),
         "display_kind": "available" if window_type in {"OVERTIME", "AVAILABLE"} else "blocked",
     }
 
@@ -178,12 +200,13 @@ def api_trial_schedule():
     include_completed = int(request.args.get("include_completed") or 0)
     start_iso = compact_text(request.args.get("start") or request.args.get("from")) or date.today().isoformat()
     end_iso = compact_text(request.args.get("end") or request.args.get("to")) or (date.today() + timedelta(days=7)).isoformat()
-    with db() as con:
+    with planner_db() as con:
+        # Clean up stale combined planning cards that lost their run_block group
         stale_cards = rows(
             con.execute(
                 """
-                SELECT card_id, ps_id, scheduled_block_group_id
-                FROM planning_card
+                SELECT card_id, planner_ps_id AS ps_id, scheduled_block_group_id
+                FROM planner_planning_card
                 WHERE card_type = 'COMBINED'
                   AND planning_status = 'SCHEDULED'
                   AND COALESCE(scheduled_block_group_id, 0) > 0
@@ -194,15 +217,11 @@ def api_trial_schedule():
             group_id = int(card["scheduled_block_group_id"] or 0)
             live_group = one(
                 con.execute(
-                    """
-                    SELECT COUNT(*) AS cnt
-                    FROM run_block
-                    WHERE group_id = ?
-                    """,
+                    "SELECT COUNT(*) AS cnt FROM planner_run_block WHERE group_id = %s",
                     (group_id,),
                 )
             )
-            if int((live_group or {})["cnt"] if live_group else 0) > 0:
+            if int((live_group or {}).get("cnt") or 0) > 0:
                 continue
             ps_id = compact_text(card["ps_id"])
             base_ps_id = ps_id.split("::", 1)[0] if ps_id else ""
@@ -213,49 +232,51 @@ def api_trial_schedule():
                 if delete_ps_id:
                     con.execute(
                         """
-                        DELETE FROM planning_card
+                        DELETE FROM planner_planning_card
                         WHERE card_type = 'COMBINED'
-                          AND ps_id = ?
+                          AND planner_ps_id = %s
                         """,
                         (delete_ps_id,),
                     )
             con.execute(
-                """
-                DELETE FROM planning_card
-                WHERE card_type = 'COMBINED'
-                  AND scheduled_block_group_id = ?
-                """,
+                "DELETE FROM planner_planning_card WHERE card_type = 'COMBINED' AND scheduled_block_group_id = %s",
                 (group_id,),
             )
-        machines = rows(con.execute("SELECT machine_id, machine_code, machine_category, shift_profile, active FROM machines WHERE active = 1 ORDER BY machine_id"))
+
+        machines = rows(con.execute(
+            "SELECT machine_id, machine_no AS machine_code, machine_category, shift_profile, active FROM planner_machines WHERE active = TRUE ORDER BY machine_id"
+        ))
         machine_by_id = {int(row["machine_id"]): dict(row) for row in machines}
+
         raw_blocks = rows(
             con.execute(
                 """
                 SELECT b.*, o.job_no, o.operation_name, o.total_qty, o.setup_minutes, o.cycle_minutes_per_qty,
                        o.compatible_machine_group, o.source_ps_id, o.source_op_seq_id AS source_op_seq_id, o.source_op_no,
-                       m.machine_code, m.machine_category, m.shift_profile,
+                       m.machine_no AS machine_code, m.machine_category, m.shift_profile,
                        g.group_label AS group_label, g.group_type AS group_type
-                FROM run_block b
-                JOIN operation o ON o.operation_id = b.operation_id
-                JOIN machines m ON m.machine_id = b.machine_id
-                LEFT JOIN run_block_group g ON g.group_id = b.group_id
-                WHERE COALESCE(b.active, 1) = 1
+                FROM planner_run_block b
+                JOIN planner_operation o ON o.operation_id = b.operation_id
+                JOIN planner_machines m ON m.machine_id = b.machine_id
+                LEFT JOIN planner_run_block_group g ON g.group_id = b.group_id
+                WHERE COALESCE(b.active, TRUE) = TRUE
                 ORDER BY b.machine_id, b.queue_position, b.block_id
                 """
             )
         )
+
         raw_segments = rows(
             con.execute(
                 """
                 SELECT s.*, b.operation_id
-                FROM run_block_segment s
-                JOIN run_block b ON b.block_id = s.block_id
-                WHERE COALESCE(b.active, 1) = 1
+                FROM planner_run_block_segment s
+                JOIN planner_run_block b ON b.block_id = s.block_id
+                WHERE COALESCE(b.active, TRUE) = TRUE
                 ORDER BY b.machine_id, b.queue_position, s.segment_id
                 """
             )
         )
+
         segments = []
         segments_by_block = {}
         for row in raw_segments:
@@ -274,25 +295,31 @@ def api_trial_schedule():
                 segment_type=item.get("segment_type") or "production",
             )
             item["shift_profile"] = shift_profile
+            item["segment_date"] = compact_text(item.get("segment_date"))
+            item["start_datetime"] = compact_text(item.get("start_datetime"))
+            item["end_datetime"] = compact_text(item.get("end_datetime"))
             item["visual_start_datetime"] = timing["visual_start_datetime"]
             item["visual_end_datetime"] = timing["visual_end_datetime"]
             item["visual_parts"] = timing["visual_parts"]
             item["break_windows"] = timing["break_windows"]
             segments.append(item)
             segments_by_block.setdefault(int(item.get("block_id") or 0), []).append(item)
+
         blocks = []
         for row in raw_blocks:
             item = dict(row)
+            # Stringify all datetime fields for JSON serialisation
+            item["anchor_datetime"] = compact_text(item.get("anchor_datetime"))
+            item["calculated_start_datetime"] = compact_text(item.get("calculated_start_datetime"))
+            item["calculated_end_datetime"] = compact_text(item.get("calculated_end_datetime"))
+            item["updated_at"] = compact_text(item.get("updated_at"))
+
             block_segments = segments_by_block.get(int(item.get("block_id") or 0), [])
             if block_segments:
-                block_start_dt = parse_dt_text(item.get("start_datetime") or item.get("calculated_start_datetime"))
-                block_end_dt = parse_dt_text(item.get("end_datetime") or item.get("calculated_end_datetime"))
-                visual_starts = sorted(
-                    [compact_text(seg.get("visual_start_datetime")) for seg in block_segments if compact_text(seg.get("visual_start_datetime"))]
-                )
-                visual_ends = sorted(
-                    [compact_text(seg.get("visual_end_datetime")) for seg in block_segments if compact_text(seg.get("visual_end_datetime"))]
-                )
+                block_start_dt = parse_dt_text(item.get("anchor_datetime") or item.get("calculated_start_datetime"))
+                block_end_dt = parse_dt_text(item.get("calculated_end_datetime"))
+                visual_starts = sorted([compact_text(seg.get("visual_start_datetime")) for seg in block_segments if compact_text(seg.get("visual_start_datetime"))])
+                visual_ends = sorted([compact_text(seg.get("visual_end_datetime")) for seg in block_segments if compact_text(seg.get("visual_end_datetime"))])
                 timing = visual_timing_for_segment(
                     block_start_dt,
                     item.get("minutes_used") or 0,
@@ -302,8 +329,8 @@ def api_trial_schedule():
                     shift_profile=compact_text(item.get("shift_profile") or machine_by_id.get(int(item.get("machine_id") or 0), {}).get("shift_profile", "")),
                     segment_type=item.get("segment_type") or "production",
                 ) if block_start_dt else {"visual_start_datetime": "", "visual_end_datetime": ""}
-                item["visual_start_datetime"] = timing.get("visual_start_datetime") or (visual_starts[0] if visual_starts else compact_text(item.get("calculated_start_datetime")))
-                item["visual_end_datetime"] = timing.get("visual_end_datetime") or (visual_ends[-1] if visual_ends else compact_text(item.get("calculated_end_datetime")))
+                item["visual_start_datetime"] = timing.get("visual_start_datetime") or (visual_starts[0] if visual_starts else item.get("calculated_start_datetime", ""))
+                item["visual_end_datetime"] = timing.get("visual_end_datetime") or (visual_ends[-1] if visual_ends else item.get("calculated_end_datetime", ""))
                 visual_parts = []
                 for seg in block_segments:
                     visual_parts.extend(seg.get("visual_parts") or [])
@@ -311,38 +338,49 @@ def api_trial_schedule():
                 item["break_windows"] = block_segments[0].get("break_windows") or []
                 item["shift_profile"] = block_segments[0].get("shift_profile") or machine_by_id.get(int(item.get("machine_id") or 0), {}).get("shift_profile", "")
             else:
-                item["visual_start_datetime"] = compact_text(item.get("calculated_start_datetime"))
-                item["visual_end_datetime"] = compact_text(item.get("calculated_end_datetime"))
+                item["visual_start_datetime"] = item.get("calculated_start_datetime", "")
+                item["visual_end_datetime"] = item.get("calculated_end_datetime", "")
                 item["visual_parts"] = []
                 item["break_windows"] = []
                 item["shift_profile"] = machine_by_id.get(int(item.get("machine_id") or 0), {}).get("shift_profile", "")
             blocks.append(item)
+
         actuals = rows(
             con.execute(
                 """
                 SELECT actual_id, segment_id, block_id, report_date,
                        output_qty, reject_qty, target_qty_at_report,
                        remarks, reported_at
-                FROM production_actual
+                FROM planner_production_actual
                 WHERE COALESCE(status, 'ACTIVE') = 'ACTIVE'
                 ORDER BY report_date, actual_id
                 """
             )
         )
+        for actual in actuals:
+            actual["report_date"] = compact_text(actual.get("report_date"))
+            actual["reported_at"] = compact_text(actual.get("reported_at"))
+
         capacities = rows(
             con.execute(
                 """
-                SELECT d.day_id, d.machine_id, d.work_date, d.profile_id, d.capacity_minutes, d.start_minute, d.note, p.profile_name
-                FROM machine_capacity_day d
-                JOIN capacity_profile p ON p.profile_id = d.profile_id
+                SELECT d.day_id, d.machine_id, d.work_date, d.profile_id,
+                       d.capacity_minutes, d.start_minute, d.note, p.profile_name
+                FROM planner_machine_capacity_day d
+                JOIN planner_capacity_profile p ON p.profile_id = d.profile_id
                 ORDER BY d.work_date, d.machine_id
                 """
             )
         )
-        profiles = rows(con.execute("SELECT profile_name, capacity_minutes, start_minute, note FROM capacity_profile ORDER BY profile_id"))
+        for cap in capacities:
+            cap["work_date"] = compact_text(cap.get("work_date"))
+
+        profiles = rows(con.execute(
+            "SELECT profile_name, capacity_minutes, start_minute, note FROM planner_capacity_profile ORDER BY profile_id"
+        ))
         catalog = trial_catalog_items(con, include_completed=bool(include_completed))
         planning_cards = [card for cards in planning_cards_by_ps(con).values() for card in cards]
-        group_ids = sorted({int(row["group_id"]) for row in blocks if int(row["group_id"] or 0) > 0})
+        group_ids = sorted({int(row["group_id"]) for row in blocks if int(row.get("group_id") or 0) > 0})
         block_groups = [combined_group_summary(con, group_id) for group_id in group_ids]
         block_groups = [group for group in block_groups if group]
         calendar_windows = [_calendar_window_payload(row) for row in _calendar_window_rows(con, start_iso, end_iso)]
@@ -350,11 +388,11 @@ def api_trial_schedule():
         ps_ids = set()
         planned_starts = {}
         for row in blocks:
-            ps_id = compact_text(row["source_ps_id"])
+            ps_id = compact_text(row.get("source_ps_id"))
             if not ps_id:
                 continue
             ps_ids.add(ps_id)
-            start_text = compact_text(row["calculated_start_datetime"])
+            start_text = compact_text(row.get("calculated_start_datetime"))
             if start_text and (ps_id not in planned_starts or start_text < planned_starts[ps_id]):
                 planned_starts[ps_id] = start_text
         for group in block_groups:
@@ -368,14 +406,9 @@ def api_trial_schedule():
 
         sync_material_requirements_for_ps_ids(con, ps_ids)
         material_status_map = material_status_map_for_ps_ids(con, ps_ids, planned_starts)
-        default_material_status = {
-            "status": "NOT_REQUIRED",
-            "label": "",
-            "expected_ready_date": "",
-            "severity": "none",
-        }
+        default_material_status = {"status": "NOT_REQUIRED", "label": "", "expected_ready_date": "", "severity": "none"}
         for row in blocks:
-            ps_id = compact_text(row["source_ps_id"])
+            ps_id = compact_text(row.get("source_ps_id"))
             row["material_status"] = material_status_map.get(ps_id, default_material_status)
         for group in block_groups:
             ps_id = compact_text(group.get("ps_id") or "")
@@ -386,9 +419,9 @@ def api_trial_schedule():
                 "machines": [dict(row) for row in machines],
                 "blocks": blocks,
                 "segments": segments,
-                "actuals": [dict(row) for row in actuals],
-                "capacities": [dict(row) for row in capacities],
-                "profiles": [dict(row) for row in profiles],
+                "actuals": actuals,
+                "capacities": capacities,
+                "profiles": profiles,
                 "block_groups": block_groups,
                 "catalog": catalog["available"],
                 "planned": catalog["planned"],
@@ -409,30 +442,30 @@ def api_trial_capacity():
         work_day = datetime.fromisoformat(work_date).date()
     except ValueError:
         return jsonify({"error": "Work date must be YYYY-MM-DD"}), 400
-    with db() as con:
+    with planner_db() as con:
         machines = fetch_machines(con)
         for machine in machines:
             if work_day.weekday() == 6 or is_public_holiday(con, work_day):
                 machine_profile_name = "OFF"
             else:
                 machine_profile_name = profile_name or default_profile_for_weekday(work_day.weekday(), machine["shift_profile"])
-                if compact_text(machine["shift_profile"]).upper() == "24HR" and machine_profile_name in {"NORMAL_DAY_NIGHT", "SATURDAY"}:
+                if compact_text(machine.get("shift_profile", "")).upper() == "24HR" and machine_profile_name in {"NORMAL_DAY_NIGHT", "SATURDAY"}:
                     machine_profile_name = "FULL_24H"
-            profile = one(con.execute("SELECT * FROM capacity_profile WHERE profile_name = ?", (machine_profile_name,)))
+            profile = one(con.execute("SELECT * FROM planner_capacity_profile WHERE profile_name = %s", (machine_profile_name,)))
             if not profile:
-                profile = one(con.execute("SELECT * FROM capacity_profile ORDER BY profile_id LIMIT 1"))
+                profile = one(con.execute("SELECT * FROM planner_capacity_profile ORDER BY profile_id LIMIT 1"))
             if not profile:
                 return jsonify({"error": "No capacity profiles available"}), 400
             con.execute(
                 """
-                INSERT INTO machine_capacity_day (machine_id, work_date, profile_id, capacity_minutes, start_minute, note, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(machine_id, work_date) DO UPDATE SET
-                  profile_id = excluded.profile_id,
-                  capacity_minutes = excluded.capacity_minutes,
-                  start_minute = excluded.start_minute,
-                  note = excluded.note,
-                  updated_at = CURRENT_TIMESTAMP
+                INSERT INTO planner_machine_capacity_day (machine_id, work_date, profile_id, capacity_minutes, start_minute, note, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (machine_id, work_date) DO UPDATE SET
+                  profile_id = EXCLUDED.profile_id,
+                  capacity_minutes = EXCLUDED.capacity_minutes,
+                  start_minute = EXCLUDED.start_minute,
+                  note = EXCLUDED.note,
+                  updated_at = NOW()
                 """,
                 (
                     int(machine["machine_id"]),
@@ -457,8 +490,10 @@ def api_trial_machine_calendar_windows_list():
     active = None
     if active_arg is not None and compact_text(active_arg) != "":
         active = 1 if compact_text(active_arg).lower() in {"1", "true", "yes", "on"} else 0
-    with db() as con:
-        windows = [_calendar_window_payload(row) for row in _calendar_window_rows(con, from_iso or None, to_iso or None, machine_id or None, active, window_type or None)]
+    with planner_db() as con:
+        windows = [_calendar_window_payload(row) for row in _calendar_window_rows(
+            con, from_iso or None, to_iso or None, machine_id or None, active, window_type or None
+        )]
         return jsonify({"ok": True, "calendar_windows": windows})
 
 
@@ -471,7 +506,7 @@ def api_trial_machine_calendar_windows_create():
     window_type = compact_text(data.get("window_type")).upper()
     note = compact_text(data.get("note"))
     capacity_minutes = int(parse_number(data.get("capacity_minutes"), 0))
-    active = 1 if data.get("active", 1) else 0
+    active = bool(data.get("active", True))
     allowed_types = {"AVAILABLE", "DOWN", "OVERTIME", "HOLIDAY", "MAINTENANCE", "BLOCKED"}
     if not machine_id:
         return jsonify({"error": "Machine is required"}), 400
@@ -486,15 +521,16 @@ def api_trial_machine_calendar_windows_create():
         return jsonify({"error": "start_at and end_at must be ISO datetimes"}), 400
     if end_dt <= start_dt:
         return jsonify({"error": "start_at must be earlier than end_at"}), 400
-    with db() as con:
-        machine = one(con.execute("SELECT machine_id FROM machines WHERE machine_id = ?", (machine_id,)))
+    with planner_db() as con:
+        machine = one(con.execute("SELECT machine_id FROM planner_machines WHERE machine_id = %s", (machine_id,)))
         if not machine:
             return jsonify({"error": "Machine not found"}), 404
         cur = con.execute(
             """
-            INSERT INTO machine_calendar_window (
+            INSERT INTO planner_machine_calendar_window (
               machine_id, start_at, end_at, window_type, capacity_minutes, note, active, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            RETURNING window_id
             """,
             (
                 machine_id,
@@ -506,16 +542,17 @@ def api_trial_machine_calendar_windows_create():
                 active,
             ),
         )
+        window_id = int(one(cur)["window_id"])
         recalculate_machine(con, machine_id)
         row = one(
             con.execute(
                 """
-                SELECT w.*, m.machine_code
-                FROM machine_calendar_window w
-                LEFT JOIN machines m ON m.machine_id = w.machine_id
-                WHERE w.window_id = ?
+                SELECT w.*, m.machine_no AS machine_code
+                FROM planner_machine_calendar_window w
+                LEFT JOIN planner_machines m ON m.machine_id = w.machine_id
+                WHERE w.window_id = %s
                 """,
-                (int(cur.lastrowid),),
+                (window_id,),
             )
         )
         return jsonify({"ok": True, "window": _calendar_window_payload(row)})
@@ -524,15 +561,15 @@ def api_trial_machine_calendar_windows_create():
 @trial_bp.patch("/api/trial/machine-calendar-windows/<int:window_id>")
 def api_trial_machine_calendar_windows_update(window_id):
     data = request.get_json(force=True, silent=True) or {}
-    with db() as con:
-        row = one(con.execute("SELECT * FROM machine_calendar_window WHERE window_id = ?", (int(window_id),)))
+    with planner_db() as con:
+        row = one(con.execute("SELECT * FROM planner_machine_calendar_window WHERE window_id = %s", (int(window_id),)))
         if not row:
             return jsonify({"error": "Window not found"}), 404
         allowed_types = {"AVAILABLE", "DOWN", "OVERTIME", "HOLIDAY", "MAINTENANCE", "BLOCKED"}
         updates = {}
         machine_id = int(data.get("machine_id") or row["machine_id"])
         if "machine_id" in data:
-            machine = one(con.execute("SELECT machine_id FROM machines WHERE machine_id = ?", (machine_id,)))
+            machine = one(con.execute("SELECT machine_id FROM planner_machines WHERE machine_id = %s", (machine_id,)))
             if not machine:
                 return jsonify({"error": "Machine not found"}), 404
             updates["machine_id"] = machine_id
@@ -550,11 +587,11 @@ def api_trial_machine_calendar_windows_update(window_id):
         if "note" in data:
             updates["note"] = compact_text(data.get("note"))
         if "active" in data:
-            updates["active"] = 1 if data.get("active") else 0
+            updates["active"] = bool(data.get("active"))
         if "start_at" in updates or "end_at" in updates:
             try:
-                start_dt = datetime.fromisoformat((updates.get("start_at") or row["start_at"]).replace("Z", "+00:00"))
-                end_dt = datetime.fromisoformat((updates.get("end_at") or row["end_at"]).replace("Z", "+00:00"))
+                start_dt = datetime.fromisoformat((updates.get("start_at") or compact_text(row["start_at"])).replace("Z", "+00:00"))
+                end_dt = datetime.fromisoformat((updates.get("end_at") or compact_text(row["end_at"])).replace("Z", "+00:00"))
             except ValueError:
                 return jsonify({"error": "start_at and end_at must be ISO datetimes"}), 400
             if end_dt <= start_dt:
@@ -562,19 +599,19 @@ def api_trial_machine_calendar_windows_update(window_id):
             updates["start_at"] = start_dt.strftime("%Y-%m-%d %H:%M:%S")
             updates["end_at"] = end_dt.strftime("%Y-%m-%d %H:%M:%S")
         if updates:
-            set_clause = ", ".join(f"{key} = ?" for key in updates)
+            set_clause = ", ".join(f"{key} = %s" for key in updates)
             con.execute(
-                f"UPDATE machine_calendar_window SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE window_id = ?",
+                f"UPDATE planner_machine_calendar_window SET {set_clause}, updated_at = NOW() WHERE window_id = %s",
                 (*updates.values(), int(window_id)),
             )
         recalculate_machine(con, machine_id)
         row = one(
             con.execute(
                 """
-                SELECT w.*, m.machine_code
-                FROM machine_calendar_window w
-                LEFT JOIN machines m ON m.machine_id = w.machine_id
-                WHERE w.window_id = ?
+                SELECT w.*, m.machine_no AS machine_code
+                FROM planner_machine_calendar_window w
+                LEFT JOIN planner_machines m ON m.machine_id = w.machine_id
+                WHERE w.window_id = %s
                 """,
                 (int(window_id),),
             )
@@ -584,16 +621,12 @@ def api_trial_machine_calendar_windows_update(window_id):
 
 @trial_bp.delete("/api/trial/machine-calendar-windows/<int:window_id>")
 def api_trial_machine_calendar_windows_delete(window_id):
-    with db() as con:
-        row = one(con.execute("SELECT * FROM machine_calendar_window WHERE window_id = ?", (int(window_id),)))
+    with planner_db() as con:
+        row = one(con.execute("SELECT * FROM planner_machine_calendar_window WHERE window_id = %s", (int(window_id),)))
         if not row:
             return jsonify({"error": "Window not found"}), 404
         con.execute(
-            """
-            UPDATE machine_calendar_window
-            SET active = 0, updated_at = CURRENT_TIMESTAMP
-            WHERE window_id = ?
-            """,
+            "UPDATE planner_machine_calendar_window SET active = FALSE, updated_at = NOW() WHERE window_id = %s",
             (int(window_id),),
         )
         recalculate_machine(con, int(row["machine_id"]))
@@ -617,14 +650,15 @@ def api_trial_create_operation():
     )
     if cycle_error:
         return jsonify({"error": cycle_error}), 400
-    with db() as con:
+    with planner_db() as con:
         planning_status, execution_status = normalize_block_status_inputs(data)
         op_cur = con.execute(
             """
-            INSERT INTO operation (
+            INSERT INTO planner_operation (
               job_no, operation_name, total_qty, setup_minutes, cycle_minutes_per_qty, compatible_machine_group,
               source_ps_id, source_op_seq_id, source_op_no, status, remarks, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            RETURNING operation_id
             """,
             (
                 job_no,
@@ -633,45 +667,49 @@ def api_trial_create_operation():
                 parse_number(data.get("setup_minutes"), 0),
                 parse_number(data.get("cycle_minutes_per_qty"), 0),
                 compact_text(data.get("compatible_machine_group")),
-                compact_text(data.get("source_ps_id")),
+                compact_text(data.get("source_ps_id")) or None,
                 int(data.get("source_op_seq_id") or 0),
                 compact_text(data.get("source_op_no")),
                 compact_text(data.get("status") or "ACTIVE") or "ACTIVE",
                 compact_text(data.get("remarks")),
             ),
         )
-        operation_id = int(op_cur.lastrowid)
+        operation_id = int(one(op_cur)["operation_id"])
         queue_position = float(data.get("queue_position") or 0)
         if queue_position <= 0:
-            queue_position = 1 + float(one(con.execute("SELECT COALESCE(MAX(queue_position), 0) AS mx FROM run_block WHERE machine_id = ?", (machine_id,)))["mx"] or 0)
+            queue_position = 1 + float(one(con.execute(
+                "SELECT COALESCE(MAX(queue_position), 0) AS mx FROM planner_run_block WHERE machine_id = %s",
+                (machine_id,),
+            ))["mx"] or 0)
         block_cur = con.execute(
             """
-            INSERT INTO run_block (
+            INSERT INTO planner_run_block (
               operation_id, machine_id, queue_position, scheduled_qty, include_setup, status, planning_status, execution_status,
               anchor_datetime, calculated_start_datetime, calculated_end_datetime, actual_good_qty, actual_reject_qty, remarks, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', 0, 0, ?, CURRENT_TIMESTAMP)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, NULL, 0, 0, %s, NOW())
+            RETURNING block_id
             """,
             (
                 operation_id,
                 machine_id,
                 queue_position,
                 parse_number(data.get("scheduled_qty"), parse_number(data.get("total_qty"), 0)),
-                1 if data.get("include_setup", 1) else 0,
+                bool(data.get("include_setup", True)),
                 execution_status,
                 planning_status,
                 execution_status,
-                compact_text(data.get("anchor_datetime")),
                 compact_text(data.get("remarks")),
             ),
         )
+        block_id = int(one(block_cur)["block_id"])
         recalculate_machine(con, machine_id)
-        return jsonify({"ok": True, "operation_id": operation_id, "block": trial_block_payload(trial_block_row(con, block_cur.lastrowid), con)})
+        return jsonify({"ok": True, "operation_id": operation_id, "block": trial_block_payload(trial_block_row(con, block_id), con)})
 
 
 @trial_bp.post("/api/trial/catalog/combine")
 def api_trial_combine_catalog_ops():
     data = request.get_json(force=True, silent=True) or {}
-    with db() as con:
+    with planner_db() as con:
         try:
             card = create_planning_card(con, data.get("ps_id"), data.get("ops") or [], data.get("target_qty"))
             return jsonify({"ok": True, "card": card})
@@ -682,7 +720,7 @@ def api_trial_combine_catalog_ops():
 @trial_bp.post("/api/trial/planning-cards")
 def api_trial_create_planning_card():
     data = request.get_json(force=True, silent=True) or {}
-    with db() as con:
+    with planner_db() as con:
         try:
             card = create_planning_card(con, data.get("ps_id"), data.get("ops") or [], data.get("target_qty"))
             return jsonify({"ok": True, "card": card})
@@ -695,7 +733,7 @@ def api_trial_schedule_planning_card(card_id):
     data = request.get_json(force=True, silent=True) or {}
     machine_id = int(data.get("machine_id") or 0)
     queue_position = float(data.get("queue_position") or 0)
-    with db() as con:
+    with planner_db() as con:
         try:
             result = schedule_planning_card(con, card_id, machine_id, queue_position)
             affected_machine_id = int(
@@ -712,20 +750,20 @@ def api_trial_schedule_planning_card(card_id):
 
 @trial_bp.delete("/api/trial/planning-cards/<int:card_id>")
 def api_trial_delete_planning_card(card_id):
-    with db() as con:
+    with planner_db() as con:
         card = planning_card_row(con, card_id)
         if not card:
             return jsonify({"error": "Combined op card not found"}), 404
-        if compact_text(card["planning_status"]).upper() == "SCHEDULED" or int(card["scheduled_block_group_id"] or 0) > 0:
+        if compact_text(card["planning_status"]).upper() == "SCHEDULED" or int(card.get("scheduled_block_group_id") or 0) > 0:
             return jsonify({"error": "This combined op card is already scheduled. Remove it from the machine schedule first."}), 400
-        con.execute("DELETE FROM planning_card WHERE card_id = ?", (int(card_id),))
+        con.execute("DELETE FROM planner_planning_card WHERE card_id = %s", (int(card_id),))
         return jsonify({"ok": True, "card_id": int(card_id)})
 
 
 @trial_bp.put("/api/trial/blocks/<int:block_id>")
 def api_trial_update_block(block_id):
     data = request.get_json(force=True, silent=True) or {}
-    with db() as con:
+    with planner_db() as con:
         block = trial_block_row(con, block_id)
         if not block:
             return jsonify({"error": "Run block not found"}), 404
@@ -743,9 +781,9 @@ def api_trial_update_block(block_id):
             if key in data:
                 op_updates[key] = parse_number(data.get(key), 0)
         if op_updates:
-            set_clause = ", ".join(f"{k} = ?" for k in op_updates)
+            set_clause = ", ".join(f"{k} = %s" for k in op_updates)
             con.execute(
-                f"UPDATE operation SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE operation_id = ?",
+                f"UPDATE planner_operation SET {set_clause}, updated_at = NOW() WHERE operation_id = %s",
                 (*op_updates.values(), int(block["operation_id"])),
             )
         block_updates = {}
@@ -765,9 +803,9 @@ def api_trial_update_block(block_id):
         if "scheduled_qty" in data:
             block_updates["scheduled_qty"] = max(0.0, parse_number(data.get("scheduled_qty"), block["scheduled_qty"]))
         if "include_setup" in data:
-            block_updates["include_setup"] = 1 if data.get("include_setup") else 0
+            block_updates["include_setup"] = bool(data.get("include_setup"))
         if "anchor_datetime" in data:
-            block_updates["anchor_datetime"] = compact_text(data.get("anchor_datetime"))
+            block_updates["anchor_datetime"] = compact_text(data.get("anchor_datetime")) or None
         if "actual_good_qty" in data:
             block_updates["actual_good_qty"] = max(0.0, parse_number(data.get("actual_good_qty"), block["actual_good_qty"]))
         if "actual_reject_qty" in data:
@@ -775,16 +813,16 @@ def api_trial_update_block(block_id):
         if "remarks" in data:
             block_updates["remarks"] = compact_text(data.get("remarks"))
         if block_updates:
-            set_clause = ", ".join(f"{k} = ?" for k in block_updates)
+            set_clause = ", ".join(f"{k} = %s" for k in block_updates)
             con.execute(
-                f"UPDATE run_block SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE block_id = ?",
+                f"UPDATE planner_run_block SET {set_clause}, updated_at = NOW() WHERE block_id = %s",
                 (*block_updates.values(), int(block_id)),
             )
         machine_ids = {int(block["machine_id"])}
         if "machine_id" in block_updates:
             machine_ids.add(int(block_updates["machine_id"]))
-        for machine_id in machine_ids:
-            recalculate_machine(con, machine_id)
+        for mid in machine_ids:
+            recalculate_machine(con, mid)
         return jsonify({"ok": True, "block": trial_block_payload(trial_block_row(con, block_id), con)})
 
 
@@ -794,41 +832,53 @@ def api_trial_split_block(block_id):
     split_qty = parse_number(data.get("split_qty"), 0)
     if split_qty <= 0:
         return jsonify({"error": "Split quantity is required"}), 400
-    with db() as con:
+    with planner_db() as con:
         block = trial_block_row(con, block_id)
         if not block:
             return jsonify({"error": "Run block not found"}), 404
         if split_qty >= float(block["scheduled_qty"] or 0):
             return jsonify({"error": "Split quantity must be smaller than the scheduled quantity"}), 400
         remaining = float(block["scheduled_qty"] or 0) - split_qty
-        max_position = float(one(con.execute("SELECT COALESCE(MAX(queue_position), 0) AS mx FROM run_block WHERE machine_id = ?", (int(block["machine_id"]),)))["mx"] or 0)
-        con.execute("UPDATE run_block SET scheduled_qty = ?, updated_at = CURRENT_TIMESTAMP WHERE block_id = ?", (split_qty, block_id))
+        max_position = float(one(con.execute(
+            "SELECT COALESCE(MAX(queue_position), 0) AS mx FROM planner_run_block WHERE machine_id = %s",
+            (int(block["machine_id"]),),
+        ))["mx"] or 0)
+        con.execute(
+            "UPDATE planner_run_block SET scheduled_qty = %s, updated_at = NOW() WHERE block_id = %s",
+            (split_qty, block_id),
+        )
         planning_status, execution_status = normalize_block_status_inputs(
             {"planning_status": block["planning_status"], "execution_status": block["execution_status"], "status": block["status"]},
             default_planning=compact_text(block["planning_status"]) or "PLANNED",
             default_execution=compact_text(block["execution_status"] or block["status"]) or "NOT_STARTED",
         )
-        cur = con.execute(
+        new_cur = con.execute(
             """
-            INSERT INTO run_block (
+            INSERT INTO planner_run_block (
               operation_id, machine_id, queue_position, scheduled_qty, include_setup, status, planning_status, execution_status,
               anchor_datetime, calculated_start_datetime, calculated_end_datetime, actual_good_qty, actual_reject_qty, remarks, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', 0, 0, ?, CURRENT_TIMESTAMP)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, NULL, 0, 0, %s, NOW())
+            RETURNING block_id
             """,
             (
                 int(block["operation_id"]),
                 int(block["machine_id"]),
                 float(max_position) + 1,
                 remaining,
-                int(block["include_setup"] or 0),
+                bool(block.get("include_setup")),
                 execution_status,
                 planning_status,
                 execution_status,
                 compact_text(block["remarks"]),
             ),
         )
+        new_block_id = int(one(new_cur)["block_id"])
         recalculate_machine(con, int(block["machine_id"]))
-        return jsonify({"ok": True, "block": trial_block_payload(trial_block_row(con, block_id), con), "new_block": trial_block_payload(trial_block_row(con, cur.lastrowid), con)})
+        return jsonify({
+            "ok": True,
+            "block": trial_block_payload(trial_block_row(con, block_id), con),
+            "new_block": trial_block_payload(trial_block_row(con, new_block_id), con),
+        })
 
 
 @trial_bp.post("/api/trial/blocks/<int:block_id>/reorder")
@@ -837,26 +887,22 @@ def api_trial_reorder_blocks(block_id):
     ordered_ids = [int(v) for v in data.get("ordered_ids", []) if v is not None and compact_text(v) != ""]
     if not ordered_ids:
         return jsonify({"error": "ordered_ids are required"}), 400
-    with db() as con:
+    with planner_db() as con:
         block = trial_block_row(con, block_id)
         if not block:
             return jsonify({"error": "Run block not found"}), 404
         machine_id = int(data.get("machine_id") or block["machine_id"])
         existing_blocks = rows(
             con.execute(
-                f"""
-                SELECT block_id, machine_id
-                FROM run_block
-                WHERE block_id IN ({",".join("?" for _ in ordered_ids)})
-                """,
-                ordered_ids,
+                "SELECT block_id, machine_id FROM planner_run_block WHERE block_id = ANY(%s)",
+                (ordered_ids,),
             )
         )
         affected_machine_ids = {int(machine_id)}
         affected_machine_ids.update(int(row["machine_id"]) for row in existing_blocks)
         for idx, ordered_block_id in enumerate(ordered_ids, 1):
             con.execute(
-                "UPDATE run_block SET machine_id = ?, queue_position = ?, updated_at = CURRENT_TIMESTAMP WHERE block_id = ?",
+                "UPDATE planner_run_block SET machine_id = %s, queue_position = %s, updated_at = NOW() WHERE block_id = %s",
                 (machine_id, float(idx), ordered_block_id),
             )
         for affected_machine_id in affected_machine_ids:
@@ -871,14 +917,14 @@ def api_trial_combine_blocks(block_id):
 
 @trial_bp.delete("/api/trial/blocks/<int:block_id>")
 def api_trial_delete_block(block_id):
-    with db() as con:
+    with planner_db() as con:
         block = trial_block_row(con, block_id)
         if not block:
             return jsonify({"error": "Run block not found"}), 404
         machine_id = int(block["machine_id"])
         operation_id = int(block["operation_id"])
-        group_id = int(block["group_id"] or 0)
-        ps_id = compact_text(block["job_no"] or block["source_ps_id"] or "")
+        group_id = int(block.get("group_id") or 0)
+        ps_id = compact_text(block.get("job_no") or block.get("source_ps_id") or "")
         base_ps_id = ps_id.split("::", 1)[0] if ps_id else ""
 
         affected_machine_ids = {machine_id}
@@ -887,45 +933,44 @@ def api_trial_delete_block(block_id):
         if group_id:
             group_blocks = rows(
                 con.execute(
-                    """
-                    SELECT block_id, operation_id, machine_id
-                    FROM run_block
-                    WHERE group_id = ?
-                    """,
+                    "SELECT block_id, operation_id, machine_id FROM planner_run_block WHERE group_id = %s",
                     (group_id,),
                 )
             )
-            affected_machine_ids.update(int(row["machine_id"]) for row in group_blocks if int(row["machine_id"] or 0))
-            affected_operation_ids.update(int(row["operation_id"]) for row in group_blocks if int(row["operation_id"] or 0))
+            affected_machine_ids.update(int(row["machine_id"]) for row in group_blocks if int(row.get("machine_id") or 0))
+            affected_operation_ids.update(int(row["operation_id"]) for row in group_blocks if int(row.get("operation_id") or 0))
             if ps_id and base_ps_id and ps_id != base_ps_id:
                 con.execute(
                     """
-                    DELETE FROM planning_card
-                    WHERE scheduled_block_group_id = ?
-                       OR (planning_status = 'SCHEDULED' AND ps_id IN (?, ?))
+                    DELETE FROM planner_planning_card
+                    WHERE scheduled_block_group_id = %s
+                       OR (planning_status = 'SCHEDULED' AND planner_ps_id = ANY(%s))
                     """,
-                    (group_id, ps_id, base_ps_id),
+                    (group_id, [ps_id, base_ps_id]),
                 )
             elif ps_id:
                 con.execute(
                     """
-                    DELETE FROM planning_card
-                    WHERE scheduled_block_group_id = ?
-                       OR (planning_status = 'SCHEDULED' AND ps_id = ?)
+                    DELETE FROM planner_planning_card
+                    WHERE scheduled_block_group_id = %s
+                       OR (planning_status = 'SCHEDULED' AND planner_ps_id = %s)
                     """,
                     (group_id, ps_id),
                 )
             else:
-                con.execute("DELETE FROM planning_card WHERE scheduled_block_group_id = ?", (group_id,))
-            con.execute("DELETE FROM run_block WHERE group_id = ?", (group_id,))
-            con.execute("DELETE FROM run_block_group WHERE group_id = ?", (group_id,))
+                con.execute("DELETE FROM planner_planning_card WHERE scheduled_block_group_id = %s", (group_id,))
+            con.execute("DELETE FROM planner_run_block WHERE group_id = %s", (group_id,))
+            con.execute("DELETE FROM planner_run_block_group WHERE group_id = %s", (group_id,))
         else:
-            con.execute("DELETE FROM run_block WHERE block_id = ?", (int(block_id),))
+            con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (int(block_id),))
 
         for op_id in affected_operation_ids:
-            remaining = one(con.execute("SELECT COUNT(*) AS cnt FROM run_block WHERE operation_id = ?", (int(op_id),)))
-            if int((remaining or {})["cnt"] if remaining else 0) <= 0:
-                con.execute("DELETE FROM operation WHERE operation_id = ?", (int(op_id),))
+            remaining = one(con.execute(
+                "SELECT COUNT(*) AS cnt FROM planner_run_block WHERE operation_id = %s",
+                (int(op_id),),
+            ))
+            if int((remaining or {}).get("cnt") or 0) <= 0:
+                con.execute("DELETE FROM planner_operation WHERE operation_id = %s", (int(op_id),))
 
         for mid in affected_machine_ids:
             if mid:
@@ -936,15 +981,14 @@ def api_trial_delete_block(block_id):
 @trial_bp.route("/api/trial/segments/<int:segment_id>/actual", methods=["PATCH", "POST"])
 def api_trial_segment_actual(segment_id):
     data = request.get_json(force=True, silent=True) or {}
-
-    with db() as con:
+    with planner_db() as con:
         segment = one(
             con.execute(
                 """
                 SELECT s.*, b.operation_id, b.machine_id AS block_machine_id
-                FROM run_block_segment s
-                JOIN run_block b ON b.block_id = s.block_id
-                WHERE s.segment_id = ?
+                FROM planner_run_block_segment s
+                JOIN planner_run_block b ON b.block_id = s.block_id
+                WHERE s.segment_id = %s
                 """,
                 (int(segment_id),),
             )
@@ -1018,7 +1062,6 @@ def api_trial_segment_actual(segment_id):
             or bool(removed_rework_machine_ids)
             or any(before_signatures.get(mid) != after_signatures.get(mid) for mid in affected_machine_ids)
         )
-        block = trial_block_row(con, block_id)
 
         message_parts = []
         if output_provided:
@@ -1059,7 +1102,7 @@ def api_trial_segment_actual(segment_id):
 @trial_bp.post("/api/trial/blocks/<int:block_id>/actual")
 def api_trial_actual(block_id):
     data = request.get_json(force=True, silent=True) or {}
-    with db() as con:
+    with planner_db() as con:
         block = trial_block_row(con, block_id)
         if not block:
             return jsonify({"error": "Run block not found"}), 404
@@ -1070,9 +1113,9 @@ def api_trial_actual(block_id):
                 con.execute(
                     """
                     SELECT actual_id
-                    FROM production_actual
-                    WHERE block_id = ?
-                      AND report_date = ?
+                    FROM planner_production_actual
+                    WHERE block_id = %s
+                      AND report_date = %s
                       AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
                     """,
                     (int(block_id), report_date),
@@ -1111,18 +1154,25 @@ def api_trial_actual(block_id):
                 SELECT actual_id, segment_id, block_id, report_date,
                        output_qty, reject_qty, target_qty_at_report,
                        remarks, reported_at
-                FROM production_actual
-                WHERE block_id = ?
+                FROM planner_production_actual
+                WHERE block_id = %s
                 ORDER BY report_date, actual_id
                 """,
                 (int(block_id),),
             )
         )
-        return jsonify({"ok": True, "block": trial_block_payload(trial_block_row(con, block_id), con), "actuals": [dict(r) for r in actuals]})
+        for actual in actuals:
+            actual["report_date"] = compact_text(actual.get("report_date"))
+            actual["reported_at"] = compact_text(actual.get("reported_at"))
+        return jsonify({
+            "ok": True,
+            "block": trial_block_payload(trial_block_row(con, block_id), con),
+            "actuals": actuals,
+        })
 
 
 @trial_bp.post("/api/trial/recalc")
 def api_trial_recalc():
-    with db() as con:
+    with planner_db() as con:
         recalculate_all(con)
         return jsonify({"ok": True})

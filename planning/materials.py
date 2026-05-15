@@ -335,3 +335,190 @@ def material_requirement_payload(row):
     payload["material_code"] = compact_text(payload.get("material_inventory_code"))
     payload["material_desc"] = compact_text(payload.get("material_description"))
     return payload
+
+
+def material_ps_summary_map(con):
+    summary = {}
+    for row in rows(
+        con.execute(
+            """
+            SELECT o.source_ps_id AS ps_id,
+                   b.block_id,
+                   b.calculated_start_datetime,
+                   b.calculated_end_datetime,
+                   b.planning_status,
+                   b.execution_status,
+                   b.status,
+                   m.machine_no AS machine_code
+            FROM planner_run_block b
+            JOIN planner_operation o ON o.operation_id = b.operation_id
+            JOIN planner_machines m ON m.machine_id = b.machine_id
+            WHERE COALESCE(o.source_ps_id, '') <> ''
+              AND b.active = TRUE
+            ORDER BY b.calculated_start_datetime, b.queue_position, b.block_id
+            """
+        )
+    ):
+        ps_id = compact_text(row["ps_id"])
+        if not ps_id:
+            continue
+        entry = summary.setdefault(
+            ps_id,
+            {
+                "block_count": 0,
+                "not_started_count": 0,
+                "in_progress_count": 0,
+                "done_count": 0,
+                "first_planned_start": "",
+                "machine_code": "",
+                "planning_status": "UNPLANNED",
+                "execution_status": "NOT_STARTED",
+            },
+        )
+        entry["block_count"] += 1
+        execution_status = compact_text(row["execution_status"] or row["status"]).upper() or "NOT_STARTED"
+        planning_status = compact_text(row["planning_status"]).upper() or "UNPLANNED"
+        if execution_status == "NOT_STARTED":
+            entry["not_started_count"] += 1
+        elif execution_status == "IN_PROGRESS":
+            entry["in_progress_count"] += 1
+        elif execution_status == "DONE":
+            entry["done_count"] += 1
+        if not entry["first_planned_start"] and compact_text(row["calculated_start_datetime"]):
+            entry["first_planned_start"] = compact_text(row["calculated_start_datetime"])
+            entry["machine_code"] = compact_text(row["machine_code"])
+        if planning_status and entry["planning_status"] == "UNPLANNED":
+            entry["planning_status"] = planning_status
+        if execution_status in {"IN_PROGRESS", "DONE"}:
+            entry["execution_status"] = "IN_PROGRESS" if execution_status == "IN_PROGRESS" else "DONE"
+        elif entry["execution_status"] == "NOT_STARTED":
+            entry["execution_status"] = execution_status
+    return summary
+
+
+def _requirement_join_rows(con):
+    return rows(
+        con.execute(
+            """
+            SELECT mr.*,
+                   mr.planner_ps_id AS ps_id,
+                   ps.pp_partial_no,
+                   ps.inventory_code AS part_no,
+                   pvc.description AS part_desc,
+                   ps.planned_qty AS ps_total_qty,
+                   ps.status AS ps_status,
+                   ps.planner_status,
+                   ps.selected_bom_id,
+                   sf.bom_code AS selected_flow_code
+            FROM planner_material_requirement mr
+            JOIN planner_process_sheet ps ON ps.planner_ps_id = mr.planner_ps_id
+            LEFT JOIN pp_vouchers_cache pvc
+                   ON pvc.ps_id = ps.source_ps_id AND pvc.pp_partial_no = ps.pp_partial_no
+            LEFT JOIN planner_bom_variation sf ON sf.bom_id = ps.selected_bom_id
+            WHERE COALESCE(sf.bom_code, '') = '' OR mr.bom_code = sf.bom_code
+            ORDER BY pvc.due_date, ps.planner_ps_id, mr.requirement_id
+            """
+        )
+    )
+
+
+def material_requirement_overview_rows(con, include_unplanned=False, include_active=False, include_completed=False, search=""):
+    from collections import defaultdict as _dd
+    search = compact_text(search).lower()
+    requirement_rows = _requirement_join_rows(con)
+    grouped = _dd(list)
+    for row in requirement_rows:
+        grouped[compact_text(row["ps_id"])].append(row)
+
+    ps_summary = material_ps_summary_map(con)
+    payloads = []
+    for ps_id, rows_for_ps in grouped.items():
+        ps_row = rows_for_ps[0]
+        summary = ps_summary.get(ps_id, {})
+        is_completed = (
+            compact_text(ps_row.get("ps_status")).upper() == "COMPLETED"
+            or compact_text(ps_row.get("planner_status")).upper() == "COMPLETED"
+        )
+        block_count = int(summary.get("block_count") or 0)
+        has_active = int(summary.get("in_progress_count") or 0) > 0 or int(summary.get("done_count") or 0) > 0
+        is_unplanned = block_count <= 0
+        is_active = has_active and not is_completed
+        is_planned_not_started = block_count > 0 and not is_active and not is_completed
+
+        if is_completed and not include_completed:
+            continue
+        if is_active and not include_active:
+            continue
+        if is_unplanned and not include_unplanned:
+            continue
+        if not (is_planned_not_started or is_completed or is_active or is_unplanned):
+            continue
+
+        mat_status = material_status_from_requirement_rows(rows_for_ps, summary.get("first_planned_start", ""))
+        first_planned_start = compact_text(summary.get("first_planned_start", ""))
+        machine_code = compact_text(summary.get("machine_code", ""))
+        if is_completed:
+            planning_status = "COMPLETED"
+            execution_status = "COMPLETED"
+        elif is_active:
+            planning_status = compact_text(summary.get("planning_status") or ps_row.get("planner_status") or "PLANNED").upper()
+            execution_status = (
+                "IN_PROGRESS" if int(summary.get("in_progress_count") or 0) > 0
+                else ("DONE" if int(summary.get("done_count") or 0) > 0 else "NOT_STARTED")
+            )
+        elif is_planned_not_started:
+            planning_status = "PLANNED"
+            execution_status = "NOT_STARTED"
+        else:
+            planning_status = "UNPLANNED"
+            execution_status = "NOT_STARTED"
+
+        for row in rows_for_ps:
+            base_ps, partial = split_ps_id(row["ps_id"])
+            material_code = _requirement_inventory_code(row)
+            material_desc = _requirement_description(row)
+            payload = {
+                "requirement_id": int(row["requirement_id"]),
+                "ps_id": compact_text(row["ps_id"]),
+                "base_ps_number": base_ps,
+                "partial": partial,
+                "part_no": compact_text(row.get("part_no") or row["ps_id"]),
+                "part_desc": compact_text(row.get("part_desc") or ""),
+                "bom_code": compact_text(row["bom_code"]),
+                "material_inventory_code": material_code,
+                "material_description": material_desc,
+                "material_qty_needed": float(row["material_qty_needed"] or 0),
+                "material_uom": compact_text(row["material_uom"]),
+                "first_planned_start": first_planned_start,
+                "machine_code": machine_code,
+                "planning_status": planning_status,
+                "execution_status": execution_status,
+                "ps_status": compact_text(row.get("ps_status")),
+                "planner_status": compact_text(row.get("planner_status")),
+                "supply_status": normalize_supply_status(row["supply_status"]),
+                "expected_ready_date": compact_text(row.get("expected_ready_date")),
+                "supplier_ref": compact_text(row.get("supplier_ref")),
+                "remarks": compact_text(row.get("remarks")),
+                "updated_at": compact_text(row.get("updated_at")),
+                "material_status": mat_status,
+                "is_completed": is_completed,
+                "is_active": is_active,
+                "is_unplanned": is_unplanned,
+                "is_planned_not_started": is_planned_not_started,
+            }
+            haystack = " ".join(
+                compact_text(part).lower()
+                for part in (
+                    payload["ps_id"], payload["part_no"], payload["part_desc"],
+                    payload["bom_code"], payload["material_inventory_code"],
+                    payload["material_description"], payload["supplier_ref"],
+                    payload["remarks"], payload["machine_code"],
+                    payload["supply_status"], payload["expected_ready_date"],
+                    payload["planning_status"], payload["execution_status"],
+                )
+            )
+            if search and search not in haystack:
+                continue
+            payloads.append(payload)
+
+    return payloads

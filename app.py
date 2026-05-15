@@ -10,11 +10,17 @@ app = Flask(__name__)
 from planning.process_sheets import process_sheets_bp
 from planning.summary import trial_summary_bp
 from planning.flows import flows_bp, trial_prefixed_flows_bp
+from planning.gantt_route import trial_gantt_bp
+from planning.materials_route import materials_route_bp
+from planning.planner_routes import trial_bp
 
 app.register_blueprint(process_sheets_bp)
 app.register_blueprint(trial_summary_bp)
 app.register_blueprint(flows_bp)
 app.register_blueprint(trial_prefixed_flows_bp)
+app.register_blueprint(trial_gantt_bp)
+app.register_blueprint(materials_route_bp)
+app.register_blueprint(trial_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 

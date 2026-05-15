@@ -40,9 +40,16 @@ async function loadTrial() {
   trialScheduleDateFilter = resolved;
   trialSyncScheduleUrl();
 
-  const rows = await GET('/api/pp-vouchers');
+  const [ppRows, machinesData] = await Promise.all([
+    GET('/api/pp-vouchers'),
+    GET('/api/planner/machines'),
+  ]);
 
-  const catalog = rows.map(row => ({
+  const machines = (machinesData.machines || [])
+    .filter(m => m.active !== false)
+    .map(m => ({ ...m, machine_code: m.machine_no }));
+
+  const catalog = ppRows.map(row => ({
     ps_id: Number(row.pp_partial_no) > 1 ? `${row.ps_id}::${row.pp_partial_no}` : row.ps_id,
     part_no:        row.part_no,
     part_name:      row.part_no,
@@ -61,7 +68,7 @@ async function loadTrial() {
   }));
 
   trialState = {
-    machines:       trialState.machines       || [],
+    machines,
     blocks:         trialState.blocks         || [],
     block_groups:   trialState.block_groups   || [],
     segments:       trialState.segments       || [],

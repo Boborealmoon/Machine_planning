@@ -1,6 +1,12 @@
+"""planning/actuals.py — production actual helpers (PostgreSQL port of Vanessa's actuals.py).
+
+Table changes vs SQLite original:
+  production_actual → planner_production_actual
+  run_block         → planner_run_block
+"""
 from __future__ import annotations
 
-from .db import one
+from .helpers import one
 
 
 def actual_totals_for_block(con, block_id):
@@ -13,8 +19,8 @@ def actual_totals_for_block(con, block_id):
               COALESCE(SUM(COALESCE(output_qty, 0) - COALESCE(reject_qty, 0)), 0) AS good_qty,
               SUM(CASE WHEN output_qty IS NOT NULL THEN 1 ELSE 0 END) AS output_reports,
               SUM(CASE WHEN reject_qty IS NOT NULL THEN 1 ELSE 0 END) AS reject_reports
-            FROM production_actual
-            WHERE block_id = ?
+            FROM planner_production_actual
+            WHERE block_id = %s
               AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
             """,
             (int(block_id),),
@@ -32,11 +38,7 @@ def actual_totals_for_block(con, block_id):
 def refresh_block_actual_status(con, block_id):
     block = one(
         con.execute(
-            """
-            SELECT *
-            FROM run_block
-            WHERE block_id = ?
-            """,
+            "SELECT * FROM planner_run_block WHERE block_id = %s",
             (int(block_id),),
         )
     )
@@ -44,9 +46,8 @@ def refresh_block_actual_status(con, block_id):
         return
 
     totals = actual_totals_for_block(con, block_id)
-    output_qty = totals["output_qty"]
-    reject_qty = totals["reject_qty"]
     good_qty = totals["good_qty"]
+    reject_qty = totals["reject_qty"]
     scheduled_qty = float(block["scheduled_qty"] or 0)
 
     if totals["output_reports"] <= 0 and totals["reject_reports"] <= 0:
@@ -58,9 +59,10 @@ def refresh_block_actual_status(con, block_id):
 
     con.execute(
         """
-        UPDATE run_block
-        SET actual_good_qty = ?, actual_reject_qty = ?, execution_status = ?, status = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE block_id = ?
+        UPDATE planner_run_block
+        SET actual_good_qty = %s, actual_reject_qty = %s,
+            execution_status = %s, status = %s, updated_at = NOW()
+        WHERE block_id = %s
         """,
         (good_qty, reject_qty, status, status, int(block_id)),
     )

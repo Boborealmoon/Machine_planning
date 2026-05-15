@@ -1,13 +1,33 @@
+"""planning/gantt_route.py — Gantt chart API (PostgreSQL port of Vanessa's routes/gantt.py).
+
+Key changes vs SQLite original:
+  db()                      → planner_db()
+  machine_calendar_window   → planner_machine_calendar_window
+  run_block_segment         → planner_run_block_segment
+  run_block                 → planner_run_block
+  operation                 → planner_operation
+  machines m.machine_code   → planner_machines m.machine_no AS machine_code
+  operation_seq             → planner_operation_seq
+  process_sheet ps.ps_id    → planner_process_sheet ps.planner_ps_id
+  production_actual         → planner_production_actual
+  run_block_group           → planner_run_block_group
+  strftime('%H',…)          → EXTRACT(HOUR FROM …)::INTEGER
+  COALESCE(b.active,1)=1    → COALESCE(b.active,TRUE)=TRUE
+  w.active=1                → w.active=TRUE
+  ? = 1 OR …                → %s OR … (Python bool)
+  ps.total_qty              → ps.planned_qty
+  date/datetime objects     → compact_text() for JSON serialisation
+"""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 from flask import Blueprint, jsonify, request
 
-from ..db import db, one, rows, parse_dt_text
-from ..machines import fetch_machines, gantt_off_time_blocks, machine_capacity_for_date
-from ..visual_time import break_windows_for_date, visual_timing_for_segment
-from ..utils import compact_text
+from .helpers import planner_db, one, rows, parse_dt_text
+from .machines import fetch_machines, gantt_off_time_blocks, machine_capacity_for_date
+from .visual_time import break_windows_for_date, visual_timing_for_segment
+from .utils import compact_text
 
 trial_gantt_bp = Blueprint("trial_gantt", __name__)
 
@@ -73,35 +93,37 @@ def api_trial_gantt():
     except ValueError:
         return jsonify({"error": "Invalid date range"}), 400
 
-    with db() as con:
+    with planner_db() as con:
         machines = [dict(row) for row in fetch_machines(con)]
         machine_by_id = {int(machine.get("machine_id") or 0): machine for machine in machines}
         calendar = _calendar_rows(con, start_iso, end_iso, machines)
         dates = [row["work_date"] for row in calendar]
         off_time_blocks = gantt_off_time_blocks(machines, dates, con)
+
         calendar_windows = [dict(row) for row in rows(
             con.execute(
                 """
-                SELECT w.*, m.machine_code
-                FROM machine_calendar_window w
-                LEFT JOIN machines m ON m.machine_id = w.machine_id
-                WHERE w.active = 1
-                  AND w.start_at < ?
-                  AND w.end_at > ?
+                SELECT w.*, m.machine_no AS machine_code
+                FROM planner_machine_calendar_window w
+                LEFT JOIN planner_machines m ON m.machine_id = w.machine_id
+                WHERE w.active = TRUE
+                  AND w.start_at < %s
+                  AND w.end_at > %s
                 ORDER BY w.start_at, w.window_id
                 """,
                 (f"{end_iso} 23:59:59", f"{start_iso} 00:00:00"),
             )
         )]
         for window in calendar_windows:
+            window["start_at"] = compact_text(window.get("start_at"))
+            window["end_at"] = compact_text(window.get("end_at"))
             window_type = compact_text(window.get("window_type") or "").upper()
             window["display_kind"] = "available" if window_type in {"OVERTIME", "AVAILABLE"} else "blocked"
+
         break_windows = [
             {
                 "work_date": work_date,
-                "windows": break_windows_for_date(
-                    date.fromisoformat(work_date),
-                ),
+                "windows": break_windows_for_date(date.fromisoformat(work_date)),
             }
             for work_date in dates
         ]
@@ -116,7 +138,7 @@ def api_trial_gantt():
                         COALESCE(SUM(COALESCE(reject_qty, 0)), 0) AS reject_qty,
                         COALESCE(SUM(COALESCE(output_qty, 0) - COALESCE(reject_qty, 0)), 0) AS good_qty,
                         COUNT(actual_id) AS actual_report_count
-                    FROM production_actual
+                    FROM planner_production_actual
                     WHERE COALESCE(status, 'ACTIVE') = 'ACTIVE'
                     GROUP BY block_id
                 )
@@ -125,14 +147,16 @@ def api_trial_gantt():
                     s.block_id,
                     b.operation_id,
                     b.machine_id,
-                    m.machine_code,
+                    m.machine_no AS machine_code,
                     m.machine_category,
                     m.shift_profile,
                     s.segment_date AS plan_date,
                     s.start_datetime,
                     s.end_datetime,
-                    CAST(strftime('%H', s.start_datetime) AS INTEGER) * 60 + CAST(strftime('%M', s.start_datetime) AS INTEGER) AS start_min,
-                    CAST(strftime('%H', s.end_datetime) AS INTEGER) * 60 + CAST(strftime('%M', s.end_datetime) AS INTEGER) AS end_min,
+                    EXTRACT(HOUR FROM s.start_datetime)::INTEGER * 60
+                        + EXTRACT(MINUTE FROM s.start_datetime)::INTEGER AS start_min,
+                    EXTRACT(HOUR FROM s.end_datetime)::INTEGER * 60
+                        + EXTRACT(MINUTE FROM s.end_datetime)::INTEGER AS end_min,
                     s.segment_type,
                     s.qty_done AS qty,
                     s.minutes_used,
@@ -144,7 +168,7 @@ def api_trial_gantt():
                     b.status,
                     b.planning_status,
                     b.execution_status,
-                    ps.total_qty AS ps_total_qty,
+                    ps.planned_qty AS ps_total_qty,
                     COALESCE(ab.good_qty, 0) AS ps_finished_qty,
                     ps.status AS ps_status,
                     ps.planner_status AS ps_planner_status,
@@ -162,20 +186,20 @@ def api_trial_gantt():
                     b.calculated_end_datetime,
                     ps.source_ps_id AS display_source_ps_id,
                     ps.pp_partial_no AS display_partial_no
-                FROM run_block_segment s
-                JOIN run_block b ON b.block_id = s.block_id
-                JOIN operation o ON o.operation_id = b.operation_id
-                JOIN machines m ON m.machine_id = b.machine_id
-                LEFT JOIN operation_seq pfs ON pfs.op_seq_id = o.source_op_seq_id
-                LEFT JOIN process_sheet ps ON ps.ps_id = o.source_ps_id
-                LEFT JOIN run_block_group g ON g.group_id = b.group_id
+                FROM planner_run_block_segment s
+                JOIN planner_run_block b ON b.block_id = s.block_id
+                JOIN planner_operation o ON o.operation_id = b.operation_id
+                JOIN planner_machines m ON m.machine_id = b.machine_id
+                LEFT JOIN planner_operation_seq pfs ON pfs.op_seq_id = o.source_op_seq_id
+                LEFT JOIN planner_process_sheet ps ON ps.planner_ps_id = o.source_ps_id
+                LEFT JOIN planner_run_block_group g ON g.group_id = b.group_id
                 LEFT JOIN actual_by_block ab ON ab.block_id = b.block_id
-                WHERE s.segment_date BETWEEN ? AND ?
-                  AND COALESCE(b.active, 1) = 1
-                  AND (? = 1 OR COALESCE(b.status, '') <> 'COMPLETED')
+                WHERE s.segment_date BETWEEN %s AND %s
+                  AND COALESCE(b.active, TRUE) = TRUE
+                  AND (%s OR COALESCE(b.status, '') <> 'COMPLETED')
                 ORDER BY s.segment_date, b.machine_id, s.start_datetime, s.segment_id
                 """,
-                (start_iso, end_iso, 1 if include_completed else 0),
+                (start_iso, end_iso, include_completed),
             )
         )
 
@@ -189,21 +213,21 @@ def api_trial_gantt():
             }
             for row in rows(
                 con.execute(
-                """
-                SELECT
-                    segment_id,
-                    COALESCE(SUM(COALESCE(output_qty, 0)), 0) AS output_qty,
-                    COALESCE(SUM(COALESCE(reject_qty, 0)), 0) AS reject_qty,
-                    COALESCE(SUM(COALESCE(output_qty, 0) - COALESCE(reject_qty, 0)), 0) AS good_qty,
-                    COUNT(actual_id) AS actual_report_count,
-                    MAX(COALESCE(target_qty_at_report, 0)) AS target_qty_at_report
-                FROM production_actual
-                WHERE segment_id IS NOT NULL
-                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
-                GROUP BY segment_id
-                """,
+                    """
+                    SELECT
+                        segment_id,
+                        COALESCE(SUM(COALESCE(output_qty, 0)), 0) AS output_qty,
+                        COALESCE(SUM(COALESCE(reject_qty, 0)), 0) AS reject_qty,
+                        COALESCE(SUM(COALESCE(output_qty, 0) - COALESCE(reject_qty, 0)), 0) AS good_qty,
+                        COUNT(actual_id) AS actual_report_count,
+                        MAX(COALESCE(target_qty_at_report, 0)) AS target_qty_at_report
+                    FROM planner_production_actual
+                    WHERE segment_id IS NOT NULL
+                      AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                    GROUP BY segment_id
+                    """,
+                )
             )
-        )
         }
 
         blocks_by_block_id = {}
@@ -234,7 +258,12 @@ def api_trial_gantt():
             item["display_partial_no"] = display_partial_no
             item["pp_partial_no"] = display_partial_no
             item["source_ps_id"] = compact_text(item.get("source_ps_id"))
-            item["plan_date"] = item.get("plan_date") or ""
+            item["plan_date"] = compact_text(item.get("plan_date")) or ""
+            item["start_datetime"] = compact_text(item.get("start_datetime"))
+            item["end_datetime"] = compact_text(item.get("end_datetime"))
+            item["calculated_start_datetime"] = compact_text(item.get("calculated_start_datetime"))
+            item["calculated_end_datetime"] = compact_text(item.get("calculated_end_datetime"))
+            item["display_source_ps_id"] = compact_text(item.get("display_source_ps_id"))
             item["start_min"] = int(item.get("start_min") or 0)
             item["end_min"] = int(item.get("end_min") or 0)
             item["visual_start_datetime"] = timing["visual_start_datetime"]
@@ -288,7 +317,7 @@ def api_trial_gantt():
             )
 
         def _marker_segment_for_block(segments, scheduled_qty, completed):
-            production_segments = [segment for segment in segments if compact_text(segment.get("segment_type")).lower() != "setup"]
+            production_segments = [s for s in segments if compact_text(s.get("segment_type")).lower() != "setup"]
             ordered_segments = sorted(production_segments or segments, key=_segment_sort_key)
             cumulative = 0.0
             for segment in ordered_segments:

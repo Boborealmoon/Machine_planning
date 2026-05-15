@@ -570,3 +570,66 @@ SELECT
     GREATEST(0, o.total_qty - COALESCE(v.good_qty, 0))                       AS remaining_qty
 FROM public.planner_operation o
 LEFT JOIN public.planner_v_operation_actual_totals v ON v.operation_id = o.operation_id;
+
+
+-- =============================================================================
+-- GROUP H: Scheduler State Cache Tables
+-- Written by the scheduler engine; read by the Gantt chart and dashboard APIs.
+-- =============================================================================
+
+-- Live schedule state snapshot for each run block (replaces SQLite machine_queue_state).
+CREATE TABLE IF NOT EXISTS public.planner_machine_queue_state (
+    block_id           BIGINT       PRIMARY KEY REFERENCES public.planner_run_block(block_id) ON DELETE CASCADE,
+    schedule_run_id    BIGINT       REFERENCES public.planner_schedule_run(schedule_run_id),
+    predicted_start_at TIMESTAMPTZ,
+    predicted_end_at   TIMESTAMPTZ,
+    remaining_qty      NUMERIC      NOT NULL DEFAULT 0,
+    output_qty         NUMERIC      NOT NULL DEFAULT 0,
+    reject_qty         NUMERIC      NOT NULL DEFAULT 0,
+    good_qty           NUMERIC      NOT NULL DEFAULT 0,
+    planned_minutes    NUMERIC      NOT NULL DEFAULT 0,
+    schedule_status    TEXT         NOT NULL DEFAULT 'UNSCHEDULED',
+    execution_status   TEXT         NOT NULL DEFAULT 'NOT_STARTED',
+    is_late            BOOLEAN      NOT NULL DEFAULT FALSE,
+    delay_minutes      NUMERIC      NOT NULL DEFAULT 0,
+    updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- Rolled-up execution state per operation (replaces SQLite process_sheet_operation_state).
+CREATE TABLE IF NOT EXISTS public.planner_process_sheet_operation_state (
+    operation_id       BIGINT       PRIMARY KEY REFERENCES public.planner_operation(operation_id) ON DELETE CASCADE,
+    planner_ps_id      TEXT         REFERENCES public.planner_process_sheet(planner_ps_id) ON DELETE CASCADE,
+    output_qty         NUMERIC      NOT NULL DEFAULT 0,
+    reject_qty         NUMERIC      NOT NULL DEFAULT 0,
+    good_qty           NUMERIC      NOT NULL DEFAULT 0,
+    remaining_qty      NUMERIC      NOT NULL DEFAULT 0,
+    predicted_start_at TIMESTAMPTZ,
+    predicted_end_at   TIMESTAMPTZ,
+    execution_status   TEXT         NOT NULL DEFAULT 'NOT_STARTED',
+    updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- Rolled-up execution state per planner PS (replaces SQLite process_sheet_state).
+CREATE TABLE IF NOT EXISTS public.planner_process_sheet_state (
+    planner_ps_id      TEXT         PRIMARY KEY REFERENCES public.planner_process_sheet(planner_ps_id) ON DELETE CASCADE,
+    predicted_start_at TIMESTAMPTZ,
+    predicted_end_at   TIMESTAMPTZ,
+    output_qty         NUMERIC      NOT NULL DEFAULT 0,
+    reject_qty         NUMERIC      NOT NULL DEFAULT 0,
+    good_qty           NUMERIC      NOT NULL DEFAULT 0,
+    remaining_qty      NUMERIC      NOT NULL DEFAULT 0,
+    planner_status     TEXT         NOT NULL DEFAULT 'UNPLANNED',
+    execution_status   TEXT         NOT NULL DEFAULT 'NOT_STARTED',
+    is_late            BOOLEAN      NOT NULL DEFAULT FALSE,
+    delay_minutes      NUMERIC      NOT NULL DEFAULT 0,
+    updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_planner_mqs_schedule_run
+    ON public.planner_machine_queue_state(schedule_run_id);
+
+CREATE INDEX IF NOT EXISTS idx_planner_psos_ps_id
+    ON public.planner_process_sheet_operation_state(planner_ps_id);
+
+CREATE INDEX IF NOT EXISTS idx_planner_pss_execution
+    ON public.planner_process_sheet_state(execution_status);
