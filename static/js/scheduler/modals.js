@@ -295,3 +295,20 @@ function toggleTrialCompletedCatalog() {
   updateTrialCompletedButton();
   renderTrialCatalog();
 }
+
+async function removeTrialBlock(blockId, groupId) {
+  const numericBlockId = Number(blockId || 0);
+  if (!numericBlockId) return;
+  const isCombined = Number(groupId || 0) > 0;
+  const msg = isCombined
+    ? 'Remove this combined operation from the machine? All ops in the group will be returned to the side panel.'
+    : 'Remove this operation from the machine? It will return to the side panel for re-allocation.';
+  if (!confirm(msg)) return;
+  try {
+    await DEL(`/api/trial/blocks/${numericBlockId}`);
+    await loadTrial();
+    toast('Removed from machine — returned to side panel', 'success');
+  } catch (e) {
+    toast('Remove failed: ' + e.message, 'error');
+  }
+}

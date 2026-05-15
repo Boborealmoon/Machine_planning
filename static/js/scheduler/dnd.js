@@ -127,6 +127,9 @@ function trialCatalogResetPointerDrag(state = trialCatalogPointerDrag) {
   if (state.currentTargetEl) {
     state.currentTargetEl.classList.remove('drop-target');
   }
+  if (state.currentLaneEl) {
+    state.currentLaneEl.classList.remove('drop-target-lane');
+  }
   if (state.sourceEl) {
     state.sourceEl.classList.remove('dragging');
     try {
@@ -181,13 +184,26 @@ function trialCatalogHandlePointerMove(e) {
     state.currentTargetEl.classList.remove('drop-target');
     state.currentTargetEl = null;
   }
-  if (!nextTarget) return;
+  if (nextTarget) {
+    const targetPayload = trialOpCardPayloadFromElement(nextTarget);
+    const validation = trialCanCombinePayloads(state.sourcePayload, targetPayload);
+    if (validation.ok) {
+      nextTarget.classList.add('drop-target');
+      state.currentTargetEl = nextTarget;
+    }
+  }
 
-  const targetPayload = trialOpCardPayloadFromElement(nextTarget);
-  const validation = trialCanCombinePayloads(state.sourcePayload, targetPayload);
-  if (!validation.ok) return;
-  nextTarget.classList.add('drop-target');
-  state.currentTargetEl = nextTarget;
+  // Highlight lane as drop target when not hovering a combine target
+  const laneEl = document.elementFromPoint(e.clientX, e.clientY)?.closest('.trial-lane');
+  const activeLane = !state.currentTargetEl ? laneEl : null;
+  if (state.currentLaneEl && state.currentLaneEl !== activeLane) {
+    state.currentLaneEl.classList.remove('drop-target-lane');
+    state.currentLaneEl = null;
+  }
+  if (activeLane) {
+    activeLane.classList.add('drop-target-lane');
+    state.currentLaneEl = activeLane;
+  }
 }
 
 async function trialCatalogHandlePointerUp(e) {
@@ -270,6 +286,7 @@ function bindTrialCatalogDnD() {
         sourcePayload,
         ghostEl: null,
         currentTargetEl: null,
+        currentLaneEl: null,
         startX: e.clientX,
         startY: e.clientY,
         hasMoved: false,

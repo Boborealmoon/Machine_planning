@@ -229,10 +229,13 @@ function renderTrialOpCardHtml(card) {
   const cardKind = String(card.card_kind || 'single');
   const isGroup = cardKind === 'group';
   const isScheduled = !!card.is_scheduled;
+  const isAllocated = !!card.is_allocated;
   const remainingQty = fmt(card.remaining_qty || 0, 0);
   const setupMinutes = fmt(card.setup_minutes || 0, 0);
   const cycleMinutes = fmt(card.cycle_minutes_per_qty || 0, 0);
   const opName = String(card.operation_name || '').trim();
+  const allocatedBlock = isAllocated ? trialAllocatedBlockForOp(card.source_ps_id || card.ps_id, card.source_op_no) : null;
+  const allocatedMachineCode = allocatedBlock ? (allocatedBlock.machine_code || '') : '';
   const payload = {
     type: 'op-card',
     card_kind: cardKind,
@@ -273,7 +276,7 @@ function renderTrialOpCardHtml(card) {
     };
   }
   return `
-    <div class="trial-catalog-op trial-planning-card ${isScheduled ? 'is-scheduled' : ''}"
+    <div class="trial-catalog-op trial-planning-card ${isScheduled ? 'is-scheduled' : ''} ${isAllocated ? 'is-allocated' : ''}"
       draggable="false"
       data-trial-payload="${trialPayloadToAttr(payload)}"
       data-card-kind="${escapeHtml(cardKind)}"
@@ -304,6 +307,12 @@ function renderTrialOpCardHtml(card) {
           <div class="trial-planning-card-sub">${escapeHtml(opName)}</div>
           <div class="trial-planning-card-sub">Remaining ${remainingQty} pcs</div>
           <div class="trial-planning-card-sub">Setup ${setupMinutes}m · Cycle ${cycleMinutes}m/pc</div>
+          ${isAllocated
+            ? `<div class="trial-allocated-badge">
+                <span class="trial-allocated-dot"></span>
+                In queue${allocatedMachineCode ? ' · ' + escapeHtml(allocatedMachineCode) : ''}
+               </div>`
+            : ''}
         </div>
         <div style="display:grid;gap:6px;justify-items:end">
           ${isGroup && !isScheduled
@@ -388,6 +397,9 @@ function renderTrialMachine(machine) {
               <button class="btn btn-ghost btn-sm" type="button" onclick="toggleTrialSetup(${leader?.block_id || 0})">
                 ${Number(leader?.include_setup || 0) === 1 ? 'Setup On' : 'Setup Off'}
               </button>
+              <button class="btn btn-ghost btn-sm trial-remove-block-btn" type="button"
+                onclick="removeTrialBlock(${leader?.block_id || 0}, ${Number(group.group_id || 0)})"
+                title="Remove from machine — returns to side panel">Remove</button>
             </div>
           </div>
         `;
@@ -505,11 +517,18 @@ function renderTrialCatalog() {
     return;
   }
 
+  const allocatedKeys = trialAllocatedOpKeys();
+
   const availableHtml = catalog.map(ps => {
     const psIdParts = String(ps.ps_id || '').split('::');
     const basePsId = psIdParts[0] || ps.ps_id || '';
     const partialText = psIdParts[1] ? `Partial ${psIdParts[1]}` : '';
-    const opCardsHtml = (ps.op_cards || []).map(card => renderTrialOpCardHtml(card)).join('');
+    const opCardsHtml = (ps.op_cards || []).map(card => {
+      const psId = String(card.source_ps_id || card.ps_id || '').trim();
+      const opNo = String(card.source_op_no || '').trim();
+      const isAllocated = psId && opNo && allocatedKeys.has(`${psId}||${opNo}`);
+      return renderTrialOpCardHtml({ ...card, is_allocated: isAllocated });
+    }).join('');
     return `
       <details class="trial-catalog-ps" ${rawQuery ? 'open' : ''}
         data-ps-id="${escapeHtml(ps.ps_id || '')}"
@@ -549,7 +568,12 @@ function renderTrialCatalog() {
           onclick="openTrialBOMEditor('${escapeHtml(ps.ps_id)}')">Edit BOM</button>
       </div>
       <div class="trial-catalog-oplist">
-        ${(ps.op_cards || []).map(card => renderTrialOpCardHtml(card)).join('')}
+        ${(ps.op_cards || []).map(card => {
+          const psId = String(card.source_ps_id || card.ps_id || '').trim();
+          const opNo = String(card.source_op_no || '').trim();
+          const isAllocated = psId && opNo && allocatedKeys.has(`${psId}||${opNo}`);
+          return renderTrialOpCardHtml({ ...card, is_allocated: isAllocated });
+        }).join('')}
       </div>
     </div>
   `).join('');

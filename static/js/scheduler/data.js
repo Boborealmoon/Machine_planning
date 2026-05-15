@@ -34,6 +34,34 @@ function trialVisibleMachines() {
   return machines;
 }
 
+function trialAllocatedOpKeys() {
+  const keys = new Set();
+  (trialState.blocks || []).forEach(b => {
+    const psId = String(b.source_ps_id || b.job_no || '').trim();
+    const opNo = String(b.source_op_no || '').trim();
+    if (psId && opNo) keys.add(`${psId}||${opNo}`);
+  });
+  return keys;
+}
+
+function trialIsOpAllocated(psId, opNo) {
+  if (!psId || !opNo) return false;
+  return (trialState.blocks || []).some(b => {
+    const bPs = String(b.source_ps_id || b.job_no || '').trim();
+    const bOp = String(b.source_op_no || '').trim();
+    return bPs === String(psId).trim() && bOp === String(opNo).trim();
+  });
+}
+
+function trialAllocatedBlockForOp(psId, opNo) {
+  if (!psId || !opNo) return null;
+  return (trialState.blocks || []).find(b => {
+    const bPs = String(b.source_ps_id || b.job_no || '').trim();
+    const bOp = String(b.source_op_no || '').trim();
+    return bPs === String(psId).trim() && bOp === String(opNo).trim();
+  }) || null;
+}
+
 function trialHasActiveDateFilter() {
   return Boolean(
     String(trialScheduleDateFilter.start || '').trim() ||
