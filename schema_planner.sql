@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS public.planner_bom_variation (
     bom_code        TEXT         NOT NULL,   -- flow/BOM code, e.g. 'BOM-A', 'STD'
     bom_desc        TEXT         NOT NULL DEFAULT '',
     is_default      BOOLEAN      NOT NULL DEFAULT FALSE,
+    source_kind     TEXT         NOT NULL DEFAULT 'ERP', -- ERP | MANUAL | MIXED
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     UNIQUE (inventory_code, bom_code)
@@ -131,6 +132,9 @@ CREATE TABLE IF NOT EXISTS public.planner_operation_seq (
     setup_time        NUMERIC      NOT NULL DEFAULT 0,    -- minutes (one-off per block)
     preferred_machine TEXT         NOT NULL DEFAULT '',   -- planner_machines.machine_no
     is_last_op        BOOLEAN      NOT NULL DEFAULT FALSE,
+    source_kind       TEXT         NOT NULL DEFAULT 'ERP', -- ERP | MANUAL
+    source_stage_no   INTEGER,
+    planner_note      TEXT         NOT NULL DEFAULT '',
     UNIQUE (bom_id, seq_no, op_no)
 );
 

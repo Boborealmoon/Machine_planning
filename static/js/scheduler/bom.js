@@ -16,34 +16,88 @@ function trialMachineCategoryFor(machineCode) {
   return machine ? String(machine.machine_category || '').toUpperCase() : 'UNKNOWN';
 }
 
+function trialCatalogItemForBOMEditor(psId) {
+  const requested = String(psId || '');
+  const requestedBase = requested.split('::')[0] || requested;
+  return [].concat(trialState.catalog || [], trialState.planned || []).find(item => {
+    const itemPsId = String(item.ps_id || '');
+    const itemBase = itemPsId.split('::')[0] || itemPsId;
+    return itemPsId === requested || itemBase === requestedBase;
+  }) || null;
+}
+
+function trialBOMStepsFromCatalogItem(item) {
+  const cards = Array.isArray(item?.all_ops) && item.all_ops.length
+    ? item.all_ops
+    : (Array.isArray(item?.op_cards) ? item.op_cards : []);
+  const seen = new Set();
+  return cards.map((card, idx) => {
+    const opNo = String(card.source_op_no || card.op_no || card.operation_label || '').trim();
+    const opName = String(card.op_type || card.operation_name || '').trim();
+    const opType = opNo
+      ? opName.replace(new RegExp(`^${trialEscapeRegExp(opNo)}\\s*[-: ]*`, 'i'), '').trim() || opName
+      : opName;
+    const key = `${opNo}|${opType}|${card.source_op_seq_id || ''}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    return {
+      op_no: opNo || String((idx + 1) * 10),
+      op_type: opType || opName || opNo,
+      machine_category: card.compatible_machine_group || card.machine_category || '',
+      preferred_machine: card.preferred_machine || card.machine_code || '',
+      cycle_time: Number(card.cycle_minutes_per_qty || card.cycle_time || 20),
+      setup_time: Number(card.setup_minutes || card.setup_time || 180),
+      is_last_op: idx === cards.length - 1 ? 1 : 0,
+      source_kind: 'ERP',
+      source_stage_no: Number(card.source_op_seq_id || card.stage_no || 0) || null,
+    };
+  }).filter(step => step && String(step.op_type || '').trim());
+}
+
 async function openTrialBOMEditor(psId) {
   try {
     const ps = await GET(`/api/trial/process-sheets/${encodeURIComponent(psId)}`);
-    const flows = await GET(`/api/trial/parts/${ps.part_id}/flows`);
+    const inventoryCode = String(ps.inventory_code || ps.part_no || '').trim();
+    if (!inventoryCode) {
+      toast('No inventory code found for this PS', 'error');
+      return;
+    }
+    const flows = await GET(`/api/trial/inventory/${encodeURIComponent(inventoryCode)}/flows`);
     const basePsId = String(ps.ps_id || psId || '').split('::')[0] || ps.ps_id || psId;
     const selectedFlowId = Number(ps.selected_bom_id || 0);
     const flow = flows.find(item => Number(item.bom_id) === selectedFlowId) ||
                  flows.find(item => item.is_default) ||
                  flows[0];
-    if (!flow) {
-      toast('No flow found for this PS', 'error');
-      return;
-    }
+    const catalogItem = trialCatalogItemForBOMEditor(psId);
+    const fallbackSteps = (!flow || !(flow.steps || []).length)
+      ? trialBOMStepsFromCatalogItem(catalogItem)
+      : [];
+    const hasPlannerFlow = !!flow;
+    const hasFallbackSteps = fallbackSteps.length > 0;
     trialBOMMeta = {
-      bom_id: Number(flow.bom_id),
-      flow_code: flow.flow_code || `FLOW-${flow.bom_id}`,
-      is_default: !!flow.is_default,
+      bom_id: Number(flow?.bom_id || 0),
+      flow_code: flow?.flow_code || catalogItem?.selected_bom_code || catalogItem?.selected_flow_code || catalogItem?.bom_code || 'MANUAL',
+      is_default: flow ? !!flow.is_default : true,
       ps_id: ps.ps_id,
+      inventory_code: inventoryCode,
       part_name: ps.part_name || ps.part_no || '',
       part_desc: ps.part_desc || '',
     };
-    trialBOMEditing = (flow.steps || []).map(step => ({ ...step }));
+    trialBOMEditing = hasFallbackSteps
+      ? fallbackSteps.map(step => ({ ...step }))
+      : (flow?.steps || []).map(step => ({ ...step }));
+    const stageHint = hasPlannerFlow
+      ? ''
+      : (hasFallbackSteps
+        ? '<div style="font-size:12px;color:var(--text3);font-weight:700">Loaded ERP stages from this PS. Save BOM to persist them for planning.</div>'
+        : '<div style="font-size:12px;color:var(--text3);font-weight:700">No ERP BOM stages found. Add manual stages below.</div>');
     openModal('Edit BOM', `
       <div style="display:grid;gap:12px">
         <div style="display:grid;gap:4px">
           <div style="font-size:18px;font-weight:900;letter-spacing:-0.03em">${escapeHtml(trialBOMMeta.part_name || basePsId)}</div>
           <div style="font-size:12px;color:var(--text3);line-height:1.35">${escapeHtml(trialBOMMeta.part_desc || 'No description')}</div>
           <div style="font-size:12px;color:var(--text3);font-weight:700">PS No: ${escapeHtml(basePsId)}</div>
+          ${stageHint}
         </div>
         <div class="trial-modal-grid">
           <label>BOM Code <input id="trial-bom-flow-code" value="${escapeHtml(trialBOMMeta.flow_code)}"></label>
@@ -169,13 +223,19 @@ async function saveTrialBOMEditor(psId) {
         preferred_machine: preferredMachine,
         machine_category: preferredMachine ? trialMachineCategoryFor(preferredMachine) : 'UNKNOWN',
         is_last_op: idx === trialBOMEditing.length - 1 ? 1 : 0,
+        source_kind: step.source_kind || (step.op_seq_id ? 'ERP' : 'MANUAL'),
       };
     });
-    await PUT(`/api/trial/flows/${trialBOMMeta.bom_id}`, {
+    const payload = {
       flow_code: document.getElementById('trial-bom-flow-code').value,
       is_default: document.getElementById('trial-bom-flow-default').value === '1',
       steps,
-    });
+    };
+    if (Number(trialBOMMeta.bom_id || 0) > 0) {
+      await PUT(`/api/trial/flows/${trialBOMMeta.bom_id}`, payload);
+    } else {
+      await POST(`/api/trial/process-sheets/${encodeURIComponent(psId)}/flows`, payload);
+    }
     closeModal();
     await loadTrial();
     toast(`BOM saved for ${psId}`, 'success');

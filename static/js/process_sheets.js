@@ -52,6 +52,13 @@
     return String(value).slice(0, 10);
   }
 
+  function firstQuantity(...values) {
+    for (const value of values) {
+      if (value !== null && value !== undefined && value !== '') return value;
+    }
+    return 0;
+  }
+
   function todayIso() {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -67,6 +74,57 @@
     return raw.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
   }
 
+  function displayExecutionStatus(value) {
+    const status = normalizeStatus(value);
+    const labels = {
+      P: 'Pending SI',
+      R: 'Ready to Start',
+      I: 'In Process',
+      C: 'Completed',
+      PENDING_SI: 'Pending SI',
+      READY_TO_START: 'Ready to Start',
+      IN_PROCESS: 'In Process',
+      COMPLETED: 'Completed',
+    };
+    return labels[status] || displayStatus(value, '-');
+  }
+
+  function opExecutionStatus(op, item) {
+    const directStatus = op?.execution_status || op?.erp_execution_status || '';
+    if (directStatus) return directStatus;
+    return item?.execution_status || item?.erp_execution_status || '';
+  }
+
+  function isExecutionCompletedStatus(value) {
+    const status = normalizeStatus(value);
+    return status === 'COMPLETED' || status === 'C';
+  }
+
+  function trackedExecutionStatuses(item) {
+    const ops = Array.isArray(item?.ops) ? item.ops : [];
+    const opStatuses = ops
+      .map(op => opExecutionStatus(op, item))
+      .filter(status => normalizeStatus(status));
+    if (opStatuses.length) return opStatuses;
+    const itemStatus = item?.execution_status || item?.erp_execution_status || '';
+    return normalizeStatus(itemStatus) ? [itemStatus] : [];
+  }
+
+  function opStatusClass(value) {
+    const status = normalizeStatus(value);
+    if (status === 'I' || status === 'IN_PROCESS') return 'is-in-process';
+    if (status === 'R' || status === 'READY_TO_START') return 'is-ready';
+    if (status === 'P' || status === 'PENDING_SI') return 'is-pending';
+    if (status === 'C' || status === 'COMPLETED') return 'is-completed';
+    return 'is-unknown';
+  }
+
+  function renderOpStatusCell(op, item) {
+    const status = opExecutionStatus(op, item);
+    if (!normalizeStatus(status)) return '<span class="ps-row-muted">-</span>';
+    return `<span class="ps-op-status ${opStatusClass(status)}">${escapeHtml(displayExecutionStatus(status))}</span>`;
+  }
+
   function materialSeverity(item) {
     return String(item.material_status?.severity || '').toLowerCase();
   }
@@ -76,14 +134,19 @@
   }
 
   function isCompleted(item) {
-    const planner = normalizeStatus(item.planner_status);
-    const status = normalizeStatus(item.status);
-    return planner === 'COMPLETED' || status === 'COMPLETED' || status === 'HISTORY';
+    const executionStatuses = trackedExecutionStatuses(item);
+    return executionStatuses.length > 0 && executionStatuses.every(isExecutionCompletedStatus);
   }
 
   function isOverdue(item) {
     const due = fmtDate(item.due_date);
     return due !== '-' && due < todayIso() && !isCompleted(item);
+  }
+
+  function itemIdentityKey(item) {
+    const sourcePsId = String(item.source_ps_id || item.display_ps_id || item.ps_id || '').split('::')[0];
+    const partial = String(item.pp_partial_no || String(item.ps_id || '').split('::')[1] || '1');
+    return `${sourcePsId}::${partial}`;
   }
 
   function itemSearchText(item) {
@@ -99,6 +162,14 @@
       item.selected_bom_code,
       item.status,
       item.planner_status,
+      ...(Array.isArray(item.ops) ? item.ops.map(op => [
+        op.op_no,
+        op.source_op_no,
+        op.stage_no,
+        op.op_type,
+        op.operation_name,
+        opExecutionStatus(op, item),
+      ].join(' ')) : []),
     ].join(' ').toLowerCase();
   }
 
@@ -126,10 +197,13 @@
       part_desc: item.part_desc || '',
       due_date: item.due_date || '',
       order_date: item.order_date || '',
-      total_qty: item.total_qty || item.partial_qty || 0,
+      total_qty: item.total_qty || 0,
+      partial_qty: item.partial_qty || 0,
+      wo_qty_required: item.wo_qty_required || 0,
+      display_qty: item.display_qty || item.wo_qty_required || item.partial_qty || item.total_qty || 0,
       planned_qty: item.planned_qty || 0,
       finished_qty: item.finished_qty || 0,
-      remaining_qty: item.remaining_qty || item.total_qty || item.partial_qty || 0,
+      remaining_qty: firstQuantity(item.remaining_qty, item.wo_qty_required, item.display_qty, item.partial_qty, item.total_qty),
       status: item.status || '',
       execution_status: item.execution_status || '',
       planner_status: item.planner_status || 'UNPLANNED',
@@ -154,9 +228,9 @@
       const plannerItems = plannerResult.status === 'fulfilled' && Array.isArray(plannerResult.value)
         ? plannerResult.value.map(normalizePlannerItem)
         : [];
-      const plannerIds = new Set(plannerItems.map(item => String(item.ps_id || '')));
+      const plannerIds = new Set(plannerItems.map(itemIdentityKey));
       const erpItems = erpResult.status === 'fulfilled' && Array.isArray(erpResult.value)
-        ? erpResult.value.map(normalizeErpItem).filter(item => item.ps_id && !plannerIds.has(String(item.ps_id)))
+        ? erpResult.value.map(normalizeErpItem).filter(item => item.ps_id && !plannerIds.has(itemIdentityKey(item)))
         : [];
 
       state.items = [...plannerItems, ...erpItems].sort((a, b) => {
@@ -186,6 +260,7 @@
     const material = String(els.materialFilter?.value || '').trim();
     const overdueOnly = Boolean(els.overdueOnly?.checked);
     const showCompleted = Boolean(els.showCompleted?.checked);
+    const completedOnly = Boolean(els.completedOnly?.checked);
 
     return state.items.filter(item => {
       if (search && !itemSearchText(item).includes(search)) return false;
@@ -193,7 +268,8 @@
       if (planner && normalizeStatus(item.planner_status) !== planner) return false;
       if (material === 'shortage' && !isMaterialShortage(item)) return false;
       if (overdueOnly && !isOverdue(item)) return false;
-      if (!showCompleted && isCompleted(item)) return false;
+      if (completedOnly && !isCompleted(item)) return false;
+      if (!completedOnly && !showCompleted && isCompleted(item)) return false;
       return true;
     });
   }
@@ -259,6 +335,7 @@
     const dueClass = isOverdue(item) ? 'is-overdue' : '';
     const partial = item.pp_partial_no ? `<span class="ps-row-muted">Partial ${escapeHtml(item.pp_partial_no)}</span>` : '';
     const source = item.source === 'erp' ? '<span class="ps-source-badge">ERP</span>' : '';
+    const opStatusStrip = renderOpStatusStrip(ops, item);
 
     return `
       <article class="ps-row ${dueClass}" data-ps-id="${escapeHtml(psId)}">
@@ -274,11 +351,12 @@
           </div>
           <div class="ps-row-meta">
             <span>Due ${escapeHtml(fmtDate(item.due_date))}</span>
-            <span>Qty ${escapeHtml(fmtQty(item.total_qty))}</span>
+            <span>Qty ${escapeHtml(fmtQty(firstQuantity(item.display_qty, item.partial_qty, item.total_qty)))}</span>
             <span>Route ${escapeHtml(item.route_label || item.selected_flow_code || item.selected_bom_code || 'No flow selected')}</span>
             <span>${escapeHtml(material)}</span>
             ${warnings.length ? `<span>${warnings.length} warning${warnings.length === 1 ? '' : 's'}</span>` : ''}
           </div>
+          ${opStatusStrip}
         </button>
         <div class="ps-row-side">
           <span class="ps-badge ${badgeClass}">${escapeHtml(displayStatus(item.planner_status, 'Unplanned'))}</span>
@@ -288,6 +366,30 @@
         <div class="ps-details" id="ps-details-${escapeHtml(cssSafeId(psId))}" hidden></div>
       </article>
     `;
+  }
+
+  function renderOpStatusStrip(ops, item) {
+    const visibleOps = (Array.isArray(ops) ? ops : [])
+      .filter(op => op && normalizeStatus(opExecutionStatus(op, item)));
+    if (!visibleOps.length) return '';
+
+    const maxVisible = 6;
+    const chips = visibleOps.slice(0, maxVisible).map(op => {
+      const opNo = op.op_no || op.source_op_no || op.stage_no || op.operation_label || '-';
+      const opName = op.op_type || op.operation_name || op.stage_desc || '';
+      const status = opExecutionStatus(op, item);
+      const label = displayExecutionStatus(status);
+      return `
+        <span class="ps-op-status ${opStatusClass(status)}" title="${escapeHtml(opName)}">
+          <strong>${escapeHtml(opNo)}</strong>
+          <span>${escapeHtml(label)}</span>
+        </span>
+      `;
+    }).join('');
+    const overflow = visibleOps.length > maxVisible
+      ? `<span class="ps-op-status is-overflow">+${escapeHtml(visibleOps.length - maxVisible)} more</span>`
+      : '';
+    return `<div class="ps-op-status-strip">${chips}${overflow}</div>`;
   }
 
   function cssSafeId(value) {
@@ -340,6 +442,7 @@
           <div class="ps-progress">
             <span>Planned ${escapeHtml(fmtQty(summary.planned_qty))}</span>
             <span>Finished ${escapeHtml(fmtQty(summary.finished_qty))}</span>
+            ${numberValue(summary.wo_qty_required) ? `<span>WO Req ${escapeHtml(fmtQty(summary.wo_qty_required))}</span>` : ''}
             <span>Remaining ${escapeHtml(fmtQty(summary.remaining_qty))}</span>
           </div>
         </div>
@@ -352,13 +455,13 @@
         </div>
       </div>
       ${details.erp_only ? '<div class="ps-details-note">This row is from the ERP catalog and has not been materialized in planner state yet.</div>' : ''}
-      ${renderOps(ops)}
+      ${renderOps(ops, summary)}
       ${renderBlocks(plannedBlocks)}
       ${renderRequirements(requirements)}
     `;
   }
 
-  function renderOps(ops) {
+  function renderOps(ops, summary) {
     if (!ops.length) return '<div class="ps-details-empty">No operations found for this process sheet.</div>';
     return `
       <div class="ps-table-wrap">
@@ -368,8 +471,11 @@
               <th>Op</th>
               <th>Type</th>
               <th>Machine</th>
+              <th>ERP Stage</th>
+              <th>WO Req</th>
               <th>Planned</th>
               <th>Finished</th>
+              <th>Rejected</th>
               <th>Remaining</th>
             </tr>
           </thead>
@@ -379,9 +485,12 @@
                 <td>${escapeHtml(op.op_no || op.source_op_no || op.operation_label || '-')}</td>
                 <td>${escapeHtml(op.op_type || op.operation_name || '-')}</td>
                 <td>${escapeHtml(op.preferred_machine || op.machine_code || op.compatible_machine_group || '-')}</td>
+                <td>${renderOpStatusCell(op, summary)}</td>
+                <td>${escapeHtml(fmtQty(firstQuantity(op.wo_qty_required, op.required_qty, op.target_qty)))}</td>
                 <td>${escapeHtml(fmtQty(op.planned_qty))}</td>
                 <td>${escapeHtml(fmtQty(op.finished_qty))}</td>
-                <td>${escapeHtml(fmtQty(op.remaining_qty || op.target_qty || op.total_qty))}</td>
+                <td>${escapeHtml(fmtQty(op.reject_qty))}</td>
+                <td>${escapeHtml(fmtQty(firstQuantity(op.remaining_qty, op.target_qty, op.total_qty)))}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -468,10 +577,11 @@
     els.materialFilter = $('ps-material-filter');
     els.overdueOnly = $('ps-overdue-only');
     els.showCompleted = $('ps-show-completed');
+    els.completedOnly = $('ps-completed-only');
     els.refreshBtn = $('ps-refresh-btn');
     els.syncBtn = $('ps-sync-btn');
 
-    [els.search, els.statusFilter, els.plannerFilter, els.materialFilter, els.overdueOnly, els.showCompleted]
+    [els.search, els.statusFilter, els.plannerFilter, els.materialFilter, els.overdueOnly, els.showCompleted, els.completedOnly]
       .filter(Boolean)
       .forEach(el => el.addEventListener('input', render));
 

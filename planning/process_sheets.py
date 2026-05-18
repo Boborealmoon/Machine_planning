@@ -182,12 +182,31 @@ def _flow_steps_for_ps_ids(con, ps_ids):
     for row in rows(
         con.execute(
             """
+            WITH stage_outputs AS (
+                SELECT ps_id, pp_partial_no, stage_no,
+                       MAX(wo_qty_required) AS wo_qty_required,
+                       MAX(wo_qty_produced) AS wo_qty_produced,
+                       MAX(wo_qty_rejected) AS wo_qty_rejected,
+                       MAX(execution_status) AS execution_status
+                FROM pp_vouchers_cache
+                WHERE stage_no IS NOT NULL
+                GROUP BY ps_id, pp_partial_no, stage_no
+            )
             SELECT ps.planner_ps_id AS ps_id,
                    pfs.op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
                    pfs.machine_category, pfs.preferred_machine,
-                   pfs.cycle_time, pfs.setup_time, pfs.is_last_op
+                   pfs.cycle_time, pfs.setup_time, pfs.is_last_op,
+                   pfs.source_stage_no,
+                   COALESCE(so.wo_qty_required, 0) AS erp_required_qty,
+                   COALESCE(so.wo_qty_produced, 0) AS erp_finished_qty,
+                   COALESCE(so.wo_qty_rejected, 0) AS erp_reject_qty,
+                   so.execution_status AS erp_execution_status
             FROM planner_process_sheet ps
             JOIN planner_operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
+            LEFT JOIN stage_outputs so
+                   ON so.ps_id = ps.source_ps_id
+                  AND so.pp_partial_no = ps.pp_partial_no
+                  AND so.stage_no = pfs.source_stage_no
             WHERE ps.planner_ps_id = ANY(%s)
             ORDER BY ps.planner_ps_id, pfs.seq_no, pfs.op_seq_id
             """,
@@ -333,10 +352,22 @@ def _planner_status(ps, total_qty, planned_qty, finished_qty, step_count):
     return "PLANNED"
 
 
-def _warnings(ps, planner_status, material_status):
+def _execution_status_completed(value):
+    return compact_text(value).upper().replace("-", "_").replace(" ", "_") in {"C", "COMPLETED"}
+
+
+def _tracked_stage_statuses(ops):
+    return [
+        compact_text(op.get("execution_status"))
+        for op in ops
+        if compact_text(op.get("execution_status"))
+    ]
+
+
+def _warnings(ps, is_completed, material_status):
     warnings = []
     due_date = compact_text(ps.get("due_date"))
-    if due_date and due_date < date.today().isoformat() and planner_status != "COMPLETED":
+    if due_date and due_date < date.today().isoformat() and not is_completed:
         warnings.append("OVERDUE")
     if not int(ps.get("selected_bom_id") or 0):
         warnings.append("NO_FLOW")
@@ -349,10 +380,27 @@ def _warnings(ps, planner_status, material_status):
 def _process_sheet_payload(ps, steps, metrics, material_status):
     raw_planned_qty = _to_float(metrics.get("planned_qty_total"))
     raw_finished_qty = _to_float(metrics.get("finished_qty_total"))
+    source_total_qty = _to_float(ps.get("total_qty") or ps.get("planned_qty"))
+    partial_qty = _to_float(ps.get("partial_qty"))
+    erp_required_qty = _to_float(ps.get("wo_qty_required"))
+    display_qty = erp_required_qty or partial_qty or source_total_qty
+    total_qty = display_qty
     planned_qty, finished_qty, reject_qty, remaining_qty = _summary_quantities(
-        ps.get("total_qty"), steps, metrics
+        total_qty, steps, metrics
     )
-    planner_status = _planner_status(ps, ps.get("total_qty"), planned_qty, finished_qty, len(steps))
+    erp_finished_qty = _to_float(ps.get("wo_qty_produced"))
+    erp_reject_qty = _to_float(ps.get("wo_qty_rejected"))
+    if erp_finished_qty > 0:
+        finished_qty = max(finished_qty, min(total_qty, erp_finished_qty) if total_qty > 0 else erp_finished_qty)
+        reject_qty = max(reject_qty, erp_reject_qty)
+        remaining_qty = max(0.0, total_qty - finished_qty)
+    planner_status = _planner_status(ps, total_qty, planned_qty, finished_qty, len(steps))
+    ops = [_step_payload(step, metrics.get("by_op", {})) for step in steps]
+    tracked_statuses = _tracked_stage_statuses(ops)
+    if not tracked_statuses and compact_text(ps.get("execution_status")):
+        tracked_statuses = [compact_text(ps.get("execution_status"))]
+    execution_completed = bool(tracked_statuses) and all(_execution_status_completed(status) for status in tracked_statuses)
+    is_completed = execution_completed
     display_ps_id, pp_partial_no = _display_ids(ps)
     return {
         "ps_id": ps.get("ps_id") or ps.get("planner_ps_id"),
@@ -366,9 +414,15 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         "part_desc": compact_text(ps.get("part_desc") or ps.get("description") or ""),
         "due_date": compact_text(ps.get("due_date") or ""),
         "order_date": compact_text(ps.get("order_date") or ""),
-        "total_qty": _to_float(ps.get("total_qty")),
+        "total_qty": source_total_qty,
+        "partial_qty": partial_qty,
+        "display_qty": display_qty,
+        "wo_qty_required": erp_required_qty,
         "status": compact_text(ps.get("status") or ""),
+        "execution_status": compact_text(ps.get("execution_status") or ""),
         "planner_status": planner_status,
+        "execution_completed": execution_completed,
+        "is_completed": is_completed,
         "selected_bom_id": int(ps.get("selected_bom_id") or 0),
         "selected_flow_code": compact_text(ps.get("selected_flow_code") or ""),
         "route_label": compact_text(ps.get("selected_flow_code") or "") or "No flow selected",
@@ -377,26 +431,30 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         "reject_qty": reject_qty,
         "remaining_qty": remaining_qty,
         "output_debug": {
-            "total_qty": _to_float(ps.get("total_qty")),
+            "total_qty": total_qty,
             "raw_planned_qty": raw_planned_qty,
             "raw_finished_qty": raw_finished_qty,
+            "erp_required_qty": erp_required_qty,
+            "erp_finished_qty": erp_finished_qty,
+            "erp_reject_qty": erp_reject_qty,
             "displayed_planned_qty": planned_qty,
             "displayed_finished_qty": finished_qty,
         },
         "expected_start": metrics.get("expected_start", ""),
         "expected_end": metrics.get("expected_end", ""),
-        "warnings": _warnings(ps, planner_status, material_status),
+        "warnings": _warnings(ps, is_completed, material_status),
         "material_status": material_status,
-        "ops": [_step_payload(step, metrics.get("by_op", {})) for step in steps],
+        "ops": ops,
     }
 
 
 def _step_payload(step, metrics_by_op):
     key = _operation_key(step.get("op_seq_id"), step.get("op_no"))
     op_metrics = metrics_by_op.get(key, {})
-    total_qty = _to_float(step.get("total_qty"))
+    total_qty = _to_float(step.get("erp_required_qty") or step.get("total_qty"))
     planned_qty = _to_float(op_metrics.get("planned_qty"))
-    finished_qty = _to_float(op_metrics.get("finished_qty"))
+    finished_qty = max(_to_float(op_metrics.get("finished_qty")), _to_float(step.get("erp_finished_qty")))
+    reject_qty = max(_to_float(op_metrics.get("reject_qty")), _to_float(step.get("erp_reject_qty")))
     return {
         "op_seq_id": int(step.get("op_seq_id") or 0),
         "seq_no": int(step.get("seq_no") or 0),
@@ -407,9 +465,15 @@ def _step_payload(step, metrics_by_op):
         "cycle_time": _to_float(step.get("cycle_time")),
         "setup_time": _to_float(step.get("setup_time")),
         "is_last_op": int(bool(step.get("is_last_op"))),
+        "stage_no": int(step.get("source_stage_no") or 0),
+        "execution_status": compact_text(step.get("erp_execution_status") or ""),
+        "required_qty": total_qty,
+        "wo_qty_required": total_qty,
+        "wo_qty_produced": _to_float(step.get("erp_finished_qty")),
+        "wo_qty_rejected": _to_float(step.get("erp_reject_qty")),
         "planned_qty": planned_qty,
         "finished_qty": finished_qty,
-        "reject_qty": _to_float(op_metrics.get("reject_qty")),
+        "reject_qty": reject_qty,
         "remaining_qty": max(0.0, total_qty - finished_qty) if total_qty else 0.0,
         "expected_start": op_metrics.get("expected_start", ""),
         "expected_end": op_metrics.get("expected_end", ""),
@@ -418,6 +482,25 @@ def _step_payload(step, metrics_by_op):
 
 
 _PS_SELECT = """
+    WITH voucher_partials AS (
+        SELECT
+            ps_id,
+            pp_partial_no,
+            MAX(part_no) AS part_no,
+            MAX(description) AS description,
+            MIN(due_date) AS due_date,
+            MIN(order_date) AS order_date,
+            MAX(bom_code) AS bom_code,
+            MAX(status) AS status,
+            MAX(execution_status) AS execution_status,
+            MAX(total_qty) AS total_qty,
+            MAX(partial_qty) AS partial_qty,
+            MAX(wo_qty_required) AS wo_qty_required,
+            MAX(wo_qty_produced) AS wo_qty_produced,
+            MAX(wo_qty_rejected) AS wo_qty_rejected
+        FROM pp_vouchers_cache
+        GROUP BY ps_id, pp_partial_no
+    )
     SELECT
         ps.planner_ps_id AS ps_id,
         ps.source_ps_id,
@@ -432,6 +515,10 @@ _PS_SELECT = """
         ps.updated_at,
         v.total_qty,
         v.partial_qty,
+        v.wo_qty_required,
+        v.wo_qty_produced,
+        v.wo_qty_rejected,
+        v.execution_status,
         v.due_date,
         v.order_date,
         v.part_no,
@@ -440,7 +527,7 @@ _PS_SELECT = """
         sf.bom_code       AS selected_flow_code,
         sf.bom_desc       AS selected_flow_name
     FROM planner_process_sheet ps
-    LEFT JOIN pp_vouchers_cache v
+    LEFT JOIN voucher_partials v
            ON v.ps_id = ps.source_ps_id
           AND v.pp_partial_no = ps.pp_partial_no
     LEFT JOIN planner_bom_variation sf ON sf.bom_id = ps.selected_bom_id
@@ -493,10 +580,10 @@ def list_process_sheets_payload(con):
             continue
         if planner_filter and compact_text(payload["planner_status"]).upper() != planner_filter:
             continue
-        if not show_completed and payload["planner_status"] == "COMPLETED":
+        if not show_completed and payload["is_completed"]:
             continue
         if overdue_only and not (
-            payload["due_date"] and payload["due_date"] < today and payload["planner_status"] != "COMPLETED"
+            payload["due_date"] and payload["due_date"] < today and not payload["is_completed"]
         ):
             continue
         result.append(payload)

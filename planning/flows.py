@@ -1,6 +1,8 @@
 """planning/flows.py — process-sheet flow / operation-sequence routes (PostgreSQL port)."""
 from __future__ import annotations
 
+import threading
+
 from flask import Blueprint, jsonify, request
 
 from .helpers import one, rows, planner_db
@@ -10,6 +12,181 @@ from .utils import compact_text, parse_number
 
 flows_bp = Blueprint("planner_flows", __name__)
 trial_prefixed_flows_bp = Blueprint("trial_planner_flows", __name__)
+
+_SOURCE_KINDS = {"ERP", "MANUAL", "MIXED"}
+_FLOW_SCHEMA_READY = False
+_FLOW_SCHEMA_LOCK = threading.Lock()
+
+
+def _ensure_flow_source_columns(con):
+    global _FLOW_SCHEMA_READY
+    if _FLOW_SCHEMA_READY:
+        return
+    with _FLOW_SCHEMA_LOCK:
+        if _FLOW_SCHEMA_READY:
+            return
+        _ensure_flow_source_columns_uncached(con)
+        _FLOW_SCHEMA_READY = True
+
+
+def _ensure_flow_source_columns_uncached(con):
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS planner_bom_variation (
+            bom_id          BIGSERIAL    PRIMARY KEY,
+            inventory_code  TEXT         NOT NULL,
+            bom_code        TEXT         NOT NULL,
+            bom_desc        TEXT         NOT NULL DEFAULT '',
+            is_default      BOOLEAN      NOT NULL DEFAULT FALSE,
+            source_kind     TEXT         NOT NULL DEFAULT 'ERP',
+            created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            UNIQUE (inventory_code, bom_code)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS planner_operation_seq (
+            op_seq_id         BIGSERIAL    PRIMARY KEY,
+            bom_id            BIGINT       NOT NULL REFERENCES planner_bom_variation(bom_id) ON DELETE CASCADE,
+            seq_no            INTEGER      NOT NULL,
+            op_no             TEXT         NOT NULL,
+            op_type           TEXT         NOT NULL,
+            machine_category  TEXT         NOT NULL,
+            cycle_time        NUMERIC      NOT NULL DEFAULT 1,
+            setup_time        NUMERIC      NOT NULL DEFAULT 0,
+            preferred_machine TEXT         NOT NULL DEFAULT '',
+            is_last_op        BOOLEAN      NOT NULL DEFAULT FALSE,
+            source_kind       TEXT         NOT NULL DEFAULT 'ERP',
+            source_stage_no   INTEGER,
+            planner_note      TEXT         NOT NULL DEFAULT '',
+            UNIQUE (bom_id, seq_no, op_no)
+        )
+        """
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_planner_bom_variation_inv_code ON planner_bom_variation(inventory_code)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_planner_operation_seq_bom_id ON planner_operation_seq(bom_id)"
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_bom_variation
+            ADD COLUMN IF NOT EXISTS source_kind TEXT NOT NULL DEFAULT 'ERP'
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_operation_seq
+            ADD COLUMN IF NOT EXISTS source_kind TEXT NOT NULL DEFAULT 'ERP'
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_operation_seq
+            ADD COLUMN IF NOT EXISTS source_stage_no INTEGER
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_operation_seq
+            ADD COLUMN IF NOT EXISTS planner_note TEXT NOT NULL DEFAULT ''
+        """
+    )
+
+
+def _source_kind(value, default="ERP"):
+    kind = compact_text(value).upper()
+    return kind if kind in _SOURCE_KINDS else default
+
+
+def _stage_source_kind(step):
+    explicit = compact_text(step.get("source_kind")).upper()
+    if explicit in {"ERP", "MANUAL"}:
+        return explicit
+    return "ERP" if int(step.get("op_seq_id") or 0) > 0 else "MANUAL"
+
+
+def _combined_flow_source_kind(stage_kinds, default="ERP"):
+    kinds = {kind for kind in stage_kinds if kind in {"ERP", "MANUAL"}}
+    if not kinds:
+        return default
+    return kinds.pop() if len(kinds) == 1 else "MIXED"
+
+
+def _save_flow_steps(con, bom_id, steps):
+    _ensure_flow_source_columns(con)
+    stage_kinds = []
+    con.execute(
+        "DELETE FROM planner_operation_seq WHERE bom_id = %s",
+        (int(bom_id),),
+    )
+    for idx, step in enumerate(steps, 1):
+        preferred_machine = compact_text(step.get("preferred_machine"))
+        machine_category = compact_text(step.get("machine_category")) or "UNKNOWN"
+        if preferred_machine:
+            machine_row = one(
+                con.execute(
+                    "SELECT machine_category FROM planner_machines WHERE machine_no = %s",
+                    (preferred_machine,),
+                )
+            )
+            machine_category = (
+                compact_text(machine_row["machine_category"] if machine_row else machine_category)
+                or "UNKNOWN"
+            )
+        source_kind = _stage_source_kind(step)
+        stage_kinds.append(source_kind)
+        con.execute(
+            """
+            INSERT INTO planner_operation_seq (
+                bom_id, seq_no, op_no, op_type, machine_category,
+                preferred_machine, cycle_time, setup_time, is_last_op,
+                source_kind, source_stage_no, planner_note
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                int(bom_id),
+                idx,
+                compact_text(step.get("op_no")),
+                compact_text(step.get("op_type")),
+                machine_category,
+                preferred_machine,
+                parse_number(step.get("cycle_time"), 0),
+                parse_number(step.get("setup_time"), 0),
+                idx == len(steps) or bool(step.get("is_last_op")),
+                source_kind,
+                int(step.get("source_stage_no") or 0) or None,
+                compact_text(step.get("planner_note")),
+            ),
+        )
+    return stage_kinds
+
+
+def _flow_payload(con, flow):
+    _ensure_flow_source_columns(con)
+    steps = rows(
+        con.execute(
+            """
+            SELECT op_seq_id, bom_id, seq_no, op_no, op_type, machine_category,
+                   preferred_machine, cycle_time, setup_time, is_last_op,
+                   source_kind, source_stage_no, planner_note
+            FROM planner_operation_seq
+            WHERE bom_id = %s
+            ORDER BY seq_no, op_seq_id
+            """,
+            (int(flow["bom_id"]),),
+        )
+    )
+    item = dict(flow)
+    item["is_default"] = bool(item.get("is_default"))
+    item["steps"] = [
+        {**dict(step), "is_last_op": int(bool(step.get("is_last_op")))}
+        for step in steps
+    ]
+    return item
 
 _PS_FLOW_SELECT = """
     SELECT
@@ -127,10 +304,12 @@ def api_inventory_flows(inventory_code):
     if not inventory_code:
         return jsonify({"error": "inventory_code is required"}), 400
     with planner_db() as con:
+        _ensure_flow_source_columns(con)
         flow_rows = rows(
             con.execute(
                 """
-                SELECT bom_id, bom_code AS flow_code, bom_desc AS flow_name, is_default
+                SELECT bom_id, bom_code AS flow_code, bom_desc AS flow_name, is_default,
+                       source_kind
                 FROM planner_bom_variation
                 WHERE inventory_code = %s
                 ORDER BY is_default DESC, bom_id
@@ -138,28 +317,89 @@ def api_inventory_flows(inventory_code):
                 (inventory_code,),
             )
         )
-        result = []
-        for flow in flow_rows:
-            steps = rows(
-                con.execute(
-                    """
-                    SELECT op_seq_id, bom_id, seq_no, op_no, op_type, machine_category,
-                           preferred_machine, cycle_time, setup_time, is_last_op
-                    FROM planner_operation_seq
-                    WHERE bom_id = %s
-                    ORDER BY seq_no, op_seq_id
-                    """,
-                    (int(flow["bom_id"]),),
-                )
+        return jsonify([_flow_payload(con, flow) for flow in flow_rows])
+
+
+@trial_prefixed_flows_bp.post("/api/trial/process-sheets/<path:ps_id>/flows")
+@flows_bp.post("/api/process-sheets/<path:ps_id>/flows")
+def api_create_process_sheet_flow(ps_id):
+    data = request.get_json(force=True, silent=True) or {}
+    steps = data.get("steps") or []
+    flow_code = compact_text(data.get("flow_code")) or "MANUAL"
+    is_default = bool(data.get("is_default"))
+    with planner_db() as con:
+        _ensure_flow_source_columns(con)
+        try:
+            ps = ensure_planner_process_sheet(con, ps_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 404
+        if not ps:
+            return jsonify({"error": "Process sheet not found"}), 404
+        inventory_code = compact_text(ps.get("inventory_code") or "")
+        if not inventory_code:
+            return jsonify({"error": "Inventory code is required to create a BOM flow"}), 400
+        if is_default:
+            con.execute(
+                "UPDATE planner_bom_variation SET is_default = FALSE WHERE inventory_code = %s",
+                (inventory_code,),
             )
-            item = dict(flow)
-            item["is_default"] = bool(item.get("is_default"))
-            item["steps"] = [
-                {**dict(step), "is_last_op": int(bool(step.get("is_last_op")))}
-                for step in steps
-            ]
-            result.append(item)
-        return jsonify(result)
+        flow_source_kind = _source_kind(data.get("source_kind"), "MANUAL")
+        flow_row = one(
+            con.execute(
+                """
+                INSERT INTO planner_bom_variation (
+                    inventory_code, bom_code, bom_desc, is_default, source_kind,
+                    created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (inventory_code, bom_code) DO UPDATE SET
+                  bom_desc = EXCLUDED.bom_desc,
+                  is_default = EXCLUDED.is_default,
+                  source_kind = EXCLUDED.source_kind,
+                  updated_at = NOW()
+                RETURNING bom_id, inventory_code, bom_code AS flow_code,
+                          bom_desc AS flow_name, is_default, source_kind
+                """,
+                (
+                    inventory_code,
+                    flow_code,
+                    compact_text(data.get("flow_name") or data.get("bom_desc")),
+                    is_default,
+                    flow_source_kind,
+                ),
+            )
+        )
+        bom_id = int(flow_row["bom_id"])
+        stage_kinds = _save_flow_steps(con, bom_id, steps)
+        persisted_source_kind = _combined_flow_source_kind(stage_kinds, flow_source_kind)
+        con.execute(
+            """
+            UPDATE planner_bom_variation
+            SET source_kind = %s, updated_at = NOW()
+            WHERE bom_id = %s
+            """,
+            (persisted_source_kind, bom_id),
+        )
+        con.execute(
+            """
+            UPDATE planner_process_sheet
+            SET selected_bom_id = %s, updated_at = NOW()
+            WHERE planner_ps_id = %s
+            """,
+            (bom_id, ps_id),
+        )
+        sync_material_requirements_for_ps(con, ps_id)
+        refreshed = one(
+            con.execute(
+                """
+                SELECT bom_id, bom_code AS flow_code, bom_desc AS flow_name,
+                       is_default, source_kind
+                FROM planner_bom_variation
+                WHERE bom_id = %s
+                """,
+                (bom_id,),
+            )
+        )
+        return jsonify({"ok": True, "flow": _flow_payload(con, refreshed)})
 
 
 @trial_prefixed_flows_bp.put("/api/trial/flows/<int:bom_id>")
@@ -167,6 +407,7 @@ def api_inventory_flows(inventory_code):
 def api_update_flow(bom_id):
     data = request.get_json(force=True, silent=True) or {}
     with planner_db() as con:
+        _ensure_flow_source_columns(con)
         flow = one(
             con.execute(
                 "SELECT * FROM planner_bom_variation WHERE bom_id = %s",
@@ -177,46 +418,31 @@ def api_update_flow(bom_id):
             return jsonify({"error": "Flow not found"}), 404
         flow_code = compact_text(data.get("flow_code")) or flow["bom_code"]
         is_default = bool(data.get("is_default"))
+        if is_default:
+            con.execute(
+                "UPDATE planner_bom_variation SET is_default = FALSE WHERE inventory_code = %s AND bom_id <> %s",
+                (flow["inventory_code"], int(bom_id)),
+            )
         con.execute(
-            "UPDATE planner_bom_variation SET bom_code = %s, is_default = %s WHERE bom_id = %s",
+            """
+            UPDATE planner_bom_variation
+            SET bom_code = %s, is_default = %s, updated_at = NOW()
+            WHERE bom_id = %s
+            """,
             (flow_code, is_default, int(bom_id)),
         )
         steps = data.get("steps") or []
-        con.execute(
-            "DELETE FROM planner_operation_seq WHERE bom_id = %s",
-            (int(bom_id),),
+        stage_kinds = _save_flow_steps(con, int(bom_id), steps)
+        persisted_source_kind = _combined_flow_source_kind(
+            stage_kinds,
+            _source_kind(flow.get("source_kind"), "ERP"),
         )
-        for idx, step in enumerate(steps, 1):
-            preferred_machine = compact_text(step.get("preferred_machine"))
-            machine_category = compact_text(step.get("machine_category")) or "UNKNOWN"
-            if preferred_machine:
-                machine_row = one(
-                    con.execute(
-                        "SELECT machine_category FROM planner_machines WHERE machine_no = %s",
-                        (preferred_machine,),
-                    )
-                )
-                machine_category = (
-                    compact_text(machine_row["machine_category"] if machine_row else machine_category)
-                    or "UNKNOWN"
-                )
-            con.execute(
-                """
-                INSERT INTO planner_operation_seq (
-                    bom_id, seq_no, op_no, op_type, machine_category,
-                    preferred_machine, cycle_time, setup_time, is_last_op
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    int(bom_id),
-                    idx,
-                    compact_text(step.get("op_no")),
-                    compact_text(step.get("op_type")),
-                    machine_category,
-                    preferred_machine,
-                    parse_number(step.get("cycle_time"), 0),
-                    parse_number(step.get("setup_time"), 0),
-                    idx == len(steps) or bool(step.get("is_last_op")),
-                ),
-            )
+        con.execute(
+            """
+            UPDATE planner_bom_variation
+            SET source_kind = %s, updated_at = NOW()
+            WHERE bom_id = %s
+            """,
+            (persisted_source_kind, int(bom_id)),
+        )
         return jsonify({"ok": True})

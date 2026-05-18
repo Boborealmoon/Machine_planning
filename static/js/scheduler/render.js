@@ -609,12 +609,11 @@ function renderTrialCatalog() {
       <div class="trial-catalog-planned-head">
         <div class="trial-catalog-ps-main">
           <div class="trial-catalog-ps-id">${escapeHtml(String(ps.ps_id || '').split('::')[0] || ps.ps_id || '')}</div>
-          <div class="trial-catalog-ps-part">${escapeHtml(ps.part_name || 'Part No')}</div>
-          ${ps.part_desc ? `<div class="trial-catalog-ps-desc">${escapeHtml(ps.part_desc)}</div>` : ''}
         </div>
         <div class="trial-catalog-planned-right">
           <span class="trial-catalog-planned-badge">Planned</span>
           <span class="trial-catalog-ps-meta trial-catalog-ps-date">${escapeHtml(ps.due_date || 'No due date')}</span>
+          ${(ps.part_name || ps.part_no || ps.part_desc) ? (() => { const _pn = ps.part_name || ps.part_no || ''; const _pd = ps.part_desc || ''; const _ct = [_pn, _pd].filter(Boolean).join('\n'); return `<button class="trial-catalog-info-btn" type="button" onclick="trialCopyInvDesc(event, this)" data-copy-text="${escapeHtml(_ct)}" aria-label="Copy inventory description"><span class="trial-catalog-info-tip">${_pn ? `<span class="tip-part-no">${escapeHtml(_pn)}</span>` : ''}${_pd ? `<span class="tip-desc">${escapeHtml(_pd)}</span>` : ''}</span></button>`; })() : ''}
         </div>
       </div>
       <div class="trial-catalog-bom-bar">
@@ -655,6 +654,16 @@ function renderTrialCatalog() {
   bindTrialCatalogDnD();
 }
 
+function trialCopyInvDesc(event, btn) {
+  event.stopPropagation();
+  const text = btn.dataset.copyText || '';
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(() => {
+    btn.classList.add('copied');
+    setTimeout(() => btn.classList.remove('copied'), 1500);
+  }).catch(() => {});
+}
+
 function decorateTrialCatalogCards() {
   document.querySelectorAll('.trial-catalog-ps').forEach(card => {
     const summary = card.querySelector('summary');
@@ -669,15 +678,23 @@ function decorateTrialCatalogCards() {
       if (dayDiff < 0) card.classList.add('overdue');
       else if (dayDiff <= 7) card.classList.add('due-soon');
     }
+    const _tipPartNo = card.dataset.partName || '';
+    const _tipDesc = card.dataset.invDesc || '';
+    const _tipHtml = [
+      _tipPartNo ? `<span class="tip-part-no">${escapeHtml(_tipPartNo)}</span>` : '',
+      _tipDesc   ? `<span class="tip-desc">${escapeHtml(_tipDesc)}</span>`     : '',
+    ].filter(Boolean).join('');
+    const _copyText = [_tipPartNo, _tipDesc].filter(Boolean).join('\n');
     summary.innerHTML = `
       <div class="trial-catalog-ps-main">
         <div class="trial-catalog-ps-id">${escapeHtml(basePsId)}</div>
         ${partialText ? `<div class="trial-catalog-ps-partial">${escapeHtml(partialText)}</div>` : ''}
-        <div class="trial-catalog-ps-part">${escapeHtml(card.dataset.partName || '')}</div>
-        ${card.dataset.invDesc ? `<div class="trial-catalog-ps-desc">${escapeHtml(card.dataset.invDesc)}</div>` : ''}
         ${trialExecStatusBadge(execStatus)}
       </div>
-      <span class="trial-catalog-ps-meta trial-catalog-ps-date">${escapeHtml(dueDate)}</span>
+      <div class="trial-catalog-ps-right">
+        <span class="trial-catalog-ps-meta trial-catalog-ps-date">${escapeHtml(dueDate)}</span>
+        ${_tipHtml ? `<button class="trial-catalog-info-btn" type="button" onclick="trialCopyInvDesc(event, this)" data-copy-text="${escapeHtml(_copyText)}" aria-label="Copy inventory description"><span class="trial-catalog-info-tip">${_tipHtml}</span></button>` : ''}
+      </div>
     `;
   });
 }

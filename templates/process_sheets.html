@@ -5,12 +5,8 @@
   <div class="page-header">
     <h1 class="page-title">Process Sheets</h1>
     <div class="page-actions">
-      <button class="btn btn-dark" id="ps-refresh-btn" type="button">Refresh</button>
-      <button class="btn btn-light" id="ps-sync-btn" type="button">Sync ERP</button>
-      <button class="btn btn-dark" type="button">Add Process Sheet</button>
-      <button class="btn btn-green" type="button">Auto Plan Active PS</button>
-      <button class="btn btn-red" type="button">Unplan All Unlocked PS</button>
-      <button class="btn btn-light" type="button">Cleanup Legacy Blocks</button>
+      <button class="btn btn-dark" id="ps-refresh-btn" type="button">Refresh From Cache</button>
+      <button class="btn btn-light" id="ps-sync-btn" type="button">Fetch ERP (Latest)</button>
     </div>
   </div>
 
@@ -57,6 +53,7 @@
         </select>
         <label class="checkbox-label"><input type="checkbox" id="ps-overdue-only" /> Overdue Only</label>
         <label class="checkbox-label"><input type="checkbox" id="ps-show-completed" /> Show Completed</label>
+        <label class="checkbox-label"><input type="checkbox" id="ps-completed-only" /> Completed Only</label>
       </div>
     </div>
 
@@ -103,5 +100,5 @@
 
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/process_sheets.js') }}"></script>
+<script src="{{ url_for('static', filename='js/process_sheets.js', v='completed-only-filter-20260518') }}"></script>
 {% endblock %}

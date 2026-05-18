@@ -10,6 +10,8 @@ log = logging.getLogger(__name__)
 load_dotenv()
 
 app = Flask(__name__)
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.jinja_env.auto_reload = True
 
 # ── Planning blueprints ────────────────────────────────────────────────────
 from planning.process_sheets import process_sheets_bp
@@ -146,6 +148,7 @@ _PP_VOUCHERS_COLS = [
     "ps_id", "pp_partial_no", "part_no", "description",
     "total_qty", "partial_qty", "due_date", "order_date",
     "bom_code", "status", "execution_status",
+    "wo_qty_required", "wo_qty_produced", "wo_qty_rejected",
     "stage_no", "stage_desc", "op_no",
 ]
 
@@ -160,6 +163,25 @@ def _invalidate_pp_vouchers_with_ops_cache():
         _PP_VOUCHERS_WITH_OPS_CACHE["data"] = None
 
 
+def _normalize_execution_status(value):
+    return str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+
+
+def _summarize_execution_status(statuses):
+    normalized = [_normalize_execution_status(status) for status in statuses if _normalize_execution_status(status)]
+    if not normalized:
+        return ""
+    if any(status in {"I", "IN_PROCESS"} for status in normalized):
+        return "In Process"
+    if any(status in {"R", "READY_TO_START"} for status in normalized):
+        return "Ready to Start"
+    if any(status in {"P", "PENDING_SI"} for status in normalized):
+        return "Pending SI"
+    if all(status in {"C", "COMPLETED"} for status in normalized):
+        return "Completed"
+    return statuses[0] or ""
+
+
 def _pp_vouchers_with_ops_payload(cache_rows):
     # Group cache rows by (ps_id, pp_partial_no) — one cache row per stage
     grouped = {}
@@ -171,6 +193,9 @@ def _pp_vouchers_with_ops_payload(cache_rows):
 
         if ps_key not in grouped:
             part_no = row.get("part_no") or ""
+            source_total_qty = float(row.get("total_qty") or 0)
+            partial_qty = float(row.get("partial_qty") or 0)
+            display_qty = partial_qty or source_total_qty
             grouped[ps_key] = {
                 "ps_id": ps_id,
                 "part_no": part_no,
@@ -179,17 +204,33 @@ def _pp_vouchers_with_ops_payload(cache_rows):
                 "due_date": str(row.get("due_date") or ""),
                 "order_date": str(row.get("order_date") or ""),
                 "bom_code": row.get("bom_code") or "",
-                "total_qty": float(row.get("total_qty") or 0),
-                "partial_qty": float(row.get("partial_qty") or 0),
+                "total_qty": source_total_qty,
+                "partial_qty": partial_qty,
+                "display_qty": display_qty,
                 "status": row.get("status") or "",
                 "execution_status": row.get("execution_status") or None,
                 "planner_status": None,
+                "planned_qty": 0.0,
+                "finished_qty": 0.0,
+                "reject_qty": 0.0,
+                "wo_qty_required": 0.0,
+                "remaining_qty": 0.0,
                 "op_cards": [],
                 "ops": [],
                 "flow_options": [],
             }
 
         entry = grouped[ps_key]
+        row_execution_status = row.get("execution_status") or ""
+        required_qty = float(row.get("wo_qty_required") or 0)
+        produced_qty = float(row.get("wo_qty_produced") or 0)
+        rejected_qty = float(row.get("wo_qty_rejected") or 0)
+        entry["wo_qty_required"] = max(float(entry.get("wo_qty_required") or 0), required_qty)
+        if entry["wo_qty_required"] > 0:
+            entry["display_qty"] = entry["wo_qty_required"]
+        entry["finished_qty"] = max(float(entry.get("finished_qty") or 0), produced_qty)
+        entry["reject_qty"] = max(float(entry.get("reject_qty") or 0), rejected_qty)
+        entry["remaining_qty"] = max(0.0, entry["wo_qty_required"] - entry["finished_qty"])
         stage_desc = row.get("stage_desc") or ""
         op_no = str(row.get("op_no") or "")
         stage_no = int(row.get("stage_no") or 0)
@@ -197,7 +238,8 @@ def _pp_vouchers_with_ops_payload(cache_rows):
             op_no = str(stage_no)
 
         if stage_desc:
-            qty = float(row.get("partial_qty") or row.get("total_qty") or 0)
+            qty = required_qty or float(row.get("partial_qty") or row.get("total_qty") or 0)
+            remaining_qty = max(0.0, qty - produced_qty)
             machine_group = stage_desc.split()[0].upper() if stage_desc else ""
             op_card = {
                 "card_kind": "single",
@@ -206,8 +248,18 @@ def _pp_vouchers_with_ops_payload(cache_rows):
                 "operation_label": op_no or stage_desc,
                 "operation_name": stage_desc,
                 "op_type": stage_desc,
+                "stage_no": stage_no,
+                "stage_desc": stage_desc,
+                "execution_status": row_execution_status,
                 "target_qty": qty,
-                "remaining_qty": qty,
+                "required_qty": required_qty,
+                "wo_qty_required": required_qty,
+                "wo_qty_produced": produced_qty,
+                "wo_qty_rejected": rejected_qty,
+                "planned_qty": 0.0,
+                "finished_qty": produced_qty,
+                "reject_qty": rejected_qty,
+                "remaining_qty": remaining_qty,
                 "source_ps_id": entry["ps_id"],
                 "source_op_seq_id": stage_no,
                 "source_op_no": op_no,
@@ -221,6 +273,15 @@ def _pp_vouchers_with_ops_payload(cache_rows):
             }
             entry["op_cards"].append(op_card)
             entry["ops"].append(op_card)
+
+    for entry in grouped.values():
+        stage_statuses = [op.get("execution_status") for op in entry.get("ops", [])]
+        summary_status = _summarize_execution_status(stage_statuses)
+        if summary_status:
+            entry["execution_status"] = summary_status
+            entry["execution_completed"] = _normalize_execution_status(summary_status) in {"C", "COMPLETED"}
+        else:
+            entry["execution_completed"] = False
     return list(grouped.values())
 
 
@@ -304,9 +365,12 @@ def api_pp_vouchers_with_ops():
 @app.post("/api/pp-vouchers/sync")
 def api_pp_vouchers_sync():
     """Force a sync regardless of cooldown (manual trigger)."""
-    from sync import run_sync
+    from sync import run_mfg_wo_status_sync, run_sync
     try:
-        result = run_sync(force=True)
+        result = {
+            "mfg_wo_status": run_mfg_wo_status_sync(force=True),
+            "pp_vouchers_cache": run_sync(force=True),
+        }
         _invalidate_pp_vouchers_with_ops_cache()
         return jsonify(result)
     except Exception as e:
@@ -387,9 +451,15 @@ with_desc AS (
 with_wo_status AS (
     SELECT
         wd.*,
-        ws.execution_status
+        ws.execution_status,
+        ws.wo_qty_required,
+        ws.total_acc_qty_produced,
+        ws.total_rej_qty_produced
     FROM with_desc wd
-    LEFT JOIN public.mfg_wo_status ws ON ws.source_mps_no = wd.ps_id
+    LEFT JOIN public.mfg_wo_status ws
+           ON ws.source_mps_no = wd.ps_id
+          AND ws.pp_partial_no = wd.pp_partial_no
+          AND ws.stage_no = wd.stage_no
 ),
 computed AS (
     SELECT DISTINCT
@@ -399,21 +469,21 @@ computed AS (
         description,
         CASE
             WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-            WHEN ws_item_qty  IS NOT NULL AND ws_item_qty  <> 0 THEN ws_item_qty
-            ELSE pp_qty
+            WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
+            ELSE ws_item_qty
         END                     AS total_qty,
         CASE
             WHEN partial_qty_raw IS NULL
               OR partial_qty_raw = 0
               OR partial_qty_raw >= CASE
                     WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-                    WHEN ws_item_qty  IS NOT NULL AND ws_item_qty  <> 0 THEN ws_item_qty
-                    ELSE pp_qty END
+                    WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
+                    ELSE ws_item_qty END
               OR (length(ps_id) - length(replace(ps_id, '-', ''))) > 1
             THEN CASE
                     WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-                    WHEN ws_item_qty  IS NOT NULL AND ws_item_qty  <> 0 THEN ws_item_qty
-                    ELSE pp_qty END
+                    WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
+                    ELSE ws_item_qty END
             ELSE partial_qty_raw
         END                     AS partial_qty,
         source_rsd              AS due_date,
@@ -432,6 +502,9 @@ computed AS (
             WHEN 'C' THEN 'Completed'
             ELSE execution_status
         END                     AS execution_status,
+        wo_qty_required,
+        total_acc_qty_produced  AS wo_qty_produced,
+        total_rej_qty_produced  AS wo_qty_rejected,
         stage_no,
         stage_desc,
         op_no
@@ -556,10 +629,10 @@ def api_pp_partial_sync():
 
 @app.post("/api/pp-staging/sync")
 def api_pp_staging_sync():
-    """Run all 5 PP staging syncs then rebuild the pp_vouchers_cache."""
+    """Run PP staging syncs then rebuild the pp_vouchers_cache."""
     from sync import (
         run_pp_voucher_sync, run_process_sheet_sync, run_workorder_status_sync,
-        run_part_desc_sync, run_pp_partial_sync, run_sync,
+        run_part_desc_sync, run_pp_partial_sync, run_mfg_wo_status_sync, run_sync,
     )
     try:
         results = {
@@ -568,8 +641,10 @@ def api_pp_staging_sync():
             "workorder_status":      run_workorder_status_sync(force=True),
             "part_desc":             run_part_desc_sync(force=True),
             "pp_partial":            run_pp_partial_sync(force=True),
+            "mfg_wo_status":         run_mfg_wo_status_sync(force=True),
             "pp_vouchers_cache":     run_sync(force=True),
         }
+        _invalidate_pp_vouchers_with_ops_cache()
         return jsonify(results)
     except Exception as e:
         return jsonify({"error": str(e)}), 500

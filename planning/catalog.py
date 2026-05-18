@@ -68,13 +68,25 @@ def trial_catalog_items(con, include_completed=False):
                        MAX(status) AS erp_status,
                        MAX(execution_status) AS execution_status,
                        MAX(total_qty) AS total_qty,
-                       MAX(partial_qty) AS partial_qty
+                       MAX(partial_qty) AS partial_qty,
+                       MAX(wo_qty_produced) AS wo_qty_produced,
+                       MAX(wo_qty_rejected) AS wo_qty_rejected
                 FROM pp_vouchers_cache
                 GROUP BY ps_id, pp_partial_no
+            ),
+            voucher_stage_outputs AS (
+                SELECT ps_id, pp_partial_no, stage_no,
+                       MAX(wo_qty_produced) AS wo_qty_produced,
+                       MAX(wo_qty_rejected) AS wo_qty_rejected
+                FROM pp_vouchers_cache
+                WHERE stage_no IS NOT NULL
+                GROUP BY ps_id, pp_partial_no, stage_no
             ),
             source_totals AS (
                 SELECT ps_id,
                        SUM(COALESCE(NULLIF(partial_qty, 0), NULLIF(total_qty, 0), 0)) AS rolled_total_qty,
+                       MAX(wo_qty_produced) AS wo_qty_produced,
+                       MAX(wo_qty_rejected) AS wo_qty_rejected,
                        MAX(part_no) AS part_no,
                        MAX(description) AS description,
                        MIN(due_date) AS due_date,
@@ -87,13 +99,6 @@ def trial_catalog_items(con, include_completed=False):
                 SELECT source_ps_id, SUM(COALESCE(planned_qty, 0)) AS planned_qty
                 FROM planner_process_sheet
                 GROUP BY source_ps_id
-            ),
-            source_stages AS (
-                SELECT ps_id,
-                       ARRAY_AGG(DISTINCT op_no::text) FILTER (WHERE op_no IS NOT NULL) AS stage_op_nos
-                FROM pp_vouchers_cache
-                WHERE UPPER(COALESCE(status, '')) <> 'HISTORY'
-                GROUP BY ps_id
             )
             SELECT ps.planner_ps_id AS planner_ps_id,
                    ps.source_ps_id AS ps_id,
@@ -111,20 +116,20 @@ def trial_catalog_items(con, include_completed=False):
                    COALESCE(st.execution_status, vp.execution_status) AS execution_status,
                    pfs.op_seq_id AS op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
                    pfs.machine_category, pfs.preferred_machine,
-                   pfs.cycle_time, pfs.setup_time, pfs.is_last_op
+                   pfs.cycle_time, pfs.setup_time, pfs.is_last_op,
+                   COALESCE(vso.wo_qty_produced, 0) AS erp_finished_qty,
+                   COALESCE(vso.wo_qty_rejected, 0) AS erp_reject_qty
             FROM planner_process_sheet ps
             LEFT JOIN voucher_partials vp
                    ON vp.ps_id = ps.source_ps_id AND vp.pp_partial_no = ps.pp_partial_no
             LEFT JOIN source_totals st ON st.ps_id = ps.source_ps_id
             LEFT JOIN planner_source_totals pst ON pst.source_ps_id = ps.source_ps_id
-            LEFT JOIN source_stages ss ON ss.ps_id = ps.source_ps_id
             LEFT JOIN planner_bom_variation sf ON sf.bom_id = ps.selected_bom_id
-            LEFT JOIN planner_operation_seq pfs
-                   ON pfs.bom_id = ps.selected_bom_id
-                  AND (
-                    COALESCE(array_length(ss.stage_op_nos, 1), 0) = 0
-                    OR pfs.op_no = ANY(ss.stage_op_nos)
-                  )
+            LEFT JOIN planner_operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
+            LEFT JOIN voucher_stage_outputs vso
+                   ON vso.ps_id = ps.source_ps_id
+                  AND vso.pp_partial_no = ps.pp_partial_no
+                  AND vso.stage_no = pfs.source_stage_no
             WHERE COALESCE(ps.selected_bom_id, 0) > 0
               AND (%s = 1 OR (
                 COALESCE(ps.planner_status, '') <> 'COMPLETED'
@@ -148,13 +153,17 @@ def trial_catalog_items(con, include_completed=False):
                        MAX(status) AS erp_status,
                        MAX(execution_status) AS execution_status,
                        MAX(total_qty) AS total_qty,
-                       MAX(partial_qty) AS partial_qty
+                       MAX(partial_qty) AS partial_qty,
+                       MAX(wo_qty_produced) AS wo_qty_produced,
+                       MAX(wo_qty_rejected) AS wo_qty_rejected
                 FROM pp_vouchers_cache
                 GROUP BY ps_id, pp_partial_no
             ),
             source_totals AS (
                 SELECT ps_id,
                        SUM(COALESCE(NULLIF(partial_qty, 0), NULLIF(total_qty, 0), 0)) AS rolled_total_qty,
+                       MAX(wo_qty_produced) AS wo_qty_produced,
+                       MAX(wo_qty_rejected) AS wo_qty_rejected,
                        MAX(part_no) AS part_no,
                        MAX(description) AS description,
                        MIN(due_date) AS due_date,
@@ -209,7 +218,9 @@ def trial_catalog_items(con, include_completed=False):
         op_key = trial_catalog_op_key(ps_id, row["op_no"], op_seq_id)
         required_qty = float(row["total_qty"] or 0)
         planned_qty = float(planned_qty_by_op.get(op_key, 0) or 0)
-        remaining_qty = max(0.0, required_qty - planned_qty)
+        erp_finished_qty = max(0.0, float(row.get("erp_finished_qty") or 0))
+        erp_reject_qty = max(0.0, float(row.get("erp_reject_qty") or 0))
+        remaining_qty = max(0.0, required_qty - planned_qty - erp_finished_qty)
         item = grouped.setdefault(
             ps_id,
             {
@@ -254,6 +265,8 @@ def trial_catalog_items(con, include_completed=False):
             "total_qty": remaining_qty,
             "required_qty": required_qty,
             "planned_qty": planned_qty,
+            "erp_finished_qty": erp_finished_qty,
+            "erp_reject_qty": erp_reject_qty,
             "remaining_qty": remaining_qty,
             "compatible_machine_group": row["machine_category"] or "",
         }

@@ -191,21 +191,21 @@ computed AS (
         description,
         CASE
             WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-            WHEN ws_item_qty  IS NOT NULL AND ws_item_qty  <> 0 THEN ws_item_qty
-            ELSE pp_qty
+            WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
+            ELSE ws_item_qty
         END                     AS total_qty,
         CASE
             WHEN partial_qty_raw IS NULL
               OR partial_qty_raw = 0
               OR partial_qty_raw >= CASE
                     WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-                    WHEN ws_item_qty  IS NOT NULL AND ws_item_qty  <> 0 THEN ws_item_qty
-                    ELSE pp_qty END
+                    WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
+                    ELSE ws_item_qty END
               OR (length(ps_id) - length(replace(ps_id, '-', ''))) > 1
             THEN CASE
                     WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-                    WHEN ws_item_qty  IS NOT NULL AND ws_item_qty  <> 0 THEN ws_item_qty
-                    ELSE pp_qty END
+                    WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
+                    ELSE ws_item_qty END
             ELSE partial_qty_raw
         END                     AS partial_qty,
         source_rsd              AS due_date,
@@ -227,6 +227,7 @@ _PP_VOUCHERS_COLS = [
     "ps_id", "pp_partial_no", "part_no", "description",
     "total_qty", "partial_qty", "due_date", "order_date",
     "bom_code", "status", "execution_status",
+    "wo_qty_required", "wo_qty_produced", "wo_qty_rejected",
     "stage_no", "stage_desc", "op_no",
 ]
 
@@ -253,7 +254,7 @@ def run_sync(force: bool = False) -> dict:
         raw = _supa_fetch_all(
             f"{supa_url()}/vw_pp_vouchers",
             headers=hdrs,
-            params={"select": ",".join(_PP_VOUCHERS_COLS), "order": "ps_id,pp_partial_no"},
+            params={"select": ",".join(_PP_VOUCHERS_COLS), "order": "ps_id,pp_partial_no,stage_no"},
         )
         rows = [tuple(row[c] for c in _PP_VOUCHERS_COLS) for row in raw]
 
@@ -643,31 +644,57 @@ def run_pp_partial_sync(force: bool = False) -> dict:
 # Priority: I (In Process) > R (Ready to Start) > P (Pending SI) > C (Completed)
 
 _MFG_WO_STATUS_SQL = """
+WITH wo_rows AS (
+    SELECT
+        t2.source_pp_no                   AS source_mps_no,
+        COALESCE(pp.pp_partial_no, 1)     AS pp_partial_no,
+        t3.execution_status,
+        t3.wo_qty_required,
+        t3.total_acc_qty_produced,
+        t3.total_rej_qty_produced,
+        NULLIF(t2.stage_no::TEXT, '')::INTEGER AS stage_no,
+        t3.plan_start_date,
+        t3.plan_end_date,
+        t3.origin_rsd,
+        t2.origin_voucher_no
+    FROM mfg_mps_vch t2
+    JOIN mfg_wo_vch t3 ON t2.wo_voucher_no = t3.voucher_no
+    LEFT JOIN LATERAL (
+        SELECT p.pp_partial_no
+        FROM public.mfg_pp_partial p
+        WHERE p.pp_voucher_no = t2.source_pp_no
+          AND p.partial_qty = t3.wo_qty_required
+        ORDER BY p.pp_partial_no
+        LIMIT 1
+    ) pp ON TRUE
+    WHERE t2.source_pp_no IS NOT NULL
+      AND t2.stage_no IS NOT NULL
+)
 SELECT
-    t2.source_pp_no                   AS source_mps_no,
+    source_mps_no,
+    pp_partial_no,
     CASE
-        WHEN bool_or(t3.execution_status = 'I') THEN 'I'
-        WHEN bool_or(t3.execution_status = 'R') THEN 'R'
-        WHEN bool_or(t3.execution_status = 'P') THEN 'P'
+        WHEN bool_or(execution_status = 'I') THEN 'I'
+        WHEN bool_or(execution_status = 'R') THEN 'R'
+        WHEN bool_or(execution_status = 'P') THEN 'P'
         ELSE 'C'
     END                               AS execution_status,
-    SUM(t3.wo_qty_required)           AS wo_qty_required,
-    SUM(t3.total_acc_qty_produced)    AS total_acc_qty_produced,
-    SUM(t3.total_rej_qty_produced)    AS total_rej_qty_produced,
-    MAX(t2.stage_no)                  AS stage_no,
-    MIN(t3.plan_start_date)           AS plan_start_date,
-    MAX(t3.plan_end_date)             AS plan_end_date,
-    MAX(t3.origin_rsd)                AS po_due_date,
-    MAX(t2.origin_voucher_no)         AS so_no
-FROM mfg_mps_vch t2
-JOIN mfg_wo_vch t3 ON t2.wo_voucher_no = t3.voucher_no
-WHERE t2.source_pp_no IS NOT NULL
-GROUP BY t2.source_pp_no
-ORDER BY t2.source_pp_no
+    SUM(wo_qty_required)              AS wo_qty_required,
+    SUM(total_acc_qty_produced)       AS total_acc_qty_produced,
+    SUM(total_rej_qty_produced)       AS total_rej_qty_produced,
+    stage_no,
+    MIN(plan_start_date)              AS plan_start_date,
+    MAX(plan_end_date)                AS plan_end_date,
+    MAX(origin_rsd)                   AS po_due_date,
+    MAX(origin_voucher_no)            AS so_no
+FROM wo_rows
+GROUP BY source_mps_no, pp_partial_no, stage_no
+ORDER BY source_mps_no, pp_partial_no, stage_no
 """
 
 _MFG_WO_STATUS_COLS = [
     "source_mps_no",
+    "pp_partial_no",
     "execution_status",
     "wo_qty_required",
     "total_acc_qty_produced",
@@ -701,7 +728,33 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
         finally:
             release_conn(src)
 
-        _supa_reload("mfg_wo_status", "_loaded_at", _MFG_WO_STATUS_COLS, rows)
+        from planning.helpers import planner_db
+
+        with planner_db() as target:
+            target.execute("DELETE FROM public.mfg_wo_status")
+            placeholders = ", ".join(["%s"] * len(_MFG_WO_STATUS_COLS))
+            target.executemany(
+                f"""
+                INSERT INTO public.mfg_wo_status ({", ".join(_MFG_WO_STATUS_COLS)})
+                VALUES ({placeholders})
+                ON CONFLICT (source_mps_no, pp_partial_no, stage_no) DO UPDATE SET
+                    execution_status = CASE
+                        WHEN public.mfg_wo_status.execution_status = 'I' OR EXCLUDED.execution_status = 'I' THEN 'I'
+                        WHEN public.mfg_wo_status.execution_status = 'R' OR EXCLUDED.execution_status = 'R' THEN 'R'
+                        WHEN public.mfg_wo_status.execution_status = 'P' OR EXCLUDED.execution_status = 'P' THEN 'P'
+                        ELSE 'C'
+                    END,
+                    wo_qty_required = COALESCE(public.mfg_wo_status.wo_qty_required, 0) + COALESCE(EXCLUDED.wo_qty_required, 0),
+                    total_acc_qty_produced = COALESCE(public.mfg_wo_status.total_acc_qty_produced, 0) + COALESCE(EXCLUDED.total_acc_qty_produced, 0),
+                    total_rej_qty_produced = COALESCE(public.mfg_wo_status.total_rej_qty_produced, 0) + COALESCE(EXCLUDED.total_rej_qty_produced, 0),
+                    plan_start_date = LEAST(public.mfg_wo_status.plan_start_date, EXCLUDED.plan_start_date),
+                    plan_end_date = GREATEST(public.mfg_wo_status.plan_end_date, EXCLUDED.plan_end_date),
+                    po_due_date = COALESCE(EXCLUDED.po_due_date, public.mfg_wo_status.po_due_date),
+                    so_no = COALESCE(EXCLUDED.so_no, public.mfg_wo_status.so_no),
+                    _loaded_at = NOW()
+                """,
+                rows,
+            )
 
         _last_wo_status_sync_at = time.monotonic()
         log.info("mfg_wo_status sync complete - %d rows in %dms",

@@ -72,17 +72,18 @@ CREATE TABLE IF NOT EXISTS public.mfg_wo_status (
     -- Loaded from COMAIN mfg_wo_vch, grouped by source_mps_no.
     -- Priority: I (In Process) > R (Ready to Start) > P (Pending SI) > C (Completed)
     source_mps_no           TEXT        NOT NULL,
+    pp_partial_no           INTEGER     NOT NULL DEFAULT 1,
     execution_status        TEXT,
     wo_qty_required         NUMERIC,
     total_acc_qty_produced  NUMERIC,
     total_rej_qty_produced  NUMERIC,
-    stage_no                TEXT,
+    stage_no                INTEGER,
     plan_start_date         DATE,
     plan_end_date           DATE,
     po_due_date             DATE,       -- origin_rsd from mfg_wo_vch
     so_no                   TEXT,       -- origin_voucher_no from mfg_wo_vch
     _loaded_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (source_mps_no)
+    PRIMARY KEY (source_mps_no, pp_partial_no, stage_no)
 );
 
 -- Run these ALTER TABLE statements if the table already exists in Supabase:
@@ -90,10 +91,14 @@ CREATE TABLE IF NOT EXISTS public.mfg_wo_status (
 -- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS total_acc_qty_produced NUMERIC;
 -- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS total_rej_qty_produced NUMERIC;
 -- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS stage_no               TEXT;
+-- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS pp_partial_no          INTEGER NOT NULL DEFAULT 1;
 -- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS plan_start_date        DATE;
 -- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS plan_end_date          DATE;
 -- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS po_due_date            DATE;
 -- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS so_no                  TEXT;
+-- ALTER TABLE public.mfg_wo_status ALTER COLUMN stage_no TYPE INTEGER USING NULLIF(stage_no::TEXT, '')::INTEGER;
+-- ALTER TABLE public.mfg_wo_status DROP CONSTRAINT IF EXISTS mfg_wo_status_pkey;
+-- ALTER TABLE public.mfg_wo_status ADD PRIMARY KEY (source_mps_no, pp_partial_no, stage_no);
 
 CREATE INDEX IF NOT EXISTS idx_mfg_wo_status_source_mps
     ON public.mfg_wo_status (source_mps_no);
@@ -173,6 +178,9 @@ CREATE TABLE IF NOT EXISTS public.pp_vouchers_cache (
     bom_code            TEXT,
     status              TEXT,
     execution_status    TEXT,
+    wo_qty_required     NUMERIC,
+    wo_qty_produced     NUMERIC,
+    wo_qty_rejected     NUMERIC,
     stage_no            INTEGER,
     stage_desc          TEXT,
     op_no               INTEGER,
@@ -183,6 +191,9 @@ CREATE TABLE IF NOT EXISTS public.pp_vouchers_cache (
 -- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS stage_no   INTEGER;
 -- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS stage_desc TEXT;
 -- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS op_no      INTEGER;
+-- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS wo_qty_required NUMERIC;
+-- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS wo_qty_produced NUMERIC;
+-- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS wo_qty_rejected NUMERIC;
 
 CREATE INDEX IF NOT EXISTS idx_pp_vouchers_cache_ps_id
     ON public.pp_vouchers_cache (ps_id);
@@ -261,9 +272,15 @@ with_desc AS (
 with_wo_status AS (
     SELECT
         wd.*,
-        ws.execution_status
+        ws.execution_status,
+        ws.wo_qty_required,
+        ws.total_acc_qty_produced,
+        ws.total_rej_qty_produced
     FROM with_desc wd
-    LEFT JOIN public.mfg_wo_status ws ON ws.source_mps_no = wd.ps_id
+    LEFT JOIN public.mfg_wo_status ws
+           ON ws.source_mps_no = wd.ps_id
+          AND ws.pp_partial_no = wd.pp_partial_no
+          AND ws.stage_no = wd.stage_no
 ),
 computed AS (
     SELECT DISTINCT
@@ -273,21 +290,21 @@ computed AS (
         description,
         CASE
             WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-            WHEN ws_item_qty  IS NOT NULL AND ws_item_qty  <> 0 THEN ws_item_qty
-            ELSE pp_qty
+            WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
+            ELSE ws_item_qty
         END                     AS total_qty,
         CASE
             WHEN partial_qty_raw IS NULL
               OR partial_qty_raw = 0
               OR partial_qty_raw >= CASE
                     WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-                    WHEN ws_item_qty  IS NOT NULL AND ws_item_qty  <> 0 THEN ws_item_qty
-                    ELSE pp_qty END
+                    WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
+                    ELSE ws_item_qty END
               OR (length(ps_id) - length(replace(ps_id, '-', ''))) > 1
             THEN CASE
                     WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-                    WHEN ws_item_qty  IS NOT NULL AND ws_item_qty  <> 0 THEN ws_item_qty
-                    ELSE pp_qty END
+                    WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
+                    ELSE ws_item_qty END
             ELSE partial_qty_raw
         END                     AS partial_qty,
         source_rsd              AS due_date,
@@ -306,6 +323,9 @@ computed AS (
             WHEN 'C' THEN 'Completed'
             ELSE execution_status
         END                     AS execution_status,
+        wo_qty_required,
+        total_acc_qty_produced  AS wo_qty_produced,
+        total_rej_qty_produced  AS wo_qty_rejected,
         stage_no,
         stage_desc,
         op_no
