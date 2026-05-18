@@ -383,7 +383,7 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
     source_total_qty = _to_float(ps.get("total_qty") or ps.get("planned_qty"))
     partial_qty = _to_float(ps.get("partial_qty"))
     erp_required_qty = _to_float(ps.get("wo_qty_required"))
-    display_qty = erp_required_qty or partial_qty or source_total_qty
+    display_qty = partial_qty or source_total_qty
     total_qty = display_qty
     planned_qty, finished_qty, reject_qty, remaining_qty = _summary_quantities(
         total_qty, steps, metrics
@@ -399,7 +399,10 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
     tracked_statuses = _tracked_stage_statuses(ops)
     if not tracked_statuses and compact_text(ps.get("execution_status")):
         tracked_statuses = [compact_text(ps.get("execution_status"))]
-    execution_completed = bool(tracked_statuses) and all(_execution_status_completed(status) for status in tracked_statuses)
+    if ps.get("execution_completed") is not None:
+        execution_completed = bool(ps.get("execution_completed"))
+    else:
+        execution_completed = bool(tracked_statuses) and all(_execution_status_completed(status) for status in tracked_statuses)
     is_completed = execution_completed
     display_ps_id, pp_partial_no = _display_ids(ps)
     return {
@@ -416,6 +419,8 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         "order_date": compact_text(ps.get("order_date") or ""),
         "total_qty": source_total_qty,
         "partial_qty": partial_qty,
+        "wo_req_qty": partial_qty,
+        "total_wo_qty": source_total_qty,
         "display_qty": display_qty,
         "wo_qty_required": erp_required_qty,
         "status": compact_text(ps.get("status") or ""),
@@ -497,7 +502,16 @@ _PS_SELECT = """
             MAX(partial_qty) AS partial_qty,
             MAX(wo_qty_required) AS wo_qty_required,
             MAX(wo_qty_produced) AS wo_qty_produced,
-            MAX(wo_qty_rejected) AS wo_qty_rejected
+            MAX(wo_qty_rejected) AS wo_qty_rejected,
+            COALESCE(
+                BOOL_AND(
+                    CASE
+                        WHEN NULLIF(TRIM(execution_status), '') IS NULL THEN NULL
+                        ELSE UPPER(REPLACE(REPLACE(execution_status, '-', '_'), ' ', '_')) IN ('C', 'COMPLETED')
+                    END
+                ),
+                FALSE
+            ) AS execution_completed
         FROM pp_vouchers_cache
         GROUP BY ps_id, pp_partial_no
     )
@@ -518,6 +532,7 @@ _PS_SELECT = """
         v.wo_qty_required,
         v.wo_qty_produced,
         v.wo_qty_rejected,
+        v.execution_completed,
         v.execution_status,
         v.due_date,
         v.order_date,

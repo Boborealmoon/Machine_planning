@@ -59,6 +59,31 @@
     return 0;
   }
 
+  function boolValue(value) {
+    if (value === true || value === 1) return true;
+    const text = String(value || '').trim().toLowerCase();
+    return ['1', 'true', 'yes', 'on'].includes(text);
+  }
+
+  function partialNo(item) {
+    const direct = item?.pp_partial_no;
+    if (direct !== null && direct !== undefined && direct !== '') return String(direct);
+    const idPartial = String(item?.ps_id || '').split('::')[1];
+    return idPartial || '1';
+  }
+
+  function partialLabel(item) {
+    return `Partial ${partialNo(item)}`;
+  }
+
+  function woReqQty(item) {
+    return firstQuantity(item?.wo_req_qty, item?.partial_qty, item?.display_qty);
+  }
+
+  function totalWoQty(item) {
+    return firstQuantity(item?.total_wo_qty, item?.total_qty);
+  }
+
   function todayIso() {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -134,6 +159,8 @@
   }
 
   function isCompleted(item) {
+    if (item && Object.prototype.hasOwnProperty.call(item, 'is_completed')) return boolValue(item.is_completed);
+    if (item && Object.prototype.hasOwnProperty.call(item, 'execution_completed')) return boolValue(item.execution_completed);
     const executionStatuses = trackedExecutionStatuses(item);
     return executionStatuses.length > 0 && executionStatuses.every(isExecutionCompletedStatus);
   }
@@ -158,6 +185,7 @@
       item.part_no,
       item.part_name,
       item.part_desc,
+      partialLabel(item),
       item.selected_flow_code,
       item.selected_bom_code,
       item.status,
@@ -179,6 +207,7 @@
       ps_id: item.ps_id || item.display_ps_id || item.source_ps_id || '',
       display_ps_id: item.display_ps_id || item.source_ps_id || item.ps_id || '',
       source_ps_id: item.source_ps_id || item.display_ps_id || item.ps_id || '',
+      pp_partial_no: partialNo(item),
       planner_status: item.planner_status || 'UNPLANNED',
       source: 'planner',
     };
@@ -190,7 +219,7 @@
       ps_id: item.ps_id || '',
       display_ps_id: item.display_ps_id || String(item.ps_id || '').split('::')[0],
       source_ps_id: item.source_ps_id || item.ps_id || '',
-      pp_partial_no: item.pp_partial_no || String(item.ps_id || '').split('::')[1] || '',
+      pp_partial_no: partialNo(item),
       inventory_code: item.inventory_code || item.part_no || '',
       part_name: item.part_name || item.part_no || '',
       part_no: item.part_no || item.inventory_code || '',
@@ -199,13 +228,17 @@
       order_date: item.order_date || '',
       total_qty: item.total_qty || 0,
       partial_qty: item.partial_qty || 0,
+      wo_req_qty: item.wo_req_qty || item.partial_qty || 0,
+      total_wo_qty: item.total_wo_qty || item.total_qty || 0,
       wo_qty_required: item.wo_qty_required || 0,
-      display_qty: item.display_qty || item.wo_qty_required || item.partial_qty || item.total_qty || 0,
+      display_qty: item.display_qty || item.partial_qty || item.total_qty || item.wo_qty_required || 0,
       planned_qty: item.planned_qty || 0,
       finished_qty: item.finished_qty || 0,
       remaining_qty: firstQuantity(item.remaining_qty, item.wo_qty_required, item.display_qty, item.partial_qty, item.total_qty),
       status: item.status || '',
       execution_status: item.execution_status || '',
+      execution_completed: item.execution_completed,
+      is_completed: item.is_completed,
       planner_status: item.planner_status || 'UNPLANNED',
       selected_flow_code: item.selected_flow_code || item.selected_bom_code || item.bom_code || '',
       route_label: item.route_label || item.selected_flow_code || item.selected_bom_code || item.bom_code || 'No flow selected',
@@ -235,7 +268,10 @@
 
       state.items = [...plannerItems, ...erpItems].sort((a, b) => {
         const due = String(a.due_date || '').localeCompare(String(b.due_date || ''));
-        return due || String(a.ps_id || '').localeCompare(String(b.ps_id || ''));
+        const source = String(a.source_ps_id || a.display_ps_id || a.ps_id || '')
+          .localeCompare(String(b.source_ps_id || b.display_ps_id || b.ps_id || ''));
+        const partial = Number(partialNo(a)) - Number(partialNo(b));
+        return due || source || partial || String(a.ps_id || '').localeCompare(String(b.ps_id || ''));
       });
 
       if (plannerResult.status === 'rejected' && erpResult.status === 'rejected') {
@@ -323,7 +359,27 @@
       els.queueHint.textContent = `${items.length} shown from ${state.items.length} loaded${erpOnly ? ` (${erpOnly} ERP-only)` : ''}`;
     }
 
-    els.queue.innerHTML = items.map(renderQueueItem).join('');
+    const openItems = items.filter(item => !isCompleted(item));
+    const completedItems = items.filter(item => isCompleted(item));
+    els.queue.innerHTML = [
+      renderQueueGroup('Open Partials', openItems),
+      renderQueueGroup('Completed Partials', completedItems),
+    ].filter(Boolean).join('');
+  }
+
+  function renderQueueGroup(title, items) {
+    if (!items.length) return '';
+    return `
+      <section class="ps-queue-group">
+        <div class="ps-queue-group-title">
+          <span>${escapeHtml(title)}</span>
+          <strong>${escapeHtml(items.length)}</strong>
+        </div>
+        <div class="ps-queue-group-list">
+          ${items.map(renderQueueItem).join('')}
+        </div>
+      </section>
+    `;
   }
 
   function renderQueueItem(item) {
@@ -333,9 +389,13 @@
     const badgeClass = `ps-badge--${normalizeStatus(item.planner_status || 'UNPLANNED').toLowerCase().replace(/_/g, '-')}`;
     const material = item.material_status?.label || (isMaterialShortage(item) ? 'Material risk' : 'Material OK');
     const dueClass = isOverdue(item) ? 'is-overdue' : '';
-    const partial = item.pp_partial_no ? `<span class="ps-row-muted">Partial ${escapeHtml(item.pp_partial_no)}</span>` : '';
+    const partial = `<span class="ps-partial-badge">${escapeHtml(partialLabel(item))}</span>`;
+    const totalQty = `<span class="ps-total-qty-badge">Total WO Qty ${escapeHtml(fmtQty(totalWoQty(item)))}</span>`;
     const source = item.source === 'erp' ? '<span class="ps-source-badge">ERP</span>' : '';
     const opStatusStrip = renderOpStatusStrip(ops, item);
+    const due = fmtDate(item.due_date);
+    const route = item.route_label || item.selected_flow_code || item.selected_bom_code || 'No flow selected';
+    const descriptor = item.part_desc || 'No description';
 
     return `
       <article class="ps-row ${dueClass}" data-ps-id="${escapeHtml(psId)}">
@@ -343,18 +403,25 @@
           <div class="ps-row-title">
             <span class="ps-id">${escapeHtml(item.display_ps_id || psId)}</span>
             ${partial}
+            ${totalQty}
             ${source}
           </div>
           <div class="ps-row-part">
             <strong>${escapeHtml(item.part_no || item.part_name || item.inventory_code || 'No part')}</strong>
-            <span>${escapeHtml(item.part_desc || 'No description')}</span>
+            <span>${escapeHtml(descriptor)}</span>
           </div>
-          <div class="ps-row-meta">
-            <span>Due ${escapeHtml(fmtDate(item.due_date))}</span>
-            <span>Qty ${escapeHtml(fmtQty(firstQuantity(item.display_qty, item.partial_qty, item.total_qty)))}</span>
-            <span>Route ${escapeHtml(item.route_label || item.selected_flow_code || item.selected_bom_code || 'No flow selected')}</span>
-            <span>${escapeHtml(material)}</span>
-            ${warnings.length ? `<span>${warnings.length} warning${warnings.length === 1 ? '' : 's'}</span>` : ''}
+          <div class="ps-row-highlights">
+            <span class="ps-highlight ps-highlight--due ${isOverdue(item) ? 'is-overdue' : ''}">
+              <small>Due</small><strong>${escapeHtml(due)}</strong>
+            </span>
+            <span class="ps-highlight"><small>WO Req</small><strong>${escapeHtml(fmtQty(woReqQty(item)))}</strong></span>
+            <span class="ps-highlight"><small>Total</small><strong>${escapeHtml(fmtQty(totalWoQty(item)))}</strong></span>
+            ${isMaterialShortage(item) ? `<span class="ps-highlight ps-highlight--risk"><small>Material</small><strong>${escapeHtml(material)}</strong></span>` : ''}
+            ${warnings.length ? `<span class="ps-highlight ps-highlight--risk"><small>Warnings</small><strong>${warnings.length}</strong></span>` : ''}
+          </div>
+          <div class="ps-row-route">
+            <span>BOM / Route</span>
+            <strong>${escapeHtml(route)}</strong>
           </div>
           ${opStatusStrip}
         </button>
@@ -439,18 +506,18 @@
       <div class="ps-details-grid">
         <div class="ps-detail-card">
           <div class="ps-detail-label">Progress</div>
-          <div class="ps-progress">
-            <span>Planned ${escapeHtml(fmtQty(summary.planned_qty))}</span>
-            <span>Finished ${escapeHtml(fmtQty(summary.finished_qty))}</span>
-            ${numberValue(summary.wo_qty_required) ? `<span>WO Req ${escapeHtml(fmtQty(summary.wo_qty_required))}</span>` : ''}
-            <span>Remaining ${escapeHtml(fmtQty(summary.remaining_qty))}</span>
+          <div class="ps-detail-stats">
+            <span><small>WO Req</small><strong>${escapeHtml(fmtQty(woReqQty(summary)))}</strong></span>
+            <span><small>Total Qty</small><strong>${escapeHtml(fmtQty(totalWoQty(summary)))}</strong></span>
+            <span><small>Operations</small><strong>${escapeHtml(ops.length)} op${ops.length === 1 ? '' : 's'}</strong></span>
           </div>
         </div>
         <div class="ps-detail-card">
           <div class="ps-detail-label">Timing</div>
-          <div class="ps-progress">
-            <span>Start ${escapeHtml(summary.expected_start ? String(summary.expected_start).slice(0, 16) : '-')}</span>
-            <span>End ${escapeHtml(summary.expected_end ? String(summary.expected_end).slice(0, 16) : '-')}</span>
+          <div class="ps-detail-stats ps-detail-stats--timing">
+            <span><small>Due Date</small><strong>${escapeHtml(fmtDate(summary.due_date))}</strong></span>
+            <span><small>Start</small><strong>${escapeHtml(summary.expected_start ? String(summary.expected_start).slice(0, 16) : '-')}</strong></span>
+            <span><small>End</small><strong>${escapeHtml(summary.expected_end ? String(summary.expected_end).slice(0, 16) : '-')}</strong></span>
           </div>
         </div>
       </div>

@@ -198,6 +198,9 @@ def _pp_vouchers_with_ops_payload(cache_rows):
             display_qty = partial_qty or source_total_qty
             grouped[ps_key] = {
                 "ps_id": ps_id,
+                "source_ps_id": ps_id_raw,
+                "display_ps_id": ps_id_raw,
+                "pp_partial_no": pp_partial,
                 "part_no": part_no,
                 "part_name": part_no,
                 "part_desc": row.get("description") or "",
@@ -206,6 +209,8 @@ def _pp_vouchers_with_ops_payload(cache_rows):
                 "bom_code": row.get("bom_code") or "",
                 "total_qty": source_total_qty,
                 "partial_qty": partial_qty,
+                "wo_req_qty": partial_qty,
+                "total_wo_qty": source_total_qty,
                 "display_qty": display_qty,
                 "status": row.get("status") or "",
                 "execution_status": row.get("execution_status") or None,
@@ -226,8 +231,6 @@ def _pp_vouchers_with_ops_payload(cache_rows):
         produced_qty = float(row.get("wo_qty_produced") or 0)
         rejected_qty = float(row.get("wo_qty_rejected") or 0)
         entry["wo_qty_required"] = max(float(entry.get("wo_qty_required") or 0), required_qty)
-        if entry["wo_qty_required"] > 0:
-            entry["display_qty"] = entry["wo_qty_required"]
         entry["finished_qty"] = max(float(entry.get("finished_qty") or 0), produced_qty)
         entry["reject_qty"] = max(float(entry.get("reject_qty") or 0), rejected_qty)
         entry["remaining_qty"] = max(0.0, entry["wo_qty_required"] - entry["finished_qty"])
@@ -282,6 +285,7 @@ def _pp_vouchers_with_ops_payload(cache_rows):
             entry["execution_completed"] = _normalize_execution_status(summary_status) in {"C", "COMPLETED"}
         else:
             entry["execution_completed"] = False
+        entry["is_completed"] = entry["execution_completed"]
     return list(grouped.values())
 
 
@@ -472,20 +476,14 @@ computed AS (
             WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
             ELSE ws_item_qty
         END                     AS total_qty,
-        CASE
-            WHEN partial_qty_raw IS NULL
-              OR partial_qty_raw = 0
-              OR partial_qty_raw >= CASE
-                    WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-                    WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
-                    ELSE ws_item_qty END
-              OR (length(ps_id) - length(replace(ps_id, '-', ''))) > 1
-            THEN CASE
-                    WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-                    WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
-                    ELSE ws_item_qty END
-            ELSE partial_qty_raw
-        END                     AS partial_qty,
+        COALESCE(
+            NULLIF(partial_qty_raw, 0),
+            CASE
+                WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
+                WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
+                ELSE ws_item_qty
+            END
+        )                       AS partial_qty,
         source_rsd              AS due_date,
         ps_order_date           AS order_date,
         bom_code,

@@ -194,20 +194,14 @@ computed AS (
             WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
             ELSE ws_item_qty
         END                     AS total_qty,
-        CASE
-            WHEN partial_qty_raw IS NULL
-              OR partial_qty_raw = 0
-              OR partial_qty_raw >= CASE
-                    WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-                    WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
-                    ELSE ws_item_qty END
-              OR (length(ps_id) - length(replace(ps_id, '-', ''))) > 1
-            THEN CASE
-                    WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-                    WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
-                    ELSE ws_item_qty END
-            ELSE partial_qty_raw
-        END                     AS partial_qty,
+        COALESCE(
+            NULLIF(partial_qty_raw, 0),
+            CASE
+                WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
+                WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
+                ELSE ws_item_qty
+            END
+        )                       AS partial_qty,
         source_rsd              AS due_date,
         ps_order_date           AS order_date,
         bom_code,
