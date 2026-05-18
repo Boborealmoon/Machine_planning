@@ -140,6 +140,17 @@ function openTrialActualModal(blockId) {
   }
 
   const actualRows = trialActualRowsForBlock(blockId);
+  const today = trialTodayLocal();
+  if (!actualRows.some(row => String(row.report_date || '') === today)) {
+    actualRows.push({
+      report_date: today,
+      segment: null,
+      actual: trialActualForBlockDate(blockId, today) || {},
+      target_qty: Number(block.remaining_qty || block.scheduled_qty || 0),
+      actual_only: true,
+    });
+  }
+  actualRows.sort((a, b) => String(a.report_date).localeCompare(String(b.report_date)));
   const outputTotal = (trialState.actuals || [])
     .filter(row => String(row.block_id) === String(blockId) && row.output_qty !== null && row.output_qty !== undefined)
     .reduce((sum, row) => sum + Number(row.output_qty || 0), 0);

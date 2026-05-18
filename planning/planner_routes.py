@@ -348,6 +348,7 @@ def api_trial_schedule():
 
 def _api_trial_schedule_db():
     include_completed = int(request.args.get("include_completed") or 0)
+    lite = compact_text(request.args.get("lite")).lower() in {"1", "true", "yes"}
     start_iso = compact_text(request.args.get("start") or request.args.get("from")) or date.today().isoformat()
     end_iso = compact_text(request.args.get("end") or request.args.get("to")) or (date.today() + timedelta(days=7)).isoformat()
     with planner_db() as con:
@@ -531,8 +532,8 @@ def _api_trial_schedule_db():
         profiles = rows(con.execute(
             "SELECT profile_name, capacity_minutes, start_minute, note FROM planner_capacity_profile ORDER BY profile_id"
         ))
-        catalog = trial_catalog_items(con, include_completed=bool(include_completed))
-        planning_cards = [card for cards in planning_cards_by_ps(con).values() for card in cards]
+        catalog = {"available": [], "planned": []} if lite else trial_catalog_items(con, include_completed=bool(include_completed))
+        planning_cards = [] if lite else [card for cards in planning_cards_by_ps(con).values() for card in cards]
         group_ids = sorted({int(row["group_id"]) for row in blocks if int(row.get("group_id") or 0) > 0})
         block_groups = []
         for group_id in group_ids:
@@ -566,14 +567,17 @@ def _api_trial_schedule_db():
             if start_text and (ps_id not in planned_starts or start_text < planned_starts[ps_id]):
                 planned_starts[ps_id] = start_text
 
-        try:
-            sync_material_requirements_for_ps_ids(con, ps_ids)
-        except Exception:
-            import logging
-            logging.getLogger(__name__).exception(
-                "material requirement sync failed during trial schedule load"
-            )
-        material_status_map = material_status_map_for_ps_ids(con, ps_ids, planned_starts)
+        if lite:
+            material_status_map = {}
+        else:
+            try:
+                sync_material_requirements_for_ps_ids(con, ps_ids)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "material requirement sync failed during trial schedule load"
+                )
+            material_status_map = material_status_map_for_ps_ids(con, ps_ids, planned_starts)
         default_material_status = {"status": "NOT_REQUIRED", "label": "", "expected_ready_date": "", "severity": "none"}
         for row in blocks:
             ps_id = compact_text(row.get("source_ps_id"))

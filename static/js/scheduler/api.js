@@ -44,7 +44,11 @@ async function syncPpVouchers() {
   if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
   try {
     await POST('/api/pp-vouchers/sync', {});
-    const erpVouchers = await GET('/api/pp-vouchers/with-ops');
+    trialLoadCache.catalog = null;
+    trialLoadCache.catalogExpiresAt = 0;
+    const erpVouchers = await GET('/api/pp-vouchers/with-ops?refresh=1');
+    trialLoadCache.catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
+    trialLoadCache.catalogExpiresAt = Date.now() + 30000;
     trialState.catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
     renderTrialCatalog();
     if (btn) btn.textContent = 'Synced ✓';
@@ -136,12 +140,27 @@ function trialMergeBlocksWithSchedule(scheduleBlocks) {
   return Array.from(merged.values());
 }
 
-async function loadTrial() {
+async function trialCachedGET(cacheKey, ttlMs, url) {
+  const now = Date.now();
+  const valueKey = cacheKey;
+  const expiresKey = `${cacheKey}ExpiresAt`;
+  if (trialLoadCache[valueKey] && now < Number(trialLoadCache[expiresKey] || 0)) {
+    return trialLoadCache[valueKey];
+  }
+  const data = await GET(url);
+  trialLoadCache[valueKey] = data;
+  trialLoadCache[expiresKey] = now + Number(ttlMs || 0);
+  return data;
+}
+
+async function loadTrial(options = {}) {
   const resolved = trialNormalizeScheduleDates(trialScheduleDateFilter.start, trialScheduleDateFilter.end);
   trialScheduleDateFilter = resolved;
   trialSyncScheduleUrl();
+  const force = !!options.force;
 
   const params = new URLSearchParams();
+  params.set('lite', '1');
   if (trialScheduleDateFilter.start) params.set('start', trialScheduleDateFilter.start);
   if (trialScheduleDateFilter.end) params.set('end', trialScheduleDateFilter.end);
   const startParam = params.toString() ? `?${params.toString()}` : '';
@@ -155,9 +174,16 @@ async function loadTrial() {
     console.error('Failed to load trial schedule:', err);
   }
 
+  if (force) {
+    trialLoadCache.catalog = null;
+    trialLoadCache.catalogExpiresAt = 0;
+    trialLoadCache.machines = null;
+    trialLoadCache.machinesExpiresAt = 0;
+  }
+
   const [erpVouchers, machinesResult] = await Promise.all([
-    GET('/api/pp-vouchers/with-ops').catch(() => []),
-    GET('/api/planner/machines').catch(() => ({ machines: [] })),
+    trialCachedGET('catalog', 30000, '/api/pp-vouchers/with-ops').catch(() => []),
+    trialCachedGET('machines', 300000, '/api/planner/machines').catch(() => ({ machines: [] })),
   ]);
 
   const scheduleData = scheduleResult || {};

@@ -149,6 +149,80 @@ _PP_VOUCHERS_COLS = [
     "stage_no", "stage_desc", "op_no",
 ]
 
+_PP_VOUCHERS_WITH_OPS_CACHE = {"expires_at": 0.0, "data": None}
+_PP_VOUCHERS_WITH_OPS_CACHE_LOCK = threading.Lock()
+_PP_VOUCHERS_WITH_OPS_TTL_SECS = 30
+
+
+def _invalidate_pp_vouchers_with_ops_cache():
+    with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+        _PP_VOUCHERS_WITH_OPS_CACHE["expires_at"] = 0.0
+        _PP_VOUCHERS_WITH_OPS_CACHE["data"] = None
+
+
+def _pp_vouchers_with_ops_payload(cache_rows):
+    # Group cache rows by (ps_id, pp_partial_no) — one cache row per stage
+    grouped = {}
+    for row in cache_rows:
+        pp_partial = int(row.get("pp_partial_no") or 1)
+        ps_id_raw = row.get("ps_id") or ""
+        ps_key = (ps_id_raw, pp_partial)
+        ps_id = f"{ps_id_raw}::{pp_partial}" if pp_partial > 1 else ps_id_raw
+
+        if ps_key not in grouped:
+            part_no = row.get("part_no") or ""
+            grouped[ps_key] = {
+                "ps_id": ps_id,
+                "part_no": part_no,
+                "part_name": part_no,
+                "part_desc": row.get("description") or "",
+                "due_date": str(row.get("due_date") or ""),
+                "order_date": str(row.get("order_date") or ""),
+                "bom_code": row.get("bom_code") or "",
+                "total_qty": float(row.get("total_qty") or 0),
+                "partial_qty": float(row.get("partial_qty") or 0),
+                "status": row.get("status") or "",
+                "execution_status": row.get("execution_status") or None,
+                "planner_status": None,
+                "op_cards": [],
+                "ops": [],
+                "flow_options": [],
+            }
+
+        entry = grouped[ps_key]
+        stage_desc = row.get("stage_desc") or ""
+        op_no = str(row.get("op_no") or "")
+        stage_no = int(row.get("stage_no") or 0)
+        if not op_no and stage_no:
+            op_no = str(stage_no)
+
+        if stage_desc:
+            qty = float(row.get("partial_qty") or row.get("total_qty") or 0)
+            machine_group = stage_desc.split()[0].upper() if stage_desc else ""
+            op_card = {
+                "card_kind": "single",
+                "card_id": None,
+                "ps_id": entry["ps_id"],
+                "operation_label": op_no or stage_desc,
+                "operation_name": stage_desc,
+                "op_type": stage_desc,
+                "target_qty": qty,
+                "remaining_qty": qty,
+                "source_ps_id": entry["ps_id"],
+                "source_op_seq_id": stage_no,
+                "source_op_no": op_no,
+                "job_no": entry["ps_id"],
+                "planning_status": "UNSCHEDULED",
+                "card_type": "SINGLE",
+                "is_scheduled": False,
+                "setup_minutes": 180.0,
+                "cycle_minutes_per_qty": 20.0,
+                "compatible_machine_group": machine_group,
+            }
+            entry["op_cards"].append(op_card)
+            entry["ops"].append(op_card)
+    return list(grouped.values())
+
 
 @app.get("/api/pp-vouchers")
 def api_pp_vouchers():
@@ -172,10 +246,16 @@ def api_pp_vouchers():
 @app.get("/api/pp-vouchers/with-ops")
 def api_pp_vouchers_with_ops():
     """PP vouchers from cache, grouped by PS, with op cards built from stage columns."""
-    import requests as req
     from db import supa_url, supa_headers
     from sync import is_sync_needed
     try:
+        refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
+        now = time.monotonic()
+        with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+            cached_data = _PP_VOUCHERS_WITH_OPS_CACHE.get("data")
+            if not refresh and cached_data is not None and now < float(_PP_VOUCHERS_WITH_OPS_CACHE.get("expires_at") or 0):
+                return jsonify(cached_data)
+
         # Trigger sync in background — serve cached data immediately
         if is_sync_needed():
             from sync import run_sync, run_mfg_wo_status_sync
@@ -197,68 +277,11 @@ def api_pp_vouchers_with_ops():
             params={"select": ",".join(_PP_VOUCHERS_COLS), "order": "ps_id,pp_partial_no,stage_no"},
         )
 
-        # Group cache rows by (ps_id, pp_partial_no) — one cache row per stage
-        grouped = {}
-        for row in cache_rows:
-            pp_partial = int(row.get("pp_partial_no") or 1)
-            ps_id_raw = row.get("ps_id") or ""
-            ps_key = (ps_id_raw, pp_partial)
-            ps_id = f"{ps_id_raw}::{pp_partial}" if pp_partial > 1 else ps_id_raw
-
-            if ps_key not in grouped:
-                part_no = row.get("part_no") or ""
-                grouped[ps_key] = {
-                    "ps_id": ps_id,
-                    "part_no": part_no,
-                    "part_name": part_no,
-                    "part_desc": row.get("description") or "",
-                    "due_date": str(row.get("due_date") or ""),
-                    "order_date": str(row.get("order_date") or ""),
-                    "bom_code": row.get("bom_code") or "",
-                    "total_qty": float(row.get("total_qty") or 0),
-                    "partial_qty": float(row.get("partial_qty") or 0),
-                    "status": row.get("status") or "",
-                    "execution_status": row.get("execution_status") or None,
-                    "planner_status": None,
-                    "op_cards": [],
-                    "ops": [],
-                    "flow_options": [],
-                }
-
-            entry = grouped[ps_key]
-            stage_desc = row.get("stage_desc") or ""
-            op_no = str(row.get("op_no") or "")
-            stage_no = int(row.get("stage_no") or 0)
-            if not op_no and stage_no:
-                op_no = str(stage_no)
-
-            if stage_desc:
-                qty = float(row.get("partial_qty") or row.get("total_qty") or 0)
-                machine_group = stage_desc.split()[0].upper() if stage_desc else ""
-                op_card = {
-                    "card_kind": "single",
-                    "card_id": None,
-                    "ps_id": entry["ps_id"],
-                    "operation_label": op_no or stage_desc,
-                    "operation_name": stage_desc,
-                    "op_type": stage_desc,
-                    "target_qty": qty,
-                    "remaining_qty": qty,
-                    "source_ps_id": entry["ps_id"],
-                    "source_op_seq_id": stage_no,
-                    "source_op_no": op_no,
-                    "job_no": entry["ps_id"],
-                    "planning_status": "UNSCHEDULED",
-                    "card_type": "SINGLE",
-                    "is_scheduled": False,
-                    "setup_minutes": 180.0,
-                    "cycle_minutes_per_qty": 20.0,
-                    "compatible_machine_group": machine_group,
-                }
-                entry["op_cards"].append(op_card)
-                entry["ops"].append(op_card)
-
-        return jsonify(list(grouped.values()))
+        data = _pp_vouchers_with_ops_payload(cache_rows)
+        with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+            _PP_VOUCHERS_WITH_OPS_CACHE["data"] = data
+            _PP_VOUCHERS_WITH_OPS_CACHE["expires_at"] = time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS
+        return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -269,6 +292,7 @@ def api_pp_vouchers_sync():
     from sync import run_sync
     try:
         result = run_sync(force=True)
+        _invalidate_pp_vouchers_with_ops_cache()
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500

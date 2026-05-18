@@ -328,9 +328,29 @@ function renderTrialOpCardHtml(card) {
 
 // ── Machine lane ──────────────────────────────────────────────────────────────
 
+function trialGroupEndForAvailability(group) {
+  return String(
+    group?.visual_end_datetime ||
+    group?.group_end ||
+    group?.leader?.visual_end_datetime ||
+    group?.leader?.calculated_end_datetime ||
+    ''
+  ).trim();
+}
+
+function trialMachineAvailabilityEnd(groups) {
+  const ends = (groups || []).map(trialGroupEndForAvailability).filter(Boolean).sort();
+  return ends[ends.length - 1] || '';
+}
+
 function renderTrialMachine(machine) {
-  const groups = trialBlocksGroupedForMachine(machine.machine_id).filter(trialGroupRunsInsideDateFilter);
+  const allGroups = trialBlocksGroupedForMachine(machine.machine_id);
+  const groups = allGroups.filter(trialGroupRunsInsideDateFilter);
   const laneId = `trial-lane-${machine.machine_id}`;
+  const availabilityEnd = trialMachineAvailabilityEnd(allGroups);
+  const availabilityTag = allGroups.length > 1 && availabilityEnd
+    ? `<span class="trial-machine-availability">Next available ${trialFormatDt(availabilityEnd)}</span>`
+    : '';
 
   const blockHtml = groups.length
     ? groups.map(group => {
@@ -364,24 +384,36 @@ function renderTrialMachine(machine) {
                   <div class="trial-block-title">${escapeHtml(psDisplay.base || group.title || '')}</div>
                   ${psDisplay.partial ? `<div class="trial-block-partial">Partial ${escapeHtml(psDisplay.partial)}</div>` : ''}
                   <div class="trial-block-op">${escapeHtml(operationLine)}</div>
-                  <div class="trial-block-qty">Qty ${fmt(group.target_qty || 0, 0)}</div>
                 </div>
               </div>
               ${combinedLine ? `<div class="trial-block-combined-line">${escapeHtml(combinedLine)}</div>` : ''}
             </div>
-            <div class="trial-op-card-statuses">
-              <span class="trial-pill ${trialPlanningStatusClass(group.planning_status)}">Plan ${escapeHtml(group.planning_status || 'UNPLANNED')}</span>
-              <span class="trial-pill ${trialStatusClass(group.status)}">Exec ${escapeHtml(group.status)}</span>
+            <div class="trial-op-card-metrics">
+              <span class="trial-metric-pill">
+                <span class="trial-pill-label">Qty</span>
+                <span class="trial-pill-value">${fmt(group.target_qty || 0, 0)}</span>
+              </span>
+              <span class="trial-metric-pill">
+                <span class="trial-pill-label">Output</span>
+                <span class="trial-pill-value">${fmt(pairedOutput, 0)}</span>
+              </span>
             </div>
-            <div class="trial-op-card-info">
-              <button class="trial-pill trial-pill-start clickable ${anchored ? 'yellow' : 'gray'}" type="button"
+            <div class="trial-op-card-info trial-op-card-time-row">
+              <button class="trial-pill trial-time-pill trial-pill-start clickable ${anchored ? 'yellow' : 'gray'}" type="button"
                 onclick="editTrialAnchor(${leader?.block_id || 0})" title="Click to edit anchor">
-                Start ${trialFormatDt(group.visual_start_datetime || group.group_start)}
+                <span class="trial-pill-label">Queued</span>
+                <span class="trial-pill-value">${trialFormatDt(group.visual_start_datetime || group.group_start)}</span>
               </button>
-              <span class="trial-pill">End ${trialFormatDt(group.visual_end_datetime || group.group_end)}</span>
-              <span class="trial-pill">Output: ${fmt(pairedOutput, 0)}</span>
-              ${materialStatus?.label ? `<span class="trial-pill ${materialChipClass}">${escapeHtml(materialStatus.label)}</span>` : ''}
+              <span class="trial-pill trial-time-pill">
+                <span class="trial-pill-label">End</span>
+                <span class="trial-pill-value">${trialFormatDt(group.visual_end_datetime || group.group_end)}</span>
+              </span>
             </div>
+            ${materialStatus?.label ? `
+              <div class="trial-op-card-extra-tags">
+                <span class="trial-pill ${materialChipClass}">${escapeHtml(materialStatus.label)}</span>
+              </div>
+            ` : ''}
             ${group.blocks.length > 1 ? `
               <div class="trial-block-member-progress">
                 ${group.member_metrics.map(member => `
@@ -414,6 +446,7 @@ function renderTrialMachine(machine) {
         <div>
           <div class="trial-machine-title">${machine.machine_code}</div>
           <div class="trial-machine-meta">${machine.machine_category} - ${machine.shift_profile || 'STANDARD'}</div>
+          ${availabilityTag}
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
           <button class="btn btn-ghost btn-sm" type="button" onclick="openTrialCreateModal(${machine.machine_id})">Add</button>

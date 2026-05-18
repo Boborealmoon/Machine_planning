@@ -204,9 +204,7 @@ def dependency_finish_for_block(con, block):
         finish_val = prev_row["dependency_finish"] if prev_row else None
         if not finish_val:
             return None
-        if isinstance(finish_val, datetime):
-            return finish_val
-        return parse_dt_text(compact_text(finish_val))
+        return parse_dt_text(finish_val)
     current_step = one(
         con.execute(
             "SELECT seq_no FROM planner_operation_seq WHERE op_seq_id = %s",
@@ -233,9 +231,7 @@ def dependency_finish_for_block(con, block):
     finish_val = prev_row["dependency_finish"] if prev_row else None
     if not finish_val:
         return None
-    if isinstance(finish_val, datetime):
-        return finish_val
-    return parse_dt_text(compact_text(finish_val))
+    return parse_dt_text(finish_val)
 
 
 def add_future_segments_after_date(con, block_id, after_date: date, qty_to_add, schedule_run_id=None):
@@ -496,7 +492,7 @@ def apply_output_delta_to_block_tail(con, block_id, actual_date_text, delta_qty)
             )
         else:
             new_minutes = new_qty * cycle_time
-            start_dt = seg["start_datetime"] if isinstance(seg["start_datetime"], datetime) else parse_dt_text(seg["start_datetime"])
+            start_dt = parse_dt_text(seg["start_datetime"])
             end_dt = start_dt + timedelta(minutes=new_minutes) if start_dt else parse_dt_text(seg["end_datetime"])
             con.execute(
                 """
@@ -1120,8 +1116,6 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         parsed
         for parsed in (
             parse_dt_text(item["members"][0]["anchor_datetime"])
-            if not isinstance(item["members"][0]["anchor_datetime"], datetime)
-            else item["members"][0]["anchor_datetime"]
             for item in queue_items
         )
         if parsed
@@ -1215,8 +1209,8 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
 
         if not is_combined:
             block = leader
-            planned_start = block["planned_start_at"] if isinstance(block["planned_start_at"], datetime) else parse_dt_text(block["planned_start_at"])
-            anchor_dt = block["anchor_datetime"] if isinstance(block["anchor_datetime"], datetime) else parse_dt_text(block["anchor_datetime"])
+            planned_start = parse_dt_text(block["planned_start_at"])
+            anchor_dt = parse_dt_text(block["anchor_datetime"])
             planned_start = planned_start or anchor_dt
             dependency_finish = dependency_finish_for_block(con, block)
             candidate_start = current_dt
@@ -1286,8 +1280,8 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         setup_minutes = max((float(member["setup_minutes"] or 0) for member in members), default=0.0)
         combined_cycle = sum(float(member["cycle_minutes_per_qty"] or 0) for member in members)
         scheduled_qty = max((float(member["scheduled_qty"] or 0) for member in members), default=0.0)
-        leader_planned_start = leader["planned_start_at"] if isinstance(leader["planned_start_at"], datetime) else parse_dt_text(leader["planned_start_at"])
-        leader_anchor = leader["anchor_datetime"] if isinstance(leader["anchor_datetime"], datetime) else parse_dt_text(leader["anchor_datetime"])
+        leader_planned_start = parse_dt_text(leader["planned_start_at"])
+        leader_anchor = parse_dt_text(leader["anchor_datetime"])
         leader_planned_start = leader_planned_start or leader_anchor
         leader_dependency_finish = dependency_finish_for_block(con, leader)
         candidate_start = current_dt

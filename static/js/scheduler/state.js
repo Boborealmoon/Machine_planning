@@ -20,3 +20,9 @@ let trialCatalogPointerDrag = null;
 let trialCatalogPointerListenersBound = false;
 // Blocks pinned after schedule POST until schedule refresh includes them (prevents pop-off).
 let trialPinnedBlocks = new Map();
+let trialLoadCache = {
+  catalog: null,
+  catalogExpiresAt: 0,
+  machines: null,
+  machinesExpiresAt: 0,
+};

@@ -5,6 +5,35 @@ function trialModalShell(html) {
   shell.innerHTML = html;
 }
 
+function closeModal() {
+  trialModalShell('');
+  document.body.classList.remove('trial-modal-open');
+}
+
+function openModal(title, bodyHtml, size = '') {
+  const sizeClass = size ? ` trial-modal-panel-${String(size).trim()}` : '';
+  trialModalShell(`
+    <div class="trial-modal-backdrop" data-trial-modal-backdrop="1">
+      <div class="trial-modal-panel${sizeClass}" role="dialog" aria-modal="true" aria-labelledby="trial-modal-title">
+        <div class="trial-modal-head">
+          <div id="trial-modal-title" class="trial-modal-title">${escapeHtml(title || '')}</div>
+          <button type="button" class="trial-modal-close" aria-label="Close modal" data-trial-modal-close="1">×</button>
+        </div>
+        <div class="trial-modal-body">${bodyHtml || ''}</div>
+      </div>
+    </div>
+  `);
+  document.body.classList.add('trial-modal-open');
+  setTimeout(() => {
+    const shell = document.getElementById('trial-modal-shell');
+    shell?.querySelector('[data-trial-modal-close="1"]')?.addEventListener('click', closeModal);
+    shell?.querySelector('[data-trial-modal-backdrop="1"]')?.addEventListener('click', event => {
+      if (event.target?.dataset?.trialModalBackdrop === '1') closeModal();
+    });
+    shell?.querySelector('input, select, textarea, button')?.focus();
+  }, 0);
+}
+
 function trialParsePayload(dt) {
   if (!dt) return null;
   try {
@@ -130,8 +159,12 @@ function openTrialBlockEditor(blockId) {
     } catch (e) {
       toast('Update failed: ' + e.message, 'error');
     }
-  }, `<button type="button" class="btn btn-ghost btn-sm" id="trial-delete-block">Delete</button>`);
+  }, `
+    <button type="button" class="btn btn-ghost btn-sm" id="trial-actual-output">Actual Output</button>
+    <button type="button" class="btn btn-ghost btn-sm" id="trial-delete-block">Delete</button>
+  `);
   setTimeout(() => {
+    document.getElementById('trial-actual-output')?.addEventListener('click', () => openTrialActualModal(block.block_id));
     document.getElementById('trial-delete-block')?.addEventListener('click', async () => {
       if (!confirm(`Delete ${block.job_no} - ${block.operation_name}?`)) return;
       try {

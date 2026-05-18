@@ -39,9 +39,9 @@ def rows(cur):
 
 
 def parse_dt_text(value):
-    """Parse a datetime string / object into a Python datetime (or None)."""
+    """Parse a datetime string / object into a naive local datetime (or None)."""
     if isinstance(value, datetime):
-        return value
+        return value.replace(tzinfo=None) if value.tzinfo is not None else value
     text = str(value or "").strip().replace("T", " ")
     if not text:
         return None

@@ -215,8 +215,8 @@ def refresh_machine_queue_state(con, block_id, schedule_run_id=None):
     planned_minutes = 0.0
     if planned_start and planned_end:
         try:
-            s = planned_start if isinstance(planned_start, datetime) else parse_dt_text(ps_text)
-            e = planned_end if isinstance(planned_end, datetime) else parse_dt_text(pe_text)
+            s = parse_dt_text(planned_start)
+            e = parse_dt_text(planned_end)
             if s and e:
                 planned_minutes = max(0.0, (e - s).total_seconds() / 60.0)
         except (ValueError, TypeError):
@@ -233,7 +233,7 @@ def refresh_machine_queue_state(con, block_id, schedule_run_id=None):
     delay_minutes = 0.0
     if planned_end:
         try:
-            end_dt = planned_end if isinstance(planned_end, datetime) else parse_dt_text(pe_text)
+            end_dt = parse_dt_text(planned_end)
             if end_dt:
                 now_dt = datetime.now()
                 if end_dt < now_dt and execution_status not in {"DONE", "COMPLETED"}:
@@ -406,7 +406,7 @@ def refresh_process_sheet_state(con, ps_id):
     delay_minutes = 0.0
     if bounds and bounds[1]:
         try:
-            end_dt = bounds[1] if isinstance(bounds[1], datetime) else parse_dt_text(str(bounds[1]))
+            end_dt = parse_dt_text(bounds[1])
             if end_dt:
                 now_dt = datetime.now()
                 if end_dt < now_dt and execution_status != "DONE":
