@@ -5,10 +5,12 @@
   <div class="page-header">
     <h1 class="page-title">Process Sheets</h1>
     <div class="page-actions">
-      <button class="btn btn-dark">Add Process Sheet</button>
-      <button class="btn btn-green">Auto Plan Active PS</button>
-      <button class="btn btn-red">Unplan All Unlocked PS</button>
-      <button class="btn btn-light">Cleanup Legacy Blocks</button>
+      <button class="btn btn-dark" id="ps-refresh-btn" type="button">Refresh</button>
+      <button class="btn btn-light" id="ps-sync-btn" type="button">Sync ERP</button>
+      <button class="btn btn-dark" type="button">Add Process Sheet</button>
+      <button class="btn btn-green" type="button">Auto Plan Active PS</button>
+      <button class="btn btn-red" type="button">Unplan All Unlocked PS</button>
+      <button class="btn btn-light" type="button">Cleanup Legacy Blocks</button>
     </div>
   </div>
 
@@ -32,27 +34,29 @@
             <circle cx="6.5" cy="6.5" r="5" stroke="#999" stroke-width="1.5"/>
             <path d="M10.5 10.5L14 14" stroke="#999" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
-          <input type="text" class="search-input" placeholder="Search PS ID, part, Inv code, description..." />
+          <input type="text" class="search-input" id="ps-search" placeholder="Search PS ID, part, Inv code, description..." />
         </div>
-        <select class="filter-select">
-          <option>All Statuses</option>
-          <option>Unplanned</option>
-          <option>Partially Planned</option>
-          <option>Planned</option>
-          <option>Needs Review</option>
-          <option>Completed</option>
-          <option>Overdue</option>
+        <select class="filter-select" id="ps-status-filter">
+          <option value="">All Statuses</option>
+          <option value="Outstanding">Outstanding</option>
+          <option value="Active">Active</option>
+          <option value="History">History</option>
+          <option value="Completed">Completed</option>
         </select>
-        <select class="filter-select">
-          <option>All Planner Status</option>
+        <select class="filter-select" id="ps-planner-filter">
+          <option value="">All Planner Status</option>
+          <option value="UNPLANNED">Unplanned</option>
+          <option value="PARTIALLY_PLANNED">Partially Planned</option>
+          <option value="PLANNED">Planned</option>
+          <option value="NEEDS_REVIEW">Needs Review</option>
+          <option value="COMPLETED">Completed</option>
         </select>
-        <select class="filter-select">
-          <option>All Material</option>
-          <option>Shortage Only</option>
+        <select class="filter-select" id="ps-material-filter">
+          <option value="">All Material</option>
+          <option value="shortage">Shortage Only</option>
         </select>
-        <label class="checkbox-label"><input type="checkbox" /> Overdue Only</label>
-        <label class="checkbox-label"><input type="checkbox" /> Shortage Only</label>
-        <label class="checkbox-label"><input type="checkbox" /> Show Completed</label>
+        <label class="checkbox-label"><input type="checkbox" id="ps-overdue-only" /> Overdue Only</label>
+        <label class="checkbox-label"><input type="checkbox" id="ps-show-completed" /> Show Completed</label>
       </div>
     </div>
 
@@ -60,27 +64,27 @@
     <div class="status-cards">
       <div class="status-card">
         <span class="status-label">UNPLANNED</span>
-        <span class="status-dash" style="color:#999">—</span>
+        <span class="status-dash" id="ps-count-unplanned" style="color:#999">—</span>
       </div>
       <div class="status-card">
         <span class="status-label">PARTIALLY PLANNED</span>
-        <span class="status-dash" style="color:#f5a623">—</span>
+        <span class="status-dash" id="ps-count-partially-planned" style="color:#f5a623">—</span>
       </div>
       <div class="status-card">
         <span class="status-label">PLANNED</span>
-        <span class="status-dash" style="color:#999">—</span>
+        <span class="status-dash" id="ps-count-planned" style="color:#999">—</span>
       </div>
       <div class="status-card">
         <span class="status-label">NEEDS REVIEW</span>
-        <span class="status-dash" style="color:#f5a623">—</span>
+        <span class="status-dash" id="ps-count-needs-review" style="color:#f5a623">—</span>
       </div>
       <div class="status-card">
         <span class="status-label">COMPLETED</span>
-        <span class="status-dash" style="color:#27ae60">—</span>
+        <span class="status-dash" id="ps-count-completed" style="color:#27ae60">—</span>
       </div>
       <div class="status-card">
         <span class="status-label">OVERDUE</span>
-        <span class="status-dash" style="color:#e74c3c">—</span>
+        <span class="status-dash" id="ps-count-overdue" style="color:#e74c3c">—</span>
       </div>
     </div>
 
@@ -88,11 +92,16 @@
     <div class="card card--flush">
       <div class="card-bar">
         <span class="card-label">PRODUCTION QUEUE</span>
-        <span class="card-hint">Expand a row to edit route steps, planning blocks, actual output and warnings.</span>
+        <span class="card-hint" id="ps-queue-hint">Loading process sheets...</span>
       </div>
-      <div class="queue-empty">No process sheets found.</div>
+      <div id="ps-queue" class="process-sheet-queue">
+        <div class="queue-empty">Loading process sheets...</div>
+      </div>
     </div>
   </section>
 </div>
 
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/process_sheets.js') }}"></script>
 {% endblock %}

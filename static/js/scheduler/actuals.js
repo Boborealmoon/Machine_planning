@@ -5,7 +5,9 @@ async function saveSegmentActual(segmentId, patch, options = {}) {
   const data = await POST(`/api/trial/segments/${segmentId}/actual`, patch);
   if (!options.silent && data.message) toast(data.message, 'success');
   if (options.reload !== false) {
-    await loadTrial();
+    const _seg = (trialState.segments || []).find(s => String(s.segment_id) === String(segmentId));
+    const _segBlock = _seg ? (trialState.blocks || []).find(b => String(b.block_id) === String(_seg.block_id)) : null;
+    await refreshMachines([Number(_segBlock?.machine_id || 0)].filter(Boolean));
   }
   return data;
 }
@@ -21,7 +23,8 @@ async function trialSaveActualDateInput(blockId, reportDate, field, value) {
     }],
   };
   await POST(`/api/trial/blocks/${blockId}/actual`, payload);
-  await loadTrial();
+  const _dateBlock = (trialState.blocks || []).find(b => String(b.block_id) === String(blockId));
+  await refreshMachines([Number(_dateBlock?.machine_id || 0)].filter(Boolean));
 }
 
 function trialSetActualDraftValue(reportDate, field, value) {
@@ -51,10 +54,12 @@ async function trialDeleteActualDraftDate(reportDate, blockId) {
   shell.querySelectorAll(`[data-trial-actual-date="${CSS.escape(reportDate)}"]`).forEach(input => {
     input.value = '';
   });
+  const _delDraftBlock = (trialState.blocks || []).find(b => String(b.block_id) === String(blockId));
+  const _delDraftMachineId = Number(_delDraftBlock?.machine_id || 0);
   try {
     await trialSubmitActualDraft(blockId);
     closeModal();
-    await loadTrial();
+    await refreshMachines([_delDraftMachineId].filter(Boolean));
     openTrialActualModal(blockId);
     toast('Actual saved', 'success');
   } catch (e) {
@@ -99,7 +104,6 @@ async function trialSubmitActualDraft(blockId, action = null) {
     const res = await saveSegmentActual(item.segmentId, item.patch, { reload: false });
     results.push(res);
   }
-  await loadTrial();
   return results[results.length - 1] || { ok: true };
 }
 
@@ -345,7 +349,11 @@ function openTrialGroupActualModal(groupId) {
         return;
       }
       closeModal();
-      await loadTrial();
+      const _groupBlockIds = new Set((groupSummary.blocks || []).map(b => String(b.block_id)));
+      const _groupMachineId = Number(
+        (trialState.blocks || []).find(b => _groupBlockIds.has(String(b.block_id)))?.machine_id || 0
+      );
+      await refreshMachines([_groupMachineId].filter(Boolean));
       toast('Combined actuals saved', 'success');
     } catch (e) {
       toast('Actual save failed: ' + e.message, 'error');

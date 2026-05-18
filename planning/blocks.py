@@ -24,13 +24,18 @@ from .actuals import actual_totals_for_block
 from .helpers import one, rows, parse_dt_text
 from .machines import capacity_minutes_for_machine_day, machine_work_intervals_for_day
 from .scheduler_state import (
+    compute_change_summary,
     create_schedule_run,
+    find_superseded_run_id,
     refresh_machine_queue_state,
     refresh_operation_state,
     refresh_process_sheet_state,
     refresh_states_for_machine,
     resolve_schedule_alert,
+    snapshot_queue_state,
+    snapshot_queue_state_all,
     upsert_schedule_alert,
+    write_change_summary,
 )
 from .utils import compact_text, date_text, format_qty
 
@@ -190,7 +195,7 @@ def dependency_finish_for_block(con, block):
         prev_row = one(
             con.execute(
                 """
-                SELECT MAX(COALESCE(q.predicted_end_at, b.calculated_end_datetime, b.planned_end_at, b.anchor_datetime)) AS dependency_finish
+                SELECT MAX(COALESCE(b.calculated_end_datetime, q.predicted_end_at, b.planned_end_at, b.anchor_datetime)) AS dependency_finish
                 FROM planner_run_block b
                 JOIN planner_operation o ON o.operation_id = b.operation_id
                 LEFT JOIN planner_machine_queue_state q ON q.block_id = b.block_id
@@ -216,7 +221,7 @@ def dependency_finish_for_block(con, block):
     prev_row = one(
         con.execute(
             """
-            SELECT MAX(COALESCE(q.predicted_end_at, b.calculated_end_datetime, b.planned_end_at, b.anchor_datetime)) AS dependency_finish
+            SELECT MAX(COALESCE(b.calculated_end_datetime, q.predicted_end_at, b.planned_end_at, b.anchor_datetime)) AS dependency_finish
             FROM planner_run_block b
             JOIN planner_operation o ON o.operation_id = b.operation_id
             JOIN planner_operation_seq s ON s.op_seq_id = o.source_op_seq_id
@@ -1038,7 +1043,9 @@ def _schedule_combined_production_across_intervals(con, machine_id, members, sch
 
 
 def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_id=None):
-    if schedule_run_id is None:
+    own_run = schedule_run_id is None
+    if own_run:
+        old_snap = snapshot_queue_state(con, machine_id)
         schedule_run_id = create_schedule_run(
             con,
             reason=reason,
@@ -1356,6 +1363,13 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
     sync_machine_operation_sequence(con, int(machine_id))
     refresh_states_for_machine(con, int(machine_id), schedule_run_id=schedule_run_id)
 
+    if own_run:
+        new_snap = snapshot_queue_state(con, machine_id)
+        summary = compute_change_summary(old_snap, new_snap, machine_id=machine_id)
+        superseded_id = find_superseded_run_id(con, schedule_run_id, int(machine_id), "MACHINE")
+        if superseded_id:
+            write_change_summary(con, superseded_id, summary)
+
 
 def recalculate_all(con):
     machine_ids = [
@@ -1366,11 +1380,35 @@ def recalculate_all(con):
             )
         )
     ]
+    old_snaps = snapshot_queue_state_all(con, machine_ids)
     schedule_run_id = create_schedule_run(
         con, reason="MANUAL_RECALCULATE", scope_type="FULL", machine_id=None, notes="Recalculate all machines"
     )
     for machine_id in machine_ids:
         recalculate_machine(con, machine_id, reason="MANUAL_RECALCULATE", schedule_run_id=schedule_run_id)
+
+    by_machine = {}
+    total_shifted = total_added = total_removed = 0
+    for mid in machine_ids:
+        new_snap = snapshot_queue_state(con, mid)
+        msummary = compute_change_summary(old_snaps[int(mid)], new_snap, machine_id=mid)
+        if msummary["blocks_shifted"] or msummary["blocks_added"] or msummary["blocks_removed"]:
+            by_machine[str(int(mid))] = msummary
+            total_shifted += len(msummary["blocks_shifted"])
+            total_added += len(msummary["blocks_added"])
+            total_removed += len(msummary["blocks_removed"])
+
+    full_summary = {
+        "scope": "FULL",
+        "machines_changed": len(by_machine),
+        "total_blocks_shifted": total_shifted,
+        "total_blocks_added": total_added,
+        "total_blocks_removed": total_removed,
+        "by_machine": by_machine,
+    }
+    superseded_id = find_superseded_run_id(con, schedule_run_id, None, "FULL")
+    if superseded_id:
+        write_change_summary(con, superseded_id, full_summary)
 
 
 def refresh_block_group_label(con, group_id):

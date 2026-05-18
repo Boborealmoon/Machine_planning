@@ -93,6 +93,7 @@ function openTrialCreateModal(defaultMachineId = '') {
     </div>
   `, 'Create', async () => {
     try {
+      const _newMachineId = Number(document.getElementById('trial-machine-id')?.value || 0);
       await POST('/api/trial/operations', {
         job_no: document.getElementById('trial-job-no').value,
         operation_name: document.getElementById('trial-operation-name').value,
@@ -107,7 +108,7 @@ function openTrialCreateModal(defaultMachineId = '') {
         remarks: document.getElementById('trial-remarks').value,
       });
       closeModal();
-      await loadTrial();
+      await refreshMachines([_newMachineId]);
       toast('Run block created', 'success');
     } catch (e) {
       toast('Create failed: ' + e.message, 'error');
@@ -140,6 +141,7 @@ function openTrialBlockEditor(blockId) {
     </div>
   `, 'Save', async () => {
     try {
+      const _editedMachineId = Number(document.getElementById('trial-edit-machine-id')?.value || 0);
       await PUT(`/api/trial/blocks/${block.block_id}`, {
         job_no: document.getElementById('trial-edit-job-no').value,
         operation_name: document.getElementById('trial-edit-operation-name').value,
@@ -147,14 +149,14 @@ function openTrialBlockEditor(blockId) {
         scheduled_qty: Number(document.getElementById('trial-edit-scheduled-qty').value || 0),
         setup_minutes: Number(document.getElementById('trial-edit-setup-minutes').value || 0),
         cycle_minutes_per_qty: Number(document.getElementById('trial-edit-cycle-minutes').value || 0),
-        machine_id: Number(document.getElementById('trial-edit-machine-id').value || 0),
+        machine_id: _editedMachineId,
         queue_position: Number(document.getElementById('trial-edit-queue-position').value || 1),
         include_setup: document.getElementById('trial-edit-include-setup').value === '1',
         anchor_datetime: document.getElementById('trial-edit-anchor-datetime').value,
         remarks: document.getElementById('trial-edit-remarks').value,
       });
       closeModal();
-      await loadTrial();
+      await refreshMachines([...new Set([block.machine_id, _editedMachineId].filter(Boolean))]);
       toast('Run block updated', 'success');
     } catch (e) {
       toast('Update failed: ' + e.message, 'error');
@@ -168,9 +170,10 @@ function openTrialBlockEditor(blockId) {
     document.getElementById('trial-delete-block')?.addEventListener('click', async () => {
       if (!confirm(`Delete ${block.job_no} - ${block.operation_name}?`)) return;
       try {
+        const _delMachineId = block.machine_id;
         await DEL(`/api/trial/blocks/${block.block_id}`);
         closeModal();
-        await loadTrial();
+        await refreshMachines([_delMachineId].filter(Boolean));
         toast('Run block deleted', 'success');
       } catch (e) {
         toast('Delete failed: ' + e.message, 'error');
@@ -194,7 +197,7 @@ function openTrialSplitModal(blockId) {
         split_qty: Number(document.getElementById('trial-split-qty').value || 0),
       });
       closeModal();
-      await loadTrial();
+      await refreshMachines([block.machine_id].filter(Boolean));
       toast('Block split', 'success');
     } catch (e) {
       toast('Split failed: ' + e.message, 'error');
@@ -270,7 +273,7 @@ function editTrialAnchor(blockId) {
         anchor_datetime: document.getElementById('trial-anchor-input').value,
       });
       closeModal();
-      await loadTrial();
+      await refreshMachines([block.machine_id].filter(Boolean));
       toast('Anchor updated', 'success');
     } catch (e) {
       toast('Anchor update failed: ' + e.message, 'error');
@@ -283,7 +286,7 @@ async function toggleTrialSetup(blockId) {
   if (!block) return;
   try {
     await PUT(`/api/trial/blocks/${block.block_id}`, { include_setup: Number(block.include_setup || 0) === 1 ? 0 : 1 });
-    await loadTrial();
+    await refreshMachines([block.machine_id].filter(Boolean));
   } catch (e) {
     toast('Setup toggle failed: ' + e.message, 'error');
   }
@@ -315,7 +318,7 @@ async function saveTrialOrder(lane, reload = true) {
       ordered_ids: orderedIds,
     });
     if (reload) {
-      await loadTrial();
+      await refreshMachines([machineId]);
       toast('Queue order saved', 'success');
     }
   } catch (e) {
@@ -337,9 +340,11 @@ async function removeTrialBlock(blockId, groupId) {
     ? 'Remove this combined operation from the machine? All ops in the group will be returned to the side panel.'
     : 'Remove this operation from the machine? It will return to the side panel for re-allocation.';
   if (!confirm(msg)) return;
+  const _rmBlock = (trialState.blocks || []).find(b => String(b.block_id) === String(numericBlockId));
+  const _rmMachineId = _rmBlock ? Number(_rmBlock.machine_id || 0) : 0;
   try {
     await DEL(`/api/trial/blocks/${numericBlockId}`);
-    await loadTrial();
+    await refreshMachines([_rmMachineId].filter(Boolean));
     toast('Removed from machine — returned to side panel', 'success');
   } catch (e) {
     toast('Remove failed: ' + e.message, 'error');

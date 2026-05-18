@@ -246,7 +246,6 @@ def api_pp_vouchers():
 @app.get("/api/pp-vouchers/with-ops")
 def api_pp_vouchers_with_ops():
     """PP vouchers from cache, grouped by PS, with op cards built from stage columns."""
-    from db import supa_url, supa_headers
     from sync import is_sync_needed
     try:
         refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
@@ -270,12 +269,13 @@ def api_pp_vouchers_with_ops():
                     pass
             threading.Thread(target=_bg_sync, daemon=True).start()
 
-        from sync import _supa_fetch_all
-        cache_rows = _supa_fetch_all(
-            f"{supa_url()}/pp_vouchers_cache",
-            headers=supa_headers(write=True),
-            params={"select": ",".join(_PP_VOUCHERS_COLS), "order": "ps_id,pp_partial_no,stage_no"},
-        )
+        # Fetch directly from Supabase PostgreSQL — much faster than going via REST
+        from planning.helpers import planner_db, rows as _db_rows
+        cols = ", ".join(_PP_VOUCHERS_COLS)
+        with planner_db() as _con:
+            cache_rows = _db_rows(_con.execute(
+                f"SELECT {cols} FROM pp_vouchers_cache ORDER BY ps_id, pp_partial_no, stage_no"
+            ))
 
         data = _pp_vouchers_with_ops_payload(cache_rows)
         with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
@@ -283,7 +283,22 @@ def api_pp_vouchers_with_ops():
             _PP_VOUCHERS_WITH_OPS_CACHE["expires_at"] = time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS
         return jsonify(data)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # Fall back to REST if direct DB query fails
+        try:
+            from db import supa_url, supa_headers
+            from sync import _supa_fetch_all
+            cache_rows = _supa_fetch_all(
+                f"{supa_url()}/pp_vouchers_cache",
+                headers=supa_headers(write=True),
+                params={"select": ",".join(_PP_VOUCHERS_COLS), "order": "ps_id,pp_partial_no,stage_no"},
+            )
+            data = _pp_vouchers_with_ops_payload(cache_rows)
+            with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+                _PP_VOUCHERS_WITH_OPS_CACHE["data"] = data
+                _PP_VOUCHERS_WITH_OPS_CACHE["expires_at"] = time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS
+            return jsonify(data)
+        except Exception as e2:
+            return jsonify({"error": str(e2)}), 500
 
 
 @app.post("/api/pp-vouchers/sync")

@@ -630,7 +630,7 @@
     gap: 8px;
     align-items: center;
   }
-  .trial-legend span {
+  .trial-legend > span {
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -675,6 +675,12 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 4px 8px;
+    max-height: 78px;
+    overflow: auto;
+    padding: 6px;
+    border: 1px solid rgba(26,28,29,0.06);
+    border-radius: 14px;
+    background: rgba(255,255,255,0.52);
   }
   .trial-machine-checkbox {
     display: flex;
@@ -706,7 +712,7 @@
   .trial-machine-checkbox-actions {
     display: flex;
     gap: 4px;
-    margin-left: 4px;
+    margin-left: 0;
   }
   .trial-machine-toggle-btn {
     border: none;
@@ -724,9 +730,9 @@
   }
   .trial-board-filter-card {
     display: grid;
-    gap: 8px;
+    gap: 10px;
     margin-bottom: 14px;
-    padding: 10px 12px;
+    padding: 12px;
     border: 1px solid rgba(26,28,29,0.08);
     border-radius: 18px;
     background: rgba(255,255,255,0.78);
@@ -735,7 +741,7 @@
   .trial-board-filter-row {
     display: flex;
     flex-wrap: wrap;
-    align-items: end;
+    align-items: flex-start;
     gap: 12px 16px;
   }
   .trial-filter-section {
@@ -744,12 +750,38 @@
     align-items: center;
     gap: 8px;
   }
+  .trial-filter-section-type {
+    align-self: flex-start;
+  }
+  .trial-filter-section-date {
+    margin-left: auto;
+  }
+  .trial-filter-section-machines {
+    flex: 1 0 100%;
+    display: grid;
+    gap: 7px;
+    align-items: stretch;
+    padding-top: 8px;
+    border-top: 1px solid rgba(26,28,29,0.06);
+  }
+  .trial-filter-section-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: center;
+  }
   .trial-filter-label {
     font-size: 11px;
     font-weight: 900;
     color: var(--text3);
     text-transform: uppercase;
     letter-spacing: 0.06em;
+  }
+  .trial-filter-subtle {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text3);
+    font-weight: 700;
   }
   .trial-date-filter {
     display: flex;
@@ -883,9 +915,15 @@
     min-width: 0;
   }
   .trial-block-top {
-    display: grid;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
     gap: 2px;
     min-width: 0;
+  }
+  .trial-block-main {
+    min-width: 0;
+    flex: 1;
   }
   .trial-block-seq {
     display: inline-flex;
@@ -944,12 +982,19 @@
     gap: 6px;
     align-items: center;
   }
-  .trial-op-card-metrics,
   .trial-op-card-time-row {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
     gap: 8px;
     align-items: center;
+  }
+  .trial-op-card-metrics {
+    display: inline-grid;
+    grid-template-columns: repeat(2, auto);
+    gap: 4px;
+    align-items: start;
+    justify-content: end;
+    flex: 0 0 auto;
   }
   .trial-metric-pill {
     display: inline-flex;
@@ -957,12 +1002,13 @@
     align-items: center;
     justify-content: center;
     min-width: 0;
-    padding: 6px 9px;
-    border-radius: 12px;
+    width: 46px;
+    padding: 4px 5px;
+    border-radius: 9px;
     background: rgba(59,130,246,0.08);
     border: 1px solid rgba(59,130,246,0.15);
     color: #1f4ea2;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 900;
     white-space: nowrap;
     overflow: hidden;
@@ -975,6 +1021,9 @@
     box-sizing: border-box;
     border-radius: 12px;
     gap: 1px;
+    padding: 7px 10px;
+    overflow: visible;
+    white-space: normal;
   }
   .trial-pill-label {
     font-size: 9px;
@@ -992,6 +1041,12 @@
     font-size: 11px;
     line-height: 1.2;
     font-weight: 900;
+  }
+  .trial-time-pill .trial-pill-value {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
   .trial-pill {
     display: inline-flex;
@@ -1092,7 +1147,7 @@
   }
   .trial-op-card-time-row {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
     flex-wrap: nowrap;
   }
   .trial-op-card-extra-tags {
@@ -1110,6 +1165,25 @@
   }
   .trial-op-card-actions .btn {
     padding: 6px 10px;
+  }
+  .trial-setup-toggle {
+    border: 1px solid transparent;
+    font-weight: 900;
+    letter-spacing: 0.01em;
+    box-shadow: none;
+  }
+  .trial-setup-toggle.is-on {
+    background: rgba(34,197,94,0.12);
+    border-color: rgba(34,197,94,0.28);
+    color: #157347;
+  }
+  .trial-setup-toggle.is-off {
+    background: rgba(148,163,184,0.14);
+    border-color: rgba(148,163,184,0.24);
+    color: #52616f;
+  }
+  .trial-setup-toggle:hover {
+    filter: brightness(0.97);
   }
   .trial-empty {
     padding: 18px;
@@ -1285,11 +1359,15 @@
   }
   /* Reusable legend colour dot */
   .trial-legend-dot {
-    width: 12px;
+    width: 22px;
     height: 12px;
-    border-radius: 3px;
+    border-radius: 999px;
     display: inline-block;
     flex-shrink: 0;
+  }
+  .trial-legend-dot-empty {
+    background: rgba(255,255,255,0.88);
+    border: 1px solid rgba(26,28,29,0.14);
   }
   /* ── Allocation indicator on catalog op cards ───────────────────────────── */
   .trial-catalog-op.is-allocated {

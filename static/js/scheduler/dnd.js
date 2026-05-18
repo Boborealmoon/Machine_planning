@@ -347,6 +347,8 @@ async function moveTrialBlockToMachine(blockId, machineId, queuePosition = 0) {
     toast('Missing block or machine for move.', 'error');
     return;
   }
+  const _moveBlock = (trialState.blocks || []).find(b => String(b.block_id) === String(numericBlockId));
+  const _fromMachineId = _moveBlock ? Number(_moveBlock.machine_id || 0) : 0;
   const lane = document.getElementById(`trial-lane-${numericMachineId}`);
   let orderedIds = trialLaneOrderedBlockIds(lane).filter(id => id !== numericBlockId);
   const insertIdx = queuePosition > 0
@@ -368,7 +370,7 @@ async function moveTrialBlockToMachine(blockId, machineId, queuePosition = 0) {
         queue_position: seq.sequence_no,
       });
     }
-    await loadTrial();
+    await refreshMachines([...(new Set([_fromMachineId, numericMachineId].filter(Boolean)))]);
     toast('Job moved', 'success');
   } catch (e) {
     toast('Move failed: ' + e.message, 'error');
@@ -444,12 +446,14 @@ function initTrialMachineSortables() {
         const fromLane = evt.from;
         const toLane = evt.to;
         if (!fromLane || !toLane) return;
+        const _fromMachineId = Number(fromLane.dataset.machineId || 0);
+        const _toMachineId = Number(toLane.dataset.machineId || 0);
         try {
           if (fromLane !== toLane) {
             await saveTrialOrder(fromLane, false);
           }
           await saveTrialOrder(toLane, false);
-          await loadTrial();
+          await refreshMachines([...(new Set([_fromMachineId, _toMachineId].filter(Boolean)))]);
         } catch (e) {
           toast('Reorder failed: ' + e.message, 'error');
           await loadTrial();
@@ -492,7 +496,7 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
     if (result && result.block) {
       trialPinBlock(result.block);
     }
-    await loadTrial();
+    await refreshMachines([Number(machineId || 0)].filter(Boolean));
     await syncTrialQueueState();
     toast('Operation scheduled', 'success');
   } catch (e) {
@@ -512,7 +516,7 @@ async function scheduleTrialCombinedOpCard(cardId, machineId, queuePosition = 0)
       machine_id: Number(machineId || 0),
       queue_position: Number(queuePosition || 0),
     });
-    await loadTrial();
+    await refreshMachines([Number(machineId || 0)].filter(Boolean));
     toast('Operations scheduled', 'success');
   } catch (e) {
     toast('Schedule failed: ' + e.message, 'error');

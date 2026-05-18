@@ -28,50 +28,110 @@ from .utils import compact_text, parse_number, trial_catalog_op_key
 # Catalog: process sheets with remaining operations
 # ---------------------------------------------------------------------------
 
+def _base_ps_id(ps_id):
+    ps_id = compact_text(ps_id)
+    return ps_id.split("::", 1)[0] if "::" in ps_id else ps_id
+
+
 def trial_catalog_items(con, include_completed=False):
     planned_qty_by_op = {}
     for row in rows(
         con.execute(
             """
-            SELECT o.source_ps_id, o.source_op_no, o.source_op_seq_id AS source_op_seq_id,
+            SELECT COALESCE(NULLIF(split_part(o.source_ps_id, '::', 1), ''), o.source_ps_id) AS source_ps_id,
+                   o.source_op_no, o.source_op_seq_id AS source_op_seq_id,
                    COALESCE(SUM(COALESCE(b.scheduled_qty, 0)), 0) AS planned_qty
             FROM planner_operation o
             JOIN planner_run_block b ON b.operation_id = o.operation_id
             WHERE COALESCE(o.source_ps_id, '') <> ''
               AND COALESCE(b.active, TRUE) = TRUE
               AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
-            GROUP BY o.source_ps_id, o.source_op_no, o.source_op_seq_id
+            GROUP BY COALESCE(NULLIF(split_part(o.source_ps_id, '::', 1), ''), o.source_ps_id),
+                     o.source_op_no, o.source_op_seq_id
             """
         )
     ):
         key = trial_catalog_op_key(row["source_ps_id"], row["source_op_no"], row["source_op_seq_id"])
         planned_qty_by_op[key] = float(row["planned_qty"] or 0)
 
-    # Process sheets that have a selected BOM (have ops to schedule)
+    # Process sheets that have a selected BOM (have ops to schedule). ERP cache
+    # has one row per partial/stage, so aggregate it before joining to planner
+    # steps; otherwise partial quantities and operation rows get multiplied.
     records = rows(
         con.execute(
             """
-            SELECT ps.planner_ps_id AS ps_id, ps.inventory_code,
+            WITH voucher_partials AS (
+                SELECT ps_id, pp_partial_no,
+                       MAX(part_no) AS part_no,
+                       MAX(description) AS description,
+                       MIN(due_date) AS due_date,
+                       MAX(status) AS erp_status,
+                       MAX(execution_status) AS execution_status,
+                       MAX(total_qty) AS total_qty,
+                       MAX(partial_qty) AS partial_qty
+                FROM pp_vouchers_cache
+                GROUP BY ps_id, pp_partial_no
+            ),
+            source_totals AS (
+                SELECT ps_id,
+                       SUM(COALESCE(NULLIF(partial_qty, 0), NULLIF(total_qty, 0), 0)) AS rolled_total_qty,
+                       MAX(part_no) AS part_no,
+                       MAX(description) AS description,
+                       MIN(due_date) AS due_date,
+                       MAX(erp_status) AS erp_status,
+                       MAX(execution_status) AS execution_status
+                FROM voucher_partials
+                GROUP BY ps_id
+            ),
+            planner_source_totals AS (
+                SELECT source_ps_id, SUM(COALESCE(planned_qty, 0)) AS planned_qty
+                FROM planner_process_sheet
+                GROUP BY source_ps_id
+            ),
+            source_stages AS (
+                SELECT ps_id,
+                       ARRAY_AGG(DISTINCT op_no::text) FILTER (WHERE op_no IS NOT NULL) AS stage_op_nos
+                FROM pp_vouchers_cache
+                WHERE UPPER(COALESCE(status, '')) <> 'HISTORY'
+                GROUP BY ps_id
+            )
+            SELECT ps.planner_ps_id AS planner_ps_id,
+                   ps.source_ps_id AS ps_id,
+                   ps.pp_partial_no,
+                   ps.inventory_code,
                    ps.selected_bom_id, ps.planner_status, ps.status,
-                   ps.planned_qty AS total_qty,
+                   COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0) AS total_qty,
+                   COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0) AS partial_qty,
                    sf.bom_code AS selected_bom_code,
-                   pvc.part_no, pvc.description AS part_desc, pvc.part_no AS part_name,
-                   pvc.due_date, pvc.status AS erp_status, pvc.execution_status,
+                   COALESCE(st.part_no, vp.part_no) AS part_no,
+                   COALESCE(st.description, vp.description) AS part_desc,
+                   COALESCE(st.part_no, vp.part_no) AS part_name,
+                   COALESCE(st.due_date, vp.due_date) AS due_date,
+                   COALESCE(st.erp_status, vp.erp_status) AS erp_status,
+                   COALESCE(st.execution_status, vp.execution_status) AS execution_status,
                    pfs.op_seq_id AS op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
                    pfs.machine_category, pfs.preferred_machine,
                    pfs.cycle_time, pfs.setup_time, pfs.is_last_op
             FROM planner_process_sheet ps
-            LEFT JOIN pp_vouchers_cache pvc
-                   ON pvc.ps_id = ps.source_ps_id AND pvc.pp_partial_no = ps.pp_partial_no
+            LEFT JOIN voucher_partials vp
+                   ON vp.ps_id = ps.source_ps_id AND vp.pp_partial_no = ps.pp_partial_no
+            LEFT JOIN source_totals st ON st.ps_id = ps.source_ps_id
+            LEFT JOIN planner_source_totals pst ON pst.source_ps_id = ps.source_ps_id
+            LEFT JOIN source_stages ss ON ss.ps_id = ps.source_ps_id
             LEFT JOIN planner_bom_variation sf ON sf.bom_id = ps.selected_bom_id
-            LEFT JOIN planner_operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
+            LEFT JOIN planner_operation_seq pfs
+                   ON pfs.bom_id = ps.selected_bom_id
+                  AND (
+                    COALESCE(array_length(ss.stage_op_nos, 1), 0) = 0
+                    OR pfs.op_no = ANY(ss.stage_op_nos)
+                  )
             WHERE COALESCE(ps.selected_bom_id, 0) > 0
               AND (%s = 1 OR (
                 COALESCE(ps.planner_status, '') <> 'COMPLETED'
                 AND COALESCE(ps.status, '') <> 'COMPLETED'
-                AND UPPER(COALESCE(pvc.status, '')) <> 'HISTORY'
+                AND UPPER(COALESCE(st.erp_status, vp.erp_status, '')) <> 'HISTORY'
               ))
-            ORDER BY pvc.due_date, ps.planner_ps_id, pfs.seq_no, pfs.op_seq_id
+            ORDER BY COALESCE(st.due_date, vp.due_date), ps.source_ps_id, pfs.seq_no, pfs.op_seq_id
             """,
             (1 if include_completed else 0,),
         )
@@ -80,22 +140,60 @@ def trial_catalog_items(con, include_completed=False):
     unassigned_records = rows(
         con.execute(
             """
-            SELECT ps.planner_ps_id AS ps_id, ps.inventory_code,
+            WITH voucher_partials AS (
+                SELECT ps_id, pp_partial_no,
+                       MAX(part_no) AS part_no,
+                       MAX(description) AS description,
+                       MIN(due_date) AS due_date,
+                       MAX(status) AS erp_status,
+                       MAX(execution_status) AS execution_status,
+                       MAX(total_qty) AS total_qty,
+                       MAX(partial_qty) AS partial_qty
+                FROM pp_vouchers_cache
+                GROUP BY ps_id, pp_partial_no
+            ),
+            source_totals AS (
+                SELECT ps_id,
+                       SUM(COALESCE(NULLIF(partial_qty, 0), NULLIF(total_qty, 0), 0)) AS rolled_total_qty,
+                       MAX(part_no) AS part_no,
+                       MAX(description) AS description,
+                       MIN(due_date) AS due_date,
+                       MAX(erp_status) AS erp_status,
+                       MAX(execution_status) AS execution_status
+                FROM voucher_partials
+                GROUP BY ps_id
+            ),
+            planner_source_totals AS (
+                SELECT source_ps_id, SUM(COALESCE(planned_qty, 0)) AS planned_qty
+                FROM planner_process_sheet
+                GROUP BY source_ps_id
+            )
+            SELECT ps.planner_ps_id AS planner_ps_id,
+                   ps.source_ps_id AS ps_id,
+                   ps.pp_partial_no,
+                   ps.inventory_code,
                    ps.selected_bom_id, ps.planner_status, ps.status,
-                   ps.planned_qty AS total_qty,
+                   COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0) AS total_qty,
+                   COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0) AS partial_qty,
                    '' AS selected_bom_code,
-                   pvc.part_no, pvc.description AS part_desc, pvc.part_no AS part_name,
-                   pvc.due_date, pvc.status AS erp_status, pvc.execution_status
+                   COALESCE(st.part_no, vp.part_no) AS part_no,
+                   COALESCE(st.description, vp.description) AS part_desc,
+                   COALESCE(st.part_no, vp.part_no) AS part_name,
+                   COALESCE(st.due_date, vp.due_date) AS due_date,
+                   COALESCE(st.erp_status, vp.erp_status) AS erp_status,
+                   COALESCE(st.execution_status, vp.execution_status) AS execution_status
             FROM planner_process_sheet ps
-            LEFT JOIN pp_vouchers_cache pvc
-                   ON pvc.ps_id = ps.source_ps_id AND pvc.pp_partial_no = ps.pp_partial_no
+            LEFT JOIN voucher_partials vp
+                   ON vp.ps_id = ps.source_ps_id AND vp.pp_partial_no = ps.pp_partial_no
+            LEFT JOIN source_totals st ON st.ps_id = ps.source_ps_id
+            LEFT JOIN planner_source_totals pst ON pst.source_ps_id = ps.source_ps_id
             WHERE COALESCE(ps.selected_bom_id, 0) = 0
               AND (%s = 1 OR (
                 COALESCE(ps.planner_status, '') <> 'COMPLETED'
                 AND COALESCE(ps.status, '') <> 'COMPLETED'
-                AND UPPER(COALESCE(pvc.status, '')) <> 'HISTORY'
+                AND UPPER(COALESCE(st.erp_status, vp.erp_status, '')) <> 'HISTORY'
               ))
-            ORDER BY pvc.due_date, ps.planner_ps_id
+            ORDER BY COALESCE(st.due_date, vp.due_date), ps.source_ps_id
             """,
             (1 if include_completed else 0,),
         )
@@ -105,7 +203,8 @@ def trial_catalog_items(con, include_completed=False):
     flow_cache = {}
 
     for row in records:
-        ps_id = compact_text(row["ps_id"])
+        ps_id = _base_ps_id(row["ps_id"])
+        planner_ps_id = compact_text(row.get("planner_ps_id"))
         op_seq_id = int(row["op_seq_id"] or 0)
         op_key = trial_catalog_op_key(ps_id, row["op_no"], op_seq_id)
         required_qty = float(row["total_qty"] or 0)
@@ -128,8 +227,17 @@ def trial_catalog_items(con, include_completed=False):
                 "selected_bom_code": row["selected_bom_code"] or "",
                 "ops": [],
                 "all_ops": [],
+                "planner_ps_ids": [],
+                "_seen_op_keys": set(),
             },
         )
+        if planner_ps_id and planner_ps_id not in item["planner_ps_ids"]:
+            item["planner_ps_ids"].append(planner_ps_id)
+        if not op_seq_id and not compact_text(row["op_no"]):
+            continue
+        if op_key in item["_seen_op_keys"]:
+            continue
+        item["_seen_op_keys"].add(op_key)
         op_item = {
             "source_ps_id": ps_id,
             "source_op_seq_id": op_seq_id,
@@ -180,6 +288,7 @@ def trial_catalog_items(con, include_completed=False):
         return flow_cache[inventory_code]
 
     for item in grouped.values():
+        item.pop("_seen_op_keys", None)
         item["flow_options"] = flow_options_for_inventory_code(item["inventory_code"])
         item["planning_cards"] = planning_cards_map.get(item["ps_id"], [])
         covered_keys = covered_map.get(item["ps_id"], set())
@@ -266,9 +375,13 @@ def trial_catalog_items(con, include_completed=False):
             )
 
     for row in unassigned_records:
-        ps_id = compact_text(row["ps_id"])
+        ps_id = _base_ps_id(row["ps_id"])
+        if ps_id in grouped:
+            continue
         inventory_code = compact_text(row["inventory_code"])
         flow_options = flow_options_for_inventory_code(inventory_code)
+        if ps_id in {item["ps_id"] for item in planned}:
+            continue
         planned.append(
             {
                 "ps_id": ps_id,
@@ -590,7 +703,7 @@ def planning_cards_by_ps(con):
         target_qty = float(card["target_qty"] or 0)
         setup_minutes = max((float(op["setup_minutes"] or 0) for op in op_rows), default=0.0)
         cycle_minutes_per_qty = sum(float(op["cycle_minutes_per_qty"] or 0) for op in op_rows)
-        ps_id = card["ps_id"] or ""
+        ps_id = _base_ps_id(card["ps_id"])
         item = {
             "card_id": card_id,
             "ps_id": ps_id,
@@ -629,13 +742,14 @@ def planning_card_covered_op_keys(con):
     for row in rows(
         con.execute(
             """
-            SELECT pc.planner_ps_id AS ps_id, pco.source_op_seq_id AS source_op_seq_id, pco.source_op_no
+            SELECT COALESCE(NULLIF(split_part(pc.planner_ps_id, '::', 1), ''), pc.planner_ps_id) AS ps_id,
+                   pco.source_op_seq_id AS source_op_seq_id, pco.source_op_no
             FROM planner_planning_card pc
             JOIN planner_planning_card_operation pco ON pco.card_id = pc.card_id
             """
         )
     ):
-        ps_id = compact_text(row["ps_id"])
+        ps_id = _base_ps_id(row["ps_id"])
         op_key = trial_catalog_op_key(ps_id, row["source_op_no"], row["source_op_seq_id"])
         covered.setdefault(ps_id, set()).add(op_key)
     return covered
@@ -888,6 +1002,27 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
         """,
         (machine_id, group_id, int(card_id)),
     )
+
+    machine_blocks = rows(
+        con.execute(
+            """
+            SELECT block_id
+            FROM planner_run_block
+            WHERE machine_id = %s
+              AND COALESCE(active, TRUE) = TRUE
+            ORDER BY queue_position, block_id
+            """,
+            (machine_id,),
+        )
+    )
+    created_block_id_set = set(created_block_ids)
+    ordered_ids = [int(row["block_id"]) for row in machine_blocks if int(row["block_id"]) not in created_block_id_set]
+    insert_idx = min(max(0, int(queue_position) - 1), len(ordered_ids)) if queue_position > 0 else len(ordered_ids)
+    ordered_ids[insert_idx:insert_idx] = created_block_ids
+    from .operation_sequence import apply_machine_queue_order
+
+    apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=False)
+
     return {
         "card": planning_card_payload(con, card_id),
         "group": combined_group_summary(con, group_id),

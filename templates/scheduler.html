@@ -4,7 +4,7 @@
 {% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}">{% endblock %}
 {% block content %}
 <div class="trial-page-header">
-  <h1 class="trial-page-title">Production<br>Planner.</h1>
+  <h1 class="trial-page-title">Production<br>Planner</h1>
   <div class="trial-toolbar">
     <button class="btn btn-primary btn-sm" onclick="openTrialCreateModal()">Add Run Block</button>
     <button class="btn btn-ghost btn-sm" onclick="openTrialCapacityModal()">Shop Calendar</button>
@@ -15,9 +15,9 @@
 
 <div class="trial-shell">
   <div class="trial-legend">
-    <span><span class="trial-legend-dot" style="background:rgba(59,130,246,0.9)"></span>Queue block</span>
-    <span><span class="trial-legend-dot" style="background:rgba(34,197,94,0.8)"></span>Actual saved</span>
-    <span><span class="trial-legend-dot" style="background:rgba(245,158,11,0.8)"></span>Anchor</span>
+    <span><span class="trial-legend-dot" style="background:rgba(239,68,68,0.85)"></span>PS overdue</span>
+    <span><span class="trial-legend-dot" style="background:rgba(245,158,11,0.85)"></span>PS due within 7 days</span>
+    <span><span class="trial-legend-dot trial-legend-dot-empty"></span>PS not due soon</span>
   </div>
   <div id="trial-loading" class="loading"><div class="spinner"></div> Loading trial scheduler...</div>
   <div class="trial-layout" style="display:none;" id="trial-layout">

@@ -216,3 +216,45 @@ async function loadTrial(options = {}) {
   };
   renderTrial();
 }
+
+// Lightweight refresh for a subset of machines after a mutation.
+// Replaces loadTrial() for block create/update/delete/reorder/actuals.
+// Falls back to loadTrial() on error.
+async function refreshMachines(machineIds) {
+  const ids = [...new Set((machineIds || []).map(Number).filter(Boolean))];
+  if (!ids.length) { renderTrial(); return; }
+
+  const params = new URLSearchParams({ machine_ids: ids.join(','), lite: '1' });
+  const data = await GET(`/api/trial/schedule?${params}`).catch(err => {
+    console.error('refreshMachines failed, falling back to full reload:', err);
+    return null;
+  });
+  if (!data) { await loadTrial(); return; }
+
+  const machineSet = new Set(ids.map(String));
+
+  // Replace blocks and segments for the affected machines only
+  trialState.blocks = [
+    ...(trialState.blocks || []).filter(b => !machineSet.has(String(b.machine_id))),
+    ...(data.blocks || []),
+  ];
+  trialState.segments = [
+    ...(trialState.segments || []).filter(s => !machineSet.has(String(s.machine_id))),
+    ...(data.segments || []),
+  ];
+
+  // Merge actuals for the affected block ids
+  if ((data.actuals || []).length > 0) {
+    const affectedBlockIds = new Set(
+      (trialState.blocks || [])
+        .filter(b => machineSet.has(String(b.machine_id)))
+        .map(b => String(b.block_id))
+    );
+    trialState.actuals = [
+      ...(trialState.actuals || []).filter(a => !affectedBlockIds.has(String(a.block_id))),
+      ...(data.actuals || []),
+    ];
+  }
+
+  renderTrial();
+}

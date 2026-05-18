@@ -304,6 +304,7 @@ CREATE TABLE IF NOT EXISTS public.planner_planning_card (
     planning_status           TEXT         NOT NULL DEFAULT 'UNSCHEDULED',
     card_type                 TEXT         NOT NULL DEFAULT 'NORMAL',
     machine_id                BIGINT       REFERENCES public.planner_machines(machine_id) ON DELETE SET NULL,
+    machine_queue_index       INTEGER,
     scheduled_block_group_id  BIGINT       REFERENCES public.planner_run_block_group(group_id) ON DELETE SET NULL,
     created_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW()
@@ -335,6 +336,7 @@ CREATE TABLE IF NOT EXISTS public.planner_schedule_run (
     scope_type       TEXT         NOT NULL DEFAULT 'FULL',     -- FULL | MACHINE
     machine_id       BIGINT       REFERENCES public.planner_machines(machine_id) ON DELETE SET NULL,
     notes            TEXT         NOT NULL DEFAULT '',
+    change_summary   JSONB,
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -448,6 +450,16 @@ CREATE INDEX IF NOT EXISTS idx_planner_operation_sequence_machine
 ALTER TABLE public.planner_run_block
     ADD COLUMN IF NOT EXISTS operation_sequence_id BIGINT
         REFERENCES public.planner_operation_sequence(operation_sequence_id) ON DELETE SET NULL;
+
+ALTER TABLE public.planner_planning_card
+    ADD COLUMN IF NOT EXISTS machine_queue_index INTEGER;
+
+ALTER TABLE public.planner_planning_card
+    ADD COLUMN IF NOT EXISTS operation_sequence_id BIGINT
+        REFERENCES public.planner_operation_sequence(operation_sequence_id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_planner_planning_card_machine_queue
+    ON public.planner_planning_card(machine_id, machine_queue_index);
 
 CREATE INDEX IF NOT EXISTS idx_planner_run_block_operation
     ON public.planner_run_block(operation_id);

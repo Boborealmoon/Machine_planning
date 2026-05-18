@@ -4,6 +4,23 @@ from __future__ import annotations
 from .helpers import one, rows
 
 
+def _planning_card_schedule_columns(con):
+    """Return optional schedule mirror columns present on planner_planning_card."""
+    found = rows(
+        con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'planner_planning_card'
+              AND column_name = ANY(%s)
+            """,
+            (["operation_sequence_id", "machine_queue_index"],),
+        )
+    )
+    return {row["column_name"] for row in found}
+
+
 def sync_machine_operation_sequence(con, machine_id):
     """Rebuild sequence rows for one machine from planner_run_block.queue_position."""
     machine_id = int(machine_id)
@@ -76,6 +93,87 @@ def sync_operation_sequences_for_machines(con, machine_ids):
     return merged
 
 
+def sync_planning_cards_for_machine(con, machine_id):
+    """Mirror the current machine-lane order onto planning-card rows."""
+    machine_id = int(machine_id)
+    if machine_id <= 0:
+        return []
+
+    schedule_columns = _planning_card_schedule_columns(con)
+    card_rows = rows(
+        con.execute(
+            """
+            SELECT pc.card_id, b.group_id, os.operation_sequence_id, os.sequence_no, b.queue_position, b.block_id
+            FROM planner_planning_card pc
+            JOIN planner_planning_card_operation pco ON pco.card_id = pc.card_id
+            JOIN planner_operation o
+              ON o.source_ps_id = pco.source_ps_id
+             AND COALESCE(o.source_op_no, '') = COALESCE(pco.source_op_no, '')
+             AND COALESCE(o.source_op_seq_id, 0) = COALESCE(pco.source_op_seq_id, 0)
+            JOIN planner_run_block b ON b.operation_id = o.operation_id
+            LEFT JOIN planner_operation_sequence os ON os.block_id = b.block_id
+            WHERE b.machine_id = %s
+              AND COALESCE(b.active, TRUE) = TRUE
+            ORDER BY pc.card_id, COALESCE(os.sequence_no, b.queue_position), b.block_id
+            """,
+            (machine_id,),
+        )
+    )
+
+    cards = {}
+    for row in card_rows:
+        card_id = int(row["card_id"])
+        cards.setdefault(
+            card_id,
+            {
+                "card_id": card_id,
+                "group_id": int(row["group_id"] or 0),
+                "operation_sequence_id": int(row["operation_sequence_id"] or 0),
+                "machine_queue_index": int(row["sequence_no"] or row["queue_position"] or 0),
+            },
+        )
+        if row["group_id"] and not cards[card_id]["group_id"]:
+            cards[card_id]["group_id"] = int(row["group_id"])
+
+    synced = []
+    for card in cards.values():
+        set_parts = [
+            "planning_status = 'SCHEDULED'",
+            "machine_id = %s",
+            "updated_at = NOW()",
+        ]
+        values = [machine_id]
+        if card["group_id"]:
+            set_parts.append("scheduled_block_group_id = %s")
+            values.append(card["group_id"])
+        if "operation_sequence_id" in schedule_columns:
+            set_parts.append("operation_sequence_id = %s")
+            values.append(card["operation_sequence_id"] or None)
+        if "machine_queue_index" in schedule_columns:
+            set_parts.append("machine_queue_index = %s")
+            values.append(card["machine_queue_index"] or None)
+        values.append(card["card_id"])
+
+        con.execute(
+            f"""
+            UPDATE planner_planning_card
+            SET {", ".join(set_parts)}
+            WHERE card_id = %s
+            """,
+            values,
+        )
+        synced.append(card)
+    return synced
+
+
+def sync_planning_cards_for_machines(con, machine_ids):
+    synced = {}
+    for machine_id in sorted({int(mid) for mid in machine_ids if int(mid or 0) > 0}):
+        for card in sync_planning_cards_for_machine(con, machine_id):
+            synced[int(card["card_id"])] = card
+    return synced
+
+
 def update_planning_card_machine_for_block(con, block_id, machine_id):
     """Keep planning_card.machine_id aligned when a block moves lanes."""
     con.execute(
@@ -128,6 +226,7 @@ def apply_machine_queue_order(con, machine_id, ordered_ids, *, recalculate=True)
         update_planning_card_machine_for_block(con, block_id, machine_id)
 
     sequence_map = sync_operation_sequences_for_machines(con, affected_machine_ids)
+    sync_planning_cards_for_machines(con, affected_machine_ids)
 
     if recalculate:
         from .blocks import recalculate_machine

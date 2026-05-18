@@ -351,53 +351,64 @@ def _api_trial_schedule_db():
     lite = compact_text(request.args.get("lite")).lower() in {"1", "true", "yes"}
     start_iso = compact_text(request.args.get("start") or request.args.get("from")) or date.today().isoformat()
     end_iso = compact_text(request.args.get("end") or request.args.get("to")) or (date.today() + timedelta(days=7)).isoformat()
+    machine_ids_param = compact_text(request.args.get("machine_ids") or "")
+    machine_id_filter = [int(x) for x in machine_ids_param.split(",") if x.strip().lstrip("-").isdigit()] if machine_ids_param else []
+    is_machine_scoped = bool(machine_id_filter)
+
     with planner_db() as con:
-        # Clean up stale combined planning cards that lost their run_block group
-        stale_cards = rows(
-            con.execute(
-                """
-                SELECT card_id, planner_ps_id AS ps_id, scheduled_block_group_id
-                FROM planner_planning_card
-                WHERE card_type = 'COMBINED'
-                  AND planning_status = 'SCHEDULED'
-                  AND COALESCE(scheduled_block_group_id, 0) > 0
-                """
-            )
-        )
-        for card in stale_cards:
-            group_id = int(card["scheduled_block_group_id"] or 0)
-            live_group = one(
+        # Stale card cleanup — skip on machine-scoped refreshes (expensive, not needed for partial updates)
+        if not is_machine_scoped:
+            stale_cards = rows(
                 con.execute(
-                    "SELECT COUNT(*) AS cnt FROM planner_run_block WHERE group_id = %s",
-                    (group_id,),
+                    """
+                    SELECT card_id, planner_ps_id AS ps_id, scheduled_block_group_id
+                    FROM planner_planning_card
+                    WHERE card_type = 'COMBINED'
+                      AND planning_status = 'SCHEDULED'
+                      AND COALESCE(scheduled_block_group_id, 0) > 0
+                    """
                 )
             )
-            if int((live_group or {}).get("cnt") or 0) > 0:
-                continue
-            ps_id = compact_text(card["ps_id"])
-            base_ps_id = ps_id.split("::", 1)[0] if ps_id else ""
-            delete_ps_ids = {ps_id}
-            if base_ps_id:
-                delete_ps_ids.add(base_ps_id)
-            for delete_ps_id in delete_ps_ids:
-                if delete_ps_id:
+            for card in stale_cards:
+                group_id = int(card["scheduled_block_group_id"] or 0)
+                live_group = one(
                     con.execute(
-                        """
-                        DELETE FROM planner_planning_card
-                        WHERE card_type = 'COMBINED'
-                          AND planner_ps_id = %s
-                        """,
-                        (delete_ps_id,),
+                        "SELECT COUNT(*) AS cnt FROM planner_run_block WHERE group_id = %s",
+                        (group_id,),
                     )
-            con.execute(
-                "DELETE FROM planner_planning_card WHERE card_type = 'COMBINED' AND scheduled_block_group_id = %s",
-                (group_id,),
-            )
+                )
+                if int((live_group or {}).get("cnt") or 0) > 0:
+                    continue
+                ps_id = compact_text(card["ps_id"])
+                base_ps_id = ps_id.split("::", 1)[0] if ps_id else ""
+                delete_ps_ids = {ps_id}
+                if base_ps_id:
+                    delete_ps_ids.add(base_ps_id)
+                for delete_ps_id in delete_ps_ids:
+                    if delete_ps_id:
+                        con.execute(
+                            """
+                            DELETE FROM planner_planning_card
+                            WHERE card_type = 'COMBINED'
+                              AND planner_ps_id = %s
+                            """,
+                            (delete_ps_id,),
+                        )
+                con.execute(
+                    "DELETE FROM planner_planning_card WHERE card_type = 'COMBINED' AND scheduled_block_group_id = %s",
+                    (group_id,),
+                )
 
         machines = rows(con.execute(
             "SELECT machine_id, machine_no AS machine_code, machine_category, shift_profile, active FROM planner_machines WHERE active = TRUE ORDER BY machine_id"
         ))
         machine_by_id = {int(row["machine_id"]): dict(row) for row in machines}
+
+        _block_where = "COALESCE(b.active, TRUE) = TRUE"
+        _block_params: list = []
+        if is_machine_scoped:
+            _block_where += " AND b.machine_id = ANY(%s)"
+            _block_params.append(machine_id_filter)
 
         raw_blocks = rows(
             con.execute(
@@ -413,12 +424,14 @@ def _api_trial_schedule_db():
                 JOIN planner_machines m ON m.machine_id = b.machine_id
                 LEFT JOIN planner_run_block_group g ON g.group_id = b.group_id
                 LEFT JOIN planner_operation_sequence os ON os.block_id = b.block_id
-                WHERE COALESCE(b.active, TRUE) = TRUE
+                WHERE {_block_where}
                 ORDER BY b.machine_id, b.queue_position, b.block_id
-                """
+                """.format(_block_where=_block_where),
+                _block_params or None,
             )
         )
 
+        _active_block_ids = [int(b["block_id"]) for b in raw_blocks if b.get("block_id")]
         raw_segments = rows(
             con.execute(
                 """
@@ -426,10 +439,12 @@ def _api_trial_schedule_db():
                 FROM planner_run_block_segment s
                 JOIN planner_run_block b ON b.block_id = s.block_id
                 WHERE COALESCE(b.active, TRUE) = TRUE
+                  AND s.block_id = ANY(%s)
                 ORDER BY b.machine_id, b.queue_position, s.segment_id
-                """
+                """,
+                (_active_block_ids,),
             )
-        )
+        ) if _active_block_ids else []
 
         segments = []
         segments_by_block = {}
@@ -499,18 +514,35 @@ def _api_trial_schedule_db():
                 item["shift_profile"] = machine_by_id.get(int(item.get("machine_id") or 0), {}).get("shift_profile", "")
             blocks.append(item)
 
-        actuals = rows(
-            con.execute(
-                """
-                SELECT actual_id, segment_id, block_id, report_date,
-                       output_qty, reject_qty, target_qty_at_report,
-                       remarks, reported_at
-                FROM planner_production_actual
-                WHERE COALESCE(status, 'ACTIVE') = 'ACTIVE'
-                ORDER BY report_date, actual_id
-                """
+        # Actuals: for machine-scoped refreshes only fetch actuals for the relevant blocks
+        if is_machine_scoped and _active_block_ids:
+            actuals = rows(
+                con.execute(
+                    """
+                    SELECT actual_id, segment_id, block_id, report_date,
+                           output_qty, reject_qty, target_qty_at_report,
+                           remarks, reported_at
+                    FROM planner_production_actual
+                    WHERE COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                      AND block_id = ANY(%s)
+                    ORDER BY report_date, actual_id
+                    """,
+                    (_active_block_ids,),
+                )
             )
-        )
+        else:
+            actuals = rows(
+                con.execute(
+                    """
+                    SELECT actual_id, segment_id, block_id, report_date,
+                           output_qty, reject_qty, target_qty_at_report,
+                           remarks, reported_at
+                    FROM planner_production_actual
+                    WHERE COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                    ORDER BY report_date, actual_id
+                    """
+                )
+            )
         for actual in actuals:
             actual["report_date"] = compact_text(actual.get("report_date"))
             actual["reported_at"] = compact_text(actual.get("reported_at"))
@@ -532,20 +564,29 @@ def _api_trial_schedule_db():
         profiles = rows(con.execute(
             "SELECT profile_name, capacity_minutes, start_minute, note FROM planner_capacity_profile ORDER BY profile_id"
         ))
-        catalog = {"available": [], "planned": []} if lite else trial_catalog_items(con, include_completed=bool(include_completed))
-        planning_cards = [] if lite else [card for cards in planning_cards_by_ps(con).values() for card in cards]
-        group_ids = sorted({int(row["group_id"]) for row in blocks if int(row.get("group_id") or 0) > 0})
-        block_groups = []
-        for group_id in group_ids:
-            try:
-                group = combined_group_summary(con, group_id)
-                if group:
-                    block_groups.append(group)
-            except Exception:
-                import logging
-                logging.getLogger(__name__).exception(
-                    "combined_group_summary failed for group_id=%s", group_id
-                )
+
+        # Skip catalog, planning cards, group summaries, and material status for machine-scoped refreshes
+        if is_machine_scoped:
+            catalog = {"available": [], "planned": []}
+            planning_cards = []
+            block_groups = []
+            material_status_map = {}
+        else:
+            catalog = {"available": [], "planned": []} if lite else trial_catalog_items(con, include_completed=bool(include_completed))
+            planning_cards = [] if lite else [card for cards in planning_cards_by_ps(con).values() for card in cards]
+            group_ids = sorted({int(row["group_id"]) for row in blocks if int(row.get("group_id") or 0) > 0})
+            block_groups = []
+            for group_id in group_ids:
+                try:
+                    group = combined_group_summary(con, group_id)
+                    if group:
+                        block_groups.append(group)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "combined_group_summary failed for group_id=%s", group_id
+                    )
+
         calendar_windows = [_calendar_window_payload(row) for row in _calendar_window_rows(con, start_iso, end_iso)]
 
         ps_ids = set()
@@ -567,7 +608,7 @@ def _api_trial_schedule_db():
             if start_text and (ps_id not in planned_starts or start_text < planned_starts[ps_id]):
                 planned_starts[ps_id] = start_text
 
-        if lite:
+        if lite or is_machine_scoped:
             material_status_map = {}
         else:
             try:

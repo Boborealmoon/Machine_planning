@@ -19,6 +19,7 @@ Key changes vs SQLite original:
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 from .actuals import actual_totals_for_block
@@ -205,8 +206,10 @@ def refresh_machine_queue_state(con, block_id, schedule_run_id=None):
         return None
 
     bounds = _segment_bounds(con, block_id)
-    planned_start = block["planned_start_at"] or (bounds[0] if bounds else None)
-    planned_end = block["planned_end_at"] or (bounds[1] if bounds else None)
+    # Queue state is the live prediction shown by the scheduler. Prefer the
+    # recalculated/segment window so setup toggles push downstream jobs.
+    planned_start = (bounds[0] if bounds else None) or block["calculated_start_datetime"] or block["planned_start_at"]
+    planned_end = (bounds[1] if bounds else None) or block["calculated_end_datetime"] or block["planned_end_at"]
 
     # Normalise to text for storage
     ps_text = planned_start.isoformat() if isinstance(planned_start, datetime) else _text(planned_start)
@@ -602,4 +605,117 @@ def resolve_schedule_alert(con, alert_id):
         WHERE alert_id = %s
         """,
         (int(alert_id),),
+    )
+
+
+def snapshot_queue_state(con, machine_id):
+    """Return {block_id: row} for all active blocks on machine_id, from planner_machine_queue_state."""
+    result = rows(
+        con.execute(
+            """
+            SELECT q.block_id, q.predicted_start_at, q.predicted_end_at,
+                   o.job_no, o.operation_name
+            FROM planner_machine_queue_state q
+            JOIN planner_run_block b ON b.block_id = q.block_id
+            JOIN planner_operation o ON o.operation_id = b.operation_id
+            WHERE b.machine_id = %s AND COALESCE(b.active, TRUE) = TRUE
+            """,
+            (int(machine_id),),
+        )
+    )
+    return {int(row["block_id"]): row for row in result}
+
+
+def snapshot_queue_state_all(con, machine_ids):
+    """Return {machine_id: {block_id: row}} for all given machine_ids."""
+    return {int(mid): snapshot_queue_state(con, mid) for mid in machine_ids}
+
+
+def compute_change_summary(old_snap, new_snap, machine_id=None):
+    """Diff two {block_id: row} snapshots into a structured change summary dict."""
+    old_ids = set(old_snap)
+    new_ids = set(new_snap)
+
+    removed = []
+    for bid in sorted(old_ids - new_ids):
+        r = old_snap[bid]
+        removed.append({
+            "block_id": bid,
+            "job_no": _text(r.get("job_no")),
+            "op_name": _text(r.get("operation_name")),
+            "old_start": r["predicted_start_at"].isoformat() if r.get("predicted_start_at") else None,
+            "old_end": r["predicted_end_at"].isoformat() if r.get("predicted_end_at") else None,
+        })
+
+    added = []
+    for bid in sorted(new_ids - old_ids):
+        r = new_snap[bid]
+        added.append({
+            "block_id": bid,
+            "job_no": _text(r.get("job_no")),
+            "op_name": _text(r.get("operation_name")),
+            "new_start": r["predicted_start_at"].isoformat() if r.get("predicted_start_at") else None,
+            "new_end": r["predicted_end_at"].isoformat() if r.get("predicted_end_at") else None,
+        })
+
+    shifted = []
+    for bid in sorted(old_ids & new_ids):
+        o = old_snap[bid]
+        n = new_snap[bid]
+        old_s = o.get("predicted_start_at")
+        new_s = n.get("predicted_start_at")
+        old_e = o.get("predicted_end_at")
+        new_e = n.get("predicted_end_at")
+        if old_s == new_s and old_e == new_e:
+            continue
+        entry = {
+            "block_id": bid,
+            "job_no": _text(o.get("job_no")),
+            "op_name": _text(o.get("operation_name")),
+            "old_start": old_s.isoformat() if old_s else None,
+            "new_start": new_s.isoformat() if new_s else None,
+            "old_end": old_e.isoformat() if old_e else None,
+            "new_end": new_e.isoformat() if new_e else None,
+        }
+        if old_s and new_s:
+            entry["shift_minutes"] = round((new_s - old_s).total_seconds() / 60.0, 1)
+        shifted.append(entry)
+
+    summary = {
+        "blocks_shifted": shifted,
+        "blocks_added": added,
+        "blocks_removed": removed,
+        "unchanged_count": max(0, len(old_ids & new_ids) - len(shifted)),
+        "total_blocks": len(new_ids),
+    }
+    if machine_id is not None:
+        summary["machine_id"] = int(machine_id)
+    return summary
+
+
+def find_superseded_run_id(con, new_run_id, machine_id, scope_type):
+    """Return the schedule_run_id that was just superseded when new_run_id was created."""
+    row = one(
+        con.execute(
+            """
+            SELECT schedule_run_id
+            FROM planner_schedule_run
+            WHERE status = 'SUPERSEDED'
+              AND scope_type = %s
+              AND machine_id IS NOT DISTINCT FROM %s
+              AND schedule_run_id < %s
+            ORDER BY schedule_run_id DESC
+            LIMIT 1
+            """,
+            (scope_type, int(machine_id) if machine_id is not None else None, int(new_run_id)),
+        )
+    )
+    return int(row["schedule_run_id"]) if row else None
+
+
+def write_change_summary(con, superseded_run_id, summary):
+    """Write a change summary JSON to the given superseded schedule run."""
+    con.execute(
+        "UPDATE planner_schedule_run SET change_summary = %s WHERE schedule_run_id = %s",
+        (json.dumps(summary), int(superseded_run_id)),
     )

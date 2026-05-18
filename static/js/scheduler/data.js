@@ -397,6 +397,12 @@ function trialBlockNetOutput(actualGood, actualReject) {
   return Math.max(0, Number(actualGood || 0) - Number(actualReject || 0));
 }
 
+function trialBlockPendingSetupMinutes(block, outputTotal = 0, rejectTotal = 0) {
+  if (Number(block?.include_setup || 0) !== 1) return 0;
+  if (Number(outputTotal || 0) > 0 || Number(rejectTotal || 0) > 0) return 0;
+  return Math.max(0, Number(block?.setup_minutes || 0));
+}
+
 function trialBlockMemberMetrics(block) {
   const outputTotal = (trialState.actuals || [])
     .filter(row => String(row.block_id) === String(block.block_id) && row.output_qty != null)
@@ -407,7 +413,8 @@ function trialBlockMemberMetrics(block) {
   const scheduledQty = Number(block.scheduled_qty || 0);
   const netOutput = trialBlockNetOutput(outputTotal, rejectTotal);
   const remainingQty = Math.max(0, scheduledQty - netOutput);
-  const remainingMinutes = remainingQty * Number(block.cycle_minutes_per_qty || 0);
+  const pendingSetupMinutes = trialBlockPendingSetupMinutes(block, outputTotal, rejectTotal);
+  const remainingMinutes = pendingSetupMinutes + (remainingQty * Number(block.cycle_minutes_per_qty || 0));
   const status = String(block.execution_status || block.status || '').toUpperCase();
   return {
     ...block,
@@ -415,6 +422,7 @@ function trialBlockMemberMetrics(block) {
     rejectTotal,
     netOutput,
     remainingQty,
+    pendingSetupMinutes,
     remainingMinutes,
     isDone: status === 'DONE',
     isInProgress: status === 'IN_PROGRESS',
@@ -427,8 +435,12 @@ function trialCombinedPairMetrics(memberMetrics, targetQty) {
     ? Math.min(...rows.map(row => Number(row.netOutput || row.outputTotal || 0)))
     : 0;
   const pairedRemainingQty = Math.max(0, Number(targetQty || 0) - pairedOutput);
-  const pairedRemainingMinutes = pairedRemainingQty *
-    rows.reduce((sum, row) => sum + Number(row.cycle_minutes_per_qty || 0), 0);
+  const pendingSetupMinutes = rows.length && Number(rows[0]?.include_setup || 0) === 1
+    ? rows.reduce((max, row) => Math.max(max, Number(row.pendingSetupMinutes || 0)), 0)
+    : 0;
+  const pairedRemainingMinutes = pendingSetupMinutes + (
+    pairedRemainingQty * rows.reduce((sum, row) => sum + Number(row.cycle_minutes_per_qty || 0), 0)
+  );
   return { pairedOutput, pairedRemainingQty, pairedRemainingMinutes };
 }
 

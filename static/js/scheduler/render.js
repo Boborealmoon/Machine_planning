@@ -124,6 +124,7 @@ function setAllTrialPsTypesVisible(visible) {
 function renderTrialMachineCategoryFilter() {
   const categories = trialMachineCategories();
   const machines = trialMachinesInCategory();
+  const selectedMachineCount = machines.filter(m => !trialMachineHiddenSet.has(m.machine_code)).length;
 
   const machineCheckboxes = machines.map(m => {
     const code = m.machine_code || '';
@@ -136,7 +137,7 @@ function renderTrialMachineCategoryFilter() {
   }).join('');
 
   return `
-    <div class="trial-filter-section">
+    <div class="trial-filter-section trial-filter-section-type">
       <div class="trial-filter-label">Type</div>
       <div class="trial-machine-filter">
         ${categories.map(category => `
@@ -149,14 +150,19 @@ function renderTrialMachineCategoryFilter() {
       </div>
     </div>
     ${machines.length > 0 ? `
-    <div class="trial-filter-section">
-      <div class="trial-filter-label">Machine</div>
-      <div class="trial-machine-checkbox-list">
-        ${machineCheckboxes}
+    <div class="trial-filter-section trial-filter-section-machines">
+      <div class="trial-filter-section-head">
+        <div>
+          <div class="trial-filter-label">Machine</div>
+          <div class="trial-filter-subtle">${selectedMachineCount}/${machines.length} shown</div>
+        </div>
         <div class="trial-machine-checkbox-actions">
           <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialMachinesVisible(true)">All</button>
           <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialMachinesVisible(false)">None</button>
         </div>
+      </div>
+      <div class="trial-machine-checkbox-list">
+        ${machineCheckboxes}
       </div>
     </div>
     ` : ''}
@@ -368,9 +374,16 @@ function renderTrialMachine(machine) {
           ? String(group.operation_label || group.group_label || '').trim()
           : [opDisplay.op_no, opDisplay.op_name].filter(Boolean).join(' ');
         const pairedOutput = Number(group.paired_output_qty ?? netOutput ?? 0);
+        const queuedText = trialFormatDt(group.visual_start_datetime || group.group_start);
+        const endText = trialFormatDt(group.visual_end_datetime || group.group_end);
+        const queuedTitle = String(group.visual_start_datetime || group.group_start || '');
+        const endTitle = String(group.visual_end_datetime || group.group_end || '');
         const actualButton = group.blocks.length > 1
           ? `<button class="btn btn-ghost btn-sm" type="button" onclick="openTrialGroupActualModal(${Number(group.group_id || 0)})">Actual</button>`
           : `<button class="btn btn-ghost btn-sm" type="button" onclick="openTrialActualModal(${leader?.block_id || 0})">Actual</button>`;
+        const setupOn = Number(leader?.include_setup || 0) === 1;
+        const setupLabel = setupOn ? 'Setup: ON' : 'Setup: OFF';
+        const setupTitle = setupOn ? 'Setup time is included. Click to turn it off.' : 'Setup time is excluded. Click to turn it on.';
         return `
           <div class="trial-block-card ${group.blocks.length > 1 ? 'combined' : ''}"
             draggable="true"
@@ -385,28 +398,28 @@ function renderTrialMachine(machine) {
                   ${psDisplay.partial ? `<div class="trial-block-partial">Partial ${escapeHtml(psDisplay.partial)}</div>` : ''}
                   <div class="trial-block-op">${escapeHtml(operationLine)}</div>
                 </div>
+                <div class="trial-op-card-metrics">
+                  <span class="trial-metric-pill">
+                    <span class="trial-pill-label">Qty</span>
+                    <span class="trial-pill-value">${fmt(group.target_qty || 0, 0)}</span>
+                  </span>
+                  <span class="trial-metric-pill">
+                    <span class="trial-pill-label">Output</span>
+                    <span class="trial-pill-value">${fmt(pairedOutput, 0)}</span>
+                  </span>
+                </div>
               </div>
               ${combinedLine ? `<div class="trial-block-combined-line">${escapeHtml(combinedLine)}</div>` : ''}
             </div>
-            <div class="trial-op-card-metrics">
-              <span class="trial-metric-pill">
-                <span class="trial-pill-label">Qty</span>
-                <span class="trial-pill-value">${fmt(group.target_qty || 0, 0)}</span>
-              </span>
-              <span class="trial-metric-pill">
-                <span class="trial-pill-label">Output</span>
-                <span class="trial-pill-value">${fmt(pairedOutput, 0)}</span>
-              </span>
-            </div>
             <div class="trial-op-card-info trial-op-card-time-row">
               <button class="trial-pill trial-time-pill trial-pill-start clickable ${anchored ? 'yellow' : 'gray'}" type="button"
-                onclick="editTrialAnchor(${leader?.block_id || 0})" title="Click to edit anchor">
+                onclick="editTrialAnchor(${leader?.block_id || 0})" title="${escapeHtml(queuedTitle || 'Click to edit anchor')}">
                 <span class="trial-pill-label">Queued</span>
-                <span class="trial-pill-value">${trialFormatDt(group.visual_start_datetime || group.group_start)}</span>
+                <span class="trial-pill-value">${queuedText}</span>
               </button>
-              <span class="trial-pill trial-time-pill">
+              <span class="trial-pill trial-time-pill" title="${escapeHtml(endTitle)}">
                 <span class="trial-pill-label">End</span>
-                <span class="trial-pill-value">${trialFormatDt(group.visual_end_datetime || group.group_end)}</span>
+                <span class="trial-pill-value">${endText}</span>
               </span>
             </div>
             ${materialStatus?.label ? `
@@ -428,8 +441,11 @@ function renderTrialMachine(machine) {
               <button class="btn btn-ghost btn-sm" type="button" onclick="openTrialBlockEditor(${leader?.block_id || 0})">Edit</button>
               <button class="btn btn-ghost btn-sm" type="button" onclick="openTrialSplitModal(${leader?.block_id || 0})">Split</button>
               ${actualButton}
-              <button class="btn btn-ghost btn-sm" type="button" onclick="toggleTrialSetup(${leader?.block_id || 0})">
-                ${Number(leader?.include_setup || 0) === 1 ? 'Setup On' : 'Setup Off'}
+              <button class="btn btn-sm trial-setup-toggle ${setupOn ? 'is-on' : 'is-off'}" type="button"
+                onclick="toggleTrialSetup(${leader?.block_id || 0})"
+                aria-pressed="${setupOn ? 'true' : 'false'}"
+                title="${escapeHtml(setupTitle)}">
+                ${setupLabel}
               </button>
               <button class="btn btn-ghost btn-sm trial-remove-block-btn" type="button"
                 onclick="removeTrialBlock(${leader?.block_id || 0}, ${Number(group.group_id || 0)})"
