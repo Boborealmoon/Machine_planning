@@ -553,23 +553,23 @@ def health():
 def api_bom_sources():
     search = request.args.get("search", "").strip()
     try:
-        search_clause = "AND source_inventory_code ILIKE %s" if search else ""
+        search_clause = "AND s.inventory_code ILIKE %s" if search else ""
         params = (f"%{search}%",) if search else ()
         rows = db_query(
             f"""
             SELECT
-                source_inventory_code,
-                COUNT(DISTINCT bom_code) AS bom_count
-            FROM public.inventory_bom_listing
-            WHERE source_inventory_code IS NOT NULL
+                s.inventory_code AS source_code,
+                COUNT(DISTINCT s.bom_code) AS bom_count
+            FROM public.mt_inventory_bom_stage s
+            WHERE s.bom_code IS NOT NULL
+              AND (
+                  s.stage_desc LIKE 'Turning%%'
+               OR s.stage_desc LIKE 'Milling%%'
+               OR s.stage_desc LIKE 'Turnmill%%'
+              )
             {search_clause}
-            AND material_inventory_code NOT IN (
-                SELECT source_inventory_code
-                FROM public.inventory_bom_listing
-                WHERE source_inventory_code IS NOT NULL
-            )
-            GROUP BY source_inventory_code
-            ORDER BY source_inventory_code
+            GROUP BY s.inventory_code
+            ORDER BY s.inventory_code
             """,
             params, fetchall=True
         )
@@ -589,9 +589,14 @@ def api_source_boms(source):
         rows = db_query(
             """
             SELECT DISTINCT bom_code
-            FROM public.inventory_bom_listing
-            WHERE source_inventory_code = %s
+            FROM public.mt_inventory_bom_stage
+            WHERE inventory_code = %s
               AND bom_code IS NOT NULL
+              AND (
+                  stage_desc LIKE 'Turning%%'
+               OR stage_desc LIKE 'Milling%%'
+               OR stage_desc LIKE 'Turnmill%%'
+              )
             ORDER BY bom_code
             """,
             (source,), fetchall=True
@@ -610,14 +615,12 @@ def api_source_boms(source):
 @app.get("/api/bom/materials")
 def api_bom_materials():
     source = request.args.get("source", "").strip()
-    bom = request.args.get("bom", "").strip()
-    if not source or not bom:
-        return jsonify({"error": "source and bom are required"}), 400
+    if not source:
+        return jsonify({"error": "source is required"}), 400
     try:
         rows = db_query(
             """
             SELECT DISTINCT
-                bom_code,
                 source_inventory_code,
                 material_inventory_code,
                 description
@@ -628,17 +631,15 @@ def api_bom_materials():
                 WHERE source_inventory_code IS NOT NULL
             )
             AND source_inventory_code = %s
-            AND bom_code = %s
             ORDER BY material_inventory_code
             """,
-            (source, bom), fetchall=True
+            (source,), fetchall=True
         )
         return jsonify([
             {
-                "bom_code": r[0],
-                "source_inventory_code": r[1],
-                "material_inventory_code": r[2],
-                "description": r[3] or "",
+                "source_inventory_code": r[0],
+                "material_inventory_code": r[1],
+                "description": r[2] or "",
             }
             for r in (rows or [])
         ])
@@ -646,46 +647,6 @@ def api_bom_materials():
         return jsonify({"error": str(e)}), 500
 
 
-
-# ── API: BOM metadata (flow name) ──────────────────────────────────────────
-
-@app.get("/api/bom/meta")
-def api_bom_meta():
-    source = request.args.get("source", "").strip()
-    bom = request.args.get("bom", "").strip()
-    if not source or not bom:
-        return jsonify({"error": "source and bom are required"}), 400
-    try:
-        row = db_query(
-            "SELECT flow_name FROM bom_metadata WHERE source_inventory_code = %s AND bom_code = %s",
-            (source, bom), fetchone=True
-        )
-        return jsonify({"flow_name": row[0] if row else ""})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.post("/api/bom/meta")
-def api_save_bom_meta():
-    data = request.get_json()
-    source = (data.get("source") or "").strip()
-    bom = (data.get("bom") or "").strip()
-    flow_name = (data.get("flow_name") or "").strip()
-    if not source or not bom:
-        return jsonify({"error": "source and bom are required"}), 400
-    try:
-        db_query(
-            """
-            INSERT INTO bom_metadata (source_inventory_code, bom_code, flow_name)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (source_inventory_code, bom_code)
-            DO UPDATE SET flow_name = EXCLUDED.flow_name
-            """,
-            (source, bom, flow_name), commit=True
-        )
-        return jsonify({"ok": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 
 # ── API: BOM operations (PostgreSQL) ──────────────────────────────────────
@@ -954,7 +915,7 @@ def api_ptl_sync_to_supabase():
         init_db()
         rows = fetch_all()
         if not rows:
-            return jsonify({"synced": 0, "message": "No rows in SQLite"})
+            return jsonify({"synced": 0, "message": "No rows in tool list"})
 
         # Enrich part_no_erp
         part_no_erp_map = {}

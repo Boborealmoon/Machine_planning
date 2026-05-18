@@ -12,7 +12,11 @@ async function POST(url, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try { const d = await res.json(); if (d && d.error) msg = d.error; } catch (_) {}
+    throw new Error(msg);
+  }
   return res.json();
 }
 
@@ -54,6 +58,32 @@ async function syncPpVouchers() {
   }
 }
 
+async function syncTrialQueueState() {
+  const queueStates = await GET('/api/trial/queue-state').catch(() => []);
+  if (!Array.isArray(queueStates) || !queueStates.length) return;
+
+  const stateByBlockId = new Map(queueStates.map(qs => [String(qs.block_id), qs]));
+  let changed = false;
+
+  (trialState.blocks || []).forEach(block => {
+    const qs = stateByBlockId.get(String(block.block_id));
+    if (!qs) return;
+    if (qs.execution_status) block.execution_status = qs.execution_status;
+    if (qs.schedule_status) block.planning_status = qs.schedule_status;
+    if (qs.predicted_start_at) {
+      block.calculated_start_datetime = qs.predicted_start_at;
+      block.visual_start_datetime = qs.predicted_start_at;
+    }
+    if (qs.predicted_end_at) {
+      block.calculated_end_datetime = qs.predicted_end_at;
+      block.visual_end_datetime = qs.predicted_end_at;
+    }
+    changed = true;
+  });
+
+  if (changed) renderTrial();
+}
+
 async function loadTrial() {
   const resolved = trialNormalizeScheduleDates(trialScheduleDateFilter.start, trialScheduleDateFilter.end);
   trialScheduleDateFilter = resolved;
@@ -64,7 +94,7 @@ async function loadTrial() {
   const [scheduleResult, erpVouchers, machinesResult] = await Promise.all([
     GET(`/api/trial/schedule${startParam}`).catch(() => null),
     GET('/api/pp-vouchers/with-ops').catch(() => []),
-    GET('/api/planner/machines'),
+    GET('/api/planner/machines').catch(() => ({ machines: [] })),
   ]);
 
   const scheduleData = scheduleResult || {};

@@ -122,3 +122,43 @@ function trialOpFromPayload(payload) {
     compatible_machine_group: payload.compatible_machine_group || '',
   };
 }
+
+// ── Toast notifications ───────────────────────────────────────────────────────
+
+let _toastContainer = null;
+
+function _ensureToastContainer() {
+  if (_toastContainer && document.body.contains(_toastContainer)) return _toastContainer;
+  _toastContainer = document.createElement('div');
+  _toastContainer.id = 'toast-container';
+  Object.assign(_toastContainer.style, {
+    position: 'fixed', bottom: '24px', right: '24px',
+    display: 'flex', flexDirection: 'column', gap: '8px',
+    zIndex: '9999', pointerEvents: 'none',
+  });
+  document.body.appendChild(_toastContainer);
+  return _toastContainer;
+}
+
+function toast(message, type = 'info') {
+  const container = _ensureToastContainer();
+  const el = document.createElement('div');
+  const bg = type === 'success' ? '#16a34a' : type === 'error' ? '#dc2626' : '#374151';
+  Object.assign(el.style, {
+    background: bg, color: '#fff', padding: '10px 16px',
+    borderRadius: '10px', fontSize: '13px', fontWeight: '600',
+    maxWidth: '320px', boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+    pointerEvents: 'auto', opacity: '0',
+    transition: 'opacity 0.2s ease', lineHeight: '1.4',
+    wordBreak: 'break-word',
+  });
+  el.textContent = message;
+  container.appendChild(el);
+  requestAnimationFrame(() => { el.style.opacity = '1'; });
+  const remove = () => {
+    el.style.opacity = '0';
+    setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
+  };
+  el.addEventListener('click', remove);
+  setTimeout(remove, type === 'error' ? 6000 : 3500);
+}

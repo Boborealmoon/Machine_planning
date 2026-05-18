@@ -308,6 +308,30 @@ def _trial_schedule_via_rest():
     })
 
 
+@trial_bp.get("/api/trial/queue-state")
+def api_trial_queue_state():
+    with planner_db() as con:
+        data = rows(
+            con.execute(
+                """
+                SELECT qs.block_id, qs.predicted_start_at, qs.predicted_end_at,
+                       qs.remaining_qty, qs.output_qty, qs.reject_qty, qs.good_qty,
+                       qs.planned_minutes, qs.schedule_status, qs.execution_status,
+                       qs.is_late, qs.delay_minutes,
+                       b.machine_id, b.queue_position
+                FROM planner_machine_queue_state qs
+                JOIN planner_run_block b ON b.block_id = qs.block_id
+                WHERE COALESCE(b.active, TRUE) = TRUE
+                ORDER BY b.machine_id, b.queue_position, b.block_id
+                """
+            )
+        )
+        for row in data:
+            row["predicted_start_at"] = compact_text(row.get("predicted_start_at"))
+            row["predicted_end_at"] = compact_text(row.get("predicted_end_at"))
+        return jsonify(data)
+
+
 @trial_bp.get("/api/trial/schedule")
 def api_trial_schedule():
     try:
@@ -770,60 +794,100 @@ def api_trial_create_operation():
     )
     if cycle_error:
         return jsonify({"error": cycle_error}), 400
-    with planner_db() as con:
-        planning_status, execution_status = normalize_block_status_inputs(data)
-        op_cur = con.execute(
-            """
-            INSERT INTO planner_operation (
-              job_no, operation_name, total_qty, setup_minutes, cycle_minutes_per_qty, compatible_machine_group,
-              source_ps_id, source_op_seq_id, source_op_no, status, remarks, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-            RETURNING operation_id
-            """,
-            (
-                job_no,
-                operation_name,
-                parse_number(data.get("total_qty"), parse_number(data.get("scheduled_qty"), 0)),
-                parse_number(data.get("setup_minutes"), 0),
-                parse_number(data.get("cycle_minutes_per_qty"), 0),
-                compact_text(data.get("compatible_machine_group")),
-                compact_text(data.get("source_ps_id")) or None,
-                int(data.get("source_op_seq_id") or 0),
-                compact_text(data.get("source_op_no")),
-                compact_text(data.get("status") or "ACTIVE") or "ACTIVE",
-                compact_text(data.get("remarks")),
-            ),
-        )
-        operation_id = int(one(op_cur)["operation_id"])
-        queue_position = float(data.get("queue_position") or 0)
-        if queue_position <= 0:
-            queue_position = 1 + float(one(con.execute(
-                "SELECT COALESCE(MAX(queue_position), 0) AS mx FROM planner_run_block WHERE machine_id = %s",
-                (machine_id,),
-            ))["mx"] or 0)
-        block_cur = con.execute(
-            """
-            INSERT INTO planner_run_block (
-              operation_id, machine_id, queue_position, scheduled_qty, include_setup, status, planning_status, execution_status,
-              anchor_datetime, calculated_start_datetime, calculated_end_datetime, actual_good_qty, actual_reject_qty, remarks, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, NULL, 0, 0, %s, NOW())
-            RETURNING block_id
-            """,
-            (
-                operation_id,
-                machine_id,
-                queue_position,
-                parse_number(data.get("scheduled_qty"), parse_number(data.get("total_qty"), 0)),
-                bool(data.get("include_setup", True)),
-                execution_status,
-                planning_status,
-                execution_status,
-                compact_text(data.get("remarks")),
-            ),
-        )
-        block_id = int(one(block_cur)["block_id"])
-        recalculate_machine(con, machine_id)
-        return jsonify({"ok": True, "operation_id": operation_id, "block": trial_block_payload(trial_block_row(con, block_id), con)})
+    try:
+        with planner_db() as con:
+            planning_status, execution_status = normalize_block_status_inputs(data)
+            op_cur = con.execute(
+                """
+                INSERT INTO planner_operation (
+                  job_no, operation_name, total_qty, setup_minutes, cycle_minutes_per_qty, compatible_machine_group,
+                  source_ps_id, source_op_seq_id, source_op_no, status, remarks, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                RETURNING operation_id
+                """,
+                (
+                    job_no,
+                    operation_name,
+                    parse_number(data.get("total_qty"), parse_number(data.get("scheduled_qty"), 0)),
+                    parse_number(data.get("setup_minutes"), 0),
+                    parse_number(data.get("cycle_minutes_per_qty"), 0),
+                    compact_text(data.get("compatible_machine_group")),
+                    compact_text(data.get("source_ps_id")) or None,
+                    int(data.get("source_op_seq_id") or 0),
+                    compact_text(data.get("source_op_no")),
+                    compact_text(data.get("status") or "ACTIVE") or "ACTIVE",
+                    compact_text(data.get("remarks")),
+                ),
+            )
+            operation_id = int(one(op_cur)["operation_id"])
+            queue_position = float(data.get("queue_position") or 0)
+            if queue_position <= 0:
+                queue_position = 1 + float(one(con.execute(
+                    "SELECT COALESCE(MAX(queue_position), 0) AS mx FROM planner_run_block WHERE machine_id = %s",
+                    (machine_id,),
+                ))["mx"] or 0)
+            block_cur = con.execute(
+                """
+                INSERT INTO planner_run_block (
+                  operation_id, machine_id, queue_position, scheduled_qty, include_setup, status, planning_status, execution_status,
+                  anchor_datetime, calculated_start_datetime, calculated_end_datetime, actual_good_qty, actual_reject_qty, remarks, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, NULL, 0, 0, %s, NOW())
+                RETURNING block_id
+                """,
+                (
+                    operation_id,
+                    machine_id,
+                    queue_position,
+                    parse_number(data.get("scheduled_qty"), parse_number(data.get("total_qty"), 0)),
+                    bool(data.get("include_setup", True)),
+                    execution_status,
+                    planning_status,
+                    execution_status,
+                    compact_text(data.get("remarks")),
+                ),
+            )
+            block_id = int(one(block_cur)["block_id"])
+
+            # Write planning card + operation link when this op has a process sheet source
+            source_ps_id_val = compact_text(data.get("source_ps_id")) or None
+            if source_ps_id_val:
+                scheduled_qty_val = parse_number(data.get("scheduled_qty"), parse_number(data.get("total_qty"), 0))
+                card_label = compact_text(data.get("source_op_no")) or operation_name
+                card_cur2 = con.execute(
+                    """
+                    INSERT INTO planner_planning_card (
+                      planner_ps_id, operation_label, target_qty, planning_status, card_type,
+                      machine_id, scheduled_block_group_id, created_at, updated_at
+                    ) VALUES (%s, %s, %s, 'SCHEDULED', 'SINGLE', %s, NULL, NOW(), NOW())
+                    RETURNING card_id
+                    """,
+                    (source_ps_id_val, card_label, scheduled_qty_val, machine_id),
+                )
+                card_id_val = int(one(card_cur2)["card_id"])
+                con.execute(
+                    """
+                    INSERT INTO planner_planning_card_operation (
+                      card_id, source_ps_id, source_op_seq_id, source_op_no, op_sequence,
+                      setup_minutes, cycle_minutes_per_qty, target_qty
+                    ) VALUES (%s, %s, %s, %s, 1, %s, %s, %s)
+                    """,
+                    (
+                        card_id_val,
+                        source_ps_id_val,
+                        int(data.get("source_op_seq_id") or 0),
+                        compact_text(data.get("source_op_no")),
+                        parse_number(data.get("setup_minutes"), 0),
+                        parse_number(data.get("cycle_minutes_per_qty"), 0),
+                        scheduled_qty_val,
+                    ),
+                )
+
+            recalculate_machine(con, machine_id)
+            return jsonify({"ok": True, "operation_id": operation_id, "block": trial_block_payload(trial_block_row(con, block_id), con)})
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(exc)}), 400
 
 
 @trial_bp.post("/api/trial/catalog/combine")

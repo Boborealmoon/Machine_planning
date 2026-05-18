@@ -3,7 +3,7 @@ planning/helpers.py
 -------------------
 Database helpers for the planner module. Provides a thin psycopg2 wrapper
 that mimics the SQLite con.execute() / one() / rows() interface used in
-Vanessa's route code, so ported queries need only table-name / column-name
+the old route code, so ported queries need only table-name / column-name
 changes — not a structural rewrite.
 
 Usage:

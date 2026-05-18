@@ -1,4 +1,4 @@
-/* Inventory BOM — Parts & Flows */
+/* Inventory BOM — Parts & Flows (read-only) */
 
 let selectedSource = null;
 let selectedSourceEl = null;
@@ -13,23 +13,6 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("part-search").addEventListener("input", (e) => {
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => loadSources(e.target.value.trim()), 280);
-  });
-
-  document.getElementById("btn-save-flow").addEventListener("click", saveFlowMeta);
-  document.getElementById("btn-duplicate").addEventListener("click", () => {
-    alert("Duplicate flow — coming soon.");
-  });
-  document.getElementById("btn-add-flow").addEventListener("click", () => {
-    alert("Add Flow — coming soon.");
-  });
-  document.getElementById("btn-edit-part").addEventListener("click", () => {
-    alert("Edit Part — coming soon.");
-  });
-  document.getElementById("btn-add-part").addEventListener("click", () => {
-    alert("Add Part — coming soon.");
-  });
-  document.getElementById("btn-add-step").addEventListener("click", () => {
-    alert("Add Step — coming soon.");
   });
 });
 
@@ -59,7 +42,6 @@ function renderSourcesList(sources) {
     <div class="part-item${s.source_code === selectedSource ? " part-item--selected" : ""}"
          data-source="${esc(s.source_code)}">
       <div class="part-number">${esc(s.source_code)}</div>
-      <div class="part-desc">No description</div>
       <div class="part-boms">${s.bom_count} bom(s)</div>
     </div>`
   ).join("");
@@ -68,7 +50,6 @@ function renderSourcesList(sources) {
     el.addEventListener("click", () => selectSource(el));
   });
 
-  // Re-highlight previously selected source after reload
   if (selectedSource) {
     const el = list.querySelector(`[data-source="${CSS.escape(selectedSource)}"]`);
     if (el) { selectedSourceEl = el; el.classList.add("part-item--selected"); }
@@ -89,6 +70,7 @@ async function selectSource(el) {
   detail.style.display = "flex";
 
   await loadBomTabs(selectedSource);
+  loadMaterials(selectedSource);
 }
 
 // ── BOM tabs ──────────────────────────────────────────────────────────────
@@ -132,60 +114,21 @@ function renderBomTabs(bomCodes) {
 function selectBomTab(bomCode) {
   activeBom = bomCode;
 
-  // Update tab highlight
   document.querySelectorAll(".bom-tab").forEach((btn) => {
     btn.classList.toggle("bom-tab--active", btn.dataset.bom === bomCode);
   });
 
-  // Update flow header
   document.getElementById("flow-code-display").textContent = bomCode;
-  document.getElementById("input-bom-code").value = bomCode;
-
   document.getElementById("bom-detail").style.display = "flex";
 
-  // Load flow name metadata, operations, and materials
-  loadFlowMeta(selectedSource, bomCode);
   loadOperations(selectedSource, bomCode);
-  loadMaterials(selectedSource, bomCode);
 }
 
-// ── Flow metadata ─────────────────────────────────────────────────────────
-
-async function loadFlowMeta(source, bom) {
-  try {
-    const res = await fetch(
-      `/api/bom/meta?source=${encodeURIComponent(source)}&bom=${encodeURIComponent(bom)}`
-    );
-    const data = await res.json();
-    document.getElementById("input-flow-name").value = data.flow_name || "";
-  } catch (_) {
-    document.getElementById("input-flow-name").value = "";
-  }
-}
-
-async function saveFlowMeta() {
-  if (!selectedSource || !activeBom) return;
-  const flowName = document.getElementById("input-flow-name").value.trim();
-  try {
-    await fetch("/api/bom/meta", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source: selectedSource, bom: activeBom, flow_name: flowName }),
-    });
-    const btn = document.getElementById("btn-save-flow");
-    btn.textContent = "Saved ✓";
-    setTimeout(() => { btn.textContent = "Save Flow"; }, 1800);
-  } catch (err) {
-    alert("Save failed: " + err.message);
-  }
-}
-
-
-// ── Operations table (SQLite planner.db) ─────────────────────────────────
+// ── Operations table ──────────────────────────────────────────────────────
 
 async function loadOperations(source, bom) {
   const tbody = document.getElementById("ops-tbody");
-  tbody.innerHTML = '<tr><td colspan="5" class="steps-empty">Loading...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="4" class="steps-empty">Loading...</td></tr>';
   try {
     const res = await fetch(
       `/api/bom/operations?source=${encodeURIComponent(source)}&bom=${encodeURIComponent(bom)}`
@@ -194,19 +137,18 @@ async function loadOperations(source, bom) {
     if (rows.error) throw new Error(rows.error);
     renderOperations(rows);
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="5" class="steps-empty" style="color:#e74c3c">Error: ${err.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="steps-empty" style="color:#e74c3c">Error: ${err.message}</td></tr>`;
   }
 }
 
 function renderOperations(rows) {
   const tbody = document.getElementById("ops-tbody");
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="steps-empty">No operations for this BOM.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" class="steps-empty">No operations for this BOM.</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map((r) => `
     <tr>
-      <td class="col-drag">⠿</td>
       <td>${esc(String(r.stage_no))}</td>
       <td>${r.op_no != null ? esc(String(r.op_no)) : "—"}</td>
       <td>${esc(r.stage_desc)}</td>
@@ -215,15 +157,13 @@ function renderOperations(rows) {
   ).join("");
 }
 
-// ── Materials table (PostgreSQL) ──────────────────────────────────────────
+// ── Materials table ───────────────────────────────────────────────────────
 
-async function loadMaterials(source, bom) {
+async function loadMaterials(source) {
   const tbody = document.getElementById("steps-tbody");
   tbody.innerHTML = '<tr><td colspan="2" class="steps-empty">Loading...</td></tr>';
   try {
-    const res = await fetch(
-      `/api/bom/materials?source=${encodeURIComponent(source)}&bom=${encodeURIComponent(bom)}`
-    );
+    const res = await fetch(`/api/bom/materials?source=${encodeURIComponent(source)}`);
     const rows = await res.json();
     if (rows.error) throw new Error(rows.error);
     renderMaterials(rows);
@@ -235,7 +175,7 @@ async function loadMaterials(source, bom) {
 function renderMaterials(rows) {
   const tbody = document.getElementById("steps-tbody");
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="2" class="steps-empty">No materials for this BOM.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="2" class="steps-empty">No materials for this part.</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map((r) => `

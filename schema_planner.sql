@@ -221,7 +221,6 @@ CREATE TABLE IF NOT EXISTS public.planner_run_block (
     planned_qty_original       NUMERIC      NOT NULL DEFAULT 0,
     split_from_block_id        BIGINT       REFERENCES public.planner_run_block(block_id) ON DELETE SET NULL,
     scheduler_note             TEXT         NOT NULL DEFAULT '',
-    last_schedule_run_id       BIGINT,      -- FK added after planner_schedule_run is created (see below)
     created_at                 TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at                 TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -242,7 +241,6 @@ CREATE TABLE IF NOT EXISTS public.planner_run_block_segment (
     end_datetime     TIMESTAMPTZ  NOT NULL,
     is_actual        BOOLEAN      NOT NULL DEFAULT FALSE,
     segment_status   TEXT         NOT NULL DEFAULT 'PLANNED',
-    schedule_run_id  BIGINT,      -- FK added after planner_schedule_run is created
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
@@ -633,3 +631,4 @@ CREATE INDEX IF NOT EXISTS idx_planner_psos_ps_id
 
 CREATE INDEX IF NOT EXISTS idx_planner_pss_execution
     ON public.planner_process_sheet_state(execution_status);
+

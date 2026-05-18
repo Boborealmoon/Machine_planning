@@ -210,6 +210,10 @@ async function trialCatalogHandlePointerUp(e) {
   const state = trialCatalogPointerDrag;
   if (!state || state.pointerId !== e.pointerId || !state.sourceEl) return;
 
+  // Consume state immediately before any await so re-entrant pointerup events are ignored.
+  trialCatalogPointerDrag = null;
+  trialDragPayload = null;
+
   const sourcePayload = state.sourcePayload;
   const targetEl = trialCatalogOpAtPoint(e.clientX, e.clientY);
   const targetPayload = targetEl && targetEl !== state.sourceEl ? trialOpCardPayloadFromElement(targetEl) : null;
@@ -308,15 +312,19 @@ function bindTrialCatalogDnD() {
 function bindTrialLaneOpDrops() {
   if (trialHasActiveDateFilter()) return;
   document.querySelectorAll('.trial-lane').forEach(lane => {
+    if (lane.dataset.laneDropBound === '1') return;
+    lane.dataset.laneDropBound = '1';
     lane.addEventListener('dragover', e => {
-      const payload = trialDragPayload || trialParsePayload(e.dataTransfer);
+      // Only accept genuine HTML5 drag transfers — not pointer-based catalog drags.
+      const payload = trialParsePayload(e.dataTransfer);
       if (!payload || payload.type !== 'op-card') return;
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
     });
     lane.addEventListener('drop', async e => {
       e.preventDefault();
-      const payload = trialParsePayload(e.dataTransfer) || trialDragPayload;
+      // Only use data-transfer payload — trialDragPayload is handled by the pointer system.
+      const payload = trialParsePayload(e.dataTransfer);
       const machineId = Number(lane.dataset.machineId || 0);
       if (!machineId || !payload || payload.type !== 'op-card') return;
       try {
@@ -329,7 +337,6 @@ function bindTrialLaneOpDrops() {
         toast('Schedule failed: ' + err.message, 'error');
         await loadTrial();
       }
-      trialDragPayload = null;
     });
   });
 }
@@ -413,8 +420,10 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
       include_setup: 1,
     });
     await loadTrial();
+    await syncTrialQueueState();
     toast('Operation scheduled', 'success');
   } catch (e) {
+    console.error('scheduleTrialSingleOpCard failed:', e);
     toast('Schedule failed: ' + e.message, 'error');
   }
 }

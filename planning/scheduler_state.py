@@ -113,6 +113,21 @@ def _ps_id_for_block(con, block_id):
     return _text(row["ps_id"]) if row else ""
 
 
+def _validated_ps_id(con, raw_ps_id):
+    """Return raw_ps_id only if it exists in planner_process_sheet, else None.
+
+    Prevents FK violations when ERP-sourced ps_ids (not yet in planner_process_sheet)
+    are stored in tables that FK-reference planner_process_sheet.
+    """
+    if not raw_ps_id:
+        return None
+    row = one(con.execute(
+        "SELECT 1 FROM planner_process_sheet WHERE planner_ps_id = %s LIMIT 1",
+        (str(raw_ps_id),),
+    ))
+    return str(raw_ps_id) if row else None
+
+
 def _archive_current_runs(con, scope_type, machine_id):
     if machine_id is None:
         con.execute(
@@ -312,7 +327,7 @@ def refresh_operation_state(con, operation_id):
     if remaining_qty <= 0 and _float(operation["total_qty"]) > 0:
         execution_status = "DONE"
 
-    planner_ps_id = _text(operation["source_ps_id"])
+    planner_ps_id = _validated_ps_id(con, _text(operation["source_ps_id"]))
     con.execute(
         """
         INSERT INTO planner_process_sheet_operation_state (
@@ -489,6 +504,10 @@ def upsert_schedule_alert(
     delay_minutes=0,
     status="OPEN",
 ):
+    # Guard FK: planner_schedule_alert.planner_ps_id references planner_process_sheet.
+    # ERP-sourced ps_ids won't exist there yet, so use NULL to avoid FK violations.
+    ps_id = _validated_ps_id(con, ps_id)
+
     # IS NOT DISTINCT FROM handles both NULL and non-NULL block_id correctly
     existing = one(
         con.execute(

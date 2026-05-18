@@ -12,13 +12,12 @@
   <!-- Page header -->
   <div class="pf-header">
     <h1 class="pf-title">Parts &amp; Flows</h1>
-    <button class="btn btn-dark" id="btn-add-part">Add Part</button>
   </div>
 
   <!-- Two-panel layout -->
   <div class="pf-layout">
 
-    <!-- Left: parts / sources list -->
+    <!-- Left: parts list -->
     <aside class="pf-sidebar">
       <div class="pf-search-wrap">
         <svg class="pf-search-icon" viewBox="0 0 16 16" fill="none">
@@ -45,42 +44,22 @@
 
         <!-- Part name row -->
         <div class="pf-part-header">
-          <div class="pf-part-meta">
-            <span class="pf-part-number" id="selected-part-number"></span>
-          </div>
-          <button class="btn-text" id="btn-edit-part">Edit Part</button>
+          <span class="pf-part-number" id="selected-part-number"></span>
         </div>
 
         <!-- BOM tabs row -->
         <div class="bom-tabs-bar">
           <div class="bom-tabs" id="bom-tabs"></div>
-          <button class="btn btn-dark btn-sm" id="btn-add-flow">Add Flow</button>
         </div>
 
-        <!-- BOM detail area (hidden until tab selected) -->
+        <!-- BOM detail area -->
         <div class="bom-detail" id="bom-detail" style="display:none">
 
-          <!-- Flow header row -->
+          <!-- Flow header -->
           <div class="flow-header-row">
             <div class="flow-header-left">
               <span class="flow-label">BOM:</span>
               <span class="flow-code-display" id="flow-code-display"></span>
-            </div>
-            <div class="flow-header-right">
-              <button class="btn btn-light btn-sm" id="btn-duplicate">Duplicate</button>
-              <button class="btn btn-dark btn-sm" id="btn-save-flow">Save Flow</button>
-            </div>
-          </div>
-
-          <!-- Flow form fields -->
-          <div class="flow-form">
-            <div class="flow-form-field">
-              <label class="flow-field-label">BOM Code</label>
-              <input type="text" class="flow-field-input" id="input-bom-code" readonly />
-            </div>
-            <div class="flow-form-field">
-              <label class="flow-field-label">Flow Name</label>
-              <input type="text" class="flow-field-input" id="input-flow-name" placeholder="Optional name" />
             </div>
           </div>
 
@@ -91,7 +70,6 @@
               <table class="steps-table">
                 <thead>
                   <tr>
-                    <th class="col-drag"></th>
                     <th>Stage</th>
                     <th>Op No</th>
                     <th>Description</th>
@@ -99,11 +77,10 @@
                   </tr>
                 </thead>
                 <tbody id="ops-tbody">
-                  <tr><td colspan="5" class="steps-empty">Loading...</td></tr>
+                  <tr><td colspan="4" class="steps-empty">Loading...</td></tr>
                 </tbody>
               </table>
             </div>
-            <button class="btn-add-step" id="btn-add-step">+ Add Step</button>
           </div>
 
           <!-- Materials table -->
@@ -128,7 +105,7 @@
 
         <!-- No tabs yet -->
         <div class="bom-no-boms" id="bom-no-boms" style="display:none">
-          No BOMs found for this part. Click "Add Flow" to create one.
+          No machining BOMs found for this part.
         </div>
 
       </div><!-- /part-detail -->
