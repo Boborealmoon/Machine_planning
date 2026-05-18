@@ -5,6 +5,7 @@ from flask import Blueprint, jsonify, request
 
 from .helpers import one, rows, planner_db
 from .materials import sync_material_requirements_for_ps
+from .process_sheets import ensure_planner_process_sheet
 from .utils import compact_text, parse_number
 
 flows_bp = Blueprint("planner_flows", __name__)
@@ -35,6 +36,10 @@ _PS_FLOW_SELECT = """
 @flows_bp.get("/api/process-sheets/<path:ps_id>")
 def api_process_sheet(ps_id):
     with planner_db() as con:
+        try:
+            ensure_planner_process_sheet(con, ps_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 404
         row = one(
             con.execute(
                 _PS_FLOW_SELECT + " WHERE ps.planner_ps_id = %s",
@@ -58,6 +63,10 @@ def api_process_sheet_selected_flow(ps_id):
     bom_id = int(data.get("bom_id") or 0)
     flow_code = compact_text(data.get("flow_code"))
     with planner_db() as con:
+        try:
+            ensure_planner_process_sheet(con, ps_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 404
         ps = one(
             con.execute(
                 _PS_FLOW_SELECT + " WHERE ps.planner_ps_id = %s",

@@ -57,14 +57,26 @@ function trialAddDaysISO(dateText, deltaDays) {
 function trialNormalizeScheduleDates(startText, endText) {
   let start = String(startText || '').trim();
   let end = String(endText || '').trim();
-  if (end && end < start) end = start;
+  if (end && start && end < start) end = start;
   return { start, end };
+}
+
+function trialDefaultScheduleDateFilter() {
+  return { start: trialTodayLocal(), end: '' };
 }
 
 function trialResolvedScheduleDateFilterFromUrl() {
   const params = new URLSearchParams(window.location.search);
+  const hasStart = params.has('start') || params.has('from');
+  const hasEnd = params.has('end') || params.has('to');
+  if (!hasStart && !hasEnd) {
+    return trialDefaultScheduleDateFilter();
+  }
   const urlStart = String(params.get('start') || params.get('from') || '').trim();
   const urlEnd = String(params.get('end') || params.get('to') || '').trim();
+  if (!urlStart && !urlEnd) {
+    return trialDefaultScheduleDateFilter();
+  }
   return trialNormalizeScheduleDates(urlStart, urlEnd);
 }
 

@@ -244,11 +244,17 @@ async function trialCatalogHandlePointerUp(e) {
 
     const machineId = Number(lane?.dataset.machineId || 0);
     if (machineId) {
+      const queuePosition = trialLaneInsertPosition(lane, e.clientY);
       try {
         if (sourcePayload.card_kind === 'group') {
-          await scheduleTrialCombinedOpCard(sourcePayload.card_id, machineId);
+          await scheduleTrialCombinedOpCard(sourcePayload.card_id, machineId, queuePosition);
         } else if (sourcePayload.card_kind === 'single') {
-          await scheduleTrialSingleOpCard(sourcePayload, machineId);
+          const existing = trialFindBlockForCatalogOp(sourcePayload);
+          if (existing) {
+            await moveTrialBlockToMachine(existing.block_id, machineId, queuePosition);
+          } else {
+            await scheduleTrialSingleOpCard(sourcePayload, machineId, queuePosition);
+          }
         }
       } catch (err) {
         toast('Schedule failed: ' + err.message, 'error');
@@ -309,8 +315,68 @@ function bindTrialCatalogDnD() {
   });
 }
 
+function trialLaneInsertPosition(lane, clientY) {
+  if (!lane) return 0;
+  const cards = Array.from(lane.querySelectorAll(':scope > .trial-block-card'));
+  for (let i = 0; i < cards.length; i++) {
+    const rect = cards[i].getBoundingClientRect();
+    const midY = rect.top + (rect.height / 2);
+    if (clientY < midY) return i + 1;
+  }
+  return cards.length + 1;
+}
+
+function trialLaneOrderedBlockIds(lane, movedBlockId = 0) {
+  const orderedIds = [];
+  if (!lane) return orderedIds;
+  Array.from(lane.querySelectorAll(':scope > .trial-block-card')).forEach(card => {
+    const id = Number(card.dataset.blockId || 0);
+    if (id) orderedIds.push(id);
+  });
+  const numericMovedId = Number(movedBlockId || 0);
+  if (!numericMovedId || orderedIds.includes(numericMovedId)) {
+    return orderedIds;
+  }
+  return orderedIds;
+}
+
+async function moveTrialBlockToMachine(blockId, machineId, queuePosition = 0) {
+  const numericBlockId = Number(blockId || 0);
+  const numericMachineId = Number(machineId || 0);
+  if (!numericBlockId || !numericMachineId) {
+    toast('Missing block or machine for move.', 'error');
+    return;
+  }
+  const lane = document.getElementById(`trial-lane-${numericMachineId}`);
+  let orderedIds = trialLaneOrderedBlockIds(lane).filter(id => id !== numericBlockId);
+  const insertIdx = queuePosition > 0
+    ? Math.min(Math.max(0, queuePosition - 1), orderedIds.length)
+    : orderedIds.length;
+  orderedIds.splice(insertIdx, 0, numericBlockId);
+  try {
+    const result = await POST(`/api/trial/blocks/${numericBlockId}/reorder`, {
+      machine_id: numericMachineId,
+      ordered_ids: orderedIds,
+    });
+    const seq = result && result.sequences ? result.sequences[String(numericBlockId)] : null;
+    if (seq) {
+      trialPinBlock({
+        block_id: numericBlockId,
+        machine_id: numericMachineId,
+        operation_sequence_id: seq.operation_sequence_id,
+        sequence_no: seq.sequence_no,
+        queue_position: seq.sequence_no,
+      });
+    }
+    await loadTrial();
+    toast('Job moved', 'success');
+  } catch (e) {
+    toast('Move failed: ' + e.message, 'error');
+    await loadTrial();
+  }
+}
+
 function bindTrialLaneOpDrops() {
-  if (trialHasActiveDateFilter()) return;
   document.querySelectorAll('.trial-lane').forEach(lane => {
     if (lane.dataset.laneDropBound === '1') return;
     lane.dataset.laneDropBound = '1';
@@ -354,7 +420,6 @@ function destroyTrialSortables() {
 
 function initTrialMachineSortables() {
   if (typeof Sortable === 'undefined') return;
-  const sortingDisabled = trialHasActiveDateFilter();
   document.querySelectorAll('.trial-lane').forEach(lane => {
     const sortable = new Sortable(lane, {
       group: {
@@ -365,7 +430,7 @@ function initTrialMachineSortables() {
       draggable: '.trial-block-card',
       handle: '.trial-op-card-header',
       animation: 150,
-      disabled: sortingDisabled,
+      disabled: !trialCanReorderMachineQueue(),
       ghostClass: 'trial-drag-ghost',
       chosenClass: 'trial-drag-chosen',
       dragClass: 'trial-drag-active',
@@ -401,8 +466,13 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
     toast('Missing operation data for this card.', 'error');
     return;
   }
+  const existing = trialFindBlockForCatalogOp(card);
+  if (existing) {
+    await moveTrialBlockToMachine(existing.block_id, machineId, queuePosition);
+    return;
+  }
   try {
-    await POST('/api/trial/operations', {
+    const result = await POST('/api/trial/operations', {
       job_no: op.job_no || op.source_ps_id || '',
       operation_name: op.operation_name || op.op_type || op.source_op_no || '',
       total_qty: Number(op.remaining_qty || op.total_qty || 0),
@@ -412,13 +482,16 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
       compatible_machine_group: op.compatible_machine_group || '',
       source_ps_id: op.source_ps_id || '',
       source_op_seq_id: Number(op.source_op_seq_id || 0),
-      source_op_no: op.source_op_no || '',
+      source_op_no: String(op.source_op_no || card?.operation_label || '').trim(),
       machine_id: Number(machineId || 0),
       queue_position: Number(queuePosition || 0),
       planning_status: 'PLANNED',
       execution_status: 'NOT_STARTED',
       include_setup: 1,
     });
+    if (result && result.block) {
+      trialPinBlock(result.block);
+    }
     await loadTrial();
     await syncTrialQueueState();
     toast('Operation scheduled', 'success');

@@ -431,6 +431,24 @@ CREATE INDEX IF NOT EXISTS idx_planner_operation_source_ps
 CREATE INDEX IF NOT EXISTS idx_planner_run_block_machine_queue
     ON public.planner_run_block(machine_id, active, queue_position);
 
+-- Per-machine queue sequence for scheduled run blocks (drag order within / across lanes).
+CREATE TABLE IF NOT EXISTS public.planner_operation_sequence (
+    operation_sequence_id  BIGSERIAL    PRIMARY KEY,
+    machine_id             BIGINT       NOT NULL REFERENCES public.planner_machines(machine_id) ON DELETE CASCADE,
+    block_id               BIGINT       NOT NULL REFERENCES public.planner_run_block(block_id) ON DELETE CASCADE,
+    sequence_no            INTEGER      NOT NULL,
+    created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (block_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_planner_operation_sequence_machine
+    ON public.planner_operation_sequence(machine_id, sequence_no);
+
+ALTER TABLE public.planner_run_block
+    ADD COLUMN IF NOT EXISTS operation_sequence_id BIGINT
+        REFERENCES public.planner_operation_sequence(operation_sequence_id) ON DELETE SET NULL;
+
 CREATE INDEX IF NOT EXISTS idx_planner_run_block_operation
     ON public.planner_run_block(operation_id);
 

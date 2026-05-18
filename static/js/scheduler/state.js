@@ -18,3 +18,5 @@ let trialActualDraft = { remarks: '', rows: {} };
 let trialMachineSortables = [];
 let trialCatalogPointerDrag = null;
 let trialCatalogPointerListenersBound = false;
+// Blocks pinned after schedule POST until schedule refresh includes them (prevents pop-off).
+let trialPinnedBlocks = new Map();

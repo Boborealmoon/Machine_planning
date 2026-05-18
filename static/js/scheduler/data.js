@@ -34,14 +34,37 @@ function trialVisibleMachines() {
   return machines;
 }
 
+function trialCatalogAllocationKey(psId, opNo, opSeqId) {
+  const ps = String(psId || '').trim();
+  if (!ps) return '';
+  const no = String(opNo || '').trim();
+  if (no) return `${ps}||op:${no}`;
+  const seq = Number(opSeqId || 0);
+  if (seq > 0) return `${ps}||seq:${seq}`;
+  return '';
+}
+
 function trialAllocatedOpKeys() {
   const keys = new Set();
   (trialState.blocks || []).forEach(b => {
-    const psId = String(b.source_ps_id || b.job_no || '').trim();
-    const opNo = String(b.source_op_no || '').trim();
-    if (psId && opNo) keys.add(`${psId}||${opNo}`);
+    const key = trialCatalogAllocationKey(
+      b.source_ps_id || b.job_no,
+      b.source_op_no,
+      b.source_op_seq_id
+    );
+    if (key) keys.add(key);
   });
   return keys;
+}
+
+function trialIsCatalogOpAllocated(card) {
+  const psId = String(card?.source_ps_id || card?.ps_id || '').trim();
+  const keys = trialAllocatedOpKeys();
+  if (!psId || !keys.size) return false;
+  const primary = trialCatalogAllocationKey(psId, card?.source_op_no, card?.source_op_seq_id);
+  if (primary && keys.has(primary)) return true;
+  const labelKey = trialCatalogAllocationKey(psId, card?.operation_label, 0);
+  return Boolean(labelKey && keys.has(labelKey));
 }
 
 function trialIsOpAllocated(psId, opNo) {
@@ -53,13 +76,12 @@ function trialIsOpAllocated(psId, opNo) {
   });
 }
 
-function trialAllocatedBlockForOp(psId, opNo) {
-  if (!psId || !opNo) return null;
-  return (trialState.blocks || []).find(b => {
-    const bPs = String(b.source_ps_id || b.job_no || '').trim();
-    const bOp = String(b.source_op_no || '').trim();
-    return bPs === String(psId).trim() && bOp === String(opNo).trim();
-  }) || null;
+function trialAllocatedBlockForOp(psId, opNo, opSeqId = 0) {
+  return trialFindBlockForCatalogOp({
+    source_ps_id: psId,
+    source_op_no: opNo,
+    source_op_seq_id: opSeqId,
+  });
 }
 
 function trialHasActiveDateFilter() {
@@ -67,6 +89,19 @@ function trialHasActiveDateFilter() {
     String(trialScheduleDateFilter.start || '').trim() ||
     String(trialScheduleDateFilter.end || '').trim()
   );
+}
+
+function trialCanReorderMachineQueue() {
+  return true;
+}
+
+function trialFindBlockForCatalogOp(card) {
+  const psId = String(card?.source_ps_id || card?.ps_id || '').trim();
+  if (!psId) return null;
+  const targetKey = trialCatalogAllocationKey(psId, card?.source_op_no, card?.source_op_seq_id);
+  return (trialState.blocks || []).find(block => (
+    trialCatalogAllocationKey(block.source_ps_id || block.job_no, block.source_op_no, block.source_op_seq_id) === targetKey
+  )) || null;
 }
 
 function trialDateStart(dateText) {
@@ -86,12 +121,22 @@ function trialParseDateTime(value) {
   return Number.isNaN(dt.getTime()) ? null : dt;
 }
 
+function trialLocalDateText(value) {
+  const dt = trialParseDateTime(value);
+  return dt ? trialDateText(dt) : '';
+}
+
 function trialDateRangesOverlap(itemStart, itemEnd, filterStart, filterEnd) {
-  if (!itemStart && !itemEnd) return false;
-  const start = itemStart || itemEnd;
-  const end = itemEnd || itemStart;
-  if (filterStart && end < filterStart) return false;
-  if (filterEnd && start > filterEnd) return false;
+  // Queued blocks without calculated times should always stay visible on the board.
+  if (!itemStart && !itemEnd) return true;
+
+  const startDay = trialLocalDateText(itemStart || itemEnd);
+  const endDay = trialLocalDateText(itemEnd || itemStart);
+  const filterStartDay = filterStart ? trialDateText(filterStart) : '';
+  const filterEndDay = filterEnd ? trialDateText(filterEnd) : '';
+
+  if (filterStartDay && endDay && endDay < filterStartDay) return false;
+  if (filterEndDay && startDay && startDay > filterEndDay) return false;
   return true;
 }
 
@@ -99,6 +144,17 @@ function trialGroupRunsInsideDateFilter(group) {
   const filterStart = trialDateStart(trialScheduleDateFilter.start);
   const filterEnd = trialDateEnd(trialScheduleDateFilter.end);
   if (!filterStart && !filterEnd) return true;
+
+  const leader = group.leader || (group.blocks || [])[0];
+  const groupStart = trialParseDateTime(
+    group.visual_start_datetime || group.group_start ||
+    leader?.visual_start_datetime || leader?.calculated_start_datetime
+  );
+  const groupEnd = trialParseDateTime(
+    group.visual_end_datetime || group.group_end ||
+    leader?.visual_end_datetime || leader?.calculated_end_datetime
+  );
+  if (!groupStart && !groupEnd) return true;
 
   const blockIds = (group.blocks || []).map(b => String(b.block_id || '')).filter(Boolean);
   const groupSegments = (trialState.segments || []).filter(seg =>
@@ -114,14 +170,6 @@ function trialGroupRunsInsideDateFilter(group) {
     if (matchedBySegments) return true;
   }
 
-  const groupStart = trialParseDateTime(
-    group.visual_start_datetime || group.group_start ||
-    group.leader?.visual_start_datetime || group.leader?.calculated_start_datetime
-  );
-  const groupEnd = trialParseDateTime(
-    group.visual_end_datetime || group.group_end ||
-    group.leader?.visual_end_datetime || group.leader?.calculated_end_datetime
-  );
   return trialDateRangesOverlap(groupStart, groupEnd, filterStart, filterEnd);
 }
 

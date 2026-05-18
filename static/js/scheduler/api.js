@@ -84,20 +84,86 @@ async function syncTrialQueueState() {
   if (changed) renderTrial();
 }
 
+function trialNormalizeBlockFromApi(block) {
+  if (!block) return null;
+  return {
+    ...block,
+    visual_start_datetime: block.visual_start_datetime ||
+      block.calculated_start_datetime ||
+      block.predicted_start_at ||
+      '',
+    visual_end_datetime: block.visual_end_datetime ||
+      block.calculated_end_datetime ||
+      block.predicted_end_at ||
+      '',
+  };
+}
+
+function trialMergeBlockFromApi(block) {
+  const normalized = trialNormalizeBlockFromApi(block);
+  if (!normalized || !normalized.block_id) return;
+  const blocks = Array.isArray(trialState.blocks) ? [...trialState.blocks] : [];
+  const idx = blocks.findIndex(b => String(b.block_id) === String(normalized.block_id));
+  if (idx >= 0) blocks[idx] = { ...blocks[idx], ...normalized };
+  else blocks.push(normalized);
+  trialState.blocks = blocks;
+}
+
+function trialPinBlock(block, ttlMs = 30000) {
+  const normalized = trialNormalizeBlockFromApi(block);
+  if (!normalized || !normalized.block_id) return;
+  const blockId = String(normalized.block_id);
+  trialPinnedBlocks.set(blockId, normalized);
+  window.setTimeout(() => trialPinnedBlocks.delete(blockId), ttlMs);
+}
+
+function trialMergeBlocksWithSchedule(scheduleBlocks) {
+  const merged = new Map();
+  (scheduleBlocks || []).forEach(block => {
+    const normalized = trialNormalizeBlockFromApi(block);
+    if (normalized?.block_id) {
+      merged.set(String(normalized.block_id), normalized);
+    }
+  });
+  trialPinnedBlocks.forEach((pinned, blockId) => {
+    if (!merged.has(blockId)) {
+      merged.set(blockId, pinned);
+      return;
+    }
+    merged.set(blockId, { ...pinned, ...merged.get(blockId) });
+    trialPinnedBlocks.delete(blockId);
+  });
+  return Array.from(merged.values());
+}
+
 async function loadTrial() {
   const resolved = trialNormalizeScheduleDates(trialScheduleDateFilter.start, trialScheduleDateFilter.end);
   trialScheduleDateFilter = resolved;
   trialSyncScheduleUrl();
 
-  const startParam = trialScheduleDateFilter.start ? `?start=${trialScheduleDateFilter.start}&end=${trialScheduleDateFilter.end}` : '';
+  const params = new URLSearchParams();
+  if (trialScheduleDateFilter.start) params.set('start', trialScheduleDateFilter.start);
+  if (trialScheduleDateFilter.end) params.set('end', trialScheduleDateFilter.end);
+  const startParam = params.toString() ? `?${params.toString()}` : '';
 
-  const [scheduleResult, erpVouchers, machinesResult] = await Promise.all([
-    GET(`/api/trial/schedule${startParam}`).catch(() => null),
+  let scheduleResult = null;
+  let scheduleError = null;
+  try {
+    scheduleResult = await GET(`/api/trial/schedule${startParam}`);
+  } catch (err) {
+    scheduleError = err;
+    console.error('Failed to load trial schedule:', err);
+  }
+
+  const [erpVouchers, machinesResult] = await Promise.all([
     GET('/api/pp-vouchers/with-ops').catch(() => []),
     GET('/api/planner/machines').catch(() => ({ machines: [] })),
   ]);
 
   const scheduleData = scheduleResult || {};
+  if (scheduleError && !scheduleData.blocks?.length) {
+    toast('Could not refresh machine queue: ' + scheduleError.message, 'error');
+  }
 
   // Prefer schedule machines (richer); fall back to /api/planner/machines
   const rawMachines = (scheduleData.machines && scheduleData.machines.length)
@@ -112,7 +178,7 @@ async function loadTrial() {
 
   trialState = {
     machines,
-    blocks:         scheduleData.blocks         || [],
+    blocks:         trialMergeBlocksWithSchedule(scheduleData.blocks || []),
     block_groups:   scheduleData.block_groups   || [],
     segments:       scheduleData.segments       || [],
     actuals:        scheduleData.actuals        || [],

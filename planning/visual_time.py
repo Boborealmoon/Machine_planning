@@ -20,18 +20,27 @@ def _break_duration_minutes(window):
 
 
 def _coerce_datetime(value):
+    """Parse datetimes for visual timing; always return naive local datetimes."""
     if value is None:
         return None
+    dt = None
     if isinstance(value, datetime):
-        return value
-    if isinstance(value, date):
-        return datetime.combine(value, datetime.min.time())
-    if isinstance(value, str):
+        dt = value
+    elif isinstance(value, date):
+        dt = datetime.combine(value, datetime.min.time())
+    elif isinstance(value, str):
+        text = str(value).strip().replace("T", " ")
+        if not text:
+            return None
         try:
-            return datetime.fromisoformat(value.replace("T", " "))
+            dt = datetime.fromisoformat(text)
         except ValueError:
             return None
-    return None
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt
 
 
 def break_windows_for_date(work_date, profile_name="", shift_profile=""):
@@ -90,8 +99,10 @@ def add_productive_minutes_visual(start_dt, productive_minutes, break_windows):
     for window in sorted(break_windows or [], key=lambda item: item.get("start_datetime") or ""):
         if remaining <= 0:
             break
-        window_start = datetime.fromisoformat(str(window.get("start_datetime") or "").replace("T", " "))
-        window_end = datetime.fromisoformat(str(window.get("end_datetime") or "").replace("T", " "))
+        window_start = _coerce_datetime(window.get("start_datetime"))
+        window_end = _coerce_datetime(window.get("end_datetime"))
+        if window_start is None or window_end is None:
+            continue
         if window_end <= cursor:
             continue
         if cursor < window_start:
@@ -121,8 +132,10 @@ def visual_parts_for_segment(start_dt, productive_minutes, break_windows, segmen
     for window in window_list:
         if remaining <= 0:
             break
-        window_start = datetime.fromisoformat(str(window.get("start_datetime") or "").replace("T", " "))
-        window_end = datetime.fromisoformat(str(window.get("end_datetime") or "").replace("T", " "))
+        window_start = _coerce_datetime(window.get("start_datetime"))
+        window_end = _coerce_datetime(window.get("end_datetime"))
+        if window_start is None or window_end is None:
+            continue
         if window_end <= raw_cursor:
             continue
         if raw_cursor < window_start:

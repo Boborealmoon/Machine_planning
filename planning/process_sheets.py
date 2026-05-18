@@ -48,6 +48,132 @@ def _display_ids(ps):
     return source_ps_id or ps_id, pp_partial_no
 
 
+def parse_planner_ps_id(planner_ps_id):
+    """Split planner_ps_id into (source_ps_id, pp_partial_no)."""
+    raw = compact_text(planner_ps_id)
+    if not raw:
+        return "", 1
+    if "::" not in raw:
+        return raw, 1
+    base, partial_text = raw.split("::", 1)
+    try:
+        partial_no = int(partial_text)
+    except (TypeError, ValueError):
+        partial_no = 1
+    return base or raw, max(1, partial_no)
+
+
+def ensure_planner_process_sheet(con, planner_ps_id):
+    """Ensure a planner_process_sheet row exists for an ERP-sourced ps id.
+
+    The trial catalog sidebar reads pp_vouchers_cache directly; scheduling writes
+    planner_planning_card rows that FK to planner_process_sheet. Materialize on demand.
+    """
+    planner_ps_id = compact_text(planner_ps_id)
+    if not planner_ps_id:
+        return None
+
+    existing = one(
+        con.execute(
+            "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
+            (planner_ps_id,),
+        )
+    )
+    if existing:
+        return existing
+
+    source_ps_id, pp_partial_no = parse_planner_ps_id(planner_ps_id)
+    cache_row = one(
+        con.execute(
+            """
+            SELECT ps_id, pp_partial_no, part_no, bom_code, total_qty, partial_qty, status
+            FROM pp_vouchers_cache
+            WHERE ps_id = %s AND pp_partial_no = %s
+            LIMIT 1
+            """,
+            (source_ps_id, pp_partial_no),
+        )
+    )
+    if not cache_row and source_ps_id != planner_ps_id:
+        cache_row = one(
+            con.execute(
+                """
+                SELECT ps_id, pp_partial_no, part_no, bom_code, total_qty, partial_qty, status
+                FROM pp_vouchers_cache
+                WHERE ps_id = %s AND pp_partial_no = 1
+                LIMIT 1
+                """,
+                (planner_ps_id,),
+            )
+        )
+        if cache_row:
+            source_ps_id = compact_text(cache_row["ps_id"]) or planner_ps_id
+            pp_partial_no = int(cache_row.get("pp_partial_no") or 1)
+
+    if not cache_row:
+        raise ValueError(
+            f"Process sheet {planner_ps_id} was not found in ERP cache. Sync ERP and try again."
+        )
+
+    inventory_code = compact_text(cache_row.get("part_no"))
+    selected_bom_id = None
+    bom_code = compact_text(cache_row.get("bom_code"))
+    if inventory_code and bom_code:
+        flow = one(
+            con.execute(
+                """
+                SELECT bom_id FROM planner_bom_variation
+                WHERE inventory_code = %s AND bom_code = %s
+                LIMIT 1
+                """,
+                (inventory_code, bom_code),
+            )
+        )
+        if flow:
+            selected_bom_id = int(flow["bom_id"])
+    if not selected_bom_id and inventory_code:
+        flow = one(
+            con.execute(
+                """
+                SELECT bom_id FROM planner_bom_variation
+                WHERE inventory_code = %s
+                ORDER BY is_default DESC, bom_id
+                LIMIT 1
+                """,
+                (inventory_code,),
+            )
+        )
+        if flow:
+            selected_bom_id = int(flow["bom_id"])
+
+    planned_qty = _to_float(cache_row.get("partial_qty") or cache_row.get("total_qty"))
+
+    con.execute(
+        """
+        INSERT INTO planner_process_sheet (
+          planner_ps_id, source_ps_id, pp_partial_no, inventory_code,
+          selected_bom_id, planner_status, status, planned_qty, finished_qty,
+          created_at, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, 'UNPLANNED', 'ACTIVE', %s, 0, NOW(), NOW())
+        ON CONFLICT (planner_ps_id) DO NOTHING
+        """,
+        (
+            planner_ps_id,
+            source_ps_id,
+            pp_partial_no,
+            inventory_code,
+            selected_bom_id,
+            planned_qty,
+        ),
+    )
+    return one(
+        con.execute(
+            "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
+            (planner_ps_id,),
+        )
+    )
+
+
 def _flow_steps_for_ps_ids(con, ps_ids):
     ps_ids = [compact_text(x) for x in ps_ids if compact_text(x)]
     if not ps_ids:

@@ -48,6 +48,8 @@ from .catalog import (
 )
 from .helpers import planner_db, one, rows, parse_dt_text
 from .materials import material_status_map_for_ps_ids, sync_material_requirements_for_ps_ids
+from .operation_sequence import apply_machine_queue_order
+from .process_sheets import ensure_planner_process_sheet
 from .machines import default_profile_for_weekday, fetch_machines, is_public_holiday
 from .visual_time import visual_timing_for_segment
 from .utils import (
@@ -204,7 +206,7 @@ def _trial_schedule_via_rest():
     def rget(table, params=None):
         r = req.get(
             f"{supa_url()}/{table}",
-            headers={**supa_headers(), "Prefer": "return=representation"},
+            headers={**supa_headers(write=True), "Prefer": "return=representation"},
             params=params or {},
             timeout=30,
         )
@@ -336,7 +338,11 @@ def api_trial_queue_state():
 def api_trial_schedule():
     try:
         return _api_trial_schedule_db()
-    except Exception:
+    except Exception as exc:
+        import logging
+        import traceback
+        logging.getLogger(__name__).exception("trial schedule DB path failed, using REST fallback: %s", exc)
+        traceback.print_exc()
         return _trial_schedule_via_rest()
 
 
@@ -398,11 +404,14 @@ def _api_trial_schedule_db():
                 SELECT b.*, o.job_no, o.operation_name, o.total_qty, o.setup_minutes, o.cycle_minutes_per_qty,
                        o.compatible_machine_group, o.source_ps_id, o.source_op_seq_id AS source_op_seq_id, o.source_op_no,
                        m.machine_no AS machine_code, m.machine_category, m.shift_profile,
-                       g.group_label AS group_label, g.group_type AS group_type
+                       g.group_label AS group_label, g.group_type AS group_type,
+                       os.operation_sequence_id AS operation_sequence_id,
+                       os.sequence_no AS sequence_no
                 FROM planner_run_block b
                 JOIN planner_operation o ON o.operation_id = b.operation_id
                 JOIN planner_machines m ON m.machine_id = b.machine_id
                 LEFT JOIN planner_run_block_group g ON g.group_id = b.group_id
+                LEFT JOIN planner_operation_sequence os ON os.block_id = b.block_id
                 WHERE COALESCE(b.active, TRUE) = TRUE
                 ORDER BY b.machine_id, b.queue_position, b.block_id
                 """
@@ -525,8 +534,17 @@ def _api_trial_schedule_db():
         catalog = trial_catalog_items(con, include_completed=bool(include_completed))
         planning_cards = [card for cards in planning_cards_by_ps(con).values() for card in cards]
         group_ids = sorted({int(row["group_id"]) for row in blocks if int(row.get("group_id") or 0) > 0})
-        block_groups = [combined_group_summary(con, group_id) for group_id in group_ids]
-        block_groups = [group for group in block_groups if group]
+        block_groups = []
+        for group_id in group_ids:
+            try:
+                group = combined_group_summary(con, group_id)
+                if group:
+                    block_groups.append(group)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "combined_group_summary failed for group_id=%s", group_id
+                )
         calendar_windows = [_calendar_window_payload(row) for row in _calendar_window_rows(con, start_iso, end_iso)]
 
         ps_ids = set()
@@ -548,7 +566,13 @@ def _api_trial_schedule_db():
             if start_text and (ps_id not in planned_starts or start_text < planned_starts[ps_id]):
                 planned_starts[ps_id] = start_text
 
-        sync_material_requirements_for_ps_ids(con, ps_ids)
+        try:
+            sync_material_requirements_for_ps_ids(con, ps_ids)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception(
+                "material requirement sync failed during trial schedule load"
+            )
         material_status_map = material_status_map_for_ps_ids(con, ps_ids, planned_starts)
         default_material_status = {"status": "NOT_REQUIRED", "label": "", "expected_ready_date": "", "severity": "none"}
         for row in blocks:
@@ -851,6 +875,7 @@ def api_trial_create_operation():
             # Write planning card + operation link when this op has a process sheet source
             source_ps_id_val = compact_text(data.get("source_ps_id")) or None
             if source_ps_id_val:
+                ensure_planner_process_sheet(con, source_ps_id_val)
                 scheduled_qty_val = parse_number(data.get("scheduled_qty"), parse_number(data.get("total_qty"), 0))
                 card_label = compact_text(data.get("source_op_no")) or operation_name
                 card_cur2 = con.execute(
@@ -882,7 +907,24 @@ def api_trial_create_operation():
                     ),
                 )
 
-            recalculate_machine(con, machine_id)
+            machine_blocks = rows(
+                con.execute(
+                    """
+                    SELECT block_id
+                    FROM planner_run_block
+                    WHERE machine_id = %s
+                      AND COALESCE(active, TRUE) = TRUE
+                    ORDER BY queue_position, block_id
+                    """,
+                    (machine_id,),
+                )
+            )
+            ordered_ids = [int(row["block_id"]) for row in machine_blocks]
+            if block_id in ordered_ids and queue_position > 0:
+                ordered_ids = [bid for bid in ordered_ids if bid != block_id]
+                insert_idx = min(max(0, int(queue_position) - 1), len(ordered_ids))
+                ordered_ids.insert(insert_idx, block_id)
+            apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=True)
             return jsonify({"ok": True, "operation_id": operation_id, "block": trial_block_payload(trial_block_row(con, block_id), con)})
     except Exception as exc:
         import traceback
@@ -1076,22 +1118,8 @@ def api_trial_reorder_blocks(block_id):
         if not block:
             return jsonify({"error": "Run block not found"}), 404
         machine_id = int(data.get("machine_id") or block["machine_id"])
-        existing_blocks = rows(
-            con.execute(
-                "SELECT block_id, machine_id FROM planner_run_block WHERE block_id = ANY(%s)",
-                (ordered_ids,),
-            )
-        )
-        affected_machine_ids = {int(machine_id)}
-        affected_machine_ids.update(int(row["machine_id"]) for row in existing_blocks)
-        for idx, ordered_block_id in enumerate(ordered_ids, 1):
-            con.execute(
-                "UPDATE planner_run_block SET machine_id = %s, queue_position = %s, updated_at = NOW() WHERE block_id = %s",
-                (machine_id, float(idx), ordered_block_id),
-            )
-        for affected_machine_id in affected_machine_ids:
-            recalculate_machine(con, affected_machine_id)
-        return jsonify({"ok": True})
+        result = apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=True)
+        return jsonify({"ok": True, **result})
 
 
 @trial_bp.post("/api/trial/blocks/<int:block_id>/combine")

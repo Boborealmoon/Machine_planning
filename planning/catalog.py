@@ -20,6 +20,7 @@ from __future__ import annotations
 from .actuals import actual_totals_for_block
 from .blocks import trial_block_row  # noqa: F401  (re-exported for route convenience)
 from .helpers import one, rows
+from .process_sheets import ensure_planner_process_sheet
 from .utils import compact_text, parse_number, trial_catalog_op_key
 
 
@@ -660,12 +661,7 @@ def create_planning_card(con, ps_id, ops, target_qty=None):
         raise ValueError("Process sheet is required")
     if len(ops) < 2:
         raise ValueError("Choose at least two operations.")
-    ps = one(
-        con.execute(
-            "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
-            (ps_id,),
-        )
-    )
+    ps = ensure_planner_process_sheet(con, ps_id)
     if not ps:
         raise ValueError(f"Process sheet not found: {ps_id}")
     selected_bom_id = int(ps["selected_bom_id"] or 0)
@@ -816,12 +812,7 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
     created_block_ids = []
     for idx, op in enumerate(ops, 1):
         op_ps_id = compact_text(op["source_ps_id"])
-        ps = one(
-            con.execute(
-                "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
-                (op_ps_id,),
-            )
-        )
+        ps = ensure_planner_process_sheet(con, op_ps_id)
         if not ps:
             raise ValueError(f"Process sheet not found: {op_ps_id}")
         step = one(

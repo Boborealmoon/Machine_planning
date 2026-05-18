@@ -229,6 +229,8 @@ def api_pp_vouchers_with_ops():
             stage_desc = row.get("stage_desc") or ""
             op_no = str(row.get("op_no") or "")
             stage_no = int(row.get("stage_no") or 0)
+            if not op_no and stage_no:
+                op_no = str(stage_no)
 
             if stage_desc:
                 qty = float(row.get("partial_qty") or row.get("total_qty") or 0)

@@ -218,7 +218,7 @@ function setTrialScheduleDateFilter(field, value) {
 }
 
 function clearTrialScheduleDateFilter() {
-  trialScheduleDateFilter = { start: '', end: '' };
+  trialScheduleDateFilter = trialDefaultScheduleDateFilter();
   trialSyncScheduleUrl();
   renderTrial();
 }
@@ -338,6 +338,7 @@ function renderTrialMachine(machine) {
         const groupBlockIds = group.blocks.map(b => b.block_id).join(',');
         const psDisplay = trialBlockPsDisplay(group, leader);
         const opDisplay = trialBlockOpDisplay(leader);
+        const sequenceNo = Number(leader?.sequence_no || leader?.queue_position || 0);
         const netOutput = trialBlockNetOutput(group.output_qty, group.reject_qty);
         const anchored = !!leader?.anchor_datetime;
         const materialStatus = group.material_status || leader?.material_status || {};
@@ -359,6 +360,7 @@ function renderTrialMachine(machine) {
             <div class="trial-op-card-header">
               <div class="trial-block-top">
                 <div class="trial-block-main">
+                  ${sequenceNo ? `<div class="trial-block-seq">#${sequenceNo}</div>` : ''}
                   <div class="trial-block-title">${escapeHtml(psDisplay.base || group.title || '')}</div>
                   ${psDisplay.partial ? `<div class="trial-block-partial">Partial ${escapeHtml(psDisplay.partial)}</div>` : ''}
                   <div class="trial-block-op">${escapeHtml(operationLine)}</div>
@@ -436,7 +438,7 @@ function renderTrial() {
           ${renderTrialMachineCategoryFilter()}
           ${renderTrialScheduleDateFilter()}
         </div>
-        ${trialHasActiveDateFilter() ? `<div class="trial-board-filter-note">Date filter active — clear it to reorder.</div>` : ''}
+        ${trialHasActiveDateFilter() ? `<div class="trial-board-filter-note">Date filter hides blocks outside the range. Drag block headers to reorder or move between machines.</div>` : ''}
       </div>
     `;
   }
@@ -517,18 +519,18 @@ function renderTrialCatalog() {
     return;
   }
 
-  const allocatedKeys = trialAllocatedOpKeys();
+  const catalogWithOpenOps = catalog.filter(ps =>
+    (ps.op_cards || []).some(card => !trialIsCatalogOpAllocated(card))
+  );
 
-  const availableHtml = catalog.map(ps => {
+  const availableHtml = catalogWithOpenOps.map(ps => {
     const psIdParts = String(ps.ps_id || '').split('::');
     const basePsId = psIdParts[0] || ps.ps_id || '';
     const partialText = psIdParts[1] ? `Partial ${psIdParts[1]}` : '';
-    const opCardsHtml = (ps.op_cards || []).map(card => {
-      const psId = String(card.source_ps_id || card.ps_id || '').trim();
-      const opNo = String(card.source_op_no || '').trim();
-      const isAllocated = psId && opNo && allocatedKeys.has(`${psId}||${opNo}`);
-      return renderTrialOpCardHtml({ ...card, is_allocated: isAllocated });
-    }).join('');
+    const opCardsHtml = (ps.op_cards || [])
+      .filter(card => !trialIsCatalogOpAllocated(card))
+      .map(card => renderTrialOpCardHtml({ ...card, is_allocated: false }))
+      .join('');
     return `
       <details class="trial-catalog-ps" ${rawQuery ? 'open' : ''}
         data-ps-id="${escapeHtml(ps.ps_id || '')}"
@@ -549,7 +551,11 @@ function renderTrialCatalog() {
     `;
   }).join('');
 
-  const plannedHtml = plannedCatalog.map(ps => `
+  const plannedWithOpenOps = plannedCatalog.filter(ps =>
+    (ps.op_cards || []).some(card => !trialIsCatalogOpAllocated(card))
+  );
+
+  const plannedHtml = plannedWithOpenOps.map(ps => `
     <div class="trial-catalog-ps trial-catalog-planned-ps" data-ps-id="${escapeHtml(ps.ps_id || '')}">
       <div class="trial-catalog-planned-head">
         <div class="trial-catalog-ps-main">
@@ -568,12 +574,10 @@ function renderTrialCatalog() {
           onclick="openTrialBOMEditor('${escapeHtml(ps.ps_id)}')">Edit BOM</button>
       </div>
       <div class="trial-catalog-oplist">
-        ${(ps.op_cards || []).map(card => {
-          const psId = String(card.source_ps_id || card.ps_id || '').trim();
-          const opNo = String(card.source_op_no || '').trim();
-          const isAllocated = psId && opNo && allocatedKeys.has(`${psId}||${opNo}`);
-          return renderTrialOpCardHtml({ ...card, is_allocated: isAllocated });
-        }).join('')}
+        ${(ps.op_cards || [])
+          .filter(card => !trialIsCatalogOpAllocated(card))
+          .map(card => renderTrialOpCardHtml({ ...card, is_allocated: false }))
+          .join('')}
       </div>
     </div>
   `).join('');

@@ -274,7 +274,7 @@ async function saveTrialOrder(lane, reload = true) {
   const cards = Array.from(lane.querySelectorAll('.trial-block-card'));
   const machineId = Number(lane.dataset.machineId || 0);
   if (!machineId) return;
-  const orderedIds = cards.map(card => Number(card.dataset.blockId));
+  const orderedIds = cards.map(card => Number(card.dataset.blockId)).filter(Boolean);
   if (!orderedIds.length) return;
   try {
     await POST(`/api/trial/blocks/${orderedIds[0]}/reorder`, {

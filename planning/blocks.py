@@ -42,11 +42,14 @@ def trial_block_row(con, block_id):
             SELECT b.*, o.job_no, o.operation_name, o.total_qty, o.setup_minutes, o.cycle_minutes_per_qty,
                    o.compatible_machine_group, o.source_ps_id, o.source_op_seq_id AS source_op_seq_id, o.source_op_no,
                    m.machine_no AS machine_code, m.machine_category, m.shift_profile,
-                   g.group_label AS group_label, g.group_type AS group_type
+                   g.group_label AS group_label, g.group_type AS group_type,
+                   os.operation_sequence_id AS operation_sequence_id,
+                   os.sequence_no AS sequence_no
             FROM planner_run_block b
             JOIN planner_operation o ON o.operation_id = b.operation_id
             JOIN planner_machines m ON m.machine_id = b.machine_id
             LEFT JOIN planner_run_block_group g ON g.group_id = b.group_id
+            LEFT JOIN planner_operation_sequence os ON os.block_id = b.block_id
             WHERE b.block_id = %s
             """,
             (int(block_id),),
@@ -91,6 +94,8 @@ def trial_block_payload(block, con=None):
         "operation_id": int(block["operation_id"]),
         "machine_id": int(block["machine_id"]),
         "queue_position": float(block["queue_position"] or 0),
+        "operation_sequence_id": int(block.get("operation_sequence_id") or 0),
+        "sequence_no": int(block.get("sequence_no") or block.get("queue_position") or 0),
         "scheduled_qty": float(block["scheduled_qty"] or 0),
         "include_setup": int(block["include_setup"] or 0),
         "status": execution_status,
@@ -126,6 +131,8 @@ def trial_block_payload(block, con=None):
         "source_ps_id": block["source_ps_id"] or "",
         "source_op_seq_id": int(block["source_op_seq_id"] or 0),
         "source_op_no": block["source_op_no"] or "",
+        "visual_start_datetime": _dt_str(block["calculated_start_datetime"]),
+        "visual_end_datetime": _dt_str(block["calculated_end_datetime"]),
         "machine_code": block["machine_code"] or "",
         "machine_category": block["machine_category"] or "",
         "shift_profile": block["shift_profile"] or "",
@@ -176,6 +183,30 @@ def dependency_finish_for_block(con, block):
     source_op_seq_id = int(block.get("source_op_seq_id") or 0)
     if not source_ps_id or not source_op_seq_id:
         return None
+    has_operation_seq = one(
+        con.execute("SELECT to_regclass('public.planner_operation_seq') AS table_name")
+    )
+    if not (has_operation_seq and has_operation_seq.get("table_name")):
+        prev_row = one(
+            con.execute(
+                """
+                SELECT MAX(COALESCE(q.predicted_end_at, b.calculated_end_datetime, b.planned_end_at, b.anchor_datetime)) AS dependency_finish
+                FROM planner_run_block b
+                JOIN planner_operation o ON o.operation_id = b.operation_id
+                LEFT JOIN planner_machine_queue_state q ON q.block_id = b.block_id
+                WHERE COALESCE(o.source_ps_id, '') = %s
+                  AND COALESCE(b.active, TRUE) = TRUE
+                  AND COALESCE(o.source_op_seq_id, 0) < %s
+                """,
+                (source_ps_id, source_op_seq_id),
+            )
+        )
+        finish_val = prev_row["dependency_finish"] if prev_row else None
+        if not finish_val:
+            return None
+        if isinstance(finish_val, datetime):
+            return finish_val
+        return parse_dt_text(compact_text(finish_val))
     current_step = one(
         con.execute(
             "SELECT seq_no FROM planner_operation_seq WHERE op_seq_id = %s",
@@ -1326,6 +1357,9 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         if refreshed_end and refreshed_end > current_dt:
             current_dt = refreshed_end
 
+    from .operation_sequence import sync_machine_operation_sequence
+
+    sync_machine_operation_sequence(con, int(machine_id))
     refresh_states_for_machine(con, int(machine_id), schedule_run_id=schedule_run_id)
 
 
