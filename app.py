@@ -152,6 +152,7 @@ _PP_VOUCHERS_COLS = [
     "qty_shipped", "so_det_qty", "status", "execution_status",
     "wo_qty_required", "wo_qty_produced", "wo_qty_rejected",
     "stage_no", "stage_desc", "op_no",
+    "current_stage_no", "current_stage_desc", "current_stage_status",
 ]
 
 _PP_VOUCHERS_WITH_OPS_CACHE = {"expires_at": 0.0, "data": None}
@@ -229,9 +230,16 @@ def _pp_vouchers_with_ops_payload(cache_rows):
                 "op_cards": [],
                 "ops": [],
                 "flow_options": [],
+                "current_stage_no": None,
+                "current_stage_desc": "",
+                "current_stage_status": "",
             }
 
         entry = grouped[ps_key]
+        if row.get("current_stage_desc") and not entry.get("current_stage_desc"):
+            entry["current_stage_no"] = row.get("current_stage_no")
+            entry["current_stage_desc"] = row.get("current_stage_desc") or ""
+            entry["current_stage_status"] = row.get("current_stage_status") or ""
         row_execution_status = row.get("execution_status") or ""
         required_qty = float(row.get("wo_qty_required") or 0)
         produced_qty = float(row.get("wo_qty_produced") or 0)
@@ -390,6 +398,27 @@ def api_pp_vouchers_with_ops():
             return jsonify({"error": str(e2)}), 500
 
 
+def _parse_pp_staging_sync_args():
+    """steps and force from query string or JSON body."""
+    from sync import resolve_pp_staging_steps
+
+    body = request.get_json(silent=True) or {}
+    steps_raw = request.args.get("steps") or body.get("steps")
+    if isinstance(steps_raw, str):
+        steps_raw = [s.strip() for s in steps_raw.split(",") if s.strip()]
+    elif steps_raw is not None and not isinstance(steps_raw, list):
+        raise ValueError("steps must be a list or comma-separated string")
+
+    force_raw = request.args.get("force", body.get("force", True))
+    if isinstance(force_raw, str):
+        force = force_raw.lower() not in ("0", "false", "no")
+    else:
+        force = bool(force_raw)
+
+    steps = resolve_pp_staging_steps(steps_raw)
+    return steps, force
+
+
 @app.post("/api/pp-vouchers/sync")
 def api_pp_vouchers_sync():
     """Force full COMAIN → Supabase staging + cache rebuild (manual Sync ERP)."""
@@ -498,6 +527,18 @@ with_desc AS (
     FROM with_partial wp
     LEFT JOIN public.part_desc pd ON wp.final_inventory_code = pd.inventory_code
 ),
+current_execution_stage AS (
+    SELECT DISTINCT ON (source_mps_no, pp_partial_no)
+        source_mps_no,
+        pp_partial_no,
+        stage_no         AS current_stage_no,
+        stage_desc       AS current_stage_desc,
+        execution_status AS current_stage_status
+    FROM public.mfg_wo_status
+    WHERE COALESCE(execution_status, '') <> 'C'
+      AND stage_no IS NOT NULL
+    ORDER BY source_mps_no, pp_partial_no, stage_no DESC
+),
 with_wo_status AS (
     SELECT
         wd.*,
@@ -510,6 +551,17 @@ with_wo_status AS (
            ON ws.source_mps_no = wd.ps_id
           AND ws.pp_partial_no = wd.pp_partial_no
           AND ws.stage_no = wd.stage_no
+),
+with_current_stage AS (
+    SELECT
+        w.*,
+        ces.current_stage_no,
+        ces.current_stage_desc,
+        ces.current_stage_status
+    FROM with_wo_status w
+    LEFT JOIN current_execution_stage ces
+           ON ces.source_mps_no = w.ps_id
+          AND ces.pp_partial_no = w.pp_partial_no
 ),
 computed AS (
     SELECT DISTINCT
@@ -555,8 +607,11 @@ computed AS (
         total_rej_qty_produced  AS wo_qty_rejected,
         stage_no,
         stage_desc,
-        op_no
-    FROM with_wo_status
+        op_no,
+        current_stage_no,
+        current_stage_desc,
+        current_stage_status
+    FROM with_current_stage
 )
 SELECT * FROM computed
 ORDER BY ps_id, pp_partial_no, stage_no;
@@ -608,6 +663,15 @@ ALTER TABLE public.pp_vouchers_cache
 ALTER TABLE public.pp_vouchers_cache
     ADD COLUMN IF NOT EXISTS so_det_qty NUMERIC;
 
+ALTER TABLE public.pp_vouchers_cache
+    ADD COLUMN IF NOT EXISTS current_stage_no INTEGER;
+
+ALTER TABLE public.pp_vouchers_cache
+    ADD COLUMN IF NOT EXISTS current_stage_desc TEXT;
+
+ALTER TABLE public.pp_vouchers_cache
+    ADD COLUMN IF NOT EXISTS current_stage_status TEXT;
+
 CREATE TABLE IF NOT EXISTS public.so_detail (
     sales_order_no  TEXT        NOT NULL,
     line_item_no    TEXT        NOT NULL,
@@ -626,6 +690,8 @@ CREATE INDEX IF NOT EXISTS idx_so_detail_sales_order
 
 def _ensure_pp_staging_schema():
     from db import planner_get_conn, planner_release_conn
+    from sync import ensure_pp_staging_shadow_tables
+
     conn = planner_get_conn()
     try:
         with conn.cursor() as cur:
@@ -638,6 +704,7 @@ def _ensure_pp_staging_schema():
         raise
     finally:
         planner_release_conn(conn)
+    ensure_pp_staging_shadow_tables()
 
 
 @app.post("/api/admin/fix-execution-status")
@@ -766,15 +833,53 @@ def api_so_detail_sync():
         return jsonify({"error": str(e)}), 500
 
 
+@app.get("/api/pp-staging/status")
+def api_pp_staging_status():
+    from sync import get_pp_staging_status
+    return jsonify(get_pp_staging_status())
+
+
+@app.post("/api/pp-vouchers-cache/rebuild")
+def api_pp_vouchers_cache_rebuild():
+    """Rebuild pp_vouchers_cache from vw_pp_vouchers (no COMAIN staging)."""
+    from sync import run_pp_staging_sync
+    try:
+        results = run_pp_staging_sync(steps=["pp_vouchers_cache"], force=True)
+        _invalidate_pp_vouchers_with_ops_cache()
+        failed = results.get("_failed_at")
+        if failed:
+            step_result = results.get(failed, {})
+            err = step_result.get("error") or step_result.get("reason") or "cache rebuild failed"
+            return jsonify({"error": err, **results}), 500
+        return jsonify(results)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.post("/api/pp-staging/sync")
 def api_pp_staging_sync():
-    """Run PP staging syncs then rebuild the pp_vouchers_cache."""
-    from sync import run_full_pp_staging_sync
+    """Run PP staging syncs; optional ?steps= or JSON {\"steps\": [...]}."""
+    from sync import run_pp_staging_sync
     try:
-        _ensure_pp_staging_schema()
-        results = {"schema": {"updated": True}, **run_full_pp_staging_sync(force=True)}
-        _invalidate_pp_vouchers_with_ops_cache()
+        steps, force = _parse_pp_staging_sync_args()
+        staging_only = [s for s in steps if s != "pp_vouchers_cache"]
+        if staging_only:
+            _ensure_pp_staging_schema()
+        results = {"schema": {"updated": bool(staging_only)}}
+        sync_results = run_pp_staging_sync(steps=steps, force=force)
+        results.update(sync_results)
+        if "pp_vouchers_cache" in steps or staging_only:
+            _invalidate_pp_vouchers_with_ops_cache()
+        failed = results.get("_failed_at")
+        if failed:
+            step_result = results.get(failed, {})
+            err = step_result.get("error") or step_result.get("reason") or f"sync failed at {failed}"
+            return jsonify({"error": err, **results}), 500
         return jsonify(results)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

@@ -1,12 +1,18 @@
 """
 Sync pipeline: COMAIN -> Supabase
 
-Reads source data from COMAIN and reloads Supabase tables via REST API.
+Reads source data from COMAIN and reloads Supabase tables via REST API
+or direct Postgres (SUPA_DB_URL) with shadow-table swap when available.
+
+Phase 1: load into {table}_shadow, then rename-swap so the live table
+is never empty while a sync is in progress.
+
 Thread-safe: a lock prevents concurrent syncs; a cooldown prevents
 re-syncing within SYNC_COOLDOWN_SECS of the last successful sync.
 """
 
 import logging
+import os
 import threading
 import time
 
@@ -86,6 +92,139 @@ def _supa_reload(table: str, clear_col: str, columns: list, rows: list) -> None:
                     record[k] = str(v)
         r = requests.post(f"{base}/{table}", headers=insert_hdrs, json=chunk)
         r.raise_for_status()
+
+
+# ── Phase 1: shadow-table swap (planner / SUPA_DB_URL) ─────────────────────
+
+PP_STAGING_SHADOW_TABLES = [
+    "pp_voucher",
+    "mfg_process_sheet_info",
+    "workorder_status",
+    "sum_qty_shipped_by_sales_order",
+    "so_detail",
+    "part_desc",
+    "pp_partial",
+    "mfg_wo_status",
+    "pp_vouchers_cache",
+]
+
+RELOAD_SHADOW_SWAP = "shadow_swap"
+RELOAD_REST_DELETE_INSERT = "rest_delete_insert"
+
+
+def _planner_db_available() -> bool:
+    return bool(os.getenv("SUPA_DB_URL", "").strip())
+
+
+def _planner_rename_swap(cur, table: str) -> None:
+    """Atomic rename: live <-> shadow (old live becomes next shadow)."""
+    cur.execute(f"ALTER TABLE public.{table} RENAME TO {table}_old")
+    cur.execute(f"ALTER TABLE public.{table}_shadow RENAME TO {table}")
+    cur.execute(f"ALTER TABLE public.{table}_old RENAME TO {table}_shadow")
+
+
+def ensure_pp_staging_shadow_tables() -> None:
+    """Create {table}_shadow clones for Phase 1 swap reloads."""
+    if not _planner_db_available():
+        return
+    from db import planner_get_conn, planner_release_conn
+
+    conn = planner_get_conn()
+    try:
+        with conn.cursor() as cur:
+            for table in PP_STAGING_SHADOW_TABLES:
+                cur.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS public.{table}_shadow
+                    (LIKE public.{table} INCLUDING ALL)
+                    """
+                )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        planner_release_conn(conn)
+
+
+def _planner_swap_reload(table: str, columns: list, rows: list) -> int:
+    """Load rows into {table}_shadow, then rename-swap with live table."""
+    from db import planner_get_conn, planner_release_conn
+
+    live = f"public.{table}"
+    shadow = f"public.{table}_shadow"
+    conn = planner_get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"CREATE TABLE IF NOT EXISTS {shadow} (LIKE {live} INCLUDING ALL)")
+            cur.execute(f"TRUNCATE {shadow}")
+            if rows:
+                col_list = ", ".join(columns)
+                placeholders = ", ".join(["%s"] * len(columns))
+                insert_sql = f"INSERT INTO {shadow} ({col_list}) VALUES ({placeholders})"
+                for i in range(0, len(rows), BATCH_SIZE):
+                    cur.executemany(insert_sql, rows[i : i + BATCH_SIZE])
+            cur.execute(f"SELECT COUNT(*) FROM {shadow}")
+            row_count = int(cur.fetchone()[0])
+            _planner_rename_swap(cur, table)
+        conn.commit()
+        return row_count
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        planner_release_conn(conn)
+
+
+def _staging_reload(table: str, clear_col: str, columns: list, rows: list) -> str:
+    """Prefer shadow swap via SUPA_DB_URL; fall back to REST delete+insert."""
+    if _planner_db_available():
+        try:
+            ensure_pp_staging_shadow_tables()
+            _planner_swap_reload(table, columns, rows)
+            return RELOAD_SHADOW_SWAP
+        except Exception as exc:
+            log.warning(
+                "shadow swap failed for %s (%s); using REST delete+insert",
+                table,
+                exc,
+            )
+    _supa_reload(table, clear_col, columns, rows)
+    return RELOAD_REST_DELETE_INSERT
+
+
+def _planner_cache_rebuild() -> int:
+    """Rebuild pp_vouchers_cache via shadow swap (live table stays readable until swap)."""
+    from db import planner_get_conn, planner_release_conn
+
+    cols = ", ".join(_PP_VOUCHERS_COLS)
+    conn = planner_get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.pp_vouchers_cache_shadow
+                (LIKE public.pp_vouchers_cache INCLUDING ALL)
+                """
+            )
+            cur.execute("TRUNCATE public.pp_vouchers_cache_shadow")
+            cur.execute(
+                f"""
+                INSERT INTO public.pp_vouchers_cache_shadow ({cols})
+                SELECT {cols}
+                FROM public.vw_pp_vouchers
+                ORDER BY ps_id, pp_partial_no, stage_no
+                """
+            )
+            row_count = cur.rowcount
+            _planner_rename_swap(cur, "pp_vouchers_cache")
+        conn.commit()
+        return row_count
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        planner_release_conn(conn)
 
 
 # ── PP Vouchers ────────────────────────────────────────────────────────────
@@ -230,6 +369,7 @@ _PP_VOUCHERS_COLS = [
     "qty_shipped", "so_det_qty", "status", "execution_status",
     "wo_qty_required", "wo_qty_produced", "wo_qty_rejected",
     "stage_no", "stage_desc", "op_no",
+    "current_stage_no", "current_stage_desc", "current_stage_status",
 ]
 
 
@@ -248,36 +388,28 @@ def run_sync(force: bool = False) -> dict:
         return {"skipped": True, "reason": "sync already in progress"}
 
     try:
-        from db import planner_get_conn, planner_release_conn
         t0 = time.monotonic()
-        cols = ", ".join(_PP_VOUCHERS_COLS)
-        conn = planner_get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM public.pp_vouchers_cache WHERE _synced_at IS NOT NULL")
-                cur.execute(
-                    f"""
-                    INSERT INTO public.pp_vouchers_cache ({cols})
-                    SELECT {cols}
-                    FROM public.vw_pp_vouchers
-                    ORDER BY ps_id, pp_partial_no, stage_no
-                    """
-                )
-                row_count = cur.rowcount
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            planner_release_conn(conn)
+        if not _planner_db_available():
+            raise RuntimeError(
+                "SUPA_DB_URL is required to rebuild pp_vouchers_cache "
+                "(shadow-table swap uses direct Postgres)"
+            )
+        ensure_pp_staging_shadow_tables()
+        row_count = _planner_cache_rebuild()
+        reload_mode = RELOAD_SHADOW_SWAP
 
         _last_sync_at = time.monotonic()
-        log.info("pp_vouchers sync complete - %d rows in %dms",
-                 row_count, int((time.monotonic() - t0) * 1000))
+        log.info(
+            "pp_vouchers cache rebuild (%s) - %d rows in %dms",
+            reload_mode,
+            row_count,
+            int((time.monotonic() - t0) * 1000),
+        )
         return {
             "synced_at": datetime.now(timezone.utc).isoformat(),
             "duration_ms": int((time.monotonic() - t0) * 1000),
             "row_count": row_count,
+            "reload": reload_mode,
         }
 
     finally:
@@ -483,10 +615,10 @@ def run_pp_voucher_sync(force: bool = False) -> dict:
                 rows = scur.fetchall()
         finally:
             release_conn(src)
-        _supa_reload("pp_voucher", "_loaded_at", _PP_VOUCHER_COLS, rows)
+        reload_mode = _staging_reload("pp_voucher", "_loaded_at", _PP_VOUCHER_COLS, rows)
         _last_pp_voucher_sync_at = time.monotonic()
-        log.info("pp_voucher sync complete - %d rows in %dms", len(rows), int((time.monotonic() - t0) * 1000))
-        return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows)}
+        log.info("pp_voucher sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
+        return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows), "reload": reload_mode}
     finally:
         _pp_voucher_sync_lock.release()
 
@@ -522,10 +654,10 @@ def run_qty_shipped_sync(force: bool = False) -> dict:
                 rows = scur.fetchall()
         finally:
             release_conn(src)
-        _supa_reload("sum_qty_shipped_by_sales_order", "_loaded_at", _QTY_SHIPPED_COLS, rows)
+        reload_mode = _staging_reload("sum_qty_shipped_by_sales_order", "_loaded_at", _QTY_SHIPPED_COLS, rows)
         _last_qty_shipped_sync_at = time.monotonic()
-        log.info("sum_qty_shipped_by_sales_order sync complete - %d rows in %dms", len(rows), int((time.monotonic() - t0) * 1000))
-        return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows)}
+        log.info("sum_qty_shipped sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
+        return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows), "reload": reload_mode}
     finally:
         _qty_shipped_sync_lock.release()
 
@@ -560,10 +692,10 @@ def run_process_sheet_sync(force: bool = False) -> dict:
                 rows = scur.fetchall()
         finally:
             release_conn(src)
-        _supa_reload("mfg_process_sheet_info", "_loaded_at", _PROCESS_SHEET_COLS, rows)
+        reload_mode = _staging_reload("mfg_process_sheet_info", "_loaded_at", _PROCESS_SHEET_COLS, rows)
         _last_process_sheet_sync_at = time.monotonic()
-        log.info("mfg_process_sheet_info sync complete - %d rows in %dms", len(rows), int((time.monotonic() - t0) * 1000))
-        return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows)}
+        log.info("mfg_process_sheet_info sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
+        return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows), "reload": reload_mode}
     finally:
         _process_sheet_sync_lock.release()
 
@@ -608,10 +740,10 @@ def run_workorder_status_sync(force: bool = False) -> dict:
                 rows = scur.fetchall()
         finally:
             release_conn(src)
-        _supa_reload("workorder_status", "_loaded_at", _WORKORDER_STATUS_COLS, rows)
+        reload_mode = _staging_reload("workorder_status", "_loaded_at", _WORKORDER_STATUS_COLS, rows)
         _last_workorder_status_sync_at = time.monotonic()
-        log.info("workorder_status sync complete - %d rows in %dms", len(rows), int((time.monotonic() - t0) * 1000))
-        return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows)}
+        log.info("workorder_status sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
+        return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows), "reload": reload_mode}
     finally:
         _workorder_status_sync_lock.release()
 
@@ -645,10 +777,10 @@ def run_part_desc_sync(force: bool = False) -> dict:
                 rows = scur.fetchall()
         finally:
             release_conn(src)
-        _supa_reload("part_desc", "_loaded_at", _PART_DESC_COLS, rows)
+        reload_mode = _staging_reload("part_desc", "_loaded_at", _PART_DESC_COLS, rows)
         _last_part_desc_sync_at = time.monotonic()
-        log.info("part_desc sync complete - %d rows in %dms", len(rows), int((time.monotonic() - t0) * 1000))
-        return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows)}
+        log.info("part_desc sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
+        return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows), "reload": reload_mode}
     finally:
         _part_desc_sync_lock.release()
 
@@ -721,13 +853,14 @@ def run_so_detail_sync(force: bool = False) -> dict:
                 rows = scur.fetchall()
         finally:
             release_conn(src)
-        _supa_reload("so_detail", "_loaded_at", _SO_DETAIL_COLS, rows)
+        reload_mode = _staging_reload("so_detail", "_loaded_at", _SO_DETAIL_COLS, rows)
         _last_so_detail_sync_at = time.monotonic()
-        log.info("so_detail sync complete - %d rows in %dms", len(rows), int((time.monotonic() - t0) * 1000))
+        log.info("so_detail sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
         return {
             "synced_at": datetime.now(timezone.utc).isoformat(),
             "duration_ms": int((time.monotonic() - t0) * 1000),
             "row_count": len(rows),
+            "reload": reload_mode,
         }
     finally:
         _so_detail_sync_lock.release()
@@ -761,10 +894,10 @@ def run_pp_partial_sync(force: bool = False) -> dict:
                 rows = scur.fetchall()
         finally:
             release_conn(src)
-        _supa_reload("pp_partial", "_loaded_at", _PP_PARTIAL_COLS, rows)
+        reload_mode = _staging_reload("pp_partial", "_loaded_at", _PP_PARTIAL_COLS, rows)
         _last_pp_partial_sync_at = time.monotonic()
-        log.info("pp_partial sync complete - %d rows in %dms", len(rows), int((time.monotonic() - t0) * 1000))
-        return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows)}
+        log.info("pp_partial sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
+        return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows), "reload": reload_mode}
     finally:
         _pp_partial_sync_lock.release()
 
@@ -863,42 +996,165 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
         finally:
             release_conn(src)
 
-        from planning.helpers import planner_db
-
-        insert_sql = f"""
-            INSERT INTO public.mfg_wo_status ({", ".join(_MFG_WO_STATUS_COLS)})
-            VALUES ({", ".join(["%s"] * len(_MFG_WO_STATUS_COLS))})
-        """
-
-        with planner_db() as target:
-            target.execute("SET LOCAL statement_timeout = '600000'")
-            target.execute("TRUNCATE TABLE public.mfg_wo_status")
-            for i in range(0, len(rows), BATCH_SIZE):
-                target.executemany(insert_sql, rows[i : i + BATCH_SIZE])
+        if not _planner_db_available():
+            raise RuntimeError("SUPA_DB_URL is required for mfg_wo_status shadow swap")
+        ensure_pp_staging_shadow_tables()
+        row_count = _planner_swap_reload("mfg_wo_status", _MFG_WO_STATUS_COLS, rows)
+        reload_mode = RELOAD_SHADOW_SWAP
 
         _last_wo_status_sync_at = time.monotonic()
-        log.info("mfg_wo_status sync complete - %d rows in %dms",
-                 len(rows), int((time.monotonic() - t0) * 1000))
+        log.info(
+            "mfg_wo_status sync complete (%s) - %d rows in %dms",
+            reload_mode,
+            row_count,
+            int((time.monotonic() - t0) * 1000),
+        )
         return {
             "synced_at": datetime.now(timezone.utc).isoformat(),
             "duration_ms": int((time.monotonic() - t0) * 1000),
-            "row_count": len(rows),
+            "row_count": row_count,
+            "reload": reload_mode,
         }
 
     finally:
         _wo_status_sync_lock.release()
 
 
+# ── PP staging orchestrator ──────────────────────────────────────────────────
+
+PP_STAGING_STEP_ORDER = [
+    "pp_voucher",
+    "mfg_process_sheet_info",
+    "workorder_status",
+    "qty_shipped",
+    "so_detail",
+    "part_desc",
+    "pp_partial",
+    "mfg_wo_status",
+    "pp_vouchers_cache",
+]
+
+PP_STAGING_STEP_LABELS = {
+    "pp_voucher": "PP vouchers",
+    "mfg_process_sheet_info": "Process sheets",
+    "workorder_status": "Work order status",
+    "qty_shipped": "Qty shipped",
+    "so_detail": "Sales order lines",
+    "part_desc": "Part descriptions",
+    "pp_partial": "PP partials",
+    "mfg_wo_status": "WO status",
+    "pp_vouchers_cache": "Voucher cache",
+}
+
+PP_STAGING_STEP_ALIASES = {
+    "cache": "pp_vouchers_cache",
+    "process_sheet": "mfg_process_sheet_info",
+    "process_sheets": "mfg_process_sheet_info",
+    "wo_status": "mfg_wo_status",
+}
+
+_STEP_RUNNERS = {
+    "pp_voucher": run_pp_voucher_sync,
+    "mfg_process_sheet_info": run_process_sheet_sync,
+    "workorder_status": run_workorder_status_sync,
+    "qty_shipped": run_qty_shipped_sync,
+    "so_detail": run_so_detail_sync,
+    "part_desc": run_part_desc_sync,
+    "pp_partial": run_pp_partial_sync,
+    "mfg_wo_status": run_mfg_wo_status_sync,
+    "pp_vouchers_cache": run_sync,
+}
+
+_STEP_LOCKS = {
+    "pp_voucher": _pp_voucher_sync_lock,
+    "mfg_process_sheet_info": _process_sheet_sync_lock,
+    "workorder_status": _workorder_status_sync_lock,
+    "qty_shipped": _qty_shipped_sync_lock,
+    "so_detail": _so_detail_sync_lock,
+    "part_desc": _part_desc_sync_lock,
+    "pp_partial": _pp_partial_sync_lock,
+    "mfg_wo_status": _wo_status_sync_lock,
+    "pp_vouchers_cache": _sync_lock,
+}
+
+_last_step_results: dict[str, dict] = {}
+
+
+def normalize_pp_staging_step(name: str) -> str:
+    key = (name or "").strip().lower().replace("-", "_")
+    key = PP_STAGING_STEP_ALIASES.get(key, key)
+    if key not in _STEP_RUNNERS:
+        valid = ", ".join(PP_STAGING_STEP_ORDER + sorted(PP_STAGING_STEP_ALIASES))
+        raise ValueError(f"Unknown sync step {name!r}; valid: {valid}")
+    return key
+
+
+def resolve_pp_staging_steps(steps: list[str] | None) -> list[str]:
+    """Return steps in pipeline order; default is full pipeline."""
+    if not steps:
+        return list(PP_STAGING_STEP_ORDER)
+    normalized = []
+    seen = set()
+    for raw in steps:
+        step = normalize_pp_staging_step(raw)
+        if step not in seen:
+            normalized.append(step)
+            seen.add(step)
+    return [s for s in PP_STAGING_STEP_ORDER if s in normalized]
+
+
+def _record_step_result(step: str, result: dict) -> None:
+    _last_step_results[step] = {
+        **result,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def run_pp_staging_sync(steps: list[str] | None = None, force: bool = True) -> dict:
+    """Run selected PP staging steps in pipeline order."""
+    ordered = resolve_pp_staging_steps(steps)
+    results: dict[str, dict] = {}
+    for step in ordered:
+        try:
+            result = _STEP_RUNNERS[step](force=force)
+        except Exception as exc:
+            result = {"error": str(exc)}
+            _record_step_result(step, result)
+            results[step] = result
+            results["_failed_at"] = step
+            break
+        _record_step_result(step, result)
+        results[step] = result
+        if result.get("error"):
+            results["_failed_at"] = step
+            break
+    results["_steps_requested"] = ordered
+    return results
+
+
+def get_pp_staging_status() -> dict:
+    """Last result and lock state per PP staging step."""
+    steps = {}
+    for step in PP_STAGING_STEP_ORDER:
+        lock = _STEP_LOCKS[step]
+        steps[step] = {
+            "label": PP_STAGING_STEP_LABELS[step],
+            "in_progress": lock.locked(),
+            "last": _last_step_results.get(step),
+        }
+    return {
+        "steps": steps,
+        "step_order": PP_STAGING_STEP_ORDER,
+        "cooldown_secs": SYNC_COOLDOWN_SECS,
+        "shadow_swap_available": _planner_db_available(),
+        "reload_modes": {
+            RELOAD_SHADOW_SWAP: "Load shadow table, rename-swap (live never empty)",
+            RELOAD_REST_DELETE_INSERT: "REST delete all rows then insert (legacy)",
+        },
+    }
+
+
 def run_full_pp_staging_sync(force: bool = True) -> dict:
     """COMAIN → Supabase staging tables, then rebuild pp_vouchers_cache."""
-    return {
-        "pp_voucher": run_pp_voucher_sync(force=force),
-        "mfg_process_sheet_info": run_process_sheet_sync(force=force),
-        "workorder_status": run_workorder_status_sync(force=force),
-        "qty_shipped": run_qty_shipped_sync(force=force),
-        "so_detail": run_so_detail_sync(force=force),
-        "part_desc": run_part_desc_sync(force=force),
-        "pp_partial": run_pp_partial_sync(force=force),
-        "mfg_wo_status": run_mfg_wo_status_sync(force=force),
-        "pp_vouchers_cache": run_sync(force=force),
-    }
+    out = run_pp_staging_sync(steps=None, force=force)
+    return {k: v for k, v in out.items() if not k.startswith("_")}

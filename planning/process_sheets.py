@@ -586,6 +586,9 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         "source_voucher_no": compact_text(ps.get("source_voucher_no") or ""),
         "qty_shipped": _to_float(ps.get("qty_shipped")),
         "so_det_qty": _to_float(ps.get("so_det_qty")) if ps.get("so_det_qty") is not None else None,
+        "current_stage_no": int(ps.get("current_stage_no") or 0),
+        "current_stage_desc": compact_text(ps.get("current_stage_desc") or ""),
+        "current_stage_status": compact_text(ps.get("current_stage_status") or ""),
         "ops": ops,
     }
 
@@ -643,6 +646,9 @@ _PS_SELECT = """
             MAX(source_voucher_no) AS source_voucher_no,
             MAX(qty_shipped) AS qty_shipped,
             MAX(so_det_qty) AS so_det_qty,
+            MAX(current_stage_no) AS current_stage_no,
+            MAX(current_stage_desc) AS current_stage_desc,
+            MAX(current_stage_status) AS current_stage_status,
             COALESCE(
                 BOOL_AND(
                     CASE
@@ -684,7 +690,10 @@ _PS_SELECT = """
         v.bom_code        AS erp_bom_code,
         v.source_voucher_no,
         v.qty_shipped,
-        v.so_det_qty
+        v.so_det_qty,
+        v.current_stage_no,
+        v.current_stage_desc,
+        v.current_stage_status
     FROM planner_process_sheet ps
     LEFT JOIN voucher_partials v
            ON v.ps_id = ps.source_ps_id

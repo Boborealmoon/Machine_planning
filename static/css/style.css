@@ -568,6 +568,20 @@ input, select { font-family: inherit; }
   border: 1px solid #bbf7d0;
 }
 
+.ps-stage-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 10px;
+  font-weight: 800;
+  border: 1px solid #bfdbfe;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ps-detail-card--voucher {
   border-color: #bbf7d0;
   background: #f0fdf4;

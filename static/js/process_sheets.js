@@ -121,6 +121,15 @@
     return raw.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
   }
 
+  function currentStagePill(item) {
+    const desc = String(item?.current_stage_desc || '').trim();
+    if (!desc) return '';
+    const stageNo = item?.current_stage_no;
+    const status = item?.current_stage_status ? displayExecutionStatus(item.current_stage_status) : '';
+    const title = [stageNo ? `Stage ${stageNo}` : '', status].filter(Boolean).join(' · ');
+    return `<span class="ps-stage-badge" title="${escapeHtml(title)}">${escapeHtml(desc)}</span>`;
+  }
+
   function displayExecutionStatus(value) {
     const status = normalizeStatus(value);
     const labels = {
@@ -236,6 +245,7 @@
       item.selected_bom_code,
       item.status,
       item.planner_status,
+      item.current_stage_desc,
       item.source_voucher_no,
       ...(Array.isArray(item.ops) ? item.ops.map(op => [
         op.op_no,
@@ -311,6 +321,9 @@
       source_voucher_no: item.source_voucher_no || '',
       qty_shipped: item.qty_shipped || 0,
       so_det_qty: item.so_det_qty,
+      current_stage_no: item.current_stage_no,
+      current_stage_desc: item.current_stage_desc || '',
+      current_stage_status: item.current_stage_status || '',
       ops,
       source: 'erp',
     };
@@ -556,6 +569,8 @@
     const totalQty = `<span class="ps-total-qty-badge">Total WO Qty ${escapeHtml(fmtQty(totalWoQty(item)))}</span>`;
     const source = item.source === 'erp' ? '<span class="ps-source-badge">ERP</span>' : '';
     const voucher = item.source_voucher_no ? `<span class="ps-voucher-badge">${escapeHtml(item.source_voucher_no)}</span>` : '';
+    const stagePill = currentStagePill(item);
+    const titleBadges = [partial, totalQty, source, voucher, stagePill].filter(Boolean).join('\n            ');
     const opStatusStrip = renderOpStatusStrip(ops, item);
     const due = fmtDate(item.due_date);
     const route = item.route_label || item.erp_bom_code || item.selected_flow_code || item.selected_bom_code || 'No flow selected';
@@ -566,10 +581,7 @@
         <button class="ps-row-main" type="button" data-action="toggle-details" data-ps-id="${escapeHtml(psId)}">
           <div class="ps-row-title">
             <span class="ps-id">${escapeHtml(item.display_ps_id || psId)}</span>
-            ${partial}
-            ${totalQty}
-            ${source}
-            ${voucher}
+            ${titleBadges}
           </div>
           <div class="ps-row-part">
             <strong>${escapeHtml(item.part_no || item.part_name || item.inventory_code || 'No part')}</strong>

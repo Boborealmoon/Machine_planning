@@ -13,9 +13,10 @@
 --   pp_vouchers_cache   base PS data joined at query time
 --
 -- WHY SOFT REFERENCES?
---   pp_vouchers_cache and bom_op_stage are periodically deleted and reloaded by
---   the sync pipeline. Hard FK constraints would block those reloads. We store
---   the natural text keys (inventory_code, source_ps_id) and join at query time.
+--   pp_vouchers_cache and bom_op_stage are periodically reloaded by the sync pipeline
+--   (shadow-table swap when SUPA_DB_URL is set; legacy REST delete+insert otherwise).
+--   Hard FK constraints would block those reloads. We store natural text keys and
+--   join at query time. Companion tables: public.{table}_shadow for atomic swaps.
 --
 -- planner_ps_id CONVENTION:
 --   planner_ps_id = source_ps_id || '::' || pp_partial_no

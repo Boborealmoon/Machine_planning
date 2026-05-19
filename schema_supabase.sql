@@ -217,6 +217,9 @@ CREATE TABLE IF NOT EXISTS public.pp_vouchers_cache (
     stage_no            INTEGER,
     stage_desc          TEXT,
     op_no               INTEGER,
+    current_stage_no    INTEGER,
+    current_stage_desc  TEXT,
+    current_stage_status TEXT,
     _synced_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -230,6 +233,9 @@ CREATE TABLE IF NOT EXISTS public.pp_vouchers_cache (
 -- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS source_voucher_no TEXT;
 -- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS source_line_item_no TEXT;
 -- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS qty_shipped NUMERIC;
+-- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS current_stage_no INTEGER;
+-- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS current_stage_desc TEXT;
+-- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS current_stage_status TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_pp_vouchers_cache_ps_id
     ON public.pp_vouchers_cache (ps_id);
@@ -336,6 +342,18 @@ with_desc AS (
     FROM with_partial wp
     LEFT JOIN public.part_desc pd ON wp.final_inventory_code = pd.inventory_code
 ),
+current_execution_stage AS (
+    SELECT DISTINCT ON (source_mps_no, pp_partial_no)
+        source_mps_no,
+        pp_partial_no,
+        stage_no         AS current_stage_no,
+        stage_desc       AS current_stage_desc,
+        execution_status AS current_stage_status
+    FROM public.mfg_wo_status
+    WHERE COALESCE(execution_status, '') <> 'C'
+      AND stage_no IS NOT NULL
+    ORDER BY source_mps_no, pp_partial_no, stage_no DESC
+),
 with_wo_status AS (
     SELECT
         wd.*,
@@ -348,6 +366,17 @@ with_wo_status AS (
            ON ws.source_mps_no = wd.ps_id
           AND ws.pp_partial_no = wd.pp_partial_no
           AND ws.stage_no = wd.stage_no
+),
+with_current_stage AS (
+    SELECT
+        w.*,
+        ces.current_stage_no,
+        ces.current_stage_desc,
+        ces.current_stage_status
+    FROM with_wo_status w
+    LEFT JOIN current_execution_stage ces
+           ON ces.source_mps_no = w.ps_id
+          AND ces.pp_partial_no = w.pp_partial_no
 ),
 computed AS (
     SELECT DISTINCT
@@ -393,8 +422,11 @@ computed AS (
         total_rej_qty_produced  AS wo_qty_rejected,
         stage_no,
         stage_desc,
-        op_no
-    FROM with_wo_status
+        op_no,
+        current_stage_no,
+        current_stage_desc,
+        current_stage_status
+    FROM with_current_stage
 )
 SELECT * FROM computed
 ORDER BY ps_id, pp_partial_no, stage_no;
