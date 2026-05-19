@@ -87,6 +87,14 @@
     return firstQuantity(item?.total_wo_qty, item?.total_qty);
   }
 
+  const SHIPPED_QTY_TOLERANCE = 0.0001;
+
+  function isShippedComplete(item) {
+    const total = numberValue(totalWoQty(item));
+    const shipped = numberValue(item?.qty_shipped);
+    return shipped >= total - SHIPPED_QTY_TOLERANCE;
+  }
+
   function todayIso() {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -162,6 +170,8 @@
   }
 
   function isCompleted(item) {
+    if (isShippedComplete(item)) return true;
+    if (item && Object.prototype.hasOwnProperty.call(item, 'shipped_completed')) return boolValue(item.shipped_completed);
     if (item && Object.prototype.hasOwnProperty.call(item, 'is_completed')) return boolValue(item.is_completed);
     if (item && Object.prototype.hasOwnProperty.call(item, 'execution_completed')) return boolValue(item.execution_completed);
     const executionStatuses = trackedExecutionStatuses(item);
@@ -210,6 +220,7 @@
   }
 
   function normalizePlannerItem(item) {
+    const shippedComplete = boolValue(item.shipped_completed) || isShippedComplete(item);
     return {
       ...item,
       ps_id: item.ps_id || item.display_ps_id || item.source_ps_id || '',
@@ -217,6 +228,8 @@
       source_ps_id: item.source_ps_id || item.display_ps_id || item.ps_id || '',
       pp_partial_no: partialNo(item),
       planner_status: item.planner_status || 'UNPLANNED',
+      shipped_completed: shippedComplete,
+      is_completed: shippedComplete || boolValue(item.is_completed),
       source: 'planner',
     };
   }
@@ -246,12 +259,15 @@
       status: item.status || '',
       execution_status: item.execution_status || '',
       execution_completed: item.execution_completed,
-      is_completed: item.is_completed,
+      shipped_completed: boolValue(item.shipped_completed) || isShippedComplete(item),
+      is_completed: boolValue(item.shipped_completed) || isShippedComplete(item) || boolValue(item.is_completed),
       planner_status: item.planner_status || 'UNPLANNED',
       selected_flow_code: item.selected_flow_code || item.selected_bom_code || item.bom_code || '',
       route_label: item.route_label || item.selected_flow_code || item.selected_bom_code || item.bom_code || 'No flow selected',
       material_status: item.material_status || { severity: 'none', label: '' },
       warnings: item.warnings || [],
+      source_voucher_no: item.source_voucher_no || '',
+      qty_shipped: item.qty_shipped || 0,
       ops,
       source: 'erp',
     };
@@ -308,7 +324,7 @@
     const hide24Tags = Boolean(els.hide24Tags?.checked);
 
     return state.items.filter(item => {
-      if (hide24Tags && isHiddenJobTag(item)) return false;
+      if (hide24Tags && !completedOnly && !search && isHiddenJobTag(item)) return false;
       if (search && !itemSearchText(item).includes(search)) return false;
       if (status && normalizeStatus(item.status) !== status) return false;
       if (planner && normalizeStatus(item.planner_status) !== planner) return false;
@@ -424,6 +440,7 @@
     const partial = `<span class="ps-partial-badge">${escapeHtml(partialLabel(item))}</span>`;
     const totalQty = `<span class="ps-total-qty-badge">Total WO Qty ${escapeHtml(fmtQty(totalWoQty(item)))}</span>`;
     const source = item.source === 'erp' ? '<span class="ps-source-badge">ERP</span>' : '';
+    const voucher = item.source_voucher_no ? `<span class="ps-voucher-badge">${escapeHtml(item.source_voucher_no)}</span>` : '';
     const opStatusStrip = renderOpStatusStrip(ops, item);
     const due = fmtDate(item.due_date);
     const route = item.route_label || item.selected_flow_code || item.selected_bom_code || 'No flow selected';
@@ -437,6 +454,7 @@
             ${partial}
             ${totalQty}
             ${source}
+            ${voucher}
           </div>
           <div class="ps-row-part">
             <strong>${escapeHtml(item.part_no || item.part_name || item.inventory_code || 'No part')}</strong>
@@ -534,6 +552,8 @@
     const plannedBlocks = Array.isArray(details.planned_blocks) ? details.planned_blocks : [];
     const requirements = Array.isArray(details.requirements) ? details.requirements : [];
 
+    const qtyShipped = Number(summary.qty_shipped || 0);
+    const sourceVoucher = summary.source_voucher_no || '';
     return `
       <div class="ps-details-grid">
         <div class="ps-detail-card">
@@ -541,6 +561,7 @@
           <div class="ps-detail-stats">
             <span><small>WO Req</small><strong>${escapeHtml(fmtQty(woReqQty(summary)))}</strong></span>
             <span><small>Total Qty</small><strong>${escapeHtml(fmtQty(totalWoQty(summary)))}</strong></span>
+            <span><small>Shipped</small><strong>${escapeHtml(fmtQty(qtyShipped))}</strong></span>
             <span><small>Operations</small><strong>${escapeHtml(ops.length)} op${ops.length === 1 ? '' : 's'}</strong></span>
           </div>
         </div>
@@ -552,6 +573,14 @@
             <span><small>End</small><strong>${escapeHtml(summary.expected_end ? String(summary.expected_end).slice(0, 16) : '-')}</strong></span>
           </div>
         </div>
+        ${sourceVoucher ? `
+        <div class="ps-detail-card ps-detail-card--voucher">
+          <div class="ps-detail-label">Sales Order</div>
+          <div class="ps-detail-stats">
+            <span><small>Voucher No</small><strong>${escapeHtml(sourceVoucher)}</strong></span>
+            <span><small>Qty Shipped</small><strong>${escapeHtml(fmtQty(qtyShipped))}</strong></span>
+          </div>
+        </div>` : ''}
       </div>
       ${details.erp_only ? '<div class="ps-details-note">This row is from the ERP catalog and has not been materialized in planner state yet.</div>' : ''}
       ${renderOps(ops, summary)}

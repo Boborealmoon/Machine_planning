@@ -23,7 +23,7 @@ from flask import Blueprint, jsonify, request
 
 from .helpers import one, rows, planner_db
 from .materials import material_requirement_payload, material_status_map_for_ps_ids
-from .utils import compact_text
+from .utils import compact_text, shipped_quantity_completed
 
 process_sheets_bp = Blueprint("planner_process_sheets", __name__)
 
@@ -403,7 +403,8 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         execution_completed = bool(ps.get("execution_completed"))
     else:
         execution_completed = bool(tracked_statuses) and all(_execution_status_completed(status) for status in tracked_statuses)
-    is_completed = execution_completed
+    shipped_completed = shipped_quantity_completed(source_total_qty, ps.get("qty_shipped"))
+    is_completed = shipped_completed
     display_ps_id, pp_partial_no = _display_ids(ps)
     return {
         "ps_id": ps.get("ps_id") or ps.get("planner_ps_id"),
@@ -427,6 +428,7 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         "execution_status": compact_text(ps.get("execution_status") or ""),
         "planner_status": planner_status,
         "execution_completed": execution_completed,
+        "shipped_completed": shipped_completed,
         "is_completed": is_completed,
         "selected_bom_id": int(ps.get("selected_bom_id") or 0),
         "selected_flow_code": compact_text(ps.get("selected_flow_code") or ""),
@@ -449,6 +451,8 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         "expected_end": metrics.get("expected_end", ""),
         "warnings": _warnings(ps, is_completed, material_status),
         "material_status": material_status,
+        "source_voucher_no": compact_text(ps.get("source_voucher_no") or ""),
+        "qty_shipped": _to_float(ps.get("qty_shipped")),
         "ops": ops,
     }
 
@@ -503,6 +507,8 @@ _PS_SELECT = """
             MAX(wo_qty_required) AS wo_qty_required,
             MAX(wo_qty_produced) AS wo_qty_produced,
             MAX(wo_qty_rejected) AS wo_qty_rejected,
+            MAX(source_voucher_no) AS source_voucher_no,
+            MAX(qty_shipped) AS qty_shipped,
             COALESCE(
                 BOOL_AND(
                     CASE
@@ -540,7 +546,9 @@ _PS_SELECT = """
         v.part_no         AS part_name,
         v.description     AS part_desc,
         sf.bom_code       AS selected_flow_code,
-        sf.bom_desc       AS selected_flow_name
+        sf.bom_desc       AS selected_flow_name,
+        v.source_voucher_no,
+        v.qty_shipped
     FROM planner_process_sheet ps
     LEFT JOIN voucher_partials v
            ON v.ps_id = ps.source_ps_id

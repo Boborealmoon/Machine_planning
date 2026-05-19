@@ -108,6 +108,12 @@
     color: #c2410c;
   }
   .trial-ps-type-checkbox.trial-ps-type-n input { accent-color: #ea580c; }
+  .trial-ps-type-checkbox.trial-ps-type-sr:has(input:checked) {
+    background: rgba(139,92,246,0.10);
+    border-color: rgba(139,92,246,0.35);
+    color: #6d28d9;
+  }
+  .trial-ps-type-checkbox.trial-ps-type-sr input { accent-color: #8b5cf6; }
   .trial-catalog-search {
     width: 100%;
     background: var(--bg2);

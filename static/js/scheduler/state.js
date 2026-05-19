@@ -9,6 +9,7 @@ let trialDragPayload = null;
 let trialCatalogSearch = '';
 let trialShowCompleted = false;
 let trialPsTypeFilter = new Set(['A', 'M', 'N']);
+let trialShowSrOrders = true;
 let trialMachineCategoryFilter = 'ALL';
 let trialMachineHiddenSet = new Set();
 let trialScheduleDateFilter = { start: '', end: '' };

@@ -20,6 +20,7 @@ from planning.flows import flows_bp, trial_prefixed_flows_bp
 from planning.gantt_route import trial_gantt_bp
 from planning.materials_route import materials_route_bp
 from planning.planner_routes import trial_bp
+from planning.utils import shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
 app.register_blueprint(trial_summary_bp)
@@ -290,7 +291,11 @@ def _pp_vouchers_with_ops_payload(cache_rows):
             entry["execution_completed"] = _normalize_execution_status(summary_status) in {"C", "COMPLETED"}
         else:
             entry["execution_completed"] = False
-        entry["is_completed"] = entry["execution_completed"]
+        entry["shipped_completed"] = shipped_quantity_completed(
+            entry.get("total_wo_qty") or entry.get("total_qty"),
+            entry.get("qty_shipped"),
+        )
+        entry["is_completed"] = entry["shipped_completed"]
     return list(grouped.values())
 
 

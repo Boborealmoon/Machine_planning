@@ -470,6 +470,21 @@ input, select { font-family: inherit; }
   font-weight: 800;
 }
 
+.ps-voucher-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #f0fdf4;
+  color: #166534;
+  font-size: 10px;
+  font-weight: 800;
+  border: 1px solid #bbf7d0;
+}
+
+.ps-detail-card--voucher {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
 .ps-total-qty-badge {
   padding: 2px 8px;
   border-radius: 999px;

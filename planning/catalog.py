@@ -23,7 +23,7 @@ from .actuals import actual_totals_for_block
 from .blocks import trial_block_row  # noqa: F401  (re-exported for route convenience)
 from .helpers import one, rows
 from .process_sheets import ensure_planner_process_sheet
-from .utils import compact_text, parse_number, trial_catalog_op_key
+from .utils import compact_text, parse_number, shipped_quantity_completed, trial_catalog_op_key
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@ def _should_show_for_shipped_qty(total_qty, qty_shipped, source_line_item_no=Non
         pass
     if compact_text(source_line_item_no) == "0":
         return False
-    return abs(float(total_qty or 0) - float(qty_shipped or 0)) > 0.0001
+    return not shipped_quantity_completed(total_qty, qty_shipped)
 
 
 def trial_catalog_items(con, include_completed=False):

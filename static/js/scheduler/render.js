@@ -100,12 +100,22 @@ function renderTrialPsTypeFilter() {
   shell.innerHTML = `
     <div class="trial-ps-type-filter-row">
       ${checkboxes}
+      <label class="trial-ps-type-checkbox trial-ps-type-sr">
+        <input type="checkbox" ${trialShowSrOrders ? 'checked' : ''}
+          onchange="toggleTrialSrFilter(this.checked)">
+        <span>[SR]</span>
+      </label>
       <div class="trial-machine-checkbox-actions">
         <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialPsTypesVisible(true)">All</button>
         <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialPsTypesVisible(false)">None</button>
       </div>
     </div>
   `;
+}
+
+function toggleTrialSrFilter(visible) {
+  trialShowSrOrders = visible;
+  renderTrialCatalog();
 }
 
 function toggleTrialPsTypeFilter(key, visible) {
@@ -529,6 +539,7 @@ function renderTrialCatalog() {
   const catalog = (trialState.catalog || []).filter(ps => {
     const psType = trialGetPsType(ps.ps_id);
     if (!trialPsTypeFilter.has(psType)) return false;
+    if (!trialShowSrOrders && String(ps.ps_id || '').includes('[SR]')) return false;
     const psStatus = String(ps.status || '').toUpperCase();
     const execStatus = String(ps.execution_status || '').toUpperCase();
     if (!trialShowCompleted) {
@@ -551,6 +562,7 @@ function renderTrialCatalog() {
   const plannedCatalog = (trialState.planned || []).filter(ps => {
     const psType = trialGetPsType(ps.ps_id);
     if (!trialPsTypeFilter.has(psType)) return false;
+    if (!trialShowSrOrders && String(ps.ps_id || '').includes('[SR]')) return false;
     const psStatus = String(ps.status || '').toUpperCase();
     const plannerStatus = String(ps.planner_status || '').toUpperCase();
     if (!trialShowCompleted && (psStatus === 'COMPLETED' || plannerStatus === 'COMPLETED')) return false;

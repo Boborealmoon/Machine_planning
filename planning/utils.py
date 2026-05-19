@@ -42,6 +42,15 @@ def parse_nullable_number(value):
         return None
 
 
+SHIPPED_QTY_TOLERANCE = 0.0001
+
+
+def shipped_quantity_completed(total_qty, qty_shipped, tolerance=SHIPPED_QTY_TOLERANCE):
+    total = parse_number(total_qty, 0)
+    shipped = parse_number(qty_shipped, 0)
+    return shipped >= total - tolerance
+
+
 def parse_date_text(value):
     if value in (None, ""):
         return ""
