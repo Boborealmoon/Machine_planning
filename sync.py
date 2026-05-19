@@ -783,12 +783,15 @@ WITH wo_rows AS (
         t3.total_acc_qty_produced,
         t3.total_rej_qty_produced,
         NULLIF(t2.stage_no::TEXT, '')::INTEGER AS stage_no,
+        t3.stage_desc,
         t3.plan_start_date,
         t3.plan_end_date,
         t3.origin_rsd,
         t2.origin_voucher_no
     FROM mfg_mps_vch t2
-    JOIN mfg_wo_vch t3 ON t2.wo_voucher_no = t3.voucher_no
+    JOIN mfg_wo_vch t3
+      ON t2.wo_voucher_no = t3.voucher_no
+     AND t2.stage_no = t3.stage_no
     LEFT JOIN LATERAL (
         SELECT p.pp_partial_no
         FROM public.mfg_pp_partial p
@@ -813,6 +816,7 @@ SELECT
     SUM(total_acc_qty_produced)       AS total_acc_qty_produced,
     SUM(total_rej_qty_produced)       AS total_rej_qty_produced,
     stage_no,
+    MAX(stage_desc)                   AS stage_desc,
     MIN(plan_start_date)              AS plan_start_date,
     MAX(plan_end_date)                AS plan_end_date,
     MAX(origin_rsd)                   AS po_due_date,
@@ -830,6 +834,7 @@ _MFG_WO_STATUS_COLS = [
     "total_acc_qty_produced",
     "total_rej_qty_produced",
     "stage_no",
+    "stage_desc",
     "plan_start_date",
     "plan_end_date",
     "po_due_date",
@@ -860,31 +865,16 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
 
         from planning.helpers import planner_db
 
+        insert_sql = f"""
+            INSERT INTO public.mfg_wo_status ({", ".join(_MFG_WO_STATUS_COLS)})
+            VALUES ({", ".join(["%s"] * len(_MFG_WO_STATUS_COLS))})
+        """
+
         with planner_db() as target:
-            target.execute("DELETE FROM public.mfg_wo_status")
-            placeholders = ", ".join(["%s"] * len(_MFG_WO_STATUS_COLS))
-            target.executemany(
-                f"""
-                INSERT INTO public.mfg_wo_status ({", ".join(_MFG_WO_STATUS_COLS)})
-                VALUES ({placeholders})
-                ON CONFLICT (source_mps_no, pp_partial_no, stage_no) DO UPDATE SET
-                    execution_status = CASE
-                        WHEN public.mfg_wo_status.execution_status = 'I' OR EXCLUDED.execution_status = 'I' THEN 'I'
-                        WHEN public.mfg_wo_status.execution_status = 'R' OR EXCLUDED.execution_status = 'R' THEN 'R'
-                        WHEN public.mfg_wo_status.execution_status = 'P' OR EXCLUDED.execution_status = 'P' THEN 'P'
-                        ELSE 'C'
-                    END,
-                    wo_qty_required = COALESCE(public.mfg_wo_status.wo_qty_required, 0) + COALESCE(EXCLUDED.wo_qty_required, 0),
-                    total_acc_qty_produced = COALESCE(public.mfg_wo_status.total_acc_qty_produced, 0) + COALESCE(EXCLUDED.total_acc_qty_produced, 0),
-                    total_rej_qty_produced = COALESCE(public.mfg_wo_status.total_rej_qty_produced, 0) + COALESCE(EXCLUDED.total_rej_qty_produced, 0),
-                    plan_start_date = LEAST(public.mfg_wo_status.plan_start_date, EXCLUDED.plan_start_date),
-                    plan_end_date = GREATEST(public.mfg_wo_status.plan_end_date, EXCLUDED.plan_end_date),
-                    po_due_date = COALESCE(EXCLUDED.po_due_date, public.mfg_wo_status.po_due_date),
-                    so_no = COALESCE(EXCLUDED.so_no, public.mfg_wo_status.so_no),
-                    _loaded_at = NOW()
-                """,
-                rows,
-            )
+            target.execute("SET LOCAL statement_timeout = '600000'")
+            target.execute("TRUNCATE TABLE public.mfg_wo_status")
+            for i in range(0, len(rows), BATCH_SIZE):
+                target.executemany(insert_sql, rows[i : i + BATCH_SIZE])
 
         _last_wo_status_sync_at = time.monotonic()
         log.info("mfg_wo_status sync complete - %d rows in %dms",

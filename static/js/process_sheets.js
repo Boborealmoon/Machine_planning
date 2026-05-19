@@ -379,8 +379,9 @@
   }
 
   function resetFilters() {
-    els.typePanel?.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = true; });
-    if (els.typeBtn) els.typeBtn.textContent = 'All Types ▾';
+    const defaults = new Set(['APS', 'NPS']);
+    els.typePanel?.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = defaults.has(cb.value); });
+    if (els.typeBtn) els.typeBtn.textContent = 'APS, NPS ▾';
     if (els.search) els.search.value = '';
     if (els.plannerFilter) els.plannerFilter.value = '';
     if (els.materialFilter) els.materialFilter.value = '';
@@ -400,10 +401,11 @@
     const completedOnly = Boolean(els.completedOnly?.checked);
     const hideDirectPp = Boolean(els.hideDirectPp?.checked);
     const hideSrTags = Boolean(els.hideSrTags?.checked);
+    const allTypeInputs = els.typePanel ? els.typePanel.querySelectorAll('input[type=checkbox]') : [];
     const checkedTypes = els.typePanel
       ? new Set([...els.typePanel.querySelectorAll('input[type=checkbox]:checked')].map(cb => cb.value))
-      : new Set(['MPS', 'APS', 'NPS', 'PPS', 'CPS']);
-    const allTypesOn = checkedTypes.size === 5;
+      : new Set(['APS', 'NPS']);
+    const allTypesOn = checkedTypes.size === allTypeInputs.length;
 
     return state.items.filter(item => {
       if (hideDirectPp && !completedOnly && !searchTerms.length && isDirectPp(item)) return false;
@@ -658,9 +660,30 @@
     }
   }
 
+  function collectDetailOps(summary, item) {
+    const seen = new Set();
+    const merged = [];
+    for (const op of [
+      ...(Array.isArray(summary?.ops) ? summary.ops : []),
+      ...(Array.isArray(item?.ops) ? item.ops : []),
+      ...(Array.isArray(item?.op_cards) ? item.op_cards : []),
+    ]) {
+      if (!op) continue;
+      const key = [
+        op.op_seq_id || op.source_op_seq_id || '',
+        op.op_no || op.source_op_no || op.operation_label || '',
+        op.stage_no || '',
+      ].join('|');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(op);
+    }
+    return merged;
+  }
+
   function renderDetails(details, item) {
     const summary = details.summary || item;
-    const ops = Array.isArray(summary.ops) && summary.ops.length ? summary.ops : (Array.isArray(item.ops) ? item.ops : []);
+    const ops = collectDetailOps(summary, item);
     const plannedBlocks = Array.isArray(details.planned_blocks) ? details.planned_blocks : [];
     const requirements = Array.isArray(details.requirements) ? details.requirements : [];
 
@@ -695,16 +718,30 @@
         </div>` : ''}
       </div>
       ${details.erp_only ? '<div class="ps-details-note">This row is from the ERP catalog and has not been materialized in planner state yet.</div>' : ''}
-      ${renderOps(ops, summary)}
+      ${renderOps(ops, summary, plannedBlocks)}
       ${renderBlocks(plannedBlocks)}
       ${renderRequirements(requirements)}
     `;
   }
 
-  function renderOps(ops, summary) {
-    if (!ops.length) return '<div class="ps-details-empty">No operations found for this process sheet.</div>';
+  function renderOps(ops, summary, plannedBlocks) {
+    const blocks = Array.isArray(plannedBlocks) ? plannedBlocks : [];
+    if (!ops.length) {
+      const hint = blocks.length
+        ? '<p class="ps-details-empty-hint">No operation steps in BOM flow or ERP cache. Scheduled blocks are listed below.</p>'
+        : '';
+      return `
+        <div class="ps-detail-section">
+          <div class="ps-detail-label">Operation Steps</div>
+          <div class="ps-details-empty">No operations found for this process sheet.</div>
+          ${hint}
+        </div>
+      `;
+    }
     return `
-      <div class="ps-table-wrap">
+      <div class="ps-detail-section">
+        <div class="ps-detail-label">Operation Steps</div>
+        <div class="ps-table-wrap">
         <table class="ps-table">
           <thead>
             <tr>
@@ -723,7 +760,7 @@
             ${ops.map(op => `
               <tr>
                 <td>${escapeHtml(op.op_no || op.source_op_no || op.operation_label || '-')}</td>
-                <td>${escapeHtml(op.op_type || op.operation_name || '-')}</td>
+                <td>${escapeHtml(op.op_type || op.operation_name || op.stage_desc || '-')}</td>
                 <td>${escapeHtml(op.preferred_machine || op.machine_code || op.compatible_machine_group || '-')}</td>
                 <td>${renderOpStatusCell(op, summary)}</td>
                 <td>${escapeHtml(fmtQty(firstQuantity(op.wo_qty_required, op.required_qty, op.target_qty)))}</td>
@@ -735,6 +772,7 @@
             `).join('')}
           </tbody>
         </table>
+        </div>
       </div>
     `;
   }
@@ -812,8 +850,9 @@
       }
     });
     els.typePanel?.addEventListener('change', () => {
-      const checked = [...els.typePanel.querySelectorAll('input:checked')].map(cb => cb.value);
-      els.typeBtn.textContent = checked.length === 5 ? 'All Types ▾' : checked.length === 0 ? 'No Types ▾' : checked.join(', ') + ' ▾';
+      const all = [...els.typePanel.querySelectorAll('input')];
+      const checked = all.filter(cb => cb.checked).map(cb => cb.value);
+      els.typeBtn.textContent = checked.length === all.length ? 'All Types ▾' : checked.length === 0 ? 'No Types ▾' : checked.join(', ') + ' ▾';
       state.page = 1;
       render();
     });

@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS public.mfg_wo_status (
     total_acc_qty_produced  NUMERIC,
     total_rej_qty_produced  NUMERIC,
     stage_no                INTEGER,
+    stage_desc              TEXT,       -- from mfg_wo_vch (via mfg_mps_vch wo_voucher_no + stage_no)
     plan_start_date         DATE,
     plan_end_date           DATE,
     po_due_date             DATE,       -- origin_rsd from mfg_wo_vch
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS public.mfg_wo_status (
 -- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS total_acc_qty_produced NUMERIC;
 -- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS total_rej_qty_produced NUMERIC;
 -- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS stage_no               TEXT;
+-- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS stage_desc             TEXT;
 -- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS pp_partial_no          INTEGER NOT NULL DEFAULT 1;
 -- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS plan_start_date        DATE;
 -- ALTER TABLE public.mfg_wo_status ADD COLUMN IF NOT EXISTS plan_end_date          DATE;

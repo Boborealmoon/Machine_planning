@@ -218,6 +218,119 @@ def _flow_steps_for_ps_ids(con, ps_ids):
     return result
 
 
+def _erp_cache_steps_for_ps(con, source_ps_id, pp_partial_no):
+    """BOM flow steps from pp_vouchers_cache when no planner_operation_seq is selected."""
+    source_ps_id = compact_text(source_ps_id)
+    if not source_ps_id:
+        return []
+    try:
+        pp_partial_no = int(pp_partial_no or 1)
+    except (TypeError, ValueError):
+        pp_partial_no = 1
+
+    steps = []
+    for idx, row in enumerate(
+        rows(
+            con.execute(
+                """
+                SELECT stage_no, stage_desc, op_no,
+                       MAX(wo_qty_required) AS wo_qty_required,
+                       MAX(wo_qty_produced) AS wo_qty_produced,
+                       MAX(wo_qty_rejected) AS wo_qty_rejected,
+                       MAX(execution_status) AS execution_status
+                FROM pp_vouchers_cache
+                WHERE ps_id = %s
+                  AND pp_partial_no = %s
+                  AND NULLIF(TRIM(COALESCE(stage_desc, '')), '') IS NOT NULL
+                GROUP BY stage_no, stage_desc, op_no
+                ORDER BY stage_no, op_no
+                """,
+                (source_ps_id, pp_partial_no),
+            )
+        )
+    ):
+        stage_desc = compact_text(row.get("stage_desc"))
+        stage_no = int(row.get("stage_no") or 0)
+        op_no = compact_text(row.get("op_no")) or (str(stage_no) if stage_no else str(idx + 1))
+        op_type = stage_desc.split()[0] if stage_desc else ""
+        steps.append(
+            {
+                "op_seq_id": stage_no or idx + 1,
+                "seq_no": idx + 1,
+                "op_no": op_no,
+                "op_type": op_type,
+                "machine_category": op_type.upper(),
+                "preferred_machine": "",
+                "cycle_time": 0,
+                "setup_time": 0,
+                "is_last_op": 0,
+                "source_stage_no": stage_no,
+                "erp_required_qty": row.get("wo_qty_required"),
+                "erp_finished_qty": row.get("wo_qty_produced"),
+                "erp_reject_qty": row.get("wo_qty_rejected"),
+                "erp_execution_status": row.get("execution_status"),
+            }
+        )
+    return steps
+
+
+def _scheduled_ops_as_steps(con, planner_ps_id):
+    """Planner operations created by scheduling when BOM flow steps are absent."""
+    planner_ps_id = compact_text(planner_ps_id)
+    if not planner_ps_id:
+        return []
+
+    steps = []
+    for idx, row in enumerate(
+        rows(
+            con.execute(
+                """
+                SELECT operation_id, operation_name, source_op_no, source_op_seq_id,
+                       total_qty, compatible_machine_group
+                FROM planner_operation
+                WHERE source_ps_id = %s
+                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                ORDER BY source_op_seq_id, source_op_no, operation_id
+                """,
+                (planner_ps_id,),
+            )
+        )
+    ):
+        op_no = compact_text(row.get("source_op_no")) or compact_text(row.get("operation_name"))
+        op_name = compact_text(row.get("operation_name")) or op_no
+        group = compact_text(row.get("compatible_machine_group"))
+        steps.append(
+            {
+                "op_seq_id": int(row.get("source_op_seq_id") or row.get("operation_id") or idx + 1),
+                "seq_no": idx + 1,
+                "op_no": op_no or str(idx + 1),
+                "op_type": op_name,
+                "machine_category": group.upper() if group else "",
+                "preferred_machine": "",
+                "cycle_time": 0,
+                "setup_time": 0,
+                "is_last_op": 0,
+                "source_stage_no": int(row.get("source_op_seq_id") or 0),
+                "erp_required_qty": row.get("total_qty"),
+                "erp_finished_qty": 0,
+                "erp_reject_qty": 0,
+                "erp_execution_status": "",
+            }
+        )
+    return steps
+
+
+def _resolve_process_sheet_steps(con, ps, flow_steps):
+    if flow_steps:
+        return flow_steps
+    source_ps_id, pp_partial_no = _display_ids(ps)
+    erp_steps = _erp_cache_steps_for_ps(con, source_ps_id, pp_partial_no)
+    if erp_steps:
+        return erp_steps
+    planner_ps_id = compact_text(ps.get("ps_id") or ps.get("planner_ps_id"))
+    return _scheduled_ops_as_steps(con, planner_ps_id)
+
+
 def _block_metrics_for_ps_ids(con, ps_ids):
     ps_ids = [compact_text(x) for x in ps_ids if compact_text(x)]
     if not ps_ids:
@@ -608,9 +721,10 @@ def list_process_sheets_payload(con):
     today = date.today().isoformat()
     for ps in ps_rows:
         ps_id = compact_text(ps["ps_id"])
+        steps = _resolve_process_sheet_steps(con, ps, steps_by_ps.get(ps_id, []))
         payload = _process_sheet_payload(
             ps,
-            steps_by_ps.get(ps_id, []),
+            steps,
             metrics_by_ps.get(ps_id, {}),
             material_status_by_ps.get(ps_id, {}),
         )
@@ -668,9 +782,10 @@ def api_process_sheet_details(ps_id):
                 [ps_id],
                 {ps_id: metrics_by_ps.get(ps_id, {}).get("expected_start", "")},
             )
+            steps = _resolve_process_sheet_steps(con, dict(ps), steps_by_ps.get(ps_id, []))
             summary = _process_sheet_payload(
                 dict(ps),
-                steps_by_ps.get(ps_id, []),
+                steps,
                 metrics_by_ps.get(ps_id, {}),
                 material_status_by_ps.get(ps_id, {}),
             )
