@@ -17,6 +17,8 @@ Key changes vs SQLite original:
 """
 from __future__ import annotations
 
+import os
+
 from .actuals import actual_totals_for_block
 from .blocks import trial_block_row  # noqa: F401  (re-exported for route convenience)
 from .helpers import one, rows
@@ -31,6 +33,14 @@ from .utils import compact_text, parse_number, trial_catalog_op_key
 def _base_ps_id(ps_id):
     ps_id = compact_text(ps_id)
     return ps_id.split("::", 1)[0] if "::" in ps_id else ps_id
+
+
+def _should_show_for_shipped_qty(total_qty, qty_shipped, source_line_item_no=None):
+    if os.getenv("DISABLE_SHIPPED_QTY_CATALOG_FILTER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    if compact_text(source_line_item_no) == "0":
+        return False
+    return abs(float(total_qty or 0) - float(qty_shipped or 0)) > 0.0001
 
 
 def trial_catalog_items(con, include_completed=False):
@@ -69,8 +79,10 @@ def trial_catalog_items(con, include_completed=False):
                        MAX(execution_status) AS execution_status,
                        MAX(total_qty) AS total_qty,
                        MAX(partial_qty) AS partial_qty,
+                       MAX(source_line_item_no) AS source_line_item_no,
                        MAX(wo_qty_produced) AS wo_qty_produced,
-                       MAX(wo_qty_rejected) AS wo_qty_rejected
+                       MAX(wo_qty_rejected) AS wo_qty_rejected,
+                       MAX(qty_shipped) AS qty_shipped
                 FROM pp_vouchers_cache
                 GROUP BY ps_id, pp_partial_no
             ),
@@ -84,14 +96,19 @@ def trial_catalog_items(con, include_completed=False):
             ),
             source_totals AS (
                 SELECT ps_id,
-                       SUM(COALESCE(NULLIF(partial_qty, 0), NULLIF(total_qty, 0), 0)) AS rolled_total_qty,
+                       COALESCE(
+                           MAX(NULLIF(total_qty, 0)),
+                           SUM(COALESCE(NULLIF(partial_qty, 0), 0))
+                       ) AS rolled_total_qty,
                        MAX(wo_qty_produced) AS wo_qty_produced,
                        MAX(wo_qty_rejected) AS wo_qty_rejected,
+                       MAX(source_line_item_no) AS source_line_item_no,
                        MAX(part_no) AS part_no,
                        MAX(description) AS description,
                        MIN(due_date) AS due_date,
                        MAX(erp_status) AS erp_status,
-                       MAX(execution_status) AS execution_status
+                       MAX(execution_status) AS execution_status,
+                       MAX(qty_shipped) AS qty_shipped
                 FROM voucher_partials
                 GROUP BY ps_id
             ),
@@ -114,6 +131,8 @@ def trial_catalog_items(con, include_completed=False):
                    COALESCE(st.due_date, vp.due_date) AS due_date,
                    COALESCE(st.erp_status, vp.erp_status) AS erp_status,
                    COALESCE(st.execution_status, vp.execution_status) AS execution_status,
+                   st.qty_shipped,
+                   st.source_line_item_no,
                    pfs.op_seq_id AS op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
                    pfs.machine_category, pfs.preferred_machine,
                    pfs.cycle_time, pfs.setup_time, pfs.is_last_op,
@@ -154,21 +173,28 @@ def trial_catalog_items(con, include_completed=False):
                        MAX(execution_status) AS execution_status,
                        MAX(total_qty) AS total_qty,
                        MAX(partial_qty) AS partial_qty,
+                       MAX(source_line_item_no) AS source_line_item_no,
                        MAX(wo_qty_produced) AS wo_qty_produced,
-                       MAX(wo_qty_rejected) AS wo_qty_rejected
+                       MAX(wo_qty_rejected) AS wo_qty_rejected,
+                       MAX(qty_shipped) AS qty_shipped
                 FROM pp_vouchers_cache
                 GROUP BY ps_id, pp_partial_no
             ),
             source_totals AS (
                 SELECT ps_id,
-                       SUM(COALESCE(NULLIF(partial_qty, 0), NULLIF(total_qty, 0), 0)) AS rolled_total_qty,
+                       COALESCE(
+                           MAX(NULLIF(total_qty, 0)),
+                           SUM(COALESCE(NULLIF(partial_qty, 0), 0))
+                       ) AS rolled_total_qty,
                        MAX(wo_qty_produced) AS wo_qty_produced,
                        MAX(wo_qty_rejected) AS wo_qty_rejected,
+                       MAX(source_line_item_no) AS source_line_item_no,
                        MAX(part_no) AS part_no,
                        MAX(description) AS description,
                        MIN(due_date) AS due_date,
                        MAX(erp_status) AS erp_status,
-                       MAX(execution_status) AS execution_status
+                       MAX(execution_status) AS execution_status,
+                       MAX(qty_shipped) AS qty_shipped
                 FROM voucher_partials
                 GROUP BY ps_id
             ),
@@ -190,7 +216,9 @@ def trial_catalog_items(con, include_completed=False):
                    COALESCE(st.part_no, vp.part_no) AS part_name,
                    COALESCE(st.due_date, vp.due_date) AS due_date,
                    COALESCE(st.erp_status, vp.erp_status) AS erp_status,
-                   COALESCE(st.execution_status, vp.execution_status) AS execution_status
+                   COALESCE(st.execution_status, vp.execution_status) AS execution_status,
+                   st.qty_shipped,
+                   st.source_line_item_no
             FROM planner_process_sheet ps
             LEFT JOIN voucher_partials vp
                    ON vp.ps_id = ps.source_ps_id AND vp.pp_partial_no = ps.pp_partial_no
@@ -214,6 +242,8 @@ def trial_catalog_items(con, include_completed=False):
     for row in records:
         ps_id = _base_ps_id(row["ps_id"])
         planner_ps_id = compact_text(row.get("planner_ps_id"))
+        if not _should_show_for_shipped_qty(row["total_qty"], row.get("qty_shipped"), row.get("source_line_item_no")):
+            continue
         op_seq_id = int(row["op_seq_id"] or 0)
         op_key = trial_catalog_op_key(ps_id, row["op_no"], op_seq_id)
         required_qty = float(row["total_qty"] or 0)
@@ -231,6 +261,8 @@ def trial_catalog_items(con, include_completed=False):
                 "part_desc": row["part_desc"] or "",
                 "due_date": str(row["due_date"]) if row["due_date"] else "",
                 "total_qty": float(row["total_qty"] or 0),
+                "qty_shipped": float(row["qty_shipped"] or 0) if row.get("qty_shipped") is not None else None,
+                "source_line_item_no": row.get("source_line_item_no") or "",
                 "status": row.get("erp_status") or row["status"] or "",
                 "execution_status": row.get("execution_status") or None,
                 "planner_status": row["planner_status"] or "",
@@ -391,6 +423,8 @@ def trial_catalog_items(con, include_completed=False):
         ps_id = _base_ps_id(row["ps_id"])
         if ps_id in grouped:
             continue
+        if not _should_show_for_shipped_qty(row["total_qty"], row.get("qty_shipped"), row.get("source_line_item_no")):
+            continue
         inventory_code = compact_text(row["inventory_code"])
         flow_options = flow_options_for_inventory_code(inventory_code)
         if ps_id in {item["ps_id"] for item in planned}:
@@ -404,6 +438,8 @@ def trial_catalog_items(con, include_completed=False):
                 "part_desc": row["part_desc"] or "",
                 "due_date": str(row["due_date"]) if row["due_date"] else "",
                 "total_qty": float(row["total_qty"] or 0),
+                "qty_shipped": float(row["qty_shipped"] or 0) if row.get("qty_shipped") is not None else None,
+                "source_line_item_no": row.get("source_line_item_no") or "",
                 "status": row.get("erp_status") or row["status"] or "",
                 "execution_status": row.get("execution_status") or None,
                 "planner_status": row["planner_status"] or "",
