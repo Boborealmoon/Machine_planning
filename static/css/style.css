@@ -195,6 +195,7 @@ input, select { font-family: inherit; }
 .btn-green { background: #27ae60; color: #fff; }
 .btn-red   { background: #e74c3c; color: #fff; }
 .btn-light { background: #fff; color: #333; border: 1px solid #ccc; }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
 
 /* ── Section ──────────────────────────────────────────────────────────── */
 .section { display: flex; flex-direction: column; gap: 14px; }
@@ -305,7 +306,7 @@ input, select { font-family: inherit; }
 /* ── Status cards ─────────────────────────────────────────────────────── */
 .status-cards {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 12px;
 }
 
@@ -374,6 +375,33 @@ input, select { font-family: inherit; }
 .ps-queue-group-list {
   display: grid;
   gap: 10px;
+}
+
+.ps-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 2px 2px;
+  color: #7b8794;
+  font-size: 12px;
+}
+
+.ps-pagination-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ps-pagination strong {
+  color: #59636e;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.ps-pagination .btn[disabled] {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .ps-row {
@@ -781,6 +809,11 @@ input, select { font-family: inherit; }
   .ps-row,
   .ps-details-grid {
     grid-template-columns: 1fr;
+  }
+
+  .ps-pagination {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .ps-detail-stats,

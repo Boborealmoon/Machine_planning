@@ -147,7 +147,8 @@ def system():
 _PP_VOUCHERS_COLS = [
     "ps_id", "pp_partial_no", "part_no", "description",
     "total_qty", "partial_qty", "due_date", "order_date",
-    "bom_code", "status", "execution_status",
+    "bom_code", "source_voucher_no", "source_line_item_no",
+    "qty_shipped", "status", "execution_status",
     "wo_qty_required", "wo_qty_produced", "wo_qty_rejected",
     "stage_no", "stage_desc", "op_no",
 ]
@@ -207,6 +208,9 @@ def _pp_vouchers_with_ops_payload(cache_rows):
                 "due_date": str(row.get("due_date") or ""),
                 "order_date": str(row.get("order_date") or ""),
                 "bom_code": row.get("bom_code") or "",
+                "source_voucher_no": row.get("source_voucher_no") or "",
+                "source_line_item_no": row.get("source_line_item_no") or "",
+                "qty_shipped": float(row.get("qty_shipped") or 0),
                 "total_qty": source_total_qty,
                 "partial_qty": partial_qty,
                 "wo_req_qty": partial_qty,
@@ -259,6 +263,7 @@ def _pp_vouchers_with_ops_payload(cache_rows):
                 "wo_qty_required": required_qty,
                 "wo_qty_produced": produced_qty,
                 "wo_qty_rejected": rejected_qty,
+                "qty_shipped": float(row.get("qty_shipped") or 0),
                 "planned_qty": 0.0,
                 "finished_qty": produced_qty,
                 "reject_qty": rejected_qty,
@@ -293,9 +298,11 @@ def _pp_vouchers_with_ops_payload(cache_rows):
 def api_pp_vouchers():
     import requests as req
     from db import supa_url, supa_headers
-    from sync import run_sync, is_sync_needed
+    from sync import run_qty_shipped_sync, run_sync, is_sync_needed
     try:
         if is_sync_needed():
+            _ensure_pp_staging_schema()
+            run_qty_shipped_sync()
             run_sync()
         from sync import _supa_fetch_all
         cache_rows = _supa_fetch_all(
@@ -322,10 +329,18 @@ def api_pp_vouchers_with_ops():
 
         # Trigger sync in background — serve cached data immediately
         if is_sync_needed():
-            from sync import run_sync, run_mfg_wo_status_sync
+            from sync import run_sync, run_mfg_wo_status_sync, run_qty_shipped_sync
             def _bg_sync():
                 try:
+                    _ensure_pp_staging_schema()
+                except Exception:
+                    return
+                try:
                     run_mfg_wo_status_sync()
+                except Exception:
+                    pass
+                try:
+                    run_qty_shipped_sync()
                 except Exception:
                     pass
                 try:
@@ -369,10 +384,13 @@ def api_pp_vouchers_with_ops():
 @app.post("/api/pp-vouchers/sync")
 def api_pp_vouchers_sync():
     """Force a sync regardless of cooldown (manual trigger)."""
-    from sync import run_mfg_wo_status_sync, run_sync
+    from sync import run_mfg_wo_status_sync, run_qty_shipped_sync, run_sync
     try:
+        _ensure_pp_staging_schema()
         result = {
+            "schema": {"updated": True},
             "mfg_wo_status": run_mfg_wo_status_sync(force=True),
+            "qty_shipped": run_qty_shipped_sync(force=True),
             "pp_vouchers_cache": run_sync(force=True),
         }
         _invalidate_pp_vouchers_with_ops_cache()
@@ -437,12 +455,21 @@ with_workorder AS (
            ON f.source_voucher_no  = wa.source_voucher_no
           AND f.source_line_item_no = wa.source_voucher_line_item_no
 ),
+with_shipped AS (
+    SELECT
+        ww.*,
+        sq.qty_shipped
+    FROM with_workorder ww
+    LEFT JOIN public.sum_qty_shipped_by_sales_order sq
+           ON ww.source_voucher_no = sq.sales_order_no
+          AND ww.source_line_item_no = sq.line_item_no
+),
 with_partial AS (
     SELECT
         ww.*,
         COALESCE(p.pp_partial_no, 1)    AS pp_partial_no,
         p.partial_qty                   AS partial_qty_raw
-    FROM with_workorder ww
+    FROM with_shipped ww
     LEFT JOIN public.pp_partial p ON ww.pp_voucher_no = p.pp_voucher_no
 ),
 with_desc AS (
@@ -487,6 +514,9 @@ computed AS (
         source_rsd              AS due_date,
         ps_order_date           AS order_date,
         bom_code,
+        source_voucher_no,
+        source_line_item_no,
+        qty_shipped,
         CASE
             WHEN status = 'H'          THEN 'History'
             WHEN ws_status IS NOT NULL THEN ws_status
@@ -512,22 +542,76 @@ SELECT * FROM computed
 ORDER BY ps_id, pp_partial_no, stage_no;
 """
 
-@app.post("/api/admin/fix-execution-status")
-def api_admin_fix_execution_status():
+
+_PP_STAGING_SCHEMA_SQL = """
+ALTER TABLE public.pp_voucher
+    ADD COLUMN IF NOT EXISTS source_voucher_no TEXT;
+
+ALTER TABLE public.pp_voucher
+    ADD COLUMN IF NOT EXISTS source_line_item_no TEXT;
+
+ALTER TABLE public.pp_voucher
+    ALTER COLUMN source_voucher_no TYPE TEXT USING source_voucher_no::TEXT;
+
+ALTER TABLE public.pp_voucher
+    ALTER COLUMN source_line_item_no TYPE TEXT USING source_line_item_no::TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_pp_voucher_source_voucher
+    ON public.pp_voucher (source_voucher_no, source_line_item_no);
+
+CREATE TABLE IF NOT EXISTS public.sum_qty_shipped_by_sales_order (
+    sales_order_no  TEXT        NOT NULL,
+    line_item_no    TEXT        NOT NULL,
+    qty_shipped     NUMERIC,
+    _loaded_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (sales_order_no, line_item_no)
+);
+
+ALTER TABLE public.sum_qty_shipped_by_sales_order
+    ALTER COLUMN sales_order_no TYPE TEXT USING sales_order_no::TEXT;
+
+ALTER TABLE public.sum_qty_shipped_by_sales_order
+    ALTER COLUMN line_item_no TYPE TEXT USING line_item_no::TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_qty_shipped_sales_order
+    ON public.sum_qty_shipped_by_sales_order (sales_order_no, line_item_no);
+
+ALTER TABLE public.pp_vouchers_cache
+    ADD COLUMN IF NOT EXISTS source_voucher_no TEXT;
+
+ALTER TABLE public.pp_vouchers_cache
+    ADD COLUMN IF NOT EXISTS source_line_item_no TEXT;
+
+ALTER TABLE public.pp_vouchers_cache
+    ADD COLUMN IF NOT EXISTS qty_shipped NUMERIC;
+"""
+
+
+def _ensure_pp_staging_schema():
     from db import planner_get_conn, planner_release_conn
-    from sync import run_mfg_wo_status_sync, run_sync
-    results = {}
     conn = planner_get_conn()
     try:
         with conn.cursor() as cur:
+            cur.execute("DROP VIEW IF EXISTS public.vw_pp_vouchers")
+            cur.execute(_PP_STAGING_SCHEMA_SQL)
             cur.execute(_VW_PP_VOUCHERS_SQL)
         conn.commit()
-        results["view_updated"] = True
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        return jsonify({"error": f"view update failed: {e}"}), 500
+        raise
     finally:
         planner_release_conn(conn)
+
+
+@app.post("/api/admin/fix-execution-status")
+def api_admin_fix_execution_status():
+    from sync import run_mfg_wo_status_sync, run_sync
+    results = {}
+    try:
+        _ensure_pp_staging_schema()
+        results["view_updated"] = True
+    except Exception as e:
+        return jsonify({"error": f"view update failed: {e}"}), 500
 
     try:
         results["mfg_wo_status_sync"] = run_mfg_wo_status_sync(force=True)
@@ -589,6 +673,16 @@ def api_pp_voucher_sync():
         return jsonify({"error": str(e)}), 500
 
 
+@app.post("/api/qty-shipped/sync")
+def api_qty_shipped_sync():
+    from sync import run_qty_shipped_sync
+    try:
+        _ensure_pp_staging_schema()
+        return jsonify(run_qty_shipped_sync(force=True))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.post("/api/process-sheet/sync")
 def api_process_sheet_sync():
     from sync import run_process_sheet_sync
@@ -630,13 +724,17 @@ def api_pp_staging_sync():
     """Run PP staging syncs then rebuild the pp_vouchers_cache."""
     from sync import (
         run_pp_voucher_sync, run_process_sheet_sync, run_workorder_status_sync,
-        run_part_desc_sync, run_pp_partial_sync, run_mfg_wo_status_sync, run_sync,
+        run_part_desc_sync, run_pp_partial_sync, run_mfg_wo_status_sync,
+        run_qty_shipped_sync, run_sync,
     )
     try:
+        _ensure_pp_staging_schema()
         results = {
+            "schema":                {"updated": True},
             "pp_voucher":            run_pp_voucher_sync(force=True),
             "mfg_process_sheet_info": run_process_sheet_sync(force=True),
             "workorder_status":      run_workorder_status_sync(force=True),
+            "qty_shipped":           run_qty_shipped_sync(force=True),
             "part_desc":             run_part_desc_sync(force=True),
             "pp_partial":            run_pp_partial_sync(force=True),
             "mfg_wo_status":         run_mfg_wo_status_sync(force=True),
@@ -1284,7 +1382,8 @@ AUTO_SYNC_INTERVAL = int(os.getenv("AUTO_SYNC_INTERVAL", 900))  # default 15 min
 def _auto_sync_loop():
     from sync import (
         run_pp_voucher_sync, run_process_sheet_sync, run_workorder_status_sync,
-        run_part_desc_sync, run_pp_partial_sync, run_mfg_wo_status_sync, run_sync,
+        run_part_desc_sync, run_pp_partial_sync, run_mfg_wo_status_sync,
+        run_qty_shipped_sync, run_sync,
     )
     log.info("auto-sync thread started, interval=%ds", AUTO_SYNC_INTERVAL)
     while True:
@@ -1292,6 +1391,7 @@ def _auto_sync_loop():
             run_pp_voucher_sync(force=True)
             run_process_sheet_sync(force=True)
             run_workorder_status_sync(force=True)
+            run_qty_shipped_sync(force=True)
             run_part_desc_sync(force=True)
             run_pp_partial_sync(force=True)
             run_mfg_wo_status_sync(force=True)

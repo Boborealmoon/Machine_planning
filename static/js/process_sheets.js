@@ -1,8 +1,11 @@
 (function () {
+  const PAGE_SIZE = 100;
+
   const state = {
     items: [],
     details: new Map(),
     loading: false,
+    page: 1,
   };
 
   const els = {};
@@ -170,6 +173,11 @@
     return due !== '-' && due < todayIso() && !isCompleted(item);
   }
 
+  function isHiddenJobTag(item) {
+    return [item?.ps_id, item?.source_ps_id, item?.display_ps_id]
+      .some(value => /^(APS24|NPS24|A24|M24|N24|P24)\b/i.test(String(value || '').trim()));
+  }
+
   function itemIdentityKey(item) {
     const sourcePsId = String(item.source_ps_id || item.display_ps_id || item.ps_id || '').split('::')[0];
     const partial = String(item.pp_partial_no || String(item.ps_id || '').split('::')[1] || '1');
@@ -297,8 +305,10 @@
     const overdueOnly = Boolean(els.overdueOnly?.checked);
     const showCompleted = Boolean(els.showCompleted?.checked);
     const completedOnly = Boolean(els.completedOnly?.checked);
+    const hide24Tags = Boolean(els.hide24Tags?.checked);
 
     return state.items.filter(item => {
+      if (hide24Tags && isHiddenJobTag(item)) return false;
       if (search && !itemSearchText(item).includes(search)) return false;
       if (status && normalizeStatus(item.status) !== status) return false;
       if (planner && normalizeStatus(item.planner_status) !== planner) return false;
@@ -319,7 +329,6 @@
   function renderCounts() {
     const visibleBase = state.items;
     const counts = {
-      UNPLANNED: 0,
       PARTIALLY_PLANNED: 0,
       PLANNED: 0,
       NEEDS_REVIEW: 0,
@@ -333,7 +342,6 @@
       if (isOverdue(item)) counts.OVERDUE += 1;
     });
 
-    setText('ps-count-unplanned', counts.UNPLANNED);
     setText('ps-count-partially-planned', counts.PARTIALLY_PLANNED);
     setText('ps-count-planned', counts.PLANNED);
     setText('ps-count-needs-review', counts.NEEDS_REVIEW);
@@ -354,17 +362,41 @@
       return;
     }
 
+    const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+    state.page = Math.min(Math.max(state.page, 1), totalPages);
+
+    const start = (state.page - 1) * PAGE_SIZE;
+    const end = Math.min(start + PAGE_SIZE, items.length);
+    const pageItems = items.slice(start, end);
+
     if (els.queueHint) {
       const erpOnly = items.filter(item => item.source === 'erp').length;
-      els.queueHint.textContent = `${items.length} shown from ${state.items.length} loaded${erpOnly ? ` (${erpOnly} ERP-only)` : ''}`;
+      els.queueHint.textContent = `${start + 1}-${end} shown from ${items.length} matched | ${state.items.length} loaded${erpOnly ? ` (${erpOnly} ERP-only)` : ''}`;
     }
 
-    const openItems = items.filter(item => !isCompleted(item));
-    const completedItems = items.filter(item => isCompleted(item));
+    const openItems = pageItems.filter(item => !isCompleted(item));
+    const completedItems = pageItems.filter(item => isCompleted(item));
     els.queue.innerHTML = [
       renderQueueGroup('Open Partials', openItems),
       renderQueueGroup('Completed Partials', completedItems),
+      renderPagination(items.length, start, end, totalPages),
     ].filter(Boolean).join('');
+  }
+
+  function renderPagination(totalItems, start, end, totalPages) {
+    if (totalItems <= PAGE_SIZE) return '';
+    const prevDisabled = state.page <= 1 ? 'disabled' : '';
+    const nextDisabled = state.page >= totalPages ? 'disabled' : '';
+    return `
+      <nav class="ps-pagination" aria-label="Process sheet pages">
+        <span>Rows ${escapeHtml(start + 1)}-${escapeHtml(end)} of ${escapeHtml(totalItems)}</span>
+        <div class="ps-pagination-actions">
+          <button class="btn btn-light btn-sm" type="button" data-action="page-prev" ${prevDisabled}>Previous</button>
+          <strong>Page ${escapeHtml(state.page)} of ${escapeHtml(totalPages)}</strong>
+          <button class="btn btn-light btn-sm" type="button" data-action="page-next" ${nextDisabled}>Next</button>
+        </div>
+      </nav>
+    `;
   }
 
   function renderQueueGroup(title, items) {
@@ -645,12 +677,16 @@
     els.overdueOnly = $('ps-overdue-only');
     els.showCompleted = $('ps-show-completed');
     els.completedOnly = $('ps-completed-only');
+    els.hide24Tags = $('ps-hide-24-tags');
     els.refreshBtn = $('ps-refresh-btn');
     els.syncBtn = $('ps-sync-btn');
 
-    [els.search, els.statusFilter, els.plannerFilter, els.materialFilter, els.overdueOnly, els.showCompleted, els.completedOnly]
+    [els.search, els.statusFilter, els.plannerFilter, els.materialFilter, els.overdueOnly, els.showCompleted, els.completedOnly, els.hide24Tags]
       .filter(Boolean)
-      .forEach(el => el.addEventListener('input', render));
+      .forEach(el => el.addEventListener('input', () => {
+        state.page = 1;
+        render();
+      }));
 
     els.refreshBtn?.addEventListener('click', () => {
       state.details.clear();
@@ -659,7 +695,15 @@
     els.syncBtn?.addEventListener('click', syncErp);
     els.queue?.addEventListener('click', event => {
       const trigger = event.target.closest('[data-action="toggle-details"]');
-      if (trigger) toggleDetails(trigger.dataset.psId || '');
+      if (trigger) {
+        toggleDetails(trigger.dataset.psId || '');
+        return;
+      }
+
+      const pageButton = event.target.closest('[data-action="page-prev"], [data-action="page-next"]');
+      if (!pageButton) return;
+      state.page += pageButton.dataset.action === 'page-prev' ? -1 : 1;
+      render();
     });
   }
 

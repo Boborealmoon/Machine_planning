@@ -52,6 +52,7 @@
           <option value="shortage">Shortage Only</option>
         </select>
         <label class="checkbox-label"><input type="checkbox" id="ps-overdue-only" /> Overdue Only</label>
+        <label class="checkbox-label"><input type="checkbox" id="ps-hide-24-tags" checked /> Hide 2024 Tags</label>
         <label class="checkbox-label"><input type="checkbox" id="ps-show-completed" /> Show Completed</label>
         <label class="checkbox-label"><input type="checkbox" id="ps-completed-only" /> Completed Only</label>
       </div>
@@ -59,10 +60,6 @@
 
     <!-- Status Summary Cards -->
     <div class="status-cards">
-      <div class="status-card">
-        <span class="status-label">UNPLANNED</span>
-        <span class="status-dash" id="ps-count-unplanned" style="color:#999">—</span>
-      </div>
       <div class="status-card">
         <span class="status-label">PARTIALLY PLANNED</span>
         <span class="status-dash" id="ps-count-partially-planned" style="color:#f5a623">—</span>
@@ -100,5 +97,5 @@
 
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/process_sheets.js', v='operation-truth-progress-20260518') }}"></script>
+<script src="{{ url_for('static', filename='js/process_sheets.js', v='process-2024-tag-filter-20260519') }}"></script>
 {% endblock %}

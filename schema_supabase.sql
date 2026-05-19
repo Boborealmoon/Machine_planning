@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS public.pp_voucher (
 
 -- Run these if the table already exists in Supabase:
 -- TRUNCATE TABLE public.pp_voucher;
+-- ALTER TABLE public.pp_voucher ADD COLUMN IF NOT EXISTS source_voucher_no   TEXT;
+-- ALTER TABLE public.pp_voucher ADD COLUMN IF NOT EXISTS source_line_item_no TEXT;
 -- ALTER TABLE public.pp_voucher ADD COLUMN IF NOT EXISTS stage_no   INTEGER;
 -- ALTER TABLE public.pp_voucher ADD COLUMN IF NOT EXISTS stage_desc TEXT;
 -- ALTER TABLE public.pp_voucher ADD COLUMN IF NOT EXISTS op_no      INTEGER;
@@ -50,6 +52,14 @@ CREATE TABLE IF NOT EXISTS public.workorder_status (
     status                      TEXT,
     _loaded_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (source_voucher_no, source_voucher_line_item_no)
+);
+
+CREATE TABLE IF NOT EXISTS public.sum_qty_shipped_by_sales_order (
+    sales_order_no  TEXT        NOT NULL,
+    line_item_no    TEXT        NOT NULL,
+    qty_shipped     NUMERIC,
+    _loaded_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (sales_order_no, line_item_no)
 );
 
 CREATE TABLE IF NOT EXISTS public.part_desc (
@@ -160,6 +170,9 @@ CREATE INDEX IF NOT EXISTS idx_mfg_process_pp_voucher
 CREATE INDEX IF NOT EXISTS idx_workorder_source_voucher
     ON public.workorder_status (source_voucher_no, source_voucher_line_item_no);
 
+CREATE INDEX IF NOT EXISTS idx_qty_shipped_sales_order
+    ON public.sum_qty_shipped_by_sales_order (sales_order_no, line_item_no);
+
 CREATE INDEX IF NOT EXISTS idx_pp_partial_pp_voucher
     ON public.pp_partial (pp_voucher_no);
 
@@ -176,6 +189,9 @@ CREATE TABLE IF NOT EXISTS public.pp_vouchers_cache (
     due_date            DATE,
     order_date          DATE,
     bom_code            TEXT,
+    source_voucher_no   TEXT,
+    source_line_item_no TEXT,
+    qty_shipped         NUMERIC,
     status              TEXT,
     execution_status    TEXT,
     wo_qty_required     NUMERIC,
@@ -194,6 +210,9 @@ CREATE TABLE IF NOT EXISTS public.pp_vouchers_cache (
 -- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS wo_qty_required NUMERIC;
 -- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS wo_qty_produced NUMERIC;
 -- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS wo_qty_rejected NUMERIC;
+-- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS source_voucher_no TEXT;
+-- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS source_line_item_no TEXT;
+-- ALTER TABLE public.pp_vouchers_cache ADD COLUMN IF NOT EXISTS qty_shipped NUMERIC;
 
 CREATE INDEX IF NOT EXISTS idx_pp_vouchers_cache_ps_id
     ON public.pp_vouchers_cache (ps_id);
@@ -254,12 +273,21 @@ with_workorder AS (
            ON f.source_voucher_no  = wa.source_voucher_no
           AND f.source_line_item_no = wa.source_voucher_line_item_no
 ),
+with_shipped AS (
+    SELECT
+        ww.*,
+        sq.qty_shipped
+    FROM with_workorder ww
+    LEFT JOIN public.sum_qty_shipped_by_sales_order sq
+           ON ww.source_voucher_no = sq.sales_order_no
+          AND ww.source_line_item_no = sq.line_item_no
+),
 with_partial AS (
     SELECT
         ww.*,
         COALESCE(p.pp_partial_no, 1)    AS pp_partial_no,
         p.partial_qty                   AS partial_qty_raw
-    FROM with_workorder ww
+    FROM with_shipped ww
     LEFT JOIN public.pp_partial p ON ww.pp_voucher_no = p.pp_voucher_no
 ),
 with_desc AS (
@@ -304,6 +332,9 @@ computed AS (
         source_rsd              AS due_date,
         ps_order_date           AS order_date,
         bom_code,
+        source_voucher_no,
+        source_line_item_no,
+        qty_shipped,
         CASE
             WHEN status = 'H'          THEN 'History'
             WHEN ws_status IS NOT NULL THEN ws_status

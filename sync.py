@@ -30,6 +30,9 @@ _bom_stage_sync_lock = threading.Lock()
 _last_wo_status_sync_at: float = 0.0
 _wo_status_sync_lock = threading.Lock()
 
+_last_qty_shipped_sync_at: float = 0.0
+_qty_shipped_sync_lock = threading.Lock()
+
 
 # ── REST helpers ───────────────────────────────────────────────────────────
 
@@ -220,7 +223,8 @@ ORDER BY ps_id, pp_partial_no
 _PP_VOUCHERS_COLS = [
     "ps_id", "pp_partial_no", "part_no", "description",
     "total_qty", "partial_qty", "due_date", "order_date",
-    "bom_code", "status", "execution_status",
+    "bom_code", "source_voucher_no", "source_line_item_no",
+    "qty_shipped", "status", "execution_status",
     "wo_qty_required", "wo_qty_produced", "wo_qty_rejected",
     "stage_no", "stage_desc", "op_no",
 ]
@@ -231,7 +235,7 @@ def is_sync_needed() -> bool:
 
 
 def run_sync(force: bool = False) -> dict:
-    """Read from Supabase vw_pp_vouchers (populated by Power Query) and reload the cache."""
+    """Read from Supabase vw_pp_vouchers and reload the cache."""
     global _last_sync_at
 
     if not force and not is_sync_needed():
@@ -241,26 +245,36 @@ def run_sync(force: bool = False) -> dict:
         return {"skipped": True, "reason": "sync already in progress"}
 
     try:
-        from db import supa_url, supa_headers
-
+        from db import planner_get_conn, planner_release_conn
         t0 = time.monotonic()
-        hdrs = supa_headers(write=True)
-        raw = _supa_fetch_all(
-            f"{supa_url()}/vw_pp_vouchers",
-            headers=hdrs,
-            params={"select": ",".join(_PP_VOUCHERS_COLS), "order": "ps_id,pp_partial_no,stage_no"},
-        )
-        rows = [tuple(row[c] for c in _PP_VOUCHERS_COLS) for row in raw]
-
-        _supa_reload("pp_vouchers_cache", "_synced_at", _PP_VOUCHERS_COLS, rows)
+        cols = ", ".join(_PP_VOUCHERS_COLS)
+        conn = planner_get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM public.pp_vouchers_cache WHERE _synced_at IS NOT NULL")
+                cur.execute(
+                    f"""
+                    INSERT INTO public.pp_vouchers_cache ({cols})
+                    SELECT {cols}
+                    FROM public.vw_pp_vouchers
+                    ORDER BY ps_id, pp_partial_no, stage_no
+                    """
+                )
+                row_count = cur.rowcount
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            planner_release_conn(conn)
 
         _last_sync_at = time.monotonic()
         log.info("pp_vouchers sync complete - %d rows in %dms",
-                 len(rows), int((time.monotonic() - t0) * 1000))
+                 row_count, int((time.monotonic() - t0) * 1000))
         return {
             "synced_at": datetime.now(timezone.utc).isoformat(),
             "duration_ms": int((time.monotonic() - t0) * 1000),
-            "row_count": len(rows),
+            "row_count": row_count,
         }
 
     finally:
@@ -430,7 +444,7 @@ SELECT
     v.pp_qty,
     v.source_voucher_no,
     v.source_rsd,
-    v.source_line_item_no,
+    v.source_line_item_no::TEXT AS source_line_item_no,
     v.status,
     s.stage_no,
     s.stage_desc,
@@ -472,6 +486,45 @@ def run_pp_voucher_sync(force: bool = False) -> dict:
         return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows)}
     finally:
         _pp_voucher_sync_lock.release()
+
+
+# ── sum_qty_shipped_by_sales_order staging ─────────────────────────────────
+
+_QTY_SHIPPED_SQL = """
+SELECT
+    sales_order_no,
+    line_item_no::TEXT AS line_item_no,
+    qty_shipped
+FROM public.sum_qty_shipped_by_sales_order
+WHERE sales_order_no IS NOT NULL
+  AND line_item_no IS NOT NULL
+"""
+
+_QTY_SHIPPED_COLS = ["sales_order_no", "line_item_no", "qty_shipped"]
+
+
+def run_qty_shipped_sync(force: bool = False) -> dict:
+    global _last_qty_shipped_sync_at
+    if not force and (time.monotonic() - _last_qty_shipped_sync_at) < SYNC_COOLDOWN_SECS:
+        return {"skipped": True, "reason": "within cooldown"}
+    if not _qty_shipped_sync_lock.acquire(blocking=False):
+        return {"skipped": True, "reason": "sync already in progress"}
+    try:
+        from db import get_conn, release_conn
+        t0 = time.monotonic()
+        src = get_conn()
+        try:
+            with src.cursor() as scur:
+                scur.execute(_QTY_SHIPPED_SQL)
+                rows = scur.fetchall()
+        finally:
+            release_conn(src)
+        _supa_reload("sum_qty_shipped_by_sales_order", "_loaded_at", _QTY_SHIPPED_COLS, rows)
+        _last_qty_shipped_sync_at = time.monotonic()
+        log.info("sum_qty_shipped_by_sales_order sync complete - %d rows in %dms", len(rows), int((time.monotonic() - t0) * 1000))
+        return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows)}
+    finally:
+        _qty_shipped_sync_lock.release()
 
 
 # ── mfg_process_sheet_info staging ─────────────────────────────────────────
