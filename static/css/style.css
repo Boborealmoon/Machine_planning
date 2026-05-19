@@ -660,7 +660,10 @@ input, select { font-family: inherit; }
 
 .ps-row-side {
   justify-content: flex-end;
-  max-width: 260px;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  flex-wrap: nowrap;
 }
 
 .ps-badge {

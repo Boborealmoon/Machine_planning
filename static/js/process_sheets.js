@@ -87,12 +87,23 @@
     return firstQuantity(item?.total_wo_qty, item?.total_qty);
   }
 
+  function soDetQty(item) {
+    if (item?.so_det_qty === null || item?.so_det_qty === undefined || item?.so_det_qty === '') return null;
+    return numberValue(item.so_det_qty);
+  }
+
+  function fmtSoQty(item) {
+    if (item?.so_det_qty === null || item?.so_det_qty === undefined || item?.so_det_qty === '') return '—';
+    return fmtQty(numberValue(item.so_det_qty));
+  }
+
   const SHIPPED_QTY_TOLERANCE = 0.0001;
 
   function isShippedComplete(item) {
-    const total = numberValue(totalWoQty(item));
+    const soQty = soDetQty(item);
+    if (soQty === null) return false;
     const shipped = numberValue(item?.qty_shipped);
-    return shipped >= total - SHIPPED_QTY_TOLERANCE;
+    return shipped >= soQty - SHIPPED_QTY_TOLERANCE;
   }
 
   function todayIso() {
@@ -183,9 +194,13 @@
     return due !== '-' && due < todayIso() && !isCompleted(item);
   }
 
-  function isHiddenJobTag(item) {
+  function isDirectPp(item) {
+    return normalizeStatus(item?.source_voucher_no) === 'DIRECT_PP';
+  }
+
+  function isSrTagged(item) {
     return [item?.ps_id, item?.source_ps_id, item?.display_ps_id]
-      .some(value => /^(APS24|NPS24|A24|M24|N24|P24)\b/i.test(String(value || '').trim()));
+      .some(value => /\[sr\]/i.test(String(value || '')));
   }
 
   function itemIdentityKey(item) {
@@ -208,6 +223,7 @@
       item.selected_bom_code,
       item.status,
       item.planner_status,
+      item.source_voucher_no,
       ...(Array.isArray(item.ops) ? item.ops.map(op => [
         op.op_no,
         op.source_op_no,
@@ -248,11 +264,11 @@
       due_date: item.due_date || '',
       order_date: item.order_date || '',
       total_qty: item.total_qty || 0,
-      partial_qty: item.partial_qty || 0,
-      wo_req_qty: item.wo_req_qty || item.partial_qty || 0,
-      total_wo_qty: item.total_wo_qty || item.total_qty || 0,
-      wo_qty_required: item.wo_qty_required || 0,
-      display_qty: item.display_qty || item.partial_qty || item.total_qty || item.wo_qty_required || 0,
+      partial_qty: numberValue(item.partial_qty),
+      wo_req_qty: firstQuantity(item.wo_req_qty, item.partial_qty, 0),
+      total_wo_qty: firstQuantity(item.total_wo_qty, item.total_qty, 0),
+      wo_qty_required: numberValue(item.wo_qty_required),
+      display_qty: firstQuantity(item.display_qty, item.partial_qty, item.total_qty, item.wo_qty_required, 0),
       planned_qty: item.planned_qty || 0,
       finished_qty: item.finished_qty || 0,
       remaining_qty: firstQuantity(item.remaining_qty, item.wo_qty_required, item.display_qty, item.partial_qty, item.total_qty),
@@ -268,6 +284,7 @@
       warnings: item.warnings || [],
       source_voucher_no: item.source_voucher_no || '',
       qty_shipped: item.qty_shipped || 0,
+      so_det_qty: item.so_det_qty,
       ops,
       source: 'erp',
     };
@@ -321,10 +338,12 @@
     const overdueOnly = Boolean(els.overdueOnly?.checked);
     const showCompleted = Boolean(els.showCompleted?.checked);
     const completedOnly = Boolean(els.completedOnly?.checked);
-    const hide24Tags = Boolean(els.hide24Tags?.checked);
+    const hideDirectPp = Boolean(els.hideDirectPp?.checked);
+    const hideSrTags = Boolean(els.hideSrTags?.checked);
 
     return state.items.filter(item => {
-      if (hide24Tags && !completedOnly && !search && isHiddenJobTag(item)) return false;
+      if (hideDirectPp && !completedOnly && !search && isDirectPp(item)) return false;
+      if (hideSrTags && !completedOnly && !search && isSrTagged(item)) return false;
       if (search && !itemSearchText(item).includes(search)) return false;
       if (status && normalizeStatus(item.status) !== status) return false;
       if (planner && normalizeStatus(item.planner_status) !== planner) return false;
@@ -477,7 +496,6 @@
         </button>
         <div class="ps-row-side">
           <span class="ps-badge ${badgeClass}">${escapeHtml(displayStatus(item.planner_status, 'Unplanned'))}</span>
-          <span class="ps-row-muted">${escapeHtml(displayStatus(item.status, item.execution_status))}</span>
           <span class="ps-row-muted">${ops.length} op${ops.length === 1 ? '' : 's'}</span>
         </div>
         <div class="ps-details" id="ps-details-${escapeHtml(cssSafeId(psId))}" hidden></div>
@@ -561,7 +579,6 @@
           <div class="ps-detail-stats">
             <span><small>WO Req</small><strong>${escapeHtml(fmtQty(woReqQty(summary)))}</strong></span>
             <span><small>Total Qty</small><strong>${escapeHtml(fmtQty(totalWoQty(summary)))}</strong></span>
-            <span><small>Shipped</small><strong>${escapeHtml(fmtQty(qtyShipped))}</strong></span>
             <span><small>Operations</small><strong>${escapeHtml(ops.length)} op${ops.length === 1 ? '' : 's'}</strong></span>
           </div>
         </div>
@@ -573,12 +590,13 @@
             <span><small>End</small><strong>${escapeHtml(summary.expected_end ? String(summary.expected_end).slice(0, 16) : '-')}</strong></span>
           </div>
         </div>
-        ${sourceVoucher ? `
+        ${(sourceVoucher || soDetQty(summary) !== null || qtyShipped > 0) ? `
         <div class="ps-detail-card ps-detail-card--voucher">
           <div class="ps-detail-label">Sales Order</div>
           <div class="ps-detail-stats">
-            <span><small>Voucher No</small><strong>${escapeHtml(sourceVoucher)}</strong></span>
-            <span><small>Qty Shipped</small><strong>${escapeHtml(fmtQty(qtyShipped))}</strong></span>
+            ${sourceVoucher ? `<span><small>Voucher No</small><strong>${escapeHtml(sourceVoucher)}</strong></span>` : ''}
+            ${sourceVoucher ? `<span><small>SO Qty</small><strong>${escapeHtml(fmtSoQty(summary))}</strong></span>` : ''}
+            <span><small>Shipped</small><strong>${escapeHtml(fmtQty(qtyShipped))}</strong></span>
           </div>
         </div>` : ''}
       </div>
@@ -706,11 +724,12 @@
     els.overdueOnly = $('ps-overdue-only');
     els.showCompleted = $('ps-show-completed');
     els.completedOnly = $('ps-completed-only');
-    els.hide24Tags = $('ps-hide-24-tags');
+    els.hideDirectPp = $('ps-hide-direct-pp');
+    els.hideSrTags = $('ps-hide-sr-tags');
     els.refreshBtn = $('ps-refresh-btn');
     els.syncBtn = $('ps-sync-btn');
 
-    [els.search, els.statusFilter, els.plannerFilter, els.materialFilter, els.overdueOnly, els.showCompleted, els.completedOnly, els.hide24Tags]
+    [els.search, els.statusFilter, els.plannerFilter, els.materialFilter, els.overdueOnly, els.showCompleted, els.completedOnly, els.hideDirectPp, els.hideSrTags]
       .filter(Boolean)
       .forEach(el => el.addEventListener('input', () => {
         state.page = 1;

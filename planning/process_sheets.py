@@ -403,7 +403,11 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         execution_completed = bool(ps.get("execution_completed"))
     else:
         execution_completed = bool(tracked_statuses) and all(_execution_status_completed(status) for status in tracked_statuses)
-    shipped_completed = shipped_quantity_completed(source_total_qty, ps.get("qty_shipped"))
+    so_qty = ps.get("so_det_qty")
+    shipped_completed = (
+        so_qty is not None
+        and shipped_quantity_completed(so_qty, ps.get("qty_shipped"))
+    )
     is_completed = shipped_completed
     display_ps_id, pp_partial_no = _display_ids(ps)
     return {
@@ -453,6 +457,7 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         "material_status": material_status,
         "source_voucher_no": compact_text(ps.get("source_voucher_no") or ""),
         "qty_shipped": _to_float(ps.get("qty_shipped")),
+        "so_det_qty": _to_float(ps.get("so_det_qty")) if ps.get("so_det_qty") is not None else None,
         "ops": ops,
     }
 
@@ -509,6 +514,7 @@ _PS_SELECT = """
             MAX(wo_qty_rejected) AS wo_qty_rejected,
             MAX(source_voucher_no) AS source_voucher_no,
             MAX(qty_shipped) AS qty_shipped,
+            MAX(so_det_qty) AS so_det_qty,
             COALESCE(
                 BOOL_AND(
                     CASE
@@ -548,7 +554,8 @@ _PS_SELECT = """
         sf.bom_code       AS selected_flow_code,
         sf.bom_desc       AS selected_flow_name,
         v.source_voucher_no,
-        v.qty_shipped
+        v.qty_shipped,
+        v.so_det_qty
     FROM planner_process_sheet ps
     LEFT JOIN voucher_partials v
            ON v.ps_id = ps.source_ps_id

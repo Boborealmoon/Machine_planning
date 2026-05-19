@@ -224,7 +224,7 @@ _PP_VOUCHERS_COLS = [
     "ps_id", "pp_partial_no", "part_no", "description",
     "total_qty", "partial_qty", "due_date", "order_date",
     "bom_code", "source_voucher_no", "source_line_item_no",
-    "qty_shipped", "status", "execution_status",
+    "qty_shipped", "so_det_qty", "status", "execution_status",
     "wo_qty_required", "wo_qty_produced", "wo_qty_rejected",
     "stage_no", "stage_desc", "op_no",
 ]
@@ -648,6 +648,86 @@ def run_part_desc_sync(force: bool = False) -> dict:
         return {"synced_at": datetime.now(timezone.utc).isoformat(), "duration_ms": int((time.monotonic() - t0) * 1000), "row_count": len(rows)}
     finally:
         _part_desc_sync_lock.release()
+
+
+# ── so_detail staging (sales order line qty from ERP order tables) ───────────
+
+_SO_DETAIL_SQL = """
+SELECT
+    sales_order_no,
+    line_item_no,
+    inventory_code,
+    inventory_code AS item_code,
+    qty,
+    item_qty
+FROM (
+    SELECT
+        sales_order_no,
+        regexp_replace(line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
+        inventory_code,
+        qty,
+        CASE
+            WHEN dt_type = 'I' AND unit_selling_price_type = 'P' THEN no_of_pack
+            ELSE qty
+        END AS item_qty
+    FROM public.so_order_new_det n
+    JOIN public.so_order_new_hdr h USING (sales_order_no)
+    WHERE h.status <> 'V'
+      AND sales_order_no IS NOT NULL
+      AND line_item_no IS NOT NULL
+      AND inventory_code IS NOT NULL
+
+    UNION ALL
+
+    SELECT
+        sales_order_no,
+        regexp_replace(line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
+        inventory_code,
+        qty,
+        CASE
+            WHEN dt_type = 'I' AND unit_selling_price_type = 'P' THEN no_of_pack
+            ELSE qty
+        END AS item_qty
+    FROM public.so_order_ost_det
+    WHERE sales_order_no IS NOT NULL
+      AND line_item_no IS NOT NULL
+      AND inventory_code IS NOT NULL
+) so_lines
+"""
+_SO_DETAIL_COLS = [
+    "sales_order_no", "line_item_no", "inventory_code", "item_code", "qty", "item_qty",
+]
+
+_last_so_detail_sync_at: float = 0.0
+_so_detail_sync_lock = threading.Lock()
+
+
+def run_so_detail_sync(force: bool = False) -> dict:
+    global _last_so_detail_sync_at
+    if not force and (time.monotonic() - _last_so_detail_sync_at) < SYNC_COOLDOWN_SECS:
+        return {"skipped": True, "reason": "within cooldown"}
+    if not _so_detail_sync_lock.acquire(blocking=False):
+        return {"skipped": True, "reason": "sync already in progress"}
+    try:
+        from db import get_conn, release_conn
+        t0 = time.monotonic()
+        src = get_conn()
+        try:
+            with src.cursor() as scur:
+                scur.execute(_SO_DETAIL_SQL)
+                rows = scur.fetchall()
+        finally:
+            release_conn(src)
+        _supa_reload("so_detail", "_loaded_at", _SO_DETAIL_COLS, rows)
+        _last_so_detail_sync_at = time.monotonic()
+        log.info("so_detail sync complete - %d rows in %dms", len(rows), int((time.monotonic() - t0) * 1000))
+        return {
+            "synced_at": datetime.now(timezone.utc).isoformat(),
+            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "row_count": len(rows),
+        }
+    finally:
+        _so_detail_sync_lock.release()
 
 
 # ── pp_partial staging ──────────────────────────────────────────────────────

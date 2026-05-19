@@ -39,6 +39,7 @@ TRUNCATE TABLE
     -- Group E: materials
     public.planner_material_requirement,
     -- Group D: scheduling core
+    public.planner_operation_sequence,
     public.planner_production_actual,
     public.planner_run_block_segment,
     public.planner_run_block,

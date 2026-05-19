@@ -176,6 +176,20 @@ CREATE INDEX IF NOT EXISTS idx_qty_shipped_sales_order
 CREATE INDEX IF NOT EXISTS idx_pp_partial_pp_voucher
     ON public.pp_partial (pp_voucher_no);
 
+CREATE TABLE IF NOT EXISTS public.so_detail (
+    sales_order_no  TEXT        NOT NULL,
+    line_item_no    TEXT        NOT NULL,
+    inventory_code  TEXT        NOT NULL,
+    item_code       TEXT,
+    qty             NUMERIC,
+    item_qty        NUMERIC,
+    _loaded_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (sales_order_no, line_item_no, inventory_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_so_detail_sales_order
+    ON public.so_detail (sales_order_no, line_item_no);
+
 
 -- ── Cache table (written by Flask auto-sync, read by /api/pp-vouchers) ───
 
@@ -192,6 +206,7 @@ CREATE TABLE IF NOT EXISTS public.pp_vouchers_cache (
     source_voucher_no   TEXT,
     source_line_item_no TEXT,
     qty_shipped         NUMERIC,
+    so_det_qty          NUMERIC,
     status              TEXT,
     execution_status    TEXT,
     wo_qty_required     NUMERIC,
@@ -282,12 +297,31 @@ with_shipped AS (
            ON ww.source_voucher_no = sq.sales_order_no
           AND regexp_replace(ww.source_line_item_no::TEXT, '\\.0+$', '') = regexp_replace(sq.line_item_no::TEXT, '\\.0+$', '')
 ),
+so_detail_by_line AS (
+    SELECT
+        sales_order_no,
+        regexp_replace(line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
+        MAX(qty) AS so_qty
+    FROM public.so_detail
+    WHERE sales_order_no IS NOT NULL
+      AND line_item_no IS NOT NULL
+    GROUP BY sales_order_no, regexp_replace(line_item_no::TEXT, '\\.0+$', '')
+),
+with_so_detail AS (
+    SELECT
+        ww.*,
+        sd.so_qty
+    FROM with_shipped ww
+    LEFT JOIN so_detail_by_line sd
+           ON sd.sales_order_no = ww.source_voucher_no
+          AND sd.line_item_no = regexp_replace(ww.source_line_item_no::TEXT, '\\.0+$', '')
+),
 with_partial AS (
     SELECT
         ww.*,
         COALESCE(p.pp_partial_no, 1)    AS pp_partial_no,
         p.partial_qty                   AS partial_qty_raw
-    FROM with_shipped ww
+    FROM with_so_detail ww
     LEFT JOIN public.pp_partial p ON ww.pp_voucher_no = p.pp_voucher_no
 ),
 with_desc AS (
@@ -329,6 +363,7 @@ computed AS (
                 ELSE ws_item_qty
             END
         )                       AS partial_qty,
+        so_qty                  AS so_det_qty,
         source_rsd              AS due_date,
         ps_order_date           AS order_date,
         bom_code,
