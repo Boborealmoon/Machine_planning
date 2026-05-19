@@ -203,6 +203,19 @@
       .some(value => /\[sr\]/i.test(String(value || '')));
   }
 
+  function getPsType(item) {
+    const raw = String(item.source_ps_id || item.display_ps_id || item.ps_id || '').split('::')[0].toUpperCase();
+    const m = raw.match(/^([A-Z]+)/);
+    if (!m) return null;
+    const prefix = m[1];
+    if (prefix === 'MPS') return 'MPS';
+    if (prefix === 'APS') return 'APS';
+    if (prefix === 'NPS') return 'NPS';
+    if (prefix === 'PPS') return 'PPS';
+    if (prefix === 'CPS') return 'CPS';
+    return prefix;
+  }
+
   function itemIdentityKey(item) {
     const sourcePsId = String(item.source_ps_id || item.display_ps_id || item.ps_id || '').split('::')[0];
     const partial = String(item.pp_partial_no || String(item.ps_id || '').split('::')[1] || '1');
@@ -330,9 +343,43 @@
     }
   }
 
+  function describeActiveFilters() {
+    const parts = [];
+    const typeInputs = els.typePanel
+      ? [...els.typePanel.querySelectorAll('input[type=checkbox]')]
+      : [];
+    const checkedTypes = typeInputs.filter(cb => cb.checked).map(cb => cb.value);
+    if (typeInputs.length && checkedTypes.length < typeInputs.length) {
+      parts.push(checkedTypes.length === 0
+        ? 'no process sheet types selected'
+        : `types: ${checkedTypes.join(', ')} only`);
+    }
+    if (els.hideSrTags?.checked) parts.push('hiding [SR]');
+    if (els.hideDirectPp?.checked) parts.push('hiding Direct PP');
+    if (els.completedOnly?.checked) parts.push('completed only');
+    else if (!els.showCompleted?.checked) parts.push('hiding completed');
+    if (els.overdueOnly?.checked) parts.push('overdue only');
+    if (String(els.search?.value || '').trim()) parts.push('search active');
+    if (els.plannerFilter?.value) parts.push(`planner: ${els.plannerFilter.value}`);
+    if (els.materialFilter?.value === 'shortage') parts.push('material shortage only');
+    return parts;
+  }
+
+  function resetFilters() {
+    els.typePanel?.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = true; });
+    if (els.typeBtn) els.typeBtn.textContent = 'All Types ▾';
+    if (els.search) els.search.value = '';
+    if (els.plannerFilter) els.plannerFilter.value = '';
+    if (els.materialFilter) els.materialFilter.value = '';
+    if (els.overdueOnly) els.overdueOnly.checked = false;
+    if (els.completedOnly) els.completedOnly.checked = false;
+    if (els.showCompleted) els.showCompleted.checked = false;
+    state.page = 1;
+    render();
+  }
+
   function filteredItems() {
     const search = String(els.search?.value || '').trim().toLowerCase();
-    const status = normalizeStatus(els.statusFilter?.value || '');
     const planner = normalizeStatus(els.plannerFilter?.value || '');
     const material = String(els.materialFilter?.value || '').trim();
     const overdueOnly = Boolean(els.overdueOnly?.checked);
@@ -340,12 +387,19 @@
     const completedOnly = Boolean(els.completedOnly?.checked);
     const hideDirectPp = Boolean(els.hideDirectPp?.checked);
     const hideSrTags = Boolean(els.hideSrTags?.checked);
+    const checkedTypes = els.typePanel
+      ? new Set([...els.typePanel.querySelectorAll('input[type=checkbox]:checked')].map(cb => cb.value))
+      : new Set(['MPS', 'APS', 'NPS', 'PPS', 'CPS']);
+    const allTypesOn = checkedTypes.size === 5;
 
     return state.items.filter(item => {
       if (hideDirectPp && !completedOnly && !search && isDirectPp(item)) return false;
       if (hideSrTags && !completedOnly && !search && isSrTagged(item)) return false;
+      if (!allTypesOn) {
+        const t = getPsType(item);
+        if (t && !checkedTypes.has(t)) return false;
+      }
       if (search && !itemSearchText(item).includes(search)) return false;
-      if (status && normalizeStatus(item.status) !== status) return false;
       if (planner && normalizeStatus(item.planner_status) !== planner) return false;
       if (material === 'shortage' && !isMaterialShortage(item)) return false;
       if (overdueOnly && !isOverdue(item)) return false;
@@ -392,8 +446,35 @@
   function renderQueue(items) {
     if (!els.queue) return;
     if (!items.length) {
-      els.queue.innerHTML = `<div class="queue-empty">${state.loading ? 'Loading process sheets...' : 'No process sheets found.'}</div>`;
-      if (els.queueHint) els.queueHint.textContent = `${state.items.length} loaded`;
+      if (state.loading) {
+        els.queue.innerHTML = '<div class="queue-empty">Loading process sheets...</div>';
+      } else if (state.items.length > 0) {
+        const filterParts = describeActiveFilters();
+        const filterLine = filterParts.length
+          ? `<p class="queue-empty-filters">${escapeHtml(filterParts.join(' · '))}</p>`
+          : '';
+        els.queue.innerHTML = [
+          '<div class="queue-empty">',
+          '<p><strong>No process sheets match the current filters.</strong></p>',
+          `<p class="queue-empty-meta">${escapeHtml(state.items.length)} loaded · 0 shown after filters</p>`,
+          filterLine,
+          '<p class="queue-empty-meta">ERP rows come from <code>pp_vouchers_cache</code> (sync rebuilds from <code>vw_pp_vouchers</code>).</p>',
+          '<button class="btn btn-light btn-sm queue-empty-reset" type="button" data-action="reset-filters">Reset filters</button>',
+          '</div>',
+        ].join('');
+      } else {
+        els.queue.innerHTML = [
+          '<div class="queue-empty">',
+          '<p>No process sheets found.</p>',
+          '<p class="queue-empty-meta">Run <strong>Sync ERP</strong> after applying the Supabase view migration, then refresh.</p>',
+          '</div>',
+        ].join('');
+      }
+      if (els.queueHint) {
+        els.queueHint.textContent = state.items.length > 0
+          ? `${state.items.length} loaded · 0 matched`
+          : '0 loaded';
+      }
       return;
     }
 
@@ -462,7 +543,7 @@
     const voucher = item.source_voucher_no ? `<span class="ps-voucher-badge">${escapeHtml(item.source_voucher_no)}</span>` : '';
     const opStatusStrip = renderOpStatusStrip(ops, item);
     const due = fmtDate(item.due_date);
-    const route = item.route_label || item.selected_flow_code || item.selected_bom_code || 'No flow selected';
+    const route = item.route_label || item.erp_bom_code || item.selected_flow_code || item.selected_bom_code || 'No flow selected';
     const descriptor = item.part_desc || 'No description';
 
     return `
@@ -689,36 +770,13 @@
 
   function setBusy(busy, hint) {
     if (els.refreshBtn) els.refreshBtn.disabled = busy;
-    if (els.syncBtn) els.syncBtn.disabled = busy;
     if (els.queueHint && hint) els.queueHint.textContent = hint;
-  }
-
-  async function syncErp() {
-    if (!els.syncBtn) return;
-    const original = els.syncBtn.textContent;
-    els.syncBtn.textContent = 'Syncing...';
-    setBusy(true, 'Syncing ERP staging tables...');
-    try {
-      await postJson('/api/pp-staging/sync', {});
-      state.details.clear();
-      await loadProcessSheets();
-      els.syncBtn.textContent = 'Synced';
-      window.setTimeout(() => { els.syncBtn.textContent = original; }, 1500);
-    } catch (err) {
-      console.error('ERP sync failed:', err);
-      renderError(err.message || 'ERP sync failed.');
-      els.syncBtn.textContent = 'Sync failed';
-      window.setTimeout(() => { els.syncBtn.textContent = original; }, 2500);
-    } finally {
-      setBusy(false);
-    }
   }
 
   function bind() {
     els.queue = $('ps-queue');
     els.queueHint = $('ps-queue-hint');
     els.search = $('ps-search');
-    els.statusFilter = $('ps-status-filter');
     els.plannerFilter = $('ps-planner-filter');
     els.materialFilter = $('ps-material-filter');
     els.overdueOnly = $('ps-overdue-only');
@@ -726,10 +784,28 @@
     els.completedOnly = $('ps-completed-only');
     els.hideDirectPp = $('ps-hide-direct-pp');
     els.hideSrTags = $('ps-hide-sr-tags');
+    els.typeBtn = $('ps-type-btn');
+    els.typePanel = $('ps-type-panel');
     els.refreshBtn = $('ps-refresh-btn');
-    els.syncBtn = $('ps-sync-btn');
 
-    [els.search, els.statusFilter, els.plannerFilter, els.materialFilter, els.overdueOnly, els.showCompleted, els.completedOnly, els.hideDirectPp, els.hideSrTags]
+    // PS type dropdown toggle
+    els.typeBtn?.addEventListener('click', e => {
+      e.stopPropagation();
+      els.typePanel.hidden = !els.typePanel.hidden;
+    });
+    document.addEventListener('click', e => {
+      if (els.typePanel && !els.typePanel.hidden && !$('ps-type-dropdown')?.contains(e.target)) {
+        els.typePanel.hidden = true;
+      }
+    });
+    els.typePanel?.addEventListener('change', () => {
+      const checked = [...els.typePanel.querySelectorAll('input:checked')].map(cb => cb.value);
+      els.typeBtn.textContent = checked.length === 5 ? 'All Types ▾' : checked.length === 0 ? 'No Types ▾' : checked.join(', ') + ' ▾';
+      state.page = 1;
+      render();
+    });
+
+    [els.search, els.plannerFilter, els.materialFilter, els.overdueOnly, els.showCompleted, els.completedOnly, els.hideDirectPp, els.hideSrTags]
       .filter(Boolean)
       .forEach(el => el.addEventListener('input', () => {
         state.page = 1;
@@ -740,8 +816,12 @@
       state.details.clear();
       loadProcessSheets();
     });
-    els.syncBtn?.addEventListener('click', syncErp);
     els.queue?.addEventListener('click', event => {
+      if (event.target.closest('[data-action="reset-filters"]')) {
+        resetFilters();
+        return;
+      }
+
       const trigger = event.target.closest('[data-action="toggle-details"]');
       if (trigger) {
         toggleDetails(trigger.dataset.psId || '');
@@ -758,5 +838,11 @@
   document.addEventListener('DOMContentLoaded', () => {
     bind();
     loadProcessSheets();
+  });
+
+  window.addEventListener('pp-vouchers-synced', () => {
+    state.details.clear();
+    setBusy(true, 'Refreshing process sheets...');
+    loadProcessSheets().finally(() => setBusy(false));
   });
 })();

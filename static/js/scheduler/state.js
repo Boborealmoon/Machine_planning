@@ -4,6 +4,7 @@ let trialState = {
   machines: [], blocks: [], block_groups: [], segments: [],
   actuals: [], capacities: [], profiles: [],
   catalog: [], planned: [], planning_cards: [],
+  program_tools_lookup: null,
 };
 let trialDragPayload = null;
 let trialCatalogSearch = '';

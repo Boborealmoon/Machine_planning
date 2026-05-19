@@ -35,6 +35,46 @@ def _base_ps_id(ps_id):
     return ps_id.split("::", 1)[0] if "::" in ps_id else ps_id
 
 
+def _bom_op_stage_keys(con):
+    return {
+        (compact_text(row["inventory_code"]), compact_text(row["bom_code"]))
+        for row in rows(
+            con.execute(
+                """
+                SELECT DISTINCT inventory_code, bom_code
+                FROM bom_op_stage
+                WHERE COALESCE(inventory_code, '') <> ''
+                  AND COALESCE(bom_code, '') <> ''
+                """
+            )
+        )
+    }
+
+
+def _bom_stage_check(inventory_code, erp_bom_code, selected_bom_code, bom_stage_keys):
+    inv = compact_text(inventory_code)
+    erp = compact_text(erp_bom_code)
+    selected = compact_text(selected_bom_code)
+    if not erp:
+        return {"erp_bom_code": "", "bom_stage_ok": False, "bom_stage_status": "missing_erp"}
+    in_stage = (inv, erp) in bom_stage_keys
+    if not in_stage:
+        return {"erp_bom_code": erp, "bom_stage_ok": False, "bom_stage_status": "not_in_stage"}
+    if selected and selected.upper() != erp.upper():
+        return {"erp_bom_code": erp, "bom_stage_ok": True, "bom_stage_status": "planner_mismatch"}
+    return {"erp_bom_code": erp, "bom_stage_ok": True, "bom_stage_status": "ok"}
+
+
+def _apply_bom_stage_fields(item, bom_stage_keys):
+    check = _bom_stage_check(
+        item.get("inventory_code"),
+        item.get("erp_bom_code"),
+        item.get("selected_bom_code"),
+        bom_stage_keys,
+    )
+    item.update(check)
+
+
 def _should_show_for_shipped_qty(total_qty, qty_shipped, source_line_item_no=None):
     if os.getenv("DISABLE_SHIPPED_QTY_CATALOG_FILTER", "").strip().lower() in {"1", "true", "yes", "on"}:
         return True
@@ -49,6 +89,7 @@ def _should_show_for_shipped_qty(total_qty, qty_shipped, source_line_item_no=Non
 
 
 def trial_catalog_items(con, include_completed=False):
+    bom_stage_keys = _bom_op_stage_keys(con)
     planned_qty_by_op = {}
     for row in rows(
         con.execute(
@@ -87,7 +128,8 @@ def trial_catalog_items(con, include_completed=False):
                        MAX(source_line_item_no) AS source_line_item_no,
                        MAX(wo_qty_produced) AS wo_qty_produced,
                        MAX(wo_qty_rejected) AS wo_qty_rejected,
-                       MAX(qty_shipped) AS qty_shipped
+                       MAX(qty_shipped) AS qty_shipped,
+                       MAX(bom_code) AS erp_bom_code
                 FROM pp_vouchers_cache
                 GROUP BY ps_id, pp_partial_no
             ),
@@ -130,6 +172,7 @@ def trial_catalog_items(con, include_completed=False):
                    COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0) AS total_qty,
                    COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0) AS partial_qty,
                    sf.bom_code AS selected_bom_code,
+                   COALESCE(vp.erp_bom_code, '') AS erp_bom_code,
                    COALESCE(st.part_no, vp.part_no) AS part_no,
                    COALESCE(st.description, vp.description) AS part_desc,
                    COALESCE(st.part_no, vp.part_no) AS part_name,
@@ -181,7 +224,8 @@ def trial_catalog_items(con, include_completed=False):
                        MAX(source_line_item_no) AS source_line_item_no,
                        MAX(wo_qty_produced) AS wo_qty_produced,
                        MAX(wo_qty_rejected) AS wo_qty_rejected,
-                       MAX(qty_shipped) AS qty_shipped
+                       MAX(qty_shipped) AS qty_shipped,
+                       MAX(bom_code) AS erp_bom_code
                 FROM pp_vouchers_cache
                 GROUP BY ps_id, pp_partial_no
             ),
@@ -216,6 +260,7 @@ def trial_catalog_items(con, include_completed=False):
                    COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0) AS total_qty,
                    COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0) AS partial_qty,
                    '' AS selected_bom_code,
+                   COALESCE(vp.erp_bom_code, '') AS erp_bom_code,
                    COALESCE(st.part_no, vp.part_no) AS part_no,
                    COALESCE(st.description, vp.description) AS part_desc,
                    COALESCE(st.part_no, vp.part_no) AS part_name,
@@ -273,6 +318,7 @@ def trial_catalog_items(con, include_completed=False):
                 "planner_status": row["planner_status"] or "",
                 "selected_bom_id": int(row["selected_bom_id"] or 0),
                 "selected_bom_code": row["selected_bom_code"] or "",
+                "erp_bom_code": compact_text(row.get("erp_bom_code")),
                 "ops": [],
                 "all_ops": [],
                 "planner_ps_ids": [],
@@ -281,6 +327,9 @@ def trial_catalog_items(con, include_completed=False):
         )
         if planner_ps_id and planner_ps_id not in item["planner_ps_ids"]:
             item["planner_ps_ids"].append(planner_ps_id)
+        erp_bom = compact_text(row.get("erp_bom_code"))
+        if erp_bom and not compact_text(item.get("erp_bom_code")):
+            item["erp_bom_code"] = erp_bom
         if not op_seq_id and not compact_text(row["op_no"]):
             continue
         if op_key in item["_seen_op_keys"]:
@@ -402,6 +451,7 @@ def trial_catalog_items(con, include_completed=False):
                 (flow["bom_code"] for flow in item["flow_options"] if int(flow["bom_id"]) == int(item["selected_bom_id"])),
                 "",
             )
+        _apply_bom_stage_fields(item, bom_stage_keys)
         if item["op_cards"]:
             available.append(item)
         else:
@@ -418,6 +468,9 @@ def trial_catalog_items(con, include_completed=False):
                     "planner_status": item["planner_status"],
                     "selected_bom_id": item["selected_bom_id"],
                     "selected_bom_code": item["selected_bom_code"],
+                    "erp_bom_code": item.get("erp_bom_code") or "",
+                    "bom_stage_ok": item.get("bom_stage_ok", False),
+                    "bom_stage_status": item.get("bom_stage_status") or "",
                     "flow_options": item["flow_options"],
                     "planning_cards": item["planning_cards"],
                     "op_cards": item["op_cards"],
@@ -434,27 +487,28 @@ def trial_catalog_items(con, include_completed=False):
         flow_options = flow_options_for_inventory_code(inventory_code)
         if ps_id in {item["ps_id"] for item in planned}:
             continue
-        planned.append(
-            {
-                "ps_id": ps_id,
-                "inventory_code": inventory_code,
-                "part_name": row["part_name"] or "",
-                "part_no": row["part_no"] or "",
-                "part_desc": row["part_desc"] or "",
-                "due_date": str(row["due_date"]) if row["due_date"] else "",
-                "total_qty": float(row["total_qty"] or 0),
-                "qty_shipped": float(row["qty_shipped"] or 0) if row.get("qty_shipped") is not None else None,
-                "source_line_item_no": row.get("source_line_item_no") or "",
-                "status": row.get("erp_status") or row["status"] or "",
-                "execution_status": row.get("execution_status") or None,
-                "planner_status": row["planner_status"] or "",
-                "selected_bom_id": int(row["selected_bom_id"] or 0),
-                "selected_bom_code": row["selected_bom_code"] or "",
-                "flow_options": flow_options,
-                "planning_cards": planning_cards_map.get(ps_id, []),
-                "op_cards": [],
-            }
-        )
+        unassigned_item = {
+            "ps_id": ps_id,
+            "inventory_code": inventory_code,
+            "part_name": row["part_name"] or "",
+            "part_no": row["part_no"] or "",
+            "part_desc": row["part_desc"] or "",
+            "due_date": str(row["due_date"]) if row["due_date"] else "",
+            "total_qty": float(row["total_qty"] or 0),
+            "qty_shipped": float(row["qty_shipped"] or 0) if row.get("qty_shipped") is not None else None,
+            "source_line_item_no": row.get("source_line_item_no") or "",
+            "status": row.get("erp_status") or row["status"] or "",
+            "execution_status": row.get("execution_status") or None,
+            "planner_status": row["planner_status"] or "",
+            "selected_bom_id": int(row["selected_bom_id"] or 0),
+            "selected_bom_code": row["selected_bom_code"] or "",
+            "erp_bom_code": compact_text(row.get("erp_bom_code")),
+            "flow_options": flow_options,
+            "planning_cards": planning_cards_map.get(ps_id, []),
+            "op_cards": [],
+        }
+        _apply_bom_stage_fields(unassigned_item, bom_stage_keys)
+        planned.append(unassigned_item)
 
     return {"available": available, "planned": planned}
 

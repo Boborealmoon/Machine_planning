@@ -37,30 +37,64 @@ function trialBlockOpDisplay(leader) {
   return { op_no: opNo ? `OP${opNo}` : '', op_name: cleanName || opNameRaw || '' };
 }
 
+function trialBomStageBadgeHtml(ps) {
+  const status = String(ps.bom_stage_status || '').toLowerCase();
+  const inv = String(ps.inventory_code || ps.part_no || '').trim();
+  const erp = String(ps.erp_bom_code || '').trim();
+  if (!status) return '';
+  const labels = {
+    ok: 'Matches bom_op_stage',
+    planner_mismatch: 'Planner BOM differs from ERP',
+    not_in_stage: 'Not in bom_op_stage',
+    missing_erp: 'No ERP BOM on voucher',
+  };
+  const label = labels[status] || status;
+  return `<span class="trial-bom-stage-badge is-${escapeHtml(status)}" title="${escapeHtml(`${inv} + ${erp || '?'}`)}">${escapeHtml(label)}</span>`;
+}
+
+function trialErpBomHtml(ps) {
+  const erp = String(ps.erp_bom_code || '').trim();
+  const inv = String(ps.inventory_code || ps.part_no || '').trim();
+  const code = erp || '-';
+  return (
+    '<div class="trial-catalog-erp-bom">' +
+    '<span class="trial-catalog-section-note">ERP BOM (pp_voucher)</span>' +
+    '<div class="trial-catalog-erp-bom-row">' +
+    `<strong class="trial-catalog-erp-bom-code" title="${escapeHtml(`${inv} - ${erp || 'missing'}`)}">${escapeHtml(code)}</strong>` +
+    trialBomStageBadgeHtml(ps) +
+    '</div></div>'
+  );
+}
+
 function trialFlowSelectHtml(ps) {
   const flows = Array.isArray(ps.flow_options) ? ps.flow_options : [];
   const selectedFlowCode = String(ps.selected_bom_code || ps.selected_flow_code || '');
+  const erpBom = String(ps.erp_bom_code || '').trim();
   const options = [];
   if (!flows.length) {
-    options.push('<option value="">No BOM code available</option>');
+    const hint = erpBom ? `Use ERP: ${erpBom}` : 'No planner BOM routes yet';
+    options.push(`<option value="">${escapeHtml(hint)}</option>`);
   } else {
-    options.push('<option value="">Select BOM code</option>');
+    options.push('<option value="">Select planner BOM</option>');
     flows.forEach(flow => {
       const code = String(flow.bom_code || flow.flow_code || '');
-      const label = `${code}${flow.is_default ? ' (default)' : ''}`;
+      const label = `${code}${flow.is_default ? ' (default)' : ''}${erpBom && code === erpBom ? ' · ERP' : ''}`;
       options.push(`<option value="${escapeHtml(code)}" ${code === selectedFlowCode ? 'selected' : ''}>${escapeHtml(label)}</option>`);
     });
   }
   const label = selectedFlowCode || '';
   return `
-    <label style="display:grid;gap:4px;justify-items:end">
-      <span class="trial-catalog-section-note">BOM Code${label ? ` · ${escapeHtml(label)}` : ''}</span>
-      <select class="trial-catalog-flow-select" data-ps-id="${escapeHtml(ps.ps_id || '')}"
-        ${flows.length ? '' : 'disabled'}
-        onchange="setTrialSelectedFlow(this.dataset.psId, this.value)">
-        ${options.join('')}
-      </select>
-    </label>
+    <div class="trial-catalog-bom-controls">
+      ${trialErpBomHtml(ps)}
+      <label class="trial-catalog-planner-bom">
+        <span class="trial-catalog-section-note">Planner BOM${label ? ` · ${escapeHtml(label)}` : ''}</span>
+        <select class="trial-catalog-flow-select" data-ps-id="${escapeHtml(ps.ps_id || '')}"
+          ${flows.length ? '' : 'disabled'}
+          onchange="setTrialSelectedFlow(this.dataset.psId, this.value)">
+          ${options.join('')}
+        </select>
+      </label>
+    </div>
   `;
 }
 
@@ -323,6 +357,7 @@ function renderTrialOpCardHtml(card) {
           <div class="trial-planning-card-sub">${escapeHtml(opName)}</div>
           <div class="trial-planning-card-sub">Remaining ${remainingQty} pcs</div>
           <div class="trial-planning-card-sub">Setup ${setupMinutes}m · Cycle ${cycleMinutes}m/pc</div>
+          ${trialProgramToolsBlockHtml(card)}
           ${isAllocated
             ? `<div class="trial-allocated-badge">
                 <span class="trial-allocated-dot"></span>
@@ -550,6 +585,7 @@ function renderTrialCatalog() {
     if (!rawQuery) return true;
     const haystack = [
       ps.ps_id, ps.part_name, ps.part_no, ps.part_desc, ps.due_date, ps.status, ps.execution_status,
+      ps.erp_bom_code, ps.selected_bom_code, ps.inventory_code,
       ...(ps.ops || []).flatMap(op => [op.op_no, op.op_type, op.machine_category, op.preferred_machine, op.source_op_no]),
     ].join(' ').toLowerCase();
     return haystack.includes(rawQuery);
@@ -590,7 +626,12 @@ function renderTrialCatalog() {
     const partialText = psIdParts[1] ? `Partial ${psIdParts[1]}` : '';
     const opCardsHtml = (ps.op_cards || [])
       .filter(card => !trialIsCatalogOpAllocated(card))
-      .map(card => renderTrialOpCardHtml({ ...card, is_allocated: false }))
+      .map(card => renderTrialOpCardHtml({
+        ...card,
+        is_allocated: false,
+        part_no: card.part_no || ps.part_no || ps.part_name || '',
+        source_ps_id: card.source_ps_id || basePsId,
+      }))
       .join('');
     return `
       <details class="trial-catalog-ps" ${rawQuery ? 'open' : ''}
@@ -636,7 +677,12 @@ function renderTrialCatalog() {
       <div class="trial-catalog-oplist">
         ${(ps.op_cards || [])
           .filter(card => !trialIsCatalogOpAllocated(card))
-          .map(card => renderTrialOpCardHtml({ ...card, is_allocated: false }))
+          .map(card => renderTrialOpCardHtml({
+            ...card,
+            is_allocated: false,
+            part_no: card.part_no || ps.part_no || ps.part_name || '',
+            source_ps_id: card.source_ps_id || String(ps.ps_id || '').split('::')[0] || ps.ps_id || '',
+          }))
           .join('')}
       </div>
     </div>

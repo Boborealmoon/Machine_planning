@@ -364,6 +364,20 @@ def _tracked_stage_statuses(ops):
     ]
 
 
+def _route_label(ps):
+    erp = compact_text(ps.get("erp_bom_code"))
+    selected = compact_text(ps.get("selected_flow_code"))
+    if erp and selected:
+        if erp.upper() == selected.upper():
+            return erp
+        return f"ERP {erp} · Planner {selected}"
+    if erp:
+        return f"ERP {erp}"
+    if selected:
+        return selected
+    return "No flow selected"
+
+
 def _warnings(ps, is_completed, material_status):
     warnings = []
     due_date = compact_text(ps.get("due_date"))
@@ -436,7 +450,8 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         "is_completed": is_completed,
         "selected_bom_id": int(ps.get("selected_bom_id") or 0),
         "selected_flow_code": compact_text(ps.get("selected_flow_code") or ""),
-        "route_label": compact_text(ps.get("selected_flow_code") or "") or "No flow selected",
+        "erp_bom_code": compact_text(ps.get("erp_bom_code") or ""),
+        "route_label": _route_label(ps),
         "planned_qty": planned_qty,
         "finished_qty": finished_qty,
         "reject_qty": reject_qty,
@@ -553,6 +568,7 @@ _PS_SELECT = """
         v.description     AS part_desc,
         sf.bom_code       AS selected_flow_code,
         sf.bom_desc       AS selected_flow_name,
+        v.bom_code        AS erp_bom_code,
         v.source_voucher_no,
         v.qty_shipped,
         v.so_det_qty

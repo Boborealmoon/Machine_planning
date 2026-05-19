@@ -273,6 +273,7 @@ def _pp_vouchers_with_ops_payload(cache_rows):
                 "source_ps_id": entry["ps_id"],
                 "source_op_seq_id": stage_no,
                 "source_op_no": op_no,
+                "part_no": entry.get("part_no") or "",
                 "job_no": entry["ps_id"],
                 "planning_status": "UNSCHEDULED",
                 "card_type": "SINGLE",
@@ -442,8 +443,11 @@ joined AS (
 filtered AS (
     SELECT *
     FROM joined
-    WHERE ps_id LIKE '%APS%'
+    WHERE ps_id LIKE '%MPS%'
+       OR ps_id LIKE '%APS%'
        OR ps_id LIKE '%NPS%'
+       OR ps_id LIKE '%PPS%'
+       OR ps_id LIKE '%CPS%'
        OR ps_id LIKE '%[SR]%'
 ),
 with_workorder AS (
@@ -1083,6 +1087,48 @@ def api_ptl_sync():
         return jsonify({"error": str(e)}), 500
 
 
+@app.get("/api/program-tool-list/lookup")
+def api_ptl_lookup():
+    """Compact PS+op / part+op lookup for scheduler op cards."""
+    from program_tools_lookup import build_program_tools_lookup
+    from tool_list_db import init_db, fetch_all
+
+    try:
+        init_db()
+        rows = fetch_all()
+        ps_nos = list({r.get("ps_no") for r in rows if r.get("ps_no")})
+        part_no_erp_map = {}
+        if ps_nos:
+            try:
+                erp_rows = db_query(
+                    """
+                    SELECT DISTINCT process_sheet_no, inventory_code
+                    FROM public.mfg_process_sheet_info_v1_view
+                    WHERE process_sheet_no = ANY(%s)
+                    """,
+                    (ps_nos,),
+                    fetchall=True,
+                )
+                if erp_rows:
+                    part_no_erp_map = {er[0]: er[1] for er in erp_rows}
+            except Exception:
+                pass
+        for row in rows:
+            row["part_no_erp"] = part_no_erp_map.get(row.get("ps_no") or "", "") or row.get("part_number") or ""
+
+        from tool_list_db import last_synced
+
+        lookup = build_program_tools_lookup(rows)
+        return jsonify({
+            "last_synced": last_synced(),
+            "ps_op_count": len(lookup.get("by_ps_op") or {}),
+            "part_op_count": len(lookup.get("by_part_op") or {}),
+            **lookup,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.get("/api/program-tool-list")
 def api_ptl_data():
     from tool_list_db import init_db, fetch_all, last_synced
@@ -1251,13 +1297,14 @@ def api_ptl_sync_to_supabase():
                 continue
 
             payload.append({
+                "ps_no": ps_no,
                 "program_file": program_file,
                 "tool_list_files": tool_list_files,
                 "part_no_erp": part_no_erp,
                 "programmer_name": programmer_name,
                 "cnc_machine_no": cnc_machine,
                 "wo_machine": wo_machine,
-                "operation_no": op_no,  # ✅ Added
+                "operation_no": op_no,
             })
 
         if not payload:

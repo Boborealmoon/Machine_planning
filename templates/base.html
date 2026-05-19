@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='process-pagination-20260519') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='nav-erp-sync-20260519') }}" />
   {% block extra_css %}{% endblock %}
 </head>
 <body>
@@ -71,6 +71,11 @@
           <a href="/system?section=about" class="nav-dropdown-item">About</a>
         </div>
       </div>
+    </div>
+    <div class="navbar-actions">
+      <button type="button" class="nav-sync-btn" id="nav-erp-sync-btn" data-default-label="Sync ERP">
+        Sync ERP
+      </button>
     </div>
   </div>
 </nav>

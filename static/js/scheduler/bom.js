@@ -76,7 +76,7 @@ async function openTrialBOMEditor(psId) {
     const hasFallbackSteps = fallbackSteps.length > 0;
     trialBOMMeta = {
       bom_id: Number(flow?.bom_id || 0),
-      flow_code: flow?.flow_code || catalogItem?.selected_bom_code || catalogItem?.selected_flow_code || catalogItem?.bom_code || 'MANUAL',
+      flow_code: flow?.flow_code || catalogItem?.erp_bom_code || catalogItem?.selected_bom_code || catalogItem?.selected_flow_code || catalogItem?.bom_code || 'MANUAL',
       is_default: flow ? !!flow.is_default : true,
       ps_id: ps.ps_id,
       inventory_code: inventoryCode,

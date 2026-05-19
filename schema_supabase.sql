@@ -266,8 +266,11 @@ joined AS (
 filtered AS (
     SELECT *
     FROM joined
-    WHERE ps_id LIKE '%APS%'
+    WHERE ps_id LIKE '%MPS%'
+       OR ps_id LIKE '%APS%'
        OR ps_id LIKE '%NPS%'
+       OR ps_id LIKE '%PPS%'
+       OR ps_id LIKE '%CPS%'
        OR ps_id LIKE '%[SR]%'
 ),
 with_workorder AS (

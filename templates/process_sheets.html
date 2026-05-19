@@ -6,7 +6,6 @@
     <h1 class="page-title">Process Sheets</h1>
     <div class="page-actions">
       <button class="btn btn-dark" id="ps-refresh-btn" type="button">Refresh From Cache</button>
-      <button class="btn btn-light" id="ps-sync-btn" type="button">Fetch ERP (Latest)</button>
     </div>
   </div>
 
@@ -32,13 +31,16 @@
           </svg>
           <input type="text" class="search-input" id="ps-search" placeholder="Search PS ID, part, Inv code, description..." />
         </div>
-        <select class="filter-select" id="ps-status-filter">
-          <option value="">All Statuses</option>
-          <option value="Outstanding">Outstanding</option>
-          <option value="Active">Active</option>
-          <option value="History">History</option>
-          <option value="Completed">Completed</option>
-        </select>
+        <div class="filter-dropdown" id="ps-type-dropdown">
+          <button class="filter-dropdown-btn" type="button" id="ps-type-btn">All Types ▾</button>
+          <div class="filter-dropdown-panel" id="ps-type-panel" hidden>
+            <label class="filter-dropdown-item"><input type="checkbox" value="MPS" checked /> MPS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="PPS" checked /> PPS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="CPS" checked /> CPS</label>
+          </div>
+        </div>
         <select class="filter-select" id="ps-planner-filter">
           <option value="">All Planner Status</option>
           <option value="UNPLANNED">Unplanned</option>

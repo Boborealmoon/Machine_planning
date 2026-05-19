@@ -40,10 +40,8 @@ async function DEL(url) {
 }
 
 async function syncPpVouchers() {
-  const btn = document.getElementById('trial-sync-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
   try {
-    await POST('/api/pp-vouchers/sync', {});
+    await (window.syncErpPpVouchers ? window.syncErpPpVouchers() : POST('/api/pp-vouchers/sync', {}));
     trialLoadCache.catalog = null;
     trialLoadCache.catalogExpiresAt = 0;
     const erpVouchers = await GET('/api/pp-vouchers/with-ops?refresh=1');
@@ -51,16 +49,24 @@ async function syncPpVouchers() {
     trialLoadCache.catalogExpiresAt = Date.now() + 30000;
     trialState.catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
     renderTrialCatalog();
-    if (btn) btn.textContent = 'Synced ✓';
-    setTimeout(() => { if (btn) btn.textContent = 'Sync ERP'; }, 2000);
   } catch (err) {
-    if (btn) btn.textContent = 'Sync failed';
-    setTimeout(() => { if (btn) btn.textContent = 'Sync ERP'; }, 3000);
     console.error('pp-vouchers sync failed:', err);
-  } finally {
-    if (btn) btn.disabled = false;
   }
 }
+
+window.addEventListener('pp-vouchers-synced', () => {
+  if (typeof renderTrialCatalog !== 'function') return;
+  trialLoadCache.catalog = null;
+  trialLoadCache.catalogExpiresAt = 0;
+  GET('/api/pp-vouchers/with-ops?refresh=1')
+    .then(erpVouchers => {
+      trialLoadCache.catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
+      trialLoadCache.catalogExpiresAt = Date.now() + 30000;
+      trialState.catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
+      renderTrialCatalog();
+    })
+    .catch(err => console.error('catalog refresh after ERP sync failed:', err));
+});
 
 async function syncTrialQueueState() {
   const queueStates = await GET('/api/trial/queue-state').catch(() => []);
@@ -181,9 +187,10 @@ async function loadTrial(options = {}) {
     trialLoadCache.machinesExpiresAt = 0;
   }
 
-  const [erpVouchers, machinesResult] = await Promise.all([
+  const [erpVouchers, machinesResult, programToolsLookup] = await Promise.all([
     trialCachedGET('catalog', 30000, '/api/pp-vouchers/with-ops').catch(() => []),
     trialCachedGET('machines', 300000, '/api/planner/machines').catch(() => ({ machines: [] })),
+    GET('/api/program-tool-list/lookup').catch(() => null),
   ]);
 
   const scheduleData = scheduleResult || {};
@@ -213,6 +220,7 @@ async function loadTrial(options = {}) {
     catalog,
     planned:        scheduleData.planned        || [],
     planning_cards: scheduleData.planning_cards || [],
+    program_tools_lookup: programToolsLookup,
   };
   renderTrial();
 }

@@ -25,6 +25,7 @@
       <div id="trial-machine-filter-shell"></div>
       <div id="trial-grid" class="trial-grid"></div>
     </div>
+    <div class="trial-resize-handle" id="trial-resize-handle"></div>
     <aside class="trial-sidebar">
       <div class="trial-sidebar-card">
         <div class="trial-sidebar-head">
@@ -33,7 +34,6 @@
             <div class="trial-sidebar-note">Combine ops inside the PS, then drag op cards to a machine lane.</div>
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
-            <button id="trial-sync-btn" class="btn btn-ghost btn-sm" onclick="syncPpVouchers()">Sync ERP</button>
             <button id="trial-completed-toggle" class="btn btn-ghost btn-sm" onclick="toggleTrialCompletedCatalog()">Show completed</button>
           </div>
         </div>
@@ -53,6 +53,7 @@
 <script src="{{ url_for('static', filename='js/scheduler/state.js') }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/data.js') }}"></script>
+<script src="{{ url_for('static', filename='js/scheduler/program_tools.js') }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/render.js') }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/api.js') }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/bom.js') }}"></script>
@@ -64,5 +65,50 @@ document.addEventListener('DOMContentLoaded', () => {
   trialScheduleDateFilter = trialResolvedScheduleDateFilterFromUrl();
   loadTrial();
 });
+</script>
+<script>
+(function () {
+  const STORAGE_KEY = 'planner-sidebar-w';
+  const MIN_W = 220;
+  const MAX_W = 640;
+
+  const layout = document.getElementById('trial-layout');
+  const handle = document.getElementById('trial-resize-handle');
+  if (!layout || !handle) return;
+
+  const saved = parseInt(localStorage.getItem(STORAGE_KEY), 10);
+  if (saved >= MIN_W && saved <= MAX_W) {
+    layout.style.setProperty('--sidebar-w', saved + 'px');
+  }
+
+  let startX = 0;
+  let startW = 0;
+
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    handle.classList.add('is-dragging');
+    startX = e.clientX;
+    const computed = getComputedStyle(layout);
+    const cols = computed.gridTemplateColumns.split(' ');
+    startW = parseFloat(cols[cols.length - 1]) || 300;
+
+    function onMove(e) {
+      const delta = startX - e.clientX;
+      const newW = Math.min(MAX_W, Math.max(MIN_W, startW + delta));
+      layout.style.setProperty('--sidebar-w', newW + 'px');
+    }
+
+    function onUp() {
+      handle.classList.remove('is-dragging');
+      const current = parseFloat(layout.style.getPropertyValue('--sidebar-w'));
+      if (!isNaN(current)) localStorage.setItem(STORAGE_KEY, Math.round(current));
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+})();
 </script>
 {% endblock %}
