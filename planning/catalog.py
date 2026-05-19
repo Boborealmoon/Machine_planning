@@ -38,6 +38,11 @@ def _base_ps_id(ps_id):
 def _should_show_for_shipped_qty(total_qty, qty_shipped, source_line_item_no=None):
     if os.getenv("DISABLE_SHIPPED_QTY_CATALOG_FILTER", "").strip().lower() in {"1", "true", "yes", "on"}:
         return True
+    try:
+        if float(compact_text(source_line_item_no) or 0) == 0:
+            return False
+    except ValueError:
+        pass
     if compact_text(source_line_item_no) == "0":
         return False
     return abs(float(total_qty or 0) - float(qty_shipped or 0)) > 0.0001

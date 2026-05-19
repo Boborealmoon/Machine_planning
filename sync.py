@@ -444,7 +444,7 @@ SELECT
     v.pp_qty,
     v.source_voucher_no,
     v.source_rsd,
-    v.source_line_item_no::TEXT AS source_line_item_no,
+    regexp_replace(v.source_line_item_no::TEXT, '\\.0+$', '') AS source_line_item_no,
     v.status,
     s.stage_no,
     s.stage_desc,

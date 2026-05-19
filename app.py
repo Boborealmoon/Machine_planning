@@ -412,7 +412,7 @@ joined AS (
         b.pp_qty,
         b.source_voucher_no,
         b.source_rsd,
-        b.source_line_item_no,
+        regexp_replace(b.source_line_item_no::TEXT, '\\.0+$', '') AS source_line_item_no,
         b.status,
         b.stage_no,
         b.stage_desc,
@@ -462,7 +462,7 @@ with_shipped AS (
     FROM with_workorder ww
     LEFT JOIN public.sum_qty_shipped_by_sales_order sq
            ON ww.source_voucher_no = sq.sales_order_no
-          AND ww.source_line_item_no = sq.line_item_no
+          AND regexp_replace(ww.source_line_item_no::TEXT, '\\.0+$', '') = regexp_replace(sq.line_item_no::TEXT, '\\.0+$', '')
 ),
 with_partial AS (
     SELECT
