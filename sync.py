@@ -449,13 +449,13 @@ SELECT
     v.source_rsd,
     regexp_replace(v.source_line_item_no::TEXT, '\\.0+$', '') AS source_line_item_no,
     v.status,
-    s.stage_no,
-    s.stage_desc,
+    COALESCE(s.stage_no, 0)     AS stage_no,
+    COALESCE(s.stage_desc, '')  AS stage_desc,
     s.op_no
 FROM public.mfg_pp_vch v
-JOIN stage s ON s.inventory_code = v.inventory_code
-            AND s.bom_code       = v.bom_code
-ORDER BY v.pp_voucher_no, s.stage_no
+LEFT JOIN stage s ON s.inventory_code = v.inventory_code
+                 AND s.bom_code       = v.bom_code
+ORDER BY v.pp_voucher_no, COALESCE(s.stage_no, 0)
 """
 _PP_VOUCHER_COLS = [
     "pp_voucher_no", "inventory_code", "bom_code", "pp_qty",
@@ -897,3 +897,18 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
 
     finally:
         _wo_status_sync_lock.release()
+
+
+def run_full_pp_staging_sync(force: bool = True) -> dict:
+    """COMAIN → Supabase staging tables, then rebuild pp_vouchers_cache."""
+    return {
+        "pp_voucher": run_pp_voucher_sync(force=force),
+        "mfg_process_sheet_info": run_process_sheet_sync(force=force),
+        "workorder_status": run_workorder_status_sync(force=force),
+        "qty_shipped": run_qty_shipped_sync(force=force),
+        "so_detail": run_so_detail_sync(force=force),
+        "part_desc": run_part_desc_sync(force=force),
+        "pp_partial": run_pp_partial_sync(force=force),
+        "mfg_wo_status": run_mfg_wo_status_sync(force=force),
+        "pp_vouchers_cache": run_sync(force=force),
+    }

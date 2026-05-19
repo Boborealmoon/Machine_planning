@@ -392,21 +392,8 @@ def api_pp_vouchers_with_ops():
 
 @app.post("/api/pp-vouchers/sync")
 def api_pp_vouchers_sync():
-    """Force a sync regardless of cooldown (manual trigger)."""
-    from sync import run_mfg_wo_status_sync, run_qty_shipped_sync, run_so_detail_sync, run_sync
-    try:
-        _ensure_pp_staging_schema()
-        result = {
-            "schema": {"updated": True},
-            "mfg_wo_status": run_mfg_wo_status_sync(force=True),
-            "qty_shipped": run_qty_shipped_sync(force=True),
-            "so_detail": run_so_detail_sync(force=True),
-            "pp_vouchers_cache": run_sync(force=True),
-        }
-        _invalidate_pp_vouchers_with_ops_cache()
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    """Force full COMAIN → Supabase staging + cache rebuild (manual Sync ERP)."""
+    return api_pp_staging_sync()
 
 
 # ── API: one-shot fix — update vw_pp_vouchers join + resync ──────────────
@@ -782,25 +769,10 @@ def api_so_detail_sync():
 @app.post("/api/pp-staging/sync")
 def api_pp_staging_sync():
     """Run PP staging syncs then rebuild the pp_vouchers_cache."""
-    from sync import (
-        run_pp_voucher_sync, run_process_sheet_sync, run_workorder_status_sync,
-        run_part_desc_sync, run_pp_partial_sync, run_mfg_wo_status_sync,
-        run_qty_shipped_sync, run_so_detail_sync, run_sync,
-    )
+    from sync import run_full_pp_staging_sync
     try:
         _ensure_pp_staging_schema()
-        results = {
-            "schema":                {"updated": True},
-            "pp_voucher":            run_pp_voucher_sync(force=True),
-            "mfg_process_sheet_info": run_process_sheet_sync(force=True),
-            "workorder_status":      run_workorder_status_sync(force=True),
-            "qty_shipped":           run_qty_shipped_sync(force=True),
-            "so_detail":             run_so_detail_sync(force=True),
-            "part_desc":             run_part_desc_sync(force=True),
-            "pp_partial":            run_pp_partial_sync(force=True),
-            "mfg_wo_status":         run_mfg_wo_status_sync(force=True),
-            "pp_vouchers_cache":     run_sync(force=True),
-        }
+        results = {"schema": {"updated": True}, **run_full_pp_staging_sync(force=True)}
         _invalidate_pp_vouchers_with_ops_cache()
         return jsonify(results)
     except Exception as e:

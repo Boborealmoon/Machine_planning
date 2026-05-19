@@ -38,7 +38,16 @@ async function syncErpPpVouchers() {
     if (!res.ok) {
       throw new Error(data.error || res.statusText || "ERP sync failed");
     }
-    if (btn) btn.textContent = "Synced ✓";
+    const cache = data.pp_vouchers_cache || {};
+    const staged = data.pp_voucher || {};
+    if (btn && cache.row_count != null) {
+      btn.textContent = `Synced (${cache.row_count}) ✓`;
+    } else if (btn) {
+      btn.textContent = "Synced ✓";
+    }
+    if (staged.skipped) {
+      console.warn("pp_voucher staging skipped:", staged.reason);
+    }
     window.dispatchEvent(new CustomEvent("pp-vouchers-synced", { detail: data }));
     window.setTimeout(() => {
       if (btn) btn.textContent = defaultLabel;

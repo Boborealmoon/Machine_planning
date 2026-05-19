@@ -16,37 +16,16 @@ os.environ.setdefault("WERKZEUG_RUN_MAIN", "false")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import app, _ensure_pp_staging_schema, _invalidate_pp_vouchers_with_ops_cache
-from sync import (
-    run_pp_voucher_sync,
-    run_process_sheet_sync,
-    run_workorder_status_sync,
-    run_part_desc_sync,
-    run_pp_partial_sync,
-    run_mfg_wo_status_sync,
-    run_qty_shipped_sync,
-    run_so_detail_sync,
-    run_sync,
-)
+from sync import run_full_pp_staging_sync
 from db import planner_get_conn, planner_release_conn
 
 
 def main():
     with app.app_context():
         _ensure_pp_staging_schema()
-        steps = [
-            ("pp_voucher", run_pp_voucher_sync),
-            ("mfg_process_sheet_info", run_process_sheet_sync),
-            ("workorder_status", run_workorder_status_sync),
-            ("qty_shipped", run_qty_shipped_sync),
-            ("so_detail", run_so_detail_sync),
-            ("part_desc", run_part_desc_sync),
-            ("pp_partial", run_pp_partial_sync),
-            ("mfg_wo_status", run_mfg_wo_status_sync),
-            ("pp_vouchers_cache", run_sync),
-        ]
-        for name, fn in steps:
+        results = run_full_pp_staging_sync(force=True)
+        for name, result in results.items():
             print(f"--- {name} ---", flush=True)
-            result = fn(force=True)
             print(result, flush=True)
             if result.get("skipped"):
                 print(f"WARNING: {name} was skipped: {result.get('reason')}", flush=True)

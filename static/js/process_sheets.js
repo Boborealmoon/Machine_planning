@@ -248,6 +248,19 @@
     ].join(' ').toLowerCase();
   }
 
+  function parseSearchTerms(raw) {
+    return String(raw || '')
+      .split(/[,;]+/)
+      .map(term => term.trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  function matchesSearchTerms(item, terms) {
+    if (!terms.length) return true;
+    const haystack = itemSearchText(item);
+    return terms.some(term => haystack.includes(term));
+  }
+
   function normalizePlannerItem(item) {
     const shippedComplete = boolValue(item.shipped_completed) || isShippedComplete(item);
     return {
@@ -379,7 +392,7 @@
   }
 
   function filteredItems() {
-    const search = String(els.search?.value || '').trim().toLowerCase();
+    const searchTerms = parseSearchTerms(els.search?.value);
     const planner = normalizeStatus(els.plannerFilter?.value || '');
     const material = String(els.materialFilter?.value || '').trim();
     const overdueOnly = Boolean(els.overdueOnly?.checked);
@@ -393,13 +406,13 @@
     const allTypesOn = checkedTypes.size === 5;
 
     return state.items.filter(item => {
-      if (hideDirectPp && !completedOnly && !search && isDirectPp(item)) return false;
-      if (hideSrTags && !completedOnly && !search && isSrTagged(item)) return false;
+      if (hideDirectPp && !completedOnly && !searchTerms.length && isDirectPp(item)) return false;
+      if (hideSrTags && !completedOnly && !searchTerms.length && isSrTagged(item)) return false;
       if (!allTypesOn) {
         const t = getPsType(item);
         if (t && !checkedTypes.has(t)) return false;
       }
-      if (search && !itemSearchText(item).includes(search)) return false;
+      if (!matchesSearchTerms(item, searchTerms)) return false;
       if (planner && normalizeStatus(item.planner_status) !== planner) return false;
       if (material === 'shortage' && !isMaterialShortage(item)) return false;
       if (overdueOnly && !isOverdue(item)) return false;
