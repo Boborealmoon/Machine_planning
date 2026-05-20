@@ -20,7 +20,7 @@ from planning.flows import flows_bp, trial_prefixed_flows_bp
 from planning.gantt_route import trial_gantt_bp
 from planning.materials_route import materials_route_bp
 from planning.planner_routes import trial_bp
-from planning.utils import shipped_quantity_completed
+from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
 app.register_blueprint(trial_summary_bp)
@@ -429,6 +429,7 @@ def _pp_vouchers_with_ops_payload(cache_rows):
         )
         entry["is_completed"] = entry["shipped_completed"]
         entry["execution_completed"] = entry["shipped_completed"]
+        entry["pending_do"] = pending_delivery_order(entry)
         bom_code = str(entry.get("bom_code") or "").strip()
         entry["erp_bom_code"] = bom_code
         entry["inventory_code"] = str(entry.get("inventory_code") or entry.get("part_no") or "").strip()

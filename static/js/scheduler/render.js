@@ -643,6 +643,7 @@ function trialCatalogPsSummaryHtml(ps) {
       <div class="trial-catalog-ps-id">${escapeHtml(basePsId)}</div>
       ${partialText ? `<div class="trial-catalog-ps-partial">${escapeHtml(partialText)}</div>` : ''}
       ${stageBadge}
+      ${trialPendingDoBadgeHtml(ps)}
       ${trialOpStatusHtml(execStatus, { compact: true })}
     </div>
     <div class="trial-catalog-ps-right">
@@ -664,6 +665,44 @@ function trialPsShippedComplete(ps) {
   if (soQty === null || soQty === undefined || soQty === '') return false;
   const shipped = Number(ps?.qty_shipped || 0);
   return shipped >= Number(soQty) - 0.0001;
+}
+
+function trialPsHasComparableSoQty(ps) {
+  const soQty = ps?.so_det_qty;
+  if (soQty === null || soQty === undefined || soQty === '') return false;
+  return Number(soQty) > 0.0001;
+}
+
+function trialPsProductionComplete(ps) {
+  const cards = (ps?.op_cards && ps.op_cards.length) ? ps.op_cards : (ps?.ops || []);
+  if (!cards.length) {
+    const exec = trialNormalizeExecStatus(trialPsRollupExecStatus(ps));
+    return exec === 'C' || exec === 'COMPLETED';
+  }
+  return cards.every(card => {
+    const remaining = Number(card?.remaining_qty ?? card?.target_qty ?? 0);
+    const exec = trialNormalizeExecStatus(trialCatalogOpExecStatus(card));
+    return (exec === 'C' || exec === 'COMPLETED') && remaining <= 0.0001;
+  });
+}
+
+/** Production done on all stages; SO line not fully shipped yet. */
+function trialPsPendingDo(ps) {
+  if (ps && Object.prototype.hasOwnProperty.call(ps, 'pending_do')) {
+    return Boolean(ps.pending_do);
+  }
+  if (!trialPsHasComparableSoQty(ps) || trialPsShippedComplete(ps)) return false;
+  return trialPsProductionComplete(ps);
+}
+
+function trialPendingDoBadgeHtml(ps) {
+  if (!trialPsPendingDo(ps)) return '';
+  const shipped = Number(ps?.qty_shipped || 0);
+  const soQty = Number(ps?.so_det_qty || 0);
+  const title = soQty > 0
+    ? `All stages completed · Shipped ${shipped} / SO ${soQty}`
+    : 'All stages completed · awaiting full SO shipment';
+  return `<span class="ps-pending-do-badge" title="${escapeHtml(title)}">Pending DO</span>`;
 }
 
 function trialPsCatalogExecStatus(ps) {

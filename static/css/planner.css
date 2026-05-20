@@ -350,8 +350,19 @@
     margin-top: 0;
   }
   .trial-catalog-ps-main .ps-op-status,
-  .trial-catalog-ps-main .ps-stage-badge {
+  .trial-catalog-ps-main .ps-stage-badge,
+  .trial-catalog-ps-main .ps-pending-do-badge {
     margin-top: 4px;
+  }
+  .ps-pending-do-badge {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #fff7ed;
+    color: #c2410c;
+    font-size: 10px;
+    font-weight: 800;
+    border: 1px solid #fed7aa;
+    white-space: nowrap;
   }
   .trial-catalog-actions {
     display: flex;

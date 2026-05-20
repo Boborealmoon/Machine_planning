@@ -131,6 +131,37 @@ def date_text(d):
     return str(d)
 
 
+def execution_status_is_completed(value):
+    norm = compact_text(value).upper().replace(" ", "_").replace("-", "_")
+    return norm in {"C", "COMPLETED"}
+
+
+def pending_delivery_order(entry):
+    """All ERP stages done but SO qty not fully shipped (qty_shipped < so_det_qty)."""
+    so_qty = entry.get("so_det_qty")
+    if so_qty is None:
+        return False
+    try:
+        if float(so_qty) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if shipped_quantity_completed(so_qty, entry.get("qty_shipped")):
+        return False
+
+    ops = entry.get("ops") or entry.get("op_cards") or []
+    if ops:
+        for op in ops:
+            if not execution_status_is_completed(op.get("execution_status")):
+                return False
+            if parse_number(op.get("remaining_qty"), 0) > SHIPPED_QTY_TOLERANCE:
+                return False
+        return True
+
+    header = entry.get("current_stage_status") or entry.get("execution_status") or ""
+    return execution_status_is_completed(header)
+
+
 def trial_catalog_op_key(source_ps_id, source_op_no="", source_op_seq_id=0):
     """Unique key for a catalog operation entry — used to correlate planned qty."""
     ps_key = compact_text(source_ps_id)
