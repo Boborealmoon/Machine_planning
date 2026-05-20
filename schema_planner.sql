@@ -44,6 +44,51 @@ CREATE TABLE IF NOT EXISTS public.planner_machines (
     UNIQUE (machine_no)
 );
 
+-- Master cycle / setup minutes (planner-owned; part_no = inventory_code).
+-- Row key = id (serial). Many bom_code rows per part_no allowed.
+-- See also: migrations/create_planner_cycle_time_master.sql
+CREATE TABLE IF NOT EXISTS public.planner_cycle_time_master (
+    id                 BIGSERIAL    PRIMARY KEY,
+    bom_code           TEXT         NOT NULL DEFAULT '',
+    part_no            TEXT         NOT NULL,
+    part_description   TEXT         NOT NULL DEFAULT '',
+    stage_no           INTEGER      NOT NULL,
+    stage_name         TEXT         NOT NULL DEFAULT '',
+    op_no              INTEGER,
+    op_type            TEXT         NOT NULL DEFAULT '',
+    program_no         TEXT         NOT NULL DEFAULT '',
+    program_file       TEXT         NOT NULL DEFAULT '',
+    tool_list_file     TEXT         NOT NULL DEFAULT '',
+    cycle_time         NUMERIC      NOT NULL DEFAULT 0,
+    set_up_time        NUMERIC      NOT NULL DEFAULT 0,
+    created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_planner_ctm_part
+    ON public.planner_cycle_time_master (part_no);
+
+CREATE INDEX IF NOT EXISTS idx_planner_ctm_bom
+    ON public.planner_cycle_time_master (bom_code);
+
+CREATE INDEX IF NOT EXISTS idx_planner_ctm_stage_no
+    ON public.planner_cycle_time_master (stage_no);
+
+CREATE INDEX IF NOT EXISTS idx_planner_ctm_stage_name
+    ON public.planner_cycle_time_master (stage_name);
+
+CREATE INDEX IF NOT EXISTS idx_planner_ctm_program_no
+    ON public.planner_cycle_time_master (program_no);
+
+CREATE INDEX IF NOT EXISTS idx_planner_ctm_program_file
+    ON public.planner_cycle_time_master (program_file);
+
+CREATE INDEX IF NOT EXISTS idx_planner_ctm_tool_list_file
+    ON public.planner_cycle_time_master (tool_list_file);
+
+CREATE INDEX IF NOT EXISTS idx_planner_ctm_part_bom
+    ON public.planner_cycle_time_master (part_no, bom_code);
+
 -- Shift capacity profiles (replaces hard-coded CAPACITY_PROFILES in constants.py).
 -- Seed rows are inserted at the bottom of this file.
 CREATE TABLE IF NOT EXISTS public.planner_capacity_profile (

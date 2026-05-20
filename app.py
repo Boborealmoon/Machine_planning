@@ -130,6 +130,11 @@ def materials():
     return render_template("planning_data/materials.html", active="planning_data")
 
 
+@app.get("/planning-data/cycle-times")
+def cycle_times_page():
+    return render_template("planning_data/cycle_times.html", active="planning_data")
+
+
 @app.get("/operations")
 def operations():
     return render_template("operations.html", active="operations")
@@ -1529,6 +1534,154 @@ def api_planner_machines_update(machine_id):
 def api_planner_machines_delete(machine_id):
     try:
         _supa_delete("planner_machines", {"machine_id": f"eq.{machine_id}"})
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: Planner — Master cycle times (Supabase) ─────────────────────────────
+
+_CT_MASTER_SELECT = (
+    "id,bom_code,part_no,part_description,stage_no,stage_name,op_no,op_type,"
+    "program_no,program_file,tool_list_file,cycle_time,set_up_time,updated_at"
+)
+
+
+def _non_negative_number(value, default=0.0):
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+@app.get("/api/planner/cycle-times")
+def api_planner_cycle_times_list():
+    try:
+        rows = _supa_get(
+            "planner_cycle_time_master",
+            {
+                "select": _CT_MASTER_SELECT,
+                "order": "id",
+            },
+        )
+        return jsonify({"rows": rows or []})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/planner/cycle-times")
+def api_planner_cycle_times_create():
+    data = request.get_json(silent=True) or {}
+    bom_code = (data.get("bom_code") or "").strip()
+    part_no = (data.get("part_no") or "").strip()
+    part_description = (data.get("part_description") or "").strip()
+    stage_name = (data.get("stage_name") or "").strip()
+    op_type = (data.get("op_type") or "").strip()
+    program_no = (data.get("program_no") or "").strip()
+    program_file = (data.get("program_file") or "").strip()
+    tool_list_file = (data.get("tool_list_file") or "").strip()
+
+    if not part_no:
+        return jsonify({"error": "part_no (inventory code) is required"}), 400
+
+    try:
+        stage_no = int(data.get("stage_no"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "stage_no must be an integer"}), 400
+
+    op_raw = data.get("op_no")
+    op_no = None
+    if op_raw is not None and str(op_raw).strip() != "":
+        try:
+            op_no = int(op_raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "op_no must be an integer when provided"}), 400
+
+    payload = {
+        "bom_code": bom_code,
+        "part_no": part_no,
+        "part_description": part_description,
+        "stage_no": stage_no,
+        "stage_name": stage_name,
+        "op_no": op_no,
+        "op_type": op_type,
+        "program_no": program_no,
+        "program_file": program_file,
+        "tool_list_file": tool_list_file,
+        "cycle_time": _non_negative_number(data.get("cycle_time"), 0),
+        "set_up_time": _non_negative_number(data.get("set_up_time"), 0),
+    }
+
+    try:
+        result = _supa_post("planner_cycle_time_master", payload)
+        return jsonify(result[0] if isinstance(result, list) else result), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.patch("/api/planner/cycle-times/<int:row_id>")
+def api_planner_cycle_times_update(row_id):
+    data = request.get_json(silent=True) or {}
+    payload = {}
+
+    if "bom_code" in data:
+        payload["bom_code"] = (data.get("bom_code") or "").strip()
+    if "part_no" in data:
+        v = (data["part_no"] or "").strip()
+        if not v:
+            return jsonify({"error": "part_no cannot be empty"}), 400
+        payload["part_no"] = v
+    if "part_description" in data:
+        payload["part_description"] = (data["part_description"] or "").strip()
+    if "op_type" in data:
+        payload["op_type"] = (data["op_type"] or "").strip()
+    if "stage_no" in data:
+        try:
+            payload["stage_no"] = int(data["stage_no"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "stage_no must be an integer"}), 400
+    if "stage_name" in data:
+        payload["stage_name"] = (data.get("stage_name") or "").strip()
+    if "op_no" in data:
+        raw = data["op_no"]
+        if raw is None or str(raw).strip() == "":
+            payload["op_no"] = None
+        else:
+            try:
+                payload["op_no"] = int(raw)
+            except (TypeError, ValueError):
+                return jsonify({"error": "op_no must be an integer when provided"}), 400
+    if "cycle_time" in data:
+        payload["cycle_time"] = _non_negative_number(data.get("cycle_time"), 0)
+    if "set_up_time" in data:
+        payload["set_up_time"] = _non_negative_number(data.get("set_up_time"), 0)
+    if "program_no" in data:
+        payload["program_no"] = (data.get("program_no") or "").strip()
+    if "program_file" in data:
+        payload["program_file"] = (data.get("program_file") or "").strip()
+    if "tool_list_file" in data:
+        payload["tool_list_file"] = (data.get("tool_list_file") or "").strip()
+
+    if not payload:
+        return jsonify({"error": "No fields to update"}), 400
+
+    payload["updated_at"] = "now()"
+
+    try:
+        result = _supa_patch(
+            "planner_cycle_time_master",
+            {"id": f"eq.{row_id}"},
+            payload,
+        )
+        return jsonify(result[0] if isinstance(result, list) else result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.delete("/api/planner/cycle-times/<int:row_id>")
+def api_planner_cycle_times_delete(row_id):
+    try:
+        _supa_delete("planner_cycle_time_master", {"id": f"eq.{row_id}"})
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

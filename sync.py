@@ -12,9 +12,17 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 
 import requests
+from dotenv import load_dotenv
 from datetime import datetime, timezone
+
+# Load .env before reading SUPA_DB_URL / PLANNER_INSERT_PAGE_SIZE etc. Scripts that import
+# ``sync`` without importing ``db`` first (e.g. ``python -c "from sync import ..."``) would
+# otherwise see an empty SUPA_DB_URL even when it is set in `.env`.
+load_dotenv(Path(__file__).resolve().parent / ".env")
+load_dotenv()
 
 log = logging.getLogger(__name__)
 

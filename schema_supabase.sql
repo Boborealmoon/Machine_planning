@@ -464,3 +464,8 @@ CREATE INDEX idx_ptl_programmer ON planner_program_tools(programmer_name);
 --
 -- TABLE: public.stg_cycle_time_comparison (refreshed asynchronously after BOM / tool-list sync when SUPA_DB_URL is set).
 -- Grain: bom_op_stage; columns include erp_cycle_time, gs_cycle_time, gs_match_method, cache_built_at.
+
+-- Planner-maintained master cycle/setup times (Supabase): public.planner_cycle_time_master
+-- Primary key: id (serial). Columns include bom_code, part_no (inventory_code), part_description,
+-- stage_no, stage_name, op_no, op_type, program_no, program_file, tool_list_file, cycle_time, set_up_time.
+-- Create: migrations/create_planner_cycle_time_master.sql; upgrade v1: alter_planner_cycle_time_master_serial_and_programs.sql
