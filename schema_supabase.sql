@@ -361,6 +361,7 @@ current_execution_stage AS (
             WHEN 'P' THEN 2
             ELSE 3
         END,
+        COALESCE(total_acc_qty_produced, 0) DESC,
         stage_no ASC
 ),
 with_wo_status AS (

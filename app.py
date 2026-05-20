@@ -528,7 +528,8 @@ with_desc AS (
     LEFT JOIN public.part_desc pd ON wp.final_inventory_code = pd.inventory_code
 ),
 current_execution_stage AS (
-    -- First open stage in route order (not the last). Prefer In Process over Ready/Pending.
+    -- Active stage: prefer In Process with the most output (skips stale admin stages
+    -- like Stock Issue that stay I while Turning is running). Else first open stage.
     SELECT DISTINCT ON (source_mps_no, pp_partial_no)
         source_mps_no,
         pp_partial_no,
@@ -547,6 +548,7 @@ current_execution_stage AS (
             WHEN 'P' THEN 2
             ELSE 3
         END,
+        COALESCE(total_acc_qty_produced, 0) DESC,
         stage_no ASC
 ),
 with_wo_status AS (
