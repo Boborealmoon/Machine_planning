@@ -155,15 +155,37 @@ _PP_VOUCHERS_COLS = [
     "current_stage_no", "current_stage_desc", "current_stage_status",
 ]
 
-_PP_VOUCHERS_WITH_OPS_CACHE = {"expires_at": 0.0, "data": None}
+_PP_VOUCHERS_WITH_OPS_CACHE: dict[str, dict] = {}
 _PP_VOUCHERS_WITH_OPS_CACHE_LOCK = threading.Lock()
-_PP_VOUCHERS_WITH_OPS_TTL_SECS = 30
+_PP_VOUCHERS_WITH_OPS_TTL_SECS = 60
+
+
+def _pp_vouchers_include_history() -> bool:
+    flag = str(
+        request.args.get("include_history")
+        or request.args.get("show_completed")
+        or ""
+    ).lower()
+    return flag in {"1", "true", "yes"}
+
+
+def _pp_vouchers_cache_scope(include_history: bool) -> str:
+    return "all" if include_history else "active"
+
+
+def _fetch_pp_vouchers_cache_rows(include_history: bool):
+    from planning.helpers import planner_db, rows as _db_rows
+
+    cols = ", ".join(_PP_VOUCHERS_COLS)
+    where = "" if include_history else " WHERE COALESCE(status, '') <> 'History'"
+    order = " ORDER BY ps_id, pp_partial_no, stage_no"
+    with planner_db() as _con:
+        return _db_rows(_con.execute(f"SELECT {cols} FROM pp_vouchers_cache{where}{order}"))
 
 
 def _invalidate_pp_vouchers_with_ops_cache():
     with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-        _PP_VOUCHERS_WITH_OPS_CACHE["expires_at"] = 0.0
-        _PP_VOUCHERS_WITH_OPS_CACHE["data"] = None
+        _PP_VOUCHERS_WITH_OPS_CACHE.clear()
 
 
 def _normalize_execution_status(value):
@@ -336,12 +358,15 @@ def api_pp_vouchers():
 def api_pp_vouchers_with_ops():
     """PP vouchers from cache, grouped by PS, with op cards built from stage columns."""
     from sync import is_sync_needed
+    include_history = _pp_vouchers_include_history()
+    scope = _pp_vouchers_cache_scope(include_history)
     try:
         refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
         now = time.monotonic()
         with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-            cached_data = _PP_VOUCHERS_WITH_OPS_CACHE.get("data")
-            if not refresh and cached_data is not None and now < float(_PP_VOUCHERS_WITH_OPS_CACHE.get("expires_at") or 0):
+            bucket = _PP_VOUCHERS_WITH_OPS_CACHE.get(scope) or {}
+            cached_data = bucket.get("data")
+            if not refresh and cached_data is not None and now < float(bucket.get("expires_at") or 0):
                 return jsonify(cached_data)
 
         # Trigger sync in background — serve cached data immediately
@@ -366,33 +391,36 @@ def api_pp_vouchers_with_ops():
                     pass
             threading.Thread(target=_bg_sync, daemon=True).start()
 
-        # Fetch directly from Supabase PostgreSQL — much faster than going via REST
-        from planning.helpers import planner_db, rows as _db_rows
-        cols = ", ".join(_PP_VOUCHERS_COLS)
-        with planner_db() as _con:
-            cache_rows = _db_rows(_con.execute(
-                f"SELECT {cols} FROM pp_vouchers_cache ORDER BY ps_id, pp_partial_no, stage_no"
-            ))
-
+        cache_rows = _fetch_pp_vouchers_cache_rows(include_history)
         data = _pp_vouchers_with_ops_payload(cache_rows)
         with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-            _PP_VOUCHERS_WITH_OPS_CACHE["data"] = data
-            _PP_VOUCHERS_WITH_OPS_CACHE["expires_at"] = time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS
+            _PP_VOUCHERS_WITH_OPS_CACHE[scope] = {
+                "data": data,
+                "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
+            }
         return jsonify(data)
     except Exception as e:
         # Fall back to REST if direct DB query fails
         try:
             from db import supa_url, supa_headers
             from sync import _supa_fetch_all
+            params = {
+                "select": ",".join(_PP_VOUCHERS_COLS),
+                "order": "ps_id,pp_partial_no,stage_no",
+            }
+            if not include_history:
+                params["status"] = "neq.History"
             cache_rows = _supa_fetch_all(
                 f"{supa_url()}/pp_vouchers_cache",
                 headers=supa_headers(write=True),
-                params={"select": ",".join(_PP_VOUCHERS_COLS), "order": "ps_id,pp_partial_no,stage_no"},
+                params=params,
             )
             data = _pp_vouchers_with_ops_payload(cache_rows)
             with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-                _PP_VOUCHERS_WITH_OPS_CACHE["data"] = data
-                _PP_VOUCHERS_WITH_OPS_CACHE["expires_at"] = time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS
+                _PP_VOUCHERS_WITH_OPS_CACHE[scope] = {
+                    "data": data,
+                    "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
+                }
             return jsonify(data)
         except Exception as e2:
             return jsonify({"error": str(e2)}), 500
@@ -1333,15 +1361,16 @@ def api_ptl_data():
 def api_ptl_sync_to_supabase():
     try:
         from tool_list_db import init_db, fetch_all
-        import requests as req
-        from db import supa_url, supa_headers
+        from planner_program_tools_sync import (
+            build_planner_program_tools_payload,
+            push_planner_program_tools_to_supabase,
+        )
 
         init_db()
         rows = fetch_all()
         if not rows:
             return jsonify({"synced": 0, "message": "No rows in tool list"})
 
-        # Enrich part_no_erp
         part_no_erp_map = {}
         ps_nos = list({r.get("ps_no") for r in rows if r.get("ps_no")})
         if ps_nos:
@@ -1355,7 +1384,6 @@ def api_ptl_sync_to_supabase():
             except Exception:
                 pass
 
-        # Enrich wo_machine
         actual_machine_map = {}
         part_no_erp_list = list(set(part_no_erp_map.values()))
         if part_no_erp_list:
@@ -1387,50 +1415,16 @@ def api_ptl_sync_to_supabase():
             except Exception:
                 pass
 
-        # Build payload (your 6 fields + operation_no)
-        payload = []
-        for r in rows:
-            ps_no = r.get("ps_no") or ""
-            part_no_erp = (part_no_erp_map.get(ps_no) or "").strip()
-            cnc_machine = (r.get("cnc_machine_no") or "").strip()
-            op_no = (r.get("operation_no") or r.get("operation_no_2") or "").strip()
-            op_type = (r.get("operation_type") or "").strip()
-            stage = f"{op_type} {op_no}".strip() if op_no else op_type
-            wo_machine = (actual_machine_map.get((part_no_erp, stage)) or "").strip()
-            program_file = (r.get("program_file") or "").strip()
-            tool_list_files = (r.get("tool_list_files") or "").strip()
-            programmer_name = (r.get("programmer_name") or "").strip()
-
-            # Skip completely empty rows
-            if not any([program_file, tool_list_files, part_no_erp, programmer_name, cnc_machine, wo_machine, op_no]):
-                continue
-
-            payload.append({
-                "ps_no": ps_no,
-                "program_file": program_file,
-                "tool_list_files": tool_list_files,
-                "part_no_erp": part_no_erp,
-                "programmer_name": programmer_name,
-                "cnc_machine_no": cnc_machine,
-                "wo_machine": wo_machine,
-                "operation_no": op_no,
-            })
-
+        payload = build_planner_program_tools_payload(
+            rows,
+            part_no_erp_map=part_no_erp_map,
+            actual_machine_map=actual_machine_map,
+        )
         if not payload:
             return jsonify({"synced": 0, "message": "No valid rows to sync"})
 
-        # DELETE all + INSERT fresh (no conflicts)
-        hdrs = supa_headers(write=True)
-        req.delete(f"{supa_url()}/planner_program_tools", headers=hdrs, params={"id": "gt.0"}, timeout=30)
-        
-        # Batch insert (Supabase limit: 1000 rows/request)
-        BATCH_SIZE = 1000
-        for i in range(0, len(payload), BATCH_SIZE):
-            batch = payload[i:i+BATCH_SIZE]
-            r = req.post(f"{supa_url()}/planner_program_tools", headers={**hdrs, "Prefer": "return=representation"}, json=batch, timeout=60)
-            r.raise_for_status()
-        
-        return jsonify({"synced": len(payload)})
+        result = push_planner_program_tools_to_supabase(payload)
+        return jsonify(result)
 
     except Exception as e:
         import traceback, sys

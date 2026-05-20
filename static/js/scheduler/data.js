@@ -104,16 +104,6 @@ function trialFindBlockForCatalogOp(card) {
   )) || null;
 }
 
-function trialDateStart(dateText) {
-  if (!dateText) return null;
-  return new Date(`${dateText}T00:00:00`);
-}
-
-function trialDateEnd(dateText) {
-  if (!dateText) return null;
-  return new Date(`${dateText}T23:59:59`);
-}
-
 function trialParseDateTime(value) {
   if (!value) return null;
   const text = String(value).replace(' ', 'T');
@@ -126,51 +116,27 @@ function trialLocalDateText(value) {
   return dt ? trialDateText(dt) : '';
 }
 
-function trialDateRangesOverlap(itemStart, itemEnd, filterStart, filterEnd) {
-  // Queued blocks without calculated times should always stay visible on the board.
-  if (!itemStart && !itemEnd) return true;
-
-  const startDay = trialLocalDateText(itemStart || itemEnd);
-  const endDay = trialLocalDateText(itemEnd || itemStart);
-  const filterStartDay = filterStart ? trialDateText(filterStart) : '';
-  const filterEndDay = filterEnd ? trialDateText(filterEnd) : '';
-
-  if (filterStartDay && endDay && endDay < filterStartDay) return false;
-  if (filterEndDay && startDay && startDay > filterEndDay) return false;
-  return true;
+function trialGroupQueuedDay(group) {
+  const leader = group.leader || (group.blocks || [])[0];
+  const queuedAt = trialParseDateTime(
+    group.visual_start_datetime || group.group_start ||
+    leader?.visual_start_datetime || leader?.calculated_start_datetime ||
+    leader?.anchor_datetime
+  );
+  return trialLocalDateText(queuedAt);
 }
 
 function trialGroupRunsInsideDateFilter(group) {
-  const filterStart = trialDateStart(trialScheduleDateFilter.start);
-  const filterEnd = trialDateEnd(trialScheduleDateFilter.end);
-  if (!filterStart && !filterEnd) return true;
+  const filterStartDay = String(trialScheduleDateFilter.start || '').trim();
+  const filterEndDay = String(trialScheduleDateFilter.end || '').trim();
+  if (!filterStartDay && !filterEndDay) return true;
 
-  const leader = group.leader || (group.blocks || [])[0];
-  const groupStart = trialParseDateTime(
-    group.visual_start_datetime || group.group_start ||
-    leader?.visual_start_datetime || leader?.calculated_start_datetime
-  );
-  const groupEnd = trialParseDateTime(
-    group.visual_end_datetime || group.group_end ||
-    leader?.visual_end_datetime || leader?.calculated_end_datetime
-  );
-  if (!groupStart && !groupEnd) return true;
+  const queuedDay = trialGroupQueuedDay(group);
+  if (!queuedDay) return false;
 
-  const blockIds = (group.blocks || []).map(b => String(b.block_id || '')).filter(Boolean);
-  const groupSegments = (trialState.segments || []).filter(seg =>
-    blockIds.includes(String(seg.block_id || ''))
-  );
-
-  if (groupSegments.length) {
-    const matchedBySegments = groupSegments.some(seg => {
-      const segStart = trialParseDateTime(seg.start_datetime);
-      const segEnd = trialParseDateTime(seg.end_datetime);
-      return trialDateRangesOverlap(segStart, segEnd, filterStart, filterEnd);
-    });
-    if (matchedBySegments) return true;
-  }
-
-  return trialDateRangesOverlap(groupStart, groupEnd, filterStart, filterEnd);
+  if (filterStartDay && queuedDay < filterStartDay) return false;
+  if (filterEndDay && queuedDay > filterEndDay) return false;
+  return true;
 }
 
 function trialCapacityKey(machineId, workDate) {

@@ -20,6 +20,19 @@ log = logging.getLogger(__name__)
 
 SYNC_COOLDOWN_SECS = 300
 BATCH_SIZE = 500
+# Bulk insert page size for direct Postgres reload (execute_values).
+PLANNER_INSERT_PAGE_SIZE = int(os.getenv("PLANNER_INSERT_PAGE_SIZE", "5000"))
+
+# Process-sheet id prefixes included in vw_pp_vouchers (keep in sync with schema/migrations).
+PP_VOUCHER_PS_ID_PREFIXES = ("%MPS%", "%APS%", "%NPS%", "%PPS%", "%CPS%", "%[SR]%")
+
+
+def _pp_ps_id_prefix_sql(column: str) -> str:
+    return "(" + " OR ".join(f"{column} LIKE %s" for _ in PP_VOUCHER_PS_ID_PREFIXES) + ")"
+
+
+def _pp_ps_id_prefix_params() -> tuple:
+    return PP_VOUCHER_PS_ID_PREFIXES
 
 _last_sync_at: float = 0.0
 _sync_lock = threading.Lock()
@@ -109,6 +122,8 @@ def _planner_set_timeout(cur) -> None:
 
 def _planner_reload(table: str, columns: list, rows: list) -> int:
     """TRUNCATE live table and insert rows via SUPA_DB_URL."""
+    from psycopg2.extras import execute_values
+
     from db import planner_get_conn, planner_release_conn
 
     live = f"public.{table}"
@@ -119,10 +134,13 @@ def _planner_reload(table: str, columns: list, rows: list) -> int:
             cur.execute(f"TRUNCATE {live}")
             if rows:
                 col_list = ", ".join(columns)
-                placeholders = ", ".join(["%s"] * len(columns))
-                insert_sql = f"INSERT INTO {live} ({col_list}) VALUES ({placeholders})"
-                for i in range(0, len(rows), BATCH_SIZE):
-                    cur.executemany(insert_sql, rows[i : i + BATCH_SIZE])
+                insert_sql = f"INSERT INTO {live} ({col_list}) VALUES %s"
+                execute_values(
+                    cur,
+                    insert_sql,
+                    rows,
+                    page_size=PLANNER_INSERT_PAGE_SIZE,
+                )
             cur.execute(f"SELECT COUNT(*) FROM {live}")
             row_count = int(cur.fetchone()[0])
         conn.commit()
@@ -854,37 +872,14 @@ def run_pp_partial_sync(force: bool = False) -> dict:
 # ── mfg_wo_status ──────────────────────────────────────────────────────────
 # Reads mfg_wo_vch from COMAIN and aggregates execution_status per PP voucher.
 # Priority: I (In Process) > R (Ready to Start) > P (Pending SI) > C (Completed)
+#
+# Default sync is SCOPED to PP vouchers in mfg_pp_vch + ps_id prefixes used by
+# vw_pp_vouchers (drops unrelated MPS/WO rows). Set MFG_WO_STATUS_UNSCOPED=1 to
+# restore the legacy full-table pull. COMAIN indexes that help the source query:
+#   mfg_mps_vch (source_pp_no), mfg_wo_vch (voucher_no, stage_no),
+#   mfg_pp_partial (pp_voucher_no, partial_qty).
 
-_MFG_WO_STATUS_SQL = """
-WITH wo_rows AS (
-    SELECT
-        t2.source_pp_no                   AS source_mps_no,
-        COALESCE(pp.pp_partial_no, 1)     AS pp_partial_no,
-        t3.execution_status,
-        t3.wo_qty_required,
-        t3.total_acc_qty_produced,
-        t3.total_rej_qty_produced,
-        NULLIF(t2.stage_no::TEXT, '')::INTEGER AS stage_no,
-        t3.stage_desc,
-        t3.plan_start_date,
-        t3.plan_end_date,
-        t3.origin_rsd,
-        t2.origin_voucher_no
-    FROM mfg_mps_vch t2
-    JOIN mfg_wo_vch t3
-      ON t2.wo_voucher_no = t3.voucher_no
-     AND t2.stage_no = t3.stage_no
-    LEFT JOIN LATERAL (
-        SELECT p.pp_partial_no
-        FROM public.mfg_pp_partial p
-        WHERE p.pp_voucher_no = t2.source_pp_no
-          AND p.partial_qty = t3.wo_qty_required
-        ORDER BY p.pp_partial_no
-        LIMIT 1
-    ) pp ON TRUE
-    WHERE t2.source_pp_no IS NOT NULL
-      AND t2.stage_no IS NOT NULL
-)
+_MFG_WO_STATUS_AGG_SQL = """
 SELECT
     source_mps_no,
     pp_partial_no,
@@ -905,8 +900,85 @@ SELECT
     MAX(origin_voucher_no)            AS so_no
 FROM wo_rows
 GROUP BY source_mps_no, pp_partial_no, stage_no
-ORDER BY source_mps_no, pp_partial_no, stage_no
 """
+
+_MFG_WO_STATUS_WO_ROWS_CORE = """
+    SELECT
+        t2.source_pp_no                   AS source_mps_no,
+        COALESCE(pp.pp_partial_no, 1)     AS pp_partial_no,
+        t3.execution_status,
+        t3.wo_qty_required,
+        t3.total_acc_qty_produced,
+        t3.total_rej_qty_produced,
+        NULLIF(t2.stage_no::TEXT, '')::INTEGER AS stage_no,
+        t3.stage_desc,
+        t3.plan_start_date,
+        t3.plan_end_date,
+        t3.origin_rsd,
+        t2.origin_voucher_no
+    FROM mfg_mps_vch t2
+    JOIN mfg_wo_vch t3
+      ON t2.wo_voucher_no = t3.voucher_no
+     AND t2.stage_no = t3.stage_no
+    LEFT JOIN pp_partials pp
+      ON pp.pp_voucher_no = t2.source_pp_no
+     AND pp.partial_qty = t3.wo_qty_required
+    WHERE t2.source_pp_no IS NOT NULL
+      AND t2.stage_no IS NOT NULL
+"""
+
+
+def _mfg_wo_status_unscoped() -> bool:
+    return str(os.getenv("MFG_WO_STATUS_UNSCOPED", "")).lower() in {"1", "true", "yes"}
+
+
+def _build_mfg_wo_status_sql(scoped: bool) -> tuple[str, tuple]:
+    """Return (sql, params) for the COMAIN WO status extract."""
+    if scoped:
+        prefix_sql = _pp_ps_id_prefix_sql("t2.source_pp_no")
+        sql = f"""
+WITH pp_partials AS (
+    SELECT DISTINCT ON (pp_voucher_no, partial_qty)
+        pp_voucher_no,
+        partial_qty,
+        pp_partial_no
+    FROM public.mfg_pp_partial
+    WHERE pp_voucher_no IS NOT NULL
+    ORDER BY pp_voucher_no, partial_qty, pp_partial_no
+),
+pp_vouchers AS (
+    SELECT DISTINCT v.pp_voucher_no
+    FROM public.mfg_pp_vch v
+    WHERE v.pp_voucher_no IS NOT NULL
+),
+wo_rows AS (
+{_MFG_WO_STATUS_WO_ROWS_CORE}
+      AND EXISTS (
+            SELECT 1 FROM pp_vouchers pv WHERE pv.pp_voucher_no = t2.source_pp_no
+      )
+      AND {prefix_sql}
+)
+{_MFG_WO_STATUS_AGG_SQL}
+"""
+        return sql, _pp_ps_id_prefix_params()
+
+    sql = f"""
+WITH pp_partials AS (
+    SELECT DISTINCT ON (pp_voucher_no, partial_qty)
+        pp_voucher_no,
+        partial_qty,
+        pp_partial_no
+    FROM public.mfg_pp_partial
+    WHERE pp_voucher_no IS NOT NULL
+    ORDER BY pp_voucher_no, partial_qty, pp_partial_no
+),
+wo_rows AS (
+{_MFG_WO_STATUS_WO_ROWS_CORE}
+)
+{_MFG_WO_STATUS_AGG_SQL}
+"""
+    return sql, ()
+
 
 _MFG_WO_STATUS_COLS = [
     "source_mps_no",
@@ -936,31 +1008,44 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
     try:
         from db import get_conn, release_conn
 
+        scoped = not _mfg_wo_status_unscoped()
+        sql, params = _build_mfg_wo_status_sql(scoped)
         t0 = time.monotonic()
         src = get_conn()
         try:
             with src.cursor() as scur:
-                scur.execute(_MFG_WO_STATUS_SQL)
+                t_query = time.monotonic()
+                scur.execute(sql, params or None)
                 rows = scur.fetchall()
+                query_ms = int((time.monotonic() - t_query) * 1000)
         finally:
             release_conn(src)
 
+        t_reload = time.monotonic()
         reload_mode = _staging_reload(
             "mfg_wo_status", "_loaded_at", _MFG_WO_STATUS_COLS, rows
         )
+        reload_ms = int((time.monotonic() - t_reload) * 1000)
 
         _last_wo_status_sync_at = time.monotonic()
+        total_ms = int((time.monotonic() - t0) * 1000)
         log.info(
-            "mfg_wo_status sync complete (%s) - %d rows in %dms",
+            "mfg_wo_status sync complete (%s, scoped=%s) - %d rows query=%dms reload=%dms total=%dms",
             reload_mode,
+            scoped,
             len(rows),
-            int((time.monotonic() - t0) * 1000),
+            query_ms,
+            reload_ms,
+            total_ms,
         )
         return {
             "synced_at": datetime.now(timezone.utc).isoformat(),
-            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "duration_ms": total_ms,
+            "query_ms": query_ms,
+            "reload_ms": reload_ms,
             "row_count": len(rows),
             "reload": reload_mode,
+            "scoped": scoped,
         }
 
     finally:

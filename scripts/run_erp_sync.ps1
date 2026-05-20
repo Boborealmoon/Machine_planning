@@ -16,7 +16,8 @@ $RunDir = Join-Path $LogDir "erp-sync-runs"
 New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 
 $DayLog = Join-Path $LogDir ("erp-sync-{0:yyyy-MM-dd}.log" -f (Get-Date))
-$LatestLog = Join-Path $LogDir "erp-sync-latest.log"
+$LatestLog = Join-Path $LogDir "last_staging_sync.log"
+$LegacyLatestLog = Join-Path $LogDir "erp-sync-latest.log"
 $RunStamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $RunLog = Join-Path $RunDir "erp-sync-$RunStamp.log"
 $JsonLog = Join-Path $RunDir "erp-sync-$RunStamp.json"
@@ -39,14 +40,16 @@ if (-not $acquired) {
 function Update-LatestLog {
     param([string]$SourcePath)
     if (-not (Test-Path $SourcePath)) { return }
-    $tmp = "$LatestLog.$RunStamp.tmp"
-    try {
-        Copy-Item -Path $SourcePath -Destination $tmp -Force
-        if (Test-Path $LatestLog) { Remove-Item -Path $LatestLog -Force -ErrorAction SilentlyContinue }
-        Move-Item -Path $tmp -Destination $LatestLog -Force
-    } catch {
-        Write-Warning "Could not update erp-sync-latest.log (close it in your editor if open). Full log: $SourcePath"
-        if (Test-Path $tmp) { Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue }
+    foreach ($dest in @($LatestLog, $LegacyLatestLog)) {
+        $tmp = "$dest.$RunStamp.tmp"
+        try {
+            Copy-Item -Path $SourcePath -Destination $tmp -Force
+            if (Test-Path $dest) { Remove-Item -Path $dest -Force -ErrorAction SilentlyContinue }
+            Move-Item -Path $tmp -Destination $dest -Force
+        } catch {
+            Write-Warning "Could not update $dest (close it in your editor if open). Full log: $SourcePath"
+            if (Test-Path $tmp) { Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue }
+        }
     }
 }
 

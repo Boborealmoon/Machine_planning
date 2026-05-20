@@ -398,7 +398,9 @@ function renderTrialMachine(machine) {
   const allGroups = trialBlocksGroupedForMachine(machine.machine_id);
   const groups = allGroups.filter(trialGroupRunsInsideDateFilter);
   const laneId = `trial-lane-${machine.machine_id}`;
-  const availabilityEnd = trialMachineAvailabilityEnd(allGroups);
+  const availabilityEnd = trialMachineAvailabilityEnd(
+    trialHasActiveDateFilter() ? groups : allGroups
+  );
   const availabilityTag = allGroups.length > 1 && availabilityEnd
     ? `<span class="trial-machine-availability">Next available ${trialFormatDt(availabilityEnd)}</span>`
     : '';
@@ -532,7 +534,7 @@ function renderTrial() {
           ${renderTrialMachineCategoryFilter()}
           ${renderTrialScheduleDateFilter()}
         </div>
-        ${trialHasActiveDateFilter() ? `<div class="trial-board-filter-note">Date filter hides blocks outside the range. Drag block headers to reorder or move between machines.</div>` : ''}
+        ${trialHasActiveDateFilter() ? `<div class="trial-board-filter-note">Date filter shows blocks queued within the selected dates. Drag block headers to reorder or move between machines.</div>` : ''}
       </div>
     `;
   }
@@ -616,8 +618,18 @@ function renderTrialCatalog() {
     return;
   }
 
+  const allocatedOpKeys = trialAllocatedOpKeys();
+  const isOpAllocated = card => {
+    const psId = String(card?.source_ps_id || card?.ps_id || '').trim();
+    if (!psId || !allocatedOpKeys.size) return false;
+    const primary = trialCatalogAllocationKey(psId, card?.source_op_no, card?.source_op_seq_id);
+    if (primary && allocatedOpKeys.has(primary)) return true;
+    const labelKey = trialCatalogAllocationKey(psId, card?.operation_label, 0);
+    return Boolean(labelKey && allocatedOpKeys.has(labelKey));
+  };
+
   const catalogWithOpenOps = catalog.filter(ps =>
-    (ps.op_cards || []).some(card => !trialIsCatalogOpAllocated(card))
+    (ps.op_cards || []).some(card => !isOpAllocated(card))
   );
 
   const availableHtml = catalogWithOpenOps.map(ps => {
@@ -625,7 +637,7 @@ function renderTrialCatalog() {
     const basePsId = psIdParts[0] || ps.ps_id || '';
     const partialText = psIdParts[1] ? `Partial ${psIdParts[1]}` : '';
     const opCardsHtml = (ps.op_cards || [])
-      .filter(card => !trialIsCatalogOpAllocated(card))
+      .filter(card => !isOpAllocated(card))
       .map(card => renderTrialOpCardHtml({
         ...card,
         is_allocated: false,
@@ -654,7 +666,7 @@ function renderTrialCatalog() {
   }).join('');
 
   const plannedWithOpenOps = plannedCatalog.filter(ps =>
-    (ps.op_cards || []).some(card => !trialIsCatalogOpAllocated(card))
+    (ps.op_cards || []).some(card => !isOpAllocated(card))
   );
 
   const plannedHtml = plannedWithOpenOps.map(ps => `
@@ -676,7 +688,7 @@ function renderTrialCatalog() {
       </div>
       <div class="trial-catalog-oplist">
         ${(ps.op_cards || [])
-          .filter(card => !trialIsCatalogOpAllocated(card))
+          .filter(card => !isOpAllocated(card))
           .map(card => renderTrialOpCardHtml({
             ...card,
             is_allocated: false,

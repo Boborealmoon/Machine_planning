@@ -326,9 +326,25 @@ async function saveTrialOrder(lane, reload = true) {
   }
 }
 
-function toggleTrialCompletedCatalog() {
+async function toggleTrialCompletedCatalog() {
   trialShowCompleted = !trialShowCompleted;
   updateTrialCompletedButton();
+  const cacheKey = trialCatalogCacheKey();
+  trialLoadCache[cacheKey] = null;
+  trialLoadCache[`${cacheKey}ExpiresAt`] = 0;
+  const catalogRoot = document.getElementById('trial-catalog');
+  if (catalogRoot) {
+    catalogRoot.innerHTML = '<div class="trial-catalog-empty">Loading catalog...</div>';
+  }
+  try {
+    const erpVouchers = await GET(trialCatalogUrl());
+    trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
+    trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 60000;
+    trialState.catalog = trialLoadCache[cacheKey];
+  } catch (err) {
+    console.error('catalog reload failed:', err);
+    toast('Could not load completed history: ' + err.message, 'error');
+  }
   renderTrialCatalog();
 }
 

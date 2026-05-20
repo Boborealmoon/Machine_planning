@@ -39,15 +39,34 @@ async function DEL(url) {
   return res.json();
 }
 
+function trialCatalogUrl(refresh = false) {
+  const params = new URLSearchParams();
+  if (trialShowCompleted) params.set('include_history', '1');
+  if (refresh) params.set('refresh', '1');
+  const qs = params.toString();
+  return `/api/pp-vouchers/with-ops${qs ? `?${qs}` : ''}`;
+}
+
+function trialCatalogCacheKey() {
+  return trialShowCompleted ? 'catalogAll' : 'catalog';
+}
+
+function trialInvalidateCatalogCache() {
+  ['catalog', 'catalogAll'].forEach(key => {
+    trialLoadCache[key] = null;
+    trialLoadCache[`${key}ExpiresAt`] = 0;
+  });
+}
+
 async function syncPpVouchers() {
   try {
     await (window.syncErpPpVouchers ? window.syncErpPpVouchers() : POST('/api/pp-vouchers/sync', {}));
-    trialLoadCache.catalog = null;
-    trialLoadCache.catalogExpiresAt = 0;
-    const erpVouchers = await GET('/api/pp-vouchers/with-ops?refresh=1');
-    trialLoadCache.catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
-    trialLoadCache.catalogExpiresAt = Date.now() + 30000;
-    trialState.catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
+    trialInvalidateCatalogCache();
+    const erpVouchers = await GET(trialCatalogUrl(true));
+    const cacheKey = trialCatalogCacheKey();
+    trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
+    trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 60000;
+    trialState.catalog = trialLoadCache[cacheKey];
     renderTrialCatalog();
   } catch (err) {
     console.error('pp-vouchers sync failed:', err);
@@ -56,13 +75,13 @@ async function syncPpVouchers() {
 
 window.addEventListener('pp-vouchers-synced', () => {
   if (typeof renderTrialCatalog !== 'function') return;
-  trialLoadCache.catalog = null;
-  trialLoadCache.catalogExpiresAt = 0;
-  GET('/api/pp-vouchers/with-ops?refresh=1')
+  trialInvalidateCatalogCache();
+  GET(trialCatalogUrl(true))
     .then(erpVouchers => {
-      trialLoadCache.catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
-      trialLoadCache.catalogExpiresAt = Date.now() + 30000;
-      trialState.catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
+      const cacheKey = trialCatalogCacheKey();
+      trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
+      trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 60000;
+      trialState.catalog = trialLoadCache[cacheKey];
       renderTrialCatalog();
     })
     .catch(err => console.error('catalog refresh after ERP sync failed:', err));
@@ -159,6 +178,30 @@ async function trialCachedGET(cacheKey, ttlMs, url) {
   return data;
 }
 
+function trialApplySchedulePayload(scheduleData, machinesResult, programToolsLookup) {
+  const schedule = scheduleData || {};
+  const rawMachines = (schedule.machines && schedule.machines.length)
+    ? schedule.machines
+    : (machinesResult?.machines || []);
+  const machines = rawMachines
+    .filter(m => m.active !== false)
+    .map(m => ({ ...m, machine_code: m.machine_no || m.machine_code }));
+
+  trialState = {
+    ...trialState,
+    machines,
+    blocks: trialMergeBlocksWithSchedule(schedule.blocks || []),
+    block_groups: schedule.block_groups || [],
+    segments: schedule.segments || [],
+    actuals: schedule.actuals || [],
+    capacities: schedule.capacities || [],
+    profiles: schedule.profiles || [],
+    planned: schedule.planned || [],
+    planning_cards: schedule.planning_cards || [],
+    program_tools_lookup: programToolsLookup ?? trialState.program_tools_lookup ?? null,
+  };
+}
+
 async function loadTrial(options = {}) {
   const resolved = trialNormalizeScheduleDates(trialScheduleDateFilter.start, trialScheduleDateFilter.end);
   trialScheduleDateFilter = resolved;
@@ -171,58 +214,46 @@ async function loadTrial(options = {}) {
   if (trialScheduleDateFilter.end) params.set('end', trialScheduleDateFilter.end);
   const startParam = params.toString() ? `?${params.toString()}` : '';
 
-  let scheduleResult = null;
-  let scheduleError = null;
-  try {
-    scheduleResult = await GET(`/api/trial/schedule${startParam}`);
-  } catch (err) {
-    scheduleError = err;
-    console.error('Failed to load trial schedule:', err);
-  }
-
   if (force) {
-    trialLoadCache.catalog = null;
-    trialLoadCache.catalogExpiresAt = 0;
+    trialInvalidateCatalogCache();
     trialLoadCache.machines = null;
     trialLoadCache.machinesExpiresAt = 0;
   }
 
-  const [erpVouchers, machinesResult, programToolsLookup] = await Promise.all([
-    trialCachedGET('catalog', 30000, '/api/pp-vouchers/with-ops').catch(() => []),
-    trialCachedGET('machines', 300000, '/api/planner/machines').catch(() => ({ machines: [] })),
-    GET('/api/program-tool-list/lookup').catch(() => null),
-  ]);
+  const schedulePromise = GET(`/api/trial/schedule${startParam}`).catch(err => {
+    console.error('Failed to load trial schedule:', err);
+    return { error: err };
+  });
+  const catalogPromise = trialCachedGET(trialCatalogCacheKey(), 60000, trialCatalogUrl()).catch(() => []);
+  const machinesPromise = trialCachedGET('machines', 300000, '/api/planner/machines').catch(() => ({ machines: [] }));
+  const lookupPromise = GET('/api/program-tool-list/lookup').catch(() => null);
 
-  const scheduleData = scheduleResult || {};
+  const scheduleOutcome = await schedulePromise;
+  const scheduleError = scheduleOutcome?.error || null;
+  const scheduleData = scheduleError ? {} : (scheduleOutcome || {});
+
   if (scheduleError && !scheduleData.blocks?.length) {
     toast('Could not refresh machine queue: ' + scheduleError.message, 'error');
   }
 
-  // Prefer schedule machines (richer); fall back to /api/planner/machines
-  const rawMachines = (scheduleData.machines && scheduleData.machines.length)
-    ? scheduleData.machines
-    : (machinesResult.machines || []);
-  const machines = rawMachines
-    .filter(m => m.active !== false)
-    .map(m => ({ ...m, machine_code: m.machine_no || m.machine_code }));
-
-  // Available panel is sourced entirely from pp_vouchers_cache (ERP truth)
-  const catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
-
-  trialState = {
-    machines,
-    blocks:         trialMergeBlocksWithSchedule(scheduleData.blocks || []),
-    block_groups:   scheduleData.block_groups   || [],
-    segments:       scheduleData.segments       || [],
-    actuals:        scheduleData.actuals        || [],
-    capacities:     scheduleData.capacities     || [],
-    profiles:       scheduleData.profiles       || [],
-    catalog,
-    planned:        scheduleData.planned        || [],
-    planning_cards: scheduleData.planning_cards || [],
-    program_tools_lookup: programToolsLookup,
-  };
+  trialApplySchedulePayload(scheduleData, { machines: [] }, null);
   renderTrial();
+
+  const [erpVouchers, machinesResult, programToolsLookup] = await Promise.all([
+    catalogPromise,
+    machinesPromise,
+    lookupPromise,
+  ]);
+
+  if (!scheduleData.machines?.length && machinesResult?.machines?.length) {
+    trialApplySchedulePayload(scheduleData, machinesResult, programToolsLookup);
+    renderTrial();
+  } else {
+    trialState.program_tools_lookup = programToolsLookup;
+  }
+
+  trialState.catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
+  renderTrialCatalog();
 }
 
 // Lightweight refresh for a subset of machines after a mutation.
