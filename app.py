@@ -899,19 +899,29 @@ def api_pp_vouchers_cache_rebuild():
 @app.post("/api/pp-staging/sync")
 def api_pp_staging_sync():
     """Run PP staging syncs; optional ?steps= or JSON {\"steps\": [...]}."""
-    from db import domain_sync_likely_unreachable
+    from db import domain_db_endpoint, domain_sync_likely_unreachable, domain_sync_unreachable
     from sync import run_pp_staging_sync
     try:
         steps, force = _parse_pp_staging_sync_args()
         staging_only = [s for s in steps if s != "pp_vouchers_cache"]
-        if staging_only and domain_sync_likely_unreachable():
+        if staging_only and domain_sync_unreachable():
+            host, port = domain_db_endpoint()
+            hint = (
+                " Run ERP sync on a machine that can reach COMAIN "
+                "(scripts/run_pp_staging_sync.py), or use VPN/tunnel and point DB_HOST "
+                "at that endpoint."
+            )
+            if domain_sync_likely_unreachable():
+                hint = (
+                    " DB_HOST is on a private LAN; this server cannot open a TCP connection "
+                    "to it." + hint
+                )
+            else:
+                hint = f" Could not connect to {host}:{port}." + hint
             return jsonify({
-                "error": (
-                    "COMAIN (DB_HOST) is on a private network and cannot be reached from "
-                    "this server. Run ERP sync on your LAN (scripts/run_pp_staging_sync.py) "
-                    "or expose COMAIN via VPN/tunnel and point DB_HOST at that endpoint."
-                ),
-                "db_host": os.getenv("DB_HOST"),
+                "error": "COMAIN (ERP database) is not reachable from this server." + hint,
+                "db_host": host,
+                "db_port": port,
             }), 503
         if staging_only:
             _ensure_pp_staging_schema()
@@ -936,14 +946,21 @@ def api_pp_staging_sync():
 
 @app.get("/api/health")
 def health():
-    from db import domain_sync_likely_unreachable
+    from db import domain_db_endpoint, domain_sync_likely_unreachable, domain_sync_unreachable
+    host, port = domain_db_endpoint()
     payload = {
         "status": "ok",
-        "domain_sync_unreachable": domain_sync_likely_unreachable(),
-        "db_host": os.getenv("DB_HOST"),
+        "db_host": host,
+        "db_port": port,
+        "db_host_private_lan": domain_sync_likely_unreachable(),
+        "domain_sync_unreachable": domain_sync_unreachable(),
     }
-    if domain_sync_likely_unreachable():
-        payload["db"] = "unreachable_private_host"
+    if domain_sync_unreachable():
+        payload["db"] = "disconnected"
+        if domain_sync_likely_unreachable():
+            payload["note"] = (
+                "DB_HOST is a private LAN address and TCP probe failed from this host."
+            )
         return jsonify(payload)
     try:
         from db import get_conn, release_conn
@@ -953,6 +970,7 @@ def health():
         return jsonify(payload)
     except Exception as e:
         payload["db"] = "disconnected"
+        payload["domain_sync_unreachable"] = True
         payload["error"] = str(e)
         return jsonify(payload)
 
@@ -1587,7 +1605,7 @@ AUTO_SYNC_INTERVAL = int(os.getenv("AUTO_SYNC_INTERVAL", 900))  # default 15 min
 
 
 def _auto_sync_loop():
-    from db import domain_sync_likely_unreachable
+    from db import domain_sync_unreachable
     from sync import (
         run_pp_voucher_sync, run_process_sheet_sync, run_workorder_status_sync,
         run_part_desc_sync, run_pp_partial_sync, run_mfg_wo_status_sync,
@@ -1595,10 +1613,11 @@ def _auto_sync_loop():
     )
     log.info("auto-sync thread started, interval=%ds", AUTO_SYNC_INTERVAL)
     while True:
-        if domain_sync_likely_unreachable():
+        if domain_sync_unreachable():
             log.warning(
-                "auto-sync skipped: DB_HOST %s is not reachable from this host",
+                "auto-sync skipped: cannot reach COMAIN at %s:%s from this host",
                 os.getenv("DB_HOST"),
+                os.getenv("DB_PORT", 5432),
             )
             time.sleep(AUTO_SYNC_INTERVAL)
             continue

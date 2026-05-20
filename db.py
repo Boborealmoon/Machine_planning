@@ -14,9 +14,34 @@ def _db_connect_timeout() -> int:
     return max(1, int(os.getenv("DB_CONNECT_TIMEOUT", "10")))
 
 
-def domain_sync_likely_unreachable() -> bool:
-    """True when DB_HOST is a private LAN address (unreachable from cloud hosts)."""
+def domain_db_endpoint() -> tuple[str, int]:
     host = (os.getenv("DB_HOST") or "").strip()
+    port = int(os.getenv("DB_PORT", 5432))
+    return host, port
+
+
+def domain_sync_unreachable(probe_timeout: float | None = None) -> bool:
+    """True if COMAIN Postgres cannot be reached from this host (TCP probe)."""
+    host, port = domain_db_endpoint()
+    if not host:
+        return True
+    timeout = probe_timeout if probe_timeout is not None else min(3.0, float(_db_connect_timeout()))
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        return False
+    except OSError:
+        return True
+    finally:
+        sock.close()
+
+
+def domain_sync_likely_unreachable() -> bool:
+    """True when DB_HOST looks like a private LAN address (heuristic only)."""
+    host, _port = domain_db_endpoint()
     if not host or host in {"localhost", "127.0.0.1", "::1"}:
         return False
     parts = host.split(".")
