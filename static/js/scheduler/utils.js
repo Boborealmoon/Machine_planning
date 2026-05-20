@@ -16,9 +16,29 @@ function trialFormatDt(value) {
 
 function trialParseVisualDateTime(value) {
   if (!value) return null;
-  const text = String(value).replace(' ', 'T');
+  const text = String(value).trim().replace(' ', 'T');
   const dt = new Date(text);
   return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+/** Format API datetime for <input type="datetime-local"> in browser local time. */
+function trialDatetimeLocalValue(value) {
+  const dt = trialParseVisualDateTime(value);
+  if (!dt) return '';
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const d = String(dt.getDate()).padStart(2, '0');
+  const h = String(dt.getHours()).padStart(2, '0');
+  const min = String(dt.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${d}T${h}:${min}`;
+}
+
+/** Convert datetime-local value to planner storage format (naive local YYYY-MM-DD HH:MM:SS). */
+function trialDatetimeLocalToStorage(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const normalized = text.replace('T', ' ');
+  return normalized.length === 16 ? `${normalized}:00` : normalized.slice(0, 19);
 }
 
 function trialSplitPsId(value) {

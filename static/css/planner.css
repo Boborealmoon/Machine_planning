@@ -1500,6 +1500,13 @@
     display: grid;
     gap: 12px;
   }
+  .trial-modal-hint {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text3);
+    font-weight: 500;
+  }
   .trial-modal-grid {
     display: grid;
     gap: 10px;

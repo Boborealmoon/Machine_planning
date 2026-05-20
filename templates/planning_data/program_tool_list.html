@@ -308,6 +308,7 @@
 .ptl-summary-table tbody tr:first-child td { border-top: none; }
 .ptl-summary-count { font-weight: 600; text-align: right; }
 .ptl-summary-part  { font-weight: 600; color: #111; white-space: nowrap; }
+.ptl-summary-op    { font-weight: 500; color: #333; white-space: nowrap; }
 
 /* ── Pagination ──────────────────────────────────────────── */
 .ptl-pagination {
@@ -346,7 +347,7 @@
   <div class="page-header">
     <h1 class="page-title">Program / Tool List</h1>
     <div class="page-actions">
-      <button class="btn" id="btn-summary">Part × Machine ▸</button>
+      <button class="btn" id="btn-summary">Part × Op summary ▸</button>
       <button id="btn-sync-supabase" class="btn btn-ghost" style="margin-left:8px">↗ Sync to Supabase</button>
       <button class="btn btn-dark" id="btn-sync">Sync from Google Sheets</button>
     </div>
@@ -444,26 +445,27 @@
 
 </div>
 
-<!-- Part × Machine summary modal -->
+<!-- Part × Op × CNC machine summary modal -->
 <div class="ptl-modal-backdrop" id="ptl-modal-backdrop" hidden>
   <div class="ptl-modal">
     <div class="ptl-modal-header">
       <div>
-        <div class="ptl-modal-title">Part × Machine Summary</div>
-        <div class="ptl-modal-subtitle">Reflects current filters</div>
+        <div class="ptl-modal-title">Part × Op × Machine Summary</div>
+        <div class="ptl-modal-subtitle">Grouped by part and op no.; count per CNC machine (current filters)</div>
       </div>
       <button class="ptl-modal-close" id="ptl-modal-close">✕</button>
     </div>
     <div class="ptl-modal-search">
       <input class="ptl-modal-search-input" id="ptl-summary-search" type="text"
-             placeholder="Filter by part no. (ERP)…" />
+             placeholder="Filter by part or op no.…" />
     </div>
     <div class="ptl-modal-body">
       <table class="ptl-summary-table">
         <thead>
           <tr>
             <th>PART NO. (ERP)</th>
-            <th>MACHINE</th>
+            <th>OP NO.</th>
+            <th>CNC MACHINE</th>
             <th>COUNT</th>
           </tr>
         </thead>
@@ -487,15 +489,42 @@ document.getElementById("btn-sync-supabase")?.addEventListener("click", async ()
     const res = await fetch("/api/program-tool-list/sync-to-supabase", { method: "POST" });
     
     // Catch HTML error pages (404/500)
-    const ct = res.headers.get("content-type");
-    if (!ct || !ct.includes("application/json")) {
+    const contentType = res.headers.get("content-type");
+    if (!contentType || !contentType.includes("application/json")) {
       const text = await res.text();
       throw new Error(`Server ${res.status}: ${text.substring(0, 150)}`);
     }
-    
+
     const data = await res.json();
     if (data.error) throw new Error(data.error);
-    btn.textContent = `✓ Synced ${data.synced}`;
+
+    if (data.sync_api_version == null) {
+      throw new Error(
+        "Server returned old sync response (only {synced}). Restart Flask so it loads the updated program_tool_list_route.py."
+      );
+    }
+
+    console.log("Supabase program-tool-list sync:", data);
+
+    const ct = data.sample_payload?.cycle_time;
+    const cycleTimeNote = data.with_cycle_time != null
+      ? ` (${data.with_cycle_time} w/ cycle time${ct != null ? `, e.g. ${ct}` : ""})`
+      : "";
+    btn.textContent = `✓ Synced ${data.synced}${cycleTimeNote}`;
+    if (data.sample_payload) {
+      console.log("Supabase insert sample row:", data.sample_payload);
+    }
+
+    if (data.warnings && data.warnings.length) {
+      let wmsg = `Synced ${data.synced} row(s)`;
+      if (data.supabase_host) wmsg += ` → ${data.supabase_host}`;
+      wmsg += "\n\n" + data.warnings.join("\n\n");
+      if (data.read_back?.sample?.length) {
+        wmsg += "\n\nRead-back sample: " + JSON.stringify(data.read_back.sample);
+      }
+      alert(wmsg);
+    }
+
     setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
   } catch (err) {
     console.error("Supabase sync failed:", err);

@@ -56,15 +56,15 @@
 {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <script src="{{ url_for('static', filename='js/scheduler/state.js') }}"></script>
-<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=ps-status-pending-20260520"></script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=anchor-dt-20260520"></script>
 <script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v=lane-blocks-20260520"></script>
 <script src="{{ url_for('static', filename='js/scheduler/program_tools.js') }}"></script>
-<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=pending-do-20260520"></script>
+<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=anchor-fix-20260520"></script>
 <script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=lane-blocks-20260520"></script>
 <script src="{{ url_for('static', filename='js/scheduler/bom.js') }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/dnd.js') }}?v=lane-blocks-20260520"></script>
 <script src="{{ url_for('static', filename='js/scheduler/actuals.js') }}"></script>
-<script src="{{ url_for('static', filename='js/scheduler/modals.js') }}"></script>
+<script src="{{ url_for('static', filename='js/scheduler/modals.js') }}?v=anchor-fix-20260520"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   trialScheduleDateFilter = trialResolvedScheduleDateFilterFromUrl();

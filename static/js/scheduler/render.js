@@ -147,6 +147,16 @@ function renderTrialPsTypeFilter() {
           onchange="toggleTrialSrFilter(this.checked)">
         <span>[SR]</span>
       </label>
+      <label class="trial-ps-type-checkbox trial-ps-type-hide-pending-do" title="Hide PS where all production stages are done and the SO is awaiting full shipment">
+        <input type="checkbox" ${trialHidePendingDo ? 'checked' : ''}
+          onchange="toggleTrialHidePendingDo(this.checked)">
+        <span>Hide Pending DO</span>
+      </label>
+      <label class="trial-ps-type-checkbox trial-ps-type-hide-blank" title="Hide PS with no work orders assigned yet">
+        <input type="checkbox" ${trialHideBlankPs ? 'checked' : ''}
+          onchange="toggleTrialHideBlankPs(this.checked)">
+        <span>Hide unassigned</span>
+      </label>
       <div class="trial-machine-checkbox-actions">
         <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialPsTypesVisible(true)">All</button>
         <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialPsTypesVisible(false)">None</button>
@@ -158,6 +168,34 @@ function renderTrialPsTypeFilter() {
 function toggleTrialSrFilter(visible) {
   trialShowSrOrders = visible;
   renderTrialCatalog();
+}
+
+function toggleTrialHidePendingDo(hide) {
+  trialHidePendingDo = hide;
+  renderTrialCatalog();
+}
+
+function toggleTrialHideBlankPs(hide) {
+  trialHideBlankPs = hide;
+  renderTrialCatalog();
+}
+
+/** Status chips / badges shown on a catalog PS header (matches render output). */
+function trialPsHasCatalogTags(ps) {
+  if (trialPsPendingDo(ps)) return true;
+  if (String(ps?.current_stage_desc || '').trim()) return true;
+  if (trialNormalizeExecStatus(trialPsRollupExecStatus(ps))) return true;
+  return (ps?.op_cards || []).some(card => trialNormalizeExecStatus(trialCatalogOpExecStatus(card)));
+}
+
+/**
+ * Unassigned / blank PS: no manufacturing work orders yet, or no visible status tags.
+ * ERP catalog rows often have op_cards from stage_desc but still look blank in the UI.
+ */
+function trialPsIsUnassignedCatalog(ps) {
+  const cards = ps?.op_cards || [];
+  if (!cards.length) return true;
+  return !trialPsHasCatalogTags(ps);
 }
 
 function toggleTrialPsTypeFilter(key, visible) {
@@ -440,7 +478,10 @@ function renderTrialMachine(machine) {
         const pairedOutput = Number(group.paired_output_qty ?? netOutput ?? 0);
         const queuedText = trialFormatDt(group.visual_start_datetime || group.group_start);
         const endText = trialFormatDt(group.visual_end_datetime || group.group_end);
-        const queuedTitle = String(group.visual_start_datetime || group.group_start || '');
+        const anchorText = anchored ? trialFormatDt(leader?.anchor_datetime) : '';
+        const queuedTitle = anchored
+          ? `Queued ${queuedText} · Anchor ${anchorText}`
+          : String(group.visual_start_datetime || group.group_start || '');
         const endTitle = String(group.visual_end_datetime || group.group_end || '');
         const actualButton = group.blocks.length > 1
           ? `<button class="btn btn-ghost btn-sm" type="button" onclick="openTrialGroupActualModal(${Number(group.group_id || 0)})">Actual</button>`
@@ -725,6 +766,8 @@ function renderTrialCatalog() {
     const psType = trialGetPsType(ps.ps_id);
     if (!trialPsTypeFilter.has(psType)) return false;
     if (!trialShowSrOrders && String(ps.ps_id || '').includes('[SR]')) return false;
+    if (trialHidePendingDo && trialPsPendingDo(ps)) return false;
+    if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
     const execStatus = trialPsCatalogExecStatus(ps).toUpperCase().replace(/[\s-]+/g, '_');
     if (!trialShowCompleted) {
       if (trialPsShippedComplete(ps)) return false;
@@ -747,6 +790,8 @@ function renderTrialCatalog() {
     const psType = trialGetPsType(ps.ps_id);
     if (!trialPsTypeFilter.has(psType)) return false;
     if (!trialShowSrOrders && String(ps.ps_id || '').includes('[SR]')) return false;
+    if (trialHidePendingDo && trialPsPendingDo(ps)) return false;
+    if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
     const psStatus = String(ps.status || '').toUpperCase();
     const plannerStatus = String(ps.planner_status || '').toUpperCase();
     if (!trialShowCompleted && (psStatus === 'COMPLETED' || plannerStatus === 'COMPLETED')) return false;
@@ -774,9 +819,10 @@ function renderTrialCatalog() {
     return Boolean(labelKey && allocatedOpKeys.has(labelKey));
   };
 
-  const catalogWithOpenOps = catalog.filter(ps =>
-    (ps.op_cards || []).some(card => !isOpAllocated(card))
-  );
+  const catalogWithOpenOps = catalog.filter(ps => {
+    if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
+    return (ps.op_cards || []).some(card => !isOpAllocated(card));
+  });
 
   const availableHtml = catalogWithOpenOps.map(ps => {
     const psIdParts = String(ps.ps_id || '').split('::');
@@ -807,9 +853,13 @@ function renderTrialCatalog() {
     `;
   }).join('');
 
-  const plannedWithOpenOps = plannedCatalog.filter(ps =>
-    (ps.op_cards || []).some(card => !isOpAllocated(card))
-  );
+  const plannedWithOpenOps = plannedCatalog.filter(ps => {
+    if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
+    const hasOpenOps = (ps.op_cards || []).some(card => !isOpAllocated(card));
+    if (hasOpenOps) return true;
+    // Other PS: show header-only rows (no work orders) when not hiding unassigned.
+    return !trialHideBlankPs && !(ps.op_cards || []).length;
+  });
 
   const plannedHtml = plannedWithOpenOps.map(ps => `
     <div class="trial-catalog-ps trial-catalog-planned-ps" data-ps-id="${escapeHtml(ps.ps_id || '')}">

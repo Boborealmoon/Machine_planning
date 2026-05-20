@@ -1106,7 +1106,12 @@ def api_trial_update_block(block_id):
         if "include_setup" in data:
             block_updates["include_setup"] = bool(data.get("include_setup"))
         if "anchor_datetime" in data:
-            block_updates["anchor_datetime"] = compact_text(data.get("anchor_datetime")) or None
+            raw_anchor = compact_text(data.get("anchor_datetime"))
+            if raw_anchor:
+                raw_anchor = raw_anchor.replace("T", " ")
+                if len(raw_anchor) == 16:
+                    raw_anchor = f"{raw_anchor}:00"
+            block_updates["anchor_datetime"] = raw_anchor or None
         if "actual_good_qty" in data:
             block_updates["actual_good_qty"] = max(0.0, parse_number(data.get("actual_good_qty"), block["actual_good_qty"]))
         if "actual_reject_qty" in data:

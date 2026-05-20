@@ -1119,21 +1119,14 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
 
     queue_items.sort(key=item_sort_key)
 
-    anchor_values = [
-        parsed
-        for parsed in (
-            parse_dt_text(item["members"][0]["anchor_datetime"])
-            for item in queue_items
-        )
-        if parsed
-    ]
     actual_start_values = []
     for item in queue_items:
         leader = item["members"][0]
         actual_bounds = preserved_actual_bounds_for_block(con, int(leader["block_id"]))
         if actual_bounds:
             actual_start_values.append(actual_bounds["start_datetime"])
-    start_candidates = [today_start, *anchor_values, *actual_start_values]
+    # Do not seed the machine cursor from other blocks' anchors — each block applies its own anchor below.
+    start_candidates = [today_start, *actual_start_values]
     current_dt = min(start_candidates) if start_candidates else today_start
 
     def update_block_schedule_window(block_id, start_dt, end_dt, planning_status=None):
@@ -1218,11 +1211,12 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
             block = leader
             planned_start = parse_dt_text(block["planned_start_at"])
             anchor_dt = parse_dt_text(block["anchor_datetime"])
-            planned_start = planned_start or anchor_dt
             dependency_finish = dependency_finish_for_block(con, block)
             candidate_start = current_dt
             if dependency_finish and dependency_finish > candidate_start:
                 candidate_start = dependency_finish
+            if anchor_dt and candidate_start < anchor_dt:
+                candidate_start = anchor_dt
             allow_pull = int(block.get("allow_pull_forward") if block.get("allow_pull_forward") is not None else 1)
             is_fresh = int(block.get("is_fresh_monday_item") or 0)
             if planned_start and candidate_start < planned_start and (allow_pull == 0 or is_fresh == 1):
@@ -1289,11 +1283,12 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         scheduled_qty = max((float(member["scheduled_qty"] or 0) for member in members), default=0.0)
         leader_planned_start = parse_dt_text(leader["planned_start_at"])
         leader_anchor = parse_dt_text(leader["anchor_datetime"])
-        leader_planned_start = leader_planned_start or leader_anchor
         leader_dependency_finish = dependency_finish_for_block(con, leader)
         candidate_start = current_dt
         if leader_dependency_finish and leader_dependency_finish > candidate_start:
             candidate_start = leader_dependency_finish
+        if leader_anchor and candidate_start < leader_anchor:
+            candidate_start = leader_anchor
         leader_allow_pull = int(leader.get("allow_pull_forward") if leader.get("allow_pull_forward") is not None else 1)
         leader_is_fresh = int(leader.get("is_fresh_monday_item") or 0)
         if leader_planned_start and candidate_start < leader_planned_start and (leader_allow_pull == 0 or leader_is_fresh == 1):

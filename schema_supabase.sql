@@ -451,6 +451,8 @@ CREATE TABLE planner_program_tools (
     cnc_machine_no TEXT,
     wo_machine TEXT,
     operation_no TEXT,
+    set_up_time INTEGER NOT NULL DEFAULT 180,
+    cycle_time INTEGER,
     synced_at TIMESTAMPTZ DEFAULT NOW()
 );
 

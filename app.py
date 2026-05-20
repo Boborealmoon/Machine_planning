@@ -20,6 +20,7 @@ from planning.flows import flows_bp, trial_prefixed_flows_bp
 from planning.gantt_route import trial_gantt_bp
 from planning.materials_route import materials_route_bp
 from planning.planner_routes import trial_bp
+from planning.program_tool_list_route import program_tool_list_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
@@ -29,6 +30,7 @@ app.register_blueprint(trial_prefixed_flows_bp)
 app.register_blueprint(trial_gantt_bp)
 app.register_blueprint(materials_route_bp)
 app.register_blueprint(trial_bp)
+app.register_blueprint(program_tool_list_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 
@@ -116,11 +118,6 @@ def planning_data():
 @app.get("/planning-data/inventory-bom")
 def inventory_bom():
     return render_template("planning_data/inventory_bom.html", active="planning_data")
-
-
-@app.get("/planning-data/program-tool-list")
-def program_tool_list():
-    return render_template("planning_data/program_tool_list.html", active="planning_data")
 
 
 @app.get("/planning-data/machines")
@@ -1391,279 +1388,6 @@ def api_bom_operations():
         return jsonify({"error": str(e)}), 500
 
 
-# ── API: Program / Tool List ───────────────────────────────────────────────
-
-_PTL_SHEET_ID  = "1e7_ahcp15jLHOKhX6W1b6TLUvbZr-wM5H_MzMzYXIXg"
-_PTL_SHEET_GID = 606390196
-
-
-@app.post("/api/program-tool-list/sync")
-def api_ptl_sync():
-    import urllib.request
-    import urllib.parse
-    import urllib.error
-    import json as _json
-    from tool_list_db import init_db, replace_all, COLUMNS
-
-    api_key = os.getenv("tool_list_secret_key", "").strip()
-
-    def sheets_get(url, params):
-        full = url + "?" + urllib.parse.urlencode(params)
-        try:
-            with urllib.request.urlopen(full, timeout=30) as r:
-                return _json.loads(r.read().decode())
-        except urllib.error.HTTPError as e:
-            body = e.read().decode()
-            try:
-                msg = _json.loads(body)["error"]["message"]
-            except Exception:
-                msg = body or str(e)
-            raise RuntimeError(f"Google API {e.code}: {msg}")
-
-    try:
-        if not api_key:
-            return jsonify({"error": "tool_list_secret_key is not set in .env"}), 500
-        # Resolve tab name from GID (Sheets API needs the name, not the numeric GID)
-        meta = sheets_get(
-            f"https://sheets.googleapis.com/v4/spreadsheets/{_PTL_SHEET_ID}",
-            {"key": api_key, "fields": "sheets(properties(sheetId,title))"},
-        )
-        sheet_name = next(
-            (s["properties"]["title"]
-             for s in meta.get("sheets", [])
-             if s["properties"]["sheetId"] == _PTL_SHEET_GID),
-            None,
-        )
-        if not sheet_name:
-            return jsonify({"error": f"Tab with gid={_PTL_SHEET_GID} not found in spreadsheet"}), 400
-
-        data = sheets_get(
-            f"https://sheets.googleapis.com/v4/spreadsheets/{_PTL_SHEET_ID}/values/{urllib.parse.quote(sheet_name)}",
-            {"key": api_key},
-        )
-        values = data.get("values", [])
-        if not values:
-            return jsonify({"synced": 0, "message": "Sheet is empty"})
-
-        n = len(COLUMNS)
-        # Skip two header rows (row1 = form question text, row2 = short labels)
-        rows = [tuple((list(r) + [""] * n)[:n]) for r in values[2:]]
-
-        init_db()
-        replace_all(rows)
-        return jsonify({"synced": len(rows)})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.get("/api/program-tool-list/lookup")
-def api_ptl_lookup():
-    """Compact PS+op / part+op lookup for scheduler op cards."""
-    from program_tools_lookup import build_program_tools_lookup
-    from tool_list_db import init_db, fetch_all
-
-    try:
-        init_db()
-        rows = fetch_all()
-        ps_nos = list({r.get("ps_no") for r in rows if r.get("ps_no")})
-        part_no_erp_map = {}
-        if ps_nos:
-            try:
-                erp_rows = db_query(
-                    """
-                    SELECT DISTINCT process_sheet_no, inventory_code
-                    FROM public.mfg_process_sheet_info_v1_view
-                    WHERE process_sheet_no = ANY(%s)
-                    """,
-                    (ps_nos,),
-                    fetchall=True,
-                )
-                if erp_rows:
-                    part_no_erp_map = {er[0]: er[1] for er in erp_rows}
-            except Exception:
-                pass
-        for row in rows:
-            row["part_no_erp"] = part_no_erp_map.get(row.get("ps_no") or "", "") or row.get("part_number") or ""
-
-        from tool_list_db import last_synced
-
-        lookup = build_program_tools_lookup(rows)
-        return jsonify({
-            "last_synced": last_synced(),
-            "ps_op_count": len(lookup.get("by_ps_op") or {}),
-            "part_op_count": len(lookup.get("by_part_op") or {}),
-            **lookup,
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.get("/api/program-tool-list")
-def api_ptl_data():
-    from tool_list_db import init_db, fetch_all, last_synced
-    search = request.args.get("search", "").strip()
-    try:
-        init_db()
-        rows = fetch_all(search)
-
-        # Enrich with ERP part number from PostgreSQL using ps_no as key
-        ps_nos = list({r["ps_no"] for r in rows if r.get("ps_no")})
-        part_no_erp_map = {}
-        if ps_nos:
-            try:
-                erp_rows = db_query(
-                    """
-                    SELECT DISTINCT process_sheet_no, inventory_code
-                    FROM public.mfg_process_sheet_info_v1_view
-                    WHERE process_sheet_no = ANY(%s)
-                    """,
-                    (ps_nos,), fetchall=True
-                )
-                if erp_rows:
-                    for er in erp_rows:
-                        part_no_erp_map[er[0]] = er[1]
-            except Exception:
-                pass  # PostgreSQL unavailable — leave column blank
-
-        for row in rows:
-            row["part_no_erp"] = part_no_erp_map.get(row.get("ps_no") or "", "") or ""
-
-        # Enrich with actual machine_no from WO completion history (by part_no_erp + stage_desc)
-        actual_machine_map = {}
-        part_no_erp_list = list({row["part_no_erp"] for row in rows if row.get("part_no_erp")})
-        if part_no_erp_list:
-            try:
-                wo_rows = db_query(
-                    """
-                    WITH wt_raw AS (
-                        SELECT
-                            t2.inventory_code,
-                            t1.voucher_no,
-                            t1.machine_no,
-                            t2.stage_desc,
-                            t3.total_acc_qty_produced,
-                            CASE WHEN t1.status = 'H' THEN 1 ELSE 0 END AS status_rank
-                        FROM mfg_wo_comp_vch t1
-                        LEFT JOIN mfg_mps_vch t2 ON t1.voucher_no = t2.wo_voucher_no
-                        LEFT JOIN mfg_wo_vch t3 ON t1.voucher_no = t3.voucher_no
-                        WHERE t2.inventory_code = ANY(%s)
-                          AND (
-                              t2.stage_desc LIKE 'Turning%%'
-                           OR t2.stage_desc LIKE 'Milling%%'
-                           OR t2.stage_desc LIKE 'Turnmill%%'
-                          )
-                    ),
-                    wt_ranked AS (
-                        SELECT *,
-                            ROW_NUMBER() OVER (
-                                PARTITION BY voucher_no
-                                ORDER BY total_acc_qty_produced DESC, status_rank DESC
-                            ) AS rn
-                        FROM wt_raw
-                    ),
-                    workorder_tracker AS (
-                        SELECT inventory_code, machine_no, stage_desc
-                        FROM wt_ranked
-                        WHERE rn = 1
-                    )
-                    SELECT inventory_code, stage_desc, MIN(machine_no) AS machine_no
-                    FROM workorder_tracker
-                    GROUP BY inventory_code, stage_desc
-                    """,
-                    (part_no_erp_list,), fetchall=True
-                )
-                if wo_rows:
-                    for wr in wo_rows:
-                        actual_machine_map[(wr[0], wr[1])] = wr[2]
-            except Exception:
-                pass  # PostgreSQL unavailable — leave blank
-
-        for row in rows:
-            part_no_erp = row.get("part_no_erp") or ""
-            op_type     = row.get("operation_type") or ""
-            op_no       = row.get("operation_no") or row.get("operation_no_2") or ""
-            stage       = f"{op_type} {op_no}".strip() if op_no else op_type
-            row["actual_machine_no"] = actual_machine_map.get((part_no_erp, stage), "")
-
-        return jsonify({"rows": rows, "last_synced": last_synced()})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.post("/api/program-tool-list/sync-to-supabase")
-def api_ptl_sync_to_supabase():
-    try:
-        from tool_list_db import init_db, fetch_all
-        from planner_program_tools_sync import (
-            build_planner_program_tools_payload,
-            push_planner_program_tools_to_supabase,
-        )
-
-        init_db()
-        rows = fetch_all()
-        if not rows:
-            return jsonify({"synced": 0, "message": "No rows in tool list"})
-
-        part_no_erp_map = {}
-        ps_nos = list({r.get("ps_no") for r in rows if r.get("ps_no")})
-        if ps_nos:
-            try:
-                erp_rows = db_query(
-                    "SELECT DISTINCT process_sheet_no, inventory_code FROM public.mfg_process_sheet_info_v1_view WHERE process_sheet_no = ANY(%s)",
-                    (ps_nos,), fetchall=True
-                )
-                if erp_rows:
-                    part_no_erp_map = {er[0]: er[1] for er in erp_rows}
-            except Exception:
-                pass
-
-        actual_machine_map = {}
-        part_no_erp_list = list(set(part_no_erp_map.values()))
-        if part_no_erp_list:
-            try:
-                wo_rows = db_query(
-                    """
-                    WITH wt_raw AS (
-                        SELECT t2.inventory_code, t1.voucher_no, t1.machine_no,
-                               t2.stage_desc, t3.total_acc_qty_produced,
-                               CASE WHEN t1.status = 'H' THEN 1 ELSE 0 END AS status_rank
-                        FROM mfg_wo_comp_vch t1
-                        LEFT JOIN mfg_mps_vch t2 ON t1.voucher_no = t2.wo_voucher_no
-                        LEFT JOIN mfg_wo_vch t3 ON t1.voucher_no = t3.voucher_no
-                        WHERE t2.inventory_code = ANY(%s)
-                          AND (t2.stage_desc LIKE 'Turning%%' OR t2.stage_desc LIKE 'Milling%%' OR t2.stage_desc LIKE 'Turnmill%%')
-                    ),
-                    wt_ranked AS (
-                        SELECT *, ROW_NUMBER() OVER(PARTITION BY voucher_no ORDER BY total_acc_qty_produced DESC, status_rank DESC) AS rn
-                        FROM wt_raw
-                    )
-                    SELECT inventory_code, stage_desc, MIN(machine_no) AS machine_no
-                    FROM wt_ranked WHERE rn = 1
-                    GROUP BY inventory_code, stage_desc
-                    """,
-                    (part_no_erp_list,), fetchall=True
-                )
-                if wo_rows:
-                    actual_machine_map = {(wr[0], wr[1]): wr[2] for wr in wo_rows}
-            except Exception:
-                pass
-
-        payload = build_planner_program_tools_payload(
-            rows,
-            part_no_erp_map=part_no_erp_map,
-            actual_machine_map=actual_machine_map,
-        )
-        if not payload:
-            return jsonify({"synced": 0, "message": "No valid rows to sync"})
-
-        result = push_planner_program_tools_to_supabase(payload)
-        return jsonify(result)
-
-    except Exception as e:
-        import traceback, sys
-        print(f"❌ SYNC ERROR: {e}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        return jsonify({"error": str(e)}), 500
-
 # ── API: stubs ─────────────────────────────────────────────────────────────
 
 @app.get("/api/machine-schedule")
@@ -1811,7 +1535,9 @@ def api_planner_machines_delete(machine_id):
 
 
 # ── Background auto-sync ──────────────────────────────────────────────────────
-# Runs the full PP staging pipeline every AUTO_SYNC_INTERVAL seconds.
+# Runs the full PP staging pipeline every AUTO_SYNC_INTERVAL seconds, then
+# program-tool-list (Google Sheet → SQLite → planner_program_tools on Supabase)
+# unless DISABLE_AUTO_PROGRAM_TOOL_LIST_SYNC is set.
 # daemon=True so the thread dies cleanly when Flask exits.
 # WERKZEUG_RUN_MAIN guard prevents double-start in Flask's debug reloader.
 
@@ -1845,6 +1571,12 @@ def _auto_sync_loop():
             run_pp_partial_sync(force=True)
             run_mfg_wo_status_sync(force=True)
             run_sync(force=True)
+            try:
+                from planning.program_tool_list_route import run_auto_program_tool_list_sync
+
+                run_auto_program_tool_list_sync(log)
+            except Exception as e:
+                log.error("program-tool-list auto-sync error: %s", e)
             log.info("auto-sync complete")
         except Exception as e:
             log.error("auto-sync error: %s", e)

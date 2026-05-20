@@ -89,17 +89,46 @@ def release_conn(conn):
 # ── Supabase REST helpers ──────────────────────────────────────────────────
 
 def supa_url() -> str:
-    return os.getenv("Supa_base_url", "").rstrip("/")
+    """PostgREST base URL, e.g. https://xxxx.supabase.co/rest/v1"""
+    explicit = (os.getenv("Supa_base_url") or "").strip().rstrip("/")
+    project_url = (os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
+
+    raw = explicit or (f"{project_url}/rest/v1" if project_url else "")
+    if not raw:
+        return ""
+
+    # Legacy: Supa_base_url sometimes stored as https://PROJECT.supabase.co without /rest/v1
+    try:
+        from urllib.parse import urlparse
+
+        u = urlparse(raw)
+        host = (u.netloc or "").lower()
+        path = (u.path or "").strip("/")
+        if host.endswith(".supabase.co") and not path.startswith("rest"):
+            return raw.rstrip("/") + "/rest/v1"
+    except Exception:
+        pass
+
+    return raw
+
+
+def supa_publishable_key() -> str:
+    return (os.getenv("Supa_base_publishable_key") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
+
+
+def supa_service_role_key() -> str:
+    """Service role key — required for server-side bulk DELETE/INSERT past RLS."""
+    return (os.getenv("supa_base_secret_key") or os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
 
 
 def supa_headers(write: bool = False) -> dict:
     """Return Supabase REST headers.
-    write=True uses the service role key (required for INSERT/DELETE).
+    write=True should use the service role key (required for INSERT/DELETE if RLS is on).
     """
     if write:
-        key = os.getenv("supa_base_secret_key", os.getenv("Supa_base_publishable_key", ""))
+        key = supa_service_role_key() or supa_publishable_key()
     else:
-        key = os.getenv("Supa_base_publishable_key", "")
+        key = supa_publishable_key()
     return {
         "apikey": key,
         "Authorization": f"Bearer {key}",

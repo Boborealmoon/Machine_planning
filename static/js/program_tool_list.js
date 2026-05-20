@@ -225,19 +225,32 @@ function renderPage() {
 function buildSummary(rows) {
   const map = new Map();
   rows.forEach((r) => {
-    const part = r.part_no_erp || "";
+    const part = (r.part_no_erp || "").trim();
+    const opNo = String(r.operation_no || r.operation_no_2 || "").trim();
     [r.cnc_machine_no, r.cnc_machine_no_2].forEach((m) => {
-      if (!m) return;
-      const key = `${part}\x00${m}`;
+      const machine = String(m || "").trim();
+      if (!machine) return;
+      const key = `${part}\x00${opNo}\x00${machine}`;
       map.set(key, (map.get(key) || 0) + 1);
     });
   });
   return [...map.entries()]
     .map(([key, count]) => {
-      const sep = key.indexOf("\x00");
-      return { part: key.slice(0, sep), machine: key.slice(sep + 1), count };
+      const i1 = key.indexOf("\x00");
+      const i2 = key.indexOf("\x00", i1 + 1);
+      return {
+        part: key.slice(0, i1),
+        op_no: key.slice(i1 + 1, i2),
+        machine: key.slice(i2 + 1),
+        count,
+      };
     })
-    .sort((a, b) => a.part.localeCompare(b.part) || a.machine.localeCompare(b.machine));
+    .sort(
+      (a, b) =>
+        a.part.localeCompare(b.part) ||
+        a.op_no.localeCompare(b.op_no, undefined, { numeric: true }) ||
+        a.machine.localeCompare(b.machine, undefined, { numeric: true })
+    );
 }
 
 function renderSummary(entries) {
@@ -248,35 +261,59 @@ function renderSummary(entries) {
 function applySummaryFilter() {
   const q = (document.getElementById("ptl-summary-search").value || "").trim().toLowerCase();
   const entries = q
-    ? summaryEntries.filter((e) => e.part.toLowerCase().includes(q))
+    ? summaryEntries.filter(
+        (e) =>
+          e.part.toLowerCase().includes(q) ||
+          String(e.op_no).toLowerCase().includes(q)
+      )
     : summaryEntries;
 
   const tbody = document.getElementById("ptl-summary-tbody");
   if (!entries.length) {
-    tbody.innerHTML = `<tr><td colspan="3" class="ptl-empty" style="padding:20px">No data</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="ptl-empty" style="padding:20px">No data</td></tr>`;
     return;
   }
 
-  // Group by part so part name appears once with rowspan
+  // Group by part, then op_no; count per CNC machine within each op
   const groups = [];
   entries.forEach((e) => {
-    if (!groups.length || groups[groups.length - 1].part !== e.part) {
-      groups.push({ part: e.part, machines: [] });
+    let g = groups[groups.length - 1];
+    if (!g || g.part !== e.part) {
+      g = { part: e.part, opGroups: [] };
+      groups.push(g);
     }
-    groups[groups.length - 1].machines.push(e);
+    let og = g.opGroups[g.opGroups.length - 1];
+    if (!og || og.op_no !== e.op_no) {
+      og = { op_no: e.op_no, machines: [] };
+      g.opGroups.push(og);
+    }
+    og.machines.push(e);
   });
 
-  tbody.innerHTML = groups.map((g) =>
-    g.machines.map((m, i) => `
-      <tr${i === 0 ? ' class="ptl-summary-group-first"' : ''}>
-        ${i === 0
-          ? `<td class="ptl-summary-part" rowspan="${g.machines.length}">${esc(g.part)}</td>`
-          : ""}
+  tbody.innerHTML = groups
+    .map((g) => {
+      const partRowspan = g.opGroups.reduce((n, og) => n + og.machines.length, 0);
+      let partRow = 0;
+      return g.opGroups
+        .map((og) => {
+          const opRowspan = og.machines.length;
+          return og.machines
+            .map((m, i) => {
+              const row = `
+      <tr${partRow === 0 && i === 0 ? ' class="ptl-summary-group-first"' : ""}>
+        ${partRow === 0 ? `<td class="ptl-summary-part" rowspan="${partRowspan}">${esc(g.part) || "—"}</td>` : ""}
+        ${i === 0 ? `<td class="ptl-summary-op" rowspan="${opRowspan}">${esc(og.op_no) || "—"}</td>` : ""}
         <td>${esc(m.machine)}</td>
         <td class="ptl-summary-count">${m.count}</td>
-      </tr>`
-    ).join("")
-  ).join("");
+      </tr>`;
+              partRow += 1;
+              return row;
+            })
+            .join("");
+        })
+        .join("");
+    })
+    .join("");
 }
 
 // ── Render ────────────────────────────────────────────────────────────────

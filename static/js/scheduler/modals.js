@@ -104,7 +104,7 @@ function openTrialCreateModal(defaultMachineId = '') {
         machine_id: Number(document.getElementById('trial-machine-id').value || 0),
         queue_position: Number(document.getElementById('trial-queue-position').value || 0),
         include_setup: document.getElementById('trial-include-setup').value === '1',
-        anchor_datetime: document.getElementById('trial-anchor-datetime').value,
+        anchor_datetime: trialDatetimeLocalToStorage(document.getElementById('trial-anchor-datetime').value),
         remarks: document.getElementById('trial-remarks').value,
       });
       closeModal();
@@ -136,7 +136,7 @@ function openTrialBlockEditor(blockId) {
         <option value="1" ${Number(block.include_setup || 0) === 1 ? 'selected' : ''}>Yes</option>
         <option value="0" ${Number(block.include_setup || 0) === 0 ? 'selected' : ''}>No</option>
       </select></label>
-      <label>Anchor Datetime <input id="trial-edit-anchor-datetime" type="datetime-local" value="${String(block.anchor_datetime || '').replace(' ', 'T').slice(0, 16)}"></label>
+      <label>Anchor Datetime <input id="trial-edit-anchor-datetime" type="datetime-local" value="${escapeHtml(trialAnchorDefaultDatetimeLocal(block))}"></label>
       <label class="full">Remarks <textarea id="trial-edit-remarks" rows="3">${block.remarks || ''}</textarea></label>
     </div>
   `, 'Save', async () => {
@@ -152,7 +152,7 @@ function openTrialBlockEditor(blockId) {
         machine_id: _editedMachineId,
         queue_position: Number(document.getElementById('trial-edit-queue-position').value || 1),
         include_setup: document.getElementById('trial-edit-include-setup').value === '1',
-        anchor_datetime: document.getElementById('trial-edit-anchor-datetime').value,
+        anchor_datetime: trialDatetimeLocalToStorage(document.getElementById('trial-edit-anchor-datetime').value),
         remarks: document.getElementById('trial-edit-remarks').value,
       });
       closeModal();
@@ -260,17 +260,28 @@ function openTrialCapacityModal(startDate = '', dayCount = 14) {
   openModal('Shop Calendar', bodyHtml, 'lg');
 }
 
+function trialAnchorDefaultDatetimeLocal(block) {
+  return trialDatetimeLocalValue(
+    block?.anchor_datetime ||
+    block?.visual_start_datetime ||
+    block?.calculated_start_datetime ||
+    ''
+  );
+}
+
 function editTrialAnchor(blockId) {
   const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
   if (!block) return;
+  const defaultValue = trialAnchorDefaultDatetimeLocal(block);
   openTrialForm('Set Anchor', `
+    <p class="trial-modal-hint">Earliest allowed start for this job. Queued time is recalculated from the machine queue and will not fall before the anchor.</p>
     <div class="trial-modal-grid">
-      <label class="full">Anchor Datetime <input id="trial-anchor-input" type="datetime-local" value="${String(block.anchor_datetime || '').replace(' ', 'T').slice(0, 16)}"></label>
+      <label class="full">Anchor Datetime <input id="trial-anchor-input" type="datetime-local" value="${escapeHtml(defaultValue)}"></label>
     </div>
   `, 'Save', async () => {
     try {
       await PUT(`/api/trial/blocks/${block.block_id}`, {
-        anchor_datetime: document.getElementById('trial-anchor-input').value,
+        anchor_datetime: trialDatetimeLocalToStorage(document.getElementById('trial-anchor-input').value),
       });
       closeModal();
       await refreshMachines([block.machine_id].filter(Boolean));
