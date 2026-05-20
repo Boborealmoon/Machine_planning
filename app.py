@@ -160,24 +160,33 @@ _PP_VOUCHERS_WITH_OPS_CACHE_LOCK = threading.Lock()
 _PP_VOUCHERS_WITH_OPS_TTL_SECS = 60
 
 
-def _pp_vouchers_include_history() -> bool:
+def _pp_vouchers_include_completed() -> bool:
+    """Include jobs fully shipped (qty_shipped >= so_det_qty). PP voucher History is ignored."""
     flag = str(
-        request.args.get("include_history")
-        or request.args.get("show_completed")
+        request.args.get("show_completed")
+        or request.args.get("include_completed")
+        or request.args.get("include_history")  # legacy alias
         or ""
     ).lower()
     return flag in {"1", "true", "yes"}
 
 
-def _pp_vouchers_cache_scope(include_history: bool) -> str:
-    return "all" if include_history else "active"
+def _pp_vouchers_cache_scope(include_completed: bool) -> str:
+    return "all" if include_completed else "open"
 
 
-def _fetch_pp_vouchers_cache_rows(include_history: bool):
+def _fetch_pp_vouchers_cache_rows(include_completed: bool):
     from planning.helpers import planner_db, rows as _db_rows
 
+    from planning.utils import SHIPPED_QTY_TOLERANCE
+
     cols = ", ".join(_PP_VOUCHERS_COLS)
-    where = "" if include_history else " WHERE COALESCE(status, '') <> 'History'"
+    # Completed = fully shipped on the SO line, not PP voucher status (H/History).
+    shipped_complete = (
+        "so_det_qty IS NOT NULL "
+        f"AND COALESCE(qty_shipped, 0) >= so_det_qty - {SHIPPED_QTY_TOLERANCE}"
+    )
+    where = "" if include_completed else f" WHERE NOT ({shipped_complete})"
     order = " ORDER BY ps_id, pp_partial_no, stage_no"
     with planner_db() as _con:
         return _db_rows(_con.execute(f"SELECT {cols} FROM pp_vouchers_cache{where}{order}"))
@@ -188,8 +197,74 @@ def _invalidate_pp_vouchers_with_ops_cache():
         _PP_VOUCHERS_WITH_OPS_CACHE.clear()
 
 
+def _pp_voucher_search_haystack(entry: dict) -> str:
+    parts = [
+        entry.get("ps_id"),
+        entry.get("source_ps_id"),
+        entry.get("display_ps_id"),
+        entry.get("part_no"),
+        entry.get("part_name"),
+        entry.get("part_desc"),
+        entry.get("source_voucher_no"),
+        entry.get("bom_code"),
+        entry.get("execution_status"),
+        entry.get("current_stage_desc"),
+    ]
+    for op in entry.get("ops") or []:
+        parts.extend(
+            [
+                op.get("operation_name"),
+                op.get("stage_desc"),
+                op.get("source_op_no"),
+                op.get("execution_status"),
+            ]
+        )
+    return " ".join(str(part) for part in parts if part).lower()
+
+
+def _filter_pp_vouchers_by_search(data: list, raw_search: str) -> list:
+    terms = [term.strip().lower() for term in str(raw_search or "").replace(";", ",").split(",") if term.strip()]
+    if not terms:
+        return data
+    return [
+        entry
+        for entry in data
+        if any(term in _pp_voucher_search_haystack(entry) for term in terms)
+    ]
+
+
 def _normalize_execution_status(value):
     return str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+
+
+def _execution_status_rank(value) -> int:
+    normalized = _normalize_execution_status(value)
+    ranks = {
+        "I": 0,
+        "IN_PROCESS": 0,
+        "R": 1,
+        "READY_TO_START": 1,
+        "P": 2,
+        "PENDING_SI": 2,
+        "C": 3,
+        "COMPLETED": 3,
+    }
+    return ranks.get(normalized, 4)
+
+
+def _execution_status_label(value) -> str:
+    normalized = _normalize_execution_status(value)
+    labels = {
+        "P": "Pending SI",
+        "PENDING_SI": "Pending SI",
+        "R": "Ready to Start",
+        "READY_TO_START": "Ready to Start",
+        "I": "In Process",
+        "IN_PROCESS": "In Process",
+        "C": "Completed",
+        "COMPLETED": "Completed",
+    }
+    return labels.get(normalized, str(value or "").strip())
 
 
 def _summarize_execution_status(statuses):
@@ -204,7 +279,7 @@ def _summarize_execution_status(statuses):
         return "Pending SI"
     if all(status in {"C", "COMPLETED"} for status in normalized):
         return "Completed"
-    return statuses[0] or ""
+    return _execution_status_label(statuses[0]) if statuses else ""
 
 
 def _pp_vouchers_with_ops_payload(cache_rows):
@@ -258,10 +333,17 @@ def _pp_vouchers_with_ops_payload(cache_rows):
             }
 
         entry = grouped[ps_key]
-        if row.get("current_stage_desc") and not entry.get("current_stage_desc"):
-            entry["current_stage_no"] = row.get("current_stage_no")
-            entry["current_stage_desc"] = row.get("current_stage_desc") or ""
-            entry["current_stage_status"] = row.get("current_stage_status") or ""
+        if row.get("current_stage_desc"):
+            new_rank = _execution_status_rank(row.get("current_stage_status"))
+            old_rank = (
+                _execution_status_rank(entry.get("current_stage_status"))
+                if entry.get("current_stage_desc")
+                else 99
+            )
+            if not entry.get("current_stage_desc") or new_rank < old_rank:
+                entry["current_stage_no"] = row.get("current_stage_no")
+                entry["current_stage_desc"] = row.get("current_stage_desc") or ""
+                entry["current_stage_status"] = row.get("current_stage_status") or ""
         row_execution_status = row.get("execution_status") or ""
         required_qty = float(row.get("wo_qty_required") or 0)
         produced_qty = float(row.get("wo_qty_produced") or 0)
@@ -316,19 +398,21 @@ def _pp_vouchers_with_ops_payload(cache_rows):
             entry["ops"].append(op_card)
 
     for entry in grouped.values():
-        stage_statuses = [op.get("execution_status") for op in entry.get("ops", [])]
-        summary_status = _summarize_execution_status(stage_statuses)
-        if summary_status:
-            entry["execution_status"] = summary_status
-            entry["execution_completed"] = _normalize_execution_status(summary_status) in {"C", "COMPLETED"}
+        current_code = entry.get("current_stage_status")
+        if current_code:
+            entry["execution_status"] = _execution_status_label(current_code)
         else:
-            entry["execution_completed"] = False
+            stage_statuses = [op.get("execution_status") for op in entry.get("ops", [])]
+            summary_status = _summarize_execution_status(stage_statuses)
+            if summary_status:
+                entry["execution_status"] = summary_status
         so_qty = entry.get("so_det_qty")
         entry["shipped_completed"] = (
             so_qty is not None
             and shipped_quantity_completed(so_qty, entry.get("qty_shipped"))
         )
         entry["is_completed"] = entry["shipped_completed"]
+        entry["execution_completed"] = entry["shipped_completed"]
     return list(grouped.values())
 
 
@@ -358,16 +442,18 @@ def api_pp_vouchers():
 def api_pp_vouchers_with_ops():
     """PP vouchers from cache, grouped by PS, with op cards built from stage columns."""
     from sync import is_sync_needed
-    include_history = _pp_vouchers_include_history()
-    scope = _pp_vouchers_cache_scope(include_history)
+    include_completed = _pp_vouchers_include_completed()
+    scope = _pp_vouchers_cache_scope(include_completed)
+    raw_search = str(request.args.get("search") or "").strip()
     try:
         refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
+        use_cache = not refresh and not raw_search
         now = time.monotonic()
         with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
             bucket = _PP_VOUCHERS_WITH_OPS_CACHE.get(scope) or {}
             cached_data = bucket.get("data")
-            if not refresh and cached_data is not None and now < float(bucket.get("expires_at") or 0):
-                return jsonify(cached_data)
+            if use_cache and cached_data is not None and now < float(bucket.get("expires_at") or 0):
+                return jsonify(_filter_pp_vouchers_by_search(cached_data, raw_search))
 
         # Trigger sync in background — serve cached data immediately
         if is_sync_needed():
@@ -391,14 +477,17 @@ def api_pp_vouchers_with_ops():
                     pass
             threading.Thread(target=_bg_sync, daemon=True).start()
 
-        cache_rows = _fetch_pp_vouchers_cache_rows(include_history)
+        cache_rows = _fetch_pp_vouchers_cache_rows(include_completed)
         data = _pp_vouchers_with_ops_payload(cache_rows)
-        with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-            _PP_VOUCHERS_WITH_OPS_CACHE[scope] = {
-                "data": data,
-                "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
-            }
-        return jsonify(data)
+        if not include_completed:
+            data = [entry for entry in data if not entry.get("shipped_completed")]
+        if use_cache:
+            with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+                _PP_VOUCHERS_WITH_OPS_CACHE[scope] = {
+                    "data": data,
+                    "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
+                }
+        return jsonify(_filter_pp_vouchers_by_search(data, raw_search))
     except Exception as e:
         # Fall back to REST if direct DB query fails
         try:
@@ -408,20 +497,21 @@ def api_pp_vouchers_with_ops():
                 "select": ",".join(_PP_VOUCHERS_COLS),
                 "order": "ps_id,pp_partial_no,stage_no",
             }
-            if not include_history:
-                params["status"] = "neq.History"
             cache_rows = _supa_fetch_all(
                 f"{supa_url()}/pp_vouchers_cache",
                 headers=supa_headers(write=True),
                 params=params,
             )
             data = _pp_vouchers_with_ops_payload(cache_rows)
-            with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-                _PP_VOUCHERS_WITH_OPS_CACHE[scope] = {
-                    "data": data,
-                    "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
-                }
-            return jsonify(data)
+            if not include_completed:
+                data = [entry for entry in data if not entry.get("shipped_completed")]
+            if use_cache:
+                with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+                    _PP_VOUCHERS_WITH_OPS_CACHE[scope] = {
+                        "data": data,
+                        "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
+                    }
+            return jsonify(_filter_pp_vouchers_by_search(data, raw_search))
         except Exception as e2:
             return jsonify({"error": str(e2)}), 500
 
@@ -1648,6 +1738,6 @@ elif _disable_auto_sync:
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("FLASK_PORT", 5000))
+    port = int(os.getenv("FLASK_PORT", 5001))
     debug = os.getenv("FLASK_ENV") == "development"
     app.run(host="0.0.0.0", port=port, debug=debug)

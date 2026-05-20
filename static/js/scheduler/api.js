@@ -41,7 +41,7 @@ async function DEL(url) {
 
 function trialCatalogUrl(refresh = false) {
   const params = new URLSearchParams();
-  if (trialShowCompleted) params.set('include_history', '1');
+  if (trialShowCompleted) params.set('show_completed', '1');
   if (refresh) params.set('refresh', '1');
   const qs = params.toString();
   return `/api/pp-vouchers/with-ops${qs ? `?${qs}` : ''}`;

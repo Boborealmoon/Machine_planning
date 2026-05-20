@@ -561,6 +561,32 @@ function trialExecStatusBadge(execStatus) {
   return '';
 }
 
+function trialPsShippedComplete(ps) {
+  if (ps && Object.prototype.hasOwnProperty.call(ps, 'shipped_completed')) {
+    return Boolean(ps.shipped_completed);
+  }
+  const soQty = ps?.so_det_qty;
+  if (soQty === null || soQty === undefined || soQty === '') return false;
+  const shipped = Number(ps?.qty_shipped || 0);
+  return shipped >= Number(soQty) - 0.0001;
+}
+
+function trialPsCatalogExecStatus(ps) {
+  const current = String(ps?.current_stage_status || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+  const labels = {
+    P: 'Pending SI',
+    PENDING_SI: 'Pending SI',
+    R: 'Ready to Start',
+    READY_TO_START: 'Ready to Start',
+    I: 'In Process',
+    IN_PROCESS: 'In Process',
+    C: 'Completed',
+    COMPLETED: 'Completed',
+  };
+  if (current && labels[current]) return labels[current];
+  return String(ps?.execution_status || '').trim();
+}
+
 // ── Catalog render ────────────────────────────────────────────────────────────
 
 const _PS_TYPE_ORDER = { A: 0, M: 1, N: 2 };
@@ -577,12 +603,10 @@ function renderTrialCatalog() {
     const psType = trialGetPsType(ps.ps_id);
     if (!trialPsTypeFilter.has(psType)) return false;
     if (!trialShowSrOrders && String(ps.ps_id || '').includes('[SR]')) return false;
-    const psStatus = String(ps.status || '').toUpperCase();
-    const execStatus = String(ps.execution_status || '').toUpperCase();
+    const execStatus = trialPsCatalogExecStatus(ps).toUpperCase().replace(/[\s-]+/g, '_');
     if (!trialShowCompleted) {
-      // execution_status is authoritative — only fall back to status when there's no exec signal
-      const activeExec = execStatus && execStatus !== 'COMPLETED';
-      if (!activeExec && (execStatus === 'COMPLETED' || psStatus === 'HISTORY')) return false;
+      if (trialPsShippedComplete(ps)) return false;
+      if (execStatus === 'COMPLETED') return false;
     }
     if (!rawQuery) return true;
     const haystack = [
@@ -653,7 +677,7 @@ function renderTrialCatalog() {
         data-part-name="${escapeHtml(ps.part_no || ps.part_name || '')}"
         data-inv-desc="${escapeHtml(ps.part_desc || '')}"
         data-due-date="${escapeHtml(ps.due_date || '')}"
-        data-exec-status="${escapeHtml(ps.execution_status || '')}">
+        data-exec-status="${escapeHtml(trialPsCatalogExecStatus(ps))}">
         <summary></summary>
         <div class="trial-catalog-bom-bar">
           ${trialFlowSelectHtml(ps)}

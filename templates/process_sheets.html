@@ -56,8 +56,8 @@
         <label class="checkbox-label"><input type="checkbox" id="ps-overdue-only" /> Overdue Only</label>
         <label class="checkbox-label"><input type="checkbox" id="ps-hide-direct-pp" checked /> Hide Direct PP</label>
         <label class="checkbox-label"><input type="checkbox" id="ps-hide-sr-tags" checked /> Hide [SR]</label>
-        <label class="checkbox-label"><input type="checkbox" id="ps-show-completed" /> Show Completed</label>
-        <label class="checkbox-label"><input type="checkbox" id="ps-completed-only" /> Completed Only</label>
+        <label class="checkbox-label" title="Include SO lines where qty shipped meets SO qty"><input type="checkbox" id="ps-show-completed" /> Show fully shipped</label>
+        <label class="checkbox-label" title="Only SO lines where qty shipped meets SO qty"><input type="checkbox" id="ps-completed-only" /> Fully shipped only</label>
       </div>
     </div>
 
@@ -76,7 +76,7 @@
         <span class="status-dash" id="ps-count-needs-review" style="color:#f5a623">—</span>
       </div>
       <div class="status-card">
-        <span class="status-label">COMPLETED</span>
+        <span class="status-label">FULLY SHIPPED</span>
         <span class="status-dash" id="ps-count-completed" style="color:#27ae60">—</span>
       </div>
       <div class="status-card">
@@ -89,7 +89,7 @@
     <div class="card card--flush">
       <div class="card-bar">
         <span class="card-label">PRODUCTION QUEUE</span>
-        <span class="card-hint" id="ps-queue-hint">Loading process sheets...</span>
+        <span class="card-hint" id="ps-queue-hint"></span>
       </div>
       <div id="ps-queue" class="process-sheet-queue">
         <div class="queue-empty">Loading process sheets...</div>
