@@ -574,10 +574,23 @@ function renderTrial() {
   bindTrialLaneOpDrops();
 }
 
-function trialCatalogOpExecStatus(card, ps) {
-  const direct = card?.execution_status || card?.op?.execution_status || '';
-  if (String(direct || '').trim()) return direct;
-  return ps?.current_stage_status || ps?.execution_status || '';
+function trialCatalogOpExecStatus(card) {
+  return card?.execution_status || card?.op?.execution_status || '';
+}
+
+function trialPsRollupExecStatus(ps) {
+  const statuses = (ps?.op_cards || [])
+    .map(card => trialCatalogOpExecStatus(card))
+    .map(s => trialNormalizeExecStatus(s))
+    .filter(Boolean);
+  if (!statuses.length) {
+    return ps?.current_stage_status || ps?.execution_status || '';
+  }
+  if (statuses.some(s => s === 'P' || s === 'PENDING_SI')) return 'P';
+  if (statuses.some(s => s === 'I' || s === 'IN_PROCESS')) return 'I';
+  if (statuses.some(s => s === 'R' || s === 'READY_TO_START')) return 'R';
+  if (statuses.every(s => s === 'C' || s === 'COMPLETED')) return 'C';
+  return ps?.current_stage_status || ps?.execution_status || statuses[0] || '';
 }
 
 function trialCatalogPsDueClass(ps) {
@@ -594,7 +607,7 @@ function trialRenderCatalogOpStatusStrip(ps) {
     .map(card => ({
       opNo: card.operation_label || card.source_op_no || '',
       opName: card.operation_name || card.op_type || '',
-      status: trialCatalogOpExecStatus(card, ps),
+      status: trialCatalogOpExecStatus(card),
     }))
     .filter(row => trialNormalizeExecStatus(row.status));
   if (!chips.length) return '';
@@ -613,7 +626,7 @@ function trialCatalogPsSummaryHtml(ps) {
   const basePsId = String(ps.ps_id || '').split('::')[0] || ps.ps_id || '';
   const partialText = String(ps.ps_id || '').includes('::') ? `Partial ${String(ps.ps_id).split('::')[1] || ''}` : '';
   const dueDate = ps.due_date || 'No due date';
-  const execStatus = trialPsCatalogExecStatus(ps);
+  const execStatus = trialPsRollupExecStatus(ps);
   const stageDesc = String(ps.current_stage_desc || '').trim();
   const stageBadge = stageDesc
     ? `<span class="ps-stage-badge" title="${escapeHtml(stageDesc)}">${escapeHtml(stageDesc)}</span>`
@@ -654,7 +667,7 @@ function trialPsShippedComplete(ps) {
 }
 
 function trialPsCatalogExecStatus(ps) {
-  return ps?.current_stage_status || ps?.execution_status || '';
+  return trialPsRollupExecStatus(ps);
 }
 
 // ── Catalog render ────────────────────────────────────────────────────────────

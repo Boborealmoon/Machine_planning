@@ -1860,6 +1860,60 @@ elif _disable_auto_sync:
     log.info("background auto-sync disabled (DISABLE_AUTO_SYNC)")
 
 
+# ── Background auto-unschedule (done ops leave machine lane, anchor kept) ───
+# NOT related to ERP sync — only updates planner DB (move DONE blocks off lanes).
+#
+# How it runs:
+#   1. Full scheduler page reload → GET /api/trial/schedule (main path; works when hosted).
+#   2. Saving actuals in the UI (planning/actuals.py) — immediate when a block becomes DONE.
+#   3. This thread + OS cron scripts — optional backup if nobody has the page open.
+#
+# ERP sync is unrelated (COMAIN → cache). Auto-unschedule only touches planner DB rows.
+
+AUTO_UNSCHEDULE_INTERVAL = int(os.getenv("AUTO_UNSCHEDULE_INTERVAL", 120))
+
+
+def _auto_unschedule_loop():
+    from planning.auto_unschedule import (
+        auto_unschedule_enabled,
+        ensure_saved_anchor_column,
+        run_auto_unschedule_sweep,
+    )
+    from planning.helpers import planner_db
+
+    log.info("auto-unschedule thread started, interval=%ds", AUTO_UNSCHEDULE_INTERVAL)
+    migration_done = False
+    while True:
+        if not auto_unschedule_enabled():
+            time.sleep(AUTO_UNSCHEDULE_INTERVAL)
+            continue
+        try:
+            with planner_db() as con:
+                if not migration_done:
+                    ensure_saved_anchor_column(con)
+                    migration_done = True
+                summary = run_auto_unschedule_sweep(con, dry_run=False)
+            unscheduled = int(summary.get("unscheduled") or 0)
+            if unscheduled:
+                log.info(
+                    "auto-unschedule: returned %d done block(s) to catalog (anchor preserved)",
+                    unscheduled,
+                )
+        except Exception as e:
+            log.error("auto-unschedule error: %s", e)
+        time.sleep(AUTO_UNSCHEDULE_INTERVAL)
+
+
+_disable_auto_unschedule = os.getenv("DISABLE_AUTO_UNSCHEDULE_DONE_OPS", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+if os.environ.get("WERKZEUG_RUN_MAIN") != "false" and not _disable_auto_unschedule:
+    _unsched_t = threading.Thread(target=_auto_unschedule_loop, daemon=True, name="auto-unschedule")
+    _unsched_t.start()
+elif _disable_auto_unschedule:
+    log.info("background auto-unschedule disabled (DISABLE_AUTO_UNSCHEDULE_DONE_OPS)")
+
+
 if __name__ == "__main__":
     port = int(os.getenv("FLASK_PORT", 5001))
     debug = os.getenv("FLASK_ENV") == "development"

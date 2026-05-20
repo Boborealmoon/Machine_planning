@@ -35,7 +35,7 @@ def actual_totals_for_block(con, block_id):
     }
 
 
-def refresh_block_actual_status(con, block_id):
+def refresh_block_actual_status(con, block_id, *, auto_unschedule: bool = True):
     block = one(
         con.execute(
             "SELECT * FROM planner_run_block WHERE block_id = %s",
@@ -66,3 +66,7 @@ def refresh_block_actual_status(con, block_id):
         """,
         (good_qty, reject_qty, status, status, int(block_id)),
     )
+    if auto_unschedule and status == "DONE":
+        from .auto_unschedule import maybe_auto_unschedule_block
+
+        maybe_auto_unschedule_block(con, int(block_id))

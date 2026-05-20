@@ -145,6 +145,16 @@ def trial_catalog_items(con, include_completed=False):
                 WHERE stage_no IS NOT NULL
                 GROUP BY ps_id, pp_partial_no, stage_no
             ),
+            voucher_op_outputs AS (
+                SELECT ps_id, pp_partial_no,
+                       TRIM(COALESCE(op_no::text, '')) AS op_no_text,
+                       MAX(wo_qty_produced) AS wo_qty_produced,
+                       MAX(wo_qty_rejected) AS wo_qty_rejected,
+                       MAX(execution_status) AS execution_status
+                FROM pp_vouchers_cache
+                WHERE NULLIF(TRIM(COALESCE(op_no::text, '')), '') IS NOT NULL
+                GROUP BY ps_id, pp_partial_no, TRIM(COALESCE(op_no::text, ''))
+            ),
             source_totals AS (
                 SELECT ps_id,
                        COALESCE(
@@ -194,9 +204,9 @@ def trial_catalog_items(con, include_completed=False):
                    pfs.op_seq_id AS op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
                    pfs.machine_category, pfs.preferred_machine,
                    pfs.cycle_time, pfs.setup_time, pfs.is_last_op,
-                   COALESCE(vso.wo_qty_produced, 0) AS erp_finished_qty,
-                   COALESCE(vso.wo_qty_rejected, 0) AS erp_reject_qty,
-                   COALESCE(vso.execution_status, '') AS op_execution_status
+                   COALESCE(vso.wo_qty_produced, vop.wo_qty_produced, 0) AS erp_finished_qty,
+                   COALESCE(vso.wo_qty_rejected, vop.wo_qty_rejected, 0) AS erp_reject_qty,
+                   COALESCE(vso.execution_status, vop.execution_status, '') AS op_execution_status
             FROM planner_process_sheet ps
             LEFT JOIN voucher_partials vp
                    ON vp.ps_id = ps.source_ps_id AND vp.pp_partial_no = ps.pp_partial_no
@@ -207,7 +217,12 @@ def trial_catalog_items(con, include_completed=False):
             LEFT JOIN voucher_stage_outputs vso
                    ON vso.ps_id = ps.source_ps_id
                   AND vso.pp_partial_no = ps.pp_partial_no
+                  AND COALESCE(pfs.source_stage_no, 0) > 0
                   AND vso.stage_no = pfs.source_stage_no
+            LEFT JOIN voucher_op_outputs vop
+                   ON vop.ps_id = ps.source_ps_id
+                  AND vop.pp_partial_no = ps.pp_partial_no
+                  AND vop.op_no_text = TRIM(COALESCE(pfs.op_no::text, ''))
             WHERE COALESCE(ps.selected_bom_id, 0) > 0
               AND (%s = 1 OR (
                 COALESCE(ps.planner_status, '') <> 'COMPLETED'
@@ -1116,7 +1131,18 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
                 group_id,
             ),
         )
-        created_block_ids.append(int(one(block_cur)["block_id"]))
+        new_block_id = int(one(block_cur)["block_id"])
+        created_block_ids.append(new_block_id)
+        if idx == 1:
+            from .auto_unschedule import apply_saved_anchor_to_new_block
+
+            apply_saved_anchor_to_new_block(
+                con,
+                new_block_id,
+                compact_text(ops[0]["source_ps_id"]),
+                compact_text(ops[0]["source_op_no"]),
+                group_id=group_id,
+            )
 
     con.execute(
         """

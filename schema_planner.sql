@@ -311,6 +311,7 @@ CREATE TABLE IF NOT EXISTS public.planner_planning_card (
     machine_id                BIGINT       REFERENCES public.planner_machines(machine_id) ON DELETE SET NULL,
     machine_queue_index       INTEGER,
     scheduled_block_group_id  BIGINT       REFERENCES public.planner_run_block_group(group_id) ON DELETE SET NULL,
+    saved_anchor_datetime     TIMESTAMPTZ,  -- kept when a done op auto-returns to the catalog
     created_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );

@@ -356,6 +356,12 @@ def _api_trial_schedule_db():
     is_machine_scoped = bool(machine_id_filter)
 
     with planner_db() as con:
+        # Full board reload: move DONE ops off machine lanes before building the response.
+        if not is_machine_scoped:
+            from .auto_unschedule import auto_unschedule_on_page_load
+
+            auto_unschedule_on_page_load(con)
+
         # Stale card cleanup — skip on machine-scoped refreshes (expensive, not needed for partial updates)
         if not is_machine_scoped:
             stale_cards = rows(
@@ -931,9 +937,18 @@ def api_trial_create_operation():
                 ),
             )
             block_id = int(one(block_cur)["block_id"])
+            source_ps_id_val = compact_text(data.get("source_ps_id")) or None
+            from .auto_unschedule import apply_saved_anchor_to_new_block
+
+            apply_saved_anchor_to_new_block(
+                con,
+                block_id,
+                source_ps_id_val or job_no,
+                compact_text(data.get("source_op_no")),
+                explicit_anchor=data.get("anchor_datetime"),
+            )
 
             # Write planning card + operation link when this op has a process sheet source
-            source_ps_id_val = compact_text(data.get("source_ps_id")) or None
             if source_ps_id_val:
                 ensure_planner_process_sheet(con, source_ps_id_val)
                 scheduled_qty_val = parse_number(data.get("scheduled_qty"), parse_number(data.get("total_qty"), 0))
