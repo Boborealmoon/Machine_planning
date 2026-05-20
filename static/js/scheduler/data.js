@@ -132,11 +132,21 @@ function trialGroupRunsInsideDateFilter(group) {
   if (!filterStartDay && !filterEndDay) return true;
 
   const queuedDay = trialGroupQueuedDay(group);
-  if (!queuedDay) return false;
+  // Keep blocks visible until queue timing is calculated (newly dropped ops).
+  if (!queuedDay) return true;
 
   if (filterStartDay && queuedDay < filterStartDay) return false;
   if (filterEndDay && queuedDay > filterEndDay) return false;
   return true;
+}
+
+function trialMachineLaneEmptyMessage(totalGroups, visibleGroups) {
+  if (totalGroups > 0 && visibleGroups === 0 && trialHasActiveDateFilter()) {
+    const n = totalGroups === 1 ? '1 block is' : `${totalGroups} blocks are`;
+    return `${n} on this machine outside the date filter. Clear dates to show all.`;
+  }
+  if (trialHasActiveDateFilter()) return 'No run blocks in this date range.';
+  return 'No run blocks yet for this machine.';
 }
 
 function trialCapacityKey(machineId, workDate) {
@@ -410,168 +420,113 @@ function trialCombinedPairMetrics(memberMetrics, targetQty) {
   return { pairedOutput, pairedRemainingQty, pairedRemainingMinutes };
 }
 
-function trialBlocksGroupedForMachine(machineId) {
-  const summaryGroups = trialGroupSummaryBlocksForMachine(machineId);
-
-  const trialGroupVisualWindow = group => {
-    const blocks = Array.isArray(group?.blocks) ? group.blocks : [];
-    const starts = blocks.map(b => String(b.visual_start_datetime || b.calculated_start_datetime || '')).filter(Boolean).sort();
-    const ends = blocks.map(b => String(b.visual_end_datetime || b.calculated_end_datetime || '')).filter(Boolean).sort();
-    const leader = group?.leader || blocks[0] || null;
-    const fallbackStart = String(group?.group_start || leader?.visual_start_datetime || leader?.calculated_start_datetime || leader?.anchor_datetime || '');
-    const fallbackEnd = String(group?.group_end || leader?.visual_end_datetime || leader?.calculated_end_datetime || leader?.anchor_datetime || '');
-    return {
-      visual_start_datetime: starts[0] || fallbackStart,
-      visual_end_datetime: ends[ends.length - 1] || fallbackEnd,
-    };
-  };
-
-  if (summaryGroups.length) {
-    const groupedBlockIds = new Set();
-    const combinedGroups = summaryGroups.map(group => {
-      const blocks = Array.isArray(group.blocks)
-        ? group.blocks.map(b => trialBlockMemberMetrics(b))
-        : [];
-      blocks.forEach(b => groupedBlockIds.add(String(b.block_id || '')));
-      const leader = blocks[0] || null;
-      const psId = String(group.ps_id || leader?.job_no || leader?.source_ps_id || '').trim();
-      const operationLabel = String(group.operation_label || group.group_label || '').trim();
-      const pairedMetrics = trialCombinedPairMetrics(blocks, group.target_qty || 0);
-      const pairedOutput = Number(group.paired_output_qty ?? pairedMetrics.pairedOutput ?? 0);
-      const pairedRemainingQty = Number(group.paired_remaining_qty ?? pairedMetrics.pairedRemainingQty ?? 0);
-      const pairedRemainingMinutes = Number(group.paired_remaining_minutes ?? pairedMetrics.pairedRemainingMinutes ?? 0);
-      const enrichedBlocks = blocks.map(member => ({
-        ...member,
-        pairedExcessQty: Math.max(0, Number(member.netOutput || 0) - pairedOutput),
-        pairedShortfallQty: Math.max(0, pairedOutput - Number(member.netOutput || 0)),
-      }));
-      return {
-        ...group,
-        leader,
-        blocks: enrichedBlocks,
-        member_metrics: enrichedBlocks,
-        ps_id: psId,
-        operation_label: operationLabel,
-        group_label: operationLabel,
-        title: psId,
-        subtitle: operationLabel,
-        summary_line: `Qty ${fmt(group.target_qty || 0, 0)}`,
-        paired_output_qty: pairedOutput,
-        paired_remaining_qty: pairedRemainingQty,
-        paired_remaining_minutes: pairedRemainingMinutes,
-        ...trialGroupVisualWindow({ ...group, leader, blocks: enrichedBlocks }),
-      };
-    }).sort(trialCompareMachineGroups);
-
-    const singles = trialBlocksForMachine(machineId)
-      .filter(b => !groupedBlockIds.has(String(b.block_id)))
-      .map(block => {
-        const metrics = trialBlockMemberMetrics(block);
-        const psId = String(metrics.job_no || metrics.source_ps_id || '').trim();
-        const operationLabel = String(metrics.source_op_no || metrics.operation_name || '').trim();
-        return {
-          group_id: 0,
-          group_label: '',
-          ps_id: psId,
-          operation_label: operationLabel,
-          leader: metrics,
-          blocks: [metrics],
-          member_metrics: [metrics],
-          title: psId,
-          subtitle: operationLabel,
-          summary_line: `Qty ${fmt(metrics.scheduled_qty || 0, 0)}`,
-          target_qty: metrics.scheduled_qty || 0,
-          setup_minutes: metrics.setup_minutes || 0,
-          cycle_minutes_per_qty: metrics.cycle_minutes_per_qty || 0,
-          output_qty: metrics.outputTotal || 0,
-          reject_qty: metrics.rejectTotal || 0,
-          remaining_qty: metrics.remainingQty || 0,
-          remaining_minutes: metrics.remainingMinutes || 0,
-          status: metrics.isDone ? 'DONE' : (metrics.isInProgress || metrics.outputTotal > 0 || metrics.rejectTotal > 0 ? 'IN_PROGRESS' : 'NOT_STARTED'),
-          planning_status: metrics.planning_status || 'UNPLANNED',
-          group_type: metrics.group_type || '',
-          group_start: metrics.calculated_start_datetime || '',
-          group_end: metrics.calculated_end_datetime || '',
-          visual_start_datetime: metrics.visual_start_datetime || metrics.calculated_start_datetime || '',
-          visual_end_datetime: metrics.visual_end_datetime || metrics.calculated_end_datetime || '',
-        };
-      }).sort(trialCompareMachineGroups);
-
-    return [...combinedGroups, ...singles].sort(trialCompareMachineGroups);
-  }
-
-  const groups = new Map();
-  trialBlocksForMachine(machineId).forEach(block => {
-    const key = trialBlockGroupKey(block);
-    if (!groups.has(key)) {
-      groups.set(key, { group_id: Number(block.group_id || 0), group_label: block.group_label || '', blocks: [] });
-    }
-    groups.get(key).blocks.push(block);
-  });
-
-  return Array.from(groups.values()).map(group => {
-    group.blocks.sort((a, b) =>
+function trialBuildMachineDisplayGroup(rawBlocks, summary = null) {
+  const blocks = (rawBlocks || [])
+    .map(b => trialBlockMemberMetrics(b))
+    .sort((a, b) =>
       Number(a.queue_position || 0) - Number(b.queue_position || 0) ||
       Number(a.block_id || 0) - Number(b.block_id || 0)
     );
-    const leader = group.blocks[0] || null;
-    const memberMetrics = group.blocks.map(trialBlockMemberMetrics);
-    const psId = String(group.ps_id || leader?.job_no || leader?.source_ps_id || '').trim();
-    const operationLabel = String(
-      group.operation_label || group.group_label ||
-      group.blocks.map(b => String(b.operation_name || b.job_no || 'Block')).filter(Boolean).join(' & ')
-    ).trim();
-    const totalSetup = memberMetrics.reduce((sum, b) => Math.max(sum, Number(b.setup_minutes || 0)), 0);
-    const totalCycle = memberMetrics.reduce((sum, b) => sum + Number(b.cycle_minutes_per_qty || 0), 0);
-    const targetQty = memberMetrics.reduce((sum, b) => Math.max(sum, Number(b.scheduled_qty || 0)), 0);
-    const actualGood = memberMetrics.reduce((sum, b) => sum + Number(b.outputTotal || 0), 0);
-    const actualReject = memberMetrics.reduce((sum, b) => sum + Number(b.rejectTotal || 0), 0);
-    const pairedMetrics = trialCombinedPairMetrics(memberMetrics, targetQty);
-    const pairedOutput = Number(group.paired_output_qty ?? pairedMetrics.pairedOutput ?? 0);
-    const enrichedMemberMetrics = memberMetrics.map(member => ({
-      ...member,
-      pairedExcessQty: Math.max(0, Number(member.netOutput || 0) - pairedOutput),
-      pairedShortfallQty: Math.max(0, pairedOutput - Number(member.netOutput || 0)),
-    }));
-    const starts = group.blocks.map(b => String(b.calculated_start_datetime || '')).filter(Boolean).sort();
-    const ends = group.blocks.map(b => String(b.calculated_end_datetime || '')).filter(Boolean).sort();
-    const visualStarts = group.blocks.map(b => String(b.visual_start_datetime || b.calculated_start_datetime || '')).filter(Boolean).sort();
-    const visualEnds = group.blocks.map(b => String(b.visual_end_datetime || b.calculated_end_datetime || '')).filter(Boolean).sort();
-    const status = memberMetrics.every(b => b.isDone)
-      ? 'DONE'
-      : memberMetrics.some(b => b.isInProgress || Number(b.outputTotal || 0) > 0 || Number(b.rejectTotal || 0) > 0)
-        ? 'IN_PROGRESS'
-        : 'NOT_STARTED';
-    const planningStatus = group.blocks.some(b => String(b.planning_status || '').toUpperCase() === 'PARTIALLY_PLANNED')
-      ? 'PARTIALLY_PLANNED'
-      : group.blocks.every(b => String(b.planning_status || '').toUpperCase() === 'PLANNED')
-        ? 'PLANNED'
-        : group.blocks[0]?.planning_status || 'UNPLANNED';
-    return {
-      ...group,
-      leader,
-      group_label: operationLabel,
-      ps_id: psId,
-      operation_label: operationLabel,
-      title: psId,
-      subtitle: operationLabel,
-      summary_line: `Qty ${fmt(targetQty, 0)}`,
-      target_qty: targetQty,
-      setup_minutes: totalSetup,
-      cycle_minutes_per_qty: totalCycle,
-      output_qty: actualGood,
-      reject_qty: actualReject,
-      paired_output_qty: pairedOutput,
-      remaining_qty: pairedMetrics.pairedRemainingQty,
-      remaining_minutes: pairedMetrics.pairedRemainingMinutes,
-      member_metrics: enrichedMemberMetrics,
-      status,
-      planning_status: planningStatus,
-      group_type: group.blocks.length > 1 ? 'COMBINED' : (leader?.group_type || ''),
-      group_start: starts[0] || leader?.calculated_start_datetime || '',
-      group_end: ends[ends.length - 1] || leader?.calculated_end_datetime || '',
-      visual_start_datetime: visualStarts[0] || leader?.visual_start_datetime || leader?.calculated_start_datetime || '',
-      visual_end_datetime: visualEnds[visualEnds.length - 1] || leader?.visual_end_datetime || leader?.calculated_end_datetime || '',
-    };
-  }).sort(trialCompareMachineGroups);
+  const leader = blocks[0] || null;
+  if (!leader) return null;
+
+  const groupId = Number(leader.group_id || summary?.group_id || 0);
+  const psId = String(summary?.ps_id || leader.job_no || leader.source_ps_id || '').trim();
+  const operationLabel = String(
+    summary?.operation_label || summary?.group_label || leader.group_label ||
+    (blocks.length > 1
+      ? blocks.map(b => String(b.source_op_no || b.operation_name || '')).filter(Boolean).join(' & ')
+      : (leader.source_op_no || leader.operation_name || ''))
+  ).trim();
+  const targetQty = summary?.target_qty != null
+    ? Number(summary.target_qty)
+    : blocks.reduce((max, b) => Math.max(max, Number(b.scheduled_qty || 0)), 0);
+  const actualGood = blocks.reduce((sum, b) => sum + Number(b.outputTotal || 0), 0);
+  const actualReject = blocks.reduce((sum, b) => sum + Number(b.rejectTotal || 0), 0);
+  const pairedMetrics = trialCombinedPairMetrics(blocks, targetQty);
+  const pairedOutput = Number(summary?.paired_output_qty ?? pairedMetrics.pairedOutput ?? 0);
+  const enrichedBlocks = blocks.map(member => ({
+    ...member,
+    pairedExcessQty: Math.max(0, Number(member.netOutput || 0) - pairedOutput),
+    pairedShortfallQty: Math.max(0, pairedOutput - Number(member.netOutput || 0)),
+  }));
+  const starts = blocks.map(b => String(b.calculated_start_datetime || '')).filter(Boolean).sort();
+  const ends = blocks.map(b => String(b.calculated_end_datetime || '')).filter(Boolean).sort();
+  const visualStarts = blocks.map(b => String(b.visual_start_datetime || b.calculated_start_datetime || '')).filter(Boolean).sort();
+  const visualEnds = blocks.map(b => String(b.visual_end_datetime || b.calculated_end_datetime || '')).filter(Boolean).sort();
+  const status = blocks.every(b => b.isDone)
+    ? 'DONE'
+    : blocks.some(b => b.isInProgress || Number(b.outputTotal || 0) > 0 || Number(b.rejectTotal || 0) > 0)
+      ? 'IN_PROGRESS'
+      : 'NOT_STARTED';
+  const planningStatus = blocks.some(b => String(b.planning_status || '').toUpperCase() === 'PARTIALLY_PLANNED')
+    ? 'PARTIALLY_PLANNED'
+    : blocks.every(b => String(b.planning_status || '').toUpperCase() === 'PLANNED')
+      ? 'PLANNED'
+      : blocks[0]?.planning_status || 'UNPLANNED';
+
+  return {
+    group_id: groupId,
+    group_label: operationLabel,
+    ps_id: psId,
+    operation_label: operationLabel,
+    leader,
+    blocks: enrichedBlocks,
+    member_metrics: enrichedBlocks,
+    title: psId,
+    subtitle: operationLabel,
+    summary_line: typeof fmt === 'function' ? `Qty ${fmt(targetQty, 0)}` : `Qty ${targetQty}`,
+    target_qty: targetQty,
+    setup_minutes: summary?.setup_minutes != null
+      ? Number(summary.setup_minutes)
+      : blocks.reduce((max, b) => Math.max(max, Number(b.setup_minutes || 0)), 0),
+    cycle_minutes_per_qty: summary?.cycle_minutes_per_qty != null
+      ? Number(summary.cycle_minutes_per_qty)
+      : blocks.reduce((sum, b) => sum + Number(b.cycle_minutes_per_qty || 0), 0),
+    output_qty: actualGood,
+    reject_qty: actualReject,
+    paired_output_qty: pairedOutput,
+    paired_remaining_qty: Number(summary?.paired_remaining_qty ?? pairedMetrics.pairedRemainingQty ?? 0),
+    paired_remaining_minutes: Number(summary?.paired_remaining_minutes ?? pairedMetrics.pairedRemainingMinutes ?? 0),
+    remaining_qty: pairedMetrics.pairedRemainingQty,
+    remaining_minutes: pairedMetrics.pairedRemainingMinutes,
+    status,
+    planning_status: planningStatus,
+    group_type: blocks.length > 1 ? 'COMBINED' : (leader.group_type || summary?.group_type || ''),
+    group_start: summary?.group_start || starts[0] || leader.calculated_start_datetime || '',
+    group_end: summary?.group_end || ends[ends.length - 1] || leader.calculated_end_datetime || '',
+    visual_start_datetime: visualStarts[0] || leader.visual_start_datetime || leader.calculated_start_datetime || leader.anchor_datetime || '',
+    visual_end_datetime: visualEnds[visualEnds.length - 1] || leader.visual_end_datetime || leader.calculated_end_datetime || '',
+    material_status: summary?.material_status || leader.material_status || {},
+  };
+}
+
+// Always build lane cards from live trialState.blocks. Stale block_groups snapshots used to
+// hide newly scheduled ops (sidebar consumed them via allocation keys, lanes stayed empty).
+function trialBlocksGroupedForMachine(machineId) {
+  const machineBlocks = trialBlocksForMachine(machineId);
+  if (!machineBlocks.length) return [];
+
+  const summaryByGroupId = new Map(
+    (trialState.block_groups || [])
+      .filter(g => String(g.machine_id || 0) === String(machineId) && Number(g.group_id || 0) > 0)
+      .map(g => [String(g.group_id), g])
+  );
+
+  const byKey = new Map();
+  machineBlocks.forEach(block => {
+    const groupId = Number(block.group_id || 0);
+    const key = groupId > 0 ? `g:${groupId}` : `s:${block.block_id}`;
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(block);
+  });
+
+  return Array.from(byKey.values())
+    .map(rawBlocks => {
+      const groupId = Number(rawBlocks[0]?.group_id || 0);
+      const summary = groupId > 0 ? summaryByGroupId.get(String(groupId)) : null;
+      return trialBuildMachineDisplayGroup(rawBlocks, summary);
+    })
+    .filter(Boolean)
+    .sort(trialCompareMachineGroups);
 }

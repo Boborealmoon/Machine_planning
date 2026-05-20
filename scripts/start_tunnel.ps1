@@ -1,9 +1,9 @@
-# Expose local Flask (default port 5000) via Cloudflare quick tunnel.
+# Expose local Flask (default port 5001) via Cloudflare quick tunnel.
 # Usage:
 #   .\scripts\start_tunnel.ps1
 #   .\scripts\start_tunnel.ps1 -Port 8080
 param(
-    [int]$Port = $(if ($env:FLASK_PORT) { [int]$env:FLASK_PORT } else { 5000 })
+    [int]$Port = $(if ($env:FLASK_PORT) { [int]$env:FLASK_PORT } else { 5001 })
 )
 
 $repoRoot = Split-Path $PSScriptRoot -Parent

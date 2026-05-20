@@ -62,7 +62,56 @@ function trialNormalizeScheduleDates(startText, endText) {
 }
 
 function trialDefaultScheduleDateFilter() {
-  return { start: trialTodayLocal(), end: '' };
+  return { start: '', end: '' };
+}
+
+// Execution status chips — match Process Sheets (.ps-op-status) colour coding.
+function trialNormalizeExecStatus(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return raw.toUpperCase().replace(/[\s-]+/g, '_');
+}
+
+function trialExecStatusLabel(value) {
+  const norm = trialNormalizeExecStatus(value);
+  const labels = {
+    P: 'Pending SI',
+    PENDING_SI: 'Pending SI',
+    R: 'Ready to Start',
+    READY_TO_START: 'Ready to Start',
+    I: 'In Process',
+    IN_PROCESS: 'In Process',
+    C: 'Completed',
+    COMPLETED: 'Completed',
+  };
+  return labels[norm] || String(value || '').trim();
+}
+
+function trialOpStatusClass(value) {
+  const status = trialNormalizeExecStatus(value);
+  if (status === 'I' || status === 'IN_PROCESS') return 'is-in-process';
+  if (status === 'R' || status === 'READY_TO_START') return 'is-ready';
+  if (status === 'P' || status === 'PENDING_SI') return 'is-pending';
+  if (status === 'C' || status === 'COMPLETED') return 'is-completed';
+  return 'is-unknown';
+}
+
+function trialOpStatusHtml(value, options = {}) {
+  const status = String(value || '').trim();
+  if (!trialNormalizeExecStatus(status)) return '';
+  const label = trialExecStatusLabel(status);
+  const opNo = String(options.opNo || '').trim();
+  const title = String(options.title || '').trim();
+  const compact = !!options.compact;
+  if (compact) {
+    return `<span class="ps-op-status ${trialOpStatusClass(status)}" title="${escapeHtml(title || label)}">${escapeHtml(label)}</span>`;
+  }
+  return `
+    <span class="ps-op-status ${trialOpStatusClass(status)}" title="${escapeHtml(title || label)}">
+      ${opNo ? `<strong>${escapeHtml(opNo)}</strong>` : ''}
+      <span>${escapeHtml(label)}</span>
+    </span>
+  `;
 }
 
 function trialResolvedScheduleDateFilterFromUrl() {

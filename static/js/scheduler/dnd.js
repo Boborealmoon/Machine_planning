@@ -495,6 +495,8 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
     });
     if (result && result.block) {
       trialPinBlock(result.block);
+      trialMergeBlockFromApi(result.block);
+      renderTrial();
     }
     await refreshMachines([Number(machineId || 0)].filter(Boolean));
     await syncTrialQueueState();

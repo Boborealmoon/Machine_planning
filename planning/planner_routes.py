@@ -565,11 +565,26 @@ def _api_trial_schedule_db():
             "SELECT profile_name, capacity_minutes, start_minute, note FROM planner_capacity_profile ORDER BY profile_id"
         ))
 
-        # Skip catalog, planning cards, group summaries, and material status for machine-scoped refreshes
+        # Skip catalog, planning cards, and material status for machine-scoped refreshes
         if is_machine_scoped:
             catalog = {"available": [], "planned": []}
             planning_cards = []
+            group_ids = sorted({
+                int(row["group_id"])
+                for row in blocks
+                if int(row.get("group_id") or 0) > 0
+            })
             block_groups = []
+            for group_id in group_ids:
+                try:
+                    group = combined_group_summary(con, group_id)
+                    if group:
+                        block_groups.append(group)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "combined_group_summary failed for group_id=%s (machine refresh)", group_id
+                    )
             material_status_map = {}
         else:
             catalog = {"available": [], "planned": []} if lite else trial_catalog_items(con, include_completed=bool(include_completed))

@@ -272,11 +272,24 @@ async function refreshMachines(machineIds) {
 
   const machineSet = new Set(ids.map(String));
 
-  // Replace blocks and segments for the affected machines only
-  trialState.blocks = [
-    ...(trialState.blocks || []).filter(b => !machineSet.has(String(b.machine_id))),
-    ...(data.blocks || []),
-  ];
+  // Replace blocks and segments for the affected machines only (keep pinned / just-created blocks)
+  const keptBlocks = (trialState.blocks || []).filter(b => !machineSet.has(String(b.machine_id)));
+  const refreshedBlocks = trialMergeBlocksWithSchedule(data.blocks || []);
+  trialState.blocks = [...keptBlocks, ...refreshedBlocks];
+
+  if (Array.isArray(data.block_groups) && data.block_groups.length) {
+    const refreshedGroupIds = new Set(
+      data.block_groups.map(g => String(g.group_id || 0)).filter(id => id !== '0')
+    );
+    trialState.block_groups = [
+      ...(trialState.block_groups || []).filter(g => {
+        const onMachine = machineSet.has(String(g.machine_id || 0));
+        const groupId = String(g.group_id || 0);
+        return !(onMachine || refreshedGroupIds.has(groupId));
+      }),
+      ...data.block_groups,
+    ];
+  }
   trialState.segments = [
     ...(trialState.segments || []).filter(s => !machineSet.has(String(s.machine_id))),
     ...(data.segments || []),

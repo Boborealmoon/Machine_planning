@@ -332,31 +332,26 @@
     line-height: 1.35;
     overflow-wrap: anywhere;
   }
-  .exec-badge {
-    display: inline-flex;
+  /* Execution status chips use Process Sheets .ps-op-status styles (style.css). */
+  .trial-catalog-op-status-strip {
+    padding: 0 12px 8px;
+    grid-column: 1 / -1;
+  }
+  .trial-catalog-ps > .trial-catalog-op-status-strip {
+    padding: 0 0 8px;
+  }
+  .trial-planning-card-title-row {
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    padding: 3px 8px;
-    border-radius: 999px;
-    font-size: 11px;
-    font-weight: 800;
-    white-space: nowrap;
+    gap: 6px;
+  }
+  .trial-planning-card-title-row .ps-op-status {
+    margin-top: 0;
+  }
+  .trial-catalog-ps-main .ps-op-status,
+  .trial-catalog-ps-main .ps-stage-badge {
     margin-top: 4px;
-  }
-  .exec-badge-pending-si {
-    background: rgba(245,158,11,0.12);
-    color: rgba(146,64,14,0.95);
-  }
-  .exec-badge-ready {
-    background: rgba(34,197,94,0.1);
-    color: rgba(22,101,52,0.95);
-  }
-  .exec-badge-in-process {
-    background: rgba(59,130,246,0.1);
-    color: rgba(30,64,175,0.95);
-  }
-  .exec-badge-completed {
-    background: rgba(107,114,128,0.1);
-    color: rgba(55,65,81,0.85);
   }
   .trial-catalog-actions {
     display: flex;
@@ -866,6 +861,18 @@
     font-size: 12px;
     color: var(--text2);
     font-weight: 700;
+  }
+  .trial-legend-sep {
+    padding: 0 2px;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    color: var(--text3);
+    font-weight: 800;
+  }
+  .trial-legend .trial-legend-status {
+    font-size: 11px;
+    pointer-events: none;
   }
   .trial-grid {
     display: grid;

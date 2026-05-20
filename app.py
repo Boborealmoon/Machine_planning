@@ -222,6 +222,20 @@ def _pp_voucher_search_haystack(entry: dict) -> str:
     return " ".join(str(part) for part in parts if part).lower()
 
 
+def _entry_matches_search_term(entry: dict, term: str) -> bool:
+    term = term.strip().lower()
+    if not term:
+        return True
+    ps_ids = [
+        str(entry.get(key) or "").lower()
+        for key in ("ps_id", "source_ps_id", "display_ps_id")
+        if entry.get(key)
+    ]
+    if ps_ids and any(term in ps_id for ps_id in ps_ids):
+        return True
+    return term in _pp_voucher_search_haystack(entry)
+
+
 def _filter_pp_vouchers_by_search(data: list, raw_search: str) -> list:
     terms = [term.strip().lower() for term in str(raw_search or "").replace(";", ",").split(",") if term.strip()]
     if not terms:
@@ -229,7 +243,7 @@ def _filter_pp_vouchers_by_search(data: list, raw_search: str) -> list:
     return [
         entry
         for entry in data
-        if any(term in _pp_voucher_search_haystack(entry) for term in terms)
+        if any(_entry_matches_search_term(entry, term) for term in terms)
     ]
 
 
@@ -307,6 +321,8 @@ def _pp_vouchers_with_ops_payload(cache_rows):
                 "due_date": str(row.get("due_date") or ""),
                 "order_date": str(row.get("order_date") or ""),
                 "bom_code": row.get("bom_code") or "",
+                "erp_bom_code": row.get("bom_code") or "",
+                "inventory_code": part_no,
                 "source_voucher_no": row.get("source_voucher_no") or "",
                 "source_line_item_no": row.get("source_line_item_no") or "",
                 "qty_shipped": float(row.get("qty_shipped") or 0),
@@ -413,7 +429,114 @@ def _pp_vouchers_with_ops_payload(cache_rows):
         )
         entry["is_completed"] = entry["shipped_completed"]
         entry["execution_completed"] = entry["shipped_completed"]
+        bom_code = str(entry.get("bom_code") or "").strip()
+        entry["erp_bom_code"] = bom_code
+        entry["inventory_code"] = str(entry.get("inventory_code") or entry.get("part_no") or "").strip()
     return list(grouped.values())
+
+
+def _enrich_pp_vouchers_planner_data(entries):
+    """Attach planner BOM routes and selected flow to ERP catalog entries."""
+    if not entries:
+        return entries
+
+    from planning.helpers import planner_db, rows as db_rows
+    from planning.utils import compact_text
+
+    source_ids = set()
+    inventory_codes = set()
+    for entry in entries:
+        source_ps_id = compact_text(entry.get("source_ps_id"))
+        if not source_ps_id:
+            ps_id = compact_text(entry.get("ps_id"))
+            source_ps_id = ps_id.split("::", 1)[0] if ps_id else ""
+        if source_ps_id:
+            source_ids.add(source_ps_id)
+        inv = compact_text(entry.get("inventory_code") or entry.get("part_no"))
+        if inv:
+            inventory_codes.add(inv)
+
+    planner_rows = {}
+    flow_cache = {}
+    bom_code_by_id = {}
+
+    with planner_db() as con:
+        if source_ids:
+            for row in db_rows(
+                con.execute(
+                    """
+                    SELECT source_ps_id, pp_partial_no, inventory_code, selected_bom_id
+                    FROM planner_process_sheet
+                    WHERE source_ps_id = ANY(%s)
+                    """,
+                    (list(source_ids),),
+                )
+            ):
+                key = (compact_text(row["source_ps_id"]), int(row.get("pp_partial_no") or 1))
+                planner_rows[key] = row
+
+        if inventory_codes:
+            for row in db_rows(
+                con.execute(
+                    """
+                    SELECT bom_id, inventory_code, bom_code, bom_desc, is_default
+                    FROM planner_bom_variation
+                    WHERE inventory_code = ANY(%s)
+                    ORDER BY is_default DESC, bom_id
+                    """,
+                    (list(inventory_codes),),
+                )
+            ):
+                inv = compact_text(row["inventory_code"])
+                flow_cache.setdefault(inv, []).append(
+                    {
+                        "bom_id": int(row["bom_id"]),
+                        "bom_code": compact_text(row["bom_code"]),
+                        "bom_desc": compact_text(row.get("bom_desc")),
+                        "is_default": bool(row.get("is_default")),
+                    }
+                )
+
+        bom_ids = [
+            int(row["selected_bom_id"])
+            for row in planner_rows.values()
+            if int(row.get("selected_bom_id") or 0) > 0
+        ]
+        if bom_ids:
+            for row in db_rows(
+                con.execute(
+                    """
+                    SELECT bom_id, bom_code
+                    FROM planner_bom_variation
+                    WHERE bom_id = ANY(%s)
+                    """,
+                    (bom_ids,),
+                )
+            ):
+                bom_code_by_id[int(row["bom_id"])] = compact_text(row["bom_code"])
+
+    for entry in entries:
+        bom_code = compact_text(entry.get("erp_bom_code") or entry.get("bom_code"))
+        entry["erp_bom_code"] = bom_code
+        source_ps_id = compact_text(entry.get("source_ps_id"))
+        if not source_ps_id:
+            ps_id = compact_text(entry.get("ps_id"))
+            source_ps_id = ps_id.split("::", 1)[0] if ps_id else ""
+        partial_no = int(entry.get("pp_partial_no") or 1)
+        planner_row = planner_rows.get((source_ps_id, partial_no))
+        if planner_row:
+            inv = compact_text(planner_row.get("inventory_code"))
+            if inv:
+                entry["inventory_code"] = inv
+            bom_id = int(planner_row.get("selected_bom_id") or 0)
+            if bom_id:
+                entry["selected_bom_id"] = bom_id
+                entry["selected_bom_code"] = bom_code_by_id.get(bom_id, entry.get("selected_bom_code") or "")
+        inv = compact_text(entry.get("inventory_code") or entry.get("part_no"))
+        entry["inventory_code"] = inv
+        entry["flow_options"] = flow_cache.get(inv, entry.get("flow_options") or [])
+
+    return entries
 
 
 @app.get("/api/pp-vouchers")
@@ -478,7 +601,7 @@ def api_pp_vouchers_with_ops():
             threading.Thread(target=_bg_sync, daemon=True).start()
 
         cache_rows = _fetch_pp_vouchers_cache_rows(include_completed)
-        data = _pp_vouchers_with_ops_payload(cache_rows)
+        data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
         if not include_completed:
             data = [entry for entry in data if not entry.get("shipped_completed")]
         if use_cache:
@@ -502,7 +625,7 @@ def api_pp_vouchers_with_ops():
                 headers=supa_headers(write=True),
                 params=params,
             )
-            data = _pp_vouchers_with_ops_payload(cache_rows)
+            data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
             if not include_completed:
                 data = [entry for entry in data if not entry.get("shipped_completed")]
             if use_cache:

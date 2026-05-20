@@ -123,6 +123,9 @@ def trial_catalog_items(con, include_completed=False):
                        MIN(due_date) AS due_date,
                        MAX(status) AS erp_status,
                        MAX(execution_status) AS execution_status,
+                       MAX(current_stage_no) AS current_stage_no,
+                       MAX(current_stage_desc) AS current_stage_desc,
+                       MAX(current_stage_status) AS current_stage_status,
                        MAX(total_qty) AS total_qty,
                        MAX(partial_qty) AS partial_qty,
                        MAX(source_line_item_no) AS source_line_item_no,
@@ -136,7 +139,8 @@ def trial_catalog_items(con, include_completed=False):
             voucher_stage_outputs AS (
                 SELECT ps_id, pp_partial_no, stage_no,
                        MAX(wo_qty_produced) AS wo_qty_produced,
-                       MAX(wo_qty_rejected) AS wo_qty_rejected
+                       MAX(wo_qty_rejected) AS wo_qty_rejected,
+                       MAX(execution_status) AS execution_status
                 FROM pp_vouchers_cache
                 WHERE stage_no IS NOT NULL
                 GROUP BY ps_id, pp_partial_no, stage_no
@@ -155,6 +159,9 @@ def trial_catalog_items(con, include_completed=False):
                        MIN(due_date) AS due_date,
                        MAX(erp_status) AS erp_status,
                        MAX(execution_status) AS execution_status,
+                       MAX(current_stage_no) AS current_stage_no,
+                       MAX(current_stage_desc) AS current_stage_desc,
+                       MAX(current_stage_status) AS current_stage_status,
                        MAX(qty_shipped) AS qty_shipped
                 FROM voucher_partials
                 GROUP BY ps_id
@@ -179,13 +186,17 @@ def trial_catalog_items(con, include_completed=False):
                    COALESCE(st.due_date, vp.due_date) AS due_date,
                    COALESCE(st.erp_status, vp.erp_status) AS erp_status,
                    COALESCE(st.execution_status, vp.execution_status) AS execution_status,
+                   COALESCE(st.current_stage_no, vp.current_stage_no) AS current_stage_no,
+                   COALESCE(st.current_stage_desc, vp.current_stage_desc) AS current_stage_desc,
+                   COALESCE(st.current_stage_status, vp.current_stage_status) AS current_stage_status,
                    st.qty_shipped,
                    st.source_line_item_no,
                    pfs.op_seq_id AS op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
                    pfs.machine_category, pfs.preferred_machine,
                    pfs.cycle_time, pfs.setup_time, pfs.is_last_op,
                    COALESCE(vso.wo_qty_produced, 0) AS erp_finished_qty,
-                   COALESCE(vso.wo_qty_rejected, 0) AS erp_reject_qty
+                   COALESCE(vso.wo_qty_rejected, 0) AS erp_reject_qty,
+                   COALESCE(vso.execution_status, '') AS op_execution_status
             FROM planner_process_sheet ps
             LEFT JOIN voucher_partials vp
                    ON vp.ps_id = ps.source_ps_id AND vp.pp_partial_no = ps.pp_partial_no
@@ -315,6 +326,9 @@ def trial_catalog_items(con, include_completed=False):
                 "source_line_item_no": row.get("source_line_item_no") or "",
                 "status": row.get("erp_status") or row["status"] or "",
                 "execution_status": row.get("execution_status") or None,
+                "current_stage_no": row.get("current_stage_no") or None,
+                "current_stage_desc": row.get("current_stage_desc") or "",
+                "current_stage_status": row.get("current_stage_status") or "",
                 "planner_status": row["planner_status"] or "",
                 "selected_bom_id": int(row["selected_bom_id"] or 0),
                 "selected_bom_code": row["selected_bom_code"] or "",
@@ -355,6 +369,7 @@ def trial_catalog_items(con, include_completed=False):
             "erp_reject_qty": erp_reject_qty,
             "remaining_qty": remaining_qty,
             "compatible_machine_group": row["machine_category"] or "",
+            "execution_status": compact_text(row.get("op_execution_status") or ""),
         }
         item["all_ops"].append(op_item)
         if remaining_qty > 0:
@@ -441,6 +456,7 @@ def trial_catalog_items(con, include_completed=False):
                     "setup_minutes": float(op["setup_time"] or 0),
                     "cycle_minutes_per_qty": float(op["cycle_time"] or 0),
                     "compatible_machine_group": op["compatible_machine_group"] or "",
+                    "execution_status": op.get("execution_status") or "",
                     "op": op,
                 }
             )
