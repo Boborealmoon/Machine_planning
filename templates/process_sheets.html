@@ -56,7 +56,7 @@
         <label class="checkbox-label"><input type="checkbox" id="ps-overdue-only" /> Overdue Only</label>
         <label class="checkbox-label"><input type="checkbox" id="ps-hide-direct-pp" checked /> Hide Direct PP</label>
         <label class="checkbox-label"><input type="checkbox" id="ps-hide-sr-tags" checked /> Hide [SR]</label>
-        <label class="checkbox-label"><input type="checkbox" id="ps-show-completed" checked /> Show Completed</label>
+        <label class="checkbox-label"><input type="checkbox" id="ps-show-completed" /> Show Completed</label>
         <label class="checkbox-label"><input type="checkbox" id="ps-completed-only" /> Completed Only</label>
       </div>
     </div>
@@ -100,5 +100,5 @@
 
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/process_sheets.js', v='process-2024-tag-filter-20260519') }}"></script>
+<script src="{{ url_for('static', filename='js/process_sheets.js', v='current-stage-pill-20260519') }}"></script>
 {% endblock %}

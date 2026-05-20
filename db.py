@@ -10,6 +10,34 @@ load_dotenv()
 _pool = None
 
 
+def _db_connect_timeout() -> int:
+    return max(1, int(os.getenv("DB_CONNECT_TIMEOUT", "10")))
+
+
+def domain_sync_likely_unreachable() -> bool:
+    """True when DB_HOST is a private LAN address (unreachable from cloud hosts)."""
+    host = (os.getenv("DB_HOST") or "").strip()
+    if not host or host in {"localhost", "127.0.0.1", "::1"}:
+        return False
+    parts = host.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        octets = [int(p) for p in parts]
+    except ValueError:
+        return False
+    if any(o < 0 or o > 255 for o in octets):
+        return False
+    a, b = octets[0], octets[1]
+    if a == 10:
+        return True
+    if a == 172 and 16 <= b <= 31:
+        return True
+    if a == 192 and b == 168:
+        return True
+    return False
+
+
 def get_pool():
     global _pool
     if _pool is None:
@@ -20,6 +48,7 @@ def get_pool():
             dbname=os.getenv("DB_NAME"),
             user=os.getenv("DB_USER"),
             password=os.getenv("DB_PASSWORD"),
+            connect_timeout=_db_connect_timeout(),
         )
     return _pool
 
@@ -70,7 +99,9 @@ def get_planner_pool():
                 "SUPA_DB_URL env var is not set. "
                 "Add it to .env: postgresql://postgres:[pw]@db.[ref].supabase.co:5432/postgres"
             )
-        _planner_pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=dsn)
+        _planner_pool = psycopg2.pool.SimpleConnectionPool(
+            1, 10, dsn=dsn, connect_timeout=_db_connect_timeout()
+        )
     return _planner_pool
 
 

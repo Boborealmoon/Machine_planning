@@ -528,6 +528,7 @@ with_desc AS (
     LEFT JOIN public.part_desc pd ON wp.final_inventory_code = pd.inventory_code
 ),
 current_execution_stage AS (
+    -- First open stage in route order (not the last). Prefer In Process over Ready/Pending.
     SELECT DISTINCT ON (source_mps_no, pp_partial_no)
         source_mps_no,
         pp_partial_no,
@@ -537,7 +538,16 @@ current_execution_stage AS (
     FROM public.mfg_wo_status
     WHERE COALESCE(execution_status, '') <> 'C'
       AND stage_no IS NOT NULL
-    ORDER BY source_mps_no, pp_partial_no, stage_no DESC
+    ORDER BY
+        source_mps_no,
+        pp_partial_no,
+        CASE execution_status
+            WHEN 'I' THEN 0
+            WHEN 'R' THEN 1
+            WHEN 'P' THEN 2
+            ELSE 3
+        END,
+        stage_no ASC
 ),
 with_wo_status AS (
     SELECT
@@ -690,7 +700,6 @@ CREATE INDEX IF NOT EXISTS idx_so_detail_sales_order
 
 def _ensure_pp_staging_schema():
     from db import planner_get_conn, planner_release_conn
-    from sync import ensure_pp_staging_shadow_tables
 
     conn = planner_get_conn()
     try:
@@ -704,7 +713,6 @@ def _ensure_pp_staging_schema():
         raise
     finally:
         planner_release_conn(conn)
-    ensure_pp_staging_shadow_tables()
 
 
 @app.post("/api/admin/fix-execution-status")
@@ -861,10 +869,20 @@ def api_pp_vouchers_cache_rebuild():
 @app.post("/api/pp-staging/sync")
 def api_pp_staging_sync():
     """Run PP staging syncs; optional ?steps= or JSON {\"steps\": [...]}."""
+    from db import domain_sync_likely_unreachable
     from sync import run_pp_staging_sync
     try:
         steps, force = _parse_pp_staging_sync_args()
         staging_only = [s for s in steps if s != "pp_vouchers_cache"]
+        if staging_only and domain_sync_likely_unreachable():
+            return jsonify({
+                "error": (
+                    "COMAIN (DB_HOST) is on a private network and cannot be reached from "
+                    "this server. Run ERP sync on your LAN (scripts/run_pp_staging_sync.py) "
+                    "or expose COMAIN via VPN/tunnel and point DB_HOST at that endpoint."
+                ),
+                "db_host": os.getenv("DB_HOST"),
+            }), 503
         if staging_only:
             _ensure_pp_staging_schema()
         results = {"schema": {"updated": bool(staging_only)}}
@@ -888,13 +906,25 @@ def api_pp_staging_sync():
 
 @app.get("/api/health")
 def health():
+    from db import domain_sync_likely_unreachable
+    payload = {
+        "status": "ok",
+        "domain_sync_unreachable": domain_sync_likely_unreachable(),
+        "db_host": os.getenv("DB_HOST"),
+    }
+    if domain_sync_likely_unreachable():
+        payload["db"] = "unreachable_private_host"
+        return jsonify(payload)
     try:
         from db import get_conn, release_conn
         conn = get_conn()
         release_conn(conn)
-        return jsonify({"status": "ok", "db": "connected"})
+        payload["db"] = "connected"
+        return jsonify(payload)
     except Exception as e:
-        return jsonify({"status": "ok", "db": "disconnected", "error": str(e)})
+        payload["db"] = "disconnected"
+        payload["error"] = str(e)
+        return jsonify(payload)
 
 
 # ── API: Inventory BOM — sources (left panel) ──────────────────────────────
@@ -1561,6 +1591,7 @@ AUTO_SYNC_INTERVAL = int(os.getenv("AUTO_SYNC_INTERVAL", 900))  # default 15 min
 
 
 def _auto_sync_loop():
+    from db import domain_sync_likely_unreachable
     from sync import (
         run_pp_voucher_sync, run_process_sheet_sync, run_workorder_status_sync,
         run_part_desc_sync, run_pp_partial_sync, run_mfg_wo_status_sync,
@@ -1568,6 +1599,13 @@ def _auto_sync_loop():
     )
     log.info("auto-sync thread started, interval=%ds", AUTO_SYNC_INTERVAL)
     while True:
+        if domain_sync_likely_unreachable():
+            log.warning(
+                "auto-sync skipped: DB_HOST %s is not reachable from this host",
+                os.getenv("DB_HOST"),
+            )
+            time.sleep(AUTO_SYNC_INTERVAL)
+            continue
         try:
             run_pp_voucher_sync(force=True)
             run_process_sheet_sync(force=True)
@@ -1584,9 +1622,14 @@ def _auto_sync_loop():
         time.sleep(AUTO_SYNC_INTERVAL)
 
 
-if os.environ.get("WERKZEUG_RUN_MAIN") != "false":
+_disable_auto_sync = os.getenv("DISABLE_AUTO_SYNC", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+if os.environ.get("WERKZEUG_RUN_MAIN") != "false" and not _disable_auto_sync:
     _t = threading.Thread(target=_auto_sync_loop, daemon=True, name="auto-sync")
     _t.start()
+elif _disable_auto_sync:
+    log.info("background auto-sync disabled (DISABLE_AUTO_SYNC)")
 
 
 if __name__ == "__main__":

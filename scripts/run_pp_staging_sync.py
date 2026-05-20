@@ -4,6 +4,7 @@ Run from repo root:
   python -u scripts/run_pp_staging_sync.py
   python -u scripts/run_pp_staging_sync.py --steps pp_voucher,mfg_wo_status,cache
   python -u scripts/run_pp_staging_sync.py --skip-cache
+  python -u scripts/run_pp_staging_sync.py --log-file logs/erp-sync-test.log
 
 Uses WERKZEUG_RUN_MAIN=false so importing app does not start the Flask
 auto-sync thread (that thread was racing this script and causing skips).
@@ -16,15 +17,20 @@ from pathlib import Path
 # Must be set before app import — app.py starts auto-sync otherwise.
 os.environ.setdefault("WERKZEUG_RUN_MAIN", "false")
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_REPO = Path(__file__).resolve().parents[1]
+_SCRIPTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_SCRIPTS))
 
 from app import app, _ensure_pp_staging_schema, _invalidate_pp_vouchers_with_ops_cache
-from sync import (
-    PP_STAGING_STEP_ORDER,
-    resolve_pp_staging_steps,
-    run_pp_staging_sync,
-)
 from db import planner_get_conn, planner_release_conn
+from sync_progress import ErpSyncProgress
+from sync import (
+    PP_STAGING_STEP_LABELS,
+    PP_STAGING_STEP_ORDER,
+    _STEP_RUNNERS,
+    resolve_pp_staging_steps,
+)
 
 
 def main():
@@ -43,6 +49,16 @@ def main():
         action="store_true",
         help="Respect sync cooldown (default: force=True)",
     )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        help="Append progress lines to this log file (in addition to stdout)",
+    )
+    parser.add_argument(
+        "--json-log",
+        type=Path,
+        help="Write structured JSON summary for this run",
+    )
     args = parser.parse_args()
 
     if args.skip_cache and args.steps:
@@ -58,24 +74,40 @@ def main():
         steps = None
 
     force = not args.no_force
+    progress = ErpSyncProgress(
+        log_file=args.log_file,
+        json_file=args.json_log,
+    )
 
     with app.app_context():
         ordered = resolve_pp_staging_steps(steps)
         staging_only = [s for s in ordered if s != "pp_vouchers_cache"]
+        total = len(ordered)
+        progress.run_start(ordered, PP_STAGING_STEP_LABELS)
+
         if staging_only:
             _ensure_pp_staging_schema()
-        results = run_pp_staging_sync(steps=steps, force=force)
-        for name in ordered:
-            result = results.get(name, {})
-            print(f"--- {name} ---", flush=True)
-            print(result, flush=True)
-            if result.get("skipped"):
-                print(f"WARNING: {name} was skipped: {result.get('reason')}", flush=True)
+            progress.emit("  schema: staging views/tables verified")
+
+        failed = False
+        for index, step in enumerate(ordered, start=1):
+            label = PP_STAGING_STEP_LABELS.get(step, step)
+            progress.step_start(index, total, step, label)
+            try:
+                result = _STEP_RUNNERS[step](force=force)
+            except Exception as exc:
+                result = {"error": str(exc)}
+            progress.step_end(index, total, step, label, result)
             if result.get("error"):
-                print(f"ERROR: {name} failed", flush=True)
-                sys.exit(1)
-        if results.get("_failed_at"):
+                failed = True
+                break
+            if result.get("skipped") and not result.get("row_count"):
+                pass  # continue pipeline unless hard error
+
+        if failed:
+            progress.run_end(False)
             sys.exit(1)
+
         if "pp_vouchers_cache" in ordered or staging_only:
             _invalidate_pp_vouchers_with_ops_cache()
 
@@ -84,11 +116,14 @@ def main():
             cur = conn.cursor()
             for tbl in ("pp_voucher", "pp_vouchers_cache", "so_detail"):
                 cur.execute(f"SELECT COUNT(*) FROM {tbl}")
-                print(f"{tbl}:", cur.fetchone()[0])
+                count = cur.fetchone()[0]
+                progress.emit(f"  table {tbl}: {count} rows")
             cur.execute("SELECT COUNT(*) FROM vw_pp_vouchers")
-            print("vw_pp_vouchers:", cur.fetchone()[0])
+            progress.emit(f"  view vw_pp_vouchers: {cur.fetchone()[0]} rows")
         finally:
             planner_release_conn(conn)
+
+        progress.run_end(True)
 
 
 if __name__ == "__main__":

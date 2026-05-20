@@ -352,7 +352,16 @@ current_execution_stage AS (
     FROM public.mfg_wo_status
     WHERE COALESCE(execution_status, '') <> 'C'
       AND stage_no IS NOT NULL
-    ORDER BY source_mps_no, pp_partial_no, stage_no DESC
+    ORDER BY
+        source_mps_no,
+        pp_partial_no,
+        CASE execution_status
+            WHEN 'I' THEN 0
+            WHEN 'R' THEN 1
+            WHEN 'P' THEN 2
+            ELSE 3
+        END,
+        stage_no ASC
 ),
 with_wo_status AS (
     SELECT

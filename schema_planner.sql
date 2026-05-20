@@ -14,9 +14,9 @@
 --
 -- WHY SOFT REFERENCES?
 --   pp_vouchers_cache and bom_op_stage are periodically reloaded by the sync pipeline
---   (shadow-table swap when SUPA_DB_URL is set; legacy REST delete+insert otherwise).
+--   (direct Postgres TRUNCATE+insert when SUPA_DB_URL is set; REST otherwise).
 --   Hard FK constraints would block those reloads. We store natural text keys and
---   join at query time. Companion tables: public.{table}_shadow for atomic swaps.
+--   join at query time.
 --
 -- planner_ps_id CONVENTION:
 --   planner_ps_id = source_ps_id || '::' || pp_partial_no

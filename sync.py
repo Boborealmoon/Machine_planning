@@ -1,11 +1,8 @@
 """
 Sync pipeline: COMAIN -> Supabase
 
-Reads source data from COMAIN and reloads Supabase tables via REST API
-or direct Postgres (SUPA_DB_URL) with shadow-table swap when available.
-
-Phase 1: load into {table}_shadow, then rename-swap so the live table
-is never empty while a sync is in progress.
+Reads source data from COMAIN and reloads Supabase tables via direct Postgres
+(SUPA_DB_URL) when available, otherwise REST delete+insert.
 
 Thread-safe: a lock prevents concurrent syncs; a cooldown prevents
 re-syncing within SYNC_COOLDOWN_SECS of the last successful sync.
@@ -94,79 +91,40 @@ def _supa_reload(table: str, clear_col: str, columns: list, rows: list) -> None:
         r.raise_for_status()
 
 
-# ── Phase 1: shadow-table swap (planner / SUPA_DB_URL) ─────────────────────
+# ── Direct Postgres reload (SUPA_DB_URL) ───────────────────────────────────
 
-PP_STAGING_SHADOW_TABLES = [
-    "pp_voucher",
-    "mfg_process_sheet_info",
-    "workorder_status",
-    "sum_qty_shipped_by_sales_order",
-    "so_detail",
-    "part_desc",
-    "pp_partial",
-    "mfg_wo_status",
-    "pp_vouchers_cache",
-]
-
-RELOAD_SHADOW_SWAP = "shadow_swap"
+RELOAD_DIRECT_POSTGRES = "direct_postgres"
 RELOAD_REST_DELETE_INSERT = "rest_delete_insert"
+
+PLANNER_STATEMENT_TIMEOUT_MS = int(os.getenv("PLANNER_STATEMENT_TIMEOUT_MS", "600000"))
 
 
 def _planner_db_available() -> bool:
     return bool(os.getenv("SUPA_DB_URL", "").strip())
 
 
-def _planner_rename_swap(cur, table: str) -> None:
-    """Atomic rename: live <-> shadow (old live becomes next shadow)."""
-    cur.execute(f"ALTER TABLE public.{table} RENAME TO {table}_old")
-    cur.execute(f"ALTER TABLE public.{table}_shadow RENAME TO {table}")
-    cur.execute(f"ALTER TABLE public.{table}_old RENAME TO {table}_shadow")
+def _planner_set_timeout(cur) -> None:
+    cur.execute(f"SET LOCAL statement_timeout = '{PLANNER_STATEMENT_TIMEOUT_MS}'")
 
 
-def ensure_pp_staging_shadow_tables() -> None:
-    """Create {table}_shadow clones for Phase 1 swap reloads."""
-    if not _planner_db_available():
-        return
-    from db import planner_get_conn, planner_release_conn
-
-    conn = planner_get_conn()
-    try:
-        with conn.cursor() as cur:
-            for table in PP_STAGING_SHADOW_TABLES:
-                cur.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS public.{table}_shadow
-                    (LIKE public.{table} INCLUDING ALL)
-                    """
-                )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        planner_release_conn(conn)
-
-
-def _planner_swap_reload(table: str, columns: list, rows: list) -> int:
-    """Load rows into {table}_shadow, then rename-swap with live table."""
+def _planner_reload(table: str, columns: list, rows: list) -> int:
+    """TRUNCATE live table and insert rows via SUPA_DB_URL."""
     from db import planner_get_conn, planner_release_conn
 
     live = f"public.{table}"
-    shadow = f"public.{table}_shadow"
     conn = planner_get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(f"CREATE TABLE IF NOT EXISTS {shadow} (LIKE {live} INCLUDING ALL)")
-            cur.execute(f"TRUNCATE {shadow}")
+            _planner_set_timeout(cur)
+            cur.execute(f"TRUNCATE {live}")
             if rows:
                 col_list = ", ".join(columns)
                 placeholders = ", ".join(["%s"] * len(columns))
-                insert_sql = f"INSERT INTO {shadow} ({col_list}) VALUES ({placeholders})"
+                insert_sql = f"INSERT INTO {live} ({col_list}) VALUES ({placeholders})"
                 for i in range(0, len(rows), BATCH_SIZE):
                     cur.executemany(insert_sql, rows[i : i + BATCH_SIZE])
-            cur.execute(f"SELECT COUNT(*) FROM {shadow}")
+            cur.execute(f"SELECT COUNT(*) FROM {live}")
             row_count = int(cur.fetchone()[0])
-            _planner_rename_swap(cur, table)
         conn.commit()
         return row_count
     except Exception:
@@ -177,15 +135,14 @@ def _planner_swap_reload(table: str, columns: list, rows: list) -> int:
 
 
 def _staging_reload(table: str, clear_col: str, columns: list, rows: list) -> str:
-    """Prefer shadow swap via SUPA_DB_URL; fall back to REST delete+insert."""
+    """Prefer direct Postgres via SUPA_DB_URL; fall back to REST delete+insert."""
     if _planner_db_available():
         try:
-            ensure_pp_staging_shadow_tables()
-            _planner_swap_reload(table, columns, rows)
-            return RELOAD_SHADOW_SWAP
+            _planner_reload(table, columns, rows)
+            return RELOAD_DIRECT_POSTGRES
         except Exception as exc:
             log.warning(
-                "shadow swap failed for %s (%s); using REST delete+insert",
+                "direct Postgres reload failed for %s (%s); using REST delete+insert",
                 table,
                 exc,
             )
@@ -194,30 +151,24 @@ def _staging_reload(table: str, clear_col: str, columns: list, rows: list) -> st
 
 
 def _planner_cache_rebuild() -> int:
-    """Rebuild pp_vouchers_cache via shadow swap (live table stays readable until swap)."""
+    """Rebuild pp_vouchers_cache from vw_pp_vouchers via direct Postgres."""
     from db import planner_get_conn, planner_release_conn
 
     cols = ", ".join(_PP_VOUCHERS_COLS)
     conn = planner_get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS public.pp_vouchers_cache_shadow
-                (LIKE public.pp_vouchers_cache INCLUDING ALL)
-                """
-            )
-            cur.execute("TRUNCATE public.pp_vouchers_cache_shadow")
+            _planner_set_timeout(cur)
+            cur.execute("TRUNCATE public.pp_vouchers_cache")
             cur.execute(
                 f"""
-                INSERT INTO public.pp_vouchers_cache_shadow ({cols})
+                INSERT INTO public.pp_vouchers_cache ({cols})
                 SELECT {cols}
                 FROM public.vw_pp_vouchers
                 ORDER BY ps_id, pp_partial_no, stage_no
                 """
             )
-            row_count = cur.rowcount
-            _planner_rename_swap(cur, "pp_vouchers_cache")
+            row_count = int(cur.rowcount)
         conn.commit()
         return row_count
     except Exception:
@@ -391,12 +342,10 @@ def run_sync(force: bool = False) -> dict:
         t0 = time.monotonic()
         if not _planner_db_available():
             raise RuntimeError(
-                "SUPA_DB_URL is required to rebuild pp_vouchers_cache "
-                "(shadow-table swap uses direct Postgres)"
+                "SUPA_DB_URL is required to rebuild pp_vouchers_cache (direct Postgres)"
             )
-        ensure_pp_staging_shadow_tables()
         row_count = _planner_cache_rebuild()
-        reload_mode = RELOAD_SHADOW_SWAP
+        reload_mode = RELOAD_DIRECT_POSTGRES
 
         _last_sync_at = time.monotonic()
         log.info(
@@ -996,23 +945,21 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
         finally:
             release_conn(src)
 
-        if not _planner_db_available():
-            raise RuntimeError("SUPA_DB_URL is required for mfg_wo_status shadow swap")
-        ensure_pp_staging_shadow_tables()
-        row_count = _planner_swap_reload("mfg_wo_status", _MFG_WO_STATUS_COLS, rows)
-        reload_mode = RELOAD_SHADOW_SWAP
+        reload_mode = _staging_reload(
+            "mfg_wo_status", "_loaded_at", _MFG_WO_STATUS_COLS, rows
+        )
 
         _last_wo_status_sync_at = time.monotonic()
         log.info(
             "mfg_wo_status sync complete (%s) - %d rows in %dms",
             reload_mode,
-            row_count,
+            len(rows),
             int((time.monotonic() - t0) * 1000),
         )
         return {
             "synced_at": datetime.now(timezone.utc).isoformat(),
             "duration_ms": int((time.monotonic() - t0) * 1000),
-            "row_count": row_count,
+            "row_count": len(rows),
             "reload": reload_mode,
         }
 
@@ -1146,10 +1093,10 @@ def get_pp_staging_status() -> dict:
         "steps": steps,
         "step_order": PP_STAGING_STEP_ORDER,
         "cooldown_secs": SYNC_COOLDOWN_SECS,
-        "shadow_swap_available": _planner_db_available(),
+        "direct_postgres_available": _planner_db_available(),
         "reload_modes": {
-            RELOAD_SHADOW_SWAP: "Load shadow table, rename-swap (live never empty)",
-            RELOAD_REST_DELETE_INSERT: "REST delete all rows then insert (legacy)",
+            RELOAD_DIRECT_POSTGRES: "TRUNCATE + insert via SUPA_DB_URL",
+            RELOAD_REST_DELETE_INSERT: "REST delete all rows then insert",
         },
     }
 
