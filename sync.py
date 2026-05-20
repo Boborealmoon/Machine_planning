@@ -49,6 +49,8 @@ _wo_status_sync_lock = threading.Lock()
 _last_qty_shipped_sync_at: float = 0.0
 _qty_shipped_sync_lock = threading.Lock()
 
+_stg_cycle_time_cache_lock = threading.Lock()
+
 
 # ── REST helpers ───────────────────────────────────────────────────────────
 
@@ -194,6 +196,184 @@ def _planner_cache_rebuild() -> int:
         raise
     finally:
         planner_release_conn(conn)
+
+
+# ── Cached stg_cycle_time_comparison (bom_op_stage + planner_program_tools) ─
+
+_STG_CYCLE_TIME_INSERT_SQL = """
+INSERT INTO public.stg_cycle_time_comparison (
+    part_no,
+    bom_code,
+    stage_no,
+    stage_desc,
+    erp_op_no,
+    op_index,
+    erp_machine_no,
+    erp_setup_time,
+    erp_cycle_time,
+    erp_loaded_at,
+    planner_program_tools_id,
+    gs_cnc_machine_no,
+    gs_operation_no_raw,
+    gs_op_extracted_int,
+    gs_set_up_time,
+    gs_cycle_time,
+    gs_synced_at,
+    gs_match_method,
+    cache_built_at
+)
+WITH gs_normalized AS (
+    SELECT
+        p.id AS planner_program_tools_id,
+        NULLIF(trim(p.part_no_erp), '') AS part_no_erp,
+        p.cnc_machine_no,
+        p.operation_no AS gs_operation_no_raw,
+        NULLIF(substring(trim(COALESCE(p.operation_no, '')) FROM '^[^0-9]*([0-9]+)'), '')
+            ::integer AS gs_op_extracted_int,
+        p.set_up_time AS gs_set_up_time,
+        p.cycle_time AS gs_cycle_time,
+        p.synced_at AS gs_synced_at
+    FROM public.planner_program_tools p
+)
+SELECT
+    b.inventory_code AS part_no,
+    b.bom_code,
+    b.stage_no,
+    b.stage_desc,
+    b.op_no AS erp_op_no,
+    b.op_index,
+    b.machine_no AS erp_machine_no,
+    b.setup_time AS erp_setup_time,
+    b.cycle_time AS erp_cycle_time,
+    b._loaded_at AS erp_loaded_at,
+    gs.planner_program_tools_id,
+    gs.cnc_machine_no AS gs_cnc_machine_no,
+    gs.gs_operation_no_raw,
+    gs.gs_op_extracted_int,
+    gs.gs_set_up_time,
+    gs.gs_cycle_time,
+    gs.gs_synced_at,
+    CASE
+        WHEN gs.planner_program_tools_id IS NULL THEN NULL
+        WHEN b.op_no IS NOT NULL AND gs.gs_op_extracted_int IS NOT DISTINCT FROM b.op_no THEN 'op_no'
+        WHEN gs.gs_op_extracted_int IS NOT DISTINCT FROM b.stage_no THEN 'stage_no'
+        ELSE 'other'
+    END AS gs_match_method,
+    NOW() AS cache_built_at
+FROM public.bom_op_stage b
+LEFT JOIN LATERAL (
+    SELECT g.*
+    FROM gs_normalized g
+    WHERE g.part_no_erp = b.inventory_code
+      AND (
+            (b.op_no IS NOT NULL AND g.gs_op_extracted_int IS NOT DISTINCT FROM b.op_no)
+         OR (
+                (
+                    b.op_no IS NULL
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM gs_normalized gx
+                        WHERE gx.part_no_erp = b.inventory_code
+                          AND gx.gs_op_extracted_int IS NOT DISTINCT FROM b.op_no
+                    )
+                )
+                AND g.gs_op_extracted_int IS NOT DISTINCT FROM b.stage_no
+            )
+      )
+    ORDER BY
+        CASE
+            WHEN b.op_no IS NOT NULL AND g.gs_op_extracted_int IS NOT DISTINCT FROM b.op_no THEN 0
+            WHEN g.gs_op_extracted_int IS NOT DISTINCT FROM b.stage_no THEN 1
+            ELSE 2
+        END,
+        CASE WHEN g.gs_cycle_time IS NOT NULL THEN 0 ELSE 1 END,
+        g.gs_synced_at DESC NULLS LAST,
+        g.planner_program_tools_id
+    LIMIT 1
+) gs ON TRUE
+"""
+
+
+def rebuild_stg_cycle_time_comparison() -> dict:
+    """TRUNCATE and refill cached ``stg_cycle_time_comparison`` from live source tables.
+
+    Uses direct Postgres (``SUPA_DB_URL``). Callers that need a fast HTTP response should use
+    :func:`schedule_rebuild_stg_cycle_time_comparison` instead; this function can take seconds
+    on large ``bom_op_stage`` / ``planner_program_tools`` tables.
+
+    Serialized with a lock so overlapping triggers (e.g. bom sync + tool-list push) wait and
+    run one refresh after the other instead of racing.
+    """
+    if not _planner_db_available():
+        return {"skipped": True, "reason": "SUPA_DB_URL not set"}
+
+    _stg_cycle_time_cache_lock.acquire()
+    try:
+        from psycopg2 import errors as pg_errors
+
+        from db import planner_get_conn, planner_release_conn
+
+        conn = planner_get_conn()
+        try:
+            with conn.cursor() as cur:
+                _planner_set_timeout(cur)
+                cur.execute("TRUNCATE public.stg_cycle_time_comparison")
+                cur.execute(_STG_CYCLE_TIME_INSERT_SQL)
+                row_count = cur.rowcount
+            conn.commit()
+            return {"skipped": False, "row_count": int(row_count), "reload": RELOAD_DIRECT_POSTGRES}
+        except pg_errors.UndefinedTable:
+            conn.rollback()
+            log.warning(
+                "stg_cycle_time_comparison: table missing — run migrations/create_stg_cycle_time_comparison.sql "
+                "in Supabase SQL editor."
+            )
+            return {
+                "skipped": True,
+                "reason": "table stg_cycle_time_comparison does not exist; apply migration "
+                "migrations/create_stg_cycle_time_comparison.sql",
+            }
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            planner_release_conn(conn)
+    finally:
+        _stg_cycle_time_cache_lock.release()
+
+
+def schedule_rebuild_stg_cycle_time_comparison() -> dict:
+    """Queue a cache refresh on a daemon thread so sync endpoints return immediately.
+
+    The staging table may lag the source tables by a few seconds until the background job
+    completes. Does not block normal page loads — only runs when a sync handler schedules it.
+    """
+    if not _planner_db_available():
+        return {
+            "scheduled": False,
+            "skipped": True,
+            "reason": "SUPA_DB_URL not set",
+        }
+
+    def _run() -> None:
+        try:
+            r = rebuild_stg_cycle_time_comparison()
+            if not r.get("skipped"):
+                log.info(
+                    "stg_cycle_time_comparison (background): %s row(s)",
+                    r.get("row_count", 0),
+                )
+            elif r.get("reason"):
+                log.info("stg_cycle_time_comparison (background): %s", r["reason"])
+        except Exception as ex:  # noqa: BLE001
+            log.warning("stg_cycle_time_comparison (background) failed: %s", ex, exc_info=True)
+
+    threading.Thread(
+        target=_run,
+        name="stg-cycle-time-refresh",
+        daemon=True,
+    ).start()
+    return {"scheduled": True, "background": True}
 
 
 # ── PP Vouchers ────────────────────────────────────────────────────────────
@@ -510,11 +690,13 @@ def run_bom_op_stage_sync(force: bool = False) -> dict:
         _last_bom_stage_sync_at = time.monotonic()
         log.info("bom_op_stage sync complete - %d rows in %dms",
                  len(rows), int((time.monotonic() - t0) * 1000))
-        return {
+        result = {
             "synced_at": datetime.now(timezone.utc).isoformat(),
             "duration_ms": int((time.monotonic() - t0) * 1000),
             "row_count": len(rows),
+            "stg_cycle_time_comparison": schedule_rebuild_stg_cycle_time_comparison(),
         }
+        return result
 
     finally:
         _bom_stage_sync_lock.release()

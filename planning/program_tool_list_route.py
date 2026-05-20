@@ -394,6 +394,13 @@ def push_planner_program_tools_to_supabase(payload: list[dict[str, Any]]) -> dic
     if warnings:
         out["warnings"] = warnings
 
+    try:
+        from sync import schedule_rebuild_stg_cycle_time_comparison
+
+        out["stg_cycle_time_comparison"] = schedule_rebuild_stg_cycle_time_comparison()
+    except Exception as ex:  # noqa: BLE001
+        out["stg_cycle_time_comparison"] = {"error": str(ex)}
+
     return out
 
 
