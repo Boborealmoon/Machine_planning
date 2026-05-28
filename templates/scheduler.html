@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Production Planner{% endblock %}
 {% block main_class %}app-main--planner{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=due-pill-20260528">{% endblock %}
 {% block content %}
 <div class="trial-page-header">
   <h1 class="trial-page-title">Production<br>Planner</h1>
@@ -59,7 +59,7 @@
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=anchor-dt-20260520"></script>
 <script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v=lane-blocks-20260520"></script>
 <script src="{{ url_for('static', filename='js/scheduler/program_tools.js') }}"></script>
-<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=machine-collapse-20260528"></script>
+<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=due-pill-20260528"></script>
 <script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=lane-blocks-20260520"></script>
 <script src="{{ url_for('static', filename='js/scheduler/bom.js') }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/dnd.js') }}?v=lane-blocks-20260520"></script>

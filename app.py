@@ -590,6 +590,12 @@ def api_pp_vouchers_with_ops():
                 except Exception:
                     return
                 try:
+                    from sync import run_pp_partial_sync
+
+                    run_pp_partial_sync()
+                except Exception:
+                    pass
+                try:
                     run_mfg_wo_status_sync()
                 except Exception:
                     pass

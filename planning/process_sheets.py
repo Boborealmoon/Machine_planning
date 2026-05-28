@@ -63,6 +63,20 @@ def parse_planner_ps_id(planner_ps_id):
     return base or raw, max(1, partial_no)
 
 
+def format_planner_ps_id(source_ps_id, pp_partial_no=1):
+    """Canonical planner_ps_id / catalog ps_id (suffix only when partial > 1)."""
+    source_ps_id = compact_text(source_ps_id)
+    try:
+        partial_no = max(1, int(pp_partial_no or 1))
+    except (TypeError, ValueError):
+        partial_no = 1
+    if not source_ps_id:
+        return ""
+    if partial_no > 1:
+        return f"{source_ps_id}::{partial_no}"
+    return source_ps_id
+
+
 def ensure_planner_process_sheet(con, planner_ps_id):
     """Ensure a planner_process_sheet row exists for an ERP-sourced ps id.
 

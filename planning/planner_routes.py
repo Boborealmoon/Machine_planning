@@ -27,13 +27,20 @@ from flask import Blueprint, jsonify, request
 
 from .actuals import refresh_block_actual_status
 from .blocks import (
+    _actual_good_qty,
+    _actual_variance,
+    apply_actual_variance_delta_to_block_tail,
     apply_output_delta_to_block_tail,
+    apply_removed_target_date_to_block_tail,
+    actual_daily_rows_for_block_row,
     create_rework_from_reject,
     delete_rework_from_reject_segment,
     find_rework_source_for_reject,
     recalculate_all,
     recalculate_machine,
     refresh_block_group_label,
+    refresh_block_schedule_bounds,
+    removed_actual_dates_for_block_row,
     schedule_signature_for_machine,
     trial_block_payload,
     trial_block_row,
@@ -51,6 +58,7 @@ from .materials import material_status_map_for_ps_ids, sync_material_requirement
 from .operation_sequence import apply_machine_queue_order
 from .process_sheets import ensure_planner_process_sheet
 from .machines import default_profile_for_weekday, fetch_machines, is_public_holiday
+from .planner_actuals import actual_summaries_for_block_rows
 from .visual_time import visual_timing_for_segment
 from .utils import (
     compact_text,
@@ -146,6 +154,22 @@ def _active_actual_for_block_date(con, block_id, report_date):
             (int(block_id), report_date),
         )
     )
+
+
+def _planned_target_qty_for_block_date(con, block_id, report_date):
+    row = one(
+        con.execute(
+            """
+            SELECT COALESCE(SUM(COALESCE(qty_done, planned_qty, 0)), 0) AS target_qty
+            FROM planner_run_block_segment
+            WHERE block_id = %s
+              AND COALESCE(segment_type, '') = 'production'
+              AND segment_date = %s::date
+            """,
+            (int(block_id), report_date),
+        )
+    )
+    return max(0.0, float(row["target_qty"] or 0)) if row else 0.0
 
 
 def _calendar_window_rows(con, start_iso=None, end_iso=None, machine_id=None, active=None, window_type=None):
@@ -518,7 +542,18 @@ def _api_trial_schedule_db():
                 item["visual_parts"] = []
                 item["break_windows"] = []
                 item["shift_profile"] = machine_by_id.get(int(item.get("machine_id") or 0), {}).get("shift_profile", "")
+            item["actual_daily_rows"] = actual_daily_rows_for_block_row(con, item)
             blocks.append(item)
+
+        if blocks:
+            actual_summary_map = actual_summaries_for_block_rows(con, blocks)
+            for item in blocks:
+                summary = actual_summary_map.get(int(item.get("block_id") or 0), {})
+                item["actual_start_at"] = compact_text(summary.get("actual_start_at") or "")
+                item["actual_end_at"] = compact_text(summary.get("actual_end_at") or "")
+                if summary.get("actual_good_qty") is not None:
+                    item["actual_good_qty"] = float(summary.get("actual_good_qty") or 0)
+                item["actual_row_count"] = int(summary.get("actual_row_count") or 0)
 
         # Actuals: for machine-scoped refreshes only fetch actuals for the relevant blocks
         if is_machine_scoped and _active_block_ids:
@@ -1399,12 +1434,25 @@ def api_trial_actual(block_id):
         if not block:
             return jsonify({"error": "Run block not found"}), 404
         delete_dates = [compact_text(v) for v in (data.get("delete_actual_dates") or []) if compact_text(v)]
+        removed_target_dates = [compact_text(v) for v in (data.get("removed_target_dates") or []) if compact_text(v)]
         daily_actuals = data.get("daily_actuals") or []
+        if not delete_dates and not removed_target_dates and not daily_actuals:
+            return jsonify({"error": "No actual rows submitted."}), 400
+        saved_count = 0
+        deleted_count = 0
+        removed_target_count = 0
+        removed_target_qty = 0.0
+        skipped_count = 0
+        adjusted_tail_qty = 0.0
+        schedule_adjusted = False
+        tail_changes = []
+        removed_target_date_set = set(removed_target_dates)
+
         for report_date in delete_dates:
             existing_rows = rows(
                 con.execute(
                     """
-                    SELECT actual_id
+                    SELECT *
                     FROM planner_production_actual
                     WHERE block_id = %s
                       AND report_date = %s
@@ -1415,13 +1463,130 @@ def api_trial_actual(block_id):
             )
             for row in existing_rows:
                 _void_actual(con, int(row["actual_id"]))
+                deleted_count += 1
+                if report_date in removed_target_date_set:
+                    continue
+                old_output = parse_nullable_number(row.get("output_qty")) if row.get("output_qty") is not None else None
+                old_reject = parse_nullable_number(row.get("reject_qty")) if row.get("reject_qty") is not None else None
+                old_good = _actual_good_qty(old_output, old_reject)
+                if old_good is None:
+                    old_good = 0.0
+                old_target = parse_nullable_number(row.get("target_qty_at_report"))
+                if old_target is None:
+                    old_target = _planned_target_qty_for_block_date(con, block_id, report_date)
+                old_variance = _actual_variance(old_good, old_target)
+                variance_delta = 0.0 - float(old_variance)
+                if abs(variance_delta) > 1e-9:
+                    tail_changes.append(
+                        {
+                            "report_date": report_date,
+                            "change_type": "actual_delete",
+                            "old_variance": float(old_variance),
+                            "new_variance": 0.0,
+                            "variance_delta": float(variance_delta),
+                        }
+                    )
+
+        for report_date in removed_target_dates:
+            existing_removed = one(
+                con.execute(
+                    """
+                    SELECT *
+                    FROM planner_block_removed_actual_date
+                    WHERE block_id = %s
+                      AND report_date = %s
+                      AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                    ORDER BY removed_date_id DESC
+                    LIMIT 1
+                    """,
+                    (int(block_id), report_date),
+                )
+            )
+            existing_rows = rows(
+                con.execute(
+                    """
+                    SELECT *
+                    FROM planner_production_actual
+                    WHERE block_id = %s
+                      AND report_date = %s
+                      AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                    ORDER BY actual_id DESC
+                    """,
+                    (int(block_id), report_date),
+                )
+            )
+            for row in existing_rows:
+                _void_actual(con, int(row["actual_id"]))
+                deleted_count += 1
+            if existing_removed:
+                continue
+
+            target_qty = _planned_target_qty_for_block_date(con, block_id, report_date)
+            if target_qty <= 0:
+                continue
+
+            con.execute(
+                """
+                INSERT INTO planner_block_removed_actual_date (
+                  block_id, report_date, target_qty_removed, status, created_at, updated_at
+                ) VALUES (%s, %s, %s, 'ACTIVE', NOW(), NOW())
+                ON CONFLICT (block_id, report_date) DO UPDATE SET
+                  target_qty_removed = EXCLUDED.target_qty_removed,
+                  status = 'ACTIVE',
+                  updated_at = NOW()
+                """,
+                (int(block_id), report_date, float(target_qty)),
+            )
+            removed_result = apply_removed_target_date_to_block_tail(con, block_id, report_date, target_qty)
+            removed_target_count += 1
+            removed_target_qty += float(target_qty)
+            schedule_adjusted = schedule_adjusted or bool(removed_result.get("changed"))
+            tail_changes.append(
+                {
+                    "report_date": report_date,
+                    "change_type": "removed_target",
+                    "removed_target_qty": float(target_qty),
+                    "variance_delta": float(target_qty),
+                }
+            )
+
         for row in daily_actuals:
             report_date = compact_text(row.get("report_date"))
             if not report_date:
+                skipped_count += 1
                 continue
-            output_value = parse_number(row.get("output_qty") if "output_qty" in row else row.get("actual_good_qty"), 0)
-            reject_value = parse_number(row.get("reject_qty") if "reject_qty" in row else row.get("actual_reject_qty"), 0)
+            raw_output = row.get("output_qty") if "output_qty" in row else row.get("actual_good_qty")
+            raw_reject = row.get("reject_qty") if "reject_qty" in row else row.get("actual_reject_qty")
+            raw_remarks = compact_text(row.get("remarks"))
+            raw_target = row.get("target_qty")
+            output_provided = "output_qty" in row and compact_text(raw_output) != ""
+            reject_provided = "reject_qty" in row and compact_text(raw_reject) != ""
+            remarks_provided = raw_remarks != ""
+            target_provided = "target_qty" in row and compact_text(raw_target) != ""
+            if not output_provided and not reject_provided and not remarks_provided:
+                skipped_count += 1
+                continue
+            output_value = parse_nullable_number(raw_output) if output_provided else None
+            reject_value = parse_nullable_number(raw_reject) if reject_provided else None
+            remarks_value = raw_remarks
             existing = _active_actual_for_block_date(con, block_id, report_date)
+            old_output = parse_nullable_number(existing["output_qty"]) if existing and existing.get("output_qty") is not None else None
+            old_reject = parse_nullable_number(existing["reject_qty"]) if existing and existing.get("reject_qty") is not None else None
+            old_good = _actual_good_qty(old_output, old_reject)
+            if target_provided:
+                target_qty = parse_nullable_number(raw_target)
+            else:
+                existing_target = parse_nullable_number(existing["target_qty_at_report"]) if existing and existing.get("target_qty_at_report") is not None else None
+                if existing_target is not None:
+                    target_qty = existing_target
+                else:
+                    target_qty = _planned_target_qty_for_block_date(con, block_id, report_date)
+            if target_qty is None:
+                target_qty = 0.0
+            old_target = parse_nullable_number(existing["target_qty_at_report"]) if existing and existing.get("target_qty_at_report") is not None else None
+            if old_target is None:
+                old_target = target_qty if existing else _planned_target_qty_for_block_date(con, block_id, report_date)
+            old_variance = _actual_variance(old_good, old_target)
             if existing:
                 _void_actual(con, existing["actual_id"])
             _insert_actual(
@@ -1431,23 +1596,54 @@ def api_trial_actual(block_id):
                 report_date=report_date,
                 output_qty=output_value,
                 reject_qty=reject_value,
-                remarks=compact_text(row.get("remarks")),
-                target_qty=parse_number(block["scheduled_qty"], 0),
+                remarks=remarks_value,
+                target_qty=float(target_qty),
                 machine_id=int(block["machine_id"]),
                 entry_type="CORRECTION" if existing else "REPORT",
                 correction_of_actual_id=int(existing["actual_id"]) if existing else None,
                 created_by=compact_text(row.get("created_by")),
             )
+            saved_count += 1
+            new_good = _actual_good_qty(output_value, reject_value)
+            new_variance = _actual_variance(new_good, target_qty)
+            variance_delta = float(new_variance) - float(old_variance)
+            if abs(variance_delta) > 1e-9:
+                tail_changes.append(
+                    {
+                        "report_date": report_date,
+                        "change_type": "actual_save",
+                        "old_variance": float(old_variance),
+                        "new_variance": float(new_variance),
+                        "variance_delta": float(variance_delta),
+                    }
+                )
         refresh_block_actual_status(con, block_id)
+        refresh_block_schedule_bounds(con, block_id)
+        for change in tail_changes:
+            if change.get("change_type") == "removed_target":
+                adjusted_tail_qty += abs(float(change["variance_delta"]))
+                continue
+            tail_result = apply_actual_variance_delta_to_block_tail(
+                con,
+                block_id,
+                change["report_date"],
+                change["variance_delta"],
+            )
+            adjusted_tail_qty += abs(float(change["variance_delta"]))
+            schedule_adjusted = schedule_adjusted or bool(tail_result.get("changed"))
+        refresh_block_schedule_bounds(con, block_id)
         recalculate_machine(con, int(block["machine_id"]))
+        updated_block = trial_block_row(con, block_id)
+        block_payload = trial_block_payload(updated_block, con)
         actuals = rows(
             con.execute(
                 """
-                SELECT actual_id, segment_id, block_id, report_date,
+                SELECT actual_id, segment_id, block_id, report_date::text AS report_date,
                        output_qty, reject_qty, target_qty_at_report,
                        remarks, reported_at
                 FROM planner_production_actual
                 WHERE block_id = %s
+                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
                 ORDER BY report_date, actual_id
                 """,
                 (int(block_id),),
@@ -1458,8 +1654,19 @@ def api_trial_actual(block_id):
             actual["reported_at"] = compact_text(actual.get("reported_at"))
         return jsonify({
             "ok": True,
-            "block": trial_block_payload(trial_block_row(con, block_id), con),
-            "actuals": actuals,
+            "saved_count": saved_count,
+            "deleted_count": deleted_count,
+            "removed_target_count": removed_target_count,
+            "removed_target_qty": removed_target_qty,
+            "skipped_count": skipped_count,
+            "changed_count": saved_count + deleted_count + removed_target_count,
+            "adjusted_tail_qty": adjusted_tail_qty,
+            "schedule_adjusted": bool(schedule_adjusted or adjusted_tail_qty > 0),
+            "tail_adjustments": tail_changes,
+            "block": block_payload,
+            "actual_daily_rows": block_payload.get("actual_daily_rows") or [],
+            "actuals": [dict(r) for r in actuals],
+            "removed_actual_dates": removed_actual_dates_for_block_row(con, updated_block),
         })
 
 

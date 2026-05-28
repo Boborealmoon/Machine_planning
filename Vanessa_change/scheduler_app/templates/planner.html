@@ -1,0 +1,2228 @@
+{% extends "base.html" %}
+{% block title %}Actual Production{% endblock %}
+{% block page_title %}
+<span style="display:block;font-size:32px;line-height:0.98;letter-spacing:-0.05em;font-weight:900;">Actual</span>
+<span style="display:block;font-size:32px;line-height:0.98;letter-spacing:-0.05em;font-weight:900;">Production.</span>
+{% endblock %}
+{% block page_actions %}
+  <div class="trial-toolbar">
+  <button class="btn btn-primary btn-sm" onclick="openTrialCreateModal()">Add Run Block</button>
+  <button class="btn btn-ghost btn-sm" onclick="openTrialCapacityModal()">Shop Calendar</button>
+  <button class="btn btn-ghost btn-sm" onclick="openTrialMachineWindowModal()">Machine Windows</button>
+  <a class="btn btn-ghost btn-sm" href="/materials">Materials</a>
+  <span class="trial-note">Live execution schedule with actual output, rejects, split, drag, and recovery planning.</span>
+</div>
+{% endblock %}
+{% block content %}
+<style>
+  .trial-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+  .trial-note {
+    color: var(--text3);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .trial-shell {
+    display: grid;
+    gap: 14px;
+  }
+  .trial-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+    align-items: start;
+  }
+  .trial-main {
+    min-width: 0;
+  }
+  .trial-catalog-empty {
+    padding: 16px;
+    border-radius: 16px;
+    border: 1px dashed var(--border);
+    background: rgba(255,255,255,0.75);
+    color: var(--text3);
+    font-size: 13px;
+  }
+  .trial-actual-summary {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .trial-actual-summary > div {
+    display: grid;
+    gap: 3px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.72);
+  }
+  .trial-actual-summary strong {
+    font-size: 18px;
+    font-weight: 900;
+    letter-spacing: -0.03em;
+  }
+  .trial-actual-grid {
+    display: grid;
+    gap: 8px;
+  }
+  .trial-actual-section {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid rgba(148,163,184,0.22);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.7);
+  }
+  .trial-actual-section-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--trial-text-strong);
+  }
+  .trial-actual-history-head,
+  .trial-actual-history-row {
+    display: grid;
+    grid-template-columns: 1.2fr 0.6fr 0.6fr auto;
+    gap: 8px;
+    align-items: center;
+  }
+  .trial-actual-history-head {
+    font-size: 11px;
+    color: var(--trial-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0 2px;
+  }
+  .trial-actual-history-row {
+    font-size: 13px;
+    padding: 6px 2px;
+    border-top: 1px solid rgba(148,163,184,0.12);
+  }
+  .trial-actual-history-row span:nth-child(2),
+  .trial-actual-history-row span:nth-child(3) {
+    text-align: right;
+  }
+  .trial-actual-history-row input {
+    width: 100%;
+    min-width: 0;
+    text-align: right;
+  }
+  .trial-actual-history-row button {
+    white-space: nowrap;
+  }
+  .trial-actual-grid-head,
+  .trial-actual-row {
+    display: grid;
+    grid-template-columns: 120px 100px minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 1.4fr);
+    gap: 8px;
+    align-items: center;
+  }
+  .trial-actual-grid-head {
+    font-size: 11px;
+    color: var(--text3);
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0 2px;
+  }
+  .trial-actual-row {
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.8);
+  }
+  .trial-actual-date {
+    font-weight: 800;
+    color: var(--text);
+    font-size: 13px;
+  }
+  .trial-actual-target {
+    font-size: 12px;
+    color: var(--text3);
+    font-weight: 700;
+  }
+  .trial-actual-cell {
+    display: grid;
+    gap: 4px;
+    font-size: 10px;
+    color: var(--text3);
+    font-weight: 700;
+  }
+  .trial-actual-cell input {
+    width: 100%;
+    min-width: 0;
+  }
+  .trial-actual-cell input,
+  .trial-actual-cell textarea {
+    box-sizing: border-box;
+  }
+  .trial-actual-cell textarea {
+    width: 100%;
+    min-width: 0;
+    resize: vertical;
+  }
+  #trial-bom-editor {
+    display: grid;
+    gap: 6px;
+  }
+  #trial-bom-editor .trial-bom-step {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    overflow-x: auto;
+  }
+  #trial-bom-editor .trial-bom-step.dragging {
+    opacity: 0.55;
+  }
+  #trial-bom-editor .trial-bom-step .field-row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: flex-end;
+    gap: 6px;
+    min-width: max-content;
+  }
+  #trial-bom-editor .trial-bom-step .trial-bom-handle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    min-width: 18px;
+    height: 28px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    color: var(--text3);
+    background: rgba(255,255,255,0.72);
+    cursor: grab;
+    user-select: none;
+    font-size: 14px;
+    line-height: 1;
+    flex: 0 0 auto;
+  }
+  #trial-bom-editor .trial-bom-step .field {
+    flex: 0 0 auto;
+    min-width: 0;
+    gap: 3px;
+  }
+  #trial-bom-editor .trial-bom-step .field.field-handle { width: auto; }
+  #trial-bom-editor .trial-bom-step .field.field-op-no { width: 58px; }
+  #trial-bom-editor .trial-bom-step .field.field-op-type { width: 124px; }
+  #trial-bom-editor .trial-bom-step .field.field-machine { width: 150px; }
+  #trial-bom-editor .trial-bom-step .field.field-cycle { width: 72px; }
+  #trial-bom-editor .trial-bom-step .field.field-setup { width: 72px; }
+  #trial-bom-editor .trial-bom-step .field[style*="flex:0 0 auto"] { width: auto; }
+  #trial-bom-editor .trial-bom-step .field label {
+    font-size: 10px;
+    line-height: 1.1;
+  }
+  #trial-bom-editor .trial-bom-step .field input,
+  #trial-bom-editor .trial-bom-step .field select {
+    padding: 5px 7px;
+    min-height: 28px;
+    font-size: 11px;
+  }
+  #trial-bom-editor .trial-bom-step .btn {
+    padding: 4px 8px;
+    min-height: 28px;
+    font-size: 11px;
+  }
+  .trial-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .trial-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.72);
+    border: 1px solid rgba(26,28,29,0.06);
+    box-shadow: 0 10px 22px rgba(26,28,29,0.04);
+    font-size: 12px;
+    color: var(--text2);
+    font-weight: 700;
+  }
+  .trial-grid {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 14px;
+  }
+  .trial-machine-filter {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0;
+  }
+  .trial-machine-filter-btn {
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.75);
+    color: var(--text2);
+    border-radius: 999px;
+    padding: 7px 12px;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+  .trial-machine-filter-btn.active {
+    background: rgba(59,130,246,0.12);
+    border-color: rgba(59,130,246,0.28);
+    color: #1f4ea2;
+  }
+  .trial-board-filter-card {
+    display: grid;
+    gap: 8px;
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    border: 1px solid rgba(26,28,29,0.08);
+    border-radius: 18px;
+    background: rgba(255,255,255,0.78);
+    box-shadow: 0 10px 22px rgba(26,28,29,0.04);
+  }
+  .trial-board-filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 12px 16px;
+  }
+  .trial-filter-section {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .trial-filter-label {
+    font-size: 11px;
+    font-weight: 900;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .trial-date-filter {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 6px;
+  }
+  .trial-date-filter label {
+    display: grid;
+    gap: 3px;
+    font-size: 10px;
+    color: var(--text3);
+    font-weight: 800;
+  }
+  .trial-date-filter input {
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.85);
+    border-radius: 10px;
+    padding: 6px 8px;
+    font: inherit;
+    font-size: 12px;
+    min-height: 32px;
+  }
+  .trial-date-filter-separator {
+    color: var(--text3);
+    font-weight: 900;
+    padding-bottom: 7px;
+  }
+  .trial-board-filter-note {
+    font-size: 12px;
+    color: var(--text3);
+    font-weight: 700;
+    line-height: 1.35;
+    padding-top: 2px;
+  }
+  .trial-machine {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 380px;
+    max-width: 520px;
+    height: clamp(460px, calc(100vh - 240px), 720px);
+    min-height: 460px;
+    overflow: hidden;
+    gap: 12px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.88), rgba(246,247,249,0.9));
+    box-shadow: var(--shadow-lg);
+  }
+  .trial-machine-head {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .trial-machine-title {
+    font-size: 18px;
+    font-weight: 900;
+    letter-spacing: -0.03em;
+  }
+  .trial-machine-meta {
+    font-size: 12px;
+    color: var(--text3);
+    line-height: 1.4;
+  }
+  .trial-capacity {
+    display: none;
+  }
+  .trial-lane {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    align-items: stretch;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 4px;
+    padding-bottom: 10px;
+    overscroll-behavior: contain;
+  }
+  .trial-block-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    padding: 14px 14px 12px;
+    border-radius: 18px;
+    border: 1px solid rgba(26,28,29,0.08);
+    background: rgba(255,255,255,0.88);
+    box-shadow: 0 12px 24px rgba(26,28,29,0.06);
+    cursor: grab;
+    width: 100%;
+    min-height: fit-content;
+    height: auto;
+    overflow: visible;
+  }
+  .trial-block-card.dragging {
+    opacity: 0.55;
+    transform: scale(0.99);
+  }
+  .trial-drag-ghost {
+    opacity: 0.35;
+  }
+  .trial-drag-chosen {
+    transform: scale(0.99);
+  }
+  .trial-drag-active {
+    opacity: 0.82;
+  }
+  .trial-op-card-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    min-width: 0;
+  }
+  .trial-block-top {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+  .trial-block-main {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .trial-block-title {
+    font-size: 16px;
+    font-weight: 900;
+    letter-spacing: -0.03em;
+    color: var(--text);
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .trial-block-partial {
+    font-size: 11px;
+    color: var(--text3);
+    line-height: 1.2;
+    font-weight: 700;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .trial-block-op {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1.25;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .trial-block-qty {
+    font-size: 12px;
+    color: var(--text2);
+    font-weight: 700;
+    line-height: 1.25;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .trial-op-card-statuses {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-items: center;
+  }
+  .trial-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 9px;
+    border-radius: 999px;
+    background: rgba(59,130,246,0.08);
+    border: 1px solid rgba(59,130,246,0.15);
+    color: #1f4ea2;
+    font-size: 11px;
+    font-weight: 800;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .trial-pill-start {
+    font: inherit;
+    cursor: default;
+    min-height: 0;
+  }
+  .trial-pill.clickable {
+    cursor: pointer;
+  }
+  .trial-pill-start.yellow {
+    background: rgba(245,158,11,0.18);
+    border-color: rgba(245,158,11,0.32);
+    color: #8a5200;
+  }
+  .trial-pill-start.gray {
+    background: rgba(148,163,184,0.10);
+    border-color: rgba(148,163,184,0.18);
+    color: #52616f;
+  }
+  .trial-pill-start:hover { filter: none; }
+  .trial-block-member-progress {
+    display: grid;
+    gap: 4px;
+    padding: 8px 10px;
+    border-radius: 12px;
+    background: rgba(168,85,247,0.06);
+    font-size: 11px;
+    color: var(--text2);
+  }
+  .trial-block-member-line {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .trial-pill.gray {
+    background: rgba(148,163,184,0.12);
+    border-color: rgba(148,163,184,0.18);
+    color: #52616f;
+  }
+  .trial-pill.green {
+    background: rgba(34,197,94,0.10);
+    border-color: rgba(34,197,94,0.20);
+    color: #157347;
+  }
+  .trial-pill.blue {
+    background: rgba(59,130,246,0.10);
+    border-color: rgba(59,130,246,0.20);
+    color: #1f4ea2;
+  }
+  .trial-pill.yellow {
+    background: rgba(245,158,11,0.14);
+    border-color: rgba(245,158,11,0.24);
+    color: #8a5200;
+  }
+  .trial-pill.orange {
+    background: rgba(245,158,11,0.12);
+    border-color: rgba(245,158,11,0.22);
+    color: #9a5b00;
+  }
+  .trial-pill.red {
+    background: rgba(239,68,68,0.10);
+    border-color: rgba(239,68,68,0.20);
+    color: #b42318;
+  }
+  .trial-pill.material-pending {
+    background: rgba(245,158,11,0.14);
+    border-color: rgba(245,158,11,0.24);
+    color: #8a5200;
+  }
+  .trial-pill.material-warning {
+    background: rgba(245,158,11,0.12);
+    border-color: rgba(245,158,11,0.22);
+    color: #9a5b00;
+  }
+  .trial-pill.material-late {
+    background: rgba(239,68,68,0.12);
+    border-color: rgba(239,68,68,0.22);
+    color: #991b1b;
+  }
+  .trial-op-card-info {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-items: center;
+  }
+  .trial-block-meta,
+  .trial-block-qty {
+    text-align: left;
+    white-space: normal;
+  }
+  .trial-block-card .btn {
+    white-space: nowrap;
+  }
+  .trial-op-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: flex-start;
+    justify-content: flex-start;
+    margin-top: 4px;
+  }
+  .trial-op-card-actions .btn {
+    padding: 6px 10px;
+  }
+  .trial-empty {
+    padding: 18px;
+    border-radius: 16px;
+    border: 1px dashed var(--border);
+    color: var(--text3);
+    background: rgba(255,255,255,0.5);
+    font-size: 12px;
+    min-height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .trial-modal-form {
+    display: grid;
+    gap: 12px;
+  }
+  .trial-modal-grid {
+    display: grid;
+    gap: 10px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .trial-modal-grid .full {
+    grid-column: 1 / -1;
+  }
+  .trial-modal-grid label,
+  .trial-form label {
+    display: grid;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--text2);
+    font-weight: 700;
+  }
+  .trial-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .trial-capacity-modal {
+    display: grid;
+    gap: 10px;
+  }
+  .trial-capacity-modal-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .trial-capacity-modal-body {
+    display: grid;
+    gap: 8px;
+    max-height: min(60vh, 520px);
+    overflow: auto;
+    padding-right: 2px;
+  }
+  .trial-capacity-modal-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    padding: 10px 12px;
+    border-radius: 16px;
+    background: rgba(255,255,255,0.72);
+    border: 1px solid rgba(26,28,29,0.06);
+  }
+  .trial-capacity-modal-controls input,
+  .trial-capacity-modal-controls select {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 7px 9px;
+    border-radius: 10px;
+    font: inherit;
+    font-size: 12px;
+  }
+  .trial-capacity-row {
+    display: grid;
+    grid-template-columns: 100px minmax(160px, 1fr) minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+  }
+  .trial-capacity-row label {
+    font-size: 11px;
+    color: var(--text3);
+    font-weight: 700;
+  }
+  .trial-capacity-modal select,
+  .trial-capacity-modal input {
+    width: 100%;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 10px;
+    font: inherit;
+    font-size: 12px;
+  }
+  @media (max-width: 900px) {
+    .trial-layout {
+      grid-template-columns: 1fr;
+    }
+    .trial-machine {
+      max-width: none;
+      width: 100%;
+      height: 520px;
+    }
+    .trial-grid {
+      flex-direction: column;
+      flex-wrap: nowrap;
+    }
+    .trial-modal-grid {
+      grid-template-columns: 1fr;
+    }
+    .trial-capacity-row {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+<div class="trial-shell">
+  <div class="trial-legend">
+    <span><span style="width:12px;height:12px;border-radius:3px;background:rgba(59,130,246,0.9);display:inline-block"></span>Queue block</span>
+    <span><span style="width:12px;height:12px;border-radius:3px;background:rgba(34,197,94,0.8);display:inline-block"></span>Actual saved</span>
+    <span><span style="width:12px;height:12px;border-radius:3px;background:rgba(245,158,11,0.8);display:inline-block"></span>Anchor</span>
+  </div>
+  <div id="trial-loading" class="loading"><div class="spinner"></div> Loading trial scheduler...</div>
+  <div class="trial-layout" style="display:none;" id="trial-layout">
+    <div class="trial-main">
+      <div id="trial-machine-filter-shell"></div>
+      <div id="trial-grid" class="trial-grid"></div>
+    </div>
+  </div>
+</div>
+
+<div id="trial-modal-shell"></div>
+
+{% endblock %}
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script>
+let trialState = { machines: [], blocks: [], segments: [], actuals: [], capacities: [], profiles: [] };
+let trialMachineCategoryFilter = 'ALL';
+let trialScheduleDateFilter = { start: '', end: '' };
+let trialActualDraft = { blockId: null, rows: {}, deletedDates: new Set() };
+let trialActualSaving = false;
+let trialMachineSortables = [];
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function trialFormatDt(value) {
+  if (!value) return '—';
+  return String(value).replace('T', ' ').slice(0, 16);
+}
+
+function trialParseLocalDateParts(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4] || 0);
+  const minute = Number(match[5] || 0);
+  const second = Number(match[6] || 0);
+  return { year, month, day, hour, minute, second };
+}
+
+function trialParseLocalDateTime(value) {
+  const parts = trialParseLocalDateParts(value);
+  if (parts) {
+    return new Date(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  }
+  if (!value) return null;
+  const dt = new Date(String(value).replace(' ', 'T'));
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function trialParseLocalDate(value) {
+  const parts = trialParseLocalDateParts(value);
+  if (parts) {
+    return new Date(parts.year, parts.month - 1, parts.day, 0, 0, 0, 0);
+  }
+  if (!value) return null;
+  const dt = new Date(String(value).replace(' ', 'T'));
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function trialParseVisualDateTime(value) {
+  return trialParseLocalDateTime(value);
+}
+
+function trialSplitPsId(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return { base: '', partial: '' };
+  const parts = raw.split('::');
+  return {
+    base: parts[0] || raw,
+    partial: parts[1] || '',
+  };
+}
+
+function trialMachineCategoryLabel(category) {
+  const raw = String(category || '').trim().toUpperCase();
+  if (!raw || raw === 'ALL') return 'All';
+  if (raw.length <= 3 || raw === 'MPP') return raw;
+  return raw.charAt(0) + raw.slice(1).toLowerCase();
+}
+
+function trialMachineCategories() {
+  const categories = new Set(
+    (trialState.machines || [])
+      .map(machine => String(machine.machine_category || '').trim().toUpperCase())
+      .filter(Boolean)
+  );
+  return ['ALL', ...Array.from(categories).sort()];
+}
+
+function trialTodayISO() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function trialAddDaysISO(dateText, deltaDays) {
+  if (!dateText) return '';
+  const base = new Date(`${String(dateText).slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(base.getTime())) return '';
+  base.setDate(base.getDate() + Number(deltaDays || 0));
+  const y = base.getFullYear();
+  const m = String(base.getMonth() + 1).padStart(2, '0');
+  const d = String(base.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function trialNormalizeScheduleDates(startText, endText) {
+  const today = trialTodayISO();
+  let start = String(startText || '').trim();
+  let end = String(endText || '').trim();
+  if (end && end < start) end = start;
+  return { start, end };
+}
+
+function trialResolvedScheduleDateFilterFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const urlStart = String(params.get('start') || params.get('from') || '').trim();
+  const urlEnd = String(params.get('end') || params.get('to') || '').trim();
+  return trialNormalizeScheduleDates(urlStart, urlEnd);
+}
+
+function trialSyncScheduleUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const resolvedStart = String(trialScheduleDateFilter.start || '').trim();
+  const resolvedEnd = String(trialScheduleDateFilter.end || '').trim();
+  if (resolvedStart) params.set('start', resolvedStart); else params.delete('start');
+  if (resolvedEnd) params.set('end', resolvedEnd); else params.delete('end');
+  const nextUrl = `${window.location.pathname}?${params.toString()}`;
+  window.history.replaceState({}, '', nextUrl);
+}
+
+function renderTrialMachineCategoryFilter() {
+  const categories = trialMachineCategories();
+  return `
+    <div class="trial-filter-section">
+      <div class="trial-filter-label">Machine</div>
+      <div class="trial-machine-filter">
+        ${categories.map(category => `
+          <button
+            type="button"
+            class="trial-machine-filter-btn ${trialMachineCategoryFilter === category ? 'active' : ''}"
+            onclick="setTrialMachineCategoryFilter('${escapeHtml(category)}')"
+          >
+            ${escapeHtml(trialMachineCategoryLabel(category))}
+          </button>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function setTrialMachineCategoryFilter(category) {
+  trialMachineCategoryFilter = String(category || 'ALL').toUpperCase();
+  renderTrial();
+}
+
+function trialVisibleMachines() {
+  const selected = String(trialMachineCategoryFilter || 'ALL').toUpperCase();
+  if (selected === 'ALL') return trialState.machines || [];
+  return (trialState.machines || []).filter(machine =>
+    String(machine.machine_category || '').trim().toUpperCase() === selected
+  );
+}
+
+function trialDateStart(dateText) {
+  return trialParseLocalDate(dateText);
+}
+
+function trialDateEnd(dateText) {
+  const d = trialParseLocalDate(dateText);
+  if (!d) return null;
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
+function trialParseDateTime(value) {
+  return trialParseLocalDateTime(value);
+}
+
+function trialDateRangesOverlap(itemStart, itemEnd, filterStart, filterEnd) {
+  if (!itemStart && !itemEnd) return false;
+  const start = itemStart || itemEnd;
+  const end = itemEnd || itemStart;
+  if (filterStart && end < filterStart) return false;
+  if (filterEnd && start > filterEnd) return false;
+  return true;
+}
+
+function trialHasActiveDateFilter() {
+  return Boolean(String(trialScheduleDateFilter.start || '').trim() || String(trialScheduleDateFilter.end || '').trim());
+}
+
+function trialBlockRunsInsideDateFilter(block) {
+  const filterStart = trialDateStart(trialScheduleDateFilter.start);
+  const filterEnd = trialDateEnd(trialScheduleDateFilter.end);
+  if (!filterStart && !filterEnd) return true;
+
+  const blockSegments = trialSegmentsForBlock(block?.block_id || 0);
+  if (blockSegments.length) {
+    const matchedBySegments = blockSegments.some(seg => {
+      const segStart = trialParseDateTime(seg.start_datetime);
+      const segEnd = trialParseDateTime(seg.end_datetime);
+      return trialDateRangesOverlap(segStart, segEnd, filterStart, filterEnd);
+    });
+    if (matchedBySegments) return true;
+  }
+
+  const blockStart = trialParseDateTime(block?.visual_start_datetime || block?.calculated_start_datetime || block?.planned_start_at || block?.anchor_datetime);
+  const blockEnd = trialParseDateTime(block?.visual_end_datetime || block?.calculated_end_datetime || block?.planned_end_at || block?.anchor_datetime);
+  return trialDateRangesOverlap(blockStart, blockEnd, filterStart, filterEnd);
+}
+
+function renderTrialScheduleDateFilter() {
+  return `
+    <div class="trial-filter-section trial-filter-section-date">
+      <div class="trial-filter-label">Date</div>
+      <div class="trial-date-filter">
+        <label>
+          <span>Start</span>
+          <input
+            type="date"
+            value="${escapeHtml(trialScheduleDateFilter.start || '')}"
+            onchange="setTrialScheduleDateFilter('start', this.value)"
+          >
+        </label>
+        <span class="trial-date-filter-separator">→</span>
+        <label>
+          <span>End</span>
+          <input
+            type="date"
+            value="${escapeHtml(trialScheduleDateFilter.end || '')}"
+            onchange="setTrialScheduleDateFilter('end', this.value)"
+          >
+        </label>
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          onclick="clearTrialScheduleDateFilter()"
+        >
+          Clear
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function setTrialScheduleDateFilter(field, value) {
+  if (field !== 'start' && field !== 'end') return;
+  trialScheduleDateFilter[field] = String(value || '');
+  trialScheduleDateFilter = trialNormalizeScheduleDates(trialScheduleDateFilter.start, trialScheduleDateFilter.end);
+  trialSyncScheduleUrl();
+  renderTrial();
+}
+
+function clearTrialScheduleDateFilter() {
+  trialScheduleDateFilter = { start: '', end: '' };
+  trialSyncScheduleUrl();
+  renderTrial();
+}
+
+function trialEscapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function trialBlockPsDisplay(group, leader) {
+  const candidates = [
+    leader?.job_no,
+    group?.ps_id,
+    leader?.source_ps_id,
+  ].map(value => String(value || '').trim()).filter(Boolean);
+  const raw = candidates.find(value => value.includes('::')) || candidates[0] || '';
+  const parsed = trialSplitPsId(raw);
+  return {
+    base: parsed.base || raw,
+    partial: parsed.partial || '',
+  };
+}
+
+function trialBlockOpDisplay(leader) {
+  const opNo = String(leader?.source_op_no || '').trim();
+  const opNameRaw = String(leader?.operation_name || '').trim();
+  const cleanName = opNo
+    ? opNameRaw.replace(new RegExp(`^${trialEscapeRegExp(opNo)}\\s*[-: ]*`, 'i'), '').trim()
+    : opNameRaw;
+  return {
+    op_no: opNo ? `OP${opNo}` : '',
+    op_name: cleanName || opNameRaw || '',
+  };
+}
+
+function trialBlockNetOutput(actualGood, actualReject) {
+  return Math.max(0, Number(actualGood || 0) - Number(actualReject || 0));
+}
+
+function trialMaterialStatusClass(status) {
+  const severity = String(status?.severity || '').toLowerCase();
+  if (severity === 'pending') return 'material-pending';
+  if (severity === 'late') return 'material-late';
+  if (severity === 'warning') return 'material-warning';
+  return '';
+}
+
+function trialProfileOptions(selected) {
+  return trialState.profiles.map(profile => {
+    const sel = String(profile.profile_name) === String(selected) ? 'selected' : '';
+    return `<option value="${profile.profile_name}" ${sel}>${profile.profile_name} (${profile.capacity_minutes}m)</option>`;
+  }).join('');
+}
+
+function trialCapacityKey(machineId, workDate) {
+  return `${machineId}::${workDate}`;
+}
+
+function trialCapacityByKey() {
+  const map = new Map();
+  (trialState.capacities || []).forEach(row => map.set(trialCapacityKey(row.machine_id, row.work_date), row));
+  return map;
+}
+
+function trialBlocksForMachine(machineId) {
+  return (trialState.blocks || []).filter(block => String(block.machine_id) === String(machineId));
+}
+
+function trialSegmentsForBlock(blockId) {
+  return (trialState.segments || []).filter(seg => String(seg.block_id) === String(blockId));
+}
+
+function trialActualsForBlock(blockId) {
+  return (trialState.actuals || []).filter(row => String(row.block_id) === String(blockId));
+}
+
+function trialActualForSegment(segmentId) {
+  const exact = (trialState.actuals || []).find(row => String(row.segment_id || '') === String(segmentId || ''));
+  if (exact) return exact;
+  const segment = (trialState.segments || []).find(seg => String(seg.segment_id || '') === String(segmentId || ''));
+  if (!segment) return null;
+  return (trialState.actuals || []).find(row =>
+    String(row.block_id || '') === String(segment.block_id || '')
+    && String(row.report_date || '') === String(segment.segment_date || '')
+  ) || null;
+}
+
+function trialActualForBlockDate(blockId, reportDate) {
+  return (trialState.actuals || []).find(row =>
+    String(row.block_id || '') === String(blockId || '')
+    && String(row.report_date || '') === String(reportDate || '')
+  ) || null;
+}
+
+function trialActualRowsForBlock(blockId) {
+  const rowMap = new Map();
+  trialSegmentsForBlock(blockId)
+    .filter(seg => String(seg.segment_type || '') === 'production')
+    .sort((a, b) => String(a.start_datetime || '').localeCompare(String(b.start_datetime || '')) || Number(a.segment_id || 0) - Number(b.segment_id || 0))
+    .forEach(seg => {
+      const reportDate = String(seg.segment_date || '');
+      if (!reportDate) return;
+      rowMap.set(reportDate, {
+        report_date: reportDate,
+        segment: seg,
+        actual: trialActualForSegment(seg.segment_id) || trialActualForBlockDate(blockId, reportDate),
+        target_qty: Number(seg.qty_done || seg.planned_qty || 0),
+        actual_only: false,
+      });
+    });
+  trialActualsForBlock(blockId).forEach(actual => {
+    const reportDate = String(actual.report_date || '');
+    if (!reportDate || rowMap.has(reportDate)) return;
+    rowMap.set(reportDate, {
+      report_date: reportDate,
+      segment: null,
+      actual,
+      target_qty: Number(actual.target_qty_at_report || 0),
+      actual_only: true,
+    });
+  });
+  return Array.from(rowMap.values()).sort((a, b) => String(a.report_date).localeCompare(String(b.report_date)));
+}
+
+function trialActualModalHost() {
+  return document.getElementById('modal-body') || document.getElementById('trial-modal-shell');
+}
+
+function trialPlannedTargetQtyForDate(blockId, reportDate) {
+  const plannedRows = trialActualRowsForBlock(blockId).filter(row => String(row.report_date || '') === String(reportDate || ''));
+  if (plannedRows.length) {
+    return plannedRows.reduce((sum, row) => sum + Number(row.target_qty || 0), 0);
+  }
+  return trialSegmentsForBlock(blockId)
+    .filter(seg => String(seg.segment_type || '') === 'production' && String(seg.segment_date || '') === String(reportDate || ''))
+    .reduce((sum, seg) => sum + Number(seg.qty_done || seg.planned_qty || 0), 0);
+}
+
+async function saveSegmentActual(segmentId, patch, options = {}) {
+  if (!segmentId) throw new Error('Planned segment is missing. Refresh the page and try again.');
+  const data = await POST(`/api/trial/segments/${segmentId}/actual`, patch);
+  if (!options.silent && data.message) toast(data.message, 'success');
+  if (options.reload !== false) {
+    await loadTrial();
+  }
+  return data;
+}
+
+async function trialSaveActualDateInput(blockId, reportDate, field, value) {
+  const actual = trialActualForBlockDate(blockId, reportDate) || {};
+  const payload = {
+    daily_actuals: [{
+      report_date: reportDate,
+      output_qty: field === 'output_qty' ? value : (actual.output_qty ?? ''),
+      reject_qty: field === 'reject_qty' ? value : (actual.reject_qty ?? ''),
+      remarks: field === 'remarks' ? value : (actual.remarks || ''),
+    }],
+  };
+  await POST(`/api/trial/blocks/${blockId}/actual`, payload);
+  await loadTrial();
+}
+
+function trialActualRowPayloadFromElement(rowEl) {
+  const getFieldValue = field => {
+    const input = rowEl?.querySelector?.(`[data-trial-actual-field="${field}"]`);
+    return input ? input.value : '';
+  };
+  return {
+    output_qty: getFieldValue('output_qty'),
+    reject_qty: getFieldValue('reject_qty'),
+    remarks: getFieldValue('remarks'),
+  };
+}
+
+async function trialSaveActualRowDate(blockId, oldReportDate, nextReportDate, rowEl) {
+  const nextDate = String(nextReportDate || '').trim();
+  if (!nextDate) return;
+  const rowValues = trialActualRowPayloadFromElement(rowEl);
+  const payload = {
+    daily_actuals: [{
+      report_date: nextDate,
+      output_qty: rowValues.output_qty,
+      reject_qty: rowValues.reject_qty,
+      remarks: rowValues.remarks,
+    }],
+  };
+  if (String(oldReportDate || '').trim() && String(oldReportDate || '').trim() !== nextDate) {
+    payload.delete_actual_dates = [String(oldReportDate || '').trim()];
+  }
+  await POST(`/api/trial/blocks/${blockId}/actual`, payload);
+  await loadTrial();
+}
+
+function trialActualDailyRowsForBlock(block) {
+  let rows = Array.isArray(block?.actual_daily_rows) ? block.actual_daily_rows : [];
+  if (!rows.length && block?.block_id) {
+    rows = trialActualRowsForBlock(block.block_id).map(row => ({
+      report_date: row.report_date,
+      original_report_date: row.actual_only ? row.report_date : '',
+      target_qty: Number(row.target_qty || 0),
+      output_qty: row.actual?.output_qty ?? '',
+      reject_qty: row.actual?.reject_qty ?? '',
+      remarks: row.actual?.remarks ?? '',
+      is_planned_row: !row.actual_only,
+      is_existing_actual: Boolean(row.actual),
+      locked_date: true,
+    }));
+  }
+  return rows.map(row => ({
+    report_date: String(row.report_date || '').trim(),
+    original_report_date: String(row.original_report_date || row.report_date || '').trim(),
+    target_qty: Number(row.target_qty || 0),
+    output_qty: row.output_qty === null || row.output_qty === undefined ? '' : String(row.output_qty),
+    reject_qty: row.reject_qty === null || row.reject_qty === undefined ? '' : String(row.reject_qty),
+    remarks: String(row.remarks || ''),
+    is_planned_row: Boolean(row.is_planned_row),
+    is_existing_actual: Boolean(row.is_existing_actual),
+    locked_date: row.locked_date !== false,
+  }));
+}
+
+function trialResetActualDraft(blockId, block) {
+  trialActualDraft = {
+    blockId: Number(blockId || 0) || null,
+    rows: {},
+    deletedDates: new Set(),
+    removedTargetDates: new Set(),
+  };
+  trialActualDailyRowsForBlock(block).forEach(row => {
+    trialActualDraft.rows[String(row.report_date || '')] = {
+      ...row,
+      is_new_row: !row.is_existing_actual && !row.is_planned_row,
+    };
+  });
+}
+
+function trialRenderActualDailyRows(blockId, rows) {
+  const shell = trialActualModalHost();
+  if (!shell) return;
+  const grid = shell.querySelector(`[data-trial-actual-daily-grid="${String(blockId)}"]`);
+  if (!grid) return;
+  const dailyRows = Array.isArray(rows) ? rows : [];
+  grid.innerHTML = dailyRows.map(row => trialActualDailyRowHtml(blockId, row)).join('') || '<div class="trial-catalog-empty">No scheduled target rows. Recalculate schedule or add a date manually.</div>';
+}
+
+function trialActualDailyRowHtml(blockId, row, options = {}) {
+  const reportDate = String(row?.report_date || trialTodayISO()).trim();
+  const originalReportDate = String(row?.original_report_date || row?.report_date || '').trim();
+  const targetQty = Number(row?.target_qty || 0);
+  const outputValue = row?.output_qty === null || row?.output_qty === undefined ? '' : String(row.output_qty);
+  const rejectValue = row?.reject_qty === null || row?.reject_qty === undefined ? '' : String(row.reject_qty);
+  const remarksValue = String(row?.remarks || '');
+  const isPlannedRow = Boolean(row?.is_planned_row);
+  const isExistingActual = Boolean(row?.is_existing_actual);
+  const lockedDate = row?.locked_date !== false;
+  const isRemoved = Boolean(options.removed);
+  const canRemove = options.canRemove !== false;
+  return `
+    <div
+      class="trial-actual-row trial-actual-daily-row"
+      data-trial-actual-row="1"
+      data-row-date="${escapeHtml(reportDate)}"
+      data-original-report-date="${escapeHtml(originalReportDate)}"
+      data-is-planned-row="${isPlannedRow ? '1' : '0'}"
+      data-is-existing-actual="${isExistingActual ? '1' : '0'}"
+      data-locked-date="${lockedDate ? '1' : '0'}"
+      data-target-qty="${escapeHtml(String(targetQty))}"
+      data-removed="${isRemoved ? '1' : '0'}"
+      style="${isRemoved ? 'display:none;' : ''}grid-template-columns: 150px 92px minmax(120px, 0.9fr) minmax(120px, 0.9fr) minmax(0, 1.4fr) 88px;"
+    >
+      <label class="trial-actual-cell">
+        <span>Date</span>
+        <span class="trial-actual-date-text">${escapeHtml(reportDate)}</span>
+        <input data-trial-actual-field="report_date" type="hidden" value="${escapeHtml(reportDate)}">
+      </label>
+      <div class="trial-actual-target">Target ${fmt(targetQty, 0)}</div>
+      <label class="trial-actual-cell">
+        <span>Output Qty</span>
+        <input data-trial-actual-field="output_qty" type="number" min="0" step="1" value="${escapeHtml(outputValue)}" oninput="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onchange="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onblur="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0})">
+      </label>
+      <label class="trial-actual-cell">
+        <span>Reject Qty</span>
+        <input data-trial-actual-field="reject_qty" type="number" min="0" step="1" value="${escapeHtml(rejectValue)}" oninput="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onchange="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onblur="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0})">
+      </label>
+      <label class="trial-actual-cell">
+        <span>Remarks</span>
+        <textarea data-trial-actual-field="remarks" rows="1" oninput="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onchange="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onblur="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0})">${escapeHtml(remarksValue)}</textarea>
+      </label>
+      <div style="display:flex;align-items:end;justify-content:flex-end;gap:8px">
+        ${canRemove ? `<button type="button" class="btn btn-ghost btn-xs" onclick="trialRemoveActualDailyRow(this.closest('.trial-actual-daily-row'))">Delete Date</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function trialRemoveActualDailyRow(rowEl) {
+  if (!rowEl) return;
+  const reportDate = String(rowEl.querySelector('[data-trial-actual-field="report_date"]')?.value || rowEl.dataset.originalReportDate || rowEl.dataset.rowDate || '').trim();
+  const hasSavedActual = String(rowEl.dataset.isExistingActual || '0') === '1';
+  const hasPlannedRow = String(rowEl.dataset.isPlannedRow || '0') === '1';
+  const targetQty = Number(rowEl.dataset.targetQty || 0);
+  const shouldRemoveTarget = hasPlannedRow || targetQty > 0;
+  if (hasSavedActual) {
+    if (reportDate) {
+      trialActualDraft.deletedDates.add(reportDate);
+      if (shouldRemoveTarget) trialActualDraft.removedTargetDates.add(reportDate);
+      if (trialActualDraft.rows[reportDate]) {
+        trialActualDraft.rows[reportDate].removed = true;
+      }
+    }
+    rowEl.dataset.removed = '1';
+    rowEl.style.display = 'none';
+    return;
+  }
+  if (hasPlannedRow) {
+    if (reportDate && shouldRemoveTarget) {
+      trialActualDraft.removedTargetDates.add(reportDate);
+    }
+    rowEl.dataset.removed = '1';
+    rowEl.style.display = 'none';
+    return;
+  }
+  if (reportDate && trialActualDraft.rows[reportDate]) {
+    delete trialActualDraft.rows[reportDate];
+  }
+  rowEl.remove();
+}
+
+function trialAddActualDailyRow(blockId, reportDate = '') {
+  const shell = trialActualModalHost();
+  if (!shell) return;
+  const grid = shell.querySelector(`[data-trial-actual-daily-grid="${String(blockId)}"]`);
+  if (!grid) return;
+  let chosenDate = String(reportDate || '').trim() || trialTodayISO();
+  let existing = Array.from(grid.querySelectorAll('.trial-actual-daily-row')).find(row => String(row.dataset.rowDate || '') === chosenDate);
+  let guard = 0;
+  while (existing && guard < 60) {
+    chosenDate = trialAddDaysISO(chosenDate, 1);
+    existing = Array.from(grid.querySelectorAll('.trial-actual-daily-row')).find(row => String(row.dataset.rowDate || '') === chosenDate);
+    guard += 1;
+  }
+  if (existing) {
+    existing.dataset.removed = '0';
+    existing.style.display = '';
+    trialActualDraft.deletedDates.delete(String(existing.dataset.rowDate || chosenDate));
+    trialActualDraft.removedTargetDates.delete(String(existing.dataset.rowDate || chosenDate));
+    existing.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    existing.querySelector('[data-trial-actual-field="output_qty"]')?.focus();
+    return;
+  }
+  const targetQty = trialPlannedTargetQtyForDate(blockId, chosenDate);
+  const row = {
+    report_date: chosenDate,
+    original_report_date: '',
+    target_qty: targetQty,
+    output_qty: '',
+    reject_qty: '',
+    remarks: '',
+    is_planned_row: false,
+    is_existing_actual: false,
+    locked_date: true,
+    is_new_row: true,
+  };
+  trialActualDraft.rows[chosenDate] = row;
+  grid.insertAdjacentHTML('beforeend', trialActualDailyRowHtml(blockId, row));
+  const added = Array.from(grid.querySelectorAll('.trial-actual-daily-row')).find(row => String(row.dataset.rowDate || '') === chosenDate && String(row.dataset.removed || '0') !== '1');
+  added?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  added?.querySelector('[data-trial-actual-field="output_qty"]')?.focus();
+}
+
+function trialSyncActualDailyRowDraft(blockId, rowEl) {
+  if (!rowEl) return;
+  const reportDate = String(rowEl.querySelector('[data-trial-actual-field="report_date"]')?.value || rowEl.dataset.originalReportDate || rowEl.dataset.rowDate || '').trim();
+  if (!reportDate) return;
+  trialActualDraft.rows[reportDate] = {
+    report_date: reportDate,
+    original_report_date: String(rowEl.dataset.originalReportDate || reportDate || '').trim(),
+    target_qty: Number(rowEl.dataset.targetQty || 0),
+    output_qty: String(rowEl.querySelector('[data-trial-actual-field="output_qty"]')?.value ?? '').trim(),
+    reject_qty: String(rowEl.querySelector('[data-trial-actual-field="reject_qty"]')?.value ?? '').trim(),
+    remarks: String(rowEl.querySelector('[data-trial-actual-field="remarks"]')?.value ?? '').trim(),
+    removed: String(rowEl.dataset.removed || '0') === '1',
+    is_existing_actual: String(rowEl.dataset.isExistingActual || '0') === '1',
+  };
+}
+
+function trialSnapshotActualDailyRows(blockId) {
+  const shell = trialActualModalHost();
+  const grid = shell ? shell.querySelector(`[data-trial-actual-daily-grid="${String(blockId)}"]`) : null;
+  if (!grid) return [];
+  const nextRows = {};
+  const nextDeleteDates = new Set(trialActualDraft.deletedDates || []);
+  const nextRemovedTargetDates = new Set(trialActualDraft.removedTargetDates || []);
+  Array.from(grid.querySelectorAll('.trial-actual-daily-row')).forEach(rowEl => {
+    const removed = String(rowEl.dataset.removed || '0') === '1';
+    const reportDate = String(rowEl.querySelector('[data-trial-actual-field="report_date"]')?.value || rowEl.dataset.originalReportDate || rowEl.dataset.rowDate || '').trim();
+    if (!reportDate) return;
+    const originalReportDate = String(rowEl.dataset.originalReportDate || '').trim();
+    const targetValue = String(rowEl.dataset.targetQty || '0').trim();
+    const outputValue = String(rowEl.querySelector('[data-trial-actual-field="output_qty"]')?.value ?? '').trim();
+    const rejectValue = String(rowEl.querySelector('[data-trial-actual-field="reject_qty"]')?.value ?? '').trim();
+    const remarksValue = String(rowEl.querySelector('[data-trial-actual-field="remarks"]')?.value ?? '').trim();
+    const isExistingActual = String(rowEl.dataset.isExistingActual || '0') === '1';
+    const isPlannedRow = String(rowEl.dataset.isPlannedRow || '0') === '1';
+    nextRows[reportDate] = {
+      report_date: reportDate,
+      original_report_date: originalReportDate || reportDate,
+      target_qty: Number(targetValue || 0),
+      output_qty: outputValue,
+      reject_qty: rejectValue,
+      remarks: remarksValue,
+      removed,
+      is_existing_actual: isExistingActual,
+      is_planned_row: isPlannedRow,
+      locked_date: String(rowEl.dataset.lockedDate || '1') !== '0',
+      is_new_row: !isExistingActual && !isPlannedRow,
+    };
+    if (removed) {
+      if (isExistingActual) nextDeleteDates.add(originalReportDate || reportDate);
+      if ((isExistingActual || isPlannedRow || Number(targetValue || 0) > 0) && reportDate) nextRemovedTargetDates.add(reportDate);
+      return;
+    }
+    if (isExistingActual && originalReportDate && reportDate !== originalReportDate) {
+      nextDeleteDates.add(originalReportDate);
+    }
+  });
+  trialActualDraft.rows = nextRows;
+  trialActualDraft.deletedDates = nextDeleteDates;
+  trialActualDraft.removedTargetDates = nextRemovedTargetDates;
+  return Object.values(nextRows);
+}
+
+function trialCollectActualDailyRows(blockId) {
+  const shell = trialActualModalHost();
+  const grid = shell ? shell.querySelector(`[data-trial-actual-daily-grid="${String(blockId)}"]`) : null;
+  if (!grid) return { daily_actuals: [], delete_actual_dates: [], removed_target_dates: [] };
+  const dailyActuals = [];
+  const deleteDates = new Set(trialActualDraft.deletedDates || []);
+  const removedTargetDates = new Set(trialActualDraft.removedTargetDates || []);
+  const snapshotRows = trialSnapshotActualDailyRows(blockId);
+  snapshotRows.forEach(rowState => {
+    const reportDate = String(rowState.report_date || '').trim();
+    if (!reportDate) return;
+    if (rowState.removed) return;
+    const nextOutputValue = String(rowState.output_qty ?? '').trim();
+    const nextRejectValue = String(rowState.reject_qty ?? '').trim();
+    const nextRemarksValue = String(rowState.remarks ?? '').trim();
+    if (nextOutputValue === '' && nextRejectValue === '' && nextRemarksValue === '') return;
+    dailyActuals.push({
+      report_date: reportDate,
+      target_qty: Number(rowState.target_qty || 0),
+      output_qty: nextOutputValue,
+      reject_qty: nextRejectValue,
+      remarks: nextRemarksValue,
+    });
+  });
+  if (dailyActuals.length === 0 && deleteDates.size === 0 && removedTargetDates.size === 0) {
+    return { daily_actuals: [], delete_actual_dates: [], removed_target_dates: [] };
+  }
+  return {
+    daily_actuals: dailyActuals,
+    delete_actual_dates: Array.from(deleteDates),
+    removed_target_dates: Array.from(removedTargetDates),
+  };
+}
+
+function trialActualInputKeydown(event, blockId) {
+  if (!event || event.key !== 'Enter') return;
+  const tag = String(event.target?.tagName || '').toLowerCase();
+  const isTextarea = tag === 'textarea';
+  if (isTextarea && !event.ctrlKey && !event.metaKey) {
+    return;
+  }
+  event.preventDefault();
+  trialSaveActualDailyRows(blockId);
+}
+
+async function trialSaveActualDailyRows(blockId) {
+  if (trialActualSaving) return;
+  trialActualSaving = true;
+  const payload = trialCollectActualDailyRows(blockId);
+  console.log('Collected actual payload', {
+    blockId,
+    payload,
+    rowCount: document.querySelectorAll('.trial-actual-daily-row').length,
+  });
+  if ((payload.daily_actuals || []).length === 0 && (payload.delete_actual_dates || []).length === 0 && (payload.removed_target_dates || []).length === 0) {
+    toast('No actual rows to save.', 'warning');
+    trialActualSaving = false;
+    return;
+  }
+  const saveBtn = document.getElementById('trial-save-btn');
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving...';
+  }
+  try {
+    const data = await POST(`/api/trial/blocks/${blockId}/actual`, payload);
+    console.log('Actual save response', data);
+    if (data && data.block) {
+      const nextBlock = data.block || {};
+      trialState.blocks = (trialState.blocks || []).map(block => String(block.block_id) === String(blockId) ? { ...block, ...nextBlock } : block);
+    }
+    const changedCount = Number(data?.changed_count || 0);
+    if (changedCount <= 0) {
+      toast('No actual rows were saved. Enter output, reject, or remarks before saving.', 'warning');
+      if (data && (data.block || data.actual_daily_rows)) {
+        trialResetActualDraft(blockId, data.block || trialState.blocks.find(block => String(block.block_id) === String(blockId)) || null);
+        trialRenderActualDailyRows(blockId, data.actual_daily_rows || (data.block && data.block.actual_daily_rows) || []);
+      }
+      return;
+    }
+    if (data && (data.block || data.actual_daily_rows)) {
+      trialResetActualDraft(blockId, data.block || trialState.blocks.find(block => String(block.block_id) === String(blockId)) || null);
+      trialRenderActualDailyRows(blockId, data.actual_daily_rows || (data.block && data.block.actual_daily_rows) || []);
+    }
+    await loadTrial();
+    toast('Actual saved', 'success');
+  } catch (e) {
+    toast('Actual save failed: ' + e.message, 'error');
+  } finally {
+    trialActualSaving = false;
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save Actuals';
+    }
+  }
+}
+
+function trialSetActualDraftValue(reportDate, field, value) {
+  if (!trialActualDraft.rows[reportDate]) {
+    trialActualDraft.rows[reportDate] = { good: null, reject: null };
+  }
+  const normalized = String(value ?? '').trim() === '' ? null : Number(value);
+  trialActualDraft.rows[reportDate][field] = Number.isFinite(normalized) ? normalized : null;
+  const shell = document.getElementById('trial-modal-shell');
+  if (!shell) return;
+  shell.querySelectorAll(`[data-trial-actual-date="${CSS.escape(reportDate)}"][data-trial-actual-field="${field}"]`).forEach(input => {
+    const nextValue = normalized == null ? '' : String(normalized);
+    if (String(input.value) !== nextValue) input.value = nextValue;
+  });
+}
+
+async function trialDeleteActualDraftDate(reportDate, blockId) {
+  if (!blockId) return;
+  if (!trialActualDraft.deletedDates) {
+    trialActualDraft.deletedDates = new Set();
+  }
+  trialActualDraft.deletedDates.add(reportDate);
+  delete trialActualDraft.rows[reportDate];
+  const shell = document.getElementById('trial-modal-shell');
+  if (!shell) return;
+  shell.querySelectorAll(`[data-trial-actual-date-row="${CSS.escape(reportDate)}"]`).forEach(node => node.remove());
+  shell.querySelectorAll(`[data-trial-actual-date="${CSS.escape(reportDate)}"]`).forEach(input => {
+    input.value = '';
+  });
+  try {
+    await trialSubmitActualDraft(blockId);
+    await loadTrial();
+    toast('Actual saved', 'success');
+  } catch (e) {
+    toast('Actual failed: ' + e.message, 'error');
+  }
+}
+
+async function trialSubmitActualDraft(blockId, action = null) {
+  const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
+  if (!block) throw new Error('Run block not found');
+  const segmentMap = new Map(
+    trialSegmentsForBlock(blockId)
+      .filter(seg => String(seg.segment_type || '') === 'production')
+      .map(seg => [String(seg.segment_date || ''), seg])
+  );
+  const dailyActuals = Object.entries(trialActualDraft.rows || {})
+    .filter(([, row]) => row && (row.good !== null || row.reject !== null))
+    .map(([reportDate, row]) => ({
+      report_date: reportDate,
+      output_qty: row.good === null ? 0 : Number(row.good || 0),
+      reject_qty: row.reject === null ? 0 : Number(row.reject || 0),
+      remarks: '',
+    }));
+  const deletedActualDates = Array.from(trialActualDraft.deletedDates || []);
+  const actualRemarks = String(trialActualDraft.remarks || '');
+  const patches = [];
+  for (const [reportDate, row] of Object.entries(trialActualDraft.rows || {})) {
+    const seg = segmentMap.get(String(reportDate || ''));
+    if (!seg) continue;
+    patches.push({
+      segmentId: seg.segment_id,
+      patch: {
+        output_qty: row.good === null ? '' : String(row.good),
+        reject_qty: row.reject === null ? '' : String(row.reject),
+        remarks: actualRemarks,
+      },
+    });
+  }
+  for (const reportDate of deletedActualDates) {
+    const seg = segmentMap.get(String(reportDate || ''));
+    if (!seg) continue;
+    patches.push({
+      segmentId: seg.segment_id,
+      patch: { output_qty: '', reject_qty: '', remarks: '' },
+    });
+  }
+  if (!patches.length) return { ok: true };
+  const results = [];
+  for (const item of patches) {
+    const res = await saveSegmentActual(item.segmentId, item.patch, { reload: false });
+    results.push(res);
+  }
+  await loadTrial();
+  return results[results.length - 1] || { ok: true };
+}
+
+function trialActualTargetsForBlock(blockId) {
+  const rows = trialSegmentsForBlock(blockId).filter(seg => String(seg.segment_type || '') === 'production');
+  const grouped = new Map();
+  rows.forEach(seg => {
+    const key = String(seg.segment_date || '');
+    if (!key) return;
+    const qty = Number(seg.qty_done || 0);
+    const existing = grouped.get(key) || { report_date: key, target_qty: 0, target_minutes: 0 };
+    existing.target_qty += qty;
+    existing.target_minutes += Number(seg.minutes_used || 0);
+    grouped.set(key, existing);
+  });
+  return Array.from(grouped.values()).sort((a, b) => String(a.report_date).localeCompare(String(b.report_date)));
+}
+
+function trialIntegerizeTargets(rows, totalQty) {
+  const targetTotal = Math.max(0, Math.round(Number(totalQty || 0)));
+  const prepared = (rows || []).map(row => {
+    const raw = Math.max(0, Number(row.target_qty || 0));
+    const base = Math.floor(raw);
+    return {
+      ...row,
+      raw_qty: raw,
+      display_qty: base,
+      remainder: raw - base,
+    };
+  });
+  let remaining = targetTotal - prepared.reduce((sum, row) => sum + Number(row.display_qty || 0), 0);
+  if (remaining > 0) {
+    [...prepared]
+      .sort((a, b) => (b.remainder - a.remainder) || String(a.report_date).localeCompare(String(b.report_date)))
+      .slice(0, remaining)
+      .forEach(row => {
+        const target = prepared.find(item => item.report_date === row.report_date);
+        if (target) target.display_qty += 1;
+      });
+  } else if (remaining < 0) {
+    [...prepared]
+      .sort((a, b) => (a.remainder - b.remainder) || String(a.report_date).localeCompare(String(b.report_date)))
+      .slice(0, Math.abs(remaining))
+      .forEach(row => {
+        const target = prepared.find(item => item.report_date === row.report_date);
+        if (target && target.display_qty > 0) target.display_qty -= 1;
+      });
+  }
+  return prepared;
+}
+
+function trialBlockMemberMetrics(block) {
+  const outputTotal = (trialState.actuals || [])
+    .filter(row => String(row.block_id) === String(block.block_id) && row.output_qty !== null && row.output_qty !== undefined)
+    .reduce((sum, row) => sum + Number(row.output_qty || 0), 0);
+  const rejectTotal = (trialState.actuals || [])
+    .filter(row => String(row.block_id) === String(block.block_id) && row.reject_qty !== null && row.reject_qty !== undefined)
+    .reduce((sum, row) => sum + Number(row.reject_qty || 0), 0);
+  const scheduledQty = Number(block.scheduled_qty || 0);
+  const netOutput = trialBlockNetOutput(outputTotal, rejectTotal);
+  const remainingQty = Math.max(0, scheduledQty - netOutput);
+  const remainingMinutes = remainingQty * Number(block.cycle_minutes_per_qty || 0);
+  const status = String(block.execution_status || block.status || '').toUpperCase();
+  return {
+    ...block,
+    outputTotal,
+    rejectTotal,
+    netOutput,
+    remainingQty,
+    remainingMinutes,
+    isDone: status === 'DONE',
+    isInProgress: status === 'IN_PROGRESS',
+  };
+}
+function renderTrialMachine(machine) {
+  const blocks = trialBlocksForMachine(machine.machine_id)
+    .map(block => trialBlockMemberMetrics(block))
+    .sort((a, b) => Number(a.queue_position || 0) - Number(b.queue_position || 0) || Number(a.block_id || 0) - Number(b.block_id || 0))
+    .filter(trialBlockRunsInsideDateFilter);
+  const laneId = `trial-lane-${machine.machine_id}`;
+  const blockHtml = blocks.length ? blocks.map(block => {
+    const psDisplay = trialBlockPsDisplay(block, block);
+    const opDisplay = trialBlockOpDisplay(block);
+    const netOutput = trialBlockNetOutput(block.outputTotal, block.rejectTotal);
+    const operationLine = [opDisplay.op_no, opDisplay.op_name].filter(Boolean).join(' ');
+    const outputPillClass = String(block.status || '').toUpperCase() === 'DONE' ? 'green' : 'gray';
+    return `
+      <div class="trial-block-card" draggable="true" data-block-id="${block.block_id || ''}">
+        <div class="trial-op-card-header">
+          <div class="trial-block-top">
+            <div class="trial-block-main">
+              <div class="trial-block-title">${escapeHtml(psDisplay.base || block.title || '')}</div>
+              ${psDisplay.partial ? `<div class="trial-block-partial">Partial ${escapeHtml(psDisplay.partial)}</div>` : ''}
+              <div class="trial-block-op">${escapeHtml(operationLine)}</div>
+              <div class="trial-block-qty">Qty ${fmt(block.scheduled_qty || 0, 0)}</div>
+            </div>
+          </div>
+        </div>
+        <div class="trial-op-card-statuses">
+        </div>
+        <div class="trial-op-card-info">
+          ${block.anchor_datetime ? `<span class="trial-pill trial-pill-start yellow" title="Anchored by Planner">Anchored ${trialFormatDt(block.calculated_start_datetime || block.anchor_datetime)}</span>` : ''}
+          <span class="trial-pill">End ${trialFormatDt(block.calculated_end_datetime || block.planned_end_at)}</span>
+          <span class="trial-pill ${outputPillClass}">Output: ${fmt(netOutput, 0)}</span>
+        </div>
+        <div class="trial-op-card-actions">
+          <button class="btn btn-ghost btn-sm" type="button" onclick="openTrialBlockEditor(${block.block_id || 0})">Edit</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="openTrialActualModal(${block.block_id || 0})">Actual</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="toggleTrialSetup(${block.block_id || 0})">${Number(block.include_setup || 0) === 1 ? 'Setup On' : 'Setup Off'}</button>
+        </div>
+      </div>
+    `;
+  }).join('') : `<div class="trial-empty">${escapeHtml(trialHasActiveDateFilter() ? 'No run blocks in this date range.' : 'No run blocks yet for this machine.')}</div>`;
+
+  return `
+    <section class="trial-machine">
+      <div class="trial-machine-head">
+        <div>
+          <div class="trial-machine-title">${machine.machine_code}</div>
+          <div class="trial-machine-meta">${machine.machine_category} - ${machine.shift_profile || 'STANDARD'}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          <button class="btn btn-ghost btn-sm" type="button" onclick="openTrialCreateModal(${machine.machine_id})">Add</button>
+        </div>
+      </div>
+      <div class="trial-lane" id="${laneId}" data-machine-id="${machine.machine_id}">
+        ${blockHtml}
+      </div>
+    </section>
+  `;
+}
+
+function renderTrial() {
+  destroyTrialSortables();
+  const filterShell = document.getElementById('trial-machine-filter-shell');
+  if (filterShell) {
+    filterShell.innerHTML = `
+      <div class="trial-board-filter-card">
+        <div class="trial-board-filter-row">
+        ${renderTrialMachineCategoryFilter()}
+        ${renderTrialScheduleDateFilter()}
+        </div>
+        ${trialHasActiveDateFilter() ? `<div class="trial-board-filter-note">Date filter active — clear it to reorder.</div>` : ''}
+      </div>
+    `;
+  }
+  const grid = document.getElementById('trial-grid');
+  const visibleMachines = trialVisibleMachines();
+  grid.innerHTML = visibleMachines.length
+    ? visibleMachines.map(renderTrialMachine).join('')
+    : `<div class="trial-empty">No machines found for ${escapeHtml(trialMachineCategoryFilter)}.</div>`;
+  document.getElementById('trial-layout').style.display = 'grid';
+  document.getElementById('trial-loading').style.display = 'none';
+  initTrialMachineSortables();
+}
+
+async function loadTrial() {
+  const resolved = trialNormalizeScheduleDates(trialScheduleDateFilter.start, trialScheduleDateFilter.end);
+  trialScheduleDateFilter = resolved;
+  trialSyncScheduleUrl();
+  const data = await GET(`/api/trial/schedule?start=${encodeURIComponent(resolved.start)}&end=${encodeURIComponent(resolved.end)}`);
+  trialState = {
+    machines: data.machines || [],
+    blocks: data.blocks || [],
+    segments: data.segments || [],
+    actuals: data.actuals || [],
+    capacities: data.capacities || [],
+    profiles: data.profiles || [],
+  };
+  renderTrial();
+}
+
+function trialModalShell(html) {
+  const shell = document.getElementById('trial-modal-shell');
+  shell.innerHTML = html;
+}
+
+function trialBlocksByIds(blockIds) {
+  const ids = new Set((blockIds || []).map(id => String(id)));
+  return (trialState.blocks || []).filter(block => ids.has(String(block.block_id)));
+}
+
+function destroyTrialSortables() {
+  (trialMachineSortables || []).forEach(instance => {
+    try {
+      instance.destroy();
+    } catch (e) {
+      // Ignore teardown errors from already-detached nodes.
+    }
+  });
+  trialMachineSortables = [];
+}
+
+function initTrialMachineSortables() {
+  if (typeof Sortable === 'undefined') return;
+  const sortingDisabled = trialHasActiveDateFilter();
+  document.querySelectorAll('.trial-lane').forEach(lane => {
+    const sortable = new Sortable(lane, {
+      group: {
+        name: 'trial-machine-blocks',
+        pull: true,
+        put: ['trial-machine-blocks'],
+      },
+      draggable: '.trial-block-card',
+      handle: '.trial-op-card-header',
+      animation: 150,
+      disabled: sortingDisabled,
+      ghostClass: 'trial-drag-ghost',
+      chosenClass: 'trial-drag-chosen',
+      dragClass: 'trial-drag-active',
+      fallbackOnBody: true,
+      swapThreshold: 0.65,
+      onStart: () => {
+      },
+      onEnd: async evt => {
+        if (!evt.item || !evt.item.classList.contains('trial-block-card')) return;
+        const fromLane = evt.from;
+        const toLane = evt.to;
+        if (!fromLane || !toLane) return;
+        try {
+          if (fromLane !== toLane) {
+            await saveTrialOrder(fromLane, false);
+          }
+          await saveTrialOrder(toLane, false);
+          await loadTrial();
+        } catch (e) {
+          toast('Reorder failed: ' + e.message, 'error');
+          await loadTrial();
+        }
+      },
+    });
+    trialMachineSortables.push(sortable);
+  });
+}
+
+function openTrialForm(title, bodyHtml, onSaveLabel, onSave, extraActionsHtml = '') {
+  openModal(title, `
+    <div class="trial-modal-form">
+      ${bodyHtml}
+      <div class="trial-modal-actions">
+        ${extraActionsHtml}
+        <button type="button" class="btn btn-ghost btn-sm" id="trial-cancel-btn">Cancel</button>
+        ${onSaveLabel ? `<button type="button" class="btn btn-primary btn-sm" id="trial-save-btn">${onSaveLabel}</button>` : ''}
+      </div>
+    </div>
+  `);
+  setTimeout(() => {
+    document.getElementById('trial-cancel-btn')?.addEventListener('click', closeModal);
+    if (onSaveLabel && onSave) document.getElementById('trial-save-btn')?.addEventListener('click', onSave);
+  }, 0);
+}
+
+
+function trialShiftDate(dateText, deltaDays) {
+  const base = trialParseLocalDate(dateText || trialTodayLocal());
+  if (!base) return trialTodayLocal();
+  base.setDate(base.getDate() + Number(deltaDays || 0));
+  return trialDateText(base);
+}
+
+function trialDefaultProfileNameForDate(dateText) {
+  const d = trialParseLocalDate(dateText || trialTodayLocal());
+  if (!d) return 'NORMAL_DAY_NIGHT';
+  const weekday = d.getDay();
+  if (weekday === 0) return 'OFF';
+  if (weekday === 6) return 'SATURDAY';
+  return 'NORMAL_DAY_NIGHT';
+}
+
+function trialTodayLocal() {
+  const now = new Date();
+  return trialDateText(now);
+}
+
+function trialDateText(value) {
+  const d = value instanceof Date ? value : trialParseLocalDate(value);
+  if (!d) return '';
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function openTrialCapacityModal(startDate = '', dayCount = 14) {
+  const referenceMachineId = (trialState.machines && trialState.machines[0] && trialState.machines[0].machine_id) ? trialState.machines[0].machine_id : 0;
+  const capMap = trialCapacityByKey();
+  const days = Math.max(1, Number(dayCount || 14));
+  const start = startDate || trialTodayLocal();
+  const rows = [];
+  for (let i = 0; i < days; i += 1) {
+    const workDate = trialShiftDate(start, i);
+    const cap = capMap.get(trialCapacityKey(referenceMachineId, workDate)) || {};
+    const defaultProfile = trialDefaultProfileNameForDate(workDate);
+    rows.push(`
+      <div class="trial-capacity-row">
+        <label>${workDate}</label>
+        <select id="trial-cap-profile-${workDate}">
+          ${trialProfileOptions(cap.profile_name || defaultProfile)}
+        </select>
+        <input id="trial-cap-note-${workDate}" type="text" value="${cap.note ? String(cap.note).replace(/"/g, '&quot;') : ''}" placeholder="Note">
+        <button class="btn btn-ghost btn-sm" type="button" onclick="saveTrialCapacity('${workDate}', document.getElementById('trial-cap-profile-${workDate}').value, document.getElementById('trial-cap-note-${workDate}').value)">Save</button>
+      </div>
+    `);
+  }
+  const bodyHtml = `
+    <div class="trial-capacity-modal">
+      <div class="trial-capacity-modal-head">
+        <div>
+          <div style="font-size:18px;font-weight:900;letter-spacing:-0.03em">Shop Calendar</div>
+          <div style="font-size:12px;color:var(--text3)">Shared across all machines</div>
+        </div>
+        <div style="font-size:12px;color:var(--text3);max-width:260px;text-align:right">
+          Set the daily profile here. The same calendar is applied to every machine in the trial scheduler.
+        </div>
+      </div>
+      <div class="trial-capacity-modal-controls">
+        <button type="button" class="btn btn-ghost btn-sm" onclick="openTrialCapacityModal(trialShiftDate(document.getElementById('trial-cap-start').value, -Number(document.getElementById('trial-cap-days').value || 14)), document.getElementById('trial-cap-days').value)">Prev</button>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);font-weight:700">Start <input id="trial-cap-start" type="date" value="${start}"></label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);font-weight:700">Days
+          <select id="trial-cap-days">
+            <option value="7" ${days === 7 ? 'selected' : ''}>7</option>
+            <option value="14" ${days === 14 ? 'selected' : ''}>14</option>
+            <option value="28" ${days === 28 ? 'selected' : ''}>28</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="openTrialCapacityModal(trialShiftDate(document.getElementById('trial-cap-start').value, Number(document.getElementById('trial-cap-days').value || 14)), document.getElementById('trial-cap-days').value)">Next</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="openTrialCapacityModal(trialTodayLocal(), document.getElementById('trial-cap-days').value)">Today</button>
+        <span style="margin-left:auto;color:var(--text3);font-size:12px">Showing ${days} day(s)</span>
+      </div>
+      <div class="trial-capacity-modal-body">
+        ${rows.join('')}
+      </div>
+    </div>
+  `;
+  openModal('Shop Calendar', bodyHtml, 'lg');
+}
+
+function trialMachineWindowTypeOptions(selected) {
+  const options = ['DOWN', 'MAINTENANCE', 'BLOCKED', 'OVERTIME', 'HOLIDAY', 'AVAILABLE'];
+  return options.map(value => `<option value="${value}" ${String(selected || 'DOWN') === value ? 'selected' : ''}>${value}</option>`).join('');
+}
+
+async function openTrialMachineWindowModal() {
+  const machineOptions = (trialState.machines || []).map(machine => `<option value="${machine.machine_id}">${escapeHtml(machine.machine_code || '')}</option>`).join('');
+  const today = trialTodayLocal();
+  const windows = await GET('/api/trial/machine-calendar-windows?active=1');
+  const rows = (windows.calendar_windows || []).map(window => `
+    <div class="trial-capacity-row" style="align-items:center">
+      <div style="min-width:0">
+        <div style="font-weight:800">${escapeHtml(window.machine_code || `Machine ${window.machine_id}`)} · ${escapeHtml(window.window_type || '')}</div>
+        <div style="font-size:11px;color:var(--text3)">${escapeHtml(window.start_at || '')} → ${escapeHtml(window.end_at || '')}${window.note ? ` · ${escapeHtml(window.note)}` : ''}</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" type="button" onclick="deactivateTrialMachineWindow(${Number(window.window_id || 0)})">Deactivate</button>
+    </div>
+  `).join('');
+  openModal('Machine Windows', `
+    <div class="trial-capacity-modal">
+      <div class="trial-capacity-modal-head">
+        <div>
+          <div style="font-size:18px;font-weight:900;letter-spacing:-0.03em">Machine Windows</div>
+          <div style="font-size:12px;color:var(--text3)">Capacity overlays that block or add time without creating queue items.</div>
+        </div>
+      </div>
+      <div class="trial-modal-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:12px">
+        <label>Machine <select id="trial-window-machine">${machineOptions}</select></label>
+        <label>Type <select id="trial-window-type">${trialMachineWindowTypeOptions('DOWN')}</select></label>
+        <label>Start <input id="trial-window-start" type="datetime-local" value="${today}T14:00"></label>
+        <label>End <input id="trial-window-end" type="datetime-local" value="${today}T15:00"></label>
+        <label class="full">Note <input id="trial-window-note" type="text" placeholder="Spindle alarm / planned service"></label>
+        <label>Capacity Minutes <input id="trial-window-capacity" type="number" min="0" step="1" value="0"></label>
+      </div>
+      <div class="trial-modal-actions" style="justify-content:flex-start;padding:0 0 12px">
+        <button type="button" class="btn btn-primary btn-sm" onclick="saveTrialMachineWindow()">Save Window</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="closeModal()">Close</button>
+      </div>
+      <div style="border-top:1px solid var(--border);padding-top:12px;display:grid;gap:8px;max-height:260px;overflow:auto">
+        <div style="font-size:12px;font-weight:800;color:var(--text3);letter-spacing:0.08em;text-transform:uppercase">Active Windows</div>
+        ${rows || '<div style="color:var(--text3);font-size:12px">No active machine windows.</div>'}
+      </div>
+    </div>
+  `, 'lg');
+}
+
+async function saveTrialMachineWindow() {
+  try {
+    await POST('/api/trial/machine-calendar-windows', {
+      machine_id: Number(document.getElementById('trial-window-machine').value || 0),
+      window_type: document.getElementById('trial-window-type').value,
+      start_at: document.getElementById('trial-window-start').value,
+      end_at: document.getElementById('trial-window-end').value,
+      capacity_minutes: Number(document.getElementById('trial-window-capacity').value || 0),
+      note: document.getElementById('trial-window-note').value,
+      active: 1,
+    });
+    toast('Machine window saved', 'success');
+    closeModal();
+    await loadTrial();
+  } catch (err) {
+    toast(`Save failed: ${err.message}`, 'error');
+  }
+}
+
+async function deactivateTrialMachineWindow(windowId) {
+  try {
+    await DEL(`/api/trial/machine-calendar-windows/${Number(windowId || 0)}`);
+    toast('Machine window deactivated', 'success');
+    closeModal();
+    await loadTrial();
+  } catch (err) {
+    toast(`Deactivate failed: ${err.message}`, 'error');
+  }
+}
+
+function openTrialCreateModal(defaultMachineId = '') {
+  const machineOptions = (trialState.machines || []).map(machine => `<option value="${machine.machine_id}" ${String(machine.machine_id) === String(defaultMachineId) ? 'selected' : ''}>${machine.machine_code}</option>`).join('');
+  openTrialForm('Add Run Block', `
+    <div class="trial-modal-grid">
+      <label>Job No <input id="trial-job-no" placeholder="J1001"></label>
+      <label>Operation Name <input id="trial-operation-name" placeholder="Cutting"></label>
+      <label>Total Qty <input id="trial-total-qty" type="number" min="0" step="1" value="100"></label>
+      <label>Scheduled Qty <input id="trial-scheduled-qty" type="number" min="0" step="1" value="100"></label>
+      <label>Setup Minutes <input id="trial-setup-minutes" type="number" min="0" step="1" value="30"></label>
+      <label>Cycle Minutes / Qty <input id="trial-cycle-minutes" type="number" min="0" step="0.1" value="2"></label>
+      <label>Machine <select id="trial-machine-id">${machineOptions}</select></label>
+      <label>Queue Position <input id="trial-queue-position" type="number" min="1" step="1" value="0"></label>
+      <label>Include Setup <select id="trial-include-setup"><option value="1" selected>Yes</option><option value="0">No</option></select></label>
+      <label class="full">Remarks <textarea id="trial-remarks" rows="3" placeholder="Optional note"></textarea></label>
+    </div>
+  `, 'Create', async () => {
+    try {
+      await POST('/api/trial/operations', {
+        job_no: document.getElementById('trial-job-no').value,
+        operation_name: document.getElementById('trial-operation-name').value,
+        total_qty: Number(document.getElementById('trial-total-qty').value || 0),
+        scheduled_qty: Number(document.getElementById('trial-scheduled-qty').value || 0),
+        setup_minutes: Number(document.getElementById('trial-setup-minutes').value || 0),
+        cycle_minutes_per_qty: Number(document.getElementById('trial-cycle-minutes').value || 0),
+        machine_id: Number(document.getElementById('trial-machine-id').value || 0),
+        queue_position: Number(document.getElementById('trial-queue-position').value || 0),
+        include_setup: document.getElementById('trial-include-setup').value === '1',
+        remarks: document.getElementById('trial-remarks').value,
+      });
+      closeModal();
+      await loadTrial();
+      toast('Run block created', 'success');
+    } catch (e) {
+      toast('Create failed: ' + e.message, 'error');
+    }
+  });
+}
+
+function openTrialBlockEditor(blockId) {
+  const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
+  if (!block) return;
+  const machineOptions = (trialState.machines || []).map(machine => `<option value="${machine.machine_id}" ${String(machine.machine_id) === String(block.machine_id) ? 'selected' : ''}>${machine.machine_code}</option>`).join('');
+  openTrialForm('Edit Run Block', `
+    <div class="trial-modal-grid">
+      <label>Job No <input id="trial-edit-job-no" value="${block.job_no || ''}"></label>
+      <label>Operation Name <input id="trial-edit-operation-name" value="${block.operation_name || ''}"></label>
+      <label>Total Qty <input id="trial-edit-total-qty" type="number" min="0" step="1" value="${block.total_qty || 0}"></label>
+      <label>Scheduled Qty <input id="trial-edit-scheduled-qty" type="number" min="0" step="1" value="${block.scheduled_qty || 0}"></label>
+      <label>Setup Minutes <input id="trial-edit-setup-minutes" type="number" min="0" step="1" value="${block.setup_minutes || 0}"></label>
+      <label>Cycle Minutes / Qty <input id="trial-edit-cycle-minutes" type="number" min="0" step="0.1" value="${block.cycle_minutes_per_qty || 0}"></label>
+      <label>Machine <select id="trial-edit-machine-id">${machineOptions}</select></label>
+      <label>Queue Position <input id="trial-edit-queue-position" type="number" min="1" step="1" value="${block.queue_position || 1}"></label>
+      <label>Include Setup <select id="trial-edit-include-setup"><option value="1" ${Number(block.include_setup || 0) === 1 ? 'selected' : ''}>Yes</option><option value="0" ${Number(block.include_setup || 0) === 0 ? 'selected' : ''}>No</option></select></label>
+      <label class="full">Remarks <textarea id="trial-edit-remarks" rows="3">${block.remarks || ''}</textarea></label>
+    </div>
+  `, 'Save', async () => {
+    try {
+      await PUT(`/api/trial/blocks/${block.block_id}`, {
+        job_no: document.getElementById('trial-edit-job-no').value,
+        operation_name: document.getElementById('trial-edit-operation-name').value,
+        total_qty: Number(document.getElementById('trial-edit-total-qty').value || 0),
+        scheduled_qty: Number(document.getElementById('trial-edit-scheduled-qty').value || 0),
+        setup_minutes: Number(document.getElementById('trial-edit-setup-minutes').value || 0),
+        cycle_minutes_per_qty: Number(document.getElementById('trial-edit-cycle-minutes').value || 0),
+        machine_id: Number(document.getElementById('trial-edit-machine-id').value || 0),
+        queue_position: Number(document.getElementById('trial-edit-queue-position').value || 1),
+        include_setup: document.getElementById('trial-edit-include-setup').value === '1',
+        remarks: document.getElementById('trial-edit-remarks').value,
+      });
+      closeModal();
+      await loadTrial();
+      toast('Run block updated', 'success');
+    } catch (e) {
+      toast('Update failed: ' + e.message, 'error');
+    }
+  }, `
+    <button type="button" class="btn btn-ghost btn-sm" id="trial-delete-block">Delete</button>
+  `);
+  setTimeout(() => {
+    document.getElementById('trial-delete-block')?.addEventListener('click', async () => {
+      if (!confirm(`Delete ${block.job_no} - ${block.operation_name}?`)) return;
+      try {
+        await DEL(`/api/trial/blocks/${block.block_id}`);
+        closeModal();
+        await loadTrial();
+        toast('Run block deleted', 'success');
+      } catch (e) {
+        toast('Delete failed: ' + e.message, 'error');
+      }
+    });
+  }, 0);
+}
+
+function openTrialActualModal(blockId) {
+  const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
+  if (!block) return;
+  trialResetActualDraft(blockId, block);
+  const outputTotal = (trialState.actuals || [])
+    .filter(row => String(row.block_id) === String(blockId) && row.output_qty !== null && row.output_qty !== undefined)
+    .reduce((sum, row) => sum + Number(row.output_qty || 0), 0);
+  const rejectTotal = (trialState.actuals || [])
+    .filter(row => String(row.block_id) === String(blockId) && row.reject_qty !== null && row.reject_qty !== undefined)
+    .reduce((sum, row) => sum + Number(row.reject_qty || 0), 0);
+  const remainingQty = Math.max(0, Number(block.scheduled_qty || 0) - outputTotal);
+  const remainingLoad = remainingQty * Number(block.cycle_minutes_per_qty || 0);
+  const dailyRows = trialActualDailyRowsForBlock(block);
+  const rowsHtml = dailyRows.length
+    ? dailyRows.map(row => trialActualDailyRowHtml(blockId, row)).join('')
+    : `<div class="trial-catalog-empty">No scheduled target rows. Recalculate schedule or add a date manually.</div>`;
+  const cardPsId = String(block.job_no || block.source_ps_id || '').trim();
+  const cardOperationLabel = String(block.source_op_no || block.operation_name || '').trim();
+  const cardMachineCode = String(block.machine_code || '').trim();
+  const cardSummaryLine = `Qty ${fmt(block.scheduled_qty || 0, 0)}${cardMachineCode ? ` · ${cardMachineCode}` : ''}`;
+  openTrialForm('Actual Output', `
+    <div style="display:grid;gap:12px">
+      <div style="display:grid;gap:4px">
+        <div style="font-size:18px;font-weight:900;letter-spacing:-0.03em">${escapeHtml(cardPsId || block.job_no || '')}</div>
+        <div style="font-size:13px;font-weight:800;color:var(--text2)">${escapeHtml(cardOperationLabel || block.operation_name || block.source_op_no || '')}</div>
+        <div style="font-size:12px;font-weight:800;color:var(--text3)">${escapeHtml(cardSummaryLine)}</div>
+      </div>
+      <div class="trial-actual-summary">
+        <div><span class="field-hint">Scheduled</span><strong>${fmt(block.scheduled_qty || 0)}</strong></div>
+        <div><span class="field-hint">Output</span><strong>${fmt(outputTotal)}</strong></div>
+        <div><span class="field-hint">Reject</span><strong>${fmt(rejectTotal)}</strong></div>
+        <div><span class="field-hint">Remaining</span><strong>${fmt(remainingQty)}</strong></div>
+        <div><span class="field-hint">Load</span><strong>${fmt(remainingLoad, 0)}m</strong></div>
+      </div>
+      <div class="trial-actual-section">
+        <div class="trial-actual-section-title">Daily rows</div>
+        <div class="trial-actual-section-note">Planned dates are shown automatically. Add Date creates an extra date-only row. Delete Date removes the date from the plan, deletes any saved actual on save, and moves the target to the tail.</div>
+        <div style="display:flex;flex-wrap:wrap;align-items:end;gap:8px;margin:8px 0 10px">
+          <label class="trial-actual-cell" style="min-width:180px">
+            <span>Add Date</span>
+            <input id="trial-actual-add-date" type="date" value="${trialTodayISO()}">
+          </label>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="trialAddActualDailyRow(${blockId}, document.getElementById('trial-actual-add-date').value)">Add Date</button>
+        </div>
+        <div class="trial-actual-grid-head" style="grid-template-columns: 150px 92px minmax(120px, 0.9fr) minmax(120px, 0.9fr) minmax(0, 1.4fr) 88px;">
+          <span>Date</span>
+          <span>Target Qty</span>
+          <span>Output Qty</span>
+          <span>Reject Qty</span>
+          <span>Remarks</span>
+          <span>Delete Date</span>
+        </div>
+        <div data-trial-actual-daily-grid="${blockId}" style="display:grid;gap:8px">
+          ${rowsHtml}
+        </div>
+      </div>
+    </div>
+  `, 'Save Actuals', async () => {
+    await trialSaveActualDailyRows(blockId);
+  });
+  }
+
+async function trialSaveActualInput(segmentId, field, value) {
+  const patch = {};
+  patch[field] = value;
+  try {
+    await saveSegmentActual(segmentId, patch, { reload: false });
+    await loadTrial();
+  } catch (e) {
+    toast('Actual failed: ' + e.message, 'error');
+  }
+}
+
+async function toggleTrialSetup(blockId) {
+  const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
+  if (!block) return;
+  try {
+    await PUT(`/api/trial/blocks/${block.block_id}`, { include_setup: Number(block.include_setup || 0) === 1 ? 0 : 1 });
+    await loadTrial();
+  } catch (e) {
+    toast('Setup toggle failed: ' + e.message, 'error');
+  }
+}
+
+async function saveTrialCapacity(workDate, profileName, note = '') {
+  try {
+    await POST('/api/trial/capacity', {
+      work_date: workDate,
+      profile_name: profileName,
+      note: note,
+    });
+    await loadTrial();
+    toast(`Capacity saved for ${workDate}`, 'success');
+  } catch (e) {
+    toast('Capacity save failed: ' + e.message, 'error');
+  }
+}
+
+async function saveTrialOrder(lane, reload = true) {
+  const cards = Array.from(lane.querySelectorAll('.trial-block-card'));
+  const machineId = Number(lane.dataset.machineId || 0);
+  if (!machineId) return;
+  const orderedIds = cards.map(card => Number(card.dataset.blockId));
+  if (!orderedIds.length) return;
+  try {
+    await POST(`/api/trial/blocks/${orderedIds[0]}/reorder`, {
+      machine_id: machineId,
+      ordered_ids: orderedIds,
+    });
+    if (reload) {
+      await loadTrial();
+      toast('Queue order saved', 'success');
+    }
+  } catch (e) {
+    toast('Reorder failed: ' + e.message, 'error');
+  }
+}
+
+document.addEventListener('DOMContentLoaded', loadTrial);
+</script>
+{% endblock %}

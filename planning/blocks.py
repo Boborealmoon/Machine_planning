@@ -21,6 +21,7 @@ import math
 from datetime import date, datetime, timedelta
 
 from .actuals import actual_totals_for_block
+from .planner_actuals import actual_summary_for_block_row
 from .helpers import one, rows, parse_dt_text
 from .machines import capacity_minutes_for_machine_day, machine_work_intervals_for_day
 from .scheduler_state import (
@@ -62,6 +63,237 @@ def trial_block_row(con, block_id):
     )
 
 
+def actual_daily_rows_for_block_row(con, block_row):
+    if not con or not block_row:
+        return []
+
+    block_id = int(block_row["block_id"])
+    removed_dates = {
+        compact_text(row["report_date"] or "")
+        for row in rows(
+            con.execute(
+                """
+                SELECT report_date
+                FROM planner_block_removed_actual_date
+                WHERE block_id = %s
+                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                ORDER BY report_date
+                """,
+                (block_id,),
+            )
+        )
+        if compact_text(row["report_date"] or "")
+    }
+    planned_rows = rows(
+        con.execute(
+            """
+            SELECT segment_date::text AS segment_date,
+                   COALESCE(SUM(COALESCE(qty_done, planned_qty, 0)), 0) AS target_qty,
+                   MIN(start_datetime) AS start_datetime,
+                   MAX(end_datetime) AS end_datetime
+            FROM planner_run_block_segment
+            WHERE block_id = %s
+              AND COALESCE(segment_type, '') = 'production'
+              AND segment_date IS NOT NULL
+            GROUP BY segment_date
+            ORDER BY segment_date
+            """,
+            (block_id,),
+        )
+    )
+    if not planned_rows and int(block_row["machine_id"] or 0):
+        recalculate_machine(con, int(block_row["machine_id"]))
+        planned_rows = rows(
+            con.execute(
+                """
+                SELECT segment_date::text AS segment_date,
+                       COALESCE(SUM(COALESCE(qty_done, planned_qty, 0)), 0) AS target_qty,
+                       MIN(start_datetime) AS start_datetime,
+                       MAX(end_datetime) AS end_datetime
+                FROM planner_run_block_segment
+                WHERE block_id = %s
+                  AND COALESCE(segment_type, '') = 'production'
+                  AND segment_date IS NOT NULL
+                GROUP BY segment_date
+                ORDER BY segment_date
+                """,
+                (block_id,),
+            )
+        )
+    actual_rows = rows(
+        con.execute(
+            """
+            SELECT actual_id, report_date::text AS report_date, output_qty, reject_qty, remarks, target_qty_at_report
+            FROM planner_production_actual
+            WHERE block_id = %s
+              AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+            ORDER BY report_date, actual_id
+            """,
+            (block_id,),
+        )
+    )
+
+    row_map = {}
+    for row in planned_rows:
+        report_date = compact_text(row["segment_date"] or "")
+        if not report_date or report_date in removed_dates:
+            continue
+        row_map[report_date] = {
+            "report_date": report_date,
+            "original_report_date": "",
+            "target_qty": float(row["target_qty"] or 0),
+            "output_qty": "",
+            "reject_qty": "",
+            "remarks": "",
+            "is_planned_row": True,
+            "is_existing_actual": False,
+            "actual_id": None,
+            "locked_date": True,
+            "start_datetime": compact_text(row["start_datetime"] or ""),
+            "end_datetime": compact_text(row["end_datetime"] or ""),
+        }
+
+    for row in actual_rows:
+        report_date = compact_text(row["report_date"] or "")
+        if not report_date or report_date in removed_dates:
+            continue
+        output_value = row["output_qty"]
+        reject_value = row["reject_qty"]
+        actual_payload = {
+            "report_date": report_date,
+            "original_report_date": report_date,
+            "target_qty": float(row["target_qty_at_report"] or row_map.get(report_date, {}).get("target_qty") or 0),
+            "output_qty": "" if output_value is None else str(output_value),
+            "reject_qty": "" if reject_value is None else str(reject_value),
+            "remarks": compact_text(row["remarks"] or ""),
+            "is_planned_row": report_date in row_map,
+            "is_existing_actual": True,
+            "actual_id": int(row["actual_id"] or 0),
+            "locked_date": True,
+        }
+        if report_date in row_map:
+            row_map[report_date].update(actual_payload)
+        else:
+            row_map[report_date] = actual_payload
+            row_map[report_date]["locked_date"] = True
+
+    return sorted(row_map.values(), key=lambda item: (compact_text(item.get("report_date") or ""), int(item.get("actual_id") or 0)))
+
+
+def removed_actual_dates_for_block_row(con, block_row):
+    if not con or not block_row:
+        return []
+    block_id = int(block_row["block_id"])
+    return [
+        compact_text(row["report_date"] or "")
+        for row in rows(
+            con.execute(
+                """
+                SELECT report_date::text AS report_date
+                FROM planner_block_removed_actual_date
+                WHERE block_id = %s
+                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                ORDER BY report_date
+                """,
+                (block_id,),
+            )
+        )
+        if compact_text(row["report_date"] or "")
+    ]
+
+
+def _actual_good_qty(output_qty, reject_qty):
+    if output_qty is None and reject_qty is None:
+        return None
+    return max(0.0, float(output_qty or 0) - float(reject_qty or 0))
+
+
+def _actual_variance(good_qty, target_qty):
+    if good_qty is None:
+        return 0.0
+    return float(good_qty or 0) - float(target_qty or 0)
+
+
+def apply_actual_variance_delta_to_block_tail(con, block_id, actual_date_text, variance_delta):
+    variance_delta = float(variance_delta or 0)
+    if abs(variance_delta) < 1e-9:
+        return {"changed": False, "applied_qty": 0.0, "variance_delta": 0.0}
+
+    block = trial_block_row(con, block_id)
+    if not block:
+        return {"changed": False, "applied_qty": 0.0, "variance_delta": variance_delta}
+
+    actual_date = parse_dt_text(actual_date_text).date() if actual_date_text else date.today()
+    if variance_delta > 0:
+        result = apply_output_delta_to_block_tail(con, block_id, actual_date_text, variance_delta)
+        refresh_block_schedule_bounds(con, block_id)
+        return {
+            "changed": bool(result.get("changed")),
+            "applied_qty": abs(variance_delta),
+            "variance_delta": variance_delta,
+            "direction": "shave",
+        }
+
+    changed = add_shortfall_to_tail_with_capacity(con, block_id, actual_date, abs(variance_delta))
+    refresh_block_schedule_bounds(con, block_id)
+    return {
+        "changed": bool(changed),
+        "applied_qty": abs(variance_delta),
+        "variance_delta": variance_delta,
+        "direction": "add",
+    }
+
+
+def apply_removed_target_date_to_block_tail(con, block_id, report_date_text, target_qty_removed=None):
+    block = trial_block_row(con, block_id)
+    if not block:
+        return {"changed": False, "removed_qty": 0.0}
+
+    report_date = compact_text(report_date_text)
+    if not report_date:
+        return {"changed": False, "removed_qty": 0.0}
+
+    removed_qty = float(target_qty_removed or 0)
+    if removed_qty <= 0:
+        removed_qty = float(
+            one(
+                con.execute(
+                    """
+                    SELECT COALESCE(SUM(COALESCE(qty_done, planned_qty, 0)), 0) AS target_qty
+                    FROM planner_run_block_segment
+                    WHERE block_id = %s
+                      AND COALESCE(segment_type, '') = 'production'
+                      AND segment_date = %s::date
+                    """,
+                    (int(block_id), report_date),
+                )
+            )["target_qty"]
+            or 0
+        )
+
+    if removed_qty <= 0:
+        return {"changed": False, "removed_qty": 0.0}
+
+    con.execute(
+        """
+        DELETE FROM planner_run_block_segment
+        WHERE block_id = %s
+          AND COALESCE(segment_type, '') = 'production'
+          AND segment_date = %s::date
+        """,
+        (int(block_id), report_date),
+    )
+
+    report_dt = parse_dt_text(report_date) if report_date else None
+    changed = add_shortfall_to_tail_with_capacity(
+        con,
+        block_id,
+        report_dt.date() if report_dt else date.today(),
+        removed_qty,
+    )
+    return {"changed": bool(changed), "removed_qty": float(removed_qty)}
+
+
 def _queue_state_for_block(con, block_id):
     if not con:
         return None
@@ -94,7 +326,7 @@ def trial_block_payload(block, con=None):
             return v.isoformat(sep=" ", timespec="seconds")
         return str(v)
 
-    return {
+    payload = {
         "block_id": int(block["block_id"]),
         "operation_id": int(block["operation_id"]),
         "machine_id": int(block["machine_id"]),
@@ -147,7 +379,18 @@ def trial_block_payload(block, con=None):
         "group_id": int(block.get("group_id") or 0),
         "group_label": block.get("group_label") or "",
         "group_type": block.get("group_type") or "",
+        "actual_daily_rows": actual_daily_rows_for_block_row(con, block) if con else [],
+        "removed_actual_dates": removed_actual_dates_for_block_row(con, block) if con else [],
+        "actual_start_at": "",
+        "actual_end_at": "",
+        "actual_row_count": 0,
     }
+    if con:
+        summary = actual_summary_for_block_row(con, block, float(block["scheduled_qty"] or 0))
+        payload["actual_start_at"] = compact_text(summary.get("actual_start_at") or "")
+        payload["actual_end_at"] = compact_text(summary.get("actual_end_at") or "")
+        payload["actual_row_count"] = int(summary.get("actual_row_count") or 0)
+    return payload
 
 
 def schedule_signature_for_machine(con, machine_id):

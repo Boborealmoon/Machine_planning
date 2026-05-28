@@ -185,14 +185,31 @@ function openTrialBlockEditor(blockId) {
 function openTrialSplitModal(blockId) {
   const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
   if (!block) return;
+  let splitInFlight = false;
   openTrialForm('Split Run Block', `
     <div class="trial-modal-grid">
       <label class="full">Split quantity for <strong>${block.job_no} - ${block.operation_name}</strong>
         <input id="trial-split-qty" type="number" min="1" step="1" value="${Math.max(1, Math.floor(Number(block.scheduled_qty || 0) / 2))}">
       </label>
+      <div id="trial-split-status" class="trial-modal-hint" style="display:none">Splitting block...</div>
     </div>
   `, 'Split', async () => {
+    if (splitInFlight) return;
+    splitInFlight = true;
+    const saveBtn = document.getElementById('trial-save-btn');
+    const cancelBtn = document.getElementById('trial-cancel-btn');
+    const qtyInput = document.getElementById('trial-split-qty');
+    const statusEl = document.getElementById('trial-split-status');
+    const originalLabel = saveBtn ? saveBtn.textContent : 'Split';
     try {
+      if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Splitting...';
+        saveBtn.setAttribute('aria-busy', 'true');
+      }
+      if (cancelBtn) cancelBtn.disabled = true;
+      if (qtyInput) qtyInput.disabled = true;
+      if (statusEl) statusEl.style.display = 'block';
       await POST(`/api/trial/blocks/${block.block_id}/split`, {
         split_qty: Number(document.getElementById('trial-split-qty').value || 0),
       });
@@ -201,6 +218,15 @@ function openTrialSplitModal(blockId) {
       toast('Block split', 'success');
     } catch (e) {
       toast('Split failed: ' + e.message, 'error');
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = originalLabel || 'Split';
+        saveBtn.removeAttribute('aria-busy');
+      }
+      if (cancelBtn) cancelBtn.disabled = false;
+      if (qtyInput) qtyInput.disabled = false;
+      if (statusEl) statusEl.style.display = 'none';
+      splitInFlight = false;
     }
   });
 }

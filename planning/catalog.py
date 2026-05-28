@@ -18,11 +18,12 @@ Key changes vs SQLite original:
 from __future__ import annotations
 
 import os
+import re
 
 from .actuals import actual_totals_for_block
 from .blocks import trial_block_row  # noqa: F401  (re-exported for route convenience)
 from .helpers import one, rows
-from .process_sheets import ensure_planner_process_sheet
+from .process_sheets import ensure_planner_process_sheet, format_planner_ps_id
 from .utils import compact_text, parse_number, shipped_quantity_completed, trial_catalog_op_key
 
 
@@ -33,6 +34,15 @@ from .utils import compact_text, parse_number, shipped_quantity_completed, trial
 def _base_ps_id(ps_id):
     ps_id = compact_text(ps_id)
     return ps_id.split("::", 1)[0] if "::" in ps_id else ps_id
+
+
+def _catalog_ps_id(row):
+    """Planner/catalog identity — one row per (source_ps_id, pp_partial_no)."""
+    planner_ps_id = compact_text(row.get("planner_ps_id"))
+    if planner_ps_id:
+        return planner_ps_id
+    source_ps_id = compact_text(row.get("ps_id"))
+    return format_planner_ps_id(source_ps_id, row.get("pp_partial_no"))
 
 
 def _bom_op_stage_keys(con):
@@ -88,13 +98,23 @@ def _should_show_for_shipped_qty(total_qty, qty_shipped, source_line_item_no=Non
     return not shipped_quantity_completed(total_qty, qty_shipped)
 
 
+_MACHINING_OP_RE = re.compile(r"^(Turning|Milling|Turnmill)\b", re.IGNORECASE)
+
+
+def _is_machining_plannable_op(op_type, machine_category):
+    op_text = compact_text(op_type)
+    if op_text and _MACHINING_OP_RE.match(op_text):
+        return True
+    return compact_text(machine_category).upper() in {"TURNING", "MILLING", "TURNMILL"}
+
+
 def trial_catalog_items(con, include_completed=False):
     bom_stage_keys = _bom_op_stage_keys(con)
     planned_qty_by_op = {}
     for row in rows(
         con.execute(
             """
-            SELECT COALESCE(NULLIF(split_part(o.source_ps_id, '::', 1), ''), o.source_ps_id) AS source_ps_id,
+            SELECT o.source_ps_id,
                    o.source_op_no, o.source_op_seq_id AS source_op_seq_id,
                    COALESCE(SUM(COALESCE(b.scheduled_qty, 0)), 0) AS planned_qty
             FROM planner_operation o
@@ -102,8 +122,7 @@ def trial_catalog_items(con, include_completed=False):
             WHERE COALESCE(o.source_ps_id, '') <> ''
               AND COALESCE(b.active, TRUE) = TRUE
               AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
-            GROUP BY COALESCE(NULLIF(split_part(o.source_ps_id, '::', 1), ''), o.source_ps_id),
-                     o.source_op_no, o.source_op_seq_id
+            GROUP BY o.source_ps_id, o.source_op_no, o.source_op_seq_id
             """
         )
     ):
@@ -316,13 +335,15 @@ def trial_catalog_items(con, include_completed=False):
     flow_cache = {}
 
     for row in records:
-        ps_id = _base_ps_id(row["ps_id"])
-        planner_ps_id = compact_text(row.get("planner_ps_id"))
+        ps_id = _catalog_ps_id(row)
+        source_ps_id = _base_ps_id(row["ps_id"])
+        pp_partial_no = int(row.get("pp_partial_no") or 1)
+        planner_ps_id = compact_text(row.get("planner_ps_id")) or ps_id
         if not _should_show_for_shipped_qty(row["total_qty"], row.get("qty_shipped"), row.get("source_line_item_no")):
             continue
         op_seq_id = int(row["op_seq_id"] or 0)
         op_key = trial_catalog_op_key(ps_id, row["op_no"], op_seq_id)
-        required_qty = float(row["total_qty"] or 0)
+        required_qty = float(row.get("partial_qty") or row["total_qty"] or 0)
         planned_qty = float(planned_qty_by_op.get(op_key, 0) or 0)
         erp_finished_qty = max(0.0, float(row.get("erp_finished_qty") or 0))
         erp_reject_qty = max(0.0, float(row.get("erp_reject_qty") or 0))
@@ -331,6 +352,8 @@ def trial_catalog_items(con, include_completed=False):
             ps_id,
             {
                 "ps_id": ps_id,
+                "source_ps_id": source_ps_id,
+                "pp_partial_no": pp_partial_no,
                 "inventory_code": row["inventory_code"] or "",
                 "part_name": row["part_name"] or "",
                 "part_no": row["part_no"] or "",
@@ -366,6 +389,7 @@ def trial_catalog_items(con, include_completed=False):
         item["_seen_op_keys"].add(op_key)
         op_item = {
             "source_ps_id": ps_id,
+            "pp_partial_no": pp_partial_no,
             "source_op_seq_id": op_seq_id,
             "source_op_no": row["op_no"] or "",
             "op_no": row["op_no"] or "",
@@ -387,7 +411,7 @@ def trial_catalog_items(con, include_completed=False):
             "execution_status": compact_text(row.get("op_execution_status") or ""),
         }
         item["all_ops"].append(op_item)
-        if remaining_qty > 0:
+        if remaining_qty > 0 and _is_machining_plannable_op(row.get("op_type"), row.get("machine_category")):
             item["ops"].append(op_item)
 
     available = []
@@ -509,7 +533,7 @@ def trial_catalog_items(con, include_completed=False):
             )
 
     for row in unassigned_records:
-        ps_id = _base_ps_id(row["ps_id"])
+        ps_id = _catalog_ps_id(row)
         if ps_id in grouped:
             continue
         if not _should_show_for_shipped_qty(row["total_qty"], row.get("qty_shipped"), row.get("source_line_item_no")):
@@ -520,6 +544,8 @@ def trial_catalog_items(con, include_completed=False):
             continue
         unassigned_item = {
             "ps_id": ps_id,
+            "source_ps_id": _base_ps_id(row["ps_id"]),
+            "pp_partial_no": int(row.get("pp_partial_no") or 1),
             "inventory_code": inventory_code,
             "part_name": row["part_name"] or "",
             "part_no": row["part_no"] or "",
@@ -842,7 +868,7 @@ def planning_cards_by_ps(con):
         target_qty = float(card["target_qty"] or 0)
         setup_minutes = max((float(op["setup_minutes"] or 0) for op in op_rows), default=0.0)
         cycle_minutes_per_qty = sum(float(op["cycle_minutes_per_qty"] or 0) for op in op_rows)
-        ps_id = _base_ps_id(card["ps_id"])
+        ps_id = compact_text(card.get("ps_id") or card.get("planner_ps_id"))
         item = {
             "card_id": card_id,
             "ps_id": ps_id,
@@ -881,14 +907,14 @@ def planning_card_covered_op_keys(con):
     for row in rows(
         con.execute(
             """
-            SELECT COALESCE(NULLIF(split_part(pc.planner_ps_id, '::', 1), ''), pc.planner_ps_id) AS ps_id,
+            SELECT pc.planner_ps_id AS ps_id,
                    pco.source_op_seq_id AS source_op_seq_id, pco.source_op_no
             FROM planner_planning_card pc
             JOIN planner_planning_card_operation pco ON pco.card_id = pc.card_id
             """
         )
     ):
-        ps_id = _base_ps_id(row["ps_id"])
+        ps_id = compact_text(row["ps_id"])
         op_key = trial_catalog_op_key(ps_id, row["source_op_no"], row["source_op_seq_id"])
         covered.setdefault(ps_id, set()).add(op_key)
     return covered

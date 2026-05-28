@@ -63,6 +63,39 @@ function trialTodayISO() {
   return `${y}-${m}-${day}`;
 }
 
+function trialBlockQueuedAt(block) {
+  if (!block) return '';
+  return String(
+    block.visual_start_datetime
+    || block.calculated_start_datetime
+    || block.predicted_start_at
+    || block.planned_start_at
+    || block.group_start
+    || block.anchor_datetime
+    || ''
+  ).trim();
+}
+
+function trialBlockOutputAt(block) {
+  if (!block) return '';
+  if (block.actual_end_at) return String(block.actual_end_at).trim();
+  return String(
+    block.predicted_end_at
+    || block.calculated_end_datetime
+    || block.visual_end_datetime
+    || block.planned_end_at
+    || block.group_end
+    || ''
+  ).trim();
+}
+
+function trialBlockOutputTitle(block) {
+  if (!block) return '';
+  if (block.actual_end_at) return 'Output complete (from reported actuals)';
+  if (block.actual_start_at) return 'Forecast output end (job in progress)';
+  return 'Forecast output end (no actuals yet)';
+}
+
 function trialAddDaysISO(dateText, deltaDays) {
   if (!dateText) return '';
   const base = new Date(`${String(dateText).slice(0, 10)}T00:00:00`);

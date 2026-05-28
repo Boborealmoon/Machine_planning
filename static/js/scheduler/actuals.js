@@ -1,4 +1,4 @@
-// Actuals entry — saving per-segment/date outputs and modal UIs.
+// Actual production entry — daily rows, schedule tail reflection, combined-run segment actuals.
 
 async function saveSegmentActual(segmentId, patch, options = {}) {
   if (!segmentId) throw new Error('Planned segment is missing. Refresh the page and try again.');
@@ -12,110 +12,350 @@ async function saveSegmentActual(segmentId, patch, options = {}) {
   return data;
 }
 
-async function trialSaveActualDateInput(blockId, reportDate, field, value) {
-  const actual = trialActualForBlockDate(blockId, reportDate) || {};
-  const payload = {
-    daily_actuals: [{
-      report_date: reportDate,
-      output_qty: field === 'output_qty' ? value : (actual.output_qty ?? ''),
-      reject_qty: field === 'reject_qty' ? value : (actual.reject_qty ?? ''),
-      remarks: field === 'remarks' ? value : (actual.remarks || ''),
-    }],
+function trialActualModalHost() {
+  return document.querySelector('.trial-modal-body') || document.getElementById('trial-modal-shell');
+}
+
+function trialPlannedTargetQtyForDate(blockId, reportDate) {
+  const plannedRows = trialActualRowsForBlock(blockId).filter(row => String(row.report_date || '') === String(reportDate || ''));
+  if (plannedRows.length) {
+    return plannedRows.reduce((sum, row) => sum + Number(row.target_qty || 0), 0);
+  }
+  return trialSegmentsForBlock(blockId)
+    .filter(seg => String(seg.segment_type || '') === 'production' && String(seg.segment_date || '') === String(reportDate || ''))
+    .reduce((sum, seg) => sum + Number(seg.qty_done || seg.planned_qty || 0), 0);
+}
+
+function trialActualDailyRowsForBlock(block) {
+  let rows = Array.isArray(block?.actual_daily_rows) ? block.actual_daily_rows : [];
+  if (!rows.length && block?.block_id) {
+    rows = trialActualRowsForBlock(block.block_id).map(row => ({
+      report_date: row.report_date,
+      original_report_date: row.actual_only ? row.report_date : '',
+      target_qty: Number(row.target_qty || 0),
+      output_qty: row.actual?.output_qty ?? '',
+      reject_qty: row.actual?.reject_qty ?? '',
+      remarks: row.actual?.remarks ?? '',
+      is_planned_row: !row.actual_only,
+      is_existing_actual: Boolean(row.actual),
+      locked_date: true,
+    }));
+  }
+  return rows.map(row => ({
+    report_date: String(row.report_date || '').trim(),
+    original_report_date: String(row.original_report_date || row.report_date || '').trim(),
+    target_qty: Number(row.target_qty || 0),
+    output_qty: row.output_qty === null || row.output_qty === undefined ? '' : String(row.output_qty),
+    reject_qty: row.reject_qty === null || row.reject_qty === undefined ? '' : String(row.reject_qty),
+    remarks: String(row.remarks || ''),
+    is_planned_row: Boolean(row.is_planned_row),
+    is_existing_actual: Boolean(row.is_existing_actual),
+    locked_date: row.locked_date !== false,
+  }));
+}
+
+function trialResetActualDraft(blockId, block) {
+  trialActualDraft = {
+    blockId: Number(blockId || 0) || null,
+    rows: {},
+    deletedDates: new Set(),
+    removedTargetDates: new Set(),
   };
-  await POST(`/api/trial/blocks/${blockId}/actual`, payload);
-  const _dateBlock = (trialState.blocks || []).find(b => String(b.block_id) === String(blockId));
-  await refreshMachines([Number(_dateBlock?.machine_id || 0)].filter(Boolean));
-}
-
-function trialSetActualDraftValue(reportDate, field, value) {
-  if (!trialActualDraft.rows[reportDate]) {
-    trialActualDraft.rows[reportDate] = { good: null, reject: null };
-  }
-  const normalized = String(value ?? '').trim() === '' ? null : Number(value);
-  trialActualDraft.rows[reportDate][field] = Number.isFinite(normalized) ? normalized : null;
-  const shell = document.getElementById('trial-modal-shell');
-  if (!shell) return;
-  shell.querySelectorAll(`[data-trial-actual-date="${CSS.escape(reportDate)}"][data-trial-actual-field="${field}"]`).forEach(input => {
-    const nextValue = normalized == null ? '' : String(normalized);
-    if (String(input.value) !== nextValue) input.value = nextValue;
+  trialActualDailyRowsForBlock(block).forEach(row => {
+    trialActualDraft.rows[String(row.report_date || '')] = {
+      ...row,
+      is_new_row: !row.is_existing_actual && !row.is_planned_row,
+    };
   });
 }
 
-async function trialDeleteActualDraftDate(reportDate, blockId) {
-  if (!blockId) return;
-  if (!trialActualDraft.deletedDates) {
-    trialActualDraft.deletedDates = new Set();
-  }
-  trialActualDraft.deletedDates.add(reportDate);
-  delete trialActualDraft.rows[reportDate];
-  const shell = document.getElementById('trial-modal-shell');
+function trialRenderActualDailyRows(blockId, rows) {
+  const shell = trialActualModalHost();
   if (!shell) return;
-  shell.querySelectorAll(`[data-trial-actual-date-row="${CSS.escape(reportDate)}"]`).forEach(node => node.remove());
-  shell.querySelectorAll(`[data-trial-actual-date="${CSS.escape(reportDate)}"]`).forEach(input => {
-    input.value = '';
-  });
-  const _delDraftBlock = (trialState.blocks || []).find(b => String(b.block_id) === String(blockId));
-  const _delDraftMachineId = Number(_delDraftBlock?.machine_id || 0);
-  try {
-    await trialSubmitActualDraft(blockId);
-    closeModal();
-    await refreshMachines([_delDraftMachineId].filter(Boolean));
-    openTrialActualModal(blockId);
-    toast('Actual saved', 'success');
-  } catch (e) {
-    toast('Actual failed: ' + e.message, 'error');
-  }
+  const grid = shell.querySelector(`[data-trial-actual-daily-grid="${String(blockId)}"]`);
+  if (!grid) return;
+  const dailyRows = Array.isArray(rows) ? rows : [];
+  grid.innerHTML = dailyRows.map(row => trialActualDailyRowHtml(blockId, row)).join('')
+    || '<div class="trial-catalog-empty">No scheduled target rows. Recalculate schedule or add a date manually.</div>';
 }
 
-async function trialSubmitActualDraft(blockId, action = null) {
+function trialActualDailyRowHtml(blockId, row, options = {}) {
+  const reportDate = String(row?.report_date || trialTodayISO()).trim();
+  const originalReportDate = String(row?.original_report_date || row?.report_date || '').trim();
+  const targetQty = Number(row?.target_qty || 0);
+  const outputValue = row?.output_qty === null || row?.output_qty === undefined ? '' : String(row.output_qty);
+  const rejectValue = row?.reject_qty === null || row?.reject_qty === undefined ? '' : String(row.reject_qty);
+  const remarksValue = String(row?.remarks || '');
+  const isPlannedRow = Boolean(row?.is_planned_row);
+  const isExistingActual = Boolean(row?.is_existing_actual);
+  const lockedDate = row?.locked_date !== false;
+  const isRemoved = Boolean(options.removed);
+  const canRemove = options.canRemove !== false;
+  return `
+    <div
+      class="trial-actual-row trial-actual-daily-row"
+      data-trial-actual-row="1"
+      data-row-date="${escapeHtml(reportDate)}"
+      data-original-report-date="${escapeHtml(originalReportDate)}"
+      data-is-planned-row="${isPlannedRow ? '1' : '0'}"
+      data-is-existing-actual="${isExistingActual ? '1' : '0'}"
+      data-locked-date="${lockedDate ? '1' : '0'}"
+      data-target-qty="${escapeHtml(String(targetQty))}"
+      data-removed="${isRemoved ? '1' : '0'}"
+      style="${isRemoved ? 'display:none;' : ''}"
+    >
+      <label class="trial-actual-cell">
+        <span>Date</span>
+        <span class="trial-actual-date-text">${escapeHtml(reportDate)}</span>
+        <input data-trial-actual-field="report_date" type="hidden" value="${escapeHtml(reportDate)}">
+      </label>
+      <div class="trial-actual-target">Target ${fmt(targetQty, 0)}</div>
+      <label class="trial-actual-cell">
+        <span>Output Qty</span>
+        <input data-trial-actual-field="output_qty" type="number" min="0" step="1" value="${escapeHtml(outputValue)}" oninput="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onchange="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onblur="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0})">
+      </label>
+      <label class="trial-actual-cell">
+        <span>Reject Qty</span>
+        <input data-trial-actual-field="reject_qty" type="number" min="0" step="1" value="${escapeHtml(rejectValue)}" oninput="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onchange="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onblur="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0})">
+      </label>
+      <label class="trial-actual-cell">
+        <span>Remarks</span>
+        <textarea data-trial-actual-field="remarks" rows="1" oninput="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onchange="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onblur="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0})">${escapeHtml(remarksValue)}</textarea>
+      </label>
+      <div class="trial-actual-delete-cell">
+        ${canRemove ? `<button type="button" class="btn btn-ghost btn-xs" onclick="trialRemoveActualDailyRow(this.closest('.trial-actual-daily-row'))">Delete Date</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function trialRemoveActualDailyRow(rowEl) {
+  if (!rowEl) return;
+  const reportDate = String(rowEl.querySelector('[data-trial-actual-field="report_date"]')?.value || rowEl.dataset.originalReportDate || rowEl.dataset.rowDate || '').trim();
+  const hasSavedActual = String(rowEl.dataset.isExistingActual || '0') === '1';
+  const hasPlannedRow = String(rowEl.dataset.isPlannedRow || '0') === '1';
+  const targetQty = Number(rowEl.dataset.targetQty || 0);
+  const shouldRemoveTarget = hasPlannedRow || targetQty > 0;
+  if (hasSavedActual) {
+    if (reportDate) {
+      trialActualDraft.deletedDates.add(reportDate);
+      if (shouldRemoveTarget) trialActualDraft.removedTargetDates.add(reportDate);
+      if (trialActualDraft.rows[reportDate]) {
+        trialActualDraft.rows[reportDate].removed = true;
+      }
+    }
+    rowEl.dataset.removed = '1';
+    rowEl.style.display = 'none';
+    return;
+  }
+  if (hasPlannedRow) {
+    if (reportDate && shouldRemoveTarget) {
+      trialActualDraft.removedTargetDates.add(reportDate);
+    }
+    rowEl.dataset.removed = '1';
+    rowEl.style.display = 'none';
+    return;
+  }
+  if (reportDate && trialActualDraft.rows[reportDate]) {
+    delete trialActualDraft.rows[reportDate];
+  }
+  rowEl.remove();
+}
+
+function trialAddActualDailyRow(blockId, reportDate = '') {
+  const shell = trialActualModalHost();
+  if (!shell) return;
+  const grid = shell.querySelector(`[data-trial-actual-daily-grid="${String(blockId)}"]`);
+  if (!grid) return;
+  let chosenDate = String(reportDate || '').trim() || trialTodayISO();
+  let existing = Array.from(grid.querySelectorAll('.trial-actual-daily-row')).find(row => String(row.dataset.rowDate || '') === chosenDate);
+  let guard = 0;
+  while (existing && guard < 60) {
+    chosenDate = trialAddDaysISO(chosenDate, 1);
+    existing = Array.from(grid.querySelectorAll('.trial-actual-daily-row')).find(row => String(row.dataset.rowDate || '') === chosenDate);
+    guard += 1;
+  }
+  if (existing) {
+    existing.dataset.removed = '0';
+    existing.style.display = '';
+    trialActualDraft.deletedDates.delete(String(existing.dataset.rowDate || chosenDate));
+    trialActualDraft.removedTargetDates.delete(String(existing.dataset.rowDate || chosenDate));
+    existing.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    existing.querySelector('[data-trial-actual-field="output_qty"]')?.focus();
+    return;
+  }
+  const targetQty = trialPlannedTargetQtyForDate(blockId, chosenDate);
+  const row = {
+    report_date: chosenDate,
+    original_report_date: '',
+    target_qty: targetQty,
+    output_qty: '',
+    reject_qty: '',
+    remarks: '',
+    is_planned_row: false,
+    is_existing_actual: false,
+    locked_date: true,
+    is_new_row: true,
+  };
+  trialActualDraft.rows[chosenDate] = row;
+  grid.insertAdjacentHTML('beforeend', trialActualDailyRowHtml(blockId, row));
+  const added = Array.from(grid.querySelectorAll('.trial-actual-daily-row')).find(row => String(row.dataset.rowDate || '') === chosenDate && String(row.dataset.removed || '0') !== '1');
+  added?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  added?.querySelector('[data-trial-actual-field="output_qty"]')?.focus();
+}
+
+function trialSyncActualDailyRowDraft(blockId, rowEl) {
+  if (!rowEl) return;
+  const reportDate = String(rowEl.querySelector('[data-trial-actual-field="report_date"]')?.value || rowEl.dataset.originalReportDate || rowEl.dataset.rowDate || '').trim();
+  if (!reportDate) return;
+  trialActualDraft.rows[reportDate] = {
+    report_date: reportDate,
+    original_report_date: String(rowEl.dataset.originalReportDate || reportDate || '').trim(),
+    target_qty: Number(rowEl.dataset.targetQty || 0),
+    output_qty: String(rowEl.querySelector('[data-trial-actual-field="output_qty"]')?.value ?? '').trim(),
+    reject_qty: String(rowEl.querySelector('[data-trial-actual-field="reject_qty"]')?.value ?? '').trim(),
+    remarks: String(rowEl.querySelector('[data-trial-actual-field="remarks"]')?.value ?? '').trim(),
+    removed: String(rowEl.dataset.removed || '0') === '1',
+    is_existing_actual: String(rowEl.dataset.isExistingActual || '0') === '1',
+  };
+}
+
+function trialSnapshotActualDailyRows(blockId) {
+  const shell = trialActualModalHost();
+  const grid = shell ? shell.querySelector(`[data-trial-actual-daily-grid="${String(blockId)}"]`) : null;
+  if (!grid) return [];
+  const nextRows = {};
+  const nextDeleteDates = new Set(trialActualDraft.deletedDates || []);
+  const nextRemovedTargetDates = new Set(trialActualDraft.removedTargetDates || []);
+  Array.from(grid.querySelectorAll('.trial-actual-daily-row')).forEach(rowEl => {
+    const removed = String(rowEl.dataset.removed || '0') === '1';
+    const reportDate = String(rowEl.querySelector('[data-trial-actual-field="report_date"]')?.value || rowEl.dataset.originalReportDate || rowEl.dataset.rowDate || '').trim();
+    if (!reportDate) return;
+    const originalReportDate = String(rowEl.dataset.originalReportDate || '').trim();
+    const targetValue = String(rowEl.dataset.targetQty || '0').trim();
+    const outputValue = String(rowEl.querySelector('[data-trial-actual-field="output_qty"]')?.value ?? '').trim();
+    const rejectValue = String(rowEl.querySelector('[data-trial-actual-field="reject_qty"]')?.value ?? '').trim();
+    const remarksValue = String(rowEl.querySelector('[data-trial-actual-field="remarks"]')?.value ?? '').trim();
+    const isExistingActual = String(rowEl.dataset.isExistingActual || '0') === '1';
+    const isPlannedRow = String(rowEl.dataset.isPlannedRow || '0') === '1';
+    nextRows[reportDate] = {
+      report_date: reportDate,
+      original_report_date: originalReportDate || reportDate,
+      target_qty: Number(targetValue || 0),
+      output_qty: outputValue,
+      reject_qty: rejectValue,
+      remarks: remarksValue,
+      removed,
+      is_existing_actual: isExistingActual,
+      is_planned_row: isPlannedRow,
+      locked_date: String(rowEl.dataset.lockedDate || '1') !== '0',
+      is_new_row: !isExistingActual && !isPlannedRow,
+    };
+    if (removed) {
+      if (isExistingActual) nextDeleteDates.add(originalReportDate || reportDate);
+      if ((isExistingActual || isPlannedRow || Number(targetValue || 0) > 0) && reportDate) nextRemovedTargetDates.add(reportDate);
+      return;
+    }
+    if (isExistingActual && originalReportDate && reportDate !== originalReportDate) {
+      nextDeleteDates.add(originalReportDate);
+    }
+  });
+  trialActualDraft.rows = nextRows;
+  trialActualDraft.deletedDates = nextDeleteDates;
+  trialActualDraft.removedTargetDates = nextRemovedTargetDates;
+  return Object.values(nextRows);
+}
+
+function trialCollectActualDailyRows(blockId) {
+  const shell = trialActualModalHost();
+  const grid = shell ? shell.querySelector(`[data-trial-actual-daily-grid="${String(blockId)}"]`) : null;
+  if (!grid) return { daily_actuals: [], delete_actual_dates: [], removed_target_dates: [] };
+  const dailyActuals = [];
+  const deleteDates = new Set(trialActualDraft.deletedDates || []);
+  const removedTargetDates = new Set(trialActualDraft.removedTargetDates || []);
+  const snapshotRows = trialSnapshotActualDailyRows(blockId);
+  snapshotRows.forEach(rowState => {
+    const reportDate = String(rowState.report_date || '').trim();
+    if (!reportDate || rowState.removed) return;
+    const nextOutputValue = String(rowState.output_qty ?? '').trim();
+    const nextRejectValue = String(rowState.reject_qty ?? '').trim();
+    const nextRemarksValue = String(rowState.remarks ?? '').trim();
+    if (nextOutputValue === '' && nextRejectValue === '' && nextRemarksValue === '') return;
+    dailyActuals.push({
+      report_date: reportDate,
+      target_qty: Number(rowState.target_qty || 0),
+      output_qty: nextOutputValue,
+      reject_qty: nextRejectValue,
+      remarks: nextRemarksValue,
+    });
+  });
+  if (dailyActuals.length === 0 && deleteDates.size === 0 && removedTargetDates.size === 0) {
+    return { daily_actuals: [], delete_actual_dates: [], removed_target_dates: [] };
+  }
+  return {
+    daily_actuals: dailyActuals,
+    delete_actual_dates: Array.from(deleteDates),
+    removed_target_dates: Array.from(removedTargetDates),
+  };
+}
+
+function trialActualInputKeydown(event, blockId) {
+  if (!event || event.key !== 'Enter') return;
+  const tag = String(event.target?.tagName || '').toLowerCase();
+  if (tag === 'textarea' && !event.ctrlKey && !event.metaKey) return;
+  event.preventDefault();
+  trialSaveActualDailyRows(blockId);
+}
+
+async function trialSaveActualDailyRows(blockId) {
+  if (trialActualSaving) return;
+  trialActualSaving = true;
   const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
-  if (!block) throw new Error('Run block not found');
-  const segmentMap = new Map(
-    trialSegmentsForBlock(blockId)
-      .filter(seg => String(seg.segment_type || '') === 'production')
-      .map(seg => [String(seg.segment_date || ''), seg])
-  );
-  const deletedActualDates = Array.from(trialActualDraft.deletedDates || []);
-  const actualRemarks = String(trialActualDraft.remarks || '');
-  const patches = [];
-  for (const [reportDate, row] of Object.entries(trialActualDraft.rows || {})) {
-    const seg = segmentMap.get(String(reportDate || ''));
-    if (!seg) continue;
-    patches.push({
-      segmentId: seg.segment_id,
-      patch: {
-        output_qty: row.good === null ? '' : String(row.good),
-        reject_qty: row.reject === null ? '' : String(row.reject),
-        remarks: actualRemarks,
-      },
-    });
+  const machineId = Number(block?.machine_id || 0);
+  const payload = trialCollectActualDailyRows(blockId);
+  if ((payload.daily_actuals || []).length === 0 && (payload.delete_actual_dates || []).length === 0 && (payload.removed_target_dates || []).length === 0) {
+    toast('No actual rows to save.', 'warning');
+    trialActualSaving = false;
+    return;
   }
-  for (const reportDate of deletedActualDates) {
-    const seg = segmentMap.get(String(reportDate || ''));
-    if (!seg) continue;
-    patches.push({
-      segmentId: seg.segment_id,
-      patch: { output_qty: '', reject_qty: '', remarks: '' },
-    });
+  const saveBtn = document.getElementById('trial-save-btn');
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving...';
   }
-  if (!patches.length) return { ok: true };
-  const results = [];
-  for (const item of patches) {
-    const res = await saveSegmentActual(item.segmentId, item.patch, { reload: false });
-    results.push(res);
-  }
-  return results[results.length - 1] || { ok: true };
-}
-
-async function trialSaveActualInput(segmentId, field, value) {
-  const patch = {};
-  patch[field] = value;
   try {
-    await saveSegmentActual(segmentId, patch);
-    const blockId = (trialState.segments || []).find(seg => String(seg.segment_id) === String(segmentId))?.block_id;
-    if (blockId) openTrialActualModal(blockId);
+    const data = await POST(`/api/trial/blocks/${blockId}/actual`, payload);
+    if (data && data.block) {
+      trialState.blocks = (trialState.blocks || []).map(item => String(item.block_id) === String(blockId) ? { ...item, ...data.block } : item);
+    }
+    const changedCount = Number(data?.changed_count || 0);
+    if (changedCount <= 0) {
+      toast('No actual rows were saved. Enter output, reject, or remarks before saving.', 'warning');
+      if (data && (data.block || data.actual_daily_rows)) {
+        trialResetActualDraft(blockId, data.block || block || null);
+        trialRenderActualDailyRows(blockId, data.actual_daily_rows || (data.block && data.block.actual_daily_rows) || []);
+      }
+      return;
+    }
+    if (data && (data.block || data.actual_daily_rows)) {
+      trialResetActualDraft(blockId, data.block || block || null);
+      trialRenderActualDailyRows(blockId, data.actual_daily_rows || (data.block && data.block.actual_daily_rows) || []);
+    }
+    closeModal();
+    await refreshMachines([machineId].filter(Boolean));
+    if (data?.schedule_adjusted) {
+      toast('Actual saved — schedule adjusted', 'success');
+    } else {
+      toast('Actual saved', 'success');
+    }
   } catch (e) {
-    toast('Actual failed: ' + e.message, 'error');
+    toast('Actual save failed: ' + e.message, 'error');
+  } finally {
+    trialActualSaving = false;
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save Actuals';
+    }
   }
 }
 
@@ -130,31 +370,13 @@ function openTrialActualModal(blockId) {
         .filter(item => String(item.group_id || 0) === String(block.group_id))
         .sort((a, b) => Number(a.queue_position || 0) - Number(b.queue_position || 0) || Number(a.block_id || 0) - Number(b.block_id || 0)))
     : [block];
-  const cardPsId = String((groupSummary && groupSummary.ps_id) || block.job_no || block.source_ps_id || '').trim();
-  const cardOperationLabel = String(
-    (groupSummary && groupSummary.operation_label)
-    || (groupBlocks.length > 1 ? groupBlocks.map(item => String(item.source_op_no || item.operation_name || '')).filter(Boolean).join(' & ') : (block.source_op_no || block.operation_name || ''))
-  ).trim();
-  const cardMachineCode = String((groupSummary && groupSummary.machine_code) || block.machine_code || '').trim();
-  const cardSummaryLine = `Qty ${fmt((groupSummary && groupSummary.target_qty) || block.scheduled_qty || 0, 0)}${cardMachineCode ? ` · ${cardMachineCode}` : ''}`;
 
   if (groupBlocks.length > 1 && Number(block.group_id || 0)) {
     openTrialGroupActualModal(block.group_id);
     return;
   }
 
-  const actualRows = trialActualRowsForBlock(blockId);
-  const today = trialTodayLocal();
-  if (!actualRows.some(row => String(row.report_date || '') === today)) {
-    actualRows.push({
-      report_date: today,
-      segment: null,
-      actual: trialActualForBlockDate(blockId, today) || {},
-      target_qty: Number(block.remaining_qty || block.scheduled_qty || 0),
-      actual_only: true,
-    });
-  }
-  actualRows.sort((a, b) => String(a.report_date).localeCompare(String(b.report_date)));
+  trialResetActualDraft(blockId, block);
   const outputTotal = (trialState.actuals || [])
     .filter(row => String(row.block_id) === String(blockId) && row.output_qty !== null && row.output_qty !== undefined)
     .reduce((sum, row) => sum + Number(row.output_qty || 0), 0);
@@ -163,31 +385,14 @@ function openTrialActualModal(blockId) {
     .reduce((sum, row) => sum + Number(row.reject_qty || 0), 0);
   const remainingQty = Math.max(0, Number(block.scheduled_qty || 0) - outputTotal);
   const remainingLoad = remainingQty * Number(block.cycle_minutes_per_qty || 0);
-  const rowsHtml = actualRows.length ? actualRows.map(row => {
-    const seg = row.segment;
-    const actual = row.actual || {};
-    const outputValue = actual.output_qty === null || actual.output_qty === undefined ? '' : String(actual.output_qty);
-    const rejectValue = actual.reject_qty === null || actual.reject_qty === undefined ? '' : String(actual.reject_qty);
-    const remarksValue = actual.remarks || '';
-    const outputHandler = seg
-      ? `trialSaveActualInput(${seg.segment_id}, 'output_qty', this.value)`
-      : `trialSaveActualDateInput(${blockId}, '${escapeHtml(row.report_date)}', 'output_qty', this.value)`;
-    const rejectHandler = seg
-      ? `trialSaveActualInput(${seg.segment_id}, 'reject_qty', this.value)`
-      : `trialSaveActualDateInput(${blockId}, '${escapeHtml(row.report_date)}', 'reject_qty', this.value)`;
-    const remarksHandler = seg
-      ? `trialSaveActualInput(${seg.segment_id}, 'remarks', this.value)`
-      : `trialSaveActualDateInput(${blockId}, '${escapeHtml(row.report_date)}', 'remarks', this.value)`;
-    return `
-      <div class="trial-actual-row" ${seg ? `data-segment-id="${seg.segment_id}"` : `data-actual-date="${escapeHtml(row.report_date)}"`}>
-        <div class="trial-actual-date">${escapeHtml(row.report_date || '')}</div>
-        <div class="trial-actual-target">${fmt(row.target_qty || 0, 0)} target${row.actual_only ? ' actual' : ''}</div>
-        <label class="trial-actual-cell"><span>Output</span><input type="number" min="0" step="1" value="${escapeHtml(outputValue)}" onkeydown="if(event.key === 'Enter') this.blur()" onblur="${outputHandler}"></label>
-        <label class="trial-actual-cell"><span>Reject</span><input type="number" min="0" step="1" value="${escapeHtml(rejectValue)}" onkeydown="if(event.key === 'Enter') this.blur()" onblur="${rejectHandler}"></label>
-        <label class="trial-actual-cell"><span>Remarks</span><textarea rows="1" onkeydown="if(event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); this.blur(); }" onblur="${remarksHandler}">${escapeHtml(remarksValue)}</textarea></label>
-      </div>
-    `;
-  }).join('') : `<div class="trial-catalog-empty">No planned production segments yet.</div>`;
+  const dailyRows = trialActualDailyRowsForBlock(block);
+  const rowsHtml = dailyRows.length
+    ? dailyRows.map(row => trialActualDailyRowHtml(blockId, row)).join('')
+    : '<div class="trial-catalog-empty">No scheduled target rows. Recalculate schedule or add a date manually.</div>';
+  const cardPsId = String(block.job_no || block.source_ps_id || '').trim();
+  const cardOperationLabel = String(block.source_op_no || block.operation_name || '').trim();
+  const cardMachineCode = String(block.machine_code || '').trim();
+  const cardSummaryLine = `Qty ${fmt(block.scheduled_qty || 0, 0)}${cardMachineCode ? ` · ${cardMachineCode}` : ''}`;
 
   openTrialForm('Actual Output', `
     <div style="display:grid;gap:12px">
@@ -204,19 +409,33 @@ function openTrialActualModal(blockId) {
         <div><span class="field-hint">Load</span><strong>${fmt(remainingLoad, 0)}m</strong></div>
       </div>
       <div class="trial-actual-section">
-        <div class="trial-actual-section-title">Planned rows</div>
-        <div class="trial-actual-section-note">Edits save automatically per row. Blank stays unreported; 0 is saved as zero.</div>
+        <div class="trial-actual-section-title">Daily rows</div>
+        <div class="trial-actual-section-note">Planned dates load automatically. Delete Date removes the plan for that day and moves target qty to the tail when you save. Over/under target adjusts the remaining schedule.</div>
+        <div style="display:flex;flex-wrap:wrap;align-items:end;gap:8px;margin:8px 0 10px">
+          <label class="trial-actual-cell" style="min-width:180px">
+            <span>Add Date</span>
+            <input id="trial-actual-add-date" type="date" value="${trialTodayISO()}">
+          </label>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="trialAddActualDailyRow(${blockId}, document.getElementById('trial-actual-add-date').value)">Add Date</button>
+        </div>
+        <div class="trial-actual-daily-table">
         <div class="trial-actual-grid-head">
           <span>Date</span>
-          <span>Target</span>
-          <span>Output</span>
-          <span>Reject</span>
+          <span>Target Qty</span>
+          <span>Output Qty</span>
+          <span>Reject Qty</span>
           <span>Remarks</span>
+          <span>Delete Date</span>
         </div>
-        ${rowsHtml}
+        <div data-trial-actual-daily-grid="${blockId}" style="display:grid;gap:8px">
+          ${rowsHtml}
+        </div>
+        </div>
       </div>
     </div>
-  `, '', null);
+  `, 'Save Actuals', async () => {
+    await trialSaveActualDailyRows(blockId);
+  });
 }
 
 function openTrialGroupActualModal(groupId) {

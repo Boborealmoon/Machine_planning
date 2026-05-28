@@ -454,6 +454,9 @@ function trialBuildMachineDisplayGroup(rawBlocks, summary = null) {
   const ends = blocks.map(b => String(b.calculated_end_datetime || '')).filter(Boolean).sort();
   const visualStarts = blocks.map(b => String(b.visual_start_datetime || b.calculated_start_datetime || '')).filter(Boolean).sort();
   const visualEnds = blocks.map(b => String(b.visual_end_datetime || b.calculated_end_datetime || '')).filter(Boolean).sort();
+  const actualStarts = blocks.map(b => String(b.actual_start_at || '')).filter(Boolean).sort();
+  const actualEnds = blocks.map(b => String(b.actual_end_at || '')).filter(Boolean).sort();
+  const allDone = blocks.length > 0 && blocks.every(b => String(b.actual_end_at || '').trim());
   const status = blocks.every(b => b.isDone)
     ? 'DONE'
     : blocks.some(b => b.isInProgress || Number(b.outputTotal || 0) > 0 || Number(b.rejectTotal || 0) > 0)
@@ -497,6 +500,8 @@ function trialBuildMachineDisplayGroup(rawBlocks, summary = null) {
     group_end: summary?.group_end || ends[ends.length - 1] || leader.calculated_end_datetime || '',
     visual_start_datetime: visualStarts[0] || leader.visual_start_datetime || leader.calculated_start_datetime || leader.anchor_datetime || '',
     visual_end_datetime: visualEnds[visualEnds.length - 1] || leader.visual_end_datetime || leader.calculated_end_datetime || '',
+    actual_start_at: actualStarts[0] || leader.actual_start_at || '',
+    actual_end_at: (allDone && actualEnds.length ? actualEnds[actualEnds.length - 1] : '') || leader.actual_end_at || '',
     material_status: summary?.material_status || leader.material_status || {},
   };
 }

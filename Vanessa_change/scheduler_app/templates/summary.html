@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Summary{% endblock %}
+{% block head_extra %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/summary.css') }}?v=15">
+{% endblock %}
+{% block page_title %}
+<span class="summary-title-line">Machine</span>
+<span class="summary-title-line">Performance</span>
+<span class="summary-title-line">Summary.</span>
+{% endblock %}
+{% block page_actions %}
+<div class="summary-actions">
+  <div class="summary-filter-block summary-range-block">
+    <div class="summary-filter-label">Range</div>
+    <div class="summary-range-row">
+      <div class="range-segment" id="range-mode" role="group" aria-label="Summary range">
+        <button type="button" class="btn" data-summary-range="week" aria-haspopup="dialog" aria-controls="summary-week-panel">Week</button>
+        <button type="button" class="btn" data-summary-range="month" aria-haspopup="dialog" aria-controls="summary-month-panel">Month</button>
+        <button type="button" class="btn" data-summary-range="custom" aria-haspopup="dialog" aria-controls="summary-custom-panel">Custom</button>
+      </div>
+      <button type="button" class="btn btn-ghost" data-summary-refresh>Refresh</button>
+    </div>
+    <div class="summary-filter-hint" id="range-hint">Showing: —</div>
+  </div>
+  <div class="summary-filter-block">
+    <div class="summary-filter-label">Machine Type</div>
+    <div class="chip-row" id="machine-type-chips"></div>
+    <div class="summary-filter-hint" id="machine-type-hint">Loading machine types…</div>
+  </div>
+</div>
+{% endblock %}
+{% block content %}
+<div class="summary-shell">
+  <div class="summary-page">
+    <div id="summary-banner" class="summary-status-banner is-loading" role="status" aria-live="polite" hidden>
+      <div class="spinner"></div>
+      <span>Loading summary…</span>
+    </div>
+
+    <div class="summary-tabs-shell">
+      <div class="summary-tabs" id="summary-tabbar" role="tablist" aria-label="Summary views">
+        <button type="button" class="summary-tab-btn" data-summary-tab="overview" role="tab" aria-controls="summary-tab-overview">Overview</button>
+        <button type="button" class="summary-tab-btn" data-summary-tab="machines" role="tab" aria-controls="summary-tab-machines">Machine Performance</button>
+        <button type="button" class="summary-tab-btn" data-summary-tab="heatmap" role="tab" aria-controls="summary-tab-heatmap">Capacity Heatmap</button>
+        <button type="button" class="summary-tab-btn" data-summary-tab="watchlist" role="tab" aria-controls="summary-tab-watchlist">Planner Watchlist</button>
+        <button type="button" class="summary-tab-btn" data-summary-tab="data-quality" role="tab" aria-controls="summary-tab-data-quality">Data Quality</button>
+        <button type="button" class="summary-tab-btn" data-summary-tab="ps-progress" role="tab" aria-controls="summary-tab-ps-progress">PS / Order Progress</button>
+      </div>
+
+      <section id="summary-tab-overview" class="summary-tab-panel" data-summary-panel="overview"></section>
+      <section id="summary-tab-machines" class="summary-tab-panel" data-summary-panel="machines" hidden></section>
+      <section id="summary-tab-heatmap" class="summary-tab-panel" data-summary-panel="heatmap" hidden></section>
+      <section id="summary-tab-watchlist" class="summary-tab-panel" data-summary-panel="watchlist" hidden></section>
+      <section id="summary-tab-data-quality" class="summary-tab-panel" data-summary-panel="data-quality" hidden></section>
+      <section id="summary-tab-ps-progress" class="summary-tab-panel" data-summary-panel="ps-progress" hidden></section>
+    </div>
+  </div>
+  <div id="summary-custom-portal" class="summary-custom-portal" aria-hidden="true"></div>
+  <div id="summary-custom-portal-content" hidden>
+    <div id="summary-week-panel" class="summary-range-popover summary-custom-range-panel" role="dialog" aria-modal="false" aria-label="Week picker" hidden>
+      <div class="summary-custom-range-fields">
+        <label class="summary-field">
+          <span>Month</span>
+          <input id="summary-week-month" type="month" autocomplete="off">
+        </label>
+      </div>
+      <div id="summary-week-options" class="summary-week-options"></div>
+      <div class="summary-custom-range-actions">
+        <button type="button" class="btn btn-ghost" data-summary-custom-cancel>Close</button>
+      </div>
+    </div>
+    <div id="summary-month-panel" class="summary-range-popover summary-custom-range-panel" role="dialog" aria-modal="false" aria-label="Month picker" hidden>
+      <div class="summary-custom-range-fields">
+        <label class="summary-field">
+          <span>Month</span>
+          <input id="summary-month-input" type="month" autocomplete="off">
+        </label>
+      </div>
+      <div class="summary-custom-range-actions">
+        <button type="button" class="btn btn-ghost" data-summary-custom-cancel>Cancel</button>
+        <button type="button" class="btn btn-primary" data-summary-month-apply>Apply</button>
+      </div>
+    </div>
+    <div id="summary-custom-panel" class="summary-range-popover summary-custom-range-panel" role="dialog" aria-modal="false" aria-label="Custom date range" hidden>
+      <div class="summary-custom-range-fields">
+        <label class="summary-field">
+          <span>From</span>
+          <input id="summary-custom-from" type="date" autocomplete="off">
+        </label>
+        <label class="summary-field">
+          <span>To</span>
+          <input id="summary-custom-to" type="date" autocomplete="off">
+        </label>
+      </div>
+      <div class="summary-custom-range-actions">
+        <button type="button" class="btn btn-ghost" data-summary-custom-cancel>Cancel</button>
+        <button type="button" class="btn btn-primary" data-summary-custom-apply>Apply</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/summary.js') }}?v=15"></script>
+{% endblock %}

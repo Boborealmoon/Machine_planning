@@ -313,6 +313,18 @@ CREATE TABLE IF NOT EXISTS public.planner_production_actual (
     created_by               TEXT         NOT NULL DEFAULT ''
 );
 
+-- Dates removed from the daily actual grid; target qty is moved to the schedule tail.
+CREATE TABLE IF NOT EXISTS public.planner_block_removed_actual_date (
+    removed_date_id    BIGSERIAL    PRIMARY KEY,
+    block_id           BIGINT       NOT NULL REFERENCES public.planner_run_block(block_id) ON DELETE CASCADE,
+    report_date        DATE         NOT NULL,
+    target_qty_removed NUMERIC      NOT NULL DEFAULT 0,
+    status             TEXT         NOT NULL DEFAULT 'ACTIVE',
+    created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (block_id, report_date)
+);
+
 
 -- =============================================================================
 -- GROUP E: Material Planning

@@ -449,6 +449,52 @@ function trialMachineAvailabilityEnd(groups) {
   return ends[ends.length - 1] || '';
 }
 
+function trialDueDateForPs(psId) {
+  const source = String(psId || '').trim();
+  if (!source) return '';
+  const sourceParts = trialSplitPsId(source);
+  const sourceBase = String(sourceParts.base || source).trim();
+  const sourcePartial = String(sourceParts.partial || '').trim();
+  const rows = [
+    ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
+    ...(Array.isArray(trialState.planned) ? trialState.planned : []),
+  ];
+  const exact = rows.find(row => String(row?.ps_id || '').trim() === source);
+  if (exact?.due_date) return String(exact.due_date);
+  const partial = sourcePartial
+    ? rows.find(row => {
+        const parts = trialSplitPsId(row?.ps_id || '');
+        return String(parts.base || '').trim() === sourceBase && String(parts.partial || '').trim() === sourcePartial;
+      })
+    : null;
+  if (partial?.due_date) return String(partial.due_date);
+  const base = rows.find(row => {
+    const parts = trialSplitPsId(row?.ps_id || '');
+    return String(parts.base || '').trim() === sourceBase;
+  });
+  return base?.due_date ? String(base.due_date) : '';
+}
+
+function trialDuePillHtml(psId) {
+  const dueDate = String(trialDueDateForPs(psId) || '').trim();
+  if (!dueDate) {
+    return `
+      <span class="trial-pill trial-time-pill trial-due-pill is-empty" title="No due date found for this PS">
+        <span class="trial-pill-label">Due</span>
+        <span class="trial-pill-value">No due date</span>
+      </span>
+    `;
+  }
+  const dayDiff = trialDateDiffDays(dueDate);
+  const dueClass = dayDiff == null ? '' : (dayDiff < 0 ? 'is-overdue' : (dayDiff <= 7 ? 'is-due-soon' : 'is-normal'));
+  return `
+    <span class="trial-pill trial-time-pill trial-due-pill ${dueClass}" title="PS due date">
+      <span class="trial-pill-label">Due</span>
+      <span class="trial-pill-value">${escapeHtml(dueDate)}</span>
+    </span>
+  `;
+}
+
 function toggleTrialMachineCollapsed(machineId) {
   const id = Number(machineId);
   if (!id) return;
@@ -500,13 +546,16 @@ function renderTrialMachine(machine) {
           ? String(group.operation_label || group.group_label || '').trim()
           : [opDisplay.op_no, opDisplay.op_name].filter(Boolean).join(' ');
         const pairedOutput = Number(group.paired_output_qty ?? netOutput ?? 0);
-        const queuedText = trialFormatDt(group.visual_start_datetime || group.group_start);
-        const endText = trialFormatDt(group.visual_end_datetime || group.group_end);
+        const queuedAt = trialBlockQueuedAt(leader || group);
+        const outputAt = trialBlockOutputAt(leader || group);
+        const queuedText = trialFormatDt(queuedAt);
+        const outputText = trialFormatDt(outputAt);
         const anchorText = anchored ? trialFormatDt(leader?.anchor_datetime) : '';
         const queuedTitle = anchored
           ? `Queued ${queuedText} · Anchor ${anchorText}`
-          : String(group.visual_start_datetime || group.group_start || '');
-        const endTitle = String(group.visual_end_datetime || group.group_end || '');
+          : `Scheduled queue start · ${queuedAt || '—'}`;
+        const outputTitle = trialBlockOutputTitle(leader || group);
+        const outputPillClass = leader?.actual_end_at ? 'green' : (leader?.actual_start_at ? 'yellow' : '');
         const actualButton = group.blocks.length > 1
           ? `<button class="btn btn-ghost btn-sm" type="button" onclick="openTrialGroupActualModal(${Number(group.group_id || 0)})">Actual</button>`
           : `<button class="btn btn-ghost btn-sm" type="button" onclick="openTrialActualModal(${leader?.block_id || 0})">Actual</button>`;
@@ -546,14 +595,15 @@ function renderTrialMachine(machine) {
               ${combinedLine ? `<div class="trial-block-combined-line">${escapeHtml(combinedLine)}</div>` : ''}
             </div>
             <div class="trial-op-card-info trial-op-card-time-row">
+              ${trialDuePillHtml(leader?.source_ps_id || group.ps_id || leader?.job_no || '')}
               <button class="trial-pill trial-time-pill trial-pill-start clickable ${anchored ? 'yellow' : 'gray'}" type="button"
                 onclick="editTrialAnchor(${leader?.block_id || 0})" title="${escapeHtml(queuedTitle || 'Click to edit anchor')}">
                 <span class="trial-pill-label">Queued</span>
                 <span class="trial-pill-value">${queuedText}</span>
               </button>
-              <span class="trial-pill trial-time-pill" title="${escapeHtml(endTitle)}">
-                <span class="trial-pill-label">End</span>
-                <span class="trial-pill-value">${endText}</span>
+              <span class="trial-pill trial-time-pill ${outputPillClass}" title="${escapeHtml(outputTitle)}">
+                <span class="trial-pill-label">Output</span>
+                <span class="trial-pill-value">${outputText}</span>
               </span>
             </div>
             ${materialStatus?.label ? `
@@ -663,8 +713,27 @@ function trialPsRollupExecStatus(ps) {
   if (statuses.some(s => s === 'P' || s === 'PENDING_SI')) return 'P';
   if (statuses.some(s => s === 'I' || s === 'IN_PROCESS')) return 'I';
   if (statuses.some(s => s === 'R' || s === 'READY_TO_START')) return 'R';
-  if (statuses.every(s => s === 'C' || s === 'COMPLETED')) return 'C';
+  if (statuses.every(s => s === 'C' || s === 'COMPLETED')) {
+    const current = trialNormalizeExecStatus(ps?.current_stage_status || ps?.execution_status || '');
+    if (current && current !== 'C' && current !== 'COMPLETED') return current;
+    return 'C';
+  }
   return ps?.current_stage_status || ps?.execution_status || statuses[0] || '';
+}
+
+/** True when an op card still belongs in the planner catalog (not fully done). */
+function trialCatalogOpIsOpen(card) {
+  const exec = trialNormalizeExecStatus(trialCatalogOpExecStatus(card));
+  const remaining = Number(card?.remaining_qty ?? card?.target_qty ?? 0);
+  if (remaining > 0.0001) return true;
+  return exec !== 'C' && exec !== 'COMPLETED';
+}
+
+function trialCatalogPsHasOpenOps(ps) {
+  const cards = ps?.op_cards || [];
+  if (cards.some(card => trialCatalogOpIsOpen(card))) return true;
+  const current = trialNormalizeExecStatus(ps?.current_stage_status || ps?.execution_status || '');
+  return Boolean(current) && current !== 'C' && current !== 'COMPLETED';
 }
 
 function trialCatalogPsDueClass(ps) {
@@ -787,12 +856,77 @@ function trialPsCatalogExecStatus(ps) {
 
 const _PS_TYPE_ORDER = { A: 0, M: 1, N: 2 };
 
+function trialNormalizeSearchText(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function trialSearchableTokens(values) {
+  const raw = values
+    .map(value => String(value == null ? '' : value).trim())
+    .filter(Boolean);
+  const normalized = raw.map(trialNormalizeSearchText).filter(Boolean);
+  return [...raw, ...normalized];
+}
+
+function trialCatalogHaystack(ps) {
+  const psId = String(ps.ps_id || '');
+  const psParts = trialSplitPsId(psId);
+  const opCards = ps.op_cards || [];
+  const opRows = ps.ops || [];
+  return trialSearchableTokens([
+    psId,
+    psParts.base,
+    psParts.partial ? `partial ${psParts.partial}` : '',
+    ps.source_ps_id,
+    ps.display_ps_id,
+    ps.pp_partial_no,
+    ps.part_name,
+    ps.part_no,
+    ps.part_desc,
+    ps.due_date,
+    ps.status,
+    ps.execution_status,
+    ps.current_stage_desc,
+    trialPsErpBomCode(ps),
+    ps.bom_code,
+    ps.selected_bom_code,
+    ps.inventory_code,
+    ...opRows.flatMap(op => [op.op_no, op.op_type, op.machine_category, op.preferred_machine, op.source_op_no]),
+    ...opCards.flatMap(card => [card.operation_label, card.operation_name, card.source_op_no, card.source_op_seq_id]),
+  ]).join(' ');
+}
+
+function trialPlannedHaystack(ps) {
+  const psId = String(ps.ps_id || '');
+  const psParts = trialSplitPsId(psId);
+  const opCards = ps.op_cards || [];
+  return trialSearchableTokens([
+    psId,
+    psParts.base,
+    psParts.partial ? `partial ${psParts.partial}` : '',
+    ps.source_ps_id,
+    ps.display_ps_id,
+    ps.pp_partial_no,
+    ps.part_name,
+    ps.part_no,
+    ps.part_desc,
+    ps.due_date,
+    ps.status,
+    ps.planner_status,
+    ps.execution_status,
+    ps.current_stage_desc,
+    ps.inventory_code,
+    ...opCards.flatMap(card => [card.operation_label, card.operation_name, card.source_op_no, card.source_op_seq_id]),
+  ]).join(' ');
+}
+
 function renderTrialCatalog() {
   renderTrialPsTypeFilter();
   const root = document.getElementById('trial-catalog');
   if (!root) return;
   const queryInput = document.getElementById('trial-catalog-search');
   const rawQuery = String(queryInput ? queryInput.value : trialCatalogSearch || '').trim().toLowerCase();
+  const normalizedQuery = trialNormalizeSearchText(rawQuery);
   trialCatalogSearch = rawQuery;
 
   const catalog = (trialState.catalog || []).filter(ps => {
@@ -802,17 +936,11 @@ function renderTrialCatalog() {
     if (trialHidePendingDo && trialPsPendingDo(ps)) return false;
     if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
     const execStatus = trialPsCatalogExecStatus(ps).toUpperCase().replace(/[\s-]+/g, '_');
-    if (!trialShowCompleted) {
-      if (trialPsShippedComplete(ps)) return false;
-      if (execStatus === 'COMPLETED') return false;
-    }
+    if (!trialShowCompleted && trialPsShippedComplete(ps)) return false;
     if (!rawQuery) return true;
-    const haystack = [
-      ps.ps_id, ps.part_name, ps.part_no, ps.part_desc, ps.due_date, ps.status, ps.execution_status,
-      trialPsErpBomCode(ps), ps.bom_code, ps.selected_bom_code, ps.inventory_code,
-      ...(ps.ops || []).flatMap(op => [op.op_no, op.op_type, op.machine_category, op.preferred_machine, op.source_op_no]),
-    ].join(' ').toLowerCase();
-    return haystack.includes(rawQuery);
+    const haystack = trialCatalogHaystack(ps);
+    if (haystack.includes(rawQuery)) return true;
+    return normalizedQuery ? haystack.includes(normalizedQuery) : false;
   }).sort((a, b) => {
     const ta = _PS_TYPE_ORDER[trialGetPsType(a.ps_id)] ?? 9;
     const tb = _PS_TYPE_ORDER[trialGetPsType(b.ps_id)] ?? 9;
@@ -829,8 +957,9 @@ function renderTrialCatalog() {
     const plannerStatus = String(ps.planner_status || '').toUpperCase();
     if (!trialShowCompleted && (psStatus === 'COMPLETED' || plannerStatus === 'COMPLETED')) return false;
     if (!rawQuery) return true;
-    const haystack = [ps.ps_id, ps.part_name, ps.part_no, ps.part_desc, ps.due_date, ps.status, ps.planner_status].join(' ').toLowerCase();
-    return haystack.includes(rawQuery);
+    const haystack = trialPlannedHaystack(ps);
+    if (haystack.includes(rawQuery)) return true;
+    return normalizedQuery ? haystack.includes(normalizedQuery) : false;
   }).sort((a, b) => {
     const ta = _PS_TYPE_ORDER[trialGetPsType(a.ps_id)] ?? 9;
     const tb = _PS_TYPE_ORDER[trialGetPsType(b.ps_id)] ?? 9;
@@ -854,7 +983,10 @@ function renderTrialCatalog() {
 
   const catalogWithOpenOps = catalog.filter(ps => {
     if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
-    return (ps.op_cards || []).some(card => !isOpAllocated(card));
+    // Match Process Sheets "Open Partials": still on the floor until fully shipped.
+    if (!trialPsShippedComplete(ps) && (ps.op_cards || []).length) return true;
+    return (ps.op_cards || []).some(card => trialCatalogOpIsOpen(card))
+      || trialCatalogPsHasOpenOps(ps);
   });
 
   const availableHtml = catalogWithOpenOps.map(ps => {
@@ -862,12 +994,12 @@ function renderTrialCatalog() {
     const basePsId = psIdParts[0] || ps.ps_id || '';
     const partialText = psIdParts[1] ? `Partial ${psIdParts[1]}` : '';
     const opCardsHtml = (ps.op_cards || [])
-      .filter(card => !isOpAllocated(card))
+      .filter(card => trialCatalogOpIsOpen(card))
       .map(card => renderTrialOpCardHtml({
         ...card,
-        is_allocated: false,
+        is_allocated: isOpAllocated(card),
         part_no: card.part_no || ps.part_no || ps.part_name || '',
-        source_ps_id: card.source_ps_id || basePsId,
+        source_ps_id: card.source_ps_id || ps.ps_id || basePsId,
       }))
       .join('');
     const dueClass = trialCatalogPsDueClass(ps);
@@ -913,12 +1045,12 @@ function renderTrialCatalog() {
       </div>
       <div class="trial-catalog-oplist">
         ${(ps.op_cards || [])
-          .filter(card => !isOpAllocated(card))
+          .filter(card => trialCatalogOpIsOpen(card))
           .map(card => renderTrialOpCardHtml({
             ...card,
-            is_allocated: false,
+            is_allocated: isOpAllocated(card),
             part_no: card.part_no || ps.part_no || ps.part_name || '',
-            source_ps_id: card.source_ps_id || String(ps.ps_id || '').split('::')[0] || ps.ps_id || '',
+            source_ps_id: card.source_ps_id || ps.ps_id || '',
           }))
           .join('')}
       </div>
