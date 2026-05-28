@@ -449,10 +449,34 @@ function trialMachineAvailabilityEnd(groups) {
   return ends[ends.length - 1] || '';
 }
 
+function toggleTrialMachineCollapsed(machineId) {
+  const id = Number(machineId);
+  if (!id) return;
+  if (trialMachineCollapsedSet.has(id)) {
+    trialMachineCollapsedSet.delete(id);
+  } else {
+    trialMachineCollapsedSet.add(id);
+  }
+  const section = document.querySelector(`.trial-machine[data-machine-id="${id}"]`);
+  if (!section) return;
+  const collapsed = trialMachineCollapsedSet.has(id);
+  section.classList.toggle('is-collapsed', collapsed);
+  const btn = section.querySelector('.trial-machine-collapse-btn');
+  if (btn) {
+    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    btn.title = collapsed ? 'Expand machine queue' : 'Collapse machine queue';
+  }
+}
+
 function renderTrialMachine(machine) {
   const allGroups = trialBlocksGroupedForMachine(machine.machine_id);
   const groups = allGroups.filter(trialGroupRunsInsideDateFilter);
   const laneId = `trial-lane-${machine.machine_id}`;
+  const collapsed = trialMachineCollapsedSet.has(machine.machine_id);
+  const blockCount = allGroups.length;
+  const collapsedSummary = blockCount
+    ? `${blockCount} run block${blockCount === 1 ? '' : 's'}`
+    : 'No run blocks';
   const availabilityEnd = trialMachineAvailabilityEnd(
     trialHasActiveDateFilter() ? groups : allGroups
   );
@@ -567,15 +591,24 @@ function renderTrialMachine(machine) {
     : `<div class="trial-empty">${escapeHtml(trialMachineLaneEmptyMessage(allGroups.length, groups.length))}</div>`;
 
   return `
-    <section class="trial-machine">
+    <section class="trial-machine${collapsed ? ' is-collapsed' : ''}" data-machine-id="${machine.machine_id}">
       <div class="trial-machine-head">
-        <div>
+        <button class="trial-machine-collapse-btn" type="button"
+          onclick="event.stopPropagation(); toggleTrialMachineCollapsed(${machine.machine_id})"
+          aria-expanded="${collapsed ? 'false' : 'true'}"
+          title="${collapsed ? 'Expand machine queue' : 'Collapse machine queue'}">
+          <span class="trial-machine-collapse-icon" aria-hidden="true"></span>
+        </button>
+        <div class="trial-machine-head-main" role="button" tabindex="0"
+          onclick="toggleTrialMachineCollapsed(${machine.machine_id})"
+          onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleTrialMachineCollapsed(${machine.machine_id}); }">
           <div class="trial-machine-title">${machine.machine_code}</div>
           <div class="trial-machine-meta">${machine.machine_category} - ${machine.shift_profile || 'STANDARD'}</div>
           ${availabilityTag}
+          <div class="trial-machine-collapsed-summary">${collapsedSummary}</div>
         </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
-          <button class="btn btn-ghost btn-sm" type="button" onclick="openTrialCreateModal(${machine.machine_id})">Add</button>
+        <div class="trial-machine-head-actions">
+          <button class="btn btn-ghost btn-sm" type="button" onclick="event.stopPropagation(); openTrialCreateModal(${machine.machine_id})">Add</button>
         </div>
       </div>
       <div class="trial-lane" id="${laneId}" data-machine-id="${machine.machine_id}">

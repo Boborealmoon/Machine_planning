@@ -15,6 +15,7 @@ let trialPsTypeFilter = new Set(['A', 'N']);
 let trialShowSrOrders = false;
 let trialMachineCategoryFilter = 'ALL';
 let trialMachineHiddenSet = new Set();
+let trialMachineCollapsedSet = new Set();
 let trialScheduleDateFilter = { start: '', end: '' };
 let trialBOMEditing = [];
 let trialBOMMeta = {};
