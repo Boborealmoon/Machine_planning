@@ -1407,12 +1407,29 @@ def api_operations():
 
 # ── API: Planner — Machines ────────────────────────────────────────────────
 
-def _supa_get(path, params=None):
+def _supa_get(path, params=None, *, service=False):
     import requests as req
     from db import supa_url, supa_headers
-    r = req.get(f"{supa_url()}/{path}", headers=supa_headers(), params=params, timeout=15)
+    r = req.get(
+        f"{supa_url()}/{path}",
+        headers=supa_headers(write=service),
+        params=params,
+        timeout=15,
+    )
     r.raise_for_status()
     return r.json()
+
+
+def _supa_fetch_all(path, params=None, *, service=False):
+    """Paginated GET for tables that may exceed PostgREST's default row cap."""
+    from sync import _supa_fetch_all as _fetch_all
+    from db import supa_url, supa_headers
+
+    return _fetch_all(
+        f"{supa_url()}/{path}",
+        headers=supa_headers(write=service),
+        params=params or {},
+    )
 
 def _supa_post(path, payload):
     import requests as req
@@ -1556,15 +1573,17 @@ def _non_negative_number(value, default=0.0):
 
 @app.get("/api/planner/cycle-times")
 def api_planner_cycle_times_list():
+    """List master cycle times. Uses service role (RLS on this table blocks anon reads)."""
     try:
-        rows = _supa_get(
+        rows = _supa_fetch_all(
             "planner_cycle_time_master",
             {
                 "select": _CT_MASTER_SELECT,
                 "order": "id",
             },
+            service=True,
         )
-        return jsonify({"rows": rows or []})
+        return jsonify({"rows": rows or [], "count": len(rows or [])})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1685,6 +1704,98 @@ def api_planner_cycle_times_delete(row_id):
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/planner/cycle-times/import-new")
+def api_planner_cycle_times_import_new():
+    """
+    Insert new master rows from planner_program_tools only.
+    Existing master rows are never updated or overwritten.
+    """
+    from planning.cycle_time_master_import import import_new_from_program_tools
+
+    try:
+        result = import_new_from_program_tools()
+        if result.get("error"):
+            return jsonify(result), 503
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/planner/cycle-times/sync")
+def api_planner_cycle_times_sync():
+    """
+    Incremental sync (default): sheet -> planner_program_tools upsert,
+    then insert-only new master rows. Never truncates master; never wipes program tools.
+    """
+    from planning.cycle_time_master_import import sync_cycle_times_incremental
+
+    try:
+        result = sync_cycle_times_incremental()
+        if result.get("program_tools", {}).get("error"):
+            return jsonify(result), 500
+        if result.get("master", {}).get("error"):
+            return jsonify(result), 503
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/planner/cycle-times/reload-from-program-tools")
+def api_planner_cycle_times_reload():
+    """DESTRUCTIVE: truncate master and reload. Requires ALLOW_MASTER_TRUNCATE=1."""
+    if os.getenv("ALLOW_MASTER_TRUNCATE", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return jsonify({
+            "error": (
+                "Master truncate is disabled. Use POST /api/planner/cycle-times/sync "
+                "(upsert + insert new only). Set ALLOW_MASTER_TRUNCATE=1 only for one-off admin rebuilds."
+            ),
+        }), 403
+    from planning.cycle_time_master_import import reload_master_from_program_tools
+
+    try:
+        result = reload_master_from_program_tools()
+        if result.get("error"):
+            return jsonify(result), 503
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/planner/cycle-times/full-reload")
+def api_planner_cycle_times_full_reload():
+    """DESTRUCTIVE admin rebuild. Requires ALLOW_MASTER_TRUNCATE=1."""
+    if os.getenv("ALLOW_MASTER_TRUNCATE", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return jsonify({
+            "error": (
+                "Full reload is disabled. Use POST /api/planner/cycle-times/sync instead. "
+                "Set ALLOW_MASTER_TRUNCATE=1 only for one-off admin rebuilds."
+            ),
+        }), 403
+    from planning.cycle_time_master_import import reload_master_from_program_tools
+    from planning.program_tool_list_route import (
+        sync_program_tool_list_to_supabase,
+        sync_tool_list_sheet_to_sqlite,
+    )
+
+    out: dict = {}
+    try:
+        if os.getenv("tool_list_secret_key", "").strip():
+            out["program_tools_sheet"] = sync_tool_list_sheet_to_sqlite()
+        else:
+            out["program_tools_sheet"] = {"skipped": True, "reason": "no tool_list_secret_key"}
+
+        out["program_tools_supabase"] = sync_program_tool_list_to_supabase(full_refresh=True)
+        if out["program_tools_supabase"].get("error"):
+            return jsonify(out), 500
+
+        out["master"] = reload_master_from_program_tools()
+        if out["master"].get("error"):
+            return jsonify(out), 503
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": str(e), **out}), 500
 
 
 # ── Background auto-sync ──────────────────────────────────────────────────────

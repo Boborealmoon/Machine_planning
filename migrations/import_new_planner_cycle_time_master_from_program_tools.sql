@@ -1,0 +1,9 @@
+-- Insert-only import: planner_program_tools -> planner_cycle_time_master
+-- Does NOT update existing master rows. Skips when the same natural key already exists:
+--   part_no + bom_code + stage_no + program_no + program_file + tool_list_file
+--
+-- Mapping (stage_no = ERP BOM sequence only; never sheet operation_no):
+--   See planning/cycle_time_master_import.py CANDIDATES_CTE
+--
+-- Prefer: python scripts/import_new_cycle_time_master_from_program_tools.py
+-- Or POST /api/planner/cycle-times/import-new from the Master cycle times page.

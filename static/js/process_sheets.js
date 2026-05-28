@@ -208,8 +208,14 @@
   }
 
   function isSrTagged(item) {
-    return [item?.ps_id, item?.source_ps_id, item?.display_ps_id]
-      .some(value => /\[sr\]/i.test(String(value || '')));
+    return [
+      item?.ps_id,
+      item?.source_ps_id,
+      item?.display_ps_id,
+      item?.inventory_code,
+      item?.part_no,
+      item?.part_name,
+    ].some(value => /\[sr\]/i.test(String(value || '')));
   }
 
   function getPsType(item) {
@@ -435,10 +441,12 @@
     if (els.plannerFilter) els.plannerFilter.value = '';
     if (els.materialFilter) els.materialFilter.value = '';
     if (els.overdueOnly) els.overdueOnly.checked = false;
+    if (els.hideDirectPp) els.hideDirectPp.checked = true;
+    if (els.hideSrTags) els.hideSrTags.checked = false;
     if (els.completedOnly) els.completedOnly.checked = false;
     if (els.showCompleted) els.showCompleted.checked = false;
     state.page = 1;
-    render();
+    loadProcessSheets();
   }
 
   function filteredItems() {

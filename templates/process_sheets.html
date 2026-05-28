@@ -55,7 +55,7 @@
         </select>
         <label class="checkbox-label"><input type="checkbox" id="ps-overdue-only" /> Overdue Only</label>
         <label class="checkbox-label"><input type="checkbox" id="ps-hide-direct-pp" checked /> Hide Direct PP</label>
-        <label class="checkbox-label"><input type="checkbox" id="ps-hide-sr-tags" checked /> Hide [SR]</label>
+        <label class="checkbox-label"><input type="checkbox" id="ps-hide-sr-tags" /> Hide [SR]</label>
         <label class="checkbox-label" title="Include SO lines where qty shipped meets SO qty"><input type="checkbox" id="ps-show-completed" /> Show fully shipped</label>
         <label class="checkbox-label" title="Only SO lines where qty shipped meets SO qty"><input type="checkbox" id="ps-completed-only" /> Fully shipped only</label>
       </div>
@@ -100,5 +100,5 @@
 
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/process_sheets.js', v='shipped-status-20260520') }}"></script>
+<script src="{{ url_for('static', filename='js/process_sheets.js', v='sr-tag-detect-20260521') }}"></script>
 {% endblock %}

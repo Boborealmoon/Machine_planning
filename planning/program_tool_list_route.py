@@ -9,6 +9,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -17,7 +18,12 @@ from flask import Blueprint, jsonify, render_template, request
 program_tool_list_bp = Blueprint("program_tool_list", __name__)
 
 # Bump when sync response shape changes (visible in Network tab).
-SYNC_API_VERSION = 2
+SYNC_API_VERSION = 3
+
+# PostgREST upsert: requires migrations/add_planner_program_tools_upsert_unique_key.sql
+UPSERT_ON_CONFLICT = (
+    "part_no_erp,cnc_machine_no,operation_no,program_file,tool_list_files"
+)
 
 _PTL_SHEET_ID = "1e7_ahcp15jLHOKhX6W1b6TLUvbZr-wM5H_MzMzYXIXg"
 _PTL_SHEET_GID = 606390196
@@ -28,6 +34,8 @@ SUPABASE_COLUMNS = (
     "part_no_erp",
     "cnc_machine_no",
     "operation_no",
+    "operation_type",
+    "program_no",
     "program_file",
     "tool_list_files",
     "programmer_name",
@@ -193,14 +201,21 @@ def _merge_dedupe_row(existing: dict[str, Any], row: dict[str, Any]) -> dict[str
     return merged
 
 
+def _planner_program_tools_dedupe_key(row: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    """Natural key: same part + machine + op can have different programs (URLs)."""
+    return (
+        str(row.get("part_no_erp") or "").strip(),
+        str(row.get("cnc_machine_no") or "").strip(),
+        str(row.get("operation_no") or "").strip(),
+        str(row.get("program_file") or "").strip(),
+        str(row.get("tool_list_files") or "").strip(),
+    )
+
+
 def _dedupe_planner_program_tools_payload(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    merged: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     for row in rows:
-        key = (
-            str(row.get("part_no_erp") or "").strip(),
-            str(row.get("cnc_machine_no") or "").strip(),
-            str(row.get("operation_no") or "").strip(),
-        )
+        key = _planner_program_tools_dedupe_key(row)
         if not key[0]:
             continue
         existing = merged.get(key)
@@ -221,12 +236,15 @@ def _coerce_row_for_supabase_insert(row: dict[str, Any]) -> dict[str, Any]:
         "part_no_erp": str(row.get("part_no_erp") or "").strip(),
         "cnc_machine_no": str(row.get("cnc_machine_no") or "").strip(),
         "operation_no": str(row.get("operation_no") or "").strip(),
+        "operation_type": str(row.get("operation_type") or "").strip(),
+        "program_no": str(row.get("program_no") or "").strip(),
         "program_file": str(row.get("program_file") or "").strip(),
         "tool_list_files": str(row.get("tool_list_files") or "").strip(),
         "programmer_name": str(row.get("programmer_name") or "").strip(),
         "wo_machine": str(row.get("wo_machine") or "").strip(),
         "set_up_time": int(row.get("set_up_time") or DEFAULT_SET_UP_TIME),
         "cycle_time": cycle_time,
+        "synced_at": datetime.now(timezone.utc).isoformat(),
     }
     return out
 
@@ -236,50 +254,69 @@ def build_planner_program_tools_payload(
     *,
     part_no_erp_map: dict[str, str] | None = None,
     actual_machine_map: dict[tuple[str, str], str] | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Rows eligible for Supabase: both file URLs set and part_no_erp resolved."""
     part_no_erp_map = part_no_erp_map or {}
     actual_machine_map = actual_machine_map or {}
-    payload: list[dict[str, Any]] = []
+    stats: dict[str, int] = {
+        "skipped_missing_program_file": 0,
+        "skipped_missing_tool_list_files": 0,
+        "skipped_missing_part_no_erp": 0,
+        "deduped_away": 0,
+    }
+    candidates: list[dict[str, Any]] = []
 
     for r in rows:
         ps_no = r.get("ps_no") or ""
         part_no_erp = (part_no_erp_map.get(ps_no) or (r.get("part_number") or "")).strip()
         if not part_no_erp and ps_no:
             part_no_erp = ps_no.strip()
+        program_file = (r.get("program_file") or "").strip()
+        tool_list_files = (r.get("tool_list_files") or "").strip()
+
+        if not program_file:
+            stats["skipped_missing_program_file"] += 1
+            continue
+        if not tool_list_files:
+            stats["skipped_missing_tool_list_files"] += 1
+            continue
+        if not part_no_erp:
+            stats["skipped_missing_part_no_erp"] += 1
+            continue
+
         cnc_machine = (r.get("cnc_machine_no") or "").strip()
         op_no = (r.get("operation_no") or r.get("operation_no_2") or "").strip()
         op_type = (r.get("operation_type") or "").strip()
         stage = f"{op_type} {op_no}".strip() if op_no else op_type
         wo_machine = (actual_machine_map.get((part_no_erp, stage)) or "").strip()
-        program_file = (r.get("program_file") or "").strip()
-        tool_list_files = (r.get("tool_list_files") or "").strip()
         programmer_name = (r.get("programmer_name") or "").strip()
-        set_up_time = _set_up_time_from_row(r)
-        cycle_time = _cycle_time_from_row(r)
 
-        if not any(
-            [program_file, tool_list_files, part_no_erp, programmer_name, cnc_machine, wo_machine, op_no]
-        ):
-            continue
-
-        payload.append(
+        candidates.append(
             {
                 "part_no_erp": part_no_erp,
                 "cnc_machine_no": cnc_machine,
                 "operation_no": op_no,
+                "operation_type": op_type,
+                "program_no": (r.get("program_no") or "").strip(),
                 "program_file": program_file,
                 "tool_list_files": tool_list_files,
                 "programmer_name": programmer_name,
                 "wo_machine": wo_machine,
-                "set_up_time": set_up_time,
-                "cycle_time": cycle_time,
+                "set_up_time": _set_up_time_from_row(r),
+                "cycle_time": _cycle_time_from_row(r),
             }
         )
 
-    return _dedupe_planner_program_tools_payload(payload)
+    payload = _dedupe_planner_program_tools_payload(candidates)
+    stats["deduped_away"] = max(0, len(candidates) - len(payload))
+    return payload, stats
 
 
-def push_planner_program_tools_to_supabase(payload: list[dict[str, Any]]) -> dict[str, Any]:
+def push_planner_program_tools_to_supabase(
+    payload: list[dict[str, Any]],
+    *,
+    full_refresh: bool = False,
+) -> dict[str, Any]:
     import requests as req
 
     from db import supa_headers, supa_service_role_key, supa_url
@@ -298,7 +335,10 @@ def push_planner_program_tools_to_supabase(payload: list[dict[str, Any]]) -> dic
     out: dict[str, Any] = {
         "sync_api_version": SYNC_API_VERSION,
         "synced": 0,
+        "upserted": 0,
+        "mode": "full_refresh" if full_refresh else "upsert",
         "payload_columns": list(SUPABASE_COLUMNS),
+        "on_conflict": UPSERT_ON_CONFLICT,
         "supabase_host": urlparse(base).netloc or "",
         "using_service_role": bool(supa_service_role_key()),
     }
@@ -322,38 +362,48 @@ def push_planner_program_tools_to_supabase(payload: list[dict[str, Any]]) -> dic
     read_hdrs = {k: v for k, v in hdrs.items() if k.lower() != "prefer"}
     read_hdrs.setdefault("Accept", "application/json")
     col_probe = req.get(
-        f"{url}?select=cycle_time,set_up_time&limit=1",
+        f"{url}?select=cycle_time,set_up_time,operation_type,program_no&limit=1",
         headers=read_hdrs,
         timeout=30,
     )
     if not col_probe.ok:
         detail = (col_probe.text or col_probe.reason or "").strip()
-        if "cycle_time" in detail.lower():
+        detail_lower = detail.lower()
+        if "cycle_time" in detail_lower or "set_up_time" in detail_lower:
             raise RuntimeError(
                 "Supabase table planner_program_tools is missing cycle_time (and/or set_up_time). "
                 "Run migrations/add_planner_program_tools_set_up_cycle_time.sql in the SQL editor, "
                 "then reload the API schema (Project Settings → API → Reload schema)."
             )
+        if "operation_type" in detail_lower or "program_no" in detail_lower:
+            raise RuntimeError(
+                "Supabase table planner_program_tools is missing operation_type and/or program_no. "
+                "Run migrations/add_planner_program_tools_operation_type_program_no.sql in the SQL editor, "
+                "then reload the API schema."
+            )
         raise RuntimeError(
             f"Cannot read planner_program_tools ({col_probe.status_code}): {detail[:400]}"
         )
 
-    del_r = req.delete(url, headers=hdrs, params={"id": "gt.0"}, timeout=120)
-    if del_r.status_code not in (200, 204):
-        detail = (del_r.text or del_r.reason or "").strip()
-        if len(detail) > 500:
-            detail = detail[:500] + "…"
-        raise RuntimeError(
-            f"Supabase DELETE failed ({del_r.status_code}): {detail or 'check RLS and API key'}"
-        )
+    if full_refresh:
+        del_r = req.delete(url, headers=hdrs, params={"id": "gt.0"}, timeout=120)
+        if del_r.status_code not in (200, 204):
+            detail = (del_r.text or del_r.reason or "").strip()
+            if len(detail) > 500:
+                detail = detail[:500] + "…"
+            raise RuntimeError(
+                f"Supabase DELETE failed ({del_r.status_code}): {detail or 'check RLS and API key'}"
+            )
 
+    upsert_url = f"{url}?on_conflict={UPSERT_ON_CONFLICT}"
+    upsert_prefer = "resolution=merge-duplicates,return=minimal"
     batch_size = 500
-    synced = 0
+    upserted = 0
     for i in range(0, len(insert_rows), batch_size):
         batch = insert_rows[i : i + batch_size]
         r = req.post(
-            url,
-            headers={**hdrs, "Prefer": "return=minimal"},
+            upsert_url,
+            headers={**hdrs, "Prefer": upsert_prefer},
             json=batch,
             timeout=120,
         )
@@ -361,15 +411,28 @@ def push_planner_program_tools_to_supabase(payload: list[dict[str, Any]]) -> dic
             detail = (r.text or r.reason or "").strip()
             if len(detail) > 500:
                 detail = detail[:500] + "…"
-            if "cycle_time" in detail.lower():
+            detail_lower = detail.lower()
+            if (
+                "no unique" in detail_lower
+                or "on_conflict" in detail_lower
+                or "42p10" in detail_lower
+                or "unique constraint" in detail_lower
+            ):
+                raise RuntimeError(
+                    f"Supabase upsert requires unique index on ({UPSERT_ON_CONFLICT}). "
+                    "Run migrations/add_planner_program_tools_upsert_unique_key.sql in the SQL editor, "
+                    "then reload the API schema."
+                ) from None
+            if "cycle_time" in detail_lower:
                 raise RuntimeError(
                     f"Supabase rejected cycle_time ({r.status_code}): {detail}. "
                     "Apply migrations/add_planner_program_tools_set_up_cycle_time.sql and reload API schema."
                 )
-            raise RuntimeError(f"Supabase insert failed ({r.status_code}): {detail or 'Bad Request'}")
-        synced += len(batch)
+            raise RuntimeError(f"Supabase upsert failed ({r.status_code}): {detail or 'Bad Request'}")
+        upserted += len(batch)
 
-    out["synced"] = synced
+    out["synced"] = upserted
+    out["upserted"] = upserted
 
     peek_r = req.get(
         f"{url}?select=cycle_time,set_up_time,part_no_erp&cycle_time=not.is.null&limit=5",
@@ -463,8 +526,8 @@ def sync_tool_list_sheet_to_sqlite() -> dict[str, Any]:
     return {"synced": len(rows)}
 
 
-def sync_program_tool_list_to_supabase() -> dict[str, Any]:
-    """Build planner_program_tools rows from SQLite and push to Supabase (same as POST handler)."""
+def sync_program_tool_list_to_supabase(*, full_refresh: bool = False) -> dict[str, Any]:
+    """Build planner_program_tools rows from SQLite and upsert to Supabase."""
     from tool_list_db import init_db, fetch_all
 
     init_db()
@@ -474,6 +537,7 @@ def sync_program_tool_list_to_supabase() -> dict[str, Any]:
             "synced": 0,
             "message": "No rows in tool list",
             "sync_api_version": SYNC_API_VERSION,
+            "mode": "full_refresh" if full_refresh else "upsert",
         }
 
     ps_nos = list({r.get("ps_no") for r in rows if r.get("ps_no")})
@@ -481,7 +545,7 @@ def sync_program_tool_list_to_supabase() -> dict[str, Any]:
     part_no_erp_list = list(set(part_no_erp_map.values()))
     actual_machine_map = _actual_machine_map_for_parts(part_no_erp_list)
 
-    payload = build_planner_program_tools_payload(
+    payload, build_stats = build_planner_program_tools_payload(
         rows,
         part_no_erp_map=part_no_erp_map,
         actual_machine_map=actual_machine_map,
@@ -491,11 +555,18 @@ def sync_program_tool_list_to_supabase() -> dict[str, Any]:
             "synced": 0,
             "message": "No valid rows to sync",
             "sync_api_version": SYNC_API_VERSION,
+            "source_rows": len(rows),
+            "payload_rows": 0,
+            "mode": "full_refresh" if full_refresh else "upsert",
+            **build_stats,
         }
 
     with_cycle_time = sum(1 for p in payload if p.get("cycle_time") is not None)
-    result = push_planner_program_tools_to_supabase(payload)
+    result = push_planner_program_tools_to_supabase(payload, full_refresh=full_refresh)
     result["sync_api_version"] = SYNC_API_VERSION
+    result["source_rows"] = len(rows)
+    result["payload_rows"] = len(payload)
+    result.update(build_stats)
     result["with_cycle_time"] = with_cycle_time
     result["without_cycle_time"] = len(payload) - with_cycle_time
     if result.get("sample_payload") is None and payload:
@@ -551,20 +622,41 @@ def run_auto_program_tool_list_sync(logger: logging.Logger | None = None) -> Non
         if not (supa_url() or "").strip():
             log.debug("auto program-tool-list (supabase): skipped (no Supabase URL)")
             return
-        r = sync_program_tool_list_to_supabase()
+        r = sync_program_tool_list_to_supabase(full_refresh=False)
         if r.get("message") and r.get("synced", 0) == 0:
             log.info("auto program-tool-list (supabase): %s", r["message"])
         else:
             log.info(
-                "auto program-tool-list (supabase): synced=%s with_cycle_time=%s host=%s",
+                "auto program-tool-list (supabase): upserted=%s payload=%s "
+                "skipped_prog=%s skipped_tool=%s skipped_part=%s deduped=%s host=%s",
                 r.get("synced"),
-                r.get("with_cycle_time"),
+                r.get("payload_rows"),
+                r.get("skipped_missing_program_file", 0),
+                r.get("skipped_missing_tool_list_files", 0),
+                r.get("skipped_missing_part_no_erp", 0),
+                r.get("deduped_away", 0),
                 r.get("supabase_host") or "",
             )
         for w in r.get("warnings") or []:
             log.warning("auto program-tool-list (supabase): %s", w)
     except Exception as e:
         log.error("auto program-tool-list (supabase) failed: %s", e)
+        return
+
+    try:
+        from planning.cycle_time_master_import import import_new_from_program_tools
+
+        imp = import_new_from_program_tools()
+        if imp.get("error"):
+            log.warning("auto master cycle-times import-new: %s", imp["error"])
+        else:
+            log.info(
+                "auto master cycle-times import-new: inserted=%s skipped_existing=%s",
+                imp.get("inserted"),
+                imp.get("skipped_existing"),
+            )
+    except Exception as e:
+        log.error("auto master cycle-times import-new failed: %s", e)
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -638,7 +730,11 @@ def api_ptl_supabase_target():
     out: dict = {
         "table": table_name,
         "payload_columns": list(SUPABASE_COLUMNS),
-        "methods": ["DELETE (clear ids > 0)", "POST (bulk insert JSON array)"],
+        "methods": [
+            "POST upsert (?on_conflict=natural key, Prefer: resolution=merge-duplicates)",
+            "POST ?refresh=1 one-time DELETE all then upsert valid rows only",
+        ],
+        "on_conflict": UPSERT_ON_CONFLICT,
         "rest_base_url": base or None,
         "resource_url": resource or None,
         "hostname": hostname or None,
@@ -694,10 +790,21 @@ def api_ptl_supabase_target():
     return jsonify(out)
 
 
+def _parse_full_refresh_flag() -> bool:
+    if request.args.get("refresh", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    body = request.get_json(silent=True) or {}
+    if isinstance(body, dict):
+        val = body.get("refresh")
+        if val is True or str(val).strip().lower() in ("1", "true", "yes"):
+            return True
+    return False
+
+
 @program_tool_list_bp.post("/api/program-tool-list/sync-to-supabase")
 def api_ptl_sync_to_supabase():
     try:
-        return jsonify(sync_program_tool_list_to_supabase())
+        return jsonify(sync_program_tool_list_to_supabase(full_refresh=_parse_full_refresh_flag()))
 
     except Exception as e:
         print(f"❌ SYNC ERROR: {e}", file=sys.stderr)

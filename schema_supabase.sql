@@ -451,6 +451,8 @@ CREATE TABLE planner_program_tools (
     cnc_machine_no TEXT,
     wo_machine TEXT,
     operation_no TEXT,
+    operation_type TEXT,
+    program_no TEXT,
     set_up_time INTEGER NOT NULL DEFAULT 180,
     cycle_time INTEGER,
     synced_at TIMESTAMPTZ DEFAULT NOW()
@@ -458,6 +460,15 @@ CREATE TABLE planner_program_tools (
 
 CREATE INDEX idx_ptl_part ON planner_program_tools(part_no_erp);
 CREATE INDEX idx_ptl_programmer ON planner_program_tools(programmer_name);
+
+-- Upsert natural key (see migrations/add_planner_program_tools_upsert_unique_key.sql)
+CREATE UNIQUE INDEX uq_planner_program_tools_natural_key ON planner_program_tools (
+    part_no_erp,
+    cnc_machine_no,
+    operation_no,
+    program_file,
+    tool_list_files
+);
 
 -- Cached ERP vs Sheet cycle times — apply migration:
 --   migrations/create_stg_cycle_time_comparison.sql

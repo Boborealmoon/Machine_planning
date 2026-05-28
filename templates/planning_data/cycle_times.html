@@ -3,45 +3,124 @@
 {% block content %}
 
 <style>
+.ct-page { padding: 24px 28px 40px; max-width: 1680px; margin: 0 auto; }
+
 .ct-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: 20px;
+  margin-bottom: 20px;
   flex-wrap: wrap;
 }
-.ct-title { font-size: 20px; font-weight: 700; color: var(--text); }
-.ct-sub { font-size: 13px; color: var(--text2); max-width: 640px; margin-top: 6px; line-height: 1.45; }
+.ct-title { font-size: 22px; font-weight: 700; color: var(--text); letter-spacing: -0.02em; }
+.ct-sub {
+  font-size: 13px;
+  color: var(--text2);
+  max-width: 720px;
+  margin-top: 8px;
+  line-height: 1.5;
+}
+.ct-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+.ct-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.ct-chip {
+  font-size: 12px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--text2);
+}
+.ct-chip strong { color: var(--text); font-weight: 600; }
 
 .ct-toolbar {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
   align-items: center;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  background: #fff;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
 }
 .ct-search {
   flex: 1;
-  min-width: 200px;
-  max-width: 360px;
-  padding: 8px 12px;
+  min-width: 220px;
+  max-width: 400px;
+  padding: 8px 12px 8px 36px;
   border: 1.5px solid var(--border);
   border-radius: 8px;
   font: inherit;
   font-size: 13px;
+  background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23999' stroke-width='2'%3E%3Ccircle cx='7' cy='7' r='5'/%3E%3Cpath d='M11 11l3 3'/%3E%3C/svg%3E") 11px center no-repeat;
 }
+.ct-search:focus { outline: none; border-color: #3b82f6; }
+
+.ct-filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.ct-filter-label { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.05em; margin-right: 4px; }
+.ct-chip-btn {
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border);
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text2);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.ct-chip-btn:hover { background: var(--bg2); }
+.ct-chip-btn.active { background: #1a1c1d; color: #fff; border-color: #1a1c1d; }
+
+.ct-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text2);
+}
+.ct-pager button {
+  padding: 5px 10px;
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ct-pager button:disabled { opacity: 0.4; cursor: default; }
+
+.ct-banner {
+  display: none;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.ct-banner.show { display: block; }
+.ct-banner--error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+.ct-banner--loading { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
+.ct-banner--ok { background: #ecfdf5; color: #166534; border: 1px solid #86efac; }
 
 .ct-table-outer {
   background: #fff;
   border: 1.5px solid var(--border);
   border-radius: 10px;
   overflow: auto;
-  max-width: 100%;
+  max-height: calc(100vh - 280px);
 }
 .ct-table {
   width: 100%;
-  min-width: 1520px;
+  min-width: 1280px;
   border-collapse: collapse;
 }
 .ct-table thead th {
@@ -53,117 +132,203 @@
   text-transform: uppercase;
   color: var(--text2);
   border-bottom: 1.5px solid var(--border);
-  background: var(--bg2);
+  background: #f8fafc;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.ct-table thead tr.ct-group-row th {
+  font-size: 9px;
+  padding: 6px 12px;
+  background: #f1f5f9;
+  color: var(--text3);
+  border-bottom: 1px solid var(--border);
+  top: 0;
+}
+.ct-table thead tr.ct-cols-row th { top: 28px; }
+
+.ct-table tbody tr { border-bottom: 1px solid #f0f0f0; }
+.ct-table tbody tr:hover td { background: #fafbfc; }
+.ct-table td { padding: 8px 12px; font-size: 13px; vertical-align: middle; }
+
+.ct-sticky-part {
+  position: sticky;
+  left: 0;
+  background: #fff;
+  z-index: 1;
+  border-right: 1px solid #eee;
+  min-width: 120px;
+}
+.ct-table tbody tr:hover td.ct-sticky-part { background: #fafbfc; }
+
+.ct-part { font-weight: 600; color: #111; }
+.ct-bom { font-size: 11px; color: var(--text3); font-family: ui-monospace, monospace; }
+.ct-desc { color: var(--text2); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ct-stage-pill {
+  display: inline-block;
+  min-width: 22px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12px;
+}
+.ct-stage-unmatched { color: var(--text3); font-weight: 400; }
+
+.ct-op-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.ct-op-badge--milling { background: #dbeafe; color: #1e40af; }
+.ct-op-badge--turning { background: #dcfce7; color: #166534; }
+.ct-op-badge--turnmill { background: #f3e8ff; color: #6b21a8; }
+.ct-op-badge--other { background: #f3f4f6; color: #4b5563; }
+
+.ct-op-no { font-variant-numeric: tabular-nums; font-weight: 600; }
+.ct-program-no { font-size: 12px; color: #334155; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ct-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 5px;
+  background: #f1f5f9;
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ct-table tbody tr {
-  border-bottom: 1px solid var(--border);
-}
-.ct-table tbody tr:hover { background: var(--bg2); }
-.ct-table td { padding: 9px 12px; font-size: 13px; vertical-align: middle; }
+.ct-link:hover { background: #e2e8f0; }
+.ct-link--missing { color: var(--text3); background: transparent; pointer-events: none; }
+
 .ct-num { text-align: right; font-variant-numeric: tabular-nums; }
-
-.btn { display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:6px; border:1.5px solid transparent; font:inherit; font-size:13px; font-weight:600; cursor:pointer; transition:all 0.15s; white-space:nowrap; }
-.btn-primary   { background:#1a1c1d; color:#fff; border-color:#1a1c1d; }
-.btn-primary:hover { background:#2d2f31; }
-.btn-ghost     { background:#fff; color:var(--text); border-color:var(--border); }
-.btn-ghost:hover { background:var(--bg2); }
-.btn-danger    { background:#fff; color:#b91c1c; border-color:#fca5a5; }
-.btn-danger:hover { background:#fee2e2; }
-.btn-sm { padding:5px 10px; font-size:12px; }
-.btn-icon { padding:5px 8px; }
-
-.row-edit-form { display:none; }
-.row-edit-form.open { display:table-row; }
-.row-edit-form td { padding: 12px; background: #f8fafc; border-bottom: 2px solid #3b82f6; }
-.edit-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 10px;
-  align-items: end;
-}
-.edit-field label { display:block; font-size:10px; font-weight:600; color:var(--text2); margin-bottom:4px; text-transform:uppercase; letter-spacing:0.04em; }
-.edit-field input {
-  width: 100%;
-  padding: 7px 10px;
+.ct-time-input {
+  width: 68px;
+  padding: 5px 8px;
   border: 1.5px solid var(--border);
   border-radius: 6px;
   font: inherit;
   font-size: 13px;
+  text-align: right;
 }
-.edit-field input:focus { outline: none; border-color: #3b82f6; }
-.edit-span2 { grid-column: span 2; }
-.edit-actions { display:flex; gap:8px; padding-bottom:1px; align-items: center; }
+.ct-time-input:focus { outline: none; border-color: #3b82f6; }
+.ct-time-input.ct-dirty { border-color: #f59e0b; background: #fffbeb; }
+tr.ct-row-dirty td { background: #fffbeb !important; }
 
-.modal-backdrop {
-  display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35);
-  z-index:200; align-items:center; justify-content:center;
-}
+.btn { display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:6px; border:1.5px solid transparent; font:inherit; font-size:13px; font-weight:600; cursor:pointer; transition:all 0.15s; white-space:nowrap; }
+.btn-primary { background:#1a1c1d; color:#fff; border-color:#1a1c1d; }
+.btn-primary:hover { background:#2d2f31; }
+.btn-ghost { background:#fff; color:var(--text); border-color:var(--border); }
+.btn-ghost:hover { background:var(--bg2); }
+.btn-warn { background:#fff; color:#b45309; border-color:#fcd34d; }
+.btn-warn:hover { background:#fffbeb; }
+.btn-danger { background:#fff; color:#b91c1c; border-color:#fca5a5; }
+.btn-sm { padding:5px 10px; font-size:12px; }
+.btn-icon { padding:5px 8px; min-width: 32px; justify-content: center; }
+
+.row-edit-form { display:none; }
+.row-edit-form.open { display:table-row; }
+.row-edit-form td { padding: 14px 12px; background: #f8fafc; border-bottom: 2px solid #3b82f6; }
+.edit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-items: end; }
+.edit-field label { display:block; font-size:10px; font-weight:600; color:var(--text2); margin-bottom:4px; text-transform:uppercase; }
+.edit-field input { width:100%; padding:7px 10px; border:1.5px solid var(--border); border-radius:6px; font:inherit; font-size:13px; }
+.edit-span2 { grid-column: span 2; }
+.edit-actions { display:flex; gap:8px; }
+
+.modal-backdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:200; align-items:center; justify-content:center; }
 .modal-backdrop.open { display:flex; }
-.modal-box {
-  background:#fff; border-radius:12px; padding:28px 32px;
-  width: min(640px, 95vw); max-height: 90vh; overflow-y: auto;
-  box-shadow:0 20px 50px rgba(0,0,0,0.18);
-}
+.modal-box { background:#fff; border-radius:12px; padding:28px 32px; width:min(640px,95vw); max-height:90vh; overflow-y:auto; box-shadow:0 20px 50px rgba(0,0,0,0.18); }
 .modal-title { font-size:17px; font-weight:700; margin-bottom:18px; }
 .modal-field { margin-bottom:12px; }
-.modal-field label { display:block; font-size:11px; font-weight:600; color:var(--text2); margin-bottom:5px; text-transform:uppercase; letter-spacing:0.04em; }
-.modal-field input {
-  width:100%; padding:8px 11px;
-  border:1.5px solid var(--border); border-radius:6px;
-  font:inherit; font-size:14px;
-}
-.modal-field input:focus { outline:none; border-color:#3b82f6; }
+.modal-field label { display:block; font-size:11px; font-weight:600; color:var(--text2); margin-bottom:5px; text-transform:uppercase; }
+.modal-field input { width:100%; padding:8px 11px; border:1.5px solid var(--border); border-radius:6px; font:inherit; font-size:14px; }
 .modal-actions { display:flex; gap:10px; justify-content:flex-end; margin-top:20px; }
 .error-msg { color:#b91c1c; font-size:12px; margin-top:8px; display:none; }
 .error-msg.show { display:block; }
 
-#toast { position:fixed; bottom:24px; right:24px; background:#1a1c1d; color:#fff; padding:10px 18px; border-radius:8px; font-size:13px; font-weight:500; box-shadow:0 4px 16px rgba(0,0,0,0.25); z-index:999; opacity:0; transition:opacity 0.2s; pointer-events:none; }
+#toast { position:fixed; bottom:24px; right:24px; background:#1a1c1d; color:#fff; padding:10px 18px; border-radius:8px; font-size:13px; font-weight:500; box-shadow:0 4px 16px rgba(0,0,0,0.25); z-index:999; opacity:0; transition:opacity 0.2s; pointer-events:none; max-width: 420px; }
 #toast.show { opacity:1; }
-.empty-row td { text-align:center; color:var(--text3); padding:32px; font-size:13px; }
-.ct-stat { font-size:12px; color:var(--text2); margin-bottom:12px; }
+.empty-row td { text-align:center; color:var(--text3); padding:40px 20px; font-size:13px; }
 </style>
 
-<div class="page" style="padding:28px 32px; max-width:1480px; margin:0 auto;">
+<div class="ct-page">
 
   <div class="ct-header">
     <div>
       <div class="ct-title">Master cycle times</div>
       <p class="ct-sub">
-        Each row is identified by <strong>ID</strong> (serial). The same part can have many BOM codes,
-        programs, or stages. Times are minutes (cycle per piece, setup per batch).
+        Your edits to cycle/setup times are kept. <strong>Sync from sheet</strong> upserts the program/tool list
+        and adds <em>new</em> master rows only — it does not replace rows you already have.
+        <strong>Refresh table</strong> only reloads this page from the database.
       </p>
     </div>
-    <button class="btn btn-primary" type="button" onclick="openAddModal()">+ Add row</button>
+    <div class="ct-actions">
+      <button class="btn btn-ghost" type="button" id="ct-refresh-btn" onclick="loadRows()"
+        title="Re-fetch rows from Supabase (no sheet sync)">Refresh table</button>
+      <button class="btn btn-primary" type="button" id="ct-sync-btn" onclick="syncFromSheet()"
+        title="Sheet → program tools (upsert) → insert new master rows only">Sync from sheet</button>
+      <button class="btn btn-primary" type="button" onclick="openAddModal()">+ Add row</button>
+    </div>
   </div>
 
+  <div id="ct-banner" class="ct-banner" role="status"></div>
+
+  <div class="ct-stats" id="ct-stats"></div>
+
   <div class="ct-toolbar">
-    <input type="search" id="ct-filter" class="ct-search" placeholder="Filter by part, BOM, description, op type…" autocomplete="off" />
+    <input type="search" id="ct-filter" class="ct-search" placeholder="Search part, BOM, program, stage…" autocomplete="off" />
+    <div class="ct-filters">
+      <span class="ct-filter-label">Op type</span>
+      <button type="button" class="ct-chip-btn active" data-op="">All</button>
+      <button type="button" class="ct-chip-btn" data-op="Turning">Turning</button>
+      <button type="button" class="ct-chip-btn" data-op="Milling">Milling</button>
+      <button type="button" class="ct-chip-btn" data-op="Turnmill">Turnmill</button>
+    </div>
+    <div class="ct-pager" id="ct-pager">
+      <button type="button" id="ct-prev" disabled>←</button>
+      <span id="ct-page-info">—</span>
+      <button type="button" id="ct-next" disabled>→</button>
+    </div>
   </div>
-  <div class="ct-stat" id="ct-stat"></div>
 
   <div class="ct-table-outer">
     <table class="ct-table" id="ct-table">
       <thead>
-        <tr>
-          <th>ID</th>
-          <th>BOM code</th>
-          <th>Part no <span style="font-weight:500;text-transform:none">(inv.)</span></th>
+        <tr class="ct-group-row">
+          <th colspan="3">Part</th>
+          <th colspan="2">ERP stage</th>
+          <th colspan="2">Operation</th>
+          <th colspan="3">Programs</th>
+          <th colspan="2">Times (min)</th>
+          <th colspan="1"></th>
+        </tr>
+        <tr class="ct-cols-row">
+          <th class="ct-sticky-part">Part no</th>
+          <th>BOM</th>
           <th>Description</th>
           <th>Stage #</th>
           <th>Stage name</th>
-          <th>Op no</th>
-          <th>Op type</th>
+          <th>Op #</th>
+          <th>Type</th>
           <th>Program #</th>
-          <th>Program file</th>
-          <th>Tool list file</th>
-          <th style="text-align:right">Cycle min/pc</th>
-          <th style="text-align:right">Setup min</th>
-          <th style="text-align:right;width:108px">Actions</th>
+          <th>Program</th>
+          <th>Tool list</th>
+          <th style="text-align:right">Cycle</th>
+          <th style="text-align:right">Setup</th>
+          <th style="text-align:right;width:100px"></th>
         </tr>
       </thead>
       <tbody id="ct-tbody">
-        <tr class="empty-row"><td colspan="14">Loading…</td></tr>
+        <tr class="empty-row"><td colspan="13">Loading…</td></tr>
       </tbody>
     </table>
   </div>
@@ -172,54 +337,18 @@
 <div class="modal-backdrop" id="add-modal">
   <div class="modal-box">
     <div class="modal-title">Add cycle time row</div>
-    <div class="modal-field">
-      <label>BOM code <span style="font-weight:400;text-transform:none">(optional)</span></label>
-      <input id="add-bom" type="text" autocomplete="off" />
-    </div>
-    <div class="modal-field">
-      <label>Part no (inventory code)</label>
-      <input id="add-part" type="text" autocomplete="off" />
-    </div>
-    <div class="modal-field">
-      <label>Part description</label>
-      <input id="add-desc" type="text" autocomplete="off" />
-    </div>
-    <div class="modal-field">
-      <label>Stage no</label>
-      <input id="add-stage" type="number" step="1" />
-    </div>
-    <div class="modal-field">
-      <label>Stage name</label>
-      <input id="add-stagename" type="text" autocomplete="off" />
-    </div>
-    <div class="modal-field">
-      <label>Op no <span style="font-weight:400;text-transform:none">(optional)</span></label>
-      <input id="add-opno" type="number" step="1" placeholder="" />
-    </div>
-    <div class="modal-field">
-      <label>Op type</label>
-      <input id="add-optype" type="text" placeholder="e.g. Turning 1" autocomplete="off" />
-    </div>
-    <div class="modal-field">
-      <label>Program no</label>
-      <input id="add-programno" type="text" autocomplete="off" />
-    </div>
-    <div class="modal-field">
-      <label>Program file</label>
-      <input id="add-programfile" type="text" autocomplete="off" />
-    </div>
-    <div class="modal-field">
-      <label>Tool list file</label>
-      <input id="add-toollist" type="text" autocomplete="off" />
-    </div>
-    <div class="modal-field">
-      <label>Cycle time (min/pc)</label>
-      <input id="add-cycle" type="number" step="0.01" min="0" value="0" />
-    </div>
-    <div class="modal-field">
-      <label>Set up time (min)</label>
-      <input id="add-setup" type="number" step="0.01" min="0" value="0" />
-    </div>
+    <div class="modal-field"><label>BOM code</label><input id="add-bom" type="text" /></div>
+    <div class="modal-field"><label>Part no</label><input id="add-part" type="text" /></div>
+    <div class="modal-field"><label>Description</label><input id="add-desc" type="text" /></div>
+    <div class="modal-field"><label>Stage no (ERP sequence)</label><input id="add-stage" type="number" step="1" /></div>
+    <div class="modal-field"><label>Stage name</label><input id="add-stagename" type="text" placeholder="e.g. Milling 20" /></div>
+    <div class="modal-field"><label>Op no</label><input id="add-opno" type="number" step="1" placeholder="20, 30, 40" /></div>
+    <div class="modal-field"><label>Op type</label><input id="add-optype" type="text" placeholder="Turning, Milling, Turnmill" /></div>
+    <div class="modal-field"><label>Program no</label><input id="add-programno" type="text" /></div>
+    <div class="modal-field"><label>Program file URL</label><input id="add-programfile" type="text" /></div>
+    <div class="modal-field"><label>Tool list URL</label><input id="add-toollist" type="text" /></div>
+    <div class="modal-field"><label>Cycle min/pc</label><input id="add-cycle" type="number" step="0.01" min="0" value="0" /></div>
+    <div class="modal-field"><label>Setup min</label><input id="add-setup" type="number" step="0.01" min="0" value="0" /></div>
     <div class="error-msg" id="add-error"></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" type="button" onclick="closeAddModal()">Cancel</button>
@@ -231,9 +360,13 @@
 <div id="toast"></div>
 
 <script>
+const PAGE_SIZE = 75;
+
 let allRows = [];
 let editingId = null;
 let filterTerm = '';
+let opTypeFilter = '';
+let currentPage = 1;
 
 function esc(v) {
   return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -250,36 +383,175 @@ async function api(method, url, body) {
   return data;
 }
 
+function setBanner(msg, kind) {
+  const el = document.getElementById('ct-banner');
+  el.textContent = msg || '';
+  el.className = 'ct-banner' + (msg ? ` show ct-banner--${kind || 'error'}` : '');
+}
+
 function toast(msg, isError) {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.style.background = isError ? '#b91c1c' : '#1a1c1d';
   el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 2800);
+  setTimeout(() => el.classList.remove('show'), 3200);
+}
+
+function opBadgeClass(opType) {
+  const t = String(opType || '').toLowerCase();
+  if (t.startsWith('mill')) return 'ct-op-badge--milling';
+  if (t.startsWith('turn') && t.includes('mill')) return 'ct-op-badge--turnmill';
+  if (t.startsWith('turn')) return 'ct-op-badge--turning';
+  return 'ct-op-badge--other';
+}
+
+function driveLink(url, label) {
+  const u = String(url || '').trim();
+  if (!u) return `<span class="ct-link ct-link--missing">—</span>`;
+  const safe = esc(u);
+  return `<a class="ct-link" href="${safe}" target="_blank" rel="noopener" title="${safe}">${esc(label)}</a>`;
 }
 
 function rowMatchesFilter(r) {
+  if (opTypeFilter) {
+    const ot = String(r.op_type || '').toLowerCase();
+    if (!ot.startsWith(opTypeFilter.toLowerCase())) return false;
+  }
   if (!filterTerm) return true;
-  const t = filterTerm;
   const hay = [
-    r.id, r.bom_code, r.part_no, r.part_description, r.stage_no, r.stage_name,
+    r.bom_code, r.part_no, r.part_description, r.stage_no, r.stage_name,
     r.op_no, r.op_type, r.program_no, r.program_file, r.tool_list_file,
   ].map(x => String(x ?? '').toLowerCase()).join(' ');
-  return hay.includes(t);
+  return hay.includes(filterTerm);
 }
 
 function visibleRows() {
   return allRows.filter(rowMatchesFilter);
 }
 
+function totalPages() {
+  return Math.max(1, Math.ceil(visibleRows().length / PAGE_SIZE));
+}
+
+function pageRows() {
+  const rows = visibleRows();
+  const start = (currentPage - 1) * PAGE_SIZE;
+  return rows.slice(start, start + PAGE_SIZE);
+}
+
+function renderStats() {
+  const total = allRows.length;
+  const shown = visibleRows().length;
+  const noBom = allRows.filter(r => !r.stage_no || Number(r.stage_no) === 0).length;
+  const el = document.getElementById('ct-stats');
+  el.innerHTML = `
+    <span class="ct-chip"><strong>${total}</strong> master rows</span>
+    <span class="ct-chip"><strong>${shown}</strong> matching filter</span>
+    ${noBom ? `<span class="ct-chip"><strong>${noBom}</strong> without ERP stage #</span>` : ''}
+  `;
+}
+
+function updatePager() {
+  const tp = totalPages();
+  if (currentPage > tp) currentPage = tp;
+  document.getElementById('ct-page-info').textContent =
+    shownCount() ? `Page ${currentPage} / ${tp}` : 'No rows';
+  document.getElementById('ct-prev').disabled = currentPage <= 1;
+  document.getElementById('ct-next').disabled = currentPage >= tp;
+}
+
+function shownCount() {
+  return visibleRows().length;
+}
+
+async function syncFromSheet() {
+  const btn = document.getElementById('ct-sync-btn');
+  btn.disabled = true;
+  setBanner('Syncing sheet → program tools (upsert) → new master rows only…', 'loading');
+  try {
+    const result = await api('POST', '/api/planner/cycle-times/sync');
+    const msg = result.message || 'Sync complete.';
+    setBanner(msg, 'ok');
+    toast(msg);
+    await loadRows();
+  } catch (e) {
+    setBanner(`Sync failed: ${e.message}`, 'error');
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function loadRows() {
+  const refreshBtn = document.getElementById('ct-refresh-btn');
+  const syncBtn = document.getElementById('ct-sync-btn');
+  setBanner('Loading…', 'loading');
+  [refreshBtn, syncBtn].forEach(b => { if (b) b.disabled = true; });
   try {
     const data = await api('GET', '/api/planner/cycle-times');
     allRows = data.rows || [];
+    setBanner('');
+    if (!allRows.length) {
+      setBanner('Table is empty. Click Sync from sheet to add rows.', 'error');
+    }
+    currentPage = 1;
     render();
   } catch (e) {
+    allRows = [];
+    setBanner(`Could not load: ${e.message}`, 'error');
     document.getElementById('ct-tbody').innerHTML =
-      `<tr class="empty-row"><td colspan="14" style="color:#b91c1c">Could not load data: ${esc(e.message)}. Run migrations/create_planner_cycle_time_master.sql (or alter_planner_cycle_time_master_serial_and_programs.sql to upgrade).</td></tr>`;
+      `<tr class="empty-row"><td colspan="13">${esc(e.message)}</td></tr>`;
+  } finally {
+    [refreshBtn, syncBtn].forEach(b => { if (b) b.disabled = false; });
+  }
+}
+
+function markRowDirty(id) {
+  document.getElementById(`row-${id}`)?.classList.add('ct-row-dirty');
+  document.getElementById(`t-cycle-${id}`)?.classList.add('ct-dirty');
+  document.getElementById(`t-setup-${id}`)?.classList.add('ct-dirty');
+}
+
+function markRowClean(id) {
+  document.getElementById(`row-${id}`)?.classList.remove('ct-row-dirty');
+  document.getElementById(`t-cycle-${id}`)?.classList.remove('ct-dirty');
+  document.getElementById(`t-setup-${id}`)?.classList.remove('ct-dirty');
+}
+
+function bindTimeInputs(id) {
+  ['t-cycle', 't-setup'].forEach(prefix => {
+    const el = document.getElementById(`${prefix}-${id}`);
+    if (!el || el.dataset.bound) return;
+    el.dataset.bound = '1';
+    el.addEventListener('input', () => markRowDirty(id));
+    el.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); saveRowTimes(id); }
+    });
+  });
+}
+
+async function saveRowTimes(id) {
+  const cycleEl = document.getElementById(`t-cycle-${id}`);
+  const setupEl = document.getElementById(`t-setup-${id}`);
+  const saveBtn = document.getElementById(`t-save-${id}`);
+  if (!cycleEl || !setupEl) return;
+  if (saveBtn) saveBtn.disabled = true;
+  try {
+    const updated = await api('PATCH', `/api/planner/cycle-times/${id}`, {
+      cycle_time: cycleEl.value,
+      set_up_time: setupEl.value,
+    });
+    const row = allRows.find(x => x.id === id);
+    if (row) {
+      row.cycle_time = updated.cycle_time ?? cycleEl.value;
+      row.set_up_time = updated.set_up_time ?? setupEl.value;
+    }
+    markRowClean(id);
+    toast('Saved');
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
   }
 }
 
@@ -289,101 +561,73 @@ function fmtNum(n) {
   return Number.isFinite(x) ? String(x) : '';
 }
 
+function stageCell(r) {
+  const sn = Number(r.stage_no);
+  if (!sn) {
+    return `<span class="ct-stage-pill ct-stage-unmatched" title="No ERP BOM match">—</span>`;
+  }
+  return `<span class="ct-stage-pill">${esc(sn)}</span>`;
+}
+
 function render() {
-  const rows = visibleRows();
+  renderStats();
+  updatePager();
+  const rows = pageRows();
   const tbody = document.getElementById('ct-tbody');
-  document.getElementById('ct-stat').textContent =
-    filterTerm
-      ? `Showing ${rows.length} of ${allRows.length} rows`
-      : `${allRows.length} row(s)`;
 
   if (!allRows.length) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="14">No rows yet. Add one with <strong>+ Add row</strong>.</td></tr>';
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="13">No rows. Click <strong>Sync from sheet</strong> to add from the program/tool list.</td></tr>';
     return;
   }
-  if (!rows.length) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="14">No rows match your filter.</td></tr>';
+  if (!visibleRows().length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="13">No rows match your filters.</td></tr>';
     return;
-  }
-
-  function cellEllipsis(val, maxW) {
-    const s = esc(val);
-    return `<td style="color:var(--text2);max-width:${maxW}px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${s}">${s || '—'}</td>`;
   }
 
   tbody.innerHTML = rows.map(r => {
     const id = r.id;
+    const opType = r.op_type || '';
     return `
     <tr id="row-${id}">
-      <td style="font-variant-numeric:tabular-nums;color:var(--text3);font-size:12px">${esc(id)}</td>
-      <td><strong>${esc(r.bom_code || '—')}</strong></td>
-      <td>${esc(r.part_no)}</td>
-      ${cellEllipsis(r.part_description, 200)}
-      <td>${esc(r.stage_no)}</td>
+      <td class="ct-sticky-part">
+        <div class="ct-part">${esc(r.part_no)}</div>
+      </td>
+      <td><span class="ct-bom">${esc(r.bom_code || '—')}</span></td>
+      <td class="ct-desc" title="${esc(r.part_description)}">${esc(r.part_description || '—')}</td>
+      <td>${stageCell(r)}</td>
       <td>${esc(r.stage_name || '—')}</td>
-      <td>${r.op_no != null ? esc(r.op_no) : '—'}</td>
-      <td>${esc(r.op_type || '—')}</td>
-      ${cellEllipsis(r.program_no, 90)}
-      ${cellEllipsis(r.program_file, 140)}
-      ${cellEllipsis(r.tool_list_file, 140)}
-      <td class="ct-num">${esc(fmtNum(r.cycle_time))}</td>
-      <td class="ct-num">${esc(fmtNum(r.set_up_time))}</td>
+      <td class="ct-op-no">${r.op_no != null ? esc(r.op_no) : '—'}</td>
+      <td>${opType ? `<span class="ct-op-badge ${opBadgeClass(opType)}">${esc(opType)}</span>` : '—'}</td>
+      <td><span class="ct-program-no" title="${esc(r.program_no)}">${esc(r.program_no || '—')}</span></td>
+      <td>${driveLink(r.program_file, 'Program')}</td>
+      <td>${driveLink(r.tool_list_file, 'Tools')}</td>
+      <td class="ct-num">
+        <input class="ct-time-input" id="t-cycle-${id}" type="number" step="0.01" min="0" value="${esc(fmtNum(r.cycle_time))}">
+      </td>
+      <td class="ct-num">
+        <input class="ct-time-input" id="t-setup-${id}" type="number" step="0.01" min="0" value="${esc(fmtNum(r.set_up_time))}">
+      </td>
       <td style="text-align:right;white-space:nowrap">
-        <button type="button" class="btn btn-ghost btn-sm btn-icon" title="Edit" onclick="openEdit(${id})">✏</button>
-        <button type="button" class="btn btn-danger btn-sm btn-icon" title="Delete" onclick="deleteRow(${id})">🗑</button>
+        <button type="button" class="btn btn-primary btn-sm" id="t-save-${id}" onclick="saveRowTimes(${id})">Save</button>
+        <button type="button" class="btn btn-ghost btn-sm btn-icon" onclick="openEdit(${id})" title="Edit">✎</button>
+        <button type="button" class="btn btn-danger btn-sm btn-icon" onclick="deleteRow(${id})" title="Delete">×</button>
       </td>
     </tr>
     <tr class="row-edit-form" id="edit-row-${id}">
-      <td colspan="14">
+      <td colspan="13">
         <div class="edit-grid">
-          <div class="edit-field">
-            <label>BOM code</label>
-            <input id="e-bom-${id}" type="text" value="${esc(r.bom_code)}">
-          </div>
-          <div class="edit-field">
-            <label>Part no</label>
-            <input id="e-part-${id}" type="text" value="${esc(r.part_no)}">
-          </div>
-          <div class="edit-field edit-span2">
-            <label>Description</label>
-            <input id="e-desc-${id}" type="text" value="${esc(r.part_description)}">
-          </div>
-          <div class="edit-field">
-            <label>Stage no</label>
-            <input id="e-stage-${id}" type="number" step="1" value="${esc(r.stage_no)}">
-          </div>
-          <div class="edit-field">
-            <label>Stage name</label>
-            <input id="e-stagename-${id}" type="text" value="${esc(r.stage_name)}">
-          </div>
-          <div class="edit-field">
-            <label>Op no</label>
-            <input id="e-opno-${id}" type="number" step="1" value="${r.op_no != null ? esc(r.op_no) : ''}">
-          </div>
-          <div class="edit-field">
-            <label>Op type</label>
-            <input id="e-optype-${id}" type="text" value="${esc(r.op_type)}">
-          </div>
-          <div class="edit-field">
-            <label>Program no</label>
-            <input id="e-programno-${id}" type="text" value="${esc(r.program_no)}">
-          </div>
-          <div class="edit-field edit-span2">
-            <label>Program file</label>
-            <input id="e-programfile-${id}" type="text" value="${esc(r.program_file)}">
-          </div>
-          <div class="edit-field edit-span2">
-            <label>Tool list file</label>
-            <input id="e-toollist-${id}" type="text" value="${esc(r.tool_list_file)}">
-          </div>
-          <div class="edit-field">
-            <label>Cycle min/pc</label>
-            <input id="e-cycle-${id}" type="number" step="0.01" min="0" value="${esc(fmtNum(r.cycle_time))}">
-          </div>
-          <div class="edit-field">
-            <label>Setup min</label>
-            <input id="e-setup-${id}" type="number" step="0.01" min="0" value="${esc(fmtNum(r.set_up_time))}">
-          </div>
+          <div class="edit-field"><label>BOM</label><input id="e-bom-${id}" value="${esc(r.bom_code)}"></div>
+          <div class="edit-field"><label>Part</label><input id="e-part-${id}" value="${esc(r.part_no)}"></div>
+          <div class="edit-field edit-span2"><label>Description</label><input id="e-desc-${id}" value="${esc(r.part_description)}"></div>
+          <div class="edit-field"><label>Stage #</label><input id="e-stage-${id}" type="number" value="${esc(r.stage_no)}"></div>
+          <div class="edit-field"><label>Stage name</label><input id="e-stagename-${id}" value="${esc(r.stage_name)}"></div>
+          <div class="edit-field"><label>Op #</label><input id="e-opno-${id}" type="number" value="${r.op_no != null ? esc(r.op_no) : ''}"></div>
+          <div class="edit-field"><label>Op type</label><input id="e-optype-${id}" value="${esc(r.op_type)}"></div>
+          <div class="edit-field"><label>Program #</label><input id="e-programno-${id}" value="${esc(r.program_no)}"></div>
+          <div class="edit-field edit-span2"><label>Program file</label><input id="e-programfile-${id}" value="${esc(r.program_file)}"></div>
+          <div class="edit-field edit-span2"><label>Tool list</label><input id="e-toollist-${id}" value="${esc(r.tool_list_file)}"></div>
+          <div class="edit-field"><label>Cycle</label><input id="e-cycle-${id}" type="number" step="0.01" value="${esc(fmtNum(r.cycle_time))}"></div>
+          <div class="edit-field"><label>Setup</label><input id="e-setup-${id}" type="number" step="0.01" value="${esc(fmtNum(r.set_up_time))}"></div>
           <div class="edit-actions">
             <button type="button" class="btn btn-primary btn-sm" onclick="saveEdit(${id})">Save</button>
             <button type="button" class="btn btn-ghost btn-sm" onclick="closeEdit(${id})">Cancel</button>
@@ -392,13 +636,14 @@ function render() {
       </td>
     </tr>`;
   }).join('');
+
+  rows.forEach(r => bindTimeInputs(r.id));
 }
 
 function openEdit(id) {
   if (editingId && editingId !== id) closeEdit(editingId);
   editingId = id;
   document.getElementById(`edit-row-${id}`)?.classList.add('open');
-  document.getElementById(`e-bom-${id}`)?.focus();
 }
 
 function closeEdit(id) {
@@ -407,39 +652,24 @@ function closeEdit(id) {
 }
 
 async function saveEdit(id) {
-  const bom_code = (document.getElementById(`e-bom-${id}`)?.value || '').trim();
   const part_no = (document.getElementById(`e-part-${id}`)?.value || '').trim();
-  const part_description = (document.getElementById(`e-desc-${id}`)?.value || '').trim();
-  const stage_name = (document.getElementById(`e-stagename-${id}`)?.value || '').trim();
-  const op_type = (document.getElementById(`e-optype-${id}`)?.value || '').trim();
-  const program_no = (document.getElementById(`e-programno-${id}`)?.value || '').trim();
-  const program_file = (document.getElementById(`e-programfile-${id}`)?.value || '').trim();
-  const tool_list_file = (document.getElementById(`e-toollist-${id}`)?.value || '').trim();
-  const stageRaw = document.getElementById(`e-stage-${id}`)?.value;
+  if (!part_no) { toast('Part no required', true); return; }
   const opNoRaw = (document.getElementById(`e-opno-${id}`)?.value || '').trim();
-  const cycle_time = document.getElementById(`e-cycle-${id}`)?.value;
-  const set_up_time = document.getElementById(`e-setup-${id}`)?.value;
-
-  if (!part_no) {
-    toast('Part no is required', true);
-    return;
-  }
   const body = {
-    bom_code,
+    bom_code: (document.getElementById(`e-bom-${id}`)?.value || '').trim(),
     part_no,
-    part_description,
-    stage_name,
-    op_type,
-    program_no,
-    program_file,
-    tool_list_file,
-    stage_no: stageRaw,
-    cycle_time,
-    set_up_time,
+    part_description: (document.getElementById(`e-desc-${id}`)?.value || '').trim(),
+    stage_name: (document.getElementById(`e-stagename-${id}`)?.value || '').trim(),
+    op_type: (document.getElementById(`e-optype-${id}`)?.value || '').trim(),
+    program_no: (document.getElementById(`e-programno-${id}`)?.value || '').trim(),
+    program_file: (document.getElementById(`e-programfile-${id}`)?.value || '').trim(),
+    tool_list_file: (document.getElementById(`e-toollist-${id}`)?.value || '').trim(),
+    stage_no: document.getElementById(`e-stage-${id}`)?.value,
+    cycle_time: document.getElementById(`e-cycle-${id}`)?.value,
+    set_up_time: document.getElementById(`e-setup-${id}`)?.value,
   };
   if (opNoRaw === '') body.op_no = null;
   else body.op_no = opNoRaw;
-
   try {
     await api('PATCH', `/api/planner/cycle-times/${id}`, body);
     toast('Row updated');
@@ -452,10 +682,10 @@ async function saveEdit(id) {
 
 async function deleteRow(id) {
   const r = allRows.find(x => x.id === id);
-  if (!confirm(`Delete row ID ${id} (${r?.part_no || 'part'}${r?.bom_code ? ', BOM ' + r.bom_code : ''})?`)) return;
+  if (!confirm(`Delete ${r?.part_no || 'row'} (op ${r?.op_no ?? '—'})?`)) return;
   try {
     await api('DELETE', `/api/planner/cycle-times/${id}`);
-    toast('Row deleted');
+    toast('Deleted');
     await loadRows();
   } catch (e) {
     toast(e.message, true);
@@ -463,21 +693,13 @@ async function deleteRow(id) {
 }
 
 function openAddModal() {
-  document.getElementById('add-bom').value = '';
-  document.getElementById('add-part').value = '';
-  document.getElementById('add-desc').value = '';
-  document.getElementById('add-stage').value = '';
-  document.getElementById('add-stagename').value = '';
-  document.getElementById('add-opno').value = '';
-  document.getElementById('add-optype').value = '';
-  document.getElementById('add-programno').value = '';
-  document.getElementById('add-programfile').value = '';
-  document.getElementById('add-toollist').value = '';
+  ['add-bom','add-part','add-desc','add-stage','add-stagename','add-opno','add-optype','add-programno','add-programfile','add-toollist'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
   document.getElementById('add-cycle').value = '0';
   document.getElementById('add-setup').value = '0';
   setAddError('');
   document.getElementById('add-modal').classList.add('open');
-  document.getElementById('add-bom').focus();
 }
 
 function closeAddModal() {
@@ -491,37 +713,25 @@ function setAddError(msg) {
 }
 
 async function submitAdd() {
-  const bom_code = (document.getElementById('add-bom').value || '').trim();
   const part_no = (document.getElementById('add-part').value || '').trim();
-  const part_description = (document.getElementById('add-desc').value || '').trim();
   const stage_no = document.getElementById('add-stage').value;
-  const stage_name = (document.getElementById('add-stagename').value || '').trim();
+  if (!part_no) { setAddError('Part no required.'); return; }
+  if (stage_no === '') { setAddError('Stage no required (use 0 if no ERP match).'); return; }
   const op_no_raw = (document.getElementById('add-opno').value || '').trim();
-  const op_type = (document.getElementById('add-optype').value || '').trim();
-  const program_no = (document.getElementById('add-programno').value || '').trim();
-  const program_file = (document.getElementById('add-programfile').value || '').trim();
-  const tool_list_file = (document.getElementById('add-toollist').value || '').trim();
-  const cycle_time = document.getElementById('add-cycle').value;
-  const set_up_time = document.getElementById('add-setup').value;
-
-  if (!part_no) { setAddError('Part no is required.'); return; }
-  if (stage_no === '' || stage_no == null) { setAddError('Stage no is required.'); return; }
-
   const body = {
-    bom_code,
+    bom_code: (document.getElementById('add-bom').value || '').trim(),
     part_no,
-    part_description,
+    part_description: (document.getElementById('add-desc').value || '').trim(),
     stage_no,
-    stage_name,
-    op_type,
-    program_no,
-    program_file,
-    tool_list_file,
-    cycle_time,
-    set_up_time,
+    stage_name: (document.getElementById('add-stagename').value || '').trim(),
+    op_type: (document.getElementById('add-optype').value || '').trim(),
+    program_no: (document.getElementById('add-programno').value || '').trim(),
+    program_file: (document.getElementById('add-programfile').value || '').trim(),
+    tool_list_file: (document.getElementById('add-toollist').value || '').trim(),
+    cycle_time: document.getElementById('add-cycle').value,
+    set_up_time: document.getElementById('add-setup').value,
   };
   if (op_no_raw !== '') body.op_no = op_no_raw;
-
   try {
     setAddError('');
     await api('POST', '/api/planner/cycle-times', body);
@@ -533,13 +743,31 @@ async function submitAdd() {
   }
 }
 
-document.getElementById('add-modal').addEventListener('click', function (e) {
-  if (e.target === this) closeAddModal();
+document.getElementById('add-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeAddModal();
 });
 
 document.getElementById('ct-filter').addEventListener('input', function () {
   filterTerm = (this.value || '').trim().toLowerCase();
+  currentPage = 1;
   render();
+});
+
+document.querySelectorAll('.ct-chip-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.ct-chip-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    opTypeFilter = btn.dataset.op || '';
+    currentPage = 1;
+    render();
+  });
+});
+
+document.getElementById('ct-prev').addEventListener('click', () => {
+  if (currentPage > 1) { currentPage--; render(); }
+});
+document.getElementById('ct-next').addEventListener('click', () => {
+  if (currentPage < totalPages()) { currentPage++; render(); }
 });
 
 document.addEventListener('DOMContentLoaded', loadRows);

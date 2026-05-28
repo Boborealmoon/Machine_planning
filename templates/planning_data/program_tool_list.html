@@ -478,7 +478,7 @@
 <script src="{{ url_for('static', filename='js/program_tool_list.js') }}"></script>
 
 <script>
-// ── Sync to Supabase (DELETE + INSERT) ─────────────────────────────────
+// ── Sync to Supabase (upsert; optional ?refresh=1 for full wipe) ───────
 document.getElementById("btn-sync-supabase")?.addEventListener("click", async () => {
   const btn = document.getElementById("btn-sync-supabase");
   if (!btn) return;
@@ -498,9 +498,9 @@ document.getElementById("btn-sync-supabase")?.addEventListener("click", async ()
     const data = await res.json();
     if (data.error) throw new Error(data.error);
 
-    if (data.sync_api_version == null) {
+    if (data.sync_api_version == null || data.sync_api_version < 3) {
       throw new Error(
-        "Server returned old sync response (only {synced}). Restart Flask so it loads the updated program_tool_list_route.py."
+        "Server returned old sync API. Restart Flask so it loads program_tool_list_route.py (sync_api_version 3)."
       );
     }
 
@@ -510,7 +510,14 @@ document.getElementById("btn-sync-supabase")?.addEventListener("click", async ()
     const cycleTimeNote = data.with_cycle_time != null
       ? ` (${data.with_cycle_time} w/ cycle time${ct != null ? `, e.g. ${ct}` : ""})`
       : "";
-    btn.textContent = `✓ Synced ${data.synced}${cycleTimeNote}`;
+    const skipped = (data.skipped_missing_program_file || 0)
+      + (data.skipped_missing_tool_list_files || 0)
+      + (data.skipped_missing_part_no_erp || 0);
+    const skipNote = skipped > 0 ? `, ${skipped} skipped` : "";
+    const payloadNote = data.payload_rows != null
+      ? ` (${data.synced}/${data.payload_rows} valid)`
+      : "";
+    btn.textContent = `✓ Upserted ${data.synced}${payloadNote}${skipNote}${cycleTimeNote}`;
     if (data.sample_payload) {
       console.log("Supabase insert sample row:", data.sample_payload);
     }
