@@ -380,24 +380,41 @@ function trialBlockPendingSetupMinutes(block, outputTotal = 0, rejectTotal = 0) 
 }
 
 function trialBlockMemberMetrics(block) {
-  const outputTotal = (trialState.actuals || [])
+  const shopOutputTotal = (trialState.actuals || [])
     .filter(row => String(row.block_id) === String(block.block_id) && row.output_qty != null)
     .reduce((sum, row) => sum + Number(row.output_qty || 0), 0);
-  const rejectTotal = (trialState.actuals || [])
+  const shopRejectTotal = (trialState.actuals || [])
     .filter(row => String(row.block_id) === String(block.block_id) && row.reject_qty != null)
     .reduce((sum, row) => sum + Number(row.reject_qty || 0), 0);
+  const effective = block?.effective_actuals || {};
+  const recon = block?.erp_reconciliation || {};
+  const outputTotal = Number(
+    effective.effective_output_qty ?? recon.effective_output_qty ?? shopOutputTotal
+  );
+  const rejectTotal = Number(
+    effective.effective_reject_qty ?? recon.effective_reject_qty ?? shopRejectTotal
+  );
   const scheduledQty = Number(block.scheduled_qty || 0);
-  const netOutput = trialBlockNetOutput(outputTotal, rejectTotal);
+  const netOutput = Number(
+    effective.effective_good_qty ?? recon.effective_good_qty ?? trialBlockNetOutput(shopOutputTotal, shopRejectTotal)
+  );
   const remainingQty = Math.max(0, scheduledQty - netOutput);
   const pendingSetupMinutes = trialBlockPendingSetupMinutes(block, outputTotal, rejectTotal);
   const remainingMinutes = pendingSetupMinutes + (remainingQty * Number(block.cycle_minutes_per_qty || 0));
   const status = String(block.execution_status || block.status || '').toUpperCase();
   return {
     ...block,
+    shopOutputTotal,
+    shopRejectTotal,
     outputTotal,
     rejectTotal,
     netOutput,
     remainingQty,
+    qtySources: {
+      output: effective.output_source || recon.output_source || 'shop',
+      reject: effective.reject_source || recon.reject_source || 'shop',
+      good: effective.good_source || recon.good_source || 'shop',
+    },
     pendingSetupMinutes,
     remainingMinutes,
     isDone: status === 'DONE',

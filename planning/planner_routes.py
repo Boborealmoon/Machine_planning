@@ -33,6 +33,7 @@ from .blocks import (
     apply_output_delta_to_block_tail,
     apply_removed_target_date_to_block_tail,
     actual_daily_rows_for_block_row,
+    attach_actual_daily_to_blocks,
     create_rework_from_reject,
     delete_rework_from_reject_segment,
     find_rework_source_for_reject,
@@ -58,6 +59,7 @@ from .materials import material_status_map_for_ps_ids, sync_material_requirement
 from .operation_sequence import apply_machine_queue_order
 from .process_sheets import ensure_planner_process_sheet
 from .machines import default_profile_for_weekday, fetch_machines, is_public_holiday
+from .sg_public_holidays import fetch_sg_public_holidays, list_public_holidays, sync_sg_public_holidays_to_db
 from .planner_actuals import actual_summaries_for_block_rows
 from .visual_time import visual_timing_for_segment
 from .utils import (
@@ -88,7 +90,7 @@ def _void_actual(con, actual_id):
     con.execute(
         """
         UPDATE planner_production_actual
-        SET status = 'VOIDED', updated_at = NOW()
+        SET status = 'VOIDED'
         WHERE actual_id = %s
         """,
         (int(actual_id),),
@@ -378,16 +380,29 @@ def _api_trial_schedule_db():
     machine_ids_param = compact_text(request.args.get("machine_ids") or "")
     machine_id_filter = [int(x) for x in machine_ids_param.split(",") if x.strip().lstrip("-").isdigit()] if machine_ids_param else []
     is_machine_scoped = bool(machine_id_filter)
+    include_parts = {
+        part.strip().lower()
+        for part in compact_text(request.args.get("include") or "").split(",")
+        if part.strip()
+    }
+    # Initial board load: skip heavy joins/enrichment; fetch on demand (Actual modal, Shop Calendar).
+    board_lite = lite and not is_machine_scoped
+    include_capacities = "capacities" in include_parts or not board_lite
+    include_segments = (not board_lite) or ("segments" in include_parts) or is_machine_scoped
+    include_segment_visual = (not board_lite) or ("visual" in include_parts)
+    include_actuals = (not board_lite) or ("actuals" in include_parts)
+    include_actual_daily = "actual_daily" in include_parts
+    include_holidays = "holidays" in include_parts
 
     with planner_db() as con:
-        # Full board reload: move DONE ops off machine lanes before building the response.
-        if not is_machine_scoped:
+        # Full board reload: move DONE ops off machine lanes (planner only, not lite list pages).
+        if not is_machine_scoped and not board_lite:
             from .auto_unschedule import auto_unschedule_on_page_load
 
             auto_unschedule_on_page_load(con)
 
-        # Stale card cleanup — skip on machine-scoped refreshes (expensive, not needed for partial updates)
-        if not is_machine_scoped:
+        # Stale card cleanup — skip on lite board and machine-scoped refreshes.
+        if not is_machine_scoped and not board_lite:
             stale_cards = rows(
                 con.execute(
                     """
@@ -462,45 +477,53 @@ def _api_trial_schedule_db():
         )
 
         _active_block_ids = [int(b["block_id"]) for b in raw_blocks if b.get("block_id")]
-        raw_segments = rows(
-            con.execute(
-                """
-                SELECT s.*, b.operation_id
-                FROM planner_run_block_segment s
-                JOIN planner_run_block b ON b.block_id = s.block_id
-                WHERE COALESCE(b.active, TRUE) = TRUE
-                  AND s.block_id = ANY(%s)
-                ORDER BY b.machine_id, b.queue_position, s.segment_id
-                """,
-                (_active_block_ids,),
+        raw_segments = []
+        if include_segments and _active_block_ids:
+            raw_segments = rows(
+                con.execute(
+                    """
+                    SELECT s.*, b.operation_id
+                    FROM planner_run_block_segment s
+                    JOIN planner_run_block b ON b.block_id = s.block_id
+                    WHERE COALESCE(b.active, TRUE) = TRUE
+                      AND s.block_id = ANY(%s)
+                    ORDER BY b.machine_id, b.queue_position, s.segment_id
+                    """,
+                    (_active_block_ids,),
+                )
             )
-        ) if _active_block_ids else []
 
         segments = []
         segments_by_block = {}
         for row in raw_segments:
             item = dict(row)
-            machine = machine_by_id.get(int(item.get("machine_id") or 0), {})
-            shift_profile = compact_text(machine.get("shift_profile") or item.get("shift_profile") or "")
-            start_dt = parse_dt_text(item.get("start_datetime"))
-            end_dt = parse_dt_text(item.get("end_datetime"))
-            timing = visual_timing_for_segment(
-                start_dt,
-                item.get("minutes_used") or 0,
-                end_dt=end_dt,
-                work_date=start_dt.date() if start_dt else None,
-                profile_name="",
-                shift_profile=shift_profile,
-                segment_type=item.get("segment_type") or "production",
-            )
-            item["shift_profile"] = shift_profile
+            if include_segment_visual:
+                machine = machine_by_id.get(int(item.get("machine_id") or 0), {})
+                shift_profile = compact_text(machine.get("shift_profile") or item.get("shift_profile") or "")
+                start_dt = parse_dt_text(item.get("start_datetime"))
+                end_dt = parse_dt_text(item.get("end_datetime"))
+                timing = visual_timing_for_segment(
+                    start_dt,
+                    item.get("minutes_used") or 0,
+                    end_dt=end_dt,
+                    work_date=start_dt.date() if start_dt else None,
+                    profile_name="",
+                    shift_profile=shift_profile,
+                    segment_type=item.get("segment_type") or "production",
+                )
+                item["shift_profile"] = shift_profile
+                item["visual_start_datetime"] = timing["visual_start_datetime"]
+                item["visual_end_datetime"] = timing["visual_end_datetime"]
+                item["visual_parts"] = timing["visual_parts"]
+                item["break_windows"] = timing["break_windows"]
+            else:
+                item["visual_start_datetime"] = compact_text(item.get("start_datetime"))
+                item["visual_end_datetime"] = compact_text(item.get("end_datetime"))
+                item["visual_parts"] = []
+                item["break_windows"] = []
             item["segment_date"] = compact_text(item.get("segment_date"))
             item["start_datetime"] = compact_text(item.get("start_datetime"))
             item["end_datetime"] = compact_text(item.get("end_datetime"))
-            item["visual_start_datetime"] = timing["visual_start_datetime"]
-            item["visual_end_datetime"] = timing["visual_end_datetime"]
-            item["visual_parts"] = timing["visual_parts"]
-            item["break_windows"] = timing["break_windows"]
             segments.append(item)
             segments_by_block.setdefault(int(item.get("block_id") or 0), []).append(item)
 
@@ -514,7 +537,7 @@ def _api_trial_schedule_db():
             item["updated_at"] = compact_text(item.get("updated_at"))
 
             block_segments = segments_by_block.get(int(item.get("block_id") or 0), [])
-            if block_segments:
+            if block_segments and include_segment_visual:
                 block_start_dt = parse_dt_text(item.get("anchor_datetime") or item.get("calculated_start_datetime"))
                 block_end_dt = parse_dt_text(item.get("calculated_end_datetime"))
                 visual_starts = sorted([compact_text(seg.get("visual_start_datetime")) for seg in block_segments if compact_text(seg.get("visual_start_datetime"))])
@@ -542,8 +565,21 @@ def _api_trial_schedule_db():
                 item["visual_parts"] = []
                 item["break_windows"] = []
                 item["shift_profile"] = machine_by_id.get(int(item.get("machine_id") or 0), {}).get("shift_profile", "")
-            item["actual_daily_rows"] = actual_daily_rows_for_block_row(con, item)
             blocks.append(item)
+
+        if not lite:
+            from .blocks import actual_daily_rows_for_block_row_with_erp
+
+            from .erp_actuals import effective_actual_totals_for_block
+
+            for item in blocks:
+                daily_rows, erp_recon = actual_daily_rows_for_block_row_with_erp(con, item)
+                item["actual_daily_rows"] = daily_rows
+                if erp_recon:
+                    item["erp_reconciliation"] = erp_recon
+                    item["effective_actuals"] = effective_actual_totals_for_block(con, item, erp_recon)
+        elif include_actual_daily:
+            attach_actual_daily_to_blocks(con, blocks, with_erp=True)
 
         if blocks:
             actual_summary_map = actual_summaries_for_block_rows(con, blocks)
@@ -555,8 +591,10 @@ def _api_trial_schedule_db():
                     item["actual_good_qty"] = float(summary.get("actual_good_qty") or 0)
                 item["actual_row_count"] = int(summary.get("actual_row_count") or 0)
 
-        # Actuals: for machine-scoped refreshes only fetch actuals for the relevant blocks
-        if is_machine_scoped and _active_block_ids:
+        # Actuals list for client-side daily row assembly.
+        if not include_actuals:
+            actuals = []
+        elif is_machine_scoped and _active_block_ids:
             actuals = rows(
                 con.execute(
                     """
@@ -588,23 +626,42 @@ def _api_trial_schedule_db():
             actual["report_date"] = compact_text(actual.get("report_date"))
             actual["reported_at"] = compact_text(actual.get("reported_at"))
 
-        capacities = rows(
-            con.execute(
-                """
-                SELECT d.day_id, d.machine_id, d.work_date, d.profile_id,
-                       d.capacity_minutes, d.start_minute, d.note, p.profile_name
-                FROM planner_machine_capacity_day d
-                JOIN planner_capacity_profile p ON p.profile_id = d.profile_id
-                ORDER BY d.work_date, d.machine_id
-                """
+        if include_capacities:
+            capacities = rows(
+                con.execute(
+                    """
+                    SELECT d.day_id, d.machine_id, d.work_date, d.profile_id,
+                           d.capacity_minutes, d.start_minute, d.note, p.profile_name
+                    FROM planner_machine_capacity_day d
+                    JOIN planner_capacity_profile p ON p.profile_id = d.profile_id
+                    ORDER BY d.work_date, d.machine_id
+                    """
+                )
             )
-        )
-        for cap in capacities:
-            cap["work_date"] = compact_text(cap.get("work_date"))
+            for cap in capacities:
+                cap["work_date"] = compact_text(cap.get("work_date"))
 
-        profiles = rows(con.execute(
-            "SELECT profile_name, capacity_minutes, start_minute, note FROM planner_capacity_profile ORDER BY profile_id"
-        ))
+            profiles = rows(con.execute(
+                "SELECT profile_name, capacity_minutes, start_minute, note FROM planner_capacity_profile ORDER BY profile_id"
+            ))
+        else:
+            capacities = []
+            profiles = []
+
+        if include_holidays:
+            try:
+                start_d = datetime.fromisoformat(start_iso).date()
+            except ValueError:
+                start_d = date.today()
+            try:
+                end_d = datetime.fromisoformat(end_iso).date()
+            except ValueError:
+                end_d = start_d + timedelta(days=7)
+            if end_d < start_d:
+                start_d, end_d = end_d, start_d
+            public_holidays = list_public_holidays(con, start_d, end_d)
+        else:
+            public_holidays = []
 
         # Skip catalog, planning cards, and material status for machine-scoped refreshes
         if is_machine_scoped:
@@ -630,20 +687,25 @@ def _api_trial_schedule_db():
         else:
             catalog = {"available": [], "planned": []} if lite else trial_catalog_items(con, include_completed=bool(include_completed))
             planning_cards = [] if lite else [card for cards in planning_cards_by_ps(con).values() for card in cards]
-            group_ids = sorted({int(row["group_id"]) for row in blocks if int(row.get("group_id") or 0) > 0})
             block_groups = []
-            for group_id in group_ids:
-                try:
-                    group = combined_group_summary(con, group_id)
-                    if group:
-                        block_groups.append(group)
-                except Exception:
-                    import logging
-                    logging.getLogger(__name__).exception(
-                        "combined_group_summary failed for group_id=%s", group_id
-                    )
+            if not board_lite:
+                group_ids = sorted({int(row["group_id"]) for row in blocks if int(row.get("group_id") or 0) > 0})
+                for group_id in group_ids:
+                    try:
+                        group = combined_group_summary(con, group_id)
+                        if group:
+                            block_groups.append(group)
+                    except Exception:
+                        import logging
+                        logging.getLogger(__name__).exception(
+                            "combined_group_summary failed for group_id=%s", group_id
+                        )
 
-        calendar_windows = [_calendar_window_payload(row) for row in _calendar_window_rows(con, start_iso, end_iso)]
+        calendar_windows = (
+            []
+            if board_lite
+            else [_calendar_window_payload(row) for row in _calendar_window_rows(con, start_iso, end_iso)]
+        )
 
         ps_ids = set()
         planned_starts = {}
@@ -691,6 +753,7 @@ def _api_trial_schedule_db():
                 "actuals": actuals,
                 "capacities": capacities,
                 "profiles": profiles,
+                "public_holidays": public_holidays,
                 "block_groups": block_groups,
                 "catalog": catalog["available"],
                 "planned": catalog["planned"],
@@ -700,6 +763,132 @@ def _api_trial_schedule_db():
         )
 
 
+@trial_bp.get("/api/trial/public-holidays")
+def api_trial_public_holidays_list():
+    from_iso = compact_text(request.args.get("from") or request.args.get("start"))
+    to_iso = compact_text(request.args.get("to") or request.args.get("end"))
+    today = date.today()
+    try:
+        start_d = datetime.fromisoformat(from_iso).date() if from_iso else today.replace(month=1, day=1)
+    except ValueError:
+        return jsonify({"error": "from must be YYYY-MM-DD"}), 400
+    try:
+        end_d = datetime.fromisoformat(to_iso).date() if to_iso else today.replace(month=12, day=31)
+    except ValueError:
+        return jsonify({"error": "to must be YYYY-MM-DD"}), 400
+    if end_d < start_d:
+        start_d, end_d = end_d, start_d
+
+    live = compact_text(request.args.get("live")).lower() in {"1", "true", "yes"}
+    if live:
+        try:
+            live_rows = fetch_sg_public_holidays(from_date=start_d, to_date=end_d)
+        except Exception as exc:
+            return jsonify({"error": f"Could not fetch SG holidays: {exc}"}), 502
+        return jsonify(
+            {
+                "ok": True,
+                "from": start_d.isoformat(),
+                "to": end_d.isoformat(),
+                "live": True,
+                "holidays": live_rows,
+            }
+        )
+
+    with planner_db() as con:
+        stored = list_public_holidays(con, start_d, end_d)
+    return jsonify(
+        {
+            "ok": True,
+            "from": start_d.isoformat(),
+            "to": end_d.isoformat(),
+            "live": False,
+            "holidays": stored,
+        }
+    )
+
+
+def _refresh_sg_public_holidays_payload(data):
+    today = date.today()
+    from_year = data.get("from_year")
+    to_year = data.get("to_year")
+    try:
+        from_year = int(from_year) if from_year is not None else today.year - 1
+        to_year = int(to_year) if to_year is not None else today.year + 1
+    except (TypeError, ValueError):
+        return None, (jsonify({"error": "from_year and to_year must be integers"}), 400)
+
+    recalculate = not compact_text(data.get("no_recalc")).lower() in {"1", "true", "yes"}
+    try:
+        with planner_db() as con:
+            result = sync_sg_public_holidays_to_db(con, from_year=from_year, to_year=to_year)
+        if recalculate:
+            with planner_db() as con:
+                recalculate_all(con)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).exception("SG public holiday refresh failed")
+        return None, (jsonify({"error": str(exc)}), 502)
+
+    return (
+        {
+            **result,
+            "recalculated": recalculate,
+        },
+        None,
+    )
+
+
+@trial_bp.post("/api/trial/public-holidays/refresh")
+@trial_bp.post("/api/trial/refresh-public-holidays")
+def api_trial_public_holidays_refresh():
+    data = request.get_json(force=True, silent=True) or {}
+    payload, error = _refresh_sg_public_holidays_payload(data)
+    if error:
+        return error
+    return jsonify(payload)
+
+
+def _apply_capacity_day_for_all_machines(con, work_day, profile_name, note):
+    machines = fetch_machines(con)
+    if not machines:
+        return None
+    for machine in machines:
+        if work_day.weekday() == 6 or is_public_holiday(con, work_day):
+            machine_profile_name = "OFF"
+        else:
+            machine_profile_name = profile_name or default_profile_for_weekday(work_day.weekday(), machine["shift_profile"])
+            if compact_text(machine.get("shift_profile", "")).upper() == "24HR" and machine_profile_name in {"NORMAL_DAY_NIGHT", "SATURDAY"}:
+                machine_profile_name = "FULL_24H"
+        profile = one(con.execute("SELECT * FROM planner_capacity_profile WHERE profile_name = %s", (machine_profile_name,)))
+        if not profile:
+            profile = one(con.execute("SELECT * FROM planner_capacity_profile ORDER BY profile_id LIMIT 1"))
+        if not profile:
+            return None
+        con.execute(
+            """
+            INSERT INTO planner_machine_capacity_day (machine_id, work_date, profile_id, capacity_minutes, start_minute, note, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (machine_id, work_date) DO UPDATE SET
+              profile_id = EXCLUDED.profile_id,
+              capacity_minutes = EXCLUDED.capacity_minutes,
+              start_minute = EXCLUDED.start_minute,
+              note = EXCLUDED.note,
+              updated_at = NOW()
+            """,
+            (
+                int(machine["machine_id"]),
+                work_day.isoformat(),
+                int(profile["profile_id"]),
+                int(profile["capacity_minutes"] or 0),
+                int(profile["start_minute"] or 0),
+                compact_text(note),
+            ),
+        )
+    return {"machine_count": len(machines)}
+
+
 @trial_bp.post("/api/trial/capacity")
 def api_trial_capacity():
     data = request.get_json(force=True, silent=True) or {}
@@ -707,46 +896,24 @@ def api_trial_capacity():
     if not work_date:
         return jsonify({"error": "Work date is required"}), 400
     profile_name = compact_text(data.get("profile_name"))
+    note = compact_text(data.get("note"))
     try:
         work_day = datetime.fromisoformat(work_date).date()
     except ValueError:
         return jsonify({"error": "Work date must be YYYY-MM-DD"}), 400
-    with planner_db() as con:
-        machines = fetch_machines(con)
-        for machine in machines:
-            if work_day.weekday() == 6 or is_public_holiday(con, work_day):
-                machine_profile_name = "OFF"
-            else:
-                machine_profile_name = profile_name or default_profile_for_weekday(work_day.weekday(), machine["shift_profile"])
-                if compact_text(machine.get("shift_profile", "")).upper() == "24HR" and machine_profile_name in {"NORMAL_DAY_NIGHT", "SATURDAY"}:
-                    machine_profile_name = "FULL_24H"
-            profile = one(con.execute("SELECT * FROM planner_capacity_profile WHERE profile_name = %s", (machine_profile_name,)))
-            if not profile:
-                profile = one(con.execute("SELECT * FROM planner_capacity_profile ORDER BY profile_id LIMIT 1"))
-            if not profile:
+    try:
+        with planner_db() as con:
+            applied = _apply_capacity_day_for_all_machines(con, work_day, profile_name, note)
+            if not applied:
                 return jsonify({"error": "No capacity profiles available"}), 400
-            con.execute(
-                """
-                INSERT INTO planner_machine_capacity_day (machine_id, work_date, profile_id, capacity_minutes, start_minute, note, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, NOW())
-                ON CONFLICT (machine_id, work_date) DO UPDATE SET
-                  profile_id = EXCLUDED.profile_id,
-                  capacity_minutes = EXCLUDED.capacity_minutes,
-                  start_minute = EXCLUDED.start_minute,
-                  note = EXCLUDED.note,
-                  updated_at = NOW()
-                """,
-                (
-                    int(machine["machine_id"]),
-                    work_date,
-                    int(profile["profile_id"]),
-                    int(profile["capacity_minutes"] or 0),
-                    int(profile["start_minute"] or 0),
-                    compact_text(data.get("note")),
-                ),
-            )
-        recalculate_all(con)
-        return jsonify({"ok": True})
+        with planner_db() as con:
+            recalculate_all(con)
+        return jsonify({"ok": True, "work_date": work_date, **applied})
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).exception("capacity save failed for %s", work_date)
+        return jsonify({"error": str(exc)}), 500
 
 
 @trial_bp.get("/api/trial/machine-calendar-windows")
@@ -1429,12 +1596,15 @@ def api_trial_segment_actual(segment_id):
 @trial_bp.post("/api/trial/blocks/<int:block_id>/actual")
 def api_trial_actual(block_id):
     data = request.get_json(force=True, silent=True) or {}
+    record_only = compact_text(data.get("record_only")).lower() in {"1", "true", "yes"}
     with planner_db() as con:
         block = trial_block_row(con, block_id)
         if not block:
             return jsonify({"error": "Run block not found"}), 404
         delete_dates = [compact_text(v) for v in (data.get("delete_actual_dates") or []) if compact_text(v)]
-        removed_target_dates = [compact_text(v) for v in (data.get("removed_target_dates") or []) if compact_text(v)]
+        removed_target_dates = [
+            compact_text(v) for v in (data.get("removed_target_dates") or []) if compact_text(v)
+        ]
         daily_actuals = data.get("daily_actuals") or []
         if not delete_dates and not removed_target_dates and not daily_actuals:
             return jsonify({"error": "No actual rows submitted."}), 400
@@ -1476,7 +1646,7 @@ def api_trial_actual(block_id):
                     old_target = _planned_target_qty_for_block_date(con, block_id, report_date)
                 old_variance = _actual_variance(old_good, old_target)
                 variance_delta = 0.0 - float(old_variance)
-                if abs(variance_delta) > 1e-9:
+                if not record_only and abs(variance_delta) > 1e-9:
                     tail_changes.append(
                         {
                             "report_date": report_date,
@@ -1523,6 +1693,28 @@ def api_trial_actual(block_id):
 
             target_qty = _planned_target_qty_for_block_date(con, block_id, report_date)
             if target_qty <= 0:
+                removed_result = apply_removed_target_date_to_block_tail(
+                    con,
+                    block_id,
+                    report_date,
+                    0,
+                    shift_to_tail=False,
+                )
+                if not removed_result.get("changed"):
+                    continue
+                con.execute(
+                    """
+                    INSERT INTO planner_block_removed_actual_date (
+                      block_id, report_date, target_qty_removed, status, created_at, updated_at
+                    ) VALUES (%s, %s, 0, 'ACTIVE', NOW(), NOW())
+                    ON CONFLICT (block_id, report_date) DO UPDATE SET
+                      target_qty_removed = 0,
+                      status = 'ACTIVE',
+                      updated_at = NOW()
+                    """,
+                    (int(block_id), report_date),
+                )
+                removed_target_count += 1
                 continue
 
             con.execute(
@@ -1537,18 +1729,25 @@ def api_trial_actual(block_id):
                 """,
                 (int(block_id), report_date, float(target_qty)),
             )
-            removed_result = apply_removed_target_date_to_block_tail(con, block_id, report_date, target_qty)
+            removed_result = apply_removed_target_date_to_block_tail(
+                con,
+                block_id,
+                report_date,
+                target_qty,
+                shift_to_tail=not record_only,
+            )
             removed_target_count += 1
             removed_target_qty += float(target_qty)
-            schedule_adjusted = schedule_adjusted or bool(removed_result.get("changed"))
-            tail_changes.append(
-                {
-                    "report_date": report_date,
-                    "change_type": "removed_target",
-                    "removed_target_qty": float(target_qty),
-                    "variance_delta": float(target_qty),
-                }
-            )
+            if not record_only:
+                schedule_adjusted = schedule_adjusted or bool(removed_result.get("changed"))
+                tail_changes.append(
+                    {
+                        "report_date": report_date,
+                        "change_type": "removed_target",
+                        "removed_target_qty": float(target_qty),
+                        "variance_delta": float(target_qty),
+                    }
+                )
 
         for row in daily_actuals:
             report_date = compact_text(row.get("report_date"))
@@ -1607,7 +1806,7 @@ def api_trial_actual(block_id):
             new_good = _actual_good_qty(output_value, reject_value)
             new_variance = _actual_variance(new_good, target_qty)
             variance_delta = float(new_variance) - float(old_variance)
-            if abs(variance_delta) > 1e-9:
+            if not record_only and abs(variance_delta) > 1e-9:
                 tail_changes.append(
                     {
                         "report_date": report_date,
@@ -1619,20 +1818,21 @@ def api_trial_actual(block_id):
                 )
         refresh_block_actual_status(con, block_id)
         refresh_block_schedule_bounds(con, block_id)
-        for change in tail_changes:
-            if change.get("change_type") == "removed_target":
+        if not record_only:
+            for change in tail_changes:
+                if change.get("change_type") == "removed_target":
+                    adjusted_tail_qty += abs(float(change["variance_delta"]))
+                    continue
+                tail_result = apply_actual_variance_delta_to_block_tail(
+                    con,
+                    block_id,
+                    change["report_date"],
+                    change["variance_delta"],
+                )
                 adjusted_tail_qty += abs(float(change["variance_delta"]))
-                continue
-            tail_result = apply_actual_variance_delta_to_block_tail(
-                con,
-                block_id,
-                change["report_date"],
-                change["variance_delta"],
-            )
-            adjusted_tail_qty += abs(float(change["variance_delta"]))
-            schedule_adjusted = schedule_adjusted or bool(tail_result.get("changed"))
-        refresh_block_schedule_bounds(con, block_id)
-        recalculate_machine(con, int(block["machine_id"]))
+                schedule_adjusted = schedule_adjusted or bool(tail_result.get("changed"))
+            refresh_block_schedule_bounds(con, block_id)
+            recalculate_machine(con, int(block["machine_id"]))
         updated_block = trial_block_row(con, block_id)
         block_payload = trial_block_payload(updated_block, con)
         actuals = rows(
@@ -1661,7 +1861,8 @@ def api_trial_actual(block_id):
             "skipped_count": skipped_count,
             "changed_count": saved_count + deleted_count + removed_target_count,
             "adjusted_tail_qty": adjusted_tail_qty,
-            "schedule_adjusted": bool(schedule_adjusted or adjusted_tail_qty > 0),
+            "schedule_adjusted": False if record_only else bool(schedule_adjusted or adjusted_tail_qty > 0),
+            "record_only": record_only,
             "tail_adjustments": tail_changes,
             "block": block_payload,
             "actual_daily_rows": block_payload.get("actual_daily_rows") or [],

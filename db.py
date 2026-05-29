@@ -153,15 +153,37 @@ def get_planner_pool():
                 "SUPA_DB_URL env var is not set. "
                 "Add it to .env: postgresql://postgres:[pw]@db.[ref].supabase.co:5432/postgres"
             )
-        _planner_pool = psycopg2.pool.SimpleConnectionPool(
+        _planner_pool = psycopg2.pool.ThreadedConnectionPool(
             1, 10, dsn=dsn, connect_timeout=_db_connect_timeout()
         )
     return _planner_pool
 
 
 def planner_get_conn():
-    return get_planner_pool().getconn()
+    pool = get_planner_pool()
+    conn = pool.getconn()
+    if getattr(conn, "closed", 0):
+        try:
+            pool.putconn(conn, close=True)
+        except psycopg2.pool.PoolError:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        conn = pool.getconn()
+    return conn
 
 
 def planner_release_conn(conn):
-    get_planner_pool().putconn(conn)
+    if conn is None:
+        return
+    pool = get_planner_pool()
+    try:
+        if getattr(conn, "closed", 0):
+            return
+        pool.putconn(conn)
+    except psycopg2.pool.PoolError:
+        try:
+            conn.close()
+        except Exception:
+            pass

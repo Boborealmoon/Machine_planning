@@ -2,7 +2,8 @@
 
 let trialState = {
   machines: [], blocks: [], block_groups: [], segments: [],
-  actuals: [], capacities: [], profiles: [],
+  actuals: [], capacities: [], profiles: [], public_holidays: [],
+  capacityBundleLoaded: false,
   catalog: [], planned: [], planning_cards: [],
   program_tools_lookup: null,
 };

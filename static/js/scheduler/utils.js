@@ -211,7 +211,21 @@ function trialShiftDate(dateText, deltaDays) {
   return trialDateText(base);
 }
 
+function trialPublicHolidayMap() {
+  const map = new Map();
+  (trialState.public_holidays || []).forEach((row) => {
+    const key = String(row.holiday_date || '').trim();
+    if (key) map.set(key, row);
+  });
+  return map;
+}
+
+function trialPublicHolidayForDate(dateText) {
+  return trialPublicHolidayMap().get(String(dateText || '').trim()) || null;
+}
+
 function trialDefaultProfileNameForDate(dateText) {
+  if (trialPublicHolidayForDate(dateText)) return 'OFF';
   const d = new Date(`${dateText || trialTodayLocal()}T00:00:00`);
   const weekday = d.getDay();
   if (weekday === 0) return 'OFF';

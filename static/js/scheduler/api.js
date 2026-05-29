@@ -67,14 +67,13 @@ async function syncPpVouchers() {
     trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
     trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 60000;
     trialState.catalog = trialLoadCache[cacheKey];
-    renderTrialCatalog();
+    trialScheduleRender();
   } catch (err) {
     console.error('pp-vouchers sync failed:', err);
   }
 }
 
 window.addEventListener('pp-vouchers-synced', () => {
-  if (typeof renderTrialCatalog !== 'function') return;
   trialInvalidateCatalogCache();
   GET(trialCatalogUrl(true))
     .then(erpVouchers => {
@@ -82,7 +81,7 @@ window.addEventListener('pp-vouchers-synced', () => {
       trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
       trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 60000;
       trialState.catalog = trialLoadCache[cacheKey];
-      renderTrialCatalog();
+      trialScheduleRender();
     })
     .catch(err => console.error('catalog refresh after ERP sync failed:', err));
 });
@@ -110,7 +109,7 @@ async function syncTrialQueueState() {
     changed = true;
   });
 
-  if (changed) renderTrial();
+  if (changed) trialScheduleRender();
 }
 
 function trialNormalizeBlockFromApi(block) {
@@ -220,15 +219,16 @@ async function loadTrial(options = {}) {
     trialLoadCache.machinesExpiresAt = 0;
   }
 
-  const schedulePromise = GET(`/api/trial/schedule${startParam}`).catch(err => {
-    console.error('Failed to load trial schedule:', err);
-    return { error: err };
-  });
-  const catalogPromise = trialCachedGET(trialCatalogCacheKey(), 60000, trialCatalogUrl()).catch(() => []);
-  const machinesPromise = trialCachedGET('machines', 300000, '/api/planner/machines').catch(() => ({ machines: [] }));
-  const lookupPromise = GET('/api/program-tool-list/lookup').catch(() => null);
+  const [scheduleOutcome, erpVouchers, machinesResult, programToolsLookup] = await Promise.all([
+    GET(`/api/trial/schedule${startParam}`).catch(err => {
+      console.error('Failed to load trial schedule:', err);
+      return { error: err };
+    }),
+    trialCachedGET(trialCatalogCacheKey(), 60000, trialCatalogUrl()).catch(() => []),
+    trialCachedGET('machines', 300000, '/api/planner/machines').catch(() => ({ machines: [] })),
+    GET('/api/program-tool-list/lookup').catch(() => null),
+  ]);
 
-  const scheduleOutcome = await schedulePromise;
   const scheduleError = scheduleOutcome?.error || null;
   const scheduleData = scheduleError ? {} : (scheduleOutcome || {});
 
@@ -236,24 +236,25 @@ async function loadTrial(options = {}) {
     toast('Could not refresh machine queue: ' + scheduleError.message, 'error');
   }
 
-  trialApplySchedulePayload(scheduleData, { machines: [] }, null);
-  renderTrial();
+  const machinesPayload = (!scheduleData.machines?.length && machinesResult?.machines?.length)
+    ? machinesResult
+    : { machines: [] };
 
-  const [erpVouchers, machinesResult, programToolsLookup] = await Promise.all([
-    catalogPromise,
-    machinesPromise,
-    lookupPromise,
-  ]);
-
-  if (!scheduleData.machines?.length && machinesResult?.machines?.length) {
-    trialApplySchedulePayload(scheduleData, machinesResult, programToolsLookup);
-    renderTrial();
-  } else {
-    trialState.program_tools_lookup = programToolsLookup;
-  }
-
+  trialApplySchedulePayload(
+    scheduleData,
+    machinesPayload,
+    programToolsLookup,
+  );
   trialState.catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
-  renderTrialCatalog();
+  trialScheduleRender();
+}
+
+function trialScheduleRender() {
+  if (typeof window.trialScheduleRenderHook === 'function') {
+    window.trialScheduleRenderHook();
+    return;
+  }
+  if (typeof renderTrial === 'function') renderTrial();
 }
 
 // Lightweight refresh for a subset of machines after a mutation.
@@ -261,7 +262,7 @@ async function loadTrial(options = {}) {
 // Falls back to loadTrial() on error.
 async function refreshMachines(machineIds) {
   const ids = [...new Set((machineIds || []).map(Number).filter(Boolean))];
-  if (!ids.length) { renderTrial(); return; }
+  if (!ids.length) { trialScheduleRender(); return; }
 
   const params = new URLSearchParams({ machine_ids: ids.join(','), lite: '1' });
   const data = await GET(`/api/trial/schedule?${params}`).catch(err => {
@@ -308,5 +309,5 @@ async function refreshMachines(machineIds) {
     ];
   }
 
-  renderTrial();
+  trialScheduleRender();
 }

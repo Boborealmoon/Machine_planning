@@ -231,38 +231,177 @@ function openTrialSplitModal(blockId) {
   });
 }
 
+let trialCapacitySaveInFlight = 0;
+
+function trialSetCapacityModalBusy(message = '') {
+  const modal = document.querySelector('.trial-capacity-modal');
+  const banner = document.getElementById('trial-cap-busy-banner');
+  const textEl = document.getElementById('trial-cap-busy-text');
+  const busy = Boolean(message);
+  if (modal) modal.classList.toggle('is-busy', busy);
+  if (banner) banner.hidden = !busy;
+  if (textEl) textEl.textContent = message || '';
+  document.querySelectorAll('.trial-capacity-modal .trial-cap-save-btn').forEach((btn) => {
+    if (!btn.closest('.trial-capacity-row.is-public-holiday')) {
+      btn.disabled = busy || btn.dataset.lockedHoliday === '1';
+    }
+  });
+  document.querySelectorAll('.trial-capacity-modal-controls button, #trial-cap-refresh-holidays').forEach((btn) => {
+    btn.disabled = busy;
+  });
+  document.querySelectorAll('.trial-capacity-modal input, .trial-capacity-modal select').forEach((el) => {
+    if (busy) {
+      el.dataset.busyPrevDisabled = el.disabled ? '1' : '0';
+      el.disabled = true;
+      return;
+    }
+    if (el.dataset.busyPrevDisabled === '0') el.disabled = false;
+    delete el.dataset.busyPrevDisabled;
+  });
+}
+
+function trialMarkCapacityRowState(workDate, state) {
+  const row = document.querySelector(`.trial-capacity-row[data-work-date="${workDate}"]`);
+  if (!row) return;
+  row.classList.remove('is-saving', 'is-saved', 'is-save-error');
+  if (state) row.classList.add(state);
+  const btn = row.querySelector('.trial-cap-save-btn');
+  if (!btn) return;
+  if (state === 'is-saving') {
+    btn.textContent = 'Saving…';
+    btn.setAttribute('aria-busy', 'true');
+  } else if (state === 'is-saved') {
+    btn.textContent = 'Saved';
+    btn.removeAttribute('aria-busy');
+  } else if (state === 'is-save-error') {
+    btn.textContent = 'Retry';
+    btn.removeAttribute('aria-busy');
+  } else {
+    btn.textContent = 'Save';
+    btn.removeAttribute('aria-busy');
+  }
+}
+
 function openTrialCapacityModal(startDate = '', dayCount = 14) {
+  trialEnsureCapacityData(startDate, dayCount).then(() => {
+    trialOpenCapacityModalBody(startDate, dayCount);
+  }).catch(err => {
+    console.error('capacity load failed:', err);
+    toast('Could not load shop calendar: ' + err.message, 'error');
+  });
+}
+
+async function trialLoadPublicHolidaysForRange(fromDate, toDate) {
+  const from = String(fromDate || '').trim();
+  const to = String(toDate || '').trim();
+  if (!from || !to) return [];
+  const holidayData = await GET(`/api/trial/public-holidays?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+  if (Array.isArray(holidayData?.holidays)) {
+    trialState.public_holidays = holidayData.holidays;
+    return holidayData.holidays;
+  }
+  trialState.public_holidays = [];
+  return [];
+}
+
+async function trialEnsureCapacityData(startDate = '', dayCount = 14) {
+  if (!trialState.capacityBundleLoaded) {
+    const data = await GET('/api/trial/schedule?lite=1&include=capacities');
+    if (Array.isArray(data?.capacities)) trialState.capacities = data.capacities;
+    if (Array.isArray(data?.profiles)) trialState.profiles = data.profiles;
+    trialState.capacityBundleLoaded = true;
+  }
+  const start = startDate || trialTodayLocal();
+  const days = Math.max(1, Number(dayCount || 14));
+  const end = trialShiftDate(start, days - 1);
+  const from = trialShiftDate(start, -14);
+  const to = trialShiftDate(end, 14);
+  await trialLoadPublicHolidaysForRange(from, to);
+}
+
+async function refreshSgPublicHolidays(options = {}) {
+  const startYear = Number(options.fromYear);
+  const endYear = Number(options.toYear ?? options.endYear);
+  const body = {};
+  if (Number.isFinite(startYear)) body.from_year = startYear;
+  if (Number.isFinite(endYear)) body.to_year = endYear;
+  let result;
+  try {
+    result = await POST('/api/trial/refresh-public-holidays', body);
+  } catch (primaryErr) {
+    result = await POST('/api/trial/public-holidays/refresh', body);
+  }
+  if (Array.isArray(result?.holidays)) {
+    const byDate = new Map((trialState.public_holidays || []).map((row) => [row.holiday_date, row]));
+    result.holidays.forEach((row) => {
+      byDate.set(row.holiday_date, {
+        holiday_date: row.holiday_date,
+        note: row.note || '',
+        source: 'sg_mom',
+        fetched_at: result.fetched_at || '',
+      });
+    });
+    trialState.public_holidays = Array.from(byDate.values()).sort((a, b) =>
+      String(a.holiday_date).localeCompare(String(b.holiday_date))
+    );
+  }
+  trialState.capacityBundleLoaded = false;
+  await loadTrial();
+  return result;
+}
+
+function trialOpenCapacityModalBody(startDate = '', dayCount = 14) {
   const referenceMachineId = (trialState.machines && trialState.machines[0] && trialState.machines[0].machine_id)
     ? trialState.machines[0].machine_id : 0;
   const capMap = trialCapacityByKey();
   const days = Math.max(1, Number(dayCount || 14));
   const start = startDate || trialTodayLocal();
   const rows = [];
+  const holidayMap = trialPublicHolidayMap();
   for (let i = 0; i < days; i += 1) {
     const workDate = trialShiftDate(start, i);
     const cap = capMap.get(trialCapacityKey(referenceMachineId, workDate)) || {};
+    const publicHoliday = holidayMap.get(workDate) || null;
     const defaultProfile = trialDefaultProfileNameForDate(workDate);
+    const lockedHoliday = Boolean(publicHoliday);
+    const profileValue = lockedHoliday ? 'OFF' : (cap.profile_name || defaultProfile);
+    const holidayBadge = publicHoliday
+      ? `<span class="trial-capacity-holiday-badge" title="${escapeHtml(publicHoliday.note || 'Public holiday')}">SG holiday</span>`
+      : '';
+    const holidayNote = publicHoliday
+      ? `<div class="trial-capacity-holiday-note">${escapeHtml(publicHoliday.note || 'Public holiday')}</div>`
+      : '';
     rows.push(`
-      <div class="trial-capacity-row">
-        <label>${workDate}</label>
-        <select id="trial-cap-profile-${workDate}">
-          ${trialProfileOptions(cap.profile_name || defaultProfile)}
+      <div class="trial-capacity-row${lockedHoliday ? ' is-public-holiday' : ''}" data-work-date="${workDate}">
+        <label>${workDate}${holidayBadge}${holidayNote}</label>
+        <select id="trial-cap-profile-${workDate}" ${lockedHoliday ? 'disabled' : ''}>
+          ${trialProfileOptions(profileValue)}
         </select>
-        <input id="trial-cap-note-${workDate}" type="text" value="${cap.note ? String(cap.note).replace(/"/g, '&quot;') : ''}" placeholder="Note">
-        <button class="btn btn-ghost btn-sm" type="button" onclick="saveTrialCapacity('${workDate}', document.getElementById('trial-cap-profile-${workDate}').value, document.getElementById('trial-cap-note-${workDate}').value)">Save</button>
+        <input id="trial-cap-note-${workDate}" type="text" value="${cap.note ? String(cap.note).replace(/"/g, '&quot;') : ''}" placeholder="Note" ${lockedHoliday ? 'disabled' : ''}>
+        <button class="btn btn-ghost btn-sm trial-cap-save-btn" type="button" data-locked-holiday="${lockedHoliday ? '1' : '0'}" ${lockedHoliday ? 'disabled title="Public holiday — machines are OFF"' : ''} onclick="saveTrialCapacity(this)">Save</button>
       </div>
     `);
   }
+  const holidayCount = (trialState.public_holidays || []).length;
   const bodyHtml = `
     <div class="trial-capacity-modal">
+      <div id="trial-cap-busy-banner" class="trial-cap-busy-banner" hidden>
+        <span class="trial-cap-busy-spinner" aria-hidden="true"></span>
+        <span id="trial-cap-busy-text" class="trial-cap-busy-text">Saving…</span>
+      </div>
       <div class="trial-capacity-modal-head">
         <div>
           <div style="font-size:18px;font-weight:900;letter-spacing:-0.03em">Shop Calendar</div>
           <div style="font-size:12px;color:var(--text3)">Shared across all machines</div>
         </div>
-        <div style="font-size:12px;color:var(--text3);max-width:260px;text-align:right">
-          Set the daily profile here. The same calendar is applied to every machine in the trial scheduler.
+        <div style="font-size:12px;color:var(--text3);max-width:280px;text-align:right">
+          Set the daily profile here. The same calendar is applied to every machine.
+          <span class="trial-capacity-holiday-badge" style="margin-left:6px">SG holiday</span> = imported from data.gov.sg (MOM).
         </div>
+      </div>
+      <div class="trial-capacity-modal-actions">
+        <button type="button" class="btn btn-ghost btn-sm" id="trial-cap-refresh-holidays">Refresh SG holidays</button>
+        <span id="trial-cap-holiday-status" class="trial-capacity-holiday-status">${holidayCount ? `${holidayCount} holiday(s) loaded for this window` : 'No holidays loaded — click Refresh or restart the app server'}</span>
       </div>
       <div class="trial-capacity-modal-controls">
         <button type="button" class="btn btn-ghost btn-sm" onclick="openTrialCapacityModal(trialShiftDate(document.getElementById('trial-cap-start').value, -Number(document.getElementById('trial-cap-days').value || 14)), document.getElementById('trial-cap-days').value)">Prev</button>
@@ -284,6 +423,36 @@ function openTrialCapacityModal(startDate = '', dayCount = 14) {
     </div>
   `;
   openModal('Shop Calendar', bodyHtml, 'lg');
+  const refreshBtn = document.getElementById('trial-cap-refresh-holidays');
+  const statusEl = document.getElementById('trial-cap-holiday-status');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', async () => {
+      const viewStart = document.getElementById('trial-cap-start')?.value || start;
+      const viewEnd = trialShiftDate(viewStart, Math.max(0, days - 1));
+      const fromYear = Number(String(viewStart).slice(0, 4));
+      const toYear = Number(String(viewEnd).slice(0, 4));
+      trialCapacitySaveInFlight += 1;
+      trialSetCapacityModalBusy('Fetching SG holidays from data.gov.sg…');
+      if (statusEl) statusEl.textContent = '';
+      try {
+        trialSetCapacityModalBusy('Importing holidays and rescheduling machines…');
+        const result = await refreshSgPublicHolidays({ fromYear, toYear });
+        toast(`SG holidays updated (${result.upserted_count || 0} dates)`, 'success');
+        await trialEnsureCapacityData(viewStart, days);
+        trialOpenCapacityModalBody(viewStart, days);
+        if (statusEl) statusEl.textContent = `Last refresh: ${result.upserted_count || 0} date(s)`;
+      } catch (e) {
+        const hint = String(e.message || '').includes('404')
+          ? ' Restart the Flask app so new API routes load, then try again.'
+          : '';
+        toast('SG holiday refresh failed: ' + e.message + hint, 'error');
+        if (statusEl) statusEl.textContent = 'Refresh failed';
+      } finally {
+        trialCapacitySaveInFlight = Math.max(0, trialCapacitySaveInFlight - 1);
+        if (trialCapacitySaveInFlight === 0) trialSetCapacityModalBusy('');
+      }
+    });
+  }
 }
 
 function trialAnchorDefaultDatetimeLocal(block) {
@@ -329,17 +498,54 @@ async function toggleTrialSetup(blockId) {
   }
 }
 
-async function saveTrialCapacity(workDate, profileName, note = '') {
+async function saveTrialCapacity(triggerOrDate, profileName, note = '') {
+  let workDate = '';
+  let profile = '';
+  let noteText = '';
+  if (triggerOrDate && typeof triggerOrDate === 'object' && triggerOrDate.tagName) {
+    const row = triggerOrDate.closest('.trial-capacity-row');
+    workDate = row?.dataset?.workDate || '';
+    profile = row?.querySelector('select')?.value || '';
+    noteText = row?.querySelector('input[type="text"]')?.value || '';
+  } else {
+    workDate = String(triggerOrDate || '');
+    profile = profileName || '';
+    noteText = note || '';
+  }
+  if (!workDate || trialCapacitySaveInFlight > 0) return;
+
+  trialCapacitySaveInFlight += 1;
+  trialMarkCapacityRowState(workDate, 'is-saving');
+  trialSetCapacityModalBusy(`Saving ${workDate}…`);
+  const statusEl = document.getElementById('trial-cap-holiday-status');
+  const startedAt = Date.now();
+
   try {
+    trialSetCapacityModalBusy(`Saving ${workDate} — rescheduling all machines (may take a minute)…`);
     await POST('/api/trial/capacity', {
       work_date: workDate,
-      profile_name: profileName,
-      note: note,
+      profile_name: profile,
+      note: noteText,
     });
+    trialSetCapacityModalBusy('Refreshing planner board…');
+    trialState.capacityBundleLoaded = false;
     await loadTrial();
-    toast(`Capacity saved for ${workDate}`, 'success');
+    const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    trialMarkCapacityRowState(workDate, 'is-saved');
+    if (statusEl) {
+      statusEl.textContent = `Saved ${workDate} · queues updated (${elapsedSec}s)`;
+    }
+    toast(`Capacity saved for ${workDate} — schedules updated`, 'success');
+    window.setTimeout(() => {
+      if (trialCapacitySaveInFlight === 0) trialMarkCapacityRowState(workDate, '');
+    }, 2500);
   } catch (e) {
+    trialMarkCapacityRowState(workDate, 'is-save-error');
+    if (statusEl) statusEl.textContent = `Save failed for ${workDate}`;
     toast('Capacity save failed: ' + e.message, 'error');
+  } finally {
+    trialCapacitySaveInFlight = Math.max(0, trialCapacitySaveInFlight - 1);
+    if (trialCapacitySaveInFlight === 0) trialSetCapacityModalBusy('');
   }
 }
 

@@ -449,30 +449,31 @@ function trialMachineAvailabilityEnd(groups) {
   return ends[ends.length - 1] || '';
 }
 
+function trialCatalogRowMatchesPsKey(row, needle, sourceBase, sourcePartial) {
+  const id = String(row?.ps_id || '').trim();
+  const src = String(row?.source_ps_id || row?.display_ps_id || '').trim();
+  if (id === needle || src === needle) return true;
+  const idParts = trialSplitPsId(id);
+  if (String(idParts.base || '').trim() !== sourceBase) {
+    return src === sourceBase && (!sourcePartial || String(row?.pp_partial_no || '') === sourcePartial);
+  }
+  if (!sourcePartial) return true;
+  if (String(idParts.partial || '').trim() === sourcePartial) return true;
+  return String(row?.pp_partial_no || '') === sourcePartial;
+}
+
 function trialDueDateForPs(psId) {
-  const source = String(psId || '').trim();
-  if (!source) return '';
-  const sourceParts = trialSplitPsId(source);
-  const sourceBase = String(sourceParts.base || source).trim();
+  const needle = String(psId || '').trim();
+  if (!needle) return '';
+  const sourceParts = trialSplitPsId(needle);
+  const sourceBase = String(sourceParts.base || needle).trim();
   const sourcePartial = String(sourceParts.partial || '').trim();
   const rows = [
     ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
     ...(Array.isArray(trialState.planned) ? trialState.planned : []),
   ];
-  const exact = rows.find(row => String(row?.ps_id || '').trim() === source);
-  if (exact?.due_date) return String(exact.due_date);
-  const partial = sourcePartial
-    ? rows.find(row => {
-        const parts = trialSplitPsId(row?.ps_id || '');
-        return String(parts.base || '').trim() === sourceBase && String(parts.partial || '').trim() === sourcePartial;
-      })
-    : null;
-  if (partial?.due_date) return String(partial.due_date);
-  const base = rows.find(row => {
-    const parts = trialSplitPsId(row?.ps_id || '');
-    return String(parts.base || '').trim() === sourceBase;
-  });
-  return base?.due_date ? String(base.due_date) : '';
+  const hit = rows.find(row => trialCatalogRowMatchesPsKey(row, needle, sourceBase, sourcePartial));
+  return hit?.due_date ? String(hit.due_date) : '';
 }
 
 function trialDuePillHtml(psId) {
@@ -535,6 +536,7 @@ function renderTrialMachine(machine) {
         const leader = group.leader;
         const groupBlockIds = group.blocks.map(b => b.block_id).join(',');
         const psDisplay = trialBlockPsDisplay(group, leader);
+        const psDueKey = psDisplay.partial ? `${psDisplay.base}::${psDisplay.partial}` : psDisplay.base;
         const opDisplay = trialBlockOpDisplay(leader);
         const sequenceNo = Number(leader?.sequence_no || leader?.queue_position || 0);
         const netOutput = trialBlockNetOutput(group.output_qty, group.reject_qty);
@@ -595,7 +597,7 @@ function renderTrialMachine(machine) {
               ${combinedLine ? `<div class="trial-block-combined-line">${escapeHtml(combinedLine)}</div>` : ''}
             </div>
             <div class="trial-op-card-info trial-op-card-time-row">
-              ${trialDuePillHtml(leader?.source_ps_id || group.ps_id || leader?.job_no || '')}
+              ${trialDuePillHtml(psDueKey)}
               <button class="trial-pill trial-time-pill trial-pill-start clickable ${anchored ? 'yellow' : 'gray'}" type="button"
                 onclick="editTrialAnchor(${leader?.block_id || 0})" title="${escapeHtml(queuedTitle || 'Click to edit anchor')}">
                 <span class="trial-pill-label">Queued</span>
@@ -671,7 +673,12 @@ function renderTrialMachine(machine) {
 // ── Main board render ─────────────────────────────────────────────────────────
 
 function renderTrial() {
-  destroyTrialSortables();
+  const grid = document.getElementById('trial-grid');
+  if (!grid) {
+    if (typeof renderActualProduction === 'function') renderActualProduction();
+    return;
+  }
+  if (typeof destroyTrialSortables === 'function') destroyTrialSortables();
   const filterShell = document.getElementById('trial-machine-filter-shell');
   if (filterShell) {
     filterShell.innerHTML = `
@@ -684,18 +691,19 @@ function renderTrial() {
       </div>
     `;
   }
-  const grid = document.getElementById('trial-grid');
   const visibleMachines = trialVisibleMachines();
   grid.innerHTML = visibleMachines.length
     ? visibleMachines.map(renderTrialMachine).join('')
     : `<div class="trial-empty">No machines found for ${escapeHtml(trialMachineCategoryFilter)}.</div>`;
-  document.getElementById('trial-layout').style.display = 'grid';
-  document.getElementById('trial-loading').style.display = 'none';
+  const layout = document.getElementById('trial-layout');
+  if (layout) layout.style.display = 'grid';
+  const loading = document.getElementById('trial-loading');
+  if (loading) loading.style.display = 'none';
   updateTrialCompletedButton();
   renderTrialCatalog();
-  bindTrialCatalogDnD();
-  initTrialMachineSortables();
-  bindTrialLaneOpDrops();
+  if (typeof bindTrialCatalogDnD === 'function') bindTrialCatalogDnD();
+  if (typeof initTrialMachineSortables === 'function') initTrialMachineSortables();
+  if (typeof bindTrialLaneOpDrops === 'function') bindTrialLaneOpDrops();
 }
 
 function trialCatalogOpExecStatus(card) {

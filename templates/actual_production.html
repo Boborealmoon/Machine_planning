@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Actual Production{% endblock %}
+{% block main_class %}app-main--actual-production{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=delete-date-manual-only-20260529">{% endblock %}
+{% block content %}
+<div class="actual-production-page">
+  <div class="actual-production-header">
+    <div>
+      <h1 class="actual-production-title">Actual Production</h1>
+      <p class="actual-production-subtitle">Totals and daily fields show ERP first (from the last WO sync). If you enter a higher shop value and save, that override wins. Planned schedule dates cannot be deleted here — use Add Date for extra days.</p>
+    </div>
+    <div class="actual-production-header-actions">
+      <a class="btn btn-ghost btn-sm" href="/scheduler">Open Planner</a>
+      <button type="button" class="btn btn-ghost btn-sm" id="actual-production-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="actual-production-toolbar card">
+    <label class="actual-production-filter">
+      <span>Category</span>
+      <select id="actual-production-category"></select>
+    </label>
+    <label class="actual-production-filter">
+      <span>Machine</span>
+      <select id="actual-production-machine">
+        <option value="">All machines</option>
+      </select>
+    </label>
+    <label class="actual-production-filter actual-production-filter--grow">
+      <span>Search</span>
+      <input id="actual-production-search" type="search" placeholder="PS, part, op, machine..." autocomplete="off">
+    </label>
+    <div class="actual-production-stats" id="actual-production-stats"></div>
+  </div>
+
+  <div id="actual-production-loading" class="loading"><div class="spinner"></div> Loading queue jobs...</div>
+  <div id="actual-production-list" class="actual-production-list" hidden></div>
+  <div id="actual-production-empty" class="actual-production-empty card" hidden>
+  <p>No assigned or queued jobs match your filters.</p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/state.js') }}"></script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=anchor-dt-20260520"></script>
+<script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v=erp-actuals-first-20260529"></script>
+<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=actual-prod-guard-20260529"></script>
+<script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=actual-prod-guard-20260529"></script>
+<script src="{{ url_for('static', filename='js/scheduler/actuals.js') }}?v=erp-actuals-first-20260529"></script>
+<script src="{{ url_for('static', filename='js/actual_production.js') }}?v=erp-actuals-first-20260529"></script>
+{% endblock %}

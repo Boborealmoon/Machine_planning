@@ -12,8 +12,171 @@ async function saveSegmentActual(segmentId, patch, options = {}) {
   return data;
 }
 
-function trialActualModalHost() {
+function trialActualAutosaveEnabled() {
+  return false;
+}
+
+function trialActualExplicitSaveEnabled() {
+  return Boolean(window.ACTUAL_PRODUCTION_PAGE);
+}
+
+function trialActualRecordOnlyEnabled() {
+  return Boolean(window.ACTUAL_PRODUCTION_PAGE);
+}
+
+function trialActualApiPayloadExtras() {
+  return trialActualRecordOnlyEnabled() ? { record_only: true } : {};
+}
+
+function trialCanDeleteActualDailyDate(row) {
+  return !Boolean(row?.is_planned_row);
+}
+
+function trialActualDailyDeleteButtonHtml(blockId, rowSelector, { explicitSave = false, isPlannedRow = false } = {}) {
+  const plannedTitle = 'This date is from the schedule. Change it in the Planner.';
+  if (isPlannedRow) {
+    return `<button type="button" class="btn btn-ghost btn-xs is-locked-action" disabled title="${escapeHtml(plannedTitle)}">Delete Date</button>`;
+  }
+  if (explicitSave) {
+    return `<button type="button" class="btn btn-ghost btn-xs" onmousedown="event.preventDefault()" onclick="trialDeleteActualDailyRow(${rowSelector}, ${Number(blockId) || 0})">Delete Date</button>`;
+  }
+  return `<button type="button" class="btn btn-ghost btn-xs" onclick="trialRemoveActualDailyRow(${rowSelector})">Delete Date</button>`;
+}
+
+function trialActualQtyDisplay(value) {
+  if (value === null || value === undefined || value === '') return '';
+  const num = Number(value);
+  if (Number.isFinite(num) && Math.abs(num - Math.round(num)) < 1e-9) return String(Math.round(num));
+  return String(value);
+}
+
+function trialDisplayQtyForDailyRow(row, field) {
+  const displayKey = field === 'reject_qty' ? 'display_reject_qty' : 'display_output_qty';
+  const displayValue = row?.[displayKey];
+  if (displayValue !== undefined && displayValue !== null && displayValue !== '') {
+    return trialActualQtyDisplay(displayValue);
+  }
+  const raw = row?.[field];
+  if (raw === null || raw === undefined || raw === '') return '';
+  return trialActualQtyDisplay(raw);
+}
+
+function trialActualEntryHost(blockId) {
+  const numericId = Number(blockId || 0);
+  if (numericId) {
+    const pageHost = document.querySelector(`[data-actual-entry-host="${numericId}"]`);
+    if (pageHost) return pageHost;
+  }
   return document.querySelector('.trial-modal-body') || document.getElementById('trial-modal-shell');
+}
+
+function trialActualDailyRowRenderOptions(blockId, overrides = {}) {
+  const shell = trialActualEntryHost(blockId);
+  const showErpReconcile = Boolean(shell?.querySelector('.actual-production-daily-table table'));
+  return {
+    explicitSave: showErpReconcile || trialActualExplicitSaveEnabled(),
+    showErpReconcile,
+    ...overrides,
+  };
+}
+
+function trialActualDailyGridElement(blockId) {
+  const shell = trialActualEntryHost(blockId);
+  if (!shell) return null;
+  return shell.querySelector(`[data-trial-actual-daily-grid="${String(blockId)}"]`);
+}
+
+function trialUsesActualProductionTable(blockId) {
+  return Boolean(trialActualEntryHost(blockId)?.querySelector('.actual-production-daily-table table'));
+}
+
+function trialRenderActualDailyRow(blockId, row, options = {}) {
+  const opts = { ...trialActualDailyRowRenderOptions(blockId), ...options };
+  if (opts.showErpReconcile) {
+    return trialActualDailyRowTableHtml(blockId, row, opts);
+  }
+  return trialActualDailyRowHtml(blockId, row, opts);
+}
+
+function trialActualModalHost() {
+  return trialActualEntryHost(trialActualDraft.blockId);
+}
+
+function trialAfterActualSaved(machineId, blockId) {
+  if (typeof actualProductionRefreshBlock === 'function' && blockId) {
+    actualProductionRefreshBlock(blockId);
+    return Promise.resolve();
+  }
+  if (typeof renderActualProduction === 'function') {
+    renderActualProduction();
+    return Promise.resolve();
+  }
+  return refreshMachines([Number(machineId || 0)].filter(Boolean));
+}
+
+function trialActualRowFieldElement(rowEl, field) {
+  return rowEl?.querySelector?.(`[data-trial-actual-field="${field}"]`) || null;
+}
+
+function trialActualRowFieldValue(rowEl, field) {
+  const el = trialActualRowFieldElement(rowEl, field);
+  return el ? String(el.value ?? '') : '';
+}
+
+function trialActualRowFieldLastSaved(rowEl, field) {
+  const el = trialActualRowFieldElement(rowEl, field);
+  return el ? String(el.dataset.lastSavedValue ?? '') : '';
+}
+
+function trialActualRowSetFieldLastSaved(rowEl, field, value) {
+  const el = trialActualRowFieldElement(rowEl, field);
+  if (!el) return;
+  el.dataset.lastSavedValue = String(value ?? '');
+}
+
+function trialActualRowSetStatus(rowEl, text, tone = '') {
+  const statusEl = rowEl?.querySelector?.('[data-trial-actual-row-status]');
+  if (!statusEl) return;
+  statusEl.textContent = text || '';
+  statusEl.classList.remove('is-saving', 'is-saved', 'is-error');
+  if (tone) statusEl.classList.add(tone);
+}
+
+function trialActualRowSetSaving(rowEl, saving) {
+  if (!rowEl) return;
+  rowEl.dataset.saving = saving ? '1' : '0';
+  rowEl.querySelectorAll('input, textarea, button').forEach(node => {
+    if (!(node instanceof HTMLElement)) return;
+    node.disabled = Boolean(saving);
+  });
+  if (saving) trialActualRowSetStatus(rowEl, 'Saving...', 'is-saving');
+}
+
+function trialActualFieldFocus(rowEl, field) {
+  const el = trialActualRowFieldElement(rowEl, field);
+  if (!el) return;
+  el.dataset.focusValue = String(el.value ?? '');
+}
+
+function trialActualFieldChanged(rowEl, field) {
+  return trialActualRowFieldValue(rowEl, field) !== trialActualRowFieldLastSaved(rowEl, field);
+}
+
+function trialActualRowPayloadFromElement(rowEl) {
+  return {
+    report_date: String(rowEl?.querySelector?.('[data-trial-actual-field="report_date"]')?.value || rowEl?.dataset?.originalReportDate || rowEl?.dataset?.rowDate || '').trim(),
+    target_qty: Number(rowEl?.dataset?.targetQty || 0),
+    output_qty: trialActualRowFieldValue(rowEl, 'output_qty').trim(),
+    reject_qty: trialActualRowFieldValue(rowEl, 'reject_qty').trim(),
+    remarks: trialActualRowFieldValue(rowEl, 'remarks').trim(),
+  };
+}
+
+function trialActualRowHasSaveableValues(rowEl) {
+  const outputValue = trialActualRowFieldValue(rowEl, 'output_qty').trim();
+  const rejectValue = trialActualRowFieldValue(rowEl, 'reject_qty').trim();
+  const remarksValue = trialActualRowFieldValue(rowEl, 'remarks').trim();
+  return outputValue !== '' || rejectValue !== '' || remarksValue !== '';
 }
 
 function trialPlannedTargetQtyForDate(blockId, reportDate) {
@@ -45,12 +208,26 @@ function trialActualDailyRowsForBlock(block) {
     report_date: String(row.report_date || '').trim(),
     original_report_date: String(row.original_report_date || row.report_date || '').trim(),
     target_qty: Number(row.target_qty || 0),
-    output_qty: row.output_qty === null || row.output_qty === undefined ? '' : String(row.output_qty),
-    reject_qty: row.reject_qty === null || row.reject_qty === undefined ? '' : String(row.reject_qty),
+    output_qty: row.output_qty === null || row.output_qty === undefined ? '' : trialActualQtyDisplay(row.output_qty),
+    reject_qty: row.reject_qty === null || row.reject_qty === undefined ? '' : trialActualQtyDisplay(row.reject_qty),
     remarks: String(row.remarks || ''),
     is_planned_row: Boolean(row.is_planned_row),
     is_existing_actual: Boolean(row.is_existing_actual),
     locked_date: row.locked_date !== false,
+    erp_daily_qty: row.erp_daily_qty,
+    erp_daily_reject: row.erp_daily_reject,
+    erp_acc_qty: row.erp_acc_qty,
+    erp_snapshot_at: String(row.erp_snapshot_at || ''),
+    shop_good_qty: row.shop_good_qty,
+    shop_output_qty: row.shop_output_qty,
+    shop_reject_qty: row.shop_reject_qty,
+    display_output_qty: row.display_output_qty,
+    display_reject_qty: row.display_reject_qty,
+    display_good_qty: row.display_good_qty,
+    output_source: row.output_source,
+    reject_source: row.reject_source,
+    good_source: row.good_source,
+    reconcile_status: String(row.reconcile_status || ''),
   }));
 }
 
@@ -70,30 +247,99 @@ function trialResetActualDraft(blockId, block) {
 }
 
 function trialRenderActualDailyRows(blockId, rows) {
-  const shell = trialActualModalHost();
-  if (!shell) return;
-  const grid = shell.querySelector(`[data-trial-actual-daily-grid="${String(blockId)}"]`);
+  const grid = trialActualDailyGridElement(blockId);
   if (!grid) return;
   const dailyRows = Array.isArray(rows) ? rows : [];
-  grid.innerHTML = dailyRows.map(row => trialActualDailyRowHtml(blockId, row)).join('')
-    || '<div class="trial-catalog-empty">No scheduled target rows. Recalculate schedule or add a date manually.</div>';
+  const emptyMsg = 'No scheduled target rows. Recalculate schedule or add a date manually.';
+  const emptyHtml = trialUsesActualProductionTable(blockId)
+    ? `<tr><td colspan="8" class="trial-catalog-empty">${emptyMsg}</td></tr>`
+    : `<div class="trial-catalog-empty">${emptyMsg}</div>`;
+  grid.innerHTML = dailyRows.length
+    ? dailyRows.map(row => trialRenderActualDailyRow(blockId, row)).join('')
+    : emptyHtml;
 }
 
 function trialActualDailyRowHtml(blockId, row, options = {}) {
   const reportDate = String(row?.report_date || trialTodayISO()).trim();
   const originalReportDate = String(row?.original_report_date || row?.report_date || '').trim();
   const targetQty = Number(row?.target_qty || 0);
-  const outputValue = row?.output_qty === null || row?.output_qty === undefined ? '' : String(row.output_qty);
-  const rejectValue = row?.reject_qty === null || row?.reject_qty === undefined ? '' : String(row.reject_qty);
+  const outputValue = trialDisplayQtyForDailyRow(row, 'output_qty');
+  const rejectValue = trialDisplayQtyForDailyRow(row, 'reject_qty');
+  const qtySourceHint = [row?.output_source, row?.reject_source].filter(source => source && source !== 'none').join(' / ');
   const remarksValue = String(row?.remarks || '');
   const isPlannedRow = Boolean(row?.is_planned_row);
   const isExistingActual = Boolean(row?.is_existing_actual);
   const lockedDate = row?.locked_date !== false;
   const isRemoved = Boolean(options.removed);
   const canRemove = options.canRemove !== false;
+  const explicitSave = Boolean(options.explicitSave || trialActualExplicitSaveEnabled());
+  const autosave = Boolean(options.autosave && !explicitSave && trialActualAutosaveEnabled());
+  const rowSelector = 'this.closest(\'.trial-actual-daily-row\')';
+  const draftFieldHandlers = (field, value) => (
+    explicitSave
+      ? `data-last-saved-value="${escapeHtml(value)}" oninput="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, ${rowSelector})" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0}, ${rowSelector}, '${field}')"`
+      : `oninput="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, ${rowSelector})" onchange="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, ${rowSelector})" onblur="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, ${rowSelector})" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0})"`
+  );
+  const outputHandlers = autosave
+    ? `data-last-saved-value="${escapeHtml(outputValue)}" onfocus="trialActualFieldFocus(${rowSelector}, 'output_qty')" onblur="trialActualFieldBlur(event, ${Number(blockId) || 0}, ${rowSelector}, 'output_qty')" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0}, ${rowSelector}, 'output_qty')"`
+    : draftFieldHandlers('output_qty', outputValue);
+  const rejectHandlers = autosave
+    ? `data-last-saved-value="${escapeHtml(rejectValue)}" onfocus="trialActualFieldFocus(${rowSelector}, 'reject_qty')" onblur="trialActualFieldBlur(event, ${Number(blockId) || 0}, ${rowSelector}, 'reject_qty')" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0}, ${rowSelector}, 'reject_qty')"`
+    : draftFieldHandlers('reject_qty', rejectValue);
+  const remarksHandlers = autosave
+    ? `data-last-saved-value="${escapeHtml(remarksValue)}" onfocus="trialActualFieldFocus(${rowSelector}, 'remarks')" onblur="trialActualFieldBlur(event, ${Number(blockId) || 0}, ${rowSelector}, 'remarks')" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0}, ${rowSelector}, 'remarks')"`
+    : draftFieldHandlers('remarks', remarksValue);
+  const deleteButton = canRemove
+    ? trialActualDailyDeleteButtonHtml(blockId, rowSelector, { explicitSave, isPlannedRow })
+    : '';
+  const explicitActions = explicitSave ? `
+        <div class="trial-actual-row-action-buttons">
+          <button type="button" class="btn btn-primary btn-xs" onmousedown="event.preventDefault()" onclick="trialSaveActualDailyRowExplicit(${Number(blockId) || 0}, ${rowSelector})">Save</button>
+          <button type="button" class="btn btn-ghost btn-xs" onmousedown="event.preventDefault()" onclick="trialCancelActualDailyRowEdit(${rowSelector})">Cancel</button>
+          ${deleteButton}
+        </div>
+  ` : deleteButton;
+  const showErpReconcile = Boolean(options.showErpReconcile);
+  const erpDailyQty = row?.erp_daily_qty;
+  const erpDailyDisplay = erpDailyQty === null || erpDailyQty === undefined ? '—' : fmt(erpDailyQty, 0);
+  const reconcileStatus = String(row?.reconcile_status || '').toLowerCase();
+  const reconcileLabels = {
+    match: 'Match',
+    shop_only: 'Shop only',
+    erp_only: 'ERP only',
+    shop_ahead: 'Shop ahead',
+    erp_ahead: 'ERP ahead',
+    no_data: 'No ERP data',
+  };
+  const reconcileLabel = reconcileLabels[reconcileStatus] || '';
+  const reconcileClass = reconcileStatus === 'match'
+    ? 'is-match'
+    : (reconcileStatus === 'shop_only' || reconcileStatus === 'shop_ahead')
+      ? 'is-shop'
+      : (reconcileStatus === 'erp_only' || reconcileStatus === 'erp_ahead')
+        ? 'is-erp'
+        : 'is-muted';
+  const erpColumnsHtml = showErpReconcile ? `
+      <div class="trial-actual-cell actual-production-erp-daily">
+        <span>ERP today</span>
+        <strong>${escapeHtml(String(erpDailyDisplay))}</strong>
+      </div>
+      <div class="actual-production-reconcile-cell">
+        ${reconcileLabel
+          ? `<span class="actual-production-reconcile-pill ${reconcileClass}">${escapeHtml(reconcileLabel)}</span>`
+          : '<span class="actual-production-reconcile-pill is-muted">—</span>'}
+      </div>
+  ` : '';
+  const rowClassNames = [
+    'trial-actual-row',
+    'trial-actual-daily-row',
+    explicitSave ? 'is-explicit-save' : '',
+    showErpReconcile ? 'has-erp-columns' : '',
+    isPlannedRow ? '' : 'is-actual-only-row',
+  ].filter(Boolean).join(' ');
   return `
     <div
-      class="trial-actual-row trial-actual-daily-row"
+      class="${rowClassNames}"
       data-trial-actual-row="1"
       data-row-date="${escapeHtml(reportDate)}"
       data-original-report-date="${escapeHtml(originalReportDate)}"
@@ -112,25 +358,127 @@ function trialActualDailyRowHtml(blockId, row, options = {}) {
       <div class="trial-actual-target">Target ${fmt(targetQty, 0)}</div>
       <label class="trial-actual-cell">
         <span>Output Qty</span>
-        <input data-trial-actual-field="output_qty" type="number" min="0" step="1" value="${escapeHtml(outputValue)}" oninput="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onchange="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onblur="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0})">
+        <input data-trial-actual-field="output_qty" type="number" min="0" step="1" value="${escapeHtml(outputValue)}" ${outputHandlers}>
       </label>
       <label class="trial-actual-cell">
         <span>Reject Qty</span>
-        <input data-trial-actual-field="reject_qty" type="number" min="0" step="1" value="${escapeHtml(rejectValue)}" oninput="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onchange="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onblur="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0})">
+        <input data-trial-actual-field="reject_qty" type="number" min="0" step="1" value="${escapeHtml(rejectValue)}" ${rejectHandlers}>
       </label>
       <label class="trial-actual-cell">
         <span>Remarks</span>
-        <textarea data-trial-actual-field="remarks" rows="1" oninput="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onchange="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onblur="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, this.closest('.trial-actual-daily-row'))" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0})">${escapeHtml(remarksValue)}</textarea>
+        <textarea data-trial-actual-field="remarks" rows="1" ${remarksHandlers}>${escapeHtml(remarksValue)}</textarea>
       </label>
-      <div class="trial-actual-delete-cell">
-        ${canRemove ? `<button type="button" class="btn btn-ghost btn-xs" onclick="trialRemoveActualDailyRow(this.closest('.trial-actual-daily-row'))">Delete Date</button>` : ''}
+      ${erpColumnsHtml}
+      <div class="trial-actual-delete-cell${explicitSave ? ' trial-actual-row-actions' : ''}">
+        ${explicitSave || autosave ? `<div class="trial-actual-row-status" data-trial-actual-row-status></div>` : ''}
+        ${explicitSave ? explicitActions : deleteButton}
       </div>
     </div>
   `;
 }
 
+function trialActualDailyRowTableHtml(blockId, row, options = {}) {
+  const reportDate = String(row?.report_date || trialTodayISO()).trim();
+  const originalReportDate = String(row?.original_report_date || row?.report_date || '').trim();
+  const targetQty = Number(row?.target_qty || 0);
+  const outputValue = trialDisplayQtyForDailyRow(row, 'output_qty');
+  const rejectValue = trialDisplayQtyForDailyRow(row, 'reject_qty');
+  const qtySourceTitle = [row?.output_source, row?.reject_source]
+    .filter(source => source && source !== 'none')
+    .map(source => (source === 'erp' ? 'ERP' : source === 'shop' ? 'Shop' : 'Match'))
+    .join(' · ');
+  const qtySourceAttr = qtySourceTitle
+    ? ` title="Showing ${escapeHtml(qtySourceTitle)} (ERP first; shop wins if higher)"`
+    : '';
+  const remarksValue = String(row?.remarks || '');
+  const isPlannedRow = Boolean(row?.is_planned_row);
+  const isExistingActual = Boolean(row?.is_existing_actual);
+  const lockedDate = row?.locked_date !== false;
+  const isRemoved = Boolean(options.removed);
+  const explicitSave = Boolean(options.explicitSave || trialActualExplicitSaveEnabled());
+  const rowSelector = 'this.closest(\'.trial-actual-daily-row\')';
+  const draftFieldHandlers = (field, value) => (
+    `data-last-saved-value="${escapeHtml(value)}" oninput="trialSyncActualDailyRowDraft(${Number(blockId) || 0}, ${rowSelector})" onkeydown="trialActualInputKeydown(event, ${Number(blockId) || 0}, ${rowSelector}, '${field}')"`
+  );
+  const outputHandlers = draftFieldHandlers('output_qty', outputValue);
+  const rejectHandlers = draftFieldHandlers('reject_qty', rejectValue);
+  const remarksHandlers = draftFieldHandlers('remarks', remarksValue);
+  const deleteButton = trialActualDailyDeleteButtonHtml(blockId, rowSelector, { explicitSave: true, isPlannedRow });
+  const erpDailyQty = row?.erp_daily_qty;
+  const erpDailyDisplay = erpDailyQty === null || erpDailyQty === undefined ? '—' : fmt(erpDailyQty, 0);
+  const reconcileStatus = String(row?.reconcile_status || '').toLowerCase();
+  const reconcileLabels = {
+    match: 'Match',
+    shop_only: 'Shop only',
+    erp_only: 'ERP only',
+    shop_ahead: 'Shop ahead',
+    erp_ahead: 'ERP ahead',
+    no_data: 'No ERP data',
+  };
+  const reconcileLabel = reconcileLabels[reconcileStatus] || '';
+  const reconcileClass = reconcileStatus === 'match'
+    ? 'is-match'
+    : (reconcileStatus === 'shop_only' || reconcileStatus === 'shop_ahead')
+      ? 'is-shop'
+      : (reconcileStatus === 'erp_only' || reconcileStatus === 'erp_ahead')
+        ? 'is-erp'
+        : 'is-muted';
+  const rowClassNames = [
+    'trial-actual-daily-row',
+    'is-explicit-save',
+    isPlannedRow ? '' : 'is-actual-only-row',
+  ].filter(Boolean).join(' ');
+  return `
+    <tr
+      class="${rowClassNames}"
+      data-trial-actual-row="1"
+      data-row-date="${escapeHtml(reportDate)}"
+      data-original-report-date="${escapeHtml(originalReportDate)}"
+      data-is-planned-row="${isPlannedRow ? '1' : '0'}"
+      data-is-existing-actual="${isExistingActual ? '1' : '0'}"
+      data-locked-date="${lockedDate ? '1' : '0'}"
+      data-target-qty="${escapeHtml(String(targetQty))}"
+      data-removed="${isRemoved ? '1' : '0'}"
+      ${isRemoved ? 'hidden' : ''}
+    >
+      <td class="ap-daily-date">
+        <span class="trial-actual-date-text">${escapeHtml(reportDate)}</span>
+        <input data-trial-actual-field="report_date" type="hidden" value="${escapeHtml(reportDate)}">
+      </td>
+      <td class="ap-daily-target">${fmt(targetQty, 0)}</td>
+      <td class="ap-daily-input">
+        <input data-trial-actual-field="output_qty" type="number" min="0" step="1" value="${escapeHtml(outputValue)}"${qtySourceAttr} ${outputHandlers}>
+      </td>
+      <td class="ap-daily-input">
+        <input data-trial-actual-field="reject_qty" type="number" min="0" step="1" value="${escapeHtml(rejectValue)}"${qtySourceAttr} ${rejectHandlers}>
+      </td>
+      <td class="ap-daily-input ap-daily-remarks">
+        <textarea data-trial-actual-field="remarks" rows="1" ${remarksHandlers}>${escapeHtml(remarksValue)}</textarea>
+      </td>
+      <td class="ap-daily-erp">${escapeHtml(String(erpDailyDisplay))}</td>
+      <td class="ap-daily-status">
+        ${reconcileLabel
+          ? `<span class="actual-production-reconcile-pill ${reconcileClass}">${escapeHtml(reconcileLabel)}</span>`
+          : '<span class="actual-production-reconcile-pill is-muted">—</span>'}
+      </td>
+      <td class="ap-daily-actions">
+        <div class="trial-actual-row-status" data-trial-actual-row-status></div>
+        <div class="trial-actual-row-action-buttons">
+          <button type="button" class="btn btn-primary btn-xs" onmousedown="event.preventDefault()" onclick="trialSaveActualDailyRowExplicit(${Number(blockId) || 0}, ${rowSelector})">Save</button>
+          <button type="button" class="btn btn-ghost btn-xs" onmousedown="event.preventDefault()" onclick="trialCancelActualDailyRowEdit(${rowSelector})">Cancel</button>
+          ${deleteButton}
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
 function trialRemoveActualDailyRow(rowEl) {
   if (!rowEl) return;
+  if (String(rowEl.dataset.isPlannedRow || '0') === '1') {
+    toast('Planned dates cannot be removed here. Use the Planner.', 'warning');
+    return;
+  }
   const reportDate = String(rowEl.querySelector('[data-trial-actual-field="report_date"]')?.value || rowEl.dataset.originalReportDate || rowEl.dataset.rowDate || '').trim();
   const hasSavedActual = String(rowEl.dataset.isExistingActual || '0') === '1';
   const hasPlannedRow = String(rowEl.dataset.isPlannedRow || '0') === '1';
@@ -163,7 +511,7 @@ function trialRemoveActualDailyRow(rowEl) {
 }
 
 function trialAddActualDailyRow(blockId, reportDate = '') {
-  const shell = trialActualModalHost();
+  const shell = trialActualEntryHost(blockId);
   if (!shell) return;
   const grid = shell.querySelector(`[data-trial-actual-daily-grid="${String(blockId)}"]`);
   if (!grid) return;
@@ -198,7 +546,7 @@ function trialAddActualDailyRow(blockId, reportDate = '') {
     is_new_row: true,
   };
   trialActualDraft.rows[chosenDate] = row;
-  grid.insertAdjacentHTML('beforeend', trialActualDailyRowHtml(blockId, row));
+  grid.insertAdjacentHTML('beforeend', trialRenderActualDailyRow(blockId, row));
   const added = Array.from(grid.querySelectorAll('.trial-actual-daily-row')).find(row => String(row.dataset.rowDate || '') === chosenDate && String(row.dataset.removed || '0') !== '1');
   added?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   added?.querySelector('[data-trial-actual-field="output_qty"]')?.focus();
@@ -221,7 +569,7 @@ function trialSyncActualDailyRowDraft(blockId, rowEl) {
 }
 
 function trialSnapshotActualDailyRows(blockId) {
-  const shell = trialActualModalHost();
+  const shell = trialActualEntryHost(blockId);
   const grid = shell ? shell.querySelector(`[data-trial-actual-daily-grid="${String(blockId)}"]`) : null;
   if (!grid) return [];
   const nextRows = {};
@@ -267,7 +615,7 @@ function trialSnapshotActualDailyRows(blockId) {
 }
 
 function trialCollectActualDailyRows(blockId) {
-  const shell = trialActualModalHost();
+  const shell = trialActualEntryHost(blockId);
   const grid = shell ? shell.querySelector(`[data-trial-actual-daily-grid="${String(blockId)}"]`) : null;
   if (!grid) return { daily_actuals: [], delete_actual_dates: [], removed_target_dates: [] };
   const dailyActuals = [];
@@ -299,12 +647,176 @@ function trialCollectActualDailyRows(blockId) {
   };
 }
 
-function trialActualInputKeydown(event, blockId) {
+function trialActualInputKeydown(event, blockId, rowEl, field) {
   if (!event || event.key !== 'Enter') return;
-  const tag = String(event.target?.tagName || '').toLowerCase();
-  if (tag === 'textarea' && !event.ctrlKey && !event.metaKey) return;
+  const isTextarea = String(event.target?.tagName || '').toLowerCase() === 'textarea';
+  if (isTextarea && !event.ctrlKey && !event.metaKey) return;
   event.preventDefault();
+  if (trialActualExplicitSaveEnabled() && rowEl) {
+    trialSaveActualDailyRowExplicit(blockId, rowEl);
+    return;
+  }
+  if (trialActualAutosaveEnabled() && rowEl) {
+    if (isTextarea && (event.ctrlKey || event.metaKey)) {
+      trialAutosaveActualRow(blockId, rowEl, 'ctrl-enter');
+      return;
+    }
+    trialAutosaveActualRow(blockId, rowEl, 'enter');
+    return;
+  }
   trialSaveActualDailyRows(blockId);
+}
+
+function trialActualFieldBlur(event, blockId, rowEl, field) {
+  if (!trialActualAutosaveEnabled() || !rowEl || String(rowEl.dataset.saving || '0') === '1') return;
+  const current = trialActualRowFieldValue(rowEl, field);
+  const previous = trialActualRowFieldLastSaved(rowEl, field);
+  if (current === previous) return;
+  trialAutosaveActualRow(blockId, rowEl, 'blur');
+}
+
+function trialCancelActualDailyRowEdit(rowEl) {
+  if (!rowEl) return;
+  ['output_qty', 'reject_qty', 'remarks'].forEach(fieldName => {
+    const el = trialActualRowFieldElement(rowEl, fieldName);
+    if (el) el.value = trialActualRowFieldLastSaved(rowEl, fieldName);
+  });
+  trialActualRowSetStatus(rowEl, '', '');
+}
+
+async function trialSaveActualDailyRowExplicit(blockId, rowEl) {
+  return trialPersistActualDailyRow(blockId, rowEl);
+}
+
+async function trialPersistActualDailyRow(blockId, rowEl, options = {}) {
+  if (!rowEl) return { ok: true, skipped: true };
+  if (String(rowEl.dataset.saving || '0') === '1') return { ok: true, skipped: true };
+  const reportDate = String(rowEl.querySelector('[data-trial-actual-field="report_date"]')?.value || rowEl.dataset.originalReportDate || rowEl.dataset.rowDate || '').trim();
+  if (!reportDate) return { ok: true, skipped: true };
+
+  trialSyncActualDailyRowDraft(blockId, rowEl);
+  if (!trialActualRowHasSaveableValues(rowEl)) {
+    toast('Enter output, reject, or remarks before saving.', 'warning');
+    return { ok: true, skipped: true };
+  }
+
+  const rowValues = trialActualRowPayloadFromElement(rowEl);
+  const payload = {
+    ...trialActualApiPayloadExtras(),
+    daily_actuals: [{
+      report_date: reportDate,
+      target_qty: rowValues.target_qty,
+      output_qty: rowValues.output_qty,
+      reject_qty: rowValues.reject_qty,
+      remarks: rowValues.remarks,
+    }],
+  };
+  const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
+  const machineId = Number(block?.machine_id || 0);
+  trialActualRowSetSaving(rowEl, true);
+  try {
+    const data = await POST(`/api/trial/blocks/${blockId}/actual`, payload);
+    if (data && data.block) {
+      trialState.blocks = (trialState.blocks || []).map(item => (
+        String(item.block_id) === String(blockId) ? { ...item, ...data.block } : item
+      ));
+    }
+    if (Array.isArray(data?.actuals)) {
+      trialState.actuals = [
+        ...(trialState.actuals || []).filter(row => String(row.block_id) !== String(blockId)),
+        ...data.actuals,
+      ];
+    }
+    if (Number(data?.changed_count || 0) <= 0) {
+      toast('No actual rows were saved.', 'warning');
+      return data;
+    }
+    trialResetActualDraft(blockId, data.block || block || null);
+    if (!trialActualExplicitSaveEnabled()) {
+      trialRenderActualDailyRows(blockId, data.actual_daily_rows || (data.block && data.block.actual_daily_rows) || []);
+    }
+    if (options.toastOnSuccess !== false) {
+      toast(data?.schedule_adjusted ? 'Actual saved — schedule adjusted' : 'Actual saved', 'success');
+    }
+    await trialAfterActualSaved(machineId, blockId);
+    return data;
+  } catch (err) {
+    if (rowEl.isConnected) trialActualRowSetStatus(rowEl, 'Error', 'is-error');
+    toast('Actual save failed: ' + err.message, 'error');
+    throw err;
+  } finally {
+    if (rowEl.isConnected) trialActualRowSetSaving(rowEl, false);
+  }
+}
+
+async function trialAutosaveActualRow(blockId, rowEl, reason) {
+  if (!rowEl) return { ok: true, skipped: true };
+  if (String(rowEl.dataset.saving || '0') === '1') return { ok: true, skipped: true };
+  trialSyncActualDailyRowDraft(blockId, rowEl);
+  if (
+    reason !== 'delete'
+    && !trialActualFieldChanged(rowEl, 'output_qty')
+    && !trialActualFieldChanged(rowEl, 'reject_qty')
+    && !trialActualFieldChanged(rowEl, 'remarks')
+  ) {
+    return { ok: true, skipped: true };
+  }
+  if (!trialActualRowHasSaveableValues(rowEl)) {
+    return { ok: true, skipped: true };
+  }
+  return trialPersistActualDailyRow(blockId, rowEl, { toastOnSuccess: false });
+}
+
+async function trialDeleteActualDailyRow(rowEl, blockId) {
+  if (!rowEl) return { ok: true, skipped: true };
+  const reportDate = String(rowEl.querySelector('[data-trial-actual-field="report_date"]')?.value || rowEl.dataset.originalReportDate || rowEl.dataset.rowDate || '').trim();
+  if (!reportDate) return { ok: true, skipped: true };
+  const hasSavedActual = String(rowEl.dataset.isExistingActual || '0') === '1';
+  const hasPlannedRow = String(rowEl.dataset.isPlannedRow || '0') === '1';
+  if (hasPlannedRow) {
+    toast('Planned dates cannot be removed here. Use the Planner.', 'warning');
+    return { ok: true, skipped: true };
+  }
+  const targetQty = Number(rowEl.dataset.targetQty || 0);
+  const payload = { ...trialActualApiPayloadExtras() };
+  if (hasSavedActual) payload.delete_actual_dates = [reportDate];
+  if (hasPlannedRow || targetQty > 0) {
+    payload.removed_target_dates = [reportDate];
+  }
+  if (!payload.delete_actual_dates && !payload.removed_target_dates) {
+    trialRemoveActualDailyRow(rowEl);
+    return { ok: true, skipped: true };
+  }
+  const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
+  const machineId = Number(block?.machine_id || 0);
+  trialActualRowSetSaving(rowEl, true);
+  try {
+    const data = await POST(`/api/trial/blocks/${blockId}/actual`, payload);
+    if (data && data.block) {
+      trialState.blocks = (trialState.blocks || []).map(item => (
+        String(item.block_id) === String(blockId) ? { ...item, ...data.block } : item
+      ));
+    }
+    if (Array.isArray(data?.actuals)) {
+      trialState.actuals = [
+        ...(trialState.actuals || []).filter(row => String(row.block_id) !== String(blockId)),
+        ...data.actuals,
+      ];
+    }
+    trialResetActualDraft(blockId, data.block || block || null);
+    if (!trialActualExplicitSaveEnabled()) {
+      trialRenderActualDailyRows(blockId, data.actual_daily_rows || (data.block && data.block.actual_daily_rows) || []);
+    }
+    toast('Date removed', 'success');
+    await trialAfterActualSaved(machineId, blockId);
+    return data;
+  } catch (err) {
+    if (rowEl.isConnected) trialActualRowSetStatus(rowEl, 'Error', 'is-error');
+    toast('Delete failed: ' + err.message, 'error');
+    throw err;
+  } finally {
+    trialActualRowSetSaving(rowEl, false);
+  }
 }
 
 async function trialSaveActualDailyRows(blockId) {
@@ -341,8 +853,10 @@ async function trialSaveActualDailyRows(blockId) {
       trialResetActualDraft(blockId, data.block || block || null);
       trialRenderActualDailyRows(blockId, data.actual_daily_rows || (data.block && data.block.actual_daily_rows) || []);
     }
-    closeModal();
-    await refreshMachines([machineId].filter(Boolean));
+    if (document.body.classList.contains('trial-modal-open')) {
+      closeModal();
+    }
+    await trialAfterActualSaved(machineId, blockId);
     if (data?.schedule_adjusted) {
       toast('Actual saved — schedule adjusted', 'success');
     } else {
@@ -359,8 +873,41 @@ async function trialSaveActualDailyRows(blockId) {
   }
 }
 
-function openTrialActualModal(blockId) {
-  const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
+async function trialEnsureBlockActualDetail(blockId) {
+  const block = (trialState.blocks || []).find(item => String(item.block_id) === String(blockId));
+  if (!block) return null;
+  if (Array.isArray(block.actual_daily_rows) && block.actual_daily_rows.length) return block;
+  const machineId = Number(block.machine_id || 0);
+  if (!machineId) return block;
+  const data = await GET(`/api/trial/schedule?machine_ids=${machineId}`);
+  const refreshedBlocks = Array.isArray(data?.blocks) ? data.blocks : [];
+  const refreshedActuals = Array.isArray(data?.actuals) ? data.actuals : [];
+  const refreshedSegments = Array.isArray(data?.segments) ? data.segments : [];
+  const refreshedBlock = refreshedBlocks.find(item => String(item.block_id) === String(blockId));
+  if (refreshedBlock) {
+    trialState.blocks = (trialState.blocks || []).map(item => (
+      String(item.block_id) === String(blockId) ? { ...item, ...refreshedBlock } : item
+    ));
+  }
+  if (refreshedActuals.length) {
+    const blockIds = new Set(refreshedBlocks.map(item => String(item.block_id)));
+    trialState.actuals = [
+      ...(trialState.actuals || []).filter(row => !blockIds.has(String(row.block_id))),
+      ...refreshedActuals,
+    ];
+  }
+  if (refreshedSegments.length) {
+    const blockIds = new Set(refreshedBlocks.map(item => String(item.block_id)));
+    trialState.segments = [
+      ...(trialState.segments || []).filter(seg => !blockIds.has(String(seg.block_id))),
+      ...refreshedSegments,
+    ];
+  }
+  return (trialState.blocks || []).find(item => String(item.block_id) === String(blockId)) || refreshedBlock || block;
+}
+
+async function openTrialActualModal(blockId) {
+  let block = await trialEnsureBlockActualDetail(blockId);
   if (!block) return;
   const groupSummary = block.group_id
     ? (trialState.block_groups || []).find(group => String(group.group_id || 0) === String(block.group_id))
@@ -387,7 +934,7 @@ function openTrialActualModal(blockId) {
   const remainingLoad = remainingQty * Number(block.cycle_minutes_per_qty || 0);
   const dailyRows = trialActualDailyRowsForBlock(block);
   const rowsHtml = dailyRows.length
-    ? dailyRows.map(row => trialActualDailyRowHtml(blockId, row)).join('')
+    ? dailyRows.map(row => trialRenderActualDailyRow(blockId, row)).join('')
     : '<div class="trial-catalog-empty">No scheduled target rows. Recalculate schedule or add a date manually.</div>';
   const cardPsId = String(block.job_no || block.source_ps_id || '').trim();
   const cardOperationLabel = String(block.source_op_no || block.operation_name || '').trim();
@@ -410,7 +957,7 @@ function openTrialActualModal(blockId) {
       </div>
       <div class="trial-actual-section">
         <div class="trial-actual-section-title">Daily rows</div>
-        <div class="trial-actual-section-note">Planned dates load automatically. Delete Date removes the plan for that day and moves target qty to the tail when you save. Over/under target adjusts the remaining schedule.</div>
+        <div class="trial-actual-section-note">Planned dates load automatically. Delete Date is only available for dates you add manually. Over/under target adjusts the remaining schedule.</div>
         <div style="display:flex;flex-wrap:wrap;align-items:end;gap:8px;margin:8px 0 10px">
           <label class="trial-actual-cell" style="min-width:180px">
             <span>Add Date</span>

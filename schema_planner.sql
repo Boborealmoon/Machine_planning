@@ -119,6 +119,8 @@ CREATE TABLE IF NOT EXISTS public.planner_machine_capacity_day (
 CREATE TABLE IF NOT EXISTS public.planner_public_holiday (
     holiday_date  DATE         PRIMARY KEY,
     note          TEXT         NOT NULL DEFAULT '',
+    source        TEXT         NOT NULL DEFAULT 'manual',  -- manual | sg_mom
+    fetched_at    TIMESTAMPTZ,
     created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );

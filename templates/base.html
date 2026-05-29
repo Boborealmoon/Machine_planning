@@ -24,6 +24,10 @@
          class="nav-link {% if active == 'scheduler' %}nav-link--active{% endif %}">
         PLANNER
       </a>
+      <a href="/actual-production"
+         class="nav-link {% if active == 'actual_production' %}nav-link--active{% endif %}">
+        ACTUAL PRODUCTION
+      </a>
       <a href="/process-sheets"
          class="nav-link {% if active == 'process_sheets' %}nav-link--active{% endif %}">
         PROCESS SHEETS
@@ -56,6 +60,7 @@
           OPERATIONS <span class="nav-caret">▾</span>
         </button>
         <div class="nav-dropdown-menu" id="dd-operations">
+          <a href="/actual-production" class="nav-dropdown-item">Actual Production</a>
           <a href="/operations?section=actual-output" class="nav-dropdown-item">Actual Output</a>
           <a href="/operations?section=warnings" class="nav-dropdown-item">Warnings</a>
           <a href="/operations?section=audit-log" class="nav-dropdown-item">Audit Log</a>

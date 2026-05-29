@@ -102,7 +102,8 @@ def actual_daily_rows_for_block_row(con, block_row):
         )
     )
     if not planned_rows and int(block_row["machine_id"] or 0):
-        recalculate_machine(con, int(block_row["machine_id"]))
+        # Do not recalculate the whole machine during read-only schedule loads.
+        pass
         planned_rows = rows(
             con.execute(
                 """
@@ -180,6 +181,54 @@ def actual_daily_rows_for_block_row(con, block_row):
     return sorted(row_map.values(), key=lambda item: (compact_text(item.get("report_date") or ""), int(item.get("actual_id") or 0)))
 
 
+def actual_daily_rows_for_block_row_with_erp(con, block_row):
+    daily_rows = actual_daily_rows_for_block_row(con, block_row)
+    try:
+        con.execute("SAVEPOINT erp_actual_enrich")
+        from .erp_actuals import enrich_actual_daily_rows_with_erp
+
+        enriched, recon = enrich_actual_daily_rows_with_erp(con, block_row, daily_rows)
+        con.execute("RELEASE SAVEPOINT erp_actual_enrich")
+        return enriched, recon
+    except Exception:
+        try:
+            con.execute("ROLLBACK TO SAVEPOINT erp_actual_enrich")
+        except Exception:
+            pass
+        return daily_rows, None
+
+
+def attach_actual_daily_to_blocks(con, block_rows, *, with_erp=False):
+    """Attach actual_daily_rows (and optional erp_reconciliation) to block dicts in place."""
+    if not con or not block_rows:
+        return
+    try:
+        from .erp_actuals import enrich_actual_daily_rows_with_erp
+    except Exception:
+        enrich_actual_daily_rows_with_erp = None
+
+    for block_row in block_rows:
+        block_id = int(block_row.get("block_id") or 0)
+        if not block_id:
+            continue
+        daily_rows = actual_daily_rows_for_block_row(con, block_row)
+        if with_erp and enrich_actual_daily_rows_with_erp:
+            try:
+                daily_rows, erp_recon = enrich_actual_daily_rows_with_erp(con, block_row, daily_rows)
+                block_row["erp_reconciliation"] = erp_recon
+                if erp_recon:
+                    from .erp_actuals import effective_actual_totals_for_block
+
+                    block_row["effective_actuals"] = effective_actual_totals_for_block(
+                        con, block_row, erp_recon
+                    )
+            except Exception:
+                block_row["erp_reconciliation"] = None
+        else:
+            block_row["erp_reconciliation"] = None
+        block_row["actual_daily_rows"] = daily_rows
+
+
 def removed_actual_dates_for_block_row(con, block_row):
     if not con or not block_row:
         return []
@@ -244,7 +293,7 @@ def apply_actual_variance_delta_to_block_tail(con, block_id, actual_date_text, v
     }
 
 
-def apply_removed_target_date_to_block_tail(con, block_id, report_date_text, target_qty_removed=None):
+def apply_removed_target_date_to_block_tail(con, block_id, report_date_text, target_qty_removed=None, shift_to_tail=True):
     block = trial_block_row(con, block_id)
     if not block:
         return {"changed": False, "removed_qty": 0.0}
@@ -272,7 +321,17 @@ def apply_removed_target_date_to_block_tail(con, block_id, report_date_text, tar
         )
 
     if removed_qty <= 0:
-        return {"changed": False, "removed_qty": 0.0}
+        deleted = con.execute(
+            """
+            DELETE FROM planner_run_block_segment
+            WHERE block_id = %s
+              AND COALESCE(segment_type, '') = 'production'
+              AND segment_date = %s::date
+            """,
+            (int(block_id), report_date),
+        )
+        changed = bool(getattr(deleted, "rowcount", 0))
+        return {"changed": changed, "removed_qty": 0.0}
 
     con.execute(
         """
@@ -283,6 +342,9 @@ def apply_removed_target_date_to_block_tail(con, block_id, report_date_text, tar
         """,
         (int(block_id), report_date),
     )
+
+    if not shift_to_tail:
+        return {"changed": True, "removed_qty": float(removed_qty)}
 
     report_dt = parse_dt_text(report_date) if report_date else None
     changed = add_shortfall_to_tail_with_capacity(
@@ -379,13 +441,21 @@ def trial_block_payload(block, con=None):
         "group_id": int(block.get("group_id") or 0),
         "group_label": block.get("group_label") or "",
         "group_type": block.get("group_type") or "",
-        "actual_daily_rows": actual_daily_rows_for_block_row(con, block) if con else [],
+        "actual_daily_rows": [],
+        "erp_reconciliation": None,
         "removed_actual_dates": removed_actual_dates_for_block_row(con, block) if con else [],
         "actual_start_at": "",
         "actual_end_at": "",
         "actual_row_count": 0,
     }
     if con:
+        daily_rows, erp_recon = actual_daily_rows_for_block_row_with_erp(con, block)
+        payload["actual_daily_rows"] = daily_rows
+        payload["erp_reconciliation"] = erp_recon
+        if erp_recon:
+            from .erp_actuals import effective_actual_totals_for_block
+
+            payload["effective_actuals"] = effective_actual_totals_for_block(con, block, erp_recon)
         summary = actual_summary_for_block_row(con, block, float(block["scheduled_qty"] or 0))
         payload["actual_start_at"] = compact_text(summary.get("actual_start_at") or "")
         payload["actual_end_at"] = compact_text(summary.get("actual_end_at") or "")

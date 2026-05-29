@@ -95,6 +95,11 @@ def scheduler():
     return render_template("scheduler.html", active="scheduler")
 
 
+@app.get("/actual-production")
+def actual_production():
+    return render_template("actual_production.html", active="actual_production")
+
+
 @app.get("/process-sheets")
 def process_sheets():
     return render_template("process_sheets.html", active="process_sheets")

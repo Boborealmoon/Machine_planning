@@ -205,19 +205,29 @@ def machine_work_intervals_for_day(con, machine_id, work_date):
     machine_shift_profile = compact_text(machine["shift_profile"]) if machine else ""
     cap = machine_capacity_details_for_date(con, machine_id, work_day)
     base_intervals = []
-    if cap and int(cap.get("capacity_minutes") or 0) > 0:
+    if cap and bool(cap.get("has_capacity_day_override")):
+        if int(cap.get("capacity_minutes") or 0) > 0:
+            start_minute = int(cap.get("start_minute") or 0)
+            end_minute = min(DAY_END_MINUTE, start_minute + int(cap.get("capacity_minutes") or 0))
+            base_intervals = [(_minute_to_datetime(work_day, start_minute), _minute_to_datetime(work_day, end_minute))]
+        else:
+            base_intervals = []
+    elif cap and int(cap.get("capacity_minutes") or 0) > 0:
         start_minute = int(cap.get("start_minute") or 0)
         end_minute = min(DAY_END_MINUTE, start_minute + int(cap.get("capacity_minutes") or 0))
         base_intervals = [(_minute_to_datetime(work_day, start_minute), _minute_to_datetime(work_day, end_minute))]
     elif work_day.weekday() == 6 or is_public_holiday(con, work_day):
         base_intervals = []
-    elif machine_shift_profile.upper() == "24HR":
-        base_intervals = [(_minute_to_datetime(work_day, 0), _minute_to_datetime(work_day, DAY_END_MINUTE))]
     elif work_day.weekday() == 5 and compact_text((cap or {}).get("profile_name")).upper() == "SATURDAY":
         base_intervals = [
             (_minute_to_datetime(work_day, STANDARD_WORK_START_MINUTE), _minute_to_datetime(work_day, WEEKDAY_LUNCH_START_MINUTE)),
             (_minute_to_datetime(work_day, WEEKDAY_LUNCH_END_MINUTE), _minute_to_datetime(work_day, SATURDAY_WORK_END_MINUTE)),
         ]
+    elif work_day.weekday() == 5:
+        # Default planning skips Saturday; explicit SATURDAY capacity profile enables catch-up only.
+        base_intervals = []
+    elif machine_shift_profile.upper() == "24HR":
+        base_intervals = [(_minute_to_datetime(work_day, 0), _minute_to_datetime(work_day, DAY_END_MINUTE))]
     else:
         base_intervals = [
             (_minute_to_datetime(work_day, STANDARD_WORK_START_MINUTE), _minute_to_datetime(work_day, WEEKDAY_LUNCH_START_MINUTE)),
@@ -283,35 +293,25 @@ def shift_windows_for_machine_day(machine, date_iso, con=None):
     shift_profile = compact_text(machine.get("shift_profile") or "")
     machine_id = int(machine.get("machine_id") or 0)
     cap = machine_capacity_details_for_date(con, machine_id, work_day) if con and machine_id else None
-    if cap and bool(cap.get("has_capacity_day_override")) and int(cap.get("capacity_minutes") or 0) > 0:
-        start_minute = int(cap.get("start_minute") or 0)
-        end_minute = min(DAY_END_MINUTE, start_minute + int(cap.get("capacity_minutes") or 0))
-        if end_minute > start_minute:
-            return [
-                {
-                    "kind": "override",
-                    "start_minute": start_minute,
-                    "end_minute": end_minute,
-                    "start_datetime": datetime_for_date_minute(date_iso, start_minute).strftime("%Y-%m-%d %H:%M:%S"),
-                    "end_datetime": datetime_for_date_minute(date_iso, end_minute).strftime("%Y-%m-%d %H:%M:%S"),
-                    "reason": "Capacity override",
-                }
-            ]
+    if cap and bool(cap.get("has_capacity_day_override")):
+        if int(cap.get("capacity_minutes") or 0) > 0:
+            start_minute = int(cap.get("start_minute") or 0)
+            end_minute = min(DAY_END_MINUTE, start_minute + int(cap.get("capacity_minutes") or 0))
+            if end_minute > start_minute:
+                return [
+                    {
+                        "kind": "override",
+                        "start_minute": start_minute,
+                        "end_minute": end_minute,
+                        "start_datetime": datetime_for_date_minute(date_iso, start_minute).strftime("%Y-%m-%d %H:%M:%S"),
+                        "end_datetime": datetime_for_date_minute(date_iso, end_minute).strftime("%Y-%m-%d %H:%M:%S"),
+                        "reason": "Capacity override",
+                    }
+                ]
         return []
 
     if work_day.weekday() == 6:
         return []
-    if shift_profile == "24HR":
-        return [
-            {
-                "kind": "full",
-                "start_minute": 0,
-                "end_minute": DAY_END_MINUTE,
-                "start_datetime": datetime_for_date_minute(date_iso, 0).strftime("%Y-%m-%d %H:%M:%S"),
-                "end_datetime": datetime_for_date_minute(date_iso, DAY_END_MINUTE).strftime("%Y-%m-%d %H:%M:%S"),
-                "reason": "24HR shift",
-            }
-        ]
     if work_day.weekday() == 5 and compact_text((cap or {}).get("profile_name")).upper() == "SATURDAY":
         return [
             {
@@ -330,6 +330,19 @@ def shift_windows_for_machine_day(machine, date_iso, con=None):
                 "end_datetime": datetime_for_date_minute(date_iso, SATURDAY_WORK_END_MINUTE).strftime("%Y-%m-%d %H:%M:%S"),
                 "reason": "Saturday shift",
             },
+        ]
+    if work_day.weekday() == 5:
+        return []
+    if shift_profile == "24HR":
+        return [
+            {
+                "kind": "full",
+                "start_minute": 0,
+                "end_minute": DAY_END_MINUTE,
+                "start_datetime": datetime_for_date_minute(date_iso, 0).strftime("%Y-%m-%d %H:%M:%S"),
+                "end_datetime": datetime_for_date_minute(date_iso, DAY_END_MINUTE).strftime("%Y-%m-%d %H:%M:%S"),
+                "reason": "24HR shift",
+            }
         ]
     return [
         {

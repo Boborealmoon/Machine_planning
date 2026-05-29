@@ -1217,6 +1217,20 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
         )
         reload_ms = int((time.monotonic() - t_reload) * 1000)
 
+        snapshot_count = 0
+        if _planner_db_available() and rows:
+            try:
+                from planning.helpers import planner_db
+                from planning.erp_actuals import record_erp_wo_qty_snapshots
+
+                synced_at = datetime.now(timezone.utc)
+                with planner_db() as con:
+                    snapshot_count = record_erp_wo_qty_snapshots(
+                        con, rows, synced_at, columns=_MFG_WO_STATUS_COLS
+                    )
+            except Exception as exc:
+                log.warning("erp wo qty snapshot recording failed: %s", exc)
+
         _last_wo_status_sync_at = time.monotonic()
         total_ms = int((time.monotonic() - t0) * 1000)
         log.info(
@@ -1236,6 +1250,7 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
             "row_count": len(rows),
             "reload": reload_mode,
             "scoped": scoped,
+            "erp_snapshot_count": snapshot_count,
         }
 
     finally:

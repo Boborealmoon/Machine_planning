@@ -738,7 +738,7 @@
     white-space: nowrap;
   }
   .trial-actual-grid-head,
-  .trial-actual-row {
+  .trial-actual-row:not(tr) {
     display: grid;
     grid-template-columns: 140px 90px minmax(72px, 1fr) minmax(72px, 1fr) minmax(100px, 1.5fr) 112px;
     gap: 8px;
@@ -765,13 +765,173 @@
     border-radius: 12px;
     background: rgba(255,255,255,0.8);
   }
-  .trial-actual-row.trial-actual-daily-row {
+  .trial-actual-row.trial-actual-daily-row:not(tr) {
     align-items: end;
   }
   .trial-actual-delete-cell {
     display: flex;
     align-items: flex-end;
     justify-content: flex-end;
+  }
+  .trial-actual-row-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+  }
+  .trial-actual-row-action-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px;
+  }
+  .trial-actual-daily-table .trial-actual-daily-row.is-explicit-save {
+    min-width: 760px;
+  }
+  /* Actual Production: real table layout (avoids CSS grid column drift). */
+  .actual-production-daily-table {
+    overflow-x: auto;
+  }
+  .actual-production-daily-table table {
+    width: 100%;
+    min-width: 820px;
+    border-collapse: separate;
+    border-spacing: 0 8px;
+    table-layout: fixed;
+  }
+  .actual-production-daily-table thead th {
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text3);
+    text-align: left;
+    padding: 0 8px 4px;
+    vertical-align: bottom;
+  }
+  .actual-production-daily-table thead th.ap-daily-actions-head,
+  .actual-production-daily-table td.ap-daily-actions {
+    text-align: right;
+    width: 220px;
+  }
+  .actual-production-daily-table tbody tr.trial-actual-daily-row {
+    background: rgba(255, 255, 255, 0.88);
+    box-shadow: 0 0 0 1px var(--border);
+  }
+  .actual-production-daily-table tbody td {
+    padding: 8px;
+    vertical-align: bottom;
+    font-size: 13px;
+  }
+  .actual-production-daily-table .ap-daily-date {
+    width: 120px;
+    font-weight: 800;
+    color: var(--text);
+  }
+  .actual-production-daily-table .ap-daily-target {
+    width: 64px;
+    font-weight: 800;
+    color: var(--text2);
+  }
+  .actual-production-daily-table .ap-daily-input input,
+  .actual-production-daily-table .ap-daily-input textarea {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+  .actual-production-daily-table .ap-daily-remarks textarea {
+    resize: vertical;
+    min-height: 32px;
+  }
+  .actual-production-daily-table .ap-daily-erp {
+    width: 72px;
+    font-weight: 800;
+    color: var(--text);
+  }
+  .actual-production-daily-table .ap-daily-status {
+    width: 96px;
+  }
+  .actual-production-daily-table .ap-daily-actions .trial-actual-row-status {
+    min-height: 14px;
+    margin-bottom: 4px;
+  }
+  .actual-production-daily-table .ap-daily-actions .trial-actual-row-action-buttons {
+    display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .actual-production-daily-table .btn.is-locked-action,
+  .trial-actual-row-action-buttons .btn.is-locked-action {
+    opacity: 0.45;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+  .actual-production-daily-table .trial-catalog-empty {
+    padding: 12px 8px;
+    text-align: center;
+    color: var(--text3);
+  }
+  .actual-production-erp-note {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 16px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    border-radius: 8px;
+    background: var(--surface2, rgba(255, 255, 255, 0.04));
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text2);
+  }
+  .actual-production-erp-note.is-muted {
+    color: var(--text3);
+  }
+  .actual-production-erp-note strong {
+    color: var(--text);
+    font-weight: 800;
+  }
+  .actual-production-erp-unallocated {
+    color: var(--warn, #c98a00);
+  }
+  .actual-production-erp-sync {
+    color: var(--text3);
+    margin-left: auto;
+  }
+  .actual-production-erp-daily strong {
+    font-size: 13px;
+    color: var(--text);
+    font-weight: 800;
+  }
+  .actual-production-reconcile-cell {
+    display: flex;
+    align-items: center;
+  }
+  .actual-production-reconcile-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .actual-production-reconcile-pill.is-match {
+    background: rgba(34, 197, 94, 0.15);
+    color: #15803d;
+  }
+  .actual-production-reconcile-pill.is-shop {
+    background: rgba(59, 130, 246, 0.15);
+    color: #1d4ed8;
+  }
+  .actual-production-reconcile-pill.is-erp {
+    background: rgba(234, 179, 8, 0.18);
+    color: #a16207;
+  }
+  .actual-production-reconcile-pill.is-muted {
+    background: rgba(148, 163, 184, 0.15);
+    color: var(--text3);
   }
   .trial-actual-delete-cell .btn {
     white-space: nowrap;
@@ -782,7 +942,7 @@
     min-width: 0;
   }
   .trial-actual-daily-table .trial-actual-grid-head,
-  .trial-actual-daily-table .trial-actual-daily-row {
+  .trial-actual-daily-table .trial-actual-daily-row:not(tr) {
     min-width: 640px;
   }
   .trial-actual-date {
@@ -915,7 +1075,7 @@
   .trial-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(min(100%, max(240px, calc((100% - 48px) / 5))), 1fr));
-    align-items: flex-start;
+    align-items: stretch;
     gap: 12px;
   }
   .trial-machine-filter {
@@ -1087,13 +1247,15 @@
     padding-top: 2px;
   }
   .trial-machine {
-    display: grid;
-    align-self: flex-start;
+    display: flex;
+    flex-direction: column;
+    align-self: stretch;
     width: 100%;
     max-width: 100%;
     min-width: 0;
-    min-height: 0;
-    height: fit-content;
+    min-height: 460px;
+    height: clamp(460px, calc(100vh - 240px), 720px);
+    overflow: hidden;
     gap: 10px;
     padding: 12px;
     border: 1px solid var(--border);
@@ -1102,6 +1264,7 @@
     box-shadow: var(--shadow-lg);
   }
   .trial-machine-head {
+    flex: 0 0 auto;
     display: flex;
     justify-content: space-between;
     gap: 8px;
@@ -1167,6 +1330,8 @@
     line-height: 1.3;
   }
   .trial-machine.is-collapsed {
+    height: auto;
+    min-height: 0;
     gap: 0;
     padding-bottom: 10px;
   }
@@ -1208,16 +1373,37 @@
     line-height: 1.2;
   }
   .trial-lane {
+    flex: 1 1 auto;
     display: flex;
     flex-direction: column;
     gap: 8px;
     align-items: stretch;
     min-width: 0;
-    min-height: 48px;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 4px;
+    padding-bottom: 10px;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+  .trial-lane::-webkit-scrollbar {
+    width: 6px;
+  }
+  .trial-lane::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .trial-lane::-webkit-scrollbar-thumb {
+    background: rgba(26,28,29,0.14);
+    border-radius: 3px;
+  }
+  .trial-lane::-webkit-scrollbar-thumb:hover {
+    background: rgba(26,28,29,0.24);
   }
   .trial-block-card {
     display: flex;
     flex-direction: column;
+    flex: 0 0 auto;
     gap: 7px;
     padding: 10px;
     border-radius: 14px;
@@ -1230,7 +1416,7 @@
     min-width: 0;
     min-height: 0;
     height: auto;
-    overflow: hidden;
+    overflow: visible;
   }
   .trial-block-card.combined {
     border-left: 4px solid rgba(168,85,247,0.65);
@@ -1662,6 +1848,92 @@
     align-items: flex-start;
     gap: 10px;
   }
+  .trial-capacity-modal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+  .trial-capacity-holiday-status {
+    font-size: 12px;
+    color: var(--text3);
+  }
+  .trial-capacity-holiday-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: #9a3412;
+    background: rgba(251, 146, 60, 0.22);
+    border: 1px solid rgba(234, 88, 12, 0.25);
+    vertical-align: middle;
+  }
+  .trial-capacity-holiday-note {
+    margin-top: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text3);
+    line-height: 1.3;
+  }
+  .trial-capacity-row.is-public-holiday {
+    background: rgba(251, 146, 60, 0.08);
+    border-radius: 12px;
+    padding: 6px 8px;
+  }
+  .trial-cap-busy-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: rgba(37, 99, 235, 0.1);
+    border: 1px solid rgba(37, 99, 235, 0.22);
+    color: #1d4ed8;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .trial-cap-busy-banner[hidden] {
+    display: none !important;
+  }
+  .trial-cap-busy-spinner {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid rgba(37, 99, 235, 0.2);
+    border-top-color: #2563eb;
+    animation: trial-cap-spin 0.75s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes trial-cap-spin {
+    to { transform: rotate(360deg); }
+  }
+  .trial-capacity-modal.is-busy .trial-capacity-modal-body {
+    opacity: 0.55;
+    pointer-events: none;
+  }
+  .trial-capacity-row.is-saving {
+    background: rgba(37, 99, 235, 0.06);
+    border-radius: 12px;
+    outline: 1px solid rgba(37, 99, 235, 0.2);
+  }
+  .trial-capacity-row.is-saved {
+    background: rgba(34, 197, 94, 0.08);
+    border-radius: 12px;
+    outline: 1px solid rgba(34, 197, 94, 0.25);
+  }
+  .trial-capacity-row.is-save-error {
+    background: rgba(239, 68, 68, 0.08);
+    border-radius: 12px;
+    outline: 1px solid rgba(239, 68, 68, 0.25);
+  }
+  .trial-capacity-row.is-saving .trial-cap-save-btn,
+  .trial-capacity-row.is-saved .trial-cap-save-btn {
+    pointer-events: none;
+  }
   .trial-capacity-modal-body {
     display: grid;
     gap: 8px;
@@ -1790,6 +2062,200 @@
     background: rgba(239,68,68,0.07);
   }
 
+  /* ── Actual Production list page ─────────────────────────────────────── */
+  .app-main--actual-production {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 20px 18px 40px;
+  }
+  .actual-production-page {
+    display: grid;
+    gap: 14px;
+  }
+  .actual-production-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .actual-production-title {
+    margin: 0;
+    font-size: 28px;
+    font-weight: 900;
+    letter-spacing: -0.04em;
+    line-height: 1.05;
+  }
+  .actual-production-subtitle {
+    margin: 6px 0 0;
+    color: var(--text3);
+    font-size: 13px;
+    line-height: 1.45;
+    max-width: 52ch;
+  }
+  .actual-production-header-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .actual-production-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 12px;
+    padding: 14px 16px;
+  }
+  .actual-production-filter {
+    display: grid;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text3);
+    min-width: 140px;
+  }
+  .actual-production-filter--grow {
+    flex: 1 1 220px;
+    min-width: 200px;
+  }
+  .actual-production-filter input,
+  .actual-production-filter select {
+    min-height: 36px;
+  }
+  .actual-production-stats {
+    margin-left: auto;
+    align-self: center;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text3);
+    white-space: nowrap;
+  }
+  .actual-production-list {
+    display: grid;
+    gap: 14px;
+  }
+  .actual-production-job {
+    display: grid;
+    gap: 12px;
+    padding: 16px 18px;
+  }
+  .actual-production-job-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .actual-production-job-ps {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 18px;
+    font-weight: 900;
+    letter-spacing: -0.03em;
+  }
+  .actual-production-queue {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 34px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(59,130,246,0.12);
+    color: #1f4ea2;
+    font-size: 12px;
+    font-weight: 800;
+  }
+  .actual-production-partial {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text3);
+  }
+  .actual-production-job-op {
+    margin-top: 4px;
+    font-size: 13px;
+    font-weight: 800;
+    color: var(--text2);
+  }
+  .actual-production-job-machine {
+    margin-top: 2px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text3);
+  }
+  .actual-production-job-side {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+  }
+  .actual-production-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .actual-production-ops {
+    display: grid;
+    gap: 12px;
+  }
+  .actual-production-op {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid rgba(148,163,184,0.2);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.55);
+  }
+  .actual-production-op-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .actual-production-op-title {
+    font-size: 14px;
+    font-weight: 800;
+    color: var(--text);
+  }
+  .actual-production-op-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text3);
+  }
+  .actual-production-daily-grid {
+    display: grid;
+    gap: 8px;
+  }
+  .actual-production-op-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 8px;
+  }
+  .actual-production-empty {
+    padding: 24px;
+    color: var(--text3);
+    text-align: center;
+  }
+  .trial-actual-row-status {
+    font-size: 11px;
+    font-weight: 800;
+    color: var(--text3);
+    min-height: 14px;
+    text-align: right;
+  }
+  .trial-actual-row-status.is-saving {
+    color: var(--text2);
+  }
+  .trial-actual-row-status.is-saved {
+    color: #166534;
+  }
+  .trial-actual-row-status.is-error {
+    color: #b42318;
+  }
+
   @media (max-width: 900px) {
     .trial-layout {
       grid-template-columns: 1fr;
@@ -1800,6 +2266,14 @@
     }
     .trial-grid {
       grid-template-columns: 1fr;
+    }
+    .trial-machine {
+      height: clamp(420px, calc(100vh - 200px), 620px);
+      min-height: 420px;
+    }
+    .trial-machine.is-collapsed {
+      height: auto;
+      min-height: 0;
     }
     .trial-modal-grid {
       grid-template-columns: 1fr;
