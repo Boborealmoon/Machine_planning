@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 
 from .helpers import one, rows
-from .process_sheets import parse_planner_ps_id
+from .process_sheets import format_planner_ps_id, parse_planner_ps_id
 from .utils import compact_text
 
 
@@ -39,18 +39,43 @@ def _float(value) -> float:
         return 0.0
 
 
-def erp_wo_key_for_block(con, block_row):
-    """Resolve ERP mfg_wo_status key (source_mps_no, pp_partial_no, stage_no) for a run block."""
-    if not block_row:
-        return None
+def _ps_id_candidates(source_mps_no, pp_partial_no):
+    source_mps_no = compact_text(source_mps_no)
+    try:
+        partial_no = max(1, int(pp_partial_no or 1))
+    except (TypeError, ValueError):
+        partial_no = 1
+    candidates = []
+    for value in (
+        source_mps_no,
+        format_planner_ps_id(source_mps_no, partial_no),
+        f"{source_mps_no}::{partial_no}" if partial_no > 1 else "",
+    ):
+        text = compact_text(value)
+        if text and text not in candidates:
+            candidates.append(text)
+    return candidates
 
-    raw_ps = compact_text(block_row.get("source_ps_id") or block_row.get("job_no"))
-    source_mps_no, pp_partial_no = parse_planner_ps_id(raw_ps)
-    if not source_mps_no:
-        return None
 
-    stage_no = 0
-    op_seq_id = int(block_row.get("source_op_seq_id") or 0)
+def _op_no_candidates(op_no, stage_no=0):
+    op_no = compact_text(op_no)
+    stage_no = int(stage_no or 0)
+    candidates = []
+    if op_no:
+        candidates.append(op_no)
+    if op_no.isdigit():
+        candidates.extend([f"OP{op_no}", str(int(op_no))])
+    elif op_no.upper().startswith("OP") and op_no[2:].isdigit():
+        candidates.append(op_no[2:])
+    if stage_no > 0:
+        for value in (str(stage_no), f"OP{stage_no}"):
+            if value not in candidates:
+                candidates.append(value)
+    return candidates
+
+
+def _stage_no_from_process_flow(con, source_mps_no, pp_partial_no, op_no, op_seq_id):
+    op_no = compact_text(op_no)
     if op_seq_id > 0:
         seq = one(
             con.execute(
@@ -63,34 +88,71 @@ def erp_wo_key_for_block(con, block_row):
                 (op_seq_id,),
             )
         )
-        if seq and seq.get("source_stage_no") is not None:
-            stage_no = int(seq["source_stage_no"] or 0)
+        if seq and int(seq.get("source_stage_no") or 0) > 0:
+            return int(seq["source_stage_no"]), compact_text(seq.get("op_no") or op_no)
 
-    if stage_no <= 0:
-        op_no = compact_text(block_row.get("source_op_no"))
-        if op_no.isdigit():
-            stage_no = int(op_no)
-        elif op_no.upper().startswith("OP") and op_no[2:].isdigit():
-            stage_no = int(op_no[2:])
+    planner_ps_id = format_planner_ps_id(source_mps_no, pp_partial_no)
+    op_candidates = _op_no_candidates(op_no)
+    if op_candidates:
+        flow = one(
+            con.execute(
+                """
+                SELECT pfs.source_stage_no, pfs.op_no
+                FROM planner_process_sheet ps
+                JOIN planner_operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
+                WHERE ps.planner_ps_id = ANY(%s)
+                  AND NULLIF(TRIM(COALESCE(pfs.op_no, '')), '') = ANY(%s)
+                ORDER BY pfs.seq_no, pfs.op_seq_id
+                LIMIT 1
+                """,
+                (_ps_id_candidates(source_mps_no, pp_partial_no), op_candidates),
+            )
+        )
+        if flow and int(flow.get("source_stage_no") or 0) > 0:
+            return int(flow["source_stage_no"]), compact_text(flow.get("op_no") or op_no)
 
-    if stage_no <= 0:
+    for ps_id in _ps_id_candidates(source_mps_no, pp_partial_no):
+        if not op_candidates:
+            break
         cache = one(
             con.execute(
                 """
-                SELECT stage_no
+                SELECT stage_no, op_no
                 FROM pp_vouchers_cache
                 WHERE ps_id = %s
                   AND pp_partial_no = %s
-                  AND NULLIF(TRIM(COALESCE(op_no, '')), '') = %s
+                  AND NULLIF(TRIM(COALESCE(op_no, '')), '') = ANY(%s)
                 ORDER BY stage_no
                 LIMIT 1
                 """,
-                (source_mps_no, int(pp_partial_no), compact_text(block_row.get("source_op_no"))),
+                (ps_id, int(pp_partial_no), op_candidates),
             )
         )
-        if cache:
-            stage_no = int(cache.get("stage_no") or 0)
+        if cache and int(cache.get("stage_no") or 0) > 0:
+            return int(cache["stage_no"]), compact_text(cache.get("op_no") or op_no)
 
+    if op_no.isdigit():
+        return int(op_no), op_no
+    if op_no.upper().startswith("OP") and op_no[2:].isdigit():
+        return int(op_no[2:]), op_no
+    return 0, op_no
+
+
+def erp_wo_key_for_block(con, block_row):
+    """Resolve ERP mfg_wo_status key (source_mps_no, pp_partial_no, stage_no) for a run block."""
+    if not block_row:
+        return None
+
+    raw_ps = compact_text(block_row.get("source_ps_id") or block_row.get("job_no"))
+    source_mps_no, pp_partial_no = parse_planner_ps_id(raw_ps)
+    if not source_mps_no:
+        return None
+
+    op_seq_id = int(block_row.get("source_op_seq_id") or 0)
+    op_no = compact_text(block_row.get("source_op_no"))
+    stage_no, resolved_op_no = _stage_no_from_process_flow(
+        con, source_mps_no, pp_partial_no, op_no, op_seq_id
+    )
     if stage_no <= 0:
         return None
 
@@ -98,6 +160,7 @@ def erp_wo_key_for_block(con, block_row):
         "source_mps_no": source_mps_no,
         "pp_partial_no": int(pp_partial_no),
         "stage_no": int(stage_no),
+        "op_no": resolved_op_no or op_no,
     }
 
 
@@ -158,22 +221,26 @@ def record_erp_wo_qty_snapshots(con, mfg_rows, synced_at=None, columns=None) -> 
 def _snapshots_for_key(con, key):
     if not key:
         return []
-    return rows(
-        con.execute(
-            """
-            SELECT snapshot_date::text AS snapshot_date,
-                   snapshot_at,
-                   acc_qty_produced,
-                   acc_rej_qty_produced
-            FROM planner_erp_wo_qty_snapshot
-            WHERE source_mps_no = %s
-              AND pp_partial_no = %s
-              AND stage_no = %s
-            ORDER BY snapshot_date ASC, snapshot_at ASC
-            """,
-            (key["source_mps_no"], key["pp_partial_no"], key["stage_no"]),
+    try:
+        ensure_erp_snapshot_table(con)
+        return rows(
+            con.execute(
+                """
+                SELECT snapshot_date::text AS snapshot_date,
+                       snapshot_at,
+                       acc_qty_produced,
+                       acc_rej_qty_produced
+                FROM planner_erp_wo_qty_snapshot
+                WHERE source_mps_no = %s
+                  AND pp_partial_no = %s
+                  AND stage_no = %s
+                ORDER BY snapshot_date ASC, snapshot_at ASC
+                """,
+                (key["source_mps_no"], key["pp_partial_no"], key["stage_no"]),
+            )
         )
-    )
+    except Exception:
+        return []
 
 
 def _daily_deltas_from_snapshots(snapshots):
@@ -203,6 +270,8 @@ def _daily_deltas_from_snapshots(snapshots):
 def _current_erp_row(con, key):
     if not key:
         return None
+    stage_no = int(key.get("stage_no") or 0)
+    op_candidates = _op_no_candidates(key.get("op_no"), stage_no)
     live = one(
         con.execute(
             """
@@ -216,29 +285,72 @@ def _current_erp_row(con, key):
               AND stage_no = %s
             LIMIT 1
             """,
-            (key["source_mps_no"], key["pp_partial_no"], key["stage_no"]),
+            (key["source_mps_no"], key["pp_partial_no"], stage_no),
         )
     )
     return live
 
 
 def _erp_totals_from_voucher_cache(con, key):
+    """Same source as process sheet: pp_vouchers_cache by ps + partial + stage/op."""
     if not key:
         return None
-    return one(
-        con.execute(
-            """
-            SELECT COALESCE(MAX(wo_qty_produced), 0) AS acc_qty_produced,
-                   COALESCE(MAX(wo_qty_rejected), 0) AS acc_rej_qty_produced,
-                   MAX(_loaded_at) AS loaded_at
-            FROM pp_vouchers_cache
-            WHERE ps_id = %s
-              AND pp_partial_no = %s
-              AND stage_no = %s
-            """,
-            (key["source_mps_no"], key["pp_partial_no"], key["stage_no"]),
+    stage_no = int(key.get("stage_no") or 0)
+    op_candidates = _op_no_candidates(key.get("op_no"), stage_no)
+    best = None
+    for ps_id in _ps_id_candidates(key["source_mps_no"], key["pp_partial_no"]):
+        row = one(
+            con.execute(
+                """
+                SELECT COALESCE(MAX(wo_qty_produced), 0) AS acc_qty_produced,
+                       COALESCE(MAX(wo_qty_rejected), 0) AS acc_rej_qty_produced,
+                       MAX(_loaded_at) AS loaded_at
+                FROM pp_vouchers_cache
+                WHERE ps_id = %s
+                  AND pp_partial_no = %s
+                  AND (
+                        (%s > 0 AND stage_no = %s)
+                     OR NULLIF(TRIM(COALESCE(op_no, '')), '') = ANY(%s)
+                  )
+                """,
+                (ps_id, key["pp_partial_no"], stage_no, stage_no, op_candidates or [""]),
+            )
         )
-    )
+        if not row:
+            continue
+        if _float(row.get("acc_qty_produced")) > 0 or _float(row.get("acc_rej_qty_produced")) > 0:
+            return row
+        if best is None:
+            best = row
+    return best
+
+
+def _inject_live_erp_daily(daily_by_date, erp_acc, erp_reject, erp_sync_at, anchor_dates):
+    """When WO snapshots are empty, expose cumulative ERP on the latest planned date."""
+    erp_acc = _float(erp_acc)
+    erp_reject = _float(erp_reject)
+    if erp_acc <= 0 and erp_reject <= 0:
+        return daily_by_date
+    if daily_by_date:
+        last_acc = 0.0
+        for report_date in sorted(daily_by_date):
+            last_acc = _float(daily_by_date[report_date].get("erp_acc_qty"))
+        if last_acc >= erp_acc - 1e-9:
+            return daily_by_date
+
+    anchor_dates = [compact_text(value) for value in (anchor_dates or []) if compact_text(value)]
+    report_date = max(anchor_dates) if anchor_dates else date.today().isoformat()
+    daily_by_date = dict(daily_by_date or {})
+    daily_by_date[report_date] = {
+        "report_date": report_date,
+        "erp_daily_qty": erp_acc,
+        "erp_daily_reject": erp_reject,
+        "erp_acc_qty": erp_acc,
+        "erp_acc_reject": erp_reject,
+        "erp_snapshot_at": compact_text(erp_sync_at),
+        "erp_live_fallback": True,
+    }
+    return daily_by_date
 
 
 def _qty_source(erp_value, shop_value):
@@ -290,6 +402,29 @@ def effective_actual_totals_for_block(con, block_row, recon=None):
         "reject_source": _qty_source(erp_reject, shop_reject),
         "good_source": _qty_source(erp_good, shop_good),
     }
+
+
+def _planned_dates_for_block(con, block_row):
+    block_id = int(block_row.get("block_id") or 0) if block_row else 0
+    if not block_id:
+        return []
+    return [
+        compact_text(row["segment_date"])
+        for row in rows(
+            con.execute(
+                """
+                SELECT segment_date::text AS segment_date
+                FROM planner_run_block_segment
+                WHERE block_id = %s
+                  AND COALESCE(segment_type, '') = 'production'
+                  AND segment_date IS NOT NULL
+                ORDER BY segment_date
+                """,
+                (block_id,),
+            )
+        )
+        if compact_text(row.get("segment_date"))
+    ]
 
 
 def erp_reconciliation_for_block(con, block_row):
@@ -350,11 +485,20 @@ def erp_reconciliation_for_block(con, block_row):
     if _float(live.get("acc_qty_produced")) <= 0 and _float(voucher.get("acc_qty_produced")) > 0:
         erp_data_source = "pp_vouchers_cache"
 
+    daily_by_date = _inject_live_erp_daily(
+        daily_by_date,
+        erp_acc,
+        erp_reject,
+        last_sync,
+        _planned_dates_for_block(con, block_row),
+    )
+
     return {
         "linked": True,
         "source_mps_no": key["source_mps_no"],
         "pp_partial_no": key["pp_partial_no"],
         "stage_no": key["stage_no"],
+        "erp_op_no": compact_text(key.get("op_no") or ""),
         "erp_acc_qty": erp_acc,
         "erp_acc_reject": erp_reject,
         "erp_last_sync_at": last_sync,

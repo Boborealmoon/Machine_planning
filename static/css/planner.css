@@ -1758,6 +1758,7 @@
     backdrop-filter: blur(4px);
   }
   .trial-modal-panel {
+    position: relative;
     width: min(720px, 100%);
     max-height: min(86vh, 900px);
     display: grid;
@@ -1769,6 +1770,56 @@
     background: rgba(255, 255, 255, 0.96);
     box-shadow: 0 24px 80px rgba(15, 23, 42, 0.22);
     overflow: hidden;
+  }
+  .trial-modal-panel.is-busy .trial-modal-body,
+  .trial-modal-panel.is-busy .trial-modal-actions,
+  .trial-modal-panel.is-busy .trial-modal-close {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+  .trial-modal-busy {
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(255, 255, 255, 0.78);
+    backdrop-filter: blur(3px);
+    border-radius: inherit;
+  }
+  .trial-modal-busy-card {
+    display: grid;
+    gap: 8px;
+    justify-items: center;
+    max-width: 320px;
+    text-align: center;
+  }
+  .trial-modal-busy-spinner {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 3px solid rgba(37, 99, 235, 0.18);
+    border-top-color: #2563eb;
+    animation: trial-cap-spin 0.75s linear infinite;
+  }
+  .trial-modal-busy-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 800;
+    color: #1d4ed8;
+    letter-spacing: -0.02em;
+  }
+  .trial-modal-busy-detail {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.45;
+    font-weight: 500;
+    color: var(--text2);
+  }
+  .trial-modal-busy-detail[hidden] {
+    display: none;
   }
   .trial-modal-panel-lg {
     width: min(980px, 100%);

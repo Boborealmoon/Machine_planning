@@ -68,6 +68,8 @@ from .utils import (
     normalize_block_status_inputs,
     parse_nullable_number,
     parse_number,
+    planner_wall_datetime_from_input,
+    planner_wall_datetime_to_api,
     validate_cycle_minutes,
 )
 
@@ -284,7 +286,7 @@ def _trial_schedule_via_rest():
             "visual_parts":             [],
             "break_windows":            [],
             "material_status":          {"status": "NOT_REQUIRED", "label": "", "expected_ready_date": "", "severity": "none"},
-            "anchor_datetime":          compact_text(b.get("anchor_datetime")),
+            "anchor_datetime":          planner_wall_datetime_to_api(b.get("anchor_datetime")),
             "calculated_start_datetime": compact_text(b.get("calculated_start_datetime")),
             "calculated_end_datetime":  compact_text(b.get("calculated_end_datetime")),
             "updated_at":               compact_text(b.get("updated_at")),
@@ -531,7 +533,7 @@ def _api_trial_schedule_db():
         for row in raw_blocks:
             item = dict(row)
             # Stringify all datetime fields for JSON serialisation
-            item["anchor_datetime"] = compact_text(item.get("anchor_datetime"))
+            item["anchor_datetime"] = planner_wall_datetime_to_api(item.get("anchor_datetime"))
             item["calculated_start_datetime"] = compact_text(item.get("calculated_start_datetime"))
             item["calculated_end_datetime"] = compact_text(item.get("calculated_end_datetime"))
             item["updated_at"] = compact_text(item.get("updated_at"))
@@ -1309,11 +1311,9 @@ def api_trial_update_block(block_id):
             block_updates["include_setup"] = bool(data.get("include_setup"))
         if "anchor_datetime" in data:
             raw_anchor = compact_text(data.get("anchor_datetime"))
-            if raw_anchor:
-                raw_anchor = raw_anchor.replace("T", " ")
-                if len(raw_anchor) == 16:
-                    raw_anchor = f"{raw_anchor}:00"
-            block_updates["anchor_datetime"] = raw_anchor or None
+            block_updates["anchor_datetime"] = (
+                planner_wall_datetime_from_input(raw_anchor) if raw_anchor else None
+            )
         if "actual_good_qty" in data:
             block_updates["actual_good_qty"] = max(0.0, parse_number(data.get("actual_good_qty"), block["actual_good_qty"]))
         if "actual_reject_qty" in data:

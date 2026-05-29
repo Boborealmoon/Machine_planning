@@ -73,6 +73,55 @@ function openTrialForm(title, bodyHtml, onSaveLabel, onSave, extraActionsHtml = 
   }, 0);
 }
 
+function trialSetFormModalBusy(title, detail = '') {
+  const panel = document.querySelector('.trial-modal-panel');
+  if (!panel) return;
+  panel.classList.add('is-busy');
+  let overlay = panel.querySelector('[data-trial-modal-busy]');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.className = 'trial-modal-busy';
+    overlay.dataset.trialModalBusy = '1';
+    overlay.setAttribute('role', 'status');
+    overlay.setAttribute('aria-live', 'polite');
+    overlay.innerHTML = `
+      <div class="trial-modal-busy-card">
+        <div class="trial-modal-busy-spinner" aria-hidden="true"></div>
+        <p class="trial-modal-busy-title" data-trial-modal-busy-title></p>
+        <p class="trial-modal-busy-detail" data-trial-modal-busy-detail></p>
+      </div>
+    `;
+    panel.appendChild(overlay);
+  }
+  overlay.querySelector('[data-trial-modal-busy-title]').textContent = title || 'Please wait…';
+  const detailEl = overlay.querySelector('[data-trial-modal-busy-detail]');
+  detailEl.textContent = detail || '';
+  detailEl.hidden = !detail;
+  panel.querySelectorAll('input, select, textarea, button').forEach(node => {
+    if (!(node instanceof HTMLElement)) return;
+    if (node.dataset.trialBusyPrevDisabled === undefined) {
+      node.dataset.trialBusyPrevDisabled = node.disabled ? '1' : '0';
+    }
+    if ('disabled' in node) node.disabled = true;
+  });
+}
+
+function trialUpdateFormModalBusy(title, detail = '') {
+  trialSetFormModalBusy(title, detail);
+}
+
+function trialClearFormModalBusy() {
+  const panel = document.querySelector('.trial-modal-panel');
+  if (!panel) return;
+  panel.classList.remove('is-busy');
+  panel.querySelector('[data-trial-modal-busy]')?.remove();
+  panel.querySelectorAll('[data-trial-busy-prev-disabled]').forEach(node => {
+    if (!(node instanceof HTMLElement) || !('disabled' in node)) return;
+    node.disabled = node.dataset.trialBusyPrevDisabled === '1';
+    delete node.dataset.trialBusyPrevDisabled;
+  });
+}
+
 function openTrialCreateModal(defaultMachineId = '') {
   const machineOptions = (trialState.machines || []).map(machine =>
     `<option value="${machine.machine_id}" ${String(machine.machine_id) === String(defaultMachineId) ? 'selected' : ''}>${machine.machine_code}</option>`
@@ -136,12 +185,27 @@ function openTrialBlockEditor(blockId) {
         <option value="1" ${Number(block.include_setup || 0) === 1 ? 'selected' : ''}>Yes</option>
         <option value="0" ${Number(block.include_setup || 0) === 0 ? 'selected' : ''}>No</option>
       </select></label>
-      <label>Anchor Datetime <input id="trial-edit-anchor-datetime" type="datetime-local" value="${escapeHtml(trialAnchorDefaultDatetimeLocal(block))}"></label>
+      <label>Anchor Datetime
+        <input id="trial-edit-anchor-datetime" type="datetime-local" value="${escapeHtml(trialAnchorDefaultDatetimeLocal(block))}">
+      </label>
+      <p class="trial-modal-hint full">Earliest allowed start. Queued start on the board may be later after recalculation — it will not go before this anchor.</p>
       <label class="full">Remarks <textarea id="trial-edit-remarks" rows="3">${block.remarks || ''}</textarea></label>
     </div>
   `, 'Save', async () => {
+    if (openTrialBlockEditor._saveInFlight) return;
+    openTrialBlockEditor._saveInFlight = true;
+    const saveBtn = document.getElementById('trial-save-btn');
+    const originalSaveLabel = saveBtn ? saveBtn.textContent : 'Save';
     try {
       const _editedMachineId = Number(document.getElementById('trial-edit-machine-id')?.value || 0);
+      trialSetFormModalBusy(
+        'Saving run block…',
+        'Writing changes and syncing with the planner schedule.'
+      );
+      if (saveBtn) {
+        saveBtn.textContent = 'Saving…';
+        saveBtn.setAttribute('aria-busy', 'true');
+      }
       await PUT(`/api/trial/blocks/${block.block_id}`, {
         job_no: document.getElementById('trial-edit-job-no').value,
         operation_name: document.getElementById('trial-edit-operation-name').value,
@@ -155,11 +219,24 @@ function openTrialBlockEditor(blockId) {
         anchor_datetime: trialDatetimeLocalToStorage(document.getElementById('trial-edit-anchor-datetime').value),
         remarks: document.getElementById('trial-edit-remarks').value,
       });
-      closeModal();
+      trialUpdateFormModalBusy(
+        'Recalculating schedule…',
+        'Refreshing machine queue, segments, and ERP actuals for this lane.'
+      );
+      if (saveBtn) saveBtn.textContent = 'Syncing…';
       await refreshMachines([...new Set([block.machine_id, _editedMachineId].filter(Boolean))]);
+      openTrialBlockEditor._saveInFlight = false;
+      closeModal();
       toast('Run block updated', 'success');
     } catch (e) {
+      trialClearFormModalBusy();
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = originalSaveLabel;
+        saveBtn.removeAttribute('aria-busy');
+      }
       toast('Update failed: ' + e.message, 'error');
+      openTrialBlockEditor._saveInFlight = false;
     }
   }, `
     <button type="button" class="btn btn-ghost btn-sm" id="trial-actual-output">Actual Output</button>
@@ -456,12 +533,7 @@ function trialOpenCapacityModalBody(startDate = '', dayCount = 14) {
 }
 
 function trialAnchorDefaultDatetimeLocal(block) {
-  return trialDatetimeLocalValue(
-    block?.anchor_datetime ||
-    block?.visual_start_datetime ||
-    block?.calculated_start_datetime ||
-    ''
-  );
+  return trialDatetimeLocalValue(block?.anchor_datetime || '');
 }
 
 function editTrialAnchor(blockId) {

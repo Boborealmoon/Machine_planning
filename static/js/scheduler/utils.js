@@ -15,21 +15,36 @@ function trialFormatDt(value) {
 }
 
 function trialParseVisualDateTime(value) {
-  if (!value) return null;
-  const text = String(value).trim().replace(' ', 'T');
-  const dt = new Date(text);
-  return Number.isNaN(dt.getTime()) ? null : dt;
+  return trialParsePlannerDateTime(value);
 }
 
-/** Format API datetime for <input type="datetime-local"> in browser local time. */
+/** Parse planner/API datetime as wall-clock components (no browser TZ shift). */
+function trialParsePlannerDateTime(value) {
+  let text = String(value || '').trim();
+  if (!text) return null;
+  text = text.replace('T', ' ');
+  text = text.replace(/\.\d+$/, '');
+  text = text.replace(/[+-]\d{2}:?\d{2}$/i, '').replace(/Z$/i, '').trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return null;
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    hour: Number(match[4]),
+    minute: Number(match[5]),
+  };
+}
+
+/** Format API datetime for <input type="datetime-local"> (wall clock, not UTC-shifted). */
 function trialDatetimeLocalValue(value) {
-  const dt = trialParseVisualDateTime(value);
-  if (!dt) return '';
-  const y = dt.getFullYear();
-  const m = String(dt.getMonth() + 1).padStart(2, '0');
-  const d = String(dt.getDate()).padStart(2, '0');
-  const h = String(dt.getHours()).padStart(2, '0');
-  const min = String(dt.getMinutes()).padStart(2, '0');
+  const parts = trialParsePlannerDateTime(value);
+  if (!parts) return '';
+  const y = parts.year;
+  const m = String(parts.month).padStart(2, '0');
+  const d = String(parts.day).padStart(2, '0');
+  const h = String(parts.hour).padStart(2, '0');
+  const min = String(parts.minute).padStart(2, '0');
   return `${y}-${m}-${d}T${h}:${min}`;
 }
 

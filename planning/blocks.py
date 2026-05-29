@@ -38,7 +38,7 @@ from .scheduler_state import (
     upsert_schedule_alert,
     write_change_summary,
 )
-from .utils import compact_text, date_text, format_qty
+from .utils import compact_text, date_text, format_qty, planner_wall_datetime_to_api
 
 
 def trial_block_row(con, block_id):
@@ -223,6 +223,11 @@ def attach_actual_daily_to_blocks(con, block_rows, *, with_erp=False):
                         con, block_row, erp_recon
                     )
             except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    "ERP enrich failed for block_id=%s", block_id
+                )
                 block_row["erp_reconciliation"] = None
         else:
             block_row["erp_reconciliation"] = None
@@ -400,7 +405,7 @@ def trial_block_payload(block, con=None):
         "status": execution_status,
         "planning_status": planning_status,
         "execution_status": execution_status,
-        "anchor_datetime": _dt_str(block["anchor_datetime"]),
+        "anchor_datetime": planner_wall_datetime_to_api(block["anchor_datetime"]),
         "planned_start_at": _dt_str(block.get("planned_start_at")),
         "planned_end_at": _dt_str(block.get("planned_end_at")),
         "allow_pull_forward": int(block.get("allow_pull_forward") if block.get("allow_pull_forward") is not None else 1),

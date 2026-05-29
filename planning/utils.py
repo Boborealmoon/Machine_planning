@@ -2,12 +2,58 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 
 try:
     from openpyxl import load_workbook
 except Exception:
     load_workbook = None
+
+
+def _planner_timezone():
+    """Singapore wall clock (UTC+8, no DST). Uses tzdata when available."""
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo("Asia/Singapore")
+        except Exception:
+            pass
+    return timezone(timedelta(hours=8), name="Asia/Singapore")
+
+
+PLANNER_TZ = _planner_timezone()
+_DATETIME_TZ_SUFFIX_RE = re.compile(r"(?:[+-]\d{2}:?\d{2}|Z)$", re.IGNORECASE)
+
+
+def planner_wall_datetime_to_api(value):
+    """Format DB/API datetimes as naive wall-clock strings (Asia/Singapore)."""
+    if value is None or value == "":
+        return ""
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(PLANNER_TZ).replace(tzinfo=None)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    text = str(value).strip().replace("T", " ")
+    text = _DATETIME_TZ_SUFFIX_RE.sub("", text).strip()
+    if len(text) >= 19:
+        return text[:19]
+    if len(text) == 16:
+        return f"{text}:00"
+    return text
+
+
+def planner_wall_datetime_from_input(value):
+    """Parse client naive datetime as Singapore wall time for TIMESTAMPTZ storage."""
+    text = planner_wall_datetime_to_api(value)
+    if not text:
+        return None
+    naive = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    return naive.replace(tzinfo=PLANNER_TZ)
 
 
 def compact_text(value):
