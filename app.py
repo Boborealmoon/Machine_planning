@@ -247,11 +247,24 @@ def _filter_pp_vouchers_by_search(data: list, raw_search: str) -> list:
     terms = [term.strip().lower() for term in str(raw_search or "").replace(";", ",").split(",") if term.strip()]
     if not terms:
         return data
-    return [
+    matched = [
         entry
         for entry in data
         if any(_entry_matches_search_term(entry, term) for term in terms)
     ]
+    bases = {
+        str(entry.get("source_ps_id") or "").strip().lower()
+        for entry in matched
+        if entry.get("source_ps_id")
+    }
+    if not bases:
+        return matched
+    by_id = {id(entry): entry for entry in matched}
+    for entry in data:
+        base = str(entry.get("source_ps_id") or "").strip().lower()
+        if base and base in bases:
+            by_id[id(entry)] = entry
+    return list(by_id.values())
 
 
 def _normalize_execution_status(value):
@@ -382,7 +395,9 @@ def _pp_vouchers_with_ops_payload(cache_rows):
             op_no = str(stage_no)
 
         if stage_desc:
-            qty = required_qty or float(row.get("partial_qty") or row.get("total_qty") or 0)
+            partial_qty = float(row.get("partial_qty") or entry.get("partial_qty") or 0)
+            display_qty = partial_qty or float(entry.get("display_qty") or entry.get("total_qty") or 0)
+            qty = display_qty if display_qty > 0 else required_qty
             remaining_qty = max(0.0, qty - produced_qty)
             machine_group = stage_desc.split()[0].upper() if stage_desc else ""
             op_card = {

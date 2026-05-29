@@ -692,21 +692,48 @@
       return;
     }
 
-    if (item.source === 'erp') {
-      const details = { summary: item, planned_blocks: [], cards: [], requirements: [], erp_only: true };
-      state.details.set(psId, details);
-      detailsEl.innerHTML = renderDetails(details, item);
-      return;
-    }
-
     detailsEl.innerHTML = '<div class="ps-details-loading">Loading details...</div>';
     try {
       const details = await getJson(`/api/process-sheets/${encodeURIComponent(psId)}/details`);
       state.details.set(psId, details);
       detailsEl.innerHTML = renderDetails(details, item);
     } catch (err) {
+      if (item.source === 'erp') {
+        const workQty = woReqQty(item);
+        const fallbackOps = enrichCatalogOpsForPartial(item, workQty);
+        const details = {
+          summary: { ...item, ops: fallbackOps },
+          planned_blocks: [],
+          cards: [],
+          requirements: [],
+          erp_only: true,
+        };
+        state.details.set(psId, details);
+        detailsEl.innerHTML = renderDetails(details, item);
+        return;
+      }
       detailsEl.innerHTML = `<div class="ps-details-error">Could not load details: ${escapeHtml(err.message)}</div>`;
     }
+  }
+
+  function enrichCatalogOpsForPartial(item, workQty) {
+    const qty = Number(workQty || 0);
+    const sourceOps = [
+      ...(Array.isArray(item?.ops) ? item.ops : []),
+      ...(Array.isArray(item?.op_cards) ? item.op_cards : []),
+      ...(Array.isArray(item?.all_ops) ? item.all_ops : []),
+    ];
+    return sourceOps.map(op => {
+      const planned = Number(op?.planned_qty || 0);
+      const finished = Number(op?.finished_qty || op?.erp_finished_qty || 0);
+      const woReq = firstQuantity(op?.wo_qty_required, op?.required_qty, qty, 0);
+      return {
+        ...op,
+        wo_qty_required: woReq,
+        required_qty: woReq,
+        remaining_qty: Math.max(0, woReq - planned - finished),
+      };
+    });
   }
 
   function collectDetailOps(summary, item) {
@@ -766,7 +793,7 @@
           </div>
         </div>` : ''}
       </div>
-      ${details.erp_only ? '<div class="ps-details-note">This row is from the ERP catalog and has not been materialized in planner state yet.</div>' : ''}
+      ${details.erp_only ? '<div class="ps-details-note">Planner row was created from ERP on open. Schedule ops from this partial to add planned blocks.</div>' : ''}
       ${renderOps(ops, summary, plannedBlocks)}
       ${renderBlocks(plannedBlocks)}
       ${renderRequirements(requirements)}
@@ -775,7 +802,22 @@
 
   function renderOps(ops, summary, plannedBlocks) {
     const blocks = Array.isArray(plannedBlocks) ? plannedBlocks : [];
-    if (!ops.length) {
+    const workQty = woReqQty(summary);
+    const displayOps = (Array.isArray(ops) ? ops : []).map(op => {
+      const planned = Number(op?.planned_qty || 0);
+      const finished = Number(op?.finished_qty || 0);
+      const woReq = firstQuantity(op?.wo_qty_required, op?.required_qty, workQty, 0);
+      return {
+        ...op,
+        wo_qty_required: woReq,
+        required_qty: woReq,
+        remaining_qty: Math.max(
+          0,
+          Number(firstQuantity(op?.remaining_qty, woReq - planned - finished, woReq, 0))
+        ),
+      };
+    });
+    if (!displayOps.length) {
       const hint = blocks.length
         ? '<p class="ps-details-empty-hint">No operation steps in BOM flow or ERP cache. Scheduled blocks are listed below.</p>'
         : '';
@@ -806,17 +848,17 @@
             </tr>
           </thead>
           <tbody>
-            ${ops.map(op => `
+            ${displayOps.map(op => `
               <tr>
                 <td>${escapeHtml(op.op_no || op.source_op_no || op.operation_label || '-')}</td>
                 <td>${escapeHtml(op.op_type || op.operation_name || op.stage_desc || '-')}</td>
                 <td>${escapeHtml(op.preferred_machine || op.machine_code || op.compatible_machine_group || '-')}</td>
                 <td>${renderOpStatusCell(op, summary)}</td>
-                <td>${escapeHtml(fmtQty(firstQuantity(op.wo_qty_required, op.required_qty, op.target_qty)))}</td>
+                <td>${escapeHtml(fmtQty(op.wo_qty_required))}</td>
                 <td>${escapeHtml(fmtQty(op.planned_qty))}</td>
                 <td>${escapeHtml(fmtQty(op.finished_qty))}</td>
                 <td>${escapeHtml(fmtQty(op.reject_qty))}</td>
-                <td>${escapeHtml(fmtQty(firstQuantity(op.remaining_qty, op.target_qty, op.total_qty)))}</td>
+                <td>${escapeHtml(fmtQty(op.remaining_qty))}</td>
               </tr>
             `).join('')}
           </tbody>

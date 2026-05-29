@@ -16,13 +16,16 @@ let trialPsTypeFilter = new Set(['A', 'N']);
 let trialShowSrOrders = false;
 let trialMachineCategoryFilter = 'ALL';
 let trialMachineHiddenSet = new Set();
-let trialMachineCollapsedSet = new Set();
+let trialOpenQueueMachineId = 0;
 let trialScheduleDateFilter = { start: '', end: '' };
 let trialBOMEditing = [];
 let trialBOMMeta = {};
 let trialActualDraft = { blockId: null, rows: {}, deletedDates: new Set(), removedTargetDates: new Set() };
 let trialActualSaving = false;
 let trialMachineSortables = [];
+let trialQueueSortable = null;
+let trialPlannerBusyDepth = 0;
+let trialPlannerBusyLock = 0;
 let trialCatalogPointerDrag = null;
 let trialCatalogPointerListenersBound = false;
 // Blocks pinned after schedule POST until schedule refresh includes them (prevents pop-off).

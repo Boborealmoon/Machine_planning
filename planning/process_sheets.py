@@ -48,6 +48,23 @@ def _display_ids(ps):
     return source_ps_id or ps_id, pp_partial_no
 
 
+def _planner_ps_identity(ps_id):
+    source_ps_id, pp_partial_no = parse_planner_ps_id(ps_id)
+    planner_ps_id = format_planner_ps_id(source_ps_id, pp_partial_no)
+    return source_ps_id, int(pp_partial_no), planner_ps_id
+
+
+def _operation_belongs_to_planner_ps(op_source_ps_id, op_job_no, planner_ps_id):
+    target_source, target_partial, _ = _planner_ps_identity(planner_ps_id)
+    for candidate in (compact_text(op_source_ps_id), compact_text(op_job_no)):
+        if not candidate:
+            continue
+        cand_source, cand_partial = parse_planner_ps_id(candidate)
+        if cand_source == target_source and int(cand_partial) == int(target_partial):
+            return True
+    return False
+
+
 def parse_planner_ps_id(planner_ps_id):
     """Split planner_ps_id into (source_ps_id, pp_partial_no)."""
     raw = compact_text(planner_ps_id)
@@ -349,8 +366,15 @@ def _block_metrics_for_ps_ids(con, ps_ids):
     ps_ids = [compact_text(x) for x in ps_ids if compact_text(x)]
     if not ps_ids:
         return {}, {}
-    metrics = {}
-    block_rows = {}
+    source_ids = set()
+    for ps_id in ps_ids:
+        source_ps_id, _, _ = _planner_ps_identity(ps_id)
+        source_ids.add(source_ps_id)
+        source_ids.add(ps_id)
+    metrics = {ps_id: {"by_op": {}, "planned_qty_total": 0.0, "finished_qty_total": 0.0,
+                       "reject_qty_total": 0.0, "expected_start": "", "expected_end": ""}
+               for ps_id in ps_ids}
+    block_rows = {ps_id: [] for ps_id in ps_ids}
     for row in rows(
         con.execute(
             """
@@ -373,7 +397,7 @@ def _block_metrics_for_ps_ids(con, ps_ids):
                 FROM planner_run_block_segment
                 GROUP BY block_id
             )
-            SELECT o.source_ps_id, o.source_op_seq_id, o.source_op_no,
+            SELECT o.source_ps_id, o.job_no, o.source_op_seq_id, o.source_op_no,
                    b.block_id, b.operation_id, b.machine_id, b.queue_position,
                    b.scheduled_qty, b.status, b.planning_status, b.execution_status,
                    b.calculated_start_datetime, b.calculated_end_datetime,
@@ -396,16 +420,22 @@ def _block_metrics_for_ps_ids(con, ps_ids):
             ORDER BY o.source_ps_id, o.source_op_seq_id, o.source_op_no,
                      b.queue_position, b.block_id
             """,
-            (ps_ids,),
+            (list(source_ids),),
         )
     ):
-        ps_id = compact_text(row["source_ps_id"])
+        matched_ps_id = ""
+        for planner_ps_id in ps_ids:
+            if _operation_belongs_to_planner_ps(
+                row.get("source_ps_id"),
+                row.get("job_no"),
+                planner_ps_id,
+            ):
+                matched_ps_id = planner_ps_id
+                break
+        if not matched_ps_id:
+            continue
         key = _operation_key(row["source_op_seq_id"], row["source_op_no"])
-        entry = metrics.setdefault(
-            ps_id,
-            {"by_op": {}, "planned_qty_total": 0.0, "finished_qty_total": 0.0,
-             "reject_qty_total": 0.0, "expected_start": "", "expected_end": ""},
-        )
+        entry = metrics[matched_ps_id]
         op_entry = entry["by_op"].setdefault(
             key,
             {"planned_qty": 0.0, "finished_qty": 0.0, "reject_qty": 0.0,
@@ -430,7 +460,7 @@ def _block_metrics_for_ps_ids(con, ps_ids):
             entry["expected_start"] = start_text
         if end_text and (not entry["expected_end"] or end_text > entry["expected_end"]):
             entry["expected_end"] = end_text
-        block_rows.setdefault(ps_id, []).append(row)
+        block_rows[matched_ps_id].append(row)
     for ps_id, entry in metrics.items():
         entry["planned_qty_total"] = sum(op["planned_qty"] for op in entry["by_op"].values())
         entry["finished_qty_total"] = sum(op["finished_qty"] for op in entry["by_op"].values())
@@ -536,7 +566,7 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         reject_qty = max(reject_qty, erp_reject_qty)
         remaining_qty = max(0.0, total_qty - finished_qty)
     planner_status = _planner_status(ps, total_qty, planned_qty, finished_qty, len(steps))
-    ops = [_step_payload(step, metrics.get("by_op", {})) for step in steps]
+    ops = [_step_payload(step, metrics.get("by_op", {}), total_qty) for step in steps]
     tracked_statuses = _tracked_stage_statuses(ops)
     if not tracked_statuses and compact_text(ps.get("execution_status")):
         tracked_statuses = [compact_text(ps.get("execution_status"))]
@@ -607,10 +637,18 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
     }
 
 
-def _step_payload(step, metrics_by_op):
+def _step_payload(step, metrics_by_op, work_qty=0):
     key = _operation_key(step.get("op_seq_id"), step.get("op_no"))
     op_metrics = metrics_by_op.get(key, {})
-    total_qty = _to_float(step.get("erp_required_qty") or step.get("total_qty"))
+    work_qty = _to_float(work_qty)
+    erp_stage_req = _to_float(step.get("erp_required_qty"))
+    # Stage-level ERP wo_qty_required is often the full WO; partial work uses partial_qty.
+    if work_qty > 0:
+        total_qty = work_qty
+    elif erp_stage_req > 0:
+        total_qty = erp_stage_req
+    else:
+        total_qty = _to_float(step.get("total_qty"))
     planned_qty = _to_float(op_metrics.get("planned_qty"))
     finished_qty = max(_to_float(op_metrics.get("finished_qty")), _to_float(step.get("erp_finished_qty")))
     reject_qty = max(_to_float(op_metrics.get("reject_qty")), _to_float(step.get("erp_reject_qty")))
@@ -789,66 +827,93 @@ def api_process_sheet_details(ps_id):
     ps_id = compact_text(ps_id)
     try:
         with planner_db() as con:
+            _, _, canonical_ps_id = _planner_ps_identity(ps_id)
             ps = one(
                 con.execute(
                     _PS_SELECT + " WHERE ps.planner_ps_id = %s",
-                    (ps_id,),
+                    (canonical_ps_id,),
                 )
             )
             if not ps:
+                try:
+                    ensure_planner_process_sheet(con, canonical_ps_id)
+                except ValueError as exc:
+                    return jsonify({"error": str(exc)}), 404
+                ps = one(
+                    con.execute(
+                        _PS_SELECT + " WHERE ps.planner_ps_id = %s",
+                        (canonical_ps_id,),
+                    )
+                )
+            if not ps:
                 return jsonify({"error": "Process sheet not found"}), 404
 
-            steps_by_ps = _flow_steps_for_ps_ids(con, [ps_id])
-            metrics_by_ps, block_rows_by_ps = _block_metrics_for_ps_ids(con, [ps_id])
+            source_ps_id, _, _ = _planner_ps_identity(canonical_ps_id)
+            steps_by_ps = _flow_steps_for_ps_ids(con, [canonical_ps_id])
+            metrics_by_ps, block_rows_by_ps = _block_metrics_for_ps_ids(con, [canonical_ps_id])
             material_status_by_ps = material_status_map_for_ps_ids(
                 con,
-                [ps_id],
-                {ps_id: metrics_by_ps.get(ps_id, {}).get("expected_start", "")},
+                [canonical_ps_id],
+                {canonical_ps_id: metrics_by_ps.get(canonical_ps_id, {}).get("expected_start", "")},
             )
-            steps = _resolve_process_sheet_steps(con, dict(ps), steps_by_ps.get(ps_id, []))
+            steps = _resolve_process_sheet_steps(con, dict(ps), steps_by_ps.get(canonical_ps_id, []))
             summary = _process_sheet_payload(
                 dict(ps),
                 steps,
-                metrics_by_ps.get(ps_id, {}),
-                material_status_by_ps.get(ps_id, {}),
+                metrics_by_ps.get(canonical_ps_id, {}),
+                material_status_by_ps.get(canonical_ps_id, {}),
             )
 
+            segment_rows = rows(
+                con.execute(
+                    """
+                    SELECT s.*, m.machine_no AS machine_code, o.source_ps_id, o.job_no,
+                           o.source_op_seq_id, o.source_op_no
+                    FROM planner_run_block_segment s
+                    JOIN planner_run_block b ON b.block_id = s.block_id
+                    JOIN planner_operation o ON o.operation_id = b.operation_id
+                    LEFT JOIN planner_machines m ON m.machine_id = s.machine_id
+                    WHERE o.source_ps_id = %s
+                       OR o.source_ps_id LIKE %s || '::%%'
+                    ORDER BY s.start_datetime, s.segment_id
+                    """,
+                    (source_ps_id, source_ps_id),
+                )
+            )
             segments = [
                 dict(row)
-                for row in rows(
-                    con.execute(
-                        """
-                        SELECT s.*, m.machine_no AS machine_code, o.source_op_seq_id, o.source_op_no
-                        FROM planner_run_block_segment s
-                        JOIN planner_run_block b ON b.block_id = s.block_id
-                        JOIN planner_operation o ON o.operation_id = b.operation_id
-                        LEFT JOIN planner_machines m ON m.machine_id = s.machine_id
-                        WHERE o.source_ps_id = %s
-                        ORDER BY s.start_datetime, s.segment_id
-                        """,
-                        (ps_id,),
-                    )
+                for row in segment_rows
+                if _operation_belongs_to_planner_ps(
+                    row.get("source_ps_id"),
+                    row.get("job_no"),
+                    canonical_ps_id,
                 )
             ]
 
+            actual_rows = rows(
+                con.execute(
+                    """
+                    SELECT a.actual_id, a.segment_id, a.block_id, a.report_date,
+                           a.output_qty, a.reject_qty, a.target_qty_at_report,
+                           a.remarks, a.reported_at,
+                           o.source_ps_id, o.job_no, o.source_op_seq_id, o.source_op_no
+                    FROM planner_production_actual a
+                    JOIN planner_run_block b ON b.block_id = a.block_id
+                    JOIN planner_operation o ON o.operation_id = b.operation_id
+                    WHERE (o.source_ps_id = %s OR o.source_ps_id LIKE %s || '::%%')
+                      AND COALESCE(a.status, 'ACTIVE') = 'ACTIVE'
+                    ORDER BY a.report_date, a.actual_id
+                    """,
+                    (source_ps_id, source_ps_id),
+                )
+            )
             actuals = [
                 dict(row)
-                for row in rows(
-                    con.execute(
-                        """
-                        SELECT a.actual_id, a.segment_id, a.block_id, a.report_date,
-                               a.output_qty, a.reject_qty, a.target_qty_at_report,
-                               a.remarks, a.reported_at,
-                               o.source_op_seq_id, o.source_op_no
-                        FROM planner_production_actual a
-                        JOIN planner_run_block b ON b.block_id = a.block_id
-                        JOIN planner_operation o ON o.operation_id = b.operation_id
-                        WHERE o.source_ps_id = %s
-                          AND COALESCE(a.status, 'ACTIVE') = 'ACTIVE'
-                        ORDER BY a.report_date, a.actual_id
-                        """,
-                        (ps_id,),
-                    )
+                for row in actual_rows
+                if _operation_belongs_to_planner_ps(
+                    row.get("source_ps_id"),
+                    row.get("job_no"),
+                    canonical_ps_id,
                 )
             ]
             actuals_by_block = {}
@@ -856,7 +921,7 @@ def api_process_sheet_details(ps_id):
                 actuals_by_block.setdefault(int(row.get("block_id") or 0), []).append(row)
 
             planned_blocks = []
-            for block in block_rows_by_ps.get(ps_id, []):
+            for block in block_rows_by_ps.get(canonical_ps_id, []):
                 item = dict(block)
                 item["actuals"] = actuals_by_block.get(int(item.get("block_id") or 0), [])
                 planned_blocks.append(item)
@@ -871,7 +936,7 @@ def api_process_sheet_details(ps_id):
                         WHERE planner_ps_id = %s
                         ORDER BY card_id
                         """,
-                        (ps_id,),
+                        (canonical_ps_id,),
                     )
                 )
             ]
@@ -886,7 +951,7 @@ def api_process_sheet_details(ps_id):
                         WHERE planner_ps_id = %s
                         ORDER BY requirement_id
                         """,
-                        (ps_id,),
+                        (canonical_ps_id,),
                     )
                 )
             ]

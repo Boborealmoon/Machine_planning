@@ -106,6 +106,37 @@ function trialFlowSelectHtml(ps) {
   `;
 }
 
+function trialCatalogBomBarHtml(ps) {
+  const flows = Array.isArray(ps.flow_options) ? ps.flow_options : [];
+  const selectedFlowCode = String(ps.selected_bom_code || ps.selected_flow_code || '');
+  const erpBom = trialPsErpBomCode(ps) || '-';
+  const options = [];
+  if (!flows.length) {
+    const hint = erpBom && erpBom !== '-' ? `ERP ${erpBom}` : 'No BOM routes';
+    options.push(`<option value="">${escapeHtml(hint)}</option>`);
+  } else {
+    options.push('<option value="">Planner BOM…</option>');
+    flows.forEach(flow => {
+      const code = String(flow.bom_code || flow.flow_code || '');
+      const label = `${code}${flow.is_default ? ' *' : ''}${erpBom && code === erpBom ? ' · ERP' : ''}`;
+      options.push(`<option value="${escapeHtml(code)}" ${code === selectedFlowCode ? 'selected' : ''}>${escapeHtml(label)}</option>`);
+    });
+  }
+  return `
+    <div class="trial-catalog-bom-bar trial-catalog-bom-bar--compact">
+      <span class="trial-catalog-bom-erp" title="ERP BOM (pp_voucher)">ERP ${escapeHtml(erpBom)}</span>
+      ${trialBomStageBadgeHtml(ps)}
+      <select class="trial-catalog-flow-select" data-ps-id="${escapeHtml(ps.ps_id || '')}"
+        ${flows.length ? '' : 'disabled'}
+        onchange="setTrialSelectedFlow(this.dataset.psId, this.value)">
+        ${options.join('')}
+      </select>
+      <button class="btn btn-ghost btn-sm trial-catalog-bom-btn" type="button"
+        onclick="openTrialBOMEditor('${escapeHtml(ps.ps_id)}')">BOM</button>
+    </div>
+  `;
+}
+
 function trialOpQtyLabel(op) {
   const remaining = Number(op.remaining_qty || op.total_qty || 0);
   const planned = Number(op.planned_qty || 0);
@@ -192,9 +223,19 @@ function trialPsHasCatalogTags(ps) {
  * Unassigned / blank PS: no manufacturing work orders yet, or no visible status tags.
  * ERP catalog rows often have op_cards from stage_desc but still look blank in the UI.
  */
+function trialCatalogSourceBase(ps) {
+  const base = String(ps?.source_ps_id || '').trim();
+  if (base) return base;
+  return trialSplitPsId(String(ps?.ps_id || '')).base || '';
+}
+
 function trialPsIsUnassignedCatalog(ps) {
   const cards = ps?.op_cards || [];
   if (!cards.length) return true;
+  // ERP partials without WO status codes still have open stage rows — not blank.
+  if (cards.some(card => trialCatalogOpIsOpen(card))) return false;
+  const workQty = Number(ps?.partial_qty ?? ps?.display_qty ?? ps?.wo_req_qty ?? 0);
+  if (workQty > 0.0001 && !trialPsShippedComplete(ps)) return false;
   return !trialPsHasCatalogTags(ps);
 }
 
@@ -211,24 +252,11 @@ function setAllTrialPsTypesVisible(visible) {
 
 // ── Filters ───────────────────────────────────────────────────────────────────
 
-function renderTrialMachineCategoryFilter() {
+function renderTrialMachineTypeFilter() {
   const categories = trialMachineCategories();
-  const machines = trialMachinesInCategory();
-  const selectedMachineCount = machines.filter(m => !trialMachineHiddenSet.has(m.machine_code)).length;
-
-  const machineCheckboxes = machines.map(m => {
-    const code = m.machine_code || '';
-    const checked = !trialMachineHiddenSet.has(code);
-    return `<label class="trial-machine-checkbox">
-        <input type="checkbox" ${checked ? 'checked' : ''}
-          onchange="toggleTrialMachineFilter('${escapeHtml(code)}', this.checked)">
-        <span>${escapeHtml(code)}</span>
-      </label>`;
-  }).join('');
-
   return `
-    <div class="trial-filter-section trial-filter-section-type">
-      <div class="trial-filter-label">Type</div>
+    <div class="trial-filter-inline trial-filter-section-type">
+      <span class="trial-filter-label">Type</span>
       <div class="trial-machine-filter">
         ${categories.map(category => `
           <button type="button"
@@ -239,13 +267,26 @@ function renderTrialMachineCategoryFilter() {
         `).join('')}
       </div>
     </div>
-    ${machines.length > 0 ? `
+  `;
+}
+
+function renderTrialMachineCheckboxFilter() {
+  const machines = trialMachinesInCategory();
+  if (!machines.length) return '';
+  const selectedMachineCount = machines.filter(m => !trialMachineHiddenSet.has(m.machine_code)).length;
+  const machineCheckboxes = machines.map(m => {
+    const code = m.machine_code || '';
+    const checked = !trialMachineHiddenSet.has(code);
+    return `<label class="trial-machine-checkbox">
+        <input type="checkbox" ${checked ? 'checked' : ''}
+          onchange="toggleTrialMachineFilter('${escapeHtml(code)}', this.checked)">
+        <span>${escapeHtml(code)}</span>
+      </label>`;
+  }).join('');
+  return `
     <div class="trial-filter-section trial-filter-section-machines">
       <div class="trial-filter-section-head">
-        <div>
-          <div class="trial-filter-label">Machine</div>
-          <div class="trial-filter-subtle">${selectedMachineCount}/${machines.length} shown</div>
-        </div>
+        <span class="trial-filter-label">Machine <span class="trial-filter-subtle">${selectedMachineCount}/${machines.length}</span></span>
         <div class="trial-machine-checkbox-actions">
           <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialMachinesVisible(true)">All</button>
           <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialMachinesVisible(false)">None</button>
@@ -255,7 +296,6 @@ function renderTrialMachineCategoryFilter() {
         ${machineCheckboxes}
       </div>
     </div>
-    ` : ''}
   `;
 }
 
@@ -285,21 +325,15 @@ function setAllTrialMachinesVisible(visible) {
 
 function renderTrialScheduleDateFilter() {
   return `
-    <div class="trial-filter-section trial-filter-section-date">
-      <div class="trial-filter-label">Date</div>
+    <div class="trial-filter-inline trial-filter-section-date">
+      <span class="trial-filter-label">Date</span>
       <div class="trial-date-filter">
-        <label>
-          <span>Start</span>
-          <input type="date" value="${escapeHtml(trialScheduleDateFilter.start || '')}"
-            onchange="setTrialScheduleDateFilter('start', this.value)">
-        </label>
-        <span class="trial-date-filter-separator">→</span>
-        <label>
-          <span>End</span>
-          <input type="date" value="${escapeHtml(trialScheduleDateFilter.end || '')}"
-            onchange="setTrialScheduleDateFilter('end', this.value)">
-        </label>
-        <button type="button" class="btn btn-ghost btn-sm" onclick="clearTrialScheduleDateFilter()">Clear</button>
+        <input type="date" aria-label="Start date" value="${escapeHtml(trialScheduleDateFilter.start || '')}"
+          onchange="setTrialScheduleDateFilter('start', this.value)">
+        <span class="trial-date-filter-separator">–</span>
+        <input type="date" aria-label="End date" value="${escapeHtml(trialScheduleDateFilter.end || '')}"
+          onchange="setTrialScheduleDateFilter('end', this.value)">
+        <button type="button" class="btn btn-ghost btn-sm trial-date-clear" onclick="clearTrialScheduleDateFilter()">Clear</button>
       </div>
     </div>
   `;
@@ -320,6 +354,227 @@ function clearTrialScheduleDateFilter() {
 }
 
 // ── Op card HTML ──────────────────────────────────────────────────────────────
+
+function trialFindCatalogOpContext(payload) {
+  if (!payload) return { ps: null, card: null };
+  const psId = String(payload.ps_id || payload.source_ps_id || '').trim();
+  const basePs = psId.split('::')[0] || psId;
+  const opNo = String(payload.source_op_no || payload.operation_label || '').trim();
+  const stepId = Number(payload.source_op_seq_id || 0);
+  const cardId = Number(payload.card_id || 0);
+  const pools = [...(trialState.catalog || []), ...(trialState.planned || [])];
+  for (const ps of pools) {
+    const rowPsId = String(ps.ps_id || '').trim();
+    const rowBase = rowPsId.split('::')[0] || rowPsId;
+    if (psId && rowPsId !== psId && rowBase !== basePs) continue;
+    for (const card of ps.op_cards || []) {
+      if (cardId && Number(card.card_id || 0) === cardId) {
+        return { ps, card };
+      }
+      if (stepId > 0 && Number(card.source_op_seq_id || 0) === stepId) {
+        return { ps, card };
+      }
+      const cardOp = String(card.source_op_no || card.operation_label || '').trim();
+      if (opNo && cardOp === opNo) {
+        return { ps, card };
+      }
+    }
+  }
+  const fallback = trialCatalogCardFromPayload(payload);
+  return { ps: null, card: fallback };
+}
+
+function trialRenderCatalogOpDetailRow(label, valueHtml) {
+  if (!valueHtml && valueHtml !== 0) return '';
+  return `
+    <div class="trial-op-detail-row">
+      <dt>${escapeHtml(label)}</dt>
+      <dd>${valueHtml}</dd>
+    </div>
+  `;
+}
+
+function trialRenderCatalogOpDetailBody(ps, card) {
+  const cardKind = String(card.card_kind || 'single');
+  const isGroup = cardKind === 'group';
+  const opName = String(card.operation_name || '').trim();
+  const execStatus = card.execution_status || card.op?.execution_status || '';
+  const catalogCard = {
+    ...card,
+    ps_id: card.ps_id || ps?.ps_id || '',
+    source_ps_id: card.source_ps_id || ps?.ps_id || '',
+    part_no: card.part_no || ps?.part_no || ps?.part_name || '',
+  };
+  const allocatedBlock = trialAllocatedBlockForOp(
+    catalogCard.source_ps_id || catalogCard.ps_id,
+    catalogCard.source_op_no || catalogCard.operation_label,
+    Number(catalogCard.source_op_seq_id || 0),
+  );
+  const isAllocated = Boolean(allocatedBlock) || trialIsCatalogOpAllocated(catalogCard);
+  const psId = String(ps?.ps_id || card.ps_id || '').trim();
+  const basePs = psId.split('::')[0] || psId;
+  const partial = psId.includes('::') ? psId.split('::')[1] : '';
+  const execHtml = trialOpStatusHtml(execStatus, {
+    opNo: card.operation_label || card.source_op_no || '',
+    title: opName,
+    compact: false,
+  });
+  const machineGroup = String(card.compatible_machine_group || card.op?.compatible_machine_group || '').trim();
+  const queueLine = allocatedBlock
+    ? `${escapeHtml(allocatedBlock.machine_code || 'Machine')} · block #${escapeHtml(allocatedBlock.block_id || '')}`
+    : '<span class="trial-ptl-muted">Not on a machine queue</span>';
+
+  return `
+    <div class="trial-op-detail">
+      <div class="trial-op-detail-head">
+        <div class="trial-op-detail-title">${escapeHtml(card.operation_label || card.source_op_no || 'Operation')}</div>
+        <div class="trial-op-detail-sub">${escapeHtml(opName || card.op_type || '')}</div>
+        <div class="trial-op-detail-badges">${execHtml}</div>
+      </div>
+      <dl class="trial-op-detail-grid">
+        ${trialRenderCatalogOpDetailRow('Process sheet', escapeHtml(basePs))}
+        ${partial ? trialRenderCatalogOpDetailRow('Partial', escapeHtml(partial)) : ''}
+        ${ps?.part_name || ps?.part_no
+          ? trialRenderCatalogOpDetailRow('Part', escapeHtml([ps.part_name || ps.part_no, ps.part_desc].filter(Boolean).join(' · ')))
+          : ''}
+        ${ps?.due_date ? trialRenderCatalogOpDetailRow('PS due', escapeHtml(ps.due_date)) : ''}
+        ${trialRenderCatalogOpDetailRow('Card type', escapeHtml(isGroup ? 'Combined planning card' : 'Single operation'))}
+        ${trialRenderCatalogOpDetailRow('Planning status', escapeHtml(card.planning_status || '—'))}
+        ${trialRenderCatalogOpDetailRow('Target qty', escapeHtml(fmt(card.target_qty || 0, 0)))}
+        ${trialRenderCatalogOpDetailRow('Remaining', escapeHtml(fmt(card.remaining_qty || 0, 0)))}
+        ${trialRenderCatalogOpDetailRow('Total qty', escapeHtml(fmt(card.total_qty || card.remaining_qty || 0, 0)))}
+        ${trialRenderCatalogOpDetailRow('Setup', `${escapeHtml(fmt(card.setup_minutes || 0, 0))} min`)}
+        ${trialRenderCatalogOpDetailRow('Cycle', `${escapeHtml(fmt(card.cycle_minutes_per_qty || 0, 2))} min/pc`)}
+        ${machineGroup ? trialRenderCatalogOpDetailRow('Machine group', escapeHtml(machineGroup)) : ''}
+        ${trialRenderCatalogOpDetailRow('Queue', queueLine)}
+      </dl>
+      <div class="trial-op-detail-section">
+        <div class="trial-op-detail-section-title">Program / tool list</div>
+        ${trialProgramToolsBlockHtml(catalogCard)}
+      </div>
+      <div class="trial-op-detail-actions">
+        ${isAllocated && allocatedBlock?.machine_id
+          ? `<button type="button" class="btn btn-primary btn-sm" onclick="closeModal(); openTrialMachineQueue(${Number(allocatedBlock.machine_id)})">Open machine queue</button>`
+          : ''}
+        ${allocatedBlock?.block_id
+          ? `<button type="button" class="btn btn-ghost btn-sm" onclick="closeModal(); openTrialBlockEditor(${Number(allocatedBlock.block_id)})">Edit run block</button>`
+          : ''}
+        ${isGroup && !card.is_scheduled
+          ? `<button type="button" class="btn btn-ghost btn-sm" onclick="closeModal(); deleteTrialPlanningCard(${Number(card.card_id || 0)})">Uncombine</button>`
+          : ''}
+      </div>
+    </div>
+  `;
+}
+
+function openTrialCatalogOpDetail(payload) {
+  if (trialPlannerBusyLock > 0) return;
+  const { ps, card } = trialFindCatalogOpContext(payload);
+  if (!card) {
+    toast('Operation details not found.', 'error');
+    return;
+  }
+  const title = `${card.operation_label || card.source_op_no || 'Operation'} · ${String(ps?.ps_id || card.ps_id || '').split('::')[0] || 'PS'}`;
+  openModal(title, trialRenderCatalogOpDetailBody(ps, card), 'lg');
+}
+
+function trialPlanningCardFromBlock(block) {
+  if (!block) return null;
+  return {
+    ps_id: block.source_ps_id || block.job_no || '',
+    source_ps_id: block.source_ps_id || block.job_no || '',
+    source_op_no: block.source_op_no || block.operation_label || '',
+    source_op_seq_id: Number(block.source_op_seq_id || 0),
+    operation_label: block.operation_label || block.source_op_no || '',
+    operation_name: block.operation_name || block.op_type || '',
+    part_no: block.part_no || block.part_name || '',
+    job_no: block.job_no || block.source_ps_id || '',
+  };
+}
+
+function trialRenderRunBlockDetailBody(group, block, machine) {
+  const vm = trialBlockGroupViewModel(group);
+  const leader = vm.leader || block;
+  const blockId = Number(leader?.block_id || block?.block_id || 0);
+  const ptlCard = trialPlanningCardFromBlock(leader || block);
+  const execHtml = vm.isCombined
+    ? vm.executionStatusHtml
+    : trialOpStatusHtml(leader?.execution_status, {
+      opNo: leader?.source_op_no || leader?.operation_label,
+      title: leader?.operation_name,
+      compact: false,
+    });
+  const machineLine = machine
+    ? `${escapeHtml(machine.machine_code || '')} · ${escapeHtml(machine.machine_category || '')}`
+    : '—';
+
+  return `
+    <div class="trial-op-detail">
+      <div class="trial-op-detail-head">
+        <div class="trial-op-detail-title">${escapeHtml(vm.psDisplay.base || group.title || '')}</div>
+        <div class="trial-op-detail-sub">${escapeHtml(vm.operationLine)}</div>
+        <div class="trial-op-detail-badges">${execHtml}</div>
+      </div>
+      <dl class="trial-op-detail-grid">
+        ${trialRenderCatalogOpDetailRow('Machine', escapeHtml(machineLine))}
+        ${vm.sequenceNo ? trialRenderCatalogOpDetailRow('Queue #', escapeHtml(String(vm.sequenceNo))) : ''}
+        ${trialRenderCatalogOpDetailRow('Target qty', vm.targetQty)}
+        ${trialRenderCatalogOpDetailRow('Output', vm.pairedOutput)}
+        ${trialRenderCatalogOpDetailRow('Due', escapeHtml(String(trialDueDateForPs(vm.psDueKey) || '—')))}
+        ${trialRenderCatalogOpDetailRow('Queued', escapeHtml(vm.queuedText))}
+        ${trialRenderCatalogOpDetailRow('End', escapeHtml(vm.outputText))}
+        ${trialRenderCatalogOpDetailRow('Setup', leader?.include_setup ? 'Included' : 'Excluded')}
+      </dl>
+      ${ptlCard ? `
+        <div class="trial-op-detail-section">
+          <div class="trial-op-detail-section-title">Program / tool list</div>
+          ${trialProgramToolsBlockHtml(ptlCard)}
+        </div>
+      ` : ''}
+      ${vm.isCombined ? `
+        <div class="trial-op-detail-section">
+          <div class="trial-op-detail-section-title">Combined operations</div>
+          <div class="trial-block-member-progress">
+            ${vm.memberMetrics.map(member => `
+              <div class="trial-block-member-line">
+                <span>${escapeHtml(member.source_op_no || member.operation_name || '')}</span>
+                <span>${fmt(member.netOutput || member.outputTotal || 0, 0)} / ${fmt(member.scheduled_qty || 0, 0)} done</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+      <div class="trial-op-detail-actions">
+        <button type="button" class="btn btn-primary btn-sm" onclick="closeModal(); openTrialMachineQueue(${Number(machine?.machine_id || block?.machine_id || 0)})">Open machine queue</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="closeModal(); openTrialBlockEditor(${blockId})">Edit</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="closeModal(); openTrialSplitModal(${blockId})">Split</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="closeModal(); ${vm.isCombined ? `openTrialGroupActualModal(${Number(group.group_id || 0)})` : `openTrialActualModal(${blockId})`}">Actual</button>
+      </div>
+    </div>
+  `;
+}
+
+function openTrialRunBlockDetail(blockId) {
+  if (trialPlannerBusyLock > 0) return;
+  const id = Number(blockId || 0);
+  if (!id) return;
+  const block = (trialState.blocks || []).find(row => Number(row.block_id) === id);
+  if (!block) {
+    toast('Run block not found.', 'error');
+    return;
+  }
+  const machineId = Number(block.machine_id || 0);
+  const groups = trialBlocksGroupedForMachine(machineId);
+  const group = groups.find(row => (row.blocks || []).some(b => Number(b.block_id) === id));
+  if (!group) {
+    toast('Queue group not found.', 'error');
+    return;
+  }
+  const machine = (trialState.machines || []).find(row => Number(row.machine_id) === machineId);
+  const vm = trialBlockGroupViewModel(group);
+  const title = `${vm.psDisplay.base || 'Run block'} · ${machine?.machine_code || 'Machine'}`;
+  openModal(title, trialRenderRunBlockDetailBody(group, block, machine), 'lg');
+}
 
 function renderTrialOpCardHtml(card) {
   const cardKind = String(card.card_kind || 'single');
@@ -377,9 +632,16 @@ function renderTrialOpCardHtml(card) {
       source_op_no: payload.source_op_no,
     };
   }
+  const opLabel = String(card.operation_label || '').trim();
+  const showOpName = opName && opName !== opLabel;
+  const uncombineBtn = isGroup && !isScheduled
+    ? `<button class="trial-catalog-op-uncombine" type="button" aria-label="Uncombine" title="Uncombine"
+        onclick="deleteTrialPlanningCard(${Number(card.card_id || 0)})">×</button>`
+    : '';
   return `
-    <div class="trial-catalog-op trial-planning-card ${isScheduled ? 'is-scheduled' : ''} ${isAllocated ? 'is-allocated' : ''}"
+    <div class="trial-catalog-op trial-planning-card trial-catalog-op--compact trial-catalog-op--clickable ${isScheduled ? 'is-scheduled' : ''} ${isAllocated ? 'is-allocated' : ''}"
       draggable="false"
+      title="Click for details · drag to schedule or combine"
       data-trial-payload="${trialPayloadToAttr(payload)}"
       data-card-kind="${escapeHtml(cardKind)}"
       data-card-id="${escapeHtml(card.card_id || '')}"
@@ -403,30 +665,25 @@ function renderTrialOpCardHtml(card) {
       data-operation-name="${escapeHtml(card.operation_name || '')}"
       data-total-qty="${escapeHtml(card.total_qty || card.remaining_qty || 0)}"
     >
-      <div class="trial-planning-card-head">
-        <div class="trial-planning-card-main">
-          <div class="trial-planning-card-title-row">
-            <div class="trial-planning-card-title">${escapeHtml(card.operation_label || '')}</div>
-            ${execStatusHtml}
-          </div>
-          <div class="trial-planning-card-sub">${escapeHtml(opName)}</div>
-          <div class="trial-planning-card-sub">Remaining ${remainingQty} pcs</div>
-          <div class="trial-planning-card-sub">Setup ${setupMinutes}m · Cycle ${cycleMinutes}m/pc</div>
-          ${trialProgramToolsBlockHtml(card)}
-          ${isAllocated
-            ? `<div class="trial-allocated-badge">
-                <span class="trial-allocated-dot"></span>
-                In queue${allocatedMachineCode ? ' · ' + escapeHtml(allocatedMachineCode) : ''}
-               </div>`
-            : ''}
+      <div class="trial-catalog-op-line">
+        <div class="trial-catalog-op-lead">
+          <span class="trial-catalog-op-label">${escapeHtml(opLabel)}</span>
+          ${execStatusHtml}
         </div>
-        <div style="display:grid;gap:6px;justify-items:end">
-          ${isGroup && !isScheduled
-            ? `<button class="btn btn-ghost btn-sm" style="padding:2px 8px;line-height:1;min-height:0" type="button"
-                aria-label="Uncombine" title="Uncombine"
-                onclick="deleteTrialPlanningCard(${Number(card.card_id || 0)})">Uncombine</button>`
-            : ''}
+        <div class="trial-catalog-op-side">
+          <span class="trial-catalog-op-qty" title="Remaining quantity">${remainingQty} pcs</span>
+          <span class="trial-catalog-op-time" title="Setup / cycle per pc">${setupMinutes}/${cycleMinutes}m</span>
         </div>
+        ${uncombineBtn}
+      </div>
+      ${showOpName ? `<div class="trial-catalog-op-detail">${escapeHtml(opName)}</div>` : ''}
+      <div class="trial-catalog-op-footer">
+        ${trialProgramToolsCompactHtml(card)}
+        ${isAllocated
+          ? `<span class="trial-allocated-badge trial-allocated-badge--compact" title="Already on a machine queue">
+              <span class="trial-allocated-dot"></span>Queue${allocatedMachineCode ? ' · ' + escapeHtml(allocatedMachineCode) : ''}
+            </span>`
+          : ''}
       </div>
     </div>
   `;
@@ -496,173 +753,223 @@ function trialDuePillHtml(psId) {
   `;
 }
 
-function toggleTrialMachineCollapsed(machineId) {
-  const id = Number(machineId);
-  if (!id) return;
-  if (trialMachineCollapsedSet.has(id)) {
-    trialMachineCollapsedSet.delete(id);
-  } else {
-    trialMachineCollapsedSet.add(id);
-  }
-  const section = document.querySelector(`.trial-machine[data-machine-id="${id}"]`);
-  if (!section) return;
-  const collapsed = trialMachineCollapsedSet.has(id);
-  section.classList.toggle('is-collapsed', collapsed);
-  const btn = section.querySelector('.trial-machine-collapse-btn');
-  if (btn) {
-    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-    btn.title = collapsed ? 'Expand machine queue' : 'Collapse machine queue';
-  }
+function trialBlockGroupViewModel(group) {
+  const leader = group.leader;
+  const psDisplay = trialBlockPsDisplay(group, leader);
+  const psDueKey = psDisplay.partial ? `${psDisplay.base}::${psDisplay.partial}` : psDisplay.base;
+  const opDisplay = trialBlockOpDisplay(leader);
+  const operationLine = group.blocks.length > 1
+    ? String(group.operation_label || group.group_label || '').trim()
+    : [opDisplay.op_no, opDisplay.op_name].filter(Boolean).join(' ');
+  const queuedAt = trialBlockQueuedAt(leader || group);
+  const outputAt = trialBlockOutputAt(leader || group);
+  const materialStatus = group.material_status || leader?.material_status || {};
+  const setupOn = Number(leader?.include_setup || 0) === 1;
+  const setupTitle = setupOn ? 'Setup time is included. Click to turn it off.' : 'Setup time is excluded. Click to turn it on.';
+  const anchored = !!leader?.anchor_datetime;
+  const queuedTitle = anchored
+    ? `Queued ${trialFormatDt(queuedAt)} · Anchor ${trialFormatDt(leader?.anchor_datetime)}`
+    : `Scheduled queue start · ${queuedAt || '—'}`;
+  const outputTitle = trialBlockOutputTitle(leader || group);
+  const outputPillClass = leader?.actual_end_at ? 'green' : (leader?.actual_start_at ? 'yellow' : '');
+  const actualButton = group.blocks.length > 1
+    ? `<button class="btn btn-ghost btn-sm" type="button" onclick="openTrialGroupActualModal(${Number(group.group_id || 0)})">Actual</button>`
+    : `<button class="btn btn-ghost btn-sm" type="button" onclick="openTrialActualModal(${leader?.block_id || 0})">Actual</button>`;
+  return {
+    group,
+    leader,
+    groupBlockIds: group.blocks.map(b => b.block_id).join(','),
+    psDisplay,
+    psDueKey,
+    operationLine,
+    sequenceNo: Number(leader?.sequence_no || leader?.queue_position || 0),
+    targetQty: fmt(group.target_qty || 0, 0),
+    pairedOutput: fmt(Number(group.paired_output_qty ?? trialBlockNetOutput(group.output_qty, group.reject_qty) ?? 0), 0),
+    queuedText: trialFormatDt(queuedAt),
+    outputText: trialFormatDt(outputAt),
+    queuedTitle,
+    outputTitle,
+    outputPillClass,
+    anchored,
+    materialStatus,
+    materialChipClass: trialMaterialStatusClass(materialStatus),
+    combinedLine: group.blocks.length > 1 ? `${group.blocks.length} ops combined` : '',
+    setupOn,
+    setupLabel: setupOn ? 'Setup: ON' : 'Setup: OFF',
+    setupTitle,
+    actualButton,
+    isCombined: group.blocks.length > 1,
+    memberMetrics: group.member_metrics || [],
+    executionStatusHtml: group.blocks.length > 1
+      ? group.member_metrics.map(member => trialOpStatusHtml(member.execution_status, {
+        opNo: member.source_op_no || member.operation_name,
+        title: member.operation_name,
+        compact: true,
+      })).join('')
+      : trialOpStatusHtml(leader?.execution_status, { compact: true }),
+  };
+}
+
+function trialRenderCompactBlockCard(vm) {
+  const leader = vm.leader;
+  const dueDate = String(trialDueDateForPs(vm.psDueKey) || '').trim();
+  const dayDiff = dueDate ? trialDateDiffDays(dueDate) : null;
+  const dueClass = dayDiff == null ? '' : (dayDiff < 0 ? 'is-overdue' : (dayDiff <= 7 ? 'is-due-soon' : 'is-normal'));
+  return `
+    <div class="trial-block-card trial-block-card--compact trial-block-card--clickable ${vm.isCombined ? 'combined' : ''}"
+      data-block-id="${leader?.block_id || ''}"
+      data-group-id="${vm.group.group_id || 0}"
+      data-block-ids="${vm.groupBlockIds}"
+      title="Click for details · drag edge to move">
+      <div class="trial-block-compact-drag" title="Drag to reorder or move to another machine"></div>
+      <div class="trial-block-compact-body">
+        <div class="trial-block-compact-top">
+          ${vm.sequenceNo ? `<span class="trial-block-seq">#${vm.sequenceNo}</span>` : ''}
+          <span class="trial-block-compact-metrics" title="Qty / Output">
+            <span class="trial-block-compact-metric"><span class="trial-pill-label">Qty</span>${vm.targetQty}</span>
+            <span class="trial-block-compact-metric"><span class="trial-pill-label">Out</span>${vm.pairedOutput}</span>
+          </span>
+        </div>
+        <div class="trial-block-title">${escapeHtml(vm.psDisplay.base || vm.group.title || '')}</div>
+        ${vm.psDisplay.partial ? `<div class="trial-block-partial">Partial ${escapeHtml(vm.psDisplay.partial)}</div>` : ''}
+        <div class="trial-block-op">${escapeHtml(vm.operationLine)}</div>
+        <div class="trial-block-compact-dates">
+          <span class="trial-block-compact-date ${dueClass}" title="Due">
+            <span class="trial-pill-label">Due</span>
+            <span>${escapeHtml(dueDate || '—')}</span>
+          </span>
+          <span class="trial-block-compact-date" title="${escapeHtml(vm.queuedTitle)}">
+            <span class="trial-pill-label">Queued</span>
+            <span>${escapeHtml(vm.queuedText)}</span>
+          </span>
+          <span class="trial-block-compact-date is-end ${vm.outputPillClass}" title="${escapeHtml(vm.outputTitle)}">
+            <span class="trial-pill-label">End</span>
+            <span>${escapeHtml(vm.outputText)}</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function trialQueueDueClass(psDueKey) {
+  const dueDate = String(trialDueDateForPs(psDueKey) || '').trim();
+  if (!dueDate) return '';
+  const dayDiff = trialDateDiffDays(dueDate);
+  if (dayDiff == null) return '';
+  if (dayDiff < 0) return 'is-overdue';
+  if (dayDiff <= 7) return 'is-due-soon';
+  return 'is-normal';
+}
+
+function trialRenderQueueDetailRow(group) {
+  const vm = trialBlockGroupViewModel(group);
+  const leader = vm.leader;
+  const blockId = leader?.block_id || 0;
+  const dueDate = String(trialDueDateForPs(vm.psDueKey) || '').trim() || '—';
+  const dueClass = trialQueueDueClass(vm.psDueKey);
+  const partialNote = vm.psDisplay.partial
+    ? `<span class="trial-queue-partial">P${escapeHtml(vm.psDisplay.partial)}</span>`
+    : '';
+  const combinedNote = vm.combinedLine
+    ? `<span class="trial-queue-combined">${escapeHtml(vm.combinedLine)}</span>`
+    : '';
+  const materialNote = vm.materialStatus?.label
+    ? `<span class="trial-queue-material ${vm.materialChipClass}" title="${escapeHtml(vm.materialStatus.label)}">Mat</span>`
+    : '';
+  const actualOnClick = vm.isCombined
+    ? `openTrialGroupActualModal(${Number(vm.group.group_id || 0)})`
+    : `openTrialActualModal(${blockId})`;
+  return `
+    <div class="trial-queue-row trial-block-card ${vm.isCombined ? 'combined' : ''}"
+      data-block-id="${blockId}"
+      data-group-id="${vm.group.group_id || 0}"
+      data-block-ids="${vm.groupBlockIds}">
+      <button class="trial-queue-row-grip" type="button" aria-label="Drag to reorder" title="Drag to reorder">⋮⋮</button>
+      <span class="trial-queue-seq">${vm.sequenceNo ? `#${vm.sequenceNo}` : '—'}</span>
+      <div class="trial-queue-job" title="${escapeHtml(vm.operationLine)}">
+        <span class="trial-queue-job-id">${escapeHtml(vm.psDisplay.base || vm.group.title || '')}</span>
+        ${partialNote}
+        <span class="trial-queue-job-op">${escapeHtml(vm.operationLine)}</span>
+        ${combinedNote}
+        ${materialNote}
+      </div>
+      <div class="trial-queue-qty" title="Qty / Output">
+        <span>${vm.targetQty}</span><span class="trial-queue-qty-sep">/</span><span>${vm.pairedOutput}</span>
+      </div>
+      <div class="trial-queue-dates">
+        <span class="trial-queue-date ${dueClass}" title="Due ${escapeHtml(dueDate)}">${escapeHtml(dueDate)}</span>
+        <button type="button" class="trial-queue-date is-queued ${vm.anchored ? 'is-anchored' : ''}"
+          onclick="editTrialAnchor(${blockId})" title="${escapeHtml(vm.queuedTitle || 'Edit queued time')}">
+          ${escapeHtml(vm.queuedText)}
+        </button>
+        <span class="trial-queue-date is-end ${vm.outputPillClass}" title="${escapeHtml(vm.outputTitle)}">
+          ${escapeHtml(vm.outputText)}
+        </span>
+      </div>
+      <div class="trial-queue-actions">
+        <button type="button" class="trial-queue-act" onclick="openTrialBlockEditor(${blockId})">Edit</button>
+        <button type="button" class="trial-queue-act" onclick="openTrialSplitModal(${blockId})">Split</button>
+        <button type="button" class="trial-queue-act" onclick="${actualOnClick}">Actual</button>
+        <button type="button" class="trial-queue-act trial-queue-act-setup ${vm.setupOn ? 'is-on' : ''}"
+          onclick="toggleTrialSetup(${blockId})" aria-pressed="${vm.setupOn ? 'true' : 'false'}"
+          title="${escapeHtml(vm.setupTitle)}">${vm.setupOn ? 'Setup' : 'No setup'}</button>
+        <button type="button" class="trial-queue-act is-danger"
+          onclick="removeTrialBlock(${blockId}, ${Number(vm.group.group_id || 0)})"
+          title="Remove from machine">Del</button>
+      </div>
+    </div>
+  `;
+}
+
+function trialRenderQueueListHeader() {
+  return `
+    <div class="trial-queue-list-head" aria-hidden="true">
+      <span></span>
+      <span>#</span>
+      <span>Job</span>
+      <span>Qty/Out</span>
+      <span>Due · Queued · End</span>
+      <span>Actions</span>
+    </div>
+  `;
 }
 
 function renderTrialMachine(machine) {
   const allGroups = trialBlocksGroupedForMachine(machine.machine_id);
   const groups = allGroups.filter(trialGroupRunsInsideDateFilter);
   const laneId = `trial-lane-${machine.machine_id}`;
-  const collapsed = trialMachineCollapsedSet.has(machine.machine_id);
   const blockCount = allGroups.length;
-  const collapsedSummary = blockCount
-    ? `${blockCount} run block${blockCount === 1 ? '' : 's'}`
-    : 'No run blocks';
+  const queueSummary = blockCount
+    ? `${blockCount} in queue`
+    : 'Empty queue';
   const availabilityEnd = trialMachineAvailabilityEnd(
     trialHasActiveDateFilter() ? groups : allGroups
   );
   const availabilityTag = allGroups.length > 1 && availabilityEnd
-    ? `<span class="trial-machine-availability">Next available ${trialFormatDt(availabilityEnd)}</span>`
+    ? `<div class="trial-machine-availability">Next available ${trialFormatDt(availabilityEnd)}</div>`
     : '';
 
   const blockHtml = groups.length
-    ? groups.map(group => {
-        const leader = group.leader;
-        const groupBlockIds = group.blocks.map(b => b.block_id).join(',');
-        const psDisplay = trialBlockPsDisplay(group, leader);
-        const psDueKey = psDisplay.partial ? `${psDisplay.base}::${psDisplay.partial}` : psDisplay.base;
-        const opDisplay = trialBlockOpDisplay(leader);
-        const sequenceNo = Number(leader?.sequence_no || leader?.queue_position || 0);
-        const netOutput = trialBlockNetOutput(group.output_qty, group.reject_qty);
-        const anchored = !!leader?.anchor_datetime;
-        const materialStatus = group.material_status || leader?.material_status || {};
-        const materialChipClass = trialMaterialStatusClass(materialStatus);
-        const combinedLine = group.blocks.length > 1 ? `${group.blocks.length} ops combined` : '';
-        const operationLine = group.blocks.length > 1
-          ? String(group.operation_label || group.group_label || '').trim()
-          : [opDisplay.op_no, opDisplay.op_name].filter(Boolean).join(' ');
-        const pairedOutput = Number(group.paired_output_qty ?? netOutput ?? 0);
-        const queuedAt = trialBlockQueuedAt(leader || group);
-        const outputAt = trialBlockOutputAt(leader || group);
-        const queuedText = trialFormatDt(queuedAt);
-        const outputText = trialFormatDt(outputAt);
-        const anchorText = anchored ? trialFormatDt(leader?.anchor_datetime) : '';
-        const queuedTitle = anchored
-          ? `Queued ${queuedText} · Anchor ${anchorText}`
-          : `Scheduled queue start · ${queuedAt || '—'}`;
-        const outputTitle = trialBlockOutputTitle(leader || group);
-        const outputPillClass = leader?.actual_end_at ? 'green' : (leader?.actual_start_at ? 'yellow' : '');
-        const actualButton = group.blocks.length > 1
-          ? `<button class="btn btn-ghost btn-sm" type="button" onclick="openTrialGroupActualModal(${Number(group.group_id || 0)})">Actual</button>`
-          : `<button class="btn btn-ghost btn-sm" type="button" onclick="openTrialActualModal(${leader?.block_id || 0})">Actual</button>`;
-        const setupOn = Number(leader?.include_setup || 0) === 1;
-        const setupLabel = setupOn ? 'Setup: ON' : 'Setup: OFF';
-        const setupTitle = setupOn ? 'Setup time is included. Click to turn it off.' : 'Setup time is excluded. Click to turn it on.';
-        return `
-          <div class="trial-block-card ${group.blocks.length > 1 ? 'combined' : ''}"
-            draggable="true"
-            data-block-id="${leader?.block_id || ''}"
-            data-group-id="${group.group_id || 0}"
-            data-block-ids="${groupBlockIds}">
-            <div class="trial-op-card-header">
-              <div class="trial-block-top">
-                <div class="trial-block-main">
-                  ${sequenceNo ? `<div class="trial-block-seq">#${sequenceNo}</div>` : ''}
-                  <div class="trial-block-title">${escapeHtml(psDisplay.base || group.title || '')}</div>
-                  ${psDisplay.partial ? `<div class="trial-block-partial">Partial ${escapeHtml(psDisplay.partial)}</div>` : ''}
-                  <div class="trial-block-op">${escapeHtml(operationLine)}</div>
-                  <div class="trial-op-card-statuses">
-                    ${group.blocks.length > 1
-                      ? group.member_metrics.map(member => trialOpStatusHtml(member.execution_status, { opNo: member.source_op_no || member.operation_name, title: member.operation_name, compact: true })).join('')
-                      : trialOpStatusHtml(leader?.execution_status, { compact: true })}
-                  </div>
-                </div>
-                <div class="trial-op-card-metrics">
-                  <span class="trial-metric-pill">
-                    <span class="trial-pill-label">Qty</span>
-                    <span class="trial-pill-value">${fmt(group.target_qty || 0, 0)}</span>
-                  </span>
-                  <span class="trial-metric-pill">
-                    <span class="trial-pill-label">Output</span>
-                    <span class="trial-pill-value">${fmt(pairedOutput, 0)}</span>
-                  </span>
-                </div>
-              </div>
-              ${combinedLine ? `<div class="trial-block-combined-line">${escapeHtml(combinedLine)}</div>` : ''}
-            </div>
-            <div class="trial-op-card-info trial-op-card-time-row">
-              ${trialDuePillHtml(psDueKey)}
-              <button class="trial-pill trial-time-pill trial-pill-start clickable ${anchored ? 'yellow' : 'gray'}" type="button"
-                onclick="editTrialAnchor(${leader?.block_id || 0})" title="${escapeHtml(queuedTitle || 'Click to edit anchor')}">
-                <span class="trial-pill-label">Queued</span>
-                <span class="trial-pill-value">${queuedText}</span>
-              </button>
-              <span class="trial-pill trial-time-pill ${outputPillClass}" title="${escapeHtml(outputTitle)}">
-                <span class="trial-pill-label">Output</span>
-                <span class="trial-pill-value">${outputText}</span>
-              </span>
-            </div>
-            ${materialStatus?.label ? `
-              <div class="trial-op-card-extra-tags">
-                <span class="trial-pill ${materialChipClass}">${escapeHtml(materialStatus.label)}</span>
-              </div>
-            ` : ''}
-            ${group.blocks.length > 1 ? `
-              <div class="trial-block-member-progress">
-                ${group.member_metrics.map(member => `
-                  <div class="trial-block-member-line">
-                    <span>${escapeHtml(member.source_op_no || member.operation_name || '')}</span>
-                    <span>${fmt(member.netOutput || member.outputTotal || 0, 0)} / ${fmt(member.scheduled_qty || 0, 0)} done</span>
-                  </div>
-                `).join('')}
-              </div>
-            ` : ''}
-            <div class="trial-op-card-actions">
-              <button class="btn btn-ghost btn-sm" type="button" onclick="openTrialBlockEditor(${leader?.block_id || 0})">Edit</button>
-              <button class="btn btn-ghost btn-sm" type="button" onclick="openTrialSplitModal(${leader?.block_id || 0})">Split</button>
-              ${actualButton}
-              <button class="btn btn-sm trial-setup-toggle ${setupOn ? 'is-on' : 'is-off'}" type="button"
-                onclick="toggleTrialSetup(${leader?.block_id || 0})"
-                aria-pressed="${setupOn ? 'true' : 'false'}"
-                title="${escapeHtml(setupTitle)}">
-                ${setupLabel}
-              </button>
-              <button class="btn btn-ghost btn-sm trial-remove-block-btn" type="button"
-                onclick="removeTrialBlock(${leader?.block_id || 0}, ${Number(group.group_id || 0)})"
-                title="Remove from machine — returns to side panel">Remove</button>
-            </div>
-          </div>
-        `;
-      }).join('')
+    ? groups.map(group => trialRenderCompactBlockCard(trialBlockGroupViewModel(group))).join('')
     : `<div class="trial-empty">${escapeHtml(trialMachineLaneEmptyMessage(allGroups.length, groups.length))}</div>`;
 
   return `
-    <section class="trial-machine${collapsed ? ' is-collapsed' : ''}" data-machine-id="${machine.machine_id}">
+    <section class="trial-machine" data-machine-id="${machine.machine_id}">
       <div class="trial-machine-head">
-        <button class="trial-machine-collapse-btn" type="button"
-          onclick="event.stopPropagation(); toggleTrialMachineCollapsed(${machine.machine_id})"
-          aria-expanded="${collapsed ? 'false' : 'true'}"
-          title="${collapsed ? 'Expand machine queue' : 'Collapse machine queue'}">
-          <span class="trial-machine-collapse-icon" aria-hidden="true"></span>
-        </button>
         <div class="trial-machine-head-main" role="button" tabindex="0"
-          onclick="toggleTrialMachineCollapsed(${machine.machine_id})"
-          onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleTrialMachineCollapsed(${machine.machine_id}); }">
+          onclick="openTrialMachineQueue(${machine.machine_id})"
+          onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openTrialMachineQueue(${machine.machine_id}); }"
+          title="Open full queue">
           <div class="trial-machine-title">${machine.machine_code}</div>
           <div class="trial-machine-meta">${machine.machine_category} - ${machine.shift_profile || 'STANDARD'}</div>
-          ${availabilityTag}
-          <div class="trial-machine-collapsed-summary">${collapsedSummary}</div>
+          <div class="trial-machine-queue-summary">${queueSummary}</div>
         </div>
         <div class="trial-machine-head-actions">
-          <button class="btn btn-ghost btn-sm" type="button" onclick="event.stopPropagation(); openTrialCreateModal(${machine.machine_id})">Add</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="event.stopPropagation(); openTrialMachineQueue(${machine.machine_id})">Queue</button>
         </div>
       </div>
+      ${availabilityTag}
       <div class="trial-lane" id="${laneId}" data-machine-id="${machine.machine_id}">
         ${blockHtml}
       </div>
@@ -671,6 +978,65 @@ function renderTrialMachine(machine) {
 }
 
 // ── Main board render ─────────────────────────────────────────────────────────
+
+let trialMachineGridScrollResizeObserver = null;
+
+function trialSyncMachineGridScrollWidth() {
+  const host = document.querySelector('.trial-grid-scroll-host');
+  if (!host) return;
+  const topInner = host.querySelector('.trial-grid-scroll-top-inner');
+  const grid = document.getElementById('trial-grid');
+  const main = host.querySelector('.trial-grid-scroll');
+  if (!topInner || !grid || !main) return;
+  const w = Math.max(grid.scrollWidth, main.clientWidth, 1);
+  topInner.style.width = `${w}px`;
+}
+
+function trialBindMachineGridScroll() {
+  const host = document.querySelector('.trial-grid-scroll-host');
+  const mainArea = document.querySelector('.trial-main');
+  if (!host) return;
+  const top = host.querySelector('.trial-grid-scroll-top');
+  const main = host.querySelector('.trial-grid-scroll');
+  if (!top || !main) return;
+
+  if (host.dataset.scrollBound !== '1') {
+    host.dataset.scrollBound = '1';
+    let syncing = false;
+    const syncFromMain = () => {
+      if (syncing) return;
+      syncing = true;
+      top.scrollLeft = main.scrollLeft;
+      syncing = false;
+    };
+    const syncFromTop = () => {
+      if (syncing) return;
+      syncing = true;
+      main.scrollLeft = top.scrollLeft;
+      syncing = false;
+    };
+    main.addEventListener('scroll', syncFromMain, { passive: true });
+    top.addEventListener('scroll', syncFromTop, { passive: true });
+
+    const onShiftWheel = (e) => {
+      if (!e.shiftKey) return;
+      const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+      if (!delta || main.scrollWidth <= main.clientWidth) return;
+      e.preventDefault();
+      main.scrollLeft += delta;
+      syncFromMain();
+    };
+    (mainArea || host).addEventListener('wheel', onShiftWheel, { passive: false });
+  }
+
+  const grid = document.getElementById('trial-grid');
+  if (grid && !trialMachineGridScrollResizeObserver) {
+    trialMachineGridScrollResizeObserver = new ResizeObserver(() => trialSyncMachineGridScrollWidth());
+    trialMachineGridScrollResizeObserver.observe(grid);
+  }
+  trialSyncMachineGridScrollWidth();
+  window.requestAnimationFrame(trialSyncMachineGridScrollWidth);
+}
 
 function renderTrial() {
   const grid = document.getElementById('trial-grid');
@@ -683,11 +1049,16 @@ function renderTrial() {
   if (filterShell) {
     filterShell.innerHTML = `
       <div class="trial-board-filter-card">
-        <div class="trial-board-filter-row">
-          ${renderTrialMachineCategoryFilter()}
+        <div class="trial-board-filter-row trial-board-filter-row--primary">
+          ${renderTrialMachineTypeFilter()}
           ${renderTrialScheduleDateFilter()}
+          <button type="button" class="btn btn-ghost btn-sm trial-shop-calendar-btn"
+            onclick="openTrialCapacityModal()"
+            title="Shop working hours, holidays, and capacity overrides">
+            Shop calendar
+          </button>
         </div>
-        ${trialHasActiveDateFilter() ? `<div class="trial-board-filter-note">Date filter shows blocks queued within the selected dates. Drag block headers to reorder or move between machines.</div>` : ''}
+        ${renderTrialMachineCheckboxFilter()}
       </div>
     `;
   }
@@ -704,6 +1075,40 @@ function renderTrial() {
   if (typeof bindTrialCatalogDnD === 'function') bindTrialCatalogDnD();
   if (typeof initTrialMachineSortables === 'function') initTrialMachineSortables();
   if (typeof bindTrialLaneOpDrops === 'function') bindTrialLaneOpDrops();
+  if (typeof bindTrialLaneBlockClicks === 'function') bindTrialLaneBlockClicks();
+  trialBindMachineGridScroll();
+  const reopenQueueId = trialOpenQueueMachineId;
+  if (reopenQueueId && typeof openTrialMachineQueue === 'function') {
+    window.requestAnimationFrame(() => openTrialMachineQueue(reopenQueueId));
+  }
+}
+
+function renderTrialMachines(machineIds) {
+  const grid = document.getElementById('trial-grid');
+  if (!grid) return;
+  const ids = [...new Set((machineIds || []).map(Number).filter(Boolean))];
+  if (!ids.length) {
+    renderTrial();
+    return;
+  }
+  if (typeof destroyTrialSortables === 'function') destroyTrialSortables();
+  const visible = trialVisibleMachines();
+  ids.forEach(machineId => {
+    const machine = visible.find(row => Number(row.machine_id) === machineId);
+    const existing = grid.querySelector(`.trial-machine[data-machine-id="${machineId}"]`);
+    if (!machine || !existing) return;
+    existing.outerHTML = renderTrialMachine(machine);
+  });
+  renderTrialCatalog();
+  if (typeof bindTrialCatalogDnD === 'function') bindTrialCatalogDnD();
+  if (typeof initTrialMachineSortables === 'function') initTrialMachineSortables();
+  if (typeof bindTrialLaneOpDrops === 'function') bindTrialLaneOpDrops();
+  if (typeof bindTrialLaneBlockClicks === 'function') bindTrialLaneBlockClicks();
+  const reopenQueueId = trialOpenQueueMachineId;
+  if (reopenQueueId && ids.includes(reopenQueueId) && typeof openTrialMachineQueue === 'function') {
+    window.requestAnimationFrame(() => openTrialMachineQueue(reopenQueueId));
+  }
+  trialSyncMachineGridScrollWidth();
 }
 
 function trialCatalogOpExecStatus(card) {
@@ -773,9 +1178,23 @@ function trialRenderCatalogOpStatusStrip(ps) {
   `;
 }
 
+function trialCatalogPartialLabel(ps) {
+  const psId = String(ps.ps_id || '');
+  let partialNo = Number(ps.pp_partial_no);
+  if (!Number.isFinite(partialNo) || partialNo < 1) {
+    partialNo = psId.includes('::') ? Number(psId.split('::')[1]) || 1 : 1;
+  }
+  const base = trialCatalogSourceBase(ps);
+  const siblingCount = base
+    ? (trialState.catalog || []).filter(item => trialCatalogSourceBase(item) === base).length
+    : 0;
+  if (siblingCount <= 1 && partialNo <= 1 && !psId.includes('::')) return '';
+  return `Partial ${partialNo}`;
+}
+
 function trialCatalogPsSummaryHtml(ps) {
   const basePsId = String(ps.ps_id || '').split('::')[0] || ps.ps_id || '';
-  const partialText = String(ps.ps_id || '').includes('::') ? `Partial ${String(ps.ps_id).split('::')[1] || ''}` : '';
+  const partialText = trialCatalogPartialLabel(ps);
   const dueDate = ps.due_date || 'No due date';
   const execStatus = trialPsRollupExecStatus(ps);
   const stageDesc = String(ps.current_stage_desc || '').trim();
@@ -937,6 +1356,13 @@ function renderTrialCatalog() {
   const normalizedQuery = trialNormalizeSearchText(rawQuery);
   trialCatalogSearch = rawQuery;
 
+  const catalogMatchesSearch = ps => {
+    if (!rawQuery) return true;
+    const haystack = trialCatalogHaystack(ps);
+    if (haystack.includes(rawQuery)) return true;
+    return normalizedQuery ? haystack.includes(normalizedQuery) : false;
+  };
+
   const catalog = (trialState.catalog || []).filter(ps => {
     const psType = trialGetPsType(ps.ps_id);
     if (!trialPsTypeFilter.has(psType)) return false;
@@ -945,11 +1371,28 @@ function renderTrialCatalog() {
     if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
     const execStatus = trialPsCatalogExecStatus(ps).toUpperCase().replace(/[\s-]+/g, '_');
     if (!trialShowCompleted && trialPsShippedComplete(ps)) return false;
-    if (!rawQuery) return true;
-    const haystack = trialCatalogHaystack(ps);
-    if (haystack.includes(rawQuery)) return true;
-    return normalizedQuery ? haystack.includes(normalizedQuery) : false;
-  }).sort((a, b) => {
+    return catalogMatchesSearch(ps);
+  });
+
+  if (rawQuery) {
+    const matchedBases = new Set(
+      catalog.map(ps => trialCatalogSourceBase(ps).toLowerCase()).filter(Boolean),
+    );
+    const seen = new Set(catalog.map(ps => String(ps.ps_id || '')));
+    for (const ps of trialState.catalog || []) {
+      const base = trialCatalogSourceBase(ps).toLowerCase();
+      const psId = String(ps.ps_id || '');
+      if (!base || !matchedBases.has(base) || seen.has(psId)) continue;
+      if (!trialPsTypeFilter.has(trialGetPsType(ps.ps_id))) continue;
+      if (!trialShowSrOrders && psId.includes('[SR]')) continue;
+      if (trialHidePendingDo && trialPsPendingDo(ps)) continue;
+      if (!trialShowCompleted && trialPsShippedComplete(ps)) continue;
+      catalog.push(ps);
+      seen.add(psId);
+    }
+  }
+
+  catalog.sort((a, b) => {
     const ta = _PS_TYPE_ORDER[trialGetPsType(a.ps_id)] ?? 9;
     const tb = _PS_TYPE_ORDER[trialGetPsType(b.ps_id)] ?? 9;
     return ta !== tb ? ta - tb : String(a.ps_id).localeCompare(String(b.ps_id));
@@ -979,15 +1422,7 @@ function renderTrialCatalog() {
     return;
   }
 
-  const allocatedOpKeys = trialAllocatedOpKeys();
-  const isOpAllocated = card => {
-    const psId = String(card?.source_ps_id || card?.ps_id || '').trim();
-    if (!psId || !allocatedOpKeys.size) return false;
-    const primary = trialCatalogAllocationKey(psId, card?.source_op_no, card?.source_op_seq_id);
-    if (primary && allocatedOpKeys.has(primary)) return true;
-    const labelKey = trialCatalogAllocationKey(psId, card?.operation_label, 0);
-    return Boolean(labelKey && allocatedOpKeys.has(labelKey));
-  };
+  const isOpAllocated = card => trialIsCatalogOpAllocated(card);
 
   const catalogWithOpenOps = catalog.filter(ps => {
     if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
@@ -1000,7 +1435,6 @@ function renderTrialCatalog() {
   const availableHtml = catalogWithOpenOps.map(ps => {
     const psIdParts = String(ps.ps_id || '').split('::');
     const basePsId = psIdParts[0] || ps.ps_id || '';
-    const partialText = psIdParts[1] ? `Partial ${psIdParts[1]}` : '';
     const opCardsHtml = (ps.op_cards || [])
       .filter(card => trialCatalogOpIsOpen(card))
       .map(card => renderTrialOpCardHtml({
@@ -1016,11 +1450,7 @@ function renderTrialCatalog() {
         data-ps-id="${escapeHtml(ps.ps_id || '')}">
         <summary>${trialCatalogPsSummaryHtml(ps)}</summary>
         ${trialRenderCatalogOpStatusStrip(ps)}
-        <div class="trial-catalog-bom-bar">
-          ${trialFlowSelectHtml(ps)}
-          <button class="btn btn-ghost btn-sm trial-catalog-bom-btn" type="button"
-            onclick="openTrialBOMEditor('${escapeHtml(ps.ps_id)}')">Edit BOM</button>
-        </div>
+        ${trialCatalogBomBarHtml(ps)}
         <div class="trial-catalog-oplist">${opCardsHtml}</div>
       </details>
     `;
@@ -1046,11 +1476,7 @@ function renderTrialCatalog() {
           ${(ps.part_name || ps.part_no || ps.part_desc) ? (() => { const _pn = ps.part_name || ps.part_no || ''; const _pd = ps.part_desc || ''; const _ct = [_pn, _pd].filter(Boolean).join('\n'); return `<button class="trial-catalog-info-btn" type="button" onclick="trialCopyInvDesc(event, this)" data-copy-text="${escapeHtml(_ct)}" aria-label="Copy inventory description"><span class="trial-catalog-info-tip">${_pn ? `<span class="tip-part-no">${escapeHtml(_pn)}</span>` : ''}${_pd ? `<span class="tip-desc">${escapeHtml(_pd)}</span>` : ''}</span></button>`; })() : ''}
         </div>
       </div>
-      <div class="trial-catalog-bom-bar">
-        ${trialFlowSelectHtml(ps)}
-        <button class="btn btn-ghost btn-sm trial-catalog-bom-btn" type="button"
-          onclick="openTrialBOMEditor('${escapeHtml(ps.ps_id)}')">Edit BOM</button>
-      </div>
+      ${trialCatalogBomBarHtml(ps)}
       <div class="trial-catalog-oplist">
         ${(ps.op_cards || [])
           .filter(card => trialCatalogOpIsOpen(card))
@@ -1069,7 +1495,6 @@ function renderTrialCatalog() {
     <div class="trial-catalog-section">
       <div class="trial-catalog-section-head">
         <div class="trial-catalog-section-title">Operations</div>
-        <div class="trial-catalog-section-note">Drag one op onto another op in the same PS to combine it. Drag an op card to a machine lane to schedule it.</div>
       </div>
       <div class="trial-catalog-section-body">
         ${availableHtml || `<div class="trial-catalog-empty">No available PS / ops match this search.</div>`}
@@ -1078,7 +1503,6 @@ function renderTrialCatalog() {
     <div class="trial-catalog-section">
       <div class="trial-catalog-section-head">
         <div class="trial-catalog-section-title">Other PS</div>
-        <div class="trial-catalog-section-note">Any op cards on these sheets render inline the same way.</div>
       </div>
       <div class="trial-catalog-section-body">
         ${plannedHtml || `<div class="trial-catalog-empty">No other PS match this search.</div>`}

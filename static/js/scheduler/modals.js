@@ -6,8 +6,71 @@ function trialModalShell(html) {
 }
 
 function closeModal() {
+  trialOpenQueueMachineId = 0;
+  if (typeof destroyTrialQueueSortable === 'function') destroyTrialQueueSortable();
   trialModalShell('');
   document.body.classList.remove('trial-modal-open');
+}
+
+function trialSetPlannerBusy(title, detail = '') {
+  trialPlannerBusyDepth += 1;
+  let bar = document.getElementById('trial-planner-busy');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'trial-planner-busy';
+    bar.className = 'trial-planner-busy';
+    bar.setAttribute('role', 'status');
+    bar.setAttribute('aria-live', 'polite');
+    bar.setAttribute('aria-busy', 'true');
+    bar.innerHTML = `
+      <div class="trial-planner-busy-spinner" aria-hidden="true"></div>
+      <div class="trial-planner-busy-text">
+        <span class="trial-planner-busy-title" data-trial-planner-busy-title></span>
+        <span class="trial-planner-busy-detail" data-trial-planner-busy-detail></span>
+      </div>
+    `;
+    document.body.appendChild(bar);
+  }
+  bar.querySelector('[data-trial-planner-busy-title]').textContent = title || 'Working…';
+  const detailEl = bar.querySelector('[data-trial-planner-busy-detail]');
+  detailEl.textContent = detail ? ` · ${detail}` : '';
+  detailEl.hidden = !detail;
+  document.body.classList.add('trial-planner-busy-open');
+}
+
+function trialUpdatePlannerBusy(title, detail = '') {
+  const overlay = document.getElementById('trial-planner-busy');
+  if (!overlay) return;
+  if (title) overlay.querySelector('[data-trial-planner-busy-title]').textContent = title;
+  const detailEl = overlay.querySelector('[data-trial-planner-busy-detail]');
+  if (detailEl) {
+    detailEl.textContent = detail || '';
+    detailEl.hidden = !detail;
+  }
+}
+
+function trialClearPlannerBusy() {
+  trialPlannerBusyDepth = Math.max(0, trialPlannerBusyDepth - 1);
+  if (trialPlannerBusyDepth > 0) return;
+  document.getElementById('trial-planner-busy')?.remove();
+  document.body.classList.remove('trial-planner-busy-open');
+}
+
+async function trialRunWithPlannerBusy(task, title, detail = '') {
+  trialPlannerBusyLock += 1;
+  let showTimer = null;
+  let visible = false;
+  showTimer = window.setTimeout(() => {
+    visible = true;
+    trialSetPlannerBusy(title, detail);
+  }, 140);
+  try {
+    return await task();
+  } finally {
+    window.clearTimeout(showTimer);
+    if (visible) trialClearPlannerBusy();
+    trialPlannerBusyLock = Math.max(0, trialPlannerBusyLock - 1);
+  }
 }
 
 function openModal(title, bodyHtml, size = '') {
@@ -622,7 +685,7 @@ async function saveTrialCapacity(triggerOrDate, profileName, note = '') {
 }
 
 async function saveTrialOrder(lane, reload = true) {
-  const cards = Array.from(lane.querySelectorAll('.trial-block-card'));
+  const cards = Array.from(lane.querySelectorAll(':scope > .trial-block-card[data-block-id], :scope > .trial-queue-row[data-block-id]'));
   const machineId = Number(lane.dataset.machineId || 0);
   if (!machineId) return;
   const orderedIds = cards.map(card => Number(card.dataset.blockId)).filter(Boolean);
@@ -639,6 +702,46 @@ async function saveTrialOrder(lane, reload = true) {
   } catch (e) {
     toast('Reorder failed: ' + e.message, 'error');
   }
+}
+
+function openTrialMachineQueue(machineId) {
+  const id = Number(machineId || 0);
+  if (!id) return;
+  const machine = (trialState.machines || []).find(row => Number(row.machine_id) === id);
+  if (!machine) return;
+  trialOpenQueueMachineId = id;
+  const allGroups = trialBlocksGroupedForMachine(id);
+  const groups = allGroups.filter(trialGroupRunsInsideDateFilter);
+  const availabilityEnd = trialMachineAvailabilityEnd(
+    trialHasActiveDateFilter() ? groups : allGroups
+  );
+  const availabilityNote = availabilityEnd
+    ? `<div class="trial-queue-panel-meta">Next available ${escapeHtml(trialFormatDt(availabilityEnd))}</div>`
+    : '';
+  const rowsHtml = groups.length
+    ? groups.map(group => trialRenderQueueDetailRow(group)).join('')
+    : `<div class="trial-empty">${escapeHtml(trialMachineLaneEmptyMessage(allGroups.length, groups.length))}</div>`;
+  const listHtml = groups.length
+    ? `<div class="trial-queue-panel-list trial-lane" id="trial-queue-list-${id}" data-machine-id="${id}">${trialRenderQueueListHeader()}${rowsHtml}</div>`
+    : rowsHtml;
+  openModal(
+    `${machine.machine_code} — Queue`,
+    `
+      <div class="trial-queue-panel">
+        <div class="trial-queue-panel-head">
+          <div>
+            <div class="trial-queue-panel-subtitle">${escapeHtml(machine.machine_category)} · ${escapeHtml(machine.shift_profile || 'STANDARD')}</div>
+            ${availabilityNote}
+          </div>
+          <button class="btn btn-primary btn-sm" type="button" onclick="openTrialCreateModal(${id})">Add</button>
+        </div>
+        <p class="trial-queue-panel-hint">Drag ⋮⋮ to reorder · row buttons to edit</p>
+        ${listHtml}
+      </div>
+    `,
+    'lg',
+  );
+  if (typeof initTrialQueuePanelSortable === 'function') initTrialQueuePanelSortable();
 }
 
 async function toggleTrialCompletedCatalog() {

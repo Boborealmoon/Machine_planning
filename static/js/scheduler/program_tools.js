@@ -107,3 +107,20 @@ function trialProgramToolsBlockHtml(card) {
       </div>
     </div>`;
 }
+
+function trialProgramToolsCompactHtml(card) {
+  const row = trialProgramToolsLookup(card);
+  if (!row) {
+    return '<span class="trial-program-tools-compact trial-ptl-muted">No program data</span>';
+  }
+  const programmer = String(row.programmer_name || '').trim();
+  const parts = [
+    trialProgramNoHtml(row.program_no),
+    trialProgramToolsLinkHtml(row.program_file, 'Prog'),
+    trialProgramToolsLinkHtml(row.tool_list_files, 'Tools'),
+  ];
+  if (programmer) {
+    parts.push(`<span class="trial-ptl-programmer" title="Programmer">${escapeHtml(programmer)}</span>`);
+  }
+  return `<div class="trial-program-tools-compact">${parts.join('<span class="trial-ptl-sep" aria-hidden="true">·</span>')}</div>`;
+}

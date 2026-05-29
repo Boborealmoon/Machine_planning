@@ -44,36 +44,63 @@ function trialCatalogAllocationKey(psId, opNo, opSeqId) {
   return '';
 }
 
-function trialAllocatedOpKeys() {
-  const keys = new Set();
-  (trialState.blocks || []).forEach(b => {
-    const key = trialCatalogAllocationKey(
-      b.source_ps_id || b.job_no,
-      b.source_op_no,
-      b.source_op_seq_id
-    );
-    if (key) keys.add(key);
+function trialCatalogPartialIndex(psId) {
+  const partialText = trialSplitPsId(psId).partial;
+  const parsed = Number(partialText);
+  return partialText && Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function trialCatalogOpMatchesBlock(cardOpNo, cardOpSeqId, cardOpLabel, block) {
+  const blockOp = String(block?.source_op_no || '').trim();
+  const cardOp = String(cardOpNo || '').trim();
+  if (cardOp && blockOp && cardOp === blockOp) return true;
+  const label = String(cardOpLabel || '').trim();
+  if (label && blockOp && label === blockOp) return true;
+  const blockSeq = Number(block?.source_op_seq_id || 0);
+  const cardSeq = Number(cardOpSeqId || 0);
+  return cardSeq > 0 && blockSeq > 0 && cardSeq === blockSeq;
+}
+
+/** Queue blocks on the same WO + operation (any partial suffix). */
+function trialBlocksForCatalogOp(card) {
+  const psId = String(card?.source_ps_id || card?.ps_id || '').trim();
+  const base = trialSplitPsId(psId).base;
+  if (!base) return [];
+  return (trialState.blocks || [])
+    .filter(block => {
+      const blockBase = trialSplitPsId(block.source_ps_id || block.job_no).base;
+      if (blockBase !== base) return false;
+      return trialCatalogOpMatchesBlock(
+        card?.source_op_no,
+        card?.source_op_seq_id,
+        card?.operation_label,
+        block,
+      );
+    })
+    .sort((a, b) => Number(a.block_id) - Number(b.block_id));
+}
+
+function trialLegacyBlocksForCatalogOp(card) {
+  return trialBlocksForCatalogOp(card).filter(block => {
+    const raw = String(block.source_ps_id || block.job_no || '');
+    return trialCatalogPartialIndex(raw) === 1 && !raw.includes('::');
   });
-  return keys;
 }
 
 function trialIsCatalogOpAllocated(card) {
-  const psId = String(card?.source_ps_id || card?.ps_id || '').trim();
-  const keys = trialAllocatedOpKeys();
-  if (!psId || !keys.size) return false;
-  const primary = trialCatalogAllocationKey(psId, card?.source_op_no, card?.source_op_seq_id);
-  if (primary && keys.has(primary)) return true;
-  const labelKey = trialCatalogAllocationKey(psId, card?.operation_label, 0);
-  return Boolean(labelKey && keys.has(labelKey));
+  const blocks = trialBlocksForCatalogOp(card);
+  if (!blocks.length) return false;
+  const wantPartial = trialCatalogPartialIndex(card?.source_ps_id || card?.ps_id);
+  const exact = blocks.filter(block => (
+    trialCatalogPartialIndex(block.source_ps_id || block.job_no) === wantPartial
+  ));
+  if (exact.length) return true;
+  // Blocks saved before partial suffixes: assign in queue order to Partial 1, 2, …
+  return trialLegacyBlocksForCatalogOp(card).length >= wantPartial;
 }
 
 function trialIsOpAllocated(psId, opNo) {
-  if (!psId || !opNo) return false;
-  return (trialState.blocks || []).some(b => {
-    const bPs = String(b.source_ps_id || b.job_no || '').trim();
-    const bOp = String(b.source_op_no || '').trim();
-    return bPs === String(psId).trim() && bOp === String(opNo).trim();
-  });
+  return trialIsCatalogOpAllocated({ source_ps_id: psId, source_op_no: opNo });
 }
 
 function trialAllocatedBlockForOp(psId, opNo, opSeqId = 0) {
@@ -96,12 +123,27 @@ function trialCanReorderMachineQueue() {
 }
 
 function trialFindBlockForCatalogOp(card) {
-  const psId = String(card?.source_ps_id || card?.ps_id || '').trim();
-  if (!psId) return null;
-  const targetKey = trialCatalogAllocationKey(psId, card?.source_op_no, card?.source_op_seq_id);
-  return (trialState.blocks || []).find(block => (
-    trialCatalogAllocationKey(block.source_ps_id || block.job_no, block.source_op_no, block.source_op_seq_id) === targetKey
-  )) || null;
+  const blocks = trialBlocksForCatalogOp(card);
+  if (!blocks.length) return null;
+  const wantPartial = trialCatalogPartialIndex(card?.source_ps_id || card?.ps_id);
+  const exact = blocks.filter(block => (
+    trialCatalogPartialIndex(block.source_ps_id || block.job_no) === wantPartial
+  ));
+  if (exact.length) return exact[0];
+  const legacy = trialLegacyBlocksForCatalogOp(card);
+  return legacy[wantPartial - 1] || null;
+}
+
+function trialCatalogCardFromPayload(payload) {
+  if (!payload) return null;
+  const op = payload.op || {};
+  return {
+    ps_id: payload.ps_id || '',
+    source_ps_id: payload.source_ps_id || payload.ps_id || op.source_ps_id || '',
+    source_op_no: payload.source_op_no || op.source_op_no || payload.operation_label || '',
+    source_op_seq_id: Number(payload.source_op_seq_id || op.source_op_seq_id || 0),
+    operation_label: payload.operation_label || '',
+  };
 }
 
 function trialParseDateTime(value) {

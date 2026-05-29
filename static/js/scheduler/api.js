@@ -249,9 +249,13 @@ async function loadTrial(options = {}) {
   trialScheduleRender();
 }
 
-function trialScheduleRender() {
+function trialScheduleRender(machineIds = null) {
   if (typeof window.trialScheduleRenderHook === 'function') {
-    window.trialScheduleRenderHook();
+    window.trialScheduleRenderHook(machineIds);
+    return;
+  }
+  if (machineIds && typeof renderTrialMachines === 'function') {
+    renderTrialMachines(machineIds);
     return;
   }
   if (typeof renderTrial === 'function') renderTrial();
@@ -309,5 +313,5 @@ async function refreshMachines(machineIds) {
     ];
   }
 
-  trialScheduleRender();
+  trialScheduleRender(ids);
 }

@@ -229,6 +229,10 @@ async function trialCatalogHandlePointerUp(e) {
 
   try {
     if (!state.hasMoved) {
+      if (trialPlannerBusyLock > 0) return;
+      if (typeof openTrialCatalogOpDetail === 'function') {
+        openTrialCatalogOpDetail(sourcePayload);
+      }
       return;
     }
 
@@ -245,17 +249,21 @@ async function trialCatalogHandlePointerUp(e) {
     const machineId = Number(lane?.dataset.machineId || 0);
     if (machineId) {
       const queuePosition = trialLaneInsertPosition(lane, e.clientY);
+      const machine = (trialState.machines || []).find(row => Number(row.machine_id) === machineId);
+      const machineLabel = machine?.machine_code || `Machine ${machineId}`;
       try {
-        if (sourcePayload.card_kind === 'group') {
-          await scheduleTrialCombinedOpCard(sourcePayload.card_id, machineId, queuePosition);
-        } else if (sourcePayload.card_kind === 'single') {
-          const existing = trialFindBlockForCatalogOp(sourcePayload);
-          if (existing) {
-            await moveTrialBlockToMachine(existing.block_id, machineId, queuePosition);
-          } else {
-            await scheduleTrialSingleOpCard(sourcePayload, machineId, queuePosition);
+        await trialRunWithPlannerBusy(async () => {
+          if (sourcePayload.card_kind === 'group') {
+            await scheduleTrialCombinedOpCard(sourcePayload.card_id, machineId, queuePosition);
+          } else if (sourcePayload.card_kind === 'single') {
+            const existing = trialFindBlockForCatalogOp(trialCatalogCardFromPayload(sourcePayload));
+            if (existing) {
+              await moveTrialBlockToMachine(existing.block_id, machineId, queuePosition, { skipBusy: true, quiet: true });
+            } else {
+              await scheduleTrialSingleOpCard(sourcePayload, machineId, queuePosition);
+            }
           }
-        }
+        }, 'Scheduling…', machineLabel);
       } catch (err) {
         toast('Schedule failed: ' + err.message, 'error');
         await loadTrial();
@@ -280,6 +288,37 @@ function trialEnsureCatalogPointerListeners() {
   document.addEventListener('pointercancel', trialCatalogHandlePointerCancel, true);
 }
 
+function bindTrialLaneBlockClicks() {
+  document.querySelectorAll('.trial-block-card--compact').forEach(el => {
+    if (el.dataset.laneClickBound === '1') return;
+    el.dataset.laneClickBound = '1';
+    el.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || !e.isPrimary) return;
+      if (trialPlannerBusyLock > 0) return;
+      if (e.target?.closest('.trial-block-compact-drag')) return;
+      el._trialLaneClickStartX = e.clientX;
+      el._trialLaneClickStartY = e.clientY;
+      el._trialLaneClickMoved = false;
+    });
+    el.addEventListener('pointermove', e => {
+      if (el._trialLaneClickMoved) return;
+      const dx = Math.abs(e.clientX - (el._trialLaneClickStartX || 0));
+      const dy = Math.abs(e.clientY - (el._trialLaneClickStartY || 0));
+      if (dx > 5 || dy > 5) el._trialLaneClickMoved = true;
+    });
+    el.addEventListener('pointerup', e => {
+      if (e.button !== 0) return;
+      if (trialPlannerBusyLock > 0) return;
+      if (e.target?.closest('.trial-block-compact-drag')) return;
+      if (el._trialLaneClickMoved) return;
+      const blockId = Number(el.dataset.blockId || 0);
+      if (blockId && typeof openTrialRunBlockDetail === 'function') {
+        openTrialRunBlockDetail(blockId);
+      }
+    });
+  });
+}
+
 function bindTrialCatalogDnD() {
   trialEnsureCatalogPointerListeners();
   document.querySelectorAll('.trial-catalog-op').forEach(el => {
@@ -287,10 +326,23 @@ function bindTrialCatalogDnD() {
     el.dataset.catalogDndBound = '1';
     el.addEventListener('pointerdown', e => {
       if (e.button !== 0 || !e.isPrimary) return;
+      if (trialPlannerBusyLock > 0) return;
       const interactive = e.target && e.target.closest('button, a, input, select, textarea, label, [contenteditable="true"]');
       if (interactive) return;
       const sourcePayload = trialOpCardPayloadFromElement(el);
       if (!sourcePayload || sourcePayload.type !== 'op-card') return;
+      const catalogCard = trialCatalogCardFromPayload(sourcePayload);
+      if (catalogCard && trialIsCatalogOpAllocated(catalogCard)) {
+        const queued = trialFindBlockForCatalogOp(catalogCard);
+        const machineCode = queued?.machine_code || '';
+        toast(
+          machineCode
+            ? `Already in queue on ${machineCode} — edit the run block to move it.`
+            : 'This operation is already in the machine queue.',
+          'info',
+        );
+        return;
+      }
       trialCatalogPointerDrag = {
         sourceEl: el,
         sourcePayload,
@@ -329,7 +381,7 @@ function trialLaneInsertPosition(lane, clientY) {
 function trialLaneOrderedBlockIds(lane, movedBlockId = 0) {
   const orderedIds = [];
   if (!lane) return orderedIds;
-  Array.from(lane.querySelectorAll(':scope > .trial-block-card')).forEach(card => {
+  Array.from(lane.querySelectorAll(':scope > .trial-block-card[data-block-id]')).forEach(card => {
     const id = Number(card.dataset.blockId || 0);
     if (id) orderedIds.push(id);
   });
@@ -340,7 +392,7 @@ function trialLaneOrderedBlockIds(lane, movedBlockId = 0) {
   return orderedIds;
 }
 
-async function moveTrialBlockToMachine(blockId, machineId, queuePosition = 0) {
+async function moveTrialBlockToMachine(blockId, machineId, queuePosition = 0, options = {}) {
   const numericBlockId = Number(blockId || 0);
   const numericMachineId = Number(machineId || 0);
   if (!numericBlockId || !numericMachineId) {
@@ -355,7 +407,8 @@ async function moveTrialBlockToMachine(blockId, machineId, queuePosition = 0) {
     ? Math.min(Math.max(0, queuePosition - 1), orderedIds.length)
     : orderedIds.length;
   orderedIds.splice(insertIdx, 0, numericBlockId);
-  try {
+  const machineIds = [...new Set([_fromMachineId, numericMachineId].filter(Boolean))];
+  const run = async () => {
     const result = await POST(`/api/trial/blocks/${numericBlockId}/reorder`, {
       machine_id: numericMachineId,
       ordered_ids: orderedIds,
@@ -370,8 +423,17 @@ async function moveTrialBlockToMachine(blockId, machineId, queuePosition = 0) {
         queue_position: seq.sequence_no,
       });
     }
-    await refreshMachines([...(new Set([_fromMachineId, numericMachineId].filter(Boolean)))]);
-    toast('Job moved', 'success');
+    await refreshMachines(machineIds);
+    if (!options.quiet) toast('Job moved', 'success');
+  };
+  if (options.skipBusy) {
+    await run();
+    return;
+  }
+  const machine = (trialState.machines || []).find(row => Number(row.machine_id) === numericMachineId);
+  const machineLabel = machine?.machine_code || `Machine ${numericMachineId}`;
+  try {
+    await trialRunWithPlannerBusy(run, 'Updating queue…', machineLabel);
   } catch (e) {
     toast('Move failed: ' + e.message, 'error');
     await loadTrial();
@@ -395,12 +457,16 @@ function bindTrialLaneOpDrops() {
       const payload = trialParsePayload(e.dataTransfer);
       const machineId = Number(lane.dataset.machineId || 0);
       if (!machineId || !payload || payload.type !== 'op-card') return;
+      const machine = (trialState.machines || []).find(row => Number(row.machine_id) === machineId);
+      const machineLabel = machine?.machine_code || `Machine ${machineId}`;
       try {
-        if (payload.card_kind === 'group') {
-          await scheduleTrialCombinedOpCard(payload.card_id, machineId);
-        } else if (payload.card_kind === 'single') {
-          await scheduleTrialSingleOpCard(payload, machineId);
-        }
+        await trialRunWithPlannerBusy(async () => {
+          if (payload.card_kind === 'group') {
+            await scheduleTrialCombinedOpCard(payload.card_id, machineId);
+          } else if (payload.card_kind === 'single') {
+            await scheduleTrialSingleOpCard(payload, machineId);
+          }
+        }, 'Scheduling…', machineLabel);
       } catch (err) {
         toast('Schedule failed: ' + err.message, 'error');
         await loadTrial();
@@ -420,17 +486,66 @@ function destroyTrialSortables() {
   trialMachineSortables = [];
 }
 
+function destroyTrialQueueSortable() {
+  if (!trialQueueSortable) return;
+  try {
+    trialQueueSortable.destroy();
+  } catch (e) {
+    // Ignore teardown errors from already-detached nodes.
+  }
+  trialQueueSortable = null;
+}
+
+function initTrialQueuePanelSortable() {
+  if (typeof Sortable === 'undefined') return;
+  destroyTrialQueueSortable();
+  const list = document.querySelector('.trial-queue-panel-list');
+  if (!list) return;
+  trialQueueSortable = new Sortable(list, {
+    draggable: '.trial-queue-row',
+    handle: '.trial-queue-row-grip',
+    animation: 150,
+    disabled: !trialCanReorderMachineQueue(),
+    ghostClass: 'trial-drag-ghost',
+    chosenClass: 'trial-drag-chosen',
+    dragClass: 'trial-drag-active',
+    fallbackOnBody: true,
+    swapThreshold: 0.65,
+    invertSwap: true,
+    onStart: () => {
+      trialDragPayload = null;
+      if (trialPlannerBusyLock > 0) return false;
+    },
+    onEnd: async evt => {
+      if (trialPlannerBusyLock > 0) return;
+      if (evt.oldIndex === evt.newIndex) return;
+      const machineId = Number(list.dataset.machineId || 0);
+      try {
+        await trialRunWithPlannerBusy(async () => {
+          await saveTrialOrder(list, false);
+          await refreshMachines([machineId].filter(Boolean));
+        }, 'Saving order…', '');
+      } catch (e) {
+        toast('Reorder failed: ' + e.message, 'error');
+        await loadTrial();
+      }
+    },
+  });
+}
+
 function initTrialMachineSortables() {
   if (typeof Sortable === 'undefined') return;
   document.querySelectorAll('.trial-lane').forEach(lane => {
+    if (lane.classList.contains('trial-queue-panel-list')) return;
     const sortable = new Sortable(lane, {
       group: {
         name: 'trial-machine-blocks',
         pull: true,
         put: ['trial-machine-blocks'],
       },
-      draggable: '.trial-block-card',
-      handle: '.trial-op-card-header',
+      draggable: '.trial-block-card--compact',
+      handle: '.trial-block-compact-drag',
+      sort: true,
       animation: 150,
       disabled: !trialCanReorderMachineQueue(),
       ghostClass: 'trial-drag-ghost',
@@ -438,22 +553,30 @@ function initTrialMachineSortables() {
       dragClass: 'trial-drag-active',
       fallbackOnBody: true,
       swapThreshold: 0.65,
+      invertSwap: true,
+      emptyInsertThreshold: 8,
       onStart: () => {
         trialDragPayload = null;
+        if (trialPlannerBusyLock > 0) return false;
       },
       onEnd: async evt => {
-        if (!evt.item || !evt.item.classList.contains('trial-block-card')) return;
+        if (trialPlannerBusyLock > 0) return;
+        if (!evt.item || !evt.item.classList.contains('trial-block-card--compact')) return;
         const fromLane = evt.from;
         const toLane = evt.to;
         if (!fromLane || !toLane) return;
+        if (evt.oldIndex === evt.newIndex && fromLane === toLane) return;
         const _fromMachineId = Number(fromLane.dataset.machineId || 0);
         const _toMachineId = Number(toLane.dataset.machineId || 0);
+        const crossMachine = fromLane !== toLane;
         try {
-          if (fromLane !== toLane) {
-            await saveTrialOrder(fromLane, false);
-          }
-          await saveTrialOrder(toLane, false);
-          await refreshMachines([...(new Set([_fromMachineId, _toMachineId].filter(Boolean)))]);
+          await trialRunWithPlannerBusy(async () => {
+            if (crossMachine) {
+              await saveTrialOrder(fromLane, false);
+            }
+            await saveTrialOrder(toLane, false);
+            await refreshMachines([...(new Set([_fromMachineId, _toMachineId].filter(Boolean)))]);
+          }, 'Updating queue…', '');
         } catch (e) {
           toast('Reorder failed: ' + e.message, 'error');
           await loadTrial();
@@ -470,21 +593,27 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
     toast('Missing operation data for this card.', 'error');
     return;
   }
-  const existing = trialFindBlockForCatalogOp(card);
-  if (existing) {
-    await moveTrialBlockToMachine(existing.block_id, machineId, queuePosition);
+  const catalogCard = trialCatalogCardFromPayload(card);
+  if (catalogCard && trialIsCatalogOpAllocated(catalogCard)) {
+    const existing = trialFindBlockForCatalogOp(catalogCard);
+    if (existing) {
+      await moveTrialBlockToMachine(existing.block_id, machineId, queuePosition, { skipBusy: true });
+      return;
+    }
+    toast('This operation is already in the machine queue.', 'info');
     return;
   }
+  const plannerPsId = String(card.ps_id || op.source_ps_id || '').trim();
   try {
     const result = await POST('/api/trial/operations', {
-      job_no: op.job_no || op.source_ps_id || '',
+      job_no: plannerPsId || op.job_no || op.source_ps_id || '',
       operation_name: op.operation_name || op.op_type || op.source_op_no || '',
       total_qty: Number(op.remaining_qty || op.total_qty || 0),
       scheduled_qty: Number(op.remaining_qty || op.total_qty || 0),
       setup_minutes: Number(op.setup_time || op.setup_minutes || 0),
       cycle_minutes_per_qty: Number(op.cycle_time || op.cycle_minutes_per_qty || 0),
       compatible_machine_group: op.compatible_machine_group || '',
-      source_ps_id: op.source_ps_id || '',
+      source_ps_id: plannerPsId || op.source_ps_id || '',
       source_op_seq_id: Number(op.source_op_seq_id || 0),
       source_op_no: String(op.source_op_no || card?.operation_label || '').trim(),
       machine_id: Number(machineId || 0),
@@ -496,10 +625,8 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
     if (result && result.block) {
       trialPinBlock(result.block);
       trialMergeBlockFromApi(result.block);
-      renderTrial();
     }
     await refreshMachines([Number(machineId || 0)].filter(Boolean));
-    await syncTrialQueueState();
     toast('Operation scheduled', 'success');
   } catch (e) {
     console.error('scheduleTrialSingleOpCard failed:', e);
@@ -574,18 +701,20 @@ function openTrialCatalogCombineModal(psId, ops) {
         toast('Target qty is required', 'error');
         return;
       }
-      await POST('/api/trial/planning-cards', {
-        ps_id: psId,
-        target_qty: targetQty,
-        ops: selection.map(op => ({
-          source_ps_id: op.source_ps_id || '',
-          source_op_seq_id: Number(op.source_op_seq_id || 0),
-          source_op_no: op.source_op_no || '',
-        })),
-      });
-      closeModal();
-      await loadTrial();
-      toast('Operations combined', 'success');
+      await trialRunWithPlannerBusy(async () => {
+        await POST('/api/trial/planning-cards', {
+          ps_id: psId,
+          target_qty: targetQty,
+          ops: selection.map(op => ({
+            source_ps_id: op.source_ps_id || '',
+            source_op_seq_id: Number(op.source_op_seq_id || 0),
+            source_op_no: op.source_op_no || '',
+          })),
+        });
+        closeModal();
+        await loadTrial();
+        toast('Operations combined', 'success');
+      }, 'Combining operations…', 'Updating the catalog.');
     } catch (e) {
       toast('Combine failed: ' + e.message, 'error');
     }
@@ -597,9 +726,11 @@ async function deleteTrialPlanningCard(cardId) {
   if (!numericCardId) return;
   if (!confirm('Uncombine this op card?')) return;
   try {
-    await DEL(`/api/trial/planning-cards/${numericCardId}`);
-    await loadTrial();
-    toast('Op card uncombined', 'success');
+    await trialRunWithPlannerBusy(async () => {
+      await DEL(`/api/trial/planning-cards/${numericCardId}`);
+      await loadTrial();
+      toast('Op card uncombined', 'success');
+    }, 'Uncombining…', 'Refreshing the catalog.');
   } catch (e) {
     toast('Uncombine failed: ' + e.message, 'error');
   }
