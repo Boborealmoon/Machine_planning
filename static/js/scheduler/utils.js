@@ -215,7 +215,7 @@ function trialDefaultProfileNameForDate(dateText) {
   const d = new Date(`${dateText || trialTodayLocal()}T00:00:00`);
   const weekday = d.getDay();
   if (weekday === 0) return 'OFF';
-  if (weekday === 6) return 'SATURDAY';
+  if (weekday === 6) return 'OFF';
   return 'NORMAL_DAY_NIGHT';
 }
 

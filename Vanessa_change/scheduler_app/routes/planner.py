@@ -15,6 +15,7 @@ from ..blocks import (
     apply_actual_variance_delta_to_block_tail,
     actual_daily_rows_for_block_row,
     apply_removed_target_date_to_block_tail,
+    reconcile_block_schedule_after_actuals,
     recalculate_all,
     recalculate_machine,
     refresh_planner_alerts,
@@ -35,6 +36,8 @@ from ..db import db, one, rows, parse_dt_text
 from ..planner_actuals import actual_summaries_for_block_rows, actual_summary_for_process_sheet_rows
 from ..materials import material_status_map_for_ps_ids, sync_material_requirements_for_ps_ids
 from ..machines import default_profile_for_weekday, fetch_machines, is_public_holiday
+from ..machines import machine_work_intervals_for_day
+from ..imports import sync_operations_for_flow
 from ..planning_scheduler import (
     create_planning_schedule_run,
     recalculate_planning_all as recalculate_planning_all_baseline,
@@ -67,11 +70,21 @@ def _visual_datetime_text(value):
     return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else ""
 
 
-def _visual_minutes_of_day(value):
-    dt = parse_dt_text(value)
-    if not dt:
-        return 0
-    return dt.hour * 60 + dt.minute
+def _working_minutes_between(con, machine_id, start_text, end_text):
+    start_dt = parse_dt_text(start_text)
+    end_dt = parse_dt_text(end_text)
+    if not start_dt or not end_dt or end_dt <= start_dt or not int(machine_id or 0):
+        return 0.0
+    total = 0.0
+    probe = start_dt.date()
+    while probe <= end_dt.date():
+        for interval_start, interval_end in machine_work_intervals_for_day(con, int(machine_id), probe):
+            overlap_start = max(start_dt, interval_start)
+            overlap_end = min(end_dt, interval_end)
+            if overlap_end > overlap_start:
+                total += (overlap_end - overlap_start).total_seconds() / 60.0
+        probe += timedelta(days=1)
+    return max(0.0, float(total))
 
 
 def _void_actual(con, actual_id):
@@ -734,7 +747,7 @@ def api_trial_planner_schedule_opn():
         )
         planned_qty = _planner_planned_qty_for_op(con, source_ps_id, pp_partial_no, selected_bom_id, source_op_seq_id, source_op_no)
         remaining_qty = max(0.0, target_qty - planned_qty)
-        operation_name = f"{step_row.get('op_no') or ''} {step_row.get('op_type') or ''}".strip()
+        operation_name = compact_text(step_row.get("op_type") or "")
         setup_minutes = parse_number(step_row.get("setup_time"), 0)
         cycle_minutes_per_qty = parse_number(step_row.get("cycle_time"), 0)
         compatible_machine_group = compact_text(step_row.get("machine_category") or "")
@@ -949,12 +962,14 @@ def api_trial_update_block(block_id):
         block = trial_block_row(con, block_id)
         if not block:
             return jsonify({"error": "Run block not found"}), 404
-        next_total_qty = data.get("total_qty", block["total_qty"])
-        next_scheduled_qty = data.get("scheduled_qty", block["scheduled_qty"])
-        next_cycle_minutes = data.get("cycle_minutes_per_qty", block["cycle_minutes_per_qty"])
-        cycle_error = validate_cycle_minutes(next_total_qty, next_scheduled_qty, next_cycle_minutes)
-        if cycle_error:
-            return jsonify({"error": cycle_error}), 400
+        cycle_fields_changed = any(key in data for key in ("total_qty", "scheduled_qty", "cycle_minutes_per_qty"))
+        if cycle_fields_changed:
+            next_total_qty = data.get("total_qty", block["total_qty"])
+            next_scheduled_qty = data.get("scheduled_qty", block["scheduled_qty"])
+            next_cycle_minutes = data.get("cycle_minutes_per_qty", block["cycle_minutes_per_qty"])
+            cycle_error = validate_cycle_minutes(next_total_qty, next_scheduled_qty, next_cycle_minutes)
+            if cycle_error:
+                return jsonify({"error": cycle_error}), 400
         op_updates = {}
         for key in ("job_no", "operation_name", "compatible_machine_group", "remarks"):
             if key in data:
@@ -1023,9 +1038,19 @@ def api_trial_update_block(block_id):
             recalculate_machine(con, machine_id)
         if anchor_related_changed:
             recalculate_planning_all_baseline(con, reason="PLANNER_ANCHOR_UPDATE")
+        if anchor_related_changed:
             refresh_planner_alerts(con)
         refreshed_block = trial_block_row(con, block_id)
         return jsonify({"ok": True, "block": trial_block_payload(refreshed_block, con)})
+
+
+@trial_bp.get("/api/trial/blocks/<int:block_id>")
+def api_trial_get_block(block_id):
+    with db() as con:
+        block = trial_block_row(con, block_id)
+        if not block:
+            return jsonify({"error": "Run block not found"}), 404
+        return jsonify({"ok": True, "block": trial_block_payload(block, con)})
 
 
 @trial_bp.post("/api/trial/blocks/<int:block_id>/split")
@@ -1378,6 +1403,32 @@ def api_trial_actual(block_id):
         delete_dates = [compact_text(v) for v in (data.get("delete_actual_dates") or []) if compact_text(v)]
         removed_target_dates = [compact_text(v) for v in (data.get("removed_target_dates") or []) if compact_text(v)]
         daily_actuals = data.get("daily_actuals") or []
+        rows_before = [
+            dict(row)
+            for row in rows(
+                con.execute(
+                    """
+                    SELECT actual_id, segment_id, block_id, report_date,
+                           output_qty, reject_qty, target_qty_at_report,
+                           remarks, status, reported_at
+                    FROM production_actual
+                    WHERE block_id = ?
+                    ORDER BY report_date, actual_id
+                    """,
+                    (int(block_id),),
+                )
+            )
+        ]
+        debug_actual_save = {
+            "incoming_daily_actuals": daily_actuals,
+            "incoming_delete_dates": delete_dates,
+            "incoming_removed_target_dates": removed_target_dates,
+            "rows_before": rows_before,
+            "rows_after": [],
+            "inserted_actual_ids": [],
+            "voided_actual_ids": [],
+            "skipped_rows": [],
+        }
         if not delete_dates and not removed_target_dates and not daily_actuals:
             return jsonify({"error": "No actual rows submitted."}), 400
         saved_count = 0
@@ -1385,65 +1436,13 @@ def api_trial_actual(block_id):
         removed_target_count = 0
         removed_target_qty = 0.0
         skipped_count = 0
-        adjusted_tail_qty = 0.0
-        schedule_adjusted = False
-        tail_changes = []
+        inserted_actual_ids = []
+        voided_actual_ids = []
+        skipped_rows = []
+        post_save_errors = []
         removed_target_date_set = set(removed_target_dates)
 
         for report_date in delete_dates:
-            existing_rows = rows(
-                con.execute(
-                    """
-                    SELECT *
-                    FROM production_actual
-                    WHERE block_id = ?
-                      AND report_date = ?
-                      AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
-                    """,
-                    (int(block_id), report_date),
-                )
-            )
-            for row in existing_rows:
-                _void_actual(con, int(row["actual_id"]))
-                deleted_count += 1
-                if report_date in removed_target_date_set:
-                    continue
-                old_output = parse_nullable_number(row.get("output_qty")) if row.get("output_qty") is not None else None
-                old_reject = parse_nullable_number(row.get("reject_qty")) if row.get("reject_qty") is not None else None
-                old_good = _actual_good_qty(old_output, old_reject)
-                if old_good is None:
-                    old_good = 0.0
-                old_target = parse_nullable_number(row.get("target_qty_at_report"))
-                if old_target is None:
-                    old_target = _planned_target_qty_for_block_date(con, block_id, report_date)
-                old_variance = _actual_variance(old_good, old_target)
-                variance_delta = 0.0 - float(old_variance)
-                if abs(variance_delta) > 1e-9:
-                    tail_changes.append(
-                        {
-                            "report_date": report_date,
-                            "change_type": "actual_delete",
-                            "old_variance": float(old_variance),
-                            "new_variance": 0.0,
-                            "variance_delta": float(variance_delta),
-                        }
-                    )
-
-        for report_date in removed_target_dates:
-            existing_removed = one(
-                con.execute(
-                    """
-                    SELECT *
-                    FROM block_removed_actual_date
-                    WHERE block_id = ?
-                      AND report_date = ?
-                      AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
-                    ORDER BY removed_date_id DESC
-                    LIMIT 1
-                    """,
-                    (int(block_id), report_date),
-                )
-            )
             existing_rows = rows(
                 con.execute(
                     """
@@ -1458,8 +1457,42 @@ def api_trial_actual(block_id):
                 )
             )
             for row in existing_rows:
+                voided_actual_ids.append(int(row["actual_id"]))
                 _void_actual(con, int(row["actual_id"]))
                 deleted_count += 1
+
+        for report_date in removed_target_dates:
+            existing_rows = rows(
+                con.execute(
+                    """
+                    SELECT *
+                    FROM production_actual
+                    WHERE block_id = ?
+                      AND report_date = ?
+                      AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                    ORDER BY actual_id DESC
+                    """,
+                    (int(block_id), report_date),
+                )
+            )
+            for row in existing_rows:
+                voided_actual_ids.append(int(row["actual_id"]))
+                _void_actual(con, int(row["actual_id"]))
+                deleted_count += 1
+            existing_removed = one(
+                con.execute(
+                    """
+                    SELECT *
+                    FROM block_removed_actual_date
+                    WHERE block_id = ?
+                      AND report_date = ?
+                      AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                    ORDER BY removed_date_id DESC
+                    LIMIT 1
+                    """,
+                    (int(block_id), report_date),
+                )
+            )
             if existing_removed:
                 continue
 
@@ -1479,59 +1512,58 @@ def api_trial_actual(block_id):
                 """,
                 (int(block_id), report_date, float(target_qty)),
             )
-            removed_result = apply_removed_target_date_to_block_tail(con, block_id, report_date, target_qty)
             removed_target_count += 1
             removed_target_qty += float(target_qty)
-            schedule_adjusted = schedule_adjusted or bool(removed_result.get("changed"))
-            tail_changes.append(
-                {
-                    "report_date": report_date,
-                    "change_type": "removed_target",
-                    "removed_target_qty": float(target_qty),
-                    "variance_delta": float(target_qty),
-                }
-            )
 
         for row in daily_actuals:
             report_date = compact_text(row.get("report_date"))
             if not report_date:
                 skipped_count += 1
+                skipped_rows.append({"report_date": "", "reason": "missing report_date"})
                 continue
+
             raw_output = row.get("output_qty") if "output_qty" in row else row.get("actual_good_qty")
             raw_reject = row.get("reject_qty") if "reject_qty" in row else row.get("actual_reject_qty")
             raw_remarks = compact_text(row.get("remarks"))
             raw_target = row.get("target_qty")
-            output_provided = "output_qty" in row and compact_text(raw_output) != ""
-            reject_provided = "reject_qty" in row and compact_text(raw_reject) != ""
+
+            output_text = "" if raw_output is None else str(raw_output).strip()
+            reject_text = "" if raw_reject is None else str(raw_reject).strip()
+            output_provided = "output_qty" in row and output_text != ""
+            reject_provided = "reject_qty" in row and reject_text != ""
             remarks_provided = raw_remarks != ""
             target_provided = "target_qty" in row and compact_text(raw_target) != ""
             if not output_provided and not reject_provided and not remarks_provided:
                 skipped_count += 1
+                skipped_rows.append({"report_date": report_date, "reason": "blank row"})
                 continue
+
             output_value = parse_nullable_number(raw_output) if output_provided else None
             reject_value = parse_nullable_number(raw_reject) if reject_provided else None
+            if output_provided and output_value is None:
+                skipped_count += 1
+                skipped_rows.append({"report_date": report_date, "reason": "invalid output_qty"})
+                continue
+            if reject_provided and reject_value is None:
+                skipped_count += 1
+                skipped_rows.append({"report_date": report_date, "reason": "invalid reject_qty"})
+                continue
+
             remarks_value = raw_remarks
             existing = _active_actual_for_block_date(con, block_id, report_date)
-            old_output = parse_nullable_number(existing["output_qty"]) if existing and existing.get("output_qty") is not None else None
-            old_reject = parse_nullable_number(existing["reject_qty"]) if existing and existing.get("reject_qty") is not None else None
-            old_good = _actual_good_qty(old_output, old_reject)
             if target_provided:
                 target_qty = parse_nullable_number(raw_target)
             else:
                 existing_target = parse_nullable_number(existing["target_qty_at_report"]) if existing and existing.get("target_qty_at_report") is not None else None
-                if existing_target is not None:
-                    target_qty = existing_target
-                else:
-                    target_qty = _planned_target_qty_for_block_date(con, block_id, report_date)
+                target_qty = existing_target if existing_target is not None else _planned_target_qty_for_block_date(con, block_id, report_date)
             if target_qty is None:
                 target_qty = 0.0
-            old_target = parse_nullable_number(existing["target_qty_at_report"]) if existing and existing.get("target_qty_at_report") is not None else None
-            if old_target is None:
-                old_target = target_qty if existing else _planned_target_qty_for_block_date(con, block_id, report_date)
-            old_variance = _actual_variance(old_good, old_target)
+
             if existing:
+                voided_actual_ids.append(int(existing["actual_id"]))
                 _void_actual(con, existing["actual_id"])
-            _insert_actual(
+
+            inserted_actual_id = _insert_actual(
                 con,
                 segment_id=None,
                 block_id=int(block_id),
@@ -1546,52 +1578,88 @@ def api_trial_actual(block_id):
                 created_by=compact_text(row.get("created_by")),
             )
             saved_count += 1
-            new_good = _actual_good_qty(output_value, reject_value)
-            new_variance = _actual_variance(new_good, target_qty)
-            variance_delta = float(new_variance) - float(old_variance)
-            if abs(variance_delta) > 1e-9:
-                tail_changes.append(
-                    {
-                        "report_date": report_date,
-                        "change_type": "actual_save",
-                        "old_variance": float(old_variance),
-                        "new_variance": float(new_variance),
-                        "variance_delta": float(variance_delta),
-                    }
+            inserted_actual_ids.append(int(inserted_actual_id))
+            inserted_confirmed = one(
+                con.execute(
+                    """
+                    SELECT actual_id, status
+                    FROM production_actual
+                    WHERE actual_id = ?
+                    """,
+                    (int(inserted_actual_id),),
                 )
-        refresh_block_actual_status(con, block_id)
-        refresh_block_schedule_bounds(con, block_id)
-        recalculate_planning_all_baseline(con, reason="ACTUAL_DAILY_SAVE")
-        for change in tail_changes:
-            if change.get("change_type") == "removed_target":
-                adjusted_tail_qty += abs(float(change["variance_delta"]))
-                continue
-            tail_result = apply_actual_variance_delta_to_block_tail(
-                con,
-                block_id,
-                change["report_date"],
-                change["variance_delta"],
             )
-            adjusted_tail_qty += abs(float(change["variance_delta"]))
-            schedule_adjusted = schedule_adjusted or bool(tail_result.get("changed"))
-        refresh_block_schedule_bounds(con, block_id)
-        refresh_planner_alerts(con)
+            if not inserted_confirmed or compact_text(inserted_confirmed["status"] or "").upper() != "ACTIVE":
+                return jsonify({
+                    "ok": False,
+                    "error": "Inserted actual row was not persisted as ACTIVE.",
+                    "debug_actual_save": debug_actual_save,
+                }), 500
+
+        reconciliation = reconcile_block_schedule_after_actuals(con, block_id)
+
+        try:
+            refresh_block_actual_status(con, block_id)
+            refresh_block_schedule_bounds(con, block_id)
+            recalculate_planning_all_baseline(con, reason="ACTUAL_DAILY_SAVE")
+            refresh_planner_alerts(con)
+        except Exception as exc:
+            post_save_errors.append(str(exc))
+
         updated_block = trial_block_row(con, block_id)
         block_payload = trial_block_payload(updated_block, con)
-        actuals = rows(
-            con.execute(
-                """
-                SELECT actual_id, segment_id, block_id, report_date,
-                       output_qty, reject_qty, target_qty_at_report,
-                       remarks, reported_at
-                FROM production_actual
-                WHERE block_id = ?
-                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
-                ORDER BY report_date, actual_id
-                """,
-                (int(block_id),),
+        rows_after = [
+            dict(row)
+            for row in rows(
+                con.execute(
+                    """
+                    SELECT actual_id, segment_id, block_id, report_date,
+                           output_qty, reject_qty, target_qty_at_report,
+                           remarks, status, reported_at
+                    FROM production_actual
+                    WHERE block_id = ?
+                    ORDER BY report_date, actual_id
+                    """,
+                    (int(block_id),),
+                )
             )
-        )
+        ]
+        actuals_active = [
+            dict(row)
+            for row in rows(
+                con.execute(
+                    """
+                    SELECT actual_id, segment_id, block_id, report_date,
+                           output_qty, reject_qty, target_qty_at_report,
+                           remarks, status, reported_at
+                    FROM production_actual
+                    WHERE block_id = ?
+                      AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                    ORDER BY report_date, actual_id
+                    """,
+                    (int(block_id),),
+                )
+            )
+        ]
+        debug_actual_save["rows_after"] = rows_after
+        debug_actual_save["inserted_actual_ids"] = inserted_actual_ids
+        debug_actual_save["voided_actual_ids"] = voided_actual_ids
+        debug_actual_save["skipped_rows"] = skipped_rows
+        debug_actual_save["errors"] = post_save_errors
+        missing_inserted = [
+            actual_id
+            for actual_id in inserted_actual_ids
+            if not any(int(row["actual_id"]) == int(actual_id) and compact_text(row["status"] or "").upper() == "ACTIVE" for row in rows_after)
+        ]
+        if missing_inserted:
+            return jsonify({
+                "ok": False,
+                "error": "Inserted actual row disappeared before response.",
+                "missing_inserted_actual_ids": missing_inserted,
+                "debug_actual_save": debug_actual_save,
+            }), 500
+
+        actual_daily_rows = actual_daily_rows_for_block_row(con, updated_block)
         return jsonify({
             "ok": True,
             "saved_count": saved_count,
@@ -1600,13 +1668,14 @@ def api_trial_actual(block_id):
             "removed_target_qty": removed_target_qty,
             "skipped_count": skipped_count,
             "changed_count": saved_count + deleted_count + removed_target_count,
-            "adjusted_tail_qty": adjusted_tail_qty,
-            "schedule_adjusted": bool(schedule_adjusted or adjusted_tail_qty > 0),
-            "tail_adjustments": tail_changes,
             "block": block_payload,
-            "actual_daily_rows": block_payload.get("actual_daily_rows") or [],
-            "actuals": [dict(r) for r in actuals],
+            "reconciliation": reconciliation,
+            "actual_daily_rows": actual_daily_rows,
+            "actuals_active": actuals_active,
+            "actuals_all": rows_after,
+            "actuals": actuals_active,
             "removed_actual_dates": removed_actual_dates_for_block_row(con, updated_block),
+            "debug_actual_save": debug_actual_save,
         })
 
 @trial_bp.post("/api/trial/recalc")
@@ -1635,6 +1704,12 @@ def _planning_run_payload(row):
 def _planning_block_payload(row):
     if not row:
         return None
+    planned_start_at = compact_text(row.get("planned_start_at") or "")
+    planned_end_at = compact_text(row.get("planned_end_at") or "")
+    expected_start_at = compact_text(row.get("expected_start_at") or "")
+    expected_end_at = compact_text(row.get("expected_end_at") or "")
+    calculated_start_datetime = compact_text(row.get("calculated_start_datetime") or "")
+    calculated_end_datetime = compact_text(row.get("calculated_end_datetime") or "")
     return {
         "block_id": int(row["block_id"]),
         "operation_id": int(row["operation_id"]),
@@ -1642,16 +1717,22 @@ def _planning_block_payload(row):
         "queue_position": float(row["queue_position"] or 0),
         "scheduled_qty": float(row["scheduled_qty"] or 0),
         "include_setup": int(row["include_setup"] or 0),
-        "planned_start_at": compact_text(row["planned_start_at"] or ""),
-        "planned_end_at": compact_text(row["planned_end_at"] or ""),
+        "planned_start_at": planned_start_at,
+        "planned_end_at": planned_end_at,
         "anchor_datetime": compact_text(row["anchor_datetime"] or ""),
-        "expected_start_at": compact_text(row["expected_start_at"] or row["planned_start_at"] or ""),
-        "expected_end_at": compact_text(row["expected_end_at"] or row["planned_end_at"] or ""),
+        "expected_start_at": expected_start_at,
+        "expected_end_at": expected_end_at,
+        "forecast_start_at": compact_text(expected_start_at or calculated_start_datetime or ""),
+        "forecast_end_at": compact_text(expected_end_at or calculated_end_datetime or ""),
+        "calculated_start_datetime": calculated_start_datetime,
+        "calculated_end_datetime": calculated_end_datetime,
         "planned_qty": float(row.get("planned_qty") or row.get("planned_qty_state") or 0),
         "planned_minutes": float(row.get("planned_minutes") or row.get("planned_minutes_state") or 0),
         "job_no": compact_text(row["job_no"] or ""),
         "operation_name": compact_text(row["operation_name"] or ""),
         "source_ps_id": compact_text(row["source_ps_id"] or ""),
+        "pp_partial_no": compact_text(row.get("pp_partial_no") or ""),
+        "partial_no": compact_text(row.get("pp_partial_no") or ""),
         "source_op_no": compact_text(row["source_op_no"] or ""),
         "machine_code": compact_text(row["machine_code"] or ""),
         "machine_category": compact_text(row["machine_category"] or ""),
@@ -1871,7 +1952,8 @@ def _planner_bom_steps_for_selected(con, source_ps_id, pp_partial_no, bom_id):
                 """
                 SELECT s.op_seq_id, s.seq_no, s.op_no, s.op_type, s.machine_category, s.preferred_machine,
                        s.cycle_time, s.setup_time, s.is_last_op,
-                       o.operation_id, o.opn_completed, o.opn_completed_at, o.opn_completed_by
+                       o.operation_id, COALESCE(o.status, 'ACTIVE') AS operation_status,
+                       o.opn_completed, o.opn_completed_at, o.opn_completed_by
                 FROM operation_seq s
                 LEFT JOIN operation o
                   ON o.source_ps_id = ?
@@ -1886,6 +1968,178 @@ def _planner_bom_steps_for_selected(con, source_ps_id, pp_partial_no, bom_id):
             )
         )
     ]
+
+
+def _planner_machine_options(con):
+    machine_rows = [dict(row) for row in fetch_machines(con)]
+    machine_groups = []
+    seen = set()
+    for row in machine_rows:
+        category = compact_text(row.get("machine_category") or "")
+        if not category or category in seen:
+            continue
+        seen.add(category)
+        machine_groups.append(category)
+    return machine_rows, machine_groups
+
+
+def _planner_machine_row_by_code(machine_rows, machine_code):
+    machine_code = compact_text(machine_code)
+    if not machine_code:
+        return None
+    return next((row for row in machine_rows if compact_text(row.get("machine_code") or "") == machine_code), None)
+
+
+def _planner_resolve_machine_context(machine_rows, machine_ids=None, preferred_machine="", machine_category=""):
+    machine_ids = [int(value or 0) for value in (machine_ids or []) if int(value or 0) > 0]
+    preferred_machine = compact_text(preferred_machine or "")
+    machine_category = compact_text(machine_category or "")
+
+    machine_row = None
+    if preferred_machine:
+        machine_row = _planner_machine_row_by_code(machine_rows, preferred_machine)
+        if not machine_row:
+            return None, None, None, "Selected preferred machine does not exist."
+        resolved_category = compact_text(machine_row.get("machine_category") or "")
+        if not resolved_category:
+            return None, None, None, "Selected preferred machine has no machine group."
+        resolved_machine_id = int(machine_row.get("machine_id") or 0)
+        return machine_row, resolved_machine_id, resolved_category, None
+
+    if machine_ids:
+        machine_id = int(machine_ids[0] or 0)
+        if machine_id > 0:
+            machine_row = next((row for row in machine_rows if int(row.get("machine_id") or 0) == machine_id), None)
+            if not machine_row:
+                return None, None, None, "Invalid machine_id"
+            resolved_category = compact_text(machine_row.get("machine_category") or "")
+            if not resolved_category:
+                return None, None, None, "Selected preferred machine has no machine group."
+            resolved_machine_id = int(machine_row.get("machine_id") or 0)
+            return machine_row, resolved_machine_id, resolved_category, None
+
+    if not machine_category:
+        return None, None, None, "machine_category is required"
+    return None, None, machine_category, None
+
+
+def _planner_operation_history_flags(con, operation_id):
+    operation_id = int(operation_id or 0)
+    if not operation_id:
+        return {"has_planned_blocks": False, "has_actual_output": False, "planned_block_count": 0, "actual_row_count": 0}
+    planned_row = one(
+        con.execute(
+            """
+            SELECT COUNT(*) AS planned_block_count
+            FROM run_block
+            WHERE operation_id = ?
+              AND COALESCE(active, 1) = 1
+            """,
+            (operation_id,),
+        )
+    ) or {}
+    actual_row = one(
+        con.execute(
+            """
+            SELECT COUNT(*) AS actual_row_count
+            FROM production_actual a
+            JOIN run_block b ON b.block_id = a.block_id
+            WHERE b.operation_id = ?
+              AND COALESCE(a.status, 'ACTIVE') = 'ACTIVE'
+            """,
+            (operation_id,),
+        )
+    ) or {}
+    planned_block_count = int(planned_row.get("planned_block_count") or 0)
+    actual_row_count = int(actual_row.get("actual_row_count") or 0)
+    return {
+        "has_planned_blocks": planned_block_count > 0,
+        "has_actual_output": actual_row_count > 0,
+        "planned_block_count": planned_block_count,
+        "actual_row_count": actual_row_count,
+    }
+
+
+def _planner_operation_editor_rows(con, source_ps_id, pp_partial_no, bom_id):
+    source_ps_id = compact_text(source_ps_id)
+    pp_partial_no = compact_text(pp_partial_no)
+    bom_id = int(bom_id or 0)
+    if not source_ps_id or not bom_id:
+        return []
+    machine_rows, machine_groups = _planner_machine_options(con)
+    machine_ids_by_group = {}
+    for machine in machine_rows:
+        group = compact_text(machine.get("machine_category") or "")
+        if not group:
+            continue
+        machine_ids_by_group.setdefault(group, []).append(int(machine.get("machine_id") or 0))
+    rows_out = []
+    for row in rows(
+        con.execute(
+            """
+            SELECT s.op_seq_id, s.seq_no, s.op_no, s.op_type, s.machine_category, s.preferred_machine,
+                   s.cycle_time, s.setup_time, s.is_last_op,
+                   o.operation_id, COALESCE(o.status, 'ACTIVE') AS operation_status,
+                   o.job_no, o.operation_name, o.total_qty, o.setup_minutes, o.cycle_minutes_per_qty,
+                   o.compatible_machine_group, o.remarks
+            FROM operation_seq s
+            LEFT JOIN operation o
+              ON COALESCE(o.source_ps_id, '') = ?
+             AND COALESCE(o.pp_partial_no, '') = ?
+             AND COALESCE(o.selected_bom_id, 0) = ?
+             AND COALESCE(o.source_op_seq_id, 0) = s.op_seq_id
+             AND COALESCE(o.source_op_no, '') = s.op_no
+            WHERE s.bom_id = ?
+            ORDER BY s.seq_no, s.op_seq_id
+            """,
+            (source_ps_id, pp_partial_no, bom_id, bom_id),
+        )
+    ):
+        step = dict(row)
+        operation_id = int(step.get("operation_id") or 0)
+        history = _planner_operation_history_flags(con, operation_id)
+        machine_category = compact_text(step.get("machine_category") or "")
+        preferred_machine = compact_text(step.get("preferred_machine") or "")
+        rows_out.append(
+            {
+                "source_ps_id": source_ps_id,
+                "pp_partial_no": pp_partial_no,
+                "selected_bom_id": bom_id,
+                "op_seq_id": int(step.get("op_seq_id") or 0),
+                "source_op_seq_id": int(step.get("op_seq_id") or 0),
+                "seq_no": int(step.get("seq_no") or 0),
+                "op_no": compact_text(step.get("op_no") or ""),
+                "source_op_no": compact_text(step.get("op_no") or ""),
+                "op_type": compact_text(step.get("op_type") or ""),
+                "operation_name": compact_text(step.get("operation_name") or step.get("op_type") or ""),
+                "setup_minutes": float(step.get("setup_minutes") if step.get("setup_minutes") is not None else step.get("setup_time") or 0),
+                "cycle_minutes_per_qty": float(step.get("cycle_minutes_per_qty") if step.get("cycle_minutes_per_qty") is not None else step.get("cycle_time") or 0),
+                "machine_category": machine_category,
+                "compatible_machine_group": compact_text(step.get("compatible_machine_group") or machine_category),
+                "preferred_machine": preferred_machine,
+                "operation_id": operation_id,
+                "operation_status": compact_text(step.get("operation_status") or "ACTIVE") or "ACTIVE",
+                "is_active": compact_text(step.get("operation_status") or "ACTIVE").upper() == "ACTIVE",
+                "is_last_op": int(step.get("is_last_op") or 0),
+                "machine_ids": list(machine_ids_by_group.get(machine_category, [])),
+                "machine_groups": machine_groups,
+                **history,
+            }
+        )
+    return rows_out
+
+
+def _planner_strip_op_prefix(op_no, value):
+    prefix = compact_text(op_no or "")
+    text = compact_text(value or "")
+    if not prefix or not text:
+        return text
+    token = f"{prefix} "
+    guard = 0
+    while text.startswith(token) and guard < 10:
+        text = text[len(token):].strip()
+        guard += 1
+    return text
 
 
 def _planner_planned_qty_for_op(con, source_ps_id, pp_partial_no, selected_bom_id, source_op_seq_id, source_op_no):
@@ -1903,6 +2157,7 @@ def _planner_planned_qty_for_op(con, source_ps_id, pp_partial_no, selected_bom_i
             FROM run_block b
             JOIN operation o ON o.operation_id = b.operation_id
             WHERE COALESCE(b.active, 1) = 1
+              AND COALESCE(o.status, 'ACTIVE') = 'ACTIVE'
               AND COALESCE(o.source_ps_id, '') = ?
               AND COALESCE(o.pp_partial_no, '') = ?
               AND COALESCE(o.selected_bom_id, 0) = ?
@@ -1951,6 +2206,8 @@ def _planner_op_cards_for_source_ps(con, source_ps_id, pp_partial_no, selected_b
         )
     ):
         step = dict(row)
+        if compact_text(step.get("operation_status") or "ACTIVE").upper() != "ACTIVE":
+            continue
         source_op_no = compact_text(step.get("op_no") or "")
         op_type = compact_text(step.get("op_type") or "")
         machine_category = compact_text(step.get("machine_category") or "")
@@ -2667,7 +2924,7 @@ def api_trial_planner_schedule():
                 con.execute(
                     """
                     SELECT b.*, o.job_no, o.operation_name, o.total_qty, o.setup_minutes, o.cycle_minutes_per_qty,
-                           o.compatible_machine_group, o.source_ps_id, o.source_op_no,
+                           o.compatible_machine_group, o.source_ps_id, o.pp_partial_no, o.source_op_no,
                            m.machine_code, m.machine_category,
                            s.expected_start_at, s.expected_end_at, s.planned_qty AS planned_qty_state, s.planned_minutes AS planned_minutes_state
                     FROM planning_block_state s
@@ -2680,6 +2937,44 @@ def api_trial_planner_schedule():
                     (int(planning_run_id),),
                 )
             )
+            block_ids = [int(row["block_id"]) for row in block_rows]
+            raw_segments = []
+            segments_by_block = {}
+            if block_ids:
+                placeholders = ",".join("?" for _ in block_ids)
+                raw_segments = rows(
+                    con.execute(
+                        f"""
+                        SELECT s.*, b.operation_id
+                        FROM run_block_segment s
+                        JOIN run_block b ON b.block_id = s.block_id
+                        WHERE COALESCE(b.active, 1) = 1
+                          AND b.block_id IN ({placeholders})
+                        ORDER BY b.machine_id, b.queue_position, s.segment_id
+                        """,
+                        block_ids,
+                    )
+                )
+                for row in raw_segments:
+                    item = dict(row)
+                    machine = next((m for m in machines if int(m.get("machine_id") or 0) == int(item.get("machine_id") or 0)), {})
+                    shift_profile = compact_text(machine.get("shift_profile") or item.get("shift_profile") or "")
+                    start_dt = parse_dt_text(item.get("start_datetime"))
+                    end_dt = parse_dt_text(item.get("end_datetime"))
+                    timing = visual_timing_for_segment(
+                        start_dt,
+                        item.get("minutes_used") or 0,
+                        end_dt=end_dt,
+                        work_date=start_dt.date() if start_dt else None,
+                        profile_name="",
+                        shift_profile=shift_profile,
+                        segment_type=item.get("segment_type") or "production",
+                    )
+                    item["visual_start_datetime"] = timing["visual_start_datetime"]
+                    item["visual_end_datetime"] = timing["visual_end_datetime"]
+                    item["visual_parts"] = timing["visual_parts"]
+                    item["break_windows"] = timing["break_windows"]
+                    segments_by_block.setdefault(int(item.get("block_id") or 0), []).append(item)
             blocks = []
             planned_qty_by_block = {
                 int(row["block_id"]): float(row["planned_qty_state"] or row["scheduled_qty"] or 0)
@@ -2688,11 +2983,63 @@ def api_trial_planner_schedule():
             for row in block_rows:
                 row_dict = dict(row)
                 payload = _planning_block_payload(row_dict)
-                payload["expected_start_at"] = compact_text(row.get("planned_start_at") or row.get("expected_start_at") or "")
-                payload["expected_end_at"] = compact_text(row.get("planned_end_at") or row.get("expected_end_at") or "")
+                block_segments = segments_by_block.get(int(row.get("block_id") or 0), [])
+                visual_start = ""
+                visual_end = ""
+                visual_error = ""
+                calculated_start = compact_text(row.get("calculated_start_datetime") or "")
+                calculated_end = compact_text(row.get("calculated_end_datetime") or "")
+                if block_segments:
+                    block_start_dt = parse_dt_text(row.get("start_datetime") or calculated_start)
+                    block_end_dt = parse_dt_text(row.get("end_datetime") or calculated_end)
+                    visual_starts = sorted(
+                        [compact_text(seg.get("visual_start_datetime")) for seg in block_segments if compact_text(seg.get("visual_start_datetime"))]
+                    )
+                    visual_ends = sorted(
+                        [compact_text(seg.get("visual_end_datetime")) for seg in block_segments if compact_text(seg.get("visual_end_datetime"))]
+                    )
+                    timing = visual_timing_for_segment(
+                        block_start_dt,
+                        row.get("minutes_used") or 0,
+                        end_dt=block_end_dt,
+                        work_date=block_start_dt.date() if block_start_dt else None,
+                        profile_name="",
+                        shift_profile=compact_text(row.get("shift_profile") or ""),
+                        segment_type=row.get("segment_type") or "production",
+                    ) if block_start_dt else {"visual_start_datetime": "", "visual_end_datetime": ""}
+                    visual_start = compact_text(
+                        timing.get("visual_start_datetime")
+                        or (visual_starts[0] if visual_starts else "")
+                        or calculated_start
+                        or compact_text(row.get("expected_start_at") or "")
+                    )
+                    visual_end = compact_text(
+                        timing.get("visual_end_datetime")
+                        or (visual_ends[-1] if visual_ends else "")
+                        or calculated_end
+                        or compact_text(row.get("expected_end_at") or "")
+                    )
+                else:
+                    visual_start = calculated_start or compact_text(row.get("expected_start_at") or "")
+                    visual_end = calculated_end or compact_text(row.get("expected_end_at") or "")
+                if float(row.get("scheduled_qty") or row.get("planned_qty_state") or 0) > 0 and (not visual_start or not visual_end) and (not calculated_start or not calculated_end) and (not compact_text(row.get("expected_start_at") or "") or not compact_text(row.get("expected_end_at") or "")):
+                    visual_error = "Forecast timing unavailable"
+                payload["planned_start_at"] = compact_text(row.get("planned_start_at") or "")
+                payload["planned_end_at"] = compact_text(row.get("planned_end_at") or "")
+                payload["expected_start_at"] = compact_text(row.get("expected_start_at") or "")
+                payload["expected_end_at"] = compact_text(row.get("expected_end_at") or "")
+                payload["forecast_start_at"] = compact_text(row.get("expected_start_at") or calculated_start or "")
+                payload["forecast_end_at"] = compact_text(row.get("expected_end_at") or calculated_end or "")
+                payload["calculated_start_datetime"] = calculated_start
+                payload["calculated_end_datetime"] = calculated_end
+                payload["visual_start_datetime"] = visual_start
+                payload["visual_end_datetime"] = visual_end
+                payload["forecast_error"] = visual_error
                 payload["planned_qty"] = float(row["planned_qty_state"] or 0)
                 payload["planned_minutes"] = float(row["planned_minutes_state"] or 0)
-                payload["actual_daily_rows"] = actual_daily_rows_for_block_row(con, row_dict)
+                actual_daily_rows = actual_daily_rows_for_block_row(con, row_dict)
+                payload["actual_daily_rows"] = actual_daily_rows
+                payload["actual_daily_rows_error"] = "NO_PRODUCTION_SEGMENTS" if not actual_daily_rows else ""
                 blocks.append(payload)
             actual_summary_map = actual_summaries_for_block_rows(
                 con,
@@ -2705,6 +3052,38 @@ def api_trial_planner_schedule():
                 payload["actual_end_at"] = compact_text(summary.get("actual_end_at") or "")
                 payload["actual_good_qty"] = float(summary.get("actual_good_qty") or 0)
                 payload["actual_row_count"] = int(summary.get("actual_row_count") or 0)
+            for idx, payload in enumerate(blocks):
+                machine_id = int(payload.get("machine_id") or 0)
+                next_payload = None
+                if idx + 1 < len(blocks):
+                    candidate = blocks[idx + 1]
+                    if int(candidate.get("machine_id") or 0) == machine_id:
+                        next_payload = candidate
+                actual_end_at = compact_text(payload.get("actual_end_at") or "")
+                next_planned_start = compact_text(next_payload.get("planned_start_at") or "") if next_payload else ""
+                if actual_end_at and next_planned_start:
+                    actual_end_dt = parse_dt_text(actual_end_at)
+                    next_planned_start_dt = parse_dt_text(next_planned_start)
+                    if actual_end_dt and next_planned_start_dt and actual_end_dt < next_planned_start_dt:
+                        available_minutes = _working_minutes_between(con, machine_id, actual_end_at, next_planned_start)
+                        if available_minutes > 0:
+                            payload["gap_after"] = {
+                                "type": "GAP",
+                                "machine_id": machine_id,
+                                "gap_id": f"actual-gap-{int(payload['block_id'])}-{int(next_payload['block_id'])}",
+                                "after_block_id": int(payload["block_id"]),
+                                "before_block_id": int(next_payload["block_id"]),
+                                "start_at": actual_end_at,
+                                "end_at": next_planned_start,
+                                "available_minutes": float(available_minutes),
+                                "label": "Available gap after actual end",
+                            }
+                        else:
+                            payload["gap_after"] = None
+                    else:
+                        payload["gap_after"] = None
+                else:
+                    payload["gap_after"] = None
             block_summary_map = {}
             for payload in blocks:
                 block_summary_map.setdefault(payload["source_ps_id"], []).append(
@@ -2880,6 +3259,8 @@ def api_trial_planner_schedule():
                         "severity": compact_text(row["severity"] or ""),
                         "status": compact_text(row["status"] or ""),
                         "message": compact_text(row["message"] or ""),
+                        "old_value": compact_text(row["old_value"] or ""),
+                        "new_value": compact_text(row["new_value"] or ""),
                         "planned_at": compact_text(row["planned_at"] or ""),
                         "predicted_at": compact_text(row["predicted_at"] or ""),
                         "expected_start_at": compact_text(row["expected_start_at"] or ""),
@@ -3043,3 +3424,618 @@ def api_trial_planner_source_ps_bom(source_ps_id):
         )
         summary = refresh_process_sheet_completion(con, source_ps_id, pp_partial_no, bom_id)
         return jsonify({"ok": True, "source_ps_id": source_ps_id, "pp_partial_no": pp_partial_no, "bom_id": bom_id, "summary": summary})
+
+
+@trial_bp.get("/api/trial/planner/source-ps/<path:source_ps_id>/operations")
+def api_trial_planner_source_ps_operations(source_ps_id):
+    source_ps_id = compact_text(source_ps_id)
+    pp_partial_no = compact_text(request.args.get("pp_partial_no") or request.args.get("partial_no") or "")
+    bom_id = int(request.args.get("bom_id") or request.args.get("selected_bom_id") or 0)
+    if not source_ps_id:
+        return jsonify({"error": "source_ps_id is required"}), 400
+    with db() as con:
+        ps_row = _planner_process_sheet_row(con, source_ps_id, pp_partial_no)
+        if not ps_row:
+            return jsonify({"error": "Process sheet not found"}), 404
+        if not pp_partial_no:
+            pp_partial_no = compact_text(ps_row.get("pp_partial_no") or ps_row.get("partial_no") or "")
+        if not bom_id:
+            bom_id = int(ps_row.get("selected_bom_id") or 0)
+        if not bom_id:
+            bom_options = _planner_bom_options_for_part(con, ps_row.get("part_id") or 0)
+            bom_id = _planner_default_bom_id(bom_options)
+        bom_options = _planner_bom_options_for_part(con, ps_row.get("part_id") or 0)
+        if bom_options and not any(int(option.get("bom_id") or 0) == int(bom_id or 0) for option in bom_options):
+            return jsonify({"error": "bom_id is not valid for this process sheet"}), 400
+        operations = _planner_operation_editor_rows(con, source_ps_id, pp_partial_no, bom_id)
+        machines, machine_groups = _planner_machine_options(con)
+        return jsonify(
+            {
+                "ok": True,
+                "source_ps_id": source_ps_id,
+                "pp_partial_no": pp_partial_no,
+                "bom_id": int(bom_id or 0),
+                "bom_code": _planner_bom_code_for_id(bom_options, bom_id),
+                "operations": operations,
+                "machines": [dict(machine) for machine in machines],
+                "machine_groups": machine_groups,
+            }
+        )
+
+
+@trial_bp.post("/api/trial/planner/source-ps/<path:source_ps_id>/operations")
+def api_trial_planner_source_ps_operations_add(source_ps_id):
+    data = request.get_json(force=True, silent=True) or {}
+    source_ps_id = compact_text(source_ps_id)
+    pp_partial_no = compact_text(data.get("pp_partial_no") or data.get("partial_no") or "")
+    bom_id = int(data.get("bom_id") or 0)
+    operation_name = compact_text(data.get("operation_name"))
+    source_op_no = compact_text(data.get("source_op_no"))
+    setup_minutes = parse_number(data.get("setup_minutes"), 0)
+    cycle_minutes_per_qty = parse_number(data.get("cycle_minutes_per_qty"), 0)
+    machine_category = compact_text(data.get("machine_category") or "")
+    preferred_machine = compact_text(data.get("preferred_machine") or "")
+    machine_ids = data.get("machine_ids") or []
+    if not source_ps_id:
+        return jsonify({"error": "source_ps_id is required"}), 400
+    if not operation_name:
+        return jsonify({"error": "operation_name is required"}), 400
+    if setup_minutes < 0:
+        return jsonify({"error": "setup_minutes must be 0 or more"}), 400
+    if cycle_minutes_per_qty <= 0:
+        return jsonify({"error": "cycle_minutes_per_qty must be greater than 0"}), 400
+    with db() as con:
+        ps_row = _planner_process_sheet_row(con, source_ps_id, pp_partial_no)
+        if not ps_row:
+            return jsonify({"error": "Process sheet not found"}), 404
+        if not pp_partial_no:
+            pp_partial_no = compact_text(ps_row.get("pp_partial_no") or ps_row.get("partial_no") or "")
+        if not bom_id:
+            bom_id = int(ps_row.get("selected_bom_id") or 0)
+        if not bom_id:
+            bom_options = _planner_bom_options_for_part(con, ps_row.get("part_id") or 0)
+            bom_id = _planner_default_bom_id(bom_options)
+        bom_options = _planner_bom_options_for_part(con, ps_row.get("part_id") or 0)
+        if bom_options and not any(int(option.get("bom_id") or 0) == int(bom_id or 0) for option in bom_options):
+            return jsonify({"error": "bom_id is not valid for this process sheet"}), 400
+        machine_rows = [dict(row) for row in fetch_machines(con)]
+        machine_row, resolved_machine_id, machine_category, machine_error = _planner_resolve_machine_context(
+            machine_rows,
+            machine_ids=machine_ids,
+            preferred_machine=preferred_machine,
+            machine_category=machine_category,
+        )
+        if machine_error:
+            return jsonify({"error": machine_error}), 400
+        if machine_row and not preferred_machine:
+            preferred_machine = compact_text(machine_row.get("machine_code") or "")
+        max_seq_row = one(
+            con.execute(
+                "SELECT COALESCE(MAX(seq_no), 0) AS max_seq FROM operation_seq WHERE bom_id = ?",
+                (int(bom_id),),
+            )
+        ) or {}
+        next_seq = int(max_seq_row.get("max_seq") or 0) + 1
+        if not source_op_no:
+            source_op_no = str(next_seq * 10)
+        duplicate_row = one(
+            con.execute(
+                """
+                SELECT op_seq_id
+                FROM operation_seq
+                WHERE bom_id = ?
+                  AND COALESCE(op_no, '') = ?
+                LIMIT 1
+                """,
+                (int(bom_id), source_op_no),
+            )
+        )
+        if duplicate_row:
+            return jsonify({"error": "source_op_no already exists for this BOM"}), 400
+        con.execute(
+            """
+            UPDATE operation_seq
+            SET is_last_op = 0
+            WHERE bom_id = ?
+            """,
+            (int(bom_id),),
+        )
+        cur = con.execute(
+            """
+            INSERT INTO operation_seq (
+              bom_id, seq_no, op_no, op_type, machine_category, preferred_machine, cycle_time, setup_time, is_last_op
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (
+                int(bom_id),
+                next_seq,
+                source_op_no,
+                operation_name,
+                machine_category,
+                preferred_machine,
+                float(cycle_minutes_per_qty),
+                float(setup_minutes),
+            ),
+        )
+        op_seq_id = int(cur.lastrowid)
+        affected_machine_ids = sync_operations_for_flow(con, bom_id)
+        current_operation = one(
+            con.execute(
+                """
+                SELECT operation_id
+                FROM operation
+                WHERE COALESCE(source_ps_id, '') = ?
+                  AND COALESCE(pp_partial_no, '') = ?
+                  AND COALESCE(selected_bom_id, 0) = ?
+                  AND COALESCE(source_op_seq_id, 0) = ?
+                  AND COALESCE(source_op_no, '') = ?
+                LIMIT 1
+                """,
+                (source_ps_id, pp_partial_no, int(bom_id), int(op_seq_id), source_op_no),
+            )
+        )
+        if current_operation:
+            current_operation_id = int(current_operation["operation_id"] or 0)
+            con.execute(
+                """
+                UPDATE operation
+                SET operation_name = ?,
+                    job_no = ?,
+                    pp_partial_no = ?,
+                    selected_bom_id = ?,
+                    setup_minutes = ?,
+                    cycle_minutes_per_qty = ?,
+                    compatible_machine_group = ?,
+                    source_op_seq_id = ?,
+                    source_op_no = ?,
+                    status = 'ACTIVE',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE operation_id = ?
+                """,
+                (
+                    _planner_strip_op_prefix(source_op_no, operation_name),
+                    source_ps_id,
+                    pp_partial_no,
+                    int(bom_id),
+                    float(setup_minutes),
+                    float(cycle_minutes_per_qty),
+                    machine_category or "UNKNOWN",
+                    int(op_seq_id),
+                    source_op_no,
+                    current_operation_id,
+                ),
+            )
+        else:
+            cur_op = con.execute(
+                """
+                INSERT INTO operation (
+                  job_no, operation_name, total_qty, setup_minutes, cycle_minutes_per_qty, compatible_machine_group,
+                  source_ps_id, pp_partial_no, selected_bom_id, source_op_seq_id, source_op_no, status, remarks, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    source_ps_id,
+                    _planner_strip_op_prefix(source_op_no, operation_name),
+                    0.0,
+                    float(setup_minutes),
+                    float(cycle_minutes_per_qty),
+                    machine_category or "UNKNOWN",
+                    source_ps_id,
+                    pp_partial_no,
+                    int(bom_id),
+                    int(op_seq_id),
+                    source_op_no,
+                    "ACTIVE",
+                    "",
+                ),
+            )
+            current_operation_id = int(cur_op.lastrowid)
+        for machine_id in affected_machine_ids:
+            recalculate_machine(con, machine_id)
+        planning_run_id = recalculate_planning_all_baseline(con, reason="BOM_OPERATION_EDIT")
+        summary = refresh_process_sheet_completion(con, source_ps_id, pp_partial_no, bom_id)
+        refresh_planner_alerts(con)
+        operations = _planner_operation_editor_rows(con, source_ps_id, pp_partial_no, bom_id)
+        created = next((row for row in operations if int(row.get("operation_id") or 0) == current_operation_id), None)
+        if not created:
+            created = next((row for row in operations if int(row.get("op_seq_id") or 0) == op_seq_id), None)
+        return jsonify(
+            {
+                "ok": True,
+                "mode": "added",
+                "message": "Operation added.",
+                "planning_run_id": planning_run_id,
+                "source_ps_id": source_ps_id,
+                "pp_partial_no": pp_partial_no,
+                "bom_id": int(bom_id),
+                "operation": created,
+                "operations": operations,
+                "summary": summary,
+                "warnings": [],
+            }
+        )
+
+
+@trial_bp.put("/api/trial/planner/operations/<int:operation_id>")
+def api_trial_planner_operation_update(operation_id):
+    data = request.get_json(force=True, silent=True) or {}
+    operation_name = compact_text(data.get("operation_name"))
+    source_op_no = compact_text(data.get("source_op_no"))
+    setup_minutes = parse_number(data.get("setup_minutes"), None)
+    cycle_minutes_per_qty = parse_number(data.get("cycle_minutes_per_qty"), None)
+    machine_category = compact_text(data.get("machine_category") or "")
+    preferred_machine = compact_text(data.get("preferred_machine") or "")
+    machine_ids = data.get("machine_ids") or []
+    is_active = data.get("is_active")
+    with db() as con:
+        op_row = one(
+            con.execute(
+                """
+                SELECT *
+                FROM operation
+                WHERE operation_id = ?
+                LIMIT 1
+                """,
+                (int(operation_id),),
+            )
+        )
+        if not op_row:
+            return jsonify({"error": "Operation not found"}), 404
+        op_row = dict(op_row)
+        source_ps_id = compact_text(op_row.get("source_ps_id") or "")
+        pp_partial_no = compact_text(op_row.get("pp_partial_no") or "")
+        bom_id = int(op_row.get("selected_bom_id") or 0)
+        source_op_seq_id = int(op_row.get("source_op_seq_id") or 0)
+        if not source_ps_id or not bom_id or not source_op_seq_id:
+            return jsonify({"error": "Operation context is incomplete"}), 400
+        step_row = one(
+            con.execute(
+                """
+                SELECT *
+                FROM operation_seq
+                WHERE bom_id = ?
+                  AND op_seq_id = ?
+                LIMIT 1
+                """,
+                (bom_id, source_op_seq_id),
+            )
+        )
+        if not step_row:
+            return jsonify({"error": "Operation step not found"}), 404
+        step_row = dict(step_row)
+        next_operation_name = operation_name or compact_text(step_row.get("op_type") or "")
+        next_source_op_no = source_op_no or compact_text(step_row.get("op_no") or "")
+        if setup_minutes is None:
+            setup_minutes = parse_number(step_row.get("setup_time"), 0)
+        if cycle_minutes_per_qty is None:
+            cycle_minutes_per_qty = parse_number(step_row.get("cycle_time"), 0)
+        if setup_minutes < 0:
+            return jsonify({"error": "setup_minutes must be 0 or more"}), 400
+        if cycle_minutes_per_qty <= 0:
+            return jsonify({"error": "cycle_minutes_per_qty must be greater than 0"}), 400
+        machine_rows = [dict(row) for row in fetch_machines(con)]
+        machine_row, resolved_machine_id, machine_category, machine_error = _planner_resolve_machine_context(
+            machine_rows,
+            machine_ids=machine_ids,
+            preferred_machine=preferred_machine,
+            machine_category=machine_category or compact_text(step_row.get("machine_category") or ""),
+        )
+        if machine_error:
+            return jsonify({"error": machine_error}), 400
+        if machine_row and not preferred_machine:
+            preferred_machine = compact_text(machine_row.get("machine_code") or "")
+        duplicate_row = one(
+            con.execute(
+                """
+                SELECT op_seq_id
+                FROM operation_seq
+                WHERE bom_id = ?
+                  AND COALESCE(op_no, '') = ?
+                  AND op_seq_id <> ?
+                LIMIT 1
+                """,
+                (bom_id, next_source_op_no, source_op_seq_id),
+            )
+        )
+        if duplicate_row:
+            return jsonify({"error": "source_op_no already exists for this BOM"}), 400
+        con.execute(
+            """
+            UPDATE operation_seq
+            SET op_no = ?,
+                op_type = ?,
+                machine_category = ?,
+                preferred_machine = ?,
+                cycle_time = ?,
+                setup_time = ?
+            WHERE bom_id = ?
+              AND op_seq_id = ?
+            """,
+            (
+                next_source_op_no,
+                next_operation_name,
+                machine_category,
+                preferred_machine,
+                float(cycle_minutes_per_qty),
+                float(setup_minutes),
+                bom_id,
+                source_op_seq_id,
+            ),
+        )
+        current_operation = one(
+            con.execute(
+                """
+                SELECT operation_id, status
+                FROM operation
+                WHERE COALESCE(source_ps_id, '') = ?
+                  AND COALESCE(pp_partial_no, '') = ?
+                  AND COALESCE(selected_bom_id, 0) = ?
+                  AND COALESCE(source_op_seq_id, 0) = ?
+                  AND COALESCE(source_op_no, '') = ?
+                LIMIT 1
+                """,
+                (source_ps_id, pp_partial_no, bom_id, source_op_seq_id, next_source_op_no),
+            )
+        )
+        next_status = compact_text(current_operation.get("status") if current_operation else "ACTIVE") or "ACTIVE"
+        if is_active is not None:
+            next_status = 'ACTIVE' if bool(is_active) else 'INACTIVE'
+        if current_operation:
+            con.execute(
+                """
+                UPDATE operation
+                SET operation_name = ?,
+                    job_no = ?,
+                    pp_partial_no = ?,
+                    selected_bom_id = ?,
+                    setup_minutes = ?,
+                    cycle_minutes_per_qty = ?,
+                    compatible_machine_group = ?,
+                    source_op_seq_id = ?,
+                    source_op_no = ?,
+                    status = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE operation_id = ?
+                """,
+                (
+                    _planner_strip_op_prefix(next_source_op_no, next_operation_name),
+                    source_ps_id,
+                    pp_partial_no,
+                    bom_id,
+                    float(setup_minutes),
+                    float(cycle_minutes_per_qty),
+                    machine_category or "UNKNOWN",
+                    source_op_seq_id,
+                    next_source_op_no,
+                    next_status,
+                    int(current_operation["operation_id"] or 0),
+                ),
+            )
+        else:
+            cur = con.execute(
+                """
+                INSERT INTO operation (
+                  job_no, operation_name, total_qty, setup_minutes, cycle_minutes_per_qty, compatible_machine_group,
+                  source_ps_id, pp_partial_no, selected_bom_id, source_op_seq_id, source_op_no, status, remarks, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    source_ps_id,
+                    _planner_strip_op_prefix(next_source_op_no, next_operation_name),
+                    0.0,
+                    float(setup_minutes),
+                    float(cycle_minutes_per_qty),
+                    machine_category or "UNKNOWN",
+                    source_ps_id,
+                    pp_partial_no,
+                    bom_id,
+                    source_op_seq_id,
+                    next_source_op_no,
+                    next_status,
+                    "",
+                ),
+            )
+            current_operation = {"operation_id": int(cur.lastrowid), "status": next_status}
+        if is_active is not None:
+            status = 'ACTIVE' if bool(is_active) else 'INACTIVE'
+            con.execute(
+                """
+                UPDATE operation
+                SET status = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE COALESCE(selected_bom_id, 0) = ?
+                  AND COALESCE(source_op_seq_id, 0) = ?
+                  AND COALESCE(source_op_no, '') = ?
+                """,
+                (status, bom_id, source_op_seq_id, compact_text(next_source_op_no)),
+            )
+        affected_machine_ids = sync_operations_for_flow(con, bom_id)
+        for machine_id in affected_machine_ids:
+            recalculate_machine(con, machine_id)
+        planning_run_id = recalculate_planning_all_baseline(con, reason="BOM_OPERATION_EDIT")
+        summary = refresh_process_sheet_completion(con, source_ps_id, pp_partial_no, bom_id)
+        refresh_planner_alerts(con)
+        operations = _planner_operation_editor_rows(con, source_ps_id, pp_partial_no, bom_id)
+        current = next((row for row in operations if int(row.get("op_seq_id") or 0) == source_op_seq_id), None)
+        warnings = []
+        if machine_category and compact_text(step_row.get("machine_category") or "") != machine_category:
+            if _planner_operation_history_flags(con, int(op_row.get("operation_id") or 0)).get("has_planned_blocks"):
+                warnings.append("This operation has planned blocks and was not deleted. Review machine compatibility on existing plans.")
+        return jsonify(
+            {
+                "ok": True,
+                "mode": "updated",
+                "message": "Operation saved.",
+                "planning_run_id": planning_run_id,
+                "source_ps_id": source_ps_id,
+                "pp_partial_no": pp_partial_no,
+                "bom_id": bom_id,
+                "operation": current,
+                "operations": operations,
+                "summary": summary,
+                "warnings": warnings,
+            }
+        )
+
+
+@trial_bp.post("/api/trial/planner/source-ps/<path:source_ps_id>/operations/reorder")
+def api_trial_planner_operations_reorder(source_ps_id):
+    data = request.get_json(force=True, silent=True) or {}
+    source_ps_id = compact_text(source_ps_id)
+    pp_partial_no = compact_text(data.get("pp_partial_no") or data.get("partial_no") or "")
+    bom_id = int(data.get("bom_id") or 0)
+    operation_ids = [int(value or 0) for value in (data.get("operation_ids") or data.get("operation_seq_ids") or []) if int(value or 0) > 0]
+    if not source_ps_id:
+        return jsonify({"error": "source_ps_id is required"}), 400
+    if not bom_id:
+        return jsonify({"error": "bom_id is required"}), 400
+    if not operation_ids:
+        return jsonify({"error": "operation_ids are required"}), 400
+    with db() as con:
+        ps_row = _planner_process_sheet_row(con, source_ps_id, pp_partial_no)
+        if not ps_row:
+            return jsonify({"error": "Process sheet not found"}), 404
+        if not pp_partial_no:
+            pp_partial_no = compact_text(ps_row.get("pp_partial_no") or ps_row.get("partial_no") or "")
+        bom_options = _planner_bom_options_for_part(con, ps_row.get("part_id") or 0)
+        if bom_options and not any(int(option.get("bom_id") or 0) == int(bom_id or 0) for option in bom_options):
+            return jsonify({"error": "bom_id is not valid for this process sheet"}), 400
+        steps = _planner_operation_editor_rows(con, source_ps_id, pp_partial_no, bom_id)
+        seq_by_operation_id = {int(row.get("operation_id") or 0): int(row.get("op_seq_id") or 0) for row in steps if int(row.get("operation_id") or 0) > 0}
+        ordered_seq_ids = []
+        for operation_id in operation_ids:
+            seq_id = int(seq_by_operation_id.get(operation_id) or 0)
+            if seq_id and seq_id not in ordered_seq_ids:
+                ordered_seq_ids.append(seq_id)
+        if not ordered_seq_ids:
+            return jsonify({"error": "No valid operation ids found"}), 400
+        existing_seq_ids = [int(row["op_seq_id"] or 0) for row in rows(con.execute("SELECT op_seq_id FROM operation_seq WHERE bom_id = ? ORDER BY seq_no, op_seq_id", (bom_id,)))]
+        for seq_id in existing_seq_ids:
+            if seq_id not in ordered_seq_ids:
+                ordered_seq_ids.append(seq_id)
+        con.execute(
+            """
+            UPDATE operation_seq
+            SET seq_no = -ABS(seq_no)
+            WHERE bom_id = ?
+            """,
+            (bom_id,),
+        )
+        for idx, seq_id in enumerate(ordered_seq_ids, 1):
+            con.execute(
+                """
+                UPDATE operation_seq
+                SET seq_no = ?,
+                    is_last_op = ?
+                WHERE bom_id = ?
+                  AND op_seq_id = ?
+                """,
+                (idx, 1 if idx == len(ordered_seq_ids) else 0, bom_id, seq_id),
+            )
+        affected_machine_ids = sync_operations_for_flow(con, bom_id)
+        for machine_id in affected_machine_ids:
+            recalculate_machine(con, machine_id)
+        planning_run_id = recalculate_planning_all_baseline(con, reason="BOM_OPERATION_EDIT")
+        summary = refresh_process_sheet_completion(con, source_ps_id, pp_partial_no, bom_id)
+        refresh_planner_alerts(con)
+        operations = _planner_operation_editor_rows(con, source_ps_id, pp_partial_no, bom_id)
+        return jsonify(
+            {
+                "ok": True,
+                "mode": "reordered",
+                "message": "Operations reordered.",
+                "planning_run_id": planning_run_id,
+                "source_ps_id": source_ps_id,
+                "pp_partial_no": pp_partial_no,
+                "bom_id": bom_id,
+                "operations": operations,
+                "summary": summary,
+            }
+        )
+
+
+@trial_bp.delete("/api/trial/planner/operations/<int:operation_id>")
+def api_trial_planner_operation_delete(operation_id):
+    with db() as con:
+        op_row = one(
+            con.execute(
+                """
+                SELECT *
+                FROM operation
+                WHERE operation_id = ?
+                LIMIT 1
+                """,
+                (int(operation_id),),
+            )
+        )
+        if not op_row:
+            return jsonify({"error": "Operation not found"}), 404
+        op_row = dict(op_row)
+        source_ps_id = compact_text(op_row.get("source_ps_id") or "")
+        pp_partial_no = compact_text(op_row.get("pp_partial_no") or "")
+        bom_id = int(op_row.get("selected_bom_id") or 0)
+        source_op_seq_id = int(op_row.get("source_op_seq_id") or 0)
+        source_op_no = compact_text(op_row.get("source_op_no") or "")
+        if not bom_id or not source_op_seq_id:
+            return jsonify({"error": "Operation context is incomplete"}), 400
+        matching_operation_ids = [
+            int(row["operation_id"] or 0)
+            for row in rows(
+                con.execute(
+                    """
+                    SELECT operation_id
+                    FROM operation
+                    WHERE COALESCE(selected_bom_id, 0) = ?
+                      AND COALESCE(source_op_seq_id, 0) = ?
+                      AND COALESCE(source_op_no, '') = ?
+                    """,
+                    (bom_id, source_op_seq_id, source_op_no),
+                )
+            )
+        ]
+        history_flags = _planner_operation_history_flags(con, int(operation_id))
+        con.execute(
+            """
+            UPDATE operation
+            SET status = 'INACTIVE',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE COALESCE(selected_bom_id, 0) = ?
+              AND COALESCE(source_op_seq_id, 0) = ?
+              AND COALESCE(source_op_no, '') = ?
+            """,
+            (bom_id, source_op_seq_id, source_op_no),
+        )
+        affected_machine_ids = {
+            int(row["machine_id"])
+            for row in rows(
+                con.execute(
+                    f"""
+                    SELECT DISTINCT machine_id
+                    FROM run_block
+                    WHERE operation_id IN ({",".join("?" for _ in matching_operation_ids)}) AND COALESCE(active, 1) = 1
+                    """,
+                    matching_operation_ids,
+                )
+            )
+        } if matching_operation_ids else set()
+        for machine_id in affected_machine_ids:
+            recalculate_machine(con, machine_id)
+        planning_run_id = recalculate_planning_all_baseline(con, reason="BOM_OPERATION_EDIT")
+        summary = refresh_process_sheet_completion(con, source_ps_id, pp_partial_no, bom_id)
+        refresh_planner_alerts(con)
+        operations = _planner_operation_editor_rows(con, source_ps_id, pp_partial_no, bom_id)
+        return jsonify(
+            {
+                "ok": True,
+                "mode": "deactivated",
+                "message": "Operation has history, so it was deactivated instead of deleted." if history_flags.get("has_planned_blocks") or history_flags.get("has_actual_output") else "Operation was deactivated.",
+                "planning_run_id": planning_run_id,
+                "source_ps_id": source_ps_id,
+                "pp_partial_no": pp_partial_no,
+                "bom_id": bom_id,
+                "operation_ids": matching_operation_ids,
+                "operations": operations,
+                "summary": summary,
+                "warnings": [],
+            }
+        )

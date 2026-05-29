@@ -34,7 +34,8 @@ def default_profile_for_weekday(weekday, shift_profile="STANDARD"):
     if weekday == 6:
         return "OFF"
     if weekday == 5:
-        return "SATURDAY"
+        # Business rule: exclude Saturdays from default planning.
+        return "OFF"
     if compact_text(shift_profile).upper() == "24HR":
         return "FULL_24H"
     return "NORMAL_DAY_NIGHT"
@@ -212,7 +213,7 @@ def machine_work_intervals_for_day(con, machine_id, work_date):
         base_intervals = []
     elif machine_shift_profile.upper() == "24HR":
         base_intervals = [(_minute_to_datetime(work_day, 0), _minute_to_datetime(work_day, DAY_END_MINUTE))]
-    elif work_day.weekday() == 5:
+    elif work_day.weekday() == 5 and compact_text((cap or {}).get("profile_name")).upper() == "SATURDAY":
         base_intervals = [
             (_minute_to_datetime(work_day, STANDARD_WORK_START_MINUTE), _minute_to_datetime(work_day, WEEKDAY_LUNCH_START_MINUTE)),
             (_minute_to_datetime(work_day, WEEKDAY_LUNCH_END_MINUTE), _minute_to_datetime(work_day, SATURDAY_WORK_END_MINUTE)),
@@ -311,7 +312,7 @@ def shift_windows_for_machine_day(machine, date_iso, con=None):
                 "reason": "24HR shift",
             }
         ]
-    if work_day.weekday() == 5:
+    if work_day.weekday() == 5 and compact_text((cap or {}).get("profile_name")).upper() == "SATURDAY":
         return [
             {
                 "kind": "standard",

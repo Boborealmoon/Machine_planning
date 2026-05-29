@@ -9,7 +9,6 @@ from .machines import capacity_minutes_for_machine_day, machine_work_intervals_f
 from .scheduler_state import (
     ACTIVE_ALERT_STATUSES,
     create_schedule_run,
-    dismiss_schedule_alert,
     active_schedule_alert_rows,
     refresh_operation_state,
     refresh_process_sheet_state,
@@ -181,6 +180,49 @@ def removed_actual_dates_for_block_row(con, block_row):
     ]
 
 
+def removed_dates_for_block(con, block_id):
+    if not con:
+        return set()
+    return {
+        compact_text(row["report_date"] or "")
+        for row in rows(
+            con.execute(
+                """
+                SELECT report_date
+                FROM block_removed_actual_date
+                WHERE block_id = ?
+                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                ORDER BY report_date
+                """,
+                (int(block_id),),
+            )
+        )
+        if compact_text(row["report_date"] or "")
+    }
+
+
+def block_tail_boundary(con, block_id):
+    return one(
+        con.execute(
+            """
+            SELECT *
+            FROM run_block_segment
+            WHERE block_id = ?
+              AND COALESCE(segment_type, '') = 'production'
+              AND segment_id NOT IN (
+                SELECT segment_id
+                FROM production_actual
+                WHERE segment_id IS NOT NULL
+                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+              )
+            ORDER BY segment_date DESC, end_datetime DESC, segment_id DESC
+            LIMIT 1
+            """,
+            (int(block_id),),
+        )
+    )
+
+
 def _actual_good_qty(output_qty, reject_qty):
     if output_qty is None and reject_qty is None:
         return None
@@ -204,7 +246,13 @@ def apply_actual_variance_delta_to_block_tail(con, block_id, actual_date_text, v
 
     actual_date = parse_dt_text(actual_date_text).date() if actual_date_text else date.today()
     if variance_delta > 0:
-        result = apply_output_delta_to_block_tail(con, block_id, actual_date_text, variance_delta)
+        result = apply_output_delta_to_block_tail(
+            con,
+            block_id,
+            actual_date_text,
+            variance_delta,
+            excluded_dates=removed_dates_for_block(con, block_id),
+        )
         refresh_block_schedule_bounds(con, block_id)
         return {
             "changed": bool(result.get("changed")),
@@ -213,7 +261,7 @@ def apply_actual_variance_delta_to_block_tail(con, block_id, actual_date_text, v
             "direction": "shave",
         }
 
-    changed = add_shortfall_to_tail_with_capacity(con, block_id, actual_date, abs(variance_delta))
+    changed = add_qty_to_block_tail(con, block_id, abs(variance_delta), excluded_dates=removed_dates_for_block(con, block_id))
     refresh_block_schedule_bounds(con, block_id)
     return {
         "changed": bool(changed),
@@ -267,8 +315,8 @@ def apply_removed_target_date_to_block_tail(con, block_id, report_date_text, tar
         (int(block_id), report_date),
     )
 
-    report_dt = parse_dt_text(report_date) if report_date else None
-    changed = add_shortfall_to_tail_with_capacity(con, block_id, report_dt.date() if report_dt else date.today(), removed_qty)
+    changed = add_qty_to_block_tail(con, block_id, removed_qty, excluded_dates=removed_dates_for_block(con, block_id))
+    refresh_block_schedule_bounds(con, block_id)
     return {"changed": bool(changed), "removed_qty": float(removed_qty)}
 
 
@@ -365,32 +413,178 @@ def _latest_alert_for_block_type(con, block_id, alert_type):
     )
 
 
-def _same_alert_signature(alert_row, expected_start_at="", actual_start_at="", drift_hours=None, output_efficiency=None):
+def _date_only_text(value):
+    dt = parse_dt_text(value)
+    return dt.date().isoformat() if dt else compact_text(value or "")
+
+
+def _same_alert_signature(alert_row, alert_type, **expected):
     if not alert_row:
         return False
-    if compact_text(alert_row.get("expected_start_at") or "") != compact_text(expected_start_at or ""):
+    if compact_text(alert_row.get("alert_type") or "").upper() != compact_text(alert_type or "").upper():
         return False
-    if compact_text(alert_row.get("actual_start_at") or "") != compact_text(actual_start_at or ""):
-        return False
-    stored_drift = alert_row.get("drift_hours")
-    if drift_hours is None:
-        if stored_drift not in (None, ""):
+
+    def _match_text(field_name, expected_value):
+        if compact_text(alert_row.get(field_name) or "") != compact_text(expected_value or ""):
             return False
-    else:
-        if stored_drift is None:
+        return True
+
+    def _match_date(field_name, expected_value):
+        if _date_only_text(alert_row.get(field_name) or "") != _date_only_text(expected_value or ""):
             return False
-        if abs(float(stored_drift or 0) - float(drift_hours or 0)) > 1e-6:
+        return True
+
+    def _match_float(field_name, expected_value, tolerance=1e-6):
+        stored_value = alert_row.get(field_name)
+        if expected_value is None:
+            if stored_value not in (None, ""):
+                return False
+            return True
+        if stored_value in (None, ""):
             return False
-    stored_eff = alert_row.get("output_efficiency")
-    if output_efficiency is None:
-        if stored_eff not in (None, ""):
-            return False
-    else:
-        if stored_eff is None:
-            return False
-        if abs(float(stored_eff or 0) - float(output_efficiency or 0)) > 1e-6:
-            return False
+        return abs(float(stored_value or 0) - float(expected_value or 0)) <= tolerance
+
+    alert_type = compact_text(alert_type or "").upper()
+    if alert_type == "START_DRIFT":
+        return (
+            _match_date("planned_at", expected.get("planned_at"))
+            and _match_date("actual_start_at", expected.get("actual_start_at"))
+            and _match_float("delay_minutes", expected.get("delay_minutes"))
+        )
+    if alert_type == "END_DRIFT":
+        return (
+            _match_date("planned_at", expected.get("planned_at"))
+            and _match_date("predicted_at", expected.get("predicted_at"))
+            and _match_float("delay_minutes", expected.get("delay_minutes"))
+        )
+    if alert_type == "CYCLE_TIME_DRIFT_AFTER_3_DAYS":
+        return (
+            _match_date("planned_at", expected.get("planned_at"))
+            and _match_date("predicted_at", expected.get("predicted_at"))
+            and _match_float("old_value", expected.get("old_value"))
+            and _match_float("new_value", expected.get("new_value"))
+            and _match_float("delay_minutes", expected.get("delay_minutes"))
+        )
+    for field_name, expected_value in expected.items():
+        if isinstance(expected_value, (int, float)) or expected_value is None:
+            if not _match_float(field_name, expected_value):
+                return False
+        elif field_name.endswith("_at") or field_name in {"planned_at", "predicted_at"}:
+            if not _match_date(field_name, expected_value):
+                return False
+        else:
+            if not _match_text(field_name, expected_value):
+                return False
     return True
+
+
+def _resolve_active_alerts_by_type(con, block_id, alert_type):
+    for alert in rows(
+        con.execute(
+            """
+            SELECT alert_id
+            FROM schedule_alert
+            WHERE block_id = ?
+              AND alert_type = ?
+              AND status IN ('ACTIVE', 'OPEN', 'ACKNOWLEDGED')
+            """,
+            (int(block_id), str(alert_type)),
+        )
+    ):
+        resolve_schedule_alert(con, int(alert["alert_id"]))
+
+
+def _machine_work_minutes_for_dates(con, machine_id, report_dates):
+    total = 0.0
+    unique_dates = sorted({compact_text(value or "") for value in report_dates if compact_text(value or "")})
+    for report_date in unique_dates:
+        try:
+            work_day = date.fromisoformat(report_date)
+        except ValueError:
+            continue
+        total += float((capacity_minutes_for_machine_day(con, machine_id, work_day) or {}).get("capacity_minutes") or 0)
+    return total
+
+
+def _actual_cycle_window_metrics(con, block_id, machine_id, actual_start_at):
+    """Return cumulative actual-cycle metrics from the actual start date through the latest actual report date."""
+    start_dt = parse_dt_text(actual_start_at)
+    if not start_dt:
+        return {
+            "actual_good_qty": 0.0,
+            "actual_minutes": 0.0,
+            "window_start": "",
+            "window_end": "",
+            "actual_day_count": 0,
+        }
+
+    window_start = start_dt.date()
+    actual_rows = rows(
+        con.execute(
+            """
+            SELECT a.report_date,
+                   COALESCE(a.output_qty, 0) AS output_qty,
+                   COALESCE(a.reject_qty, 0) AS reject_qty,
+                   s.start_datetime,
+                   s.end_datetime
+            FROM production_actual a
+            LEFT JOIN run_block_segment s ON s.segment_id = a.segment_id
+            WHERE a.block_id = ?
+              AND COALESCE(a.status, 'ACTIVE') = 'ACTIVE'
+              AND a.report_date >= ?
+            ORDER BY a.report_date, a.actual_id
+            """,
+            (int(block_id), window_start.isoformat()),
+        )
+    )
+
+    if not actual_rows:
+        return {
+            "actual_good_qty": 0.0,
+            "actual_minutes": 0.0,
+            "window_start": window_start.isoformat(),
+            "window_end": "",
+            "actual_day_count": 0,
+        }
+
+    daily_metrics = {}
+    for row in actual_rows:
+        report_date = compact_text(row["report_date"] or "")
+        if not report_date:
+            continue
+        bucket = daily_metrics.setdefault(
+            report_date,
+            {
+                "actual_good_qty": 0.0,
+                "linked_segment_minutes": 0.0,
+            },
+        )
+        output_qty = max(0.0, float(row["output_qty"] or 0))
+        reject_qty = max(0.0, float(row["reject_qty"] or 0))
+        bucket["actual_good_qty"] += max(0.0, output_qty - reject_qty)
+        start_text = compact_text(row["start_datetime"] or "")
+        end_text = compact_text(row["end_datetime"] or "")
+        start_dt = parse_dt_text(start_text)
+        end_dt = parse_dt_text(end_text)
+        if start_dt and end_dt and end_dt > start_dt:
+            bucket["linked_segment_minutes"] += (end_dt - start_dt).total_seconds() / 60.0
+
+    actual_good_qty = sum(float(bucket["actual_good_qty"] or 0) for bucket in daily_metrics.values())
+    report_dates = sorted(daily_metrics.keys())
+    latest_report_date = report_dates[-1] if report_dates else ""
+    linked_minutes_by_date = [float(bucket["linked_segment_minutes"] or 0) for bucket in daily_metrics.values() if float(bucket["linked_segment_minutes"] or 0) > 0]
+    actual_minutes = sum(linked_minutes_by_date)
+    fallback_dates = [report_date for report_date, bucket in daily_metrics.items() if float(bucket["linked_segment_minutes"] or 0) <= 0]
+    if fallback_dates:
+        actual_minutes += _machine_work_minutes_for_dates(con, machine_id, fallback_dates)
+
+    return {
+        "actual_good_qty": actual_good_qty,
+        "actual_minutes": actual_minutes,
+        "window_start": window_start.isoformat(),
+        "window_end": latest_report_date,
+        "actual_day_count": len(report_dates),
+    }
 
 
 def refresh_planner_alerts(con, block_rows=None):
@@ -421,94 +615,43 @@ def refresh_planner_alerts(con, block_rows=None):
             continue
         target_qty = max(0.0, float(block.get("scheduled_qty") or 0))
         planning_state = _block_planning_state_for_current_run(con, block_id)
-        planned_start_at = compact_text(
-            block.get("planned_start_at")
-            or (planning_state or {}).get("expected_start_at")
-            or block.get("calculated_start_datetime")
-            or block.get("anchor_datetime")
-            or ""
-        )
-        planned_end_at = compact_text(
-            block.get("planned_end_at")
+        planned_start_at = compact_text(block.get("planned_start_at") or "")
+        planned_end_at = compact_text(block.get("planned_end_at") or "")
+        forecast_end_at = compact_text(
+            block.get("calculated_end_datetime")
             or (planning_state or {}).get("expected_end_at")
-            or block.get("calculated_end_datetime")
             or ""
         )
-        planned_minutes = float((planning_state or {}).get("planned_minutes") or 0)
-        if not planned_minutes and planned_start_at and planned_end_at:
-            start_dt = parse_dt_text(planned_start_at)
-            end_dt = parse_dt_text(planned_end_at)
-            if start_dt and end_dt:
-                planned_minutes = max(0.0, (end_dt - start_dt).total_seconds() / 60.0)
+        forecast_start_at = compact_text(
+            block.get("calculated_start_datetime")
+            or (planning_state or {}).get("expected_start_at")
+            or ""
+        )
 
         actual = actual_summary_for_block(con, block_id, target_qty)
         actual_start_at = compact_text(actual.get("actual_start_at") or "")
         actual_end_at = compact_text(actual.get("actual_end_at") or "")
         actual_good_qty = max(0.0, float(actual.get("actual_good_qty") or 0))
+        actual_start_date = _date_only_text(actual_start_at)
+        actual_end_date = _date_only_text(actual_end_at)
+        planned_start_date = _date_only_text(planned_start_at)
+        planned_end_date = _date_only_text(planned_end_at)
 
         latest_start_alert = _latest_alert_for_block_type(con, block_id, "START_DRIFT")
-        if planned_start_at and actual_start_at:
-            planned_dt = parse_dt_text(planned_start_at)
-            actual_dt = parse_dt_text(actual_start_at)
-            if planned_dt and actual_dt:
-                drift_hours = (actual_dt - planned_dt).total_seconds() / 3600.0
-                abs_drift = abs(drift_hours)
-                if abs_drift > 24:
-                    if not (latest_start_alert and compact_text(latest_start_alert.get("status")) == "DISMISSED" and _same_alert_signature(latest_start_alert, planned_start_at, actual_start_at, drift_hours, None)):
-                        severity = "CRITICAL" if abs_drift > 72 else "WARNING"
-                        direction = "later than" if drift_hours > 0 else "earlier than"
-                        message = f"Actual start is {abs_drift / 24.0:.1f} days {direction} planned. Review plan or align planned start to actual start."
-                        upsert_schedule_alert(
-                            con,
-                            schedule_run_id=int(block.get("last_schedule_run_id") or 0) or None,
-                            block_id=block_id,
-                            operation_id=int(block.get("operation_id") or 0),
-                            ps_id=compact_text(block.get("source_ps_id") or ""),
-                            machine_id=int(block.get("machine_id") or 0),
-                            alert_type="START_DRIFT",
-                            severity=severity,
-                            message=message,
-                            planned_at=planned_start_at,
-                            predicted_at=planned_start_at,
-                            expected_start_at=planned_start_at,
-                            actual_start_at=actual_start_at,
-                            drift_hours=drift_hours,
-                            output_efficiency=None,
-                            status="ACTIVE",
-                        )
-                else:
-                    for alert in rows(con.execute("SELECT alert_id FROM schedule_alert WHERE block_id = ? AND alert_type = 'START_DRIFT' AND status IN ('ACTIVE', 'OPEN', 'ACKNOWLEDGED')", (block_id,))):
-                        resolve_schedule_alert(con, int(alert["alert_id"]))
-            else:
-                for alert in rows(con.execute("SELECT alert_id FROM schedule_alert WHERE block_id = ? AND alert_type = 'START_DRIFT' AND status IN ('ACTIVE', 'OPEN', 'ACKNOWLEDGED')", (block_id,))):
-                    resolve_schedule_alert(con, int(alert["alert_id"]))
-        else:
-            for alert in rows(con.execute("SELECT alert_id FROM schedule_alert WHERE block_id = ? AND alert_type = 'START_DRIFT' AND status IN ('ACTIVE', 'OPEN', 'ACKNOWLEDGED')", (block_id,))):
-                resolve_schedule_alert(con, int(alert["alert_id"]))
-
-        latest_low_output_alert = _latest_alert_for_block_type(con, block_id, "LOW_OUTPUT_AFTER_3_DAYS")
-        if not planned_start_at or target_qty <= 0 or planned_minutes <= 0 or actual_good_qty >= target_qty or actual_end_at:
-            for alert in rows(con.execute("SELECT alert_id FROM schedule_alert WHERE block_id = ? AND alert_type = 'LOW_OUTPUT_AFTER_3_DAYS' AND status IN ('ACTIVE', 'OPEN', 'ACKNOWLEDGED')", (block_id,))):
-                resolve_schedule_alert(con, int(alert["alert_id"]))
-            continue
-
-        planned_dt = parse_dt_text(planned_start_at)
-        if not planned_dt:
-            continue
-        elapsed_minutes = max(0.0, (now_dt - planned_dt).total_seconds() / 60.0)
-        if elapsed_minutes < 3 * 24 * 60:
-            for alert in rows(con.execute("SELECT alert_id FROM schedule_alert WHERE block_id = ? AND alert_type = 'LOW_OUTPUT_AFTER_3_DAYS' AND status IN ('ACTIVE', 'OPEN', 'ACKNOWLEDGED')", (block_id,))):
-                resolve_schedule_alert(con, int(alert["alert_id"]))
-            continue
-        expected_qty_by_now = target_qty * elapsed_minutes / planned_minutes if planned_minutes > 0 else 0.0
-        if expected_qty_by_now <= 0:
-            for alert in rows(con.execute("SELECT alert_id FROM schedule_alert WHERE block_id = ? AND alert_type = 'LOW_OUTPUT_AFTER_3_DAYS' AND status IN ('ACTIVE', 'OPEN', 'ACKNOWLEDGED')", (block_id,))):
-                resolve_schedule_alert(con, int(alert["alert_id"]))
-            continue
-        output_efficiency = actual_good_qty / expected_qty_by_now
-        if output_efficiency < 0.6:
-            if not (latest_low_output_alert and compact_text(latest_low_output_alert.get("status")) == "DISMISSED" and _same_alert_signature(latest_low_output_alert, planned_start_at, actual_start_at, None, output_efficiency)):
-                message = "3 days after planned start, output is below 60% of expected. Review cycle time or shopfloor issue."
+        if planned_start_at and actual_start_at and planned_start_date and actual_start_date and actual_start_date > planned_start_date:
+            drift_days = (parse_dt_text(actual_start_at).date() - parse_dt_text(planned_start_at).date()).days
+            drift_hours = float(drift_days * 24)
+            if not (
+                latest_start_alert
+                and compact_text(latest_start_alert.get("status")) == "DISMISSED"
+                and _same_alert_signature(
+                    latest_start_alert,
+                    "START_DRIFT",
+                    planned_at=planned_start_at,
+                    actual_start_at=actual_start_at,
+                    delay_minutes=float(drift_days * 24 * 60),
+                )
+            ):
                 upsert_schedule_alert(
                     con,
                     schedule_run_id=int(block.get("last_schedule_run_id") or 0) or None,
@@ -516,20 +659,143 @@ def refresh_planner_alerts(con, block_rows=None):
                     operation_id=int(block.get("operation_id") or 0),
                     ps_id=compact_text(block.get("source_ps_id") or ""),
                     machine_id=int(block.get("machine_id") or 0),
-                    alert_type="LOW_OUTPUT_AFTER_3_DAYS",
+                    alert_type="START_DRIFT",
                     severity="WARNING",
-                    message=message,
+                    message="Actual start is later than planned start.",
+                    old_value=planned_start_at,
+                    new_value=actual_start_at,
                     planned_at=planned_start_at,
-                    predicted_at=planned_end_at,
+                    predicted_at=actual_start_at,
                     expected_start_at=planned_start_at,
                     actual_start_at=actual_start_at,
-                    drift_hours=None,
-                    output_efficiency=output_efficiency,
+                    drift_hours=drift_hours,
+                    output_efficiency=None,
+                    delay_minutes=float(drift_days * 24 * 60),
                     status="ACTIVE",
                 )
         else:
-            for alert in rows(con.execute("SELECT alert_id FROM schedule_alert WHERE block_id = ? AND alert_type = 'LOW_OUTPUT_AFTER_3_DAYS' AND status IN ('ACTIVE', 'OPEN', 'ACKNOWLEDGED')", (block_id,))):
-                resolve_schedule_alert(con, int(alert["alert_id"]))
+            _resolve_active_alerts_by_type(con, block_id, "START_DRIFT")
+
+        current_end_at = compact_text(actual_end_at or forecast_end_at or "")
+        latest_end_alert = _latest_alert_for_block_type(con, block_id, "END_DRIFT")
+        if planned_end_at and current_end_at and planned_end_date and _date_only_text(current_end_at):
+            current_end_date = _date_only_text(current_end_at)
+            if current_end_date and current_end_date > planned_end_date:
+                drift_days = (parse_dt_text(current_end_at).date() - parse_dt_text(planned_end_at).date()).days
+                drift_minutes = float(drift_days * 24 * 60)
+                if not (
+                    latest_end_alert
+                    and compact_text(latest_end_alert.get("status")) == "DISMISSED"
+                    and _same_alert_signature(
+                        latest_end_alert,
+                        "END_DRIFT",
+                        planned_at=planned_end_at,
+                        predicted_at=current_end_at,
+                        delay_minutes=drift_minutes,
+                    )
+                ):
+                    end_message = "Actual end is later than planned end." if actual_end_at else "Forecast end is later than planned end."
+                    upsert_schedule_alert(
+                        con,
+                        schedule_run_id=int(block.get("last_schedule_run_id") or 0) or None,
+                        block_id=block_id,
+                        operation_id=int(block.get("operation_id") or 0),
+                        ps_id=compact_text(block.get("source_ps_id") or ""),
+                        machine_id=int(block.get("machine_id") or 0),
+                        alert_type="END_DRIFT",
+                        severity="WARNING",
+                        message=end_message,
+                        old_value=planned_end_at,
+                        new_value=current_end_at,
+                        planned_at=planned_end_at,
+                        predicted_at=current_end_at,
+                        expected_start_at=planned_start_at,
+                        actual_start_at=actual_start_at,
+                        drift_hours=float(drift_days * 24),
+                        output_efficiency=None,
+                        delay_minutes=drift_minutes,
+                        status="ACTIVE",
+                    )
+            else:
+                _resolve_active_alerts_by_type(con, block_id, "END_DRIFT")
+        else:
+            _resolve_active_alerts_by_type(con, block_id, "END_DRIFT")
+
+        latest_cycle_alert = _latest_alert_for_block_type(con, block_id, "CYCLE_TIME_DRIFT_AFTER_3_DAYS")
+        planned_cycle_minutes_per_qty = max(0.0, float(block.get("cycle_minutes_per_qty") or 0))
+        if not actual_start_date or planned_cycle_minutes_per_qty <= 0:
+            _resolve_active_alerts_by_type(con, block_id, "CYCLE_TIME_DRIFT_AFTER_3_DAYS")
+        else:
+            actual_start_dt = parse_dt_text(actual_start_at)
+            if actual_start_dt:
+                cycle_metrics = _actual_cycle_window_metrics(con, block_id, int(block.get("machine_id") or 0), actual_start_at)
+                actual_good_qty_window = max(0.0, float(cycle_metrics["actual_good_qty"] or 0))
+                actual_minutes_window = max(0.0, float(cycle_metrics["actual_minutes"] or 0))
+                actual_day_count = max(0, int(cycle_metrics.get("actual_day_count") or 0))
+                eligible = (
+                    now_dt.date() >= actual_start_dt.date() + timedelta(days=3)
+                    or actual_day_count >= 3
+                )
+                if not eligible or actual_good_qty_window <= 0 or actual_minutes_window <= 0:
+                    _resolve_active_alerts_by_type(con, block_id, "CYCLE_TIME_DRIFT_AFTER_3_DAYS")
+                else:
+                    actual_cycle_minutes_per_qty = actual_minutes_window / actual_good_qty_window
+                    drift_pct = (actual_cycle_minutes_per_qty - planned_cycle_minutes_per_qty) / planned_cycle_minutes_per_qty
+                    if abs(drift_pct) > 0.10:
+                        if not (
+                            latest_cycle_alert
+                            and compact_text(latest_cycle_alert.get("status")) == "DISMISSED"
+                            and _same_alert_signature(
+                                latest_cycle_alert,
+                                "CYCLE_TIME_DRIFT_AFTER_3_DAYS",
+                                planned_at=cycle_metrics["window_start"],
+                                predicted_at=cycle_metrics["window_end"],
+                                old_value=planned_cycle_minutes_per_qty,
+                                new_value=actual_cycle_minutes_per_qty,
+                                delay_minutes=actual_day_count,
+                            )
+                        ):
+                            if actual_cycle_minutes_per_qty > planned_cycle_minutes_per_qty:
+                                message = (
+                                    f"Cycle time drift detected. Planned cycle time is {format_qty(round(planned_cycle_minutes_per_qty, 2))} min/pc, "
+                                    f"but based on {actual_day_count} days of actual output, effective cycle time is {format_qty(round(actual_cycle_minutes_per_qty, 2))} min/pc."
+                                )
+                                severity = "WARNING"
+                            else:
+                                message = (
+                                    f"Cycle time is faster than planned. Planned cycle time is {format_qty(round(planned_cycle_minutes_per_qty, 2))} min/pc, "
+                                    f"but based on {actual_day_count} days of actual output, effective cycle time is {format_qty(round(actual_cycle_minutes_per_qty, 2))} min/pc. "
+                                    "Review whether cycle time should be updated."
+                                )
+                                severity = "INFO"
+                            upsert_schedule_alert(
+                                con,
+                                schedule_run_id=int(block.get("last_schedule_run_id") or 0) or None,
+                                block_id=block_id,
+                                operation_id=int(block.get("operation_id") or 0),
+                                ps_id=compact_text(block.get("source_ps_id") or ""),
+                                machine_id=int(block.get("machine_id") or 0),
+                                alert_type="CYCLE_TIME_DRIFT_AFTER_3_DAYS",
+                                severity=severity,
+                                message=message,
+                                old_value=planned_cycle_minutes_per_qty,
+                                new_value=actual_cycle_minutes_per_qty,
+                                planned_at=cycle_metrics["window_start"],
+                                predicted_at=cycle_metrics["window_end"],
+                                expected_start_at=actual_start_at,
+                                actual_start_at=actual_start_at,
+                                drift_hours=float(drift_pct * 100.0),
+                                output_efficiency=float(actual_cycle_minutes_per_qty / planned_cycle_minutes_per_qty) if planned_cycle_minutes_per_qty else None,
+                                delay_minutes=actual_day_count,
+                                status="ACTIVE",
+                            )
+                    else:
+                        _resolve_active_alerts_by_type(con, block_id, "CYCLE_TIME_DRIFT_AFTER_3_DAYS")
+            else:
+                _resolve_active_alerts_by_type(con, block_id, "CYCLE_TIME_DRIFT_AFTER_3_DAYS")
+
+        # Retire the noisy legacy alert if it lingers.
+        _resolve_active_alerts_by_type(con, block_id, "LOW_OUTPUT_AFTER_3_DAYS")
 
 
 def _resolve_alerts_by_type(con, block_id, alert_type):
@@ -562,6 +828,7 @@ def trial_block_payload(block, con=None):
     schedule_status = queue_state["schedule_status"] if queue_state and queue_state["schedule_status"] else planning_status
     is_late = int(queue_state["is_late"] or 0) if queue_state else 0
     delay_minutes = float(queue_state["delay_minutes"] or 0) if queue_state else 0.0
+    actual_daily_rows = actual_daily_rows_for_block_row(con, block) if con else []
     return {
         "block_id": int(block["block_id"]),
         "operation_id": int(block["operation_id"]),
@@ -614,7 +881,8 @@ def trial_block_payload(block, con=None):
         "group_label": block.get("group_label") or "",
         "group_type": block.get("group_type") or "",
         "alerts": _alerts_for_block(con, block["block_id"]) if con else [],
-        "actual_daily_rows": actual_daily_rows_for_block_row(con, block) if con else [],
+        "actual_daily_rows": actual_daily_rows,
+        "actual_daily_rows_error": "NO_PRODUCTION_SEGMENTS" if con and not actual_daily_rows else "",
         "removed_actual_dates": removed_actual_dates_for_block_row(con, block) if con else [],
     }
 
@@ -1003,7 +1271,7 @@ def _apply_planned_start_constraints(con, block, candidate_start, planned_start,
     return candidate_start
 
 
-def add_future_segments_after_date(con, block_id, after_date: date, qty_to_add, schedule_run_id=None):
+def add_future_segments_after_date(con, block_id, after_date: date, qty_to_add, schedule_run_id=None, excluded_dates=None):
     block = trial_block_row(con, block_id)
     if not block:
         return False
@@ -1017,12 +1285,16 @@ def add_future_segments_after_date(con, block_id, after_date: date, qty_to_add, 
     if remaining_qty <= 0:
         return False
 
+    excluded_dates = {compact_text(v) for v in (excluded_dates or []) if compact_text(v)}
     work_date = after_date + timedelta(days=1)
     changed = False
     safety = 0
 
     while remaining_qty > 0 and safety < 370:
         safety += 1
+        if date_text(work_date) in excluded_dates:
+            work_date += timedelta(days=1)
+            continue
         intervals = machine_work_intervals_for_day(con, machine_id, work_date)
         if not intervals:
             work_date += timedelta(days=1)
@@ -1064,7 +1336,7 @@ def add_future_segments_after_date(con, block_id, after_date: date, qty_to_add, 
     return changed
 
 
-def add_shortfall_to_tail_with_capacity(con, block_id, actual_date, qty_to_add):
+def add_qty_to_block_tail(con, block_id, qty_to_add, excluded_dates=None):
     block = trial_block_row(con, block_id)
     if not block:
         return False
@@ -1078,15 +1350,75 @@ def add_shortfall_to_tail_with_capacity(con, block_id, actual_date, qty_to_add):
     if remaining_to_add <= 0:
         return False
 
+    excluded_dates = {compact_text(v) for v in (excluded_dates or []) if compact_text(v)}
     changed = False
-    tail = one(
+    tail = block_tail_boundary(con, block_id)
+
+    if tail:
+        tail_date_text = compact_text(tail["segment_date"])
+        tail_date = parse_dt_text(tail_date_text).date() if tail_date_text else date.today()
+        if tail_date_text not in excluded_dates:
+            cap = capacity_minutes_for_machine_day(con, machine_id, tail_date)
+            capacity_minutes = int(cap["capacity_minutes"] or 0)
+            max_qty_for_tail_day = math.floor(capacity_minutes / cycle_time) if cycle_time > 0 else 0
+            current_qty = float(tail["qty_done"] or 0)
+            available_qty_on_tail = max(0.0, max_qty_for_tail_day - current_qty)
+            add_to_tail = min(remaining_to_add, available_qty_on_tail)
+
+            if add_to_tail > 0:
+                new_qty = current_qty + add_to_tail
+                new_minutes = new_qty * cycle_time
+                start_dt = parse_dt_text(tail["start_datetime"])
+                end_dt = start_dt + timedelta(minutes=new_minutes) if start_dt else parse_dt_text(tail["end_datetime"])
+                con.execute(
+                    """
+                    UPDATE run_block_segment
+                    SET qty_done = ?, minutes_used = ?, end_datetime = ?
+                    WHERE segment_id = ?
+                    """,
+                    (
+                        new_qty,
+                        new_minutes,
+                        end_dt.strftime("%Y-%m-%d %H:%M:%S") if end_dt else tail["end_datetime"],
+                        int(tail["segment_id"]),
+                    ),
+                )
+                remaining_to_add -= add_to_tail
+                changed = True
+        if remaining_to_add > 0:
+            changed = add_future_segments_after_date(con, block_id, tail_date, remaining_to_add, excluded_dates=excluded_dates) or changed
+    else:
+        start_date = date.today()
+        changed = add_future_segments_after_date(con, block_id, start_date, remaining_to_add, excluded_dates=excluded_dates)
+
+    return changed
+
+
+def add_shortfall_to_tail_with_capacity(con, block_id, actual_date, qty_to_add):
+    return add_qty_to_block_tail(con, block_id, qty_to_add, excluded_dates=removed_dates_for_block(con, block_id))
+
+
+def shave_qty_from_block_tail(con, block_id, qty_to_shave, excluded_dates=None):
+    block = trial_block_row(con, block_id)
+    if not block:
+        return False
+
+    cycle_time = max(0.0, float(block["cycle_minutes_per_qty"] or 0))
+    if cycle_time <= 0:
+        return False
+
+    remaining_to_shave = float(qty_to_shave or 0)
+    if remaining_to_shave <= 0:
+        return False
+
+    excluded_dates = {compact_text(v) for v in (excluded_dates or []) if compact_text(v)}
+    future_segments = rows(
         con.execute(
             """
             SELECT *
             FROM run_block_segment
             WHERE block_id = ?
-              AND segment_type = 'production'
-              AND segment_date > ?
+              AND COALESCE(segment_type, '') = 'production'
               AND segment_id NOT IN (
                 SELECT segment_id
                 FROM production_actual
@@ -1094,27 +1426,30 @@ def add_shortfall_to_tail_with_capacity(con, block_id, actual_date, qty_to_add):
                   AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
               )
             ORDER BY segment_date DESC, end_datetime DESC, segment_id DESC
-            LIMIT 1
             """,
-            (int(block_id), date_text(actual_date)),
+            (int(block_id),),
         )
     )
 
-    if tail:
-        tail_date_text = compact_text(tail["segment_date"])
-        tail_date = parse_dt_text(tail_date_text).date() if tail_date_text else actual_date
-        cap = capacity_minutes_for_machine_day(con, machine_id, tail_date)
-        capacity_minutes = int(cap["capacity_minutes"] or 0)
-        max_qty_for_tail_day = math.floor(capacity_minutes / cycle_time) if cycle_time > 0 else 0
-        current_qty = float(tail["qty_done"] or 0)
-        available_qty_on_tail = max(0.0, max_qty_for_tail_day - current_qty)
-        add_to_tail = min(remaining_to_add, available_qty_on_tail)
+    changed = False
+    for seg in future_segments:
+        if remaining_to_shave <= 0:
+            break
 
-        if add_to_tail > 0:
-            new_qty = current_qty + add_to_tail
+        seg_date_text = compact_text(seg["segment_date"] or "")
+        if seg_date_text in excluded_dates:
+            continue
+
+        seg_qty = float(seg["qty_done"] or 0)
+        shave = min(seg_qty, remaining_to_shave)
+        new_qty = seg_qty - shave
+
+        if new_qty <= 0:
+            con.execute("DELETE FROM run_block_segment WHERE segment_id = ?", (int(seg["segment_id"]),))
+        else:
             new_minutes = new_qty * cycle_time
-            start_dt = parse_dt_text(tail["start_datetime"])
-            end_dt = start_dt + timedelta(minutes=new_minutes) if start_dt else parse_dt_text(tail["end_datetime"])
+            start_dt = parse_dt_text(seg["start_datetime"])
+            end_dt = start_dt + timedelta(minutes=new_minutes) if start_dt else parse_dt_text(seg["end_datetime"])
             con.execute(
                 """
                 UPDATE run_block_segment
@@ -1124,19 +1459,176 @@ def add_shortfall_to_tail_with_capacity(con, block_id, actual_date, qty_to_add):
                 (
                     new_qty,
                     new_minutes,
-                    end_dt.strftime("%Y-%m-%d %H:%M:%S") if end_dt else tail["end_datetime"],
-                    int(tail["segment_id"]),
+                    end_dt.strftime("%Y-%m-%d %H:%M:%S") if end_dt else seg["end_datetime"],
+                    int(seg["segment_id"]),
                 ),
             )
-            remaining_to_add -= add_to_tail
-            changed = True
 
-        if remaining_to_add > 0:
-            changed = add_future_segments_after_date(con, block_id, tail_date, remaining_to_add) or changed
-    else:
-        changed = add_future_segments_after_date(con, block_id, actual_date, remaining_to_add)
+        remaining_to_shave -= shave
+        changed = True
 
     return changed
+
+
+def reconcile_block_schedule_after_actuals(con, block_id):
+    block = trial_block_row(con, block_id)
+    if not block:
+        return {
+            "block_id": int(block_id),
+            "scheduled_qty": 0.0,
+            "active_actual_good_qty": 0.0,
+            "future_required_qty": 0.0,
+            "current_future_segment_qty_before": 0.0,
+            "delta": 0.0,
+            "excluded_dates": [],
+            "changed": False,
+        }
+
+    actual_dates = {
+        compact_text(row["report_date"] or "")
+        for row in rows(
+            con.execute(
+                """
+                SELECT DISTINCT report_date
+                FROM production_actual
+                WHERE block_id = ?
+                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                ORDER BY report_date
+                """,
+                (int(block_id),),
+            )
+        )
+        if compact_text(row["report_date"] or "")
+    }
+    removed_dates = removed_dates_for_block(con, block_id)
+    excluded_dates = {v for v in (*actual_dates, *removed_dates) if compact_text(v)}
+
+    placeholders = ",".join("?" for _ in excluded_dates) if excluded_dates else ""
+    delete_sql = """
+        DELETE FROM run_block_segment
+        WHERE block_id = ?
+          AND COALESCE(segment_type, '') = 'production'
+          AND segment_id NOT IN (
+            SELECT segment_id
+            FROM production_actual
+            WHERE segment_id IS NOT NULL
+              AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+          )
+    """
+    params = [int(block_id)]
+    if excluded_dates:
+        delete_sql += f" AND segment_date IN ({placeholders})"
+        params.extend(sorted(excluded_dates))
+    removed_segments = rows(
+        con.execute(
+            """
+            SELECT segment_id
+            FROM run_block_segment
+            WHERE block_id = ?
+              AND COALESCE(segment_type, '') = 'production'
+              AND segment_id NOT IN (
+                SELECT segment_id
+                FROM production_actual
+                WHERE segment_id IS NOT NULL
+                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+              )
+            """ + (f" AND segment_date IN ({placeholders})" if excluded_dates else ""),
+            params,
+        )
+    )
+    if removed_segments:
+        con.execute(delete_sql, params)
+
+    active_actual_good_qty = 0.0
+    for row in rows(
+        con.execute(
+            """
+            SELECT output_qty, reject_qty
+            FROM production_actual
+            WHERE block_id = ?
+              AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+            """,
+            (int(block_id),),
+        )
+    ):
+        good = _actual_good_qty(row["output_qty"], row["reject_qty"])
+        if good is not None:
+            active_actual_good_qty += float(good or 0)
+
+    scheduled_qty = max(0.0, float(block["scheduled_qty"] or 0))
+    future_required_qty = max(0.0, scheduled_qty - active_actual_good_qty)
+
+    current_future_segment_qty_before = 0.0
+    for row in rows(
+        con.execute(
+            """
+            SELECT qty_done, planned_qty
+            FROM run_block_segment
+            WHERE block_id = ?
+              AND COALESCE(segment_type, '') = 'production'
+              AND segment_id NOT IN (
+                SELECT segment_id
+                FROM production_actual
+                WHERE segment_id IS NOT NULL
+                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+              )
+            """,
+            (int(block_id),),
+        )
+    ):
+        current_future_segment_qty_before += float(row["qty_done"] or row["planned_qty"] or 0)
+
+    delta = float(future_required_qty) - float(current_future_segment_qty_before)
+    changed = bool(removed_segments)
+    if delta > 1e-9:
+        changed = add_qty_to_block_tail(con, block_id, delta, excluded_dates=excluded_dates)
+    elif delta < -1e-9:
+        changed = shave_qty_from_block_tail(con, block_id, abs(delta), excluded_dates=excluded_dates)
+
+    refresh_block_schedule_bounds(con, block_id)
+    return {
+        "block_id": int(block_id),
+        "scheduled_qty": float(scheduled_qty),
+        "active_actual_good_qty": float(active_actual_good_qty),
+        "future_required_qty": float(future_required_qty),
+        "current_future_segment_qty_before": float(current_future_segment_qty_before),
+        "delta": float(delta),
+        "excluded_dates": sorted(excluded_dates),
+        "changed": bool(changed),
+    }
+
+
+def enforce_removed_dates_for_block(con, block_id):
+    removed_dates = removed_dates_for_block(con, block_id)
+    if not removed_dates:
+        return False
+
+    removed_segments = rows(
+        con.execute(
+            """
+            SELECT *
+            FROM run_block_segment
+            WHERE block_id = ?
+              AND COALESCE(segment_type, '') = 'production'
+              AND segment_date IN ({})
+            ORDER BY segment_date DESC, end_datetime DESC, segment_id DESC
+            """.format(",".join("?" for _ in removed_dates)),
+            [int(block_id), *sorted(removed_dates)],
+        )
+    )
+    if not removed_segments:
+        refresh_block_schedule_bounds(con, block_id)
+        return False
+
+    removed_qty = sum(float(seg["qty_done"] or seg["planned_qty"] or 0) for seg in removed_segments)
+    for seg in removed_segments:
+        con.execute("DELETE FROM run_block_segment WHERE segment_id = ?", (int(seg["segment_id"]),))
+
+    changed = False
+    if removed_qty > 0:
+        changed = add_qty_to_block_tail(con, block_id, removed_qty, excluded_dates=removed_dates)
+    refresh_block_schedule_bounds(con, block_id)
+    return bool(changed or removed_qty > 0)
 
 
 def refresh_block_schedule_bounds(con, block_id):
@@ -1205,7 +1697,7 @@ def refresh_block_schedule_bounds(con, block_id):
     )
 
 
-def apply_output_delta_to_block_tail(con, block_id, actual_date_text, delta_qty):
+def apply_output_delta_to_block_tail(con, block_id, actual_date_text, delta_qty, excluded_dates=None):
     delta_qty = float(delta_qty or 0)
     if delta_qty == 0:
         return {"changed": False, "applied_qty": 0.0}
@@ -1227,6 +1719,7 @@ def apply_output_delta_to_block_tail(con, block_id, actual_date_text, delta_qty)
     if cycle_time <= 0:
         return {"changed": False, "applied_qty": 0.0}
 
+    excluded_dates = {compact_text(v) for v in (excluded_dates or []) if compact_text(v)}
     future_segments = rows(
         con.execute(
             """
@@ -1251,6 +1744,10 @@ def apply_output_delta_to_block_tail(con, block_id, actual_date_text, delta_qty)
     for seg in future_segments:
         if remaining_to_shave <= 0:
             break
+
+        seg_date_text = compact_text(seg["segment_date"] or "")
+        if seg_date_text in excluded_dates:
+            continue
 
         seg_qty = float(seg["qty_done"] or 0)
         shave = min(seg_qty, remaining_to_shave)
@@ -1384,7 +1881,7 @@ def rework_op_for_block(con, block_id):
         "source_ps_id": source_ps_id,
         "source_op_seq_id": int(step["op_seq_id"] or 0),
         "source_op_no": step["op_no"] or "",
-        "operation_name": f"{step['op_no'] or ''} {step['op_type'] or ''} REWORK".strip(),
+        "operation_name": f"{compact_text(step['op_type'] or '')} REWORK".strip(),
         "machine_id": int(machine["machine_id"]) if machine else 0,
         "machine_category": step["machine_category"] or "",
         "cycle_minutes_per_qty": float(step["cycle_time"] or 0),
@@ -1849,17 +2346,10 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
 
     queue_items.sort(key=item_sort_key)
 
-    anchor_values = [parsed for parsed in (parse_dt_text(item["members"][0]["anchor_datetime"]) for item in queue_items) if parsed]
-    actual_start_values = []
-    for item in queue_items:
-        leader = item["members"][0]
-        actual_bounds = preserved_actual_bounds_for_block(con, int(leader["block_id"]))
-        if actual_bounds:
-            actual_start_values.append(actual_bounds["start_datetime"])
-    start_candidates = [today_start, *anchor_values, *actual_start_values]
-    current_dt = min(start_candidates) if start_candidates else today_start
+    current_dt = today_start
+    lane_is_first_block = True
 
-    def update_block_schedule_window(block_id, start_dt, end_dt, planning_status=None):
+    def update_block_schedule_window(block_id, start_dt, end_dt, planning_status=None, sync_planned=False):
         start_text = start_dt.strftime("%Y-%m-%d %H:%M:%S") if start_dt else ""
         end_text = end_dt.strftime("%Y-%m-%d %H:%M:%S") if end_dt else ""
         con.execute(
@@ -1884,6 +2374,21 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                 int(block_id),
             ),
         )
+        if sync_planned and start_text and end_text:
+            con.execute(
+                """
+                UPDATE run_block
+                SET planned_start_at = ?,
+                    planned_end_at = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE block_id = ?
+                """,
+                (
+                    start_text,
+                    end_text,
+                    int(block_id),
+                ),
+            )
         if not start_text or not end_text:
             upsert_schedule_alert(
                 con,
@@ -1968,17 +2473,21 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
 
         if not is_combined:
             block = leader
-            planned_start = parse_dt_text(block["anchor_datetime"]) or parse_dt_text(block["planned_start_at"])
+            anchor_start = parse_dt_text(block["anchor_datetime"])
+            if not anchor_start and int(block.get("allow_pull_forward") or 1) == 0:
+                anchor_start = parse_dt_text(block.get("planned_start_at"))
             setup_minutes = float(block["setup_minutes"] or 0) if int(block["include_setup"] or 0) == 1 else 0.0
             dependency_ready_at = dependency_ready_time_by_quantity(con, block)
             candidate_start = current_dt
-            if planned_start and candidate_start < planned_start:
-                candidate_start = planned_start
+            if lane_is_first_block and anchor_start:
+                candidate_start = anchor_start
+            elif anchor_start and candidate_start < anchor_start:
+                candidate_start = anchor_start
             candidate_start = _apply_planned_start_constraints(
                 con,
                 block,
                 candidate_start,
-                planned_start,
+                anchor_start,
                 schedule_run_id=schedule_run_id,
                 machine_id=machine_id,
             )
@@ -1995,6 +2504,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                     actual_start_dt,
                     actual_end_dt,
                     None,
+                    sync_planned=False,
                 )
                 totals = actual_totals_for_block(con, block["block_id"])
                 reported_output = max(0.0, float(totals["output_qty"] or 0) - float(totals["reject_qty"] or 0))
@@ -2022,6 +2532,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                         actual_start_dt,
                         last_end or actual_end_dt,
                         None,
+                        sync_planned=False,
                     )
                 else:
                     current_dt = actual_end_dt
@@ -2029,59 +2540,61 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                 refreshed = trial_block_row(con, int(block["block_id"]))
                 refreshed_end = parse_dt_text(refreshed["calculated_end_datetime"]) if refreshed else None
                 current_dt = refreshed_end or current_dt or actual_end_dt
-                continue
+            else:
+                raw_reported_output = max(0.0, float(block["actual_good_qty"] or 0))
+                reported_reject = max(0.0, float(block["actual_reject_qty"] or 0))
+                reported_output = max(0.0, raw_reported_output - reported_reject)
+                scheduled_qty = max(0.0, float(block["scheduled_qty"] or 0))
+                remaining_qty = max(0.0, scheduled_qty - reported_output)
+                if remaining_qty <= 0:
+                    remaining_qty = scheduled_qty
 
-            raw_reported_output = max(0.0, float(block["actual_good_qty"] or 0))
-            reported_reject = max(0.0, float(block["actual_reject_qty"] or 0))
-            reported_output = max(0.0, raw_reported_output - reported_reject)
-            scheduled_qty = max(0.0, float(block["scheduled_qty"] or 0))
-            remaining_qty = max(0.0, scheduled_qty - reported_output)
-            if remaining_qty <= 0:
-                remaining_qty = scheduled_qty
+                setup_minutes = float(block["setup_minutes"] or 0) if int(block["include_setup"] or 0) == 1 else 0.0
+                remaining_setup = 0.0 if (reported_output > 0 or reported_reject > 0) else setup_minutes
+                cycle_time = max(0.0, float(block["cycle_minutes_per_qty"] or 0))
+                if cycle_time <= 0:
+                    remaining_qty = 0.0
+                start_dt = None
+                end_dt = None
+                if remaining_setup > 0:
+                    setup_start, current_dt, setup_end, remaining_setup = _schedule_setup_across_intervals(
+                        con,
+                        machine_id,
+                        int(block["block_id"]),
+                        schedule_run_id,
+                        current_dt,
+                        remaining_setup,
+                    )
+                    start_dt = start_dt or setup_start
+                    end_dt = setup_end or end_dt
+                production_start_candidate = current_dt if current_dt else candidate_start
+                if dependency_ready_at and production_start_candidate < dependency_ready_at:
+                    production_start_candidate = dependency_ready_at
+                if remaining_qty > 0 and cycle_time > 0:
+                    prod_start, current_dt, prod_end, remaining_qty = _schedule_production_across_intervals(
+                        con,
+                        machine_id,
+                        block,
+                        schedule_run_id,
+                        production_start_candidate,
+                        remaining_qty,
+                        cycle_time,
+                    )
+                    start_dt = start_dt or prod_start
+                    end_dt = prod_end or end_dt
+                elif current_dt and production_start_candidate > current_dt:
+                    current_dt = production_start_candidate
 
-            setup_minutes = float(block["setup_minutes"] or 0) if int(block["include_setup"] or 0) == 1 else 0.0
-            remaining_setup = 0.0 if (reported_output > 0 or reported_reject > 0) else setup_minutes
-            cycle_time = max(0.0, float(block["cycle_minutes_per_qty"] or 0))
-            if cycle_time <= 0:
-                remaining_qty = 0.0
-            start_dt = None
-            end_dt = None
-            if remaining_setup > 0:
-                setup_start, current_dt, setup_end, remaining_setup = _schedule_setup_across_intervals(
-                    con,
-                    machine_id,
-                    int(block["block_id"]),
-                    schedule_run_id,
-                    current_dt,
-                    remaining_setup,
-                )
-                start_dt = start_dt or setup_start
-                end_dt = setup_end or end_dt
-            production_start_candidate = current_dt if current_dt else candidate_start
-            if dependency_ready_at and production_start_candidate < dependency_ready_at:
-                production_start_candidate = dependency_ready_at
-            if remaining_qty > 0 and cycle_time > 0:
-                prod_start, current_dt, prod_end, remaining_qty = _schedule_production_across_intervals(
-                    con,
-                    machine_id,
-                    block,
-                    schedule_run_id,
-                    production_start_candidate,
-                    remaining_qty,
-                    cycle_time,
-                )
-                start_dt = start_dt or prod_start
-                end_dt = prod_end or end_dt
-            elif current_dt and production_start_candidate > current_dt:
-                current_dt = production_start_candidate
-
-            update_block_schedule_window(block["block_id"], start_dt, end_dt, None)
+                update_block_schedule_window(block["block_id"], start_dt, end_dt, None, sync_planned=True)
+            lane_is_first_block = False
             continue
 
         setup_minutes = max((float(member["setup_minutes"] or 0) for member in members), default=0.0)
         combined_cycle = sum(float(member["cycle_minutes_per_qty"] or 0) for member in members)
         scheduled_qty = max((float(member["scheduled_qty"] or 0) for member in members), default=0.0)
-        leader_planned_start = parse_dt_text(leader["anchor_datetime"]) or parse_dt_text(leader["planned_start_at"])
+        leader_planned_start = parse_dt_text(leader["anchor_datetime"])
+        if not leader_planned_start and int(leader.get("allow_pull_forward") or 1) == 0:
+            leader_planned_start = parse_dt_text(leader.get("planned_start_at"))
         combined_rule_block = dict(leader)
         combined_rule_block["allow_pull_forward"] = 0 if any(int(member.get("allow_pull_forward") or 0) == 0 for member in members) else 1
         combined_rule_block["is_fresh_monday_item"] = 1 if any(int(member.get("is_fresh_monday_item") or 0) == 1 for member in members) else 0
@@ -2092,7 +2605,9 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         leader_dependency_ready = [dt for dt in leader_dependency_ready if dt]
         leader_dependency_finish = max(leader_dependency_ready) if leader_dependency_ready else None
         candidate_start = current_dt
-        if leader_planned_start and candidate_start < leader_planned_start:
+        if lane_is_first_block and leader_planned_start:
+            candidate_start = leader_planned_start
+        elif leader_planned_start and candidate_start < leader_planned_start:
             candidate_start = leader_planned_start
         candidate_start = _apply_planned_start_constraints(
             con,
@@ -2111,13 +2626,15 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                 member_id = int(member["block_id"])
                 actual_bounds = actual_bounds_by_block.get(member_id)
                 if actual_bounds:
-                    update_block_schedule_window(member_id, actual_bounds["start_datetime"], actual_bounds["end_datetime"], None)
+                    update_block_schedule_window(member_id, actual_bounds["start_datetime"], actual_bounds["end_datetime"], None, sync_planned=False)
                 totals = actual_totals_for_block(con, member_id)
                 reported_output = max(0.0, float(totals["output_qty"] or 0) - float(totals["reject_qty"] or 0))
                 member_scheduled_qty = max(0.0, float(member["scheduled_qty"] or 0))
                 remaining_qty = max(0.0, member_scheduled_qty - reported_output)
                 member_dependency_ready = dependency_ready_time_by_quantity(con, member)
-                member_planned_start = parse_dt_text(member["anchor_datetime"]) or parse_dt_text(member["planned_start_at"])
+                member_planned_start = parse_dt_text(member["anchor_datetime"])
+                if not member_planned_start and int(member.get("allow_pull_forward") or 1) == 0:
+                    member_planned_start = parse_dt_text(member.get("planned_start_at"))
                 if actual_bounds and remaining_qty > 0 and float(member["cycle_minutes_per_qty"] or 0) > 0:
                     production_floor = actual_bounds["end_datetime"]
                     if member_planned_start and production_floor < member_planned_start:
@@ -2134,15 +2651,16 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                         float(member["cycle_minutes_per_qty"] or 0),
                     )
                     if prod_end:
-                        update_block_schedule_window(member_id, actual_bounds["start_datetime"], prod_end, None)
+                        update_block_schedule_window(member_id, actual_bounds["start_datetime"], prod_end, None, sync_planned=False)
                     else:
-                        update_block_schedule_window(member_id, actual_bounds["start_datetime"], actual_bounds["end_datetime"], None)
+                        update_block_schedule_window(member_id, actual_bounds["start_datetime"], actual_bounds["end_datetime"], None, sync_planned=False)
                 refresh_block_schedule_bounds(con, member_id)
                 refreshed = trial_block_row(con, member_id)
                 refreshed_end = parse_dt_text(refreshed["calculated_end_datetime"]) if refreshed else None
                 if refreshed_end and (max_end is None or refreshed_end > max_end):
                     max_end = refreshed_end
             current_dt = max_end or current_dt
+            lane_is_first_block = False
             continue
 
         remaining_setup = setup_minutes if int(leader["include_setup"] or 0) == 1 else 0.0
@@ -2180,13 +2698,43 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         for member in members[1:]:
             refresh_block_schedule_bounds(con, int(member["block_id"]))
         if start_dt and end_dt:
-            update_block_schedule_window(leader["block_id"], start_dt, end_dt, None)
+            update_block_schedule_window(leader["block_id"], start_dt, end_dt, None, sync_planned=True)
         else:
             refresh_block_schedule_bounds(con, int(leader["block_id"]))
         refreshed_leader = trial_block_row(con, int(leader["block_id"]))
         refreshed_end = parse_dt_text(refreshed_leader["calculated_end_datetime"]) if refreshed_leader else None
         if refreshed_end and refreshed_end > current_dt:
             current_dt = refreshed_end
+        lane_is_first_block = False
+
+    for block in blocks:
+        block_id = int(block["block_id"])
+        has_active_actual = one(
+            con.execute(
+                """
+                SELECT 1 AS present
+                FROM production_actual
+                WHERE block_id = ?
+                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                LIMIT 1
+                """,
+                (block_id,),
+            )
+        )
+        has_removed_dates = one(
+            con.execute(
+                """
+                SELECT 1 AS present
+                FROM block_removed_actual_date
+                WHERE block_id = ?
+                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                LIMIT 1
+                """,
+                (block_id,),
+            )
+        )
+        if has_active_actual or has_removed_dates:
+            reconcile_block_schedule_after_actuals(con, block_id)
 
     refresh_states_for_machine(con, int(machine_id), schedule_run_id=schedule_run_id)
     refresh_planner_alerts(con, blocks)
