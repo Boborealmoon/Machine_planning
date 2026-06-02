@@ -94,6 +94,19 @@ def format_planner_ps_id(source_ps_id, pp_partial_no=1):
     return source_ps_id
 
 
+def _ensure_coway_proposed_edd_column(con):
+    """Apply migration on demand when the column has not been added yet."""
+    try:
+        con.execute(
+            """
+            ALTER TABLE planner_process_sheet
+            ADD COLUMN IF NOT EXISTS coway_proposed_edd DATE
+            """
+        )
+    except Exception:
+        pass
+
+
 def ensure_planner_process_sheet(con, planner_ps_id):
     """Ensure a planner_process_sheet row exists for an ERP-sourced ps id.
 
@@ -371,7 +384,8 @@ def _block_metrics_for_ps_ids(con, ps_ids):
         source_ps_id, _, _ = _planner_ps_identity(ps_id)
         source_ids.add(source_ps_id)
         source_ids.add(ps_id)
-    metrics = {ps_id: {"by_op": {}, "planned_qty_total": 0.0, "finished_qty_total": 0.0,
+    metrics = {ps_id: {"by_op": {}, "machines": set(), "queued_machine_map": {},
+                       "planned_qty_total": 0.0, "finished_qty_total": 0.0,
                        "reject_qty_total": 0.0, "expected_start": "", "expected_end": ""}
                for ps_id in ps_ids}
     block_rows = {ps_id: [] for ps_id in ps_ids}
@@ -403,6 +417,7 @@ def _block_metrics_for_ps_ids(con, ps_ids):
                    b.calculated_start_datetime, b.calculated_end_datetime,
                    b.anchor_datetime, b.remarks,
                    m.machine_no AS machine_code,
+                   m.machine_category,
                    COALESCE(ab.output_qty, 0) AS output_qty,
                    COALESCE(ab.reject_qty, 0) AS reject_qty,
                    COALESCE(ab.good_qty, 0) AS good_qty,
@@ -439,7 +454,8 @@ def _block_metrics_for_ps_ids(con, ps_ids):
         op_entry = entry["by_op"].setdefault(
             key,
             {"planned_qty": 0.0, "finished_qty": 0.0, "reject_qty": 0.0,
-             "actual_report_count": 0, "expected_start": "", "expected_end": "", "block_count": 0},
+             "actual_report_count": 0, "expected_start": "", "expected_end": "",
+             "block_count": 0, "machines": set()},
         )
         scheduled_qty = _to_float(row["scheduled_qty"])
         good_qty = _to_float(row["good_qty"])
@@ -450,6 +466,12 @@ def _block_metrics_for_ps_ids(con, ps_ids):
         op_entry["reject_qty"] += reject_qty
         op_entry["actual_report_count"] += actual_report_count
         op_entry["block_count"] += 1
+        machine_code = compact_text(row.get("machine_code"))
+        machine_category = compact_text(row.get("machine_category"))
+        if machine_code:
+            op_entry["machines"].add(machine_code)
+            entry["machines"].add(machine_code)
+            entry["queued_machine_map"][machine_code] = machine_category or entry["queued_machine_map"].get(machine_code, "")
         start_text = compact_text(row.get("expected_start") or row.get("calculated_start_datetime") or "")
         end_text = compact_text(row.get("expected_end") or row.get("calculated_end_datetime") or "")
         if start_text and (not op_entry["expected_start"] or start_text < op_entry["expected_start"]):
@@ -465,6 +487,17 @@ def _block_metrics_for_ps_ids(con, ps_ids):
         entry["planned_qty_total"] = sum(op["planned_qty"] for op in entry["by_op"].values())
         entry["finished_qty_total"] = sum(op["finished_qty"] for op in entry["by_op"].values())
         entry["reject_qty_total"] = sum(op["reject_qty"] for op in entry["by_op"].values())
+        entry["queued_machines"] = sorted(entry.pop("machines", set()))
+        machine_map = entry.pop("queued_machine_map", {})
+        entry["queued_machine_details"] = [
+            {
+                "machine_code": code,
+                "machine_category": compact_text(machine_map.get(code)),
+            }
+            for code in entry["queued_machines"]
+        ]
+        for op_entry in entry["by_op"].values():
+            op_entry["queued_machines"] = sorted(op_entry.pop("machines", set()))
     return metrics, block_rows
 
 
@@ -570,17 +603,32 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
     tracked_statuses = _tracked_stage_statuses(ops)
     if not tracked_statuses and compact_text(ps.get("execution_status")):
         tracked_statuses = [compact_text(ps.get("execution_status"))]
-    if ps.get("execution_completed") is not None:
+    if steps:
+        execution_completed = all(
+            _execution_status_completed(compact_text(step.get("erp_execution_status") or ""))
+            for step in steps
+        )
+    elif ps.get("execution_completed") is not None:
         execution_completed = bool(ps.get("execution_completed"))
     else:
-        execution_completed = bool(tracked_statuses) and all(_execution_status_completed(status) for status in tracked_statuses)
+        execution_completed = bool(tracked_statuses) and all(
+            _execution_status_completed(status) for status in tracked_statuses
+        )
     so_qty = ps.get("so_det_qty")
     shipped_completed = (
         so_qty is not None
         and shipped_quantity_completed(so_qty, ps.get("qty_shipped"))
     )
-    is_completed = shipped_completed
+    qty_tolerance = 0.0001
+    production_completed = (
+        (total_qty > 0 and finished_qty >= (total_qty - qty_tolerance))
+        or (execution_completed and remaining_qty <= qty_tolerance)
+    )
+    is_completed = shipped_completed or production_completed
     display_ps_id, pp_partial_no = _display_ids(ps)
+    queued_machines = list(metrics.get("queued_machines") or [])
+    queued_machine_details = list(metrics.get("queued_machine_details") or [])
+    is_queued = bool(queued_machines) or raw_planned_qty > 0
     return {
         "ps_id": ps.get("ps_id") or ps.get("planner_ps_id"),
         "source_ps_id": compact_text(ps.get("source_ps_id")) or display_ps_id,
@@ -592,6 +640,7 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         "part_no": compact_text(ps.get("part_no") or ""),
         "part_desc": compact_text(ps.get("part_desc") or ps.get("description") or ""),
         "due_date": compact_text(ps.get("due_date") or ""),
+        "coway_proposed_edd": compact_text(ps.get("coway_proposed_edd") or ""),
         "order_date": compact_text(ps.get("order_date") or ""),
         "total_qty": source_total_qty,
         "partial_qty": partial_qty,
@@ -603,6 +652,7 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         "execution_status": compact_text(ps.get("execution_status") or ""),
         "planner_status": planner_status,
         "execution_completed": execution_completed,
+        "production_completed": production_completed,
         "shipped_completed": shipped_completed,
         "is_completed": is_completed,
         "selected_bom_id": int(ps.get("selected_bom_id") or 0),
@@ -625,6 +675,9 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         },
         "expected_start": metrics.get("expected_start", ""),
         "expected_end": metrics.get("expected_end", ""),
+        "is_queued": is_queued,
+        "queued_machines": queued_machines,
+        "queued_machine_details": queued_machine_details,
         "warnings": _warnings(ps, is_completed, material_status),
         "material_status": material_status,
         "source_voucher_no": compact_text(ps.get("source_voucher_no") or ""),
@@ -652,6 +705,8 @@ def _step_payload(step, metrics_by_op, work_qty=0):
     planned_qty = _to_float(op_metrics.get("planned_qty"))
     finished_qty = max(_to_float(op_metrics.get("finished_qty")), _to_float(step.get("erp_finished_qty")))
     reject_qty = max(_to_float(op_metrics.get("reject_qty")), _to_float(step.get("erp_reject_qty")))
+    queued_machines = list(op_metrics.get("queued_machines") or [])
+    machine_code = queued_machines[0] if queued_machines else ""
     return {
         "op_seq_id": int(step.get("op_seq_id") or 0),
         "seq_no": int(step.get("seq_no") or 0),
@@ -675,7 +730,39 @@ def _step_payload(step, metrics_by_op, work_qty=0):
         "expected_start": op_metrics.get("expected_start", ""),
         "expected_end": op_metrics.get("expected_end", ""),
         "block_count": int(op_metrics.get("block_count") or 0),
+        "machine_code": machine_code,
+        "queued_machines": queued_machines,
     }
+
+
+def _apply_partial_shipped_rollup(rows):
+    """Allocate shipped qty across partials of the same source PS in order."""
+    if not rows:
+        return
+    qty_tolerance = 0.0001
+    by_source = {}
+    for row in rows:
+        source = compact_text(row.get("source_ps_id") or row.get("display_ps_id") or row.get("ps_id"))
+        if not source:
+            continue
+        by_source.setdefault(source.split("::", 1)[0], []).append(row)
+
+    for source_rows in by_source.values():
+        source_rows.sort(key=lambda item: int(item.get("pp_partial_no") or 1))
+        shipped_total = max(_to_float(item.get("qty_shipped")) for item in source_rows)
+        shipped_left = max(0.0, shipped_total)
+        for item in source_rows:
+            req_qty = max(0.0, _to_float(item.get("display_qty") or item.get("wo_req_qty") or item.get("partial_qty")))
+            if req_qty <= 0:
+                continue
+            covered_qty = min(req_qty, shipped_left)
+            shipped_left = max(0.0, shipped_left - covered_qty)
+            if covered_qty + qty_tolerance < req_qty:
+                continue
+            item["finished_qty"] = max(_to_float(item.get("finished_qty")), req_qty)
+            item["remaining_qty"] = 0.0
+            item["production_completed"] = True
+            item["is_completed"] = True
 
 
 _PS_SELECT = """
@@ -723,6 +810,7 @@ _PS_SELECT = """
         ps.status,
         ps.planned_qty,
         ps.finished_qty,
+        ps.coway_proposed_edd,
         ps.created_at,
         ps.updated_at,
         v.total_qty,
@@ -754,7 +842,33 @@ _PS_SELECT = """
 """
 
 
+def _erp_wo_completion_map(con, source_ps_ids):
+    """True per (source_ps_id, pp_partial_no) when every synced ERP WO stage is Completed."""
+    ids = [compact_text(ps_id) for ps_id in source_ps_ids if compact_text(ps_id)]
+    if not ids:
+        return {}
+    out = {}
+    for row in rows(
+        con.execute(
+            """
+            SELECT source_mps_no, pp_partial_no,
+                   BOOL_AND(COALESCE(execution_status, '') = 'C') AS all_complete,
+                   COUNT(*)::INTEGER AS stage_count
+            FROM mfg_wo_status
+            WHERE source_mps_no = ANY(%s)
+            GROUP BY source_mps_no, pp_partial_no
+            """,
+            (ids,),
+        )
+    ):
+        key = (compact_text(row["source_mps_no"]), int(row.get("pp_partial_no") or 1))
+        stage_count = int(row.get("stage_count") or 0)
+        out[key] = stage_count > 0 and bool(row.get("all_complete"))
+    return out
+
+
 def list_process_sheets_payload(con):
+    _ensure_coway_proposed_edd_column(con)
     search = compact_text(request.args.get("search")).lower()
     status_filter = compact_text(request.args.get("status")).upper()
     planner_filter = compact_text(request.args.get("planner_status")).upper()
@@ -777,6 +891,10 @@ def list_process_sheets_payload(con):
         ps_ids,
         {ps_id: metrics_by_ps.get(ps_id, {}).get("expected_start", "") for ps_id in ps_ids},
     )
+    wo_complete_by_partial = _erp_wo_completion_map(
+        con,
+        {compact_text(row.get("source_ps_id")) for row in ps_rows if compact_text(row.get("source_ps_id"))},
+    )
 
     result = []
     today = date.today().isoformat()
@@ -789,6 +907,10 @@ def list_process_sheets_payload(con):
             metrics_by_ps.get(ps_id, {}),
             material_status_by_ps.get(ps_id, {}),
         )
+        wo_key = (compact_text(ps.get("source_ps_id")), int(ps.get("pp_partial_no") or 1))
+        if wo_complete_by_partial.get(wo_key):
+            payload["erp_all_wo_complete"] = True
+            payload["execution_completed"] = True
         haystack = " ".join(
             compact_text(payload.get(k)).lower()
             for k in ("ps_id", "source_ps_id", "display_ps_id", "pp_partial_no",
@@ -808,7 +930,96 @@ def list_process_sheets_payload(con):
         ):
             continue
         result.append(payload)
+    _apply_partial_shipped_rollup(result)
     return result
+
+
+def _parse_optional_date_field(value):
+    if value is None:
+        return None
+    text = compact_text(value)
+    if not text:
+        return None
+    if len(text) >= 10:
+        text = text[:10]
+    try:
+        date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError("coway_proposed_edd must be YYYY-MM-DD") from exc
+    return text
+
+
+def _update_coway_proposed_edd(con, ps_id, proposed):
+    _ensure_coway_proposed_edd_column(con)
+    _, _, canonical_ps_id = _planner_ps_identity(ps_id)
+    try:
+        ensure_planner_process_sheet(con, canonical_ps_id)
+    except ValueError as exc:
+        return None, str(exc)
+    con.execute(
+        """
+        UPDATE planner_process_sheet
+        SET coway_proposed_edd = %s, updated_at = NOW()
+        WHERE planner_ps_id = %s
+        """,
+        (proposed, canonical_ps_id),
+    )
+    row = one(
+        con.execute(
+            "SELECT coway_proposed_edd FROM planner_process_sheet WHERE planner_ps_id = %s",
+            (canonical_ps_id,),
+        )
+    )
+    return {
+        "ps_id": canonical_ps_id,
+        "coway_proposed_edd": compact_text((row or {}).get("coway_proposed_edd")),
+    }, None
+
+
+@process_sheets_bp.post("/api/trial/process-sheets/coway-proposed-edd")
+@process_sheets_bp.post("/api/process-sheets/coway-proposed-edd")
+def api_process_sheet_coway_proposed_edd_post():
+    data = request.get_json(force=True, silent=True) or {}
+    ps_id = compact_text(data.get("ps_id"))
+    if not ps_id:
+        return jsonify({"error": "ps_id is required"}), 400
+    try:
+        proposed = _parse_optional_date_field(data.get("coway_proposed_edd"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    try:
+        with planner_db() as con:
+            payload, err = _update_coway_proposed_edd(con, ps_id, proposed)
+            if err:
+                return jsonify({"error": err}), 404
+            return jsonify(payload)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@process_sheets_bp.patch("/api/trial/process-sheets/<path:ps_id>/coway-proposed-edd")
+@process_sheets_bp.put("/api/trial/process-sheets/<path:ps_id>/coway-proposed-edd")
+@process_sheets_bp.patch("/api/process-sheets/<path:ps_id>/coway-proposed-edd")
+@process_sheets_bp.put("/api/process-sheets/<path:ps_id>/coway-proposed-edd")
+def api_process_sheet_coway_proposed_edd(ps_id):
+    ps_id = compact_text(ps_id)
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        if "coway_proposed_edd" in data:
+            raw = data.get("coway_proposed_edd")
+        else:
+            raw = data.get("value")
+        proposed = _parse_optional_date_field(raw)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    try:
+        with planner_db() as con:
+            payload, err = _update_coway_proposed_edd(con, ps_id, proposed)
+            if err:
+                return jsonify({"error": err}), 404
+            return jsonify(payload)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @process_sheets_bp.get("/api/trial/process-sheets")
@@ -827,6 +1038,7 @@ def api_process_sheet_details(ps_id):
     ps_id = compact_text(ps_id)
     try:
         with planner_db() as con:
+            _ensure_coway_proposed_edd_column(con)
             _, _, canonical_ps_id = _planner_ps_identity(ps_id)
             ps = one(
                 con.execute(

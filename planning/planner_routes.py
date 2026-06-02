@@ -397,11 +397,16 @@ def _api_trial_schedule_db():
     include_holidays = "holidays" in include_parts
 
     with planner_db() as con:
-        # Full board reload: move DONE ops off machine lanes (planner only, not lite list pages).
+        # Full board reload: move DONE ops off machine lanes.
         if not is_machine_scoped and not board_lite:
             from .auto_unschedule import auto_unschedule_on_page_load
 
             auto_unschedule_on_page_load(con)
+        # Machine-scoped refresh (queue modal/actual saves): also sweep DONE ops for these lanes.
+        elif is_machine_scoped and not board_lite:
+            from .auto_unschedule import auto_unschedule_for_machines
+
+            auto_unschedule_for_machines(con, machine_id_filter)
 
         # Stale card cleanup — skip on lite board and machine-scoped refreshes.
         if not is_machine_scoped and not board_lite:
@@ -451,7 +456,22 @@ def _api_trial_schedule_db():
         ))
         machine_by_id = {int(row["machine_id"]): dict(row) for row in machines}
 
-        _block_where = "COALESCE(b.active, TRUE) = TRUE"
+        # include_completed=1 is used by Actual Production history view to include:
+        # - DONE blocks that were auto-unscheduled (active = FALSE), and
+        # - any block with saved actual rows (defensive for status drift).
+        _block_where = (
+            """(
+                COALESCE(b.active, TRUE) = TRUE
+                OR UPPER(COALESCE(b.execution_status, '')) = 'DONE'
+                OR EXISTS (
+                    SELECT 1
+                    FROM planner_production_actual pa
+                    WHERE pa.block_id = b.block_id
+                )
+            )"""
+            if include_completed
+            else "COALESCE(b.active, TRUE) = TRUE"
+        )
         _block_params: list = []
         if is_machine_scoped:
             _block_where += " AND b.machine_id = ANY(%s)"

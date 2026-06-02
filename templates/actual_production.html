@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Actual Production{% endblock %}
 {% block main_class %}app-main--actual-production{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=delete-date-manual-only-20260529">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=actual-view-tabs-20260602">{% endblock %}
 {% block content %}
 <div class="actual-production-page">
   <div class="actual-production-header">
@@ -30,13 +30,20 @@
       <span>Search</span>
       <input id="actual-production-search" type="search" placeholder="PS, part, op, machine..." autocomplete="off">
     </label>
+    <div class="actual-production-filter actual-production-filter--view">
+      <span>View</span>
+      <div class="actual-production-view-toggle" role="tablist" aria-label="Actual Production view">
+        <button type="button" class="actual-production-view-btn is-active" id="actual-production-view-queue" data-actual-view="queue" role="tab" aria-selected="true">Queue</button>
+        <button type="button" class="actual-production-view-btn" id="actual-production-view-history" data-actual-view="history" role="tab" aria-selected="false">History</button>
+      </div>
+    </div>
     <div class="actual-production-stats" id="actual-production-stats"></div>
   </div>
 
   <div id="actual-production-loading" class="loading"><div class="spinner"></div> Loading queue jobs...</div>
   <div id="actual-production-list" class="actual-production-list" hidden></div>
   <div id="actual-production-empty" class="actual-production-empty card" hidden>
-  <p>No assigned or queued jobs match your filters.</p>
+  <p id="actual-production-empty-text">No assigned or queued jobs match your filters.</p>
   </div>
 </div>
 {% endblock %}
@@ -47,5 +54,5 @@
 <script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=actual-prod-guard-20260529"></script>
 <script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=actual-prod-guard-20260529"></script>
 <script src="{{ url_for('static', filename='js/scheduler/actuals.js') }}?v=erp-voucher-match-20260529"></script>
-<script src="{{ url_for('static', filename='js/actual_production.js') }}?v=erp-voucher-match-20260529"></script>
+<script src="{{ url_for('static', filename='js/actual_production.js') }}?v=actual-view-tabs-20260602"></script>
 {% endblock %}

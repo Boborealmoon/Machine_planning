@@ -185,6 +185,7 @@ CREATE TABLE IF NOT EXISTS public.so_detail (
     item_code       TEXT,
     qty             NUMERIC,
     item_qty        NUMERIC,
+    required_shipment_date DATE,
     _loaded_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (sales_order_no, line_item_no, inventory_code)
 );
@@ -312,7 +313,8 @@ so_detail_by_line AS (
     SELECT
         sales_order_no,
         regexp_replace(line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
-        MAX(qty) AS so_qty
+        MAX(qty) AS so_qty,
+        MAX(required_shipment_date) AS required_shipment_date
     FROM public.so_detail
     WHERE sales_order_no IS NOT NULL
       AND line_item_no IS NOT NULL
@@ -321,7 +323,8 @@ so_detail_by_line AS (
 with_so_detail AS (
     SELECT
         ww.*,
-        sd.so_qty
+        sd.so_qty,
+        sd.required_shipment_date
     FROM with_shipped ww
     LEFT JOIN so_detail_by_line sd
            ON sd.sales_order_no = ww.source_voucher_no
@@ -408,7 +411,7 @@ computed AS (
             END
         )                       AS partial_qty,
         so_qty                  AS so_det_qty,
-        source_rsd              AS due_date,
+        COALESCE(required_shipment_date, source_rsd) AS due_date,
         ps_order_date           AS order_date,
         bom_code,
         source_voucher_no,

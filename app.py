@@ -111,8 +111,8 @@ def machine_schedule():
 
 
 @app.get("/summary")
-def summary():
-    return render_template("summary.html", active="summary")
+def summary_redirect():
+    return redirect(url_for("machine_schedule"))
 
 
 @app.get("/planning-data")
@@ -384,9 +384,13 @@ def _pp_vouchers_with_ops_payload(cache_rows):
         required_qty = float(row.get("wo_qty_required") or 0)
         produced_qty = float(row.get("wo_qty_produced") or 0)
         rejected_qty = float(row.get("wo_qty_rejected") or 0)
-        entry["wo_qty_required"] = max(float(entry.get("wo_qty_required") or 0), required_qty)
-        entry["finished_qty"] = max(float(entry.get("finished_qty") or 0), produced_qty)
-        entry["reject_qty"] = max(float(entry.get("reject_qty") or 0), rejected_qty)
+        entry_work_qty = float(entry.get("display_qty") or entry.get("partial_qty") or entry.get("total_qty") or 0)
+        effective_required = entry_work_qty if entry_work_qty > 0 else required_qty
+        effective_produced = min(max(0.0, produced_qty), effective_required if effective_required > 0 else produced_qty)
+        effective_rejected = min(max(0.0, rejected_qty), effective_required if effective_required > 0 else rejected_qty)
+        entry["wo_qty_required"] = max(float(entry.get("wo_qty_required") or 0), effective_required)
+        entry["finished_qty"] = max(float(entry.get("finished_qty") or 0), effective_produced)
+        entry["reject_qty"] = max(float(entry.get("reject_qty") or 0), effective_rejected)
         entry["remaining_qty"] = max(0.0, entry["wo_qty_required"] - entry["finished_qty"])
         stage_desc = row.get("stage_desc") or ""
         op_no = str(row.get("op_no") or "")
@@ -398,7 +402,22 @@ def _pp_vouchers_with_ops_payload(cache_rows):
             partial_qty = float(row.get("partial_qty") or entry.get("partial_qty") or 0)
             display_qty = partial_qty or float(entry.get("display_qty") or entry.get("total_qty") or 0)
             qty = display_qty if display_qty > 0 else required_qty
-            remaining_qty = max(0.0, qty - produced_qty)
+            stage_required = qty if qty > 0 else required_qty
+            stage_produced = min(max(0.0, produced_qty), stage_required if stage_required > 0 else produced_qty)
+            stage_rejected = min(max(0.0, rejected_qty), stage_required if stage_required > 0 else rejected_qty)
+            has_wo_output = stage_required > 0 or stage_produced > 0 or str(row_execution_status or "").strip()
+            voucher_status = str(row.get("status") or entry.get("status") or "").strip().upper()
+            is_outstanding = voucher_status in {"O", "OUTSTANDING"}
+            if not has_wo_output:
+                # New/outstanding PP with BOM route but no WO issued yet — still schedulable.
+                if is_outstanding and display_qty > 0:
+                    qty = display_qty
+                    remaining_qty = display_qty
+                else:
+                    qty = 0.0
+                    remaining_qty = 0.0
+            else:
+                remaining_qty = max(0.0, qty - stage_produced)
             machine_group = stage_desc.split()[0].upper() if stage_desc else ""
             op_card = {
                 "card_kind": "single",
@@ -411,14 +430,14 @@ def _pp_vouchers_with_ops_payload(cache_rows):
                 "stage_desc": stage_desc,
                 "execution_status": row_execution_status,
                 "target_qty": qty,
-                "required_qty": required_qty,
-                "wo_qty_required": required_qty,
-                "wo_qty_produced": produced_qty,
-                "wo_qty_rejected": rejected_qty,
+                "required_qty": stage_required,
+                "wo_qty_required": stage_required,
+                "wo_qty_produced": stage_produced,
+                "wo_qty_rejected": stage_rejected,
                 "qty_shipped": float(row.get("qty_shipped") or 0),
                 "planned_qty": 0.0,
-                "finished_qty": produced_qty,
-                "reject_qty": rejected_qty,
+                "finished_qty": stage_produced,
+                "reject_qty": stage_rejected,
                 "remaining_qty": remaining_qty,
                 "source_ps_id": entry["ps_id"],
                 "source_op_seq_id": stage_no,
@@ -458,6 +477,36 @@ def _pp_vouchers_with_ops_payload(cache_rows):
     return list(grouped.values())
 
 
+def _erp_wo_completion_by_partial(con, source_ids):
+    """Aggregate ERP WO completion from mfg_wo_status (authoritative vs BOM stage rows)."""
+    from planning.helpers import rows as db_rows
+    from planning.utils import compact_text
+
+    if not source_ids:
+        return {}
+    out = {}
+    for row in db_rows(
+        con.execute(
+            """
+            SELECT source_mps_no, pp_partial_no,
+                   COUNT(*)::INTEGER AS stage_count,
+                   BOOL_AND(COALESCE(execution_status, '') = 'C') AS all_complete
+            FROM mfg_wo_status
+            WHERE source_mps_no = ANY(%s)
+            GROUP BY source_mps_no, pp_partial_no
+            """,
+            (list(source_ids),),
+        )
+    ):
+        key = (compact_text(row["source_mps_no"]), int(row.get("pp_partial_no") or 1))
+        stage_count = int(row.get("stage_count") or 0)
+        out[key] = {
+            "erp_wo_stage_count": stage_count,
+            "erp_all_wo_complete": stage_count > 0 and bool(row.get("all_complete")),
+        }
+    return out
+
+
 def _enrich_pp_vouchers_planner_data(entries):
     """Attach planner BOM routes and selected flow to ERP catalog entries."""
     if not entries:
@@ -482,8 +531,11 @@ def _enrich_pp_vouchers_planner_data(entries):
     planner_rows = {}
     flow_cache = {}
     bom_code_by_id = {}
+    wo_completion = {}
 
     with planner_db() as con:
+        if source_ids:
+            wo_completion = _erp_wo_completion_by_partial(con, source_ids)
         if source_ids:
             for row in db_rows(
                 con.execute(
@@ -558,6 +610,11 @@ def _enrich_pp_vouchers_planner_data(entries):
         inv = compact_text(entry.get("inventory_code") or entry.get("part_no"))
         entry["inventory_code"] = inv
         entry["flow_options"] = flow_cache.get(inv, entry.get("flow_options") or [])
+        wo_flags = wo_completion.get((source_ps_id, partial_no), {})
+        entry["erp_wo_stage_count"] = int(wo_flags.get("erp_wo_stage_count") or 0)
+        entry["erp_all_wo_complete"] = bool(wo_flags.get("erp_all_wo_complete"))
+        if entry["erp_all_wo_complete"]:
+            entry["execution_completed"] = True
 
     return entries
 
@@ -767,7 +824,8 @@ so_detail_by_line AS (
     SELECT
         sales_order_no,
         regexp_replace(line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
-        MAX(qty) AS so_qty
+        MAX(qty) AS so_qty,
+        MAX(required_shipment_date) AS required_shipment_date
     FROM public.so_detail
     WHERE sales_order_no IS NOT NULL
       AND line_item_no IS NOT NULL
@@ -776,7 +834,8 @@ so_detail_by_line AS (
 with_so_detail AS (
     SELECT
         ww.*,
-        sd.so_qty
+        sd.so_qty,
+        sd.required_shipment_date
     FROM with_shipped ww
     LEFT JOIN so_detail_by_line sd
            ON sd.sales_order_no = ww.source_voucher_no
@@ -865,7 +924,7 @@ computed AS (
             END
         )                       AS partial_qty,
         so_qty                  AS so_det_qty,
-        source_rsd              AS due_date,
+        COALESCE(required_shipment_date, source_rsd) AS due_date,
         ps_order_date           AS order_date,
         bom_code,
         source_voucher_no,
@@ -961,9 +1020,13 @@ CREATE TABLE IF NOT EXISTS public.so_detail (
     item_code       TEXT,
     qty             NUMERIC,
     item_qty        NUMERIC,
+    required_shipment_date DATE,
     _loaded_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (sales_order_no, line_item_no, inventory_code)
 );
+
+ALTER TABLE public.so_detail
+    ADD COLUMN IF NOT EXISTS required_shipment_date DATE;
 
 CREATE INDEX IF NOT EXISTS idx_so_detail_sales_order
     ON public.so_detail (sales_order_no, line_item_no);
@@ -1423,7 +1486,9 @@ def api_bom_operations():
 
 @app.get("/api/machine-schedule")
 def api_machine_schedule():
-    return jsonify([])
+    """Alias for gantt timeline data (same payload as /api/trial/gantt)."""
+    from planning.gantt_route import api_trial_gantt
+    return api_trial_gantt()
 
 
 @app.get("/api/operations")

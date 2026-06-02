@@ -121,7 +121,7 @@ def _stage_no_from_process_flow(con, source_mps_no, pp_partial_no, op_no, op_seq
                 FROM pp_vouchers_cache
                 WHERE ps_id = %s
                   AND pp_partial_no = %s
-                  AND NULLIF(TRIM(COALESCE(op_no, '')), '') = ANY(%s)
+                  AND NULLIF(TRIM(COALESCE(op_no::text, '')), '') = ANY(%s)
                 ORDER BY stage_no
                 LIMIT 1
                 """,

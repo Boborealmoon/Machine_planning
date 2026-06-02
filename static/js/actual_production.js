@@ -6,6 +6,7 @@ const actualProductionFilter = {
   category: 'ALL',
   machineId: '',
   search: '',
+  view: 'queue',
 };
 
 function actualProductionMachinesForFilter() {
@@ -17,12 +18,11 @@ function actualProductionMachinesForFilter() {
   return machines;
 }
 
-function actualProductionQueuedJobs() {
+function actualProductionAllJobs() {
   const jobs = [];
   const machines = actualProductionMachinesForFilter();
   machines.forEach(machine => {
-    const groups = trialBlocksGroupedForMachine(machine.machine_id)
-      .filter(group => String(group.status || '').toUpperCase() !== 'DONE');
+    const groups = trialBlocksGroupedForMachine(machine.machine_id);
     groups.forEach(group => {
       jobs.push({
         machine,
@@ -37,6 +37,50 @@ function actualProductionQueuedJobs() {
     if (a.queue !== b.queue) return a.queue - b.queue;
     return Number(a.group.leader?.block_id || 0) - Number(b.group.leader?.block_id || 0);
   });
+}
+
+function actualProductionIsHistoryView() {
+  return String(actualProductionFilter.view || 'queue').toLowerCase() === 'history';
+}
+
+function actualProductionGroupHasActualData(group) {
+  const members = (group?.blocks || []).map(block => trialBlockMemberMetrics(block));
+  return members.some(block => {
+    const dailyRows = Array.isArray(block.actual_daily_rows) ? block.actual_daily_rows : [];
+    return (
+      dailyRows.length > 0
+      || Number(block.outputTotal || 0) > 0
+      || Number(block.rejectTotal || 0) > 0
+      || Number(block.netOutput || 0) > 0
+    );
+  });
+}
+
+function actualProductionIsHistoryCandidate(group) {
+  const leader = group?.leader || (group?.blocks || [])[0] || {};
+  const status = String(group?.status || leader?.execution_status || '').toUpperCase();
+  const leaderActive = Boolean(leader?.active ?? true);
+  const remaining = Number(group?.remaining_qty ?? group?.paired_remaining_qty ?? 0);
+  const hasActualData = actualProductionGroupHasActualData(group);
+  return (
+    status === 'DONE'
+    || (!leaderActive && hasActualData)
+    || (hasActualData && remaining <= 0)
+  );
+}
+
+function actualProductionQueuedJobs() {
+  return actualProductionAllJobs().filter(job => !actualProductionIsHistoryCandidate(job.group));
+}
+
+function actualProductionHistoryJobs() {
+  return actualProductionAllJobs().filter(job => actualProductionIsHistoryCandidate(job.group));
+}
+
+function actualProductionJobsForActiveView() {
+  return String(actualProductionFilter.view || 'queue').toLowerCase() === 'history'
+    ? actualProductionHistoryJobs()
+    : actualProductionQueuedJobs();
 }
 
 function actualProductionJobMatchesSearch(job, needle) {
@@ -62,7 +106,7 @@ function actualProductionFilteredJobs() {
   const category = String(actualProductionFilter.category || 'ALL').toUpperCase();
   const machineId = String(actualProductionFilter.machineId || '').trim();
   const needle = String(actualProductionFilter.search || '').trim().toLowerCase();
-  return actualProductionQueuedJobs().filter(job => {
+  return actualProductionJobsForActiveView().filter(job => {
     if (category !== 'ALL' && String(job.machine.machine_category || '').toUpperCase() !== category) {
       return false;
     }
@@ -263,33 +307,80 @@ function actualProductionRenderFilters() {
     );
     machineSelect.innerHTML = options.join('');
   }
+
+  const activeView = String(actualProductionFilter.view || 'queue').toLowerCase();
+  document.querySelectorAll('[data-actual-view]').forEach(button => {
+    const btnView = String(button.dataset.actualView || '').toLowerCase();
+    const isActive = btnView === activeView;
+    button.classList.toggle('is-active', isActive);
+    button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
 }
 
 function renderActualProduction() {
   const loading = document.getElementById('actual-production-loading');
   const list = document.getElementById('actual-production-list');
   const empty = document.getElementById('actual-production-empty');
+  const emptyText = document.getElementById('actual-production-empty-text');
   const stats = document.getElementById('actual-production-stats');
   if (!list) return;
 
   actualProductionRenderFilters();
   const jobs = actualProductionFilteredJobs();
+  const isHistoryView = actualProductionIsHistoryView();
   if (stats) {
-    const total = actualProductionQueuedJobs().length;
-    stats.textContent = `${jobs.length} shown · ${total} on queue`;
+    const total = actualProductionJobsForActiveView().length;
+    const viewLabel = isHistoryView ? 'history' : 'queue';
+    stats.textContent = `${jobs.length} shown · ${total} in ${viewLabel}`;
   }
 
   if (loading) loading.hidden = true;
   if (!jobs.length) {
     list.hidden = true;
     if (empty) empty.hidden = false;
+    if (emptyText) {
+      emptyText.textContent = isHistoryView
+        ? 'No completed jobs with actuals match your filters.'
+        : 'No assigned or queued jobs match your filters.';
+    }
     return;
   }
 
   if (empty) empty.hidden = true;
   list.hidden = false;
+  list.classList.toggle('is-history-view', isHistoryView);
   list.innerHTML = jobs.map(job => actualProductionRenderJobCard(job)).join('');
   actualProductionBindAddDateButtons();
+  actualProductionApplyReadOnlyState();
+}
+
+function actualProductionApplyReadOnlyState() {
+  const list = document.getElementById('actual-production-list');
+  if (!list) return;
+  const readOnly = actualProductionIsHistoryView();
+  const editableNodes = list.querySelectorAll(
+    '[data-trial-actual-field="output_qty"], [data-trial-actual-field="reject_qty"], [data-trial-actual-field="remarks"], [data-actual-add-date]'
+  );
+  editableNodes.forEach(node => {
+    if (readOnly) {
+      node.dataset.apReadonlyRestoreDisabled = node.disabled ? '1' : '0';
+      node.disabled = true;
+    } else if (node.dataset.apReadonlyRestoreDisabled !== '1') {
+      node.disabled = false;
+    }
+  });
+
+  const actionButtons = list.querySelectorAll(
+    '[data-actual-add-btn], .trial-actual-row-action-buttons button, .trial-actual-delete-cell button'
+  );
+  actionButtons.forEach(button => {
+    if (readOnly) {
+      button.dataset.apReadonlyRestoreDisabled = button.disabled ? '1' : '0';
+      button.disabled = true;
+    } else if (button.dataset.apReadonlyRestoreDisabled !== '1') {
+      button.disabled = false;
+    }
+  });
 }
 
 async function loadActualProduction(options = {}) {
@@ -300,6 +391,9 @@ async function loadActualProduction(options = {}) {
 
   trialScheduleDateFilter = trialDefaultScheduleDateFilter();
   const params = new URLSearchParams({ lite: '1', include: 'segments,actuals,actual_daily' });
+  if (actualProductionIsHistoryView()) {
+    params.set('include_completed', '1');
+  }
   if (options.force) params.set('_', String(Date.now()));
 
   try {
@@ -334,12 +428,23 @@ function actualProductionOnSearchInput(event) {
   renderActualProduction();
 }
 
+function actualProductionOnViewChange(event) {
+  const nextView = String(event.currentTarget?.dataset?.actualView || '').toLowerCase();
+  if (!['queue', 'history'].includes(nextView)) return;
+  if (nextView === actualProductionFilter.view) return;
+  actualProductionFilter.view = nextView;
+  loadActualProduction({ force: true });
+}
+
 window.trialScheduleRenderHook = renderActualProduction;
 
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('actual-production-category')?.addEventListener('change', actualProductionOnCategoryChange);
   document.getElementById('actual-production-machine')?.addEventListener('change', actualProductionOnMachineChange);
   document.getElementById('actual-production-search')?.addEventListener('input', actualProductionOnSearchInput);
+  document.querySelectorAll('[data-actual-view]').forEach(button => {
+    button.addEventListener('click', actualProductionOnViewChange);
+  });
   document.getElementById('actual-production-refresh')?.addEventListener('click', () => loadActualProduction({ force: true }));
   loadActualProduction();
 });

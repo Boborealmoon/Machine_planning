@@ -951,7 +951,8 @@ SELECT
     inventory_code,
     inventory_code AS item_code,
     qty,
-    item_qty
+    item_qty,
+    required_shipment_date
 FROM (
     SELECT
         sales_order_no,
@@ -961,7 +962,8 @@ FROM (
         CASE
             WHEN dt_type = 'I' AND unit_selling_price_type = 'P' THEN no_of_pack
             ELSE qty
-        END AS item_qty
+        END AS item_qty,
+        n.required_shipment_date::date AS required_shipment_date
     FROM public.so_order_new_det n
     JOIN public.so_order_new_hdr h USING (sales_order_no)
     WHERE h.status <> 'V'
@@ -979,7 +981,8 @@ FROM (
         CASE
             WHEN dt_type = 'I' AND unit_selling_price_type = 'P' THEN no_of_pack
             ELSE qty
-        END AS item_qty
+        END AS item_qty,
+        required_shipment_date::date AS required_shipment_date
     FROM public.so_order_ost_det
     WHERE sales_order_no IS NOT NULL
       AND line_item_no IS NOT NULL
@@ -987,7 +990,8 @@ FROM (
 ) so_lines
 """
 _SO_DETAIL_COLS = [
-    "sales_order_no", "line_item_no", "inventory_code", "item_code", "qty", "item_qty",
+    "sales_order_no", "line_item_no", "inventory_code", "item_code",
+    "qty", "item_qty", "required_shipment_date",
 ]
 
 _last_so_detail_sync_at: float = 0.0

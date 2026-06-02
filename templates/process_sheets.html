@@ -21,7 +21,7 @@
     <div class="card">
       <div class="card-bar">
         <span class="card-label">QUEUE FILTERS</span>
-        <span class="card-hint">Slice the active queue by status, planning state and material risk.</span>
+        <span class="card-hint">Slice the active queue by type and queue state.</span>
       </div>
       <div class="filters-row">
         <div class="search-wrap">
@@ -32,56 +32,28 @@
           <input type="text" class="search-input" id="ps-search" placeholder="Search PS ID, part, Inv code… (comma-separated for multiple)" />
         </div>
         <div class="filter-dropdown" id="ps-type-dropdown">
-          <button class="filter-dropdown-btn" type="button" id="ps-type-btn">APS, NPS ▾</button>
+          <button class="filter-dropdown-btn" type="button" id="ps-type-btn">APS, NPS, [SR] ▾</button>
           <div class="filter-dropdown-panel" id="ps-type-panel" hidden>
             <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
             <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
             <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="SR" checked /> [SR]</label>
             <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
             <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
           </div>
         </div>
-        <select class="filter-select" id="ps-planner-filter">
-          <option value="">All Planner Status</option>
-          <option value="UNPLANNED">Unplanned</option>
-          <option value="PARTIALLY_PLANNED">Partially Planned</option>
-          <option value="PLANNED">Planned</option>
-          <option value="NEEDS_REVIEW">Needs Review</option>
-          <option value="COMPLETED">Completed</option>
-        </select>
-        <select class="filter-select" id="ps-material-filter">
-          <option value="">All Material</option>
-          <option value="shortage">Shortage Only</option>
+        <select class="filter-select" id="ps-queue-filter">
+          <option value="">All Queue State</option>
+          <option value="queued">Queued Only</option>
+          <option value="unqueued">Unqueued Only</option>
         </select>
         <label class="checkbox-label"><input type="checkbox" id="ps-overdue-only" /> Overdue Only</label>
-        <label class="checkbox-label"><input type="checkbox" id="ps-hide-direct-pp" checked /> Hide Direct PP</label>
-        <label class="checkbox-label"><input type="checkbox" id="ps-hide-sr-tags" /> Hide [SR]</label>
-        <label class="checkbox-label" title="Include SO lines where qty shipped meets SO qty"><input type="checkbox" id="ps-show-completed" /> Show fully shipped</label>
-        <label class="checkbox-label" title="Only SO lines where qty shipped meets SO qty"><input type="checkbox" id="ps-completed-only" /> Fully shipped only</label>
-      </div>
-    </div>
-
-    <!-- Status Summary Cards -->
-    <div class="status-cards">
-      <div class="status-card">
-        <span class="status-label">PARTIALLY PLANNED</span>
-        <span class="status-dash" id="ps-count-partially-planned" style="color:#f5a623">—</span>
-      </div>
-      <div class="status-card">
-        <span class="status-label">PLANNED</span>
-        <span class="status-dash" id="ps-count-planned" style="color:#999">—</span>
-      </div>
-      <div class="status-card">
-        <span class="status-label">NEEDS REVIEW</span>
-        <span class="status-dash" id="ps-count-needs-review" style="color:#f5a623">—</span>
-      </div>
-      <div class="status-card">
-        <span class="status-label">FULLY SHIPPED</span>
-        <span class="status-dash" id="ps-count-completed" style="color:#27ae60">—</span>
-      </div>
-      <div class="status-card">
-        <span class="status-label">OVERDUE</span>
-        <span class="status-dash" id="ps-count-overdue" style="color:#e74c3c">—</span>
+        <label class="checkbox-label"><input type="checkbox" id="ps-hide-sr-tags" checked /> Hide [SR]</label>
+        <label class="checkbox-label" title="Include lines where shipped qty meets order qty"><input type="checkbox" id="ps-show-completed" /> Show completed</label>
+        <label class="checkbox-label" title="Only lines where shipped qty meets order qty"><input type="checkbox" id="ps-completed-only" /> Completed only</label>
+        <span class="ps-summary-pill ps-badge ps-badge--queued" id="ps-queued-pill">
+          Queued <strong id="ps-count-queued">—</strong>
+        </span>
       </div>
     </div>
 
@@ -100,5 +72,5 @@
 
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/process_sheets.js', v='sr-tag-detect-20260521') }}"></script>
+<script src="{{ url_for('static', filename='js/process_sheets.js', v='hide-sr-default-20260602') }}"></script>
 {% endblock %}

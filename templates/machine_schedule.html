@@ -1,11 +1,74 @@
 {% extends "base.html" %}
+{% block title %}Machine Schedule — Production Planning{% endblock %}
+{% block main_class %}app-main--gantt{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/gantt.css', v='20260602') }}" />
+{% endblock %}
 {% block content %}
-<div class="page">
-  <div class="page-header">
-    <h1 class="page-title">Machine Schedule</h1>
+<div class="page gantt-page">
+  <div class="page-header gantt-page-header">
+    <div class="page-header-copy">
+      <h1 class="page-title">Machine Schedule</h1>
+      <p class="page-subtitle">Timeline view of scheduled run blocks by machine and day.</p>
+    </div>
+    <div class="page-actions gantt-actions">
+      <div class="gantt-filter-block">
+        <div class="gantt-filter-label">Range</div>
+        <div class="gantt-range-row">
+          <span id="gantt-loaded-range-label" class="gantt-date-chip"></span>
+          <label class="gantt-jump-field">
+            <span class="gantt-filter-hint">Jump to date</span>
+            <input id="gantt-jump-date" type="date" class="gantt-date-input" />
+          </label>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="jumpToSelectedDate()">Jump</button>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="jumpToToday()">Today</button>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="reloadCurrentWindow()">Reload</button>
+          <div class="gantt-scale-toggle" role="group" aria-label="Timeline time scale">
+            <button type="button" class="gantt-scale-btn" data-mode="focus" onclick="setGanttTimeScaleMode('focus')">Focus Hours</button>
+            <button type="button" class="gantt-scale-btn" data-mode="true24" onclick="setGanttTimeScaleMode('true24')">True 24H</button>
+            <button type="button" class="gantt-scale-btn" data-mode="compact" onclick="setGanttTimeScaleMode('compact')">Compact AM/PM</button>
+          </div>
+          <span class="gantt-filter-hint" style="margin-left:4px">View-only — schedule blocks from Planner.</span>
+        </div>
+      </div>
+      <div class="gantt-filter-block">
+        <div class="gantt-filter-label">Machine Type</div>
+        <div id="gantt-machine-chips" class="chip-row"></div>
+        <div class="gantt-filter-hint">Tap a chip to focus on one machine type.</div>
+      </div>
+    </div>
   </div>
-  <div class="card empty-state">
-    <p>Machine schedule content coming soon.</p>
+
+  <div class="gantt-page-shell">
+    <div id="gantt-legend">
+      <span><span style="background:rgba(59,130,246,0.72);border:1px solid rgba(59,130,246,0.95);"></span> Planned production</span>
+      <span><span style="background:rgba(100,116,139,0.55);border:1px dashed rgba(100,116,139,0.9);"></span> Setup</span>
+      <span><span style="background:rgba(34,197,94,0.78);border:1px solid rgba(34,197,94,1);"></span> Actual reported</span>
+      <span><span style="background:rgba(16,185,129,0.88);border:1px solid rgba(16,185,129,1);"></span> Completed</span>
+      <span><span style="background:rgba(239,68,68,0.82);"></span> Rework</span>
+      <span><span style="background:rgba(100,116,139,0.15);border:1px solid var(--border);"></span> Off shift</span>
+      <span><span style="background:rgba(234,179,8,0.16);border:1px dashed rgba(234,179,8,0.55);"></span> Lunch break</span>
+      <span><span style="background:rgba(99,102,241,0.14);border:1px dashed rgba(99,102,241,0.55);"></span> Coffee break</span>
+      <span><span style="background:rgba(71,85,105,0.22);border:1px solid rgba(71,85,105,0.55);"></span> Sunday off</span>
+      <span><span style="background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.35);"></span> Capacity override</span>
+      <span><span style="background:rgba(34,197,94,0.14);border:1px solid rgba(34,197,94,0.45);"></span> Calendar window</span>
+      <span style="margin-left:auto;color:var(--text3);background:transparent;border:none;">Click block for details</span>
+    </div>
+    <div id="gantt-container">
+      <div class="loading"><div class="spinner"></div> Loading schedule…</div>
+    </div>
   </div>
 </div>
+
+<div id="block-detail" class="gantt-block-detail" hidden>
+  <div class="gantt-block-detail-head">
+    <strong id="bd-title">Segment Details</strong>
+    <button type="button" class="gantt-block-detail-close" aria-label="Close"
+      onclick="document.getElementById('block-detail').hidden = true">×</button>
+  </div>
+  <div id="bd-body" class="gantt-block-detail-body"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/gantt.js', v='20260602') }}"></script>
 {% endblock %}
