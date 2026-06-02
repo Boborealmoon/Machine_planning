@@ -397,8 +397,8 @@ def _api_trial_schedule_db():
     include_holidays = "holidays" in include_parts
 
     with planner_db() as con:
-        # Full board reload: move DONE ops off machine lanes.
-        if not is_machine_scoped and not board_lite:
+        # Full board reload (including lite board): move DONE ops off machine lanes.
+        if not is_machine_scoped:
             from .auto_unschedule import auto_unschedule_on_page_load
 
             auto_unschedule_on_page_load(con)

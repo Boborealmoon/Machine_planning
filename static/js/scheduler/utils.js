@@ -252,6 +252,105 @@ function trialPayloadToAttr(payload) {
   return escapeHtml(JSON.stringify(payload || {}));
 }
 
+// ── Lightweight perf tracing ──────────────────────────────────────────────────
+
+let trialPerfSamples = [];
+
+function trialPerfIsEnabled() {
+  // Enabled by default for live debugging. Set window.trialPerfDebug = false to mute.
+  return window.trialPerfDebug !== false;
+}
+
+function trialPerfNow() {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+function trialPerfStart(label, meta = {}) {
+  return {
+    label: String(label || 'perf'),
+    meta: meta || {},
+    t0: trialPerfNow(),
+    marks: [],
+  };
+}
+
+function trialPerfMark(span, name, data = {}) {
+  if (!span) return;
+  span.marks.push({
+    name: String(name || 'mark'),
+    t: trialPerfNow(),
+    data: data || {},
+  });
+}
+
+function trialPerfEnd(span, extra = {}) {
+  if (!span) return null;
+  const tEnd = trialPerfNow();
+  const marks = [];
+  let prev = span.t0;
+  span.marks.forEach(mark => {
+    const dt = Math.max(0, mark.t - prev);
+    marks.push({
+      name: mark.name,
+      ms: Number(dt.toFixed(2)),
+      ...mark.data,
+    });
+    prev = mark.t;
+  });
+  const totalMs = Math.max(0, tEnd - span.t0);
+  const sample = {
+    label: span.label,
+    total_ms: Number(totalMs.toFixed(2)),
+    started_at_ms: Number(span.t0.toFixed(2)),
+    marks,
+    ...span.meta,
+    ...extra,
+  };
+  trialPerfSamples.push(sample);
+  if (trialPerfSamples.length > 60) {
+    trialPerfSamples = trialPerfSamples.slice(-60);
+  }
+  window.trialPerfSamples = trialPerfSamples;
+  window.trialPerfLast = sample;
+
+  if (trialPerfIsEnabled()) {
+    const head = `[trial-perf] ${sample.label} ${sample.total_ms}ms`;
+    if (console.groupCollapsed) console.groupCollapsed(head);
+    else console.log(head);
+    if (sample.marks.length) console.table(sample.marks);
+    console.log(sample);
+    if (console.groupEnd) console.groupEnd();
+  }
+  return sample;
+}
+
+function trialPerfSummary(lastN = 20) {
+  const samples = (window.trialPerfSamples || []).slice(-Math.max(1, Number(lastN || 20)));
+  const byLabel = new Map();
+  samples.forEach(sample => {
+    const key = String(sample.label || 'unknown');
+    const entry = byLabel.get(key) || { label: key, count: 0, total: 0, max: 0, min: Number.POSITIVE_INFINITY };
+    const ms = Number(sample.total_ms || 0);
+    entry.count += 1;
+    entry.total += ms;
+    entry.max = Math.max(entry.max, ms);
+    entry.min = Math.min(entry.min, ms);
+    byLabel.set(key, entry);
+  });
+  const rows = Array.from(byLabel.values()).map(entry => ({
+    label: entry.label,
+    count: entry.count,
+    avg_ms: Number((entry.total / Math.max(1, entry.count)).toFixed(2)),
+    max_ms: Number(entry.max.toFixed(2)),
+    min_ms: Number((entry.min === Number.POSITIVE_INFINITY ? 0 : entry.min).toFixed(2)),
+  })).sort((a, b) => b.avg_ms - a.avg_ms);
+  if (console.table) console.table(rows);
+  return rows;
+}
+
 function trialOpFromPayload(payload) {
   if (!payload) return null;
   return payload.op || {

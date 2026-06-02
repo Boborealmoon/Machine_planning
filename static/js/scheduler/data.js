@@ -9,6 +9,65 @@ function trialSyncScheduleUrl() {
   window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`);
 }
 
+let trialDerivedIndexes = null;
+
+function trialResetDataIndexes() {
+  trialDerivedIndexes = null;
+}
+
+function trialBuildDerivedIndexes() {
+  const perf = (typeof trialPerfStart === 'function')
+    ? trialPerfStart('build-derived-indexes', {
+      blocks: Array.isArray(trialState.blocks) ? trialState.blocks.length : 0,
+      actuals: Array.isArray(trialState.actuals) ? trialState.actuals.length : 0,
+    })
+    : null;
+  const blocksByMachine = new Map();
+  const blocksBySourceBase = new Map();
+  const actualTotalsByBlock = new Map();
+
+  (trialState.blocks || []).forEach(block => {
+    const machineKey = String(block.machine_id || '');
+    if (!blocksByMachine.has(machineKey)) blocksByMachine.set(machineKey, []);
+    blocksByMachine.get(machineKey).push(block);
+
+    const sourceBase = trialSplitPsId(block.source_ps_id || block.job_no).base;
+    if (sourceBase) {
+      if (!blocksBySourceBase.has(sourceBase)) blocksBySourceBase.set(sourceBase, []);
+      blocksBySourceBase.get(sourceBase).push(block);
+    }
+  });
+
+  (trialState.actuals || []).forEach(row => {
+    const blockId = String(row.block_id || '');
+    if (!blockId) return;
+    const entry = actualTotalsByBlock.get(blockId) || { output: 0, reject: 0 };
+    if (row.output_qty != null) entry.output += Number(row.output_qty || 0);
+    if (row.reject_qty != null) entry.reject += Number(row.reject_qty || 0);
+    actualTotalsByBlock.set(blockId, entry);
+  });
+
+  trialDerivedIndexes = {
+    blocksByMachine,
+    blocksBySourceBase,
+    actualTotalsByBlock,
+  };
+  if (typeof trialPerfEnd === 'function') {
+    trialPerfEnd(perf, {
+      index_machines: blocksByMachine.size,
+      index_ps_bases: blocksBySourceBase.size,
+      index_actual_blocks: actualTotalsByBlock.size,
+    });
+  }
+}
+
+function trialEnsureDataIndexes() {
+  if (!trialDerivedIndexes) {
+    trialBuildDerivedIndexes();
+  }
+  return trialDerivedIndexes;
+}
+
 function trialMachineCategories() {
   const categories = new Set(
     (trialState.machines || [])
@@ -66,10 +125,10 @@ function trialBlocksForCatalogOp(card) {
   const psId = String(card?.source_ps_id || card?.ps_id || '').trim();
   const base = trialSplitPsId(psId).base;
   if (!base) return [];
-  return (trialState.blocks || [])
+  const { blocksBySourceBase } = trialEnsureDataIndexes();
+  const candidates = blocksBySourceBase.get(base) || [];
+  return candidates
     .filter(block => {
-      const blockBase = trialSplitPsId(block.source_ps_id || block.job_no).base;
-      if (blockBase !== base) return false;
       return trialCatalogOpMatchesBlock(
         card?.source_op_no,
         card?.source_op_seq_id,
@@ -204,7 +263,8 @@ function trialCapacityByKey() {
 }
 
 function trialBlocksForMachine(machineId) {
-  return (trialState.blocks || []).filter(b => String(b.machine_id) === String(machineId));
+  const { blocksByMachine } = trialEnsureDataIndexes();
+  return blocksByMachine.get(String(machineId)) || [];
 }
 
 function trialGroupSummaryBlocksForMachine(machineId) {
@@ -422,28 +482,33 @@ function trialBlockPendingSetupMinutes(block, outputTotal = 0, rejectTotal = 0) 
 }
 
 function trialBlockMemberMetrics(block) {
-  const shopOutputTotal = (trialState.actuals || [])
-    .filter(row => String(row.block_id) === String(block.block_id) && row.output_qty != null)
-    .reduce((sum, row) => sum + Number(row.output_qty || 0), 0);
-  const shopRejectTotal = (trialState.actuals || [])
-    .filter(row => String(row.block_id) === String(block.block_id) && row.reject_qty != null)
-    .reduce((sum, row) => sum + Number(row.reject_qty || 0), 0);
+  const { actualTotalsByBlock } = trialEnsureDataIndexes();
+  const blockTotals = actualTotalsByBlock.get(String(block.block_id || '')) || { output: 0, reject: 0 };
+  const shopOutputTotal = Number(blockTotals.output || 0);
+  const shopRejectTotal = Number(blockTotals.reject || 0);
   const effective = block?.effective_actuals || {};
   const recon = block?.erp_reconciliation || {};
-  const outputTotal = Number(
+  let outputTotal = Number(
     effective.effective_output_qty ?? recon.effective_output_qty ?? shopOutputTotal
   );
-  const rejectTotal = Number(
+  let rejectTotal = Number(
     effective.effective_reject_qty ?? recon.effective_reject_qty ?? shopRejectTotal
   );
   const scheduledQty = Number(block.scheduled_qty || 0);
-  const netOutput = Number(
+  let netOutput = Number(
     effective.effective_good_qty ?? recon.effective_good_qty ?? trialBlockNetOutput(shopOutputTotal, shopRejectTotal)
   );
+  const status = String(block.execution_status || block.status || '').toUpperCase();
+  const isCompleted = status === 'DONE' || status === 'COMPLETED' || status === 'C';
+  // Lite schedule payloads can omit ERP reconciliation totals; if a block is marked complete,
+  // treat scheduled qty as fully output so machine cards do not show stale "OUT 0".
+  if (isCompleted && scheduledQty > 0 && outputTotal <= 0 && rejectTotal <= 0 && netOutput <= 0) {
+    outputTotal = scheduledQty;
+    netOutput = scheduledQty;
+  }
   const remainingQty = Math.max(0, scheduledQty - netOutput);
   const pendingSetupMinutes = trialBlockPendingSetupMinutes(block, outputTotal, rejectTotal);
   const remainingMinutes = pendingSetupMinutes + (remainingQty * Number(block.cycle_minutes_per_qty || 0));
-  const status = String(block.execution_status || block.status || '').toUpperCase();
   return {
     ...block,
     shopOutputTotal,
@@ -563,6 +628,53 @@ function trialBuildMachineDisplayGroup(rawBlocks, summary = null) {
     actual_end_at: (allDone && actualEnds.length ? actualEnds[actualEnds.length - 1] : '') || leader.actual_end_at || '',
     material_status: summary?.material_status || leader.material_status || {},
   };
+}
+
+function trialGroupCompletedForQueue(group) {
+  const blockCompletedByCatalog = (block) => {
+    const sourcePs = String(block?.source_ps_id || block?.job_no || '').trim();
+    if (!sourcePs) return false;
+    const sourceBase = trialSplitPsId(sourcePs).base;
+    const sourcePartial = String(trialSplitPsId(sourcePs).partial || '').trim();
+    const pools = [
+      ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
+      ...(Array.isArray(trialState.planned) ? trialState.planned : []),
+    ];
+    for (const ps of pools) {
+      const psId = String(ps?.ps_id || '').trim();
+      if (!psId) continue;
+      const psParts = trialSplitPsId(psId);
+      const psBase = String(psParts.base || '').trim();
+      const psPartial = String(psParts.partial || ps?.pp_partial_no || '').trim();
+      if (!psBase || psBase !== sourceBase) continue;
+      if (sourcePartial && psPartial && sourcePartial !== psPartial) continue;
+      const cards = Array.isArray(ps?.op_cards) ? ps.op_cards : [];
+      const hit = cards.find(card => trialCatalogOpMatchesBlock(
+        card?.source_op_no,
+        card?.source_op_seq_id,
+        card?.operation_label,
+        block,
+      ));
+      if (!hit) continue;
+      return !trialCatalogOpIsOpen(hit);
+    }
+    return false;
+  };
+
+  const rows = Array.isArray(group?.member_metrics) && group.member_metrics.length
+    ? group.member_metrics
+    : (Array.isArray(group?.blocks) ? group.blocks : []);
+  if (!rows.length) return false;
+  const tol = 0.0001;
+  const pairRemaining = Number(group?.paired_remaining_qty ?? group?.remaining_qty ?? 0);
+  if (pairRemaining > tol) return false;
+  return rows.every(row => {
+    const status = String(row?.execution_status || row?.status || '').toUpperCase();
+    const doneByStatus = status === 'DONE' || status === 'COMPLETED' || status === 'C';
+    const remaining = Number(row?.remainingQty ?? row?.remaining_qty ?? 0);
+    if (doneByStatus || remaining <= tol) return true;
+    return blockCompletedByCatalog(row);
+  });
 }
 
 // Always build lane cards from live trialState.blocks. Stale block_groups snapshots used to

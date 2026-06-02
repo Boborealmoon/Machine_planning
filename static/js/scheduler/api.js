@@ -135,6 +135,7 @@ function trialMergeBlockFromApi(block) {
   if (idx >= 0) blocks[idx] = { ...blocks[idx], ...normalized };
   else blocks.push(normalized);
   trialState.blocks = blocks;
+  if (typeof trialResetDataIndexes === 'function') trialResetDataIndexes();
 }
 
 function trialPinBlock(block, ttlMs = 30000) {
@@ -199,9 +200,16 @@ function trialApplySchedulePayload(scheduleData, machinesResult, programToolsLoo
     planning_cards: schedule.planning_cards || [],
     program_tools_lookup: programToolsLookup ?? trialState.program_tools_lookup ?? null,
   };
+  if (typeof trialResetDataIndexes === 'function') trialResetDataIndexes();
 }
 
 async function loadTrial(options = {}) {
+  const perf = (typeof trialPerfStart === 'function')
+    ? trialPerfStart('load-trial', {
+      force: !!options?.force,
+      show_completed: !!trialShowCompleted,
+    })
+    : null;
   const resolved = trialNormalizeScheduleDates(trialScheduleDateFilter.start, trialScheduleDateFilter.end);
   trialScheduleDateFilter = resolved;
   trialSyncScheduleUrl();
@@ -224,10 +232,14 @@ async function loadTrial(options = {}) {
       console.error('Failed to load trial schedule:', err);
       return { error: err };
     }),
-    trialCachedGET(trialCatalogCacheKey(), 60000, trialCatalogUrl()).catch(() => []),
+    // Always request a fresh catalog payload for planner views.
+    GET(trialCatalogUrl(true)).catch(() => []),
     trialCachedGET('machines', 300000, '/api/planner/machines').catch(() => ({ machines: [] })),
     GET('/api/program-tool-list/lookup').catch(() => null),
   ]);
+  if (typeof trialPerfMark === 'function') {
+    trialPerfMark(perf, 'fetch-all');
+  }
 
   const scheduleError = scheduleOutcome?.error || null;
   const scheduleData = scheduleError ? {} : (scheduleOutcome || {});
@@ -245,8 +257,26 @@ async function loadTrial(options = {}) {
     machinesPayload,
     programToolsLookup,
   );
-  trialState.catalog = Array.isArray(erpVouchers) ? erpVouchers : [];
+  if (typeof trialPerfMark === 'function') {
+    trialPerfMark(perf, 'apply-schedule-payload', {
+      machines: Array.isArray(trialState.machines) ? trialState.machines.length : 0,
+      blocks: Array.isArray(trialState.blocks) ? trialState.blocks.length : 0,
+      catalog: Array.isArray(erpVouchers) ? erpVouchers.length : 0,
+    });
+  }
+  const cacheKey = trialCatalogCacheKey();
+  trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
+  trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 10000;
+  trialState.catalog = trialLoadCache[cacheKey];
   trialScheduleRender();
+  if (typeof trialPerfMark === 'function') {
+    trialPerfMark(perf, 'schedule-render-dispatch');
+  }
+  if (typeof trialPerfEnd === 'function') {
+    trialPerfEnd(perf, {
+      schedule_error: Boolean(scheduleError),
+    });
+  }
 }
 
 function trialScheduleRender(machineIds = null) {
@@ -265,6 +295,11 @@ function trialScheduleRender(machineIds = null) {
 // Replaces loadTrial() for block create/update/delete/reorder/actuals.
 // Falls back to loadTrial() on error.
 async function refreshMachines(machineIds) {
+  const perf = (typeof trialPerfStart === 'function')
+    ? trialPerfStart('refresh-machines', {
+      requested: (machineIds || []).length,
+    })
+    : null;
   const ids = [...new Set((machineIds || []).map(Number).filter(Boolean))];
   if (!ids.length) { trialScheduleRender(); return; }
 
@@ -273,6 +308,9 @@ async function refreshMachines(machineIds) {
     console.error('refreshMachines failed, falling back to full reload:', err);
     return null;
   });
+  if (typeof trialPerfMark === 'function') {
+    trialPerfMark(perf, 'fetch-machine-slice', { ids: ids.join(',') });
+  }
   if (!data) { await loadTrial(); return; }
 
   const machineSet = new Set(ids.map(String));
@@ -313,5 +351,16 @@ async function refreshMachines(machineIds) {
     ];
   }
 
+  if (typeof trialResetDataIndexes === 'function') trialResetDataIndexes();
   trialScheduleRender(ids);
+  if (typeof trialPerfMark === 'function') {
+    trialPerfMark(perf, 'merge-and-render');
+  }
+  if (typeof trialPerfEnd === 'function') {
+    trialPerfEnd(perf, {
+      refreshed_blocks: Array.isArray(data.blocks) ? data.blocks.length : 0,
+      refreshed_segments: Array.isArray(data.segments) ? data.segments.length : 0,
+      refreshed_actuals: Array.isArray(data.actuals) ? data.actuals.length : 0,
+    });
+  }
 }

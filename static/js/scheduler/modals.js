@@ -710,7 +710,8 @@ function openTrialMachineQueue(machineId) {
   const machine = (trialState.machines || []).find(row => Number(row.machine_id) === id);
   if (!machine) return;
   trialOpenQueueMachineId = id;
-  const allGroups = trialBlocksGroupedForMachine(id);
+  const allGroups = trialBlocksGroupedForMachine(id)
+    .filter(group => !trialGroupCompletedForQueue(group));
   const groups = allGroups.filter(trialGroupRunsInsideDateFilter);
   const availabilityEnd = trialMachineAvailabilityEnd(
     trialHasActiveDateFilter() ? groups : allGroups
@@ -755,7 +756,7 @@ async function toggleTrialCompletedCatalog() {
     catalogRoot.innerHTML = '<div class="trial-catalog-empty">Loading catalog...</div>';
   }
   try {
-    const erpVouchers = await GET(trialCatalogUrl());
+    const erpVouchers = await GET(trialCatalogUrl(true));
     trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
     trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 60000;
     trialState.catalog = trialLoadCache[cacheKey];

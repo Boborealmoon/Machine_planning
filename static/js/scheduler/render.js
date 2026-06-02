@@ -236,17 +236,81 @@ function trialCatalogSourceBase(ps) {
   return trialSplitPsId(String(ps?.ps_id || '')).base || '';
 }
 
+let trialCatalogDueDateIndex = null;
+let trialQueueBlocksIndex = null;
+let trialQueueBlockSourceSet = null;
+
+function trialResetRenderIndexes() {
+  trialCatalogDueDateIndex = null;
+  trialQueueBlocksIndex = null;
+  trialQueueBlockSourceSet = null;
+}
+
+function trialBuildDueDateIndex() {
+  const rows = [
+    ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
+    ...(Array.isArray(trialState.planned) ? trialState.planned : []),
+  ];
+  const index = new Map();
+  rows.forEach(row => {
+    const dueDate = row?.due_date ? String(row.due_date) : '';
+    if (!dueDate) return;
+    const rowId = String(row?.ps_id || '').trim();
+    const rowSrc = String(row?.source_ps_id || row?.display_ps_id || '').trim();
+    const rowParts = trialSplitPsId(rowId);
+    const rowBase = String(rowParts.base || rowSrc || rowId).trim();
+    const rowPartial = String(rowParts.partial || row?.pp_partial_no || '').trim();
+    [rowId, rowSrc, rowBase].filter(Boolean).forEach(key => {
+      if (!index.has(key)) index.set(key, dueDate);
+    });
+    if (rowBase) {
+      const baseKey = rowPartial ? `${rowBase}::${rowPartial}` : rowBase;
+      if (!index.has(baseKey)) index.set(baseKey, dueDate);
+    }
+  });
+  trialCatalogDueDateIndex = index;
+}
+
+function trialEnsureDueDateIndex() {
+  if (!trialCatalogDueDateIndex) {
+    trialBuildDueDateIndex();
+  }
+  return trialCatalogDueDateIndex;
+}
+
+function trialBuildQueueBlocksIndex() {
+  const index = new Map();
+  const sourceSet = new Set();
+  (Array.isArray(trialState.blocks) ? trialState.blocks : []).forEach(block => {
+    const blockSource = trialCatalogSourceBase({ source_ps_id: block.source_ps_id || block.job_no });
+    if (!blockSource) return;
+    sourceSet.add(blockSource);
+    const blockPartial = String(trialSplitPsId(block.source_ps_id || block.job_no).partial || '').trim() || '1';
+    const key = `${blockSource}::${blockPartial}`;
+    if (!index.has(key)) index.set(key, []);
+    index.get(key).push(block);
+  });
+  trialQueueBlocksIndex = index;
+  trialQueueBlockSourceSet = sourceSet;
+}
+
+function trialEnsureQueueBlocksIndex() {
+  if (!trialQueueBlocksIndex) {
+    trialBuildQueueBlocksIndex();
+  }
+  return trialQueueBlocksIndex;
+}
+
 function trialPsHasQueuedBlocks(ps) {
   const psId = String(ps?.ps_id || '').trim();
   const source = trialCatalogSourceBase(ps);
   const partial = String(trialSplitPsId(psId).partial || ps?.pp_partial_no || '').trim();
-  return (trialState.blocks || []).some(block => {
-    const blockSource = trialCatalogSourceBase({ source_ps_id: block.source_ps_id || block.job_no });
-    if (!blockSource || blockSource !== source) return false;
-    const blockPartial = String(trialSplitPsId(block.source_ps_id || block.job_no).partial || '').trim();
-    if (partial && blockPartial && partial !== blockPartial) return false;
-    return true;
-  });
+  if (!source) return false;
+  const index = trialEnsureQueueBlocksIndex();
+  if (!partial) {
+    return !!trialQueueBlockSourceSet?.has(source);
+  }
+  return index.has(`${source}::${partial}`);
 }
 
 function trialQueuedOpCardsForPs(ps) {
@@ -254,12 +318,8 @@ function trialQueuedOpCardsForPs(ps) {
   const source = trialCatalogSourceBase(ps);
   const partial = String(trialSplitPsId(psId).partial || ps?.pp_partial_no || '').trim() || '1';
   if (!source) return [];
-  const blocks = (trialState.blocks || []).filter(block => {
-    const blockSource = trialCatalogSourceBase({ source_ps_id: block.source_ps_id || block.job_no });
-    if (!blockSource || blockSource !== source) return false;
-    const blockPartial = String(trialSplitPsId(block.source_ps_id || block.job_no).partial || '').trim() || '1';
-    return blockPartial === partial;
-  });
+  const index = trialEnsureQueueBlocksIndex();
+  const blocks = index.get(`${source}::${partial}`) || [];
   if (!blocks.length) return [];
   const opMap = new Map();
   blocks.forEach(block => {
@@ -300,8 +360,15 @@ function trialQueuedOpCardsForPs(ps) {
   );
 }
 
+function trialResolvedOpCardsForPs(ps) {
+  if (Array.isArray(ps?.op_cards) && ps.op_cards.length) return ps.op_cards;
+  const queuedCards = trialQueuedOpCardsForPs(ps);
+  if (queuedCards.length) return queuedCards;
+  return [];
+}
+
 function trialPsIsUnassignedCatalog(ps) {
-  const cards = ps?.op_cards || [];
+  const cards = trialResolvedOpCardsForPs(ps);
   if (!cards.length) {
     // Keep queued/scheduled partials visible even without sidebar op cards.
     if (trialPsHasQueuedBlocks(ps)) return false;
@@ -810,6 +877,11 @@ function trialDueDateForPs(psId) {
   const sourceParts = trialSplitPsId(needle);
   const sourceBase = String(sourceParts.base || needle).trim();
   const sourcePartial = String(sourceParts.partial || '').trim();
+  const exactKey = sourcePartial ? `${sourceBase}::${sourcePartial}` : sourceBase;
+  const index = trialEnsureDueDateIndex();
+  if (index.has(needle)) return String(index.get(needle) || '');
+  if (index.has(exactKey)) return String(index.get(exactKey) || '');
+  if (index.has(sourceBase)) return String(index.get(sourceBase) || '');
   const rows = [
     ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
     ...(Array.isArray(trialState.planned) ? trialState.planned : []),
@@ -1021,7 +1093,8 @@ function trialRenderQueueListHeader() {
 }
 
 function renderTrialMachine(machine) {
-  const allGroups = trialBlocksGroupedForMachine(machine.machine_id);
+  const allGroups = trialBlocksGroupedForMachine(machine.machine_id)
+    .filter(group => !trialGroupCompletedForQueue(group));
   const groups = allGroups.filter(trialGroupRunsInsideDateFilter);
   const laneId = `trial-lane-${machine.machine_id}`;
   const blockCount = allGroups.length;
@@ -1124,12 +1197,20 @@ function trialBindMachineGridScroll() {
 }
 
 function renderTrial() {
+  const perf = (typeof trialPerfStart === 'function')
+    ? trialPerfStart('render-trial', {
+      machines_total: Array.isArray(trialState.machines) ? trialState.machines.length : 0,
+    })
+    : null;
+  trialResetRenderIndexes();
   const grid = document.getElementById('trial-grid');
   if (!grid) {
     if (typeof renderActualProduction === 'function') renderActualProduction();
+    if (typeof trialPerfEnd === 'function') trialPerfEnd(perf, { skipped: 'no-grid' });
     return;
   }
   if (typeof destroyTrialSortables === 'function') destroyTrialSortables();
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'destroy-sortables');
   const filterShell = document.getElementById('trial-machine-filter-shell');
   if (filterShell) {
     filterShell.innerHTML = `
@@ -1148,35 +1229,59 @@ function renderTrial() {
     `;
   }
   const visibleMachines = trialVisibleMachines();
+  if (typeof trialPerfMark === 'function') {
+    trialPerfMark(perf, 'compute-visible-machines', { visible_machines: visibleMachines.length });
+  }
   grid.innerHTML = visibleMachines.length
     ? visibleMachines.map(renderTrialMachine).join('')
     : `<div class="trial-empty">No machines found for ${escapeHtml(trialMachineCategoryFilter)}.</div>`;
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'render-machine-grid-html');
   const layout = document.getElementById('trial-layout');
   if (layout) layout.style.display = 'grid';
   const loading = document.getElementById('trial-loading');
   if (loading) loading.style.display = 'none';
   updateTrialCompletedButton();
   renderTrialCatalog();
-  if (typeof bindTrialCatalogDnD === 'function') bindTrialCatalogDnD();
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'render-catalog');
   if (typeof initTrialMachineSortables === 'function') initTrialMachineSortables();
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'init-machine-sortables');
   if (typeof bindTrialLaneOpDrops === 'function') bindTrialLaneOpDrops();
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'bind-lane-op-drops');
   if (typeof bindTrialLaneBlockClicks === 'function') bindTrialLaneBlockClicks();
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'bind-lane-block-clicks');
   trialBindMachineGridScroll();
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'bind-grid-scroll');
   const reopenQueueId = trialOpenQueueMachineId;
   if (reopenQueueId && typeof openTrialMachineQueue === 'function') {
     window.requestAnimationFrame(() => openTrialMachineQueue(reopenQueueId));
   }
+  if (typeof trialPerfEnd === 'function') {
+    trialPerfEnd(perf, {
+      visible_machines: visibleMachines.length,
+    });
+  }
 }
 
 function renderTrialMachines(machineIds) {
+  const perf = (typeof trialPerfStart === 'function')
+    ? trialPerfStart('render-trial-machines', {
+      requested: Array.isArray(machineIds) ? machineIds.length : 0,
+    })
+    : null;
+  trialResetRenderIndexes();
   const grid = document.getElementById('trial-grid');
-  if (!grid) return;
+  if (!grid) {
+    if (typeof trialPerfEnd === 'function') trialPerfEnd(perf, { skipped: 'no-grid' });
+    return;
+  }
   const ids = [...new Set((machineIds || []).map(Number).filter(Boolean))];
   if (!ids.length) {
     renderTrial();
+    if (typeof trialPerfEnd === 'function') trialPerfEnd(perf, { fallback: 'full-render' });
     return;
   }
   if (typeof destroyTrialSortables === 'function') destroyTrialSortables();
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'destroy-sortables');
   const visible = trialVisibleMachines();
   ids.forEach(machineId => {
     const machine = visible.find(row => Number(row.machine_id) === machineId);
@@ -1184,16 +1289,26 @@ function renderTrialMachines(machineIds) {
     if (!machine || !existing) return;
     existing.outerHTML = renderTrialMachine(machine);
   });
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'replace-machine-html', { ids: ids.join(',') });
   renderTrialCatalog();
-  if (typeof bindTrialCatalogDnD === 'function') bindTrialCatalogDnD();
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'render-catalog');
   if (typeof initTrialMachineSortables === 'function') initTrialMachineSortables();
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'init-machine-sortables');
   if (typeof bindTrialLaneOpDrops === 'function') bindTrialLaneOpDrops();
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'bind-lane-op-drops');
   if (typeof bindTrialLaneBlockClicks === 'function') bindTrialLaneBlockClicks();
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'bind-lane-block-clicks');
   const reopenQueueId = trialOpenQueueMachineId;
   if (reopenQueueId && ids.includes(reopenQueueId) && typeof openTrialMachineQueue === 'function') {
     window.requestAnimationFrame(() => openTrialMachineQueue(reopenQueueId));
   }
   trialSyncMachineGridScrollWidth();
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'sync-grid-scroll-width');
+  if (typeof trialPerfEnd === 'function') {
+    trialPerfEnd(perf, {
+      rendered_ids: ids.length,
+    });
+  }
 }
 
 function trialCatalogOpExecStatus(card) {
@@ -1274,23 +1389,21 @@ function trialRenderCatalogOpStatusStrip(ps) {
   `;
 }
 
-function trialCatalogPartialLabel(ps) {
+function trialCatalogPartialLabel(ps, siblingCountByBase) {
   const psId = String(ps.ps_id || '');
   let partialNo = Number(ps.pp_partial_no);
   if (!Number.isFinite(partialNo) || partialNo < 1) {
     partialNo = psId.includes('::') ? Number(psId.split('::')[1]) || 1 : 1;
   }
   const base = trialCatalogSourceBase(ps);
-  const siblingCount = base
-    ? (trialState.catalog || []).filter(item => trialCatalogSourceBase(item) === base).length
-    : 0;
+  const siblingCount = base ? Number(siblingCountByBase?.get(base) || 0) : 0;
   if (siblingCount <= 1 && partialNo <= 1 && !psId.includes('::')) return '';
   return `Partial ${partialNo}`;
 }
 
-function trialCatalogPsSummaryHtml(ps) {
+function trialCatalogPsSummaryHtml(ps, siblingCountByBase) {
   const basePsId = String(ps.ps_id || '').split('::')[0] || ps.ps_id || '';
-  const partialText = trialCatalogPartialLabel(ps);
+  const partialText = trialCatalogPartialLabel(ps, siblingCountByBase);
   const dueDate = ps.due_date || 'No due date';
   const execStatus = trialPsRollupExecStatus(ps);
   const stageDesc = String(ps.current_stage_desc || '').trim();
@@ -1506,17 +1619,71 @@ function trialPlannedHaystack(ps) {
 }
 
 function renderTrialCatalog() {
+  const perf = (typeof trialPerfStart === 'function')
+    ? trialPerfStart('render-trial-catalog', {
+      catalog_rows: Array.isArray(trialState.catalog) ? trialState.catalog.length : 0,
+      planned_rows: Array.isArray(trialState.planned) ? trialState.planned.length : 0,
+    })
+    : null;
+  trialResetRenderIndexes();
   renderTrialPsTypeFilter();
   const root = document.getElementById('trial-catalog');
-  if (!root) return;
+  if (!root) {
+    if (typeof trialPerfEnd === 'function') trialPerfEnd(perf, { skipped: 'no-catalog-root' });
+    return;
+  }
   const queryInput = document.getElementById('trial-catalog-search');
   const rawQuery = String(queryInput ? queryInput.value : trialCatalogSearch || '').trim().toLowerCase();
   const normalizedQuery = trialNormalizeSearchText(rawQuery);
   trialCatalogSearch = rawQuery;
+  const catalogHaystackCache = new WeakMap();
+  const plannedHaystackCache = new WeakMap();
+  const resolvedCardsCache = new WeakMap();
+  const allocatedCardCache = new Map();
+  const siblingCountByBase = new Map();
+  (trialState.catalog || []).forEach(ps => {
+    const base = trialCatalogSourceBase(ps);
+    if (!base) return;
+    siblingCountByBase.set(base, Number(siblingCountByBase.get(base) || 0) + 1);
+  });
+
+  const cachedCatalogHaystack = ps => {
+    if (catalogHaystackCache.has(ps)) return catalogHaystackCache.get(ps);
+    const haystack = trialCatalogHaystack(ps);
+    catalogHaystackCache.set(ps, haystack);
+    return haystack;
+  };
+
+  const cachedPlannedHaystack = ps => {
+    if (plannedHaystackCache.has(ps)) return plannedHaystackCache.get(ps);
+    const haystack = trialPlannedHaystack(ps);
+    plannedHaystackCache.set(ps, haystack);
+    return haystack;
+  };
+
+  const cachedResolvedCards = ps => {
+    if (resolvedCardsCache.has(ps)) return resolvedCardsCache.get(ps);
+    const cards = trialResolvedOpCardsForPs(ps);
+    resolvedCardsCache.set(ps, cards);
+    return cards;
+  };
+
+  const cachedIsOpAllocated = card => {
+    const key = [
+      String(card?.source_ps_id || card?.ps_id || '').trim(),
+      String(card?.source_op_no || card?.operation_label || '').trim(),
+      String(card?.source_op_seq_id || card?.source_step_id || '').trim(),
+      String(card?.card_id || '').trim(),
+    ].join('|');
+    if (allocatedCardCache.has(key)) return allocatedCardCache.get(key);
+    const allocated = trialIsCatalogOpAllocated(card);
+    allocatedCardCache.set(key, allocated);
+    return allocated;
+  };
 
   const catalogMatchesSearch = ps => {
     if (!rawQuery) return true;
-    const haystack = trialCatalogHaystack(ps);
+    const haystack = cachedCatalogHaystack(ps);
     if (haystack.includes(rawQuery)) return true;
     return normalizedQuery ? haystack.includes(normalizedQuery) : false;
   };
@@ -1530,6 +1697,7 @@ function renderTrialCatalog() {
     if (!trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
     return catalogMatchesSearch(ps);
   });
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'filter-catalog', { kept: catalog.length });
 
   if (rawQuery) {
     const matchedBases = new Set(
@@ -1564,7 +1732,7 @@ function renderTrialCatalog() {
     if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
     if (!trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
     if (!rawQuery) return true;
-    const haystack = trialPlannedHaystack(ps);
+    const haystack = cachedPlannedHaystack(ps);
     if (haystack.includes(rawQuery)) return true;
     return normalizedQuery ? haystack.includes(normalizedQuery) : false;
   }).sort((a, b) => {
@@ -1572,17 +1740,19 @@ function renderTrialCatalog() {
     const tb = _PS_TYPE_ORDER[trialGetPsType(b.ps_id)] ?? 9;
     return ta !== tb ? ta - tb : String(a.ps_id).localeCompare(String(b.ps_id));
   });
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'filter-planned', { kept: plannedCatalog.length });
 
   if (!catalog.length && !plannedCatalog.length) {
     root.innerHTML = `<div class="trial-catalog-empty">No available PS / ops match this search.</div>`;
+    if (typeof trialPerfEnd === 'function') trialPerfEnd(perf, { empty: true });
     return;
   }
 
-  const isOpAllocated = card => trialIsCatalogOpAllocated(card);
+  const isOpAllocated = card => cachedIsOpAllocated(card);
 
   const catalogWithOpenOps = catalog.filter(ps => {
     if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
-    const cards = (ps.op_cards || []).length ? (ps.op_cards || []) : trialQueuedOpCardsForPs(ps);
+    const cards = cachedResolvedCards(ps);
     const hasOpenOps = cards.some(card => trialCatalogOpIsOpen(card) || isOpAllocated(card))
       || trialCatalogPsHasOpenOps(ps);
     if (!trialShowCompleted) return hasOpenOps;
@@ -1594,7 +1764,7 @@ function renderTrialCatalog() {
   const availableHtml = catalogWithOpenOps.map(ps => {
     const psIdParts = String(ps.ps_id || '').split('::');
     const basePsId = psIdParts[0] || ps.ps_id || '';
-    const cards = (ps.op_cards || []).length ? (ps.op_cards || []) : trialQueuedOpCardsForPs(ps);
+    const cards = cachedResolvedCards(ps);
     const opCardsHtml = cards
       .filter(card => trialCatalogOpIsOpen(card) || isOpAllocated(card))
       .map(card => renderTrialOpCardHtml({
@@ -1608,17 +1778,18 @@ function renderTrialCatalog() {
     return `
       <details class="trial-catalog-ps ${dueClass}" ${rawQuery ? 'open' : ''}
         data-ps-id="${escapeHtml(ps.ps_id || '')}">
-        <summary>${trialCatalogPsSummaryHtml(ps)}</summary>
+        <summary>${trialCatalogPsSummaryHtml(ps, siblingCountByBase)}</summary>
         ${trialRenderCatalogOpStatusStrip(ps)}
         ${trialCatalogBomBarHtml(ps)}
         <div class="trial-catalog-oplist">${opCardsHtml}</div>
       </details>
     `;
   }).join('');
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'build-available-html', { ps: catalogWithOpenOps.length });
 
   const plannedWithOpenOps = plannedCatalog.filter(ps => {
     if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
-    const cards = (ps.op_cards || []).length ? (ps.op_cards || []) : trialQueuedOpCardsForPs(ps);
+    const cards = cachedResolvedCards(ps);
     const hasOpenOps = cards.some(card => trialCatalogOpIsOpen(card) || isOpAllocated(card));
     if (hasOpenOps) return true;
     // Other PS: show header-only rows (no work orders) when not hiding unassigned.
@@ -1639,7 +1810,7 @@ function renderTrialCatalog() {
       </div>
       ${trialCatalogBomBarHtml(ps)}
       <div class="trial-catalog-oplist">
-        ${(((ps.op_cards || []).length ? (ps.op_cards || []) : trialQueuedOpCardsForPs(ps)))
+        ${cachedResolvedCards(ps)
           .filter(card => trialCatalogOpIsOpen(card) || isOpAllocated(card))
           .map(card => renderTrialOpCardHtml({
             ...card,
@@ -1651,6 +1822,7 @@ function renderTrialCatalog() {
       </div>
     </div>
   `).join('');
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'build-planned-html', { ps: plannedWithOpenOps.length });
 
   root.innerHTML = `
     <div class="trial-catalog-section">
@@ -1672,6 +1844,14 @@ function renderTrialCatalog() {
   `;
   decorateTrialCatalogCards();
   bindTrialCatalogDnD();
+  if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'bind-catalog-dnd');
+  if (typeof trialPerfEnd === 'function') {
+    trialPerfEnd(perf, {
+      available_ps: catalogWithOpenOps.length,
+      planned_ps: plannedWithOpenOps.length,
+      query: rawQuery || '',
+    });
+  }
 }
 
 function trialCopyInvDesc(event, btn) {

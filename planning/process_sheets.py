@@ -615,7 +615,18 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
             _execution_status_completed(status) for status in tracked_statuses
         )
     so_qty = ps.get("so_det_qty")
-    shipped_completed = (
+    qty_shipped = _to_float(ps.get("qty_shipped"))
+    has_partial_erp_evidence = bool(
+        compact_text(ps.get("current_stage_status"))
+        or execution_completed
+        or any(compact_text(step.get("erp_execution_status")) for step in (steps or []))
+    )
+    partial_shipped_completed = (
+        has_partial_erp_evidence
+        and total_qty > 0
+        and qty_shipped >= (total_qty - 0.0001)
+    )
+    shipped_completed = partial_shipped_completed or (
         so_qty is not None
         and shipped_quantity_completed(so_qty, ps.get("qty_shipped"))
     )

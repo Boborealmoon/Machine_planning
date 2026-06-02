@@ -464,10 +464,34 @@ def _pp_vouchers_with_ops_payload(cache_rows):
             if summary_status:
                 entry["execution_status"] = summary_status
         so_qty = entry.get("so_det_qty")
-        entry["shipped_completed"] = (
-            so_qty is not None
-            and shipped_quantity_completed(so_qty, entry.get("qty_shipped"))
+        partial_work_qty = float(entry.get("display_qty") or entry.get("wo_req_qty") or 0)
+        qty_shipped = float(entry.get("qty_shipped") or 0)
+        has_partial_erp_evidence = bool(
+            str(entry.get("current_stage_status") or "").strip()
+            or bool(entry.get("erp_all_wo_complete"))
+            or any(str(op.get("execution_status") or "").strip() for op in (entry.get("op_cards") or []))
         )
+        # Guard partial shipped completion behind partial ERP stage evidence. Some ERP exports
+        # duplicate shipped qty on every partial row, which would otherwise mark all partials done.
+        partial_shipped_completed = (
+            has_partial_erp_evidence
+            and partial_work_qty > 0
+            and qty_shipped >= (partial_work_qty - 0.0001)
+        )
+        entry["shipped_completed"] = partial_shipped_completed or (
+            so_qty is not None
+            and shipped_quantity_completed(so_qty, qty_shipped)
+        )
+        if partial_shipped_completed and partial_work_qty > 0:
+            entry["wo_qty_required"] = max(float(entry.get("wo_qty_required") or 0), partial_work_qty)
+            entry["finished_qty"] = max(float(entry.get("finished_qty") or 0), partial_work_qty)
+            entry["remaining_qty"] = max(0.0, float(entry["wo_qty_required"]) - float(entry["finished_qty"]))
+            for op in (entry.get("op_cards") or []):
+                op_req = float(op.get("wo_qty_required") or op.get("required_qty") or partial_work_qty)
+                if float(op.get("wo_qty_produced") or 0) <= 0:
+                    op["wo_qty_produced"] = min(op_req, partial_work_qty)
+                op["finished_qty"] = max(float(op.get("finished_qty") or 0), float(op.get("wo_qty_produced") or 0))
+                op["remaining_qty"] = max(0.0, op_req - float(op["finished_qty"]))
         entry["is_completed"] = entry["shipped_completed"]
         entry["execution_completed"] = entry["shipped_completed"]
         entry["pending_do"] = pending_delivery_order(entry)
@@ -658,8 +682,10 @@ def api_pp_vouchers_with_ops():
             if use_cache and cached_data is not None and now < float(bucket.get("expires_at") or 0):
                 return jsonify(_filter_pp_vouchers_by_search(cached_data, raw_search))
 
-        # Trigger sync in background — serve cached data immediately
-        if is_sync_needed():
+        # For explicit refresh requests we avoid background stale-while-revalidate behavior:
+        # return the latest rows available in pp_vouchers_cache immediately.
+        # Background sync remains for non-refresh requests.
+        if is_sync_needed() and not refresh:
             from sync import run_sync, run_mfg_wo_status_sync, run_qty_shipped_sync
             def _bg_sync():
                 try:
