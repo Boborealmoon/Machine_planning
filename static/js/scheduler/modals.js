@@ -269,7 +269,13 @@ function openTrialBlockEditor(blockId) {
         saveBtn.textContent = 'Saving…';
         saveBtn.setAttribute('aria-busy', 'true');
       }
-      const affectedIds = [...new Set([block.machine_id, _editedMachineId].filter(Boolean))];
+      const catalogRef = typeof trialPlanningCardFromBlock === 'function'
+        ? trialPlanningCardFromBlock(block)
+        : null;
+      const siblingMachineIds = catalogRef && typeof trialBlocksForCatalogOp === 'function'
+        ? trialBlocksForCatalogOp(catalogRef).map(row => Number(row.machine_id || 0)).filter(Boolean)
+        : [];
+      const affectedIds = [...new Set([block.machine_id, _editedMachineId, ...siblingMachineIds].filter(Boolean))];
       const result = await PUT(`/api/trial/blocks/${block.block_id}`, {
         job_no: document.getElementById('trial-edit-job-no').value,
         operation_name: document.getElementById('trial-edit-operation-name').value,
@@ -722,8 +728,15 @@ function openTrialMachineQueue(machineId) {
   const staleNote = trialDirtyMachineIds.has(id)
     ? `<div class="trial-queue-panel-stale">Schedule times may be outdated. <button type="button" class="btn btn-primary btn-sm" onclick="trialRecalculateSingleMachine(${id})">Recalculate</button></div>`
     : '';
+  const duplicateCount = typeof trialMachineDuplicateQueueCount === 'function'
+    ? trialMachineDuplicateQueueCount(id)
+    : 0;
+  const dedupeNote = duplicateCount > 0
+    ? `<div class="trial-queue-panel-stale">Found ${duplicateCount} duplicate queue ${duplicateCount === 1 ? 'entry' : 'entries'}.
+      <button type="button" class="btn btn-primary btn-sm" onclick="trialDedupeMachineQueue(${id})">Remove duplicates</button></div>`
+    : '';
   const rowsHtml = groups.length
-    ? groups.map(group => trialRenderQueueDetailRow(group)).join('')
+    ? groups.map((group, idx) => trialRenderQueueDetailRow(group, idx + 1)).join('')
     : `<div class="trial-empty">${escapeHtml(trialMachineLaneEmptyMessage(allGroups.length, groups.length))}</div>`;
   const listHtml = groups.length
     ? `<div class="trial-queue-panel-list trial-lane" id="trial-queue-list-${id}" data-machine-id="${id}">${trialRenderQueueListHeader()}${rowsHtml}</div>`
@@ -737,6 +750,7 @@ function openTrialMachineQueue(machineId) {
             <div class="trial-queue-panel-subtitle">${escapeHtml(machine.machine_category)} · ${escapeHtml(machine.shift_profile || 'STANDARD')}</div>
             ${availabilityNote}
             ${staleNote}
+            ${dedupeNote}
           </div>
           <button class="btn btn-primary btn-sm" type="button" onclick="openTrialCreateModal(${id})">Add</button>
         </div>
@@ -769,6 +783,78 @@ async function toggleTrialCompletedCatalog() {
     toast('Could not load completed history: ' + err.message, 'error');
   }
   renderTrialCatalog();
+}
+
+function trialDuplicateQueueBlockIds(machineId) {
+  const id = Number(machineId || 0);
+  if (!id) return [];
+  const groups = (typeof trialBlocksGroupedForMachine === 'function' ? trialBlocksGroupedForMachine(id) : [])
+    .filter(group => (typeof trialGroupCompletedForQueue !== 'function' || !trialGroupCompletedForQueue(group)));
+  const seen = new Set();
+  const removeIds = [];
+  groups.forEach(group => {
+    const leader = group?.leader || group?.blocks?.[0];
+    const blockId = Number(leader?.block_id || 0);
+    if (!blockId) return;
+    const key = typeof trialCatalogOpPendingKey === 'function'
+      ? trialCatalogOpPendingKey({
+        source_ps_id: leader.source_ps_id || leader.job_no,
+        source_op_no: leader.source_op_no,
+        source_op_seq_id: leader.source_op_seq_id,
+        card_kind: Number(group?.group_id || 0) > 0 ? 'group' : 'single',
+        card_id: group?.group_id || 0,
+      })
+      : String(blockId);
+    if (seen.has(key)) removeIds.push(blockId);
+    else seen.add(key);
+  });
+  return removeIds;
+}
+
+async function trialDedupeMachineQueue(machineId) {
+  const id = Number(machineId || 0);
+  if (!id) return;
+  const removeIds = trialDuplicateQueueBlockIds(id);
+  if (!removeIds.length) {
+    toast('No duplicate queue entries found.', 'info');
+    return;
+  }
+  if (!confirm(
+    `Remove ${removeIds.length} duplicate queue ${removeIds.length === 1 ? 'entry' : 'entries'}? The earliest copy of each job is kept.`
+  )) {
+    return;
+  }
+  try {
+    await trialRunWithPlannerBusy(async () => {
+      for (const blockId of removeIds) {
+        try {
+          await DEL(`/api/trial/blocks/${blockId}`);
+        } catch (e) {
+          if (!/not found/i.test(String(e.message || ''))) throw e;
+        }
+      }
+      const lane = document.getElementById(`trial-queue-list-${id}`)
+        || document.getElementById(`trial-lane-${id}`);
+      const orderedIds = (typeof trialLaneOrderedBlockIds === 'function' ? trialLaneOrderedBlockIds(lane) : [])
+        .filter(blockId => !removeIds.includes(blockId));
+      if (orderedIds.length && typeof postTrialQueueReorder === 'function') {
+        const result = await postTrialQueueReorder(
+          [{ machine_id: id, ordered_ids: orderedIds }],
+          { recalculate: false },
+        );
+        if (typeof trialMarkDirtyMachines === 'function') trialMarkDirtyMachines([id]);
+        await refreshMachines([id], { response: result });
+        return;
+      }
+      if (typeof trialMarkDirtyMachines === 'function') trialMarkDirtyMachines([id]);
+      await refreshMachines([id]);
+    }, 'Removing duplicates…');
+    toast('Duplicate queue entries removed', 'success');
+    if (trialOpenQueueMachineId === id) openTrialMachineQueue(id);
+  } catch (e) {
+    toast('Could not remove duplicates: ' + e.message, 'error');
+    await loadTrial();
+  }
 }
 
 async function removeTrialBlock(blockId, groupId) {

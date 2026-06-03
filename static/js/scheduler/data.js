@@ -93,6 +93,40 @@ function trialVisibleMachines() {
   return machines;
 }
 
+function trialCatalogOpPendingKey(cardOrPayload) {
+  const raw = cardOrPayload || {};
+  if (String(raw.card_kind || '') === 'group' && Number(raw.card_id || 0) > 0) {
+    return `group:${Number(raw.card_id)}`;
+  }
+  const card = (typeof trialCatalogCardFromPayload === 'function')
+    ? (trialCatalogCardFromPayload(cardOrPayload) || cardOrPayload)
+    : (cardOrPayload || {});
+  const ps = String(card?.source_ps_id || card?.ps_id || '').trim();
+  const base = trialSplitPsId(ps).base || ps;
+  const op = String(card?.source_op_no || card?.operation_label || '').trim();
+  const seq = Number(card?.source_op_seq_id || 0);
+  return `${base}|${op}|${seq}`;
+}
+
+function trialReserveCatalogOpSchedule(cardOrPayload) {
+  const key = trialCatalogOpPendingKey(cardOrPayload);
+  if (!key || key === '|' || key === '||0') return { ok: false, key };
+  if (trialPendingCatalogOpSchedules.has(key)) return { ok: false, key };
+  trialPendingCatalogOpSchedules.add(key);
+  return { ok: true, key };
+}
+
+function trialReleaseCatalogOpSchedule(key) {
+  if (key) trialPendingCatalogOpSchedules.delete(key);
+}
+
+function trialMachineDuplicateQueueCount(machineId) {
+  if (typeof trialDuplicateQueueBlockIds === 'function') {
+    return trialDuplicateQueueBlockIds(machineId).length;
+  }
+  return 0;
+}
+
 function trialCatalogAllocationKey(psId, opNo, opSeqId) {
   const ps = String(psId || '').trim();
   if (!ps) return '';
@@ -146,6 +180,19 @@ function trialLegacyBlocksForCatalogOp(card) {
   });
 }
 
+function trialCatalogSchedulableRemaining(cardOrPayload) {
+  const raw = cardOrPayload?.remaining_qty ?? cardOrPayload?.op?.remaining_qty ?? 0;
+  return Math.max(0, Number(raw || 0));
+}
+
+function trialCatalogOpHasQueuedBlocks(card) {
+  return trialBlocksForCatalogOp(card).length > 0;
+}
+
+function trialIsCatalogOpFullyQueued(card) {
+  return trialCatalogOpHasQueuedBlocks(card) && trialCatalogSchedulableRemaining(card) <= 0.0001;
+}
+
 function trialIsCatalogOpAllocated(card) {
   const blocks = trialBlocksForCatalogOp(card);
   if (!blocks.length) return false;
@@ -156,6 +203,20 @@ function trialIsCatalogOpAllocated(card) {
   if (exact.length) return true;
   // Blocks saved before partial suffixes: assign in queue order to Partial 1, 2, …
   return trialLegacyBlocksForCatalogOp(card).length >= wantPartial;
+}
+
+function trialQueuedMachineCodesForCatalogOp(card) {
+  const fromCard = Array.isArray(card?.queued_machines) ? card.queued_machines : [];
+  const fromBlocks = trialBlocksForCatalogOp(card)
+    .map(block => String(block.machine_code || '').trim())
+    .filter(Boolean);
+  return [...new Set([...fromCard, ...fromBlocks])].sort();
+}
+
+function trialBlockForCatalogOpOnMachine(card, machineId) {
+  const targetId = Number(machineId || 0);
+  if (!targetId) return null;
+  return trialBlocksForCatalogOp(card).find(block => Number(block.machine_id) === targetId) || null;
 }
 
 function trialIsOpAllocated(psId, opNo) {

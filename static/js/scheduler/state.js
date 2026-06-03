@@ -28,6 +28,8 @@ let trialPlannerBusyDepth = 0;
 let trialPlannerBusyLock = 0;
 let trialCatalogPointerDrag = null;
 let trialCatalogPointerListenersBound = false;
+/** Catalog op keys currently being scheduled (prevents double-drop duplicates). */
+let trialPendingCatalogOpSchedules = new Set();
 // Blocks pinned after schedule POST until schedule refresh includes them (prevents pop-off).
 let trialPinnedBlocks = new Map();
 /** Machine IDs whose lane order changed without schedule recalc (stale times until recalculate). */

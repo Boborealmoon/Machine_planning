@@ -670,7 +670,10 @@ def program_tool_list_page():
 @program_tool_list_bp.post("/api/program-tool-list/sync")
 def api_ptl_sync():
     try:
-        return jsonify(sync_tool_list_sheet_to_sqlite())
+        result = sync_tool_list_sheet_to_sqlite()
+        if hasattr(api_ptl_lookup, "_cache"):
+            api_ptl_lookup._cache = {"payload": None, "last_synced": None}
+        return jsonify(result)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
@@ -682,17 +685,28 @@ def api_ptl_lookup():
     from program_tools_lookup import build_program_tools_lookup
     from tool_list_db import init_db, fetch_all, last_synced
 
+    _PTL_LOOKUP_CACHE = getattr(api_ptl_lookup, "_cache", None)
+    if _PTL_LOOKUP_CACHE is None:
+        _PTL_LOOKUP_CACHE = {"payload": None, "last_synced": None}
+        api_ptl_lookup._cache = _PTL_LOOKUP_CACHE
+
     try:
         init_db()
+        synced = last_synced()
+        if _PTL_LOOKUP_CACHE["payload"] is not None and _PTL_LOOKUP_CACHE["last_synced"] == synced:
+            return jsonify(_PTL_LOOKUP_CACHE["payload"])
         rows = fetch_all()
         _enrich_rows_for_display(rows)
         lookup = build_program_tools_lookup(rows)
-        return jsonify({
-            "last_synced": last_synced(),
+        payload = {
+            "last_synced": synced,
             "ps_op_count": len(lookup.get("by_ps_op") or {}),
             "part_op_count": len(lookup.get("by_part_op") or {}),
             **lookup,
-        })
+        }
+        _PTL_LOOKUP_CACHE["payload"] = payload
+        _PTL_LOOKUP_CACHE["last_synced"] = synced
+        return jsonify(payload)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
