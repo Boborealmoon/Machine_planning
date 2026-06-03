@@ -184,25 +184,41 @@ def _pp_vouchers_cache_scope(include_completed: bool) -> str:
 
 
 def _fetch_pp_vouchers_cache_rows(include_completed: bool):
+    from planning.erp_wo_merge import (
+        PP_VOUCHERS_CACHE_WO_MERGE_FROM,
+        PP_VOUCHERS_CACHE_WO_MERGE_SELECT,
+    )
     from planning.helpers import planner_db, rows as _db_rows
 
     from planning.utils import SHIPPED_QTY_TOLERANCE
 
-    cols = ", ".join(_PP_VOUCHERS_COLS)
     # Completed = fully shipped on the SO line, not PP voucher status (H/History).
     shipped_complete = (
-        "so_det_qty IS NOT NULL "
-        f"AND COALESCE(qty_shipped, 0) >= so_det_qty - {SHIPPED_QTY_TOLERANCE}"
+        "c.so_det_qty IS NOT NULL "
+        f"AND COALESCE(c.qty_shipped, 0) >= c.so_det_qty - {SHIPPED_QTY_TOLERANCE}"
     )
     where = "" if include_completed else f" WHERE NOT ({shipped_complete})"
-    order = " ORDER BY ps_id, pp_partial_no, stage_no"
+    order = " ORDER BY c.ps_id, c.pp_partial_no, c.stage_no"
     with planner_db() as _con:
-        return _db_rows(_con.execute(f"SELECT {cols} FROM pp_vouchers_cache{where}{order}"))
+        return _db_rows(
+            _con.execute(
+                f"SELECT {PP_VOUCHERS_CACHE_WO_MERGE_SELECT} "
+                f"{PP_VOUCHERS_CACHE_WO_MERGE_FROM}{where}{order}"
+            )
+        )
 
 
 def _invalidate_pp_vouchers_with_ops_cache():
     with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
         _PP_VOUCHERS_WITH_OPS_CACHE.clear()
+
+
+def _store_pp_vouchers_with_ops_cache(scope: str, data: list) -> None:
+    with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+        _PP_VOUCHERS_WITH_OPS_CACHE[scope] = {
+            "data": data,
+            "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
+        }
 
 
 def _pp_voucher_search_haystack(entry: dict) -> str:
@@ -336,6 +352,58 @@ def _entry_production_completed_from_ops(entry, *, tol=0.0001):
         status in {"C", "COMPLETED"} and remaining <= tol
         for status, remaining in tracked
     )
+
+
+def _apply_sequential_partial_shipped(entries, *, tol=0.0001):
+    """Allocate duplicated SO shipped qty across partials; avoid marking open partials done."""
+    from planning.utils import compact_text, shipped_quantity_completed
+
+    by_source = {}
+    for entry in entries:
+        source = compact_text(entry.get("source_ps_id") or "")
+        if not source:
+            ps_id = compact_text(entry.get("ps_id") or "")
+            source = ps_id.split("::", 1)[0] if ps_id else ""
+        if not source:
+            continue
+        by_source.setdefault(source, []).append(entry)
+
+    for siblings in by_source.values():
+        siblings.sort(key=lambda item: int(item.get("pp_partial_no") or 1))
+        shipped_total = max(float(item.get("qty_shipped") or 0) for item in siblings)
+        shipped_left = max(0.0, shipped_total)
+        so_qty = next((item.get("so_det_qty") for item in siblings if item.get("so_det_qty") is not None), None)
+        so_shipped_complete = so_qty is not None and shipped_quantity_completed(so_qty, shipped_total)
+
+        for entry in siblings:
+            production_completed = bool(entry.get("execution_completed"))
+            partial_work_qty = float(
+                entry.get("display_qty") or entry.get("partial_qty") or entry.get("wo_req_qty") or 0
+            )
+            has_partial_erp_evidence = bool(
+                str(entry.get("current_stage_status") or "").strip()
+                or any(str(op.get("execution_status") or "").strip() for op in (entry.get("op_cards") or []))
+            )
+            covered = min(partial_work_qty, shipped_left) if partial_work_qty > tol else 0.0
+            sequential_shipped = (
+                has_partial_erp_evidence
+                and production_completed
+                and partial_work_qty > tol
+                and covered >= (partial_work_qty - tol)
+            )
+            shipped_left = max(0.0, shipped_left - covered)
+            entry["shipped_completed"] = sequential_shipped or so_shipped_complete
+
+            if sequential_shipped and partial_work_qty > 0:
+                entry["wo_qty_required"] = max(float(entry.get("wo_qty_required") or 0), partial_work_qty)
+                entry["finished_qty"] = max(float(entry.get("finished_qty") or 0), partial_work_qty)
+                entry["remaining_qty"] = max(0.0, float(entry["wo_qty_required"]) - float(entry["finished_qty"]))
+                for op in entry.get("op_cards") or []:
+                    op_req = float(op.get("wo_qty_required") or op.get("required_qty") or partial_work_qty)
+                    if float(op.get("wo_qty_produced") or 0) <= 0:
+                        op["wo_qty_produced"] = min(op_req, partial_work_qty)
+                    op["finished_qty"] = max(float(op.get("finished_qty") or 0), float(op.get("wo_qty_produced") or 0))
+                    op["remaining_qty"] = max(0.0, op_req - float(op["finished_qty"]))
 
 
 def _pp_vouchers_with_ops_payload(cache_rows):
@@ -486,42 +554,20 @@ def _pp_vouchers_with_ops_payload(cache_rows):
             if summary_status:
                 entry["execution_status"] = summary_status
         so_qty = entry.get("so_det_qty")
-        partial_work_qty = float(entry.get("display_qty") or entry.get("wo_req_qty") or 0)
-        qty_shipped = float(entry.get("qty_shipped") or 0)
-        has_partial_erp_evidence = bool(
-            str(entry.get("current_stage_status") or "").strip()
-            or bool(entry.get("erp_all_wo_complete"))
-            or any(str(op.get("execution_status") or "").strip() for op in (entry.get("op_cards") or []))
-        )
-        # Guard partial shipped completion behind partial ERP stage evidence. Some ERP exports
-        # duplicate shipped qty on every partial row, which would otherwise mark all partials done.
-        partial_shipped_completed = (
-            has_partial_erp_evidence
-            and partial_work_qty > 0
-            and qty_shipped >= (partial_work_qty - 0.0001)
-        )
-        entry["shipped_completed"] = partial_shipped_completed or (
-            so_qty is not None
-            and shipped_quantity_completed(so_qty, qty_shipped)
-        )
-        if partial_shipped_completed and partial_work_qty > 0:
-            entry["wo_qty_required"] = max(float(entry.get("wo_qty_required") or 0), partial_work_qty)
-            entry["finished_qty"] = max(float(entry.get("finished_qty") or 0), partial_work_qty)
-            entry["remaining_qty"] = max(0.0, float(entry["wo_qty_required"]) - float(entry["finished_qty"]))
-            for op in (entry.get("op_cards") or []):
-                op_req = float(op.get("wo_qty_required") or op.get("required_qty") or partial_work_qty)
-                if float(op.get("wo_qty_produced") or 0) <= 0:
-                    op["wo_qty_produced"] = min(op_req, partial_work_qty)
-                op["finished_qty"] = max(float(op.get("finished_qty") or 0), float(op.get("wo_qty_produced") or 0))
-                op["remaining_qty"] = max(0.0, op_req - float(op["finished_qty"]))
         production_completed = _entry_production_completed_from_ops(entry)
         entry["execution_completed"] = production_completed
-        entry["is_completed"] = bool(entry["shipped_completed"]) or production_completed
+        entry["is_completed"] = production_completed
         entry["pending_do"] = pending_delivery_order(entry)
         bom_code = str(entry.get("bom_code") or "").strip()
         entry["erp_bom_code"] = bom_code
         entry["inventory_code"] = str(entry.get("inventory_code") or entry.get("part_no") or "").strip()
-    return list(grouped.values())
+
+    result = list(grouped.values())
+    _apply_sequential_partial_shipped(result)
+    for entry in result:
+        entry["is_completed"] = bool(entry.get("shipped_completed")) or bool(entry.get("execution_completed"))
+        entry["pending_do"] = pending_delivery_order(entry)
+    return result
 
 
 def _erp_wo_completion_by_partial(con, source_ids):
@@ -739,12 +785,8 @@ def api_pp_vouchers_with_ops():
         data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
         if not include_completed:
             data = [entry for entry in data if not entry.get("shipped_completed")]
-        if use_cache:
-            with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-                _PP_VOUCHERS_WITH_OPS_CACHE[scope] = {
-                    "data": data,
-                    "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
-                }
+        if use_cache or refresh:
+            _store_pp_vouchers_with_ops_cache(scope, data)
         return jsonify(_filter_pp_vouchers_by_search(data, raw_search))
     except Exception as e:
         # Fall back to REST if direct DB query fails
@@ -763,12 +805,8 @@ def api_pp_vouchers_with_ops():
             data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
             if not include_completed:
                 data = [entry for entry in data if not entry.get("shipped_completed")]
-            if use_cache:
-                with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-                    _PP_VOUCHERS_WITH_OPS_CACHE[scope] = {
-                        "data": data,
-                        "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
-                    }
+            if use_cache or refresh:
+                _store_pp_vouchers_with_ops_cache(scope, data)
             return jsonify(_filter_pp_vouchers_by_search(data, raw_search))
         except Exception as e2:
             return jsonify({"error": str(e2)}), 500
@@ -787,11 +825,12 @@ def api_process_sheets_board():
         planner_keys = {process_sheet_board_identity_key(item) for item in planner_items}
         include_completed = _pp_vouchers_include_completed()
         refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
+        scope = _pp_vouchers_cache_scope(include_completed)
         if refresh:
             cache_rows = _fetch_pp_vouchers_cache_rows(include_completed)
             erp_data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
+            _store_pp_vouchers_with_ops_cache(scope, erp_data)
         else:
-            scope = _pp_vouchers_cache_scope(include_completed)
             now = time.monotonic()
             with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
                 bucket = _PP_VOUCHERS_WITH_OPS_CACHE.get(scope) or {}
@@ -801,11 +840,7 @@ def api_process_sheets_board():
             if erp_data is None:
                 cache_rows = _fetch_pp_vouchers_cache_rows(include_completed)
                 erp_data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
-                with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-                    _PP_VOUCHERS_WITH_OPS_CACHE[scope] = {
-                        "data": erp_data,
-                        "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
-                    }
+                _store_pp_vouchers_with_ops_cache(scope, erp_data)
         if not include_completed:
             erp_data = [entry for entry in erp_data if not entry.get("shipped_completed")]
         erp_only = [

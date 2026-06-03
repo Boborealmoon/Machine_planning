@@ -46,6 +46,7 @@ from .blocks import (
     schedule_signature_for_machine,
     dedupe_machine_catalog_queue,
     find_active_catalog_lane_block,
+    merge_deleted_split_block_qty,
     trial_block_payload,
     trial_block_row,
 )
@@ -60,7 +61,7 @@ from .catalog import (
 from .helpers import planner_db, one, planner_try_savepoint, rows, parse_dt_text
 from .materials import material_status_map_for_ps_ids, sync_material_requirements_for_ps_ids
 from .operation_sequence import apply_machine_queue_order, apply_machine_queue_orders
-from .process_sheets import ensure_planner_process_sheet
+from .process_sheets import ensure_planner_process_sheet, format_planner_ps_id, parse_planner_ps_id
 from .machines import default_profile_for_weekday, fetch_machines, is_public_holiday
 from .sg_public_holidays import fetch_sg_public_holidays, list_public_holidays, sync_sg_public_holidays_to_db
 from .planner_actuals import actual_summaries_for_block_rows
@@ -1354,7 +1355,9 @@ def api_trial_create_operation():
         return jsonify({"error": cycle_error}), 400
     try:
         with planner_db() as con:
-            source_ps_id_val = compact_text(data.get("source_ps_id")) or job_no
+            raw_source_ps = compact_text(data.get("source_ps_id")) or job_no
+            src_base, src_partial = parse_planner_ps_id(raw_source_ps)
+            source_ps_id_val = format_planner_ps_id(src_base, src_partial) if src_base else raw_source_ps
             source_op_no_val = compact_text(data.get("source_op_no"))
             source_op_seq_val = int(data.get("source_op_seq_id") or 0)
             existing_block_id = find_active_catalog_lane_block(
@@ -1367,8 +1370,6 @@ def api_trial_create_operation():
             if existing_block_id:
                 queue_position = float(data.get("queue_position") or 0)
                 if queue_position > 0:
-                    from .operation_sequence import apply_machine_queue_order
-
                     machine_blocks = rows(
                         con.execute(
                             """
@@ -1711,8 +1712,9 @@ def api_trial_split_block(block_id):
             """
             INSERT INTO planner_run_block (
               operation_id, machine_id, queue_position, scheduled_qty, include_setup, status, planning_status, execution_status,
-              anchor_datetime, calculated_start_datetime, calculated_end_datetime, actual_good_qty, actual_reject_qty, remarks, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, NULL, 0, 0, %s, NOW())
+              anchor_datetime, calculated_start_datetime, calculated_end_datetime, actual_good_qty, actual_reject_qty, remarks,
+              split_from_block_id, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, NULL, 0, 0, %s, %s, NOW())
             RETURNING block_id
             """,
             (
@@ -1725,14 +1727,18 @@ def api_trial_split_block(block_id):
                 planning_status,
                 execution_status,
                 compact_text(block["remarks"]),
+                int(block_id),
             ),
         )
         new_block_id = int(one(new_cur)["block_id"])
-        recalculate_machine(con, int(block["machine_id"]))
+        machine_id = int(block["machine_id"])
+        # Defer schedule times — same as queue/reorder; user clicks Recalculate schedules.
         return jsonify({
             "ok": True,
-            "block": trial_block_payload(trial_block_row(con, block_id), con),
-            "new_block": trial_block_payload(trial_block_row(con, new_block_id), con),
+            "recalculated": False,
+            "block": trial_block_payload(trial_block_row(con, block_id), None),
+            "new_block": trial_block_payload(trial_block_row(con, new_block_id), None),
+            "machine_refresh": _trial_machine_refresh_payload(con, [machine_id], lite=True),
         })
 
 
@@ -1886,6 +1892,7 @@ def api_trial_delete_block(block_id):
             con.execute("DELETE FROM planner_run_block WHERE group_id = %s", (group_id,))
             con.execute("DELETE FROM planner_run_block_group WHERE group_id = %s", (group_id,))
         else:
+            merge_deleted_split_block_qty(con, block)
             con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (int(block_id),))
 
         for op_id in affected_operation_ids:

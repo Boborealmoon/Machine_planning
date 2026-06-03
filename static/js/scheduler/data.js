@@ -180,9 +180,35 @@ function trialLegacyBlocksForCatalogOp(card) {
   });
 }
 
+function trialCatalogQueuedQty(cardOrPayload) {
+  const card = (typeof trialCatalogCardFromPayload === 'function')
+    ? (trialCatalogCardFromPayload(cardOrPayload) || cardOrPayload)
+    : cardOrPayload;
+  return trialBlocksForCatalogOp(card).reduce(
+    (sum, block) => sum + Math.max(0, Number(block.scheduled_qty || 0)),
+    0,
+  );
+}
+
 function trialCatalogSchedulableRemaining(cardOrPayload) {
-  const raw = cardOrPayload?.remaining_qty ?? cardOrPayload?.op?.remaining_qty ?? 0;
-  return Math.max(0, Number(raw || 0));
+  const op = cardOrPayload?.op || {};
+  const serverRemaining = Math.max(0, Number(
+    cardOrPayload?.remaining_qty ?? op?.remaining_qty ?? 0,
+  ));
+  const required = Math.max(0, Number(
+    op?.required_qty ?? cardOrPayload?.required_qty ?? 0,
+  ));
+  const erpFinished = Math.max(0, Number(
+    op?.erp_finished_qty ?? cardOrPayload?.erp_finished_qty ?? 0,
+  ));
+  const queued = trialCatalogQueuedQty(cardOrPayload);
+  if (required > 0.0001) {
+    return Math.max(0, required - queued - erpFinished);
+  }
+  if (queued > 0.0001 && serverRemaining > queued + 0.0001) {
+    return Math.max(0, serverRemaining - queued);
+  }
+  return serverRemaining;
 }
 
 function trialCatalogOpHasQueuedBlocks(card) {
@@ -263,6 +289,10 @@ function trialCatalogCardFromPayload(payload) {
     source_op_no: payload.source_op_no || op.source_op_no || payload.operation_label || '',
     source_op_seq_id: Number(payload.source_op_seq_id || op.source_op_seq_id || 0),
     operation_label: payload.operation_label || '',
+    remaining_qty: Number(payload.remaining_qty ?? op.remaining_qty ?? 0),
+    required_qty: Number(payload.required_qty ?? op.required_qty ?? 0),
+    erp_finished_qty: Number(payload.erp_finished_qty ?? op.erp_finished_qty ?? 0),
+    planned_qty: Number(payload.planned_qty ?? op.planned_qty ?? 0),
   };
 }
 

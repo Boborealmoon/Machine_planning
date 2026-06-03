@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Production Planner{% endblock %}
 {% block main_class %}app-main--planner{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=board-page-scroll-20260603">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=catalog-queue-pill-fix-20260603">{% endblock %}
 {% block content %}
 <div class="trial-shell">
   <div class="trial-top-strip">
@@ -64,6 +64,16 @@
           </div>
         </div>
         <div id="trial-ps-type-filter"></div>
+        <div class="trial-sidebar-catalog-actions">
+          <button
+            id="trial-catalog-due-sort-btn"
+            class="btn btn-ghost btn-sm trial-sidebar-head-btn trial-catalog-sort-btn"
+            type="button"
+            onclick="toggleTrialCatalogDueDateSort()"
+            aria-pressed="false"
+            title="Sort operations by due date (earliest first)"
+          >Sort by due</button>
+        </div>
         <input id="trial-catalog-search" class="trial-catalog-search" type="search" placeholder="Search PS, part, op..." oninput="renderTrialCatalog()">
         <div id="trial-catalog" class="trial-catalog"></div>
       </div>
@@ -80,7 +90,7 @@
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=anchor-wall-clock-20260529"></script>
 <script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v=dedupe-queue-guard-20260603"></script>
 <script src="{{ url_for('static', filename='js/scheduler/program_tools.js') }}?v=lane-height-viewport-20260529"></script>
-<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=fast-schedule-20260603"></script>
+<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=catalog-partial-shipped-20260603"></script>
 <script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=load-perf-20260603"></script>
 <script src="{{ url_for('static', filename='js/scheduler/bom.js') }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/dnd.js') }}?v=dedupe-queue-guard-20260603"></script>

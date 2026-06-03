@@ -9,6 +9,8 @@ let trialState = {
 };
 let trialDragPayload = null;
 let trialCatalogSearch = '';
+/** When true, PS / Ops sidebar lists earliest due_date first. */
+let trialCatalogSortByDueDate = false;
 let trialShowCompleted = false;
 let trialHidePendingDo = true;
 let trialHideBlankPs = true;

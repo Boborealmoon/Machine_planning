@@ -277,6 +277,19 @@
     min-height: 0 !important;
     flex-shrink: 0;
   }
+  .trial-sidebar-catalog-actions {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 4px;
+    margin: 2px 0 4px;
+    min-width: 0;
+  }
+  .trial-sidebar .trial-catalog-sort-btn.is-active {
+    color: var(--accent, #6366f1);
+    background: rgba(99, 102, 241, 0.12);
+    border-color: rgba(99, 102, 241, 0.28);
+  }
   .trial-sidebar .trial-ps-type-filter-row {
     display: flex;
     flex-wrap: wrap;
@@ -516,10 +529,33 @@
   }
   .trial-sidebar .trial-catalog-ps-main .ps-op-status,
   .trial-sidebar .trial-catalog-ps-main .ps-stage-badge,
-  .trial-sidebar .trial-catalog-ps-main .ps-pending-do-badge {
+  .trial-sidebar .trial-catalog-ps-main .ps-pending-do-badge,
+  .trial-sidebar .trial-catalog-ps-main .trial-catalog-queue-pill {
     margin-top: 2px;
     font-size: 9px;
     padding: 1px 5px;
+  }
+  .trial-catalog-queue-pill {
+    display: inline-flex;
+    align-items: center;
+    width: max-content;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1.2;
+    white-space: nowrap;
+    border: 1px solid transparent;
+  }
+  .trial-catalog-queue-pill.is-queued {
+    border-color: rgba(59, 130, 246, 0.28);
+    background: rgba(59, 130, 246, 0.12);
+    color: #1d4ed8;
+  }
+  .trial-catalog-queue-pill.is-not-queued {
+    border-color: rgba(140, 149, 163, 0.28);
+    background: rgba(140, 149, 163, 0.1);
+    color: #57606a;
   }
   .trial-catalog-ps-part {
     font-size: 13px;
@@ -558,7 +594,8 @@
   }
   .trial-catalog-ps-main .ps-op-status,
   .trial-catalog-ps-main .ps-stage-badge,
-  .trial-catalog-ps-main .ps-pending-do-badge {
+  .trial-catalog-ps-main .ps-pending-do-badge,
+  .trial-catalog-ps-main .trial-catalog-queue-pill {
     margin-top: 4px;
   }
   .ps-pending-do-badge {
@@ -946,6 +983,27 @@
   .trial-catalog-section-head {
     display: grid;
     gap: 2px;
+  }
+  .trial-catalog-section-head-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    min-width: 0;
+  }
+  .trial-catalog-sort-btn {
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    padding: 2px 6px;
+    line-height: 1.2;
+    opacity: 0.72;
+  }
+  .trial-catalog-sort-btn.is-active {
+    opacity: 1;
+    color: var(--accent, #6366f1);
+    background: rgba(99, 102, 241, 0.1);
   }
   .trial-catalog-section-title {
     font-size: 10px;
@@ -3023,6 +3081,13 @@
     background: rgba(16,185,129,0.04);
     opacity: 0.82;
     cursor: not-allowed;
+  }
+  .trial-catalog-op.is-allocated.is-partially-allocated {
+    opacity: 1;
+    cursor: grab;
+  }
+  .trial-catalog-op.is-allocated.is-partially-allocated:active {
+    cursor: grabbing;
   }
   .trial-catalog-op.is-allocated .trial-planning-card-title,
   .trial-catalog-op.is-allocated .trial-planning-card-sub {

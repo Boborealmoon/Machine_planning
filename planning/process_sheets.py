@@ -219,23 +219,16 @@ def ensure_planner_process_sheet(con, planner_ps_id):
 
 
 def _flow_steps_for_ps_ids(con, ps_ids):
+    from planning.erp_wo_merge import ERP_STAGE_OUTPUTS_CTE
+
     ps_ids = [compact_text(x) for x in ps_ids if compact_text(x)]
     if not ps_ids:
         return {}
     result = {}
     for row in rows(
         con.execute(
-            """
-            WITH stage_outputs AS (
-                SELECT ps_id, pp_partial_no, stage_no,
-                       MAX(wo_qty_required) AS wo_qty_required,
-                       MAX(wo_qty_produced) AS wo_qty_produced,
-                       MAX(wo_qty_rejected) AS wo_qty_rejected,
-                       MAX(execution_status) AS execution_status
-                FROM pp_vouchers_cache
-                WHERE stage_no IS NOT NULL
-                GROUP BY ps_id, pp_partial_no, stage_no
-            )
+            f"""
+            WITH {ERP_STAGE_OUTPUTS_CTE}
             SELECT ps.planner_ps_id AS ps_id,
                    pfs.op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
                    pfs.machine_category, pfs.preferred_machine,
@@ -247,7 +240,7 @@ def _flow_steps_for_ps_ids(con, ps_ids):
                    so.execution_status AS erp_execution_status
             FROM planner_process_sheet ps
             JOIN planner_operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
-            LEFT JOIN stage_outputs so
+            LEFT JOIN erp_stage_outputs so
                    ON so.ps_id = ps.source_ps_id
                   AND so.pp_partial_no = ps.pp_partial_no
                   AND so.stage_no = pfs.source_stage_no
@@ -264,6 +257,8 @@ def _flow_steps_for_ps_ids(con, ps_ids):
 
 def _erp_cache_steps_batch(con, partial_keys):
     """Batch-fetch ERP cache steps for many (source_ps_id, pp_partial_no) pairs."""
+    from planning.erp_wo_merge import ERP_CACHE_STEPS_SELECT, ERP_CACHE_STEPS_WHERE_PARTIALS
+
     keys = []
     for source_ps_id, pp_partial_no in partial_keys or []:
         source_ps_id = compact_text(source_ps_id)
@@ -282,18 +277,7 @@ def _erp_cache_steps_batch(con, partial_keys):
     grouped: dict[tuple[str, int], list] = {}
     for row in rows(
         con.execute(
-            f"""
-            SELECT ps_id, pp_partial_no, stage_no, stage_desc, op_no,
-                   MAX(wo_qty_required) AS wo_qty_required,
-                   MAX(wo_qty_produced) AS wo_qty_produced,
-                   MAX(wo_qty_rejected) AS wo_qty_rejected,
-                   MAX(execution_status) AS execution_status
-            FROM pp_vouchers_cache
-            WHERE (ps_id, pp_partial_no) IN ({values_sql})
-              AND NULLIF(TRIM(COALESCE(stage_desc, '')), '') IS NOT NULL
-            GROUP BY ps_id, pp_partial_no, stage_no, stage_desc, op_no
-            ORDER BY ps_id, pp_partial_no, stage_no, op_no
-            """,
+            ERP_CACHE_STEPS_SELECT + ERP_CACHE_STEPS_WHERE_PARTIALS.format(values_sql=values_sql),
             params,
         )
     ):
@@ -332,6 +316,8 @@ def _erp_cache_steps_batch(con, partial_keys):
 
 def _erp_cache_steps_for_ps(con, source_ps_id, pp_partial_no):
     """BOM flow steps from pp_vouchers_cache when no planner_operation_seq is selected."""
+    from planning.erp_wo_merge import ERP_CACHE_STEPS_SELECT, ERP_CACHE_STEPS_WHERE_SINGLE
+
     source_ps_id = compact_text(source_ps_id)
     if not source_ps_id:
         return []
@@ -344,19 +330,7 @@ def _erp_cache_steps_for_ps(con, source_ps_id, pp_partial_no):
     for idx, row in enumerate(
         rows(
             con.execute(
-                """
-                SELECT stage_no, stage_desc, op_no,
-                       MAX(wo_qty_required) AS wo_qty_required,
-                       MAX(wo_qty_produced) AS wo_qty_produced,
-                       MAX(wo_qty_rejected) AS wo_qty_rejected,
-                       MAX(execution_status) AS execution_status
-                FROM pp_vouchers_cache
-                WHERE ps_id = %s
-                  AND pp_partial_no = %s
-                  AND NULLIF(TRIM(COALESCE(stage_desc, '')), '') IS NOT NULL
-                GROUP BY stage_no, stage_desc, op_no
-                ORDER BY stage_no, op_no
-                """,
+                ERP_CACHE_STEPS_SELECT + ERP_CACHE_STEPS_WHERE_SINGLE,
                 (source_ps_id, pp_partial_no),
             )
         )
@@ -855,40 +829,48 @@ def _apply_partial_shipped_rollup(rows):
             item["is_completed"] = True
 
 
-_PS_SELECT = """
-    WITH voucher_partials AS (
+def _ps_select_sql():
+    from planning.erp_wo_merge import ERP_STAGE_OUTPUTS_CTE
+
+    return f"""
+    WITH {ERP_STAGE_OUTPUTS_CTE},
+    voucher_partials AS (
         SELECT
-            ps_id,
-            pp_partial_no,
-            MAX(part_no) AS part_no,
-            MAX(description) AS description,
-            MIN(due_date) AS due_date,
-            MIN(order_date) AS order_date,
-            MAX(bom_code) AS bom_code,
-            MAX(status) AS status,
-            MAX(execution_status) AS execution_status,
-            MAX(total_qty) AS total_qty,
-            MAX(partial_qty) AS partial_qty,
-            MAX(wo_qty_required) AS wo_qty_required,
-            MAX(wo_qty_produced) AS wo_qty_produced,
-            MAX(wo_qty_rejected) AS wo_qty_rejected,
-            MAX(source_voucher_no) AS source_voucher_no,
-            MAX(qty_shipped) AS qty_shipped,
-            MAX(so_det_qty) AS so_det_qty,
-            MAX(current_stage_no) AS current_stage_no,
-            MAX(current_stage_desc) AS current_stage_desc,
-            MAX(current_stage_status) AS current_stage_status,
+            c.ps_id,
+            c.pp_partial_no,
+            MAX(c.part_no) AS part_no,
+            MAX(c.description) AS description,
+            MIN(c.due_date) AS due_date,
+            MIN(c.order_date) AS order_date,
+            MAX(c.bom_code) AS bom_code,
+            MAX(c.status) AS status,
+            MAX(COALESCE(e.execution_status, c.execution_status)) AS execution_status,
+            MAX(c.total_qty) AS total_qty,
+            MAX(c.partial_qty) AS partial_qty,
+            MAX(COALESCE(e.wo_qty_required, c.wo_qty_required)) AS wo_qty_required,
+            MAX(COALESCE(e.wo_qty_produced, c.wo_qty_produced)) AS wo_qty_produced,
+            MAX(COALESCE(e.wo_qty_rejected, c.wo_qty_rejected)) AS wo_qty_rejected,
+            MAX(c.source_voucher_no) AS source_voucher_no,
+            MAX(c.qty_shipped) AS qty_shipped,
+            MAX(c.so_det_qty) AS so_det_qty,
+            MAX(c.current_stage_no) AS current_stage_no,
+            MAX(c.current_stage_desc) AS current_stage_desc,
+            MAX(c.current_stage_status) AS current_stage_status,
             COALESCE(
                 BOOL_AND(
                     CASE
-                        WHEN NULLIF(TRIM(execution_status), '') IS NULL THEN NULL
-                        ELSE UPPER(REPLACE(REPLACE(execution_status, '-', '_'), ' ', '_')) IN ('C', 'COMPLETED')
+                        WHEN NULLIF(TRIM(COALESCE(e.execution_status, c.execution_status)), '') IS NULL THEN NULL
+                        ELSE UPPER(REPLACE(REPLACE(COALESCE(e.execution_status, c.execution_status), '-', '_'), ' ', '_')) IN ('C', 'COMPLETED')
                     END
                 ),
                 FALSE
             ) AS execution_completed
-        FROM pp_vouchers_cache
-        GROUP BY ps_id, pp_partial_no
+        FROM pp_vouchers_cache c
+        LEFT JOIN erp_stage_outputs e
+               ON e.ps_id = c.ps_id
+              AND e.pp_partial_no = c.pp_partial_no
+              AND e.stage_no = c.stage_no
+        GROUP BY c.ps_id, c.pp_partial_no
     )
     SELECT
         ps.planner_ps_id AS ps_id,
@@ -930,6 +912,9 @@ _PS_SELECT = """
           AND v.pp_partial_no = ps.pp_partial_no
     LEFT JOIN planner_bom_variation sf ON sf.bom_id = ps.selected_bom_id
 """
+
+
+_PS_SELECT = _ps_select_sql()
 
 
 def _erp_wo_completion_map(con, source_ps_ids):

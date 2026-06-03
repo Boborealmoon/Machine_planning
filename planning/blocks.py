@@ -107,6 +107,60 @@ def find_active_catalog_lane_block(
     return None
 
 
+def merge_deleted_split_block_qty(con, block):
+    """Return qty merged into a sibling block when removing a queue split (else 0)."""
+    if not con or not block:
+        return 0.0
+    block_id = int(block.get("block_id") or 0)
+    operation_id = int(block.get("operation_id") or 0)
+    removed_qty = max(0.0, float(block.get("scheduled_qty") or 0))
+    if not block_id or not operation_id or removed_qty <= 0:
+        return 0.0
+
+    siblings = rows(
+        con.execute(
+            """
+            SELECT block_id, scheduled_qty, split_from_block_id
+            FROM planner_run_block
+            WHERE operation_id = %s
+              AND block_id <> %s
+              AND COALESCE(active, TRUE) = TRUE
+            ORDER BY block_id
+            """,
+            (operation_id, block_id),
+        )
+    )
+    if not siblings:
+        return 0.0
+
+    split_parent_id = int(block.get("split_from_block_id") or 0)
+    target = None
+    if split_parent_id:
+        target = next((row for row in siblings if int(row["block_id"]) == split_parent_id), None)
+    if not target:
+        target = siblings[0]
+
+    target_id = int(target["block_id"])
+    next_qty = max(0.0, float(target["scheduled_qty"] or 0)) + removed_qty
+    con.execute(
+        "UPDATE planner_run_block SET scheduled_qty = %s, updated_at = NOW() WHERE block_id = %s",
+        (next_qty, target_id),
+    )
+    op_row = one(
+        con.execute(
+            "SELECT total_qty FROM planner_operation WHERE operation_id = %s",
+            (operation_id,),
+        )
+    )
+    if op_row:
+        op_total = max(float(op_row.get("total_qty") or 0), next_qty)
+        con.execute(
+            "UPDATE planner_operation SET total_qty = %s, updated_at = NOW() WHERE operation_id = %s",
+            (op_total, operation_id),
+        )
+    return removed_qty
+
+
 def sync_catalog_op_timing_fields(
     con,
     anchor_operation_id,

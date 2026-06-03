@@ -23,7 +23,7 @@ import re
 from .actuals import actual_totals_for_block
 from .blocks import trial_block_row  # noqa: F401  (re-exported for route convenience)
 from .helpers import one, rows
-from .process_sheets import ensure_planner_process_sheet, format_planner_ps_id
+from .process_sheets import ensure_planner_process_sheet, format_planner_ps_id, parse_planner_ps_id
 from .utils import compact_text, parse_number, shipped_quantity_completed, trial_catalog_op_key
 
 
@@ -34,6 +34,27 @@ from .utils import compact_text, parse_number, shipped_quantity_completed, trial
 def _base_ps_id(ps_id):
     ps_id = compact_text(ps_id)
     return ps_id.split("::", 1)[0] if "::" in ps_id else ps_id
+
+
+def _canonical_catalog_ps_id(ps_id):
+    """Normalize PS ids so catalog op keys match planner_operation.source_ps_id."""
+    source, partial = parse_planner_ps_id(ps_id)
+    return format_planner_ps_id(source, partial) if source else compact_text(ps_id)
+
+
+def _planned_qty_for_catalog_op(planned_qty_by_op, ps_id, op_no, op_seq_id):
+    """Lookup planned queue qty — tolerates legacy source_ps_id / planner_ps_id variants."""
+    candidates = []
+    canonical = _canonical_catalog_ps_id(ps_id)
+    if canonical:
+        candidates.append(trial_catalog_op_key(canonical, op_no, op_seq_id))
+    raw = compact_text(ps_id)
+    if raw and raw != canonical:
+        candidates.append(trial_catalog_op_key(raw, op_no, op_seq_id))
+    base = _base_ps_id(raw or canonical)
+    if base and base not in {raw, canonical}:
+        candidates.append(trial_catalog_op_key(base, op_no, op_seq_id))
+    return max(float(planned_qty_by_op.get(key, 0) or 0) for key in candidates) if candidates else 0.0
 
 
 def _catalog_ps_id(row):
@@ -127,8 +148,9 @@ def trial_catalog_items(con, include_completed=False):
             """
         )
     ):
-        key = trial_catalog_op_key(row["source_ps_id"], row["source_op_no"], row["source_op_seq_id"])
-        planned_qty_by_op[key] = float(row["planned_qty"] or 0)
+        canonical_ps = _canonical_catalog_ps_id(row["source_ps_id"])
+        key = trial_catalog_op_key(canonical_ps, row["source_op_no"], row["source_op_seq_id"])
+        planned_qty_by_op[key] = float(planned_qty_by_op.get(key, 0) or 0) + float(row["planned_qty"] or 0)
     for row in rows(
         con.execute(
             """
@@ -144,7 +166,8 @@ def trial_catalog_items(con, include_completed=False):
             """
         )
     ):
-        key = trial_catalog_op_key(row["source_ps_id"], row["source_op_no"], row["source_op_seq_id"])
+        canonical_ps = _canonical_catalog_ps_id(row["source_ps_id"])
+        key = trial_catalog_op_key(canonical_ps, row["source_op_no"], row["source_op_seq_id"])
         code = compact_text(row.get("machine_code"))
         if code:
             queued_machines_by_op.setdefault(key, []).append(code)
@@ -366,7 +389,7 @@ def trial_catalog_items(con, include_completed=False):
         op_seq_id = int(row["op_seq_id"] or 0)
         op_key = trial_catalog_op_key(ps_id, row["op_no"], op_seq_id)
         required_qty = float(row.get("partial_qty") or row["total_qty"] or 0)
-        planned_qty = float(planned_qty_by_op.get(op_key, 0) or 0)
+        planned_qty = _planned_qty_for_catalog_op(planned_qty_by_op, ps_id, row["op_no"], op_seq_id)
         erp_finished_qty = max(0.0, float(row.get("erp_finished_qty") or 0))
         erp_reject_qty = max(0.0, float(row.get("erp_reject_qty") or 0))
         remaining_qty = max(0.0, required_qty - planned_qty - erp_finished_qty)
@@ -511,6 +534,9 @@ def trial_catalog_items(con, include_completed=False):
                     "operation_name": op["op_type"] or op["operation_name"] or "",
                     "target_qty": float(op["remaining_qty"] or 0),
                     "remaining_qty": float(op["remaining_qty"] or 0),
+                    "required_qty": float(op.get("required_qty") or 0),
+                    "planned_qty": float(op.get("planned_qty") or 0),
+                    "erp_finished_qty": float(op.get("erp_finished_qty") or 0),
                     "source_op_seq_id": int(op["source_op_seq_id"] or 0),
                     "source_op_no": op["source_op_no"] or "",
                     "job_no": op["job_no"] or "",
