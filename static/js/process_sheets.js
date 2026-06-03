@@ -377,6 +377,27 @@
     return status === 'COMPLETED' || status === 'C';
   }
 
+  function opRemainingQty(op) {
+    const direct = numberValue(op?.remaining_qty);
+    if (direct > SHIPPED_QTY_TOLERANCE) return direct;
+    const required = numberValue(op?.wo_qty_required ?? op?.required_qty ?? 0);
+    const finished = numberValue(op?.finished_qty ?? op?.wo_qty_produced ?? 0);
+    return Math.max(0, required - finished);
+  }
+
+  function opHasWorkOrderEvidence(op) {
+    const required = numberValue(op?.wo_qty_required ?? op?.required_qty ?? 0);
+    const produced = numberValue(op?.finished_qty ?? op?.wo_qty_produced ?? 0);
+    const status = normalizeStatus(opExecutionStatus(op));
+    return required > SHIPPED_QTY_TOLERANCE || produced > SHIPPED_QTY_TOLERANCE || Boolean(status);
+  }
+
+  function isOpProductionComplete(op) {
+    if (!opHasWorkOrderEvidence(op)) return true;
+    if (opRemainingQty(op) > SHIPPED_QTY_TOLERANCE) return false;
+    return isExecutionCompletedStatus(opExecutionStatus(op));
+  }
+
   function trackedExecutionStatuses(item) {
     const ops = Array.isArray(item?.ops) ? item.ops : [];
     const opStatuses = ops
@@ -412,6 +433,11 @@
 
   function isCompleted(item) {
     if (isShippedComplete(item)) return true;
+    const ops = Array.isArray(item?.ops) ? item.ops : [];
+    const trackedOps = ops.filter(op => opHasWorkOrderEvidence(op));
+    if (trackedOps.length) {
+      return trackedOps.every(op => isOpProductionComplete(op));
+    }
     const remaining = numberValue(item?.remaining_qty);
     const finished = numberValue(item?.finished_qty);
     const required = numberValue(firstQuantity(item?.wo_req_qty, item?.display_qty, item?.partial_qty, item?.total_qty, 0));
@@ -552,9 +578,9 @@
       remaining_qty: firstQuantity(item.remaining_qty, item.wo_qty_required, item.display_qty, item.partial_qty, item.total_qty),
       status: item.status || '',
       execution_status: executionStatus,
-      execution_completed: shippedComplete,
+      execution_completed: boolValue(item.execution_completed),
       shipped_completed: boolValue(item.shipped_completed) || isShippedComplete(item),
-      is_completed: boolValue(item.shipped_completed) || isShippedComplete(item),
+      is_completed: boolValue(item.is_completed),
       planner_status: item.planner_status || 'UNPLANNED',
       selected_flow_code: item.selected_flow_code || item.selected_bom_code || item.bom_code || '',
       route_label: item.route_label || item.selected_flow_code || item.selected_bom_code || item.bom_code || 'No flow selected',
@@ -575,35 +601,32 @@
     return Boolean(els.showCompleted?.checked) || Boolean(els.completedOnly?.checked);
   }
 
-  function erpVouchersUrl() {
+  function erpVouchersUrl(refresh = false) {
     const includeCompleted = shouldIncludeErpCompleted();
     state.erpIncludeCompleted = includeCompleted;
     const params = new URLSearchParams();
-    params.set('refresh', '1');
+    if (refresh) params.set('refresh', '1');
     if (includeCompleted) params.set('show_completed', '1');
-    const search = String(els.search?.value || '').trim();
-    if (search) params.set('search', search);
-    return `/api/pp-vouchers/with-ops?${params.toString()}`;
+    const qs = params.toString();
+    return qs ? `/api/pp-vouchers/with-ops?${qs}` : '/api/pp-vouchers/with-ops';
   }
 
   function plannerProcessSheetsUrl() {
     const params = new URLSearchParams();
     if (shouldIncludeErpCompleted()) params.set('show_completed', '1');
-    const search = String(els.search?.value || '').trim();
-    if (search) params.set('search', search);
     const qs = params.toString();
     return qs ? `/api/process-sheets?${qs}` : '/api/process-sheets';
   }
 
-  let searchLoadTimer = null;
+  let searchRenderTimer = null;
 
-  async function loadProcessSheets() {
+  async function loadProcessSheets({ refresh = false } = {}) {
     state.loading = true;
     setBusy(true);
     try {
       const [plannerResult, erpResult] = await Promise.allSettled([
         getJson(plannerProcessSheetsUrl()),
-        getJson(erpVouchersUrl()),
+        getJson(erpVouchersUrl(refresh)),
       ]);
 
       const plannerItems = plannerResult.status === 'fulfilled' && Array.isArray(plannerResult.value)
@@ -1140,12 +1163,12 @@
     if (els.refreshBtn) els.refreshBtn.disabled = busy;
   }
 
-  function scheduleSearchLoad() {
-    clearTimeout(searchLoadTimer);
-    searchLoadTimer = setTimeout(() => {
+  function scheduleSearchRender() {
+    clearTimeout(searchRenderTimer);
+    searchRenderTimer = setTimeout(() => {
       state.page = 1;
-      loadProcessSheets();
-    }, 350);
+      render();
+    }, 150);
   }
 
   function bind() {
@@ -1179,7 +1202,7 @@
       render();
     });
 
-    els.search?.addEventListener('input', scheduleSearchLoad);
+    els.search?.addEventListener('input', scheduleSearchRender);
 
     [els.queueFilter, els.overdueOnly, els.hideSrTags]
       .filter(Boolean)
@@ -1202,7 +1225,7 @@
 
     els.refreshBtn?.addEventListener('click', () => {
       state.details.clear();
-      loadProcessSheets();
+      loadProcessSheets({ refresh: true });
     });
     els.queue?.addEventListener('click', event => {
       if (event.target.closest('[data-action="coway-edd"], [data-action="coway-edd-wrap"]')) {
@@ -1253,6 +1276,6 @@
   window.addEventListener('pp-vouchers-synced', () => {
     state.details.clear();
     setBusy(true);
-    loadProcessSheets().finally(() => setBusy(false));
+    loadProcessSheets({ refresh: true }).finally(() => setBusy(false));
   });
 })();

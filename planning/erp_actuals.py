@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from .helpers import one, rows
+from .helpers import one, planner_try_savepoint, rows
 from .process_sheets import format_planner_ps_id, parse_planner_ps_id
 from .utils import compact_text
 
@@ -221,7 +221,8 @@ def record_erp_wo_qty_snapshots(con, mfg_rows, synced_at=None, columns=None) -> 
 def _snapshots_for_key(con, key):
     if not key:
         return []
-    try:
+
+    def _load():
         ensure_erp_snapshot_table(con)
         return rows(
             con.execute(
@@ -239,8 +240,8 @@ def _snapshots_for_key(con, key):
                 (key["source_mps_no"], key["pp_partial_no"], key["stage_no"]),
             )
         )
-    except Exception:
-        return []
+
+    return planner_try_savepoint(con, "erp_snapshots", _load, default=[]) or []
 
 
 def _daily_deltas_from_snapshots(snapshots):
@@ -304,7 +305,7 @@ def _erp_totals_from_voucher_cache(con, key):
                 """
                 SELECT COALESCE(MAX(wo_qty_produced), 0) AS acc_qty_produced,
                        COALESCE(MAX(wo_qty_rejected), 0) AS acc_rej_qty_produced,
-                       MAX(_loaded_at) AS loaded_at
+                       MAX(_synced_at) AS loaded_at
                 FROM pp_vouchers_cache
                 WHERE ps_id = %s
                   AND pp_partial_no = %s

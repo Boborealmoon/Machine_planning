@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Production Planner{% endblock %}
 {% block main_class %}app-main--planner{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=sidebar-collapse-20260602">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=board-page-scroll-20260603">{% endblock %}
 {% block content %}
 <div class="trial-shell">
   <div class="trial-top-strip">
@@ -80,17 +80,42 @@
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=anchor-wall-clock-20260529"></script>
 <script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v=catalog-partial-alloc-20260529"></script>
 <script src="{{ url_for('static', filename='js/scheduler/program_tools.js') }}?v=lane-height-viewport-20260529"></script>
-<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=outstanding-op-cards-20260602"></script>
-<script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=lane-blocks-20260520"></script>
+<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=fast-schedule-20260603"></script>
+<script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=fast-schedule-20260603"></script>
 <script src="{{ url_for('static', filename='js/scheduler/bom.js') }}"></script>
-<script src="{{ url_for('static', filename='js/scheduler/dnd.js') }}?v=lane-height-viewport-20260529"></script>
+<script src="{{ url_for('static', filename='js/scheduler/dnd.js') }}?v=fast-schedule-20260603"></script>
 <script src="{{ url_for('static', filename='js/scheduler/actuals.js') }}"></script>
-<script src="{{ url_for('static', filename='js/scheduler/modals.js') }}?v=lane-height-viewport-20260529"></script>
+<script src="{{ url_for('static', filename='js/scheduler/modals.js') }}?v=fast-schedule-20260603"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   window.trialScheduleRenderHook = null;
   trialScheduleDateFilter = trialResolvedScheduleDateFilterFromUrl();
   loadTrial();
+  let _autoRefreshInFlight = false;
+  let _lastAutoRefreshAt = 0;
+  const AUTO_REFRESH_MS = 60000;
+  const MIN_REFRESH_GAP_MS = 15000;
+  const runAutoRefresh = async () => {
+    if (_autoRefreshInFlight) return;
+    const now = Date.now();
+    if ((now - _lastAutoRefreshAt) < MIN_REFRESH_GAP_MS) return;
+    _autoRefreshInFlight = true;
+    try {
+      await loadTrial({ force: true });
+      _lastAutoRefreshAt = Date.now();
+    } catch (_) {
+      // keep UI responsive; loadTrial already emits toast on hard errors.
+    } finally {
+      _autoRefreshInFlight = false;
+    }
+  };
+  window.addEventListener('focus', () => { runAutoRefresh(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') runAutoRefresh();
+  });
+  window.setInterval(() => {
+    if (document.visibilityState === 'visible') runAutoRefresh();
+  }, AUTO_REFRESH_MS);
 });
 </script>
 <script>

@@ -249,21 +249,17 @@ async function trialCatalogHandlePointerUp(e) {
     const machineId = Number(lane?.dataset.machineId || 0);
     if (machineId) {
       const queuePosition = trialLaneInsertPosition(lane, e.clientY);
-      const machine = (trialState.machines || []).find(row => Number(row.machine_id) === machineId);
-      const machineLabel = machine?.machine_code || `Machine ${machineId}`;
       try {
-        await trialRunWithPlannerBusy(async () => {
-          if (sourcePayload.card_kind === 'group') {
-            await scheduleTrialCombinedOpCard(sourcePayload.card_id, machineId, queuePosition);
-          } else if (sourcePayload.card_kind === 'single') {
-            const existing = trialFindBlockForCatalogOp(trialCatalogCardFromPayload(sourcePayload));
-            if (existing) {
-              await moveTrialBlockToMachine(existing.block_id, machineId, queuePosition, { skipBusy: true, quiet: true });
-            } else {
-              await scheduleTrialSingleOpCard(sourcePayload, machineId, queuePosition);
-            }
+        if (sourcePayload.card_kind === 'group') {
+          await scheduleTrialCombinedOpCard(sourcePayload.card_id, machineId, queuePosition);
+        } else if (sourcePayload.card_kind === 'single') {
+          const existing = trialFindBlockForCatalogOp(trialCatalogCardFromPayload(sourcePayload));
+          if (existing) {
+            await moveTrialBlockToMachine(existing.block_id, machineId, queuePosition, { skipBusy: true, quiet: true });
+          } else {
+            await scheduleTrialSingleOpCard(sourcePayload, machineId, queuePosition);
           }
-        }, 'Scheduling…', machineLabel);
+        }
       } catch (err) {
         toast('Schedule failed: ' + err.message, 'error');
         await loadTrial();
@@ -409,10 +405,14 @@ async function moveTrialBlockToMachine(blockId, machineId, queuePosition = 0, op
   orderedIds.splice(insertIdx, 0, numericBlockId);
   const machineIds = [...new Set([_fromMachineId, numericMachineId].filter(Boolean))];
   const run = async () => {
-    const result = await POST(`/api/trial/blocks/${numericBlockId}/reorder`, {
-      machine_id: numericMachineId,
-      ordered_ids: orderedIds,
-    });
+    const lanes = [{ machine_id: numericMachineId, ordered_ids: orderedIds }];
+    if (_fromMachineId && _fromMachineId !== numericMachineId) {
+      const fromLane = document.getElementById(`trial-lane-${_fromMachineId}`);
+      const fromOrder = trialLaneOrderFromElement(fromLane);
+      if (fromOrder) lanes.unshift(fromOrder);
+    }
+    const result = await postTrialQueueReorder(lanes, { recalculate: false });
+    trialMarkDirtyMachines(machineIds);
     const seq = result && result.sequences ? result.sequences[String(numericBlockId)] : null;
     if (seq) {
       trialPinBlock({
@@ -423,7 +423,7 @@ async function moveTrialBlockToMachine(blockId, machineId, queuePosition = 0, op
         queue_position: seq.sequence_no,
       });
     }
-    await refreshMachines(machineIds);
+    await refreshMachines(machineIds, { response: result });
     if (!options.quiet) toast('Job moved', 'success');
   };
   if (options.skipBusy) {
@@ -460,13 +460,11 @@ function bindTrialLaneOpDrops() {
       const machine = (trialState.machines || []).find(row => Number(row.machine_id) === machineId);
       const machineLabel = machine?.machine_code || `Machine ${machineId}`;
       try {
-        await trialRunWithPlannerBusy(async () => {
-          if (payload.card_kind === 'group') {
-            await scheduleTrialCombinedOpCard(payload.card_id, machineId);
-          } else if (payload.card_kind === 'single') {
-            await scheduleTrialSingleOpCard(payload, machineId);
-          }
-        }, 'Scheduling…', machineLabel);
+        if (payload.card_kind === 'group') {
+          await scheduleTrialCombinedOpCard(payload.card_id, machineId);
+        } else if (payload.card_kind === 'single') {
+          await scheduleTrialSingleOpCard(payload, machineId);
+        }
       } catch (err) {
         toast('Schedule failed: ' + err.message, 'error');
         await loadTrial();
@@ -522,8 +520,12 @@ function initTrialQueuePanelSortable() {
       const machineId = Number(list.dataset.machineId || 0);
       try {
         await trialRunWithPlannerBusy(async () => {
-          await saveTrialOrder(list, false);
-          await refreshMachines([machineId].filter(Boolean));
+          const lane = list;
+          const order = trialLaneOrderFromElement(lane);
+          if (!order) return;
+          const result = await postTrialQueueReorder([order], { recalculate: false });
+          trialMarkDirtyMachines([machineId]);
+          await refreshMachines([machineId].filter(Boolean), { response: result });
         }, 'Saving order…', '');
       } catch (e) {
         toast('Reorder failed: ' + e.message, 'error');
@@ -571,11 +573,18 @@ function initTrialMachineSortables() {
         const crossMachine = fromLane !== toLane;
         try {
           await trialRunWithPlannerBusy(async () => {
+            const lanes = [];
             if (crossMachine) {
-              await saveTrialOrder(fromLane, false);
+              const fromOrder = trialLaneOrderFromElement(fromLane);
+              if (fromOrder) lanes.push(fromOrder);
             }
-            await saveTrialOrder(toLane, false);
-            await refreshMachines([...(new Set([_fromMachineId, _toMachineId].filter(Boolean)))]);
+            const toOrder = trialLaneOrderFromElement(toLane);
+            if (toOrder) lanes.push(toOrder);
+            if (!lanes.length) return;
+            const affected = [...new Set(lanes.map(lane => lane.machine_id).filter(Boolean))];
+            const result = await postTrialQueueReorder(lanes, { recalculate: false });
+            trialMarkDirtyMachines(affected);
+            await refreshMachines(affected, { response: result });
           }, 'Updating queue…', '');
         } catch (e) {
           toast('Reorder failed: ' + e.message, 'error');
@@ -621,13 +630,18 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
       planning_status: 'PLANNED',
       execution_status: 'NOT_STARTED',
       include_setup: 1,
+      recalculate: false,
     });
+    const affectedIds = [Number(machineId || 0)].filter(Boolean);
     if (result && result.block) {
       trialPinBlock(result.block);
       trialMergeBlockFromApi(result.block);
     }
-    await refreshMachines([Number(machineId || 0)].filter(Boolean));
-    toast('Operation scheduled', 'success');
+    trialMarkDirtyMachines(affectedIds);
+    await refreshMachines(affectedIds, { response: result });
+    const machine = (trialState.machines || []).find(row => Number(row.machine_id) === Number(machineId));
+    const label = machine?.machine_code || `Machine ${machineId}`;
+    toast(`Queued on ${label} — click Recalculate schedules for times`, 'success');
   } catch (e) {
     console.error('scheduleTrialSingleOpCard failed:', e);
     toast('Schedule failed: ' + e.message, 'error');
@@ -641,12 +655,18 @@ async function scheduleTrialCombinedOpCard(cardId, machineId, queuePosition = 0)
     return;
   }
   try {
-    await POST(`/api/trial/planning-cards/${numericCardId}/schedule`, {
-      machine_id: Number(machineId || 0),
+    const numericMachineId = Number(machineId || 0);
+    const result = await POST(`/api/trial/planning-cards/${numericCardId}/schedule`, {
+      machine_id: numericMachineId,
       queue_position: Number(queuePosition || 0),
+      recalculate: false,
     });
-    await refreshMachines([Number(machineId || 0)].filter(Boolean));
-    toast('Operations scheduled', 'success');
+    const affectedIds = [numericMachineId].filter(Boolean);
+    trialMarkDirtyMachines(affectedIds);
+    await refreshMachines(affectedIds, { response: result });
+    const machine = (trialState.machines || []).find(row => Number(row.machine_id) === numericMachineId);
+    const label = machine?.machine_code || `Machine ${numericMachineId}`;
+    toast(`Queued on ${label} — click Recalculate schedules for times`, 'success');
   } catch (e) {
     toast('Schedule failed: ' + e.message, 'error');
   }

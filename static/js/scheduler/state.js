@@ -30,6 +30,8 @@ let trialCatalogPointerDrag = null;
 let trialCatalogPointerListenersBound = false;
 // Blocks pinned after schedule POST until schedule refresh includes them (prevents pop-off).
 let trialPinnedBlocks = new Map();
+/** Machine IDs whose lane order changed without schedule recalc (stale times until recalculate). */
+let trialDirtyMachineIds = new Set();
 let trialLoadCache = {
   catalog: null,
   catalogExpiresAt: 0,

@@ -594,10 +594,6 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
     )
     erp_finished_qty = _to_float(ps.get("wo_qty_produced"))
     erp_reject_qty = _to_float(ps.get("wo_qty_rejected"))
-    if erp_finished_qty > 0:
-        finished_qty = max(finished_qty, min(total_qty, erp_finished_qty) if total_qty > 0 else erp_finished_qty)
-        reject_qty = max(reject_qty, erp_reject_qty)
-        remaining_qty = max(0.0, total_qty - finished_qty)
     planner_status = _planner_status(ps, total_qty, planned_qty, finished_qty, len(steps))
     ops = [_step_payload(step, metrics.get("by_op", {}), total_qty) for step in steps]
     tracked_statuses = _tracked_stage_statuses(ops)
@@ -614,6 +610,10 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         execution_completed = bool(tracked_statuses) and all(
             _execution_status_completed(status) for status in tracked_statuses
         )
+    if erp_finished_qty > 0 and execution_completed:
+        finished_qty = max(finished_qty, min(total_qty, erp_finished_qty) if total_qty > 0 else erp_finished_qty)
+        reject_qty = max(reject_qty, erp_reject_qty)
+        remaining_qty = max(0.0, total_qty - finished_qty)
     so_qty = ps.get("so_det_qty")
     qty_shipped = _to_float(ps.get("qty_shipped"))
     has_partial_erp_evidence = bool(
@@ -631,10 +631,13 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         and shipped_quantity_completed(so_qty, ps.get("qty_shipped"))
     )
     qty_tolerance = 0.0001
-    production_completed = (
-        (total_qty > 0 and finished_qty >= (total_qty - qty_tolerance))
-        or (execution_completed and remaining_qty <= qty_tolerance)
-    )
+    if steps:
+        production_completed = execution_completed
+    else:
+        production_completed = (
+            (total_qty > 0 and finished_qty >= (total_qty - qty_tolerance))
+            or (execution_completed and remaining_qty <= qty_tolerance)
+        )
     is_completed = shipped_completed or production_completed
     display_ps_id, pp_partial_no = _display_ids(ps)
     queued_machines = list(metrics.get("queued_machines") or [])

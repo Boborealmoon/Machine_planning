@@ -482,6 +482,44 @@ function trialBlockPendingSetupMinutes(block, outputTotal = 0, rejectTotal = 0) 
 }
 
 function trialBlockMemberMetrics(block) {
+  const catalogFallbackGoodQty = () => {
+    const sourcePs = String(block?.source_ps_id || block?.job_no || '').trim();
+    if (!sourcePs) return 0;
+    const sourceParts = trialSplitPsId(sourcePs);
+    const sourceBase = String(sourceParts.base || '').trim();
+    const sourcePartial = String(sourceParts.partial || '').trim();
+    if (!sourceBase) return 0;
+    const pools = [
+      ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
+      ...(Array.isArray(trialState.planned) ? trialState.planned : []),
+    ];
+    for (const ps of pools) {
+      const psId = String(ps?.ps_id || '').trim();
+      if (!psId) continue;
+      const psParts = trialSplitPsId(psId);
+      const psBase = String(psParts.base || '').trim();
+      const psPartial = String(psParts.partial || ps?.pp_partial_no || '').trim();
+      if (psBase !== sourceBase) continue;
+      if (sourcePartial && psPartial && sourcePartial !== psPartial) continue;
+      const cards = Array.isArray(ps?.op_cards) ? ps.op_cards : [];
+      const hit = cards.find(card => trialCatalogOpMatchesBlock(
+        card?.source_op_no,
+        card?.source_op_seq_id,
+        card?.operation_label,
+        block,
+      ));
+      if (!hit) continue;
+      const produced = Number(hit?.finished_qty ?? hit?.wo_qty_produced ?? 0);
+      const required = Number(hit?.wo_qty_required ?? hit?.required_qty ?? block?.scheduled_qty ?? 0);
+      const bounded = Math.max(0, Math.min(
+        Math.max(0, Number(block?.scheduled_qty || required || 0)),
+        Math.max(0, produced),
+      ));
+      if (bounded > 0) return bounded;
+    }
+    return 0;
+  };
+
   const { actualTotalsByBlock } = trialEnsureDataIndexes();
   const blockTotals = actualTotalsByBlock.get(String(block.block_id || '')) || { output: 0, reject: 0 };
   const shopOutputTotal = Number(blockTotals.output || 0);
@@ -498,6 +536,13 @@ function trialBlockMemberMetrics(block) {
   let netOutput = Number(
     effective.effective_good_qty ?? recon.effective_good_qty ?? trialBlockNetOutput(shopOutputTotal, shopRejectTotal)
   );
+  if (netOutput <= 0) {
+    const fallbackGood = catalogFallbackGoodQty();
+    if (fallbackGood > 0) {
+      netOutput = fallbackGood;
+      outputTotal = Math.max(outputTotal, fallbackGood);
+    }
+  }
   const status = String(block.execution_status || block.status || '').toUpperCase();
   const isCompleted = status === 'DONE' || status === 'COMPLETED' || status === 'C';
   // Lite schedule payloads can omit ERP reconciliation totals; if a block is marked complete,
@@ -671,8 +716,11 @@ function trialGroupCompletedForQueue(group) {
   return rows.every(row => {
     const status = String(row?.execution_status || row?.status || '').toUpperCase();
     const doneByStatus = status === 'DONE' || status === 'COMPLETED' || status === 'C';
+    if (doneByStatus) return true;
     const remaining = Number(row?.remainingQty ?? row?.remaining_qty ?? 0);
-    if (doneByStatus || remaining <= tol) return true;
+    if (remaining > tol) return false;
+    // ERP/catalog reconciliation can drive remaining to 0 while the WO is still open.
+    // Only drop from machine lanes when the catalog agrees the op is finished.
     return blockCompletedByCatalog(row);
   });
 }

@@ -38,6 +38,29 @@ def rows(cur):
     return [dict(r) for r in cur.fetchall()]
 
 
+def planner_try_savepoint(con, name: str, fn, default=None):
+    """Run fn() inside a SAVEPOINT; roll back to it on failure so the outer tx stays usable."""
+    savepoint = re.sub(r"[^a-zA-Z0-9_]", "_", compact_savepoint_name(name)) or "sp"
+    con.execute(f"SAVEPOINT {savepoint}")
+    try:
+        result = fn()
+        con.execute(f"RELEASE SAVEPOINT {savepoint}")
+        return result
+    except Exception:
+        try:
+            con.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        except Exception:
+            pass
+        return default
+
+
+def compact_savepoint_name(name: str) -> str:
+    text = str(name or "").strip()
+    if len(text) <= 63:
+        return text
+    return text[:63]
+
+
 def parse_dt_text(value):
     """Parse a datetime string / object into a naive local datetime (or None)."""
     if isinstance(value, datetime):

@@ -269,7 +269,8 @@ function openTrialBlockEditor(blockId) {
         saveBtn.textContent = 'Saving…';
         saveBtn.setAttribute('aria-busy', 'true');
       }
-      await PUT(`/api/trial/blocks/${block.block_id}`, {
+      const affectedIds = [...new Set([block.machine_id, _editedMachineId].filter(Boolean))];
+      const result = await PUT(`/api/trial/blocks/${block.block_id}`, {
         job_no: document.getElementById('trial-edit-job-no').value,
         operation_name: document.getElementById('trial-edit-operation-name').value,
         total_qty: Number(document.getElementById('trial-edit-total-qty').value || 0),
@@ -281,16 +282,20 @@ function openTrialBlockEditor(blockId) {
         include_setup: document.getElementById('trial-edit-include-setup').value === '1',
         anchor_datetime: trialDatetimeLocalToStorage(document.getElementById('trial-edit-anchor-datetime').value),
         remarks: document.getElementById('trial-edit-remarks').value,
+        recalculate: false,
       });
+      trialMarkDirtyMachines(affectedIds);
       trialUpdateFormModalBusy(
-        'Recalculating schedule…',
-        'Refreshing machine queue, segments, and ERP actuals for this lane.'
+        'Refreshing lane…',
+        'Updating the board with your saved changes.'
       );
       if (saveBtn) saveBtn.textContent = 'Syncing…';
-      await refreshMachines([...new Set([block.machine_id, _editedMachineId].filter(Boolean))]);
+      if (!trialApplyMachineRefreshFromResponse(affectedIds, result)) {
+        await refreshMachines(affectedIds, { response: result });
+      }
       openTrialBlockEditor._saveInFlight = false;
       closeModal();
-      toast('Run block updated', 'success');
+      toast('Run block saved — click Recalculate schedules to refresh times', 'success');
     } catch (e) {
       trialClearFormModalBusy();
       if (saveBtn) {
@@ -685,19 +690,14 @@ async function saveTrialCapacity(triggerOrDate, profileName, note = '') {
 }
 
 async function saveTrialOrder(lane, reload = true) {
-  const cards = Array.from(lane.querySelectorAll(':scope > .trial-block-card[data-block-id], :scope > .trial-queue-row[data-block-id]'));
-  const machineId = Number(lane.dataset.machineId || 0);
-  if (!machineId) return;
-  const orderedIds = cards.map(card => Number(card.dataset.blockId)).filter(Boolean);
-  if (!orderedIds.length) return;
+  const order = trialLaneOrderFromElement(lane);
+  if (!order) return;
   try {
-    await POST(`/api/trial/blocks/${orderedIds[0]}/reorder`, {
-      machine_id: machineId,
-      ordered_ids: orderedIds,
-    });
+    const result = await postTrialQueueReorder([order], { recalculate: false });
+    trialMarkDirtyMachines([order.machine_id]);
     if (reload) {
-      await refreshMachines([machineId]);
-      toast('Queue order saved', 'success');
+      await refreshMachines([order.machine_id], { response: result });
+      toast('Queue order saved — recalculate schedules when ready', 'success');
     }
   } catch (e) {
     toast('Reorder failed: ' + e.message, 'error');
@@ -719,6 +719,9 @@ function openTrialMachineQueue(machineId) {
   const availabilityNote = availabilityEnd
     ? `<div class="trial-queue-panel-meta">Next available ${escapeHtml(trialFormatDt(availabilityEnd))}</div>`
     : '';
+  const staleNote = trialDirtyMachineIds.has(id)
+    ? `<div class="trial-queue-panel-stale">Schedule times may be outdated. <button type="button" class="btn btn-primary btn-sm" onclick="trialRecalculateSingleMachine(${id})">Recalculate</button></div>`
+    : '';
   const rowsHtml = groups.length
     ? groups.map(group => trialRenderQueueDetailRow(group)).join('')
     : `<div class="trial-empty">${escapeHtml(trialMachineLaneEmptyMessage(allGroups.length, groups.length))}</div>`;
@@ -733,6 +736,7 @@ function openTrialMachineQueue(machineId) {
           <div>
             <div class="trial-queue-panel-subtitle">${escapeHtml(machine.machine_category)} · ${escapeHtml(machine.shift_profile || 'STANDARD')}</div>
             ${availabilityNote}
+            ${staleNote}
           </div>
           <button class="btn btn-primary btn-sm" type="button" onclick="openTrialCreateModal(${id})">Add</button>
         </div>
@@ -770,18 +774,36 @@ async function toggleTrialCompletedCatalog() {
 async function removeTrialBlock(blockId, groupId) {
   const numericBlockId = Number(blockId || 0);
   if (!numericBlockId) return;
+  if (removeTrialBlock._inFlight) return;
   const isCombined = Number(groupId || 0) > 0;
   const msg = isCombined
     ? 'Remove this combined operation from the machine? All ops in the group will be returned to the side panel.'
     : 'Remove this operation from the machine? It will return to the side panel for re-allocation.';
   if (!confirm(msg)) return;
+
   const _rmBlock = (trialState.blocks || []).find(b => String(b.block_id) === String(numericBlockId));
   const _rmMachineId = _rmBlock ? Number(_rmBlock.machine_id || 0) : 0;
+  const queueRow = document.querySelector(`.trial-queue-row[data-block-id="${numericBlockId}"]`);
+
+  removeTrialBlock._inFlight = true;
   try {
-    await DEL(`/api/trial/blocks/${numericBlockId}`);
-    await refreshMachines([_rmMachineId].filter(Boolean));
+    await trialRunWithPlannerBusy(async () => {
+      trialSetFormModalBusy('Removing from queue…');
+      queueRow?.classList.add('is-removing');
+      try {
+        await DEL(`/api/trial/blocks/${numericBlockId}`);
+      } catch (e) {
+        if (!/not found/i.test(String(e.message || ''))) throw e;
+      }
+      queueRow?.remove();
+      await refreshMachines([_rmMachineId].filter(Boolean));
+    }, 'Removing from queue…');
     toast('Removed from machine — returned to side panel', 'success');
   } catch (e) {
+    queueRow?.classList.remove('is-removing');
     toast('Remove failed: ' + e.message, 'error');
+  } finally {
+    removeTrialBlock._inFlight = false;
+    trialClearFormModalBusy();
   }
 }

@@ -6,6 +6,12 @@ async function GET(url) {
   return res.json();
 }
 
+function trialNoCacheUrl(url) {
+  const u = new URL(String(url || ''), window.location.origin);
+  u.searchParams.set('_ts', String(Date.now()));
+  return `${u.pathname}?${u.searchParams.toString()}`;
+}
+
 async function POST(url, body) {
   const res = await fetch(url, {
     method: 'POST',
@@ -26,7 +32,11 @@ async function PUT(url, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try { const d = await res.json(); if (d && d.error) msg = d.error; } catch (_) {}
+    throw new Error(msg);
+  }
   return res.json();
 }
 
@@ -38,6 +48,127 @@ async function DEL(url) {
   }
   return res.json();
 }
+
+function trialLaneOrderFromElement(laneEl) {
+  if (!laneEl) return null;
+  const machineId = Number(laneEl.dataset.machineId || 0);
+  const orderedIds = Array.from(
+    laneEl.querySelectorAll(':scope > .trial-block-card[data-block-id], :scope > .trial-queue-row[data-block-id]')
+  ).map(card => Number(card.dataset.blockId)).filter(Boolean);
+  if (!machineId || !orderedIds.length) return null;
+  return { machine_id: machineId, ordered_ids: orderedIds };
+}
+
+function trialMarkDirtyMachines(machineIds) {
+  (machineIds || []).forEach(id => {
+    const numeric = Number(id || 0);
+    if (numeric) trialDirtyMachineIds.add(numeric);
+  });
+  trialUpdateStaleScheduleUi();
+}
+
+function trialClearDirtyMachines(machineIds) {
+  if (machineIds == null) {
+    trialDirtyMachineIds.clear();
+  } else {
+    (machineIds || []).forEach(id => trialDirtyMachineIds.delete(Number(id || 0)));
+  }
+  trialUpdateStaleScheduleUi();
+}
+
+function trialUpdateStaleScheduleUi() {
+  let banner = document.getElementById('trial-stale-schedule-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'trial-stale-schedule-banner';
+    banner.className = 'trial-stale-schedule-banner';
+    banner.setAttribute('role', 'status');
+    const anchor = document.getElementById('trial-machine-filter-shell')
+      || document.querySelector('.trial-main');
+    if (anchor?.parentNode) {
+      anchor.parentNode.insertBefore(banner, anchor);
+    }
+  }
+  const count = trialDirtyMachineIds.size;
+  if (!count) {
+    banner.hidden = true;
+    banner.innerHTML = '';
+    return;
+  }
+  banner.hidden = false;
+  banner.innerHTML = `
+    <span class="trial-stale-schedule-banner-text">
+      ${count} machine${count === 1 ? '' : 's'}: schedule times may be outdated after queue changes.
+    </span>
+    <button type="button" class="btn btn-primary btn-sm" onclick="trialRecalculateDirtySchedules()">
+      Recalculate schedules
+    </button>
+  `;
+  if (typeof trialScheduleRender === 'function') {
+    trialScheduleRender([...trialDirtyMachineIds], { deferCatalog: true, skipCatalog: true });
+  }
+}
+
+async function postTrialQueueReorder(lanes, options = {}) {
+  const recalculate = options.recalculate !== false;
+  const normalized = (lanes || [])
+    .map(lane => ({
+      machine_id: Number(lane.machine_id || 0),
+      ordered_ids: (lane.ordered_ids || []).map(Number).filter(Boolean),
+    }))
+    .filter(lane => lane.machine_id && lane.ordered_ids.length);
+  if (!normalized.length) return null;
+  const body = { recalculate };
+  if (normalized.length === 1) {
+    const lane = normalized[0];
+    return POST(`/api/trial/blocks/${lane.ordered_ids[0]}/reorder`, {
+      machine_id: lane.machine_id,
+      ordered_ids: lane.ordered_ids,
+      ...body,
+    });
+  }
+  return POST('/api/trial/queue/reorder-batch', { lanes: normalized, ...body });
+}
+
+async function postTrialQueueRecalculate(machineIds) {
+  const ids = [...new Set((machineIds || []).map(Number).filter(Boolean))];
+  if (!ids.length) return null;
+  return POST('/api/trial/queue/recalculate', { machine_ids: ids });
+}
+
+async function trialRecalculateDirtySchedules() {
+  const ids = [...trialDirtyMachineIds];
+  if (!ids.length) return;
+  try {
+    await trialRunWithPlannerBusy(async () => {
+      const result = await postTrialQueueRecalculate(ids);
+      trialClearDirtyMachines(ids);
+      await refreshMachines(ids, { response: result });
+      toast('Schedules recalculated', 'success');
+    }, 'Recalculating schedules…', `${ids.length} machine${ids.length === 1 ? '' : 's'}`);
+  } catch (err) {
+    toast('Recalculate failed: ' + err.message, 'error');
+  }
+}
+
+async function trialRecalculateSingleMachine(machineId) {
+  const id = Number(machineId || 0);
+  if (!id) return;
+  try {
+    await trialRunWithPlannerBusy(async () => {
+      const result = await postTrialQueueRecalculate([id]);
+      trialDirtyMachineIds.delete(id);
+      trialUpdateStaleScheduleUi();
+      await refreshMachines([id], { response: result });
+      toast('Schedule recalculated', 'success');
+    }, 'Recalculating…', '');
+  } catch (err) {
+    toast('Recalculate failed: ' + err.message, 'error');
+  }
+}
+
+window.trialRecalculateDirtySchedules = trialRecalculateDirtySchedules;
+window.trialRecalculateSingleMachine = trialRecalculateSingleMachine;
 
 function trialCatalogUrl(refresh = false) {
   const params = new URLSearchParams();
@@ -62,7 +193,7 @@ async function syncPpVouchers() {
   try {
     await (window.syncErpPpVouchers ? window.syncErpPpVouchers() : POST('/api/pp-vouchers/sync', {}));
     trialInvalidateCatalogCache();
-    const erpVouchers = await GET(trialCatalogUrl(true));
+    const erpVouchers = await GET(trialNoCacheUrl(trialCatalogUrl(true)));
     const cacheKey = trialCatalogCacheKey();
     trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
     trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 60000;
@@ -75,7 +206,7 @@ async function syncPpVouchers() {
 
 window.addEventListener('pp-vouchers-synced', () => {
   trialInvalidateCatalogCache();
-  GET(trialCatalogUrl(true))
+  GET(trialNoCacheUrl(trialCatalogUrl(true)))
     .then(erpVouchers => {
       const cacheKey = trialCatalogCacheKey();
       trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
@@ -146,6 +277,39 @@ function trialPinBlock(block, ttlMs = 30000) {
   window.setTimeout(() => trialPinnedBlocks.delete(blockId), ttlMs);
 }
 
+function trialApplyMachineRefreshPayload(machineIds, payload) {
+  if (!payload || !Array.isArray(payload.blocks)) return false;
+  const machineSet = new Set((machineIds || []).map(id => String(Number(id))).filter(id => id !== '0'));
+  if (!machineSet.size) return false;
+
+  const keptBlocks = (trialState.blocks || []).filter(b => !machineSet.has(String(b.machine_id)));
+  const refreshedBlocks = trialMergeBlocksWithSchedule(payload.blocks);
+  trialState.blocks = [...keptBlocks, ...refreshedBlocks];
+
+  if (Array.isArray(payload.block_groups) && payload.block_groups.length) {
+    const refreshedGroupIds = new Set(
+      payload.block_groups.map(g => String(g.group_id || 0)).filter(id => id !== '0')
+    );
+    trialState.block_groups = [
+      ...(trialState.block_groups || []).filter(g => {
+        const onMachine = machineSet.has(String(g.machine_id || 0));
+        const groupId = String(g.group_id || 0);
+        return !(onMachine || refreshedGroupIds.has(groupId));
+      }),
+      ...payload.block_groups,
+    ];
+  }
+
+  if (typeof trialResetDataIndexes === 'function') trialResetDataIndexes();
+  return true;
+}
+
+function trialApplyMachineRefreshFromResponse(machineIds, response) {
+  if (!trialApplyMachineRefreshPayload(machineIds, response?.machine_refresh)) return false;
+  trialScheduleRender(machineIds, { deferCatalog: true });
+  return true;
+}
+
 function trialMergeBlocksWithSchedule(scheduleBlocks) {
   const merged = new Map();
   (scheduleBlocks || []).forEach(block => {
@@ -210,6 +374,7 @@ async function loadTrial(options = {}) {
       show_completed: !!trialShowCompleted,
     })
     : null;
+  try {
   const resolved = trialNormalizeScheduleDates(trialScheduleDateFilter.start, trialScheduleDateFilter.end);
   trialScheduleDateFilter = resolved;
   trialSyncScheduleUrl();
@@ -227,15 +392,18 @@ async function loadTrial(options = {}) {
     trialLoadCache.machinesExpiresAt = 0;
   }
 
+  const catalogFetch = force
+    ? GET(trialNoCacheUrl(trialCatalogUrl(true))).catch(() => [])
+    : trialCachedGET(trialCatalogCacheKey(), 60000, trialCatalogUrl(false)).catch(() => []);
+
   const [scheduleOutcome, erpVouchers, machinesResult, programToolsLookup] = await Promise.all([
-    GET(`/api/trial/schedule${startParam}`).catch(err => {
+    GET(trialNoCacheUrl(`/api/trial/schedule${startParam}`)).catch(err => {
       console.error('Failed to load trial schedule:', err);
       return { error: err };
     }),
-    // Always request a fresh catalog payload for planner views.
-    GET(trialCatalogUrl(true)).catch(() => []),
+    catalogFetch,
     trialCachedGET('machines', 300000, '/api/planner/machines').catch(() => ({ machines: [] })),
-    GET('/api/program-tool-list/lookup').catch(() => null),
+    trialCachedGET('programToolsLookup', 300000, '/api/program-tool-list/lookup').catch(() => null),
   ]);
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'fetch-all');
@@ -277,24 +445,31 @@ async function loadTrial(options = {}) {
       schedule_error: Boolean(scheduleError),
     });
   }
+  } catch (err) {
+    console.error('loadTrial failed:', err);
+    toast('Could not load planner: ' + (err?.message || err), 'error');
+    trialScheduleRender();
+  }
 }
 
-function trialScheduleRender(machineIds = null) {
+function trialScheduleRender(machineIds = null, options = {}) {
   if (typeof window.trialScheduleRenderHook === 'function') {
-    window.trialScheduleRenderHook(machineIds);
+    window.trialScheduleRenderHook(machineIds, options);
     return;
   }
   if (machineIds && typeof renderTrialMachines === 'function') {
-    renderTrialMachines(machineIds);
+    renderTrialMachines(machineIds, options);
     return;
   }
-  if (typeof renderTrial === 'function') renderTrial();
+  if (typeof renderTrial === 'function') renderTrial(options);
 }
 
 // Lightweight refresh for a subset of machines after a mutation.
 // Replaces loadTrial() for block create/update/delete/reorder/actuals.
 // Falls back to loadTrial() on error.
-async function refreshMachines(machineIds) {
+let refreshMachinesQueue = Promise.resolve();
+
+async function refreshMachinesImpl(machineIds, options = {}) {
   const perf = (typeof trialPerfStart === 'function')
     ? trialPerfStart('refresh-machines', {
       requested: (machineIds || []).length,
@@ -303,8 +478,19 @@ async function refreshMachines(machineIds) {
   const ids = [...new Set((machineIds || []).map(Number).filter(Boolean))];
   if (!ids.length) { trialScheduleRender(); return; }
 
-  const params = new URLSearchParams({ machine_ids: ids.join(','), lite: '1' });
-  const data = await GET(`/api/trial/schedule?${params}`).catch(err => {
+  if (options.response && trialApplyMachineRefreshFromResponse(ids, options.response)) {
+    if (typeof trialPerfEnd === 'function') {
+      trialPerfEnd(perf, { source: 'mutation-payload' });
+    }
+    return;
+  }
+
+  const params = new URLSearchParams({
+    machine_ids: ids.join(','),
+    lite: '1',
+    include: 'blocks,actuals',
+  });
+  const data = await GET(trialNoCacheUrl(`/api/trial/schedule?${params}`)).catch(err => {
     console.error('refreshMachines failed, falling back to full reload:', err);
     return null;
   });
@@ -313,46 +499,8 @@ async function refreshMachines(machineIds) {
   }
   if (!data) { await loadTrial(); return; }
 
-  const machineSet = new Set(ids.map(String));
-
-  // Replace blocks and segments for the affected machines only (keep pinned / just-created blocks)
-  const keptBlocks = (trialState.blocks || []).filter(b => !machineSet.has(String(b.machine_id)));
-  const refreshedBlocks = trialMergeBlocksWithSchedule(data.blocks || []);
-  trialState.blocks = [...keptBlocks, ...refreshedBlocks];
-
-  if (Array.isArray(data.block_groups) && data.block_groups.length) {
-    const refreshedGroupIds = new Set(
-      data.block_groups.map(g => String(g.group_id || 0)).filter(id => id !== '0')
-    );
-    trialState.block_groups = [
-      ...(trialState.block_groups || []).filter(g => {
-        const onMachine = machineSet.has(String(g.machine_id || 0));
-        const groupId = String(g.group_id || 0);
-        return !(onMachine || refreshedGroupIds.has(groupId));
-      }),
-      ...data.block_groups,
-    ];
-  }
-  trialState.segments = [
-    ...(trialState.segments || []).filter(s => !machineSet.has(String(s.machine_id))),
-    ...(data.segments || []),
-  ];
-
-  // Merge actuals for the affected block ids
-  if ((data.actuals || []).length > 0) {
-    const affectedBlockIds = new Set(
-      (trialState.blocks || [])
-        .filter(b => machineSet.has(String(b.machine_id)))
-        .map(b => String(b.block_id))
-    );
-    trialState.actuals = [
-      ...(trialState.actuals || []).filter(a => !affectedBlockIds.has(String(a.block_id))),
-      ...(data.actuals || []),
-    ];
-  }
-
-  if (typeof trialResetDataIndexes === 'function') trialResetDataIndexes();
-  trialScheduleRender(ids);
+  trialApplyMachineRefreshPayload(ids, data);
+  trialScheduleRender(ids, { deferCatalog: true });
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'merge-and-render');
   }
@@ -363,4 +511,11 @@ async function refreshMachines(machineIds) {
       refreshed_actuals: Array.isArray(data.actuals) ? data.actuals.length : 0,
     });
   }
+}
+
+async function refreshMachines(machineIds, options = {}) {
+  const job = () => refreshMachinesImpl(machineIds, options);
+  const result = refreshMachinesQueue.then(job, job);
+  refreshMachinesQueue = result.catch(() => {});
+  return result;
 }

@@ -32,10 +32,6 @@
          class="nav-link {% if active == 'process_sheets' %}nav-link--active{% endif %}">
         PROCESS SHEETS
       </a>
-      <a href="/machine-schedule"
-         class="nav-link {% if active == 'machine_schedule' %}nav-link--active{% endif %}">
-        MACHINE SCHEDULE
-      </a>
 
       <div class="nav-dropdown {% if active == 'planning_data' %}nav-dropdown--active{% endif %}">
         <button class="nav-dropdown-trigger" data-dropdown="planning-data">
@@ -48,29 +44,6 @@
           <a href="/planning-data/machines" class="nav-dropdown-item">Machines</a>
           <a href="/planning-data/cycle-times" class="nav-dropdown-item">Master cycle times</a>
           <a href="/planning-data/materials" class="nav-dropdown-item">Materials</a>
-        </div>
-      </div>
-
-      <div class="nav-dropdown {% if active == 'operations' %}nav-dropdown--active{% endif %}">
-        <button class="nav-dropdown-trigger" data-dropdown="operations">
-          OPERATIONS <span class="nav-caret">▾</span>
-        </button>
-        <div class="nav-dropdown-menu" id="dd-operations">
-          <a href="/actual-production" class="nav-dropdown-item">Actual Production</a>
-          <a href="/operations?section=actual-output" class="nav-dropdown-item">Actual Output</a>
-          <a href="/operations?section=warnings" class="nav-dropdown-item">Warnings</a>
-          <a href="/operations?section=audit-log" class="nav-dropdown-item">Audit Log</a>
-        </div>
-      </div>
-
-      <div class="nav-dropdown {% if active == 'system' %}nav-dropdown--active{% endif %}">
-        <button class="nav-dropdown-trigger" data-dropdown="system">
-          SYSTEM <span class="nav-caret">▾</span>
-        </button>
-        <div class="nav-dropdown-menu" id="dd-system">
-          <a href="/system?section=users" class="nav-dropdown-item">Users</a>
-          <a href="/system?section=settings" class="nav-dropdown-item">Settings</a>
-          <a href="/system?section=about" class="nav-dropdown-item">About</a>
         </div>
       </div>
     </div>

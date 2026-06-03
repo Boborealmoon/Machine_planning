@@ -39,6 +39,7 @@ from .blocks import (
     find_rework_source_for_reject,
     recalculate_all,
     recalculate_machine,
+    recalculate_machines,
     refresh_block_group_label,
     refresh_block_schedule_bounds,
     removed_actual_dates_for_block_row,
@@ -54,9 +55,9 @@ from .catalog import (
     schedule_planning_card,
     trial_catalog_items,
 )
-from .helpers import planner_db, one, rows, parse_dt_text
+from .helpers import planner_db, one, planner_try_savepoint, rows, parse_dt_text
 from .materials import material_status_map_for_ps_ids, sync_material_requirements_for_ps_ids
-from .operation_sequence import apply_machine_queue_order
+from .operation_sequence import apply_machine_queue_order, apply_machine_queue_orders
 from .process_sheets import ensure_planner_process_sheet
 from .machines import default_profile_for_weekday, fetch_machines, is_public_holiday
 from .sg_public_holidays import fetch_sg_public_holidays, list_public_holidays, sync_sg_public_holidays_to_db
@@ -74,6 +75,21 @@ from .utils import (
 )
 
 trial_bp = Blueprint("trial", __name__)
+
+
+def _parse_recalculate_flag(data):
+    """Request body recalculate flag; default True for backward compatibility."""
+    if not isinstance(data, dict) or "recalculate" not in data:
+        return True
+    value = data.get("recalculate")
+    if isinstance(value, bool):
+        return value
+    text = compact_text(value).lower()
+    if text in {"0", "false", "no", "off"}:
+        return False
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    return bool(value)
 
 
 def _visual_datetime_text(value):
@@ -362,6 +378,136 @@ def api_trial_queue_state():
         return jsonify(data)
 
 
+def _trial_machine_refresh_payload(con, machine_ids, *, lite=True):
+    """
+    Lane refresh after queue mutations.
+
+    lite=True (default): read persisted times from planner_run_block +
+    planner_machine_queue_state — no ERP enrichment or heavy group summaries.
+    lite=False: full enrichment for editor/detail views.
+    """
+    machine_ids = sorted({int(value) for value in (machine_ids or []) if int(value or 0) > 0})
+    if not machine_ids:
+        return {"blocks": [], "block_groups": [], "lite": bool(lite)}
+
+    raw_blocks = rows(
+        con.execute(
+            """
+            SELECT b.*, o.job_no, o.operation_name, o.total_qty, o.setup_minutes, o.cycle_minutes_per_qty,
+                   o.compatible_machine_group, o.source_ps_id, o.source_op_seq_id AS source_op_seq_id, o.source_op_no,
+                   m.machine_no AS machine_code, m.machine_category, m.shift_profile,
+                   g.group_label AS group_label, g.group_type AS group_type,
+                   os.operation_sequence_id AS operation_sequence_id,
+                   os.sequence_no AS sequence_no,
+                   qs.predicted_start_at AS qs_predicted_start_at,
+                   qs.predicted_end_at AS qs_predicted_end_at,
+                   qs.remaining_qty AS qs_remaining_qty,
+                   qs.good_qty AS qs_good_qty,
+                   qs.reject_qty AS qs_reject_qty,
+                   qs.schedule_status AS qs_schedule_status
+            FROM planner_run_block b
+            JOIN planner_operation o ON o.operation_id = b.operation_id
+            JOIN planner_machines m ON m.machine_id = b.machine_id
+            LEFT JOIN planner_run_block_group g ON g.group_id = b.group_id
+            LEFT JOIN planner_operation_sequence os ON os.block_id = b.block_id
+            LEFT JOIN planner_machine_queue_state qs ON qs.block_id = b.block_id
+            WHERE COALESCE(b.active, TRUE) = TRUE
+              AND b.machine_id = ANY(%s)
+            ORDER BY b.machine_id, b.queue_position, b.block_id
+            """,
+            (machine_ids,),
+        )
+    )
+    blocks = []
+    for row in raw_blocks:
+        item = dict(row)
+        item["anchor_datetime"] = planner_wall_datetime_to_api(item.get("anchor_datetime"))
+        calc_start = compact_text(item.get("calculated_start_datetime"))
+        calc_end = compact_text(item.get("calculated_end_datetime"))
+        pred_start = compact_text(item.get("qs_predicted_start_at") or calc_start)
+        pred_end = compact_text(item.get("qs_predicted_end_at") or calc_end)
+        item["calculated_start_datetime"] = calc_start
+        item["calculated_end_datetime"] = calc_end
+        item["predicted_start_at"] = pred_start
+        item["predicted_end_at"] = pred_end
+        item["visual_start_datetime"] = pred_start
+        item["visual_end_datetime"] = pred_end
+        item["updated_at"] = compact_text(item.get("updated_at"))
+        item["visual_parts"] = []
+        item["break_windows"] = []
+        item["shift_profile"] = compact_text(item.get("shift_profile") or "")
+        if item.get("qs_good_qty") is not None:
+            item["actual_good_qty"] = float(item.get("qs_good_qty") or 0)
+            item["good_qty"] = float(item.get("qs_good_qty") or 0)
+        if item.get("qs_reject_qty") is not None:
+            item["actual_reject_qty"] = float(item.get("qs_reject_qty") or 0)
+            item["reject_qty"] = float(item.get("qs_reject_qty") or 0)
+        if item.get("qs_schedule_status"):
+            item["planning_status"] = compact_text(item.get("qs_schedule_status"))
+        for drop_key in ("qs_predicted_start_at", "qs_predicted_end_at", "qs_remaining_qty", "qs_good_qty", "qs_reject_qty", "qs_schedule_status"):
+            item.pop(drop_key, None)
+        blocks.append(item)
+
+    if not lite:
+        from .erp_actuals import effective_actual_totals_for_block, erp_reconciliation_for_block
+
+        for item in blocks:
+            try:
+                con.execute("SAVEPOINT trial_machine_refresh_erp")
+                erp_recon = erp_reconciliation_for_block(con, item)
+                if erp_recon:
+                    item["erp_reconciliation"] = erp_recon
+                    try:
+                        item["effective_actuals"] = effective_actual_totals_for_block(con, item, erp_recon)
+                    except Exception:
+                        item["effective_actuals"] = None
+                con.execute("RELEASE SAVEPOINT trial_machine_refresh_erp")
+            except Exception:
+                try:
+                    con.execute("ROLLBACK TO SAVEPOINT trial_machine_refresh_erp")
+                except Exception:
+                    pass
+
+        actual_summary_map = actual_summaries_for_block_rows(con, blocks)
+        for item in blocks:
+            summary = actual_summary_map.get(int(item.get("block_id") or 0), {})
+            item["actual_start_at"] = compact_text(summary.get("actual_start_at") or "")
+            item["actual_end_at"] = compact_text(summary.get("actual_end_at") or "")
+            if summary.get("actual_good_qty") is not None:
+                item["actual_good_qty"] = float(summary.get("actual_good_qty") or 0)
+            item["actual_row_count"] = int(summary.get("actual_row_count") or 0)
+
+    group_ids = sorted({int(row.get("group_id") or 0) for row in blocks if int(row.get("group_id") or 0) > 0})
+    block_groups = []
+    if lite:
+        if group_ids:
+            for group in rows(
+                con.execute(
+                    """
+                    SELECT group_id, group_label, group_type
+                    FROM planner_run_block_group
+                    WHERE group_id = ANY(%s)
+                    ORDER BY group_id
+                    """,
+                    (group_ids,),
+                )
+            ):
+                block_groups.append(dict(group))
+    else:
+        for group_id in group_ids:
+            try:
+                group = combined_group_summary(con, group_id)
+                if group:
+                    block_groups.append(group)
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    "combined_group_summary failed for group_id=%s (machine refresh)", group_id
+                )
+    return {"blocks": blocks, "block_groups": block_groups, "lite": bool(lite)}
+
+
 @trial_bp.get("/api/trial/schedule")
 def api_trial_schedule():
     try:
@@ -389,21 +535,23 @@ def _api_trial_schedule_db():
     }
     # Initial board load: skip heavy joins/enrichment; fetch on demand (Actual modal, Shop Calendar).
     board_lite = lite and not is_machine_scoped
+    fast_lane_load = board_lite or (lite and is_machine_scoped)
     include_capacities = "capacities" in include_parts or not board_lite
-    include_segments = (not board_lite) or ("segments" in include_parts) or is_machine_scoped
+    include_segments = ("segments" in include_parts) or (not board_lite and not is_machine_scoped)
     include_segment_visual = (not board_lite) or ("visual" in include_parts)
     include_actuals = (not board_lite) or ("actuals" in include_parts)
     include_actual_daily = "actual_daily" in include_parts
     include_holidays = "holidays" in include_parts
 
     with planner_db() as con:
-        # Full board reload (including lite board): move DONE ops off machine lanes.
-        if not is_machine_scoped:
+        # Full board reload: move DONE ops off machine lanes. Skip on lite board load —
+        # that path can recalculate every affected machine and makes the planner feel hung.
+        if not is_machine_scoped and not board_lite:
             from .auto_unschedule import auto_unschedule_on_page_load
 
             auto_unschedule_on_page_load(con)
-        # Machine-scoped refresh (queue modal/actual saves): also sweep DONE ops for these lanes.
-        elif is_machine_scoped and not board_lite:
+        # Machine-scoped full refresh only — lite lane updates skip this (too slow).
+        elif is_machine_scoped and not lite:
             from .auto_unschedule import auto_unschedule_for_machines
 
             auto_unschedule_for_machines(con, machine_id_filter)
@@ -485,12 +633,20 @@ def _api_trial_schedule_db():
                        m.machine_no AS machine_code, m.machine_category, m.shift_profile,
                        g.group_label AS group_label, g.group_type AS group_type,
                        os.operation_sequence_id AS operation_sequence_id,
-                       os.sequence_no AS sequence_no
+                       os.sequence_no AS sequence_no,
+                       qs.predicted_start_at AS qs_predicted_start_at,
+                       qs.predicted_end_at AS qs_predicted_end_at,
+                       qs.remaining_qty AS qs_remaining_qty,
+                       qs.output_qty AS qs_output_qty,
+                       qs.good_qty AS qs_good_qty,
+                       qs.reject_qty AS qs_reject_qty,
+                       qs.schedule_status AS qs_schedule_status
                 FROM planner_run_block b
                 JOIN planner_operation o ON o.operation_id = b.operation_id
                 JOIN planner_machines m ON m.machine_id = b.machine_id
                 LEFT JOIN planner_run_block_group g ON g.group_id = b.group_id
                 LEFT JOIN planner_operation_sequence os ON os.block_id = b.block_id
+                LEFT JOIN planner_machine_queue_state qs ON qs.block_id = b.block_id
                 WHERE {_block_where}
                 ORDER BY b.machine_id, b.queue_position, b.block_id
                 """.format(_block_where=_block_where),
@@ -587,6 +743,48 @@ def _api_trial_schedule_db():
                 item["visual_parts"] = []
                 item["break_windows"] = []
                 item["shift_profile"] = machine_by_id.get(int(item.get("machine_id") or 0), {}).get("shift_profile", "")
+            if fast_lane_load:
+                calc_start = compact_text(item.get("calculated_start_datetime"))
+                calc_end = compact_text(item.get("calculated_end_datetime"))
+                pred_start = compact_text(item.get("qs_predicted_start_at") or calc_start)
+                pred_end = compact_text(item.get("qs_predicted_end_at") or calc_end)
+                item["predicted_start_at"] = pred_start
+                item["predicted_end_at"] = pred_end
+                if pred_start:
+                    item["visual_start_datetime"] = pred_start
+                if pred_end:
+                    item["visual_end_datetime"] = pred_end
+                output_qty = item.get("qs_output_qty")
+                good_qty = item.get("qs_good_qty")
+                reject_qty = item.get("qs_reject_qty")
+                if output_qty is not None or good_qty is not None or reject_qty is not None:
+                    output_total = float(output_qty if output_qty is not None else good_qty or 0)
+                    reject_total = float(reject_qty or 0)
+                    good_total = float(
+                        good_qty if good_qty is not None else max(0.0, output_total - reject_total)
+                    )
+                    item["actual_good_qty"] = good_total
+                    item["good_qty"] = good_total
+                    item["effective_actuals"] = {
+                        "effective_output_qty": output_total,
+                        "effective_reject_qty": reject_total,
+                        "effective_good_qty": good_total,
+                        "output_source": "queue_state",
+                        "reject_source": "queue_state",
+                        "good_source": "queue_state",
+                    }
+                if item.get("qs_schedule_status"):
+                    item["planning_status"] = compact_text(item.get("qs_schedule_status"))
+                for drop_key in (
+                    "qs_predicted_start_at",
+                    "qs_predicted_end_at",
+                    "qs_remaining_qty",
+                    "qs_output_qty",
+                    "qs_good_qty",
+                    "qs_reject_qty",
+                    "qs_schedule_status",
+                ):
+                    item.pop(drop_key, None)
             blocks.append(item)
 
         if not lite:
@@ -602,8 +800,24 @@ def _api_trial_schedule_db():
                     item["effective_actuals"] = effective_actual_totals_for_block(con, item, erp_recon)
         elif include_actual_daily:
             attach_actual_daily_to_blocks(con, blocks, with_erp=True)
+        elif include_actuals and not fast_lane_load:
+            from .erp_actuals import effective_actual_totals_for_block, erp_reconciliation_for_block
 
-        if blocks:
+            for item in blocks:
+                def _attach_erp(block_item=item):
+                    erp_recon = erp_reconciliation_for_block(con, block_item)
+                    if not erp_recon:
+                        return None
+                    block_item["erp_reconciliation"] = erp_recon
+                    try:
+                        block_item["effective_actuals"] = effective_actual_totals_for_block(con, block_item, erp_recon)
+                    except Exception:
+                        block_item["effective_actuals"] = None
+                    return erp_recon
+
+                planner_try_savepoint(con, "trial_schedule_erp", _attach_erp, default=None)
+
+        if blocks and not fast_lane_load:
             actual_summary_map = actual_summaries_for_block_rows(con, blocks)
             for item in blocks:
                 summary = actual_summary_map.get(int(item.get("block_id") or 0), {})
@@ -614,7 +828,7 @@ def _api_trial_schedule_db():
                 item["actual_row_count"] = int(summary.get("actual_row_count") or 0)
 
         # Actuals list for client-side daily row assembly.
-        if not include_actuals:
+        if not include_actuals or fast_lane_load:
             actuals = []
         elif is_machine_scoped and _active_block_ids:
             actuals = rows(
@@ -695,16 +909,35 @@ def _api_trial_schedule_db():
                 if int(row.get("group_id") or 0) > 0
             })
             block_groups = []
-            for group_id in group_ids:
-                try:
-                    group = combined_group_summary(con, group_id)
+            if fast_lane_load and group_ids:
+                for group in rows(
+                    con.execute(
+                        """
+                        SELECT group_id, group_label, group_type
+                        FROM planner_run_block_group
+                        WHERE group_id = ANY(%s)
+                        ORDER BY group_id
+                        """,
+                        (group_ids,),
+                    )
+                ):
+                    block_groups.append(dict(group))
+            else:
+                for group_id in group_ids:
+                    group = planner_try_savepoint(
+                        con,
+                        f"trial_group_summary_{group_id}",
+                        lambda gid=group_id: combined_group_summary(con, gid),
+                        default=None,
+                    )
                     if group:
                         block_groups.append(group)
-                except Exception:
-                    import logging
-                    logging.getLogger(__name__).exception(
-                        "combined_group_summary failed for group_id=%s (machine refresh)", group_id
-                    )
+                    elif group is None:
+                        import logging
+
+                        logging.getLogger(__name__).warning(
+                            "combined_group_summary failed for group_id=%s (machine refresh)", group_id
+                        )
             material_status_map = {}
         else:
             catalog = {"available": [], "planned": []} if lite else trial_catalog_items(con, include_completed=bool(include_completed))
@@ -713,13 +946,18 @@ def _api_trial_schedule_db():
             if not board_lite:
                 group_ids = sorted({int(row["group_id"]) for row in blocks if int(row.get("group_id") or 0) > 0})
                 for group_id in group_ids:
-                    try:
-                        group = combined_group_summary(con, group_id)
-                        if group:
-                            block_groups.append(group)
-                    except Exception:
+                    group = planner_try_savepoint(
+                        con,
+                        f"trial_group_summary_{group_id}",
+                        lambda gid=group_id: combined_group_summary(con, gid),
+                        default=None,
+                    )
+                    if group:
+                        block_groups.append(group)
+                    elif group is None:
                         import logging
-                        logging.getLogger(__name__).exception(
+
+                        logging.getLogger(__name__).warning(
                             "combined_group_summary failed for group_id=%s", group_id
                         )
 
@@ -1223,8 +1461,15 @@ def api_trial_create_operation():
                 ordered_ids = [bid for bid in ordered_ids if bid != block_id]
                 insert_idx = min(max(0, int(queue_position) - 1), len(ordered_ids))
                 ordered_ids.insert(insert_idx, block_id)
-            apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=True)
-            return jsonify({"ok": True, "operation_id": operation_id, "block": trial_block_payload(trial_block_row(con, block_id), con)})
+            recalculate = _parse_recalculate_flag(data)
+            apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=recalculate)
+            return jsonify({
+                "ok": True,
+                "operation_id": operation_id,
+                "recalculated": recalculate,
+                "block": trial_block_payload(trial_block_row(con, block_id), con),
+                "machine_refresh": _trial_machine_refresh_payload(con, [machine_id], lite=True),
+            })
     except Exception as exc:
         import traceback
         traceback.print_exc()
@@ -1258,6 +1503,7 @@ def api_trial_schedule_planning_card(card_id):
     data = request.get_json(force=True, silent=True) or {}
     machine_id = int(data.get("machine_id") or 0)
     queue_position = float(data.get("queue_position") or 0)
+    recalculate = _parse_recalculate_flag(data)
     with planner_db() as con:
         try:
             result = schedule_planning_card(con, card_id, machine_id, queue_position)
@@ -1266,9 +1512,17 @@ def api_trial_schedule_planning_card(card_id):
                 or (result.get("card") or {}).get("machine_id")
                 or machine_id
             )
-            if affected_machine_id:
-                recalculate_machine(con, affected_machine_id)
-            return jsonify({"ok": True, **result})
+            if affected_machine_id and recalculate:
+                created_ids = [int(value) for value in (result.get("block_ids") or []) if int(value or 0) > 0]
+                tail_by_machine = {affected_machine_id: created_ids[0]} if created_ids else {}
+                recalculate_machines(con, [affected_machine_id], tail_by_machine=tail_by_machine)
+            refresh_ids = [affected_machine_id] if affected_machine_id else []
+            return jsonify({
+                "ok": True,
+                "recalculated": recalculate,
+                **result,
+                "machine_refresh": _trial_machine_refresh_payload(con, refresh_ids, lite=True),
+            })
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -1288,6 +1542,7 @@ def api_trial_delete_planning_card(card_id):
 @trial_bp.put("/api/trial/blocks/<int:block_id>")
 def api_trial_update_block(block_id):
     data = request.get_json(force=True, silent=True) or {}
+    recalculate = False if "recalculate" not in data else _parse_recalculate_flag(data)
     with planner_db() as con:
         block = trial_block_row(con, block_id)
         if not block:
@@ -1346,12 +1601,24 @@ def api_trial_update_block(block_id):
                 f"UPDATE planner_run_block SET {set_clause}, updated_at = NOW() WHERE block_id = %s",
                 (*block_updates.values(), int(block_id)),
             )
-        machine_ids = {int(block["machine_id"])}
+        original_machine_id = int(block["machine_id"])
+        machine_ids = {original_machine_id}
         if "machine_id" in block_updates:
             machine_ids.add(int(block_updates["machine_id"]))
-        for mid in machine_ids:
-            recalculate_machine(con, mid)
-        return jsonify({"ok": True, "block": trial_block_payload(trial_block_row(con, block_id), con)})
+        if recalculate:
+            new_machine_id = int(block_updates.get("machine_id") or original_machine_id)
+            if new_machine_id != original_machine_id:
+                recalculate_machine(con, original_machine_id)
+                recalculate_machine(con, new_machine_id, tail_from_block_id=int(block_id))
+            else:
+                recalculate_machine(con, original_machine_id, tail_from_block_id=int(block_id))
+        affected_ids = sorted(machine_ids)
+        return jsonify({
+            "ok": True,
+            "recalculated": recalculate,
+            "block_id": int(block_id),
+            "machine_refresh": _trial_machine_refresh_payload(con, affected_ids, lite=True),
+        })
 
 
 @trial_bp.post("/api/trial/blocks/<int:block_id>/split")
@@ -1415,13 +1682,77 @@ def api_trial_reorder_blocks(block_id):
     ordered_ids = [int(v) for v in data.get("ordered_ids", []) if v is not None and compact_text(v) != ""]
     if not ordered_ids:
         return jsonify({"error": "ordered_ids are required"}), 400
+    recalculate = _parse_recalculate_flag(data)
     with planner_db() as con:
         block = trial_block_row(con, block_id)
         if not block:
             return jsonify({"error": "Run block not found"}), 404
         machine_id = int(data.get("machine_id") or block["machine_id"])
-        result = apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=True)
-        return jsonify({"ok": True, **result})
+        result = apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=recalculate)
+        affected_ids = list(result.get("affected_machine_ids") or [machine_id])
+        return jsonify({
+            "ok": True,
+            "recalculated": recalculate,
+            **result,
+            "machine_refresh": _trial_machine_refresh_payload(con, affected_ids, lite=True),
+        })
+
+
+@trial_bp.post("/api/trial/queue/reorder-batch")
+def api_trial_reorder_queue_batch():
+    """Apply queue order for multiple lanes in one transaction + optional stacked recalc."""
+    data = request.get_json(force=True, silent=True) or {}
+    raw_lanes = data.get("lanes") or data.get("machine_orders") or []
+    if not isinstance(raw_lanes, list) or not raw_lanes:
+        return jsonify({"error": "lanes are required"}), 400
+    recalculate = _parse_recalculate_flag(data)
+
+    lane_orders = []
+    for entry in raw_lanes:
+        if not isinstance(entry, dict):
+            continue
+        machine_id = int(entry.get("machine_id") or 0)
+        ordered_ids = [
+            int(value)
+            for value in (entry.get("ordered_ids") or [])
+            if value is not None and compact_text(value) != ""
+        ]
+        if machine_id and ordered_ids:
+            lane_orders.append({"machine_id": machine_id, "ordered_ids": ordered_ids})
+
+    if not lane_orders:
+        return jsonify({"error": "lanes must include machine_id and ordered_ids"}), 400
+
+    with planner_db() as con:
+        result = apply_machine_queue_orders(con, lane_orders, recalculate=recalculate)
+        affected_ids = list(result.get("affected_machine_ids") or [])
+        return jsonify({
+            "ok": True,
+            "recalculated": recalculate,
+            **result,
+            "machine_refresh": _trial_machine_refresh_payload(con, affected_ids, lite=True),
+        })
+
+
+@trial_bp.post("/api/trial/queue/recalculate")
+def api_trial_queue_recalculate():
+    """Recalculate schedule times for machines after deferred queue reorder."""
+    data = request.get_json(force=True, silent=True) or {}
+    machine_ids = sorted({
+        int(value)
+        for value in (data.get("machine_ids") or [])
+        if value is not None and int(value or 0) > 0
+    })
+    if not machine_ids:
+        return jsonify({"error": "machine_ids are required"}), 400
+    with planner_db() as con:
+        recalculate_machines(con, machine_ids, reason="PLANNER_CHANGE")
+        return jsonify({
+            "ok": True,
+            "machine_ids": machine_ids,
+            "recalculated": True,
+            "machine_refresh": _trial_machine_refresh_payload(con, machine_ids, lite=True),
+        })
 
 
 @trial_bp.post("/api/trial/blocks/<int:block_id>/combine")

@@ -190,8 +190,11 @@ def _add_interval(base_intervals, add_start, add_end):
     return _merge_intervals([*base_intervals, (add_start, add_end)])
 
 
-def machine_work_intervals_for_day(con, machine_id, work_date):
+def machine_work_intervals_for_day(con, machine_id, work_date, interval_cache=None):
     work_day = work_date if isinstance(work_date, date) else date.fromisoformat(str(work_date))
+    cache_key = (int(machine_id), work_day.isoformat())
+    if interval_cache is not None and cache_key in interval_cache:
+        return interval_cache[cache_key]
     machine = (
         one(
             con.execute(
@@ -249,7 +252,10 @@ def machine_work_intervals_for_day(con, machine_id, work_date):
         elif window_type in ADDING_WINDOW_TYPES:
             base_intervals = _add_interval(base_intervals, start_dt, end_dt)
 
-    return _merge_intervals(base_intervals)
+    merged = _merge_intervals(base_intervals)
+    if interval_cache is not None:
+        interval_cache[cache_key] = merged
+    return merged
 
 
 def capacity_minutes_for_machine_day(con, machine_id, work_date):

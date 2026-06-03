@@ -1101,6 +1101,9 @@ function renderTrialMachine(machine) {
   const queueSummary = blockCount
     ? `${blockCount} in queue`
     : 'Empty queue';
+  const staleBadge = trialDirtyMachineIds.has(Number(machine.machine_id))
+    ? '<span class="trial-machine-stale-badge" title="Queue changed; schedule times may be outdated">Schedule outdated</span>'
+    : '';
   const availabilityEnd = trialMachineAvailabilityEnd(
     trialHasActiveDateFilter() ? groups : allGroups
   );
@@ -1122,9 +1125,11 @@ function renderTrialMachine(machine) {
           <div class="trial-machine-title">${machine.machine_code}</div>
           <div class="trial-machine-meta">${machine.machine_category} - ${machine.shift_profile || 'STANDARD'}</div>
           <div class="trial-machine-queue-summary">${queueSummary}</div>
+          ${staleBadge}
         </div>
         <div class="trial-machine-head-actions">
           <button class="btn btn-ghost btn-sm" type="button" onclick="event.stopPropagation(); openTrialMachineQueue(${machine.machine_id})">Queue</button>
+          ${staleBadge ? `<button class="btn btn-primary btn-sm" type="button" onclick="event.stopPropagation(); trialRecalculateSingleMachine(${machine.machine_id})">Recalc</button>` : ''}
         </div>
       </div>
       ${availabilityTag}
@@ -1148,6 +1153,14 @@ function trialSyncMachineGridScrollWidth() {
   if (!topInner || !grid || !main) return;
   const w = Math.max(grid.scrollWidth, main.clientWidth, 1);
   topInner.style.width = `${w}px`;
+}
+
+function trialLaneAbsorbsVerticalWheel(lane, deltaY) {
+  if (!lane || !deltaY) return false;
+  const maxScroll = lane.scrollHeight - lane.clientHeight;
+  if (maxScroll <= 1) return false;
+  if (deltaY > 0) return lane.scrollTop < maxScroll - 1;
+  return lane.scrollTop > 0;
 }
 
 function trialBindMachineGridScroll() {
@@ -1176,15 +1189,26 @@ function trialBindMachineGridScroll() {
     main.addEventListener('scroll', syncFromMain, { passive: true });
     top.addEventListener('scroll', syncFromTop, { passive: true });
 
-    const onShiftWheel = (e) => {
-      if (!e.shiftKey) return;
-      const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
-      if (!delta || main.scrollWidth <= main.clientWidth) return;
-      e.preventDefault();
-      main.scrollLeft += delta;
-      syncFromMain();
+    const onBoardWheel = (e) => {
+      if (e.shiftKey) {
+        const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+        if (!delta || main.scrollWidth <= main.clientWidth) return;
+        e.preventDefault();
+        main.scrollLeft += delta;
+        syncFromMain();
+        return;
+      }
+      const deltaY = e.deltaY;
+      if (!deltaY) return;
+      const lane = e.target.closest?.('.trial-lane');
+      if (trialLaneAbsorbsVerticalWheel(lane, deltaY)) return;
+      const root = document.scrollingElement;
+      if (!root) return;
+      const before = root.scrollTop;
+      root.scrollTop += deltaY;
+      if (root.scrollTop !== before) e.preventDefault();
     };
-    (mainArea || host).addEventListener('wheel', onShiftWheel, { passive: false });
+    (mainArea || host).addEventListener('wheel', onBoardWheel, { passive: false });
   }
 
   const grid = document.getElementById('trial-grid');
@@ -1196,7 +1220,19 @@ function trialBindMachineGridScroll() {
   window.requestAnimationFrame(trialSyncMachineGridScrollWidth);
 }
 
-function renderTrial() {
+let trialDeferredCatalogRenderRaf = 0;
+
+function trialDeferCatalogRender() {
+  if (trialDeferredCatalogRenderRaf) {
+    cancelAnimationFrame(trialDeferredCatalogRenderRaf);
+  }
+  trialDeferredCatalogRenderRaf = requestAnimationFrame(() => {
+    trialDeferredCatalogRenderRaf = 0;
+    renderTrialCatalog();
+  });
+}
+
+function renderTrial(options = {}) {
   const perf = (typeof trialPerfStart === 'function')
     ? trialPerfStart('render-trial', {
       machines_total: Array.isArray(trialState.machines) ? trialState.machines.length : 0,
@@ -1241,7 +1277,8 @@ function renderTrial() {
   const loading = document.getElementById('trial-loading');
   if (loading) loading.style.display = 'none';
   updateTrialCompletedButton();
-  renderTrialCatalog();
+  if (options.deferCatalog) trialDeferCatalogRender();
+  else renderTrialCatalog();
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'render-catalog');
   if (typeof initTrialMachineSortables === 'function') initTrialMachineSortables();
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'init-machine-sortables');
@@ -1262,7 +1299,7 @@ function renderTrial() {
   }
 }
 
-function renderTrialMachines(machineIds) {
+function renderTrialMachines(machineIds, options = {}) {
   const perf = (typeof trialPerfStart === 'function')
     ? trialPerfStart('render-trial-machines', {
       requested: Array.isArray(machineIds) ? machineIds.length : 0,
@@ -1290,7 +1327,13 @@ function renderTrialMachines(machineIds) {
     existing.outerHTML = renderTrialMachine(machine);
   });
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'replace-machine-html', { ids: ids.join(',') });
-  renderTrialCatalog();
+  if (options.skipCatalog) {
+    // Lane-only update.
+  } else if (options.deferCatalog) {
+    trialDeferCatalogRender();
+  } else {
+    renderTrialCatalog();
+  }
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'render-catalog');
   if (typeof initTrialMachineSortables === 'function') initTrialMachineSortables();
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'init-machine-sortables');

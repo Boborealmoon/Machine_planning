@@ -107,12 +107,13 @@ def process_sheets():
 
 @app.get("/machine-schedule")
 def machine_schedule():
-    return render_template("machine_schedule.html", active="machine_schedule")
+    # View-only Gantt hidden from nav — no background compute; redirect to Planner.
+    return redirect(url_for("scheduler"))
 
 
 @app.get("/summary")
 def summary_redirect():
-    return redirect(url_for("machine_schedule"))
+    return redirect(url_for("scheduler"))
 
 
 @app.get("/planning-data")
@@ -142,12 +143,12 @@ def cycle_times_page():
 
 @app.get("/operations")
 def operations():
-    return render_template("operations.html", active="operations")
+    return redirect(url_for("scheduler"))
 
 
 @app.get("/system")
 def system():
-    return render_template("system.html", active="system")
+    return redirect(url_for("scheduler"))
 
 
 # ── API: PP Vouchers ───────────────────────────────────────────────────────
@@ -314,6 +315,27 @@ def _summarize_execution_status(statuses):
     if all(status in {"C", "COMPLETED"} for status in normalized):
         return "Completed"
     return _execution_status_label(statuses[0]) if statuses else ""
+
+
+def _entry_production_completed_from_ops(entry, *, tol=0.0001):
+    """True only when every ERP stage with WO evidence is Completed and has no remaining qty."""
+    ops = entry.get("op_cards") or entry.get("ops") or []
+    tracked = []
+    for op in ops:
+        status = _normalize_execution_status(op.get("execution_status"))
+        required = float(op.get("wo_qty_required") or op.get("required_qty") or 0)
+        produced = float(op.get("finished_qty") or op.get("wo_qty_produced") or 0)
+        remaining = float(op.get("remaining_qty") or max(0.0, required - produced))
+        has_wo = required > tol or produced > tol or bool(status)
+        if not has_wo:
+            continue
+        tracked.append((status, remaining))
+    if not tracked:
+        return False
+    return all(
+        status in {"C", "COMPLETED"} and remaining <= tol
+        for status, remaining in tracked
+    )
 
 
 def _pp_vouchers_with_ops_payload(cache_rows):
@@ -492,8 +514,9 @@ def _pp_vouchers_with_ops_payload(cache_rows):
                     op["wo_qty_produced"] = min(op_req, partial_work_qty)
                 op["finished_qty"] = max(float(op.get("finished_qty") or 0), float(op.get("wo_qty_produced") or 0))
                 op["remaining_qty"] = max(0.0, op_req - float(op["finished_qty"]))
-        entry["is_completed"] = entry["shipped_completed"]
-        entry["execution_completed"] = entry["shipped_completed"]
+        production_completed = _entry_production_completed_from_ops(entry)
+        entry["execution_completed"] = production_completed
+        entry["is_completed"] = bool(entry["shipped_completed"]) or production_completed
         entry["pending_do"] = pending_delivery_order(entry)
         bom_code = str(entry.get("bom_code") or "").strip()
         entry["erp_bom_code"] = bom_code

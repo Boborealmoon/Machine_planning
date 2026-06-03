@@ -956,19 +956,48 @@ def rework_op_for_block(con, block_id):
     }
 
 
-def preserved_actual_bounds_for_block(con, block_id):
-    row = one(
+def _normalize_preserved_actual_bounds_row(row):
+    if not row:
+        return None
+    start_dt = row.get("start_datetime")
+    end_dt = row.get("end_datetime")
+    actual_count = int(row.get("actual_count") or 0)
+    if actual_count <= 0 or not start_dt or not end_dt:
+        return None
+    if not isinstance(start_dt, datetime):
+        start_dt = parse_dt_text(str(start_dt))
+    if not isinstance(end_dt, datetime):
+        end_dt = parse_dt_text(str(end_dt))
+    if not start_dt or not end_dt:
+        return None
+    return {"start_datetime": start_dt, "end_datetime": end_dt}
+
+
+def preserved_actual_bounds_for_blocks(con, block_ids):
+    """Batch version of preserved_actual_bounds_for_block for machine recalculation."""
+    ids = sorted({int(value) for value in (block_ids or []) if int(value or 0) > 0})
+    if not ids:
+        return {}
+    out = {}
+    for row in rows(
         con.execute(
             """
             SELECT
+              s.block_id,
               MIN(s.start_datetime) AS start_datetime,
               MAX(s.end_datetime) AS end_datetime,
-              COUNT(CASE WHEN a.actual_id IS NOT NULL AND (a.output_qty IS NOT NULL OR a.reject_qty IS NOT NULL) THEN 1 END) AS actual_count
+              COUNT(
+                CASE
+                  WHEN a.actual_id IS NOT NULL
+                   AND (a.output_qty IS NOT NULL OR a.reject_qty IS NOT NULL)
+                  THEN 1
+                END
+              ) AS actual_count
             FROM planner_run_block_segment s
             LEFT JOIN planner_production_actual a
               ON a.segment_id = s.segment_id
              AND COALESCE(a.status, 'ACTIVE') = 'ACTIVE'
-            WHERE s.block_id = %s
+            WHERE s.block_id = ANY(%s)
               AND (
                 (
                   a.actual_id IS NOT NULL
@@ -984,24 +1013,20 @@ def preserved_actual_bounds_for_block(con, block_id):
                   )
                 )
               )
+            GROUP BY s.block_id
             """,
-            (int(block_id),),
+            (ids,),
         )
-    ) or {}
+    ):
+        bounds = _normalize_preserved_actual_bounds_row(row)
+        if bounds:
+            out[int(row["block_id"])] = bounds
+    return out
 
-    start_dt = row.get("start_datetime")
-    end_dt = row.get("end_datetime")
-    actual_count = int(row.get("actual_count") or 0)
-    if actual_count <= 0 or not start_dt or not end_dt:
-        return None
-    # PostgreSQL returns datetime objects for TIMESTAMPTZ; parse if text
-    if not isinstance(start_dt, datetime):
-        start_dt = parse_dt_text(str(start_dt))
-    if not isinstance(end_dt, datetime):
-        end_dt = parse_dt_text(str(end_dt))
-    if not start_dt or not end_dt:
-        return None
-    return {"start_datetime": start_dt, "end_datetime": end_dt}
+
+def preserved_actual_bounds_for_block(con, block_id):
+    cached = preserved_actual_bounds_for_blocks(con, [int(block_id)])
+    return cached.get(int(block_id))
 
 
 def latest_actual_date_for_block(con, block_id):
@@ -1184,12 +1209,12 @@ def create_rework_from_reject(con, rework_source_block_id, reject_segment_id, re
     return {"created": True, "machine_id": machine_id}
 
 
-def _next_interval_after(con, machine_id, current_dt):
+def _next_interval_after(con, machine_id, current_dt, interval_cache=None):
     probe = current_dt.date()
     safety = 0
     while safety < 365:
         safety += 1
-        intervals = machine_work_intervals_for_day(con, machine_id, probe)
+        intervals = machine_work_intervals_for_day(con, machine_id, probe, interval_cache=interval_cache)
         for start_dt, end_dt in intervals:
             if end_dt <= current_dt:
                 continue
@@ -1202,7 +1227,7 @@ def _next_interval_after(con, machine_id, current_dt):
     return None, None
 
 
-def _schedule_setup_across_intervals(con, machine_id, block_id, schedule_run_id, start_dt, remaining_setup):
+def _schedule_setup_across_intervals(con, machine_id, block_id, schedule_run_id, start_dt, remaining_setup, interval_cache=None):
     current_dt = start_dt
     first_start = None
     end_dt = None
@@ -1210,7 +1235,7 @@ def _schedule_setup_across_intervals(con, machine_id, block_id, schedule_run_id,
     remaining = float(remaining_setup or 0)
     while remaining > 0 and safety < 365:
         safety += 1
-        interval_start, interval_end = _next_interval_after(con, machine_id, current_dt)
+        interval_start, interval_end = _next_interval_after(con, machine_id, current_dt, interval_cache=interval_cache)
         if not interval_start or not interval_end:
             break
         if current_dt < interval_start:
@@ -1247,7 +1272,7 @@ def _schedule_setup_across_intervals(con, machine_id, block_id, schedule_run_id,
     return first_start, current_dt, end_dt, remaining
 
 
-def _schedule_production_across_intervals(con, machine_id, block, schedule_run_id, start_dt, remaining_qty, cycle_time):
+def _schedule_production_across_intervals(con, machine_id, block, schedule_run_id, start_dt, remaining_qty, cycle_time, interval_cache=None):
     current_dt = start_dt
     first_start = None
     end_dt = None
@@ -1256,7 +1281,7 @@ def _schedule_production_across_intervals(con, machine_id, block, schedule_run_i
     safety = 0
     while remaining > 0 and safety < 365:
         safety += 1
-        interval_start, interval_end = _next_interval_after(con, machine_id, current_dt)
+        interval_start, interval_end = _next_interval_after(con, machine_id, current_dt, interval_cache=interval_cache)
         if not interval_start or not interval_end:
             break
         if current_dt < interval_start:
@@ -1301,7 +1326,7 @@ def _schedule_production_across_intervals(con, machine_id, block, schedule_run_i
     return first_start, current_dt, end_dt, remaining
 
 
-def _schedule_combined_production_across_intervals(con, machine_id, members, schedule_run_id, start_dt, remaining_qty):
+def _schedule_combined_production_across_intervals(con, machine_id, members, schedule_run_id, start_dt, remaining_qty, interval_cache=None):
     current_dt = start_dt
     first_start = None
     end_dt = None
@@ -1310,7 +1335,7 @@ def _schedule_combined_production_across_intervals(con, machine_id, members, sch
     safety = 0
     while remaining > 0 and safety < 365:
         safety += 1
-        interval_start, interval_end = _next_interval_after(con, machine_id, current_dt)
+        interval_start, interval_end = _next_interval_after(con, machine_id, current_dt, interval_cache=interval_cache)
         if not interval_start or not interval_end:
             break
         if current_dt < interval_start:
@@ -1360,7 +1385,7 @@ def _schedule_combined_production_across_intervals(con, machine_id, members, sch
     return first_start, current_dt, end_dt, remaining
 
 
-def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_id=None):
+def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_id=None, tail_from_block_id=None):
     own_run = schedule_run_id is None
     if own_run:
         old_snap = snapshot_queue_state(con, machine_id)
@@ -1387,31 +1412,6 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
             (int(machine_id),),
         )
     )
-    block_ids = [int(b["block_id"]) for b in blocks]
-    if block_ids:
-        con.execute(
-            """
-            DELETE FROM planner_run_block_segment
-            WHERE block_id = ANY(%s)
-              AND segment_id NOT IN (
-                SELECT segment_id
-                FROM planner_production_actual
-                WHERE segment_id IS NOT NULL
-                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
-              )
-              AND NOT (
-                segment_type = 'setup'
-                AND block_id IN (
-                  SELECT DISTINCT block_id
-                  FROM planner_production_actual
-                  WHERE COALESCE(status, 'ACTIVE') = 'ACTIVE'
-                    AND (output_qty IS NOT NULL OR reject_qty IS NOT NULL)
-                )
-              )
-            """,
-            (block_ids,),
-        )
-
     if not blocks:
         return
 
@@ -1437,15 +1437,89 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
 
     queue_items.sort(key=item_sort_key)
 
-    actual_start_values = []
-    for item in queue_items:
-        leader = item["members"][0]
-        actual_bounds = preserved_actual_bounds_for_block(con, int(leader["block_id"]))
-        if actual_bounds:
-            actual_start_values.append(actual_bounds["start_datetime"])
-    # Do not seed the machine cursor from other blocks' anchors — each block applies its own anchor below.
-    start_candidates = [today_start, *actual_start_values]
-    current_dt = min(start_candidates) if start_candidates else today_start
+    start_item_idx = 0
+    tail_block_id = int(tail_from_block_id or 0)
+    if tail_block_id:
+        for idx, item in enumerate(queue_items):
+            member_ids = [int(member["block_id"]) for member in item["members"]]
+            if tail_block_id in member_ids:
+                start_item_idx = idx
+                break
+
+    if start_item_idx >= len(queue_items):
+        from .operation_sequence import sync_machine_operation_sequence
+
+        sync_machine_operation_sequence(con, int(machine_id))
+        refresh_states_for_machine(con, int(machine_id), schedule_run_id=schedule_run_id)
+        return
+
+    rebuild_block_ids = [
+        int(member["block_id"])
+        for item in queue_items[start_item_idx:]
+        for member in item["members"]
+    ]
+    if rebuild_block_ids:
+        con.execute(
+            """
+            DELETE FROM planner_run_block_segment
+            WHERE block_id = ANY(%s)
+              AND segment_id NOT IN (
+                SELECT segment_id
+                FROM planner_production_actual
+                WHERE segment_id IS NOT NULL
+                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+              )
+              AND NOT (
+                segment_type = 'setup'
+                AND block_id IN (
+                  SELECT DISTINCT block_id
+                  FROM planner_production_actual
+                  WHERE COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                    AND (output_qty IS NOT NULL OR reject_qty IS NOT NULL)
+                )
+              )
+            """,
+            (rebuild_block_ids,),
+        )
+
+    all_block_ids = [
+        int(member["block_id"])
+        for item in queue_items
+        for member in item["members"]
+    ]
+    preserved_bounds_by_block = preserved_actual_bounds_for_blocks(con, all_block_ids)
+
+    def _naive_schedule_dt(value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=None) if value.tzinfo is not None else value
+        return parse_dt_text(value)
+
+    current_dt = today_start
+    if start_item_idx > 0:
+        prev_leader = queue_items[start_item_idx - 1]["members"][0]
+        prev_bounds = preserved_bounds_by_block.get(int(prev_leader["block_id"]))
+        seeded = None
+        if prev_bounds and prev_bounds.get("end_datetime"):
+            seeded = _naive_schedule_dt(prev_bounds["end_datetime"])
+        if not seeded:
+            seeded = _naive_schedule_dt(prev_leader.get("calculated_end_datetime"))
+        if seeded:
+            current_dt = seeded
+    else:
+        actual_start_values = []
+        for item in queue_items:
+            leader = item["members"][0]
+            actual_bounds = preserved_bounds_by_block.get(int(leader["block_id"]))
+            if actual_bounds:
+                start_dt = _naive_schedule_dt(actual_bounds.get("start_datetime"))
+                if start_dt:
+                    actual_start_values.append(start_dt)
+        start_candidates = [today_start, *actual_start_values]
+        current_dt = min(start_candidates) if start_candidates else today_start
+
+    interval_cache = {}
 
     def update_block_schedule_window(block_id, start_dt, end_dt, planning_status=None):
         start_text = start_dt.strftime("%Y-%m-%d %H:%M:%S") if start_dt else None
@@ -1520,7 +1594,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                     status="OPEN",
                 )
 
-    for item in queue_items:
+    for item in queue_items[start_item_idx:]:
         members = item["members"]
         leader = members[0]
         is_combined = bool(item["combined"])
@@ -1541,7 +1615,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                 candidate_start = planned_start
             current_dt = candidate_start
 
-            actual_bounds = preserved_actual_bounds_for_block(con, int(block["block_id"]))
+            actual_bounds = preserved_bounds_by_block.get(int(block["block_id"]))
             if actual_bounds:
                 update_block_schedule_window(
                     block["block_id"],
@@ -1582,12 +1656,14 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
             if remaining_setup > 0:
                 setup_start, current_dt, setup_end, remaining_setup = _schedule_setup_across_intervals(
                     con, machine_id, int(block["block_id"]), schedule_run_id, current_dt, remaining_setup,
+                    interval_cache=interval_cache,
                 )
                 start_dt = start_dt or setup_start
                 end_dt = setup_end or end_dt
             if remaining_qty > 0 and cycle_time > 0:
                 prod_start, current_dt, prod_end, remaining_qty = _schedule_production_across_intervals(
                     con, machine_id, block, schedule_run_id, current_dt, remaining_qty, cycle_time,
+                    interval_cache=interval_cache,
                 )
                 start_dt = start_dt or prod_start
                 end_dt = prod_end or end_dt
@@ -1614,7 +1690,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         current_dt = candidate_start
 
         actual_bounds_by_block = {
-            int(member["block_id"]): preserved_actual_bounds_for_block(con, int(member["block_id"]))
+            int(member["block_id"]): preserved_bounds_by_block.get(int(member["block_id"]))
             for member in members
         }
         if any(actual_bounds_by_block.values()):
@@ -1648,12 +1724,14 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         if remaining_setup > 0:
             setup_start, current_dt, setup_end, remaining_setup = _schedule_setup_across_intervals(
                 con, machine_id, int(leader["block_id"]), schedule_run_id, current_dt, remaining_setup,
+                interval_cache=interval_cache,
             )
             start_dt = start_dt or setup_start
             end_dt = setup_end or end_dt
         if remaining_qty > 0 and combined_cycle > 0:
             group_start, current_dt, group_end, remaining_qty = _schedule_combined_production_across_intervals(
                 con, machine_id, members, schedule_run_id, current_dt, remaining_qty,
+                interval_cache=interval_cache,
             )
             start_dt = start_dt or group_start
             end_dt = group_end or end_dt
@@ -1682,6 +1760,58 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         superseded_id = find_superseded_run_id(con, schedule_run_id, int(machine_id), "MACHINE")
         if superseded_id:
             write_change_summary(con, superseded_id, summary)
+
+
+def recalculate_machines(con, machine_ids, reason="PLANNER_CHANGE", tail_by_machine=None):
+    """Recalculate several machine lanes under one schedule run (stacked recalc)."""
+    machine_ids = sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0})
+    if not machine_ids:
+        return
+
+    tail_by_machine = tail_by_machine or {}
+    old_snaps = snapshot_queue_state_all(con, machine_ids)
+    schedule_run_id = create_schedule_run(
+        con,
+        reason=reason,
+        scope_type="MACHINE",
+        machine_id=None,
+        notes=f"Recalculate machines {','.join(str(mid) for mid in machine_ids)}",
+    )
+    for machine_id in machine_ids:
+        recalculate_machine(
+            con,
+            machine_id,
+            reason=reason,
+            schedule_run_id=schedule_run_id,
+            tail_from_block_id=tail_by_machine.get(int(machine_id)),
+        )
+
+    by_machine = {}
+    total_shifted = total_added = total_removed = 0
+    for mid in machine_ids:
+        new_snap = snapshot_queue_state(con, mid)
+        msummary = compute_change_summary(old_snaps[int(mid)], new_snap, machine_id=mid)
+        if msummary["blocks_shifted"] or msummary["blocks_added"] or msummary["blocks_removed"]:
+            by_machine[str(int(mid))] = msummary
+            total_shifted += len(msummary["blocks_shifted"])
+            total_added += len(msummary["blocks_added"])
+            total_removed += len(msummary["blocks_removed"])
+            superseded_id = find_superseded_run_id(con, schedule_run_id, int(mid), "MACHINE")
+            if superseded_id:
+                write_change_summary(con, superseded_id, msummary)
+
+    if len(machine_ids) > 1 and by_machine:
+        batch_summary = {
+            "scope": "MACHINE_BATCH",
+            "machines_changed": len(by_machine),
+            "total_blocks_shifted": total_shifted,
+            "total_blocks_added": total_added,
+            "total_blocks_removed": total_removed,
+            "by_machine": by_machine,
+        }
+        superseded_id = find_superseded_run_id(con, schedule_run_id, None, "MACHINE")
+        if superseded_id:
+            write_change_summary(con, superseded_id, batch_summary)
 
 
 def recalculate_all(con):
