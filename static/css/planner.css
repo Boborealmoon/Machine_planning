@@ -3422,3 +3422,186 @@
       grid-template-columns: 1fr;
     }
   }
+
+  /* ── Queue Delays list page ───────────────────────────────────────────── */
+  .app-main--queue-delays {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 20px 18px 40px;
+  }
+  .queue-delays-page {
+    display: grid;
+    gap: 14px;
+  }
+  .queue-delays-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .queue-delays-title {
+    margin: 0;
+    font-size: 28px;
+    font-weight: 900;
+    letter-spacing: -0.04em;
+    line-height: 1.05;
+  }
+  .queue-delays-subtitle {
+    margin: 6px 0 0;
+    color: var(--text3);
+    font-size: 13px;
+    line-height: 1.45;
+    max-width: 60ch;
+  }
+  .queue-delays-header-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .queue-delays-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 12px;
+    padding: 14px 16px;
+  }
+  .queue-delays-filter {
+    display: grid;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text3);
+  }
+  .queue-delays-filter--grow {
+    flex: 1 1 220px;
+    min-width: 180px;
+  }
+  .queue-delays-filter select,
+  .queue-delays-filter input {
+    min-width: 160px;
+  }
+  .queue-delays-stats {
+    margin-left: auto;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text2);
+    white-space: nowrap;
+  }
+  .queue-delays-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding: 10px 16px;
+    font-size: 12px;
+    color: var(--text2);
+  }
+  .queue-delays-flag {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .queue-delays-flag.is-past-due {
+    background: #b42318;
+  }
+  .queue-delays-flag.is-past-coway {
+    background: #c05600;
+  }
+  .queue-delays-table-wrap {
+    padding: 0;
+    overflow: auto;
+  }
+  .queue-delays-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .queue-delays-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface2);
+    text-align: left;
+    padding: 10px 12px;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text3);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .queue-delays-table tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .queue-delays-row.is-past-due {
+    background: rgba(180, 35, 24, 0.06);
+  }
+  .queue-delays-row.is-past-coway:not(.is-past-due) {
+    background: rgba(192, 86, 0, 0.05);
+  }
+  .queue-delays-ps strong {
+    font-weight: 800;
+  }
+  .queue-delays-partial {
+    display: inline-block;
+    margin-left: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text3);
+  }
+  .queue-delays-op {
+    max-width: 240px;
+    color: var(--text2);
+  }
+  .queue-delays-date {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .queue-delays-end.is-past-due {
+    color: #b42318;
+    font-weight: 800;
+  }
+  .queue-delays-end.is-past-coway {
+    color: #c05600;
+    font-weight: 700;
+  }
+  .queue-delays-status-cell {
+    white-space: nowrap;
+  }
+  .queue-delays-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+  }
+  .queue-delays-status + .queue-delays-status {
+    margin-left: 6px;
+  }
+  .queue-delays-status.is-past-due {
+    background: rgba(180, 35, 24, 0.12);
+    color: #b42318;
+  }
+  .queue-delays-status.is-past-coway {
+    background: rgba(192, 86, 0, 0.12);
+    color: #c05600;
+  }
+  .queue-delays-status.is-ok {
+    background: rgba(21, 115, 71, 0.1);
+    color: #157347;
+  }
+  .queue-delays-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--text3);
+  }

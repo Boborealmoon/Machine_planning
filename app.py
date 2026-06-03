@@ -95,6 +95,11 @@ def scheduler():
     return render_template("scheduler.html", active="scheduler")
 
 
+@app.get("/queue-delays")
+def queue_delays():
+    return render_template("queue_delays.html", active="queue_delays")
+
+
 @app.get("/actual-production")
 def actual_production():
     return render_template("actual_production.html", active="actual_production")

@@ -1030,6 +1030,221 @@ def _api_trial_schedule_db():
         )
 
 
+def _queue_delay_iso_date(value):
+    text = compact_text(value)
+    if not text:
+        return None
+    if len(text) >= 10:
+        try:
+            return date.fromisoformat(text[:10])
+        except ValueError:
+            pass
+    dt = parse_dt_text(text)
+    return dt.date() if dt else None
+
+
+def _queue_delay_start_text(row):
+    return compact_text(
+        row.get("predicted_start_at")
+        or row.get("calculated_start_datetime")
+        or row.get("anchor_datetime")
+        or ""
+    )
+
+
+def _queue_delay_end_text(row):
+    return compact_text(
+        row.get("predicted_end_at")
+        or row.get("calculated_end_datetime")
+        or ""
+    )
+
+
+def _queue_delay_op_label(row):
+    op_no = compact_text(row.get("source_op_no"))
+    op_name = compact_text(row.get("operation_name"))
+    if op_no and op_name:
+        clean = op_name
+        prefix = f"OP{op_no.lstrip('OPop')}"
+        if op_name.upper().startswith(prefix.upper()):
+            clean = op_name[len(prefix):].lstrip(" -:")
+        return f"OP{op_no.lstrip('OPop')} {clean}".strip()
+    return op_name or (f"OP{op_no}" if op_no else "")
+
+
+def _queue_delay_ps_display(source_ps_id):
+    base, partial_no = parse_planner_ps_id(compact_text(source_ps_id))
+    return base, partial_no if partial_no > 1 else 0
+
+
+def _build_queue_delay_jobs(raw_rows):
+    grouped = {}
+    for row in raw_rows:
+        status = compact_text(row.get("execution_status")).upper().replace("-", "_").replace(" ", "_")
+        if status in {"DONE", "COMPLETED"}:
+            continue
+        group_id = int(row.get("group_id") or 0)
+        block_id = int(row.get("block_id") or 0)
+        machine_id = int(row.get("machine_id") or 0)
+        key = f"g:{group_id}" if group_id > 0 else f"b:{block_id}"
+        entry = grouped.setdefault(
+            key,
+            {
+                "group_id": group_id,
+                "block_id": block_id,
+                "machine_id": machine_id,
+                "machine_code": compact_text(row.get("machine_code")),
+                "machine_category": compact_text(row.get("machine_category")),
+                "queue_position": int(row.get("queue_position") or 0),
+                "source_ps_id": compact_text(row.get("source_ps_id")),
+                "operation_labels": [],
+                "starts": [],
+                "ends": [],
+                "due_date": compact_text(row.get("due_date")),
+                "coway_edd": compact_text(row.get("coway_proposed_edd")),
+                "group_label": compact_text(row.get("group_label")),
+            },
+        )
+        entry["queue_position"] = min(entry["queue_position"], int(row.get("queue_position") or 0))
+        label = _queue_delay_op_label(row)
+        if label and label not in entry["operation_labels"]:
+            entry["operation_labels"].append(label)
+        start_text = _queue_delay_start_text(row)
+        end_text = _queue_delay_end_text(row)
+        if start_text:
+            entry["starts"].append(start_text)
+        if end_text:
+            entry["ends"].append(end_text)
+        if not entry["due_date"]:
+            entry["due_date"] = compact_text(row.get("due_date"))
+        if not entry["coway_edd"]:
+            entry["coway_edd"] = compact_text(row.get("coway_proposed_edd"))
+
+    jobs = []
+    for entry in grouped.values():
+        ps_base, partial_no = _queue_delay_ps_display(entry["source_ps_id"])
+        starts = sorted(entry["starts"])
+        ends = sorted(entry["ends"])
+        start_at = starts[0] if starts else ""
+        end_at = ends[-1] if ends else ""
+        if len(entry["operation_labels"]) > 1:
+            operation = entry["group_label"] or " · ".join(entry["operation_labels"])
+        else:
+            operation = entry["operation_labels"][0] if entry["operation_labels"] else entry["group_label"]
+
+        due_date = entry["due_date"]
+        coway_edd = entry["coway_edd"]
+        end_day = _queue_delay_iso_date(end_at)
+        due_day = _queue_delay_iso_date(due_date)
+        coway_day = _queue_delay_iso_date(coway_edd)
+        past_due = bool(end_day and due_day and end_day > due_day)
+        past_coway_edd = bool(end_day and coway_day and end_day > coway_day)
+        delay_days = (end_day - due_day).days if past_due else 0
+        coway_delay_days = (end_day - coway_day).days if past_coway_edd else 0
+        at_risk = past_due or past_coway_edd
+
+        jobs.append(
+            {
+                "ps_id": ps_base,
+                "partial_no": partial_no,
+                "source_ps_id": entry["source_ps_id"],
+                "operation": operation,
+                "machine_code": entry["machine_code"],
+                "machine_category": entry["machine_category"],
+                "queue_position": entry["queue_position"],
+                "start_at": start_at,
+                "end_at": end_at,
+                "due_date": due_date,
+                "coway_edd": coway_edd,
+                "past_due": past_due,
+                "past_coway_edd": past_coway_edd,
+                "delay_days": delay_days,
+                "coway_delay_days": coway_delay_days,
+                "at_risk": at_risk,
+            }
+        )
+
+    jobs.sort(
+        key=lambda job: (
+            0 if job["at_risk"] else 1,
+            -(job["delay_days"] or job["coway_delay_days"] or 0),
+            job.get("due_date") or "9999-12-31",
+            job.get("machine_code") or "",
+            job.get("queue_position") or 0,
+        )
+    )
+    return jobs
+
+
+@trial_bp.get("/api/trial/queue-delays")
+def api_trial_queue_delays():
+    with planner_db() as con:
+        raw_rows = rows(
+            con.execute(
+                """
+                WITH voucher_partials AS (
+                    SELECT ps_id, pp_partial_no, MIN(due_date) AS due_date
+                    FROM pp_vouchers_cache
+                    GROUP BY ps_id, pp_partial_no
+                )
+                SELECT
+                    b.block_id,
+                    b.group_id,
+                    b.machine_id,
+                    b.queue_position,
+                    b.calculated_start_datetime,
+                    b.calculated_end_datetime,
+                    b.anchor_datetime,
+                    b.execution_status,
+                    m.machine_no AS machine_code,
+                    m.machine_category,
+                    o.source_ps_id,
+                    o.source_op_no,
+                    o.operation_name,
+                    g.group_label,
+                    qs.predicted_start_at,
+                    qs.predicted_end_at,
+                    ps.coway_proposed_edd,
+                    vp.due_date
+                FROM planner_run_block b
+                JOIN planner_operation o ON o.operation_id = b.operation_id
+                JOIN planner_machines m ON m.machine_id = b.machine_id
+                LEFT JOIN planner_run_block_group g ON g.group_id = b.group_id
+                LEFT JOIN planner_machine_queue_state qs ON qs.block_id = b.block_id
+                LEFT JOIN planner_process_sheet ps ON ps.planner_ps_id = o.source_ps_id
+                LEFT JOIN voucher_partials vp
+                       ON vp.ps_id = ps.source_ps_id
+                      AND vp.pp_partial_no = ps.pp_partial_no
+                WHERE COALESCE(b.active, TRUE) = TRUE
+                  AND UPPER(REPLACE(REPLACE(COALESCE(b.execution_status, ''), '-', '_'), ' ', '_'))
+                      NOT IN ('DONE', 'COMPLETED')
+                ORDER BY m.machine_id, b.queue_position, b.block_id
+                """
+            )
+        )
+
+        for row in raw_rows:
+            row["calculated_start_datetime"] = compact_text(row.get("calculated_start_datetime"))
+            row["calculated_end_datetime"] = compact_text(row.get("calculated_end_datetime"))
+            row["anchor_datetime"] = planner_wall_datetime_to_api(row.get("anchor_datetime"))
+            row["predicted_start_at"] = compact_text(row.get("predicted_start_at"))
+            row["predicted_end_at"] = compact_text(row.get("predicted_end_at"))
+            row["due_date"] = compact_text(row.get("due_date"))
+            row["coway_proposed_edd"] = compact_text(row.get("coway_proposed_edd"))
+
+        jobs = _build_queue_delay_jobs(raw_rows)
+        at_risk = sum(1 for job in jobs if job.get("at_risk"))
+        return jsonify(
+            {
+                "jobs": jobs,
+                "summary": {
+                    "total": len(jobs),
+                    "at_risk": at_risk,
+                },
+            }
+        )
+
+
 @trial_bp.get("/api/trial/public-holidays")
 def api_trial_public_holidays_list():
     from_iso = compact_text(request.args.get("from") or request.args.get("start"))

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Queue Delays{% endblock %}
+{% block main_class %}app-main--queue-delays{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=queue-delays-20260603">{% endblock %}
+{% block content %}
+<div class="queue-delays-page">
+  <div class="queue-delays-header">
+    <div>
+      <h1 class="queue-delays-title">Queue Delays</h1>
+      <p class="queue-delays-subtitle">Queued jobs with forecast end vs PS due date and Coway EDD. Rows flagged when the end date runs past either commitment.</p>
+    </div>
+    <div class="queue-delays-header-actions">
+      <a class="btn btn-ghost btn-sm" href="/scheduler">Open Planner</a>
+      <button type="button" class="btn btn-ghost btn-sm" id="queue-delays-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="queue-delays-toolbar card">
+    <label class="queue-delays-filter">
+      <span>Show</span>
+      <select id="queue-delays-filter">
+        <option value="at_risk">At risk only</option>
+        <option value="all">All queued jobs</option>
+      </select>
+    </label>
+    <label class="queue-delays-filter queue-delays-filter--grow">
+      <span>Search</span>
+      <input id="queue-delays-search" type="search" placeholder="PS, operation, machine..." autocomplete="off">
+    </label>
+    <div class="queue-delays-stats" id="queue-delays-stats"></div>
+  </div>
+
+  <div class="queue-delays-legend card">
+    <span><span class="queue-delays-flag is-past-due"></span> End past PS due</span>
+    <span><span class="queue-delays-flag is-past-coway"></span> End past Coway EDD</span>
+  </div>
+
+  <div id="queue-delays-loading" class="loading"><div class="spinner"></div> Loading queued jobs...</div>
+  <div id="queue-delays-table-wrap" class="queue-delays-table-wrap card" hidden>
+    <table class="queue-delays-table">
+      <thead>
+        <tr>
+          <th>PS</th>
+          <th>Operation</th>
+          <th>Machine</th>
+          <th>Start</th>
+          <th>End</th>
+          <th>Due</th>
+          <th>Coway EDD</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="queue-delays-body"></tbody>
+    </table>
+  </div>
+  <div id="queue-delays-empty" class="queue-delays-empty card" hidden>
+    <p id="queue-delays-empty-text">No queued jobs match your filters.</p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=queue-delays-20260603"></script>
+<script src="{{ url_for('static', filename='js/queue_delays.js') }}?v=queue-delays-20260603"></script>
+{% endblock %}
