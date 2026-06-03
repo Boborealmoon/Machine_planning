@@ -14,6 +14,8 @@
     <span><span class="ps-op-status is-ready trial-legend-status">Ready to Start</span></span>
     <span><span class="ps-op-status is-in-process trial-legend-status">In Process</span></span>
     <span><span class="ps-op-status is-completed trial-legend-status">Completed</span></span>
+    <span class="trial-legend-sep" aria-hidden="true">·</span>
+    <span class="trial-legend-note">Times shown in Singapore (SGT)</span>
     </div>
   </div>
   <div id="trial-loading" class="loading"><div class="spinner"></div> Loading trial scheduler...</div>
@@ -87,7 +89,7 @@
 {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v=lane-height-viewport-20260529"></script>
-<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=anchor-wall-clock-20260529"></script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sgt-wall-clock-20260603"></script>
 <script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v=dedupe-queue-guard-20260603"></script>
 <script src="{{ url_for('static', filename='js/scheduler/program_tools.js') }}?v=lane-height-viewport-20260529"></script>
 <script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=catalog-partial-shipped-20260603"></script>

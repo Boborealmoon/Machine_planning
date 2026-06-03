@@ -39,6 +39,15 @@ def planner_wall_datetime_to_api(value):
             dt = dt.astimezone(PLANNER_TZ).replace(tzinfo=None)
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     text = str(value).strip().replace("T", " ")
+    if not text:
+        return ""
+    if _DATETIME_TZ_SUFFIX_RE.search(text):
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                return parsed.astimezone(PLANNER_TZ).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
     text = _DATETIME_TZ_SUFFIX_RE.sub("", text).strip()
     if len(text) >= 19:
         return text[:19]

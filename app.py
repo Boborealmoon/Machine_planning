@@ -21,6 +21,7 @@ from planning.gantt_route import trial_gantt_bp
 from planning.materials_route import materials_route_bp
 from planning.planner_routes import trial_bp
 from planning.program_tool_list_route import program_tool_list_bp
+from planning.new_orders_route import new_orders_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
@@ -31,6 +32,7 @@ app.register_blueprint(trial_gantt_bp)
 app.register_blueprint(materials_route_bp)
 app.register_blueprint(trial_bp)
 app.register_blueprint(program_tool_list_bp)
+app.register_blueprint(new_orders_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 

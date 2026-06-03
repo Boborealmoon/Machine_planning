@@ -21,6 +21,7 @@ from datetime import date
 
 from flask import Blueprint, jsonify, request
 
+from db import planner_db_connect_error
 from .helpers import one, rows, planner_db
 from .materials import material_requirement_payload, material_status_map_for_ps_ids
 from .utils import compact_text, shipped_quantity_completed
@@ -1101,6 +1102,9 @@ def api_process_sheet_coway_proposed_edd_post():
                 return jsonify({"error": err}), 404
             return jsonify(payload)
     except Exception as e:
+        friendly = planner_db_connect_error(e)
+        if friendly:
+            return jsonify({"error": friendly}), 503
         return jsonify({"error": str(e)}), 500
 
 
@@ -1126,6 +1130,9 @@ def api_process_sheet_coway_proposed_edd(ps_id):
                 return jsonify({"error": err}), 404
             return jsonify(payload)
     except Exception as e:
+        friendly = planner_db_connect_error(e)
+        if friendly:
+            return jsonify({"error": friendly}), 503
         return jsonify({"error": str(e)}), 500
 
 

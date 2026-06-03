@@ -159,19 +159,59 @@ def get_planner_pool():
     return _planner_pool
 
 
+def planner_db_connect_error(exc: Exception) -> str | None:
+    """User-facing message for planner Postgres connectivity failures."""
+    msg = str(exc).lower()
+    if "could not translate host name" in msg or "name or service not known" in msg:
+        return (
+            "Planner database is unreachable (could not resolve Supabase host). "
+            "Check internet/VPN, then verify SUPA_DB_URL in .env."
+        )
+    if any(
+        token in msg
+        for token in (
+            "connection refused",
+            "timeout expired",
+            "could not connect to server",
+            "server closed the connection unexpectedly",
+        )
+    ):
+        return (
+            "Planner database is unreachable. Check network/VPN and SUPA_DB_URL in .env."
+        )
+    return None
+
+
 def planner_get_conn():
     pool = get_planner_pool()
-    conn = pool.getconn()
-    if getattr(conn, "closed", 0):
+    last_exc = None
+    for attempt in range(2):
         try:
-            pool.putconn(conn, close=True)
-        except psycopg2.pool.PoolError:
-            try:
-                conn.close()
-            except Exception:
-                pass
-        conn = pool.getconn()
-    return conn
+            conn = pool.getconn()
+            if getattr(conn, "closed", 0):
+                try:
+                    pool.putconn(conn, close=True)
+                except psycopg2.pool.PoolError:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                conn = pool.getconn()
+            return conn
+        except psycopg2.OperationalError as exc:
+            last_exc = exc
+            if attempt == 0:
+                global _planner_pool
+                try:
+                    pool.closeall()
+                except Exception:
+                    pass
+                _planner_pool = None
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Could not obtain planner database connection")
 
 
 def planner_release_conn(conn):

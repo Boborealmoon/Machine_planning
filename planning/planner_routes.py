@@ -234,8 +234,8 @@ def _calendar_window_payload(row):
         "window_id": int(row.get("window_id") or 0),
         "machine_id": int(row.get("machine_id") or 0),
         "machine_code": compact_text(row.get("machine_code") or ""),
-        "start_at": compact_text(row.get("start_at") or ""),
-        "end_at": compact_text(row.get("end_at") or ""),
+        "start_at": planner_wall_datetime_to_api(row.get("start_at") or ""),
+        "end_at": planner_wall_datetime_to_api(row.get("end_at") or ""),
         "window_type": window_type,
         "capacity_minutes": int(row.get("capacity_minutes") or 0),
         "note": compact_text(row.get("note") or ""),
@@ -300,14 +300,14 @@ def _trial_schedule_via_rest():
             "shift_profile":            machine.get("shift_profile"),
             "group_label":              group.get("group_label"),
             "group_type":               group.get("group_type"),
-            "visual_start_datetime":    compact_text(b.get("calculated_start_datetime")) or "",
-            "visual_end_datetime":      compact_text(b.get("calculated_end_datetime")) or "",
+            "visual_start_datetime":    planner_wall_datetime_to_api(b.get("calculated_start_datetime")) or "",
+            "visual_end_datetime":      planner_wall_datetime_to_api(b.get("calculated_end_datetime")) or "",
             "visual_parts":             [],
             "break_windows":            [],
             "material_status":          {"status": "NOT_REQUIRED", "label": "", "expected_ready_date": "", "severity": "none"},
             "anchor_datetime":          planner_wall_datetime_to_api(b.get("anchor_datetime")),
-            "calculated_start_datetime": compact_text(b.get("calculated_start_datetime")),
-            "calculated_end_datetime":  compact_text(b.get("calculated_end_datetime")),
+            "calculated_start_datetime": planner_wall_datetime_to_api(b.get("calculated_start_datetime")),
+            "calculated_end_datetime":  planner_wall_datetime_to_api(b.get("calculated_end_datetime")),
             "updated_at":               compact_text(b.get("updated_at")),
         })
 
@@ -318,13 +318,13 @@ def _trial_schedule_via_rest():
         segments.append({
             **s,
             "operation_id":          ops_by_id.get((next((b for b in blocks_raw if b["block_id"] == s["block_id"]), {}) or {}).get("operation_id") or 0, {}).get("operation_id"),
-            "visual_start_datetime": compact_text(s.get("start_datetime")) or "",
-            "visual_end_datetime":   compact_text(s.get("end_datetime")) or "",
+            "visual_start_datetime": planner_wall_datetime_to_api(s.get("start_datetime")) or "",
+            "visual_end_datetime":   planner_wall_datetime_to_api(s.get("end_datetime")) or "",
             "visual_parts":          [],
             "break_windows":         [],
             "segment_date":          compact_text(s.get("segment_date")),
-            "start_datetime":        compact_text(s.get("start_datetime")),
-            "end_datetime":          compact_text(s.get("end_datetime")),
+            "start_datetime":        planner_wall_datetime_to_api(s.get("start_datetime")),
+            "end_datetime":          planner_wall_datetime_to_api(s.get("end_datetime")),
         })
 
     capacities = [{**c, "profile_name": profiles_by_id.get(c.get("profile_id") or 0, {}).get("profile_name", ""), "work_date": compact_text(c.get("work_date"))} for c in caps_raw]
@@ -376,8 +376,8 @@ def api_trial_queue_state():
             )
         )
         for row in data:
-            row["predicted_start_at"] = compact_text(row.get("predicted_start_at"))
-            row["predicted_end_at"] = compact_text(row.get("predicted_end_at"))
+            row["predicted_start_at"] = planner_wall_datetime_to_api(row.get("predicted_start_at"))
+            row["predicted_end_at"] = planner_wall_datetime_to_api(row.get("predicted_end_at"))
         return jsonify(data)
 
 
@@ -425,10 +425,10 @@ def _trial_machine_refresh_payload(con, machine_ids, *, lite=True):
     for row in raw_blocks:
         item = dict(row)
         item["anchor_datetime"] = planner_wall_datetime_to_api(item.get("anchor_datetime"))
-        calc_start = compact_text(item.get("calculated_start_datetime"))
-        calc_end = compact_text(item.get("calculated_end_datetime"))
-        pred_start = compact_text(item.get("qs_predicted_start_at") or calc_start)
-        pred_end = compact_text(item.get("qs_predicted_end_at") or calc_end)
+        calc_start = planner_wall_datetime_to_api(row.get("calculated_start_datetime"))
+        calc_end = planner_wall_datetime_to_api(row.get("calculated_end_datetime"))
+        pred_start = planner_wall_datetime_to_api(row.get("qs_predicted_start_at")) or calc_start
+        pred_end = planner_wall_datetime_to_api(row.get("qs_predicted_end_at")) or calc_end
         item["calculated_start_datetime"] = calc_start
         item["calculated_end_datetime"] = calc_end
         item["predicted_start_at"] = pred_start
@@ -474,8 +474,8 @@ def _trial_machine_refresh_payload(con, machine_ids, *, lite=True):
         actual_summary_map = actual_summaries_for_block_rows(con, blocks)
         for item in blocks:
             summary = actual_summary_map.get(int(item.get("block_id") or 0), {})
-            item["actual_start_at"] = compact_text(summary.get("actual_start_at") or "")
-            item["actual_end_at"] = compact_text(summary.get("actual_end_at") or "")
+            item["actual_start_at"] = planner_wall_datetime_to_api(summary.get("actual_start_at") or "")
+            item["actual_end_at"] = planner_wall_datetime_to_api(summary.get("actual_end_at") or "")
             if summary.get("actual_good_qty") is not None:
                 item["actual_good_qty"] = float(summary.get("actual_good_qty") or 0)
             item["actual_row_count"] = int(summary.get("actual_row_count") or 0)
@@ -702,23 +702,25 @@ def _api_trial_schedule_db():
                 item["visual_parts"] = timing["visual_parts"]
                 item["break_windows"] = timing["break_windows"]
             else:
-                item["visual_start_datetime"] = compact_text(item.get("start_datetime"))
-                item["visual_end_datetime"] = compact_text(item.get("end_datetime"))
+                item["visual_start_datetime"] = planner_wall_datetime_to_api(item.get("start_datetime"))
+                item["visual_end_datetime"] = planner_wall_datetime_to_api(item.get("end_datetime"))
                 item["visual_parts"] = []
                 item["break_windows"] = []
             item["segment_date"] = compact_text(item.get("segment_date"))
-            item["start_datetime"] = compact_text(item.get("start_datetime"))
-            item["end_datetime"] = compact_text(item.get("end_datetime"))
+            item["start_datetime"] = planner_wall_datetime_to_api(item.get("start_datetime"))
+            item["end_datetime"] = planner_wall_datetime_to_api(item.get("end_datetime"))
             segments.append(item)
             segments_by_block.setdefault(int(item.get("block_id") or 0), []).append(item)
 
         blocks = []
         for row in raw_blocks:
             item = dict(row)
-            # Stringify all datetime fields for JSON serialisation
+            calc_start = planner_wall_datetime_to_api(row.get("calculated_start_datetime"))
+            calc_end = planner_wall_datetime_to_api(row.get("calculated_end_datetime"))
+            # Stringify all datetime fields for JSON serialisation (Singapore wall clock)
             item["anchor_datetime"] = planner_wall_datetime_to_api(item.get("anchor_datetime"))
-            item["calculated_start_datetime"] = compact_text(item.get("calculated_start_datetime"))
-            item["calculated_end_datetime"] = compact_text(item.get("calculated_end_datetime"))
+            item["calculated_start_datetime"] = calc_start
+            item["calculated_end_datetime"] = calc_end
             item["updated_at"] = compact_text(item.get("updated_at"))
 
             block_segments = segments_by_block.get(int(item.get("block_id") or 0), [])
@@ -751,10 +753,8 @@ def _api_trial_schedule_db():
                 item["break_windows"] = []
                 item["shift_profile"] = machine_by_id.get(int(item.get("machine_id") or 0), {}).get("shift_profile", "")
             if fast_lane_load:
-                calc_start = compact_text(item.get("calculated_start_datetime"))
-                calc_end = compact_text(item.get("calculated_end_datetime"))
-                pred_start = compact_text(item.get("qs_predicted_start_at") or calc_start)
-                pred_end = compact_text(item.get("qs_predicted_end_at") or calc_end)
+                pred_start = planner_wall_datetime_to_api(row.get("qs_predicted_start_at")) or calc_start
+                pred_end = planner_wall_datetime_to_api(row.get("qs_predicted_end_at")) or calc_end
                 item["predicted_start_at"] = pred_start
                 item["predicted_end_at"] = pred_end
                 if pred_start:
@@ -828,8 +828,8 @@ def _api_trial_schedule_db():
             actual_summary_map = actual_summaries_for_block_rows(con, blocks)
             for item in blocks:
                 summary = actual_summary_map.get(int(item.get("block_id") or 0), {})
-                item["actual_start_at"] = compact_text(summary.get("actual_start_at") or "")
-                item["actual_end_at"] = compact_text(summary.get("actual_end_at") or "")
+                item["actual_start_at"] = planner_wall_datetime_to_api(summary.get("actual_start_at") or "")
+                item["actual_end_at"] = planner_wall_datetime_to_api(summary.get("actual_end_at") or "")
                 if summary.get("actual_good_qty") is not None:
                     item["actual_good_qty"] = float(summary.get("actual_good_qty") or 0)
                 item["actual_row_count"] = int(summary.get("actual_row_count") or 0)
@@ -1074,101 +1074,103 @@ def _queue_delay_op_label(row):
 
 def _queue_delay_ps_display(source_ps_id):
     base, partial_no = parse_planner_ps_id(compact_text(source_ps_id))
-    return base, partial_no if partial_no > 1 else 0
+    return base, max(1, int(partial_no or 1))
+
+
+def _queue_delay_risk_flags(end_at, due_date, coway_edd):
+    """Coway EDD takes precedence over PS due when present."""
+    end_day = _queue_delay_iso_date(end_at)
+    coway_text = compact_text(coway_edd)
+    due_text = compact_text(due_date)
+    if coway_text:
+        commitment_source = "coway"
+        commitment_date = coway_text
+        ref_day = _queue_delay_iso_date(coway_text)
+    elif due_text:
+        commitment_source = "due"
+        commitment_date = due_text
+        ref_day = _queue_delay_iso_date(due_text)
+    else:
+        return {
+            "commitment_source": "",
+            "commitment_date": "",
+            "past_commitment": False,
+            "past_due": False,
+            "past_coway_edd": False,
+            "delay_days": 0,
+            "coway_delay_days": 0,
+            "at_risk": False,
+        }
+
+    past_commitment = bool(end_day and ref_day and end_day > ref_day)
+    delay_days = (end_day - ref_day).days if past_commitment else 0
+    past_due = past_commitment and commitment_source == "due"
+    past_coway_edd = past_commitment and commitment_source == "coway"
+    return {
+        "commitment_source": commitment_source,
+        "commitment_date": commitment_date,
+        "past_commitment": past_commitment,
+        "past_due": past_due,
+        "past_coway_edd": past_coway_edd,
+        "delay_days": delay_days,
+        "coway_delay_days": delay_days if past_coway_edd else 0,
+        "at_risk": past_commitment,
+    }
 
 
 def _build_queue_delay_jobs(raw_rows):
-    grouped = {}
+    jobs = []
     for row in raw_rows:
         status = compact_text(row.get("execution_status")).upper().replace("-", "_").replace(" ", "_")
         if status in {"DONE", "COMPLETED"}:
             continue
-        group_id = int(row.get("group_id") or 0)
-        block_id = int(row.get("block_id") or 0)
-        machine_id = int(row.get("machine_id") or 0)
-        key = f"g:{group_id}" if group_id > 0 else f"b:{block_id}"
-        entry = grouped.setdefault(
-            key,
-            {
-                "group_id": group_id,
-                "block_id": block_id,
-                "machine_id": machine_id,
-                "machine_code": compact_text(row.get("machine_code")),
-                "machine_category": compact_text(row.get("machine_category")),
-                "queue_position": int(row.get("queue_position") or 0),
-                "source_ps_id": compact_text(row.get("source_ps_id")),
-                "operation_labels": [],
-                "starts": [],
-                "ends": [],
-                "due_date": compact_text(row.get("due_date")),
-                "coway_edd": compact_text(row.get("coway_proposed_edd")),
-                "group_label": compact_text(row.get("group_label")),
-            },
-        )
-        entry["queue_position"] = min(entry["queue_position"], int(row.get("queue_position") or 0))
-        label = _queue_delay_op_label(row)
-        if label and label not in entry["operation_labels"]:
-            entry["operation_labels"].append(label)
-        start_text = _queue_delay_start_text(row)
-        end_text = _queue_delay_end_text(row)
-        if start_text:
-            entry["starts"].append(start_text)
-        if end_text:
-            entry["ends"].append(end_text)
-        if not entry["due_date"]:
-            entry["due_date"] = compact_text(row.get("due_date"))
-        if not entry["coway_edd"]:
-            entry["coway_edd"] = compact_text(row.get("coway_proposed_edd"))
 
-    jobs = []
-    for entry in grouped.values():
-        ps_base, partial_no = _queue_delay_ps_display(entry["source_ps_id"])
-        starts = sorted(entry["starts"])
-        ends = sorted(entry["ends"])
-        start_at = starts[0] if starts else ""
-        end_at = ends[-1] if ends else ""
-        if len(entry["operation_labels"]) > 1:
-            operation = entry["group_label"] or " · ".join(entry["operation_labels"])
-        else:
-            operation = entry["operation_labels"][0] if entry["operation_labels"] else entry["group_label"]
-
-        due_date = entry["due_date"]
-        coway_edd = entry["coway_edd"]
-        end_day = _queue_delay_iso_date(end_at)
-        due_day = _queue_delay_iso_date(due_date)
-        coway_day = _queue_delay_iso_date(coway_edd)
-        past_due = bool(end_day and due_day and end_day > due_day)
-        past_coway_edd = bool(end_day and coway_day and end_day > coway_day)
-        delay_days = (end_day - due_day).days if past_due else 0
-        coway_delay_days = (end_day - coway_day).days if past_coway_edd else 0
-        at_risk = past_due or past_coway_edd
+        ps_base, partial_no = _queue_delay_ps_display(row.get("source_ps_id"))
+        if int(row.get("pp_partial_no") or 0) > 0:
+            partial_no = int(row["pp_partial_no"])
+        planner_ps_id = format_planner_ps_id(ps_base, partial_no)
+        start_at = _queue_delay_start_text(row)
+        end_at = _queue_delay_end_text(row)
+        due_date = compact_text(row.get("due_date"))
+        coway_edd = compact_text(row.get("coway_proposed_edd"))
+        risk = _queue_delay_risk_flags(end_at, due_date, coway_edd)
 
         jobs.append(
             {
                 "ps_id": ps_base,
                 "partial_no": partial_no,
-                "source_ps_id": entry["source_ps_id"],
-                "operation": operation,
-                "machine_code": entry["machine_code"],
-                "machine_category": entry["machine_category"],
-                "queue_position": entry["queue_position"],
+                "pp_partial_no": partial_no,
+                "source_ps_id": planner_ps_id,
+                "planner_ps_id": planner_ps_id,
+                "block_id": int(row.get("block_id") or 0),
+                "operation": _queue_delay_op_label(row),
+                "source_op_no": compact_text(row.get("source_op_no")),
+                "machine_code": compact_text(row.get("machine_code")),
+                "machine_category": compact_text(row.get("machine_category")),
+                "queue_position": int(row.get("queue_position") or 0),
+                "scheduled_qty": float(row.get("scheduled_qty") or 0),
                 "start_at": start_at,
                 "end_at": end_at,
                 "due_date": due_date,
                 "coway_edd": coway_edd,
-                "past_due": past_due,
-                "past_coway_edd": past_coway_edd,
-                "delay_days": delay_days,
-                "coway_delay_days": coway_delay_days,
-                "at_risk": at_risk,
+                "commitment_source": risk["commitment_source"],
+                "commitment_date": risk["commitment_date"],
+                "past_commitment": risk["past_commitment"],
+                "past_due": risk["past_due"],
+                "past_coway_edd": risk["past_coway_edd"],
+                "delay_days": risk["delay_days"],
+                "coway_delay_days": risk["coway_delay_days"],
+                "at_risk": risk["at_risk"],
             }
         )
 
     jobs.sort(
         key=lambda job: (
             0 if job["at_risk"] else 1,
-            -(job["delay_days"] or job["coway_delay_days"] or 0),
-            job.get("due_date") or "9999-12-31",
+            -(job["delay_days"] or 0),
+            job.get("commitment_date") or job.get("due_date") or "9999-12-31",
+            job.get("ps_id") or "",
+            int(job.get("pp_partial_no") or job.get("partial_no") or 1),
             job.get("machine_code") or "",
             job.get("queue_position") or 0,
         )
@@ -1192,6 +1194,7 @@ def api_trial_queue_delays():
                     b.group_id,
                     b.machine_id,
                     b.queue_position,
+                    b.scheduled_qty,
                     b.calculated_start_datetime,
                     b.calculated_end_datetime,
                     b.anchor_datetime,
@@ -1204,6 +1207,7 @@ def api_trial_queue_delays():
                     g.group_label,
                     qs.predicted_start_at,
                     qs.predicted_end_at,
+                    ps.pp_partial_no,
                     ps.coway_proposed_edd,
                     vp.due_date
                 FROM planner_run_block b
@@ -1224,13 +1228,14 @@ def api_trial_queue_delays():
         )
 
         for row in raw_rows:
-            row["calculated_start_datetime"] = compact_text(row.get("calculated_start_datetime"))
-            row["calculated_end_datetime"] = compact_text(row.get("calculated_end_datetime"))
+            row["calculated_start_datetime"] = planner_wall_datetime_to_api(row.get("calculated_start_datetime"))
+            row["calculated_end_datetime"] = planner_wall_datetime_to_api(row.get("calculated_end_datetime"))
             row["anchor_datetime"] = planner_wall_datetime_to_api(row.get("anchor_datetime"))
-            row["predicted_start_at"] = compact_text(row.get("predicted_start_at"))
-            row["predicted_end_at"] = compact_text(row.get("predicted_end_at"))
+            row["predicted_start_at"] = planner_wall_datetime_to_api(row.get("predicted_start_at"))
+            row["predicted_end_at"] = planner_wall_datetime_to_api(row.get("predicted_end_at"))
             row["due_date"] = compact_text(row.get("due_date"))
             row["coway_proposed_edd"] = compact_text(row.get("coway_proposed_edd"))
+            row["scheduled_qty"] = float(row.get("scheduled_qty") or 0)
 
         jobs = _build_queue_delay_jobs(raw_rows)
         at_risk = sum(1 for job in jobs if job.get("at_risk"))

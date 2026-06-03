@@ -24,7 +24,7 @@ from .actuals import actual_totals_for_block
 from .blocks import trial_block_row  # noqa: F401  (re-exported for route convenience)
 from .helpers import one, rows
 from .process_sheets import ensure_planner_process_sheet, format_planner_ps_id, parse_planner_ps_id
-from .utils import compact_text, parse_number, shipped_quantity_completed, trial_catalog_op_key
+from .utils import compact_text, parse_number, planner_wall_datetime_to_api, shipped_quantity_completed, trial_catalog_op_key
 
 
 # ---------------------------------------------------------------------------
@@ -697,12 +697,7 @@ def combined_group_summary(con, group_id):
         remaining_qty = max(0.0, scheduled_qty - valid_done)
 
         def _dt_str(v):
-            if v is None:
-                return ""
-            from datetime import datetime as _dt
-            if isinstance(v, _dt):
-                return v.isoformat(sep=" ", timespec="seconds")
-            return str(v)
+            return planner_wall_datetime_to_api(v)
 
         member_rows.append(
             {

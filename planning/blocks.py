@@ -408,8 +408,8 @@ def actual_daily_rows_for_block_row(con, block_row):
             "is_existing_actual": False,
             "actual_id": None,
             "locked_date": True,
-            "start_datetime": compact_text(row["start_datetime"] or ""),
-            "end_datetime": compact_text(row["end_datetime"] or ""),
+            "start_datetime": planner_wall_datetime_to_api(row["start_datetime"] or ""),
+            "end_datetime": planner_wall_datetime_to_api(row["end_datetime"] or ""),
         }
 
     for row in actual_rows:
@@ -643,13 +643,9 @@ def trial_block_payload(block, con=None):
     reject_qty = float(queue_state["reject_qty"] if queue_state and queue_state["reject_qty"] is not None else float(block["actual_reject_qty"] or 0))
     schedule_status = queue_state["schedule_status"] if queue_state and queue_state["schedule_status"] else planning_status
 
-    # Normalise datetime fields to strings for JSON serialisation
+    # Normalise datetime fields to strings for JSON serialisation (Singapore wall clock)
     def _dt_str(v):
-        if v is None:
-            return ""
-        if isinstance(v, datetime):
-            return v.isoformat(sep=" ", timespec="seconds")
-        return str(v)
+        return planner_wall_datetime_to_api(v)
 
     payload = {
         "block_id": int(block["block_id"]),

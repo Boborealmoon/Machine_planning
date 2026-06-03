@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}New Orders{% endblock %}
+{% block main_class %}app-main--new-orders{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=new-orders-side-rail-20260603">{% endblock %}
+{% block content %}
+<div class="new-orders-page">
+  <div class="new-orders-header">
+    <div>
+      <h1 class="new-orders-title">New Orders</h1>
+      <p class="new-orders-subtitle">Sales orders newly posted in ERP, grouped by working week (Mon–Sat). Click a row to see full line detail. Data is read live from COMAIN — cached in memory for 5 minutes, not stored in Supabase.</p>
+    </div>
+    <div class="new-orders-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="new-orders-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="new-orders-toolbar card">
+    <label class="new-orders-filter">
+      <span>Week</span>
+      <select id="new-orders-week">
+        <option value="this_week" selected>This working week</option>
+        <option value="last_week">Last working week</option>
+        <option value="custom">Custom range</option>
+      </select>
+    </label>
+    <label class="new-orders-filter new-orders-filter--custom" id="new-orders-from-wrap" hidden>
+      <span>From</span>
+      <input id="new-orders-from" type="date">
+    </label>
+    <label class="new-orders-filter new-orders-filter--custom" id="new-orders-to-wrap" hidden>
+      <span>To</span>
+      <input id="new-orders-to" type="date">
+    </label>
+    <div class="new-orders-filter">
+      <span>PS type</span>
+      <div class="filter-dropdown" id="no-ps-type-dropdown">
+        <button class="filter-dropdown-btn" type="button" id="no-ps-type-btn">APS, NPS ▾</button>
+        <div class="filter-dropdown-panel" id="no-ps-type-panel" hidden>
+          <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="SR" /> [SR]</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
+        </div>
+      </div>
+    </div>
+    <div class="new-orders-filter new-orders-filter--checkbox">
+      <span>Status</span>
+      <label class="checkbox-label new-orders-hide-history-label">
+        <input type="checkbox" id="new-orders-hide-history" checked />
+        Hide History
+      </label>
+    </div>
+    <label class="new-orders-filter new-orders-filter--grow">
+      <span>Search</span>
+      <span class="planner-page-search-wrap">
+        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="new-orders-search" class="planner-page-search-input" type="search" placeholder="SO, PS, part, customer PO..." autocomplete="off">
+      </span>
+    </label>
+    <div class="new-orders-stats" id="new-orders-stats"></div>
+  </div>
+
+  <div id="new-orders-loading" class="loading"><div class="spinner"></div> Loading new orders...</div>
+  <div id="new-orders-table-wrap" class="new-orders-table-wrap card" hidden>
+    <table class="new-orders-table">
+      <thead>
+        <tr>
+          <th class="new-orders-side-head">Sales order</th>
+          <th>Line</th>
+          <th>PS</th>
+          <th>Part</th>
+          <th>Description</th>
+          <th>PO due</th>
+          <th>Qty</th>
+          <th>Issued</th>
+          <th>Status</th>
+          <th>Proposed EDD</th>
+        </tr>
+      </thead>
+      <tbody id="new-orders-body"></tbody>
+    </table>
+  </div>
+  <div id="new-orders-empty" class="new-orders-empty card" hidden>
+    <p id="new-orders-empty-text">No new orders match your filters.</p>
+  </div>
+  <p class="new-orders-meta" id="new-orders-meta" hidden></p>
+</div>
+
+<div id="new-orders-detail" class="new-orders-detail" hidden>
+  <div class="new-orders-detail-backdrop" data-action="close-detail" aria-hidden="true"></div>
+  <aside class="new-orders-detail-panel" role="dialog" aria-modal="true" aria-labelledby="new-orders-detail-title">
+    <div class="new-orders-detail-head">
+      <div>
+        <p class="new-orders-detail-kicker">Order detail</p>
+        <h2 class="new-orders-detail-title" id="new-orders-detail-title"></h2>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="new-orders-detail-close" aria-label="Close">Close</button>
+    </div>
+    <div class="new-orders-detail-body" id="new-orders-detail-body"></div>
+    <p class="new-orders-detail-foot">Source: live COMAIN ERP read · short-lived server cache (not saved to Supabase)</p>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=new-orders-20260603"></script>
+<script src="{{ url_for('static', filename='js/new_orders.js') }}?v=new-orders-hide-history-20260603"></script>
+{% endblock %}
