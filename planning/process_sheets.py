@@ -262,6 +262,74 @@ def _flow_steps_for_ps_ids(con, ps_ids):
     return result
 
 
+def _erp_cache_steps_batch(con, partial_keys):
+    """Batch-fetch ERP cache steps for many (source_ps_id, pp_partial_no) pairs."""
+    keys = []
+    for source_ps_id, pp_partial_no in partial_keys or []:
+        source_ps_id = compact_text(source_ps_id)
+        if not source_ps_id:
+            continue
+        try:
+            partial = int(pp_partial_no or 1)
+        except (TypeError, ValueError):
+            partial = 1
+        keys.append((source_ps_id, partial))
+    if not keys:
+        return {}
+
+    values_sql = ", ".join(["(%s, %s)"] * len(keys))
+    params = [part for pair in keys for part in pair]
+    grouped: dict[tuple[str, int], list] = {}
+    for row in rows(
+        con.execute(
+            f"""
+            SELECT ps_id, pp_partial_no, stage_no, stage_desc, op_no,
+                   MAX(wo_qty_required) AS wo_qty_required,
+                   MAX(wo_qty_produced) AS wo_qty_produced,
+                   MAX(wo_qty_rejected) AS wo_qty_rejected,
+                   MAX(execution_status) AS execution_status
+            FROM pp_vouchers_cache
+            WHERE (ps_id, pp_partial_no) IN ({values_sql})
+              AND NULLIF(TRIM(COALESCE(stage_desc, '')), '') IS NOT NULL
+            GROUP BY ps_id, pp_partial_no, stage_no, stage_desc, op_no
+            ORDER BY ps_id, pp_partial_no, stage_no, op_no
+            """,
+            params,
+        )
+    ):
+        cache_key = (compact_text(row.get("ps_id")), int(row.get("pp_partial_no") or 1))
+        grouped.setdefault(cache_key, []).append(row)
+
+    out = {}
+    for cache_key, cache_rows in grouped.items():
+        steps = []
+        for idx, row in enumerate(cache_rows):
+            stage_desc = compact_text(row.get("stage_desc"))
+            stage_no = int(row.get("stage_no") or 0)
+            op_no = compact_text(row.get("op_no")) or (str(stage_no) if stage_no else str(idx + 1))
+            op_type = stage_desc.split()[0] if stage_desc else ""
+            steps.append(
+                {
+                    "op_seq_id": stage_no or idx + 1,
+                    "seq_no": idx + 1,
+                    "op_no": op_no,
+                    "op_type": op_type,
+                    "machine_category": op_type.upper(),
+                    "preferred_machine": "",
+                    "cycle_time": 0,
+                    "setup_time": 0,
+                    "is_last_op": 0,
+                    "source_stage_no": stage_no,
+                    "erp_required_qty": row.get("wo_qty_required"),
+                    "erp_finished_qty": row.get("wo_qty_produced"),
+                    "erp_reject_qty": row.get("wo_qty_rejected"),
+                    "erp_execution_status": row.get("execution_status"),
+                }
+            )
+        out[cache_key] = steps
+    return out
+
+
 def _erp_cache_steps_for_ps(con, source_ps_id, pp_partial_no):
     """BOM flow steps from pp_vouchers_cache when no planner_operation_seq is selected."""
     source_ps_id = compact_text(source_ps_id)
@@ -364,11 +432,19 @@ def _scheduled_ops_as_steps(con, planner_ps_id):
     return steps
 
 
-def _resolve_process_sheet_steps(con, ps, flow_steps):
+def _resolve_process_sheet_steps(con, ps, flow_steps, erp_steps_cache=None):
     if flow_steps:
         return flow_steps
     source_ps_id, pp_partial_no = _display_ids(ps)
-    erp_steps = _erp_cache_steps_for_ps(con, source_ps_id, pp_partial_no)
+    try:
+        partial_int = int(pp_partial_no or 1)
+    except (TypeError, ValueError):
+        partial_int = 1
+    cache_key = (compact_text(source_ps_id), partial_int)
+    if erp_steps_cache is not None and cache_key in erp_steps_cache:
+        erp_steps = erp_steps_cache[cache_key]
+    else:
+        erp_steps = _erp_cache_steps_for_ps(con, source_ps_id, pp_partial_no)
     if erp_steps:
         return erp_steps
     planner_ps_id = compact_text(ps.get("ps_id") or ps.get("planner_ps_id"))
@@ -881,6 +957,24 @@ def _erp_wo_completion_map(con, source_ps_ids):
     return out
 
 
+def process_sheet_board_identity_key(item):
+    """Match client itemIdentityKey() for planner/ERP row deduplication."""
+    source = compact_text(
+        item.get("source_ps_id") or item.get("display_ps_id") or item.get("ps_id") or ""
+    ).split("::")[0]
+    try:
+        partial = int(item.get("pp_partial_no") or 1)
+    except (TypeError, ValueError):
+        partial = 1
+    ps_id = compact_text(item.get("ps_id") or "")
+    if not item.get("pp_partial_no") and "::" in ps_id:
+        try:
+            partial = int(ps_id.rsplit("::", 1)[1])
+        except ValueError:
+            pass
+    return f"{source}::{partial}"
+
+
 def list_process_sheets_payload(con):
     _ensure_coway_proposed_edd_column(con)
     search = compact_text(request.args.get("search")).lower()
@@ -910,11 +1004,25 @@ def list_process_sheets_payload(con):
         {compact_text(row.get("source_ps_id")) for row in ps_rows if compact_text(row.get("source_ps_id"))},
     )
 
+    erp_step_keys = []
+    for ps in ps_rows:
+        ps_id = compact_text(ps["ps_id"])
+        if steps_by_ps.get(ps_id):
+            continue
+        source_ps_id, pp_partial_no = _display_ids(ps)
+        try:
+            partial_int = int(pp_partial_no or 1)
+        except (TypeError, ValueError):
+            partial_int = 1
+        if compact_text(source_ps_id):
+            erp_step_keys.append((compact_text(source_ps_id), partial_int))
+    erp_steps_cache = _erp_cache_steps_batch(con, erp_step_keys)
+
     result = []
     today = date.today().isoformat()
     for ps in ps_rows:
         ps_id = compact_text(ps["ps_id"])
-        steps = _resolve_process_sheet_steps(con, ps, steps_by_ps.get(ps_id, []))
+        steps = _resolve_process_sheet_steps(con, ps, steps_by_ps.get(ps_id, []), erp_steps_cache)
         payload = _process_sheet_payload(
             ps,
             steps,

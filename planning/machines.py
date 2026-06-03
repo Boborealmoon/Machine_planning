@@ -129,6 +129,159 @@ def machine_capacity_for_date(con, machine_id, work_date):
     return machine_capacity_details_for_date(con, machine_id, work_date)
 
 
+def prefetch_capacity_context(con, machine_ids, start_date, end_date):
+    """Bulk-load rows used by machine_capacity_details_for_date across a date range."""
+    start_s = start_date.isoformat() if isinstance(start_date, date) else str(start_date)[:10]
+    end_s = end_date.isoformat() if isinstance(end_date, date) else str(end_date)[:10]
+    mids = [int(machine_id) for machine_id in (machine_ids or []) if int(machine_id or 0) > 0]
+
+    overrides = {}
+    if mids:
+        for row in rows(
+            con.execute(
+                """
+                SELECT d.machine_id, d.work_date, d.capacity_minutes, d.start_minute, d.note,
+                       p.profile_name
+                FROM planner_machine_capacity_day d
+                JOIN planner_capacity_profile p ON p.profile_id = d.profile_id
+                WHERE d.machine_id = ANY(%s)
+                  AND d.work_date BETWEEN %s AND %s
+                """,
+                (mids, start_s, end_s),
+            )
+        ):
+            work_date_text = compact_text(row.get("work_date"))
+            overrides[(int(row["machine_id"]), work_date_text)] = {
+                "profile_name": row["profile_name"],
+                "capacity_minutes": int(row["capacity_minutes"] or 0),
+                "start_minute": int(row["start_minute"] or 0),
+                "note": row["note"] or "",
+                "has_capacity_day_override": True,
+            }
+
+    holidays = {
+        compact_text(row.get("holiday_date"))
+        for row in rows(
+            con.execute(
+                """
+                SELECT holiday_date
+                FROM planner_public_holiday
+                WHERE holiday_date BETWEEN %s AND %s
+                """,
+                (start_s, end_s),
+            )
+        )
+        if compact_text(row.get("holiday_date"))
+    }
+
+    profiles_by_name = {
+        compact_text(row.get("profile_name")): row
+        for row in rows(con.execute("SELECT * FROM planner_capacity_profile"))
+        if compact_text(row.get("profile_name"))
+    }
+    fallback_profile = profiles_by_name.get("OFF")
+    if not fallback_profile and profiles_by_name:
+        fallback_profile = next(iter(profiles_by_name.values()))
+
+    shift_profiles = {}
+    if mids:
+        for row in rows(
+            con.execute(
+                "SELECT machine_id, shift_profile FROM planner_machines WHERE machine_id = ANY(%s)",
+                (mids,),
+            )
+        ):
+            shift_profiles[int(row["machine_id"])] = compact_text(row.get("shift_profile"))
+
+    return {
+        "overrides": overrides,
+        "holidays": holidays,
+        "profiles_by_name": profiles_by_name,
+        "shift_profiles": shift_profiles,
+        "fallback_profile": fallback_profile,
+    }
+
+
+def machine_capacity_details_with_context(con, machine_id, work_date, ctx):
+    work_day = work_date if isinstance(work_date, date) else date.fromisoformat(str(work_date))
+    key = (int(machine_id), work_day.isoformat())
+    override = (ctx or {}).get("overrides", {}).get(key)
+    if override:
+        return override
+
+    profiles_by_name = (ctx or {}).get("profiles_by_name") or {}
+    fallback_profile = (ctx or {}).get("fallback_profile")
+    holidays = (ctx or {}).get("holidays") or set()
+
+    if work_day.weekday() == 6 or work_day.isoformat() in holidays:
+        profile = profiles_by_name.get("OFF") or fallback_profile
+        if profile:
+            return {
+                "profile_name": profile["profile_name"],
+                "capacity_minutes": int(profile["capacity_minutes"] or 0),
+                "start_minute": int(profile["start_minute"] or 0),
+                "note": profile["note"] or "",
+                "has_capacity_day_override": False,
+            }
+        return {
+            "profile_name": "OFF",
+            "capacity_minutes": 0,
+            "start_minute": 0,
+            "note": "",
+            "has_capacity_day_override": False,
+        }
+
+    machine_shift_profile = (ctx or {}).get("shift_profiles", {}).get(int(machine_id)) or "STANDARD"
+    profile_name = default_profile_for_weekday(work_day.weekday(), machine_shift_profile)
+    profile = profiles_by_name.get(profile_name) or fallback_profile
+    if not profile:
+        return {
+            "profile_name": profile_name,
+            "capacity_minutes": 0,
+            "start_minute": 0,
+            "note": "",
+            "has_capacity_day_override": False,
+        }
+    return {
+        "profile_name": profile["profile_name"],
+        "capacity_minutes": int(profile["capacity_minutes"] or 0),
+        "start_minute": int(profile["start_minute"] or 0),
+        "note": profile["note"] or "",
+        "has_capacity_day_override": False,
+    }
+
+
+def machine_capacity_for_date_range(con, start_iso, end_iso, machines):
+    machine_ids = [int(machine.get("machine_id") or 0) for machine in (machines or [])]
+    start_day = date.fromisoformat(start_iso)
+    end_day = date.fromisoformat(end_iso)
+    ctx = prefetch_capacity_context(con, machine_ids, start_day, end_day)
+    calendar = []
+    day = start_day
+    while day <= end_day:
+        iso_day = day.isoformat()
+        per_machine = [
+            machine_capacity_details_with_context(con, machine["machine_id"], day, ctx)
+            for machine in machines
+        ]
+        capacity_minutes = sum(int(cap.get("capacity_minutes") or 0) for cap in per_machine)
+        profiles = sorted(
+            {compact_text(cap.get("profile_name")) for cap in per_machine if compact_text(cap.get("profile_name"))}
+        )
+        notes = sorted({compact_text(cap.get("note")) for cap in per_machine if compact_text(cap.get("note"))})
+        calendar.append(
+            {
+                "work_date": iso_day,
+                "is_working_day": 1 if any(int(cap.get("capacity_minutes") or 0) > 0 for cap in per_machine) else 0,
+                "capacity_minutes": capacity_minutes,
+                "profile_name": ", ".join(profiles) if profiles else "OFF",
+                "note": "; ".join(notes),
+            }
+        )
+        day += timedelta(days=1)
+    return calendar
+
+
 def is_public_holiday(con, work_date):
     row = one(
         con.execute(

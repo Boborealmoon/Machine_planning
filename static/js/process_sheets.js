@@ -615,7 +615,24 @@
     const params = new URLSearchParams();
     if (shouldIncludeErpCompleted()) params.set('show_completed', '1');
     const qs = params.toString();
-    return qs ? `/api/process-sheets?${qs}` : '/api/process-sheets';
+    return qs ? `/api/process-sheets/board?${qs}` : '/api/process-sheets/board';
+  }
+
+  function mergeBoardItems(board) {
+    const plannerItems = Array.isArray(board?.planner)
+      ? board.planner.map(normalizePlannerItem)
+      : [];
+    const plannerIds = new Set(plannerItems.map(itemIdentityKey));
+    const erpItems = Array.isArray(board?.erp_only)
+      ? board.erp_only.map(normalizeErpItem).filter(item => item.ps_id && !plannerIds.has(itemIdentityKey(item)))
+      : [];
+    return [...plannerItems, ...erpItems].sort((a, b) => {
+      const due = String(a.due_date || '').localeCompare(String(b.due_date || ''));
+      const source = String(a.source_ps_id || a.display_ps_id || a.ps_id || '')
+        .localeCompare(String(b.source_ps_id || b.display_ps_id || b.ps_id || ''));
+      const partial = Number(partialNo(a)) - Number(partialNo(b));
+      return due || source || partial || String(a.ps_id || '').localeCompare(String(b.ps_id || ''));
+    });
   }
 
   let searchRenderTimer = null;
@@ -624,30 +641,10 @@
     state.loading = true;
     setBusy(true);
     try {
-      const [plannerResult, erpResult] = await Promise.allSettled([
-        getJson(plannerProcessSheetsUrl()),
-        getJson(erpVouchersUrl(refresh)),
-      ]);
-
-      const plannerItems = plannerResult.status === 'fulfilled' && Array.isArray(plannerResult.value)
-        ? plannerResult.value.map(normalizePlannerItem)
-        : [];
-      const plannerIds = new Set(plannerItems.map(itemIdentityKey));
-      const erpItems = erpResult.status === 'fulfilled' && Array.isArray(erpResult.value)
-        ? erpResult.value.map(normalizeErpItem).filter(item => item.ps_id && !plannerIds.has(itemIdentityKey(item)))
-        : [];
-
-      state.items = [...plannerItems, ...erpItems].sort((a, b) => {
-        const due = String(a.due_date || '').localeCompare(String(b.due_date || ''));
-        const source = String(a.source_ps_id || a.display_ps_id || a.ps_id || '')
-          .localeCompare(String(b.source_ps_id || b.display_ps_id || b.ps_id || ''));
-        const partial = Number(partialNo(a)) - Number(partialNo(b));
-        return due || source || partial || String(a.ps_id || '').localeCompare(String(b.ps_id || ''));
-      });
-
-      if (plannerResult.status === 'rejected' && erpResult.status === 'rejected') {
-        throw plannerResult.reason || erpResult.reason;
-      }
+      const url = plannerProcessSheetsUrl();
+      const boardUrl = refresh ? `${url}${url.includes('?') ? '&' : '?'}refresh=1` : url;
+      const board = await getJson(boardUrl);
+      state.items = mergeBoardItems(board);
 
       state.loading = false;
       render();

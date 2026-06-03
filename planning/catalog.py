@@ -111,6 +111,7 @@ def _is_machining_plannable_op(op_type, machine_category):
 def trial_catalog_items(con, include_completed=False):
     bom_stage_keys = _bom_op_stage_keys(con)
     planned_qty_by_op = {}
+    queued_machines_by_op = {}
     for row in rows(
         con.execute(
             """
@@ -128,6 +129,27 @@ def trial_catalog_items(con, include_completed=False):
     ):
         key = trial_catalog_op_key(row["source_ps_id"], row["source_op_no"], row["source_op_seq_id"])
         planned_qty_by_op[key] = float(row["planned_qty"] or 0)
+    for row in rows(
+        con.execute(
+            """
+            SELECT DISTINCT o.source_ps_id, o.source_op_no, o.source_op_seq_id AS source_op_seq_id,
+                   m.machine_no AS machine_code
+            FROM planner_operation o
+            JOIN planner_run_block b ON b.operation_id = o.operation_id
+            JOIN planner_machines m ON m.machine_id = b.machine_id
+            WHERE COALESCE(o.source_ps_id, '') <> ''
+              AND COALESCE(b.active, TRUE) = TRUE
+              AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
+            ORDER BY m.machine_no
+            """
+        )
+    ):
+        key = trial_catalog_op_key(row["source_ps_id"], row["source_op_no"], row["source_op_seq_id"])
+        code = compact_text(row.get("machine_code"))
+        if code:
+            queued_machines_by_op.setdefault(key, []).append(code)
+    for key, codes in list(queued_machines_by_op.items()):
+        queued_machines_by_op[key] = sorted({c for c in codes if c})
 
     # Process sheets that have a selected BOM (have ops to schedule). ERP cache
     # has one row per partial/stage, so aggregate it before joining to planner
@@ -387,6 +409,7 @@ def trial_catalog_items(con, include_completed=False):
         if op_key in item["_seen_op_keys"]:
             continue
         item["_seen_op_keys"].add(op_key)
+        queued_machines = list(queued_machines_by_op.get(op_key, []) or [])
         op_item = {
             "source_ps_id": ps_id,
             "pp_partial_no": pp_partial_no,
@@ -407,6 +430,8 @@ def trial_catalog_items(con, include_completed=False):
             "erp_finished_qty": erp_finished_qty,
             "erp_reject_qty": erp_reject_qty,
             "remaining_qty": remaining_qty,
+            "queued_machines": queued_machines,
+            "is_allocated": planned_qty > 0,
             "compatible_machine_group": row["machine_category"] or "",
             "execution_status": compact_text(row.get("op_execution_status") or ""),
         }
@@ -496,6 +521,8 @@ def trial_catalog_items(con, include_completed=False):
                     "cycle_minutes_per_qty": float(op["cycle_time"] or 0),
                     "compatible_machine_group": op["compatible_machine_group"] or "",
                     "execution_status": op.get("execution_status") or "",
+                    "queued_machines": list(op.get("queued_machines") or []),
+                    "is_allocated": bool(op.get("is_allocated")),
                     "op": op,
                 }
             )

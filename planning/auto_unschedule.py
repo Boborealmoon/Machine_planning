@@ -337,8 +337,13 @@ def unschedule_done_block(con, block_id: int, *, reason: str = "AUTO_DONE") -> d
             (int(row["block_id"]),),
         )
 
-    for machine_id in machine_ids:
-        recalculate_machine(con, machine_id)
+    if machine_ids:
+        from .operation_sequence import compact_machine_lane_queue
+
+        for machine_id in machine_ids:
+            compact_machine_lane_queue(con, machine_id, recalculate=False)
+        for machine_id in machine_ids:
+            recalculate_machine(con, machine_id)
 
     return {
         "ok": True,

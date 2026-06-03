@@ -44,6 +44,8 @@ from .blocks import (
     refresh_block_schedule_bounds,
     removed_actual_dates_for_block_row,
     schedule_signature_for_machine,
+    dedupe_machine_catalog_queue,
+    find_active_catalog_lane_block,
     trial_block_payload,
     trial_block_row,
 )
@@ -548,13 +550,17 @@ def _api_trial_schedule_db():
         # that path can recalculate every affected machine and makes the planner feel hung.
         if not is_machine_scoped and not board_lite:
             from .auto_unschedule import auto_unschedule_on_page_load
+            from .operation_sequence import compact_machine_lanes_with_gaps
 
             auto_unschedule_on_page_load(con)
+            compact_machine_lanes_with_gaps(con, recalculate=False)
         # Machine-scoped full refresh only — lite lane updates skip this (too slow).
         elif is_machine_scoped and not lite:
             from .auto_unschedule import auto_unschedule_for_machines
+            from .operation_sequence import compact_machine_lanes_with_gaps
 
             auto_unschedule_for_machines(con, machine_id_filter)
+            compact_machine_lanes_with_gaps(con, machine_id_filter, recalculate=False)
 
         # Stale card cleanup — skip on lite board and machine-scoped refreshes.
         if not is_machine_scoped and not board_lite:
@@ -1348,6 +1354,48 @@ def api_trial_create_operation():
         return jsonify({"error": cycle_error}), 400
     try:
         with planner_db() as con:
+            source_ps_id_val = compact_text(data.get("source_ps_id")) or job_no
+            source_op_no_val = compact_text(data.get("source_op_no"))
+            source_op_seq_val = int(data.get("source_op_seq_id") or 0)
+            existing_block_id = find_active_catalog_lane_block(
+                con,
+                machine_id,
+                source_ps_id_val,
+                source_op_no_val,
+                source_op_seq_val,
+            )
+            if existing_block_id:
+                queue_position = float(data.get("queue_position") or 0)
+                if queue_position > 0:
+                    from .operation_sequence import apply_machine_queue_order
+
+                    machine_blocks = rows(
+                        con.execute(
+                            """
+                            SELECT block_id
+                            FROM planner_run_block
+                            WHERE machine_id = %s
+                              AND COALESCE(active, TRUE) = TRUE
+                            ORDER BY queue_position, block_id
+                            """,
+                            (machine_id,),
+                        )
+                    )
+                    ordered_ids = [int(row["block_id"]) for row in machine_blocks]
+                    ordered_ids = [bid for bid in ordered_ids if bid != existing_block_id]
+                    insert_idx = min(max(0, int(queue_position) - 1), len(ordered_ids))
+                    ordered_ids.insert(insert_idx, existing_block_id)
+                    recalculate = _parse_recalculate_flag(data)
+                    apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=recalculate)
+                block = trial_block_row(con, existing_block_id)
+                return jsonify({
+                    "ok": True,
+                    "duplicate": True,
+                    "operation_id": int(block["operation_id"]),
+                    "block": trial_block_payload(block, None),
+                    "machine_refresh": _trial_machine_refresh_payload(con, [machine_id], lite=True),
+                })
+
             planning_status, execution_status = normalize_block_status_inputs(data)
             op_cur = con.execute(
                 """
@@ -1399,7 +1447,6 @@ def api_trial_create_operation():
                 ),
             )
             block_id = int(one(block_cur)["block_id"])
-            source_ps_id_val = compact_text(data.get("source_ps_id")) or None
             from .auto_unschedule import apply_saved_anchor_to_new_block
 
             apply_saved_anchor_to_new_block(
@@ -1467,7 +1514,7 @@ def api_trial_create_operation():
                 "ok": True,
                 "operation_id": operation_id,
                 "recalculated": recalculate,
-                "block": trial_block_payload(trial_block_row(con, block_id), con),
+                "block": trial_block_payload(trial_block_row(con, block_id), None),
                 "machine_refresh": _trial_machine_refresh_payload(con, [machine_id], lite=True),
             })
     except Exception as exc:
@@ -1566,6 +1613,19 @@ def api_trial_update_block(block_id):
                 f"UPDATE planner_operation SET {set_clause}, updated_at = NOW() WHERE operation_id = %s",
                 (*op_updates.values(), int(block["operation_id"])),
             )
+            timing_sync = {}
+            if "setup_minutes" in op_updates:
+                timing_sync["setup_minutes"] = op_updates["setup_minutes"]
+            if "cycle_minutes_per_qty" in op_updates:
+                timing_sync["cycle_minutes_per_qty"] = op_updates["cycle_minutes_per_qty"]
+            if timing_sync:
+                from .blocks import sync_catalog_op_timing_fields
+
+                sync_catalog_op_timing_fields(
+                    con,
+                    int(block["operation_id"]),
+                    **timing_sync,
+                )
         block_updates = {}
         if any(key in data for key in ("planning_status", "execution_status", "status")):
             planning_status, execution_status = normalize_block_status_inputs(
@@ -1758,6 +1818,25 @@ def api_trial_queue_recalculate():
 @trial_bp.post("/api/trial/blocks/<int:block_id>/combine")
 def api_trial_combine_blocks(block_id):
     return jsonify({"error": "Scheduled blocks cannot be combined. Combine operations inside the PS list before scheduling."}), 400
+
+
+@trial_bp.post("/api/trial/machines/<int:machine_id>/dedupe-queue")
+def api_trial_dedupe_machine_queue(machine_id):
+    """Remove duplicate queue cards for the same PS/op on one machine (keeps earliest slot)."""
+    machine_id = int(machine_id or 0)
+    if machine_id <= 0:
+        return jsonify({"error": "Machine is required"}), 400
+    with planner_db() as con:
+        result = dedupe_machine_catalog_queue(con, machine_id)
+        removed = result.get("removed_block_ids") or []
+        payload = {
+            "ok": True,
+            "removed": len(removed),
+            "removed_block_ids": removed,
+        }
+        if removed:
+            payload["machine_refresh"] = _trial_machine_refresh_payload(con, [machine_id], lite=True)
+        return jsonify(payload)
 
 
 @trial_bp.delete("/api/trial/blocks/<int:block_id>")
