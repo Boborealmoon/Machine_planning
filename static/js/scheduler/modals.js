@@ -325,6 +325,9 @@ function openTrialBlockEditor(blockId) {
         await DEL(`/api/trial/blocks/${block.block_id}`);
         closeModal();
         await refreshMachines([_delMachineId].filter(Boolean));
+        if (typeof trialRefreshCatalogSidebar === 'function') {
+          trialRefreshCatalogSidebar();
+        }
         toast('Run block deleted', 'success');
       } catch (e) {
         toast('Delete failed: ' + e.message, 'error');
@@ -361,12 +364,31 @@ function openTrialSplitModal(blockId) {
       if (cancelBtn) cancelBtn.disabled = true;
       if (qtyInput) qtyInput.disabled = true;
       if (statusEl) statusEl.style.display = 'block';
-      await POST(`/api/trial/blocks/${block.block_id}/split`, {
+      const machineId = Number(block.machine_id || 0);
+      const result = await POST(`/api/trial/blocks/${block.block_id}/split`, {
         split_qty: Number(document.getElementById('trial-split-qty').value || 0),
       });
       closeModal();
-      await refreshMachines([block.machine_id].filter(Boolean));
-      toast('Block split', 'success');
+      if (result?.block && typeof trialMergeBlockFromApi === 'function') {
+        trialMergeBlockFromApi(result.block);
+      }
+      if (result?.new_block) {
+        if (typeof trialPinBlock === 'function') trialPinBlock(result.new_block);
+        if (typeof trialMergeBlockFromApi === 'function') trialMergeBlockFromApi(result.new_block);
+      }
+      if (typeof trialMarkDirtyMachines === 'function') {
+        trialMarkDirtyMachines([machineId].filter(Boolean), { skipRender: true });
+      }
+      const refreshed = machineId
+        && typeof trialApplyMachineRefreshFromResponse === 'function'
+        && trialApplyMachineRefreshFromResponse([machineId], result);
+      if (!refreshed && machineId) {
+        await refreshMachines([machineId], { response: result });
+      }
+      if (typeof trialRefreshCatalogSidebar === 'function') {
+        trialRefreshCatalogSidebar();
+      }
+      toast('Block split — click Recalculate schedules for times', 'success');
     } catch (e) {
       toast('Split failed: ' + e.message, 'error');
       if (saveBtn) {

@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Queue Delays{% endblock %}
+{% block main_class %}app-main--queue-delays{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=toolbar-search-20260603">{% endblock %}
+{% block content %}
+<div class="queue-delays-page">
+  <div class="queue-delays-header">
+    <div>
+      <h1 class="queue-delays-title">Queue Delays</h1>
+      <p class="queue-delays-subtitle">Queued jobs grouped by PS + partial. All schedule times are Singapore (SGT, UTC+8). Coway EDD is set once per group and overrides PS due for all ops under that partial.</p>
+    </div>
+    <div class="queue-delays-header-actions">
+      <a class="btn btn-ghost btn-sm" href="/scheduler">Open Planner</a>
+      <button type="button" class="btn btn-ghost btn-sm" id="queue-delays-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="queue-delays-toolbar card">
+    <label class="queue-delays-filter">
+      <span>Show</span>
+      <select id="queue-delays-filter">
+        <option value="all" selected>All queued jobs</option>
+        <option value="at_risk">At risk only</option>
+      </select>
+    </label>
+    <label class="queue-delays-filter">
+      <span>Sort by</span>
+      <select id="queue-delays-sort-by">
+        <option value="days_late" selected>Days past due</option>
+        <option value="ps">PS no.</option>
+        <option value="end">End date</option>
+        <option value="due">Due date</option>
+        <option value="coway">Coway EDD</option>
+      </select>
+    </label>
+    <button type="button" class="btn btn-ghost btn-sm queue-delays-sort-dir" id="queue-delays-sort-dir" title="Toggle sort direction">
+      ↓ Most late
+    </button>
+    <label class="queue-delays-filter queue-delays-filter--grow">
+      <span>Search</span>
+      <span class="planner-page-search-wrap">
+        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="queue-delays-search" class="planner-page-search-input" type="search" placeholder="PS, operation, machine..." autocomplete="off">
+      </span>
+    </label>
+    <div class="queue-delays-stats" id="queue-delays-stats"></div>
+  </div>
+
+  <div class="queue-delays-legend card">
+    <span><span class="queue-delays-flag is-past-coway"></span> End past Coway EDD (when set)</span>
+    <span><span class="queue-delays-flag is-past-due"></span> End past PS due (when no Coway EDD)</span>
+  </div>
+
+  <div id="queue-delays-loading" class="loading"><div class="spinner"></div> Loading queued jobs...</div>
+  <div id="queue-delays-table-wrap" class="queue-delays-table-wrap card" hidden>
+    <table class="queue-delays-table">
+      <thead>
+        <tr>
+          <th>PS</th>
+          <th>Operation</th>
+          <th>Machine</th>
+          <th>Start</th>
+          <th>End</th>
+          <th>Due</th>
+          <th>Coway EDD</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="queue-delays-body"></tbody>
+    </table>
+  </div>
+  <div id="queue-delays-empty" class="queue-delays-empty card" hidden>
+    <p id="queue-delays-empty-text">No queued jobs match your filters.</p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=queue-delays-20260603"></script>
+<script src="{{ url_for('static', filename='js/queue_delays.js') }}?v=queue-delays-sgt-20260603"></script>
+{% endblock %}

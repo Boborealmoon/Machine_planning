@@ -680,7 +680,9 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
     return;
   }
   const catalogCard = trialCatalogCardFromPayload(card);
-  const schedulableRemaining = trialCatalogSchedulableRemaining(card?.op ? { ...catalogCard, remaining_qty: op.remaining_qty } : card);
+  const schedulableRemaining = trialCatalogSchedulableRemaining(
+    card?.op ? { ...catalogCard, remaining_qty: op.remaining_qty, op } : card,
+  );
   const numericMachineId = Number(machineId || 0);
 
   if (catalogCard && schedulableRemaining > 0.0001) {

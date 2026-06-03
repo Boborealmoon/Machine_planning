@@ -107,6 +107,60 @@ def find_active_catalog_lane_block(
     return None
 
 
+def merge_deleted_split_block_qty(con, block):
+    """Return qty merged into a sibling block when removing a queue split (else 0)."""
+    if not con or not block:
+        return 0.0
+    block_id = int(block.get("block_id") or 0)
+    operation_id = int(block.get("operation_id") or 0)
+    removed_qty = max(0.0, float(block.get("scheduled_qty") or 0))
+    if not block_id or not operation_id or removed_qty <= 0:
+        return 0.0
+
+    siblings = rows(
+        con.execute(
+            """
+            SELECT block_id, scheduled_qty, split_from_block_id
+            FROM planner_run_block
+            WHERE operation_id = %s
+              AND block_id <> %s
+              AND COALESCE(active, TRUE) = TRUE
+            ORDER BY block_id
+            """,
+            (operation_id, block_id),
+        )
+    )
+    if not siblings:
+        return 0.0
+
+    split_parent_id = int(block.get("split_from_block_id") or 0)
+    target = None
+    if split_parent_id:
+        target = next((row for row in siblings if int(row["block_id"]) == split_parent_id), None)
+    if not target:
+        target = siblings[0]
+
+    target_id = int(target["block_id"])
+    next_qty = max(0.0, float(target["scheduled_qty"] or 0)) + removed_qty
+    con.execute(
+        "UPDATE planner_run_block SET scheduled_qty = %s, updated_at = NOW() WHERE block_id = %s",
+        (next_qty, target_id),
+    )
+    op_row = one(
+        con.execute(
+            "SELECT total_qty FROM planner_operation WHERE operation_id = %s",
+            (operation_id,),
+        )
+    )
+    if op_row:
+        op_total = max(float(op_row.get("total_qty") or 0), next_qty)
+        con.execute(
+            "UPDATE planner_operation SET total_qty = %s, updated_at = NOW() WHERE operation_id = %s",
+            (op_total, operation_id),
+        )
+    return removed_qty
+
+
 def sync_catalog_op_timing_fields(
     con,
     anchor_operation_id,
@@ -354,8 +408,8 @@ def actual_daily_rows_for_block_row(con, block_row):
             "is_existing_actual": False,
             "actual_id": None,
             "locked_date": True,
-            "start_datetime": compact_text(row["start_datetime"] or ""),
-            "end_datetime": compact_text(row["end_datetime"] or ""),
+            "start_datetime": planner_wall_datetime_to_api(row["start_datetime"] or ""),
+            "end_datetime": planner_wall_datetime_to_api(row["end_datetime"] or ""),
         }
 
     for row in actual_rows:
@@ -589,13 +643,9 @@ def trial_block_payload(block, con=None):
     reject_qty = float(queue_state["reject_qty"] if queue_state and queue_state["reject_qty"] is not None else float(block["actual_reject_qty"] or 0))
     schedule_status = queue_state["schedule_status"] if queue_state and queue_state["schedule_status"] else planning_status
 
-    # Normalise datetime fields to strings for JSON serialisation
+    # Normalise datetime fields to strings for JSON serialisation (Singapore wall clock)
     def _dt_str(v):
-        if v is None:
-            return ""
-        if isinstance(v, datetime):
-            return v.isoformat(sep=" ", timespec="seconds")
-        return str(v)
+        return planner_wall_datetime_to_api(v)
 
     payload = {
         "block_id": int(block["block_id"]),

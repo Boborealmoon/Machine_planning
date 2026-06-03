@@ -639,12 +639,14 @@
 
   async function loadProcessSheets({ refresh = false } = {}) {
     state.loading = true;
-    setBusy(true);
+    setBusy(true, refresh);
+    if (refresh) render();
     try {
       const url = plannerProcessSheetsUrl();
       const boardUrl = refresh ? `${url}${url.includes('?') ? '&' : '?'}refresh=1` : url;
       const board = await getJson(boardUrl);
       state.items = mergeBoardItems(board);
+      state.lastRefreshedAt = refresh ? Date.now() : state.lastRefreshedAt;
 
       state.loading = false;
       render();
@@ -780,7 +782,11 @@
 
     if (els.queueHint) {
       const erpOnly = items.filter(item => item.source === 'erp').length;
-      els.queueHint.textContent = `${start + 1}-${end} shown from ${items.length} matched | ${state.items.length} loaded${erpOnly ? ` (${erpOnly} ERP-only)` : ''}`;
+      const refreshed = state.lastRefreshedAt
+        ? ` | refreshed ${new Date(state.lastRefreshedAt).toLocaleTimeString()}`
+        : '';
+      const loadingNote = state.loading ? ' | refreshing from cache…' : '';
+      els.queueHint.textContent = `${start + 1}-${end} shown from ${items.length} matched | ${state.items.length} loaded${erpOnly ? ` (${erpOnly} ERP-only)` : ''}${refreshed}${loadingNote}`;
     }
 
     const openItems = pageItems.filter(item => !isCompleted(item));
@@ -1156,8 +1162,14 @@
     if (els.queueHint) els.queueHint.textContent = 'Load failed';
   }
 
-  function setBusy(busy) {
-    if (els.refreshBtn) els.refreshBtn.disabled = busy;
+  function setBusy(busy, refreshing = false) {
+    if (!els.refreshBtn) return;
+    els.refreshBtn.disabled = busy;
+    if (busy && refreshing) {
+      els.refreshBtn.textContent = 'Refreshing…';
+    } else if (!busy) {
+      els.refreshBtn.textContent = 'Refresh From Cache';
+    }
   }
 
   function scheduleSearchRender() {

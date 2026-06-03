@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Actual Production{% endblock %}
 {% block main_class %}app-main--actual-production{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=actual-view-tabs-20260602">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=toolbar-search-20260603">{% endblock %}
 {% block content %}
 <div class="actual-production-page">
   <div class="actual-production-header">
@@ -28,7 +28,13 @@
     </label>
     <label class="actual-production-filter actual-production-filter--grow">
       <span>Search</span>
-      <input id="actual-production-search" type="search" placeholder="PS, part, op, machine..." autocomplete="off">
+      <span class="planner-page-search-wrap">
+        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="actual-production-search" class="planner-page-search-input" type="search" placeholder="PS, part, op, machine..." autocomplete="off">
+      </span>
     </label>
     <div class="actual-production-filter actual-production-filter--view">
       <span>View</span>

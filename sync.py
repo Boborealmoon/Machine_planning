@@ -1070,7 +1070,7 @@ def run_pp_partial_sync(force: bool = False) -> dict:
 # Default sync is SCOPED to PP vouchers in mfg_pp_vch + ps_id prefixes used by
 # vw_pp_vouchers (drops unrelated MPS/WO rows). Set MFG_WO_STATUS_UNSCOPED=1 to
 # restore the legacy full-table pull. COMAIN indexes that help the source query:
-#   mfg_mps_vch (source_pp_no), mfg_wo_vch (voucher_no, stage_no),
+#   mfg_mps_vch (source_pp_no, source_pp_partial_no), mfg_wo_vch (voucher_no, stage_no),
 #   mfg_pp_partial (pp_voucher_no, partial_qty).
 
 _MFG_WO_STATUS_AGG_SQL = """
@@ -1099,7 +1099,11 @@ GROUP BY source_mps_no, pp_partial_no, stage_no
 _MFG_WO_STATUS_WO_ROWS_CORE = """
     SELECT
         t2.source_pp_no                   AS source_mps_no,
-        COALESCE(pp.pp_partial_no, 1)     AS pp_partial_no,
+        COALESCE(
+            NULLIF(t2.source_pp_partial_no, 0),
+            pp.pp_partial_no,
+            1
+        )                                 AS pp_partial_no,
         t3.execution_status,
         t3.wo_qty_required,
         t3.total_acc_qty_produced,
@@ -1117,6 +1121,7 @@ _MFG_WO_STATUS_WO_ROWS_CORE = """
     LEFT JOIN pp_partials pp
       ON pp.pp_voucher_no = t2.source_pp_no
      AND pp.partial_qty = t3.wo_qty_required
+     AND COALESCE(t2.source_pp_partial_no, 0) = 0
     WHERE t2.source_pp_no IS NOT NULL
       AND t2.stage_no IS NOT NULL
 """
@@ -1213,7 +1218,10 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
                 rows = scur.fetchall()
                 query_ms = int((time.monotonic() - t_query) * 1000)
         finally:
-            release_conn(src)
+            try:
+                release_conn(src)
+            except Exception:
+                src.close()
 
         t_reload = time.monotonic()
         reload_mode = _staging_reload(

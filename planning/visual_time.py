@@ -39,7 +39,8 @@ def _coerce_datetime(value):
     if dt is None:
         return None
     if dt.tzinfo is not None:
-        dt = dt.replace(tzinfo=None)
+        from .utils import PLANNER_TZ
+        dt = dt.astimezone(PLANNER_TZ).replace(tzinfo=None)
     return dt
 
 

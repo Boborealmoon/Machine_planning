@@ -189,6 +189,22 @@ function trialInvalidateCatalogCache() {
   });
 }
 
+/** Reload PS/Ops sidebar after queue mutations (split, delete, schedule). */
+async function trialRefreshCatalogSidebar() {
+  trialInvalidateCatalogCache();
+  try {
+    const erpVouchers = await GET(trialNoCacheUrl(trialCatalogUrl(true)));
+    const cacheKey = trialCatalogCacheKey();
+    trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
+    trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 10000;
+    trialState.catalog = trialLoadCache[cacheKey];
+    if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
+    if (typeof bindTrialCatalogDnD === 'function') bindTrialCatalogDnD();
+  } catch (err) {
+    console.error('trialRefreshCatalogSidebar failed:', err);
+  }
+}
+
 async function syncPpVouchers() {
   try {
     await (window.syncErpPpVouchers ? window.syncErpPpVouchers() : POST('/api/pp-vouchers/sync', {}));

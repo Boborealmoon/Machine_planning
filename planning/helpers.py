@@ -62,10 +62,16 @@ def compact_savepoint_name(name: str) -> str:
 
 
 def parse_dt_text(value):
-    """Parse a datetime string / object into a naive local datetime (or None)."""
+    """Parse a datetime string / object into naive Singapore wall time (or None)."""
+    if value is None or value == "":
+        return None
     if isinstance(value, datetime):
-        return value.replace(tzinfo=None) if value.tzinfo is not None else value
-    text = str(value or "").strip().replace("T", " ")
+        if value.tzinfo is not None:
+            from .utils import PLANNER_TZ
+            return value.astimezone(PLANNER_TZ).replace(tzinfo=None)
+        return value
+    from .utils import planner_wall_datetime_to_api
+    text = planner_wall_datetime_to_api(value)
     if not text:
         return None
     try:

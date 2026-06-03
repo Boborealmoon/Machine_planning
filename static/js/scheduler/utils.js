@@ -11,7 +11,9 @@ function escapeHtml(value) {
 
 function trialFormatDt(value) {
   if (!value) return '—';
-  return String(value).replace('T', ' ').slice(0, 16);
+  let text = String(value).replace('T', ' ');
+  text = text.replace(/[+-]\d{2}:?\d{2}$/i, '').replace(/Z$/i, '').trim();
+  return text.slice(0, 16);
 }
 
 function trialParseVisualDateTime(value) {

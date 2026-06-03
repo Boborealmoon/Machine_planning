@@ -302,15 +302,45 @@ function trialEnsureQueueBlocksIndex() {
 }
 
 function trialPsHasQueuedBlocks(ps) {
-  const psId = String(ps?.ps_id || '').trim();
+  const cards = trialResolvedOpCardsForPs(ps);
+  if (cards.some(card => trialIsCatalogOpAllocated(card))) return true;
   const source = trialCatalogSourceBase(ps);
-  const partial = String(trialSplitPsId(psId).partial || ps?.pp_partial_no || '').trim();
   if (!source) return false;
-  const index = trialEnsureQueueBlocksIndex();
-  if (!partial) {
-    return !!trialQueueBlockSourceSet?.has(source);
+  const wantPartial = trialCatalogPartialIndex(
+    String(ps?.ps_id || '').includes('::')
+      ? ps.ps_id
+      : `${source}::${Number(ps?.pp_partial_no) || 1}`,
+  );
+  const { blocksBySourceBase } = trialEnsureDataIndexes();
+  const blocks = blocksBySourceBase.get(source) || [];
+  if (!blocks.length) return false;
+  if (blocks.some(block => trialCatalogPartialIndex(block.source_ps_id || block.job_no) === wantPartial)) {
+    return true;
   }
-  return index.has(`${source}::${partial}`);
+  const legacyCount = blocks.filter(block => {
+    const raw = String(block.source_ps_id || block.job_no || '');
+    return !raw.includes('::') && trialCatalogPartialIndex(raw) === 1;
+  }).length;
+  return legacyCount >= wantPartial;
+}
+
+function trialQueuedMachineCodesForPs(ps) {
+  const codes = new Set();
+  trialResolvedOpCardsForPs(ps).forEach(card => {
+    if (!trialIsCatalogOpAllocated(card)) return;
+    trialQueuedMachineCodesForCatalogOp(card).forEach(code => codes.add(code));
+  });
+  return [...codes].sort();
+}
+
+function trialCatalogPsQueuePillHtml(ps) {
+  const queued = trialPsHasQueuedBlocks(ps);
+  const machines = queued ? trialQueuedMachineCodesForPs(ps) : [];
+  const title = queued
+    ? (machines.length ? `Queued on ${machines.join(', ')}` : 'On machine queue')
+    : 'Not on any machine queue';
+  const label = queued ? 'Queued' : 'Not queued';
+  return `<span class="trial-catalog-queue-pill ${queued ? 'is-queued' : 'is-not-queued'}" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
 }
 
 function trialQueuedOpCardsForPs(ps) {
@@ -772,7 +802,10 @@ function renderTrialOpCardHtml(card) {
   const isAllocated = !!card.is_allocated || trialCatalogOpHasQueuedBlocks(catalogOpRef);
   const schedulableRemaining = trialCatalogSchedulableRemaining(card);
   const isPartiallyAllocated = isAllocated && schedulableRemaining > 0.0001;
-  const remainingQty = fmt(card.remaining_qty || 0, 0);
+  const remainingQty = fmt(
+    isPartiallyAllocated ? schedulableRemaining : (card.remaining_qty || 0),
+    0,
+  );
   const setupMinutes = fmt(card.setup_minutes || 0, 0);
   const cycleMinutes = fmt(card.cycle_minutes_per_qty || 0, 0);
   const opName = String(card.operation_name || '').trim();
@@ -809,12 +842,21 @@ function renderTrialOpCardHtml(card) {
     total_qty: Number(card.total_qty || card.remaining_qty || 0),
   };
   if (cardKind === 'single') {
+    const opRef = card.op || {};
+    payload.required_qty = Number(card.required_qty ?? opRef.required_qty ?? 0);
+    payload.planned_qty = Number(card.planned_qty ?? opRef.planned_qty ?? 0);
+    payload.erp_finished_qty = Number(card.erp_finished_qty ?? opRef.erp_finished_qty ?? 0);
     payload.op = {
       job_no: payload.job_no,
       operation_name: payload.operation_name,
       op_type: payload.op_type,
       total_qty: payload.total_qty || payload.remaining_qty || 0,
-      remaining_qty: payload.remaining_qty || payload.total_qty || 0,
+      remaining_qty: isPartiallyAllocated
+        ? schedulableRemaining
+        : (payload.remaining_qty || payload.total_qty || 0),
+      required_qty: payload.required_qty,
+      planned_qty: payload.planned_qty,
+      erp_finished_qty: payload.erp_finished_qty,
       setup_time: payload.setup_minutes,
       cycle_time: payload.cycle_minutes_per_qty,
       compatible_machine_group: payload.compatible_machine_group,
@@ -841,7 +883,7 @@ function renderTrialOpCardHtml(card) {
       data-ps-id="${escapeHtml(card.ps_id || '')}"
       data-operation-label="${escapeHtml(card.operation_label || '')}"
       data-target-qty="${escapeHtml(card.target_qty || 0)}"
-      data-remaining-qty="${escapeHtml(card.remaining_qty || 0)}"
+      data-remaining-qty="${escapeHtml(isPartiallyAllocated ? schedulableRemaining : (card.remaining_qty || 0))}"
       data-planning-status="${escapeHtml(card.planning_status || '')}"
       data-card-type="${escapeHtml(card.card_type || '')}"
       data-is-scheduled="${isScheduled ? 'true' : 'false'}"
@@ -1530,6 +1572,7 @@ function trialCatalogPsSummaryHtml(ps, siblingCountByBase) {
       ${stageBadge}
       ${trialPendingDoBadgeHtml(ps)}
       ${trialOpStatusHtml(execStatus, { compact: true })}
+      ${trialCatalogPsQueuePillHtml(ps)}
     </div>
     <div class="trial-catalog-ps-right">
       <span class="trial-catalog-ps-meta trial-catalog-ps-date">${escapeHtml(dueDate)}</span>
@@ -1624,6 +1667,7 @@ function trialPsProductionComplete(ps) {
 
 /** True when the PS should be treated as completed for Show completed (catalog sidebar). */
 function trialPsCatalogCompleted(ps) {
+  if (trialPsHasQueuedBlocks(ps)) return false;
   if (trialPsShippedCoveredByPartial(ps)) return true;
   if (trialPsShippedComplete(ps)) return true;
   if (trialPsPendingDo(ps)) return false;
@@ -1659,6 +1703,38 @@ function trialPsCatalogExecStatus(ps) {
 // ── Catalog render ────────────────────────────────────────────────────────────
 
 const _PS_TYPE_ORDER = { A: 0, M: 1, N: 2 };
+
+function trialCatalogDueDateSortKey(ps) {
+  const dueDate = String(ps?.due_date || '').trim().slice(0, 10);
+  if (!dueDate) return Number.POSITIVE_INFINITY;
+  const ts = new Date(`${dueDate}T00:00:00`).getTime();
+  return Number.isNaN(ts) ? Number.POSITIVE_INFINITY : ts;
+}
+
+function trialCompareCatalogPs(a, b) {
+  if (trialCatalogSortByDueDate) {
+    const da = trialCatalogDueDateSortKey(a);
+    const db = trialCatalogDueDateSortKey(b);
+    if (da !== db) return da - db;
+  }
+  const ta = _PS_TYPE_ORDER[trialGetPsType(a.ps_id)] ?? 9;
+  const tb = _PS_TYPE_ORDER[trialGetPsType(b.ps_id)] ?? 9;
+  return ta !== tb ? ta - tb : String(a.ps_id).localeCompare(String(b.ps_id));
+}
+
+function updateTrialCatalogDueDateSortButton() {
+  const btn = document.getElementById('trial-catalog-due-sort-btn');
+  if (!btn) return;
+  btn.classList.toggle('is-active', trialCatalogSortByDueDate);
+  btn.setAttribute('aria-pressed', trialCatalogSortByDueDate ? 'true' : 'false');
+  btn.textContent = trialCatalogSortByDueDate ? 'Due date ↑' : 'Sort by due';
+}
+
+function toggleTrialCatalogDueDateSort() {
+  trialCatalogSortByDueDate = !trialCatalogSortByDueDate;
+  updateTrialCatalogDueDateSortButton();
+  renderTrialCatalog();
+}
 
 function trialNormalizeSearchText(value) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
@@ -1733,6 +1809,7 @@ function renderTrialCatalog() {
     : null;
   trialResetRenderIndexes();
   renderTrialPsTypeFilter();
+  updateTrialCatalogDueDateSortButton();
   const root = document.getElementById('trial-catalog');
   if (!root) {
     if (typeof trialPerfEnd === 'function') trialPerfEnd(perf, { skipped: 'no-catalog-root' });
@@ -1824,11 +1901,7 @@ function renderTrialCatalog() {
     }
   }
 
-  catalog.sort((a, b) => {
-    const ta = _PS_TYPE_ORDER[trialGetPsType(a.ps_id)] ?? 9;
-    const tb = _PS_TYPE_ORDER[trialGetPsType(b.ps_id)] ?? 9;
-    return ta !== tb ? ta - tb : String(a.ps_id).localeCompare(String(b.ps_id));
-  });
+  catalog.sort(trialCompareCatalogPs);
 
   const plannedCatalog = (trialState.planned || []).filter(ps => {
     const psType = trialGetPsType(ps.ps_id);
@@ -1841,11 +1914,7 @@ function renderTrialCatalog() {
     const haystack = cachedPlannedHaystack(ps);
     if (haystack.includes(rawQuery)) return true;
     return normalizedQuery ? haystack.includes(normalizedQuery) : false;
-  }).sort((a, b) => {
-    const ta = _PS_TYPE_ORDER[trialGetPsType(a.ps_id)] ?? 9;
-    const tb = _PS_TYPE_ORDER[trialGetPsType(b.ps_id)] ?? 9;
-    return ta !== tb ? ta - tb : String(a.ps_id).localeCompare(String(b.ps_id));
-  });
+  }).sort(trialCompareCatalogPs);
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'filter-planned', { kept: plannedCatalog.length });
 
   if (!catalog.length && !plannedCatalog.length) {
@@ -1907,6 +1976,7 @@ function renderTrialCatalog() {
       <div class="trial-catalog-planned-head">
         <div class="trial-catalog-ps-main">
           <div class="trial-catalog-ps-id">${escapeHtml(String(ps.ps_id || '').split('::')[0] || ps.ps_id || '')}</div>
+          ${trialCatalogPsQueuePillHtml(ps)}
         </div>
         <div class="trial-catalog-planned-right">
           <span class="trial-catalog-planned-badge">Planned</span>
