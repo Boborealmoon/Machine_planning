@@ -25,7 +25,7 @@ from datetime import date, timedelta
 from flask import Blueprint, jsonify, request
 
 from .helpers import planner_db, one, rows, parse_dt_text
-from .machines import fetch_machines, gantt_off_time_blocks, machine_capacity_for_date
+from .machines import fetch_machines, gantt_off_time_blocks, machine_capacity_for_date_range
 from .visual_time import break_windows_for_date, visual_timing_for_segment
 from .utils import compact_text
 
@@ -64,23 +64,7 @@ def _display_ids(source_ps_id, display_source_ps_id=None, display_partial_no=Non
 
 
 def _calendar_rows(con, start_iso, end_iso, machines):
-    calendar = []
-    for iso_day in _date_range(start_iso, end_iso):
-        work_day = date.fromisoformat(iso_day)
-        per_machine = [machine_capacity_for_date(con, machine["machine_id"], work_day) for machine in machines]
-        capacity_minutes = sum(int(cap.get("capacity_minutes") or 0) for cap in per_machine)
-        profiles = sorted({compact_text(cap.get("profile_name")) for cap in per_machine if compact_text(cap.get("profile_name"))})
-        notes = sorted({compact_text(cap.get("note")) for cap in per_machine if compact_text(cap.get("note"))})
-        calendar.append(
-            {
-                "work_date": iso_day,
-                "is_working_day": 1 if any(int(cap.get("capacity_minutes") or 0) > 0 for cap in per_machine) else 0,
-                "capacity_minutes": capacity_minutes,
-                "profile_name": ", ".join(profiles) if profiles else "OFF",
-                "note": "; ".join(notes),
-            }
-        )
-    return calendar
+    return machine_capacity_for_date_range(con, start_iso, end_iso, machines)
 
 
 @trial_gantt_bp.get("/api/trial/gantt")

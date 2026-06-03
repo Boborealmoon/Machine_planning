@@ -774,6 +774,50 @@ def api_pp_vouchers_with_ops():
             return jsonify({"error": str(e2)}), 500
 
 
+@app.get("/api/process-sheets/board")
+def api_process_sheets_board():
+    """Single round-trip for Process Sheets: planner rows + ERP-only vouchers."""
+    from planning.helpers import planner_db
+    from planning.process_sheets import list_process_sheets_payload, process_sheet_board_identity_key
+    from planning.utils import compact_text
+
+    try:
+        with planner_db() as con:
+            planner_items = list_process_sheets_payload(con)
+        planner_keys = {process_sheet_board_identity_key(item) for item in planner_items}
+        include_completed = _pp_vouchers_include_completed()
+        refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
+        if refresh:
+            cache_rows = _fetch_pp_vouchers_cache_rows(include_completed)
+            erp_data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
+        else:
+            scope = _pp_vouchers_cache_scope(include_completed)
+            now = time.monotonic()
+            with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+                bucket = _PP_VOUCHERS_WITH_OPS_CACHE.get(scope) or {}
+                erp_data = bucket.get("data")
+                if erp_data is None or now >= float(bucket.get("expires_at") or 0):
+                    erp_data = None
+            if erp_data is None:
+                cache_rows = _fetch_pp_vouchers_cache_rows(include_completed)
+                erp_data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
+                with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+                    _PP_VOUCHERS_WITH_OPS_CACHE[scope] = {
+                        "data": erp_data,
+                        "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
+                    }
+        if not include_completed:
+            erp_data = [entry for entry in erp_data if not entry.get("shipped_completed")]
+        erp_only = [
+            entry
+            for entry in erp_data
+            if compact_text(entry.get("ps_id")) and process_sheet_board_identity_key(entry) not in planner_keys
+        ]
+        return jsonify({"planner": planner_items, "erp_only": erp_only})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 def _parse_pp_staging_sync_args():
     """steps and force from query string or JSON body."""
     from sync import resolve_pp_staging_steps
@@ -940,7 +984,18 @@ with_wo_status AS (
     LEFT JOIN public.mfg_wo_status ws
            ON ws.source_mps_no = wd.ps_id
           AND ws.pp_partial_no = wd.pp_partial_no
-          AND ws.stage_no = wd.stage_no
+          AND (
+              (
+                  NULLIF(TRIM(COALESCE(ws.stage_desc, '')), '') IS NOT NULL
+                  AND TRIM(COALESCE(ws.stage_desc, '')) = TRIM(COALESCE(wd.stage_desc, ''))
+              )
+              OR (
+                  NULLIF(TRIM(COALESCE(ws.stage_desc, '')), '') IS NULL
+                  AND ws.stage_no IS NOT NULL
+                  AND wd.stage_no IS NOT NULL
+                  AND ws.stage_no = wd.stage_no
+              )
+          )
 ),
 with_current_stage AS (
     SELECT

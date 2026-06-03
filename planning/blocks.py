@@ -38,7 +38,211 @@ from .scheduler_state import (
     upsert_schedule_alert,
     write_change_summary,
 )
-from .utils import compact_text, date_text, format_qty, planner_wall_datetime_to_api
+from .utils import compact_text, date_text, format_qty, planner_wall_datetime_to_api, trial_catalog_op_key
+
+
+def _catalog_ps_base_partial(source_ps_id: str):
+    ps = compact_text(source_ps_id)
+    if not ps:
+        return "", 1
+    base, _, partial = ps.partition("::")
+    base = base or ps
+    try:
+        partial_no = max(1, int(partial or 1))
+    except (TypeError, ValueError):
+        partial_no = 1
+    return base, partial_no
+
+
+def _catalog_op_matches_row(source_op_no: str, source_op_seq_id: int, row: dict) -> bool:
+    op_no = compact_text(source_op_no)
+    op_seq = int(source_op_seq_id or 0)
+    row_op = compact_text(row.get("source_op_no"))
+    row_seq = int(row.get("source_op_seq_id") or 0)
+    if op_no and row_op and op_no == row_op:
+        return True
+    if op_seq > 0 and row_seq > 0 and op_seq == row_seq:
+        return True
+    return not op_no and not op_seq
+
+
+def find_active_catalog_lane_block(
+    con,
+    machine_id,
+    source_ps_id,
+    source_op_no="",
+    source_op_seq_id=0,
+):
+    """Return an existing active lane block for the same PS/op (prevents double-queue)."""
+    machine_id = int(machine_id or 0)
+    ps = compact_text(source_ps_id)
+    if not machine_id or not ps:
+        return None
+    want_base, want_partial = _catalog_ps_base_partial(ps)
+    candidates = rows(
+        con.execute(
+            """
+            SELECT b.block_id, o.source_ps_id, o.job_no, o.source_op_no, o.source_op_seq_id
+            FROM planner_run_block b
+            JOIN planner_operation o ON o.operation_id = b.operation_id
+            WHERE b.machine_id = %s
+              AND COALESCE(b.active, TRUE) = TRUE
+            ORDER BY b.queue_position, b.block_id
+            """,
+            (machine_id,),
+        )
+    )
+    for row in candidates:
+        raw_ps = compact_text(row.get("source_ps_id") or row.get("job_no"))
+        if not raw_ps:
+            continue
+        row_base, row_partial = _catalog_ps_base_partial(raw_ps)
+        if row_base != want_base:
+            continue
+        if "::" in ps and "::" in raw_ps and row_partial != want_partial:
+            continue
+        if not _catalog_op_matches_row(source_op_no, source_op_seq_id, row):
+            continue
+        return int(row["block_id"])
+    return None
+
+
+def sync_catalog_op_timing_fields(
+    con,
+    anchor_operation_id,
+    setup_minutes=None,
+    cycle_minutes_per_qty=None,
+):
+    """Apply setup/cycle changes to every active run block for the same catalog op."""
+    if setup_minutes is None and cycle_minutes_per_qty is None:
+        return 0
+    anchor = one(
+        con.execute(
+            """
+            SELECT operation_id, source_ps_id, job_no, source_op_no, source_op_seq_id
+            FROM planner_operation
+            WHERE operation_id = %s
+            """,
+            (int(anchor_operation_id),),
+        )
+    )
+    if not anchor:
+        return 0
+    anchor_ps = compact_text(anchor.get("source_ps_id") or anchor.get("job_no"))
+    if not anchor_ps:
+        return 0
+    anchor_key = trial_catalog_op_key(
+        anchor_ps,
+        anchor.get("source_op_no"),
+        anchor.get("source_op_seq_id"),
+    )
+    want_base, want_partial = _catalog_ps_base_partial(anchor_ps)
+    fields = []
+    params = []
+    if setup_minutes is not None:
+        fields.append("setup_minutes = %s")
+        params.append(float(setup_minutes))
+    if cycle_minutes_per_qty is not None:
+        fields.append("cycle_minutes_per_qty = %s")
+        params.append(float(cycle_minutes_per_qty))
+    if not fields:
+        return 0
+
+    siblings = rows(
+        con.execute(
+            """
+            SELECT DISTINCT o.operation_id, o.source_ps_id, o.job_no,
+                   o.source_op_no, o.source_op_seq_id
+            FROM planner_operation o
+            JOIN planner_run_block b ON b.operation_id = o.operation_id
+            WHERE COALESCE(b.active, TRUE) = TRUE
+              AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
+            """
+        )
+    )
+    updated = 0
+    set_clause = ", ".join(fields)
+    for row in siblings:
+        raw_ps = compact_text(row.get("source_ps_id") or row.get("job_no"))
+        if not raw_ps:
+            continue
+        row_base, row_partial = _catalog_ps_base_partial(raw_ps)
+        if row_base != want_base:
+            continue
+        if "::" in anchor_ps and "::" in raw_ps and row_partial != want_partial:
+            continue
+        if not _catalog_op_matches_row(
+            anchor.get("source_op_no"),
+            int(anchor.get("source_op_seq_id") or 0),
+            row,
+        ):
+            continue
+        row_key = trial_catalog_op_key(
+            raw_ps,
+            row.get("source_op_no"),
+            row.get("source_op_seq_id"),
+        )
+        if row_key != anchor_key:
+            continue
+        op_id = int(row["operation_id"])
+        con.execute(
+            f"UPDATE planner_operation SET {set_clause}, updated_at = NOW() WHERE operation_id = %s",
+            (*params, op_id),
+        )
+        updated += 1
+    return updated
+
+
+def dedupe_machine_catalog_queue(con, machine_id):
+    """Remove duplicate active queue rows for the same PS/op on one machine (keeps earliest)."""
+    machine_id = int(machine_id or 0)
+    if machine_id <= 0:
+        return {"removed_block_ids": []}
+    block_rows = rows(
+        con.execute(
+            """
+            SELECT b.block_id, b.operation_id, b.queue_position,
+                   o.source_ps_id, o.job_no, o.source_op_no, o.source_op_seq_id
+            FROM planner_run_block b
+            JOIN planner_operation o ON o.operation_id = b.operation_id
+            WHERE b.machine_id = %s
+              AND COALESCE(b.active, TRUE) = TRUE
+            ORDER BY b.queue_position, b.block_id
+            """,
+            (machine_id,),
+        )
+    )
+    buckets = {}
+    for row in block_rows:
+        raw_ps = compact_text(row.get("source_ps_id") or row.get("job_no"))
+        base, partial = _catalog_ps_base_partial(raw_ps)
+        key = (base, partial, compact_text(row.get("source_op_no")), int(row.get("source_op_seq_id") or 0))
+        buckets.setdefault(key, []).append(row)
+
+    removed = []
+    for items in buckets.values():
+        if len(items) < 2:
+            continue
+        for dup in items[1:]:
+            dup_id = int(dup["block_id"])
+            op_id = int(dup["operation_id"])
+            con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (dup_id,))
+            remaining = one(
+                con.execute(
+                    "SELECT COUNT(*) AS cnt FROM planner_run_block WHERE operation_id = %s",
+                    (op_id,),
+                )
+            )
+            if int((remaining or {}).get("cnt") or 0) <= 0:
+                con.execute("DELETE FROM planner_operation WHERE operation_id = %s", (op_id,))
+            removed.append(dup_id)
+
+    if removed:
+        from .operation_sequence import compact_machine_lane_queue
+
+        compact_machine_lane_queue(con, machine_id, recalculate=False)
+        recalculate_machine(con, machine_id)
+    return {"removed_block_ids": removed}
 
 
 def trial_block_row(con, block_id):

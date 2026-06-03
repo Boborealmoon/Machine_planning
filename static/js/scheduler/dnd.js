@@ -86,9 +86,49 @@ function trialOpCardPayloadFromElement(el) {
   return payload;
 }
 
-function trialCatalogOpAtPoint(x, y) {
-  const el = document.elementFromPoint(x, y);
-  return el ? el.closest('.trial-catalog-op') : null;
+function trialCatalogHideDragGhost(state) {
+  if (state?.ghostEl) state.ghostEl.style.visibility = 'hidden';
+}
+
+function trialCatalogShowDragGhost(state) {
+  if (state?.ghostEl) state.ghostEl.style.visibility = '';
+}
+
+function trialElementsAtPoint(clientX, clientY, state = null) {
+  trialCatalogHideDragGhost(state);
+  const nodes = document.elementsFromPoint(clientX, clientY);
+  trialCatalogShowDragGhost(state);
+  return nodes;
+}
+
+function trialCatalogOpAtPoint(x, y, state = null) {
+  const nodes = trialElementsAtPoint(x, y, state);
+  for (const node of nodes) {
+    if (!(node instanceof Element)) continue;
+    if (node.classList.contains('trial-catalog-drag-ghost')) continue;
+    const op = node.closest('.trial-catalog-op');
+    if (op && !op.classList.contains('trial-catalog-drag-ghost')) return op;
+  }
+  return null;
+}
+
+function trialLaneAtPoint(clientX, clientY, fallbackLane = null, state = null) {
+  const nodes = trialElementsAtPoint(clientX, clientY, state);
+  for (const node of nodes) {
+    if (!(node instanceof Element)) continue;
+    if (node.classList.contains('trial-lane')) return node;
+    const lane = node.closest('.trial-lane');
+    if (lane) return lane;
+  }
+  for (const node of nodes) {
+    if (!(node instanceof Element)) continue;
+    const machine = node.closest('.trial-machine');
+    if (machine) {
+      const lane = machine.querySelector('.trial-lane');
+      if (lane) return lane;
+    }
+  }
+  return fallbackLane;
 }
 
 function trialCanCombinePayloads(sourcePayload, targetPayload) {
@@ -178,8 +218,12 @@ function trialCatalogHandlePointerMove(e) {
   }
   trialCatalogEnsurePointerGhost(state, e);
 
-  const targetEl = trialCatalogOpAtPoint(e.clientX, e.clientY);
-  const nextTarget = targetEl && targetEl !== state.sourceEl ? targetEl : null;
+  const laneEl = trialLaneAtPoint(e.clientX, e.clientY, null, state);
+  let nextTarget = null;
+  if (!laneEl) {
+    const targetEl = trialCatalogOpAtPoint(e.clientX, e.clientY, state);
+    nextTarget = targetEl && targetEl !== state.sourceEl ? targetEl : null;
+  }
   if (state.currentTargetEl && state.currentTargetEl !== nextTarget) {
     state.currentTargetEl.classList.remove('drop-target');
     state.currentTargetEl = null;
@@ -193,9 +237,7 @@ function trialCatalogHandlePointerMove(e) {
     }
   }
 
-  // Highlight lane as drop target when not hovering a combine target
-  const laneEl = document.elementFromPoint(e.clientX, e.clientY)?.closest('.trial-lane');
-  const activeLane = !state.currentTargetEl ? laneEl : null;
+  const activeLane = laneEl || null;
   if (state.currentLaneEl && state.currentLaneEl !== activeLane) {
     state.currentLaneEl.classList.remove('drop-target-lane');
     state.currentLaneEl = null;
@@ -210,28 +252,56 @@ async function trialCatalogHandlePointerUp(e) {
   const state = trialCatalogPointerDrag;
   if (!state || state.pointerId !== e.pointerId || !state.sourceEl) return;
 
-  // Consume state immediately before any await so re-entrant pointerup events are ignored.
+  const sourcePayload = state.sourcePayload;
+  const hasMoved = state.hasMoved;
+  const lane = trialLaneAtPoint(e.clientX, e.clientY, state.currentLaneEl, state);
+  const targetEl = lane ? null : trialCatalogOpAtPoint(e.clientX, e.clientY, state);
+  const targetPayload = targetEl && targetEl !== state.sourceEl ? trialOpCardPayloadFromElement(targetEl) : null;
+
+  // Consume state immediately; clear ghost before awaits so the drag never looks stuck.
   trialCatalogPointerDrag = null;
   trialDragPayload = null;
-
-  const sourcePayload = state.sourcePayload;
-  const targetEl = trialCatalogOpAtPoint(e.clientX, e.clientY);
-  const targetPayload = targetEl && targetEl !== state.sourceEl ? trialOpCardPayloadFromElement(targetEl) : null;
-  const lane = document.elementFromPoint(e.clientX, e.clientY)?.closest('.trial-lane');
+  trialCatalogResetPointerDrag(state);
 
   try {
-    if (state.sourceEl && typeof state.sourceEl.releasePointerCapture === 'function') {
-      state.sourceEl.releasePointerCapture(e.pointerId);
-    }
-  } catch (err) {
-    // Ignore capture release errors.
-  }
-
-  try {
-    if (!state.hasMoved) {
+    if (!hasMoved) {
       if (trialPlannerBusyLock > 0) return;
       if (typeof openTrialCatalogOpDetail === 'function') {
         openTrialCatalogOpDetail(sourcePayload);
+      }
+      return;
+    }
+
+    const machineId = Number(lane?.dataset.machineId || 0);
+    if (machineId) {
+      const reserve = typeof trialReserveCatalogOpSchedule === 'function'
+        ? trialReserveCatalogOpSchedule(sourcePayload)
+        : { ok: true, key: '' };
+      if (!reserve.ok) {
+        toast('Already queuing this operation — please wait.', 'info');
+        return;
+      }
+      const queuePosition = trialLaneInsertPosition(lane, e.clientY);
+      const machine = (trialState.machines || []).find(row => Number(row.machine_id) === machineId);
+      const machineLabel = machine?.machine_code || `Machine ${machineId}`;
+      const scheduleDrop = async () => {
+        if (sourcePayload.card_kind === 'group') {
+          await scheduleTrialCombinedOpCard(sourcePayload.card_id, machineId, queuePosition);
+          return;
+        }
+        await scheduleTrialSingleOpCard(sourcePayload, machineId, queuePosition);
+      };
+      trialPlannerBusyLock += 1;
+      if (typeof trialSetPlannerBusy === 'function') trialSetPlannerBusy('Queuing…', machineLabel);
+      try {
+        await scheduleDrop();
+      } catch (err) {
+        toast('Schedule failed: ' + err.message, 'error');
+        await loadTrial();
+      } finally {
+        if (typeof trialReleaseCatalogOpSchedule === 'function') trialReleaseCatalogOpSchedule(reserve.key);
+        if (typeof trialClearPlannerBusy === 'function') trialClearPlannerBusy();
+        trialPlannerBusyLock = Math.max(0, trialPlannerBusyLock - 1);
       }
       return;
     }
@@ -246,27 +316,10 @@ async function trialCatalogHandlePointerUp(e) {
       return;
     }
 
-    const machineId = Number(lane?.dataset.machineId || 0);
-    if (machineId) {
-      const queuePosition = trialLaneInsertPosition(lane, e.clientY);
-      try {
-        if (sourcePayload.card_kind === 'group') {
-          await scheduleTrialCombinedOpCard(sourcePayload.card_id, machineId, queuePosition);
-        } else if (sourcePayload.card_kind === 'single') {
-          const existing = trialFindBlockForCatalogOp(trialCatalogCardFromPayload(sourcePayload));
-          if (existing) {
-            await moveTrialBlockToMachine(existing.block_id, machineId, queuePosition, { skipBusy: true, quiet: true });
-          } else {
-            await scheduleTrialSingleOpCard(sourcePayload, machineId, queuePosition);
-          }
-        }
-      } catch (err) {
-        toast('Schedule failed: ' + err.message, 'error');
-        await loadTrial();
-      }
-    }
-  } finally {
-    trialCatalogResetPointerDrag(state);
+    toast('Drop onto a machine queue column to schedule.', 'info');
+  } catch (err) {
+    console.error('catalog pointer drop failed:', err);
+    toast('Schedule failed: ' + (err.message || 'unknown error'), 'error');
   }
 }
 
@@ -328,13 +381,17 @@ function bindTrialCatalogDnD() {
       const sourcePayload = trialOpCardPayloadFromElement(el);
       if (!sourcePayload || sourcePayload.type !== 'op-card') return;
       const catalogCard = trialCatalogCardFromPayload(sourcePayload);
-      if (catalogCard && trialIsCatalogOpAllocated(catalogCard)) {
-        const queued = trialFindBlockForCatalogOp(catalogCard);
-        const machineCode = queued?.machine_code || '';
+      if (catalogCard && typeof trialPendingCatalogOpSchedules !== 'undefined'
+        && trialPendingCatalogOpSchedules.has(trialCatalogOpPendingKey(catalogCard))) {
+        toast('Already queuing this operation — please wait.', 'info');
+        return;
+      }
+      if (catalogCard && trialIsCatalogOpFullyQueued(catalogCard)) {
+        const machines = trialQueuedMachineCodesForCatalogOp(catalogCard);
         toast(
-          machineCode
-            ? `Already in queue on ${machineCode} — edit the run block to move it.`
-            : 'This operation is already in the machine queue.',
+          machines.length
+            ? `Fully queued on ${machines.join(', ')} — remove a run block to reschedule.`
+            : 'This operation is already fully queued.',
           'info',
         );
         return;
@@ -351,13 +408,6 @@ function bindTrialCatalogDnD() {
         pointerId: e.pointerId,
       };
       trialDragPayload = sourcePayload;
-      try {
-        if (typeof el.setPointerCapture === 'function') {
-          el.setPointerCapture(e.pointerId);
-        }
-      } catch (err) {
-        // Ignore capture setup errors.
-      }
       e.preventDefault();
     });
   });
@@ -473,15 +523,36 @@ function bindTrialLaneOpDrops() {
   });
 }
 
-function destroyTrialSortables() {
+function destroyTrialSortableForLane(laneEl) {
+  if (!laneEl) return;
+  const idx = (trialMachineSortables || []).findIndex(instance => instance.el === laneEl);
+  if (idx < 0) return;
+  try {
+    trialMachineSortables[idx].destroy();
+  } catch (e) {
+    // Ignore teardown errors from already-detached nodes.
+  }
+  trialMachineSortables.splice(idx, 1);
+}
+
+function destroyTrialSortables(machineIds = null) {
+  const targetIds = machineIds == null
+    ? null
+    : new Set((machineIds || []).map(id => String(Number(id))).filter(id => id !== '0'));
+  const keep = [];
   (trialMachineSortables || []).forEach(instance => {
+    const laneMachineId = String(instance.el?.dataset?.machineId || '');
+    if (targetIds && !targetIds.has(laneMachineId)) {
+      keep.push(instance);
+      return;
+    }
     try {
       instance.destroy();
     } catch (e) {
       // Ignore teardown errors from already-detached nodes.
     }
   });
-  trialMachineSortables = [];
+  trialMachineSortables = keep;
 }
 
 function destroyTrialQueueSortable() {
@@ -535,10 +606,16 @@ function initTrialQueuePanelSortable() {
   });
 }
 
-function initTrialMachineSortables() {
+function initTrialMachineSortables(machineIds = null) {
   if (typeof Sortable === 'undefined') return;
+  const targetIds = machineIds == null
+    ? null
+    : new Set((machineIds || []).map(id => String(Number(id))).filter(id => id !== '0'));
   document.querySelectorAll('.trial-lane').forEach(lane => {
     if (lane.classList.contains('trial-queue-panel-list')) return;
+    const laneMachineId = String(lane.dataset.machineId || '');
+    if (targetIds && !targetIds.has(laneMachineId)) return;
+    if ((trialMachineSortables || []).some(instance => instance.el === lane)) return;
     const sortable = new Sortable(lane, {
       group: {
         name: 'trial-machine-blocks',
@@ -597,16 +674,68 @@ function initTrialMachineSortables() {
 }
 
 async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
-  const op = card && card.op;
+  const op = card && (card.op || (typeof trialOpFromPayload === 'function' ? trialOpFromPayload(card) : null));
   if (!op) {
     toast('Missing operation data for this card.', 'error');
     return;
   }
   const catalogCard = trialCatalogCardFromPayload(card);
+  const schedulableRemaining = trialCatalogSchedulableRemaining(card?.op ? { ...catalogCard, remaining_qty: op.remaining_qty } : card);
+  const numericMachineId = Number(machineId || 0);
+
+  if (catalogCard && schedulableRemaining > 0.0001) {
+    const onTarget = trialBlockForCatalogOpOnMachine(catalogCard, numericMachineId);
+    if (onTarget) {
+      const label = onTarget.machine_code || `machine ${numericMachineId}`;
+      toast(
+        `Already queued on ${label} — edit that run block's scheduled qty, or drag the remainder to another machine.`,
+        'info',
+      );
+      return;
+    }
+    const siblings = trialBlocksForCatalogOp(catalogCard);
+    const includeSetup = siblings.length === 0 ? 1 : 0;
+    const plannerPsId = String(card.ps_id || op.source_ps_id || '').trim();
+    try {
+      const result = await POST('/api/trial/operations', {
+        job_no: plannerPsId || op.job_no || op.source_ps_id || '',
+        operation_name: op.operation_name || op.op_type || op.source_op_no || '',
+        total_qty: schedulableRemaining,
+        scheduled_qty: schedulableRemaining,
+        setup_minutes: Number(op.setup_time || op.setup_minutes || 0),
+        cycle_minutes_per_qty: Number(op.cycle_time || op.cycle_minutes_per_qty || 0),
+        compatible_machine_group: op.compatible_machine_group || '',
+        source_ps_id: plannerPsId || op.source_ps_id || '',
+        source_op_seq_id: Number(op.source_op_seq_id || 0),
+        source_op_no: String(op.source_op_no || card?.operation_label || '').trim(),
+        machine_id: numericMachineId,
+        queue_position: Number(queuePosition || 0),
+        planning_status: 'PLANNED',
+        execution_status: 'NOT_STARTED',
+        include_setup: includeSetup,
+        recalculate: false,
+      });
+      const affectedIds = [numericMachineId].filter(Boolean);
+      if (result && result.block) {
+        trialPinBlock(result.block);
+        trialMergeBlockFromApi(result.block);
+      }
+      trialMarkDirtyMachines(affectedIds, { skipRender: true });
+      await refreshMachines(affectedIds, { response: result });
+      const machine = (trialState.machines || []).find(row => Number(row.machine_id) === numericMachineId);
+      const label = machine?.machine_code || `Machine ${numericMachineId}`;
+      toast(`Queued ${fmt(schedulableRemaining, 0)} pcs on ${label} — click Recalculate schedules for times`, 'success');
+    } catch (e) {
+      console.error('scheduleTrialSingleOpCard failed:', e);
+      toast('Schedule failed: ' + e.message, 'error');
+    }
+    return;
+  }
+
   if (catalogCard && trialIsCatalogOpAllocated(catalogCard)) {
     const existing = trialFindBlockForCatalogOp(catalogCard);
     if (existing) {
-      await moveTrialBlockToMachine(existing.block_id, machineId, queuePosition, { skipBusy: true });
+      await moveTrialBlockToMachine(existing.block_id, numericMachineId, queuePosition, { skipBusy: true });
       return;
     }
     toast('This operation is already in the machine queue.', 'info');
@@ -625,7 +754,7 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
       source_ps_id: plannerPsId || op.source_ps_id || '',
       source_op_seq_id: Number(op.source_op_seq_id || 0),
       source_op_no: String(op.source_op_no || card?.operation_label || '').trim(),
-      machine_id: Number(machineId || 0),
+      machine_id: numericMachineId,
       queue_position: Number(queuePosition || 0),
       planning_status: 'PLANNED',
       execution_status: 'NOT_STARTED',
@@ -637,11 +766,14 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
       trialPinBlock(result.block);
       trialMergeBlockFromApi(result.block);
     }
-    trialMarkDirtyMachines(affectedIds);
+    trialMarkDirtyMachines(affectedIds, { skipRender: true });
     await refreshMachines(affectedIds, { response: result });
     const machine = (trialState.machines || []).find(row => Number(row.machine_id) === Number(machineId));
     const label = machine?.machine_code || `Machine ${machineId}`;
-    toast(`Queued on ${label} — click Recalculate schedules for times`, 'success');
+    const msg = result?.duplicate
+      ? `Already on ${label} — queue updated`
+      : `Queued on ${label} — click Recalculate schedules for times`;
+    toast(msg, result?.duplicate ? 'info' : 'success');
   } catch (e) {
     console.error('scheduleTrialSingleOpCard failed:', e);
     toast('Schedule failed: ' + e.message, 'error');
@@ -662,7 +794,7 @@ async function scheduleTrialCombinedOpCard(cardId, machineId, queuePosition = 0)
       recalculate: false,
     });
     const affectedIds = [numericMachineId].filter(Boolean);
-    trialMarkDirtyMachines(affectedIds);
+    trialMarkDirtyMachines(affectedIds, { skipRender: true });
     await refreshMachines(affectedIds, { response: result });
     const machine = (trialState.machines || []).find(row => Number(row.machine_id) === numericMachineId);
     const label = machine?.machine_code || `Machine ${numericMachineId}`;

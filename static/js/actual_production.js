@@ -398,13 +398,7 @@ async function loadActualProduction(options = {}) {
 
   try {
     const scheduleData = await GET(`/api/trial/schedule?${params}`);
-    trialApplySchedulePayload(scheduleData, { machines: [] }, null);
-    if (!scheduleData.machines?.length) {
-      const machinesResult = await GET('/api/planner/machines').catch(() => ({ machines: [] }));
-      if (machinesResult?.machines?.length) {
-        trialApplySchedulePayload(scheduleData, machinesResult, null);
-      }
-    }
+    trialApplySchedulePayload(scheduleData, {}, null);
     renderActualProduction();
   } catch (err) {
     if (loading) loading.hidden = true;

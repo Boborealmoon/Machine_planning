@@ -879,7 +879,12 @@ async function trialEnsureBlockActualDetail(blockId) {
   if (Array.isArray(block.actual_daily_rows) && block.actual_daily_rows.length) return block;
   const machineId = Number(block.machine_id || 0);
   if (!machineId) return block;
-  const data = await GET(`/api/trial/schedule?machine_ids=${machineId}`);
+  const params = new URLSearchParams({
+    machine_ids: String(machineId),
+    lite: '1',
+    include: 'actuals,segments,actual_daily',
+  });
+  const data = await GET(`/api/trial/schedule?${params}`);
   const refreshedBlocks = Array.isArray(data?.blocks) ? data.blocks : [];
   const refreshedActuals = Array.isArray(data?.actuals) ? data.actuals : [];
   const refreshedSegments = Array.isArray(data?.segments) ? data.segments : [];

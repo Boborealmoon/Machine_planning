@@ -195,6 +195,58 @@ def update_planning_card_machine_for_block(con, block_id, machine_id):
     )
 
 
+def compact_machine_lane_queue(con, machine_id, *, recalculate=False):
+    """Renumber active blocks on a lane to 1..n in current queue order."""
+    machine_id = int(machine_id)
+    if machine_id <= 0:
+        return {"affected_machine_ids": [], "sequences": {}}
+    ordered_ids = [
+        int(row["block_id"])
+        for row in rows(
+            con.execute(
+                """
+                SELECT block_id
+                FROM planner_run_block
+                WHERE machine_id = %s
+                  AND COALESCE(active, TRUE) = TRUE
+                ORDER BY queue_position, block_id
+                """,
+                (machine_id,),
+            )
+        )
+    ]
+    if not ordered_ids:
+        return {"affected_machine_ids": [], "sequences": {}}
+    return apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=recalculate)
+
+
+def compact_machine_lanes_with_gaps(con, machine_ids=None, *, recalculate=False):
+    """Renumber lanes where queue_position leaves gaps (e.g. after auto-unschedule)."""
+    params = []
+    machine_clause = ""
+    mids = sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0})
+    if mids:
+        machine_clause = " AND machine_id = ANY(%s)"
+        params.append(mids)
+    gap_rows = rows(
+        con.execute(
+            f"""
+            SELECT machine_id
+            FROM planner_run_block
+            WHERE COALESCE(active, TRUE) = TRUE
+              AND machine_id IS NOT NULL
+              {machine_clause}
+            GROUP BY machine_id
+            HAVING COALESCE(MAX(queue_position), 0) > COUNT(*)
+            """,
+            tuple(params),
+        )
+    )
+    for row in gap_rows:
+        compact_machine_lane_queue(con, int(row["machine_id"]), recalculate=recalculate)
+    return [int(row["machine_id"]) for row in gap_rows]
+
+
 def tail_recalc_start_index(existing_ids, ordered_ids):
     """
     First block index where the lane order diverges. Equal length + identical => no work.

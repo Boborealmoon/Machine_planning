@@ -59,12 +59,12 @@ function trialLaneOrderFromElement(laneEl) {
   return { machine_id: machineId, ordered_ids: orderedIds };
 }
 
-function trialMarkDirtyMachines(machineIds) {
+function trialMarkDirtyMachines(machineIds, options = {}) {
   (machineIds || []).forEach(id => {
     const numeric = Number(id || 0);
     if (numeric) trialDirtyMachineIds.add(numeric);
   });
-  trialUpdateStaleScheduleUi();
+  trialUpdateStaleScheduleUi(options);
 }
 
 function trialClearDirtyMachines(machineIds) {
@@ -76,7 +76,7 @@ function trialClearDirtyMachines(machineIds) {
   trialUpdateStaleScheduleUi();
 }
 
-function trialUpdateStaleScheduleUi() {
+function trialUpdateStaleScheduleUi(options = {}) {
   let banner = document.getElementById('trial-stale-schedule-banner');
   if (!banner) {
     banner = document.createElement('div');
@@ -104,7 +104,7 @@ function trialUpdateStaleScheduleUi() {
       Recalculate schedules
     </button>
   `;
-  if (typeof trialScheduleRender === 'function') {
+  if (!options.skipRender && typeof trialScheduleRender === 'function') {
     trialScheduleRender([...trialDirtyMachineIds], { deferCatalog: true, skipCatalog: true });
   }
 }
@@ -216,32 +216,6 @@ window.addEventListener('pp-vouchers-synced', () => {
     })
     .catch(err => console.error('catalog refresh after ERP sync failed:', err));
 });
-
-async function syncTrialQueueState() {
-  const queueStates = await GET('/api/trial/queue-state').catch(() => []);
-  if (!Array.isArray(queueStates) || !queueStates.length) return;
-
-  const stateByBlockId = new Map(queueStates.map(qs => [String(qs.block_id), qs]));
-  let changed = false;
-
-  (trialState.blocks || []).forEach(block => {
-    const qs = stateByBlockId.get(String(block.block_id));
-    if (!qs) return;
-    if (qs.execution_status) block.execution_status = qs.execution_status;
-    if (qs.schedule_status) block.planning_status = qs.schedule_status;
-    if (qs.predicted_start_at) {
-      block.calculated_start_datetime = qs.predicted_start_at;
-      block.visual_start_datetime = qs.predicted_start_at;
-    }
-    if (qs.predicted_end_at) {
-      block.calculated_end_datetime = qs.predicted_end_at;
-      block.visual_end_datetime = qs.predicted_end_at;
-    }
-    changed = true;
-  });
-
-  if (changed) trialScheduleRender();
-}
 
 function trialNormalizeBlockFromApi(block) {
   if (!block) return null;
@@ -388,25 +362,17 @@ async function loadTrial(options = {}) {
 
   if (force) {
     trialInvalidateCatalogCache();
-    trialLoadCache.machines = null;
-    trialLoadCache.machinesExpiresAt = 0;
   }
 
-  const catalogFetch = force
-    ? GET(trialNoCacheUrl(trialCatalogUrl(true))).catch(() => [])
-    : trialCachedGET(trialCatalogCacheKey(), 60000, trialCatalogUrl(false)).catch(() => []);
-
-  const [scheduleOutcome, erpVouchers, machinesResult, programToolsLookup] = await Promise.all([
-    GET(trialNoCacheUrl(`/api/trial/schedule${startParam}`)).catch(err => {
-      console.error('Failed to load trial schedule:', err);
-      return { error: err };
-    }),
-    catalogFetch,
-    trialCachedGET('machines', 300000, '/api/planner/machines').catch(() => ({ machines: [] })),
-    trialCachedGET('programToolsLookup', 300000, '/api/program-tool-list/lookup').catch(() => null),
-  ]);
+  const scheduleUrl = force
+    ? trialNoCacheUrl(`/api/trial/schedule${startParam}`)
+    : `/api/trial/schedule${startParam}`;
+  const scheduleOutcome = await GET(scheduleUrl).catch(err => {
+    console.error('Failed to load trial schedule:', err);
+    return { error: err };
+  });
   if (typeof trialPerfMark === 'function') {
-    trialPerfMark(perf, 'fetch-all');
+    trialPerfMark(perf, 'fetch-schedule');
   }
 
   const scheduleError = scheduleOutcome?.error || null;
@@ -416,27 +382,32 @@ async function loadTrial(options = {}) {
     toast('Could not refresh machine queue: ' + scheduleError.message, 'error');
   }
 
-  const machinesPayload = (!scheduleData.machines?.length && machinesResult?.machines?.length)
-    ? machinesResult
-    : { machines: [] };
-
-  trialApplySchedulePayload(
-    scheduleData,
-    machinesPayload,
-    programToolsLookup,
-  );
+  trialApplySchedulePayload(scheduleData, {}, null);
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'apply-schedule-payload', {
       machines: Array.isArray(trialState.machines) ? trialState.machines.length : 0,
       blocks: Array.isArray(trialState.blocks) ? trialState.blocks.length : 0,
-      catalog: Array.isArray(erpVouchers) ? erpVouchers.length : 0,
     });
   }
+  trialScheduleRender(null, { skipCatalog: true });
+
+  const catalogFetch = force
+    ? GET(trialNoCacheUrl(trialCatalogUrl(true))).catch(() => [])
+    : trialCachedGET(trialCatalogCacheKey(), 60000, trialCatalogUrl(false)).catch(() => []);
+  const [erpVouchers, programToolsLookup] = await Promise.all([
+    catalogFetch,
+    trialCachedGET('programToolsLookup', 300000, '/api/program-tool-list/lookup').catch(() => null),
+  ]);
+  if (typeof trialPerfMark === 'function') {
+    trialPerfMark(perf, 'fetch-secondary');
+  }
+
+  trialApplySchedulePayload(scheduleData, {}, programToolsLookup);
   const cacheKey = trialCatalogCacheKey();
   trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
   trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 10000;
   trialState.catalog = trialLoadCache[cacheKey];
-  trialScheduleRender();
+  trialScheduleRender(null, { deferCatalog: true });
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'schedule-render-dispatch');
   }
@@ -488,7 +459,7 @@ async function refreshMachinesImpl(machineIds, options = {}) {
   const params = new URLSearchParams({
     machine_ids: ids.join(','),
     lite: '1',
-    include: 'blocks,actuals',
+    include: 'blocks',
   });
   const data = await GET(trialNoCacheUrl(`/api/trial/schedule?${params}`)).catch(err => {
     console.error('refreshMachines failed, falling back to full reload:', err);
