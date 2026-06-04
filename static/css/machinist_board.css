@@ -1,0 +1,284 @@
+body.machinist-board {
+  overflow: hidden;
+}
+
+body.machinist-board .navbar,
+body.machinist-board .navbar-backdrop {
+  display: none !important;
+}
+
+body.machinist-board .app-main--machinist {
+  padding: 0;
+  margin: 0;
+  max-width: none;
+  width: 100%;
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.trial-shell--machinist {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.machinist-board-head {
+  flex: 0 0 auto;
+  padding: 4px 10px 3px;
+  border-bottom: 1px solid rgba(26, 28, 29, 0.06);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.machinist-board-head-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.machinist-board-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.machinist-board-note {
+  margin: 0;
+  font-size: 10px;
+  color: var(--text3);
+  line-height: 1.2;
+}
+
+.trial-layout--machinist {
+  display: grid !important;
+  grid-template-columns: 1fr !important;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.trial-main--machinist {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.trial-main--machinist #trial-machine-filter-shell {
+  display: none;
+}
+
+.trial-main--machinist .trial-grid-scroll-host {
+  height: 100%;
+  min-height: 0;
+}
+
+/* Discreet horizontal scroll strip */
+body.machinist-board .trial-grid-scroll-top-wrap {
+  gap: 0;
+  padding: 0 6px 2px;
+  border-bottom: none;
+  background: transparent;
+}
+
+body.machinist-board .trial-grid-scroll-hint {
+  display: none !important;
+}
+
+body.machinist-board .trial-grid-scroll-top {
+  height: 7px;
+  border-radius: 4px;
+  background: rgba(26, 28, 29, 0.04);
+  box-shadow: inset 0 0 0 1px rgba(26, 28, 29, 0.05);
+  scrollbar-color: rgba(26, 28, 29, 0.28) transparent;
+}
+
+body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar {
+  height: 7px;
+}
+
+body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 0;
+}
+
+body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar-thumb {
+  background: rgba(26, 28, 29, 0.22);
+  border: none;
+  border-radius: 4px;
+  min-width: 32px;
+}
+
+body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar-thumb:hover {
+  background: rgba(26, 28, 29, 0.34);
+}
+
+body.machinist-board .trial-grid-scroll {
+  padding-bottom: 2px;
+}
+
+body.machinist-board .trial-grid {
+  gap: 6px;
+  padding: 0 4px 4px;
+}
+
+body.machinist-board .trial-grid.trial-grid--grouped {
+  gap: 5px;
+}
+
+/* Tighter lane columns */
+body.machinist-board .trial-machine {
+  flex: 0 0 168px;
+  width: 168px;
+  max-width: 168px;
+  min-width: 168px;
+  min-height: 0;
+  gap: 4px;
+  padding: 5px 6px 6px;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(26, 28, 29, 0.05);
+}
+
+body.machinist-board .trial-machine-head {
+  gap: 4px;
+}
+
+body.machinist-board .trial-machine-head-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 5px;
+  padding: 0;
+  margin: 0;
+}
+
+body.machinist-board .trial-machine-meta,
+body.machinist-board .trial-machine-availability {
+  display: none !important;
+}
+
+body.machinist-board .trial-machine-title {
+  font-size: 12px;
+  line-height: 1.15;
+}
+
+body.machinist-board .trial-machine-queue-summary {
+  margin: 0;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+body.machinist-board .trial-lane {
+  gap: 3px;
+  padding-right: 2px;
+  padding-bottom: 4px;
+}
+
+body.machinist-board .trial-lane::-webkit-scrollbar {
+  width: 4px;
+}
+
+/* Compact job cards */
+body.machinist-board .trial-block-card--compact,
+body.machinist-board .trial-block-card--readonly {
+  padding: 3px 5px 4px 8px !important;
+  border-radius: 7px;
+  box-shadow: 0 2px 6px rgba(26, 28, 29, 0.04);
+}
+
+body.machinist-board .trial-block-compact-body {
+  gap: 1px;
+}
+
+body.machinist-board .trial-block-card--compact .trial-block-seq {
+  font-size: 8px;
+  padding: 0 4px;
+}
+
+body.machinist-board .trial-block-compact-metric {
+  font-size: 9px;
+}
+
+body.machinist-board .trial-block-compact-metric .trial-pill-label {
+  font-size: 7px;
+}
+
+body.machinist-board .trial-block-card--compact .trial-block-title {
+  font-size: 10px;
+  line-height: 1.12;
+}
+
+body.machinist-board .trial-block-card--compact .trial-block-partial {
+  font-size: 8px;
+}
+
+body.machinist-board .trial-block-card--compact .trial-block-op {
+  font-size: 9px;
+  line-height: 1.15;
+}
+
+body.machinist-board .trial-block-compact-dates {
+  gap: 1px;
+  margin-top: 1px;
+}
+
+body.machinist-board .trial-block-compact-date {
+  font-size: 8px;
+  gap: 4px;
+}
+
+body.machinist-board .trial-block-compact-date .trial-pill-label {
+  font-size: 7px;
+}
+
+body.machinist-board .trial-empty {
+  font-size: 9px;
+  padding: 6px 4px;
+}
+
+/* Compact group chrome when labels expanded */
+body.machinist-board .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine-board-group-head {
+  padding: 1px 6px;
+  margin: 0 2px 2px;
+  font-size: 9px;
+}
+
+body.machinist-board .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine {
+  padding: 4px 5px 5px;
+}
+
+body.machinist-board .trial-machine-board-group-lanes {
+  padding: 6px 4px 6px;
+}
+
+body.machinist-board .trial-machine-board-subgroup-head {
+  margin-bottom: 4px;
+  padding: 4px 6px;
+}
+
+body.machinist-board .trial-machine-board-subgroup-title {
+  font-size: 8px;
+}
+
+body.machinist-board .trial-machine-board-subgroup-hint {
+  margin-top: 2px;
+  font-size: 8px;
+}
+
+body.machinist-board .loading {
+  padding: 8px;
+  font-size: 11px;
+}
+
+a.trial-machinist-view-link {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+

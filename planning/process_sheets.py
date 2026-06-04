@@ -17,6 +17,7 @@ Key SQL adaptations from Vanessa's SQLite version:
 """
 from __future__ import annotations
 
+import re
 from datetime import date
 
 from flask import Blueprint, jsonify, request
@@ -38,6 +39,106 @@ def _to_float(value):
 
 def _operation_key(source_op_seq_id, source_op_no):
     return (int(source_op_seq_id or 0), compact_text(source_op_no))
+
+
+def _ensure_bom_step_qty_table(con):
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS public.planner_ps_bom_step_qty (
+            planner_ps_id   TEXT         NOT NULL REFERENCES public.planner_process_sheet(planner_ps_id) ON DELETE CASCADE,
+            op_seq_id       BIGINT       NOT NULL,
+            qty_produced    NUMERIC      NOT NULL DEFAULT 0,
+            qty_rejected    NUMERIC      NOT NULL DEFAULT 0,
+            updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (planner_ps_id, op_seq_id)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_planner_ps_bom_step_qty_ps
+            ON public.planner_ps_bom_step_qty(planner_ps_id)
+        """
+    )
+
+
+def manual_qty_by_ps_ids(con, ps_ids):
+    return _manual_qty_by_ps_ids(con, ps_ids)
+
+
+def _manual_qty_by_ps_ids(con, ps_ids):
+    ps_ids = [compact_text(x) for x in ps_ids if compact_text(x)]
+    if not ps_ids:
+        return {}
+    _ensure_bom_step_qty_table(con)
+    result = {ps_id: {} for ps_id in ps_ids}
+    for row in rows(
+        con.execute(
+            """
+            SELECT planner_ps_id, op_seq_id, qty_produced, qty_rejected
+            FROM planner_ps_bom_step_qty
+            WHERE planner_ps_id = ANY(%s)
+            """,
+            (ps_ids,),
+        )
+    ):
+        ps_id = compact_text(row.get("planner_ps_id"))
+        op_seq_id = int(row.get("op_seq_id") or 0)
+        if not ps_id or op_seq_id <= 0:
+            continue
+        result.setdefault(ps_id, {})[op_seq_id] = {
+            "qty_produced": _to_float(row.get("qty_produced")),
+            "qty_rejected": _to_float(row.get("qty_rejected")),
+        }
+    return result
+
+
+def step_needs_manual_produced(step):
+    """True when ERP will not supply reliable produced qty for this BOM step."""
+    kind = compact_text(step.get("source_kind")).upper()
+    stage_no = int(step.get("source_stage_no") or 0)
+    if kind == "MANUAL":
+        return True
+    if stage_no > 0:
+        return False
+    erp_prod = _to_float(step.get("erp_finished_qty"))
+    erp_req = _to_float(step.get("erp_required_qty"))
+    return erp_req <= 0 and erp_prod <= 0
+
+
+def apply_flow_step_qty_cascade(steps, launch_qty, manual_by_op_seq=None):
+    """Push effective output from each step as required qty for the next."""
+    manual_by_op_seq = manual_by_op_seq or {}
+    if not steps:
+        return []
+    ordered = sorted(
+        steps,
+        key=lambda s: (int(s.get("seq_no") or 0), int(s.get("op_seq_id") or 0)),
+    )
+    launch_qty = max(0.0, _to_float(launch_qty))
+    carry_in = launch_qty
+    enriched = []
+    for step in ordered:
+        row = dict(step)
+        op_seq_id = int(row.get("op_seq_id") or 0)
+        manual = manual_by_op_seq.get(op_seq_id, {})
+        manual_prod = _to_float(manual.get("qty_produced"))
+        manual_rej = _to_float(manual.get("qty_rejected"))
+        erp_prod = _to_float(row.get("erp_finished_qty"))
+        erp_rej = _to_float(row.get("erp_reject_qty"))
+        required = carry_in if carry_in > 0 else launch_qty
+        row["cascade_required_qty"] = required
+        row["manual_produced_qty"] = manual_prod
+        row["manual_reject_qty"] = manual_rej
+        row["needs_manual_produced"] = step_needs_manual_produced(row)
+        effective_out = max(erp_prod, manual_prod)
+        if required > 0:
+            effective_out = min(required, effective_out)
+        row["cascade_output_qty"] = effective_out
+        row["cascade_reject_qty"] = max(erp_rej, manual_rej)
+        carry_in = effective_out
+        enriched.append(row)
+    return enriched
 
 
 def _display_ids(ps):
@@ -95,23 +196,614 @@ def format_planner_ps_id(source_ps_id, pp_partial_no=1):
     return source_ps_id
 
 
-def _ensure_planner_overlay_columns(con):
-    """Apply overlay-column migrations on demand when they have not been added yet."""
+TEMP_PS_PREFIX = "[Temp]"
+TEMP_PARTIAL_MIN = 900001
+_TEMP_TABLE_READY = False
+
+
+def _ensure_planner_temp_process_sheet_table(con):
+    """Persistent registry for [Temp] reject/rework PS (PostgreSQL / SUPA_DB_URL)."""
+    global _TEMP_TABLE_READY
+    if _TEMP_TABLE_READY:
+        return
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS public.planner_temp_process_sheet (
+            planner_ps_id           TEXT         PRIMARY KEY
+                REFERENCES public.planner_process_sheet(planner_ps_id) ON DELETE CASCADE,
+            source_ps_id            TEXT         NOT NULL,
+            source_pp_partial_no    INTEGER      NOT NULL DEFAULT 1,
+            reject_qty              NUMERIC      NOT NULL DEFAULT 0,
+            inventory_code          TEXT         NOT NULL DEFAULT '',
+            part_no                 TEXT         NOT NULL DEFAULT '',
+            part_desc               TEXT         NOT NULL DEFAULT '',
+            due_date                DATE,
+            erp_bom_code            TEXT         NOT NULL DEFAULT '',
+            selected_bom_id         BIGINT
+                REFERENCES public.planner_bom_variation(bom_id) ON DELETE SET NULL,
+            selected_bom_code       TEXT         NOT NULL DEFAULT '',
+            remarks                 TEXT         NOT NULL DEFAULT '',
+            created_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_planner_temp_process_sheet_source
+            ON public.planner_temp_process_sheet (source_ps_id)
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_planner_temp_process_sheet_created
+            ON public.planner_temp_process_sheet (created_at DESC)
+        """
+    )
+    # Backfill registry rows for legacy [Temp] planner rows created before this table existed.
+    con.execute(
+        """
+        INSERT INTO planner_temp_process_sheet (
+          planner_ps_id, source_ps_id, source_pp_partial_no, reject_qty,
+          inventory_code, part_no, part_desc, due_date, erp_bom_code,
+          selected_bom_id, selected_bom_code, remarks, created_at, updated_at
+        )
+        SELECT ps.planner_ps_id,
+               ps.source_ps_id,
+               1,
+               COALESCE(ps.planned_qty, 0),
+               COALESCE(ps.inventory_code, ''),
+               COALESCE(ps.inventory_code, ''),
+               '',
+               NULL::DATE,
+               '',
+               ps.selected_bom_id,
+               COALESCE(sf.bom_code, ''),
+               COALESCE(ps.remarks, ''),
+               ps.created_at,
+               ps.updated_at
+        FROM planner_process_sheet ps
+        LEFT JOIN planner_bom_variation sf ON sf.bom_id = ps.selected_bom_id
+        WHERE ps.planner_ps_id LIKE %s
+          AND NOT EXISTS (
+            SELECT 1 FROM planner_temp_process_sheet t
+            WHERE t.planner_ps_id = ps.planner_ps_id
+          )
+        """,
+        (f"{TEMP_PS_PREFIX}%",),
+    )
+    _TEMP_TABLE_READY = True
+
+
+def _persist_temp_process_sheet_record(con, *, planner_ps_id, preview, source_pp_partial_no, qty, remarks):
+    _ensure_planner_temp_process_sheet_table(con)
+    due_raw = compact_text(preview.get("due_date"))
+    due_val = None
+    if due_raw:
+        try:
+            due_val = date.fromisoformat(due_raw[:10])
+        except ValueError:
+            due_val = None
+    con.execute(
+        """
+        INSERT INTO planner_temp_process_sheet (
+          planner_ps_id, source_ps_id, source_pp_partial_no, reject_qty,
+          inventory_code, part_no, part_desc, due_date, erp_bom_code,
+          selected_bom_id, selected_bom_code, remarks, created_at, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (planner_ps_id) DO UPDATE SET
+          reject_qty = EXCLUDED.reject_qty,
+          remarks = EXCLUDED.remarks,
+          updated_at = NOW()
+        """,
+        (
+            planner_ps_id,
+            compact_text(preview.get("source_ps_id")),
+            max(1, int(source_pp_partial_no or 1)),
+            max(0.0, _to_float(qty)),
+            compact_text(preview.get("part_no")),
+            compact_text(preview.get("part_no")),
+            compact_text(preview.get("part_desc")),
+            due_val,
+            compact_text(preview.get("erp_bom_code")),
+            int(preview.get("selected_bom_id") or 0) or None,
+            compact_text(preview.get("selected_bom_code")),
+            compact_text(remarks),
+        ),
+    )
+
+
+def list_temp_process_sheets(con, limit=500):
+    _ensure_planner_temp_process_sheet_table(con)
+    limit = max(1, min(int(limit or 500), 2000))
+    return rows(
+        con.execute(
+            """
+            SELECT t.*,
+                   ps.planner_status,
+                   ps.status AS ps_status,
+                   ps.planned_qty,
+                   ps.finished_qty
+            FROM planner_temp_process_sheet t
+            JOIN planner_process_sheet ps ON ps.planner_ps_id = t.planner_ps_id
+            ORDER BY t.created_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+    )
+
+
+def list_temp_process_sheets_payload(con, limit=500):
+    """Trackable temp PS rows for the Process Sheets · Temp tab."""
+    rows_raw = list_temp_process_sheets(con, limit=limit)
+    ps_ids = [compact_text(r.get("planner_ps_id")) for r in rows_raw if compact_text(r.get("planner_ps_id"))]
+    metrics_by_ps, _ = _block_metrics_for_ps_ids(con, ps_ids)
+    out = []
+    for row in rows_raw:
+        pid = compact_text(row.get("planner_ps_id"))
+        metrics = metrics_by_ps.get(pid, {})
+        planned_lane = _to_float(metrics.get("planned_qty_total"))
+        queued_machines = list(metrics.get("queued_machines") or [])
+        out.append(
+            {
+                "planner_ps_id": pid,
+                "display_ps_id": temp_planner_ps_display_label(pid),
+                "source_ps_id": compact_text(row.get("source_ps_id")),
+                "source_pp_partial_no": int(row.get("source_pp_partial_no") or 1),
+                "source_label": format_planner_ps_id(
+                    row.get("source_ps_id"),
+                    row.get("source_pp_partial_no"),
+                ),
+                "reject_qty": _to_float(row.get("reject_qty")),
+                "planned_qty": _to_float(row.get("planned_qty")),
+                "finished_qty": _to_float(row.get("finished_qty")),
+                "part_no": compact_text(row.get("part_no")),
+                "part_desc": compact_text(row.get("part_desc")),
+                "due_date": compact_text(row.get("due_date")),
+                "erp_bom_code": compact_text(row.get("erp_bom_code")),
+                "selected_bom_code": compact_text(row.get("selected_bom_code")),
+                "remarks": compact_text(row.get("remarks")),
+                "planner_status": compact_text(row.get("planner_status")),
+                "ps_status": compact_text(row.get("ps_status")),
+                "created_at": compact_text(row.get("created_at")),
+                "updated_at": compact_text(row.get("updated_at")),
+                "is_queued": planned_lane > 0 or bool(queued_machines),
+                "queued_machines": queued_machines,
+                "stored_in": "planner_temp_process_sheet",
+            }
+        )
+    return out
+
+
+def is_temp_planner_ps_id(planner_ps_id):
+    return compact_text(planner_ps_id).startswith(TEMP_PS_PREFIX)
+
+
+def temp_planner_ps_display_label(planner_ps_id):
+    """Human-facing label, e.g. [Temp] NPS26-0210."""
+    raw = compact_text(planner_ps_id)
+    if not is_temp_planner_ps_id(raw):
+        return raw
+    body = raw[len(TEMP_PS_PREFIX) :]
+    return f"{TEMP_PS_PREFIX} {body}" if body else raw
+
+
+def _allocate_temp_planner_identity(con, source_ps_id):
+    """Next temp planner_ps_id and pp_partial_no for reject/rework copies."""
+    source_ps_id = compact_text(source_ps_id)
+    row = one(
+        con.execute(
+            """
+            SELECT COALESCE(MAX(pp_partial_no), %s - 1) AS mx
+            FROM planner_process_sheet
+            WHERE source_ps_id = %s
+              AND pp_partial_no >= %s
+            """,
+            (TEMP_PARTIAL_MIN, source_ps_id, TEMP_PARTIAL_MIN),
+        )
+    )
+    next_partial = max(TEMP_PARTIAL_MIN, int((row or {}).get("mx") or TEMP_PARTIAL_MIN - 1) + 1)
+    sequence = next_partial - TEMP_PARTIAL_MIN + 1
+    if sequence <= 1:
+        planner_ps_id = f"{TEMP_PS_PREFIX}{source_ps_id}"
+    else:
+        planner_ps_id = f"{TEMP_PS_PREFIX}{source_ps_id}-{sequence}"
+    return planner_ps_id, next_partial
+
+
+def _voucher_partial_row(con, source_ps_id, pp_partial_no):
+    return one(
+        con.execute(
+            """
+            SELECT ps_id, pp_partial_no,
+                   MAX(part_no) AS part_no,
+                   MAX(description) AS description,
+                   MIN(due_date) AS due_date,
+                   MAX(bom_code) AS bom_code,
+                   MAX(total_qty) AS total_qty,
+                   MAX(partial_qty) AS partial_qty,
+                   MAX(status) AS erp_status
+            FROM pp_vouchers_cache
+            WHERE ps_id = %s AND pp_partial_no = %s
+            GROUP BY ps_id, pp_partial_no
+            """,
+            (compact_text(source_ps_id), max(1, int(pp_partial_no or 1))),
+        )
+    )
+
+
+def _mfg_process_sheet_staging_row(con, source_ps_id):
+    """Fallback when pp_vouchers_cache has not been rebuilt yet for this PS."""
+    source_ps_id = compact_text(source_ps_id)
+    if not source_ps_id:
+        return None
+    return one(
+        con.execute(
+            """
+            SELECT process_sheet_no AS ps_id,
+                   1 AS pp_partial_no,
+                   MAX(inventory_code) AS part_no,
+                   '' AS description,
+                   NULL::DATE AS due_date,
+                   MAX(COALESCE(total_qty, 0)) AS display_qty,
+                   '' AS bom_code,
+                   'erp_staging' AS match_source
+            FROM mfg_process_sheet_info
+            WHERE process_sheet_no = %s
+            GROUP BY process_sheet_no
+            LIMIT 1
+            """,
+            (source_ps_id,),
+        )
+    )
+
+
+def _voucher_rows_for_source_ps(con, source_ps_id, pp_partial_no=None):
+    """All cache partials for a PS, or one partial when specified."""
+    source_ps_id = compact_text(source_ps_id)
+    if not source_ps_id:
+        return []
+    if pp_partial_no is not None:
+        row = _voucher_partial_row(con, source_ps_id, pp_partial_no)
+        return [row] if row else []
+    return rows(
+        con.execute(
+            """
+            SELECT ps_id, pp_partial_no,
+                   MAX(part_no) AS part_no,
+                   MAX(description) AS description,
+                   MIN(due_date) AS due_date,
+                   MAX(COALESCE(NULLIF(partial_qty, 0), total_qty, 0)) AS display_qty,
+                   MAX(bom_code) AS bom_code
+            FROM pp_vouchers_cache
+            WHERE ps_id ILIKE %s
+            GROUP BY ps_id, pp_partial_no
+            ORDER BY pp_partial_no
+            """,
+            (source_ps_id,),
+        )
+    )
+
+
+def search_process_sheet_sources(con, query, limit=25):
+    needle = compact_text(query)
+    if not needle:
+        return []
+    pattern = f"%{needle}%"
+    limit = max(1, min(int(limit or 25), 50))
+    cache_rows = rows(
+        con.execute(
+            """
+            SELECT ps_id, pp_partial_no,
+                   MAX(part_no) AS part_no,
+                   MAX(description) AS description,
+                   MIN(due_date) AS due_date,
+                   MAX(COALESCE(NULLIF(partial_qty, 0), total_qty, 0)) AS display_qty,
+                   MAX(bom_code) AS bom_code,
+                   'pp_vouchers_cache' AS match_source
+            FROM pp_vouchers_cache
+            WHERE ps_id ILIKE %s
+               OR part_no ILIKE %s
+               OR description ILIKE %s
+            GROUP BY ps_id, pp_partial_no
+            ORDER BY MIN(due_date) NULLS LAST, ps_id, pp_partial_no
+            LIMIT %s
+            """,
+            (pattern, pattern, pattern, limit),
+        )
+    )
+    seen = {(compact_text(r.get("ps_id")), int(r.get("pp_partial_no") or 1)) for r in cache_rows}
+    out = [dict(r) for r in cache_rows]
+    if len(out) >= limit:
+        return out
+
+    staging_rows = rows(
+        con.execute(
+            """
+            SELECT process_sheet_no AS ps_id,
+                   1 AS pp_partial_no,
+                   MAX(inventory_code) AS part_no,
+                   '' AS description,
+                   NULL::DATE AS due_date,
+                   MAX(COALESCE(total_qty, 0)) AS display_qty,
+                   '' AS bom_code,
+                   'erp_staging' AS match_source
+            FROM mfg_process_sheet_info
+            WHERE process_sheet_no ILIKE %s
+               OR inventory_code ILIKE %s
+            GROUP BY process_sheet_no
+            ORDER BY process_sheet_no
+            LIMIT %s
+            """,
+            (pattern, pattern, max(limit - len(out), 0) or 1),
+        )
+    )
+    for row in staging_rows:
+        key = (compact_text(row.get("ps_id")), int(row.get("pp_partial_no") or 1))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(dict(row))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def temp_process_sheet_source_preview(con, source_ps_id, pp_partial_no=1):
+    source_ps_id, pp_partial_no = parse_planner_ps_id(
+        format_planner_ps_id(compact_text(source_ps_id), pp_partial_no)
+    )
+    cache_row = _voucher_partial_row(con, source_ps_id, pp_partial_no)
+    if not cache_row:
+        partial_rows = _voucher_rows_for_source_ps(con, source_ps_id)
+        if partial_rows:
+            cache_row = partial_rows[0]
+            pp_partial_no = int(cache_row.get("pp_partial_no") or 1)
+        else:
+            cache_row = _mfg_process_sheet_staging_row(con, source_ps_id)
+            if cache_row:
+                pp_partial_no = 1
+    if not cache_row:
+        raise ValueError(
+            f"Process sheet {source_ps_id} was not found. "
+            "Run Sync ERP (PP vouchers + process sheets) and try again."
+        )
+
+    canonical = format_planner_ps_id(source_ps_id, pp_partial_no)
+    planner_row = one(
+        con.execute(
+            "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
+            (canonical,),
+        )
+    )
+    if not planner_row:
+        try:
+            planner_row = ensure_planner_process_sheet(con, canonical)
+        except ValueError:
+            planner_row = None
+
+    selected_bom_id = int((planner_row or {}).get("selected_bom_id") or 0)
+    bom_code = ""
+    bom_desc = ""
+    if selected_bom_id:
+        flow = one(
+            con.execute(
+                """
+                SELECT bom_code, bom_desc FROM planner_bom_variation
+                WHERE bom_id = %s
+                """,
+                (selected_bom_id,),
+            )
+        )
+        if flow:
+            bom_code = compact_text(flow.get("bom_code"))
+            bom_desc = compact_text(flow.get("bom_desc"))
+
+    if not bom_code:
+        bom_code = compact_text(cache_row.get("bom_code"))
+        if bom_code and compact_text(cache_row.get("part_no")):
+            flow = one(
+                con.execute(
+                    """
+                    SELECT bom_id, bom_code, bom_desc FROM planner_bom_variation
+                    WHERE inventory_code = %s AND bom_code = %s
+                    LIMIT 1
+                    """,
+                    (compact_text(cache_row.get("part_no")), bom_code),
+                )
+            )
+            if flow:
+                selected_bom_id = int(flow["bom_id"])
+                bom_desc = compact_text(flow.get("bom_desc"))
+
+    ops_preview = []
+    if selected_bom_id:
+        for row in rows(
+            con.execute(
+                """
+                SELECT seq_no, op_no, op_type, machine_category, preferred_machine
+                FROM planner_operation_seq
+                WHERE bom_id = %s
+                ORDER BY seq_no, op_seq_id
+                """,
+                (selected_bom_id,),
+            )
+        ):
+            label = f"OP{compact_text(row.get('op_no')).lstrip('OPop')} {compact_text(row.get('op_type'))}".strip()
+            ops_preview.append(
+                {
+                    "seq_no": int(row.get("seq_no") or 0),
+                    "op_no": compact_text(row.get("op_no")),
+                    "label": label,
+                    "machine_category": compact_text(row.get("machine_category")),
+                    "preferred_machine": compact_text(row.get("preferred_machine")),
+                }
+            )
+
+    display_qty = _to_float(cache_row.get("partial_qty") or cache_row.get("total_qty"))
+    return {
+        "source_ps_id": source_ps_id,
+        "pp_partial_no": pp_partial_no,
+        "planner_ps_id": canonical,
+        "part_no": compact_text(cache_row.get("part_no")),
+        "part_desc": compact_text(cache_row.get("description")),
+        "due_date": compact_text(cache_row.get("due_date")),
+        "display_qty": display_qty,
+        "erp_bom_code": compact_text(cache_row.get("bom_code")),
+        "selected_bom_id": selected_bom_id,
+        "selected_bom_code": bom_code,
+        "selected_bom_desc": bom_desc,
+        "ops_preview": ops_preview,
+        "temp_name_preview": temp_planner_ps_display_label(f"{TEMP_PS_PREFIX}{source_ps_id}"),
+    }
+
+
+def create_temp_process_sheet(con, source_ps_id, pp_partial_no, qty, remarks=""):
+    preview = temp_process_sheet_source_preview(con, source_ps_id, pp_partial_no)
+    qty = max(0.0, _to_float(qty))
+    if qty <= 0:
+        raise ValueError("Quantity must be greater than zero.")
+
+    source_ps_id = preview["source_ps_id"]
+    pp_partial_no = int(preview["pp_partial_no"])
+    planner_ps_id, temp_partial_no = _allocate_temp_planner_identity(con, source_ps_id)
+
+    existing = one(
+        con.execute(
+            "SELECT planner_ps_id FROM planner_process_sheet WHERE planner_ps_id = %s",
+            (planner_ps_id,),
+        )
+    )
+    if existing:
+        raise ValueError(f"Temp process sheet {planner_ps_id} already exists.")
+
+    inventory_code = compact_text(preview.get("part_no"))
+    selected_bom_id = int(preview.get("selected_bom_id") or 0) or None
+    note = compact_text(remarks)
+    if not note:
+        note = f"Temp reject PS cloned from {format_planner_ps_id(source_ps_id, pp_partial_no)}"
+
+    con.execute(
+        """
+        INSERT INTO planner_process_sheet (
+          planner_ps_id, source_ps_id, pp_partial_no, inventory_code,
+          selected_bom_id, planner_status, status, planned_qty, finished_qty,
+          remarks, created_at, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, 'UNPLANNED', 'ACTIVE', %s, 0, %s, NOW(), NOW())
+        """,
+        (
+            planner_ps_id,
+            source_ps_id,
+            temp_partial_no,
+            inventory_code,
+            selected_bom_id,
+            qty,
+            note,
+        ),
+    )
+    _persist_temp_process_sheet_record(
+        con,
+        planner_ps_id=planner_ps_id,
+        preview=preview,
+        source_pp_partial_no=pp_partial_no,
+        qty=qty,
+        remarks=note,
+    )
+    row = one(
+        con.execute(
+            "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
+            (planner_ps_id,),
+        )
+    )
+    temp_row = one(
+        con.execute(
+            "SELECT * FROM planner_temp_process_sheet WHERE planner_ps_id = %s",
+            (planner_ps_id,),
+        )
+    )
+    return {
+        "planner_ps_id": planner_ps_id,
+        "ps_id": planner_ps_id,
+        "display_ps_id": temp_planner_ps_display_label(planner_ps_id),
+        "source_ps_id": source_ps_id,
+        "source_pp_partial_no": pp_partial_no,
+        "temp_source_ps_id": source_ps_id,
+        "temp_source_label": format_planner_ps_id(source_ps_id, pp_partial_no),
+        "is_temp_ps": True,
+        "pp_partial_no": temp_partial_no,
+        "planned_qty": qty,
+        "reject_qty": qty,
+        "part_no": preview.get("part_no") or "",
+        "part_desc": preview.get("part_desc") or "",
+        "due_date": preview.get("due_date") or "",
+        "selected_bom_code": preview.get("selected_bom_code") or "",
+        "is_temp": True,
+        "stored_in": "planner_process_sheet + planner_temp_process_sheet",
+        "row": dict(row) if row else {},
+        "temp_record": dict(temp_row) if temp_row else {},
+    }
+
+
+_OVERLAY_COLUMN_CACHE = None
+
+
+def _overlay_column_flags(con):
+    """Detect overlay columns without DDL (safe on hot read paths)."""
+    global _OVERLAY_COLUMN_CACHE
+    if _OVERLAY_COLUMN_CACHE is not None:
+        return _OVERLAY_COLUMN_CACHE
+    flags = {"coway": False, "remarks": False}
     try:
-        con.execute(
-            """
-            ALTER TABLE planner_process_sheet
-            ADD COLUMN IF NOT EXISTS coway_proposed_edd DATE
-            """
-        )
-        con.execute(
-            """
-            ALTER TABLE planner_process_sheet
-            ADD COLUMN IF NOT EXISTS remarks TEXT NOT NULL DEFAULT ''
-            """
-        )
+        for row in rows(
+            con.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'planner_process_sheet'
+                  AND column_name IN ('coway_proposed_edd', 'remarks')
+                """
+            )
+        ):
+            name = compact_text(row.get("column_name"))
+            if name == "coway_proposed_edd":
+                flags["coway"] = True
+            elif name == "remarks":
+                flags["remarks"] = True
     except Exception:
         pass
+    _OVERLAY_COLUMN_CACHE = flags
+    return flags
+
+
+def _ensure_planner_overlay_columns(con):
+    """Apply overlay DDL only when a write path needs a missing column."""
+    flags = _overlay_column_flags(con)
+    if flags["coway"] and flags["remarks"]:
+        return flags
+    global _OVERLAY_COLUMN_CACHE
+    try:
+        if not flags["coway"]:
+            con.execute(
+                """
+                ALTER TABLE planner_process_sheet
+                ADD COLUMN IF NOT EXISTS coway_proposed_edd DATE
+                """
+            )
+            flags["coway"] = True
+        if not flags["remarks"]:
+            con.execute(
+                """
+                ALTER TABLE planner_process_sheet
+                ADD COLUMN IF NOT EXISTS remarks TEXT NOT NULL DEFAULT ''
+                """
+            )
+            flags["remarks"] = True
+    except Exception:
+        pass
+    _OVERLAY_COLUMN_CACHE = dict(flags)
+    return _OVERLAY_COLUMN_CACHE
 
 
 def _ensure_coway_proposed_edd_column(con):
@@ -244,7 +936,7 @@ def _flow_steps_for_ps_ids(con, ps_ids):
                    pfs.op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
                    pfs.machine_category, pfs.preferred_machine,
                    pfs.cycle_time, pfs.setup_time, pfs.is_last_op,
-                   pfs.source_stage_no,
+                   pfs.source_kind, pfs.source_stage_no,
                    COALESCE(so.wo_qty_required, 0) AS erp_required_qty,
                    COALESCE(so.wo_qty_produced, 0) AS erp_finished_qty,
                    COALESCE(so.wo_qty_rejected, 0) AS erp_reject_qty,
@@ -642,14 +1334,18 @@ def _warnings(ps, is_completed, material_status):
     return warnings
 
 
-def _process_sheet_payload(ps, steps, metrics, material_status):
+def _process_sheet_payload(ps, steps, metrics, material_status, manual_by_op_seq=None):
     raw_planned_qty = _to_float(metrics.get("planned_qty_total"))
     raw_finished_qty = _to_float(metrics.get("finished_qty_total"))
     source_total_qty = _to_float(ps.get("total_qty") or ps.get("planned_qty"))
     partial_qty = _to_float(ps.get("partial_qty"))
     erp_required_qty = _to_float(ps.get("wo_qty_required"))
-    display_qty = partial_qty or source_total_qty
+    if is_temp_planner_ps_id(ps.get("ps_id") or ps.get("planner_ps_id")):
+        display_qty = _to_float(ps.get("planned_qty")) or partial_qty or source_total_qty
+    else:
+        display_qty = partial_qty or source_total_qty
     total_qty = display_qty
+    steps = apply_flow_step_qty_cascade(steps, display_qty, manual_by_op_seq)
     planned_qty, finished_qty, reject_qty, remaining_qty = _summary_quantities(
         total_qty, steps, metrics
     )
@@ -701,6 +1397,8 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         )
     is_completed = shipped_completed or production_completed
     display_ps_id, pp_partial_no = _display_ids(ps)
+    if is_temp_planner_ps_id(ps.get("ps_id") or ps.get("planner_ps_id")):
+        display_ps_id = temp_planner_ps_display_label(ps.get("ps_id") or ps.get("planner_ps_id"))
     queued_machines = list(metrics.get("queued_machines") or [])
     queued_machine_details = list(metrics.get("queued_machine_details") or [])
     is_queued = bool(queued_machines) or raw_planned_qty > 0
@@ -709,6 +1407,7 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         "source_ps_id": compact_text(ps.get("source_ps_id")) or display_ps_id,
         "pp_partial_no": pp_partial_no,
         "display_ps_id": display_ps_id,
+        "is_temp_ps": is_temp_planner_ps_id(ps.get("ps_id") or ps.get("planner_ps_id")),
         "part_id": 0,
         "inventory_code": compact_text(ps.get("inventory_code") or ""),
         "part_name": compact_text(ps.get("part_no") or ps.get("part_name") or ""),
@@ -770,17 +1469,32 @@ def _step_payload(step, metrics_by_op, work_qty=0):
     key = _operation_key(step.get("op_seq_id"), step.get("op_no"))
     op_metrics = metrics_by_op.get(key, {})
     work_qty = _to_float(work_qty)
+    cascade_req = _to_float(step.get("cascade_required_qty"))
     erp_stage_req = _to_float(step.get("erp_required_qty"))
     # Stage-level ERP wo_qty_required is often the full WO; partial work uses partial_qty.
-    if work_qty > 0:
+    if cascade_req > 0:
+        total_qty = cascade_req
+    elif work_qty > 0:
         total_qty = work_qty
     elif erp_stage_req > 0:
         total_qty = erp_stage_req
     else:
         total_qty = _to_float(step.get("total_qty"))
     planned_qty = _to_float(op_metrics.get("planned_qty"))
-    finished_qty = max(_to_float(op_metrics.get("finished_qty")), _to_float(step.get("erp_finished_qty")))
-    reject_qty = max(_to_float(op_metrics.get("reject_qty")), _to_float(step.get("erp_reject_qty")))
+    manual_prod = _to_float(step.get("manual_produced_qty"))
+    manual_rej = _to_float(step.get("manual_reject_qty"))
+    finished_qty = max(
+        _to_float(op_metrics.get("finished_qty")),
+        _to_float(step.get("erp_finished_qty")),
+        manual_prod,
+        _to_float(step.get("cascade_output_qty")),
+    )
+    reject_qty = max(
+        _to_float(op_metrics.get("reject_qty")),
+        _to_float(step.get("erp_reject_qty")),
+        manual_rej,
+        _to_float(step.get("cascade_reject_qty")),
+    )
     queued_machines = list(op_metrics.get("queued_machines") or [])
     machine_code = queued_machines[0] if queued_machines else ""
     return {
@@ -794,11 +1508,14 @@ def _step_payload(step, metrics_by_op, work_qty=0):
         "setup_time": _to_float(step.get("setup_time")),
         "is_last_op": int(bool(step.get("is_last_op"))),
         "stage_no": int(step.get("source_stage_no") or 0),
+        "source_kind": compact_text(step.get("source_kind") or ""),
+        "needs_manual_produced": bool(step.get("needs_manual_produced")),
         "execution_status": compact_text(step.get("erp_execution_status") or ""),
         "required_qty": total_qty,
         "wo_qty_required": total_qty,
-        "wo_qty_produced": _to_float(step.get("erp_finished_qty")),
-        "wo_qty_rejected": _to_float(step.get("erp_reject_qty")),
+        "wo_qty_produced": finished_qty,
+        "manual_produced_qty": manual_prod,
+        "wo_qty_rejected": reject_qty,
         "planned_qty": planned_qty,
         "finished_qty": finished_qty,
         "reject_qty": reject_qty,
@@ -844,8 +1561,20 @@ def _apply_partial_shipped_rollup(rows):
             item["is_completed"] = True
 
 
-def _ps_select_sql():
+def _ps_select_sql(con=None):
     from planning.erp_wo_merge import ERP_STAGE_OUTPUTS_CTE
+
+    flags = _overlay_column_flags(con) if con is not None else (_OVERLAY_COLUMN_CACHE or {"coway": True, "remarks": True})
+    coway_expr = (
+        "ps.coway_proposed_edd,"
+        if flags.get("coway")
+        else "NULL::DATE AS coway_proposed_edd,"
+    )
+    remarks_expr = (
+        "ps.remarks,"
+        if flags.get("remarks")
+        else "'' AS remarks,"
+    )
 
     return f"""
     WITH {ERP_STAGE_OUTPUTS_CTE},
@@ -897,8 +1626,8 @@ def _ps_select_sql():
         ps.status,
         ps.planned_qty,
         ps.finished_qty,
-        ps.coway_proposed_edd,
-        ps.remarks,
+        {coway_expr}
+        {remarks_expr}
         ps.created_at,
         ps.updated_at,
         v.total_qty,
@@ -930,6 +1659,11 @@ def _ps_select_sql():
 """
 
 
+def _ps_select(con):
+    return _ps_select_sql(con)
+
+
+# Backward compatibility for ad-hoc scripts (assumes overlay columns exist).
 _PS_SELECT = _ps_select_sql()
 
 
@@ -976,11 +1710,31 @@ def _board_item_source_partial(item):
     return source, max(1, partial)
 
 
+def _enrich_overlay_select_sql(flags):
+    select_cols = ["source_ps_id", "pp_partial_no"]
+    conditions = []
+    if flags.get("coway"):
+        select_cols.append("coway_proposed_edd")
+        conditions.append("coway_proposed_edd IS NOT NULL")
+    if flags.get("remarks"):
+        select_cols.append("remarks")
+        conditions.append("NULLIF(TRIM(remarks), '') IS NOT NULL")
+    if not conditions:
+        return None
+    return (
+        f"SELECT {', '.join(select_cols)} FROM planner_process_sheet "
+        f"WHERE source_ps_id = ANY(%s) AND ({' OR '.join(conditions)})"
+    )
+
+
 def enrich_board_planner_fields(con, items):
     """Attach planner overlay fields when board rows omit them (common on ERP-only lines)."""
     if not items:
         return items
-    _ensure_planner_overlay_columns(con)
+    flags = _overlay_column_flags(con)
+    enrich_sql = _enrich_overlay_select_sql(flags)
+    if not enrich_sql:
+        return items
     indices_by_key = {}
     source_ids = set()
     for idx, item in enumerate(items):
@@ -993,20 +1747,7 @@ def enrich_board_planner_fields(con, items):
     if not source_ids:
         return items
     overlay_by_key = {}
-    for row in rows(
-        con.execute(
-            """
-            SELECT source_ps_id, pp_partial_no, coway_proposed_edd, remarks
-            FROM planner_process_sheet
-            WHERE source_ps_id = ANY(%s)
-              AND (
-                    coway_proposed_edd IS NOT NULL
-                 OR NULLIF(TRIM(remarks), '') IS NOT NULL
-              )
-            """,
-            (list(source_ids),),
-        )
-    ):
+    for row in rows(con.execute(enrich_sql, (list(source_ids),))):
         key = (compact_text(row.get("source_ps_id")), int(row.get("pp_partial_no") or 1))
         overlay_by_key[key] = {
             "coway_proposed_edd": compact_text(row.get("coway_proposed_edd")),
@@ -1031,8 +1772,11 @@ def enrich_board_coway_proposed_edd(con, items):
 
 def process_sheet_board_identity_key(item):
     """Match client itemIdentityKey() for planner/ERP row deduplication."""
+    ps_id = compact_text(item.get("ps_id") or "")
+    if is_temp_planner_ps_id(ps_id):
+        return ps_id
     source = compact_text(
-        item.get("source_ps_id") or item.get("display_ps_id") or item.get("ps_id") or ""
+        item.get("source_ps_id") or item.get("display_ps_id") or ps_id or ""
     ).split("::")[0]
     try:
         partial = int(item.get("pp_partial_no") or 1)
@@ -1048,7 +1792,8 @@ def process_sheet_board_identity_key(item):
 
 
 def list_process_sheets_payload(con):
-    _ensure_planner_overlay_columns(con)
+    _ensure_planner_temp_process_sheet_table(con)
+    _overlay_column_flags(con)
     search = compact_text(request.args.get("search")).lower()
     status_filter = compact_text(request.args.get("status")).upper()
     planner_filter = compact_text(request.args.get("planner_status")).upper()
@@ -1059,12 +1804,13 @@ def list_process_sheets_payload(con):
         dict(row)
         for row in rows(
             con.execute(
-                _PS_SELECT + " ORDER BY COALESCE(v.due_date::TEXT, ''), ps.planner_ps_id"
+                _ps_select(con) + " ORDER BY COALESCE(v.due_date::TEXT, ''), ps.planner_ps_id"
             )
         )
     ]
     ps_ids = [row["ps_id"] for row in ps_rows]
     steps_by_ps = _flow_steps_for_ps_ids(con, ps_ids)
+    manual_qty_by_ps = _manual_qty_by_ps_ids(con, ps_ids)
     metrics_by_ps, _ = _block_metrics_for_ps_ids(con, ps_ids)
     material_status_by_ps = material_status_map_for_ps_ids(
         con,
@@ -1100,16 +1846,76 @@ def list_process_sheets_payload(con):
             steps,
             metrics_by_ps.get(ps_id, {}),
             material_status_by_ps.get(ps_id, {}),
+            manual_qty_by_ps.get(ps_id, {}),
         )
+        if is_temp_planner_ps_id(ps_id):
+            temp_reg = one(
+                con.execute(
+                    "SELECT * FROM planner_temp_process_sheet WHERE planner_ps_id = %s",
+                    (ps_id,),
+                )
+            )
+            if temp_reg:
+                payload["temp_source_ps_id"] = compact_text(temp_reg.get("source_ps_id"))
+                payload["temp_source_label"] = format_planner_ps_id(
+                    temp_reg.get("source_ps_id"),
+                    temp_reg.get("source_pp_partial_no"),
+                )
+                payload["reject_qty"] = _to_float(temp_reg.get("reject_qty"))
+                if compact_text(temp_reg.get("part_no")):
+                    payload["part_no"] = compact_text(temp_reg.get("part_no"))
+                    payload["part_name"] = payload["part_no"]
+                if compact_text(temp_reg.get("part_desc")):
+                    payload["part_desc"] = compact_text(temp_reg.get("part_desc"))
+                if compact_text(temp_reg.get("due_date")):
+                    payload["due_date"] = compact_text(temp_reg.get("due_date"))
+                if compact_text(temp_reg.get("selected_bom_code")):
+                    payload["selected_flow_code"] = compact_text(temp_reg.get("selected_bom_code"))
+                payload["stored_in"] = "planner_temp_process_sheet"
+            if not compact_text(payload.get("due_date")):
+                source_row = _voucher_partial_row(
+                    con,
+                    compact_text(ps.get("source_ps_id")),
+                    1,
+                )
+                if source_row:
+                    payload["due_date"] = compact_text(source_row.get("due_date"))
+            if not compact_text(payload.get("part_no")):
+                payload["part_no"] = compact_text(ps.get("inventory_code"))
+            if not payload.get("temp_source_ps_id"):
+                payload["temp_source_ps_id"] = compact_text(ps.get("source_ps_id"))
+            if not payload.get("temp_source_label"):
+                note = compact_text(ps.get("remarks"))
+                cloned = re.search(r"cloned from (\S+)", note)
+                payload["temp_source_label"] = (
+                    cloned.group(1)
+                    if cloned
+                    else format_planner_ps_id(compact_text(ps.get("source_ps_id")), 1)
+                )
         wo_key = (compact_text(ps.get("source_ps_id")), int(ps.get("pp_partial_no") or 1))
-        if wo_complete_by_partial.get(wo_key):
+        if not is_temp_planner_ps_id(ps_id) and wo_complete_by_partial.get(wo_key):
             payload["erp_all_wo_complete"] = True
         haystack = " ".join(
             compact_text(payload.get(k)).lower()
-            for k in ("ps_id", "source_ps_id", "display_ps_id", "pp_partial_no",
-                      "part_name", "part_no", "part_desc", "selected_flow_code",
-                      "status", "planner_status", "inventory_code")
+            for k in (
+                "ps_id",
+                "source_ps_id",
+                "display_ps_id",
+                "pp_partial_no",
+                "part_name",
+                "part_no",
+                "part_desc",
+                "selected_flow_code",
+                "status",
+                "planner_status",
+                "inventory_code",
+                "temp_source_ps_id",
+                "temp_source_label",
+                "is_temp_ps",
+            )
         )
+        if payload.get("is_temp_ps"):
+            haystack += " temp reject rework"
         if search and search not in haystack:
             continue
         if status_filter and compact_text(payload["status"]).upper() != status_filter:
@@ -1293,6 +2099,99 @@ def api_process_sheet_remarks(ps_id):
         return jsonify({"error": str(e)}), 500
 
 
+@process_sheets_bp.patch("/api/trial/process-sheets/<path:ps_id>/bom-step-qty")
+@process_sheets_bp.put("/api/trial/process-sheets/<path:ps_id>/bom-step-qty")
+@process_sheets_bp.patch("/api/process-sheets/<path:ps_id>/bom-step-qty")
+@process_sheets_bp.put("/api/process-sheets/<path:ps_id>/bom-step-qty")
+def api_process_sheet_bom_step_qty(ps_id):
+    data = request.get_json(force=True, silent=True) or {}
+    op_seq_id = int(data.get("op_seq_id") or 0)
+    if op_seq_id <= 0:
+        return jsonify({"error": "op_seq_id is required"}), 400
+    qty_produced = max(0.0, _to_float(data.get("qty_produced")))
+    qty_rejected = max(0.0, _to_float(data.get("qty_rejected")))
+    try:
+        with planner_db() as con:
+            _, _, canonical_ps_id = _planner_ps_identity(ps_id)
+            try:
+                ps = ensure_planner_process_sheet(con, canonical_ps_id)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 404
+            if not ps:
+                return jsonify({"error": "Process sheet not found"}), 404
+            selected_bom_id = int(ps.get("selected_bom_id") or 0)
+            if not selected_bom_id:
+                return jsonify({"error": "No planner BOM selected for this process sheet"}), 400
+            step = one(
+                con.execute(
+                    """
+                    SELECT op_seq_id, source_kind, source_stage_no
+                    FROM planner_operation_seq
+                    WHERE op_seq_id = %s AND bom_id = %s
+                    """,
+                    (op_seq_id, selected_bom_id),
+                )
+            )
+            if not step:
+                return jsonify({"error": "Operation step not found on selected BOM"}), 404
+            if not step_needs_manual_produced(step):
+                return jsonify({"error": "This step uses ERP produced qty; manual entry is not allowed"}), 400
+            _ensure_bom_step_qty_table(con)
+            con.execute(
+                """
+                INSERT INTO planner_ps_bom_step_qty (
+                    planner_ps_id, op_seq_id, qty_produced, qty_rejected, updated_at
+                ) VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (planner_ps_id, op_seq_id) DO UPDATE SET
+                    qty_produced = EXCLUDED.qty_produced,
+                    qty_rejected = EXCLUDED.qty_rejected,
+                    updated_at = NOW()
+                """,
+                (canonical_ps_id, op_seq_id, qty_produced, qty_rejected),
+            )
+            steps_by_ps = _flow_steps_for_ps_ids(con, [canonical_ps_id])
+            manual_qty_by_ps = _manual_qty_by_ps_ids(con, [canonical_ps_id])
+            metrics_by_ps, _ = _block_metrics_for_ps_ids(con, [canonical_ps_id])
+            material_status_by_ps = material_status_map_for_ps_ids(
+                con,
+                [canonical_ps_id],
+                {canonical_ps_id: metrics_by_ps.get(canonical_ps_id, {}).get("expected_start", "")},
+            )
+            ps_row = one(
+                con.execute(
+                    _ps_select(con) + " WHERE ps.planner_ps_id = %s",
+                    (canonical_ps_id,),
+                )
+            )
+            steps = _resolve_process_sheet_steps(con, dict(ps_row), steps_by_ps.get(canonical_ps_id, []))
+            summary = _process_sheet_payload(
+                dict(ps_row),
+                steps,
+                metrics_by_ps.get(canonical_ps_id, {}),
+                material_status_by_ps.get(canonical_ps_id, {}),
+                manual_qty_by_ps.get(canonical_ps_id, {}),
+            )
+            updated_op = next(
+                (op for op in summary.get("ops", []) if int(op.get("op_seq_id") or 0) == op_seq_id),
+                None,
+            )
+            return jsonify({
+                "ok": True,
+                "ps_id": canonical_ps_id,
+                "op_seq_id": op_seq_id,
+                "qty_produced": qty_produced,
+                "qty_rejected": qty_rejected,
+                "op": updated_op,
+                "summary": {
+                    "finished_qty": summary.get("finished_qty"),
+                    "remaining_qty": summary.get("remaining_qty"),
+                    "planned_qty": summary.get("planned_qty"),
+                },
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @process_sheets_bp.get("/api/trial/process-sheets")
 @process_sheets_bp.get("/api/process-sheets")
 def api_process_sheets():
@@ -1309,11 +2208,11 @@ def api_process_sheet_details(ps_id):
     ps_id = compact_text(ps_id)
     try:
         with planner_db() as con:
-            _ensure_coway_proposed_edd_column(con)
+            _overlay_column_flags(con)
             _, _, canonical_ps_id = _planner_ps_identity(ps_id)
             ps = one(
                 con.execute(
-                    _PS_SELECT + " WHERE ps.planner_ps_id = %s",
+                    _ps_select(con) + " WHERE ps.planner_ps_id = %s",
                     (canonical_ps_id,),
                 )
             )
@@ -1324,7 +2223,7 @@ def api_process_sheet_details(ps_id):
                     return jsonify({"error": str(exc)}), 404
                 ps = one(
                     con.execute(
-                        _PS_SELECT + " WHERE ps.planner_ps_id = %s",
+                        _ps_select(con) + " WHERE ps.planner_ps_id = %s",
                         (canonical_ps_id,),
                     )
                 )
@@ -1339,12 +2238,14 @@ def api_process_sheet_details(ps_id):
                 [canonical_ps_id],
                 {canonical_ps_id: metrics_by_ps.get(canonical_ps_id, {}).get("expected_start", "")},
             )
+            manual_qty_by_ps = _manual_qty_by_ps_ids(con, [canonical_ps_id])
             steps = _resolve_process_sheet_steps(con, dict(ps), steps_by_ps.get(canonical_ps_id, []))
             summary = _process_sheet_payload(
                 dict(ps),
                 steps,
                 metrics_by_ps.get(canonical_ps_id, {}),
                 material_status_by_ps.get(canonical_ps_id, {}),
+                manual_qty_by_ps.get(canonical_ps_id, {}),
             )
 
             segment_rows = rows(
@@ -1446,5 +2347,86 @@ def api_process_sheet_details(ps_id):
                 "cards": cards,
                 "requirements": requirements,
             })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# Temp PS routes (register before any /process-sheets/<path:ps_id> catch-alls in other blueprints).
+@process_sheets_bp.get("/api/trial/temp-process-sheets")
+@process_sheets_bp.get("/api/temp-process-sheets")
+def api_list_temp_process_sheets():
+    """All sustained [Temp] reject/rework process sheets from planner_temp_process_sheet."""
+    try:
+        limit = int(request.args.get("limit") or 500)
+    except (TypeError, ValueError):
+        limit = 500
+    try:
+        with planner_db() as con:
+            items = list_temp_process_sheets_payload(con, limit=limit)
+            return jsonify({"items": items, "count": len(items)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@process_sheets_bp.get("/api/trial/temp-process-sheets/search")
+@process_sheets_bp.get("/api/temp-process-sheets/search")
+def api_temp_process_sheet_search():
+    query = compact_text(request.args.get("q") or request.args.get("search") or "")
+    try:
+        limit = int(request.args.get("limit") or 25)
+    except (TypeError, ValueError):
+        limit = 25
+    try:
+        with planner_db() as con:
+            _ensure_planner_temp_process_sheet_table(con)
+            items = search_process_sheet_sources(con, query, limit=limit)
+            return jsonify({"items": items})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@process_sheets_bp.get("/api/trial/temp-process-sheets/source")
+@process_sheets_bp.get("/api/temp-process-sheets/source")
+def api_temp_process_sheet_source():
+    source_ps_id = compact_text(request.args.get("source_ps_id") or request.args.get("ps_id") or "")
+    try:
+        pp_partial_no = int(request.args.get("pp_partial_no") or request.args.get("partial") or 1)
+    except (TypeError, ValueError):
+        pp_partial_no = 1
+    if not source_ps_id:
+        return jsonify({"error": "source_ps_id is required"}), 400
+    try:
+        with planner_db() as con:
+            return jsonify(temp_process_sheet_source_preview(con, source_ps_id, pp_partial_no))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@process_sheets_bp.post("/api/trial/temp-process-sheets")
+@process_sheets_bp.post("/api/temp-process-sheets")
+def api_create_temp_process_sheet():
+    data = request.get_json(silent=True) or {}
+    source_ps_id = compact_text(
+        data.get("source_ps_id") or data.get("ps_id") or data.get("process_sheet_no") or ""
+    )
+    try:
+        pp_partial_no = int(data.get("pp_partial_no") or data.get("partial_no") or 1)
+    except (TypeError, ValueError):
+        pp_partial_no = 1
+    qty = data.get("qty") or data.get("quantity") or data.get("planned_qty")
+    remarks = compact_text(data.get("remarks") or "")
+    if not source_ps_id:
+        return jsonify({"error": "source_ps_id is required"}), 400
+    try:
+        with planner_db() as con:
+            _ensure_planner_temp_process_sheet_table(con)
+            result = create_temp_process_sheet(
+                con, source_ps_id, pp_partial_no, qty, remarks=remarks
+            )
+            return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500

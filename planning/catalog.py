@@ -23,7 +23,15 @@ import re
 from .actuals import actual_totals_for_block
 from .blocks import trial_block_row  # noqa: F401  (re-exported for route convenience)
 from .helpers import one, rows
-from .process_sheets import ensure_planner_process_sheet, format_planner_ps_id, parse_planner_ps_id
+from .process_sheets import (
+    apply_flow_step_qty_cascade,
+    ensure_planner_process_sheet,
+    format_planner_ps_id,
+    is_temp_planner_ps_id,
+    manual_qty_by_ps_ids,
+    parse_planner_ps_id,
+    temp_planner_ps_display_label,
+)
 from .utils import compact_text, parse_number, planner_wall_datetime_to_api, shipped_quantity_completed, trial_catalog_op_key
 
 
@@ -106,6 +114,53 @@ def _apply_bom_stage_fields(item, bom_stage_keys):
     item.update(check)
 
 
+def _apply_catalog_op_qty_cascade(item, manual_qty_by_ps):
+    all_ops = list(item.get("all_ops") or [])
+    if not all_ops:
+        return
+    launch_qty = float(item.get("partial_qty") or item.get("total_qty") or 0)
+    manual_map = {}
+    for planner_ps_id in item.get("planner_ps_ids") or []:
+        manual_map.update((manual_qty_by_ps or {}).get(planner_ps_id, {}))
+    steps = []
+    for op in all_ops:
+        steps.append(
+            {
+                "op_seq_id": int(op.get("source_op_seq_id") or 0),
+                "seq_no": int(op.get("seq_no") or 0),
+                "op_no": op.get("op_no") or op.get("source_op_no") or "",
+                "source_kind": op.get("source_kind") or "",
+                "source_stage_no": int(op.get("source_stage_no") or 0),
+                "erp_finished_qty": float(op.get("erp_finished_qty") or 0),
+                "erp_reject_qty": float(op.get("erp_reject_qty") or 0),
+                "erp_required_qty": 0,
+            }
+        )
+    cascaded = apply_flow_step_qty_cascade(steps, launch_qty, manual_map)
+    by_op_seq = {int(s.get("op_seq_id") or 0): s for s in cascaded}
+    refreshed_ops = []
+    for op in all_ops:
+        op_seq_id = int(op.get("source_op_seq_id") or 0)
+        step = by_op_seq.get(op_seq_id, {})
+        required = float(step.get("cascade_required_qty") or launch_qty)
+        finished = max(
+            float(op.get("erp_finished_qty") or 0),
+            float(step.get("manual_produced_qty") or 0),
+            float(step.get("cascade_output_qty") or 0),
+        )
+        planned = float(op.get("planned_qty") or 0)
+        remaining = max(0.0, required - planned - finished)
+        refreshed = dict(op)
+        refreshed["required_qty"] = required
+        refreshed["total_qty"] = remaining
+        refreshed["remaining_qty"] = remaining
+        refreshed["needs_manual_produced"] = bool(step.get("needs_manual_produced"))
+        refreshed["manual_produced_qty"] = float(step.get("manual_produced_qty") or 0)
+        refreshed_ops.append(refreshed)
+    item["all_ops"] = refreshed_ops
+    item["ops"] = _catalog_ops_for_sidebar(refreshed_ops)
+
+
 def _should_show_for_shipped_qty(total_qty, qty_shipped, source_line_item_no=None):
     if os.getenv("DISABLE_SHIPPED_QTY_CATALOG_FILTER", "").strip().lower() in {"1", "true", "yes", "on"}:
         return True
@@ -120,17 +175,70 @@ def _should_show_for_shipped_qty(total_qty, qty_shipped, source_line_item_no=Non
 
 
 _MACHINING_OP_RE = re.compile(r"^(Turning|Milling|Turnmill)\b", re.IGNORECASE)
+_NON_MACHINING_OP_RE = re.compile(
+    r"^(BOM|MATERIAL|MAT\b|SUBCON|SUB\s*CON|SMP[\s-]*MAT|KITTING|PACK)\b",
+    re.IGNORECASE,
+)
 
 
-def _is_machining_plannable_op(op_type, machine_category):
+def _is_manual_bom_step(op):
+    """Planner-added BOM step (Edit BOM · source MANUAL), not ERP bom_op_stage rows."""
+    row = op if isinstance(op, dict) else {}
+    if int(row.get("source_stage_no") or 0) > 0:
+        return False
+    return compact_text(row.get("source_kind")).upper() == "MANUAL" and bool(compact_text(row.get("op_type")))
+
+
+def _is_machining_plannable_op(op_type, machine_category, source_kind=None, preferred_machine=None):
+    """True when a BOM step can be dragged onto a machine lane in the scheduler."""
+    if compact_text(preferred_machine):
+        return True
+    cat = compact_text(machine_category).upper()
+    if cat in {"TURNING", "MILLING", "TURNMILL"}:
+        return True
     op_text = compact_text(op_type)
+    if op_text and _NON_MACHINING_OP_RE.match(op_text):
+        return False
     if op_text and _MACHINING_OP_RE.match(op_text):
         return True
-    return compact_text(machine_category).upper() in {"TURNING", "MILLING", "TURNMILL"}
+    # Manual planner BOM steps (e.g. op 60 · test) are schedulable unless marked as material/subcon.
+    if compact_text(source_kind).upper() == "MANUAL" and op_text:
+        return True
+    return False
 
 
-def trial_catalog_items(con, include_completed=False):
-    bom_stage_keys = _bom_op_stage_keys(con)
+def _catalog_ops_for_sidebar(refreshed_ops):
+    """Ops listed in PS / Ops sidebar — manual BOM steps always included."""
+    sidebar_ops = []
+    for op in refreshed_ops:
+        if _is_manual_bom_step(op):
+            row = dict(op)
+            if float(row.get("remaining_qty") or 0) <= 0:
+                fallback = max(
+                    float(row.get("required_qty") or 0),
+                    float(row.get("cascade_required_qty") or 0),
+                    float(row.get("total_qty") or 0),
+                )
+                planned = float(row.get("planned_qty") or 0)
+                if fallback > 0:
+                    row["remaining_qty"] = max(0.0, fallback - planned)
+                    row["total_qty"] = row["remaining_qty"]
+            sidebar_ops.append(row)
+            continue
+        if float(op.get("remaining_qty") or 0) <= 0:
+            continue
+        if _is_machining_plannable_op(
+            op.get("op_type"),
+            op.get("machine_category"),
+            op.get("source_kind"),
+            op.get("preferred_machine"),
+        ):
+            sidebar_ops.append(op)
+    return sidebar_ops
+
+
+def _catalog_lane_qty_maps(con):
+    """Planned + queued qty keyed for catalog / PP sidebar op cards."""
     planned_qty_by_op = {}
     queued_machines_by_op = {}
     for row in rows(
@@ -173,6 +281,143 @@ def trial_catalog_items(con, include_completed=False):
             queued_machines_by_op.setdefault(key, []).append(code)
     for key, codes in list(queued_machines_by_op.items()):
         queued_machines_by_op[key] = sorted({c for c in codes if c})
+    return planned_qty_by_op, queued_machines_by_op
+
+
+def _catalog_op_card_from_planner_op(op, entry):
+    ps_id = compact_text(entry.get("ps_id"))
+    return {
+        "card_kind": "single",
+        "card_id": None,
+        "ps_id": op.get("source_ps_id") or ps_id,
+        "operation_label": op.get("source_op_no") or op.get("operation_name") or op.get("op_type") or "",
+        "operation_name": op.get("op_type") or op.get("operation_name") or "",
+        "op_type": op.get("op_type") or "",
+        "target_qty": float(op.get("remaining_qty") or 0),
+        "remaining_qty": float(op.get("remaining_qty") or 0),
+        "required_qty": float(op.get("required_qty") or 0),
+        "planned_qty": float(op.get("planned_qty") or 0),
+        "erp_finished_qty": float(op.get("erp_finished_qty") or 0),
+        "source_op_seq_id": int(op.get("source_op_seq_id") or 0),
+        "source_op_no": op.get("source_op_no") or "",
+        "source_kind": compact_text(op.get("source_kind") or ""),
+        "is_manual_bom": _is_manual_bom_step(op),
+        "job_no": op.get("job_no") or ps_id,
+        "planning_status": "UNSCHEDULED",
+        "card_type": "SINGLE",
+        "is_scheduled": False,
+        "setup_minutes": float(op.get("setup_time") or 0),
+        "cycle_minutes_per_qty": float(op.get("cycle_time") or 0),
+        "compatible_machine_group": op.get("compatible_machine_group") or "",
+        "execution_status": op.get("execution_status") or "",
+        "queued_machines": list(op.get("queued_machines") or []),
+        "is_allocated": bool(op.get("is_allocated")),
+        "op": op,
+    }
+
+
+def attach_planner_bom_ops_to_catalog_entry(
+    con,
+    entry,
+    *,
+    planned_qty_by_op,
+    queued_machines_by_op,
+    bom_stage_keys=None,
+):
+    """PP sidebar (/api/pp-vouchers/with-ops) — use planner BOM steps when a flow is selected."""
+    bom_id = int(entry.get("selected_bom_id") or 0)
+    if bom_id <= 0:
+        return
+    source_ps_id = compact_text(entry.get("source_ps_id"))
+    if not source_ps_id:
+        ps_id = compact_text(entry.get("ps_id"))
+        source_ps_id = ps_id.split("::", 1)[0] if ps_id else ""
+    if not source_ps_id:
+        return
+    pp_partial_no = int(entry.get("pp_partial_no") or 1)
+    ps_id = compact_text(entry.get("ps_id")) or format_planner_ps_id(source_ps_id, pp_partial_no)
+    launch_qty = float(
+        entry.get("display_qty")
+        or entry.get("partial_qty")
+        or entry.get("wo_req_qty")
+        or entry.get("total_qty")
+        or 0
+    )
+    step_rows = rows(
+        con.execute(
+            """
+            SELECT op_seq_id, seq_no, op_no, op_type, machine_category, preferred_machine,
+                   cycle_time, setup_time, is_last_op, source_kind, source_stage_no
+            FROM planner_operation_seq
+            WHERE bom_id = %s
+            ORDER BY seq_no, op_seq_id
+            """,
+            (bom_id,),
+        )
+    )
+    if not step_rows:
+        return
+
+    all_ops = []
+    for row in step_rows:
+        op_seq_id = int(row["op_seq_id"] or 0)
+        op_key = trial_catalog_op_key(ps_id, row["op_no"], op_seq_id)
+        planned_qty = _planned_qty_for_catalog_op(planned_qty_by_op, ps_id, row["op_no"], op_seq_id)
+        erp_finished_qty = 0.0
+        remaining_qty = max(0.0, launch_qty - planned_qty - erp_finished_qty)
+        queued_machines = list(queued_machines_by_op.get(op_key, []) or [])
+        all_ops.append(
+            {
+                "source_ps_id": ps_id,
+                "pp_partial_no": pp_partial_no,
+                "source_op_seq_id": op_seq_id,
+                "source_op_no": row["op_no"] or "",
+                "op_no": row["op_no"] or "",
+                "op_type": row["op_type"] or "",
+                "seq_no": int(row.get("seq_no") or 0),
+                "source_kind": compact_text(row.get("source_kind") or ""),
+                "source_stage_no": int(row.get("source_stage_no") or 0),
+                "machine_category": row["machine_category"] or "",
+                "preferred_machine": row["preferred_machine"] or "",
+                "cycle_time": float(row["cycle_time"] or 0),
+                "setup_time": float(row["setup_time"] or 0),
+                "is_last_op": int(row["is_last_op"] or 0),
+                "job_no": ps_id,
+                "operation_name": f"{row['op_no'] or ''} {row['op_type'] or ''}".strip(),
+                "total_qty": remaining_qty,
+                "required_qty": launch_qty,
+                "planned_qty": planned_qty,
+                "erp_finished_qty": erp_finished_qty,
+                "erp_reject_qty": 0.0,
+                "remaining_qty": remaining_qty,
+                "queued_machines": queued_machines,
+                "is_allocated": planned_qty > 0,
+                "compatible_machine_group": row["machine_category"] or "",
+                "execution_status": "",
+            }
+        )
+
+    cascade_item = {
+        "partial_qty": launch_qty,
+        "total_qty": launch_qty,
+        "planner_ps_ids": [format_planner_ps_id(source_ps_id, pp_partial_no)],
+        "all_ops": all_ops,
+    }
+    manual_qty_by_ps = manual_qty_by_ps_ids(con, cascade_item["planner_ps_ids"])
+    _apply_catalog_op_qty_cascade(cascade_item, manual_qty_by_ps)
+    sidebar_ops = _catalog_ops_for_sidebar(cascade_item["all_ops"])
+    op_cards = [_catalog_op_card_from_planner_op(op, entry) for op in sidebar_ops]
+
+    entry["all_ops"] = list(cascade_item["all_ops"])
+    entry["ops"] = list(sidebar_ops)
+    entry["op_cards"] = op_cards
+    if bom_stage_keys is not None:
+        _apply_bom_stage_fields(entry, bom_stage_keys)
+
+
+def trial_catalog_items(con, include_completed=False):
+    bom_stage_keys = _bom_op_stage_keys(con)
+    planned_qty_by_op, queued_machines_by_op = _catalog_lane_qty_maps(con)
 
     # Process sheets that have a selected BOM (have ops to schedule). ERP cache
     # has one row per partial/stage, so aggregate it before joining to planner
@@ -250,6 +495,7 @@ def trial_catalog_items(con, include_completed=False):
                    ps.pp_partial_no,
                    ps.inventory_code,
                    ps.selected_bom_id, ps.planner_status, ps.status,
+                   ps.planned_qty,
                    COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0) AS total_qty,
                    COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0) AS partial_qty,
                    sf.bom_code AS selected_bom_code,
@@ -268,6 +514,7 @@ def trial_catalog_items(con, include_completed=False):
                    pfs.op_seq_id AS op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
                    pfs.machine_category, pfs.preferred_machine,
                    pfs.cycle_time, pfs.setup_time, pfs.is_last_op,
+                   pfs.source_kind, pfs.source_stage_no,
                    COALESCE(vso.wo_qty_produced, vop.wo_qty_produced, 0) AS erp_finished_qty,
                    COALESCE(vso.wo_qty_rejected, vop.wo_qty_rejected, 0) AS erp_reject_qty,
                    COALESCE(vso.execution_status, vop.execution_status, '') AS op_execution_status
@@ -347,6 +594,7 @@ def trial_catalog_items(con, include_completed=False):
                    ps.pp_partial_no,
                    ps.inventory_code,
                    ps.selected_bom_id, ps.planner_status, ps.status,
+                   ps.planned_qty,
                    COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0) AS total_qty,
                    COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0) AS partial_qty,
                    '' AS selected_bom_code,
@@ -384,11 +632,17 @@ def trial_catalog_items(con, include_completed=False):
         source_ps_id = _base_ps_id(row["ps_id"])
         pp_partial_no = int(row.get("pp_partial_no") or 1)
         planner_ps_id = compact_text(row.get("planner_ps_id")) or ps_id
-        if not _should_show_for_shipped_qty(row["total_qty"], row.get("qty_shipped"), row.get("source_line_item_no")):
+        is_temp = is_temp_planner_ps_id(planner_ps_id)
+        if not is_temp and not _should_show_for_shipped_qty(
+            row["total_qty"], row.get("qty_shipped"), row.get("source_line_item_no")
+        ):
             continue
         op_seq_id = int(row["op_seq_id"] or 0)
         op_key = trial_catalog_op_key(ps_id, row["op_no"], op_seq_id)
-        required_qty = float(row.get("partial_qty") or row["total_qty"] or 0)
+        if is_temp:
+            required_qty = float(row.get("planned_qty") or row.get("partial_qty") or 0)
+        else:
+            required_qty = float(row.get("partial_qty") or row["total_qty"] or 0)
         planned_qty = _planned_qty_for_catalog_op(planned_qty_by_op, ps_id, row["op_no"], op_seq_id)
         erp_finished_qty = max(0.0, float(row.get("erp_finished_qty") or 0))
         erp_reject_qty = max(0.0, float(row.get("erp_reject_qty") or 0))
@@ -397,6 +651,8 @@ def trial_catalog_items(con, include_completed=False):
             ps_id,
             {
                 "ps_id": ps_id,
+                "display_ps_id": temp_planner_ps_display_label(planner_ps_id) if is_temp else ps_id,
+                "is_temp_ps": is_temp,
                 "source_ps_id": source_ps_id,
                 "pp_partial_no": pp_partial_no,
                 "inventory_code": row["inventory_code"] or "",
@@ -440,6 +696,9 @@ def trial_catalog_items(con, include_completed=False):
             "source_op_no": row["op_no"] or "",
             "op_no": row["op_no"] or "",
             "op_type": row["op_type"] or "",
+            "seq_no": int(row.get("seq_no") or 0),
+            "source_kind": compact_text(row.get("source_kind") or ""),
+            "source_stage_no": int(row.get("source_stage_no") or 0),
             "machine_category": row["machine_category"] or "",
             "preferred_machine": row["preferred_machine"] or "",
             "cycle_time": float(row["cycle_time"] or 0),
@@ -459,7 +718,15 @@ def trial_catalog_items(con, include_completed=False):
             "execution_status": compact_text(row.get("op_execution_status") or ""),
         }
         item["all_ops"].append(op_item)
-        if remaining_qty > 0 and _is_machining_plannable_op(row.get("op_type"), row.get("machine_category")):
+        if _is_manual_bom_step(op_item) or (
+            remaining_qty > 0
+            and _is_machining_plannable_op(
+                row.get("op_type"),
+                row.get("machine_category"),
+                row.get("source_kind"),
+                row.get("preferred_machine"),
+            )
+        ):
             item["ops"].append(op_item)
 
     available = []
@@ -488,8 +755,14 @@ def trial_catalog_items(con, include_completed=False):
             ]
         return flow_cache[inventory_code]
 
+    planner_ps_ids = []
+    for item in grouped.values():
+        planner_ps_ids.extend(item.get("planner_ps_ids") or [])
+    manual_qty_by_ps = manual_qty_by_ps_ids(con, list(dict.fromkeys(planner_ps_ids)))
+
     for item in grouped.values():
         item.pop("_seen_op_keys", None)
+        _apply_catalog_op_qty_cascade(item, manual_qty_by_ps)
         item["flow_options"] = flow_options_for_inventory_code(item["inventory_code"])
         item["planning_cards"] = planning_cards_map.get(item["ps_id"], [])
         covered_keys = covered_map.get(item["ps_id"], set())
@@ -546,6 +819,8 @@ def trial_catalog_items(con, include_completed=False):
                     "setup_minutes": float(op["setup_time"] or 0),
                     "cycle_minutes_per_qty": float(op["cycle_time"] or 0),
                     "compatible_machine_group": op["compatible_machine_group"] or "",
+                    "source_kind": compact_text(op.get("source_kind") or ""),
+                    "is_manual_bom": _is_manual_bom_step(op),
                     "execution_status": op.get("execution_status") or "",
                     "queued_machines": list(op.get("queued_machines") or []),
                     "is_allocated": bool(op.get("is_allocated")),

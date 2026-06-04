@@ -13,7 +13,7 @@ import os
 
 from .blocks import recalculate_machine
 from .helpers import one, rows
-from .utils import compact_text
+from .utils import compact_text, planner_timestamptz_for_db
 
 
 def _truthy_env(name: str, default: str = "") -> bool:
@@ -514,6 +514,6 @@ def apply_saved_anchor_to_new_block(
         SET anchor_datetime = %s, updated_at = NOW()
         WHERE block_id = %s
         """,
-        (saved, int(block_id)),
+        (planner_timestamptz_for_db(saved), int(block_id)),
     )
     return True

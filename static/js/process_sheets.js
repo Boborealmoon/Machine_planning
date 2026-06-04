@@ -9,6 +9,11 @@
     erpIncludeCompleted: false,
   };
 
+  const tempState = {
+    items: [],
+    loading: false,
+  };
+
   const els = {};
 
   function $(id) {
@@ -24,11 +29,25 @@
       .replace(/'/g, '&#39;');
   }
 
-  async function getJson(url) {
-    const res = await fetch(url);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
-    return data;
+  async function getJson(url, options = {}) {
+    const timeoutMs = options.timeoutMs ?? 120000;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+      return data;
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        throw new Error(
+          'Request timed out. The board query may be slow, or planner_process_sheet may be locked by a stuck ALTER TABLE in Supabase — cancel that query, then restart the app and refresh.'
+        );
+      }
+      throw err;
+    } finally {
+      window.clearTimeout(timer);
+    }
   }
 
   async function postJson(url, body) {
@@ -60,13 +79,16 @@
 
   function canonicalPlannerPsId(itemOrId) {
     if (itemOrId && typeof itemOrId === 'object') {
-      const source = String(itemOrId.source_ps_id || itemOrId.display_ps_id || itemOrId.ps_id || '')
+      const psId = String(itemOrId.ps_id || '').trim();
+      if (psId.startsWith('[Temp]')) return psId;
+      const source = String(itemOrId.source_ps_id || itemOrId.display_ps_id || psId || '')
         .split('::')[0]
         .trim();
       const partial = Number(partialNo(itemOrId)) || 1;
       return partial > 1 ? `${source}::${partial}` : source;
     }
     const raw = String(itemOrId || '').trim();
+    if (raw.startsWith('[Temp]')) return raw;
     if (!raw) return '';
     const source = raw.split('::')[0];
     const partial = Number(raw.split('::')[1] || 1) || 1;
@@ -373,6 +395,10 @@
   }
 
   function partialLabel(item) {
+    if (isTempPs(item)) {
+      const source = String(item.temp_source_label || item.temp_source_ps_id || item.source_ps_id || '').trim();
+      return source ? `From ${source}` : 'Reject rework';
+    }
     return `Partial ${partialNo(item)}`;
   }
 
@@ -505,12 +531,72 @@
     `;
   }
 
+  function fmtBlockDateTime(value) {
+    if (!value) return '';
+    const raw = String(value).trim();
+    if (!raw) return '';
+    const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) {
+      return raw.replace('T', ' ');
+    }
+    return date.toLocaleString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  function blockPlannedTimes(block) {
+    const start = block?.expected_start || block?.calculated_start_datetime || block?.planned_start_at;
+    const end = block?.expected_end || block?.calculated_end_datetime || block?.planned_end_at;
+    return {
+      startFmt: fmtBlockDateTime(start),
+      endFmt: fmtBlockDateTime(end),
+    };
+  }
+
+  function findOpForBlock(block, ops) {
+    const list = Array.isArray(ops) ? ops : [];
+    const opNo = compactText(block?.source_op_no || block?.operation_label);
+    const opSeq = Number(block?.source_op_seq_id || 0);
+    return list.find(op => {
+      const rowNo = compactText(op?.op_no || op?.source_op_no || op?.operation_label);
+      const rowSeq = Number(op?.op_seq_id || op?.source_op_seq_id || 0);
+      if (opNo && rowNo && opNo === rowNo) return true;
+      if (opSeq && rowSeq && opSeq === rowSeq) return true;
+      return false;
+    });
+  }
+
+  function compactText(value) {
+    return String(value || '').trim();
+  }
+
+  function blockOpLabel(block, ops) {
+    const op = findOpForBlock(block, ops);
+    const opNo = compactText(block?.source_op_no || op?.op_no || op?.source_op_no);
+    const opType = compactText(op?.op_type || op?.operation_name || op?.stage_desc);
+    if (opNo && opType) return `Op ${opNo} · ${opType}`;
+    if (opNo) return `Op ${opNo}`;
+    if (opType) return opType;
+    return compactText(block?.operation_label) || 'Operation';
+  }
+
+  function blockPlannedRange(block) {
+    const { startFmt, endFmt } = blockPlannedTimes(block);
+    if (startFmt && endFmt) return `${startFmt} → ${endFmt}`;
+    if (startFmt) return `from ${startFmt}`;
+    if (endFmt) return `until ${endFmt}`;
+    return '';
+  }
+
   function renderDetailsMeta(summary, item, ops) {
     const sourceVoucher = summary.source_voucher_no || item.source_voucher_no || '';
     const qtyShipped = Number(summary.qty_shipped || item.qty_shipped || 0);
-    const posted = fmtDate(summary.order_date || item.order_date);
-    const due = fmtDate(summary.due_date || item.due_date);
-    const dueOverdue = isOverdue({ ...item, ...summary });
     const start = summary.expected_start || item.expected_start;
     const end = summary.expected_end || item.expected_end;
     const plannedRange = start && end
@@ -520,7 +606,6 @@
     const groups = [
       [
         `<span class="ps-detail-meta-item"><small>WO Req</small><strong>${escapeHtml(fmtQty(woReqQty(summary)))}</strong></span>`,
-        `<span class="ps-detail-meta-item"><small>Total Qty</small><strong>${escapeHtml(fmtQty(totalWoQty(summary)))}</strong></span>`,
         `<span class="ps-detail-meta-item"><small>Ops</small><strong>${escapeHtml(ops.length)}</strong></span>`,
       ],
     ];
@@ -534,10 +619,8 @@
     }
 
     groups.push([
-      posted !== '-' ? `<span class="ps-detail-meta-item"><small>Posted</small><strong>${escapeHtml(posted)}</strong></span>` : '',
-      `<span class="ps-detail-meta-item ps-detail-meta-item--due ${dueOverdue ? 'is-overdue' : ''}"><small>PO Due</small><strong>${escapeHtml(due)}</strong></span>`,
       `<span class="ps-detail-meta-item"><small>Planned</small><strong>${escapeHtml(plannedRange)}</strong></span>`,
-    ].filter(Boolean));
+    ]);
 
     return `
       <div class="ps-detail-meta">
@@ -774,7 +857,20 @@
     ].some(value => /\[sr\]/i.test(String(value || '')));
   }
 
+  function isTempPs(item) {
+    return Boolean(item?.is_temp_ps) || String(item?.ps_id || '').startsWith('[Temp]');
+  }
+
+  function tempPsDisplayId(item) {
+    const raw = String(item?.display_ps_id || item?.ps_id || '').trim();
+    if (!raw.startsWith('[Temp]')) return raw;
+    if (typeof trialTempPsDisplayId === 'function') return trialTempPsDisplayId(raw);
+    const body = raw.slice('[Temp]'.length);
+    return body ? `[Temp] ${body}` : raw;
+  }
+
   function getPsType(item) {
+    if (isTempPs(item)) return 'TEMP';
     const raw = String(item.source_ps_id || item.display_ps_id || item.ps_id || '').split('::')[0];
     if (/\[sr\]/i.test(raw)) return 'SR';
     const upper = raw.toUpperCase();
@@ -791,8 +887,10 @@
   }
 
   function itemIdentityKey(item) {
-    const sourcePsId = String(item.source_ps_id || item.display_ps_id || item.ps_id || '').split('::')[0];
-    const partial = String(item.pp_partial_no || String(item.ps_id || '').split('::')[1] || '1');
+    const psId = String(item.ps_id || '').trim();
+    if (psId.startsWith('[Temp]')) return psId;
+    const sourcePsId = String(item.source_ps_id || item.display_ps_id || psId || '').split('::')[0];
+    const partial = String(item.pp_partial_no || String(psId || '').split('::')[1] || '1');
     return `${sourcePsId}::${partial}`;
   }
 
@@ -801,6 +899,9 @@
       item.ps_id,
       item.source_ps_id,
       item.display_ps_id,
+      item.temp_source_ps_id,
+      item.temp_source_label,
+      isTempPs(item) ? 'temp reject rework' : '',
       item.inventory_code,
       item.part_no,
       item.part_name,
@@ -838,10 +939,15 @@
 
   function normalizePlannerItem(item) {
     const shippedComplete = boolValue(item.shipped_completed) || isShippedComplete(item);
+    const temp = Boolean(item.is_temp_ps) || String(item.ps_id || '').startsWith('[Temp]');
+    const displayId = temp
+      ? tempPsDisplayId(item)
+      : (item.display_ps_id || item.source_ps_id || item.ps_id || '');
     return {
       ...item,
+      is_temp_ps: temp,
       ps_id: item.ps_id || item.display_ps_id || item.source_ps_id || '',
-      display_ps_id: item.display_ps_id || item.source_ps_id || item.ps_id || '',
+      display_ps_id: displayId,
       source_ps_id: item.source_ps_id || item.display_ps_id || item.ps_id || '',
       pp_partial_no: partialNo(item),
       planner_status: item.planner_status || 'UNPLANNED',
@@ -943,18 +1049,68 @@
   }
 
   let searchRenderTimer = null;
+  let loadStatusTimer = null;
+  let loadStartedAt = 0;
+
+  function boardRequestUrl(refresh = false) {
+    const url = plannerProcessSheetsUrl();
+    if (!refresh) return url;
+    return `${url}${url.includes('?') ? '&' : '?'}refresh=1`;
+  }
+
+  function plannerOnlyRequestUrl(refresh = false) {
+    const params = new URLSearchParams();
+    if (shouldIncludeErpCompleted()) params.set('show_completed', '1');
+    if (refresh) params.set('refresh', '1');
+    const qs = params.toString();
+    return qs ? `/api/process-sheets?${qs}` : '/api/process-sheets';
+  }
+
+  function updateLoadStatusMessage() {
+    if (!state.loading || !els.queueHint) return;
+    const seconds = Math.max(1, Math.round((Date.now() - loadStartedAt) / 1000));
+    els.queueHint.textContent = `Loading process sheets… ${seconds}s`;
+  }
+
+  function startLoadStatusTimer() {
+    loadStartedAt = Date.now();
+    clearInterval(loadStatusTimer);
+    updateLoadStatusMessage();
+    loadStatusTimer = window.setInterval(updateLoadStatusMessage, 1000);
+  }
+
+  function stopLoadStatusTimer() {
+    clearInterval(loadStatusTimer);
+    loadStatusTimer = null;
+  }
+
+  async function fetchBoardPayload(refresh = false) {
+    return getJson(boardRequestUrl(refresh), { timeoutMs: 90000 });
+  }
+
+  async function fetchPlannerOnlyPayload(refresh = false) {
+    const rows = await getJson(plannerOnlyRequestUrl(refresh), { timeoutMs: 60000 });
+    return {
+      planner: Array.isArray(rows) ? rows : [],
+      erp_only: [],
+    };
+  }
 
   async function loadProcessSheets({ refresh = false } = {}) {
     state.loading = true;
     setBusy(true, refresh);
-    if (refresh) render();
+    startLoadStatusTimer();
+    render();
     try {
-      const url = plannerProcessSheetsUrl();
-      const boardUrl = refresh ? `${url}${url.includes('?') ? '&' : '?'}refresh=1` : url;
-      const board = await getJson(boardUrl);
+      let board;
+      try {
+        board = await fetchBoardPayload(refresh);
+      } catch (boardErr) {
+        console.warn('process sheet board load failed, falling back to planner list:', boardErr);
+        board = await fetchPlannerOnlyPayload(refresh);
+      }
       state.items = mergeBoardItems(board);
       state.lastRefreshedAt = refresh ? Date.now() : state.lastRefreshedAt;
-
       state.loading = false;
       render();
     } catch (err) {
@@ -964,7 +1120,9 @@
       renderError(err.message || 'Could not load process sheets.');
     } finally {
       state.loading = false;
+      stopLoadStatusTimer();
       setBusy(false);
+      loadTempTracker();
     }
   }
 
@@ -987,6 +1145,9 @@
     const queueFilter = String(els.queueFilter?.value || '').trim().toLowerCase();
     if (queueFilter === 'queued') parts.push('queued on planner');
     if (queueFilter === 'unqueued') parts.push('needs scheduling');
+    const tempFilter = String(els.tempFilter?.value || 'all').trim().toLowerCase();
+    if (tempFilter === 'temp_only') parts.push('[Temp] only');
+    if (tempFilter === 'hide_temp') parts.push('hiding [Temp]');
     const sortMode = currentSortMode();
     if (sortMode === 'due_asc') parts.push('sorted by PO due (soonest)');
     if (sortMode === 'due_desc') parts.push('sorted by PO due (latest)');
@@ -994,10 +1155,11 @@
   }
 
   function resetFilters() {
-    const defaults = new Set(['APS', 'NPS', 'SR']);
+    const defaults = new Set(['APS', 'NPS', 'SR', 'TEMP']);
     els.typePanel?.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = defaults.has(cb.value); });
-    if (els.typeBtn) els.typeBtn.textContent = 'APS, NPS, [SR] ▾';
+    if (els.typeBtn) els.typeBtn.textContent = 'APS, NPS, [SR], [Temp] ▾';
     if (els.search) els.search.value = '';
+    if (els.tempFilter) els.tempFilter.value = 'all';
     if (els.queueFilter) els.queueFilter.value = 'unqueued';
     if (els.sortBy) els.sortBy.value = 'planning';
     if (els.overdueOnly) els.overdueOnly.checked = false;
@@ -1018,10 +1180,13 @@
     const allTypeInputs = els.typePanel ? els.typePanel.querySelectorAll('input[type=checkbox]') : [];
     const checkedTypes = els.typePanel
       ? new Set([...els.typePanel.querySelectorAll('input[type=checkbox]:checked')].map(cb => cb.value))
-      : new Set(['APS', 'NPS', 'SR']);
+      : new Set(['APS', 'NPS', 'SR', 'TEMP']);
     const allTypesOn = checkedTypes.size === allTypeInputs.length;
+    const tempFilter = String(els.tempFilter?.value || 'all').trim().toLowerCase();
 
     return state.items.filter(item => {
+      if (tempFilter === 'temp_only' && !isTempPs(item)) return false;
+      if (tempFilter === 'hide_temp' && isTempPs(item)) return false;
       if (hideSrTags && !completedOnly && !searchTerms.length && isSrTagged(item)) return false;
       if (!allTypesOn) {
         const t = getPsType(item);
@@ -1041,6 +1206,7 @@
     const items = filteredItems();
     renderCounts();
     renderQueue(items);
+    updateTempTabCount();
   }
 
   function renderCounts() {
@@ -1064,7 +1230,13 @@
     if (!els.queue) return;
     if (!items.length) {
       if (state.loading && !state.items.length) {
-        els.queue.innerHTML = '<div class="queue-empty">Loading process sheets...</div>';
+        els.queue.innerHTML = [
+          '<div class="queue-empty">',
+          '<p><strong>Loading process sheets…</strong></p>',
+          '<p class="queue-empty-meta">If this takes more than a minute, ERP sync may be holding the database lock — wait for sync to finish, then click retry.</p>',
+          '<button class="btn btn-light btn-sm" type="button" data-action="retry-load">Retry load</button>',
+          '</div>',
+        ].join('');
       } else if (state.items.length > 0) {
         els.queue.innerHTML = [
           '<div class="queue-empty">',
@@ -1163,12 +1335,13 @@
     const ops = Array.isArray(item.ops) ? item.ops : [];
     const dueClass = isOverdue(item) ? 'is-overdue' : '';
     const partial = `<span class="ps-partial-badge">${escapeHtml(partialLabel(item))}</span>`;
-    const srBadge = isSrTagged(item) ? '<span class="ps-sr-badge">[SR]</span>' : '';
+    const tempBadge = isTempPs(item) ? '<span class="ps-temp-badge">[Temp]</span>' : '';
+    const srBadge = isSrTagged(item) && !isTempPs(item) ? '<span class="ps-sr-badge">[SR]</span>' : '';
     const stagePill = currentStagePill(item);
     const qty = fmtQty(firstQuantity(item.display_qty, item.partial_qty, item.wo_req_qty, item.total_qty, 0));
     const qtyBadge = renderQtyBadge(qty);
     const warningsPill = renderWarningsPill(warnings);
-    const titleBadges = [partial, qtyBadge, srBadge, stagePill, warningsPill].filter(Boolean).join('\n              ');
+    const titleBadges = [tempBadge, partial, qtyBadge, srBadge, stagePill, warningsPill].filter(Boolean).join('\n              ');
     const opStatusStrip = renderOpStatusStrip(ops, item);
     const descriptor = item.part_desc || 'No description';
     const queueClass = isQueued(item) ? 'is-queued' : 'is-needs';
@@ -1179,7 +1352,7 @@
           <button class="ps-row-main" type="button" data-action="toggle-details" data-ps-id="${escapeHtml(psId)}">
             <div class="ps-row-title">
               <div class="ps-row-title-left">
-                <span class="ps-id">${escapeHtml(item.display_ps_id || psId)}</span>
+                <span class="ps-id">${escapeHtml(tempPsDisplayId(item) || item.display_ps_id || psId)}</span>
                 ${titleBadges}
               </div>
               ${renderSchedulingInline(item, ops)}
@@ -1337,14 +1510,67 @@
       ${renderDetailsMeta(summary, item, ops)}
       ${details.erp_only ? '<div class="ps-details-note">Planner row was created from ERP on open. Schedule ops from this partial to add planned blocks.</div>' : ''}
       ${renderOps(ops, summary, plannedBlocks)}
-      ${renderBlocks(plannedBlocks)}
+      ${renderBlocks(plannedBlocks, ops)}
       ${renderRequirements(requirements)}
     `;
+  }
+
+  function renderManualProducedCell(op, psId) {
+    if (!op?.needs_manual_produced) {
+      return escapeHtml(fmtQty(op?.finished_qty));
+    }
+    const opSeqId = Number(op?.op_seq_id || op?.source_op_seq_id || 0);
+    const value = Number(op?.manual_produced_qty ?? op?.finished_qty ?? 0);
+    return `
+      <input type="number" class="ps-manual-produced-input" min="0" step="1"
+        data-action="manual-produced"
+        data-ps-id="${escapeHtml(canonicalPlannerPsId(psId))}"
+        data-op-seq-id="${opSeqId}"
+        value="${Number.isFinite(value) ? value : 0}"
+        title="Planner produced qty (ERP does not track this BOM step)">
+    `;
+  }
+
+  async function saveManualProducedQty(psId, opSeqId, qty, inputEl) {
+    const canonical = canonicalPlannerPsId(psId);
+    const opSeq = Number(opSeqId || 0);
+    if (!canonical || opSeq <= 0) return;
+    try {
+      if (inputEl) inputEl.disabled = true;
+      const data = await patchJson(
+        `/api/process-sheets/${encodeURIComponent(canonical)}/bom-step-qty`,
+        { op_seq_id: opSeq, qty_produced: Math.max(0, Number(qty) || 0) },
+      );
+      const item = findQueueItem(canonical);
+      if (item && data?.summary) {
+        item.finished_qty = data.summary.finished_qty;
+        item.remaining_qty = data.summary.remaining_qty;
+        item.planned_qty = data.summary.planned_qty;
+      }
+      state.details.delete(canonical);
+      const detailsEl = $(`ps-details-${cssSafeId(canonical)}`);
+      if (item && detailsEl && !detailsEl.hidden) {
+        const details = await getJson(`/api/process-sheets/${encodeURIComponent(canonical)}/details`);
+        state.details.set(canonical, details);
+        if (details.summary) {
+          ['finished_qty', 'remaining_qty', 'planned_qty', 'ops'].forEach(key => {
+            if (details.summary[key] != null) item[key] = details.summary[key];
+          });
+        }
+        detailsEl.innerHTML = renderDetails(details, item);
+      }
+      render();
+    } catch (err) {
+      window.alert(err.message || 'Failed to save produced qty');
+    } finally {
+      if (inputEl) inputEl.disabled = false;
+    }
   }
 
   function renderOps(ops, summary, plannedBlocks) {
     const blocks = Array.isArray(plannedBlocks) ? plannedBlocks : [];
     const workQty = woReqQty(summary);
+    const psId = canonicalPlannerPsId(summary);
     const displayOps = (Array.isArray(ops) ? ops : []).map(op => {
       const planned = Number(op?.planned_qty || 0);
       const finished = Number(op?.finished_qty || 0);
@@ -1384,7 +1610,7 @@
               <th>ERP Stage</th>
               <th>WO Req</th>
               <th>Planned</th>
-              <th>Finished</th>
+              <th>Finished / Produced</th>
               <th>Rejected</th>
               <th>Remaining</th>
             </tr>
@@ -1404,7 +1630,7 @@
                 <td>${renderOpStatusCell(op)}</td>
                 <td>${escapeHtml(fmtQty(op.wo_qty_required))}</td>
                 <td>${escapeHtml(fmtQty(op.planned_qty))}</td>
-                <td>${escapeHtml(fmtQty(op.finished_qty))}</td>
+                <td>${renderManualProducedCell(op, psId)}</td>
                 <td>${escapeHtml(fmtQty(op.reject_qty))}</td>
                 <td>${escapeHtml(fmtQty(op.remaining_qty))}</td>
               </tr>
@@ -1416,19 +1642,33 @@
     `;
   }
 
-  function renderBlocks(blocks) {
+  function renderBlocks(blocks, ops) {
     if (!blocks.length) return '';
     return `
       <div class="ps-detail-section">
         <div class="ps-detail-label">Planned Blocks</div>
-        <div class="ps-chip-list">
-          ${blocks.map(block => `
-            <span class="ps-chip">
-              ${escapeHtml(block.machine_code || block.machine_no || 'Machine TBD')}
-              · ${escapeHtml(block.source_op_no || block.operation_label || 'Op')}
-              · Qty ${escapeHtml(fmtQty(block.scheduled_qty))}
-            </span>
-          `).join('')}
+        <div class="ps-block-chip-list">
+          ${blocks.map(block => {
+            const machine = block.machine_code || block.machine_no || 'Machine TBD';
+            const opLabel = blockOpLabel(block, ops);
+            const qty = fmtQty(block.scheduled_qty);
+            const { startFmt, endFmt } = blockPlannedTimes(block);
+            const title = [machine, opLabel, `Qty ${qty}`, blockPlannedRange(block)].filter(Boolean).join(' · ');
+            return `
+              <span class="ps-block-chip" title="${escapeHtml(title)}">
+                <span class="ps-block-chip-head">
+                  <strong>${escapeHtml(machine)}</strong>
+                  <span>${escapeHtml(opLabel)}</span>
+                  <span class="ps-block-chip-qty">Qty ${escapeHtml(qty)}</span>
+                </span>
+                ${(startFmt || endFmt) ? `
+                <span class="ps-block-chip-schedule">
+                  ${startFmt ? `<span class="ps-block-chip-time"><small>Start</small><strong>${escapeHtml(startFmt)}</strong></span>` : ''}
+                  ${endFmt ? `<span class="ps-block-chip-time"><small>End</small><strong>${escapeHtml(endFmt)}</strong></span>` : ''}
+                </span>` : ''}
+              </span>
+            `;
+          }).join('')}
         </div>
       </div>
     `;
@@ -1453,7 +1693,13 @@
 
   function renderError(message) {
     if (els.queue) {
-      els.queue.innerHTML = `<div class="queue-empty">Failed to load process sheets: ${escapeHtml(message)}</div>`;
+      els.queue.innerHTML = [
+        '<div class="queue-empty">',
+        `<p><strong>Failed to load process sheets.</strong></p>`,
+        `<p class="queue-empty-meta">${escapeHtml(message)}</p>`,
+        '<button class="btn btn-light btn-sm" type="button" data-action="retry-load">Retry load</button>',
+        '</div>',
+      ].join('');
     }
     if (els.queueHint) els.queueHint.textContent = 'Load failed';
   }
@@ -1476,6 +1722,167 @@
     }, 150);
   }
 
+  function resolveInitialPsView() {
+    if (window.location.pathname === '/temp-process-sheets' || window.location.hash === '#temp') {
+      return 'temp';
+    }
+    return 'queue';
+  }
+
+  function updateTempTabCount() {
+    const pill = $('ps-temp-tab-count');
+    if (!pill) return;
+    const fromQueue = state.items.filter(isTempPs).length;
+    const count = Math.max(fromQueue, tempState.items.length);
+    if (count <= 0) {
+      pill.hidden = true;
+      return;
+    }
+    pill.hidden = false;
+    pill.textContent = String(count);
+  }
+
+  function setPsView(view) {
+    const isTemp = view === 'temp';
+    const queuePanel = $('ps-view-queue');
+    const tempPanel = $('ps-view-temp');
+    if (queuePanel) {
+      queuePanel.hidden = isTemp;
+      queuePanel.classList.toggle('is-ps-view-hidden', isTemp);
+    }
+    if (tempPanel) {
+      tempPanel.hidden = !isTemp;
+      tempPanel.classList.toggle('is-ps-view-hidden', !isTemp);
+    }
+    document.querySelectorAll('.ps-view-tab').forEach(tab => {
+      tab.classList.toggle('is-active', tab.dataset.psView === view);
+    });
+    const path = isTemp ? '/process-sheets#temp' : '/process-sheets';
+    if (`${window.location.pathname}${window.location.hash}` !== path && window.location.pathname !== '/temp-process-sheets') {
+      history.replaceState(null, '', path);
+    }
+    if (isTemp) loadTempTracker();
+  }
+
+  function filteredTempItems() {
+    const needle = String(els.tempSearch?.value || '').trim().toLowerCase();
+    const queueFilter = String(els.tempQueueFilter?.value || '').trim().toLowerCase();
+    return tempState.items.filter(item => {
+      if (queueFilter === 'queued' && !item.is_queued) return false;
+      if (queueFilter === 'unqueued' && item.is_queued) return false;
+      if (!needle) return true;
+      const hay = [
+        item.display_ps_id,
+        item.planner_ps_id,
+        item.source_ps_id,
+        item.source_label,
+        item.part_no,
+        item.part_desc,
+        item.selected_bom_code,
+        item.remarks,
+      ].join(' ').toLowerCase();
+      return hay.includes(needle);
+    });
+  }
+
+  function renderTempTracker() {
+    const root = $('ps-temp-tracker');
+    const hint = $('ps-temp-tracker-hint');
+    if (!root) return;
+    if (tempState.loading && !tempState.items.length) {
+      root.innerHTML = '<div class="queue-empty">Loading temp process sheets…</div>';
+      if (hint) hint.textContent = 'Loading…';
+      return;
+    }
+    const items = filteredTempItems();
+    updateTempTabCount();
+    if (hint) {
+      hint.textContent = tempState.items.length
+        ? `${items.length} shown · ${tempState.items.length} saved in database`
+        : 'No temp process sheets yet — create one to track reject/rework qty';
+    }
+    if (!items.length) {
+      root.innerHTML = [
+        '<div class="queue-empty">',
+        '<p><strong>No temp process sheets match.</strong></p>',
+        tempState.items.length
+          ? '<p class="queue-empty-meta">Try clearing the search or queue filter.</p>'
+          : '<p class="queue-empty-meta">Click <strong>Create temp PS</strong> to add a reject/rework copy from an ERP process sheet.</p>',
+        '</div>',
+      ].join('');
+      return;
+    }
+    root.innerHTML = `
+      <div class="ps-temp-tracker-table-wrap">
+        <table class="ps-temp-tracker-table">
+          <thead>
+            <tr>
+              <th>Temp PS</th>
+              <th>Source PS</th>
+              <th>Reject qty</th>
+              <th>Part</th>
+              <th>Route</th>
+              <th>Planner</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map(renderTempTrackerRow).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderTempTrackerRow(item) {
+    const psId = item.planner_ps_id || '';
+    const queueClass = item.is_queued ? 'is-queued' : 'is-needs';
+    const queueLabel = item.is_queued
+      ? `On planner${item.queued_machines?.length ? `: ${item.queued_machines.join(', ')}` : ''}`
+      : 'Needs scheduling';
+    const created = item.created_at
+      ? new Date(item.created_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
+      : '—';
+    return `
+      <tr class="ps-temp-tracker-row ${queueClass}">
+        <td>
+          <span class="ps-temp-badge">[Temp]</span>
+          <button type="button" class="ps-temp-tracker-link" data-action="open-temp-detail" data-ps-id="${escapeHtml(psId)}">
+            ${escapeHtml(item.display_ps_id || psId)}
+          </button>
+        </td>
+        <td>${escapeHtml(item.source_label || item.source_ps_id || '—')}</td>
+        <td><strong>${escapeHtml(fmtQty(item.reject_qty))}</strong></td>
+        <td>
+          <strong>${escapeHtml(item.part_no || '—')}</strong>
+          <div class="ps-temp-tracker-sub">${escapeHtml(item.part_desc || '')}</div>
+        </td>
+        <td>${escapeHtml(item.selected_bom_code || item.erp_bom_code || '—')}</td>
+        <td><span class="ps-planning-flag ${queueClass}">${escapeHtml(queueLabel)}</span></td>
+        <td>${escapeHtml(created)}</td>
+      </tr>
+    `;
+  }
+
+  async function loadTempTracker() {
+    if (!els.tempTracker) return;
+    tempState.loading = true;
+    renderTempTracker();
+    try {
+      const data = await getJson('/api/temp-process-sheets?limit=500');
+      tempState.items = Array.isArray(data?.items) ? data.items : [];
+    } catch (err) {
+      tempState.items = [];
+      if (els.tempTracker) {
+        els.tempTracker.innerHTML = `<div class="queue-empty">${escapeHtml(err.message || 'Could not load temp process sheets')}</div>`;
+      }
+      if (els.tempTrackerHint) els.tempTrackerHint.textContent = 'Load failed';
+    } finally {
+      tempState.loading = false;
+      renderTempTracker();
+    }
+  }
+
   function bind() {
     els.queue = $('ps-queue');
     els.queueHint = $('ps-queue-hint');
@@ -1488,7 +1895,41 @@
     els.hideSrTags = $('ps-hide-sr-tags');
     els.typeBtn = $('ps-type-btn');
     els.typePanel = $('ps-type-panel');
+    els.tempFilter = $('ps-temp-filter');
+    els.createTempBtn = $('ps-create-temp-btn');
     els.refreshBtn = $('ps-refresh-btn');
+    els.tempTracker = $('ps-temp-tracker');
+    els.tempTrackerHint = $('ps-temp-tracker-hint');
+    els.tempSearch = $('ps-temp-search');
+    els.tempQueueFilter = $('ps-temp-queue-filter');
+    els.tempRefreshBtn = $('ps-temp-refresh-btn');
+    els.tempCreateBtn = $('ps-temp-create-btn');
+
+    document.querySelectorAll('.ps-view-tab').forEach(tab => {
+      tab.addEventListener('click', () => setPsView(tab.dataset.psView || 'queue'));
+    });
+    els.tempSearch?.addEventListener('input', () => renderTempTracker());
+    els.tempQueueFilter?.addEventListener('change', () => renderTempTracker());
+    els.tempRefreshBtn?.addEventListener('click', () => loadTempTracker());
+    els.tempCreateBtn?.addEventListener('click', () => {
+      if (typeof openTempProcessSheetModal === 'function') openTempProcessSheetModal();
+    });
+    els.tempTracker?.addEventListener('click', event => {
+      const btn = event.target.closest('[data-action="open-temp-detail"]');
+      if (!btn) return;
+      const psId = btn.dataset.psId || '';
+      setPsView('queue');
+      if (els.tempFilter) els.tempFilter.value = 'temp_only';
+      if (els.queueFilter) els.queueFilter.value = '';
+      if (els.search) els.search.value = psId;
+      state.page = 1;
+      render();
+      window.setTimeout(() => {
+        const row = [...document.querySelectorAll('.ps-row')].find(el => el.dataset.psId === psId);
+        row?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        row?.querySelector('[data-action="toggle-details"]')?.click();
+      }, 80);
+    });
 
     // PS type dropdown toggle
     els.typeBtn?.addEventListener('click', e => {
@@ -1503,19 +1944,28 @@
     els.typePanel?.addEventListener('change', () => {
       const all = [...els.typePanel.querySelectorAll('input')];
       const checked = all.filter(cb => cb.checked).map(cb => cb.value);
-      els.typeBtn.textContent = checked.length === all.length ? 'All Types ▾' : checked.length === 0 ? 'No Types ▾' : checked.join(', ') + ' ▾';
+      const typeLabel = value => (value === 'TEMP' ? '[Temp]' : value);
+      els.typeBtn.textContent = checked.length === all.length
+        ? 'All Types ▾'
+        : checked.length === 0
+          ? 'No Types ▾'
+          : `${checked.map(typeLabel).join(', ')} ▾`;
       state.page = 1;
       render();
     });
 
     els.search?.addEventListener('input', scheduleSearchRender);
 
-    [els.queueFilter, els.sortBy, els.overdueOnly, els.hideSrTags]
+    [els.queueFilter, els.sortBy, els.overdueOnly, els.hideSrTags, els.tempFilter]
       .filter(Boolean)
       .forEach(el => el.addEventListener('change', () => {
         state.page = 1;
         render();
       }));
+
+    els.createTempBtn?.addEventListener('click', () => {
+      if (typeof openTempProcessSheetModal === 'function') openTempProcessSheetModal();
+    });
 
     [els.showCompleted, els.completedOnly].filter(Boolean).forEach(el => {
       el.addEventListener('change', () => {
@@ -1550,6 +2000,10 @@
       }
       if (event.target.closest('[data-action="reset-filters"]')) {
         resetFilters();
+        return;
+      }
+      if (event.target.closest('[data-action="retry-load"]')) {
+        loadProcessSheets({ refresh: true });
         return;
       }
 
@@ -1598,18 +2052,81 @@
       if (cowayInput) {
         clearTimeout(cowaySaveTimer);
         saveCowayProposedEdd(cowayInput.dataset.psId || '', cowayInput.value, cowayInput);
+        return;
+      }
+      const producedInput = event.target.closest('[data-action="manual-produced"]');
+      if (producedInput) {
+        saveManualProducedQty(
+          producedInput.dataset.psId || '',
+          producedInput.dataset.opSeqId || '',
+          producedInput.value,
+          producedInput,
+        );
       }
     }, true);
+    els.queue?.addEventListener('keydown', event => {
+      const producedInput = event.target.closest('[data-action="manual-produced"]');
+      if (!producedInput || event.key !== 'Enter') return;
+      event.preventDefault();
+      event.stopPropagation();
+      producedInput.blur();
+    });
   }
+
+  window.psBoardItemsForTempSearch = () => {
+    const seen = new Set();
+    const out = [];
+    state.items.forEach(item => {
+      const psId = String(item.ps_id || item.display_ps_id || '').trim();
+      if (!psId || seen.has(psId)) return;
+      seen.add(psId);
+      out.push({
+        ps_id: psId,
+        source_ps_id: item.source_ps_id || psId,
+        pp_partial_no: Number(item.pp_partial_no || 1),
+        part_no: item.part_no || item.part_name || '',
+        part_desc: item.part_desc || '',
+        display_qty: Number(item.display_qty ?? item.partial_qty ?? item.wo_req_qty ?? 0),
+        due_date: item.due_date || '',
+        bom_code: item.selected_bom_code || item.erp_bom_code || '',
+        match_source: 'loaded_board',
+      });
+    });
+    return out;
+  };
 
   document.addEventListener('DOMContentLoaded', () => {
     bind();
     loadProcessSheets();
+    if (resolveInitialPsView() === 'temp') setPsView('temp');
+    window.addEventListener('hashchange', () => {
+      if (window.location.hash === '#temp') setPsView('temp');
+      else if (window.location.pathname !== '/temp-process-sheets') setPsView('queue');
+    });
   });
 
   window.addEventListener('pp-vouchers-synced', () => {
     state.details.clear();
     setBusy(true);
     loadProcessSheets({ refresh: true }).finally(() => setBusy(false));
+  });
+
+  window.addEventListener('temp-ps-created', event => {
+    state.details.clear();
+    state.page = 1;
+    if (els.tempFilter) els.tempFilter.value = 'temp_only';
+    if (els.typePanel) {
+      els.typePanel.querySelectorAll('input[type=checkbox]').forEach(cb => {
+        cb.checked = cb.value === 'TEMP';
+      });
+      if (els.typeBtn) els.typeBtn.textContent = 'TEMP ▾';
+    }
+    if (els.queueFilter) els.queueFilter.value = '';
+    const label = event?.detail?.display_ps_id || event?.detail?.planner_ps_id || '';
+    if (els.search && label) els.search.value = label;
+    setBusy(true);
+    loadProcessSheets({ refresh: true }).finally(() => setBusy(false));
+    loadTempTracker();
+    setPsView('temp');
   });
 })();

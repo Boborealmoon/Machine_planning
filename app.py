@@ -1,7 +1,9 @@
 import logging
 import os
+import secrets
 import threading
 import time
+from urllib.parse import urlencode
 from flask import Flask, render_template, jsonify, request, redirect, url_for
 from dotenv import load_dotenv
 
@@ -22,6 +24,8 @@ from planning.materials_route import materials_route_bp
 from planning.planner_routes import trial_bp
 from planning.program_tool_list_route import program_tool_list_bp
 from planning.new_orders_route import new_orders_bp
+from planning.material_inspection_route import material_inspection_bp
+from planning.repeat_orders_route import repeat_orders_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
@@ -33,7 +37,102 @@ app.register_blueprint(materials_route_bp)
 app.register_blueprint(trial_bp)
 app.register_blueprint(program_tool_list_bp)
 app.register_blueprint(new_orders_bp)
+app.register_blueprint(material_inspection_bp)
+app.register_blueprint(repeat_orders_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
+
+# Obscured shop-floor board URL (override via MACHINIST_BOARD_PATH in .env).
+_DEFAULT_MACHINIST_BOARD_PATH = "/s/x7k9m2p4w1n5q8r3"
+
+
+def _machinist_board_path() -> str:
+    raw = (os.getenv("MACHINIST_BOARD_PATH") or _DEFAULT_MACHINIST_BOARD_PATH).strip()
+    if not raw.startswith("/"):
+        raw = "/" + raw
+    if len(raw) > 1 and raw.endswith("/"):
+        raw = raw.rstrip("/")
+    return raw
+
+
+MACHINIST_BOARD_PATH = _machinist_board_path()
+
+PLANNER_ACCESS_TOKEN = os.getenv("PLANNER_ACCESS_TOKEN", "").strip()
+PLANNER_ACCESS_COOKIE = "planner_access"
+
+
+def _safe_next_url(raw):
+    next_url = (raw or "/scheduler").strip()
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        return "/scheduler"
+    return next_url
+
+
+def _planner_access_cookie_secure():
+    return request.is_secure or os.getenv("FLASK_SECURE_COOKIES", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _set_planner_access_cookie(response):
+    response.set_cookie(
+        PLANNER_ACCESS_COOKIE,
+        PLANNER_ACCESS_TOKEN,
+        httponly=True,
+        samesite="Lax",
+        max_age=60 * 60 * 24 * 365,
+        secure=_planner_access_cookie_secure(),
+    )
+    return response
+
+
+def _has_planner_access():
+    if not PLANNER_ACCESS_TOKEN:
+        return True
+    token = request.cookies.get(PLANNER_ACCESS_COOKIE, "")
+    return bool(token) and secrets.compare_digest(token, PLANNER_ACCESS_TOKEN)
+
+
+def _is_public_without_planner_access(path, method):
+    if path == MACHINIST_BOARD_PATH:
+        return True
+    if path.startswith("/static/"):
+        return True
+    if path in ("/favicon.ico", "/planner-access"):
+        return True
+    if path == "/api/health":
+        return True
+    # Machinist board only needs read-only schedule data.
+    if method == "GET" and path.startswith("/api/trial/schedule"):
+        return True
+    return False
+
+
+@app.before_request
+def _require_planner_access():
+    if not PLANNER_ACCESS_TOKEN or _has_planner_access():
+        return None
+
+    supplied = (request.args.get("access") or "").strip()
+    if supplied and secrets.compare_digest(supplied, PLANNER_ACCESS_TOKEN):
+        qs = {k: v for k, v in request.args.items() if k != "access"}
+        target = request.path
+        if qs:
+            target += "?" + urlencode(qs, doseq=True)
+        resp = redirect(target)
+        return _set_planner_access_cookie(resp)
+
+    if _is_public_without_planner_access(request.path, request.method):
+        return None
+
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    return redirect(url_for("planner_access_gate", next=_safe_next_url(request.full_path)))
+
+
+@app.context_processor
+def _inject_machinist_board_path():
+    return {"machinist_board_path": MACHINIST_BOARD_PATH}
 
 
 @app.get("/favicon.ico")
@@ -91,10 +190,30 @@ def supabase_query(sql, params=(), fetchone=False, fetchall=False, commit=False)
 
 # ── Pages ──────────────────────────────────────────────────────────────────
 
+@app.get("/planner-access")
+@app.post("/planner-access")
+def planner_access_gate():
+    if not PLANNER_ACCESS_TOKEN:
+        return redirect(_safe_next_url(request.args.get("next")))
+    next_url = _safe_next_url(request.args.get("next") or request.form.get("next"))
+    if request.method == "POST":
+        token = (request.form.get("token") or "").strip()
+        if secrets.compare_digest(token, PLANNER_ACCESS_TOKEN):
+            resp = redirect(next_url)
+            return _set_planner_access_cookie(resp)
+        return render_template("planner_access.html", error="Invalid access code", next=next_url), 401
+    return render_template("planner_access.html", next=next_url)
+
+
 @app.get("/")
 @app.get("/scheduler")
 def scheduler():
     return render_template("scheduler.html", active="scheduler")
+
+
+@app.get(MACHINIST_BOARD_PATH)
+def machinist_board():
+    return render_template("machinist_board.html", active="machinist_board")
 
 
 @app.get("/queue-delays")
@@ -109,6 +228,11 @@ def actual_production():
 
 @app.get("/process-sheets")
 def process_sheets():
+    return render_template("process_sheets.html", active="process_sheets")
+
+
+@app.get("/temp-process-sheets")
+def temp_process_sheets_page():
     return render_template("process_sheets.html", active="process_sheets")
 
 
@@ -190,7 +314,7 @@ def _pp_vouchers_cache_scope(include_completed: bool) -> str:
     return "all" if include_completed else "open"
 
 
-def _fetch_pp_vouchers_cache_rows(include_completed: bool):
+def _fetch_pp_vouchers_cache_rows(include_completed: bool, con=None):
     from planning.erp_wo_merge import (
         PP_VOUCHERS_CACHE_WO_MERGE_FROM,
         PP_VOUCHERS_CACHE_WO_MERGE_SELECT,
@@ -206,18 +330,45 @@ def _fetch_pp_vouchers_cache_rows(include_completed: bool):
     )
     where = "" if include_completed else f" WHERE NOT ({shipped_complete})"
     order = " ORDER BY c.ps_id, c.pp_partial_no, c.stage_no"
+    sql = (
+        f"SELECT {PP_VOUCHERS_CACHE_WO_MERGE_SELECT} "
+        f"{PP_VOUCHERS_CACHE_WO_MERGE_FROM}{where}{order}"
+    )
+
+    def _run(_con):
+        return _db_rows(_con.execute(sql))
+
+    if con is not None:
+        return _run(con)
     with planner_db() as _con:
-        return _db_rows(
-            _con.execute(
-                f"SELECT {PP_VOUCHERS_CACHE_WO_MERGE_SELECT} "
-                f"{PP_VOUCHERS_CACHE_WO_MERGE_FROM}{where}{order}"
-            )
-        )
+        return _run(_con)
 
 
 def _invalidate_pp_vouchers_with_ops_cache():
     with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
         _PP_VOUCHERS_WITH_OPS_CACHE.clear()
+
+
+def _load_pp_vouchers_board_erp_data(include_completed: bool, refresh: bool, scope: str):
+    """ERP-only board rows from memory cache or DB (one connection, released before planner list)."""
+    now = time.monotonic()
+    if not refresh:
+        with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+            bucket = _PP_VOUCHERS_WITH_OPS_CACHE.get(scope) or {}
+            cached = bucket.get("data")
+            if cached is not None and now < float(bucket.get("expires_at") or 0):
+                return list(cached)
+
+    from planning.helpers import planner_db
+
+    with planner_db() as con:
+        cache_rows = _fetch_pp_vouchers_cache_rows(include_completed, con=con)
+        erp_data = _enrich_pp_vouchers_planner_data(
+            _pp_vouchers_with_ops_payload(cache_rows),
+            con=con,
+        )
+    _store_pp_vouchers_with_ops_cache(scope, erp_data)
+    return erp_data
 
 
 def _store_pp_vouchers_with_ops_cache(scope: str, data: list) -> None:
@@ -607,7 +758,7 @@ def _erp_wo_completion_by_partial(con, source_ids):
     return out
 
 
-def _enrich_pp_vouchers_planner_data(entries):
+def _enrich_pp_vouchers_planner_data(entries, con=None):
     """Attach planner BOM routes and selected flow to ERP catalog entries."""
     if not entries:
         return entries
@@ -633,12 +784,13 @@ def _enrich_pp_vouchers_planner_data(entries):
     bom_code_by_id = {}
     wo_completion = {}
 
-    with planner_db() as con:
+    def _load(_con):
+        nonlocal wo_completion
         if source_ids:
-            wo_completion = _erp_wo_completion_by_partial(con, source_ids)
+            wo_completion = _erp_wo_completion_by_partial(_con, source_ids)
         if source_ids:
             for row in db_rows(
-                con.execute(
+                _con.execute(
                     """
                     SELECT source_ps_id, pp_partial_no, inventory_code, selected_bom_id
                     FROM planner_process_sheet
@@ -652,7 +804,7 @@ def _enrich_pp_vouchers_planner_data(entries):
 
         if inventory_codes:
             for row in db_rows(
-                con.execute(
+                _con.execute(
                     """
                     SELECT bom_id, inventory_code, bom_code, bom_desc, is_default
                     FROM planner_bom_variation
@@ -679,7 +831,7 @@ def _enrich_pp_vouchers_planner_data(entries):
         ]
         if bom_ids:
             for row in db_rows(
-                con.execute(
+                _con.execute(
                     """
                     SELECT bom_id, bom_code
                     FROM planner_bom_variation
@@ -689,6 +841,27 @@ def _enrich_pp_vouchers_planner_data(entries):
                 )
             ):
                 bom_code_by_id[int(row["bom_id"])] = compact_text(row["bom_code"])
+
+    if con is not None:
+        _load(con)
+    else:
+        with planner_db() as _con:
+            _load(_con)
+
+    from planning.catalog import (
+        _bom_op_stage_keys,
+        _catalog_lane_qty_maps,
+        attach_planner_bom_ops_to_catalog_entry,
+    )
+
+    bom_stage_keys = _bom_op_stage_keys(con) if con is not None else set()
+    planned_qty_by_op = {}
+    queued_machines_by_op = {}
+    needs_planner_ops = any(
+        int(row.get("selected_bom_id") or 0) > 0 for row in planner_rows.values()
+    ) or any(int(entry.get("selected_bom_id") or 0) > 0 for entry in entries)
+    if con is not None and needs_planner_ops:
+        planned_qty_by_op, queued_machines_by_op = _catalog_lane_qty_maps(con)
 
     for entry in entries:
         bom_code = compact_text(entry.get("erp_bom_code") or entry.get("bom_code"))
@@ -713,6 +886,14 @@ def _enrich_pp_vouchers_planner_data(entries):
         wo_flags = wo_completion.get((source_ps_id, partial_no), {})
         entry["erp_wo_stage_count"] = int(wo_flags.get("erp_wo_stage_count") or 0)
         entry["erp_all_wo_complete"] = bool(wo_flags.get("erp_all_wo_complete"))
+        if con is not None and int(entry.get("selected_bom_id") or 0) > 0:
+            attach_planner_bom_ops_to_catalog_entry(
+                con,
+                entry,
+                planned_qty_by_op=planned_qty_by_op,
+                queued_machines_by_op=queued_machines_by_op,
+                bom_stage_keys=bom_stage_keys,
+            )
 
     return entries
 
@@ -786,8 +967,14 @@ def api_pp_vouchers_with_ops():
                     pass
             threading.Thread(target=_bg_sync, daemon=True).start()
 
-        cache_rows = _fetch_pp_vouchers_cache_rows(include_completed)
-        data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
+        from planning.helpers import planner_db
+
+        with planner_db() as con:
+            cache_rows = _fetch_pp_vouchers_cache_rows(include_completed, con=con)
+            data = _enrich_pp_vouchers_planner_data(
+                _pp_vouchers_with_ops_payload(cache_rows),
+                con=con,
+            )
         if not include_completed:
             data = [entry for entry in data if not entry.get("shipped_completed")]
         if use_cache or refresh:
@@ -820,6 +1007,9 @@ def api_pp_vouchers_with_ops():
 @app.get("/api/process-sheets/board")
 def api_process_sheets_board():
     """Single round-trip for Process Sheets: planner rows + ERP-only vouchers."""
+    import concurrent.futures
+
+    from flask import copy_current_request_context
     from planning.helpers import planner_db
     from planning.process_sheets import (
         enrich_board_planner_fields,
@@ -829,40 +1019,45 @@ def api_process_sheets_board():
     from planning.utils import compact_text
 
     try:
-        with planner_db() as con:
-            planner_items = list_process_sheets_payload(con)
-            planner_keys = {process_sheet_board_identity_key(item) for item in planner_items}
-            include_completed = _pp_vouchers_include_completed()
-            refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
-            scope = _pp_vouchers_cache_scope(include_completed)
-            if refresh:
-                cache_rows = _fetch_pp_vouchers_cache_rows(include_completed)
-                erp_data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
-                _store_pp_vouchers_with_ops_cache(scope, erp_data)
-            else:
-                now = time.monotonic()
-                with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-                    bucket = _PP_VOUCHERS_WITH_OPS_CACHE.get(scope) or {}
-                    erp_data = bucket.get("data")
-                    if erp_data is None or now >= float(bucket.get("expires_at") or 0):
-                        erp_data = None
-                if erp_data is None:
-                    cache_rows = _fetch_pp_vouchers_cache_rows(include_completed)
-                    erp_data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
-                    _store_pp_vouchers_with_ops_cache(scope, erp_data)
+        include_completed = _pp_vouchers_include_completed()
+        refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
+        scope = _pp_vouchers_cache_scope(include_completed)
+
+        @copy_current_request_context
+        def _load_erp_board_rows():
+            erp_data = _load_pp_vouchers_board_erp_data(include_completed, refresh, scope)
             if not include_completed:
                 erp_data = [entry for entry in erp_data if not entry.get("shipped_completed")]
-            erp_only = [
-                entry
-                for entry in erp_data
-                if compact_text(entry.get("ps_id"))
-                and process_sheet_board_identity_key(entry) not in planner_keys
-            ]
-            enrich_board_planner_fields(con, planner_items)
+            return erp_data
+
+        @copy_current_request_context
+        def _load_planner_board_rows():
+            with planner_db() as con:
+                planner_items = list_process_sheets_payload(con)
+                enrich_board_planner_fields(con, planner_items)
+                return planner_items
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            erp_future = pool.submit(_load_erp_board_rows)
+            planner_future = pool.submit(_load_planner_board_rows)
+            erp_data = erp_future.result()
+            planner_items = planner_future.result()
+
+        planner_keys = {process_sheet_board_identity_key(item) for item in planner_items}
+        erp_only = [
+            entry
+            for entry in erp_data
+            if compact_text(entry.get("ps_id"))
+            and process_sheet_board_identity_key(entry) not in planner_keys
+        ]
+        with planner_db() as con:
             enrich_board_planner_fields(con, erp_only)
         return jsonify({"planner": planner_items, "erp_only": erp_only})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        from db import planner_db_connect_error
+
+        friendly = planner_db_connect_error(e)
+        return jsonify({"error": friendly or str(e)}), 500
 
 
 def _parse_pp_staging_sync_args():
@@ -2156,4 +2351,14 @@ elif _disable_auto_unschedule:
 if __name__ == "__main__":
     port = int(os.getenv("FLASK_PORT", 5001))
     debug = os.getenv("FLASK_ENV") == "development"
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    repeat_rules = [str(r) for r in app.url_map.iter_rules() if "repeat-orders" in str(r)]
+    if repeat_rules:
+        log.info("repeat orders routes: %s", ", ".join(repeat_rules))
+    else:
+        log.warning("repeat orders routes missing — check app.py was saved before restart")
+    log.info("machinist board: http://127.0.0.1:%s%s", port, MACHINIST_BOARD_PATH)
+    if PLANNER_ACCESS_TOKEN:
+        log.info("planner access gate enabled (set PLANNER_ACCESS_TOKEN in .env)")
+    else:
+        log.warning("planner access gate disabled — set PLANNER_ACCESS_TOKEN to lock down the planner")
+    app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)

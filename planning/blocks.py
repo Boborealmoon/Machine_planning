@@ -23,6 +23,7 @@ from datetime import date, datetime, timedelta
 from .actuals import actual_totals_for_block
 from .planner_actuals import actual_summary_for_block_row
 from .helpers import one, rows, parse_dt_text
+from .utils import planner_today, planner_timestamptz_for_db
 from .machines import capacity_minutes_for_machine_day, machine_work_intervals_for_day
 from .scheduler_state import (
     compute_change_summary,
@@ -997,8 +998,8 @@ def refresh_block_schedule_bounds(con, block_id):
         WHERE block_id = %s
         """,
         (
-            bounds.get("start_datetime"),
-            bounds.get("end_datetime"),
+            planner_timestamptz_for_db(bounds.get("start_datetime")),
+            planner_timestamptz_for_db(bounds.get("end_datetime")),
             planning_status,
             int(block_id),
         ),
@@ -1669,7 +1670,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
     if not blocks:
         return
 
-    today_start = datetime.combine(date.today(), datetime.min.time()).replace(
+    today_start = datetime.combine(planner_today(), datetime.min.time()).replace(
         hour=8, minute=30, second=0, microsecond=0
     )
 
@@ -1776,6 +1777,8 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
     interval_cache = {}
 
     def update_block_schedule_window(block_id, start_dt, end_dt, planning_status=None):
+        start_bind = planner_timestamptz_for_db(start_dt)
+        end_bind = planner_timestamptz_for_db(end_dt)
         start_text = start_dt.strftime("%Y-%m-%d %H:%M:%S") if start_dt else None
         end_text = end_dt.strftime("%Y-%m-%d %H:%M:%S") if end_dt else None
         con.execute(
@@ -1793,8 +1796,8 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
             WHERE block_id = %s
             """,
             (
-                start_text,
-                end_text,
+                start_bind,
+                end_bind,
                 int(schedule_run_id) if schedule_run_id is not None else None,
                 planning_status,
                 int(block_id),

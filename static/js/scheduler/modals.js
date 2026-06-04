@@ -8,6 +8,7 @@ function trialModalShell(html) {
 function closeModal() {
   trialOpenQueueMachineId = 0;
   if (typeof destroyTrialQueueSortable === 'function') destroyTrialQueueSortable();
+  document.querySelector('.trial-modal-panel')?.classList.remove('trial-modal-panel--temp-ps');
   trialModalShell('');
   document.body.classList.remove('trial-modal-open');
 }

@@ -399,3 +399,70 @@
 }
 
 .btn-add-step:hover { border-color: #888; color: #333; }
+
+/* ── Responsive (tablet & mobile) ─────────────────────────────────────── */
+@media (max-width: 1024px) {
+  .app-main--split {
+    height: auto;
+    min-height: calc(100dvh - 52px);
+    overflow: visible;
+  }
+
+  .pf-page {
+    height: auto;
+    min-height: calc(100dvh - 52px);
+  }
+
+  .pf-header {
+    padding: 16px clamp(12px, 3vw, 24px) 14px;
+  }
+
+  .pf-title {
+    font-size: 22px;
+  }
+
+  .pf-layout {
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  .pf-sidebar {
+    width: 100%;
+    max-height: min(42dvh, 360px);
+    border-right: none;
+    border-bottom: 1px solid #e4e4e4;
+  }
+
+  .pf-content {
+    min-height: min(58dvh, 720px);
+    overflow: visible;
+  }
+
+  #part-detail {
+    height: auto;
+    min-height: min(50dvh, 640px);
+    overflow: visible;
+  }
+
+  .steps-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .flow-form-field {
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .pf-part-header,
+  .bom-tabs-bar,
+  .steps-section {
+    padding-inline: 14px;
+  }
+
+  .bom-tabs-bar {
+    align-items: flex-start;
+  }
+}

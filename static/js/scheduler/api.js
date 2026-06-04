@@ -2,7 +2,16 @@
 
 async function GET(url) {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const data = await res.json();
+      if (data && data.error) msg = data.error;
+    } catch (_) {
+      // ignore JSON parse errors
+    }
+    throw new Error(msg);
+  }
   return res.json();
 }
 
@@ -407,13 +416,18 @@ async function loadTrial(options = {}) {
   }
   trialScheduleRender(null, { skipCatalog: true });
 
-  const catalogFetch = force
-    ? GET(trialNoCacheUrl(trialCatalogUrl(true))).catch(() => [])
-    : trialCachedGET(trialCatalogCacheKey(), 60000, trialCatalogUrl(false)).catch(() => []);
-  const [erpVouchers, programToolsLookup] = await Promise.all([
-    catalogFetch,
-    trialCachedGET('programToolsLookup', 300000, '/api/program-tool-list/lookup').catch(() => null),
-  ]);
+  const skipCatalog = typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
+  let erpVouchers = [];
+  let programToolsLookup = null;
+  if (!skipCatalog) {
+    const catalogFetch = force
+      ? GET(trialNoCacheUrl(trialCatalogUrl(true))).catch(() => [])
+      : trialCachedGET(trialCatalogCacheKey(), 60000, trialCatalogUrl(false)).catch(() => []);
+    [erpVouchers, programToolsLookup] = await Promise.all([
+      catalogFetch,
+      trialCachedGET('programToolsLookup', 300000, '/api/program-tool-list/lookup').catch(() => null),
+    ]);
+  }
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'fetch-secondary');
   }

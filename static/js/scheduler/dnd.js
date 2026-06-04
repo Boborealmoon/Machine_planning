@@ -338,6 +338,7 @@ function trialEnsureCatalogPointerListeners() {
 }
 
 function bindTrialLaneBlockClicks() {
+  if (typeof trialIsReadOnlyBoard === 'function' && trialIsReadOnlyBoard()) return;
   document.querySelectorAll('.trial-block-card--compact').forEach(el => {
     if (el.dataset.laneClickBound === '1') return;
     el.dataset.laneClickBound = '1';
@@ -491,6 +492,7 @@ async function moveTrialBlockToMachine(blockId, machineId, queuePosition = 0, op
 }
 
 function bindTrialLaneOpDrops() {
+  if (typeof trialIsReadOnlyBoard === 'function' && trialIsReadOnlyBoard()) return;
   document.querySelectorAll('.trial-lane').forEach(lane => {
     if (lane.dataset.laneDropBound === '1') return;
     lane.dataset.laneDropBound = '1';
@@ -607,6 +609,7 @@ function initTrialQueuePanelSortable() {
 }
 
 function initTrialMachineSortables(machineIds = null) {
+  if (typeof trialIsReadOnlyBoard === 'function' && trialIsReadOnlyBoard()) return;
   if (typeof Sortable === 'undefined') return;
   const targetIds = machineIds == null
     ? null

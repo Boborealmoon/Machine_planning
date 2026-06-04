@@ -93,6 +93,256 @@ function trialVisibleMachines() {
   return machines;
 }
 
+/**
+ * Shop-floor lane groups when Type = All (machine group matrix + subgroup annotations).
+ */
+const TRIAL_MACHINE_BOARD_GROUPS = [
+  {
+    id: 'mpp',
+    label: 'MPP',
+    subgroups: [
+      {
+        id: 'mpp-production',
+        title: 'OSS frame · 3D complex · quick-change',
+        hint: 'OSS frame agreement, 3D complex parts, quick-change production',
+        machine_codes: ['CNC 35', 'CNC 36'],
+      },
+    ],
+  },
+  {
+    id: 'multiaxis',
+    label: 'Multi-Axis',
+    subgroups: [
+      {
+        id: 'ma-index-8',
+        title: 'Turn-mill indexing',
+        hint: 'Turning + milling indexing · 8″ chuck',
+        machine_codes: ['CNC 38'],
+      },
+      {
+        id: 'ma-full5-12',
+        title: 'Full 5-axis milling',
+        hint: 'Turning + full 5-axis milling · 12″ chuck',
+        machine_codes: ['CNC 39', 'CNC 40'],
+      },
+    ],
+  },
+  {
+    id: 'turning',
+    label: 'Turning',
+    subgroups: [
+      {
+        id: 't-mazak-tm',
+        title: 'Mazak turn-mill',
+        hint: 'Mazak turn-mill · 8″ & 10″ chuck',
+        machine_codes: ['CNC 22', 'CNC 30'],
+      },
+      {
+        id: 't-mazak-lathe',
+        title: 'Mazak turning',
+        hint: 'Mazak turning · 6″ chuck · 8-tool ATC max',
+        machine_codes: ['CNC 31', 'CNC 32'],
+      },
+      {
+        id: 't-fanuc-10',
+        title: 'Fanuc · 10″ chuck',
+        hint: 'Fanuc turning · 10″ chuck turn-mill & lathe',
+        machine_codes: ['CNC 10', 'CNC 15'],
+      },
+      {
+        id: 't-fanuc-8',
+        title: 'Fanuc · 8″ chuck',
+        hint: 'Fanuc turning · 8″ chuck · main & sub-spindle',
+        machine_codes: ['CNC 21', 'CNC 24', 'CNC 27'],
+      },
+    ],
+  },
+  {
+    id: 'milling',
+    label: 'Milling',
+    subgroups: [
+      {
+        id: 'm-mitsu-31',
+        title: 'Mitsubishi · 3+1',
+        hint: 'Mitsubishi controller · 3+1 indexing',
+        machine_codes: ['CNC 20'],
+      },
+      {
+        id: 'm-mitsu-32',
+        title: 'Mitsubishi · 3+2',
+        hint: 'Mitsubishi controller · 3+2 indexing · 750 mm table X',
+        machine_codes: ['CNC 29'],
+      },
+      {
+        id: 'm-makino-31',
+        title: 'Makino · Mitsubishi · 3+1',
+        hint: 'Makino / Mitsubishi milling · 3+1 indexing',
+        machine_codes: ['CNC 25', 'CNC 26'],
+      },
+    ],
+  },
+];
+
+const TRIAL_MACHINE_BOARD_GROUP_BY_CATEGORY = {
+  MPP: 'mpp',
+  TURNMILL: 'multiaxis',
+  TURNING: 'turning',
+  MILLING: 'milling',
+};
+
+const TRIAL_MACHINE_BOARD_GROUP_LABELS = {
+  mpp: 'MPP',
+  multiaxis: 'Multi-Axis',
+  turning: 'Turning',
+  milling: 'Milling',
+};
+
+const TRIAL_MACHINE_BOARD_GROUP_ORDER = ['mpp', 'multiaxis', 'turning', 'milling'];
+
+const TRIAL_MACHINE_BOARD_GROUP_CATEGORY_ORDER = ['MPP', 'TURNMILL', 'TURNING', 'MILLING', 'OTHER'];
+
+function trialSortMachineBoardGroups(groups) {
+  return groups.slice().sort((a, b) => {
+    const ai = TRIAL_MACHINE_BOARD_GROUP_ORDER.indexOf(a.id);
+    const bi = TRIAL_MACHINE_BOARD_GROUP_ORDER.indexOf(b.id);
+    const aRank = ai < 0 ? 100 : ai;
+    const bRank = bi < 0 ? 100 : bi;
+    if (aRank !== bRank) return aRank - bRank;
+    return String(a.label || '').localeCompare(String(b.label || ''));
+  });
+}
+
+function trialShouldGroupMachineLanes() {
+  return String(trialMachineCategoryFilter || 'ALL').toUpperCase() === 'ALL';
+}
+
+function trialNormalizeMachineCode(code) {
+  return String(code || '').trim().toUpperCase();
+}
+
+function trialAppendMachinesToBoardGroup(groups, groupId, machines, options = {}) {
+  if (!machines.length) return;
+  let group = groups.find(row => row.id === groupId);
+  if (!group) {
+    group = {
+      id: groupId,
+      label: TRIAL_MACHINE_BOARD_GROUP_LABELS[groupId] || groupId,
+      subgroups: [],
+      grouped: true,
+      fallback: true,
+    };
+    groups.push(group);
+  }
+  if (!Array.isArray(group.subgroups)) group.subgroups = [];
+  let bucket = group.subgroups.find(sub => sub.fallback);
+  if (!bucket) {
+    bucket = {
+      id: `${groupId}-other`,
+      title: options.title || 'Additional machines',
+      hint: options.hint || 'Active machines in this category not listed in the matrix',
+      machines: [],
+      fallback: true,
+    };
+    group.subgroups.push(bucket);
+  }
+  bucket.machines.push(...machines);
+}
+
+function trialVisibleMachinesGrouped() {
+  const visible = trialVisibleMachines();
+  if (!trialShouldGroupMachineLanes()) {
+    return [{ id: 'flat', label: '', machines: visible, grouped: false }];
+  }
+
+  const byCode = new Map();
+  visible.forEach(machine => {
+    byCode.set(trialNormalizeMachineCode(machine.machine_code), machine);
+  });
+
+  const assigned = new Set();
+  const groups = [];
+
+  TRIAL_MACHINE_BOARD_GROUPS.forEach(spec => {
+    const subgroups = [];
+    (spec.subgroups || []).forEach(subSpec => {
+      const machines = [];
+      (subSpec.machine_codes || []).forEach(code => {
+        const key = trialNormalizeMachineCode(code);
+        const machine = byCode.get(key);
+        if (!machine) return;
+        machines.push(machine);
+        assigned.add(key);
+      });
+      if (!machines.length) return;
+      subgroups.push({
+        id: subSpec.id,
+        title: subSpec.title || '',
+        hint: subSpec.hint || subSpec.title || '',
+        machines,
+      });
+    });
+    if (subgroups.length) {
+      groups.push({
+        id: spec.id,
+        label: spec.label,
+        subgroups,
+        grouped: true,
+      });
+    }
+  });
+
+  const remainder = visible.filter(machine =>
+    !assigned.has(trialNormalizeMachineCode(machine.machine_code))
+  );
+  if (remainder.length) {
+    const categoryRemainder = new Map();
+    const buckets = new Map();
+    remainder.forEach(machine => {
+      const cat = String(machine.machine_category || 'OTHER').trim().toUpperCase() || 'OTHER';
+      const groupId = TRIAL_MACHINE_BOARD_GROUP_BY_CATEGORY[cat];
+      if (groupId) {
+        if (!categoryRemainder.has(groupId)) categoryRemainder.set(groupId, []);
+        categoryRemainder.get(groupId).push(machine);
+        assigned.add(trialNormalizeMachineCode(machine.machine_code));
+        return;
+      }
+      if (!buckets.has(cat)) buckets.set(cat, []);
+      buckets.get(cat).push(machine);
+    });
+    categoryRemainder.forEach((machines, groupId) => {
+      machines.sort((a, b) =>
+        trialNormalizeMachineCode(a.machine_code).localeCompare(trialNormalizeMachineCode(b.machine_code))
+      );
+      trialAppendMachinesToBoardGroup(groups, groupId, machines, {
+        title: 'Additional machines',
+        hint: `Other active ${TRIAL_MACHINE_BOARD_GROUP_LABELS[groupId] || groupId} machines`,
+      });
+    });
+    const sortedCats = [...buckets.keys()].sort((a, b) => {
+      const ai = TRIAL_MACHINE_BOARD_GROUP_CATEGORY_ORDER.indexOf(a);
+      const bi = TRIAL_MACHINE_BOARD_GROUP_CATEGORY_ORDER.indexOf(b);
+      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || a.localeCompare(b);
+    });
+    sortedCats.forEach(cat => {
+      const machines = buckets.get(cat).slice().sort((a, b) =>
+        trialNormalizeMachineCode(a.machine_code).localeCompare(trialNormalizeMachineCode(b.machine_code))
+      );
+      if (!machines.length) return;
+      groups.push({
+        id: `other-${cat.toLowerCase()}`,
+        label: trialMachineCategoryLabel(cat),
+        machines,
+        grouped: true,
+        fallback: true,
+      });
+    });
+  }
+
+  return groups.length
+    ? trialSortMachineBoardGroups(groups)
+    : [{ id: 'flat', label: '', machines: visible, grouped: false }];
+}
+
 function trialCatalogOpPendingKey(cardOrPayload) {
   const raw = cardOrPayload || {};
   if (String(raw.card_kind || '') === 'group' && Number(raw.card_id || 0) > 0) {
@@ -265,6 +515,7 @@ function trialHasActiveDateFilter() {
 }
 
 function trialCanReorderMachineQueue() {
+  if (typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard()) return false;
   return true;
 }
 

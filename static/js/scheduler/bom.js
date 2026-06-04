@@ -49,7 +49,8 @@ function trialBOMStepsFromCatalogItem(item) {
       setup_time: Number(card.setup_minutes || card.setup_time || 180),
       is_last_op: idx === cards.length - 1 ? 1 : 0,
       source_kind: 'ERP',
-      source_stage_no: Number(card.source_op_seq_id || card.stage_no || 0) || null,
+      op_seq_id: Number(card.source_op_seq_id || card.op_seq_id || 0) || null,
+      source_stage_no: Number(card.source_stage_no || card.stage_no || 0) || null,
     };
   }).filter(step => step && String(step.op_type || '').trim());
 }
@@ -77,6 +78,7 @@ async function openTrialBOMEditor(psId) {
     trialBOMMeta = {
       bom_id: Number(flow?.bom_id || 0),
       flow_code: flow?.flow_code || catalogItem?.erp_bom_code || catalogItem?.selected_bom_code || catalogItem?.selected_flow_code || catalogItem?.bom_code || 'MANUAL',
+      source_kind: String(flow?.source_kind || '').trim().toUpperCase(),
       is_default: flow ? !!flow.is_default : true,
       ps_id: ps.ps_id,
       inventory_code: inventoryCode,
@@ -126,6 +128,13 @@ async function openTrialBOMEditor(psId) {
   }
 }
 
+function trialBOMStepSourceLabel(step) {
+  const kind = String(step.source_kind || '').toUpperCase();
+  if (kind === 'MANUAL') return 'Manual';
+  if (kind === 'ERP') return 'ERP';
+  return step.op_seq_id ? 'ERP' : 'Manual';
+}
+
 function renderTrialBOMEditor() {
   const el = document.getElementById('trial-bom-editor');
   if (!el) return;
@@ -135,6 +144,10 @@ function renderTrialBOMEditor() {
         <div class="field field-handle">
           <label>&nbsp;</label>
           <div class="trial-bom-handle" title="Drag to reorder">::</div>
+        </div>
+        <div class="field field-source">
+          <label>Source</label>
+          <span class="trial-bom-source-badge">${escapeHtml(trialBOMStepSourceLabel(step))}</span>
         </div>
         <div class="field field-op-no">
           <label>Op No</label>
@@ -160,7 +173,7 @@ function renderTrialBOMEditor() {
           <input type="number" step="1" min="0" value="${Number(step.setup_time || 0)}"
             onchange="editTrialBOMStep(${idx}, 'setup_time', parseFloat(this.value) || 0)">
         </div>
-        <div class="field" style="flex:0 0 auto;min-width:auto">
+        <div class="field field-remove">
           <label>&nbsp;</label>
           <button class="btn btn-ghost btn-sm" type="button" onclick="removeTrialBOMStep(${idx})">Remove</button>
         </div>
@@ -190,22 +203,26 @@ function addTrialBOMStep() {
   const nextOp = trialBOMEditing.length
     ? String((parseInt(trialBOMEditing[trialBOMEditing.length - 1].op_no, 10) || trialBOMEditing.length * 10) + 10)
     : '10';
+  trialBOMEditing.forEach(step => { step.is_last_op = 0; });
   trialBOMEditing.push({
     op_no: nextOp,
-    op_type: '',
+    op_type: 'Turning',
     machine_category: '',
     preferred_machine: '',
     cycle_time: 1,
     setup_time: 0,
-    is_last_op: trialBOMEditing.length === 0 ? 1 : 0,
+    is_last_op: 1,
+    source_kind: 'MANUAL',
   });
   renderTrialBOMEditor();
 }
 
 function removeTrialBOMStep(idx) {
   trialBOMEditing.splice(idx, 1);
-  if (trialBOMEditing.length && !trialBOMEditing.some(step => Number(step.is_last_op || 0) === 1)) {
-    trialBOMEditing[trialBOMEditing.length - 1].is_last_op = 1;
+  if (trialBOMEditing.length) {
+    trialBOMEditing.forEach((step, i) => {
+      step.is_last_op = i === trialBOMEditing.length - 1 ? 1 : 0;
+    });
   }
   renderTrialBOMEditor();
 }
@@ -218,12 +235,17 @@ async function saveTrialBOMEditor(psId) {
   try {
     const steps = trialBOMEditing.map((step, idx) => {
       const preferredMachine = String(step.preferred_machine || '').trim();
+      const explicitKind = String(step.source_kind || '').trim().toUpperCase();
+      const hasErpLink = Number(step.source_stage_no || 0) > 0 || Number(step.op_seq_id || 0) > 0;
+      const sourceKind = explicitKind === 'MANUAL' && !hasErpLink
+        ? 'MANUAL'
+        : (explicitKind === 'ERP' || hasErpLink ? 'ERP' : 'MANUAL');
       return {
         ...step,
         preferred_machine: preferredMachine,
         machine_category: preferredMachine ? trialMachineCategoryFor(preferredMachine) : 'UNKNOWN',
         is_last_op: idx === trialBOMEditing.length - 1 ? 1 : 0,
-        source_kind: step.source_kind || (step.op_seq_id ? 'ERP' : 'MANUAL'),
+        source_kind: sourceKind,
       };
     });
     const payload = {
@@ -231,14 +253,36 @@ async function saveTrialBOMEditor(psId) {
       is_default: document.getElementById('trial-bom-flow-default').value === '1',
       steps,
     };
-    if (Number(trialBOMMeta.bom_id || 0) > 0) {
-      await PUT(`/api/trial/flows/${trialBOMMeta.bom_id}`, payload);
+    let savedFlowId = Number(trialBOMMeta.bom_id || 0);
+    let saveResult = null;
+    if (savedFlowId > 0) {
+      saveResult = await PUT(`/api/trial/flows/${savedFlowId}`, payload);
+      savedFlowId = Number(saveResult?.bom_id || saveResult?.flow?.bom_id || savedFlowId);
     } else {
-      await POST(`/api/trial/process-sheets/${encodeURIComponent(psId)}/flows`, payload);
+      saveResult = await POST(`/api/trial/process-sheets/${encodeURIComponent(psId)}/flows`, {
+        ...payload,
+        source_kind: steps.some(step => String(step.source_kind || '').toUpperCase() === 'MANUAL') ? 'MIXED' : 'MANUAL',
+      });
+      savedFlowId = Number(saveResult?.flow?.bom_id || 0);
+    }
+    if (savedFlowId > 0) {
+      await PUT(`/api/trial/process-sheets/${encodeURIComponent(psId)}/flow`, { bom_id: savedFlowId });
     }
     closeModal();
-    await loadTrial();
-    toast(`BOM saved for ${psId}`, 'success');
+    if (typeof trialInvalidateCatalogCache === 'function') trialInvalidateCatalogCache();
+    if (typeof trialRefreshCatalogSidebar === 'function') {
+      await trialRefreshCatalogSidebar();
+    } else if (typeof loadTrial === 'function') {
+      await loadTrial({ force: true });
+    }
+    const forked = !!saveResult?.forked;
+    const flowLabel = String(saveResult?.flow_code || payload.flow_code || '').trim();
+    toast(
+      forked
+        ? `Saved planner BOM variation ${flowLabel || ''} (ERP route unchanged)`
+        : `BOM saved for ${psId}`,
+      'success',
+    );
   } catch (e) {
     toast('Save BOM failed: ' + e.message, 'error');
   }

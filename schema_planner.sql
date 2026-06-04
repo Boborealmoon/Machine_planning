@@ -214,6 +214,30 @@ CREATE TABLE IF NOT EXISTS public.planner_process_sheet (
 );
 
 
+-- Reject/rework copies: 1:1 with planner_process_sheet rows whose planner_ps_id starts with [Temp].
+-- Survives restarts; stores creation-time snapshot (qty, part, route) independent of ERP cache refresh.
+CREATE TABLE IF NOT EXISTS public.planner_temp_process_sheet (
+    planner_ps_id           TEXT         PRIMARY KEY
+        REFERENCES public.planner_process_sheet(planner_ps_id) ON DELETE CASCADE,
+    source_ps_id            TEXT         NOT NULL,
+    source_pp_partial_no    INTEGER      NOT NULL DEFAULT 1,
+    reject_qty              NUMERIC      NOT NULL DEFAULT 0,
+    inventory_code          TEXT         NOT NULL DEFAULT '',
+    part_no                 TEXT         NOT NULL DEFAULT '',
+    part_desc               TEXT         NOT NULL DEFAULT '',
+    due_date                DATE,
+    erp_bom_code            TEXT         NOT NULL DEFAULT '',
+    selected_bom_id         BIGINT       REFERENCES public.planner_bom_variation(bom_id) ON DELETE SET NULL,
+    selected_bom_code       TEXT         NOT NULL DEFAULT '',
+    remarks                 TEXT         NOT NULL DEFAULT '',
+    created_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_planner_temp_process_sheet_source
+    ON public.planner_temp_process_sheet (source_ps_id);
+
+
 -- =============================================================================
 -- GROUP D: Scheduling Engine Core
 -- =============================================================================
@@ -725,6 +749,19 @@ CREATE INDEX IF NOT EXISTS idx_planner_mqs_schedule_run
 
 CREATE INDEX IF NOT EXISTS idx_planner_psos_ps_id
     ON public.planner_process_sheet_operation_state(planner_ps_id);
+
+-- Manual produced qty for planner BOM variation steps without ERP WO tracking.
+CREATE TABLE IF NOT EXISTS public.planner_ps_bom_step_qty (
+    planner_ps_id   TEXT         NOT NULL REFERENCES public.planner_process_sheet(planner_ps_id) ON DELETE CASCADE,
+    op_seq_id       BIGINT       NOT NULL,
+    qty_produced    NUMERIC      NOT NULL DEFAULT 0,
+    qty_rejected    NUMERIC      NOT NULL DEFAULT 0,
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (planner_ps_id, op_seq_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_planner_ps_bom_step_qty_ps
+    ON public.planner_ps_bom_step_qty(planner_ps_id);
 
 CREATE INDEX IF NOT EXISTS idx_planner_pss_execution
     ON public.planner_process_sheet_state(execution_status);

@@ -103,6 +103,8 @@ def _source_kind(value, default="ERP"):
 
 
 def _stage_source_kind(step):
+    if int(step.get("source_stage_no") or 0) > 0:
+        return "ERP"
     explicit = compact_text(step.get("source_kind")).upper()
     if explicit in {"ERP", "MANUAL"}:
         return explicit
@@ -114,6 +116,78 @@ def _combined_flow_source_kind(stage_kinds, default="ERP"):
     if not kinds:
         return default
     return kinds.pop() if len(kinds) == 1 else "MIXED"
+
+
+def _steps_include_manual(steps):
+    return any(_stage_source_kind(step) == "MANUAL" for step in (steps or []))
+
+
+def _flow_should_fork_to_planner_variation(flow, steps):
+    """Keep ERP bom_variation rows immutable; planner edits become their own variation."""
+    flow_kind = compact_text(flow.get("source_kind")).upper() or "ERP"
+    if flow_kind != "ERP":
+        return False
+    return _steps_include_manual(steps)
+
+
+def _unique_planner_variation_code(con, inventory_code, base_code):
+    inventory_code = compact_text(inventory_code)
+    base_code = compact_text(base_code) or "MANUAL"
+    stem = base_code if base_code.upper().endswith("-PLANNER") else f"{base_code}-PLANNER"
+    candidate = stem
+    suffix = 2
+    while one(
+        con.execute(
+            """
+            SELECT 1 AS ok
+            FROM planner_bom_variation
+            WHERE inventory_code = %s AND bom_code = %s
+            """,
+            (inventory_code, candidate),
+        )
+    ):
+        candidate = f"{stem}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _insert_planner_bom_variation(
+    con,
+    *,
+    inventory_code,
+    bom_code,
+    bom_desc,
+    is_default,
+    flow_source_kind,
+):
+    if is_default:
+        con.execute(
+            "UPDATE planner_bom_variation SET is_default = FALSE WHERE inventory_code = %s",
+            (inventory_code,),
+        )
+    return one(
+        con.execute(
+            """
+            INSERT INTO planner_bom_variation (
+                inventory_code, bom_code, bom_desc, is_default, source_kind,
+                created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+            ON CONFLICT (inventory_code, bom_code) DO UPDATE SET
+              bom_desc = EXCLUDED.bom_desc,
+              is_default = EXCLUDED.is_default,
+              source_kind = EXCLUDED.source_kind,
+              updated_at = NOW()
+            RETURNING bom_id, inventory_code, bom_code, bom_desc, is_default, source_kind
+            """,
+            (
+                inventory_code,
+                bom_code,
+                bom_desc,
+                is_default,
+                flow_source_kind,
+            ),
+        )
+    )
 
 
 def _save_flow_steps(con, bom_id, steps):
@@ -212,6 +286,8 @@ _PS_FLOW_SELECT = """
 @trial_prefixed_flows_bp.get("/api/trial/process-sheets/<path:ps_id>")
 @flows_bp.get("/api/process-sheets/<path:ps_id>")
 def api_process_sheet(ps_id):
+    if compact_text(ps_id).startswith("temp-process-sheets"):
+        return jsonify({"error": "Not found"}), 404
     with planner_db() as con:
         try:
             ensure_planner_process_sheet(con, ps_id)
@@ -338,35 +414,14 @@ def api_create_process_sheet_flow(ps_id):
         inventory_code = compact_text(ps.get("inventory_code") or "")
         if not inventory_code:
             return jsonify({"error": "Inventory code is required to create a BOM flow"}), 400
-        if is_default:
-            con.execute(
-                "UPDATE planner_bom_variation SET is_default = FALSE WHERE inventory_code = %s",
-                (inventory_code,),
-            )
         flow_source_kind = _source_kind(data.get("source_kind"), "MANUAL")
-        flow_row = one(
-            con.execute(
-                """
-                INSERT INTO planner_bom_variation (
-                    inventory_code, bom_code, bom_desc, is_default, source_kind,
-                    created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
-                ON CONFLICT (inventory_code, bom_code) DO UPDATE SET
-                  bom_desc = EXCLUDED.bom_desc,
-                  is_default = EXCLUDED.is_default,
-                  source_kind = EXCLUDED.source_kind,
-                  updated_at = NOW()
-                RETURNING bom_id, inventory_code, bom_code AS flow_code,
-                          bom_desc AS flow_name, is_default, source_kind
-                """,
-                (
-                    inventory_code,
-                    flow_code,
-                    compact_text(data.get("flow_name") or data.get("bom_desc")),
-                    is_default,
-                    flow_source_kind,
-                ),
-            )
+        flow_row = _insert_planner_bom_variation(
+            con,
+            inventory_code=inventory_code,
+            bom_code=flow_code,
+            bom_desc=compact_text(data.get("flow_name") or data.get("bom_desc")),
+            is_default=is_default,
+            flow_source_kind=flow_source_kind,
         )
         bom_id = int(flow_row["bom_id"])
         stage_kinds = _save_flow_steps(con, bom_id, steps)
@@ -399,6 +454,12 @@ def api_create_process_sheet_flow(ps_id):
                 (bom_id,),
             )
         )
+        try:
+            from app import _invalidate_pp_vouchers_with_ops_cache
+
+            _invalidate_pp_vouchers_with_ops_cache()
+        except Exception:
+            pass
         return jsonify({"ok": True, "flow": _flow_payload(con, refreshed)})
 
 
@@ -418,10 +479,57 @@ def api_update_flow(bom_id):
             return jsonify({"error": "Flow not found"}), 404
         flow_code = compact_text(data.get("flow_code")) or flow["bom_code"]
         is_default = bool(data.get("is_default"))
+        steps = data.get("steps") or []
+        inventory_code = compact_text(flow["inventory_code"])
+
+        if _flow_should_fork_to_planner_variation(flow, steps):
+            new_code = _unique_planner_variation_code(con, inventory_code, flow_code)
+            erp_code = compact_text(flow["bom_code"])
+            flow_row = _insert_planner_bom_variation(
+                con,
+                inventory_code=inventory_code,
+                bom_code=new_code,
+                bom_desc=f"Planner route from {erp_code}" if erp_code else "Planner route",
+                is_default=is_default,
+                flow_source_kind="MIXED",
+            )
+            new_bom_id = int(flow_row["bom_id"])
+            stage_kinds = _save_flow_steps(con, new_bom_id, steps)
+            persisted_source_kind = _combined_flow_source_kind(stage_kinds, "MIXED")
+            con.execute(
+                """
+                UPDATE planner_bom_variation
+                SET source_kind = %s, updated_at = NOW()
+                WHERE bom_id = %s
+                """,
+                (persisted_source_kind, new_bom_id),
+            )
+            refreshed = one(
+                con.execute(
+                    "SELECT bom_id, bom_code AS flow_code, bom_desc AS flow_name, is_default, source_kind FROM planner_bom_variation WHERE bom_id = %s",
+                    (new_bom_id,),
+                )
+            )
+            try:
+                from app import _invalidate_pp_vouchers_with_ops_cache
+
+                _invalidate_pp_vouchers_with_ops_cache()
+            except Exception:
+                pass
+            return jsonify(
+                {
+                    "ok": True,
+                    "forked": True,
+                    "bom_id": new_bom_id,
+                    "flow_code": new_code,
+                    "flow": _flow_payload(con, refreshed),
+                }
+            )
+
         if is_default:
             con.execute(
                 "UPDATE planner_bom_variation SET is_default = FALSE WHERE inventory_code = %s AND bom_id <> %s",
-                (flow["inventory_code"], int(bom_id)),
+                (inventory_code, int(bom_id)),
             )
         con.execute(
             """
@@ -431,7 +539,6 @@ def api_update_flow(bom_id):
             """,
             (flow_code, is_default, int(bom_id)),
         )
-        steps = data.get("steps") or []
         stage_kinds = _save_flow_steps(con, int(bom_id), steps)
         persisted_source_kind = _combined_flow_source_kind(
             stage_kinds,
@@ -445,4 +552,26 @@ def api_update_flow(bom_id):
             """,
             (persisted_source_kind, int(bom_id)),
         )
-        return jsonify({"ok": True})
+        refreshed = one(
+            con.execute(
+                """
+                SELECT bom_id, bom_code AS flow_code, bom_desc AS flow_name, is_default, source_kind
+                FROM planner_bom_variation
+                WHERE bom_id = %s
+                """,
+                (int(bom_id),),
+            )
+        )
+        try:
+            from app import _invalidate_pp_vouchers_with_ops_cache
+
+            _invalidate_pp_vouchers_with_ops_cache()
+        except Exception:
+            pass
+        return jsonify(
+            {
+                "ok": True,
+                "bom_id": int(bom_id),
+                "flow": _flow_payload(con, refreshed),
+            }
+        )

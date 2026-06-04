@@ -153,8 +153,10 @@ def get_planner_pool():
                 "SUPA_DB_URL env var is not set. "
                 "Add it to .env: postgresql://postgres:[pw]@db.[ref].supabase.co:5432/postgres"
             )
+        minconn = max(1, int(os.getenv("PLANNER_POOL_MIN", "2")))
+        maxconn = max(minconn, int(os.getenv("PLANNER_POOL_MAX", "20")))
         _planner_pool = psycopg2.pool.ThreadedConnectionPool(
-            1, 10, dsn=dsn, connect_timeout=_db_connect_timeout()
+            minconn, maxconn, dsn=dsn, connect_timeout=_db_connect_timeout()
         )
     return _planner_pool
 
@@ -179,7 +181,18 @@ def planner_db_connect_error(exc: Exception) -> str | None:
         return (
             "Planner database is unreachable. Check network/VPN and SUPA_DB_URL in .env."
         )
+    if "connection pool exhausted" in msg:
+        return (
+            "Database connection pool is full — often during ERP sync or multiple page refreshes. "
+            "Wait for sync to finish, refresh once, or restart the app."
+        )
     return None
+
+
+def planner_configure_connection(conn) -> None:
+    """Interpret naive timestamps as Singapore wall clock on this session."""
+    with conn.cursor() as cur:
+        cur.execute("SET TIME ZONE 'Asia/Singapore'")
 
 
 def planner_get_conn():
@@ -197,7 +210,10 @@ def planner_get_conn():
                     except Exception:
                         pass
                 conn = pool.getconn()
+            planner_configure_connection(conn)
             return conn
+        except psycopg2.pool.PoolError as exc:
+            raise RuntimeError("connection pool exhausted") from exc
         except psycopg2.OperationalError as exc:
             last_exc = exc
             if attempt == 0:

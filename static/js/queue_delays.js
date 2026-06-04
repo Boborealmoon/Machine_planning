@@ -81,6 +81,24 @@ function queueDelaysIsoDate(value) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+function queueDelaysTodayDaySgt() {
+  const iso = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore' }).format(new Date());
+  return queueDelaysIsoDate(iso);
+}
+
+function queueDelaysDayDiff(fromDay, toDay) {
+  if (!fromDay || !toDay) return null;
+  return Math.floor((toDay.getTime() - fromDay.getTime()) / 86400000);
+}
+
+function queueDelaysCountdownDays(commitmentDate) {
+  const refDay = queueDelaysIsoDate(commitmentDate);
+  const today = queueDelaysTodayDaySgt();
+  if (!refDay || !today) return null;
+  const days = queueDelaysDayDiff(today, refDay);
+  return days == null ? null : Math.max(0, days);
+}
+
 function queueDelaysEndDay(value) {
   const text = queueDelaysNormalizeDateTimeText(value);
   if (!text) return null;
@@ -107,11 +125,11 @@ function queueDelaysApplyRisk(job, groupCoway, groupDue) {
     refDay = queueDelaysIsoDate(due);
   }
 
-  const pastCommitment = Boolean(
-    endDay && refDay && endDay.getTime() > refDay.getTime()
-  );
-  const delayDays = pastCommitment
-    ? Math.floor((endDay.getTime() - refDay.getTime()) / 86400000)
+  const dayDelta = queueDelaysDayDiff(endDay, refDay);
+  const pastCommitment = dayDelta != null && dayDelta < 0;
+  const delayDays = pastCommitment ? -dayDelta : 0;
+  const daysLeft = !pastCommitment && refDay
+    ? queueDelaysCountdownDays(commitmentDate)
     : 0;
 
   job.commitment_source = commitmentSource;
@@ -120,6 +138,7 @@ function queueDelaysApplyRisk(job, groupCoway, groupDue) {
   job.past_due = pastCommitment && commitmentSource === 'due';
   job.past_coway_edd = pastCommitment && commitmentSource === 'coway';
   job.delay_days = delayDays;
+  job.days_left = daysLeft;
   job.coway_delay_days = job.past_coway_edd ? delayDays : 0;
   job.at_risk = pastCommitment;
   return job;
@@ -162,13 +181,23 @@ function queueDelaysFormatDate(value) {
   return text.slice(0, 10);
 }
 
-function queueDelaysStatusHtml(job) {
+function queueDelaysDaysLeftLabel(days) {
+  const n = Number(days || 0);
+  return n === 1 ? '1 day left' : `${n}d left`;
+}
+
+function queueDelaysStatusHtml(job, options = {}) {
   if (!job.at_risk) {
+    const daysLeft = options.daysLeft != null ? options.daysLeft : job.days_left;
     const hint = job.commitment_source === 'coway'
-      ? 'Forecast end is on or before Coway EDD'
+      ? 'Calendar days until Coway EDD (SGT today → commitment). Late if forecast end is after commitment.'
       : (job.commitment_source === 'due'
-        ? 'Forecast end is on or before PS due'
+        ? 'Calendar days until PS due (SGT today → due). Late if forecast end is after due date.'
         : 'No commitment date to compare');
+    if (job.commitment_source) {
+      const label = queueDelaysDaysLeftLabel(daysLeft);
+      return `<span class="queue-delays-status is-ok" title="${escapeHtml(hint)}">${escapeHtml(label)}</span>`;
+    }
     return `<span class="queue-delays-status is-ok" title="${escapeHtml(hint)}">On track</span>`;
   }
   const days = Number(job.delay_days || 0);
@@ -182,9 +211,26 @@ function queueDelaysStatusHtml(job) {
   return `<span class="queue-delays-status is-past-due">${escapeHtml(dayLabel)}</span>`;
 }
 
+function queueDelaysGroupDaysLeft(group) {
+  const refDate = group.commitment_source === 'coway'
+    ? group.coway_edd
+    : (group.commitment_source === 'due' ? group.due_date : '');
+  return queueDelaysCountdownDays(refDate);
+}
+
 function queueDelaysGroupStatusHtml(group) {
   if (!group.at_risk) {
-    return `<span class="queue-delays-status is-ok" title="All queued ops on or before commitment">On track</span>`;
+    if (group.commitment_source) {
+      const daysLeft = queueDelaysGroupDaysLeft(group);
+      if (daysLeft != null && daysLeft >= 0) {
+        const hint = group.commitment_source === 'coway'
+          ? 'Calendar days until Coway EDD (SGT today → commitment)'
+          : 'Calendar days until PS due (SGT today → due date)';
+        const label = queueDelaysDaysLeftLabel(daysLeft);
+        return `<span class="queue-delays-status is-ok" title="${escapeHtml(hint)}">${escapeHtml(label)}</span>`;
+      }
+    }
+    return `<span class="queue-delays-status is-ok" title="All queued ops finish on or before commitment">On track</span>`;
   }
   const worst = group.worst_child;
   if (!worst) return queueDelaysStatusHtml({ at_risk: true, delay_days: group.max_delay_days, commitment_source: group.commitment_source });
@@ -283,6 +329,15 @@ function queueDelaysBuildGroups(jobs) {
     const psBase = queueDelaysPsBase(lead);
     const partialNo = queueDelaysPartialNo(lead);
     const commitmentSource = cowayEdd ? 'coway' : (dueDate ? 'due' : '');
+    const commitmentDate = cowayEdd || dueDate;
+    const groupDaysLeft = !atRisk && commitmentDate
+      ? queueDelaysCountdownDays(commitmentDate)
+      : null;
+    sortedChildren.forEach(child => {
+      if (!child.at_risk && groupDaysLeft != null) {
+        child.days_left = groupDaysLeft;
+      }
+    });
 
     return {
       planner_ps_id: plannerPsId,
@@ -291,6 +346,7 @@ function queueDelaysBuildGroups(jobs) {
       due_date: dueDate,
       coway_edd: cowayEdd,
       commitment_source: commitmentSource,
+      days_left: groupDaysLeft,
       children: sortedChildren,
       op_count: sortedChildren.length,
       at_risk: atRisk,
@@ -478,7 +534,7 @@ function queueDelaysRenderChildRow(job, siblings) {
       <td class="queue-delays-date queue-delays-end ${endClass}">${escapeHtml(queueDelaysFormatDt(job.end_at))}</td>
       <td class="queue-delays-date queue-delays-muted" title="See PS header">—</td>
       <td class="queue-delays-coway queue-delays-muted" title="Edit Coway EDD on PS header">—</td>
-      <td class="queue-delays-status-cell">${queueDelaysStatusHtml(job)}</td>
+      <td class="queue-delays-status-cell">${queueDelaysStatusHtml(job, { daysLeft: job.days_left })}</td>
     </tr>
   `;
 }

@@ -65,6 +65,27 @@ def planner_wall_datetime_from_input(value):
     return naive.replace(tzinfo=PLANNER_TZ)
 
 
+def planner_now_naive():
+    """Current Singapore wall clock as naive datetime (for schedule math)."""
+    return datetime.now(PLANNER_TZ).replace(tzinfo=None)
+
+
+def planner_today():
+    """Current calendar date in Singapore."""
+    return planner_now_naive().date()
+
+
+def planner_timestamptz_for_db(value):
+    """Bind a value for PostgreSQL TIMESTAMPTZ (always Asia/Singapore wall clock)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(PLANNER_TZ)
+        return value.replace(tzinfo=PLANNER_TZ)
+    return planner_wall_datetime_from_input(value)
+
+
 def compact_text(value):
     if value is None:
         return ""

@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 
 from .actuals import actual_totals_for_block
 from .helpers import one, rows, parse_dt_text
+from .utils import planner_now_naive, planner_timestamptz_for_db
 
 
 def _text(value):
@@ -238,7 +239,7 @@ def refresh_machine_queue_state(con, block_id, schedule_run_id=None):
         try:
             end_dt = parse_dt_text(planned_end)
             if end_dt:
-                now_dt = datetime.now()
+                now_dt = planner_now_naive()
                 if end_dt < now_dt and execution_status not in {"DONE", "COMPLETED"}:
                     is_late = True
                     delay_minutes = max(0.0, (now_dt - end_dt).total_seconds() / 60.0)
@@ -269,8 +270,8 @@ def refresh_machine_queue_state(con, block_id, schedule_run_id=None):
         (
             int(block_id),
             int(schedule_run_id) if schedule_run_id is not None else block["last_schedule_run_id"],
-            planned_start or None,
-            planned_end or None,
+            planner_timestamptz_for_db(planned_start),
+            planner_timestamptz_for_db(planned_end),
             remaining_qty,
             output_qty,
             reject_qty,

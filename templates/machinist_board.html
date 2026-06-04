@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Machine Queue Board{% endblock %}
+{% block body_class %}machinist-board{% endblock %}
+{% block main_class %}app-main--planner app-main--machinist{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=board-neutral-20260604">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/machinist_board.css') }}?v=compact-20260604">
+{% endblock %}
+{% block content %}
+<div class="trial-shell trial-shell--machinist">
+  <header class="machinist-board-head" aria-label="Machine queue board">
+    <div class="machinist-board-head-row">
+      <h1 class="machinist-board-title">Machine queue board</h1>
+      <span class="machinist-board-note">Read-only · auto-refresh</span>
+    </div>
+  </header>
+  <div id="trial-loading" class="loading"><div class="spinner"></div> Loading machine queues...</div>
+  <div class="trial-layout trial-layout--machinist" style="display:none;" id="trial-layout">
+    <div class="trial-main trial-main--machinist">
+      <div id="trial-machine-filter-shell"></div>
+      <div class="trial-grid-scroll-host">
+        <div class="trial-grid-scroll-top-wrap">
+          <div class="trial-grid-scroll-top" aria-label="Scroll machine lanes horizontally" title="Drag to scroll · Shift + wheel">
+            <div class="trial-grid-scroll-top-inner"></div>
+          </div>
+        </div>
+        <div class="trial-grid-scroll">
+          <div id="trial-grid" class="trial-grid"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>window.trialBoardMode = 'machinist';</script>
+<script src="{{ url_for('static', filename='js/scheduler/board_mode.js') }}?v=20260604"></script>
+<script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v=lane-height-viewport-20260529"></script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sgt-wall-clock-20260603"></script>
+<script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v=board-neutral-20260604"></script>
+<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=board-neutral-20260604"></script>
+<script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=load-perf-20260603"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  window.trialScheduleRenderHook = null;
+  trialMachineCategoryFilter = 'ALL';
+  trialScheduleDateFilter = trialResolvedScheduleDateFilterFromUrl();
+  loadTrial();
+  let _autoRefreshInFlight = false;
+  let _lastAutoRefreshAt = 0;
+  const AUTO_REFRESH_MS = 60000;
+  const MIN_REFRESH_GAP_MS = 15000;
+  const runAutoRefresh = async () => {
+    if (_autoRefreshInFlight) return;
+    const now = Date.now();
+    if ((now - _lastAutoRefreshAt) < MIN_REFRESH_GAP_MS) return;
+    _autoRefreshInFlight = true;
+    try {
+      await loadTrial({ force: true });
+      _lastAutoRefreshAt = Date.now();
+    } catch (_) {}
+    finally {
+      _autoRefreshInFlight = false;
+    }
+  };
+  window.addEventListener('focus', () => { runAutoRefresh(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') runAutoRefresh();
+  });
+  window.setInterval(() => {
+    if (document.visibilityState === 'visible') runAutoRefresh();
+  }, AUTO_REFRESH_MS);
+});
+</script>
+{% endblock %}

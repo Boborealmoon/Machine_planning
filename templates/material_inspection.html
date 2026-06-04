@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Material Inspection{% endblock %}
+{% block main_class %}app-main--material-inspection{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=responsive-layout-20260604">{% endblock %}
+{% block content %}
+<div class="mi-page">
+  <div class="mi-header">
+    <div>
+      <h1 class="mi-title">Material Inspection</h1>
+      <p class="mi-subtitle">QC job assignments linked to inbound shipment lines. Toggle outstanding <strong>R</strong> or historical <strong>H</strong>. Click a row for full detail. Sorted by newest created first.</p>
+    </div>
+    <div class="mi-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="mi-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="mi-toolbar card">
+    <div class="mi-filter mi-filter--view">
+      <span>View</span>
+      <div class="mi-view-toggle" role="tablist" aria-label="Material inspection view">
+        <button type="button" class="mi-view-btn is-active" id="mi-view-outstanding" data-mi-view="outstanding" role="tab" aria-selected="true">
+          Outstanding <span class="mi-status-pill mi-status-pill--r">R</span>
+        </button>
+        <button type="button" class="mi-view-btn" id="mi-view-historical" data-mi-view="historical" role="tab" aria-selected="false">
+          Historical <span class="mi-status-pill mi-status-pill--h">H</span>
+        </button>
+      </div>
+    </div>
+    <label class="mi-filter mi-filter--grow">
+      <span>Search</span>
+      <span class="planner-page-search-wrap">
+        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="mi-search" class="planner-page-search-input" type="search" placeholder="Inspection, GRN, part, shipment..." autocomplete="off">
+      </span>
+    </label>
+    <div class="mi-stats" id="mi-stats"></div>
+  </div>
+
+  <div id="mi-loading" class="loading"><div class="spinner"></div> Loading material inspection...</div>
+
+  <section class="mi-section card" id="mi-table-section" hidden>
+    <div class="mi-section-head">
+      <h2 class="mi-section-title" id="mi-section-title">Outstanding</h2>
+      <span class="mi-section-count" id="mi-row-count"></span>
+    </div>
+    <div class="mi-table-wrap">
+      <table class="mi-table">
+        <thead>
+          <tr>
+            <th>Created</th>
+            <th>Inspection</th>
+            <th>Source voucher</th>
+            <th>Seq</th>
+            <th>Shipment</th>
+            <th>Line</th>
+            <th>GRN</th>
+            <th>Inspector</th>
+            <th>Part</th>
+            <th>Description</th>
+            <th>DT type</th>
+            <th>Remarks</th>
+            <th>Created by</th>
+            <th>Updated</th>
+          </tr>
+        </thead>
+        <tbody id="mi-table-body"></tbody>
+      </table>
+    </div>
+    <p class="mi-section-empty" id="mi-table-empty" hidden>No rows match your search in this view.</p>
+  </section>
+
+  <div id="mi-global-empty" class="mi-global-empty card" hidden>
+    <p>No material inspection rows in this view.</p>
+  </div>
+  <p class="mi-meta" id="mi-meta" hidden></p>
+</div>
+
+<div id="mi-detail" class="mi-detail" hidden>
+  <div class="mi-detail-backdrop" data-action="close-detail" aria-hidden="true"></div>
+  <aside class="mi-detail-panel" role="dialog" aria-modal="true" aria-labelledby="mi-detail-title">
+    <div class="mi-detail-head">
+      <div>
+        <p class="mi-detail-kicker">Inspection detail</p>
+        <h2 class="mi-detail-title" id="mi-detail-title"></h2>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="mi-detail-close" aria-label="Close">Close</button>
+    </div>
+    <div class="mi-detail-body" id="mi-detail-body"></div>
+    <p class="mi-detail-foot">Source: live COMAIN ERP read · short-lived server cache</p>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=material-inspection-detail-20260604"></script>
+<script src="{{ url_for('static', filename='js/material_inspection.js') }}?v=material-inspection-detail-20260604"></script>
+{% endblock %}

@@ -1,4 +1,8 @@
 {% extends "base.html" %}
+{% block main_class %}app-main--planner{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=temp-ps-ps-page-20260604">
+{% endblock %}
 {% block content %}
 
 <div class="page">
@@ -6,15 +10,27 @@
     <h1 class="page-title">Process Sheets</h1>
     <div class="page-actions">
       <a class="btn btn-light" href="/scheduler">Open Planner</a>
+      <button class="btn btn-light" type="button" id="ps-create-temp-btn" title="Create a [Temp] process sheet for reject/rework qty">+ Create temp PS</button>
       <button class="btn btn-dark" id="ps-refresh-btn" type="button">Refresh From Cache</button>
     </div>
   </div>
 
-  <section class="section">
+  <nav class="ps-view-tabs" aria-label="Process sheet views">
+    <button type="button" class="ps-view-tab is-active" data-ps-view="queue" id="ps-tab-queue">
+      Production queue
+    </button>
+    <button type="button" class="ps-view-tab" data-ps-view="temp" id="ps-tab-temp">
+      Temp reject PS
+      <span class="ps-view-tab-count" id="ps-temp-tab-count" hidden>0</span>
+    </button>
+  </nav>
+
+  <section class="section ps-view-panel" id="ps-view-queue">
     <div class="section-heading">
       <h2 class="section-title">Active Job Control</h2>
       <p class="section-desc">
-        Plan from one queue: open partials, PO timing, Coway EDD, and whether each line is queued on the machine plan or still needs scheduling.
+        ERP and planner lines including <strong>[Temp]</strong> when enabled in filters below.
+        Use filter <strong>[Temp] only</strong> to focus reject/rework copies in this queue.
       </p>
     </div>
 
@@ -33,7 +49,7 @@
           <input type="text" class="search-input" id="ps-search" placeholder="Search PS, part, PO, description… (comma-separated)" />
         </div>
         <div class="filter-dropdown" id="ps-type-dropdown">
-          <button class="filter-dropdown-btn" type="button" id="ps-type-btn">APS, NPS, [SR] ▾</button>
+          <button class="filter-dropdown-btn" type="button" id="ps-type-btn">APS, NPS, [SR], [Temp] ▾</button>
           <div class="filter-dropdown-panel" id="ps-type-panel" hidden>
             <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
             <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
@@ -41,8 +57,15 @@
             <label class="filter-dropdown-item"><input type="checkbox" value="SR" checked /> [SR]</label>
             <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
             <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
+            <label class="filter-dropdown-item filter-dropdown-item--sep" aria-hidden="true"></label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="TEMP" checked /> [Temp]</label>
           </div>
         </div>
+        <select class="filter-select" id="ps-temp-filter" title="Filter reject/rework temp process sheets">
+          <option value="all" selected>All PS lines</option>
+          <option value="temp_only">[Temp] only</option>
+          <option value="hide_temp">Hide [Temp]</option>
+        </select>
         <select class="filter-select" id="ps-queue-filter">
           <option value="">All queue states</option>
           <option value="unqueued" selected>Needs scheduling</option>
@@ -68,6 +91,7 @@
         <span><span class="ps-planning-flag is-needs"></span> Not on machine queue</span>
         <span><span class="ps-planning-flag is-queued"></span> Queued on planner</span>
         <span><span class="ps-planning-flag is-overdue"></span> Past PO due date</span>
+        <span><span class="ps-temp-badge ps-temp-badge--legend">[Temp]</span> Reject / rework copy</span>
       </div>
     </div>
 
@@ -82,9 +106,50 @@
       </div>
     </div>
   </section>
+
+  <section class="section ps-view-panel" id="ps-view-temp" hidden>
+    <div class="section-heading">
+      <h2 class="section-title">Temp reject / rework PS</h2>
+      <p class="section-desc">
+        All sustained <strong>[Temp]</strong> lines from <code>planner_temp_process_sheet</code> (saved in Supabase).
+        These are also in the production queue when you enable the [Temp] type filter.
+      </p>
+    </div>
+    <div class="card">
+      <div class="card-bar">
+        <span class="card-label">TEMP TRACKER</span>
+        <span class="card-hint" id="ps-temp-tracker-hint">Loading…</span>
+      </div>
+      <div class="filters-row ps-temp-tracker-filters">
+        <div class="search-wrap">
+          <svg class="search-icon" viewBox="0 0 16 16" fill="none">
+            <circle cx="6.5" cy="6.5" r="5" stroke="#999" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="#999" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input type="text" class="search-input" id="ps-temp-search" placeholder="Search temp PS, source, part…" />
+        </div>
+        <select class="filter-select" id="ps-temp-queue-filter">
+          <option value="">All</option>
+          <option value="unqueued">Needs scheduling</option>
+          <option value="queued">On planner</option>
+        </select>
+        <button type="button" class="btn btn-light btn-sm" id="ps-temp-refresh-btn">Refresh list</button>
+        <button type="button" class="btn btn-dark btn-sm" id="ps-temp-create-btn">Create temp PS</button>
+      </div>
+      <div id="ps-temp-tracker" class="ps-temp-tracker">
+        <div class="queue-empty">Loading temp process sheets…</div>
+      </div>
+    </div>
+  </section>
 </div>
+
+<div id="trial-modal-shell"></div>
 
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/process_sheets.js', v='remarks-save-20260604') }}"></script>
+<script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=temp-ps-fix-20260604"></script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=temp-ps-ps-page-20260604"></script>
+<script src="{{ url_for('static', filename='js/scheduler/modals.js') }}?v=temp-ps-fix-20260604"></script>
+<script src="{{ url_for('static', filename='js/scheduler/temp_ps.js') }}?v=temp-ps-fix-20260604"></script>
+<script src="{{ url_for('static', filename='js/process_sheets.js', v='temp-ps-fix-20260604') }}"></script>
 {% endblock %}

@@ -24,6 +24,9 @@ function trialBlockPsDisplay(group, leader) {
     .map(v => String(v || '').trim())
     .filter(Boolean);
   const raw = candidates.find(v => v.includes('::')) || candidates[0] || '';
+  if (raw.startsWith('[Temp]')) {
+    return { base: trialTempPsDisplayId(raw), partial: '' };
+  }
   const parsed = trialSplitPsId(raw);
   return { base: parsed.base || raw, partial: parsed.partial || '' };
 }
@@ -867,12 +870,16 @@ function renderTrialOpCardHtml(card) {
   }
   const opLabel = String(card.operation_label || '').trim();
   const showOpName = opName && opName !== opLabel;
+  const isManualBom = trialCatalogOpIsManualBom(card);
+  const manualBomBadge = isManualBom
+    ? '<span class="trial-catalog-manual-bom-badge" title="Manual BOM step — always shown in catalog">Manual</span>'
+    : '';
   const uncombineBtn = isGroup && !isScheduled
     ? `<button class="trial-catalog-op-uncombine" type="button" aria-label="Uncombine" title="Uncombine"
         onclick="deleteTrialPlanningCard(${Number(card.card_id || 0)})">×</button>`
     : '';
   return `
-    <div class="trial-catalog-op trial-planning-card trial-catalog-op--compact trial-catalog-op--clickable ${isScheduled ? 'is-scheduled' : ''} ${isAllocated ? 'is-allocated' : ''} ${isPartiallyAllocated ? 'is-partially-allocated' : ''}"
+    <div class="trial-catalog-op trial-planning-card trial-catalog-op--compact trial-catalog-op--clickable ${isScheduled ? 'is-scheduled' : ''} ${isAllocated ? 'is-allocated' : ''} ${isPartiallyAllocated ? 'is-partially-allocated' : ''} ${isManualBom ? 'is-manual-bom' : ''}"
       draggable="false"
       title="${isPartiallyAllocated
         ? `Click for details · drag remainder (${schedulableRemaining} pcs) to another machine`
@@ -913,6 +920,7 @@ function renderTrialOpCardHtml(card) {
       </div>
       ${showOpName ? `<div class="trial-catalog-op-detail">${escapeHtml(opName)}</div>` : ''}
       <div class="trial-catalog-op-footer">
+        ${manualBomBadge}
         ${trialProgramToolsCompactHtml(card)}
         ${isAllocated
           ? `${trialRenderQueuedMachinePills(queuedMachines, {
@@ -1073,13 +1081,19 @@ function trialRenderCompactBlockCard(vm) {
   const dueDate = String(trialDueDateForPs(vm.psDueKey) || '').trim();
   const dayDiff = dueDate ? trialDateDiffDays(dueDate) : null;
   const dueClass = dayDiff == null ? '' : (dayDiff < 0 ? 'is-overdue' : (dayDiff <= 7 ? 'is-due-soon' : 'is-normal'));
+  const readOnly = typeof trialIsReadOnlyBoard === 'function' && trialIsReadOnlyBoard();
+  const clickableClass = readOnly ? '' : ' trial-block-card--clickable';
+  const cardTitle = readOnly ? 'Scheduled job' : 'Click for details · drag edge to move';
+  const dragHtml = readOnly
+    ? ''
+    : '<div class="trial-block-compact-drag" title="Drag to reorder or move to another machine"></div>';
   return `
-    <div class="trial-block-card trial-block-card--compact trial-block-card--clickable ${vm.isCombined ? 'combined' : ''}"
+    <div class="trial-block-card trial-block-card--compact${clickableClass}${readOnly ? ' trial-block-card--readonly' : ''} ${vm.isCombined ? 'combined' : ''}"
       data-block-id="${leader?.block_id || ''}"
       data-group-id="${vm.group.group_id || 0}"
       data-block-ids="${vm.groupBlockIds}"
-      title="Click for details · drag edge to move">
-      <div class="trial-block-compact-drag" title="Drag to reorder or move to another machine"></div>
+      title="${escapeHtml(cardTitle)}">
+      ${dragHtml}
       <div class="trial-block-compact-body">
         <div class="trial-block-compact-top">
           ${vm.sequenceNo ? `<span class="trial-block-seq">#${vm.sequenceNo}</span>` : ''}
@@ -1196,6 +1210,101 @@ function trialRenderQueueListHeader() {
   `;
 }
 
+function renderTrialMachineBoardSubgroup(subgroup) {
+  if (!subgroup?.machines?.length) return '';
+  const hint = String(subgroup.hint || '').trim();
+  const title = String(subgroup.title || '').trim();
+  const showHint = hint && hint.toLowerCase() !== title.toLowerCase();
+  return `
+    <div class="trial-machine-board-subgroup${subgroup.fallback ? ' is-fallback' : ''}"
+      data-board-subgroup="${escapeHtml(subgroup.id)}">
+      <div class="trial-machine-board-subgroup-head" title="${escapeHtml(hint || title)}">
+        <span class="trial-machine-board-subgroup-title">${escapeHtml(title || 'Subgroup')}</span>
+        ${showHint ? `<span class="trial-machine-board-subgroup-hint">${escapeHtml(hint)}</span>` : ''}
+      </div>
+      <div class="trial-machine-board-subgroup-lanes">
+        ${subgroup.machines.map(renderTrialMachine).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderTrialMachineLaneGroup(group) {
+  const flatMachines = group?.machines || [];
+  const subgroups = Array.isArray(group?.subgroups) ? group.subgroups : [];
+  if (!group?.grouped || !group.label) {
+    return flatMachines.map(renderTrialMachine).join('');
+  }
+  const laneHtml = subgroups.length
+    ? subgroups.map(renderTrialMachineBoardSubgroup).join('')
+    : flatMachines.map(renderTrialMachine).join('');
+  const subgroupedClass = subgroups.length ? ' trial-machine-board-group-lanes--subgrouped' : '';
+  const chromeExpanded = typeof trialIsBoardGroupChromeExpanded === 'function'
+    && trialIsBoardGroupChromeExpanded(group.id);
+  const machineCount = typeof trialBoardGroupMachineCount === 'function'
+    ? trialBoardGroupMachineCount(group)
+    : 0;
+  const countLabel = machineCount
+    ? `${machineCount} machine${machineCount === 1 ? '' : 's'}`
+    : '';
+  return `
+    <div class="trial-machine-board-group${chromeExpanded ? ' is-chrome-expanded' : ''}" data-board-group="${escapeHtml(group.id)}">
+      <button type="button" class="trial-machine-board-group-head"
+        data-board-group-toggle="${escapeHtml(group.id)}"
+        aria-expanded="${chromeExpanded ? 'true' : 'false'}"
+        title="${escapeHtml(chromeExpanded ? `Hide ${group.label} section labels` : `Show ${group.label} section labels`)}">
+        <span class="trial-machine-board-group-caret" aria-hidden="true"></span>
+        <span class="trial-machine-board-group-label">${escapeHtml(group.label)}</span>
+        ${countLabel ? `<span class="trial-machine-board-group-count">${escapeHtml(countLabel)}</span>` : ''}
+      </button>
+      <div class="trial-machine-board-group-lanes${subgroupedClass}">
+        ${laneHtml}
+      </div>
+    </div>
+  `;
+}
+
+function trialApplyBoardGroupChrome(groupEl, chromeExpanded) {
+  if (!groupEl) return;
+  const btn = groupEl.querySelector('[data-board-group-toggle]');
+  groupEl.classList.toggle('is-chrome-expanded', chromeExpanded);
+  if (btn) {
+    btn.setAttribute('aria-expanded', chromeExpanded ? 'true' : 'false');
+    const label = groupEl.querySelector('.trial-machine-board-group-label')?.textContent?.trim() || 'group';
+    btn.title = chromeExpanded ? `Hide ${label} section labels` : `Show ${label} section labels`;
+  }
+}
+
+function trialBindBoardGroupCollapse() {
+  const grid = document.getElementById('trial-grid');
+  if (!grid || grid.dataset.boardGroupCollapseBound === '1') return;
+  grid.dataset.boardGroupCollapseBound = '1';
+  grid.addEventListener('click', e => {
+    const btn = e.target.closest('[data-board-group-toggle]');
+    if (!btn || !grid.contains(btn)) return;
+    e.preventDefault();
+    const groupId = btn.dataset.boardGroupToggle || '';
+    const chromeExpanded = typeof trialToggleBoardGroupChromeExpanded === 'function'
+      ? trialToggleBoardGroupChromeExpanded(groupId)
+      : false;
+    trialApplyBoardGroupChrome(btn.closest('.trial-machine-board-group'), chromeExpanded);
+    if (typeof trialSyncMachineGridScrollWidth === 'function') {
+      window.requestAnimationFrame(trialSyncMachineGridScrollWidth);
+    }
+  });
+}
+
+function renderTrialMachineGridHtml() {
+  const groups = trialVisibleMachinesGrouped();
+  const useGroupedLayout = trialShouldGroupMachineLanes()
+    && groups.some(group => group.grouped && group.label);
+  if (!useGroupedLayout) {
+    const flat = groups[0]?.machines || trialVisibleMachines();
+    return flat.map(renderTrialMachine).join('');
+  }
+  return groups.map(renderTrialMachineLaneGroup).join('');
+}
+
 function renderTrialMachine(machine) {
   const allGroups = trialBlocksGroupedForMachine(machine.machine_id)
     .filter(group => !trialGroupCompletedForQueue(group));
@@ -1221,22 +1330,29 @@ function renderTrialMachine(machine) {
     )).join('')
     : `<div class="trial-empty">${escapeHtml(trialMachineLaneEmptyMessage(allGroups.length, groups.length))}</div>`;
 
+  const readOnly = typeof trialIsReadOnlyBoard === 'function' && trialIsReadOnlyBoard();
+  const headMainAttrs = readOnly
+    ? ''
+    : ` role="button" tabindex="0"
+          onclick="openTrialMachineQueue(${machine.machine_id})"
+          onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openTrialMachineQueue(${machine.machine_id}); }"
+          title="Open full queue"`;
+  const headActionsHtml = readOnly
+    ? ''
+    : `<div class="trial-machine-head-actions">
+          <button class="btn btn-ghost btn-sm" type="button" onclick="event.stopPropagation(); openTrialMachineQueue(${machine.machine_id})">Queue</button>
+          ${staleBadge ? `<button class="btn btn-primary btn-sm" type="button" onclick="event.stopPropagation(); trialRecalculateSingleMachine(${machine.machine_id})">Recalc</button>` : ''}
+        </div>`;
   return `
     <section class="trial-machine" data-machine-id="${machine.machine_id}">
       <div class="trial-machine-head">
-        <div class="trial-machine-head-main" role="button" tabindex="0"
-          onclick="openTrialMachineQueue(${machine.machine_id})"
-          onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openTrialMachineQueue(${machine.machine_id}); }"
-          title="Open full queue">
+        <div class="trial-machine-head-main"${headMainAttrs}>
           <div class="trial-machine-title">${machine.machine_code}</div>
           <div class="trial-machine-meta">${machine.machine_category} - ${machine.shift_profile || 'STANDARD'}</div>
           <div class="trial-machine-queue-summary">${queueSummary}</div>
-          ${staleBadge}
+          ${readOnly ? '' : staleBadge}
         </div>
-        <div class="trial-machine-head-actions">
-          <button class="btn btn-ghost btn-sm" type="button" onclick="event.stopPropagation(); openTrialMachineQueue(${machine.machine_id})">Queue</button>
-          ${staleBadge ? `<button class="btn btn-primary btn-sm" type="button" onclick="event.stopPropagation(); trialRecalculateSingleMachine(${machine.machine_id})">Recalc</button>` : ''}
-        </div>
+        ${headActionsHtml}
       </div>
       ${availabilityTag}
       <div class="trial-lane" id="${laneId}" data-machine-id="${machine.machine_id}">
@@ -1354,28 +1470,45 @@ function renderTrial(options = {}) {
   if (typeof destroyTrialSortables === 'function') destroyTrialSortables();
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'destroy-sortables');
   const filterShell = document.getElementById('trial-machine-filter-shell');
+  const machinist = typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
   if (filterShell) {
-    filterShell.innerHTML = `
-      <div class="trial-board-filter-card">
-        <div class="trial-board-filter-row trial-board-filter-row--primary">
-          ${renderTrialMachineTypeFilter()}
-          ${renderTrialScheduleDateFilter()}
-          <button type="button" class="btn btn-ghost btn-sm trial-shop-calendar-btn"
-            onclick="openTrialCapacityModal()"
-            title="Shop working hours, holidays, and capacity overrides">
-            Shop calendar
-          </button>
+    if (machinist) {
+      filterShell.innerHTML = '';
+    } else {
+      filterShell.innerHTML = `
+        <div class="trial-board-filter-card">
+          <div class="trial-board-filter-row trial-board-filter-row--primary">
+            ${renderTrialMachineTypeFilter()}
+            ${renderTrialScheduleDateFilter()}
+            <button type="button" class="btn btn-ghost btn-sm trial-shop-calendar-btn"
+              onclick="openTrialCapacityModal()"
+              title="Shop working hours, holidays, and capacity overrides">
+              Shop calendar
+            </button>
+            <button type="button" class="btn btn-ghost btn-sm"
+              onclick="trialExportBoardToExcel()"
+              title="Download lane board as Excel (matches shop-floor layout)">
+              Export Excel
+            </button>
+            ${String(window.trialMachinistBoardUrl || '').trim() ? `
+            <a href="${String(window.trialMachinistBoardUrl).trim()}" target="_blank" rel="noopener"
+              class="btn btn-ghost btn-sm trial-machinist-view-link"
+              title="Open read-only lane board for shop floor">
+              Machinist view
+            </a>` : ''}
+          </div>
+          ${renderTrialMachineCheckboxFilter()}
         </div>
-        ${renderTrialMachineCheckboxFilter()}
-      </div>
-    `;
+      `;
+    }
   }
   const visibleMachines = trialVisibleMachines();
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'compute-visible-machines', { visible_machines: visibleMachines.length });
   }
+  grid.classList.toggle('trial-grid--grouped', trialShouldGroupMachineLanes());
   grid.innerHTML = visibleMachines.length
-    ? visibleMachines.map(renderTrialMachine).join('')
+    ? renderTrialMachineGridHtml()
     : `<div class="trial-empty">No machines found for ${escapeHtml(trialMachineCategoryFilter)}.</div>`;
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'render-machine-grid-html');
   const layout = document.getElementById('trial-layout');
@@ -1395,6 +1528,7 @@ function renderTrial(options = {}) {
   if (typeof bindTrialLaneBlockClicks === 'function') bindTrialLaneBlockClicks();
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'bind-lane-block-clicks');
   trialBindMachineGridScroll();
+  trialBindBoardGroupCollapse();
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'bind-grid-scroll');
   const reopenQueueId = trialOpenQueueMachineId;
   if (reopenQueueId && typeof openTrialMachineQueue === 'function') {
@@ -1489,8 +1623,18 @@ function trialPsRollupExecStatus(ps) {
   return ps?.current_stage_status || ps?.execution_status || statuses[0] || '';
 }
 
+function trialCatalogOpIsManualBom(card) {
+  if (!card) return false;
+  const stageNo = Number(card.source_stage_no ?? card.op?.source_stage_no ?? 0);
+  if (stageNo > 0) return false;
+  if (card.is_manual_bom) return true;
+  const kind = String(card.source_kind || card.op?.source_kind || '').trim().toUpperCase();
+  return kind === 'MANUAL' && Boolean(String(card.operation_name || card.op?.op_type || '').trim());
+}
+
 /** True when an op card still belongs in the planner catalog (not fully done). */
 function trialCatalogOpIsOpen(card) {
+  if (trialCatalogOpIsManualBom(card)) return true;
   const exec = trialNormalizeExecStatus(trialCatalogOpExecStatus(card));
   const remaining = Number(card?.remaining_qty ?? card?.target_qty ?? 0);
   if (remaining > 0.0001) return true;
@@ -1503,6 +1647,7 @@ function trialCatalogOpIsOpen(card) {
 
 function trialCatalogOpOpenProbe(op) {
   if (!op || typeof op !== 'object') return false;
+  if (String(op.source_kind || '').toUpperCase() === 'MANUAL') return true;
   return trialCatalogOpIsOpen({
     execution_status: op.execution_status || op.op?.execution_status || '',
     remaining_qty: op.remaining_qty,
@@ -1554,6 +1699,7 @@ function trialRenderCatalogOpStatusStrip(ps) {
 }
 
 function trialCatalogPartialLabel(ps, siblingCountByBase) {
+  if (ps?.is_temp_ps) return 'Reject rework';
   const psId = String(ps.ps_id || '');
   let partialNo = Number(ps.pp_partial_no);
   if (!Number.isFinite(partialNo) || partialNo < 1) {
@@ -1566,7 +1712,7 @@ function trialCatalogPartialLabel(ps, siblingCountByBase) {
 }
 
 function trialCatalogPsSummaryHtml(ps, siblingCountByBase) {
-  const basePsId = String(ps.ps_id || '').split('::')[0] || ps.ps_id || '';
+  const basePsId = String(ps.display_ps_id || ps.ps_id || '').split('::')[0] || ps.ps_id || '';
   const partialText = trialCatalogPartialLabel(ps, siblingCountByBase);
   const dueDate = ps.due_date || 'No due date';
   const execStatus = trialPsRollupExecStatus(ps);
@@ -1956,7 +2102,7 @@ function renderTrialCatalog() {
   const catalogWithOpenOps = catalog.filter(ps => {
     if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
     const cards = cachedResolvedCards(ps);
-    const hasOpenOps = cards.some(card => trialCatalogOpIsOpen(card) || isOpAllocated(card))
+    const hasOpenOps = cards.some(card => trialCatalogOpIsOpen(card) || trialCatalogOpIsManualBom(card) || isOpAllocated(card))
       || trialCatalogPsHasOpenOps(ps);
     if (!trialShowCompleted) return hasOpenOps;
     // Show completed on: include shipped jobs and any PS with stage rows for reference.
@@ -1969,7 +2115,7 @@ function renderTrialCatalog() {
     const basePsId = psIdParts[0] || ps.ps_id || '';
     const cards = cachedResolvedCards(ps);
     const opCardsHtml = cards
-      .filter(card => trialCatalogOpIsOpen(card) || isOpAllocated(card))
+      .filter(card => trialCatalogOpIsOpen(card) || trialCatalogOpIsManualBom(card) || isOpAllocated(card))
       .map(card => renderTrialOpCardHtml({
         ...card,
         is_allocated: isOpAllocated(card),
@@ -1993,7 +2139,7 @@ function renderTrialCatalog() {
   const plannedWithOpenOps = plannedCatalog.filter(ps => {
     if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
     const cards = cachedResolvedCards(ps);
-    const hasOpenOps = cards.some(card => trialCatalogOpIsOpen(card) || isOpAllocated(card));
+    const hasOpenOps = cards.some(card => trialCatalogOpIsOpen(card) || trialCatalogOpIsManualBom(card) || isOpAllocated(card));
     if (hasOpenOps) return true;
     // Other PS: show header-only rows (no work orders) when not hiding unassigned.
     return !trialHideBlankPs && !(ps.op_cards || []).length;
@@ -2015,7 +2161,7 @@ function renderTrialCatalog() {
       ${trialCatalogBomBarHtml(ps)}
       <div class="trial-catalog-oplist">
         ${cachedResolvedCards(ps)
-          .filter(card => trialCatalogOpIsOpen(card) || isOpAllocated(card))
+          .filter(card => trialCatalogOpIsOpen(card) || trialCatalogOpIsManualBom(card) || isOpAllocated(card))
           .map(card => renderTrialOpCardHtml({
             ...card,
             is_allocated: isOpAllocated(card),

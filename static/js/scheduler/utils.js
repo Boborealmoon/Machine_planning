@@ -9,6 +9,13 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function fmt(value, decimals) {
+  return Number(value).toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+
 function trialFormatDt(value) {
   if (!value) return '—';
   let text = String(value).replace('T', ' ');
@@ -63,6 +70,13 @@ function trialSplitPsId(value) {
   if (!raw) return { base: '', partial: '' };
   const parts = raw.split('::');
   return { base: parts[0] || raw, partial: parts[1] || '' };
+}
+
+function trialTempPsDisplayId(psId) {
+  const raw = String(psId || '').trim();
+  if (!raw.startsWith('[Temp]')) return raw;
+  const body = raw.slice('[Temp]'.length);
+  return body ? `[Temp] ${body}` : raw;
 }
 
 function trialMachineCategoryLabel(category) {

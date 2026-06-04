@@ -1,3 +1,50 @@
+// Mobile navigation drawer
+(function initMobileNav() {
+  const nav = document.getElementById("site-navbar");
+  const btn = document.getElementById("navbar-menu-btn");
+  const backdrop = document.getElementById("navbar-backdrop");
+  const panel = document.getElementById("navbar-nav-panel");
+  if (!nav || !btn || !panel) return;
+
+  const mq = window.matchMedia("(max-width: 1024px)");
+
+  const closeMenu = () => {
+    nav.classList.remove("is-menu-open");
+    btn.setAttribute("aria-expanded", "false");
+    btn.setAttribute("aria-label", "Open navigation menu");
+    document.body.classList.remove("navbar-menu-open");
+    if (backdrop) backdrop.hidden = true;
+  };
+
+  const openMenu = () => {
+    if (!mq.matches) return;
+    nav.classList.add("is-menu-open");
+    btn.setAttribute("aria-expanded", "true");
+    btn.setAttribute("aria-label", "Close navigation menu");
+    document.body.classList.add("navbar-menu-open");
+    if (backdrop) backdrop.hidden = false;
+  };
+
+  btn.addEventListener("click", () => {
+    if (nav.classList.contains("is-menu-open")) closeMenu();
+    else openMenu();
+  });
+
+  backdrop?.addEventListener("click", closeMenu);
+
+  panel.querySelectorAll(".nav-link, .nav-dropdown-item").forEach((el) => {
+    el.addEventListener("click", closeMenu);
+  });
+
+  mq.addEventListener("change", (e) => {
+    if (!e.matches) closeMenu();
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeMenu();
+  });
+})();
+
 // Navbar dropdowns
 document.querySelectorAll(".nav-dropdown-trigger").forEach((trigger) => {
   trigger.addEventListener("click", (e) => {

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Queue Delays{% endblock %}
 {% block main_class %}app-main--queue-delays{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=toolbar-search-20260603">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=responsive-layout-20260604">{% endblock %}
 {% block content %}
 <div class="queue-delays-page">
   <div class="queue-delays-header">
@@ -79,5 +79,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=queue-delays-20260603"></script>
-<script src="{{ url_for('static', filename='js/queue_delays.js') }}?v=queue-delays-sgt-20260603"></script>
+<script src="{{ url_for('static', filename='js/queue_delays.js') }}?v=queue-delays-countdown-sgt-20260604"></script>
 {% endblock %}

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Production Planner{% endblock %}
 {% block main_class %}app-main--planner{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=catalog-queue-pill-fix-20260603">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=board-neutral-20260604">{% endblock %}
 {% block content %}
 <div class="trial-shell">
   <div class="trial-top-strip">
@@ -62,6 +62,12 @@
             >
               <span aria-hidden="true">›</span>
             </button>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm trial-sidebar-head-btn"
+              onclick="openTempProcessSheetModal()"
+              title="Create a [Temp] process sheet for reject/rework qty"
+            >Temp PS</button>
             <button id="trial-completed-toggle" class="btn btn-ghost btn-sm trial-sidebar-head-btn" type="button" onclick="toggleTrialCompletedCatalog()">Completed</button>
           </div>
         </div>
@@ -87,17 +93,21 @@
 
 {% endblock %}
 {% block scripts %}
+<script>window.trialMachinistBoardUrl = {{ machinist_board_path|tojson }};</script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script src="{{ url_for('static', filename='js/scheduler/board_mode.js') }}?v=20260604"></script>
 <script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v=lane-height-viewport-20260529"></script>
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sgt-wall-clock-20260603"></script>
-<script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v=dedupe-queue-guard-20260603"></script>
+<script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v=board-neutral-20260604"></script>
 <script src="{{ url_for('static', filename='js/scheduler/program_tools.js') }}?v=lane-height-viewport-20260529"></script>
-<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=catalog-partial-shipped-20260603"></script>
+<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=machinist-url-20260604"></script>
 <script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=load-perf-20260603"></script>
 <script src="{{ url_for('static', filename='js/scheduler/bom.js') }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/dnd.js') }}?v=dedupe-queue-guard-20260603"></script>
 <script src="{{ url_for('static', filename='js/scheduler/actuals.js') }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/modals.js') }}?v=dedupe-client-delete-20260603"></script>
+<script src="{{ url_for('static', filename='js/scheduler/temp_ps.js') }}?v=temp-ps-combobox-20260604"></script>
+<script src="{{ url_for('static', filename='js/scheduler/export.js') }}?v=20260604"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   window.trialScheduleRenderHook = null;
@@ -138,6 +148,18 @@ document.addEventListener('DOMContentLoaded', () => {
   const MIN_W = 176;
   const MAX_W = 480;
 
+  function sidebarWidthLimits() {
+    const w = window.innerWidth;
+    if (w <= 640) return { min: 200, max: 280, def: 228 };
+    if (w <= 1024) return { min: 220, max: 300, def: 252 };
+    return { min: MIN_W, max: MAX_W, def: DEFAULT_W };
+  }
+
+  function clampSidebarWidth(px) {
+    const { min, max } = sidebarWidthLimits();
+    return Math.min(max, Math.max(min, px));
+  }
+
   const layout = document.getElementById('trial-layout');
   const handle = document.getElementById('trial-resize-handle');
   const sidebar = document.getElementById('trial-sidebar');
@@ -168,9 +190,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (!handle) return;
 
+  const limits = sidebarWidthLimits();
   const saved = parseInt(localStorage.getItem(STORAGE_KEY), 10);
-  const width = saved >= MIN_W && saved <= MAX_W ? saved : DEFAULT_W;
+  const width = clampSidebarWidth(
+    !isNaN(saved) ? saved : limits.def
+  );
   layout.style.setProperty('--sidebar-w', width + 'px');
+
+  window.addEventListener('resize', () => {
+    if (isSidebarCollapsed()) return;
+    const current = parseFloat(layout.style.getPropertyValue('--sidebar-w'));
+    if (!isNaN(current)) {
+      layout.style.setProperty('--sidebar-w', clampSidebarWidth(current) + 'px');
+    }
+  });
 
   let startX = 0;
   let startW = 0;
@@ -186,7 +219,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function onMove(e) {
       const delta = startX - e.clientX;
-      const newW = Math.min(MAX_W, Math.max(MIN_W, startW + delta));
+      const { min, max } = sidebarWidthLimits();
+      const newW = Math.min(max, Math.max(min, startW + delta));
       layout.style.setProperty('--sidebar-w', newW + 'px');
     }
 
