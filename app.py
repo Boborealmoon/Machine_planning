@@ -713,8 +713,6 @@ def _enrich_pp_vouchers_planner_data(entries):
         wo_flags = wo_completion.get((source_ps_id, partial_no), {})
         entry["erp_wo_stage_count"] = int(wo_flags.get("erp_wo_stage_count") or 0)
         entry["erp_all_wo_complete"] = bool(wo_flags.get("erp_all_wo_complete"))
-        if entry["erp_all_wo_complete"]:
-            entry["execution_completed"] = True
 
     return entries
 
@@ -823,38 +821,45 @@ def api_pp_vouchers_with_ops():
 def api_process_sheets_board():
     """Single round-trip for Process Sheets: planner rows + ERP-only vouchers."""
     from planning.helpers import planner_db
-    from planning.process_sheets import list_process_sheets_payload, process_sheet_board_identity_key
+    from planning.process_sheets import (
+        enrich_board_planner_fields,
+        list_process_sheets_payload,
+        process_sheet_board_identity_key,
+    )
     from planning.utils import compact_text
 
     try:
         with planner_db() as con:
             planner_items = list_process_sheets_payload(con)
-        planner_keys = {process_sheet_board_identity_key(item) for item in planner_items}
-        include_completed = _pp_vouchers_include_completed()
-        refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
-        scope = _pp_vouchers_cache_scope(include_completed)
-        if refresh:
-            cache_rows = _fetch_pp_vouchers_cache_rows(include_completed)
-            erp_data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
-            _store_pp_vouchers_with_ops_cache(scope, erp_data)
-        else:
-            now = time.monotonic()
-            with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-                bucket = _PP_VOUCHERS_WITH_OPS_CACHE.get(scope) or {}
-                erp_data = bucket.get("data")
-                if erp_data is None or now >= float(bucket.get("expires_at") or 0):
-                    erp_data = None
-            if erp_data is None:
+            planner_keys = {process_sheet_board_identity_key(item) for item in planner_items}
+            include_completed = _pp_vouchers_include_completed()
+            refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
+            scope = _pp_vouchers_cache_scope(include_completed)
+            if refresh:
                 cache_rows = _fetch_pp_vouchers_cache_rows(include_completed)
                 erp_data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
                 _store_pp_vouchers_with_ops_cache(scope, erp_data)
-        if not include_completed:
-            erp_data = [entry for entry in erp_data if not entry.get("shipped_completed")]
-        erp_only = [
-            entry
-            for entry in erp_data
-            if compact_text(entry.get("ps_id")) and process_sheet_board_identity_key(entry) not in planner_keys
-        ]
+            else:
+                now = time.monotonic()
+                with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+                    bucket = _PP_VOUCHERS_WITH_OPS_CACHE.get(scope) or {}
+                    erp_data = bucket.get("data")
+                    if erp_data is None or now >= float(bucket.get("expires_at") or 0):
+                        erp_data = None
+                if erp_data is None:
+                    cache_rows = _fetch_pp_vouchers_cache_rows(include_completed)
+                    erp_data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
+                    _store_pp_vouchers_with_ops_cache(scope, erp_data)
+            if not include_completed:
+                erp_data = [entry for entry in erp_data if not entry.get("shipped_completed")]
+            erp_only = [
+                entry
+                for entry in erp_data
+                if compact_text(entry.get("ps_id"))
+                and process_sheet_board_identity_key(entry) not in planner_keys
+            ]
+            enrich_board_planner_fields(con, planner_items)
+            enrich_board_planner_fields(con, erp_only)
         return jsonify({"planner": planner_items, "erp_only": erp_only})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

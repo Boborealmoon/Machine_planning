@@ -102,9 +102,34 @@
     note.textContent = message;
   }
 
+  function cowayEddValue(item, psIdOverride) {
+    const psId = canonicalPlannerPsId(psIdOverride || item);
+    const cached = state.details.get(psId);
+    const fromDetails = cached?.summary?.coway_proposed_edd;
+    return dateInputValue(item?.coway_proposed_edd || fromDetails);
+  }
+
+  function applyCowayEddToRow(psId, value) {
+    const saved = dateInputValue(value);
+    const canonical = canonicalPlannerPsId(psId);
+    const item = findQueueItem(canonical);
+    if (item) item.coway_proposed_edd = saved;
+    const cached = state.details.get(canonical) || state.details.get(psId);
+    if (cached?.summary) cached.summary.coway_proposed_edd = saved;
+    document.querySelectorAll('.ps-row').forEach(row => {
+      if (row.dataset.psId !== canonical) return;
+      row.querySelectorAll('[data-action="coway-edd"]').forEach(input => {
+        input.value = saved;
+        input.dataset.lastSaved = saved;
+        input.classList.remove('is-error');
+        input.removeAttribute('title');
+      });
+    });
+  }
+
   function renderCowayEddInput(item, psIdOverride) {
     const psId = canonicalPlannerPsId(psIdOverride || item);
-    const value = dateInputValue(item.coway_proposed_edd);
+    const value = cowayEddValue(item, psId);
     return `
       <label class="ps-highlight ps-highlight--coway" data-action="coway-edd-wrap">
         <small>Coway EDD</small>
@@ -152,11 +177,8 @@
       }
       const cached = state.details.get(canonical) || state.details.get(psId);
       if (cached?.summary) cached.summary.coway_proposed_edd = saved;
+      applyCowayEddToRow(canonical, saved);
       if (inputEl) {
-        inputEl.value = saved;
-        inputEl.dataset.lastSaved = saved;
-        inputEl.classList.remove('is-error');
-        inputEl.removeAttribute('title');
         setCowayEddStatus(inputEl, 'is-saved', saved ? 'Saved' : 'Cleared');
         window.setTimeout(() => {
           if (inputEl.dataset.lastSaved === saved) {
@@ -173,6 +195,146 @@
       console.error('coway proposed edd save failed:', err);
     } finally {
       if (inputEl) inputEl.disabled = false;
+    }
+  }
+
+  function remarksValue(item, psIdOverride) {
+    const psId = canonicalPlannerPsId(psIdOverride || item);
+    const cached = state.details.get(psId);
+    const fromDetails = cached?.summary?.remarks;
+    return String(item?.remarks || fromDetails || '').trim();
+  }
+
+  function applyRemarksToRow(psId, value) {
+    const saved = String(value || '').trim();
+    const canonical = canonicalPlannerPsId(psId);
+    const item = findQueueItem(canonical);
+    if (item) item.remarks = saved;
+    const cached = state.details.get(canonical) || state.details.get(psId);
+    if (cached?.summary) cached.summary.remarks = saved;
+    document.querySelectorAll('.ps-row').forEach(row => {
+      if (row.dataset.psId !== canonical) return;
+      row.querySelectorAll('[data-action="remarks"]').forEach(input => {
+        input.value = saved;
+        input.dataset.lastSaved = saved;
+        input.classList.remove('is-error');
+        input.removeAttribute('title');
+        updateRemarksSaveButton(input);
+      });
+    });
+  }
+
+  function setRemarksStatus(inputEl, status, message) {
+    if (!inputEl) return;
+    const wrap = inputEl.closest('[data-action="remarks-wrap"]');
+    if (!wrap) return;
+    wrap.classList.remove('is-saving', 'is-saved', 'is-error');
+    if (status) wrap.classList.add(status);
+    let note = wrap.querySelector('.ps-remarks-status');
+    if (!message) {
+      if (note) note.remove();
+      return;
+    }
+    if (!note) {
+      note = document.createElement('span');
+      note.className = 'ps-remarks-status';
+      wrap.appendChild(note);
+    }
+    note.textContent = message;
+  }
+
+  function remarksIsDirty(inputEl) {
+    if (!inputEl) return false;
+    return String(inputEl.value || '').trim() !== String(inputEl.dataset.lastSaved || '').trim();
+  }
+
+  function updateRemarksSaveButton(inputEl) {
+    if (!inputEl) return;
+    const wrap = inputEl.closest('[data-action="remarks-wrap"]');
+    if (!wrap) return;
+    const btn = wrap.querySelector('[data-action="save-remarks"]');
+    if (!btn) return;
+    btn.disabled = !remarksIsDirty(inputEl);
+  }
+
+  function renderRemarksInput(item, psIdOverride) {
+    const psId = canonicalPlannerPsId(psIdOverride || item);
+    const value = remarksValue(item, psId);
+    return `
+      <div class="ps-remarks-wrap" data-action="remarks-wrap" data-ps-id="${escapeHtml(psId)}">
+        <label class="ps-highlight ps-highlight--remarks">
+          <small>Remarks</small>
+          <input
+            type="text"
+            class="ps-remarks-input"
+            data-action="remarks"
+            data-ps-id="${escapeHtml(psId)}"
+            value="${escapeHtml(value)}"
+            data-last-saved="${escapeHtml(value)}"
+            placeholder="Add note…"
+            maxlength="500"
+          />
+        </label>
+        <button
+          type="button"
+          class="ps-remarks-save btn btn-light btn-sm"
+          data-action="save-remarks"
+          data-ps-id="${escapeHtml(psId)}"
+          disabled
+        >Save</button>
+      </div>
+    `;
+  }
+
+  async function saveRemarks(psId, value, inputEl) {
+    const canonical = canonicalPlannerPsId(psId);
+    if (!canonical) return;
+    const nextValue = String(value || '').trim();
+    if (inputEl && inputEl.dataset.lastSaved === nextValue) return;
+
+    if (inputEl) {
+      inputEl.disabled = true;
+      const wrap = inputEl.closest('[data-action="remarks-wrap"]');
+      const btn = wrap?.querySelector('[data-action="save-remarks"]');
+      if (btn) btn.disabled = true;
+      setRemarksStatus(inputEl, 'is-saving', 'Saving…');
+    }
+    try {
+      const data = await postJson('/api/process-sheets/remarks', {
+        ps_id: canonical,
+        remarks: nextValue,
+      });
+      const saved = String(data.remarks || '').trim();
+      const item = findQueueItem(canonical);
+      if (item) {
+        item.remarks = saved;
+        item.ps_id = data.ps_id || canonical;
+      }
+      const cached = state.details.get(canonical) || state.details.get(psId);
+      if (cached?.summary) cached.summary.remarks = saved;
+      applyRemarksToRow(canonical, saved);
+      if (inputEl) {
+        inputEl.dataset.lastSaved = saved;
+        updateRemarksSaveButton(inputEl);
+        setRemarksStatus(inputEl, 'is-saved', saved ? 'Saved' : 'Cleared');
+        window.setTimeout(() => {
+          if (inputEl.dataset.lastSaved === saved) {
+            setRemarksStatus(inputEl, '', '');
+          }
+        }, 1800);
+      }
+    } catch (err) {
+      if (inputEl) {
+        inputEl.classList.add('is-error');
+        inputEl.title = err.message || 'Could not save remarks';
+        setRemarksStatus(inputEl, 'is-error', err.message || 'Save failed');
+      }
+      console.error('remarks save failed:', err);
+    } finally {
+      if (inputEl) {
+        inputEl.disabled = false;
+        updateRemarksSaveButton(inputEl);
+      }
     }
   }
 
@@ -320,21 +482,155 @@
     `;
   }
 
-  function renderWarningIcon(warnings) {
+  function renderWarningsPill(warnings) {
     if (!warnings.length) return '';
     const tooltip = warnings.map(warningMessage).join('\n');
-    return `<span class="ps-warn-icon" tabindex="0" aria-label="${escapeHtml(`${warnings.length} warning${warnings.length === 1 ? '' : 's'}`)}" title="${escapeHtml(tooltip)}">!</span>`;
+    const label = warnings.length === 1 ? '1 warning' : `${warnings.length} warnings`;
+    return `
+      <span
+        class="ps-warnings-pill"
+        tabindex="0"
+        aria-label="${escapeHtml(tooltip)}"
+        title="${escapeHtml(tooltip)}"
+      >${escapeHtml(label)}</span>
+    `;
   }
 
-  function renderStatusSide(item, ops) {
+  function renderQtyBadge(qty) {
+    return `
+      <span class="ps-qty-badge">
+        <small>Qty</small>
+        <strong>${escapeHtml(qty)}</strong>
+      </span>
+    `;
+  }
+
+  function renderDetailsMeta(summary, item, ops) {
+    const sourceVoucher = summary.source_voucher_no || item.source_voucher_no || '';
+    const qtyShipped = Number(summary.qty_shipped || item.qty_shipped || 0);
+    const posted = fmtDate(summary.order_date || item.order_date);
+    const due = fmtDate(summary.due_date || item.due_date);
+    const dueOverdue = isOverdue({ ...item, ...summary });
+    const start = summary.expected_start || item.expected_start;
+    const end = summary.expected_end || item.expected_end;
+    const plannedRange = start && end
+      ? `${String(start).slice(0, 16)} → ${String(end).slice(0, 16)}`
+      : (start ? String(start).slice(0, 16) : '-');
+
+    const groups = [
+      [
+        `<span class="ps-detail-meta-item"><small>WO Req</small><strong>${escapeHtml(fmtQty(woReqQty(summary)))}</strong></span>`,
+        `<span class="ps-detail-meta-item"><small>Total Qty</small><strong>${escapeHtml(fmtQty(totalWoQty(summary)))}</strong></span>`,
+        `<span class="ps-detail-meta-item"><small>Ops</small><strong>${escapeHtml(ops.length)}</strong></span>`,
+      ],
+    ];
+
+    if (sourceVoucher || soDetQty(summary) !== null || qtyShipped > 0) {
+      groups.push([
+        sourceVoucher ? `<span class="ps-detail-meta-item"><small>SO</small><strong>${escapeHtml(sourceVoucher)}</strong></span>` : '',
+        sourceVoucher ? `<span class="ps-detail-meta-item"><small>SO Qty</small><strong>${escapeHtml(fmtSoQty(summary))}</strong></span>` : '',
+        `<span class="ps-detail-meta-item"><small>Shipped</small><strong>${escapeHtml(fmtQty(qtyShipped))}</strong></span>`,
+      ].filter(Boolean));
+    }
+
+    groups.push([
+      posted !== '-' ? `<span class="ps-detail-meta-item"><small>Posted</small><strong>${escapeHtml(posted)}</strong></span>` : '',
+      `<span class="ps-detail-meta-item ps-detail-meta-item--due ${dueOverdue ? 'is-overdue' : ''}"><small>PO Due</small><strong>${escapeHtml(due)}</strong></span>`,
+      `<span class="ps-detail-meta-item"><small>Planned</small><strong>${escapeHtml(plannedRange)}</strong></span>`,
+    ].filter(Boolean));
+
+    return `
+      <div class="ps-detail-meta">
+        ${groups.map(items => `<div class="ps-detail-meta-group">${items.join('')}</div>`).join('')}
+      </div>
+    `;
+  }
+
+  function renderSchedulingInline(item, ops) {
+    const opsLabel = `<span class="ps-row-muted">${ops.length} op${ops.length === 1 ? '' : 's'}</span>`;
     if (!isQueued(item)) {
-      return `<span class="ps-row-muted">${ops.length} op${ops.length === 1 ? '' : 's'}</span>`;
+      return `
+        <div class="ps-row-scheduling">
+          <span class="ps-badge ps-badge--needs-scheduling">Needs scheduling</span>
+          ${opsLabel}
+        </div>
+      `;
     }
     return `
-      <span class="ps-badge ps-badge--queued">Queued</span>
-      ${renderMachinePills(item)}
-      <span class="ps-row-muted">${ops.length} op${ops.length === 1 ? '' : 's'}</span>
+      <div class="ps-row-scheduling">
+        <span class="ps-badge ps-badge--queued">Queued</span>
+        ${renderMachinePills(item)}
+        ${opsLabel}
+      </div>
     `;
+  }
+
+  function renderDateStrip(item, psId) {
+    const due = fmtDate(item.due_date);
+    const posted = fmtDate(item.order_date);
+    const dueOverdue = isOverdue(item);
+    const parts = [];
+    if (posted !== '-') {
+      parts.push(`<span class="ps-date-item"><small>Posted</small><strong>${escapeHtml(posted)}</strong></span>`);
+    }
+    parts.push(`
+      <span class="ps-date-item ps-date-item--due ${dueOverdue ? 'is-overdue' : ''}">
+        <small>PO Due</small><strong>${escapeHtml(due)}</strong>
+      </span>
+    `);
+    parts.push(`<span class="ps-date-item ps-date-item--coway">${renderCowayEddInput(item, psId)}</span>`);
+    return `<div class="ps-date-strip">${parts.join('')}</div>`;
+  }
+
+  function planningPriority(item) {
+    const overdueUnqueued = isOverdue(item) && !isQueued(item) ? 0 : 1;
+    const unqueued = !isQueued(item) ? 0 : 1;
+    const due = String(item.due_date || '9999-99-99');
+    const ps = String(item.display_ps_id || item.ps_id || '');
+    return [overdueUnqueued, unqueued, due, ps];
+  }
+
+  function comparePlanningPriority(a, b) {
+    const left = planningPriority(a);
+    const right = planningPriority(b);
+    for (let i = 0; i < left.length; i += 1) {
+      if (left[i] < right[i]) return -1;
+      if (left[i] > right[i]) return 1;
+    }
+    return 0;
+  }
+
+  function poDueSortKey(item) {
+    const due = String(item?.due_date || '').trim().slice(0, 10);
+    return due || '9999-99-99';
+  }
+
+  function currentSortMode() {
+    return String(els.sortBy?.value || 'planning').trim().toLowerCase();
+  }
+
+  function sortQueueItems(items) {
+    const mode = currentSortMode();
+    const list = [...items];
+    if (mode === 'due_asc') {
+      return list.sort((a, b) => {
+        const due = poDueSortKey(a).localeCompare(poDueSortKey(b));
+        if (due) return due;
+        return String(a.display_ps_id || a.ps_id || '').localeCompare(String(b.display_ps_id || b.ps_id || ''));
+      });
+    }
+    if (mode === 'due_desc') {
+      return list.sort((a, b) => {
+        const da = String(a?.due_date || '').trim().slice(0, 10);
+        const db = String(b?.due_date || '').trim().slice(0, 10);
+        const aMissing = !da;
+        const bMissing = !db;
+        if (aMissing !== bMissing) return aMissing ? 1 : -1;
+        if (da !== db) return db.localeCompare(da);
+        return String(a.display_ps_id || a.ps_id || '').localeCompare(String(b.display_ps_id || b.ps_id || ''));
+      });
+    }
+    return list.sort(comparePlanningPriority);
   }
 
   function currentStagePill(item) {
@@ -343,7 +639,16 @@
     const stageNo = item?.current_stage_no;
     const status = item?.current_stage_status ? displayExecutionStatus(item.current_stage_status) : '';
     const title = [stageNo ? `Stage ${stageNo}` : '', status].filter(Boolean).join(' · ');
-    return `<span class="ps-stage-badge" title="${escapeHtml(title)}">${escapeHtml(desc)}</span>`;
+    const statusHtml = status
+      ? `<span class="ps-stage-badge-status ${opStatusClass(item.current_stage_status)}">${escapeHtml(status)}</span>`
+      : '';
+    return `
+      <span class="ps-stage-badge" title="${escapeHtml(title)}">
+        <span class="ps-stage-badge-label">Current stage</span>
+        <strong>${escapeHtml(desc)}</strong>
+        ${statusHtml}
+      </span>
+    `;
   }
 
   function displayExecutionStatus(value) {
@@ -432,9 +737,10 @@
   }
 
   function isCompleted(item) {
-    if (isShippedComplete(item)) return true;
     const ops = Array.isArray(item?.ops) ? item.ops : [];
     const trackedOps = ops.filter(op => opHasWorkOrderEvidence(op));
+    if (trackedOps.some(op => !isOpProductionComplete(op))) return false;
+    if (isShippedComplete(item)) return true;
     if (trackedOps.length) {
       return trackedOps.every(op => isOpProductionComplete(op));
     }
@@ -566,6 +872,7 @@
       part_desc: item.part_desc || '',
       due_date: item.due_date || '',
       coway_proposed_edd: item.coway_proposed_edd || '',
+      remarks: item.remarks || '',
       order_date: item.order_date || '',
       total_qty: item.total_qty || 0,
       partial_qty: numberValue(item.partial_qty),
@@ -678,8 +985,11 @@
     if (els.overdueOnly?.checked) parts.push('overdue only');
     if (String(els.search?.value || '').trim()) parts.push('search active');
     const queueFilter = String(els.queueFilter?.value || '').trim().toLowerCase();
-    if (queueFilter === 'queued') parts.push('queued only');
-    if (queueFilter === 'unqueued') parts.push('unqueued only');
+    if (queueFilter === 'queued') parts.push('queued on planner');
+    if (queueFilter === 'unqueued') parts.push('needs scheduling');
+    const sortMode = currentSortMode();
+    if (sortMode === 'due_asc') parts.push('sorted by PO due (soonest)');
+    if (sortMode === 'due_desc') parts.push('sorted by PO due (latest)');
     return parts;
   }
 
@@ -688,7 +998,8 @@
     els.typePanel?.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = defaults.has(cb.value); });
     if (els.typeBtn) els.typeBtn.textContent = 'APS, NPS, [SR] ▾';
     if (els.search) els.search.value = '';
-    if (els.queueFilter) els.queueFilter.value = '';
+    if (els.queueFilter) els.queueFilter.value = 'unqueued';
+    if (els.sortBy) els.sortBy.value = 'planning';
     if (els.overdueOnly) els.overdueOnly.checked = false;
     if (els.hideSrTags) els.hideSrTags.checked = true;
     if (els.completedOnly) els.completedOnly.checked = false;
@@ -734,10 +1045,14 @@
 
   function renderCounts() {
     let queued = 0;
+    let needs = 0;
     state.items.forEach(item => {
+      if (isCompleted(item)) return;
       if (isQueued(item)) queued += 1;
+      else needs += 1;
     });
     setText('ps-count-queued', queued);
+    setText('ps-count-needs', needs);
   }
 
   function setText(id, value) {
@@ -773,29 +1088,42 @@
       return;
     }
 
-    const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+    const sortedItems = sortQueueItems(items);
+    const totalPages = Math.max(1, Math.ceil(sortedItems.length / PAGE_SIZE));
     state.page = Math.min(Math.max(state.page, 1), totalPages);
 
     const start = (state.page - 1) * PAGE_SIZE;
-    const end = Math.min(start + PAGE_SIZE, items.length);
-    const pageItems = items.slice(start, end);
+    const end = Math.min(start + PAGE_SIZE, sortedItems.length);
+    const pageItems = sortedItems.slice(start, end);
 
     if (els.queueHint) {
       const erpOnly = items.filter(item => item.source === 'erp').length;
+      const sortNote = currentSortMode() === 'planning' ? '' : ' | sorted';
       const refreshed = state.lastRefreshedAt
         ? ` | refreshed ${new Date(state.lastRefreshedAt).toLocaleTimeString()}`
         : '';
       const loadingNote = state.loading ? ' | refreshing from cache…' : '';
-      els.queueHint.textContent = `${start + 1}-${end} shown from ${items.length} matched | ${state.items.length} loaded${erpOnly ? ` (${erpOnly} ERP-only)` : ''}${refreshed}${loadingNote}`;
+      els.queueHint.textContent = `${start + 1}-${end} shown from ${sortedItems.length} matched | ${state.items.length} loaded${erpOnly ? ` (${erpOnly} ERP-only)` : ''}${sortNote}${refreshed}${loadingNote}`;
     }
 
-    const openItems = pageItems.filter(item => !isCompleted(item));
-    const completedItems = pageItems.filter(item => isCompleted(item));
-    els.queue.innerHTML = [
-      renderQueueGroup('Open Partials', openItems),
-      renderQueueGroup('Completed', completedItems),
-      renderPagination(items.length, start, end, totalPages),
-    ].filter(Boolean).join('');
+    const sortMode = currentSortMode();
+    const sortByDue = sortMode === 'due_asc' || sortMode === 'due_desc';
+    let queueHtml;
+    if (sortByDue) {
+      queueHtml = [
+        renderQueueGroup('By PO due date', pageItems),
+        renderPagination(sortedItems.length, start, end, totalPages),
+      ].filter(Boolean).join('');
+    } else {
+      const openItems = pageItems.filter(item => !isCompleted(item));
+      const completedItems = pageItems.filter(item => isCompleted(item));
+      queueHtml = [
+        renderQueueGroup('Open Partials', openItems),
+        renderQueueGroup('Completed', completedItems),
+        renderPagination(sortedItems.length, start, end, totalPages),
+      ].filter(Boolean).join('');
+    }
+    els.queue.innerHTML = queueHtml;
   }
 
   function renderPagination(totalItems, start, end, totalPages) {
@@ -833,49 +1161,39 @@
     const psId = canonicalPlannerPsId(item);
     const warnings = Array.isArray(item.warnings) ? item.warnings : [];
     const ops = Array.isArray(item.ops) ? item.ops : [];
-    const material = item.material_status?.label || (isMaterialShortage(item) ? 'Material risk' : 'Material OK');
     const dueClass = isOverdue(item) ? 'is-overdue' : '';
     const partial = `<span class="ps-partial-badge">${escapeHtml(partialLabel(item))}</span>`;
     const srBadge = isSrTagged(item) ? '<span class="ps-sr-badge">[SR]</span>' : '';
-    const source = item.source === 'erp' ? '<span class="ps-source-badge">ERP</span>' : '';
-    const voucher = item.source_voucher_no ? `<span class="ps-voucher-badge">${escapeHtml(item.source_voucher_no)}</span>` : '';
     const stagePill = currentStagePill(item);
-    const titleBadges = [partial, srBadge, source, voucher, stagePill].filter(Boolean).join('\n            ');
+    const qty = fmtQty(firstQuantity(item.display_qty, item.partial_qty, item.wo_req_qty, item.total_qty, 0));
+    const qtyBadge = renderQtyBadge(qty);
+    const warningsPill = renderWarningsPill(warnings);
+    const titleBadges = [partial, qtyBadge, srBadge, stagePill, warningsPill].filter(Boolean).join('\n              ');
     const opStatusStrip = renderOpStatusStrip(ops, item);
-    const due = fmtDate(item.due_date);
-    const route = item.route_label || item.erp_bom_code || item.selected_flow_code || item.selected_bom_code || 'No flow selected';
     const descriptor = item.part_desc || 'No description';
-    const warnIcon = renderWarningIcon(warnings);
+    const queueClass = isQueued(item) ? 'is-queued' : 'is-needs';
 
     return `
-      <article class="ps-row ${dueClass}" data-ps-id="${escapeHtml(psId)}">
+      <article class="ps-row ${dueClass} ${queueClass}" data-ps-id="${escapeHtml(psId)}">
         <div class="ps-row-col">
           <button class="ps-row-main" type="button" data-action="toggle-details" data-ps-id="${escapeHtml(psId)}">
             <div class="ps-row-title">
-              <span class="ps-id">${escapeHtml(item.display_ps_id || psId)}</span>
-              ${titleBadges}
-              ${warnIcon}
+              <div class="ps-row-title-left">
+                <span class="ps-id">${escapeHtml(item.display_ps_id || psId)}</span>
+                ${titleBadges}
+              </div>
+              ${renderSchedulingInline(item, ops)}
             </div>
             <div class="ps-row-part">
               <strong>${escapeHtml(item.part_no || item.part_name || item.inventory_code || 'No part')}</strong>
               <span>${escapeHtml(descriptor)}</span>
             </div>
-            <div class="ps-row-route">
-              <span>BOM / Route</span>
-              <strong>${escapeHtml(route)}</strong>
-            </div>
             ${opStatusStrip}
           </button>
+          ${renderDateStrip(item, psId)}
           <div class="ps-row-highlights">
-            <span class="ps-highlight ps-highlight--due ${isOverdue(item) ? 'is-overdue' : ''}">
-              <small>Due</small><strong>${escapeHtml(due)}</strong>
-            </span>
-            ${renderCowayEddInput(item, psId)}
-            ${isMaterialShortage(item) ? `<span class="ps-highlight ps-highlight--risk"><small>Material</small><strong>${escapeHtml(material)}</strong></span>` : ''}
+            ${renderRemarksInput(item, psId)}
           </div>
-        </div>
-        <div class="ps-row-side">
-          ${renderStatusSide(item, ops)}
         </div>
         <div class="ps-details" id="ps-details-${escapeHtml(cssSafeId(psId))}" hidden></div>
       </article>
@@ -922,7 +1240,10 @@
 
     detailsEl.hidden = false;
     if (state.details.has(psId)) {
-      detailsEl.innerHTML = renderDetails(state.details.get(psId), item);
+      const cached = state.details.get(psId);
+      applyCowayEddToRow(psId, cached?.summary?.coway_proposed_edd || item.coway_proposed_edd);
+      applyRemarksToRow(psId, cached?.summary?.remarks || item.remarks);
+      detailsEl.innerHTML = renderDetails(cached, item);
       return;
     }
 
@@ -930,6 +1251,8 @@
     try {
       const details = await getJson(`/api/process-sheets/${encodeURIComponent(psId)}/details`);
       state.details.set(psId, details);
+      applyCowayEddToRow(psId, details.summary?.coway_proposed_edd || item.coway_proposed_edd);
+      applyRemarksToRow(psId, details.summary?.remarks || item.remarks);
       detailsEl.innerHTML = renderDetails(details, item);
     } catch (err) {
       if (item.source === 'erp') {
@@ -943,6 +1266,8 @@
           erp_only: true,
         };
         state.details.set(psId, details);
+        applyCowayEddToRow(psId, details.summary?.coway_proposed_edd || item.coway_proposed_edd);
+        applyRemarksToRow(psId, details.summary?.remarks || item.remarks);
         detailsEl.innerHTML = renderDetails(details, item);
         return;
       }
@@ -996,49 +1321,20 @@
     const ops = collectDetailOps(summary, item);
     const plannedBlocks = Array.isArray(details.planned_blocks) ? details.planned_blocks : [];
     const requirements = Array.isArray(details.requirements) ? details.requirements : [];
-    const warnings = Array.isArray(summary.warnings) ? summary.warnings : (Array.isArray(item.warnings) ? item.warnings : []);
-
-    const qtyShipped = Number(summary.qty_shipped || 0);
-    const sourceVoucher = summary.source_voucher_no || '';
     const machines = queuedMachines(summary).length ? queuedMachines(summary) : queuedMachines(item);
+    const route = summary.route_label || summary.erp_bom_code || summary.selected_flow_code || summary.selected_bom_code
+      || item.route_label || item.erp_bom_code || item.selected_flow_code || item.selected_bom_code || 'No flow selected';
     return `
-      ${warnings.length ? `
-      <div class="ps-details-warnings" role="note">
-        ${warnings.map(code => `<span class="ps-details-warning">${escapeHtml(warningMessage(code))}</span>`).join('')}
-      </div>` : ''}
       ${machines.length ? `
       <div class="ps-details-queue">
         <span class="ps-badge ps-badge--queued">Queued</span>
         ${renderMachinePills(summary.queued_machine_details?.length ? summary : item)}
       </div>` : ''}
-      <div class="ps-details-grid">
-        <div class="ps-detail-card">
-          <div class="ps-detail-label">Progress</div>
-          <div class="ps-detail-stats">
-            <span><small>WO Req</small><strong>${escapeHtml(fmtQty(woReqQty(summary)))}</strong></span>
-            <span><small>Total Qty</small><strong>${escapeHtml(fmtQty(totalWoQty(summary)))}</strong></span>
-            <span><small>Operations</small><strong>${escapeHtml(ops.length)} op${ops.length === 1 ? '' : 's'}</strong></span>
-          </div>
-        </div>
-        <div class="ps-detail-card">
-          <div class="ps-detail-label">Timing</div>
-          <div class="ps-detail-stats ps-detail-stats--timing">
-            <span><small>Due Date</small><strong>${escapeHtml(fmtDate(summary.due_date))}</strong></span>
-            <span class="ps-detail-coway-edd">${renderCowayEddInput(summary, summary.ps_id || item.ps_id)}</span>
-            <span><small>Start</small><strong>${escapeHtml(summary.expected_start ? String(summary.expected_start).slice(0, 16) : '-')}</strong></span>
-            <span><small>End</small><strong>${escapeHtml(summary.expected_end ? String(summary.expected_end).slice(0, 16) : '-')}</strong></span>
-          </div>
-        </div>
-        ${(sourceVoucher || soDetQty(summary) !== null || qtyShipped > 0) ? `
-        <div class="ps-detail-card ps-detail-card--voucher">
-          <div class="ps-detail-label">Sales Order</div>
-          <div class="ps-detail-stats">
-            ${sourceVoucher ? `<span><small>Voucher No</small><strong>${escapeHtml(sourceVoucher)}</strong></span>` : ''}
-            ${sourceVoucher ? `<span><small>SO Qty</small><strong>${escapeHtml(fmtSoQty(summary))}</strong></span>` : ''}
-            <span><small>Shipped</small><strong>${escapeHtml(fmtQty(qtyShipped))}</strong></span>
-          </div>
-        </div>` : ''}
+      <div class="ps-detail-route">
+        <span class="ps-detail-label">BOM / Route</span>
+        <strong>${escapeHtml(route)}</strong>
       </div>
+      ${renderDetailsMeta(summary, item, ops)}
       ${details.erp_only ? '<div class="ps-details-note">Planner row was created from ERP on open. Schedule ops from this partial to add planned blocks.</div>' : ''}
       ${renderOps(ops, summary, plannedBlocks)}
       ${renderBlocks(plannedBlocks)}
@@ -1185,6 +1481,7 @@
     els.queueHint = $('ps-queue-hint');
     els.search = $('ps-search');
     els.queueFilter = $('ps-queue-filter');
+    els.sortBy = $('ps-sort');
     els.overdueOnly = $('ps-overdue-only');
     els.showCompleted = $('ps-show-completed');
     els.completedOnly = $('ps-completed-only');
@@ -1213,9 +1510,9 @@
 
     els.search?.addEventListener('input', scheduleSearchRender);
 
-    [els.queueFilter, els.overdueOnly, els.hideSrTags]
+    [els.queueFilter, els.sortBy, els.overdueOnly, els.hideSrTags]
       .filter(Boolean)
-      .forEach(el => el.addEventListener('input', () => {
+      .forEach(el => el.addEventListener('change', () => {
         state.page = 1;
         render();
       }));
@@ -1241,6 +1538,16 @@
         event.stopPropagation();
         return;
       }
+      if (event.target.closest('[data-action="remarks-wrap"], [data-action="save-remarks"]')) {
+        event.stopPropagation();
+        const saveBtn = event.target.closest('[data-action="save-remarks"]');
+        if (saveBtn) {
+          const wrap = saveBtn.closest('[data-action="remarks-wrap"]');
+          const input = wrap?.querySelector('[data-action="remarks"]');
+          if (input) saveRemarks(input.dataset.psId || '', input.value, input);
+        }
+        return;
+      }
       if (event.target.closest('[data-action="reset-filters"]')) {
         resetFilters();
         return;
@@ -1258,22 +1565,40 @@
       render();
     });
     els.queue?.addEventListener('change', event => {
-      const input = event.target.closest('[data-action="coway-edd"]');
-      if (!input) return;
-      event.stopPropagation();
-      saveCowayProposedEdd(input.dataset.psId || '', input.value, input);
+      const cowayInput = event.target.closest('[data-action="coway-edd"]');
+      if (cowayInput) {
+        event.stopPropagation();
+        saveCowayProposedEdd(cowayInput.dataset.psId || '', cowayInput.value, cowayInput);
+      }
     });
     els.queue?.addEventListener('input', event => {
-      const input = event.target.closest('[data-action="coway-edd"]');
-      if (!input) return;
+      const cowayInput = event.target.closest('[data-action="coway-edd"]');
+      if (cowayInput) {
+        event.stopPropagation();
+        scheduleCowayEddSave(cowayInput);
+        return;
+      }
+      const remarksInput = event.target.closest('[data-action="remarks"]');
+      if (remarksInput) {
+        event.stopPropagation();
+        updateRemarksSaveButton(remarksInput);
+      }
+    });
+    els.queue?.addEventListener('keydown', event => {
+      const remarksInput = event.target.closest('[data-action="remarks"]');
+      if (!remarksInput || event.key !== 'Enter') return;
+      event.preventDefault();
       event.stopPropagation();
-      scheduleCowayEddSave(input);
+      if (remarksIsDirty(remarksInput)) {
+        saveRemarks(remarksInput.dataset.psId || '', remarksInput.value, remarksInput);
+      }
     });
     els.queue?.addEventListener('blur', event => {
-      const input = event.target.closest('[data-action="coway-edd"]');
-      if (!input) return;
-      clearTimeout(cowaySaveTimer);
-      saveCowayProposedEdd(input.dataset.psId || '', input.value, input);
+      const cowayInput = event.target.closest('[data-action="coway-edd"]');
+      if (cowayInput) {
+        clearTimeout(cowaySaveTimer);
+        saveCowayProposedEdd(cowayInput.dataset.psId || '', cowayInput.value, cowayInput);
+      }
     }, true);
   }
 

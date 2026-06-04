@@ -1501,9 +1501,25 @@ function trialCatalogOpIsOpen(card) {
   return exec !== 'C' && exec !== 'COMPLETED';
 }
 
+function trialCatalogOpOpenProbe(op) {
+  if (!op || typeof op !== 'object') return false;
+  return trialCatalogOpIsOpen({
+    execution_status: op.execution_status || op.op?.execution_status || '',
+    remaining_qty: op.remaining_qty,
+    target_qty: op.total_qty ?? op.remaining_qty,
+    required_qty: op.required_qty,
+    wo_qty_required: op.required_qty,
+    finished_qty: op.finished_qty ?? op.erp_finished_qty,
+    wo_qty_produced: op.wo_qty_produced ?? op.erp_finished_qty,
+    op,
+  });
+}
+
 function trialCatalogPsHasOpenOps(ps) {
   const cards = ps?.op_cards || [];
   if (cards.some(card => trialCatalogOpIsOpen(card))) return true;
+  const allOps = ps?.all_ops || [];
+  if (allOps.some(op => trialCatalogOpOpenProbe(op))) return true;
   const current = trialNormalizeExecStatus(ps?.current_stage_status || ps?.execution_status || '');
   return Boolean(current) && current !== 'C' && current !== 'COMPLETED';
 }
@@ -1610,6 +1626,7 @@ function trialPsRequiredQty(ps) {
 function trialPsShippedCoveredByPartial(ps) {
   // Never auto-complete a partial that is still actively queued on machine lanes.
   if (trialPsHasQueuedBlocks(ps)) return false;
+  if (trialCatalogPsHasOpenOps(ps)) return false;
   const base = trialCatalogSourceBase(ps);
   if (!base) return false;
   const pools = [
@@ -1658,7 +1675,17 @@ function trialPsProductionComplete(ps) {
     const exec = trialNormalizeExecStatus(trialPsRollupExecStatus(ps));
     return exec === 'C' || exec === 'COMPLETED';
   }
-  return cards.every(card => {
+  const tracked = cards.filter(card => {
+    const exec = trialNormalizeExecStatus(trialCatalogOpExecStatus(card));
+    const required = Number(card?.wo_qty_required ?? card?.required_qty ?? 0);
+    const produced = Number(card?.finished_qty ?? card?.wo_qty_produced ?? 0);
+    return required > 0.0001 || produced > 0.0001 || Boolean(exec);
+  });
+  if (!tracked.length) {
+    const exec = trialNormalizeExecStatus(ps?.current_stage_status || ps?.execution_status || '');
+    return exec === 'C' || exec === 'COMPLETED';
+  }
+  return tracked.every(card => {
     const remaining = Number(card?.remaining_qty ?? card?.target_qty ?? 0);
     const exec = trialNormalizeExecStatus(trialCatalogOpExecStatus(card));
     return (exec === 'C' || exec === 'COMPLETED') && remaining <= 0.0001;
@@ -1668,6 +1695,7 @@ function trialPsProductionComplete(ps) {
 /** True when the PS should be treated as completed for Show completed (catalog sidebar). */
 function trialPsCatalogCompleted(ps) {
   if (trialPsHasQueuedBlocks(ps)) return false;
+  if (trialCatalogPsHasOpenOps(ps)) return false;
   if (trialPsShippedCoveredByPartial(ps)) return true;
   if (trialPsShippedComplete(ps)) return true;
   if (trialPsPendingDo(ps)) return false;

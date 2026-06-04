@@ -95,8 +95,8 @@ def format_planner_ps_id(source_ps_id, pp_partial_no=1):
     return source_ps_id
 
 
-def _ensure_coway_proposed_edd_column(con):
-    """Apply migration on demand when the column has not been added yet."""
+def _ensure_planner_overlay_columns(con):
+    """Apply overlay-column migrations on demand when they have not been added yet."""
     try:
         con.execute(
             """
@@ -104,8 +104,18 @@ def _ensure_coway_proposed_edd_column(con):
             ADD COLUMN IF NOT EXISTS coway_proposed_edd DATE
             """
         )
+        con.execute(
+            """
+            ALTER TABLE planner_process_sheet
+            ADD COLUMN IF NOT EXISTS remarks TEXT NOT NULL DEFAULT ''
+            """
+        )
     except Exception:
         pass
+
+
+def _ensure_coway_proposed_edd_column(con):
+    _ensure_planner_overlay_columns(con)
 
 
 def ensure_planner_process_sheet(con, planner_ps_id):
@@ -706,6 +716,7 @@ def _process_sheet_payload(ps, steps, metrics, material_status):
         "part_desc": compact_text(ps.get("part_desc") or ps.get("description") or ""),
         "due_date": compact_text(ps.get("due_date") or ""),
         "coway_proposed_edd": compact_text(ps.get("coway_proposed_edd") or ""),
+        "remarks": compact_text(ps.get("remarks") or ""),
         "order_date": compact_text(ps.get("order_date") or ""),
         "total_qty": source_total_qty,
         "partial_qty": partial_qty,
@@ -824,9 +835,12 @@ def _apply_partial_shipped_rollup(rows):
             shipped_left = max(0.0, shipped_left - covered_qty)
             if covered_qty + qty_tolerance < req_qty:
                 continue
+            production_done = bool(item.get("production_completed")) or bool(item.get("execution_completed"))
+            if not production_done:
+                continue
             item["finished_qty"] = max(_to_float(item.get("finished_qty")), req_qty)
             item["remaining_qty"] = 0.0
-            item["production_completed"] = True
+            item["shipped_completed"] = True
             item["is_completed"] = True
 
 
@@ -884,6 +898,7 @@ def _ps_select_sql():
         ps.planned_qty,
         ps.finished_qty,
         ps.coway_proposed_edd,
+        ps.remarks,
         ps.created_at,
         ps.updated_at,
         v.total_qty,
@@ -943,6 +958,77 @@ def _erp_wo_completion_map(con, source_ps_ids):
     return out
 
 
+def _board_item_source_partial(item):
+    """(source_ps_id, pp_partial_no) for board rows — matches process_sheet_board_identity_key."""
+    source = compact_text(
+        item.get("source_ps_id") or item.get("display_ps_id") or item.get("ps_id") or ""
+    ).split("::")[0]
+    try:
+        partial = int(item.get("pp_partial_no") or 1)
+    except (TypeError, ValueError):
+        partial = 1
+    ps_id = compact_text(item.get("ps_id") or "")
+    if not item.get("pp_partial_no") and "::" in ps_id:
+        try:
+            partial = int(ps_id.rsplit("::", 1)[1])
+        except ValueError:
+            pass
+    return source, max(1, partial)
+
+
+def enrich_board_planner_fields(con, items):
+    """Attach planner overlay fields when board rows omit them (common on ERP-only lines)."""
+    if not items:
+        return items
+    _ensure_planner_overlay_columns(con)
+    indices_by_key = {}
+    source_ids = set()
+    for idx, item in enumerate(items):
+        source, partial = _board_item_source_partial(item)
+        if not source:
+            continue
+        key = (source, partial)
+        indices_by_key.setdefault(key, []).append(idx)
+        source_ids.add(source)
+    if not source_ids:
+        return items
+    overlay_by_key = {}
+    for row in rows(
+        con.execute(
+            """
+            SELECT source_ps_id, pp_partial_no, coway_proposed_edd, remarks
+            FROM planner_process_sheet
+            WHERE source_ps_id = ANY(%s)
+              AND (
+                    coway_proposed_edd IS NOT NULL
+                 OR NULLIF(TRIM(remarks), '') IS NOT NULL
+              )
+            """,
+            (list(source_ids),),
+        )
+    ):
+        key = (compact_text(row.get("source_ps_id")), int(row.get("pp_partial_no") or 1))
+        overlay_by_key[key] = {
+            "coway_proposed_edd": compact_text(row.get("coway_proposed_edd")),
+            "remarks": compact_text(row.get("remarks")),
+        }
+    for key, indices in indices_by_key.items():
+        overlay = overlay_by_key.get(key)
+        if not overlay:
+            continue
+        for idx in indices:
+            if not compact_text(items[idx].get("coway_proposed_edd")) and overlay["coway_proposed_edd"]:
+                items[idx]["coway_proposed_edd"] = overlay["coway_proposed_edd"]
+            if not compact_text(items[idx].get("remarks")) and overlay["remarks"]:
+                items[idx]["remarks"] = overlay["remarks"]
+    return items
+
+
+def enrich_board_coway_proposed_edd(con, items):
+    """Backward-compatible alias for enrich_board_planner_fields."""
+    return enrich_board_planner_fields(con, items)
+
+
 def process_sheet_board_identity_key(item):
     """Match client itemIdentityKey() for planner/ERP row deduplication."""
     source = compact_text(
@@ -962,7 +1048,7 @@ def process_sheet_board_identity_key(item):
 
 
 def list_process_sheets_payload(con):
-    _ensure_coway_proposed_edd_column(con)
+    _ensure_planner_overlay_columns(con)
     search = compact_text(request.args.get("search")).lower()
     status_filter = compact_text(request.args.get("status")).upper()
     planner_filter = compact_text(request.args.get("planner_status")).upper()
@@ -1018,7 +1104,6 @@ def list_process_sheets_payload(con):
         wo_key = (compact_text(ps.get("source_ps_id")), int(ps.get("pp_partial_no") or 1))
         if wo_complete_by_partial.get(wo_key):
             payload["erp_all_wo_complete"] = True
-            payload["execution_completed"] = True
         haystack = " ".join(
             compact_text(payload.get(k)).lower()
             for k in ("ps_id", "source_ps_id", "display_ps_id", "pp_partial_no",
@@ -1084,6 +1169,33 @@ def _update_coway_proposed_edd(con, ps_id, proposed):
     }, None
 
 
+def _update_remarks(con, ps_id, remarks_text):
+    _ensure_planner_overlay_columns(con)
+    _, _, canonical_ps_id = _planner_ps_identity(ps_id)
+    try:
+        ensure_planner_process_sheet(con, canonical_ps_id)
+    except ValueError as exc:
+        return None, str(exc)
+    con.execute(
+        """
+        UPDATE planner_process_sheet
+        SET remarks = %s, updated_at = NOW()
+        WHERE planner_ps_id = %s
+        """,
+        (remarks_text, canonical_ps_id),
+    )
+    row = one(
+        con.execute(
+            "SELECT remarks FROM planner_process_sheet WHERE planner_ps_id = %s",
+            (canonical_ps_id,),
+        )
+    )
+    return {
+        "ps_id": canonical_ps_id,
+        "remarks": compact_text((row or {}).get("remarks")),
+    }, None
+
+
 @process_sheets_bp.post("/api/trial/process-sheets/coway-proposed-edd")
 @process_sheets_bp.post("/api/process-sheets/coway-proposed-edd")
 def api_process_sheet_coway_proposed_edd_post():
@@ -1126,6 +1238,51 @@ def api_process_sheet_coway_proposed_edd(ps_id):
     try:
         with planner_db() as con:
             payload, err = _update_coway_proposed_edd(con, ps_id, proposed)
+            if err:
+                return jsonify({"error": err}), 404
+            return jsonify(payload)
+    except Exception as e:
+        friendly = planner_db_connect_error(e)
+        if friendly:
+            return jsonify({"error": friendly}), 503
+        return jsonify({"error": str(e)}), 500
+
+
+@process_sheets_bp.post("/api/trial/process-sheets/remarks")
+@process_sheets_bp.post("/api/process-sheets/remarks")
+def api_process_sheet_remarks_post():
+    data = request.get_json(force=True, silent=True) or {}
+    ps_id = compact_text(data.get("ps_id"))
+    if not ps_id:
+        return jsonify({"error": "ps_id is required"}), 400
+    remarks_text = compact_text(data.get("remarks"))
+    try:
+        with planner_db() as con:
+            payload, err = _update_remarks(con, ps_id, remarks_text)
+            if err:
+                return jsonify({"error": err}), 404
+            return jsonify(payload)
+    except Exception as e:
+        friendly = planner_db_connect_error(e)
+        if friendly:
+            return jsonify({"error": friendly}), 503
+        return jsonify({"error": str(e)}), 500
+
+
+@process_sheets_bp.patch("/api/trial/process-sheets/<path:ps_id>/remarks")
+@process_sheets_bp.put("/api/trial/process-sheets/<path:ps_id>/remarks")
+@process_sheets_bp.patch("/api/process-sheets/<path:ps_id>/remarks")
+@process_sheets_bp.put("/api/process-sheets/<path:ps_id>/remarks")
+def api_process_sheet_remarks(ps_id):
+    ps_id = compact_text(ps_id)
+    data = request.get_json(force=True, silent=True) or {}
+    if "remarks" in data:
+        remarks_text = compact_text(data.get("remarks"))
+    else:
+        remarks_text = compact_text(data.get("value"))
+    try:
+        with planner_db() as con:
+            payload, err = _update_remarks(con, ps_id, remarks_text)
             if err:
                 return jsonify({"error": err}), 404
             return jsonify(payload)
