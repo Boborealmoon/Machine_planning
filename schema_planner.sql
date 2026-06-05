@@ -208,6 +208,7 @@ CREATE TABLE IF NOT EXISTS public.planner_process_sheet (
     finished_qty    NUMERIC      NOT NULL DEFAULT 0,
     coway_proposed_edd DATE,
     remarks         TEXT         NOT NULL DEFAULT '',
+    material_in     BOOLEAN      NOT NULL DEFAULT FALSE,
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     UNIQUE (source_ps_id, pp_partial_no)

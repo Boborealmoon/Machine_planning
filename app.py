@@ -773,6 +773,22 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
     if con is not None and needs_planner_ops:
         planned_qty_by_op, queued_machines_by_op = _catalog_lane_qty_maps(con)
 
+    from planning.process_sheets import format_planner_ps_id, material_in_map_for_planner_ps_ids
+
+    material_in_by_ps = {}
+    if con is not None:
+        planner_ps_ids = []
+        for entry in entries:
+            source_ps_id = compact_text(entry.get("source_ps_id"))
+            if not source_ps_id:
+                ps_id = compact_text(entry.get("ps_id"))
+                source_ps_id = ps_id.split("::", 1)[0] if ps_id else ""
+            if source_ps_id:
+                planner_ps_ids.append(
+                    format_planner_ps_id(source_ps_id, int(entry.get("pp_partial_no") or 1))
+                )
+        material_in_by_ps = material_in_map_for_planner_ps_ids(con, planner_ps_ids)
+
     for entry in entries:
         bom_code = compact_text(entry.get("erp_bom_code") or entry.get("bom_code"))
         entry["erp_bom_code"] = bom_code
@@ -781,6 +797,8 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
             ps_id = compact_text(entry.get("ps_id"))
             source_ps_id = ps_id.split("::", 1)[0] if ps_id else ""
         partial_no = int(entry.get("pp_partial_no") or 1)
+        planner_ps_id = format_planner_ps_id(source_ps_id, partial_no) if source_ps_id else ""
+        entry["material_in"] = bool(material_in_by_ps.get(planner_ps_id))
         planner_row = planner_rows.get((source_ps_id, partial_no))
         if planner_row:
             inv = compact_text(planner_row.get("inventory_code"))

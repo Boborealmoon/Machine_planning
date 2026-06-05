@@ -42,3 +42,5 @@ let trialLoadCache = {
   machines: null,
   machinesExpiresAt: 0,
 };
+/** Optimistic material-in overrides keyed by planner ps_id (e.g. NPS25-0279::4). */
+let trialMaterialInOverrides = new Map();

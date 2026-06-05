@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Production Planner{% endblock %}
 {% block main_class %}app-main--planner{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=board-neutral-20260604">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=stock-pill-20260605b">{% endblock %}
 {% block content %}
 <div class="trial-shell">
   <div class="trial-top-strip">
@@ -14,6 +14,9 @@
     <span><span class="ps-op-status is-ready trial-legend-status">Ready to Start</span></span>
     <span><span class="ps-op-status is-in-process trial-legend-status">In Process</span></span>
     <span><span class="ps-op-status is-completed trial-legend-status">Completed</span></span>
+    <span class="trial-legend-sep" aria-hidden="true">·</span>
+    <span><span class="trial-legend-dot" style="background:rgba(34,197,94,0.85)"></span>Queued · in stock</span>
+    <span><span class="trial-legend-dot" style="background:rgba(239,68,68,0.85)"></span>Queued · awaiting stock</span>
     <span class="trial-legend-sep" aria-hidden="true">·</span>
     <span class="trial-legend-note">Times shown in Singapore (SGT)</span>
     </div>
@@ -96,11 +99,11 @@
 <script>window.trialMachinistBoardUrl = {{ machinist_board_path|tojson }};</script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <script src="{{ url_for('static', filename='js/scheduler/board_mode.js') }}?v=20260604"></script>
-<script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v=lane-height-viewport-20260529"></script>
+<script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v=material-in-20260605"></script>
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sgt-wall-clock-20260603"></script>
 <script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v=board-neutral-20260604"></script>
 <script src="{{ url_for('static', filename='js/scheduler/program_tools.js') }}?v=lane-height-viewport-20260529"></script>
-<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=machinist-url-20260604"></script>
+<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=stock-pill-20260605b"></script>
 <script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=load-perf-20260603"></script>
 <script src="{{ url_for('static', filename='js/scheduler/bom.js') }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/dnd.js') }}?v=dedupe-queue-guard-20260603"></script>

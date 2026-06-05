@@ -12,6 +12,128 @@ function trialMaterialStatusClass(status) {
   return '';
 }
 
+function trialCatalogPsRecord(psId) {
+  const needle = String(psId || '').trim();
+  if (!needle) return null;
+  const pools = [
+    ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
+    ...(Array.isArray(trialState.planned) ? trialState.planned : []),
+  ];
+  return pools.find(ps => String(ps.ps_id || '').trim() === needle) || null;
+}
+
+function trialMaterialInForPsId(psId) {
+  const key = String(psId || '').trim();
+  if (!key) return false;
+  if (trialMaterialInOverrides.has(key)) {
+    return Boolean(trialMaterialInOverrides.get(key));
+  }
+  const ps = trialCatalogPsRecord(key);
+  return Boolean(ps?.material_in);
+}
+
+function trialMaterialInForBlockLeader(leader) {
+  const candidates = [leader?.source_ps_id, leader?.job_no]
+    .map(v => String(v || '').trim())
+    .filter(Boolean);
+  const psKey = candidates.find(v => v.includes('::')) || candidates[0] || '';
+  return trialMaterialInForPsId(psKey);
+}
+
+function trialMaterialInLaneClass(leader) {
+  if (!leader?.block_id) return '';
+  return trialMaterialInForBlockLeader(leader) ? 'material-in-yes' : 'material-in-no';
+}
+
+function trialMaterialInPillMeta(materialIn) {
+  if (materialIn) {
+    return {
+      stateClass: 'is-in',
+      label: 'In stock',
+      title: 'Raw material is in — click to mark as awaiting',
+    };
+  }
+  return {
+    stateClass: 'is-out',
+    label: 'Awaiting',
+    title: 'Raw material not in yet — click when stock arrives',
+  };
+}
+
+function trialMaterialInPillSync(pill, materialIn) {
+  if (!pill) return;
+  const meta = trialMaterialInPillMeta(materialIn);
+  pill.classList.toggle('is-in', Boolean(materialIn));
+  pill.classList.toggle('is-out', !materialIn);
+  pill.setAttribute('aria-pressed', materialIn ? 'true' : 'false');
+  pill.title = meta.title;
+  const textEl = pill.querySelector('.trial-material-in-text');
+  if (textEl) textEl.textContent = meta.label;
+}
+
+function trialCatalogMaterialInCheckboxHtml(ps) {
+  const psId = String(ps.ps_id || '').trim();
+  if (!psId) return '';
+  const checked = trialMaterialInForPsId(psId);
+  const meta = trialMaterialInPillMeta(checked);
+  return `
+    <label class="trial-material-in-pill ${meta.stateClass}"
+      title="${escapeHtml(meta.title)}"
+      aria-pressed="${checked ? 'true' : 'false'}"
+      aria-label="${escapeHtml(meta.label)}"
+      onclick="event.stopPropagation()">
+      <input type="checkbox" class="trial-material-in-input"
+        data-ps-id="${escapeHtml(psId)}"
+        ${checked ? 'checked' : ''}
+        tabindex="-1"
+        aria-hidden="true"
+        onchange="trialSetMaterialIn(event, this)">
+      <span class="trial-material-in-dot" aria-hidden="true"></span>
+      <span class="trial-material-in-text">${escapeHtml(meta.label)}</span>
+    </label>
+  `;
+}
+
+async function trialSetMaterialIn(event, input) {
+  if (event) event.stopPropagation();
+  const psId = String(input?.dataset?.psId || '').trim();
+  if (!psId || input.disabled) return;
+  const materialIn = Boolean(input.checked);
+  const previous = trialMaterialInForPsId(psId);
+  const pill = input.closest('.trial-material-in-pill');
+  trialMaterialInOverrides.set(psId, materialIn);
+  trialApplyMaterialInToCatalogPs(psId, materialIn);
+  trialMaterialInPillSync(pill, materialIn);
+  input.disabled = true;
+  if (pill) pill.classList.add('is-saving');
+  try {
+    await POST('/api/trial/process-sheets/material-in', { ps_id: psId, material_in: materialIn });
+    if (typeof trialInvalidateCatalogCache === 'function') trialInvalidateCatalogCache();
+    if (typeof renderTrial === 'function') renderTrial({ preserveScroll: true });
+  } catch (err) {
+    trialMaterialInOverrides.set(psId, previous);
+    trialApplyMaterialInToCatalogPs(psId, previous);
+    input.checked = previous;
+    trialMaterialInPillSync(pill, previous);
+    window.alert(err?.message || 'Could not save material-in flag');
+  } finally {
+    input.disabled = false;
+    if (pill) pill.classList.remove('is-saving');
+  }
+}
+
+function trialApplyMaterialInToCatalogPs(psId, materialIn) {
+  const key = String(psId || '').trim();
+  if (!key) return;
+  const pools = [
+    ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
+    ...(Array.isArray(trialState.planned) ? trialState.planned : []),
+  ];
+  pools.forEach(ps => {
+    if (String(ps.ps_id || '').trim() === key) ps.material_in = Boolean(materialIn);
+  });
+}
+
 function trialProfileOptions(selected) {
   return (trialState.profiles || []).map(profile => {
     const sel = String(profile.profile_name) === String(selected) ? 'selected' : '';
@@ -1087,8 +1209,9 @@ function trialRenderCompactBlockCard(vm) {
   const dragHtml = readOnly
     ? ''
     : '<div class="trial-block-compact-drag" title="Drag to reorder or move to another machine"></div>';
+  const materialInClass = trialMaterialInLaneClass(leader);
   return `
-    <div class="trial-block-card trial-block-card--compact${clickableClass}${readOnly ? ' trial-block-card--readonly' : ''} ${vm.isCombined ? 'combined' : ''}"
+    <div class="trial-block-card trial-block-card--compact${clickableClass}${readOnly ? ' trial-block-card--readonly' : ''} ${vm.isCombined ? 'combined' : ''} ${materialInClass}"
       data-block-id="${leader?.block_id || ''}"
       data-group-id="${vm.group.group_id || 0}"
       data-block-ids="${vm.groupBlockIds}"
@@ -1155,8 +1278,9 @@ function trialRenderQueueDetailRow(group, displaySequenceNo = 0) {
   const actualOnClick = vm.isCombined
     ? `openTrialGroupActualModal(${Number(vm.group.group_id || 0)})`
     : `openTrialActualModal(${blockId})`;
+  const materialInClass = trialMaterialInLaneClass(leader);
   return `
-    <div class="trial-queue-row trial-block-card ${vm.isCombined ? 'combined' : ''}"
+    <div class="trial-queue-row trial-block-card ${vm.isCombined ? 'combined' : ''} ${materialInClass}"
       data-block-id="${blockId}"
       data-group-id="${vm.group.group_id || 0}"
       data-block-ids="${vm.groupBlockIds}">
@@ -1737,6 +1861,7 @@ function trialCatalogPsSummaryHtml(ps, siblingCountByBase) {
       ${trialCatalogPsQueuePillHtml(ps)}
     </div>
     <div class="trial-catalog-ps-right">
+      ${trialCatalogMaterialInCheckboxHtml(ps)}
       <span class="trial-catalog-ps-meta trial-catalog-ps-date">${escapeHtml(dueDate)}</span>
       ${_tipHtml ? `<button class="trial-catalog-info-btn" type="button" onclick="trialCopyInvDesc(event, this)" data-copy-text="${escapeHtml(_copyText)}" aria-label="Copy inventory description"><span class="trial-catalog-info-tip">${_tipHtml}</span></button>` : ''}
     </div>
@@ -2153,6 +2278,7 @@ function renderTrialCatalog() {
           ${trialCatalogPsQueuePillHtml(ps)}
         </div>
         <div class="trial-catalog-planned-right">
+          ${trialCatalogMaterialInCheckboxHtml(ps)}
           <span class="trial-catalog-planned-badge">Planned</span>
           <span class="trial-catalog-ps-meta trial-catalog-ps-date">${escapeHtml(ps.due_date || 'No due date')}</span>
           ${(ps.part_name || ps.part_no || ps.part_desc) ? (() => { const _pn = ps.part_name || ps.part_no || ''; const _pd = ps.part_desc || ''; const _ct = [_pn, _pd].filter(Boolean).join('\n'); return `<button class="trial-catalog-info-btn" type="button" onclick="trialCopyInvDesc(event, this)" data-copy-text="${escapeHtml(_ct)}" aria-label="Copy inventory description"><span class="trial-catalog-info-tip">${_pn ? `<span class="tip-part-no">${escapeHtml(_pn)}</span>` : ''}${_pd ? `<span class="tip-desc">${escapeHtml(_pd)}</span>` : ''}</span></button>`; })() : ''}

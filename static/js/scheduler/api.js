@@ -207,6 +207,7 @@ async function trialRefreshCatalogSidebar() {
     trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
     trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 10000;
     trialState.catalog = trialLoadCache[cacheKey];
+    if (typeof trialMaterialInOverrides !== 'undefined') trialMaterialInOverrides.clear();
     if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
     if (typeof bindTrialCatalogDnD === 'function') bindTrialCatalogDnD();
   } catch (err) {
@@ -437,6 +438,7 @@ async function loadTrial(options = {}) {
   trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
   trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 10000;
   trialState.catalog = trialLoadCache[cacheKey];
+  if (typeof trialMaterialInOverrides !== 'undefined') trialMaterialInOverrides.clear();
   trialScheduleRender(null, { deferCatalog: true });
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'schedule-render-dispatch');

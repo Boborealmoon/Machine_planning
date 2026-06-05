@@ -753,7 +753,7 @@ def _overlay_column_flags(con):
     global _OVERLAY_COLUMN_CACHE
     if _OVERLAY_COLUMN_CACHE is not None:
         return _OVERLAY_COLUMN_CACHE
-    flags = {"coway": False, "remarks": False}
+    flags = {"coway": False, "remarks": False, "material_in": False}
     try:
         for row in rows(
             con.execute(
@@ -762,7 +762,7 @@ def _overlay_column_flags(con):
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
                   AND table_name = 'planner_process_sheet'
-                  AND column_name IN ('coway_proposed_edd', 'remarks')
+                  AND column_name IN ('coway_proposed_edd', 'remarks', 'material_in')
                 """
             )
         ):
@@ -771,6 +771,8 @@ def _overlay_column_flags(con):
                 flags["coway"] = True
             elif name == "remarks":
                 flags["remarks"] = True
+            elif name == "material_in":
+                flags["material_in"] = True
     except Exception:
         pass
     _OVERLAY_COLUMN_CACHE = flags
@@ -780,7 +782,7 @@ def _overlay_column_flags(con):
 def _ensure_planner_overlay_columns(con):
     """Apply overlay DDL only when a write path needs a missing column."""
     flags = _overlay_column_flags(con)
-    if flags["coway"] and flags["remarks"]:
+    if flags["coway"] and flags["remarks"] and flags["material_in"]:
         return flags
     global _OVERLAY_COLUMN_CACHE
     try:
@@ -800,6 +802,14 @@ def _ensure_planner_overlay_columns(con):
                 """
             )
             flags["remarks"] = True
+        if not flags["material_in"]:
+            con.execute(
+                """
+                ALTER TABLE planner_process_sheet
+                ADD COLUMN IF NOT EXISTS material_in BOOLEAN NOT NULL DEFAULT FALSE
+                """
+            )
+            flags["material_in"] = True
     except Exception:
         pass
     _OVERLAY_COLUMN_CACHE = dict(flags)
@@ -2002,6 +2012,77 @@ def _update_remarks(con, ps_id, remarks_text):
     }, None
 
 
+def material_in_map_for_planner_ps_ids(con, planner_ps_ids):
+    """Return {planner_ps_id: bool} for scheduler catalog material-in flags."""
+    flags = _overlay_column_flags(con)
+    ids = [compact_text(i) for i in (planner_ps_ids or []) if compact_text(i)]
+    if not ids:
+        return {}
+    if not flags.get("material_in"):
+        return {pid: False for pid in ids}
+    out = {pid: False for pid in ids}
+    for row in rows(
+        con.execute(
+            """
+            SELECT planner_ps_id, COALESCE(material_in, FALSE) AS material_in
+            FROM planner_process_sheet
+            WHERE planner_ps_id = ANY(%s)
+            """,
+            (ids,),
+        )
+    ):
+        pid = compact_text(row.get("planner_ps_id"))
+        if pid:
+            out[pid] = bool(row.get("material_in"))
+    return out
+
+
+def _parse_material_in_field(raw):
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    text = compact_text(raw).lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off", ""):
+        return False
+    raise ValueError("material_in must be a boolean")
+
+
+def _update_material_in(con, ps_id, material_in):
+    _ensure_planner_overlay_columns(con)
+    _, _, canonical_ps_id = _planner_ps_identity(ps_id)
+    try:
+        ensure_planner_process_sheet(con, canonical_ps_id)
+    except ValueError as exc:
+        return None, str(exc)
+    con.execute(
+        """
+        UPDATE planner_process_sheet
+        SET material_in = %s, updated_at = NOW()
+        WHERE planner_ps_id = %s
+        """,
+        (bool(material_in), canonical_ps_id),
+    )
+    row = one(
+        con.execute(
+            "SELECT material_in FROM planner_process_sheet WHERE planner_ps_id = %s",
+            (canonical_ps_id,),
+        )
+    )
+    try:
+        from app import _invalidate_pp_vouchers_with_ops_cache
+
+        _invalidate_pp_vouchers_with_ops_cache()
+    except Exception:
+        pass
+    return {
+        "ps_id": canonical_ps_id,
+        "material_in": bool((row or {}).get("material_in")),
+    }, None
+
+
 @process_sheets_bp.post("/api/trial/process-sheets/coway-proposed-edd")
 @process_sheets_bp.post("/api/process-sheets/coway-proposed-edd")
 def api_process_sheet_coway_proposed_edd_post():
@@ -2073,6 +2154,59 @@ def api_process_sheet_remarks_post():
         if friendly:
             return jsonify({"error": friendly}), 503
         return jsonify({"error": str(e)}), 500
+
+
+@process_sheets_bp.post("/api/trial/process-sheets/material-in")
+@process_sheets_bp.post("/api/process-sheets/material-in")
+def api_process_sheet_material_in_post():
+    data = request.get_json(force=True, silent=True) or {}
+    ps_id = compact_text(data.get("ps_id"))
+    if not ps_id:
+        return jsonify({"error": "ps_id is required"}), 400
+    if "material_in" not in data:
+        return jsonify({"error": "material_in is required"}), 400
+    try:
+        material_in = _parse_material_in_field(data.get("material_in"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    try:
+        with planner_db() as con:
+            payload, err = _update_material_in(con, ps_id, material_in)
+            if err:
+                return jsonify({"error": err}), 404
+            return jsonify(payload)
+    except Exception as e:
+        friendly = planner_db_connect_error(e)
+        if friendly:
+            return jsonify({"error": friendly}), 503
+        raise
+
+
+@process_sheets_bp.patch("/api/trial/process-sheets/<path:ps_id>/material-in")
+@process_sheets_bp.put("/api/trial/process-sheets/<path:ps_id>/material-in")
+@process_sheets_bp.patch("/api/process-sheets/<path:ps_id>/material-in")
+@process_sheets_bp.put("/api/process-sheets/<path:ps_id>/material-in")
+def api_process_sheet_material_in(ps_id):
+    data = request.get_json(force=True, silent=True) or {}
+    if "material_in" in data:
+        raw = data.get("material_in")
+    else:
+        raw = data.get("value")
+    try:
+        material_in = _parse_material_in_field(raw)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    try:
+        with planner_db() as con:
+            payload, err = _update_material_in(con, ps_id, material_in)
+            if err:
+                return jsonify({"error": err}), 404
+            return jsonify(payload)
+    except Exception as e:
+        friendly = planner_db_connect_error(e)
+        if friendly:
+            return jsonify({"error": friendly}), 503
+        raise
 
 
 @process_sheets_bp.patch("/api/trial/process-sheets/<path:ps_id>/remarks")

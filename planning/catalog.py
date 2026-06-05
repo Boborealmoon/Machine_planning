@@ -29,6 +29,7 @@ from .process_sheets import (
     format_planner_ps_id,
     is_temp_planner_ps_id,
     manual_qty_by_ps_ids,
+    material_in_map_for_planner_ps_ids,
     parse_planner_ps_id,
     temp_planner_ps_display_label,
 )
@@ -758,10 +759,19 @@ def trial_catalog_items(con, include_completed=False):
     planner_ps_ids = []
     for item in grouped.values():
         planner_ps_ids.extend(item.get("planner_ps_ids") or [])
-    manual_qty_by_ps = manual_qty_by_ps_ids(con, list(dict.fromkeys(planner_ps_ids)))
+    unique_planner_ps_ids = list(dict.fromkeys(planner_ps_ids))
+    manual_qty_by_ps = manual_qty_by_ps_ids(con, unique_planner_ps_ids)
+    material_in_by_ps = material_in_map_for_planner_ps_ids(con, unique_planner_ps_ids)
+
+    def _catalog_material_in(item):
+        for pid in item.get("planner_ps_ids") or []:
+            if material_in_by_ps.get(pid):
+                return True
+        return bool(material_in_by_ps.get(item.get("ps_id")))
 
     for item in grouped.values():
         item.pop("_seen_op_keys", None)
+        item["material_in"] = _catalog_material_in(item)
         _apply_catalog_op_qty_cascade(item, manual_qty_by_ps)
         item["flow_options"] = flow_options_for_inventory_code(item["inventory_code"])
         item["planning_cards"] = planning_cards_map.get(item["ps_id"], [])
@@ -857,6 +867,7 @@ def trial_catalog_items(con, include_completed=False):
                     "flow_options": item["flow_options"],
                     "planning_cards": item["planning_cards"],
                     "op_cards": item["op_cards"],
+                    "material_in": bool(item.get("material_in")),
                 }
             )
 
@@ -870,6 +881,7 @@ def trial_catalog_items(con, include_completed=False):
         flow_options = flow_options_for_inventory_code(inventory_code)
         if ps_id in {item["ps_id"] for item in planned}:
             continue
+        planner_ps_id = compact_text(row.get("planner_ps_id")) or ps_id
         unassigned_item = {
             "ps_id": ps_id,
             "source_ps_id": _base_ps_id(row["ps_id"]),
@@ -891,6 +903,7 @@ def trial_catalog_items(con, include_completed=False):
             "flow_options": flow_options,
             "planning_cards": planning_cards_map.get(ps_id, []),
             "op_cards": [],
+            "material_in": bool(material_in_by_ps.get(planner_ps_id)),
         }
         _apply_bom_stage_fields(unassigned_item, bom_stage_keys)
         planned.append(unassigned_item)
