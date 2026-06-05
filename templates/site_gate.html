@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow, noarchive" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Access</title>
+  <style>
+    :root {
+      color-scheme: light;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+      color: #1e293b;
+    }
+    .gate-card {
+      width: min(100%, 360px);
+      padding: 28px 24px 24px;
+      border-radius: 16px;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    p {
+      margin: 0 0 18px;
+      font-size: 13px;
+      line-height: 1.45;
+      color: #64748b;
+    }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #64748b;
+    }
+    input[type="password"] {
+      width: 100%;
+      padding: 11px 12px;
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      border-radius: 10px;
+      font-size: 15px;
+      outline: none;
+      background: #fff;
+    }
+    input[type="password"]:focus {
+      border-color: rgba(37, 99, 235, 0.55);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+    }
+    button {
+      width: 100%;
+      margin-top: 14px;
+      padding: 11px 14px;
+      border: none;
+      border-radius: 10px;
+      background: #1d4ed8;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #1e40af;
+    }
+    .gate-error {
+      margin: 0 0 14px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(239, 68, 68, 0.08);
+      border: 1px solid rgba(239, 68, 68, 0.18);
+      color: #b91c1c;
+      font-size: 13px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <main class="gate-card">
+    <h1>Access required</h1>
+    {% if gate_disabled %}
+    <p>Passcode gate is not active yet.</p>
+    <div class="gate-error" role="alert">
+      Add <strong>PLANNER_PASSCODE</strong> to the <strong>.env</strong> file in the project folder, then restart Flask.
+    </div>
+    {% else %}
+    <p>Enter the passcode to open the planner.</p>
+    {% if error %}
+    <div class="gate-error" role="alert">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="{{ gate_action }}">
+      {% if next_path %}
+      <input type="hidden" name="next" value="{{ next_path }}" />
+      {% endif %}
+      <label for="passcode">Passcode</label>
+      <input id="passcode" name="passcode" type="password" autocomplete="current-password" required autofocus />
+      <button type="submit">Continue</button>
+    </form>
+    {% endif %}
+  </main>
+</body>
+</html>

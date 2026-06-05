@@ -215,6 +215,18 @@ function trialResolvedScheduleDateFilterFromUrl() {
   return trialNormalizeScheduleDates(urlStart, urlEnd);
 }
 
+function trialSyncScheduleUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const resolvedStart = String(trialScheduleDateFilter.start || '').trim();
+  const resolvedEnd = String(trialScheduleDateFilter.end || '').trim();
+  if (resolvedStart) params.set('start', resolvedStart);
+  else params.delete('start');
+  if (resolvedEnd) params.set('end', resolvedEnd);
+  else params.delete('end');
+  const query = params.toString();
+  window.history.replaceState({}, '', query ? `${window.location.pathname}?${query}` : window.location.pathname);
+}
+
 function trialEscapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -365,6 +377,61 @@ function trialPerfSummary(lastN = 20) {
   })).sort((a, b) => b.avg_ms - a.avg_ms);
   if (console.table) console.table(rows);
   return rows;
+}
+
+/** Drag-and-drop reorder for simple vertical lists (e.g. BOM operation steps). */
+function makeSortable(container, onSort, options = {}) {
+  if (!container) return;
+  const itemSelector = options.itemSelector || '[draggable]';
+  const handleSelector = options.handle || null;
+  container._sortableOnSort = onSort;
+  container._sortableItemSelector = itemSelector;
+
+  const moveDragged = (clientY) => {
+    const dragged = container._sortableDragEl;
+    if (!dragged) return;
+    const items = Array.from(container.querySelectorAll(itemSelector)).filter(el => el !== dragged);
+    const before = items.find(el => {
+      const rect = el.getBoundingClientRect();
+      return clientY < rect.top + rect.height / 2;
+    });
+    if (before) container.insertBefore(dragged, before);
+    else container.appendChild(dragged);
+  };
+
+  if (!container._sortableBound) {
+    container._sortableBound = true;
+    container.addEventListener('dragover', e => {
+      if (!container._sortableDragEl) return;
+      e.preventDefault();
+      moveDragged(e.clientY);
+    });
+  }
+
+  Array.from(container.querySelectorAll(itemSelector)).forEach(el => {
+    if (handleSelector) el.removeAttribute('draggable');
+    const dragEl = handleSelector ? el.querySelector(handleSelector) : el;
+    if (!dragEl) return;
+    dragEl.setAttribute('draggable', 'true');
+    dragEl.addEventListener('dragstart', e => {
+      container._sortableDragEl = el;
+      el.classList.add('dragging');
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', el.dataset.idx || '');
+      }
+    });
+    dragEl.addEventListener('dragend', () => {
+      container._sortableDragEl = null;
+      el.classList.remove('dragging');
+      if (container._sortableOnSort) container._sortableOnSort();
+    });
+    el.addEventListener('dragover', e => {
+      if (!container._sortableDragEl || container._sortableDragEl === el) return;
+      e.preventDefault();
+      moveDragged(e.clientY);
+    });
+  });
 }
 
 function trialOpFromPayload(payload) {

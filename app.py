@@ -1,13 +1,15 @@
 import logging
 import os
+import secrets
 import threading
 import time
-from flask import Flask, render_template, jsonify, request, redirect, url_for
+from flask import Flask, render_template, jsonify, request, redirect, session, url_for
 from dotenv import load_dotenv
 
 log = logging.getLogger(__name__)
 
-load_dotenv()
+_APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_APP_ROOT, ".env"))
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
@@ -39,8 +41,27 @@ app.register_blueprint(material_inspection_bp)
 app.register_blueprint(repeat_orders_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
-# Obscured shop-floor board URL (override via MACHINIST_BOARD_PATH in .env).
-_DEFAULT_MACHINIST_BOARD_PATH = "/s/x7k9m2p4w1n5q8r3"
+
+# Stock-in pill save — registered on app (not flows catch-all GET /process-sheets/<path:ps_id>).
+@app.post("/api/process-sheets/stock-in-flag")
+@app.post("/api/trial/process-sheets/stock-in-flag")
+def api_process_sheet_stock_in_flag():
+    from planning.process_sheets import material_in_post_response
+
+    return material_in_post_response()
+
+# Shop-floor machinist board (public — no passcode). Override via MACHINIST_BOARD_PATH in .env.
+_DEFAULT_MACHINIST_BOARD_PATH = "/machine-queue"
+_MACHINIST_BOARD_DECOY_PATHS = frozenset({
+    "/s/x7k9m2p4w1n5q8r3",
+    "/machinist-board",
+    "/machinist",
+    "/machine-queue-board",
+    "/queue-board",
+    "/shop-floor",
+    "/shop-floor-board",
+    "/floor-board",
+})
 
 
 def _machinist_board_path() -> str:
@@ -54,10 +75,137 @@ def _machinist_board_path() -> str:
 
 MACHINIST_BOARD_PATH = _machinist_board_path()
 
+# Planner lives on a non-root path so shop-floor users hitting "/" do not reach it.
+_DEFAULT_PLANNER_PATH = "/planner"
+_PLANNER_LEGACY_PATHS = frozenset({"/scheduler"})
+
+
+def _planner_path() -> str:
+    raw = (os.getenv("PLANNER_PATH") or _DEFAULT_PLANNER_PATH).strip()
+    if not raw.startswith("/"):
+        raw = "/" + raw
+    if len(raw) > 1 and raw.endswith("/"):
+        raw = raw.rstrip("/")
+    if raw == "/":
+        raise RuntimeError("PLANNER_PATH cannot be '/' — root is reserved for the access gate.")
+    return raw
+
+
+PLANNER_PATH = _planner_path()
+
+PLANNER_SESSION_KEY = "planner_access_ok"
+LOCK_PLANNER_PATH = "/lock-planner"
+
+
+def _planner_passcode() -> str:
+    return (os.getenv("PLANNER_PASSCODE") or "").strip()
+
+
+def _planner_gate_enabled() -> bool:
+    return bool(_planner_passcode())
+
+
+def _planner_authenticated() -> bool:
+    return session.get(PLANNER_SESSION_KEY) is True
+
+
+def _normalize_gate_path(path: str) -> str:
+    return ((path or "/").lower().rstrip("/")) or "/"
+
+
+def _is_gate_public_path(path: str) -> bool:
+    normalized = _normalize_gate_path(path)
+    if normalized in (
+        "/",
+        MACHINIST_BOARD_PATH.lower(),
+        LOCK_PLANNER_PATH.lower(),
+        "/favicon.ico",
+    ):
+        return True
+    return normalized.startswith("/static/") or normalized.startswith("/api/")
+
+
+def _safe_next_path(raw: str) -> str:
+    target = (raw or "").strip()
+    if not target.startswith("/") or target.startswith("//"):
+        return PLANNER_PATH
+    return target
+
+
+@app.before_request
+def _require_planner_passcode():
+    if not _planner_gate_enabled():
+        return None
+    path = request.path or "/"
+    if _is_gate_public_path(path):
+        return None
+    if _planner_authenticated():
+        return None
+    return redirect(url_for("site_root_gate", next=path))
+
+
+def _scheduler_asset_version() -> str:
+    """Cache-bust token for planner JS — changes when scheduler scripts change."""
+    override = (os.getenv("SCHEDULER_ASSET_VERSION") or "").strip()
+    if override:
+        return override
+    root = os.path.dirname(os.path.abspath(__file__))
+    watch = (
+        "static/js/scheduler/data.js",
+        "static/js/scheduler/api.js",
+        "static/js/scheduler/dnd.js",
+        "static/js/scheduler/render.js",
+        "static/js/scheduler/modals.js",
+        "static/js/scheduler/utils.js",
+        "static/js/scheduler/bom.js",
+    )
+    try:
+        mt = max(
+            os.path.getmtime(os.path.join(root, rel))
+            for rel in watch
+            if os.path.isfile(os.path.join(root, rel))
+        )
+        return f"partial-lane-{int(mt)}"
+    except (OSError, ValueError):
+        return "partial-lane-dev"
+
+
+SCHEDULER_ASSET_VERSION = _scheduler_asset_version()
+
 
 @app.context_processor
-def _inject_machinist_board_path():
-    return {"machinist_board_path": MACHINIST_BOARD_PATH}
+def _inject_board_paths():
+    return {
+        "machinist_board_path": MACHINIST_BOARD_PATH,
+        "machinist_board_canonical_path": MACHINIST_BOARD_PATH,
+        "planner_path": PLANNER_PATH,
+        "planner_gate_enabled": _planner_gate_enabled(),
+        "planner_authenticated": _planner_authenticated(),
+        "scheduler_asset_version": SCHEDULER_ASSET_VERSION,
+    }
+
+
+@app.after_request
+def _planner_cache_headers(response):
+    """Prevent Cloudflare tunnel / browser from serving stale planner HTML or JS."""
+    path = (request.path or "").lower()
+    if path == MACHINIST_BOARD_PATH.lower():
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    if path == "/":
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    if path in (PLANNER_PATH.lower(), MACHINIST_BOARD_PATH.lower()):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["CDN-Cache-Control"] = "no-store"
+        response.headers["X-Scheduler-Build"] = SCHEDULER_ASSET_VERSION
+    elif path.startswith("/static/js/scheduler/") or path.startswith("/static/css/"):
+        if request.args.get("v"):
+            response.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+        else:
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
 
 
 @app.get("/favicon.ico")
@@ -115,15 +263,111 @@ def supabase_query(sql, params=(), fetchone=False, fetchall=False, commit=False)
 
 # ── Pages ──────────────────────────────────────────────────────────────────
 
-@app.get("/")
-@app.get("/scheduler")
-def scheduler():
-    return render_template("scheduler.html", active="scheduler")
+@app.route("/", methods=["GET", "POST"], endpoint="site_root_gate")
+def site_root_gate():
+    next_path = _safe_next_path(request.values.get("next") or PLANNER_PATH)
+    gate_action = url_for("site_root_gate")
+
+    if not _planner_gate_enabled():
+        return render_template(
+            "site_gate.html",
+            error=None,
+            next_path=next_path,
+            gate_action=gate_action,
+            gate_disabled=True,
+        )
+
+    if request.method == "POST":
+        entered = (request.form.get("passcode") or "").strip()
+        passcode = _planner_passcode()
+        if passcode and secrets.compare_digest(entered, passcode):
+            session[PLANNER_SESSION_KEY] = True
+            session.permanent = True
+            return redirect(_safe_next_path(request.form.get("next") or PLANNER_PATH))
+        return (
+            render_template(
+                "site_gate.html",
+                error="Invalid passcode.",
+                next_path=next_path,
+                gate_action=url_for("site_root_gate"),
+            ),
+            401,
+        )
+
+    if _planner_authenticated():
+        return redirect(url_for("planner"))
+
+    return render_template(
+        "site_gate.html",
+        error=None,
+        next_path=next_path,
+        gate_action=url_for("site_root_gate"),
+    )
+
+
+@app.post(LOCK_PLANNER_PATH, endpoint="lock_planner")
+def lock_planner():
+    session.pop(PLANNER_SESSION_KEY, None)
+    return redirect(url_for("site_root_gate"))
+
+
+@app.get(PLANNER_PATH, endpoint="planner")
+def planner():
+    if _planner_gate_enabled() and not _planner_authenticated():
+        return redirect(url_for("site_root_gate", next=PLANNER_PATH))
+    return render_template(
+        "scheduler.html",
+        active="scheduler",
+        scheduler_asset_version=SCHEDULER_ASSET_VERSION,
+    )
+
+
+def _register_planner_legacy_decoy_routes():
+    canonical = PLANNER_PATH.lower()
+
+    def _register_one(legacy_path: str):
+        slug = legacy_path.strip("/").replace("-", "_") or "root"
+
+        @app.get(legacy_path, endpoint=f"planner_legacy_{slug}")
+        def _planner_legacy_decoy():
+            return "", 404
+
+    for legacy_path in _PLANNER_LEGACY_PATHS:
+        if legacy_path.lower() == canonical:
+            continue
+        _register_one(legacy_path)
+
+
+_register_planner_legacy_decoy_routes()
 
 
 @app.get(MACHINIST_BOARD_PATH)
 def machinist_board():
-    return render_template("machinist_board.html", active="machinist_board")
+    return render_template(
+        "machinist_board.html",
+        active="machinist_board",
+        scheduler_asset_version=SCHEDULER_ASSET_VERSION,
+        machinist_board_canonical_path=MACHINIST_BOARD_PATH,
+    )
+
+
+def _register_machinist_decoy_routes():
+    canonical = MACHINIST_BOARD_PATH.lower()
+
+    def _register_one(decoy_path: str):
+        slug = decoy_path.strip("/").replace("-", "_") or "root"
+
+        @app.get(decoy_path, endpoint=f"machinist_decoy_{slug}")
+        def _machinist_board_decoy():
+            return "", 404
+
+    for decoy_path in _MACHINIST_BOARD_DECOY_PATHS:
+        if decoy_path.lower() == canonical:
+            continue
+        _register_one(decoy_path)
+
+
+_register_machinist_decoy_routes()
 
 
 @app.get("/queue-delays")
@@ -149,12 +393,12 @@ def temp_process_sheets_page():
 @app.get("/machine-schedule")
 def machine_schedule():
     # View-only Gantt hidden from nav — no background compute; redirect to Planner.
-    return redirect(url_for("scheduler"))
+    return redirect(url_for("planner"))
 
 
 @app.get("/summary")
 def summary_redirect():
-    return redirect(url_for("scheduler"))
+    return redirect(url_for("planner"))
 
 
 @app.get("/planning-data")
@@ -184,12 +428,12 @@ def cycle_times_page():
 
 @app.get("/operations")
 def operations():
-    return redirect(url_for("scheduler"))
+    return redirect(url_for("planner"))
 
 
 @app.get("/system")
 def system():
-    return redirect(url_for("scheduler"))
+    return redirect(url_for("planner"))
 
 
 # ── API: PP Vouchers ───────────────────────────────────────────────────────
@@ -252,6 +496,54 @@ def _fetch_pp_vouchers_cache_rows(include_completed: bool, con=None):
         return _run(con)
     with planner_db() as _con:
         return _run(_con)
+
+
+def pp_vouchers_lane_catalog_entries(con, partial_keys, include_completed=True):
+    """With-ops catalog entries for lane blocks — same pipeline as /api/pp-vouchers/with-ops."""
+    from planning.helpers import rows as _db_rows
+    from planning.utils import compact_text
+
+    if not partial_keys:
+        return []
+    allowed = {
+        (compact_text(base), int(partial or 1))
+        for base, partial in partial_keys
+        if compact_text(base)
+    }
+    if not allowed:
+        return []
+
+    from planning.erp_wo_merge import (
+        PP_VOUCHERS_CACHE_WO_MERGE_FROM,
+        PP_VOUCHERS_CACHE_WO_MERGE_SELECT,
+    )
+    from planning.utils import SHIPPED_QTY_TOLERANCE
+
+    ps_ids = sorted({key[0] for key in allowed})
+    shipped_complete = (
+        "c.so_det_qty IS NOT NULL "
+        f"AND COALESCE(c.qty_shipped, 0) >= c.so_det_qty - {SHIPPED_QTY_TOLERANCE}"
+    )
+    where_parts = ["c.ps_id = ANY(%s)"]
+    params: list = [ps_ids]
+    if not include_completed:
+        where_parts.append(f"NOT ({shipped_complete})")
+    where = " WHERE " + " AND ".join(where_parts)
+    order = " ORDER BY c.ps_id, c.pp_partial_no, c.stage_no"
+    sql = (
+        f"SELECT {PP_VOUCHERS_CACHE_WO_MERGE_SELECT} "
+        f"{PP_VOUCHERS_CACHE_WO_MERGE_FROM}{where}{order}"
+    )
+    cache_rows = [
+        row for row in _db_rows(con.execute(sql, tuple(params)))
+        if (compact_text(row.get("ps_id")), int(row.get("pp_partial_no") or 1)) in allowed
+    ]
+    if not cache_rows:
+        return []
+    return _enrich_pp_vouchers_planner_data(
+        _pp_vouchers_with_ops_payload(cache_rows),
+        con=con,
+    )
 
 
 def _invalidate_pp_vouchers_with_ops_cache():
@@ -474,8 +766,46 @@ def _apply_sequential_partial_shipped(entries, *, tol=0.0001):
                     op["remaining_qty"] = max(0.0, op_req - float(op["finished_qty"]))
 
 
+def _pp_voucher_stage_op_key(stage_no, op_no, stage_desc=""):
+    stage_no = int(stage_no or 0)
+    op_text = str(op_no or "").strip()
+    if not op_text and stage_no:
+        op_text = str(stage_no)
+    if op_text:
+        return (stage_no, op_text)
+    return (stage_no, str(stage_desc or "").strip())
+
+
+def _merge_pp_voucher_op_card(existing, incoming):
+    """Roll up duplicate ERP cache stage rows (split WOs) into one catalog op card."""
+    for field in ("target_qty", "required_qty", "wo_qty_required"):
+        existing[field] = max(float(existing.get(field) or 0), float(incoming.get(field) or 0))
+    for field in ("wo_qty_produced", "finished_qty", "wo_qty_rejected", "reject_qty", "planned_qty"):
+        existing[field] = max(float(existing.get(field) or 0), float(incoming.get(field) or 0))
+    existing["qty_shipped"] = max(
+        float(existing.get("qty_shipped") or 0),
+        float(incoming.get("qty_shipped") or 0),
+    )
+    qty = float(existing.get("target_qty") or 0)
+    stage_required = float(existing.get("required_qty") or existing.get("wo_qty_required") or 0)
+    stage_produced = float(existing.get("finished_qty") or existing.get("wo_qty_produced") or 0)
+    base_qty = qty if qty > 0 else stage_required
+    if base_qty > 0 or stage_produced > 0 or str(existing.get("execution_status") or "").strip():
+        existing["remaining_qty"] = max(0.0, base_qty - stage_produced)
+    else:
+        existing["remaining_qty"] = max(
+            float(existing.get("remaining_qty") or 0),
+            float(incoming.get("remaining_qty") or 0),
+        )
+    if _execution_status_rank(incoming.get("execution_status")) < _execution_status_rank(
+        existing.get("execution_status")
+    ):
+        existing["execution_status"] = incoming.get("execution_status") or existing.get("execution_status")
+
+
 def _pp_vouchers_with_ops_payload(cache_rows):
-    # Group cache rows by (ps_id, pp_partial_no) — one cache row per stage
+    # Group cache rows by (ps_id, pp_partial_no). Duplicate cache rows for the same
+    # stage/op (split ERP WOs) are merged into one op card per stage.
     grouped = {}
     for row in cache_rows:
         pp_partial = int(row.get("pp_partial_no") or 1)
@@ -520,6 +850,7 @@ def _pp_vouchers_with_ops_payload(cache_rows):
                 "remaining_qty": 0.0,
                 "op_cards": [],
                 "ops": [],
+                "_op_card_by_stage": {},
                 "flow_options": [],
                 "current_stage_no": None,
                 "current_stage_desc": "",
@@ -609,10 +940,18 @@ def _pp_vouchers_with_ops_payload(cache_rows):
                 "cycle_minutes_per_qty": 20.0,
                 "compatible_machine_group": machine_group,
             }
-            entry["op_cards"].append(op_card)
-            entry["ops"].append(op_card)
+            stage_key = _pp_voucher_stage_op_key(stage_no, op_no, stage_desc)
+            stage_ops = entry.setdefault("_op_card_by_stage", {})
+            existing_card = stage_ops.get(stage_key)
+            if existing_card is not None:
+                _merge_pp_voucher_op_card(existing_card, op_card)
+            else:
+                stage_ops[stage_key] = op_card
+                entry["op_cards"].append(op_card)
+                entry["ops"].append(op_card)
 
     for entry in grouped.values():
+        entry.pop("_op_card_by_stage", None)
         current_code = entry.get("current_stage_status")
         if current_code:
             entry["execution_status"] = _execution_status_label(current_code)
@@ -666,6 +1005,25 @@ def _erp_wo_completion_by_partial(con, source_ids):
             "erp_all_wo_complete": stage_count > 0 and bool(row.get("all_complete")),
         }
     return out
+
+
+def _append_temp_ps_catalog_entries(entries, con, include_completed=False):
+    """Merge planner-only [Temp] reject/rework PS into the sidebar catalog."""
+    from planning.catalog import trial_catalog_items
+    from planning.process_sheets import is_temp_planner_ps_id
+    from planning.utils import compact_text
+
+    merged = list(entries or [])
+    existing = {compact_text(item.get("ps_id")) for item in merged if compact_text(item.get("ps_id"))}
+    catalog = trial_catalog_items(con, include_completed=include_completed)
+    for bucket in ("available", "planned"):
+        for item in catalog.get(bucket) or []:
+            ps_id = compact_text(item.get("ps_id"))
+            if not ps_id or not is_temp_planner_ps_id(ps_id) or ps_id in existing:
+                continue
+            merged.append(dict(item))
+            existing.add(ps_id)
+    return merged
 
 
 def _enrich_pp_vouchers_planner_data(entries, con=None):
@@ -899,12 +1257,20 @@ def api_pp_vouchers_with_ops():
 
         with planner_db() as con:
             cache_rows = _fetch_pp_vouchers_cache_rows(include_completed, con=con)
-            data = _enrich_pp_vouchers_planner_data(
-                _pp_vouchers_with_ops_payload(cache_rows),
-                con=con,
+            data = _append_temp_ps_catalog_entries(
+                _enrich_pp_vouchers_planner_data(
+                    _pp_vouchers_with_ops_payload(cache_rows),
+                    con=con,
+                ),
+                con,
+                include_completed=include_completed,
             )
         if not include_completed:
-            data = [entry for entry in data if not entry.get("shipped_completed")]
+            data = [
+                entry
+                for entry in data
+                if not entry.get("shipped_completed") or entry.get("is_temp_ps")
+            ]
         if use_cache or refresh:
             _store_pp_vouchers_with_ops_cache(scope, data)
         return jsonify(_filter_pp_vouchers_by_search(data, raw_search))
@@ -924,7 +1290,11 @@ def api_pp_vouchers_with_ops():
             )
             data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
             if not include_completed:
-                data = [entry for entry in data if not entry.get("shipped_completed")]
+                data = [
+                    entry
+                    for entry in data
+                    if not entry.get("shipped_completed") or entry.get("is_temp_ps")
+                ]
             if use_cache or refresh:
                 _store_pp_vouchers_with_ops_cache(scope, data)
             return jsonify(_filter_pp_vouchers_by_search(data, raw_search))
@@ -1533,6 +1903,8 @@ def health():
         "db_port": port,
         "db_host_private_lan": domain_sync_likely_unreachable(),
         "domain_sync_unreachable": domain_sync_unreachable(),
+        "planner_gate_enabled": _planner_gate_enabled(),
+        "planner_path": PLANNER_PATH,
     }
     if domain_sync_unreachable():
         payload["db"] = "disconnected"
@@ -2284,5 +2656,11 @@ if __name__ == "__main__":
         log.info("repeat orders routes: %s", ", ".join(repeat_rules))
     else:
         log.warning("repeat orders routes missing — check app.py was saved before restart")
+    log.info("planner: http://127.0.0.1:%s%s", port, PLANNER_PATH)
     log.info("machinist board: http://127.0.0.1:%s%s", port, MACHINIST_BOARD_PATH)
+    if _planner_gate_enabled():
+        log.info("planner passcode gate: enabled (POST / then session unlock)")
+    else:
+        log.warning("planner passcode gate: disabled — set PLANNER_PASSCODE in .env to protect /planner")
+    log.info("scheduler asset build: %s", SCHEDULER_ASSET_VERSION)
     app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)

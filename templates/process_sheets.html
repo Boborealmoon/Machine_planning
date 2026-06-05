@@ -9,7 +9,7 @@
   <div class="page-header">
     <h1 class="page-title">Process Sheets</h1>
     <div class="page-actions">
-      <a class="btn btn-light" href="/scheduler">Open Planner</a>
+      <a class="btn btn-light" href="{{ planner_path }}">Open Planner</a>
       <button class="btn btn-light" type="button" id="ps-create-temp-btn" title="Create a [Temp] process sheet for reject/rework qty">+ Create temp PS</button>
       <button class="btn btn-dark" id="ps-refresh-btn" type="button">Refresh From Cache</button>
     </div>
@@ -147,9 +147,9 @@
 
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=temp-ps-fix-20260604"></script>
+<script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=temp-ps-bom-20260605"></script>
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=temp-ps-ps-page-20260604"></script>
 <script src="{{ url_for('static', filename='js/scheduler/modals.js') }}?v=temp-ps-fix-20260604"></script>
-<script src="{{ url_for('static', filename='js/scheduler/temp_ps.js') }}?v=temp-ps-fix-20260604"></script>
-<script src="{{ url_for('static', filename='js/process_sheets.js', v='temp-ps-fix-20260604') }}"></script>
+<script src="{{ url_for('static', filename='js/scheduler/temp_ps.js') }}?v=temp-ps-ui-20260605"></script>
+<script src="{{ url_for('static', filename='js/process_sheets.js', v='temp-ps-bom-20260605') }}"></script>
 {% endblock %}

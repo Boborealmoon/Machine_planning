@@ -6,26 +6,20 @@ Table changes vs SQLite original:
 """
 from __future__ import annotations
 
-from .helpers import one
+from .helpers import one, rows
+
+_EMPTY_TOTALS = {
+    "output_qty": 0.0,
+    "reject_qty": 0.0,
+    "good_qty": 0.0,
+    "output_reports": 0,
+    "reject_reports": 0,
+}
 
 
-def actual_totals_for_block(con, block_id):
-    row = one(
-        con.execute(
-            """
-            SELECT
-              COALESCE(SUM(COALESCE(output_qty, 0)), 0) AS output_qty,
-              COALESCE(SUM(COALESCE(reject_qty, 0)), 0) AS reject_qty,
-              COALESCE(SUM(COALESCE(output_qty, 0) - COALESCE(reject_qty, 0)), 0) AS good_qty,
-              SUM(CASE WHEN output_qty IS NOT NULL THEN 1 ELSE 0 END) AS output_reports,
-              SUM(CASE WHEN reject_qty IS NOT NULL THEN 1 ELSE 0 END) AS reject_reports
-            FROM planner_production_actual
-            WHERE block_id = %s
-              AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
-            """,
-            (int(block_id),),
-        )
-    )
+def _totals_from_row(row):
+    if not row:
+        return dict(_EMPTY_TOTALS)
     return {
         "output_qty": float(row["output_qty"] or 0),
         "reject_qty": float(row["reject_qty"] or 0),
@@ -33,6 +27,36 @@ def actual_totals_for_block(con, block_id):
         "output_reports": int(row["output_reports"] or 0),
         "reject_reports": int(row["reject_reports"] or 0),
     }
+
+
+def actual_totals_for_block(con, block_id):
+    return actual_totals_for_block_ids(con, [int(block_id)]).get(int(block_id), dict(_EMPTY_TOTALS))
+
+
+def actual_totals_for_block_ids(con, block_ids):
+    ids = sorted({int(block_id) for block_id in (block_ids or []) if int(block_id) > 0})
+    if not con or not ids:
+        return {}
+    totals = {block_id: dict(_EMPTY_TOTALS) for block_id in ids}
+    for row in rows(
+        con.execute(
+            """
+            SELECT block_id,
+              COALESCE(SUM(COALESCE(output_qty, 0)), 0) AS output_qty,
+              COALESCE(SUM(COALESCE(reject_qty, 0)), 0) AS reject_qty,
+              COALESCE(SUM(COALESCE(output_qty, 0) - COALESCE(reject_qty, 0)), 0) AS good_qty,
+              SUM(CASE WHEN output_qty IS NOT NULL THEN 1 ELSE 0 END) AS output_reports,
+              SUM(CASE WHEN reject_qty IS NOT NULL THEN 1 ELSE 0 END) AS reject_reports
+            FROM planner_production_actual
+            WHERE block_id = ANY(%s)
+              AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+            GROUP BY block_id
+            """,
+            (ids,),
+        )
+    ):
+        totals[int(row.get("block_id") or 0)] = _totals_from_row(row)
+    return totals
 
 
 def refresh_block_actual_status(con, block_id, *, auto_unschedule: bool = True):

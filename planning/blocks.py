@@ -18,11 +18,12 @@ Key changes vs SQLite original:
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 from .actuals import actual_totals_for_block
 from .planner_actuals import actual_summary_for_block_row
-from .helpers import one, rows, parse_dt_text
+from .helpers import one, planner_try_savepoint, rows, parse_dt_text
 from .utils import planner_today, planner_timestamptz_for_db
 from .machines import capacity_minutes_for_machine_day, machine_work_intervals_for_day
 from .scheduler_state import (
@@ -39,20 +40,92 @@ from .scheduler_state import (
     upsert_schedule_alert,
     write_change_summary,
 )
+from .process_sheets import format_planner_ps_id, parse_planner_ps_id
 from .utils import compact_text, date_text, format_qty, planner_wall_datetime_to_api, trial_catalog_op_key
 
 
 def _catalog_ps_base_partial(source_ps_id: str):
-    ps = compact_text(source_ps_id)
-    if not ps:
-        return "", 1
-    base, _, partial = ps.partition("::")
-    base = base or ps
+    base, partial = parse_planner_ps_id(compact_text(source_ps_id))
+    return base, max(1, int(partial or 1))
+
+
+def _row_planner_ps_identity(row: dict):
+    """Best-effort (source_ps_id, pp_partial_no) from a lane/operation row."""
+    planner_ps = compact_text(row.get("planner_ps_id"))
+    if planner_ps:
+        base, partial = parse_planner_ps_id(planner_ps)
+        if base:
+            return base, max(1, int(partial or 1))
+
     try:
-        partial_no = max(1, int(partial or 1))
+        explicit_partial = int(row.get("pp_partial_no") or 0)
     except (TypeError, ValueError):
-        partial_no = 1
-    return base, partial_no
+        explicit_partial = 0
+
+    src = compact_text(row.get("source_ps_id"))
+    job = compact_text(row.get("job_no"))
+    src_base, src_partial = parse_planner_ps_id(src)
+    job_base, job_partial = parse_planner_ps_id(job)
+    base = job_base or src_base
+    if not base:
+        return "", 1
+
+    # job_no is the canonical queue id written on INSERT — prefer its partial.
+    if job_base:
+        partial = job_partial
+    else:
+        partial = src_partial
+    if job_base and src_base and job_base == src_base:
+        partial = job_partial
+    if explicit_partial > 0:
+        partial = explicit_partial
+    return base, max(1, int(partial or 1))
+
+
+def planner_ps_id_from_block_row(row: dict) -> str:
+    """Canonical planner_ps_id for a scheduled block/operation row."""
+    base, partial = _row_planner_ps_identity(row)
+    return format_planner_ps_id(base, partial)
+
+
+def attach_block_ps_identity(con, blocks):
+    """Attach planner_ps_id + pp_partial_no; fall back to planner_process_sheet when row ids are bare."""
+    if not blocks:
+        return
+
+    op_ids = sorted({int(b["operation_id"]) for b in blocks if int(b.get("operation_id") or 0) > 0})
+    sheet_by_op: dict[int, dict] = {}
+    if op_ids:
+        for row in rows(
+            con.execute(
+                """
+                SELECT o.operation_id, o.job_no, o.source_ps_id,
+                       COALESCE(ps_job.planner_ps_id, ps_src.planner_ps_id) AS sheet_planner_ps_id,
+                       COALESCE(ps_job.pp_partial_no, ps_src.pp_partial_no) AS sheet_partial_no
+                FROM planner_operation o
+                LEFT JOIN planner_process_sheet ps_job ON ps_job.planner_ps_id = o.job_no
+                LEFT JOIN planner_process_sheet ps_src ON ps_src.planner_ps_id = o.source_ps_id
+                WHERE o.operation_id = ANY(%s)
+                """,
+                (op_ids,),
+            )
+        ):
+            sheet_by_op[int(row["operation_id"])] = dict(row)
+
+    for block in blocks:
+        oid = int(block.get("operation_id") or 0)
+        sheet = sheet_by_op.get(oid) if oid else None
+        sheet_ps = compact_text((sheet or {}).get("sheet_planner_ps_id"))
+        if sheet_ps:
+            base, partial = parse_planner_ps_id(sheet_ps)
+            if base:
+                block["planner_ps_id"] = format_planner_ps_id(base, partial)
+                block["pp_partial_no"] = int(sheet.get("sheet_partial_no") or partial or 1)
+                continue
+        base, partial = _row_planner_ps_identity(block)
+        if base:
+            block["planner_ps_id"] = format_planner_ps_id(base, partial)
+            block["pp_partial_no"] = int(partial or 1)
 
 
 def _catalog_op_matches_row(source_op_no: str, source_op_seq_id: int, row: dict) -> bool:
@@ -94,13 +167,12 @@ def find_active_catalog_lane_block(
         )
     )
     for row in candidates:
-        raw_ps = compact_text(row.get("source_ps_id") or row.get("job_no"))
-        if not raw_ps:
+        row_base, row_partial = _row_planner_ps_identity(row)
+        if not row_base:
             continue
-        row_base, row_partial = _catalog_ps_base_partial(raw_ps)
         if row_base != want_base:
             continue
-        if "::" in ps and "::" in raw_ps and row_partial != want_partial:
+        if row_partial != want_partial:
             continue
         if not _catalog_op_matches_row(source_op_no, source_op_seq_id, row):
             continue
@@ -322,86 +394,17 @@ def trial_block_row(con, block_id):
     )
 
 
-def actual_daily_rows_for_block_row(con, block_row):
-    if not con or not block_row:
-        return []
-
-    block_id = int(block_row["block_id"])
-    removed_dates = {
-        compact_text(row["report_date"] or "")
-        for row in rows(
-            con.execute(
-                """
-                SELECT report_date
-                FROM planner_block_removed_actual_date
-                WHERE block_id = %s
-                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
-                ORDER BY report_date
-                """,
-                (block_id,),
-            )
-        )
-        if compact_text(row["report_date"] or "")
-    }
-    planned_rows = rows(
-        con.execute(
-            """
-            SELECT segment_date::text AS segment_date,
-                   COALESCE(SUM(COALESCE(qty_done, planned_qty, 0)), 0) AS target_qty,
-                   MIN(start_datetime) AS start_datetime,
-                   MAX(end_datetime) AS end_datetime
-            FROM planner_run_block_segment
-            WHERE block_id = %s
-              AND COALESCE(segment_type, '') = 'production'
-              AND segment_date IS NOT NULL
-            GROUP BY segment_date
-            ORDER BY segment_date
-            """,
-            (block_id,),
-        )
-    )
-    if not planned_rows and int(block_row["machine_id"] or 0):
-        # Do not recalculate the whole machine during read-only schedule loads.
-        pass
-        planned_rows = rows(
-            con.execute(
-                """
-                SELECT segment_date::text AS segment_date,
-                       COALESCE(SUM(COALESCE(qty_done, planned_qty, 0)), 0) AS target_qty,
-                       MIN(start_datetime) AS start_datetime,
-                       MAX(end_datetime) AS end_datetime
-                FROM planner_run_block_segment
-                WHERE block_id = %s
-                  AND COALESCE(segment_type, '') = 'production'
-                  AND segment_date IS NOT NULL
-                GROUP BY segment_date
-                ORDER BY segment_date
-                """,
-                (block_id,),
-            )
-        )
-    actual_rows = rows(
-        con.execute(
-            """
-            SELECT actual_id, report_date::text AS report_date, output_qty, reject_qty, remarks, target_qty_at_report
-            FROM planner_production_actual
-            WHERE block_id = %s
-              AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
-            ORDER BY report_date, actual_id
-            """,
-            (block_id,),
-        )
-    )
-
+def _merge_actual_daily_rows(removed_dates, planned_rows, actual_rows):
+    """Build daily actual rows from pre-fetched planned/actual/removed data."""
     row_map = {}
     for row in planned_rows:
-        report_date = compact_text(row["segment_date"] or "")
+        report_date = compact_text(row.get("segment_date") or "")
         if not report_date or report_date in removed_dates:
             continue
         row_map[report_date] = {
             "report_date": report_date,
             "original_report_date": "",
-            "target_qty": float(row["target_qty"] or 0),
+            "target_qty": float(row.get("target_qty") or 0),
             "output_qty": "",
             "reject_qty": "",
             "remarks": "",
@@ -409,26 +412,26 @@ def actual_daily_rows_for_block_row(con, block_row):
             "is_existing_actual": False,
             "actual_id": None,
             "locked_date": True,
-            "start_datetime": planner_wall_datetime_to_api(row["start_datetime"] or ""),
-            "end_datetime": planner_wall_datetime_to_api(row["end_datetime"] or ""),
+            "start_datetime": planner_wall_datetime_to_api(row.get("start_datetime") or ""),
+            "end_datetime": planner_wall_datetime_to_api(row.get("end_datetime") or ""),
         }
 
     for row in actual_rows:
-        report_date = compact_text(row["report_date"] or "")
+        report_date = compact_text(row.get("report_date") or "")
         if not report_date or report_date in removed_dates:
             continue
-        output_value = row["output_qty"]
-        reject_value = row["reject_qty"]
+        output_value = row.get("output_qty")
+        reject_value = row.get("reject_qty")
         actual_payload = {
             "report_date": report_date,
             "original_report_date": report_date,
-            "target_qty": float(row["target_qty_at_report"] or row_map.get(report_date, {}).get("target_qty") or 0),
+            "target_qty": float(row.get("target_qty_at_report") or row_map.get(report_date, {}).get("target_qty") or 0),
             "output_qty": "" if output_value is None else str(output_value),
             "reject_qty": "" if reject_value is None else str(reject_value),
-            "remarks": compact_text(row["remarks"] or ""),
+            "remarks": compact_text(row.get("remarks") or ""),
             "is_planned_row": report_date in row_map,
             "is_existing_actual": True,
-            "actual_id": int(row["actual_id"] or 0),
+            "actual_id": int(row.get("actual_id") or 0),
             "locked_date": True,
         }
         if report_date in row_map:
@@ -437,7 +440,89 @@ def actual_daily_rows_for_block_row(con, block_row):
             row_map[report_date] = actual_payload
             row_map[report_date]["locked_date"] = True
 
-    return sorted(row_map.values(), key=lambda item: (compact_text(item.get("report_date") or ""), int(item.get("actual_id") or 0)))
+    return sorted(
+        row_map.values(),
+        key=lambda item: (compact_text(item.get("report_date") or ""), int(item.get("actual_id") or 0)),
+    )
+
+
+def actual_daily_rows_maps_for_block_ids(con, block_ids):
+    """Batch-fetch daily actual rows for many blocks (no ERP enrichment)."""
+    ids = sorted({int(block_id) for block_id in (block_ids or []) if int(block_id) > 0})
+    if not con or not ids:
+        return {}
+
+    removed_by_block = defaultdict(set)
+    for row in rows(
+        con.execute(
+            """
+            SELECT block_id, report_date::text AS report_date
+            FROM planner_block_removed_actual_date
+            WHERE block_id = ANY(%s)
+              AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+            ORDER BY block_id, report_date
+            """,
+            (ids,),
+        )
+    ):
+        block_id = int(row.get("block_id") or 0)
+        report_date = compact_text(row.get("report_date") or "")
+        if block_id and report_date:
+            removed_by_block[block_id].add(report_date)
+
+    planned_by_block = defaultdict(list)
+    for row in rows(
+        con.execute(
+            """
+            SELECT block_id,
+                   segment_date::text AS segment_date,
+                   COALESCE(SUM(COALESCE(qty_done, planned_qty, 0)), 0) AS target_qty,
+                   MIN(start_datetime) AS start_datetime,
+                   MAX(end_datetime) AS end_datetime
+            FROM planner_run_block_segment
+            WHERE block_id = ANY(%s)
+              AND COALESCE(segment_type, '') = 'production'
+              AND segment_date IS NOT NULL
+            GROUP BY block_id, segment_date
+            ORDER BY block_id, segment_date
+            """,
+            (ids,),
+        )
+    ):
+        planned_by_block[int(row.get("block_id") or 0)].append(row)
+
+    actual_by_block = defaultdict(list)
+    for row in rows(
+        con.execute(
+            """
+            SELECT block_id, actual_id, report_date::text AS report_date,
+                   output_qty, reject_qty, remarks, target_qty_at_report
+            FROM planner_production_actual
+            WHERE block_id = ANY(%s)
+              AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+            ORDER BY block_id, report_date, actual_id
+            """,
+            (ids,),
+        )
+    ):
+        actual_by_block[int(row.get("block_id") or 0)].append(row)
+
+    return {
+        block_id: _merge_actual_daily_rows(
+            removed_by_block.get(block_id, set()),
+            planned_by_block.get(block_id, []),
+            actual_by_block.get(block_id, []),
+        )
+        for block_id in ids
+    }
+
+
+def actual_daily_rows_for_block_row(con, block_row):
+    if not con or not block_row:
+        return []
+
+    block_id = int(block_row["block_id"])
+    return actual_daily_rows_maps_for_block_ids(con, [block_id]).get(block_id, [])
 
 
 def actual_daily_rows_for_block_row_with_erp(con, block_row):
@@ -461,35 +546,72 @@ def attach_actual_daily_to_blocks(con, block_rows, *, with_erp=False):
     """Attach actual_daily_rows (and optional erp_reconciliation) to block dicts in place."""
     if not con or not block_rows:
         return
-    try:
-        from .erp_actuals import enrich_actual_daily_rows_with_erp
-    except Exception:
-        enrich_actual_daily_rows_with_erp = None
+
+    block_ids = [int(row.get("block_id") or 0) for row in block_rows if int(row.get("block_id") or 0)]
+    daily_maps = actual_daily_rows_maps_for_block_ids(con, block_ids)
+
+    enrich_fn = None
+    effective_totals_fn = None
+    shop_totals_by_block = {}
+    if with_erp:
+        try:
+            from .actuals import actual_totals_for_block_ids
+            from .erp_actuals import (
+                effective_actual_totals_for_block,
+                enrich_actual_daily_rows_with_erp,
+                ensure_erp_snapshot_table,
+            )
+
+            ensure_erp_snapshot_table(con)
+            shop_totals_by_block = actual_totals_for_block_ids(con, block_ids)
+            enrich_fn = enrich_actual_daily_rows_with_erp
+            effective_totals_fn = effective_actual_totals_for_block
+        except Exception:
+            enrich_fn = None
+            effective_totals_fn = None
+            shop_totals_by_block = {}
 
     for block_row in block_rows:
         block_id = int(block_row.get("block_id") or 0)
         if not block_id:
             continue
-        daily_rows = actual_daily_rows_for_block_row(con, block_row)
-        if with_erp and enrich_actual_daily_rows_with_erp:
-            try:
-                daily_rows, erp_recon = enrich_actual_daily_rows_with_erp(con, block_row, daily_rows)
-                block_row["erp_reconciliation"] = erp_recon
-                if erp_recon:
-                    from .erp_actuals import effective_actual_totals_for_block
+        daily_rows = daily_maps.get(block_id, [])
+        block_row["erp_reconciliation"] = None
+        if enrich_fn:
+            anchor_dates = [
+                compact_text(row.get("report_date"))
+                for row in daily_rows
+                if compact_text(row.get("report_date"))
+            ]
+            shop_totals = shop_totals_by_block.get(block_id)
 
-                    block_row["effective_actuals"] = effective_actual_totals_for_block(
-                        con, block_row, erp_recon
-                    )
-            except Exception:
-                import logging
-
-                logging.getLogger(__name__).exception(
-                    "ERP enrich failed for block_id=%s", block_id
+            def _enrich(
+                rows=daily_rows,
+                row=block_row,
+                bid=block_id,
+                dates=anchor_dates,
+                totals=shop_totals,
+            ):
+                enriched, erp_recon = enrich_fn(
+                    con,
+                    row,
+                    rows,
+                    anchor_dates=dates,
+                    shop_totals=totals,
                 )
-                block_row["erp_reconciliation"] = None
-        else:
-            block_row["erp_reconciliation"] = None
+                if erp_recon and effective_totals_fn:
+                    row["effective_actuals"] = effective_totals_fn(con, row, erp_recon)
+                return enriched, erp_recon
+
+            enriched = planner_try_savepoint(
+                con,
+                f"erp_daily_{block_id}",
+                _enrich,
+                default=(daily_rows, None),
+            )
+            if enriched:
+                daily_rows, erp_recon = enriched
+                block_row["erp_reconciliation"] = erp_recon
         block_row["actual_daily_rows"] = daily_rows
 
 
@@ -634,6 +756,8 @@ def _queue_state_for_block(con, block_id):
 def trial_block_payload(block, con=None):
     if not block:
         return None
+    ps_base, pp_partial_no = _row_planner_ps_identity(block)
+    canonical_ps_id = format_planner_ps_id(ps_base, pp_partial_no) if ps_base else ""
     planning_status = block.get("planning_status", "UNPLANNED") or "UNPLANNED"
     execution_status = block.get("execution_status", block.get("status", "NOT_STARTED")) or "NOT_STARTED"
     queue_state = _queue_state_for_block(con, block["block_id"]) if con else None
@@ -681,13 +805,14 @@ def trial_block_payload(block, con=None):
         "remaining_qty": remaining_qty,
         "schedule_status": schedule_status,
         "remarks": block["remarks"] or "",
-        "job_no": block["job_no"] or "",
+        "job_no": block["job_no"] or canonical_ps_id or "",
         "operation_name": block["operation_name"] or "",
         "total_qty": float(block["total_qty"] or 0),
         "setup_minutes": float(block["setup_minutes"] or 0),
         "cycle_minutes_per_qty": float(block["cycle_minutes_per_qty"] or 0),
         "compatible_machine_group": block["compatible_machine_group"] or "",
-        "source_ps_id": block["source_ps_id"] or "",
+        "source_ps_id": canonical_ps_id or block["source_ps_id"] or "",
+        "pp_partial_no": pp_partial_no,
         "source_op_seq_id": int(block["source_op_seq_id"] or 0),
         "source_op_no": block["source_op_no"] or "",
         "visual_start_datetime": _dt_str(block["calculated_start_datetime"]),

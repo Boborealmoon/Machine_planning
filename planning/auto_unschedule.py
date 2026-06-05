@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import os
 
-from .blocks import recalculate_machine
+from .blocks import _row_planner_ps_identity, recalculate_machine
 from .helpers import one, rows
 from .utils import compact_text, planner_timestamptz_for_db
+
+QTY_TOL = 0.0001
 
 
 def _truthy_env(name: str, default: str = "") -> bool:
@@ -161,9 +163,11 @@ def _group_blocks(con, group_id: int):
         con.execute(
             """
             SELECT b.block_id, b.machine_id, b.group_id, b.execution_status, b.anchor_datetime,
-                   b.active, b.scheduled_qty, o.source_ps_id, o.job_no, o.source_op_no
+                   b.active, b.scheduled_qty, o.source_ps_id, o.job_no, o.source_op_no,
+                   qs.good_qty AS qs_good_qty
             FROM planner_run_block b
             JOIN planner_operation o ON o.operation_id = b.operation_id
+            LEFT JOIN planner_machine_queue_state qs ON qs.block_id = b.block_id
             WHERE b.group_id = %s
               AND COALESCE(b.active, TRUE) = TRUE
             ORDER BY b.queue_position, b.block_id
@@ -178,16 +182,31 @@ def _execution_status_completed(value: str) -> bool:
     return text in {"C", "COMPLETED", "DONE"}
 
 
-def _erp_marks_row_done(con, row) -> bool:
-    source_ps = compact_text(row.get("source_ps_id") or row.get("job_no"))
-    if not source_ps:
+def _lane_output_satisfied(row) -> bool:
+    scheduled = float(row.get("scheduled_qty") or 0)
+    if scheduled <= QTY_TOL:
         return False
-    base_ps, _, partial = source_ps.partition("::")
-    ps_id = base_ps or source_ps
-    try:
-        partial_no = max(1, int(partial or 1))
-    except (TypeError, ValueError):
-        partial_no = 1
+    good = float(
+        row.get("qs_good_qty")
+        or row.get("good_qty")
+        or row.get("actual_good_qty")
+        or 0
+    )
+    return good >= scheduled - QTY_TOL
+
+
+def _block_done_for_unschedule(con, row) -> bool:
+    if compact_text(row.get("execution_status")).upper() == "DONE":
+        return True
+    if _lane_output_satisfied(row):
+        return True
+    return _erp_marks_row_done(con, row)
+
+
+def _erp_marks_row_done(con, row) -> bool:
+    ps_id, partial_no = _row_planner_ps_identity(row)
+    if not ps_id:
+        return False
     op_no = compact_text(row.get("source_op_no"))
     op_candidates = []
     if op_no:
@@ -253,9 +272,11 @@ def block_ready_for_auto_unschedule(con, block_id: int) -> bool:
         con.execute(
             """
             SELECT b.block_id, b.group_id, b.execution_status, b.active, b.scheduled_qty,
-                   o.source_ps_id, o.job_no, o.source_op_no
+                   o.source_ps_id, o.job_no, o.source_op_no,
+                   qs.good_qty AS qs_good_qty
             FROM planner_run_block b
             JOIN planner_operation o ON o.operation_id = b.operation_id
+            LEFT JOIN planner_machine_queue_state qs ON qs.block_id = b.block_id
             WHERE b.block_id = %s
             """,
             (int(block_id),),
@@ -263,20 +284,15 @@ def block_ready_for_auto_unschedule(con, block_id: int) -> bool:
     )
     if not block or not block.get("active", True):
         return False
-    status = compact_text(block.get("execution_status")).upper()
-    if status != "DONE":
-        return _erp_marks_row_done(con, block)
+    if not _block_done_for_unschedule(con, block):
+        return False
     group_id = int(block.get("group_id") or 0)
     if group_id <= 0:
         return True
     members = _group_blocks(con, group_id)
     if not members:
         return False
-    return all(
-        compact_text(row.get("execution_status")).upper() == "DONE"
-        or _erp_marks_row_done(con, row)
-        for row in members
-    )
+    return all(_block_done_for_unschedule(con, row) for row in members)
 
 
 def unschedule_done_block(con, block_id: int, *, reason: str = "AUTO_DONE") -> dict:
@@ -302,11 +318,7 @@ def unschedule_done_block(con, block_id: int, *, reason: str = "AUTO_DONE") -> d
         member_rows = _group_blocks(con, group_id)
         if not member_rows:
             return {"ok": False, "reason": "empty_group", "block_ids": []}
-        if not all(
-            compact_text(row.get("execution_status")).upper() == "DONE"
-            or _erp_marks_row_done(con, row)
-            for row in member_rows
-        ):
+        if not all(_block_done_for_unschedule(con, row) for row in member_rows):
             return {"ok": False, "reason": "group_not_all_done", "block_ids": []}
         target_rows = member_rows
         anchor_dt = next(
@@ -315,7 +327,7 @@ def unschedule_done_block(con, block_id: int, *, reason: str = "AUTO_DONE") -> d
         )
         ps_id = compact_text(member_rows[0].get("source_ps_id") or member_rows[0].get("job_no"))
     else:
-        if compact_text(block.get("execution_status")).upper() != "DONE" and not _erp_marks_row_done(con, block):
+        if not _block_done_for_unschedule(con, block):
             return {"ok": False, "reason": "not_done", "block_ids": []}
         target_rows = [block]
         anchor_dt = block.get("anchor_datetime")
@@ -371,7 +383,6 @@ def find_done_active_block_ids(con) -> list[int]:
             SELECT b.block_id, b.group_id
             FROM planner_run_block b
             WHERE COALESCE(b.active, TRUE) = TRUE
-              AND UPPER(COALESCE(b.execution_status, '')) = 'DONE'
             ORDER BY b.machine_id, b.queue_position, b.block_id
             """
         )
@@ -387,6 +398,8 @@ def find_done_active_block_ids(con) -> list[int]:
             if not block_ready_for_auto_unschedule(con, block_id):
                 continue
             seen_groups.add(group_id)
+        elif not block_ready_for_auto_unschedule(con, block_id):
+            continue
         leaders.append(block_id)
     return leaders
 
@@ -428,6 +441,14 @@ def auto_unschedule_on_page_load(con) -> dict | None:
         return None
     ensure_saved_anchor_column(con)
     return run_auto_unschedule_sweep(con, reason="AUTO_DONE_PAGE_LOAD")
+
+
+def auto_unschedule_on_lite_board_load(con) -> dict | None:
+    """Sweep lane-saturated / DONE blocks on machinist lite loads (no full lane compaction)."""
+    if not auto_unschedule_enabled():
+        return None
+    ensure_saved_anchor_column(con)
+    return run_auto_unschedule_sweep(con, reason="AUTO_DONE_LITE_LOAD")
 
 
 def auto_unschedule_for_machines(con, machine_ids, *, reason: str = "AUTO_DONE_MACHINE_REFRESH") -> dict | None:

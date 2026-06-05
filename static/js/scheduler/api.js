@@ -179,16 +179,20 @@ async function trialRecalculateSingleMachine(machineId) {
 window.trialRecalculateDirtySchedules = trialRecalculateDirtySchedules;
 window.trialRecalculateSingleMachine = trialRecalculateSingleMachine;
 
+function trialShowCompletedFlag() {
+  return typeof trialShowCompleted !== 'undefined' ? !!trialShowCompleted : false;
+}
+
 function trialCatalogUrl(refresh = false) {
   const params = new URLSearchParams();
-  if (trialShowCompleted) params.set('show_completed', '1');
+  if (trialShowCompletedFlag()) params.set('show_completed', '1');
   if (refresh) params.set('refresh', '1');
   const qs = params.toString();
   return `/api/pp-vouchers/with-ops${qs ? `?${qs}` : ''}`;
 }
 
 function trialCatalogCacheKey() {
-  return trialShowCompleted ? 'catalogAll' : 'catalog';
+  return trialShowCompletedFlag() ? 'catalogAll' : 'catalog';
 }
 
 function trialInvalidateCatalogCache() {
@@ -305,9 +309,189 @@ function trialApplyMachineRefreshPayload(machineIds, payload) {
 }
 
 function trialApplyMachineRefreshFromResponse(machineIds, response) {
-  if (!trialApplyMachineRefreshPayload(machineIds, response?.machine_refresh)) return false;
+  let applied = trialApplyMachineRefreshPayload(machineIds, response?.machine_refresh);
+  if (!applied && response?.block) {
+    trialMergeBlockFromApi(response.block);
+    applied = true;
+  }
+  if (!applied) return false;
   trialScheduleRender(machineIds, { deferCatalog: true });
   return true;
+}
+
+function trialLaneShowsBlock(block, machineId) {
+  if (!block || Number(block.machine_id) !== Number(machineId)) return false;
+  const blockId = String(block.block_id || '');
+  if (!blockId) return false;
+  const groups = typeof trialBlocksGroupedForMachine === 'function'
+    ? trialBlocksGroupedForMachine(machineId)
+    : [];
+  const group = (groups || []).find(row => {
+    const leaderId = String(row?.leader?.block_id || '');
+    if (leaderId === blockId) return true;
+    return (row?.blocks || []).some(b => String(b.block_id) === blockId);
+  });
+  if (!group) return true;
+  if (typeof trialHasActiveDateFilter === 'function' && trialHasActiveDateFilter()
+    && typeof trialGroupRunsInsideDateFilter === 'function') {
+    return trialGroupRunsInsideDateFilter(group);
+  }
+  return true;
+}
+
+/** POST queue row; canonical PS id; retry once if server matched another partial. */
+async function trialPostCatalogQueueOperation(body, catalogCard) {
+  const build = typeof trialCanonicalQueuePayload === 'function'
+    ? trialCanonicalQueuePayload
+    : (b) => ({ ...b });
+  const resolve = typeof trialResolveQueueCard === 'function'
+    ? trialResolveQueueCard(catalogCard || body)
+    : null;
+  const buildPayload = (seed = body) => {
+    const card = resolve?.catalogCard || catalogCard || {};
+    const built = build({ ...seed }, card);
+    const wantPartial = resolve?.ppPartialNo
+      ?? (typeof trialCatalogPartialIndex === 'function' ? trialCatalogPartialIndex(catalogCard || seed) : 1);
+    const plannerId = resolve?.plannerPsId
+      || (typeof trialFormatPlannerPsId === 'function'
+        ? trialFormatPlannerPsId(
+          typeof trialCatalogSourceBase === 'function' ? trialCatalogSourceBase(card) : '',
+          wantPartial,
+        )
+        : '');
+    if (plannerId) {
+      built.job_no = plannerId;
+      built.source_ps_id = plannerId;
+    }
+    if (wantPartial > 0) built.pp_partial_no = wantPartial;
+    return built;
+  };
+  let payload = buildPayload();
+  let result = await POST('/api/trial/operations', payload);
+  if (!result?.duplicate || !result?.block) return result;
+  const want = Number(payload.pp_partial_no)
+    || Number(result?.requested_partial_no)
+    || 1;
+  const got = Number(result?.matched_partial_no)
+    || (typeof trialCatalogPartialIndex === 'function' ? trialCatalogPartialIndex(result.block) : 1);
+  if (got === want) return result;
+  console.warn('trialPostCatalogQueueOperation: duplicate partial mismatch — retrying with forced planner id', {
+    sent: payload,
+    want,
+    got,
+    response: result,
+  });
+  payload = buildPayload({
+    ...body,
+    pp_partial_no: want,
+    job_no: typeof trialFormatPlannerPsId === 'function'
+      ? trialFormatPlannerPsId(
+        typeof trialCatalogSourceBase === 'function'
+          ? trialCatalogSourceBase(resolve?.catalogCard || catalogCard || body)
+          : '',
+        want,
+      )
+      : body.job_no,
+    source_ps_id: typeof trialFormatPlannerPsId === 'function'
+      ? trialFormatPlannerPsId(
+        typeof trialCatalogSourceBase === 'function'
+          ? trialCatalogSourceBase(resolve?.catalogCard || catalogCard || body)
+          : '',
+        want,
+      )
+      : body.source_ps_id,
+  });
+  result = await POST('/api/trial/operations', payload);
+  return result;
+}
+
+function trialCatalogOpOnLane(catalogCard, machineId, resultBlock) {
+  const mid = Number(machineId || 0);
+  if (!mid) return false;
+  const block = resultBlock ? trialNormalizeBlockFromApi(resultBlock) : null;
+  if (block && typeof trialBlockMatchesCatalogCard === 'function'
+    && trialBlockMatchesCatalogCard(block, catalogCard)
+    && trialLaneShowsBlock(block, mid)) {
+    return true;
+  }
+  return typeof trialCatalogOpVisibleOnMachineLane === 'function'
+    && trialCatalogOpVisibleOnMachineLane(catalogCard, mid);
+}
+
+/** After POST /api/trial/operations — sync lane + sidebar and verify the block exists. */
+async function trialFinalizeCatalogQueueSchedule({ catalogCard, machineId, result, qtyLabel }) {
+  const numericMachineId = Number(machineId || 0);
+  const affectedIds = [numericMachineId].filter(Boolean);
+  const resultBlock = result?.block ? trialNormalizeBlockFromApi(result.block) : null;
+  if (result?.block) {
+    trialPinBlock(result.block);
+    trialMergeBlockFromApi(result.block);
+  }
+  trialMarkDirtyMachines(affectedIds, { skipRender: true });
+  await refreshMachines(affectedIds, { response: result });
+  if (typeof trialRefreshCatalogSidebar === 'function') {
+    await trialRefreshCatalogSidebar();
+  }
+  const machine = (trialState.machines || []).find(row => Number(row.machine_id) === numericMachineId);
+  const label = machine?.machine_code || `Machine ${numericMachineId}`;
+  let onLane = trialCatalogOpOnLane(catalogCard, numericMachineId, resultBlock);
+  if (!onLane && typeof loadTrial === 'function') {
+    await loadTrial({ force: true });
+    onLane = trialCatalogOpOnLane(catalogCard, numericMachineId, resultBlock);
+  }
+  if (result?.duplicate) {
+    const partialLabel = typeof trialCatalogPartialIndex === 'function'
+      ? trialCatalogPartialIndex(catalogCard)
+      : 1;
+    const blockPartial = resultBlock && typeof trialCatalogPartialIndex === 'function'
+      ? trialCatalogPartialIndex(resultBlock)
+      : partialLabel;
+    const serverWant = Number(result?.requested_partial_no);
+    const serverGot = Number(result?.matched_partial_no);
+    if (resultBlock && blockPartial !== partialLabel
+      && (Number.isFinite(serverGot) && serverGot !== partialLabel
+        || !Number.isFinite(serverWant) || serverWant !== partialLabel)) {
+      console.error('Partial queue identity mismatch', {
+        catalogPartial: partialLabel,
+        blockPartial,
+        requested_partial_no: result?.requested_partial_no,
+        matched_partial_no: result?.matched_partial_no,
+        requested_source_ps_id: result?.requested_source_ps_id,
+        block: resultBlock,
+        catalogCard,
+      });
+      toast(
+        `Could not add Partial ${partialLabel} on ${label} — request used Partial ${blockPartial}'s id. Hard-refresh (Ctrl+F5) and try again.`,
+        'error',
+      );
+      return { ok: false, duplicate: false };
+    }
+    const opMatches = !resultBlock || (
+      typeof trialBlockMatchesCatalogCard === 'function'
+      && trialBlockMatchesCatalogCard(resultBlock, catalogCard)
+    );
+    if (resultBlock && !opMatches) {
+      toast(`Partial ${partialLabel} already on ${label} for a different operation.`, 'info');
+      return { ok: onLane, duplicate: true };
+    }
+    toast(
+      onLane
+        ? `Partial ${partialLabel} already on ${label} — queue order updated.`
+        : `Partial ${partialLabel} is on ${label} but hidden by the date filter — clear dates or reload.`,
+      onLane ? 'info' : 'error',
+    );
+    return { ok: onLane, duplicate: true };
+  }
+  if (onLane) {
+    const qtyText = qtyLabel ? ` ${qtyLabel}` : '';
+    toast(`Queued${qtyText} on ${label} — click Recalculate schedules for times`, 'success');
+    return { ok: true, duplicate: false };
+  }
+  toast(
+    `Queue saved but the card did not appear on ${label}. Clear the date filter or reload the board.`,
+    'error',
+  );
+  return { ok: false, duplicate: false };
 }
 
 function trialMergeBlocksWithSchedule(scheduleBlocks) {
@@ -371,13 +555,13 @@ async function loadTrial(options = {}) {
   const perf = (typeof trialPerfStart === 'function')
     ? trialPerfStart('load-trial', {
       force: !!options?.force,
-      show_completed: !!trialShowCompleted,
+      show_completed: trialShowCompletedFlag(),
     })
     : null;
   try {
   const resolved = trialNormalizeScheduleDates(trialScheduleDateFilter.start, trialScheduleDateFilter.end);
   trialScheduleDateFilter = resolved;
-  trialSyncScheduleUrl();
+  if (typeof trialSyncScheduleUrl === 'function') trialSyncScheduleUrl();
   const force = !!options.force;
 
   const params = new URLSearchParams();
@@ -390,7 +574,8 @@ async function loadTrial(options = {}) {
     trialInvalidateCatalogCache();
   }
 
-  const scheduleUrl = force
+  const machinistBoard = typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
+  const scheduleUrl = (force || machinistBoard)
     ? trialNoCacheUrl(`/api/trial/schedule${startParam}`)
     : `/api/trial/schedule${startParam}`;
   const scheduleOutcome = await GET(scheduleUrl).catch(err => {

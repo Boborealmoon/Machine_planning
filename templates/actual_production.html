@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+<!-- {% extends "base.html" %}
 {% block title %}Actual Production{% endblock %}
 {% block main_class %}app-main--actual-production{% endblock %}
 {% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=responsive-layout-20260604">{% endblock %}
@@ -10,7 +10,7 @@
       <p class="actual-production-subtitle">Totals and daily fields show ERP first (from the last WO sync). If you enter a higher shop value and save, that override wins. Planned schedule dates cannot be deleted here — use Add Date for extra days.</p>
     </div>
     <div class="actual-production-header-actions">
-      <a class="btn btn-ghost btn-sm" href="/scheduler">Open Planner</a>
+      <a class="btn btn-ghost btn-sm" href="{{ planner_path }}">Open Planner</a>
       <button type="button" class="btn btn-ghost btn-sm" id="actual-production-refresh">Refresh</button>
     </div>
   </div>
@@ -56,9 +56,9 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/state.js') }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=anchor-dt-20260520"></script>
-<script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v=erp-voucher-match-20260529"></script>
+<script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v=partial-index-20260605b"></script>
 <script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=actual-prod-guard-20260529"></script>
 <script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=actual-prod-guard-20260529"></script>
 <script src="{{ url_for('static', filename='js/scheduler/actuals.js') }}?v=erp-voucher-match-20260529"></script>
 <script src="{{ url_for('static', filename='js/actual_production.js') }}?v=actual-view-tabs-20260602"></script>
-{% endblock %}
+{% endblock %} -->

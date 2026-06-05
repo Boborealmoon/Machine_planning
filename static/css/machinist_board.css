@@ -1,284 +1,552 @@
-body.machinist-board {
-  overflow: hidden;
-}
-
-body.machinist-board .navbar,
-body.machinist-board .navbar-backdrop {
-  display: none !important;
-}
-
-body.machinist-board .app-main--machinist {
-  padding: 0;
-  margin: 0;
-  max-width: none;
-  width: 100%;
-  height: 100vh;
-  min-height: 100vh;
-  overflow: hidden;
-}
-
-.trial-shell--machinist {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.machinist-board-head {
-  flex: 0 0 auto;
-  padding: 4px 10px 3px;
-  border-bottom: 1px solid rgba(26, 28, 29, 0.06);
-  background: rgba(255, 255, 255, 0.96);
-}
-
-.machinist-board-head-row {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 6px 10px;
-}
-
-.machinist-board-title {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  color: var(--text);
-  line-height: 1.2;
-}
-
-.machinist-board-note {
-  margin: 0;
-  font-size: 10px;
-  color: var(--text3);
-  line-height: 1.2;
-}
-
-.trial-layout--machinist {
-  display: grid !important;
-  grid-template-columns: 1fr !important;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.trial-main--machinist {
-  min-height: 0;
-  height: 100%;
-  overflow: hidden;
-}
-
-.trial-main--machinist #trial-machine-filter-shell {
-  display: none;
-}
-
-.trial-main--machinist .trial-grid-scroll-host {
-  height: 100%;
-  min-height: 0;
-}
-
-/* Discreet horizontal scroll strip */
-body.machinist-board .trial-grid-scroll-top-wrap {
-  gap: 0;
-  padding: 0 6px 2px;
-  border-bottom: none;
-  background: transparent;
-}
-
-body.machinist-board .trial-grid-scroll-hint {
-  display: none !important;
-}
-
-body.machinist-board .trial-grid-scroll-top {
-  height: 7px;
-  border-radius: 4px;
-  background: rgba(26, 28, 29, 0.04);
-  box-shadow: inset 0 0 0 1px rgba(26, 28, 29, 0.05);
-  scrollbar-color: rgba(26, 28, 29, 0.28) transparent;
-}
-
-body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar {
-  height: 7px;
-}
-
-body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar-track {
-  background: transparent;
-  margin: 0;
-}
-
-body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar-thumb {
-  background: rgba(26, 28, 29, 0.22);
-  border: none;
-  border-radius: 4px;
-  min-width: 32px;
-}
-
-body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar-thumb:hover {
-  background: rgba(26, 28, 29, 0.34);
-}
-
-body.machinist-board .trial-grid-scroll {
-  padding-bottom: 2px;
-}
-
-body.machinist-board .trial-grid {
-  gap: 6px;
-  padding: 0 4px 4px;
-}
-
-body.machinist-board .trial-grid.trial-grid--grouped {
-  gap: 5px;
-}
-
-/* Tighter lane columns */
-body.machinist-board .trial-machine {
-  flex: 0 0 168px;
-  width: 168px;
-  max-width: 168px;
-  min-width: 168px;
-  min-height: 0;
-  gap: 4px;
-  padding: 5px 6px 6px;
-  border-radius: 10px;
-  box-shadow: 0 2px 8px rgba(26, 28, 29, 0.05);
-}
-
-body.machinist-board .trial-machine-head {
-  gap: 4px;
-}
-
-body.machinist-board .trial-machine-head-main {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px 5px;
-  padding: 0;
-  margin: 0;
-}
-
-body.machinist-board .trial-machine-meta,
-body.machinist-board .trial-machine-availability {
-  display: none !important;
-}
-
-body.machinist-board .trial-machine-title {
-  font-size: 12px;
-  line-height: 1.15;
-}
-
-body.machinist-board .trial-machine-queue-summary {
-  margin: 0;
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-body.machinist-board .trial-lane {
-  gap: 3px;
-  padding-right: 2px;
-  padding-bottom: 4px;
-}
-
-body.machinist-board .trial-lane::-webkit-scrollbar {
-  width: 4px;
-}
-
-/* Compact job cards */
-body.machinist-board .trial-block-card--compact,
-body.machinist-board .trial-block-card--readonly {
-  padding: 3px 5px 4px 8px !important;
-  border-radius: 7px;
-  box-shadow: 0 2px 6px rgba(26, 28, 29, 0.04);
-}
-
-body.machinist-board .trial-block-compact-body {
-  gap: 1px;
-}
-
-body.machinist-board .trial-block-card--compact .trial-block-seq {
-  font-size: 8px;
-  padding: 0 4px;
-}
-
-body.machinist-board .trial-block-compact-metric {
-  font-size: 9px;
-}
-
-body.machinist-board .trial-block-compact-metric .trial-pill-label {
-  font-size: 7px;
-}
-
-body.machinist-board .trial-block-card--compact .trial-block-title {
-  font-size: 10px;
-  line-height: 1.12;
-}
-
-body.machinist-board .trial-block-card--compact .trial-block-partial {
-  font-size: 8px;
-}
-
-body.machinist-board .trial-block-card--compact .trial-block-op {
-  font-size: 9px;
-  line-height: 1.15;
-}
-
-body.machinist-board .trial-block-compact-dates {
-  gap: 1px;
-  margin-top: 1px;
-}
-
-body.machinist-board .trial-block-compact-date {
-  font-size: 8px;
-  gap: 4px;
-}
-
-body.machinist-board .trial-block-compact-date .trial-pill-label {
-  font-size: 7px;
-}
-
-body.machinist-board .trial-empty {
-  font-size: 9px;
-  padding: 6px 4px;
-}
-
-/* Compact group chrome when labels expanded */
-body.machinist-board .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine-board-group-head {
-  padding: 1px 6px;
-  margin: 0 2px 2px;
-  font-size: 9px;
-}
-
-body.machinist-board .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine {
-  padding: 4px 5px 5px;
-}
-
-body.machinist-board .trial-machine-board-group-lanes {
-  padding: 6px 4px 6px;
-}
-
-body.machinist-board .trial-machine-board-subgroup-head {
-  margin-bottom: 4px;
-  padding: 4px 6px;
-}
-
-body.machinist-board .trial-machine-board-subgroup-title {
-  font-size: 8px;
-}
-
-body.machinist-board .trial-machine-board-subgroup-hint {
-  margin-top: 2px;
-  font-size: 8px;
-}
-
-body.machinist-board .loading {
-  padding: 8px;
-  font-size: 11px;
-}
-
-a.trial-machinist-view-link {
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-}
-
+body.machinist-board {
+  overflow: hidden;
+}
+
+body.machinist-board .navbar,
+body.machinist-board .navbar-backdrop {
+  display: none !important;
+}
+
+body.machinist-board .app-main--machinist {
+  padding: 0;
+  margin: 0;
+  max-width: none;
+  width: 100%;
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.trial-shell--machinist {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.machinist-board-head {
+  flex: 0 0 auto;
+  padding: 4px 10px 3px;
+  border-bottom: 1px solid rgba(26, 28, 29, 0.06);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.machinist-board-head-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.machinist-board-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.machinist-board-note {
+  margin: 0;
+  font-size: 10px;
+  color: var(--text3);
+  line-height: 1.2;
+}
+
+.machinist-stock-colors-toggle {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(26, 28, 29, 0.1);
+  background: rgba(255, 255, 255, 0.92);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--text3);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.machinist-stock-colors-toggle:hover {
+  color: var(--text);
+  border-color: rgba(26, 28, 29, 0.16);
+}
+
+.machinist-stock-colors-toggle.is-on {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #157347;
+}
+
+.machinist-board-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text3);
+}
+
+body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
+  margin-left: 0;
+}
+
+.machinist-board-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.machinist-board-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.machinist-board-legend-dot.is-in {
+  background: rgba(34, 197, 94, 0.85);
+}
+
+.machinist-board-legend-dot.is-out {
+  background: rgba(239, 68, 68, 0.85);
+}
+
+.trial-layout--machinist {
+  display: grid !important;
+  grid-template-columns: 1fr !important;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.trial-main--machinist {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.trial-main--machinist #trial-machine-filter-shell {
+  display: none;
+}
+
+.trial-main--machinist .trial-grid-scroll-host {
+  height: 100%;
+  min-height: 0;
+}
+
+/* Discreet horizontal scroll strip */
+body.machinist-board .trial-grid-scroll-top-wrap {
+  gap: 0;
+  padding: 0 6px 2px;
+  border-bottom: none;
+  background: transparent;
+}
+
+body.machinist-board .trial-grid-scroll-hint {
+  display: none;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(26, 28, 29, 0.45);
+  user-select: none;
+  pointer-events: none;
+  padding: 0 2px;
+}
+
+body.machinist-board .trial-grid-scroll-top {
+  height: 7px;
+  border-radius: 4px;
+  background: rgba(26, 28, 29, 0.04);
+  box-shadow: inset 0 0 0 1px rgba(26, 28, 29, 0.05);
+  scrollbar-color: rgba(26, 28, 29, 0.28) transparent;
+  touch-action: pan-x;
+}
+
+body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar {
+  height: 7px;
+}
+
+body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 0;
+}
+
+body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar-thumb {
+  background: rgba(26, 28, 29, 0.22);
+  border: none;
+  border-radius: 4px;
+  min-width: 32px;
+}
+
+body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar-thumb:hover {
+  background: rgba(26, 28, 29, 0.34);
+}
+
+body.machinist-board .trial-grid-scroll {
+  padding-bottom: 2px;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+}
+
+body.machinist-board .trial-grid {
+  gap: 6px;
+  padding: 0 4px 4px;
+}
+
+body.machinist-board .trial-grid.trial-grid--grouped {
+  gap: 5px;
+}
+
+/* Tighter lane columns */
+body.machinist-board .trial-machine {
+  flex: 0 0 168px;
+  width: 168px;
+  max-width: 168px;
+  min-width: 168px;
+  min-height: 0;
+  gap: 4px;
+  padding: 5px 6px 6px;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(26, 28, 29, 0.05);
+}
+
+body.machinist-board .trial-machine-head {
+  gap: 4px;
+}
+
+body.machinist-board .trial-machine-head-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 5px;
+  padding: 0;
+  margin: 0;
+}
+
+body.machinist-board .trial-machine-meta {
+  display: none !important;
+}
+
+body.machinist-board .trial-machine-availability {
+  padding: 3px 5px;
+  font-size: 8px;
+  border-radius: 5px;
+  line-height: 1.2;
+}
+
+body.machinist-board .trial-machine-title {
+  font-size: 12px;
+  line-height: 1.15;
+}
+
+body.machinist-board .trial-machine-queue-summary {
+  margin: 0;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+body.machinist-board .trial-lane {
+  gap: 3px;
+  padding-right: 2px;
+  padding-bottom: 4px;
+}
+
+body.machinist-board .trial-lane::-webkit-scrollbar {
+  width: 4px;
+}
+
+/* Compact job cards */
+body.machinist-board .trial-block-card--compact,
+body.machinist-board .trial-block-card--readonly {
+  padding: 3px 5px 4px 8px !important;
+  border-radius: 7px;
+  box-shadow: 0 2px 6px rgba(26, 28, 29, 0.04);
+}
+
+body.machinist-board:not(.machinist-board--stock-colors) .trial-block-card--compact.material-in-yes,
+body.machinist-board:not(.machinist-board--stock-colors) .trial-block-card--compact.material-in-no,
+body.machinist-board:not(.machinist-board--stock-colors) .trial-block-card--readonly.material-in-yes,
+body.machinist-board:not(.machinist-board--stock-colors) .trial-block-card--readonly.material-in-no {
+  border-color: rgba(26, 28, 29, 0.08) !important;
+  background: rgba(255, 255, 255, 0.88) !important;
+  box-shadow: 0 2px 6px rgba(26, 28, 29, 0.04) !important;
+}
+
+body.machinist-board.machinist-board--stock-colors .trial-block-card--compact.material-in-yes,
+body.machinist-board.machinist-board--stock-colors .trial-block-card--readonly.material-in-yes {
+  border-color: rgba(34, 197, 94, 0.55) !important;
+  background: rgba(34, 197, 94, 0.12) !important;
+  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.14) !important;
+}
+
+body.machinist-board.machinist-board--stock-colors .trial-block-card--compact.material-in-no,
+body.machinist-board.machinist-board--stock-colors .trial-block-card--readonly.material-in-no {
+  border-color: rgba(239, 68, 68, 0.55) !important;
+  background: rgba(239, 68, 68, 0.1) !important;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.12) !important;
+}
+
+body.machinist-board .trial-block-compact-body {
+  gap: 1px;
+}
+
+body.machinist-board .trial-block-card--compact .trial-block-seq {
+  font-size: 8px;
+  padding: 0 4px;
+}
+
+body.machinist-board .trial-block-compact-metric {
+  font-size: 9px;
+}
+
+body.machinist-board .trial-block-compact-metric .trial-pill-label {
+  font-size: 7px;
+}
+
+body.machinist-board .trial-block-card--compact .trial-block-title {
+  font-size: 10px;
+  line-height: 1.12;
+}
+
+body.machinist-board .trial-block-card--compact .trial-block-partial {
+  font-size: 8px;
+}
+
+body.machinist-board .trial-block-card--compact .trial-block-op {
+  font-size: 9px;
+  line-height: 1.15;
+}
+
+body.machinist-board .trial-block-compact-dates {
+  gap: 1px;
+  margin-top: 1px;
+}
+
+body.machinist-board .trial-block-compact-date {
+  font-size: 8px;
+  gap: 4px;
+}
+
+body.machinist-board .trial-block-compact-date .trial-pill-label {
+  font-size: 7px;
+}
+
+body.machinist-board .trial-empty {
+  font-size: 9px;
+  padding: 6px 4px;
+}
+
+/* Compact group chrome when labels expanded */
+body.machinist-board .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine-board-group-head {
+  padding: 1px 6px;
+  margin: 0 2px 2px;
+  font-size: 9px;
+}
+
+body.machinist-board .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine {
+  padding: 4px 5px 5px;
+}
+
+body.machinist-board .trial-machine-board-group-lanes {
+  padding: 6px 4px 6px;
+}
+
+body.machinist-board .trial-machine-board-subgroup-head {
+  margin-bottom: 4px;
+  padding: 4px 6px;
+}
+
+body.machinist-board .trial-machine-board-subgroup-title {
+  font-size: 8px;
+}
+
+body.machinist-board .trial-machine-board-subgroup-hint {
+  margin-top: 2px;
+  font-size: 8px;
+}
+
+body.machinist-board .loading {
+  padding: 8px;
+  font-size: 11px;
+}
+
+a.trial-machinist-view-link {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+@media (max-width: 900px) {
+  body.machinist-board {
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y pinch-zoom;
+  }
+
+  body.machinist-board .app-main--machinist {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .trial-shell--machinist {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
+  .trial-layout--machinist,
+  .trial-main--machinist {
+    overflow: visible;
+    height: auto;
+  }
+
+  .machinist-board-head {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    padding: max(6px, env(safe-area-inset-top, 0px)) 8px 4px;
+  }
+
+  .machinist-board-head-row {
+    gap: 4px 8px;
+  }
+
+  .machinist-stock-colors-toggle {
+    margin-left: 0;
+    min-height: 28px;
+    padding: 4px 10px;
+    font-size: 10px;
+  }
+
+  .machinist-board-legend {
+    width: 100%;
+  }
+
+  .trial-main--machinist .trial-grid-scroll-host {
+    height: auto;
+    min-height: 0;
+  }
+
+  body.machinist-board .trial-grid-scroll-top-wrap {
+    position: sticky;
+    top: calc(2.4rem + env(safe-area-inset-top, 0px));
+    z-index: 10;
+    padding: 0 6px 4px;
+    gap: 3px;
+    border-bottom: 1px solid rgba(26, 28, 29, 0.06);
+    background: rgba(248, 250, 252, 0.96);
+    backdrop-filter: blur(6px);
+  }
+
+  body.machinist-board .trial-grid-scroll-hint {
+    display: block;
+    line-height: 1.35;
+  }
+
+  body.machinist-board .trial-grid-scroll-top {
+    height: 22px;
+    border-radius: 8px;
+    background: rgba(26, 28, 29, 0.06);
+    box-shadow: inset 0 0 0 1px rgba(26, 28, 29, 0.08);
+    scrollbar-color: rgba(37, 99, 235, 0.55) rgba(26, 28, 29, 0.08);
+    touch-action: pan-x pinch-zoom;
+  }
+
+  body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar {
+    height: 18px;
+  }
+
+  body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, rgba(59, 130, 246, 0.75), rgba(37, 99, 235, 0.85));
+    border-radius: 7px;
+    border: 2px solid rgba(248, 250, 252, 0.9);
+    min-width: 48px;
+  }
+
+  body.machinist-board .trial-grid-scroll {
+    overflow-x: auto;
+    overflow-y: visible;
+    overscroll-behavior: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(37, 99, 235, 0.45) transparent;
+    padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+    touch-action: pan-x pan-y pinch-zoom;
+  }
+
+  body.machinist-board .trial-grid-scroll::-webkit-scrollbar {
+    display: block;
+    height: 8px;
+  }
+
+  body.machinist-board .trial-grid-scroll::-webkit-scrollbar-thumb {
+    background: rgba(37, 99, 235, 0.45);
+    border-radius: 4px;
+  }
+
+  body.machinist-board .trial-grid,
+  body.machinist-board .trial-grid.trial-grid--grouped {
+    height: auto;
+    align-items: flex-start;
+  }
+
+  body.machinist-board .trial-machine-board-group,
+  body.machinist-board .trial-machine-board-subgroup {
+    height: auto;
+    align-self: flex-start;
+  }
+
+  body.machinist-board .trial-machine-board-group-lanes,
+  body.machinist-board .trial-machine-board-subgroup-lanes {
+    align-items: flex-start;
+    min-height: 0;
+  }
+
+  body.machinist-board .trial-machine {
+    flex: 0 0 168px;
+    width: 168px;
+    max-width: 168px;
+    min-width: 168px;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+    min-height: 0;
+  }
+
+  body.machinist-board .trial-lane {
+    overflow-y: visible;
+    overflow-x: hidden;
+    max-height: none;
+    flex: 0 1 auto;
+    touch-action: pan-y pinch-zoom;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+@media (max-width: 480px) {
+  body.machinist-board .trial-machine {
+    flex: 0 0 156px;
+    width: 156px;
+    max-width: 156px;
+    min-width: 156px;
+  }
+
+  body.machinist-board .trial-block-card--compact .trial-block-title {
+    font-size: 11px;
+  }
+
+  body.machinist-board .trial-block-card--compact .trial-block-op {
+    font-size: 10px;
+  }
+}
+

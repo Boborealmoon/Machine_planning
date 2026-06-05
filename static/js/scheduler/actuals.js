@@ -876,38 +876,31 @@ async function trialSaveActualDailyRows(blockId) {
 async function trialEnsureBlockActualDetail(blockId) {
   const block = (trialState.blocks || []).find(item => String(item.block_id) === String(blockId));
   if (!block) return null;
-  if (Array.isArray(block.actual_daily_rows) && block.actual_daily_rows.length) return block;
-  const machineId = Number(block.machine_id || 0);
-  if (!machineId) return block;
-  const params = new URLSearchParams({
-    machine_ids: String(machineId),
-    lite: '1',
-    include: 'actuals,segments,actual_daily',
-  });
-  const data = await GET(`/api/trial/schedule?${params}`);
-  const refreshedBlocks = Array.isArray(data?.blocks) ? data.blocks : [];
+  if (block.actual_daily_loaded) return block;
+
+  const data = await GET(`/api/trial/blocks/${blockId}/actual-detail`);
+  const refreshedBlock = data?.block || null;
   const refreshedActuals = Array.isArray(data?.actuals) ? data.actuals : [];
   const refreshedSegments = Array.isArray(data?.segments) ? data.segments : [];
-  const refreshedBlock = refreshedBlocks.find(item => String(item.block_id) === String(blockId));
   if (refreshedBlock) {
+    refreshedBlock.actual_daily_loaded = true;
     trialState.blocks = (trialState.blocks || []).map(item => (
       String(item.block_id) === String(blockId) ? { ...item, ...refreshedBlock } : item
     ));
   }
   if (refreshedActuals.length) {
-    const blockIds = new Set(refreshedBlocks.map(item => String(item.block_id)));
     trialState.actuals = [
-      ...(trialState.actuals || []).filter(row => !blockIds.has(String(row.block_id))),
+      ...(trialState.actuals || []).filter(row => String(row.block_id) !== String(blockId)),
       ...refreshedActuals,
     ];
   }
   if (refreshedSegments.length) {
-    const blockIds = new Set(refreshedBlocks.map(item => String(item.block_id)));
     trialState.segments = [
-      ...(trialState.segments || []).filter(seg => !blockIds.has(String(seg.block_id))),
+      ...(trialState.segments || []).filter(seg => String(seg.block_id) !== String(blockId)),
       ...refreshedSegments,
     ];
   }
+  if (typeof trialResetDataIndexes === 'function') trialResetDataIndexes();
   return (trialState.blocks || []).find(item => String(item.block_id) === String(blockId)) || refreshedBlock || block;
 }
 

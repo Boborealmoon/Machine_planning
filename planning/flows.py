@@ -7,7 +7,7 @@ from flask import Blueprint, jsonify, request
 
 from .helpers import one, rows, planner_db
 from .materials import sync_material_requirements_for_ps
-from .process_sheets import ensure_planner_process_sheet
+from .process_sheets import ensure_planner_process_sheet, format_planner_ps_id
 from .utils import compact_text, parse_number
 
 flows_bp = Blueprint("planner_flows", __name__)
@@ -190,6 +190,119 @@ def _insert_planner_bom_variation(
     )
 
 
+def _ps_id_variants_for_relink(planner_ps_id, source_ps_id, pp_partial_no=1):
+    """All planner_operation source_ps_id values that may reference one PS partial."""
+    variants = set()
+    planner_ps_id = compact_text(planner_ps_id)
+    source_ps_id = compact_text(source_ps_id)
+    try:
+        partial_no = max(1, int(pp_partial_no or 1))
+    except (TypeError, ValueError):
+        partial_no = 1
+    if planner_ps_id:
+        variants.add(planner_ps_id)
+    if source_ps_id:
+        variants.add(source_ps_id)
+        formatted = format_planner_ps_id(source_ps_id, partial_no)
+        if formatted:
+            variants.add(formatted)
+    return [value for value in variants if value]
+
+
+def _relink_planner_op_seq_ids_for_bom(con, bom_id, planner_ps_ids=None):
+    """Point queued ops at new planner_operation_seq rows after a BOM save (same op_no)."""
+    bom_id = int(bom_id or 0)
+    if bom_id <= 0:
+        return
+    step_rows = rows(
+        con.execute(
+            """
+            SELECT op_seq_id, op_no
+            FROM planner_operation_seq
+            WHERE bom_id = %s
+            ORDER BY seq_no, op_seq_id
+            """,
+            (bom_id,),
+        )
+    )
+    if not step_rows:
+        return
+
+    wanted_ps_ids = [compact_text(pid) for pid in (planner_ps_ids or []) if compact_text(pid)]
+    if wanted_ps_ids:
+        ps_rows = rows(
+            con.execute(
+                """
+                SELECT planner_ps_id, source_ps_id, pp_partial_no
+                FROM planner_process_sheet
+                WHERE planner_ps_id = ANY(%s)
+                """,
+                (wanted_ps_ids,),
+            )
+        )
+    else:
+        ps_rows = rows(
+            con.execute(
+                """
+                SELECT planner_ps_id, source_ps_id, pp_partial_no
+                FROM planner_process_sheet
+                WHERE selected_bom_id = %s
+                """,
+                (bom_id,),
+            )
+        )
+    if not ps_rows:
+        return
+
+    ps_id_variants = set()
+    planner_ps_id_list = []
+    for ps in ps_rows:
+        planner_ps_id_list.append(compact_text(ps["planner_ps_id"]))
+        for variant in _ps_id_variants_for_relink(
+            ps.get("planner_ps_id"),
+            ps.get("source_ps_id"),
+            ps.get("pp_partial_no"),
+        ):
+            ps_id_variants.add(variant)
+    if not ps_id_variants:
+        return
+
+    ps_id_values = sorted(ps_id_variants)
+    planner_ps_id_values = [pid for pid in planner_ps_id_list if pid]
+
+    for step in step_rows:
+        op_no = compact_text(step.get("op_no"))
+        new_seq = int(step.get("op_seq_id") or 0)
+        if not op_no or new_seq <= 0:
+            continue
+        con.execute(
+            """
+            UPDATE planner_operation
+            SET source_op_seq_id = %s, updated_at = NOW()
+            WHERE TRIM(COALESCE(source_op_no, '')) = %s
+              AND COALESCE(source_op_seq_id, 0) <> %s
+              AND (
+                COALESCE(source_ps_id, '') = ANY(%s)
+                OR COALESCE(job_no, '') = ANY(%s)
+              )
+            """,
+            (new_seq, op_no, new_seq, ps_id_values, ps_id_values),
+        )
+        if planner_ps_id_values:
+            con.execute(
+                """
+                UPDATE planner_planning_card_operation pco
+                SET source_op_seq_id = %s
+                FROM planner_planning_card pc
+                WHERE pc.card_id = pco.card_id
+                  AND pc.planner_ps_id = ANY(%s)
+                  AND TRIM(COALESCE(pco.source_op_no, '')) = %s
+                  AND COALESCE(pco.source_op_seq_id, 0) <> %s
+                """,
+                (new_seq, planner_ps_id_values, op_no, new_seq),
+            )
+
+
 def _save_flow_steps(con, bom_id, steps):
     _ensure_flow_source_columns(con)
     stage_kinds = []
@@ -236,6 +349,7 @@ def _save_flow_steps(con, bom_id, steps):
                 compact_text(step.get("planner_note")),
             ),
         )
+    _relink_planner_op_seq_ids_for_bom(con, int(bom_id))
     return stage_kinds
 
 
@@ -362,6 +476,7 @@ def api_process_sheet_selected_flow(ps_id):
             """,
             (int(flow["bom_id"]), ps_id),
         )
+        _relink_planner_op_seq_ids_for_bom(con, int(flow["bom_id"]), planner_ps_ids=[ps_id])
         sync_material_requirements_for_ps(con, ps_id)
         return jsonify(
             {

@@ -660,8 +660,14 @@ async function toggleTrialSetup(blockId) {
   const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
   if (!block) return;
   try {
-    await PUT(`/api/trial/blocks/${block.block_id}`, { include_setup: Number(block.include_setup || 0) === 1 ? 0 : 1 });
-    await refreshMachines([block.machine_id].filter(Boolean));
+    const machineId = Number(block.machine_id || 0);
+    const result = await PUT(`/api/trial/blocks/${block.block_id}`, {
+      include_setup: Number(block.include_setup || 0) === 1 ? 0 : 1,
+      recalculate: false,
+    });
+    trialMarkDirtyMachines([machineId].filter(Boolean));
+    await refreshMachines([machineId].filter(Boolean), { response: result });
+    toast('Setup updated — click Recalculate schedules to refresh times', 'success');
   } catch (e) {
     toast('Setup toggle failed: ' + e.message, 'error');
   }
@@ -739,8 +745,7 @@ function openTrialMachineQueue(machineId) {
   const machine = (trialState.machines || []).find(row => Number(row.machine_id) === id);
   if (!machine) return;
   trialOpenQueueMachineId = id;
-  const allGroups = trialBlocksGroupedForMachine(id)
-    .filter(group => !trialGroupCompletedForQueue(group));
+  const allGroups = trialBlocksGroupedForMachine(id);
   const groups = allGroups.filter(trialGroupRunsInsideDateFilter);
   const availabilityEnd = trialMachineAvailabilityEnd(
     trialHasActiveDateFilter() ? groups : allGroups
@@ -811,19 +816,20 @@ async function toggleTrialCompletedCatalog() {
 function trialDuplicateQueueBlockIds(machineId) {
   const id = Number(machineId || 0);
   if (!id) return [];
-  const groups = (typeof trialBlocksGroupedForMachine === 'function' ? trialBlocksGroupedForMachine(id) : [])
-    .filter(group => (typeof trialGroupCompletedForQueue !== 'function' || !trialGroupCompletedForQueue(group)));
+  const groups = (typeof trialBlocksGroupedForMachine === 'function' ? trialBlocksGroupedForMachine(id) : []);
   const seen = new Set();
   const removeIds = [];
   groups.forEach(group => {
     const leader = group?.leader || group?.blocks?.[0];
     const blockId = Number(leader?.block_id || 0);
     if (!blockId) return;
-    const key = typeof trialCatalogOpPendingKey === 'function'
-      ? trialCatalogOpPendingKey({
+    const key = typeof trialQueueIdentityKey === 'function'
+      ? trialQueueIdentityKey({
         source_ps_id: leader.source_ps_id || leader.job_no,
+        job_no: leader.job_no || leader.source_ps_id,
         source_op_no: leader.source_op_no,
         source_op_seq_id: leader.source_op_seq_id,
+        pp_partial_no: leader.pp_partial_no,
         card_kind: Number(group?.group_id || 0) > 0 ? 'group' : 'single',
         card_id: group?.group_id || 0,
       })

@@ -1,17 +1,38 @@
 {% extends "base.html" %}
-{% block title %}Machine Queue Board{% endblock %}
+{% block title %}Queue{% endblock %}
 {% block body_class %}machinist-board{% endblock %}
 {% block main_class %}app-main--planner app-main--machinist{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=board-neutral-20260604">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/machinist_board.css') }}?v=compact-20260604">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=5" />
+<meta name="referrer" content="no-referrer" />
+<meta name="robots" content="noindex, nofollow, noarchive" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v={{ scheduler_asset_version }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/machinist_board.css') }}?v=mobile-friendly-20260605">
 {% endblock %}
 {% block content %}
+<script>
+try {
+  if (localStorage.getItem('machinist-board-stock-colors-v1') === '1') {
+    document.body.classList.add('machinist-board--stock-colors');
+  }
+} catch (_) {}
+</script>
 <div class="trial-shell trial-shell--machinist">
   <header class="machinist-board-head" aria-label="Machine queue board">
     <div class="machinist-board-head-row">
       <h1 class="machinist-board-title">Machine queue board</h1>
       <span class="machinist-board-note">Read-only · auto-refresh</span>
+      <button type="button"
+        id="machinist-stock-colors-toggle"
+        class="machinist-stock-colors-toggle is-off"
+        aria-pressed="false"
+        title="Show green/red stock status on cards">
+        Stock colours
+      </button>
+      <span class="machinist-board-legend" hidden aria-label="Card colour legend">
+        <span class="machinist-board-legend-item"><span class="machinist-board-legend-dot is-in"></span>In stock</span>
+        <span class="machinist-board-legend-item"><span class="machinist-board-legend-dot is-out"></span>Awaiting stock</span>
+      </span>
     </div>
   </header>
   <div id="trial-loading" class="loading"><div class="spinner"></div> Loading machine queues...</div>
@@ -20,7 +41,8 @@
       <div id="trial-machine-filter-shell"></div>
       <div class="trial-grid-scroll-host">
         <div class="trial-grid-scroll-top-wrap">
-          <div class="trial-grid-scroll-top" aria-label="Scroll machine lanes horizontally" title="Drag to scroll · Shift + wheel">
+          <div class="trial-grid-scroll-hint" aria-hidden="true">Swipe sideways for machines · scroll down for queues · pinch to zoom</div>
+          <div class="trial-grid-scroll-top" aria-label="Scroll machine lanes horizontally" title="Drag to scroll · swipe sideways on mobile">
             <div class="trial-grid-scroll-top-inner"></div>
           </div>
         </div>
@@ -34,22 +56,51 @@
 {% endblock %}
 {% block scripts %}
 <script>window.trialBoardMode = 'machinist';</script>
-<script src="{{ url_for('static', filename='js/scheduler/board_mode.js') }}?v=20260604"></script>
-<script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v=lane-height-viewport-20260529"></script>
-<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sgt-wall-clock-20260603"></script>
-<script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v=board-neutral-20260604"></script>
-<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v=board-neutral-20260604"></script>
-<script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v=load-perf-20260603"></script>
+<script>
+(function () {
+  const canonical = {{ (machinist_board_canonical_path or machinist_board_path)|tojson }};
+  if (!canonical || !window.history || !window.history.replaceState) return;
+  try {
+    const clean = String(canonical).split('?')[0].split('#')[0] || canonical;
+    if (window.location.pathname !== clean) {
+      window.history.replaceState(null, document.title || 'Queue', clean);
+    } else if (window.location.search || window.location.hash) {
+      window.history.replaceState(null, document.title || 'Queue', clean);
+    }
+  } catch (_) {}
+})();
+</script>
+<script src="{{ url_for('static', filename='js/scheduler/board_mode.js') }}?v=stock-colors-toggle-20260605"></script>
+<script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v={{ scheduler_asset_version }}"></script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v={{ scheduler_asset_version }}"></script>
+<script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v={{ scheduler_asset_version }}"></script>
+<script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v={{ scheduler_asset_version }}"></script>
+<script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v={{ scheduler_asset_version }}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
+  if (typeof trialMachineCategories !== 'function' || typeof loadTrial !== 'function') {
+    const msg = 'Board scripts did not load (data.js). Hard-refresh (Ctrl+F5).';
+    if (typeof toast === 'function') toast(msg, 'error');
+    else console.error(msg);
+    return;
+  }
   window.trialScheduleRenderHook = null;
   trialMachineCategoryFilter = 'ALL';
   trialScheduleDateFilter = trialResolvedScheduleDateFilterFromUrl();
+  if (typeof trialSyncMachinistStockColorsClass === 'function') {
+    trialSyncMachinistStockColorsClass();
+    const stockColorsToggle = document.getElementById('machinist-stock-colors-toggle');
+    if (stockColorsToggle) {
+      stockColorsToggle.addEventListener('click', () => {
+        if (typeof trialToggleMachinistStockColors === 'function') trialToggleMachinistStockColors();
+      });
+    }
+  }
   loadTrial();
   let _autoRefreshInFlight = false;
   let _lastAutoRefreshAt = 0;
-  const AUTO_REFRESH_MS = 60000;
-  const MIN_REFRESH_GAP_MS = 15000;
+  const AUTO_REFRESH_MS = 30000;
+  const MIN_REFRESH_GAP_MS = 10000;
   const runAutoRefresh = async () => {
     if (_autoRefreshInFlight) return;
     const now = Date.now();

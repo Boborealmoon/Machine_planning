@@ -390,7 +390,7 @@ async function loadActualProduction(options = {}) {
   if (list) list.hidden = true;
 
   trialScheduleDateFilter = trialDefaultScheduleDateFilter();
-  const params = new URLSearchParams({ lite: '1', include: 'segments,actuals,actual_daily' });
+  const params = new URLSearchParams({ lite: '1', include: 'actual_daily' });
   if (actualProductionIsHistoryView()) {
     params.set('include_completed', '1');
   }

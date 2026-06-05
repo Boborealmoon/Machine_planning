@@ -20,4 +20,8 @@ if (-not (Test-Path $cloudflared)) {
 
 $target = "http://127.0.0.1:$Port"
 Write-Host "Tunneling $target (Ctrl+C to stop)"
+Write-Host ""
+Write-Host "Tunnel URL is a different browser origin than localhost — hard-refresh (Ctrl+F5) on the"
+Write-Host "trycloudflare.com tab after code changes. Verify build: curl -I <tunnel>/planner | findstr X-Scheduler-Build"
+Write-Host ""
 & $cloudflared tunnel --url $target

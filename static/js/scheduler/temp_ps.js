@@ -6,6 +6,12 @@ let _tempPsSelected = null;
 let _tempPsPreview = null;
 let _tempPsDropdownItems = [];
 let _tempPsDropdownIndex = -1;
+let _tempPsPlaceholderMode = false;
+
+function tempPsOnSchedulerPage() {
+  const path = String(window.location.pathname || '');
+  return /\/(scheduler|machinist|trial)(\/|$)/.test(path);
+}
 
 function tempPsNormalizeEntry(raw) {
   const psId = String(raw?.ps_id || raw?.source_ps_id || '').trim();
@@ -184,47 +190,121 @@ async function runTempPsSearch(query, options = {}) {
   }
 }
 
+function tempPsNormalizeReferenceLabel(raw) {
+  let text = String(raw || '').trim();
+  if (!text) return '';
+  if (/^\[Temp\]/i.test(text)) text = text.replace(/^\[Temp\]\s*/i, '').trim();
+  return text;
+}
+
+function tempPsUpdateNamePreview() {
+  const preview = document.getElementById('temp-ps-name-preview');
+  const input = document.getElementById('temp-ps-reference');
+  if (!preview) return;
+  const ref = tempPsNormalizeReferenceLabel(input?.value || '');
+  const label = ref
+    ? (typeof trialTempPsDisplayId === 'function'
+      ? trialTempPsDisplayId(`[Temp]${ref}`)
+      : `[Temp] ${ref}`)
+    : '[Temp] …';
+  preview.innerHTML = `Will create <strong>${escapeHtml(label)}</strong>`;
+}
+
+function tempPsSetMode(mode) {
+  const isPlaceholder = mode === 'placeholder';
+  _tempPsPlaceholderMode = isPlaceholder;
+  _tempPsSelected = null;
+  _tempPsPreview = null;
+  tempPsCloseDropdown();
+  document.querySelectorAll('.temp-ps-mode-btn').forEach(btn => {
+    const active = btn.dataset.tempPsMode === mode;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const reworkPanel = document.getElementById('temp-ps-mode-rework');
+  const placeholderPanel = document.getElementById('temp-ps-mode-placeholder');
+  if (reworkPanel) reworkPanel.hidden = isPlaceholder;
+  if (placeholderPanel) placeholderPanel.hidden = !isPlaceholder;
+  const previewEl = document.getElementById('temp-ps-preview');
+  if (previewEl) previewEl.hidden = true;
+  if (isPlaceholder) tempPsUpdateNamePreview();
+}
+
 function openTempProcessSheetModal() {
   _tempPsSelected = null;
   _tempPsPreview = null;
   _tempPsDropdownItems = [];
+  _tempPsPlaceholderMode = false;
   openTrialForm(
     'Create temp process sheet',
     `
-      <p class="trial-modal-hint">
-        Search uses ERP cache (<code>pp_vouchers_cache</code>). After you create, the temp PS is
-        <strong>saved permanently</strong> in Supabase (<code>SUPA_DB_URL</code>):
-        <code>planner_process_sheet</code> (scheduling) plus
-        <code>planner_temp_process_sheet</code> (reject qty, source PS, part, route snapshot).
-      </p>
-      <label class="trial-modal-field temp-ps-combobox">
-        <span class="trial-modal-label">Process sheet</span>
-        <div class="temp-ps-combobox-shell">
-          <input id="temp-ps-search" class="trial-modal-input temp-ps-combobox-input" type="text"
-            placeholder="Start typing PS no., part, description…"
-            autocomplete="off" autocapitalize="off" spellcheck="false"
-            role="combobox" aria-expanded="false" aria-controls="temp-ps-dropdown" aria-autocomplete="list">
-          <div id="temp-ps-dropdown" class="temp-ps-dropdown" role="listbox" hidden></div>
-        </div>
-        <span id="temp-ps-search-status" class="temp-ps-search-status">Type to search ERP process sheets</span>
-      </label>
-      <div id="temp-ps-preview" class="temp-ps-preview" hidden></div>
-      <label class="trial-modal-field">
-        <span class="trial-modal-label">Reject / rework qty</span>
-        <input id="temp-ps-qty" class="trial-modal-input" type="number" min="0" step="1"
-          placeholder="e.g. 12">
-      </label>
-      <label class="trial-modal-field">
-        <span class="trial-modal-label">Remarks (optional)</span>
-        <input id="temp-ps-remarks" class="trial-modal-input" type="text"
-          placeholder="Reason or note">
-      </label>
+      <div class="temp-ps-mode-switch" role="tablist" aria-label="Temp PS type">
+        <button type="button" class="temp-ps-mode-btn is-active" data-temp-ps-mode="rework"
+          role="tab" aria-selected="true">Rework from ERP PS</button>
+        <button type="button" class="temp-ps-mode-btn" data-temp-ps-mode="placeholder"
+          role="tab" aria-selected="false">Placeholder (no PS yet)</button>
+      </div>
+
+      <div id="temp-ps-mode-rework" class="temp-ps-mode-panel">
+        <p class="temp-ps-mode-desc">Pick the source process sheet. Creates <strong>[Temp] NPS…</strong> and copies its route.</p>
+        <label class="trial-modal-field temp-ps-combobox">
+          <span class="trial-modal-label">Source process sheet</span>
+          <div class="temp-ps-combobox-shell">
+            <input id="temp-ps-search" class="trial-modal-input temp-ps-combobox-input" type="text"
+              placeholder="Search PS no., part, description…"
+              autocomplete="off" autocapitalize="off" spellcheck="false"
+              role="combobox" aria-expanded="false" aria-controls="temp-ps-dropdown" aria-autocomplete="list">
+            <div id="temp-ps-dropdown" class="temp-ps-dropdown" role="listbox" hidden></div>
+          </div>
+          <span id="temp-ps-search-status" class="temp-ps-search-status">Search ERP — click a result to select</span>
+        </label>
+        <div id="temp-ps-preview" class="temp-ps-preview" hidden></div>
+      </div>
+
+      <div id="temp-ps-mode-placeholder" class="temp-ps-mode-panel" hidden>
+        <p class="temp-ps-mode-desc">Hold a lane with a <code>PLACEHOLDER</code> op until the real ERP PS exists.</p>
+        <div id="temp-ps-name-preview" class="temp-ps-name-preview">Will create <strong>[Temp] …</strong></div>
+        <label class="trial-modal-field">
+          <span class="trial-modal-label">Process sheet no.</span>
+          <input id="temp-ps-reference" class="trial-modal-input" type="text"
+            placeholder="NPS25-0205" autocomplete="off">
+        </label>
+        <p class="temp-ps-field-hint">PS number only — not the part code.</p>
+        <label class="trial-modal-field">
+          <span class="trial-modal-label">Part number</span>
+          <input id="temp-ps-part-no" class="trial-modal-input" type="text"
+            placeholder="BB18-KS1712-02 REV 04" autocomplete="off">
+        </label>
+        <label class="trial-modal-field">
+          <span class="trial-modal-label">Description</span>
+          <input id="temp-ps-part-desc" class="trial-modal-input" type="text"
+            placeholder="Optional" autocomplete="off">
+        </label>
+      </div>
+
+      <div class="temp-ps-shared-fields">
+        <label class="trial-modal-field">
+          <span class="trial-modal-label">Qty</span>
+          <input id="temp-ps-qty" class="trial-modal-input" type="number" min="0" step="1"
+            placeholder="e.g. 12">
+        </label>
+        <label class="trial-modal-field">
+          <span class="trial-modal-label">Remarks</span>
+          <input id="temp-ps-remarks" class="trial-modal-input" type="text"
+            placeholder="Optional" autocomplete="off">
+        </label>
+      </div>
     `,
     'Create temp PS',
     saveTempProcessSheet
   );
   setTimeout(() => {
     document.querySelector('.trial-modal-panel')?.classList.add('trial-modal-panel--temp-ps');
+    document.querySelectorAll('.temp-ps-mode-btn').forEach(btn => {
+      btn.addEventListener('click', () => tempPsSetMode(btn.dataset.tempPsMode || 'rework'));
+    });
+    document.getElementById('temp-ps-reference')?.addEventListener('input', tempPsUpdateNamePreview);
+    tempPsSetMode('rework');
     const input = document.getElementById('temp-ps-search');
     const shell = input?.closest('.temp-ps-combobox-shell');
     input?.addEventListener('input', () => {
@@ -349,7 +429,9 @@ async function loadTempPsPreview(selection) {
 }
 
 async function saveTempProcessSheet() {
-  if (!_tempPsSelected?.source_ps_id) {
+  const placeholderMode = _tempPsPlaceholderMode
+    || !document.getElementById('temp-ps-mode-placeholder')?.hidden;
+  if (!placeholderMode && !_tempPsSelected?.source_ps_id) {
     window.alert('Pick a process sheet from the dropdown list first (don’t only type the number).');
     return;
   }
@@ -359,6 +441,19 @@ async function saveTempProcessSheet() {
     return;
   }
   const remarks = String(document.getElementById('temp-ps-remarks')?.value || '').trim();
+  const partNo = String(document.getElementById('temp-ps-part-no')?.value || '').trim();
+  const partDesc = String(document.getElementById('temp-ps-part-desc')?.value || '').trim();
+  const referenceLabel = tempPsNormalizeReferenceLabel(
+    document.getElementById('temp-ps-reference')?.value || ''
+  );
+  if (placeholderMode && !referenceLabel) {
+    window.alert('Enter the process sheet number (e.g. NPS25-0205).');
+    return;
+  }
+  if (placeholderMode && !partNo) {
+    window.alert('Enter the part / inventory code for this placeholder temp PS.');
+    return;
+  }
   const saveBtn = document.getElementById('trial-save-btn');
   if (saveBtn) saveBtn.disabled = true;
   trialSetFormModalBusy('Creating temp PS…');
@@ -366,17 +461,28 @@ async function saveTempProcessSheet() {
     '/api/temp-process-sheets',
     '/api/trial/temp-process-sheets',
   ];
+  const payload = placeholderMode
+    ? {
+        mode: 'placeholder',
+        placeholder: true,
+        reference_ps_id: referenceLabel,
+        part_no: partNo,
+        part_desc: partDesc,
+        qty,
+        remarks,
+      }
+    : {
+        source_ps_id: _tempPsSelected.source_ps_id,
+        pp_partial_no: _tempPsSelected.pp_partial_no,
+        qty,
+        remarks,
+      };
   try {
     let result = null;
     let lastError = null;
     for (const url of bodies) {
       try {
-        result = await POST(url, {
-          source_ps_id: _tempPsSelected.source_ps_id,
-          pp_partial_no: _tempPsSelected.pp_partial_no,
-          qty,
-          remarks,
-        });
+        result = await POST(url, payload);
         break;
       } catch (err) {
         lastError = err;
@@ -384,13 +490,14 @@ async function saveTempProcessSheet() {
     }
     if (!result) throw lastError || new Error('Could not create temp process sheet');
     closeModal();
+    window.dispatchEvent(new CustomEvent('temp-ps-created', { detail: result }));
     if (typeof trialToast === 'function') {
       trialToast(
         `Created ${result.display_ps_id || trialTempPsDisplayId(result.planner_ps_id)} · qty ${fmt(qty, 0)}`,
         'success'
       );
     }
-    if (typeof loadTrial === 'function') {
+    if (tempPsOnSchedulerPage() && typeof loadTrial === 'function') {
       await loadTrial({ force: true });
       const search = document.getElementById('trial-catalog-search');
       const label = result.display_ps_id || result.planner_ps_id || '';
@@ -399,7 +506,6 @@ async function saveTempProcessSheet() {
         if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
       }
     }
-    window.dispatchEvent(new CustomEvent('temp-ps-created', { detail: result }));
   } catch (err) {
     window.alert(err.message || 'Could not create temp process sheet');
   } finally {

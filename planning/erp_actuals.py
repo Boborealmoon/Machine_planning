@@ -7,8 +7,14 @@ from .helpers import one, planner_try_savepoint, rows
 from .process_sheets import format_planner_ps_id, parse_planner_ps_id
 from .utils import compact_text
 
+_erp_snapshot_schema_ready = False
+
 
 def ensure_erp_snapshot_table(con) -> None:
+    global _erp_snapshot_schema_ready
+    if _erp_snapshot_schema_ready:
+        return
+    # Table only on the hot path; index is created by migrations/add_erp_wo_qty_snapshot.sql.
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS public.planner_erp_wo_qty_snapshot (
@@ -24,12 +30,7 @@ def ensure_erp_snapshot_table(con) -> None:
         )
         """
     )
-    con.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_planner_erp_wo_qty_snapshot_lookup
-            ON public.planner_erp_wo_qty_snapshot (source_mps_no, pp_partial_no, stage_no, snapshot_date DESC)
-        """
-    )
+    _erp_snapshot_schema_ready = True
 
 
 def _float(value) -> float:
@@ -300,23 +301,53 @@ def _erp_totals_from_voucher_cache(con, key):
     op_candidates = _op_no_candidates(key.get("op_no"), stage_no)
     best = None
     for ps_id in _ps_id_candidates(key["source_mps_no"], key["pp_partial_no"]):
-        row = one(
-            con.execute(
-                """
-                SELECT COALESCE(MAX(wo_qty_produced), 0) AS acc_qty_produced,
-                       COALESCE(MAX(wo_qty_rejected), 0) AS acc_rej_qty_produced,
-                       MAX(_synced_at) AS loaded_at
-                FROM pp_vouchers_cache
-                WHERE ps_id = %s
-                  AND pp_partial_no = %s
-                  AND (
-                        (%s > 0 AND stage_no = %s)
-                     OR NULLIF(TRIM(COALESCE(op_no, '')), '') = ANY(%s)
-                  )
-                """,
-                (ps_id, key["pp_partial_no"], stage_no, stage_no, op_candidates or [""]),
+        if op_candidates:
+            row = one(
+                con.execute(
+                    """
+                    SELECT COALESCE(MAX(wo_qty_produced), 0) AS acc_qty_produced,
+                           COALESCE(MAX(wo_qty_rejected), 0) AS acc_rej_qty_produced,
+                           MAX(_synced_at) AS loaded_at
+                    FROM pp_vouchers_cache
+                    WHERE ps_id = %s
+                      AND pp_partial_no = %s
+                      AND (
+                            (%s > 0 AND stage_no = %s)
+                         OR COALESCE(op_no::text, '') = ANY(%s)
+                      )
+                    """,
+                    (ps_id, key["pp_partial_no"], stage_no, stage_no, op_candidates),
+                )
             )
-        )
+        elif stage_no > 0:
+            row = one(
+                con.execute(
+                    """
+                    SELECT COALESCE(MAX(wo_qty_produced), 0) AS acc_qty_produced,
+                           COALESCE(MAX(wo_qty_rejected), 0) AS acc_rej_qty_produced,
+                           MAX(_synced_at) AS loaded_at
+                    FROM pp_vouchers_cache
+                    WHERE ps_id = %s
+                      AND pp_partial_no = %s
+                      AND stage_no = %s
+                    """,
+                    (ps_id, key["pp_partial_no"], stage_no),
+                )
+            )
+        else:
+            row = one(
+                con.execute(
+                    """
+                    SELECT COALESCE(MAX(wo_qty_produced), 0) AS acc_qty_produced,
+                           COALESCE(MAX(wo_qty_rejected), 0) AS acc_rej_qty_produced,
+                           MAX(_synced_at) AS loaded_at
+                    FROM pp_vouchers_cache
+                    WHERE ps_id = %s
+                      AND pp_partial_no = %s
+                    """,
+                    (ps_id, key["pp_partial_no"]),
+                )
+            )
         if not row:
             continue
         if _float(row.get("acc_qty_produced")) > 0 or _float(row.get("acc_rej_qty_produced")) > 0:
@@ -428,7 +459,7 @@ def _planned_dates_for_block(con, block_row):
     ]
 
 
-def erp_reconciliation_for_block(con, block_row):
+def erp_reconciliation_for_block(con, block_row, *, anchor_dates=None, shop_totals=None):
     key = erp_wo_key_for_block(con, block_row)
     if not key:
         return {
@@ -462,10 +493,11 @@ def erp_reconciliation_for_block(con, block_row):
     if erp_reject <= 0 and _float(voucher.get("acc_rej_qty_produced")) > 0:
         erp_reject = _float(voucher.get("acc_rej_qty_produced"))
 
-    from .actuals import actual_totals_for_block
-
     block_id = int(block_row.get("block_id") or 0)
-    shop_totals = actual_totals_for_block(con, block_id) if block_id else {}
+    if shop_totals is None:
+        from .actuals import actual_totals_for_block
+
+        shop_totals = actual_totals_for_block(con, block_id) if block_id else {}
     shop_output = _float(shop_totals.get("output_qty"))
     shop_reject = _float(shop_totals.get("reject_qty"))
     shop_good = _float(shop_totals.get("good_qty"))
@@ -486,12 +518,16 @@ def erp_reconciliation_for_block(con, block_row):
     if _float(live.get("acc_qty_produced")) <= 0 and _float(voucher.get("acc_qty_produced")) > 0:
         erp_data_source = "pp_vouchers_cache"
 
+    if anchor_dates is None:
+        anchor_dates = _planned_dates_for_block(con, block_row)
+    else:
+        anchor_dates = [compact_text(value) for value in anchor_dates if compact_text(value)]
     daily_by_date = _inject_live_erp_daily(
         daily_by_date,
         erp_acc,
         erp_reject,
         last_sync,
-        _planned_dates_for_block(con, block_row),
+        anchor_dates,
     )
 
     return {
@@ -547,8 +583,19 @@ def _reconcile_status(shop_good, erp_daily):
     return "erp_ahead"
 
 
-def enrich_actual_daily_rows_with_erp(con, block_row, daily_rows):
-    recon = erp_reconciliation_for_block(con, block_row)
+def enrich_actual_daily_rows_with_erp(con, block_row, daily_rows, *, anchor_dates=None, shop_totals=None):
+    if anchor_dates is None:
+        anchor_dates = [
+            compact_text(row.get("report_date"))
+            for row in (daily_rows or [])
+            if compact_text(row.get("report_date"))
+        ]
+    recon = erp_reconciliation_for_block(
+        con,
+        block_row,
+        anchor_dates=anchor_dates,
+        shop_totals=shop_totals,
+    )
     daily_map = recon.get("daily_by_date") or {}
     enriched = []
     for row in daily_rows or []:

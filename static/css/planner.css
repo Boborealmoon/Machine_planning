@@ -352,6 +352,12 @@
     color: #c2410c;
   }
   .trial-ps-type-checkbox.trial-ps-type-n input { accent-color: #ea580c; }
+  .trial-ps-type-checkbox.trial-ps-type-t:has(input:checked) {
+    background: rgba(14, 165, 233, 0.14);
+    border-color: rgba(14, 165, 233, 0.45);
+    color: #0369a1;
+  }
+  .trial-ps-type-checkbox.trial-ps-type-t input { accent-color: #0ea5e9; }
   .trial-ps-type-checkbox.trial-ps-type-sr:has(input:checked) {
     background: rgba(139,92,246,0.10);
     border-color: rgba(139,92,246,0.35);
@@ -1608,6 +1614,11 @@
     user-select: none;
     font-size: 14px;
     line-height: 1;
+    touch-action: none;
+  }
+  #trial-bom-editor .trial-bom-step .trial-bom-handle:active,
+  #trial-bom-editor .trial-bom-step.dragging .trial-bom-handle {
+    cursor: grabbing;
   }
   #trial-bom-editor .trial-bom-step .field {
     display: grid;
@@ -1815,9 +1826,13 @@
     min-height: 0;
   }
   .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine-meta,
-  .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine-queue-summary,
-  .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine-availability {
+  .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine-queue-summary {
     display: none;
+  }
+  .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine-availability {
+    padding: 4px 6px;
+    font-size: 9px;
+    border-radius: 6px;
   }
   .trial-machine-board-group.is-chrome-expanded .trial-machine-board-group-caret {
     transform: none;
@@ -2270,7 +2285,7 @@
   .trial-block-card--compact {
     position: relative;
     gap: 0;
-    padding: 6px 7px 7px 14px;
+    padding: 6px 7px 7px 18px;
     border-radius: 10px;
     box-shadow: 0 4px 10px rgba(26,28,29,0.05);
     cursor: default;
@@ -2287,28 +2302,48 @@
     background: rgba(239, 68, 68, 0.1);
     box-shadow: 0 4px 12px rgba(239, 68, 68, 0.12);
   }
-  .trial-block-card--compact.material-in-yes .trial-block-compact-drag,
-  .trial-block-card--compact.material-in-no .trial-block-compact-drag {
-    background: transparent;
-  }
   .trial-block-compact-drag {
     position: absolute;
     left: 0;
     top: 0;
     bottom: 0;
-    width: 12px;
+    width: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     cursor: grab;
     border-radius: 10px 0 0 10px;
-    background: rgba(26,28,29,0.06);
+    background: rgba(26,28,29,0.08);
+    border-right: 1px solid rgba(26,28,29,0.12);
+    color: rgba(26,28,29,0.38);
+    font-size: 9px;
+    font-weight: 900;
+    letter-spacing: -0.12em;
+    line-height: 1;
     touch-action: none;
+    user-select: none;
+  }
+  .trial-block-card--compact.material-in-yes .trial-block-compact-drag {
+    background: rgba(22, 101, 52, 0.14);
+    border-right-color: rgba(22, 101, 52, 0.22);
+    color: rgba(22, 101, 52, 0.5);
+  }
+  .trial-block-card--compact.material-in-no .trial-block-compact-drag {
+    background: rgba(153, 27, 27, 0.14);
+    border-right-color: rgba(153, 27, 27, 0.22);
+    color: rgba(153, 27, 27, 0.5);
   }
   .trial-block-compact-drag:hover {
-    background: rgba(59,130,246,0.18);
+    background: rgba(59,130,246,0.16);
+    border-right-color: rgba(59,130,246,0.28);
+    color: rgba(37, 99, 235, 0.72);
   }
   .trial-block-card--compact.sortable-chosen .trial-block-compact-drag,
   .trial-block-card--compact.trial-drag-chosen .trial-block-compact-drag {
     cursor: grabbing;
-    background: rgba(59,130,246,0.22);
+    background: rgba(59,130,246,0.24);
+    border-right-color: rgba(59,130,246,0.34);
+    color: rgba(37, 99, 235, 0.85);
   }
   .trial-lane .trial-drag-ghost {
     opacity: 0.92;
@@ -3133,6 +3168,52 @@
     gap: 8px;
     padding-top: 4px;
   }
+  .trial-ps-detail-op-list {
+    display: grid;
+    gap: 6px;
+  }
+  .trial-ps-detail-op-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 12px;
+    align-items: center;
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border, rgba(15, 23, 42, 0.08));
+    border-radius: 12px;
+    background: var(--surface2, #f8fafc);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .trial-ps-detail-op-row:hover,
+  .trial-ps-detail-op-row:focus-visible {
+    border-color: var(--accent, #6366f1);
+    background: rgba(99, 102, 241, 0.06);
+    outline: none;
+  }
+  .trial-ps-detail-op-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .trial-ps-detail-op-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    align-items: center;
+    justify-content: flex-end;
+  }
+  .trial-ps-detail-op-qty {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text3);
+    white-space: nowrap;
+  }
   .trial-modal-backdrop {
     position: fixed;
     inset: 0;
@@ -3279,6 +3360,75 @@
     line-height: 1.45;
     color: var(--text3);
     font-weight: 500;
+  }
+  .temp-ps-field-hint {
+    margin: -4px 0 8px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text3);
+    font-weight: 600;
+  }
+  .temp-ps-mode-switch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 4px;
+    border-radius: 12px;
+    background: rgba(15, 23, 42, 0.05);
+    border: 1px solid var(--border);
+  }
+  .temp-ps-mode-btn {
+    border: 1px solid transparent;
+    border-radius: 9px;
+    padding: 9px 10px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 800;
+    color: var(--text2);
+    background: transparent;
+    cursor: pointer;
+    text-align: center;
+    line-height: 1.25;
+  }
+  .temp-ps-mode-btn.is-active {
+    color: #0f172a;
+    background: #fff;
+    border-color: rgba(37, 99, 235, 0.28);
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+  }
+  .temp-ps-mode-panel {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .temp-ps-mode-panel[hidden] {
+    display: none;
+  }
+  .temp-ps-mode-desc {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text3);
+    font-weight: 600;
+  }
+  .temp-ps-name-preview {
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px dashed rgba(14, 165, 233, 0.45);
+    background: rgba(14, 165, 233, 0.08);
+    font-size: 12px;
+    font-weight: 700;
+    color: #0369a1;
+  }
+  .temp-ps-name-preview strong {
+    font-weight: 900;
+  }
+  .temp-ps-shared-fields {
+    display: grid;
+    gap: 10px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
   }
   .trial-modal-grid {
     display: grid;
@@ -3461,6 +3611,21 @@
     background: rgba(255,255,255,0.88);
     border: 1px solid rgba(26,28,29,0.14);
   }
+  /* ── Completed catalog op cards (visible, not draggable) ───────────────── */
+  .trial-catalog-op.is-completed {
+    border-left: 3px solid rgba(16,185,129,0.45);
+    background: rgba(16,185,129,0.05);
+    opacity: 0.78;
+    cursor: default;
+  }
+  .trial-catalog-op.is-completed:active {
+    cursor: default;
+  }
+  .trial-catalog-op.is-completed .trial-catalog-op-label,
+  .trial-catalog-op.is-completed .trial-catalog-op-detail {
+    color: var(--text2);
+  }
+
   /* ── Allocation indicator on catalog op cards ───────────────────────────── */
   .trial-catalog-op.is-allocated {
     border-left: 3px solid rgba(16,185,129,0.6);
@@ -3507,6 +3672,36 @@
   }
   .trial-lane.drop-target-lane .trial-empty {
     color: rgba(59,130,246,0.7);
+  }
+  .trial-lane-insert-marker {
+    position: relative;
+    flex: 0 0 auto;
+    height: 3px;
+    margin: 2px 4px;
+    border-radius: 2px;
+    background: rgba(59, 130, 246, 0.9);
+    box-shadow:
+      0 0 0 1px rgba(59, 130, 246, 0.28),
+      0 2px 8px rgba(59, 130, 246, 0.35);
+    pointer-events: none;
+  }
+  .trial-lane-insert-marker::before,
+  .trial-lane-insert-marker::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    width: 7px;
+    height: 7px;
+    margin-top: -3.5px;
+    border-radius: 50%;
+    background: rgba(59, 130, 246, 0.95);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+  }
+  .trial-lane-insert-marker::before {
+    left: 0;
+  }
+  .trial-lane-insert-marker::after {
+    right: 0;
   }
 
   /* ── Remove-from-machine button ─────────────────────────────────────────── */
@@ -5497,6 +5692,10 @@
   }
   .temp-ps-preview {
     margin-top: 4px;
+  }
+  .temp-ps-preview[hidden],
+  .temp-ps-dropdown[hidden] {
+    display: none;
   }
   .temp-ps-preview-card {
     padding: 10px 12px;

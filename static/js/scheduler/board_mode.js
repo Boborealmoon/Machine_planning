@@ -53,3 +53,41 @@ function trialBoardGroupMachineCount(group) {
   }
   return (group?.machines || []).length;
 }
+
+/** Machinist board: green/red stock tint on lane cards (default off). */
+const TRIAL_MACHINIST_STOCK_COLORS_KEY = 'machinist-board-stock-colors-v1';
+
+function trialIsMachinistStockColorsEnabled() {
+  try {
+    return localStorage.getItem(TRIAL_MACHINIST_STOCK_COLORS_KEY) === '1';
+  } catch (_) {
+    return false;
+  }
+}
+
+function trialSetMachinistStockColorsEnabled(enabled) {
+  try {
+    localStorage.setItem(TRIAL_MACHINIST_STOCK_COLORS_KEY, enabled ? '1' : '0');
+  } catch (_) {
+    // ignore quota / private mode
+  }
+  trialSyncMachinistStockColorsClass();
+}
+
+function trialSyncMachinistStockColorsClass() {
+  if (typeof trialIsMachinistBoard !== 'function' || !trialIsMachinistBoard()) return;
+  const on = trialIsMachinistStockColorsEnabled();
+  document.body.classList.toggle('machinist-board--stock-colors', on);
+  const btn = document.getElementById('machinist-stock-colors-toggle');
+  if (btn) {
+    btn.classList.toggle('is-on', on);
+    btn.classList.toggle('is-off', !on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  const legend = document.querySelector('.machinist-board-legend');
+  if (legend) legend.hidden = !on;
+}
+
+function trialToggleMachinistStockColors() {
+  trialSetMachinistStockColorsEnabled(!trialIsMachinistStockColorsEnabled());
+}

@@ -15,7 +15,7 @@
 
 <nav class="navbar" id="site-navbar">
   <div class="navbar-inner">
-    <a href="/" class="navbar-logo">
+    <a href="{{ planner_path }}" class="navbar-logo">
       <span class="logo-top">PRODUCTION</span>
       <span class="logo-bottom">PLANNING</span>
     </a>
@@ -34,8 +34,8 @@
     {% set nav_path = request.path %}
     <div class="navbar-links">
       {# Primary workflow tabs #}
-      <a href="/scheduler"
-         class="nav-link {% if nav_path in ('/', '/scheduler') or active == 'scheduler' %}nav-link--active{% endif %}">
+      <a href="{{ planner_path }}"
+         class="nav-link {% if nav_path == planner_path or active == 'scheduler' %}nav-link--active{% endif %}">
         PLANNER
       </a>
 
@@ -102,6 +102,11 @@
       </div>
     </div>
     <div class="navbar-actions">
+      {% if planner_gate_enabled and planner_authenticated %}
+      <form method="post" action="{{ url_for('lock_planner') }}" class="navbar-lock-form">
+        <button type="submit" class="nav-lock-btn">Lock planner</button>
+      </form>
+      {% endif %}
       <button type="button" class="nav-sync-btn" id="nav-erp-sync-btn" data-default-label="Sync ERP">
         Sync ERP
       </button>

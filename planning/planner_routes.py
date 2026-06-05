@@ -46,6 +46,8 @@ from .blocks import (
     schedule_signature_for_machine,
     dedupe_machine_catalog_queue,
     find_active_catalog_lane_block,
+    attach_block_ps_identity,
+    planner_ps_id_from_block_row,
     merge_deleted_split_block_qty,
     trial_block_payload,
     trial_block_row,
@@ -61,7 +63,13 @@ from .catalog import (
 from .helpers import planner_db, one, planner_try_savepoint, rows, parse_dt_text
 from .materials import material_status_map_for_ps_ids, sync_material_requirements_for_ps_ids
 from .operation_sequence import apply_machine_queue_order, apply_machine_queue_orders
-from .process_sheets import ensure_planner_process_sheet, format_planner_ps_id, parse_planner_ps_id
+from .process_sheets import (
+    due_date_map_for_planner_ps_ids,
+    ensure_planner_process_sheet,
+    format_planner_ps_id,
+    material_in_map_for_planner_ps_ids,
+    parse_planner_ps_id,
+)
 from .machines import default_profile_for_weekday, fetch_machines, is_public_holiday
 from .sg_public_holidays import fetch_sg_public_holidays, list_public_holidays, sync_sg_public_holidays_to_db
 from .planner_actuals import actual_summaries_for_block_rows
@@ -244,6 +252,75 @@ def _calendar_window_payload(row):
     }
 
 
+def _attach_board_meta_to_blocks(con, blocks):
+    """Attach planner_ps_id, material_in, and due_date for board / machinist lane cards."""
+    if not blocks:
+        return
+    board_ps_ids = list(dict.fromkeys(
+        planner_ps_id_from_block_row(row)
+        for row in blocks
+        if planner_ps_id_from_block_row(row)
+    ))
+    if not board_ps_ids:
+        return
+    material_in_by_ps = material_in_map_for_planner_ps_ids(con, board_ps_ids)
+    due_date_by_ps = due_date_map_for_planner_ps_ids(con, board_ps_ids)
+    for row in blocks:
+        ps_id = planner_ps_id_from_block_row(row)
+        if not ps_id:
+            continue
+        row["planner_ps_id"] = ps_id
+        row["material_in"] = bool(material_in_by_ps.get(ps_id))
+        due_text = compact_text(due_date_by_ps.get(ps_id))
+        if due_text:
+            row["due_date"] = due_text
+
+
+def _attach_board_meta_to_blocks_rest(blocks):
+    """REST fallback: attach material_in (and planner_ps_id) without direct DB."""
+    if not blocks:
+        return
+    import requests as req
+    from db import supa_url, supa_headers
+
+    board_ps_ids = list(dict.fromkeys(
+        planner_ps_id_from_block_row(row)
+        for row in blocks
+        if planner_ps_id_from_block_row(row)
+    ))
+    if not board_ps_ids:
+        return
+    material_in_by_ps = {pid: False for pid in board_ps_ids}
+    try:
+        quoted = ",".join(f'"{pid}"' for pid in board_ps_ids)
+        r = req.get(
+            f"{supa_url()}/planner_process_sheet",
+            headers={**supa_headers(write=True), "Prefer": "return=representation"},
+            params={
+                "select": "planner_ps_id,material_in",
+                "planner_ps_id": f"in.({quoted})",
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        for row in r.json() or []:
+            pid = compact_text(row.get("planner_ps_id"))
+            if pid:
+                material_in_by_ps[pid] = bool(row.get("material_in"))
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "REST board material_in enrichment failed; defaulting to awaiting stock"
+        )
+    for row in blocks:
+        ps_id = planner_ps_id_from_block_row(row)
+        if not ps_id:
+            continue
+        row["planner_ps_id"] = ps_id
+        row["material_in"] = bool(material_in_by_ps.get(ps_id))
+
+
 def _trial_schedule_via_rest():
     """Fallback: build the schedule response using Supabase REST API instead of direct DB."""
     import requests as req
@@ -341,6 +418,8 @@ def _trial_schedule_via_rest():
     for actual in actuals_raw:
         actual["report_date"]  = compact_text(actual.get("report_date"))
         actual["reported_at"]  = compact_text(actual.get("reported_at"))
+
+    _attach_board_meta_to_blocks_rest(blocks)
 
     return jsonify({
         "machines":        machines_raw,
@@ -508,6 +587,27 @@ def _trial_machine_refresh_payload(con, machine_ids, *, lite=True):
                 logging.getLogger(__name__).exception(
                     "combined_group_summary failed for group_id=%s (machine refresh)", group_id
                 )
+
+    attach_block_ps_identity(con, blocks)
+
+    from .queue_visibility import filter_completed_lane_blocks
+
+    blocks = filter_completed_lane_blocks(con, blocks)
+    visible_group_ids = {
+        int(row.get("group_id") or 0)
+        for row in blocks
+        if int(row.get("group_id") or 0) > 0
+    }
+    if visible_group_ids:
+        block_groups = [
+            group for group in block_groups
+            if int(group.get("group_id") or 0) in visible_group_ids
+        ]
+    elif not blocks:
+        block_groups = []
+
+    _attach_board_meta_to_blocks(con, blocks)
+
     return {"blocks": blocks, "block_groups": block_groups, "lite": bool(lite)}
 
 
@@ -547,14 +647,17 @@ def _api_trial_schedule_db():
     include_holidays = "holidays" in include_parts
 
     with planner_db() as con:
-        # Full board reload: move DONE ops off machine lanes. Skip on lite board load —
-        # that path can recalculate every affected machine and makes the planner feel hung.
+        # Full board reload: move DONE ops off machine lanes + compact gaps.
         if not is_machine_scoped and not board_lite:
             from .auto_unschedule import auto_unschedule_on_page_load
             from .operation_sequence import compact_machine_lanes_with_gaps
 
             auto_unschedule_on_page_load(con)
             compact_machine_lanes_with_gaps(con, recalculate=False)
+        elif board_lite and not is_machine_scoped:
+            from .auto_unschedule import auto_unschedule_on_lite_board_load
+
+            auto_unschedule_on_lite_board_load(con)
         # Machine-scoped full refresh only — lite lane updates skip this (too slow).
         elif is_machine_scoped and not lite:
             from .auto_unschedule import auto_unschedule_for_machines
@@ -794,6 +897,20 @@ def _api_trial_schedule_db():
                     item.pop(drop_key, None)
             blocks.append(item)
 
+        attach_block_ps_identity(con, blocks)
+
+        visible_block_ids = {int(b["block_id"]) for b in blocks if b.get("block_id")}
+        if not include_completed:
+            from .queue_visibility import filter_completed_lane_blocks
+
+            blocks = filter_completed_lane_blocks(con, blocks)
+            visible_block_ids = {int(b["block_id"]) for b in blocks if b.get("block_id")}
+            if visible_block_ids != {int(x) for x in _active_block_ids}:
+                segments = [
+                    seg for seg in segments
+                    if int(seg.get("block_id") or 0) in visible_block_ids
+                ]
+
         if not lite:
             from .blocks import actual_daily_rows_for_block_row_with_erp
 
@@ -806,6 +923,9 @@ def _api_trial_schedule_db():
                     item["erp_reconciliation"] = erp_recon
                     item["effective_actuals"] = effective_actual_totals_for_block(con, item, erp_recon)
         elif include_actual_daily:
+            from .erp_actuals import ensure_erp_snapshot_table
+
+            ensure_erp_snapshot_table(con)
             attach_actual_daily_to_blocks(con, blocks, with_erp=True)
         elif include_actuals and not fast_lane_load:
             from .erp_actuals import effective_actual_totals_for_block, erp_reconciliation_for_block
@@ -868,6 +988,11 @@ def _api_trial_schedule_db():
         for actual in actuals:
             actual["report_date"] = compact_text(actual.get("report_date"))
             actual["reported_at"] = compact_text(actual.get("reported_at"))
+        if not include_completed and visible_block_ids:
+            actuals = [
+                row for row in actuals
+                if int(row.get("block_id") or 0) in visible_block_ids
+            ]
 
         if include_capacities:
             capacities = rows(
@@ -992,6 +1117,9 @@ def _api_trial_schedule_db():
             start_text = compact_text(group.get("group_start"))
             if start_text and (ps_id not in planned_starts or start_text < planned_starts[ps_id]):
                 planned_starts[ps_id] = start_text
+
+        if fast_lane_load and blocks:
+            _attach_board_meta_to_blocks(con, blocks)
 
         if lite or is_machine_scoped:
             material_status_map = {}
@@ -1577,6 +1705,17 @@ def api_trial_create_operation():
         with planner_db() as con:
             raw_source_ps = compact_text(data.get("source_ps_id")) or job_no
             src_base, src_partial = parse_planner_ps_id(raw_source_ps)
+            job_base, job_partial = parse_planner_ps_id(job_no)
+            if job_base and not src_base:
+                src_base = job_base
+            if int(job_partial or 1) > int(src_partial or 1):
+                src_partial = int(job_partial)
+            try:
+                body_partial = int(data.get("pp_partial_no") or 0)
+            except (TypeError, ValueError):
+                body_partial = 0
+            if body_partial > 0:
+                src_partial = body_partial
             source_ps_id_val = format_planner_ps_id(src_base, src_partial) if src_base else raw_source_ps
             source_op_no_val = compact_text(data.get("source_op_no"))
             source_op_seq_val = int(data.get("source_op_seq_id") or 0)
@@ -1587,6 +1726,26 @@ def api_trial_create_operation():
                 source_op_no_val,
                 source_op_seq_val,
             )
+            if existing_block_id:
+                dup_row = one(
+                    con.execute(
+                        """
+                        SELECT o.source_ps_id, o.job_no
+                        FROM planner_run_block b
+                        JOIN planner_operation o ON o.operation_id = b.operation_id
+                        WHERE b.block_id = %s
+                        """,
+                        (existing_block_id,),
+                    )
+                )
+                if dup_row:
+                    _, dup_partial = _row_planner_ps_identity(dup_row)
+                    _, want_partial = parse_planner_ps_id(source_ps_id_val)
+                    if int(dup_partial) != int(want_partial):
+                        existing_block_id = None
+                    elif body_partial > 0 and int(dup_partial) != int(body_partial):
+                        existing_block_id = None
+
             if existing_block_id:
                 queue_position = float(data.get("queue_position") or 0)
                 if queue_position > 0:
@@ -1609,11 +1768,16 @@ def api_trial_create_operation():
                     recalculate = _parse_recalculate_flag(data)
                     apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=recalculate)
                 block = trial_block_row(con, existing_block_id)
+                _, dup_partial_out = _row_planner_ps_identity(block)
+                _, want_partial_out = parse_planner_ps_id(source_ps_id_val)
                 return jsonify({
                     "ok": True,
                     "duplicate": True,
                     "operation_id": int(block["operation_id"]),
                     "block": trial_block_payload(block, None),
+                    "requested_source_ps_id": source_ps_id_val,
+                    "requested_partial_no": int(want_partial_out),
+                    "matched_partial_no": int(dup_partial_out),
                     "machine_refresh": _trial_machine_refresh_payload(con, [machine_id], lite=True),
                 })
 
@@ -1627,13 +1791,13 @@ def api_trial_create_operation():
                 RETURNING operation_id
                 """,
                 (
-                    job_no,
+                    source_ps_id_val or job_no,
                     operation_name,
                     parse_number(data.get("total_qty"), parse_number(data.get("scheduled_qty"), 0)),
                     parse_number(data.get("setup_minutes"), 0),
                     parse_number(data.get("cycle_minutes_per_qty"), 0),
                     compact_text(data.get("compatible_machine_group")),
-                    compact_text(data.get("source_ps_id")) or None,
+                    source_ps_id_val or None,
                     int(data.get("source_op_seq_id") or 0),
                     compact_text(data.get("source_op_no")),
                     compact_text(data.get("status") or "ACTIVE") or "ACTIVE",
@@ -1805,6 +1969,56 @@ def api_trial_delete_planning_card(card_id):
             return jsonify({"error": "This combined op card is already scheduled. Remove it from the machine schedule first."}), 400
         con.execute("DELETE FROM planner_planning_card WHERE card_id = %s", (int(card_id),))
         return jsonify({"ok": True, "card_id": int(card_id)})
+
+
+@trial_bp.get("/api/trial/blocks/<int:block_id>/actual-detail")
+def api_trial_block_actual_detail(block_id):
+    """Lightweight actual entry payload for one block (planner modal)."""
+    with planner_db() as con:
+        block = trial_block_row(con, block_id)
+        if not block:
+            return jsonify({"error": "Run block not found"}), 404
+        attach_actual_daily_to_blocks(con, [block], with_erp=True)
+        segments = rows(
+            con.execute(
+                """
+                SELECT s.segment_id, s.block_id, s.segment_date::text AS segment_date,
+                       s.planned_qty, s.qty_done, s.start_datetime, s.end_datetime,
+                       s.segment_type, s.minutes_used
+                FROM planner_run_block_segment s
+                WHERE s.block_id = %s
+                ORDER BY s.segment_date, s.segment_id
+                """,
+                (int(block_id),),
+            )
+        )
+        for seg in segments:
+            seg["start_datetime"] = planner_wall_datetime_to_api(seg.get("start_datetime"))
+            seg["end_datetime"] = planner_wall_datetime_to_api(seg.get("end_datetime"))
+            seg["segment_date"] = compact_text(seg.get("segment_date"))
+        actuals = rows(
+            con.execute(
+                """
+                SELECT actual_id, segment_id, block_id, report_date::text AS report_date,
+                       output_qty, reject_qty, target_qty_at_report, remarks, reported_at
+                FROM planner_production_actual
+                WHERE block_id = %s
+                  AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+                ORDER BY report_date, actual_id
+                """,
+                (int(block_id),),
+            )
+        )
+        for actual in actuals:
+            actual["reported_at"] = compact_text(actual.get("reported_at"))
+        return jsonify(
+            {
+                "block": block,
+                "segments": segments,
+                "actuals": actuals,
+                "actual_daily_rows": block.get("actual_daily_rows") or [],
+            }
+        )
 
 
 @trial_bp.put("/api/trial/blocks/<int:block_id>")

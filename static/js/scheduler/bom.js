@@ -139,7 +139,7 @@ function renderTrialBOMEditor() {
   const el = document.getElementById('trial-bom-editor');
   if (!el) return;
   el.innerHTML = trialBOMEditing.map((step, idx) => `
-    <div class="trial-bom-step" draggable="true" data-idx="${idx}">
+    <div class="trial-bom-step" data-idx="${idx}">
       <div class="field-row">
         <div class="field field-handle">
           <label>&nbsp;</label>
@@ -186,7 +186,13 @@ function renderTrialBOMEditor() {
       reordered.push(trialBOMEditing[parseInt(stepEl.dataset.idx, 10)]);
     });
     trialBOMEditing = reordered;
+    trialBOMEditing.forEach((step, i) => {
+      step.is_last_op = i === trialBOMEditing.length - 1 ? 1 : 0;
+    });
     renderTrialBOMEditor();
+  }, {
+    itemSelector: '.trial-bom-step[data-idx]',
+    handle: '.trial-bom-handle',
   });
 }
 

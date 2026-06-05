@@ -72,6 +72,13 @@
     return data;
   }
 
+  async function deleteJson(url) {
+    const res = await fetch(url, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+    return data;
+  }
+
   function dateInputValue(value) {
     const text = fmtDate(value);
     return text === '-' ? '' : text;
@@ -1366,6 +1373,11 @@
           ${renderDateStrip(item, psId)}
           <div class="ps-row-highlights">
             ${renderRemarksInput(item, psId)}
+            ${isTempPs(item) ? `
+              <button type="button" class="btn btn-light btn-sm ps-temp-delete-btn"
+                data-action="delete-temp-ps" data-ps-id="${escapeHtml(psId)}">
+                Delete temp PS
+              </button>` : ''}
           </div>
         </div>
         <div class="ps-details" id="ps-details-${escapeHtml(cssSafeId(psId))}" hidden></div>
@@ -1450,12 +1462,11 @@
 
   function enrichCatalogOpsForPartial(item, workQty) {
     const qty = Number(workQty || 0);
-    const sourceOps = [
+    return collectDetailOps({ ops: [
       ...(Array.isArray(item?.ops) ? item.ops : []),
       ...(Array.isArray(item?.op_cards) ? item.op_cards : []),
       ...(Array.isArray(item?.all_ops) ? item.all_ops : []),
-    ];
-    return sourceOps.map(op => {
+    ] }, null).map(op => {
       const planned = Number(op?.planned_qty || 0);
       const finished = Number(op?.finished_qty || op?.erp_finished_qty || 0);
       const woReq = firstQuantity(op?.wo_qty_required, op?.required_qty, qty, 0);
@@ -1477,11 +1488,13 @@
       ...(Array.isArray(item?.op_cards) ? item.op_cards : []),
     ]) {
       if (!op) continue;
-      const key = [
-        op.op_seq_id || op.source_op_seq_id || '',
-        op.op_no || op.source_op_no || op.operation_label || '',
-        op.stage_no || '',
-      ].join('|');
+      const opNo = String(op.op_no || op.source_op_no || op.operation_label || '').trim();
+      const key = opNo
+        ? [opNo, op.stage_no || ''].join('|')
+        : [
+          op.op_seq_id || op.source_op_seq_id || '',
+          op.stage_no || '',
+        ].join('|');
       if (seen.has(key)) continue;
       seen.add(key);
       merged.push(op);
@@ -1824,6 +1837,7 @@
               <th>Route</th>
               <th>Planner</th>
               <th>Created</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -1860,8 +1874,45 @@
         <td>${escapeHtml(item.selected_bom_code || item.erp_bom_code || '—')}</td>
         <td><span class="ps-planning-flag ${queueClass}">${escapeHtml(queueLabel)}</span></td>
         <td>${escapeHtml(created)}</td>
+        <td>
+          <button type="button" class="btn btn-light btn-sm ps-temp-delete-btn"
+            data-action="delete-temp-ps" data-ps-id="${escapeHtml(psId)}"
+            title="Delete this temp process sheet">
+            Delete
+          </button>
+        </td>
       </tr>
     `;
+  }
+
+  async function deleteTempProcessSheet(psId) {
+    const canonical = canonicalPlannerPsId({ ps_id: psId });
+    if (!canonical) return;
+    const label = tempPsDisplayId({ ps_id: canonical }) || canonical;
+    const item = tempState.items.find(row => row.planner_ps_id === canonical);
+    const queueNote = item?.is_queued
+      ? ' It is on the planner queue — scheduled blocks will be removed too.'
+      : '';
+    if (!window.confirm(`Delete ${label}?${queueNote} This cannot be undone.`)) return;
+    const urls = [
+      `/api/temp-process-sheets/${encodeURIComponent(canonical)}`,
+      `/api/trial/temp-process-sheets/${encodeURIComponent(canonical)}`,
+    ];
+    let lastError = null;
+    for (const url of urls) {
+      try {
+        await deleteJson(url);
+        state.details.delete(canonical);
+        await Promise.all([
+          loadProcessSheets({ refresh: true }),
+          loadTempTracker(),
+        ]);
+        return;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    window.alert(lastError?.message || 'Could not delete temp process sheet');
   }
 
   async function loadTempTracker() {
@@ -1915,6 +1966,12 @@
       if (typeof openTempProcessSheetModal === 'function') openTempProcessSheetModal();
     });
     els.tempTracker?.addEventListener('click', event => {
+      const deleteBtn = event.target.closest('[data-action="delete-temp-ps"]');
+      if (deleteBtn) {
+        event.preventDefault();
+        deleteTempProcessSheet(deleteBtn.dataset.psId || '');
+        return;
+      }
       const btn = event.target.closest('[data-action="open-temp-detail"]');
       if (!btn) return;
       const psId = btn.dataset.psId || '';
@@ -1996,6 +2053,13 @@
           const input = wrap?.querySelector('[data-action="remarks"]');
           if (input) saveRemarks(input.dataset.psId || '', input.value, input);
         }
+        return;
+      }
+      const deleteTempBtn = event.target.closest('[data-action="delete-temp-ps"]');
+      if (deleteTempBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        deleteTempProcessSheet(deleteTempBtn.dataset.psId || '');
         return;
       }
       if (event.target.closest('[data-action="reset-filters"]')) {

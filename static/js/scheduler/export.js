@@ -53,7 +53,6 @@ function trialFormatScheduleForExport(dateTimeText) {
 
 function trialExportJobGroupsForMachine(machineId) {
   return trialBlocksGroupedForMachine(machineId)
-    .filter(group => !trialGroupCompletedForQueue(group))
     .filter(trialGroupRunsInsideDateFilter);
 }
 

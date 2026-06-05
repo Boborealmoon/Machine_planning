@@ -117,6 +117,33 @@ input, select { font-family: inherit; }
 .navbar-actions {
   margin-left: auto;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.navbar-lock-form {
+  margin: 0;
+}
+
+.nav-lock-btn {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  background: #fff;
+  border: 1.5px solid #d4d4d4;
+  border-radius: 20px;
+  padding: 6px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.nav-lock-btn:hover {
+  color: #111;
+  background: #f8fafc;
+  border-color: #bbb;
 }
 
 .nav-sync-btn {
@@ -1981,8 +2008,15 @@ input, select { font-family: inherit; }
     padding-top: 12px;
     border-top: 1px solid #eee;
     width: 100%;
+    flex-direction: column;
+    align-items: stretch;
   }
 
+  .navbar-lock-form {
+    width: 100%;
+  }
+
+  .nav-lock-btn,
   .nav-sync-btn {
     width: 100%;
     text-align: center;

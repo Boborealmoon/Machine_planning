@@ -32,6 +32,7 @@ from .process_sheets import (
     material_in_map_for_planner_ps_ids,
     parse_planner_ps_id,
     temp_planner_ps_display_label,
+    _repair_temp_ps_bom_if_missing,
 )
 from .utils import compact_text, parse_number, planner_wall_datetime_to_api, shipped_quantity_completed, trial_catalog_op_key
 
@@ -51,19 +52,29 @@ def _canonical_catalog_ps_id(ps_id):
     return format_planner_ps_id(source, partial) if source else compact_text(ps_id)
 
 
-def _planned_qty_for_catalog_op(planned_qty_by_op, ps_id, op_no, op_seq_id):
-    """Lookup planned queue qty — tolerates legacy source_ps_id / planner_ps_id variants."""
-    candidates = []
-    canonical = _canonical_catalog_ps_id(ps_id)
-    if canonical:
-        candidates.append(trial_catalog_op_key(canonical, op_no, op_seq_id))
+def _catalog_op_qty_ps_ids(ps_id):
+    """Planner PS id variants for lane qty lookup — never mix other partials."""
+    source, partial = parse_planner_ps_id(ps_id)
     raw = compact_text(ps_id)
-    if raw and raw != canonical:
-        candidates.append(trial_catalog_op_key(raw, op_no, op_seq_id))
-    base = _base_ps_id(raw or canonical)
-    if base and base not in {raw, canonical}:
-        candidates.append(trial_catalog_op_key(base, op_no, op_seq_id))
-    return max(float(planned_qty_by_op.get(key, 0) or 0) for key in candidates) if candidates else 0.0
+    if not source:
+        return [raw] if raw else []
+    ids = []
+    for pid in (format_planner_ps_id(source, partial), raw):
+        if pid and pid not in ids:
+            ids.append(pid)
+    # Legacy unsuffixed source_ps_id rows count as partial 1 only.
+    if partial <= 1 and source not in ids:
+        ids.append(source)
+    return ids
+
+
+def _planned_qty_for_catalog_op(planned_qty_by_op, ps_id, op_no, op_seq_id):
+    """Lookup planned queue qty for one partial (not sibling partials on the same PS)."""
+    keys = [
+        trial_catalog_op_key(pid, op_no, op_seq_id)
+        for pid in _catalog_op_qty_ps_ids(ps_id)
+    ]
+    return max(float(planned_qty_by_op.get(key, 0) or 0) for key in keys) if keys else 0.0
 
 
 def _catalog_ps_id(row):
@@ -73,6 +84,47 @@ def _catalog_ps_id(row):
         return planner_ps_id
     source_ps_id = compact_text(row.get("ps_id"))
     return format_planner_ps_id(source_ps_id, row.get("pp_partial_no"))
+
+
+def _sanitize_temp_ps_catalog_item(item):
+    """Temp rework lines must not inherit source PS shipment/ERP completion."""
+    if not item.get("is_temp_ps"):
+        return item
+    item["pp_partial_no"] = int(item.get("source_pp_partial_no") or 1)
+    item["shipped_completed"] = False
+    item["execution_completed"] = False
+    item["is_completed"] = False
+    item["erp_all_wo_complete"] = False
+    item["pending_do"] = False
+    item["qty_shipped"] = 0
+    item["execution_status"] = None
+    item["current_stage_status"] = ""
+    item["current_stage_desc"] = ""
+    item["status"] = compact_text(item.get("planner_status") or item.get("status") or "ACTIVE")
+    for op in item.get("ops") or []:
+        op["pp_partial_no"] = item["pp_partial_no"]
+        required = float(op.get("required_qty") or op.get("total_qty") or 0)
+        planned = float(op.get("planned_qty") or 0)
+        op["erp_finished_qty"] = 0.0
+        op["erp_reject_qty"] = 0.0
+        op["execution_status"] = ""
+        op["remaining_qty"] = max(0.0, required - planned)
+        op["total_qty"] = op["remaining_qty"]
+    for card in item.get("op_cards") or []:
+        card["pp_partial_no"] = item["pp_partial_no"]
+        required = float(card.get("required_qty") or card.get("target_qty") or 0)
+        planned = float(card.get("planned_qty") or 0)
+        card["erp_finished_qty"] = 0.0
+        card["execution_status"] = ""
+        card["remaining_qty"] = max(0.0, required - planned)
+        card["target_qty"] = card["remaining_qty"]
+        nested = card.get("op")
+        if isinstance(nested, dict):
+            nested["erp_finished_qty"] = 0.0
+            nested["execution_status"] = ""
+            nested["remaining_qty"] = card["remaining_qty"]
+            nested["total_qty"] = card["remaining_qty"]
+    return item
 
 
 def _bom_op_stage_keys(con):
@@ -195,7 +247,10 @@ def _is_machining_plannable_op(op_type, machine_category, source_kind=None, pref
     if compact_text(preferred_machine):
         return True
     cat = compact_text(machine_category).upper()
-    if cat in {"TURNING", "MILLING", "TURNMILL"}:
+    if cat in {"TURNING", "MILLING", "TURNMILL", "PLACEHOLDER"}:
+        return True
+    op_upper = compact_text(op_type).upper()
+    if op_upper == "PLACEHOLDER":
         return True
     op_text = compact_text(op_type)
     if op_text and _NON_MACHINING_OP_RE.match(op_text):
@@ -209,7 +264,7 @@ def _is_machining_plannable_op(op_type, machine_category, source_kind=None, pref
 
 
 def _catalog_ops_for_sidebar(refreshed_ops):
-    """Ops listed in PS / Ops sidebar — manual BOM steps always included."""
+    """Ops listed in PS / Ops sidebar — includes completed machining ops (read-only in UI)."""
     sidebar_ops = []
     for op in refreshed_ops:
         if _is_manual_bom_step(op):
@@ -226,15 +281,13 @@ def _catalog_ops_for_sidebar(refreshed_ops):
                     row["total_qty"] = row["remaining_qty"]
             sidebar_ops.append(row)
             continue
-        if float(op.get("remaining_qty") or 0) <= 0:
-            continue
         if _is_machining_plannable_op(
             op.get("op_type"),
             op.get("machine_category"),
             op.get("source_kind"),
             op.get("preferred_machine"),
         ):
-            sidebar_ops.append(op)
+            sidebar_ops.append(dict(op))
     return sidebar_ops
 
 
@@ -287,10 +340,13 @@ def _catalog_lane_qty_maps(con):
 
 def _catalog_op_card_from_planner_op(op, entry):
     ps_id = compact_text(entry.get("ps_id"))
+    pp_partial_no = int(entry.get("pp_partial_no") or parse_planner_ps_id(ps_id)[1] or 1)
     return {
         "card_kind": "single",
         "card_id": None,
-        "ps_id": op.get("source_ps_id") or ps_id,
+        "ps_id": ps_id,
+        "pp_partial_no": pp_partial_no,
+        "source_ps_id": ps_id,
         "operation_label": op.get("source_op_no") or op.get("operation_name") or op.get("op_type") or "",
         "operation_name": op.get("op_type") or op.get("operation_name") or "",
         "op_type": op.get("op_type") or "",
@@ -416,7 +472,28 @@ def attach_planner_bom_ops_to_catalog_entry(
         _apply_bom_stage_fields(entry, bom_stage_keys)
 
 
-def trial_catalog_items(con, include_completed=False):
+def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
+    ps_filter_clause = ""
+    ps_filter_params = []
+    wanted_ps_ids = [compact_text(pid) for pid in (planner_ps_ids or []) if compact_text(pid)]
+    if wanted_ps_ids:
+        ps_filter_clause = " AND ps.planner_ps_id = ANY(%s)"
+        ps_filter_params = [wanted_ps_ids]
+    for row in rows(
+        con.execute(
+            """
+            SELECT planner_ps_id
+            FROM planner_process_sheet
+            WHERE planner_ps_id LIKE %s
+              AND COALESCE(selected_bom_id, 0) = 0
+            """,
+            ("[Temp]%",),
+        )
+    ):
+        try:
+            _repair_temp_ps_bom_if_missing(con, row.get("planner_ps_id"))
+        except Exception:
+            pass
     bom_stage_keys = _bom_op_stage_keys(con)
     planned_qty_by_op, queued_machines_by_op = _catalog_lane_qty_maps(con)
 
@@ -494,6 +571,7 @@ def trial_catalog_items(con, include_completed=False):
             SELECT ps.planner_ps_id AS planner_ps_id,
                    ps.source_ps_id AS ps_id,
                    ps.pp_partial_no,
+                   tps.source_pp_partial_no,
                    ps.inventory_code,
                    ps.selected_bom_id, ps.planner_status, ps.status,
                    ps.planned_qty,
@@ -520,30 +598,35 @@ def trial_catalog_items(con, include_completed=False):
                    COALESCE(vso.wo_qty_rejected, vop.wo_qty_rejected, 0) AS erp_reject_qty,
                    COALESCE(vso.execution_status, vop.execution_status, '') AS op_execution_status
             FROM planner_process_sheet ps
+            LEFT JOIN planner_temp_process_sheet tps ON tps.planner_ps_id = ps.planner_ps_id
             LEFT JOIN voucher_partials vp
-                   ON vp.ps_id = ps.source_ps_id AND vp.pp_partial_no = ps.pp_partial_no
+                   ON vp.ps_id = ps.source_ps_id
+                  AND vp.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
             LEFT JOIN source_totals st ON st.ps_id = ps.source_ps_id
             LEFT JOIN planner_source_totals pst ON pst.source_ps_id = ps.source_ps_id
             LEFT JOIN planner_bom_variation sf ON sf.bom_id = ps.selected_bom_id
             LEFT JOIN planner_operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
             LEFT JOIN voucher_stage_outputs vso
                    ON vso.ps_id = ps.source_ps_id
-                  AND vso.pp_partial_no = ps.pp_partial_no
+                  AND vso.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
                   AND COALESCE(pfs.source_stage_no, 0) > 0
                   AND vso.stage_no = pfs.source_stage_no
             LEFT JOIN voucher_op_outputs vop
                    ON vop.ps_id = ps.source_ps_id
-                  AND vop.pp_partial_no = ps.pp_partial_no
+                  AND vop.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
                   AND vop.op_no_text = TRIM(COALESCE(pfs.op_no::text, ''))
             WHERE COALESCE(ps.selected_bom_id, 0) > 0
               AND (%s = 1 OR (
                 COALESCE(ps.planner_status, '') <> 'COMPLETED'
                 AND COALESCE(ps.status, '') <> 'COMPLETED'
-                AND UPPER(COALESCE(st.erp_status, vp.erp_status, '')) <> 'HISTORY'
-              ))
+                AND (
+                  ps.planner_ps_id LIKE '[Temp]%%'
+                  OR UPPER(COALESCE(st.erp_status, vp.erp_status, '')) <> 'HISTORY'
+                )
+              )){ps_filter_clause}
             ORDER BY COALESCE(st.due_date, vp.due_date), ps.source_ps_id, pfs.seq_no, pfs.op_seq_id
-            """,
-            (1 if include_completed else 0,),
+            """.format(ps_filter_clause=ps_filter_clause),
+            tuple([1 if include_completed else 0, *ps_filter_params]),
         )
     )
     # Process sheets without a BOM yet
@@ -593,6 +676,7 @@ def trial_catalog_items(con, include_completed=False):
             SELECT ps.planner_ps_id AS planner_ps_id,
                    ps.source_ps_id AS ps_id,
                    ps.pp_partial_no,
+                   tps.source_pp_partial_no,
                    ps.inventory_code,
                    ps.selected_bom_id, ps.planner_status, ps.status,
                    ps.planned_qty,
@@ -609,19 +693,24 @@ def trial_catalog_items(con, include_completed=False):
                    st.qty_shipped,
                    st.source_line_item_no
             FROM planner_process_sheet ps
+            LEFT JOIN planner_temp_process_sheet tps ON tps.planner_ps_id = ps.planner_ps_id
             LEFT JOIN voucher_partials vp
-                   ON vp.ps_id = ps.source_ps_id AND vp.pp_partial_no = ps.pp_partial_no
+                   ON vp.ps_id = ps.source_ps_id
+                  AND vp.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
             LEFT JOIN source_totals st ON st.ps_id = ps.source_ps_id
             LEFT JOIN planner_source_totals pst ON pst.source_ps_id = ps.source_ps_id
             WHERE COALESCE(ps.selected_bom_id, 0) = 0
               AND (%s = 1 OR (
                 COALESCE(ps.planner_status, '') <> 'COMPLETED'
                 AND COALESCE(ps.status, '') <> 'COMPLETED'
-                AND UPPER(COALESCE(st.erp_status, vp.erp_status, '')) <> 'HISTORY'
-              ))
+                AND (
+                  ps.planner_ps_id LIKE '[Temp]%%'
+                  OR UPPER(COALESCE(st.erp_status, vp.erp_status, '')) <> 'HISTORY'
+                )
+              )){ps_filter_clause}
             ORDER BY COALESCE(st.due_date, vp.due_date), ps.source_ps_id
-            """,
-            (1 if include_completed else 0,),
+            """.format(ps_filter_clause=ps_filter_clause),
+            tuple([1 if include_completed else 0, *ps_filter_params]),
         )
     )
 
@@ -640,14 +729,24 @@ def trial_catalog_items(con, include_completed=False):
             continue
         op_seq_id = int(row["op_seq_id"] or 0)
         op_key = trial_catalog_op_key(ps_id, row["op_no"], op_seq_id)
+        catalog_partial_no = (
+            int(row.get("source_pp_partial_no") or 1)
+            if is_temp
+            else pp_partial_no
+        )
         if is_temp:
             required_qty = float(row.get("planned_qty") or row.get("partial_qty") or 0)
         else:
             required_qty = float(row.get("partial_qty") or row["total_qty"] or 0)
         planned_qty = _planned_qty_for_catalog_op(planned_qty_by_op, ps_id, row["op_no"], op_seq_id)
-        erp_finished_qty = max(0.0, float(row.get("erp_finished_qty") or 0))
-        erp_reject_qty = max(0.0, float(row.get("erp_reject_qty") or 0))
-        remaining_qty = max(0.0, required_qty - planned_qty - erp_finished_qty)
+        if is_temp:
+            erp_finished_qty = 0.0
+            erp_reject_qty = 0.0
+            remaining_qty = max(0.0, required_qty - planned_qty)
+        else:
+            erp_finished_qty = max(0.0, float(row.get("erp_finished_qty") or 0))
+            erp_reject_qty = max(0.0, float(row.get("erp_reject_qty") or 0))
+            remaining_qty = max(0.0, required_qty - planned_qty - erp_finished_qty)
         item = grouped.setdefault(
             ps_id,
             {
@@ -655,7 +754,8 @@ def trial_catalog_items(con, include_completed=False):
                 "display_ps_id": temp_planner_ps_display_label(planner_ps_id) if is_temp else ps_id,
                 "is_temp_ps": is_temp,
                 "source_ps_id": source_ps_id,
-                "pp_partial_no": pp_partial_no,
+                "pp_partial_no": catalog_partial_no,
+                "source_pp_partial_no": int(row.get("source_pp_partial_no") or 1) if is_temp else None,
                 "inventory_code": row["inventory_code"] or "",
                 "part_name": row["part_name"] or "",
                 "part_no": row["part_no"] or "",
@@ -692,7 +792,7 @@ def trial_catalog_items(con, include_completed=False):
         queued_machines = list(queued_machines_by_op.get(op_key, []) or [])
         op_item = {
             "source_ps_id": ps_id,
-            "pp_partial_no": pp_partial_no,
+            "pp_partial_no": catalog_partial_no,
             "source_op_seq_id": op_seq_id,
             "source_op_no": row["op_no"] or "",
             "op_no": row["op_no"] or "",
@@ -844,6 +944,8 @@ def trial_catalog_items(con, include_completed=False):
                 (flow["bom_code"] for flow in item["flow_options"] if int(flow["bom_id"]) == int(item["selected_bom_id"])),
                 "",
             )
+        if item.get("is_temp_ps"):
+            _sanitize_temp_ps_catalog_item(item)
         _apply_bom_stage_fields(item, bom_stage_keys)
         if item["op_cards"]:
             available.append(item)
@@ -851,6 +953,9 @@ def trial_catalog_items(con, include_completed=False):
             planned.append(
                 {
                     "ps_id": item["ps_id"],
+                    "display_ps_id": item.get("display_ps_id") or item["ps_id"],
+                    "is_temp_ps": bool(item.get("is_temp_ps")),
+                    "source_ps_id": item.get("source_ps_id") or "",
                     "inventory_code": item["inventory_code"],
                     "part_name": item["part_name"],
                     "part_no": item["part_no"],
@@ -868,6 +973,9 @@ def trial_catalog_items(con, include_completed=False):
                     "planning_cards": item["planning_cards"],
                     "op_cards": item["op_cards"],
                     "material_in": bool(item.get("material_in")),
+                    "shipped_completed": False,
+                    "execution_completed": False,
+                    "is_completed": False,
                 }
             )
 
@@ -875,15 +983,20 @@ def trial_catalog_items(con, include_completed=False):
         ps_id = _catalog_ps_id(row)
         if ps_id in grouped:
             continue
-        if not _should_show_for_shipped_qty(row["total_qty"], row.get("qty_shipped"), row.get("source_line_item_no")):
+        planner_ps_id = compact_text(row.get("planner_ps_id")) or ps_id
+        is_temp_row = is_temp_planner_ps_id(planner_ps_id)
+        if not is_temp_row and not _should_show_for_shipped_qty(
+            row["total_qty"], row.get("qty_shipped"), row.get("source_line_item_no")
+        ):
             continue
         inventory_code = compact_text(row["inventory_code"])
         flow_options = flow_options_for_inventory_code(inventory_code)
         if ps_id in {item["ps_id"] for item in planned}:
             continue
-        planner_ps_id = compact_text(row.get("planner_ps_id")) or ps_id
         unassigned_item = {
             "ps_id": ps_id,
+            "display_ps_id": temp_planner_ps_display_label(planner_ps_id) if is_temp_row else ps_id,
+            "is_temp_ps": is_temp_row,
             "source_ps_id": _base_ps_id(row["ps_id"]),
             "pp_partial_no": int(row.get("pp_partial_no") or 1),
             "inventory_code": inventory_code,
@@ -905,10 +1018,42 @@ def trial_catalog_items(con, include_completed=False):
             "op_cards": [],
             "material_in": bool(material_in_by_ps.get(planner_ps_id)),
         }
+        if is_temp_row:
+            _sanitize_temp_ps_catalog_item(unassigned_item)
         _apply_bom_stage_fields(unassigned_item, bom_stage_keys)
         planned.append(unassigned_item)
 
     return {"available": available, "planned": planned}
+
+
+def catalog_lane_context_for_blocks(con, blocks):
+    """
+    Op cards + ERP due dates for lane blocks via the with-ops pipeline
+    (same as /api/pp-vouchers/with-ops), so queue visibility matches the planner sidebar.
+    """
+    from .blocks import _row_planner_ps_identity
+
+    wanted_keys = set()
+    for row in blocks or []:
+        base, partial = _row_planner_ps_identity(row)
+        if base:
+            wanted_keys.add((base, int(partial or 1)))
+    if not wanted_keys:
+        return {}, {}
+
+    from app import pp_vouchers_lane_catalog_entries
+
+    op_cards_by_partial = {}
+    due_by_partial = {}
+    for entry in pp_vouchers_lane_catalog_entries(con, wanted_keys, include_completed=True):
+        base = compact_text(entry.get("source_ps_id") or _base_ps_id(entry.get("ps_id")))
+        partial = int(entry.get("pp_partial_no") or parse_planner_ps_id(entry.get("ps_id"))[1] or 1)
+        key = (base, partial)
+        op_cards_by_partial[key] = list(entry.get("op_cards") or [])
+        due_text = compact_text(entry.get("due_date"))
+        if due_text:
+            due_by_partial[key] = due_text
+    return op_cards_by_partial, due_by_partial
 
 
 # ---------------------------------------------------------------------------

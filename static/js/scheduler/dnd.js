@@ -13,6 +13,60 @@ function trialCatalogCombineSummary(source, target) {
   };
 }
 
+function trialEnrichOpCardPayload(el, sourcePayload) {
+  if (!sourcePayload) return sourcePayload;
+  const psWrap = el?.closest('.trial-catalog-ps, .trial-catalog-planned-ps');
+  const parentPsId = String(psWrap?.dataset?.psId || sourcePayload.ps_id || '').trim();
+  const elPartial = Number(el?.dataset?.ppPartialNo || sourcePayload.pp_partial_no || 0);
+  const pools = [
+    ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
+    ...(Array.isArray(trialState.planned) ? trialState.planned : []),
+  ];
+  let psRow = null;
+  if (parentPsId) {
+    psRow = pools.find(row => String(row.ps_id || '').trim() === parentPsId) || null;
+    if (!psRow && typeof trialSplitPsId === 'function') {
+      const parts = trialSplitPsId(parentPsId);
+      const base = String(parts.base || parentPsId).trim();
+      const wantPartial = String(parts.partial || elPartial || sourcePayload.pp_partial_no || '1').trim();
+      psRow = pools.find(row => {
+        const rowBase = typeof trialCatalogSourceBase === 'function'
+          ? trialCatalogSourceBase(row)
+          : String(trialSplitPsId(row.ps_id || '').base || '').trim();
+        if (rowBase !== base) return false;
+        const rowPartial = String(
+          row.pp_partial_no ?? trialSplitPsId(row.ps_id || '').partial ?? '1',
+        ).trim();
+        return rowPartial === wantPartial;
+      }) || null;
+    }
+  }
+  const catalogCard = typeof trialCatalogCardFromPayload === 'function'
+    ? trialCatalogCardFromPayload(sourcePayload)
+    : sourcePayload;
+  if (elPartial > 0) catalogCard.pp_partial_no = elPartial;
+  const ctx = typeof trialCatalogOpForPs === 'function'
+    ? trialCatalogOpForPs(catalogCard, psRow)
+    : catalogCard;
+  const plannerPsId = typeof trialCatalogPlannerPsId === 'function'
+    ? trialCatalogPlannerPsId(ctx)
+    : String(ctx?.ps_id || '').trim();
+  const op = {
+    ...(sourcePayload.op || {}),
+    job_no: plannerPsId || sourcePayload.op?.job_no,
+    source_ps_id: plannerPsId || sourcePayload.op?.source_ps_id,
+  };
+  return {
+    ...sourcePayload,
+    ...ctx,
+    ps_id: plannerPsId || ctx.ps_id,
+    source_ps_id: plannerPsId || ctx.source_ps_id,
+    job_no: plannerPsId || ctx.job_no || sourcePayload.job_no,
+    pp_partial_no: ctx.pp_partial_no,
+    op,
+  };
+}
+
 function trialOpCardPayloadFromElement(el) {
   if (!el) return null;
 
@@ -49,6 +103,7 @@ function trialOpCardPayloadFromElement(el) {
     card_kind: cardKind,
     card_id: Number(el.dataset.cardId || 0) || null,
     ps_id: el.dataset.psId || '',
+    pp_partial_no: Number(el.dataset.ppPartialNo || 0) || undefined,
     operation_label: el.dataset.operationLabel || '',
     target_qty: Number(el.dataset.targetQty || 0),
     remaining_qty: Number(el.dataset.remainingQty || el.dataset.targetQty || 0),
@@ -168,6 +223,7 @@ function trialCatalogResetPointerDrag(state = trialCatalogPointerDrag) {
     state.currentTargetEl.classList.remove('drop-target');
   }
   if (state.currentLaneEl) {
+    trialLaneClearInsertMarker(state.currentLaneEl);
     state.currentLaneEl.classList.remove('drop-target-lane');
   }
   if (state.sourceEl) {
@@ -239,12 +295,14 @@ function trialCatalogHandlePointerMove(e) {
 
   const activeLane = laneEl || null;
   if (state.currentLaneEl && state.currentLaneEl !== activeLane) {
+    trialLaneClearInsertMarker(state.currentLaneEl);
     state.currentLaneEl.classList.remove('drop-target-lane');
     state.currentLaneEl = null;
   }
   if (activeLane) {
     activeLane.classList.add('drop-target-lane');
     state.currentLaneEl = activeLane;
+    trialLaneShowAppendMarker(activeLane);
   }
 }
 
@@ -252,7 +310,9 @@ async function trialCatalogHandlePointerUp(e) {
   const state = trialCatalogPointerDrag;
   if (!state || state.pointerId !== e.pointerId || !state.sourceEl) return;
 
-  const sourcePayload = state.sourcePayload;
+  const sourcePayload = typeof trialEnrichOpCardPayload === 'function'
+    ? trialEnrichOpCardPayload(state.sourceEl, state.sourcePayload)
+    : state.sourcePayload;
   const hasMoved = state.hasMoved;
   const lane = trialLaneAtPoint(e.clientX, e.clientY, state.currentLaneEl, state);
   const targetEl = lane ? null : trialCatalogOpAtPoint(e.clientX, e.clientY, state);
@@ -281,7 +341,9 @@ async function trialCatalogHandlePointerUp(e) {
         toast('Already queuing this operation — please wait.', 'info');
         return;
       }
-      const queuePosition = trialLaneInsertPosition(lane, e.clientY);
+      // Catalog drops always append to the end of the queue. Cursor-based insertion
+      // mis-fires when the pointer releases over the middle of the lane stack (N-1).
+      const queuePosition = 0;
       const machine = (trialState.machines || []).find(row => Number(row.machine_id) === machineId);
       const machineLabel = machine?.machine_code || `Machine ${machineId}`;
       const scheduleDrop = async () => {
@@ -372,6 +434,18 @@ function bindTrialLaneBlockClicks() {
 function bindTrialCatalogDnD() {
   trialEnsureCatalogPointerListeners();
   document.querySelectorAll('.trial-catalog-op').forEach(el => {
+    if (el.dataset.catalogClickBound !== '1' && el.dataset.isComplete === 'true') {
+      el.dataset.catalogClickBound = '1';
+      el.addEventListener('click', e => {
+        if (trialPlannerBusyLock > 0) return;
+        const interactive = e.target && e.target.closest('button, a, input, select, textarea, label, [contenteditable="true"]');
+        if (interactive) return;
+        const sourcePayload = trialEnrichOpCardPayload(el, trialOpCardPayloadFromElement(el));
+        if (sourcePayload && typeof openTrialCatalogOpDetail === 'function') {
+          openTrialCatalogOpDetail(sourcePayload);
+        }
+      });
+    }
     if (el.dataset.catalogDndBound === '1') return;
     el.dataset.catalogDndBound = '1';
     el.addEventListener('pointerdown', e => {
@@ -379,9 +453,11 @@ function bindTrialCatalogDnD() {
       if (trialPlannerBusyLock > 0) return;
       const interactive = e.target && e.target.closest('button, a, input, select, textarea, label, [contenteditable="true"]');
       if (interactive) return;
-      const sourcePayload = trialOpCardPayloadFromElement(el);
+      const sourcePayload = trialEnrichOpCardPayload(el, trialOpCardPayloadFromElement(el));
       if (!sourcePayload || sourcePayload.type !== 'op-card') return;
-      const catalogCard = trialCatalogCardFromPayload(sourcePayload);
+      const catalogCard = typeof trialResolveQueueCard === 'function'
+        ? trialResolveQueueCard(sourcePayload).catalogCard
+        : trialCatalogCardFromPayload(sourcePayload);
       if (catalogCard && typeof trialPendingCatalogOpSchedules !== 'undefined'
         && trialPendingCatalogOpSchedules.has(trialCatalogOpPendingKey(catalogCard))) {
         toast('Already queuing this operation — please wait.', 'info');
@@ -397,6 +473,10 @@ function bindTrialCatalogDnD() {
         );
         return;
       }
+      if (catalogCard && typeof trialCatalogOpIsComplete === 'function' && trialCatalogOpIsComplete(catalogCard)) {
+        return;
+      }
+      if (el.dataset.isComplete === 'true') return;
       trialCatalogPointerDrag = {
         sourceEl: el,
         sourcePayload,
@@ -414,15 +494,37 @@ function bindTrialCatalogDnD() {
   });
 }
 
+function trialLaneQueueCards(lane) {
+  if (!lane) return [];
+  return Array.from(lane.querySelectorAll(':scope > .trial-block-card'));
+}
+
 function trialLaneInsertPosition(lane, clientY) {
   if (!lane) return 0;
-  const cards = Array.from(lane.querySelectorAll(':scope > .trial-block-card'));
+  const cards = trialLaneQueueCards(lane);
+  // Only the top slice of a card counts as "insert before"; dropping lower on a card
+  // (especially the last one) appends after it instead of always slotting second-to-last.
+  const insertBeforeFraction = 0.35;
   for (let i = 0; i < cards.length; i++) {
     const rect = cards[i].getBoundingClientRect();
-    const midY = rect.top + (rect.height / 2);
-    if (clientY < midY) return i + 1;
+    const threshold = rect.top + (rect.height * insertBeforeFraction);
+    if (clientY < threshold) return i + 1;
   }
   return cards.length + 1;
+}
+
+function trialLaneClearInsertMarker(lane) {
+  if (!lane) return;
+  lane.querySelectorAll(':scope > .trial-lane-insert-marker').forEach(el => el.remove());
+}
+
+function trialLaneShowAppendMarker(lane) {
+  if (!lane) return;
+  trialLaneClearInsertMarker(lane);
+  const marker = document.createElement('div');
+  marker.className = 'trial-lane-insert-marker';
+  marker.setAttribute('aria-hidden', 'true');
+  lane.appendChild(marker);
 }
 
 function trialLaneOrderedBlockIds(lane, movedBlockId = 0) {
@@ -677,19 +779,32 @@ function initTrialMachineSortables(machineIds = null) {
 }
 
 async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
+  const resolved = typeof trialResolveQueueCard === 'function'
+    ? trialResolveQueueCard(card)
+    : null;
+  const workCard = resolved?.catalogCard || trialCatalogCardFromPayload(card);
   const op = card && (card.op || (typeof trialOpFromPayload === 'function' ? trialOpFromPayload(card) : null));
   if (!op) {
     toast('Missing operation data for this card.', 'error');
     return;
   }
-  const catalogCard = trialCatalogCardFromPayload(card);
   const schedulableRemaining = trialCatalogSchedulableRemaining(
-    card?.op ? { ...catalogCard, remaining_qty: op.remaining_qty, op } : card,
+    card?.op ? { ...workCard, remaining_qty: op.remaining_qty, op } : workCard,
   );
   const numericMachineId = Number(machineId || 0);
+  const ppPartialNo = resolved?.ppPartialNo
+    ?? trialCatalogPartialIndex(card)
+    ?? trialCatalogPartialIndex(workCard);
+  const plannerBase = typeof trialCatalogSourceBase === 'function'
+    ? (trialCatalogSourceBase(card) || trialCatalogSourceBase(workCard))
+    : '';
+  const plannerPsId = resolved?.plannerPsId
+    || (typeof trialFormatPlannerPsId === 'function' && plannerBase
+      ? trialFormatPlannerPsId(plannerBase, ppPartialNo)
+      : String(card?.ps_id || workCard?.ps_id || op.job_no || op.source_ps_id || '').trim());
 
-  if (catalogCard && schedulableRemaining > 0.0001) {
-    const onTarget = trialBlockForCatalogOpOnMachine(catalogCard, numericMachineId);
+  if (workCard && schedulableRemaining > 0.0001) {
+    const onTarget = trialBlockForCatalogOpOnMachine(workCard, numericMachineId);
     if (onTarget) {
       const label = onTarget.machine_code || `machine ${numericMachineId}`;
       toast(
@@ -698,11 +813,10 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
       );
       return;
     }
-    const siblings = trialBlocksForCatalogOp(catalogCard);
+    const siblings = trialBlocksForCatalogOp(workCard);
     const includeSetup = siblings.length === 0 ? 1 : 0;
-    const plannerPsId = String(card.ps_id || op.source_ps_id || '').trim();
     try {
-      const result = await POST('/api/trial/operations', {
+      const queueBody = {
         job_no: plannerPsId || op.job_no || op.source_ps_id || '',
         operation_name: op.operation_name || op.op_type || op.source_op_no || '',
         total_qty: schedulableRemaining,
@@ -710,7 +824,8 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
         setup_minutes: Number(op.setup_time || op.setup_minutes || 0),
         cycle_minutes_per_qty: Number(op.cycle_time || op.cycle_minutes_per_qty || 0),
         compatible_machine_group: op.compatible_machine_group || '',
-        source_ps_id: plannerPsId || op.source_ps_id || '',
+        source_ps_id: plannerPsId,
+        pp_partial_no: ppPartialNo,
         source_op_seq_id: Number(op.source_op_seq_id || 0),
         source_op_no: String(op.source_op_no || card?.operation_label || '').trim(),
         machine_id: numericMachineId,
@@ -719,17 +834,18 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
         execution_status: 'NOT_STARTED',
         include_setup: includeSetup,
         recalculate: false,
-      });
-      const affectedIds = [numericMachineId].filter(Boolean);
-      if (result && result.block) {
-        trialPinBlock(result.block);
-        trialMergeBlockFromApi(result.block);
+      };
+      const result = typeof trialPostCatalogQueueOperation === 'function'
+        ? await trialPostCatalogQueueOperation(queueBody, workCard)
+        : await POST('/api/trial/operations', queueBody);
+      if (typeof trialFinalizeCatalogQueueSchedule === 'function') {
+        await trialFinalizeCatalogQueueSchedule({
+          catalogCard: workCard,
+          machineId: numericMachineId,
+          result,
+          qtyLabel: `${fmt(schedulableRemaining, 0)} pcs`,
+        });
       }
-      trialMarkDirtyMachines(affectedIds, { skipRender: true });
-      await refreshMachines(affectedIds, { response: result });
-      const machine = (trialState.machines || []).find(row => Number(row.machine_id) === numericMachineId);
-      const label = machine?.machine_code || `Machine ${numericMachineId}`;
-      toast(`Queued ${fmt(schedulableRemaining, 0)} pcs on ${label} — click Recalculate schedules for times`, 'success');
     } catch (e) {
       console.error('scheduleTrialSingleOpCard failed:', e);
       toast('Schedule failed: ' + e.message, 'error');
@@ -737,8 +853,8 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
     return;
   }
 
-  if (catalogCard && trialIsCatalogOpAllocated(catalogCard)) {
-    const existing = trialFindBlockForCatalogOp(catalogCard);
+  if (workCard && trialIsCatalogOpAllocated(workCard)) {
+    const existing = trialFindBlockForCatalogOp(workCard);
     if (existing) {
       await moveTrialBlockToMachine(existing.block_id, numericMachineId, queuePosition, { skipBusy: true });
       return;
@@ -746,9 +862,8 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
     toast('This operation is already in the machine queue.', 'info');
     return;
   }
-  const plannerPsId = String(card.ps_id || op.source_ps_id || '').trim();
   try {
-    const result = await POST('/api/trial/operations', {
+    const queueBody = {
       job_no: plannerPsId || op.job_no || op.source_ps_id || '',
       operation_name: op.operation_name || op.op_type || op.source_op_no || '',
       total_qty: Number(op.remaining_qty || op.total_qty || 0),
@@ -756,7 +871,8 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
       setup_minutes: Number(op.setup_time || op.setup_minutes || 0),
       cycle_minutes_per_qty: Number(op.cycle_time || op.cycle_minutes_per_qty || 0),
       compatible_machine_group: op.compatible_machine_group || '',
-      source_ps_id: plannerPsId || op.source_ps_id || '',
+      source_ps_id: plannerPsId,
+      pp_partial_no: ppPartialNo,
       source_op_seq_id: Number(op.source_op_seq_id || 0),
       source_op_no: String(op.source_op_no || card?.operation_label || '').trim(),
       machine_id: numericMachineId,
@@ -765,20 +881,18 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
       execution_status: 'NOT_STARTED',
       include_setup: 1,
       recalculate: false,
-    });
-    const affectedIds = [Number(machineId || 0)].filter(Boolean);
-    if (result && result.block) {
-      trialPinBlock(result.block);
-      trialMergeBlockFromApi(result.block);
+    };
+    const result = typeof trialPostCatalogQueueOperation === 'function'
+      ? await trialPostCatalogQueueOperation(queueBody, workCard)
+      : await POST('/api/trial/operations', queueBody);
+    if (typeof trialFinalizeCatalogQueueSchedule === 'function') {
+      await trialFinalizeCatalogQueueSchedule({
+        catalogCard: workCard,
+        machineId: numericMachineId,
+        result,
+        qtyLabel: `${fmt(Number(op.remaining_qty || op.total_qty || 0), 0)} pcs`,
+      });
     }
-    trialMarkDirtyMachines(affectedIds, { skipRender: true });
-    await refreshMachines(affectedIds, { response: result });
-    const machine = (trialState.machines || []).find(row => Number(row.machine_id) === Number(machineId));
-    const label = machine?.machine_code || `Machine ${machineId}`;
-    const msg = result?.duplicate
-      ? `Already on ${label} — queue updated`
-      : `Queued on ${label} — click Recalculate schedules for times`;
-    toast(msg, result?.duplicate ? 'info' : 'success');
   } catch (e) {
     console.error('scheduleTrialSingleOpCard failed:', e);
     toast('Schedule failed: ' + e.message, 'error');
