@@ -1,9 +1,7 @@
 import logging
 import os
-import secrets
 import threading
 import time
-from urllib.parse import urlencode
 from flask import Flask, render_template, jsonify, request, redirect, url_for
 from dotenv import load_dotenv
 
@@ -55,79 +53,6 @@ def _machinist_board_path() -> str:
 
 
 MACHINIST_BOARD_PATH = _machinist_board_path()
-
-PLANNER_ACCESS_TOKEN = os.getenv("PLANNER_ACCESS_TOKEN", "").strip()
-PLANNER_ACCESS_COOKIE = "planner_access"
-
-
-def _safe_next_url(raw):
-    next_url = (raw or "/scheduler").strip()
-    if not next_url.startswith("/") or next_url.startswith("//"):
-        return "/scheduler"
-    return next_url
-
-
-def _planner_access_cookie_secure():
-    return request.is_secure or os.getenv("FLASK_SECURE_COOKIES", "").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
-
-
-def _set_planner_access_cookie(response):
-    response.set_cookie(
-        PLANNER_ACCESS_COOKIE,
-        PLANNER_ACCESS_TOKEN,
-        httponly=True,
-        samesite="Lax",
-        max_age=60 * 60 * 24 * 365,
-        secure=_planner_access_cookie_secure(),
-    )
-    return response
-
-
-def _has_planner_access():
-    if not PLANNER_ACCESS_TOKEN:
-        return True
-    token = request.cookies.get(PLANNER_ACCESS_COOKIE, "")
-    return bool(token) and secrets.compare_digest(token, PLANNER_ACCESS_TOKEN)
-
-
-def _is_public_without_planner_access(path, method):
-    if path == MACHINIST_BOARD_PATH:
-        return True
-    if path.startswith("/static/"):
-        return True
-    if path in ("/favicon.ico", "/planner-access"):
-        return True
-    if path == "/api/health":
-        return True
-    # Machinist board only needs read-only schedule data.
-    if method == "GET" and path.startswith("/api/trial/schedule"):
-        return True
-    return False
-
-
-@app.before_request
-def _require_planner_access():
-    if not PLANNER_ACCESS_TOKEN or _has_planner_access():
-        return None
-
-    supplied = (request.args.get("access") or "").strip()
-    if supplied and secrets.compare_digest(supplied, PLANNER_ACCESS_TOKEN):
-        qs = {k: v for k, v in request.args.items() if k != "access"}
-        target = request.path
-        if qs:
-            target += "?" + urlencode(qs, doseq=True)
-        resp = redirect(target)
-        return _set_planner_access_cookie(resp)
-
-    if _is_public_without_planner_access(request.path, request.method):
-        return None
-
-    if request.path.startswith("/api/"):
-        return jsonify({"error": "Unauthorized"}), 401
-
-    return redirect(url_for("planner_access_gate", next=_safe_next_url(request.full_path)))
 
 
 @app.context_processor
@@ -189,21 +114,6 @@ def supabase_query(sql, params=(), fetchone=False, fetchall=False, commit=False)
 
 
 # ── Pages ──────────────────────────────────────────────────────────────────
-
-@app.get("/planner-access")
-@app.post("/planner-access")
-def planner_access_gate():
-    if not PLANNER_ACCESS_TOKEN:
-        return redirect(_safe_next_url(request.args.get("next")))
-    next_url = _safe_next_url(request.args.get("next") or request.form.get("next"))
-    if request.method == "POST":
-        token = (request.form.get("token") or "").strip()
-        if secrets.compare_digest(token, PLANNER_ACCESS_TOKEN):
-            resp = redirect(next_url)
-            return _set_planner_access_cookie(resp)
-        return render_template("planner_access.html", error="Invalid access code", next=next_url), 401
-    return render_template("planner_access.html", next=next_url)
-
 
 @app.get("/")
 @app.get("/scheduler")
@@ -2357,8 +2267,4 @@ if __name__ == "__main__":
     else:
         log.warning("repeat orders routes missing — check app.py was saved before restart")
     log.info("machinist board: http://127.0.0.1:%s%s", port, MACHINIST_BOARD_PATH)
-    if PLANNER_ACCESS_TOKEN:
-        log.info("planner access gate enabled (set PLANNER_ACCESS_TOKEN in .env)")
-    else:
-        log.warning("planner access gate disabled — set PLANNER_ACCESS_TOKEN to lock down the planner")
     app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)
