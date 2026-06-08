@@ -1765,6 +1765,47 @@ def _schedule_combined_production_across_intervals(con, machine_id, members, sch
     return first_start, current_dt, end_dt, remaining
 
 
+def _leader_end_datetime(leader, preserved_bounds_by_block, naive_schedule_dt):
+    block_id = int(leader["block_id"])
+    bounds = preserved_bounds_by_block.get(block_id)
+    if bounds and bounds.get("end_datetime"):
+        return naive_schedule_dt(bounds["end_datetime"])
+    return naive_schedule_dt(leader.get("calculated_end_datetime"))
+
+
+def _resolve_block_candidate_start(
+    predecessor_end_dt,
+    anchor_dt,
+    dependency_finish,
+    planned_start,
+    allow_pull,
+    is_fresh,
+    *,
+    queue_fallback_dt=None,
+):
+    """Anchor is the planning reference; without anchor, chain from the previous queue job end."""
+    if anchor_dt:
+        candidate_start = anchor_dt
+        if predecessor_end_dt and predecessor_end_dt > candidate_start:
+            candidate_start = predecessor_end_dt
+    elif predecessor_end_dt:
+        candidate_start = predecessor_end_dt
+    else:
+        candidate_start = queue_fallback_dt
+    if dependency_finish and candidate_start and dependency_finish > candidate_start:
+        candidate_start = dependency_finish
+    elif dependency_finish and not candidate_start:
+        candidate_start = dependency_finish
+    if (
+        planned_start
+        and candidate_start
+        and candidate_start < planned_start
+        and (allow_pull == 0 or is_fresh == 1)
+    ):
+        candidate_start = planned_start
+    return candidate_start
+
+
 def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_id=None, tail_from_block_id=None):
     own_run = schedule_run_id is None
     if own_run:
@@ -1876,30 +1917,8 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
             return value.replace(tzinfo=None) if value.tzinfo is not None else value
         return parse_dt_text(value)
 
-    current_dt = today_start
-    if start_item_idx > 0:
-        prev_leader = queue_items[start_item_idx - 1]["members"][0]
-        prev_bounds = preserved_bounds_by_block.get(int(prev_leader["block_id"]))
-        seeded = None
-        if prev_bounds and prev_bounds.get("end_datetime"):
-            seeded = _naive_schedule_dt(prev_bounds["end_datetime"])
-        if not seeded:
-            seeded = _naive_schedule_dt(prev_leader.get("calculated_end_datetime"))
-        if seeded:
-            current_dt = seeded
-    else:
-        actual_start_values = []
-        for item in queue_items:
-            leader = item["members"][0]
-            actual_bounds = preserved_bounds_by_block.get(int(leader["block_id"]))
-            if actual_bounds:
-                start_dt = _naive_schedule_dt(actual_bounds.get("start_datetime"))
-                if start_dt:
-                    actual_start_values.append(start_dt)
-        start_candidates = [today_start, *actual_start_values]
-        current_dt = min(start_candidates) if start_candidates else today_start
-
     interval_cache = {}
+    queue_cursor_end = None
 
     def update_block_schedule_window(block_id, start_dt, end_dt, planning_status=None):
         start_bind = planner_timestamptz_for_db(start_dt)
@@ -1976,26 +1995,35 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                     status="OPEN",
                 )
 
-    for item in queue_items[start_item_idx:]:
+    for rel_idx, item in enumerate(queue_items[start_item_idx:]):
         members = item["members"]
         leader = members[0]
         is_combined = bool(item["combined"])
+        if rel_idx == 0 and start_item_idx > 0:
+            predecessor_end = _leader_end_datetime(
+                queue_items[start_item_idx - 1]["members"][0],
+                preserved_bounds_by_block,
+                _naive_schedule_dt,
+            )
+        else:
+            predecessor_end = queue_cursor_end
 
         if not is_combined:
             block = leader
             planned_start = parse_dt_text(block["planned_start_at"])
             anchor_dt = parse_dt_text(block["anchor_datetime"])
             dependency_finish = dependency_finish_for_block(con, block)
-            candidate_start = current_dt
-            if dependency_finish and dependency_finish > candidate_start:
-                candidate_start = dependency_finish
-            if anchor_dt and candidate_start < anchor_dt:
-                candidate_start = anchor_dt
             allow_pull = int(block.get("allow_pull_forward") if block.get("allow_pull_forward") is not None else 1)
             is_fresh = int(block.get("is_fresh_monday_item") or 0)
-            if planned_start and candidate_start < planned_start and (allow_pull == 0 or is_fresh == 1):
-                candidate_start = planned_start
-            current_dt = candidate_start
+            current_dt = _resolve_block_candidate_start(
+                predecessor_end,
+                anchor_dt,
+                dependency_finish,
+                planned_start,
+                allow_pull,
+                is_fresh,
+                queue_fallback_dt=today_start,
+            )
 
             actual_bounds = preserved_bounds_by_block.get(int(block["block_id"]))
             if actual_bounds:
@@ -2018,6 +2046,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                 if refreshed_end and not isinstance(refreshed_end, datetime):
                     refreshed_end = parse_dt_text(refreshed_end)
                 current_dt = refreshed_end or actual_bounds["end_datetime"]
+                queue_cursor_end = current_dt
                 continue
 
             raw_reported_output = max(0.0, float(block["actual_good_qty"] or 0))
@@ -2051,6 +2080,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                 end_dt = prod_end or end_dt
 
             update_block_schedule_window(block["block_id"], start_dt, end_dt, None)
+            queue_cursor_end = current_dt
             continue
 
         # Combined group
@@ -2060,16 +2090,17 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         leader_planned_start = parse_dt_text(leader["planned_start_at"])
         leader_anchor = parse_dt_text(leader["anchor_datetime"])
         leader_dependency_finish = dependency_finish_for_block(con, leader)
-        candidate_start = current_dt
-        if leader_dependency_finish and leader_dependency_finish > candidate_start:
-            candidate_start = leader_dependency_finish
-        if leader_anchor and candidate_start < leader_anchor:
-            candidate_start = leader_anchor
         leader_allow_pull = int(leader.get("allow_pull_forward") if leader.get("allow_pull_forward") is not None else 1)
         leader_is_fresh = int(leader.get("is_fresh_monday_item") or 0)
-        if leader_planned_start and candidate_start < leader_planned_start and (leader_allow_pull == 0 or leader_is_fresh == 1):
-            candidate_start = leader_planned_start
-        current_dt = candidate_start
+        current_dt = _resolve_block_candidate_start(
+            predecessor_end,
+            leader_anchor,
+            leader_dependency_finish,
+            leader_planned_start,
+            leader_allow_pull,
+            leader_is_fresh,
+            queue_fallback_dt=today_start,
+        )
 
         actual_bounds_by_block = {
             int(member["block_id"]): preserved_bounds_by_block.get(int(member["block_id"]))
@@ -2097,6 +2128,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                 if refreshed_end and (max_end is None or refreshed_end > max_end):
                     max_end = refreshed_end
             current_dt = max_end or current_dt
+            queue_cursor_end = current_dt
             continue
 
         remaining_setup = setup_minutes if int(leader["include_setup"] or 0) == 1 else 0.0
@@ -2130,6 +2162,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
             refreshed_end = parse_dt_text(refreshed_end)
         if refreshed_end and refreshed_end > current_dt:
             current_dt = refreshed_end
+        queue_cursor_end = current_dt
 
     from .operation_sequence import sync_machine_operation_sequence
 

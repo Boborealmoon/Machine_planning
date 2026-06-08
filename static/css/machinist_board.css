@@ -132,7 +132,60 @@ body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
 }
 
 .trial-main--machinist #trial-machine-filter-shell {
-  display: none;
+  flex: 0 0 auto;
+  padding: 4px 8px 2px;
+  border-bottom: 1px solid rgba(26, 28, 29, 0.06);
+  background: rgba(255, 255, 255, 0.96);
+  overflow: visible;
+  position: relative;
+  z-index: 25;
+}
+
+.machinist-board-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px 10px;
+  max-width: 100%;
+}
+
+.machinist-board-filters .trial-filter-section-type {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.machinist-board-filters .trial-machine-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.machinist-board-filters .trial-machine-filter-btn {
+  padding: 2px 7px;
+  font-size: 9px;
+  line-height: 1.3;
+}
+
+.machinist-board-filters .trial-filter-section-machines {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.machinist-board-filters .trial-board-machine-filter-dropdown .filter-dropdown-btn {
+  height: 24px;
+  max-width: 100%;
+  padding: 0 8px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.machinist-machine-filter-empty,
+.trial-board-machine-filter-empty {
+  padding: 8px 12px;
+  font-size: 10px;
+  color: var(--text3);
 }
 
 .trial-main--machinist .trial-grid-scroll-host {
@@ -243,7 +296,16 @@ body.machinist-board .trial-machine-availability {
 }
 
 body.machinist-board .trial-machine-anchor-meta {
-  font-size: 8px;
+  display: none !important;
+}
+
+body.machinist-board .trial-block-compact-metric--cycle {
+  color: #6b4c9a;
+}
+
+body.machinist-board .trial-block-compact-metric--cycle .trial-pill-label {
+  color: #6b4c9a;
+  opacity: 0.72;
 }
 
 body.machinist-board .trial-machine-title {
@@ -306,6 +368,18 @@ body.machinist-board .trial-block-compact-body {
 body.machinist-board .trial-block-card--compact .trial-block-seq {
   font-size: 8px;
   padding: 0 4px;
+}
+
+body.machinist-board .trial-block-compact-top-end {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px 4px;
+}
+
+body.machinist-board .trial-block-compact-metrics {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px 4px;
 }
 
 body.machinist-board .trial-block-compact-metric {
@@ -421,6 +495,50 @@ a.trial-machinist-view-link {
     top: 0;
     z-index: 20;
     padding: max(6px, env(safe-area-inset-top, 0px)) 8px 4px;
+  }
+
+  .trial-main--machinist #trial-machine-filter-shell {
+    position: sticky;
+    top: calc(2rem + env(safe-area-inset-top, 0px));
+    z-index: 21;
+    padding: 6px 8px 4px;
+  }
+
+  .machinist-board-filters {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .machinist-board-filters .trial-filter-section-type {
+    width: 100%;
+  }
+
+  .machinist-board-filters .trial-filter-label {
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  .machinist-board-filters .trial-filter-section-machines {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .machinist-board-filters .trial-board-machine-filter-dropdown {
+    width: 100%;
+  }
+
+  .machinist-board-filters .trial-board-machine-filter-dropdown .filter-dropdown-btn {
+    width: 100%;
+    min-height: 36px;
+    height: auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    font-size: 11px;
+    border-radius: 10px;
+    max-width: none;
   }
 
   .machinist-board-head-row {

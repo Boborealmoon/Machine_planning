@@ -12,8 +12,6 @@ let trialCatalogSearch = '';
 /** When true, PS / Ops sidebar lists earliest due_date first. */
 let trialCatalogSortByDueDate = false;
 let trialShowCompleted = false;
-let trialHidePendingDo = true;
-let trialHideBlankPs = true;
 let trialPsTypeFilter = new Set(['A', 'N', 'T']);
 let trialShowSrOrders = false;
 let trialMachineCategoryFilter = 'ALL';

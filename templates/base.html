@@ -63,7 +63,7 @@
       </div>
 
       {# Shop floor & delays #}
-      <div class="nav-dropdown {% if nav_path in ('/actual-production', '/material-inspection', '/queue-delays') or active in ('actual_production', 'material_inspection', 'queue_delays') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/actual-production', '/material-inspection', '/queue-delays', '/planner-email', '/auk-oee') or active in ('actual_production', 'material_inspection', 'queue_delays', 'planner_email', 'auk_oee') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="production">
           PRODUCTION <span class="nav-caret">▾</span>
         </button>
@@ -77,10 +77,18 @@
              class="nav-dropdown-item {% if nav_path == '/material-inspection' or active == 'material_inspection' %}nav-dropdown-item--active{% endif %}">
             Material inspection
           </a>
+          <a href="/auk-oee"
+             class="nav-dropdown-item {% if nav_path == '/auk-oee' or active == 'auk_oee' %}nav-dropdown-item--active{% endif %}">
+            Auk OEE dashboard
+          </a>
           <span class="nav-dropdown-section">PLANNING</span>
           <a href="/queue-delays"
              class="nav-dropdown-item {% if nav_path == '/queue-delays' or active == 'queue_delays' %}nav-dropdown-item--active{% endif %}">
             Queue delays
+          </a>
+          <a href="/planner-email"
+             class="nav-dropdown-item {% if nav_path == '/planner-email' or active == 'planner_email' %}nav-dropdown-item--active{% endif %}">
+            Daily planner email
           </a>
         </div>
       </div>

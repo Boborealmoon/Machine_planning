@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Auk OEE Dashboard{% endblock %}
+{% block body_class %}auk-oee-page{% endblock %}
+{% block main_class %}app-main--planner{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/auk_oee_dashboard.css') }}?v=auk-oee-20260608b">
+{% endblock %}
+{% block content %}
+<div class="auk-oee-shell">
+  <header class="auk-oee-head">
+    <div class="auk-oee-head-row">
+      <div>
+        <h1 class="auk-oee-title">Seletar OEE</h1>
+        <p class="auk-oee-subtitle">Live from Auk canvas · auto-refresh</p>
+      </div>
+      <div class="auk-oee-controls">
+        <label class="auk-oee-field">
+          <span>From</span>
+          <input type="datetime-local" id="auk-oee-from" />
+        </label>
+        <label class="auk-oee-field">
+          <span>To</span>
+          <input type="datetime-local" id="auk-oee-to" />
+        </label>
+        <button type="button" class="auk-oee-btn" id="auk-oee-refresh">Refresh</button>
+      </div>
+    </div>
+    <div class="auk-oee-meta" id="auk-oee-meta"></div>
+    <div class="auk-oee-alert" id="auk-oee-alert" hidden></div>
+  </header>
+
+  <div id="auk-oee-loading" class="auk-oee-loading">
+    <div class="spinner"></div>
+    <span>Loading OEE cards…</span>
+  </div>
+
+  <div id="auk-oee-grid" class="auk-oee-grid" hidden></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  window.AUK_OEE_CONFIG = {
+    configured: {{ auk_configured | tojson }},
+  };
+</script>
+<script src="{{ url_for('static', filename='js/auk_oee_dashboard.js') }}?v=auk-oee-20260608b"></script>
+{% endblock %}

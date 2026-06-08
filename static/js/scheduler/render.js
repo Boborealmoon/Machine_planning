@@ -364,16 +364,6 @@ function renderTrialPsTypeFilter() {
           onchange="toggleTrialSrFilter(this.checked)">
         <span>[SR]</span>
       </label>
-      <label class="trial-ps-type-checkbox trial-ps-type-hide-pending-do" title="Hide PS where all production stages are done and the SO is awaiting full shipment">
-        <input type="checkbox" ${trialHidePendingDo ? 'checked' : ''}
-          onchange="toggleTrialHidePendingDo(this.checked)">
-        <span>Hide Pending DO</span>
-      </label>
-      <label class="trial-ps-type-checkbox trial-ps-type-hide-blank" title="Hide PS with no work orders assigned yet">
-        <input type="checkbox" ${trialHideBlankPs ? 'checked' : ''}
-          onchange="toggleTrialHideBlankPs(this.checked)">
-        <span>Hide unassigned</span>
-      </label>
       <div class="trial-machine-checkbox-actions">
         <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialPsTypesVisible(true)">All</button>
         <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialPsTypesVisible(false)">None</button>
@@ -384,16 +374,6 @@ function renderTrialPsTypeFilter() {
 
 function toggleTrialSrFilter(visible) {
   trialShowSrOrders = visible;
-  renderTrialCatalog();
-}
-
-function toggleTrialHidePendingDo(hide) {
-  trialHidePendingDo = hide;
-  renderTrialCatalog();
-}
-
-function toggleTrialHideBlankPs(hide) {
-  trialHideBlankPs = hide;
   renderTrialCatalog();
 }
 
@@ -756,6 +736,199 @@ function setAllTrialPsTypesVisible(visible) {
 
 // ── Filters ───────────────────────────────────────────────────────────────────
 
+function trialMachinistBoardCategories() {
+  return ['ALL', 'MPP', 'MILLING', 'TURNING', 'TURNMILL'];
+}
+
+function trialMachineFilterButtonLabel() {
+  const machines = trialMachinesInCategory();
+  if (!machines.length) return 'No machines';
+  const selectedCount = machines.filter(m => !trialMachineHiddenSet.has(m.machine_code)).length;
+  if (selectedCount === machines.length) return 'All machines';
+  if (selectedCount === 0) return 'No machines selected';
+  return `${selectedCount}/${machines.length} machines`;
+}
+
+function trialMachineFilterDomIds(scope) {
+  const s = String(scope || 'planner');
+  return {
+    dropdownId: `${s}-machine-filter-dropdown`,
+    btnId: `${s}-machine-filter-btn`,
+    panelId: `${s}-machine-filter-panel`,
+  };
+}
+
+function trialUsesInlineMachineFilterPanel() {
+  try {
+    return window.matchMedia('(max-width: 900px)').matches;
+  } catch (_) {
+    return false;
+  }
+}
+
+function trialResetMachineFilterPanelPosition(scope) {
+  const { panelId } = trialMachineFilterDomIds(scope);
+  const panel = document.getElementById(panelId);
+  if (!panel) return;
+  panel.style.position = '';
+  panel.style.top = '';
+  panel.style.left = '';
+  panel.style.right = '';
+  panel.style.width = '';
+  panel.style.maxHeight = '';
+}
+
+function trialSyncMachineFilterPanelPosition(scope) {
+  const { dropdownId, btnId, panelId } = trialMachineFilterDomIds(scope);
+  const dropdown = document.getElementById(dropdownId);
+  const btn = document.getElementById(btnId);
+  const panel = document.getElementById(panelId);
+  if (!dropdown || !btn || !panel || panel.hidden) {
+    trialResetMachineFilterPanelPosition(scope);
+    return;
+  }
+
+  dropdown.classList.add('is-open');
+  if (trialUsesInlineMachineFilterPanel()) {
+    trialResetMachineFilterPanelPosition(scope);
+    return;
+  }
+
+  const margin = 8;
+  const panelWidth = Math.min(260, Math.max(168, window.innerWidth - margin * 2));
+  const rect = btn.getBoundingClientRect();
+  let left = rect.right - panelWidth;
+  if (left < margin) left = margin;
+  if (left + panelWidth > window.innerWidth - margin) {
+    left = Math.max(margin, window.innerWidth - panelWidth - margin);
+  }
+  const maxHeight = Math.min(320, Math.max(120, window.innerHeight - rect.bottom - margin - 4));
+
+  panel.style.position = 'fixed';
+  panel.style.top = `${Math.round(rect.bottom + 4)}px`;
+  panel.style.left = `${Math.round(left)}px`;
+  panel.style.right = 'auto';
+  panel.style.width = `${Math.round(panelWidth)}px`;
+  panel.style.maxHeight = `${Math.round(maxHeight)}px`;
+}
+
+function trialToggleMachineFilterPanel(scope) {
+  const { dropdownId, panelId } = trialMachineFilterDomIds(scope);
+  const dropdown = document.getElementById(dropdownId);
+  const panel = document.getElementById(panelId);
+  if (!panel) return;
+  panel.hidden = !panel.hidden;
+  if (panel.hidden) {
+    dropdown?.classList.remove('is-open');
+    trialResetMachineFilterPanelPosition(scope);
+  } else {
+    trialSyncMachineFilterPanelPosition(scope);
+  }
+}
+
+function trialCloseMachineFilterPanel(scope) {
+  const { dropdownId, panelId } = trialMachineFilterDomIds(scope);
+  const dropdown = document.getElementById(dropdownId);
+  const panel = document.getElementById(panelId);
+  if (panel) panel.hidden = true;
+  dropdown?.classList.remove('is-open');
+  trialResetMachineFilterPanelPosition(scope);
+}
+
+function trialCloseAllMachineFilterPanels() {
+  trialCloseMachineFilterPanel('machinist');
+  trialCloseMachineFilterPanel('planner');
+}
+
+function trialMachineFilterPanelWasOpen(scope) {
+  const { panelId } = trialMachineFilterDomIds(scope);
+  const panel = document.getElementById(panelId);
+  return panel && !panel.hidden;
+}
+
+function trialRestoreMachineFilterPanelIfOpen(scope) {
+  if (!trialMachineFilterPanelWasOpen(scope)) return;
+  const { panelId } = trialMachineFilterDomIds(scope);
+  const panel = document.getElementById(panelId);
+  if (panel) {
+    panel.hidden = false;
+    trialSyncMachineFilterPanelPosition(scope);
+  }
+}
+
+let trialMachineFilterBindingsBound = false;
+
+function trialBindMachineFilterDropdowns() {
+  if (trialMachineFilterBindingsBound) return;
+  trialMachineFilterBindingsBound = true;
+  document.addEventListener('click', () => {
+    trialCloseAllMachineFilterPanels();
+  });
+  window.addEventListener('resize', () => {
+    ['machinist', 'planner'].forEach(scope => {
+      const { panelId } = trialMachineFilterDomIds(scope);
+      const panel = document.getElementById(panelId);
+      if (panel && !panel.hidden) trialSyncMachineFilterPanelPosition(scope);
+    });
+  });
+}
+
+function renderTrialMachineDropdownFilter(scope = 'planner') {
+  const machines = trialMachinesInCategory();
+  const machineBtnLabel = trialMachineFilterButtonLabel();
+  const { dropdownId, btnId, panelId } = trialMachineFilterDomIds(scope);
+  const machineCheckboxes = machines.map(m => {
+    const code = m.machine_code || '';
+    const checked = !trialMachineHiddenSet.has(code);
+    return `<label class="filter-dropdown-item">
+        <input type="checkbox" ${checked ? 'checked' : ''}
+          onchange="toggleTrialMachineFilter('${escapeHtml(code)}', this.checked)">
+        <span>${escapeHtml(code)}</span>
+      </label>`;
+  }).join('');
+  const scopeAttr = escapeHtml(scope);
+  return `
+    <div class="trial-filter-inline trial-filter-section-machines">
+      <span class="trial-filter-label">Machine</span>
+      <div class="filter-dropdown trial-board-machine-filter-dropdown" id="${dropdownId}">
+        <button type="button" class="filter-dropdown-btn" id="${btnId}"
+          onclick="event.stopPropagation(); trialToggleMachineFilterPanel('${scopeAttr}')">
+          ${escapeHtml(machineBtnLabel)} ▾
+        </button>
+        <div class="filter-dropdown-panel trial-board-machine-filter-panel" id="${panelId}" hidden
+          onclick="event.stopPropagation()">
+          <div class="trial-board-machine-filter-panel-head">
+            <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialMachinesVisible(true)">All</button>
+            <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialMachinesVisible(false)">None</button>
+          </div>
+          ${machineCheckboxes || '<div class="trial-board-machine-filter-empty">No machines in this group</div>'}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderTrialMachinistBoardFilters() {
+  const categories = trialMachinistBoardCategories();
+  return `
+    <div class="machinist-board-filters">
+      <div class="trial-filter-inline trial-filter-section-type">
+        <span class="trial-filter-label">Group</span>
+        <div class="trial-machine-filter">
+          ${categories.map(category => `
+            <button type="button"
+              class="trial-machine-filter-btn ${trialMachineCategoryFilter === category ? 'active' : ''}"
+              onclick="setTrialMachineCategoryFilter('${escapeHtml(category)}')">
+              ${escapeHtml(trialMachineCategoryLabel(category))}
+            </button>
+          `).join('')}
+        </div>
+      </div>
+      ${renderTrialMachineDropdownFilter('machinist')}
+    </div>
+  `;
+}
+
 function renderTrialMachineTypeFilter() {
   const categories = trialMachineCategories();
   return `
@@ -774,37 +947,9 @@ function renderTrialMachineTypeFilter() {
   `;
 }
 
-function renderTrialMachineCheckboxFilter() {
-  const machines = trialMachinesInCategory();
-  if (!machines.length) return '';
-  const selectedMachineCount = machines.filter(m => !trialMachineHiddenSet.has(m.machine_code)).length;
-  const machineCheckboxes = machines.map(m => {
-    const code = m.machine_code || '';
-    const checked = !trialMachineHiddenSet.has(code);
-    return `<label class="trial-machine-checkbox">
-        <input type="checkbox" ${checked ? 'checked' : ''}
-          onchange="toggleTrialMachineFilter('${escapeHtml(code)}', this.checked)">
-        <span>${escapeHtml(code)}</span>
-      </label>`;
-  }).join('');
-  return `
-    <div class="trial-filter-section trial-filter-section-machines">
-      <div class="trial-filter-section-head">
-        <span class="trial-filter-label">Machine <span class="trial-filter-subtle">${selectedMachineCount}/${machines.length}</span></span>
-        <div class="trial-machine-checkbox-actions">
-          <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialMachinesVisible(true)">All</button>
-          <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialMachinesVisible(false)">None</button>
-        </div>
-      </div>
-      <div class="trial-machine-checkbox-list">
-        ${machineCheckboxes}
-      </div>
-    </div>
-  `;
-}
-
 function setTrialMachineCategoryFilter(category) {
   trialMachineCategoryFilter = String(category || 'ALL').toUpperCase();
+  trialCloseAllMachineFilterPanels();
   renderTrial();
 }
 
@@ -1508,6 +1653,9 @@ function trialBlockGroupViewModel(group, options = {}) {
     : `Queued ${trialFormatDt(queuedAt) || '—'} — tap to set anchor`;
   const outputTitle = trialBlockOutputTitle(leader || group);
   const outputPillClass = leader?.actual_end_at ? 'green' : (leader?.actual_start_at ? 'yellow' : '');
+  const cycleMinutesPerQty = group.blocks.length > 1
+    ? group.blocks.reduce((sum, block) => sum + Number(block.cycle_minutes_per_qty || 0), 0)
+    : Number(leader?.cycle_minutes_per_qty || 0);
   const queuedMachines = trialQueuedMachineCodesForCatalogOp({
     source_ps_id: leader?.source_ps_id || leader?.job_no || '',
     source_op_no: leader?.source_op_no || leader?.operation_label || '',
@@ -1531,6 +1679,7 @@ function trialBlockGroupViewModel(group, options = {}) {
     ),
     targetQty: fmt(group.target_qty || 0, 0),
     pairedOutput: fmt(Number(group.paired_output_qty ?? trialBlockNetOutput(group.output_qty, group.reject_qty) ?? 0), 0),
+    cycleMinutesPerQty: fmt(cycleMinutesPerQty, cycleMinutesPerQty % 1 === 0 ? 0 : 2),
     queuedText: trialFormatDt(queuedAt),
     anchorText,
     scheduleTimeLabel,
@@ -1601,9 +1750,10 @@ function trialRenderCompactBlockCard(vm) {
         <div class="trial-block-compact-top">
           ${vm.sequenceNo ? `<span class="trial-block-seq">#${vm.sequenceNo}</span>` : ''}
           <div class="trial-block-compact-top-end">
-            <span class="trial-block-compact-metrics" title="Qty / Output">
+            <span class="trial-block-compact-metrics" title="Qty / Output / Cycle">
               <span class="trial-block-compact-metric"><span class="trial-pill-label">Qty</span>${vm.targetQty}</span>
               <span class="trial-block-compact-metric"><span class="trial-pill-label">Out</span>${vm.pairedOutput}</span>
+              ${readOnly ? `<span class="trial-block-compact-metric trial-block-compact-metric--cycle" title="Cycle time per piece"><span class="trial-pill-label">Cycle</span>${vm.cycleMinutesPerQty}m</span>` : ''}
             </span>
             ${removeBtn}
           </div>
@@ -1622,12 +1772,13 @@ function trialRenderCompactBlockCard(vm) {
             <span class="trial-pill-label">${escapeHtml(vm.scheduleTimeLabel)}</span>
             <span>${escapeHtml(vm.scheduleTimeText || '—')}</span>
           </span>`
-    : `<button type="button" class="trial-block-compact-date is-queued ${vm.anchored ? 'is-anchored' : ''}"
+    : `<button type="button" class="trial-block-compact-date is-queued is-clickable ${vm.anchored ? 'is-anchored' : ''}"
             onclick="event.stopPropagation(); editTrialAnchor(${leader?.block_id || 0})"
             aria-label="${escapeHtml(vm.anchored ? `Change anchor ${vm.anchorText}` : 'Set anchor time')}"
             title="${escapeHtml(vm.queuedTitle)}">
             <span class="trial-pill-label">${escapeHtml(vm.scheduleTimeLabel)}</span>
-            <span>${escapeHtml(vm.scheduleTimeText || '—')}</span>
+            <span class="trial-anchor-time-value">${escapeHtml(vm.scheduleTimeText || '—')}</span>
+            <span class="trial-anchor-edit-icon" aria-hidden="true">✎</span>
           </button>`}
           <span class="trial-block-compact-date is-end ${vm.outputPillClass}" title="${escapeHtml(vm.outputTitle)}">
             <span class="trial-pill-label">End</span>
@@ -1689,9 +1840,10 @@ function trialRenderQueueDetailRow(group, displaySequenceNo = 0) {
       </div>
       <div class="trial-queue-dates">
         <span class="trial-queue-date ${dueClass}" title="Due ${escapeHtml(dueDate)}">${escapeHtml(dueDate)}</span>
-        <button type="button" class="trial-queue-date is-queued ${vm.anchored ? 'is-anchored' : ''}"
+        <button type="button" class="trial-queue-date is-queued is-clickable ${vm.anchored ? 'is-anchored' : ''}"
           onclick="editTrialAnchor(${blockId})" title="${escapeHtml(vm.queuedTitle)}">
-          ${escapeHtml(vm.scheduleTimeText || '—')}
+          <span class="trial-anchor-time-value">${escapeHtml(vm.scheduleTimeText || '—')}</span>
+          <span class="trial-anchor-edit-icon" aria-hidden="true">✎</span>
         </button>
         <span class="trial-queue-date is-end ${vm.outputPillClass}" title="${escapeHtml(vm.outputTitle)}">
           ${escapeHtml(vm.outputText)}
@@ -1857,14 +2009,14 @@ function renderTrialMachine(machine) {
             title="${escapeHtml(anchorTitle)}">
             <span class="trial-machine-availability-stack">
               <span class="trial-machine-availability-text">${availabilityText}</span>
-              <span class="trial-machine-anchor-meta ${firstAnchorText ? 'is-set' : 'is-unset'}">${anchorMeta}</span>
+              <span class="trial-machine-anchor-meta is-clickable ${firstAnchorText ? 'is-set' : 'is-unset'}">
+                <span class="trial-machine-anchor-meta-text">${anchorMeta}</span>
+                <span class="trial-anchor-edit-icon" aria-hidden="true">✎</span>
+              </span>
             </span>
           </button>`
       : `<div class="trial-machine-availability">
-            <span class="trial-machine-availability-stack">
-              <span class="trial-machine-availability-text">${availabilityText}</span>
-              ${firstAnchorText ? `<span class="trial-machine-anchor-meta is-set">Anchor ${firstAnchorText}</span>` : ''}
-            </span>
+            <span class="trial-machine-availability-text">${availabilityText}</span>
           </div>`)
     : '';
 
@@ -2057,14 +2209,19 @@ function renderTrial(options = {}) {
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'destroy-sortables');
   const filterShell = document.getElementById('trial-machine-filter-shell');
   const machinist = typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
+  const machinistPanelWasOpen = machinist && trialMachineFilterPanelWasOpen('machinist');
+  const plannerPanelWasOpen = !machinist && trialMachineFilterPanelWasOpen('planner');
   if (filterShell) {
     if (machinist) {
-      filterShell.innerHTML = '';
+      filterShell.innerHTML = renderTrialMachinistBoardFilters();
+      trialBindMachineFilterDropdowns();
+      if (machinistPanelWasOpen) trialRestoreMachineFilterPanelIfOpen('machinist');
     } else {
       filterShell.innerHTML = `
         <div class="trial-board-filter-card">
           <div class="trial-board-filter-row trial-board-filter-row--primary">
             ${renderTrialMachineTypeFilter()}
+            ${renderTrialMachineDropdownFilter('planner')}
             ${renderTrialScheduleDateFilter()}
             <button type="button" class="btn btn-ghost btn-sm trial-shop-calendar-btn"
               onclick="openTrialCapacityModal()"
@@ -2083,9 +2240,10 @@ function renderTrial(options = {}) {
               Machinist view
             </a>` : ''}
           </div>
-          ${renderTrialMachineCheckboxFilter()}
         </div>
       `;
+      trialBindMachineFilterDropdowns();
+      if (plannerPanelWasOpen) trialRestoreMachineFilterPanelIfOpen('planner');
     }
   }
   const visibleMachines = trialVisibleMachines();
@@ -2458,9 +2616,9 @@ function trialPendingDoBadgeHtml(ps) {
   const shipped = Number(ps?.qty_shipped || 0);
   const soQty = Number(ps?.so_det_qty || 0);
   const title = soQty > 0
-    ? `All stages completed · Shipped ${shipped} / SO ${soQty}`
-    : 'All stages completed · awaiting full SO shipment';
-  return `<span class="ps-pending-do-badge" title="${escapeHtml(title)}">Pending DO</span>`;
+    ? `All operations complete · Shipped ${shipped} / SO ${soQty}`
+    : 'All operations complete · awaiting full SO shipment';
+  return `<span class="ps-pending-do-badge" title="${escapeHtml(title)}">Ops Complete</span>`;
 }
 
 function trialPsCatalogExecStatus(ps) {
@@ -2645,8 +2803,6 @@ function renderTrialCatalog() {
     const psType = trialGetPsType(ps.ps_id);
     if (!trialPsTypeFilter.has(psType)) return false;
     if (!trialShowSrOrders && String(ps.ps_id || '').includes('[SR]')) return false;
-    if (trialHidePendingDo && trialPsPendingDo(ps)) return false;
-    if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
     if (!trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
     if (trialCatalogSupersededByTempSibling(ps, trialState.catalog)) return false;
     return catalogMatchesSearch(ps);
@@ -2665,8 +2821,6 @@ function renderTrialCatalog() {
       if (trialCatalogSupersededByTempSibling(ps, trialState.catalog)) continue;
       if (!trialPsTypeFilter.has(trialGetPsType(ps.ps_id))) continue;
       if (!trialShowSrOrders && psId.includes('[SR]')) continue;
-      if (trialHidePendingDo && trialPsPendingDo(ps)) continue;
-      if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) continue;
       if (!trialShowCompleted && trialPsCatalogCompleted(ps)) continue;
       catalog.push(ps);
       seen.add(psId);
@@ -2679,8 +2833,6 @@ function renderTrialCatalog() {
     const psType = trialGetPsType(ps.ps_id);
     if (!trialPsTypeFilter.has(psType)) return false;
     if (!trialShowSrOrders && String(ps.ps_id || '').includes('[SR]')) return false;
-    if (trialHidePendingDo && trialPsPendingDo(ps)) return false;
-    if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
     if (!trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
     if (trialCatalogSupersededByTempSibling(ps, trialState.catalog)) return false;
     if (!rawQuery) return true;
@@ -2698,7 +2850,6 @@ function renderTrialCatalog() {
 
   const catalogWithOpenOps = catalog.filter(ps => {
     if (ps?.is_temp_ps) return true;
-    if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
     const cards = cachedResolvedCards(ps);
     const isOpAllocated = card => cachedIsOpAllocated(card, ps);
     const hasOpenOps = cards.some(card => trialCatalogOpShouldShow(card, isOpAllocated))
@@ -2739,13 +2890,12 @@ function renderTrialCatalog() {
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'build-available-html', { ps: catalogWithOpenOps.length });
 
   const plannedWithOpenOps = plannedCatalog.filter(ps => {
-    if (trialHideBlankPs && trialPsIsUnassignedCatalog(ps)) return false;
     const cards = cachedResolvedCards(ps);
     const isOpAllocated = card => cachedIsOpAllocated(card, ps);
     const hasOpenOps = cards.some(card => trialCatalogOpShouldShow(card, isOpAllocated));
     if (hasOpenOps) return true;
-    // Other PS: show header-only rows (no work orders) when not hiding unassigned.
-    return !trialHideBlankPs && !(ps.op_cards || []).length;
+    // Other PS: show header-only rows (no work orders).
+    return !(ps.op_cards || []).length;
   });
 
   const plannedHtml = plannedWithOpenOps.map(ps => `

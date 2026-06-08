@@ -252,7 +252,7 @@ function openTrialBlockEditor(blockId) {
       <label>Anchor Datetime
         <input id="trial-edit-anchor-datetime" type="datetime-local" value="${escapeHtml(trialAnchorDefaultDatetimeLocal(block))}">
       </label>
-      <p class="trial-modal-hint full">Earliest allowed start. Queued start on the board may be later after recalculation — it will not go before this anchor.</p>
+      <p class="trial-modal-hint full">Planning reference start. Without an anchor, the job chains from the previous queue job end; with an anchor, scheduling uses this date/time unless a prior job or dependency finishes later.</p>
       <label class="full">Remarks <textarea id="trial-edit-remarks" rows="3">${block.remarks || ''}</textarea></label>
     </div>
   `, 'Save', async () => {
@@ -638,7 +638,7 @@ function editTrialAnchor(blockId) {
   if (!block) return;
   const defaultValue = trialAnchorDefaultDatetimeLocal(block);
   openTrialForm('Set Anchor', `
-    <p class="trial-modal-hint">Earliest allowed start for this job. Queued time is recalculated from the machine queue and will not fall before the anchor.</p>
+    <p class="trial-modal-hint">Planning reference start. Without an anchor, the job chains from the previous queue job end; with an anchor, scheduling uses this date/time unless a prior job or dependency finishes later.</p>
     <div class="trial-modal-grid">
       <label class="full">Anchor Datetime <input id="trial-anchor-input" type="datetime-local" value="${escapeHtml(defaultValue)}"></label>
     </div>
@@ -770,7 +770,10 @@ function openTrialMachineQueue(machineId) {
               title="${escapeHtml(anchorTitle)}">
               <span class="trial-machine-availability-stack">
                 <span class="trial-machine-availability-text">${availabilityText}</span>
-                <span class="trial-machine-anchor-meta ${firstAnchorText ? 'is-set' : 'is-unset'}">${anchorMeta}</span>
+                <span class="trial-machine-anchor-meta is-clickable ${firstAnchorText ? 'is-set' : 'is-unset'}">
+                  <span class="trial-machine-anchor-meta-text">${anchorMeta}</span>
+                  <span class="trial-anchor-edit-icon" aria-hidden="true">✎</span>
+                </span>
               </span>
             </button>`
       : `<div class="trial-queue-panel-meta trial-queue-panel-availability">
