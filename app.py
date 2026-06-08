@@ -1524,18 +1524,8 @@ with_wo_status AS (
     LEFT JOIN public.mfg_wo_status ws
            ON ws.source_mps_no = wd.ps_id
           AND ws.pp_partial_no = wd.pp_partial_no
-          AND (
-              (
-                  NULLIF(TRIM(COALESCE(ws.stage_desc, '')), '') IS NOT NULL
-                  AND TRIM(COALESCE(ws.stage_desc, '')) = TRIM(COALESCE(wd.stage_desc, ''))
-              )
-              OR (
-                  NULLIF(TRIM(COALESCE(ws.stage_desc, '')), '') IS NULL
-                  AND ws.stage_no IS NOT NULL
-                  AND wd.stage_no IS NOT NULL
-                  AND ws.stage_no = wd.stage_no
-              )
-          )
+          AND ws.stage_no = wd.stage_no
+          AND TRIM(COALESCE(ws.stage_desc, '')) = TRIM(COALESCE(wd.stage_desc, ''))
 ),
 with_current_stage AS (
     SELECT

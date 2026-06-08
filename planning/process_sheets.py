@@ -1810,14 +1810,37 @@ def _warnings(ps, is_completed, material_status):
     return warnings
 
 
+def _temp_work_qty(ps):
+    """Reject/rework qty for a [Temp] PS — never the source ERP order qty."""
+    return _to_float(ps.get("planned_qty") or ps.get("reject_qty"))
+
+
+def _strip_temp_step_erp_qty(steps):
+    """Temp rework must not inherit source PS stage completion or WO quantities."""
+    cleaned = []
+    for step in steps or []:
+        row = dict(step)
+        row["erp_required_qty"] = 0.0
+        row["erp_finished_qty"] = 0.0
+        row["erp_reject_qty"] = 0.0
+        row["erp_execution_status"] = ""
+        cleaned.append(row)
+    return cleaned
+
+
 def _process_sheet_payload(ps, steps, metrics, material_status, manual_by_op_seq=None):
     raw_planned_qty = _to_float(metrics.get("planned_qty_total"))
     raw_finished_qty = _to_float(metrics.get("finished_qty_total"))
+    is_temp = is_temp_planner_ps_id(ps.get("ps_id") or ps.get("planner_ps_id"))
     source_total_qty = _to_float(ps.get("total_qty") or ps.get("planned_qty"))
     partial_qty = _to_float(ps.get("partial_qty"))
     erp_required_qty = _to_float(ps.get("wo_qty_required"))
-    if is_temp_planner_ps_id(ps.get("ps_id") or ps.get("planner_ps_id")):
-        display_qty = _to_float(ps.get("planned_qty")) or partial_qty or source_total_qty
+    if is_temp:
+        display_qty = _temp_work_qty(ps) or partial_qty or source_total_qty
+        source_total_qty = display_qty
+        partial_qty = display_qty
+        erp_required_qty = 0.0
+        steps = _strip_temp_step_erp_qty(steps)
     else:
         display_qty = partial_qty or source_total_qty
     total_qty = display_qty
@@ -1825,8 +1848,8 @@ def _process_sheet_payload(ps, steps, metrics, material_status, manual_by_op_seq
     planned_qty, finished_qty, reject_qty, remaining_qty = _summary_quantities(
         total_qty, steps, metrics
     )
-    erp_finished_qty = _to_float(ps.get("wo_qty_produced"))
-    erp_reject_qty = _to_float(ps.get("wo_qty_rejected"))
+    erp_finished_qty = 0.0 if is_temp else _to_float(ps.get("wo_qty_produced"))
+    erp_reject_qty = 0.0 if is_temp else _to_float(ps.get("wo_qty_rejected"))
     planner_status = _planner_status(ps, total_qty, planned_qty, finished_qty, len(steps))
     ops = [_step_payload(step, metrics.get("by_op", {}), total_qty) for step in steps]
     tracked_statuses = _tracked_stage_statuses(ops)
@@ -1893,10 +1916,10 @@ def _process_sheet_payload(ps, steps, metrics, material_status, manual_by_op_seq
         "coway_proposed_edd": compact_text(ps.get("coway_proposed_edd") or ""),
         "remarks": compact_text(ps.get("remarks") or ""),
         "order_date": compact_text(ps.get("order_date") or ""),
-        "total_qty": source_total_qty,
-        "partial_qty": partial_qty,
-        "wo_req_qty": partial_qty,
-        "total_wo_qty": source_total_qty,
+        "total_qty": display_qty if is_temp else source_total_qty,
+        "partial_qty": display_qty if is_temp else partial_qty,
+        "wo_req_qty": display_qty if is_temp else partial_qty,
+        "total_wo_qty": display_qty if is_temp else source_total_qty,
         "display_qty": display_qty,
         "wo_qty_required": erp_required_qty,
         "status": compact_text(ps.get("status") or ""),
@@ -1947,15 +1970,18 @@ def _step_payload(step, metrics_by_op, work_qty=0):
     work_qty = _to_float(work_qty)
     cascade_req = _to_float(step.get("cascade_required_qty"))
     erp_stage_req = _to_float(step.get("erp_required_qty"))
-    # Stage-level ERP wo_qty_required is often the full WO; partial work uses partial_qty.
-    if cascade_req > 0:
-        total_qty = cascade_req
-    elif work_qty > 0:
-        total_qty = work_qty
+    # WO Req reflects ERP work-order quantity, capped to partial work qty when ERP over-aggregates.
+    if erp_stage_req > 0 and work_qty > 0:
+        wo_req_qty = min(erp_stage_req, work_qty)
     elif erp_stage_req > 0:
-        total_qty = erp_stage_req
+        wo_req_qty = erp_stage_req
+    elif work_qty > 0:
+        wo_req_qty = work_qty
+    elif cascade_req > 0:
+        wo_req_qty = cascade_req
     else:
-        total_qty = _to_float(step.get("total_qty"))
+        wo_req_qty = _to_float(step.get("total_qty"))
+    ready_qty = cascade_req if cascade_req > 0 else wo_req_qty
     planned_qty = _to_float(op_metrics.get("planned_qty"))
     manual_prod = _to_float(step.get("manual_produced_qty"))
     manual_rej = _to_float(step.get("manual_reject_qty"))
@@ -1971,8 +1997,12 @@ def _step_payload(step, metrics_by_op, work_qty=0):
         manual_rej,
         _to_float(step.get("cascade_reject_qty")),
     )
+    if wo_req_qty > 0:
+        finished_qty = min(finished_qty, wo_req_qty)
     queued_machines = list(op_metrics.get("queued_machines") or [])
     machine_code = queued_machines[0] if queued_machines else ""
+    wo_remaining = max(0.0, wo_req_qty - finished_qty - reject_qty) if wo_req_qty else 0.0
+    schedulable_remaining = max(0.0, ready_qty - planned_qty - finished_qty) if ready_qty else 0.0
     return {
         "op_seq_id": int(step.get("op_seq_id") or 0),
         "seq_no": int(step.get("seq_no") or 0),
@@ -1987,15 +2017,17 @@ def _step_payload(step, metrics_by_op, work_qty=0):
         "source_kind": compact_text(step.get("source_kind") or ""),
         "needs_manual_produced": bool(step.get("needs_manual_produced")),
         "execution_status": compact_text(step.get("erp_execution_status") or ""),
-        "required_qty": total_qty,
-        "wo_qty_required": total_qty,
+        "required_qty": wo_req_qty,
+        "wo_qty_required": wo_req_qty,
+        "ready_qty": ready_qty,
         "wo_qty_produced": finished_qty,
         "manual_produced_qty": manual_prod,
         "wo_qty_rejected": reject_qty,
         "planned_qty": planned_qty,
         "finished_qty": finished_qty,
         "reject_qty": reject_qty,
-        "remaining_qty": max(0.0, total_qty - finished_qty) if total_qty else 0.0,
+        "remaining_qty": wo_remaining,
+        "schedulable_remaining_qty": schedulable_remaining,
         "expected_start": op_metrics.get("expected_start", ""),
         "expected_end": op_metrics.get("expected_end", ""),
         "block_count": int(op_metrics.get("block_count") or 0),
@@ -2102,6 +2134,7 @@ def _ps_select_sql(con=None):
         ps.status,
         ps.planned_qty,
         ps.finished_qty,
+        tps.reject_qty,
         {coway_expr}
         {remarks_expr}
         ps.created_at,

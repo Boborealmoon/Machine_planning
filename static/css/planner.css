@@ -934,6 +934,46 @@
     color: #b42318;
     border-color: rgba(239,68,68,0.28);
   }
+  .trial-catalog-op-remove,
+  .trial-block-remove,
+  .trial-queue-remove {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    padding: 0;
+    border: 1px solid rgba(239,68,68,0.22);
+    border-radius: 6px;
+    background: rgba(255,255,255,0.95);
+    color: #b42318;
+    font-size: 14px;
+    font-weight: 900;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .trial-catalog-op-remove:hover,
+  .trial-block-remove:hover,
+  .trial-queue-remove:hover {
+    background: rgba(239,68,68,0.08);
+    border-color: rgba(239,68,68,0.34);
+    color: #912018;
+  }
+  .trial-block-remove {
+    width: 16px;
+    height: 16px;
+    font-size: 12px;
+    border-radius: 5px;
+    flex-shrink: 0;
+  }
+  .trial-op-detail-remove {
+    border-color: rgba(239,68,68,0.22);
+    color: #b42318;
+  }
+  .trial-op-detail-remove:hover {
+    background: rgba(239,68,68,0.08);
+    border-color: rgba(239,68,68,0.34);
+    color: #912018;
+  }
   .trial-program-tools-compact {
     display: flex;
     flex-wrap: wrap;
@@ -2223,11 +2263,11 @@
   .trial-machine-availability {
     display: flex;
     align-items: center;
-    justify-content: center;
     box-sizing: border-box;
     width: 100%;
     margin: 0;
     padding: 6px 8px;
+    min-height: 32px;
     border-radius: 8px;
     background: rgba(26, 28, 29, 0.04);
     border: 1px solid rgba(26, 28, 29, 0.1);
@@ -2235,7 +2275,51 @@
     font-size: 10px;
     font-weight: 900;
     line-height: 1.25;
-    text-align: center;
+    text-align: left;
+  }
+  button.trial-machine-availability {
+    cursor: pointer;
+    appearance: none;
+    font: inherit;
+    text-align: inherit;
+  }
+  .trial-machine-availability.is-anchorable:hover {
+    border-color: rgba(26, 28, 29, 0.18);
+    background: rgba(26, 28, 29, 0.06);
+  }
+  .trial-machine-availability-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    min-width: 0;
+  }
+  .trial-machine-availability-text {
+    width: 100%;
+    min-width: 0;
+    font-size: 10px;
+    font-weight: 800;
+    color: var(--text2);
+    line-height: 1.2;
+  }
+  .trial-machine-anchor-meta {
+    width: 100%;
+    min-width: 0;
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+  }
+  .trial-machine-anchor-meta.is-set {
+    color: #8a5200;
+  }
+  .trial-machine-anchor-meta.is-unset {
+    color: var(--text3);
+    font-weight: 700;
   }
   .trial-lane {
     flex: 1 1 auto;
@@ -2361,6 +2445,13 @@
     gap: 4px;
     min-width: 0;
   }
+  .trial-block-compact-top-end {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+    min-width: 0;
+  }
   .trial-block-card--compact .trial-block-seq {
     min-width: 0;
     padding: 1px 5px;
@@ -2440,6 +2531,28 @@
   }
   .trial-block-compact-date.is-end.yellow {
     color: #8a5200;
+  }
+  button.trial-block-compact-date {
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    cursor: pointer;
+    text-align: inherit;
+    appearance: none;
+  }
+  button.trial-block-compact-date.is-queued:hover {
+    color: var(--text);
+  }
+  .trial-block-compact-date.is-anchored,
+  button.trial-block-compact-date.is-queued.is-anchored {
+    color: #8a5200;
+  }
+  .trial-block-compact-date.is-anchored > span:last-child,
+  button.trial-block-compact-date.is-queued > span:last-child {
+    font-weight: 800;
   }
   .trial-block-card.combined {
     border-left: 4px solid rgba(168,85,247,0.65);
@@ -2762,6 +2875,18 @@
     font-weight: 800;
     color: #157347;
   }
+  .trial-queue-panel-availability {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  button.trial-queue-panel-meta.trial-machine-availability {
+    width: 100%;
+    color: var(--text2);
+    text-align: left;
+  }
   .trial-queue-panel-hint {
     margin: 0;
     font-size: 12px;
@@ -2928,10 +3053,12 @@
   .trial-queue-date.is-queued {
     font: inherit;
     cursor: pointer;
+    min-height: 28px;
+    padding: 4px 6px;
   }
   .trial-queue-date.is-queued.is-anchored {
-    border-color: rgba(245,158,11,0.32);
-    background: rgba(245,158,11,0.14);
+    border-color: rgba(245,158,11,0.28);
+    background: rgba(245,158,11,0.1);
     color: #8a5200;
   }
   .trial-queue-date.is-queued:hover {

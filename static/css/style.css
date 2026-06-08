@@ -954,6 +954,43 @@ input, select { font-family: inherit; }
   color: #176d3b;
 }
 
+.ps-current-stage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 5px 8px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #f8fbff 0%, #eff6ff 100%);
+  min-width: 0;
+}
+
+.ps-current-stage-label {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ps-current-stage-no,
+.ps-current-stage-op {
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.ps-current-stage-name {
+  color: #1e40af;
+  font-size: 12px;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
 .ps-detail-card--voucher {
   border-color: #bbf7d0;
   background: #f0fdf4;

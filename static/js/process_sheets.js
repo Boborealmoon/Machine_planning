@@ -617,6 +617,16 @@
       ],
     ];
 
+    const stage = resolveCurrentStage(summary);
+    if (stage?.desc) {
+      const stageStatus = stage.status ? displayExecutionStatus(stage.status) : '';
+      groups.push([
+        `<span class="ps-detail-meta-item"><small>${stage.allComplete ? 'Final stage' : 'Current stage'}</small><strong>${escapeHtml(stage.desc)}</strong></span>`,
+        stage.opNo ? `<span class="ps-detail-meta-item"><small>Op</small><strong>${escapeHtml(stage.opNo)}</strong></span>` : '',
+        stageStatus ? `<span class="ps-detail-meta-item"><small>Stage status</small><strong>${escapeHtml(stageStatus)}</strong></span>` : '',
+      ].filter(Boolean));
+    }
+
     if (sourceVoucher || soDetQty(summary) !== null || qtyShipped > 0) {
       groups.push([
         sourceVoucher ? `<span class="ps-detail-meta-item"><small>SO</small><strong>${escapeHtml(sourceVoucher)}</strong></span>` : '',
@@ -723,24 +733,6 @@
     return list.sort(comparePlanningPriority);
   }
 
-  function currentStagePill(item) {
-    const desc = String(item?.current_stage_desc || '').trim();
-    if (!desc) return '';
-    const stageNo = item?.current_stage_no;
-    const status = item?.current_stage_status ? displayExecutionStatus(item.current_stage_status) : '';
-    const title = [stageNo ? `Stage ${stageNo}` : '', status].filter(Boolean).join(' · ');
-    const statusHtml = status
-      ? `<span class="ps-stage-badge-status ${opStatusClass(item.current_stage_status)}">${escapeHtml(status)}</span>`
-      : '';
-    return `
-      <span class="ps-stage-badge" title="${escapeHtml(title)}">
-        <span class="ps-stage-badge-label">Current stage</span>
-        <strong>${escapeHtml(desc)}</strong>
-        ${statusHtml}
-      </span>
-    `;
-  }
-
   function displayExecutionStatus(value) {
     const status = normalizeStatus(value);
     const labels = {
@@ -791,6 +783,137 @@
     if (!opHasWorkOrderEvidence(op)) return true;
     if (opRemainingQty(op) > SHIPPED_QTY_TOLERANCE) return false;
     return isExecutionCompletedStatus(opExecutionStatus(op));
+  }
+
+  function executionStatusRank(value) {
+    const status = normalizeStatus(value);
+    if (status === 'I' || status === 'IN_PROCESS') return 0;
+    if (status === 'R' || status === 'READY_TO_START') return 1;
+    if (status === 'P' || status === 'PENDING_SI') return 2;
+    if (status === 'C' || status === 'COMPLETED') return 3;
+    return 4;
+  }
+
+  function sortedOpsForStage(item) {
+    const ops = Array.isArray(item?.ops) ? item.ops : [];
+    return [...ops].sort((a, b) => {
+      const stageA = Number(a.stage_no || a.source_stage_no || 0);
+      const stageB = Number(b.stage_no || b.source_stage_no || 0);
+      if (stageA !== stageB) return stageA - stageB;
+      const opA = Number(a.op_no || a.source_op_no || 0);
+      const opB = Number(b.op_no || b.source_op_no || 0);
+      if (Number.isFinite(opA) && Number.isFinite(opB) && opA !== opB) return opA - opB;
+      return String(a.op_no || a.source_op_no || '').localeCompare(String(b.op_no || b.source_op_no || ''));
+    });
+  }
+
+  function stageDescFromOp(op) {
+    const desc = compactText(op?.op_type || op?.operation_name || op?.stage_desc);
+    if (desc) return desc;
+    const opNo = compactText(op?.op_no || op?.source_op_no || op?.operation_label);
+    return opNo ? `Op ${opNo}` : '';
+  }
+
+  function stageFromOp(op, options = {}) {
+    const desc = stageDescFromOp(op);
+    if (!desc) return null;
+    return {
+      stageNo: Number(op?.stage_no || op?.source_stage_no || 0) || null,
+      opNo: compactText(op?.op_no || op?.source_op_no || op?.operation_label),
+      desc,
+      status: opExecutionStatus(op),
+      allComplete: Boolean(options.allComplete),
+    };
+  }
+
+  function resolveCurrentStage(item) {
+    const headerDesc = compactText(item?.current_stage_desc);
+    if (headerDesc) {
+      return {
+        stageNo: Number(item?.current_stage_no || 0) || null,
+        opNo: '',
+        desc: headerDesc,
+        status: item?.current_stage_status || '',
+        allComplete: isExecutionCompletedStatus(item?.current_stage_status),
+        source: 'erp',
+      };
+    }
+
+    const ops = sortedOpsForStage(item);
+    const trackedOps = ops.filter(op => opHasWorkOrderEvidence(op));
+    if (!trackedOps.length) return null;
+
+    const inProcessOps = trackedOps.filter(op => {
+      const status = normalizeStatus(opExecutionStatus(op));
+      return status === 'I' || status === 'IN_PROCESS';
+    });
+    if (inProcessOps.length) {
+      const active = inProcessOps.sort((a, b) => (
+        numberValue(b?.finished_qty ?? b?.wo_qty_produced)
+        - numberValue(a?.finished_qty ?? a?.wo_qty_produced)
+      ))[0];
+      const resolved = stageFromOp(active);
+      if (resolved) {
+        resolved.source = 'derived';
+        return resolved;
+      }
+    }
+
+    const openOp = trackedOps.find(op => !isOpProductionComplete(op));
+    if (openOp) {
+      const resolved = stageFromOp(openOp);
+      if (resolved) {
+        resolved.source = 'derived';
+        return resolved;
+      }
+    }
+
+    const pendingOps = trackedOps.filter(op => !isExecutionCompletedStatus(opExecutionStatus(op)));
+    if (pendingOps.length) {
+      const nextOp = pendingOps.sort((a, b) => (
+        executionStatusRank(opExecutionStatus(a)) - executionStatusRank(opExecutionStatus(b))
+      ))[0];
+      const resolved = stageFromOp(nextOp);
+      if (resolved) {
+        resolved.source = 'derived';
+        return resolved;
+      }
+    }
+
+    if (trackedOps.every(op => isOpProductionComplete(op))) {
+      const lastOp = trackedOps[trackedOps.length - 1];
+      const resolved = stageFromOp(lastOp, { allComplete: true });
+      if (resolved) {
+        resolved.source = 'derived';
+        resolved.allComplete = true;
+        return resolved;
+      }
+    }
+
+    return null;
+  }
+
+  function renderCurrentStageStrip(item) {
+    const stage = resolveCurrentStage(item);
+    if (!stage?.desc) return '';
+    const label = stage.allComplete ? 'Final stage' : 'Current stage';
+    const opLabel = stage.opNo ? `<span class="ps-current-stage-op">Op ${escapeHtml(stage.opNo)}</span>` : '';
+    const stageNoLabel = stage.stageNo
+      ? `<span class="ps-current-stage-no">Stage ${escapeHtml(stage.stageNo)}</span>`
+      : '';
+    const status = stage.status ? displayExecutionStatus(stage.status) : '';
+    const statusHtml = status
+      ? `<span class="ps-op-status ${opStatusClass(stage.status)}">${escapeHtml(status)}</span>`
+      : '';
+    return `
+      <div class="ps-current-stage" title="${escapeHtml([label, stage.desc, status].filter(Boolean).join(' · '))}">
+        <span class="ps-current-stage-label">${escapeHtml(label)}</span>
+        ${stageNoLabel}
+        <strong class="ps-current-stage-name">${escapeHtml(stage.desc)}</strong>
+        ${opLabel}
+        ${statusHtml}
+      </div>
+    `;
   }
 
   function trackedExecutionStatuses(item) {
@@ -1167,7 +1290,7 @@
     if (els.typeBtn) els.typeBtn.textContent = 'APS, NPS, [SR], [Temp] ▾';
     if (els.search) els.search.value = '';
     if (els.tempFilter) els.tempFilter.value = 'all';
-    if (els.queueFilter) els.queueFilter.value = 'unqueued';
+    if (els.queueFilter) els.queueFilter.value = '';
     if (els.sortBy) els.sortBy.value = 'planning';
     if (els.overdueOnly) els.overdueOnly.checked = false;
     if (els.hideSrTags) els.hideSrTags.checked = true;
@@ -1344,11 +1467,11 @@
     const partial = `<span class="ps-partial-badge">${escapeHtml(partialLabel(item))}</span>`;
     const tempBadge = isTempPs(item) ? '<span class="ps-temp-badge">[Temp]</span>' : '';
     const srBadge = isSrTagged(item) && !isTempPs(item) ? '<span class="ps-sr-badge">[SR]</span>' : '';
-    const stagePill = currentStagePill(item);
     const qty = fmtQty(firstQuantity(item.display_qty, item.partial_qty, item.wo_req_qty, item.total_qty, 0));
     const qtyBadge = renderQtyBadge(qty);
     const warningsPill = renderWarningsPill(warnings);
-    const titleBadges = [tempBadge, partial, qtyBadge, srBadge, stagePill, warningsPill].filter(Boolean).join('\n              ');
+    const titleBadges = [tempBadge, partial, qtyBadge, srBadge, warningsPill].filter(Boolean).join('\n              ');
+    const currentStageStrip = renderCurrentStageStrip(item);
     const opStatusStrip = renderOpStatusStrip(ops, item);
     const descriptor = item.part_desc || 'No description';
     const queueClass = isQueued(item) ? 'is-queued' : 'is-needs';
@@ -1368,6 +1491,7 @@
               <strong>${escapeHtml(item.part_no || item.part_name || item.inventory_code || 'No part')}</strong>
               <span>${escapeHtml(descriptor)}</span>
             </div>
+            ${currentStageStrip}
             ${opStatusStrip}
           </button>
           ${renderDateStrip(item, psId)}
@@ -1466,17 +1590,27 @@
       ...(Array.isArray(item?.ops) ? item.ops : []),
       ...(Array.isArray(item?.op_cards) ? item.op_cards : []),
       ...(Array.isArray(item?.all_ops) ? item.all_ops : []),
-    ] }, null).map(op => {
-      const planned = Number(op?.planned_qty || 0);
-      const finished = Number(op?.finished_qty || op?.erp_finished_qty || 0);
-      const woReq = firstQuantity(op?.wo_qty_required, op?.required_qty, qty, 0);
-      return {
-        ...op,
-        wo_qty_required: woReq,
-        required_qty: woReq,
-        remaining_qty: Math.max(0, woReq - planned - finished),
-      };
-    });
+    ] }, null).map(op => normalizeOpQuantities(op, qty));
+  }
+
+  function normalizeOpQuantities(op, workQty = 0) {
+    const planned = Number(op?.planned_qty || 0);
+    const finished = Number(op?.finished_qty || op?.erp_finished_qty || op?.wo_qty_produced || 0);
+    const woReq = firstQuantity(op?.wo_qty_required, op?.required_qty, workQty, 0);
+    const readyQty = firstQuantity(op?.ready_qty, woReq, 0);
+    const woRemaining = Math.max(0, woReq - finished);
+    const schedulableRemaining = Math.max(
+      0,
+      Number(firstQuantity(op?.schedulable_remaining_qty, readyQty - planned - finished, readyQty, 0))
+    );
+    return {
+      ...op,
+      wo_qty_required: woReq,
+      required_qty: woReq,
+      ready_qty: readyQty,
+      remaining_qty: woRemaining,
+      schedulable_remaining_qty: schedulableRemaining,
+    };
   }
 
   function collectDetailOps(summary, item) {
@@ -1584,20 +1718,7 @@
     const blocks = Array.isArray(plannedBlocks) ? plannedBlocks : [];
     const workQty = woReqQty(summary);
     const psId = canonicalPlannerPsId(summary);
-    const displayOps = (Array.isArray(ops) ? ops : []).map(op => {
-      const planned = Number(op?.planned_qty || 0);
-      const finished = Number(op?.finished_qty || 0);
-      const woReq = firstQuantity(op?.wo_qty_required, op?.required_qty, workQty, 0);
-      return {
-        ...op,
-        wo_qty_required: woReq,
-        required_qty: woReq,
-        remaining_qty: Math.max(
-          0,
-          Number(firstQuantity(op?.remaining_qty, woReq - planned - finished, woReq, 0))
-        ),
-      };
-    });
+    const displayOps = (Array.isArray(ops) ? ops : []).map(op => normalizeOpQuantities(op, workQty));
     if (!displayOps.length) {
       const hint = blocks.length
         ? '<p class="ps-details-empty-hint">No operation steps in BOM flow or ERP cache. Scheduled blocks are listed below.</p>'
@@ -1621,11 +1742,11 @@
               <th>Type</th>
               <th>Machine</th>
               <th>ERP Stage</th>
-              <th>WO Req</th>
+              <th title="ERP work-order quantity">WO Req</th>
               <th>Planned</th>
               <th>Finished / Produced</th>
               <th>Rejected</th>
-              <th>Remaining</th>
+              <th title="WO Req minus finished">Remaining</th>
             </tr>
           </thead>
           <tbody>

@@ -1,8 +1,15 @@
 """Join pp_vouchers_cache with mfg_wo_status for authoritative per-partial WO fields."""
 
+MFG_WO_STATUS_STAGE_JOIN = """
+       ON ws.source_mps_no = c.ps_id
+      AND ws.pp_partial_no = c.pp_partial_no
+      AND ws.stage_no = c.stage_no
+      AND TRIM(COALESCE(ws.stage_desc, '')) = TRIM(COALESCE(c.stage_desc, ''))
+"""
+
 ERP_STAGE_OUTPUTS_CTE = """
     erp_stage_outputs AS (
-        SELECT c.ps_id, c.pp_partial_no, c.stage_no,
+        SELECT c.ps_id, c.pp_partial_no, c.stage_no, c.stage_desc,
                MAX(COALESCE(ws.wo_qty_required, c.wo_qty_required)) AS wo_qty_required,
                MAX(COALESCE(ws.total_acc_qty_produced, c.wo_qty_produced)) AS wo_qty_produced,
                MAX(COALESCE(ws.total_rej_qty_produced, c.wo_qty_rejected)) AS wo_qty_rejected,
@@ -12,8 +19,9 @@ ERP_STAGE_OUTPUTS_CTE = """
                ON ws.source_mps_no = c.ps_id
               AND ws.pp_partial_no = c.pp_partial_no
               AND ws.stage_no = c.stage_no
+              AND TRIM(COALESCE(ws.stage_desc, '')) = TRIM(COALESCE(c.stage_desc, ''))
         WHERE c.stage_no IS NOT NULL
-        GROUP BY c.ps_id, c.pp_partial_no, c.stage_no
+        GROUP BY c.ps_id, c.pp_partial_no, c.stage_no, c.stage_desc
     )
 """
 
@@ -23,6 +31,7 @@ LEFT JOIN mfg_wo_status ws
        ON ws.source_mps_no = c.ps_id
       AND ws.pp_partial_no = c.pp_partial_no
       AND ws.stage_no = c.stage_no
+      AND TRIM(COALESCE(ws.stage_desc, '')) = TRIM(COALESCE(c.stage_desc, ''))
 """
 
 PP_VOUCHERS_CACHE_WO_MERGE_SELECT = """
@@ -63,6 +72,7 @@ ERP_CACHE_STEPS_SELECT = """
            ON ws.source_mps_no = c.ps_id
           AND ws.pp_partial_no = c.pp_partial_no
           AND ws.stage_no = c.stage_no
+          AND TRIM(COALESCE(ws.stage_desc, '')) = TRIM(COALESCE(c.stage_desc, ''))
 """
 
 ERP_CACHE_STEPS_WHERE_PARTIALS = """

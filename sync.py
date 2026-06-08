@@ -1073,6 +1073,22 @@ def run_pp_partial_sync(force: bool = False) -> dict:
 #   mfg_mps_vch (source_pp_no, source_pp_partial_no), mfg_wo_vch (voucher_no, stage_no),
 #   mfg_pp_partial (pp_voucher_no, partial_qty).
 
+_MFG_WO_STATUS_PRIMARY_WO_SQL = """
+, primary_wo_rows AS (
+    -- Rework/scrap WOs often share stage_no + stage_desc with qty=1; keep the main WO only.
+    SELECT w.*
+    FROM wo_rows w
+    WHERE w.wo_qty_required = (
+        SELECT MAX(w2.wo_qty_required)
+        FROM wo_rows w2
+        WHERE w2.source_mps_no = w.source_mps_no
+          AND w2.pp_partial_no = w.pp_partial_no
+          AND w2.stage_no = w.stage_no
+          AND w2.stage_desc = w.stage_desc
+    )
+)
+"""
+
 _MFG_WO_STATUS_AGG_SQL = """
 SELECT
     source_mps_no,
@@ -1087,13 +1103,13 @@ SELECT
     SUM(total_acc_qty_produced)       AS total_acc_qty_produced,
     SUM(total_rej_qty_produced)       AS total_rej_qty_produced,
     stage_no,
-    MAX(stage_desc)                   AS stage_desc,
+    stage_desc,
     MIN(plan_start_date)              AS plan_start_date,
     MAX(plan_end_date)                AS plan_end_date,
     MAX(origin_rsd)                   AS po_due_date,
     MAX(origin_voucher_no)            AS so_no
-FROM wo_rows
-GROUP BY source_mps_no, pp_partial_no, stage_no
+FROM primary_wo_rows
+GROUP BY source_mps_no, pp_partial_no, stage_no, stage_desc
 """
 
 _MFG_WO_STATUS_WO_ROWS_CORE = """
@@ -1109,7 +1125,7 @@ _MFG_WO_STATUS_WO_ROWS_CORE = """
         t3.total_acc_qty_produced,
         t3.total_rej_qty_produced,
         NULLIF(t2.stage_no::TEXT, '')::INTEGER AS stage_no,
-        t3.stage_desc,
+        TRIM(COALESCE(t3.stage_desc, '')) AS stage_desc,
         t3.plan_start_date,
         t3.plan_end_date,
         t3.origin_rsd,
@@ -1157,6 +1173,7 @@ wo_rows AS (
       )
       AND {prefix_sql}
 )
+{_MFG_WO_STATUS_PRIMARY_WO_SQL}
 {_MFG_WO_STATUS_AGG_SQL}
 """
         return sql, _pp_ps_id_prefix_params()
@@ -1174,6 +1191,7 @@ WITH pp_partials AS (
 wo_rows AS (
 {_MFG_WO_STATUS_WO_ROWS_CORE}
 )
+{_MFG_WO_STATUS_PRIMARY_WO_SQL}
 {_MFG_WO_STATUS_AGG_SQL}
 """
     return sql, ()

@@ -983,6 +983,10 @@ function trialRenderCatalogOpDetailBody(ps, card) {
         ${allocatedBlock?.block_id
           ? `<button type="button" class="btn btn-ghost btn-sm" onclick="closeModal(); openTrialBlockEditor(${Number(allocatedBlock.block_id)})">Edit run block</button>`
           : ''}
+        ${allocatedBlock?.block_id
+          ? `<button type="button" class="btn btn-ghost btn-sm trial-op-detail-remove"
+            onclick="removeTrialBlock(${Number(allocatedBlock.block_id)}, ${Number(allocatedBlock.group_id || 0)})">Remove from queue</button>`
+          : ''}
         ${isGroup && !card.is_scheduled
           ? `<button type="button" class="btn btn-ghost btn-sm" onclick="closeModal(); deleteTrialPlanningCard(${Number(card.card_id || 0)})">Uncombine</button>`
           : ''}
@@ -1216,6 +1220,8 @@ function trialRenderRunBlockDetailBody(group, block, machine) {
         <button type="button" class="btn btn-ghost btn-sm" onclick="closeModal(); openTrialBlockEditor(${blockId})">Edit</button>
         <button type="button" class="btn btn-ghost btn-sm" onclick="closeModal(); openTrialSplitModal(${blockId})">Split</button>
         <button type="button" class="btn btn-ghost btn-sm" onclick="closeModal(); ${vm.isCombined ? `openTrialGroupActualModal(${Number(group.group_id || 0)})` : `openTrialActualModal(${blockId})`}">Actual</button>
+        <button type="button" class="btn btn-ghost btn-sm trial-op-detail-remove"
+          onclick="removeTrialBlock(${blockId}, ${Number(group.group_id || 0)})">Remove from queue</button>
       </div>
     </div>
   `;
@@ -1273,7 +1279,7 @@ function renderTrialOpCardHtml(card) {
     compact: true,
   });
   const queuedMachines = trialQueuedMachineCodesForCatalogOp(catalogOpRef);
-  const allocatedBlock = isAllocated ? trialAllocatedBlockForOp(catalogOpRef, card.source_op_no) : null;
+  const allocatedBlock = isAllocated ? trialFindBlockForCatalogOp(catalogOpRef) : null;
   const plannerPsId = typeof trialCatalogPlannerPsId === 'function'
     ? trialCatalogPlannerPsId(catalogOpRef)
     : String(catalogOpRef.ps_id || catalogOpRef.source_ps_id || '').trim();
@@ -1336,6 +1342,12 @@ function renderTrialOpCardHtml(card) {
   const manualBomBadge = isManualBom
     ? '<span class="trial-catalog-manual-bom-badge" title="Manual BOM step — always shown in catalog">Manual</span>'
     : '';
+  const removeBtn = allocatedBlock?.block_id
+    ? trialRenderQueueRemoveBtn(allocatedBlock.block_id, allocatedBlock.group_id, {
+      className: 'trial-catalog-op-remove',
+      title: 'Remove from machine queue',
+    })
+    : '';
   const uncombineBtn = isGroup && !isScheduled
     ? `<button class="trial-catalog-op-uncombine" type="button" aria-label="Uncombine" title="Uncombine"
         onclick="deleteTrialPlanningCard(${Number(card.card_id || 0)})">×</button>`
@@ -1382,6 +1394,7 @@ function renderTrialOpCardHtml(card) {
           <span class="trial-catalog-op-qty" title="Remaining quantity">${remainingQty} pcs</span>
           <span class="trial-catalog-op-time" title="Setup / cycle per pc">${setupMinutes}/${cycleMinutes}m</span>
         </div>
+        ${removeBtn}
         ${uncombineBtn}
       </div>
       ${showOpName ? `<div class="trial-catalog-op-detail">${escapeHtml(opName)}</div>` : ''}
@@ -1487,9 +1500,12 @@ function trialBlockGroupViewModel(group, options = {}) {
   const setupOn = Number(leader?.include_setup || 0) === 1;
   const setupTitle = setupOn ? 'Setup time is included. Click to turn it off.' : 'Setup time is excluded. Click to turn it on.';
   const anchored = !!leader?.anchor_datetime;
+  const anchorText = anchored ? trialFormatDt(leader.anchor_datetime) : '';
+  const scheduleTimeLabel = anchored ? 'Anchor' : 'Queued';
+  const scheduleTimeText = anchored ? anchorText : trialFormatDt(queuedAt);
   const queuedTitle = anchored
-    ? `Queued ${trialFormatDt(queuedAt)} · Anchor ${trialFormatDt(leader?.anchor_datetime)}`
-    : `Scheduled queue start · ${queuedAt || '—'}`;
+    ? `Anchor ${anchorText} · Queued ${trialFormatDt(queuedAt)} — tap to edit`
+    : `Queued ${trialFormatDt(queuedAt) || '—'} — tap to set anchor`;
   const outputTitle = trialBlockOutputTitle(leader || group);
   const outputPillClass = leader?.actual_end_at ? 'green' : (leader?.actual_start_at ? 'yellow' : '');
   const queuedMachines = trialQueuedMachineCodesForCatalogOp({
@@ -1516,6 +1532,9 @@ function trialBlockGroupViewModel(group, options = {}) {
     targetQty: fmt(group.target_qty || 0, 0),
     pairedOutput: fmt(Number(group.paired_output_qty ?? trialBlockNetOutput(group.output_qty, group.reject_qty) ?? 0), 0),
     queuedText: trialFormatDt(queuedAt),
+    anchorText,
+    scheduleTimeLabel,
+    scheduleTimeText,
     outputText: trialFormatDt(outputAt),
     queuedTitle,
     outputTitle,
@@ -1544,6 +1563,18 @@ function trialBlockGroupViewModel(group, options = {}) {
   };
 }
 
+function trialRenderQueueRemoveBtn(blockId, groupId, options = {}) {
+  const bid = Number(blockId || 0);
+  if (!bid) return '';
+  const gid = Number(groupId || 0);
+  const className = String(options.className || 'trial-queue-remove').trim();
+  const label = options.label != null ? String(options.label) : '×';
+  const title = String(options.title || 'Remove from queue').trim();
+  return `<button type="button" class="${escapeHtml(className)}"
+    onclick="event.stopPropagation(); removeTrialBlock(${bid}, ${gid})"
+    aria-label="${escapeHtml(title)}" title="${escapeHtml(title)}">${label}</button>`;
+}
+
 function trialRenderCompactBlockCard(vm) {
   const leader = vm.leader;
   const dueDate = String(trialDueDateForPs(vm.psDueKey) || leader?.due_date || '').trim();
@@ -1555,6 +1586,9 @@ function trialRenderCompactBlockCard(vm) {
   const dragHtml = readOnly
     ? ''
     : '<div class="trial-block-compact-drag" title="Drag to reorder or move to another machine" aria-label="Drag to reorder">⋮⋮</div>';
+  const removeBtn = readOnly
+    ? ''
+    : trialRenderQueueRemoveBtn(leader?.block_id, vm.group.group_id, { className: 'trial-block-remove' });
   const materialInClass = trialMaterialInLaneClass(leader);
   return `
     <div class="trial-block-card trial-block-card--compact${clickableClass}${readOnly ? ' trial-block-card--readonly' : ''} ${vm.isCombined ? 'combined' : ''} ${materialInClass}"
@@ -1566,10 +1600,13 @@ function trialRenderCompactBlockCard(vm) {
       <div class="trial-block-compact-body">
         <div class="trial-block-compact-top">
           ${vm.sequenceNo ? `<span class="trial-block-seq">#${vm.sequenceNo}</span>` : ''}
-          <span class="trial-block-compact-metrics" title="Qty / Output">
-            <span class="trial-block-compact-metric"><span class="trial-pill-label">Qty</span>${vm.targetQty}</span>
-            <span class="trial-block-compact-metric"><span class="trial-pill-label">Out</span>${vm.pairedOutput}</span>
-          </span>
+          <div class="trial-block-compact-top-end">
+            <span class="trial-block-compact-metrics" title="Qty / Output">
+              <span class="trial-block-compact-metric"><span class="trial-pill-label">Qty</span>${vm.targetQty}</span>
+              <span class="trial-block-compact-metric"><span class="trial-pill-label">Out</span>${vm.pairedOutput}</span>
+            </span>
+            ${removeBtn}
+          </div>
         </div>
         <div class="trial-block-title">${escapeHtml(vm.psDisplay.base || vm.group.title || '')}</div>
         ${vm.psDisplay.partial ? `<div class="trial-block-partial">Partial ${escapeHtml(vm.psDisplay.partial)}</div>` : ''}
@@ -1580,10 +1617,18 @@ function trialRenderCompactBlockCard(vm) {
             <span class="trial-pill-label">Due</span>
             <span>${escapeHtml(dueDate || '—')}</span>
           </span>
-          <span class="trial-block-compact-date" title="${escapeHtml(vm.queuedTitle)}">
-            <span class="trial-pill-label">Queued</span>
-            <span>${escapeHtml(vm.queuedText)}</span>
-          </span>
+          ${readOnly
+    ? `<span class="trial-block-compact-date ${vm.anchored ? 'is-anchored' : ''}" title="${escapeHtml(vm.queuedTitle)}">
+            <span class="trial-pill-label">${escapeHtml(vm.scheduleTimeLabel)}</span>
+            <span>${escapeHtml(vm.scheduleTimeText || '—')}</span>
+          </span>`
+    : `<button type="button" class="trial-block-compact-date is-queued ${vm.anchored ? 'is-anchored' : ''}"
+            onclick="event.stopPropagation(); editTrialAnchor(${leader?.block_id || 0})"
+            aria-label="${escapeHtml(vm.anchored ? `Change anchor ${vm.anchorText}` : 'Set anchor time')}"
+            title="${escapeHtml(vm.queuedTitle)}">
+            <span class="trial-pill-label">${escapeHtml(vm.scheduleTimeLabel)}</span>
+            <span>${escapeHtml(vm.scheduleTimeText || '—')}</span>
+          </button>`}
           <span class="trial-block-compact-date is-end ${vm.outputPillClass}" title="${escapeHtml(vm.outputTitle)}">
             <span class="trial-pill-label">End</span>
             <span>${escapeHtml(vm.outputText)}</span>
@@ -1645,8 +1690,8 @@ function trialRenderQueueDetailRow(group, displaySequenceNo = 0) {
       <div class="trial-queue-dates">
         <span class="trial-queue-date ${dueClass}" title="Due ${escapeHtml(dueDate)}">${escapeHtml(dueDate)}</span>
         <button type="button" class="trial-queue-date is-queued ${vm.anchored ? 'is-anchored' : ''}"
-          onclick="editTrialAnchor(${blockId})" title="${escapeHtml(vm.queuedTitle || 'Edit queued time')}">
-          ${escapeHtml(vm.queuedText)}
+          onclick="editTrialAnchor(${blockId})" title="${escapeHtml(vm.queuedTitle)}">
+          ${escapeHtml(vm.scheduleTimeText || '—')}
         </button>
         <span class="trial-queue-date is-end ${vm.outputPillClass}" title="${escapeHtml(vm.outputTitle)}">
           ${escapeHtml(vm.outputText)}
@@ -1787,11 +1832,40 @@ function renderTrialMachine(machine) {
   const staleBadge = trialDirtyMachineIds.has(Number(machine.machine_id))
     ? '<span class="trial-machine-stale-badge" title="Queue changed; schedule times may be outdated">Schedule outdated</span>'
     : '';
+  const readOnly = typeof trialIsReadOnlyBoard === 'function' && trialIsReadOnlyBoard();
   const availabilityEnd = trialMachineAvailabilityEnd(
     trialHasActiveDateFilter() ? groups : allGroups
   );
-  const availabilityTag = availabilityEnd && allGroups.length >= 1
-    ? `<div class="trial-machine-availability">Next available ${trialFormatDt(availabilityEnd)}</div>`
+  const firstLeader = (groups[0] || allGroups[0])?.leader;
+  const firstBlockId = Number(firstLeader?.block_id || 0);
+  const firstAnchor = String(firstLeader?.anchor_datetime || '').trim();
+  const firstAnchorText = firstAnchor ? trialFormatDt(firstAnchor) : '';
+  const anchorTitle = firstAnchor
+    ? `Anchor ${firstAnchorText} — tap to change`
+    : 'Tap to set anchor for first job in queue';
+  const availabilityText = availabilityEnd
+    ? `Next available ${trialFormatDt(availabilityEnd)}`
+    : 'Queued jobs';
+  const anchorMeta = firstAnchorText
+    ? `Anchor ${firstAnchorText}`
+    : 'Tap to set anchor';
+  const showAvailabilityBar = allGroups.length >= 1 && (availabilityEnd || (!readOnly && firstBlockId));
+  const availabilityTag = showAvailabilityBar
+    ? (!readOnly && firstBlockId
+      ? `<button type="button" class="trial-machine-availability is-anchorable"
+            onclick="event.stopPropagation(); editTrialAnchor(${firstBlockId})"
+            title="${escapeHtml(anchorTitle)}">
+            <span class="trial-machine-availability-stack">
+              <span class="trial-machine-availability-text">${availabilityText}</span>
+              <span class="trial-machine-anchor-meta ${firstAnchorText ? 'is-set' : 'is-unset'}">${anchorMeta}</span>
+            </span>
+          </button>`
+      : `<div class="trial-machine-availability">
+            <span class="trial-machine-availability-stack">
+              <span class="trial-machine-availability-text">${availabilityText}</span>
+              ${firstAnchorText ? `<span class="trial-machine-anchor-meta is-set">Anchor ${firstAnchorText}</span>` : ''}
+            </span>
+          </div>`)
     : '';
 
   const blockHtml = groups.length
@@ -1800,7 +1874,6 @@ function renderTrialMachine(machine) {
     )).join('')
     : `<div class="trial-empty">${escapeHtml(trialMachineLaneEmptyMessage(allGroups.length, groups.length))}</div>`;
 
-  const readOnly = typeof trialIsReadOnlyBoard === 'function' && trialIsReadOnlyBoard();
   const headMainAttrs = readOnly
     ? ''
     : ` role="button" tabindex="0"

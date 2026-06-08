@@ -86,10 +86,28 @@ def _catalog_ps_id(row):
     return format_planner_ps_id(source_ps_id, row.get("pp_partial_no"))
 
 
+def _temp_reject_qty(item):
+    """Reject/rework qty entered when the [Temp] PS was created."""
+    return float(item.get("reject_qty") or item.get("planned_qty") or 0)
+
+
+def _catalog_launch_qty(item):
+    """Work quantity that drives op cascade — temp rows use reject qty, not source ERP."""
+    if item.get("is_temp_ps"):
+        reject_qty = _temp_reject_qty(item)
+        if reject_qty > 0:
+            return reject_qty
+    return float(item.get("partial_qty") or item.get("total_qty") or 0)
+
+
 def _sanitize_temp_ps_catalog_item(item):
     """Temp rework lines must not inherit source PS shipment/ERP completion."""
     if not item.get("is_temp_ps"):
         return item
+    reject_qty = _temp_reject_qty(item)
+    if reject_qty > 0:
+        item["total_qty"] = reject_qty
+        item["partial_qty"] = reject_qty
     item["pp_partial_no"] = int(item.get("source_pp_partial_no") or 1)
     item["shipped_completed"] = False
     item["execution_completed"] = False
@@ -171,7 +189,8 @@ def _apply_catalog_op_qty_cascade(item, manual_qty_by_ps):
     all_ops = list(item.get("all_ops") or [])
     if not all_ops:
         return
-    launch_qty = float(item.get("partial_qty") or item.get("total_qty") or 0)
+    launch_qty = _catalog_launch_qty(item)
+    is_temp = bool(item.get("is_temp_ps"))
     manual_map = {}
     for planner_ps_id in item.get("planner_ps_ids") or []:
         manual_map.update((manual_qty_by_ps or {}).get(planner_ps_id, {}))
@@ -184,9 +203,11 @@ def _apply_catalog_op_qty_cascade(item, manual_qty_by_ps):
                 "op_no": op.get("op_no") or op.get("source_op_no") or "",
                 "source_kind": op.get("source_kind") or "",
                 "source_stage_no": int(op.get("source_stage_no") or 0),
-                "erp_finished_qty": float(op.get("erp_finished_qty") or 0),
-                "erp_reject_qty": float(op.get("erp_reject_qty") or 0),
-                "erp_required_qty": 0,
+                "erp_finished_qty": 0.0 if is_temp else float(op.get("erp_finished_qty") or 0),
+                "erp_reject_qty": 0.0 if is_temp else float(op.get("erp_reject_qty") or 0),
+                "erp_required_qty": 0.0 if is_temp else float(
+                    op.get("erp_required_qty") or op.get("required_qty") or 0
+                ),
             }
         )
     cascaded = apply_flow_step_qty_cascade(steps, launch_qty, manual_map)
@@ -195,18 +216,28 @@ def _apply_catalog_op_qty_cascade(item, manual_qty_by_ps):
     for op in all_ops:
         op_seq_id = int(op.get("source_op_seq_id") or 0)
         step = by_op_seq.get(op_seq_id, {})
-        required = float(step.get("cascade_required_qty") or launch_qty)
+        ready_qty = float(step.get("cascade_required_qty") or launch_qty)
+        if is_temp:
+            wo_req = launch_qty
+        else:
+            wo_req = float(op.get("erp_required_qty") or 0)
+            if wo_req <= 0:
+                wo_req = float(op.get("required_qty") or launch_qty)
+            if launch_qty > 0 and wo_req > launch_qty:
+                wo_req = launch_qty
         finished = max(
             float(op.get("erp_finished_qty") or 0),
             float(step.get("manual_produced_qty") or 0),
             float(step.get("cascade_output_qty") or 0),
         )
         planned = float(op.get("planned_qty") or 0)
-        remaining = max(0.0, required - planned - finished)
+        schedulable_remaining = max(0.0, ready_qty - planned - finished)
         refreshed = dict(op)
-        refreshed["required_qty"] = required
-        refreshed["total_qty"] = remaining
-        refreshed["remaining_qty"] = remaining
+        refreshed["wo_qty_required"] = wo_req
+        refreshed["required_qty"] = wo_req
+        refreshed["ready_qty"] = ready_qty
+        refreshed["total_qty"] = schedulable_remaining
+        refreshed["remaining_qty"] = schedulable_remaining
         refreshed["needs_manual_produced"] = bool(step.get("needs_manual_produced"))
         refreshed["manual_produced_qty"] = float(step.get("manual_produced_qty") or 0)
         refreshed_ops.append(refreshed)
@@ -352,7 +383,9 @@ def _catalog_op_card_from_planner_op(op, entry):
         "op_type": op.get("op_type") or "",
         "target_qty": float(op.get("remaining_qty") or 0),
         "remaining_qty": float(op.get("remaining_qty") or 0),
-        "required_qty": float(op.get("required_qty") or 0),
+        "required_qty": float(op.get("required_qty") or op.get("wo_qty_required") or 0),
+        "wo_qty_required": float(op.get("wo_qty_required") or op.get("required_qty") or 0),
+        "ready_qty": float(op.get("ready_qty") or op.get("remaining_qty") or 0),
         "planned_qty": float(op.get("planned_qty") or 0),
         "erp_finished_qty": float(op.get("erp_finished_qty") or 0),
         "source_op_seq_id": int(op.get("source_op_seq_id") or 0),
@@ -524,13 +557,14 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
                 GROUP BY ps_id, pp_partial_no
             ),
             voucher_stage_outputs AS (
-                SELECT ps_id, pp_partial_no, stage_no,
+                SELECT ps_id, pp_partial_no, stage_no, stage_desc,
+                       MAX(wo_qty_required) AS wo_qty_required,
                        MAX(wo_qty_produced) AS wo_qty_produced,
                        MAX(wo_qty_rejected) AS wo_qty_rejected,
                        MAX(execution_status) AS execution_status
                 FROM pp_vouchers_cache
                 WHERE stage_no IS NOT NULL
-                GROUP BY ps_id, pp_partial_no, stage_no
+                GROUP BY ps_id, pp_partial_no, stage_no, stage_desc
             ),
             voucher_op_outputs AS (
                 SELECT ps_id, pp_partial_no,
@@ -572,11 +606,18 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
                    ps.source_ps_id AS ps_id,
                    ps.pp_partial_no,
                    tps.source_pp_partial_no,
+                   tps.reject_qty,
                    ps.inventory_code,
                    ps.selected_bom_id, ps.planner_status, ps.status,
                    ps.planned_qty,
-                   COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0) AS total_qty,
-                   COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0) AS partial_qty,
+                   CASE WHEN ps.planner_ps_id LIKE '[Temp]%%'
+                        THEN COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)
+                        ELSE COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0)
+                   END AS total_qty,
+                   CASE WHEN ps.planner_ps_id LIKE '[Temp]%%'
+                        THEN COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)
+                        ELSE COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0)
+                   END AS partial_qty,
                    sf.bom_code AS selected_bom_code,
                    COALESCE(vp.erp_bom_code, '') AS erp_bom_code,
                    COALESCE(st.part_no, vp.part_no) AS part_no,
@@ -594,6 +635,7 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
                    pfs.machine_category, pfs.preferred_machine,
                    pfs.cycle_time, pfs.setup_time, pfs.is_last_op,
                    pfs.source_kind, pfs.source_stage_no,
+                   COALESCE(vso.wo_qty_required, 0) AS erp_required_qty,
                    COALESCE(vso.wo_qty_produced, vop.wo_qty_produced, 0) AS erp_finished_qty,
                    COALESCE(vso.wo_qty_rejected, vop.wo_qty_rejected, 0) AS erp_reject_qty,
                    COALESCE(vso.execution_status, vop.execution_status, '') AS op_execution_status
@@ -677,11 +719,18 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
                    ps.source_ps_id AS ps_id,
                    ps.pp_partial_no,
                    tps.source_pp_partial_no,
+                   tps.reject_qty,
                    ps.inventory_code,
                    ps.selected_bom_id, ps.planner_status, ps.status,
                    ps.planned_qty,
-                   COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0) AS total_qty,
-                   COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0) AS partial_qty,
+                   CASE WHEN ps.planner_ps_id LIKE '[Temp]%%'
+                        THEN COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)
+                        ELSE COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0)
+                   END AS total_qty,
+                   CASE WHEN ps.planner_ps_id LIKE '[Temp]%%'
+                        THEN COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)
+                        ELSE COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0)
+                   END AS partial_qty,
                    '' AS selected_bom_code,
                    COALESCE(vp.erp_bom_code, '') AS erp_bom_code,
                    COALESCE(st.part_no, vp.part_no) AS part_no,
@@ -761,7 +810,10 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
                 "part_no": row["part_no"] or "",
                 "part_desc": row["part_desc"] or "",
                 "due_date": str(row["due_date"]) if row["due_date"] else "",
+                "planned_qty": float(row.get("planned_qty") or 0),
+                "reject_qty": float(row.get("reject_qty") or row.get("planned_qty") or 0),
                 "total_qty": float(row["total_qty"] or 0),
+                "partial_qty": float(row.get("partial_qty") or 0),
                 "qty_shipped": float(row["qty_shipped"] or 0) if row.get("qty_shipped") is not None else None,
                 "source_line_item_no": row.get("source_line_item_no") or "",
                 "status": row.get("erp_status") or row["status"] or "",
@@ -809,6 +861,8 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
             "operation_name": f"{row['op_no'] or ''} {row['op_type'] or ''}".strip(),
             "total_qty": remaining_qty,
             "required_qty": required_qty,
+            "wo_qty_required": required_qty if is_temp else float(row.get("erp_required_qty") or required_qty),
+            "erp_required_qty": 0.0 if is_temp else float(row.get("erp_required_qty") or 0),
             "planned_qty": planned_qty,
             "erp_finished_qty": erp_finished_qty,
             "erp_reject_qty": erp_reject_qty,
@@ -917,7 +971,9 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
                     "operation_name": op["op_type"] or op["operation_name"] or "",
                     "target_qty": float(op["remaining_qty"] or 0),
                     "remaining_qty": float(op["remaining_qty"] or 0),
-                    "required_qty": float(op.get("required_qty") or 0),
+                    "required_qty": float(op.get("required_qty") or op.get("wo_qty_required") or 0),
+                    "wo_qty_required": float(op.get("wo_qty_required") or op.get("required_qty") or 0),
+                    "ready_qty": float(op.get("ready_qty") or op.get("remaining_qty") or 0),
                     "planned_qty": float(op.get("planned_qty") or 0),
                     "erp_finished_qty": float(op.get("erp_finished_qty") or 0),
                     "source_op_seq_id": int(op["source_op_seq_id"] or 0),
@@ -1004,7 +1060,10 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
             "part_no": row["part_no"] or "",
             "part_desc": row["part_desc"] or "",
             "due_date": str(row["due_date"]) if row["due_date"] else "",
+            "planned_qty": float(row.get("planned_qty") or 0),
+            "reject_qty": float(row.get("reject_qty") or row.get("planned_qty") or 0),
             "total_qty": float(row["total_qty"] or 0),
+            "partial_qty": float(row.get("partial_qty") or 0),
             "qty_shipped": float(row["qty_shipped"] or 0) if row.get("qty_shipped") is not None else None,
             "source_line_item_no": row.get("source_line_item_no") or "",
             "status": row.get("erp_status") or row["status"] or "",

@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS public.mfg_wo_status (
     po_due_date             DATE,       -- origin_rsd from mfg_wo_vch
     so_no                   TEXT,       -- origin_voucher_no from mfg_wo_vch
     _loaded_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (source_mps_no, pp_partial_no, stage_no)
+    PRIMARY KEY (source_mps_no, pp_partial_no, stage_no, stage_desc)
 );
 
 -- Run these ALTER TABLE statements if the table already exists in Supabase:

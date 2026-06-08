@@ -235,10 +235,15 @@ body.machinist-board .trial-machine-meta {
 }
 
 body.machinist-board .trial-machine-availability {
-  padding: 3px 5px;
+  padding: 4px 6px;
+  min-height: 28px;
   font-size: 8px;
   border-radius: 5px;
   line-height: 1.2;
+}
+
+body.machinist-board .trial-machine-anchor-meta {
+  font-size: 8px;
 }
 
 body.machinist-board .trial-machine-title {

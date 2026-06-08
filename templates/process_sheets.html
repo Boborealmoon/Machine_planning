@@ -67,8 +67,8 @@
           <option value="hide_temp">Hide [Temp]</option>
         </select>
         <select class="filter-select" id="ps-queue-filter">
-          <option value="">All queue states</option>
-          <option value="unqueued" selected>Needs scheduling</option>
+          <option value="" selected>All queue states</option>
+          <option value="unqueued">Needs scheduling</option>
           <option value="queued">Queued on planner</option>
         </select>
         <select class="filter-select" id="ps-sort" title="Sort order for the production queue">
@@ -151,5 +151,5 @@
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=temp-ps-ps-page-20260604"></script>
 <script src="{{ url_for('static', filename='js/scheduler/modals.js') }}?v=temp-ps-fix-20260604"></script>
 <script src="{{ url_for('static', filename='js/scheduler/temp_ps.js') }}?v=temp-ps-ui-20260605"></script>
-<script src="{{ url_for('static', filename='js/process_sheets.js', v='temp-ps-bom-20260605') }}"></script>
+<script src="{{ url_for('static', filename='js/process_sheets.js', v='ps-current-stage-20260608') }}"></script>
 {% endblock %}

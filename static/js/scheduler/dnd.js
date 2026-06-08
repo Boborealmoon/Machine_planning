@@ -407,7 +407,7 @@ function bindTrialLaneBlockClicks() {
     el.addEventListener('pointerdown', e => {
       if (e.button !== 0 || !e.isPrimary) return;
       if (trialPlannerBusyLock > 0) return;
-      if (e.target?.closest('.trial-block-compact-drag')) return;
+      if (e.target?.closest('.trial-block-compact-drag, .trial-block-remove, .trial-queue-remove')) return;
       el._trialLaneClickStartX = e.clientX;
       el._trialLaneClickStartY = e.clientY;
       el._trialLaneClickMoved = false;
@@ -421,7 +421,7 @@ function bindTrialLaneBlockClicks() {
     el.addEventListener('pointerup', e => {
       if (e.button !== 0) return;
       if (trialPlannerBusyLock > 0) return;
-      if (e.target?.closest('.trial-block-compact-drag')) return;
+      if (e.target?.closest('.trial-block-compact-drag, .trial-block-remove, .trial-queue-remove')) return;
       if (el._trialLaneClickMoved) return;
       const blockId = Number(el.dataset.blockId || 0);
       if (blockId && typeof openTrialRunBlockDetail === 'function') {

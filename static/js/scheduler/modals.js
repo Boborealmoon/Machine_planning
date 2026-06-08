@@ -750,8 +750,35 @@ function openTrialMachineQueue(machineId) {
   const availabilityEnd = trialMachineAvailabilityEnd(
     trialHasActiveDateFilter() ? groups : allGroups
   );
-  const availabilityNote = availabilityEnd
-    ? `<div class="trial-queue-panel-meta">Next available ${escapeHtml(trialFormatDt(availabilityEnd))}</div>`
+  const firstLeader = (groups[0] || allGroups[0])?.leader;
+  const firstBlockId = Number(firstLeader?.block_id || 0);
+  const firstAnchor = String(firstLeader?.anchor_datetime || '').trim();
+  const firstAnchorText = firstAnchor ? trialFormatDt(firstAnchor) : '';
+  const anchorTitle = firstAnchor
+    ? `Anchor ${firstAnchorText} — tap to change`
+    : 'Tap to set anchor for first job in queue';
+  const availabilityText = availabilityEnd
+    ? `Next available ${escapeHtml(trialFormatDt(availabilityEnd))}`
+    : 'Queued jobs';
+  const anchorMeta = firstAnchorText
+    ? `Anchor ${escapeHtml(firstAnchorText)}`
+    : 'Tap to set anchor';
+  const availabilityNote = (availabilityEnd || firstBlockId)
+    ? (firstBlockId
+      ? `<button type="button" class="trial-queue-panel-meta trial-queue-panel-availability trial-machine-availability is-anchorable"
+              onclick="editTrialAnchor(${firstBlockId})"
+              title="${escapeHtml(anchorTitle)}">
+              <span class="trial-machine-availability-stack">
+                <span class="trial-machine-availability-text">${availabilityText}</span>
+                <span class="trial-machine-anchor-meta ${firstAnchorText ? 'is-set' : 'is-unset'}">${anchorMeta}</span>
+              </span>
+            </button>`
+      : `<div class="trial-queue-panel-meta trial-queue-panel-availability">
+              <span class="trial-machine-availability-stack">
+                <span class="trial-machine-availability-text">${availabilityText}</span>
+                ${firstAnchorText ? `<span class="trial-machine-anchor-meta is-set">Anchor ${escapeHtml(firstAnchorText)}</span>` : ''}
+              </span>
+            </div>`)
     : '';
   const staleNote = trialDirtyMachineIds.has(id)
     ? `<div class="trial-queue-panel-stale">Schedule times may be outdated. <button type="button" class="btn btn-primary btn-sm" onclick="trialRecalculateSingleMachine(${id})">Recalculate</button></div>`
@@ -886,17 +913,42 @@ async function trialDedupeMachineQueue(machineId) {
   }
 }
 
+function trialRemoveBlockPsLabel(block) {
+  if (!block) return '';
+  if (typeof trialBlockPsDisplay === 'function') {
+    const ps = trialBlockPsDisplay(null, block);
+    const base = String(ps?.base || '').trim();
+    if (!base) return '';
+    const partial = String(ps?.partial || '').trim();
+    return partial ? `${base} P${partial}` : base;
+  }
+  const raw = String(block.source_ps_id || block.job_no || '').trim();
+  if (!raw) return '';
+  if (typeof trialSplitPsId === 'function') {
+    const parts = trialSplitPsId(raw);
+    const base = String(parts?.base || '').trim();
+    if (!base) return raw.split('::')[0] || raw;
+    const partial = String(parts?.partial || '').trim();
+    return partial && partial !== '1' ? `${base} P${partial}` : base;
+  }
+  const split = raw.split('::');
+  return split.length > 1 && split[1] && split[1] !== '1'
+    ? `${split[0]} P${split[1]}`
+    : (split[0] || raw);
+}
+
 async function removeTrialBlock(blockId, groupId) {
   const numericBlockId = Number(blockId || 0);
   if (!numericBlockId) return;
   if (removeTrialBlock._inFlight) return;
+  const _rmBlock = (trialState.blocks || []).find(b => String(b.block_id) === String(numericBlockId));
+  const psLabel = trialRemoveBlockPsLabel(_rmBlock);
+  const psPart = psLabel ? ` (process sheet ${psLabel})` : '';
   const isCombined = Number(groupId || 0) > 0;
   const msg = isCombined
-    ? 'Remove this combined operation from the machine? All ops in the group will be returned to the side panel.'
-    : 'Remove this operation from the machine? It will return to the side panel for re-allocation.';
+    ? `Remove this combined operation${psPart} from the machine? All ops in the group will be returned to the side panel.`
+    : `Remove this operation${psPart} from the machine? It will return to the side panel for re-allocation.`;
   if (!confirm(msg)) return;
-
-  const _rmBlock = (trialState.blocks || []).find(b => String(b.block_id) === String(numericBlockId));
   const _rmMachineId = _rmBlock ? Number(_rmBlock.machine_id || 0) : 0;
   const queueRow = document.querySelector(`.trial-queue-row[data-block-id="${numericBlockId}"]`);
 
@@ -913,6 +965,7 @@ async function removeTrialBlock(blockId, groupId) {
       queueRow?.remove();
       await refreshMachines([_rmMachineId].filter(Boolean));
     }, 'Removing from queue…');
+    if (typeof closeModal === 'function') closeModal();
     toast('Removed from machine — returned to side panel', 'success');
   } catch (e) {
     queueRow?.classList.remove('is-removing');
