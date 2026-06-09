@@ -1,4 +1,4 @@
-"""Material inspection status — live ERP QC job assignments vs inbound shipment lines."""
+"""Material inspection — live ERP QC inspections on inbound logistic shipments."""
 from __future__ import annotations
 
 import logging
@@ -19,29 +19,45 @@ material_inspection_bp = Blueprint("material_inspection", __name__)
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
 
+# ERP jasper view used by the QC inspection control screen (logistic shipment + QI lines).
 _MATERIAL_INSPECTION_SQL = """
 SELECT
-    qja.inspection_voucher_no,
-    lsv.source_voucher_no,
-    qja.job_assignment_seq_no,
-    qja.shipment_voucher_no,
-    qja.shipment_line_item_no,
-    lsv.grn_no,
-    qja.inspector_code,
-    qja.status,
-    lsv.inventory_code,
-    lsv.line_item_description,
-    lsv.dt_type,
-    qja.internal_remarks,
-    qja.created_by,
-    qja.created_datetime,
-    qja.last_updated_datetime
-FROM public.qc_job_assignment qja
-INNER JOIN public.lg_in_shm_det_view lsv
-    ON qja.shipment_voucher_no = lsv.shipment_voucher_no
-    AND qja.shipment_line_item_no = lsv.line_item_no
-WHERE qja.shipment_voucher_no IS NOT NULL
-ORDER BY qja.created_datetime DESC NULLS LAST
+    inspection_voucher_no,
+    status,
+    inspector_code,
+    inspector_name,
+    po_no,
+    supplier_code,
+    supplier_name,
+    source_voucher_no AS shipment_voucher_no,
+    grn_no,
+    item_no AS shipment_line_item_no,
+    inventory_code,
+    inventory_desc,
+    uom,
+    receiving_qty,
+    inspected_qty,
+    accepted_qty,
+    rejected_qty,
+    actual_arrival_date,
+    goods_receipt_date,
+    created_by_employee_code,
+    created_by_employee_name,
+    last_udpated_by_employee_code AS last_updated_by_employee_code,
+    last_udpated_by_employee_name AS last_updated_by_employee_name,
+    created_datetime,
+    last_updated_datetime,
+    internal_remarks,
+    line_item_remarks,
+    ncr_voucher_no,
+    shipment_supplier_name,
+    shipment_receiving_location_name,
+    contact_person_name,
+    generate_ncr
+FROM public.zz_jasper_th5_quality_inspection_control_header
+WHERE source_voucher_no IS NOT NULL
+  AND BTRIM(source_voucher_no) <> ''
+ORDER BY created_datetime DESC NULLS LAST
 """
 
 
@@ -76,14 +92,17 @@ def _erp_query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
 
 def _split_by_status(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     outstanding: list[dict[str, Any]] = []
+    ready: list[dict[str, Any]] = []
     historical: list[dict[str, Any]] = []
     for row in rows:
         code = compact_text(row.get("status")).upper()
         if code == "H":
             historical.append(row)
         elif code == "R":
+            ready.append(row)
+        elif code == "O":
             outstanding.append(row)
-    return {"outstanding": outstanding, "historical": historical}
+    return {"outstanding": outstanding, "ready": ready, "historical": historical}
 
 
 def _fetch_material_inspection(*, refresh: bool = False) -> dict[str, list[dict[str, Any]]]:
@@ -114,6 +133,7 @@ def api_material_inspection():
         return jsonify({"error": f"ERP query failed: {exc}"}), 502
 
     outstanding = data.get("outstanding") or []
+    ready = data.get("ready") or []
     historical = data.get("historical") or []
     cached_at = _cache[0] if _cache else time.time()
 
@@ -121,11 +141,13 @@ def api_material_inspection():
         {
             "ok": True,
             "outstanding_count": len(outstanding),
+            "ready_count": len(ready),
             "historical_count": len(historical),
-            "count": len(outstanding) + len(historical),
+            "count": len(outstanding) + len(ready) + len(historical),
             "cached_at": datetime.fromtimestamp(cached_at, tz=None).isoformat(sep=" ", timespec="seconds"),
             "cache_ttl_sec": _CACHE_TTL_SEC,
             "outstanding": outstanding,
+            "ready": ready,
             "historical": historical,
         }
     )

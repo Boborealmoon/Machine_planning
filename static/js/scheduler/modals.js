@@ -746,6 +746,39 @@ async function saveTrialOrder(lane, reload = true) {
   }
 }
 
+function bindTrialQueueHeadsModalActions() {
+  const shell = document.getElementById('trial-modal-shell');
+  if (!shell) return;
+  shell.querySelectorAll('.trial-queue-heads-row:not(.is-empty)').forEach(row => {
+    const openMachineQueue = () => {
+      const id = Number(row.dataset.machineId || 0);
+      if (!id) return;
+      closeModal();
+      if (typeof openTrialMachineQueue === 'function') openTrialMachineQueue(id);
+      window.setTimeout(() => {
+        document.querySelector(`.trial-machine[data-machine-id="${id}"]`)
+          ?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+      }, 100);
+    };
+    row.addEventListener('click', openMachineQueue);
+    row.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openMachineQueue();
+      }
+    });
+  });
+}
+
+function openTrialQueueHeadsModal() {
+  if (typeof trialRenderQueueHeadsPanel !== 'function') {
+    toast('Queue summary is not available.', 'error');
+    return;
+  }
+  openModal('View current Operations', trialRenderQueueHeadsPanel(), 'xl');
+  bindTrialQueueHeadsModalActions();
+}
+
 function openTrialMachineQueue(machineId) {
   const id = Number(machineId || 0);
   if (!id) return;

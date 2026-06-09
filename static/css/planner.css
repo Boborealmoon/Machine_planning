@@ -2992,6 +2992,106 @@
   .trial-op-card-actions .btn {
     padding: 6px 10px;
   }
+  .trial-queue-heads-btn {
+    flex-shrink: 0;
+  }
+  .trial-queue-heads-panel {
+    display: grid;
+    gap: 12px;
+    min-height: 0;
+  }
+  .trial-queue-heads-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    font-size: 12px;
+    color: var(--text2);
+  }
+  .trial-queue-heads-summary strong {
+    color: var(--text);
+  }
+  .trial-queue-heads-table-wrap {
+    overflow: auto;
+    max-height: min(70vh, 640px);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .trial-queue-heads-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .trial-queue-heads-table th,
+  .trial-queue-heads-table td {
+    padding: 8px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .trial-queue-heads-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface2, #f8f9fa);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text3);
+  }
+  .trial-queue-heads-row:not(.is-empty) {
+    cursor: pointer;
+  }
+  .trial-queue-heads-row:not(.is-empty):hover td {
+    background: rgba(0, 0, 0, 0.03);
+  }
+  .trial-queue-heads-row.material-in-yes td:first-child {
+    box-shadow: inset 3px 0 0 rgba(34, 197, 94, 0.85);
+  }
+  .trial-queue-heads-row.material-in-no td:first-child {
+    box-shadow: inset 3px 0 0 rgba(239, 68, 68, 0.85);
+  }
+  .trial-queue-heads-muted {
+    color: var(--text3);
+    white-space: nowrap;
+  }
+  .trial-queue-heads-empty {
+    color: var(--text3);
+    font-style: italic;
+  }
+  .trial-queue-heads-ps {
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .trial-queue-heads-qty {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .trial-queue-heads-date.is-overdue {
+    color: #b42318;
+    font-weight: 700;
+  }
+  .trial-queue-heads-date.is-due-soon {
+    color: #b54708;
+    font-weight: 700;
+  }
+  .trial-queue-heads-start {
+    white-space: nowrap;
+  }
+  .trial-queue-heads-depth {
+    margin-left: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text3);
+    background: var(--surface2, #f1f3f5);
+    border-radius: 999px;
+    padding: 1px 6px;
+  }
+  .trial-queue-heads-hint {
+    margin: 0;
+    font-size: 11px;
+    color: var(--text3);
+  }
   .trial-queue-panel {
     display: grid;
     gap: 12px;
@@ -5426,7 +5526,7 @@
     min-width: 200px;
   }
   .mi-filter--view {
-    min-width: 280px;
+    min-width: 360px;
   }
   .mi-view-toggle {
     display: inline-flex;
@@ -5461,6 +5561,7 @@
     color: #fff;
     box-shadow: 0 1px 2px rgba(37, 99, 235, .35);
   }
+  .mi-view-btn.is-active .mi-status-pill--o,
   .mi-view-btn.is-active .mi-status-pill--r,
   .mi-view-btn.is-active .mi-status-pill--h {
     background: rgba(255, 255, 255, .2);
@@ -5507,10 +5608,15 @@
     font-weight: 800;
     letter-spacing: 0.06em;
   }
-  .mi-status-pill--r {
+  .mi-status-pill--o {
     background: #fef3c7;
     color: #92400e;
     border: 1px solid #fcd34d;
+  }
+  .mi-status-pill--r {
+    background: #dbeafe;
+    color: #1e40af;
+    border: 1px solid #93c5fd;
   }
   .mi-status-pill--h {
     background: #e2e8f0;
@@ -5561,6 +5667,11 @@
   .mi-cell--mono {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 11px;
+    white-space: nowrap;
+  }
+  .mi-cell--num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
   .mi-cell--desc,

@@ -209,9 +209,16 @@
 
   function defaultRange() {
     const now = new Date();
-    now.setMinutes(0, 0, 0);
-    const from = new Date(now.getTime() - 12 * 60 * 60 * 1000);
-    return { from: from.toISOString(), to: now.toISOString() };
+    const day = new Date(now);
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    if (nowMinutes < 8 * 60 + 30) {
+      day.setDate(day.getDate() - 1);
+    }
+    const from = new Date(day);
+    from.setHours(8, 30, 0, 0);
+    const to = new Date(day);
+    to.setHours(20, 0, 0, 0);
+    return { from: from.toISOString(), to: to.toISOString() };
   }
 
   function currentQuery() {

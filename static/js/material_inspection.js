@@ -1,7 +1,8 @@
-// Material Inspection — QC job assignments (R outstanding, H historical).
+// Material Inspection — inbound logistic shipment QC lines (O / R / H).
 
 const miState = {
   outstanding: [],
+  ready: [],
   historical: [],
   view: 'outstanding',
   search: '',
@@ -14,17 +15,26 @@ function miFormatDt(value) {
   return trialFormatDt(value);
 }
 
+function miFormatDate(value) {
+  if (!value) return '—';
+  const text = String(value).trim();
+  if (!text) return '—';
+  const d = new Date(text.includes('T') ? text : text.replace(' ', 'T'));
+  if (Number.isNaN(d.getTime())) return text;
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
 function miRowKey(row) {
   const insp = String(row?.inspection_voucher_no || '').trim();
-  const seq = String(row?.job_assignment_seq_no ?? '').trim();
   const ship = String(row?.shipment_voucher_no || '').trim();
   const line = String(row?.shipment_line_item_no ?? '').trim();
-  return `${insp}::${seq}::${ship}::${line}`;
+  return `${insp}::${ship}::${line}`;
 }
 
 function miStatusLabel(code) {
   const c = String(code || '').trim().toUpperCase();
-  if (c === 'R') return 'Outstanding (R)';
+  if (c === 'O') return 'Outstanding (O)';
+  if (c === 'R') return 'Ready (R)';
   if (c === 'H') return 'Historical (H)';
   return c || '—';
 }
@@ -52,38 +62,54 @@ function miDetailSection(title, html) {
 }
 
 function miRenderDetail(row) {
-  const desc = String(row.line_item_description || '').trim();
   const remarks = String(row.internal_remarks || '').trim();
+  const lineRemarks = String(row.line_item_remarks || '').trim();
   const qcHtml = [
     miDetailField('Inspection voucher', row.inspection_voucher_no, { mono: true }),
-    miDetailField('Job assignment seq', row.job_assignment_seq_no),
     miDetailField('Status', miStatusLabel(row.status)),
-    miDetailField('Inspector', row.inspector_code),
+    miDetailField('Inspector', row.inspector_name || row.inspector_code),
+    miDetailField('NCR voucher', row.ncr_voucher_no, { mono: true }),
+    miDetailField('Generate NCR', row.generate_ncr),
     miDetailField('Internal remarks', remarks || '—', { fullWidth: true }),
-    miDetailField('Created by', row.created_by),
+    miDetailField('Created by', row.created_by_employee_name || row.created_by_employee_code),
     miDetailField('Created', miFormatDt(row.created_datetime)),
+    miDetailField('Last updated by', row.last_updated_by_employee_name || row.last_updated_by_employee_code),
     miDetailField('Last updated', miFormatDt(row.last_updated_datetime)),
   ].join('');
   const shipHtml = [
     miDetailField('Shipment voucher', row.shipment_voucher_no, { mono: true }),
     miDetailField('Shipment line', row.shipment_line_item_no),
-    miDetailField('Source voucher', row.source_voucher_no, { mono: true }),
+    miDetailField('PO', row.po_no, { mono: true }),
+    miDetailField('Supplier', row.supplier_name),
     miDetailField('GRN', row.grn_no, { mono: true }),
+    miDetailField('Arrival date', miFormatDate(row.actual_arrival_date)),
+    miDetailField('Goods receipt date', miFormatDate(row.goods_receipt_date)),
+    miDetailField('Receiving location', row.shipment_receiving_location_name),
+    miDetailField('Contact', row.contact_person_name),
   ].join('');
   const partHtml = [
     miDetailField('Inventory / part', row.inventory_code, { mono: true }),
-    miDetailField('Line description', desc || '—', { fullWidth: true }),
-    miDetailField('DT type', row.dt_type),
+    miDetailField('Description', row.inventory_desc || '—', { fullWidth: true }),
+    miDetailField('Line remarks', lineRemarks || '—', { fullWidth: true }),
+    miDetailField('UOM', row.uom),
+    miDetailField('Receiving qty', row.receiving_qty),
+    miDetailField('Inspected qty', row.inspected_qty),
+    miDetailField('Accepted qty', row.accepted_qty),
+    miDetailField('Rejected qty', row.rejected_qty),
   ].join('');
   return [
-    miDetailSection('QC assignment', qcHtml),
+    miDetailSection('QC inspection', qcHtml),
     miDetailSection('Inbound shipment', shipHtml),
     miDetailSection('Material', partHtml),
   ].join('');
 }
 
 function miAllRows() {
-  return [...(miState.outstanding || []), ...(miState.historical || [])];
+  return [
+    ...(miState.outstanding || []),
+    ...(miState.ready || []),
+    ...(miState.historical || []),
+  ];
 }
 
 function miFindRowByKey(key) {
@@ -119,9 +145,9 @@ function miOpenRowDetail(row) {
   const key = miRowKey(row);
   miState.selectedRowKey = key;
   const insp = String(row.inspection_voucher_no || '').trim() || 'Inspection';
-  const seq = row.job_assignment_seq_no != null ? ` · seq ${row.job_assignment_seq_no}` : '';
+  const line = row.shipment_line_item_no != null ? ` · line ${row.shipment_line_item_no}` : '';
   miOpenDetail({
-    title: `${insp}${seq}`,
+    title: `${insp}${line}`,
     bodyHtml: miRenderDetail(row),
   });
   document.querySelectorAll('#mi-table-body tr[data-mi-row-key]').forEach(tr => {
@@ -154,24 +180,35 @@ function miBindTableClicks() {
   });
 }
 
+function miViewLabel(view) {
+  if (view === 'ready') return 'Ready';
+  if (view === 'historical') return 'Historical';
+  return 'Outstanding';
+}
+
 function miActiveRows() {
-  return miState.view === 'historical' ? miState.historical : miState.outstanding;
+  if (miState.view === 'ready') return miState.ready;
+  if (miState.view === 'historical') return miState.historical;
+  return miState.outstanding;
 }
 
 function miRowSearchText(row) {
   const parts = [
     row.inspection_voucher_no,
-    row.source_voucher_no,
+    row.po_no,
+    row.supplier_name,
     row.shipment_voucher_no,
     row.shipment_line_item_no,
     row.grn_no,
     row.inspector_code,
+    row.inspector_name,
     row.inventory_code,
-    row.line_item_description,
-    row.dt_type,
+    row.inventory_desc,
+    row.uom,
     row.internal_remarks,
-    row.created_by,
-    row.job_assignment_seq_no,
+    row.line_item_remarks,
+    row.created_by_employee_name,
+    row.ncr_voucher_no,
   ];
   return parts.map(v => String(v == null ? '' : v).toLowerCase()).join(' ');
 }
@@ -185,30 +222,31 @@ function miFilterRows(rows) {
 function miRenderRow(row) {
   const key = miRowKey(row);
   const selected = key === miState.selectedRowKey;
-  const desc = String(row.line_item_description || '').trim();
-  const remarks = String(row.internal_remarks || '').trim();
+  const desc = String(row.inventory_desc || '').trim();
   return `
     <tr class="is-clickable${selected ? ' is-selected' : ''}" data-mi-row-key="${escapeHtml(key)}" tabindex="0" role="button" aria-label="View inspection detail">
-      <td class="mi-cell--dt">${escapeHtml(miFormatDt(row.created_datetime))}</td>
       <td class="mi-cell--mono">${escapeHtml(String(row.inspection_voucher_no || '—'))}</td>
-      <td class="mi-cell--mono">${escapeHtml(String(row.source_voucher_no || '—'))}</td>
-      <td class="mi-cell--mono">${escapeHtml(String(row.job_assignment_seq_no ?? '—'))}</td>
+      <td>${escapeHtml(String(row.inspector_name || row.inspector_code || '—'))}</td>
+      <td class="mi-cell--mono">${escapeHtml(String(row.po_no || '—'))}</td>
+      <td>${escapeHtml(String(row.supplier_name || '—'))}</td>
       <td class="mi-cell--mono">${escapeHtml(String(row.shipment_voucher_no || '—'))}</td>
-      <td>${escapeHtml(String(row.shipment_line_item_no ?? '—'))}</td>
       <td class="mi-cell--mono">${escapeHtml(String(row.grn_no || '—'))}</td>
-      <td>${escapeHtml(String(row.inspector_code || '—'))}</td>
+      <td class="mi-cell--dt">${escapeHtml(miFormatDate(row.actual_arrival_date || row.goods_receipt_date))}</td>
+      <td>${escapeHtml(String(row.shipment_line_item_no ?? '—'))}</td>
       <td class="mi-cell--mono">${escapeHtml(String(row.inventory_code || '—'))}</td>
       <td class="mi-cell--desc" title="${escapeHtml(desc)}">${escapeHtml(desc || '—')}</td>
-      <td>${escapeHtml(String(row.dt_type || '—'))}</td>
-      <td class="mi-cell--remarks" title="${escapeHtml(remarks)}">${escapeHtml(remarks || '—')}</td>
-      <td>${escapeHtml(String(row.created_by || '—'))}</td>
+      <td>${escapeHtml(String(row.uom || '—'))}</td>
+      <td class="mi-cell--num">${escapeHtml(row.receiving_qty == null ? '—' : String(row.receiving_qty))}</td>
+      <td>${escapeHtml(String(row.created_by_employee_name || row.created_by_employee_code || '—'))}</td>
+      <td class="mi-cell--dt">${escapeHtml(miFormatDt(row.created_datetime))}</td>
+      <td>${escapeHtml(String(row.last_updated_by_employee_name || row.last_updated_by_employee_code || '—'))}</td>
       <td class="mi-cell--dt">${escapeHtml(miFormatDt(row.last_updated_datetime))}</td>
     </tr>
   `;
 }
 
 function miSetView(view) {
-  const next = view === 'historical' ? 'historical' : 'outstanding';
+  const next = ['ready', 'historical'].includes(view) ? view : 'outstanding';
   miState.view = next;
   miCloseDetail();
   document.querySelectorAll('[data-mi-view]').forEach(btn => {
@@ -218,7 +256,7 @@ function miSetView(view) {
   });
   const title = document.getElementById('mi-section-title');
   if (title) {
-    title.textContent = next === 'historical' ? 'Historical' : 'Outstanding';
+    title.textContent = miViewLabel(next);
   }
   miRender();
 }
@@ -228,9 +266,10 @@ function miUpdateStats() {
   if (!stats) return;
   const active = miFilterRows(miActiveRows()).length;
   const outN = miFilterRows(miState.outstanding).length;
+  const readyN = miFilterRows(miState.ready).length;
   const histN = miFilterRows(miState.historical).length;
-  const label = miState.view === 'historical' ? 'Historical' : 'Outstanding';
-  stats.textContent = `${label}: ${active} · R: ${outN} · H: ${histN}`;
+  const label = miViewLabel(miState.view);
+  stats.textContent = `${label}: ${active} · O: ${outN} · R: ${readyN} · H: ${histN}`;
 }
 
 function miRender() {
@@ -245,7 +284,9 @@ function miRender() {
 
   if (loading) loading.hidden = true;
 
-  const hasData = (miState.outstanding?.length || 0) + (miState.historical?.length || 0) > 0;
+  const hasData = (miState.outstanding?.length || 0)
+    + (miState.ready?.length || 0)
+    + (miState.historical?.length || 0) > 0;
   const viewEmpty = (rows?.length || 0) === 0;
 
   if (section) {
@@ -254,8 +295,7 @@ function miRender() {
   if (globalEmpty) {
     globalEmpty.hidden = !hasData || !viewEmpty;
     if (viewEmpty && hasData) {
-      const label = miState.view === 'historical' ? 'historical' : 'outstanding';
-      globalEmpty.querySelector('p').textContent = `No ${label} inspections in ERP.`;
+      globalEmpty.querySelector('p').textContent = `No ${miViewLabel(miState.view).toLowerCase()} inspections in ERP.`;
     }
   }
 
@@ -319,6 +359,7 @@ async function miLoad({ refresh = false } = {}) {
   }
 
   miState.outstanding = payload.outstanding || [];
+  miState.ready = payload.ready || [];
   miState.historical = payload.historical || [];
   miState.cachedAt = payload.cached_at || '';
   miState.cacheTtlSec = payload.cache_ttl_sec || 300;

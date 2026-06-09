@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
+
+from .utils import PLANNER_TZ
 
 import requests
 
@@ -82,10 +84,16 @@ def _get(path: str, params: dict[str, Any] | None = None) -> Any:
 
 
 def _default_range() -> tuple[str, str]:
-    now = datetime.now(timezone.utc)
-    lower = (now - timedelta(hours=12)).replace(minute=0, second=0, microsecond=0)
-    upper = now.replace(minute=0, second=0, microsecond=0)
-    return lower.isoformat().replace("+00:00", "Z"), upper.isoformat().replace("+00:00", "Z")
+    now = datetime.now(PLANNER_TZ)
+    day = now.date()
+    if now < datetime.combine(day, time(8, 30), tzinfo=PLANNER_TZ):
+        day -= timedelta(days=1)
+    lower = datetime.combine(day, time(8, 30), tzinfo=PLANNER_TZ)
+    upper = datetime.combine(day, time(20, 0), tzinfo=PLANNER_TZ)
+    return (
+        lower.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        upper.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+    )
 
 
 def _parse_iso(value: str | None) -> datetime | None:

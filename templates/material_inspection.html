@@ -7,7 +7,7 @@
   <div class="mi-header">
     <div>
       <h1 class="mi-title">Material Inspection</h1>
-      <p class="mi-subtitle">QC job assignments linked to inbound shipment lines. Toggle outstanding <strong>R</strong> or historical <strong>H</strong>. Click a row for full detail. Sorted by newest created first.</p>
+      <p class="mi-subtitle">Inbound logistic shipment QC inspections. Toggle outstanding <strong>O</strong>, ready <strong>R</strong>, or historical <strong>H</strong>. Click a row for full detail. Sorted by newest created first.</p>
     </div>
     <div class="mi-header-actions">
       <button type="button" class="btn btn-ghost btn-sm" id="mi-refresh">Refresh</button>
@@ -19,7 +19,10 @@
       <span>View</span>
       <div class="mi-view-toggle" role="tablist" aria-label="Material inspection view">
         <button type="button" class="mi-view-btn is-active" id="mi-view-outstanding" data-mi-view="outstanding" role="tab" aria-selected="true">
-          Outstanding <span class="mi-status-pill mi-status-pill--r">R</span>
+          Outstanding <span class="mi-status-pill mi-status-pill--o">O</span>
+        </button>
+        <button type="button" class="mi-view-btn" id="mi-view-ready" data-mi-view="ready" role="tab" aria-selected="false">
+          Ready <span class="mi-status-pill mi-status-pill--r">R</span>
         </button>
         <button type="button" class="mi-view-btn" id="mi-view-historical" data-mi-view="historical" role="tab" aria-selected="false">
           Historical <span class="mi-status-pill mi-status-pill--h">H</span>
@@ -33,7 +36,7 @@
           <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
           <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
-        <input id="mi-search" class="planner-page-search-input" type="search" placeholder="Inspection, GRN, part, shipment..." autocomplete="off">
+        <input id="mi-search" class="planner-page-search-input" type="search" placeholder="Inspection, PO, supplier, GRN, part..." autocomplete="off">
       </span>
     </label>
     <div class="mi-stats" id="mi-stats"></div>
@@ -50,19 +53,21 @@
       <table class="mi-table">
         <thead>
           <tr>
-            <th>Created</th>
             <th>Inspection</th>
-            <th>Source voucher</th>
-            <th>Seq</th>
-            <th>Shipment</th>
-            <th>Line</th>
-            <th>GRN</th>
             <th>Inspector</th>
+            <th>PO</th>
+            <th>Supplier</th>
+            <th>Shipment</th>
+            <th>GRN</th>
+            <th>Arrival</th>
+            <th>Line</th>
             <th>Part</th>
             <th>Description</th>
-            <th>DT type</th>
-            <th>Remarks</th>
+            <th>UOM</th>
+            <th>Qty</th>
             <th>Created by</th>
+            <th>Created</th>
+            <th>Updated by</th>
             <th>Updated</th>
           </tr>
         </thead>
@@ -95,5 +100,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=material-inspection-detail-20260604"></script>
-<script src="{{ url_for('static', filename='js/material_inspection.js') }}?v=material-inspection-detail-20260604"></script>
+<script src="{{ url_for('static', filename='js/material_inspection.js') }}?v=material-inspection-split-orh-20260609"></script>
 {% endblock %}

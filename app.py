@@ -28,6 +28,7 @@ from planning.sales_orders_route import sales_orders_bp
 from planning.material_inspection_route import material_inspection_bp
 from planning.repeat_orders_route import repeat_orders_bp
 from planning.auk_oee_route import auk_oee_bp
+from planning.bom_variation_route import bom_variation_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
@@ -43,6 +44,7 @@ app.register_blueprint(sales_orders_bp)
 app.register_blueprint(material_inspection_bp)
 app.register_blueprint(repeat_orders_bp)
 app.register_blueprint(auk_oee_bp)
+app.register_blueprint(bom_variation_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 
@@ -610,40 +612,75 @@ def _pp_voucher_search_haystack(entry: dict) -> str:
     return " ".join(str(part) for part in parts if part).lower()
 
 
+def _entry_ps_base_and_partial(entry: dict) -> tuple[str, int]:
+    source = str(entry.get("source_ps_id") or "").split("::")[0].strip().lower()
+    if not source:
+        source = str(entry.get("ps_id") or "").split("::")[0].strip().lower()
+    try:
+        partial_no = max(1, int(entry.get("pp_partial_no") or 1))
+    except (TypeError, ValueError):
+        partial_no = 1
+    return source, partial_no
+
+
 def _entry_matches_search_term(entry: dict, term: str) -> bool:
+    from planning.process_sheets import is_ps_base_id, parse_bulk_lookup_ps_term
+
     term = term.strip().lower()
     if not term:
         return True
+    base_term, partial_no = parse_bulk_lookup_ps_term(term)
+    source, entry_partial = _entry_ps_base_and_partial(entry)
+    if partial_no is not None and is_ps_base_id(base_term):
+        return source == base_term and entry_partial == partial_no
+
     ps_ids = [
         str(entry.get(key) or "").lower()
         for key in ("ps_id", "source_ps_id", "display_ps_id")
         if entry.get(key)
     ]
-    if ps_ids and any(term in ps_id for ps_id in ps_ids):
+    if ps_ids and any(base_term in ps_id for ps_id in ps_ids):
         return True
-    return term in _pp_voucher_search_haystack(entry)
+    if is_ps_base_id(base_term) and source == base_term:
+        return True
+    return base_term in _pp_voucher_search_haystack(entry)
 
 
 def _filter_pp_vouchers_by_search(data: list, raw_search: str) -> list:
-    terms = [term.strip().lower() for term in str(raw_search or "").replace(";", ",").split(",") if term.strip()]
+    from planning.process_sheets import is_ps_base_id, parse_bulk_lookup_ps_term
+
+    normalized = str(raw_search or "").replace(";", " ").replace(",", " ")
+    terms = [term.strip().lower() for term in normalized.split() if term.strip()]
     if not terms:
         return data
+    parsed_terms = [parse_bulk_lookup_ps_term(term) for term in terms]
     matched = [
         entry
         for entry in data
         if any(_entry_matches_search_term(entry, term) for term in terms)
     ]
-    bases = {
-        str(entry.get("source_ps_id") or "").strip().lower()
+    explicit_partial_bases = {
+        base_term
+        for base_term, partial_no in parsed_terms
+        if partial_no is not None and is_ps_base_id(base_term)
+    }
+    bases_to_expand = {
+        base_term
+        for base_term, partial_no in parsed_terms
+        if partial_no is None and is_ps_base_id(base_term)
+    }
+    bases_to_expand.update(
+        str(entry.get("source_ps_id") or "").split("::")[0].strip().lower()
         for entry in matched
         if entry.get("source_ps_id")
-    }
-    if not bases:
+    )
+    bases_to_expand -= explicit_partial_bases
+    if not bases_to_expand:
         return matched
     by_id = {id(entry): entry for entry in matched}
     for entry in data:
-        base = str(entry.get("source_ps_id") or "").strip().lower()
-        if base and base in bases:
+        base = str(entry.get("source_ps_id") or "").split("::")[0].strip().lower()
+        if base and base in bases_to_expand:
             by_id[id(entry)] = entry
     return list(by_id.values())
 

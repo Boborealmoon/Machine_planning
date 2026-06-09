@@ -1801,6 +1801,78 @@ function trialQueueDueClass(psDueKey) {
   return 'is-normal';
 }
 
+function trialRenderQueueHeadsPanel() {
+  const heads = typeof trialFirstQueueHeads === 'function' ? trialFirstQueueHeads() : [];
+  const withJobs = heads.filter(head => head.firstGroup);
+  const emptyCount = heads.length - withJobs.length;
+  const rows = heads.map(head => {
+    if (!head.firstGroup) {
+      return `
+        <tr class="trial-queue-heads-row is-empty" data-machine-id="${head.machine_id}">
+          <td><strong>${escapeHtml(head.machine_code)}</strong></td>
+          <td class="trial-queue-heads-muted">${escapeHtml(head.machine_category || '—')}</td>
+          <td colspan="5" class="trial-queue-heads-empty">Empty queue</td>
+        </tr>
+      `;
+    }
+    const vm = trialBlockGroupViewModel(head.firstGroup, { displaySequenceNo: 1 });
+    const leader = vm.leader;
+    const dueClass = trialQueueDueClass(vm.psDueKey);
+    const dueDate = String(trialDueDateForPs(vm.psDueKey) || leader?.due_date || '').trim() || '—';
+    const partialNote = vm.psDisplay.partial
+      ? ` <span class="trial-queue-partial">P${escapeHtml(vm.psDisplay.partial)}</span>`
+      : '';
+    const materialInClass = trialMaterialInLaneClass(leader);
+    const depthNote = head.queue_depth > 1
+      ? `<span class="trial-queue-heads-depth" title="${head.queue_depth} jobs in queue">+${head.queue_depth - 1}</span>`
+      : '';
+    return `
+      <tr class="trial-queue-heads-row ${materialInClass}"
+        data-machine-id="${head.machine_id}"
+        role="button"
+        tabindex="0"
+        title="Open ${escapeHtml(head.machine_code)} queue">
+        <td>
+          <strong>${escapeHtml(head.machine_code)}</strong>
+          ${depthNote}
+        </td>
+        <td class="trial-queue-heads-muted">${escapeHtml(head.machine_category || '—')}</td>
+        <td class="trial-queue-heads-ps">${escapeHtml(vm.psDisplay.base || vm.group.title || '—')}${partialNote}</td>
+        <td>${escapeHtml(vm.operationLine || '—')}</td>
+        <td class="trial-queue-heads-qty">${vm.targetQty}</td>
+        <td class="trial-queue-heads-date ${dueClass}">${escapeHtml(dueDate)}</td>
+        <td class="trial-queue-heads-start">${escapeHtml(vm.scheduleTimeText || '—')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <div class="trial-queue-heads-panel">
+      <div class="trial-queue-heads-summary">
+        <span><strong>${withJobs.length}</strong> machine${withJobs.length === 1 ? '' : 's'} with a current operation</span>
+        ${emptyCount ? `<span>${emptyCount} empty</span>` : ''}
+      </div>
+      <div class="trial-queue-heads-table-wrap">
+        <table class="trial-queue-heads-table">
+          <thead>
+            <tr>
+              <th>Machine</th>
+              <th>Type</th>
+              <th>Process sheet</th>
+              <th>Operation</th>
+              <th>Qty</th>
+              <th>Due</th>
+              <th>Start / anchor</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <p class="trial-queue-heads-hint">Click a row to open that machine&apos;s full queue.</p>
+    </div>
+  `;
+}
+
 function trialRenderQueueDetailRow(group, displaySequenceNo = 0) {
   const vm = trialBlockGroupViewModel(group, {
     displaySequenceNo: displaySequenceNo > 0 ? displaySequenceNo : undefined,
@@ -2224,6 +2296,11 @@ function renderTrial(options = {}) {
             ${renderTrialMachineTypeFilter()}
             ${renderTrialMachineDropdownFilter('planner')}
             ${renderTrialScheduleDateFilter()}
+            <button type="button" class="btn btn-primary btn-sm trial-queue-heads-btn"
+              onclick="openTrialQueueHeadsModal()"
+              title="View the current operation at the front of every machine queue">
+              View current Operations
+            </button>
             <button type="button" class="btn btn-ghost btn-sm trial-shop-calendar-btn"
               onclick="openTrialCapacityModal()"
               title="Shop working hours, holidays, and capacity overrides">

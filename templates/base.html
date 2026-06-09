@@ -93,6 +93,11 @@
         </div>
       </div>
 
+      <a href="/bom-variation"
+         class="nav-link {% if nav_path == '/bom-variation' or active == 'bom_variation' %}nav-link--active{% endif %}">
+        BOM VARIATION
+      </a>
+
       {# Reference / master data (/planning-data/* except legacy repeat-orders URL) #}
       <div class="nav-dropdown {% if nav_path.startswith('/planning-data') and nav_path != '/planning-data/repeat-orders' or active == 'planning_data' %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="planning-data">

@@ -86,6 +86,23 @@ function trialVisibleMachines() {
   return machines;
 }
 
+/** #1 queue item per visible machine lane (unfiltered by date — true queue head). */
+function trialFirstQueueHeads() {
+  return (trialVisibleMachines() || []).map(machine => {
+    const allGroups = typeof trialBlocksGroupedForMachine === 'function'
+      ? trialBlocksGroupedForMachine(machine.machine_id)
+      : [];
+    return {
+      machine,
+      machine_id: Number(machine.machine_id || 0),
+      machine_code: String(machine.machine_code || '').trim(),
+      machine_category: String(machine.machine_category || '').trim(),
+      firstGroup: allGroups[0] || null,
+      queue_depth: allGroups.length,
+    };
+  });
+}
+
 /**
  * Shop-floor lane groups when Type = All (machine group matrix + subgroup annotations).
  */

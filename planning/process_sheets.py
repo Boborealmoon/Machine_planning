@@ -203,6 +203,43 @@ def format_planner_ps_id(source_ps_id, pp_partial_no=1):
     return source_ps_id
 
 
+_PS_BASE_ID_RE = re.compile(
+    r"^(?:APS|NPS|PPS|CPS|MPS|SR)\d{2}-\d{4}$",
+    re.IGNORECASE,
+)
+_BULK_LOOKUP_PS_DASH_PARTIAL_RE = re.compile(
+    r"^((?:APS|NPS|PPS|CPS|MPS|SR)\d{2}-\d{4})-(\d+)$",
+    re.IGNORECASE,
+)
+
+
+def is_ps_base_id(value):
+    return bool(_PS_BASE_ID_RE.match(compact_text(value)))
+
+
+def parse_bulk_lookup_ps_term(term):
+    """
+    Parse a bulk-lookup token into (base_or_raw, partial_no).
+    partial_no is set when the user specified a partial via :: or trailing -N
+    (e.g. NPS25-0279-3). None means any partial is acceptable.
+    """
+    raw = compact_text(term).lower()
+    if not raw:
+        return "", None
+    if "::" in raw:
+        base, partial_text = raw.split("::", 1)
+        base = base.strip()
+        try:
+            partial_no = int(partial_text)
+        except (TypeError, ValueError):
+            return raw, None
+        return base, max(1, partial_no)
+    match = _BULK_LOOKUP_PS_DASH_PARTIAL_RE.match(raw)
+    if match:
+        return match.group(1).lower(), int(match.group(2))
+    return raw, None
+
+
 TEMP_PS_PREFIX = "[Temp]"
 TEMP_PARTIAL_MIN = 900001
 _TEMP_TABLE_READY = False

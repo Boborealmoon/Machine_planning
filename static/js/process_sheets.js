@@ -1066,6 +1066,68 @@
       .filter(Boolean);
   }
 
+  function parseBulkLookupTerms(raw) {
+    return String(raw || '')
+      .split(/[\s,;]+/)
+      .map(term => term.trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  const PS_BASE_ID_RE = /^(?:aps|nps|pps|cps|mps|sr)\d{2}-\d{4}$/i;
+  const PS_DASH_PARTIAL_RE = /^((?:aps|nps|pps|cps|mps|sr)\d{2}-\d{4})-(\d+)$/i;
+
+  function isPsBaseId(value) {
+    return PS_BASE_ID_RE.test(String(value || '').trim());
+  }
+
+  function parseBulkLookupPsTerm(term) {
+    const raw = String(term || '').trim().toLowerCase();
+    if (!raw) return null;
+    if (raw.includes('::')) {
+      const [base, partialText] = raw.split('::');
+      const partial = Number(partialText) || 1;
+      const normalizedBase = String(base || '').trim();
+      return {
+        raw,
+        base: normalizedBase,
+        partial,
+        canonical: partial > 1 ? `${normalizedBase}::${partial}` : normalizedBase,
+      };
+    }
+    const dashMatch = raw.match(PS_DASH_PARTIAL_RE);
+    if (dashMatch) {
+      const base = dashMatch[1].toLowerCase();
+      const partial = Number(dashMatch[2]) || 1;
+      return {
+        raw,
+        base,
+        partial,
+        canonical: partial > 1 ? `${base}::${partial}` : base,
+      };
+    }
+    return { raw, base: raw, partial: null, canonical: raw };
+  }
+
+  function itemPsBaseAndPartial(item) {
+    const source = String(item?.source_ps_id || item?.display_ps_id || item?.ps_id || '')
+      .split('::')[0]
+      .trim()
+      .toLowerCase();
+    return { source, partial: Number(partialNo(item)) || 1 };
+  }
+
+  function itemMatchesBulkLookupTerm(item, parsed) {
+    if (!parsed) return false;
+    const { source, partial } = itemPsBaseAndPartial(item);
+    if (parsed.partial !== null && isPsBaseId(parsed.base)) {
+      return source === parsed.base && partial === parsed.partial;
+    }
+    const haystack = itemSearchText(item);
+    return haystack.includes(parsed.raw)
+      || haystack.includes(parsed.canonical)
+      || (isPsBaseId(parsed.base) && source === parsed.base);
+  }
+
   function matchesSearchTerms(item, terms) {
     if (!terms.length) return true;
     const haystack = itemSearchText(item);
@@ -1093,8 +1155,10 @@
     });
   }
 
-  function unmatchedBulkLookupTerms(terms, items) {
-    return terms.filter(term => !items.some(item => itemSearchText(item).includes(term)));
+  function unmatchedBulkLookupTerms(parsedTerms, items) {
+    return parsedTerms
+      .filter(parsed => !items.some(item => itemMatchesBulkLookupTerm(item, parsed)))
+      .map(parsed => parsed.raw);
   }
 
   function bulkLookupQueueLabel(item) {
@@ -1238,22 +1302,27 @@
 
   async function runBulkLookup() {
     const raw = String(els.bulkLookupInput?.value || '').trim();
-    const terms = parseSearchTerms(raw);
-    if (!terms.length) {
-      window.alert('Enter one or more values separated by commas (process sheet, part, PO, SO, etc.).');
+    const terms = parseBulkLookupTerms(raw);
+    const parsedTerms = terms.map(parseBulkLookupPsTerm).filter(Boolean);
+    if (!parsedTerms.length) {
+      window.alert('Enter one or more values separated by spaces or commas (process sheet, part, PO, SO, etc.).');
       els.bulkLookupInput?.focus();
       return;
     }
     openBulkLookupModalLoading(terms);
     try {
-      const searchParam = encodeURIComponent(terms.join(','));
+      const apiBases = [...new Set(parsedTerms.map(parsed => parsed.base).filter(Boolean))];
+      const searchParam = encodeURIComponent(apiBases.join(','));
       const apiRows = await getJson(
         `/api/pp-vouchers/with-ops?search=${searchParam}&show_completed=1`,
         { timeoutMs: 120000 },
       ).catch(() => []);
-      const localMatches = state.items.filter(item => matchesSearchTerms(item, terms));
-      const items = mergeBulkLookupItems(apiRows, localMatches);
-      const missedTerms = unmatchedBulkLookupTerms(terms, items);
+      const localMatches = state.items.filter(item =>
+        parsedTerms.some(parsed => itemMatchesBulkLookupTerm(item, parsed)),
+      );
+      const items = mergeBulkLookupItems(apiRows, localMatches)
+        .filter(item => parsedTerms.some(parsed => itemMatchesBulkLookupTerm(item, parsed)));
+      const missedTerms = unmatchedBulkLookupTerms(parsedTerms, items);
       openBulkLookupModalResults(terms, items, missedTerms);
     } catch (err) {
       if (typeof openModal === 'function') {

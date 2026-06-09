@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block title %}BOM Variation{% endblock %}
+{% block main_class %}app-main--bom-variation{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=bom-variation-20260609">
+<style>
+.bv-page { padding: 1.5rem; max-width: 100%; }
+
+.bv-tab-panel { margin-top: 1rem; }
+
+.bv-lookup-form {
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  margin-bottom: 1rem;
+}
+.bv-lookup-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+}
+.bv-lookup-input {
+  width: 100%;
+  min-height: 96px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.8125rem;
+  resize: vertical;
+  background: #f8fafc;
+  color: #0f172a;
+  box-sizing: border-box;
+  line-height: 1.5;
+}
+.bv-lookup-input:focus { outline: none; border-color: #3b82f6; background: #fff; box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+.bv-lookup-hint { font-size: 0.75rem; color: #94a3b8; }
+.bv-lookup-actions { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+
+.btn-primary {
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  padding: 0.4rem 0.875rem;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-primary:hover { background: #1d4ed8; }
+.btn-primary:active { background: #1e40af; }
+.btn-primary:disabled { background: #93c5fd; cursor: not-allowed; }
+
+.bv-results-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+.bv-fullrefresh-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 1.25rem;
+  margin-bottom: 0.75rem;
+}
+.bv-error {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fca5a5;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  margin-top: 0.75rem;
+}
+.bv-meta {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  margin-top: 0.5rem;
+  text-align: right;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="bv-page">
+  <div class="mi-header">
+    <div>
+      <h1 class="mi-title">BOM Variation Queries</h1>
+      <p class="mi-subtitle">Query BOM and material info from ERP. Switch tabs to change query type.</p>
+    </div>
+  </div>
+
+  <div class="mi-toolbar card">
+    <div class="mi-view-toggle" role="tablist" aria-label="BOM query type">
+      <button type="button" class="mi-view-btn is-active" data-bv-tab="lookup" role="tab" aria-selected="true">
+        Lookup by Part No
+      </button>
+      <button type="button" class="mi-view-btn" data-bv-tab="bom-per-part" role="tab" aria-selected="false">
+        BOM Per Part
+      </button>
+      <button type="button" class="mi-view-btn" data-bv-tab="bom-per-ps" role="tab" aria-selected="false">
+        BOM Per Process Sheet
+      </button>
+    </div>
+  </div>
+
+  {# ── Tab: Lookup by Part No ─────────────────────────────────────────── #}
+  <div id="bv-tab-lookup" class="bv-tab-panel">
+    <div class="bv-lookup-form card">
+      <span class="bv-lookup-label">Part No(s)</span>
+      <textarea id="bv-lookup-input" class="bv-lookup-input"
+        placeholder="Enter part numbers separated by commas or newlines&#10;e.g.  ABC123, DEF456&#10;or paste a column directly from Excel"></textarea>
+      <span class="bv-lookup-hint">Tip: paste a column of part numbers, or separate with commas/semicolons. Ctrl+Enter to run.</span>
+      <div class="bv-lookup-actions">
+        <button type="button" class="btn-primary" id="bv-lookup-run">Run Query</button>
+      </div>
+    </div>
+
+    <div id="bv-lookup-loading" class="loading" hidden><div class="spinner"></div> Running query...</div>
+    <div id="bv-lookup-error" class="bv-error" hidden></div>
+
+    <div id="bv-lookup-results" hidden>
+      <div class="bv-results-toolbar">
+        <label class="mi-filter mi-filter--grow">
+          <span>Filter</span>
+          <span class="planner-page-search-wrap">
+            <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <input id="bv-lookup-search" class="planner-page-search-input" type="search" placeholder="Filter results..." autocomplete="off">
+          </span>
+        </label>
+        <span class="mi-stats" id="bv-lookup-stats"></span>
+        <button type="button" class="btn btn-ghost btn-sm" id="bv-lookup-csv">Export CSV</button>
+      </div>
+      <section class="mi-section card">
+        <div class="mi-table-wrap">
+          <table class="mi-table">
+            <thead>
+              <tr>
+                <th>Part No</th>
+                <th>Part Name</th>
+                <th>BOM Code</th>
+                <th>OP Description</th>
+                <th>Required Quantity</th>
+                <th>Material Inventory Code</th>
+                <th>Material Description</th>
+              </tr>
+            </thead>
+            <tbody id="bv-lookup-tbody"></tbody>
+          </table>
+        </div>
+        <p id="bv-lookup-empty" class="mi-section-empty" hidden>No rows match your filter.</p>
+      </section>
+    </div>
+  </div>
+
+  {# ── Tab: BOM Per Part ─────────────────────────────────────────────── #}
+  <div id="bv-tab-bom-per-part" class="bv-tab-panel" hidden>
+    <div class="bv-fullrefresh-toolbar card">
+      <label class="mi-filter mi-filter--grow">
+        <span>Search</span>
+        <span class="planner-page-search-wrap">
+          <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input id="bv-bpp-search" class="planner-page-search-input" type="search" placeholder="Filter by part, BOM code, material..." autocomplete="off">
+        </span>
+      </label>
+      <span class="mi-stats" id="bv-bpp-stats"></span>
+      <button type="button" class="btn btn-ghost btn-sm" id="bv-bpp-csv" hidden>Export CSV</button>
+      <button type="button" class="btn-primary" id="bv-bpp-load">Load All</button>
+    </div>
+
+    <div id="bv-bpp-loading" class="loading" hidden><div class="spinner"></div> Loading BOM per part (full dataset)...</div>
+    <div id="bv-bpp-error" class="bv-error" hidden></div>
+
+    <div id="bv-bpp-results" hidden>
+      <section class="mi-section card">
+        <div class="mi-table-wrap">
+          <table class="mi-table">
+            <thead>
+              <tr>
+                <th>Part No</th>
+                <th>Part Name</th>
+                <th>BOM Code</th>
+                <th>OP No</th>
+                <th>OP Description</th>
+                <th>Inhouse Quantity</th>
+                <th>Material Inventory Code</th>
+                <th>Material Description</th>
+              </tr>
+            </thead>
+            <tbody id="bv-bpp-tbody"></tbody>
+          </table>
+        </div>
+        <p id="bv-bpp-empty" class="mi-section-empty" hidden>No rows match your search.</p>
+      </section>
+    </div>
+    <p id="bv-bpp-meta" class="bv-meta" hidden></p>
+  </div>
+
+  {# ── Tab: BOM Per Process Sheet ────────────────────────────────────── #}
+  <div id="bv-tab-bom-per-ps" class="bv-tab-panel" hidden>
+    <div class="bv-fullrefresh-toolbar card">
+      <label class="mi-filter mi-filter--grow">
+        <span>Search</span>
+        <span class="planner-page-search-wrap">
+          <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input id="bv-bpps-search" class="planner-page-search-input" type="search" placeholder="Filter by process sheet, part, material..." autocomplete="off">
+        </span>
+      </label>
+      <span class="mi-stats" id="bv-bpps-stats"></span>
+      <button type="button" class="btn btn-ghost btn-sm" id="bv-bpps-csv" hidden>Export CSV</button>
+      <button type="button" class="btn-primary" id="bv-bpps-load">Load All</button>
+    </div>
+
+    <div id="bv-bpps-loading" class="loading" hidden><div class="spinner"></div> Loading BOM per process sheet (APS/NPS)...</div>
+    <div id="bv-bpps-error" class="bv-error" hidden></div>
+
+    <div id="bv-bpps-results" hidden>
+      <section class="mi-section card">
+        <div class="mi-table-wrap">
+          <table class="mi-table">
+            <thead>
+              <tr>
+                <th>Process Sheet</th>
+                <th>Part No</th>
+                <th>Part Name</th>
+                <th>BOM Code</th>
+                <th>OP No</th>
+                <th>OP Description</th>
+                <th>Inhouse Quantity</th>
+                <th>Material Inventory Code</th>
+                <th>Material Description</th>
+              </tr>
+            </thead>
+            <tbody id="bv-bpps-tbody"></tbody>
+          </table>
+        </div>
+        <p id="bv-bpps-empty" class="mi-section-empty" hidden>No rows match your search.</p>
+      </section>
+    </div>
+    <p id="bv-bpps-meta" class="bv-meta" hidden></p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/bom_variation.js') }}?v=20260609"></script>
+{% endblock %}
