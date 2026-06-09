@@ -5698,6 +5698,19 @@
     font-size: 11px;
     color: var(--text3);
   }
+  .mi-group-row td {
+    padding: 10px 16px 6px;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text3);
+    background: rgba(15, 23, 42, 0.03);
+    border-top: 1px solid var(--line, #e2e8f0);
+  }
+  .mi-group-row:first-child td {
+    border-top: 0;
+  }
   .mi-table tbody tr.is-clickable {
     cursor: pointer;
   }

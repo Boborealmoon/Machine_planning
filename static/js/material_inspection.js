@@ -24,11 +24,122 @@ function miFormatDate(value) {
   return d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
+function miStartOfDay(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/** Mon–Sat working week (matches planner / new orders). */
+function miWorkingWeekRange(forDate = new Date(), offsetWeeks = 0) {
+  const anchor = miStartOfDay(forDate);
+  if (!anchor) return { start: null, end: null };
+  const day = anchor.getDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const start = new Date(anchor);
+  start.setDate(anchor.getDate() + mondayOffset + offsetWeeks * 7);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 5);
+  return { start, end };
+}
+
+function miFormatWeekRangeLabel(range) {
+  if (!range?.start || !range?.end) return '';
+  const fmt = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return `${fmt(range.start)} – ${fmt(range.end)}`;
+}
+
+function miArrivalDate(row) {
+  const raw = row?.actual_arrival_date || row?.goods_receipt_date;
+  if (!raw) return null;
+  const text = String(raw).trim();
+  if (!text) return null;
+  return miStartOfDay(text.includes('T') ? text : text.replace(' ', 'T'));
+}
+
+function miCreatedTime(row) {
+  const raw = row?.created_datetime;
+  if (!raw) return 0;
+  const t = new Date(String(raw).replace(' ', 'T')).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
+function miHistoricalArrivalBucket(arrival, thisWeek, lastWeek) {
+  if (!arrival) return 3;
+  const t = arrival.getTime();
+  if (t >= thisWeek.start.getTime() && t <= thisWeek.end.getTime()) return 0;
+  if (t >= lastWeek.start.getTime() && t <= lastWeek.end.getTime()) return 1;
+  return 2;
+}
+
+function miHistoricalGroupLabel(bucket, thisWeek, lastWeek) {
+  if (bucket === 0) return `Arrived this week (${miFormatWeekRangeLabel(thisWeek)})`;
+  if (bucket === 1) return `Arrived last week (${miFormatWeekRangeLabel(lastWeek)})`;
+  if (bucket === 2) return 'Earlier arrivals';
+  return 'No arrival date';
+}
+
+function miSortHistoricalRows(rows) {
+  const thisWeek = miWorkingWeekRange(new Date(), 0);
+  const lastWeek = miWorkingWeekRange(new Date(), -1);
+  return [...(rows || [])].sort((a, b) => {
+    const ba = miHistoricalArrivalBucket(miArrivalDate(a), thisWeek, lastWeek);
+    const bb = miHistoricalArrivalBucket(miArrivalDate(b), thisWeek, lastWeek);
+    if (ba !== bb) return ba - bb;
+    const ad = miArrivalDate(a)?.getTime() || 0;
+    const bd = miArrivalDate(b)?.getTime() || 0;
+    if (ad !== bd) return bd - ad;
+    return miCreatedTime(b) - miCreatedTime(a);
+  });
+}
+
+function miSortActiveRows(rows) {
+  return [...(rows || [])].sort((a, b) => miCreatedTime(b) - miCreatedTime(a));
+}
+
 function miRowKey(row) {
   const insp = String(row?.inspection_voucher_no || '').trim();
   const ship = String(row?.shipment_voucher_no || '').trim();
   const line = String(row?.shipment_line_item_no ?? '').trim();
   return `${insp}::${ship}::${line}`;
+}
+
+function miRowStatus(row) {
+  return String(row?.status || '').trim().toUpperCase();
+}
+
+/** ERP material inspection vouchers: QI + digits only (e.g. QI00015980). Excludes legacy QAQC…QI. */
+function miIsQiVoucher(row) {
+  return /^QI\d+$/.test(String(row?.inspection_voucher_no || '').trim());
+}
+
+/** Always bucket by ERP status (O / R / H), even if API still merges O+R. */
+function miSplitByStatus(rows) {
+  const outstanding = [];
+  const ready = [];
+  const historical = [];
+  for (const row of rows || []) {
+    if (!miIsQiVoucher(row)) continue;
+    const code = miRowStatus(row);
+    if (code === 'H') historical.push(row);
+    else if (code === 'R') ready.push(row);
+    else if (code === 'O') outstanding.push(row);
+  }
+  return { outstanding, ready, historical };
+}
+
+function miCollectPayloadRows(payload) {
+  const seen = new Set();
+  const rows = [];
+  for (const list of [payload.outstanding, payload.ready, payload.historical]) {
+    for (const row of list || []) {
+      const key = miRowKey(row);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push(row);
+    }
+  }
+  return rows;
 }
 
 function miStatusLabel(code) {
@@ -219,6 +330,33 @@ function miFilterRows(rows) {
   return (rows || []).filter(row => miRowSearchText(row).includes(q));
 }
 
+const MI_TABLE_COL_COUNT = 16;
+
+function miRenderGroupRow(label) {
+  return `
+    <tr class="mi-group-row" aria-hidden="true">
+      <td colspan="${MI_TABLE_COL_COUNT}">${escapeHtml(label)}</td>
+    </tr>
+  `;
+}
+
+function miRenderHistoricalBody(rows) {
+  const thisWeek = miWorkingWeekRange(new Date(), 0);
+  const lastWeek = miWorkingWeekRange(new Date(), -1);
+  const sorted = miSortHistoricalRows(rows);
+  const parts = [];
+  let lastBucket = null;
+  for (const row of sorted) {
+    const bucket = miHistoricalArrivalBucket(miArrivalDate(row), thisWeek, lastWeek);
+    if (bucket !== lastBucket) {
+      parts.push(miRenderGroupRow(miHistoricalGroupLabel(bucket, thisWeek, lastWeek)));
+      lastBucket = bucket;
+    }
+    parts.push(miRenderRow(row));
+  }
+  return parts.join('');
+}
+
 function miRenderRow(row) {
   const key = miRowKey(row);
   const selected = key === miState.selectedRowKey;
@@ -300,7 +438,9 @@ function miRender() {
   }
 
   if (body) {
-    body.innerHTML = filtered.map(miRenderRow).join('');
+    body.innerHTML = miState.view === 'historical'
+      ? miRenderHistoricalBody(filtered)
+      : miSortActiveRows(filtered).map(miRenderRow).join('');
     body.querySelectorAll('tr[data-mi-row-key]').forEach(tr => {
       tr.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -322,7 +462,10 @@ function miRender() {
   if (meta) {
     if (hasData) {
       meta.hidden = false;
-      meta.textContent = `Click a row for detail · Sorted by created (newest first) · cached ${miState.cachedAt || '—'} · TTL ${miState.cacheTtlSec}s`;
+      const sortHint = miState.view === 'historical'
+        ? 'Historical grouped by arrival week (this week, last week, then earlier)'
+        : 'Sorted by created (newest first)';
+      meta.textContent = `Click a row for detail · ${sortHint} · cached ${miState.cachedAt || '—'} · TTL ${miState.cacheTtlSec}s`;
     } else {
       meta.hidden = true;
     }
@@ -358,9 +501,10 @@ async function miLoad({ refresh = false } = {}) {
     return;
   }
 
-  miState.outstanding = payload.outstanding || [];
-  miState.ready = payload.ready || [];
-  miState.historical = payload.historical || [];
+  const split = miSplitByStatus(miCollectPayloadRows(payload));
+  miState.outstanding = split.outstanding;
+  miState.ready = split.ready;
+  miState.historical = split.historical;
   miState.cachedAt = payload.cached_at || '';
   miState.cacheTtlSec = payload.cache_ttl_sec || 300;
   miRender();

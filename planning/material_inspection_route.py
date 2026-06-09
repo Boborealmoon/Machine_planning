@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 material_inspection_bp = Blueprint("material_inspection", __name__)
 
 _CACHE_TTL_SEC = 300
-_cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
+_CACHE_VERSION = 3  # bump when bucket / voucher filter logic changes
+_cache: tuple[float, int, dict[str, list[dict[str, Any]]]] | None = None
 
 # ERP jasper view used by the QC inspection control screen (logistic shipment + QI lines).
 _MATERIAL_INSPECTION_SQL = """
@@ -57,6 +58,7 @@ SELECT
 FROM public.zz_jasper_th5_quality_inspection_control_header
 WHERE source_voucher_no IS NOT NULL
   AND BTRIM(source_voucher_no) <> ''
+  AND inspection_voucher_no ~ '^QI[0-9]+$'
 ORDER BY created_datetime DESC NULLS LAST
 """
 
@@ -108,12 +110,17 @@ def _split_by_status(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any
 def _fetch_material_inspection(*, refresh: bool = False) -> dict[str, list[dict[str, Any]]]:
     global _cache
     now = time.time()
-    if not refresh and _cache and now - _cache[0] < _CACHE_TTL_SEC:
-        return _cache[1]
+    if (
+        not refresh
+        and _cache
+        and _cache[1] == _CACHE_VERSION
+        and now - _cache[0] < _CACHE_TTL_SEC
+    ):
+        return _cache[2]
 
     rows = _erp_query(_MATERIAL_INSPECTION_SQL)
     payload = _split_by_status(rows)
-    _cache = (now, payload)
+    _cache = (now, _CACHE_VERSION, payload)
     return payload
 
 
