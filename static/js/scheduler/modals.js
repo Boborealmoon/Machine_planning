@@ -643,13 +643,20 @@ function editTrialAnchor(blockId) {
       <label class="full">Anchor Datetime <input id="trial-anchor-input" type="datetime-local" value="${escapeHtml(defaultValue)}"></label>
     </div>
   `, 'Save', async () => {
+    const machineId = Number(block.machine_id || 0);
     try {
-      await PUT(`/api/trial/blocks/${block.block_id}`, {
-        anchor_datetime: trialDatetimeLocalToStorage(document.getElementById('trial-anchor-input').value),
-      });
+      await trialRunWithPlannerBusy(async () => {
+        const result = await PUT(`/api/trial/blocks/${block.block_id}`, {
+          anchor_datetime: trialDatetimeLocalToStorage(document.getElementById('trial-anchor-input').value),
+          recalculate: true,
+        });
+        trialClearDirtyMachines([machineId]);
+        if (!trialApplyMachineRefreshFromResponse([machineId], result)) {
+          await refreshMachines([machineId], { response: result });
+        }
+      }, 'Updating anchor…', 'Recalculating queue times');
       closeModal();
-      await refreshMachines([block.machine_id].filter(Boolean));
-      toast('Anchor updated', 'success');
+      toast('Anchor updated — schedule recalculated', 'success');
     } catch (e) {
       toast('Anchor update failed: ' + e.message, 'error');
     }
@@ -835,7 +842,11 @@ async function toggleTrialCompletedCatalog() {
     const erpVouchers = await GET(trialCatalogUrl(true));
     trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
     trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 60000;
-    trialState.catalog = trialLoadCache[cacheKey];
+    if (typeof trialAssignCatalogRows === 'function') {
+      trialAssignCatalogRows(trialLoadCache[cacheKey]);
+    } else {
+      trialState.catalog = trialLoadCache[cacheKey];
+    }
   } catch (err) {
     console.error('catalog reload failed:', err);
     toast('Could not load completed history: ' + err.message, 'error');

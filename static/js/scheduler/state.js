@@ -9,8 +9,11 @@ let trialState = {
 };
 let trialDragPayload = null;
 let trialCatalogSearch = '';
+let trialCatalogSearchTimer = null;
 /** When true, PS / Ops sidebar lists earliest due_date first. */
 let trialCatalogSortByDueDate = false;
+/** '', 'queued', or 'unqueued' — filter PS / Ops sidebar by machine queue state. */
+let trialCatalogQueueFilter = '';
 let trialShowCompleted = false;
 let trialPsTypeFilter = new Set(['A', 'N', 'T']);
 let trialShowSrOrders = false;

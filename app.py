@@ -24,9 +24,9 @@ from planning.materials_route import materials_route_bp
 from planning.planner_routes import trial_bp
 from planning.program_tool_list_route import program_tool_list_bp
 from planning.new_orders_route import new_orders_bp
+from planning.sales_orders_route import sales_orders_bp
 from planning.material_inspection_route import material_inspection_bp
 from planning.repeat_orders_route import repeat_orders_bp
-from planning.planner_email_route import planner_email_bp
 from planning.auk_oee_route import auk_oee_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
@@ -39,9 +39,9 @@ app.register_blueprint(materials_route_bp)
 app.register_blueprint(trial_bp)
 app.register_blueprint(program_tool_list_bp)
 app.register_blueprint(new_orders_bp)
+app.register_blueprint(sales_orders_bp)
 app.register_blueprint(material_inspection_bp)
 app.register_blueprint(repeat_orders_bp)
-app.register_blueprint(planner_email_bp)
 app.register_blueprint(auk_oee_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
@@ -2657,4 +2657,13 @@ if __name__ == "__main__":
     else:
         log.warning("planner passcode gate: disabled — set PLANNER_PASSCODE in .env to protect /planner")
     log.info("scheduler asset build: %s", SCHEDULER_ASSET_VERSION)
-    app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)
+    try:
+        app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)
+    except OSError as exc:
+        in_use = getattr(exc, "winerror", None) == 10048 or "Address already in use" in str(exc)
+        if in_use:
+            log.error(
+                "Port %s is already in use — stop the other Flask/python process or set FLASK_PORT in .env",
+                port,
+            )
+        raise

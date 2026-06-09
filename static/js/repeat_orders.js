@@ -144,19 +144,20 @@
     return checked.join(', ');
   }
 
-  function fileLinkHtml(value, label) {
+  function fileLinkHtml(value, label, titleText) {
     const text = String(value || '').trim();
     if (!text) return '<span class="ro-dash">—</span>';
     const href = text.startsWith('http') || text.startsWith('file:') || text.startsWith('\\\\')
       ? text
       : `file:///${text.replace(/\\/g, '/')}`;
-    return `<a class="ro-file-link" href="${esc(href)}" title="${esc(text)}">${esc(label || text)}</a>`;
+    const title = String(titleText || text).trim();
+    return `<a class="ro-file-link" href="${esc(href)}" title="${esc(title)}">${esc(label || text)}</a>`;
   }
 
   function programNoHtml(value) {
     const text = String(value || '').trim();
     if (!text) return '<span class="ro-dash">—</span>';
-    return `<span class="ro-program-no">${esc(text)}</span>`;
+    return `<span class="ro-program-no" title="${esc(text)}">${esc(text)}</span>`;
   }
 
   function renderStats() {
@@ -167,7 +168,7 @@
     const typesLabel = psTypeLabel();
     el.innerHTML = [
       `<span class="ro-chip"><strong>${visible.length}</strong> groups shown</span>`,
-      `<span class="ro-chip"><strong>${visibleOrders}</strong> sheets (${esc(typesLabel)})</span>`,
+      `<span class="ro-chip"><strong>${visibleOrders}</strong> process sheets (${esc(typesLabel)})</span>`,
       `<span class="ro-chip"><strong>${state.stats.repeat_groups || 0}</strong> repeat groups total</span>`,
     ].join('');
   }
@@ -284,22 +285,22 @@
         const key = rowKey(row);
         const expanded = state.expandedKey === key;
         const countClass = row.is_repeat ? 'ro-count is-repeat' : 'ro-count';
-        const toolLabel = row.tool_list_file ? 'Tool list' : '';
+        const toolLabel = row.tool_list_file ? 'Tools' : '';
         return `
           <tr class="${expanded ? 'is-expanded' : ''}" data-key="${esc(key)}">
             <td>
-              <button type="button" class="ro-expand-btn" data-expand="${esc(key)}" aria-expanded="${expanded}">
+              <button type="button" class="ro-expand-btn" data-expand="${esc(key)}" aria-expanded="${expanded}" aria-label="${expanded ? 'Collapse details' : 'Expand details'}">
                 ${expanded ? '▾' : '▸'}
               </button>
             </td>
-            <td class="ro-part-no">${esc(row.part_no || '—')}</td>
-            <td class="ro-desc">${esc(row.part_desc || '—')}</td>
-            <td class="ro-bom">${esc(row.bom_code || '—')}</td>
+            <td class="ro-part-no" title="${esc(row.part_no || '')}">${esc(row.part_no || '—')}</td>
+            <td class="ro-desc" title="${esc(row.part_desc || '')}">${esc(row.part_desc || '—')}</td>
+            <td class="ro-bom" title="${esc(row.bom_code || '')}">${esc(row.bom_code || '—')}</td>
             <td>${typeTagsHtml(row.type_counts, { activeOnly: true })}</td>
-            <td><span class="${countClass}">${esc(row.order_count || 0)}</span></td>
+            <td class="ro-col-orders"><span class="${countClass}">${esc(row.order_count || 0)}</span></td>
             <td>${programNoHtml(row.program_no)}</td>
             <td>${fileLinkHtml(row.program_file, row.program_file ? 'Program' : '')}</td>
-            <td>${fileLinkHtml(row.tool_list_file, toolLabel || row.tool_list_file || '')}</td>
+            <td>${fileLinkHtml(row.tool_list_file, toolLabel, 'Tool list')}</td>
           </tr>
           ${
             expanded

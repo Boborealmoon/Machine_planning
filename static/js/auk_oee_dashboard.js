@@ -14,9 +14,8 @@
     overall: '#475467',
     turning: '#1570ef',
     milling: '#7a5af8',
-    turnmill: '#099250',
+    multiaxis: '#099250',
     mpp: '#dd2590',
-    other: '#667085',
   };
 
   function pad2(n) {
@@ -93,6 +92,9 @@
       ? `<span class="auk-oee-card__badge">${escapeHtml(card.machine_type)}</span>`
       : '';
     const summaryClass = card.is_group_summary ? ' auk-oee-card--summary' : '';
+    const summaryNote = card.is_group_summary
+      ? '<div class="auk-oee-card__note">Auk block summary · not included in machine avg</div>'
+      : '';
     const error = card.error
       ? `<div class="auk-oee-card__error">${escapeHtml(card.error)}</div>`
       : '';
@@ -117,6 +119,7 @@
           ${renderMetric('PER', card.performance_pct)}
           ${renderMetric('QUA', card.quality_pct)}
         </div>
+        ${summaryNote}
         ${error}
       </article>
     `;
@@ -126,16 +129,18 @@
     const accent = GROUP_ACCENTS[section.id] || GROUP_ACCENTS.other;
     const avg = section.avg_oee_pct != null ? fmtPct(section.avg_oee_pct) : '—';
     const cards = Array.isArray(section.cards) ? section.cards : [];
+    const machineCount = section.count ?? cards.filter((c) => c.is_machine).length;
+    const avgLabel = section.id === 'overall' ? 'Plant OEE' : 'Machine avg';
 
     return `
       <section class="auk-oee-section" style="--section-accent:${accent}">
         <header class="auk-oee-section__head">
           <div class="auk-oee-section__title-wrap">
             <h2 class="auk-oee-section__title">${escapeHtml(section.title)}</h2>
-            <span class="auk-oee-section__count">${cards.length} machine${cards.length === 1 ? '' : 's'}</span>
+            <span class="auk-oee-section__count">${section.id === 'overall' ? 'Summary' : `${machineCount} machine${machineCount === 1 ? '' : 's'}`}</span>
           </div>
           <div class="auk-oee-section__avg">
-            <span class="auk-oee-section__avg-label">Group avg</span>
+            <span class="auk-oee-section__avg-label">${avgLabel}</span>
             <strong class="auk-oee-section__avg-value">${avg}</strong>
           </div>
         </header>
@@ -157,32 +162,39 @@
       overall: 'Plant overview',
       turning: 'Turning',
       milling: 'Milling',
-      turnmill: 'Turn mill',
+      multiaxis: 'Multi-axis',
       mpp: 'MPP',
-      other: 'Other',
     };
-    const order = ['overall', 'turning', 'milling', 'turnmill', 'mpp', 'other'];
+    const order = ['overall', 'turning', 'milling', 'multiaxis', 'mpp'];
     return order
       .filter((id) => byGroup.has(id))
       .map((id) => {
         const sectionCards = byGroup.get(id) || [];
-        const oeeValues = sectionCards
+        const machines = sectionCards.filter((c) => c.is_machine);
+        const summaries = sectionCards.filter((c) => c.is_group_summary);
+        const machineOee = machines
           .map((c) => Number(c.oee_pct))
           .filter((n) => Number.isFinite(n));
+        const avg = id === 'overall'
+          ? (summaries.find((c) => Number.isFinite(Number(c.oee_pct)))?.oee_pct ?? null)
+          : (machineOee.length ? machineOee.reduce((a, b) => a + b, 0) / machineOee.length : null);
         return {
           id,
           title: titles[id] || id,
           cards: sectionCards,
-          avg_oee_pct: oeeValues.length
-            ? oeeValues.reduce((a, b) => a + b, 0) / oeeValues.length
-            : null,
+          count: machines.length,
+          avg_oee_pct: avg,
         };
       });
   }
 
   function setLoading(isLoading) {
-    loadingEl.hidden = !isLoading;
-    if (isLoading) gridEl.hidden = true;
+    if (loadingEl) {
+      loadingEl.classList.toggle('is-active', isLoading);
+    }
+    if (gridEl) {
+      gridEl.hidden = isLoading;
+    }
   }
 
   function showAlert(message) {

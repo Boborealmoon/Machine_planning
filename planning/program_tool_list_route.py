@@ -122,6 +122,47 @@ def _actual_machine_map_for_parts(part_no_erp_list: list[str]) -> dict[tuple[str
         return {}
 
 
+def _normalize_search_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).lower()
+
+
+def _row_search_haystack(row: dict[str, Any]) -> str:
+    parts = [
+        row.get("part_no_erp"),
+        row.get("part_number"),
+        row.get("program_no"),
+        row.get("programmer_name"),
+        row.get("process_sheet_no"),
+        row.get("ps_no"),
+        row.get("cnc_machine_no"),
+        row.get("cnc_machine_no_2"),
+        row.get("actual_machine_no"),
+        row.get("operation_no"),
+        row.get("operation_no_2"),
+        row.get("operation_type"),
+        row.get("kit_assembly_number"),
+        row.get("kit_assembly_no"),
+    ]
+    return _normalize_search_text(" ".join(str(p) for p in parts if p))
+
+
+def _row_matches_search(row: dict[str, Any], search: str) -> bool:
+    query = _normalize_search_text(search)
+    if not query:
+        return True
+    haystack = _row_search_haystack(row)
+    if query in haystack:
+        return True
+    tokens = query.split()
+    return len(tokens) > 1 and all(token in haystack for token in tokens)
+
+
+def _filter_rows_by_search(rows: list[dict[str, Any]], search: str) -> list[dict[str, Any]]:
+    if not search.strip():
+        return rows
+    return [row for row in rows if _row_matches_search(row, search)]
+
+
 def _enrich_rows_for_display(rows: list[dict[str, Any]]) -> None:
     ps_nos = list({r.get("ps_no") for r in rows if r.get("ps_no")})
     part_no_erp_map = _part_no_erp_map_for_ps_nos(ps_nos)
@@ -718,8 +759,9 @@ def api_ptl_data():
     search = request.args.get("search", "").strip()
     try:
         init_db()
-        rows = fetch_all(search)
+        rows = fetch_all()
         _enrich_rows_for_display(rows)
+        rows = _filter_rows_by_search(rows, search)
         return jsonify({"rows": rows, "last_synced": last_synced()})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

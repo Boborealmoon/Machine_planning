@@ -15,15 +15,35 @@ _DEFAULT_ENTITY_ID = 393
 _DEFAULT_CANVAS_ID = 426
 _DEFAULT_FRONTEND_URL = "https://ops.auk.industries/canvas/426"
 _MAX_WORKERS = 8
-_CNC_RE = re.compile(r"^CNC\s+(\d+)", re.IGNORECASE)
+_CNC_RE = re.compile(r"CNC\s+(\d+)", re.IGNORECASE)
+
+# Seletar machine-group mapping (CNC number -> group).
+_CNC_GROUP_NUMBERS: dict[str, set[int]] = {
+    "mpp": {35, 36},
+    "multiaxis": {38, 39, 40},
+    "turning": {10, 15, 21, 22, 24, 27, 30, 31, 32},
+    "milling": {20, 25, 26, 29},
+}
+
+# Auk block summaries — shown for reference, excluded from group averages.
+_SUMMARY_LABELS: dict[str, str] = {
+    "seletar manufacturing overall": "overall",
+    "seletar overall": "overall",
+    "turning": "turning",
+    "aps turn": "turning",
+    "ps turn": "turning",
+    "milling": "milling",
+    "turn mill": "multiaxis",
+    "turnmill": "multiaxis",
+    "mpp": "mpp",
+}
 
 _GROUP_ORDER = (
     ("overall", "Plant overview"),
     ("turning", "Turning"),
     ("milling", "Milling"),
-    ("turnmill", "Turn mill"),
+    ("multiaxis", "Multi-axis"),
     ("mpp", "MPP"),
-    ("other", "Other"),
 )
 
 
@@ -147,54 +167,64 @@ def _overall_block_id_for_mapping(widgets: list[dict[str, Any]]) -> int | None:
     return None
 
 
-def _classify_card(label: str) -> tuple[str, bool]:
-    """Return (group_id, is_group_summary)."""
+def _extract_cnc_number(label: str) -> int | None:
+    match = _CNC_RE.search(label or "")
+    return int(match.group(1)) if match else None
+
+
+def _group_for_cnc(cnc_number: int) -> str | None:
+    for group_id, numbers in _CNC_GROUP_NUMBERS.items():
+        if cnc_number in numbers:
+            return group_id
+    return None
+
+
+def _classify_card(label: str) -> dict[str, Any]:
+    """Classify a canvas tile. Machines are grouped by CNC number; summaries are reference-only."""
     text = (label or "").strip()
     lower = text.lower()
 
-    if "overall" in lower or "seletar manufacturing" in lower:
-        return "overall", True
+    if "seletar manufacturing" in lower:
+        return {
+            "group_id": "overall",
+            "is_group_summary": True,
+            "is_machine": False,
+            "cnc_number": None,
+        }
 
-    if lower in {"turning", "aps turn", "ps turn"}:
-        return "turning", True
-    if lower == "milling":
-        return "milling", True
-    if lower in {"turn mill", "turnmill"}:
-        return "turnmill", True
-    if lower == "mpp":
-        return "mpp", True
+    if lower in _SUMMARY_LABELS:
+        return {
+            "group_id": _SUMMARY_LABELS[lower],
+            "is_group_summary": True,
+            "is_machine": False,
+            "cnc_number": None,
+        }
 
-    if "(turning)" in lower:
-        return "turning", False
-    if "(milling)" in lower:
-        return "milling", False
-    if "(turnmill)" in lower or "(turn mill)" in lower:
-        return "turnmill", False
+    cnc_number = _extract_cnc_number(text)
+    if cnc_number is not None:
+        group_id = _group_for_cnc(cnc_number)
+        return {
+            "group_id": group_id,
+            "is_group_summary": False,
+            "is_machine": group_id is not None,
+            "cnc_number": cnc_number,
+        }
 
-    if "turn" in lower and "mill" in lower:
-        return "turnmill", "cnc" not in lower
-    if "milling" in lower:
-        return "milling", "cnc" not in lower
-    if "turning" in lower or lower.endswith(" turn"):
-        return "turning", "cnc" not in lower
-    if lower == "mpp" or lower.startswith("mpp "):
-        return "mpp", True
-
-    return "other", "cnc" not in lower
-
-
-def _cnc_sort_key(label: str) -> tuple[int, str]:
-    match = _CNC_RE.match(label or "")
-    if match:
-        return (0, int(match.group(1)))
-    return (1, (label or "").lower())
+    return {
+        "group_id": None,
+        "is_group_summary": False,
+        "is_machine": False,
+        "cnc_number": None,
+    }
 
 
 def _card_sort_key(card: dict[str, Any]) -> tuple:
-    group_id = card.get("group_id") or "other"
+    group_id = card.get("group_id") or "zzz"
     group_rank = next((idx for idx, (gid, _) in enumerate(_GROUP_ORDER) if gid == group_id), 99)
     summary_rank = 0 if card.get("is_group_summary") else 1
-    return (group_rank, summary_rank, _cnc_sort_key(card.get("label") or ""))
+    cnc_number = card.get("cnc_number")
+    cnc_rank = int(cnc_number) if cnc_number is not None else 9999
+    return (group_rank, summary_rank, cnc_rank, (card.get("label") or "").lower())
 
 
 def _dedupe_overall_summaries(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -254,10 +284,25 @@ def _dedupe_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
+def _section_avg_oee(group_id: str, machines: list[dict[str, Any]], summaries: list[dict[str, Any]]) -> float | None:
+    if group_id == "overall":
+        for summary in summaries:
+            if summary.get("oee_pct") is not None:
+                return round(float(summary["oee_pct"]), 1)
+        return None
+
+    oee_values = [float(c["oee_pct"]) for c in machines if c.get("oee_pct") is not None]
+    if not oee_values:
+        return None
+    return round(sum(oee_values) / len(oee_values), 1)
+
+
 def _group_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {gid: [] for gid, _ in _GROUP_ORDER}
     for card in cards:
-        group_id = card.get("group_id") or "other"
+        group_id = card.get("group_id")
+        if not group_id:
+            continue
         grouped.setdefault(group_id, []).append(card)
 
     sections: list[dict[str, Any]] = []
@@ -265,15 +310,22 @@ def _group_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
         section_cards = grouped.get(group_id) or []
         if not section_cards:
             continue
-        oee_values = [float(c["oee_pct"]) for c in section_cards if c.get("oee_pct") is not None]
-        avg_oee = round(sum(oee_values) / len(oee_values), 1) if oee_values else None
+
+        summaries = [c for c in section_cards if c.get("is_group_summary")]
+        machines = [c for c in section_cards if c.get("is_machine")]
+        display_cards = sorted(
+            summaries + machines,
+            key=_card_sort_key,
+        )
+
         sections.append(
             {
                 "id": group_id,
                 "title": title,
-                "count": len(section_cards),
-                "avg_oee_pct": avg_oee,
-                "cards": section_cards,
+                "count": len(machines),
+                "summary_count": len(summaries),
+                "avg_oee_pct": _section_avg_oee(group_id, machines, summaries),
+                "cards": display_cards,
             }
         )
     return sections
@@ -295,15 +347,17 @@ def _card_from_widget(
 ) -> dict[str, Any]:
     overall = (oee_payload or {}).get("overall") or {}
     label = widget.get("label") or "Untitled"
-    group_id, is_group_summary = _classify_card(label)
+    classification = _classify_card(label)
     title, machine_type = _parse_card_title(label)
     return {
         "widget_id": widget.get("widget_id"),
         "label": label,
         "title": title,
         "machine_type": machine_type,
-        "group_id": group_id,
-        "is_group_summary": is_group_summary,
+        "group_id": classification["group_id"],
+        "is_group_summary": classification["is_group_summary"],
+        "is_machine": classification["is_machine"],
+        "cnc_number": classification["cnc_number"],
         "position_x": int(widget.get("position_x") or 0),
         "position_y": int(widget.get("position_y") or 0),
         "block_id": (oee_payload or {}).get("block_id") or (widget.get("binding") or {}).get("block_id"),
@@ -410,6 +464,7 @@ def fetch_canvas_dashboard(
         )
 
     cards = _dedupe_cards(cards)
+    cards = [card for card in cards if card.get("group_id")]
     groups = _group_cards(cards)
 
     return {

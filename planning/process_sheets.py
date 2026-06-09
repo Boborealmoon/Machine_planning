@@ -392,6 +392,9 @@ def list_temp_process_sheets_payload(con, limit=500):
                 "updated_at": compact_text(row.get("updated_at")),
                 "is_queued": planned_lane > 0 or bool(queued_machines),
                 "queued_machines": queued_machines,
+                "remaining_qty": max(0.0, _to_float(row.get("reject_qty")) - _to_float(row.get("finished_qty"))),
+                "is_resolved": compact_text(row.get("planner_status")).upper() == "COMPLETED"
+                or compact_text(row.get("ps_status")).upper() == "COMPLETED",
                 "stored_in": "planner_temp_process_sheet",
             }
         )
@@ -1198,6 +1201,209 @@ def delete_temp_process_sheet(con, planner_ps_id):
         (planner_ps_id,),
     )
     return {"ok": True, "planner_ps_id": planner_ps_id, "deleted": True}
+
+
+def _void_active_actuals_for_block_date(con, block_id, report_date):
+    for row in rows(
+        con.execute(
+            """
+            SELECT actual_id
+            FROM planner_production_actual
+            WHERE block_id = %s
+              AND report_date = %s
+              AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+            """,
+            (int(block_id), report_date),
+        )
+    ):
+        con.execute(
+            """
+            UPDATE planner_production_actual
+            SET status = 'VOID', updated_at = NOW()
+            WHERE actual_id = %s
+            """,
+            (int(row["actual_id"]),),
+        )
+
+
+def _record_block_actual_for_resolve(
+    con,
+    *,
+    block_id,
+    machine_id,
+    report_date,
+    output_qty,
+    reject_qty=0.0,
+    remarks="",
+):
+    """Insert a same-day actual row so refresh_block_actual_status can pop the block off."""
+    output_qty = max(0.0, _to_float(output_qty))
+    reject_qty = max(0.0, _to_float(reject_qty))
+    _void_active_actuals_for_block_date(con, block_id, report_date)
+    good_qty = max(0.0, output_qty - reject_qty)
+    con.execute(
+        """
+        INSERT INTO planner_production_actual (
+            segment_id, block_id, machine_id, report_date, remarks, reported_at,
+            output_qty, reject_qty, target_qty_at_report, status, entry_type,
+            correction_of_actual_id, good_qty_at_report, created_by
+        ) VALUES (NULL, %s, %s, %s, %s, NOW(), %s, %s, %s, 'ACTIVE', 'REPORT', NULL, %s, %s)
+        """,
+        (
+            int(block_id),
+            int(machine_id or 0) or None,
+            report_date,
+            compact_text(remarks) or "Temp PS resolve",
+            output_qty,
+            reject_qty,
+            output_qty,
+            good_qty,
+            "temp-ps-resolve",
+        ),
+    )
+
+
+def resolve_temp_process_sheet(con, planner_ps_id, qty_produced, qty_rejected=0.0, *, remarks=""):
+    """Record rework output for a [Temp] PS and pop queued blocks off the planner when done."""
+    from .actuals import actual_totals_for_block, refresh_block_actual_status
+
+    planner_ps_id = compact_text(planner_ps_id)
+    if not is_temp_planner_ps_id(planner_ps_id):
+        raise ValueError("Only [Temp] process sheets can be resolved from this action.")
+
+    ps = one(
+        con.execute(
+            "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
+            (planner_ps_id,),
+        )
+    )
+    if not ps:
+        raise ValueError("Temp process sheet not found.")
+
+    temp_row = one(
+        con.execute(
+            "SELECT * FROM planner_temp_process_sheet WHERE planner_ps_id = %s",
+            (planner_ps_id,),
+        )
+    )
+    reject_qty = _to_float((temp_row or {}).get("reject_qty") or ps.get("planned_qty"))
+    qty_produced = max(0.0, _to_float(qty_produced))
+    qty_rejected = max(0.0, _to_float(qty_rejected))
+    if qty_produced <= 0 and qty_rejected <= 0:
+        raise ValueError("Enter output or reject quantity.")
+
+    finished_qty = min(reject_qty, qty_produced) if reject_qty > 0 else qty_produced
+    is_complete = reject_qty > 0 and qty_produced + 1e-9 >= reject_qty
+    planner_status = "COMPLETED" if is_complete else compact_text(ps.get("planner_status") or "UNPLANNED")
+    ps_status = "COMPLETED" if is_complete else compact_text(ps.get("status") or "ACTIVE")
+    if planner_status not in {"COMPLETED"} and finished_qty > 0:
+        planner_status = "PARTIALLY_PLANNED" if planner_status == "UNPLANNED" else planner_status
+
+    con.execute(
+        """
+        UPDATE planner_process_sheet
+        SET finished_qty = %s,
+            planner_status = %s,
+            status = %s,
+            updated_at = NOW()
+        WHERE planner_ps_id = %s
+        """,
+        (finished_qty, planner_status, ps_status, planner_ps_id),
+    )
+
+    selected_bom_id = int(ps.get("selected_bom_id") or 0)
+    updated_op_seq_ids = []
+    if selected_bom_id:
+        steps_by_ps = _flow_steps_for_ps_ids(con, [planner_ps_id])
+        steps = _resolve_process_sheet_steps(con, dict(ps), steps_by_ps.get(planner_ps_id, []))
+        manual_targets = [step for step in _last_operation_steps(steps) if int(step.get("op_seq_id") or 0) > 0]
+        if not manual_targets:
+            manual_targets = [
+                step for step in steps if int(step.get("op_seq_id") or 0) > 0
+            ]
+        _ensure_bom_step_qty_table(con)
+        for step in manual_targets:
+            op_seq_id = int(step.get("op_seq_id") or 0)
+            if op_seq_id <= 0:
+                continue
+            if not (step_needs_manual_produced(step) or is_temp_planner_ps_id(planner_ps_id)):
+                continue
+            con.execute(
+                """
+                INSERT INTO planner_ps_bom_step_qty (
+                    planner_ps_id, op_seq_id, qty_produced, qty_rejected, updated_at
+                ) VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (planner_ps_id, op_seq_id) DO UPDATE SET
+                    qty_produced = EXCLUDED.qty_produced,
+                    qty_rejected = EXCLUDED.qty_rejected,
+                    updated_at = NOW()
+                """,
+                (planner_ps_id, op_seq_id, finished_qty, qty_rejected),
+            )
+            updated_op_seq_ids.append(op_seq_id)
+
+    _, block_rows_by_ps = _block_metrics_for_ps_ids(con, [planner_ps_id])
+    block_rows = block_rows_by_ps.get(planner_ps_id, [])
+    report_date = date.today().isoformat()
+    popped_block_ids = []
+    remaining_to_allocate = finished_qty
+    note = compact_text(remarks) or "Temp PS resolve"
+
+    for row in block_rows:
+        block_id = int(row.get("block_id") or 0)
+        if block_id <= 0 or remaining_to_allocate <= 1e-9:
+            break
+        block = one(
+            con.execute(
+                """
+                SELECT block_id, machine_id, scheduled_qty, active
+                FROM planner_run_block
+                WHERE block_id = %s
+                """,
+                (block_id,),
+            )
+        )
+        if not block or not block.get("active", True):
+            continue
+        scheduled_qty = _to_float(block.get("scheduled_qty"))
+        totals = actual_totals_for_block(con, block_id)
+        current_good = _to_float(totals.get("good_qty"))
+        if is_complete:
+            target_good = scheduled_qty
+        else:
+            target_good = min(scheduled_qty, remaining_to_allocate)
+        if target_good + 1e-9 <= current_good:
+            remaining_to_allocate = max(0.0, remaining_to_allocate - target_good)
+            continue
+        output_qty = target_good
+        if qty_rejected > 0 and is_complete and len(block_rows) == 1:
+            output_qty = target_good + qty_rejected
+        _record_block_actual_for_resolve(
+            con,
+            block_id=block_id,
+            machine_id=int(block.get("machine_id") or 0),
+            report_date=report_date,
+            output_qty=output_qty,
+            reject_qty=qty_rejected if len(block_rows) == 1 else 0.0,
+            remarks=note,
+        )
+        refresh_block_actual_status(con, block_id, auto_unschedule=True)
+        popped_block_ids.append(block_id)
+        remaining_to_allocate = max(0.0, remaining_to_allocate - target_good)
+
+    return {
+        "ok": True,
+        "planner_ps_id": planner_ps_id,
+        "display_ps_id": temp_planner_ps_display_label(planner_ps_id),
+        "qty_produced": qty_produced,
+        "qty_rejected": qty_rejected,
+        "finished_qty": finished_qty,
+        "reject_qty": reject_qty,
+        "is_resolved": is_complete,
+        "planner_status": planner_status,
+        "popped_block_ids": popped_block_ids,
+        "updated_op_seq_ids": updated_op_seq_ids,
+    }
 
 
 _OVERLAY_COLUMN_CACHE = None
@@ -3153,6 +3359,40 @@ def api_create_temp_process_sheet():
                 result = create_temp_process_sheet(
                     con, source_ps_id, pp_partial_no, qty, remarks=remarks
                 )
+            try:
+                from app import _invalidate_pp_vouchers_with_ops_cache
+
+                _invalidate_pp_vouchers_with_ops_cache()
+            except Exception:
+                pass
+            return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@process_sheets_bp.post("/api/trial/temp-process-sheets/<path:planner_ps_id>/resolve")
+@process_sheets_bp.post("/api/temp-process-sheets/<path:planner_ps_id>/resolve")
+def api_resolve_temp_process_sheet(planner_ps_id):
+    data = request.get_json(silent=True) or {}
+    qty_produced = data.get("qty_produced")
+    if qty_produced is None:
+        qty_produced = data.get("output_qty") or data.get("qty") or data.get("quantity")
+    qty_rejected = data.get("qty_rejected")
+    if qty_rejected is None:
+        qty_rejected = data.get("reject_qty") or 0
+    remarks = compact_text(data.get("remarks") or "")
+    try:
+        with planner_db() as con:
+            _ensure_planner_temp_process_sheet_table(con)
+            result = resolve_temp_process_sheet(
+                con,
+                planner_ps_id,
+                qty_produced,
+                qty_rejected=qty_rejected,
+                remarks=remarks,
+            )
             try:
                 from app import _invalidate_pp_vouchers_with_ops_cache
 

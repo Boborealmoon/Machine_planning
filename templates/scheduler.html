@@ -77,6 +77,14 @@
         <div id="trial-ps-type-filter"></div>
         <div class="trial-sidebar-catalog-actions">
           <button
+            id="trial-catalog-queue-filter-btn"
+            class="btn btn-ghost btn-sm trial-sidebar-head-btn trial-catalog-sort-btn"
+            type="button"
+            onclick="toggleTrialCatalogUnqueuedOnly()"
+            aria-pressed="false"
+            title="Show only unqueued jobs with open operations (hides queued and completed)"
+          >Unqueued only</button>
+          <button
             id="trial-catalog-due-sort-btn"
             class="btn btn-ghost btn-sm trial-sidebar-head-btn trial-catalog-sort-btn"
             type="button"
@@ -85,7 +93,7 @@
             title="Sort operations by due date (earliest first)"
           >Sort by due</button>
         </div>
-        <input id="trial-catalog-search" class="trial-catalog-search" type="search" placeholder="Search PS, part, op..." oninput="renderTrialCatalog()">
+        <input id="trial-catalog-search" class="trial-catalog-search" type="search" placeholder="Search PS, part, op..." oninput="scheduleTrialCatalogSearchRender()">
         <div id="trial-catalog" class="trial-catalog"></div>
       </div>
     </aside>
@@ -131,6 +139,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (window.SCHEDULER_BUILD) console.info('Scheduler build:', window.SCHEDULER_BUILD);
   window.trialScheduleRenderHook = null;
   trialScheduleDateFilter = trialResolvedScheduleDateFilterFromUrl();
+  if (typeof renderTrialPsTypeFilter === 'function') renderTrialPsTypeFilter();
   loadTrial();
   let _autoRefreshInFlight = false;
   let _lastAutoRefreshAt = 0;

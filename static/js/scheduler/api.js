@@ -200,6 +200,12 @@ function trialInvalidateCatalogCache() {
     trialLoadCache[key] = null;
     trialLoadCache[`${key}ExpiresAt`] = 0;
   });
+  if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
+}
+
+function trialAssignCatalogRows(rows) {
+  trialState.catalog = Array.isArray(rows) ? rows : [];
+  if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
 }
 
 /** Reload PS/Ops sidebar after queue mutations (split, delete, schedule). */
@@ -210,7 +216,7 @@ async function trialRefreshCatalogSidebar() {
     const cacheKey = trialCatalogCacheKey();
     trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
     trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 10000;
-    trialState.catalog = trialLoadCache[cacheKey];
+    trialAssignCatalogRows(trialLoadCache[cacheKey]);
     if (typeof trialMaterialInOverrides !== 'undefined') trialMaterialInOverrides.clear();
     if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
     if (typeof bindTrialCatalogDnD === 'function') bindTrialCatalogDnD();
@@ -227,7 +233,7 @@ async function syncPpVouchers() {
     const cacheKey = trialCatalogCacheKey();
     trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
     trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 60000;
-    trialState.catalog = trialLoadCache[cacheKey];
+    trialAssignCatalogRows(trialLoadCache[cacheKey]);
     trialScheduleRender();
   } catch (err) {
     console.error('pp-vouchers sync failed:', err);
@@ -241,7 +247,7 @@ window.addEventListener('pp-vouchers-synced', () => {
       const cacheKey = trialCatalogCacheKey();
       trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
       trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 60000;
-      trialState.catalog = trialLoadCache[cacheKey];
+      trialAssignCatalogRows(trialLoadCache[cacheKey]);
       trialScheduleRender();
     })
     .catch(err => console.error('catalog refresh after ERP sync failed:', err));
@@ -549,6 +555,7 @@ function trialApplySchedulePayload(scheduleData, machinesResult, programToolsLoo
     program_tools_lookup: programToolsLookup ?? trialState.program_tools_lookup ?? null,
   };
   if (typeof trialResetDataIndexes === 'function') trialResetDataIndexes();
+  if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
 }
 
 async function loadTrial(options = {}) {
@@ -622,7 +629,7 @@ async function loadTrial(options = {}) {
   const cacheKey = trialCatalogCacheKey();
   trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
   trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 10000;
-  trialState.catalog = trialLoadCache[cacheKey];
+  trialAssignCatalogRows(trialLoadCache[cacheKey]);
   if (typeof trialMaterialInOverrides !== 'undefined') trialMaterialInOverrides.clear();
   trialScheduleRender(null, { deferCatalog: true });
   if (typeof trialPerfMark === 'function') {

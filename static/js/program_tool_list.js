@@ -7,6 +7,7 @@ let debounceTimer = null;
 let allRows       = [];
 let filteredRows  = [];   // post-filter, pre-pagination
 let currentPage   = 1;
+let searchQuery   = "";
 let opTypeFilter  = "";         // "" | "Turning" | "Milling" | "Turnmill"
 let machineFilter = new Set();  // empty = show all
 let summaryEntries = [];        // full built summary, pre-search
@@ -16,10 +17,13 @@ let summaryEntries = [];        // full built summary, pre-search
 document.addEventListener("DOMContentLoaded", () => {
   loadData();
 
-  // Search
+  // Search (client-side on enriched display fields)
   document.getElementById("ptl-search").addEventListener("input", (e) => {
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => loadData(e.target.value.trim()), 280);
+    debounceTimer = setTimeout(() => {
+      searchQuery = e.target.value.trim();
+      applyFilters();
+    }, 280);
   });
 
   // Sync
@@ -89,12 +93,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // ── Load ──────────────────────────────────────────────────────────────────
 
-async function loadData(search = "") {
+async function loadData() {
   setTableState("Loading…");
   try {
-    const url = "/api/program-tool-list" +
-      (search ? `?search=${encodeURIComponent(search)}` : "");
-    const res  = await fetch(url);
+    const res  = await fetch("/api/program-tool-list");
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     allRows = data.rows;
@@ -119,8 +121,7 @@ async function syncData() {
     if (data.error) throw new Error(data.error);
 
     btn.textContent = `Synced ${data.synced} rows ✓`;
-    const search = document.getElementById("ptl-search").value.trim();
-    await loadData(search);
+    await loadData();
   } catch (err) {
     btn.textContent = "Sync Failed";
     alert("Sync error: " + err.message);
@@ -134,6 +135,10 @@ async function syncData() {
 
 function applyFilters() {
   let rows = allRows;
+
+  if (searchQuery) {
+    rows = rows.filter((r) => rowMatchesSearch(r, searchQuery));
+  }
 
   if (opTypeFilter) {
     const f = opTypeFilter.toLowerCase();
@@ -384,4 +389,40 @@ function esc(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function normalizeSearchText(value) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function rowSearchHaystack(row) {
+  return normalizeSearchText(
+    [
+      row.part_no_erp,
+      row.part_number,
+      row.program_no,
+      row.programmer_name,
+      row.process_sheet_no,
+      row.ps_no,
+      row.cnc_machine_no,
+      row.cnc_machine_no_2,
+      row.actual_machine_no,
+      row.operation_no,
+      row.operation_no_2,
+      row.operation_type,
+      row.kit_assembly_number,
+      row.kit_assembly_no,
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
+}
+
+function rowMatchesSearch(row, query) {
+  const q = normalizeSearchText(query);
+  if (!q) return true;
+  const haystack = rowSearchHaystack(row);
+  if (haystack.includes(q)) return true;
+  const tokens = q.split(" ");
+  return tokens.length > 1 && tokens.every((token) => haystack.includes(token));
 }

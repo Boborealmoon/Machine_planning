@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Sales Orders{% endblock %}
+{% block main_class %}app-main--new-orders{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=responsive-layout-20260604">{% endblock %}
+{% block content %}
+<div class="new-orders-page">
+  <div class="new-orders-header">
+    <div>
+      <h1 class="new-orders-title">Sales Orders</h1>
+      <p class="new-orders-subtitle">
+        Built from <code>mfg_pp_vch</code> (PP vouchers on <strong>source_voucher_no</strong>),
+        nested <code>mfg_pp_partial_view</code> partials on <strong>pp_voucher_no</strong>,
+        with <code>so_order_view</code> customer/header joined on <strong>sales_order_no</strong>.
+        Toggle <strong>Active</strong> <span class="mi-status-pill mi-status-pill--r">O</span> or
+        <strong>Complete</strong> <span class="mi-status-pill mi-status-pill--h">C</span>.
+      </p>
+    </div>
+    <div class="new-orders-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="so-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="new-orders-toolbar card">
+    <div class="new-orders-filter new-orders-filter--view">
+      <span>View</span>
+      <div class="mi-view-toggle" role="tablist" aria-label="Sales order view">
+        <button type="button" class="mi-view-btn is-active" data-so-view="active" role="tab" aria-selected="true">
+          Active <span class="mi-status-pill mi-status-pill--r">O</span>
+          <span class="ps-view-tab-count" id="so-active-tab-count" hidden>0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-so-view="complete" role="tab" aria-selected="false">
+          Complete <span class="mi-status-pill mi-status-pill--h">C</span>
+          <span class="ps-view-tab-count" id="so-complete-tab-count" hidden>0</span>
+        </button>
+      </div>
+    </div>
+    <label class="new-orders-filter new-orders-filter--grow">
+      <span>Search</span>
+      <span class="planner-page-search-wrap">
+        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="so-search" class="planner-page-search-input" type="search" placeholder="SO, PP, partial, part, customer PO..." autocomplete="off">
+      </span>
+    </label>
+    <div class="new-orders-stats" id="so-stats"></div>
+  </div>
+
+  <div id="so-loading" class="loading"><div class="spinner"></div> Loading sales orders...</div>
+  <div id="so-table-wrap" class="new-orders-table-wrap card" hidden>
+    <table class="new-orders-table">
+      <thead>
+        <tr>
+          <th class="new-orders-side-head">Sales order</th>
+          <th>PP voucher</th>
+          <th>Partial</th>
+          <th>Part</th>
+          <th>BOM</th>
+          <th>PP qty</th>
+          <th>SO line</th>
+          <th>PO due</th>
+          <th>Proposed EDD</th>
+          <th>PP status</th>
+        </tr>
+      </thead>
+      <tbody id="so-table-body"></tbody>
+    </table>
+  </div>
+  <div id="so-empty" class="new-orders-empty card" hidden>
+    <p id="so-empty-text">No sales orders match your filters.</p>
+  </div>
+  <p class="new-orders-meta" id="so-meta" hidden></p>
+</div>
+
+<div id="so-detail" class="new-orders-detail" hidden>
+  <div class="new-orders-detail-backdrop" data-action="close-detail" aria-hidden="true"></div>
+  <aside class="new-orders-detail-panel" role="dialog" aria-modal="true" aria-labelledby="so-detail-title">
+    <div class="new-orders-detail-head">
+      <div>
+        <p class="new-orders-detail-kicker">Sales order detail</p>
+        <h2 class="new-orders-detail-title" id="so-detail-title"></h2>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="so-detail-close" aria-label="Close">Close</button>
+    </div>
+    <div class="new-orders-detail-body" id="so-detail-body"></div>
+    <p class="new-orders-detail-foot">Source: live COMAIN ERP read · short-lived server cache (not saved to Supabase)</p>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-orders-pp-20260608"></script>
+<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=sales-orders-pp-slim-20260608"></script>
+{% endblock %}

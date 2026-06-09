@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='temp-ps-fix-20260604') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='ps-bulk-lookup-20260609') }}" />
   {% block extra_css %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -45,7 +45,7 @@
       </a>
 
       {# Orders & intake (not under /planning-data — avoids master-data highlight) #}
-      <div class="nav-dropdown {% if nav_path in ('/new-orders', '/repeat-orders', '/planning-data/repeat-orders') or active in ('new_orders', 'repeat_orders') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/new-orders', '/sales-orders', '/repeat-orders', '/planning-data/repeat-orders') or active in ('new_orders', 'sales_orders', 'repeat_orders') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="orders">
           ORDERS <span class="nav-caret">▾</span>
         </button>
@@ -55,6 +55,10 @@
              class="nav-dropdown-item {% if nav_path == '/new-orders' or active == 'new_orders' %}nav-dropdown-item--active{% endif %}">
             New orders
           </a>
+          <a href="/sales-orders"
+             class="nav-dropdown-item {% if nav_path == '/sales-orders' or active == 'sales_orders' %}nav-dropdown-item--active{% endif %}">
+            Sales orders
+          </a>
           <a href="/planning-data/repeat-orders"
              class="nav-dropdown-item {% if nav_path in ('/repeat-orders', '/planning-data/repeat-orders') or active == 'repeat_orders' %}nav-dropdown-item--active{% endif %}">
             Repeat orders
@@ -63,7 +67,7 @@
       </div>
 
       {# Shop floor & delays #}
-      <div class="nav-dropdown {% if nav_path in ('/actual-production', '/material-inspection', '/queue-delays', '/planner-email', '/auk-oee') or active in ('actual_production', 'material_inspection', 'queue_delays', 'planner_email', 'auk_oee') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/actual-production', '/material-inspection', '/queue-delays', '/auk-oee') or active in ('actual_production', 'material_inspection', 'queue_delays', 'auk_oee') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="production">
           PRODUCTION <span class="nav-caret">▾</span>
         </button>
@@ -85,10 +89,6 @@
           <a href="/queue-delays"
              class="nav-dropdown-item {% if nav_path == '/queue-delays' or active == 'queue_delays' %}nav-dropdown-item--active{% endif %}">
             Queue delays
-          </a>
-          <a href="/planner-email"
-             class="nav-dropdown-item {% if nav_path == '/planner-email' or active == 'planner_email' %}nav-dropdown-item--active{% endif %}">
-            Daily planner email
           </a>
         </div>
       </div>

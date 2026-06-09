@@ -94,6 +94,23 @@
         <span><span class="ps-planning-flag is-overdue"></span> Past PO due date</span>
         <span><span class="ps-temp-badge ps-temp-badge--legend">[Temp]</span> Reject / rework copy</span>
       </div>
+      <div class="ps-bulk-lookup-row">
+        <span class="ps-bulk-lookup-label">Bulk lookup</span>
+        <div class="search-wrap ps-bulk-lookup-wrap">
+          <svg class="search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5" stroke="#999" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="#999" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input
+            type="text"
+            class="search-input"
+            id="ps-bulk-lookup-input"
+            placeholder="PS, part, PO, SO… comma-separated — opens results table"
+            autocomplete="off"
+          />
+        </div>
+        <button type="button" class="btn btn-dark btn-sm" id="ps-bulk-lookup-btn">Lookup table</button>
+      </div>
     </div>
 
     <!-- Production Queue -->
@@ -152,5 +169,5 @@
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=temp-ps-ps-page-20260604"></script>
 <script src="{{ url_for('static', filename='js/scheduler/modals.js') }}?v=temp-ps-fix-20260604"></script>
 <script src="{{ url_for('static', filename='js/scheduler/temp_ps.js') }}?v=temp-ps-ui-20260605"></script>
-<script src="{{ url_for('static', filename='js/process_sheets.js', v='ps-current-stage-20260608') }}"></script>
+<script src="{{ url_for('static', filename='js/process_sheets.js', v='ps-bulk-lookup-20260609') }}"></script>
 {% endblock %}

@@ -812,6 +812,37 @@ input, select { font-family: inherit; }
   color: var(--text3, #6b7280);
   margin-top: 2px;
 }
+.ps-temp-tracker-id-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ps-temp-planner-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 120px;
+}
+.ps-temp-planner-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text2, #4b5563);
+  line-height: 1.3;
+}
+.ps-temp-tracker-row.is-resolved {
+  opacity: 0.82;
+}
+.ps-planning-flag.is-resolved {
+  background: #157347;
+}
+.ps-temp-tracker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  white-space: nowrap;
+}
 .filter-dropdown-item--sep {
   height: 1px;
   margin: 4px 0;
@@ -1815,6 +1846,84 @@ input, select { font-family: inherit; }
 
 .ps-table tr:last-child td {
   border-bottom: 0;
+}
+
+.ps-bulk-lookup-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #edf0f3;
+}
+
+.ps-bulk-lookup-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7b8794;
+  white-space: nowrap;
+}
+
+.ps-bulk-lookup-wrap {
+  flex: 1;
+  min-width: 280px;
+}
+
+.ps-bulk-lookup-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #666;
+}
+
+.ps-bulk-lookup-summary strong {
+  color: #111;
+}
+
+.ps-bulk-lookup-missed {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fff8e6;
+  border: 1px solid #f0d78c;
+  font-size: 12px;
+  color: #7a5b00;
+}
+
+.ps-bulk-lookup-missed strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ps-bulk-lookup-row-btn {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  color: #2563eb;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ps-bulk-lookup-row-btn:hover {
+  text-decoration: underline;
+}
+
+.ps-bulk-lookup-table .ps-table tbody tr {
+  cursor: pointer;
+}
+
+.ps-bulk-lookup-table .ps-table tbody tr:hover td {
+  background: #f8fafc;
 }
 
 .ps-manual-produced-input {
