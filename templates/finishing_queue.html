@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Finishing Queue{% endblock %}
+{% block main_class %}app-main--finishing-queue{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=finishing-queue-20260611">{% endblock %}
+{% block content %}
+<div class="fq-page new-orders-page">
+  <div class="new-orders-header">
+    <div>
+      <h1 class="new-orders-title">Finishing Queue</h1>
+      <p class="new-orders-subtitle">
+        Process sheet partials whose active ERP stage is
+        <strong>Deburring</strong>, <strong>Final Inspection</strong>, or <strong>Packing</strong>
+        (from <code>mfg_wo_status</code> / <code>pp_vouchers_cache</code>).
+        Excludes completed stages and fully shipped lines.
+      </p>
+    </div>
+    <div class="new-orders-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="fq-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="new-orders-toolbar card">
+    <div class="new-orders-filter new-orders-filter--view">
+      <span>Stage</span>
+      <div class="mi-view-toggle" role="tablist" aria-label="Finishing stage">
+        <button type="button" class="mi-view-btn is-active" data-fq-stage="all" role="tab" aria-selected="true">
+          All <span class="ps-view-tab-count" id="fq-count-all" hidden>0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-fq-stage="deburring" role="tab" aria-selected="false">
+          Deburring <span class="ps-view-tab-count" id="fq-count-deburring" hidden>0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-fq-stage="final_inspection" role="tab" aria-selected="false">
+          Final Inspection <span class="ps-view-tab-count" id="fq-count-final_inspection" hidden>0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-fq-stage="packing" role="tab" aria-selected="false">
+          Packing <span class="ps-view-tab-count" id="fq-count-packing" hidden>0</span>
+        </button>
+      </div>
+    </div>
+    <div class="new-orders-filter new-orders-filter--view">
+      <span>Status</span>
+      <div class="mi-view-toggle" role="tablist" aria-label="Stage status">
+        <button type="button" class="mi-view-btn is-active" data-fq-status="all" role="tab" aria-selected="true">All</button>
+        <button type="button" class="mi-view-btn" data-fq-status="I" role="tab" aria-selected="false">
+          In process <span class="mi-status-pill mi-status-pill--o">I</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-fq-status="R" role="tab" aria-selected="false">
+          Ready <span class="mi-status-pill mi-status-pill--r">R</span>
+        </button>
+      </div>
+    </div>
+    <label class="new-orders-filter new-orders-filter--grow">
+      <span>Search</span>
+      <span class="planner-page-search-wrap">
+        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="fq-search" class="planner-page-search-input" type="search" placeholder="PS, partial, part, SO, BOM..." autocomplete="off">
+      </span>
+    </label>
+    <div class="new-orders-stats" id="fq-stats"></div>
+  </div>
+
+  <div id="fq-loading" class="loading"><div class="spinner"></div> Loading finishing queue...</div>
+  <div id="fq-table-wrap" class="new-orders-table-wrap card" hidden>
+    <table class="new-orders-table fq-table">
+      <thead>
+        <tr>
+          <th>Process sheet</th>
+          <th>Partial</th>
+          <th>Stage</th>
+          <th>Status</th>
+          <th>Part</th>
+          <th>Description</th>
+          <th>BOM</th>
+          <th>Qty</th>
+          <th>Stage progress</th>
+          <th>Sales order</th>
+          <th>Due</th>
+          <th>PP status</th>
+        </tr>
+      </thead>
+      <tbody id="fq-table-body"></tbody>
+    </table>
+  </div>
+  <div id="fq-empty" class="new-orders-empty card" hidden>
+    <p id="fq-empty-text">No partials are currently at a finishing stage.</p>
+  </div>
+  <p class="new-orders-meta" id="fq-meta" hidden></p>
+</div>
+
+<div id="fq-detail" class="new-orders-detail" hidden>
+  <div class="new-orders-detail-backdrop" data-action="close-detail" aria-hidden="true"></div>
+  <aside class="new-orders-detail-panel" role="dialog" aria-modal="true" aria-labelledby="fq-detail-title">
+    <div class="new-orders-detail-head">
+      <div>
+        <p class="new-orders-detail-kicker">Finishing detail</p>
+        <h2 class="new-orders-detail-title" id="fq-detail-title"></h2>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="fq-detail-close" aria-label="Close">Close</button>
+    </div>
+    <div class="new-orders-detail-body" id="fq-detail-body"></div>
+    <p class="new-orders-detail-foot">Source: planner staging cache · refreshes on ERP sync</p>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=finishing-queue-20260611"></script>
+<script src="{{ url_for('static', filename='js/finishing_queue.js') }}?v=finishing-queue-20260611"></script>
+{% endblock %}

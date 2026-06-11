@@ -19,7 +19,7 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _MFG_PP_VCH_SQL = """
 SELECT
@@ -83,6 +83,19 @@ SELECT
 FROM public.so_order_view
 """
 
+_SO_POSTED_DATES_SQL = """
+SELECT
+    h.sales_order_no,
+    COALESCE(rev.first_posted_datetime, h.posted_datetime) AS first_posted_datetime,
+    h.posted_datetime AS latest_posted_datetime
+FROM public.so_order_ost_hdr h
+LEFT JOIN (
+    SELECT sales_order_no, MIN(posted_datetime) AS first_posted_datetime
+    FROM public.so_order_rev_hst_hdr
+    GROUP BY sales_order_no
+) rev ON rev.sales_order_no = h.sales_order_no
+"""
+
 
 def _serialize_value(value: Any) -> Any:
     if value is None:
@@ -112,7 +125,7 @@ def _normalize_line_item_no(value: Any) -> str | None:
 
 def _order_sort_key(order: dict[str, Any]) -> tuple[str, str, str]:
     return (
-        str(order.get("order_date") or ""),
+        str(order.get("first_posted_datetime") or order.get("order_date") or ""),
         str(order.get("created_datetime") or ""),
         str(order.get("sales_order_no") or ""),
     )
@@ -140,6 +153,15 @@ def _headers_by_sales_order(headers: list[dict[str, Any]]) -> dict[str, dict[str
     return by_so
 
 
+def _posted_dates_by_sales_order(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    by_so: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        so_no = compact_text(row.get("sales_order_no"))
+        if so_no:
+            by_so[so_no] = row
+    return by_so
+
+
 def _partials_by_pp_voucher(partials: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for raw in partials:
@@ -157,6 +179,7 @@ def _build_orders_from_pp_vouchers(
     pp_rows: list[dict[str, Any]],
     partials_by_pp: dict[str, list[dict[str, Any]]],
     headers_by_so: dict[str, dict[str, Any]],
+    posted_by_so: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """mfg_pp_vch rows grouped by source_voucher_no with nested partials + SO header."""
     grouped: dict[str, dict[str, Any]] = {}
@@ -177,6 +200,9 @@ def _build_orders_from_pp_vouchers(
             header = dict(headers_by_so.get(so_no, {}))
             header["sales_order_no"] = so_no
             header["has_header"] = so_no in headers_by_so
+            posted = dict((posted_by_so or {}).get(so_no, {}))
+            header["first_posted_datetime"] = posted.get("first_posted_datetime")
+            header["latest_posted_datetime"] = posted.get("latest_posted_datetime")
             header["pp_vouchers"] = []
             grouped[so_no] = header
 
@@ -215,10 +241,12 @@ def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, An
     pp_rows = _erp_query(_MFG_PP_VCH_SQL)
     partials = _erp_query(_MFG_PP_PARTIAL_SQL)
     headers = _erp_query(_SO_ORDER_HEADER_SQL)
+    posted_dates = _erp_query(_SO_POSTED_DATES_SQL)
     orders = _build_orders_from_pp_vouchers(
         pp_rows,
         _partials_by_pp_voucher(partials),
         _headers_by_sales_order(headers),
+        _posted_dates_by_sales_order(posted_dates),
     )
     payload = _split_by_voucher_status(orders)
     _cache = (now, payload)

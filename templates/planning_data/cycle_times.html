@@ -258,6 +258,37 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
 #toast { position:fixed; bottom:24px; right:24px; background:#1a1c1d; color:#fff; padding:10px 18px; border-radius:8px; font-size:13px; font-weight:500; box-shadow:0 4px 16px rgba(0,0,0,0.25); z-index:999; opacity:0; transition:opacity 0.2s; pointer-events:none; max-width: 420px; }
 #toast.show { opacity:1; }
 .empty-row td { text-align:center; color:var(--text3); padding:40px 20px; font-size:13px; }
+
+.harvest-modal .modal-box { max-width: 1100px; width: calc(100% - 32px); }
+.harvest-hint { font-size: 12px; color: var(--text2); line-height: 1.5; margin-bottom: 12px; }
+.harvest-table-wrap { max-height: 52vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.harvest-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.harvest-table th, .harvest-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+.harvest-table th { position: sticky; top: 0; background: #f8fafc; z-index: 1; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text3); }
+.harvest-table tr.harvest-changed td { background: #fffbeb; }
+.harvest-table tr.harvest-variance td { background: #fef2f2; }
+.harvest-table tr.harvest-placeholder td { background: #f3f4f6; color: var(--text3); }
+.harvest-table tr.harvest-detail td { background: #f8fafc; padding: 0; }
+.harvest-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+.harvest-toolbar label { font-size: 12px; color: var(--text2); display: flex; gap: 6px; align-items: center; }
+.harvest-toolbar select { font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); }
+.harvest-ps-search {
+  font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border);
+  min-width: 160px; max-width: 240px; flex: 1 1 160px;
+}
+.harvest-ps-search:focus { outline: none; border-color: #3b82f6; }
+.harvest-filter-count { font-size: 11px; color: var(--text3); white-space: nowrap; }
+.harvest-verdict { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.harvest-verdict--clear { background: #dcfce7; color: #166534; }
+.harvest-verdict--review { background: #fee2e2; color: #991b1b; }
+.harvest-publish-input { width: 72px; text-align: right; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 12px; }
+.harvest-expand-btn { border: none; background: none; cursor: pointer; font-size: 14px; padding: 0 4px; color: var(--text2); }
+.harvest-jobs-mini { width: 100%; border-collapse: collapse; font-size: 11px; margin: 0; }
+.harvest-jobs-mini th, .harvest-jobs-mini td { padding: 6px 10px; border-top: 1px solid var(--border); text-align: left; }
+.harvest-jobs-mini th { color: var(--text3); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.harvest-pick-btn { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: #fff; cursor: pointer; }
+.harvest-pick-btn.is-picked { background: #1a1c1d; color: #fff; border-color: #1a1c1d; }
+.harvest-num { text-align: right; font-variant-numeric: tabular-nums; }
 </style>
 
 <div class="ct-page">
@@ -266,14 +297,18 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
     <div>
       <div class="ct-title">Master cycle times</div>
       <p class="ct-sub">
-        Your edits to cycle/setup times are kept. <strong>Sync from sheet</strong> upserts the program/tool list
-        and adds <em>new</em> master rows only — it does not replace rows you already have.
-        <strong>Refresh table</strong> only reloads this page from the database.
+        Published master times are used as defaults for <em>new</em> schedules only — existing planner jobs are never
+        overwritten. <strong>Import from planner jobs</strong> promotes your per-job tweaks into master (with preview).
+        <strong>Sync from sheet</strong> adds new rows from the program/tool list without replacing master edits.
       </p>
     </div>
     <div class="ct-actions">
+      <button class="btn btn-ghost" type="button" id="ct-export-btn" onclick="exportToExcel()"
+        title="Download filtered rows as Excel (.xlsx)">Export Excel</button>
       <button class="btn btn-ghost" type="button" id="ct-refresh-btn" onclick="loadRows()"
         title="Re-fetch rows from Supabase (no sheet sync)">Refresh table</button>
+      <button class="btn btn-ghost" type="button" id="ct-harvest-btn" onclick="openHarvestModal()"
+        title="Preview cycle times from scheduled planner jobs">Import from planner jobs</button>
       <button class="btn btn-primary" type="button" id="ct-sync-btn" onclick="syncFromSheet()"
         title="Sheet → program tools (upsert) → insert new master rows only">Sync from sheet</button>
       <button class="btn btn-primary" type="button" onclick="openAddModal()">+ Add row</button>
@@ -334,6 +369,59 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
   </div>
 </div>
 
+<div class="modal-backdrop harvest-modal" id="harvest-modal">
+  <div class="modal-box">
+    <div class="modal-title">Import from planner jobs</div>
+    <p class="harvest-hint">
+      Each row groups scheduled jobs for the same part + BOM + operation. Expand a row to see every job (PS, machine, cycle, last edit)
+      and pick which one to publish. <strong>Clear</strong> rows are safe to bulk-publish; <strong>Review</strong> rows have conflicting
+      job values — pick manually. Publishing never changes existing scheduled blocks.
+    </p>
+    <div class="harvest-toolbar">
+      <input type="search" id="harvest-ps-filter" class="harvest-ps-search"
+        placeholder="Search PS (e.g. NPS26-0260, ::2)…" autocomplete="off"
+        title="Filter rows by process sheet / job id in the expanded job list" />
+      <label>Default pick
+        <select id="harvest-strategy" onchange="applyHarvestStrategy()">
+          <option value="latest">Latest edited job</option>
+          <option value="median">Median across jobs</option>
+          <option value="mode">Most common value</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="harvest-only-review" onchange="renderHarvestRows()"> Show only needs review</label>
+      <label><input type="checkbox" id="harvest-hide-placeholder" checked onchange="renderHarvestRows()"> Hide placeholder BOMs</label>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="selectHarvestClear()">Select all clear</button>
+      <span class="harvest-filter-count" id="harvest-filter-count"></span>
+    </div>
+    <div class="harvest-table-wrap">
+      <table class="harvest-table">
+        <thead>
+          <tr>
+            <th><input type="checkbox" id="harvest-select-all" title="Toggle visible rows" /></th>
+            <th></th>
+            <th>Part</th>
+            <th>BOM</th>
+            <th>Op</th>
+            <th>Verdict</th>
+            <th class="harvest-num">Master</th>
+            <th class="harvest-num">BOM</th>
+            <th class="harvest-num">Publish</th>
+            <th>Jobs</th>
+          </tr>
+        </thead>
+        <tbody id="harvest-tbody">
+          <tr><td colspan="10">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="error-msg" id="harvest-error"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" type="button" onclick="closeHarvestModal()">Cancel</button>
+      <button class="btn btn-primary" type="button" id="harvest-publish-btn" onclick="publishHarvestSelected()">Publish selected</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="add-modal">
   <div class="modal-box">
     <div class="modal-title">Add cycle time row</div>
@@ -363,6 +451,9 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
 const PAGE_SIZE = 75;
 
 let allRows = [];
+let harvestRows = [];
+let harvestStrategy = 'latest';
+let harvestPsFilter = '';
 let editingId = null;
 let filterTerm = '';
 let opTypeFilter = '';
@@ -479,6 +570,97 @@ async function syncFromSheet() {
     toast(e.message, true);
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function ensureExcelJs() {
+  if (window.ExcelJS) return window.ExcelJS;
+  await new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error('Could not load Excel export library'));
+    document.head.appendChild(script);
+  });
+  return window.ExcelJS;
+}
+
+function exportFilename() {
+  const stamp = new Date().toISOString().slice(0, 10);
+  return `master-cycle-times-${stamp}.xlsx`;
+}
+
+async function exportToExcel() {
+  const rows = visibleRows();
+  if (!rows.length) {
+    toast('No rows to export', true);
+    return;
+  }
+  const btn = document.getElementById('ct-export-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const ExcelJS = await ensureExcelJs();
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Production Planner';
+    workbook.created = new Date();
+    const sheet = workbook.addWorksheet('Master cycle times');
+
+    const headers = [
+      'Part no', 'BOM', 'Description', 'Stage #', 'Stage name',
+      'Op #', 'Op type', 'Program #', 'Program file', 'Tool list',
+      'Cycle (min)', 'Setup (min)', 'Updated',
+    ];
+    const headerRow = sheet.addRow(headers);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+    headerRow.alignment = { vertical: 'middle' };
+
+    rows.forEach(r => {
+      sheet.addRow([
+        r.part_no || '',
+        r.bom_code || '',
+        r.part_description || '',
+        r.stage_no != null ? Number(r.stage_no) : '',
+        r.stage_name || '',
+        r.op_no != null ? Number(r.op_no) : '',
+        r.op_type || '',
+        r.program_no || '',
+        r.program_file || '',
+        r.tool_list_file || '',
+        r.cycle_time != null ? Number(r.cycle_time) : 0,
+        r.set_up_time != null ? Number(r.set_up_time) : 0,
+        r.updated_at ? String(r.updated_at).slice(0, 19).replace('T', ' ') : '',
+      ]);
+    });
+
+    sheet.columns.forEach((col, i) => {
+      let max = headers[i]?.length || 10;
+      col.eachCell({ includeEmpty: false }, cell => {
+        const len = String(cell.value ?? '').length;
+        if (len > max) max = len;
+      });
+      col.width = Math.min(Math.max(max + 2, 10), 48);
+    });
+    sheet.views = [{ state: 'frozen', ySplit: 1, xSplit: 0, activeCell: 'A2' }];
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = exportFilename();
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast(`Exported ${rows.length} row(s)`);
+  } catch (e) {
+    toast(`Export failed: ${e.message}`, true);
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -768,6 +950,344 @@ document.getElementById('ct-prev').addEventListener('click', () => {
 });
 document.getElementById('ct-next').addEventListener('click', () => {
   if (currentPage < totalPages()) { currentPage++; render(); }
+});
+
+function setHarvestError(msg) {
+  const el = document.getElementById('harvest-error');
+  el.textContent = msg || '';
+  el.classList.toggle('show', !!msg);
+}
+
+function harvestRowMatchesPsFilter(row, term) {
+  if (!term) return true;
+  return (row.jobs || []).some(job => {
+    const ps = String(job.source_ps_id || '').trim().toLowerCase();
+    if (!ps) return false;
+    if (ps.includes(term)) return true;
+    const base = ps.includes('::') ? ps.split('::')[0] : ps;
+    return base.includes(term);
+  });
+}
+
+function harvestVisibleRows() {
+  const onlyReview = document.getElementById('harvest-only-review')?.checked;
+  const hidePlaceholder = document.getElementById('harvest-hide-placeholder')?.checked;
+  const psTerm = harvestPsFilter || (document.getElementById('harvest-ps-filter')?.value || '').trim().toLowerCase();
+  return harvestRows
+    .map((r, idx) => ({ r, idx }))
+    .filter(({ r }) => {
+      if (onlyReview && r.recommendation !== 'review') return false;
+      if (hidePlaceholder && r.is_placeholder) return false;
+      if (!harvestRowMatchesPsFilter(r, psTerm)) return false;
+      return true;
+    });
+}
+
+function updateHarvestFilterCount(visibleCount) {
+  const el = document.getElementById('harvest-filter-count');
+  if (!el) return;
+  const total = harvestRows.length;
+  const psTerm = harvestPsFilter || (document.getElementById('harvest-ps-filter')?.value || '').trim();
+  const onlyReview = document.getElementById('harvest-only-review')?.checked;
+  const hidePlaceholder = document.getElementById('harvest-hide-placeholder')?.checked;
+  const filtered = psTerm || onlyReview || hidePlaceholder;
+  if (!filtered || !total) {
+    el.textContent = '';
+    return;
+  }
+  el.textContent = `${visibleCount} of ${total} rows`;
+}
+
+function harvestProposedFromJobs(jobs, strategy) {
+  if (!jobs?.length) return { cycle: 0, setup: 0, jobIndex: null };
+  const cycles = jobs.map(j => Number(j.cycle_time || 0));
+  const setups = jobs.map(j => Number(j.set_up_time || 0));
+  if (strategy === 'median') {
+    const sorted = [...cycles].sort((a, b) => a - b);
+    const cycle = sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+    const setupSorted = [...setups].sort((a, b) => a - b);
+    const setup = setupSorted.length % 2 ? setupSorted[(setupSorted.length - 1) / 2] : (setupSorted[setupSorted.length / 2 - 1] + setupSorted[setupSorted.length / 2]) / 2;
+    let jobIndex = 0;
+    let bestDiff = Infinity;
+    jobs.forEach((j, i) => {
+      const diff = Math.abs(Number(j.cycle_time || 0) - cycle);
+      if (diff < bestDiff) { bestDiff = diff; jobIndex = i; }
+    });
+    return { cycle, setup, jobIndex };
+  }
+  if (strategy === 'mode') {
+    const counts = {};
+    cycles.forEach(c => {
+      const key = String(Math.round(c * 100) / 100);
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    const bestKey = Object.keys(counts).sort((a, b) => counts[b] - counts[a] || Number(b) - Number(a))[0];
+    const cycle = Number(bestKey);
+    const jobIndex = jobs.findIndex(j => Math.abs(Number(j.cycle_time || 0) - cycle) < 0.01);
+    const setup = Number(jobs[jobIndex >= 0 ? jobIndex : 0]?.set_up_time || 0);
+    return { cycle, setup, jobIndex: jobIndex >= 0 ? jobIndex : 0 };
+  }
+  return {
+    cycle: Number(jobs[0].cycle_time || 0),
+    setup: Number(jobs[0].set_up_time || 0),
+    jobIndex: 0,
+  };
+}
+
+function applyHarvestStrategy() {
+  harvestStrategy = document.getElementById('harvest-strategy')?.value || 'latest';
+  harvestRows.forEach(r => {
+    if (r.picked_job_index != null) return;
+    const pick = harvestProposedFromJobs(r.jobs || [], harvestStrategy);
+    r.proposed_cycle_time = pick.cycle;
+    r.proposed_set_up_time = pick.setup;
+    r.publish_cycle_time = pick.cycle;
+    r.publish_set_up_time = pick.setup;
+    if (pick.jobIndex != null && r.jobs?.[pick.jobIndex]) {
+      r.source_block_id = r.jobs[pick.jobIndex].block_id;
+      r.source_operation_id = r.jobs[pick.jobIndex].operation_id;
+    }
+  });
+  renderHarvestRows();
+}
+
+function pickHarvestJob(rowIdx, jobIdx) {
+  const r = harvestRows[rowIdx];
+  const job = r?.jobs?.[jobIdx];
+  if (!r || !job) return;
+  r.picked_job_index = jobIdx;
+  r.publish_cycle_time = Number(job.cycle_time || 0);
+  r.publish_set_up_time = Number(job.set_up_time || 0);
+  r.proposed_cycle_time = r.publish_cycle_time;
+  r.proposed_set_up_time = r.publish_set_up_time;
+  r.source_block_id = job.block_id;
+  r.source_operation_id = job.operation_id;
+  r.selected = true;
+  r.expanded = true;
+  renderHarvestRows();
+}
+
+function toggleHarvestExpand(idx) {
+  if (harvestRows[idx]) harvestRows[idx].expanded = !harvestRows[idx].expanded;
+  renderHarvestRows();
+}
+
+function selectHarvestClear() {
+  harvestRows.forEach(r => { r.selected = r.recommendation === 'clear' && r.differs_from_master; });
+  renderHarvestRows();
+}
+
+function harvestJobMatchesPsFilter(job, term) {
+  if (!term) return false;
+  const ps = String(job.source_ps_id || '').trim().toLowerCase();
+  if (!ps) return false;
+  if (ps.includes(term)) return true;
+  const base = ps.includes('::') ? ps.split('::')[0] : ps;
+  return base.includes(term);
+}
+
+function renderHarvestJobDetail(r, rowIdx, psTerm) {
+  const jobs = r.jobs || [];
+  if (!jobs.length) return '';
+  const range = r.has_variance ? `${fmtNum(r.cycle_min)} – ${fmtNum(r.cycle_max)}` : 'all agree';
+  return `
+    <table class="harvest-jobs-mini">
+      <thead>
+        <tr>
+          <th></th>
+          <th>PS / job</th>
+          <th>Machine</th>
+          <th class="harvest-num">Cycle</th>
+          <th class="harvest-num">Setup</th>
+          <th>Last edit</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${jobs.map((j, jobIdx) => `
+          <tr${psTerm && harvestJobMatchesPsFilter(j, psTerm) ? ' style="background:#eff6ff"' : ''}>
+            <td>
+              <button type="button" class="harvest-pick-btn ${r.picked_job_index === jobIdx ? 'is-picked' : ''}"
+                onclick="pickHarvestJob(${rowIdx}, ${jobIdx})">${r.picked_job_index === jobIdx ? 'Using' : 'Use'}</button>
+            </td>
+            <td>${esc(j.source_ps_id || ('block ' + j.block_id))}</td>
+            <td>${esc(j.machine_no || '—')}</td>
+            <td class="harvest-num">${esc(fmtNum(j.cycle_time))}</td>
+            <td class="harvest-num">${esc(fmtNum(j.set_up_time))}</td>
+            <td>${esc(j.touched_at || '—')}</td>
+          </tr>`).join('')}
+      </tbody>
+      <tfoot>
+        <tr><td colspan="6" style="font-size:11px;color:var(--text3);padding:8px 10px">
+          Range: ${esc(range)} · Median ${esc(fmtNum(r.median_cycle_time))} · Mode ${esc(fmtNum(r.mode_cycle_time))}
+        </td></tr>
+      </tfoot>
+    </table>`;
+}
+
+function renderHarvestRows() {
+  const tbody = document.getElementById('harvest-tbody');
+  const visible = harvestVisibleRows();
+  updateHarvestFilterCount(visible.length);
+  if (!harvestRows.length) {
+    tbody.innerHTML = '<tr><td colspan="10">No scheduled jobs with cycle time &gt; 0 found.</td></tr>';
+    return;
+  }
+  if (!visible.length) {
+    tbody.innerHTML = '<tr><td colspan="10">No rows match the current filters.</td></tr>';
+    return;
+  }
+  const psTerm = harvestPsFilter || (document.getElementById('harvest-ps-filter')?.value || '').trim().toLowerCase();
+  tbody.innerHTML = visible.map(({ r, idx }) => {
+    const opLabel = [r.op_type, r.op_no != null ? r.op_no : ''].filter(Boolean).join(' ');
+    const verdict = r.recommendation === 'clear'
+      ? '<span class="harvest-verdict harvest-verdict--clear">Clear</span>'
+      : '<span class="harvest-verdict harvest-verdict--review">Review</span>';
+    let rowClass = r.recommendation === 'review' ? 'harvest-variance' : (r.differs_from_master ? 'harvest-changed' : '');
+    if (r.is_placeholder) rowClass = 'harvest-placeholder';
+    const jobsLabel = r.has_variance
+      ? `${r.job_count} (${fmtNum(r.cycle_min)}–${fmtNum(r.cycle_max)})`
+      : String(r.job_count);
+    const autoExpand = psTerm && harvestRowMatchesPsFilter(r, psTerm);
+    const expanded = psTerm ? autoExpand : r.expanded;
+    const main = `
+      <tr class="${rowClass}">
+        <td><input type="checkbox" class="harvest-check" data-idx="${idx}" ${r.selected ? 'checked' : ''}></td>
+        <td><button type="button" class="harvest-expand-btn" onclick="toggleHarvestExpand(${idx})" title="Show jobs">${expanded ? '▼' : '▶'}</button></td>
+        <td>${esc(r.part_no)}</td>
+        <td>${esc(r.bom_code || '—')}</td>
+        <td>${esc(opLabel || '—')}</td>
+        <td>${verdict}</td>
+        <td class="harvest-num">${r.current_master_id ? esc(fmtNum(r.current_cycle_time)) : '—'}</td>
+        <td class="harvest-num">${r.bom_step_cycle_time > 0 ? esc(fmtNum(r.bom_step_cycle_time)) : '—'}</td>
+        <td class="harvest-num">
+          <input class="harvest-publish-input" type="number" step="0.1" min="0"
+            value="${esc(fmtNum(r.publish_cycle_time))}"
+            onchange="harvestRows[${idx}].publish_cycle_time = parseFloat(this.value) || 0; harvestRows[${idx}].picked_job_index = null;">
+        </td>
+        <td>${esc(jobsLabel)}</td>
+      </tr>`;
+    const detail = expanded ? `
+      <tr class="harvest-detail"><td colspan="10">${renderHarvestJobDetail(r, idx, psTerm)}</td></tr>` : '';
+    return main + detail;
+  }).join('');
+  tbody.querySelectorAll('.harvest-check').forEach(el => {
+    el.addEventListener('change', () => {
+      const idx = Number(el.dataset.idx);
+      if (harvestRows[idx]) harvestRows[idx].selected = el.checked;
+    });
+  });
+  const selectAll = document.getElementById('harvest-select-all');
+  if (selectAll) {
+    const vis = harvestVisibleRows();
+    selectAll.checked = vis.length > 0 && vis.every(({ r }) => r.selected);
+  }
+}
+
+async function openHarvestModal() {
+  const btn = document.getElementById('ct-harvest-btn');
+  const publishBtn = document.getElementById('harvest-publish-btn');
+  setHarvestError('');
+  harvestPsFilter = '';
+  const psFilterEl = document.getElementById('harvest-ps-filter');
+  if (psFilterEl) psFilterEl.value = '';
+  const filterCountEl = document.getElementById('harvest-filter-count');
+  if (filterCountEl) filterCountEl.textContent = '';
+  document.getElementById('harvest-modal').classList.add('open');
+  document.getElementById('harvest-tbody').innerHTML = '<tr><td colspan="10">Loading…</td></tr>';
+  harvestStrategy = document.getElementById('harvest-strategy')?.value || 'latest';
+  if (btn) btn.disabled = true;
+  if (publishBtn) publishBtn.disabled = true;
+  try {
+    let data;
+    try {
+      data = await api('GET', '/api/planner/cycle-times?harvest=preview');
+    } catch (err) {
+      if (!/not found|404/i.test(String(err.message || ''))) throw err;
+      data = await api('GET', '/api/planner/cycle-times/harvest-preview');
+    }
+    harvestRows = (data.rows || []).map(r => ({
+      ...r,
+      publish_cycle_time: r.publish_cycle_time ?? r.proposed_cycle_time,
+      publish_set_up_time: r.publish_set_up_time ?? r.proposed_set_up_time,
+      selected: !!r.selected,
+      expanded: false,
+      picked_job_index: r.picked_job_index ?? null,
+    }));
+    renderHarvestRows();
+    const selectAll = document.getElementById('harvest-select-all');
+    if (selectAll) {
+      selectAll.onchange = () => {
+        const on = selectAll.checked;
+        harvestVisibleRows().forEach(({ r }) => { r.selected = on; });
+        renderHarvestRows();
+      };
+    }
+  } catch (e) {
+    setHarvestError(e.message);
+    document.getElementById('harvest-tbody').innerHTML =
+      `<tr><td colspan="10">${esc(e.message)}</td></tr>`;
+  } finally {
+    if (btn) btn.disabled = false;
+    if (publishBtn) publishBtn.disabled = false;
+  }
+}
+
+function closeHarvestModal() {
+  document.getElementById('harvest-modal').classList.remove('open');
+}
+
+async function publishHarvestSelected() {
+  const selected = harvestRows.filter(r => r.selected);
+  if (!selected.length) {
+    setHarvestError('Select at least one row to publish.');
+    return;
+  }
+  if (!confirm(`Publish ${selected.length} row(s) to master? Existing scheduled jobs will not change.`)) return;
+  const publishBtn = document.getElementById('harvest-publish-btn');
+  publishBtn.disabled = true;
+  setHarvestError('');
+  try {
+    const payload = selected.map(r => ({
+      part_no: r.part_no,
+      bom_code: r.bom_code,
+      stage_no: r.stage_no,
+      stage_name: r.stage_name,
+      op_no: r.op_no,
+      op_type: r.op_type,
+      part_description: r.part_description,
+      cycle_time: r.publish_cycle_time ?? r.proposed_cycle_time,
+      set_up_time: r.publish_set_up_time ?? r.proposed_set_up_time,
+      master_id: r.current_master_id,
+      source_block_id: r.source_block_id,
+      source_operation_id: r.source_operation_id,
+      source_kind: 'PLANNER_HARVEST',
+    }));
+    let result;
+    try {
+      result = await api('POST', '/api/planner/cycle-times/sync', { action: 'publish', items: payload });
+    } catch (err) {
+      if (!/not found|404/i.test(String(err.message || ''))) throw err;
+      result = await api('POST', '/api/planner/cycle-times/publish', { items: payload });
+    }
+    const n = result.count || (result.published || []).length;
+    const errN = (result.errors || []).length;
+    toast(`Published ${n} master row(s)${errN ? ` (${errN} failed)` : ''}`);
+    closeHarvestModal();
+    await loadRows();
+  } catch (e) {
+    setHarvestError(e.message);
+  } finally {
+    publishBtn.disabled = false;
+  }
+}
+
+document.getElementById('harvest-ps-filter')?.addEventListener('input', function () {
+  harvestPsFilter = (this.value || '').trim().toLowerCase();
+  renderHarvestRows();
+});
+
+document.getElementById('harvest-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeHarvestModal();
 });
 
 document.addEventListener('DOMContentLoaded', loadRows);

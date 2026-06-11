@@ -319,15 +319,22 @@ def _ensure_planner_temp_process_sheet_table(con):
     _TEMP_TABLE_READY = True
 
 
-def _persist_temp_process_sheet_record(con, *, planner_ps_id, preview, source_pp_partial_no, qty, remarks):
+def _parse_temp_due_date(raw) -> date | None:
+    text = compact_text(raw)
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        raise ValueError("due_date must be YYYY-MM-DD") from None
+
+
+def _persist_temp_process_sheet_record(
+    con, *, planner_ps_id, preview, source_pp_partial_no, qty, remarks, due_date=None
+):
     _ensure_planner_temp_process_sheet_table(con)
-    due_raw = compact_text(preview.get("due_date"))
-    due_val = None
-    if due_raw:
-        try:
-            due_val = date.fromisoformat(due_raw[:10])
-        except ValueError:
-            due_val = None
+    due_raw = compact_text(due_date if due_date is not None else preview.get("due_date"))
+    due_val = _parse_temp_due_date(due_raw) if due_raw else None
     con.execute(
         """
         INSERT INTO planner_temp_process_sheet (
@@ -338,6 +345,7 @@ def _persist_temp_process_sheet_record(con, *, planner_ps_id, preview, source_pp
         ON CONFLICT (planner_ps_id) DO UPDATE SET
           reject_qty = EXCLUDED.reject_qty,
           remarks = EXCLUDED.remarks,
+          due_date = COALESCE(EXCLUDED.due_date, planner_temp_process_sheet.due_date),
           updated_at = NOW()
         """,
         (
@@ -423,6 +431,7 @@ def list_temp_process_sheets_payload(con, limit=500):
                 "erp_bom_code": compact_text(row.get("erp_bom_code")),
                 "selected_bom_code": compact_text(row.get("selected_bom_code")),
                 "remarks": compact_text(row.get("remarks")),
+                "is_placeholder": compact_text(row.get("selected_bom_code")).upper() == "PLACEHOLDER",
                 "planner_status": compact_text(row.get("planner_status")),
                 "ps_status": compact_text(row.get("ps_status")),
                 "created_at": compact_text(row.get("created_at")),
@@ -921,8 +930,169 @@ def temp_process_sheet_source_preview(con, source_ps_id, pp_partial_no=1):
     }
 
 
-def create_temp_process_sheet(con, source_ps_id, pp_partial_no, qty, remarks=""):
+def update_temp_process_sheet(con, planner_ps_id, updates=None):
+    """Update editable fields on a [Temp] process sheet."""
+    planner_ps_id = compact_text(planner_ps_id)
+    if not is_temp_planner_ps_id(planner_ps_id):
+        raise ValueError("Not a temp process sheet")
+    updates = dict(updates or {})
+    if not updates:
+        raise ValueError("No fields to update")
+    _ensure_planner_temp_process_sheet_table(con)
+    temp_row = one(
+        con.execute(
+            "SELECT * FROM planner_temp_process_sheet WHERE planner_ps_id = %s",
+            (planner_ps_id,),
+        )
+    )
+    if not temp_row:
+        raise ValueError(f"Temp process sheet {planner_ps_id} not found")
+    ps_row = one(
+        con.execute(
+            """
+            SELECT planner_ps_id, planned_qty, finished_qty, inventory_code, remarks
+            FROM planner_process_sheet
+            WHERE planner_ps_id = %s
+            """,
+            (planner_ps_id,),
+        )
+    )
+    if not ps_row:
+        raise ValueError(f"Temp process sheet {planner_ps_id} not found")
+
+    temp_sets = []
+    temp_vals = []
+    ps_sets = []
+    ps_vals = []
+
+    if "due_date" in updates or "po_due_date" in updates:
+        due_raw = updates.get("due_date") if "due_date" in updates else updates.get("po_due_date")
+        due_val = _parse_temp_due_date(due_raw) if compact_text(due_raw) else None
+        temp_sets.append("due_date = %s")
+        temp_vals.append(due_val)
+
+    qty_raw = updates.get("qty") if "qty" in updates else updates.get("reject_qty")
+    if qty_raw is not None:
+        qty = max(0.0, _to_float(qty_raw))
+        if qty <= 0:
+            raise ValueError("Quantity must be greater than zero.")
+        finished_qty = _to_float(ps_row.get("finished_qty"))
+        if qty + 1e-9 < finished_qty:
+            raise ValueError(
+                f"Quantity cannot be less than finished qty ({finished_qty:g})."
+            )
+        temp_sets.extend(["reject_qty = %s"])
+        temp_vals.append(qty)
+        ps_sets.extend(["planned_qty = %s"])
+        ps_vals.append(qty)
+
+    if "remarks" in updates:
+        note = compact_text(updates.get("remarks"))
+        temp_sets.append("remarks = %s")
+        temp_vals.append(note)
+        ps_sets.append("remarks = %s")
+        ps_vals.append(note)
+
+    if "part_no" in updates:
+        part_no = compact_text(updates.get("part_no"))
+        if not part_no:
+            raise ValueError("Part number is required.")
+        temp_sets.extend(["part_no = %s", "inventory_code = %s"])
+        temp_vals.extend([part_no, part_no])
+        ps_sets.extend(["inventory_code = %s"])
+        ps_vals.append(part_no)
+
+    if "part_desc" in updates:
+        part_desc = compact_text(updates.get("part_desc"))
+        temp_sets.append("part_desc = %s")
+        temp_vals.append(part_desc)
+
+    if "source_ps_id" in updates or "source_label" in updates:
+        raw = (
+            updates.get("source_ps_id")
+            if "source_ps_id" in updates
+            else updates.get("source_label")
+        )
+        raw = normalize_temp_ps_reference(raw)
+        if not raw:
+            raise ValueError("Source PS number is required.")
+        source_ps_id, source_partial = parse_planner_ps_id(raw)
+        if not source_ps_id:
+            source_ps_id = raw
+        if "source_pp_partial_no" in updates:
+            try:
+                source_partial = max(1, int(updates.get("source_pp_partial_no") or 1))
+            except (TypeError, ValueError):
+                source_partial = 1
+        temp_sets.extend(["source_ps_id = %s", "source_pp_partial_no = %s"])
+        temp_vals.extend([source_ps_id, source_partial])
+        ps_sets.append("source_ps_id = %s")
+        ps_vals.append(source_ps_id)
+
+    if not temp_sets and not ps_sets:
+        raise ValueError("No supported fields to update")
+
+    if temp_sets:
+        temp_sets.append("updated_at = NOW()")
+        con.execute(
+            f"""
+            UPDATE planner_temp_process_sheet
+            SET {", ".join(temp_sets)}
+            WHERE planner_ps_id = %s
+            """,
+            (*temp_vals, planner_ps_id),
+        )
+    if ps_sets:
+        ps_sets.append("updated_at = NOW()")
+        con.execute(
+            f"""
+            UPDATE planner_process_sheet
+            SET {", ".join(ps_sets)}
+            WHERE planner_ps_id = %s
+            """,
+            (*ps_vals, planner_ps_id),
+        )
+
+    refreshed = one(
+        con.execute(
+            """
+            SELECT t.reject_qty, t.part_no, t.part_desc, t.due_date, t.remarks,
+                   t.source_ps_id, t.source_pp_partial_no,
+                   ps.planned_qty, ps.finished_qty
+            FROM planner_temp_process_sheet t
+            JOIN planner_process_sheet ps ON ps.planner_ps_id = t.planner_ps_id
+            WHERE t.planner_ps_id = %s
+            """,
+            (planner_ps_id,),
+        )
+    )
+    source_ps_id = compact_text((refreshed or {}).get("source_ps_id"))
+    source_partial = int((refreshed or {}).get("source_pp_partial_no") or 1)
+    return {
+        "planner_ps_id": planner_ps_id,
+        "display_ps_id": temp_planner_ps_display_label(planner_ps_id),
+        "reject_qty": _to_float((refreshed or {}).get("reject_qty")),
+        "planned_qty": _to_float((refreshed or {}).get("planned_qty")),
+        "finished_qty": _to_float((refreshed or {}).get("finished_qty")),
+        "part_no": compact_text((refreshed or {}).get("part_no")),
+        "part_desc": compact_text((refreshed or {}).get("part_desc")),
+        "due_date": compact_text((refreshed or {}).get("due_date")),
+        "remarks": compact_text((refreshed or {}).get("remarks")),
+        "source_ps_id": source_ps_id,
+        "source_pp_partial_no": source_partial,
+        "source_label": format_planner_ps_id(source_ps_id, source_partial),
+    }
+
+
+def update_temp_process_sheet_due_date(con, planner_ps_id, due_date_raw):
+    """Set or clear PO due date on a [Temp] process sheet."""
+    return update_temp_process_sheet(con, planner_ps_id, {"due_date": due_date_raw})
+
+
+def create_temp_process_sheet(con, source_ps_id, pp_partial_no, qty, remarks="", due_date=""):
     preview = temp_process_sheet_source_preview(con, source_ps_id, pp_partial_no)
+    if compact_text(due_date):
+        preview["due_date"] = compact_text(due_date)[:10]
     qty = max(0.0, _to_float(qty))
     if qty <= 0:
         raise ValueError("Quantity must be greater than zero.")
@@ -1014,7 +1184,7 @@ def create_temp_process_sheet(con, source_ps_id, pp_partial_no, qty, remarks="")
         "reject_qty": qty,
         "part_no": preview.get("part_no") or "",
         "part_desc": preview.get("part_desc") or "",
-        "due_date": preview.get("due_date") or "",
+        "due_date": compact_text((temp_row or {}).get("due_date")) or preview.get("due_date") or "",
         "selected_bom_code": selected_bom_code or preview.get("selected_bom_code") or "",
         "is_temp": True,
         "stored_in": "planner_process_sheet + planner_temp_process_sheet",
@@ -1031,6 +1201,7 @@ def create_placeholder_temp_process_sheet(
     part_desc="",
     qty,
     remarks="",
+    due_date="",
 ):
     """Dummy [Temp] PS with a PLACEHOLDER BOM for lane scheduling until ERP PS exists."""
     reference_ps_id = normalize_temp_ps_reference(reference_ps_id)
@@ -1062,7 +1233,7 @@ def create_placeholder_temp_process_sheet(
         "pp_partial_no": 1,
         "part_no": part_no,
         "part_desc": compact_text(part_desc),
-        "due_date": "",
+        "due_date": compact_text(due_date)[:10] if compact_text(due_date) else "",
         "display_qty": 0,
         "erp_bom_code": "",
         "selected_bom_id": 0,
@@ -1134,7 +1305,7 @@ def create_placeholder_temp_process_sheet(
         "reject_qty": qty,
         "part_no": part_no,
         "part_desc": compact_text(part_desc),
-        "due_date": "",
+        "due_date": compact_text((temp_row or {}).get("due_date")) or preview.get("due_date") or "",
         "selected_bom_code": "PLACEHOLDER",
         "is_temp": True,
         "stored_in": "planner_process_sheet + planner_temp_process_sheet",
@@ -3369,6 +3540,7 @@ def api_create_temp_process_sheet():
         pp_partial_no = 1
     qty = data.get("qty") or data.get("quantity") or data.get("planned_qty")
     remarks = compact_text(data.get("remarks") or "")
+    due_date = compact_text(data.get("due_date") or data.get("po_due_date") or "")
     try:
         with planner_db() as con:
             _ensure_planner_temp_process_sheet_table(con)
@@ -3389,12 +3561,13 @@ def api_create_temp_process_sheet():
                     part_desc=compact_text(data.get("part_desc") or data.get("description") or ""),
                     qty=qty,
                     remarks=remarks,
+                    due_date=due_date,
                 )
             else:
                 if not source_ps_id:
                     return jsonify({"error": "source_ps_id is required"}), 400
                 result = create_temp_process_sheet(
-                    con, source_ps_id, pp_partial_no, qty, remarks=remarks
+                    con, source_ps_id, pp_partial_no, qty, remarks=remarks, due_date=due_date
                 )
             try:
                 from app import _invalidate_pp_vouchers_with_ops_cache
@@ -3403,6 +3576,42 @@ def api_create_temp_process_sheet():
             except Exception:
                 pass
             return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@process_sheets_bp.patch("/api/trial/temp-process-sheets/<path:planner_ps_id>")
+@process_sheets_bp.patch("/api/temp-process-sheets/<path:planner_ps_id>")
+def api_patch_temp_process_sheet(planner_ps_id):
+    data = request.get_json(silent=True) or {}
+    allowed = {
+        "due_date",
+        "po_due_date",
+        "qty",
+        "reject_qty",
+        "remarks",
+        "part_no",
+        "part_desc",
+        "source_ps_id",
+        "source_label",
+        "source_pp_partial_no",
+    }
+    updates = {key: data[key] for key in allowed if key in data}
+    if not updates:
+        return jsonify({"error": "At least one updatable field is required"}), 400
+    try:
+        with planner_db() as con:
+            _ensure_planner_temp_process_sheet_table(con)
+            result = update_temp_process_sheet(con, planner_ps_id, updates)
+            try:
+                from app import _invalidate_pp_vouchers_with_ops_cache
+
+                _invalidate_pp_vouchers_with_ops_cache()
+            except Exception:
+                pass
+            return jsonify({"ok": True, **result})
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as e:

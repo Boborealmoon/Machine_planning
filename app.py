@@ -28,7 +28,16 @@ from planning.sales_orders_route import sales_orders_bp
 from planning.material_inspection_route import material_inspection_bp
 from planning.repeat_orders_route import repeat_orders_bp
 from planning.auk_oee_route import auk_oee_bp
+from planning.daily_output_route import (
+    api_daily_output_get,
+    api_daily_output_patch,
+    api_daily_output_refresh_plan,
+    api_daily_output_snapshot_detail,
+    api_daily_output_unlock,
+    daily_output_page,
+)
 from planning.bom_variation_route import bom_variation_bp
+from planning.finishing_queue_route import finishing_queue_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
@@ -45,6 +54,7 @@ app.register_blueprint(material_inspection_bp)
 app.register_blueprint(repeat_orders_bp)
 app.register_blueprint(auk_oee_bp)
 app.register_blueprint(bom_variation_bp)
+app.register_blueprint(finishing_queue_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 
@@ -379,6 +389,36 @@ _register_machinist_decoy_routes()
 @app.get("/queue-delays")
 def queue_delays():
     return render_template("queue_delays.html", active="queue_delays")
+
+
+@app.get("/daily-output")
+def daily_output_view():
+    return daily_output_page()
+
+
+@app.get("/api/daily-output")
+def api_get_daily_output():
+    return api_daily_output_get()
+
+
+@app.route("/api/daily-output", methods=["PATCH"])
+def api_patch_daily_output():
+    return api_daily_output_patch()
+
+
+@app.post("/api/daily-output/refresh-plan")
+def api_post_daily_output_refresh_plan():
+    return api_daily_output_refresh_plan()
+
+
+@app.post("/api/daily-output/unlock")
+def api_post_daily_output_unlock():
+    return api_daily_output_unlock()
+
+
+@app.get("/api/daily-output/snapshots/<int:snapshot_id>")
+def api_get_daily_output_snapshot(snapshot_id: int):
+    return api_daily_output_snapshot_detail(snapshot_id)
 
 
 @app.get("/actual-production")
@@ -2339,9 +2379,25 @@ def _non_negative_number(value, default=0.0):
         return float(default)
 
 
+def _api_planner_cycle_times_harvest_preview_impl():
+    from planning.cycle_time_service import harvest_preview, planner_db_available
+    from planning.helpers import planner_db
+
+    if not planner_db_available():
+        return jsonify({"error": "SUPA_DB_URL is not set. Direct Postgres is required."}), 503
+    with planner_db() as con:
+        rows_out = harvest_preview(con)
+    return jsonify({"rows": rows_out, "count": len(rows_out)})
+
+
 @app.get("/api/planner/cycle-times")
 def api_planner_cycle_times_list():
     """List master cycle times. Uses service role (RLS on this table blocks anon reads)."""
+    if request.args.get("harvest") == "preview":
+        try:
+            return _api_planner_cycle_times_harvest_preview_impl()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
     try:
         rows = _supa_fetch_all(
             "planner_cycle_time_master",
@@ -2474,6 +2530,106 @@ def api_planner_cycle_times_delete(row_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.get("/api/planner/cycle-times/harvest-preview")
+def api_planner_cycle_times_harvest_preview():
+    """Preview planner job cycle times grouped by part+BOM+op (does not change anything)."""
+    try:
+        return _api_planner_cycle_times_harvest_preview_impl()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def _api_planner_cycle_times_publish_impl(data):
+    """
+    Publish cycle/setup times to master + snapshot.
+    Never updates planner_operation on existing scheduled jobs.
+    """
+    from planning.cycle_time_service import (
+        SOURCE_PLANNER_HARVEST,
+        SOURCE_PLANNER_JOB,
+        publish_cycle_time,
+        publish_from_block,
+        publish_many,
+        planner_db_available,
+    )
+    from planning.helpers import planner_db
+    from planning.utils import compact_text
+
+    if not planner_db_available():
+        return jsonify({"error": "SUPA_DB_URL is not set. Direct Postgres is required."}), 503
+
+    block_id = data.get("block_id")
+    items = data.get("items")
+
+    try:
+        with planner_db() as con:
+            if block_id is not None:
+                result = publish_from_block(
+                    con,
+                    int(block_id),
+                    notes=compact_text(data.get("notes")),
+                )
+                return jsonify({"ok": True, "published": [result], "count": 1})
+            if isinstance(items, list) and items:
+                out = publish_many(
+                    con,
+                    items,
+                    default_source=compact_text(data.get("source_kind") or SOURCE_PLANNER_HARVEST),
+                )
+                return jsonify({"ok": True, **out})
+            if data.get("part_no"):
+                result = publish_cycle_time(
+                    con,
+                    part_no=data.get("part_no") or "",
+                    bom_code=data.get("bom_code") or "",
+                    stage_no=int(data.get("stage_no") or 0),
+                    stage_name=data.get("stage_name") or "",
+                    op_no=data.get("op_no"),
+                    op_type=data.get("op_type") or "",
+                    cycle_time=float(data.get("cycle_time") or 0),
+                    set_up_time=float(data.get("set_up_time") or 0),
+                    part_description=data.get("part_description") or "",
+                    program_no=data.get("program_no") or "",
+                    program_file=data.get("program_file") or "",
+                    tool_list_file=data.get("tool_list_file") or "",
+                    source_kind=compact_text(data.get("source_kind") or SOURCE_PLANNER_JOB),
+                    notes=compact_text(data.get("notes")),
+                    master_id=data.get("master_id"),
+                    source_block_id=data.get("source_block_id"),
+                    source_operation_id=data.get("source_operation_id"),
+                )
+                return jsonify({"ok": True, "published": [result], "count": 1})
+        return jsonify({"error": "Provide block_id, items[], or a single part_no payload."}), 400
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/planner/cycle-times/publish")
+def api_planner_cycle_times_publish():
+    data = request.get_json(silent=True) or {}
+    return _api_planner_cycle_times_publish_impl(data)
+
+
+@app.get("/api/trial/blocks/<int:block_id>/cycle-time-context")
+def api_trial_block_cycle_time_context(block_id):
+    """Read-only cycle time references for a scheduled block."""
+    from planning.cycle_time_service import block_cycle_time_context, planner_db_available
+    from planning.helpers import planner_db
+
+    if not planner_db_available():
+        return jsonify({"error": "SUPA_DB_URL is not set."}), 503
+    try:
+        with planner_db() as con:
+            ctx = block_cycle_time_context(con, block_id)
+        if not ctx:
+            return jsonify({"error": "block not found"}), 404
+        return jsonify(ctx)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.post("/api/planner/cycle-times/import-new")
 def api_planner_cycle_times_import_new():
     """
@@ -2496,7 +2652,15 @@ def api_planner_cycle_times_sync():
     """
     Incremental sync (default): sheet -> planner_program_tools upsert,
     then insert-only new master rows. Never truncates master; never wipes program tools.
+
+    Pass JSON ``{"action": "publish", ...}`` to publish without syncing the sheet.
     """
+    from planning.utils import compact_text
+
+    data = request.get_json(silent=True) or {}
+    if compact_text(data.get("action")).lower() == "publish":
+        return _api_planner_cycle_times_publish_impl(data)
+
     from planning.cycle_time_master_import import sync_cycle_times_incremental
 
     try:
@@ -2687,6 +2851,12 @@ if __name__ == "__main__":
         log.info("repeat orders routes: %s", ", ".join(repeat_rules))
     else:
         log.warning("repeat orders routes missing — check app.py was saved before restart")
+    daily_rules = [str(r) for r in app.url_map.iter_rules() if "daily-output" in str(r)]
+    if daily_rules:
+        log.info("daily output routes: %s", ", ".join(daily_rules))
+    else:
+        log.warning("daily output routes missing — restart Flask after pulling latest app.py")
+    log.info("daily output page: http://127.0.0.1:%s/daily-output", port)
     log.info("planner: http://127.0.0.1:%s%s", port, PLANNER_PATH)
     log.info("machinist board: http://127.0.0.1:%s%s", port, MACHINIST_BOARD_PATH)
     if _planner_gate_enabled():

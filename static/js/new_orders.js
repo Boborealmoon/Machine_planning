@@ -52,7 +52,7 @@ function newOrdersRenderLineDetail(row) {
   const html = [
     newOrdersDetailField('Sales order', row.source_voucher_no, { mono: true }),
     newOrdersDetailField('Line', row.source_voucher_line_item_no),
-    newOrdersDetailField('Posted', newOrdersFormatPosted(row.sales_order_date)),
+    newOrdersPostedDetailFields(row),
     newOrdersDetailField('Customer', row.customer_code),
     newOrdersDetailField('Customer PO', row.customer_po_no),
     newOrdersDetailField('Customer PO line', row.customer_po_line_item_no),
@@ -93,7 +93,7 @@ function newOrdersRenderLineDetail(row) {
 function newOrdersRenderGroupDetail(group) {
   const headerHtml = [
     newOrdersDetailField('Sales order', group.sales_order_no, { mono: true }),
-    newOrdersDetailField('Posted', newOrdersFormatPosted(group.sales_order_date)),
+    newOrdersPostedDetailFields(group),
     newOrdersDetailField('Customer', group.customer_code),
     newOrdersDetailField('Customer PO', group.customer_po_no),
     newOrdersDetailField('Reference no.', group.reference_no, { mono: true }),
@@ -242,6 +242,34 @@ function newOrdersFormatPosted(value) {
   return trialFormatDt(text);
 }
 
+function newOrdersIsReposted(rowOrGroup) {
+  const first = String(rowOrGroup?.first_posted_datetime || '').trim();
+  const latest = String(rowOrGroup?.latest_posted_datetime || '').trim();
+  return Boolean(first && latest && first !== latest);
+}
+
+function newOrdersPostedDetailFields(rowOrGroup) {
+  const fields = [
+    newOrdersDetailField('First posted', newOrdersFormatPosted(rowOrGroup.first_posted_datetime)),
+  ];
+  if (newOrdersIsReposted(rowOrGroup)) {
+    fields.push(newOrdersDetailField('Latest post', newOrdersFormatPosted(rowOrGroup.latest_posted_datetime)));
+  }
+  return fields.join('');
+}
+
+function newOrdersRenderPostedSideRail(rowOrGroup) {
+  const first = newOrdersFormatPosted(rowOrGroup.first_posted_datetime);
+  const reposted = newOrdersIsReposted(rowOrGroup);
+  const latestBlock = reposted
+    ? `<div class="new-orders-side-reposted"><span class="new-orders-side-posted-label">Latest post</span> ${escapeHtml(newOrdersFormatPosted(rowOrGroup.latest_posted_datetime))}</div>`
+    : '';
+  return `
+    <div class="new-orders-side-posted"><span class="new-orders-side-posted-label">First posted</span> ${escapeHtml(first)}</div>
+    ${latestBlock}
+  `;
+}
+
 function newOrdersGetPsType(row) {
   const raw = String(row.process_sheet_no || '').split('::')[0];
   if (/\[sr\]/i.test(raw)) return 'SR';
@@ -313,7 +341,8 @@ function newOrdersBuildGroups(rows) {
     if (!map.has(key)) {
       const group = {
         sales_order_no: key,
-        sales_order_date: row.sales_order_date,
+        first_posted_datetime: row.first_posted_datetime,
+        latest_posted_datetime: row.latest_posted_datetime,
         customer_po_no: row.customer_po_no,
         customer_code: row.customer_code,
         reference_no: row.reference_no,
@@ -341,7 +370,7 @@ function newOrdersRenderSideRail(group, rowSpan) {
           <button type="button" class="new-orders-group-toggle" data-action="toggle-group" data-sales-order="${escapeHtml(group.sales_order_no)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} lines">${chevron}</button>
           <span class="new-orders-row-hint">Detail</span>
         </div>
-        <div class="new-orders-side-posted"><span class="new-orders-side-posted-label">Posted date</span> ${escapeHtml(newOrdersFormatPosted(group.sales_order_date))}</div>
+        <div class="new-orders-side-posted-wrap">${newOrdersRenderPostedSideRail(group)}</div>
         <strong class="new-orders-side-so">${escapeHtml(group.sales_order_no)}</strong>
         <span class="new-orders-group-meta">${escapeHtml(lineLabel)}</span>
         <dl class="new-orders-side-facts">
@@ -422,7 +451,7 @@ function newOrdersRenderTable() {
     if (emptyText) {
       emptyText.textContent = newOrdersState.rows.length
         ? 'No rows match your filters.'
-        : `No new orders posted ${newOrdersState.rangeLabel || 'for this range'}.`;
+        : `No orders first posted ${newOrdersState.rangeLabel || 'for this range'}.`;
     }
   } else {
     empty.hidden = true;

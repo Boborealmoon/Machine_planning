@@ -1,0 +1,1340 @@
+{
+  "weekLabel": "WEEK 24/2026",
+  "dayLabel": "Tue",
+  "shiftStart": "08:30",
+  "shiftEnd": "20:00",
+  "sections": [
+    {
+      "label": "PS ML",
+      "oeeTarget": 0.7,
+      "machines": [
+        {
+          "name": "CNC 20",
+          "mcAm": "PRAKA",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0096",
+              "opn": "40B",
+              "ct": 30.0,
+              "tgt": 1.0,
+              "out": 1.0,
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 25",
+          "mcAm": "PRAKA",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0210",
+              "opn": 40.0,
+              "ct": 15.0,
+              "tgt": 1.0,
+              "out": 1.0,
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 26",
+          "mcAm": "",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": " ",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 29",
+          "mcAm": "",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 38",
+          "mcAm": "WEI",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0150",
+              "opn": 30.0,
+              "ct": 42.0,
+              "tgt": 14.0,
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 39",
+          "mcAm": "ANADA",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS25-0283-3",
+              "opn": 20.0,
+              "ct": 26.0,
+              "tgt": 23.0,
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 40",
+          "mcAm": "ANADA",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0279-5",
+              "opn": 15.0,
+              "ct": 24.0,
+              "tgt": 5.0,
+              "out": 5.0,
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "NPS26-0152",
+              "opn": 15.0,
+              "ct": 24.0,
+              "tgt": 1.0,
+              "out": 1.0,
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "NPS26-0153",
+              "opn": 15.0,
+              "ct": 24.0,
+              "tgt": 2.0,
+              "out": 2.0,
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "NPS26-0154",
+              "opn": 15.0,
+              "ct": 24.0,
+              "tgt": 1.0,
+              "out": 1.0,
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "NPS26-0279-5",
+              "opn": 20.0,
+              "ct": 60.0,
+              "tgt": 1.0,
+              "out": 1.0,
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "NPS26-0279-5",
+              "opn": 20.0,
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "PS TN",
+      "oeeTarget": 0.95,
+      "machines": [
+        {
+          "name": "CNC 15",
+          "mcAm": "HJ",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0164-1",
+              "opn": 30.0,
+              "ct": 180.0,
+              "tgt": 1.0,
+              "out": 1.0,
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "NPS26-0164-1",
+              "opn": 30.0,
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 21",
+          "mcAm": "HJ",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0166",
+              "opn": 20.0,
+              "ct": 20.0,
+              "tgt": 31.0,
+              "out": "",
+              "fpce": "",
+              "inpro": "A",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 24",
+          "mcAm": "HJ",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0168-1",
+              "opn": 20.0,
+              "ct": 18.0,
+              "tgt": 12.0,
+              "out": 12.0,
+              "fpce": "",
+              "inpro": "A",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "NPS26-0168-1",
+              "opn": 30.0,
+              "ct": 120.0,
+              "tgt": 1.0,
+              "out": 1.0,
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "NPS26-0168-1",
+              "opn": 30.0,
+              "ct": 2.0,
+              "tgt": 150.0,
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC27",
+          "mcAm": "HJ",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0225",
+              "opn": 30.0,
+              "ct": 21.0,
+              "tgt": 30.0,
+              "out": "",
+              "fpce": "",
+              "inpro": "A",
+              "quahis": "C",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 35",
+          "mcAm": "",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0222",
+              "opn": 20.0,
+              "ct": 45.0,
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "MRO",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 36",
+          "mcAm": "",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0218",
+              "opn": 20.0,
+              "ct": 115.0,
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "APS TN",
+      "oeeTarget": 0.95,
+      "machines": [
+        {
+          "name": "CNC 10",
+          "mcAm": "YT",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0210",
+              "opn": 30.0,
+              "ct": 8.0,
+              "tgt": 75.0,
+              "out": "",
+              "fpce": "",
+              "inpro": "A",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 22",
+          "mcAm": "WEI",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0175",
+              "opn": 25.0,
+              "ct": 10.0,
+              "tgt": 7.0,
+              "out": 7.0,
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "NPS26-0175",
+              "opn": 30.0,
+              "ct": 120.0,
+              "tgt": 1.0,
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 30",
+          "mcAm": "WEI",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0176",
+              "opn": 30.0,
+              "ct": 20.0,
+              "tgt": 25.0,
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 31",
+          "mcAm": "YT",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0252",
+              "opn": 20.0,
+              "ct": 120.0,
+              "tgt": 1.0,
+              "out": 1.0,
+              "fpce": "A",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "NPS26-0252",
+              "opn": 20.0,
+              "ct": 15.0,
+              "tgt": 14.0,
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        },
+        {
+          "name": "CNC 32",
+          "mcAm": "YT",
+          "mcOt": "",
+          "jobs": [
+            {
+              "ps": "NPS26-0177",
+              "opn": 30.0,
+              "ct": 15.0,
+              "tgt": 40.0,
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            },
+            {
+              "ps": "",
+              "opn": "",
+              "ct": "",
+              "tgt": "",
+              "out": "",
+              "fpce": "",
+              "inpro": "",
+              "quahis": "",
+              "rejects": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

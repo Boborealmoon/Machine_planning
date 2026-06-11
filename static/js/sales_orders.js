@@ -31,6 +31,34 @@ function soFormatDt(value) {
   return typeof trialFormatDt === 'function' ? trialFormatDt(value) : String(value || '—');
 }
 
+function soIsReposted(order) {
+  const first = String(order?.first_posted_datetime || '').trim();
+  const latest = String(order?.latest_posted_datetime || '').trim();
+  return Boolean(first && latest && first !== latest);
+}
+
+function soPostedDetailFields(order) {
+  const fields = [
+    soDetailField('First posted', soFormatDt(order?.first_posted_datetime)),
+  ];
+  if (soIsReposted(order)) {
+    fields.push(soDetailField('Latest post', soFormatDt(order?.latest_posted_datetime)));
+  }
+  return fields.join('');
+}
+
+function soRenderPostedSideRail(order) {
+  const first = soFormatDt(order?.first_posted_datetime);
+  const reposted = soIsReposted(order);
+  const latestBlock = reposted
+    ? `<div class="new-orders-side-reposted"><span class="new-orders-side-posted-label">Latest post</span> ${escapeHtml(soFormatDt(order.latest_posted_datetime))}</div>`
+    : '';
+  return `
+    <div class="new-orders-side-posted"><span class="new-orders-side-posted-label">First posted</span> ${escapeHtml(first)}</div>
+    ${latestBlock}
+  `;
+}
+
 function soDetailField(label, value, { mono, fullWidth } = {}) {
   const text = value == null || value === '' ? '—' : String(value);
   const cls = mono ? ' new-orders-detail-value--mono' : '';
@@ -79,6 +107,7 @@ function soRenderPartialDetail(order, pp, partial) {
     soDetailField('Customer PO', order?.customer_po_no, { mono: true }),
     soDetailField('Voucher status', order?.voucher_status, { mono: true }),
     soDetailField('Order date', soFormatDate(order?.order_date)),
+    soPostedDetailFields(order),
   ].join('');
   return [
     soDetailSection('Partial', partialHtml),
@@ -134,6 +163,7 @@ function soRenderOrderDetail(order) {
   const headerHtml = [
     soDetailField('Sales order', order.sales_order_no, { mono: true }),
     soDetailField('Order date', soFormatDate(order.order_date)),
+    soPostedDetailFields(order),
     soDetailField('Status', order.status),
     soDetailField('Voucher status', order.voucher_status, { mono: true }),
     soDetailField('Customer', order.customer_name || order.customer_short_name),
@@ -367,7 +397,7 @@ function soRenderSideRail(order, rowSpan) {
           <button type="button" class="new-orders-group-toggle" data-action="toggle-group" data-sales-order="${escapeHtml(soNo)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} PP vouchers">${chevron}</button>
           <span class="new-orders-row-hint">Detail</span>
         </div>
-        <div class="new-orders-side-posted"><span class="new-orders-side-posted-label">Order date</span> ${escapeHtml(soFormatDate(order.order_date))}</div>
+        <div class="new-orders-side-posted-wrap">${soRenderPostedSideRail(order)}</div>
         <strong class="new-orders-side-so">${escapeHtml(soNo || '—')}</strong>
         <span class="new-orders-group-meta">${escapeHtml(String(ppCount))} PP · ${escapeHtml(String(partialCount))} partial(s) · ${escapeHtml(String(order.voucher_status || '—'))}</span>
         <dl class="new-orders-side-facts">

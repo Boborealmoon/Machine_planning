@@ -15,6 +15,8 @@ function trialBuildDerivedIndexes() {
     : null;
   const blocksByMachine = new Map();
   const blocksBySourceBase = new Map();
+  const blocksByPsPartial = new Map();
+  const allocatedOpKeys = new Set();
   const actualTotalsByBlock = new Map();
 
   (trialState.blocks || []).forEach(block => {
@@ -28,7 +30,32 @@ function trialBuildDerivedIndexes() {
     if (sourceBase) {
       if (!blocksBySourceBase.has(sourceBase)) blocksBySourceBase.set(sourceBase, []);
       blocksBySourceBase.get(sourceBase).push(block);
+
+      const blockSource = (typeof trialCatalogSourceBase === 'function')
+        ? trialCatalogSourceBase({
+          planner_ps_id: block.planner_ps_id,
+          source_ps_id: block.source_ps_id || block.job_no,
+        })
+        : sourceBase;
+      const partial = String(trialCatalogPartialIndex(block) || 1);
+      const partialKey = `${blockSource}::${partial}`;
+      if (!blocksByPsPartial.has(partialKey)) blocksByPsPartial.set(partialKey, []);
+      blocksByPsPartial.get(partialKey).push(block);
+
+      const opNo = String(block.source_op_no || '').trim();
+      const opLabel = String(block.operation_name || '').trim();
+      const opSeq = Number(block.source_op_seq_id || 0);
+      const addAlloc = (token) => {
+        if (token) allocatedOpKeys.add(`${blockSource}::${partial}::${token}`);
+      };
+      addAlloc(opNo);
+      if (opLabel && opLabel !== opNo) addAlloc(opLabel);
+      if (opSeq > 0) addAlloc(`step:${opSeq}`);
     }
+  });
+
+  blocksByPsPartial.forEach((blocks) => {
+    blocks.sort((a, b) => Number(a.block_id) - Number(b.block_id));
   });
 
   (trialState.actuals || []).forEach(row => {
@@ -43,12 +70,16 @@ function trialBuildDerivedIndexes() {
   trialDerivedIndexes = {
     blocksByMachine,
     blocksBySourceBase,
+    blocksByPsPartial,
+    allocatedOpKeys,
     actualTotalsByBlock,
   };
   if (typeof trialPerfEnd === 'function') {
     trialPerfEnd(perf, {
       index_machines: blocksByMachine.size,
       index_ps_bases: blocksBySourceBase.size,
+      index_ps_partials: blocksByPsPartial.size,
+      index_allocated_ops: allocatedOpKeys.size,
       index_actual_blocks: actualTotalsByBlock.size,
     });
   }
@@ -602,7 +633,11 @@ function trialBlocksForCatalogPs(ps) {
       ? ps.ps_id
       : `${source}::${Number(ps?.pp_partial_no) || 1}`,
   );
-  const { blocksBySourceBase } = trialEnsureDataIndexes();
+  const { blocksBySourceBase, blocksByPsPartial } = trialEnsureDataIndexes();
+  const exactFromIndex = blocksByPsPartial?.get(`${source}::${wantPartial}`);
+  if (exactFromIndex?.length) {
+    return exactFromIndex;
+  }
   const allBlocks = blocksBySourceBase.get(source) || [];
   if (!allBlocks.length) return [];
   const exact = allBlocks.filter(block => trialCatalogPartialIndex(block) === wantPartial);
@@ -700,7 +735,44 @@ function trialIsCatalogOpFullyQueued(card) {
       || (Array.isArray(card?.queued_machines) && card.queued_machines.length > 0));
 }
 
+/** Open catalog ops for a PS partial that can still be queued (route order). */
+function trialSchedulableOpCardsForPs(ps) {
+  const cards = typeof trialResolvedOpCardsForPs === 'function'
+    ? trialResolvedOpCardsForPs(ps)
+    : [];
+  const enrich = card => (
+    typeof trialCatalogOpForPs === 'function' ? trialCatalogOpForPs(card, ps) : card
+  );
+  return cards
+    .map(enrich)
+    .filter(card => String(card.card_kind || 'single') !== 'group')
+    .filter(card => !trialCatalogOpIsComplete(card))
+    .filter(card => trialCatalogSchedulableRemaining(card) > 0.0001)
+    .sort((a, b) => (
+      Number(a.source_op_seq_id || 0) - Number(b.source_op_seq_id || 0)
+      || String(a.source_op_no || a.operation_label || '').localeCompare(String(b.source_op_no || b.operation_label || ''))
+    ));
+}
+
 function trialIsCatalogOpAllocated(card) {
+  const { allocatedOpKeys } = trialEnsureDataIndexes();
+  if (allocatedOpKeys?.size) {
+    const source = String(
+      card?.source_ps_id
+      || (typeof trialCatalogSourceBase === 'function' ? trialCatalogSourceBase(card) : '')
+      || '',
+    ).trim();
+    if (!source) return false;
+    const partial = String(trialCatalogPartialIndex(card) || 1);
+    const prefix = `${source}::${partial}::`;
+    const opNo = String(card?.source_op_no || '').trim();
+    const opLabel = String(card?.operation_label || '').trim();
+    const opSeq = Number(card?.source_op_seq_id || 0);
+    if (opNo && allocatedOpKeys.has(prefix + opNo)) return true;
+    if (opLabel && opLabel !== opNo && allocatedOpKeys.has(prefix + opLabel)) return true;
+    if (opSeq > 0 && allocatedOpKeys.has(prefix + `step:${opSeq}`)) return true;
+    return false;
+  }
   return trialBlocksForCatalogOp(card).length > 0;
 }
 
@@ -821,6 +893,326 @@ function trialGroupQueuedDay(group) {
   return trialLocalDateText(queuedAt);
 }
 
+function trialMachinistGroupSearchHaystack(group) {
+  const leader = group?.leader || (group?.blocks || [])[0];
+  if (!leader) return [];
+  const psId = String(
+    group.ps_id || leader.planner_ps_id || leader.job_no || leader.source_ps_id || '',
+  ).trim();
+  const parts = typeof trialSplitPsId === 'function'
+    ? trialSplitPsId(psId)
+    : { base: psId, partial: '' };
+  const blocks = Array.isArray(group?.blocks) ? group.blocks : [leader];
+  return trialSearchableTokens([
+    psId,
+    parts.base,
+    parts.partial ? `partial ${parts.partial}` : '',
+    leader.job_no,
+    leader.source_ps_id,
+    leader.planner_ps_id,
+    group.operation_label,
+    group.group_label,
+    ...blocks.flatMap(block => [
+      block?.source_op_no,
+      block?.operation_name,
+      block?.group_label,
+    ]),
+  ]);
+}
+
+function trialMachinistJobMatchesQuery(group, query) {
+  const rawQuery = String(query || '').trim();
+  if (!rawQuery || rawQuery.length < 2) return false;
+  const normalizedQuery = trialNormalizeSearchText(rawQuery);
+  const rawLower = rawQuery.toLowerCase();
+  const haystack = trialMachinistGroupSearchHaystack(group);
+  return haystack.some(token => {
+    const text = String(token).toLowerCase();
+    const normalized = trialNormalizeSearchText(token);
+    return text.includes(rawLower)
+      || (normalizedQuery && normalized.includes(normalizedQuery));
+  });
+}
+
+/** Find queued jobs across all machines; returns lane position (#1 = queue head). */
+function trialSearchMachinistQueues(query) {
+  const needle = String(query || '').trim();
+  if (!needle || needle.length < 2) return [];
+  const machines = Array.isArray(trialState.machines) ? trialState.machines : [];
+  const hits = [];
+  machines.forEach(machine => {
+    const groups = typeof trialBlocksGroupedForMachine === 'function'
+      ? trialBlocksGroupedForMachine(machine.machine_id)
+      : [];
+    groups.forEach((group, idx) => {
+      if (!trialMachinistJobMatchesQuery(group, needle)) return;
+      const vm = typeof trialBlockGroupViewModel === 'function'
+        ? trialBlockGroupViewModel(group, { displaySequenceNo: idx + 1 })
+        : null;
+      hits.push({
+        machineId: Number(machine.machine_id || 0),
+        machineCode: String(machine.machine_code || '').trim(),
+        machineCategory: String(machine.machine_category || '').trim(),
+        queuePosition: idx + 1,
+        groupId: Number(group.group_id || 0),
+        blockId: Number(group.leader?.block_id || 0),
+        psDisplay: String(vm?.psDisplay?.base || group.ps_id || group.title || '').trim(),
+        operationLine: String(vm?.operationLine || group.operation_label || '').trim(),
+        partial: String(vm?.psDisplay?.partial || '').trim(),
+      });
+    });
+  });
+  return hits.sort((a, b) =>
+    a.machineCode.localeCompare(b.machineCode, undefined, { numeric: true })
+    || a.queuePosition - b.queuePosition,
+  );
+}
+
+function trialEnsureMachineLaneVisibleForSearch(machine) {
+  if (!machine) return false;
+  let changed = false;
+  const code = String(machine.machine_code || '').trim();
+  if (code && trialMachineHiddenSet.has(code)) {
+    trialMachineHiddenSet.delete(code);
+    changed = true;
+  }
+  const machineCat = String(machine.machine_category || '').trim().toUpperCase();
+  const filterCat = String(trialMachineCategoryFilter || 'ALL').trim().toUpperCase();
+  if (machineCat && filterCat !== 'ALL' && filterCat !== machineCat) {
+    trialMachineCategoryFilter = 'ALL';
+    changed = true;
+  }
+  return changed;
+}
+
+function trialEnsureMachinistFocusMachineSelected(machineId) {
+  const id = Number(machineId || 0);
+  if (!id || typeof trialMachinistFocusLayoutActive !== 'function' || !trialMachinistFocusLayoutActive()) {
+    return false;
+  }
+  const ids = typeof trialGetMachinistFocusMachineIds === 'function'
+    ? trialGetMachinistFocusMachineIds()
+    : [];
+  if (ids.includes(id)) return false;
+  if (ids.length >= trialMachinistFocusMaxMachines()) {
+    if (typeof toast === 'function') {
+      toast(
+        typeof trialMachinistT === 'function'
+          ? trialMachinistT('add_machine_focus', { max: trialMachinistFocusMaxMachines() })
+          : `Add this machine in focus view (max ${trialMachinistFocusMaxMachines()} selected)`,
+        'error',
+      );
+    }
+    return false;
+  }
+  if (typeof trialToggleMachinistFocusMachine === 'function') {
+    trialToggleMachinistFocusMachine(id);
+    return true;
+  }
+  return false;
+}
+
+function trialMachinistFocusMaxJobs() {
+  return 5;
+}
+
+/** Machinist focus view: full queue in planner order (lane scrolls after ~5 visible cards). */
+function trialMachinistFocusGroups(groups) {
+  const rows = Array.isArray(groups) ? groups : [];
+  return rows.length ? rows : [];
+}
+
+function trialMachinistFocusLayoutActive() {
+  return typeof trialIsMachinistBoard === 'function'
+    && trialIsMachinistBoard()
+    && typeof trialIsMachinistFocusEnabled === 'function'
+    && trialIsMachinistFocusEnabled();
+}
+
+const TRIAL_MACHINIST_FOCUS_MACHINE_KEY = 'machinist-board-focus-machine-v1';
+const TRIAL_MACHINIST_FOCUS_MACHINES_KEY = 'machinist-board-focus-machines-v2';
+
+function trialMachinistFocusMaxMachines() {
+  return 4;
+}
+
+function trialLoadMachinistFocusMachineIds() {
+  const max = trialMachinistFocusMaxMachines();
+  try {
+    const raw = localStorage.getItem(TRIAL_MACHINIST_FOCUS_MACHINES_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return [...new Set(parsed.map(id => Number(id)).filter(id => id > 0))].slice(0, max);
+      }
+    }
+  } catch (_) {
+    // ignore quota / private mode
+  }
+  return [];
+}
+
+function trialSaveMachinistFocusMachineIds(ids) {
+  const max = trialMachinistFocusMaxMachines();
+  const normalized = [...new Set((ids || []).map(id => Number(id)).filter(id => id > 0))].slice(0, max);
+  trialMachinistFocusMachineIds = normalized;
+  trialMachinistFocusMachineIdsLoaded = true;
+  try {
+    if (normalized.length) {
+      localStorage.setItem(TRIAL_MACHINIST_FOCUS_MACHINES_KEY, JSON.stringify(normalized));
+    } else {
+      localStorage.removeItem(TRIAL_MACHINIST_FOCUS_MACHINES_KEY);
+    }
+    localStorage.removeItem(TRIAL_MACHINIST_FOCUS_MACHINE_KEY);
+  } catch (_) {
+    // ignore quota / private mode
+  }
+  return normalized;
+}
+
+function trialGetMachinistFocusMachineIds() {
+  if (!trialMachinistFocusMachineIdsLoaded) {
+    trialMachinistFocusMachineIds = trialLoadMachinistFocusMachineIds();
+    trialMachinistFocusMachineIdsLoaded = true;
+  }
+  return [...trialMachinistFocusMachineIds];
+}
+
+function trialMachinesForFocusGrid() {
+  return (trialVisibleMachines() || []).filter(machine => {
+    const allGroups = typeof trialBlocksGroupedForMachine === 'function'
+      ? trialBlocksGroupedForMachine(machine.machine_id)
+      : [];
+    const groups = allGroups.filter(
+      row => typeof trialGroupRunsInsideDateFilter === 'function' && trialGroupRunsInsideDateFilter(row),
+    );
+    return typeof trialMachinistFocusGroups === 'function' && trialMachinistFocusGroups(groups).length > 0;
+  });
+}
+
+function trialResolveMachinistFocusMachines() {
+  const ids = trialGetMachinistFocusMachineIds();
+  if (!ids.length) return [];
+  const candidates = trialMachinesForFocusGrid();
+  if (!candidates.length) return [];
+  const byId = new Map(candidates.map(machine => [Number(machine.machine_id), machine]));
+  return ids.map(id => byId.get(Number(id))).filter(Boolean);
+}
+
+function trialSyncMachinistFocusMachineIds() {
+  const candidates = trialMachinesForFocusGrid();
+  const candidateIds = new Set(candidates.map(machine => Number(machine.machine_id)));
+  const pruned = trialGetMachinistFocusMachineIds().filter(id => candidateIds.has(id));
+  const currentIds = trialGetMachinistFocusMachineIds();
+  if (pruned.join(',') !== currentIds.join(',')) {
+    trialSaveMachinistFocusMachineIds(pruned);
+  }
+}
+
+function trialToggleMachinistFocusMachine(machineId) {
+  const id = Number(machineId || 0);
+  if (!id) return;
+  const candidates = trialMachinesForFocusGrid();
+  if (!candidates.some(machine => Number(machine.machine_id) === id)) return;
+  const ids = [...trialGetMachinistFocusMachineIds()];
+  const idx = ids.indexOf(id);
+  if (idx >= 0) {
+    ids.splice(idx, 1);
+  } else {
+    if (ids.length >= trialMachinistFocusMaxMachines()) {
+      if (typeof toast === 'function') {
+        toast(
+          typeof trialMachinistT === 'function'
+            ? trialMachinistT('max_machines_focus', { max: trialMachinistFocusMaxMachines() })
+            : `Maximum ${trialMachinistFocusMaxMachines()} machines in focus view`,
+          'error',
+        );
+      }
+      return;
+    }
+    ids.push(id);
+  }
+  trialSaveMachinistFocusMachineIds(ids);
+  if (typeof renderTrial === 'function') renderTrial({ skipCatalog: true });
+}
+
+function trialClearMachinistFocusMachines() {
+  trialSaveMachinistFocusMachineIds([]);
+  if (typeof renderTrial === 'function') renderTrial({ skipCatalog: true });
+}
+
+function trialSegmentTargetQty(seg) {
+  return Math.max(0, Number(seg?.qty_done ?? seg?.planned_qty ?? 0));
+}
+
+function trialSegmentDateKey(seg) {
+  const dated = String(seg?.segment_date || '').trim();
+  if (dated) return dated.slice(0, 10);
+  const start = String(seg?.start_datetime || seg?.visual_start_datetime || '').trim();
+  return start ? start.slice(0, 10) : '';
+}
+
+function trialFocusTargetForBlock(blockId, today) {
+  if (!blockId || !today || typeof trialSegmentsForBlock !== 'function') return 0;
+  const segs = trialSegmentsForBlock(blockId)
+    .filter(seg => String(seg.segment_type || '') === 'production');
+  if (!segs.length) return 0;
+
+  const todaySegs = segs.filter(seg => trialSegmentDateKey(seg) === today);
+  if (todaySegs.length) {
+    return todaySegs.reduce((sum, seg) => sum + trialSegmentTargetQty(seg), 0);
+  }
+
+  const dayStart = typeof trialParseDateTime === 'function'
+    ? trialParseDateTime(`${today}T00:00:00`)
+    : new Date(`${today}T00:00:00`);
+  const dayEnd = typeof trialParseDateTime === 'function'
+    ? trialParseDateTime(`${today}T23:59:59`)
+    : new Date(`${today}T23:59:59`);
+  if (dayStart && dayEnd) {
+    const spanning = segs.filter(seg => {
+      const start = trialParseDateTime(seg.start_datetime || seg.visual_start_datetime);
+      const end = trialParseDateTime(seg.end_datetime || seg.visual_end_datetime);
+      if (!start) return false;
+      return start <= dayEnd && (!end || end >= dayStart);
+    });
+    if (spanning.length) {
+      return spanning.reduce((sum, seg) => sum + trialSegmentTargetQty(seg), 0);
+    }
+  }
+
+  const upcoming = segs
+    .map(seg => ({ seg, date: trialSegmentDateKey(seg) }))
+    .filter(row => row.date && row.date >= today)
+    .sort((a, b) => a.date.localeCompare(b.date) || Number(a.seg.segment_id || 0) - Number(b.seg.segment_id || 0));
+  if (upcoming.length) {
+    const nextDate = upcoming[0].date;
+    return upcoming
+      .filter(row => row.date === nextDate)
+      .reduce((sum, row) => sum + trialSegmentTargetQty(row.seg), 0);
+  }
+
+  const block = (trialState.blocks || []).find(row => Number(row.block_id) === Number(blockId));
+  if (block && typeof trialBlockMemberMetrics === 'function') {
+    const metrics = trialBlockMemberMetrics(block);
+    return Math.max(0, Number(metrics.remainingQty ?? 0));
+  }
+  return 0;
+}
+
+function trialFocusTargetForGroup(group) {
+  const blocks = Array.isArray(group?.blocks) && group.blocks.length
+    ? group.blocks
+    : [group?.leader].filter(Boolean);
+  const today = typeof trialTodayISO === 'function' ? trialTodayISO() : '';
+  if (!today || !blocks.length) return 0;
+  return blocks.reduce((sum, block) => sum + trialFocusTargetForBlock(block?.block_id, today), 0);
+}
+
+function trialTodayTargetForGroup(group) {
+  return trialFocusTargetForGroup(group);
+}
+
 function trialGroupRunsInsideDateFilter(group) {
   const filterStartDay = String(trialScheduleDateFilter.start || '').trim();
   const filterEndDay = String(trialScheduleDateFilter.end || '').trim();
@@ -836,6 +1228,10 @@ function trialGroupRunsInsideDateFilter(group) {
 }
 
 function trialMachineLaneEmptyMessage(totalGroups, visibleGroups) {
+  if (typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard()
+    && typeof trialMachinistLaneEmptyMessage === 'function') {
+    return trialMachinistLaneEmptyMessage(totalGroups, visibleGroups);
+  }
   if (totalGroups > 0 && visibleGroups === 0 && trialHasActiveDateFilter()) {
     const n = totalGroups === 1 ? '1 block is' : `${totalGroups} blocks are`;
     return `${n} on this machine outside the date filter. Clear dates to show all.`;

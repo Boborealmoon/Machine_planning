@@ -19,7 +19,13 @@ new_orders_bp = Blueprint("new_orders", __name__)
 _CACHE_TTL_SEC = 300
 _cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
-_NEW_ORDERS_SQL = """
+_FIRST_POSTED_SQL = """
+SELECT sales_order_no, MIN(posted_datetime) AS first_posted_datetime
+FROM public.so_order_rev_hst_hdr
+GROUP BY sales_order_no
+"""
+
+_NEW_ORDERS_SQL = f"""
 SELECT
     d.source_voucher_no,
     d.source_voucher_line_item_no,
@@ -43,7 +49,8 @@ SELECT
     h.do_generation_datetime,
     pp.proposed_edd,
     hdr.reference_no,
-    hdr.posted_datetime AS sales_order_date,
+    COALESCE(rev.first_posted_datetime, hdr.posted_datetime) AS first_posted_datetime,
+    hdr.posted_datetime AS latest_posted_datetime,
     hdr.customer_code,
     (d.unit_selling_price * d.qty_issued * h.exch_rate) AS total_home_amt
 FROM public.lg_out_shm_detail d
@@ -59,10 +66,14 @@ LEFT JOIN public.mfg_pp_vch pp
     ON pp.pp_voucher_no = s.process_sheet_no
 LEFT JOIN public.so_order_ost_hdr hdr
     ON hdr.sales_order_no = d.source_voucher_no
+LEFT JOIN ({_FIRST_POSTED_SQL.strip()}) rev
+    ON rev.sales_order_no = d.source_voucher_no
 WHERE d.source_voucher_no LIKE 'SO/%%'
   AND NOT (d.status = 'History' AND d.qty_issued = 0)
-  AND hdr.posted_datetime::date BETWEEN %s AND %s
-ORDER BY hdr.posted_datetime DESC, d.source_voucher_no, d.source_voucher_line_item_no
+  AND COALESCE(rev.first_posted_datetime, hdr.posted_datetime)::date BETWEEN %s AND %s
+ORDER BY COALESCE(rev.first_posted_datetime, hdr.posted_datetime) DESC,
+         d.source_voucher_no,
+         d.source_voucher_line_item_no
 """
 
 

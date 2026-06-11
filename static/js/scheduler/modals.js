@@ -229,13 +229,45 @@ function openTrialCreateModal(defaultMachineId = '') {
   });
 }
 
-function openTrialBlockEditor(blockId) {
+function trialCycleContextStrip(ctx) {
+  if (!ctx) return '';
+  const master = ctx.master || {};
+  const parts = [
+    `<span><strong>This job</strong> ${fmt(ctx.job_cycle_time || 0, 2)} min/pc</span>`,
+    `<span>Master ${fmt(master.cycle_time || 0, 2)}</span>`,
+    `<span>BOM step ${fmt(ctx.bom_step_cycle_time || 0, 2)}</span>`,
+  ];
+  return `<p class="trial-modal-hint full" id="trial-cycle-context-strip">${parts.join(' · ')}</p>`;
+}
+
+async function publishTrialBlockCycleToMaster(blockId) {
+  if (!confirm('Publish this job\'s cycle time to master? Other scheduled jobs will not change.')) return;
+  try {
+    const result = await POST('/api/planner/cycle-times/publish', { block_id: Number(blockId) });
+    const n = result.count || (result.published || []).length;
+    toast(n ? 'Published to master baseline' : 'Published', 'success');
+    const ctx = await GET(`/api/trial/blocks/${encodeURIComponent(blockId)}/cycle-time-context`);
+    const strip = document.getElementById('trial-cycle-context-strip');
+    if (strip) strip.outerHTML = trialCycleContextStrip(ctx);
+  } catch (e) {
+    toast('Publish failed: ' + e.message, 'error');
+  }
+}
+
+async function openTrialBlockEditor(blockId) {
   const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
   if (!block) return;
+  let cycleCtx = null;
+  try {
+    cycleCtx = await GET(`/api/trial/blocks/${encodeURIComponent(blockId)}/cycle-time-context`);
+  } catch (_e) {
+    cycleCtx = null;
+  }
   const machineOptions = (trialState.machines || []).map(machine =>
     `<option value="${machine.machine_id}" ${String(machine.machine_id) === String(block.machine_id) ? 'selected' : ''}>${machine.machine_code}</option>`
   ).join('');
   openTrialForm('Edit Run Block', `
+    ${trialCycleContextStrip(cycleCtx)}
     <div class="trial-modal-grid">
       <label>Job No <input id="trial-edit-job-no" value="${block.job_no || ''}"></label>
       <label>Operation Name <input id="trial-edit-operation-name" value="${block.operation_name || ''}"></label>
@@ -314,10 +346,14 @@ function openTrialBlockEditor(blockId) {
       openTrialBlockEditor._saveInFlight = false;
     }
   }, `
+    <button type="button" class="btn btn-ghost btn-sm" id="trial-publish-cycle-master" title="Publish this job cycle to master baseline">Publish to master</button>
     <button type="button" class="btn btn-ghost btn-sm" id="trial-actual-output">Actual Output</button>
     <button type="button" class="btn btn-ghost btn-sm" id="trial-delete-block">Delete</button>
   `);
   setTimeout(() => {
+    document.getElementById('trial-publish-cycle-master')?.addEventListener('click', () => {
+      publishTrialBlockCycleToMaster(block.block_id);
+    });
     document.getElementById('trial-actual-output')?.addEventListener('click', () => openTrialActualModal(block.block_id));
     document.getElementById('trial-delete-block')?.addEventListener('click', async () => {
       if (!confirm(`Delete ${block.job_no} - ${block.operation_name}?`)) return;
@@ -777,6 +813,118 @@ function openTrialQueueHeadsModal() {
   }
   openModal('View current Operations', trialRenderQueueHeadsPanel(), 'xl');
   bindTrialQueueHeadsModalActions();
+}
+
+function trialQueuePsAllMachineSelectHtml(machines, selectedId, selectId = '') {
+  const selected = Number(selectedId || 0);
+  const idAttr = selectId ? ` id="${escapeHtml(selectId)}"` : '';
+  const machineOptions = (machines || []).map(machine => {
+    const machineId = Number(machine.machine_id || 0);
+    return `
+      <option value="${machineId}"${machineId === selected ? ' selected' : ''}>
+        ${escapeHtml(machine.machine_code || '')} · ${escapeHtml(machine.machine_category || '')}
+      </option>
+    `;
+  }).join('');
+  return `
+    <select class="trial-queue-ps-all-machine-select"${idAttr} required>
+      <option value="">— choose lane —</option>
+      ${machineOptions}
+    </select>
+  `;
+}
+
+function openTrialQueuePsAllModal(psId) {
+  if (trialPlannerBusyLock > 0) return;
+  const ps = typeof trialCatalogPsRecord === 'function' ? trialCatalogPsRecord(psId) : null;
+  if (!ps) {
+    toast('PS / partial not found.', 'error');
+    return;
+  }
+  const schedulable = typeof trialSchedulableOpCardsForPs === 'function'
+    ? trialSchedulableOpCardsForPs(ps)
+    : [];
+  if (!schedulable.length) {
+    toast('No open operations to queue for this job.', 'info');
+    return;
+  }
+  const machines = Array.isArray(trialState.machines) ? trialState.machines : [];
+  if (!machines.length) {
+    toast('No machines loaded.', 'error');
+    return;
+  }
+  const basePs = String(ps.ps_id || '').split('::')[0] || ps.ps_id || 'PS';
+  const partial = String(ps.ps_id || '').includes('::')
+    ? String(ps.ps_id).split('::')[1]
+    : (Number(ps.pp_partial_no) > 1 ? String(ps.pp_partial_no) : '');
+  const title = [basePs, partial ? `Partial ${partial}` : ''].filter(Boolean).join(' · ');
+  const bulkDefaultHtml = schedulable.length > 1
+    ? `
+      <label class="full">Default machine lane
+        ${trialQueuePsAllMachineSelectHtml(machines, 0, 'trial-queue-ps-all-default-machine')}
+      </label>
+    `
+    : '';
+  const opRows = schedulable.map((card, idx) => {
+    const opDisp = trialBlockOpDisplay({
+      source_op_no: card.source_op_no || card.operation_label,
+      operation_name: card.operation_name || card.op_type || '',
+    });
+    const qty = typeof trialCatalogSchedulableRemaining === 'function'
+      ? trialCatalogSchedulableRemaining(card)
+      : Number(card.remaining_qty || 0);
+    const label = [opDisp.op_no, opDisp.op_name].filter(Boolean).join(' · ') || 'Operation';
+    return `
+      <div class="trial-queue-ps-all-op">
+        <div class="trial-queue-ps-all-op-main">
+          <span class="trial-queue-ps-all-op-label">${escapeHtml(label)}</span>
+          <span class="trial-ptl-muted">${escapeHtml(fmt(qty, 0))} pcs</span>
+        </div>
+        <label class="trial-queue-ps-all-op-machine">
+          <span class="trial-queue-ps-all-op-machine-label">Machine lane</span>
+          ${trialQueuePsAllMachineSelectHtml(machines, 0, `trial-queue-ps-all-machine-${idx}`)}
+        </label>
+      </div>
+    `;
+  }).join('');
+  openTrialForm(`Queue entire job · ${title}`, `
+    <p class="trial-modal-hint">
+      Choose a machine lane for each open operation. Any operation left unassigned is skipped.
+    </p>
+    ${bulkDefaultHtml}
+    <div class="trial-op-detail-section">
+      <div class="trial-op-detail-section-title">Operations to queue</div>
+      <div class="trial-queue-ps-all-op-list">${opRows}</div>
+    </div>
+  `, 'Queue all', async () => {
+    const assignments = schedulable.map((card, idx) => ({
+      card,
+      machineId: Number(document.getElementById(`trial-queue-ps-all-machine-${idx}`)?.value || 0),
+    }));
+    const toQueue = assignments.filter(row => Number(row.machineId || 0) > 0);
+    if (!toQueue.length) {
+      toast('Choose at least one machine lane to queue.', 'error');
+      return;
+    }
+    const skippedEmpty = assignments.length - toQueue.length;
+    closeModal();
+    if (typeof scheduleTrialPsAllOps === 'function') {
+      await scheduleTrialPsAllOps(psId, toQueue, { skippedEmpty });
+    }
+  });
+  if (schedulable.length > 1) {
+    setTimeout(() => {
+      const bulkSelect = document.getElementById('trial-queue-ps-all-default-machine');
+      bulkSelect?.addEventListener('change', () => {
+        const value = bulkSelect.value;
+        if (!value) return;
+        schedulable.forEach((_card, idx) => {
+          const select = document.getElementById(`trial-queue-ps-all-machine-${idx}`);
+          if (select) select.value = value;
+        });
+      });
+    }, 0);
+  }
 }
 
 function openTrialMachineQueue(machineId) {

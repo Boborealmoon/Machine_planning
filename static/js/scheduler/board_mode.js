@@ -83,6 +83,10 @@ function trialSyncMachinistStockColorsClass() {
     btn.classList.toggle('is-on', on);
     btn.classList.toggle('is-off', !on);
     btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (typeof trialMachinistT === 'function') {
+      btn.textContent = trialMachinistT('stock_colours');
+      btn.title = trialMachinistT('stock_colours_title');
+    }
   }
   const legend = document.querySelector('.machinist-board-legend');
   if (legend) legend.hidden = !on;
@@ -90,4 +94,49 @@ function trialSyncMachinistStockColorsClass() {
 
 function trialToggleMachinistStockColors() {
   trialSetMachinistStockColorsEnabled(!trialIsMachinistStockColorsEnabled());
+}
+
+/** Machinist board: focus view shows current job + queue (lane scrolls after ~5 cards). */
+const TRIAL_MACHINIST_FOCUS_KEY = 'machinist-board-focus-v1';
+
+function trialIsMachinistFocusEnabled() {
+  try {
+    return localStorage.getItem(TRIAL_MACHINIST_FOCUS_KEY) === '1';
+  } catch (_) {
+    return false;
+  }
+}
+
+function trialSetMachinistFocusEnabled(enabled) {
+  try {
+    localStorage.setItem(TRIAL_MACHINIST_FOCUS_KEY, enabled ? '1' : '0');
+  } catch (_) {
+    // ignore quota / private mode
+  }
+  trialSyncMachinistFocusClass();
+}
+
+function trialSyncMachinistFocusClass() {
+  if (typeof trialIsMachinistBoard !== 'function' || !trialIsMachinistBoard()) return;
+  const on = trialIsMachinistFocusEnabled();
+  document.body.classList.toggle('machinist-board--focus', on);
+  const btn = document.getElementById('machinist-focus-toggle');
+  if (btn) {
+    btn.classList.toggle('is-on', on);
+    btn.classList.toggle('is-off', !on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (typeof trialMachinistT === 'function') {
+      btn.textContent = trialMachinistT('focus_view');
+      btn.title = trialMachinistT('focus_view_title');
+    }
+  }
+}
+
+function trialToggleMachinistFocus() {
+  const next = !trialIsMachinistFocusEnabled();
+  trialSetMachinistFocusEnabled(next);
+  if (!next && typeof trialSaveMachinistFocusMachineIds === 'function') {
+    trialSaveMachinistFocusMachineIds([]);
+  }
+  if (typeof renderTrial === 'function') renderTrial({ skipCatalog: true });
 }

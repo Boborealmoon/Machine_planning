@@ -135,7 +135,7 @@ async function trialSetMaterialIn(event, input) {
   try {
     await POST('/api/process-sheets/stock-in-flag', { ps_id: psId, material_in: materialIn });
     if (typeof trialInvalidateCatalogCache === 'function') trialInvalidateCatalogCache();
-    if (typeof renderTrial === 'function') renderTrial({ preserveScroll: true });
+    if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
   } catch (err) {
     trialMaterialInOverrides.set(psId, previous);
     trialApplyMaterialInToCatalogPs(psId, previous);
@@ -742,6 +742,10 @@ function trialMachinistBoardCategories() {
 }
 
 function trialMachineFilterButtonLabel() {
+  if (typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard()
+    && typeof trialMachinistFilterButtonLabel === 'function') {
+    return trialMachinistFilterButtonLabel();
+  }
   const machines = trialMachinesInCategory();
   if (!machines.length) return 'No machines';
   const selectedCount = machines.filter(m => !trialMachineHiddenSet.has(m.machine_code)).length;
@@ -820,9 +824,11 @@ function trialToggleMachineFilterPanel(scope) {
   if (!panel) return;
   panel.hidden = !panel.hidden;
   if (panel.hidden) {
+    if (trialMachineFilterPanelOpenScope === scope) trialMachineFilterPanelOpenScope = null;
     dropdown?.classList.remove('is-open');
     trialResetMachineFilterPanelPosition(scope);
   } else {
+    trialMachineFilterPanelOpenScope = scope;
     trialSyncMachineFilterPanelPosition(scope);
   }
 }
@@ -832,13 +838,21 @@ function trialCloseMachineFilterPanel(scope) {
   const dropdown = document.getElementById(dropdownId);
   const panel = document.getElementById(panelId);
   if (panel) panel.hidden = true;
+  if (trialMachineFilterPanelOpenScope === scope) trialMachineFilterPanelOpenScope = null;
   dropdown?.classList.remove('is-open');
   trialResetMachineFilterPanelPosition(scope);
 }
 
 function trialCloseAllMachineFilterPanels() {
+  trialMachineFilterPanelOpenScope = null;
   trialCloseMachineFilterPanel('machinist');
   trialCloseMachineFilterPanel('planner');
+}
+
+function trialSyncMachineFilterButtonLabel(scope) {
+  const { btnId } = trialMachineFilterDomIds(scope);
+  const btn = document.getElementById(btnId);
+  if (btn) btn.textContent = `${trialMachineFilterButtonLabel()} ▾`;
 }
 
 function trialMachineFilterPanelWasOpen(scope) {
@@ -848,11 +862,12 @@ function trialMachineFilterPanelWasOpen(scope) {
 }
 
 function trialRestoreMachineFilterPanelIfOpen(scope) {
-  if (!trialMachineFilterPanelWasOpen(scope)) return;
+  if (trialMachineFilterPanelOpenScope !== scope && !trialMachineFilterPanelWasOpen(scope)) return;
   const { panelId } = trialMachineFilterDomIds(scope);
   const panel = document.getElementById(panelId);
   if (panel) {
     panel.hidden = false;
+    trialMachineFilterPanelOpenScope = scope;
     trialSyncMachineFilterPanelPosition(scope);
   }
 }
@@ -862,8 +877,15 @@ let trialMachineFilterBindingsBound = false;
 function trialBindMachineFilterDropdowns() {
   if (trialMachineFilterBindingsBound) return;
   trialMachineFilterBindingsBound = true;
-  document.addEventListener('click', () => {
-    trialCloseAllMachineFilterPanels();
+  document.addEventListener('click', (event) => {
+    ['machinist', 'planner'].forEach(scope => {
+      const { dropdownId, panelId } = trialMachineFilterDomIds(scope);
+      const panel = document.getElementById(panelId);
+      if (!panel || panel.hidden) return;
+      const dropdown = document.getElementById(dropdownId);
+      if (dropdown?.contains(event.target)) return;
+      trialCloseMachineFilterPanel(scope);
+    });
   });
   window.addEventListener('resize', () => {
     ['machinist', 'planner'].forEach(scope => {
@@ -877,12 +899,26 @@ function trialBindMachineFilterDropdowns() {
 function renderTrialMachineDropdownFilter(scope = 'planner') {
   const machines = trialMachinesInCategory();
   const machineBtnLabel = trialMachineFilterButtonLabel();
+  const machinistScope = scope === 'machinist';
+  const machineLabel = machinistScope && typeof trialMachinistT === 'function'
+    ? trialMachinistT('machine')
+    : 'Machine';
+  const allLabel = machinistScope && typeof trialMachinistT === 'function'
+    ? trialMachinistT('all')
+    : 'All';
+  const noneLabel = machinistScope && typeof trialMachinistT === 'function'
+    ? trialMachinistT('none')
+    : 'None';
+  const emptyMachinesLabel = machinistScope && typeof trialMachinistT === 'function'
+    ? trialMachinistT('no_machines_in_group')
+    : 'No machines in this group';
   const { dropdownId, btnId, panelId } = trialMachineFilterDomIds(scope);
   const machineCheckboxes = machines.map(m => {
     const code = m.machine_code || '';
     const checked = !trialMachineHiddenSet.has(code);
-    return `<label class="filter-dropdown-item">
+    return `<label class="filter-dropdown-item" onclick="event.stopPropagation()">
         <input type="checkbox" ${checked ? 'checked' : ''}
+          onclick="event.stopPropagation()"
           onchange="toggleTrialMachineFilter('${escapeHtml(code)}', this.checked)">
         <span>${escapeHtml(code)}</span>
       </label>`;
@@ -890,7 +926,7 @@ function renderTrialMachineDropdownFilter(scope = 'planner') {
   const scopeAttr = escapeHtml(scope);
   return `
     <div class="trial-filter-inline trial-filter-section-machines">
-      <span class="trial-filter-label">Machine</span>
+      <span class="trial-filter-label">${escapeHtml(machineLabel)}</span>
       <div class="filter-dropdown trial-board-machine-filter-dropdown" id="${dropdownId}">
         <button type="button" class="filter-dropdown-btn" id="${btnId}"
           onclick="event.stopPropagation(); trialToggleMachineFilterPanel('${scopeAttr}')">
@@ -899,22 +935,289 @@ function renderTrialMachineDropdownFilter(scope = 'planner') {
         <div class="filter-dropdown-panel trial-board-machine-filter-panel" id="${panelId}" hidden
           onclick="event.stopPropagation()">
           <div class="trial-board-machine-filter-panel-head">
-            <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialMachinesVisible(true)">All</button>
-            <button type="button" class="trial-machine-toggle-btn" onclick="setAllTrialMachinesVisible(false)">None</button>
+            <button type="button" class="trial-machine-toggle-btn"
+              onclick="event.stopPropagation(); setAllTrialMachinesVisible(true)">${escapeHtml(allLabel)}</button>
+            <button type="button" class="trial-machine-toggle-btn"
+              onclick="event.stopPropagation(); setAllTrialMachinesVisible(false)">${escapeHtml(noneLabel)}</button>
           </div>
-          ${machineCheckboxes || '<div class="trial-board-machine-filter-empty">No machines in this group</div>'}
+          ${machineCheckboxes || `<div class="trial-board-machine-filter-empty">${escapeHtml(emptyMachinesLabel)}</div>`}
         </div>
       </div>
     </div>
   `;
 }
 
-function renderTrialMachinistBoardFilters() {
-  const categories = trialMachinistBoardCategories();
+function renderTrialMachinistJobSearchBar() {
+  const query = escapeHtml(trialMachinistJobSearch || '');
+  const t = typeof trialMachinistT === 'function' ? trialMachinistT : (key) => key;
   return `
+    <div class="machinist-job-search" id="machinist-job-search-wrap">
+      <label class="machinist-job-search-label" for="machinist-job-search-input">${escapeHtml(t('find_job'))}</label>
+      <input type="search"
+        id="machinist-job-search-input"
+        class="machinist-job-search-input"
+        placeholder="${escapeHtml(t('job_placeholder'))}"
+        value="${query}"
+        autocomplete="off"
+        enterkeyhint="search"
+        oninput="scheduleTrialMachinistJobSearch()"
+        onkeydown="trialMachinistJobSearchKeydown(event)"
+        onfocus="trialRefreshMachinistJobSearchResults()">
+      <span class="machinist-job-search-warning" role="alert">${escapeHtml(t('unsure_warning'))}</span>
+      <div id="machinist-job-search-results" class="machinist-job-search-results" hidden></div>
+    </div>
+  `;
+}
+
+function scheduleTrialMachinistJobSearch() {
+  clearTimeout(trialMachinistJobSearchTimer);
+  trialMachinistJobSearchTimer = window.setTimeout(() => {
+    trialMachinistJobSearchTimer = null;
+    trialRefreshMachinistJobSearchResults();
+  }, 150);
+}
+
+function trialMachinistJobSearchKeydown(event) {
+  if (!event) return;
+  if (event.key === 'Escape') {
+    const panel = document.getElementById('machinist-job-search-results');
+    if (panel) panel.hidden = true;
+    event.target?.blur?.();
+    return;
+  }
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    if (trialMachinistJobSearchHits.length) trialNavigateToMachinistJobHit(0);
+  }
+}
+
+function trialRefreshMachinistJobSearchResults() {
+  const input = document.getElementById('machinist-job-search-input');
+  const panel = document.getElementById('machinist-job-search-results');
+  if (!input || !panel) return;
+  const query = String(input.value || '').trim();
+  trialMachinistJobSearch = query;
+  if (query.length < 2) {
+    panel.hidden = true;
+    panel.innerHTML = '';
+    trialMachinistJobSearchHits = [];
+    return;
+  }
+  trialMachinistJobSearchHits = typeof trialSearchMachinistQueues === 'function'
+    ? trialSearchMachinistQueues(query)
+    : [];
+  if (!trialMachinistJobSearchHits.length) {
+    panel.hidden = false;
+    panel.innerHTML = `<div class="machinist-job-search-empty">${escapeHtml(
+      typeof trialMachinistT === 'function' ? trialMachinistT('no_jobs_match') : 'No queued jobs match.',
+    )}</div>`;
+    return;
+  }
+  panel.hidden = false;
+  panel.innerHTML = trialMachinistJobSearchHits.map((hit, idx) => {
+    const posLabel = hit.queuePosition === 1
+      ? (typeof trialMachinistT === 'function' ? trialMachinistT('job_pos_head') : '#1 · head')
+      : (typeof trialMachinistT === 'function'
+        ? trialMachinistT('job_pos', { n: hit.queuePosition })
+        : `#${hit.queuePosition}`);
+    const partialNote = hit.partial ? ` · P${hit.partial}` : '';
+    return `<button type="button" class="machinist-job-search-hit"
+      onclick="trialNavigateToMachinistJobHit(${idx})">
+      <span class="machinist-job-search-hit-main">
+        <span class="machinist-job-search-hit-machine">${escapeHtml(hit.machineCode)}</span>
+        <span class="machinist-job-search-hit-pos">${escapeHtml(posLabel)}</span>
+      </span>
+      <span class="machinist-job-search-hit-detail">
+        <span class="machinist-job-search-hit-job">${escapeHtml(hit.psDisplay)}${escapeHtml(partialNote)}</span>
+        <span class="machinist-job-search-hit-op">${escapeHtml(hit.operationLine)}</span>
+      </span>
+    </button>`;
+  }).join('');
+}
+
+function trialHighlightMachinistJobCard(machineId, groupId, blockId) {
+  const machineRoot = document.querySelector(`.trial-machine[data-machine-id="${machineId}"]`);
+  if (!machineRoot) return false;
+  let card = null;
+  if (groupId > 0) {
+    card = machineRoot.querySelector(`[data-group-id="${groupId}"]`);
+  }
+  if (!card && blockId > 0) {
+    card = machineRoot.querySelector(`[data-block-id="${blockId}"]`);
+  }
+  if (!card) return false;
+  const lane = machineRoot.querySelector('.trial-lane');
+  if (lane && lane.scrollHeight > lane.clientHeight) {
+    const laneRect = lane.getBoundingClientRect();
+    const cardRect = card.getBoundingClientRect();
+    lane.scrollTop += cardRect.top - laneRect.top - (laneRect.height / 2) + (cardRect.height / 2);
+  }
+  card.classList.add('trial-job-search-hit');
+  window.setTimeout(() => card.classList.remove('trial-job-search-hit'), 3200);
+  return true;
+}
+
+function trialScrollMachinistMachineIntoView(machineId) {
+  const machineRoot = document.querySelector(`.trial-machine[data-machine-id="${machineId}"]`);
+  if (!machineRoot) return;
+  const gridScroll = document.querySelector('.trial-grid-scroll');
+  if (!gridScroll || gridScroll.scrollWidth <= gridScroll.clientWidth) {
+    machineRoot.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    return;
+  }
+  const hostRect = gridScroll.getBoundingClientRect();
+  const machineRect = machineRoot.getBoundingClientRect();
+  const delta = (machineRect.left + machineRect.width / 2)
+    - (hostRect.left + hostRect.width / 2);
+  gridScroll.scrollTo({ left: gridScroll.scrollLeft + delta, behavior: 'smooth' });
+}
+
+function trialNavigateToMachinistJobHit(idx) {
+  const hit = trialMachinistJobSearchHits[Number(idx)];
+  if (!hit) return;
+  const machine = (trialState.machines || []).find(row => Number(row.machine_id) === hit.machineId);
+  const panel = document.getElementById('machinist-job-search-results');
+  if (panel) panel.hidden = true;
+
+  const finishNavigate = () => {
+    window.requestAnimationFrame(() => {
+      trialScrollMachinistMachineIntoView(hit.machineId);
+      window.setTimeout(() => {
+        const highlighted = trialHighlightMachinistJobCard(hit.machineId, hit.groupId, hit.blockId);
+        if (!highlighted) {
+          const msg = typeof trialMachinistT === 'function'
+            ? trialMachinistT('job_on_machine', {
+              ps: hit.psDisplay,
+              pos: hit.queuePosition,
+              machine: hit.machineCode,
+            })
+            : `${hit.psDisplay} is #${hit.queuePosition} on ${hit.machineCode}`;
+          if (typeof toast === 'function') toast(msg, 'info');
+        }
+      }, 280);
+    });
+  };
+
+  let needsRender = false;
+  if (machine && typeof trialEnsureMachineLaneVisibleForSearch === 'function') {
+    needsRender = trialEnsureMachineLaneVisibleForSearch(machine);
+  }
+  if (typeof trialEnsureMachinistFocusMachineSelected === 'function') {
+    needsRender = trialEnsureMachinistFocusMachineSelected(hit.machineId) || needsRender;
+  }
+  if (needsRender) {
+    renderTrial({ skipCatalog: true, preserveScroll: true });
+    finishNavigate();
+    return;
+  }
+  finishNavigate();
+}
+
+let trialMachinistJobSearchDismissBound = false;
+
+function trialBindMachinistJobSearchDismiss() {
+  if (trialMachinistJobSearchDismissBound) return;
+  trialMachinistJobSearchDismissBound = true;
+  document.addEventListener('click', (event) => {
+    const wrap = document.getElementById('machinist-job-search-wrap');
+    if (!wrap || wrap.contains(event.target)) return;
+    const panel = document.getElementById('machinist-job-search-results');
+    if (panel) panel.hidden = true;
+  });
+}
+
+function renderTrialMachinistFocusWarning() {
+  return `
+    <div class="machinist-focus-warning" role="alert">
+      IF UNSURE PLEASE ASK PRODUCTION CONTROLLER
+    </div>
+  `;
+}
+
+function renderTrialMachinistFocusMachinePicker() {
+  const t = typeof trialMachinistT === 'function' ? trialMachinistT : (key, vars) => key;
+  const machines = typeof trialMachinesForFocusGrid === 'function'
+    ? trialMachinesForFocusGrid()
+    : [];
+  const selectedIds = typeof trialGetMachinistFocusMachineIds === 'function'
+    ? trialGetMachinistFocusMachineIds()
+    : [];
+  const maxMachines = typeof trialMachinistFocusMaxMachines === 'function'
+    ? trialMachinistFocusMaxMachines()
+    : 4;
+  const atMax = selectedIds.length >= maxMachines;
+  if (!machines.length) {
+    return `<div class="machinist-focus-picker machinist-focus-picker--empty">${escapeHtml(t('no_active_jobs'))}</div>`;
+  }
+
+  const GROUP_ORDER = ['MPP', 'MILLING', 'TURNING', 'TURNMILL'];
+  const grouped = new Map();
+  machines.forEach(machine => {
+    const cat = String(machine.machine_category || '').trim().toUpperCase() || 'OTHER';
+    if (!grouped.has(cat)) grouped.set(cat, []);
+    grouped.get(cat).push(machine);
+  });
+  const sortedCats = [
+    ...GROUP_ORDER.filter(g => grouped.has(g)),
+    ...[...grouped.keys()].filter(g => !GROUP_ORDER.includes(g)).sort(),
+  ];
+
+  const makeChip = machine => {
+    const machineId = Number(machine.machine_id || 0);
+    const active = selectedIds.includes(machineId);
+    const disabled = !active && atMax;
+    const clickAttr = disabled ? '' : ` onclick="trialToggleMachinistFocusMachine(${machineId})"`;
+    return `<button type="button"
+      class="machinist-focus-machine-chip${active ? ' is-active' : ''}${disabled ? ' is-disabled' : ''}"
+      aria-pressed="${active ? 'true' : 'false'}"
+      ${disabled ? 'disabled tabindex="-1"' : ''}${clickAttr}>
+      ${escapeHtml(machine.machine_code || '')}
+    </button>`;
+  };
+
+  const groupsHtml = sortedCats.map(cat => {
+    const label = typeof trialMachineCategoryLabel === 'function' ? trialMachineCategoryLabel(cat) : cat;
+    const chips = (grouped.get(cat) || []).map(makeChip).join('');
+    return `
+      <div class="machinist-focus-machine-group">
+        <span class="machinist-focus-machine-group-label">${escapeHtml(label)}</span>
+        <div class="machinist-focus-machine-chips">${chips}</div>
+      </div>`;
+  }).join('');
+
+  const countLabel = selectedIds.length
+    ? `${selectedIds.length}/${maxMachines}`
+    : t('none');
+  const clearBtn = selectedIds.length
+    ? `<button type="button" class="machinist-focus-clear-btn" onclick="trialClearMachinistFocusMachines()">${escapeHtml(t('clear'))}</button>`
+    : '';
+  return `
+    <div class="machinist-focus-picker">
+      <div class="machinist-focus-picker-meta">
+        <span class="machinist-focus-picker-prompt">${escapeHtml(t('select_machines', { max: maxMachines }))}</span>
+        <span class="machinist-focus-picker-count">${escapeHtml(countLabel)}</span>
+      </div>
+      <div class="machinist-focus-machine-groups" role="group" aria-label="${escapeHtml(t('machines_active_aria'))}">
+        ${groupsHtml}
+      </div>
+      ${clearBtn}
+    </div>
+  `;
+}
+
+function renderTrialMachinistBoardFilters() {
+  const searchBar = renderTrialMachinistJobSearchBar();
+  const focusLayout = typeof trialMachinistFocusLayoutActive === 'function'
+    && trialMachinistFocusLayoutActive();
+  if (focusLayout) {
+    return `${searchBar}${renderTrialMachinistFocusMachinePicker()}`;
+  }
+  const categories = trialMachinistBoardCategories();
+  const groupLabel = typeof trialMachinistT === 'function' ? trialMachinistT('group') : 'Group';
+  return `${searchBar}
     <div class="machinist-board-filters">
       <div class="trial-filter-inline trial-filter-section-type">
-        <span class="trial-filter-label">Group</span>
+        <span class="trial-filter-label">${escapeHtml(groupLabel)}</span>
         <div class="trial-machine-filter">
           ${categories.map(category => `
             <button type="button"
@@ -960,7 +1263,12 @@ function toggleTrialMachineFilter(machineCode, visible) {
   } else {
     trialMachineHiddenSet.add(machineCode);
   }
-  renderTrial();
+  const openScope = trialMachineFilterPanelOpenScope;
+  if (openScope) trialSyncMachineFilterButtonLabel(openScope);
+  renderTrial({
+    skipFilterShell: Boolean(openScope),
+    skipCatalog: true,
+  });
 }
 
 function setAllTrialMachinesVisible(visible) {
@@ -970,7 +1278,19 @@ function setAllTrialMachinesVisible(visible) {
   } else {
     machines.forEach(m => trialMachineHiddenSet.add(m.machine_code));
   }
-  renderTrial();
+  const openScope = trialMachineFilterPanelOpenScope;
+  if (openScope) {
+    const { panelId } = trialMachineFilterDomIds(openScope);
+    const panel = document.getElementById(panelId);
+    panel?.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+      cb.checked = visible;
+    });
+    trialSyncMachineFilterButtonLabel(openScope);
+  }
+  renderTrial({
+    skipFilterShell: Boolean(openScope),
+    skipCatalog: true,
+  });
 }
 
 function renderTrialScheduleDateFilter() {
@@ -1168,6 +1488,23 @@ function openTrialCatalogOpDetailFromPs(psId, sourceOpNo, sourceOpSeqId, cardId)
   });
 }
 
+function trialCatalogQueueAllBtnHtml(ps) {
+  const psId = String(ps?.ps_id || '').trim();
+  if (!psId) return '';
+  const count = typeof trialSchedulableOpCardsForPs === 'function'
+    ? trialSchedulableOpCardsForPs(ps).length
+    : 0;
+  if (!count) return '';
+  return `
+    <button
+      type="button"
+      class="trial-catalog-queue-all-btn"
+      onclick="event.stopPropagation(); openTrialQueuePsAllModal('${escapeHtml(psId)}')"
+      title="Queue all ${count} open operation${count === 1 ? '' : 's'} — choose machine lane per op"
+    >Queue all</button>
+  `;
+}
+
 function trialCatalogInfoBtnHtml(ps) {
   const psId = String(ps?.ps_id || '').trim();
   if (!psId) return '';
@@ -1271,6 +1608,14 @@ function trialRenderCatalogPsDetailBody(ps) {
         <div class="trial-ps-detail-op-list">${opsHtml}</div>
       </div>
       <div class="trial-op-detail-actions">
+        ${(() => {
+          const schedulable = typeof trialSchedulableOpCardsForPs === 'function'
+            ? trialSchedulableOpCardsForPs(ps)
+            : [];
+          return schedulable.length
+            ? `<button type="button" class="btn btn-primary btn-sm" onclick="closeModal(); openTrialQueuePsAllModal('${escapeHtml(psId)}')">Queue all ops (${schedulable.length})</button>`
+            : '';
+        })()}
         ${copyText
           ? `<button type="button" class="btn btn-ghost btn-sm" data-copy-json="${escapeHtml(JSON.stringify(copyText))}" onclick="trialCopyPartText(JSON.parse(this.dataset.copyJson))">Copy part description</button>`
           : ''}
@@ -1324,6 +1669,13 @@ function trialRenderRunBlockDetailBody(group, block, machine) {
   const machineLine = machine
     ? `${escapeHtml(machine.machine_code || '')} · ${escapeHtml(machine.machine_category || '')}`
     : '—';
+  const psIdForDue = leader?.source_ps_id || leader?.job_no || vm.psDisplay.base || '';
+  const isTempPs = String(psIdForDue).trim().startsWith('[Temp]');
+  const dueDateText = String(trialDueDateForPs(vm.psDueKey) || '—');
+  const dueRowLabel = isTempPs ? 'PO due' : 'Due';
+  const dueEditBtn = isTempPs && typeof openTempPsPoDueModal === 'function'
+    ? `<button type="button" class="btn btn-ghost btn-sm" onclick="openTempPsPoDueModal(${JSON.stringify(psIdForDue)}, ${JSON.stringify(dueDateText === '—' ? '' : dueDateText)})">Set PO due</button>`
+    : '';
 
   return `
     <div class="trial-op-detail">
@@ -1337,7 +1689,7 @@ function trialRenderRunBlockDetailBody(group, block, machine) {
         ${vm.sequenceNo ? trialRenderCatalogOpDetailRow('Queue #', escapeHtml(String(vm.sequenceNo))) : ''}
         ${trialRenderCatalogOpDetailRow('Target qty', vm.targetQty)}
         ${trialRenderCatalogOpDetailRow('Output', vm.pairedOutput)}
-        ${trialRenderCatalogOpDetailRow('Due', escapeHtml(String(trialDueDateForPs(vm.psDueKey) || '—')))}
+        ${trialRenderCatalogOpDetailRow(dueRowLabel, escapeHtml(dueDateText))}
         ${trialRenderCatalogOpDetailRow('Queued', escapeHtml(vm.queuedText))}
         ${trialRenderCatalogOpDetailRow('End', escapeHtml(vm.outputText))}
         ${trialRenderCatalogOpDetailRow('Setup', leader?.include_setup ? 'Included' : 'Excluded')}
@@ -1363,6 +1715,7 @@ function trialRenderRunBlockDetailBody(group, block, machine) {
       ` : ''}
       <div class="trial-op-detail-actions">
         <button type="button" class="btn btn-primary btn-sm" onclick="closeModal(); openTrialMachineQueue(${Number(machine?.machine_id || block?.machine_id || 0)})">Open machine queue</button>
+        ${dueEditBtn}
         <button type="button" class="btn btn-ghost btn-sm" onclick="closeModal(); openTrialBlockEditor(${blockId})">Edit</button>
         <button type="button" class="btn btn-ghost btn-sm" onclick="closeModal(); openTrialSplitModal(${blockId})">Split</button>
         <button type="button" class="btn btn-ghost btn-sm" onclick="closeModal(); ${vm.isCombined ? `openTrialGroupActualModal(${Number(group.group_id || 0)})` : `openTrialActualModal(${blockId})`}">Actual</button>
@@ -1725,12 +2078,80 @@ function trialRenderQueueRemoveBtn(blockId, groupId, options = {}) {
     aria-label="${escapeHtml(title)}" title="${escapeHtml(title)}">${label}</button>`;
 }
 
-function trialRenderCompactBlockCard(vm) {
+function trialRenderFocusBlockCard(vm, options = {}) {
+  const leader = vm.leader;
+  const dueDate = String(trialDueDateForPs(vm.psDueKey) || leader?.due_date || '').trim();
+  const dayDiff = dueDate ? trialDateDiffDays(dueDate) : null;
+  const dueClass = dayDiff == null ? '' : (dayDiff < 0 ? 'is-overdue' : (dayDiff <= 7 ? 'is-due-soon' : 'is-normal'));
+  const isCurrent = !!options.isCurrent;
+  const upcomingIdx = Number(options.upcomingIdx || 0);
+  const todayTarget = typeof trialFocusTargetForGroup === 'function'
+    ? trialFocusTargetForGroup(vm.group)
+    : (typeof trialTodayTargetForGroup === 'function' ? trialTodayTargetForGroup(vm.group) : 0);
+  const materialInClass = trialMaterialInLaneClass(leader);
+  const partialFromKey = String(vm.psDueKey || '').includes('::')
+    ? String(vm.psDueKey.split('::')[1] || '').trim()
+    : '';
+  const partialFromLeader = typeof trialSplitPsId === 'function'
+    ? String(trialSplitPsId(leader?.planner_ps_id || leader?.job_no || leader?.source_ps_id || '').partial || '').trim()
+    : '';
+  const partialNo = String(vm.psDisplay.partial || partialFromKey || partialFromLeader || '').trim();
+  const hasPartial = !!partialNo;
+  const t = typeof trialMachinistT === 'function' ? trialMachinistT : (key, vars) => key;
+  let seqLabel = t('now');
+  let seqClass = 'is-now';
+  if (!isCurrent) {
+    seqLabel = upcomingIdx === 1 ? t('next') : t('then');
+    seqClass = upcomingIdx === 1 ? 'is-next' : 'is-later';
+  }
+  const scheduleLabel = typeof trialMachinistScheduleLabel === 'function'
+    ? trialMachinistScheduleLabel(vm.anchored)
+    : vm.scheduleTimeLabel;
+  const partialBadge = hasPartial
+    ? `<span class="trial-focus-partial-badge" title="${escapeHtml(t('partial_title'))}">${escapeHtml(t('partial', { n: partialNo }))}</span>`
+    : '';
+  return `
+    <article class="trial-focus-card ${materialInClass}${isCurrent ? ' is-current' : ''}${hasPartial ? ' has-partial' : ''}"
+      data-block-id="${leader?.block_id || ''}"
+      data-group-id="${vm.group.group_id || 0}">
+      <div class="trial-focus-card-top">
+        <span class="trial-focus-seq ${seqClass}">${escapeHtml(seqLabel)}</span>
+        <span class="trial-focus-metrics">
+          <span class="trial-focus-metric"><span class="trial-pill-label">${escapeHtml(t('qty'))}</span>${vm.targetQty}</span>
+          <span class="trial-focus-metric"><span class="trial-pill-label">${escapeHtml(t('out'))}</span>${vm.pairedOutput}</span>
+          <span class="trial-focus-metric trial-focus-metric--target"><span class="trial-pill-label">${escapeHtml(t('target'))}</span>${fmt(todayTarget, 0)}</span>
+          <span class="trial-focus-metric"><span class="trial-pill-label">${escapeHtml(t('cycle'))}</span>${vm.cycleMinutesPerQty}m</span>
+        </span>
+      </div>
+      <div class="trial-focus-ps-row">
+        <div class="trial-focus-ps">${escapeHtml(vm.psDisplay.base || vm.group.title || '')}</div>
+        ${partialBadge}
+      </div>
+      ${hasPartial ? `<div class="trial-focus-partial-note">${escapeHtml(t('partial_note', { n: partialNo }))}</div>` : ''}
+      <div class="trial-focus-op">${escapeHtml(vm.operationLine)}</div>
+      <div class="trial-focus-dates">
+        <span class="trial-focus-date ${dueClass}"><span class="trial-pill-label">${escapeHtml(t('due'))}</span>${escapeHtml(dueDate || '—')}</span>
+        <span class="trial-focus-date${vm.anchored ? ' is-anchored' : ''}"><span class="trial-pill-label">${escapeHtml(scheduleLabel)}</span>${escapeHtml(vm.scheduleTimeText || '—')}</span>
+        <span class="trial-focus-date is-end ${vm.outputPillClass}"><span class="trial-pill-label">${escapeHtml(t('end'))}</span>${escapeHtml(vm.outputText || '—')}</span>
+      </div>
+    </article>
+  `;
+}
+
+function trialRenderCompactBlockCard(vm, options = {}) {
   const leader = vm.leader;
   const dueDate = String(trialDueDateForPs(vm.psDueKey) || leader?.due_date || '').trim();
   const dayDiff = dueDate ? trialDateDiffDays(dueDate) : null;
   const dueClass = dayDiff == null ? '' : (dayDiff < 0 ? 'is-overdue' : (dayDiff <= 7 ? 'is-due-soon' : 'is-normal'));
   const readOnly = typeof trialIsReadOnlyBoard === 'function' && trialIsReadOnlyBoard();
+  const focusMode = options.focusMode === true
+    || (options.focusMode !== false
+      && typeof trialIsMachinistFocusEnabled === 'function'
+      && trialIsMachinistFocusEnabled());
+  const isCurrent = !!options.isCurrent;
+  const todayTarget = focusMode && typeof trialTodayTargetForGroup === 'function'
+    ? trialTodayTargetForGroup(vm.group)
+    : null;
   const clickableClass = readOnly ? '' : ' trial-block-card--clickable';
   const cardTitle = readOnly ? 'Scheduled job' : 'Click for details · drag edge to move';
   const dragHtml = readOnly
@@ -1740,8 +2161,25 @@ function trialRenderCompactBlockCard(vm) {
     ? ''
     : trialRenderQueueRemoveBtn(leader?.block_id, vm.group.group_id, { className: 'trial-block-remove' });
   const materialInClass = trialMaterialInLaneClass(leader);
+  const currentClass = isCurrent ? ' trial-block-card--current' : '';
+  const focusClass = focusMode ? ' trial-block-card--focus' : '';
+  const mb = (key, vars) => {
+    if (readOnly && typeof trialMachinistT === 'function') return trialMachinistT(key, vars);
+    const labels = { qty: 'Qty', out: 'Out', target: 'Target', cycle: 'Cycle', due: 'Due', end: 'End', now: 'Now' };
+    if (key === 'partial' && vars?.n) return `Partial ${vars.n}`;
+    return labels[key] || key;
+  };
+  const scheduleLabel = readOnly && typeof trialMachinistScheduleLabel === 'function'
+    ? trialMachinistScheduleLabel(vm.anchored)
+    : vm.scheduleTimeLabel;
+  const targetHtml = focusMode
+    ? `<span class="trial-block-compact-date trial-block-compact-target" title="Today's scheduled production target">
+            <span class="trial-pill-label">${escapeHtml(mb('target'))}</span>
+            <span>${todayTarget != null ? fmt(todayTarget, 0) : '—'}</span>
+          </span>`
+    : '';
   return `
-    <div class="trial-block-card trial-block-card--compact${clickableClass}${readOnly ? ' trial-block-card--readonly' : ''} ${vm.isCombined ? 'combined' : ''} ${materialInClass}"
+    <div class="trial-block-card trial-block-card--compact${clickableClass}${readOnly ? ' trial-block-card--readonly' : ''}${focusClass}${currentClass} ${vm.isCombined ? 'combined' : ''} ${materialInClass}"
       data-block-id="${leader?.block_id || ''}"
       data-group-id="${vm.group.group_id || 0}"
       data-block-ids="${vm.groupBlockIds}"
@@ -1749,28 +2187,30 @@ function trialRenderCompactBlockCard(vm) {
       ${dragHtml}
       <div class="trial-block-compact-body">
         <div class="trial-block-compact-top">
-          ${vm.sequenceNo ? `<span class="trial-block-seq">#${vm.sequenceNo}</span>` : ''}
+          ${vm.sequenceNo ? `<span class="trial-block-seq${isCurrent ? ' is-current' : ''}">${isCurrent ? escapeHtml(mb('now')) : `#${vm.sequenceNo}`}</span>` : ''}
           <div class="trial-block-compact-top-end">
             <span class="trial-block-compact-metrics" title="Qty / Output / Cycle">
-              <span class="trial-block-compact-metric"><span class="trial-pill-label">Qty</span>${vm.targetQty}</span>
-              <span class="trial-block-compact-metric"><span class="trial-pill-label">Out</span>${vm.pairedOutput}</span>
-              ${readOnly ? `<span class="trial-block-compact-metric trial-block-compact-metric--cycle" title="Cycle time per piece"><span class="trial-pill-label">Cycle</span>${vm.cycleMinutesPerQty}m</span>` : ''}
+              <span class="trial-block-compact-metric"><span class="trial-pill-label">${escapeHtml(mb('qty'))}</span>${vm.targetQty}</span>
+              <span class="trial-block-compact-metric"><span class="trial-pill-label">${escapeHtml(mb('out'))}</span>${vm.pairedOutput}</span>
+              ${readOnly ? `<span class="trial-block-compact-metric trial-block-compact-metric--cycle" title="Cycle time per piece"><span class="trial-pill-label">${escapeHtml(mb('cycle'))}</span>${vm.cycleMinutesPerQty}m</span>` : ''}
             </span>
             ${removeBtn}
           </div>
         </div>
         <div class="trial-block-title">${escapeHtml(vm.psDisplay.base || vm.group.title || '')}</div>
-        ${vm.psDisplay.partial ? `<div class="trial-block-partial">Partial ${escapeHtml(vm.psDisplay.partial)}</div>` : ''}
+        ${vm.psDisplay.partial
+    ? `<div class="trial-block-partial">${escapeHtml(mb('partial', { n: vm.psDisplay.partial }))}</div>`
+    : ''}
         <div class="trial-block-op">${escapeHtml(vm.operationLine)}</div>
         ${vm.splitAllocationHtml ? `<div class="trial-block-split-machines">${vm.splitAllocationHtml}</div>` : ''}
         <div class="trial-block-compact-dates">
           <span class="trial-block-compact-date ${dueClass}" title="Due">
-            <span class="trial-pill-label">Due</span>
+            <span class="trial-pill-label">${escapeHtml(mb('due'))}</span>
             <span>${escapeHtml(dueDate || '—')}</span>
           </span>
           ${readOnly
     ? `<span class="trial-block-compact-date ${vm.anchored ? 'is-anchored' : ''}" title="${escapeHtml(vm.queuedTitle)}">
-            <span class="trial-pill-label">${escapeHtml(vm.scheduleTimeLabel)}</span>
+            <span class="trial-pill-label">${escapeHtml(scheduleLabel)}</span>
             <span>${escapeHtml(vm.scheduleTimeText || '—')}</span>
           </span>`
     : `<button type="button" class="trial-block-compact-date is-queued is-clickable ${vm.anchored ? 'is-anchored' : ''}"
@@ -1782,9 +2222,10 @@ function trialRenderCompactBlockCard(vm) {
             <span class="trial-anchor-edit-icon" aria-hidden="true">✎</span>
           </button>`}
           <span class="trial-block-compact-date is-end ${vm.outputPillClass}" title="${escapeHtml(vm.outputTitle)}">
-            <span class="trial-pill-label">End</span>
+            <span class="trial-pill-label">${escapeHtml(mb('end'))}</span>
             <span>${escapeHtml(vm.outputText)}</span>
           </span>
+          ${targetHtml}
         </div>
       </div>
     </div>
@@ -2034,7 +2475,31 @@ function trialBindBoardGroupCollapse() {
   });
 }
 
+function renderTrialMachinistFocusLandingHtml() {
+  const text = typeof trialMachinistT === 'function'
+    ? trialMachinistT('select_machines_landing')
+    : 'Select machines above to show lanes.';
+  return `
+    <div class="trial-focus-landing">
+      <p class="trial-focus-landing-text">${escapeHtml(text)}</p>
+    </div>
+  `;
+}
+
 function renderTrialMachineGridHtml() {
+  const focusLayout = typeof trialMachinistFocusLayoutActive === 'function'
+    && trialMachinistFocusLayoutActive();
+  if (focusLayout) {
+    const candidates = typeof trialMachinesForFocusGrid === 'function'
+      ? trialMachinesForFocusGrid()
+      : [];
+    if (!candidates.length) return '';
+    const machines = typeof trialResolveMachinistFocusMachines === 'function'
+      ? trialResolveMachinistFocusMachines()
+      : [];
+    if (!machines.length) return renderTrialMachinistFocusLandingHtml();
+    return machines.map(renderTrialMachine).join('');
+  }
   const groups = trialVisibleMachinesGrouped();
   const useGroupedLayout = trialShouldGroupMachineLanes()
     && groups.some(group => group.grouped && group.label);
@@ -2051,9 +2516,11 @@ function renderTrialMachine(machine) {
   const groups = allGroups.filter(trialGroupRunsInsideDateFilter);
   const laneId = `trial-lane-${machine.machine_id}`;
   const blockCount = allGroups.length;
+  const readOnlyMachinist = typeof trialIsReadOnlyBoard === 'function' && trialIsReadOnlyBoard();
+  const t = readOnlyMachinist && typeof trialMachinistT === 'function' ? trialMachinistT : null;
   const queueSummary = blockCount
-    ? `${blockCount} in queue`
-    : 'Empty queue';
+    ? (t ? t('in_queue', { n: blockCount }) : `${blockCount} in queue`)
+    : (t ? t('empty_queue') : 'Empty queue');
   const staleBadge = trialDirtyMachineIds.has(Number(machine.machine_id))
     ? '<span class="trial-machine-stale-badge" title="Queue changed; schedule times may be outdated">Schedule outdated</span>'
     : '';
@@ -2069,8 +2536,8 @@ function renderTrialMachine(machine) {
     ? `Anchor ${firstAnchorText} — tap to change`
     : 'Tap to set anchor for first job in queue';
   const availabilityText = availabilityEnd
-    ? `Next available ${trialFormatDt(availabilityEnd)}`
-    : 'Queued jobs';
+    ? (t ? t('next_available', { dt: trialFormatDt(availabilityEnd) }) : `Next available ${trialFormatDt(availabilityEnd)}`)
+    : (t ? t('queued_jobs') : 'Queued jobs');
   const anchorMeta = firstAnchorText
     ? `Anchor ${firstAnchorText}`
     : 'Tap to set anchor';
@@ -2093,11 +2560,40 @@ function renderTrialMachine(machine) {
           </div>`)
     : '';
 
-  const blockHtml = groups.length
-    ? groups.map((group, idx) => trialRenderCompactBlockCard(
-      trialBlockGroupViewModel(group, { displaySequenceNo: idx + 1 })
-    )).join('')
+  const focusMode = typeof trialMachinistFocusLayoutActive === 'function'
+    && trialMachinistFocusLayoutActive();
+  const displayGroups = focusMode && typeof trialMachinistFocusGroups === 'function'
+    ? trialMachinistFocusGroups(groups)
+    : groups;
+  const blockHtml = displayGroups.length
+    ? displayGroups.map((group, idx) => {
+      const queueIndex = groups.indexOf(group);
+      const sequenceNo = queueIndex >= 0 ? queueIndex + 1 : idx + 1;
+      const vm = trialBlockGroupViewModel(group, { displaySequenceNo: sequenceNo });
+      if (focusMode) {
+        return trialRenderFocusBlockCard(vm, { isCurrent: idx === 0, upcomingIdx: idx });
+      }
+      return trialRenderCompactBlockCard(vm, { focusMode: false, isCurrent: idx === 0 });
+    }).join('')
     : `<div class="trial-empty">${escapeHtml(trialMachineLaneEmptyMessage(allGroups.length, groups.length))}</div>`;
+
+  if (focusMode) {
+    return `
+    <section class="trial-machine trial-machine--focus trial-machine--focus-lane" data-machine-id="${machine.machine_id}">
+      <header class="trial-machine-head trial-machine-head--focus">
+        <div class="trial-machine-title">${escapeHtml(machine.machine_code)}</div>
+        <span class="trial-machine-focus-hint">${escapeHtml(
+          typeof trialMachinistT === 'function'
+            ? trialMachinistT('focus_hint', { n: trialMachinistFocusMaxJobs() - 1 })
+            : `Now + next ${trialMachinistFocusMaxJobs() - 1} · scroll for more`,
+        )}</span>
+      </header>
+      <div class="trial-lane trial-lane--focus" id="${laneId}" data-machine-id="${machine.machine_id}">
+        ${blockHtml}
+      </div>
+    </section>
+  `;
+  }
 
   const headMainAttrs = readOnly
     ? ''
@@ -2131,6 +2627,45 @@ function renderTrialMachine(machine) {
 }
 
 // ── Main board render ─────────────────────────────────────────────────────────
+
+function trialSyncStaleMachineBadges() {
+  if (typeof trialIsReadOnlyBoard === 'function' && trialIsReadOnlyBoard()) return;
+  document.querySelectorAll('.trial-machine[data-machine-id]').forEach(section => {
+    const machineId = Number(section.dataset.machineId || 0);
+    if (!machineId) return;
+    const stale = trialDirtyMachineIds.has(machineId);
+    const headMain = section.querySelector('.trial-machine-head-main');
+    if (!headMain) return;
+    let badge = section.querySelector('.trial-machine-stale-badge');
+    const actions = section.querySelector('.trial-machine-head-actions');
+    if (stale) {
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'trial-machine-stale-badge';
+        badge.title = 'Queue changed; schedule times may be outdated';
+        badge.textContent = 'Schedule outdated';
+        headMain.appendChild(badge);
+      }
+      if (actions && !actions.querySelector('[data-trial-recalc-btn]')) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-primary btn-sm';
+        btn.dataset.trialRecalcBtn = '1';
+        btn.textContent = 'Recalc';
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (typeof trialRecalculateSingleMachine === 'function') {
+            trialRecalculateSingleMachine(machineId);
+          }
+        });
+        actions.appendChild(btn);
+      }
+    } else {
+      badge?.remove();
+      actions?.querySelector('[data-trial-recalc-btn]')?.remove();
+    }
+  });
+}
 
 let trialMachineGridScrollResizeObserver = null;
 
@@ -2271,6 +2806,11 @@ function renderTrial(options = {}) {
       machines_total: Array.isArray(trialState.machines) ? trialState.machines.length : 0,
     })
     : null;
+  const scrollHost = document.querySelector('.trial-grid-scroll');
+  const savedScrollLeft = options.preserveScroll && scrollHost ? scrollHost.scrollLeft : null;
+  const savedPageScroll = options.preserveScroll && document.scrollingElement
+    ? document.scrollingElement.scrollTop
+    : null;
   trialResetRenderIndexes();
   const grid = document.getElementById('trial-grid');
   if (!grid) {
@@ -2282,12 +2822,20 @@ function renderTrial(options = {}) {
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'destroy-sortables');
   const filterShell = document.getElementById('trial-machine-filter-shell');
   const machinist = typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
-  const machinistPanelWasOpen = machinist && trialMachineFilterPanelWasOpen('machinist');
-  const plannerPanelWasOpen = !machinist && trialMachineFilterPanelWasOpen('planner');
-  if (filterShell) {
+  const machinistPanelWasOpen = machinist && (
+    trialMachineFilterPanelOpenScope === 'machinist' || trialMachineFilterPanelWasOpen('machinist')
+  );
+  const plannerPanelWasOpen = !machinist && (
+    trialMachineFilterPanelOpenScope === 'planner' || trialMachineFilterPanelWasOpen('planner')
+  );
+  if (filterShell && !options.skipFilterShell) {
     if (machinist) {
       filterShell.innerHTML = renderTrialMachinistBoardFilters();
       trialBindMachineFilterDropdowns();
+      trialBindMachinistJobSearchDismiss();
+      if (typeof trialRefreshMachinistJobSearchResults === 'function') {
+        trialRefreshMachinistJobSearchResults();
+      }
       if (machinistPanelWasOpen) trialRestoreMachineFilterPanelIfOpen('machinist');
     } else {
       filterShell.innerHTML = `
@@ -2311,6 +2859,11 @@ function renderTrial(options = {}) {
               title="Download lane board as Excel (matches shop-floor layout)">
               Export Excel
             </button>
+            <a href="/finishing-queue"
+              class="btn btn-ghost btn-sm trial-finishing-queue-link"
+              title="Open finishing schedule queue (Deburring, Final Inspection, Packing)">
+              Finishing queue
+            </a>
             ${String(window.trialMachinistBoardUrl || '').trim() ? `
             <a href="${String(window.trialMachinistBoardUrl).trim()}" target="_blank" rel="noopener noreferrer"
               class="btn btn-ghost btn-sm trial-machinist-view-link"
@@ -2328,10 +2881,27 @@ function renderTrial(options = {}) {
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'compute-visible-machines', { visible_machines: visibleMachines.length });
   }
-  grid.classList.toggle('trial-grid--grouped', trialShouldGroupMachineLanes());
-  grid.innerHTML = visibleMachines.length
-    ? renderTrialMachineGridHtml()
-    : `<div class="trial-empty">No machines found for ${escapeHtml(trialMachineCategoryFilter)}.</div>`;
+  const focusLayout = machinist && typeof trialMachinistFocusLayoutActive === 'function'
+    && trialMachinistFocusLayoutActive();
+  const focusCandidates = focusLayout && typeof trialMachinesForFocusGrid === 'function'
+    ? trialMachinesForFocusGrid()
+    : [];
+  if (focusLayout && typeof trialSyncMachinistFocusMachineIds === 'function') {
+    trialSyncMachinistFocusMachineIds();
+  }
+  grid.classList.toggle('trial-grid--focus', focusLayout);
+  grid.classList.toggle('trial-grid--grouped', !focusLayout && trialShouldGroupMachineLanes());
+  if (focusLayout) {
+    if (!focusCandidates.length) {
+      grid.innerHTML = '<div class="trial-empty">No active jobs right now.</div>';
+    } else {
+      grid.innerHTML = renderTrialMachineGridHtml();
+    }
+  } else {
+    grid.innerHTML = visibleMachines.length
+      ? renderTrialMachineGridHtml()
+      : `<div class="trial-empty">No machines found for ${escapeHtml(trialMachineCategoryFilter)}.</div>`;
+  }
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'render-machine-grid-html');
   const layout = document.getElementById('trial-layout');
   if (layout) layout.style.display = 'grid';
@@ -2355,6 +2925,15 @@ function renderTrial(options = {}) {
   trialBindMachineGridScroll();
   trialBindBoardGroupCollapse();
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'bind-grid-scroll');
+  if (savedScrollLeft != null && scrollHost) {
+    scrollHost.scrollLeft = savedScrollLeft;
+    const topScroll = document.querySelector('.trial-grid-scroll-top');
+    if (topScroll) topScroll.scrollLeft = savedScrollLeft;
+  }
+  if (savedPageScroll != null && document.scrollingElement) {
+    document.scrollingElement.scrollTop = savedPageScroll;
+  }
+  if (typeof trialSyncStaleMachineBadges === 'function') trialSyncStaleMachineBadges();
   const reopenQueueId = trialOpenQueueMachineId;
   if (reopenQueueId && typeof openTrialMachineQueue === 'function') {
     window.requestAnimationFrame(() => openTrialMachineQueue(reopenQueueId));
@@ -2415,6 +2994,7 @@ function renderTrialMachines(machineIds, options = {}) {
     window.requestAnimationFrame(() => openTrialMachineQueue(reopenQueueId));
   }
   trialSyncMachineGridScrollWidth();
+  if (typeof trialSyncStaleMachineBadges === 'function') trialSyncStaleMachineBadges();
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'sync-grid-scroll-width');
   if (typeof trialPerfEnd === 'function') {
     trialPerfEnd(perf, {
@@ -2563,6 +3143,7 @@ function trialCatalogPsSummaryHtml(ps, siblingCountByBase) {
       ${trialCatalogPsQueuePillHtml(ps)}
     </div>
     <div class="trial-catalog-ps-right">
+      ${trialCatalogQueueAllBtnHtml(ps)}
       ${trialCatalogMaterialInCheckboxHtml(ps)}
       <span class="trial-catalog-ps-meta trial-catalog-ps-date">${escapeHtml(dueDate)}</span>
       ${trialCatalogInfoBtnHtml(ps)}
@@ -2735,7 +3316,7 @@ function scheduleTrialCatalogSearchRender() {
   trialCatalogSearchTimer = window.setTimeout(() => {
     trialCatalogSearchTimer = null;
     window.requestAnimationFrame(() => renderTrialCatalog());
-  }, 220);
+  }, 320);
 }
 
 const _PS_TYPE_ORDER = { A: 0, M: 1, N: 2 };
@@ -2897,7 +3478,6 @@ function renderTrialCatalog() {
       planned_rows: Array.isArray(trialState.planned) ? trialState.planned.length : 0,
     })
     : null;
-  trialResetRenderIndexes();
   updateTrialCatalogDueDateSortButton();
   updateTrialCatalogQueueFilterButton();
   const root = document.getElementById('trial-catalog');
@@ -3074,6 +3654,7 @@ function renderTrialCatalog() {
           ${trialCatalogPsQueuePillHtml(ps)}
         </div>
         <div class="trial-catalog-planned-right">
+          ${trialCatalogQueueAllBtnHtml(ps)}
           ${trialCatalogMaterialInCheckboxHtml(ps)}
           <span class="trial-catalog-planned-badge">Planned</span>
           <span class="trial-catalog-ps-meta trial-catalog-ps-date">${escapeHtml(ps.due_date || 'No due date')}</span>

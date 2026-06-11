@@ -67,12 +67,20 @@
       </div>
 
       {# Shop floor & delays #}
-      <div class="nav-dropdown {% if nav_path in ('/actual-production', '/material-inspection', '/queue-delays', '/auk-oee') or active in ('actual_production', 'material_inspection', 'queue_delays', 'auk_oee') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/actual-production', '/daily-output', '/finishing-queue', '/material-inspection', '/queue-delays', '/auk-oee') or active in ('actual_production', 'daily_output', 'finishing_queue', 'material_inspection', 'queue_delays', 'auk_oee') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="production">
           PRODUCTION <span class="nav-caret">▾</span>
         </button>
         <div class="nav-dropdown-menu" id="dd-production">
           <span class="nav-dropdown-section">SHOP FLOOR</span>
+          <a href="/daily-output"
+             class="nav-dropdown-item {% if nav_path == '/daily-output' or active == 'daily_output' %}nav-dropdown-item--active{% endif %}">
+            Daily output
+          </a>
+          <a href="/finishing-queue"
+             class="nav-dropdown-item {% if nav_path == '/finishing-queue' or active == 'finishing_queue' %}nav-dropdown-item--active{% endif %}">
+            Finishing queue
+          </a>
           <a href="/actual-production"
              class="nav-dropdown-item {% if nav_path == '/actual-production' or active == 'actual_production' %}nav-dropdown-item--active{% endif %}">
             Actual production

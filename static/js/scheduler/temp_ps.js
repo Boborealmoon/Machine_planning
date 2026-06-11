@@ -284,6 +284,10 @@ function openTempProcessSheetModal() {
 
       <div class="temp-ps-shared-fields">
         <label class="trial-modal-field">
+          <span class="trial-modal-label">PO due date</span>
+          <input id="temp-ps-due-date" class="trial-modal-input" type="date">
+        </label>
+        <label class="trial-modal-field">
           <span class="trial-modal-label">Qty</span>
           <input id="temp-ps-qty" class="trial-modal-input" type="number" min="0" step="1"
             placeholder="e.g. 12">
@@ -418,6 +422,10 @@ async function loadTempPsPreview(selection) {
         qtyInput.placeholder = `e.g. reject qty (ERP ${fmt(Number(data.display_qty || 0), 0)})`;
       }
       if (status) status.textContent = `Selected ${data.source_ps_id} — enter reject qty below`;
+      const dueInput = document.getElementById('temp-ps-due-date');
+      if (dueInput && !String(dueInput.value || '').trim() && data.due_date) {
+        dueInput.value = String(data.due_date).trim().slice(0, 10);
+      }
       return;
     } catch (err) {
       lastError = err;
@@ -441,6 +449,7 @@ async function saveTempProcessSheet() {
     return;
   }
   const remarks = String(document.getElementById('temp-ps-remarks')?.value || '').trim();
+  const dueDate = String(document.getElementById('temp-ps-due-date')?.value || '').trim().slice(0, 10);
   const partNo = String(document.getElementById('temp-ps-part-no')?.value || '').trim();
   const partDesc = String(document.getElementById('temp-ps-part-desc')?.value || '').trim();
   const referenceLabel = tempPsNormalizeReferenceLabel(
@@ -470,12 +479,14 @@ async function saveTempProcessSheet() {
         part_desc: partDesc,
         qty,
         remarks,
+        due_date: dueDate,
       }
     : {
         source_ps_id: _tempPsSelected.source_ps_id,
         pp_partial_no: _tempPsSelected.pp_partial_no,
         qty,
         remarks,
+        due_date: dueDate,
       };
   try {
     let result = null;
@@ -512,4 +523,208 @@ async function saveTempProcessSheet() {
     trialClearFormModalBusy();
     if (saveBtn) saveBtn.disabled = false;
   }
+}
+
+function tempPsDateInputValue(raw) {
+  const text = String(raw || '').trim();
+  return text.length >= 10 ? text.slice(0, 10) : '';
+}
+
+async function patchTempProcessSheet(psId, updates, { onSuccess } = {}) {
+  const canonical = String(psId || '').trim();
+  if (!canonical) throw new Error('Temp PS id is required');
+  const body = { ...(updates || {}) };
+  if (!Object.keys(body).length) throw new Error('No fields to update');
+  const urls = [
+    `/api/temp-process-sheets/${encodeURIComponent(canonical)}`,
+    `/api/trial/temp-process-sheets/${encodeURIComponent(canonical)}`,
+  ];
+  let lastError = null;
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (typeof onSuccess === 'function') await onSuccess(data);
+      return data;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error('Could not update temp process sheet');
+}
+
+async function patchTempPsPoDue(psId, dueDate, { onSuccess } = {}) {
+  return patchTempProcessSheet(psId, {
+    due_date: String(dueDate || '').trim().slice(0, 10),
+  }, { onSuccess });
+}
+
+function tempPsIsPlaceholderItem(item) {
+  if (!item) return false;
+  if (item.is_placeholder) return true;
+  const route = String(item.selected_bom_code || item.erp_bom_code || '').trim().toUpperCase();
+  const source = String(item.source_ps_id || item.source_label || '').trim().toUpperCase();
+  return route === 'PLACEHOLDER' || source === 'PLACEHOLDER';
+}
+
+function openTempPsEditModal(item, options = {}) {
+  const psId = String(item?.planner_ps_id || item?.ps_id || '').trim();
+  if (!psId || typeof openTrialForm !== 'function') return;
+  const label = typeof trialTempPsDisplayId === 'function'
+    ? trialTempPsDisplayId(psId)
+    : (item?.display_ps_id || psId);
+  const isPlaceholder = tempPsIsPlaceholderItem(item);
+  const finishedQty = Math.max(0, Number(item?.finished_qty || 0));
+  const rejectQty = Math.max(0, Number(item?.reject_qty ?? item?.planned_qty ?? 0));
+  const sourceLabel = String(item?.source_label || item?.source_ps_id || '').trim();
+  openTrialForm(`Edit temp PS · ${label}`, `
+    <p class="trial-modal-hint">Update source PS label, reject qty, due date, remarks, and part details for this temp process sheet.</p>
+    <div class="trial-actual-summary">
+      <div><span class="field-hint">Finished</span><strong>${escapeHtml(fmt(finishedQty, 0))}</strong></div>
+    </div>
+    <label class="trial-modal-field">
+      <span class="trial-modal-label">Source PS no.</span>
+      <input id="temp-ps-edit-source" class="trial-modal-input" type="text"
+        placeholder="e.g. NPS26-0006 or NPS26-0006::2"
+        value="${escapeHtml(sourceLabel)}" autocomplete="off">
+    </label>
+    <p class="temp-ps-field-hint">Display label only — use <code>::2</code> suffix for partial no.</p>
+    <label class="trial-modal-field">
+      <span class="trial-modal-label">Reject qty</span>
+      <input id="temp-ps-edit-qty" class="trial-modal-input" type="number" min="${finishedQty > 0 ? finishedQty : 1}" step="1"
+        value="${Number.isFinite(rejectQty) ? rejectQty : 0}">
+    </label>
+    <label class="trial-modal-field">
+      <span class="trial-modal-label">PO due date</span>
+      <input id="temp-ps-edit-due-date" class="trial-modal-input" type="date"
+        value="${escapeHtml(tempPsDateInputValue(item?.due_date))}">
+    </label>
+    <button type="button" class="btn btn-ghost btn-sm" id="temp-ps-edit-clear-due-date">Clear due date</button>
+    <label class="trial-modal-field">
+      <span class="trial-modal-label">Part number${isPlaceholder ? '' : ' <span class="field-hint">(from source PS)</span>'}</span>
+      <input id="temp-ps-edit-part-no" class="trial-modal-input" type="text"
+        value="${escapeHtml(String(item?.part_no || ''))}" ${isPlaceholder ? '' : 'readonly'}>
+    </label>
+    <label class="trial-modal-field">
+      <span class="trial-modal-label">Description</span>
+      <input id="temp-ps-edit-part-desc" class="trial-modal-input" type="text"
+        value="${escapeHtml(String(item?.part_desc || ''))}" autocomplete="off">
+    </label>
+    <label class="trial-modal-field">
+      <span class="trial-modal-label">Remarks</span>
+      <input id="temp-ps-edit-remarks" class="trial-modal-input" type="text"
+        value="${escapeHtml(String(item?.remarks || ''))}" autocomplete="off">
+    </label>
+  `, 'Save', async () => {
+    const qty = Math.max(0, Number(document.getElementById('temp-ps-edit-qty')?.value || 0));
+    if (!Number.isFinite(qty) || qty <= 0) {
+      window.alert('Enter a quantity greater than zero.');
+      return;
+    }
+    if (qty + 1e-9 < finishedQty) {
+      window.alert(`Quantity cannot be less than finished qty (${fmt(finishedQty, 0)}).`);
+      return;
+    }
+    const sourcePs = String(document.getElementById('temp-ps-edit-source')?.value || '').trim();
+    const dueDate = String(document.getElementById('temp-ps-edit-due-date')?.value || '').trim().slice(0, 10);
+    const partNo = String(document.getElementById('temp-ps-edit-part-no')?.value || '').trim();
+    const partDesc = String(document.getElementById('temp-ps-edit-part-desc')?.value || '').trim();
+    const remarks = String(document.getElementById('temp-ps-edit-remarks')?.value || '').trim();
+    if (!sourcePs) {
+      window.alert('Enter a source PS number.');
+      return;
+    }
+    if (isPlaceholder && !partNo) {
+      window.alert('Part number is required for placeholder temp PS.');
+      return;
+    }
+    const updates = {
+      source_ps_id: sourcePs,
+      qty,
+      due_date: dueDate,
+      part_desc: partDesc,
+      remarks,
+    };
+    if (isPlaceholder) updates.part_no = partNo;
+    trialSetFormModalBusy('Saving temp PS…');
+    try {
+      await patchTempProcessSheet(psId, updates, {
+        onSuccess: async () => {
+          closeModal();
+          if (typeof trialToast === 'function') {
+            trialToast(`Updated ${label}`, 'success');
+          }
+          if (tempPsOnSchedulerPage() && typeof loadTrial === 'function') {
+            await loadTrial({ force: true });
+          }
+          if (typeof options.onSaved === 'function') {
+            await options.onSaved();
+          }
+          window.dispatchEvent(new CustomEvent('temp-ps-updated', { detail: { ps_id: psId, ...updates } }));
+        },
+      });
+    } catch (err) {
+      window.alert(err.message || 'Could not save temp process sheet');
+    } finally {
+      trialClearFormModalBusy();
+    }
+  });
+  setTimeout(() => {
+    document.getElementById('temp-ps-edit-clear-due-date')?.addEventListener('click', () => {
+      const input = document.getElementById('temp-ps-edit-due-date');
+      if (input) input.value = '';
+    });
+    document.getElementById('temp-ps-edit-qty')?.focus();
+  }, 0);
+}
+
+function openTempPsPoDueModal(psId, currentDue, options = {}) {
+  const label = typeof trialTempPsDisplayId === 'function'
+    ? trialTempPsDisplayId(psId)
+    : psId;
+  const defaultValue = tempPsDateInputValue(currentDue);
+  openTrialForm(`PO due · ${label}`, `
+    <p class="trial-modal-hint">Customer PO due date for this temp process sheet. Shown as Due on machine queues and the planner catalog.</p>
+    <label class="trial-modal-field">
+      <span class="trial-modal-label">PO due date</span>
+      <input id="temp-ps-edit-due-date" class="trial-modal-input" type="date" value="${escapeHtml(defaultValue)}">
+    </label>
+    <button type="button" class="btn btn-ghost btn-sm" id="temp-ps-clear-due-date">Clear due date</button>
+  `, 'Save', async () => {
+    const dueDate = String(document.getElementById('temp-ps-edit-due-date')?.value || '').trim();
+    trialSetFormModalBusy('Saving PO due…');
+    try {
+      await patchTempPsPoDue(psId, dueDate, {
+        onSuccess: async () => {
+          closeModal();
+          if (typeof trialToast === 'function') {
+            trialToast(dueDate ? `PO due set to ${dueDate}` : 'PO due cleared', 'success');
+          }
+          if (tempPsOnSchedulerPage() && typeof loadTrial === 'function') {
+            await loadTrial({ force: true });
+          }
+          if (typeof options.onSaved === 'function') {
+            await options.onSaved(dueDate);
+          }
+          window.dispatchEvent(new CustomEvent('temp-ps-updated', { detail: { ps_id: psId, due_date: dueDate } }));
+        },
+      });
+    } catch (err) {
+      window.alert(err.message || 'Could not save PO due date');
+    } finally {
+      trialClearFormModalBusy();
+    }
+  });
+  setTimeout(() => {
+    document.getElementById('temp-ps-clear-due-date')?.addEventListener('click', () => {
+      const input = document.getElementById('temp-ps-edit-due-date');
+      if (input) input.value = '';
+    });
+    document.getElementById('temp-ps-edit-due-date')?.focus();
+  }, 0);
 }

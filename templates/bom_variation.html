@@ -100,7 +100,7 @@
   <div class="mi-toolbar card">
     <div class="mi-view-toggle" role="tablist" aria-label="BOM query type">
       <button type="button" class="mi-view-btn is-active" data-bv-tab="lookup" role="tab" aria-selected="true">
-        Lookup by Part No
+        Lookup
       </button>
       <button type="button" class="mi-view-btn" data-bv-tab="bom-per-part" role="tab" aria-selected="false">
         BOM Per Part
@@ -111,13 +111,13 @@
     </div>
   </div>
 
-  {# ── Tab: Lookup by Part No ─────────────────────────────────────────── #}
+  {# ── Tab: Lookup ─────────────────────────────────────────────────────── #}
   <div id="bv-tab-lookup" class="bv-tab-panel">
     <div class="bv-lookup-form card">
-      <span class="bv-lookup-label">Part No(s)</span>
+      <span class="bv-lookup-label">Part no, part name, or BOM code</span>
       <textarea id="bv-lookup-input" class="bv-lookup-input"
-        placeholder="Enter part numbers separated by commas or newlines&#10;e.g.  ABC123, DEF456&#10;or paste a column directly from Excel"></textarea>
-      <span class="bv-lookup-hint">Tip: paste a column of part numbers, or separate with commas/semicolons. Ctrl+Enter to run.</span>
+        placeholder="Search by part no, part name, or BOM code&#10;e.g.  VALVE BODY&#10;      SMP-MAT-01-REV00&#10;      09-9643-02"></textarea>
+      <span class="bv-lookup-hint">Tip: part names and BOM codes use partial match (e.g. valve body). Separate multiple terms with commas or newlines. Ctrl+Enter to run.</span>
       <div class="bv-lookup-actions">
         <button type="button" class="btn-primary" id="bv-lookup-run">Run Query</button>
       </div>
@@ -259,5 +259,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/bom_variation.js') }}?v=20260609"></script>
+<script src="{{ url_for('static', filename='js/bom_variation.js') }}?v=20260610"></script>
 {% endblock %}

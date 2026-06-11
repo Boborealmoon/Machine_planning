@@ -80,6 +80,10 @@ function trialTempPsDisplayId(psId) {
 }
 
 function trialMachineCategoryLabel(category) {
+  if (typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard()
+    && typeof trialMachinistCategoryLabel === 'function') {
+    return trialMachinistCategoryLabel(category);
+  }
   const raw = String(category || '').trim().toUpperCase();
   if (!raw || raw === 'ALL') return 'All';
   if (raw.length <= 3 || raw === 'MPP') return raw;
@@ -285,8 +289,60 @@ function trialPayloadToAttr(payload) {
 let trialPerfSamples = [];
 
 function trialPerfIsEnabled() {
-  // Enabled by default for live debugging. Set window.trialPerfDebug = false to mute.
-  return window.trialPerfDebug !== false;
+  // Opt-in verbose console tracing. Set window.trialPerfDebug = true in dev tools.
+  return window.trialPerfDebug === true;
+}
+
+const TRIAL_PERF_HUD_LABELS = {
+  'load-trial': 'Load',
+  'render-trial': 'Board',
+  'render-trial-catalog': 'Catalog',
+  'refresh-machines': 'Refresh',
+};
+
+const TRIAL_PERF_HUD_HIDE_MS = 5000;
+
+let trialPerfHudState = {};
+let trialPerfHudHideTimer = null;
+
+function trialPerfHudScheduleHide() {
+  if (trialPerfHudHideTimer) clearTimeout(trialPerfHudHideTimer);
+  trialPerfHudHideTimer = window.setTimeout(() => {
+    trialPerfHudHideTimer = null;
+    const el = document.getElementById('trial-perf-hud');
+    if (el) el.hidden = true;
+  }, TRIAL_PERF_HUD_HIDE_MS);
+}
+
+function trialPerfEnsureHud() {
+  let el = document.getElementById('trial-perf-hud');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'trial-perf-hud';
+  el.className = 'trial-perf-hud';
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'polite');
+  el.title = 'Planner page timing (not your PC). Orange/red = the page is working hard.';
+  document.body.appendChild(el);
+  return el;
+}
+
+function trialPerfHudPush(sample) {
+  if (!sample || window.trialPerfHud === false) return;
+  const key = String(sample.label || '');
+  if (!TRIAL_PERF_HUD_LABELS[key]) return;
+  trialPerfHudState[key] = Number(sample.total_ms || 0);
+  const el = trialPerfEnsureHud();
+  const parts = ['load-trial', 'render-trial', 'render-trial-catalog']
+    .filter(label => trialPerfHudState[label] != null)
+    .map(label => `${TRIAL_PERF_HUD_LABELS[label]} ${trialPerfHudState[label]}ms`);
+  if (!parts.length) return;
+  el.hidden = false;
+  el.textContent = parts.join(' · ');
+  const maxMs = Math.max(...Object.values(trialPerfHudState));
+  el.classList.toggle('is-busy', maxMs >= 120);
+  el.classList.toggle('is-slow', maxMs >= 400);
+  trialPerfHudScheduleHide();
 }
 
 function trialPerfNow() {
@@ -344,6 +400,9 @@ function trialPerfEnd(span, extra = {}) {
   window.trialPerfSamples = trialPerfSamples;
   window.trialPerfLast = sample;
 
+  if (typeof trialPerfHudPush === 'function') {
+    trialPerfHudPush(sample);
+  }
   if (trialPerfIsEnabled()) {
     const head = `[trial-perf] ${sample.label} ${sample.total_ms}ms`;
     if (console.groupCollapsed) console.groupCollapsed(head);
@@ -351,6 +410,8 @@ function trialPerfEnd(span, extra = {}) {
     if (sample.marks.length) console.table(sample.marks);
     console.log(sample);
     if (console.groupEnd) console.groupEnd();
+  } else if (sample.total_ms >= 250) {
+    console.info(`[trial-perf] ${sample.label} ${sample.total_ms}ms (set window.trialPerfDebug=true for details)`);
   }
   return sample;
 }

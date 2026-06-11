@@ -55,8 +55,48 @@ body.machinist-board .app-main--machinist {
   line-height: 1.2;
 }
 
-.machinist-stock-colors-toggle {
+.machinist-lang-toggle {
+  display: inline-flex;
+  align-items: stretch;
   margin-left: auto;
+  border: 1px solid rgba(26, 28, 29, 0.14);
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 1px 4px rgba(26, 28, 29, 0.06);
+}
+
+.machinist-lang-btn {
+  min-width: 38px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: var(--text3);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.machinist-lang-btn + .machinist-lang-btn {
+  border-left: 1px solid rgba(26, 28, 29, 0.1);
+}
+
+.machinist-lang-btn:hover {
+  color: var(--text);
+  background: rgba(26, 28, 29, 0.04);
+}
+
+.machinist-lang-btn.is-active {
+  background: rgba(59, 130, 246, 0.14);
+  color: #1d4ed8;
+}
+
+.machinist-focus-toggle,
+.machinist-stock-colors-toggle {
+  margin-left: 0;
   padding: 2px 8px;
   border-radius: 999px;
   border: 1px solid rgba(26, 28, 29, 0.1);
@@ -70,15 +110,26 @@ body.machinist-board .app-main--machinist {
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
+.machinist-focus-toggle:hover,
 .machinist-stock-colors-toggle:hover {
   color: var(--text);
   border-color: rgba(26, 28, 29, 0.16);
+}
+
+.machinist-focus-toggle.is-on {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.35);
+  color: #1d4ed8;
 }
 
 .machinist-stock-colors-toggle.is-on {
   background: rgba(34, 197, 94, 0.12);
   border-color: rgba(34, 197, 94, 0.35);
   color: #157347;
+}
+
+.machinist-stock-colors-toggle {
+  margin-left: 0;
 }
 
 .machinist-board-legend {
@@ -139,6 +190,146 @@ body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
   overflow: visible;
   position: relative;
   z-index: 25;
+}
+
+.machinist-job-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+.machinist-job-search-label {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text3);
+  white-space: nowrap;
+}
+
+.machinist-job-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 320px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid rgba(26, 28, 29, 0.12);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.machinist-job-search-input:focus {
+  outline: none;
+  border-color: rgba(59, 130, 246, 0.45);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.12);
+}
+
+.machinist-job-search-input::placeholder {
+  color: var(--text3);
+  font-weight: 500;
+}
+
+.machinist-job-search-results {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  max-width: 420px;
+  max-height: min(50vh, 280px);
+  overflow: auto;
+  border: 1px solid rgba(26, 28, 29, 0.1);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  z-index: 40;
+}
+
+.machinist-job-search-empty {
+  padding: 10px 12px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text3);
+}
+
+.machinist-job-search-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid rgba(26, 28, 29, 0.06);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.machinist-job-search-hit:last-child {
+  border-bottom: none;
+}
+
+.machinist-job-search-hit:hover,
+.machinist-job-search-hit:focus-visible {
+  background: rgba(59, 130, 246, 0.08);
+  outline: none;
+}
+
+.machinist-job-search-hit-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+}
+
+.machinist-job-search-hit-machine {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.machinist-job-search-hit-pos {
+  font-size: 10px;
+  font-weight: 700;
+  color: #1d4ed8;
+}
+
+.machinist-job-search-hit-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 10px;
+  color: var(--text3);
+}
+
+.machinist-job-search-hit-job {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.machinist-job-search-hit-op {
+  font-weight: 600;
+}
+
+.machinist-job-search-note {
+  font-size: 9px;
+  font-weight: 700;
+  color: #b45309;
+}
+
+.trial-job-search-hit {
+  animation: trial-job-search-pulse 1.2s ease-in-out 2;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.55);
+}
+
+@keyframes trial-job-search-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35); }
+  50% { box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.65); }
 }
 
 .machinist-board-filters {
@@ -463,6 +654,425 @@ a.trial-machinist-view-link {
   align-items: center;
 }
 
+/* ── Focus view: single lane, compact cards, minimal chrome ─────────────── */
+body.machinist-board.machinist-board--focus {
+  background: #f8f9fa;
+}
+
+body.machinist-board.machinist-board--focus .machinist-board-note,
+body.machinist-board.machinist-board--focus .machinist-stock-colors-toggle,
+body.machinist-board.machinist-board--focus .machinist-board-legend,
+body.machinist-board.machinist-board--focus .trial-machine-board-group-head,
+body.machinist-board.machinist-board--focus .trial-machine-board-subgroup-head,
+body.machinist-board.machinist-board--focus .trial-machine-availability,
+body.machinist-board.machinist-board--focus .trial-machine-queue-summary,
+body.machinist-board.machinist-board--focus .trial-filter-section-type {
+  display: none !important;
+}
+
+body.machinist-board.machinist-board--focus .machinist-board-head {
+  padding: 6px 12px 4px;
+  border-bottom-color: rgba(26, 28, 29, 0.08);
+  background: #fff;
+}
+
+body.machinist-board.machinist-board--focus .machinist-board-title {
+  font-size: 13px;
+}
+
+body.machinist-board.machinist-board--focus .trial-main--machinist #trial-machine-filter-shell {
+  padding: 6px 12px 4px;
+  border-bottom: 1px solid rgba(26, 28, 29, 0.06);
+  background: #fff;
+}
+
+body.machinist-board.machinist-board--focus .trial-main--machinist .trial-grid-scroll-host {
+  background: #f8f9fa;
+}
+
+body.machinist-board.machinist-board--focus .trial-grid-scroll {
+  padding: 0 4px 4px;
+  overflow-x: auto !important;
+  overflow-y: auto;
+  touch-action: pan-x pan-y;
+}
+
+body.machinist-board.machinist-board--focus .trial-grid.trial-grid--focus {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  flex-wrap: nowrap;
+  gap: 10px;
+  width: max-content;
+  min-width: 100%;
+  padding: 4px 4px 8px;
+}
+
+body.machinist-board.machinist-board--focus .trial-machine--focus-lane {
+  flex: 0 0 220px;
+  width: 220px;
+  max-width: 220px;
+  min-width: 220px;
+  gap: 6px;
+  padding: 6px 8px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(26, 28, 29, 0.1);
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(26, 28, 29, 0.05);
+}
+
+body.machinist-board.machinist-board--focus .trial-machine-head--focus {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px 2px;
+  margin: 0;
+  border-bottom: 1px solid rgba(26, 28, 29, 0.08);
+}
+
+body.machinist-board.machinist-board--focus .trial-machine-head--focus .trial-machine-title {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+body.machinist-board.machinist-board--focus .trial-machine-focus-hint {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text3);
+  white-space: nowrap;
+}
+
+.machinist-job-search-warning {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 3px 10px;
+  border-radius: 5px;
+  border: 1px solid rgba(220, 38, 38, 0.4);
+  background: rgba(254, 226, 226, 0.7);
+  color: #b42318;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.machinist-focus-machine-groups {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+}
+
+.machinist-focus-machine-group {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 5px;
+}
+
+.machinist-focus-machine-group-label {
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text3);
+  white-space: nowrap;
+}
+
+.machinist-focus-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.machinist-focus-picker-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.machinist-focus-picker-count {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text3);
+  white-space: nowrap;
+}
+
+.machinist-focus-picker--empty {
+  padding: 4px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text3);
+}
+
+.machinist-focus-picker-prompt {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text3);
+}
+
+.machinist-focus-machine-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.machinist-focus-machine-chip {
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(26, 28, 29, 0.12);
+  background: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.machinist-focus-machine-chip:hover {
+  border-color: rgba(26, 28, 29, 0.22);
+}
+
+.machinist-focus-machine-chip.is-active {
+  border-color: rgba(26, 28, 29, 0.32);
+  background: rgba(26, 28, 29, 0.07);
+}
+
+.machinist-focus-machine-chip.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.machinist-focus-clear-btn {
+  align-self: flex-start;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text3);
+  cursor: pointer;
+}
+
+.machinist-focus-clear-btn:hover {
+  color: var(--text2);
+  text-decoration: underline;
+}
+
+.trial-focus-landing {
+  width: 100%;
+  min-width: 0;
+  margin: 12px 0 0;
+  padding: 16px 8px;
+}
+
+.trial-focus-landing-text {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text3);
+}
+
+body.machinist-board.machinist-board--focus .trial-lane--focus {
+  gap: 5px;
+  padding: 0 2px 0 0;
+  max-height: min(34rem, calc(100dvh - 12rem));
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(26, 28, 29, 0.22) transparent;
+}
+
+body.machinist-board.machinist-board--focus .trial-lane--focus::-webkit-scrollbar {
+  width: 5px;
+}
+
+body.machinist-board.machinist-board--focus .trial-lane--focus::-webkit-scrollbar-thumb {
+  background: rgba(26, 28, 29, 0.2);
+  border-radius: 3px;
+}
+
+.trial-focus-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px 7px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(26, 28, 29, 0.1);
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(26, 28, 29, 0.04);
+}
+
+.trial-focus-card.is-current {
+  border-left: 3px solid rgba(26, 28, 29, 0.55);
+  padding-left: 8px;
+}
+
+body.machinist-board.machinist-board--stock-colors .trial-focus-card.material-in-yes {
+  border-color: rgba(34, 197, 94, 0.4);
+  background: rgba(34, 197, 94, 0.05);
+}
+
+body.machinist-board.machinist-board--stock-colors .trial-focus-card.material-in-no {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.04);
+}
+
+body.machinist-board.machinist-board--stock-colors .trial-focus-card.is-current.material-in-yes {
+  border-left-color: rgba(34, 197, 94, 0.75);
+}
+
+body.machinist-board.machinist-board--stock-colors .trial-focus-card.is-current.material-in-no {
+  border-left-color: rgba(239, 68, 68, 0.75);
+}
+
+.trial-focus-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.trial-focus-seq {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text3);
+}
+
+.trial-focus-seq.is-now {
+  color: var(--text);
+}
+
+.trial-focus-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px 8px;
+  margin-left: auto;
+}
+
+.trial-focus-metric {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.trial-focus-metric .trial-pill-label {
+  font-size: 8px;
+  margin-right: 3px;
+}
+
+.trial-focus-metric--target {
+  color: var(--text2);
+}
+
+.trial-focus-ps-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.trial-focus-ps {
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.trial-focus-partial-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 4px;
+  border: 1px solid rgba(180, 83, 9, 0.35);
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.trial-focus-card.has-partial {
+  border-color: rgba(180, 83, 9, 0.28);
+}
+
+.trial-focus-card.has-partial.is-current {
+  border-left-color: #b45309;
+}
+
+.trial-focus-partial-note {
+  font-size: 9px;
+  font-weight: 700;
+  color: #b45309;
+  line-height: 1.2;
+}
+
+.trial-focus-op {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text2);
+}
+
+.trial-focus-dates {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 2px;
+}
+
+.trial-focus-date {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text2);
+}
+
+.trial-focus-date .trial-pill-label {
+  font-size: 8px;
+  min-width: 2.8em;
+}
+
+.trial-focus-date.is-overdue {
+  color: #b42318;
+}
+
+.trial-focus-date.is-due-soon {
+  color: #b45309;
+}
+
+.trial-focus-date.is-end.green {
+  color: #157347;
+}
+
+.trial-focus-date.is-end.yellow {
+  color: #b45309;
+}
+
+body.machinist-board.machinist-board--focus .trial-empty {
+  font-size: 11px;
+  padding: 16px 8px;
+  color: var(--text3);
+}
+
 @media (max-width: 900px) {
   body.machinist-board {
     overflow-x: hidden;
@@ -545,11 +1155,30 @@ a.trial-machinist-view-link {
     gap: 4px 8px;
   }
 
+  .machinist-lang-toggle {
+    order: 10;
+    margin-left: auto;
+  }
+
+  .machinist-lang-btn {
+    min-width: 42px;
+    min-height: 32px;
+    font-size: 12px;
+  }
+
+  .machinist-focus-toggle,
   .machinist-stock-colors-toggle {
     margin-left: 0;
     min-height: 28px;
     padding: 4px 10px;
     font-size: 10px;
+  }
+
+  body.machinist-board.machinist-board--focus .trial-machine--focus-lane {
+    flex: 0 0 min(200px, 78vw);
+    width: min(200px, 78vw);
+    max-width: min(200px, 78vw);
+    min-width: min(200px, 78vw);
   }
 
   .machinist-board-legend {
@@ -647,12 +1276,19 @@ a.trial-machinist-view-link {
   }
 
   body.machinist-board .trial-lane {
-    overflow-y: visible;
+    max-height: min(28rem, calc(100dvh - 14rem));
+    overflow-y: auto;
     overflow-x: hidden;
-    max-height: none;
     flex: 0 1 auto;
-    touch-action: pan-y pinch-zoom;
+    overscroll-behavior-y: contain;
+    touch-action: pan-y;
     -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(37, 99, 235, 0.35) transparent;
+  }
+
+  body.machinist-board.machinist-board--focus .trial-lane--focus {
+    max-height: min(34rem, calc(100dvh - 11rem));
   }
 }
 

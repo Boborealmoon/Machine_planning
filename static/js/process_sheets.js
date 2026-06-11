@@ -705,6 +705,25 @@
     return due || '9999-99-99';
   }
 
+  function hasPoDueDate(item) {
+    return Boolean(String(item?.due_date || '').trim().slice(0, 10));
+  }
+
+  function compareDueAscending(a, b) {
+    const da = poDueSortKey(a);
+    const db = poDueSortKey(b);
+    const aMissing = da === '9999-99-99';
+    const bMissing = db === '9999-99-99';
+    if (aMissing !== bMissing) return aMissing ? 1 : -1;
+    if (!aMissing && da !== db) return da.localeCompare(db);
+    return comparePlanningPriority(a, b);
+  }
+
+  function sortsByPoDue() {
+    const mode = currentSortMode();
+    return mode === 'due_asc' || mode === 'due_desc';
+  }
+
   function currentSortMode() {
     return String(els.sortBy?.value || 'planning').trim().toLowerCase();
   }
@@ -713,21 +732,17 @@
     const mode = currentSortMode();
     const list = [...items];
     if (mode === 'due_asc') {
-      return list.sort((a, b) => {
-        const due = poDueSortKey(a).localeCompare(poDueSortKey(b));
-        if (due) return due;
-        return String(a.display_ps_id || a.ps_id || '').localeCompare(String(b.display_ps_id || b.ps_id || ''));
-      });
+      return list.sort(compareDueAscending);
     }
     if (mode === 'due_desc') {
       return list.sort((a, b) => {
-        const da = String(a?.due_date || '').trim().slice(0, 10);
-        const db = String(b?.due_date || '').trim().slice(0, 10);
-        const aMissing = !da;
-        const bMissing = !db;
+        const da = poDueSortKey(a);
+        const db = poDueSortKey(b);
+        const aMissing = da === '9999-99-99';
+        const bMissing = db === '9999-99-99';
         if (aMissing !== bMissing) return aMissing ? 1 : -1;
-        if (da !== db) return db.localeCompare(da);
-        return String(a.display_ps_id || a.ps_id || '').localeCompare(String(b.display_ps_id || b.ps_id || ''));
+        if (!aMissing && da !== db) return db.localeCompare(da);
+        return comparePlanningPriority(a, b);
       });
     }
     return list.sort(comparePlanningPriority);
@@ -1547,8 +1562,8 @@
     if (tempFilter === 'temp_only') parts.push('[Temp] only');
     if (tempFilter === 'hide_temp') parts.push('hiding [Temp]');
     const sortMode = currentSortMode();
-    if (sortMode === 'due_asc') parts.push('sorted by PO due (soonest)');
-    if (sortMode === 'due_desc') parts.push('sorted by PO due (latest)');
+    if (sortMode === 'due_asc') parts.push('open only · PO due (overdue first, then soonest)');
+    if (sortMode === 'due_desc') parts.push('open only · PO due (latest)');
     return parts;
   }
 
@@ -1581,8 +1596,11 @@
       : new Set(['APS', 'NPS', 'SR', 'TEMP']);
     const allTypesOn = checkedTypes.size === allTypeInputs.length;
     const tempFilter = String(els.tempFilter?.value || 'all').trim().toLowerCase();
+    const dueSortActive = sortsByPoDue();
 
     return state.items.filter(item => {
+      if (dueSortActive && !completedOnly && isCompleted(item)) return false;
+      if (dueSortActive && !hasPoDueDate(item)) return false;
       if (tempFilter === 'temp_only' && !isTempPs(item)) return false;
       if (tempFilter === 'hide_temp' && isTempPs(item)) return false;
       if (hideSrTags && !completedOnly && !searchTerms.length && isSrTagged(item)) return false;
@@ -1677,11 +1695,14 @@
     }
 
     const sortMode = currentSortMode();
-    const sortByDue = sortMode === 'due_asc' || sortMode === 'due_desc';
+    const sortByDue = sortsByPoDue();
     let queueHtml;
     if (sortByDue) {
+      const dueTitle = sortMode === 'due_asc'
+        ? 'Open · PO due (overdue first, then soonest)'
+        : 'Open · PO due (latest)';
       queueHtml = [
-        renderQueueGroup('By PO due date', pageItems),
+        renderQueueGroup(dueTitle, pageItems),
         renderPagination(sortedItems.length, start, end, totalPages),
       ].filter(Boolean).join('');
     } else {
@@ -2269,6 +2290,7 @@
               <th>Reject qty</th>
               <th>Progress</th>
               <th>Part</th>
+              <th>PO due</th>
               <th>Route</th>
               <th>Planner</th>
               <th>Created</th>
@@ -2297,6 +2319,7 @@
     const rejectQty = numberValue(item.reject_qty);
     const finishedQty = numberValue(item.finished_qty);
     const progressLabel = `${fmtQty(finishedQty)} / ${fmtQty(rejectQty)}`;
+    const dueDate = fmtDate(item.due_date);
     const canResolve = !item.is_resolved;
     return `
       <tr class="ps-temp-tracker-row ${queueClass}">
@@ -2316,6 +2339,9 @@
           <strong>${escapeHtml(item.part_no || '—')}</strong>
           <div class="ps-temp-tracker-sub">${escapeHtml(item.part_desc || '')}</div>
         </td>
+        <td class="ps-temp-due-cell">
+          <span>${escapeHtml(dueDate)}</span>
+        </td>
         <td>${escapeHtml(item.selected_bom_code || item.erp_bom_code || '—')}</td>
         <td class="ps-temp-planner-cell">
           <span class="ps-planning-flag ${queueClass}" aria-hidden="true"></span>
@@ -2323,6 +2349,11 @@
         </td>
         <td>${escapeHtml(created)}</td>
         <td class="ps-temp-tracker-actions">
+          <button type="button" class="btn btn-light btn-sm"
+            data-action="edit-temp-ps" data-ps-id="${escapeHtml(psId)}"
+            title="Edit qty, due date, remarks, and part details">
+            Edit
+          </button>
           ${canResolve ? `
           <button type="button" class="btn btn-dark btn-sm"
             data-action="resolve-temp-ps" data-ps-id="${escapeHtml(psId)}"
@@ -2523,6 +2554,16 @@
       if (deleteBtn) {
         event.preventDefault();
         deleteTempProcessSheet(deleteBtn.dataset.psId || '');
+        return;
+      }
+      const editBtn = event.target.closest('[data-action="edit-temp-ps"]');
+      if (editBtn && typeof openTempPsEditModal === 'function') {
+        event.preventDefault();
+        const psId = editBtn.dataset.psId || '';
+        const item = tempState.items.find(row => row.planner_ps_id === psId);
+        if (item) {
+          openTempPsEditModal(item, { onSaved: () => loadTempTracker() });
+        }
         return;
       }
       const btn = event.target.closest('[data-action="open-temp-detail"]');
@@ -2752,5 +2793,11 @@
     loadProcessSheets({ refresh: true }).finally(() => setBusy(false));
     loadTempTracker();
     setPsView('temp');
+  });
+
+  window.addEventListener('temp-ps-updated', () => {
+    loadTempTracker();
+    setBusy(true);
+    loadProcessSheets({ refresh: true }).finally(() => setBusy(false));
   });
 })();

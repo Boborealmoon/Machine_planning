@@ -7,7 +7,7 @@
 <meta name="referrer" content="no-referrer" />
 <meta name="robots" content="noindex, nofollow, noarchive" />
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v={{ scheduler_asset_version }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/machinist_board.css') }}?v=machinist-filter-panel-20260608b">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/machinist_board.css') }}?v=machinist-i18n-20260611">
 {% endblock %}
 {% block content %}
 <script>
@@ -15,34 +15,52 @@ try {
   if (localStorage.getItem('machinist-board-stock-colors-v1') === '1') {
     document.body.classList.add('machinist-board--stock-colors');
   }
+  if (localStorage.getItem('machinist-board-focus-v1') === '1') {
+    document.body.classList.add('machinist-board--focus');
+  }
 } catch (_) {}
 </script>
 <div class="trial-shell trial-shell--machinist">
   <header class="machinist-board-head" aria-label="Machine queue board">
     <div class="machinist-board-head-row">
-      <h1 class="machinist-board-title">Machine queue board</h1>
-      <span class="machinist-board-note">Read-only · auto-refresh</span>
+      <h1 class="machinist-board-title" data-machinist-i18n="page_title">Machine queue board</h1>
+      <span class="machinist-board-note" data-machinist-i18n="read_only_note">Read-only · auto-refresh</span>
+      <div class="machinist-lang-toggle" role="group" aria-label="Language" data-machinist-i18n-aria="lang_toggle_aria">
+        <button type="button" id="machinist-lang-en" class="machinist-lang-btn is-active" aria-pressed="true">EN</button>
+        <button type="button" id="machinist-lang-zh" class="machinist-lang-btn" aria-pressed="false">中文</button>
+      </div>
+      <button type="button"
+        id="machinist-focus-toggle"
+        class="machinist-focus-toggle is-off"
+        aria-pressed="false"
+        data-machinist-i18n="focus_view"
+        data-machinist-i18n-title="focus_view_title"
+        title="Select up to 4 machines to show their lanes">
+        Focus view
+      </button>
       <button type="button"
         id="machinist-stock-colors-toggle"
         class="machinist-stock-colors-toggle is-off"
         aria-pressed="false"
+        data-machinist-i18n="stock_colours"
+        data-machinist-i18n-title="stock_colours_title"
         title="Show green/red stock status on cards">
         Stock colours
       </button>
       <span class="machinist-board-legend" hidden aria-label="Card colour legend">
-        <span class="machinist-board-legend-item"><span class="machinist-board-legend-dot is-in"></span>In stock</span>
-        <span class="machinist-board-legend-item"><span class="machinist-board-legend-dot is-out"></span>Awaiting stock</span>
+        <span class="machinist-board-legend-item"><span class="machinist-board-legend-dot is-in"></span><span data-machinist-i18n="in_stock">In stock</span></span>
+        <span class="machinist-board-legend-item"><span class="machinist-board-legend-dot is-out"></span><span data-machinist-i18n="awaiting_stock">Awaiting stock</span></span>
       </span>
     </div>
   </header>
-  <div id="trial-loading" class="loading"><div class="spinner"></div> Loading machine queues...</div>
+  <div id="trial-loading" class="loading"><div class="spinner"></div> <span data-machinist-i18n="loading">Loading machine queues...</span></div>
   <div class="trial-layout trial-layout--machinist" style="display:none;" id="trial-layout">
     <div class="trial-main trial-main--machinist">
       <div id="trial-machine-filter-shell"></div>
       <div class="trial-grid-scroll-host">
         <div class="trial-grid-scroll-top-wrap">
-          <div class="trial-grid-scroll-hint" aria-hidden="true">Swipe sideways for machines · scroll down for queues · pinch to zoom</div>
-          <div class="trial-grid-scroll-top" aria-label="Scroll machine lanes horizontally" title="Drag to scroll · swipe sideways on mobile">
+          <div class="trial-grid-scroll-hint" aria-hidden="true" data-machinist-i18n="scroll_hint">Swipe sideways for machines · scroll down for queues · pinch to zoom</div>
+          <div class="trial-grid-scroll-top" data-machinist-i18n-aria="scroll_lanes_aria" data-machinist-i18n-title="scroll_lanes_title" aria-label="Scroll machine lanes horizontally" title="Drag to scroll · swipe sideways on mobile">
             <div class="trial-grid-scroll-top-inner"></div>
           </div>
         </div>
@@ -70,7 +88,8 @@ try {
   } catch (_) {}
 })();
 </script>
-<script src="{{ url_for('static', filename='js/scheduler/board_mode.js') }}?v=stock-colors-toggle-20260605"></script>
+<script src="{{ url_for('static', filename='js/scheduler/board_mode.js') }}?v=machinist-focus-v3-20260610"></script>
+<script src="{{ url_for('static', filename='js/scheduler/machinist_i18n.js') }}?v=machinist-i18n-20260611"></script>
 <script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v={{ scheduler_asset_version }}"></script>
@@ -79,14 +98,36 @@ try {
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   if (typeof trialMachineCategories !== 'function' || typeof loadTrial !== 'function') {
-    const msg = 'Board scripts did not load (data.js). Hard-refresh (Ctrl+F5).';
+    const msg = typeof trialMachinistT === 'function'
+      ? trialMachinistT('scripts_failed')
+      : 'Board scripts did not load (data.js). Hard-refresh (Ctrl+F5).';
     if (typeof toast === 'function') toast(msg, 'error');
     else console.error(msg);
     return;
   }
+  if (typeof trialSyncMachinistLocaleStatic === 'function') {
+    trialSyncMachinistLocaleStatic();
+    const langEn = document.getElementById('machinist-lang-en');
+    const langZh = document.getElementById('machinist-lang-zh');
+    if (langEn) langEn.addEventListener('click', () => trialToggleMachinistLocale('en'));
+    if (langZh) langZh.addEventListener('click', () => trialToggleMachinistLocale('zh'));
+  }
   window.trialScheduleRenderHook = null;
   trialMachineCategoryFilter = 'ALL';
   trialScheduleDateFilter = trialResolvedScheduleDateFilterFromUrl();
+  if (typeof trialLoadMachinistFocusMachineIds === 'function') {
+    trialMachinistFocusMachineIds = trialLoadMachinistFocusMachineIds();
+    trialMachinistFocusMachineIdsLoaded = true;
+  }
+  if (typeof trialSyncMachinistFocusClass === 'function') {
+    trialSyncMachinistFocusClass();
+    const focusToggle = document.getElementById('machinist-focus-toggle');
+    if (focusToggle) {
+      focusToggle.addEventListener('click', () => {
+        if (typeof trialToggleMachinistFocus === 'function') trialToggleMachinistFocus();
+      });
+    }
+  }
   if (typeof trialSyncMachinistStockColorsClass === 'function') {
     trialSyncMachinistStockColorsClass();
     const stockColorsToggle = document.getElementById('machinist-stock-colors-toggle');
@@ -107,7 +148,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if ((now - _lastAutoRefreshAt) < MIN_REFRESH_GAP_MS) return;
     _autoRefreshInFlight = true;
     try {
-      await loadTrial({ force: true });
+      await loadTrial();
       _lastAutoRefreshAt = Date.now();
     } catch (_) {}
     finally {

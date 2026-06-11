@@ -10,6 +10,10 @@ let trialState = {
 let trialDragPayload = null;
 let trialCatalogSearch = '';
 let trialCatalogSearchTimer = null;
+/** Machinist board job queue search (locate position on lanes). */
+let trialMachinistJobSearch = '';
+let trialMachinistJobSearchTimer = null;
+let trialMachinistJobSearchHits = [];
 /** When true, PS / Ops sidebar lists earliest due_date first. */
 let trialCatalogSortByDueDate = false;
 /** '', 'queued', or 'unqueued' — filter PS / Ops sidebar by machine queue state. */
@@ -19,6 +23,11 @@ let trialPsTypeFilter = new Set(['A', 'N', 'T']);
 let trialShowSrOrders = false;
 let trialMachineCategoryFilter = 'ALL';
 let trialMachineHiddenSet = new Set();
+/** 'planner' | 'machinist' while machine filter dropdown is open; null when closed. */
+let trialMachineFilterPanelOpenScope = null;
+/** Machinist focus view: selected machine lanes (persisted, max 4). */
+let trialMachinistFocusMachineIds = [];
+let trialMachinistFocusMachineIdsLoaded = false;
 let trialOpenQueueMachineId = 0;
 let trialScheduleDateFilter = { start: '', end: '' };
 let trialBOMEditing = [];

@@ -1,14 +1,26 @@
 (function () {
   const config = window.AUK_OEE_CONFIG || {};
-  const loadingEl = document.getElementById('auk-oee-loading');
+  const refreshToastEl = document.getElementById('auk-oee-refresh-toast');
   const gridEl = document.getElementById('auk-oee-grid');
   const metaEl = document.getElementById('auk-oee-meta');
   const alertEl = document.getElementById('auk-oee-alert');
   const fromEl = document.getElementById('auk-oee-from');
   const toEl = document.getElementById('auk-oee-to');
   const refreshBtn = document.getElementById('auk-oee-refresh');
+  const presetButtons = Array.from(document.querySelectorAll('.auk-oee-preset'));
 
-  const REFRESH_MS = 5 * 60 * 1000;
+  const LIVE_REFRESH_MS = 60 * 1000;
+  let activePreset = 'shift';
+  let syncingRange = false;
+  let refreshTimer = null;
+  let hasLoadedOnce = false;
+
+  const PRESET_LABELS = {
+    shift: 'Shift (live)',
+    last_1h: 'Last 1 hour',
+    last_24h: 'Last 24 hours',
+    custom: 'Custom',
+  };
 
   const GROUP_ACCENTS = {
     overall: '#475467',
@@ -16,6 +28,21 @@
     milling: '#7a5af8',
     multiaxis: '#099250',
     mpp: '#dd2590',
+    other: '#667085',
+  };
+
+  const LOSS_LABELS = {
+    us: 'Unscheduled',
+    pd: 'Planned downtime',
+    bd: 'Breakdowns',
+    st: 'Setup',
+    uu: 'Un-utilised',
+    ms: 'Minor stops',
+    sl: 'Speed loss',
+    ef: 'Effective',
+    rj: 'Rejects',
+    rw: 'Rework',
+    na: 'No data',
   };
 
   function pad2(n) {
@@ -42,7 +69,7 @@
   function fmtPct(value) {
     const n = Number(value);
     if (!Number.isFinite(n)) return '—';
-    return `${n.toFixed(1)}%`;
+    return `${n.toFixed(2)}%`;
   }
 
   function toneForPct(value) {
@@ -83,72 +110,230 @@
     `;
   }
 
-  function renderCard(card, groupId) {
-    const oee = card.oee_pct;
+  function renderCompactMetric(label, value) {
+    const pct = Math.max(0, Math.min(100, Number(value) || 0));
+    const tone = metricTone(pct);
+    return `
+      <div class="auk-oee-compact-metric">
+        <span class="auk-oee-compact-metric__label">${label}</span>
+        <div class="auk-oee-compact-metric__bar">
+          <div class="auk-oee-metric__fill auk-oee-metric__fill--${tone}" style="width:${pct}%"></div>
+        </div>
+        <span class="auk-oee-compact-metric__value">${fmtPct(value)}</span>
+      </div>
+    `;
+  }
+
+  function renderDonut(oee, sizeClass) {
     const tone = toneForPct(oee);
     const pct = Math.max(0, Math.min(100, Number(oee) || 0));
-    const title = card.title || card.label || 'Untitled';
-    const typeBadge = card.machine_type
-      ? `<span class="auk-oee-card__badge">${escapeHtml(card.machine_type)}</span>`
-      : '';
-    const summaryClass = card.is_group_summary ? ' auk-oee-card--summary' : '';
-    const summaryNote = card.is_group_summary
-      ? '<div class="auk-oee-card__note">Auk block summary · not included in machine avg</div>'
-      : '';
-    const error = card.error
-      ? `<div class="auk-oee-card__error">${escapeHtml(card.error)}</div>`
-      : '';
-
+    const size = sizeClass ? ` ${sizeClass}` : '';
     return `
-      <article class="auk-oee-card${summaryClass} auk-oee-card--${tone}" data-group="${escapeHtml(groupId || card.group_id || 'other')}">
-        <div class="auk-oee-card__head">
-          <div class="auk-oee-card__title">${escapeHtml(title)}</div>
-          ${typeBadge}
+      <div class="auk-oee-donut auk-oee-donut--${tone}${size}" style="--pct:${pct}">
+        <div class="auk-oee-donut__center">
+          <span class="auk-oee-donut__value">${fmtPct(oee)}</span>
+          <span class="auk-oee-donut__label">OEE</span>
         </div>
-        <div class="auk-oee-card__donut-wrap">
-          <div class="auk-oee-donut auk-oee-donut--${tone}" style="--pct:${pct}">
-            <div class="auk-oee-donut__center">
-              <span class="auk-oee-donut__value">${fmtPct(oee)}</span>
-              <span class="auk-oee-donut__label">OEE</span>
-            </div>
+      </div>
+    `;
+  }
+
+  function renderSummaryChip(card) {
+    const title = card.title || card.label || 'Untitled';
+    const tone = toneForPct(card.oee_pct);
+    return `
+      <div class="auk-oee-summary-chip auk-oee-summary-chip--${tone}" title="Auk pareto group block · reference only">
+        <span class="auk-oee-summary-chip__name">${escapeHtml(title)}</span>
+        <strong class="auk-oee-summary-chip__oee">${fmtPct(card.oee_pct)}</strong>
+      </div>
+    `;
+  }
+
+  function renderHeroCard(card) {
+    const title = card.title || card.label || 'Plant overview';
+    const tone = toneForPct(card.oee_pct);
+    return `
+      <article class="auk-oee-hero-card auk-oee-hero-card--${tone}">
+        <div class="auk-oee-hero-card__body">
+          <div class="auk-oee-hero-card__text">
+            <h2 class="auk-oee-hero-card__title">${escapeHtml(title)}</h2>
+            <p class="auk-oee-hero-card__sub">Live plant OEE from Auk Pareto</p>
           </div>
+          ${renderDonut(card.oee_pct, 'auk-oee-donut--hero')}
         </div>
-        <div class="auk-oee-metrics">
-          ${renderMetric('LOA', card.loading_pct)}
-          ${renderMetric('AVA', card.availability_pct)}
-          ${renderMetric('PER', card.performance_pct)}
-          ${renderMetric('QUA', card.quality_pct)}
+        <div class="auk-oee-hero-card__metrics">
+          ${renderMetric('Loading', card.loading_pct)}
+          ${renderMetric('Availability', card.availability_pct)}
+          ${renderMetric('Performance', card.performance_pct)}
+          ${renderMetric('Quality', card.quality_pct)}
         </div>
-        ${summaryNote}
-        ${error}
       </article>
     `;
   }
 
-  function renderSection(section) {
+  function renderLossGrid(losses) {
+    const entries = Object.entries(losses || {}).filter(([, value]) => Number.isFinite(Number(value)));
+    if (!entries.length) {
+      return '<div class="auk-oee-loss-grid auk-oee-loss-grid--empty">No hourly loss breakdown for this range.</div>';
+    }
+    return `
+      <div class="auk-oee-loss-grid">
+        ${entries.map(([key, value]) => `
+          <div class="auk-oee-loss-cell">
+            <span class="auk-oee-loss-cell__key">${escapeHtml(LOSS_LABELS[key] || key.toUpperCase())}</span>
+            <strong class="auk-oee-loss-cell__val">${fmtPct(value)}</strong>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function renderMachineDetail(card) {
+    const meta = [
+      card.asset_id != null ? `Asset ${card.asset_id}` : null,
+      card.block_id != null ? `Block ${card.block_id}` : null,
+      card.std_time_hrs != null ? `Std ${Number(card.std_time_hrs).toFixed(1)}h` : null,
+      card.hourly_slots != null ? `${card.hourly_slots} hourly slots` : null,
+    ].filter(Boolean);
+    const charts = Array.isArray(card.charts) ? card.charts : [];
+    const chartMeta = charts.length
+      ? `<div class="auk-oee-row__charts">${charts.map((ch) => `<span title="chart ${ch.chart_id}">${escapeHtml(ch.title || `Chart ${ch.chart_id}`)}</span>`).join('')}</div>`
+      : '';
+
+    return `
+      <div class="auk-oee-row__detail">
+        <div class="auk-oee-row__detail-metrics">
+          ${renderCompactMetric('LOA', card.loading_pct)}
+          ${renderCompactMetric('AVA', card.availability_pct)}
+          ${renderCompactMetric('PER', card.performance_pct)}
+          ${renderCompactMetric('QUA', card.quality_pct)}
+        </div>
+        ${meta.length ? `<div class="auk-oee-row__meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}</div>` : ''}
+        ${chartMeta}
+        <div class="auk-oee-row__loss-title">Pareto loss breakdown (avg per hour)</div>
+        ${renderLossGrid(card.losses)}
+      </div>
+    `;
+  }
+
+  function renderMachineRow(card, rank) {
+    const oee = card.oee_pct;
+    const tone = toneForPct(oee);
+    const title = card.title || card.label || 'Untitled';
+    const typeBadge = card.machine_type
+      ? `<span class="auk-oee-row__type">${escapeHtml(card.machine_type)}</span>`
+      : '';
+    const error = card.error
+      ? `<div class="auk-oee-row__error">${escapeHtml(card.error)}</div>`
+      : '';
+    const inactive = !Number.isFinite(Number(oee)) || Number(oee) <= 0;
+
+    return `
+      <details class="auk-oee-row-wrap auk-oee-row-wrap--${tone}${inactive ? ' auk-oee-row-wrap--inactive' : ''}">
+        <summary class="auk-oee-row auk-oee-row--${tone}${inactive ? ' auk-oee-row--inactive' : ''}">
+          <div class="auk-oee-row__rank">${rank}</div>
+          <div class="auk-oee-row__identity">
+            <div class="auk-oee-row__name">${escapeHtml(title)}</div>
+            ${typeBadge}
+            ${error}
+          </div>
+          <div class="auk-oee-row__oee">
+            ${renderDonut(oee, 'auk-oee-donut--sm')}
+          </div>
+          <div class="auk-oee-row__metrics">
+            ${renderCompactMetric('AVA', card.availability_pct)}
+            ${renderCompactMetric('PER', card.performance_pct)}
+          </div>
+          <div class="auk-oee-row__secondary" title="Loading, un-utilised &amp; quality">
+            <span>LOA ${fmtPct(card.loading_pct)}</span>
+            <span>UU ${fmtPct(card.unutilised_pct)}</span>
+          </div>
+          <span class="auk-oee-row__expand" aria-hidden="true">▾</span>
+        </summary>
+        ${renderMachineDetail(card)}
+      </details>
+    `;
+  }
+
+  function splitSectionCards(section) {
+    const summaries = Array.isArray(section.summaries)
+      ? section.summaries
+      : (section.cards || []).filter((c) => c.is_group_summary);
+    const machines = Array.isArray(section.machines)
+      ? section.machines
+      : (section.cards || []).filter((c) => c.is_machine);
+    return { summaries, machines };
+  }
+
+  function renderOverallSection(section) {
+    const accent = GROUP_ACCENTS.overall;
+    const { summaries } = splitSectionCards(section);
+    const hero = summaries[0] || (section.cards || [])[0];
+    if (!hero) return '';
+
+    return `
+      <section class="auk-oee-overall" style="--section-accent:${accent}">
+        ${renderHeroCard(hero)}
+      </section>
+    `;
+  }
+
+  function renderDepartmentSection(section) {
     const accent = GROUP_ACCENTS[section.id] || GROUP_ACCENTS.other;
     const avg = section.avg_oee_pct != null ? fmtPct(section.avg_oee_pct) : '—';
-    const cards = Array.isArray(section.cards) ? section.cards : [];
-    const machineCount = section.count ?? cards.filter((c) => c.is_machine).length;
-    const avgLabel = section.id === 'overall' ? 'Plant OEE' : 'Machine avg';
+    const { summaries, machines } = splitSectionCards(section);
+
+    if (!machines.length && !summaries.length) return '';
+
+    const summaryStrip = summaries.length
+      ? `
+        <div class="auk-oee-ref-block">
+          <div class="auk-oee-ref-block__label">Auk reference blocks</div>
+          <div class="auk-oee-summary-strip">
+            ${summaries.map(renderSummaryChip).join('')}
+          </div>
+        </div>
+      `
+      : '';
+
+    const machineList = machines.length
+      ? `
+        <div class="auk-oee-machine-list">
+          <div class="auk-oee-machine-list__head">
+            <span class="auk-oee-machine-list__col auk-oee-machine-list__col--rank">#</span>
+            <span class="auk-oee-machine-list__col auk-oee-machine-list__col--name">Machine</span>
+            <span class="auk-oee-machine-list__col auk-oee-machine-list__col--oee">OEE</span>
+            <span class="auk-oee-machine-list__col auk-oee-machine-list__col--metrics">Availability · Performance</span>
+            <span class="auk-oee-machine-list__col auk-oee-machine-list__col--secondary">LOA · QUA</span>
+          </div>
+          ${machines.map((card, idx) => renderMachineRow(card, idx + 1)).join('')}
+        </div>
+      `
+      : '<div class="auk-oee-empty">No machines in this group.</div>';
 
     return `
       <section class="auk-oee-section" style="--section-accent:${accent}">
         <header class="auk-oee-section__head">
           <div class="auk-oee-section__title-wrap">
             <h2 class="auk-oee-section__title">${escapeHtml(section.title)}</h2>
-            <span class="auk-oee-section__count">${section.id === 'overall' ? 'Summary' : `${machineCount} machine${machineCount === 1 ? '' : 's'}`}</span>
+            <span class="auk-oee-section__count">${machines.length} machine${machines.length === 1 ? '' : 's'}</span>
           </div>
           <div class="auk-oee-section__avg">
-            <span class="auk-oee-section__avg-label">${avgLabel}</span>
+            <span class="auk-oee-section__avg-label">Machine avg</span>
             <strong class="auk-oee-section__avg-value">${avg}</strong>
           </div>
         </header>
-        <div class="auk-oee-section__grid">
-          ${cards.map((card) => renderCard(card, section.id)).join('')}
-        </div>
+        ${summaryStrip}
+        ${machineList}
       </section>
     `;
+  }
+
+  function renderSection(section) {
+    if (section.id === 'overall') {
+      return renderOverallSection(section);
+    }
+    return renderDepartmentSection(section);
   }
 
   function buildGroupsFromCards(cards) {
@@ -164,14 +349,17 @@
       milling: 'Milling',
       multiaxis: 'Multi-axis',
       mpp: 'MPP',
+      other: 'Other',
     };
-    const order = ['overall', 'turning', 'milling', 'multiaxis', 'mpp'];
+    const order = ['overall', 'turning', 'milling', 'multiaxis', 'mpp', 'other'];
     return order
       .filter((id) => byGroup.has(id))
       .map((id) => {
         const sectionCards = byGroup.get(id) || [];
-        const machines = sectionCards.filter((c) => c.is_machine);
         const summaries = sectionCards.filter((c) => c.is_group_summary);
+        const machines = sectionCards
+          .filter((c) => c.is_machine)
+          .sort((a, b) => (Number(a.oee_pct) || -1) - (Number(b.oee_pct) || -1));
         const machineOee = machines
           .map((c) => Number(c.oee_pct))
           .filter((n) => Number.isFinite(n));
@@ -181,6 +369,8 @@
         return {
           id,
           title: titles[id] || id,
+          summaries,
+          machines,
           cards: sectionCards,
           count: machines.length,
           avg_oee_pct: avg,
@@ -188,13 +378,36 @@
       });
   }
 
-  function setLoading(isLoading) {
-    if (loadingEl) {
-      loadingEl.classList.toggle('is-active', isLoading);
+  function setLoading(isLoading, message) {
+    const text = message || (hasLoadedOnce ? 'Refreshing OEE…' : 'Loading OEE…');
+    if (refreshToastEl) {
+      refreshToastEl.hidden = false;
+      refreshToastEl.classList.toggle('is-active', isLoading);
+      const label = refreshToastEl.querySelector('.auk-oee-refresh-toast__text');
+      if (label) label.textContent = text;
     }
-    if (gridEl) {
+    if (!gridEl) return;
+    if (!hasLoadedOnce) {
       gridEl.hidden = isLoading;
+      gridEl.classList.toggle('auk-oee-grid--initial', isLoading);
+      if (isLoading && !gridEl.innerHTML.trim()) {
+        gridEl.innerHTML = '<span>Loading OEE cards…</span>';
+        gridEl.hidden = false;
+      }
+      return;
     }
+    gridEl.classList.toggle('auk-oee-grid--refreshing', isLoading);
+  }
+
+  function parseApiError(raw, status) {
+    if (!raw) return `Server error (${status})`;
+    try {
+      const data = JSON.parse(raw);
+      if (data && data.error) return String(data.error);
+    } catch (_err) {
+      // plain text / HTML
+    }
+    return raw.length > 240 ? `${raw.slice(0, 240)}…` : raw;
   }
 
   function showAlert(message) {
@@ -207,29 +420,67 @@
     alertEl.textContent = message;
   }
 
-  function defaultRange() {
-    const now = new Date();
-    const day = new Date(now);
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
-    if (nowMinutes < 8 * 60 + 30) {
-      day.setDate(day.getDate() - 1);
-    }
-    const from = new Date(day);
-    from.setHours(8, 30, 0, 0);
-    const to = new Date(day);
-    to.setHours(20, 0, 0, 0);
-    return { from: from.toISOString(), to: to.toISOString() };
+  function floorToMinute(date) {
+    const d = new Date(date);
+    d.setSeconds(0, 0);
+    return d;
+  }
+
+  function setActivePreset(preset) {
+    activePreset = preset || 'shift';
+    presetButtons.forEach((btn) => {
+      btn.classList.toggle('is-active', btn.dataset.preset === activePreset);
+    });
+  }
+
+  function clampToIso(iso) {
+    if (!iso) return '';
+    const nowIso = floorToMinute(new Date()).toISOString();
+    return iso > nowIso ? nowIso : iso;
   }
 
   function currentQuery() {
-    const fromIso = localInputToIso(fromEl.value);
-    const toIso = localInputToIso(toEl.value);
     const params = new URLSearchParams();
-    if (fromIso) params.set('from', fromIso);
-    if (toIso) params.set('to', toIso);
+    if (activePreset !== 'custom') {
+      params.set('preset', activePreset);
+    } else {
+      const fromIso = localInputToIso(fromEl.value);
+      const toIso = clampToIso(localInputToIso(toEl.value));
+      if (fromIso) params.set('from', fromIso);
+      if (toIso) params.set('to', toIso);
+    }
     params.set('res_x', '1');
     params.set('res_period', 'hours');
     return params.toString();
+  }
+
+  function syncRangeInputs(fromIso, toIso) {
+    syncingRange = true;
+    if (fromIso) fromEl.value = toLocalInputValue(fromIso);
+    if (toIso) toEl.value = toLocalInputValue(toIso);
+    syncingRange = false;
+  }
+
+  function scheduleRefresh() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    const ms = activePreset === 'custom' || activePreset === 'last_24h'
+      ? 5 * 60 * 1000
+      : LIVE_REFRESH_MS;
+    refreshTimer = setInterval(loadDashboard, ms);
+  }
+
+  function formatRangeLocal(fromIso, toIso) {
+    const fmt = (iso) => {
+      const dt = new Date(iso);
+      if (Number.isNaN(dt.getTime())) return iso || '';
+      return dt.toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    };
+    return `${fmt(fromIso)} → ${fmt(toIso)}`;
   }
 
   async function loadDashboard() {
@@ -257,39 +508,87 @@
 
       const data = JSON.parse(raw);
       if (!res.ok) {
-        throw new Error(data.error || `${res.status} ${res.statusText}`);
+        throw new Error(data.error || parseApiError(raw, res.status));
       }
 
       const groups = Array.isArray(data.groups) && data.groups.length
         ? data.groups
         : buildGroupsFromCards(Array.isArray(data.cards) ? data.cards : []);
 
+      gridEl.classList.remove('auk-oee-grid--initial');
       gridEl.innerHTML = groups.map(renderSection).join('');
       gridEl.hidden = groups.length === 0;
+      hasLoadedOnce = true;
 
-      const cardCount = data.card_count ?? (data.cards || []).length;
+      const machineCount = data.machine_count ?? groups.reduce(
+        (sum, g) => sum + (g.count ?? (g.machines || []).length),
+        0,
+      );
+      if (data.range_preset) {
+        setActivePreset(data.range_preset);
+        scheduleRefresh();
+      }
+      syncRangeInputs(data.from, data.to);
+
+      const presetLabel = PRESET_LABELS[data.range_preset] || PRESET_LABELS.custom;
+      const shiftWindow = data.shift_window || '08:30-20:30';
+      const toDt = new Date(data.to || '');
+      const toIsLive = Number.isFinite(toDt.getTime())
+        && toDt >= new Date(Date.now() - 90 * 1000);
       metaEl.textContent = [
-        `Range ${data.from || ''} → ${data.to || ''}`,
-        `${cardCount} machines`,
-        `${groups.length} groups`,
+        `${presetLabel} · ${formatRangeLocal(data.from, data.to)}`,
+        toIsLive ? 'To = now (live)' : `To frozen`,
+        `window ${shiftWindow}`,
+        `${machineCount} assets`,
         `updated ${new Date(data.fetched_at || Date.now()).toLocaleString()}`,
       ].join(' · ');
+
+      if (data.warning) {
+        showAlert(data.warning);
+      } else if (data.asset_error_count > 0) {
+        showAlert(`${data.asset_error_count} machine(s) failed to load — expand rows for details.`);
+      } else {
+        showAlert('');
+      }
     } catch (err) {
-      gridEl.hidden = true;
+      if (!hasLoadedOnce) gridEl.hidden = true;
       showAlert(err.message || 'Failed to load OEE dashboard');
     } finally {
       setLoading(false);
+      if (refreshToastEl) {
+        window.setTimeout(() => {
+          if (!refreshToastEl.classList.contains('is-active')) {
+            refreshToastEl.hidden = true;
+          }
+        }, 220);
+      }
     }
   }
 
-  function initRangeInputs() {
-    const range = defaultRange();
-    fromEl.value = toLocalInputValue(range.from);
-    toEl.value = toLocalInputValue(range.to);
-  }
+  presetButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const preset = btn.dataset.preset || 'shift';
+      setActivePreset(preset);
+      scheduleRefresh();
+      loadDashboard();
+    });
+  });
+
+  fromEl.addEventListener('change', () => {
+    if (!syncingRange) {
+      setActivePreset('custom');
+      scheduleRefresh();
+    }
+  });
+  toEl.addEventListener('change', () => {
+    if (!syncingRange) {
+      setActivePreset('custom');
+      scheduleRefresh();
+    }
+  });
 
   refreshBtn.addEventListener('click', loadDashboard);
-  initRangeInputs();
+  setActivePreset('shift');
+  scheduleRefresh();
   loadDashboard();
-  setInterval(loadDashboard, REFRESH_MS);
 })();

@@ -89,6 +89,8 @@ CREATE INDEX IF NOT EXISTS idx_planner_ctm_tool_list_file
 CREATE INDEX IF NOT EXISTS idx_planner_ctm_part_bom
     ON public.planner_cycle_time_master (part_no, bom_code);
 
+-- Publish audit trail: migrations/add_planner_cycle_time_snapshot.sql
+
 -- Shift capacity profiles (replaces hard-coded CAPACITY_PROFILES in constants.py).
 -- Seed rows are inserted at the bottom of this file.
 CREATE TABLE IF NOT EXISTS public.planner_capacity_profile (

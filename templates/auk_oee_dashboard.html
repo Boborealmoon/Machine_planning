@@ -3,7 +3,7 @@
 {% block body_class %}auk-oee-page{% endblock %}
 {% block main_class %}app-main--planner{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/auk_oee_dashboard.css') }}?v=auk-oee-20260608c">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/auk_oee_dashboard.css') }}?v=auk-oee-20260611h">
 {% endblock %}
 {% block content %}
 <div class="auk-oee-shell">
@@ -11,9 +11,15 @@
     <div class="auk-oee-head-row">
       <div>
         <h1 class="auk-oee-title">Seletar OEE</h1>
-        <p class="auk-oee-subtitle">Live from Auk canvas · auto-refresh</p>
+        <p class="auk-oee-subtitle">Live from Auk Pareto · auto-refresh · OEE is sensitive to the <strong>To</strong> time — match Auk’s end time when comparing</p>
       </div>
       <div class="auk-oee-controls">
+        <div class="auk-oee-presets" role="group" aria-label="Time range preset">
+          <button type="button" class="auk-oee-preset is-active" data-preset="shift">Shift (live)</button>
+          <button type="button" class="auk-oee-preset" data-preset="last_1h">Last 1 hour</button>
+          <button type="button" class="auk-oee-preset" data-preset="last_24h">Last 24 hours</button>
+          <button type="button" class="auk-oee-preset" data-preset="custom">Custom</button>
+        </div>
         <label class="auk-oee-field">
           <span>From</span>
           <input type="datetime-local" id="auk-oee-from" />
@@ -29,9 +35,9 @@
     <div class="auk-oee-alert" id="auk-oee-alert" hidden></div>
   </header>
 
-  <div id="auk-oee-loading" class="auk-oee-loading is-active">
-    <div class="spinner"></div>
-    <span>Loading OEE cards…</span>
+  <div id="auk-oee-refresh-toast" class="auk-oee-refresh-toast" hidden aria-live="polite">
+    <span class="auk-oee-refresh-toast__spinner" aria-hidden="true"></span>
+    <span class="auk-oee-refresh-toast__text">Refreshing OEE…</span>
   </div>
 
   <div id="auk-oee-grid" class="auk-oee-grid" hidden></div>
@@ -43,5 +49,5 @@
     configured: {{ auk_configured | tojson }},
   };
 </script>
-<script src="{{ url_for('static', filename='js/auk_oee_dashboard.js') }}?v=auk-oee-20260608c"></script>
+<script src="{{ url_for('static', filename='js/auk_oee_dashboard.js') }}?v=auk-oee-20260611h"></script>
 {% endblock %}

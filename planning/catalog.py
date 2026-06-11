@@ -623,7 +623,7 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
                    COALESCE(st.part_no, vp.part_no) AS part_no,
                    COALESCE(st.description, vp.description) AS part_desc,
                    COALESCE(st.part_no, vp.part_no) AS part_name,
-                   COALESCE(st.due_date, vp.due_date) AS due_date,
+                   COALESCE(tps.due_date::text, st.due_date, vp.due_date) AS due_date,
                    COALESCE(st.erp_status, vp.erp_status) AS erp_status,
                    COALESCE(st.execution_status, vp.execution_status) AS execution_status,
                    COALESCE(st.current_stage_no, vp.current_stage_no) AS current_stage_no,
@@ -666,7 +666,7 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
                   OR UPPER(COALESCE(st.erp_status, vp.erp_status, '')) <> 'HISTORY'
                 )
               )){ps_filter_clause}
-            ORDER BY COALESCE(st.due_date, vp.due_date), ps.source_ps_id, pfs.seq_no, pfs.op_seq_id
+            ORDER BY COALESCE(tps.due_date::text, st.due_date, vp.due_date), ps.source_ps_id, pfs.seq_no, pfs.op_seq_id
             """.format(ps_filter_clause=ps_filter_clause),
             tuple([1 if include_completed else 0, *ps_filter_params]),
         )
@@ -736,7 +736,7 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
                    COALESCE(st.part_no, vp.part_no) AS part_no,
                    COALESCE(st.description, vp.description) AS part_desc,
                    COALESCE(st.part_no, vp.part_no) AS part_name,
-                   COALESCE(st.due_date, vp.due_date) AS due_date,
+                   COALESCE(tps.due_date::text, st.due_date, vp.due_date) AS due_date,
                    COALESCE(st.erp_status, vp.erp_status) AS erp_status,
                    COALESCE(st.execution_status, vp.execution_status) AS execution_status,
                    st.qty_shipped,
@@ -757,7 +757,7 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
                   OR UPPER(COALESCE(st.erp_status, vp.erp_status, '')) <> 'HISTORY'
                 )
               )){ps_filter_clause}
-            ORDER BY COALESCE(st.due_date, vp.due_date), ps.source_ps_id
+            ORDER BY COALESCE(tps.due_date::text, st.due_date, vp.due_date), ps.source_ps_id
             """.format(ps_filter_clause=ps_filter_clause),
             tuple([1 if include_completed else 0, *ps_filter_params]),
         )
@@ -1654,6 +1654,34 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
         if not step:
             raise ValueError(f"Operation not found for scheduling: {op['source_op_no'] or op['source_op_seq_id']}")
 
+        bom_row = one(
+            con.execute(
+                """
+                SELECT bv.inventory_code, bv.bom_code
+                FROM planner_bom_variation bv
+                WHERE bv.bom_id = %s
+                """,
+                (int(ps["selected_bom_id"] or 0),),
+            )
+        ) if int(ps.get("selected_bom_id") or 0) > 0 else None
+        part_no = compact_text(
+            (bom_row or {}).get("inventory_code") or ps.get("inventory_code") or ""
+        )
+        bom_code = compact_text((bom_row or {}).get("bom_code") or "")
+        resolved_times = {"cycle_time": parse_number(step["cycle_time"], 0), "set_up_time": parse_number(step["setup_time"], 0)}
+        if part_no:
+            try:
+                from .cycle_time_service import resolve_step_times
+
+                resolved_times = resolve_step_times(
+                    con,
+                    part_no=part_no,
+                    bom_code=bom_code,
+                    step=step,
+                )
+            except Exception:
+                pass
+
         op_name = f"{step['op_no'] or ''} {step['op_type'] or ''}".strip()
         op_cur = con.execute(
             """
@@ -1668,8 +1696,8 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
                 op_ps_id,
                 op_name,
                 float(card["target_qty"] or 0),
-                parse_number(step["setup_time"], 0),
-                parse_number(step["cycle_time"], 0),
+                parse_number(resolved_times.get("set_up_time"), parse_number(step["setup_time"], 0)),
+                parse_number(resolved_times.get("cycle_time"), parse_number(step["cycle_time"], 0)),
                 compact_text(step["machine_category"]) or compact_text(machine["machine_category"]) or "UNKNOWN",
                 op_ps_id,
                 int(step["op_seq_id"] or 0),

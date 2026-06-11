@@ -113,7 +113,10 @@ function trialUpdateStaleScheduleUi(options = {}) {
       Recalculate schedules
     </button>
   `;
-  if (!options.skipRender && typeof trialScheduleRender === 'function') {
+  if (typeof trialSyncStaleMachineBadges === 'function') {
+    trialSyncStaleMachineBadges();
+  }
+  if (options.rerenderMachines && typeof trialScheduleRender === 'function') {
     trialScheduleRender([...trialDirtyMachineIds], { deferCatalog: true, skipCatalog: true });
   }
 }
@@ -558,7 +561,19 @@ function trialApplySchedulePayload(scheduleData, machinesResult, programToolsLoo
   if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
 }
 
+let loadTrialInFlight = null;
+
 async function loadTrial(options = {}) {
+  if (loadTrialInFlight) {
+    return loadTrialInFlight;
+  }
+  loadTrialInFlight = loadTrialImpl(options).finally(() => {
+    loadTrialInFlight = null;
+  });
+  return loadTrialInFlight;
+}
+
+async function loadTrialImpl(options = {}) {
   const perf = (typeof trialPerfStart === 'function')
     ? trialPerfStart('load-trial', {
       force: !!options?.force,
@@ -571,8 +586,10 @@ async function loadTrial(options = {}) {
   if (typeof trialSyncScheduleUrl === 'function') trialSyncScheduleUrl();
   const force = !!options.force;
 
+  const machinistBoard = typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
   const params = new URLSearchParams();
   params.set('lite', '1');
+  if (machinistBoard) params.set('include', 'segments');
   if (trialScheduleDateFilter.start) params.set('start', trialScheduleDateFilter.start);
   if (trialScheduleDateFilter.end) params.set('end', trialScheduleDateFilter.end);
   const startParam = params.toString() ? `?${params.toString()}` : '';
@@ -580,8 +597,6 @@ async function loadTrial(options = {}) {
   if (force) {
     trialInvalidateCatalogCache();
   }
-
-  const machinistBoard = typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
   const scheduleUrl = (force || machinistBoard)
     ? trialNoCacheUrl(`/api/trial/schedule${startParam}`)
     : `/api/trial/schedule${startParam}`;
@@ -607,7 +622,10 @@ async function loadTrial(options = {}) {
       blocks: Array.isArray(trialState.blocks) ? trialState.blocks.length : 0,
     });
   }
-  trialScheduleRender(null, { skipCatalog: true });
+  const boardPainted = Boolean(document.getElementById('trial-grid')?.childElementCount);
+  if (!boardPainted) {
+    trialScheduleRender(null, { skipCatalog: true });
+  }
 
   const skipCatalog = typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
   let erpVouchers = [];
@@ -631,7 +649,11 @@ async function loadTrial(options = {}) {
   trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 10000;
   trialAssignCatalogRows(trialLoadCache[cacheKey]);
   if (typeof trialMaterialInOverrides !== 'undefined') trialMaterialInOverrides.clear();
-  trialScheduleRender(null, { deferCatalog: true });
+  trialScheduleRender(null, {
+    deferCatalog: true,
+    skipFilterShell: boardPainted,
+    preserveScroll: boardPainted,
+  });
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'schedule-render-dispatch');
   }
@@ -695,7 +717,11 @@ async function refreshMachinesImpl(machineIds, options = {}) {
   if (!data) { await loadTrial(); return; }
 
   trialApplyMachineRefreshPayload(ids, data);
-  trialScheduleRender(ids, { deferCatalog: true });
+  trialScheduleRender(ids, {
+    deferCatalog: true,
+    skipFilterShell: true,
+    preserveScroll: true,
+  });
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'merge-and-render');
   }

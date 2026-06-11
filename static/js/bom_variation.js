@@ -155,17 +155,17 @@
     var raw = input.value.trim();
     if (!raw) return;
 
-    var partNos = raw
+    var terms = raw
       .split(/[\n,;]+/)
-      .map(function (s) { return s.trim().toUpperCase(); })
+      .map(function (s) { return s.trim(); })
       .filter(Boolean);
-    if (!partNos.length) return;
+    if (!terms.length) return;
 
     clearError("bv-lookup-error");
     el("bv-lookup-results").hidden = true;
     el("bv-lookup-loading").hidden = false;
 
-    var url = "/api/bom-variation/lookup?part_nos=" + encodeURIComponent(partNos.join(","));
+    var url = "/api/bom-variation/lookup?q=" + encodeURIComponent(terms.join(","));
     fetch(url)
       .then(function (r) { return r.json(); })
       .then(function (data) {
@@ -180,7 +180,12 @@
         renderTable("bv-lookup-tbody", state.lookup.filtered, COLS.lookup);
         updateStats("bv-lookup-stats", state.lookup.filtered.length, state.lookup.rows.length);
         var emptyEl = el("bv-lookup-empty");
-        if (emptyEl) emptyEl.hidden = state.lookup.filtered.length > 0 || !state.lookup.rows.length;
+        if (emptyEl) {
+          emptyEl.textContent = state.lookup.rows.length
+            ? "No rows match your filter."
+            : "No BOM rows found for that search.";
+          emptyEl.hidden = state.lookup.filtered.length > 0;
+        }
         el("bv-lookup-results").hidden = false;
       })
       .catch(function (err) {
@@ -312,7 +317,12 @@
         renderTable("bv-lookup-tbody", state.lookup.filtered, COLS.lookup);
         updateStats("bv-lookup-stats", state.lookup.filtered.length, state.lookup.rows.length);
         var emptyEl = el("bv-lookup-empty");
-        if (emptyEl) emptyEl.hidden = state.lookup.filtered.length > 0 || !state.lookup.rows.length;
+        if (emptyEl) {
+          emptyEl.textContent = state.lookup.rows.length
+            ? "No rows match your filter."
+            : "No BOM rows found for that search.";
+          emptyEl.hidden = state.lookup.filtered.length > 0;
+        }
       });
     }
 

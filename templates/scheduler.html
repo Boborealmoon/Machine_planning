@@ -146,7 +146,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if ((now - _lastAutoRefreshAt) < MIN_REFRESH_GAP_MS) return;
     _autoRefreshInFlight = true;
     try {
-      await loadTrial({ force: true });
+      await loadTrial();
       _lastAutoRefreshAt = Date.now();
     } catch (_) {
       // keep UI responsive; loadTrial already emits toast on hard errors.

@@ -778,15 +778,25 @@ function initTrialMachineSortables(machineIds = null) {
   });
 }
 
-async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
+function trialMergeQueuedBlockFromResult(result) {
+  if (!result?.block) return;
+  const normalized = typeof trialNormalizeBlockFromApi === 'function'
+    ? trialNormalizeBlockFromApi(result.block)
+    : result.block;
+  if (typeof trialPinBlock === 'function') trialPinBlock(normalized);
+  if (typeof trialMergeBlockFromApi === 'function') trialMergeBlockFromApi(result.block);
+}
+
+async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0, options = {}) {
+  const batch = Boolean(options.batch);
   const resolved = typeof trialResolveQueueCard === 'function'
     ? trialResolveQueueCard(card)
     : null;
   const workCard = resolved?.catalogCard || trialCatalogCardFromPayload(card);
   const op = card && (card.op || (typeof trialOpFromPayload === 'function' ? trialOpFromPayload(card) : null));
   if (!op) {
-    toast('Missing operation data for this card.', 'error');
-    return;
+    if (!batch) toast('Missing operation data for this card.', 'error');
+    return batch ? { ok: false, skipped: true, reason: 'missing_op' } : undefined;
   }
   const schedulableRemaining = trialCatalogSchedulableRemaining(
     card?.op ? { ...workCard, remaining_qty: op.remaining_qty, op } : workCard,
@@ -806,12 +816,14 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
   if (workCard && schedulableRemaining > 0.0001) {
     const onTarget = trialBlockForCatalogOpOnMachine(workCard, numericMachineId);
     if (onTarget) {
-      const label = onTarget.machine_code || `machine ${numericMachineId}`;
-      toast(
-        `Already queued on ${label} — edit that run block's scheduled qty, or drag the remainder to another machine.`,
-        'info',
-      );
-      return;
+      if (!batch) {
+        const label = onTarget.machine_code || `machine ${numericMachineId}`;
+        toast(
+          `Already queued on ${label} — edit that run block's scheduled qty, or drag the remainder to another machine.`,
+          'info',
+        );
+      }
+      return batch ? { ok: true, skipped: true, reason: 'on_target' } : undefined;
     }
     const siblings = trialBlocksForCatalogOp(workCard);
     const includeSetup = siblings.length === 0 ? 1 : 0;
@@ -838,6 +850,10 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
       const result = typeof trialPostCatalogQueueOperation === 'function'
         ? await trialPostCatalogQueueOperation(queueBody, workCard)
         : await POST('/api/trial/operations', queueBody);
+      if (batch) {
+        trialMergeQueuedBlockFromResult(result);
+        return { ok: true, skipped: false, result };
+      }
       if (typeof trialFinalizeCatalogQueueSchedule === 'function') {
         await trialFinalizeCatalogQueueSchedule({
           catalogCard: workCard,
@@ -848,19 +864,20 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
       }
     } catch (e) {
       console.error('scheduleTrialSingleOpCard failed:', e);
+      if (batch) throw e;
       toast('Schedule failed: ' + e.message, 'error');
     }
-    return;
+    return batch ? { ok: false, skipped: true, reason: 'error' } : undefined;
   }
 
   if (workCard && trialIsCatalogOpAllocated(workCard)) {
     const existing = trialFindBlockForCatalogOp(workCard);
     if (existing) {
       await moveTrialBlockToMachine(existing.block_id, numericMachineId, queuePosition, { skipBusy: true });
-      return;
+      return batch ? { ok: true, skipped: false, moved: true } : undefined;
     }
-    toast('This operation is already in the machine queue.', 'info');
-    return;
+    if (!batch) toast('This operation is already in the machine queue.', 'info');
+    return batch ? { ok: true, skipped: true, reason: 'allocated' } : undefined;
   }
   try {
     const queueBody = {
@@ -885,6 +902,10 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
     const result = typeof trialPostCatalogQueueOperation === 'function'
       ? await trialPostCatalogQueueOperation(queueBody, workCard)
       : await POST('/api/trial/operations', queueBody);
+    if (batch) {
+      trialMergeQueuedBlockFromResult(result);
+      return { ok: true, skipped: false, result };
+    }
     if (typeof trialFinalizeCatalogQueueSchedule === 'function') {
       await trialFinalizeCatalogQueueSchedule({
         catalogCard: workCard,
@@ -893,10 +914,109 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0) {
         qtyLabel: `${fmt(Number(op.remaining_qty || op.total_qty || 0), 0)} pcs`,
       });
     }
+    return batch ? { ok: true, skipped: false, result } : undefined;
   } catch (e) {
     console.error('scheduleTrialSingleOpCard failed:', e);
+    if (batch) throw e;
     toast('Schedule failed: ' + e.message, 'error');
   }
+  return batch ? { ok: false, skipped: true, reason: 'error' } : undefined;
+}
+
+async function scheduleTrialPsAllOps(psId, machineIdOrAssignments, options = {}) {
+  const ps = typeof trialCatalogPsRecord === 'function' ? trialCatalogPsRecord(psId) : null;
+  if (!ps) {
+    toast('PS / partial not found.', 'error');
+    return;
+  }
+  const cards = typeof trialSchedulableOpCardsForPs === 'function'
+    ? trialSchedulableOpCardsForPs(ps)
+    : [];
+  if (!cards.length) {
+    toast('No open operations to queue for this job.', 'info');
+    return;
+  }
+  const assignments = Array.isArray(machineIdOrAssignments)
+    ? machineIdOrAssignments
+    : cards.map(card => ({ card, machineId: Number(machineIdOrAssignments || 0) }));
+  if (!assignments.length) {
+    toast('Choose at least one machine lane to queue.', 'error');
+    return;
+  }
+  const toQueue = assignments.filter(row => Number(row.machineId || 0) > 0);
+  if (!toQueue.length) {
+    toast('Choose at least one machine lane to queue.', 'error');
+    return;
+  }
+  const affectedMachineIds = [...new Set(
+    toQueue.map(row => Number(row.machineId || 0)).filter(Boolean),
+  )];
+  const machineLabelFor = machineId => {
+    const machine = (trialState.machines || []).find(row => Number(row.machine_id) === machineId);
+    return machine?.machine_code || `Machine ${machineId}`;
+  };
+  const busyDetail = affectedMachineIds.length === 1
+    ? machineLabelFor(affectedMachineIds[0])
+    : `${affectedMachineIds.length} lanes`;
+  let queued = 0;
+  let skipped = 0;
+  const errors = [];
+  const run = async () => {
+    for (const { card, machineId } of toQueue) {
+      const numericMachineId = Number(machineId || 0);
+      if (!numericMachineId) continue;
+      try {
+        const outcome = await scheduleTrialSingleOpCard(card, numericMachineId, 0, { batch: true });
+        if (outcome?.skipped) {
+          skipped += 1;
+        } else if (outcome?.ok) {
+          queued += 1;
+        }
+      } catch (err) {
+        const opLabel = String(card.source_op_no || card.operation_label || card.operation_name || 'op').trim();
+        errors.push(`${opLabel}: ${err.message || 'failed'}`);
+      }
+    }
+    if (queued > 0) {
+      if (typeof trialMarkDirtyMachines === 'function') {
+        trialMarkDirtyMachines(affectedMachineIds, { skipRender: true });
+      }
+      await refreshMachines(affectedMachineIds);
+      if (typeof trialRefreshCatalogSidebar === 'function') {
+        await trialRefreshCatalogSidebar();
+      }
+      if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
+    }
+  };
+  if (typeof trialRunWithPlannerBusy === 'function') {
+    await trialRunWithPlannerBusy(run, `Queuing ${toQueue.length} ops…`, busyDetail);
+  } else {
+    await run();
+  }
+  const laneSummary = affectedMachineIds.length === 1
+    ? machineLabelFor(affectedMachineIds[0])
+    : `${affectedMachineIds.length} machine lanes`;
+  if (errors.length) {
+    toast(`Queued ${queued} on ${laneSummary}, but some ops failed: ${errors[0]}`, 'error');
+    return;
+  }
+  if (queued === 0) {
+    toast(
+      skipped
+        ? `All ${skipped} operation(s) are already queued or complete.`
+        : 'Nothing to queue.',
+      'info',
+    );
+    return;
+  }
+  const skipNote = [
+    skipped ? `${skipped} already queued` : '',
+    Number(options.skippedEmpty || 0) > 0 ? `${options.skippedEmpty} skipped (no lane chosen)` : '',
+  ].filter(Boolean).join(', ');
+  toast(
+    `Queued ${queued} operation${queued === 1 ? '' : 's'} on ${laneSummary}${skipNote ? ` (${skipNote})` : ''} — Recalculate for times`,
+    'success',
+  );
 }
 
 async function scheduleTrialCombinedOpCard(cardId, machineId, queuePosition = 0) {

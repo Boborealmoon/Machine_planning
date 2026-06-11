@@ -1,4 +1,4 @@
-"""BOM Variation queries — Lookup by Part No, BOM Per Part, BOM Per PS."""
+"""BOM Variation queries — Lookup, BOM Per Part, BOM Per PS."""
 from __future__ import annotations
 
 import logging
@@ -20,7 +20,9 @@ _CACHE_TTL_SEC = 300
 _bom_per_part_cache: tuple[float, list[dict]] | None = None
 _bom_per_ps_cache: tuple[float, list[dict]] | None = None
 
-_BOM_LOOKUP_SQL = """
+_EXCLUDE_DO_NOT_USE = "UPPER(COALESCE(i.main_desc, '')) NOT LIKE '%DO NOT USE%'"
+
+_BOM_LOOKUP_SELECT = """
 SELECT
     s.inventory_code           AS "Part No",
     i.main_desc                AS "Part Name",
@@ -35,12 +37,41 @@ LEFT JOIN mt_inventory_item_view i
 LEFT JOIN inventory_bom_listing bm
     ON s.inventory_code = bm.source_inventory_code
     AND s.bom_code = bm.bom_code
-WHERE s.inventory_code = ANY(%(part_nos)s)
-ORDER BY
+"""
+
+
+def _parse_lookup_terms(raw: str) -> list[str]:
+    return [t.strip() for t in raw.replace(";", ",").split(",") if t.strip()]
+
+
+def _build_lookup_sql(terms: list[str]) -> tuple[str, dict[str, Any]]:
+    """Match each term against part no (exact), part name, or BOM code (contains)."""
+    term_clauses: list[str] = []
+    params: dict[str, Any] = {}
+    for idx, term in enumerate(terms):
+        exact_key = f"term_{idx}"
+        like_key = f"like_{idx}"
+        upper_term = term.upper()
+        params[exact_key] = upper_term
+        params[like_key] = f"%{upper_term}%"
+        term_clauses.append(
+            f"""(
+            s.inventory_code = %({exact_key})s
+            OR UPPER(COALESCE(i.main_desc, '')) LIKE %({like_key})s
+            OR UPPER(s.bom_code) LIKE %({like_key})s
+        )"""
+        )
+    where = f"({' OR '.join(term_clauses)}) AND {_EXCLUDE_DO_NOT_USE}"
+    sql = (
+        _BOM_LOOKUP_SELECT
+        + f"WHERE {where}\n"
+        + """ORDER BY
     s.inventory_code ASC,
     s.bom_code ASC,
     s.stage_no ASC
 """
+    )
+    return sql, params
 
 _BOM_PER_PART_SQL = """
 SELECT
@@ -61,6 +92,7 @@ LEFT JOIN mt_inventory_item_view i
 LEFT JOIN inventory_bom_listing bm
     ON s.inventory_code = bm.source_inventory_code
     AND s.bom_code = bm.bom_code
+WHERE """ + _EXCLUDE_DO_NOT_USE + """
 ORDER BY
     s.inventory_code ASC,
     s.bom_code ASC,
@@ -89,8 +121,9 @@ LEFT JOIN mt_inventory_item_view i
 LEFT JOIN inventory_bom_listing bm
     ON s.inventory_code = bm.source_inventory_code
     AND s.bom_code = bm.bom_code
-WHERE ps.process_sheet_no LIKE '%APS%'
-   OR ps.process_sheet_no LIKE '%NPS%'
+WHERE (ps.process_sheet_no LIKE '%APS%'
+   OR ps.process_sheet_no LIKE '%NPS%')
+  AND """ + _EXCLUDE_DO_NOT_USE + """
 ORDER BY
     ps.process_sheet_no ASC,
     s.bom_code ASC,
@@ -134,12 +167,13 @@ def bom_variation_page():
 
 @bom_variation_bp.get("/api/bom-variation/lookup")
 def api_bom_lookup():
-    raw = request.args.get("part_nos", "")
-    part_nos = [p.strip().upper() for p in raw.replace(";", ",").split(",") if p.strip()]
-    if not part_nos:
-        return jsonify({"error": "part_nos query parameter is required"}), 400
+    raw = request.args.get("part_nos", "") or request.args.get("q", "")
+    terms = _parse_lookup_terms(raw)
+    if not terms:
+        return jsonify({"error": "Enter a part no, part name, or BOM code to search"}), 400
     try:
-        rows = _erp_query(_BOM_LOOKUP_SQL, {"part_nos": part_nos})
+        sql, params = _build_lookup_sql(terms)
+        rows = _erp_query(sql, params)
         return jsonify({"ok": True, "count": len(rows), "rows": rows})
     except Exception as exc:
         logger.exception("BOM lookup query failed")

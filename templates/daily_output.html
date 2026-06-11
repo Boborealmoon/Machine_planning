@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Daily Output &amp; Efficiency{% endblock %}
+{% block body_class %}daily-output-page{% endblock %}
+{% block main_class %}app-main--planner{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/daily_output.css') }}?v=daily-output-20260610b">
+{% endblock %}
+{% block content %}
+<div class="do-shell">
+  <header class="do-head do-head--sticky">
+    <div class="do-head-main">
+      <div class="do-period">
+        <div class="do-week" id="do-week-label">WEEK —/—</div>
+        <div class="do-day" id="do-day-label">—</div>
+      </div>
+      <div class="do-head-copy">
+        <h1 class="do-title">Output &amp; Efficiency</h1>
+        <p class="do-subtitle" id="do-status-text">Loading…</p>
+      </div>
+    </div>
+    <div class="do-head-actions">
+      <label class="do-date-field">
+        <span>Date</span>
+        <input type="date" id="do-work-date" />
+      </label>
+      <label class="do-shift-field">
+        <span>Start</span>
+        <input type="time" id="do-shift-start" value="08:30" />
+      </label>
+      <label class="do-shift-field">
+        <span>End</span>
+        <input type="time" id="do-shift-end" value="20:00" />
+      </label>
+      <div class="do-effective">
+        <span>Effective</span>
+        <strong id="do-effective-mins">—</strong>
+        <span class="do-effective-unit">min</span>
+      </div>
+      <button type="button" class="do-btn do-btn--ghost" id="do-refresh-plan" hidden>Refresh plan</button>
+      <button type="button" class="do-btn do-btn--ghost" id="do-unlock-btn" hidden>Unlock edit</button>
+    </div>
+  </header>
+
+  <div class="do-toolbar card">
+    <label class="do-toggle">
+      <input type="checkbox" id="do-compact-slots" />
+      <span>Hide empty rows</span>
+    </label>
+    <label class="do-toggle">
+      <input type="checkbox" id="do-collapse-idle" checked />
+      <span>Collapse idle machines</span>
+    </label>
+    <label class="do-toggle">
+      <input type="checkbox" id="do-full-labels" />
+      <span>Full column labels</span>
+    </label>
+    <details class="do-column-help">
+      <summary>Column guide</summary>
+      <dl class="do-column-guide">
+        <div><dt>PS</dt><dd>Process sheet / part number</dd></div>
+        <div><dt>Opn</dt><dd>Operation</dd></div>
+        <div><dt>C/T</dt><dd>Cycle time (minutes)</dd></div>
+        <div><dt>Tgt</dt><dd>Target output for the shift</dd></div>
+        <div><dt>Out</dt><dd>Actual output (manual)</dd></div>
+        <div><dt>F/pce</dt><dd>Finish per piece (manual)</dd></div>
+        <div><dt>In-pro</dt><dd>In progress (manual)</dd></div>
+        <div><dt>Qua/his</dt><dd>Quality history (manual)</dd></div>
+        <div><dt>Rej</dt><dd>Rejects (manual)</dd></div>
+        <div><dt>Util</dt><dd>Planned utilisation vs effective minutes</dd></div>
+        <div><dt>Actual</dt><dd>Actual efficiency vs OEE target</dd></div>
+      </dl>
+    </details>
+    <div class="do-legend">
+      <span class="do-legend-auto">Auto-filled from schedule</span>
+      <span class="do-legend-manual">Manual entry fields</span>
+    </div>
+  </div>
+
+  <div class="do-alert" id="do-alert" hidden></div>
+
+  <div class="do-board-scroll">
+    <div class="do-board" id="do-board" aria-label="Daily output board by area"></div>
+  </div>
+
+  <details class="do-snapshots" id="do-snapshots-panel" hidden>
+    <summary>11:00 snapshots <span id="do-snapshot-count"></span></summary>
+    <ul class="do-snapshot-list" id="do-snapshot-list"></ul>
+  </details>
+</div>
+
+<dialog class="do-unlock-dialog" id="do-unlock-dialog">
+  <form method="dialog" class="do-unlock-form" id="do-unlock-form">
+    <h2>Unlock editing</h2>
+    <p>Enter the planner passcode to edit past days or locked snapshots.</p>
+    <label>
+      <span>Passcode</span>
+      <input type="password" id="do-unlock-passcode" autocomplete="current-password" required />
+    </label>
+    <p class="do-unlock-error" id="do-unlock-error" hidden></p>
+    <div class="do-unlock-actions">
+      <button type="button" class="do-btn do-btn--ghost" id="do-unlock-cancel">Cancel</button>
+      <button type="submit" class="do-btn">Unlock</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/daily_output.js') }}?v=daily-output-20260610b"></script>
+{% endblock %}
