@@ -417,12 +417,22 @@ def _release_sweep_lock(con) -> None:
 
 
 def ensure_saved_anchor_column(con) -> None:
-    con.execute(
-        """
-        ALTER TABLE public.planner_planning_card
-        ADD COLUMN IF NOT EXISTS saved_anchor_datetime TIMESTAMPTZ
-        """
-    )
+    """Confirm saved_anchor_datetime exists without blocking request paths on hosted Postgres."""
+    if _has_saved_anchor_column(con):
+        return
+    # Runtime DDL triggers pgrst_ddl_watch() on Supabase and can exceed statement_timeout.
+    # Apply migrations/add_planning_card_saved_anchor.sql instead; opt in locally via PLANNER_RUNTIME_DDL=1.
+    if not _truthy_env("PLANNER_RUNTIME_DDL"):
+        return
+    try:
+        con.execute(
+            """
+            ALTER TABLE public.planner_planning_card
+            ADD COLUMN IF NOT EXISTS saved_anchor_datetime TIMESTAMPTZ
+            """
+        )
+    except Exception:
+        pass
 
 
 def run_auto_unschedule_sweep(con, *, dry_run: bool = False, reason: str = "AUTO_DONE_SWEEP") -> dict:
@@ -439,16 +449,22 @@ def auto_unschedule_on_page_load(con) -> dict | None:
     """Run when the scheduler board is fully reloaded (not per-machine refresh)."""
     if not auto_unschedule_enabled():
         return None
-    ensure_saved_anchor_column(con)
-    return run_auto_unschedule_sweep(con, reason="AUTO_DONE_PAGE_LOAD")
+    try:
+        ensure_saved_anchor_column(con)
+        return run_auto_unschedule_sweep(con, reason="AUTO_DONE_PAGE_LOAD")
+    except Exception:
+        return None
 
 
 def auto_unschedule_on_lite_board_load(con) -> dict | None:
     """Sweep lane-saturated / DONE blocks on machinist lite loads (no full lane compaction)."""
     if not auto_unschedule_enabled():
         return None
-    ensure_saved_anchor_column(con)
-    return run_auto_unschedule_sweep(con, reason="AUTO_DONE_LITE_LOAD")
+    try:
+        ensure_saved_anchor_column(con)
+        return run_auto_unschedule_sweep(con, reason="AUTO_DONE_LITE_LOAD")
+    except Exception:
+        return None
 
 
 def auto_unschedule_for_machines(con, machine_ids, *, reason: str = "AUTO_DONE_MACHINE_REFRESH") -> dict | None:
@@ -458,7 +474,10 @@ def auto_unschedule_for_machines(con, machine_ids, *, reason: str = "AUTO_DONE_M
     mids = sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0})
     if not mids:
         return {"candidates": 0, "unscheduled": 0, "results": []}
-    ensure_saved_anchor_column(con)
+    try:
+        ensure_saved_anchor_column(con)
+    except Exception:
+        return {"candidates": 0, "unscheduled": 0, "results": []}
     candidates = rows(
         con.execute(
             """

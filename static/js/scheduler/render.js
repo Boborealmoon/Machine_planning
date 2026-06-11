@@ -3416,6 +3416,29 @@ function trialSearchableTokens(values) {
   return [...raw, ...normalized];
 }
 
+/** Source ERP PS number stripped from a [Temp] planner id (for sidebar search). */
+function trialCatalogTempSourceRef(ps) {
+  const raw = String(ps?.ps_id || ps?.source_ps_id || '').trim();
+  if (!/^\[Temp\]/i.test(raw)) return '';
+  return raw.replace(/^\[Temp\]\s*/i, '').trim();
+}
+
+/** Lowercase keys used to pull sibling partials/temp lines into an active search. */
+function trialCatalogSearchBaseKeys(ps) {
+  const keys = new Set();
+  const base = String(trialCatalogSourceBase(ps) || '').trim().toLowerCase();
+  if (base) keys.add(base);
+  const src = String(ps?.source_ps_id || '').split('::')[0].trim().toLowerCase();
+  if (src) keys.add(src);
+  const tempRef = String(trialCatalogTempSourceRef(ps) || '').trim().toLowerCase();
+  if (tempRef) keys.add(tempRef);
+  if (base.startsWith('[temp]')) {
+    const stripped = base.replace(/^\[temp\]\s*/i, '').trim();
+    if (stripped) keys.add(stripped);
+  }
+  return keys;
+}
+
 function trialCatalogHaystack(ps) {
   const psId = String(ps.ps_id || '');
   const psParts = trialSplitPsId(psId);
@@ -3424,6 +3447,7 @@ function trialCatalogHaystack(ps) {
   return trialSearchableTokens([
     psId,
     psParts.base,
+    trialCatalogTempSourceRef(ps),
     psParts.partial ? `partial ${psParts.partial}` : '',
     ps.source_ps_id,
     ps.display_ps_id,
@@ -3550,14 +3574,16 @@ function renderTrialCatalog() {
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'filter-catalog', { kept: catalog.length });
 
   if (rawQuery) {
-    const matchedBases = new Set(
-      catalog.map(ps => trialCatalogSourceBase(ps).toLowerCase()).filter(Boolean),
-    );
+    const matchedBases = new Set();
+    catalog.forEach(ps => {
+      trialCatalogSearchBaseKeys(ps).forEach(key => matchedBases.add(key));
+    });
     const seen = new Set(catalog.map(ps => String(ps.ps_id || '')));
     for (const ps of trialState.catalog || []) {
-      const base = trialCatalogSourceBase(ps).toLowerCase();
       const psId = String(ps.ps_id || '');
-      if (!base || !matchedBases.has(base) || seen.has(psId)) continue;
+      if (seen.has(psId)) continue;
+      const keys = trialCatalogSearchBaseKeys(ps);
+      if (!keys.size || ![...keys].some(key => matchedBases.has(key))) continue;
       if (trialCatalogSupersededByTempSibling(ps, trialState.catalog)) continue;
       if (!trialPsTypeFilter.has(trialGetPsType(ps.ps_id))) continue;
       if (!trialShowSrOrders && psId.includes('[SR]')) continue;

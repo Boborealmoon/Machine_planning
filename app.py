@@ -495,6 +495,7 @@ _PP_VOUCHERS_COLS = [
 ]
 
 _PP_VOUCHERS_WITH_OPS_CACHE: dict[str, dict] = {}
+_PP_VOUCHERS_BOARD_ERP_CACHE: dict[str, dict] = {}
 _PP_VOUCHERS_WITH_OPS_CACHE_LOCK = threading.Lock()
 _PP_VOUCHERS_WITH_OPS_TTL_SECS = 60
 
@@ -595,6 +596,7 @@ def pp_vouchers_lane_catalog_entries(con, partial_keys, include_completed=True):
 def _invalidate_pp_vouchers_with_ops_cache():
     with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
         _PP_VOUCHERS_WITH_OPS_CACHE.clear()
+        _PP_VOUCHERS_BOARD_ERP_CACHE.clear()
 
 
 def _load_pp_vouchers_board_erp_data(include_completed: bool, refresh: bool, scope: str):
@@ -602,7 +604,7 @@ def _load_pp_vouchers_board_erp_data(include_completed: bool, refresh: bool, sco
     now = time.monotonic()
     if not refresh:
         with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-            bucket = _PP_VOUCHERS_WITH_OPS_CACHE.get(scope) or {}
+            bucket = _PP_VOUCHERS_BOARD_ERP_CACHE.get(scope) or {}
             cached = bucket.get("data")
             if cached is not None and now < float(bucket.get("expires_at") or 0):
                 return list(cached)
@@ -615,7 +617,11 @@ def _load_pp_vouchers_board_erp_data(include_completed: bool, refresh: bool, sco
             _pp_vouchers_with_ops_payload(cache_rows),
             con=con,
         )
-    _store_pp_vouchers_with_ops_cache(scope, erp_data)
+    with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+        _PP_VOUCHERS_BOARD_ERP_CACHE[scope] = {
+            "data": erp_data,
+            "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
+        }
     return erp_data
 
 
@@ -1091,12 +1097,32 @@ def _erp_wo_completion_by_partial(con, source_ids):
 def _append_temp_ps_catalog_entries(entries, con, include_completed=False):
     """Merge planner-only [Temp] reject/rework PS into the sidebar catalog."""
     from planning.catalog import trial_catalog_items
+    from planning.helpers import rows as db_rows
     from planning.process_sheets import is_temp_planner_ps_id
     from planning.utils import compact_text
 
     merged = list(entries or [])
     existing = {compact_text(item.get("ps_id")) for item in merged if compact_text(item.get("ps_id"))}
-    catalog = trial_catalog_items(con, include_completed=include_completed)
+    temp_ids = [
+        compact_text(row.get("planner_ps_id"))
+        for row in db_rows(
+            con.execute(
+                """
+                SELECT planner_ps_id
+                FROM planner_process_sheet
+                WHERE planner_ps_id LIKE '[Temp]%%'
+                """
+            )
+        )
+        if compact_text(row.get("planner_ps_id")) and compact_text(row.get("planner_ps_id")) not in existing
+    ]
+    if not temp_ids:
+        return merged
+    catalog = trial_catalog_items(
+        con,
+        include_completed=include_completed,
+        planner_ps_ids=temp_ids,
+    )
     for bucket in ("available", "planned"):
         for item in catalog.get(bucket) or []:
             ps_id = compact_text(item.get("ps_id"))
@@ -1369,7 +1395,17 @@ def api_pp_vouchers_with_ops():
                 headers=supa_headers(write=True),
                 params=params,
             )
-            data = _enrich_pp_vouchers_planner_data(_pp_vouchers_with_ops_payload(cache_rows))
+            from planning.helpers import planner_db
+
+            with planner_db() as con:
+                data = _append_temp_ps_catalog_entries(
+                    _enrich_pp_vouchers_planner_data(
+                        _pp_vouchers_with_ops_payload(cache_rows),
+                        con=con,
+                    ),
+                    con,
+                    include_completed=include_completed,
+                )
             if not include_completed:
                 data = [
                     entry
