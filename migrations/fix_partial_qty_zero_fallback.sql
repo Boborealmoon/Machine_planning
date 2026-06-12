@@ -17,4 +17,4 @@ CREATE INDEX IF NOT EXISTS idx_so_detail_sales_order
 
 DROP VIEW IF EXISTS public.vw_pp_vouchers;
 
--- View body matches app.py _VW_PP_VOUCHERS_SQL (run /api/pp-staging/sync to apply).
+-- View body: sql/vw_pp_vouchers.sql (run _ensure_pp_staging_schema(apply_view=True) to apply).

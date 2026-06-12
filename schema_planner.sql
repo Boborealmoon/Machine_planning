@@ -769,3 +769,15 @@ CREATE INDEX IF NOT EXISTS idx_planner_ps_bom_step_qty_ps
 CREATE INDEX IF NOT EXISTS idx_planner_pss_execution
     ON public.planner_process_sheet_state(execution_status);
 
+
+-- Sales Orders page — planner notes per PP voucher (Material/Sub-con … Sales columns).
+CREATE TABLE IF NOT EXISTS public.planner_so_pp_notes (
+    pp_voucher_no       TEXT         PRIMARY KEY,
+    material_subcon     TEXT         NOT NULL DEFAULT '',
+    mtl_part_order      TEXT         NOT NULL DEFAULT '',
+    quality_doc         TEXT         NOT NULL DEFAULT '',
+    ops_notes           TEXT         NOT NULL DEFAULT '',
+    sales_notes         TEXT         NOT NULL DEFAULT '',
+    updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+

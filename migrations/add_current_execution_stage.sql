@@ -12,7 +12,7 @@ ALTER TABLE public.pp_vouchers_cache
 
 DROP VIEW IF EXISTS public.vw_pp_vouchers;
 
--- View body is maintained in app.py (_VW_PP_VOUCHERS_SQL); run POST /api/pp-staging/sync
+-- View body: sql/vw_pp_vouchers.sql — run POST /api/admin/fix-execution-status or apply_view sync
 -- or scripts/apply_current_execution_stage.py after deploying app changes.
 
 NOTIFY pgrst, 'reload schema';

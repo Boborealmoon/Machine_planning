@@ -497,7 +497,59 @@ _PP_VOUCHERS_COLS = [
 _PP_VOUCHERS_WITH_OPS_CACHE: dict[str, dict] = {}
 _PP_VOUCHERS_BOARD_ERP_CACHE: dict[str, dict] = {}
 _PP_VOUCHERS_WITH_OPS_CACHE_LOCK = threading.Lock()
-_PP_VOUCHERS_WITH_OPS_TTL_SECS = 60
+# In-process catalog payload — avoids re-querying Supabase on every planner load.
+_PP_VOUCHERS_WITH_OPS_TTL_SECS = int(os.getenv("PP_VOUCHERS_WITH_OPS_TTL_SECS", "300"))
+_PP_VOUCHERS_STALE_SECS = int(os.getenv("PP_VOUCHERS_STALE_SECS", "86400"))
+_PP_VOUCHERS_AUTO_SYNC_ON_READ = os.getenv("PP_VOUCHERS_AUTO_SYNC_ON_READ", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+# pp_vouchers_cache is rebuilt from vw_pp_vouchers (already includes WO fields). Skip the
+# read-time mfg_wo_status join unless you need live WO rows before the next cache rebuild.
+_PP_VOUCHERS_READ_MERGE_WO = os.getenv("PP_VOUCHERS_READ_MERGE_WO", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+
+
+def _pp_vouchers_cache_sql_parts():
+    from planning.erp_wo_merge import (
+        PP_VOUCHERS_CACHE_DIRECT_FROM,
+        PP_VOUCHERS_CACHE_DIRECT_SELECT,
+        PP_VOUCHERS_CACHE_WO_MERGE_FROM,
+        PP_VOUCHERS_CACHE_WO_MERGE_SELECT,
+    )
+
+    if _PP_VOUCHERS_READ_MERGE_WO:
+        return PP_VOUCHERS_CACHE_WO_MERGE_SELECT, PP_VOUCHERS_CACHE_WO_MERGE_FROM
+    return PP_VOUCHERS_CACHE_DIRECT_SELECT, PP_VOUCHERS_CACHE_DIRECT_FROM
+
+
+def _pp_vouchers_memory_cache_get(scope: str):
+    with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+        return dict(_PP_VOUCHERS_WITH_OPS_CACHE.get(scope) or {})
+
+
+def _pp_vouchers_memory_cache_lookup(scope: str, *, allow_stale: bool):
+    """Return cached with-ops payload when fresh, or stale when allowed."""
+    now = time.monotonic()
+    bucket = _pp_vouchers_memory_cache_get(scope)
+    data = bucket.get("data")
+    if data is None:
+        return None
+    if now < float(bucket.get("expires_at") or 0):
+        return data
+    if allow_stale and now < float(bucket.get("stale_expires_at") or 0):
+        return data
+    return None
+
+
+def _store_pp_vouchers_with_ops_cache(scope: str, data: list) -> None:
+    now = time.monotonic()
+    with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+        _PP_VOUCHERS_WITH_OPS_CACHE[scope] = {
+            "data": data,
+            "expires_at": now + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
+            "stale_expires_at": now + _PP_VOUCHERS_STALE_SECS,
+        }
 
 
 def _pp_vouchers_include_completed() -> bool:
@@ -516,13 +568,10 @@ def _pp_vouchers_cache_scope(include_completed: bool) -> str:
 
 
 def _fetch_pp_vouchers_cache_rows(include_completed: bool, con=None):
-    from planning.erp_wo_merge import (
-        PP_VOUCHERS_CACHE_WO_MERGE_FROM,
-        PP_VOUCHERS_CACHE_WO_MERGE_SELECT,
-    )
     from planning.helpers import planner_db, rows as _db_rows
-
     from planning.utils import SHIPPED_QTY_TOLERANCE
+
+    select_sql, from_sql = _pp_vouchers_cache_sql_parts()
 
     # Completed = fully shipped on the SO line, not PP voucher status (H/History).
     shipped_complete = (
@@ -531,10 +580,7 @@ def _fetch_pp_vouchers_cache_rows(include_completed: bool, con=None):
     )
     where = "" if include_completed else f" WHERE NOT ({shipped_complete})"
     order = " ORDER BY c.ps_id, c.pp_partial_no, c.stage_no"
-    sql = (
-        f"SELECT {PP_VOUCHERS_CACHE_WO_MERGE_SELECT} "
-        f"{PP_VOUCHERS_CACHE_WO_MERGE_FROM}{where}{order}"
-    )
+    sql = f"SELECT {select_sql} {from_sql}{where}{order}"
 
     def _run(_con):
         return _db_rows(_con.execute(sql))
@@ -543,6 +589,25 @@ def _fetch_pp_vouchers_cache_rows(include_completed: bool, con=None):
         return _run(con)
     with planner_db() as _con:
         return _run(_con)
+
+
+def _build_pp_vouchers_with_ops_data(include_completed: bool, con, cache_rows=None) -> list:
+    rows = cache_rows if cache_rows is not None else _fetch_pp_vouchers_cache_rows(include_completed, con=con)
+    data = _append_temp_ps_catalog_entries(
+        _enrich_pp_vouchers_planner_data(
+            _pp_vouchers_with_ops_payload(rows),
+            con=con,
+        ),
+        con,
+        include_completed=include_completed,
+    )
+    if not include_completed:
+        data = [
+            entry
+            for entry in data
+            if not entry.get("shipped_completed") or entry.get("is_temp_ps")
+        ]
+    return data
 
 
 def pp_vouchers_lane_catalog_entries(con, partial_keys, include_completed=True):
@@ -560,10 +625,7 @@ def pp_vouchers_lane_catalog_entries(con, partial_keys, include_completed=True):
     if not allowed:
         return []
 
-    from planning.erp_wo_merge import (
-        PP_VOUCHERS_CACHE_WO_MERGE_FROM,
-        PP_VOUCHERS_CACHE_WO_MERGE_SELECT,
-    )
+    select_sql, from_sql = _pp_vouchers_cache_sql_parts()
     from planning.utils import SHIPPED_QTY_TOLERANCE
 
     ps_ids = sorted({key[0] for key in allowed})
@@ -577,10 +639,7 @@ def pp_vouchers_lane_catalog_entries(con, partial_keys, include_completed=True):
         where_parts.append(f"NOT ({shipped_complete})")
     where = " WHERE " + " AND ".join(where_parts)
     order = " ORDER BY c.ps_id, c.pp_partial_no, c.stage_no"
-    sql = (
-        f"SELECT {PP_VOUCHERS_CACHE_WO_MERGE_SELECT} "
-        f"{PP_VOUCHERS_CACHE_WO_MERGE_FROM}{where}{order}"
-    )
+    sql = f"SELECT {select_sql} {from_sql}{where}{order}"
     cache_rows = [
         row for row in _db_rows(con.execute(sql, tuple(params)))
         if (compact_text(row.get("ps_id")), int(row.get("pp_partial_no") or 1)) in allowed
@@ -599,38 +658,48 @@ def _invalidate_pp_vouchers_with_ops_cache():
         _PP_VOUCHERS_BOARD_ERP_CACHE.clear()
 
 
+def _pp_vouchers_board_cache_lookup(scope: str, *, allow_stale: bool):
+    now = time.monotonic()
+    with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+        bucket = _PP_VOUCHERS_BOARD_ERP_CACHE.get(scope) or {}
+        data = bucket.get("data")
+        if data is None:
+            return None
+        if now < float(bucket.get("expires_at") or 0):
+            return data
+        if allow_stale and now < float(bucket.get("stale_expires_at") or 0):
+            return data
+    return None
+
+
+def _store_pp_vouchers_board_erp_cache(scope: str, data: list) -> None:
+    now = time.monotonic()
+    with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+        _PP_VOUCHERS_BOARD_ERP_CACHE[scope] = {
+            "data": data,
+            "expires_at": now + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
+            "stale_expires_at": now + _PP_VOUCHERS_STALE_SECS,
+        }
+
+
 def _load_pp_vouchers_board_erp_data(include_completed: bool, refresh: bool, scope: str):
     """ERP-only board rows from memory cache or DB (one connection, released before planner list)."""
-    now = time.monotonic()
     if not refresh:
-        with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-            bucket = _PP_VOUCHERS_BOARD_ERP_CACHE.get(scope) or {}
-            cached = bucket.get("data")
-            if cached is not None and now < float(bucket.get("expires_at") or 0):
-                return list(cached)
+        cached = _pp_vouchers_board_cache_lookup(scope, allow_stale=True)
+        if cached is not None:
+            return list(cached)
 
     from planning.helpers import planner_db
 
     with planner_db() as con:
-        cache_rows = _fetch_pp_vouchers_cache_rows(include_completed, con=con)
         erp_data = _enrich_pp_vouchers_planner_data(
-            _pp_vouchers_with_ops_payload(cache_rows),
+            _pp_vouchers_with_ops_payload(
+                _fetch_pp_vouchers_cache_rows(include_completed, con=con)
+            ),
             con=con,
         )
-    with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-        _PP_VOUCHERS_BOARD_ERP_CACHE[scope] = {
-            "data": erp_data,
-            "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
-        }
+    _store_pp_vouchers_board_erp_cache(scope, erp_data)
     return erp_data
-
-
-def _store_pp_vouchers_with_ops_cache(scope: str, data: list) -> None:
-    with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-        _PP_VOUCHERS_WITH_OPS_CACHE[scope] = {
-            "data": data,
-            "expires_at": time.monotonic() + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
-        }
 
 
 def _pp_voucher_search_haystack(entry: dict) -> str:
@@ -1293,15 +1362,9 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
 
 @app.get("/api/pp-vouchers")
 def api_pp_vouchers():
-    import requests as req
-    from db import supa_url, supa_headers
-    from sync import run_qty_shipped_sync, run_so_detail_sync, run_sync, is_sync_needed
+    """Raw pp_vouchers_cache rows — no sync-on-read (use Sync ERP to refresh)."""
     try:
-        if is_sync_needed():
-            _ensure_pp_staging_schema()
-            run_qty_shipped_sync()
-            run_so_detail_sync()
-            run_sync()
+        from db import supa_url, supa_headers
         from sync import _supa_fetch_all
         cache_rows = _supa_fetch_all(
             f"{supa_url()}/pp_vouchers_cache",
@@ -1315,71 +1378,53 @@ def api_pp_vouchers():
 
 @app.get("/api/pp-vouchers/with-ops")
 def api_pp_vouchers_with_ops():
-    """PP vouchers from cache, grouped by PS, with op cards built from stage columns."""
-    from sync import is_sync_needed
+    """PP vouchers from in-process cache, then pp_vouchers_cache (no sync-on-read by default)."""
     include_completed = _pp_vouchers_include_completed()
     scope = _pp_vouchers_cache_scope(include_completed)
     raw_search = str(request.args.get("search") or "").strip()
     try:
         refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
-        use_cache = not refresh and not raw_search
-        now = time.monotonic()
-        with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
-            bucket = _PP_VOUCHERS_WITH_OPS_CACHE.get(scope) or {}
-            cached_data = bucket.get("data")
-            if use_cache and cached_data is not None and now < float(bucket.get("expires_at") or 0):
+        if not refresh:
+            cached_data = _pp_vouchers_memory_cache_lookup(scope, allow_stale=True)
+            if cached_data is not None:
                 return jsonify(_filter_pp_vouchers_by_search(cached_data, raw_search))
 
-        # For explicit refresh requests we avoid background stale-while-revalidate behavior:
-        # return the latest rows available in pp_vouchers_cache immediately.
-        # Background sync remains for non-refresh requests.
-        if is_sync_needed() and not refresh:
-            from sync import run_sync, run_mfg_wo_status_sync, run_qty_shipped_sync
-            def _bg_sync():
-                try:
-                    _ensure_pp_staging_schema()
-                except Exception:
-                    return
-                try:
-                    from sync import run_pp_partial_sync
+        if _PP_VOUCHERS_AUTO_SYNC_ON_READ and not refresh:
+            from sync import is_sync_needed, run_mfg_wo_status_sync, run_qty_shipped_sync, run_sync
 
-                    run_pp_partial_sync()
-                except Exception:
-                    pass
-                try:
-                    run_mfg_wo_status_sync()
-                except Exception:
-                    pass
-                try:
-                    run_qty_shipped_sync()
-                except Exception:
-                    pass
-                try:
-                    run_sync()
-                except Exception:
-                    pass
-            threading.Thread(target=_bg_sync, daemon=True).start()
+            if is_sync_needed():
+
+                def _bg_sync():
+                    try:
+                        _ensure_pp_staging_schema()
+                    except Exception:
+                        return
+                    try:
+                        from sync import run_pp_partial_sync
+
+                        run_pp_partial_sync()
+                    except Exception:
+                        pass
+                    try:
+                        run_mfg_wo_status_sync()
+                    except Exception:
+                        pass
+                    try:
+                        run_qty_shipped_sync()
+                    except Exception:
+                        pass
+                    try:
+                        run_sync()
+                    except Exception:
+                        pass
+
+                threading.Thread(target=_bg_sync, daemon=True).start()
 
         from planning.helpers import planner_db
 
         with planner_db() as con:
-            cache_rows = _fetch_pp_vouchers_cache_rows(include_completed, con=con)
-            data = _append_temp_ps_catalog_entries(
-                _enrich_pp_vouchers_planner_data(
-                    _pp_vouchers_with_ops_payload(cache_rows),
-                    con=con,
-                ),
-                con,
-                include_completed=include_completed,
-            )
-        if not include_completed:
-            data = [
-                entry
-                for entry in data
-                if not entry.get("shipped_completed") or entry.get("is_temp_ps")
-            ]
-        if use_cache or refresh:
-            _store_pp_vouchers_with_ops_cache(scope, data)
+            data = _build_pp_vouchers_with_ops_data(include_completed, con)
+        _store_pp_vouchers_with_ops_cache(scope, data)
         return jsonify(_filter_pp_vouchers_by_search(data, raw_search))
     except Exception as e:
         # Fall back to REST if direct DB query fails
@@ -1398,22 +1443,12 @@ def api_pp_vouchers_with_ops():
             from planning.helpers import planner_db
 
             with planner_db() as con:
-                data = _append_temp_ps_catalog_entries(
-                    _enrich_pp_vouchers_planner_data(
-                        _pp_vouchers_with_ops_payload(cache_rows),
-                        con=con,
-                    ),
+                data = _build_pp_vouchers_with_ops_data(
+                    include_completed,
                     con,
-                    include_completed=include_completed,
+                    cache_rows=cache_rows,
                 )
-            if not include_completed:
-                data = [
-                    entry
-                    for entry in data
-                    if not entry.get("shipped_completed") or entry.get("is_temp_ps")
-                ]
-            if use_cache or refresh:
-                _store_pp_vouchers_with_ops_cache(scope, data)
+            _store_pp_vouchers_with_ops_cache(scope, data)
             return jsonify(_filter_pp_vouchers_by_search(data, raw_search))
         except Exception as e2:
             return jsonify({"error": str(e2)}), 500
@@ -1502,303 +1537,13 @@ def api_pp_vouchers_sync():
     return api_pp_staging_sync()
 
 
-# ── API: one-shot fix — update vw_pp_vouchers join + resync ──────────────
-
-_VW_PP_VOUCHERS_SQL = """
-CREATE OR REPLACE VIEW public.vw_pp_vouchers AS
-WITH
-joined AS (
-    SELECT
-        b.pp_voucher_no,
-        b.inventory_code,
-        b.bom_code,
-        b.pp_qty,
-        b.source_voucher_no,
-        b.source_rsd,
-        regexp_replace(b.source_line_item_no::TEXT, '\\.0+$', '') AS source_line_item_no,
-        b.status,
-        b.stage_no,
-        b.stage_desc,
-        b.op_no,
-        ps.process_sheet_no                                 AS ps_id_raw,
-        ps.inventory_code                                   AS ps_inventory_code,
-        ps.total_qty                                        AS ps_total_qty,
-        ps.sales_order_date                                 AS ps_order_date,
-        COALESCE(ps.process_sheet_no, b.pp_voucher_no)      AS ps_id,
-        CASE WHEN ps.process_sheet_no IS NOT NULL
-             THEN ps.inventory_code
-             ELSE b.inventory_code
-        END                                                 AS final_inventory_code
-    FROM public.pp_voucher b
-    LEFT JOIN public.mfg_process_sheet_info ps
-           ON b.pp_voucher_no = ps.pp_voucher_no
-),
-filtered AS (
-    SELECT *
-    FROM joined
-    WHERE ps_id LIKE '%MPS%'
-       OR ps_id LIKE '%APS%'
-       OR ps_id LIKE '%NPS%'
-       OR ps_id LIKE '%PPS%'
-       OR ps_id LIKE '%CPS%'
-       OR ps_id LIKE '%[SR]%'
-),
-with_workorder AS (
-    SELECT
-        f.*,
-        wa.ws_item_qty,
-        wa.ws_status
-    FROM filtered f
-    LEFT JOIN (
-        SELECT
-            source_voucher_no,
-            source_voucher_line_item_no,
-            MIN(item_qty) AS ws_item_qty,
-            MIN(status)   AS ws_status
-        FROM public.workorder_status
-        GROUP BY source_voucher_no, source_voucher_line_item_no
-    ) wa
-           ON f.source_voucher_no  = wa.source_voucher_no
-          AND f.source_line_item_no = wa.source_voucher_line_item_no
-),
-with_shipped AS (
-    SELECT
-        ww.*,
-        sq.qty_shipped
-    FROM with_workorder ww
-    LEFT JOIN public.sum_qty_shipped_by_sales_order sq
-           ON ww.source_voucher_no = sq.sales_order_no
-          AND regexp_replace(ww.source_line_item_no::TEXT, '\\.0+$', '') = regexp_replace(sq.line_item_no::TEXT, '\\.0+$', '')
-),
-so_detail_by_line AS (
-    SELECT
-        sales_order_no,
-        regexp_replace(line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
-        MAX(qty) AS so_qty,
-        MAX(required_shipment_date) AS required_shipment_date
-    FROM public.so_detail
-    WHERE sales_order_no IS NOT NULL
-      AND line_item_no IS NOT NULL
-    GROUP BY sales_order_no, regexp_replace(line_item_no::TEXT, '\\.0+$', '')
-),
-with_so_detail AS (
-    SELECT
-        ww.*,
-        sd.so_qty,
-        sd.required_shipment_date
-    FROM with_shipped ww
-    LEFT JOIN so_detail_by_line sd
-           ON sd.sales_order_no = ww.source_voucher_no
-          AND sd.line_item_no = regexp_replace(ww.source_line_item_no::TEXT, '\\.0+$', '')
-),
-with_partial AS (
-    SELECT
-        ww.*,
-        COALESCE(p.pp_partial_no, 1)    AS pp_partial_no,
-        p.partial_qty                   AS partial_qty_raw
-    FROM with_so_detail ww
-    LEFT JOIN public.pp_partial p ON ww.pp_voucher_no = p.pp_voucher_no
-),
-with_desc AS (
-    SELECT
-        wp.*,
-        pd.main_desc AS description
-    FROM with_partial wp
-    LEFT JOIN public.part_desc pd ON wp.final_inventory_code = pd.inventory_code
-),
-current_execution_stage AS (
-    -- Active stage: prefer In Process with the most output (skips stale admin stages
-    -- like Stock Issue that stay I while Turning is running). Else first open stage.
-    SELECT DISTINCT ON (source_mps_no, pp_partial_no)
-        source_mps_no,
-        pp_partial_no,
-        stage_no         AS current_stage_no,
-        stage_desc       AS current_stage_desc,
-        execution_status AS current_stage_status
-    FROM public.mfg_wo_status
-    WHERE COALESCE(execution_status, '') <> 'C'
-      AND stage_no IS NOT NULL
-    ORDER BY
-        source_mps_no,
-        pp_partial_no,
-        CASE execution_status
-            WHEN 'I' THEN 0
-            WHEN 'R' THEN 1
-            WHEN 'P' THEN 2
-            ELSE 3
-        END,
-        COALESCE(total_acc_qty_produced, 0) DESC,
-        stage_no ASC
-),
-with_wo_status AS (
-    SELECT
-        wd.*,
-        ws.execution_status,
-        ws.wo_qty_required,
-        ws.total_acc_qty_produced,
-        ws.total_rej_qty_produced
-    FROM with_desc wd
-    LEFT JOIN public.mfg_wo_status ws
-           ON ws.source_mps_no = wd.ps_id
-          AND ws.pp_partial_no = wd.pp_partial_no
-          AND ws.stage_no = wd.stage_no
-          AND TRIM(COALESCE(ws.stage_desc, '')) = TRIM(COALESCE(wd.stage_desc, ''))
-),
-with_current_stage AS (
-    SELECT
-        w.*,
-        ces.current_stage_no,
-        ces.current_stage_desc,
-        ces.current_stage_status
-    FROM with_wo_status w
-    LEFT JOIN current_execution_stage ces
-           ON ces.source_mps_no = w.ps_id
-          AND ces.pp_partial_no = w.pp_partial_no
-),
-computed AS (
-    SELECT DISTINCT
-        ps_id,
-        pp_partial_no,
-        final_inventory_code    AS part_no,
-        description,
-        CASE
-            WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-            WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
-            ELSE ws_item_qty
-        END                     AS total_qty,
-        COALESCE(
-            NULLIF(partial_qty_raw, 0),
-            CASE
-                WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-                WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
-                ELSE ws_item_qty
-            END
-        )                       AS partial_qty,
-        so_qty                  AS so_det_qty,
-        COALESCE(required_shipment_date, source_rsd) AS due_date,
-        ps_order_date           AS order_date,
-        bom_code,
-        source_voucher_no,
-        source_line_item_no,
-        qty_shipped,
-        CASE
-            WHEN status = 'H'          THEN 'History'
-            WHEN ws_status IS NOT NULL THEN ws_status
-            WHEN status = 'O'          THEN 'Outstanding'
-            ELSE status
-        END                     AS status,
-        CASE execution_status
-            WHEN 'P' THEN 'Pending SI'
-            WHEN 'R' THEN 'Ready to Start'
-            WHEN 'I' THEN 'In Process'
-            WHEN 'C' THEN 'Completed'
-            ELSE execution_status
-        END                     AS execution_status,
-        wo_qty_required,
-        total_acc_qty_produced  AS wo_qty_produced,
-        total_rej_qty_produced  AS wo_qty_rejected,
-        stage_no,
-        stage_desc,
-        op_no,
-        current_stage_no,
-        current_stage_desc,
-        current_stage_status
-    FROM with_current_stage
-)
-SELECT * FROM computed
-ORDER BY ps_id, pp_partial_no, stage_no;
-"""
+# ── PP staging schema / vw_pp_vouchers (canonical SQL in sql/*.sql) ─────────
 
 
-_PP_STAGING_SCHEMA_SQL = """
-ALTER TABLE public.pp_voucher
-    ADD COLUMN IF NOT EXISTS source_voucher_no TEXT;
+def _ensure_pp_staging_schema(*, apply_view: bool = False):
+    from planning.pp_staging_sql import ensure_pp_staging_schema
 
-ALTER TABLE public.pp_voucher
-    ADD COLUMN IF NOT EXISTS source_line_item_no TEXT;
-
-ALTER TABLE public.pp_voucher
-    ALTER COLUMN source_voucher_no TYPE TEXT USING source_voucher_no::TEXT;
-
-ALTER TABLE public.pp_voucher
-    ALTER COLUMN source_line_item_no TYPE TEXT USING source_line_item_no::TEXT;
-
-CREATE INDEX IF NOT EXISTS idx_pp_voucher_source_voucher
-    ON public.pp_voucher (source_voucher_no, source_line_item_no);
-
-CREATE TABLE IF NOT EXISTS public.sum_qty_shipped_by_sales_order (
-    sales_order_no  TEXT        NOT NULL,
-    line_item_no    TEXT        NOT NULL,
-    qty_shipped     NUMERIC,
-    _loaded_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (sales_order_no, line_item_no)
-);
-
-ALTER TABLE public.sum_qty_shipped_by_sales_order
-    ALTER COLUMN sales_order_no TYPE TEXT USING sales_order_no::TEXT;
-
-ALTER TABLE public.sum_qty_shipped_by_sales_order
-    ALTER COLUMN line_item_no TYPE TEXT USING line_item_no::TEXT;
-
-CREATE INDEX IF NOT EXISTS idx_qty_shipped_sales_order
-    ON public.sum_qty_shipped_by_sales_order (sales_order_no, line_item_no);
-
-ALTER TABLE public.pp_vouchers_cache
-    ADD COLUMN IF NOT EXISTS source_voucher_no TEXT;
-
-ALTER TABLE public.pp_vouchers_cache
-    ADD COLUMN IF NOT EXISTS source_line_item_no TEXT;
-
-ALTER TABLE public.pp_vouchers_cache
-    ADD COLUMN IF NOT EXISTS qty_shipped NUMERIC;
-
-ALTER TABLE public.pp_vouchers_cache
-    ADD COLUMN IF NOT EXISTS so_det_qty NUMERIC;
-
-ALTER TABLE public.pp_vouchers_cache
-    ADD COLUMN IF NOT EXISTS current_stage_no INTEGER;
-
-ALTER TABLE public.pp_vouchers_cache
-    ADD COLUMN IF NOT EXISTS current_stage_desc TEXT;
-
-ALTER TABLE public.pp_vouchers_cache
-    ADD COLUMN IF NOT EXISTS current_stage_status TEXT;
-
-CREATE TABLE IF NOT EXISTS public.so_detail (
-    sales_order_no  TEXT        NOT NULL,
-    line_item_no    TEXT        NOT NULL,
-    inventory_code  TEXT        NOT NULL,
-    item_code       TEXT,
-    qty             NUMERIC,
-    item_qty        NUMERIC,
-    required_shipment_date DATE,
-    _loaded_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (sales_order_no, line_item_no, inventory_code)
-);
-
-ALTER TABLE public.so_detail
-    ADD COLUMN IF NOT EXISTS required_shipment_date DATE;
-
-CREATE INDEX IF NOT EXISTS idx_so_detail_sales_order
-    ON public.so_detail (sales_order_no, line_item_no);
-"""
-
-
-def _ensure_pp_staging_schema():
-    from db import planner_get_conn, planner_release_conn
-
-    conn = planner_get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DROP VIEW IF EXISTS public.vw_pp_vouchers")
-            cur.execute(_PP_STAGING_SCHEMA_SQL)
-            cur.execute(_VW_PP_VOUCHERS_SQL)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        planner_release_conn(conn)
+    return ensure_pp_staging_schema(apply_view=apply_view)
 
 
 @app.post("/api/admin/fix-execution-status")
@@ -1806,7 +1551,7 @@ def api_admin_fix_execution_status():
     from sync import run_mfg_wo_status_sync, run_sync
     results = {}
     try:
-        _ensure_pp_staging_schema()
+        _ensure_pp_staging_schema(apply_view=True)
         results["view_updated"] = True
     except Exception as e:
         return jsonify({"error": f"view update failed: {e}"}), 500
@@ -2766,8 +2511,10 @@ def api_planner_cycle_times_full_reload():
         return jsonify({"error": str(e), **out}), 500
 
 
-# ── Background auto-sync ──────────────────────────────────────────────────────
-# Runs the full PP staging pipeline every AUTO_SYNC_INTERVAL seconds, then
+# ── Background auto-sync (opt-in) ─────────────────────────────────────────────
+# ERP sync normally runs at fixed daily times via scripts/install_erp_sync_scheduler.ps1
+# (or manual Sync ERP in the UI). Set ENABLE_AUTO_SYNC=1 to also run the full PP staging
+# pipeline every AUTO_SYNC_INTERVAL seconds inside this Flask process, then
 # program-tool-list (Google Sheet → SQLite → planner_program_tools on Supabase)
 # unless DISABLE_AUTO_PROGRAM_TOOL_LIST_SYNC is set.
 # daemon=True so the thread dies cleanly when Flask exits.
@@ -2815,14 +2562,16 @@ def _auto_sync_loop():
         time.sleep(AUTO_SYNC_INTERVAL)
 
 
-_disable_auto_sync = os.getenv("DISABLE_AUTO_SYNC", "").strip().lower() in {
+_enable_auto_sync = os.getenv("ENABLE_AUTO_SYNC", "").strip().lower() in {
     "1", "true", "yes", "on",
 }
-if os.environ.get("WERKZEUG_RUN_MAIN") != "false" and not _disable_auto_sync:
+if os.environ.get("WERKZEUG_RUN_MAIN") != "false" and _enable_auto_sync:
     _t = threading.Thread(target=_auto_sync_loop, daemon=True, name="auto-sync")
     _t.start()
-elif _disable_auto_sync:
-    log.info("background auto-sync disabled (DISABLE_AUTO_SYNC)")
+else:
+    log.info(
+        "background auto-sync disabled (use scheduled task or ENABLE_AUTO_SYNC=1)"
+    )
 
 
 # ── Background auto-unschedule (done ops leave machine lane, anchor kept) ───

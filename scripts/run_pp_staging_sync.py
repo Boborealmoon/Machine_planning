@@ -6,8 +6,8 @@ Run from repo root:
   python -u scripts/run_pp_staging_sync.py --skip-cache
   python -u scripts/run_pp_staging_sync.py --log-file logs/erp-sync-test.log
 
-Uses WERKZEUG_RUN_MAIN=false so importing app does not start the Flask
-auto-sync thread (that thread was racing this script and causing skips).
+Uses WERKZEUG_RUN_MAIN=false so importing app does not start the optional
+Flask auto-sync thread (ENABLE_AUTO_SYNC=1; otherwise sync is scheduled-only).
 """
 import argparse
 import os

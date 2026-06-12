@@ -1,4 +1,4 @@
-# Register Windows Task Scheduler job: ERP sync every 30 minutes.
+# Register Windows Task Scheduler job: ERP sync at fixed daily times.
 # Run from repo root (Admin NOT required if using current user only):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_erp_sync_scheduler.ps1
 #
@@ -31,14 +31,11 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$SyncScript`"" `
     -WorkingDirectory $RepoRoot
 
-# Repeat every 30 minutes (Task Scheduler caps repetition duration; ~10 years is effectively indefinite).
-$Triggers = @(
-    New-ScheduledTaskTrigger `
-        -Once `
-        -At (Get-Date) `
-        -RepetitionInterval (New-TimeSpan -Minutes 30) `
-        -RepetitionDuration (New-TimeSpan -Days 3650)
-)
+# Daily triggers at: 00:00, 08:00, 12:05, 16:05, 18:00, 20:00
+$SyncTimes = @("00:00", "08:00", "12:05", "16:05", "18:00", "20:00")
+$Triggers = $SyncTimes | ForEach-Object {
+    New-ScheduledTaskTrigger -Daily -At $_
+}
 
 $Settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
@@ -55,11 +52,11 @@ Register-ScheduledTask `
     -Trigger $Triggers `
     -Settings $Settings `
     -Principal $Principal `
-    -Description "COMAIN to Supabase ERP sync for Machine Planning (every 30 minutes)" | Out-Null
+    -Description "COMAIN to Supabase ERP sync for Machine Planning (fixed daily times)" | Out-Null
 
 Write-Host ""
 Write-Host "Scheduled task registered: $TaskName"
-Write-Host "  Interval:       every 30 minutes"
+Write-Host "  Times:          $($SyncTimes -join ', ')"
 Write-Host "  Script:         $SyncScript"
 Write-Host "  Logs:           $RepoRoot\logs\last_staging_sync.log"
 Write-Host ""

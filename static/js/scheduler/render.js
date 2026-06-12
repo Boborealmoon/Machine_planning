@@ -2854,6 +2854,11 @@ function renderTrial(options = {}) {
               title="Shop working hours, holidays, and capacity overrides">
               Shop calendar
             </button>
+            <button type="button" class="btn btn-ghost btn-sm trial-floor-layout-btn"
+              onclick="openTrialFloorLayoutModal()"
+              title="View physical machine positions on the factory floor">
+              Floor layout
+            </button>
             <button type="button" class="btn btn-ghost btn-sm"
               onclick="trialExportBoardToExcel()"
               title="Download lane board as Excel (matches shop-floor layout)">

@@ -19,10 +19,10 @@ def main():
             con.execute(stmt)
     print("   OK")
 
-    print("2. Updating vw_pp_vouchers (via app schema helper)...")
+    print("2. Updating vw_pp_vouchers (sql/vw_pp_vouchers.sql)...")
     from app import _ensure_pp_staging_schema
 
-    _ensure_pp_staging_schema()
+    _ensure_pp_staging_schema(apply_view=True)
     print("   OK")
 
     print("3. Syncing mfg_wo_status from COMAIN...")

@@ -25,6 +25,37 @@ ERP_STAGE_OUTPUTS_CTE = """
     )
 """
 
+PP_VOUCHERS_CACHE_DIRECT_FROM = """
+FROM pp_vouchers_cache c
+"""
+
+PP_VOUCHERS_CACHE_DIRECT_SELECT = """
+    c.ps_id,
+    c.pp_partial_no,
+    c.part_no,
+    c.description,
+    c.total_qty,
+    c.partial_qty,
+    c.due_date,
+    c.order_date,
+    c.bom_code,
+    c.source_voucher_no,
+    c.source_line_item_no,
+    c.qty_shipped,
+    c.so_det_qty,
+    c.status,
+    c.execution_status,
+    c.wo_qty_required,
+    c.wo_qty_produced,
+    c.wo_qty_rejected,
+    c.stage_no,
+    c.stage_desc,
+    c.op_no,
+    c.current_stage_no,
+    c.current_stage_desc,
+    c.current_stage_status
+"""
+
 PP_VOUCHERS_CACHE_WO_MERGE_FROM = """
 FROM pp_vouchers_cache c
 LEFT JOIN mfg_wo_status ws

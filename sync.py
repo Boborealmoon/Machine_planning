@@ -31,7 +31,7 @@ BATCH_SIZE = 500
 # Bulk insert page size for direct Postgres reload (execute_values).
 PLANNER_INSERT_PAGE_SIZE = int(os.getenv("PLANNER_INSERT_PAGE_SIZE", "5000"))
 
-# Process-sheet id prefixes included in vw_pp_vouchers (keep in sync with schema/migrations).
+# Process-sheet id prefixes included in vw_pp_vouchers (keep in sync with sql/vw_pp_vouchers.sql).
 PP_VOUCHER_PS_ID_PREFIXES = ("%MPS%", "%APS%", "%NPS%", "%PPS%", "%CPS%", "%[SR]%")
 
 
@@ -388,136 +388,6 @@ def schedule_rebuild_stg_cycle_time_comparison() -> dict:
 # Source tables (pp_voucher, workorder_status, etc.) live in Supabase and are
 # loaded by Power Query. We read from the vw_pp_vouchers view and cache the
 # result in pp_vouchers_cache for fast API reads.
-
-_PP_VOUCHERS_SQL_UNUSED = """
-WITH
-base AS (
-    SELECT
-        pp_voucher_no,
-        inventory_code,
-        bom_code,
-        pp_qty,
-        source_voucher_no,
-        source_rsd,
-        source_line_item_no,
-        status
-    FROM pp_voucher
-),
-process_source AS (
-    SELECT
-        pp_voucher_no,
-        process_sheet_no,
-        inventory_code,
-        total_qty,
-        sales_order_date
-    FROM mfg_process_sheet_info_v1_view
-),
-workorder_agg AS (
-    SELECT
-        source_voucher_no,
-        source_voucher_line_item_no,
-        MIN(item_qty) AS ws_item_qty,
-        MIN(status)   AS ws_status
-    FROM workorder_status
-    GROUP BY source_voucher_no, source_voucher_line_item_no
-),
-part_desc_agg AS (
-    SELECT
-        inventory_code,
-        MIN(main_desc) AS description
-    FROM part_desc
-    GROUP BY inventory_code
-),
-joined AS (
-    SELECT
-        b.pp_voucher_no,
-        b.inventory_code,
-        b.bom_code,
-        b.pp_qty,
-        b.source_voucher_no,
-        b.source_rsd,
-        b.source_line_item_no,
-        b.status,
-        ps.process_sheet_no                                 AS ps_id_raw,
-        ps.inventory_code                                   AS ps_inventory_code,
-        ps.total_qty                                        AS ps_total_qty,
-        ps.sales_order_date                                 AS ps_order_date,
-        COALESCE(ps.process_sheet_no, b.pp_voucher_no)      AS ps_id,
-        CASE WHEN ps.process_sheet_no IS NOT NULL
-             THEN ps.inventory_code
-             ELSE b.inventory_code
-        END                                                 AS final_inventory_code
-    FROM base b
-    LEFT JOIN process_source ps ON b.pp_voucher_no = ps.pp_voucher_no
-),
-filtered AS (
-    SELECT *
-    FROM joined
-    WHERE ps_id LIKE '%MPS%'
-       OR ps_id LIKE '%APS%'
-       OR ps_id LIKE '%NPS%'
-       OR ps_id LIKE '%PPS%'
-       OR ps_id LIKE '%CPS%'
-       OR ps_id LIKE '%[SR]%'
-),
-with_workorder AS (
-    SELECT
-        f.*,
-        wa.ws_item_qty,
-        wa.ws_status
-    FROM filtered f
-    LEFT JOIN workorder_agg wa
-           ON f.source_voucher_no  = wa.source_voucher_no
-          AND f.source_line_item_no = wa.source_voucher_line_item_no
-),
-with_partial AS (
-    SELECT
-        ww.*,
-        COALESCE(p.pp_partial_no, 1)    AS pp_partial_no,
-        p.partial_qty                   AS partial_qty_raw
-    FROM with_workorder ww
-    LEFT JOIN pp_partial p ON ww.pp_voucher_no = p.pp_voucher_no
-),
-with_desc AS (
-    SELECT
-        wp.*,
-        pd.description
-    FROM with_partial wp
-    LEFT JOIN part_desc_agg pd ON wp.final_inventory_code = pd.inventory_code
-),
-computed AS (
-    SELECT DISTINCT
-        ps_id,
-        pp_partial_no,
-        final_inventory_code    AS part_no,
-        description,
-        CASE
-            WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-            WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
-            ELSE ws_item_qty
-        END                     AS total_qty,
-        COALESCE(
-            NULLIF(partial_qty_raw, 0),
-            CASE
-                WHEN ps_total_qty IS NOT NULL AND ps_total_qty <> 0 THEN ps_total_qty
-                WHEN pp_qty       IS NOT NULL AND pp_qty       <> 0 THEN pp_qty
-                ELSE ws_item_qty
-            END
-        )                       AS partial_qty,
-        source_rsd              AS due_date,
-        ps_order_date           AS order_date,
-        bom_code,
-        CASE
-            WHEN ws_status IS NOT NULL THEN ws_status
-            WHEN status = 'H'          THEN 'History'
-            WHEN status = 'O'          THEN 'Outstanding'
-            ELSE status
-        END                     AS status
-    FROM with_desc
-)
-SELECT * FROM computed
-ORDER BY ps_id, pp_partial_no
-"""
 
 _PP_VOUCHERS_COLS = [
     "ps_id", "pp_partial_no", "part_no", "description",

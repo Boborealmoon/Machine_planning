@@ -243,7 +243,13 @@ CREATE INDEX IF NOT EXISTS idx_pp_vouchers_cache_ps_id
 
 
 -- ── Combined view (mirrors /api/pp-vouchers query) ────────────────────────
+-- Canonical definition: sql/vw_pp_vouchers.sql
+-- Applied by planning.pp_staging_sql.apply_vw_pp_vouchers() or POST /api/admin/fix-execution-status
 
+-- CREATE OR REPLACE VIEW public.vw_pp_vouchers AS
+-- (see sql/vw_pp_vouchers.sql — not duplicated here to avoid drift)
+
+/*
 CREATE OR REPLACE VIEW public.vw_pp_vouchers AS
 WITH
 joined AS (
@@ -454,6 +460,7 @@ computed AS (
 )
 SELECT * FROM computed
 ORDER BY ps_id, pp_partial_no, stage_no;
+*/
 
 
 CREATE TABLE planner_program_tools (

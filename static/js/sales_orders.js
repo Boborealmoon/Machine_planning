@@ -1,5 +1,44 @@
 // Sales Orders — mfg_pp_vch → mfg_pp_partial_view, so_order_view header on sales_order_no.
 
+const SO_NOTE_FIELDS = [
+  'material_subcon',
+  'mtl_part_order',
+  'quality_doc',
+  'ops_notes',
+  'sales_notes',
+];
+
+const SO_NOTE_LABELS = {
+  material_subcon: 'Material/Sub-con',
+  mtl_part_order: 'Mtl / Part Order',
+  quality_doc: 'Quality Doc',
+  ops_notes: 'Ops',
+  sales_notes: 'Sales',
+};
+
+const SO_PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
+
+const SO_COLUMNS = [
+  { id: '_so', label: 'SO', side: true, sortable: true, filterable: true },
+  { id: 'pp_voucher_no', label: 'PP voucher', sortable: true, filterable: true, filterType: 'prefix' },
+  { id: 'partial', label: 'Partial', sortable: true, filterable: true },
+  { id: 'process_sheet_no', label: 'Process sheet', sortable: true, filterable: true },
+  { id: 'order_date', label: 'Date', sortable: true, filterable: true },
+  { id: 'part', label: 'Part', sortable: true, filterable: true },
+  { id: 'description', label: 'Description', sortable: true, filterable: true },
+  { id: 'customer_po_no', label: 'P/O No.', sortable: true, filterable: true },
+  { id: 'due_date', label: 'Due date', sortable: true, filterable: true },
+  { id: 'delivery_date', label: 'Del. date', sortable: true, filterable: true },
+  { id: 'unit_selling_price', label: 'U/Price', sortable: true, filterable: true },
+  { id: 'amount', label: 'Amount', sortable: true, filterable: true },
+  { id: 'qty', label: 'Qty', sortable: true, filterable: true },
+  { id: 'material_subcon', label: 'Material/Sub-con', sortable: true, filterable: true },
+  { id: 'mtl_part_order', label: 'Mtl / Part Order', sortable: true, filterable: true },
+  { id: 'quality_doc', label: 'Quality Doc', sortable: true, filterable: true },
+  { id: 'ops_notes', label: 'Ops', sortable: true, filterable: true },
+  { id: 'sales_notes', label: 'Sales', sortable: true, filterable: true },
+];
+
 const soState = {
   active: [],
   complete: [],
@@ -12,6 +51,12 @@ const soState = {
   missingHeaderCount: 0,
   collapsedGroups: new Set(),
   selectedKey: '',
+  saveTimers: new Map(),
+  ppTypes: new Set(['APS', 'NPS']),
+  sortCol: '',
+  sortDir: 'asc',
+  colFilters: {},
+  openFilterCol: '',
 };
 
 function soPartialKey(order, pp, partial) {
@@ -21,10 +66,27 @@ function soPartialKey(order, pp, partial) {
   return partial ? `${so}::${ppNo}::${partialNo}` : `${so}::${ppNo}`;
 }
 
+async function soPostJson(url, body) {
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
 function soFormatDate(value) {
   if (!value) return '—';
   const text = String(value).trim();
   return text.length >= 10 ? text.slice(0, 10) : text || '—';
+}
+
+function soFormatMoney(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '—';
+  return num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function soFormatDt(value) {
@@ -92,14 +154,18 @@ function soRenderPartialDetail(order, pp, partial) {
   ].join('');
   const ppHtml = [
     soDetailField('PP voucher', pp?.pp_voucher_no, { mono: true }),
+    soDetailField('Process sheet', pp?.process_sheet_no, { mono: true }),
     soDetailField('Part', pp?.inventory_code, { mono: true }),
-    soDetailField('BOM', pp?.bom_code, { mono: true }),
+    soDetailField('Description', pp?.description),
+    soDetailField('P/O No.', pp?.customer_po_no, { mono: true }),
     soDetailField('PP qty', pp?.pp_qty),
     soDetailField('SO line', pp?.source_line_item_no),
-    soDetailField('PO due', soFormatDate(pp?.source_rsd)),
-    soDetailField('Proposed EDD', soFormatDate(pp?.proposed_edd)),
+    soDetailField('Due date', soFormatDate(pp?.due_date)),
+    soDetailField('Del. date', soFormatDate(pp?.delivery_date)),
+    soDetailField('U/Price', soFormatMoney(pp?.unit_selling_price)),
+    soDetailField('Amount', soFormatMoney(pp?.amount)),
     soDetailField('PP status', pp?.status),
-    soDetailField('Segment', pp?.segment_1_code),
+    ...SO_NOTE_FIELDS.map(field => soDetailField(SO_NOTE_LABELS[field], pp?.[field])),
   ].join('');
   const orderHtml = [
     soDetailField('Sales order', order?.sales_order_no, { mono: true }),
@@ -119,17 +185,19 @@ function soRenderPartialDetail(order, pp, partial) {
 function soRenderPpDetail(order, pp) {
   const ppHtml = [
     soDetailField('PP voucher', pp?.pp_voucher_no, { mono: true }),
+    soDetailField('Process sheet', pp?.process_sheet_no, { mono: true }),
     soDetailField('Part', pp?.inventory_code, { mono: true }),
     soDetailField('BOM', pp?.bom_code, { mono: true }),
-    soDetailField('BOM desc', pp?.bom_desc, { fullWidth: true }),
+    soDetailField('Description', pp?.description, { fullWidth: true }),
+    soDetailField('P/O No.', pp?.customer_po_no, { mono: true }),
     soDetailField('PP qty', pp?.pp_qty),
     soDetailField('SO line', pp?.source_line_item_no),
-    soDetailField('PO due', soFormatDate(pp?.source_rsd)),
-    soDetailField('Production due', soFormatDate(pp?.production_due_date)),
-    soDetailField('Proposed EDD', soFormatDate(pp?.proposed_edd)),
+    soDetailField('Due date', soFormatDate(pp?.due_date)),
+    soDetailField('Del. date', soFormatDate(pp?.delivery_date)),
+    soDetailField('U/Price', soFormatMoney(pp?.unit_selling_price)),
+    soDetailField('Amount', soFormatMoney(pp?.amount)),
     soDetailField('PP status', pp?.status),
-    soDetailField('Segment', pp?.segment_1_code),
-    soDetailField('Remarks', pp?.remarks, { fullWidth: true }),
+    ...SO_NOTE_FIELDS.map(field => soDetailField(SO_NOTE_LABELS[field], pp?.[field])),
   ].join('');
   const partials = Array.isArray(pp?.partials) ? pp.partials : [];
   const partialList = partials.map(partial => {
@@ -218,6 +286,15 @@ function soFindByKey(key) {
   return { order, pp, partial };
 }
 
+function soFindPp(ppVoucherNo) {
+  const target = String(ppVoucherNo || '').trim();
+  for (const order of soAllOrders()) {
+    const pp = (order.pp_vouchers || []).find(row => String(row.pp_voucher_no || '').trim() === target);
+    if (pp) return { order, pp };
+  }
+  return { order: null, pp: null };
+}
+
 function soOpenDetail({ title, bodyHtml }) {
   const shell = document.getElementById('so-detail');
   const titleEl = document.getElementById('so-detail-title');
@@ -288,6 +365,8 @@ function soBindTableClicks() {
   wrap.dataset.detailBound = '1';
 
   wrap.addEventListener('click', e => {
+    if (e.target.closest('.so-editable-input, .so-editable-cell')) return;
+
     const toggle = e.target.closest('[data-action="toggle-group"]');
     if (toggle) {
       e.stopPropagation();
@@ -343,11 +422,15 @@ function soOrderSearchText(order) {
   (order.pp_vouchers || []).forEach(pp => {
     parts.push(
       pp.pp_voucher_no,
+      pp.process_sheet_no,
       pp.inventory_code,
       pp.bom_code,
+      pp.description,
+      pp.customer_po_no,
       pp.status,
       pp.source_line_item_no,
       pp.segment_1_code,
+      ...SO_NOTE_FIELDS.map(field => pp[field]),
     );
     (pp.partials || []).forEach(partial => {
       parts.push(
@@ -381,6 +464,332 @@ function soLeafRows(order) {
   return leaves;
 }
 
+function soGetPsType(pp) {
+  const raw = String(pp?.process_sheet_no || pp?.pp_voucher_no || '').split('::')[0];
+  if (/\[sr\]/i.test(raw)) return 'SR';
+  const match = raw.toUpperCase().match(/^([A-Z]+)/);
+  if (!match) return null;
+  const prefix = match[1];
+  return SO_PS_TYPES.includes(prefix) ? prefix : prefix;
+}
+
+function soPpTypesAllSelected() {
+  return soState.ppTypes.size >= SO_PS_TYPES.length;
+}
+
+function soPsTypeLabel() {
+  const panel = document.getElementById('so-ps-type-panel');
+  if (!panel) return 'APS, NPS';
+  const checked = [...panel.querySelectorAll('input[type="checkbox"]:checked')].map(el => el.value);
+  if (!checked.length) return 'None';
+  if (checked.length >= SO_PS_TYPES.length) return 'All types';
+  return checked.map(v => (v === 'SR' ? '[SR]' : v)).join(', ');
+}
+
+function soSyncPsTypeCheckboxes() {
+  const panel = document.getElementById('so-ps-type-panel');
+  if (!panel) return;
+  panel.querySelectorAll('input[type="checkbox"]').forEach(input => {
+    input.checked = soState.ppTypes.has(input.value);
+  });
+  const btn = document.getElementById('so-ps-type-btn');
+  if (btn) btn.textContent = `${soPsTypeLabel()} ▾`;
+}
+
+function soLeafColumnValue(leaf, colId) {
+  const { order, pp, partial } = leaf;
+  switch (colId) {
+    case '_so': return order?.sales_order_no;
+    case 'pp_voucher_no': return pp?.pp_voucher_no;
+    case 'partial': return partial?.pp_partial_no ?? '';
+    case 'process_sheet_no': return pp?.process_sheet_no;
+    case 'order_date': return pp?.order_date;
+    case 'part': return partial?.inventory_code || pp?.inventory_code;
+    case 'description': return pp?.description;
+    case 'customer_po_no': return pp?.customer_po_no;
+    case 'due_date': return pp?.due_date;
+    case 'delivery_date': return pp?.delivery_date;
+    case 'unit_selling_price': return pp?.unit_selling_price;
+    case 'amount': return pp?.amount;
+    case 'qty': return pp?.pp_qty;
+    default:
+      if (SO_NOTE_FIELDS.includes(colId)) return pp?.[colId];
+      return '';
+  }
+}
+
+function soCompareValues(a, b, dir) {
+  const desc = dir === 'desc';
+  const aEmpty = a == null || a === '';
+  const bEmpty = b == null || b === '';
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;
+  if (bEmpty) return -1;
+  const an = Number(a);
+  const bn = Number(b);
+  if (Number.isFinite(an) && Number.isFinite(bn)) {
+    return desc ? bn - an : an - bn;
+  }
+  const cmp = String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  return desc ? -cmp : cmp;
+}
+
+function soLeafPassesPrefixFilter(pp) {
+  if (soPpTypesAllSelected()) return true;
+  if (!soState.ppTypes.size) return false;
+  const psType = soGetPsType(pp);
+  if (!psType) return true;
+  return soState.ppTypes.has(psType);
+}
+
+function soLeafPassesColumnFilters(leaf) {
+  for (const [colId, text] of Object.entries(soState.colFilters)) {
+    const q = String(text || '').trim().toLowerCase();
+    if (!q) continue;
+    const val = String(soLeafColumnValue(leaf, colId) ?? '').toLowerCase();
+    if (!val.includes(q)) return false;
+  }
+  return true;
+}
+
+function soLeafPassesFilters(leaf) {
+  if (!soLeafPassesPrefixFilter(leaf.pp)) return false;
+  return soLeafPassesColumnFilters(leaf);
+}
+
+function soVisibleLeaves(order) {
+  let leaves = soLeafRows(order).filter(soLeafPassesFilters);
+  if (soState.sortCol) {
+    leaves = [...leaves].sort((a, b) => soCompareValues(
+      soLeafColumnValue(a, soState.sortCol),
+      soLeafColumnValue(b, soState.sortCol),
+      soState.sortDir,
+    ));
+  }
+  return leaves;
+}
+
+function soVisibleOrders(orders) {
+  let list = soFilterOrders(orders).filter(order => soVisibleLeaves(order).length > 0);
+  if (soState.sortCol) {
+    list = [...list].sort((a, b) => {
+      const av = soState.sortCol === '_so'
+        ? a.sales_order_no
+        : soLeafColumnValue(soVisibleLeaves(a)[0], soState.sortCol);
+      const bv = soState.sortCol === '_so'
+        ? b.sales_order_no
+        : soLeafColumnValue(soVisibleLeaves(b)[0], soState.sortCol);
+      return soCompareValues(av, bv, soState.sortDir);
+    });
+  }
+  return list;
+}
+
+function soColumnFilterActive(colId) {
+  if (colId === 'pp_voucher_no' && !soPpTypesAllSelected()) return true;
+  return Boolean(String(soState.colFilters[colId] || '').trim());
+}
+
+function soSortIcon(colId) {
+  if (soState.sortCol !== colId) return '↕';
+  return soState.sortDir === 'desc' ? '↓' : '↑';
+}
+
+function soRenderTableHead() {
+  const row = document.getElementById('so-table-head-row');
+  if (!row) return;
+  row.innerHTML = SO_COLUMNS.map(col => {
+    const sideCls = col.side ? ' new-orders-side-head' : '';
+    const activeFilter = soColumnFilterActive(col.id);
+    const filterCls = activeFilter ? ' is-active' : '';
+    const sortCls = soState.sortCol === col.id ? ' is-sorted' : '';
+    if (!col.sortable && !col.filterable) {
+      return `<th class="${sideCls.trim()}">${escapeHtml(col.label)}</th>`;
+    }
+    return `
+      <th class="so-col-head${sideCls}${sortCls}" data-so-col="${escapeHtml(col.id)}">
+        <div class="so-col-head-inner">
+          <button type="button" class="so-col-sort-btn" data-action="sort-col" data-so-col="${escapeHtml(col.id)}" title="Sort">
+            <span class="so-col-label">${escapeHtml(col.label)}</span>
+            <span class="so-col-sort-icon">${soSortIcon(col.id)}</span>
+          </button>
+          ${col.filterable ? `<button type="button" class="so-col-filter-btn${filterCls}" data-action="filter-col" data-so-col="${escapeHtml(col.id)}" title="Filter">▾</button>` : ''}
+        </div>
+      </th>
+    `;
+  }).join('');
+}
+
+function soCloseColumnFilter() {
+  const pop = document.getElementById('so-col-filter-popover');
+  if (pop) pop.hidden = true;
+  soState.openFilterCol = '';
+}
+
+function soRenderPrefixFilterPanel(colId) {
+  const checks = SO_PS_TYPES.map(type => {
+    const label = type === 'SR' ? '[SR]' : type;
+    const checked = soState.ppTypes.has(type) ? ' checked' : '';
+    return `<label class="so-col-filter-check"><input type="checkbox" data-so-prefix="${escapeHtml(type)}"${checked} /> ${escapeHtml(label)}</label>`;
+  }).join('');
+  const textVal = escapeHtml(soState.colFilters[colId] || '');
+  return `
+    <div class="so-col-filter-title">PP voucher prefix</div>
+    <div class="so-col-filter-checks">${checks}</div>
+    <label class="so-col-filter-text-label">Contains</label>
+    <input type="search" class="so-col-filter-input" data-so-filter-input="${escapeHtml(colId)}" value="${textVal}" placeholder="e.g. NPS25-0274" autocomplete="off" />
+    <div class="so-col-filter-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-action="clear-col-filter" data-so-col="${escapeHtml(colId)}">Clear</button>
+    </div>
+  `;
+}
+
+function soRenderTextFilterPanel(colId, label) {
+  const textVal = escapeHtml(soState.colFilters[colId] || '');
+  return `
+    <div class="so-col-filter-title">Filter: ${escapeHtml(label)}</div>
+    <input type="search" class="so-col-filter-input" data-so-filter-input="${escapeHtml(colId)}" value="${textVal}" placeholder="Contains…" autocomplete="off" />
+    <div class="so-col-filter-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-action="clear-col-filter" data-so-col="${escapeHtml(colId)}">Clear</button>
+    </div>
+  `;
+}
+
+function soOpenColumnFilter(btn, colId) {
+  const pop = document.getElementById('so-col-filter-popover');
+  const col = SO_COLUMNS.find(c => c.id === colId);
+  if (!pop || !col) return;
+
+  if (soState.openFilterCol === colId && !pop.hidden) {
+    soCloseColumnFilter();
+    return;
+  }
+
+  soState.openFilterCol = colId;
+  pop.innerHTML = col.filterType === 'prefix'
+    ? soRenderPrefixFilterPanel(colId)
+    : soRenderTextFilterPanel(colId, col.label);
+
+  const rect = btn.getBoundingClientRect();
+  const wrap = document.getElementById('so-table-wrap');
+  const wrapRect = wrap?.getBoundingClientRect();
+  if (wrapRect) {
+    pop.style.left = `${Math.max(8, rect.left - wrapRect.left)}px`;
+    pop.style.top = `${rect.bottom - wrapRect.top + 4}px`;
+  }
+  pop.hidden = false;
+}
+
+function soApplyPrefixFilterFromPanel(panel) {
+  const next = new Set();
+  panel.querySelectorAll('input[data-so-prefix]').forEach(input => {
+    if (input.checked) next.add(input.getAttribute('data-so-prefix'));
+  });
+  soState.ppTypes = next;
+  soSyncPsTypeCheckboxes();
+}
+
+function soBindColumnControls() {
+  const wrap = document.getElementById('so-table-wrap');
+  if (!wrap || wrap.dataset.colControlsBound === '1') return;
+  wrap.dataset.colControlsBound = '1';
+
+  wrap.addEventListener('click', e => {
+    const sortBtn = e.target.closest('[data-action="sort-col"]');
+    if (sortBtn) {
+      e.stopPropagation();
+      const colId = sortBtn.getAttribute('data-so-col');
+      if (!colId) return;
+      if (soState.sortCol === colId) {
+        soState.sortDir = soState.sortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        soState.sortCol = colId;
+        soState.sortDir = 'asc';
+      }
+      soCloseColumnFilter();
+      soRender();
+      return;
+    }
+
+    const filterBtn = e.target.closest('[data-action="filter-col"]');
+    if (filterBtn) {
+      e.stopPropagation();
+      soOpenColumnFilter(filterBtn, filterBtn.getAttribute('data-so-col'));
+      return;
+    }
+  });
+
+  document.addEventListener('click', e => {
+    const pop = document.getElementById('so-col-filter-popover');
+    if (!pop || pop.hidden) return;
+    if (pop.contains(e.target) || e.target.closest('[data-action="filter-col"]')) return;
+    soCloseColumnFilter();
+  });
+
+  const pop = document.getElementById('so-col-filter-popover');
+  pop?.addEventListener('click', e => {
+    const clearBtn = e.target.closest('[data-action="clear-col-filter"]');
+    if (clearBtn) {
+      const colId = clearBtn.getAttribute('data-so-col');
+      if (colId === 'pp_voucher_no') {
+        soState.ppTypes = new Set(['APS', 'NPS']);
+        soSyncPsTypeCheckboxes();
+      }
+      delete soState.colFilters[colId];
+      soCloseColumnFilter();
+      soRender();
+      return;
+    }
+    e.stopPropagation();
+  });
+
+  pop?.addEventListener('input', e => {
+    const prefixInput = e.target.closest('input[data-so-prefix]');
+    if (prefixInput) {
+      soApplyPrefixFilterFromPanel(pop);
+      soRender();
+      return;
+    }
+    const textInput = e.target.closest('[data-so-filter-input]');
+    if (textInput) {
+      const colId = textInput.getAttribute('data-so-filter-input');
+      if (!colId) return;
+      soState.colFilters[colId] = textInput.value || '';
+      soRender();
+    }
+  });
+}
+
+function soBindPsTypeDropdown() {
+  const dropdown = document.getElementById('so-ps-type-dropdown');
+  const btn = document.getElementById('so-ps-type-btn');
+  const panel = document.getElementById('so-ps-type-panel');
+  if (!dropdown || !btn || !panel) return;
+
+  soSyncPsTypeCheckboxes();
+
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    panel.hidden = !panel.hidden;
+  });
+
+  document.addEventListener('click', () => {
+    panel.hidden = true;
+  });
+
+  panel.addEventListener('click', e => e.stopPropagation());
+
+  panel.querySelectorAll('input[type="checkbox"]').forEach(input => {
+    input.addEventListener('change', () => {
+      soState.ppTypes = new Set(
+        [...panel.querySelectorAll('input[type="checkbox"]:checked')].map(el => el.value),
+      );
+      btn.textContent = `${soPsTypeLabel()} ▾`;
+      soRender();
+    });
+  });
+}
+
 function soRenderSideRail(order, rowSpan) {
   const soNo = String(order.sales_order_no || '').trim();
   const collapsed = soState.collapsedGroups.has(soNo);
@@ -389,23 +798,68 @@ function soRenderSideRail(order, rowSpan) {
   const partialCount = order.partial_count || 0;
   const customer = order.customer_name || order.customer_short_name || order.customer_code
     || (order.has_header === false ? '(no so_order_view header)' : '—');
+  const railTitle = [
+    soNo,
+    customer,
+    `PO ${order.customer_po_no || '—'}`,
+    order.status || '—',
+    `Posted ${soFormatDt(order.first_posted_datetime)}`,
+    `${ppCount} PP · ${partialCount} partial(s)`,
+    'Click for detail',
+  ].join(' · ');
+
+  const posted = soFormatDt(order.first_posted_datetime);
+  const postedShort = posted.length >= 10 ? posted.slice(0, 10) : posted;
 
   return `
-    <td class="new-orders-side-rail" rowspan="${rowSpan}" data-sales-order="${escapeHtml(soNo)}" title="Click for order detail">
+    <td class="new-orders-side-rail new-orders-side-rail--compact" rowspan="${rowSpan}" data-sales-order="${escapeHtml(soNo)}" title="${escapeHtml(railTitle)}">
       <div class="new-orders-side-rail-inner">
         <div class="new-orders-side-rail-top">
           <button type="button" class="new-orders-group-toggle" data-action="toggle-group" data-sales-order="${escapeHtml(soNo)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} PP vouchers">${chevron}</button>
-          <span class="new-orders-row-hint">Detail</span>
         </div>
-        <div class="new-orders-side-posted-wrap">${soRenderPostedSideRail(order)}</div>
         <strong class="new-orders-side-so">${escapeHtml(soNo || '—')}</strong>
-        <span class="new-orders-group-meta">${escapeHtml(String(ppCount))} PP · ${escapeHtml(String(partialCount))} partial(s) · ${escapeHtml(String(order.voucher_status || '—'))}</span>
-        <dl class="new-orders-side-facts">
-          <div><dt>Customer</dt><dd title="${escapeHtml(customer)}">${escapeHtml(customer)}</dd></div>
-          <div><dt>Customer PO</dt><dd>${escapeHtml(String(order.customer_po_no || '—'))}</dd></div>
-          <div><dt>Status</dt><dd>${escapeHtml(String(order.status || '—'))}</dd></div>
-        </dl>
+        <span class="new-orders-side-posted-compact" title="${escapeHtml(posted)}">${escapeHtml(postedShort)}</span>
+        <span class="new-orders-side-customer-compact" title="${escapeHtml(customer)}">${escapeHtml(customer)}</span>
       </div>
+    </td>
+  `;
+}
+
+function soRenderPpVoucherCell(pp, rowSpan) {
+  return `<td class="mi-cell--mono" rowspan="${rowSpan}">${escapeHtml(String(pp.pp_voucher_no || '—'))}</td>`;
+}
+
+function soRenderPpSpanCells(pp, rowSpan) {
+  return `
+    <td rowspan="${rowSpan}">${escapeHtml(String(pp.process_sheet_no || '—'))}</td>
+    <td class="new-orders-date" rowspan="${rowSpan}">${escapeHtml(soFormatDate(pp.order_date))}</td>
+    <td class="new-orders-desc" rowspan="${rowSpan}" title="${escapeHtml(String(pp.description || ''))}">${escapeHtml(String(pp.description || '—'))}</td>
+    <td class="new-orders-mono" rowspan="${rowSpan}">${escapeHtml(String(pp.customer_po_no || '—'))}</td>
+    <td class="new-orders-date" rowspan="${rowSpan}">${escapeHtml(soFormatDate(pp.due_date))}</td>
+    <td class="new-orders-date" rowspan="${rowSpan}">${escapeHtml(soFormatDate(pp.delivery_date))}</td>
+    <td class="new-orders-num" rowspan="${rowSpan}">${escapeHtml(soFormatMoney(pp.unit_selling_price))}</td>
+    <td class="new-orders-num" rowspan="${rowSpan}">${escapeHtml(soFormatMoney(pp.amount))}</td>
+    <td class="new-orders-num" rowspan="${rowSpan}">${escapeHtml(String(pp.pp_qty ?? '—'))}</td>
+    ${SO_NOTE_FIELDS.map(field => soRenderEditableCell(pp, field, rowSpan)).join('')}
+  `;
+}
+
+function soRenderEditableCell(pp, field, rowSpan) {
+  const ppNo = String(pp.pp_voucher_no || '').trim();
+  const value = String(pp[field] || '');
+  const label = SO_NOTE_LABELS[field] || field;
+  return `
+    <td class="so-editable-cell" rowspan="${rowSpan}">
+      <textarea
+        class="so-editable-input"
+        rows="2"
+        data-pp-voucher-no="${escapeHtml(ppNo)}"
+        data-field="${escapeHtml(field)}"
+        data-last-saved="${escapeHtml(value)}"
+        aria-label="${escapeHtml(label)}"
+        placeholder="—"
+      >${escapeHtml(value)}</textarea>
+      <span class="so-editable-status" aria-live="polite"></span>
     </td>
   `;
 }
@@ -415,30 +869,24 @@ function soRenderLeafCells(pp, partial) {
   return `
     <td class="new-orders-num">${escapeHtml(partial ? String(partial.pp_partial_no ?? '—') : '—')}</td>
     <td class="new-orders-num">${escapeHtml(String(part))}</td>
-    <td>${escapeHtml(String(pp?.bom_code || '—'))}</td>
-    <td class="new-orders-num">${escapeHtml(String(pp?.pp_qty ?? '—'))}</td>
-    <td class="new-orders-num">${escapeHtml(String(pp?.source_line_item_no ?? '—'))}</td>
-    <td class="new-orders-date">${escapeHtml(soFormatDate(pp?.source_rsd))}</td>
-    <td class="new-orders-date">${escapeHtml(soFormatDate(pp?.proposed_edd))}</td>
-    <td>${escapeHtml(String(pp?.status || '—'))}</td>
   `;
 }
 
-function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, includePpCell, ppRowSpan, ppStart }) {
+function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, includePpCells, ppRowSpan, ppStart }) {
   const { order, pp, partial } = leaf;
   const key = soPartialKey(order, pp, partial);
   const selected = key === soState.selectedKey;
   const sideRail = includeSideRail ? soRenderSideRail(order, sideRowSpan) : '';
-  const ppCell = includePpCell
-    ? `<td class="mi-cell--mono" rowspan="${ppRowSpan}">${escapeHtml(String(pp.pp_voucher_no || '—'))}</td>`
-    : '';
+  const ppVoucherCell = includePpCells ? soRenderPpVoucherCell(pp, ppRowSpan) : '';
+  const ppCells = includePpCells ? soRenderPpSpanCells(pp, ppRowSpan) : '';
   const startClass = groupStart ? ' new-orders-group-start' : '';
   const ppStartClass = ppStart ? ' so-pp-group-start' : '';
   return `
     <tr class="new-orders-child-row is-clickable${startClass}${ppStartClass}${selected ? ' is-selected' : ''}" data-sales-order="${escapeHtml(String(order.sales_order_no || ''))}" data-detail-key="${escapeHtml(key)}" title="Click for detail">
       ${sideRail}
-      ${ppCell}
+      ${ppVoucherCell}
       ${soRenderLeafCells(pp, partial)}
+      ${ppCells}
     </tr>
   `;
 }
@@ -446,23 +894,17 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, inclu
 function soRenderOrderGroup(order) {
   const soNo = String(order.sales_order_no || '').trim();
   const collapsed = soState.collapsedGroups.has(soNo);
-  const leaves = soLeafRows(order);
+  const leaves = soVisibleLeaves(order);
+  const colSpan = 17;
 
-  if (!leaves.length) {
-    return `
-      <tr class="new-orders-group-row is-clickable" data-sales-order="${escapeHtml(soNo)}" title="Click for order detail">
-        ${soRenderSideRail(order, 1)}
-        <td colspan="9" class="new-orders-collapsed-summary new-orders-muted">No PP vouchers for this sales order</td>
-      </tr>
-    `;
-  }
+  if (!leaves.length) return '';
 
   if (collapsed) {
     const label = `${leaves.length} row(s) hidden`;
     return `
       <tr class="new-orders-group-row is-clickable" data-sales-order="${escapeHtml(soNo)}" title="Click for order detail">
         ${soRenderSideRail(order, 1)}
-        <td colspan="9" class="new-orders-collapsed-summary">${escapeHtml(label)} — expand to view</td>
+        <td colspan="${colSpan}" class="new-orders-collapsed-summary">${escapeHtml(label)} — expand to view</td>
       </tr>
     `;
   }
@@ -484,7 +926,7 @@ function soRenderOrderGroup(order) {
         includeSideRail: firstOrderRow && leafIndex === 0,
         sideRowSpan: leaves.length,
         groupStart: firstOrderRow && leafIndex === 0,
-        includePpCell: firstPpRow,
+        includePpCells: firstPpRow,
         ppRowSpan: groupLeaves.length,
         ppStart: firstPpRow,
       }));
@@ -494,6 +936,89 @@ function soRenderOrderGroup(order) {
     });
   }
   return html.join('');
+}
+
+function soSetSaveStatus(textarea, state, message) {
+  const status = textarea?.closest('.so-editable-cell')?.querySelector('.so-editable-status');
+  if (!status) return;
+  status.className = `so-editable-status${state ? ` is-${state}` : ''}`;
+  status.textContent = message || '';
+}
+
+async function soSaveField(textarea) {
+  const ppNo = String(textarea.dataset.ppVoucherNo || '').trim();
+  const field = String(textarea.dataset.field || '').trim();
+  if (!ppNo || !field) return;
+
+  const nextValue = String(textarea.value || '').trim();
+  const lastSaved = String(textarea.dataset.lastSaved || '');
+  if (nextValue === lastSaved) return;
+
+  textarea.disabled = true;
+  soSetSaveStatus(textarea, 'saving', 'Saving…');
+  try {
+    const data = await soPostJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
+      [field]: nextValue,
+    });
+    const saved = String(data[field] || '').trim();
+    textarea.value = saved;
+    textarea.dataset.lastSaved = saved;
+    const found = soFindPp(ppNo);
+    if (found.pp) found.pp[field] = saved;
+    soSetSaveStatus(textarea, 'saved', 'Saved');
+    window.setTimeout(() => {
+      if (textarea.dataset.lastSaved === saved) soSetSaveStatus(textarea, '', '');
+    }, 1500);
+  } catch (err) {
+    soSetSaveStatus(textarea, 'error', err.message || 'Save failed');
+  } finally {
+    textarea.disabled = false;
+  }
+}
+
+function soScheduleSave(textarea) {
+  const key = `${textarea.dataset.ppVoucherNo}::${textarea.dataset.field}`;
+  const existing = soState.saveTimers.get(key);
+  if (existing) window.clearTimeout(existing);
+  soState.saveTimers.set(key, window.setTimeout(() => {
+    soState.saveTimers.delete(key);
+    soSaveField(textarea);
+  }, 500));
+}
+
+function soBindEditableInputs() {
+  const body = document.getElementById('so-table-body');
+  if (!body || body.dataset.editableBound === '1') return;
+  body.dataset.editableBound = '1';
+
+  body.addEventListener('input', e => {
+    const textarea = e.target.closest('.so-editable-input');
+    if (!textarea) return;
+    e.stopPropagation();
+    soScheduleSave(textarea);
+  });
+
+  body.addEventListener('blur', e => {
+    const textarea = e.target.closest('.so-editable-input');
+    if (!textarea) return;
+    const key = `${textarea.dataset.ppVoucherNo}::${textarea.dataset.field}`;
+    const pending = soState.saveTimers.get(key);
+    if (pending) {
+      window.clearTimeout(pending);
+      soState.saveTimers.delete(key);
+    }
+    soSaveField(textarea);
+  }, true);
+
+  body.addEventListener('keydown', e => {
+    const textarea = e.target.closest('.so-editable-input');
+    if (!textarea) return;
+    e.stopPropagation();
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      textarea.blur();
+    }
+  });
 }
 
 function soUpdateTabCounts() {
@@ -524,17 +1049,18 @@ function soSetView(view) {
 function soUpdateStats() {
   const stats = document.getElementById('so-stats');
   if (!stats) return;
-  const orders = soFilterOrders(soActiveOrders());
-  const ppRows = orders.reduce((sum, order) => sum + (order.pp_count || 0), 0);
-  const partialRows = orders.reduce((sum, order) => sum + (order.partial_count || 0), 0);
-  const activeN = soFilterOrders(soState.active).length;
-  const completeN = soFilterOrders(soState.complete).length;
+  const orders = soVisibleOrders(soActiveOrders());
+  let leafCount = 0;
+  orders.forEach(order => { leafCount += soVisibleLeaves(order).length; });
+  const activeN = soVisibleOrders(soState.active).length;
+  const completeN = soVisibleOrders(soState.complete).length;
   const label = soState.view === 'complete' ? 'Complete' : 'Active';
-  stats.textContent = `${label}: ${orders.length} SO · ${ppRows} PP · ${partialRows} partials · Active: ${activeN} · Complete: ${completeN}`;
+  stats.textContent = `${label}: ${orders.length} SO · ${leafCount} rows · Active: ${activeN} · Complete: ${completeN}`;
 }
 
 function soRender() {
-  const orders = soFilterOrders(soActiveOrders());
+  soRenderTableHead();
+  const orders = soVisibleOrders(soActiveOrders());
   const body = document.getElementById('so-table-body');
   const wrap = document.getElementById('so-table-wrap');
   const empty = document.getElementById('so-empty');
@@ -553,7 +1079,9 @@ function soRender() {
       empty.hidden = false;
       if (emptyText) {
         emptyText.textContent = hasData
-          ? 'No sales orders match your search in this view.'
+          ? (soState.ppTypes.size === 0
+            ? 'Select at least one PP prefix (APS, NPS, …).'
+            : 'No rows match your search or column filters in this view.')
           : `No ${soState.view === 'complete' ? 'complete' : 'active'} sales orders in ERP.`;
       }
     }
@@ -565,12 +1093,16 @@ function soRender() {
 
   if (wrap) wrap.hidden = false;
   if (empty) empty.hidden = true;
-  if (body) body.innerHTML = orders.map(soRenderOrderGroup).join('');
+  if (body) {
+    body.innerHTML = orders.map(soRenderOrderGroup).filter(Boolean).join('');
+    delete body.dataset.editableBound;
+    soBindEditableInputs();
+  }
   if (meta) {
     meta.hidden = false;
     const missing = Number(soState.missingHeaderCount) || 0;
     const missingNote = missing > 0 ? ` · ${missing} without so_order_view header` : '';
-    meta.textContent = `Click a row for detail · ${soState.ppCount || 0} PP vouchers · ${soState.partialCount || 0} partials · cached ${soState.cachedAt || '—'} · TTL ${soState.cacheTtlSec}s${missingNote}`;
+    meta.textContent = `Planner notes autosave on blur · per PP voucher in Supabase · Click a row for detail · ${soState.ppCount || 0} PP · ${soState.partialCount || 0} partials · cached ${soState.cachedAt || '—'} · TTL ${soState.cacheTtlSec}s${missingNote}`;
   }
 
   soUpdateStats();
@@ -609,8 +1141,6 @@ async function soLoad({ refresh = false, bustCache = false } = {}) {
   soState.ppCount = Number(payload.pp_count) || 0;
   soState.partialCount = Number(payload.partial_count) || 0;
   soState.missingHeaderCount = Number(payload.missing_header_count) || 0;
-  soState.schemaVersion = Number(payload.schema_version) || 0;
-  soState.apiSource = String(payload.source || '');
 
   const orderTotal = soState.active.length + soState.complete.length;
   const nestedPp = soState.active.concat(soState.complete)
@@ -643,6 +1173,9 @@ function soInit() {
   document.getElementById('so-refresh')?.addEventListener('click', () => soLoad({ refresh: true, bustCache: true }));
   soBindDetailPanel();
   soBindTableClicks();
+  soBindColumnControls();
+  soBindPsTypeDropdown();
+  soRenderTableHead();
   soLoad({ refresh: false });
 }
 

@@ -5,4 +5,4 @@ ALTER TABLE public.so_detail
 
 DROP VIEW IF EXISTS public.vw_pp_vouchers;
 
--- View body matches app.py _VW_PP_VOUCHERS_SQL (run /api/pp-staging/sync or _ensure_pp_staging_schema).
+-- View body: sql/vw_pp_vouchers.sql (run _ensure_pp_staging_schema(apply_view=True) or admin fix).

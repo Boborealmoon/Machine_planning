@@ -11,6 +11,8 @@ from typing import Any
 import psycopg2.extras
 from flask import Blueprint, jsonify, render_template, request
 
+from db import planner_db_connect_error
+from .helpers import planner_db, rows
 from .utils import compact_text
 
 logger = logging.getLogger(__name__)
@@ -19,28 +21,59 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
+
+_NOTE_FIELDS = (
+    "material_subcon",
+    "mtl_part_order",
+    "quality_doc",
+    "ops_notes",
+    "sales_notes",
+)
 
 _MFG_PP_VCH_SQL = """
 SELECT
-    pp_voucher_no,
-    inventory_code,
-    bom_code,
-    bom_desc,
-    pp_qty,
-    source_voucher_no,
-    source_rsd,
-    source_line_item_no,
-    status,
-    segment_1_code,
-    proposed_edd,
-    production_due_date,
-    remarks,
-    customer_code,
-    mark_as_complete
-FROM public.mfg_pp_vch
-WHERE source_voucher_no IS NOT NULL
-ORDER BY source_voucher_no, pp_voucher_no
+    pp.pp_voucher_no,
+    pp.inventory_code,
+    pp.bom_code,
+    pp.bom_desc,
+    pp.pp_qty,
+    pp.source_voucher_no,
+    pp.source_rsd,
+    pp.source_line_item_no,
+    pp.status,
+    pp.segment_1_code,
+    pp.proposed_edd,
+    pp.production_due_date,
+    pp.remarks,
+    pp.customer_code,
+    pp.mark_as_complete,
+    COALESCE(ps.process_sheet_no, pp.pp_voucher_no) AS process_sheet_no,
+    COALESCE(ps.sales_order_date, hdr.order_date) AS order_date,
+    COALESCE(NULLIF(TRIM(pd.main_desc), ''), NULLIF(TRIM(pp.bom_desc), '')) AS description,
+    COALESCE(NULLIF(TRIM(part.customer_po_no), ''), NULLIF(TRIM(hdr.customer_po_no), '')) AS customer_po_no,
+    COALESCE(det.required_shipment_date, pp.source_rsd) AS due_date,
+    pp.proposed_edd AS delivery_date,
+    det.unit_selling_price,
+    (det.unit_selling_price * pp.pp_qty) AS amount
+FROM public.mfg_pp_vch pp
+LEFT JOIN public.mfg_process_sheet_info ps
+       ON ps.pp_voucher_no = pp.pp_voucher_no
+LEFT JOIN public.part_desc pd
+       ON pd.inventory_code = COALESCE(ps.inventory_code, pp.inventory_code)
+LEFT JOIN public.so_order_view hdr
+       ON hdr.sales_order_no = pp.source_voucher_no
+LEFT JOIN public.so_order_ost_det det
+       ON det.sales_order_no = pp.source_voucher_no
+      AND regexp_replace(det.line_item_no::TEXT, '\\.0+$', '')
+          = regexp_replace(pp.source_line_item_no::TEXT, '\\.0+$', '')
+LEFT JOIN (
+    SELECT pp_voucher_no, MAX(customer_po_no) AS customer_po_no
+    FROM public.mfg_pp_partial_view
+    GROUP BY pp_voucher_no
+) part ON part.pp_voucher_no = pp.pp_voucher_no
+WHERE pp.source_voucher_no IS NOT NULL
+ORDER BY pp.source_voucher_no, pp.pp_voucher_no
 """
 
 _MFG_PP_PARTIAL_SQL = """
@@ -138,8 +171,8 @@ def _erp_query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, params)
-            rows = cur.fetchall()
-            return [_serialize_row(dict(row)) for row in rows]
+            rows_out = cur.fetchall()
+            return [_serialize_row(dict(row)) for row in rows_out]
     finally:
         release_conn(conn)
 
@@ -170,9 +203,65 @@ def _partials_by_pp_voucher(partials: list[dict[str, Any]]) -> dict[str, list[di
         if not pp_no:
             continue
         grouped.setdefault(pp_no, []).append(row)
-    for rows in grouped.values():
-        rows.sort(key=lambda row: int(row.get("pp_partial_no") or 0))
+    for pp_rows in grouped.values():
+        pp_rows.sort(key=lambda row: int(row.get("pp_partial_no") or 0))
     return grouped
+
+
+def _empty_notes() -> dict[str, str]:
+    return {field: "" for field in _NOTE_FIELDS}
+
+
+def _notes_from_row(row: dict[str, Any] | None) -> dict[str, str]:
+    if not row:
+        return _empty_notes()
+    return {field: compact_text(row.get(field)) for field in _NOTE_FIELDS}
+
+
+def _ensure_notes_table(con) -> None:
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS planner_so_pp_notes (
+            pp_voucher_no       TEXT         PRIMARY KEY,
+            material_subcon     TEXT         NOT NULL DEFAULT '',
+            mtl_part_order      TEXT         NOT NULL DEFAULT '',
+            quality_doc         TEXT         NOT NULL DEFAULT '',
+            ops_notes           TEXT         NOT NULL DEFAULT '',
+            sales_notes         TEXT         NOT NULL DEFAULT '',
+            updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+
+
+def _load_notes_map(pp_voucher_nos: list[str]) -> dict[str, dict[str, str]]:
+    ids = [compact_text(v) for v in pp_voucher_nos if compact_text(v)]
+    if not ids:
+        return {}
+    try:
+        with planner_db() as con:
+            _ensure_notes_table(con)
+            fetched = rows(
+                con.execute(
+                    """
+                    SELECT pp_voucher_no, material_subcon, mtl_part_order,
+                           quality_doc, ops_notes, sales_notes
+                    FROM planner_so_pp_notes
+                    WHERE pp_voucher_no = ANY(%s)
+                    """,
+                    (ids,),
+                )
+            )
+    except Exception as exc:
+        logger.warning("planner_so_pp_notes load skipped: %s", exc)
+        return {}
+
+    out: dict[str, dict[str, str]] = {}
+    for row in fetched:
+        key = compact_text(row.get("pp_voucher_no"))
+        if key:
+            out[key] = _notes_from_row(row)
+    return out
 
 
 def _build_orders_from_pp_vouchers(
@@ -180,9 +269,11 @@ def _build_orders_from_pp_vouchers(
     partials_by_pp: dict[str, list[dict[str, Any]]],
     headers_by_so: dict[str, dict[str, Any]],
     posted_by_so: dict[str, dict[str, Any]] | None = None,
+    notes_by_pp: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """mfg_pp_vch rows grouped by source_voucher_no with nested partials + SO header."""
     grouped: dict[str, dict[str, Any]] = {}
+    notes_map = notes_by_pp or {}
 
     for raw in pp_rows:
         pp = dict(raw)
@@ -192,9 +283,9 @@ def _build_orders_from_pp_vouchers(
             continue
 
         pp["source_line_item_no"] = _normalize_line_item_no(pp.get("source_line_item_no"))
-        pp_partials = partials_by_pp.get(pp_no, [])
-        pp["partials"] = pp_partials
-        pp["partial_count"] = len(pp_partials)
+        pp["partials"] = partials_by_pp.get(pp_no, [])
+        pp["partial_count"] = len(pp["partials"])
+        pp.update(notes_map.get(pp_no, _empty_notes()))
 
         if so_no not in grouped:
             header = dict(headers_by_so.get(so_no, {}))
@@ -239,6 +330,7 @@ def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, An
         return _cache[1]
 
     pp_rows = _erp_query(_MFG_PP_VCH_SQL)
+    notes_map = _load_notes_map([str(row.get("pp_voucher_no") or "") for row in pp_rows])
     partials = _erp_query(_MFG_PP_PARTIAL_SQL)
     headers = _erp_query(_SO_ORDER_HEADER_SQL)
     posted_dates = _erp_query(_SO_POSTED_DATES_SQL)
@@ -247,10 +339,53 @@ def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, An
         _partials_by_pp_voucher(partials),
         _headers_by_sales_order(headers),
         _posted_dates_by_sales_order(posted_dates),
+        notes_map,
     )
     payload = _split_by_voucher_status(orders)
     _cache = (now, payload)
     return payload
+
+
+def _upsert_notes(pp_voucher_no: str, patch: dict[str, str]) -> dict[str, Any]:
+    with planner_db() as con:
+        _ensure_notes_table(con)
+        existing = rows(
+            con.execute(
+                """
+                SELECT pp_voucher_no, material_subcon, mtl_part_order,
+                       quality_doc, ops_notes, sales_notes
+                FROM planner_so_pp_notes
+                WHERE pp_voucher_no = %s
+                """,
+                (pp_voucher_no,),
+            )
+        )
+        current = _notes_from_row(existing[0] if existing else None)
+        current.update(patch)
+        con.execute(
+            """
+            INSERT INTO planner_so_pp_notes (
+                pp_voucher_no, material_subcon, mtl_part_order,
+                quality_doc, ops_notes, sales_notes, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (pp_voucher_no) DO UPDATE SET
+                material_subcon = EXCLUDED.material_subcon,
+                mtl_part_order = EXCLUDED.mtl_part_order,
+                quality_doc = EXCLUDED.quality_doc,
+                ops_notes = EXCLUDED.ops_notes,
+                sales_notes = EXCLUDED.sales_notes,
+                updated_at = NOW()
+            """,
+            (
+                pp_voucher_no,
+                current["material_subcon"],
+                current["mtl_part_order"],
+                current["quality_doc"],
+                current["ops_notes"],
+                current["sales_notes"],
+            ),
+        )
+        return {"pp_voucher_no": pp_voucher_no, **current}
 
 
 @sales_orders_bp.get("/sales-orders")
@@ -292,3 +427,38 @@ def api_sales_orders():
             "complete": complete,
         }
     )
+
+
+@sales_orders_bp.patch("/api/sales-orders/notes/<path:pp_voucher_no>")
+@sales_orders_bp.put("/api/sales-orders/notes/<path:pp_voucher_no>")
+def api_sales_order_notes(pp_voucher_no):
+    pp_voucher_no = compact_text(pp_voucher_no)
+    if not pp_voucher_no:
+        return jsonify({"error": "pp_voucher_no is required"}), 400
+
+    data = request.get_json(force=True, silent=True) or {}
+    patch: dict[str, str] = {}
+    for field in _NOTE_FIELDS:
+        if field in data:
+            patch[field] = compact_text(data.get(field))
+
+    if not patch:
+        return jsonify({"error": "No editable fields supplied"}), 400
+
+    try:
+        payload = _upsert_notes(pp_voucher_no, patch)
+    except Exception as exc:
+        friendly = planner_db_connect_error(exc)
+        if friendly:
+            return jsonify({"error": friendly}), 503
+        logger.exception("sales order notes save failed")
+        return jsonify({"error": str(exc)}), 500
+
+    if _cache:
+        for bucket in ("active", "complete"):
+            for order in _cache[1].get(bucket, []):
+                for pp in order.get("pp_vouchers") or []:
+                    if compact_text(pp.get("pp_voucher_no")) == pp_voucher_no:
+                        pp.update(payload)
+
+    return jsonify({"ok": True, **payload})
