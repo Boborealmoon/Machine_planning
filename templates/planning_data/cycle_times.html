@@ -245,7 +245,6 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
 .btn-danger { background:#fff; color:#b91c1c; border-color:#fca5a5; }
 .btn-sm { padding:5px 10px; font-size:12px; }
 .btn-icon { padding:5px 8px; min-width: 32px; justify-content: center; }
-
 .row-edit-form { display:none; }
 .row-edit-form.open { display:table-row; }
 .row-edit-form td { padding: 14px 12px; background: #f8fafc; border-bottom: 2px solid #3b82f6; }
@@ -386,9 +385,10 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
   <div class="modal-box">
     <div class="modal-title">Import from planner jobs</div>
     <p class="harvest-hint">
-      Each row groups scheduled jobs for the same part + BOM + operation. Expand a row to see every job (PS, machine, cycle, last edit)
-      and pick which one to publish. <strong>Clear</strong> rows are safe to bulk-publish; <strong>Review</strong> rows have conflicting
-      job values — pick manually. Publishing never changes existing scheduled blocks.
+      Each row groups scheduled jobs for the same part + BOM + operation. Expand a row to pick which job to use.
+      Publishing updates <strong>production cycle</strong> only (master/ideal cycle is unchanged).
+      <strong>Review</strong> rows differ from the machine ideal cycle — check before publishing.
+      Nothing is pre-selected; pick the rows you want. Scheduled jobs are never changed.
     </p>
     <div class="harvest-toolbar">
       <input type="search" id="harvest-ps-filter" class="harvest-ps-search"
@@ -416,9 +416,9 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
             <th>BOM</th>
             <th>Op</th>
             <th>Verdict</th>
-            <th class="harvest-num">Master</th>
-            <th class="harvest-num">BOM</th>
-            <th class="harvest-num">Publish</th>
+            <th class="harvest-num" title="Machine ideal cycle time">Ideal</th>
+            <th class="harvest-num" title="Current production cycle in master">Production</th>
+            <th class="harvest-num" title="Production cycle to publish">Publish</th>
             <th>Jobs</th>
           </tr>
         </thead>
@@ -1081,6 +1081,7 @@ function applyHarvestStrategy() {
       r.source_block_id = r.jobs[pick.jobIndex].block_id;
       r.source_operation_id = r.jobs[pick.jobIndex].operation_id;
     }
+    r.recommendation = harvestRecommendation(r);
   });
   renderHarvestRows();
 }
@@ -1096,7 +1097,7 @@ function pickHarvestJob(rowIdx, jobIdx) {
   r.proposed_set_up_time = r.publish_set_up_time;
   r.source_block_id = job.block_id;
   r.source_operation_id = job.operation_id;
-  r.selected = true;
+  r.recommendation = harvestRecommendation(r);
   r.expanded = true;
   renderHarvestRows();
 }
@@ -1106,8 +1107,25 @@ function toggleHarvestExpand(idx) {
   renderHarvestRows();
 }
 
+function harvestIdealBaseline(r) {
+  const ideal = Number(r.current_ideal_cycle_time ?? 0);
+  if (ideal > 0) return ideal;
+  return Number(r.bom_step_cycle_time ?? 0);
+}
+
+function harvestRecommendation(r) {
+  const ideal = harvestIdealBaseline(r);
+  const pub = Number(r.publish_cycle_time ?? r.proposed_cycle_time ?? 0);
+  if (ideal <= 0 && pub > 0) return 'review';
+  if (ideal > 0 && Math.abs(pub - ideal) > 0.009) return 'review';
+  return 'clear';
+}
+
 function selectHarvestClear() {
-  harvestRows.forEach(r => { r.selected = r.recommendation === 'clear' && r.differs_from_master; });
+  harvestRows.forEach(r => {
+    r.recommendation = harvestRecommendation(r);
+    r.selected = r.recommendation === 'clear' && r.differs_from_master;
+  });
   renderHarvestRows();
 }
 
@@ -1173,11 +1191,14 @@ function renderHarvestRows() {
   const psTerm = harvestPsFilter || (document.getElementById('harvest-ps-filter')?.value || '').trim().toLowerCase();
   tbody.innerHTML = visible.map(({ r, idx }) => {
     const opLabel = [r.op_type, r.op_no != null ? r.op_no : ''].filter(Boolean).join(' ');
-    const verdict = r.recommendation === 'clear'
+    const verdictKind = harvestRecommendation(r);
+    r.recommendation = verdictKind;
+    const verdict = verdictKind === 'clear'
       ? '<span class="harvest-verdict harvest-verdict--clear">Clear</span>'
       : '<span class="harvest-verdict harvest-verdict--review">Review</span>';
-    let rowClass = r.recommendation === 'review' ? 'harvest-variance' : (r.differs_from_master ? 'harvest-changed' : '');
+    let rowClass = verdictKind === 'review' ? 'harvest-variance' : (r.differs_from_master ? 'harvest-changed' : '');
     if (r.is_placeholder) rowClass = 'harvest-placeholder';
+    const ideal = harvestIdealBaseline(r);
     const jobsLabel = r.has_variance
       ? `${r.job_count} (${fmtNum(r.cycle_min)}–${fmtNum(r.cycle_max)})`
       : String(r.job_count);
@@ -1191,12 +1212,12 @@ function renderHarvestRows() {
         <td>${esc(r.bom_code || '—')}</td>
         <td>${esc(opLabel || '—')}</td>
         <td>${verdict}</td>
+        <td class="harvest-num">${ideal > 0 ? esc(fmtNum(ideal)) : '—'}</td>
         <td class="harvest-num">${r.current_master_id ? esc(fmtNum(r.current_cycle_time)) : '—'}</td>
-        <td class="harvest-num">${r.bom_step_cycle_time > 0 ? esc(fmtNum(r.bom_step_cycle_time)) : '—'}</td>
         <td class="harvest-num">
           <input class="harvest-publish-input" type="number" step="0.1" min="0"
             value="${esc(fmtNum(r.publish_cycle_time))}"
-            onchange="harvestRows[${idx}].publish_cycle_time = parseFloat(this.value) || 0; harvestRows[${idx}].picked_job_index = null;">
+            onchange="harvestRows[${idx}].publish_cycle_time = parseFloat(this.value) || 0; harvestRows[${idx}].picked_job_index = null; renderHarvestRows();">
         </td>
         <td>${esc(jobsLabel)}</td>
       </tr>`;
@@ -1242,14 +1263,14 @@ async function openHarvestModal() {
     harvestRows = (data.rows || []).map(r => ({
       ...r,
       publish_cycle_time: r.publish_cycle_time ?? r.proposed_cycle_time,
-      publish_set_up_time: r.publish_set_up_time ?? r.proposed_set_up_time,
-      selected: !!r.selected,
+      selected: false,
       expanded: false,
       picked_job_index: r.picked_job_index ?? null,
     }));
     renderHarvestRows();
     const selectAll = document.getElementById('harvest-select-all');
     if (selectAll) {
+      selectAll.checked = false;
       selectAll.onchange = () => {
         const on = selectAll.checked;
         harvestVisibleRows().forEach(({ r }) => { r.selected = on; });
@@ -1276,7 +1297,7 @@ async function publishHarvestSelected() {
     setHarvestError('Select at least one row to publish.');
     return;
   }
-  if (!confirm(`Publish ${selected.length} row(s) to master? Existing scheduled jobs will not change.`)) return;
+  if (!confirm(`Publish production cycle for ${selected.length} row(s)? Ideal/master cycle is not changed. Scheduled jobs are not affected.`)) return;
   const publishBtn = document.getElementById('harvest-publish-btn');
   publishBtn.disabled = true;
   setHarvestError('');
@@ -1290,7 +1311,6 @@ async function publishHarvestSelected() {
       op_type: r.op_type,
       part_description: r.part_description,
       cycle_time: r.publish_cycle_time ?? r.proposed_cycle_time,
-      set_up_time: r.publish_set_up_time ?? r.proposed_set_up_time,
       master_id: r.current_master_id,
       source_block_id: r.source_block_id,
       source_operation_id: r.source_operation_id,
@@ -1305,7 +1325,7 @@ async function publishHarvestSelected() {
     }
     const n = result.count || (result.published || []).length;
     const errN = (result.errors || []).length;
-    toast(`Published ${n} master row(s)${errN ? ` (${errN} failed)` : ''}`);
+    toast(`Updated production cycle on ${n} row(s)${errN ? ` (${errN} failed)` : ''}`);
     closeHarvestModal();
     await loadRows();
   } catch (e) {

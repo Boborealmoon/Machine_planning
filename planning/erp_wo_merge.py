@@ -2,10 +2,50 @@
 
 from __future__ import annotations
 
+import re
+
 from planning.utils import compact_text
 
 # Post-machining stages live in mfg_wo_status but are omitted from pp_voucher BOM rows.
-FINISHING_STAGE_DESCS = frozenset({"Deburring", "Final Inspection", "Packing"})
+FINISHING_STAGE_DESCS = frozenset({
+    "Deburring",
+    "Final Inspection",
+    "Packing",
+    "Engraving & Packing",
+})
+
+_FINISHING_STAGE_PATTERNS = (
+    re.compile(r"^deburring$", re.IGNORECASE),
+    re.compile(r"^final\s+inspection$", re.IGNORECASE),
+    re.compile(r"^packing$", re.IGNORECASE),
+    re.compile(r"engraving.*packing|packing.*engraving", re.IGNORECASE),
+)
+
+
+def is_finishing_stage_desc(stage_desc: str) -> bool:
+    text = compact_text(stage_desc)
+    if not text:
+        return False
+    if text in FINISHING_STAGE_DESCS:
+        return True
+    lowered = text.casefold()
+    if any(known.casefold() == lowered for known in FINISHING_STAGE_DESCS):
+        return True
+    return any(pattern.search(text) for pattern in _FINISHING_STAGE_PATTERNS)
+
+
+def finishing_stage_bucket(stage_desc: str) -> str:
+    text = compact_text(stage_desc)
+    lowered = text.casefold()
+    if lowered == "deburring":
+        return "deburring"
+    if lowered == "final inspection":
+        return "final_inspection"
+    if "engraving" in lowered and "packing" in lowered:
+        return "engraving_packing"
+    if lowered == "packing":
+        return "packing"
+    return "other"
 
 MFG_WO_STATUS_STAGE_JOIN = """
        ON ws.source_mps_no = c.ps_id
@@ -195,16 +235,16 @@ def mfg_wo_stages_batch(con, partial_keys) -> dict[tuple[str, int], list[dict]]:
 def _wo_stage_row_to_flow_step(row, seq_no: int) -> dict:
     stage_desc = compact_text(row.get("stage_desc"))
     stage_no = int(row.get("stage_no") or 0)
-    op_type = stage_desc if stage_desc in FINISHING_STAGE_DESCS else (
-        stage_desc.split()[0] if stage_desc else ""
-    )
+    finishing = is_finishing_stage_desc(stage_desc)
+    op_type = stage_desc if finishing else (stage_desc.split()[0] if stage_desc else "")
     return {
         "op_seq_id": stage_no or seq_no,
         "seq_no": seq_no,
         "op_no": str(stage_no) if stage_no else str(seq_no),
         "op_type": op_type,
         "stage_desc": stage_desc,
-        "machine_category": op_type.upper(),
+        "machine_category": "FINISHING" if finishing else op_type.upper(),
+        "source_kind": "ERP_WO" if finishing else "",
         "preferred_machine": "",
         "cycle_time": 0,
         "setup_time": 0,
@@ -218,7 +258,7 @@ def _wo_stage_row_to_flow_step(row, seq_no: int) -> dict:
 
 
 def merge_finishing_steps_into_flow_steps(steps, wo_stages) -> list:
-    """Append Deburring / Final Inspection / Packing from mfg_wo_status when absent from BOM cache."""
+    """Append post-machining WO stages from mfg_wo_status when absent from BOM flow."""
     existing = {
         compact_text(step.get("stage_desc") or step.get("op_type") or "")
         for step in (steps or [])
@@ -227,7 +267,7 @@ def merge_finishing_steps_into_flow_steps(steps, wo_stages) -> list:
     next_seq = max((int(step.get("seq_no") or 0) for step in merged), default=0) + 1
     for row in sorted(wo_stages or [], key=lambda item: int(item.get("stage_no") or 0)):
         stage_desc = compact_text(row.get("stage_desc"))
-        if stage_desc not in FINISHING_STAGE_DESCS or stage_desc in existing:
+        if not is_finishing_stage_desc(stage_desc) or stage_desc in existing:
             continue
         merged.append(_wo_stage_row_to_flow_step(row, next_seq))
         next_seq += 1
@@ -306,7 +346,7 @@ def merge_finishing_op_cards_into_entry(entry: dict, wo_stages) -> None:
     }
     for row in sorted(wo_stages or [], key=lambda item: int(item.get("stage_no") or 0)):
         stage_desc = compact_text(row.get("stage_desc"))
-        if stage_desc not in FINISHING_STAGE_DESCS or stage_desc in existing:
+        if not is_finishing_stage_desc(stage_desc) or stage_desc in existing:
             continue
         op_card = _wo_stage_to_op_card(row, entry)
         entry.setdefault("ops", []).append(op_card)
@@ -344,7 +384,7 @@ def resolve_current_stage_from_wo_stages(wo_stages, *, shipped_completed: bool =
     finishing = [
         row
         for row in wo_stages
-        if compact_text(row.get("stage_desc")) in FINISHING_STAGE_DESCS
+        if is_finishing_stage_desc(row.get("stage_desc"))
     ]
     if not finishing:
         return None
@@ -387,7 +427,7 @@ def apply_wo_stage_metadata(entry: dict, wo_stages) -> None:
 
 
 def apply_wo_stage_metadata_to_voucher_entries(entries, con) -> None:
-    """Resolve current stage from mfg_wo_status without polluting BOM operation cards."""
+    """Resolve current stage from mfg_wo_status; attach finishing op cards when missing."""
     if not entries:
         return
     keys = []
@@ -409,8 +449,10 @@ def apply_wo_stage_metadata_to_voucher_entries(entries, con) -> None:
             ps_id = compact_text(entry.get("ps_id") or "")
             source = ps_id.split("::", 1)[0] if ps_id else ""
         partial = int(entry.get("pp_partial_no") or 1)
-        apply_wo_stage_metadata(entry, wo_cache.get((source, partial), []))
+        wo_stages = wo_cache.get((source, partial), [])
+        apply_wo_stage_metadata(entry, wo_stages)
+        merge_finishing_op_cards_into_entry(entry, wo_stages)
 
 
-# Backward-compatible alias — does not merge finishing stages into ops.
+# Backward-compatible alias — metadata + finishing op cards for PP sidebar.
 merge_finishing_stages_into_voucher_entries = apply_wo_stage_metadata_to_voucher_entries

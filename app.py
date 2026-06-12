@@ -2511,6 +2511,34 @@ def api_planner_cycle_times_reload():
         return jsonify({"error": str(e)}), 500
 
 
+@app.post("/api/planner/cycle-times/reset-from-sheet")
+def api_planner_cycle_times_reset_from_sheet():
+    """
+    DESTRUCTIVE one-time reset: sync Excel sheet, wipe master table, reload all rows from program tools.
+    Requires JSON body {"confirm": "RESET_FROM_SHEET"}.
+    """
+    data = request.get_json(silent=True) or {}
+    if (data.get("confirm") or "").strip() != "RESET_FROM_SHEET":
+        return jsonify({
+            "error": 'Confirmation required. Send {"confirm": "RESET_FROM_SHEET"} to proceed.',
+        }), 400
+
+    from planning.cycle_time_master_import import reset_master_from_sheet
+
+    try:
+        result = reset_master_from_sheet(full_program_tools_refresh=False)
+        if result.get("error"):
+            status = 503 if "SUPA_DB_URL" in str(result.get("error", "")) else 500
+            return jsonify(result), status
+        if result.get("program_tools", {}).get("error"):
+            return jsonify(result), 500
+        if result.get("master", {}).get("error"):
+            return jsonify(result), 503
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.post("/api/planner/cycle-times/full-reload")
 def api_planner_cycle_times_full_reload():
     """DESTRUCTIVE admin rebuild. Requires ALLOW_MASTER_TRUNCATE=1."""
@@ -2547,7 +2575,7 @@ def api_planner_cycle_times_full_reload():
 
 
 # ── Background auto-sync (opt-in) ─────────────────────────────────────────────
-# ERP sync normally runs at fixed daily times via scripts/install_erp_sync_scheduler.ps1
+# ERP sync normally runs once daily at 08:00 via scripts/install_erp_sync_scheduler.ps1
 # (or manual Sync ERP in the UI). Set ENABLE_AUTO_SYNC=1 to also run the full PP staging
 # pipeline every AUTO_SYNC_INTERVAL seconds inside this Flask process, then
 # program-tool-list (Google Sheet → SQLite → planner_program_tools on Supabase)

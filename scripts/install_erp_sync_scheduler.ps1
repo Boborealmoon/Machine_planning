@@ -31,8 +31,8 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$SyncScript`"" `
     -WorkingDirectory $RepoRoot
 
-# Daily triggers at: 00:00, 08:00, 12:05, 16:05, 18:00, 20:00
-$SyncTimes = @("00:00", "08:00", "12:05", "16:05", "18:00", "20:00")
+# Once daily at 08:00 (local time)
+$SyncTimes = @("08:00")
 $Triggers = $SyncTimes | ForEach-Object {
     New-ScheduledTaskTrigger -Daily -At $_
 }
@@ -52,7 +52,7 @@ Register-ScheduledTask `
     -Trigger $Triggers `
     -Settings $Settings `
     -Principal $Principal `
-    -Description "COMAIN to Supabase ERP sync for Machine Planning (fixed daily times)" | Out-Null
+    -Description "COMAIN to Supabase ERP sync for Machine Planning (daily 08:00)" | Out-Null
 
 Write-Host ""
 Write-Host "Scheduled task registered: $TaskName"

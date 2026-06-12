@@ -1004,7 +1004,7 @@ function openTrialMachineQueue(machineId) {
         ${listHtml}
       </div>
     `,
-    'lg',
+    'xl',
   );
   if (typeof initTrialQueuePanelSortable === 'function') initTrialQueuePanelSortable();
 }

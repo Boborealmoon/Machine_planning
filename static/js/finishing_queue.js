@@ -1,4 +1,4 @@
-// Finishing queue — Deburring / Final Inspection / Packing active stages.
+// Finishing queue — Deburring / Final Inspection / Packing / Engraving & Packing.
 
 const fqState = {
   items: [],
@@ -171,6 +171,7 @@ function fqUpdateCounts(payload) {
   setCount('fq-count-deburring', stageCounts.deburring);
   setCount('fq-count-final_inspection', stageCounts.final_inspection);
   setCount('fq-count-packing', stageCounts.packing);
+  setCount('fq-count-engraving_packing', stageCounts.engraving_packing);
 }
 
 function fqRenderTable() {
@@ -187,7 +188,7 @@ function fqRenderTable() {
   if (!fqState.items.length) {
     wrap.hidden = true;
     empty.hidden = false;
-    if (emptyText) emptyText.textContent = 'No partials are currently at Deburring, Final Inspection, or Packing.';
+    if (emptyText) emptyText.textContent = 'No partials are currently at a finishing stage.';
     if (stats) stats.textContent = '';
     if (meta) meta.hidden = true;
     return;

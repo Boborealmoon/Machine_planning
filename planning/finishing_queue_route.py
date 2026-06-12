@@ -1,4 +1,4 @@
-"""Finishing queue — partials currently at Deburring, Final Inspection, or Packing."""
+"""Finishing queue — partials at post-machining ERP stages (deburr, inspect, pack, engrave)."""
 from __future__ import annotations
 
 import logging
@@ -9,6 +9,7 @@ from typing import Any
 
 from flask import Blueprint, jsonify, render_template, request
 
+from .erp_wo_merge import FINISHING_STAGE_DESCS, finishing_stage_bucket, is_finishing_stage_desc
 from .helpers import planner_db, rows
 from .utils import compact_text, shipped_quantity_completed
 
@@ -17,10 +18,10 @@ logger = logging.getLogger(__name__)
 finishing_queue_bp = Blueprint("finishing_queue", __name__)
 
 _CACHE_TTL_SEC = 60
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2
 _cache: tuple[float, int, list[dict[str, Any]]] | None = None
 
-FINISHING_STAGES = ("Deburring", "Final Inspection", "Packing")
+FINISHING_STAGES = tuple(FINISHING_STAGE_DESCS)
 
 _FINISHING_QUEUE_SQL = """
 WITH partial_base AS (
@@ -41,8 +42,11 @@ WITH partial_base AS (
         c.so_det_qty,
         c.status AS pp_status
     FROM pp_vouchers_cache c
-    WHERE c.current_stage_desc = ANY(%s)
-      AND COALESCE(c.current_stage_status, '') <> 'C'
+    WHERE COALESCE(c.current_stage_status, '') <> 'C'
+      AND (
+            c.current_stage_desc = ANY(%s)
+         OR c.current_stage_desc ILIKE 'Engraving%%Packing%%'
+      )
     ORDER BY c.ps_id, c.pp_partial_no, c.stage_no
 ),
 with_stage_qty AS (
@@ -60,11 +64,12 @@ with_stage_qty AS (
 SELECT *
 FROM with_stage_qty
 ORDER BY
-    CASE current_stage_desc
-        WHEN 'Deburring' THEN 1
-        WHEN 'Final Inspection' THEN 2
-        WHEN 'Packing' THEN 3
-        ELSE 4
+    CASE
+        WHEN TRIM(COALESCE(current_stage_desc, '')) = 'Deburring' THEN 1
+        WHEN TRIM(COALESCE(current_stage_desc, '')) = 'Final Inspection' THEN 2
+        WHEN TRIM(COALESCE(current_stage_desc, '')) = 'Packing' THEN 3
+        WHEN current_stage_desc ILIKE 'Engraving%%Packing%%' THEN 4
+        ELSE 5
     END,
     CASE current_stage_status
         WHEN 'I' THEN 0
@@ -95,14 +100,7 @@ def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _stage_bucket(stage_desc: str) -> str:
-    text = compact_text(stage_desc)
-    if text == "Deburring":
-        return "deburring"
-    if text == "Final Inspection":
-        return "final_inspection"
-    if text == "Packing":
-        return "packing"
-    return "other"
+    return finishing_stage_bucket(stage_desc)
 
 
 def _fetch_finishing_queue(*, refresh: bool = False) -> list[dict[str, Any]]:
@@ -121,6 +119,9 @@ def _fetch_finishing_queue(*, refresh: bool = False) -> list[dict[str, Any]]:
 
     items: list[dict[str, Any]] = []
     for row in raw_rows:
+        stage_desc = compact_text(row.get("current_stage_desc"))
+        if not is_finishing_stage_desc(stage_desc):
+            continue
         so_qty = row.get("so_det_qty")
         shipped = float(row.get("qty_shipped") or 0)
         if so_qty is not None and shipped_quantity_completed(so_qty, shipped):
@@ -153,7 +154,7 @@ def api_finishing_queue():
         logger.exception("finishing queue query failed")
         return jsonify({"error": str(exc)}), 500
 
-    counts = {stage: 0 for stage in ("deburring", "final_inspection", "packing")}
+    counts = {stage: 0 for stage in ("deburring", "final_inspection", "packing", "engraving_packing")}
     status_counts = {"I": 0, "R": 0, "P": 0}
     for item in items:
         bucket = item.get("stage_bucket") or ""

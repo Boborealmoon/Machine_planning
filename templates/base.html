@@ -101,13 +101,8 @@
         </div>
       </div>
 
-      <a href="/bom-variation"
-         class="nav-link {% if nav_path == '/bom-variation' or active == 'bom_variation' %}nav-link--active{% endif %}">
-        BOM VARIATION
-      </a>
-
       {# Reference / master data (/planning-data/* except legacy repeat-orders URL) #}
-      <div class="nav-dropdown {% if nav_path.startswith('/planning-data') and nav_path != '/planning-data/repeat-orders' or active == 'planning_data' %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/bom-variation',) or nav_path.startswith('/planning-data') and nav_path != '/planning-data/repeat-orders' or active in ('planning_data', 'bom_variation') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="planning-data">
           MASTER DATA <span class="nav-caret">▾</span>
         </button>
@@ -118,6 +113,10 @@
             Inventory enquiry
           </a>
           <a href="/planning-data/inventory-bom" class="nav-dropdown-item">Inventory BOM</a>
+          <a href="/bom-variation"
+             class="nav-dropdown-item {% if nav_path == '/bom-variation' or active == 'bom_variation' %}nav-dropdown-item--active{% endif %}">
+            BOM variation
+          </a>
           <span class="nav-dropdown-section">MACHINES &amp; TIMING</span>
           <a href="/planning-data/machines" class="nav-dropdown-item">Machines</a>
           <a href="/planning-data/cycle-times" class="nav-dropdown-item">Master cycle times</a>

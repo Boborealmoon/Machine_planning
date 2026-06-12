@@ -64,7 +64,9 @@ function newOrdersRenderLineDetail(row) {
   const repeatOpts = newOrdersRepeatOptions(row, similar);
   const lineHtml = [
     newOrdersDetailField('Process sheet', row.process_sheet_no, { mono: true }),
-    typeof repeatOrderDetailHtml === 'function' ? repeatOrderDetailHtml(similar, repeatOpts) : '',
+    typeof repeatOrderNewOrdersDetailHtml === 'function'
+      ? repeatOrderNewOrdersDetailHtml(row, similar, repeatOpts)
+      : (typeof repeatOrderDetailHtml === 'function' ? repeatOrderDetailHtml(similar, repeatOpts) : ''),
     newOrdersDetailField('Part / inventory', row.inventory_code, { mono: true }),
     newOrdersDetailField('Main description', row.main_desc),
     newOrdersDetailField('Line description', desc),
@@ -324,16 +326,49 @@ function newOrdersSimilarPsList(row, soPsMap) {
   return newOrdersExcludeSameOrderPs(row, out, soPsMap);
 }
 
-function newOrdersEnrichRowQueue(row, queuedSet) {
+function newOrdersSameSoSimilarPs(row, allRows) {
+  const soNo = String(row?.source_voucher_no || '').trim();
+  const partNo = String(row?.inventory_code || '').trim();
+  const current = newOrdersPsBase(row?.process_sheet_no);
+  if (!soNo || !partNo || !current) return [];
+  const seen = new Set();
+  const out = [];
+  (allRows || []).forEach((item) => {
+    if (String(item?.source_voucher_no || '').trim() !== soNo) return;
+    if (String(item?.inventory_code || '').trim() !== partNo) return;
+    const ps = newOrdersPsBase(item?.process_sheet_no);
+    if (!ps || ps === current || seen.has(ps)) return;
+    seen.add(ps);
+    out.push(ps);
+  });
+  return out;
+}
+
+function newOrdersEnrichRowQueue(row, queuedSet, allRows) {
   const similar = Array.isArray(row.similar_ps) ? row.similar_ps : [];
   const queuedInPlanner = Array.isArray(row.queued_in_planner)
     ? row.queued_in_planner.map(newOrdersPsBase).filter(Boolean)
     : similar.filter((ps) => queuedSet.has(newOrdersPsBase(ps)));
+  const sameSoSimilar = Array.isArray(row.same_so_similar_ps)
+    ? row.same_so_similar_ps.map(newOrdersPsBase).filter(Boolean)
+    : newOrdersSameSoSimilarPs(row, allRows);
+  const queuedInSo = Array.isArray(row.queued_in_so)
+    ? row.queued_in_so.map(newOrdersPsBase).filter(Boolean)
+    : sameSoSimilar.filter((ps) => queuedSet.has(ps));
+  const psCurrent = newOrdersPsBase(row?.process_sheet_no);
+  const plannerQueued = Boolean(row.planner_queued) || Boolean(psCurrent && queuedSet.has(psCurrent));
   return {
     ...row,
     similar_ps: similar,
     queued_in_planner: queuedInPlanner,
-    is_repeat: Boolean(similar.length && queuedInPlanner.length),
+    same_so_similar_ps: sameSoSimilar,
+    queued_in_so: queuedInSo,
+    planner_queued: plannerQueued,
+    is_repeat: Boolean(
+      (similar.length && queuedInPlanner.length)
+      || queuedInSo.length
+      || sameSoSimilar.length,
+    ),
   };
 }
 
@@ -348,12 +383,12 @@ function newOrdersEnrichRowsWithRepeats(rows, repeatGroups) {
   return (rows || []).map((row) => {
     const existing = newOrdersSimilarPsList(row, soPsMap);
     if (existing.length) {
-      return newOrdersEnrichRowQueue({ ...row, similar_ps: existing }, queuedSet);
+      return newOrdersEnrichRowQueue({ ...row, similar_ps: existing }, queuedSet, rows);
     }
     const similar = typeof repeatOrderSimilarList === 'function'
       ? repeatOrderSimilarList(row, repeatGroups, soPsMap, keys)
       : [];
-    return newOrdersEnrichRowQueue({ ...row, similar_ps: similar }, queuedSet);
+    return newOrdersEnrichRowQueue({ ...row, similar_ps: similar }, queuedSet, rows);
   });
 }
 
@@ -363,13 +398,29 @@ function newOrdersRepeatOptions(row, similar) {
   const slotWith = Array.isArray(row?.queued_in_planner) && row.queued_in_planner.length
     ? row.queued_in_planner.map(newOrdersPsBase).filter(Boolean)
     : list.filter((ps) => queuedSet.has(newOrdersPsBase(ps)));
-  return { slotWith, queuedInPlanner: slotWith, requireQueued: true };
+  const slotWithSameSo = Array.isArray(row?.queued_in_so)
+    ? row.queued_in_so.map(newOrdersPsBase).filter(Boolean)
+    : [];
+  const sameSoSimilar = Array.isArray(row?.same_so_similar_ps)
+    ? row.same_so_similar_ps.map(newOrdersPsBase).filter(Boolean)
+    : [];
+  return {
+    slotWith,
+    slotWithSameSo,
+    sameSoSimilar,
+    queuedInPlanner: slotWith,
+    plannerQueued: Boolean(row?.planner_queued),
+    requireQueued: true,
+    similar: list,
+  };
 }
 
 function newOrdersRenderSimilarPs(row) {
-  if (row?.is_repeat === false) return '';
   const soPsMap = newOrdersBuildSoPsMap(newOrdersState.rows);
   const similar = newOrdersSimilarPsList(row, soPsMap);
+  if (typeof repeatOrderRenderNewOrdersHints === 'function') {
+    return repeatOrderRenderNewOrdersHints(row, similar, newOrdersRepeatOptions(row, similar));
+  }
   const opts = newOrdersRepeatOptions(row, similar);
   if (!similar.length || !opts.slotWith.length) return '';
   return typeof repeatOrderRenderPill === 'function' ? repeatOrderRenderPill(similar, opts) : '';
@@ -406,6 +457,8 @@ function newOrdersSearchText(row) {
     row.process_sheet_no,
     ...(row.similar_ps || []),
     ...(row.queued_in_planner || []),
+    ...(row.queued_in_so || []),
+    ...(row.same_so_similar_ps || []),
     row.inventory_code,
     row.main_desc,
     row.line_item_description,

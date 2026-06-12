@@ -21,7 +21,7 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 
 _NOTE_FIELDS = (
     "material_subcon",
@@ -229,14 +229,41 @@ def _partials_by_pp_voucher(partials: list[dict[str, Any]]) -> dict[str, list[di
     return grouped
 
 
-def _empty_notes() -> dict[str, str]:
-    return {field: "" for field in _NOTE_FIELDS}
+def _empty_notes() -> dict[str, Any]:
+    out = {field: "" for field in _NOTE_FIELDS}
+    out["ps_highlighted"] = False
+    out["highlighted_partials"] = []
+    return out
 
 
-def _notes_from_row(row: dict[str, Any] | None) -> dict[str, str]:
+def _parse_highlighted_partials(raw: Any, *, legacy_bool: bool = False) -> list[int]:
+    out: list[int] = []
+    text = compact_text(raw)
+    if text:
+        for part in text.split(","):
+            part = part.strip()
+            if part.isdigit():
+                out.append(int(part))
+    if not out and legacy_bool:
+        out = [1]
+    return sorted(set(out))
+
+
+def _format_highlighted_partials(partials: list[int]) -> str:
+    return ",".join(str(p) for p in sorted(set(int(p) for p in partials if int(p) > 0)))
+
+
+def _notes_from_row(row: dict[str, Any] | None) -> dict[str, Any]:
     if not row:
         return _empty_notes()
-    return {field: compact_text(row.get(field)) for field in _NOTE_FIELDS}
+    out = {field: compact_text(row.get(field)) for field in _NOTE_FIELDS}
+    highlighted = _parse_highlighted_partials(
+        row.get("highlighted_partials"),
+        legacy_bool=bool(row.get("ps_highlighted")),
+    )
+    out["highlighted_partials"] = highlighted
+    out["ps_highlighted"] = bool(highlighted)
+    return out
 
 
 def _ensure_notes_table(con) -> None:
@@ -249,8 +276,21 @@ def _ensure_notes_table(con) -> None:
             quality_doc         TEXT         NOT NULL DEFAULT '',
             ops_notes           TEXT         NOT NULL DEFAULT '',
             sales_notes         TEXT         NOT NULL DEFAULT '',
+            ps_highlighted      BOOLEAN      NOT NULL DEFAULT FALSE,
             updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         )
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_so_pp_notes
+        ADD COLUMN IF NOT EXISTS ps_highlighted BOOLEAN NOT NULL DEFAULT FALSE
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_so_pp_notes
+        ADD COLUMN IF NOT EXISTS highlighted_partials TEXT NOT NULL DEFAULT ''
         """
     )
 
@@ -323,6 +363,210 @@ def _apply_material_in_overlay(orders: list[dict[str, Any]], overlay: dict[str, 
             pp.update(overlay.get(base, default))
 
 
+_QUEUED_MACHINES_SQL = """
+SELECT DISTINCT
+    COALESCE(NULLIF(TRIM(o.source_ps_id), ''), NULLIF(TRIM(o.job_no), '')) AS raw_ps_id,
+    m.machine_no
+FROM planner_operation o
+JOIN planner_run_block b ON b.operation_id = o.operation_id
+JOIN planner_machines m ON m.machine_id = b.machine_id
+WHERE COALESCE(b.active, TRUE) = TRUE
+  AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
+  AND m.active = TRUE
+  AND COALESCE(NULLIF(TRIM(o.source_ps_id), ''), NULLIF(TRIM(o.job_no), '')) <> ''
+ORDER BY raw_ps_id, m.machine_no
+"""
+
+
+def _pp_ps_base(pp: dict[str, Any]) -> str:
+    return _ps_base_id(pp.get("process_sheet_no") or pp.get("pp_voucher_no") or "")
+
+
+def _machines_for_planner_ps_id(
+    by_canonical: dict[str, list[str]],
+    ps_id: str,
+) -> list[str]:
+    """Match planner queue rows to a sales-order partial (same rules as catalog sidebar)."""
+    from .catalog import _canonical_catalog_ps_id, _catalog_op_qty_ps_ids
+
+    machines: list[str] = []
+    for variant in _catalog_op_qty_ps_ids(ps_id):
+        canonical = _canonical_catalog_ps_id(variant)
+        for machine in by_canonical.get(canonical, []):
+            if machine not in machines:
+                machines.append(machine)
+    return machines
+
+
+def _load_queued_machines_by_canonical_ps() -> dict[str, list[str]]:
+    from .catalog import _canonical_catalog_ps_id
+
+    out: dict[str, list[str]] = {}
+    try:
+        with planner_db() as con:
+            fetched = rows(con.execute(_QUEUED_MACHINES_SQL))
+    except Exception as exc:
+        logger.warning("queued machines overlay load skipped: %s", exc)
+        return out
+
+    for row in fetched:
+        raw_ps_id = compact_text(row.get("raw_ps_id"))
+        machine = compact_text(row.get("machine_no"))
+        if not raw_ps_id or not machine:
+            continue
+        canonical = _canonical_catalog_ps_id(raw_ps_id)
+        if not canonical:
+            continue
+        bucket = out.setdefault(canonical, [])
+        if machine not in bucket:
+            bucket.append(machine)
+    return out
+
+
+_STAGE_OVERLAY_SQL = """
+SELECT
+    split_part(ps_id, '::', 1) AS ps_base,
+    pp_partial_no,
+    MAX(current_stage_no) AS current_stage_no,
+    MAX(current_stage_desc) AS current_stage_desc,
+    MAX(current_stage_status) AS current_stage_status
+FROM pp_vouchers_cache
+WHERE split_part(ps_id, '::', 1) = ANY(%s)
+GROUP BY split_part(ps_id, '::', 1), pp_partial_no
+"""
+
+
+def _default_stage_overlay() -> dict[str, Any]:
+    return {
+        "current_stage_no": None,
+        "current_stage_desc": "",
+        "current_stage_status": "",
+    }
+
+
+def _load_stage_overlay(process_sheet_nos: list[str]) -> dict[tuple[str, int], dict[str, Any]]:
+    bases: list[str] = []
+    seen: set[str] = set()
+    for raw in process_sheet_nos:
+        base = _ps_base_id(raw)
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        bases.append(base)
+    if not bases:
+        return {}
+
+    try:
+        with planner_db() as con:
+            fetched = rows(con.execute(_STAGE_OVERLAY_SQL, (bases,)))
+    except Exception as exc:
+        logger.warning("stage overlay load skipped: %s", exc)
+        return {}
+
+    out: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in fetched:
+        ps_base = compact_text(row.get("ps_base"))
+        if not ps_base:
+            continue
+        try:
+            partial_no = max(1, int(row.get("pp_partial_no") or 1))
+        except (TypeError, ValueError):
+            partial_no = 1
+        stage_desc = compact_text(row.get("current_stage_desc"))
+        stage_status = compact_text(row.get("current_stage_status"))
+        if not stage_desc and not stage_status:
+            continue
+        stage_no = row.get("current_stage_no")
+        out[(ps_base, partial_no)] = {
+            "current_stage_no": int(stage_no) if stage_no is not None else None,
+            "current_stage_desc": stage_desc,
+            "current_stage_status": stage_status,
+        }
+    return out
+
+
+def _apply_stage_overlay(
+    orders: list[dict[str, Any]],
+    overlay: dict[tuple[str, int], dict[str, Any]],
+) -> None:
+    default = _default_stage_overlay()
+    for order in orders:
+        for pp in order.get("pp_vouchers") or []:
+            base = _pp_ps_base(pp)
+            partial_rows = pp.get("partials") or []
+            if not partial_rows:
+                pp.update(overlay.get((base, 1), default))
+                continue
+            for partial in partial_rows:
+                try:
+                    partial_no = max(1, int(partial.get("pp_partial_no") or 1))
+                except (TypeError, ValueError):
+                    partial_no = 1
+                partial.update(overlay.get((base, partial_no), default))
+
+
+def _apply_queued_machines_overlay(
+    orders: list[dict[str, Any]],
+    by_canonical: dict[str, list[str]],
+) -> None:
+    from .process_sheets import format_planner_ps_id
+
+    for order in orders:
+        for pp in order.get("pp_vouchers") or []:
+            base = _pp_ps_base(pp)
+            partial_rows = pp.get("partials") or []
+            if not partial_rows:
+                partial_rows = [{"pp_partial_no": 1}]
+            all_machines: list[str] = []
+            by_partial: dict[str, list[str]] = {}
+            for partial in partial_rows:
+                partial_no = int(partial.get("pp_partial_no") or 1)
+                ps_id = format_planner_ps_id(base, partial_no)
+                machines = _machines_for_planner_ps_id(by_canonical, ps_id)
+                partial["queued_machines"] = machines
+                by_partial[str(partial_no)] = machines
+                for machine in machines:
+                    if machine not in all_machines:
+                        all_machines.append(machine)
+            pp["queued_machines"] = all_machines
+            pp["queued_machines_by_partial"] = by_partial
+
+
+def _strip_completed_highlights(orders: list[dict[str, Any]]) -> list[str]:
+    to_clear: list[str] = []
+    for order in orders:
+        for pp in order.get("pp_vouchers") or []:
+            if pp.get("shipped_completed") and pp.get("highlighted_partials"):
+                pp["highlighted_partials"] = []
+                pp["ps_highlighted"] = False
+                pp_no = compact_text(pp.get("pp_voucher_no"))
+                if pp_no:
+                    to_clear.append(pp_no)
+    return to_clear
+
+
+def _batch_clear_ps_highlights(pp_voucher_nos: list[str]) -> None:
+    ids = [compact_text(v) for v in pp_voucher_nos if compact_text(v)]
+    if not ids:
+        return
+    try:
+        with planner_db() as con:
+            _ensure_notes_table(con)
+            con.execute(
+                """
+                UPDATE planner_so_pp_notes
+                SET ps_highlighted = FALSE,
+                    highlighted_partials = '',
+                    updated_at = NOW()
+                WHERE pp_voucher_no = ANY(%s)
+                  AND (ps_highlighted = TRUE OR highlighted_partials <> '')
+                """,
+                (ids,),
+            )
+    except Exception as exc:
+        logger.warning("ps_highlighted batch clear skipped: %s", exc)
+
+
 def _load_notes_map(pp_voucher_nos: list[str]) -> dict[str, dict[str, str]]:
     ids = [compact_text(v) for v in pp_voucher_nos if compact_text(v)]
     if not ids:
@@ -334,7 +578,8 @@ def _load_notes_map(pp_voucher_nos: list[str]) -> dict[str, dict[str, str]]:
                 con.execute(
                     """
                     SELECT pp_voucher_no, material_subcon, mtl_part_order,
-                           quality_doc, ops_notes, sales_notes
+                           quality_doc, ops_notes, sales_notes, ps_highlighted,
+                           highlighted_partials
                     FROM planner_so_pp_notes
                     WHERE pp_voucher_no = ANY(%s)
                     """,
@@ -458,19 +703,25 @@ def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, An
         if pp.get("process_sheet_no")
     ]
     _apply_material_in_overlay(orders, _load_material_in_overlay(process_sheets))
+    _apply_stage_overlay(orders, _load_stage_overlay(process_sheets))
+    _apply_queued_machines_overlay(orders, _load_queued_machines_by_canonical_ps())
+    to_clear = _strip_completed_highlights(orders)
+    if to_clear:
+        _batch_clear_ps_highlights(to_clear)
     payload = _split_by_shipped_completion(orders)
     _cache = (now, payload)
     return payload
 
 
-def _upsert_notes(pp_voucher_no: str, patch: dict[str, str]) -> dict[str, Any]:
+def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
     with planner_db() as con:
         _ensure_notes_table(con)
         existing = rows(
             con.execute(
                 """
                 SELECT pp_voucher_no, material_subcon, mtl_part_order,
-                       quality_doc, ops_notes, sales_notes
+                       quality_doc, ops_notes, sales_notes, ps_highlighted,
+                       highlighted_partials
                 FROM planner_so_pp_notes
                 WHERE pp_voucher_no = %s
                 """,
@@ -478,19 +729,51 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, str]) -> dict[str, Any]:
             )
         )
         current = _notes_from_row(existing[0] if existing else None)
-        current.update(patch)
+        partial_toggle = patch.pop("partial_highlight", None)
+        if partial_toggle is not None:
+            try:
+                partial_no = max(1, int(partial_toggle.get("pp_partial_no") or 1))
+            except (TypeError, ValueError):
+                partial_no = 1
+            highlighted_set = set(current.get("highlighted_partials") or [])
+            if bool(partial_toggle.get("highlighted")):
+                highlighted_set.add(partial_no)
+            else:
+                highlighted_set.discard(partial_no)
+            current["highlighted_partials"] = sorted(highlighted_set)
+            current["ps_highlighted"] = bool(highlighted_set)
+        elif "ps_highlighted" in patch:
+            on = bool(patch.pop("ps_highlighted"))
+            try:
+                partial_no = max(1, int(patch.pop("pp_partial_no", 1) or 1))
+            except (TypeError, ValueError):
+                partial_no = 1
+            highlighted_set = set(current.get("highlighted_partials") or [])
+            if on:
+                highlighted_set.add(partial_no)
+            else:
+                highlighted_set.discard(partial_no)
+            current["highlighted_partials"] = sorted(highlighted_set)
+            current["ps_highlighted"] = bool(highlighted_set)
+        for key, value in patch.items():
+            if key in _NOTE_FIELDS:
+                current[key] = compact_text(value)
+        highlighted_text = _format_highlighted_partials(current.get("highlighted_partials") or [])
         con.execute(
             """
             INSERT INTO planner_so_pp_notes (
                 pp_voucher_no, material_subcon, mtl_part_order,
-                quality_doc, ops_notes, sales_notes, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                quality_doc, ops_notes, sales_notes, ps_highlighted,
+                highlighted_partials, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (pp_voucher_no) DO UPDATE SET
                 material_subcon = EXCLUDED.material_subcon,
                 mtl_part_order = EXCLUDED.mtl_part_order,
                 quality_doc = EXCLUDED.quality_doc,
                 ops_notes = EXCLUDED.ops_notes,
                 sales_notes = EXCLUDED.sales_notes,
+                ps_highlighted = EXCLUDED.ps_highlighted,
+                highlighted_partials = EXCLUDED.highlighted_partials,
                 updated_at = NOW()
             """,
             (
@@ -500,8 +783,11 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, str]) -> dict[str, Any]:
                 current["quality_doc"],
                 current["ops_notes"],
                 current["sales_notes"],
+                current["ps_highlighted"],
+                highlighted_text,
             ),
         )
+        current["highlighted_partials"] = _parse_highlighted_partials(highlighted_text)
         return {"pp_voucher_no": pp_voucher_no, **current}
 
 
@@ -558,10 +844,16 @@ def api_sales_order_notes(pp_voucher_no):
         return jsonify({"error": "pp_voucher_no is required"}), 400
 
     data = request.get_json(force=True, silent=True) or {}
-    patch: dict[str, str] = {}
+    patch: dict[str, Any] = {}
     for field in _NOTE_FIELDS:
         if field in data:
             patch[field] = compact_text(data.get(field))
+    if "partial_highlight" in data and isinstance(data.get("partial_highlight"), dict):
+        patch["partial_highlight"] = data.get("partial_highlight")
+    elif "ps_highlighted" in data:
+        patch["ps_highlighted"] = bool(data.get("ps_highlighted"))
+        if "pp_partial_no" in data:
+            patch["pp_partial_no"] = data.get("pp_partial_no")
 
     if not patch:
         return jsonify({"error": "No editable fields supplied"}), 400

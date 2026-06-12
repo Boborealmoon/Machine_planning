@@ -90,6 +90,12 @@ function repeatOrderSlotWithList(options = {}) {
   return out;
 }
 
+function repeatOrderFormatPsList(list, max = 3) {
+  const items = (Array.isArray(list) ? list : []).slice(0, max);
+  const overflow = (Array.isArray(list) ? list : []).length > max ? ` +${list.length - max} more` : '';
+  return { preview: items.join(', '), overflow };
+}
+
 function repeatOrderRenderPill(similar, options = {}) {
   const hasHistory = Array.isArray(similar) && similar.length > 0;
   const slotWith = repeatOrderSlotWithList(options);
@@ -97,8 +103,7 @@ function repeatOrderRenderPill(similar, options = {}) {
 
   if (requireQueued) {
     if (!hasHistory || !slotWith.length) return '';
-    const preview = slotWith.slice(0, 3).join(', ');
-    const overflow = slotWith.length > 3 ? ` +${slotWith.length - 3} more` : '';
+    const { preview, overflow } = repeatOrderFormatPsList(slotWith);
     const title = `Repeat order — same part already queued on planner: ${slotWith.join(', ')}`;
     return `
       <div class="new-orders-repeat-wrap" title="${escapeHtml(title)}">
@@ -109,13 +114,74 @@ function repeatOrderRenderPill(similar, options = {}) {
   }
 
   if (!hasHistory) return '';
-  const preview = similar.slice(0, 3).join(', ');
-  const overflow = similar.length > 3 ? ` +${similar.length - 3} more` : '';
+  const { preview, overflow } = repeatOrderFormatPsList(similar);
   const title = `Repeat order — previous PS: ${similar.join(', ')}`;
   return `
     <div class="new-orders-repeat-wrap" title="${escapeHtml(title)}">
       <span class="new-orders-repeat-badge">Repeat</span>
       <span class="new-orders-repeat-ref">Similar to ${escapeHtml(preview)}${escapeHtml(overflow)}</span>
+    </div>
+  `;
+}
+
+function repeatOrderRenderNewOrdersHints(row, similar, options = {}) {
+  const parts = [];
+  const crossSlot = repeatOrderSlotWithList({ slotWith: options.slotWith || row?.queued_in_planner });
+  const soSlot = repeatOrderSlotWithList({ slotWith: options.slotWithSameSo || row?.queued_in_so });
+  const sameSoAll = repeatOrderSlotWithList({ slotWith: row?.same_so_similar_ps || options.sameSoSimilar });
+  const sameSoOnly = sameSoAll.filter((ps) => !soSlot.includes(ps));
+  const similarList = Array.isArray(similar) ? similar : [];
+  const plannerQueued = Boolean(row?.planner_queued ?? options.plannerQueued);
+
+  if (similarList.length && crossSlot.length) {
+    const { preview, overflow } = repeatOrderFormatPsList(crossSlot);
+    const title = `Repeat order — same part already queued on planner: ${crossSlot.join(', ')}`;
+    parts.push(`
+      <div class="new-orders-repeat-wrap" title="${escapeHtml(title)}">
+        <span class="new-orders-repeat-badge">Repeat</span>
+        <span class="new-orders-repeat-ref">Slot with ${escapeHtml(preview)}${escapeHtml(overflow)}</span>
+      </div>
+    `);
+  }
+
+  if (soSlot.length) {
+    const { preview, overflow } = repeatOrderFormatPsList(soSlot);
+    const title = `Same sales order — same part already queued: ${soSlot.join(', ')}`;
+    parts.push(`
+      <div class="new-orders-repeat-wrap" title="${escapeHtml(title)}">
+        <span class="new-orders-repeat-badge new-orders-repeat-badge--same-so">Same order</span>
+        <span class="new-orders-repeat-ref new-orders-repeat-ref--same-so">Slot with ${escapeHtml(preview)}${escapeHtml(overflow)}</span>
+      </div>
+    `);
+  } else if (sameSoOnly.length) {
+    const { preview, overflow } = repeatOrderFormatPsList(sameSoOnly);
+    const title = `Same sales order — same part on another line: ${sameSoOnly.join(', ')}`;
+    parts.push(`
+      <div class="new-orders-repeat-wrap" title="${escapeHtml(title)}">
+        <span class="new-orders-repeat-badge new-orders-repeat-badge--same-so">Same order</span>
+        <span class="new-orders-repeat-ref new-orders-repeat-ref--same-so">Also ${escapeHtml(preview)}${escapeHtml(overflow)}</span>
+      </div>
+    `);
+  }
+
+  if (plannerQueued) {
+    parts.push(`
+      <div class="new-orders-repeat-wrap" title="This process sheet is already on the production queue">
+        <span class="new-orders-repeat-badge new-orders-repeat-badge--queued">Queued</span>
+      </div>
+    `);
+  }
+
+  return parts.join('');
+}
+
+function repeatOrderNewOrdersDetailHtml(row, similar, options = {}) {
+  const pill = repeatOrderRenderNewOrdersHints(row, similar, options);
+  if (!pill) return '';
+  return `
+    <div class="new-orders-detail-field new-orders-detail-field--repeat">
+      <dt>Queue hints</dt>
+      <dd class="new-orders-detail-value new-orders-detail-value--repeat">${pill}</dd>
     </div>
   `;
 }

@@ -295,10 +295,60 @@ def _is_machining_plannable_op(op_type, machine_category, source_kind=None, pref
     return False
 
 
+def _catalog_op_from_finishing_step(step, *, ps_id, pp_partial_no, launch_qty):
+    from planning.erp_wo_merge import is_finishing_stage_desc
+
+    stage_desc = compact_text(step.get("stage_desc") or step.get("op_type") or "")
+    if not is_finishing_stage_desc(stage_desc):
+        return None
+    stage_no = int(step.get("source_stage_no") or step.get("op_seq_id") or 0)
+    op_no = compact_text(step.get("op_no") or str(stage_no or ""))
+    finished = float(step.get("erp_finished_qty") or 0)
+    required = float(step.get("erp_required_qty") or launch_qty or 0)
+    if required <= 0:
+        required = float(launch_qty or 0)
+    remaining = max(0.0, required - finished) if required > 0 else 0.0
+    return {
+        "source_ps_id": ps_id,
+        "pp_partial_no": pp_partial_no,
+        "source_op_seq_id": stage_no,
+        "source_op_no": op_no,
+        "op_no": op_no,
+        "op_type": stage_desc,
+        "stage_desc": stage_desc,
+        "seq_no": int(step.get("seq_no") or 0),
+        "source_kind": "ERP_WO",
+        "source_stage_no": stage_no,
+        "machine_category": "FINISHING",
+        "preferred_machine": "",
+        "cycle_time": 0.0,
+        "setup_time": 0.0,
+        "is_last_op": 0,
+        "job_no": ps_id,
+        "operation_name": stage_desc,
+        "total_qty": remaining,
+        "required_qty": required,
+        "planned_qty": 0.0,
+        "erp_finished_qty": finished,
+        "erp_reject_qty": float(step.get("erp_reject_qty") or 0),
+        "remaining_qty": remaining,
+        "queued_machines": [],
+        "is_allocated": False,
+        "compatible_machine_group": "FINISHING",
+        "execution_status": compact_text(step.get("erp_execution_status") or ""),
+        "is_finishing": True,
+    }
+
+
 def _catalog_ops_for_sidebar(refreshed_ops):
-    """Ops listed in PS / Ops sidebar — includes completed machining ops (read-only in UI)."""
+    """Ops listed in PS / Ops sidebar — machining + post-machining finishing stages."""
+    from planning.erp_wo_merge import is_finishing_stage_desc
+
     sidebar_ops = []
     for op in refreshed_ops:
+        if is_finishing_stage_desc(op.get("stage_desc") or op.get("op_type")):
+            sidebar_ops.append(dict(op))
+            continue
         if _is_manual_bom_step(op):
             row = dict(op)
             if float(row.get("remaining_qty") or 0) <= 0:
@@ -487,6 +537,21 @@ def attach_planner_bom_ops_to_catalog_entry(
                 "execution_status": "",
             }
         )
+
+    from planning.erp_wo_merge import mfg_wo_stages_batch, merge_finishing_steps_into_flow_steps
+
+    wo_stages = mfg_wo_stages_batch(con, [(source_ps_id, pp_partial_no)]).get(
+        (source_ps_id, pp_partial_no), []
+    )
+    for step in merge_finishing_steps_into_flow_steps([], wo_stages):
+        finishing_op = _catalog_op_from_finishing_step(
+            step,
+            ps_id=ps_id,
+            pp_partial_no=pp_partial_no,
+            launch_qty=launch_qty,
+        )
+        if finishing_op:
+            all_ops.append(finishing_op)
 
     cascade_item = {
         "partial_qty": launch_qty,

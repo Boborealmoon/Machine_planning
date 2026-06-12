@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Inventory Enquiry{% endblock %}
 {% block main_class %}app-main--inventory-enquiry{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=inventory-enquiry-20260612">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=inventory-enquiry-summary-20260612">{% endblock %}
 {% block content %}
 <div class="mi-page inv-enq-page">
   <div class="mi-header">
     <div>
       <h1 class="mi-title">Inventory Enquiry</h1>
-      <p class="mi-subtitle">Live <code>mt_inventory</code> master. Filter by inventory class, search part numbers and descriptions, then click a row for grouped detail.</p>
+      <p class="mi-subtitle">Live <code>ic_inventory_enquiry_summary_view</code> — part master with on-hand, on-order, allocation and balance qty. Filter by class or stock position, search, then click a row for grouped detail.</p>
     </div>
     <div class="mi-header-actions">
       <button type="button" class="btn btn-ghost btn-sm" id="inv-refresh">Refresh</button>
@@ -42,11 +42,13 @@
       </div>
     </div>
     <label class="mi-filter">
-      <span>Status</span>
-      <select id="inv-status-filter" class="inv-enq-status-select">
-        <option value="active" selected>Active only</option>
-        <option value="suspended">Suspended only</option>
-        <option value="all">All statuses</option>
+      <span>Stock</span>
+      <select id="inv-stock-filter" class="inv-enq-status-select">
+        <option value="all" selected>All parts</option>
+        <option value="on_hand">On hand &gt; 0</option>
+        <option value="on_order">On order &gt; 0</option>
+        <option value="free_balance">Free balance &gt; 0</option>
+        <option value="back_order">Back order &gt; 0</option>
       </select>
     </label>
     <label class="mi-filter mi-filter--grow">
@@ -56,7 +58,7 @@
           <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
           <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
-        <input id="inv-search" class="planner-page-search-input" type="search" placeholder="Part no, description, class, UOM..." autocomplete="off">
+        <input id="inv-search" class="planner-page-search-input" type="search" placeholder="Part no, description, class, category, brand..." autocomplete="off">
       </span>
     </label>
     <div class="mi-stats" id="inv-stats"></div>
@@ -76,14 +78,15 @@
             <th>Part no</th>
             <th>Description</th>
             <th>Class</th>
+            <th>Cat</th>
             <th>UOM</th>
-            <th>BOM</th>
-            <th>In-house</th>
-            <th>Stock</th>
-            <th>Lead (d)</th>
-            <th>Base cost</th>
-            <th>Suspend</th>
-            <th>Updated</th>
+            <th>QOH avail</th>
+            <th>On hand</th>
+            <th>On order</th>
+            <th>Alloc (SQ)</th>
+            <th>Unalloc</th>
+            <th>Free bal</th>
+            <th>Back order</th>
           </tr>
         </thead>
         <tbody id="inv-table-body"></tbody>
@@ -109,11 +112,11 @@
       <button type="button" class="btn btn-ghost btn-sm" id="inv-detail-close" aria-label="Close">Close</button>
     </div>
     <div class="mi-detail-body" id="inv-detail-body"></div>
-    <p class="mi-detail-foot">Source: live COMAIN ERP · <code>mt_inventory</code> · short-lived server cache</p>
+    <p class="mi-detail-foot">Source: live COMAIN ERP · <code>ic_inventory_enquiry_summary_view</code> · short-lived server cache</p>
   </aside>
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=inventory-enquiry-20260612"></script>
-<script src="{{ url_for('static', filename='js/inventory_enquiry.js') }}?v=inventory-enquiry-20260612"></script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=inventory-enquiry-summary-20260612"></script>
+<script src="{{ url_for('static', filename='js/inventory_enquiry.js') }}?v=inventory-enquiry-summary-20260612"></script>
 {% endblock %}

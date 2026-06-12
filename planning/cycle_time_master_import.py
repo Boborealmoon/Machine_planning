@@ -639,6 +639,54 @@ SELECT COUNT(*)::int AS n FROM candidates
 
 
 
+def reset_master_from_sheet(*, full_program_tools_refresh: bool = False) -> dict:
+    """
+    One-time destructive reset: sheet -> program tools -> TRUNCATE master -> reload from sheet.
+    Both ideal_cycle_time and production cycle_time are set to Excel / program-tools values.
+    """
+    import os
+
+    from planning.program_tool_list_route import (
+        sync_program_tool_list_to_supabase,
+        sync_tool_list_sheet_to_sqlite,
+    )
+
+    out: dict = {}
+    if os.getenv("tool_list_secret_key", "").strip():
+        try:
+            out["sheet"] = sync_tool_list_sheet_to_sqlite()
+        except Exception as e:
+            out["sheet"] = {"error": str(e)}
+            return out
+    else:
+        out["sheet"] = {"skipped": True, "reason": "no tool_list_secret_key"}
+        return {
+            **out,
+            "error": "tool_list_secret_key is not set; cannot read the Excel sheet.",
+        }
+
+    try:
+        out["program_tools"] = sync_program_tool_list_to_supabase(
+            full_refresh=full_program_tools_refresh
+        )
+        if out["program_tools"].get("error"):
+            return out
+    except Exception as e:
+        out["program_tools"] = {"error": str(e)}
+        return out
+
+    out["master"] = reload_master_from_program_tools()
+    if out["master"].get("error"):
+        return out
+
+    inserted = int(out["master"].get("inserted") or 0)
+    out["message"] = (
+        f"Reset complete: master table replaced with {inserted} row(s) from the Excel sheet. "
+        "Master and production cycle times now match program tools."
+    )
+    return out
+
+
 def sync_cycle_times_incremental() -> dict:
     """
     Normal sync: Google Sheet -> planner_program_tools (upsert, no table wipe),
@@ -712,7 +760,9 @@ def reload_master_from_program_tools() -> dict:
 
         source = int(rows(con.execute(COUNT_CANDIDATES_SQL))[0].get("n") or 0)
 
-        con.execute("TRUNCATE public.planner_cycle_time_master RESTART IDENTITY")
+        con.execute(
+            "TRUNCATE public.planner_cycle_time_master RESTART IDENTITY CASCADE"
+        )
 
         cur = con.execute(RELOAD_MASTER_SQL)
 

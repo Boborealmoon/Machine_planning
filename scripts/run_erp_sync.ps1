@@ -1,4 +1,4 @@
-# On-prem ERP sync (Option A). Schedule via install_erp_sync_scheduler.ps1 (fixed daily times).
+# On-prem ERP sync (Option A). Schedule via install_erp_sync_scheduler.ps1 (daily 08:00).
 # Usage (from repo root):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_erp_sync.ps1
 

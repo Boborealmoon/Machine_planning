@@ -1,4 +1,4 @@
-"""Inventory enquiry — live ERP mt_inventory master read."""
+"""Inventory enquiry — live ERP ic_inventory_enquiry_summary_view."""
 from __future__ import annotations
 
 import logging
@@ -17,10 +17,8 @@ logger = logging.getLogger(__name__)
 inventory_enquiry_bp = Blueprint("inventory_enquiry", __name__)
 
 _CACHE_TTL_SEC = 300
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2
 _cache: tuple[float, int, list[dict[str, Any]]] | None = None
-
-_BYTEA_COLS = frozenset({"inventory_image", "thumbnail"})
 
 _CLASS_KEY_BY_CODE = {
     "RAW MATERIAL": "raw_material",
@@ -32,7 +30,7 @@ _CLASS_KEY_BY_CODE = {
 
 _INVENTORY_SQL = """
 SELECT *
-FROM public.mt_inventory
+FROM public.ic_inventory_enquiry_summary_view
 WHERE inventory_code IS NOT NULL
   AND BTRIM(inventory_code) <> ''
 ORDER BY
@@ -49,8 +47,6 @@ def _class_key(row: dict[str, Any]) -> str:
 def _serialize_value(value: Any) -> Any:
     if value is None:
         return None
-    if isinstance(value, (bytes, memoryview)):
-        return None
     if isinstance(value, datetime):
         return value.isoformat(sep=" ", timespec="seconds")
     if isinstance(value, date):
@@ -61,7 +57,7 @@ def _serialize_value(value: Any) -> Any:
 
 
 def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
-    out = {key: _serialize_value(val) for key, val in row.items() if key not in _BYTEA_COLS}
+    out = {key: _serialize_value(val) for key, val in row.items()}
     out["class_key"] = _class_key(out)
     return out
 
@@ -89,15 +85,33 @@ def _class_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def _status_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
-    active = 0
-    suspended = 0
+def _qty(row: dict[str, Any], key: str) -> float:
+    try:
+        return float(row.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _stock_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    on_hand = 0
+    on_order = 0
+    back_order = 0
+    free_balance = 0
     for row in rows:
-        if compact_text(row.get("is_suspend")).upper() == "Y":
-            suspended += 1
-        else:
-            active += 1
-    return {"active": active, "suspended": suspended}
+        if _qty(row, "total_qty_on_hand") > 0:
+            on_hand += 1
+        if _qty(row, "total_qty_on_order") > 0:
+            on_order += 1
+        if _qty(row, "total_qty_back_order") > 0:
+            back_order += 1
+        if _qty(row, "total_free_balance_qty") > 0:
+            free_balance += 1
+    return {
+        "on_hand": on_hand,
+        "on_order": on_order,
+        "back_order": back_order,
+        "free_balance": free_balance,
+    }
 
 
 def _fetch_inventory(*, refresh: bool = False) -> list[dict[str, Any]]:
@@ -137,7 +151,7 @@ def api_inventory_enquiry():
             "ok": True,
             "count": len(rows),
             "class_counts": _class_counts(rows),
-            "status_counts": _status_counts(rows),
+            "stock_counts": _stock_counts(rows),
             "cached_at": datetime.fromtimestamp(cached_at, tz=None).isoformat(sep=" ", timespec="seconds"),
             "cache_ttl_sec": _CACHE_TTL_SEC,
             "rows": rows,

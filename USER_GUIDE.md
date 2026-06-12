@@ -548,7 +548,7 @@ The **Sync ERP** button (top-right of the nav bar) pulls the latest data from th
 
 Progress is shown in the button label (e.g., "3/9 Work order status…"). When complete it shows "Synced (N rows) ✓".
 
-> **When to sync:** Run a sync at the start of each shift, or whenever you notice that new orders or status changes from the ERP are not reflected in the planner. Sync takes approximately 20–40 seconds.
+> **When to sync:** A full ERP sync runs automatically once per day at **08:00** (Windows Task Scheduler). Use **Sync ERP** manually when you need fresher data during the day. Sync takes approximately 20–40 seconds.
 
 ---
 

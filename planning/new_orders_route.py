@@ -216,6 +216,37 @@ def _so_ps_map(rows: list[dict[str, Any]]) -> dict[str, set[str]]:
     return by_so
 
 
+def _so_part_ps_map(rows: list[dict[str, Any]]) -> dict[str, dict[str, list[str]]]:
+    """Sales order -> part_no -> distinct PS bases on that order."""
+    out: dict[str, dict[str, list[str]]] = {}
+    seen: dict[str, dict[str, set[str]]] = {}
+    for row in rows:
+        so_no = compact_text(row.get("source_voucher_no"))
+        part_no = compact_text(row.get("inventory_code"))
+        ps_base = _ps_base_id(row.get("process_sheet_no") or "")
+        if not so_no or not part_no or not ps_base:
+            continue
+        part_seen = seen.setdefault(so_no, {}).setdefault(part_no, set())
+        if ps_base in part_seen:
+            continue
+        part_seen.add(ps_base)
+        out.setdefault(so_no, {}).setdefault(part_no, []).append(ps_base)
+    return out
+
+
+def _same_so_same_part_for_row(
+    row: dict[str, Any],
+    so_part_map: dict[str, dict[str, list[str]]],
+) -> list[str]:
+    so_no = compact_text(row.get("source_voucher_no"))
+    part_no = compact_text(row.get("inventory_code"))
+    ps_current = _ps_base_id(row.get("process_sheet_no") or "")
+    if not so_no or not part_no:
+        return []
+    siblings = so_part_map.get(so_no, {}).get(part_no, [])
+    return [ps for ps in siblings if ps and ps != ps_current]
+
+
 def _queued_ps_for_row(
     row: dict[str, Any],
     *,
@@ -282,6 +313,7 @@ def _enrich_new_orders_repeat_info(rows: list[dict[str, Any]]) -> tuple[list[dic
         groups = {}
 
     so_ps = _so_ps_map(rows)
+    so_part_map = _so_part_ps_map(rows)
     for row in rows:
         so_no = compact_text(row.get("source_voucher_no"))
         exclude = so_ps.get(so_no)
@@ -292,12 +324,19 @@ def _enrich_new_orders_repeat_info(rows: list[dict[str, Any]]) -> tuple[list[dic
             queued_by_part=queued_by_part,
             exclude_ps=exclude,
         )
+        same_so_similar = _same_so_same_part_for_row(row, so_part_map)
+        queued_in_so = [ps for ps in same_so_similar if ps in queued_bases]
         row["similar_ps"] = similar
         row["similar_ps_in_queue"] = [ps for ps in similar if ps in queued_bases]
         row["queued_in_planner"] = queued_same_part
+        row["same_so_similar_ps"] = same_so_similar
+        row["queued_in_so"] = queued_in_so
         row["planner_queued"] = in_queue
-        # Repeat badge: same part ordered before AND a similar PS is already on the planner queue.
-        row["is_repeat"] = bool(similar) and bool(queued_same_part)
+        row["is_repeat"] = bool(
+            (similar and queued_same_part)
+            or queued_in_so
+            or same_so_similar
+        )
     return rows, sorted(queued_bases)
 
 

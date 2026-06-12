@@ -31,6 +31,19 @@ def planner_db_available() -> bool:
     return bool(os.getenv("SUPA_DB_URL", "").strip())
 
 
+def _master_ideal_cycle(master: dict[str, Any] | None) -> float:
+    if not master:
+        return 0.0
+    ideal = float(master.get("ideal_cycle_time") or 0)
+    if ideal > 0:
+        return ideal
+    return float(master.get("cycle_time") or 0)
+
+
+def _production_cycle_only_source(source_kind: str) -> bool:
+    return compact_text(source_kind) in {SOURCE_PLANNER_HARVEST, SOURCE_PLANNER_JOB}
+
+
 def _parse_op_no(value: Any) -> int | None:
     text = compact_text(value)
     if not text:
@@ -396,7 +409,8 @@ def harvest_preview(con, *, strategy: str = "latest") -> list[dict[str, Any]]:
         proposed_cycle, proposed_setup, source_block_id, source_operation_id = _proposed_from_jobs(
             jobs, strategy
         )
-        current_cycle = float(master.get("cycle_time") or 0) if master else 0.0
+        current_ideal = _master_ideal_cycle(master)
+        current_production = float(master.get("cycle_time") or 0) if master else 0.0
         current_setup = float(master.get("set_up_time") or 0) if master else 0.0
         job_count = int(row.get("job_count") or len(jobs) or 1)
         cycle_min = float(row.get("cycle_min") or proposed_cycle)
@@ -404,15 +418,19 @@ def harvest_preview(con, *, strategy: str = "latest") -> list[dict[str, Any]]:
         has_variance = abs(cycle_max - cycle_min) > 0.009
         bom_step_cycle = float(row.get("bom_step_cycle_time") or 0)
         is_placeholder = bom_code.upper() in {"PLACEHOLDER", ""} and bom_step_cycle <= 1.01
-        recommendation = "review" if has_variance or is_placeholder else "clear"
+        ideal_baseline = current_ideal if current_ideal > 0 else bom_step_cycle
+        recommendation = (
+            "review"
+            if ideal_baseline <= 0
+            or abs(proposed_cycle - ideal_baseline) > 0.009
+            else "clear"
+        )
         median_cycle = _median([j["cycle_time"] for j in jobs])
         mode_cycle = _mode([j["cycle_time"] for j in jobs])
         differs = (
             master is None
-            or abs(current_cycle - proposed_cycle) > 0.009
-            or abs(current_setup - proposed_setup) > 0.009
+            or abs(current_production - proposed_cycle) > 0.009
         )
-        auto_select = differs and recommendation == "clear"
         out.append(
             {
                 "key": f"{part_no}|{bom_code}|{compact_text(row.get('op_type'))}|{compact_text(row.get('op_no_raw'))}",
@@ -432,7 +450,8 @@ def harvest_preview(con, *, strategy: str = "latest") -> list[dict[str, Any]]:
                 "bom_step_cycle_time": bom_step_cycle,
                 "bom_step_set_up_time": float(row.get("bom_step_set_up_time") or 0),
                 "current_master_id": int(master.get("id") or 0) if master else None,
-                "current_cycle_time": current_cycle,
+                "current_ideal_cycle_time": current_ideal,
+                "current_cycle_time": current_production,
                 "current_set_up_time": current_setup,
                 "job_count": job_count,
                 "cycle_min": cycle_min,
@@ -444,7 +463,7 @@ def harvest_preview(con, *, strategy: str = "latest") -> list[dict[str, Any]]:
                 "jobs": jobs,
                 "source_operation_id": source_operation_id,
                 "source_block_id": source_block_id,
-                "selected": auto_select,
+                "selected": False,
                 "expanded": False,
                 "picked_job_index": 0 if recommendation == "clear" else None,
             }
@@ -590,39 +609,54 @@ def publish_cycle_time(
     cycle_old = float(master.get("cycle_time") or 0) if master else None
     setup_old = float(master.get("set_up_time") or 0) if master else None
     update_ideal = source_kind == SOURCE_SHEET
+    production_only = _production_cycle_only_source(source_kind)
 
     if master:
         master_id = int(master["id"])
-        ideal_clause = ", ideal_cycle_time = %s" if update_ideal else ""
-        ideal_param = (cycle_new,) if update_ideal else ()
-        con.execute(
-            f"""
-            UPDATE public.planner_cycle_time_master
-            SET cycle_time = %s,
-                set_up_time = %s{ideal_clause},
-                part_description = CASE
-                    WHEN %s <> '' THEN %s
-                    ELSE part_description
-                END,
-                stage_name = CASE
-                    WHEN %s <> '' THEN %s
-                    ELSE stage_name
-                END,
-                updated_at = NOW()
-            WHERE id = %s
-            """,
-            (
-                cycle_new,
-                setup_new,
-                *ideal_param,
-                payload["part_description"],
-                payload["part_description"],
-                payload["stage_name"],
-                payload["stage_name"],
-                master_id,
-            ),
-        )
+        if production_only:
+            con.execute(
+                """
+                UPDATE public.planner_cycle_time_master
+                SET cycle_time = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (cycle_new, master_id),
+            )
+            setup_new = setup_old if setup_old is not None else 0.0
+        else:
+            ideal_clause = ", ideal_cycle_time = %s" if update_ideal else ""
+            ideal_param = (cycle_new,) if update_ideal else ()
+            con.execute(
+                f"""
+                UPDATE public.planner_cycle_time_master
+                SET cycle_time = %s,
+                    set_up_time = %s{ideal_clause},
+                    part_description = CASE
+                        WHEN %s <> '' THEN %s
+                        ELSE part_description
+                    END,
+                    stage_name = CASE
+                        WHEN %s <> '' THEN %s
+                        ELSE stage_name
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    cycle_new,
+                    setup_new,
+                    *ideal_param,
+                    payload["part_description"],
+                    payload["part_description"],
+                    payload["stage_name"],
+                    payload["stage_name"],
+                    master_id,
+                ),
+            )
     else:
+        ideal_insert = 0.0 if production_only else cycle_new
+        setup_insert = 0.0 if production_only else setup_new
         inserted = one(
             con.execute(
                 """
@@ -644,9 +678,9 @@ def publish_cycle_time(
                     payload["program_no"],
                     payload["program_file"],
                     payload["tool_list_file"],
+                    ideal_insert,
                     cycle_new,
-                    cycle_new,
-                    setup_new,
+                    setup_insert,
                 ),
             )
         )

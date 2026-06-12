@@ -20,9 +20,10 @@ const SO_PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
 
 const SO_COLUMNS = [
   { id: '_so', label: 'SO', side: true, sortable: true, filterable: true },
-  { id: 'pp_voucher_no', label: 'PP voucher', sortable: true, filterable: true, filterType: 'prefix' },
   { id: 'partial', label: 'Partial', sortable: true, filterable: true },
-  { id: 'process_sheet_no', label: 'Process sheet', sortable: true, filterable: true },
+  { id: 'process_sheet_no', label: 'Process sheet', sortable: true, filterable: true, filterType: 'prefix' },
+  { id: 'queued_cnc', label: 'Queued CNC', sortable: true, filterable: true },
+  { id: 'erp_stage', label: 'Stage', sortable: true, filterable: true },
   { id: 'order_date', label: 'Date', sortable: true, filterable: true },
   { id: 'part', label: 'Part', sortable: true, filterable: true },
   { id: 'description', label: 'Description', sortable: true, filterable: true },
@@ -199,90 +200,178 @@ function soDetailSection(title, html) {
   `;
 }
 
-function soRenderPartialDetail(order, pp, partial) {
-  const partialHtml = [
-    soDetailField('PP voucher', pp?.pp_voucher_no, { mono: true }),
-    soDetailField('Partial no.', partial?.pp_partial_no),
-    soDetailField('Part', partial?.inventory_code || pp?.inventory_code, { mono: true }),
-    soDetailField('Customer', partial?.party_name),
-    soDetailField('Customer code', partial?.customer_code, { mono: true }),
-    soDetailField('Customer PO', partial?.customer_po_no, { mono: true }),
-  ].join('');
+function soPsDisplayId(pp) {
+  const ppNo = String(pp?.pp_voucher_no || '').trim();
+  const psNo = String(pp?.process_sheet_no || '').trim();
+  if (psNo && ppNo && psNo !== ppNo) return `${ppNo} · ${psNo}`;
+  return psNo || ppNo || '—';
+}
+
+function soPsDisplayLabel(pp) {
+  const ppNo = String(pp?.pp_voucher_no || '').trim();
+  const psNo = String(pp?.process_sheet_no || '').trim();
+  if (psNo && ppNo && psNo !== ppNo) return 'PP / Process sheet';
+  return 'Process sheet';
+}
+
+function soPartialNo(partial) {
+  const n = Number(partial?.pp_partial_no);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+function soPartialQueuedMachines(pp, partial) {
+  if (Array.isArray(partial?.queued_machines)) {
+    return partial.queued_machines.filter(Boolean);
+  }
+  const pno = String(soPartialNo(partial));
+  const byPartial = pp?.queued_machines_by_partial;
+  if (byPartial && Array.isArray(byPartial[pno])) return byPartial[pno].filter(Boolean);
+  const fromList = (pp?.partials || []).find(row => String(soPartialNo(row)) === pno);
+  if (Array.isArray(fromList?.queued_machines)) return fromList.queued_machines.filter(Boolean);
+  if (pno === '1' && Array.isArray(pp?.queued_machines)) return pp.queued_machines.filter(Boolean);
+  return [];
+}
+
+function soQueuedMachinesLabel(pp, partial) {
+  const machines = partial ? soPartialQueuedMachines(pp, partial) : (pp?.queued_machines || []);
+  return machines.length ? machines.join(', ') : '—';
+}
+
+function soRenderQueuedMachinesHtml(machines) {
+  const list = Array.isArray(machines) ? machines.filter(Boolean) : [];
+  if (!list.length) return '<span class="so-dash">—</span>';
+  const pills = list.map(machine => (
+    `<span class="so-queue-machine-pill">${escapeHtml(String(machine))}</span>`
+  )).join('');
+  return `<span class="so-queue-machines" title="Queued on planner CNC lanes (this partial)">${pills}</span>`;
+}
+
+function soIsPartialQueued(pp, partial) {
+  if (soState.view !== 'active' || pp?.shipped_completed) return false;
+  return soPartialQueuedMachines(pp, partial).length > 0;
+}
+
+function soExecutionLabel(code) {
+  const c = String(code || '').trim().toUpperCase();
+  if (c === 'I' || c === 'IN_PROCESS') return 'In Process';
+  if (c === 'R' || c === 'READY_TO_START') return 'Ready to Start';
+  if (c === 'P' || c === 'PENDING_SI') return 'Pending SI';
+  if (c === 'C' || c === 'COMPLETED') return 'Completed';
+  return c || '—';
+}
+
+function soStatusPill(code) {
+  const c = String(code || '').trim().toUpperCase();
+  if (!c) return '';
+  let cls = 'mi-status-pill';
+  if (c === 'I') cls += ' mi-status-pill--o';
+  else if (c === 'R') cls += ' mi-status-pill--r';
+  else if (c === 'P') cls += ' mi-status-pill--h';
+  return `<span class="${cls}" title="${escapeHtml(soExecutionLabel(c))}">${escapeHtml(c)}</span>`;
+}
+
+function soPartialStage(partial) {
+  return {
+    desc: String(partial?.current_stage_desc || '').trim(),
+    status: String(partial?.current_stage_status || '').trim(),
+    no: partial?.current_stage_no,
+  };
+}
+
+function soStageLabel(partial) {
+  const stage = soPartialStage(partial);
+  if (!stage.desc && !stage.status) return '';
+  const parts = [];
+  if (stage.desc) parts.push(stage.desc);
+  if (stage.status) parts.push(stage.status);
+  return parts.join(' · ');
+}
+
+function soPsDisplayForPartial(pp, partial) {
+  const base = soPsDisplayId(pp);
+  const partialCount = Math.max(1, (pp?.partials || []).length);
+  const pno = soPartialNo(partial);
+  if (partialCount > 1) return `${base} · p${pno}`;
+  return base;
+}
+
+function soRenderJobDetailFields(order, pp, partial) {
   const similar = soSimilarPsForPp(order, pp);
-  const ppHtml = [
-    soDetailField('PP voucher', pp?.pp_voucher_no, { mono: true }),
-    soDetailField('Process sheet', pp?.process_sheet_no, { mono: true }),
+  return [
+    soDetailField('Sales order', order?.sales_order_no, { mono: true }),
+    soDetailField('Partial', partial?.pp_partial_no ?? '—'),
+    soDetailField(soPsDisplayLabel(pp), soPsDisplayId(pp), { mono: true }),
     typeof repeatOrderDetailHtml === 'function' ? repeatOrderDetailHtml(similar) : '',
-    soDetailField('Part', pp?.inventory_code, { mono: true }),
-    soDetailField('Description', pp?.description),
-    soDetailField('P/O No.', pp?.customer_po_no, { mono: true }),
-    soDetailField('PP qty', pp?.pp_qty),
+    soDetailField('Queued CNC', soQueuedMachinesLabel(pp, partial), { mono: true }),
+    ...(soPartialStage(partial).desc ? [soDetailField('Stage', soPartialStage(partial).desc)] : []),
+    ...(soPartialStage(partial).status ? [soDetailField('Stage status', soExecutionLabel(soPartialStage(partial).status))] : []),
+    soDetailField('Part', partial?.inventory_code || pp?.inventory_code, { mono: true }),
+    soDetailField('Description', pp?.description, { fullWidth: true }),
+    soDetailField('Customer PO', partial?.customer_po_no || pp?.customer_po_no || order?.customer_po_no, { mono: true }),
     soDetailField('SO line', pp?.source_line_item_no),
     soDetailField('Due date', soFormatDate(pp?.due_date)),
     soDetailField('Del. date', soFormatDate(pp?.delivery_date)),
+    soDetailField('Qty', pp?.pp_qty),
     soDetailField('U/Price', soFormatMoney(pp?.unit_selling_price)),
     soDetailField('Amount', soFormatMoney(pp?.amount)),
     soDetailField('PP status', pp?.status),
+    soDetailField('Material in', pp?.material_in ? `Yes · ${soFormatDate(pp?.material_in_date)}` : 'Awaiting'),
     ...SO_NOTE_FIELDS.map(field => soDetailField(SO_NOTE_LABELS[field], pp?.[field])),
   ].join('');
+}
+
+function soRenderPartialDetail(order, pp, partial) {
+  const lineHtml = soRenderJobDetailFields(order, pp, partial);
   const orderHtml = [
-    soDetailField('Sales order', order?.sales_order_no, { mono: true }),
-    soDetailField('Customer', order?.customer_name || order?.customer_short_name),
-    soDetailField('Customer PO', order?.customer_po_no, { mono: true }),
-    soDetailField('Voucher status', order?.voucher_status, { mono: true }),
+    soDetailField('Customer', partial?.party_name || order?.customer_name || order?.customer_short_name),
+    soDetailField('Customer code', partial?.customer_code || order?.customer_code, { mono: true }),
     soDetailField('Order date', soFormatDate(order?.order_date)),
     soPostedDetailFields(order),
+    soDetailField('Voucher status', order?.voucher_status, { mono: true }),
   ].join('');
   return [
-    soDetailSection('Partial', partialHtml),
-    soDetailSection('PP voucher', ppHtml),
+    soDetailSection('Line detail', lineHtml),
     soDetailSection('Sales order', orderHtml),
   ].join('');
 }
 
 function soRenderPpDetail(order, pp) {
-  const similar = soSimilarPsForPp(order, pp);
-  const ppHtml = [
-    soDetailField('PP voucher', pp?.pp_voucher_no, { mono: true }),
-    soDetailField('Process sheet', pp?.process_sheet_no, { mono: true }),
-    typeof repeatOrderDetailHtml === 'function' ? repeatOrderDetailHtml(similar) : '',
-    soDetailField('Material in', pp?.material_in ? `Yes · ${soFormatDate(pp?.material_in_date)}` : 'Awaiting'),
-    soDetailField('Part', pp?.inventory_code, { mono: true }),
-    soDetailField('BOM', pp?.bom_code, { mono: true }),
-    soDetailField('Description', pp?.description, { fullWidth: true }),
-    soDetailField('P/O No.', pp?.customer_po_no, { mono: true }),
-    soDetailField('PP qty', pp?.pp_qty),
-    soDetailField('SO line', pp?.source_line_item_no),
-    soDetailField('Due date', soFormatDate(pp?.due_date)),
-    soDetailField('Del. date', soFormatDate(pp?.delivery_date)),
-    soDetailField('U/Price', soFormatMoney(pp?.unit_selling_price)),
-    soDetailField('Amount', soFormatMoney(pp?.amount)),
-    soDetailField('PP status', pp?.status),
-    ...SO_NOTE_FIELDS.map(field => soDetailField(SO_NOTE_LABELS[field], pp?.[field])),
-  ].join('');
   const partials = Array.isArray(pp?.partials) ? pp.partials : [];
   const partialList = partials.map(partial => {
     const key = soPartialKey(order, pp, partial);
+    const queueHtml = soRenderQueuedMachinesHtml(soPartialQueuedMachines(pp, partial));
     return `
       <button type="button" class="new-orders-detail-line-pick" data-detail-key="${escapeHtml(key)}">
         <span class="new-orders-detail-line-pick-no">Partial ${escapeHtml(String(partial.pp_partial_no ?? '—'))}</span>
         <span class="new-orders-detail-line-pick-part">${escapeHtml(String(partial.inventory_code || '—'))}</span>
-        <span class="new-orders-detail-line-pick-desc">${escapeHtml(String(partial.customer_po_no || partial.party_name || '—'))}</span>
+        <span class="new-orders-detail-line-pick-desc">${escapeHtml(soQueuedMachinesLabel(pp, partial))}</span>
+        <span class="new-orders-detail-line-pick-queue">${queueHtml}</span>
       </button>
     `;
   }).join('');
+  const lineHtml = [
+    soDetailField(soPsDisplayLabel(pp), soPsDisplayId(pp), { mono: true }),
+    soDetailField('Queued CNC (all)', soQueuedMachinesLabel(pp), { mono: true }),
+    soDetailField('Part', pp?.inventory_code, { mono: true }),
+    soDetailField('BOM', pp?.bom_code, { mono: true }),
+    soDetailField('Description', pp?.description, { fullWidth: true }),
+    soDetailField('Customer PO', pp?.customer_po_no, { mono: true }),
+    soDetailField('Qty', pp?.pp_qty),
+    soDetailField('Due date', soFormatDate(pp?.due_date)),
+    soDetailField('Material in', pp?.material_in ? `Yes · ${soFormatDate(pp?.material_in_date)}` : 'Awaiting'),
+    ...SO_NOTE_FIELDS.map(field => soDetailField(SO_NOTE_LABELS[field], pp?.[field])),
+  ].join('');
   const orderHtml = [
     soDetailField('Sales order', order?.sales_order_no, { mono: true }),
     soDetailField('Customer', order?.customer_name || order?.customer_short_name),
-    soDetailField('Customer PO', order?.customer_po_no, { mono: true }),
+    soDetailField('Order date', soFormatDate(order?.order_date)),
     soDetailField('Status', order?.status),
-    soDetailField('Voucher status', order?.voucher_status, { mono: true }),
   ].join('');
   return `
-    ${soDetailSection('PP voucher', ppHtml)}
+    ${soDetailSection('Job', lineHtml)}
     <section class="new-orders-detail-section">
       <h3 class="new-orders-detail-section-title">Partials — click for detail</h3>
-      <div class="new-orders-detail-line-list">${partialList || '<p class="new-orders-muted">No partial rows for this PP voucher.</p>'}</div>
+      <div class="new-orders-detail-line-list">${partialList || '<p class="new-orders-muted">No partial rows.</p>'}</div>
     </section>
     ${soDetailSection('Sales order', orderHtml)}
   `;
@@ -310,10 +399,10 @@ function soRenderOrderDetail(order) {
     const repeatPill = soRenderRepeatPill(order, pp);
     return `
       <button type="button" class="new-orders-detail-line-pick" data-detail-key="${escapeHtml(key)}">
-        <span class="new-orders-detail-line-pick-no">${escapeHtml(String(pp.pp_voucher_no || '—'))}</span>
+        <span class="new-orders-detail-line-pick-no">${escapeHtml(soPsDisplayId(pp))}</span>
         <span class="new-orders-detail-line-pick-ps">
-          <span>${escapeHtml(String(pp.process_sheet_no || '—'))}</span>
           ${repeatPill}
+          ${soRenderQueuedMachinesHtml(pp.queued_machines)}
         </span>
         <span class="new-orders-detail-line-pick-part">${escapeHtml(String(pp.inventory_code || '—'))}</span>
         <span class="new-orders-detail-line-pick-desc">${escapeHtml(String(pp.partial_count || 0))} partial(s) · qty ${escapeHtml(String(pp.pp_qty ?? '—'))}</span>
@@ -496,6 +585,8 @@ function soOrderSearchText(order) {
       pp.status,
       pp.source_line_item_no,
       pp.segment_1_code,
+      ...(pp.queued_machines || []),
+      ...((pp.partials || []).flatMap(p => p.queued_machines || [])),
       ...SO_NOTE_FIELDS.map(field => pp[field]),
     );
     (pp.partials || []).forEach(partial => {
@@ -505,6 +596,8 @@ function soOrderSearchText(order) {
         partial.party_name,
         partial.customer_po_no,
         partial.customer_code,
+        partial.current_stage_desc,
+        partial.current_stage_status,
       );
     });
   });
@@ -523,12 +616,20 @@ function soLeafRows(order) {
     const partials = pp.partials || [];
     if (!partials.length) {
       // No mfg_pp_partial_view rows — show as partial 1 (same as implicit single partial on PP).
+      const pno = 1;
+      const byPartial = pp.queued_machines_by_partial || {};
       leaves.push({
         order,
         pp,
         partial: {
-          pp_partial_no: 1,
+          pp_partial_no: pno,
           inventory_code: pp.inventory_code,
+          queued_machines: Array.isArray(byPartial[String(pno)])
+            ? byPartial[String(pno)]
+            : (pp.queued_machines || []),
+          current_stage_no: pp.current_stage_no,
+          current_stage_desc: pp.current_stage_desc,
+          current_stage_status: pp.current_stage_status,
         },
       });
       return;
@@ -615,9 +716,10 @@ function soLeafColumnValue(leaf, colId) {
   const { order, pp, partial } = leaf;
   switch (colId) {
     case '_so': return order?.sales_order_no;
-    case 'pp_voucher_no': return pp?.pp_voucher_no;
     case 'partial': return partial?.pp_partial_no ?? '';
-    case 'process_sheet_no': return pp?.process_sheet_no;
+    case 'process_sheet_no': return soPsDisplayId(pp);
+    case 'queued_cnc': return soQueuedMachinesLabel(pp, partial);
+    case 'erp_stage': return soStageLabel(partial);
     case 'order_date': return pp?.order_date;
     case 'part': return partial?.inventory_code || pp?.inventory_code;
     case 'description': return pp?.description;
@@ -703,7 +805,7 @@ function soVisibleOrders(orders) {
 }
 
 function soColumnFilterActive(colId) {
-  if (colId === 'pp_voucher_no' && !soPpTypesAllSelected()) return true;
+  if (colId === 'process_sheet_no' && !soPpTypesAllSelected()) return true;
   return Boolean(String(soState.colFilters[colId] || '').trim());
 }
 
@@ -848,7 +950,7 @@ function soBindColumnControls() {
     const clearBtn = e.target.closest('[data-action="clear-col-filter"]');
     if (clearBtn) {
       const colId = clearBtn.getAttribute('data-so-col');
-      if (colId === 'pp_voucher_no') {
+      if (colId === 'process_sheet_no') {
         soState.ppTypes = new Set(['APS', 'NPS']);
         soSyncPsTypeCheckboxes();
       }
@@ -942,30 +1044,44 @@ function soRenderSideRail(order, rowSpan) {
   `;
 }
 
-function soRenderPpVoucherCell(pp, rowSpan) {
+function soRenderProcessSheetCell(order, pp, partial) {
+  const psCode = soPsDisplayForPartial(pp, partial);
+  const repeatPill = soRenderRepeatPill(order, pp);
   const psType = soGetPsType(pp);
-  const ppNo = String(pp.pp_voucher_no || '—');
   const tag = psType ? soTypeTagHtml(psType) : '';
   return `
-    <td class="so-pp-voucher-cell" rowspan="${rowSpan}">
-      <span class="so-pp-voucher-inner">
+    <td class="new-orders-ps-cell so-process-sheet-cell">
+      <div class="so-ps-headline">
         ${tag}
-        <span class="so-pp-voucher-no">${escapeHtml(ppNo)}</span>
-      </span>
+        <span class="new-orders-ps-code">${escapeHtml(psCode)}</span>
+      </div>
+      ${repeatPill}
     </td>
   `;
 }
 
-function soRenderPpSpanCellsStart(order, pp, rowSpan) {
-  const psCode = String(pp.process_sheet_no || '—');
-  const repeatPill = soRenderRepeatPill(order, pp);
+function soRenderQueuedCncCell(pp, partial) {
   return `
-    <td class="new-orders-ps-cell so-process-sheet-cell" rowspan="${rowSpan}">
-      <div class="new-orders-ps-code">${escapeHtml(psCode)}</div>
-      ${repeatPill}
+    <td class="so-queued-cnc-cell">
+      ${soRenderQueuedMachinesHtml(soPartialQueuedMachines(pp, partial))}
     </td>
-    <td class="new-orders-date" rowspan="${rowSpan}">${escapeHtml(soFormatDate(pp.order_date))}</td>
   `;
+}
+
+function soRenderStageCell(pp, partial) {
+  const stage = soPartialStage(partial);
+  if (!stage.desc && !stage.status) {
+    return '<td class="so-stage-cell"><span class="so-dash">—</span></td>';
+  }
+  const descHtml = stage.desc
+    ? `<span class="so-stage-desc" title="${escapeHtml(stage.desc)}">${escapeHtml(stage.desc)}</span>`
+    : '';
+  const statusHtml = stage.status ? soStatusPill(stage.status) : '';
+  return `<td class="so-stage-cell">${descHtml}${statusHtml}</td>`;
+}
+
+function soRenderOrderDateCell(pp) {
+  return `<td class="new-orders-date">${escapeHtml(soFormatDate(pp.order_date))}</td>`;
 }
 
 function soRenderPpSpanCellsRest(pp, rowSpan) {
@@ -1042,7 +1158,7 @@ function soRenderEditableCell(pp, field, rowSpan) {
     <td class="so-editable-cell" rowspan="${rowSpan}">
       <textarea
         class="so-editable-input"
-        rows="2"
+        rows="1"
         data-pp-voucher-no="${escapeHtml(ppNo)}"
         data-field="${escapeHtml(field)}"
         data-last-saved="${escapeHtml(value)}"
@@ -1068,17 +1184,20 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, inclu
   const key = soPartialKey(order, pp, partial);
   const selected = key === soState.selectedKey;
   const sideRail = includeSideRail ? soRenderSideRail(order, sideRowSpan) : '';
-  const ppVoucherCell = includePpCells ? soRenderPpVoucherCell(pp, ppRowSpan) : '';
-  const ppSpanStart = includePpCells ? soRenderPpSpanCellsStart(order, pp, ppRowSpan) : '';
+  const processSheetCell = soRenderProcessSheetCell(order, pp, partial);
+  const orderDateCell = soRenderOrderDateCell(pp);
   const ppSpanRest = includePpCells ? soRenderPpSpanCellsRest(pp, ppRowSpan) : '';
   const startClass = groupStart ? ' new-orders-group-start' : '';
   const ppStartClass = ppStart ? ' so-pp-group-start' : '';
+  const queuedMark = soIsPartialQueued(pp, partial) ? ' is-ps-queued-mark' : '';
   return `
-    <tr class="new-orders-child-row is-clickable${startClass}${ppStartClass}${selected ? ' is-selected' : ''}" data-sales-order="${escapeHtml(String(order.sales_order_no || ''))}" data-detail-key="${escapeHtml(key)}" title="Click for detail">
+    <tr class="new-orders-child-row is-clickable${startClass}${ppStartClass}${queuedMark}${selected ? ' is-selected' : ''}" data-sales-order="${escapeHtml(String(order.sales_order_no || ''))}" data-detail-key="${escapeHtml(key)}" title="Click for detail">
       ${sideRail}
-      ${ppVoucherCell}
       ${soRenderPartialCell(partial)}
-      ${ppSpanStart}
+      ${processSheetCell}
+      ${soRenderQueuedCncCell(pp, partial)}
+      ${soRenderStageCell(pp, partial)}
+      ${orderDateCell}
       ${soRenderPartCell(pp, partial)}
       ${ppSpanRest}
     </tr>
@@ -1132,41 +1251,42 @@ function soRenderOrderGroup(order) {
   return html.join('');
 }
 
-function soSetSaveStatus(textarea, state, message) {
-  const status = textarea?.closest('.so-editable-cell')?.querySelector('.so-editable-status');
+function soSetSaveStatus(control, state, message) {
+  const status = control?.closest('.so-editable-cell')?.querySelector('.so-editable-status');
   if (!status) return;
   status.className = `so-editable-status${state ? ` is-${state}` : ''}`;
   status.textContent = message || '';
 }
 
-async function soSaveField(textarea) {
-  const ppNo = String(textarea.dataset.ppVoucherNo || '').trim();
-  const field = String(textarea.dataset.field || '').trim();
+async function soSaveField(control) {
+  const ppNo = String(control.dataset.ppVoucherNo || '').trim();
+  const field = String(control.dataset.field || '').trim();
   if (!ppNo || !field) return;
 
-  const nextValue = String(textarea.value || '').trim();
-  const lastSaved = String(textarea.dataset.lastSaved || '');
+  const nextValue = String(control.value || '').trim();
+  const lastSaved = String(control.dataset.lastSaved || '');
   if (nextValue === lastSaved) return;
 
-  textarea.disabled = true;
-  soSetSaveStatus(textarea, 'saving', 'Saving…');
+  control.disabled = true;
+  soSetSaveStatus(control, 'saving', 'Saving…');
   try {
     const data = await soPostJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
       [field]: nextValue,
     });
     const saved = String(data[field] || '').trim();
-    textarea.value = saved;
-    textarea.dataset.lastSaved = saved;
+    control.value = saved;
+    control.dataset.lastSaved = saved;
     const found = soFindPp(ppNo);
     if (found.pp) found.pp[field] = saved;
-    soSetSaveStatus(textarea, 'saved', 'Saved');
+    soSetSaveStatus(control, 'saved', 'Saved');
     window.setTimeout(() => {
-      if (textarea.dataset.lastSaved === saved) soSetSaveStatus(textarea, '', '');
+      if (control.dataset.lastSaved === saved) soSetSaveStatus(control, '', '');
     }, 1500);
   } catch (err) {
-    soSetSaveStatus(textarea, 'error', err.message || 'Save failed');
+    control.value = lastSaved;
+    soSetSaveStatus(control, 'error', err.message || 'Save failed');
   } finally {
-    textarea.disabled = false;
+    control.disabled = false;
   }
 }
 

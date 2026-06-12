@@ -613,11 +613,12 @@ function trialQueuedOpCardsForPs(ps) {
   );
 }
 
-const TRIAL_FINISHING_STAGE_DESCS = new Set(['Deburring', 'Final Inspection', 'Packing']);
-
 function trialIsFinishingOpCard(card) {
   const desc = String(card?.stage_desc || card?.op_type || card?.operation_name || '').trim();
-  return TRIAL_FINISHING_STAGE_DESCS.has(desc);
+  if (!desc) return false;
+  const lowered = desc.toLowerCase();
+  if (lowered === 'deburring' || lowered === 'final inspection' || lowered === 'packing') return true;
+  return lowered.includes('engraving') && lowered.includes('packing');
 }
 
 function trialResolvedOpCardsForPs(ps) {
@@ -2394,7 +2395,11 @@ function trialRenderQueueListHeader() {
       <span>#</span>
       <span>Job</span>
       <span>Qty/Out</span>
-      <span>Due · Queued · End</span>
+      <span class="trial-queue-dates-head">
+        <span>Due</span>
+        <span>Queued</span>
+        <span>End</span>
+      </span>
       <span>Actions</span>
     </div>
   `;

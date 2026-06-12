@@ -3314,15 +3314,17 @@
     flex-direction: column;
     gap: 3px;
     max-height: min(72vh, 680px);
+    overflow-x: auto;
     overflow-y: auto;
     padding-right: 2px;
   }
   .trial-queue-list-head,
   .trial-queue-row {
     display: grid;
-    grid-template-columns: 24px 30px minmax(140px, 1.5fr) 54px minmax(200px, 1.3fr) minmax(220px, auto);
+    grid-template-columns: 24px 30px minmax(110px, 1fr) 54px minmax(330px, 1.35fr) minmax(200px, auto);
     gap: 6px 8px;
     align-items: center;
+    min-width: min(100%, 860px);
   }
   .trial-queue-list-head {
     position: sticky;
@@ -3428,26 +3430,36 @@
     opacity: 0.45;
     margin: 0 1px;
   }
+  .trial-queue-dates-head {
+    display: grid;
+    grid-template-columns: 86px minmax(118px, 1fr) minmax(118px, 1fr);
+    gap: 4px;
+    min-width: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .trial-queue-dates-head > span {
+    text-align: center;
+  }
   .trial-queue-dates {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: 86px minmax(118px, 1fr) minmax(118px, 1fr);
     gap: 4px;
     min-width: 0;
   }
   .trial-queue-date {
     display: block;
     min-width: 0;
-    padding: 2px 4px;
+    padding: 3px 5px;
     border-radius: 5px;
     border: 1px solid rgba(148,163,184,0.2);
     background: rgba(148,163,184,0.08);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 700;
-    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.25;
     color: var(--text2);
     text-align: center;
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
   }
   .trial-queue-date.is-overdue {
@@ -3479,11 +3491,11 @@
     background: rgba(245,158,11,0.08);
   }
   .trial-queue-date.is-queued .trial-anchor-time-value {
+    flex: 1 1 auto;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
     text-align: left;
+    font-weight: 800;
   }
   .trial-queue-date.is-queued.is-anchored {
     border-style: solid;
@@ -3547,7 +3559,8 @@
       grid-template-columns: 24px 26px minmax(100px, 1fr) 48px minmax(0, 1fr);
       grid-template-areas:
         "grip seq job job job"
-        "grip seq qty dates actions";
+        "grip seq qty dates dates"
+        "grip seq actions actions actions";
     }
     .trial-queue-list-head span:nth-child(5),
     .trial-queue-list-head span:nth-child(6) {
@@ -3555,6 +3568,10 @@
     }
     .trial-queue-list-head span:nth-child(4) {
       grid-column: 4 / -1;
+    }
+    .trial-queue-dates-head,
+    .trial-queue-dates {
+      grid-template-columns: 1fr;
     }
     .trial-queue-row-grip { grid-area: grip; }
     .trial-queue-seq { grid-area: seq; }
@@ -5282,24 +5299,24 @@
   .app-main--sales-orders-wide {
     max-width: none;
     width: 100%;
-    padding: 14px 10px 28px;
+    padding: 10px 8px 20px;
   }
   .new-orders-page--sales-orders .new-orders-header {
     margin-bottom: 0;
   }
   .so-stats-row {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 10px;
-    margin-bottom: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 6px;
+    margin-bottom: 8px;
   }
   .so-chip {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    font-size: 11px;
-    padding: 10px 14px;
-    border-radius: 10px;
+    gap: 2px;
+    font-size: 10px;
+    padding: 6px 10px;
+    border-radius: 8px;
     background: #fff;
     border: 1px solid var(--border);
     color: var(--text3);
@@ -5307,7 +5324,7 @@
   }
   .so-chip strong {
     display: block;
-    font-size: 20px;
+    font-size: 17px;
     font-weight: 700;
     color: var(--text1, #0f172a);
     letter-spacing: -0.02em;
@@ -5371,19 +5388,19 @@
   .so-pp-voucher-cell,
   .so-process-sheet-cell,
   .so-part-cell {
-    vertical-align: top;
-    font-size: 11px;
+    vertical-align: middle;
+    font-size: 10px;
   }
   .so-pp-voucher-inner {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 4px;
+    gap: 2px;
     min-width: 0;
   }
   .so-pp-voucher-no {
     font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 11px;
+    font-size: 10px;
     word-break: break-all;
   }
   .so-process-sheet-cell {
@@ -5399,32 +5416,41 @@
     background: #f8fafc;
   }
   .new-orders-page--sales-orders .new-orders-table-wrap.so-table-wrap--wide {
-    max-height: calc(100dvh - 220px);
+    max-height: calc(100dvh - 190px);
     position: relative;
   }
   .new-orders-page--sales-orders .so-table--wide {
-    font-size: 11px;
+    font-size: 10px;
+    line-height: 1.25;
   }
   .new-orders-page--sales-orders .so-table--wide thead th,
   .new-orders-page--sales-orders .so-table--wide tbody td {
-    padding: 7px 8px;
+    padding: 3px 5px;
+    vertical-align: middle;
+    border-right: 1px solid rgba(148, 163, 184, 0.28);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+  }
+  .new-orders-page--sales-orders .so-table--wide thead th:last-child,
+  .new-orders-page--sales-orders .so-table--wide tbody td:last-child {
+    border-right: none;
   }
   .new-orders-page--sales-orders .so-table--wide thead th.new-orders-side-head {
     left: 0;
     z-index: 4;
-    min-width: 112px;
-    width: 112px;
-    max-width: 112px;
-    padding: 7px 6px;
+    min-width: 96px;
+    width: 96px;
+    max-width: 96px;
+    padding: 4px 4px;
   }
   .new-orders-page--sales-orders .new-orders-side-rail--compact {
-    min-width: 112px;
-    max-width: 112px;
-    width: 112px;
+    min-width: 96px;
+    max-width: 96px;
+    width: 96px;
+    border-right: 1px solid rgba(148, 163, 184, 0.4);
   }
   .new-orders-page--sales-orders .new-orders-side-rail--compact .new-orders-side-rail-inner {
-    padding: 8px 6px 10px;
-    gap: 3px;
+    padding: 4px 4px 6px;
+    gap: 2px;
   }
   .new-orders-page--sales-orders .new-orders-side-rail--compact .new-orders-side-so {
     font-size: 10px;
@@ -5457,17 +5483,18 @@
     font-size: 11px;
   }
   .new-orders-page--sales-orders .so-editable-cell {
-    min-width: 96px;
-    max-width: 140px;
-    padding: 5px 6px !important;
+    min-width: 80px;
+    max-width: 120px;
+    padding: 2px 4px !important;
   }
   .new-orders-page--sales-orders .so-editable-input {
-    min-height: 36px;
-    padding: 4px 6px;
-    font-size: 11px;
+    min-height: 22px;
+    padding: 2px 4px;
+    font-size: 10px;
+    line-height: 1.25;
   }
   .new-orders-page--sales-orders .new-orders-desc {
-    max-width: 160px;
+    max-width: 140px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -5752,12 +5779,18 @@
   .new-orders-repeat-badge--queued {
     background: #2563eb;
   }
+  .new-orders-repeat-badge--same-so {
+    background: #7c3aed;
+  }
   .new-orders-repeat-ref {
     font-size: 10px;
     font-weight: 600;
     line-height: 1.4;
     color: #92400e;
     word-break: break-word;
+  }
+  .new-orders-repeat-ref--same-so {
+    color: #5b21b6;
   }
   .new-orders-empty {
     padding: 28px 20px;
@@ -5830,7 +5863,84 @@
   }
   .new-orders-page--sales-orders .so-process-sheet-cell.new-orders-ps-cell {
     min-width: 148px;
-    max-width: 240px;
+    max-width: 220px;
+    padding-top: 2px !important;
+    padding-bottom: 2px !important;
+  }
+  .new-orders-page--sales-orders .so-ps-headline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+  .new-orders-page--sales-orders .so-process-sheet-cell .new-orders-ps-code {
+    display: inline-block;
+    max-width: 100%;
+    word-break: break-all;
+    line-height: 1.2;
+    font-weight: 700;
+  }
+  .new-orders-page--sales-orders .so-queued-cnc-cell {
+    min-width: 72px;
+    max-width: 120px;
+    vertical-align: middle;
+  }
+  .new-orders-page--sales-orders .so-stage-cell {
+    min-width: 96px;
+    max-width: 180px;
+    vertical-align: middle;
+    line-height: 1.35;
+  }
+  .new-orders-page--sales-orders .so-stage-cell .so-stage-desc {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    color: #334155;
+    word-break: break-word;
+  }
+  .new-orders-page--sales-orders .so-stage-cell .mi-status-pill {
+    margin-top: 3px;
+  }
+  .new-orders-page--sales-orders .so-queued-cnc-cell .so-queue-machines {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    max-width: 100%;
+  }
+  .new-orders-page--sales-orders .so-queue-machines {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    max-width: 100%;
+  }
+  .new-orders-page--sales-orders .so-queue-machine-pill {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: #dbeafe;
+    color: #1d4ed8;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .new-orders-page--sales-orders tr.is-ps-queued-mark td {
+    background: color-mix(in srgb, #22c55e 14%, #ffffff) !important;
+  }
+  /* Sticky side rail must stay fully opaque so scrolled columns don't bleed through */
+  .new-orders-page--sales-orders tr.is-ps-queued-mark td.new-orders-side-rail {
+    background: color-mix(in srgb, #22c55e 20%, #f8fafc) !important;
+  }
+  .new-orders-page--sales-orders tr.is-ps-queued-mark:hover td:not(.new-orders-side-rail) {
+    background: color-mix(in srgb, #22c55e 20%, #ffffff) !important;
+  }
+  .new-orders-page--sales-orders tr.is-ps-queued-mark:hover td.new-orders-side-rail {
+    background: color-mix(in srgb, #22c55e 20%, #f1f5f9) !important;
+  }
+  .new-orders-page--sales-orders .so-process-sheet-cell .new-orders-repeat-wrap {
+    margin-top: 2px;
+    gap: 3px;
   }
 
   /* Sales Orders — planner note cells */
@@ -7007,7 +7117,12 @@
   }
 
   .inv-enq-table .mi-cell--desc {
-    max-width: 320px;
+    max-width: 280px;
+  }
+
+  .inv-enq-qty--pos {
+    color: #0f766e;
+    font-weight: 700;
   }
 
   @media (max-width: 1024px) {

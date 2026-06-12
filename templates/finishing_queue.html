@@ -9,7 +9,8 @@
       <h1 class="new-orders-title">Finishing Queue</h1>
       <p class="new-orders-subtitle">
         Process sheet partials whose active ERP stage is
-        <strong>Deburring</strong>, <strong>Final Inspection</strong>, or <strong>Packing</strong>
+        <strong>Deburring</strong>, <strong>Final Inspection</strong>, <strong>Packing</strong>,
+        or <strong>Engraving &amp; Packing</strong>
         (from <code>mfg_wo_status</code> / <code>pp_vouchers_cache</code>).
         Excludes completed stages and fully shipped lines.
       </p>
@@ -34,6 +35,9 @@
         </button>
         <button type="button" class="mi-view-btn" data-fq-stage="packing" role="tab" aria-selected="false">
           Packing <span class="ps-view-tab-count" id="fq-count-packing" hidden>0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-fq-stage="engraving_packing" role="tab" aria-selected="false">
+          Engraving &amp; Packing <span class="ps-view-tab-count" id="fq-count-engraving_packing" hidden>0</span>
         </button>
       </div>
     </div>

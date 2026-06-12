@@ -1,14 +1,14 @@
-// Inventory Enquiry — mt_inventory master (grouped by inventory class).
+// Inventory Enquiry — ic_inventory_enquiry_summary_view (grouped by inventory class).
 
 const invState = {
   rows: [],
   classView: 'all',
-  statusFilter: 'active',
+  stockFilter: 'all',
   search: '',
   cachedAt: '',
   cacheTtlSec: 300,
   selectedCode: '',
-  classCounts: {},
+  stockCounts: {},
 };
 
 const INV_CLASS_LABELS = {
@@ -41,140 +41,49 @@ const INV_CLASS_ORDER = [
 
 const INV_DETAIL_SECTIONS = [
   {
-    title: 'Identity',
+    title: 'Part',
     fields: [
       ['Part no', 'inventory_code', { mono: true }],
       ['Main description', 'main_desc', { fullWidth: true }],
       ['Short description', 'short_desc', { fullWidth: true }],
-      ['Internal description', 'internal_desc', { fullWidth: true }],
-      ['Main description (CN)', 'main_desc_cn', { fullWidth: true }],
-      ['Short description (CN)', 'short_desc_cn'],
-      ['Detail spec', 'det_spec', { fullWidth: true }],
-      ['Detail spec (CN)', 'det_spec_cn', { fullWidth: true }],
-      ['Barcode', 'barcode', { mono: true }],
-      ['Retail barcode', 'retail_barcode', { mono: true }],
     ],
   },
   {
     title: 'Classification',
     fields: [
-      ['Inventory type', 'inventory_type'],
       ['Class', 'inventory_class_code'],
       ['Category', 'inventory_category_code'],
       ['Brand', 'inventory_brand_code'],
-      ['Sub-category', 'inventory_sub_categ_code'],
-      ['Model', 'inventory_model_code'],
-      ['Report grouping', 'report_grouping_code'],
-      ['Stock type', 'stock_type'],
-      ['Product type', 'product_type'],
-      ['Production type', 'production_type'],
-      ['Segment 1', 'segment_1_code'],
-      ['Segment 2', 'segment_2_code'],
-      ['Segment 3', 'segment_3_code'],
-      ['Segment 4', 'segment_4_code'],
-      ['Country of origin', 'country_of_origin'],
-      ['HS code', 'hs_code', { mono: true }],
-    ],
-  },
-  {
-    title: 'Units & dimensions',
-    fields: [
       ['UOM', 'uom_code'],
-      ['Second UOM', 'second_uom'],
-      ['Packing UOM', 'packing_uom'],
-      ['Reporting UOM', 'reporting_uom'],
-      ['Default bill UOM', 'default_bill_uom'],
-      ['Weight UOM', 'weight_uom'],
-      ['Length', 'length'],
-      ['Height', 'height'],
-      ['Breadth', 'breadth'],
-      ['Gross weight', 'gross_weight'],
-      ['Nett weight', 'nett_weight'],
-      ['Thickness', 'thickness'],
-      ['Thickness 2', 'thickness2'],
-      ['Volume', 'volume'],
-      ['Area', 'area'],
-      ['Inner dimension', 'inner_dimension'],
-      ['Outer dimension', 'outer_dimension'],
     ],
   },
   {
-    title: 'Production & BOM',
+    title: 'Available quantities',
+    numeric: true,
     fields: [
-      ['Has BOM', 'has_bom'],
-      ['In-house production', 'in_house_production'],
-      ['Requires cutting', 'requires_cutting'],
-      ['Route to QAQC', 'route_to_qaqc'],
-      ['Production lead time', 'production_lead_time'],
-      ['Customer raw mat', 'cust_raw_mat'],
-      ['Parent part', 'parent_inventory_code', { mono: true }],
-      ['PRD inventory', 'prd_inventory_code', { mono: true }],
-      ['Nesting material', 'is_nesting_material'],
-      ['Batch completion', 'is_batch_completion'],
+      ['QOH available', 'total_qoh_available'],
+      ['QOO available', 'total_qoo_available'],
     ],
   },
   {
-    title: 'Costing & lead time',
+    title: 'Balances & allocation',
+    numeric: true,
     fields: [
-      ['Base cost', 'base_cost'],
-      ['Cost price', 'cost_price'],
-      ['Resale base price', 'resale_base_price'],
-      ['Lead time (days)', 'lead_time'],
-      ['Lead time (months)', 'lead_time_month'],
-      ['MOQ (loose)', 'moq_in_loose'],
-      ['Markup %', 'markup_percentage'],
-      ['Budget category', 'budget_category_code'],
-      ['COGS budget category', 'cogs_budget_category_code'],
-    ],
-  },
-  {
-    title: 'Flags & compliance',
-    fields: [
-      ['Suspended', 'is_suspend'],
-      ['Restricted', 'restricted_item'],
-      ['Special item', 'is_special_item'],
-      ['Require inspection', 'require_inspection'],
-      ['Require in-house inspection', 'require_in_house_inspection'],
-      ['Require BP number', 'require_bp_number'],
-      ['Enable lot no', 'enable_lot_no'],
-      ['Enable serial no', 'enable_serial_no'],
-      ['Flammable', 'flammable'],
-      ['API status', 'api_status'],
-      ['Import', 'is_import'],
-      ['Billable', 'is_billable'],
-    ],
-  },
-  {
-    title: 'Remarks',
-    fields: [
-      ['Inventory remarks', 'inventory_remarks', { fullWidth: true }],
-      ['End client', 'end_client_name'],
-      ['Market segment', 'market_segment'],
-      ['Base material', 'base_material'],
-      ['Customer paint specs', 'customer_paint_specs', { fullWidth: true }],
-    ],
-  },
-  {
-    title: 'Audit',
-    fields: [
-      ['Created by', 'created_by'],
-      ['Created', 'created_datetime'],
-      ['Last updated by', 'last_updated_by'],
-      ['Last updated', 'last_updated_datetime'],
-      ['Last modified by', 'last_modified_by'],
-      ['Last modified', 'last_modified_datetime'],
-      ['Object version', 'object_version'],
+      ['Qty on hand', 'total_qty_on_hand'],
+      ['Qty on order', 'total_qty_on_order'],
+      ['Free balance', 'total_free_balance_qty'],
+      ['Allocated in SQ', 'total_allocated_in_sq'],
+      ['Unallocated qty', 'total_unallocated_qty'],
+      ['Back order', 'total_qty_back_order'],
     ],
   },
 ];
 
-const INV_TABLE_COL_COUNT = 11;
+const INV_TABLE_COL_COUNT = 12;
 
-function invYn(value) {
-  const c = String(value || '').trim().toUpperCase();
-  if (c === 'Y') return 'Y';
-  if (c === 'N') return 'N';
-  return '—';
+function invQty(row, key) {
+  const n = Number(row?.[key]);
+  return Number.isFinite(n) ? n : 0;
 }
 
 function invFormatNum(value) {
@@ -186,14 +95,13 @@ function invFormatNum(value) {
   return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
-function invIsSuspended(row) {
-  return String(row?.is_suspend || '').trim().toUpperCase() === 'Y';
-}
-
-function invMatchesStatus(row) {
-  if (invState.statusFilter === 'all') return true;
-  if (invState.statusFilter === 'suspended') return invIsSuspended(row);
-  return !invIsSuspended(row);
+function invMatchesStock(row) {
+  const filter = invState.stockFilter;
+  if (filter === 'on_hand') return invQty(row, 'total_qty_on_hand') > 0;
+  if (filter === 'on_order') return invQty(row, 'total_qty_on_order') > 0;
+  if (filter === 'free_balance') return invQty(row, 'total_free_balance_qty') > 0;
+  if (filter === 'back_order') return invQty(row, 'total_qty_back_order') > 0;
+  return true;
 }
 
 function invMatchesClass(row) {
@@ -206,14 +114,10 @@ function invRowSearchText(row) {
     row.inventory_code,
     row.main_desc,
     row.short_desc,
-    row.internal_desc,
     row.inventory_class_code,
     row.inventory_category_code,
+    row.inventory_brand_code,
     row.uom_code,
-    row.stock_type,
-    row.inventory_remarks,
-    row.barcode,
-    row.parent_inventory_code,
   ];
   return parts.map((v) => String(v == null ? '' : v).toLowerCase()).join(' ');
 }
@@ -222,21 +126,22 @@ function invFilterRows(rows) {
   const q = String(invState.search || '').trim().toLowerCase();
   return (rows || []).filter((row) => {
     if (!invMatchesClass(row)) return false;
-    if (!invMatchesStatus(row)) return false;
+    if (!invMatchesStock(row)) return false;
     if (q && !invRowSearchText(row).includes(q)) return false;
     return true;
   });
 }
 
-function invDetailField(label, value, { mono, fullWidth } = {}) {
-  if (value == null || value === '') return '';
-  const text = String(value);
+function invDetailField(label, value, { mono, fullWidth, numeric } = {}) {
+  if (!numeric && (value == null || value === '')) return '';
+  if (numeric && (value == null || value === '')) value = 0;
+  const text = numeric ? invFormatNum(value) : String(value);
   const cls = mono ? ' mi-detail-value--mono' : '';
   const span = fullWidth ? ' mi-detail-field--full' : '';
   return `
     <div class="mi-detail-field${span}">
       <dt>${escapeHtml(label)}</dt>
-      <dd class="mi-detail-value${cls}">${escapeHtml(text)}</dd>
+      <dd class="mi-detail-value${cls}${numeric ? ' mi-detail-value--num' : ''}">${escapeHtml(text)}</dd>
     </div>
   `;
 }
@@ -254,7 +159,11 @@ function invDetailSection(title, html) {
 function invRenderDetail(row) {
   return INV_DETAIL_SECTIONS.map((section) => {
     const html = section.fields
-      .map(([label, key, opts]) => invDetailField(label, row[key], opts || {}))
+      .map(([label, key, opts]) => invDetailField(
+        label,
+        row[key],
+        { ...(opts || {}), numeric: section.numeric },
+      ))
       .join('');
     return invDetailSection(section.title, html);
   }).join('');
@@ -310,6 +219,12 @@ function invRenderGroupRow(label) {
   `;
 }
 
+function invQtyCell(value) {
+  const n = Number(value);
+  const cls = Number.isFinite(n) && n > 0 ? ' inv-enq-qty--pos' : '';
+  return `<td class="mi-cell--num${cls}">${escapeHtml(invFormatNum(value))}</td>`;
+}
+
 function invRenderRow(row) {
   const code = String(row.inventory_code || '').trim();
   const selected = code === invState.selectedCode;
@@ -319,14 +234,15 @@ function invRenderRow(row) {
       <td class="mi-cell--mono">${escapeHtml(code || '—')}</td>
       <td class="mi-cell--desc" title="${escapeHtml(desc)}">${escapeHtml(desc || '—')}</td>
       <td>${escapeHtml(String(row.inventory_class_code || '—'))}</td>
+      <td>${escapeHtml(String(row.inventory_category_code || '—'))}</td>
       <td>${escapeHtml(String(row.uom_code || '—'))}</td>
-      <td>${escapeHtml(invYn(row.has_bom))}</td>
-      <td>${escapeHtml(invYn(row.in_house_production))}</td>
-      <td>${escapeHtml(String(row.stock_type || '—'))}</td>
-      <td class="mi-cell--num">${escapeHtml(invFormatNum(row.lead_time))}</td>
-      <td class="mi-cell--num">${escapeHtml(invFormatNum(row.base_cost))}</td>
-      <td>${escapeHtml(invYn(row.is_suspend))}</td>
-      <td class="mi-cell--dt">${escapeHtml(trialFormatDt(row.last_updated_datetime || row.created_datetime))}</td>
+      ${invQtyCell(row.total_qoh_available)}
+      ${invQtyCell(row.total_qty_on_hand)}
+      ${invQtyCell(row.total_qty_on_order)}
+      ${invQtyCell(row.total_allocated_in_sq)}
+      ${invQtyCell(row.total_unallocated_qty)}
+      ${invQtyCell(row.total_free_balance_qty)}
+      ${invQtyCell(row.total_qty_back_order)}
     </tr>
   `;
 }
@@ -358,10 +274,14 @@ function invRenderBody(rows) {
   return parts.join('');
 }
 
+function invPassesStockForCounts(row) {
+  return invMatchesStock(row);
+}
+
 function invUpdateTabCounts() {
-  const baseRows = invState.rows.filter(invMatchesStatus);
   const search = String(invState.search || '').trim().toLowerCase();
-  const countFor = (classKey) => baseRows.filter((row) => {
+  const countFor = (classKey) => invState.rows.filter((row) => {
+    if (!invPassesStockForCounts(row)) return false;
     if (classKey !== 'all' && (row.class_key || 'other') !== classKey) return false;
     if (search && !invRowSearchText(row).includes(search)) return false;
     return true;
@@ -377,9 +297,13 @@ function invUpdateStats() {
   const stats = document.getElementById('inv-stats');
   if (!stats) return;
   const filtered = invFilterRows(invState.rows);
-  const active = invState.rows.filter((r) => !invIsSuspended(r)).length;
-  const suspended = invState.rows.length - active;
-  stats.textContent = `${filtered.length} shown · ${active} active · ${suspended} suspended`;
+  const sc = invState.stockCounts || {};
+  stats.textContent = [
+    `${filtered.length} shown`,
+    `on hand: ${sc.on_hand ?? '—'}`,
+    `on order: ${sc.on_order ?? '—'}`,
+    `back order: ${sc.back_order ?? '—'}`,
+  ].join(' · ');
 }
 
 function invSetClassView(classView) {
@@ -456,7 +380,7 @@ async function invLoad({ refresh = false } = {}) {
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
     invState.rows = data.rows || [];
-    invState.classCounts = data.class_counts || {};
+    invState.stockCounts = data.stock_counts || {};
     invState.cachedAt = data.cached_at || '';
     invState.cacheTtlSec = data.cache_ttl_sec || 300;
     invRender();
@@ -475,9 +399,9 @@ function invBindEvents() {
     btn.addEventListener('click', () => invSetClassView(btn.getAttribute('data-inv-class')));
   });
 
-  const statusFilter = document.getElementById('inv-status-filter');
-  statusFilter?.addEventListener('change', () => {
-    invState.statusFilter = statusFilter.value || 'active';
+  const stockFilter = document.getElementById('inv-stock-filter');
+  stockFilter?.addEventListener('change', () => {
+    invState.stockFilter = stockFilter.value || 'all';
     invCloseDetail();
     invRender();
   });

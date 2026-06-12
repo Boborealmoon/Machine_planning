@@ -2014,9 +2014,17 @@ def _scheduled_ops_as_steps(con, planner_ps_id):
 
 def _normalize_manufacturing_step(step):
     """Align op type labels with ERP stage_desc (e.g. Turning 20 -> Turning)."""
+    from planning.erp_wo_merge import is_finishing_stage_desc
+
     row = dict(step or {})
     stage_desc = compact_text(row.get("stage_desc") or "")
     op_type = compact_text(row.get("op_type") or "")
+    if is_finishing_stage_desc(stage_desc):
+        row["op_type"] = stage_desc
+        row["stage_desc"] = stage_desc
+        row["machine_category"] = compact_text(row.get("machine_category") or "FINISHING")
+        row["source_kind"] = compact_text(row.get("source_kind") or "ERP_WO")
+        return row
     if stage_desc and not op_type:
         op_type = stage_desc.split()[0]
     elif stage_desc:
@@ -2090,8 +2098,8 @@ def _resolve_process_sheet_steps(con, ps, flow_steps, erp_steps_cache=None):
 
 
 def _prepare_process_sheet_steps(con, ps, flow_steps, erp_steps_cache=None, wo_stages_cache=None):
-    """Resolve BOM/ERP machining steps; load mfg_wo_status separately for current stage only."""
-    from planning.erp_wo_merge import mfg_wo_stages_batch
+    """Resolve BOM machining steps and append post-machining WO stages from mfg_wo_status."""
+    from planning.erp_wo_merge import mfg_wo_stages_batch, merge_finishing_steps_into_flow_steps
 
     steps = _resolve_process_sheet_steps(con, ps, flow_steps, erp_steps_cache)
     source_ps_id, pp_partial_no = _display_ids(ps)
@@ -2102,7 +2110,10 @@ def _prepare_process_sheet_steps(con, ps, flow_steps, erp_steps_cache=None, wo_s
     cache_key = (compact_text(source_ps_id), partial_int)
     if wo_stages_cache is None:
         wo_stages_cache = mfg_wo_stages_batch(con, [cache_key] if cache_key[0] else [])
-    return steps, wo_stages_cache.get(cache_key, [])
+    wo_stages = wo_stages_cache.get(cache_key, [])
+    steps = merge_finishing_steps_into_flow_steps(steps, wo_stages)
+    steps = [_normalize_manufacturing_step(step) for step in steps]
+    return steps, wo_stages
 
 
 def _block_metrics_for_ps_ids(con, ps_ids):
