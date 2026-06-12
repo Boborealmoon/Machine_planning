@@ -25,7 +25,7 @@ from flask import Blueprint, jsonify, request
 from db import planner_db_connect_error
 from .helpers import one, rows, planner_db
 from .materials import material_requirement_payload, material_status_map_for_ps_ids
-from .utils import compact_text, shipped_quantity_completed
+from .utils import compact_text, pending_delivery_order, shipped_quantity_completed
 
 process_sheets_bp = Blueprint("planner_process_sheets", __name__)
 
@@ -1622,7 +1622,7 @@ def _overlay_column_flags(con):
     global _OVERLAY_COLUMN_CACHE
     if _OVERLAY_COLUMN_CACHE is not None:
         return _OVERLAY_COLUMN_CACHE
-    flags = {"coway": False, "remarks": False, "material_in": False}
+    flags = {"coway": False, "remarks": False, "material_in": False, "material_in_date": False}
     try:
         for row in rows(
             con.execute(
@@ -1631,7 +1631,9 @@ def _overlay_column_flags(con):
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
                   AND table_name = 'planner_process_sheet'
-                  AND column_name IN ('coway_proposed_edd', 'remarks', 'material_in')
+                  AND column_name IN (
+                      'coway_proposed_edd', 'remarks', 'material_in', 'material_in_date'
+                  )
                 """
             )
         ):
@@ -1642,6 +1644,8 @@ def _overlay_column_flags(con):
                 flags["remarks"] = True
             elif name == "material_in":
                 flags["material_in"] = True
+            elif name == "material_in_date":
+                flags["material_in_date"] = True
     except Exception:
         pass
     _OVERLAY_COLUMN_CACHE = flags
@@ -1651,7 +1655,7 @@ def _overlay_column_flags(con):
 def _ensure_planner_overlay_columns(con):
     """Apply overlay DDL only when a write path needs a missing column."""
     flags = _overlay_column_flags(con)
-    if flags["coway"] and flags["remarks"] and flags["material_in"]:
+    if flags["coway"] and flags["remarks"] and flags["material_in"] and flags["material_in_date"]:
         return flags
     global _OVERLAY_COLUMN_CACHE
     try:
@@ -1679,6 +1683,14 @@ def _ensure_planner_overlay_columns(con):
                 """
             )
             flags["material_in"] = True
+        if not flags["material_in_date"]:
+            con.execute(
+                """
+                ALTER TABLE planner_process_sheet
+                ADD COLUMN IF NOT EXISTS material_in_date DATE
+                """
+            )
+            flags["material_in_date"] = True
     except Exception:
         pass
     _OVERLAY_COLUMN_CACHE = dict(flags)
@@ -1890,7 +1902,8 @@ def _erp_cache_steps_batch(con, partial_keys):
                     "seq_no": idx + 1,
                     "op_no": op_no,
                     "op_type": op_type,
-                    "machine_category": op_type.upper(),
+                    "stage_desc": stage_desc,
+                    "machine_category": "",
                     "preferred_machine": "",
                     "cycle_time": 0,
                     "setup_time": 0,
@@ -1937,7 +1950,8 @@ def _erp_cache_steps_for_ps(con, source_ps_id, pp_partial_no):
                 "seq_no": idx + 1,
                 "op_no": op_no,
                 "op_type": op_type,
-                "machine_category": op_type.upper(),
+                "stage_desc": stage_desc,
+                "machine_category": "",
                 "preferred_machine": "",
                 "cycle_time": 0,
                 "setup_time": 0,
@@ -1998,9 +2012,27 @@ def _scheduled_ops_as_steps(con, planner_ps_id):
     return steps
 
 
-def _resolve_process_sheet_steps(con, ps, flow_steps, erp_steps_cache=None):
-    if flow_steps:
-        return flow_steps
+def _normalize_manufacturing_step(step):
+    """Align op type labels with ERP stage_desc (e.g. Turning 20 -> Turning)."""
+    row = dict(step or {})
+    stage_desc = compact_text(row.get("stage_desc") or "")
+    op_type = compact_text(row.get("op_type") or "")
+    if stage_desc and not op_type:
+        op_type = stage_desc.split()[0]
+    elif stage_desc:
+        base = stage_desc.split()[0]
+        if op_type and op_type.upper().startswith(base.upper()) and op_type != base:
+            op_type = base
+    elif op_type and " " in op_type:
+        op_type = op_type.split()[0]
+    if not stage_desc and op_type:
+        stage_desc = op_type
+    row["op_type"] = op_type
+    row["stage_desc"] = stage_desc or op_type
+    return row
+
+
+def _erp_cache_steps_for_partial(con, ps, erp_steps_cache=None):
     source_ps_id, pp_partial_no = _display_ids(ps)
     planner_ps_id = compact_text(ps.get("ps_id") or ps.get("planner_ps_id"))
     try:
@@ -2009,13 +2041,68 @@ def _resolve_process_sheet_steps(con, ps, flow_steps, erp_steps_cache=None):
         partial_int = 1
     cache_key = (compact_text(source_ps_id), partial_int)
     if erp_steps_cache is not None and cache_key in erp_steps_cache:
-        erp_steps = erp_steps_cache[cache_key]
-    else:
-        erp_steps = _erp_cache_steps_for_ps(con, source_ps_id, pp_partial_no)
+        return erp_steps_cache[cache_key]
+    return _erp_cache_steps_for_ps(con, source_ps_id, pp_partial_no)
+
+
+def _merge_erp_metadata_into_flow_steps(flow_steps, erp_steps):
+    if not flow_steps:
+        return []
+    erp_by_op = {
+        compact_text(step.get("op_no")): step
+        for step in (erp_steps or [])
+        if compact_text(step.get("op_no"))
+    }
+    erp_by_stage = {
+        int(step.get("source_stage_no") or 0): step
+        for step in (erp_steps or [])
+        if int(step.get("source_stage_no") or 0)
+    }
+    merged = []
+    for step in flow_steps:
+        row = dict(step)
+        erp = erp_by_op.get(compact_text(row.get("op_no"))) or erp_by_stage.get(
+            int(row.get("source_stage_no") or 0)
+        )
+        if erp:
+            if compact_text(erp.get("stage_desc")):
+                row["stage_desc"] = compact_text(erp.get("stage_desc"))
+            for field in (
+                "erp_execution_status",
+                "erp_required_qty",
+                "erp_finished_qty",
+                "erp_reject_qty",
+            ):
+                if row.get(field) in (None, "", 0) and erp.get(field) not in (None, ""):
+                    row[field] = erp.get(field)
+        merged.append(_normalize_manufacturing_step(row))
+    return merged
+
+
+def _resolve_process_sheet_steps(con, ps, flow_steps, erp_steps_cache=None):
+    erp_steps = _erp_cache_steps_for_partial(con, ps, erp_steps_cache)
+    if flow_steps:
+        return _merge_erp_metadata_into_flow_steps(flow_steps, erp_steps)
     if erp_steps:
-        return erp_steps
+        return [_normalize_manufacturing_step(step) for step in erp_steps]
     planner_ps_id = compact_text(ps.get("ps_id") or ps.get("planner_ps_id"))
-    return _scheduled_ops_as_steps(con, planner_ps_id)
+    return [_normalize_manufacturing_step(step) for step in _scheduled_ops_as_steps(con, planner_ps_id)]
+
+
+def _prepare_process_sheet_steps(con, ps, flow_steps, erp_steps_cache=None, wo_stages_cache=None):
+    """Resolve BOM/ERP machining steps; load mfg_wo_status separately for current stage only."""
+    from planning.erp_wo_merge import mfg_wo_stages_batch
+
+    steps = _resolve_process_sheet_steps(con, ps, flow_steps, erp_steps_cache)
+    source_ps_id, pp_partial_no = _display_ids(ps)
+    try:
+        partial_int = int(pp_partial_no or 1)
+    except (TypeError, ValueError):
+        partial_int = 1
+    cache_key = (compact_text(source_ps_id), partial_int)
+    if wo_stages_cache is None:
+        wo_stages_cache = mfg_wo_stages_batch(con, [cache_key] if cache_key[0] else [])
+    return steps, wo_stages_cache.get(cache_key, [])
 
 
 def _block_metrics_for_ps_ids(con, ps_ids):
@@ -2242,7 +2329,7 @@ def _strip_temp_step_erp_qty(steps):
     return cleaned
 
 
-def _process_sheet_payload(ps, steps, metrics, material_status, manual_by_op_seq=None):
+def _process_sheet_payload(ps, steps, metrics, material_status, manual_by_op_seq=None, wo_stages=None):
     raw_planned_qty = _to_float(metrics.get("planned_qty_total"))
     raw_finished_qty = _to_float(metrics.get("finished_qty_total"))
     is_temp = is_temp_planner_ps_id(ps.get("ps_id") or ps.get("planner_ps_id"))
@@ -2308,14 +2395,31 @@ def _process_sheet_payload(ps, steps, metrics, material_status, manual_by_op_seq
             (total_qty > 0 and finished_qty >= (total_qty - qty_tolerance))
             or (execution_completed and remaining_qty <= qty_tolerance)
         )
-    is_completed = shipped_completed or production_completed
     display_ps_id, pp_partial_no = _display_ids(ps)
     if is_temp_planner_ps_id(ps.get("ps_id") or ps.get("planner_ps_id")):
         display_ps_id = temp_planner_ps_display_label(ps.get("ps_id") or ps.get("planner_ps_id"))
     queued_machines = list(metrics.get("queued_machines") or [])
     queued_machine_details = list(metrics.get("queued_machine_details") or [])
     is_queued = bool(queued_machines) or raw_planned_qty > 0
-    return {
+    from planning.erp_wo_merge import wo_stages_all_complete
+
+    erp_all_wo_complete = wo_stages_all_complete(wo_stages) if wo_stages else bool(
+        ps.get("erp_all_wo_complete")
+    )
+    pending_do = pending_delivery_order(
+        {
+            "ops": ops,
+            "so_det_qty": _to_float(ps.get("so_det_qty")) if ps.get("so_det_qty") is not None else None,
+            "qty_shipped": qty_shipped,
+            "shipped_completed": shipped_completed,
+            "execution_completed": execution_completed,
+            "erp_all_wo_complete": erp_all_wo_complete,
+            "current_stage_status": compact_text(ps.get("current_stage_status") or ""),
+            "execution_status": compact_text(ps.get("execution_status") or ""),
+        }
+    )
+    is_completed = shipped_completed or (erp_all_wo_complete and not pending_do)
+    payload = {
         "ps_id": ps.get("ps_id") or ps.get("planner_ps_id"),
         "source_ps_id": compact_text(ps.get("source_ps_id")) or display_ps_id,
         "pp_partial_no": pp_partial_no,
@@ -2343,6 +2447,8 @@ def _process_sheet_payload(ps, steps, metrics, material_status, manual_by_op_seq
         "production_completed": production_completed,
         "shipped_completed": shipped_completed,
         "is_completed": is_completed,
+        "pending_do": pending_do,
+        "erp_all_wo_complete": erp_all_wo_complete,
         "selected_bom_id": int(ps.get("selected_bom_id") or 0),
         "selected_flow_code": compact_text(ps.get("selected_flow_code") or ""),
         "erp_bom_code": compact_text(ps.get("erp_bom_code") or ""),
@@ -2376,6 +2482,22 @@ def _process_sheet_payload(ps, steps, metrics, material_status, manual_by_op_seq
         "current_stage_status": compact_text(ps.get("current_stage_status") or ""),
         "ops": ops,
     }
+    if wo_stages and not payload["current_stage_desc"]:
+        from planning.erp_wo_merge import resolve_current_stage_from_wo_stages
+
+        resolved = resolve_current_stage_from_wo_stages(
+            wo_stages,
+            shipped_completed=bool(payload.get("shipped_completed")),
+        )
+        if resolved:
+            payload["current_stage_no"] = int(resolved.get("current_stage_no") or 0)
+            payload["current_stage_desc"] = compact_text(resolved.get("current_stage_desc") or "")
+            payload["current_stage_status"] = compact_text(resolved.get("current_stage_status") or "")
+    if not payload.get("pending_do"):
+        payload["pending_do"] = pending_delivery_order(payload)
+    if payload["pending_do"]:
+        payload["is_completed"] = bool(payload.get("shipped_completed"))
+    return payload
 
 
 def _step_payload(step, metrics_by_op, work_qty=0):
@@ -2422,6 +2544,7 @@ def _step_payload(step, metrics_by_op, work_qty=0):
         "seq_no": int(step.get("seq_no") or 0),
         "op_no": step.get("op_no") or "",
         "op_type": step.get("op_type") or "",
+        "stage_desc": compact_text(step.get("stage_desc") or step.get("op_type") or ""),
         "machine_category": step.get("machine_category") or "",
         "preferred_machine": step.get("preferred_machine") or "",
         "cycle_time": _to_float(step.get("cycle_time")),
@@ -2759,18 +2882,40 @@ def list_process_sheets_payload(con):
         if compact_text(source_ps_id):
             erp_step_keys.append((compact_text(source_ps_id), partial_int))
     erp_steps_cache = _erp_cache_steps_batch(con, erp_step_keys)
+    from planning.erp_wo_merge import mfg_wo_stages_batch
+
+    wo_stage_keys = []
+    wo_stage_seen = set()
+    for ps in ps_rows:
+        source_ps_id, pp_partial_no = _display_ids(ps)
+        try:
+            partial_int = int(pp_partial_no or 1)
+        except (TypeError, ValueError):
+            partial_int = 1
+        key = (compact_text(source_ps_id), partial_int)
+        if key[0] and key not in wo_stage_seen:
+            wo_stage_keys.append(key)
+            wo_stage_seen.add(key)
+    wo_stages_cache = mfg_wo_stages_batch(con, wo_stage_keys)
 
     result = []
     today = date.today().isoformat()
     for ps in ps_rows:
         ps_id = compact_text(ps["ps_id"])
-        steps = _resolve_process_sheet_steps(con, ps, steps_by_ps.get(ps_id, []), erp_steps_cache)
+        steps, wo_stages = _prepare_process_sheet_steps(
+            con,
+            ps,
+            steps_by_ps.get(ps_id, []),
+            erp_steps_cache,
+            wo_stages_cache,
+        )
         payload = _process_sheet_payload(
             ps,
             steps,
             metrics_by_ps.get(ps_id, {}),
             material_status_by_ps.get(ps_id, {}),
             manual_qty_by_ps.get(ps_id, {}),
+            wo_stages=wo_stages,
         )
         if is_temp_planner_ps_id(ps_id):
             if not int(ps.get("selected_bom_id") or 0):
@@ -2778,11 +2923,12 @@ def list_process_sheets_payload(con):
                     repaired_bom_id = _repair_temp_ps_bom_if_missing(con, ps_id)
                     if repaired_bom_id:
                         ps["selected_bom_id"] = repaired_bom_id
-                        steps = _resolve_process_sheet_steps(
+                        steps, wo_stages = _prepare_process_sheet_steps(
                             con,
                             ps,
                             _flow_steps_for_ps_ids(con, [ps_id]).get(ps_id, []),
                             erp_steps_cache,
+                            wo_stages_cache,
                         )
                         payload = _process_sheet_payload(
                             ps,
@@ -2790,6 +2936,7 @@ def list_process_sheets_payload(con):
                             metrics_by_ps.get(ps_id, {}),
                             material_status_by_ps.get(ps_id, {}),
                             manual_qty_by_ps.get(ps_id, {}),
+                            wo_stages=wo_stages,
                         )
                 except Exception:
                     pass
@@ -3036,17 +3183,27 @@ def _update_material_in(con, ps_id, material_in):
         ensure_planner_process_sheet(con, canonical_ps_id)
     except ValueError as exc:
         return None, str(exc)
+    material_in_bool = bool(material_in)
     con.execute(
         """
         UPDATE planner_process_sheet
-        SET material_in = %s, updated_at = NOW()
+        SET material_in = %s,
+            material_in_date = CASE
+                WHEN %s THEN COALESCE(material_in_date, CURRENT_DATE)
+                ELSE NULL
+            END,
+            updated_at = NOW()
         WHERE planner_ps_id = %s
         """,
-        (bool(material_in), canonical_ps_id),
+        (material_in_bool, material_in_bool, canonical_ps_id),
     )
     row = one(
         con.execute(
-            "SELECT material_in FROM planner_process_sheet WHERE planner_ps_id = %s",
+            """
+            SELECT material_in, material_in_date
+            FROM planner_process_sheet
+            WHERE planner_ps_id = %s
+            """,
             (canonical_ps_id,),
         )
     )
@@ -3056,9 +3213,11 @@ def _update_material_in(con, ps_id, material_in):
         _invalidate_pp_vouchers_with_ops_cache()
     except Exception:
         pass
+    material_in_date = (row or {}).get("material_in_date")
     return {
         "ps_id": canonical_ps_id,
         "material_in": bool((row or {}).get("material_in")),
+        "material_in_date": material_in_date.isoformat() if material_in_date else None,
     }, None
 
 
@@ -3283,13 +3442,18 @@ def api_process_sheet_bom_step_qty(ps_id):
                     (canonical_ps_id,),
                 )
             )
-            steps = _resolve_process_sheet_steps(con, dict(ps_row), steps_by_ps.get(canonical_ps_id, []))
+            steps, wo_stages = _prepare_process_sheet_steps(
+                con,
+                dict(ps_row),
+                steps_by_ps.get(canonical_ps_id, []),
+            )
             summary = _process_sheet_payload(
                 dict(ps_row),
                 steps,
                 metrics_by_ps.get(canonical_ps_id, {}),
                 material_status_by_ps.get(canonical_ps_id, {}),
                 manual_qty_by_ps.get(canonical_ps_id, {}),
+                wo_stages=wo_stages,
             )
             updated_op = next(
                 (op for op in summary.get("ops", []) if int(op.get("op_seq_id") or 0) == op_seq_id),
@@ -3359,13 +3523,18 @@ def api_process_sheet_details(ps_id):
                 {canonical_ps_id: metrics_by_ps.get(canonical_ps_id, {}).get("expected_start", "")},
             )
             manual_qty_by_ps = _manual_qty_by_ps_ids(con, [canonical_ps_id])
-            steps = _resolve_process_sheet_steps(con, dict(ps), steps_by_ps.get(canonical_ps_id, []))
+            steps, wo_stages = _prepare_process_sheet_steps(
+                con,
+                dict(ps),
+                steps_by_ps.get(canonical_ps_id, []),
+            )
             summary = _process_sheet_payload(
                 dict(ps),
                 steps,
                 metrics_by_ps.get(canonical_ps_id, {}),
                 material_status_by_ps.get(canonical_ps_id, {}),
                 manual_qty_by_ps.get(canonical_ps_id, {}),
+                wo_stages=wo_stages,
             )
 
             segment_rows = rows(

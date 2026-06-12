@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS public.planner_cycle_time_master (
     program_no         TEXT         NOT NULL DEFAULT '',
     program_file       TEXT         NOT NULL DEFAULT '',
     tool_list_file     TEXT         NOT NULL DEFAULT '',
+    ideal_cycle_time   NUMERIC      NOT NULL DEFAULT 0,
     cycle_time         NUMERIC      NOT NULL DEFAULT 0,
     set_up_time        NUMERIC      NOT NULL DEFAULT 0,
     created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -48,5 +49,6 @@ CREATE INDEX IF NOT EXISTS idx_planner_ctm_part_bom
 COMMENT ON TABLE public.planner_cycle_time_master IS
     'Planner-maintained cycle/setup times (minutes). Key = id; part_no can repeat with many bom_code / program rows.';
 
-COMMENT ON COLUMN public.planner_cycle_time_master.cycle_time IS 'Minutes per piece.';
+COMMENT ON COLUMN public.planner_cycle_time_master.ideal_cycle_time IS 'Machine ideal minutes per piece (from program tools).';
+COMMENT ON COLUMN public.planner_cycle_time_master.cycle_time IS 'Production minutes per piece for new schedules; defaults to ideal.';
 COMMENT ON COLUMN public.planner_cycle_time_master.set_up_time IS 'Minutes per setup.';

@@ -613,13 +613,22 @@ function trialQueuedOpCardsForPs(ps) {
   );
 }
 
+const TRIAL_FINISHING_STAGE_DESCS = new Set(['Deburring', 'Final Inspection', 'Packing']);
+
+function trialIsFinishingOpCard(card) {
+  const desc = String(card?.stage_desc || card?.op_type || card?.operation_name || '').trim();
+  return TRIAL_FINISHING_STAGE_DESCS.has(desc);
+}
+
 function trialResolvedOpCardsForPs(ps) {
   const stampPs = (card) => ({
     ...card,
     ps_id: card?.ps_id || ps?.ps_id || '',
     pp_partial_no: card?.pp_partial_no ?? ps?.pp_partial_no,
   });
-  const baseCards = (Array.isArray(ps?.op_cards) ? ps.op_cards : []).map(stampPs);
+  const baseCards = (Array.isArray(ps?.op_cards) ? ps.op_cards : [])
+    .filter(card => !trialIsFinishingOpCard(card))
+    .map(stampPs);
   const queuedCards = trialQueuedOpCardsForPs(ps);
   const seen = new Set(baseCards.map(trialCatalogOpCardKey));
   const merged = [...baseCards];
@@ -2839,16 +2848,21 @@ function renderTrial(options = {}) {
       if (machinistPanelWasOpen) trialRestoreMachineFilterPanelIfOpen('machinist');
     } else {
       filterShell.innerHTML = `
-        <div class="trial-board-filter-card">
-          <div class="trial-board-filter-row trial-board-filter-row--primary">
-            ${renderTrialMachineTypeFilter()}
-            ${renderTrialMachineDropdownFilter('planner')}
-            ${renderTrialScheduleDateFilter()}
+        <div class="trial-board-filter-body">
+          <div class="trial-board-filter-row trial-board-filter-row--filters">
+            <div class="trial-board-filter-group">
+              ${renderTrialMachineTypeFilter()}
+              ${renderTrialMachineDropdownFilter('planner')}
+              ${renderTrialScheduleDateFilter()}
+            </div>
             <button type="button" class="btn btn-primary btn-sm trial-queue-heads-btn"
               onclick="openTrialQueueHeadsModal()"
               title="View the current operation at the front of every machine queue">
               View current Operations
             </button>
+          </div>
+          <div class="trial-board-filter-row trial-board-filter-row--actions">
+            <span class="trial-board-filter-actions-label">Tools</span>
             <button type="button" class="btn btn-ghost btn-sm trial-shop-calendar-btn"
               onclick="openTrialCapacityModal()"
               title="Shop working hours, holidays, and capacity overrides">

@@ -59,11 +59,17 @@ CREATE TABLE IF NOT EXISTS public.planner_cycle_time_master (
     program_no         TEXT         NOT NULL DEFAULT '',
     program_file       TEXT         NOT NULL DEFAULT '',
     tool_list_file     TEXT         NOT NULL DEFAULT '',
+    ideal_cycle_time   NUMERIC      NOT NULL DEFAULT 0,
     cycle_time         NUMERIC      NOT NULL DEFAULT 0,
     set_up_time        NUMERIC      NOT NULL DEFAULT 0,
     created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+COMMENT ON COLUMN public.planner_cycle_time_master.ideal_cycle_time IS
+    'Machine ideal cycle time (minutes/pc) from program tools.';
+COMMENT ON COLUMN public.planner_cycle_time_master.cycle_time IS
+    'Production cycle time (minutes/pc) for new schedules; defaults to ideal.';
 
 CREATE INDEX IF NOT EXISTS idx_planner_ctm_part
     ON public.planner_cycle_time_master (part_no);

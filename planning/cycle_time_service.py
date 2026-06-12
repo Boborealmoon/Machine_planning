@@ -108,7 +108,7 @@ def lookup_master_row(
             """
             SELECT id, part_no, bom_code, stage_no, stage_name, op_no, op_type,
                    program_no, program_file, tool_list_file,
-                   cycle_time, set_up_time, updated_at
+                   ideal_cycle_time, cycle_time, set_up_time, updated_at
             FROM public.planner_cycle_time_master m
             WHERE trim(m.part_no) = trim(%s)
               AND trim(m.bom_code) = trim(%s)
@@ -167,12 +167,15 @@ def resolve_step_times(
         stage_no=stage_no or None,
     )
     if master:
-        cycle = parse_number(master.get("cycle_time"), 0)
+        ideal = parse_number(master.get("ideal_cycle_time"), 0)
+        production = parse_number(master.get("cycle_time"), 0)
+        cycle = production if production > 0 else ideal
         setup = parse_number(master.get("set_up_time"), 0)
         if cycle > 0 or setup > 0:
             return {
                 "cycle_time": cycle if cycle > 0 else fallback_cycle,
                 "set_up_time": setup if setup > 0 else fallback_setup,
+                "ideal_cycle_time": ideal,
                 "source": "master",
                 "master_id": int(master.get("id") or 0),
             }
@@ -554,7 +557,7 @@ def publish_cycle_time(
                 """
                 SELECT id, part_no, bom_code, stage_no, stage_name, op_no, op_type,
                        program_no, program_file, tool_list_file,
-                       cycle_time, set_up_time
+                       ideal_cycle_time, cycle_time, set_up_time
                 FROM public.planner_cycle_time_master
                 WHERE id = %s
                 """,
@@ -586,14 +589,17 @@ def publish_cycle_time(
 
     cycle_old = float(master.get("cycle_time") or 0) if master else None
     setup_old = float(master.get("set_up_time") or 0) if master else None
+    update_ideal = source_kind == SOURCE_SHEET
 
     if master:
         master_id = int(master["id"])
+        ideal_clause = ", ideal_cycle_time = %s" if update_ideal else ""
+        ideal_param = (cycle_new,) if update_ideal else ()
         con.execute(
-            """
+            f"""
             UPDATE public.planner_cycle_time_master
             SET cycle_time = %s,
-                set_up_time = %s,
+                set_up_time = %s{ideal_clause},
                 part_description = CASE
                     WHEN %s <> '' THEN %s
                     ELSE part_description
@@ -608,6 +614,7 @@ def publish_cycle_time(
             (
                 cycle_new,
                 setup_new,
+                *ideal_param,
                 payload["part_description"],
                 payload["part_description"],
                 payload["stage_name"],
@@ -622,9 +629,9 @@ def publish_cycle_time(
                 INSERT INTO public.planner_cycle_time_master (
                     bom_code, part_no, part_description, stage_no, stage_name,
                     op_no, op_type, program_no, program_file, tool_list_file,
-                    cycle_time, set_up_time
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, cycle_time, set_up_time
+                    ideal_cycle_time, cycle_time, set_up_time
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, ideal_cycle_time, cycle_time, set_up_time
                 """,
                 (
                     payload["bom_code"],
@@ -637,6 +644,7 @@ def publish_cycle_time(
                     payload["program_no"],
                     payload["program_file"],
                     payload["tool_list_file"],
+                    cycle_new,
                     cycle_new,
                     setup_new,
                 ),
@@ -814,6 +822,7 @@ def block_cycle_time_context(con, block_id: int) -> dict[str, Any] | None:
         "bom_step_set_up_time": bom_step_setup,
         "master": {
             "id": int(master.get("id") or 0) if master else None,
+            "ideal_cycle_time": float(master.get("ideal_cycle_time") or 0) if master else 0.0,
             "cycle_time": float(master.get("cycle_time") or 0) if master else 0.0,
             "set_up_time": float(master.get("set_up_time") or 0) if master else 0.0,
         },

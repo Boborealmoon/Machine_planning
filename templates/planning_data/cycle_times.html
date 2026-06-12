@@ -120,7 +120,7 @@
 }
 .ct-table {
   width: 100%;
-  min-width: 1280px;
+  min-width: 1360px;
   border-collapse: collapse;
 }
 .ct-table thead th {
@@ -222,6 +222,17 @@
 }
 .ct-time-input:focus { outline: none; border-color: #3b82f6; }
 .ct-time-input.ct-dirty { border-color: #f59e0b; background: #fffbeb; }
+.ct-time-readonly {
+  display: inline-block;
+  min-width: 52px;
+  padding: 5px 8px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text2);
+  background: #f8fafc;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+}
+.ct-time-differs { color: #b45309; font-weight: 600; }
 tr.ct-row-dirty td { background: #fffbeb !important; }
 
 .btn { display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:6px; border:1.5px solid transparent; font:inherit; font-size:13px; font-weight:600; cursor:pointer; transition:all 0.15s; white-space:nowrap; }
@@ -297,9 +308,10 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
     <div>
       <div class="ct-title">Master cycle times</div>
       <p class="ct-sub">
-        Published master times are used as defaults for <em>new</em> schedules only — existing planner jobs are never
-        overwritten. <strong>Import from planner jobs</strong> promotes your per-job tweaks into master (with preview).
-        <strong>Sync from sheet</strong> adds new rows from the program/tool list without replacing master edits.
+        <strong>Master cycle</strong> is the machine ideal (from program tools; updated on sheet sync).
+        <strong>Production cycle</strong> is what new schedules use — defaults to master, editable from production or
+        <strong>Import from planner jobs</strong>. Existing scheduled jobs are never overwritten.
+        <strong>Sync from sheet</strong> adds new rows and refreshes master cycle on existing rows only.
       </p>
     </div>
     <div class="ct-actions">
@@ -343,7 +355,7 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
           <th colspan="2">ERP stage</th>
           <th colspan="2">Operation</th>
           <th colspan="3">Programs</th>
-          <th colspan="2">Times (min)</th>
+          <th colspan="3">Times (min)</th>
           <th colspan="1"></th>
         </tr>
         <tr class="ct-cols-row">
@@ -357,13 +369,14 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
           <th>Program #</th>
           <th>Program</th>
           <th>Tool list</th>
-          <th style="text-align:right">Cycle</th>
+          <th style="text-align:right" title="Machine ideal cycle time from program tools">Master cycle</th>
+          <th style="text-align:right" title="Production cycle time used for new schedules">Production cycle</th>
           <th style="text-align:right">Setup</th>
           <th style="text-align:right;width:100px"></th>
         </tr>
       </thead>
       <tbody id="ct-tbody">
-        <tr class="empty-row"><td colspan="13">Loading…</td></tr>
+        <tr class="empty-row"><td colspan="14">Loading…</td></tr>
       </tbody>
     </table>
   </div>
@@ -435,7 +448,8 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
     <div class="modal-field"><label>Program no</label><input id="add-programno" type="text" /></div>
     <div class="modal-field"><label>Program file URL</label><input id="add-programfile" type="text" /></div>
     <div class="modal-field"><label>Tool list URL</label><input id="add-toollist" type="text" /></div>
-    <div class="modal-field"><label>Cycle min/pc</label><input id="add-cycle" type="number" step="0.01" min="0" value="0" /></div>
+    <div class="modal-field"><label>Master cycle min/pc (machine ideal)</label><input id="add-ideal-cycle" type="number" step="0.01" min="0" value="0" /></div>
+    <div class="modal-field"><label>Production cycle min/pc</label><input id="add-cycle" type="number" step="0.01" min="0" value="0" placeholder="Defaults to master cycle" /></div>
     <div class="modal-field"><label>Setup min</label><input id="add-setup" type="number" step="0.01" min="0" value="0" /></div>
     <div class="error-msg" id="add-error"></div>
     <div class="modal-actions">
@@ -609,7 +623,7 @@ async function exportToExcel() {
     const headers = [
       'Part no', 'BOM', 'Description', 'Stage #', 'Stage name',
       'Op #', 'Op type', 'Program #', 'Program file', 'Tool list',
-      'Cycle (min)', 'Setup (min)', 'Updated',
+      'Master cycle (min)', 'Production cycle (min)', 'Setup (min)', 'Updated',
     ];
     const headerRow = sheet.addRow(headers);
     headerRow.font = { bold: true, size: 11 };
@@ -628,6 +642,7 @@ async function exportToExcel() {
         r.program_no || '',
         r.program_file || '',
         r.tool_list_file || '',
+        idealCycleTime(r) != null ? Number(idealCycleTime(r)) : 0,
         r.cycle_time != null ? Number(r.cycle_time) : 0,
         r.set_up_time != null ? Number(r.set_up_time) : 0,
         r.updated_at ? String(r.updated_at).slice(0, 19).replace('T', ' ') : '',
@@ -682,10 +697,16 @@ async function loadRows() {
     allRows = [];
     setBanner(`Could not load: ${e.message}`, 'error');
     document.getElementById('ct-tbody').innerHTML =
-      `<tr class="empty-row"><td colspan="13">${esc(e.message)}</td></tr>`;
+      `<tr class="empty-row"><td colspan="14">${esc(e.message)}</td></tr>`;
   } finally {
     [refreshBtn, syncBtn].forEach(b => { if (b) b.disabled = false; });
   }
+}
+
+function idealCycleTime(r) {
+  const ideal = r?.ideal_cycle_time;
+  if (ideal != null && ideal !== '' && Number(ideal) > 0) return ideal;
+  return r?.cycle_time ?? 0;
 }
 
 function markRowDirty(id) {
@@ -758,17 +779,21 @@ function render() {
   const tbody = document.getElementById('ct-tbody');
 
   if (!allRows.length) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="13">No rows. Click <strong>Sync from sheet</strong> to add from the program/tool list.</td></tr>';
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="14">No rows. Click <strong>Sync from sheet</strong> to add from the program/tool list.</td></tr>';
     return;
   }
   if (!visibleRows().length) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="13">No rows match your filters.</td></tr>';
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="14">No rows match your filters.</td></tr>';
     return;
   }
 
   tbody.innerHTML = rows.map(r => {
     const id = r.id;
     const opType = r.op_type || '';
+    const ideal = idealCycleTime(r);
+    const production = r.cycle_time ?? ideal;
+    const prodDiffers = Number(production) > 0 && Number(ideal) > 0
+      && Math.abs(Number(production) - Number(ideal)) > 0.009;
     return `
     <tr id="row-${id}">
       <td class="ct-sticky-part">
@@ -784,7 +809,11 @@ function render() {
       <td>${driveLink(r.program_file, 'Program')}</td>
       <td>${driveLink(r.tool_list_file, 'Tools')}</td>
       <td class="ct-num">
-        <input class="ct-time-input" id="t-cycle-${id}" type="number" step="0.01" min="0" value="${esc(fmtNum(r.cycle_time))}">
+        <span class="ct-time-readonly" title="From machine / program tools (updated on sheet sync)">${esc(fmtNum(ideal))}</span>
+      </td>
+      <td class="ct-num">
+        <input class="ct-time-input${prodDiffers ? ' ct-dirty' : ''}" id="t-cycle-${id}" type="number" step="0.01" min="0"
+          value="${esc(fmtNum(production))}" title="Production cycle time for new schedules">
       </td>
       <td class="ct-num">
         <input class="ct-time-input" id="t-setup-${id}" type="number" step="0.01" min="0" value="${esc(fmtNum(r.set_up_time))}">
@@ -796,7 +825,7 @@ function render() {
       </td>
     </tr>
     <tr class="row-edit-form" id="edit-row-${id}">
-      <td colspan="13">
+      <td colspan="14">
         <div class="edit-grid">
           <div class="edit-field"><label>BOM</label><input id="e-bom-${id}" value="${esc(r.bom_code)}"></div>
           <div class="edit-field"><label>Part</label><input id="e-part-${id}" value="${esc(r.part_no)}"></div>
@@ -808,7 +837,8 @@ function render() {
           <div class="edit-field"><label>Program #</label><input id="e-programno-${id}" value="${esc(r.program_no)}"></div>
           <div class="edit-field edit-span2"><label>Program file</label><input id="e-programfile-${id}" value="${esc(r.program_file)}"></div>
           <div class="edit-field edit-span2"><label>Tool list</label><input id="e-toollist-${id}" value="${esc(r.tool_list_file)}"></div>
-          <div class="edit-field"><label>Cycle</label><input id="e-cycle-${id}" type="number" step="0.01" value="${esc(fmtNum(r.cycle_time))}"></div>
+          <div class="edit-field"><label>Master cycle</label><input id="e-ideal-cycle-${id}" type="number" step="0.01" value="${esc(fmtNum(ideal))}"></div>
+          <div class="edit-field"><label>Production cycle</label><input id="e-cycle-${id}" type="number" step="0.01" value="${esc(fmtNum(production))}"></div>
           <div class="edit-field"><label>Setup</label><input id="e-setup-${id}" type="number" step="0.01" value="${esc(fmtNum(r.set_up_time))}"></div>
           <div class="edit-actions">
             <button type="button" class="btn btn-primary btn-sm" onclick="saveEdit(${id})">Save</button>
@@ -847,6 +877,7 @@ async function saveEdit(id) {
     program_file: (document.getElementById(`e-programfile-${id}`)?.value || '').trim(),
     tool_list_file: (document.getElementById(`e-toollist-${id}`)?.value || '').trim(),
     stage_no: document.getElementById(`e-stage-${id}`)?.value,
+    ideal_cycle_time: document.getElementById(`e-ideal-cycle-${id}`)?.value,
     cycle_time: document.getElementById(`e-cycle-${id}`)?.value,
     set_up_time: document.getElementById(`e-setup-${id}`)?.value,
   };
@@ -878,7 +909,8 @@ function openAddModal() {
   ['add-bom','add-part','add-desc','add-stage','add-stagename','add-opno','add-optype','add-programno','add-programfile','add-toollist'].forEach(id => {
     document.getElementById(id).value = '';
   });
-  document.getElementById('add-cycle').value = '0';
+  document.getElementById('add-ideal-cycle').value = '0';
+  document.getElementById('add-cycle').value = '';
   document.getElementById('add-setup').value = '0';
   setAddError('');
   document.getElementById('add-modal').classList.add('open');
@@ -910,7 +942,9 @@ async function submitAdd() {
     program_no: (document.getElementById('add-programno').value || '').trim(),
     program_file: (document.getElementById('add-programfile').value || '').trim(),
     tool_list_file: (document.getElementById('add-toollist').value || '').trim(),
-    cycle_time: document.getElementById('add-cycle').value,
+    ideal_cycle_time: document.getElementById('add-ideal-cycle').value,
+    cycle_time: (document.getElementById('add-cycle').value || '').trim()
+      || document.getElementById('add-ideal-cycle').value,
     set_up_time: document.getElementById('add-setup').value,
   };
   if (op_no_raw !== '') body.op_no = op_no_raw;

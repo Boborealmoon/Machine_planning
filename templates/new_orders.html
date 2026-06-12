@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}New Orders{% endblock %}
 {% block main_class %}app-main--new-orders{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=responsive-layout-20260604">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=new-orders-queue-20260612">{% endblock %}
 {% block content %}
 <div class="new-orders-page">
   <div class="new-orders-header">
@@ -74,7 +74,7 @@
           <th>Line</th>
           <th>PS</th>
           <th>Part</th>
-          <th>Description</th>
+          <th class="new-orders-desc-head">Description</th>
           <th>PO due</th>
           <th>Qty</th>
           <th>Issued</th>
@@ -108,5 +108,6 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=new-orders-20260603"></script>
-<script src="{{ url_for('static', filename='js/new_orders.js') }}?v=new-orders-hide-history-20260603"></script>
+<script src="{{ url_for('static', filename='js/repeat_order_tags.js') }}?v=repeat-slot-queue-20260612"></script>
+<script src="{{ url_for('static', filename='js/new_orders.js') }}?v=new-orders-slot-queue-20260612"></script>
 {% endblock %}

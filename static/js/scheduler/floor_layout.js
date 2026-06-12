@@ -1,5 +1,7 @@
 // Factory floor layout — SVG map of machine positions on the shop floor.
 
+const TRIAL_FLOOR_LAYOUT_HEIGHT = 10;
+
 const TRIAL_FLOOR_LAYOUT_COLORS = {
   turnmill: '#00B4D8',
   mpp: '#FFB703',
@@ -33,6 +35,18 @@ const TRIAL_FLOOR_LAYOUT_MACHINES = [
   { x: 8.5, y: 0.5, w: 0.8, h: 1, label: '27', color: 'turning', rotation: 90 },
 ];
 
+function trialFloorLayoutMatplotlibToSvg(machine) {
+  const { x, y, w, h } = machine;
+  return {
+    x,
+    y: TRIAL_FLOOR_LAYOUT_HEIGHT - y - h,
+    w,
+    h,
+    cx: x + w / 2,
+    cy: TRIAL_FLOOR_LAYOUT_HEIGHT - y - h / 2,
+  };
+}
+
 function trialFloorLayoutLegendHtml() {
   const items = [
     ['Turnmill', TRIAL_FLOOR_LAYOUT_COLORS.turnmill],
@@ -50,31 +64,31 @@ function trialFloorLayoutLegendHtml() {
 
 function trialFloorLayoutMachineSvg(machine) {
   const fill = TRIAL_FLOOR_LAYOUT_COLORS[machine.color] || '#ccc';
-  const cx = machine.x + machine.w / 2;
-  const cy = machine.y + machine.h / 2;
-  const rotation = Number(machine.rotation) || 0;
-  const labelTransform = rotation
-    ? ` transform="rotate(${rotation} ${cx} ${cy})"`
+  const { x, y, w, h, cx, cy } = trialFloorLayoutMatplotlibToSvg(machine);
+  const mplRot = Number(machine.rotation) || 0;
+  const svgRot = mplRot ? -mplRot : 0;
+  const labelTransform = svgRot
+    ? ` transform="rotate(${svgRot} ${cx} ${cy})"`
     : '';
   return `
     <rect
-      x="${machine.x}"
-      y="${machine.y}"
-      width="${machine.w}"
-      height="${machine.h}"
+      x="${x}"
+      y="${y}"
+      width="${w}"
+      height="${h}"
       fill="${fill}"
       stroke="#1a1c1d"
-      stroke-width="0.08"
-      rx="0.06"
+      stroke-width="0.12"
     />
     <text
       x="${cx}"
       y="${cy}"
       text-anchor="middle"
       dominant-baseline="central"
-      font-size="0.42"
+      font-size="0.48"
       font-weight="700"
-      fill="#1a1c1d"${labelTransform}
+      fill="#1a1c1d"
+      font-family="system-ui, -apple-system, Segoe UI, sans-serif"${labelTransform}
     >${escapeHtml(machine.label)}</text>
   `;
 }
@@ -85,12 +99,11 @@ function trialFloorLayoutSvgHtml() {
     <svg
       class="trial-floor-layout-svg"
       viewBox="0 0 10 10"
+      preserveAspectRatio="xMidYMid meet"
       role="img"
       aria-label="Factory floor plan showing machine positions"
     >
-      <g transform="scale(1,-1) translate(0,-10)">
-        ${machines}
-      </g>
+      ${machines}
     </svg>
   `;
 }

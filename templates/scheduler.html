@@ -4,22 +4,26 @@
 {% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v={{ scheduler_asset_version }}">{% endblock %}
 {% block content %}
 <div class="trial-shell">
-  <div class="trial-top-strip">
-    <div class="trial-legend">
-    <span><span class="trial-legend-dot" style="background:rgba(239,68,68,0.85)"></span>PS overdue</span>
-    <span><span class="trial-legend-dot" style="background:rgba(245,158,11,0.85)"></span>PS due within 7 days</span>
-    <span><span class="trial-legend-dot trial-legend-dot-empty"></span>PS not due soon</span>
-    <span class="trial-legend-sep" aria-hidden="true">·</span>
-    <span><span class="trial-legend-dot" style="background:rgba(34,197,94,0.85)"></span>Queued · in stock</span>
-    <span><span class="trial-legend-dot" style="background:rgba(239,68,68,0.85)"></span>Queued · awaiting stock</span>
-    <span class="trial-legend-sep" aria-hidden="true">·</span>
-    <span class="trial-legend-note">Times shown in Singapore (SGT)</span>
-    </div>
-  </div>
   <div id="trial-loading" class="loading"><div class="spinner"></div> Loading trial scheduler...</div>
   <div class="trial-layout" style="display:none;" id="trial-layout">
     <div class="trial-main">
-      <div id="trial-machine-filter-shell"></div>
+      <div class="trial-toolbar">
+        <div class="trial-legend-bar" aria-label="Board legend">
+          <div class="trial-legend-group">
+            <span class="trial-legend-group-label">PS due</span>
+            <span><span class="trial-legend-dot" style="background:rgba(239,68,68,0.85)"></span>Overdue</span>
+            <span><span class="trial-legend-dot" style="background:rgba(245,158,11,0.85)"></span>Within 7 days</span>
+            <span><span class="trial-legend-dot trial-legend-dot-empty"></span>Not due soon</span>
+          </div>
+          <div class="trial-legend-group">
+            <span class="trial-legend-group-label">Queue</span>
+            <span><span class="trial-legend-dot" style="background:rgba(34,197,94,0.85)"></span>In stock</span>
+            <span><span class="trial-legend-dot" style="background:rgba(239,68,68,0.85)"></span>Awaiting stock</span>
+          </div>
+          <span class="trial-legend-note">Times in Singapore (SGT)</span>
+        </div>
+        <div id="trial-machine-filter-shell"></div>
+      </div>
       <div class="trial-grid-scroll-host">
         <div class="trial-grid-scroll-top-wrap">
           <div class="trial-grid-scroll-hint" aria-hidden="true">Drag to scroll machines · Shift + mouse wheel</div>

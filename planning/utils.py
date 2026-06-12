@@ -225,6 +225,9 @@ def pending_delivery_order(entry):
     if shipped_quantity_completed(so_qty, entry.get("qty_shipped")):
         return False
 
+    if bool(entry.get("erp_all_wo_complete")):
+        return True
+
     ops = entry.get("ops") or entry.get("op_cards") or []
     if ops:
         for op in ops:

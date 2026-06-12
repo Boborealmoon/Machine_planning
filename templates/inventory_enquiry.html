@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Inventory Enquiry{% endblock %}
+{% block main_class %}app-main--inventory-enquiry{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=inventory-enquiry-20260612">{% endblock %}
+{% block content %}
+<div class="mi-page inv-enq-page">
+  <div class="mi-header">
+    <div>
+      <h1 class="mi-title">Inventory Enquiry</h1>
+      <p class="mi-subtitle">Live <code>mt_inventory</code> master. Filter by inventory class, search part numbers and descriptions, then click a row for grouped detail.</p>
+    </div>
+    <div class="mi-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="inv-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="mi-toolbar card">
+    <div class="mi-filter mi-filter--view">
+      <span>Class</span>
+      <div class="mi-view-toggle inv-enq-class-toggle" role="tablist" aria-label="Inventory class">
+        <button type="button" class="mi-view-btn is-active" data-inv-class="all" role="tab" aria-selected="true">
+          All <span class="inv-enq-tab-count" id="inv-count-all">0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-inv-class="raw_material" role="tab" aria-selected="false">
+          Raw <span class="inv-enq-tab-count" id="inv-count-raw_material">0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-inv-class="fg_mfg_commercial" role="tab" aria-selected="false">
+          FG MFG <span class="inv-enq-tab-count" id="inv-count-fg_mfg_commercial">0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-inv-class="fg_mro" role="tab" aria-selected="false">
+          FG MRO <span class="inv-enq-tab-count" id="inv-count-fg_mro">0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-inv-class="cp" role="tab" aria-selected="false">
+          CP <span class="inv-enq-tab-count" id="inv-count-cp">0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-inv-class="cfm" role="tab" aria-selected="false">
+          CFM <span class="inv-enq-tab-count" id="inv-count-cfm">0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-inv-class="other" role="tab" aria-selected="false">
+          Other <span class="inv-enq-tab-count" id="inv-count-other">0</span>
+        </button>
+      </div>
+    </div>
+    <label class="mi-filter">
+      <span>Status</span>
+      <select id="inv-status-filter" class="inv-enq-status-select">
+        <option value="active" selected>Active only</option>
+        <option value="suspended">Suspended only</option>
+        <option value="all">All statuses</option>
+      </select>
+    </label>
+    <label class="mi-filter mi-filter--grow">
+      <span>Search</span>
+      <span class="planner-page-search-wrap">
+        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="inv-search" class="planner-page-search-input" type="search" placeholder="Part no, description, class, UOM..." autocomplete="off">
+      </span>
+    </label>
+    <div class="mi-stats" id="inv-stats"></div>
+  </div>
+
+  <div id="inv-loading" class="loading"><div class="spinner"></div> Loading inventory...</div>
+
+  <section class="mi-section card" id="inv-table-section" hidden>
+    <div class="mi-section-head">
+      <h2 class="mi-section-title" id="inv-section-title">All inventory</h2>
+      <span class="mi-section-count" id="inv-row-count"></span>
+    </div>
+    <div class="mi-table-wrap">
+      <table class="mi-table inv-enq-table">
+        <thead>
+          <tr>
+            <th>Part no</th>
+            <th>Description</th>
+            <th>Class</th>
+            <th>UOM</th>
+            <th>BOM</th>
+            <th>In-house</th>
+            <th>Stock</th>
+            <th>Lead (d)</th>
+            <th>Base cost</th>
+            <th>Suspend</th>
+            <th>Updated</th>
+          </tr>
+        </thead>
+        <tbody id="inv-table-body"></tbody>
+      </table>
+    </div>
+    <p class="mi-section-empty" id="inv-table-empty" hidden>No rows match your filters.</p>
+  </section>
+
+  <div id="inv-global-empty" class="mi-global-empty card" hidden>
+    <p>No inventory rows returned from ERP.</p>
+  </div>
+  <p class="mi-meta" id="inv-meta" hidden></p>
+</div>
+
+<div id="inv-detail" class="mi-detail" hidden>
+  <div class="mi-detail-backdrop" data-action="close-detail" aria-hidden="true"></div>
+  <aside class="mi-detail-panel" role="dialog" aria-modal="true" aria-labelledby="inv-detail-title">
+    <div class="mi-detail-head">
+      <div>
+        <p class="mi-detail-kicker">Inventory detail</p>
+        <h2 class="mi-detail-title" id="inv-detail-title"></h2>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="inv-detail-close" aria-label="Close">Close</button>
+    </div>
+    <div class="mi-detail-body" id="inv-detail-body"></div>
+    <p class="mi-detail-foot">Source: live COMAIN ERP · <code>mt_inventory</code> · short-lived server cache</p>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=inventory-enquiry-20260612"></script>
+<script src="{{ url_for('static', filename='js/inventory_enquiry.js') }}?v=inventory-enquiry-20260612"></script>
+{% endblock %}

@@ -29,6 +29,41 @@
       .replace(/'/g, '&#39;');
   }
 
+  const PS_COPY_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5" y="4" width="8" height="10" rx="1"/><path d="M4 4V3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v1"/></svg>';
+
+  function renderCopyBtn(text, label) {
+    const value = String(text || '').trim();
+    if (!value) return '';
+    const aria = escapeHtml(label || 'text');
+    return `
+      <button type="button" class="ps-copy-btn"
+        data-action="copy-text"
+        data-copy-json="${escapeHtml(JSON.stringify(value))}"
+        title="Copy ${aria}"
+        aria-label="Copy ${aria}">
+        ${PS_COPY_ICON}
+      </button>
+    `;
+  }
+
+  function copyTextFromButton(btn) {
+    if (!btn) return;
+    let value = '';
+    try {
+      value = JSON.parse(btn.dataset.copyJson || '""');
+    } catch (_err) {
+      value = btn.dataset.copyJson || '';
+    }
+    value = String(value || '').trim();
+    if (!value) return;
+    const label = String(btn.getAttribute('aria-label') || 'Copied').replace(/^Copy\s+/i, '');
+    navigator.clipboard.writeText(value).then(() => {
+      if (typeof toast === 'function') toast(`${label} copied.`, 'success');
+    }).catch(() => {
+      if (typeof toast === 'function') toast('Could not copy to clipboard.', 'error');
+    });
+  }
+
   async function getJson(url, options = {}) {
     const timeoutMs = options.timeoutMs ?? 120000;
     const controller = new AbortController();
@@ -823,7 +858,7 @@
   }
 
   function stageDescFromOp(op) {
-    const desc = compactText(op?.op_type || op?.operation_name || op?.stage_desc);
+    const desc = compactText(op?.stage_desc || op?.op_type || op?.operation_name);
     if (desc) return desc;
     const opNo = compactText(op?.op_no || op?.source_op_no || op?.operation_label);
     return opNo ? `Op ${opNo}` : '';
@@ -964,7 +999,15 @@
     return ['late', 'warning', 'shortage'].includes(materialSeverity(item));
   }
 
+  function isPendingDo(item) {
+    if (item && Object.prototype.hasOwnProperty.call(item, 'pending_do')) {
+      return Boolean(item.pending_do);
+    }
+    return false;
+  }
+
   function isCompleted(item) {
+    if (isPendingDo(item)) return false;
     const ops = Array.isArray(item?.ops) ? item.ops : [];
     const trackedOps = ops.filter(op => opHasWorkOrderEvidence(op));
     if (trackedOps.some(op => !isOpProductionComplete(op))) return false;
@@ -1365,7 +1408,7 @@
       pp_partial_no: partialNo(item),
       planner_status: item.planner_status || 'UNPLANNED',
       shipped_completed: shippedComplete,
-      is_completed: shippedComplete || boolValue(item.is_completed),
+      is_completed: isPendingDo(item) ? false : (shippedComplete || boolValue(item.is_completed)),
       source: 'planner',
     };
   }
@@ -1418,6 +1461,7 @@
       current_stage_no: item.current_stage_no,
       current_stage_desc: item.current_stage_desc || '',
       current_stage_status: item.current_stage_status || '',
+      pending_do: boolValue(item.pending_do),
       ops,
       source: 'erp',
     };
@@ -1762,7 +1806,9 @@
     const titleBadges = [tempBadge, partial, qtyBadge, srBadge, warningsPill].filter(Boolean).join('\n              ');
     const currentStageStrip = renderCurrentStageStrip(item);
     const opStatusStrip = renderOpStatusStrip(ops, item);
-    const descriptor = item.part_desc || 'No description';
+    const partNo = compactText(item.part_no || item.part_name || item.inventory_code || '');
+    const partDesc = compactText(item.part_desc || '');
+    const descriptor = partDesc || 'No description';
     const queueClass = isQueued(item) ? 'is-queued' : 'is-needs';
 
     return `
@@ -1776,13 +1822,19 @@
               </div>
               ${renderSchedulingInline(item, ops)}
             </div>
-            <div class="ps-row-part">
-              <strong>${escapeHtml(item.part_no || item.part_name || item.inventory_code || 'No part')}</strong>
-              <span>${escapeHtml(descriptor)}</span>
-            </div>
             ${currentStageStrip}
             ${opStatusStrip}
           </button>
+          <div class="ps-row-part">
+            <div class="ps-copy-line">
+              <strong>${escapeHtml(partNo || 'No part')}</strong>
+              ${renderCopyBtn(partNo, 'part number')}
+            </div>
+            <div class="ps-copy-line">
+              <span>${escapeHtml(descriptor)}</span>
+              ${renderCopyBtn(partDesc, 'part name')}
+            </div>
+          </div>
           ${renderDateStrip(item, psId)}
           <div class="ps-row-highlights">
             ${renderRemarksInput(item, psId)}
@@ -1986,7 +2038,10 @@
       </div>` : ''}
       <div class="ps-detail-route">
         <span class="ps-detail-label">BOM / Route</span>
-        <strong>${escapeHtml(route)}</strong>
+        <div class="ps-copy-line">
+          <strong>${escapeHtml(route)}</strong>
+          ${route && route !== 'No flow selected' ? renderCopyBtn(route, 'BOM code') : ''}
+        </div>
       </div>
       ${renderDetailsMeta(summary, item, ops)}
       ${details.erp_only ? '<div class="ps-details-note">Planner row was created from ERP on open. Schedule ops from this partial to add planned blocks.</div>' : ''}
@@ -2091,8 +2146,7 @@
                 <td>${escapeHtml(
                   op.machine_code
                   || (Array.isArray(op.queued_machines) && op.queued_machines.length ? op.queued_machines.join(', ') : '')
-                  || op.preferred_machine
-                  || op.compatible_machine_group
+                  || compactText(op.preferred_machine)
                   || '-'
                 )}</td>
                 <td>${renderOpStatusCell(op)}</td>
@@ -2654,6 +2708,13 @@
           const input = wrap?.querySelector('[data-action="remarks"]');
           if (input) saveRemarks(input.dataset.psId || '', input.value, input);
         }
+        return;
+      }
+      const copyBtn = event.target.closest('[data-action="copy-text"]');
+      if (copyBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        copyTextFromButton(copyBtn);
         return;
       }
       const deleteTempBtn = event.target.closest('[data-action="delete-temp-ps"]');

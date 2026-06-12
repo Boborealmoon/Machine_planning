@@ -1,4 +1,4 @@
-// Sales Orders — mfg_pp_vch → mfg_pp_partial_view, so_order_view header on sales_order_no.
+// S/O Management — mfg_pp_vch → mfg_pp_partial_view, so_order_view header on sales_order_no.
 
 const SO_NOTE_FIELDS = [
   'material_subcon',
@@ -32,6 +32,7 @@ const SO_COLUMNS = [
   { id: 'unit_selling_price', label: 'U/Price', sortable: true, filterable: true },
   { id: 'amount', label: 'Amount', sortable: true, filterable: true },
   { id: 'qty', label: 'Qty', sortable: true, filterable: true },
+  { id: 'material_in', label: 'Material in', sortable: true, filterable: true },
   { id: 'material_subcon', label: 'Material/Sub-con', sortable: true, filterable: true },
   { id: 'mtl_part_order', label: 'Mtl / Part Order', sortable: true, filterable: true },
   { id: 'quality_doc', label: 'Quality Doc', sortable: true, filterable: true },
@@ -39,9 +40,17 @@ const SO_COLUMNS = [
   { id: 'sales_notes', label: 'Sales', sortable: true, filterable: true },
 ];
 
+const SO_REPEAT_KEYS = {
+  soKey: row => row.source_voucher_no,
+  partKey: row => row.inventory_code,
+  bomKey: row => row.bom_code,
+  psKey: row => row.process_sheet_no,
+};
+
 const soState = {
   active: [],
   complete: [],
+  repeatGroups: [],
   view: 'active',
   search: '',
   cachedAt: '',
@@ -58,6 +67,53 @@ const soState = {
   colFilters: {},
   openFilterCol: '',
 };
+
+function soAllPpItems() {
+  const items = [];
+  soAllOrders().forEach(order => {
+    (order.pp_vouchers || []).forEach(pp => {
+      items.push({
+        source_voucher_no: order.sales_order_no,
+        inventory_code: pp.inventory_code,
+        bom_code: pp.bom_code,
+        process_sheet_no: pp.process_sheet_no,
+        pp,
+        order,
+      });
+    });
+  });
+  return items;
+}
+
+function soRepeatRow(order, pp) {
+  return {
+    source_voucher_no: order?.sales_order_no,
+    inventory_code: pp?.inventory_code,
+    bom_code: pp?.bom_code,
+    process_sheet_no: pp?.process_sheet_no,
+  };
+}
+
+function soRepeatSoPsMap() {
+  return repeatOrderBuildSoPsMap(
+    soAllPpItems(),
+    item => item.source_voucher_no,
+    item => item.process_sheet_no,
+  );
+}
+
+function soSimilarPsForPp(order, pp) {
+  return repeatOrderSimilarList(
+    soRepeatRow(order, pp),
+    soState.repeatGroups,
+    soRepeatSoPsMap(),
+    SO_REPEAT_KEYS,
+  );
+}
+
+function soRenderRepeatPill(order, pp) {
+  return repeatOrderRenderPill(soSimilarPsForPp(order, pp));
+}
 
 function soPartialKey(order, pp, partial) {
   const so = String(order?.sales_order_no || '').trim();
@@ -152,9 +208,11 @@ function soRenderPartialDetail(order, pp, partial) {
     soDetailField('Customer code', partial?.customer_code, { mono: true }),
     soDetailField('Customer PO', partial?.customer_po_no, { mono: true }),
   ].join('');
+  const similar = soSimilarPsForPp(order, pp);
   const ppHtml = [
     soDetailField('PP voucher', pp?.pp_voucher_no, { mono: true }),
     soDetailField('Process sheet', pp?.process_sheet_no, { mono: true }),
+    typeof repeatOrderDetailHtml === 'function' ? repeatOrderDetailHtml(similar) : '',
     soDetailField('Part', pp?.inventory_code, { mono: true }),
     soDetailField('Description', pp?.description),
     soDetailField('P/O No.', pp?.customer_po_no, { mono: true }),
@@ -183,9 +241,12 @@ function soRenderPartialDetail(order, pp, partial) {
 }
 
 function soRenderPpDetail(order, pp) {
+  const similar = soSimilarPsForPp(order, pp);
   const ppHtml = [
     soDetailField('PP voucher', pp?.pp_voucher_no, { mono: true }),
     soDetailField('Process sheet', pp?.process_sheet_no, { mono: true }),
+    typeof repeatOrderDetailHtml === 'function' ? repeatOrderDetailHtml(similar) : '',
+    soDetailField('Material in', pp?.material_in ? `Yes · ${soFormatDate(pp?.material_in_date)}` : 'Awaiting'),
     soDetailField('Part', pp?.inventory_code, { mono: true }),
     soDetailField('BOM', pp?.bom_code, { mono: true }),
     soDetailField('Description', pp?.description, { fullWidth: true }),
@@ -246,9 +307,14 @@ function soRenderOrderDetail(order) {
   ].join('');
   const ppList = (order.pp_vouchers || []).map(pp => {
     const key = soPartialKey(order, pp, null);
+    const repeatPill = soRenderRepeatPill(order, pp);
     return `
       <button type="button" class="new-orders-detail-line-pick" data-detail-key="${escapeHtml(key)}">
         <span class="new-orders-detail-line-pick-no">${escapeHtml(String(pp.pp_voucher_no || '—'))}</span>
+        <span class="new-orders-detail-line-pick-ps">
+          <span>${escapeHtml(String(pp.process_sheet_no || '—'))}</span>
+          ${repeatPill}
+        </span>
         <span class="new-orders-detail-line-pick-part">${escapeHtml(String(pp.inventory_code || '—'))}</span>
         <span class="new-orders-detail-line-pick-desc">${escapeHtml(String(pp.partial_count || 0))} partial(s) · qty ${escapeHtml(String(pp.pp_qty ?? '—'))}</span>
       </button>
@@ -456,7 +522,15 @@ function soLeafRows(order) {
   (order.pp_vouchers || []).forEach(pp => {
     const partials = pp.partials || [];
     if (!partials.length) {
-      leaves.push({ order, pp, partial: null });
+      // No mfg_pp_partial_view rows — show as partial 1 (same as implicit single partial on PP).
+      leaves.push({
+        order,
+        pp,
+        partial: {
+          pp_partial_no: 1,
+          inventory_code: pp.inventory_code,
+        },
+      });
       return;
     }
     partials.forEach(partial => leaves.push({ order, pp, partial }));
@@ -471,6 +545,47 @@ function soGetPsType(pp) {
   if (!match) return null;
   const prefix = match[1];
   return SO_PS_TYPES.includes(prefix) ? prefix : prefix;
+}
+
+function soTypeTagLabel(psType) {
+  const t = String(psType || 'OTHER');
+  return t === 'SR' ? '[SR]' : t;
+}
+
+function soTypeTagHtml(psType, count) {
+  const t = String(psType || 'OTHER');
+  const cls = `so-type-tag so-type-tag--${t.toLowerCase()}`;
+  const label = soTypeTagLabel(t);
+  const text = count != null ? `${label} ${count}` : label;
+  return `<span class="${cls}">${escapeHtml(text)}</span>`;
+}
+
+function soTypeTagsHtml(typeCounts) {
+  const entries = Object.entries(typeCounts || {})
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => {
+      const ai = SO_PS_TYPES.indexOf(a[0]);
+      const bi = SO_PS_TYPES.indexOf(b[0]);
+      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+    });
+  if (!entries.length) return '<span class="so-dash">—</span>';
+  return `<span class="so-type-tags">${entries.map(([t, c]) => soTypeTagHtml(t, c)).join('')}</span>`;
+}
+
+function soVisibleTypeCounts() {
+  const typeCounts = {};
+  const ppSeen = new Set();
+  soVisibleOrders(soActiveOrders()).forEach(order => {
+    soVisibleLeaves(order).forEach(leaf => {
+      const ppNo = String(leaf.pp?.pp_voucher_no || '').trim();
+      if (ppNo && !ppSeen.has(ppNo)) {
+        ppSeen.add(ppNo);
+        const t = soGetPsType(leaf.pp) || 'OTHER';
+        typeCounts[t] = (typeCounts[t] || 0) + 1;
+      }
+    });
+  });
+  return { typeCounts, ppCount: ppSeen.size };
 }
 
 function soPpTypesAllSelected() {
@@ -512,6 +627,8 @@ function soLeafColumnValue(leaf, colId) {
     case 'unit_selling_price': return pp?.unit_selling_price;
     case 'amount': return pp?.amount;
     case 'qty': return pp?.pp_qty;
+    case 'material_in':
+      return pp?.material_in ? `in ${soFormatDate(pp?.material_in_date)}` : 'awaiting';
     default:
       if (SO_NOTE_FIELDS.includes(colId)) return pp?.[colId];
       return '';
@@ -826,13 +943,33 @@ function soRenderSideRail(order, rowSpan) {
 }
 
 function soRenderPpVoucherCell(pp, rowSpan) {
-  return `<td class="mi-cell--mono" rowspan="${rowSpan}">${escapeHtml(String(pp.pp_voucher_no || '—'))}</td>`;
+  const psType = soGetPsType(pp);
+  const ppNo = String(pp.pp_voucher_no || '—');
+  const tag = psType ? soTypeTagHtml(psType) : '';
+  return `
+    <td class="so-pp-voucher-cell" rowspan="${rowSpan}">
+      <span class="so-pp-voucher-inner">
+        ${tag}
+        <span class="so-pp-voucher-no">${escapeHtml(ppNo)}</span>
+      </span>
+    </td>
+  `;
 }
 
-function soRenderPpSpanCells(pp, rowSpan) {
+function soRenderPpSpanCellsStart(order, pp, rowSpan) {
+  const psCode = String(pp.process_sheet_no || '—');
+  const repeatPill = soRenderRepeatPill(order, pp);
   return `
-    <td rowspan="${rowSpan}">${escapeHtml(String(pp.process_sheet_no || '—'))}</td>
+    <td class="new-orders-ps-cell so-process-sheet-cell" rowspan="${rowSpan}">
+      <div class="new-orders-ps-code">${escapeHtml(psCode)}</div>
+      ${repeatPill}
+    </td>
     <td class="new-orders-date" rowspan="${rowSpan}">${escapeHtml(soFormatDate(pp.order_date))}</td>
+  `;
+}
+
+function soRenderPpSpanCellsRest(pp, rowSpan) {
+  return `
     <td class="new-orders-desc" rowspan="${rowSpan}" title="${escapeHtml(String(pp.description || ''))}">${escapeHtml(String(pp.description || '—'))}</td>
     <td class="new-orders-mono" rowspan="${rowSpan}">${escapeHtml(String(pp.customer_po_no || '—'))}</td>
     <td class="new-orders-date" rowspan="${rowSpan}">${escapeHtml(soFormatDate(pp.due_date))}</td>
@@ -840,7 +977,60 @@ function soRenderPpSpanCells(pp, rowSpan) {
     <td class="new-orders-num" rowspan="${rowSpan}">${escapeHtml(soFormatMoney(pp.unit_selling_price))}</td>
     <td class="new-orders-num" rowspan="${rowSpan}">${escapeHtml(soFormatMoney(pp.amount))}</td>
     <td class="new-orders-num" rowspan="${rowSpan}">${escapeHtml(String(pp.pp_qty ?? '—'))}</td>
+    ${soRenderMaterialInCell(pp, rowSpan)}
     ${SO_NOTE_FIELDS.map(field => soRenderEditableCell(pp, field, rowSpan)).join('')}
+  `;
+}
+
+function soMaterialInMeta(materialIn) {
+  if (materialIn) {
+    return {
+      stateClass: 'is-in',
+      label: 'In stock',
+      title: 'Raw material is in — click to mark as awaiting',
+    };
+  }
+  return {
+    stateClass: 'is-out',
+    label: 'Awaiting',
+    title: 'Raw material not in yet — click when stock arrives',
+  };
+}
+
+function soSyncMaterialInPill(pill, materialIn) {
+  if (!pill) return;
+  const meta = soMaterialInMeta(materialIn);
+  pill.classList.toggle('is-in', Boolean(materialIn));
+  pill.classList.toggle('is-out', !materialIn);
+  pill.setAttribute('aria-pressed', materialIn ? 'true' : 'false');
+  pill.title = meta.title;
+  const textEl = pill.querySelector('.trial-material-in-text');
+  if (textEl) textEl.textContent = meta.label;
+}
+
+function soRenderMaterialInCell(pp, rowSpan) {
+  const psId = String(pp.process_sheet_no || '').trim();
+  const materialIn = Boolean(pp.material_in);
+  const meta = soMaterialInMeta(materialIn);
+  const dateText = pp.material_in_date ? soFormatDate(pp.material_in_date) : '—';
+  const dateCls = materialIn ? 'so-material-in-date' : 'so-material-in-date so-material-in-date--empty';
+  return `
+    <td class="so-material-in-cell" rowspan="${rowSpan}">
+      <label class="trial-material-in-pill so-material-in-pill ${meta.stateClass}"
+        title="${escapeHtml(meta.title)}"
+        aria-pressed="${materialIn ? 'true' : 'false'}"
+        aria-label="${escapeHtml(meta.label)}">
+        <input type="checkbox" class="trial-material-in-input so-material-in-input"
+          data-ps-id="${escapeHtml(psId)}"
+          ${materialIn ? 'checked' : ''}
+          tabindex="-1"
+          aria-hidden="true">
+        <span class="trial-material-in-dot" aria-hidden="true"></span>
+        <span class="trial-material-in-text">${escapeHtml(meta.label)}</span>
+      </label>
+      <span class="${dateCls}">${escapeHtml(dateText)}</span>
+      <span class="so-material-in-status" aria-live="polite"></span>
+    </td>
   `;
 }
 
@@ -864,12 +1054,13 @@ function soRenderEditableCell(pp, field, rowSpan) {
   `;
 }
 
-function soRenderLeafCells(pp, partial) {
+function soRenderPartialCell(partial) {
+  return `<td class="new-orders-num">${escapeHtml(String(partial?.pp_partial_no ?? '—'))}</td>`;
+}
+
+function soRenderPartCell(pp, partial) {
   const part = partial?.inventory_code || pp?.inventory_code || '—';
-  return `
-    <td class="new-orders-num">${escapeHtml(partial ? String(partial.pp_partial_no ?? '—') : '—')}</td>
-    <td class="new-orders-num">${escapeHtml(String(part))}</td>
-  `;
+  return `<td class="new-orders-num so-part-cell">${escapeHtml(String(part))}</td>`;
 }
 
 function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, includePpCells, ppRowSpan, ppStart }) {
@@ -878,15 +1069,18 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, inclu
   const selected = key === soState.selectedKey;
   const sideRail = includeSideRail ? soRenderSideRail(order, sideRowSpan) : '';
   const ppVoucherCell = includePpCells ? soRenderPpVoucherCell(pp, ppRowSpan) : '';
-  const ppCells = includePpCells ? soRenderPpSpanCells(pp, ppRowSpan) : '';
+  const ppSpanStart = includePpCells ? soRenderPpSpanCellsStart(order, pp, ppRowSpan) : '';
+  const ppSpanRest = includePpCells ? soRenderPpSpanCellsRest(pp, ppRowSpan) : '';
   const startClass = groupStart ? ' new-orders-group-start' : '';
   const ppStartClass = ppStart ? ' so-pp-group-start' : '';
   return `
     <tr class="new-orders-child-row is-clickable${startClass}${ppStartClass}${selected ? ' is-selected' : ''}" data-sales-order="${escapeHtml(String(order.sales_order_no || ''))}" data-detail-key="${escapeHtml(key)}" title="Click for detail">
       ${sideRail}
       ${ppVoucherCell}
-      ${soRenderLeafCells(pp, partial)}
-      ${ppCells}
+      ${soRenderPartialCell(partial)}
+      ${ppSpanStart}
+      ${soRenderPartCell(pp, partial)}
+      ${ppSpanRest}
     </tr>
   `;
 }
@@ -895,7 +1089,7 @@ function soRenderOrderGroup(order) {
   const soNo = String(order.sales_order_no || '').trim();
   const collapsed = soState.collapsedGroups.has(soNo);
   const leaves = soVisibleLeaves(order);
-  const colSpan = 17;
+  const colSpan = SO_COLUMNS.filter(col => !col.side).length;
 
   if (!leaves.length) return '';
 
@@ -986,6 +1180,99 @@ function soScheduleSave(textarea) {
   }, 500));
 }
 
+function soFindPpByPsId(psId) {
+  const target = repeatOrderPsBase(psId);
+  if (!target) return null;
+  for (const order of soAllOrders()) {
+    for (const pp of order.pp_vouchers || []) {
+      if (repeatOrderPsBase(pp.process_sheet_no) === target) {
+        return { order, pp };
+      }
+    }
+  }
+  return null;
+}
+
+function soSetMaterialInStatus(input, state, message) {
+  const status = input?.closest('.so-material-in-cell')?.querySelector('.so-material-in-status');
+  if (!status) return;
+  status.className = `so-material-in-status${state ? ` is-${state}` : ''}`;
+  status.textContent = message || '';
+}
+
+async function soSaveMaterialIn(input) {
+  const psId = String(input?.dataset?.psId || '').trim();
+  if (!psId || input.disabled) return;
+  const materialIn = Boolean(input.checked);
+  const pill = input.closest('.trial-material-in-pill');
+  const dateEl = input.closest('.so-material-in-cell')?.querySelector('.so-material-in-date');
+  const found = soFindPpByPsId(psId);
+  const previous = Boolean(found?.pp?.material_in);
+  const previousDate = found?.pp?.material_in_date || null;
+
+  soSyncMaterialInPill(pill, materialIn);
+  input.disabled = true;
+  if (pill) pill.classList.add('is-saving');
+  soSetMaterialInStatus(input, 'saving', 'Saving…');
+  try {
+    const res = await fetch('/api/process-sheets/stock-in-flag', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ps_id: psId, material_in: materialIn }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (found?.pp) {
+      found.pp.material_in = Boolean(data.material_in);
+      found.pp.material_in_date = data.material_in_date || null;
+    }
+    const savedIn = Boolean(data.material_in);
+    soSyncMaterialInPill(pill, savedIn);
+    input.checked = savedIn;
+    if (dateEl) {
+      const nextDate = savedIn ? soFormatDate(data.material_in_date) : '—';
+      dateEl.textContent = nextDate;
+      dateEl.classList.toggle('so-material-in-date--empty', !savedIn);
+    }
+    soSetMaterialInStatus(input, 'saved', 'Saved');
+    window.setTimeout(() => soSetMaterialInStatus(input, '', ''), 1500);
+  } catch (err) {
+    if (found?.pp) {
+      found.pp.material_in = previous;
+      found.pp.material_in_date = previousDate;
+    }
+    input.checked = previous;
+    soSyncMaterialInPill(pill, previous);
+    if (dateEl) {
+      dateEl.textContent = previous ? soFormatDate(previousDate) : '—';
+      dateEl.classList.toggle('so-material-in-date--empty', !previous);
+    }
+    soSetMaterialInStatus(input, 'error', err.message || 'Save failed');
+  } finally {
+    input.disabled = false;
+    if (pill) pill.classList.remove('is-saving');
+  }
+}
+
+function soBindMaterialInInputs() {
+  const body = document.getElementById('so-table-body');
+  if (!body || body.dataset.materialInBound === '1') return;
+  body.dataset.materialInBound = '1';
+
+  body.addEventListener('change', e => {
+    const input = e.target.closest('.so-material-in-input');
+    if (!input) return;
+    e.stopPropagation();
+    soSaveMaterialIn(input);
+  });
+
+  body.addEventListener('click', e => {
+    const pill = e.target.closest('.so-material-in-pill');
+    if (!pill) return;
+    e.stopPropagation();
+  });
+}
+
 function soBindEditableInputs() {
   const body = document.getElementById('so-table-body');
   if (!body || body.dataset.editableBound === '1') return;
@@ -1021,16 +1308,33 @@ function soBindEditableInputs() {
   });
 }
 
+function soBucketJobCount(orders) {
+  return (orders || []).reduce((sum, order) => sum + (order.pp_vouchers?.length || 0), 0);
+}
+
+/** Job count for tab badges — respects the PP prefix filter (APS/NPS default). */
+function soFilteredJobCount(orders) {
+  let count = 0;
+  (orders || []).forEach(order => {
+    (order.pp_vouchers || []).forEach(pp => {
+      if (soLeafPassesPrefixFilter(pp)) count += 1;
+    });
+  });
+  return count;
+}
+
 function soUpdateTabCounts() {
   const activeEl = document.getElementById('so-active-tab-count');
   const completeEl = document.getElementById('so-complete-tab-count');
+  const activeJobs = soFilteredJobCount(soState.active);
+  const completeJobs = soFilteredJobCount(soState.complete);
   if (activeEl) {
-    activeEl.textContent = String(soState.active.length);
-    activeEl.hidden = soState.active.length === 0;
+    activeEl.textContent = String(activeJobs);
+    activeEl.hidden = activeJobs === 0;
   }
   if (completeEl) {
-    completeEl.textContent = String(soState.complete.length);
-    completeEl.hidden = soState.complete.length === 0;
+    completeEl.textContent = String(completeJobs);
+    completeEl.hidden = completeJobs === 0;
   }
 }
 
@@ -1047,15 +1351,33 @@ function soSetView(view) {
 }
 
 function soUpdateStats() {
-  const stats = document.getElementById('so-stats');
-  if (!stats) return;
+  const el = document.getElementById('so-stats-chips');
+  if (!el) return;
   const orders = soVisibleOrders(soActiveOrders());
   let leafCount = 0;
-  orders.forEach(order => { leafCount += soVisibleLeaves(order).length; });
+  let partialCount = 0;
+  orders.forEach(order => {
+    const leaves = soVisibleLeaves(order);
+    leafCount += leaves.length;
+    partialCount += leaves.length;
+  });
   const activeN = soVisibleOrders(soState.active).length;
   const completeN = soVisibleOrders(soState.complete).length;
-  const label = soState.view === 'complete' ? 'Complete' : 'Active';
-  stats.textContent = `${label}: ${orders.length} SO · ${leafCount} rows · Active: ${activeN} · Complete: ${completeN}`;
+  const viewLabel = soState.view === 'complete' ? 'Complete' : 'Active';
+  const { typeCounts, ppCount } = soVisibleTypeCounts();
+  const typesLabel = soPsTypeLabel();
+  const hasLoaded = (soState.active?.length || 0) + (soState.complete?.length || 0) > 0;
+  if (!hasLoaded) {
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = [
+    `<span class="so-chip"><strong>${orders.length}</strong> ${escapeHtml(viewLabel)} S/O</span>`,
+    `<span class="so-chip"><strong>${leafCount}</strong> rows · <strong>${partialCount}</strong> partials</span>`,
+    `<span class="so-chip"><strong>${ppCount}</strong> PP <span class="so-chip-sub">${escapeHtml(typesLabel)}</span></span>`,
+    `<span class="so-chip so-chip--types"><span class="so-chip-types-label">By type</span>${soTypeTagsHtml(typeCounts)}</span>`,
+    `<span class="so-chip so-chip--muted"><span class="so-chip-muted-line"><strong>${activeN}</strong> active S/O</span><span class="so-chip-muted-line"><strong>${completeN}</strong> complete S/O</span></span>`,
+  ].join('');
 }
 
 function soRender() {
@@ -1073,16 +1395,27 @@ function soRender() {
   const hasData = (soState.active?.length || 0) + (soState.complete?.length || 0) > 0;
 
   if (!orders.length) {
-    if (body) body.innerHTML = '';
-    if (wrap) wrap.hidden = true;
-    if (empty) {
-      empty.hidden = false;
-      if (emptyText) {
-        emptyText.textContent = hasData
-          ? (soState.ppTypes.size === 0
-            ? 'Select at least one PP prefix (APS, NPS, …).'
-            : 'No rows match your search or column filters in this view.')
-          : `No ${soState.view === 'complete' ? 'complete' : 'active'} sales orders in ERP.`;
+    const emptyMsg = !hasData
+      ? `No ${soState.view === 'complete' ? 'complete' : 'active'} sales orders in ERP.`
+      : (soState.ppTypes.size === 0
+        ? 'Select at least one PP prefix (APS, NPS, …).'
+        : 'No rows match your search or column filters — adjust filters in the column headers above.');
+    if (hasData) {
+      if (wrap) wrap.hidden = false;
+      if (empty) empty.hidden = true;
+      if (body) {
+        body.innerHTML = `
+          <tr class="so-table-empty-row">
+            <td colspan="${SO_COLUMNS.length}">${escapeHtml(emptyMsg)}</td>
+          </tr>
+        `;
+      }
+    } else {
+      if (body) body.innerHTML = '';
+      if (wrap) wrap.hidden = true;
+      if (empty) {
+        empty.hidden = false;
+        if (emptyText) emptyText.textContent = emptyMsg;
       }
     }
     if (meta) meta.hidden = !hasData;
@@ -1096,7 +1429,9 @@ function soRender() {
   if (body) {
     body.innerHTML = orders.map(soRenderOrderGroup).filter(Boolean).join('');
     delete body.dataset.editableBound;
+    delete body.dataset.materialInBound;
     soBindEditableInputs();
+    soBindMaterialInInputs();
   }
   if (meta) {
     meta.hidden = false;
@@ -1122,9 +1457,27 @@ async function soLoad({ refresh = false, bustCache = false } = {}) {
 
   let payload;
   try {
-    const res = await fetch(`/api/sales-orders?${params}`);
-    payload = await res.json();
-    if (!res.ok) throw new Error(payload?.error || `HTTP ${res.status}`);
+    const [ordersRes, repeatRes] = await Promise.all([
+      fetch(`/api/sales-orders?${params}`),
+      fetch('/api/planning-data/repeat-orders'),
+    ]);
+    const raw = await ordersRes.text();
+    try {
+      payload = raw ? JSON.parse(raw) : {};
+    } catch {
+      throw new Error(
+        ordersRes.ok
+          ? 'Server returned invalid JSON — restart Flask and refresh.'
+          : `Server error (HTTP ${ordersRes.status}) — restart Flask and refresh.`,
+      );
+    }
+    if (!ordersRes.ok) throw new Error(payload?.error || `HTTP ${ordersRes.status}`);
+    if (repeatRes.ok) {
+      const repeatPayload = await repeatRes.json();
+      soState.repeatGroups = Array.isArray(repeatPayload.rows) ? repeatPayload.rows : [];
+    } else {
+      soState.repeatGroups = [];
+    }
   } catch (err) {
     if (loading) loading.hidden = true;
     const empty = document.getElementById('so-empty');
@@ -1138,7 +1491,9 @@ async function soLoad({ refresh = false, bustCache = false } = {}) {
   soState.complete = Array.isArray(payload.complete) ? payload.complete : [];
   soState.cachedAt = payload.cached_at || '';
   soState.cacheTtlSec = Number(payload.cache_ttl_sec) || 300;
-  soState.ppCount = Number(payload.pp_count) || 0;
+  soState.activeJobCount = Number(payload.active_job_count) || soBucketJobCount(soState.active);
+  soState.completeJobCount = Number(payload.complete_job_count) || soBucketJobCount(soState.complete);
+  soState.ppCount = Number(payload.pp_count) || (soState.activeJobCount + soState.completeJobCount);
   soState.partialCount = Number(payload.partial_count) || 0;
   soState.missingHeaderCount = Number(payload.missing_header_count) || 0;
 

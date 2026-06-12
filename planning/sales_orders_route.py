@@ -13,7 +13,7 @@ from flask import Blueprint, jsonify, render_template, request
 
 from db import planner_db_connect_error
 from .helpers import planner_db, rows
-from .utils import compact_text
+from .utils import compact_text, shipped_quantity_completed
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 7
 
 _NOTE_FIELDS = (
     "material_subcon",
@@ -50,22 +50,43 @@ SELECT
     pp.mark_as_complete,
     COALESCE(ps.process_sheet_no, pp.pp_voucher_no) AS process_sheet_no,
     COALESCE(ps.sales_order_date, hdr.order_date) AS order_date,
-    COALESCE(NULLIF(TRIM(pd.main_desc), ''), NULLIF(TRIM(pp.bom_desc), '')) AS description,
+    COALESCE(
+        NULLIF(TRIM(pd.main_desc), ''),
+        NULLIF(TRIM(det.line_item_description), ''),
+        NULLIF(TRIM(pp.bom_desc), '')
+    ) AS description,
     COALESCE(NULLIF(TRIM(part.customer_po_no), ''), NULLIF(TRIM(hdr.customer_po_no), '')) AS customer_po_no,
     COALESCE(det.required_shipment_date, pp.source_rsd) AS due_date,
-    pp.proposed_edd AS delivery_date,
-    det.unit_selling_price,
-    (det.unit_selling_price * pp.pp_qty) AS amount
+    CASE
+        WHEN pp.proposed_edd IS NULL THEN NULL
+        WHEN pp.proposed_edd::date = COALESCE(det.required_shipment_date, pp.source_rsd)::date THEN NULL
+        ELSE pp.proposed_edd
+    END AS delivery_date,
+    COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price) AS unit_selling_price,
+    (COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price) * pp.pp_qty) AS amount,
+    det.qty AS so_det_qty,
+    COALESCE(sq.qty_shipped, 0) AS qty_shipped
 FROM public.mfg_pp_vch pp
-LEFT JOIN public.mfg_process_sheet_info ps
-       ON ps.pp_voucher_no = pp.pp_voucher_no
-LEFT JOIN public.part_desc pd
+LEFT JOIN (
+    SELECT DISTINCT ON (pp_voucher_no)
+        pp_voucher_no,
+        process_sheet_no,
+        sales_order_date,
+        inventory_code
+    FROM public.mfg_process_sheet_info_v1_view
+    ORDER BY pp_voucher_no, process_sheet_no
+) ps ON ps.pp_voucher_no = pp.pp_voucher_no
+LEFT JOIN public.mt_inventory pd
        ON pd.inventory_code = COALESCE(ps.inventory_code, pp.inventory_code)
 LEFT JOIN public.so_order_view hdr
        ON hdr.sales_order_no = pp.source_voucher_no
 LEFT JOIN public.so_order_ost_det det
        ON det.sales_order_no = pp.source_voucher_no
       AND regexp_replace(det.line_item_no::TEXT, '\\.0+$', '')
+          = regexp_replace(pp.source_line_item_no::TEXT, '\\.0+$', '')
+LEFT JOIN public.sum_qty_shipped_by_sales_order sq
+       ON sq.sales_order_no = pp.source_voucher_no
+      AND regexp_replace(sq.line_item_no::TEXT, '\\.0+$', '')
           = regexp_replace(pp.source_line_item_no::TEXT, '\\.0+$', '')
 LEFT JOIN (
     SELECT pp_voucher_no, MAX(customer_po_no) AS customer_po_no
@@ -234,6 +255,74 @@ def _ensure_notes_table(con) -> None:
     )
 
 
+def _ps_base_id(ps_id: str) -> str:
+    return compact_text(ps_id).split("::")[0]
+
+
+def _default_material_in_overlay() -> dict[str, Any]:
+    return {"material_in": False, "material_in_date": None}
+
+
+def _load_material_in_overlay(process_sheet_nos: list[str]) -> dict[str, dict[str, Any]]:
+    bases: list[str] = []
+    seen: set[str] = set()
+    for raw in process_sheet_nos:
+        base = _ps_base_id(raw)
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        bases.append(base)
+    if not bases:
+        return {}
+
+    default = _default_material_in_overlay()
+    try:
+        from .process_sheets import _ensure_planner_overlay_columns
+
+        with planner_db() as con:
+            _ensure_planner_overlay_columns(con)
+            fetched = rows(
+                con.execute(
+                    """
+                    SELECT planner_ps_id, source_ps_id,
+                           COALESCE(material_in, FALSE) AS material_in,
+                           material_in_date
+                    FROM planner_process_sheet
+                    WHERE planner_ps_id = ANY(%s)
+                       OR source_ps_id = ANY(%s)
+                       OR split_part(planner_ps_id, '::', 1) = ANY(%s)
+                    """,
+                    (bases, bases, bases),
+                )
+            )
+    except Exception as exc:
+        logger.warning("material_in overlay load skipped: %s", exc)
+        return {base: dict(default) for base in bases}
+
+    out = {base: dict(default) for base in bases}
+    for row in fetched:
+        payload = {
+            "material_in": bool(row.get("material_in")),
+            "material_in_date": _serialize_value(row.get("material_in_date")),
+        }
+        for key in (
+            compact_text(row.get("planner_ps_id")),
+            compact_text(row.get("source_ps_id")),
+        ):
+            base = _ps_base_id(key)
+            if base in out:
+                out[base] = payload
+    return out
+
+
+def _apply_material_in_overlay(orders: list[dict[str, Any]], overlay: dict[str, dict[str, Any]]) -> None:
+    default = _default_material_in_overlay()
+    for order in orders:
+        for pp in order.get("pp_vouchers") or []:
+            base = _ps_base_id(pp.get("process_sheet_no") or "")
+            pp.update(overlay.get(base, default))
+
+
 def _load_notes_map(pp_voucher_nos: list[str]) -> dict[str, dict[str, str]]:
     ids = [compact_text(v) for v in pp_voucher_nos if compact_text(v)]
     if not ids:
@@ -274,17 +363,23 @@ def _build_orders_from_pp_vouchers(
     """mfg_pp_vch rows grouped by source_voucher_no with nested partials + SO header."""
     grouped: dict[str, dict[str, Any]] = {}
     notes_map = notes_by_pp or {}
+    seen_pp: set[str] = set()
 
     for raw in pp_rows:
         pp = dict(raw)
         pp_no = compact_text(pp.get("pp_voucher_no"))
         so_no = compact_text(pp.get("source_voucher_no"))
-        if not pp_no or not so_no:
+        if not pp_no or not so_no or pp_no in seen_pp:
             continue
+        seen_pp.add(pp_no)
 
         pp["source_line_item_no"] = _normalize_line_item_no(pp.get("source_line_item_no"))
         pp["partials"] = partials_by_pp.get(pp_no, [])
         pp["partial_count"] = len(pp["partials"])
+        pp["shipped_completed"] = shipped_quantity_completed(
+            pp.get("so_det_qty"),
+            pp.get("qty_shipped"),
+        )
         pp.update(notes_map.get(pp_no, _empty_notes()))
 
         if so_no not in grouped:
@@ -311,16 +406,31 @@ def _build_orders_from_pp_vouchers(
     return orders
 
 
-def _split_by_voucher_status(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def _order_with_pp_subset(order: dict[str, Any], pp_vouchers: list[dict[str, Any]]) -> dict[str, Any]:
+    out = dict(order)
+    out["pp_vouchers"] = pp_vouchers
+    out["pp_count"] = len(pp_vouchers)
+    out["partial_count"] = sum(int(row.get("partial_count") or 0) for row in pp_vouchers)
+    return out
+
+
+def _split_by_shipped_completion(orders: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Active vs complete per PP job — fully shipped SO line qty (same rule as planner lanes)."""
     active: list[dict[str, Any]] = []
     complete: list[dict[str, Any]] = []
-    for row in rows:
-        code = compact_text(row.get("voucher_status")).upper()
-        if code == "C":
-            complete.append(row)
-        else:
-            active.append(row)
+    for order in orders:
+        pp_vouchers = order.get("pp_vouchers") or []
+        active_pp = [pp for pp in pp_vouchers if not pp.get("shipped_completed")]
+        complete_pp = [pp for pp in pp_vouchers if pp.get("shipped_completed")]
+        if active_pp:
+            active.append(_order_with_pp_subset(order, active_pp))
+        if complete_pp:
+            complete.append(_order_with_pp_subset(order, complete_pp))
     return {"active": active, "complete": complete}
+
+
+def _job_count(orders: list[dict[str, Any]]) -> int:
+    return sum(len(order.get("pp_vouchers") or []) for order in orders)
 
 
 def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, Any]]]:
@@ -341,7 +451,14 @@ def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, An
         _posted_dates_by_sales_order(posted_dates),
         notes_map,
     )
-    payload = _split_by_voucher_status(orders)
+    process_sheets = [
+        pp.get("process_sheet_no")
+        for order in orders
+        for pp in (order.get("pp_vouchers") or [])
+        if pp.get("process_sheet_no")
+    ]
+    _apply_material_in_overlay(orders, _load_material_in_overlay(process_sheets))
+    payload = _split_by_shipped_completion(orders)
     _cache = (now, payload)
     return payload
 
@@ -406,7 +523,9 @@ def api_sales_orders():
     active = data.get("active") or []
     complete = data.get("complete") or []
     cached_at = _cache[0] if _cache else time.time()
-    pp_count = sum(int(row.get("pp_count") or 0) for row in active + complete)
+    active_jobs = _job_count(active)
+    complete_jobs = _job_count(complete)
+    pp_count = active_jobs + complete_jobs
     partial_count = sum(int(row.get("partial_count") or 0) for row in active + complete)
     missing_header = sum(1 for row in active + complete if not row.get("has_header"))
 
@@ -417,6 +536,8 @@ def api_sales_orders():
             "source": "mfg_pp_vch",
             "active_count": len(active),
             "complete_count": len(complete),
+            "active_job_count": active_jobs,
+            "complete_job_count": complete_jobs,
             "pp_count": pp_count,
             "partial_count": partial_count,
             "missing_header_count": missing_header,

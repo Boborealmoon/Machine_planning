@@ -1,20 +1,21 @@
 {% extends "base.html" %}
-{% block title %}Sales Orders{% endblock %}
+{% block title %}S/O Management{% endblock %}
 {% block main_class %}app-main--new-orders app-main--sales-orders-wide{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=sales-orders-colfilter-20260612">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-view-tab-count-20260612">{% endblock %}
 {% block content %}
 <div class="new-orders-page new-orders-page--sales-orders">
   <div class="new-orders-header">
     <div>
       <div class="new-orders-title-row">
-        <h1 class="new-orders-title">Sales Orders</h1>
-        <button type="button" class="new-orders-info-btn" aria-label="About Sales Orders">
+        <h1 class="new-orders-title">S/O Management</h1>
+        <button type="button" class="new-orders-info-btn" aria-label="About S/O Management">
           <span class="new-orders-info-tip" role="tooltip">
             Built from <code>mfg_pp_vch</code> (PP vouchers on <strong>source_voucher_no</strong>),
             nested <code>mfg_pp_partial_view</code> partials on <strong>pp_voucher_no</strong>,
             with <code>so_order_view</code> customer/header joined on <strong>sales_order_no</strong>.
+            <strong>Material in</strong> links to the planner stock flag (same as the scheduler sidebar) and records the date when checked.
             Columns from <strong>Material/Sub-con</strong> through <strong>Sales</strong> are planner notes — autosaved to Supabase per PP voucher when you leave a field or pause typing.
-            Toggle <strong>Active</strong> (O) or <strong>Complete</strong> (C).
+            Toggle <strong>Active</strong> (SO line not fully shipped) or <strong>Complete</strong> (fully shipped qty on the SO line).
           </span>
         </button>
       </div>
@@ -24,10 +25,12 @@
     </div>
   </div>
 
+  <div class="so-stats-row" id="so-stats-chips"></div>
+
   <div class="new-orders-toolbar card">
     <div class="new-orders-filter new-orders-filter--view">
       <span>View</span>
-      <div class="mi-view-toggle" role="tablist" aria-label="Sales order view">
+      <div class="mi-view-toggle" role="tablist" aria-label="S/O view">
         <button type="button" class="mi-view-btn is-active" data-so-view="active" role="tab" aria-selected="true">
           Active <span class="mi-status-pill mi-status-pill--r">O</span>
           <span class="ps-view-tab-count" id="so-active-tab-count" hidden>0</span>
@@ -62,10 +65,9 @@
         <input id="so-search" class="planner-page-search-input" type="search" placeholder="SO, PP, partial, part, customer PO..." autocomplete="off">
       </span>
     </label>
-    <div class="new-orders-stats" id="so-stats"></div>
   </div>
 
-  <div id="so-loading" class="loading"><div class="spinner"></div> Loading sales orders...</div>
+  <div id="so-loading" class="loading"><div class="spinner"></div> Loading S/O data...</div>
   <div id="so-table-wrap" class="new-orders-table-wrap card so-table-wrap--wide" hidden>
     <table class="new-orders-table so-table--wide">
       <thead>
@@ -76,7 +78,7 @@
     <div id="so-col-filter-popover" class="so-col-filter-popover" hidden></div>
   </div>
   <div id="so-empty" class="new-orders-empty card" hidden>
-    <p id="so-empty-text">No sales orders match your filters.</p>
+    <p id="so-empty-text">No rows match your filters.</p>
   </div>
   <p class="new-orders-meta" id="so-meta" hidden></p>
 </div>
@@ -86,7 +88,7 @@
   <aside class="new-orders-detail-panel" role="dialog" aria-modal="true" aria-labelledby="so-detail-title">
     <div class="new-orders-detail-head">
       <div>
-        <p class="new-orders-detail-kicker">Sales order detail</p>
+        <p class="new-orders-detail-kicker">S/O detail</p>
         <h2 class="new-orders-detail-title" id="so-detail-title"></h2>
       </div>
       <button type="button" class="btn btn-ghost btn-sm" id="so-detail-close" aria-label="Close">Close</button>
@@ -98,5 +100,6 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-orders-pp-20260608"></script>
-<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=sales-orders-colfilter-20260612"></script>
+<script src="{{ url_for('static', filename='js/repeat_order_tags.js') }}?v=repeat-tags-detail-20260612"></script>
+<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=so-repeat-detail-20260612"></script>
 {% endblock %}

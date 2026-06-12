@@ -1,5 +1,12 @@
 """Join pp_vouchers_cache with mfg_wo_status for authoritative per-partial WO fields."""
 
+from __future__ import annotations
+
+from planning.utils import compact_text
+
+# Post-machining stages live in mfg_wo_status but are omitted from pp_voucher BOM rows.
+FINISHING_STAGE_DESCS = frozenset({"Deburring", "Final Inspection", "Packing"})
+
 MFG_WO_STATUS_STAGE_JOIN = """
        ON ws.source_mps_no = c.ps_id
       AND ws.pp_partial_no = c.pp_partial_no
@@ -120,3 +127,290 @@ ERP_CACHE_STEPS_WHERE_SINGLE = """
     GROUP BY c.ps_id, c.pp_partial_no, c.stage_no, c.stage_desc, c.op_no
     ORDER BY c.stage_no, c.op_no
 """
+
+
+def _normalize_execution_status(value) -> str:
+    return compact_text(value).upper().replace("-", "_").replace(" ", "_")
+
+
+def _execution_status_rank(value) -> int:
+    normalized = _normalize_execution_status(value)
+    ranks = {
+        "I": 0,
+        "IN_PROCESS": 0,
+        "R": 1,
+        "READY_TO_START": 1,
+        "P": 2,
+        "PENDING_SI": 2,
+    }
+    return ranks.get(normalized, 3)
+
+
+def _execution_status_completed(value) -> bool:
+    return _normalize_execution_status(value) in {"C", "COMPLETED"}
+
+
+def mfg_wo_stages_batch(con, partial_keys) -> dict[tuple[str, int], list[dict]]:
+    """Fetch all mfg_wo_status stages for many (source_ps_id, pp_partial_no) pairs."""
+    from planning.helpers import rows
+
+    keys: list[tuple[str, int]] = []
+    for source_ps_id, pp_partial_no in partial_keys or []:
+        source_ps_id = compact_text(source_ps_id)
+        if not source_ps_id:
+            continue
+        try:
+            partial = int(pp_partial_no or 1)
+        except (TypeError, ValueError):
+            partial = 1
+        keys.append((source_ps_id, partial))
+    if not keys:
+        return {}
+
+    grouped: dict[tuple[str, int], list[dict]] = {}
+    chunk_size = 200
+    for start in range(0, len(keys), chunk_size):
+        chunk = keys[start : start + chunk_size]
+        values_sql = ", ".join(["(%s, %s)"] * len(chunk))
+        params = [part for pair in chunk for part in pair]
+        for row in rows(
+            con.execute(
+                f"""
+                SELECT source_mps_no, pp_partial_no, stage_no, stage_desc,
+                       execution_status, wo_qty_required,
+                       total_acc_qty_produced, total_rej_qty_produced
+                FROM mfg_wo_status
+                WHERE (source_mps_no, pp_partial_no) IN ({values_sql})
+                  AND NULLIF(TRIM(COALESCE(stage_desc, '')), '') IS NOT NULL
+                ORDER BY source_mps_no, pp_partial_no, stage_no, stage_desc
+                """,
+                params,
+            )
+        ):
+            cache_key = (compact_text(row.get("source_mps_no")), int(row.get("pp_partial_no") or 1))
+            grouped.setdefault(cache_key, []).append(dict(row))
+    return grouped
+
+
+def _wo_stage_row_to_flow_step(row, seq_no: int) -> dict:
+    stage_desc = compact_text(row.get("stage_desc"))
+    stage_no = int(row.get("stage_no") or 0)
+    op_type = stage_desc if stage_desc in FINISHING_STAGE_DESCS else (
+        stage_desc.split()[0] if stage_desc else ""
+    )
+    return {
+        "op_seq_id": stage_no or seq_no,
+        "seq_no": seq_no,
+        "op_no": str(stage_no) if stage_no else str(seq_no),
+        "op_type": op_type,
+        "stage_desc": stage_desc,
+        "machine_category": op_type.upper(),
+        "preferred_machine": "",
+        "cycle_time": 0,
+        "setup_time": 0,
+        "is_last_op": 0,
+        "source_stage_no": stage_no,
+        "erp_required_qty": row.get("wo_qty_required"),
+        "erp_finished_qty": row.get("total_acc_qty_produced"),
+        "erp_reject_qty": row.get("total_rej_qty_produced"),
+        "erp_execution_status": row.get("execution_status"),
+    }
+
+
+def merge_finishing_steps_into_flow_steps(steps, wo_stages) -> list:
+    """Append Deburring / Final Inspection / Packing from mfg_wo_status when absent from BOM cache."""
+    existing = {
+        compact_text(step.get("stage_desc") or step.get("op_type") or "")
+        for step in (steps or [])
+    }
+    merged = list(steps or [])
+    next_seq = max((int(step.get("seq_no") or 0) for step in merged), default=0) + 1
+    for row in sorted(wo_stages or [], key=lambda item: int(item.get("stage_no") or 0)):
+        stage_desc = compact_text(row.get("stage_desc"))
+        if stage_desc not in FINISHING_STAGE_DESCS or stage_desc in existing:
+            continue
+        merged.append(_wo_stage_row_to_flow_step(row, next_seq))
+        next_seq += 1
+        existing.add(stage_desc)
+    merged.sort(
+        key=lambda step: (
+            int(step.get("source_stage_no") or 0),
+            int(step.get("seq_no") or 0),
+        )
+    )
+    return merged
+
+
+def _wo_stage_to_op_card(row, entry: dict) -> dict:
+    stage_desc = compact_text(row.get("stage_desc"))
+    stage_no = int(row.get("stage_no") or 0)
+    row_execution_status = row.get("execution_status") or ""
+    required_qty = float(row.get("wo_qty_required") or 0)
+    produced_qty = float(row.get("total_acc_qty_produced") or 0)
+    rejected_qty = float(row.get("total_rej_qty_produced") or 0)
+    display_qty = float(
+        entry.get("display_qty") or entry.get("partial_qty") or entry.get("total_qty") or 0
+    )
+    qty = display_qty if display_qty > 0 else required_qty
+    stage_required = qty if qty > 0 else required_qty
+    stage_produced = min(
+        max(0.0, produced_qty),
+        stage_required if stage_required > 0 else produced_qty,
+    )
+    stage_rejected = min(
+        max(0.0, rejected_qty),
+        stage_required if stage_required > 0 else rejected_qty,
+    )
+    remaining_qty = max(0.0, qty - stage_produced) if qty > 0 else 0.0
+    op_no = str(stage_no) if stage_no else stage_desc
+    machine_group = stage_desc.split()[0].upper() if stage_desc else ""
+    return {
+        "card_kind": "single",
+        "card_id": None,
+        "ps_id": entry.get("ps_id"),
+        "operation_label": op_no,
+        "operation_name": stage_desc,
+        "op_type": stage_desc,
+        "stage_no": stage_no,
+        "stage_desc": stage_desc,
+        "execution_status": row_execution_status,
+        "target_qty": qty,
+        "required_qty": stage_required,
+        "wo_qty_required": stage_required,
+        "wo_qty_produced": stage_produced,
+        "wo_qty_rejected": stage_rejected,
+        "qty_shipped": float(entry.get("qty_shipped") or 0),
+        "planned_qty": 0.0,
+        "finished_qty": stage_produced,
+        "reject_qty": stage_rejected,
+        "remaining_qty": remaining_qty,
+        "source_ps_id": entry.get("source_ps_id") or entry.get("ps_id"),
+        "source_op_seq_id": stage_no,
+        "source_op_no": op_no,
+        "part_no": entry.get("part_no") or "",
+        "job_no": entry.get("ps_id"),
+        "planning_status": "UNSCHEDULED",
+        "card_type": "SINGLE",
+        "is_scheduled": False,
+        "setup_minutes": 180.0,
+        "cycle_minutes_per_qty": 20.0,
+        "compatible_machine_group": machine_group,
+    }
+
+
+def merge_finishing_op_cards_into_entry(entry: dict, wo_stages) -> None:
+    """Attach finishing WO stages to pp-voucher catalog ops when BOM cache omits them."""
+    existing = {
+        compact_text(op.get("stage_desc") or op.get("op_type") or op.get("operation_name") or "")
+        for op in (entry.get("ops") or [])
+    }
+    for row in sorted(wo_stages or [], key=lambda item: int(item.get("stage_no") or 0)):
+        stage_desc = compact_text(row.get("stage_desc"))
+        if stage_desc not in FINISHING_STAGE_DESCS or stage_desc in existing:
+            continue
+        op_card = _wo_stage_to_op_card(row, entry)
+        entry.setdefault("ops", []).append(op_card)
+        entry.setdefault("op_cards", []).append(op_card)
+        existing.add(stage_desc)
+
+
+def resolve_current_stage_from_wo_stages(wo_stages, *, shipped_completed: bool = False) -> dict | None:
+    """Pick active WO stage; when all stages are done but not shipped, surface finishing."""
+    if not wo_stages:
+        return None
+
+    open_stages = [
+        row
+        for row in wo_stages
+        if not _execution_status_completed(row.get("execution_status"))
+    ]
+    if open_stages:
+        active = sorted(
+            open_stages,
+            key=lambda row: (
+                _execution_status_rank(row.get("execution_status")),
+                int(row.get("stage_no") or 0),
+            ),
+        )[0]
+        return {
+            "current_stage_no": int(active.get("stage_no") or 0) or None,
+            "current_stage_desc": compact_text(active.get("stage_desc") or ""),
+            "current_stage_status": compact_text(active.get("execution_status") or ""),
+        }
+
+    if shipped_completed:
+        return None
+
+    finishing = [
+        row
+        for row in wo_stages
+        if compact_text(row.get("stage_desc")) in FINISHING_STAGE_DESCS
+    ]
+    if not finishing:
+        return None
+
+    latest = max(finishing, key=lambda row: int(row.get("stage_no") or 0))
+    return {
+        "current_stage_no": int(latest.get("stage_no") or 0) or None,
+        "current_stage_desc": compact_text(latest.get("stage_desc") or ""),
+        "current_stage_status": compact_text(latest.get("execution_status") or ""),
+    }
+
+
+def apply_wo_current_stage(entry: dict, wo_stages) -> None:
+    """Fill current_stage_* from mfg_wo_status when the cache view has no open stage."""
+    if compact_text(entry.get("current_stage_desc")):
+        return
+    shipped_completed = bool(entry.get("shipped_completed"))
+    resolved = resolve_current_stage_from_wo_stages(
+        wo_stages,
+        shipped_completed=shipped_completed,
+    )
+    if not resolved:
+        return
+    entry["current_stage_no"] = resolved.get("current_stage_no")
+    entry["current_stage_desc"] = resolved.get("current_stage_desc") or ""
+    entry["current_stage_status"] = resolved.get("current_stage_status") or ""
+
+
+def wo_stages_all_complete(wo_stages) -> bool:
+    if not wo_stages:
+        return False
+    return all(_execution_status_completed(row.get("execution_status")) for row in wo_stages)
+
+
+def apply_wo_stage_metadata(entry: dict, wo_stages) -> None:
+    """Attach current_stage_* and ERP completion flags — never add finishing stages to ops."""
+    apply_wo_current_stage(entry, wo_stages)
+    entry["erp_wo_stage_count"] = len(wo_stages or [])
+    entry["erp_all_wo_complete"] = wo_stages_all_complete(wo_stages)
+
+
+def apply_wo_stage_metadata_to_voucher_entries(entries, con) -> None:
+    """Resolve current stage from mfg_wo_status without polluting BOM operation cards."""
+    if not entries:
+        return
+    keys = []
+    seen = set()
+    for entry in entries:
+        source = compact_text(entry.get("source_ps_id") or "")
+        if not source:
+            ps_id = compact_text(entry.get("ps_id") or "")
+            source = ps_id.split("::", 1)[0] if ps_id else ""
+        partial = int(entry.get("pp_partial_no") or 1)
+        key = (source, partial)
+        if source and key not in seen:
+            keys.append(key)
+            seen.add(key)
+    wo_cache = mfg_wo_stages_batch(con, keys)
+    for entry in entries:
+        source = compact_text(entry.get("source_ps_id") or "")
+        if not source:
+            ps_id = compact_text(entry.get("ps_id") or "")
+            source = ps_id.split("::", 1)[0] if ps_id else ""
+        partial = int(entry.get("pp_partial_no") or 1)
+        apply_wo_stage_metadata(entry, wo_cache.get((source, partial), []))
+
+
+# Backward-compatible alias — does not merge finishing stages into ops.
+merge_finishing_stages_into_voucher_entries = apply_wo_stage_metadata_to_voucher_entries

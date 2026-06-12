@@ -38,6 +38,7 @@ from planning.daily_output_route import (
 )
 from planning.bom_variation_route import bom_variation_bp
 from planning.finishing_queue_route import finishing_queue_bp
+from planning.inventory_enquiry_route import inventory_enquiry_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
@@ -55,6 +56,7 @@ app.register_blueprint(repeat_orders_bp)
 app.register_blueprint(auk_oee_bp)
 app.register_blueprint(bom_variation_bp)
 app.register_blueprint(finishing_queue_bp)
+app.register_blueprint(inventory_enquiry_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 
@@ -592,10 +594,16 @@ def _fetch_pp_vouchers_cache_rows(include_completed: bool, con=None):
 
 
 def _build_pp_vouchers_with_ops_data(include_completed: bool, con, cache_rows=None) -> list:
+    from planning.erp_wo_merge import merge_finishing_stages_into_voucher_entries
+
     rows = cache_rows if cache_rows is not None else _fetch_pp_vouchers_cache_rows(include_completed, con=con)
+    payload = _pp_vouchers_with_ops_payload(rows)
+    merge_finishing_stages_into_voucher_entries(payload, con)
+    for entry in payload:
+        _finalize_pp_voucher_entry(entry)
     data = _append_temp_ps_catalog_entries(
         _enrich_pp_vouchers_planner_data(
-            _pp_vouchers_with_ops_payload(rows),
+            payload,
             con=con,
         ),
         con,
@@ -691,13 +699,16 @@ def _load_pp_vouchers_board_erp_data(include_completed: bool, refresh: bool, sco
 
     from planning.helpers import planner_db
 
+    from planning.erp_wo_merge import merge_finishing_stages_into_voucher_entries
+
     with planner_db() as con:
-        erp_data = _enrich_pp_vouchers_planner_data(
-            _pp_vouchers_with_ops_payload(
-                _fetch_pp_vouchers_cache_rows(include_completed, con=con)
-            ),
-            con=con,
+        payload = _pp_vouchers_with_ops_payload(
+            _fetch_pp_vouchers_cache_rows(include_completed, con=con)
         )
+        merge_finishing_stages_into_voucher_entries(payload, con)
+        for entry in payload:
+            _finalize_pp_voucher_entry(entry)
+        erp_data = _enrich_pp_vouchers_planner_data(payload, con=con)
     _store_pp_vouchers_board_erp_cache(scope, erp_data)
     return erp_data
 
@@ -847,6 +858,20 @@ def _summarize_execution_status(statuses):
     if all(status in {"C", "COMPLETED"} for status in normalized):
         return "Completed"
     return _execution_status_label(statuses[0]) if statuses else ""
+
+
+def _finalize_pp_voucher_entry(entry: dict) -> None:
+    """Recalculate completion flags; ERP WO completion comes from mfg_wo_status metadata."""
+    machining_completed = _entry_production_completed_from_ops(entry)
+    erp_all_complete = bool(entry.get("erp_all_wo_complete"))
+    entry["execution_completed"] = erp_all_complete or machining_completed
+    entry["pending_do"] = pending_delivery_order(entry)
+    entry["is_completed"] = bool(entry.get("shipped_completed")) or (
+        erp_all_complete and not entry["pending_do"]
+    )
+    current_code = entry.get("current_stage_status")
+    if current_code:
+        entry["execution_status"] = _execution_status_label(current_code)
 
 
 def _entry_production_completed_from_ops(entry, *, tol=0.0001):
@@ -2149,7 +2174,7 @@ def api_planner_machines_delete(machine_id):
 
 _CT_MASTER_SELECT = (
     "id,bom_code,part_no,part_description,stage_no,stage_name,op_no,op_type,"
-    "program_no,program_file,tool_list_file,cycle_time,set_up_time,updated_at"
+    "program_no,program_file,tool_list_file,ideal_cycle_time,cycle_time,set_up_time,updated_at"
 )
 
 
@@ -2221,6 +2246,13 @@ def api_planner_cycle_times_create():
         except (TypeError, ValueError):
             return jsonify({"error": "op_no must be an integer when provided"}), 400
 
+    ideal_cycle = _non_negative_number(data.get("ideal_cycle_time"), 0)
+    production_cycle = _non_negative_number(data.get("cycle_time"), ideal_cycle)
+    if ideal_cycle <= 0 and production_cycle > 0:
+        ideal_cycle = production_cycle
+    if production_cycle <= 0 and ideal_cycle > 0:
+        production_cycle = ideal_cycle
+
     payload = {
         "bom_code": bom_code,
         "part_no": part_no,
@@ -2232,7 +2264,8 @@ def api_planner_cycle_times_create():
         "program_no": program_no,
         "program_file": program_file,
         "tool_list_file": tool_list_file,
-        "cycle_time": _non_negative_number(data.get("cycle_time"), 0),
+        "ideal_cycle_time": ideal_cycle,
+        "cycle_time": production_cycle,
         "set_up_time": _non_negative_number(data.get("set_up_time"), 0),
     }
 
@@ -2275,6 +2308,8 @@ def api_planner_cycle_times_update(row_id):
                 payload["op_no"] = int(raw)
             except (TypeError, ValueError):
                 return jsonify({"error": "op_no must be an integer when provided"}), 400
+    if "ideal_cycle_time" in data:
+        payload["ideal_cycle_time"] = _non_negative_number(data.get("ideal_cycle_time"), 0)
     if "cycle_time" in data:
         payload["cycle_time"] = _non_negative_number(data.get("cycle_time"), 0)
     if "set_up_time" in data:

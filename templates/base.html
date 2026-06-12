@@ -57,7 +57,7 @@
           </a>
           <a href="/sales-orders"
              class="nav-dropdown-item {% if nav_path == '/sales-orders' or active == 'sales_orders' %}nav-dropdown-item--active{% endif %}">
-            Sales orders
+            S/O management
           </a>
           <a href="/planning-data/repeat-orders"
              class="nav-dropdown-item {% if nav_path in ('/repeat-orders', '/planning-data/repeat-orders') or active == 'repeat_orders' %}nav-dropdown-item--active{% endif %}">
@@ -113,6 +113,10 @@
         </button>
         <div class="nav-dropdown-menu" id="dd-planning-data">
           <span class="nav-dropdown-section">INVENTORY</span>
+          <a href="/planning-data/inventory-enquiry"
+             class="nav-dropdown-item {% if nav_path == '/planning-data/inventory-enquiry' %}nav-dropdown-item--active{% endif %}">
+            Inventory enquiry
+          </a>
           <a href="/planning-data/inventory-bom" class="nav-dropdown-item">Inventory BOM</a>
           <span class="nav-dropdown-section">MACHINES &amp; TIMING</span>
           <a href="/planning-data/machines" class="nav-dropdown-item">Machines</a>

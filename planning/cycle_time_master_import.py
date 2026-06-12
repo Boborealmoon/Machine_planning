@@ -262,6 +262,8 @@ INSERT INTO public.planner_cycle_time_master (
 
     tool_list_file,
 
+    ideal_cycle_time,
+
     cycle_time,
 
     set_up_time
@@ -289,6 +291,8 @@ SELECT
     program_file,
 
     tool_list_file,
+
+    cycle_time,
 
     cycle_time,
 
@@ -503,6 +507,36 @@ def import_new_from_program_tools() -> dict:
     }
 
 
+
+def sync_ideal_cycle_times_from_program_tools() -> dict:
+
+    """Update ideal_cycle_time on existing master rows from program tools (never touches production cycle_time)."""
+
+    if not _planner_db_available():
+
+        return {"error": "SUPA_DB_URL is not set.", "updated": 0}
+
+
+
+    from sync import PLANNER_STATEMENT_TIMEOUT_MS
+
+    from planning.helpers import planner_db
+
+
+
+    with planner_db() as con:
+
+        con.execute(f"SET LOCAL statement_timeout = '{PLANNER_STATEMENT_TIMEOUT_MS}'")
+
+        cur = con.execute(UPDATE_IDEAL_FROM_PROGRAM_TOOLS_SQL)
+
+        updated = int(cur.rowcount or 0)
+
+
+
+    return {"updated": updated, "message": f"Updated ideal cycle time on {updated} existing row(s)."}
+
+
 RELOAD_MASTER_SQL = f"""
 
 WITH {CANDIDATES_CTE}
@@ -528,6 +562,8 @@ INSERT INTO public.planner_cycle_time_master (
     program_file,
 
     tool_list_file,
+
+    ideal_cycle_time,
 
     cycle_time,
 
@@ -559,9 +595,33 @@ SELECT
 
     cycle_time,
 
+    cycle_time,
+
     set_up_time
 
 FROM candidates
+
+"""
+
+
+
+UPDATE_IDEAL_FROM_PROGRAM_TOOLS_SQL = f"""
+
+WITH {CANDIDATES_CTE}
+
+UPDATE public.planner_cycle_time_master m
+
+SET ideal_cycle_time = c.cycle_time,
+
+    updated_at = NOW()
+
+FROM candidates c
+
+WHERE {MASTER_MATCH_SQL}
+
+  AND c.cycle_time > 0
+
+  AND m.ideal_cycle_time IS DISTINCT FROM c.cycle_time
 
 """
 
@@ -610,11 +670,14 @@ def sync_cycle_times_incremental() -> dict:
         return out
 
     out["master"] = import_new_from_program_tools()
+    out["ideal_sync"] = sync_ideal_cycle_times_from_program_tools()
     imp = out["master"]
+    ideal = out["ideal_sync"]
     out["message"] = (
         f"Program tools upserted {out['program_tools'].get('upserted', out['program_tools'].get('synced', 0))} row(s); "
         f"master inserted {imp.get('inserted', 0)} new, "
-        f"skipped {imp.get('skipped_existing', 0)} already in master."
+        f"skipped {imp.get('skipped_existing', 0)} already in master; "
+        f"updated ideal on {ideal.get('updated', 0)} existing row(s)."
     )
     return out
 

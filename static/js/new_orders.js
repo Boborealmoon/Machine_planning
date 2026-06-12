@@ -2,6 +2,8 @@
 
 const newOrdersState = {
   rows: [],
+  repeatGroups: [],
+  queuedPsBases: new Set(),
   week: 'this_week',
   from: '',
   to: '',
@@ -58,8 +60,11 @@ function newOrdersRenderLineDetail(row) {
     newOrdersDetailField('Customer PO line', row.customer_po_line_item_no),
     newOrdersDetailField('Reference no.', row.reference_no, { mono: true }),
   ].join('');
+  const similar = newOrdersSimilarPsList(row, newOrdersBuildSoPsMap(newOrdersState.rows));
+  const repeatOpts = newOrdersRepeatOptions(row, similar);
   const lineHtml = [
     newOrdersDetailField('Process sheet', row.process_sheet_no, { mono: true }),
+    typeof repeatOrderDetailHtml === 'function' ? repeatOrderDetailHtml(similar, repeatOpts) : '',
     newOrdersDetailField('Part / inventory', row.inventory_code, { mono: true }),
     newOrdersDetailField('Main description', row.main_desc),
     newOrdersDetailField('Line description', desc),
@@ -102,10 +107,14 @@ function newOrdersRenderGroupDetail(group) {
   const linesHtml = (group.children || []).map(row => {
     const key = newOrdersLineKey(row);
     const desc = String(row.line_item_description || row.main_desc || '').trim();
+    const repeatPill = newOrdersRenderSimilarPs(row);
     return `
       <button type="button" class="new-orders-detail-line-pick" data-line-key="${escapeHtml(key)}">
         <span class="new-orders-detail-line-pick-no">Line ${escapeHtml(String(row.source_voucher_line_item_no ?? '—'))}</span>
-        <span class="new-orders-detail-line-pick-ps">${escapeHtml(String(row.process_sheet_no || '—'))}</span>
+        <span class="new-orders-detail-line-pick-ps">
+          <span>${escapeHtml(String(row.process_sheet_no || '—'))}</span>
+          ${repeatPill}
+        </span>
         <span class="new-orders-detail-line-pick-part">${escapeHtml(String(row.inventory_code || '—'))}</span>
         <span class="new-orders-detail-line-pick-desc">${escapeHtml(desc || '—')}</span>
       </button>
@@ -270,6 +279,102 @@ function newOrdersRenderPostedSideRail(rowOrGroup) {
   `;
 }
 
+function newOrdersPsBase(value) {
+  return String(value || '').split('::')[0].trim();
+}
+
+function newOrdersBuildSoPsMap(rows) {
+  const map = new Map();
+  (rows || []).forEach((row) => {
+    const soNo = String(row.source_voucher_no || '').trim();
+    const ps = newOrdersPsBase(row.process_sheet_no);
+    if (!soNo || !ps) return;
+    if (!map.has(soNo)) map.set(soNo, new Set());
+    map.get(soNo).add(ps);
+  });
+  return map;
+}
+
+function newOrdersExcludeSameOrderPs(row, similar, soPsMap) {
+  const soNo = String(row.source_voucher_no || '').trim();
+  const skip = soPsMap.get(soNo) || new Set();
+  const seen = new Set();
+  const out = [];
+  (similar || []).forEach((value) => {
+    const ps = newOrdersPsBase(value);
+    if (!ps || skip.has(ps) || seen.has(ps)) return;
+    seen.add(ps);
+    out.push(ps);
+  });
+  return out;
+}
+
+function newOrdersSimilarPsList(row, soPsMap) {
+  const raw = row?.similar_ps;
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const out = [];
+  raw.forEach((value) => {
+    const text = newOrdersPsBase(value);
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+    out.push(text);
+  });
+  if (!soPsMap) return out;
+  return newOrdersExcludeSameOrderPs(row, out, soPsMap);
+}
+
+function newOrdersEnrichRowQueue(row, queuedSet) {
+  const similar = Array.isArray(row.similar_ps) ? row.similar_ps : [];
+  const queuedInPlanner = Array.isArray(row.queued_in_planner)
+    ? row.queued_in_planner.map(newOrdersPsBase).filter(Boolean)
+    : similar.filter((ps) => queuedSet.has(newOrdersPsBase(ps)));
+  return {
+    ...row,
+    similar_ps: similar,
+    queued_in_planner: queuedInPlanner,
+    is_repeat: Boolean(similar.length && queuedInPlanner.length),
+  };
+}
+
+function newOrdersEnrichRowsWithRepeats(rows, repeatGroups) {
+  const soPsMap = newOrdersBuildSoPsMap(rows);
+  const queuedSet = newOrdersState.queuedPsBases || new Set();
+  const keys = {
+    soKey: row => row.source_voucher_no,
+    partKey: row => row.inventory_code,
+    psKey: row => row.process_sheet_no,
+  };
+  return (rows || []).map((row) => {
+    const existing = newOrdersSimilarPsList(row, soPsMap);
+    if (existing.length) {
+      return newOrdersEnrichRowQueue({ ...row, similar_ps: existing }, queuedSet);
+    }
+    const similar = typeof repeatOrderSimilarList === 'function'
+      ? repeatOrderSimilarList(row, repeatGroups, soPsMap, keys)
+      : [];
+    return newOrdersEnrichRowQueue({ ...row, similar_ps: similar }, queuedSet);
+  });
+}
+
+function newOrdersRepeatOptions(row, similar) {
+  const list = Array.isArray(similar) ? similar : newOrdersSimilarPsList(row, newOrdersBuildSoPsMap(newOrdersState.rows));
+  const queuedSet = newOrdersState.queuedPsBases || new Set();
+  const slotWith = Array.isArray(row?.queued_in_planner) && row.queued_in_planner.length
+    ? row.queued_in_planner.map(newOrdersPsBase).filter(Boolean)
+    : list.filter((ps) => queuedSet.has(newOrdersPsBase(ps)));
+  return { slotWith, queuedInPlanner: slotWith, requireQueued: true };
+}
+
+function newOrdersRenderSimilarPs(row) {
+  if (row?.is_repeat === false) return '';
+  const soPsMap = newOrdersBuildSoPsMap(newOrdersState.rows);
+  const similar = newOrdersSimilarPsList(row, soPsMap);
+  const opts = newOrdersRepeatOptions(row, similar);
+  if (!similar.length || !opts.slotWith.length) return '';
+  return typeof repeatOrderRenderPill === 'function' ? repeatOrderRenderPill(similar, opts) : '';
+}
+
 function newOrdersGetPsType(row) {
   const raw = String(row.process_sheet_no || '').split('::')[0];
   if (/\[sr\]/i.test(raw)) return 'SR';
@@ -299,6 +404,8 @@ function newOrdersSearchText(row) {
     row.source_voucher_no,
     row.source_voucher_line_item_no,
     row.process_sheet_no,
+    ...(row.similar_ps || []),
+    ...(row.queued_in_planner || []),
     row.inventory_code,
     row.main_desc,
     row.line_item_description,
@@ -383,13 +490,35 @@ function newOrdersRenderSideRail(group, rowSpan) {
   `;
 }
 
+function newOrdersDescParts(row) {
+  const main = String(row.main_desc || '').trim();
+  const line = String(row.line_item_description || '').trim();
+  return { main, line };
+}
+
+function newOrdersRenderDescription(row) {
+  const { main, line } = newOrdersDescParts(row);
+  if (!main && !line) return '—';
+  if (main && line && main !== line) {
+    return `
+      <div class="new-orders-desc-main">${escapeHtml(main)}</div>
+      <div class="new-orders-desc-line">${escapeHtml(line)}</div>
+    `;
+  }
+  return `<div class="new-orders-desc-main">${escapeHtml(main || line)}</div>`;
+}
+
 function newOrdersRenderLineCells(row) {
-  const desc = String(row.line_item_description || row.main_desc || '').trim();
+  const psCode = String(row.process_sheet_no || '—');
+  const repeatPill = newOrdersRenderSimilarPs(row);
   return `
     <td class="new-orders-num">${escapeHtml(String(row.source_voucher_line_item_no ?? '—'))}</td>
-    <td>${escapeHtml(String(row.process_sheet_no || '—'))}</td>
-    <td>${escapeHtml(String(row.inventory_code || '—'))}</td>
-    <td class="new-orders-desc" title="${escapeHtml(desc)}">${escapeHtml(desc || '—')}</td>
+    <td class="new-orders-ps-cell">
+      <div class="new-orders-ps-code">${escapeHtml(psCode)}</div>
+      ${repeatPill}
+    </td>
+    <td class="new-orders-part-cell">${escapeHtml(String(row.inventory_code || '—'))}</td>
+    <td class="new-orders-desc">${newOrdersRenderDescription(row)}</td>
     <td class="new-orders-date">${escapeHtml(newOrdersDateOnly(row.po_due_date) || '—')}</td>
     <td class="new-orders-num">${escapeHtml(String(row.qty ?? '—'))}</td>
     <td class="new-orders-num">${escapeHtml(String(row.qty_issued ?? '—'))}</td>
@@ -509,10 +638,25 @@ function newOrdersBuildUrl(refresh) {
 async function newOrdersLoad(refresh) {
   newOrdersSetLoading(true);
   try {
-    const res = await fetch(newOrdersBuildUrl(refresh));
-    const payload = await res.json();
-    if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
-    newOrdersState.rows = Array.isArray(payload.rows) ? payload.rows : [];
+    const [ordersRes, repeatRes] = await Promise.all([
+      fetch(newOrdersBuildUrl(refresh)),
+      fetch('/api/planning-data/repeat-orders'),
+    ]);
+    const payload = await ordersRes.json();
+    if (!ordersRes.ok) throw new Error(payload.error || `HTTP ${ordersRes.status}`);
+    let repeatGroups = [];
+    if (repeatRes.ok) {
+      const repeatPayload = await repeatRes.json();
+      repeatGroups = Array.isArray(repeatPayload.rows) ? repeatPayload.rows : [];
+    }
+    newOrdersState.repeatGroups = repeatGroups;
+    newOrdersState.queuedPsBases = new Set(
+      (Array.isArray(payload.queued_ps_bases) ? payload.queued_ps_bases : [])
+        .map(newOrdersPsBase)
+        .filter(Boolean),
+    );
+    const rawRows = Array.isArray(payload.rows) ? payload.rows : [];
+    newOrdersState.rows = newOrdersEnrichRowsWithRepeats(rawRows, repeatGroups);
     newOrdersUpdateMeta(payload);
     newOrdersRenderTable();
   } catch (err) {

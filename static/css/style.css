@@ -1042,6 +1042,46 @@ input, select { font-family: inherit; }
   min-width: 0;
 }
 
+.ps-copy-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ps-copy-line > strong,
+.ps-copy-line > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.ps-copy-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid #d8e0e8;
+  border-radius: 5px;
+  background: #fff;
+  color: #64748b;
+  cursor: pointer;
+  line-height: 0;
+}
+
+.ps-copy-btn:hover {
+  background: #f1f5f9;
+  color: #334155;
+  border-color: #94a3b8;
+}
+
+.ps-copy-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
 .ps-row-part strong {
   color: #222;
   overflow-wrap: anywhere;
@@ -1678,7 +1718,7 @@ input, select { font-family: inherit; }
 .ps-detail-route {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   padding: 8px 12px;
   margin-bottom: 10px;
@@ -1687,10 +1727,16 @@ input, select { font-family: inherit; }
   background: #fafbfc;
 }
 
+.ps-detail-route .ps-copy-line {
+  flex: 1;
+  min-width: 0;
+}
+
 .ps-detail-route strong {
   color: #344054;
   font-size: 13px;
   font-weight: 800;
+  overflow-wrap: anywhere;
 }
 
 .ps-detail-meta {
