@@ -1009,7 +1009,7 @@ function soBindPsTypeDropdown() {
   });
 }
 
-function soRenderSideRail(order, rowSpan) {
+function soRenderSideRail(order, rowSpan, { shadeAlt = false } = {}) {
   const soNo = String(order.sales_order_no || '').trim();
   const collapsed = soState.collapsedGroups.has(soNo);
   const chevron = collapsed ? '▸' : '▾';
@@ -1031,7 +1031,7 @@ function soRenderSideRail(order, rowSpan) {
   const postedShort = posted.length >= 10 ? posted.slice(0, 10) : posted;
 
   return `
-    <td class="new-orders-side-rail new-orders-side-rail--compact" rowspan="${rowSpan}" data-sales-order="${escapeHtml(soNo)}" title="${escapeHtml(railTitle)}">
+    <td class="new-orders-side-rail new-orders-side-rail--compact${shadeAlt ? ' new-orders-side-rail--shade-alt' : ''}" rowspan="${rowSpan}" data-sales-order="${escapeHtml(soNo)}" title="${escapeHtml(railTitle)}">
       <div class="new-orders-side-rail-inner">
         <div class="new-orders-side-rail-top">
           <button type="button" class="new-orders-group-toggle" data-action="toggle-group" data-sales-order="${escapeHtml(soNo)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} PP vouchers">${chevron}</button>
@@ -1179,11 +1179,11 @@ function soRenderPartCell(pp, partial) {
   return `<td class="new-orders-num so-part-cell">${escapeHtml(String(part))}</td>`;
 }
 
-function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, includePpCells, ppRowSpan, ppStart }) {
+function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, includePpCells, ppRowSpan, ppStart, shadeAlt }) {
   const { order, pp, partial } = leaf;
   const key = soPartialKey(order, pp, partial);
   const selected = key === soState.selectedKey;
-  const sideRail = includeSideRail ? soRenderSideRail(order, sideRowSpan) : '';
+  const sideRail = includeSideRail ? soRenderSideRail(order, sideRowSpan, { shadeAlt }) : '';
   const processSheetCell = soRenderProcessSheetCell(order, pp, partial);
   const orderDateCell = soRenderOrderDateCell(pp);
   const ppSpanRest = includePpCells ? soRenderPpSpanCellsRest(pp, ppRowSpan) : '';
@@ -1204,11 +1204,12 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, inclu
   `;
 }
 
-function soRenderOrderGroup(order) {
+function soRenderOrderGroup(order, soGroupIndex = 0) {
   const soNo = String(order.sales_order_no || '').trim();
   const collapsed = soState.collapsedGroups.has(soNo);
   const leaves = soVisibleLeaves(order);
   const colSpan = SO_COLUMNS.filter(col => !col.side).length;
+  const shadeAlt = soGroupIndex % 2 === 1;
 
   if (!leaves.length) return '';
 
@@ -1216,7 +1217,7 @@ function soRenderOrderGroup(order) {
     const label = `${leaves.length} row(s) hidden`;
     return `
       <tr class="new-orders-group-row is-clickable" data-sales-order="${escapeHtml(soNo)}" title="Click for order detail">
-        ${soRenderSideRail(order, 1)}
+        ${soRenderSideRail(order, 1, { shadeAlt })}
         <td colspan="${colSpan}" class="new-orders-collapsed-summary">${escapeHtml(label)} — expand to view</td>
       </tr>
     `;
@@ -1242,6 +1243,7 @@ function soRenderOrderGroup(order) {
         includePpCells: firstPpRow,
         ppRowSpan: groupLeaves.length,
         ppStart: firstPpRow,
+        shadeAlt,
       }));
       firstPpRow = false;
       leafIndex += 1;
@@ -1547,7 +1549,7 @@ function soRender() {
   if (wrap) wrap.hidden = false;
   if (empty) empty.hidden = true;
   if (body) {
-    body.innerHTML = orders.map(soRenderOrderGroup).filter(Boolean).join('');
+    body.innerHTML = orders.map((order, idx) => soRenderOrderGroup(order, idx)).filter(Boolean).join('');
     delete body.dataset.editableBound;
     delete body.dataset.materialInBound;
     soBindEditableInputs();

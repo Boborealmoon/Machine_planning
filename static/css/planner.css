@@ -5447,6 +5447,16 @@
     max-width: 96px;
     width: 96px;
     border-right: 1px solid rgba(148, 163, 184, 0.4);
+    background: #f8fafc !important;
+  }
+  .new-orders-page--sales-orders .new-orders-side-rail--compact.new-orders-side-rail--shade-alt {
+    background: #eef2f6 !important;
+  }
+  .new-orders-page--sales-orders tr:hover .new-orders-side-rail--compact {
+    background: #f1f5f9 !important;
+  }
+  .new-orders-page--sales-orders tr:hover .new-orders-side-rail--compact.new-orders-side-rail--shade-alt {
+    background: #e8edf3 !important;
   }
   .new-orders-page--sales-orders .new-orders-side-rail--compact .new-orders-side-rail-inner {
     padding: 4px 4px 6px;
@@ -5925,18 +5935,11 @@
     letter-spacing: 0.02em;
     white-space: nowrap;
   }
-  .new-orders-page--sales-orders tr.is-ps-queued-mark td {
+  .new-orders-page--sales-orders tr.is-ps-queued-mark td:not(.new-orders-side-rail) {
     background: color-mix(in srgb, #22c55e 14%, #ffffff) !important;
-  }
-  /* Sticky side rail must stay fully opaque so scrolled columns don't bleed through */
-  .new-orders-page--sales-orders tr.is-ps-queued-mark td.new-orders-side-rail {
-    background: color-mix(in srgb, #22c55e 20%, #f8fafc) !important;
   }
   .new-orders-page--sales-orders tr.is-ps-queued-mark:hover td:not(.new-orders-side-rail) {
     background: color-mix(in srgb, #22c55e 20%, #ffffff) !important;
-  }
-  .new-orders-page--sales-orders tr.is-ps-queued-mark:hover td.new-orders-side-rail {
-    background: color-mix(in srgb, #22c55e 20%, #f1f5f9) !important;
   }
   .new-orders-page--sales-orders .so-process-sheet-cell .new-orders-repeat-wrap {
     margin-top: 2px;
