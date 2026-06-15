@@ -93,32 +93,90 @@ const PP_SYNC_STEP_LABELS = {
   pp_vouchers_cache: "Cache",
 };
 
-async function postPpStagingStep(step, force = true) {
-  const res = await fetch("/api/pp-staging/sync", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ steps: [step], force }),
-  });
+async function fetchPpStagingWait(since = "", timeoutSec = 30) {
+  const params = new URLSearchParams({ timeout: String(timeoutSec) });
+  if (since) params.set("since", since);
+  const res = await fetch(`/api/pp-staging/wait?${params}`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = new Error(data.error || res.statusText || "ERP sync failed");
-    err.step = step;
-    err.detail = data;
-    throw err;
+    throw new Error(data.error || res.statusText || "Could not read sync status");
   }
   return data;
 }
 
+function ppSyncProgressFromStatus(status) {
+  const order = status.step_order || PP_SYNC_STEPS;
+  const total = order.length;
+  for (let i = 0; i < order.length; i++) {
+    const step = order[i];
+    const info = status.steps?.[step] || {};
+    if (info.in_progress) {
+      return { index: i + 1, total, label: PP_SYNC_STEP_LABELS[step] || step, step };
+    }
+  }
+  let completed = 0;
+  for (let i = 0; i < order.length; i++) {
+    const last = status.steps?.[order[i]]?.last;
+    if (last && !last.error) completed = i + 1;
+  }
+  const step = order[Math.min(completed, total - 1)] || order[0];
+  return {
+    index: Math.max(1, completed),
+    total,
+    label: PP_SYNC_STEP_LABELS[step] || step,
+    step,
+  };
+}
+
+async function startBackgroundPpSync(steps = null) {
+  const body = { background: true, force: true };
+  if (steps && steps.length) body.steps = steps;
+  const res = await fetch("/api/pp-staging/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 409) {
+    const err = new Error(data.error || "ERP sync is already running");
+    err.alreadyRunning = true;
+    throw err;
+  }
+  if (!res.ok) {
+    throw new Error(data.error || res.statusText || "ERP sync failed to start");
+  }
+  return data;
+}
+
+async function waitForBackgroundPpSync(onProgress) {
+  let token = "";
+  for (;;) {
+    const status = await fetchPpStagingWait(token, 30);
+    token = status.progress_token || token;
+    onProgress?.(ppSyncProgressFromStatus(status));
+    const bg = status.background_sync || {};
+    if (status.done || !bg.running) {
+      if (bg.error) throw new Error(bg.error);
+      if (bg.failed_at) {
+        const stepResult = (bg.results || {})[bg.failed_at] || {};
+        const err = new Error(
+          stepResult.error || stepResult.reason || `sync failed at ${bg.failed_at}`
+        );
+        err.step = bg.failed_at;
+        throw err;
+      }
+      return bg.results || {};
+    }
+  }
+}
+
 /**
- * Full ERP sync, one HTTP request per step (avoids proxy/browser timeouts).
- * @param {{ steps?: string[], onProgress?: (info: object) => void }} [opts]
+ * Sync ERP: 1 POST to start on server, long-poll for progress (not 11 separate sync POSTs).
  */
 async function syncErpPpVouchers(opts = {}) {
   const btn = document.getElementById("nav-erp-sync-btn");
   const defaultLabel = btn?.dataset.defaultLabel || "Sync ERP";
-  const steps = opts.steps && opts.steps.length ? opts.steps : PP_SYNC_STEPS;
-  const total = steps.length;
-  const combined = {};
+  const steps = opts.steps && opts.steps.length ? opts.steps : null;
 
   const setLabel = (text) => {
     if (btn) btn.textContent = text;
@@ -126,24 +184,15 @@ async function syncErpPpVouchers(opts = {}) {
 
   if (btn) {
     btn.disabled = true;
-    setLabel("Syncing…");
+    setLabel("Syncing ERP…");
   }
 
   try {
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i];
-      const label = PP_SYNC_STEP_LABELS[step] || step;
-      const progress = { step, label, index: i + 1, total };
-      setLabel(`${i + 1}/${total} ${label}…`);
+    await startBackgroundPpSync(steps);
+    const combined = await waitForBackgroundPpSync((progress) => {
+      setLabel(`${progress.index}/${progress.total} ${progress.label}…`);
       opts.onProgress?.(progress);
-
-      const data = await postPpStagingStep(step, true);
-      Object.assign(combined, data);
-      const stepResult = data[step] || {};
-      if (stepResult.skipped) {
-        console.warn(`${step} skipped:`, stepResult.reason);
-      }
-    }
+    });
 
     const cache = combined.pp_vouchers_cache || {};
     if (btn && cache.row_count != null) {
@@ -158,9 +207,10 @@ async function syncErpPpVouchers(opts = {}) {
     window.setTimeout(() => setLabel(defaultLabel), 2000);
     return combined;
   } catch (err) {
-    const step = err.step || "?";
-    const label = PP_SYNC_STEP_LABELS[step] || step;
-    setLabel(`Failed: ${label}`);
+    if (!err.alreadyRunning) {
+      const label = PP_SYNC_STEP_LABELS[err.step] || err.step || "Sync";
+      setLabel(`Failed: ${label}`);
+    }
     console.error("pp-vouchers sync failed:", err);
     window.setTimeout(() => setLabel(defaultLabel), 4000);
     throw err;

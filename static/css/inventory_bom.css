@@ -28,6 +28,29 @@
   color: #111;
 }
 
+.pf-fetch-btn {
+  font-size: 12px;
+  font-weight: 600;
+  color: #111;
+  background: #fff;
+  border: 1.5px solid #d4d4d4;
+  border-radius: 8px;
+  padding: 8px 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+.pf-fetch-btn:hover:not(:disabled) {
+  background: #f8f8f8;
+  border-color: #bbb;
+}
+
+.pf-fetch-btn:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
 /* ── Two-panel ────────────────────────────────────────────────────────── */
 
 .pf-layout {
@@ -335,6 +358,20 @@
   font-weight: 700;
   letter-spacing: 0.07em;
   color: #888;
+}
+
+.steps-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 24px 8px;
+  flex-wrap: wrap;
+}
+
+.steps-hint {
+  font-size: 11px;
+  color: #9a6700;
 }
 
 .steps-table-wrap {

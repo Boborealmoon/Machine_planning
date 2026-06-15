@@ -14,7 +14,36 @@ document.addEventListener("DOMContentLoaded", () => {
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => loadSources(e.target.value.trim()), 280);
   });
+
+  document.getElementById("pf-fetch-btn")?.addEventListener("click", () => {
+    fetchFromErp().catch((err) => console.error("Fetch ERP failed:", err));
+  });
 });
+
+/** Re-read live COMAIN data (no Supabase staging). */
+async function fetchFromErp() {
+  const btn = document.getElementById("pf-fetch-btn");
+  const defaultLabel = btn?.dataset.defaultLabel || "Fetch ERP";
+  const search = document.getElementById("part-search")?.value.trim() || "";
+  const bomToKeep = activeBom;
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Fetching…";
+  }
+
+  try {
+    await loadSources(search);
+    if (selectedSource) {
+      await loadBomTabs(selectedSource, bomToKeep);
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = defaultLabel;
+    }
+  }
+}
 
 // ── Sources (left panel) ──────────────────────────────────────────────────
 
@@ -74,7 +103,7 @@ async function selectSource(el) {
 
 // ── BOM tabs ──────────────────────────────────────────────────────────────
 
-async function loadBomTabs(source) {
+async function loadBomTabs(source, preferredBom = null) {
   const tabsEl = document.getElementById("bom-tabs");
   tabsEl.innerHTML = "";
   document.getElementById("bom-detail").style.display = "none";
@@ -90,8 +119,12 @@ async function loadBomTabs(source) {
       return;
     }
 
+    const bomToSelect =
+      preferredBom && data.bom_codes.includes(preferredBom)
+        ? preferredBom
+        : data.bom_codes[0];
     renderBomTabs(data.bom_codes);
-    selectBomTab(data.bom_codes[0]);
+    selectBomTab(bomToSelect);
   } catch (err) {
     tabsEl.innerHTML = `<span style="font-size:12px;color:#e74c3c">Error: ${err.message}</span>`;
   }
@@ -175,18 +208,35 @@ async function loadMaterials(source, bom) {
 }
 
 function formatQtyPerFg(row) {
+  const fromApi = Number(row.qty_per_fg);
+  if (Number.isFinite(fromApi) && fromApi > 0) {
+    return formatDecimal(fromApi);
+  }
   const qtyParent = Number(row.qty_parent);
   const qtyFg = Number(row.qty_fg);
-  if (!Number.isFinite(qtyParent)) return "—";
-  if (Number.isFinite(qtyFg) && qtyFg > 0 && qtyFg !== 1) {
-    const perFg = qtyParent / qtyFg;
-    return Number.isInteger(perFg) ? String(perFg) : perFg.toFixed(4).replace(/\.?0+$/, "");
-  }
-  return Number.isInteger(qtyParent) ? String(qtyParent) : qtyParent.toFixed(4).replace(/\.?0+$/, "");
+  if (!Number.isFinite(qtyParent) || qtyParent <= 0) return "—";
+  const perFg = Number.isFinite(qtyFg) && qtyFg > 0 ? qtyParent / qtyFg : qtyParent;
+  return formatDecimal(perFg);
+}
+
+function formatDecimal(value) {
+  if (!Number.isFinite(value)) return "—";
+  return Number.isInteger(value) ? String(value) : value.toFixed(4).replace(/\.?0+$/, "");
 }
 
 function renderMaterials(rows) {
   const tbody = document.getElementById("steps-tbody");
+  const hint = document.getElementById("materials-hint");
+  const templateRows = rows.filter((r) => r.bom_template);
+  if (hint) {
+    if (templateRows.length) {
+      hint.hidden = false;
+      hint.textContent = "Template BOM — quantities shown from bom_code (not part-specific).";
+    } else {
+      hint.hidden = true;
+      hint.textContent = "";
+    }
+  }
   if (!rows.length) {
     tbody.innerHTML = '<tr><td colspan="4" class="steps-empty">No materials for this BOM.</td></tr>';
     return;

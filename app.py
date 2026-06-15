@@ -511,6 +511,14 @@ _PP_VOUCHERS_READ_MERGE_WO = os.getenv("PP_VOUCHERS_READ_MERGE_WO", "").strip().
     "1", "true", "yes", "on",
 }
 
+_BG_PP_SYNC_LOCK = threading.Lock()
+_BG_PP_SYNC: dict = {
+    "running": False,
+    "failed_at": None,
+    "error": None,
+    "results": None,
+}
+
 
 def _pp_vouchers_cache_sql_parts():
     from planning.erp_wo_merge import (
@@ -1559,6 +1567,119 @@ def _parse_pp_staging_sync_args():
     return steps, force
 
 
+def _want_background_pp_sync(body: dict | None = None) -> bool:
+    body = body if body is not None else (request.get_json(silent=True) or {})
+    raw = body.get("background", request.args.get("background", False))
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(raw)
+
+
+def _domain_sync_unreachable_response():
+    from db import domain_db_endpoint, domain_sync_likely_unreachable, domain_sync_unreachable
+
+    if not domain_sync_unreachable():
+        return None
+    host, port = domain_db_endpoint()
+    hint = (
+        " Run ERP sync on a machine that can reach COMAIN "
+        "(scripts/run_pp_staging_sync.py), or use VPN/tunnel and point DB_HOST "
+        "at that endpoint."
+    )
+    if domain_sync_likely_unreachable():
+        hint = (
+            " DB_HOST is on a private LAN; this server cannot open a TCP connection "
+            "to it." + hint
+        )
+    else:
+        hint = f" Could not connect to {host}:{port}." + hint
+    return jsonify({
+        "error": "COMAIN (ERP database) is not reachable from this server." + hint,
+        "db_host": host,
+        "db_port": port,
+    }), 503
+
+
+def _run_pp_staging_sync_pipeline(steps: list[str], force: bool) -> tuple[dict, int]:
+    from sync import run_pp_staging_sync
+
+    staging_only = [s for s in steps if s != "pp_vouchers_cache"]
+    if staging_only:
+        _ensure_pp_staging_schema()
+    results: dict = {"schema": {"updated": bool(staging_only)}}
+    sync_results = run_pp_staging_sync(steps=steps, force=force)
+    results.update(sync_results)
+    if "pp_vouchers_cache" in steps or staging_only:
+        _invalidate_pp_vouchers_with_ops_cache()
+    failed = results.get("_failed_at")
+    if failed:
+        step_result = results.get(failed, {})
+        err = step_result.get("error") or step_result.get("reason") or f"sync failed at {failed}"
+        return {"error": err, **results}, 500
+    return results, 200
+
+
+def _background_pp_sync_worker(steps: list[str], force: bool) -> None:
+    global _BG_PP_SYNC
+    try:
+        payload, status = _run_pp_staging_sync_pipeline(steps, force)
+        with _BG_PP_SYNC_LOCK:
+            _BG_PP_SYNC["results"] = payload
+            _BG_PP_SYNC["failed_at"] = payload.get("_failed_at")
+            if status >= 400 and not _BG_PP_SYNC["failed_at"]:
+                _BG_PP_SYNC["error"] = payload.get("error") or "sync failed"
+    except Exception as exc:
+        log.exception("background PP staging sync failed")
+        with _BG_PP_SYNC_LOCK:
+            _BG_PP_SYNC["error"] = str(exc)
+    finally:
+        with _BG_PP_SYNC_LOCK:
+            _BG_PP_SYNC["running"] = False
+
+
+def _start_background_pp_sync(steps: list[str], force: bool):
+    global _BG_PP_SYNC
+    with _BG_PP_SYNC_LOCK:
+        if _BG_PP_SYNC.get("running"):
+            return None
+        _BG_PP_SYNC = {
+            "running": True,
+            "failed_at": None,
+            "error": None,
+            "results": None,
+        }
+    threading.Thread(
+        target=_background_pp_sync_worker,
+        args=(steps, force),
+        daemon=True,
+        name="pp-staging-sync",
+    ).start()
+    return dict(_BG_PP_SYNC)
+
+
+def _pp_staging_status_payload() -> dict:
+    from sync import get_pp_staging_status
+
+    with _BG_PP_SYNC_LOCK:
+        background = dict(_BG_PP_SYNC)
+    return {**get_pp_staging_status(), "background_sync": background}
+
+
+def _pp_sync_progress_token(payload: dict) -> str:
+    order = payload.get("step_order") or []
+    parts: list[str] = []
+    bg = payload.get("background_sync") or {}
+    parts.append("1" if bg.get("running") else "0")
+    parts.append(str(bg.get("failed_at") or ""))
+    for step in order:
+        info = (payload.get("steps") or {}).get(step) or {}
+        if info.get("in_progress"):
+            parts.append(f">{step}")
+        last = info.get("last") or {}
+        parts.append(f"{step}:{last.get('recorded_at') or last.get('synced_at') or ''}")
+    return "|".join(parts)
+
+
 @app.post("/api/pp-vouchers/sync")
 def api_pp_vouchers_sync():
     """Force full COMAIN → Supabase staging + cache rebuild (manual Sync ERP)."""
@@ -1702,8 +1823,36 @@ def api_so_detail_sync():
 
 @app.get("/api/pp-staging/status")
 def api_pp_staging_status():
-    from sync import get_pp_staging_status
-    return jsonify(get_pp_staging_status())
+    return jsonify(_pp_staging_status_payload())
+
+
+@app.get("/api/pp-staging/wait")
+def api_pp_staging_wait():
+    """Long-poll ERP sync progress (avoids polling /status every few seconds)."""
+    try:
+        timeout_sec = int(request.args.get("timeout", 30))
+    except (TypeError, ValueError):
+        timeout_sec = 30
+    timeout_sec = max(5, min(timeout_sec, 85))
+    since = str(request.args.get("since") or "").strip()
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        payload = _pp_staging_status_payload()
+        token = _pp_sync_progress_token(payload)
+        bg = payload.get("background_sync") or {}
+        if not bg.get("running"):
+            return jsonify({**payload, "done": True, "progress_token": token})
+        if since and token != since:
+            return jsonify({**payload, "done": False, "progress_token": token})
+        if not since:
+            return jsonify({**payload, "done": False, "progress_token": token})
+        time.sleep(1.0)
+    payload = _pp_staging_status_payload()
+    return jsonify({
+        **payload,
+        "done": not (payload.get("background_sync") or {}).get("running"),
+        "progress_token": _pp_sync_progress_token(payload),
+    })
 
 
 @app.post("/api/pp-vouchers-cache/rebuild")
@@ -1727,44 +1876,25 @@ def api_pp_vouchers_cache_rebuild():
 
 @app.post("/api/pp-staging/sync")
 def api_pp_staging_sync():
-    """Run PP staging syncs; optional ?steps= or JSON {\"steps\": [...]}."""
-    from db import domain_db_endpoint, domain_sync_likely_unreachable, domain_sync_unreachable
-    from sync import run_pp_staging_sync
+    """Run PP staging syncs; pass {\"background\": true} from the UI to avoid proxy timeouts."""
     try:
+        body = request.get_json(silent=True) or {}
         steps, force = _parse_pp_staging_sync_args()
         staging_only = [s for s in steps if s != "pp_vouchers_cache"]
-        if staging_only and domain_sync_unreachable():
-            host, port = domain_db_endpoint()
-            hint = (
-                " Run ERP sync on a machine that can reach COMAIN "
-                "(scripts/run_pp_staging_sync.py), or use VPN/tunnel and point DB_HOST "
-                "at that endpoint."
-            )
-            if domain_sync_likely_unreachable():
-                hint = (
-                    " DB_HOST is on a private LAN; this server cannot open a TCP connection "
-                    "to it." + hint
-                )
-            else:
-                hint = f" Could not connect to {host}:{port}." + hint
-            return jsonify({
-                "error": "COMAIN (ERP database) is not reachable from this server." + hint,
-                "db_host": host,
-                "db_port": port,
-            }), 503
         if staging_only:
-            _ensure_pp_staging_schema()
-        results = {"schema": {"updated": bool(staging_only)}}
-        sync_results = run_pp_staging_sync(steps=steps, force=force)
-        results.update(sync_results)
-        if "pp_vouchers_cache" in steps or staging_only:
-            _invalidate_pp_vouchers_with_ops_cache()
-        failed = results.get("_failed_at")
-        if failed:
-            step_result = results.get(failed, {})
-            err = step_result.get("error") or step_result.get("reason") or f"sync failed at {failed}"
-            return jsonify({"error": err, **results}), 500
-        return jsonify(results)
+            blocked = _domain_sync_unreachable_response()
+            if blocked is not None:
+                return blocked
+        if _want_background_pp_sync(body):
+            started = _start_background_pp_sync(steps, force)
+            if started is None:
+                return jsonify({
+                    "error": "ERP sync is already running",
+                    "background_sync": _pp_staging_status_payload().get("background_sync"),
+                }), 409
+            return jsonify({"status": "started", "background_sync": started, "steps": steps})
+        payload, status = _run_pp_staging_sync_pipeline(steps, force)
+        return jsonify(payload), status
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:

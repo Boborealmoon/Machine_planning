@@ -13,6 +13,7 @@
   <!-- Page header -->
   <div class="pf-header">
     <h1 class="pf-title">Parts &amp; Flows</h1>
+    <button type="button" class="pf-fetch-btn" id="pf-fetch-btn" data-default-label="Fetch ERP">Fetch ERP</button>
   </div>
 
   <!-- Two-panel layout -->
@@ -86,7 +87,10 @@
 
           <!-- Materials table -->
           <div class="steps-section">
-            <div class="steps-label">MATERIALS</div>
+            <div class="steps-label-row">
+              <div class="steps-label">MATERIALS</div>
+              <div class="steps-hint" id="materials-hint" hidden></div>
+            </div>
             <div class="steps-table-wrap">
               <table class="steps-table">
                 <thead>
