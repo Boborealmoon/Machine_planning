@@ -38,17 +38,6 @@
     </div>
     <div class="trial-resize-handle" id="trial-resize-handle"></div>
     <aside class="trial-sidebar" id="trial-sidebar" aria-label="Available PS and operations">
-      <button
-        type="button"
-        id="trial-sidebar-expand-tab"
-        class="trial-sidebar-expand-tab"
-        aria-label="Show available PS / Ops"
-        title="Show available PS / Ops"
-        hidden
-      >
-        <span class="trial-sidebar-expand-tab-icon" aria-hidden="true">☰</span>
-        <span class="trial-sidebar-expand-tab-label">PS</span>
-      </button>
       <div class="trial-sidebar-card">
         <div class="trial-sidebar-head">
           <div class="trial-sidebar-head-text">
@@ -56,21 +45,11 @@
           </div>
           <div class="trial-sidebar-head-actions">
             <button
-              id="trial-sidebar-collapse-btn"
-              class="trial-sidebar-collapse-btn"
-              type="button"
-              aria-label="Hide available PS / Ops panel"
-              title="Collapse panel"
-            >
-              <span aria-hidden="true">›</span>
-            </button>
-            <button
               type="button"
               class="btn btn-ghost btn-sm trial-sidebar-head-btn"
               onclick="openTempProcessSheetModal()"
               title="Create a [Temp] process sheet for reject/rework qty"
             >Temp PS</button>
-            <button id="trial-completed-toggle" class="btn btn-ghost btn-sm trial-sidebar-head-btn" type="button" onclick="toggleTrialCompletedCatalog()">Completed</button>
           </div>
         </div>
         <div id="trial-ps-type-filter"></div>
@@ -119,7 +98,7 @@
 <script src="{{ url_for('static', filename='js/scheduler/modals.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/floor_layout.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/temp_ps.js') }}?v=temp-ps-ui-20260605"></script>
-<script src="{{ url_for('static', filename='js/scheduler/export.js') }}?v=20260604"></script>
+<script src="{{ url_for('static', filename='js/scheduler/export.js') }}?v=20260615-material-colors"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const _trialScriptChecks = [
@@ -171,7 +150,6 @@ document.addEventListener('DOMContentLoaded', () => {
 <script>
 (function () {
   const STORAGE_KEY = 'planner-sidebar-w-v2';
-  const COLLAPSED_KEY = 'planner-sidebar-collapsed-v1';
   const DEFAULT_W = 208;
   const MIN_W = 176;
   const MAX_W = 480;
@@ -190,33 +168,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const layout = document.getElementById('trial-layout');
   const handle = document.getElementById('trial-resize-handle');
-  const sidebar = document.getElementById('trial-sidebar');
-  const collapseBtn = document.getElementById('trial-sidebar-collapse-btn');
-  const expandTab = document.getElementById('trial-sidebar-expand-tab');
-  if (!layout) return;
-
-  function isSidebarCollapsed() {
-    return layout.classList.contains('is-sidebar-collapsed');
-  }
-
-  function setSidebarCollapsed(collapsed) {
-    layout.classList.toggle('is-sidebar-collapsed', collapsed);
-    localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0');
-    if (sidebar) sidebar.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-    if (expandTab) expandTab.hidden = !collapsed;
-    if (collapseBtn) collapseBtn.hidden = collapsed;
-  }
-
-  if (localStorage.getItem(COLLAPSED_KEY) === '1') {
-    setSidebarCollapsed(true);
-  } else if (sidebar) {
-    sidebar.setAttribute('aria-expanded', 'true');
-  }
-
-  collapseBtn?.addEventListener('click', () => setSidebarCollapsed(true));
-  expandTab?.addEventListener('click', () => setSidebarCollapsed(false));
-
-  if (!handle) return;
+  if (!layout || !handle) return;
 
   const limits = sidebarWidthLimits();
   const saved = parseInt(localStorage.getItem(STORAGE_KEY), 10);
@@ -226,7 +178,6 @@ document.addEventListener('DOMContentLoaded', () => {
   layout.style.setProperty('--sidebar-w', width + 'px');
 
   window.addEventListener('resize', () => {
-    if (isSidebarCollapsed()) return;
     const current = parseFloat(layout.style.getPropertyValue('--sidebar-w'));
     if (!isNaN(current)) {
       layout.style.setProperty('--sidebar-w', clampSidebarWidth(current) + 'px');
@@ -237,7 +188,6 @@ document.addEventListener('DOMContentLoaded', () => {
   let startW = 0;
 
   handle.addEventListener('mousedown', (e) => {
-    if (isSidebarCollapsed()) return;
     e.preventDefault();
     handle.classList.add('is-dragging');
     startX = e.clientX;

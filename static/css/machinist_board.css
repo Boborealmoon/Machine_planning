@@ -12,15 +12,15 @@ body.machinist-board .app-main--machinist {
   margin: 0;
   max-width: none;
   width: 100%;
-  height: 100vh;
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 100dvh;
   overflow: hidden;
 }
 
 .trial-shell--machinist {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100dvh;
   min-height: 0;
   overflow: hidden;
 }
@@ -177,6 +177,9 @@ body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
 }
 
 .trial-main--machinist {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
   min-height: 0;
   height: 100%;
   overflow: hidden;
@@ -380,6 +383,9 @@ body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
 }
 
 .trial-main--machinist .trial-grid-scroll-host {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
 }
@@ -690,29 +696,42 @@ body.machinist-board.machinist-board--focus .trial-main--machinist .trial-grid-s
   background: #f8f9fa;
 }
 
+body.machinist-board.machinist-board--focus .trial-grid-scroll-top-wrap {
+  display: none;
+}
+
 body.machinist-board.machinist-board--focus .trial-grid-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 0 4px 4px;
   overflow-x: auto !important;
-  overflow-y: auto;
+  overflow-y: hidden;
   touch-action: pan-x pan-y;
+  display: flex;
+  flex-direction: column;
 }
 
 body.machinist-board.machinist-board--focus .trial-grid.trial-grid--focus {
   display: flex;
   flex-direction: row;
-  align-items: flex-start;
+  align-items: stretch;
+  flex: 1 1 auto;
   flex-wrap: nowrap;
   gap: 10px;
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
   padding: 4px 4px 8px;
 }
 
 body.machinist-board.machinist-board--focus .trial-machine--focus-lane {
-  flex: 0 0 220px;
-  width: 220px;
-  max-width: 220px;
-  min-width: 220px;
+  flex: 1 1 0;
+  width: auto;
+  min-width: 180px;
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   gap: 6px;
   padding: 6px 8px 8px;
   border-radius: 10px;
@@ -763,9 +782,25 @@ body.machinist-board.machinist-board--focus .trial-machine-focus-hint {
 .machinist-focus-machine-groups {
   display: flex;
   flex-direction: row;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 4px 16px;
+  gap: 8px 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(26, 28, 29, 0.2) transparent;
+  padding-bottom: 2px;
+}
+
+.machinist-focus-machine-groups::-webkit-scrollbar {
+  height: 4px;
+}
+
+.machinist-focus-machine-groups::-webkit-scrollbar-thumb {
+  background: rgba(26, 28, 29, 0.18);
+  border-radius: 2px;
 }
 
 .machinist-focus-machine-group {
@@ -773,6 +808,7 @@ body.machinist-board.machinist-board--focus .trial-machine-focus-hint {
   flex-direction: row;
   align-items: center;
   gap: 5px;
+  flex: 0 0 auto;
 }
 
 .machinist-focus-machine-group-label {
@@ -881,9 +917,11 @@ body.machinist-board.machinist-board--focus .trial-machine-focus-hint {
 }
 
 body.machinist-board.machinist-board--focus .trial-lane--focus {
+  flex: 1 1 auto;
+  min-height: 0;
   gap: 5px;
   padding: 0 2px 0 0;
-  max-height: min(34rem, calc(100dvh - 12rem));
+  max-height: none;
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior-y: contain;
@@ -1073,7 +1111,8 @@ body.machinist-board.machinist-board--focus .trial-empty {
   color: var(--text3);
 }
 
-@media (max-width: 900px) {
+/* Tablets (iPad landscape, Lenovo ~1280px), touch kiosks, and phones */
+@media (max-width: 1280px), ((hover: none) and (pointer: coarse)) {
   body.machinist-board {
     overflow-x: hidden;
     overflow-y: auto;
@@ -1175,10 +1214,38 @@ body.machinist-board.machinist-board--focus .trial-empty {
   }
 
   body.machinist-board.machinist-board--focus .trial-machine--focus-lane {
-    flex: 0 0 min(200px, 78vw);
-    width: min(200px, 78vw);
-    max-width: min(200px, 78vw);
-    min-width: min(200px, 78vw);
+    flex: 1 1 0;
+    min-width: min(200px, 42vw);
+    max-width: none;
+    width: auto;
+  }
+
+  body.machinist-board.machinist-board--focus .machinist-focus-picker {
+    gap: 4px;
+  }
+
+  body.machinist-board.machinist-board--focus .machinist-focus-picker-prompt {
+    font-size: 12px;
+  }
+
+  .machinist-focus-machine-chip {
+    min-height: 36px;
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+
+  .machinist-focus-machine-group-label {
+    font-size: 9px;
+  }
+
+  .machinist-job-search-input {
+    max-width: none;
+    min-height: 36px;
+    font-size: 12px;
+  }
+
+  .machinist-job-search-label {
+    font-size: 10px;
   }
 
   .machinist-board-legend {
@@ -1288,7 +1355,72 @@ body.machinist-board.machinist-board--focus .trial-empty {
   }
 
   body.machinist-board.machinist-board--focus .trial-lane--focus {
-    max-height: min(34rem, calc(100dvh - 11rem));
+    max-height: none;
+  }
+
+  body.machinist-board.machinist-board--focus .trial-focus-ps {
+    font-size: 13px;
+  }
+
+  body.machinist-board.machinist-board--focus .trial-focus-op {
+    font-size: 11px;
+  }
+
+  body.machinist-board.machinist-board--focus .trial-focus-metric {
+    font-size: 11px;
+  }
+
+  /* Focus view keeps a locked viewport on tablets so queues scroll inside lanes */
+  body.machinist-board.machinist-board--focus {
+    overflow: hidden;
+    touch-action: manipulation;
+  }
+
+  body.machinist-board.machinist-board--focus .app-main--machinist {
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+    padding-bottom: 0;
+  }
+
+  body.machinist-board.machinist-board--focus .trial-shell--machinist {
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  body.machinist-board.machinist-board--focus .trial-layout--machinist,
+  body.machinist-board.machinist-board--focus .trial-main--machinist {
+    overflow: hidden;
+    height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  body.machinist-board.machinist-board--focus .trial-main--machinist #trial-machine-filter-shell {
+    flex: 0 0 auto;
+    position: relative;
+    top: auto;
+  }
+
+  body.machinist-board.machinist-board--focus .trial-main--machinist .trial-grid-scroll-host {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  body.machinist-board.machinist-board--focus .trial-grid-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: hidden;
+    padding-bottom: max(4px, env(safe-area-inset-bottom, 0px));
+  }
+
+  body.machinist-board.machinist-board--focus .trial-grid.trial-grid--focus {
+    height: 100%;
+    align-items: stretch;
   }
 }
 

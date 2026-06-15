@@ -70,7 +70,6 @@ async function selectSource(el) {
   detail.style.display = "flex";
 
   await loadBomTabs(selectedSource);
-  loadMaterials(selectedSource);
 }
 
 // ── BOM tabs ──────────────────────────────────────────────────────────────
@@ -122,6 +121,7 @@ function selectBomTab(bomCode) {
   document.getElementById("bom-detail").style.display = "flex";
 
   loadOperations(selectedSource, bomCode);
+  loadMaterials(selectedSource, bomCode);
 }
 
 // ── Operations table ──────────────────────────────────────────────────────
@@ -159,29 +159,44 @@ function renderOperations(rows) {
 
 // ── Materials table ───────────────────────────────────────────────────────
 
-async function loadMaterials(source) {
+async function loadMaterials(source, bom) {
   const tbody = document.getElementById("steps-tbody");
-  tbody.innerHTML = '<tr><td colspan="2" class="steps-empty">Loading...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="4" class="steps-empty">Loading...</td></tr>';
   try {
-    const res = await fetch(`/api/bom/materials?source=${encodeURIComponent(source)}`);
+    const res = await fetch(
+      `/api/bom/materials?source=${encodeURIComponent(source)}&bom=${encodeURIComponent(bom)}`
+    );
     const rows = await res.json();
     if (rows.error) throw new Error(rows.error);
     renderMaterials(rows);
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="2" class="steps-empty" style="color:#e74c3c">Error: ${err.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="steps-empty" style="color:#e74c3c">Error: ${err.message}</td></tr>`;
   }
+}
+
+function formatQtyPerFg(row) {
+  const qtyParent = Number(row.qty_parent);
+  const qtyFg = Number(row.qty_fg);
+  if (!Number.isFinite(qtyParent)) return "—";
+  if (Number.isFinite(qtyFg) && qtyFg > 0 && qtyFg !== 1) {
+    const perFg = qtyParent / qtyFg;
+    return Number.isInteger(perFg) ? String(perFg) : perFg.toFixed(4).replace(/\.?0+$/, "");
+  }
+  return Number.isInteger(qtyParent) ? String(qtyParent) : qtyParent.toFixed(4).replace(/\.?0+$/, "");
 }
 
 function renderMaterials(rows) {
   const tbody = document.getElementById("steps-tbody");
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="2" class="steps-empty">No materials for this part.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" class="steps-empty">No materials for this BOM.</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map((r) => `
     <tr>
       <td>${esc(r.material_inventory_code)}</td>
       <td>${esc(r.description)}</td>
+      <td>${esc(formatQtyPerFg(r))}</td>
+      <td>${esc(r.uom_code || "—")}</td>
     </tr>`
   ).join("");
 }

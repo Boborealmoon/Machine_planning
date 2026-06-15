@@ -299,6 +299,21 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
 .harvest-pick-btn { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: #fff; cursor: pointer; }
 .harvest-pick-btn.is-picked { background: #1a1c1d; color: #fff; border-color: #1a1c1d; }
 .harvest-num { text-align: right; font-variant-numeric: tabular-nums; }
+.harvest-group-row th { top: 0; z-index: 2; font-size: 10px; text-align: center; text-transform: none; letter-spacing: 0; background: #f1f5f9; border-bottom: 1px solid var(--border); color: var(--text2); }
+.harvest-cols-row th { top: 24px; z-index: 2; }
+.harvest-change { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.harvest-current { color: var(--text2); font-variant-numeric: tabular-nums; min-width: 2.5em; text-align: right; }
+.harvest-arrow { color: var(--text3); font-weight: 600; }
+.harvest-delta { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px; white-space: nowrap; }
+.harvest-delta--up { background: #fef3c7; color: #92400e; }
+.harvest-delta--down { background: #dbeafe; color: #1d4ed8; }
+.harvest-delta--new { background: #ede9fe; color: #5b21b6; }
+.harvest-delta--same { background: #f1f5f9; color: var(--text3); }
+.harvest-source { font-size: 11px; color: var(--text2); max-width: 140px; line-height: 1.35; }
+.harvest-source strong { color: var(--text); font-weight: 600; }
+.harvest-jobs-summary { font-size: 11px; color: var(--text2); line-height: 1.35; font-variant-numeric: tabular-nums; }
+.harvest-jobs-summary .harvest-jobs-range { color: var(--text); font-weight: 600; }
+.harvest-ideal-ref { color: var(--text3); }
 </style>
 
 <div class="ct-page">
@@ -385,16 +400,18 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
   <div class="modal-box">
     <div class="modal-title">Import from planner jobs</div>
     <p class="harvest-hint">
-      Each row groups scheduled jobs for the same part + BOM + operation. Expand a row to pick which job to use.
-      Publishing updates <strong>production cycle</strong> only (master/ideal cycle is unchanged).
-      <strong>Review</strong> rows differ from the machine ideal cycle — check before publishing.
-      Nothing is pre-selected; pick the rows you want. Scheduled jobs are never changed.
+      Reads cycle times from <strong>scheduled jobs</strong> and writes to the master table
+      <strong>production cycle</strong> column (used when you schedule new work).
+      <strong>Master/ideal cycle</strong> and <strong>existing scheduled jobs</strong> are not changed.
+      Expand a row to pick a specific job, or use the default rule to fill the new value from all jobs in that group.
+      <strong>Review</strong> means the new value differs from the machine ideal — not necessarily from current production.
     </p>
     <div class="harvest-toolbar">
       <input type="search" id="harvest-ps-filter" class="harvest-ps-search"
         placeholder="Search PS (e.g. NPS26-0260, ::2)…" autocomplete="off"
         title="Filter rows by process sheet / job id in the expanded job list" />
-      <label>Default pick
+      <label title="How the new production value is filled when you have not picked a job">
+        Default for new values
         <select id="harvest-strategy" onchange="applyHarvestStrategy()">
           <option value="latest">Latest edited job</option>
           <option value="median">Median across jobs</option>
@@ -403,34 +420,42 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
       </label>
       <label><input type="checkbox" id="harvest-only-review" onchange="renderHarvestRows()"> Show only needs review</label>
       <label><input type="checkbox" id="harvest-hide-placeholder" checked onchange="renderHarvestRows()"> Hide placeholder BOMs</label>
-      <button type="button" class="btn btn-ghost btn-sm" onclick="selectHarvestClear()">Select all clear</button>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="selectHarvestClear()" title="Check rows that are clear and differ from current production">Select clear rows</button>
       <span class="harvest-filter-count" id="harvest-filter-count"></span>
     </div>
     <div class="harvest-table-wrap">
       <table class="harvest-table">
         <thead>
-          <tr>
+          <tr class="harvest-group-row">
+            <th colspan="6"></th>
+            <th colspan="1" title="Reference only — not updated">Reference</th>
+            <th colspan="1" title="Production cycle in master table today">Master table today</th>
+            <th colspan="1" title="What will be saved to production cycle when you publish">Will publish</th>
+            <th colspan="2" title="Cycle times seen on scheduled jobs for this part + BOM + op">From scheduled jobs</th>
+          </tr>
+          <tr class="harvest-cols-row">
             <th><input type="checkbox" id="harvest-select-all" title="Toggle visible rows" /></th>
             <th></th>
             <th>Part</th>
             <th>BOM</th>
             <th>Op</th>
-            <th>Verdict</th>
-            <th class="harvest-num" title="Machine ideal cycle time">Ideal</th>
-            <th class="harvest-num" title="Current production cycle in master">Production</th>
-            <th class="harvest-num" title="Production cycle to publish">Publish</th>
-            <th>Jobs</th>
+            <th>Check</th>
+            <th class="harvest-num harvest-ideal-ref" title="Machine ideal cycle (not changed)">Ideal</th>
+            <th class="harvest-num" title="Current production cycle in master">Prod now</th>
+            <th class="harvest-num" title="New production cycle to save">New prod</th>
+            <th title="Aggregated cycle times across scheduled jobs in this group">Job times</th>
+            <th title="Where the new value came from">Source</th>
           </tr>
         </thead>
         <tbody id="harvest-tbody">
-          <tr><td colspan="10">Loading…</td></tr>
+          <tr><td colspan="11">Loading…</td></tr>
         </tbody>
       </table>
     </div>
     <div class="error-msg" id="harvest-error"></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" type="button" onclick="closeHarvestModal()">Cancel</button>
-      <button class="btn btn-primary" type="button" id="harvest-publish-btn" onclick="publishHarvestSelected()">Publish selected</button>
+      <button class="btn btn-primary" type="button" id="harvest-publish-btn" onclick="publishHarvestSelected()">Update master production</button>
     </div>
   </div>
 </div>
@@ -1141,7 +1166,6 @@ function harvestJobMatchesPsFilter(job, term) {
 function renderHarvestJobDetail(r, rowIdx, psTerm) {
   const jobs = r.jobs || [];
   if (!jobs.length) return '';
-  const range = r.has_variance ? `${fmtNum(r.cycle_min)} – ${fmtNum(r.cycle_max)}` : 'all agree';
   return `
     <table class="harvest-jobs-mini">
       <thead>
@@ -1170,59 +1194,130 @@ function renderHarvestJobDetail(r, rowIdx, psTerm) {
       </tbody>
       <tfoot>
         <tr><td colspan="6" style="font-size:11px;color:var(--text3);padding:8px 10px">
-          Range: ${esc(range)} · Median ${esc(fmtNum(r.median_cycle_time))} · Mode ${esc(fmtNum(r.mode_cycle_time))}
+          Pick one job above, or change <strong>New prod</strong> manually. Setup is not updated from this screen.
         </td></tr>
       </tfoot>
     </table>`;
+}
+
+function harvestOpLabel(row) {
+  const opNo = row?.op_no;
+  let opType = String(row?.op_type || '').trim();
+  if (opNo != null && opType) {
+    const opNoText = String(opNo);
+    const suffix = new RegExp(`^(.+?)\\s*[-: ]+\\s*${opNoText}$`, 'i');
+    const prefix = new RegExp(`^${opNoText}\\s*[-: ]+\\s*(.+)$`, 'i');
+    const suffixMatch = opType.match(suffix);
+    const prefixMatch = opType.match(prefix);
+    if (suffixMatch) opType = suffixMatch[1].trim();
+    else if (prefixMatch) opType = prefixMatch[1].trim();
+    else if (opType === opNoText) opType = '';
+  }
+  return [opType, opNo != null ? opNo : ''].filter(Boolean).join(' ');
+}
+
+function harvestSourceLabel(r) {
+  const pub = Number(r.publish_cycle_time ?? 0);
+  const prop = Number(r.proposed_cycle_time ?? 0);
+  if (r.picked_job_index != null) {
+    const job = r.jobs?.[r.picked_job_index];
+    const ps = job?.source_ps_id || (job?.block_id ? `block ${job.block_id}` : 'job');
+    return `<strong>Picked job</strong><br>${esc(ps)}`;
+  }
+  if (Math.abs(pub - prop) > 0.009) {
+    return '<strong>Typed in</strong>';
+  }
+  const labels = {
+    latest: '<strong>Latest job</strong>',
+    median: '<strong>Median</strong> of jobs',
+    mode: '<strong>Most common</strong>',
+  };
+  return labels[harvestStrategy] || labels.latest;
+}
+
+function harvestJobTimesSummary(r) {
+  const jobs = r.jobs || [];
+  const n = r.job_count || jobs.length;
+  if (!n) return '—';
+  if (n === 1) {
+    const j = jobs[0];
+    return `${esc(fmtNum(j.cycle_time))} min · 1 job${j.machine_no ? ` · ${esc(j.machine_no)}` : ''}`;
+  }
+  if (r.has_variance) {
+    return `<span class="harvest-jobs-range">${esc(fmtNum(r.cycle_min))}–${esc(fmtNum(r.cycle_max))}</span> min`
+      + ` · med ${esc(fmtNum(r.median_cycle_time))}`
+      + ` · mode ${esc(fmtNum(r.mode_cycle_time))}`
+      + ` · ${n} jobs`;
+  }
+  const val = fmtNum(r.median_cycle_time ?? jobs[0]?.cycle_time);
+  return `<span class="harvest-jobs-range">${esc(val)}</span> min · ${n} jobs agree`;
+}
+
+function harvestProdDelta(r) {
+  const pub = Number(r.publish_cycle_time ?? r.proposed_cycle_time ?? 0);
+  if (!r.current_master_id) {
+    return '<span class="harvest-delta harvest-delta--new" title="No master row yet — publish will create one">new row</span>';
+  }
+  const current = Number(r.current_cycle_time ?? 0);
+  if (Math.abs(pub - current) <= 0.009) {
+    return '<span class="harvest-delta harvest-delta--same" title="Same as current production">no change</span>';
+  }
+  const diff = pub - current;
+  const cls = diff > 0 ? 'harvest-delta--up' : 'harvest-delta--down';
+  return `<span class="harvest-delta ${cls}" title="Change vs current production">${diff > 0 ? '+' : ''}${esc(fmtNum(diff))}</span>`;
 }
 
 function renderHarvestRows() {
   const tbody = document.getElementById('harvest-tbody');
   const visible = harvestVisibleRows();
   updateHarvestFilterCount(visible.length);
+  const colSpan = 11;
   if (!harvestRows.length) {
-    tbody.innerHTML = '<tr><td colspan="10">No scheduled jobs with cycle time &gt; 0 found.</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="${colSpan}">No scheduled jobs with cycle time &gt; 0 found.</td></tr>`;
     return;
   }
   if (!visible.length) {
-    tbody.innerHTML = '<tr><td colspan="10">No rows match the current filters.</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="${colSpan}">No rows match the current filters.</td></tr>`;
     return;
   }
   const psTerm = harvestPsFilter || (document.getElementById('harvest-ps-filter')?.value || '').trim().toLowerCase();
   tbody.innerHTML = visible.map(({ r, idx }) => {
-    const opLabel = [r.op_type, r.op_no != null ? r.op_no : ''].filter(Boolean).join(' ');
+    const opLabel = harvestOpLabel(r);
     const verdictKind = harvestRecommendation(r);
     r.recommendation = verdictKind;
     const verdict = verdictKind === 'clear'
-      ? '<span class="harvest-verdict harvest-verdict--clear">Clear</span>'
-      : '<span class="harvest-verdict harvest-verdict--review">Review</span>';
+      ? '<span class="harvest-verdict harvest-verdict--clear" title="New value matches machine ideal">Clear</span>'
+      : '<span class="harvest-verdict harvest-verdict--review" title="New value differs from machine ideal">Review</span>';
     let rowClass = verdictKind === 'review' ? 'harvest-variance' : (r.differs_from_master ? 'harvest-changed' : '');
     if (r.is_placeholder) rowClass = 'harvest-placeholder';
     const ideal = harvestIdealBaseline(r);
-    const jobsLabel = r.has_variance
-      ? `${r.job_count} (${fmtNum(r.cycle_min)}–${fmtNum(r.cycle_max)})`
-      : String(r.job_count);
+    const prodNow = r.current_master_id ? fmtNum(r.current_cycle_time) : '—';
     const autoExpand = psTerm && harvestRowMatchesPsFilter(r, psTerm);
     const expanded = psTerm ? autoExpand : r.expanded;
     const main = `
       <tr class="${rowClass}">
         <td><input type="checkbox" class="harvest-check" data-idx="${idx}" ${r.selected ? 'checked' : ''}></td>
-        <td><button type="button" class="harvest-expand-btn" onclick="toggleHarvestExpand(${idx})" title="Show jobs">${expanded ? '▼' : '▶'}</button></td>
+        <td><button type="button" class="harvest-expand-btn" onclick="toggleHarvestExpand(${idx})" title="Show individual scheduled jobs">${expanded ? '▼' : '▶'}</button></td>
         <td>${esc(r.part_no)}</td>
         <td>${esc(r.bom_code || '—')}</td>
         <td>${esc(opLabel || '—')}</td>
         <td>${verdict}</td>
-        <td class="harvest-num">${ideal > 0 ? esc(fmtNum(ideal)) : '—'}</td>
-        <td class="harvest-num">${r.current_master_id ? esc(fmtNum(r.current_cycle_time)) : '—'}</td>
+        <td class="harvest-num harvest-ideal-ref">${ideal > 0 ? esc(fmtNum(ideal)) : '—'}</td>
+        <td class="harvest-num" title="Current production cycle in master (this is what gets replaced)">${esc(prodNow)}</td>
         <td class="harvest-num">
-          <input class="harvest-publish-input" type="number" step="0.1" min="0"
-            value="${esc(fmtNum(r.publish_cycle_time))}"
-            onchange="harvestRows[${idx}].publish_cycle_time = parseFloat(this.value) || 0; harvestRows[${idx}].picked_job_index = null; renderHarvestRows();">
+          <div class="harvest-change">
+            <input class="harvest-publish-input" type="number" step="0.1" min="0"
+              value="${esc(fmtNum(r.publish_cycle_time))}"
+              title="New production cycle to save to master"
+              onchange="harvestRows[${idx}].publish_cycle_time = parseFloat(this.value) || 0; harvestRows[${idx}].picked_job_index = null; renderHarvestRows();">
+            ${harvestProdDelta(r)}
+          </div>
         </td>
-        <td>${esc(jobsLabel)}</td>
+        <td class="harvest-jobs-summary">${harvestJobTimesSummary(r)}</td>
+        <td class="harvest-source">${harvestSourceLabel(r)}</td>
       </tr>`;
     const detail = expanded ? `
-      <tr class="harvest-detail"><td colspan="10">${renderHarvestJobDetail(r, idx, psTerm)}</td></tr>` : '';
+      <tr class="harvest-detail"><td colspan="${colSpan}">${renderHarvestJobDetail(r, idx, psTerm)}</td></tr>` : '';
     return main + detail;
   }).join('');
   tbody.querySelectorAll('.harvest-check').forEach(el => {
@@ -1248,7 +1343,7 @@ async function openHarvestModal() {
   const filterCountEl = document.getElementById('harvest-filter-count');
   if (filterCountEl) filterCountEl.textContent = '';
   document.getElementById('harvest-modal').classList.add('open');
-  document.getElementById('harvest-tbody').innerHTML = '<tr><td colspan="10">Loading…</td></tr>';
+  document.getElementById('harvest-tbody').innerHTML = '<tr><td colspan="11">Loading…</td></tr>';
   harvestStrategy = document.getElementById('harvest-strategy')?.value || 'latest';
   if (btn) btn.disabled = true;
   if (publishBtn) publishBtn.disabled = true;
@@ -1280,7 +1375,7 @@ async function openHarvestModal() {
   } catch (e) {
     setHarvestError(e.message);
     document.getElementById('harvest-tbody').innerHTML =
-      `<tr><td colspan="10">${esc(e.message)}</td></tr>`;
+      `<tr><td colspan="11">${esc(e.message)}</td></tr>`;
   } finally {
     if (btn) btn.disabled = false;
     if (publishBtn) publishBtn.disabled = false;
@@ -1297,7 +1392,17 @@ async function publishHarvestSelected() {
     setHarvestError('Select at least one row to publish.');
     return;
   }
-  if (!confirm(`Publish production cycle for ${selected.length} row(s)? Ideal/master cycle is not changed. Scheduled jobs are not affected.`)) return;
+  const summary = selected.slice(0, 5).map(r => {
+    const from = r.current_master_id ? fmtNum(r.current_cycle_time) : '—';
+    const to = fmtNum(r.publish_cycle_time ?? r.proposed_cycle_time);
+    return `${r.part_no} (${from} → ${to})`;
+  }).join('\n');
+  const more = selected.length > 5 ? `\n…and ${selected.length - 5} more` : '';
+  if (!confirm(
+    `Update production cycle on ${selected.length} master row(s)?\n\n`
+    + `Only the production cycle column changes. Ideal/master cycle and scheduled jobs stay as-is.\n\n`
+    + summary + more
+  )) return;
   const publishBtn = document.getElementById('harvest-publish-btn');
   publishBtn.disabled = true;
   setHarvestError('');

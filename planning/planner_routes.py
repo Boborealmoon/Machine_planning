@@ -1684,6 +1684,41 @@ def api_trial_machine_calendar_windows_delete(window_id):
         return jsonify({"ok": True, "window_id": int(window_id)})
 
 
+@trial_bp.get("/api/trial/cycle-times/resolve")
+def api_trial_resolve_cycle_times():
+    """Resolve cycle/setup for a catalog op from master (same source as cycle-times UI)."""
+    from .cycle_time_service import MasterTimeCache, resolve_step_times, _parse_op_no
+
+    part_no = compact_text(request.args.get("part_no"))
+    if not part_no:
+        return jsonify({"error": "part_no is required"}), 400
+    bom_code = compact_text(request.args.get("bom_code"))
+    op_no = _parse_op_no(request.args.get("op_no"))
+    op_type = compact_text(request.args.get("op_type"))
+    stage_no = int(request.args.get("stage_no") or 0)
+    extra_part = compact_text(request.args.get("inventory_code") or request.args.get("part_desc"))
+    try:
+        with planner_db() as con:
+            master_cache = MasterTimeCache.load(con)
+            resolved = resolve_step_times(
+                con,
+                part_no=part_no,
+                bom_code=bom_code,
+                step={
+                    "op_no": request.args.get("op_no"),
+                    "op_type": op_type,
+                    "source_stage_no": stage_no,
+                    "cycle_time": parse_number(request.args.get("fallback_cycle"), 0),
+                    "setup_time": parse_number(request.args.get("fallback_setup"), 0),
+                },
+                extra_part_nos=[extra_part] if extra_part else None,
+                master_cache=master_cache,
+            )
+        return jsonify(resolved)
+    except Exception as ex:
+        return jsonify({"error": str(ex)}), 500
+
+
 @trial_bp.post("/api/trial/operations")
 def api_trial_create_operation():
     data = request.get_json(force=True, silent=True) or {}
@@ -1694,13 +1729,6 @@ def api_trial_create_operation():
         return jsonify({"error": "Job number and operation name are required"}), 400
     if not machine_id:
         return jsonify({"error": "Machine is required"}), 400
-    cycle_error = validate_cycle_minutes(
-        data.get("total_qty"),
-        data.get("scheduled_qty"),
-        data.get("cycle_minutes_per_qty"),
-    )
-    if cycle_error:
-        return jsonify({"error": cycle_error}), 400
     try:
         with planner_db() as con:
             raw_source_ps = compact_text(data.get("source_ps_id")) or job_no
@@ -1719,6 +1747,26 @@ def api_trial_create_operation():
             source_ps_id_val = format_planner_ps_id(src_base, src_partial) if src_base else raw_source_ps
             source_op_no_val = compact_text(data.get("source_op_no"))
             source_op_seq_val = int(data.get("source_op_seq_id") or 0)
+
+            from .cycle_time_service import resolve_schedule_times
+
+            resolved_times = resolve_schedule_times(
+                con,
+                source_ps_id=source_ps_id_val,
+                source_op_seq_id=source_op_seq_val,
+                source_op_no=source_op_no_val,
+                cycle_minutes_per_qty=parse_number(data.get("cycle_minutes_per_qty"), 0),
+                setup_minutes=parse_number(data.get("setup_minutes"), 0),
+            )
+            cycle_minutes_per_qty = float(resolved_times.get("cycle_minutes_per_qty") or 0)
+            setup_minutes = float(resolved_times.get("setup_minutes") or 0)
+            cycle_error = validate_cycle_minutes(
+                data.get("total_qty"),
+                data.get("scheduled_qty"),
+                cycle_minutes_per_qty,
+            )
+            if cycle_error:
+                return jsonify({"error": cycle_error}), 400
             existing_block_id = find_active_catalog_lane_block(
                 con,
                 machine_id,
@@ -1794,8 +1842,8 @@ def api_trial_create_operation():
                     source_ps_id_val or job_no,
                     operation_name,
                     parse_number(data.get("total_qty"), parse_number(data.get("scheduled_qty"), 0)),
-                    parse_number(data.get("setup_minutes"), 0),
-                    parse_number(data.get("cycle_minutes_per_qty"), 0),
+                    setup_minutes,
+                    cycle_minutes_per_qty,
                     compact_text(data.get("compatible_machine_group")),
                     source_ps_id_val or None,
                     int(data.get("source_op_seq_id") or 0),
@@ -2084,6 +2132,9 @@ def api_trial_update_block(block_id):
             block_updates["anchor_datetime"] = (
                 planner_wall_datetime_from_input(raw_anchor) if raw_anchor else None
             )
+            block_updates["allow_pull_forward"] = not bool(raw_anchor)
+            if raw_anchor:
+                block_updates["planned_start_at"] = block_updates["anchor_datetime"]
         if "actual_good_qty" in data:
             block_updates["actual_good_qty"] = max(0.0, parse_number(data.get("actual_good_qty"), block["actual_good_qty"]))
         if "actual_reject_qty" in data:
@@ -2166,6 +2217,12 @@ def api_trial_split_block(block_id):
         )
         new_block_id = int(one(new_cur)["block_id"])
         machine_id = int(block["machine_id"])
+        refresh_block_actual_status(con, block_id, auto_unschedule=False)
+        refresh_block_actual_status(con, new_block_id, auto_unschedule=False)
+        from .scheduler_state import refresh_machine_queue_state
+
+        refresh_machine_queue_state(con, block_id)
+        refresh_machine_queue_state(con, new_block_id)
         # Defer schedule times — same as queue/reorder; user clicks Recalculate schedules.
         return jsonify({
             "ok": True,
@@ -2234,9 +2291,27 @@ def api_trial_reorder_queue_batch():
         })
 
 
+def _parse_tail_by_machine(data):
+    raw = (data or {}).get("tail_by_machine") or {}
+    if not isinstance(raw, dict):
+        return {}
+    parsed = {}
+    for key, value in raw.items():
+        try:
+            machine_id = int(key)
+            block_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if machine_id > 0 and block_id > 0:
+            parsed[machine_id] = block_id
+    return parsed
+
+
 @trial_bp.post("/api/trial/queue/recalculate")
 def api_trial_queue_recalculate():
     """Recalculate schedule times for machines after deferred queue reorder."""
+    from .operation_sequence import infer_tail_by_machine
+
     data = request.get_json(force=True, silent=True) or {}
     machine_ids = sorted({
         int(value)
@@ -2246,11 +2321,21 @@ def api_trial_queue_recalculate():
     if not machine_ids:
         return jsonify({"error": "machine_ids are required"}), 400
     with planner_db() as con:
-        recalculate_machines(con, machine_ids, reason="PLANNER_CHANGE")
+        tail_by_machine = _parse_tail_by_machine(data)
+        missing = [mid for mid in machine_ids if mid not in tail_by_machine]
+        if missing:
+            tail_by_machine.update(infer_tail_by_machine(con, missing))
+        recalculate_machines(
+            con,
+            machine_ids,
+            reason="PLANNER_CHANGE",
+            tail_by_machine=tail_by_machine,
+        )
         return jsonify({
             "ok": True,
             "machine_ids": machine_ids,
             "recalculated": True,
+            "tail_by_machine": {str(k): v for k, v in tail_by_machine.items()},
             "machine_refresh": _trial_machine_refresh_payload(con, machine_ids, lite=True),
         })
 

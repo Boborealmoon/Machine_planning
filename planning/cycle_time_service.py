@@ -57,6 +57,145 @@ def _parse_op_no(value: Any) -> int | None:
         return None
 
 
+def normalize_op_identity(
+    op_type: str = "",
+    op_no_raw: Any = None,
+) -> tuple[int | None, str]:
+    """Return canonical (op_no, op_type) — strip duplicated op number from op_type labels."""
+    op_no = _parse_op_no(op_no_raw)
+    op_type = compact_text(op_type)
+    if op_no is None:
+        return None, op_type
+    op_no_text = str(op_no)
+    if not op_type or op_type == op_no_text:
+        return op_no, ""
+    prefix = re.match(rf"^{re.escape(op_no_text)}\s*[-: ]+\s*(.+)$", op_type, re.I)
+    if prefix:
+        return op_no, compact_text(prefix.group(1))
+    suffix = re.match(rf"^(.+?)\s*[-: ]+\s*{re.escape(op_no_text)}$", op_type, re.I)
+    if suffix:
+        return op_no, compact_text(suffix.group(1))
+    return op_no, op_type
+
+
+def resolve_schedule_times(
+    con,
+    *,
+    source_ps_id: str,
+    source_op_seq_id: int = 0,
+    source_op_no: str = "",
+    cycle_minutes_per_qty: float = 0,
+    setup_minutes: float = 0,
+) -> dict[str, Any]:
+    """Master-first cycle/setup for new scheduler jobs (catalog drag-drop path)."""
+    fallback_cycle = max(0.0, float(cycle_minutes_per_qty or 0))
+    fallback_setup = max(0.0, float(setup_minutes or 0))
+    source_ps_id = compact_text(source_ps_id)
+    if not source_ps_id:
+        return {
+            "cycle_minutes_per_qty": fallback_cycle,
+            "setup_minutes": fallback_setup,
+            "source": "client",
+        }
+
+    from .process_sheets import ensure_planner_process_sheet
+
+    ps = ensure_planner_process_sheet(con, source_ps_id)
+    if not ps:
+        return {
+            "cycle_minutes_per_qty": fallback_cycle,
+            "setup_minutes": fallback_setup,
+            "source": "client",
+        }
+
+    bom_id = int(ps.get("selected_bom_id") or 0)
+    step = None
+    if int(source_op_seq_id or 0) > 0 and bom_id > 0:
+        step = one(
+            con.execute(
+                "SELECT * FROM planner_operation_seq WHERE op_seq_id = %s AND bom_id = %s",
+                (int(source_op_seq_id), bom_id),
+            )
+        )
+    if not step and compact_text(source_op_no) and bom_id > 0:
+        step = one(
+            con.execute(
+                """
+                SELECT * FROM planner_operation_seq
+                WHERE bom_id = %s AND op_no = %s
+                ORDER BY seq_no, op_seq_id LIMIT 1
+                """,
+                (bom_id, compact_text(source_op_no)),
+            )
+        )
+
+    bom_row = (
+        one(
+            con.execute(
+                "SELECT inventory_code, bom_code FROM planner_bom_variation WHERE bom_id = %s",
+                (bom_id,),
+            )
+        )
+        if bom_id > 0
+        else None
+    )
+    part_no = compact_text((bom_row or {}).get("inventory_code") or ps.get("inventory_code") or "")
+    bom_code = compact_text((bom_row or {}).get("bom_code") or "")
+    if not part_no:
+        return {
+            "cycle_minutes_per_qty": fallback_cycle,
+            "setup_minutes": fallback_setup,
+            "source": "client",
+        }
+
+    master_cache = MasterTimeCache.load(con)
+    resolved = resolve_step_times(
+        con,
+        part_no=part_no,
+        bom_code=bom_code,
+        step=step or {},
+        extra_part_nos=[compact_text(ps.get("inventory_code") or "")],
+        master_cache=master_cache,
+    )
+    cycle = parse_number(resolved.get("cycle_time"), fallback_cycle)
+    setup = parse_number(resolved.get("set_up_time"), fallback_setup)
+    if resolved.get("source") == "master" and (cycle > 0 or setup > 0):
+        return {
+            "cycle_minutes_per_qty": cycle if cycle > 0 else fallback_cycle,
+            "setup_minutes": setup if setup > 0 else fallback_setup,
+            "source": "master",
+            "master_id": resolved.get("master_id"),
+        }
+
+    if not step and part_no:
+        op_no, op_type = normalize_op_identity("", source_op_no)
+        master = lookup_master_row(
+            con,
+            part_no=part_no,
+            bom_code=bom_code,
+            op_no=op_no,
+            op_type=op_type,
+        )
+        if master:
+            ideal = parse_number(master.get("ideal_cycle_time"), 0)
+            production = parse_number(master.get("cycle_time"), 0)
+            cycle = production if production > 0 else ideal
+            setup = parse_number(master.get("set_up_time"), 0)
+            if cycle > 0 or setup > 0:
+                return {
+                    "cycle_minutes_per_qty": cycle if cycle > 0 else fallback_cycle,
+                    "setup_minutes": setup if setup > 0 else fallback_setup,
+                    "source": "master",
+                    "master_id": int(master.get("id") or 0),
+                }
+
+    return {
+        "cycle_minutes_per_qty": fallback_cycle,
+        "setup_minutes": fallback_setup,
+        "source": "client",
+    }
+
+
 def ensure_cycle_time_snapshot_table(con) -> None:
     global _SNAPSHOT_READY
     if _SNAPSHOT_READY:
@@ -99,6 +238,198 @@ def ensure_cycle_time_snapshot_table(con) -> None:
     _SNAPSHOT_READY = True
 
 
+_MASTER_ROW_SELECT = (
+    "id, part_no, bom_code, stage_no, stage_name, op_no, op_type, "
+    "program_no, program_file, tool_list_file, "
+    "ideal_cycle_time, cycle_time, set_up_time, updated_at"
+)
+
+
+def _part_no_lookup_candidates(primary: str, *extras: str) -> list[str]:
+    out: list[str] = []
+
+    def add(value: str) -> None:
+        value = compact_text(value)
+        if not value:
+            return
+        if value not in out:
+            out.append(value)
+        upper = value.upper()
+        for prefix in ("PMM-SUBCON-", "SUBCON-"):
+            if upper.startswith(prefix):
+                add(value[len(prefix):])
+
+    add(primary)
+    for extra in extras:
+        add(extra)
+    return out
+
+
+def _load_master_rows_rest() -> list[dict[str, Any]]:
+    try:
+        from db import supa_headers, supa_url
+        from sync import _supa_fetch_all as supa_fetch_all
+
+        base = supa_url()
+        if not base:
+            return []
+        return supa_fetch_all(
+            f"{base}/planner_cycle_time_master",
+            headers=supa_headers(write=True),
+            params={"select": _MASTER_ROW_SELECT, "order": "id"},
+        )
+    except Exception:
+        return []
+
+
+def _load_master_rows_pg(con) -> list[dict[str, Any]]:
+    try:
+        return rows(
+            con.execute(
+                f"""
+                SELECT {_MASTER_ROW_SELECT}
+                FROM public.planner_cycle_time_master
+                ORDER BY id
+                """
+            )
+        )
+    except Exception:
+        return []
+
+
+def load_master_time_rows(con) -> list[dict[str, Any]]:
+    """Load master cycle rows from Postgres and Supabase REST (same source as cycle-times UI)."""
+    by_id: dict[int, dict[str, Any]] = {}
+    for row in _load_master_rows_pg(con) + _load_master_rows_rest():
+        row_id = int(row.get("id") or 0)
+        if row_id > 0:
+            by_id[row_id] = row
+        else:
+            by_id[len(by_id) + 1_000_000] = row
+    return list(by_id.values())
+
+
+def _program_no_candidates(part_no: str, op_text: str) -> list[str]:
+    if not op_text:
+        return []
+    candidates = [f"{part_no}-OP{op_text}"]
+    if op_text.isdigit():
+        candidates.append(f"{part_no}-OP{int(op_text):02d}")
+        candidates.append(f"{part_no}-OP{int(op_text):03d}")
+    seen: list[str] = []
+    for item in candidates:
+        key = compact_text(item).upper()
+        if key and key not in seen:
+            seen.append(key)
+    return seen
+
+
+def _pick_master_row(
+    master_rows: list[dict[str, Any]],
+    *,
+    part_no: str,
+    bom_code: str = "",
+    op_no: int | None = None,
+    op_type: str = "",
+    stage_no: int | None = None,
+    extra_part_nos: list[str] | None = None,
+) -> dict[str, Any] | None:
+    part_candidates = _part_no_lookup_candidates(part_no, *(extra_part_nos or []))
+    if not part_candidates:
+        return None
+    bom_code = compact_text(bom_code)
+    op_type = compact_text(op_type)
+    op_text = str(op_no) if op_no is not None else ""
+    stage_val = int(stage_no or 0)
+    bom_candidates = [bom_code] if bom_code else []
+    if "" not in bom_candidates:
+        bom_candidates.append("")
+
+    best: tuple[int, dict[str, Any]] | None = None
+
+    def consider(row: dict[str, Any], score: int) -> None:
+        nonlocal best
+        if score <= 0:
+            return
+        if best is None or score > best[0] or (score == best[0] and int(row.get("id") or 0) > int(best[1].get("id") or 0)):
+            best = (score, row)
+
+    for row in master_rows or []:
+        row_part = compact_text(row.get("part_no"))
+        if row_part not in part_candidates:
+            continue
+        row_bom = compact_text(row.get("bom_code"))
+        row_op_text = str(row.get("op_no")) if row.get("op_no") is not None else ""
+        row_op_type = compact_text(row.get("op_type"))
+        row_stage = int(row.get("stage_no") or 0)
+        row_program = compact_text(row.get("program_no")).upper()
+        generic_program = (
+            not compact_text(row.get("program_file"))
+            and not compact_text(row.get("tool_list_file"))
+        )
+
+        for bom_try in bom_candidates:
+            if row_bom != bom_try:
+                continue
+            if op_text and row_op_text == op_text:
+                score = 900 + (10 if bom_try else 0) + (1 if generic_program else 0)
+                consider(row, score)
+            elif stage_val > 0 and row_stage == stage_val:
+                score = 700 + (10 if bom_try else 0) + (1 if generic_program else 0)
+                consider(row, score)
+            elif not op_text and row_op_type and row_op_type == op_type:
+                score = 500 + (10 if bom_try else 0) + (1 if generic_program else 0)
+                consider(row, score)
+
+        if op_text:
+            for program_no in _program_no_candidates(row_part, op_text):
+                if row_program == program_no.upper():
+                    score = 850 + (1 if generic_program else 0)
+                    consider(row, score)
+            if row_program.endswith(f"-OP{op_text}"):
+                score = 800 + (1 if generic_program else 0)
+                consider(row, score)
+
+        if op_text and row_op_text == op_text and not bom_code:
+            score = 600 + (1 if generic_program else 0)
+            consider(row, score)
+
+    return best[1] if best else None
+
+
+class MasterTimeCache:
+    """In-memory master cycle rows for one catalog / batch resolve pass."""
+
+    __slots__ = ("_rows",)
+
+    def __init__(self, rows: list[dict[str, Any]] | None = None):
+        self._rows = list(rows or [])
+
+    @classmethod
+    def load(cls, con) -> MasterTimeCache:
+        return cls(load_master_time_rows(con))
+
+    def lookup(
+        self,
+        *,
+        part_no: str,
+        bom_code: str = "",
+        op_no: int | None = None,
+        op_type: str = "",
+        stage_no: int | None = None,
+        extra_part_nos: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        return _pick_master_row(
+            self._rows,
+            part_no=part_no,
+            bom_code=bom_code,
+            op_no=op_no,
+            op_type=op_type,
+            stage_no=stage_no,
+            extra_part_nos=extra_part_nos,
+        )
+
+
 def lookup_master_row(
     con,
     *,
@@ -107,21 +438,120 @@ def lookup_master_row(
     op_no: int | None = None,
     op_type: str = "",
     stage_no: int | None = None,
+    extra_part_nos: list[str] | None = None,
+    master_cache: MasterTimeCache | None = None,
 ) -> dict[str, Any] | None:
     part_no = compact_text(part_no)
     if not part_no:
         return None
+    if master_cache is not None:
+        hit = master_cache.lookup(
+            part_no=part_no,
+            bom_code=bom_code,
+            op_no=op_no,
+            op_type=op_type,
+            stage_no=stage_no,
+            extra_part_nos=extra_part_nos,
+        )
+        if hit:
+            return hit
+
     bom_code = compact_text(bom_code)
     op_type = compact_text(op_type)
     op_text = str(op_no) if op_no is not None else ""
     stage_val = int(stage_no or 0)
 
+    part_candidates = _part_no_lookup_candidates(part_no, *(extra_part_nos or []))
+    bom_candidates: list[str] = []
+    if bom_code:
+        bom_candidates.append(bom_code)
+    if "" not in bom_candidates:
+        bom_candidates.append("")
+
+    for part_try in part_candidates:
+        for bom_try in bom_candidates:
+            row = _fetch_master_row(
+                con,
+                part_no=part_try,
+                bom_code=bom_try,
+                op_text=op_text,
+                op_type=op_type,
+                stage_val=stage_val,
+            )
+            if row:
+                return row
+
+        if op_text:
+            row = one(
+                con.execute(
+                    f"""
+                    SELECT {_MASTER_ROW_SELECT}
+                    FROM public.planner_cycle_time_master m
+                    WHERE trim(m.part_no) = trim(%s)
+                      AND m.op_no IS NOT NULL
+                      AND m.op_no::text = %s
+                    ORDER BY
+                        CASE
+                            WHEN trim(COALESCE(m.program_no, '')) = ''
+                             AND trim(COALESCE(m.program_file, '')) = ''
+                             AND trim(COALESCE(m.tool_list_file, '')) = ''
+                            THEN 0 ELSE 1
+                        END,
+                        m.updated_at DESC NULLS LAST,
+                        m.id DESC
+                    LIMIT 1
+                    """,
+                    (part_try, op_text),
+                )
+            )
+            if row:
+                return row
+
+            for program_no in _program_no_candidates(part_try, op_text):
+                row = one(
+                    con.execute(
+                        f"""
+                        SELECT {_MASTER_ROW_SELECT}
+                        FROM public.planner_cycle_time_master m
+                        WHERE trim(m.part_no) = trim(%s)
+                          AND upper(trim(COALESCE(m.program_no, ''))) = upper(trim(%s))
+                        ORDER BY m.updated_at DESC NULLS LAST, m.id DESC
+                        LIMIT 1
+                        """,
+                        (part_try, program_no),
+                    )
+                )
+                if row:
+                    return row
+
+    if master_cache is None:
+        rest_rows = _load_master_rows_rest()
+        if rest_rows:
+            return _pick_master_row(
+                rest_rows,
+                part_no=part_no,
+                bom_code=bom_code,
+                op_no=op_no,
+                op_type=op_type,
+                stage_no=stage_no,
+                extra_part_nos=extra_part_nos,
+            )
+    return None
+
+
+def _fetch_master_row(
+    con,
+    *,
+    part_no: str,
+    bom_code: str,
+    op_text: str,
+    op_type: str,
+    stage_val: int,
+) -> dict[str, Any] | None:
     return one(
         con.execute(
-            """
-            SELECT id, part_no, bom_code, stage_no, stage_name, op_no, op_type,
-                   program_no, program_file, tool_list_file,
-                   ideal_cycle_time, cycle_time, set_up_time, updated_at
+            f"""
+            SELECT {_MASTER_ROW_SELECT}
             FROM public.planner_cycle_time_master m
             WHERE trim(m.part_no) = trim(%s)
               AND trim(m.bom_code) = trim(%s)
@@ -162,6 +592,8 @@ def resolve_step_times(
     part_no: str,
     bom_code: str,
     step: dict[str, Any] | None = None,
+    extra_part_nos: list[str] | None = None,
+    master_cache: MasterTimeCache | None = None,
 ) -> dict[str, float]:
     """Master-first times for new schedules; never reads planner_operation."""
     step = step or {}
@@ -178,6 +610,8 @@ def resolve_step_times(
         op_no=op_no,
         op_type=op_type,
         stage_no=stage_no or None,
+        extra_part_nos=extra_part_nos,
+        master_cache=master_cache,
     )
     if master:
         ideal = parse_number(master.get("ideal_cycle_time"), 0)
@@ -374,13 +808,70 @@ def _proposed_from_jobs(jobs: list[dict[str, Any]], strategy: str) -> tuple[floa
     )
 
 
+def _finalize_harvest_item(item: dict[str, Any], *, strategy: str) -> dict[str, Any]:
+    jobs = sorted(
+        item.get("jobs") or [],
+        key=lambda j: (str(j.get("touched_at") or ""), int(j.get("block_id") or 0)),
+        reverse=True,
+    )
+    proposed_cycle, proposed_setup, source_block_id, source_operation_id = _proposed_from_jobs(
+        jobs, strategy
+    )
+    cycles = [float(j.get("cycle_time") or 0) for j in jobs]
+    cycle_min = min(cycles) if cycles else proposed_cycle
+    cycle_max = max(cycles) if cycles else proposed_cycle
+    item.update(
+        {
+            "jobs": jobs,
+            "job_count": len(jobs),
+            "proposed_cycle_time": proposed_cycle,
+            "proposed_set_up_time": proposed_setup,
+            "publish_cycle_time": proposed_cycle,
+            "publish_set_up_time": proposed_setup,
+            "median_cycle_time": _median(cycles),
+            "mode_cycle_time": _mode(cycles),
+            "cycle_min": cycle_min,
+            "cycle_max": cycle_max,
+            "has_variance": abs(cycle_max - cycle_min) > 0.009,
+            "source_operation_id": source_operation_id,
+            "source_block_id": source_block_id,
+        }
+    )
+    ideal_baseline = (
+        float(item.get("current_ideal_cycle_time") or 0)
+        if float(item.get("current_ideal_cycle_time") or 0) > 0
+        else float(item.get("bom_step_cycle_time") or 0)
+    )
+    recommendation = (
+        "review"
+        if ideal_baseline <= 0
+        or abs(proposed_cycle - ideal_baseline) > 0.009
+        else "clear"
+    )
+    item["recommendation"] = recommendation
+    item["picked_job_index"] = 0 if recommendation == "clear" else None
+    current_production = float(item.get("current_cycle_time") or 0)
+    item["differs_from_master"] = (
+        not item.get("current_master_id")
+        or abs(current_production - proposed_cycle) > 0.009
+    )
+    op_no = item.get("op_no")
+    op_type = compact_text(item.get("op_type"))
+    item["key"] = (
+        f"{item.get('part_no')}|{item.get('bom_code')}|{op_type}|"
+        f"{op_no if op_no is not None else ''}"
+    )
+    return item
+
+
 def harvest_preview(con, *, strategy: str = "latest") -> list[dict[str, Any]]:
     ensure_cycle_time_snapshot_table(con)
-    out: list[dict[str, Any]] = []
+    merged: dict[tuple[Any, ...], dict[str, Any]] = {}
     for row in rows(con.execute(HARVEST_PREVIEW_SQL)):
         part_no = compact_text(row.get("part_no"))
         bom_code = compact_text(row.get("bom_code"))
-        op_no = _parse_op_no(row.get("op_no_raw"))
+        stage_no = int(row.get("stage_no") or 0)
+        op_no, op_type = normalize_op_identity(row.get("op_type"), row.get("op_no_raw"))
         jobs_raw = row.get("jobs_json") or []
         if isinstance(jobs_raw, str):
             jobs_raw = json.loads(jobs_raw)
@@ -403,71 +894,85 @@ def harvest_preview(con, *, strategy: str = "latest") -> list[dict[str, Any]]:
             part_no=part_no,
             bom_code=bom_code,
             op_no=op_no,
-            op_type=compact_text(row.get("op_type")),
-            stage_no=int(row.get("stage_no") or 0) or None,
-        )
-        proposed_cycle, proposed_setup, source_block_id, source_operation_id = _proposed_from_jobs(
-            jobs, strategy
+            op_type=op_type,
+            stage_no=stage_no or None,
         )
         current_ideal = _master_ideal_cycle(master)
         current_production = float(master.get("cycle_time") or 0) if master else 0.0
         current_setup = float(master.get("set_up_time") or 0) if master else 0.0
-        job_count = int(row.get("job_count") or len(jobs) or 1)
-        cycle_min = float(row.get("cycle_min") or proposed_cycle)
-        cycle_max = float(row.get("cycle_max") or proposed_cycle)
-        has_variance = abs(cycle_max - cycle_min) > 0.009
         bom_step_cycle = float(row.get("bom_step_cycle_time") or 0)
         is_placeholder = bom_code.upper() in {"PLACEHOLDER", ""} and bom_step_cycle <= 1.01
-        ideal_baseline = current_ideal if current_ideal > 0 else bom_step_cycle
-        recommendation = (
-            "review"
-            if ideal_baseline <= 0
-            or abs(proposed_cycle - ideal_baseline) > 0.009
-            else "clear"
-        )
-        median_cycle = _median([j["cycle_time"] for j in jobs])
-        mode_cycle = _mode([j["cycle_time"] for j in jobs])
-        differs = (
-            master is None
-            or abs(current_production - proposed_cycle) > 0.009
-        )
-        out.append(
-            {
-                "key": f"{part_no}|{bom_code}|{compact_text(row.get('op_type'))}|{compact_text(row.get('op_no_raw'))}",
+        stage_name = compact_text(row.get("stage_name"))
+        if op_type and op_no is not None:
+            canonical_stage = f"{op_type} {op_no}".strip()
+            if not stage_name or stage_name == compact_text(row.get("op_type")):
+                stage_name = canonical_stage
+        elif op_no is not None and not stage_name:
+            stage_name = str(op_no)
+
+        merge_key = (part_no, bom_code, stage_no, op_no, op_type)
+        if merge_key not in merged:
+            merged[merge_key] = {
                 "part_no": part_no,
                 "bom_code": bom_code,
                 "part_description": compact_text(row.get("part_description")),
-                "stage_no": int(row.get("stage_no") or 0),
-                "stage_name": compact_text(row.get("stage_name")),
+                "stage_no": stage_no,
+                "stage_name": stage_name,
                 "op_no": op_no,
-                "op_type": compact_text(row.get("op_type")),
-                "proposed_cycle_time": proposed_cycle,
-                "proposed_set_up_time": proposed_setup,
-                "publish_cycle_time": proposed_cycle,
-                "publish_set_up_time": proposed_setup,
-                "median_cycle_time": median_cycle,
-                "mode_cycle_time": mode_cycle,
+                "op_type": op_type,
                 "bom_step_cycle_time": bom_step_cycle,
                 "bom_step_set_up_time": float(row.get("bom_step_set_up_time") or 0),
                 "current_master_id": int(master.get("id") or 0) if master else None,
                 "current_ideal_cycle_time": current_ideal,
                 "current_cycle_time": current_production,
                 "current_set_up_time": current_setup,
-                "job_count": job_count,
-                "cycle_min": cycle_min,
-                "cycle_max": cycle_max,
-                "has_variance": has_variance,
                 "is_placeholder": is_placeholder,
-                "recommendation": recommendation,
-                "differs_from_master": differs,
-                "jobs": jobs,
-                "source_operation_id": source_operation_id,
-                "source_block_id": source_block_id,
+                "jobs": list(jobs),
                 "selected": False,
                 "expanded": False,
-                "picked_job_index": 0 if recommendation == "clear" else None,
             }
+            continue
+
+        existing = merged[merge_key]
+        seen_blocks = {
+            int(j.get("block_id") or 0)
+            for j in existing.get("jobs") or []
+            if int(j.get("block_id") or 0) > 0
+        }
+        for job in jobs:
+            block_id = int(job.get("block_id") or 0)
+            if block_id > 0 and block_id in seen_blocks:
+                continue
+            if block_id > 0:
+                seen_blocks.add(block_id)
+            existing["jobs"].append(job)
+        existing["bom_step_cycle_time"] = max(
+            float(existing.get("bom_step_cycle_time") or 0),
+            bom_step_cycle,
         )
+        existing["bom_step_set_up_time"] = max(
+            float(existing.get("bom_step_set_up_time") or 0),
+            float(row.get("bom_step_set_up_time") or 0),
+        )
+        if not existing.get("current_master_id") and master:
+            existing["current_master_id"] = int(master.get("id") or 0)
+            existing["current_ideal_cycle_time"] = current_ideal
+            existing["current_cycle_time"] = current_production
+            existing["current_set_up_time"] = current_setup
+
+    out = [
+        _finalize_harvest_item(item, strategy=strategy)
+        for item in merged.values()
+    ]
+    out.sort(
+        key=lambda item: (
+            item.get("part_no") or "",
+            item.get("bom_code") or "",
+            int(item.get("stage_no") or 0),
+            int(item.get("op_no") or 0),
+            item.get("op_type") or "",
+        )
+    )
     return out
 
 
@@ -815,8 +1320,7 @@ def block_cycle_time_context(con, block_id: int) -> dict[str, Any] | None:
 
     part_no = compact_text(block.get("bom_part_no") or block.get("inventory_code"))
     bom_code = compact_text(block.get("bom_code"))
-    op_no = _parse_op_no(block.get("op_no") or block.get("source_op_no"))
-    op_type = compact_text(block.get("op_type"))
+    op_no, op_type = normalize_op_identity(block.get("op_type"), block.get("op_no") or block.get("source_op_no"))
     stage_no = int(block.get("source_stage_no") or 0)
 
     master = lookup_master_row(

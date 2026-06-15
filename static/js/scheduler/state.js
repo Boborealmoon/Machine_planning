@@ -46,6 +46,10 @@ let trialPendingCatalogOpSchedules = new Set();
 let trialPinnedBlocks = new Map();
 /** Machine IDs whose lane order changed without schedule recalc (stale times until recalculate). */
 let trialDirtyMachineIds = new Set();
+/** Queue order at last successful recalc (or initial load) — baseline for tail recalc. */
+let trialRecalcBaselineByMachine = new Map();
+/** Earliest block per machine that needs schedule rebuild (tail recalc). */
+let trialDirtyTailByMachine = new Map();
 let trialLoadCache = {
   catalog: null,
   catalogExpiresAt: 0,

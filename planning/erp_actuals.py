@@ -399,7 +399,7 @@ def _qty_source(erp_value, shop_value):
 
 def effective_actual_totals_for_block(con, block_row, recon=None):
     """ERP is source of truth; shop staging wins when strictly higher (manual override)."""
-    from .actuals import actual_totals_for_block
+    from .actuals import actual_totals_for_block, allocate_qty_across_operation_splits, operation_split_siblings
 
     recon = recon if recon is not None else erp_reconciliation_for_block(con, block_row)
     block_id = int(block_row.get("block_id") or 0) if block_row else 0
@@ -419,6 +419,12 @@ def effective_actual_totals_for_block(con, block_row, recon=None):
     effective_output = max(erp_output, shop_output)
     effective_reject = max(erp_reject, shop_reject)
     effective_good = max(erp_good, shop_good)
+
+    has_block_shop_actuals = shop_output > 0 or shop_reject > 0 or int(shop.get("output_reports") or 0) > 0
+    if not has_block_shop_actuals and len(operation_split_siblings(con, block_row)) > 1:
+        effective_good = allocate_qty_across_operation_splits(con, block_row, effective_good)
+        effective_output = allocate_qty_across_operation_splits(con, block_row, effective_output)
+        effective_reject = allocate_qty_across_operation_splits(con, block_row, effective_reject)
 
     return {
         "erp_output_qty": erp_output,

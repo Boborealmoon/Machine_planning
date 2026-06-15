@@ -275,16 +275,44 @@ function soPartialStage(partial) {
     desc: String(partial?.current_stage_desc || '').trim(),
     status: String(partial?.current_stage_status || '').trim(),
     no: partial?.current_stage_no,
+    mode: String(partial?.erp_stage_mode || 'unassigned').trim() || 'unassigned',
+    lastDesc: String(partial?.erp_last_stage_desc || '').trim(),
+    lastStatus: String(partial?.erp_last_stage_status || '').trim(),
+    woCount: Number(partial?.erp_wo_stage_count) || 0,
   };
+}
+
+function soStageModeLabel(mode) {
+  if (mode === 'unassigned') return 'No WO assigned';
+  if (mode === 'completed') return 'All stages complete';
+  return '';
+}
+
+function soStageSortValue(partial) {
+  const stage = soPartialStage(partial);
+  if (stage.desc || stage.status) {
+    const statusRank = { P: 1, R: 2, I: 3 }[String(stage.status).toUpperCase()] || 0;
+    return `0|${String(statusRank).padStart(2, '0')}|${stage.desc}|${stage.status}`;
+  }
+  if (stage.mode === 'unassigned') return '1|no wo assigned';
+  if (stage.mode === 'completed') return `2|${stage.lastDesc || 'all stages complete'}`;
+  return '1|';
 }
 
 function soStageLabel(partial) {
   const stage = soPartialStage(partial);
-  if (!stage.desc && !stage.status) return '';
-  const parts = [];
-  if (stage.desc) parts.push(stage.desc);
-  if (stage.status) parts.push(stage.status);
-  return parts.join(' · ');
+  if (stage.desc || stage.status) {
+    const parts = [];
+    if (stage.desc) parts.push(stage.desc);
+    if (stage.status) parts.push(soExecutionLabel(stage.status));
+    return parts.join(' · ');
+  }
+  if (stage.mode === 'unassigned') return soStageModeLabel('unassigned');
+  if (stage.mode === 'completed') {
+    if (stage.lastDesc) return `All stages complete · ${stage.lastDesc}`;
+    return soStageModeLabel('completed');
+  }
+  return '';
 }
 
 function soPsDisplayForPartial(pp, partial) {
@@ -305,6 +333,9 @@ function soRenderJobDetailFields(order, pp, partial) {
     soDetailField('Queued CNC', soQueuedMachinesLabel(pp, partial), { mono: true }),
     ...(soPartialStage(partial).desc ? [soDetailField('Stage', soPartialStage(partial).desc)] : []),
     ...(soPartialStage(partial).status ? [soDetailField('Stage status', soExecutionLabel(soPartialStage(partial).status))] : []),
+    ...(!soPartialStage(partial).desc && !soPartialStage(partial).status
+      ? [soDetailField('WO assignment', soStageLabel(partial))]
+      : []),
     soDetailField('Part', partial?.inventory_code || pp?.inventory_code, { mono: true }),
     soDetailField('Description', pp?.description, { fullWidth: true }),
     soDetailField('Customer PO', partial?.customer_po_no || pp?.customer_po_no || order?.customer_po_no, { mono: true }),
@@ -598,6 +629,8 @@ function soOrderSearchText(order) {
         partial.customer_code,
         partial.current_stage_desc,
         partial.current_stage_status,
+        partial.erp_stage_mode,
+        partial.erp_last_stage_desc,
       );
     });
   });
@@ -630,6 +663,12 @@ function soLeafRows(order) {
           current_stage_no: pp.current_stage_no,
           current_stage_desc: pp.current_stage_desc,
           current_stage_status: pp.current_stage_status,
+          erp_stage_mode: pp.erp_stage_mode,
+          erp_wo_stage_count: pp.erp_wo_stage_count,
+          erp_all_wo_complete: pp.erp_all_wo_complete,
+          erp_last_stage_no: pp.erp_last_stage_no,
+          erp_last_stage_desc: pp.erp_last_stage_desc,
+          erp_last_stage_status: pp.erp_last_stage_status,
         },
       });
       return;
@@ -776,12 +815,17 @@ function soLeafPassesFilters(leaf) {
   return soLeafPassesColumnFilters(leaf);
 }
 
+function soLeafSortValue(leaf, colId) {
+  if (colId === 'erp_stage') return soStageSortValue(leaf.partial);
+  return soLeafColumnValue(leaf, colId);
+}
+
 function soVisibleLeaves(order) {
   let leaves = soLeafRows(order).filter(soLeafPassesFilters);
   if (soState.sortCol) {
     leaves = [...leaves].sort((a, b) => soCompareValues(
-      soLeafColumnValue(a, soState.sortCol),
-      soLeafColumnValue(b, soState.sortCol),
+      soLeafSortValue(a, soState.sortCol),
+      soLeafSortValue(b, soState.sortCol),
       soState.sortDir,
     ));
   }
@@ -794,10 +838,10 @@ function soVisibleOrders(orders) {
     list = [...list].sort((a, b) => {
       const av = soState.sortCol === '_so'
         ? a.sales_order_no
-        : soLeafColumnValue(soVisibleLeaves(a)[0], soState.sortCol);
+        : soLeafSortValue(soVisibleLeaves(a)[0], soState.sortCol);
       const bv = soState.sortCol === '_so'
         ? b.sales_order_no
-        : soLeafColumnValue(soVisibleLeaves(b)[0], soState.sortCol);
+        : soLeafSortValue(soVisibleLeaves(b)[0], soState.sortCol);
       return soCompareValues(av, bv, soState.sortDir);
     });
   }
@@ -1070,31 +1114,42 @@ function soRenderQueuedCncCell(pp, partial) {
 
 function soRenderStageCell(pp, partial) {
   const stage = soPartialStage(partial);
-  if (!stage.desc && !stage.status) {
-    return '<td class="so-stage-cell"><span class="so-dash">—</span></td>';
+  if (stage.desc || stage.status) {
+    const descHtml = stage.desc
+      ? `<span class="so-stage-desc" title="${escapeHtml(stage.desc)}">${escapeHtml(stage.desc)}</span>`
+      : '';
+    const statusHtml = stage.status ? soStatusPill(stage.status) : '';
+    return `<td class="so-stage-cell">${descHtml}${statusHtml}</td>`;
   }
-  const descHtml = stage.desc
-    ? `<span class="so-stage-desc" title="${escapeHtml(stage.desc)}">${escapeHtml(stage.desc)}</span>`
-    : '';
-  const statusHtml = stage.status ? soStatusPill(stage.status) : '';
-  return `<td class="so-stage-cell">${descHtml}${statusHtml}</td>`;
+  if (stage.mode === 'unassigned') {
+    const title = 'No work-order stages in ERP (mfg_wo_status) for this partial';
+    return `<td class="so-stage-cell"><span class="so-stage-mode so-stage-mode--unassigned" title="${escapeHtml(title)}">No WO</span></td>`;
+  }
+  if (stage.mode === 'completed') {
+    const last = stage.lastDesc
+      ? `Last stage: ${stage.lastDesc}${stage.lastStatus ? ` (${soExecutionLabel(stage.lastStatus)})` : ''}`
+      : 'All manufacturing stages marked complete in ERP';
+    const countNote = stage.woCount ? ` · ${stage.woCount} stage${stage.woCount === 1 ? '' : 's'}` : '';
+    return `<td class="so-stage-cell"><span class="so-stage-mode so-stage-mode--completed" title="${escapeHtml(last + countNote)}">All complete</span></td>`;
+  }
+  return '<td class="so-stage-cell"><span class="so-dash">—</span></td>';
 }
 
 function soRenderOrderDateCell(pp) {
   return `<td class="new-orders-date">${escapeHtml(soFormatDate(pp.order_date))}</td>`;
 }
 
-function soRenderPpSpanCellsRest(pp, rowSpan) {
+function soRenderPpCells(pp) {
   return `
-    <td class="new-orders-desc" rowspan="${rowSpan}" title="${escapeHtml(String(pp.description || ''))}">${escapeHtml(String(pp.description || '—'))}</td>
-    <td class="new-orders-mono" rowspan="${rowSpan}">${escapeHtml(String(pp.customer_po_no || '—'))}</td>
-    <td class="new-orders-date" rowspan="${rowSpan}">${escapeHtml(soFormatDate(pp.due_date))}</td>
-    <td class="new-orders-date" rowspan="${rowSpan}">${escapeHtml(soFormatDate(pp.delivery_date))}</td>
-    <td class="new-orders-num" rowspan="${rowSpan}">${escapeHtml(soFormatMoney(pp.unit_selling_price))}</td>
-    <td class="new-orders-num" rowspan="${rowSpan}">${escapeHtml(soFormatMoney(pp.amount))}</td>
-    <td class="new-orders-num" rowspan="${rowSpan}">${escapeHtml(String(pp.pp_qty ?? '—'))}</td>
-    ${soRenderMaterialInCell(pp, rowSpan)}
-    ${SO_NOTE_FIELDS.map(field => soRenderEditableCell(pp, field, rowSpan)).join('')}
+    <td class="new-orders-desc" title="${escapeHtml(String(pp.description || ''))}">${escapeHtml(String(pp.description || '—'))}</td>
+    <td class="new-orders-mono">${escapeHtml(String(pp.customer_po_no || '—'))}</td>
+    <td class="new-orders-date">${escapeHtml(soFormatDate(pp.due_date))}</td>
+    <td class="new-orders-date">${escapeHtml(soFormatDate(pp.delivery_date))}</td>
+    <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.unit_selling_price))}</td>
+    <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.amount))}</td>
+    <td class="new-orders-num">${escapeHtml(String(pp.pp_qty ?? '—'))}</td>
+    ${soRenderMaterialInCell(pp)}
+    ${SO_NOTE_FIELDS.map(field => soRenderEditableCell(pp, field)).join('')}
   `;
 }
 
@@ -1124,14 +1179,14 @@ function soSyncMaterialInPill(pill, materialIn) {
   if (textEl) textEl.textContent = meta.label;
 }
 
-function soRenderMaterialInCell(pp, rowSpan) {
+function soRenderMaterialInCell(pp) {
   const psId = String(pp.process_sheet_no || '').trim();
   const materialIn = Boolean(pp.material_in);
   const meta = soMaterialInMeta(materialIn);
   const dateText = pp.material_in_date ? soFormatDate(pp.material_in_date) : '—';
   const dateCls = materialIn ? 'so-material-in-date' : 'so-material-in-date so-material-in-date--empty';
   return `
-    <td class="so-material-in-cell" rowspan="${rowSpan}">
+    <td class="so-material-in-cell">
       <label class="trial-material-in-pill so-material-in-pill ${meta.stateClass}"
         title="${escapeHtml(meta.title)}"
         aria-pressed="${materialIn ? 'true' : 'false'}"
@@ -1150,12 +1205,12 @@ function soRenderMaterialInCell(pp, rowSpan) {
   `;
 }
 
-function soRenderEditableCell(pp, field, rowSpan) {
+function soRenderEditableCell(pp, field) {
   const ppNo = String(pp.pp_voucher_no || '').trim();
   const value = String(pp[field] || '');
   const label = SO_NOTE_LABELS[field] || field;
   return `
-    <td class="so-editable-cell" rowspan="${rowSpan}">
+    <td class="so-editable-cell">
       <textarea
         class="so-editable-input"
         rows="1"
@@ -1179,19 +1234,17 @@ function soRenderPartCell(pp, partial) {
   return `<td class="new-orders-num so-part-cell">${escapeHtml(String(part))}</td>`;
 }
 
-function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, includePpCells, ppRowSpan, ppStart, shadeAlt }) {
+function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, shadeAlt }) {
   const { order, pp, partial } = leaf;
   const key = soPartialKey(order, pp, partial);
   const selected = key === soState.selectedKey;
   const sideRail = includeSideRail ? soRenderSideRail(order, sideRowSpan, { shadeAlt }) : '';
   const processSheetCell = soRenderProcessSheetCell(order, pp, partial);
   const orderDateCell = soRenderOrderDateCell(pp);
-  const ppSpanRest = includePpCells ? soRenderPpSpanCellsRest(pp, ppRowSpan) : '';
   const startClass = groupStart ? ' new-orders-group-start' : '';
-  const ppStartClass = ppStart ? ' so-pp-group-start' : '';
   const queuedMark = soIsPartialQueued(pp, partial) ? ' is-ps-queued-mark' : '';
   return `
-    <tr class="new-orders-child-row is-clickable${startClass}${ppStartClass}${queuedMark}${selected ? ' is-selected' : ''}" data-sales-order="${escapeHtml(String(order.sales_order_no || ''))}" data-detail-key="${escapeHtml(key)}" title="Click for detail">
+    <tr class="new-orders-child-row is-clickable${startClass}${queuedMark}${selected ? ' is-selected' : ''}" data-sales-order="${escapeHtml(String(order.sales_order_no || ''))}" data-detail-key="${escapeHtml(key)}" title="Click for detail">
       ${sideRail}
       ${soRenderPartialCell(partial)}
       ${processSheetCell}
@@ -1199,7 +1252,7 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, inclu
       ${soRenderStageCell(pp, partial)}
       ${orderDateCell}
       ${soRenderPartCell(pp, partial)}
-      ${ppSpanRest}
+      ${soRenderPpCells(pp)}
     </tr>
   `;
 }
@@ -1224,32 +1277,14 @@ function soRenderOrderGroup(order, soGroupIndex = 0) {
   }
 
   const html = [];
-  let leafIndex = 0;
-  const ppGroups = new Map();
-  leaves.forEach(leaf => {
-    const ppNo = String(leaf.pp.pp_voucher_no || '');
-    if (!ppGroups.has(ppNo)) ppGroups.set(ppNo, []);
-    ppGroups.get(ppNo).push(leaf);
+  leaves.forEach((leaf, leafIndex) => {
+    html.push(soRenderLeafRow(leaf, {
+      includeSideRail: leafIndex === 0,
+      sideRowSpan: leaves.length,
+      groupStart: leafIndex === 0,
+      shadeAlt,
+    }));
   });
-
-  let firstOrderRow = true;
-  for (const groupLeaves of ppGroups.values()) {
-    let firstPpRow = true;
-    groupLeaves.forEach(leaf => {
-      html.push(soRenderLeafRow(leaf, {
-        includeSideRail: firstOrderRow && leafIndex === 0,
-        sideRowSpan: leaves.length,
-        groupStart: firstOrderRow && leafIndex === 0,
-        includePpCells: firstPpRow,
-        ppRowSpan: groupLeaves.length,
-        ppStart: firstPpRow,
-        shadeAlt,
-      }));
-      firstPpRow = false;
-      leafIndex += 1;
-      firstOrderRow = false;
-    });
-  }
   return html.join('');
 }
 

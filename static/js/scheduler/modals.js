@@ -323,7 +323,7 @@ async function openTrialBlockEditor(blockId) {
         remarks: document.getElementById('trial-edit-remarks').value,
         recalculate: false,
       });
-      trialMarkDirtyMachines(affectedIds);
+      trialMarkDirtyMachines(affectedIds, { tailFromBlockId: block.block_id });
       trialUpdateFormModalBusy(
         'Refreshing lane…',
         'Updating the board with your saved changes.'
@@ -414,7 +414,10 @@ function openTrialSplitModal(blockId) {
         if (typeof trialMergeBlockFromApi === 'function') trialMergeBlockFromApi(result.new_block);
       }
       if (typeof trialMarkDirtyMachines === 'function') {
-        trialMarkDirtyMachines([machineId].filter(Boolean), { skipRender: true });
+        trialMarkDirtyMachines([machineId].filter(Boolean), {
+          skipRender: true,
+          tailFromBlockId: block.block_id,
+        });
       }
       const refreshed = machineId
         && typeof trialApplyMachineRefreshFromResponse === 'function'
@@ -708,7 +711,7 @@ async function toggleTrialSetup(blockId) {
       include_setup: Number(block.include_setup || 0) === 1 ? 0 : 1,
       recalculate: false,
     });
-    trialMarkDirtyMachines([machineId].filter(Boolean));
+    trialMarkDirtyMachines([machineId].filter(Boolean), { tailFromBlockId: block.block_id });
     await refreshMachines([machineId].filter(Boolean), { response: result });
     toast('Setup updated — click Recalculate schedules to refresh times', 'success');
   } catch (e) {
@@ -772,9 +775,11 @@ async function saveTrialOrder(lane, reload = true) {
   if (!order) return;
   try {
     const result = await postTrialQueueReorder([order], { recalculate: false });
-    trialMarkDirtyMachines([order.machine_id]);
     if (reload) {
       await refreshMachines([order.machine_id], { response: result });
+      trialMarkDirtyMachines([order.machine_id], {
+        queueOrders: { [order.machine_id]: order.ordered_ids },
+      });
       toast('Queue order saved — recalculate schedules when ready', 'success');
     }
   } catch (e) {
@@ -1009,9 +1014,9 @@ function openTrialMachineQueue(machineId) {
   if (typeof initTrialQueuePanelSortable === 'function') initTrialQueuePanelSortable();
 }
 
-async function toggleTrialCompletedCatalog() {
-  trialShowCompleted = !trialShowCompleted;
-  updateTrialCompletedButton();
+async function onTrialShowCompletedChange(checked) {
+  trialShowCompleted = Boolean(checked);
+  updateTrialCompletedCheckbox();
   const cacheKey = trialCatalogCacheKey();
   trialLoadCache[cacheKey] = null;
   trialLoadCache[`${cacheKey}ExpiresAt`] = 0;
@@ -1027,6 +1032,7 @@ async function toggleTrialCompletedCatalog() {
       trialAssignCatalogRows(trialLoadCache[cacheKey]);
     } else {
       trialState.catalog = trialLoadCache[cacheKey];
+      if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
     }
   } catch (err) {
     console.error('catalog reload failed:', err);

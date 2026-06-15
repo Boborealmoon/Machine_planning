@@ -68,10 +68,104 @@ function trialLaneOrderFromElement(laneEl) {
   return { machine_id: machineId, ordered_ids: orderedIds };
 }
 
+function trialRecalcStartIndex(existingIds, orderedIds) {
+  const existing = (existingIds || []).map(Number).filter(Boolean);
+  const ordered = (orderedIds || []).map(Number).filter(Boolean);
+  if (!ordered.length) return 0;
+  let prefix = 0;
+  for (let idx = 0; idx < Math.min(existing.length, ordered.length); idx += 1) {
+    if (ordered[idx] === existing[idx]) prefix = idx + 1;
+    else break;
+  }
+  if (prefix >= ordered.length && ordered.length === existing.length) return ordered.length;
+  return prefix;
+}
+
+function trialMachineBlockOrder(machineId) {
+  const mid = Number(machineId || 0);
+  if (!mid) return [];
+  return (trialState.blocks || [])
+    .filter(block => Number(block.machine_id) === mid && block.active !== false)
+    .sort((a, b) => (
+      Number(a.queue_position || 0) - Number(b.queue_position || 0)
+      || Number(a.block_id || 0) - Number(b.block_id || 0)
+    ))
+    .map(block => Number(block.block_id))
+    .filter(Boolean);
+}
+
+function trialSyncRecalcBaseline(machineIds = null) {
+  const targets = machineIds == null
+    ? (trialState.machines || []).map(row => Number(row.machine_id || 0)).filter(Boolean)
+    : (machineIds || []).map(Number).filter(Boolean);
+  targets.forEach(mid => {
+    trialRecalcBaselineByMachine.set(mid, trialMachineBlockOrder(mid));
+  });
+}
+
+function trialMergeDirtyTailBlock(machineId, blockId) {
+  const mid = Number(machineId || 0);
+  const bid = Number(blockId || 0);
+  if (!mid || !bid) return;
+  const order = trialMachineBlockOrder(mid);
+  const newIdx = order.indexOf(bid);
+  if (newIdx < 0) {
+    trialDirtyTailByMachine.delete(mid);
+    return;
+  }
+  const existing = trialDirtyTailByMachine.get(mid);
+  if (!existing) {
+    trialDirtyTailByMachine.set(mid, bid);
+    return;
+  }
+  const existingIdx = order.indexOf(existing);
+  if (existingIdx < 0 || newIdx < existingIdx) {
+    trialDirtyTailByMachine.set(mid, bid);
+  }
+}
+
+function trialTailBlockIdFromQueueDelta(machineId, orderedIds = null) {
+  const mid = Number(machineId || 0);
+  if (!mid) return null;
+  const baseline = trialRecalcBaselineByMachine.get(mid);
+  if (!baseline || !baseline.length) return null;
+  const current = orderedIds || trialMachineBlockOrder(mid);
+  const idx = trialRecalcStartIndex(baseline, current);
+  if (idx >= current.length) return null;
+  return current[idx];
+}
+
+function trialDirtyTailByMachinePayload(machineIds) {
+  const payload = {};
+  (machineIds || []).forEach(id => {
+    const mid = Number(id || 0);
+    const blockId = trialDirtyTailByMachine.get(mid);
+    if (mid && blockId) payload[String(mid)] = Number(blockId);
+  });
+  return payload;
+}
+
 function trialMarkDirtyMachines(machineIds, options = {}) {
+  const queueOrders = options.queueOrders || {};
   (machineIds || []).forEach(id => {
     const numeric = Number(id || 0);
-    if (numeric) trialDirtyMachineIds.add(numeric);
+    if (!numeric) return;
+    trialDirtyMachineIds.add(numeric);
+    if (options.tailFromBlockId) {
+      const orderedIds = queueOrders[numeric] || queueOrders[String(numeric)] || null;
+      const blockId = Number(options.tailFromBlockId);
+      const currentOrder = orderedIds || trialMachineBlockOrder(numeric);
+      if (currentOrder.includes(blockId)) {
+        trialMergeDirtyTailBlock(numeric, blockId);
+      } else {
+        const tailId = trialTailBlockIdFromQueueDelta(numeric, orderedIds);
+        if (tailId) trialMergeDirtyTailBlock(numeric, tailId);
+      }
+    } else if (!options.skipTailUpdate) {
+      const orderedIds = queueOrders[numeric] || queueOrders[String(numeric)] || null;
+      const tailId = trialTailBlockIdFromQueueDelta(numeric, orderedIds);
+      if (tailId) trialMergeDirtyTailBlock(numeric, tailId);
+    }
   });
   trialUpdateStaleScheduleUi(options);
 }
@@ -79,8 +173,15 @@ function trialMarkDirtyMachines(machineIds, options = {}) {
 function trialClearDirtyMachines(machineIds) {
   if (machineIds == null) {
     trialDirtyMachineIds.clear();
+    trialDirtyTailByMachine.clear();
   } else {
-    (machineIds || []).forEach(id => trialDirtyMachineIds.delete(Number(id || 0)));
+    (machineIds || []).forEach(id => {
+      const numeric = Number(id || 0);
+      if (!numeric) return;
+      trialDirtyMachineIds.delete(numeric);
+      trialDirtyTailByMachine.delete(numeric);
+      trialSyncRecalcBaseline([numeric]);
+    });
   }
   trialUpdateStaleScheduleUi();
 }
@@ -145,7 +246,10 @@ async function postTrialQueueReorder(lanes, options = {}) {
 async function postTrialQueueRecalculate(machineIds) {
   const ids = [...new Set((machineIds || []).map(Number).filter(Boolean))];
   if (!ids.length) return null;
-  return POST('/api/trial/queue/recalculate', { machine_ids: ids });
+  const tailByMachine = trialDirtyTailByMachinePayload(ids);
+  const body = { machine_ids: ids };
+  if (Object.keys(tailByMachine).length) body.tail_by_machine = tailByMachine;
+  return POST('/api/trial/queue/recalculate', body);
 }
 
 async function trialRecalculateDirtySchedules() {
@@ -436,8 +540,19 @@ async function trialFinalizeCatalogQueueSchedule({ catalogCard, machineId, resul
     trialPinBlock(result.block);
     trialMergeBlockFromApi(result.block);
   }
-  trialMarkDirtyMachines(affectedIds, { skipRender: true });
+  const queueOrders = {};
+  if (numericMachineId && result?.block?.block_id) {
+    queueOrders[numericMachineId] = trialMachineBlockOrder(numericMachineId);
+    if (!queueOrders[numericMachineId].includes(Number(result.block.block_id))) {
+      queueOrders[numericMachineId].push(Number(result.block.block_id));
+    }
+  }
   await refreshMachines(affectedIds, { response: result });
+  trialMarkDirtyMachines(affectedIds, {
+    skipRender: true,
+    queueOrders,
+    tailFromBlockId: result?.block?.block_id,
+  });
   if (typeof trialRefreshCatalogSidebar === 'function') {
     await trialRefreshCatalogSidebar();
   }
@@ -616,6 +731,7 @@ async function loadTrialImpl(options = {}) {
   }
 
   trialApplySchedulePayload(scheduleData, {}, null);
+  if (typeof trialSyncRecalcBaseline === 'function') trialSyncRecalcBaseline();
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'apply-schedule-payload', {
       machines: Array.isArray(trialState.machines) ? trialState.machines.length : 0,

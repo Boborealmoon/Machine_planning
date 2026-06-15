@@ -21,7 +21,7 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 
 _NOTE_FIELDS = (
     "material_subcon",
@@ -424,15 +424,79 @@ def _load_queued_machines_by_canonical_ps() -> dict[str, list[str]]:
 
 
 _STAGE_OVERLAY_SQL = """
+WITH wo AS (
+    SELECT
+        source_mps_no AS ps_base,
+        pp_partial_no,
+        stage_no,
+        stage_desc,
+        execution_status,
+        total_acc_qty_produced
+    FROM mfg_wo_status
+    WHERE source_mps_no = ANY(%s)
+      AND stage_no IS NOT NULL
+),
+agg AS (
+    SELECT
+        ps_base,
+        pp_partial_no,
+        COUNT(*)::int AS erp_wo_stage_count,
+        BOOL_AND(UPPER(COALESCE(execution_status, '')) IN ('C', 'COMPLETED')) AS erp_all_wo_complete
+    FROM wo
+    GROUP BY ps_base, pp_partial_no
+),
+open_stage AS (
+    SELECT DISTINCT ON (ps_base, pp_partial_no)
+        ps_base,
+        pp_partial_no,
+        stage_no AS current_stage_no,
+        stage_desc AS current_stage_desc,
+        execution_status AS current_stage_status
+    FROM wo
+    WHERE UPPER(COALESCE(execution_status, '')) NOT IN ('C', 'COMPLETED')
+    ORDER BY
+        ps_base,
+        pp_partial_no,
+        CASE execution_status
+            WHEN 'I' THEN 0
+            WHEN 'R' THEN 1
+            WHEN 'P' THEN 2
+            ELSE 3
+        END,
+        COALESCE(total_acc_qty_produced, 0) DESC,
+        stage_no ASC
+),
+last_stage AS (
+    SELECT DISTINCT ON (ps_base, pp_partial_no)
+        ps_base,
+        pp_partial_no,
+        stage_no AS erp_last_stage_no,
+        stage_desc AS erp_last_stage_desc,
+        execution_status AS erp_last_stage_status
+    FROM wo
+    ORDER BY ps_base, pp_partial_no, stage_no DESC, stage_desc DESC
+)
 SELECT
-    split_part(ps_id, '::', 1) AS ps_base,
-    pp_partial_no,
-    MAX(current_stage_no) AS current_stage_no,
-    MAX(current_stage_desc) AS current_stage_desc,
-    MAX(current_stage_status) AS current_stage_status
-FROM pp_vouchers_cache
-WHERE split_part(ps_id, '::', 1) = ANY(%s)
-GROUP BY split_part(ps_id, '::', 1), pp_partial_no
+    a.ps_base,
+    a.pp_partial_no,
+    a.erp_wo_stage_count,
+    a.erp_all_wo_complete,
+    o.current_stage_no,
+    o.current_stage_desc,
+    o.current_stage_status,
+    l.erp_last_stage_no,
+    l.erp_last_stage_desc,
+    l.erp_last_stage_status,
+    CASE
+        WHEN o.current_stage_no IS NOT NULL THEN 'open'
+        WHEN a.erp_all_wo_complete THEN 'completed'
+        ELSE 'unassigned'
+    END AS erp_stage_mode
+FROM agg a
+LEFT JOIN open_stage o
+       ON o.ps_base = a.ps_base AND o.pp_partial_no = a.pp_partial_no
+LEFT JOIN last_stage l
+       ON l.ps_base = a.ps_base AND l.pp_partial_no = a.pp_partial_no
 """
 
 
@@ -441,6 +505,35 @@ def _default_stage_overlay() -> dict[str, Any]:
         "current_stage_no": None,
         "current_stage_desc": "",
         "current_stage_status": "",
+        "erp_stage_mode": "unassigned",
+        "erp_wo_stage_count": 0,
+        "erp_all_wo_complete": False,
+        "erp_last_stage_no": None,
+        "erp_last_stage_desc": "",
+        "erp_last_stage_status": "",
+    }
+
+
+def _stage_overlay_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    stage_desc = compact_text(row.get("current_stage_desc"))
+    stage_status = compact_text(row.get("current_stage_status"))
+    stage_no = row.get("current_stage_no")
+    last_no = row.get("erp_last_stage_no")
+    mode = compact_text(row.get("erp_stage_mode")) or "unassigned"
+    if stage_desc or stage_status:
+        mode = "open"
+    elif int(row.get("erp_wo_stage_count") or 0) <= 0:
+        mode = "unassigned"
+    return {
+        "current_stage_no": int(stage_no) if stage_no is not None else None,
+        "current_stage_desc": stage_desc,
+        "current_stage_status": stage_status,
+        "erp_stage_mode": mode,
+        "erp_wo_stage_count": int(row.get("erp_wo_stage_count") or 0),
+        "erp_all_wo_complete": bool(row.get("erp_all_wo_complete")),
+        "erp_last_stage_no": int(last_no) if last_no is not None else None,
+        "erp_last_stage_desc": compact_text(row.get("erp_last_stage_desc")),
+        "erp_last_stage_status": compact_text(row.get("erp_last_stage_status")),
     }
 
 
@@ -472,16 +565,7 @@ def _load_stage_overlay(process_sheet_nos: list[str]) -> dict[tuple[str, int], d
             partial_no = max(1, int(row.get("pp_partial_no") or 1))
         except (TypeError, ValueError):
             partial_no = 1
-        stage_desc = compact_text(row.get("current_stage_desc"))
-        stage_status = compact_text(row.get("current_stage_status"))
-        if not stage_desc and not stage_status:
-            continue
-        stage_no = row.get("current_stage_no")
-        out[(ps_base, partial_no)] = {
-            "current_stage_no": int(stage_no) if stage_no is not None else None,
-            "current_stage_desc": stage_desc,
-            "current_stage_status": stage_status,
-        }
+        out[(ps_base, partial_no)] = _stage_overlay_from_row(row)
     return out
 
 

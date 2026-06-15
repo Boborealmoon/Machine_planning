@@ -89,6 +89,34 @@ function trialExportJobCellLines(group, displaySequenceNo) {
   return lines;
 }
 
+// Blended on white to match planner.css material-in-yes / material-in-no tints.
+const TRIAL_EXPORT_MATERIAL_IN_FILL = {
+  yes: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE4F8EC' } },
+  no: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDECEC' } },
+};
+const TRIAL_EXPORT_MATERIAL_IN_BORDER = {
+  yes: 'FF85DFA6',
+  no: 'FFF69898',
+};
+
+function trialExportMaterialCellStyle(leader) {
+  if (!leader?.block_id) return null;
+  const materialIn = typeof trialMaterialInForBlockLeader === 'function'
+    ? trialMaterialInForBlockLeader(leader)
+    : Boolean(leader.material_in);
+  const key = materialIn ? 'yes' : 'no';
+  const borderColor = TRIAL_EXPORT_MATERIAL_IN_BORDER[key];
+  return {
+    fill: TRIAL_EXPORT_MATERIAL_IN_FILL[key],
+    border: {
+      top: { style: 'thin', color: { argb: borderColor } },
+      left: { style: 'thin', color: { argb: borderColor } },
+      bottom: { style: 'thin', color: { argb: borderColor } },
+      right: { style: 'thin', color: { argb: borderColor } },
+    },
+  };
+}
+
 function trialExportBoardFilename() {
   const stamp = typeof trialTodayLocal === 'function'
     ? trialTodayLocal()
@@ -222,8 +250,14 @@ async function trialBuildAndDownloadExcel(columns, queues, maxDepth) {
         cell.value = '';
         return;
       }
+      const vm = trialBlockGroupViewModel(group, { displaySequenceNo: depth + 1 });
       const lines = trialExportJobCellLines(group, depth + 1);
       cell.value = lines.join('\n');
+      const materialStyle = trialExportMaterialCellStyle(vm.leader || group.leader);
+      if (materialStyle) {
+        cell.fill = materialStyle.fill;
+        cell.border = materialStyle.border;
+      }
     });
   }
 

@@ -33,6 +33,45 @@ def actual_totals_for_block(con, block_id):
     return actual_totals_for_block_ids(con, [int(block_id)]).get(int(block_id), dict(_EMPTY_TOTALS))
 
 
+def operation_split_siblings(con, block_row):
+    """Active run blocks for the same operation, in queue order."""
+    operation_id = int((block_row or {}).get("operation_id") or 0)
+    if not con or not operation_id:
+        block_id = int((block_row or {}).get("block_id") or 0)
+        return [{"block_id": block_id, "scheduled_qty": float((block_row or {}).get("scheduled_qty") or 0)}] if block_id else []
+    return rows(
+        con.execute(
+            """
+            SELECT block_id, scheduled_qty, queue_position, split_from_block_id
+            FROM planner_run_block
+            WHERE operation_id = %s
+              AND COALESCE(active, TRUE) = TRUE
+            ORDER BY queue_position, block_id
+            """,
+            (operation_id,),
+        )
+    )
+
+
+def allocate_qty_across_operation_splits(con, block_row, total_qty):
+    """Spread operation-level output across split queue blocks (first pieces absorb done qty)."""
+    total = max(0.0, float(total_qty or 0))
+    block_id = int((block_row or {}).get("block_id") or 0)
+    siblings = operation_split_siblings(con, block_row)
+    if len(siblings) <= 1:
+        scheduled_qty = max(0.0, float((block_row or {}).get("scheduled_qty") or 0))
+        return min(total, scheduled_qty) if scheduled_qty > 0 else total
+
+    remaining = total
+    for sibling in siblings:
+        scheduled_qty = max(0.0, float(sibling.get("scheduled_qty") or 0))
+        allocated = min(scheduled_qty, remaining)
+        if int(sibling.get("block_id") or 0) == block_id:
+            return allocated
+        remaining -= allocated
+    return 0.0
+
+
 def actual_totals_for_block_ids(con, block_ids):
     ids = sorted({int(block_id) for block_id in (block_ids or []) if int(block_id) > 0})
     if not con or not ids:

@@ -444,23 +444,33 @@ def run_sync(force: bool = False) -> dict:
 # ── material_per_bom ───────────────────────────────────────────────────────
 
 _MATERIAL_PER_BOM_SQL = """
-SELECT DISTINCT
-    source_inventory_code,
-    bom_code,
-    material_inventory_code,
-    description
-FROM public.inventory_bom_listing
-WHERE source_inventory_code IS NOT NULL
-  AND material_inventory_code NOT IN (
-      SELECT source_inventory_code
-      FROM public.inventory_bom_listing
-      WHERE source_inventory_code IS NOT NULL
+SELECT
+    main.source_inventory_code,
+    main.bom_code,
+    main.material_inventory_code,
+    MAX(main.description) AS description,
+    SUM(main.qty_parent) AS qty_parent,
+    MAX(main.qty_fg) AS qty_fg,
+    MAX(main.uom_code) AS uom_code
+FROM public.inventory_bom_listing AS main
+WHERE main.source_inventory_code IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM public.inventory_bom_listing AS sub
+      WHERE sub.source_inventory_code = main.material_inventory_code
   )
-ORDER BY source_inventory_code, bom_code, material_inventory_code
+GROUP BY main.source_inventory_code, main.bom_code, main.material_inventory_code
+ORDER BY main.source_inventory_code, main.bom_code, main.material_inventory_code
 """
 
 _MATERIAL_PER_BOM_COLS = [
-    "source_inventory_code", "bom_code", "material_inventory_code", "description",
+    "source_inventory_code",
+    "bom_code",
+    "material_inventory_code",
+    "description",
+    "qty_parent",
+    "qty_fg",
+    "uom_code",
 ]
 
 

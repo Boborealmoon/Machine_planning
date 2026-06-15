@@ -24,7 +24,11 @@ from flask import Blueprint, jsonify, request
 
 from db import planner_db_connect_error
 from .helpers import one, rows, planner_db
-from .materials import material_requirement_payload, material_status_map_for_ps_ids
+from .materials import (
+    enrich_items_material_inventory_codes,
+    material_requirement_payload,
+    material_status_map_for_ps_ids,
+)
 from .utils import compact_text, pending_delivery_order, shipped_quantity_completed
 
 process_sheets_bp = Blueprint("planner_process_sheets", __name__)
@@ -3014,8 +3018,14 @@ def list_process_sheets_payload(con):
                 "temp_source_ps_id",
                 "temp_source_label",
                 "is_temp_ps",
+                "material_inventory_code",
             )
         )
+        if payload.get("material_inventory_codes"):
+            haystack += " " + " ".join(
+                compact_text(code).lower()
+                for code in payload.get("material_inventory_codes") or []
+            )
         if payload.get("is_temp_ps"):
             haystack += " temp reject rework"
         if search and search not in haystack:
@@ -3032,6 +3042,7 @@ def list_process_sheets_payload(con):
             continue
         result.append(payload)
     _apply_partial_shipped_rollup(result)
+    enrich_items_material_inventory_codes(con, result)
     return result
 
 
@@ -3639,6 +3650,8 @@ def api_process_sheet_details(ps_id):
                     )
                 )
             ]
+
+            enrich_items_material_inventory_codes(con, [summary])
 
             return jsonify({
                 "summary": summary,

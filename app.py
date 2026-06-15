@@ -1527,6 +1527,9 @@ def api_process_sheets_board():
         ]
         with planner_db() as con:
             enrich_board_planner_fields(con, erp_only)
+            from planning.materials import enrich_items_material_inventory_codes
+
+            enrich_items_material_inventory_codes(con, erp_only)
         return jsonify({"planner": planner_items, "erp_only": erp_only})
     except Exception as e:
         from db import planner_db_connect_error
@@ -1871,31 +1874,47 @@ def api_source_boms(source):
 @app.get("/api/bom/materials")
 def api_bom_materials():
     source = request.args.get("source", "").strip()
+    bom = request.args.get("bom", "").strip()
     if not source:
         return jsonify({"error": "source is required"}), 400
     try:
+        params = [source]
+        bom_clause = ""
+        if bom:
+            bom_clause = "AND main.bom_code = %s"
+            params.append(bom)
         rows = db_query(
-            """
-            SELECT DISTINCT
-                source_inventory_code,
-                material_inventory_code,
-                description
-            FROM public.inventory_bom_listing
-            WHERE material_inventory_code NOT IN (
-                SELECT source_inventory_code
-                FROM public.inventory_bom_listing
-                WHERE source_inventory_code IS NOT NULL
-            )
-            AND source_inventory_code = %s
-            ORDER BY material_inventory_code
+            f"""
+            SELECT
+                main.source_inventory_code,
+                main.bom_code,
+                main.material_inventory_code,
+                MAX(main.description) AS description,
+                SUM(main.qty_parent) AS qty_parent,
+                MAX(main.qty_fg) AS qty_fg,
+                MAX(main.uom_code) AS uom_code
+            FROM public.inventory_bom_listing AS main
+            WHERE main.source_inventory_code = %s
+              {bom_clause}
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM public.inventory_bom_listing AS sub
+                  WHERE sub.source_inventory_code = main.material_inventory_code
+              )
+            GROUP BY main.source_inventory_code, main.bom_code, main.material_inventory_code
+            ORDER BY main.material_inventory_code
             """,
-            (source,), fetchall=True
+            tuple(params), fetchall=True
         )
         return jsonify([
             {
                 "source_inventory_code": r[0],
-                "material_inventory_code": r[1],
-                "description": r[2] or "",
+                "bom_code": r[1],
+                "material_inventory_code": r[2],
+                "description": r[3] or "",
+                "qty_parent": float(r[4]) if r[4] is not None else None,
+                "qty_fg": float(r[5]) if r[5] is not None else None,
+                "uom_code": r[6] or "",
             }
             for r in (rows or [])
         ])

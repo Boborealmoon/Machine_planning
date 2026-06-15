@@ -1471,45 +1471,68 @@ function trialBlockPendingSetupMinutes(block, outputTotal = 0, rejectTotal = 0) 
   return Math.max(0, Number(block?.setup_minutes || 0));
 }
 
-function trialBlockMemberMetrics(block) {
-  const catalogFallbackGoodQty = () => {
-    const sourcePs = String(block?.source_ps_id || block?.job_no || '').trim();
-    if (!sourcePs) return 0;
-    const sourceParts = trialSplitPsId(sourcePs);
-    const sourceBase = String(sourceParts.base || '').trim();
-    const sourcePartial = String(sourceParts.partial || '').trim();
-    if (!sourceBase) return 0;
-    const pools = [
-      ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
-      ...(Array.isArray(trialState.planned) ? trialState.planned : []),
-    ];
-    for (const ps of pools) {
-      const psId = String(ps?.ps_id || '').trim();
-      if (!psId) continue;
-      const psParts = trialSplitPsId(psId);
-      const psBase = String(psParts.base || '').trim();
-      const psPartial = String(psParts.partial || ps?.pp_partial_no || '').trim();
-      if (psBase !== sourceBase) continue;
-      if (sourcePartial && psPartial && sourcePartial !== psPartial) continue;
-      const cards = Array.isArray(ps?.op_cards) ? ps.op_cards : [];
-      const hit = cards.find(card => trialCatalogOpMatchesBlock(
-        card?.source_op_no,
-        card?.source_op_seq_id,
-        card?.operation_label,
-        block,
-      ));
-      if (!hit) continue;
-      const produced = Number(hit?.finished_qty ?? hit?.wo_qty_produced ?? 0);
-      const required = Number(hit?.wo_qty_required ?? hit?.required_qty ?? block?.scheduled_qty ?? 0);
-      const bounded = Math.max(0, Math.min(
-        Math.max(0, Number(block?.scheduled_qty || required || 0)),
-        Math.max(0, produced),
-      ));
-      if (bounded > 0) return bounded;
-    }
-    return 0;
-  };
+function trialOperationSiblingBlocks(block) {
+  const operationId = Number(block?.operation_id || 0);
+  if (!operationId) return block ? [block] : [];
+  return (trialState.blocks || [])
+    .filter(row => Number(row?.operation_id || 0) === operationId)
+    .sort((left, right) =>
+      Number(left?.queue_position || 0) - Number(right?.queue_position || 0) ||
+      Number(left?.block_id || 0) - Number(right?.block_id || 0)
+    );
+}
 
+function trialAllocateQtyAcrossSiblings(block, totalQty) {
+  const siblings = trialOperationSiblingBlocks(block);
+  let remaining = Math.max(0, Number(totalQty || 0));
+  if (siblings.length <= 1) {
+    const scheduledQty = Math.max(0, Number(block?.scheduled_qty || 0));
+    return scheduledQty > 0 ? Math.min(remaining, scheduledQty) : remaining;
+  }
+  for (const sibling of siblings) {
+    const scheduledQty = Math.max(0, Number(sibling?.scheduled_qty || 0));
+    const allocated = Math.min(scheduledQty, remaining);
+    if (Number(sibling?.block_id || 0) === Number(block?.block_id || 0)) {
+      return allocated;
+    }
+    remaining -= allocated;
+  }
+  return 0;
+}
+
+function trialCatalogOperationProducedQty(block) {
+  const sourcePs = String(block?.source_ps_id || block?.job_no || '').trim();
+  if (!sourcePs) return 0;
+  const sourceParts = trialSplitPsId(sourcePs);
+  const sourceBase = String(sourceParts.base || '').trim();
+  const sourcePartial = String(sourceParts.partial || '').trim();
+  if (!sourceBase) return 0;
+  const pools = [
+    ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
+    ...(Array.isArray(trialState.planned) ? trialState.planned : []),
+  ];
+  for (const ps of pools) {
+    const psId = String(ps?.ps_id || '').trim();
+    if (!psId) continue;
+    const psParts = trialSplitPsId(psId);
+    const psBase = String(psParts.base || '').trim();
+    const psPartial = String(psParts.partial || ps?.pp_partial_no || '').trim();
+    if (psBase !== sourceBase) continue;
+    if (sourcePartial && psPartial && sourcePartial !== psPartial) continue;
+    const cards = Array.isArray(ps?.op_cards) ? ps.op_cards : [];
+    const hit = cards.find(card => trialCatalogOpMatchesBlock(
+      card?.source_op_no,
+      card?.source_op_seq_id,
+      card?.operation_label,
+      block,
+    ));
+    if (!hit) continue;
+    return Math.max(0, Number(hit?.finished_qty ?? hit?.wo_qty_produced ?? 0));
+  }
+  return 0;
+}
+
+function trialBlockMemberMetrics(block) {
   const { actualTotalsByBlock } = trialEnsureDataIndexes();
   const blockTotals = actualTotalsByBlock.get(String(block.block_id || '')) || { output: 0, reject: 0 };
   const shopOutputTotal = Number(blockTotals.output || 0);
@@ -1523,14 +1546,28 @@ function trialBlockMemberMetrics(block) {
     effective.effective_reject_qty ?? recon.effective_reject_qty ?? shopRejectTotal
   );
   const scheduledQty = Number(block.scheduled_qty || 0);
-  let netOutput = Number(
-    effective.effective_good_qty ?? recon.effective_good_qty ?? trialBlockNetOutput(shopOutputTotal, shopRejectTotal)
-  );
-  if (netOutput <= 0) {
-    const fallbackGood = catalogFallbackGoodQty();
-    if (fallbackGood > 0) {
-      netOutput = fallbackGood;
-      outputTotal = Math.max(outputTotal, fallbackGood);
+  const shopNetOutput = trialBlockNetOutput(shopOutputTotal, shopRejectTotal);
+  const blockGoodQty = Math.max(0, Number(block?.good_qty ?? block?.actual_good_qty ?? 0));
+  const hasBlockShopActuals = shopOutputTotal > 0 || shopRejectTotal > 0;
+  const siblings = trialOperationSiblingBlocks(block);
+  let netOutput = 0;
+  if (hasBlockShopActuals) {
+    netOutput = shopNetOutput;
+  } else if (blockGoodQty > 0) {
+    netOutput = blockGoodQty;
+    if (outputTotal <= 0) outputTotal = blockGoodQty;
+  } else {
+    let operationGood = Number(
+      effective.effective_good_qty ?? recon.effective_good_qty ?? 0
+    );
+    if (operationGood <= 0) {
+      operationGood = trialCatalogOperationProducedQty(block);
+    }
+    netOutput = siblings.length > 1
+      ? trialAllocateQtyAcrossSiblings(block, operationGood)
+      : Math.min(Math.max(0, operationGood), scheduledQty || operationGood);
+    if (outputTotal <= 0 && netOutput > 0) {
+      outputTotal = netOutput;
     }
   }
   const status = String(block.execution_status || block.status || '').toUpperCase();

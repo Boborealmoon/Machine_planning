@@ -53,6 +53,20 @@
         </button>
       </div>
     </div>
+    <div class="new-orders-filter">
+      <span>PS type</span>
+      <div class="filter-dropdown" id="fq-ps-type-dropdown">
+        <button class="filter-dropdown-btn" type="button" id="fq-ps-type-btn">APS, NPS ▾</button>
+        <div class="filter-dropdown-panel" id="fq-ps-type-panel" hidden>
+          <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="SR" /> [SR]</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
+        </div>
+      </div>
+    </div>
     <label class="new-orders-filter new-orders-filter--grow">
       <span>Search</span>
       <span class="planner-page-search-wrap">
@@ -71,7 +85,14 @@
     <table class="new-orders-table fq-table">
       <thead>
         <tr>
-          <th>Process sheet</th>
+          <th class="so-col-head" data-fq-sort-col="ps_id">
+            <div class="so-col-head-inner">
+              <button type="button" class="so-col-sort-btn" data-fq-sort="ps_id" title="Sort by process sheet">
+                <span class="so-col-label">Process sheet</span>
+                <span class="so-col-sort-icon" data-fq-sort-icon="ps_id">↕</span>
+              </button>
+            </div>
+          </th>
           <th>Partial</th>
           <th>Stage</th>
           <th>Status</th>
@@ -81,7 +102,14 @@
           <th>Qty</th>
           <th>Stage progress</th>
           <th>Sales order</th>
-          <th>Due</th>
+          <th class="so-col-head" data-fq-sort-col="due_date">
+            <div class="so-col-head-inner">
+              <button type="button" class="so-col-sort-btn" data-fq-sort="due_date" title="Sort by PO due date">
+                <span class="so-col-label">Due</span>
+                <span class="so-col-sort-icon" data-fq-sort-icon="due_date">↕</span>
+              </button>
+            </div>
+          </th>
           <th>PP status</th>
         </tr>
       </thead>
@@ -111,5 +139,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=finishing-queue-20260611"></script>
-<script src="{{ url_for('static', filename='js/finishing_queue.js') }}?v=finishing-queue-20260611"></script>
+<script src="{{ url_for('static', filename='js/finishing_queue.js') }}?v=finishing-queue-20260615b"></script>
 {% endblock %}

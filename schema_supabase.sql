@@ -119,16 +119,25 @@ CREATE INDEX IF NOT EXISTS idx_mfg_wo_status_source_mps
 -- ── material_per_bom ─────────────────────────────────────────────────────
 -- Loaded from the material_per_bom Power Query (inventory_bom_listing view,
 -- filtered to leaf materials only — rows where material_inventory_code does
--- not appear as a source_inventory_code).
+-- not appear as a source_inventory_code). Merged per source + bom + material;
+-- qty_parent / qty_fg / uom_code describe quantity required per finished good.
 
 CREATE TABLE IF NOT EXISTS public.material_per_bom (
     source_inventory_code   TEXT        NOT NULL,
     bom_code                TEXT        NOT NULL,
     material_inventory_code TEXT        NOT NULL,
     description             TEXT,
+    qty_parent              NUMERIC,
+    qty_fg                  NUMERIC,
+    uom_code                TEXT,
     _loaded_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (source_inventory_code, bom_code, material_inventory_code)
 );
+
+-- Run if the table already exists in Supabase:
+-- ALTER TABLE public.material_per_bom ADD COLUMN IF NOT EXISTS qty_parent NUMERIC;
+-- ALTER TABLE public.material_per_bom ADD COLUMN IF NOT EXISTS qty_fg NUMERIC;
+-- ALTER TABLE public.material_per_bom ADD COLUMN IF NOT EXISTS uom_code TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_material_per_bom_source
     ON public.material_per_bom (source_inventory_code);

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}S/O Management{% endblock %}
 {% block main_class %}app-main--new-orders app-main--sales-orders-wide{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-side-rail-stripe-20260612">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-stage-mode-20260615">{% endblock %}
 {% block content %}
 <div class="new-orders-page new-orders-page--sales-orders">
   <div class="new-orders-header">
@@ -103,5 +103,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-orders-pp-20260608"></script>
 <script src="{{ url_for('static', filename='js/repeat_order_tags.js') }}?v=repeat-tags-detail-20260612"></script>
-<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=so-side-rail-stripe-20260612"></script>
+<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=so-stage-mode-20260615"></script>
 {% endblock %}

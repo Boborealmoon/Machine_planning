@@ -420,6 +420,40 @@ def _catalog_lane_qty_maps(con):
     return planned_qty_by_op, queued_machines_by_op
 
 
+def _catalog_op_times_with_master(
+    con,
+    *,
+    part_no: str,
+    bom_code: str,
+    step_row: dict,
+    master_cache=None,
+    extra_part_nos: list[str] | None = None,
+) -> tuple[float, float]:
+    """Return (cycle_time, setup_time) preferring planner_cycle_time_master."""
+    cycle_time = float(step_row.get("cycle_time") or 0)
+    setup_time = float(step_row.get("setup_time") or 0)
+    part_no = compact_text(part_no)
+    if not part_no:
+        return cycle_time, setup_time
+    try:
+        from .cycle_time_service import resolve_step_times
+
+        resolved = resolve_step_times(
+            con,
+            part_no=part_no,
+            bom_code=compact_text(bom_code),
+            step=step_row,
+            extra_part_nos=extra_part_nos,
+            master_cache=master_cache,
+        )
+        if resolved.get("source") == "master":
+            cycle_time = parse_number(resolved.get("cycle_time"), cycle_time)
+            setup_time = parse_number(resolved.get("set_up_time"), setup_time)
+    except Exception:
+        pass
+    return cycle_time, setup_time
+
+
 def _catalog_op_card_from_planner_op(op, entry):
     ps_id = compact_text(entry.get("ps_id"))
     pp_partial_no = int(entry.get("pp_partial_no") or parse_planner_ps_id(ps_id)[1] or 1)
@@ -499,6 +533,20 @@ def attach_planner_bom_ops_to_catalog_entry(
     if not step_rows:
         return
 
+    part_no = compact_text(entry.get("inventory_code") or entry.get("part_no") or "")
+    bom_code = compact_text(entry.get("erp_bom_code") or entry.get("bom_code") or "")
+    if bom_id > 0 and not bom_code:
+        bom_row = one(
+            con.execute(
+                "SELECT bom_code FROM planner_bom_variation WHERE bom_id = %s",
+                (bom_id,),
+            )
+        )
+        bom_code = compact_text((bom_row or {}).get("bom_code") or "")
+    from .cycle_time_service import MasterTimeCache
+
+    master_cache = MasterTimeCache.load(con)
+
     all_ops = []
     for row in step_rows:
         op_seq_id = int(row["op_seq_id"] or 0)
@@ -507,6 +555,20 @@ def attach_planner_bom_ops_to_catalog_entry(
         erp_finished_qty = 0.0
         remaining_qty = max(0.0, launch_qty - planned_qty - erp_finished_qty)
         queued_machines = list(queued_machines_by_op.get(op_key, []) or [])
+        cycle_time = float(row["cycle_time"] or 0)
+        setup_time = float(row["setup_time"] or 0)
+        if part_no:
+            cycle_time, setup_time = _catalog_op_times_with_master(
+                con,
+                part_no=part_no,
+                bom_code=bom_code,
+                step_row=row,
+                master_cache=master_cache,
+                extra_part_nos=[
+                    compact_text(entry.get("part_desc") or ""),
+                    compact_text(entry.get("inventory_code") or ""),
+                ],
+            )
         all_ops.append(
             {
                 "source_ps_id": ps_id,
@@ -520,8 +582,8 @@ def attach_planner_bom_ops_to_catalog_entry(
                 "source_stage_no": int(row.get("source_stage_no") or 0),
                 "machine_category": row["machine_category"] or "",
                 "preferred_machine": row["preferred_machine"] or "",
-                "cycle_time": float(row["cycle_time"] or 0),
-                "setup_time": float(row["setup_time"] or 0),
+                "cycle_time": cycle_time,
+                "setup_time": setup_time,
                 "is_last_op": int(row["is_last_op"] or 0),
                 "job_no": ps_id,
                 "operation_name": f"{row['op_no'] or ''} {row['op_type'] or ''}".strip(),
@@ -595,6 +657,9 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
             pass
     bom_stage_keys = _bom_op_stage_keys(con)
     planned_qty_by_op, queued_machines_by_op = _catalog_lane_qty_maps(con)
+    from .cycle_time_service import MasterTimeCache
+
+    master_cache = MasterTimeCache.load(con)
 
     # Process sheets that have a selected BOM (have ops to schedule). ERP cache
     # has one row per partial/stage, so aggregate it before joining to planner
@@ -810,6 +875,26 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
             continue
         item["_seen_op_keys"].add(op_key)
         queued_machines = list(queued_machines_by_op.get(op_key, []) or [])
+        part_no_for_master = compact_text(row.get("part_no") or row.get("inventory_code") or "")
+        bom_code_for_master = compact_text(row.get("selected_bom_code") or row.get("erp_bom_code") or "")
+        step_row = {
+            "op_no": row["op_no"] or "",
+            "op_type": row["op_type"] or "",
+            "source_stage_no": int(row.get("source_stage_no") or 0),
+            "cycle_time": float(row["cycle_time"] or 0),
+            "setup_time": float(row["setup_time"] or 0),
+        }
+        cycle_time, setup_time = _catalog_op_times_with_master(
+            con,
+            part_no=part_no_for_master,
+            bom_code=bom_code_for_master,
+            step_row=step_row,
+            master_cache=master_cache,
+            extra_part_nos=[
+                compact_text(row.get("inventory_code") or ""),
+                compact_text(row.get("part_desc") or ""),
+            ],
+        )
         op_item = {
             "source_ps_id": ps_id,
             "pp_partial_no": catalog_partial_no,
@@ -822,8 +907,8 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
             "source_stage_no": int(row.get("source_stage_no") or 0),
             "machine_category": row["machine_category"] or "",
             "preferred_machine": row["preferred_machine"] or "",
-            "cycle_time": float(row["cycle_time"] or 0),
-            "setup_time": float(row["setup_time"] or 0),
+            "cycle_time": cycle_time,
+            "setup_time": setup_time,
             "is_last_op": int(row["is_last_op"] or 0),
             "job_no": ps_id,
             "operation_name": f"{row['op_no'] or ''} {row['op_type'] or ''}".strip(),

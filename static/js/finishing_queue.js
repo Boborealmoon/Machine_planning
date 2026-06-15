@@ -1,9 +1,14 @@
 // Finishing queue — Deburring / Final Inspection / Packing / Engraving & Packing.
 
+const FQ_PS_TYPE_ORDER = ['MPS', 'APS', 'NPS', 'SR', 'PPS', 'CPS'];
+
 const fqState = {
   items: [],
   stage: 'all',
   status: 'all',
+  psTypes: new Set(['APS', 'NPS']),
+  sortCol: '',
+  sortDir: 'asc',
   search: '',
   cachedAt: '',
   cacheTtlSec: 60,
@@ -53,6 +58,61 @@ function fqStageProgress(item) {
   return `${fqFormatQty(done)} / ${fqFormatQty(required)}`;
 }
 
+function fqGetPsType(item) {
+  const raw = String(item?.ps_id || '').split('::')[0];
+  if (/\[sr\]|\(sr\)/i.test(raw)) return 'SR';
+  const m = raw.toUpperCase().match(/^([A-Z]+)/);
+  if (!m) return null;
+  const prefix = m[1];
+  if (FQ_PS_TYPE_ORDER.includes(prefix)) return prefix;
+  return prefix;
+}
+
+function fqPsTypeLabel() {
+  const panel = document.getElementById('fq-ps-type-panel');
+  if (!panel) return 'APS, NPS';
+  const checked = [...panel.querySelectorAll('input[type="checkbox"]:checked')].map((el) => el.value);
+  if (!checked.length) return 'None';
+  if (checked.length >= FQ_PS_TYPE_ORDER.length) return 'All types';
+  return checked.join(', ');
+}
+
+function fqSortValue(item, col) {
+  if (col === 'ps_id') return String(item?.ps_id || '').trim();
+  if (col === 'due_date') {
+    const text = String(item?.due_date || '').trim();
+    return text.length >= 10 ? text.slice(0, 10) : text;
+  }
+  return '';
+}
+
+function fqCompareValues(a, b, dir) {
+  const desc = dir === 'desc';
+  const aEmpty = a == null || a === '';
+  const bEmpty = b == null || b === '';
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;
+  if (bEmpty) return -1;
+  const cmp = String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  return desc ? -cmp : cmp;
+}
+
+function fqSortIcon(col) {
+  if (fqState.sortCol !== col) return '↕';
+  return fqState.sortDir === 'desc' ? '↓' : '↑';
+}
+
+function fqUpdateSortHeaders() {
+  document.querySelectorAll('[data-fq-sort-col]').forEach((th) => {
+    const col = th.dataset.fqSortCol || '';
+    th.classList.toggle('is-sorted', col && col === fqState.sortCol);
+  });
+  document.querySelectorAll('[data-fq-sort-icon]').forEach((icon) => {
+    const col = icon.dataset.fqSortIcon || '';
+    icon.textContent = fqSortIcon(col);
+  });
+}
+
 function fqMatchesSearch(item, term) {
   const hay = [
     item?.ps_id,
@@ -70,14 +130,36 @@ function fqMatchesSearch(item, term) {
 
 function fqFilteredItems() {
   const term = String(fqState.search || '').trim().toLowerCase();
-  return (fqState.items || []).filter((item) => {
+  const types = fqState.psTypes;
+  const allTypes = types.size >= FQ_PS_TYPE_ORDER.length;
+
+  const filtered = (fqState.items || []).filter((item) => {
     if (fqState.stage !== 'all' && item.stage_bucket !== fqState.stage) return false;
     if (fqState.status !== 'all') {
       const code = String(item.current_stage_status || '').trim().toUpperCase();
       if (code !== fqState.status) return false;
     }
+    if (!allTypes) {
+      const psType = fqGetPsType(item);
+      if (psType && !types.has(psType)) return false;
+      if (!psType && types.size > 0) return false;
+    }
     if (term && !fqMatchesSearch(item, term)) return false;
     return true;
+  });
+
+  if (!fqState.sortCol) return filtered;
+
+  return filtered.sort((a, b) => {
+    const primary = fqCompareValues(
+      fqSortValue(a, fqState.sortCol),
+      fqSortValue(b, fqState.sortCol),
+      fqState.sortDir
+    );
+    if (primary !== 0) return primary;
+    const psCmp = fqCompareValues(fqSortValue(a, 'ps_id'), fqSortValue(b, 'ps_id'), 'asc');
+    if (psCmp !== 0) return psCmp;
+    return Number(a.pp_partial_no || 0) - Number(b.pp_partial_no || 0);
   });
 }
 
@@ -239,6 +321,8 @@ function fqRenderTable() {
       ? `Cached ${fqState.cachedAt} · TTL ${fqState.cacheTtlSec}s`
       : '';
   }
+
+  fqUpdateSortHeaders();
 }
 
 async function fqLoad({ refresh = false } = {}) {
@@ -286,8 +370,56 @@ function fqSetStatus(status) {
   fqRenderTable();
 }
 
+function fqBindPsTypeDropdown() {
+  const dropdown = document.getElementById('fq-ps-type-dropdown');
+  const btn = document.getElementById('fq-ps-type-btn');
+  const panel = document.getElementById('fq-ps-type-panel');
+  if (!dropdown || !btn || !panel) return;
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    panel.hidden = !panel.hidden;
+  });
+
+  document.addEventListener('click', () => {
+    panel.hidden = true;
+  });
+
+  panel.addEventListener('click', (e) => e.stopPropagation());
+
+  panel.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+    input.addEventListener('change', () => {
+      fqState.psTypes = new Set(
+        [...panel.querySelectorAll('input[type="checkbox"]:checked')].map((el) => el.value)
+      );
+      btn.textContent = `${fqPsTypeLabel()} ▾`;
+      fqRenderTable();
+    });
+  });
+
+  btn.textContent = `${fqPsTypeLabel()} ▾`;
+}
+
+function fqSetSort(col) {
+  if (!col) return;
+  if (fqState.sortCol === col) {
+    fqState.sortDir = fqState.sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    fqState.sortCol = col;
+    fqState.sortDir = 'asc';
+  }
+  fqRenderTable();
+}
+
 function fqBindEvents() {
   document.getElementById('fq-refresh')?.addEventListener('click', () => fqLoad({ refresh: true }));
+
+  document.querySelectorAll('[data-fq-sort]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      fqSetSort(btn.dataset.fqSort || '');
+    });
+  });
 
   document.querySelectorAll('[data-fq-stage]').forEach((btn) => {
     btn.addEventListener('click', () => fqSetStage(btn.dataset.fqStage || 'all'));
@@ -327,6 +459,7 @@ function fqBindEvents() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  fqBindPsTypeDropdown();
   fqBindEvents();
   fqLoad();
 });

@@ -1102,6 +1102,8 @@
       partialLabel(item),
       item.selected_flow_code,
       item.selected_bom_code,
+      item.material_inventory_code,
+      ...(Array.isArray(item.material_inventory_codes) ? item.material_inventory_codes : []),
       item.status,
       item.planner_status,
       item.current_stage_desc,
@@ -1189,7 +1191,11 @@
   function matchesSearchTerms(item, terms) {
     if (!terms.length) return true;
     const haystack = itemSearchText(item);
-    return terms.some(term => haystack.includes(term));
+    return terms.some(term => {
+      if (haystack.includes(term)) return true;
+      const serial = term.replace(/^0+/, '');
+      return serial && serial !== term && haystack.includes(serial);
+    });
   }
 
   function mergeBulkLookupItems(apiRows, localItems) {
@@ -1462,6 +1468,10 @@
       current_stage_desc: item.current_stage_desc || '',
       current_stage_status: item.current_stage_status || '',
       pending_do: boolValue(item.pending_do),
+      material_inventory_code: item.material_inventory_code || '',
+      material_inventory_codes: Array.isArray(item.material_inventory_codes)
+        ? item.material_inventory_codes
+        : (item.material_inventory_code ? [item.material_inventory_code] : []),
       ops,
       source: 'erp',
     };
@@ -1653,8 +1663,10 @@
         if (t && !checkedTypes.has(t)) return false;
       }
       if (!matchesSearchTerms(item, searchTerms)) return false;
-      if (queueFilter === 'queued' && !isQueued(item)) return false;
-      if (queueFilter === 'unqueued' && isQueued(item)) return false;
+      if (!searchTerms.length) {
+        if (queueFilter === 'queued' && !isQueued(item)) return false;
+        if (queueFilter === 'unqueued' && isQueued(item)) return false;
+      }
       if (overdueOnly && !isOverdue(item)) return false;
       if (completedOnly && !isCompleted(item)) return false;
       if (!completedOnly && !showCompleted && isCompleted(item)) return false;
@@ -1792,6 +1804,30 @@
     `;
   }
 
+  function materialInventoryLabel(item) {
+    const codes = Array.isArray(item?.material_inventory_codes)
+      ? item.material_inventory_codes.map(code => compactText(code)).filter(Boolean)
+      : [];
+    if (!codes.length && compactText(item?.material_inventory_code)) {
+      codes.push(compactText(item.material_inventory_code));
+    }
+    return codes.join(', ');
+  }
+
+  function renderMaterialCodes(item) {
+    const label = materialInventoryLabel(item);
+    if (!label) return '';
+    return `
+      <div class="ps-row-route ps-row-material">
+        <span>Material</span>
+        <div class="ps-copy-line">
+          <strong>${escapeHtml(label)}</strong>
+          ${renderCopyBtn(label, 'material inventory code')}
+        </div>
+      </div>
+    `;
+  }
+
   function renderQueueItem(item) {
     const psId = canonicalPlannerPsId(item);
     const warnings = Array.isArray(item.warnings) ? item.warnings : [];
@@ -1834,6 +1870,7 @@
               <span>${escapeHtml(descriptor)}</span>
               ${renderCopyBtn(partDesc, 'part name')}
             </div>
+            ${renderMaterialCodes(item)}
           </div>
           ${renderDateStrip(item, psId)}
           <div class="ps-row-highlights">
@@ -2044,6 +2081,7 @@
         </div>
       </div>
       ${renderDetailsMeta(summary, item, ops)}
+      ${renderMaterialCodes(summary) || renderMaterialCodes(item)}
       ${details.erp_only ? '<div class="ps-details-note">Planner row was created from ERP on open. Schedule ops from this partial to add planned blocks.</div>' : ''}
       ${renderOps(ops, summary, plannedBlocks)}
       ${renderBlocks(plannedBlocks, ops)}

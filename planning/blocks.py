@@ -316,6 +316,32 @@ def sync_catalog_op_timing_fields(
             f"UPDATE planner_operation SET {set_clause}, updated_at = NOW() WHERE operation_id = %s",
             (*params, op_id),
         )
+        card_set = []
+        card_params = []
+        if setup_minutes is not None:
+            card_set.append("setup_minutes = %s")
+            card_params.append(float(setup_minutes))
+        if cycle_minutes_per_qty is not None:
+            card_set.append("cycle_minutes_per_qty = %s")
+            card_params.append(float(cycle_minutes_per_qty))
+        if card_set:
+            con.execute(
+                f"""
+                UPDATE planner_planning_card_operation pco
+                SET {", ".join(card_set)}
+                FROM planner_planning_card pc
+                WHERE pc.card_id = pco.card_id
+                  AND COALESCE(pco.source_ps_id, '') = %s
+                  AND COALESCE(pco.source_op_no, '') = COALESCE(%s, '')
+                  AND COALESCE(pco.source_op_seq_id, 0) = COALESCE(%s, 0)
+                """,
+                (
+                    *card_params,
+                    raw_ps,
+                    compact_text(row.get("source_op_no")),
+                    int(row.get("source_op_seq_id") or 0),
+                ),
+            )
         updated += 1
     return updated
 
@@ -1773,6 +1799,44 @@ def _leader_end_datetime(leader, preserved_bounds_by_block, naive_schedule_dt):
     return naive_schedule_dt(leader.get("calculated_end_datetime"))
 
 
+def _naive_schedule_dt(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None) if value.tzinfo is not None else value
+    return parse_dt_text(value)
+
+
+def _sync_block_planned_dates(con, block_id, start_dt, end_dt, *, anchor_dt=None):
+    """Mirror recalculated bounds onto planned_start_at/planned_end_at for catalog/master feedback."""
+    start_dt = _naive_schedule_dt(start_dt)
+    end_dt = _naive_schedule_dt(end_dt)
+    if not start_dt or not end_dt:
+        return
+    if anchor_dt is None:
+        row = one(
+            con.execute(
+                "SELECT anchor_datetime FROM planner_run_block WHERE block_id = %s",
+                (int(block_id),),
+            )
+        )
+        anchor_dt = row["anchor_datetime"] if row else None
+    anchor_dt = _naive_schedule_dt(anchor_dt)
+    planned_start = max(start_dt, anchor_dt) if anchor_dt else start_dt
+    con.execute(
+        """
+        UPDATE planner_run_block
+        SET planned_start_at = %s, planned_end_at = %s, updated_at = NOW()
+        WHERE block_id = %s
+        """,
+        (
+            planner_timestamptz_for_db(planned_start),
+            planner_timestamptz_for_db(end_dt),
+            int(block_id),
+        ),
+    )
+
+
 def _resolve_block_candidate_start(
     predecessor_end_dt,
     anchor_dt,
@@ -1783,21 +1847,34 @@ def _resolve_block_candidate_start(
     *,
     queue_fallback_dt=None,
 ):
-    """Anchor is the planning reference; without anchor, chain from the previous queue job end."""
-    if anchor_dt:
-        candidate_start = anchor_dt
+    """Anchor supersedes scheduled timing; without anchor, chain from the previous queue job end."""
+    predecessor_end_dt = _naive_schedule_dt(predecessor_end_dt)
+    anchor_dt = _naive_schedule_dt(anchor_dt)
+    dependency_finish = _naive_schedule_dt(dependency_finish)
+    planned_start = _naive_schedule_dt(planned_start)
+
+    effective_anchor = anchor_dt
+    if not effective_anchor and allow_pull == 0 and planned_start:
+        effective_anchor = planned_start
+
+    if effective_anchor:
+        candidate_start = effective_anchor
         if predecessor_end_dt and predecessor_end_dt > candidate_start:
             candidate_start = predecessor_end_dt
     elif predecessor_end_dt:
         candidate_start = predecessor_end_dt
     else:
         candidate_start = queue_fallback_dt
+
     if dependency_finish and candidate_start and dependency_finish > candidate_start:
         candidate_start = dependency_finish
     elif dependency_finish and not candidate_start:
         candidate_start = dependency_finish
+
+    # Scheduled pull-forward clamp applies only when no explicit anchor is set.
     if (
-        planned_start
+        not anchor_dt
+        and planned_start
         and candidate_start
         and candidate_start < planned_start
         and (allow_pull == 0 or is_fresh == 1)
@@ -1910,17 +1987,10 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
     ]
     preserved_bounds_by_block = preserved_actual_bounds_for_blocks(con, all_block_ids)
 
-    def _naive_schedule_dt(value):
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            return value.replace(tzinfo=None) if value.tzinfo is not None else value
-        return parse_dt_text(value)
-
     interval_cache = {}
     queue_cursor_end = None
 
-    def update_block_schedule_window(block_id, start_dt, end_dt, planning_status=None):
+    def update_block_schedule_window(block_id, start_dt, end_dt, planning_status=None, *, anchor_dt=None):
         start_bind = planner_timestamptz_for_db(start_dt)
         end_bind = planner_timestamptz_for_db(end_dt)
         start_text = start_dt.strftime("%Y-%m-%d %H:%M:%S") if start_dt else None
@@ -1947,6 +2017,14 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                 int(block_id),
             ),
         )
+        if start_text and end_text:
+            _sync_block_planned_dates(
+                con,
+                int(block_id),
+                start_dt,
+                end_dt,
+                anchor_dt=anchor_dt,
+            )
         if not start_text or not end_text:
             upsert_schedule_alert(
                 con,
@@ -2079,7 +2157,13 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                 start_dt = start_dt or prod_start
                 end_dt = prod_end or end_dt
 
-            update_block_schedule_window(block["block_id"], start_dt, end_dt, None)
+            update_block_schedule_window(
+                block["block_id"],
+                start_dt,
+                end_dt,
+                None,
+                anchor_dt=anchor_dt,
+            )
             queue_cursor_end = current_dt
             continue
 
@@ -2153,7 +2237,13 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         for member in members[1:]:
             refresh_block_schedule_bounds(con, int(member["block_id"]))
         if start_dt and end_dt:
-            update_block_schedule_window(leader["block_id"], start_dt, end_dt, None)
+            update_block_schedule_window(
+                leader["block_id"],
+                start_dt,
+                end_dt,
+                None,
+                anchor_dt=leader_anchor,
+            )
         else:
             refresh_block_schedule_bounds(con, int(leader["block_id"]))
         refreshed_leader = trial_block_row(con, int(leader["block_id"]))
@@ -2164,9 +2254,10 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
             current_dt = refreshed_end
         queue_cursor_end = current_dt
 
-    from .operation_sequence import sync_machine_operation_sequence
+    from .operation_sequence import sync_machine_operation_sequence, sync_planning_cards_for_machine
 
     sync_machine_operation_sequence(con, int(machine_id))
+    sync_planning_cards_for_machine(con, int(machine_id))
     refresh_states_for_machine(con, int(machine_id), schedule_run_id=schedule_run_id)
 
     if own_run:

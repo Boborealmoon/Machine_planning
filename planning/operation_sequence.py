@@ -267,6 +267,49 @@ def tail_recalc_start_index(existing_ids, ordered_ids):
     return prefix
 
 
+def infer_tail_by_machine(con, machine_ids):
+    """
+    Infer tail recalc start per machine by comparing current queue order to the order
+    implied by persisted calculated_start_datetime (last schedule). Used when the client
+    defers recalc after reordering.
+    """
+    tail_by_machine = {}
+    for machine_id in sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0}):
+        blocks = rows(
+            con.execute(
+                """
+                SELECT block_id, queue_position, calculated_start_datetime
+                FROM planner_run_block
+                WHERE machine_id = %s
+                  AND COALESCE(active, TRUE) = TRUE
+                ORDER BY queue_position, block_id
+                """,
+                (int(machine_id),),
+            )
+        )
+        if not blocks:
+            continue
+        queue_order = [int(row["block_id"]) for row in blocks]
+        scheduled = [row for row in blocks if row.get("calculated_start_datetime")]
+        if len(scheduled) < len(blocks):
+            continue
+        time_order = sorted(
+            scheduled,
+            key=lambda row: (
+                row["calculated_start_datetime"],
+                float(row["queue_position"] or 0),
+                int(row["block_id"]),
+            ),
+        )
+        time_order_ids = [int(row["block_id"]) for row in time_order]
+        if time_order_ids == queue_order:
+            continue
+        tail_start = tail_recalc_start_index(time_order_ids, queue_order)
+        if tail_start < len(queue_order):
+            tail_by_machine[int(machine_id)] = int(queue_order[tail_start])
+    return tail_by_machine
+
+
 def apply_machine_queue_order(con, machine_id, ordered_ids, *, recalculate=True):
     """
     Set queue_position (and machine) for ordered block ids on a lane, sync operation

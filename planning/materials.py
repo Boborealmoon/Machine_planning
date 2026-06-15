@@ -48,6 +48,101 @@ def _requirement_description(row):
     return compact_text(row.get("material_description") or row.get("material_desc"))
 
 
+def material_lookup_source_inventory(item):
+    return compact_text(item.get("inventory_code") or item.get("part_no") or "")
+
+
+def material_lookup_bom_code(item):
+    return compact_text(
+        item.get("selected_flow_code")
+        or item.get("selected_bom_code")
+        or item.get("erp_bom_code")
+        or item.get("bom_code")
+        or ""
+    )
+
+
+def material_inventory_codes_map(con, keys):
+    """Batch lookup material_per_bom rows keyed by (source_inventory_code, bom_code)."""
+    pairs = []
+    seen = set()
+    for item in keys or []:
+        if isinstance(item, tuple):
+            src, bom = compact_text(item[0]), compact_text(item[1])
+        else:
+            src = material_lookup_source_inventory(item)
+            bom = material_lookup_bom_code(item)
+        if not src or not bom:
+            continue
+        key = (src, bom)
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append(key)
+    if not pairs:
+        return {}
+
+    sources = [pair[0] for pair in pairs]
+    boms = [pair[1] for pair in pairs]
+    out = defaultdict(list)
+    seen_codes = defaultdict(set)
+    try:
+        query_rows = rows(
+            con.execute(
+                """
+                SELECT mpb.source_inventory_code, mpb.bom_code,
+                       mpb.material_inventory_code, mpb.description,
+                       mpb.qty_parent, mpb.qty_fg, mpb.uom_code
+                FROM material_per_bom mpb
+                INNER JOIN UNNEST(%s::text[], %s::text[]) AS k(source_inventory_code, bom_code)
+                    ON mpb.source_inventory_code = k.source_inventory_code
+                   AND mpb.bom_code = k.bom_code
+                ORDER BY mpb.source_inventory_code, mpb.bom_code, mpb.material_inventory_code
+                """,
+                (sources, boms),
+            )
+        )
+    except Exception:
+        return {}
+    for row in query_rows:
+        key = (
+            compact_text(row.get("source_inventory_code")),
+            compact_text(row.get("bom_code")),
+        )
+        code = compact_text(row.get("material_inventory_code"))
+        if not code or code in seen_codes[key]:
+            continue
+        seen_codes[key].add(code)
+        out[key].append(
+            {
+                "material_inventory_code": code,
+                "description": compact_text(row.get("description") or ""),
+                "qty_parent": parse_number(row.get("qty_parent"), 0),
+                "qty_fg": parse_number(row.get("qty_fg"), 1),
+                "uom_code": compact_text(row.get("uom_code") or ""),
+            }
+        )
+    return dict(out)
+
+
+def enrich_items_material_inventory_codes(con, items):
+    """Attach material_inventory_code(s) from material_per_bom to each process sheet item."""
+    if not items:
+        return items
+    code_map = material_inventory_codes_map(con, items)
+    for item in items:
+        key = (material_lookup_source_inventory(item), material_lookup_bom_code(item))
+        entries = code_map.get(key, [])
+        codes = [
+            compact_text(entry.get("material_inventory_code"))
+            for entry in entries
+            if compact_text(entry.get("material_inventory_code"))
+        ]
+        item["material_inventory_codes"] = codes
+        item["material_inventory_code"] = codes[0] if codes else ""
+    return items
+
+
 def _ps_requirement_context(con, ps_id):
     """Return process sheet row with ERP columns joined (used for sync)."""
     ps_id = compact_text(ps_id)
@@ -83,6 +178,14 @@ def _ps_requirement_context(con, ps_id):
     )
 
 
+def _bom_qty_per_fg(bom_row):
+    qty_parent = parse_number(bom_row.get("qty_parent"), 0)
+    qty_fg = parse_number(bom_row.get("qty_fg"), 1) or 1
+    if qty_parent <= 0:
+        return 0.0
+    return float(qty_parent) / float(qty_fg) if qty_fg else float(qty_parent)
+
+
 def sync_material_requirements_for_ps(con, ps_id):
     """
     Sync material_requirement rows for one PS from material_per_bom (ERP sync table).
@@ -101,14 +204,13 @@ def sync_material_requirements_for_ps(con, ps_id):
         return {"inserted": 0, "updated": 0, "skipped": 0, "requirement_ids": []}
 
     bom_code = compact_text(ps.get("selected_flow_code") or "")
-    total_qty = max(0.0, parse_number(ps.get("total_qty"), 0))
-    material_uom = "EA" if total_qty > 0 else ""
 
     bom_rows = rows(
         con.execute(
             """
             SELECT source_inventory_code, bom_code, material_inventory_code,
-                   description AS material_description
+                   description AS material_description,
+                   qty_parent, qty_fg, uom_code
             FROM material_per_bom
             WHERE source_inventory_code = %s AND bom_code = %s
             ORDER BY material_inventory_code
@@ -155,6 +257,8 @@ def sync_material_requirements_for_ps(con, ps_id):
             counts["skipped"] += 1
             continue
         mat_desc = compact_text(bom_row.get("material_description") or "")
+        material_qty_needed = _bom_qty_per_fg(bom_row)
+        material_uom = compact_text(bom_row.get("uom_code") or "")
         existing = existing_by_code.get(mat_code)
 
         if existing:
@@ -165,7 +269,7 @@ def sync_material_requirements_for_ps(con, ps_id):
                 and compact_text(existing.get("bom_code")) == bom_code
                 and compact_text(existing.get("material_inventory_code")) == mat_code
                 and cur_desc == next_desc
-                and float(parse_number(existing.get("material_qty_needed"), 0)) == float(total_qty)
+                and float(parse_number(existing.get("material_qty_needed"), 0)) == float(material_qty_needed)
                 and compact_text(existing.get("material_uom")) == material_uom
             )
             if unchanged:
@@ -184,7 +288,7 @@ def sync_material_requirements_for_ps(con, ps_id):
                     updated_at = NOW()
                 WHERE requirement_id = %s
                 """,
-                (source_inventory_code, bom_code, mat_code, next_desc, total_qty, material_uom,
+                (source_inventory_code, bom_code, mat_code, next_desc, material_qty_needed, material_uom,
                  int(existing["requirement_id"])),
             )
             counts["updated"] += 1
@@ -199,7 +303,7 @@ def sync_material_requirements_for_ps(con, ps_id):
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING_CONFIRMATION', '', '')
                 RETURNING requirement_id
                 """,
-                (ps_id, source_inventory_code, bom_code, mat_code, mat_desc, total_qty, material_uom),
+                (ps_id, source_inventory_code, bom_code, mat_code, mat_desc, material_qty_needed, material_uom),
             )
             new_row = one(cur)
             counts["inserted"] += 1
