@@ -135,15 +135,89 @@ def inventory_enquiry_page():
     return render_template("inventory_enquiry.html", active="planning_data")
 
 
+def _parse_codes_filter() -> list[str]:
+    raw = compact_text(request.args.get("codes"))
+    if not raw:
+        return []
+    parts = [compact_text(part) for part in raw.replace(";", ",").split(",")]
+    return [part for part in parts if part]
+
+
+def _loose_match_enabled() -> bool:
+    return compact_text(request.args.get("loose")).lower() in {"1", "true", "yes"}
+
+
+def _inventory_matches_bom_material(inventory_code: str, bom_material_code: str) -> bool:
+    """Exact match, or inventory variant with dimension suffix after underscore."""
+    inv = compact_text(inventory_code)
+    bom = compact_text(bom_material_code)
+    if not inv or not bom:
+        return False
+    if inv == bom:
+        return True
+    return inv.startswith(f"{bom}_")
+
+
+def _match_type(inventory_code: str, bom_material_code: str) -> str:
+    inv = compact_text(inventory_code)
+    bom = compact_text(bom_material_code)
+    if inv == bom:
+        return "exact"
+    if inv.startswith(f"{bom}_"):
+        return "suffix"
+    return ""
+
+
+def _filter_rows_by_codes(
+    rows: list[dict[str, Any]],
+    codes: list[str],
+    *,
+    loose: bool = False,
+) -> list[dict[str, Any]]:
+    if not codes:
+        return rows
+    if not loose:
+        code_set = set(codes)
+        return [
+            row
+            for row in rows
+            if compact_text(row.get("inventory_code")) in code_set
+        ]
+
+    matched: list[dict[str, Any]] = []
+    seen_inventory_codes: set[str] = set()
+    for row in rows:
+        inv = compact_text(row.get("inventory_code"))
+        if not inv:
+            continue
+        for bom_code in codes:
+            if not _inventory_matches_bom_material(inv, bom_code):
+                continue
+            if inv in seen_inventory_codes:
+                break
+            out = dict(row)
+            out["matched_bom_material_code"] = bom_code
+            out["match_type"] = _match_type(inv, bom_code)
+            matched.append(out)
+            seen_inventory_codes.add(inv)
+            break
+    return matched
+
+
 @inventory_enquiry_bp.get("/api/inventory-enquiry")
 def api_inventory_enquiry():
     refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
+    codes = _parse_codes_filter()
+    loose = _loose_match_enabled()
 
     try:
         rows = _fetch_inventory(refresh=refresh)
     except Exception as exc:
         logger.exception("inventory enquiry ERP query failed")
         return jsonify({"error": f"ERP query failed: {exc}"}), 502
+
+    if codes:
+        rows = _filter_rows_by_codes(rows, codes, loose=loose)
 
     cached_at = _cache[0] if _cache else time.time()
     return jsonify(
@@ -155,5 +229,7 @@ def api_inventory_enquiry():
             "cached_at": datetime.fromtimestamp(cached_at, tz=None).isoformat(sep=" ", timespec="seconds"),
             "cache_ttl_sec": _CACHE_TTL_SEC,
             "rows": rows,
+            "filtered_codes": codes or None,
+            "loose_match": loose if codes else False,
         }
     )

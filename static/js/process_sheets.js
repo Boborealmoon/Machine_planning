@@ -7,6 +7,7 @@
     loading: false,
     page: 1,
     erpIncludeCompleted: false,
+    psView: 'queue',
   };
 
   const tempState = {
@@ -416,6 +417,35 @@
     return String(value).slice(0, 10);
   }
 
+  function parseDateOnly(value) {
+    const text = String(value || '').trim().slice(0, 10);
+    const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (
+      date.getUTCFullYear() !== year
+      || date.getUTCMonth() !== month - 1
+      || date.getUTCDate() !== day
+    ) {
+      return null;
+    }
+    return date;
+  }
+
+  function isoCalendarWeek(value) {
+    const date = parseDateOnly(value);
+    if (!date) return '';
+    const dayNum = date.getUTCDay() || 7;
+    const thursday = new Date(date);
+    thursday.setUTCDate(thursday.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 1));
+    const weekNo = Math.ceil((((thursday - yearStart) / 86400000) + 1) / 7);
+    return `${thursday.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+  }
+
   function firstQuantity(...values) {
     for (const value of values) {
       if (value !== null && value !== undefined && value !== '') return value;
@@ -573,6 +603,35 @@
     `;
   }
 
+  function itemRejectQty(item) {
+    const top = Math.max(
+      numberValue(item?.reject_qty),
+      numberValue(item?.erp_reject_qty),
+      numberValue(item?.wo_qty_rejected),
+      numberValue(item?.output_debug?.erp_reject_qty),
+    );
+    const ops = Array.isArray(item?.ops) ? item.ops : [];
+    const fromOps = ops.reduce((sum, op) => {
+      return sum + Math.max(numberValue(op?.reject_qty), numberValue(op?.wo_qty_rejected));
+    }, 0);
+    return Math.max(top, fromOps);
+  }
+
+  function hasActiveRejectQty(item) {
+    return !isCompleted(item) && !isTempPs(item) && itemRejectQty(item) > 0;
+  }
+
+  function renderRejectQtyBadge(item) {
+    const qty = itemRejectQty(item);
+    if (qty <= 0) return '';
+    return `
+      <span class="ps-qty-badge ps-qty-badge--reject" title="Rejected quantity reported">
+        <small>Rej</small>
+        <strong>${escapeHtml(fmtQty(qty))}</strong>
+      </span>
+    `;
+  }
+
   function fmtBlockDateTime(value) {
     if (!value) return '';
     const raw = String(value).trim();
@@ -590,6 +649,19 @@
       hour: '2-digit',
       minute: '2-digit',
     });
+  }
+
+  function fmtExportDateTime(value) {
+    if (!value) return '';
+    const raw = String(value).trim();
+    if (!raw) return '';
+    const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) {
+      return raw.replace('T', ' ').slice(0, 16);
+    }
+    const pad = n => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
   }
 
   function blockPlannedTimes(block) {
@@ -1234,11 +1306,90 @@
     return 'Needs scheduling';
   }
 
+  function fmtDateTimeExport(value) {
+    if (!value) return '';
+    const raw = String(value).trim();
+    if (!raw) return '';
+    const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) return raw.slice(0, 16).replace('T', ' ');
+    const pad = n => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  function bulkLookupScheduleFields(item) {
+    const start = item?.expected_start || '';
+    const end = item?.expected_end || '';
+    return {
+      scheduled_start: start ? fmtDateTimeExport(start) : '',
+      scheduled_end: end ? fmtDateTimeExport(end) : '',
+      scheduled_start_display: start ? fmtBlockDateTime(start) : '—',
+      scheduled_end_display: end ? fmtBlockDateTime(end) : '—',
+    };
+  }
+
+  function bulkLookupPlannerPoolItems() {
+    const byKey = new Map();
+    const ingest = item => {
+      if (!item) return;
+      const key = itemIdentityKey(item);
+      if (!key) return;
+      byKey.set(key, item);
+    };
+    state.items.forEach(ingest);
+    if (Array.isArray(bulkLookupExportState.boardItems)) {
+      bulkLookupExportState.boardItems.forEach(ingest);
+    }
+    return [...byKey.values()];
+  }
+
+  function buildPlannerScheduleMap(plannerRows) {
+    const map = new Map();
+    (Array.isArray(plannerRows) ? plannerRows : []).forEach(row => {
+      const key = itemIdentityKey(row);
+      if (key) map.set(key, row);
+    });
+    return map;
+  }
+
+  function enrichBulkLookupPlannerFields(item, plannerByKey) {
+    const normalized = item?.source ? item : normalizeErpItem(item);
+    const planner = plannerByKey.get(itemIdentityKey(normalized));
+    if (!planner) return normalized;
+    return {
+      ...normalized,
+      expected_start: planner.expected_start || normalized.expected_start || '',
+      expected_end: planner.expected_end || normalized.expected_end || '',
+      queued_machines: planner.queued_machines?.length ? planner.queued_machines : (normalized.queued_machines || []),
+      queued_machine_details: planner.queued_machine_details?.length
+        ? planner.queued_machine_details
+        : (normalized.queued_machine_details || []),
+      planned_qty: planner.planned_qty ?? normalized.planned_qty,
+      finished_qty: planner.finished_qty ?? normalized.finished_qty,
+      remaining_qty: planner.remaining_qty ?? normalized.remaining_qty,
+      coway_proposed_edd: planner.coway_proposed_edd || normalized.coway_proposed_edd,
+      remarks: planner.remarks || normalized.remarks,
+      planner_status: planner.planner_status || normalized.planner_status,
+      ops: planner.ops?.length ? planner.ops : normalized.ops,
+      order_date: planner.order_date || normalized.order_date,
+    };
+  }
+
   function bulkLookupStageLabel(item) {
     const stage = resolveCurrentStage(item);
     if (!stage?.desc) return '—';
     const status = stage.status ? displayExecutionStatus(stage.status) : '';
     return status ? `${stage.desc} · ${status}` : stage.desc;
+  }
+
+  function bulkLookupScheduleStartLabel(item) {
+    const { scheduled_start_display } = bulkLookupScheduleFields(item);
+    return scheduled_start_display;
+  }
+
+  function bulkLookupScheduleEndLabel(item) {
+    const { scheduled_end_display } = bulkLookupScheduleFields(item);
+    return scheduled_end_display;
   }
 
   function renderBulkLookupTable(items) {
@@ -1258,8 +1409,14 @@
                 <th>Qty</th>
                 <th>PO due</th>
                 <th>Coway EDD</th>
+                <th>Coway week</th>
                 <th>Current stage</th>
                 <th>Queue</th>
+                <th>Machines</th>
+                <th>Scheduled start</th>
+                <th>Scheduled end</th>
+                <th>Planned qty</th>
+                <th>Finished qty</th>
                 <th>SO / PO</th>
                 <th>Shipped</th>
               </tr>
@@ -1272,11 +1429,15 @@
                 const qty = fmtQty(firstQuantity(item.display_qty, item.partial_qty, item.wo_req_qty, item.total_qty, 0));
                 const due = fmtDate(item.due_date);
                 const coway = fmtDate(item.coway_proposed_edd);
+                const cowayWeek = isoCalendarWeek(item.coway_proposed_edd) || '—';
                 const so = item.source_voucher_no || '—';
                 const shipped = fmtQty(item.qty_shipped || 0);
                 const soQty = fmtSoQty(item);
                 const queueClass = isQueued(item) ? 'ps-badge--queued' : 'ps-badge--needs-scheduling';
                 const tempBadge = isTempPs(item) ? '<span class="ps-temp-badge">[Temp]</span> ' : '';
+                const machines = queuedMachines(item);
+                const plannedQty = isQueued(item) ? fmtQty(item.planned_qty || 0) : '—';
+                const finishedQty = isQueued(item) ? fmtQty(item.finished_qty || 0) : '—';
                 return `
                   <tr data-action="bulk-lookup-open" data-ps-id="${escapeHtml(psId)}" title="Click to open in queue">
                     <td>${tempBadge}<button type="button" class="ps-bulk-lookup-row-btn" data-action="bulk-lookup-open" data-ps-id="${escapeHtml(psId)}">${escapeHtml(displayId)}</button></td>
@@ -1286,8 +1447,14 @@
                     <td>${escapeHtml(qty)}</td>
                     <td class="${due !== '-' && isOverdue(item) ? 'is-overdue' : ''}">${escapeHtml(due)}</td>
                     <td>${escapeHtml(coway)}</td>
+                    <td>${escapeHtml(cowayWeek)}</td>
                     <td>${escapeHtml(bulkLookupStageLabel(item))}</td>
                     <td><span class="ps-badge ${queueClass}">${escapeHtml(bulkLookupQueueLabel(item))}</span></td>
+                    <td>${escapeHtml(machines.length ? machines.join(', ') : '—')}</td>
+                    <td>${escapeHtml(bulkLookupScheduleStartLabel(item))}</td>
+                    <td>${escapeHtml(bulkLookupScheduleEndLabel(item))}</td>
+                    <td>${escapeHtml(plannedQty)}</td>
+                    <td>${escapeHtml(finishedQty)}</td>
                     <td>${escapeHtml(so)}</td>
                     <td>${escapeHtml(shipped)}${soQty !== '—' ? ` / ${escapeHtml(soQty)}` : ''}</td>
                   </tr>
@@ -1306,12 +1473,200 @@
       <div class="ps-bulk-lookup-summary">
         <span>Searching for <strong>${escapeHtml(terms.length)}</strong> term${terms.length === 1 ? '' : 's'}…</span>
       </div>
-      <div class="ps-details-loading">Loading process sheets from cache…</div>
+      <div class="ps-details-loading">Loading process sheets and planner schedule…</div>
     `, 'xl');
+  }
+
+  const bulkLookupExportState = {
+    items: [],
+    missedTerms: [],
+    terms: [],
+    boardItems: [],
+  };
+
+  function sortBulkLookupItemsByInputOrder(items, parsedTerms) {
+    function matchIndex(item) {
+      const idx = parsedTerms.findIndex(parsed => itemMatchesBulkLookupTerm(item, parsed));
+      return idx >= 0 ? idx : parsedTerms.length;
+    }
+    return [...items].sort((a, b) => {
+      const orderDiff = matchIndex(a) - matchIndex(b);
+      if (orderDiff) return orderDiff;
+      const psDiff = String(a.display_ps_id || a.ps_id || '').localeCompare(String(b.display_ps_id || b.ps_id || ''));
+      if (psDiff) return psDiff;
+      return Number(partialNo(a)) - Number(partialNo(b));
+    });
+  }
+
+  async function fetchBulkLookupResults(raw) {
+    const terms = parseBulkLookupTerms(raw);
+    const parsedTerms = terms.map(parseBulkLookupPsTerm).filter(Boolean);
+    if (!parsedTerms.length) {
+      throw new Error('Enter one or more process sheet numbers separated by commas, spaces, or newlines.');
+    }
+    const apiBases = [...new Set(parsedTerms.map(parsed => parsed.base).filter(Boolean))];
+    const searchParam = encodeURIComponent(apiBases.join(','));
+    const [apiRows, boardPayload] = await Promise.all([
+      getJson(
+        `/api/pp-vouchers/with-ops?search=${searchParam}&show_completed=1`,
+        { timeoutMs: 120000 },
+      ).catch(() => []),
+      getJson('/api/process-sheets/board?show_completed=1', { timeoutMs: 120000 }).catch(() => null),
+    ]);
+    bulkLookupExportState.boardItems = boardPayload ? mergeBoardItems(boardPayload) : [];
+    const plannerByKey = buildPlannerScheduleMap(bulkLookupPlannerPoolItems());
+    const plannerMatches = bulkLookupPlannerPoolItems().filter(item =>
+      parsedTerms.some(parsed => itemMatchesBulkLookupTerm(item, parsed)),
+    );
+    const items = sortBulkLookupItemsByInputOrder(
+      mergeBulkLookupItems(apiRows, plannerMatches)
+        .filter(item => parsedTerms.some(parsed => itemMatchesBulkLookupTerm(item, parsed)))
+        .map(item => enrichBulkLookupPlannerFields(item, plannerByKey)),
+      parsedTerms,
+    );
+    const missedTerms = unmatchedBulkLookupTerms(parsedTerms, items);
+    return { terms, parsedTerms, items, missedTerms };
+  }
+
+  const PS_EXPORT_COLUMNS = [
+    { key: 'process_sheet', header: 'Process sheet', width: 16 },
+    { key: 'partial', header: 'Partial', width: 8 },
+    { key: 'part_no', header: 'Part no', width: 14 },
+    { key: 'description', header: 'Description', width: 28 },
+    { key: 'qty', header: 'Qty', width: 10 },
+    { key: 'po_due', header: 'PO due', width: 12 },
+    { key: 'coway_edd', header: 'Coway EDD', width: 12 },
+    { key: 'coway_week', header: 'Coway week', width: 12 },
+    { key: 'current_stage', header: 'Current stage', width: 22 },
+    { key: 'stage_status', header: 'Stage status', width: 14 },
+    { key: 'queue_status', header: 'Queue', width: 18 },
+    { key: 'queued_machines', header: 'Queued machines', width: 18 },
+    { key: 'scheduled_start', header: 'Scheduled start', width: 20 },
+    { key: 'scheduled_end', header: 'Scheduled end', width: 20 },
+    { key: 'planned_qty', header: 'Planned qty', width: 12 },
+    { key: 'finished_qty', header: 'Finished qty', width: 12 },
+    { key: 'remaining_qty', header: 'Remaining qty', width: 12 },
+    { key: 'order_posted', header: 'Order posted', width: 12 },
+    { key: 'so_po', header: 'SO / PO', width: 16 },
+    { key: 'shipped_qty', header: 'Shipped qty', width: 12 },
+    { key: 'so_qty', header: 'SO qty', width: 10 },
+    { key: 'bom_route', header: 'BOM / route', width: 16 },
+    { key: 'remarks', header: 'Remarks', width: 24 },
+    { key: 'erp_status', header: 'ERP status', width: 12 },
+  ];
+
+  function bulkLookupExportRow(item) {
+    const stage = resolveCurrentStage(item);
+    const stageStatus = stage?.status ? displayExecutionStatus(stage.status) : '';
+    const machines = queuedMachines(item);
+    const schedule = bulkLookupScheduleFields(item);
+    return {
+      process_sheet: tempPsDisplayId(item) || item.display_ps_id || item.ps_id || '',
+      partial: partialLabel(item),
+      part_no: item.part_no || item.part_name || item.inventory_code || '',
+      description: item.part_desc || '',
+      qty: firstQuantity(item.display_qty, item.partial_qty, item.wo_req_qty, item.total_qty, 0),
+      po_due: fmtDate(item.due_date) === '-' ? '' : fmtDate(item.due_date),
+      coway_edd: fmtDate(item.coway_proposed_edd) === '-' ? '' : fmtDate(item.coway_proposed_edd),
+      coway_week: isoCalendarWeek(item.coway_proposed_edd),
+      current_stage: stage?.desc || '',
+      stage_status: stageStatus,
+      queue_status: bulkLookupQueueLabel(item),
+      queued_machines: machines.join(', '),
+      scheduled_start: schedule.scheduled_start,
+      scheduled_end: schedule.scheduled_end,
+      planned_qty: isQueued(item) ? numberValue(item.planned_qty) : '',
+      finished_qty: numberValue(item.finished_qty),
+      remaining_qty: numberValue(item.remaining_qty),
+      order_posted: fmtDate(item.order_date) === '-' ? '' : fmtDate(item.order_date),
+      so_po: item.source_voucher_no || '',
+      shipped_qty: numberValue(item.qty_shipped),
+      so_qty: item.so_det_qty != null ? numberValue(item.so_det_qty) : '',
+      bom_route: item.selected_flow_code || item.route_label || item.erp_bom_code || '',
+      remarks: item.remarks || '',
+      erp_status: item.status || item.execution_status || '',
+    };
+  }
+
+  async function ensureExcelJs() {
+    if (window.ExcelJS) return window.ExcelJS;
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+      script.async = true;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('Could not load Excel export library'));
+      document.head.appendChild(script);
+    });
+    return window.ExcelJS;
+  }
+
+  function bulkExportFilename() {
+    const stamp = new Date().toISOString().slice(0, 10);
+    return `process-sheets-export-${stamp}.xlsx`;
+  }
+
+  async function exportBulkLookupToExcel(items, missedTerms, terms) {
+    if (!items.length && !missedTerms.length) {
+      throw new Error('No process sheets matched your list.');
+    }
+    const ExcelJS = await ensureExcelJs();
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Production Planner';
+    workbook.created = new Date();
+
+    const sheet = workbook.addWorksheet('Process sheets');
+    const headers = PS_EXPORT_COLUMNS.map(col => col.header);
+    const headerRow = sheet.addRow(headers);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+    headerRow.alignment = { vertical: 'middle' };
+
+    items.forEach(item => {
+      const row = bulkLookupExportRow(item);
+      sheet.addRow(PS_EXPORT_COLUMNS.map(col => row[col.key] ?? ''));
+    });
+
+    PS_EXPORT_COLUMNS.forEach((col, index) => {
+      sheet.getColumn(index + 1).width = col.width;
+    });
+    sheet.views = [{ state: 'frozen', ySplit: 1, xSplit: 0, activeCell: 'A2' }];
+
+    if (missedTerms.length) {
+      const missedSheet = workbook.addWorksheet('No matches');
+      const missedHeader = missedSheet.addRow(['Requested value', 'Note']);
+      missedHeader.font = { bold: true, size: 11 };
+      missedHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF2F2' } };
+      missedTerms.forEach(term => {
+        missedSheet.addRow([term, 'No matching process sheet found']);
+      });
+      missedSheet.getColumn(1).width = 24;
+      missedSheet.getColumn(2).width = 36;
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = bulkExportFilename();
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+
+    const summaryParts = [`Exported ${items.length} process sheet${items.length === 1 ? '' : 's'}`];
+    if (missedTerms.length) summaryParts.push(`${missedTerms.length} not found`);
+    if (typeof toast === 'function') toast(summaryParts.join(' · '), missedTerms.length ? 'info' : 'success');
   }
 
   function openBulkLookupModalResults(terms, items, missedTerms) {
     if (typeof openModal !== 'function') return;
+    bulkLookupExportState.items = items;
+    bulkLookupExportState.missedTerms = missedTerms;
+    bulkLookupExportState.terms = terms;
     const missedHtml = missedTerms.length
       ? `<div class="ps-bulk-lookup-missed"><strong>No matches</strong>${escapeHtml(missedTerms.join(', '))}</div>`
       : '';
@@ -1319,6 +1674,7 @@
       <div class="ps-bulk-lookup-summary">
         <span><strong>${escapeHtml(items.length)}</strong> process sheet${items.length === 1 ? '' : 's'} found</span>
         <span>Searched: ${escapeHtml(terms.join(', '))}</span>
+        <button type="button" class="btn btn-dark btn-sm" data-action="bulk-lookup-export">Export Excel</button>
       </div>
       ${renderBulkLookupTable(items)}
       ${missedHtml}
@@ -1334,6 +1690,14 @@
         event.preventDefault();
         event.stopPropagation();
         openBulkLookupItemInQueue(node.dataset.psId || '');
+      });
+    });
+    shell.querySelector('[data-action="bulk-lookup-export"]')?.addEventListener('click', event => {
+      event.preventDefault();
+      runBulkExport({
+        items: bulkLookupExportState.items,
+        missedTerms: bulkLookupExportState.missedTerms,
+        terms: bulkLookupExportState.terms,
       });
     });
   }
@@ -1366,27 +1730,14 @@
 
   async function runBulkLookup() {
     const raw = String(els.bulkLookupInput?.value || '').trim();
-    const terms = parseBulkLookupTerms(raw);
-    const parsedTerms = terms.map(parseBulkLookupPsTerm).filter(Boolean);
-    if (!parsedTerms.length) {
-      window.alert('Enter one or more values separated by spaces or commas (process sheet, part, PO, SO, etc.).');
+    if (!raw) {
+      window.alert('Enter one or more process sheet numbers separated by commas, spaces, or newlines.');
       els.bulkLookupInput?.focus();
       return;
     }
-    openBulkLookupModalLoading(terms);
+    openBulkLookupModalLoading(parseBulkLookupTerms(raw));
     try {
-      const apiBases = [...new Set(parsedTerms.map(parsed => parsed.base).filter(Boolean))];
-      const searchParam = encodeURIComponent(apiBases.join(','));
-      const apiRows = await getJson(
-        `/api/pp-vouchers/with-ops?search=${searchParam}&show_completed=1`,
-        { timeoutMs: 120000 },
-      ).catch(() => []);
-      const localMatches = state.items.filter(item =>
-        parsedTerms.some(parsed => itemMatchesBulkLookupTerm(item, parsed)),
-      );
-      const items = mergeBulkLookupItems(apiRows, localMatches)
-        .filter(item => parsedTerms.some(parsed => itemMatchesBulkLookupTerm(item, parsed)));
-      const missedTerms = unmatchedBulkLookupTerms(parsedTerms, items);
+      const { terms, items, missedTerms } = await fetchBulkLookupResults(raw);
       openBulkLookupModalResults(terms, items, missedTerms);
     } catch (err) {
       if (typeof openModal === 'function') {
@@ -1395,6 +1746,35 @@
         `, 'lg');
       } else {
         window.alert(err.message || 'Could not run bulk lookup.');
+      }
+    }
+  }
+
+  async function runBulkExport(prefetched) {
+    const btn = els.bulkExportBtn;
+    const raw = String(els.bulkLookupInput?.value || '').trim();
+    if (!prefetched && !raw) {
+      window.alert('Enter one or more process sheet numbers separated by commas, spaces, or newlines.');
+      els.bulkLookupInput?.focus();
+      return;
+    }
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Exporting…';
+    }
+    try {
+      const result = prefetched || await fetchBulkLookupResults(raw);
+      await exportBulkLookupToExcel(result.items, result.missedTerms, result.terms);
+    } catch (err) {
+      if (typeof toast === 'function') {
+        toast(err.message || 'Export failed.', 'error');
+      } else {
+        window.alert(err.message || 'Export failed.');
+      }
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Export Excel';
       }
     }
   }
@@ -1450,6 +1830,9 @@
       display_qty: firstQuantity(item.display_qty, item.partial_qty, item.total_qty, item.wo_qty_required, 0),
       planned_qty: item.planned_qty || 0,
       finished_qty: item.finished_qty || 0,
+      reject_qty: numberValue(item.reject_qty),
+      wo_qty_rejected: numberValue(item.wo_qty_rejected),
+      erp_reject_qty: numberValue(item.erp_reject_qty),
       remaining_qty: firstQuantity(item.remaining_qty, item.wo_qty_required, item.display_qty, item.partial_qty, item.total_qty),
       status: item.status || '',
       execution_status: executionStatus,
@@ -1653,6 +2036,9 @@
     const dueSortActive = sortsByPoDue();
 
     return state.items.filter(item => {
+      if (state.psView === 'rejects') {
+        if (!hasActiveRejectQty(item)) return false;
+      }
       if (dueSortActive && !completedOnly && isCompleted(item)) return false;
       if (dueSortActive && !hasPoDueDate(item)) return false;
       if (tempFilter === 'temp_only' && !isTempPs(item)) return false;
@@ -1678,7 +2064,48 @@
     const items = filteredItems();
     renderCounts();
     renderQueue(items);
+    updateRejectsTabCount();
     updateTempTabCount();
+    updateQueueViewHeading();
+  }
+
+  function updateQueueViewHeading() {
+    const title = $('ps-queue-section-title');
+    const desc = $('ps-queue-section-desc');
+    if (!title || !desc) return;
+    if (state.psView === 'rejects') {
+      title.textContent = 'Rejected qty';
+      desc.innerHTML = 'Active process sheets with <strong>rejected quantity</strong> reported and not yet fully completed. Use <strong>Create temp PS</strong> to spin up a rework copy.';
+      return;
+    }
+    title.textContent = 'Active Job Control';
+    desc.innerHTML = 'ERP and planner lines including <strong>[Temp]</strong> when enabled in filters below. Use filter <strong>[Temp] only</strong> to focus reject/rework copies in this queue.';
+  }
+
+  function updateRejectsTabCount() {
+    const pill = $('ps-rejects-tab-count');
+    if (!pill) return;
+    const count = state.items.filter(hasActiveRejectQty).length;
+    if (count <= 0) {
+      pill.hidden = true;
+      return;
+    }
+    pill.hidden = false;
+    pill.textContent = String(count);
+  }
+
+  function updateTempTabCount() {
+    const pill = $('ps-temp-tab-count');
+    if (!pill) return;
+    const unresolved = tempState.items.filter(item => !item.is_resolved).length;
+    const fromQueue = state.items.filter(item => isTempPs(item) && !isCompleted(item)).length;
+    const count = tempState.items.length ? unresolved : fromQueue;
+    if (count <= 0) {
+      pill.hidden = true;
+      return;
+    }
+    pill.hidden = false;
+    pill.textContent = String(count);
   }
 
   function renderCounts() {
@@ -1710,9 +2137,13 @@
           '</div>',
         ].join('');
       } else if (state.items.length > 0) {
+        const rejectView = state.psView === 'rejects';
         els.queue.innerHTML = [
           '<div class="queue-empty">',
-          '<p><strong>No results.</strong></p>',
+          `<p><strong>${rejectView ? 'No active process sheets with rejected qty match.' : 'No results.'}</strong></p>`,
+          rejectView
+            ? '<p class="queue-empty-meta">Rejected qty is read from ERP WO reporting. Try clearing search or queue filters.</p>'
+            : '',
           '<button class="btn btn-light btn-sm queue-empty-reset" type="button" data-action="reset-filters">Reset filters</button>',
           '</div>',
         ].join('');
@@ -1741,13 +2172,17 @@
     const pageItems = sortedItems.slice(start, end);
 
     if (els.queueHint) {
-      const erpOnly = items.filter(item => item.source === 'erp').length;
-      const sortNote = currentSortMode() === 'planning' ? '' : ' | sorted';
-      const refreshed = state.lastRefreshedAt
-        ? ` | refreshed ${new Date(state.lastRefreshedAt).toLocaleTimeString()}`
-        : '';
       const loadingNote = state.loading ? ' | refreshing from cache…' : '';
-      els.queueHint.textContent = `${start + 1}-${end} shown from ${sortedItems.length} matched | ${state.items.length} loaded${erpOnly ? ` (${erpOnly} ERP-only)` : ''}${sortNote}${refreshed}${loadingNote}`;
+      if (state.psView === 'rejects') {
+        els.queueHint.textContent = `${sortedItems.length} active with rejected qty · showing ${start + 1}-${end}${loadingNote}`;
+      } else {
+        const erpOnly = items.filter(item => item.source === 'erp').length;
+        const sortNote = currentSortMode() === 'planning' ? '' : ' | sorted';
+        const refreshed = state.lastRefreshedAt
+          ? ` | refreshed ${new Date(state.lastRefreshedAt).toLocaleTimeString()}`
+          : '';
+        els.queueHint.textContent = `${start + 1}-${end} shown from ${sortedItems.length} matched | ${state.items.length} loaded${erpOnly ? ` (${erpOnly} ERP-only)` : ''}${sortNote}${refreshed}${loadingNote}`;
+      }
     }
 
     const sortMode = currentSortMode();
@@ -1838,8 +2273,9 @@
     const srBadge = isSrTagged(item) && !isTempPs(item) ? '<span class="ps-sr-badge">[SR]</span>' : '';
     const qty = fmtQty(firstQuantity(item.display_qty, item.partial_qty, item.wo_req_qty, item.total_qty, 0));
     const qtyBadge = renderQtyBadge(qty);
+    const rejectBadge = renderRejectQtyBadge(item);
     const warningsPill = renderWarningsPill(warnings);
-    const titleBadges = [tempBadge, partial, qtyBadge, srBadge, warningsPill].filter(Boolean).join('\n              ');
+    const titleBadges = [tempBadge, partial, qtyBadge, rejectBadge, srBadge, warningsPill].filter(Boolean).join('\n              ');
     const currentStageStrip = renderCurrentStageStrip(item);
     const opStatusStrip = renderOpStatusStrip(ops, item);
     const partNo = compactText(item.part_no || item.part_name || item.inventory_code || '');
@@ -2286,23 +2722,14 @@
     if (window.location.pathname === '/temp-process-sheets' || window.location.hash === '#temp') {
       return 'temp';
     }
+    if (window.location.hash === '#rejects') {
+      return 'rejects';
+    }
     return 'queue';
   }
 
-  function updateTempTabCount() {
-    const pill = $('ps-temp-tab-count');
-    if (!pill) return;
-    const fromQueue = state.items.filter(isTempPs).length;
-    const count = Math.max(fromQueue, tempState.items.length);
-    if (count <= 0) {
-      pill.hidden = true;
-      return;
-    }
-    pill.hidden = false;
-    pill.textContent = String(count);
-  }
-
   function setPsView(view) {
+    state.psView = view || 'queue';
     const isTemp = view === 'temp';
     const queuePanel = $('ps-view-queue');
     const tempPanel = $('ps-view-temp');
@@ -2317,17 +2744,25 @@
     document.querySelectorAll('.ps-view-tab').forEach(tab => {
       tab.classList.toggle('is-active', tab.dataset.psView === view);
     });
-    const path = isTemp ? '/process-sheets#temp' : '/process-sheets';
+    const hash = view === 'rejects' ? '#rejects' : (view === 'temp' ? '#temp' : '');
+    const path = `/process-sheets${hash}`;
     if (`${window.location.pathname}${window.location.hash}` !== path && window.location.pathname !== '/temp-process-sheets') {
       history.replaceState(null, '', path);
     }
-    if (isTemp) loadTempTracker();
+    if (isTemp) {
+      loadTempTracker();
+      return;
+    }
+    state.page = 1;
+    render();
   }
 
   function filteredTempItems() {
     const needle = String(els.tempSearch?.value || '').trim().toLowerCase();
     const queueFilter = String(els.tempQueueFilter?.value || '').trim().toLowerCase();
+    const hideResolved = els.tempHideResolved?.checked !== false;
     return tempState.items.filter(item => {
+      if (hideResolved && item.is_resolved) return false;
       if (queueFilter === 'queued' && !item.is_queued) return false;
       if (queueFilter === 'unqueued' && item.is_queued) return false;
       if (!needle) return true;
@@ -2619,16 +3054,19 @@
     els.tempTrackerHint = $('ps-temp-tracker-hint');
     els.tempSearch = $('ps-temp-search');
     els.tempQueueFilter = $('ps-temp-queue-filter');
+    els.tempHideResolved = $('ps-temp-hide-resolved');
     els.tempRefreshBtn = $('ps-temp-refresh-btn');
     els.tempCreateBtn = $('ps-temp-create-btn');
     els.bulkLookupInput = $('ps-bulk-lookup-input');
     els.bulkLookupBtn = $('ps-bulk-lookup-btn');
+    els.bulkExportBtn = $('ps-bulk-export-btn');
 
     document.querySelectorAll('.ps-view-tab').forEach(tab => {
       tab.addEventListener('click', () => setPsView(tab.dataset.psView || 'queue'));
     });
     els.tempSearch?.addEventListener('input', () => renderTempTracker());
     els.tempQueueFilter?.addEventListener('change', () => renderTempTracker());
+    els.tempHideResolved?.addEventListener('change', () => renderTempTracker());
     els.tempRefreshBtn?.addEventListener('click', () => loadTempTracker());
     els.tempCreateBtn?.addEventListener('click', () => {
       if (typeof openTempProcessSheetModal === 'function') openTempProcessSheetModal();
@@ -2700,10 +3138,15 @@
     els.search?.addEventListener('input', scheduleSearchRender);
 
     els.bulkLookupBtn?.addEventListener('click', () => runBulkLookup());
+    els.bulkExportBtn?.addEventListener('click', () => runBulkExport());
     els.bulkLookupInput?.addEventListener('keydown', event => {
       if (event.key !== 'Enter') return;
       event.preventDefault();
-      runBulkLookup();
+      if (event.shiftKey) {
+        runBulkExport();
+      } else {
+        runBulkLookup();
+      }
     });
 
     [els.queueFilter, els.sortBy, els.overdueOnly, els.hideSrTags, els.tempFilter]
@@ -2862,9 +3305,10 @@
   document.addEventListener('DOMContentLoaded', () => {
     bind();
     loadProcessSheets();
-    if (resolveInitialPsView() === 'temp') setPsView('temp');
+    if (resolveInitialPsView() !== 'queue') setPsView(resolveInitialPsView());
     window.addEventListener('hashchange', () => {
       if (window.location.hash === '#temp') setPsView('temp');
+      else if (window.location.hash === '#rejects') setPsView('rejects');
       else if (window.location.pathname !== '/temp-process-sheets') setPsView('queue');
     });
   });

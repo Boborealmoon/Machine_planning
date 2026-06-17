@@ -90,6 +90,13 @@ def resolve_schedule_times(
     """Master-first cycle/setup for new scheduler jobs (catalog drag-drop path)."""
     fallback_cycle = max(0.0, float(cycle_minutes_per_qty or 0))
     fallback_setup = max(0.0, float(setup_minutes or 0))
+    # Catalog drag-drop already sends BOM/cycle-times; avoid master REST on every queue POST.
+    if fallback_cycle > 0:
+        return {
+            "cycle_minutes_per_qty": fallback_cycle,
+            "setup_minutes": fallback_setup,
+            "source": "client",
+        }
     source_ps_id = compact_text(source_ps_id)
     if not source_ps_id:
         return {

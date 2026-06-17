@@ -619,11 +619,123 @@ function trialQueuedOpCardsForPs(ps) {
 }
 
 function trialIsFinishingOpCard(card) {
-  const desc = String(card?.stage_desc || card?.op_type || card?.operation_name || '').trim();
+  if (!card) return false;
+  if (card.is_finishing || card.op?.is_finishing) return true;
+  const desc = String(
+    card?.stage_desc || card?.op?.stage_desc
+    || card?.op_type || card?.op?.op_type
+    || card?.operation_name || card?.op?.operation_name
+    || '',
+  ).trim();
   if (!desc) return false;
   const lowered = desc.toLowerCase();
   if (lowered === 'deburring' || lowered === 'final inspection' || lowered === 'packing') return true;
   return lowered.includes('engraving') && lowered.includes('packing');
+}
+
+/** True when a catalog op matches the PS partial's active ERP WO stage. */
+function trialCatalogOpMatchesCurrentStage(card, ps) {
+  const stageNo = Number(ps?.current_stage_no || 0);
+  const stageDesc = String(ps?.current_stage_desc || '').trim();
+  if (!stageNo && !stageDesc) return true;
+
+  const opNo = String(card?.source_op_no || card?.operation_label || '').trim();
+  const opType = String(card?.operation_name || card?.op_type || card?.op?.op_type || '').trim();
+  const sourceStageNo = Number(card?.source_stage_no ?? card?.op?.source_stage_no ?? 0);
+
+  if (stageNo > 0) {
+    if (sourceStageNo > 0 && sourceStageNo === stageNo) return true;
+    if (opNo && opNo === String(stageNo)) return true;
+  }
+  if (stageDesc) {
+    const descLower = stageDesc.toLowerCase();
+    const typeLower = opType.toLowerCase();
+    if (typeLower && (typeLower === descLower || typeLower.includes(descLower) || descLower.includes(typeLower))) {
+      return true;
+    }
+    if (opNo && stageDesc.includes(opNo)) return true;
+  }
+  return false;
+}
+
+/** Mirror planning/catalog.py _is_machining_plannable_op — scheduler sidebar machining ops only. */
+function trialCatalogOpIsMachiningPlannable(opType, machineCategory, sourceKind, preferredMachine) {
+  if (String(preferredMachine || '').trim()) return true;
+  const cat = String(machineCategory || '').trim().toUpperCase();
+  if (cat === 'TURNING' || cat === 'MILLING' || cat === 'TURNMILL' || cat === 'PLACEHOLDER') return true;
+  const opUpper = String(opType || '').trim().toUpperCase();
+  if (opUpper === 'PLACEHOLDER') return true;
+  const opText = String(opType || '').trim();
+  if (/^(BOM|MATERIAL|MAT\b|SUBCON|SUB\s*CON|SMP[\s-]*MAT|KITTING|PACK)\b/i.test(opText)) return false;
+  if (/^(Turning|Milling|Turnmill)\b/i.test(opText)) return true;
+  if (String(sourceKind || '').toUpperCase() === 'MANUAL' && opText) return true;
+  return false;
+}
+
+function trialCatalogOpIsRelevant(card) {
+  if (!card) return false;
+  if (trialCatalogOpIsManualBom(card)) return true;
+  if (trialIsFinishingOpCard(card)) return false;
+  const opRef = card.op || {};
+  const stageNo = Number(card.source_stage_no ?? opRef.source_stage_no ?? 0);
+  const sourceKind = String(card.source_kind || opRef.source_kind || '').trim().toUpperCase();
+  if (stageNo > 0 && sourceKind === 'ERP_WO') {
+    const cat = String(card.compatible_machine_group || opRef.machine_category || '').trim().toUpperCase();
+    if (cat === 'FINISHING') return false;
+  }
+  const opType = String(
+    card.operation_name || card.op_type || opRef.op_type || card.stage_desc || opRef.stage_desc || '',
+  ).trim();
+  const machineCat = String(card.compatible_machine_group || opRef.machine_category || '').trim();
+  const preferred = String(card.preferred_machine || opRef.preferred_machine || '').trim();
+  return trialCatalogOpIsMachiningPlannable(opType, machineCat, sourceKind, preferred);
+}
+
+function trialCatalogPsFromElement(opEl) {
+  const psEl = opEl?.closest?.('.trial-catalog-ps');
+  if (!psEl) return null;
+  const psId = String(psEl.dataset?.psId || '').trim();
+  if (!psId) return null;
+  const pools = [
+    ...(Array.isArray(trialState?.catalog) ? trialState.catalog : []),
+    ...(Array.isArray(trialState?.planned) ? trialState.planned : []),
+  ];
+  return pools.find(row => String(row?.ps_id || '') === psId) || null;
+}
+
+/** Original PS: only the current ERP stage is draggable; [Temp] lines stay fully draggable. */
+function trialCatalogOpCanDrag(card, ps) {
+  if (!card || trialCatalogOpIsComplete(card)) return false;
+  if (trialCatalogSchedulableRemaining(card) <= 0.0001) return false;
+  if (trialIsCatalogOpFullyQueued(card)) return false;
+
+  const isTemp = Boolean(ps?.is_temp_ps || card?.is_temp_ps);
+  if (isTemp) return true;
+
+  const pool = [
+    ...(Array.isArray(trialState?.catalog) ? trialState.catalog : []),
+    ...(Array.isArray(trialState?.planned) ? trialState.planned : []),
+  ];
+  if (ps && typeof trialCatalogSupersededByTempSibling === 'function'
+    && trialCatalogSupersededByTempSibling(ps, pool)) {
+    return false;
+  }
+
+  if (trialCatalogOpIsManualBom(card)) return true;
+
+  const exec = trialNormalizeExecStatus(trialCatalogOpExecStatus(card));
+  if (exec === 'I' || exec === 'IN_PROCESS' || exec === 'C' || exec === 'COMPLETED') {
+    return false;
+  }
+
+  if (!trialCatalogOpMatchesCurrentStage(card, ps)) return false;
+
+  const isAllocated = Boolean(card.is_allocated) || trialIsCatalogOpAllocated(card);
+  if (isAllocated) {
+    return trialCatalogSchedulableRemaining(card) > 0.0001;
+  }
+
+  return true;
 }
 
 function trialResolvedOpCardsForPs(ps) {
@@ -633,7 +745,7 @@ function trialResolvedOpCardsForPs(ps) {
     pp_partial_no: card?.pp_partial_no ?? ps?.pp_partial_no,
   });
   const baseCards = (Array.isArray(ps?.op_cards) ? ps.op_cards : [])
-    .filter(card => !trialIsFinishingOpCard(card))
+    .filter(card => trialCatalogOpIsRelevant(card))
     .map(stampPs);
   const queuedCards = trialQueuedOpCardsForPs(ps);
   const seen = new Set(baseCards.map(trialCatalogOpCardKey));
@@ -657,6 +769,7 @@ function trialResolvedOpCardsForPs(ps) {
       }
       return;
     }
+    if (!trialCatalogOpIsRelevant(card)) return;
     merged.push(card);
     seen.add(key);
   });
@@ -689,6 +802,7 @@ function trialResolvedOpCardsForPs(ps) {
     };
     const key = trialCatalogOpCardKey(card);
     if (seen.has(key)) return;
+    if (!trialCatalogOpIsRelevant(card)) return;
     if (!trialCatalogOpShouldShow(card, () => false)) return;
     merged.push(card);
     seen.add(key);
@@ -1808,7 +1922,7 @@ function openTrialRunBlockDetail(blockId) {
   openModal(title, trialRenderRunBlockDetailBody(group, block, machine), 'lg');
 }
 
-function renderTrialOpCardHtml(card) {
+function renderTrialOpCardHtml(card, ps) {
   const cardKind = String(card.card_kind || 'single');
   const isGroup = cardKind === 'group';
   const isScheduled = !!card.is_scheduled;
@@ -1898,6 +2012,7 @@ function renderTrialOpCardHtml(card) {
   const showOpName = opName && opName !== opLabel;
   const isManualBom = trialCatalogOpIsManualBom(card);
   const isComplete = trialCatalogOpIsComplete(card);
+  const canDrag = trialCatalogOpCanDrag(card, ps);
   const manualBomBadge = isManualBom
     ? '<span class="trial-catalog-manual-bom-badge" title="Manual BOM step — always shown in catalog">Manual</span>'
     : '';
@@ -1912,14 +2027,17 @@ function renderTrialOpCardHtml(card) {
         onclick="deleteTrialPlanningCard(${Number(card.card_id || 0)})">×</button>`
     : '';
   return `
-    <div class="trial-catalog-op trial-planning-card trial-catalog-op--compact trial-catalog-op--clickable ${isScheduled ? 'is-scheduled' : ''} ${isAllocated ? 'is-allocated' : ''} ${isPartiallyAllocated ? 'is-partially-allocated' : ''} ${isManualBom ? 'is-manual-bom' : ''} ${isComplete ? 'is-completed' : ''}"
+    <div class="trial-catalog-op trial-planning-card trial-catalog-op--compact trial-catalog-op--clickable ${isScheduled ? 'is-scheduled' : ''} ${isAllocated ? 'is-allocated' : ''} ${isPartiallyAllocated ? 'is-partially-allocated' : ''} ${isManualBom ? 'is-manual-bom' : ''} ${isComplete ? 'is-completed' : ''} ${canDrag ? '' : 'is-not-draggable'}"
       draggable="false"
+      data-can-drag="${canDrag ? '1' : '0'}"
       data-is-complete="${isComplete ? 'true' : 'false'}"
       title="${isComplete
         ? 'Completed — click for details'
-        : (isPartiallyAllocated
-          ? `Click for details · drag remainder (${schedulableRemaining} pcs) to another machine`
-          : 'Click for details · drag to schedule or combine')}"
+        : (!canDrag
+          ? 'Click for details — not draggable'
+          : (isPartiallyAllocated
+            ? `Click for details · drag remainder (${schedulableRemaining} pcs) to another machine`
+            : 'Click for details · drag to schedule or combine'))}"
       data-trial-payload="${trialPayloadToAttr(payload)}"
       data-card-kind="${escapeHtml(cardKind)}"
       data-card-id="${escapeHtml(card.card_id || '')}"
@@ -2669,7 +2787,7 @@ function renderTrialMachine(machine) {
     ? ''
     : `<div class="trial-machine-head-actions">
           <button class="btn btn-ghost btn-sm" type="button" onclick="event.stopPropagation(); openTrialMachineQueue(${machine.machine_id})">Queue</button>
-          ${staleBadge ? `<button class="btn btn-primary btn-sm" type="button" onclick="event.stopPropagation(); trialRecalculateSingleMachine(${machine.machine_id})">Recalc</button>` : ''}
+          ${staleBadge ? `<button class="btn btn-primary btn-sm" type="button" data-trial-recalc-btn="1" onclick="event.stopPropagation(); trialRecalculateSingleMachine(${machine.machine_id})">Recalc</button>` : ''}
         </div>`;
   return `
     <section class="trial-machine" data-machine-id="${machine.machine_id}">
@@ -2979,8 +3097,13 @@ function renderTrial(options = {}) {
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'render-machine-grid-html');
   const layout = document.getElementById('trial-layout');
   if (layout) layout.style.display = 'grid';
-  const loading = document.getElementById('trial-loading');
-  if (loading) loading.style.display = 'none';
+  if (options.dismissLoading) {
+    if (typeof trialLoadingHide === 'function') trialLoadingHide();
+    else {
+      const loading = document.getElementById('trial-loading');
+      if (loading) loading.hidden = true;
+    }
+  }
   updateTrialCompletedCheckbox();
   if (options.skipCatalog) {
     // Board-only update; catalog loads in a follow-up fetch.
@@ -3167,6 +3290,7 @@ function trialRenderCatalogOpStatusStrip(ps) {
     ? trialResolvedOpCardsForPs(ps)
     : (ps?.op_cards || []);
   const chips = cards
+    .filter(card => trialCatalogOpIsRelevant(card))
     .map(card => ({
       opNo: card.operation_label || card.source_op_no || '',
       opName: card.operation_name || card.op_type || '',
@@ -3487,6 +3611,7 @@ function trialCatalogPsHasUnqueuedWork(ps, isOpAllocated) {
 }
 
 function trialCatalogOpVisibleInList(card, isOpAllocated) {
+  if (!trialCatalogOpIsRelevant(card)) return false;
   if (trialCatalogUnqueuedFilterActive()) {
     return trialCatalogOpMatchesUnqueuedFilter(card, isOpAllocated);
   }
@@ -3669,6 +3794,12 @@ function renderTrialCatalogBoardSearchFallback(rawQuery) {
     </div>`;
 }
 
+function trialShowCatalogLoadingPlaceholder() {
+  const root = document.getElementById('trial-catalog');
+  if (!root) return;
+  root.innerHTML = '<div class="trial-catalog-empty trial-catalog-loading">Loading jobs…</div>';
+}
+
 function renderTrialCatalog() {
   clearTimeout(trialCatalogSearchTimer);
   trialCatalogSearchTimer = null;
@@ -3816,7 +3947,7 @@ function renderTrialCatalog() {
           ...ctx,
           is_allocated: isOpAllocated(card),
           part_no: ctx.part_no || ps.part_no || ps.part_name || '',
-        });
+        }, ps);
       })
       .join('');
     const dueClass = trialCatalogPsDueClass(ps);
@@ -3874,7 +4005,7 @@ function renderTrialCatalog() {
                 ...ctx,
                 is_allocated: isOpAllocated(card),
                 part_no: ctx.part_no || ps.part_no || ps.part_name || '',
-              });
+              }, ps);
             })
             .join('');
         })()}

@@ -39,6 +39,7 @@ from planning.daily_output_route import (
 from planning.bom_variation_route import bom_variation_bp
 from planning.finishing_queue_route import finishing_queue_bp
 from planning.inventory_enquiry_route import inventory_enquiry_bp
+from planning.excel_local_route import excel_local_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
@@ -57,6 +58,7 @@ app.register_blueprint(auk_oee_bp)
 app.register_blueprint(bom_variation_bp)
 app.register_blueprint(finishing_queue_bp)
 app.register_blueprint(inventory_enquiry_bp)
+app.register_blueprint(excel_local_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 
@@ -1340,6 +1342,12 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
     if con is not None and needs_planner_ops:
         planned_qty_by_op, queued_machines_by_op = _catalog_lane_qty_maps(con)
 
+    master_cache = None
+    if con is not None and needs_planner_ops:
+        from planning.cycle_time_service import MasterTimeCache
+
+        master_cache = MasterTimeCache.load(con)
+
     from planning.process_sheets import format_planner_ps_id, material_in_map_for_planner_ps_ids
 
     material_in_by_ps = {}
@@ -1388,6 +1396,7 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
                 planned_qty_by_op=planned_qty_by_op,
                 queued_machines_by_op=queued_machines_by_op,
                 bom_stage_keys=bom_stage_keys,
+                master_cache=master_cache,
             )
 
     return entries
@@ -2003,51 +2012,17 @@ def api_source_boms(source):
 
 @app.get("/api/bom/materials")
 def api_bom_materials():
+    from planning.bom_materials import fetch_bom_material_rows, resolve_bom_materials
+
     source = request.args.get("source", "").strip()
     bom = request.args.get("bom", "").strip()
+    fallback = request.args.get("fallback", "").strip().lower() in {"1", "true", "yes"}
     if not source:
         return jsonify({"error": "source is required"}), 400
     try:
-        params = [source]
-        bom_clause = ""
-        if bom:
-            bom_clause = "AND main.bom_code = %s"
-            params.append(bom)
-        rows = db_query(
-            f"""
-            SELECT
-                main.source_inventory_code,
-                main.bom_code,
-                main.material_inventory_code,
-                MAX(main.description) AS description,
-                SUM(main.qty_parent) AS qty_parent,
-                MAX(main.qty_fg) AS qty_fg,
-                MAX(main.uom_code) AS uom_code
-            FROM public.inventory_bom_listing AS main
-            WHERE main.source_inventory_code = %s
-              {bom_clause}
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM public.inventory_bom_listing AS sub
-                  WHERE sub.source_inventory_code = main.material_inventory_code
-              )
-            GROUP BY main.source_inventory_code, main.bom_code, main.material_inventory_code
-            ORDER BY main.material_inventory_code
-            """,
-            tuple(params), fetchall=True
-        )
-        return jsonify([
-            {
-                "source_inventory_code": r[0],
-                "bom_code": r[1],
-                "material_inventory_code": r[2],
-                "description": r[3] or "",
-                "qty_parent": float(r[4]) if r[4] is not None else None,
-                "qty_fg": float(r[5]) if r[5] is not None else None,
-                "uom_code": r[6] or "",
-            }
-            for r in (rows or [])
-        ])
+        if fallback:
+            return jsonify(resolve_bom_materials(db_query, source, bom or None))
+        return jsonify(fetch_bom_material_rows(db_query, source, bom or None))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

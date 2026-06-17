@@ -269,6 +269,7 @@ function trialCatalogHandlePointerMove(e) {
   const distance = Math.hypot(e.clientX - state.startX, e.clientY - state.startY);
   if (!state.hasMoved && distance < 5) return;
   if (!state.hasMoved) {
+    if (!state.canDrag) return;
     state.hasMoved = true;
     state.sourceEl.classList.add('dragging');
   }
@@ -334,6 +335,10 @@ async function trialCatalogHandlePointerUp(e) {
 
     const machineId = Number(lane?.dataset.machineId || 0);
     if (machineId) {
+      if (!state.canDrag) {
+        toast('Only the current ERP stage can be queued for this process sheet.', 'info');
+        return;
+      }
       const reserve = typeof trialReserveCatalogOpSchedule === 'function'
         ? trialReserveCatalogOpSchedule(sourcePayload)
         : { ok: true, key: '' };
@@ -434,7 +439,8 @@ function bindTrialLaneBlockClicks() {
 function bindTrialCatalogDnD() {
   trialEnsureCatalogPointerListeners();
   document.querySelectorAll('.trial-catalog-op').forEach(el => {
-    if (el.dataset.catalogClickBound !== '1' && el.dataset.isComplete === 'true') {
+    if (el.dataset.catalogClickBound !== '1'
+      && (el.dataset.isComplete === 'true' || el.dataset.canDrag === '0')) {
       el.dataset.catalogClickBound = '1';
       el.addEventListener('click', e => {
         if (trialPlannerBusyLock > 0) return;
@@ -476,6 +482,9 @@ function bindTrialCatalogDnD() {
       if (catalogCard && typeof trialCatalogOpIsComplete === 'function' && trialCatalogOpIsComplete(catalogCard)) {
         return;
       }
+      const psRow = typeof trialCatalogPsFromElement === 'function' ? trialCatalogPsFromElement(el) : null;
+      const canDrag = !catalogCard || typeof trialCatalogOpCanDrag !== 'function'
+        || trialCatalogOpCanDrag(catalogCard, psRow);
       if (el.dataset.isComplete === 'true') return;
       trialCatalogPointerDrag = {
         sourceEl: el,
@@ -486,6 +495,7 @@ function bindTrialCatalogDnD() {
         startX: e.clientX,
         startY: e.clientY,
         hasMoved: false,
+        canDrag,
         pointerId: e.pointerId,
       };
       trialDragPayload = sourcePayload;
@@ -996,10 +1006,9 @@ async function scheduleTrialPsAllOps(psId, machineIdOrAssignments, options = {})
         });
         trialMarkDirtyMachines(affectedMachineIds, { skipRender: true, queueOrders });
       }
-      if (typeof trialRefreshCatalogSidebar === 'function') {
-        await trialRefreshCatalogSidebar();
+      if (typeof trialRerenderCatalogFromBlocks === 'function') {
+        trialRerenderCatalogFromBlocks();
       }
-      if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
     }
   };
   if (typeof trialRunWithPlannerBusy === 'function') {

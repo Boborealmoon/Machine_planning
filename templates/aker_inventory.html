@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Aker Inventory{% endblock %}
+{% block main_class %}app-main--aker-inventory{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=aker-inventory-20260616c">{% endblock %}
+{% block content %}
+<div class="mi-page aker-inv-page">
+  <div class="mi-header">
+    <div>
+      <h1 class="mi-title">Aker Inventory</h1>
+      <p class="mi-subtitle">Local Excel workbook (.xls or .xlsx) — browse every sheet. Set <code>LOCAL_EXCEL_PATH</code> in <code>.env</code> to point at your file.</p>
+    </div>
+    <div class="mi-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="aker-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="mi-toolbar card">
+    <div class="mi-filter mi-filter--view aker-inv-sheet-filter">
+      <span>Sheet</span>
+      <div class="mi-view-toggle aker-inv-sheet-toggle" id="aker-sheet-tabs" role="tablist" aria-label="Workbook sheets"></div>
+    </div>
+    <label class="mi-filter mi-filter--grow">
+      <span>Search</span>
+      <span class="planner-page-search-wrap">
+        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="aker-search" class="planner-page-search-input" type="search" placeholder="Search current sheet..." autocomplete="off">
+      </span>
+    </label>
+    <div class="mi-stats" id="aker-stats"></div>
+  </div>
+
+  <div id="aker-loading" class="loading"><div class="spinner"></div> Loading workbook...</div>
+
+  <section class="mi-section card" id="aker-table-section" hidden>
+    <div class="mi-section-head">
+      <h2 class="mi-section-title" id="aker-section-title">Sheet</h2>
+      <span class="mi-section-count" id="aker-row-count"></span>
+    </div>
+    <div class="mi-table-wrap">
+      <table class="mi-table aker-inv-table">
+        <thead id="aker-table-head"></thead>
+        <tbody id="aker-table-body"></tbody>
+      </table>
+    </div>
+    <p class="mi-section-empty" id="aker-table-empty" hidden>No rows match your search.</p>
+  </section>
+
+  <div id="aker-global-empty" class="mi-global-empty card" hidden>
+    <p>No workbook data loaded.</p>
+  </div>
+  <p class="mi-meta" id="aker-meta" hidden></p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=aker-inventory-20260616c"></script>
+<script src="{{ url_for('static', filename='js/aker_inventory.js') }}?v=aker-inventory-20260616c"></script>
+{% endblock %}

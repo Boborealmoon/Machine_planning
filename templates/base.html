@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='ps-bulk-lookup-20260609') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='ps-rejected-qty-tab-20260616') }}" />
   {% block extra_css %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -67,7 +67,7 @@
       </div>
 
       {# Shop floor & delays #}
-      <div class="nav-dropdown {% if nav_path in ('/actual-production', '/daily-output', '/finishing-queue', '/material-inspection', '/queue-delays', '/auk-oee') or active in ('actual_production', 'daily_output', 'finishing_queue', 'material_inspection', 'queue_delays', 'auk_oee') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/actual-production', '/daily-output', '/finishing-queue', '/material-inspection', '/material-inspection/no-shipment', '/queue-delays', '/auk-oee') or active in ('actual_production', 'daily_output', 'finishing_queue', 'material_inspection', 'material_inspection_no_shipment', 'queue_delays', 'auk_oee') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="production">
           PRODUCTION <span class="nav-caret">▾</span>
         </button>
@@ -89,6 +89,10 @@
              class="nav-dropdown-item {% if nav_path == '/material-inspection' or active == 'material_inspection' %}nav-dropdown-item--active{% endif %}">
             Material inspection
           </a>
+          <a href="/material-inspection/no-shipment"
+             class="nav-dropdown-item {% if nav_path == '/material-inspection/no-shipment' or active == 'material_inspection_no_shipment' %}nav-dropdown-item--active{% endif %}">
+            Material inspection (no shipment)
+          </a>
           <a href="/auk-oee"
              class="nav-dropdown-item {% if nav_path == '/auk-oee' or active == 'auk_oee' %}nav-dropdown-item--active{% endif %}">
             Auk OEE dashboard
@@ -102,7 +106,7 @@
       </div>
 
       {# Reference / master data (/planning-data/* except legacy repeat-orders URL) #}
-      <div class="nav-dropdown {% if nav_path in ('/bom-variation',) or nav_path.startswith('/planning-data') and nav_path != '/planning-data/repeat-orders' or active in ('planning_data', 'bom_variation') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/bom-variation',) or nav_path.startswith('/planning-data') and nav_path != '/planning-data/repeat-orders' or active in ('planning_data', 'bom_variation', 'aker_inventory') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="planning-data">
           MASTER DATA <span class="nav-caret">▾</span>
         </button>
@@ -111,6 +115,10 @@
           <a href="/planning-data/inventory-enquiry"
              class="nav-dropdown-item {% if nav_path == '/planning-data/inventory-enquiry' %}nav-dropdown-item--active{% endif %}">
             Inventory enquiry
+          </a>
+          <a href="/planning-data/aker-inventory"
+             class="nav-dropdown-item {% if nav_path == '/planning-data/aker-inventory' %}nav-dropdown-item--active{% endif %}">
+            Aker Inventory
           </a>
           <a href="/planning-data/inventory-bom" class="nav-dropdown-item">Inventory BOM</a>
           <a href="/bom-variation"

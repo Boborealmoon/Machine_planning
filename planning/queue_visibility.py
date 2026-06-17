@@ -274,6 +274,43 @@ def apply_lane_due_dates_from_catalog(blocks, due_by_partial) -> None:
 
 
 
+def _row_done_fast_for_lane(block) -> bool:
+    """Hide lane rows by status/qty only — no with-ops catalog round trip."""
+    if _execution_done(block.get("execution_status") or block.get("status")):
+        return True
+    scheduled = float(block.get("scheduled_qty") or 0)
+    if scheduled > QTY_TOL and _block_net_output(block) >= scheduled - QTY_TOL:
+        return True
+    return False
+
+
+def _group_completed_fast(member_blocks) -> bool:
+    if not member_blocks:
+        return False
+    if _paired_remaining_qty(member_blocks) > QTY_TOL:
+        return False
+    return all(_row_done_fast_for_lane(block) for block in member_blocks)
+
+
+def filter_completed_lane_blocks_fast(blocks):
+    """Lite board load: drop clearly finished lane cards without catalog enrichment."""
+    if not blocks:
+        return blocks
+    groups: dict[str, list[dict]] = {}
+    for block in blocks:
+        group_id = int(block.get("group_id") or 0)
+        block_id = int(block.get("block_id") or 0)
+        group_key = f"g:{group_id}" if group_id > 0 else f"s:{block_id}"
+        groups.setdefault(group_key, []).append(block)
+    hide_ids: set[int] = set()
+    for members in groups.values():
+        if _group_completed_fast(members):
+            hide_ids.update(int(b.get("block_id") or 0) for b in members if int(b.get("block_id") or 0) > 0)
+    if not hide_ids:
+        return blocks
+    return [b for b in blocks if int(b.get("block_id") or 0) not in hide_ids]
+
+
 def filter_completed_lane_blocks(con, blocks):
 
     """Drop lane blocks whose display group is finished per ERP/catalog rules."""

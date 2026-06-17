@@ -53,7 +53,14 @@ try {
       </span>
     </div>
   </header>
-  <div id="trial-loading" class="loading"><div class="spinner"></div> <span data-machinist-i18n="loading">Loading machine queues...</span></div>
+  <div id="trial-loading" class="trial-load-panel" role="status" aria-live="polite" aria-busy="true">
+    <div class="trial-load-panel-inner">
+      <div id="trial-load-label" class="trial-load-label" data-machinist-i18n="loading">Loading machine queues…</div>
+      <div class="trial-load-track" aria-hidden="true">
+        <div id="trial-load-bar" class="trial-load-bar" style="width:5%"></div>
+      </div>
+    </div>
+  </div>
   <div class="trial-layout trial-layout--machinist" style="display:none;" id="trial-layout">
     <div class="trial-main trial-main--machinist">
       <div id="trial-machine-filter-shell"></div>

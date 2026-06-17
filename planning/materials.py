@@ -179,11 +179,17 @@ def _ps_requirement_context(con, ps_id):
 
 
 def _bom_qty_per_fg(bom_row):
+    """Qty required per finished good, aligned with Synergix BOM material display."""
     qty_parent = parse_number(bom_row.get("qty_parent"), 0)
     qty_fg = parse_number(bom_row.get("qty_fg"), 1) or 1
     if qty_parent <= 0:
         return 0.0
-    return float(qty_parent) / float(qty_fg) if qty_fg else float(qty_parent)
+    if qty_fg <= 0:
+        return float(qty_parent)
+    # ERP stores the same value in both fields when qty is already per FG (e.g. 120 MM).
+    if abs(float(qty_parent) - float(qty_fg)) < 1e-9:
+        return float(qty_parent)
+    return float(qty_parent) / float(qty_fg)
 
 
 def sync_material_requirements_for_ps(con, ps_id):

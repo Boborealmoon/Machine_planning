@@ -243,7 +243,11 @@ def _apply_catalog_op_qty_cascade(item, manual_qty_by_ps):
         refreshed["manual_produced_qty"] = float(step.get("manual_produced_qty") or 0)
         refreshed_ops.append(refreshed)
     item["all_ops"] = refreshed_ops
-    item["ops"] = _catalog_ops_for_sidebar(refreshed_ops)
+    if item.get("is_temp_ps"):
+        # Temp rework lines: list every step on the assigned planner BOM.
+        item["ops"] = [dict(op) for op in refreshed_ops]
+    else:
+        item["ops"] = _catalog_ops_for_sidebar(refreshed_ops)
 
 
 def _should_show_for_shipped_qty(total_qty, qty_shipped, source_line_item_no=None):
@@ -341,13 +345,12 @@ def _catalog_op_from_finishing_step(step, *, ps_id, pp_partial_no, launch_qty):
 
 
 def _catalog_ops_for_sidebar(refreshed_ops):
-    """Ops listed in PS / Ops sidebar — machining + post-machining finishing stages."""
+    """Ops listed in PS / Ops sidebar — machining BOM steps only (not ERP finishing WOs)."""
     from planning.erp_wo_merge import is_finishing_stage_desc
 
     sidebar_ops = []
     for op in refreshed_ops:
         if is_finishing_stage_desc(op.get("stage_desc") or op.get("op_type")):
-            sidebar_ops.append(dict(op))
             continue
         if _is_manual_bom_step(op):
             row = dict(op)
@@ -498,6 +501,7 @@ def attach_planner_bom_ops_to_catalog_entry(
     planned_qty_by_op,
     queued_machines_by_op,
     bom_stage_keys=None,
+    master_cache=None,
 ):
     """PP sidebar (/api/pp-vouchers/with-ops) — use planner BOM steps when a flow is selected."""
     bom_id = int(entry.get("selected_bom_id") or 0)
@@ -543,9 +547,10 @@ def attach_planner_bom_ops_to_catalog_entry(
             )
         )
         bom_code = compact_text((bom_row or {}).get("bom_code") or "")
-    from .cycle_time_service import MasterTimeCache
+    if master_cache is None:
+        from .cycle_time_service import MasterTimeCache
 
-    master_cache = MasterTimeCache.load(con)
+        master_cache = MasterTimeCache.load(con)
 
     all_ops = []
     for row in step_rows:
@@ -926,7 +931,7 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
             "execution_status": compact_text(row.get("op_execution_status") or ""),
         }
         item["all_ops"].append(op_item)
-        if _is_manual_bom_step(op_item) or (
+        if is_temp or _is_manual_bom_step(op_item) or (
             remaining_qty > 0
             and _is_machining_plannable_op(
                 row.get("op_type"),

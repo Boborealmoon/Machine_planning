@@ -769,6 +769,10 @@ input, select { font-family: inherit; }
   color: #1d4ed8;
   vertical-align: middle;
 }
+.ps-view-tab.is-active .ps-view-tab-count {
+  background: rgba(29, 78, 216, 0.22);
+  color: #1e40af;
+}
 .ps-temp-tracker-filters {
   margin-bottom: 12px;
 }
@@ -887,6 +891,14 @@ input, select { font-family: inherit; }
   font-weight: 900;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+.ps-qty-badge--reject {
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.22);
+}
+.ps-qty-badge--reject small {
+  color: #dc2626;
 }
 
 .ps-qty-badge strong {
@@ -1921,10 +1933,15 @@ input, select { font-family: inherit; }
 .ps-bulk-lookup-summary {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px 16px;
   margin-bottom: 12px;
   font-size: 12px;
   color: #666;
+}
+
+.ps-bulk-lookup-summary .btn {
+  margin-left: auto;
 }
 
 .ps-bulk-lookup-summary strong {

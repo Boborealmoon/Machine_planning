@@ -9,8 +9,9 @@ let _tempPsDropdownIndex = -1;
 let _tempPsPlaceholderMode = false;
 
 function tempPsOnSchedulerPage() {
-  const path = String(window.location.pathname || '');
-  return /\/(scheduler|machinist|trial)(\/|$)/.test(path);
+  if (document.getElementById('trial-catalog')) return true;
+  const path = String(window.location.pathname || '').toLowerCase();
+  return /\/(scheduler|machinist|trial|planner)(\/|$)/.test(path);
 }
 
 function tempPsNormalizeEntry(raw) {
@@ -508,15 +509,6 @@ async function saveTempProcessSheet() {
         'success'
       );
     }
-    if (tempPsOnSchedulerPage() && typeof loadTrial === 'function') {
-      await loadTrial({ force: true });
-      const search = document.getElementById('trial-catalog-search');
-      const label = result.display_ps_id || result.planner_ps_id || '';
-      if (search && label) {
-        search.value = label;
-        if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
-      }
-    }
   } catch (err) {
     window.alert(err.message || 'Could not create temp process sheet');
   } finally {
@@ -659,9 +651,6 @@ function openTempPsEditModal(item, options = {}) {
           if (typeof trialToast === 'function') {
             trialToast(`Updated ${label}`, 'success');
           }
-          if (tempPsOnSchedulerPage() && typeof loadTrial === 'function') {
-            await loadTrial({ force: true });
-          }
           if (typeof options.onSaved === 'function') {
             await options.onSaved();
           }
@@ -704,9 +693,6 @@ function openTempPsPoDueModal(psId, currentDue, options = {}) {
           closeModal();
           if (typeof trialToast === 'function') {
             trialToast(dueDate ? `PO due set to ${dueDate}` : 'PO due cleared', 'success');
-          }
-          if (tempPsOnSchedulerPage() && typeof loadTrial === 'function') {
-            await loadTrial({ force: true });
           }
           if (typeof options.onSaved === 'function') {
             await options.onSaved(dueDate);

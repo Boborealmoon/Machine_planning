@@ -207,15 +207,21 @@ async function loadMaterials(source, bom) {
   }
 }
 
+function bomQtyPerFg(qtyParent, qtyFg) {
+  const parent = Number(qtyParent);
+  const fg = Number(qtyFg);
+  if (!Number.isFinite(parent) || parent <= 0) return null;
+  if (!Number.isFinite(fg) || fg <= 0) return parent;
+  if (Math.abs(parent - fg) < 1e-9) return parent;
+  return parent / fg;
+}
+
 function formatQtyPerFg(row) {
   const fromApi = Number(row.qty_per_fg);
   if (Number.isFinite(fromApi) && fromApi > 0) {
     return formatDecimal(fromApi);
   }
-  const qtyParent = Number(row.qty_parent);
-  const qtyFg = Number(row.qty_fg);
-  if (!Number.isFinite(qtyParent) || qtyParent <= 0) return "—";
-  const perFg = Number.isFinite(qtyFg) && qtyFg > 0 ? qtyParent / qtyFg : qtyParent;
+  const perFg = bomQtyPerFg(row.qty_parent, row.qty_fg);
   return formatDecimal(perFg);
 }
 

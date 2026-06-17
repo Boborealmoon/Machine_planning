@@ -16,12 +16,56 @@ const SO_NOTE_LABELS = {
   sales_notes: 'Sales',
 };
 
+const SO_MATERIAL_SUBCON_ARRIVED = 'ARRIVED';
+
+function soParseMaterialSubcon(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return { arrived: false, date: '', legacy: '' };
+  if (/^arrived$/i.test(text)) return { arrived: true, date: '', legacy: '' };
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return { arrived: false, date: text, legacy: '' };
+  const dmy = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (dmy) {
+    const day = Number(dmy[1]);
+    const month = Number(dmy[2]);
+    let year = Number(dmy[3]);
+    if (year < 100) year += 2000;
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+      const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const parsed = Date.parse(`${iso}T00:00:00`);
+      if (!Number.isNaN(parsed)) return { arrived: false, date: iso, legacy: '' };
+    }
+  }
+  return { arrived: false, date: '', legacy: text };
+}
+
+function soSerializeMaterialSubcon({ arrived, date }) {
+  if (arrived) return SO_MATERIAL_SUBCON_ARRIVED;
+  const iso = String(date || '').trim();
+  return iso || '';
+}
+
+function soMaterialSubconDisplay(raw) {
+  const parsed = soParseMaterialSubcon(raw);
+  if (parsed.arrived) return 'Arrived';
+  if (parsed.date) return soFormatDate(parsed.date);
+  if (parsed.legacy) return parsed.legacy;
+  return '';
+}
+
+function soMaterialSubconSortValue(raw) {
+  const parsed = soParseMaterialSubcon(raw);
+  if (parsed.arrived) return '0-arrived';
+  if (parsed.date) return `1-${parsed.date}`;
+  if (parsed.legacy) return `2-${parsed.legacy.toLowerCase()}`;
+  return '9-empty';
+}
+
 const SO_PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
 
 const SO_COLUMNS = [
   { id: '_so', label: 'SO', side: true, sortable: true, filterable: true },
+  { id: 'process_sheet_no', label: 'Process sheet', sortable: true, filterable: true, filterType: 'prefix', stickyAfterSide: true },
   { id: 'partial', label: 'Partial', sortable: true, filterable: true },
-  { id: 'process_sheet_no', label: 'Process sheet', sortable: true, filterable: true, filterType: 'prefix' },
   { id: 'queued_cnc', label: 'Queued CNC', sortable: true, filterable: true },
   { id: 'erp_stage', label: 'Stage', sortable: true, filterable: true },
   { id: 'order_date', label: 'Date', sortable: true, filterable: true },
@@ -61,7 +105,7 @@ const soState = {
   missingHeaderCount: 0,
   collapsedGroups: new Set(),
   selectedKey: '',
-  saveTimers: new Map(),
+  saveInFlight: new Set(),
   ppTypes: new Set(['APS', 'NPS']),
   sortCol: '',
   sortDir: 'asc',
@@ -315,6 +359,55 @@ function soStageLabel(partial) {
   return '';
 }
 
+function soPartialIsNoWo(partial) {
+  const stage = soPartialStage(partial);
+  return !stage.desc && !stage.status && stage.mode === 'unassigned';
+}
+
+function soCollectNoWoProcessSheets() {
+  const sheets = [];
+  soVisibleOrders(soActiveOrders()).forEach(order => {
+    soVisibleLeaves(order).forEach(leaf => {
+      if (!soPartialIsNoWo(leaf.partial)) return;
+      const ps = soPsDisplayForPartial(leaf.pp, leaf.partial);
+      if (!ps || ps === '—') return;
+      sheets.push(ps);
+    });
+  });
+  return sheets;
+}
+
+function soCopyNoWoProcessSheets() {
+  const btn = document.getElementById('so-copy-no-wo-ps');
+  const sheets = soCollectNoWoProcessSheets();
+  if (!sheets.length) {
+    if (!btn) return;
+    const defaultLabel = btn.dataset.defaultLabel || btn.textContent;
+    btn.dataset.defaultLabel = defaultLabel;
+    btn.textContent = 'None found';
+    window.setTimeout(() => {
+      btn.textContent = btn.dataset.defaultLabel || 'Copy No WO PS';
+    }, 1600);
+    return;
+  }
+  const text = sheets.join('\n');
+  const defaultLabel = btn?.dataset.defaultLabel || btn?.textContent || 'Copy No WO PS';
+  if (btn) btn.dataset.defaultLabel = defaultLabel;
+  navigator.clipboard.writeText(text).then(() => {
+    if (!btn) return;
+    btn.textContent = `Copied ${sheets.length}`;
+    window.setTimeout(() => {
+      btn.textContent = btn.dataset.defaultLabel || 'Copy No WO PS';
+    }, 1600);
+  }).catch(() => {
+    if (!btn) return;
+    btn.textContent = 'Copy failed';
+    window.setTimeout(() => {
+      btn.textContent = btn.dataset.defaultLabel || 'Copy No WO PS';
+    }, 1600);
+  });
+}
+
 function soPsDisplayForPartial(pp, partial) {
   const base = soPsDisplayId(pp);
   const partialCount = Math.max(1, (pp?.partials || []).length);
@@ -347,7 +440,10 @@ function soRenderJobDetailFields(order, pp, partial) {
     soDetailField('Amount', soFormatMoney(pp?.amount)),
     soDetailField('PP status', pp?.status),
     soDetailField('Material in', pp?.material_in ? `Yes · ${soFormatDate(pp?.material_in_date)}` : 'Awaiting'),
-    ...SO_NOTE_FIELDS.map(field => soDetailField(SO_NOTE_LABELS[field], pp?.[field])),
+    ...SO_NOTE_FIELDS.map(field => soDetailField(
+      SO_NOTE_LABELS[field],
+      field === 'material_subcon' ? soMaterialSubconDisplay(pp?.[field]) : pp?.[field],
+    )),
   ].join('');
 }
 
@@ -390,7 +486,10 @@ function soRenderPpDetail(order, pp) {
     soDetailField('Qty', pp?.pp_qty),
     soDetailField('Due date', soFormatDate(pp?.due_date)),
     soDetailField('Material in', pp?.material_in ? `Yes · ${soFormatDate(pp?.material_in_date)}` : 'Awaiting'),
-    ...SO_NOTE_FIELDS.map(field => soDetailField(SO_NOTE_LABELS[field], pp?.[field])),
+    ...SO_NOTE_FIELDS.map(field => soDetailField(
+      SO_NOTE_LABELS[field],
+      field === 'material_subcon' ? soMaterialSubconDisplay(pp?.[field]) : pp?.[field],
+    )),
   ].join('');
   const orderHtml = [
     soDetailField('Sales order', order?.sales_order_no, { mono: true }),
@@ -551,7 +650,18 @@ function soBindTableClicks() {
   wrap.dataset.detailBound = '1';
 
   wrap.addEventListener('click', e => {
-    if (e.target.closest('.so-editable-input, .so-editable-cell')) return;
+    if (e.target.closest('.so-editable-input, .so-editable-cell, .so-material-subcon-cell')) return;
+
+    const materialBtn = e.target.closest('[data-action="open-material"]');
+    if (materialBtn) {
+      e.stopPropagation();
+      soOpenMaterialModal({
+        partNo: materialBtn.getAttribute('data-part-no'),
+        bomCode: materialBtn.getAttribute('data-bom-code'),
+        processSheetNo: materialBtn.getAttribute('data-process-sheet'),
+      });
+      return;
+    }
 
     const toggle = e.target.closest('[data-action="toggle-group"]');
     if (toggle) {
@@ -618,7 +728,9 @@ function soOrderSearchText(order) {
       pp.segment_1_code,
       ...(pp.queued_machines || []),
       ...((pp.partials || []).flatMap(p => p.queued_machines || [])),
-      ...SO_NOTE_FIELDS.map(field => pp[field]),
+      ...SO_NOTE_FIELDS.map(field => (
+        field === 'material_subcon' ? soMaterialSubconDisplay(pp[field]) : pp[field]
+      )),
     );
     (pp.partials || []).forEach(partial => {
       parts.push(
@@ -770,6 +882,8 @@ function soLeafColumnValue(leaf, colId) {
     case 'qty': return pp?.pp_qty;
     case 'material_in':
       return pp?.material_in ? `in ${soFormatDate(pp?.material_in_date)}` : 'awaiting';
+    case 'material_subcon':
+      return soMaterialSubconDisplay(pp?.material_subcon);
     default:
       if (SO_NOTE_FIELDS.includes(colId)) return pp?.[colId];
       return '';
@@ -817,6 +931,7 @@ function soLeafPassesFilters(leaf) {
 
 function soLeafSortValue(leaf, colId) {
   if (colId === 'erp_stage') return soStageSortValue(leaf.partial);
+  if (colId === 'material_subcon') return soMaterialSubconSortValue(leaf.pp?.material_subcon);
   return soLeafColumnValue(leaf, colId);
 }
 
@@ -866,11 +981,12 @@ function soRenderTableHead() {
     const activeFilter = soColumnFilterActive(col.id);
     const filterCls = activeFilter ? ' is-active' : '';
     const sortCls = soState.sortCol === col.id ? ' is-sorted' : '';
+    const stickyCls = col.stickyAfterSide ? ' so-sticky-ps-head' : '';
     if (!col.sortable && !col.filterable) {
-      return `<th class="${sideCls.trim()}">${escapeHtml(col.label)}</th>`;
+      return `<th class="${sideCls}${stickyCls}">${escapeHtml(col.label)}</th>`;
     }
     return `
-      <th class="so-col-head${sideCls}${sortCls}" data-so-col="${escapeHtml(col.id)}">
+      <th class="so-col-head${sideCls}${stickyCls}${sortCls}" data-so-col="${escapeHtml(col.id)}">
         <div class="so-col-head-inner">
           <button type="button" class="so-col-sort-btn" data-action="sort-col" data-so-col="${escapeHtml(col.id)}" title="Sort">
             <span class="so-col-label">${escapeHtml(col.label)}</span>
@@ -887,6 +1003,22 @@ function soCloseColumnFilter() {
   const pop = document.getElementById('so-col-filter-popover');
   if (pop) pop.hidden = true;
   soState.openFilterCol = '';
+}
+
+function soColumnFilterBtn(colId) {
+  const wrap = document.getElementById('so-table-wrap');
+  if (!wrap || !colId) return null;
+  return wrap.querySelector(`[data-action="filter-col"][data-so-col="${CSS.escape(colId)}"]`);
+}
+
+function soRepositionColumnFilter() {
+  const pop = document.getElementById('so-col-filter-popover');
+  if (!pop || pop.hidden || !soState.openFilterCol) return;
+  const btn = soColumnFilterBtn(soState.openFilterCol);
+  if (!btn) return;
+  const rect = btn.getBoundingClientRect();
+  pop.style.left = `${Math.max(8, rect.left)}px`;
+  pop.style.top = `${rect.bottom + 4}px`;
 }
 
 function soRenderPrefixFilterPanel(colId) {
@@ -933,14 +1065,8 @@ function soOpenColumnFilter(btn, colId) {
     ? soRenderPrefixFilterPanel(colId)
     : soRenderTextFilterPanel(colId, col.label);
 
-  const rect = btn.getBoundingClientRect();
-  const wrap = document.getElementById('so-table-wrap');
-  const wrapRect = wrap?.getBoundingClientRect();
-  if (wrapRect) {
-    pop.style.left = `${Math.max(8, rect.left - wrapRect.left)}px`;
-    pop.style.top = `${rect.bottom - wrapRect.top + 4}px`;
-  }
   pop.hidden = false;
+  soRepositionColumnFilter();
 }
 
 function soApplyPrefixFilterFromPanel(panel) {
@@ -956,6 +1082,9 @@ function soBindColumnControls() {
   const wrap = document.getElementById('so-table-wrap');
   if (!wrap || wrap.dataset.colControlsBound === '1') return;
   wrap.dataset.colControlsBound = '1';
+
+  wrap.addEventListener('scroll', soRepositionColumnFilter, { passive: true });
+  window.addEventListener('resize', soRepositionColumnFilter);
 
   wrap.addEventListener('click', e => {
     const sortBtn = e.target.closest('[data-action="sort-col"]');
@@ -1094,7 +1223,7 @@ function soRenderProcessSheetCell(order, pp, partial) {
   const psType = soGetPsType(pp);
   const tag = psType ? soTypeTagHtml(psType) : '';
   return `
-    <td class="new-orders-ps-cell so-process-sheet-cell">
+    <td class="new-orders-ps-cell so-process-sheet-cell so-sticky-ps-cell">
       <div class="so-ps-headline">
         ${tag}
         <span class="new-orders-ps-code">${escapeHtml(psCode)}</span>
@@ -1112,27 +1241,444 @@ function soRenderQueuedCncCell(pp, partial) {
   `;
 }
 
+function soPartNoForRow(pp, partial) {
+  return String(partial?.inventory_code || pp?.inventory_code || '').trim();
+}
+
+function soRenderStageMaterialBtn(pp, partial) {
+  const partNo = soPartNoForRow(pp, partial);
+  if (!partNo) return '';
+  const bomCode = String(pp?.bom_code || '').trim();
+  const processSheetNo = soPsDisplayForPartial(pp, partial);
+  const title = bomCode
+    ? `View BOM materials for ${partNo} · ${bomCode}`
+    : `View BOM materials for ${partNo}`;
+  return `
+    <button type="button" class="so-stage-material-btn btn btn-ghost btn-sm"
+      data-action="open-material"
+      data-part-no="${escapeHtml(partNo)}"
+      data-bom-code="${escapeHtml(bomCode)}"
+      data-process-sheet="${escapeHtml(processSheetNo)}"
+      title="${escapeHtml(title)}">Materials</button>
+  `;
+}
+
 function soRenderStageCell(pp, partial) {
   const stage = soPartialStage(partial);
+  let stageHtml = '';
   if (stage.desc || stage.status) {
     const descHtml = stage.desc
       ? `<span class="so-stage-desc" title="${escapeHtml(stage.desc)}">${escapeHtml(stage.desc)}</span>`
       : '';
     const statusHtml = stage.status ? soStatusPill(stage.status) : '';
-    return `<td class="so-stage-cell">${descHtml}${statusHtml}</td>`;
-  }
-  if (stage.mode === 'unassigned') {
+    stageHtml = `${descHtml}${statusHtml}`;
+  } else if (stage.mode === 'unassigned') {
     const title = 'No work-order stages in ERP (mfg_wo_status) for this partial';
-    return `<td class="so-stage-cell"><span class="so-stage-mode so-stage-mode--unassigned" title="${escapeHtml(title)}">No WO</span></td>`;
-  }
-  if (stage.mode === 'completed') {
+    stageHtml = `<span class="so-stage-mode so-stage-mode--unassigned" title="${escapeHtml(title)}">No WO</span>`;
+  } else if (stage.mode === 'completed') {
     const last = stage.lastDesc
       ? `Last stage: ${stage.lastDesc}${stage.lastStatus ? ` (${soExecutionLabel(stage.lastStatus)})` : ''}`
       : 'All manufacturing stages marked complete in ERP';
     const countNote = stage.woCount ? ` · ${stage.woCount} stage${stage.woCount === 1 ? '' : 's'}` : '';
-    return `<td class="so-stage-cell"><span class="so-stage-mode so-stage-mode--completed" title="${escapeHtml(last + countNote)}">All complete</span></td>`;
+    stageHtml = `<span class="so-stage-mode so-stage-mode--completed" title="${escapeHtml(last + countNote)}">All complete</span>`;
+  } else {
+    stageHtml = '<span class="so-dash">—</span>';
   }
-  return '<td class="so-stage-cell"><span class="so-dash">—</span></td>';
+  return `
+    <td class="so-stage-cell">
+      <div class="so-stage-stack">
+        ${stageHtml}
+        ${soRenderStageMaterialBtn(pp, partial)}
+      </div>
+    </td>`;
+}
+
+const SO_COPY_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5" y="4" width="8" height="10" rx="1"/><path d="M4 4V3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v1"/></svg>';
+
+function soCopyBtn(text, label) {
+  const value = String(text || '').trim();
+  if (!value) return '';
+  const aria = escapeHtml(label || 'text');
+  return `
+    <button type="button" class="so-copy-btn"
+      data-action="copy-text"
+      data-copy-json="${escapeHtml(JSON.stringify(value))}"
+      title="Copy ${aria}"
+      aria-label="Copy ${aria}">
+      ${SO_COPY_ICON}
+    </button>
+  `;
+}
+
+function soCopyableLine(label, text, { mono = false } = {}) {
+  const value = String(text || '').trim();
+  if (!value) return '';
+  const cls = mono ? ' so-material-modal-id-value--mono' : '';
+  return `
+    <div class="so-copy-line so-material-modal-id-row">
+      <span class="so-material-modal-id-label">${escapeHtml(label)}</span>
+      <span class="so-material-modal-id-value${cls}">${escapeHtml(value)}</span>
+      ${soCopyBtn(value, label)}
+    </div>
+  `;
+}
+
+function soCopyableCell(text, label) {
+  const value = String(text || '').trim();
+  if (!value || value === '—') return escapeHtml(text || '—');
+  return `
+    <span class="so-copy-line so-copy-line--cell">
+      <span class="so-copy-line-text">${escapeHtml(value)}</span>
+      ${soCopyBtn(value, label)}
+    </span>
+  `;
+}
+
+function soRenderMaterialModalHeader(partNo, bomCode, processSheetNo) {
+  const rows = [
+    soCopyableLine('Part no', partNo, { mono: true }),
+    soCopyableLine('BOM code', bomCode, { mono: true }),
+    soCopyableLine('PS number', processSheetNo, { mono: true }),
+  ].filter(Boolean).join('');
+  const part = String(partNo || '').trim();
+  if (rows) return rows;
+  return part
+    ? `<div class="so-copy-line so-material-modal-id-row"><span class="so-material-modal-id-value so-material-modal-id-value--mono">${escapeHtml(part)}</span>${soCopyBtn(part, 'Part no')}</div>`
+    : '';
+}
+
+function soCopyTextFromButton(btn) {
+  if (!btn) return;
+  let value = '';
+  try {
+    value = JSON.parse(btn.dataset.copyJson || '""');
+  } catch (_err) {
+    value = btn.dataset.copyJson || '';
+  }
+  value = String(value || '').trim();
+  if (!value) return;
+  const defaultTitle = btn.title || '';
+  navigator.clipboard.writeText(value).then(() => {
+    btn.classList.add('is-copied');
+    btn.title = 'Copied!';
+    window.setTimeout(() => {
+      btn.classList.remove('is-copied');
+      btn.title = defaultTitle;
+    }, 1200);
+  }).catch(() => {
+    btn.classList.add('is-copy-error');
+    btn.title = 'Copy failed';
+    window.setTimeout(() => {
+      btn.classList.remove('is-copy-error');
+      btn.title = defaultTitle;
+    }, 1200);
+  });
+}
+
+function soBomQtyPerFg(qtyParent, qtyFg) {
+  const parent = Number(qtyParent);
+  const fg = Number(qtyFg);
+  if (!Number.isFinite(parent) || parent <= 0) return null;
+  if (!Number.isFinite(fg) || fg <= 0) return parent;
+  if (Math.abs(parent - fg) < 1e-9) return parent;
+  return parent / fg;
+}
+
+function soFormatMaterialQtyPerFg(row) {
+  const fromApi = Number(row.qty_per_fg);
+  if (Number.isFinite(fromApi) && fromApi > 0) {
+    return Number.isInteger(fromApi) ? String(fromApi) : fromApi.toFixed(4).replace(/\.?0+$/, '');
+  }
+  const perFg = soBomQtyPerFg(row.qty_parent, row.qty_fg);
+  if (perFg == null) return '—';
+  return Number.isInteger(perFg) ? String(perFg) : perFg.toFixed(4).replace(/\.?0+$/, '');
+}
+
+function soFormatInvNum(value) {
+  if (value == null || value === '') return '—';
+  const n = Number(value);
+  if (Number.isNaN(n)) return String(value);
+  if (Math.abs(n) < 0.0001 && n !== 0) return String(value);
+  if (Number.isInteger(n)) return String(n);
+  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+function soInvQtyCell(value) {
+  const n = Number(value);
+  const cls = Number.isFinite(n) && n > 0 ? ' inv-enq-qty--pos' : '';
+  return `<td class="new-orders-num${cls}">${escapeHtml(soFormatInvNum(value))}</td>`;
+}
+
+function soInventoryMatchesBomCode(bomCode, invRows) {
+  const bom = String(bomCode || '').trim();
+  if (!bom) return [];
+  const matches = (invRows || []).filter(row => {
+    const matchedBom = String(row.matched_bom_material_code || '').trim();
+    if (matchedBom && matchedBom === bom) return true;
+    const inv = String(row.inventory_code || '').trim();
+    return inv === bom || inv.startsWith(`${bom}_`);
+  });
+  return matches.sort((a, b) => {
+    const ac = String(a.inventory_code || '');
+    const bc = String(b.inventory_code || '');
+    if (ac === bom && bc !== bom) return -1;
+    if (bc === bom && ac !== bom) return 1;
+    return ac.localeCompare(bc, undefined, { numeric: true, sensitivity: 'base' });
+  });
+}
+
+function soRenderMaterialModalInventoryDataRow(bomCode, row, { showBomCell = true, rowSpan = 1 } = {}) {
+  const invCode = String(row.inventory_code || '').trim();
+  const bom = String(bomCode || '').trim();
+  const isVariant = invCode && bom && invCode !== bom;
+  const desc = String(row.main_desc || '').trim();
+  const variantBadge = isVariant
+    ? '<span class="so-material-modal-match-pill" title="Matched from BOM material header with dimension suffix">variant</span>'
+    : '';
+  const bomCell = showBomCell
+    ? `<td class="new-orders-mono so-material-modal-bom-ref"${rowSpan > 1 ? ` rowspan="${rowSpan}"` : ''}>${escapeHtml(bom)}</td>`
+    : '';
+  return `
+    <tr${isVariant ? ' class="so-material-modal-inv-variant"' : ''}>
+      ${bomCell}
+      <td class="new-orders-mono">
+        <span class="so-material-modal-inv-code">${escapeHtml(invCode || bom)}${variantBadge}</span>
+      </td>
+      <td class="so-material-modal-desc" title="${escapeHtml(desc)}">${escapeHtml(desc || '—')}</td>
+      <td>${escapeHtml(String(row.inventory_class_code || '—'))}</td>
+      <td>${escapeHtml(String(row.inventory_category_code || '—'))}</td>
+      <td>${escapeHtml(String(row.uom_code || '—'))}</td>
+      ${soInvQtyCell(row.total_qoh_available)}
+      ${soInvQtyCell(row.total_qty_on_hand)}
+      ${soInvQtyCell(row.total_qty_on_order)}
+      ${soInvQtyCell(row.total_allocated_in_sq)}
+      ${soInvQtyCell(row.total_unallocated_qty)}
+      ${soInvQtyCell(row.total_free_balance_qty)}
+      ${soInvQtyCell(row.total_qty_back_order)}
+    </tr>
+  `;
+}
+
+function soRenderMaterialModalInventoryTable(bomRows, invRows) {
+  const codes = soBomMaterialCodes(bomRows);
+  if (!codes.length) {
+    return '';
+  }
+  const bodyParts = [];
+  codes.forEach(bomCode => {
+    const matches = soInventoryMatchesBomCode(bomCode, invRows);
+    if (!matches.length) {
+      bodyParts.push(`
+        <tr class="so-material-modal-inv-missing">
+          <td class="new-orders-mono so-material-modal-bom-ref">${escapeHtml(bomCode)}</td>
+          <td class="new-orders-mono">${escapeHtml(bomCode)}</td>
+          <td colspan="11" class="so-material-modal-inv-missing-note">Not found in inventory enquiry (exact or dimension suffix)</td>
+        </tr>
+      `);
+      return;
+    }
+    matches.forEach((row, idx) => {
+      bodyParts.push(soRenderMaterialModalInventoryDataRow(bomCode, row, {
+        showBomCell: idx === 0,
+        rowSpan: matches.length,
+      }));
+    });
+  });
+  return `
+    <section class="so-material-modal-section">
+      <h3 class="so-material-modal-section-title">Inventory enquiry</h3>
+      <p class="so-material-modal-section-hint">Live stock for each BOM material. Dimension variants (e.g. <code>NITRONIC 50(HS)*3_D50.8_39.1</code>) are matched when they share the same BOM header.</p>
+      <div class="so-material-modal-table-wrap so-material-modal-table-wrap--wide">
+        <table class="so-material-modal-table so-material-modal-table--inventory">
+          <thead>
+            <tr>
+              <th>BOM material</th>
+              <th>Part no</th>
+              <th>Description</th>
+              <th>Class</th>
+              <th>Cat</th>
+              <th>UOM</th>
+              <th>QOH avail</th>
+              <th>On hand</th>
+              <th>On order</th>
+              <th>Alloc (SQ)</th>
+              <th>Unalloc</th>
+              <th>Free bal</th>
+              <th>Back order</th>
+            </tr>
+          </thead>
+          <tbody>${bodyParts.join('')}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function soBomMaterialCodes(bomRows) {
+  return [...new Set(
+    (bomRows || [])
+      .map(row => String(row.material_inventory_code || '').trim())
+      .filter(Boolean),
+  )];
+}
+
+function soShouldShowBomRouteColumn(bomRows, meta) {
+  const mode = String(meta?.match_mode || '').trim();
+  if (mode && mode !== 'exact') return true;
+  const codes = new Set(
+    (bomRows || []).map(row => String(row.bom_code || '').trim()).filter(Boolean),
+  );
+  return codes.size > 1;
+}
+
+function soRenderMaterialModalNotice(meta) {
+  const text = String(meta?.notice || '').trim();
+  if (!text) return '';
+  const mode = String(meta?.match_mode || '');
+  const cls = mode === 'not_found'
+    ? ' so-material-modal-notice--warn'
+    : ' so-material-modal-notice--info';
+  return `<div class="so-material-modal-notice${cls}">${escapeHtml(text)}</div>`;
+}
+
+function soRenderMaterialModalBomTable(rows, meta = null) {
+  if (!Array.isArray(rows) || !rows.length) {
+    return '<p class="so-material-modal-empty">No BOM materials found for this part and route.</p>';
+  }
+  const showRoute = soShouldShowBomRouteColumn(rows, meta);
+  const body = rows.map(row => `
+    <tr>
+      ${showRoute ? `<td class="new-orders-mono">${escapeHtml(String(row.bom_code || '—'))}</td>` : ''}
+      <td class="new-orders-mono">${soCopyableCell(row.material_inventory_code, 'material name')}</td>
+      <td>${escapeHtml(row.description || '—')}</td>
+      <td class="new-orders-num">${escapeHtml(soFormatMaterialQtyPerFg(row))}</td>
+      <td>${escapeHtml(row.uom_code || '—')}</td>
+    </tr>
+  `).join('');
+  return `
+    <section class="so-material-modal-section">
+      <h3 class="so-material-modal-section-title">BOM materials</h3>
+      <div class="so-material-modal-table-wrap">
+        <table class="so-material-modal-table">
+          <thead>
+            <tr>
+              ${showRoute ? '<th>BOM route</th>' : ''}
+              <th>Material</th>
+              <th>Description</th>
+              <th>Qty / FG</th>
+              <th>UOM</th>
+            </tr>
+          </thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function soRenderMaterialModalContent(bomRows, invRows, meta = null) {
+  return [
+    soRenderMaterialModalNotice(meta),
+    soRenderMaterialModalBomTable(bomRows, meta),
+    soRenderMaterialModalInventoryTable(bomRows, invRows),
+  ].join('');
+}
+
+function soRenderMaterialModalTable(rows) {
+  return soRenderMaterialModalContent(rows, [], null);
+}
+
+function soParseBomMaterialsResponse(data) {
+  if (Array.isArray(data)) {
+    return { bomRows: data, meta: null };
+  }
+  if (data && Array.isArray(data.rows)) {
+    return {
+      bomRows: data.rows,
+      meta: {
+        requested_bom_code: data.requested_bom_code || '',
+        resolved_bom_code: data.resolved_bom_code || '',
+        match_mode: data.match_mode || '',
+        alternate_bom_codes: data.alternate_bom_codes || [],
+        notice: data.notice || '',
+      },
+    };
+  }
+  if (data?.error) {
+    throw new Error(data.error);
+  }
+  return { bomRows: [], meta: null };
+}
+
+function soCloseMaterialModal() {
+  const shell = document.getElementById('so-material-modal');
+  if (!shell) return;
+  shell.hidden = true;
+  document.body.classList.remove('so-material-modal-open');
+  const bodyEl = document.getElementById('so-material-modal-body');
+  if (bodyEl) bodyEl.innerHTML = '';
+  const titleEl = document.getElementById('so-material-modal-title');
+  if (titleEl) titleEl.innerHTML = '';
+}
+
+function soOpenMaterialModal({ partNo, bomCode, processSheetNo } = {}) {
+  const shell = document.getElementById('so-material-modal');
+  const titleEl = document.getElementById('so-material-modal-title');
+  const bodyEl = document.getElementById('so-material-modal-body');
+  if (!shell || !titleEl || !bodyEl) return;
+
+  const part = String(partNo || '').trim();
+  const bom = String(bomCode || '').trim();
+  const psNo = String(processSheetNo || '').trim();
+  if (!part) return;
+
+  titleEl.innerHTML = soRenderMaterialModalHeader(part, bom, psNo);
+  bodyEl.innerHTML = '<div class="so-material-modal-loading"><div class="spinner"></div> Loading BOM materials and inventory…</div>';
+  shell.hidden = false;
+  document.body.classList.add('so-material-modal-open');
+
+  const bomParams = new URLSearchParams({ source: part, fallback: '1' });
+  if (bom) bomParams.set('bom', bom);
+
+  fetch(`/api/bom/materials?${bomParams}`)
+    .then(res => res.json().then(data => ({ ok: res.ok, data })))
+    .then(async ({ ok, data }) => {
+      if (!ok) throw new Error(data?.error || 'Failed to load BOM materials');
+      const { bomRows, meta } = soParseBomMaterialsResponse(data);
+      const codes = soBomMaterialCodes(bomRows);
+      let invRows = [];
+      if (codes.length) {
+        const invParams = new URLSearchParams({ codes: codes.join(','), loose: '1' });
+        const invRes = await fetch(`/api/inventory-enquiry?${invParams}`);
+        const invData = await invRes.json();
+        if (!invRes.ok || invData?.error) {
+          throw new Error(invData?.error || 'Failed to load inventory enquiry');
+        }
+        invRows = Array.isArray(invData.rows) ? invData.rows : [];
+      }
+      bodyEl.innerHTML = soRenderMaterialModalContent(bomRows, invRows, meta);
+    })
+    .catch(err => {
+      bodyEl.innerHTML = `<p class="so-material-modal-error">Could not load materials: ${escapeHtml(err.message || 'Unknown error')}</p>`;
+    });
+}
+
+function soBindMaterialModal() {
+  const shell = document.getElementById('so-material-modal');
+  if (!shell || shell.dataset.bound === '1') return;
+  shell.dataset.bound = '1';
+
+  shell.querySelector('[data-action="close-material-modal"]')?.addEventListener('click', soCloseMaterialModal);
+  document.getElementById('so-material-modal-close')?.addEventListener('click', soCloseMaterialModal);
+  shell.addEventListener('click', e => {
+    const btn = e.target.closest('[data-action="copy-text"]');
+    if (!btn || !shell.contains(btn)) return;
+    e.stopPropagation();
+    soCopyTextFromButton(btn);
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !shell.hidden) soCloseMaterialModal();
+  });
 }
 
 function soRenderOrderDateCell(pp) {
@@ -1149,7 +1695,8 @@ function soRenderPpCells(pp) {
     <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.amount))}</td>
     <td class="new-orders-num">${escapeHtml(String(pp.pp_qty ?? '—'))}</td>
     ${soRenderMaterialInCell(pp)}
-    ${SO_NOTE_FIELDS.map(field => soRenderEditableCell(pp, field)).join('')}
+    ${soRenderMaterialSubconCell(pp)}
+    ${SO_NOTE_FIELDS.filter(field => field !== 'material_subcon').map(field => soRenderEditableCell(pp, field)).join('')}
   `;
 }
 
@@ -1205,6 +1752,38 @@ function soRenderMaterialInCell(pp) {
   `;
 }
 
+function soRenderMaterialSubconCell(pp) {
+  const ppNo = String(pp.pp_voucher_no || '').trim();
+  const raw = String(pp.material_subcon || '');
+  const parsed = soParseMaterialSubcon(raw);
+  const arrivedCls = parsed.arrived ? ' is-active' : '';
+  const dateHiddenCls = parsed.arrived ? ' is-hidden' : '';
+  const legacyHtml = parsed.legacy
+    ? `<span class="so-material-subcon-legacy" title="Previous note">${escapeHtml(parsed.legacy)}</span>`
+    : '';
+  return `
+    <td class="so-material-subcon-cell" data-pp-voucher-no="${escapeHtml(ppNo)}" data-last-saved="${escapeHtml(raw)}">
+      <div class="so-material-subcon-controls">
+        <button type="button"
+          class="so-material-subcon-arrived${arrivedCls}"
+          data-action="toggle-subcon-arrived"
+          aria-pressed="${parsed.arrived ? 'true' : 'false'}"
+          title="${parsed.arrived ? 'Material arrived — click to clear' : 'Mark material as arrived'}">
+          <span class="so-material-subcon-arrived-dot" aria-hidden="true"></span>
+          Arrived
+        </button>
+        <input type="date"
+          class="so-material-subcon-date${dateHiddenCls}"
+          value="${escapeHtml(parsed.date)}"
+          ${parsed.arrived ? 'disabled' : ''}
+          aria-label="Material/Sub-con expected date">
+        ${legacyHtml}
+      </div>
+      <span class="so-editable-status" aria-live="polite"></span>
+    </td>
+  `;
+}
+
 function soRenderEditableCell(pp, field) {
   const ppNo = String(pp.pp_voucher_no || '').trim();
   const value = String(pp[field] || '');
@@ -1226,7 +1805,7 @@ function soRenderEditableCell(pp, field) {
 }
 
 function soRenderPartialCell(partial) {
-  return `<td class="new-orders-num">${escapeHtml(String(partial?.pp_partial_no ?? '—'))}</td>`;
+  return `<td class="new-orders-num so-partial-cell">${escapeHtml(String(partial?.pp_partial_no ?? '—'))}</td>`;
 }
 
 function soRenderPartCell(pp, partial) {
@@ -1246,8 +1825,8 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, shade
   return `
     <tr class="new-orders-child-row is-clickable${startClass}${queuedMark}${selected ? ' is-selected' : ''}" data-sales-order="${escapeHtml(String(order.sales_order_no || ''))}" data-detail-key="${escapeHtml(key)}" title="Click for detail">
       ${sideRail}
-      ${soRenderPartialCell(partial)}
       ${processSheetCell}
+      ${soRenderPartialCell(partial)}
       ${soRenderQueuedCncCell(pp, partial)}
       ${soRenderStageCell(pp, partial)}
       ${orderDateCell}
@@ -1289,10 +1868,74 @@ function soRenderOrderGroup(order, soGroupIndex = 0) {
 }
 
 function soSetSaveStatus(control, state, message) {
-  const status = control?.closest('.so-editable-cell')?.querySelector('.so-editable-status');
+  const status = control?.closest('.so-editable-cell, .so-material-subcon-cell')?.querySelector('.so-editable-status');
   if (!status) return;
   status.className = `so-editable-status${state ? ` is-${state}` : ''}`;
   status.textContent = message || '';
+}
+
+function soSyncMaterialSubconCell(cell, raw) {
+  if (!cell) return;
+  const parsed = soParseMaterialSubcon(raw);
+  cell.dataset.lastSaved = String(raw || '');
+  const btn = cell.querySelector('.so-material-subcon-arrived');
+  const dateInput = cell.querySelector('.so-material-subcon-date');
+  if (btn) {
+    btn.classList.toggle('is-active', parsed.arrived);
+    btn.setAttribute('aria-pressed', parsed.arrived ? 'true' : 'false');
+    btn.title = parsed.arrived ? 'Material arrived — click to clear' : 'Mark material as arrived';
+  }
+  if (dateInput) {
+    dateInput.value = parsed.date || '';
+    dateInput.disabled = parsed.arrived;
+    dateInput.classList.toggle('is-hidden', parsed.arrived);
+  }
+  const controls = cell.querySelector('.so-material-subcon-controls');
+  let legacyEl = cell.querySelector('.so-material-subcon-legacy');
+  if (parsed.legacy) {
+    if (!legacyEl && controls) {
+      legacyEl = document.createElement('span');
+      legacyEl.className = 'so-material-subcon-legacy';
+      legacyEl.title = 'Previous note';
+      controls.appendChild(legacyEl);
+    }
+    if (legacyEl) legacyEl.textContent = parsed.legacy;
+  } else if (legacyEl) {
+    legacyEl.remove();
+  }
+}
+
+async function soSaveMaterialSubconCell(cell, nextValue) {
+  const ppNo = String(cell?.dataset?.ppVoucherNo || '').trim();
+  if (!ppNo || !cell) return;
+
+  const key = `${ppNo}::material_subcon`;
+  if (soState.saveInFlight.has(key)) return;
+
+  const savedValue = String(nextValue || '').trim();
+  const lastSaved = String(cell.dataset.lastSaved || '').trim();
+  if (savedValue === lastSaved) return;
+
+  soState.saveInFlight.add(key);
+  soSetSaveStatus(cell, 'saving', 'Saving…');
+  try {
+    const data = await soPostJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
+      material_subcon: savedValue,
+    });
+    const saved = String(data.material_subcon || '').trim();
+    soSyncMaterialSubconCell(cell, saved);
+    const found = soFindPp(ppNo);
+    if (found.pp) found.pp.material_subcon = saved;
+    soSetSaveStatus(cell, 'saved', 'Saved');
+    window.setTimeout(() => {
+      if (String(cell.dataset.lastSaved || '').trim() === saved) soSetSaveStatus(cell, '', '');
+    }, 1500);
+  } catch (err) {
+    soSyncMaterialSubconCell(cell, lastSaved);
+    soSetSaveStatus(cell, 'error', err.message || 'Save failed');
+  } finally {
+    soState.saveInFlight.delete(key);
+  }
 }
 
 async function soSaveField(control) {
@@ -1300,11 +1943,14 @@ async function soSaveField(control) {
   const field = String(control.dataset.field || '').trim();
   if (!ppNo || !field) return;
 
+  const key = `${ppNo}::${field}`;
+  if (soState.saveInFlight.has(key)) return;
+
   const nextValue = String(control.value || '').trim();
   const lastSaved = String(control.dataset.lastSaved || '');
   if (nextValue === lastSaved) return;
 
-  control.disabled = true;
+  soState.saveInFlight.add(key);
   soSetSaveStatus(control, 'saving', 'Saving…');
   try {
     const data = await soPostJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
@@ -1323,18 +1969,8 @@ async function soSaveField(control) {
     control.value = lastSaved;
     soSetSaveStatus(control, 'error', err.message || 'Save failed');
   } finally {
-    control.disabled = false;
+    soState.saveInFlight.delete(key);
   }
-}
-
-function soScheduleSave(textarea) {
-  const key = `${textarea.dataset.ppVoucherNo}::${textarea.dataset.field}`;
-  const existing = soState.saveTimers.get(key);
-  if (existing) window.clearTimeout(existing);
-  soState.saveTimers.set(key, window.setTimeout(() => {
-    soState.saveTimers.delete(key);
-    soSaveField(textarea);
-  }, 500));
 }
 
 function soFindPpByPsId(psId) {
@@ -1430,6 +2066,37 @@ function soBindMaterialInInputs() {
   });
 }
 
+function soBindMaterialSubconInputs() {
+  const body = document.getElementById('so-table-body');
+  if (!body || body.dataset.subconBound === '1') return;
+  body.dataset.subconBound = '1';
+
+  body.addEventListener('click', e => {
+    const btn = e.target.closest('[data-action="toggle-subcon-arrived"]');
+    if (!btn) return;
+    e.stopPropagation();
+    const cell = btn.closest('.so-material-subcon-cell');
+    if (!cell) return;
+    const parsed = soParseMaterialSubcon(cell.dataset.lastSaved);
+    const nextArrived = !parsed.arrived;
+    const dateInput = cell.querySelector('.so-material-subcon-date');
+    const date = nextArrived ? '' : String(dateInput?.value || '').trim();
+    soSaveMaterialSubconCell(cell, soSerializeMaterialSubcon({ arrived: nextArrived, date }));
+  });
+
+  body.addEventListener('change', e => {
+    const dateInput = e.target.closest('.so-material-subcon-date');
+    if (!dateInput || dateInput.disabled) return;
+    e.stopPropagation();
+    const cell = dateInput.closest('.so-material-subcon-cell');
+    if (!cell) return;
+    soSaveMaterialSubconCell(cell, soSerializeMaterialSubcon({
+      arrived: false,
+      date: dateInput.value,
+    }));
+  });
+}
+
 function soBindEditableInputs() {
   const body = document.getElementById('so-table-body');
   if (!body || body.dataset.editableBound === '1') return;
@@ -1439,18 +2106,11 @@ function soBindEditableInputs() {
     const textarea = e.target.closest('.so-editable-input');
     if (!textarea) return;
     e.stopPropagation();
-    soScheduleSave(textarea);
   });
 
   body.addEventListener('blur', e => {
     const textarea = e.target.closest('.so-editable-input');
     if (!textarea) return;
-    const key = `${textarea.dataset.ppVoucherNo}::${textarea.dataset.field}`;
-    const pending = soState.saveTimers.get(key);
-    if (pending) {
-      window.clearTimeout(pending);
-      soState.saveTimers.delete(key);
-    }
     soSaveField(textarea);
   }, true);
 
@@ -1499,6 +2159,7 @@ function soSetView(view) {
   const next = view === 'complete' ? 'complete' : 'active';
   soState.view = next;
   soCloseDetail();
+  soCloseMaterialModal();
   document.querySelectorAll('[data-so-view]').forEach(btn => {
     const active = btn.getAttribute('data-so-view') === next;
     btn.classList.toggle('is-active', active);
@@ -1578,6 +2239,7 @@ function soRender() {
     if (meta) meta.hidden = !hasData;
     soUpdateStats();
     soUpdateTabCounts();
+    soRepositionColumnFilter();
     return;
   }
 
@@ -1599,6 +2261,7 @@ function soRender() {
 
   soUpdateStats();
   soUpdateTabCounts();
+  soRepositionColumnFilter();
 }
 
 async function soLoad({ refresh = false, bustCache = false } = {}) {
@@ -1607,6 +2270,7 @@ async function soLoad({ refresh = false, bustCache = false } = {}) {
   if (loading) loading.hidden = false;
   if (wrap) wrap.hidden = true;
   soCloseDetail();
+  soCloseMaterialModal();
 
   const params = new URLSearchParams();
   if (refresh) params.set('refresh', '1');
@@ -1682,10 +2346,13 @@ function soInit() {
     soRender();
   });
 
+  document.getElementById('so-copy-no-wo-ps')?.addEventListener('click', soCopyNoWoProcessSheets);
   document.getElementById('so-refresh')?.addEventListener('click', () => soLoad({ refresh: true, bustCache: true }));
   soBindDetailPanel();
+  soBindMaterialModal();
   soBindTableClicks();
   soBindColumnControls();
+  soBindMaterialSubconInputs();
   soBindPsTypeDropdown();
   soRenderTableHead();
   soLoad({ refresh: false });

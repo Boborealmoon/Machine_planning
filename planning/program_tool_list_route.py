@@ -692,9 +692,10 @@ def run_auto_program_tool_list_sync(logger: logging.Logger | None = None) -> Non
             log.warning("auto master cycle-times import-new: %s", imp["error"])
         else:
             log.info(
-                "auto master cycle-times import-new: inserted=%s skipped_existing=%s",
+                "auto master cycle-times import-new: inserted=%s skipped_existing=%s pruned_stale=%s",
                 imp.get("inserted"),
                 imp.get("skipped_existing"),
+                imp.get("pruned_stale"),
             )
     except Exception as e:
         log.error("auto master cycle-times import-new failed: %s", e)

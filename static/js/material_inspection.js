@@ -1,5 +1,9 @@
 // Material Inspection — inbound logistic shipment QC lines (O / R / H).
 
+const miPageConfig = window.__MI_PAGE__ || {};
+const miApiUrl = String(miPageConfig.apiUrl || '/api/material-inspection');
+const miShowShipmentColumn = miPageConfig.showShipmentColumn !== false;
+
 const miState = {
   outstanding: [],
   ready: [],
@@ -330,7 +334,7 @@ function miFilterRows(rows) {
   return (rows || []).filter(row => miRowSearchText(row).includes(q));
 }
 
-const MI_TABLE_COL_COUNT = 16;
+const MI_TABLE_COL_COUNT = miShowShipmentColumn ? 16 : 15;
 
 function miRenderGroupRow(label) {
   return `
@@ -361,13 +365,16 @@ function miRenderRow(row) {
   const key = miRowKey(row);
   const selected = key === miState.selectedRowKey;
   const desc = String(row.inventory_desc || '').trim();
+  const shipmentCell = miShowShipmentColumn
+    ? `<td class="mi-cell--mono">${escapeHtml(String(row.shipment_voucher_no || '—'))}</td>`
+    : '';
   return `
     <tr class="is-clickable${selected ? ' is-selected' : ''}" data-mi-row-key="${escapeHtml(key)}" tabindex="0" role="button" aria-label="View inspection detail">
       <td class="mi-cell--mono">${escapeHtml(String(row.inspection_voucher_no || '—'))}</td>
       <td>${escapeHtml(String(row.inspector_name || row.inspector_code || '—'))}</td>
       <td class="mi-cell--mono">${escapeHtml(String(row.po_no || '—'))}</td>
       <td>${escapeHtml(String(row.supplier_name || '—'))}</td>
-      <td class="mi-cell--mono">${escapeHtml(String(row.shipment_voucher_no || '—'))}</td>
+      ${shipmentCell}
       <td class="mi-cell--mono">${escapeHtml(String(row.grn_no || '—'))}</td>
       <td class="mi-cell--dt">${escapeHtml(miFormatDate(row.actual_arrival_date || row.goods_receipt_date))}</td>
       <td>${escapeHtml(String(row.shipment_line_item_no ?? '—'))}</td>
@@ -486,7 +493,7 @@ async function miLoad({ refresh = false } = {}) {
 
   let payload;
   try {
-    const res = await fetch(`/api/material-inspection?${params}`);
+    const res = await fetch(`${miApiUrl}?${params}`);
     payload = await res.json();
     if (!res.ok) {
       throw new Error(payload?.error || `HTTP ${res.status}`);

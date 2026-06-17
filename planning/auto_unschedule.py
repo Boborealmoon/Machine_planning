@@ -295,7 +295,7 @@ def block_ready_for_auto_unschedule(con, block_id: int) -> bool:
     return all(_block_done_for_unschedule(con, row) for row in members)
 
 
-def unschedule_done_block(con, block_id: int, *, reason: str = "AUTO_DONE") -> dict:
+def unschedule_done_block(con, block_id: int, *, reason: str = "AUTO_DONE", recalculate: bool = True) -> dict:
     """Soft-remove a DONE block (or DONE combined group) from its machine lane."""
     block = one(
         con.execute(
@@ -354,8 +354,9 @@ def unschedule_done_block(con, block_id: int, *, reason: str = "AUTO_DONE") -> d
 
         for machine_id in machine_ids:
             compact_machine_lane_queue(con, machine_id, recalculate=False)
-        for machine_id in machine_ids:
-            recalculate_machine(con, machine_id)
+        if recalculate:
+            for machine_id in machine_ids:
+                recalculate_machine(con, machine_id)
 
     return {
         "ok": True,
@@ -456,13 +457,25 @@ def auto_unschedule_on_page_load(con) -> dict | None:
         return None
 
 
+_LITE_BOARD_SWEEP_MIN_INTERVAL_SEC = 120.0
+_last_lite_board_sweep_at = 0.0
+
+
 def auto_unschedule_on_lite_board_load(con) -> dict | None:
-    """Sweep lane-saturated / DONE blocks on machinist lite loads (no full lane compaction)."""
+    """Sweep DONE blocks on lite board loads — throttled; no per-block schedule recalc."""
     if not auto_unschedule_enabled():
+        return None
+    import time
+
+    global _last_lite_board_sweep_at
+    now = time.monotonic()
+    if (now - _last_lite_board_sweep_at) < _LITE_BOARD_SWEEP_MIN_INTERVAL_SEC:
         return None
     try:
         ensure_saved_anchor_column(con)
-        return run_auto_unschedule_sweep(con, reason="AUTO_DONE_LITE_LOAD")
+        result = run_auto_unschedule_sweep(con, reason="AUTO_DONE_LITE_LOAD")
+        _last_lite_board_sweep_at = now
+        return result
     except Exception:
         return None
 
@@ -523,8 +536,9 @@ def _run_auto_unschedule_sweep_locked(con, *, dry_run: bool = False, reason: str
     results = []
     if dry_run:
         return {"dry_run": True, "candidates": block_ids, "results": []}
+    recalculate = reason not in {"AUTO_DONE_LITE_LOAD"}
     for block_id in block_ids:
-        results.append(unschedule_done_block(con, block_id, reason=reason))
+        results.append(unschedule_done_block(con, block_id, reason=reason, recalculate=recalculate))
     ok_count = sum(1 for item in results if item.get("ok"))
     return {
         "dry_run": False,

@@ -476,8 +476,27 @@ def api_process_sheet_selected_flow(ps_id):
             """,
             (int(flow["bom_id"]), ps_id),
         )
+        from planning.process_sheets import is_temp_planner_ps_id
+
+        if is_temp_planner_ps_id(ps_id):
+            con.execute(
+                """
+                UPDATE planner_temp_process_sheet
+                SET selected_bom_id = %s,
+                    selected_bom_code = %s,
+                    updated_at = NOW()
+                WHERE planner_ps_id = %s
+                """,
+                (int(flow["bom_id"]), compact_text(flow.get("bom_code")), ps_id),
+            )
         _relink_planner_op_seq_ids_for_bom(con, int(flow["bom_id"]), planner_ps_ids=[ps_id])
         sync_material_requirements_for_ps(con, ps_id)
+        try:
+            from app import _invalidate_pp_vouchers_with_ops_cache
+
+            _invalidate_pp_vouchers_with_ops_cache()
+        except Exception:
+            pass
         return jsonify(
             {
                 "ok": True,

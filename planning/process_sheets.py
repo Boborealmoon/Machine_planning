@@ -161,9 +161,13 @@ def _planner_ps_identity(ps_id):
 
 
 def _operation_belongs_to_planner_ps(op_source_ps_id, op_job_no, planner_ps_id):
+    planner_ps_id = compact_text(planner_ps_id)
+    target_is_temp = is_temp_planner_ps_id(planner_ps_id)
     target_source, target_partial, _ = _planner_ps_identity(planner_ps_id)
     for candidate in (compact_text(op_source_ps_id), compact_text(op_job_no)):
         if not candidate:
+            continue
+        if is_temp_planner_ps_id(candidate) != target_is_temp:
             continue
         cand_source, cand_partial = parse_planner_ps_id(candidate)
         if cand_source == target_source and int(cand_partial) == int(target_partial):
@@ -559,40 +563,118 @@ def _erp_steps_to_flow_steps(erp_steps):
     return out
 
 
+def _planner_bom_steps_to_flow_steps(con, bom_id):
+    """Copy planner_operation_seq rows into flow-step dicts for temp BOM cloning."""
+    bom_id = int(bom_id or 0)
+    if bom_id <= 0:
+        return []
+    step_rows = rows(
+        con.execute(
+            """
+            SELECT seq_no, op_no, op_type, machine_category, preferred_machine,
+                   cycle_time, setup_time, is_last_op, source_kind, source_stage_no, planner_note
+            FROM planner_operation_seq
+            WHERE bom_id = %s
+            ORDER BY seq_no, op_seq_id
+            """,
+            (bom_id,),
+        )
+    )
+    if not step_rows:
+        return []
+    out = []
+    for idx, row in enumerate(step_rows):
+        out.append(
+            {
+                "seq_no": int(row.get("seq_no") or idx + 1),
+                "op_no": compact_text(row.get("op_no")) or str(idx + 1),
+                "op_type": compact_text(row.get("op_type")) or "OP",
+                "machine_category": compact_text(row.get("machine_category")) or "GENERAL",
+                "preferred_machine": compact_text(row.get("preferred_machine")),
+                "cycle_time": max(0.0, _to_float(row.get("cycle_time") or 1)),
+                "setup_time": max(0.0, _to_float(row.get("setup_time"))),
+                "is_last_op": int(bool(row.get("is_last_op"))),
+                "source_kind": compact_text(row.get("source_kind") or "ERP"),
+                "source_stage_no": int(row.get("source_stage_no") or 0) or None,
+                "planner_note": compact_text(row.get("planner_note")),
+            }
+        )
+    if out:
+        out[-1]["is_last_op"] = 1
+    return out
+
+
+def _temp_ps_flow_steps_from_preview(con, preview, *, placeholder=False):
+    """Best route for a [Temp] PS: clone assigned planner BOM, else ERP stages, else placeholder."""
+    if placeholder:
+        return _placeholder_flow_steps(), "PLACEHOLDER", "Temp placeholder route", "MANUAL"
+
+    source_ps_id = compact_text(preview.get("source_ps_id"))
+    source_partial = int(preview.get("pp_partial_no") or 1)
+    planner_bom_id = int(preview.get("selected_bom_id") or 0)
+    planner_steps = _planner_bom_steps_to_flow_steps(con, planner_bom_id)
+    if planner_steps:
+        source_label = format_planner_ps_id(source_ps_id, source_partial) if source_ps_id else "source"
+        bom_code = _unique_temp_bom_code(
+            con,
+            compact_text(preview.get("part_no")),
+            f"{source_ps_id or source_label}-TEMP-REWORK",
+        )
+        bom_desc = f"Temp rework route from {source_label}"
+        return planner_steps, bom_code, bom_desc, "ERP"
+
+    erp_steps = _erp_cache_steps_for_ps(con, source_ps_id, source_partial)
+    if erp_steps:
+        bom_code = _unique_temp_bom_code(
+            con,
+            compact_text(preview.get("part_no")),
+            f"{source_ps_id}-TEMP-REWORK",
+        )
+        bom_desc = f"Temp rework route from {format_planner_ps_id(source_ps_id, source_partial)}"
+        return _erp_steps_to_flow_steps(erp_steps), bom_code, bom_desc, "ERP"
+
+    return _placeholder_flow_steps(), "PLACEHOLDER", "Temp placeholder route", "MANUAL"
+
+
 def _ensure_temp_ps_bom(con, planner_ps_id, inventory_code, preview, *, placeholder=False):
-    """Assign a planner BOM to a temp PS — clone source route or create PLACEHOLDER."""
+    """Assign a dedicated planner BOM to a temp PS — clone assigned route steps when available."""
     planner_ps_id = compact_text(planner_ps_id)
     inventory_code = compact_text(inventory_code)
     if not inventory_code:
         raise ValueError("Inventory code is required to assign a BOM flow.")
 
-    existing_bom_id = int(preview.get("selected_bom_id") or 0)
-    if existing_bom_id and not placeholder:
-        flow = one(
+    current = one(
+        con.execute(
+            "SELECT selected_bom_id FROM planner_process_sheet WHERE planner_ps_id = %s",
+            (planner_ps_id,),
+        )
+    )
+    current_bom_id = int((current or {}).get("selected_bom_id") or 0)
+    if current_bom_id > 0:
+        has_steps = one(
             con.execute(
-                "SELECT bom_id, bom_code FROM planner_bom_variation WHERE bom_id = %s",
-                (existing_bom_id,),
+                "SELECT 1 FROM planner_operation_seq WHERE bom_id = %s LIMIT 1",
+                (current_bom_id,),
             )
         )
-        if flow:
-            bom_code = compact_text(flow.get("bom_code"))
-            con.execute(
-                """
-                UPDATE planner_process_sheet
-                SET selected_bom_id = %s, updated_at = NOW()
-                WHERE planner_ps_id = %s
-                """,
-                (existing_bom_id, planner_ps_id),
+        if has_steps:
+            flow = one(
+                con.execute(
+                    "SELECT bom_code FROM planner_bom_variation WHERE bom_id = %s",
+                    (current_bom_id,),
+                )
             )
-            con.execute(
-                """
-                UPDATE planner_temp_process_sheet
-                SET selected_bom_id = %s, selected_bom_code = %s, updated_at = NOW()
-                WHERE planner_ps_id = %s
-                """,
-                (existing_bom_id, bom_code, planner_ps_id),
-            )
-            return existing_bom_id
+            bom_code = compact_text((flow or {}).get("bom_code"))
+            if bom_code:
+                con.execute(
+                    """
+                    UPDATE planner_temp_process_sheet
+                    SET selected_bom_id = %s, selected_bom_code = %s, updated_at = NOW()
+                    WHERE planner_ps_id = %s
+                    """,
+                    (current_bom_id, bom_code, planner_ps_id),
+                )
+            return current_bom_id
 
     from planning.flows import (
         _combined_flow_source_kind,
@@ -602,29 +684,11 @@ def _ensure_temp_ps_bom(con, planner_ps_id, inventory_code, preview, *, placehol
     )
 
     _ensure_flow_source_columns(con)
-    if placeholder:
-        bom_code = "PLACEHOLDER"
-        bom_desc = "Temp placeholder route"
-        flow_steps = _placeholder_flow_steps()
-        flow_source_kind = "MANUAL"
-    else:
-        source_ps_id = compact_text(preview.get("source_ps_id"))
-        source_partial = int(preview.get("pp_partial_no") or 1)
-        erp_steps = _erp_cache_steps_for_ps(con, source_ps_id, source_partial)
-        if erp_steps:
-            bom_code = _unique_temp_bom_code(
-                con,
-                inventory_code,
-                f"{source_ps_id}-TEMP-REWORK",
-            )
-            bom_desc = f"Temp rework route from {format_planner_ps_id(source_ps_id, source_partial)}"
-            flow_steps = _erp_steps_to_flow_steps(erp_steps)
-            flow_source_kind = "ERP"
-        else:
-            bom_code = "PLACEHOLDER"
-            bom_desc = "Temp placeholder route"
-            flow_steps = _placeholder_flow_steps()
-            flow_source_kind = "MANUAL"
+    flow_steps, bom_code, bom_desc, flow_source_kind = _temp_ps_flow_steps_from_preview(
+        con,
+        preview,
+        placeholder=placeholder,
+    )
 
     flow_row = _insert_planner_bom_variation(
         con,
@@ -1115,7 +1179,6 @@ def create_temp_process_sheet(con, source_ps_id, pp_partial_no, qty, remarks="",
         raise ValueError(f"Temp process sheet {planner_ps_id} already exists.")
 
     inventory_code = compact_text(preview.get("part_no"))
-    selected_bom_id = int(preview.get("selected_bom_id") or 0) or None
     note = compact_text(remarks)
     if not note:
         note = f"Temp reject PS cloned from {format_planner_ps_id(source_ps_id, pp_partial_no)}"
@@ -1126,14 +1189,13 @@ def create_temp_process_sheet(con, source_ps_id, pp_partial_no, qty, remarks="",
           planner_ps_id, source_ps_id, pp_partial_no, inventory_code,
           selected_bom_id, planner_status, status, planned_qty, finished_qty,
           remarks, created_at, updated_at
-        ) VALUES (%s, %s, %s, %s, %s, 'UNPLANNED', 'ACTIVE', %s, 0, %s, NOW(), NOW())
+        ) VALUES (%s, %s, %s, %s, NULL, 'UNPLANNED', 'ACTIVE', %s, 0, %s, NOW(), NOW())
         """,
         (
             planner_ps_id,
             source_ps_id,
             temp_partial_no,
             inventory_code,
-            selected_bom_id,
             qty,
             note,
         ),
@@ -1356,6 +1418,77 @@ def _repair_temp_ps_bom_if_missing(con, planner_ps_id):
         preview,
         placeholder=placeholder,
     )
+
+
+def _repair_erp_ps_planner_bom_if_missing(con, planner_ps_id):
+    """Restore planner BOM on an ERP PS when selected_bom_id was cleared (never touch [Temp] rows)."""
+    planner_ps_id = compact_text(planner_ps_id)
+    if not planner_ps_id or is_temp_planner_ps_id(planner_ps_id):
+        return 0
+    ps_row = one(
+        con.execute(
+            """
+            SELECT planner_ps_id, source_ps_id, pp_partial_no, inventory_code, selected_bom_id
+            FROM planner_process_sheet
+            WHERE planner_ps_id = %s
+            """,
+            (planner_ps_id,),
+        )
+    )
+    if not ps_row or int(ps_row.get("selected_bom_id") or 0) > 0:
+        return int((ps_row or {}).get("selected_bom_id") or 0)
+    source_ps_id = compact_text(ps_row.get("source_ps_id"))
+    pp_partial_no = int(ps_row.get("pp_partial_no") or 1)
+    inventory_code = compact_text(ps_row.get("inventory_code"))
+    if not source_ps_id or not inventory_code:
+        return 0
+    preview = temp_process_sheet_source_preview(con, source_ps_id, pp_partial_no)
+    if int(preview.get("selected_bom_id") or 0) > 0:
+        bom_id = int(preview["selected_bom_id"])
+    else:
+        erp_steps = _erp_cache_steps_for_ps(con, source_ps_id, pp_partial_no)
+        if not erp_steps:
+            return 0
+        from planning.flows import (
+            _combined_flow_source_kind,
+            _ensure_flow_source_columns,
+            _insert_planner_bom_variation,
+            _save_flow_steps,
+        )
+
+        _ensure_flow_source_columns(con)
+        bom_code = compact_text(preview.get("selected_bom_code") or preview.get("erp_bom_code"))
+        if not bom_code:
+            bom_code = _unique_temp_bom_code(con, inventory_code, f"{source_ps_id}-ROUTE")
+        bom_desc = f"Planner route for {format_planner_ps_id(source_ps_id, pp_partial_no)}"
+        flow_row = _insert_planner_bom_variation(
+            con,
+            inventory_code=inventory_code,
+            bom_code=bom_code,
+            bom_desc=bom_desc,
+            is_default=True,
+            flow_source_kind="ERP",
+        )
+        bom_id = int(flow_row["bom_id"])
+        stage_kinds = _save_flow_steps(con, bom_id, _erp_steps_to_flow_steps(erp_steps))
+        persisted_source_kind = _combined_flow_source_kind(stage_kinds, "ERP")
+        con.execute(
+            """
+            UPDATE planner_bom_variation
+            SET source_kind = %s, updated_at = NOW()
+            WHERE bom_id = %s
+            """,
+            (persisted_source_kind, bom_id),
+        )
+    con.execute(
+        """
+        UPDATE planner_process_sheet
+        SET selected_bom_id = %s, updated_at = NOW()
+        WHERE planner_ps_id = %s
+        """,
+        (bom_id, planner_ps_id),
+    )
+    return bom_id
 
 
 def delete_temp_process_sheet(con, planner_ps_id):
@@ -1841,10 +1974,14 @@ def _flow_steps_for_ps_ids(con, ps_ids):
                    pfs.machine_category, pfs.preferred_machine,
                    pfs.cycle_time, pfs.setup_time, pfs.is_last_op,
                    pfs.source_kind, pfs.source_stage_no,
-                   COALESCE(so.wo_qty_required, 0) AS erp_required_qty,
-                   COALESCE(so.wo_qty_produced, 0) AS erp_finished_qty,
-                   COALESCE(so.wo_qty_rejected, 0) AS erp_reject_qty,
-                   so.execution_status AS erp_execution_status
+                   CASE WHEN ps.planner_ps_id LIKE '[Temp]%%' THEN 0
+                        ELSE COALESCE(so.wo_qty_required, 0) END AS erp_required_qty,
+                   CASE WHEN ps.planner_ps_id LIKE '[Temp]%%' THEN 0
+                        ELSE COALESCE(so.wo_qty_produced, 0) END AS erp_finished_qty,
+                   CASE WHEN ps.planner_ps_id LIKE '[Temp]%%' THEN 0
+                        ELSE COALESCE(so.wo_qty_rejected, 0) END AS erp_reject_qty,
+                   CASE WHEN ps.planner_ps_id LIKE '[Temp]%%' THEN ''
+                        ELSE COALESCE(so.execution_status, '') END AS erp_execution_status
             FROM planner_process_sheet ps
             JOIN planner_operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
             LEFT JOIN planner_temp_process_sheet tps ON tps.planner_ps_id = ps.planner_ps_id
@@ -2092,29 +2229,44 @@ def _merge_erp_metadata_into_flow_steps(flow_steps, erp_steps):
 
 
 def _resolve_process_sheet_steps(con, ps, flow_steps, erp_steps_cache=None):
+    planner_ps_id = compact_text(ps.get("ps_id") or ps.get("planner_ps_id"))
+    is_temp = is_temp_planner_ps_id(planner_ps_id)
+    if is_temp:
+        if flow_steps:
+            return [_normalize_manufacturing_step(step) for step in flow_steps]
+        return [_normalize_manufacturing_step(step) for step in _scheduled_ops_as_steps(con, planner_ps_id)]
     erp_steps = _erp_cache_steps_for_partial(con, ps, erp_steps_cache)
     if flow_steps:
         return _merge_erp_metadata_into_flow_steps(flow_steps, erp_steps)
     if erp_steps:
         return [_normalize_manufacturing_step(step) for step in erp_steps]
-    planner_ps_id = compact_text(ps.get("ps_id") or ps.get("planner_ps_id"))
     return [_normalize_manufacturing_step(step) for step in _scheduled_ops_as_steps(con, planner_ps_id)]
 
 
 def _prepare_process_sheet_steps(con, ps, flow_steps, erp_steps_cache=None, wo_stages_cache=None):
     """Resolve BOM machining steps and append post-machining WO stages from mfg_wo_status."""
-    from planning.erp_wo_merge import mfg_wo_stages_batch, merge_finishing_steps_into_flow_steps
+    from planning.erp_wo_merge import (
+        filter_wo_stages_for_main_partial,
+        mfg_wo_stages_batch,
+        merge_finishing_steps_into_flow_steps,
+    )
 
     steps = _resolve_process_sheet_steps(con, ps, flow_steps, erp_steps_cache)
     source_ps_id, pp_partial_no = _display_ids(ps)
+    is_temp = is_temp_planner_ps_id(ps.get("ps_id") or ps.get("planner_ps_id"))
     try:
         partial_int = int(pp_partial_no or 1)
     except (TypeError, ValueError):
         partial_int = 1
     cache_key = (compact_text(source_ps_id), partial_int)
-    if wo_stages_cache is None:
-        wo_stages_cache = mfg_wo_stages_batch(con, [cache_key] if cache_key[0] else [])
-    wo_stages = wo_stages_cache.get(cache_key, [])
+    if is_temp:
+        wo_stages = []
+    else:
+        if wo_stages_cache is None:
+            wo_stages_cache = mfg_wo_stages_batch(con, [cache_key] if cache_key[0] else [])
+        wo_stages = list(wo_stages_cache.get(cache_key, []))
+        main_qty = _to_float(ps.get("partial_qty") or ps.get("planned_qty") or ps.get("total_qty"))
+        wo_stages = filter_wo_stages_for_main_partial(wo_stages, main_qty)
     steps = merge_finishing_steps_into_flow_steps(steps, wo_stages)
     steps = [_normalize_manufacturing_step(step) for step in steps]
     return steps, wo_stages
@@ -2917,6 +3069,14 @@ def list_process_sheets_payload(con):
     today = date.today().isoformat()
     for ps in ps_rows:
         ps_id = compact_text(ps["ps_id"])
+        if not is_temp_planner_ps_id(ps_id) and not int(ps.get("selected_bom_id") or 0):
+            try:
+                repaired_bom_id = _repair_erp_ps_planner_bom_if_missing(con, ps_id)
+                if repaired_bom_id:
+                    ps["selected_bom_id"] = repaired_bom_id
+                    steps_by_ps[ps_id] = _flow_steps_for_ps_ids(con, [ps_id]).get(ps_id, [])
+            except Exception:
+                pass
         steps, wo_stages = _prepare_process_sheet_steps(
             con,
             ps,
@@ -3150,19 +3310,15 @@ def due_date_map_for_planner_ps_ids(con, planner_ps_ids):
         query_rows = rows(
             con.execute(
                 """
-                WITH voucher_partials AS (
-                    SELECT ps_id, pp_partial_no, MIN(due_date) AS due_date
-                    FROM pp_vouchers_cache
-                    GROUP BY ps_id, pp_partial_no
-                )
                 SELECT ps.planner_ps_id,
-                       vp.due_date::TEXT AS due_date,
+                       MIN(c.due_date)::TEXT AS due_date,
                        ps.coway_proposed_edd::TEXT AS coway_proposed_edd
                 FROM planner_process_sheet ps
-                LEFT JOIN voucher_partials vp
-                       ON vp.ps_id = ps.source_ps_id
-                      AND vp.pp_partial_no = ps.pp_partial_no
+                LEFT JOIN pp_vouchers_cache c
+                       ON c.ps_id = ps.source_ps_id
+                      AND c.pp_partial_no = ps.pp_partial_no
                 WHERE ps.planner_ps_id = ANY(%s)
+                GROUP BY ps.planner_ps_id, ps.coway_proposed_edd
                 """,
                 (ids,),
             )

@@ -315,14 +315,24 @@ function trialAssignCatalogRows(rows) {
   if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
 }
 
+function trialCatalogClientCacheMs() {
+  return 300000;
+}
+
+/** Re-render catalog sidebar from in-memory blocks (no /with-ops round trip). */
+function trialRerenderCatalogFromBlocks() {
+  if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
+  if (typeof bindTrialCatalogDnD === 'function') bindTrialCatalogDnD();
+}
+
 /** Reload PS/Ops sidebar after queue mutations (split, delete, schedule). */
 async function trialRefreshCatalogSidebar() {
   trialInvalidateCatalogCache();
   try {
-    const erpVouchers = await GET(trialNoCacheUrl(trialCatalogUrl(true)));
+    const erpVouchers = await GET(trialNoCacheUrl(trialCatalogUrl(false)));
     const cacheKey = trialCatalogCacheKey();
     trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
-    trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 10000;
+    trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + trialCatalogClientCacheMs();
     trialAssignCatalogRows(trialLoadCache[cacheKey]);
     if (typeof trialMaterialInOverrides !== 'undefined') trialMaterialInOverrides.clear();
     if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
@@ -358,6 +368,31 @@ window.addEventListener('pp-vouchers-synced', () => {
       trialScheduleRender();
     })
     .catch(err => console.error('catalog refresh after ERP sync failed:', err));
+});
+
+async function trialRefreshCatalogAfterTempPsChange(event) {
+  if (!document.getElementById('trial-catalog') || typeof loadTrial !== 'function') return;
+  await loadTrial({ force: true });
+  const detail = event?.detail || {};
+  const search = document.getElementById('trial-catalog-search');
+  const label = detail.display_ps_id || detail.planner_ps_id || '';
+  if (search && label) {
+    search.value = label;
+    if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
+  }
+}
+
+window.addEventListener('temp-ps-created', event => {
+  trialRefreshCatalogAfterTempPsChange(event).catch(err => {
+    console.error('catalog refresh after temp PS create failed:', err);
+  });
+});
+
+window.addEventListener('temp-ps-updated', () => {
+  if (!document.getElementById('trial-catalog') || typeof trialRefreshCatalogSidebar !== 'function') return;
+  trialRefreshCatalogSidebar().catch(err => {
+    console.error('catalog refresh after temp PS update failed:', err);
+  });
 });
 
 function trialNormalizeBlockFromApi(block) {
@@ -553,16 +588,12 @@ async function trialFinalizeCatalogQueueSchedule({ catalogCard, machineId, resul
     queueOrders,
     tailFromBlockId: result?.block?.block_id,
   });
-  if (typeof trialRefreshCatalogSidebar === 'function') {
-    await trialRefreshCatalogSidebar();
+  if (typeof trialRerenderCatalogFromBlocks === 'function') {
+    trialRerenderCatalogFromBlocks();
   }
   const machine = (trialState.machines || []).find(row => Number(row.machine_id) === numericMachineId);
   const label = machine?.machine_code || `Machine ${numericMachineId}`;
-  let onLane = trialCatalogOpOnLane(catalogCard, numericMachineId, resultBlock);
-  if (!onLane && typeof loadTrial === 'function') {
-    await loadTrial({ force: true });
-    onLane = trialCatalogOpOnLane(catalogCard, numericMachineId, resultBlock);
-  }
+  const onLane = trialCatalogOpOnLane(catalogCard, numericMachineId, resultBlock);
   if (result?.duplicate) {
     const partialLabel = typeof trialCatalogPartialIndex === 'function'
       ? trialCatalogPartialIndex(catalogCard)
@@ -678,6 +709,130 @@ function trialApplySchedulePayload(scheduleData, machinesResult, programToolsLoo
 
 let loadTrialInFlight = null;
 
+const TRIAL_LOAD_STAGES = {
+  connect: { label: 'Connecting…', percent: 5, ceiling: 11 },
+  shell: { label: 'Laying out machines…', percent: 12, ceiling: 21 },
+  shellDone: { percent: 22, ceiling: 27 },
+  schedule: { label: 'Loading machine queues…', percent: 28, ceiling: 47 },
+  scheduleDone: { percent: 48, ceiling: 51 },
+  renderBoard: { label: 'Rendering board…', percent: 52, ceiling: 61 },
+  catalog: { label: 'Loading process sheets…', percent: 62, ceiling: 81 },
+  catalogDone: { percent: 82, ceiling: 93 },
+  finish: { label: 'Finishing…', percent: 94, ceiling: 99 },
+  done: { percent: 100, ceiling: 100 },
+};
+
+let trialLoadingSim = null;
+
+function trialLoadingStopSim() {
+  if (trialLoadingSim?.timer) window.clearInterval(trialLoadingSim.timer);
+  trialLoadingSim = null;
+}
+
+function trialLoadingPaintBar(percent) {
+  const bar = trialLoadingBarEl();
+  if (bar) bar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+}
+
+function trialLoadingStartSim() {
+  trialLoadingStopSim();
+  const connect = TRIAL_LOAD_STAGES.connect;
+  trialLoadingSim = {
+    floor: connect.percent,
+    ceiling: connect.ceiling,
+    display: connect.percent,
+    timer: null,
+  };
+  trialLoadingPaintBar(connect.percent);
+  trialLoadingSim.timer = window.setInterval(() => {
+    const sim = trialLoadingSim;
+    if (!sim) return;
+    if (sim.display >= sim.ceiling - 0.05) return;
+    const gap = sim.ceiling - sim.display;
+    const step = Math.max(0.06, Math.min(0.45, gap * 0.035));
+    sim.display = Math.min(sim.ceiling, sim.display + step);
+    trialLoadingPaintBar(sim.display);
+  }, 55);
+}
+
+function trialLoadingEl() {
+  return document.getElementById('trial-loading');
+}
+
+function trialLoadingBarEl() {
+  return document.getElementById('trial-load-bar');
+}
+
+function trialLoadingLabelEl() {
+  return document.getElementById('trial-load-label');
+}
+
+function trialLoadingReset(options = {}) {
+  trialLoadingStopSim();
+  const panel = trialLoadingEl();
+  if (!panel) return;
+  panel.hidden = false;
+  panel.classList.remove('trial-load-panel--compact', 'trial-load-panel--error');
+  panel.setAttribute('aria-busy', 'true');
+  if (options.compact) panel.classList.add('trial-load-panel--compact');
+  trialLoadingStage('connect');
+  trialLoadingStartSim();
+}
+
+function trialLoadingStage(stageKey, overrides = {}) {
+  const stage = { ...(TRIAL_LOAD_STAGES[stageKey] || {}), ...overrides };
+  const labelEl = trialLoadingLabelEl();
+  if (labelEl && stage.label) labelEl.textContent = stage.label;
+  if (!Number.isFinite(stage.percent)) return;
+
+  const pct = stage.percent;
+  const ceiling = Number.isFinite(stage.ceiling) ? stage.ceiling : pct + 6;
+
+  if (trialLoadingSim) {
+    trialLoadingSim.floor = Math.max(trialLoadingSim.floor, pct);
+    trialLoadingSim.ceiling = Math.max(trialLoadingSim.ceiling, ceiling);
+    trialLoadingSim.display = Math.max(trialLoadingSim.display, trialLoadingSim.floor);
+    if (stageKey === 'done') {
+      trialLoadingSim.ceiling = 100;
+      trialLoadingSim.display = 100;
+    }
+    trialLoadingPaintBar(trialLoadingSim.display);
+    return;
+  }
+  trialLoadingPaintBar(pct);
+}
+
+function trialLoadingCompact() {
+  const panel = trialLoadingEl();
+  if (!panel || panel.hidden) return;
+  panel.classList.add('trial-load-panel--compact');
+}
+
+function trialLoadingHide() {
+  const panel = trialLoadingEl();
+  if (!panel) return;
+  trialLoadingStopSim();
+  trialLoadingStage('done');
+  window.setTimeout(() => {
+    panel.hidden = true;
+    panel.classList.remove('trial-load-panel--compact', 'trial-load-panel--error');
+    panel.removeAttribute('aria-busy');
+  }, 180);
+}
+
+function trialLoadingError(message) {
+  trialLoadingStopSim();
+  const panel = trialLoadingEl();
+  const labelEl = trialLoadingLabelEl();
+  if (!panel) return;
+  panel.classList.add('trial-load-panel--error');
+  panel.classList.remove('trial-load-panel--compact');
+  if (labelEl) labelEl.textContent = message || 'Could not load planner';
+  panel.setAttribute('aria-busy', 'false');
+}
+
+window.trialLoadingHide = trialLoadingHide;
+
 async function loadTrial(options = {}) {
   if (loadTrialInFlight) {
     return loadTrialInFlight;
@@ -695,6 +850,9 @@ async function loadTrialImpl(options = {}) {
       show_completed: trialShowCompletedFlag(),
     })
     : null;
+  const boardAlreadyPainted = Boolean(document.getElementById('trial-grid')?.childElementCount);
+  const showLoadUi = !boardAlreadyPainted || !!options.force;
+  if (showLoadUi) trialLoadingReset({ compact: boardAlreadyPainted });
   try {
   const resolved = trialNormalizeScheduleDates(trialScheduleDateFilter.start, trialScheduleDateFilter.end);
   trialScheduleDateFilter = resolved;
@@ -715,10 +873,42 @@ async function loadTrialImpl(options = {}) {
   const scheduleUrl = (force || machinistBoard)
     ? trialNoCacheUrl(`/api/trial/schedule${startParam}`)
     : `/api/trial/schedule${startParam}`;
-  const scheduleOutcome = await GET(scheduleUrl).catch(err => {
+  const shellParams = new URLSearchParams(params);
+  shellParams.set('shell', '1');
+  const shellUrl = (force || machinistBoard)
+    ? trialNoCacheUrl(`/api/trial/schedule?${shellParams}`)
+    : `/api/trial/schedule?${shellParams}`;
+  const skipCatalog = typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
+  if (!skipCatalog && typeof trialShowCatalogLoadingPlaceholder === 'function') {
+    trialShowCatalogLoadingPlaceholder();
+  }
+
+  const catalogCacheMs = trialCatalogClientCacheMs();
+  const catalogPromise = skipCatalog
+    ? Promise.resolve([])
+    : trialCachedGET(trialCatalogCacheKey(), catalogCacheMs, trialCatalogUrl(false)).catch(() => []);
+
+  if (!machinistBoard && !boardAlreadyPainted) {
+    if (showLoadUi) trialLoadingStage('shell');
+    const shellOutcome = await GET(shellUrl).catch(err => {
+      console.error('Failed to load trial schedule shell:', err);
+      return { error: err };
+    });
+    if (!shellOutcome?.error && Array.isArray(shellOutcome?.machines) && shellOutcome.machines.length) {
+      trialApplySchedulePayload(shellOutcome, {}, null);
+      if (showLoadUi) trialLoadingStage('shellDone');
+      trialScheduleRender(null, { skipCatalog: true });
+      if (showLoadUi) trialLoadingCompact();
+    }
+  }
+
+  if (showLoadUi) trialLoadingStage('schedule');
+  if (showLoadUi && !skipCatalog) trialLoadingStage('catalog');
+  const schedulePromise = GET(scheduleUrl).catch(err => {
     console.error('Failed to load trial schedule:', err);
     return { error: err };
   });
+  const [scheduleOutcome, erpVouchers] = await Promise.all([schedulePromise, catalogPromise]);
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'fetch-schedule');
   }
@@ -728,8 +918,14 @@ async function loadTrialImpl(options = {}) {
 
   if (scheduleError && !scheduleData.blocks?.length) {
     toast('Could not refresh machine queue: ' + scheduleError.message, 'error');
+    if (showLoadUi) {
+      trialLoadingError('Could not load machine queues');
+      window.setTimeout(() => trialLoadingHide(), 1400);
+    }
+    return;
   }
 
+  if (showLoadUi) trialLoadingStage('scheduleDone');
   trialApplySchedulePayload(scheduleData, {}, null);
   if (typeof trialSyncRecalcBaseline === 'function') trialSyncRecalcBaseline();
   if (typeof trialPerfMark === 'function') {
@@ -738,38 +934,46 @@ async function loadTrialImpl(options = {}) {
       blocks: Array.isArray(trialState.blocks) ? trialState.blocks.length : 0,
     });
   }
-  const boardPainted = Boolean(document.getElementById('trial-grid')?.childElementCount);
-  if (!boardPainted) {
-    trialScheduleRender(null, { skipCatalog: true });
+  if (showLoadUi) trialLoadingStage('renderBoard');
+  trialScheduleRender(null, { skipCatalog: true });
+  if (showLoadUi) trialLoadingCompact();
+
+  if (skipCatalog) {
+    if (showLoadUi) trialLoadingHide();
+    if (typeof trialPerfEnd === 'function') {
+      trialPerfEnd(perf, { schedule_error: Boolean(scheduleError), skip_catalog: true });
+    }
+    return;
   }
 
-  const skipCatalog = typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
-  let erpVouchers = [];
-  let programToolsLookup = null;
-  if (!skipCatalog) {
-    const catalogFetch = force
-      ? GET(trialNoCacheUrl(trialCatalogUrl(true))).catch(() => [])
-      : trialCachedGET(trialCatalogCacheKey(), 60000, trialCatalogUrl(false)).catch(() => []);
-    [erpVouchers, programToolsLookup] = await Promise.all([
-      catalogFetch,
-      trialCachedGET('programToolsLookup', 300000, '/api/program-tool-list/lookup').catch(() => null),
-    ]);
-  }
   if (typeof trialPerfMark === 'function') {
-    trialPerfMark(perf, 'fetch-secondary');
+    trialPerfMark(perf, 'fetch-catalog');
   }
 
-  trialApplySchedulePayload(scheduleData, {}, programToolsLookup);
   const cacheKey = trialCatalogCacheKey();
   trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
-  trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + 10000;
+  trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + catalogCacheMs;
   trialAssignCatalogRows(trialLoadCache[cacheKey]);
   if (typeof trialMaterialInOverrides !== 'undefined') trialMaterialInOverrides.clear();
+  if (showLoadUi) {
+    trialLoadingStage('catalogDone');
+    trialLoadingStage('finish');
+  }
   trialScheduleRender(null, {
     deferCatalog: true,
-    skipFilterShell: boardPainted,
-    preserveScroll: boardPainted,
+    skipFilterShell: true,
+    preserveScroll: true,
+    dismissLoading: showLoadUi,
   });
+
+  trialCachedGET('programToolsLookup', 300000, '/api/program-tool-list/lookup')
+    .then(programToolsLookup => {
+      if (!programToolsLookup) return;
+      trialState.program_tools_lookup = programToolsLookup;
+      if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
+    })
+    .catch(() => {});
+
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'schedule-render-dispatch');
   }
@@ -781,6 +985,10 @@ async function loadTrialImpl(options = {}) {
   } catch (err) {
     console.error('loadTrial failed:', err);
     toast('Could not load planner: ' + (err?.message || err), 'error');
+    if (showLoadUi) {
+      trialLoadingError('Could not load planner');
+      window.setTimeout(() => trialLoadingHide(), 1400);
+    }
     trialScheduleRender();
   }
 }

@@ -34,6 +34,31 @@ def is_finishing_stage_desc(stage_desc: str) -> bool:
     return any(pattern.search(text) for pattern in _FINISHING_STAGE_PATTERNS)
 
 
+def filter_wo_stages_for_main_partial(wo_stages, main_qty):
+    """Drop rework/satellite WOs (e.g. qty-3 reject lines) from the main ERP PS view."""
+    try:
+        main_qty = float(main_qty or 0)
+    except (TypeError, ValueError):
+        main_qty = 0.0
+    if main_qty <= 0:
+        return list(wo_stages or [])
+    kept = []
+    for row in wo_stages or []:
+        try:
+            req = float(row.get("wo_qty_required") or 0)
+        except (TypeError, ValueError):
+            req = 0.0
+        if req <= 0 or req >= main_qty - 0.0001:
+            kept.append(row)
+            continue
+        stage_desc = compact_text(row.get("stage_desc"))
+        # Reject/rework WOs belong on [Temp] PS — keep them off the source line.
+        if is_finishing_stage_desc(stage_desc) or req <= main_qty * 0.25:
+            continue
+        kept.append(row)
+    return kept
+
+
 def finishing_stage_bucket(stage_desc: str) -> str:
     text = compact_text(stage_desc)
     lowered = text.casefold()

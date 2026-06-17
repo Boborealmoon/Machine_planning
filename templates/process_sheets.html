@@ -20,6 +20,10 @@
     <button type="button" class="ps-view-tab is-active" data-ps-view="queue" id="ps-tab-queue">
       Production queue
     </button>
+    <button type="button" class="ps-view-tab" data-ps-view="rejects" id="ps-tab-rejects">
+      Rejected qty
+      <span class="ps-view-tab-count" id="ps-rejects-tab-count" hidden>0</span>
+    </button>
     <button type="button" class="ps-view-tab" data-ps-view="temp" id="ps-tab-temp">
       Temp reject PS
       <span class="ps-view-tab-count" id="ps-temp-tab-count" hidden>0</span>
@@ -28,8 +32,8 @@
 
   <section class="section ps-view-panel" id="ps-view-queue">
     <div class="section-heading">
-      <h2 class="section-title">Active Job Control</h2>
-      <p class="section-desc">
+      <h2 class="section-title" id="ps-queue-section-title">Active Job Control</h2>
+      <p class="section-desc" id="ps-queue-section-desc">
         ERP and planner lines including <strong>[Temp]</strong> when enabled in filters below.
         Use filter <strong>[Temp] only</strong> to focus reject/rework copies in this queue.
       </p>
@@ -95,7 +99,7 @@
         <span><span class="ps-temp-badge ps-temp-badge--legend">[Temp]</span> Reject / rework copy</span>
       </div>
       <div class="ps-bulk-lookup-row">
-        <span class="ps-bulk-lookup-label">Bulk lookup</span>
+        <span class="ps-bulk-lookup-label">Bulk lookup / export</span>
         <div class="search-wrap ps-bulk-lookup-wrap">
           <svg class="search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <circle cx="6.5" cy="6.5" r="5" stroke="#999" stroke-width="1.5"/>
@@ -105,11 +109,12 @@
             type="text"
             class="search-input"
             id="ps-bulk-lookup-input"
-            placeholder="PS (NPS26-0100-2 = partial 2), part, PO… space or comma-separated"
+            placeholder="NPS26-0202, NPS26-0241… paste PS list (comma, space, or newline)"
             autocomplete="off"
           />
         </div>
-        <button type="button" class="btn btn-dark btn-sm" id="ps-bulk-lookup-btn">Lookup table</button>
+        <button type="button" class="btn btn-light btn-sm" id="ps-bulk-lookup-btn">Lookup table</button>
+        <button type="button" class="btn btn-dark btn-sm" id="ps-bulk-export-btn" title="Pull matching process sheets and download as Excel">Export Excel</button>
       </div>
     </div>
 
@@ -151,6 +156,9 @@
           <option value="unqueued">Needs scheduling</option>
           <option value="queued">On planner</option>
         </select>
+        <label class="checkbox-label" title="Hide completed reject/rework lines">
+          <input type="checkbox" id="ps-temp-hide-resolved" checked /> Hide resolved
+        </label>
         <button type="button" class="btn btn-light btn-sm" id="ps-temp-refresh-btn">Refresh list</button>
         <button type="button" class="btn btn-dark btn-sm" id="ps-temp-create-btn">Create temp PS</button>
       </div>
@@ -169,5 +177,5 @@
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=temp-ps-ps-page-20260604"></script>
 <script src="{{ url_for('static', filename='js/scheduler/modals.js') }}?v=temp-ps-fix-20260604"></script>
 <script src="{{ url_for('static', filename='js/scheduler/temp_ps.js') }}?v=temp-ps-source-edit-20260611"></script>
-<script src="{{ url_for('static', filename='js/process_sheets.js', v='ps-copy-fields-20260612') }}"></script>
+<script src="{{ url_for('static', filename='js/process_sheets.js', v='ps-rejected-temp-tabs-20260616') }}"></script>
 {% endblock %}

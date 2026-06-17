@@ -747,6 +747,7 @@ function trialSchedulableOpCardsForPs(ps) {
     .map(enrich)
     .filter(card => String(card.card_kind || 'single') !== 'group')
     .filter(card => !trialCatalogOpIsComplete(card))
+    .filter(card => typeof trialCatalogOpCanDrag !== 'function' || trialCatalogOpCanDrag(card, ps))
     .filter(card => trialCatalogSchedulableRemaining(card) > 0.0001)
     .sort((a, b) => (
       Number(a.source_op_seq_id || 0) - Number(b.source_op_seq_id || 0)

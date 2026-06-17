@@ -645,6 +645,14 @@ def _api_trial_schedule_db():
     include_actuals = (not board_lite) or ("actuals" in include_parts)
     include_actual_daily = "actual_daily" in include_parts
     include_holidays = "holidays" in include_parts
+    shell_only = (
+        not is_machine_scoped
+        and board_lite
+        and (
+            compact_text(request.args.get("shell")).lower() in {"1", "true", "yes"}
+            or include_parts == {"machines"}
+        )
+    )
 
     with planner_db() as con:
         # Full board reload: move DONE ops off machine lanes + compact gaps.
@@ -654,11 +662,7 @@ def _api_trial_schedule_db():
 
             auto_unschedule_on_page_load(con)
             compact_machine_lanes_with_gaps(con, recalculate=False)
-        elif board_lite and not is_machine_scoped:
-            from .auto_unschedule import auto_unschedule_on_lite_board_load
-
-            auto_unschedule_on_lite_board_load(con)
-        # Machine-scoped full refresh only — lite lane updates skip this (too slow).
+        # Lite board load: skip auto-unschedule sweep (was blocking every page open).
         elif is_machine_scoped and not lite:
             from .auto_unschedule import auto_unschedule_for_machines
             from .operation_sequence import compact_machine_lanes_with_gaps
@@ -712,6 +716,22 @@ def _api_trial_schedule_db():
         machines = rows(con.execute(
             "SELECT machine_id, machine_no AS machine_code, machine_category, shift_profile, active FROM planner_machines WHERE active = TRUE ORDER BY machine_id"
         ))
+        if shell_only:
+            return jsonify({
+                "machines": [dict(row) for row in machines],
+                "blocks": [],
+                "segments": [],
+                "actuals": [],
+                "capacities": [],
+                "profiles": [],
+                "public_holidays": [],
+                "block_groups": [],
+                "catalog": [],
+                "planned": [],
+                "planning_cards": [],
+                "calendar_windows": [],
+            })
+
         machine_by_id = {int(row["machine_id"]): dict(row) for row in machines}
 
         # include_completed=1 is used by Actual Production history view to include:
@@ -901,9 +921,14 @@ def _api_trial_schedule_db():
 
         visible_block_ids = {int(b["block_id"]) for b in blocks if b.get("block_id")}
         if not include_completed:
-            from .queue_visibility import filter_completed_lane_blocks
+            if board_lite:
+                from .queue_visibility import filter_completed_lane_blocks_fast
 
-            blocks = filter_completed_lane_blocks(con, blocks)
+                blocks = filter_completed_lane_blocks_fast(blocks)
+            else:
+                from .queue_visibility import filter_completed_lane_blocks
+
+                blocks = filter_completed_lane_blocks(con, blocks)
             visible_block_ids = {int(b["block_id"]) for b in blocks if b.get("block_id")}
             if visible_block_ids != {int(x) for x in _active_block_ids}:
                 segments = [
@@ -1924,25 +1949,37 @@ def api_trial_create_operation():
                     ),
                 )
 
-            machine_blocks = rows(
-                con.execute(
-                    """
-                    SELECT block_id
-                    FROM planner_run_block
-                    WHERE machine_id = %s
-                      AND COALESCE(active, TRUE) = TRUE
-                    ORDER BY queue_position, block_id
-                    """,
-                    (machine_id,),
-                )
-            )
-            ordered_ids = [int(row["block_id"]) for row in machine_blocks]
-            if block_id in ordered_ids and queue_position > 0:
-                ordered_ids = [bid for bid in ordered_ids if bid != block_id]
-                insert_idx = min(max(0, int(queue_position) - 1), len(ordered_ids))
-                ordered_ids.insert(insert_idx, block_id)
+            requested_queue = float(data.get("queue_position") or 0)
             recalculate = _parse_recalculate_flag(data)
-            apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=recalculate)
+            if requested_queue <= 0 and not recalculate:
+                from .operation_sequence import (
+                    append_block_operation_sequence,
+                    sync_planning_cards_for_machine,
+                    update_planning_card_machine_for_block,
+                )
+
+                append_block_operation_sequence(con, machine_id, block_id)
+                update_planning_card_machine_for_block(con, block_id, machine_id)
+                sync_planning_cards_for_machine(con, machine_id)
+            else:
+                machine_blocks = rows(
+                    con.execute(
+                        """
+                        SELECT block_id
+                        FROM planner_run_block
+                        WHERE machine_id = %s
+                          AND COALESCE(active, TRUE) = TRUE
+                        ORDER BY queue_position, block_id
+                        """,
+                        (machine_id,),
+                    )
+                )
+                ordered_ids = [int(row["block_id"]) for row in machine_blocks]
+                if block_id in ordered_ids and queue_position > 0:
+                    ordered_ids = [bid for bid in ordered_ids if bid != block_id]
+                    insert_idx = min(max(0, int(queue_position) - 1), len(ordered_ids))
+                    ordered_ids.insert(insert_idx, block_id)
+                apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=recalculate)
             return jsonify({
                 "ok": True,
                 "operation_id": operation_id,

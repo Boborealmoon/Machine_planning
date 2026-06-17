@@ -17,11 +17,11 @@ logger = logging.getLogger(__name__)
 material_inspection_bp = Blueprint("material_inspection", __name__)
 
 _CACHE_TTL_SEC = 300
-_CACHE_VERSION = 3  # bump when bucket / voucher filter logic changes
-_cache: tuple[float, int, dict[str, list[dict[str, Any]]]] | None = None
+_CACHE_VERSION = 4  # bump when bucket / voucher filter logic changes
+_cache: dict[str, tuple[float, int, dict[str, list[dict[str, Any]]]]] = {}
 
 # ERP jasper view used by the QC inspection control screen (logistic shipment + QI lines).
-_MATERIAL_INSPECTION_SQL = """
+_MATERIAL_INSPECTION_SELECT = """
 SELECT
     inspection_voucher_no,
     status,
@@ -56,11 +56,24 @@ SELECT
     contact_person_name,
     generate_ncr
 FROM public.zz_jasper_th5_quality_inspection_control_header
-WHERE source_voucher_no IS NOT NULL
-  AND BTRIM(source_voucher_no) <> ''
-  AND inspection_voucher_no ~ '^QI[0-9]+$'
-ORDER BY created_datetime DESC NULLS LAST
 """
+
+_MATERIAL_INSPECTION_FILTERS = {
+    "with_shipment": (
+        "WHERE source_voucher_no IS NOT NULL"
+        "  AND BTRIM(source_voucher_no) <> ''"
+        "  AND inspection_voucher_no ~ '^QI[0-9]+$'"
+    ),
+    "no_shipment": (
+        "WHERE (source_voucher_no IS NULL OR BTRIM(source_voucher_no) = '')"
+        "  AND inspection_voucher_no ~ '^QI[0-9]+$'"
+    ),
+}
+
+
+def _material_inspection_sql(variant: str) -> str:
+    where = _MATERIAL_INSPECTION_FILTERS[variant]
+    return f"{_MATERIAL_INSPECTION_SELECT}{where}\nORDER BY created_datetime DESC NULLS LAST"
 
 
 def _serialize_value(value: Any) -> Any:
@@ -107,46 +120,49 @@ def _split_by_status(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any
     return {"outstanding": outstanding, "ready": ready, "historical": historical}
 
 
-def _fetch_material_inspection(*, refresh: bool = False) -> dict[str, list[dict[str, Any]]]:
-    global _cache
+def _fetch_material_inspection(
+    *,
+    variant: str = "with_shipment",
+    refresh: bool = False,
+) -> dict[str, list[dict[str, Any]]]:
+    if variant not in _MATERIAL_INSPECTION_FILTERS:
+        raise ValueError(f"unknown material inspection variant: {variant}")
+
     now = time.time()
+    cached = _cache.get(variant)
     if (
         not refresh
-        and _cache
-        and _cache[1] == _CACHE_VERSION
-        and now - _cache[0] < _CACHE_TTL_SEC
+        and cached
+        and cached[1] == _CACHE_VERSION
+        and now - cached[0] < _CACHE_TTL_SEC
     ):
-        return _cache[2]
+        return cached[2]
 
-    rows = _erp_query(_MATERIAL_INSPECTION_SQL)
+    rows = _erp_query(_material_inspection_sql(variant))
     payload = _split_by_status(rows)
-    _cache = (now, _CACHE_VERSION, payload)
+    _cache[variant] = (now, _CACHE_VERSION, payload)
     return payload
 
 
-@material_inspection_bp.get("/material-inspection")
-def material_inspection_page():
-    return render_template("material_inspection.html", active="material_inspection")
-
-
-@material_inspection_bp.get("/api/material-inspection")
-def api_material_inspection():
+def _material_inspection_api_response(variant: str):
     refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
 
     try:
-        data = _fetch_material_inspection(refresh=refresh)
+        data = _fetch_material_inspection(variant=variant, refresh=refresh)
     except Exception as exc:
-        logger.exception("material inspection ERP query failed")
+        logger.exception("material inspection ERP query failed (%s)", variant)
         return jsonify({"error": f"ERP query failed: {exc}"}), 502
 
     outstanding = data.get("outstanding") or []
     ready = data.get("ready") or []
     historical = data.get("historical") or []
-    cached_at = _cache[0] if _cache else time.time()
+    cached = _cache.get(variant)
+    cached_at = cached[0] if cached else time.time()
 
     return jsonify(
         {
             "ok": True,
+            "variant": variant,
             "outstanding_count": len(outstanding),
             "ready_count": len(ready),
             "historical_count": len(historical),
@@ -158,3 +174,45 @@ def api_material_inspection():
             "historical": historical,
         }
     )
+
+
+@material_inspection_bp.get("/material-inspection")
+def material_inspection_page():
+    return render_template(
+        "material_inspection.html",
+        active="material_inspection",
+        mi_page_title="Material Inspection",
+        mi_subtitle=(
+            "Inbound logistic shipment QC inspections linked to a shipment voucher. "
+            "Toggle outstanding <strong>O</strong>, ready <strong>R</strong>, or historical <strong>H</strong>. "
+            "Historical is grouped by arrival week (this week, last week, then earlier). Click a row for full detail."
+        ),
+        mi_api_path="/api/material-inspection",
+        mi_show_shipment_column=True,
+    )
+
+
+@material_inspection_bp.get("/material-inspection/no-shipment")
+def material_inspection_no_shipment_page():
+    return render_template(
+        "material_inspection.html",
+        active="material_inspection_no_shipment",
+        mi_page_title="Material Inspection (no shipment)",
+        mi_subtitle=(
+            "QC inspections with <strong>no shipment voucher</strong> on the inbound line. "
+            "Toggle outstanding <strong>O</strong>, ready <strong>R</strong>, or historical <strong>H</strong>. "
+            "Historical is grouped by arrival week (this week, last week, then earlier). Click a row for full detail."
+        ),
+        mi_api_path="/api/material-inspection/no-shipment",
+        mi_show_shipment_column=False,
+    )
+
+
+@material_inspection_bp.get("/api/material-inspection")
+def api_material_inspection():
+    return _material_inspection_api_response("with_shipment")
+
+
+@material_inspection_bp.get("/api/material-inspection/no-shipment")
+def api_material_inspection_no_shipment():
+    return _material_inspection_api_response("no_shipment")

@@ -127,6 +127,8 @@ candidates AS (
             FROM public.planner_program_tools p
 
             WHERE NULLIF(trim(p.part_no_erp), '') IS NOT NULL
+              AND NULLIF(trim(p.program_file), '') IS NOT NULL
+              AND NULLIF(trim(p.tool_list_files), '') IS NOT NULL
 
         ) g
 
@@ -216,6 +218,31 @@ MASTER_MATCH_SQL = """
 
 """
 
+
+# Drop orphan master rows superseded by a richer row for the same part + op (e.g. stage_no=0 stubs).
+PRUNE_STALE_MASTER_ROWS_SQL = """
+DELETE FROM public.planner_cycle_time_master m
+WHERE EXISTS (
+    SELECT 1
+    FROM public.planner_cycle_time_master b
+    WHERE trim(b.part_no) = trim(m.part_no)
+      AND b.op_no IS NOT DISTINCT FROM m.op_no
+      AND b.id <> m.id
+      AND (
+            (m.stage_no = 0 AND b.stage_no > 0)
+         OR (
+                trim(COALESCE(m.program_file, '')) = ''
+            AND trim(COALESCE(m.program_no, '')) = ''
+            AND trim(COALESCE(m.tool_list_file, '')) = ''
+            AND (
+                    trim(COALESCE(b.program_file, '')) <> ''
+                 OR trim(COALESCE(b.program_no, '')) <> ''
+                 OR b.stage_no > 0
+                )
+            )
+      )
+)
+"""
 
 
 INSERT_NEW_ONLY_SQL = f"""
@@ -437,7 +464,23 @@ def _planner_db_available() -> bool:
     return bool(os.getenv("SUPA_DB_URL", "").strip())
 
 
+def prune_stale_master_rows() -> dict:
+    """Remove generic / stage_no=0 master rows when a richer row exists for the same part + op."""
+    if not _planner_db_available():
+        return {"error": "SUPA_DB_URL is not set.", "deleted": 0}
 
+    from sync import PLANNER_STATEMENT_TIMEOUT_MS
+    from planning.helpers import planner_db
+
+    with planner_db() as con:
+        con.execute(f"SET LOCAL statement_timeout = '{PLANNER_STATEMENT_TIMEOUT_MS}'")
+        cur = con.execute(PRUNE_STALE_MASTER_ROWS_SQL)
+        deleted = int(cur.rowcount or 0)
+
+    return {
+        "deleted": deleted,
+        "message": f"Pruned {deleted} stale master row(s) superseded by richer part+op rows.",
+    }
 
 
 def import_new_from_program_tools() -> dict:
@@ -482,7 +525,9 @@ def import_new_from_program_tools() -> dict:
 
         inserted = int(cur.rowcount or 0)
 
+        prune_cur = con.execute(PRUNE_STALE_MASTER_ROWS_SQL)
 
+        pruned = int(prune_cur.rowcount or 0)
 
     source = int(stats.get("source_count") or 0)
 
@@ -496,11 +541,15 @@ def import_new_from_program_tools() -> dict:
 
         "source_count": source,
 
+        "pruned_stale": pruned,
+
         "message": (
 
             f"Inserted {inserted} new row(s); "
 
-            f"skipped {skipped} already in master (not overwritten)."
+            f"skipped {skipped} already in master (not overwritten); "
+
+            f"pruned {pruned} stale row(s)."
 
         ),
 
@@ -724,7 +773,8 @@ def sync_cycle_times_incremental() -> dict:
     out["message"] = (
         f"Program tools upserted {out['program_tools'].get('upserted', out['program_tools'].get('synced', 0))} row(s); "
         f"master inserted {imp.get('inserted', 0)} new, "
-        f"skipped {imp.get('skipped_existing', 0)} already in master; "
+        f"skipped {imp.get('skipped_existing', 0)} already in master, "
+        f"pruned {imp.get('pruned_stale', 0)} stale; "
         f"updated ideal on {ideal.get('updated', 0)} existing row(s)."
     )
     return out

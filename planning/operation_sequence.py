@@ -84,6 +84,52 @@ def sync_machine_operation_sequence(con, machine_id):
     return result
 
 
+def append_block_operation_sequence(con, machine_id, block_id):
+    """Append one block to a lane without rebuilding every sequence row on the machine."""
+    machine_id = int(machine_id)
+    block_id = int(block_id)
+    if machine_id <= 0 or block_id <= 0:
+        return None
+    next_seq = int(
+        one(
+            con.execute(
+                """
+                SELECT COALESCE(MAX(os.sequence_no), 0) AS mx
+                FROM planner_operation_sequence os
+                WHERE os.machine_id = %s
+                """,
+                (machine_id,),
+            )
+        )["mx"]
+        or 0
+    ) + 1
+    row = one(
+        con.execute(
+            """
+            INSERT INTO planner_operation_sequence (
+              machine_id, block_id, sequence_no, created_at, updated_at
+            ) VALUES (%s, %s, %s, NOW(), NOW())
+            ON CONFLICT (block_id) DO UPDATE SET
+              machine_id = EXCLUDED.machine_id,
+              sequence_no = EXCLUDED.sequence_no,
+              updated_at = NOW()
+            RETURNING operation_sequence_id, block_id, machine_id, sequence_no
+            """,
+            (machine_id, block_id, next_seq),
+        )
+    )
+    operation_sequence_id = int(row["operation_sequence_id"])
+    con.execute(
+        """
+        UPDATE planner_run_block
+        SET operation_sequence_id = %s, updated_at = NOW()
+        WHERE block_id = %s
+        """,
+        (operation_sequence_id, block_id),
+    )
+    return dict(row)
+
+
 def sync_operation_sequences_for_machines(con, machine_ids):
     """Sync planner_operation_sequence for each machine id; return block_id -> row map."""
     merged = {}
