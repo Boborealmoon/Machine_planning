@@ -625,6 +625,9 @@ def _build_pp_vouchers_with_ops_data(include_completed: bool, con, cache_rows=No
             for entry in data
             if not entry.get("shipped_completed") or entry.get("is_temp_ps")
         ]
+    from planning.materials import enrich_items_material_inventory_codes
+
+    enrich_items_material_inventory_codes(con, data)
     return data
 
 

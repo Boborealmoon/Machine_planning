@@ -68,6 +68,7 @@ const SO_COLUMNS = [
   { id: 'partial', label: 'Partial', sortable: true, filterable: true },
   { id: 'queued_cnc', label: 'Queued CNC', sortable: true, filterable: true },
   { id: 'erp_stage', label: 'Stage', sortable: true, filterable: true },
+  { id: 'qty', label: 'Qty', sortable: true, filterable: true },
   { id: 'order_date', label: 'Date', sortable: true, filterable: true },
   { id: 'part', label: 'Part', sortable: true, filterable: true },
   { id: 'description', label: 'Description', sortable: true, filterable: true },
@@ -76,7 +77,6 @@ const SO_COLUMNS = [
   { id: 'delivery_date', label: 'Del. date', sortable: true, filterable: true },
   { id: 'unit_selling_price', label: 'U/Price', sortable: true, filterable: true },
   { id: 'amount', label: 'Amount', sortable: true, filterable: true },
-  { id: 'qty', label: 'Qty', sortable: true, filterable: true },
   { id: 'material_in', label: 'Material in', sortable: true, filterable: true },
   { id: 'material_subcon', label: 'Material/Sub-con', sortable: true, filterable: true },
   { id: 'mtl_part_order', label: 'Mtl / Part Order', sortable: true, filterable: true },
@@ -1685,6 +1685,10 @@ function soRenderOrderDateCell(pp) {
   return `<td class="new-orders-date">${escapeHtml(soFormatDate(pp.order_date))}</td>`;
 }
 
+function soRenderQtyCell(pp) {
+  return `<td class="new-orders-num so-qty-cell">${escapeHtml(String(pp?.pp_qty ?? '—'))}</td>`;
+}
+
 function soRenderPpCells(pp) {
   return `
     <td class="new-orders-desc" title="${escapeHtml(String(pp.description || ''))}">${escapeHtml(String(pp.description || '—'))}</td>
@@ -1693,7 +1697,6 @@ function soRenderPpCells(pp) {
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.delivery_date))}</td>
     <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.unit_selling_price))}</td>
     <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.amount))}</td>
-    <td class="new-orders-num">${escapeHtml(String(pp.pp_qty ?? '—'))}</td>
     ${soRenderMaterialInCell(pp)}
     ${soRenderMaterialSubconCell(pp)}
     ${SO_NOTE_FIELDS.filter(field => field !== 'material_subcon').map(field => soRenderEditableCell(pp, field)).join('')}
@@ -1829,6 +1832,7 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, shade
       ${soRenderPartialCell(partial)}
       ${soRenderQueuedCncCell(pp, partial)}
       ${soRenderStageCell(pp, partial)}
+      ${soRenderQtyCell(pp)}
       ${orderDateCell}
       ${soRenderPartCell(pp, partial)}
       ${soRenderPpCells(pp)}

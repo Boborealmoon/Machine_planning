@@ -1406,6 +1406,7 @@
                 <th>Partial</th>
                 <th>Part</th>
                 <th>Description</th>
+                <th>Material</th>
                 <th>Qty</th>
                 <th>PO due</th>
                 <th>Coway EDD</th>
@@ -1444,6 +1445,7 @@
                     <td>${escapeHtml(partialLabel(item))}</td>
                     <td>${escapeHtml(part)}</td>
                     <td>${escapeHtml(item.part_desc || '—')}</td>
+                    <td>${escapeHtml(materialInventoryLabel(item) || '—')}</td>
                     <td>${escapeHtml(qty)}</td>
                     <td class="${due !== '-' && isOverdue(item) ? 'is-overdue' : ''}">${escapeHtml(due)}</td>
                     <td>${escapeHtml(coway)}</td>
@@ -1533,6 +1535,7 @@
     { key: 'partial', header: 'Partial', width: 8 },
     { key: 'part_no', header: 'Part no', width: 14 },
     { key: 'description', header: 'Description', width: 28 },
+    { key: 'material', header: 'Material', width: 18 },
     { key: 'qty', header: 'Qty', width: 10 },
     { key: 'po_due', header: 'PO due', width: 12 },
     { key: 'coway_edd', header: 'Coway EDD', width: 12 },
@@ -1565,6 +1568,7 @@
       partial: partialLabel(item),
       part_no: item.part_no || item.part_name || item.inventory_code || '',
       description: item.part_desc || '',
+      material: materialInventoryLabel(item),
       qty: firstQuantity(item.display_qty, item.partial_qty, item.wo_req_qty, item.total_qty, 0),
       po_due: fmtDate(item.due_date) === '-' ? '' : fmtDate(item.due_date),
       coway_edd: fmtDate(item.coway_proposed_edd) === '-' ? '' : fmtDate(item.coway_proposed_edd),

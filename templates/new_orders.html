@@ -10,6 +10,7 @@
       <p class="new-orders-subtitle">Sales orders grouped by working week (Mon–Sat), filtered on <strong>first post</strong> date so re-posted orders do not reappear. Re-posts show a latest-post timestamp when different. Data is read live from COMAIN — cached in memory for 5 minutes, not stored in Supabase.</p>
     </div>
     <div class="new-orders-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="new-orders-copy-ps" title="Copy process sheet numbers from visible rows">Copy PS</button>
       <button type="button" class="btn btn-ghost btn-sm" id="new-orders-refresh">Refresh</button>
     </div>
   </div>
@@ -109,5 +110,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=new-orders-20260603"></script>
 <script src="{{ url_for('static', filename='js/repeat_order_tags.js') }}?v=repeat-same-so-20260612"></script>
-<script src="{{ url_for('static', filename='js/new_orders.js') }}?v=new-orders-same-so-20260612"></script>
+<script src="{{ url_for('static', filename='js/new_orders.js') }}?v=new-orders-copy-ps-20260617"></script>
 {% endblock %}

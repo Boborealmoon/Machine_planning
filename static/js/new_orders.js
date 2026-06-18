@@ -198,6 +198,43 @@ function newOrdersBindDetailPanel() {
   });
 }
 
+function newOrdersCollectVisiblePsNumbers() {
+  return newOrdersFilteredRows()
+    .map(row => newOrdersPsBase(row.process_sheet_no))
+    .filter(Boolean);
+}
+
+function newOrdersCopyVisiblePsNumbers() {
+  const btn = document.getElementById('new-orders-copy-ps');
+  const sheets = newOrdersCollectVisiblePsNumbers();
+  if (!sheets.length) {
+    if (!btn) return;
+    const defaultLabel = btn.dataset.defaultLabel || btn.textContent;
+    btn.dataset.defaultLabel = defaultLabel;
+    btn.textContent = 'None found';
+    window.setTimeout(() => {
+      btn.textContent = btn.dataset.defaultLabel || 'Copy PS';
+    }, 1600);
+    return;
+  }
+  const text = sheets.join('\n');
+  const defaultLabel = btn?.dataset.defaultLabel || btn?.textContent || 'Copy PS';
+  if (btn) btn.dataset.defaultLabel = defaultLabel;
+  navigator.clipboard.writeText(text).then(() => {
+    if (!btn) return;
+    btn.textContent = `Copied ${sheets.length}`;
+    window.setTimeout(() => {
+      btn.textContent = btn.dataset.defaultLabel || 'Copy PS';
+    }, 1600);
+  }).catch(() => {
+    if (!btn) return;
+    btn.textContent = 'Copy failed';
+    window.setTimeout(() => {
+      btn.textContent = btn.dataset.defaultLabel || 'Copy PS';
+    }, 1600);
+  });
+}
+
 function newOrdersBindTableClicks() {
   const wrap = document.getElementById('new-orders-table-wrap');
   if (!wrap || wrap.dataset.detailBound === '1') return;
@@ -801,6 +838,7 @@ function newOrdersInit() {
   });
 
   refreshBtn?.addEventListener('click', () => newOrdersLoad(true));
+  document.getElementById('new-orders-copy-ps')?.addEventListener('click', newOrdersCopyVisiblePsNumbers);
 
   newOrdersBindPsTypeDropdown();
   newOrdersBindDetailPanel();

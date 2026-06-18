@@ -469,6 +469,78 @@ function trialIsTempCatalogPs(row) {
   return src.startsWith('[Temp]');
 }
 
+/** [Temp] planner ids on machine lanes that are not yet in the catalog API payload. */
+function trialBoardTempPsIdsMissingFromCatalog() {
+  const known = new Set();
+  [...(trialState.catalog || []), ...(trialState.planned || [])].forEach(ps => {
+    const id = String(ps?.ps_id || '').trim();
+    if (id) known.add(id);
+  });
+  const missing = new Set();
+  (trialState.blocks || []).forEach(block => {
+    const psId = String(block.planner_ps_id || block.source_ps_id || block.job_no || '').trim();
+    if (!psId || known.has(psId)) return;
+    if (trialIsTempCatalogPs({ ps_id: psId, planner_ps_id: psId, source_ps_id: psId })) {
+      missing.add(psId);
+    }
+  });
+  return [...missing];
+}
+
+/** Minimal catalog rows for queued [Temp] lines missing from /with-ops (stale cache). */
+function trialBoardOnlyTempCatalogEntries() {
+  const missing = trialBoardTempPsIdsMissingFromCatalog();
+  if (!missing.length) return [];
+  const missingSet = new Set(missing);
+  const byId = new Map();
+  (trialState.blocks || []).forEach(block => {
+    const psId = String(block.planner_ps_id || block.source_ps_id || block.job_no || '').trim();
+    if (!psId || !missingSet.has(psId)) return;
+    let row = byId.get(psId);
+    if (!row) {
+      const sourceRef = psId.replace(/^\[Temp\]\s*/i, '').trim();
+      row = {
+        ps_id: psId,
+        display_ps_id: typeof trialTempPsDisplayId === 'function' ? trialTempPsDisplayId(psId) : psId,
+        is_temp_ps: true,
+        source_ps_id: sourceRef,
+        temp_source_ps_id: sourceRef,
+        pp_partial_no: 1,
+        part_no: '',
+        part_name: '',
+        part_desc: '',
+        due_date: '',
+        material_in: false,
+        partial_qty: 0,
+        op_cards: [],
+        ops: [],
+        _from_board_blocks: true,
+      };
+      byId.set(psId, row);
+    }
+    const part = String(block.part_no || block.inventory_code || '').trim();
+    if (part && !row.part_no) row.part_no = part;
+    if (part && !row.part_name) row.part_name = part;
+    const desc = String(block.part_desc || '').trim();
+    if (desc && !row.part_desc) row.part_desc = desc;
+    const due = String(block.due_date || '').trim();
+    if (due && !row.due_date) row.due_date = due;
+    if (block.material_in) row.material_in = true;
+    row.partial_qty = Math.max(
+      Number(row.partial_qty || 0),
+      Number(block.scheduled_qty || 0),
+    );
+  });
+  return [...byId.values()];
+}
+
+/** Catalog rows plus any [Temp] lines visible on the board but absent from the API. */
+function trialMergedCatalogRows() {
+  const boardTemp = trialBoardOnlyTempCatalogEntries();
+  if (!boardTemp.length) return trialState.catalog || [];
+  return [...(trialState.catalog || []), ...boardTemp];
+}
+
 /** Resolve partial number from pp_partial_no and/or ::suffix on any planner id field. */
 function trialCatalogPartialIndex(psIdOrRow, explicitPartialNo) {
   let ppPartial = explicitPartialNo;

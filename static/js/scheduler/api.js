@@ -315,6 +315,27 @@ function trialAssignCatalogRows(rows) {
   if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
 }
 
+let _trialMissingTempCatalogRefreshTimer = 0;
+let _trialMissingTempCatalogRefreshInFlight = false;
+
+/** Debounced refresh when queued [Temp] lines are on the board but not in /with-ops yet. */
+function trialScheduleMissingTempCatalogRefresh() {
+  if (_trialMissingTempCatalogRefreshInFlight) return;
+  clearTimeout(_trialMissingTempCatalogRefreshTimer);
+  _trialMissingTempCatalogRefreshTimer = window.setTimeout(() => {
+    _trialMissingTempCatalogRefreshTimer = 0;
+    if (typeof trialBoardTempPsIdsMissingFromCatalog !== 'function') return;
+    if (!trialBoardTempPsIdsMissingFromCatalog().length) return;
+    if (typeof trialRefreshCatalogSidebar !== 'function') return;
+    _trialMissingTempCatalogRefreshInFlight = true;
+    trialRefreshCatalogSidebar()
+      .catch(err => console.error('catalog refresh for board-only temp PS failed:', err))
+      .finally(() => {
+        _trialMissingTempCatalogRefreshInFlight = false;
+      });
+  }, 1500);
+}
+
 function trialCatalogClientCacheMs() {
   return 300000;
 }
@@ -955,6 +976,13 @@ async function loadTrialImpl(options = {}) {
   trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + catalogCacheMs;
   trialAssignCatalogRows(trialLoadCache[cacheKey]);
   if (typeof trialMaterialInOverrides !== 'undefined') trialMaterialInOverrides.clear();
+  if (typeof trialBoardTempPsIdsMissingFromCatalog === 'function'
+    && trialBoardTempPsIdsMissingFromCatalog().length) {
+    trialInvalidateCatalogCache();
+    if (typeof trialScheduleMissingTempCatalogRefresh === 'function') {
+      trialScheduleMissingTempCatalogRefresh();
+    }
+  }
   if (showLoadUi) {
     trialLoadingStage('catalogDone');
     trialLoadingStage('finish');

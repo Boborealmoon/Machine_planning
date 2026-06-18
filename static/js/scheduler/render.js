@@ -835,7 +835,7 @@ function trialCatalogOpShouldShow(card, isOpAllocated) {
 }
 
 function trialPsIsUnassignedCatalog(ps) {
-  if (ps?.is_temp_ps) {
+  if (typeof trialIsTempCatalogPs === 'function' && trialIsTempCatalogPs(ps)) {
     const cards = trialResolvedOpCardsForPs(ps);
     if (cards.length) return false;
   }
@@ -3820,11 +3820,15 @@ function renderTrialCatalog() {
   const queryInput = document.getElementById('trial-catalog-search');
   const rawQuery = String(queryInput ? queryInput.value : trialCatalogSearch || '').trim().toLowerCase();
   trialCatalogSearch = rawQuery;
+  const catalogSource = typeof trialMergedCatalogRows === 'function'
+    ? trialMergedCatalogRows()
+    : (trialState.catalog || []);
+  const hadBoardOnlyTemp = catalogSource.length > (trialState.catalog || []).length;
   const searchIndex = trialEnsureCatalogSearchIndex();
   const resolvedCardsCache = new WeakMap();
   const allocatedCardCache = new Map();
   const siblingCountByBase = new Map();
-  (trialState.catalog || []).forEach(ps => {
+  catalogSource.forEach(ps => {
     const base = trialCatalogSourceBase(ps);
     if (!base) return;
     siblingCountByBase.set(base, Number(siblingCountByBase.get(base) || 0) + 1);
@@ -3864,12 +3868,12 @@ function renderTrialCatalog() {
 
   const catalogMatchesSearch = ps => trialQueryMatchesSearchTokens(cachedCatalogHaystack(ps), rawQuery);
 
-  const catalog = (trialState.catalog || []).filter(ps => {
+  const catalog = catalogSource.filter(ps => {
     const psType = trialGetPsType(ps.ps_id);
     if (!trialPsTypeFilter.has(psType)) return false;
     if (!trialShowSrOrders && String(ps.ps_id || '').includes('[SR]')) return false;
     if (!trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
-    if (!rawQuery && trialCatalogSupersededByTempSibling(ps, trialState.catalog)) return false;
+    if (!rawQuery && trialCatalogSupersededByTempSibling(ps, catalogSource)) return false;
     if (!rawQuery && !trialCatalogMatchesQueueFilter(ps)) return false;
     return catalogMatchesSearch(ps);
   });
@@ -3881,12 +3885,12 @@ function renderTrialCatalog() {
       trialCatalogSearchBaseKeys(ps).forEach(key => matchedBases.add(key));
     });
     const seen = new Set(catalog.map(ps => String(ps.ps_id || '')));
-    for (const ps of trialState.catalog || []) {
+    for (const ps of catalogSource) {
       const psId = String(ps.ps_id || '');
       if (seen.has(psId)) continue;
       const keys = trialCatalogSearchBaseKeys(ps);
       if (!keys.size || ![...keys].some(key => matchedBases.has(key))) continue;
-      if (!rawQuery && trialCatalogSupersededByTempSibling(ps, trialState.catalog)) continue;
+      if (!rawQuery && trialCatalogSupersededByTempSibling(ps, catalogSource)) continue;
       if (!trialPsTypeFilter.has(trialGetPsType(ps.ps_id))) continue;
       if (!trialShowSrOrders && psId.includes('[SR]')) continue;
       if (!trialShowCompleted && trialPsCatalogCompleted(ps)) continue;
@@ -3903,7 +3907,7 @@ function renderTrialCatalog() {
     if (!trialPsTypeFilter.has(psType)) return false;
     if (!trialShowSrOrders && String(ps.ps_id || '').includes('[SR]')) return false;
     if (!trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
-    if (!rawQuery && trialCatalogSupersededByTempSibling(ps, trialState.catalog)) return false;
+    if (!rawQuery && trialCatalogSupersededByTempSibling(ps, catalogSource)) return false;
     if (!rawQuery && !trialCatalogMatchesQueueFilter(ps)) return false;
     return trialQueryMatchesSearchTokens(cachedPlannedHaystack(ps), rawQuery);
   }).sort(trialCompareCatalogPs);
@@ -3923,7 +3927,9 @@ function renderTrialCatalog() {
     if (trialCatalogUnqueuedFilterActive()) {
       return trialCatalogPsHasUnqueuedWork(ps, isOpAllocated);
     }
-    if (ps?.is_temp_ps) return true;
+    if (typeof trialIsTempCatalogPs === 'function' ? trialIsTempCatalogPs(ps) : ps?.is_temp_ps) {
+      return true;
+    }
     const cards = cachedResolvedCards(ps);
     const hasActiveWork = cards.some(card =>
       trialCatalogOpIsOpen(card) || trialCatalogOpIsManualBom(card) || isOpAllocated(card))
@@ -3970,6 +3976,9 @@ function renderTrialCatalog() {
     const isOpAllocated = card => cachedIsOpAllocated(card, ps);
     if (trialCatalogUnqueuedFilterActive()) {
       return trialCatalogPsHasUnqueuedWork(ps, isOpAllocated);
+    }
+    if (typeof trialIsTempCatalogPs === 'function' ? trialIsTempCatalogPs(ps) : ps?.is_temp_ps) {
+      return true;
     }
     const cards = cachedResolvedCards(ps);
     const hasOpenOps = cards.some(card => trialCatalogOpShouldShow(card, isOpAllocated));
@@ -4019,12 +4028,16 @@ function renderTrialCatalog() {
   decorateTrialCatalogCards();
   trialBindCatalogPsExpandState();
   bindTrialCatalogDnD();
+  if (hadBoardOnlyTemp && typeof trialScheduleMissingTempCatalogRefresh === 'function') {
+    trialScheduleMissingTempCatalogRefresh();
+  }
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'bind-catalog-dnd');
   if (typeof trialPerfEnd === 'function') {
     trialPerfEnd(perf, {
       available_ps: catalogWithOpenOps.length,
       planned_ps: plannedWithOpenOps.length,
       query: rawQuery || '',
+      board_only_temp: hadBoardOnlyTemp,
     });
   }
 }

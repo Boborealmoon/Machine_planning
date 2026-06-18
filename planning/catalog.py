@@ -34,6 +34,7 @@ from .process_sheets import (
     parse_planner_ps_id,
     temp_planner_ps_display_label,
     _repair_temp_ps_bom_if_missing,
+    _repair_erp_ps_planner_bom_if_missing,
 )
 from .utils import compact_text, parse_number, planner_wall_datetime_to_api, shipped_quantity_completed, trial_catalog_op_key
 
@@ -658,6 +659,38 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
     ):
         try:
             _repair_temp_ps_bom_if_missing(con, row.get("planner_ps_id"))
+        except Exception:
+            pass
+    erp_bom_repair_clause = ""
+    erp_bom_repair_params = []
+    if wanted_ps_ids:
+        erp_bom_repair_clause = " AND ps.planner_ps_id = ANY(%s)"
+        erp_bom_repair_params = [wanted_ps_ids]
+    for row in rows(
+        con.execute(
+            f"""
+            SELECT ps.planner_ps_id
+            FROM planner_process_sheet ps
+            JOIN planner_bom_variation bv ON bv.bom_id = ps.selected_bom_id
+            WHERE ps.planner_ps_id NOT LIKE %s
+              AND COALESCE(ps.selected_bom_id, 0) > 0
+              {erp_bom_repair_clause}
+              AND (
+                UPPER(TRIM(COALESCE(bv.bom_code, ''))) = 'PLACEHOLDER'
+                OR UPPER(COALESCE(bv.bom_code, '')) LIKE %s
+                OR EXISTS (
+                  SELECT 1
+                  FROM planner_operation_seq s
+                  WHERE s.bom_id = ps.selected_bom_id
+                    AND UPPER(TRIM(COALESCE(s.op_type, ''))) = 'PLACEHOLDER'
+                )
+              )
+            """,
+            ("[Temp]%", *erp_bom_repair_params, "%TEMP-REWORK%"),
+        )
+    ):
+        try:
+            _repair_erp_ps_planner_bom_if_missing(con, row.get("planner_ps_id"))
         except Exception:
             pass
     bom_stage_keys = _bom_op_stage_keys(con)
