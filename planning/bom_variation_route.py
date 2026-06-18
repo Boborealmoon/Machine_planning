@@ -20,6 +20,13 @@ _CACHE_TTL_SEC = 300
 _bom_per_part_cache: tuple[float, list[dict]] | None = None
 _bom_per_ps_cache: tuple[float, list[dict]] | None = None
 
+
+def invalidate_bom_variation_cache() -> None:
+    global _bom_per_part_cache, _bom_per_ps_cache
+    _bom_per_part_cache = None
+    _bom_per_ps_cache = None
+
+
 _EXCLUDE_DO_NOT_USE = "UPPER(COALESCE(i.main_desc, '')) NOT LIKE '%DO NOT USE%'"
 
 _BOM_LOOKUP_SELECT = """

@@ -18,29 +18,9 @@ function trialEnrichOpCardPayload(el, sourcePayload) {
   const psWrap = el?.closest('.trial-catalog-ps, .trial-catalog-planned-ps');
   const parentPsId = String(psWrap?.dataset?.psId || sourcePayload.ps_id || '').trim();
   const elPartial = Number(el?.dataset?.ppPartialNo || sourcePayload.pp_partial_no || 0);
-  const pools = [
-    ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
-    ...(Array.isArray(trialState.planned) ? trialState.planned : []),
-  ];
-  let psRow = null;
-  if (parentPsId) {
-    psRow = pools.find(row => String(row.ps_id || '').trim() === parentPsId) || null;
-    if (!psRow && typeof trialSplitPsId === 'function') {
-      const parts = trialSplitPsId(parentPsId);
-      const base = String(parts.base || parentPsId).trim();
-      const wantPartial = String(parts.partial || elPartial || sourcePayload.pp_partial_no || '1').trim();
-      psRow = pools.find(row => {
-        const rowBase = typeof trialCatalogSourceBase === 'function'
-          ? trialCatalogSourceBase(row)
-          : String(trialSplitPsId(row.ps_id || '').base || '').trim();
-        if (rowBase !== base) return false;
-        const rowPartial = String(
-          row.pp_partial_no ?? trialSplitPsId(row.ps_id || '').partial ?? '1',
-        ).trim();
-        return rowPartial === wantPartial;
-      }) || null;
-    }
-  }
+  const psRow = typeof trialCatalogFindPsRow === 'function'
+    ? trialCatalogFindPsRow(parentPsId, elPartial || sourcePayload.pp_partial_no || '')
+    : null;
   const catalogCard = typeof trialCatalogCardFromPayload === 'function'
     ? trialCatalogCardFromPayload(sourcePayload)
     : sourcePayload;
@@ -269,10 +249,18 @@ function trialCatalogHandlePointerMove(e) {
   const distance = Math.hypot(e.clientX - state.startX, e.clientY - state.startY);
   if (!state.hasMoved && distance < 5) return;
   if (!state.hasMoved) {
-    if (!state.canDrag) return;
+    const ctx = typeof trialCatalogDragContextFromElement === 'function'
+      ? trialCatalogDragContextFromElement(state.sourceEl)
+      : null;
+    if (ctx) state.canDrag = ctx.canDrag;
     state.hasMoved = true;
+    if (!state.canDrag) {
+      state.dragRejected = true;
+      return;
+    }
     state.sourceEl.classList.add('dragging');
   }
+  if (!state.canDrag || state.dragRejected) return;
   trialCatalogEnsurePointerGhost(state, e);
 
   const laneEl = trialLaneAtPoint(e.clientX, e.clientY, null, state);
@@ -333,12 +321,13 @@ async function trialCatalogHandlePointerUp(e) {
       return;
     }
 
+    if (state.dragRejected || !state.canDrag) {
+      toast('Only the current ERP stage can be queued for this process sheet.', 'info');
+      return;
+    }
+
     const machineId = Number(lane?.dataset.machineId || 0);
     if (machineId) {
-      if (!state.canDrag) {
-        toast('Only the current ERP stage can be queued for this process sheet.', 'info');
-        return;
-      }
       const reserve = typeof trialReserveCatalogOpSchedule === 'function'
         ? trialReserveCatalogOpSchedule(sourcePayload)
         : { ok: true, key: '' };
@@ -459,11 +448,19 @@ function bindTrialCatalogDnD() {
       if (trialPlannerBusyLock > 0) return;
       const interactive = e.target && e.target.closest('button, a, input, select, textarea, label, [contenteditable="true"]');
       if (interactive) return;
-      const sourcePayload = trialEnrichOpCardPayload(el, trialOpCardPayloadFromElement(el));
+      if (el.dataset.isComplete === 'true') return;
+      const dragCtx = typeof trialCatalogDragContextFromElement === 'function'
+        ? trialCatalogDragContextFromElement(el)
+        : null;
+      const sourcePayload = dragCtx?.sourcePayload
+        || (typeof trialEnrichOpCardPayload === 'function'
+          ? trialEnrichOpCardPayload(el, trialOpCardPayloadFromElement(el))
+          : trialOpCardPayloadFromElement(el));
       if (!sourcePayload || sourcePayload.type !== 'op-card') return;
-      const catalogCard = typeof trialResolveQueueCard === 'function'
-        ? trialResolveQueueCard(sourcePayload).catalogCard
-        : trialCatalogCardFromPayload(sourcePayload);
+      const catalogCard = dragCtx?.workCard
+        || (typeof trialResolveQueueCard === 'function'
+          ? trialResolveQueueCard(sourcePayload).catalogCard
+          : trialCatalogCardFromPayload(sourcePayload));
       if (catalogCard && typeof trialPendingCatalogOpSchedules !== 'undefined'
         && trialPendingCatalogOpSchedules.has(trialCatalogOpPendingKey(catalogCard))) {
         toast('Already queuing this operation — please wait.', 'info');
@@ -482,10 +479,7 @@ function bindTrialCatalogDnD() {
       if (catalogCard && typeof trialCatalogOpIsComplete === 'function' && trialCatalogOpIsComplete(catalogCard)) {
         return;
       }
-      const psRow = typeof trialCatalogPsFromElement === 'function' ? trialCatalogPsFromElement(el) : null;
-      const canDrag = !catalogCard || typeof trialCatalogOpCanDrag !== 'function'
-        || trialCatalogOpCanDrag(catalogCard, psRow);
-      if (el.dataset.isComplete === 'true') return;
+      const canDrag = dragCtx ? dragCtx.canDrag : String(el.dataset.canDrag || '') === '1';
       trialCatalogPointerDrag = {
         sourceEl: el,
         sourcePayload,
@@ -495,10 +489,16 @@ function bindTrialCatalogDnD() {
         startX: e.clientX,
         startY: e.clientY,
         hasMoved: false,
+        dragRejected: false,
         canDrag,
         pointerId: e.pointerId,
       };
       trialDragPayload = sourcePayload;
+      try {
+        if (typeof el.setPointerCapture === 'function') el.setPointerCapture(e.pointerId);
+      } catch (err) {
+        // Ignore capture errors on unsupported nodes.
+      }
       e.preventDefault();
     });
   });

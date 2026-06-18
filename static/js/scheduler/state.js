@@ -16,7 +16,7 @@ let trialMachinistJobSearchTimer = null;
 let trialMachinistJobSearchHits = [];
 /** When true, PS / Ops sidebar lists earliest due_date first. */
 let trialCatalogSortByDueDate = false;
-/** '', 'queued', or 'unqueued' — filter PS / Ops sidebar by machine queue state. */
+/** '', 'unqueued', or 'queued-op40-pending' — filter PS / Ops sidebar by machine queue state. */
 let trialCatalogQueueFilter = '';
 let trialShowCompleted = false;
 let trialPsTypeFilter = new Set(['A', 'N', 'T']);

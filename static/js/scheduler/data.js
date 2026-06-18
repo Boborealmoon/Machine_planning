@@ -619,8 +619,11 @@ function trialFormatPlannerPsId(sourceBase, partialNo) {
 }
 
 function trialCatalogPsFromPayload(payload) {
-  const needle = String(payload?.ps_id || payload?.job_no || '').trim();
+  const needle = String(payload?.ps_id || payload?.job_no || payload?.source_ps_id || '').trim();
   if (!needle) return null;
+  if (typeof trialCatalogFindPsRow === 'function') {
+    return trialCatalogFindPsRow(needle, payload?.pp_partial_no || '');
+  }
   const parts = trialSplitPsId(needle);
   const base = String(parts.base || needle).trim();
   const wantPartial = String(parts.partial || payload?.pp_partial_no || '').trim() || '1';
@@ -1600,7 +1603,11 @@ function trialCatalogOperationProducedQty(block) {
       block,
     ));
     if (!hit) continue;
-    return Math.max(0, Number(hit?.finished_qty ?? hit?.wo_qty_produced ?? 0));
+    const opRef = hit?.op || {};
+    return Math.max(0, Number(
+      hit?.finished_qty ?? hit?.erp_finished_qty ?? hit?.wo_qty_produced ??
+      opRef.finished_qty ?? opRef.erp_finished_qty ?? opRef.wo_qty_produced ?? 0
+    ));
   }
   return 0;
 }

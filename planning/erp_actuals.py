@@ -1,11 +1,14 @@
 """ERP work-order qty snapshots and daily reconciliation vs shop actuals."""
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timezone
 
 from .helpers import one, planner_try_savepoint, rows
 from .process_sheets import format_planner_ps_id, parse_planner_ps_id
 from .utils import compact_text
+
+logger = logging.getLogger(__name__)
 
 _erp_snapshot_schema_ready = False
 
@@ -90,7 +93,9 @@ def _stage_no_from_process_flow(con, source_mps_no, pp_partial_no, op_no, op_seq
             )
         )
         if seq and int(seq.get("source_stage_no") or 0) > 0:
-            return int(seq["source_stage_no"]), compact_text(seq.get("op_no") or op_no)
+            seq_op = compact_text(seq.get("op_no"))
+            if not op_no or not seq_op or seq_op in _op_no_candidates(op_no, 0):
+                return int(seq["source_stage_no"]), compact_text(seq_op or op_no)
 
     planner_ps_id = format_planner_ps_id(source_mps_no, pp_partial_no)
     op_candidates = _op_no_candidates(op_no)
@@ -170,13 +175,15 @@ def record_erp_wo_qty_snapshots(con, mfg_rows, synced_at=None, columns=None) -> 
     if not mfg_rows:
         return 0
 
+    from psycopg2.extras import execute_values
+
     ensure_erp_snapshot_table(con)
     when = synced_at or datetime.now(timezone.utc)
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     snapshot_date = when.astimezone().date()
 
-    saved = 0
+    batch: list[tuple] = []
     for raw in mfg_rows:
         if isinstance(raw, dict):
             row = raw
@@ -193,18 +200,7 @@ def record_erp_wo_qty_snapshots(con, mfg_rows, synced_at=None, columns=None) -> 
             stage_no = int(stage_no)
         except (TypeError, ValueError):
             continue
-
-        con.execute(
-            """
-            INSERT INTO planner_erp_wo_qty_snapshot (
-              source_mps_no, pp_partial_no, stage_no, snapshot_date, snapshot_at,
-              acc_qty_produced, acc_rej_qty_produced
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (source_mps_no, pp_partial_no, stage_no, snapshot_date) DO UPDATE SET
-              snapshot_at = EXCLUDED.snapshot_at,
-              acc_qty_produced = EXCLUDED.acc_qty_produced,
-              acc_rej_qty_produced = EXCLUDED.acc_rej_qty_produced
-            """,
+        batch.append(
             (
                 source_mps_no,
                 pp_partial_no,
@@ -213,10 +209,47 @@ def record_erp_wo_qty_snapshots(con, mfg_rows, synced_at=None, columns=None) -> 
                 when,
                 _float(row.get("total_acc_qty_produced")),
                 _float(row.get("total_rej_qty_produced")),
-            ),
+            )
         )
-        saved += 1
-    return saved
+
+    if not batch:
+        return 0
+
+    execute_values(
+        con,
+        """
+        INSERT INTO planner_erp_wo_qty_snapshot (
+          source_mps_no, pp_partial_no, stage_no, snapshot_date, snapshot_at,
+          acc_qty_produced, acc_rej_qty_produced
+        ) VALUES %s
+        ON CONFLICT (source_mps_no, pp_partial_no, stage_no, snapshot_date) DO UPDATE SET
+          snapshot_at = EXCLUDED.snapshot_at,
+          acc_qty_produced = EXCLUDED.acc_qty_produced,
+          acc_rej_qty_produced = EXCLUDED.acc_rej_qty_produced
+        """,
+        batch,
+        page_size=1000,
+    )
+    return len(batch)
+
+
+def record_erp_wo_qty_snapshots_from_staging(con, synced_at=None) -> int:
+    """Batch snapshot from mfg_wo_status after staging reload (deferred from step 8)."""
+    staging_rows = rows(
+        con.execute(
+            """
+            SELECT source_mps_no,
+                   pp_partial_no,
+                   stage_no,
+                   total_acc_qty_produced,
+                   total_rej_qty_produced
+            FROM mfg_wo_status
+            WHERE source_mps_no IS NOT NULL
+              AND stage_no IS NOT NULL
+            """
+        )
+    )
+    return record_erp_wo_qty_snapshots(con, staging_rows, synced_at=synced_at)
 
 
 def _snapshots_for_key(con, key):
@@ -674,3 +707,207 @@ def enrich_actual_daily_rows_with_erp(con, block_row, daily_rows, *, anchor_date
 
     enriched.sort(key=lambda item: compact_text(item.get("report_date") or ""))
     return enriched, recon
+
+
+def apply_effective_actuals_to_queue_state(con, block_row) -> bool:
+    """Persist ERP/shop effective qty on planner_machine_queue_state for lite board reads."""
+    block_id = int(block_row.get("block_id") or 0)
+    if block_id <= 0:
+        return False
+
+    effective = effective_actual_totals_for_block(con, block_row)
+    effective_output = _float(effective.get("effective_output_qty"))
+    effective_reject = _float(effective.get("effective_reject_qty"))
+    effective_good = _float(effective.get("effective_good_qty"))
+    scheduled_qty = _float(block_row.get("scheduled_qty"))
+    remaining_qty = max(0.0, scheduled_qty - effective_good)
+
+    result = con.execute(
+        """
+        UPDATE planner_machine_queue_state
+        SET output_qty = %s,
+            reject_qty = %s,
+            good_qty = %s,
+            remaining_qty = %s,
+            updated_at = NOW()
+        WHERE block_id = %s
+        """,
+        (effective_output, effective_reject, effective_good, remaining_qty, block_id),
+    )
+    return bool(getattr(result, "rowcount", 0))
+
+
+def reconcile_queue_states_after_erp_sync(con=None) -> dict:
+    """
+    After ERP staging sync, push reconciled ERP/shop output into machine queue state.
+
+    Uses batched pp_vouchers_cache reads (just rebuilt on step 9) so post-sync does not
+    hang the UI on hundreds of per-block reconciliation queries.
+    """
+    from .helpers import planner_db
+
+    updated = 0
+    skipped = 0
+    errors = 0
+
+    def _run(connection):
+        nonlocal updated, skipped, errors
+        block_rows = rows(
+            connection.execute(
+                """
+                SELECT b.*, o.source_ps_id, o.source_op_no, o.source_op_seq_id
+                FROM planner_run_block b
+                JOIN planner_operation o ON o.operation_id = b.operation_id
+                JOIN planner_machine_queue_state qs ON qs.block_id = b.block_id
+                WHERE COALESCE(b.active, TRUE) = TRUE
+                  AND COALESCE(b.machine_id, 0) > 0
+                ORDER BY b.block_id
+                """
+            )
+        )
+        if not block_rows:
+            return
+
+        block_ids = [int(row["block_id"]) for row in block_rows]
+        shop_by_block = {
+            int(row["block_id"]): row
+            for row in rows(
+                connection.execute(
+                    """
+                    SELECT block_id, output_qty, reject_qty, good_qty
+                    FROM planner_v_block_actual_totals
+                    WHERE block_id = ANY(%s)
+                    """,
+                    (block_ids,),
+                )
+            )
+        }
+
+        ps_partials = set()
+        for block_row in block_rows:
+            raw_ps = compact_text(
+                block_row.get("source_ps_id") or block_row.get("job_no")
+            )
+            source_mps_no, pp_partial_no = parse_planner_ps_id(raw_ps)
+            if source_mps_no:
+                ps_partials.add((source_mps_no, int(pp_partial_no)))
+
+        voucher_rows = []
+        if ps_partials:
+            ps_ids = sorted({ps for ps, _partial in ps_partials})
+            partials = sorted({partial for _ps, partial in ps_partials})
+            voucher_rows = rows(
+                connection.execute(
+                    """
+                    SELECT ps_id, pp_partial_no, stage_no, op_no::text AS op_no,
+                           COALESCE(wo_qty_produced, 0) AS wo_qty_produced,
+                           COALESCE(wo_qty_rejected, 0) AS wo_qty_rejected
+                    FROM pp_vouchers_cache
+                    WHERE ps_id = ANY(%s)
+                      AND pp_partial_no = ANY(%s)
+                    """,
+                    (ps_ids, partials),
+                )
+            )
+
+        voucher_index: dict[tuple[str, int], list[dict]] = {}
+        for row in voucher_rows:
+            ps_id = compact_text(row.get("ps_id"))
+            partial_no = int(row.get("pp_partial_no") or 1)
+            key = (ps_id, partial_no)
+            voucher_index.setdefault(key, []).append(dict(row))
+            base_ps, base_partial = parse_planner_ps_id(ps_id)
+            if base_ps and base_ps != ps_id:
+                voucher_index.setdefault((base_ps, base_partial), []).append(dict(row))
+
+        def _erp_totals_for_block(block_row):
+            raw_ps = compact_text(
+                block_row.get("source_ps_id") or block_row.get("job_no")
+            )
+            source_mps_no, pp_partial_no = parse_planner_ps_id(raw_ps)
+            if not source_mps_no:
+                return 0.0, 0.0
+            op_no = compact_text(block_row.get("source_op_no"))
+            op_seq_id = int(block_row.get("source_op_seq_id") or 0)
+            candidates = _op_no_candidates(op_no, op_seq_id if op_seq_id > 0 else 0)
+
+            best_output = 0.0
+            best_reject = 0.0
+            for ps_id in _ps_id_candidates(source_mps_no, pp_partial_no):
+                for cache_row in voucher_index.get((ps_id, int(pp_partial_no)), []):
+                    cache_op = compact_text(cache_row.get("op_no"))
+                    stage_no = int(cache_row.get("stage_no") or 0)
+                    matched = False
+                    if op_no and cache_op and op_no == cache_op:
+                        matched = True
+                    elif candidates and cache_op in candidates:
+                        matched = True
+                    elif op_seq_id > 0 and stage_no == op_seq_id:
+                        matched = True
+                    elif op_seq_id > 0 and cache_op.isdigit() and int(cache_op) == op_seq_id:
+                        matched = True
+                    if not matched:
+                        continue
+                    produced = _float(cache_row.get("wo_qty_produced"))
+                    rejected = _float(cache_row.get("wo_qty_rejected"))
+                    if produced > best_output:
+                        best_output = produced
+                    if rejected > best_reject:
+                        best_reject = rejected
+            return best_output, best_reject
+
+        updates = []
+        for block_row in block_rows:
+            block_id = int(block_row.get("block_id") or 0)
+            try:
+                shop = shop_by_block.get(block_id) or {}
+                shop_output = _float(shop.get("output_qty"))
+                shop_reject = _float(shop.get("reject_qty"))
+                shop_good = _float(shop.get("good_qty"))
+                erp_output, erp_reject = _erp_totals_for_block(block_row)
+                erp_good = max(0.0, erp_output - erp_reject)
+                effective_output = max(erp_output, shop_output)
+                effective_reject = max(erp_reject, shop_reject)
+                effective_good = max(erp_good, shop_good)
+                scheduled_qty = _float(block_row.get("scheduled_qty"))
+                remaining_qty = max(0.0, scheduled_qty - effective_good)
+                updates.append(
+                    (
+                        effective_output,
+                        effective_reject,
+                        effective_good,
+                        remaining_qty,
+                        block_id,
+                    )
+                )
+            except Exception:
+                errors += 1
+                logger.exception(
+                    "queue state ERP reconcile failed for block_id=%s",
+                    block_id,
+                )
+
+        if updates:
+            connection.executemany(
+                """
+                UPDATE planner_machine_queue_state
+                SET output_qty = %s,
+                    reject_qty = %s,
+                    good_qty = %s,
+                    remaining_qty = %s,
+                    updated_at = NOW()
+                WHERE block_id = %s
+                """,
+                updates,
+            )
+            updated = len(updates)
+
+    if con is not None:
+        _run(con)
+    else:
+        with planner_db() as connection:
+            _run(connection)
+
+    summary = {"updated": updated, "skipped": skipped, "errors": errors}
+    logger.info("ERP queue reconcile after sync: %s", summary)
+    return summary

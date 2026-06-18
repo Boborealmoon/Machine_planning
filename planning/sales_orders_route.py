@@ -762,6 +762,11 @@ def _job_count(orders: list[dict[str, Any]]) -> int:
     return sum(len(order.get("pp_vouchers") or []) for order in orders)
 
 
+def invalidate_sales_orders_cache() -> None:
+    global _cache
+    _cache = None
+
+
 def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, Any]]]:
     global _cache
     now = time.time()

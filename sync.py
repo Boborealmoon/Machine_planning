@@ -30,6 +30,7 @@ SYNC_COOLDOWN_SECS = 300
 BATCH_SIZE = 500
 # Bulk insert page size for direct Postgres reload (execute_values).
 PLANNER_INSERT_PAGE_SIZE = int(os.getenv("PLANNER_INSERT_PAGE_SIZE", "5000"))
+DOMAIN_STATEMENT_TIMEOUT_MS = int(os.getenv("DOMAIN_STATEMENT_TIMEOUT_MS", "900000"))
 
 # Process-sheet id prefixes included in vw_pp_vouchers (keep in sync with sql/vw_pp_vouchers.sql).
 PP_VOUCHER_PS_ID_PREFIXES = ("%MPS%", "%APS%", "%NPS%", "%PPS%", "%CPS%", "%[SR]%")
@@ -956,16 +957,26 @@ def run_pp_partial_sync(force: bool = False) -> dict:
 _MFG_WO_STATUS_PRIMARY_WO_SQL = """
 , primary_wo_rows AS (
     -- Rework/scrap WOs often share stage_no + stage_desc with qty=1; keep the main WO only.
-    SELECT w.*
-    FROM wo_rows w
-    WHERE w.wo_qty_required = (
-        SELECT MAX(w2.wo_qty_required)
-        FROM wo_rows w2
-        WHERE w2.source_mps_no = w.source_mps_no
-          AND w2.pp_partial_no = w.pp_partial_no
-          AND w2.stage_no = w.stage_no
-          AND w2.stage_desc = w.stage_desc
-    )
+    SELECT DISTINCT ON (source_mps_no, pp_partial_no, stage_no, stage_desc)
+        source_mps_no,
+        pp_partial_no,
+        execution_status,
+        wo_qty_required,
+        total_acc_qty_produced,
+        total_rej_qty_produced,
+        stage_no,
+        stage_desc,
+        plan_start_date,
+        plan_end_date,
+        origin_rsd,
+        origin_voucher_no
+    FROM wo_rows
+    ORDER BY
+        source_mps_no,
+        pp_partial_no,
+        stage_no,
+        stage_desc,
+        wo_qty_required DESC NULLS LAST
 )
 """
 
@@ -1023,6 +1034,10 @@ _MFG_WO_STATUS_WO_ROWS_CORE = """
 """
 
 
+def _domain_set_timeout(cur) -> None:
+    cur.execute(f"SET LOCAL statement_timeout = '{DOMAIN_STATEMENT_TIMEOUT_MS}'")
+
+
 def _mfg_wo_status_unscoped() -> bool:
     return str(os.getenv("MFG_WO_STATUS_UNSCOPED", "")).lower() in {"1", "true", "yes"}
 
@@ -1047,10 +1062,34 @@ pp_vouchers AS (
     WHERE v.pp_voucher_no IS NOT NULL
 ),
 wo_rows AS (
-{_MFG_WO_STATUS_WO_ROWS_CORE}
-      AND EXISTS (
-            SELECT 1 FROM pp_vouchers pv WHERE pv.pp_voucher_no = t2.source_pp_no
-      )
+    SELECT
+        t2.source_pp_no                   AS source_mps_no,
+        COALESCE(
+            NULLIF(t2.source_pp_partial_no, 0),
+            pp.pp_partial_no,
+            1
+        )                                 AS pp_partial_no,
+        t3.execution_status,
+        t3.wo_qty_required,
+        t3.total_acc_qty_produced,
+        t3.total_rej_qty_produced,
+        NULLIF(t2.stage_no::TEXT, '')::INTEGER AS stage_no,
+        TRIM(COALESCE(t3.stage_desc, '')) AS stage_desc,
+        t3.plan_start_date,
+        t3.plan_end_date,
+        t3.origin_rsd,
+        t2.origin_voucher_no
+    FROM mfg_mps_vch t2
+    JOIN mfg_wo_vch t3
+      ON t2.wo_voucher_no = t3.voucher_no
+     AND t2.stage_no = t3.stage_no
+    LEFT JOIN pp_partials pp
+      ON pp.pp_voucher_no = t2.source_pp_no
+     AND pp.partial_qty = t3.wo_qty_required
+     AND COALESCE(t2.source_pp_partial_no, 0) = 0
+    INNER JOIN pp_vouchers pv ON pv.pp_voucher_no = t2.source_pp_no
+    WHERE t2.source_pp_no IS NOT NULL
+      AND t2.stage_no IS NOT NULL
       AND {prefix_sql}
 )
 {_MFG_WO_STATUS_PRIMARY_WO_SQL}
@@ -1111,6 +1150,7 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
         src = get_conn()
         try:
             with src.cursor() as scur:
+                _domain_set_timeout(scur)
                 t_query = time.monotonic()
                 scur.execute(sql, params or None)
                 rows = scur.fetchall()
@@ -1126,20 +1166,6 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
             "mfg_wo_status", "_loaded_at", _MFG_WO_STATUS_COLS, rows
         )
         reload_ms = int((time.monotonic() - t_reload) * 1000)
-
-        snapshot_count = 0
-        if _planner_db_available() and rows:
-            try:
-                from planning.helpers import planner_db
-                from planning.erp_actuals import record_erp_wo_qty_snapshots
-
-                synced_at = datetime.now(timezone.utc)
-                with planner_db() as con:
-                    snapshot_count = record_erp_wo_qty_snapshots(
-                        con, rows, synced_at, columns=_MFG_WO_STATUS_COLS
-                    )
-            except Exception as exc:
-                log.warning("erp wo qty snapshot recording failed: %s", exc)
 
         _last_wo_status_sync_at = time.monotonic()
         total_ms = int((time.monotonic() - t0) * 1000)
@@ -1160,7 +1186,6 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
             "row_count": len(rows),
             "reload": reload_mode,
             "scoped": scoped,
-            "erp_snapshot_count": snapshot_count,
         }
 
     finally:

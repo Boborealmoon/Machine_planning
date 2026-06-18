@@ -22,7 +22,7 @@ _SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_SCRIPTS))
 
-from app import app, _ensure_pp_staging_schema, _invalidate_pp_vouchers_with_ops_cache
+from app import app, _ensure_pp_staging_schema
 from db import planner_get_conn, planner_release_conn
 from sync_progress import ErpSyncProgress
 from sync import (
@@ -108,8 +108,24 @@ def main():
             progress.run_end(False)
             sys.exit(1)
 
-        if "pp_vouchers_cache" in ordered or staging_only:
-            _invalidate_pp_vouchers_with_ops_cache()
+        from planning.erp_cache_refresh import refresh_after_erp_sync
+
+        refresh_after_erp_sync(warm=False, background=False)
+
+        notify_result = None
+        try:
+            from notify_planner_cache_refresh import notify_planner_cache_refresh
+
+            notify_result = notify_planner_cache_refresh()
+            if notify_result.get("ok"):
+                progress.emit("  planner cache refresh: notified running app")
+            else:
+                progress.emit(
+                    f"  planner cache refresh: {notify_result.get('error') or 'not reachable'} "
+                    "(start Flask or set PLANNER_BASE_URL)"
+                )
+        except Exception as exc:
+            progress.emit(f"  planner cache refresh notify failed: {exc}")
 
         conn = planner_get_conn()
         try:

@@ -64,12 +64,20 @@ async function openTrialBOMEditor(psId) {
       return;
     }
     const flows = await GET(`/api/trial/inventory/${encodeURIComponent(inventoryCode)}/flows`);
+    const catalogItem = trialCatalogItemForBOMEditor(psId);
     const basePsId = String(ps.ps_id || psId || '').split('::')[0] || ps.ps_id || psId;
     const selectedFlowId = Number(ps.selected_bom_id || 0);
-    const flow = flows.find(item => Number(item.bom_id) === selectedFlowId) ||
+    const selectedFlowCode = String(
+      ps.selected_flow_code || ps.selected_bom_code || catalogItem?.selected_bom_code || ''
+    ).trim();
+    const flowCodeMatches = item => {
+      const code = String(item.flow_code || item.bom_code || '').trim();
+      return code && selectedFlowCode && code.toUpperCase() === selectedFlowCode.toUpperCase();
+    };
+    const flow = flows.find(item => Number(item.bom_id) === selectedFlowId && selectedFlowId > 0) ||
+                 flows.find(flowCodeMatches) ||
                  flows.find(item => item.is_default) ||
                  flows[0];
-    const catalogItem = trialCatalogItemForBOMEditor(psId);
     const fallbackSteps = (!flow || !(flow.steps || []).length)
       ? trialBOMStepsFromCatalogItem(catalogItem)
       : [];
@@ -294,14 +302,73 @@ async function saveTrialBOMEditor(psId) {
   }
 }
 
+function trialApplyCatalogFlowPatch(psId, patch) {
+  if (!patch || !psId) return false;
+  const requested = String(psId || '').trim();
+  const requestedBase = requested.split('::')[0] || requested;
+  const matchRow = item => {
+    const itemPsId = String(item?.ps_id || '').trim();
+    const itemBase = itemPsId.split('::')[0] || itemPsId;
+    const source = String(item?.source_ps_id || '').trim();
+    return itemPsId === requested || itemBase === requestedBase || source === requestedBase;
+  };
+  let updated = false;
+  for (const bucket of ['catalog', 'planned']) {
+    const list = trialState[bucket];
+    if (!Array.isArray(list)) continue;
+    const idx = list.findIndex(matchRow);
+    if (idx < 0) continue;
+    list[idx] = { ...list[idx], ...patch };
+    updated = true;
+  }
+  if (updated && typeof trialInvalidateCatalogSearchIndex === 'function') {
+    trialInvalidateCatalogSearchIndex();
+  }
+  return updated;
+}
+
 async function setTrialSelectedFlow(psId, flowCode) {
   const code = String(flowCode || '').trim();
   if (!code) return;
+  const selectEl = document.querySelector(`.trial-catalog-flow-select[data-ps-id="${CSS.escape(String(psId || ''))}"]`);
+  if (selectEl) selectEl.disabled = true;
   try {
-    await PUT(`/api/trial/process-sheets/${encodeURIComponent(psId)}/flow`, { flow_code: code });
-    await loadTrial();
-    toast(`Flow updated for ${psId}`, 'success');
+    const result = await PUT(`/api/trial/process-sheets/${encodeURIComponent(psId)}/flow`, { flow_code: code });
+    if (typeof trialInvalidateCatalogCache === 'function') trialInvalidateCatalogCache();
+    const patch = {
+      selected_bom_id: Number(result?.selected_bom_id || 0),
+      selected_bom_code: String(result?.selected_bom_code || result?.selected_flow_code || code).trim(),
+      selected_flow_code: String(result?.selected_flow_code || result?.selected_bom_code || code).trim(),
+      op_cards: Array.isArray(result?.op_cards) ? result.op_cards : undefined,
+      ops: Array.isArray(result?.ops) ? result.ops : undefined,
+      all_ops: Array.isArray(result?.all_ops) ? result.all_ops : undefined,
+      flow_options: Array.isArray(result?.flow_options) ? result.flow_options : undefined,
+      bom_stage_status: result?.bom_stage_status,
+      bom_stage_ok: result?.bom_stage_ok,
+    };
+    Object.keys(patch).forEach(key => {
+      if (patch[key] === undefined) delete patch[key];
+    });
+    trialApplyCatalogFlowPatch(psId, patch);
+    if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
+    if (typeof bindTrialCatalogDnD === 'function') bindTrialCatalogDnD();
+    const machineIds = Array.isArray(result?.machine_ids)
+      ? result.machine_ids.map(Number).filter(Boolean)
+      : [];
+    if (machineIds.length && typeof refreshMachines === 'function') {
+      await refreshMachines(machineIds);
+    }
+    if (typeof trialRefreshCatalogSidebar === 'function') {
+      trialRefreshCatalogSidebar().catch(() => {});
+    }
+    const hint = String(result?.toast_hint || '').trim();
+    toast(`BOM route updated for ${psId}${hint ? ` — ${hint}` : ''}`, 'success');
   } catch (e) {
     toast('Flow update failed: ' + e.message, 'error');
+    if (typeof trialRefreshCatalogSidebar === 'function') {
+      await trialRefreshCatalogSidebar();
+    }
+  } finally {
+    if (selectEl) selectEl.disabled = false;
   }
 }

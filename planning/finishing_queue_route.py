@@ -103,6 +103,11 @@ def _stage_bucket(stage_desc: str) -> str:
     return finishing_stage_bucket(stage_desc)
 
 
+def invalidate_finishing_queue_cache() -> None:
+    global _cache
+    _cache = None
+
+
 def _fetch_finishing_queue(*, refresh: bool = False) -> list[dict[str, Any]]:
     global _cache
     now = time.time()

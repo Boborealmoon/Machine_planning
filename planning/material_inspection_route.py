@@ -120,6 +120,11 @@ def _split_by_status(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any
     return {"outstanding": outstanding, "ready": ready, "historical": historical}
 
 
+def invalidate_material_inspection_cache() -> None:
+    global _cache
+    _cache.clear()
+
+
 def _fetch_material_inspection(
     *,
     variant: str = "with_shipment",

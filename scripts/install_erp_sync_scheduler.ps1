@@ -1,4 +1,4 @@
-# Register Windows Task Scheduler job: ERP sync at fixed daily times.
+# Register Windows Task Scheduler job: ERP sync at fixed weekday times.
 # Run from repo root (Admin NOT required if using current user only):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_erp_sync_scheduler.ps1
 #
@@ -31,10 +31,17 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$SyncScript`"" `
     -WorkingDirectory $RepoRoot
 
-# Once daily at 08:00 (local time)
-$SyncTimes = @("08:00")
-$Triggers = $SyncTimes | ForEach-Object {
-    New-ScheduledTaskTrigger -Daily -At $_
+# Weekdays only: 08:00 and 13:00 (local time)
+$Weekdays = @(
+    [System.DayOfWeek]::Monday,
+    [System.DayOfWeek]::Tuesday,
+    [System.DayOfWeek]::Wednesday,
+    [System.DayOfWeek]::Thursday,
+    [System.DayOfWeek]::Friday
+)
+$SyncTimes = @("08:00", "13:00")
+$Triggers = foreach ($time in $SyncTimes) {
+    New-ScheduledTaskTrigger -Weekly -DaysOfWeek $Weekdays -At $time
 }
 
 $Settings = New-ScheduledTaskSettingsSet `
@@ -52,11 +59,11 @@ Register-ScheduledTask `
     -Trigger $Triggers `
     -Settings $Settings `
     -Principal $Principal `
-    -Description "COMAIN to Supabase ERP sync for Machine Planning (daily 08:00)" | Out-Null
+    -Description "COMAIN to Supabase ERP sync for Machine Planning (weekdays 08:00, 13:00)" | Out-Null
 
 Write-Host ""
 Write-Host "Scheduled task registered: $TaskName"
-Write-Host "  Times:          $($SyncTimes -join ', ')"
+Write-Host "  Times:          $($SyncTimes -join ', ') (Mon-Fri)"
 Write-Host "  Script:         $SyncScript"
 Write-Host "  Logs:           $RepoRoot\logs\last_staging_sync.log"
 Write-Host ""

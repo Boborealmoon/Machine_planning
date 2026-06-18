@@ -269,8 +269,9 @@ function trialFlowSelectHtml(ps) {
     options.push('<option value="">Select planner BOM</option>');
     flows.forEach(flow => {
       const code = String(flow.bom_code || flow.flow_code || '');
-      const label = `${code}${flow.is_default ? ' (default)' : ''}${erpBom && code === erpBom ? ' · ERP' : ''}`;
-      options.push(`<option value="${escapeHtml(code)}" ${code === selectedFlowCode ? 'selected' : ''}>${escapeHtml(label)}</option>`);
+      const erpRoute = !Number(flow.bom_id || 0) && String(flow.source_kind || '').toUpperCase() === 'ERP';
+      const label = `${code}${flow.is_default ? ' (default)' : ''}${erpBom && code.toUpperCase() === String(erpBom).toUpperCase() ? ' · voucher' : erpRoute ? ' · ERP route' : ''}`;
+      options.push(`<option value="${escapeHtml(code)}" ${code.toUpperCase() === selectedFlowCode.toUpperCase() ? 'selected' : ''}>${escapeHtml(label)}</option>`);
     });
   }
   const label = selectedFlowCode || '';
@@ -301,8 +302,9 @@ function trialCatalogBomBarHtml(ps) {
     options.push('<option value="">Planner BOM…</option>');
     flows.forEach(flow => {
       const code = String(flow.bom_code || flow.flow_code || '');
-      const label = `${code}${flow.is_default ? ' *' : ''}${erpBom && code === erpBom ? ' · ERP' : ''}`;
-      options.push(`<option value="${escapeHtml(code)}" ${code === selectedFlowCode ? 'selected' : ''}>${escapeHtml(label)}</option>`);
+      const erpRoute = !Number(flow.bom_id || 0) && String(flow.source_kind || '').toUpperCase() === 'ERP';
+      const label = `${code}${flow.is_default ? ' *' : ''}${erpBom && code.toUpperCase() === String(erpBom).toUpperCase() ? ' · voucher' : erpRoute ? ' · ERP route' : ''}`;
+      options.push(`<option value="${escapeHtml(code)}" ${code.toUpperCase() === selectedFlowCode.toUpperCase() ? 'selected' : ''}>${escapeHtml(label)}</option>`);
     });
   }
   return `
@@ -691,16 +693,75 @@ function trialCatalogOpIsRelevant(card) {
   return trialCatalogOpIsMachiningPlannable(opType, machineCat, sourceKind, preferred);
 }
 
+function trialCatalogPsPools() {
+  const catalog = typeof trialMergedCatalogRows === 'function'
+    ? trialMergedCatalogRows()
+    : (Array.isArray(trialState?.catalog) ? trialState.catalog : []);
+  const planned = Array.isArray(trialState?.planned) ? trialState.planned : [];
+  return { catalog, planned, all: [...catalog, ...planned] };
+}
+
+function trialCatalogFindPsRow(psId, partialNo = '') {
+  const needle = String(psId || '').trim();
+  if (!needle) return null;
+  const { catalog, planned } = trialCatalogPsPools();
+  const direct = [...catalog, ...planned].find(row => String(row?.ps_id || '') === needle);
+  if (direct) return direct;
+  const parts = typeof trialSplitPsId === 'function'
+    ? trialSplitPsId(needle)
+    : { base: needle, partial: '' };
+  const base = String(parts.base || needle).trim();
+  const wantPartial = String(partialNo || parts.partial || '').trim() || '1';
+  const matcher = ps => {
+    if (String(ps?.ps_id || '') === needle) return true;
+    if (typeof trialIsTempCatalogPs === 'function' && trialIsTempCatalogPs(ps)) {
+      return String(ps?.ps_id || '').trim() === needle
+        || (typeof trialCatalogSourceBase === 'function' && trialCatalogSourceBase(ps) === base);
+    }
+    const rowBase = typeof trialCatalogSourceBase === 'function'
+      ? trialCatalogSourceBase(ps)
+      : String(trialSplitPsId(ps?.ps_id || '').base || '').trim();
+    if (rowBase !== base) return false;
+    const rowPartial = String(
+      ps?.pp_partial_no ?? trialSplitPsId(ps?.ps_id || '').partial ?? '1',
+    ).trim();
+    return rowPartial === wantPartial;
+  };
+  return catalog.find(matcher) || planned.find(matcher) || null;
+}
+
 function trialCatalogPsFromElement(opEl) {
-  const psEl = opEl?.closest?.('.trial-catalog-ps');
+  const psEl = opEl?.closest?.('.trial-catalog-ps, .trial-catalog-planned-ps');
   if (!psEl) return null;
   const psId = String(psEl.dataset?.psId || '').trim();
   if (!psId) return null;
-  const pools = [
-    ...(Array.isArray(trialState?.catalog) ? trialState.catalog : []),
-    ...(Array.isArray(trialState?.planned) ? trialState.planned : []),
-  ];
-  return pools.find(row => String(row?.ps_id || '') === psId) || null;
+  const partialNo = Number(opEl?.dataset?.ppPartialNo || 0) || '';
+  return trialCatalogFindPsRow(psId, partialNo);
+}
+
+function trialCatalogDragContextFromElement(el) {
+  if (!el) return null;
+  const sourcePayload = typeof trialEnrichOpCardPayload === 'function'
+    ? trialEnrichOpCardPayload(el, trialOpCardPayloadFromElement(el))
+    : trialOpCardPayloadFromElement(el);
+  if (!sourcePayload || sourcePayload.type !== 'op-card') return null;
+  const psRow = trialCatalogPsFromElement(el);
+  const catalogCard = typeof trialCatalogCardFromPayload === 'function'
+    ? trialCatalogCardFromPayload(sourcePayload)
+    : sourcePayload;
+  const workCard = typeof trialCatalogOpForPs === 'function'
+    ? trialCatalogOpForPs(catalogCard, psRow)
+    : catalogCard;
+  const canDrag = typeof trialCatalogOpCanDrag === 'function'
+    ? trialCatalogOpCanDrag(workCard, psRow)
+    : String(el.dataset?.canDrag || '') === '1';
+  return { sourcePayload, psRow, workCard, canDrag };
+}
+
+function trialCatalogOpBypassesStageInQueuedOp40View(card, ps) {
+  if (!trialCatalogQueuedOp40PendingFilterActive() || !ps || !card) return false;
+  if (!trialPsHasQueuedBlocks(ps)) return false;
+  return trialCatalogOpMatchesQueuedOp40PendingFilter(card, c => trialIsCatalogOpAllocated(c));
 }
 
 /** Original PS: only the current ERP stage is draggable; [Temp] lines stay fully draggable. */
@@ -728,7 +789,8 @@ function trialCatalogOpCanDrag(card, ps) {
     return false;
   }
 
-  if (!trialCatalogOpMatchesCurrentStage(card, ps)) return false;
+  const bypassStage = trialCatalogOpBypassesStageInQueuedOp40View(card, ps);
+  if (!bypassStage && !trialCatalogOpMatchesCurrentStage(card, ps)) return false;
 
   const isAllocated = Boolean(card.is_allocated) || trialIsCatalogOpAllocated(card);
   if (isAllocated) {
@@ -3593,10 +3655,53 @@ function trialCatalogUnqueuedFilterActive() {
   return String(trialCatalogQueueFilter || '').trim().toLowerCase() === 'unqueued';
 }
 
+function trialCatalogQueuedOp40PendingFilterActive() {
+  return String(trialCatalogQueueFilter || '').trim() === 'queued-op40-pending';
+}
+
+function trialCatalogNormalizedOpNo(card) {
+  const raw = String(card?.source_op_no || card?.operation_label || card?.op_no || '').trim();
+  if (!raw) return '';
+  const prefixed = raw.match(/^OP?\s*0*(\d+)\s*$/i);
+  if (prefixed) return String(parseInt(prefixed[1], 10));
+  const plain = raw.match(/^(\d+)$/);
+  if (plain) return String(parseInt(plain[1], 10));
+  return raw;
+}
+
+function trialCatalogOpIsOp40(card) {
+  return trialCatalogNormalizedOpNo(card) === '40';
+}
+
+function trialCatalogOp40CardsForPs(ps) {
+  const cards = trialResolvedOpCardsForPs(ps).filter(trialCatalogOpIsOp40);
+  if (cards.length) return cards;
+  const pool = [
+    ...(Array.isArray(ps?.op_cards) ? ps.op_cards : []),
+    ...(Array.isArray(ps?.all_ops) ? ps.all_ops.map(op => ({
+      source_op_no: op.source_op_no || op.op_no || '',
+      operation_label: op.source_op_no || op.op_no || '',
+      remaining_qty: op.remaining_qty,
+      target_qty: op.total_qty ?? op.remaining_qty,
+      required_qty: op.required_qty,
+      finished_qty: op.finished_qty ?? op.erp_finished_qty,
+      execution_status: op.execution_status || '',
+      source_kind: op.source_kind || '',
+      op,
+    })) : []),
+  ];
+  return pool.filter(trialCatalogOpIsOp40);
+}
+
 function trialCatalogOpMatchesUnqueuedFilter(card, isOpAllocated) {
   if (trialCatalogOpIsComplete(card)) return false;
   if (isOpAllocated(card)) return false;
   return trialCatalogOpIsOpen(card) || trialCatalogOpIsManualBom(card);
+}
+
+function trialCatalogOpMatchesQueuedOp40PendingFilter(card, isOpAllocated) {
+  if (!trialCatalogOpIsOp40(card)) return false;
+  return trialCatalogOpMatchesUnqueuedFilter(card, isOpAllocated);
 }
 
 function trialCatalogPsHasUnqueuedWork(ps, isOpAllocated) {
@@ -3610,6 +3715,16 @@ function trialCatalogPsHasUnqueuedWork(ps, isOpAllocated) {
   return cards.some(card => trialCatalogOpMatchesUnqueuedFilter(card, allocated));
 }
 
+function trialCatalogPsQueuedWithUnqueuedOp40(ps, isOpAllocated) {
+  if (!trialPsHasQueuedBlocks(ps)) return false;
+  if (trialPsCatalogCompleted(ps)) return false;
+  const allocated = typeof isOpAllocated === 'function'
+    ? isOpAllocated
+    : card => trialIsCatalogOpAllocated(card);
+  return trialCatalogOp40CardsForPs(ps)
+    .some(card => trialCatalogOpMatchesQueuedOp40PendingFilter(card, allocated));
+}
+
 function trialCatalogOpVisibleInList(card, isOpAllocated) {
   if (!trialCatalogOpIsRelevant(card)) return false;
   if (trialCatalogUnqueuedFilterActive()) {
@@ -3619,24 +3734,40 @@ function trialCatalogOpVisibleInList(card, isOpAllocated) {
 }
 
 function trialCatalogMatchesQueueFilter(ps) {
-  const filter = String(trialCatalogQueueFilter || '').trim().toLowerCase();
+  const filter = String(trialCatalogQueueFilter || '').trim();
   if (!filter) return true;
-  const queued = trialPsHasQueuedBlocks(ps);
-  if (filter === 'queued') return queued;
   if (filter === 'unqueued') return trialCatalogPsHasUnqueuedWork(ps);
+  if (filter === 'queued-op40-pending') return trialCatalogPsQueuedWithUnqueuedOp40(ps);
+  const lowered = filter.toLowerCase();
+  if (lowered === 'queued') return trialPsHasQueuedBlocks(ps);
   return true;
 }
 
 function updateTrialCatalogQueueFilterButton() {
-  const btn = document.getElementById('trial-catalog-queue-filter-btn');
-  if (!btn) return;
-  const active = trialCatalogQueueFilter === 'unqueued';
-  btn.classList.toggle('is-active', active);
-  btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  const unqueuedBtn = document.getElementById('trial-catalog-queue-filter-btn');
+  const op40Btn = document.getElementById('trial-catalog-queued-op40-btn');
+  if (unqueuedBtn) {
+    const active = trialCatalogQueueFilter === 'unqueued';
+    unqueuedBtn.classList.toggle('is-active', active);
+    unqueuedBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+  if (op40Btn) {
+    const active = trialCatalogQueueFilter === 'queued-op40-pending';
+    op40Btn.classList.toggle('is-active', active);
+    op40Btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
 }
 
 function toggleTrialCatalogUnqueuedOnly() {
   trialCatalogQueueFilter = trialCatalogQueueFilter === 'unqueued' ? '' : 'unqueued';
+  updateTrialCatalogQueueFilterButton();
+  renderTrialCatalog();
+}
+
+function toggleTrialCatalogQueuedOp40Pending() {
+  trialCatalogQueueFilter = trialCatalogQueueFilter === 'queued-op40-pending'
+    ? ''
+    : 'queued-op40-pending';
   updateTrialCatalogQueueFilterButton();
   renderTrialCatalog();
 }
@@ -3803,6 +3934,9 @@ function trialShowCatalogLoadingPlaceholder() {
 function renderTrialCatalog() {
   clearTimeout(trialCatalogSearchTimer);
   trialCatalogSearchTimer = null;
+  if (trialCatalogPointerDrag) {
+    trialCatalogResetPointerDrag(trialCatalogPointerDrag);
+  }
   const perf = (typeof trialPerfStart === 'function')
     ? trialPerfStart('render-trial-catalog', {
       catalog_rows: Array.isArray(trialState.catalog) ? trialState.catalog.length : 0,
@@ -3927,6 +4061,9 @@ function renderTrialCatalog() {
     if (trialCatalogUnqueuedFilterActive()) {
       return trialCatalogPsHasUnqueuedWork(ps, isOpAllocated);
     }
+    if (trialCatalogQueuedOp40PendingFilterActive()) {
+      return trialCatalogPsQueuedWithUnqueuedOp40(ps, isOpAllocated);
+    }
     if (typeof trialIsTempCatalogPs === 'function' ? trialIsTempCatalogPs(ps) : ps?.is_temp_ps) {
       return true;
     }
@@ -3976,6 +4113,9 @@ function renderTrialCatalog() {
     const isOpAllocated = card => cachedIsOpAllocated(card, ps);
     if (trialCatalogUnqueuedFilterActive()) {
       return trialCatalogPsHasUnqueuedWork(ps, isOpAllocated);
+    }
+    if (trialCatalogQueuedOp40PendingFilterActive()) {
+      return trialCatalogPsQueuedWithUnqueuedOp40(ps, isOpAllocated);
     }
     if (typeof trialIsTempCatalogPs === 'function' ? trialIsTempCatalogPs(ps) : ps?.is_temp_ps) {
       return true;

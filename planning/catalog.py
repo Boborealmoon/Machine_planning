@@ -536,10 +536,21 @@ def attach_planner_bom_ops_to_catalog_entry(
         )
     )
     if not step_rows:
+        entry["all_ops"] = []
+        entry["ops"] = []
+        entry["op_cards"] = []
+        if bom_stage_keys is not None:
+            _apply_bom_stage_fields(entry, bom_stage_keys)
         return
 
     part_no = compact_text(entry.get("inventory_code") or entry.get("part_no") or "")
-    bom_code = compact_text(entry.get("erp_bom_code") or entry.get("bom_code") or "")
+    bom_code = compact_text(
+        entry.get("selected_bom_code")
+        or entry.get("selected_flow_code")
+        or entry.get("erp_bom_code")
+        or entry.get("bom_code")
+        or ""
+    )
     if bom_id > 0 and not bom_code:
         bom_row = one(
             con.execute(
@@ -637,6 +648,102 @@ def attach_planner_bom_ops_to_catalog_entry(
     entry["op_cards"] = op_cards
     if bom_stage_keys is not None:
         _apply_bom_stage_fields(entry, bom_stage_keys)
+
+
+def build_catalog_flow_patch(con, planner_ps_id, bom_id, bom_code):
+    """Rebuild sidebar op cards after a planner BOM route change."""
+    from planning.flows import flow_options_for_inventory
+
+    planner_ps_id = compact_text(planner_ps_id)
+    bom_id = int(bom_id or 0)
+    bom_code = compact_text(bom_code)
+    if not planner_ps_id or bom_id <= 0:
+        return {}
+
+    ps_row = one(
+        con.execute(
+            """
+            SELECT planner_ps_id, source_ps_id, pp_partial_no, inventory_code
+            FROM planner_process_sheet
+            WHERE planner_ps_id = %s
+            """,
+            (planner_ps_id,),
+        )
+    )
+    if not ps_row:
+        return {}
+
+    source_ps_id = compact_text(ps_row.get("source_ps_id") or planner_ps_id)
+    pp_partial_no = int(ps_row.get("pp_partial_no") or 1)
+    inventory_code = compact_text(ps_row.get("inventory_code"))
+    catalog_ps_id = format_planner_ps_id(source_ps_id, pp_partial_no)
+    voucher = one(
+        con.execute(
+            """
+            SELECT bom_code, partial_qty, total_qty
+            FROM pp_vouchers_cache
+            WHERE ps_id = %s AND pp_partial_no = %s
+            LIMIT 1
+            """,
+            (source_ps_id, pp_partial_no),
+        )
+    )
+    partial_qty = float((voucher or {}).get("partial_qty") or 0)
+    total_qty = float((voucher or {}).get("total_qty") or 0)
+    launch_qty = partial_qty or total_qty
+    erp_bom_code = compact_text((voucher or {}).get("bom_code"))
+
+    entry = {
+        "ps_id": catalog_ps_id,
+        "source_ps_id": source_ps_id,
+        "pp_partial_no": pp_partial_no,
+        "inventory_code": inventory_code,
+        "part_no": inventory_code,
+        "erp_bom_code": erp_bom_code,
+        "bom_code": erp_bom_code,
+        "selected_bom_id": bom_id,
+        "selected_bom_code": bom_code,
+        "selected_flow_code": bom_code,
+        "partial_qty": partial_qty,
+        "total_qty": total_qty,
+        "display_qty": launch_qty,
+        "wo_req_qty": launch_qty,
+        "op_cards": [],
+        "ops": [],
+        "all_ops": [],
+    }
+    planned_qty_by_op, queued_machines_by_op = _catalog_lane_qty_maps(con)
+    bom_stage_keys = _bom_op_stage_keys(con)
+    from .cycle_time_service import MasterTimeCache
+
+    master_cache = MasterTimeCache.load(con)
+    attach_planner_bom_ops_to_catalog_entry(
+        con,
+        entry,
+        planned_qty_by_op=planned_qty_by_op,
+        queued_machines_by_op=queued_machines_by_op,
+        bom_stage_keys=bom_stage_keys,
+        master_cache=master_cache,
+    )
+    return {
+        "ps_id": catalog_ps_id,
+        "source_ps_id": source_ps_id,
+        "pp_partial_no": pp_partial_no,
+        "selected_bom_id": bom_id,
+        "selected_bom_code": bom_code,
+        "selected_flow_code": bom_code,
+        "op_cards": list(entry.get("op_cards") or []),
+        "ops": list(entry.get("ops") or []),
+        "all_ops": list(entry.get("all_ops") or []),
+        "flow_options": flow_options_for_inventory(
+            con,
+            inventory_code,
+            erp_voucher_bom=erp_bom_code,
+        ),
+        "bom_stage_status": entry.get("bom_stage_status"),
+        "bom_stage_ok": entry.get("bom_stage_ok"),
+        "erp_bom_code": erp_bom_code,
+    }
 
 
 def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
@@ -835,7 +942,6 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
     )
 
     grouped = {}
-    flow_cache = {}
 
     for row in records:
         ps_id = _catalog_ps_id(row)
@@ -980,26 +1086,30 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
     planning_cards_map = planning_cards_by_ps(con)
     covered_map = planning_card_covered_op_keys(con)
 
-    def flow_options_for_inventory_code(inventory_code):
+    from planning.flows import _bom_code_key, erp_bom_codes_by_inventory, merge_flow_options, planner_flow_options_for_inventory
+
+    inventory_codes_for_flows = sorted(
+        {
+            compact_text(item.get("inventory_code"))
+            for item in grouped.values()
+            if compact_text(item.get("inventory_code"))
+        }
+    )
+    erp_bom_codes_map = erp_bom_codes_by_inventory(con, inventory_codes_for_flows)
+    flow_cache = {}
+
+    def flow_options_for_inventory_code(inventory_code, erp_voucher_bom=None):
         inventory_code = compact_text(inventory_code)
         if not inventory_code:
             return []
-        if inventory_code not in flow_cache:
-            flow_cache[inventory_code] = [
-                dict(flow)
-                for flow in rows(
-                    con.execute(
-                        """
-                        SELECT bom_id, bom_code, bom_desc, is_default
-                        FROM planner_bom_variation
-                        WHERE inventory_code = %s
-                        ORDER BY is_default DESC, bom_id
-                        """,
-                        (inventory_code,),
-                    )
-                )
-            ]
-        return flow_cache[inventory_code]
+        cache_key = (inventory_code, _bom_code_key(erp_voucher_bom))
+        if cache_key not in flow_cache:
+            flow_cache[cache_key] = merge_flow_options(
+                planner_flow_options_for_inventory(con, inventory_code),
+                erp_bom_codes_map.get(inventory_code, []),
+                erp_voucher_bom=erp_voucher_bom,
+            )
+        return flow_cache[cache_key]
 
     planner_ps_ids = []
     for item in grouped.values():
@@ -1018,7 +1128,10 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
         item.pop("_seen_op_keys", None)
         item["material_in"] = _catalog_material_in(item)
         _apply_catalog_op_qty_cascade(item, manual_qty_by_ps)
-        item["flow_options"] = flow_options_for_inventory_code(item["inventory_code"])
+        item["flow_options"] = flow_options_for_inventory_code(
+            item["inventory_code"],
+            item.get("erp_bom_code"),
+        )
         item["planning_cards"] = planning_cards_map.get(item["ps_id"], [])
         covered_keys = covered_map.get(item["ps_id"], set())
         op_cards = []
@@ -1137,7 +1250,10 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
         ):
             continue
         inventory_code = compact_text(row["inventory_code"])
-        flow_options = flow_options_for_inventory_code(inventory_code)
+        flow_options = flow_options_for_inventory_code(
+            inventory_code,
+            compact_text(row.get("erp_bom_code")),
+        )
         if ps_id in {item["ps_id"] for item in planned}:
             continue
         unassigned_item = {

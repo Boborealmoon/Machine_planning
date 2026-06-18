@@ -340,6 +340,11 @@ def _enrich_new_orders_repeat_info(rows: list[dict[str, Any]]) -> tuple[list[dic
     return rows, sorted(queued_bases)
 
 
+def invalidate_new_orders_cache() -> None:
+    global _cache
+    _cache.clear()
+
+
 def _fetch_new_orders(from_d: date, to_d: date, *, refresh: bool = False) -> list[dict[str, Any]]:
     key = _cache_key(from_d, to_d)
     now = time.time()

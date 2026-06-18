@@ -350,7 +350,7 @@ function trialRerenderCatalogFromBlocks() {
 async function trialRefreshCatalogSidebar() {
   trialInvalidateCatalogCache();
   try {
-    const erpVouchers = await GET(trialNoCacheUrl(trialCatalogUrl(false)));
+    const erpVouchers = await GET(trialNoCacheUrl(trialCatalogUrl(true)));
     const cacheKey = trialCatalogCacheKey();
     trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
     trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + trialCatalogClientCacheMs();
@@ -379,6 +379,12 @@ async function syncPpVouchers() {
 }
 
 window.addEventListener('pp-vouchers-synced', () => {
+  if (typeof loadTrial === 'function' && document.getElementById('trial-grid')) {
+    loadTrial({ force: true }).catch(err => {
+      console.error('board refresh after ERP sync failed:', err);
+    });
+    return;
+  }
   trialInvalidateCatalogCache();
   GET(trialNoCacheUrl(trialCatalogUrl(true)))
     .then(erpVouchers => {
@@ -907,7 +913,9 @@ async function loadTrialImpl(options = {}) {
   const catalogCacheMs = trialCatalogClientCacheMs();
   const catalogPromise = skipCatalog
     ? Promise.resolve([])
-    : trialCachedGET(trialCatalogCacheKey(), catalogCacheMs, trialCatalogUrl(false)).catch(() => []);
+    : (force
+      ? GET(trialNoCacheUrl(trialCatalogUrl(true))).catch(() => [])
+      : trialCachedGET(trialCatalogCacheKey(), catalogCacheMs, trialCatalogUrl(false)).catch(() => []));
 
   if (!machinistBoard && !boardAlreadyPainted) {
     if (showLoadUi) trialLoadingStage('shell');

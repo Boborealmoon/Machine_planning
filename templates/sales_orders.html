@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}S/O Management{% endblock %}
 {% block main_class %}app-main--new-orders app-main--sales-orders-wide{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-stage-material-all-20260616">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-header-pills-20260618">{% endblock %}
 {% block content %}
 <div class="new-orders-page new-orders-page--sales-orders">
   <div class="new-orders-header">
@@ -17,18 +17,18 @@
             Rows turn <strong>green automatically</strong> when that partial is on a planner CNC lane (Active view).
             <strong>Queued CNC</strong> column shows machine pills per partial from the live planner queue.
             Note columns autosave to Supabase per PP voucher.
+            <strong>Exception</strong> flags a line item (saved per partial) and highlights the row in red.
             Toggle <strong>Active</strong> (SO line not fully shipped) or <strong>Complete</strong> (fully shipped qty on the SO line).
           </span>
         </button>
       </div>
     </div>
     <div class="new-orders-header-actions">
+      <div class="so-header-pills" id="so-stats-chips" aria-label="Summary counts"></div>
       <button type="button" class="btn btn-ghost btn-sm" id="so-copy-no-wo-ps" title="Copy process sheet numbers from visible rows with stage No WO">Copy No WO PS</button>
       <button type="button" class="btn btn-ghost btn-sm" id="so-refresh">Refresh</button>
     </div>
   </div>
-
-  <div class="so-stats-row" id="so-stats-chips"></div>
 
   <div class="new-orders-toolbar card">
     <div class="new-orders-filter new-orders-filter--view">
@@ -71,14 +71,21 @@
   </div>
 
   <div id="so-loading" class="loading"><div class="spinner"></div> Loading S/O data...</div>
-  <div id="so-table-wrap" class="new-orders-table-wrap card so-table-wrap--wide" hidden>
-    <table class="new-orders-table so-table--wide">
-      <thead>
-        <tr id="so-table-head-row"></tr>
-      </thead>
-      <tbody id="so-table-body"></tbody>
-    </table>
-    <div id="so-col-filter-popover" class="so-col-filter-popover" hidden></div>
+  <div id="so-table-host" class="so-table-scroll-host card" hidden>
+    <div class="so-table-scroll-top-wrap">
+      <div id="so-table-scroll-top" class="so-table-scroll-top" aria-label="Scroll table horizontally" title="Drag to scroll left or right">
+        <div class="so-table-scroll-top-inner"></div>
+      </div>
+    </div>
+    <div id="so-table-wrap" class="new-orders-table-wrap so-table-wrap--wide">
+      <table class="new-orders-table so-table--wide">
+        <thead>
+          <tr id="so-table-head-row"></tr>
+        </thead>
+        <tbody id="so-table-body"></tbody>
+      </table>
+      <div id="so-col-filter-popover" class="so-col-filter-popover" hidden></div>
+    </div>
   </div>
   <div id="so-empty" class="new-orders-empty card" hidden>
     <p id="so-empty-text">No rows match your filters.</p>
@@ -119,5 +126,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-orders-pp-20260608"></script>
 <script src="{{ url_for('static', filename='js/repeat_order_tags.js') }}?v=repeat-tags-detail-20260612"></script>
-<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=so-qty-after-stage-20260617"></script>
+<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=so-header-pills-20260618"></script>
 {% endblock %}

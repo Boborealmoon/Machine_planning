@@ -209,6 +209,188 @@ def _ps_id_variants_for_relink(planner_ps_id, source_ps_id, pp_partial_no=1):
     return [value for value in variants if value]
 
 
+def clear_ps_queue_for_bom_route_change(con, planner_ps_id, old_bom_id, new_bom_id):
+    """Remove machine-queue blocks for a PS when its planner BOM route changes."""
+    planner_ps_id = compact_text(planner_ps_id)
+    old_bom_id = int(old_bom_id or 0)
+    new_bom_id = int(new_bom_id or 0)
+    if not planner_ps_id or old_bom_id <= 0 or old_bom_id == new_bom_id:
+        return {
+            "cleared_blocks": 0,
+            "cleared_operations": 0,
+            "machine_ids": [],
+            "old_bom_id": old_bom_id,
+            "new_bom_id": new_bom_id,
+        }
+
+    from .auto_unschedule import _release_planning_cards
+    from .blocks import recalculate_machine
+
+    ps_row = one(
+        con.execute(
+            """
+            SELECT planner_ps_id, source_ps_id, pp_partial_no
+            FROM planner_process_sheet
+            WHERE planner_ps_id = %s
+            """,
+            (planner_ps_id,),
+        )
+    )
+    if not ps_row:
+        return {
+            "cleared_blocks": 0,
+            "cleared_operations": 0,
+            "machine_ids": [],
+            "old_bom_id": old_bom_id,
+            "new_bom_id": new_bom_id,
+        }
+
+    ps_id_variants = sorted(
+        {
+            variant
+            for variant in _ps_id_variants_for_relink(
+                ps_row.get("planner_ps_id"),
+                ps_row.get("source_ps_id"),
+                ps_row.get("pp_partial_no"),
+            )
+        }
+    )
+    if not ps_id_variants:
+        return {
+            "cleared_blocks": 0,
+            "cleared_operations": 0,
+            "machine_ids": [],
+            "old_bom_id": old_bom_id,
+            "new_bom_id": new_bom_id,
+        }
+
+    block_rows = rows(
+        con.execute(
+            """
+            SELECT b.block_id, b.operation_id, b.machine_id, b.group_id
+            FROM planner_run_block b
+            JOIN planner_operation o ON o.operation_id = b.operation_id
+            WHERE COALESCE(b.active, TRUE) = TRUE
+              AND (
+                COALESCE(o.source_ps_id, '') = ANY(%s)
+                OR COALESCE(o.job_no, '') = ANY(%s)
+              )
+            ORDER BY b.group_id NULLS LAST, b.block_id
+            """,
+            (ps_id_variants, ps_id_variants),
+        )
+    )
+
+    affected_machine_ids = set()
+    affected_operation_ids = set()
+    cleared_blocks = 0
+    handled_groups = set()
+
+    for row in block_rows:
+        group_id = int(row.get("group_id") or 0)
+        block_id = int(row.get("block_id") or 0)
+        operation_id = int(row.get("operation_id") or 0)
+        machine_id = int(row.get("machine_id") or 0)
+        if machine_id:
+            affected_machine_ids.add(machine_id)
+        if operation_id:
+            affected_operation_ids.add(operation_id)
+
+        if group_id > 0:
+            if group_id in handled_groups:
+                continue
+            handled_groups.add(group_id)
+            group_blocks = rows(
+                con.execute(
+                    """
+                    SELECT block_id, operation_id, machine_id
+                    FROM planner_run_block
+                    WHERE group_id = %s
+                    """,
+                    (group_id,),
+                )
+            )
+            for gb in group_blocks:
+                affected_machine_ids.add(int(gb.get("machine_id") or 0))
+                affected_operation_ids.add(int(gb.get("operation_id") or 0))
+                cleared_blocks += 1
+            ps_id = compact_text(ps_row.get("planner_ps_id"))
+            _release_planning_cards(con, ps_id=ps_id, group_id=group_id)
+            con.execute("DELETE FROM planner_planning_card WHERE scheduled_block_group_id = %s", (group_id,))
+            con.execute("DELETE FROM planner_run_block WHERE group_id = %s", (group_id,))
+            con.execute("DELETE FROM planner_run_block_group WHERE group_id = %s", (group_id,))
+            continue
+
+        if block_id <= 0:
+            continue
+        cleared_blocks += 1
+        con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (block_id,))
+
+    cleared_operations = 0
+    for op_id in sorted(affected_operation_ids):
+        remaining = one(
+            con.execute(
+                "SELECT COUNT(*) AS cnt FROM planner_run_block WHERE operation_id = %s",
+                (int(op_id),),
+            )
+        )
+        if int((remaining or {}).get("cnt") or 0) <= 0:
+            con.execute("DELETE FROM planner_operation WHERE operation_id = %s", (int(op_id),))
+            cleared_operations += 1
+
+    old_seq_rows = rows(
+        con.execute(
+            "SELECT op_seq_id FROM planner_operation_seq WHERE bom_id = %s",
+            (old_bom_id,),
+        )
+    )
+    old_seq_ids = [int(row["op_seq_id"]) for row in old_seq_rows if int(row.get("op_seq_id") or 0) > 0]
+    if old_seq_ids:
+        orphan_ops = rows(
+            con.execute(
+                """
+                SELECT o.operation_id
+                FROM planner_operation o
+                LEFT JOIN planner_run_block b ON b.operation_id = o.operation_id
+                WHERE (
+                    COALESCE(o.source_ps_id, '') = ANY(%s)
+                    OR COALESCE(o.job_no, '') = ANY(%s)
+                )
+                  AND COALESCE(o.source_op_seq_id, 0) = ANY(%s)
+                  AND b.block_id IS NULL
+                """,
+                (ps_id_variants, ps_id_variants, old_seq_ids),
+            )
+        )
+        for row in orphan_ops:
+            op_id = int(row.get("operation_id") or 0)
+            if op_id <= 0:
+                continue
+            con.execute("DELETE FROM planner_operation WHERE operation_id = %s", (op_id,))
+            cleared_operations += 1
+
+    for ps_variant in ps_id_variants:
+        _release_planning_cards(con, ps_id=ps_variant, group_id=0)
+
+    for machine_id in sorted(mid for mid in affected_machine_ids if mid):
+        recalculate_machine(con, machine_id)
+
+    try:
+        from .scheduler_state import refresh_process_sheet_state
+
+        refresh_process_sheet_state(con, planner_ps_id)
+    except Exception:
+        pass
+
+    return {
+        "cleared_blocks": cleared_blocks,
+        "cleared_operations": cleared_operations,
+        "machine_ids": sorted(mid for mid in affected_machine_ids if mid),
+        "old_bom_id": old_bom_id,
+        "new_bom_id": new_bom_id,
+    }
+
+
 def _relink_planner_op_seq_ids_for_bom(con, bom_id, planner_ps_ids=None):
     """Point queued ops at new planner_operation_seq rows after a BOM save (same op_no)."""
     bom_id = int(bom_id or 0)
@@ -376,6 +558,387 @@ def _flow_payload(con, flow):
     ]
     return item
 
+
+def _bom_code_key(code):
+    return compact_text(code).upper()
+
+
+def _op_type_from_stage_desc(stage_desc):
+    stage_desc = compact_text(stage_desc)
+    if stage_desc.upper().startswith("TURNING"):
+        return "Turning"
+    if stage_desc.upper().startswith("MILLING"):
+        return "Milling"
+    if stage_desc.upper().startswith("TURNMILL"):
+        return "Turnmill"
+    return stage_desc.split()[0] if stage_desc else "OP"
+
+
+def _machine_category_from_op_type(op_type):
+    op_type = compact_text(op_type)
+    upper = op_type.upper()
+    if upper in {"TURNING", "MILLING", "TURNMILL"}:
+        return upper
+    if op_type in {"Turning", "Milling", "Turnmill"}:
+        return op_type.upper()
+    return upper or "GENERAL"
+
+
+def erp_bom_codes_by_inventory(con, inventory_codes):
+    """Distinct ERP BOM routes per inventory_code (material_per_bom + bom_op_stage)."""
+    codes = [compact_text(code) for code in (inventory_codes or []) if compact_text(code)]
+    if not codes:
+        return {}
+    out = {code: [] for code in codes}
+    seen = {code: set() for code in codes}
+
+    def _append(inv, bom_code):
+        code = compact_text(bom_code)
+        key = _bom_code_key(code)
+        if inv not in out or not code or key in seen[inv]:
+            return
+        seen[inv].add(key)
+        out[inv].append(code)
+
+    for row in rows(
+        con.execute(
+            """
+            SELECT DISTINCT source_inventory_code, bom_code
+            FROM material_per_bom
+            WHERE source_inventory_code = ANY(%s)
+              AND COALESCE(bom_code, '') <> ''
+            ORDER BY source_inventory_code, bom_code
+            """,
+            (codes,),
+        )
+    ):
+        _append(compact_text(row.get("source_inventory_code")), row.get("bom_code"))
+    for row in rows(
+        con.execute(
+            """
+            SELECT DISTINCT inventory_code, bom_code
+            FROM bom_op_stage
+            WHERE inventory_code = ANY(%s)
+              AND COALESCE(bom_code, '') <> ''
+            ORDER BY inventory_code, bom_code
+            """,
+            (codes,),
+        )
+    ):
+        _append(compact_text(row.get("inventory_code")), row.get("bom_code"))
+    for inv in out:
+        out[inv].sort()
+    return out
+
+
+def _resolve_inventory_bom_code(con, inventory_code, bom_code):
+    """Resolve canonical bom_code from bom_op_stage or material_per_bom."""
+    inventory_code = compact_text(inventory_code)
+    bom_code = compact_text(bom_code)
+    if not inventory_code or not bom_code:
+        return ""
+    resolved = _resolve_bom_op_stage_code(con, inventory_code, bom_code)
+    if resolved:
+        return resolved
+    row = one(
+        con.execute(
+            """
+            SELECT bom_code
+            FROM material_per_bom
+            WHERE source_inventory_code = %s AND bom_code = %s
+            LIMIT 1
+            """,
+            (inventory_code, bom_code),
+        )
+    )
+    if row:
+        return compact_text(row.get("bom_code"))
+    row = one(
+        con.execute(
+            """
+            SELECT bom_code
+            FROM material_per_bom
+            WHERE source_inventory_code = %s AND UPPER(bom_code) = UPPER(%s)
+            LIMIT 1
+            """,
+            (inventory_code, bom_code),
+        )
+    )
+    return compact_text(row.get("bom_code")) if row else bom_code
+
+
+def _resolve_bom_op_stage_code(con, inventory_code, bom_code):
+    inventory_code = compact_text(inventory_code)
+    bom_code = compact_text(bom_code)
+    if not inventory_code or not bom_code:
+        return ""
+    row = one(
+        con.execute(
+            """
+            SELECT bom_code
+            FROM bom_op_stage
+            WHERE inventory_code = %s AND bom_code = %s
+            LIMIT 1
+            """,
+            (inventory_code, bom_code),
+        )
+    )
+    if row:
+        return compact_text(row.get("bom_code"))
+    row = one(
+        con.execute(
+            """
+            SELECT bom_code
+            FROM bom_op_stage
+            WHERE inventory_code = %s AND UPPER(bom_code) = UPPER(%s)
+            LIMIT 1
+            """,
+            (inventory_code, bom_code),
+        )
+    )
+    return compact_text(row.get("bom_code")) if row else ""
+
+
+def _bom_op_stage_steps(con, inventory_code, bom_code):
+    inventory_code = compact_text(inventory_code)
+    bom_code = _resolve_bom_op_stage_code(con, inventory_code, bom_code)
+    if not inventory_code or not bom_code:
+        return []
+    stage_rows = rows(
+        con.execute(
+            """
+            SELECT stage_no, stage_desc, op_no, op_index, machine_no, setup_time, cycle_time
+            FROM bom_op_stage
+            WHERE inventory_code = %s AND bom_code = %s
+            ORDER BY op_no NULLS LAST, op_index, stage_no
+            """,
+            (inventory_code, bom_code),
+        )
+    )
+    steps = []
+    for idx, row in enumerate(stage_rows):
+        stage_desc = compact_text(row.get("stage_desc"))
+        stage_no = int(row.get("stage_no") or 0)
+        op_no = compact_text(row.get("op_no")) or (str(stage_no) if stage_no else str(idx + 1))
+        op_type = _op_type_from_stage_desc(stage_desc)
+        steps.append(
+            {
+                "seq_no": idx + 1,
+                "op_no": op_no,
+                "op_type": op_type,
+                "machine_category": _machine_category_from_op_type(op_type),
+                "preferred_machine": compact_text(row.get("machine_no")),
+                "cycle_time": max(0.0, parse_number(row.get("cycle_time"), 0)),
+                "setup_time": max(0.0, parse_number(row.get("setup_time"), 0)),
+                "is_last_op": idx == len(stage_rows) - 1,
+                "source_kind": "ERP",
+                "source_stage_no": stage_no or None,
+            }
+        )
+    return steps
+
+
+def _is_machining_stage_desc(stage_desc):
+    upper = compact_text(stage_desc).upper()
+    return upper.startswith(("TURNING ", "MILLING ", "TURNMILL ")) or upper in {
+        "TURNING",
+        "MILLING",
+        "TURNMILL",
+    }
+
+
+def _planner_step_from_erp_stage_row(row, idx, total):
+    from planning.erp_wo_merge import is_finishing_stage_desc
+
+    stage_desc = compact_text(row.get("stage_desc"))
+    stage_no = int(row.get("stage_no") or 0)
+    op_no = compact_text(row.get("op_no")) or (str(stage_no) if stage_no else str(idx + 1))
+    if _is_machining_stage_desc(stage_desc):
+        op_type = _op_type_from_stage_desc(stage_desc)
+        machine_category = _machine_category_from_op_type(op_type)
+    else:
+        op_type = stage_desc or "OP"
+        machine_category = (
+            "FINISHING"
+            if is_finishing_stage_desc(stage_desc)
+            else "GENERAL"
+        )
+    return {
+        "seq_no": idx + 1,
+        "op_no": op_no,
+        "op_type": op_type,
+        "machine_category": machine_category,
+        "preferred_machine": compact_text(row.get("machine_no")),
+        "cycle_time": max(0.0, parse_number(row.get("cycle_time"), 0)),
+        "setup_time": max(0.0, parse_number(row.get("setup_time"), 0)),
+        "is_last_op": idx >= total - 1,
+        "source_kind": "ERP",
+        "source_stage_no": stage_no or None,
+    }
+
+
+def _erp_domain_inventory_bom_steps(inventory_code, bom_code):
+    """Full ERP BOM stages from COMAIN when bom_op_stage has no machining rows."""
+    inventory_code = compact_text(inventory_code)
+    bom_code = compact_text(bom_code)
+    if not inventory_code or not bom_code:
+        return []
+    try:
+        from db import domain_sync_unreachable, get_conn, release_conn
+
+        if domain_sync_unreachable():
+            return []
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT stage_no, stage_desc,
+                           CASE
+                               WHEN stage_desc ~ ' [0-9]+$'
+                               THEN substring(stage_desc FROM ' ([0-9]+)$')::INTEGER
+                               ELSE NULL
+                           END AS op_no,
+                           NULL::TEXT AS machine_no,
+                           0::NUMERIC AS setup_time,
+                           0::NUMERIC AS cycle_time
+                    FROM public.mt_inventory_bom_stage
+                    WHERE inventory_code = %s
+                      AND UPPER(bom_code) = UPPER(%s)
+                    ORDER BY stage_no
+                    """,
+                    (inventory_code, bom_code),
+                )
+                cols = [desc[0] for desc in cur.description]
+                stage_rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        finally:
+            release_conn(conn)
+    except Exception:
+        return []
+    if not stage_rows:
+        return []
+    total = len(stage_rows)
+    return [_planner_step_from_erp_stage_row(row, idx, total) for idx, row in enumerate(stage_rows)]
+
+
+def _inventory_bom_route_steps(con, inventory_code, bom_code):
+    """Planner flow steps from bom_op_stage, else full ERP mt_inventory_bom_stage."""
+    steps = _bom_op_stage_steps(con, inventory_code, bom_code)
+    if steps:
+        return steps
+    resolved = _resolve_inventory_bom_code(con, inventory_code, bom_code)
+    return _erp_domain_inventory_bom_steps(inventory_code, resolved or bom_code)
+
+
+def merge_flow_options(planner_flows, erp_bom_codes, erp_voucher_bom=None):
+    """Planner BOM variations plus ERP inventory BOM routes not yet seeded."""
+    options = [dict(flow) for flow in (planner_flows or [])]
+    seen = {_bom_code_key(flow.get("bom_code")) for flow in options if _bom_code_key(flow.get("bom_code"))}
+    voucher_key = _bom_code_key(erp_voucher_bom)
+    for bom_code in erp_bom_codes or []:
+        code = compact_text(bom_code)
+        key = _bom_code_key(code)
+        if not code or key in seen:
+            continue
+        seen.add(key)
+        options.append(
+            {
+                "bom_id": 0,
+                "bom_code": code,
+                "bom_desc": "ERP route",
+                "is_default": bool(voucher_key and key == voucher_key),
+                "source_kind": "ERP",
+            }
+        )
+    options.sort(
+        key=lambda flow: (
+            0 if flow.get("is_default") else 1,
+            0 if int(flow.get("bom_id") or 0) > 0 else 1,
+            compact_text(flow.get("bom_code")),
+        )
+    )
+    return options
+
+
+def planner_flow_options_for_inventory(con, inventory_code):
+    inventory_code = compact_text(inventory_code)
+    if not inventory_code:
+        return []
+    return [
+        dict(flow)
+        for flow in rows(
+            con.execute(
+                """
+                SELECT bom_id, bom_code, bom_desc, is_default, source_kind
+                FROM planner_bom_variation
+                WHERE inventory_code = %s
+                ORDER BY is_default DESC, bom_id
+                """,
+                (inventory_code,),
+            )
+        )
+    ]
+
+
+def flow_options_for_inventory(con, inventory_code, erp_bom_codes=None, erp_voucher_bom=None):
+    planner_flows = planner_flow_options_for_inventory(con, inventory_code)
+    if erp_bom_codes is None:
+        erp_bom_codes = erp_bom_codes_by_inventory(con, [inventory_code]).get(inventory_code, [])
+    return merge_flow_options(planner_flows, erp_bom_codes, erp_voucher_bom=erp_voucher_bom)
+
+
+def ensure_planner_bom_from_bom_op_stage(con, inventory_code, bom_code, *, is_default=False):
+    """Create planner_bom_variation + steps from ERP BOM routes when missing."""
+    inventory_code = compact_text(inventory_code)
+    requested_code = compact_text(bom_code)
+    if not inventory_code or not requested_code:
+        return 0
+
+    existing = one(
+        con.execute(
+            """
+            SELECT bom_id
+            FROM planner_bom_variation
+            WHERE inventory_code = %s
+              AND UPPER(bom_code) = UPPER(%s)
+            LIMIT 1
+            """,
+            (inventory_code, requested_code),
+        )
+    )
+    if existing:
+        return int(existing["bom_id"])
+
+    resolved_code = _resolve_inventory_bom_code(con, inventory_code, requested_code)
+    if not resolved_code:
+        return 0
+
+    steps = _inventory_bom_route_steps(con, inventory_code, resolved_code)
+    if not steps:
+        return 0
+
+    _ensure_flow_source_columns(con)
+    flow_row = _insert_planner_bom_variation(
+        con,
+        inventory_code=inventory_code,
+        bom_code=resolved_code,
+        bom_desc=f"ERP route {resolved_code}",
+        is_default=is_default,
+        flow_source_kind="ERP",
+    )
+    bom_id = int(flow_row["bom_id"])
+    stage_kinds = _save_flow_steps(con, bom_id, steps)
+    persisted_source_kind = _combined_flow_source_kind(stage_kinds, "ERP")
+    con.execute(
+        """
+        UPDATE planner_bom_variation
+        SET source_kind = %s, updated_at = NOW()
+        WHERE bom_id = %s
+        """,
+        (persisted_source_kind, bom_id),
+    )
+    return bom_id
+
 _PS_FLOW_SELECT = """
     SELECT
         ps.planner_ps_id AS ps_id,
@@ -461,20 +1024,41 @@ def api_process_sheet_selected_flow(ps_id):
                     """
                     SELECT bom_id, bom_code
                     FROM planner_bom_variation
-                    WHERE inventory_code = %s AND bom_code = %s
+                    WHERE inventory_code = %s AND UPPER(bom_code) = UPPER(%s)
                     """,
                     (inventory_code, flow_code),
                 )
             )
+            if not flow:
+                seeded_bom_id = ensure_planner_bom_from_bom_op_stage(
+                    con,
+                    inventory_code,
+                    flow_code,
+                    is_default=False,
+                )
+                if seeded_bom_id > 0:
+                    flow = one(
+                        con.execute(
+                            """
+                            SELECT bom_id, bom_code
+                            FROM planner_bom_variation
+                            WHERE bom_id = %s
+                            """,
+                            (seeded_bom_id,),
+                        )
+                    )
         if not flow:
             return jsonify({"error": "Flow not found for this PS"}), 404
+        old_bom_id = int(ps.get("selected_bom_id") or 0)
+        new_bom_id = int(flow["bom_id"])
+        queue_clear = clear_ps_queue_for_bom_route_change(con, ps_id, old_bom_id, new_bom_id)
         con.execute(
             """
             UPDATE planner_process_sheet
             SET selected_bom_id = %s, updated_at = NOW()
             WHERE planner_ps_id = %s
             """,
-            (int(flow["bom_id"]), ps_id),
+            (new_bom_id, ps_id),
         )
         from planning.process_sheets import is_temp_planner_ps_id
 
@@ -487,9 +1071,10 @@ def api_process_sheet_selected_flow(ps_id):
                     updated_at = NOW()
                 WHERE planner_ps_id = %s
                 """,
-                (int(flow["bom_id"]), compact_text(flow.get("bom_code")), ps_id),
+                (new_bom_id, compact_text(flow.get("bom_code")), ps_id),
             )
-        _relink_planner_op_seq_ids_for_bom(con, int(flow["bom_id"]), planner_ps_ids=[ps_id])
+        if old_bom_id == new_bom_id:
+            _relink_planner_op_seq_ids_for_bom(con, new_bom_id, planner_ps_ids=[ps_id])
         sync_material_requirements_for_ps(con, ps_id)
         try:
             from app import _invalidate_pp_vouchers_with_ops_cache
@@ -497,12 +1082,24 @@ def api_process_sheet_selected_flow(ps_id):
             _invalidate_pp_vouchers_with_ops_cache()
         except Exception:
             pass
+        from planning.catalog import build_catalog_flow_patch
+
+        patch = build_catalog_flow_patch(con, ps_id, new_bom_id, compact_text(flow.get("bom_code")))
+        cleared_blocks = int(queue_clear.get("cleared_blocks") or 0)
+        toast_hint = ""
+        if cleared_blocks > 0:
+            toast_hint = f" Cleared {cleared_blocks} queued block(s) from the previous BOM."
         return jsonify(
             {
                 "ok": True,
                 "ps_id": ps_id,
-                "selected_bom_id": int(flow["bom_id"]),
+                "selected_bom_id": new_bom_id,
+                "selected_bom_code": compact_text(flow.get("bom_code")),
                 "selected_flow_code": flow["bom_code"] or "",
+                "queue_cleared": queue_clear,
+                "machine_ids": queue_clear.get("machine_ids") or [],
+                "toast_hint": toast_hint.strip(),
+                **patch,
             }
         )
 
@@ -515,19 +1112,40 @@ def api_inventory_flows(inventory_code):
         return jsonify({"error": "inventory_code is required"}), 400
     with planner_db() as con:
         _ensure_flow_source_columns(con)
-        flow_rows = rows(
-            con.execute(
-                """
-                SELECT bom_id, bom_code AS flow_code, bom_desc AS flow_name, is_default,
-                       source_kind
-                FROM planner_bom_variation
-                WHERE inventory_code = %s
-                ORDER BY is_default DESC, bom_id
-                """,
-                (inventory_code,),
+        merged_options = flow_options_for_inventory(con, inventory_code)
+        payloads = []
+        for option in merged_options:
+            bom_id = int(option.get("bom_id") or 0)
+            if bom_id > 0:
+                flow = one(
+                    con.execute(
+                        """
+                        SELECT bom_id, bom_code AS flow_code, bom_desc AS flow_name,
+                               is_default, source_kind
+                        FROM planner_bom_variation
+                        WHERE bom_id = %s
+                        """,
+                        (bom_id,),
+                    )
+                )
+                if flow:
+                    payloads.append(_flow_payload(con, flow))
+                continue
+            bom_code = compact_text(option.get("bom_code"))
+            steps = _inventory_bom_route_steps(con, inventory_code, bom_code)
+            if not steps:
+                continue
+            payloads.append(
+                {
+                    "bom_id": 0,
+                    "flow_code": bom_code,
+                    "flow_name": compact_text(option.get("bom_desc")) or f"ERP route {bom_code}",
+                    "is_default": bool(option.get("is_default")),
+                    "source_kind": "ERP",
+                    "steps": [{**dict(step), "is_last_op": int(bool(step.get("is_last_op")))} for step in steps],
+                }
             )
-        )
-        return jsonify([_flow_payload(con, flow) for flow in flow_rows])
+        return jsonify(payloads)
 
 
 @trial_prefixed_flows_bp.post("/api/trial/process-sheets/<path:ps_id>/flows")

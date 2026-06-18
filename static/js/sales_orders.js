@@ -66,6 +66,7 @@ const SO_COLUMNS = [
   { id: '_so', label: 'SO', side: true, sortable: true, filterable: true },
   { id: 'process_sheet_no', label: 'Process sheet', sortable: true, filterable: true, filterType: 'prefix', stickyAfterSide: true },
   { id: 'partial', label: 'Partial', sortable: true, filterable: true },
+  { id: 'exception', label: 'Exception', sortable: true, filterable: false },
   { id: 'queued_cnc', label: 'Queued CNC', sortable: true, filterable: true },
   { id: 'erp_stage', label: 'Stage', sortable: true, filterable: true },
   { id: 'qty', label: 'Qty', sortable: true, filterable: true },
@@ -644,13 +645,59 @@ function soBindDetailPanel() {
   });
 }
 
+function soTableHost() {
+  return document.getElementById('so-table-host');
+}
+
+let soTableScrollResizeObserver = null;
+
+function soSyncTableScrollWidth() {
+  const topInner = document.querySelector('.so-table-scroll-top-inner');
+  const wrap = document.getElementById('so-table-wrap');
+  const table = wrap?.querySelector('.so-table--wide');
+  if (!topInner || !wrap || !table) return;
+  const w = Math.max(table.scrollWidth, wrap.clientWidth, 1);
+  topInner.style.width = `${w}px`;
+}
+
+function soBindTableScroll() {
+  const top = document.getElementById('so-table-scroll-top');
+  const wrap = document.getElementById('so-table-wrap');
+  if (!top || !wrap || top.dataset.scrollBound === '1') return;
+  top.dataset.scrollBound = '1';
+
+  let syncing = false;
+  const syncFromWrap = () => {
+    if (syncing) return;
+    syncing = true;
+    top.scrollLeft = wrap.scrollLeft;
+    syncing = false;
+  };
+  const syncFromTop = () => {
+    if (syncing) return;
+    syncing = true;
+    wrap.scrollLeft = top.scrollLeft;
+    syncing = false;
+  };
+  wrap.addEventListener('scroll', syncFromWrap, { passive: true });
+  top.addEventListener('scroll', syncFromTop, { passive: true });
+
+  if (!soTableScrollResizeObserver) {
+    soTableScrollResizeObserver = new ResizeObserver(() => soSyncTableScrollWidth());
+  }
+  const table = wrap.querySelector('.so-table--wide');
+  if (table) soTableScrollResizeObserver.observe(table);
+  soTableScrollResizeObserver.observe(wrap);
+  soSyncTableScrollWidth();
+}
+
 function soBindTableClicks() {
   const wrap = document.getElementById('so-table-wrap');
   if (!wrap || wrap.dataset.detailBound === '1') return;
   wrap.dataset.detailBound = '1';
 
   wrap.addEventListener('click', e => {
-    if (e.target.closest('.so-editable-input, .so-editable-cell, .so-material-subcon-cell')) return;
+    if (e.target.closest('.so-editable-input, .so-editable-cell, .so-material-subcon-cell, .so-exception-cell')) return;
 
     const materialBtn = e.target.closest('[data-action="open-material"]');
     if (materialBtn) {
@@ -868,6 +915,7 @@ function soLeafColumnValue(leaf, colId) {
   switch (colId) {
     case '_so': return order?.sales_order_no;
     case 'partial': return partial?.pp_partial_no ?? '';
+    case 'exception': return soIsPartialException(pp, partial) ? 'flagged' : '';
     case 'process_sheet_no': return soPsDisplayId(pp);
     case 'queued_cnc': return soQueuedMachinesLabel(pp, partial);
     case 'erp_stage': return soStageLabel(partial);
@@ -1807,6 +1855,64 @@ function soRenderEditableCell(pp, field) {
   `;
 }
 
+function soPartialNo(partial) {
+  const n = Number(partial?.pp_partial_no);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+function soIsPartialException(pp, partial) {
+  const partials = Array.isArray(pp?.highlighted_partials) ? pp.highlighted_partials : [];
+  return partials.includes(soPartialNo(partial));
+}
+
+function soSetPartialException(pp, partialNo, on) {
+  if (!pp) return;
+  const set = new Set(Array.isArray(pp.highlighted_partials) ? pp.highlighted_partials : []);
+  if (on) set.add(partialNo);
+  else set.delete(partialNo);
+  const sorted = [...set].sort((a, b) => a - b);
+  pp.highlighted_partials = sorted;
+  pp.ps_highlighted = sorted.length > 0;
+}
+
+function soSyncExceptionRow(row, flagged) {
+  if (!row) return;
+  row.classList.toggle('is-so-exception', Boolean(flagged));
+  const cell = row.querySelector('.so-exception-cell');
+  const input = cell?.querySelector('.so-exception-input');
+  const label = cell?.querySelector('.so-exception-flag');
+  if (input) input.checked = Boolean(flagged);
+  if (label) {
+    label.classList.toggle('is-active', Boolean(flagged));
+    label.setAttribute('aria-pressed', flagged ? 'true' : 'false');
+    label.title = flagged ? 'Exception raised — click to clear' : 'Raise exception for this line';
+  }
+}
+
+function soRenderExceptionCell(pp, partial) {
+  const ppNo = String(pp?.pp_voucher_no || '').trim();
+  const partialNo = soPartialNo(partial);
+  const flagged = soIsPartialException(pp, partial);
+  return `
+    <td class="so-exception-cell">
+      <label class="so-exception-flag${flagged ? ' is-active' : ''}"
+        title="${flagged ? 'Exception raised — click to clear' : 'Raise exception for this line'}"
+        aria-pressed="${flagged ? 'true' : 'false'}"
+        aria-label="${flagged ? 'Exception raised' : 'Raise exception'}">
+        <input type="checkbox"
+          class="so-exception-input"
+          data-pp-voucher-no="${escapeHtml(ppNo)}"
+          data-partial-no="${partialNo}"
+          ${flagged ? 'checked' : ''}
+          tabindex="-1"
+          aria-hidden="true">
+        <span class="so-exception-mark" aria-hidden="true">!</span>
+      </label>
+      <span class="so-exception-status" aria-live="polite"></span>
+    </td>
+  `;
+}
+
 function soRenderPartialCell(partial) {
   return `<td class="new-orders-num so-partial-cell">${escapeHtml(String(partial?.pp_partial_no ?? '—'))}</td>`;
 }
@@ -1825,11 +1931,13 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, shade
   const orderDateCell = soRenderOrderDateCell(pp);
   const startClass = groupStart ? ' new-orders-group-start' : '';
   const queuedMark = soIsPartialQueued(pp, partial) ? ' is-ps-queued-mark' : '';
+  const exceptionMark = soIsPartialException(pp, partial) ? ' is-so-exception' : '';
   return `
-    <tr class="new-orders-child-row is-clickable${startClass}${queuedMark}${selected ? ' is-selected' : ''}" data-sales-order="${escapeHtml(String(order.sales_order_no || ''))}" data-detail-key="${escapeHtml(key)}" title="Click for detail">
+    <tr class="new-orders-child-row is-clickable${startClass}${queuedMark}${exceptionMark}${selected ? ' is-selected' : ''}" data-sales-order="${escapeHtml(String(order.sales_order_no || ''))}" data-detail-key="${escapeHtml(key)}" title="Click for detail">
       ${sideRail}
       ${processSheetCell}
       ${soRenderPartialCell(partial)}
+      ${soRenderExceptionCell(pp, partial)}
       ${soRenderQueuedCncCell(pp, partial)}
       ${soRenderStageCell(pp, partial)}
       ${soRenderQtyCell(pp)}
@@ -2051,6 +2159,76 @@ async function soSaveMaterialIn(input) {
   }
 }
 
+function soSetExceptionStatus(control, state, message) {
+  const status = control?.closest('.so-exception-cell')?.querySelector('.so-exception-status');
+  if (!status) return;
+  status.className = `so-exception-status${state ? ` is-${state}` : ''}`;
+  status.textContent = message || '';
+}
+
+async function soSaveExceptionFlag(input) {
+  const ppNo = String(input?.dataset?.ppVoucherNo || '').trim();
+  const partialNo = Math.max(1, Number(input?.dataset?.partialNo) || 1);
+  if (!ppNo || input.disabled) return;
+
+  const flagged = Boolean(input.checked);
+  const row = input.closest('tr');
+  const label = input.closest('.so-exception-flag');
+  const found = soFindPp(ppNo);
+  const previous = found?.pp ? soIsPartialException(found.pp, { pp_partial_no: partialNo }) : false;
+
+  soSyncExceptionRow(row, flagged);
+  input.disabled = true;
+  if (label) label.classList.add('is-saving');
+  soSetExceptionStatus(input, 'saving', 'Saving…');
+  try {
+    const data = await soPostJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
+      partial_highlight: {
+        pp_partial_no: partialNo,
+        highlighted: flagged,
+      },
+    });
+    if (found?.pp) {
+      found.pp.highlighted_partials = Array.isArray(data.highlighted_partials)
+        ? data.highlighted_partials
+        : [];
+      found.pp.ps_highlighted = Boolean(data.ps_highlighted);
+    }
+    const saved = Array.isArray(data.highlighted_partials)
+      ? data.highlighted_partials.includes(partialNo)
+      : flagged;
+    soSyncExceptionRow(row, saved);
+    soSetExceptionStatus(input, 'saved', saved ? 'Flagged' : 'Cleared');
+    window.setTimeout(() => soSetExceptionStatus(input, '', ''), 1500);
+  } catch (err) {
+    if (found?.pp) soSetPartialException(found.pp, partialNo, previous);
+    soSyncExceptionRow(row, previous);
+    soSetExceptionStatus(input, 'error', err.message || 'Save failed');
+  } finally {
+    input.disabled = false;
+    if (label) label.classList.remove('is-saving');
+  }
+}
+
+function soBindExceptionFlags() {
+  const body = document.getElementById('so-table-body');
+  if (!body || body.dataset.exceptionBound === '1') return;
+  body.dataset.exceptionBound = '1';
+
+  body.addEventListener('change', e => {
+    const input = e.target.closest('.so-exception-input');
+    if (!input) return;
+    e.stopPropagation();
+    soSaveExceptionFlag(input);
+  });
+
+  body.addEventListener('click', e => {
+    const flag = e.target.closest('.so-exception-flag');
+    if (!flag) return;
+    e.stopPropagation();
+  });
+}
+
 function soBindMaterialInInputs() {
   const body = document.getElementById('so-table-body');
   if (!body || body.dataset.materialInBound === '1') return;
@@ -2177,28 +2355,24 @@ function soUpdateStats() {
   if (!el) return;
   const orders = soVisibleOrders(soActiveOrders());
   let leafCount = 0;
-  let partialCount = 0;
   orders.forEach(order => {
-    const leaves = soVisibleLeaves(order);
-    leafCount += leaves.length;
-    partialCount += leaves.length;
+    leafCount += soVisibleLeaves(order).length;
   });
   const activeN = soVisibleOrders(soState.active).length;
   const completeN = soVisibleOrders(soState.complete).length;
   const viewLabel = soState.view === 'complete' ? 'Complete' : 'Active';
   const { typeCounts, ppCount } = soVisibleTypeCounts();
-  const typesLabel = soPsTypeLabel();
   const hasLoaded = (soState.active?.length || 0) + (soState.complete?.length || 0) > 0;
   if (!hasLoaded) {
     el.innerHTML = '';
     return;
   }
   el.innerHTML = [
-    `<span class="so-chip"><strong>${orders.length}</strong> ${escapeHtml(viewLabel)} S/O</span>`,
-    `<span class="so-chip"><strong>${leafCount}</strong> rows · <strong>${partialCount}</strong> partials</span>`,
-    `<span class="so-chip"><strong>${ppCount}</strong> PP <span class="so-chip-sub">${escapeHtml(typesLabel)}</span></span>`,
-    `<span class="so-chip so-chip--types"><span class="so-chip-types-label">By type</span>${soTypeTagsHtml(typeCounts)}</span>`,
-    `<span class="so-chip so-chip--muted"><span class="so-chip-muted-line"><strong>${activeN}</strong> active S/O</span><span class="so-chip-muted-line"><strong>${completeN}</strong> complete S/O</span></span>`,
+    `<span class="so-header-pill"><strong>${orders.length}</strong> ${escapeHtml(viewLabel)} S/O</span>`,
+    `<span class="so-header-pill"><strong>${leafCount}</strong> rows</span>`,
+    `<span class="so-header-pill"><strong>${ppCount}</strong> PP</span>`,
+    soTypeTagsHtml(typeCounts),
+    `<span class="so-header-pill so-header-pill--muted"><strong>${activeN}</strong> active · <strong>${completeN}</strong> complete</span>`,
   ].join('');
 }
 
@@ -2206,6 +2380,7 @@ function soRender() {
   soRenderTableHead();
   const orders = soVisibleOrders(soActiveOrders());
   const body = document.getElementById('so-table-body');
+  const host = soTableHost();
   const wrap = document.getElementById('so-table-wrap');
   const empty = document.getElementById('so-empty');
   const emptyText = document.getElementById('so-empty-text');
@@ -2223,7 +2398,7 @@ function soRender() {
         ? 'Select at least one PP prefix (APS, NPS, …).'
         : 'No rows match your search or column filters — adjust filters in the column headers above.');
     if (hasData) {
-      if (wrap) wrap.hidden = false;
+      if (host) host.hidden = false;
       if (empty) empty.hidden = true;
       if (body) {
         body.innerHTML = `
@@ -2234,7 +2409,7 @@ function soRender() {
       }
     } else {
       if (body) body.innerHTML = '';
-      if (wrap) wrap.hidden = true;
+      if (host) host.hidden = true;
       if (empty) {
         empty.hidden = false;
         if (emptyText) emptyText.textContent = emptyMsg;
@@ -2244,17 +2419,20 @@ function soRender() {
     soUpdateStats();
     soUpdateTabCounts();
     soRepositionColumnFilter();
+    soSyncTableScrollWidth();
     return;
   }
 
-  if (wrap) wrap.hidden = false;
+  if (host) host.hidden = false;
   if (empty) empty.hidden = true;
   if (body) {
     body.innerHTML = orders.map((order, idx) => soRenderOrderGroup(order, idx)).filter(Boolean).join('');
     delete body.dataset.editableBound;
     delete body.dataset.materialInBound;
+    delete body.dataset.exceptionBound;
     soBindEditableInputs();
     soBindMaterialInInputs();
+    soBindExceptionFlags();
   }
   if (meta) {
     meta.hidden = false;
@@ -2266,13 +2444,14 @@ function soRender() {
   soUpdateStats();
   soUpdateTabCounts();
   soRepositionColumnFilter();
+  soSyncTableScrollWidth();
 }
 
 async function soLoad({ refresh = false, bustCache = false } = {}) {
   const loading = document.getElementById('so-loading');
-  const wrap = document.getElementById('so-table-wrap');
+  const host = soTableHost();
   if (loading) loading.hidden = false;
-  if (wrap) wrap.hidden = true;
+  if (host) host.hidden = true;
   soCloseDetail();
   soCloseMaterialModal();
 
@@ -2355,10 +2534,17 @@ function soInit() {
   soBindDetailPanel();
   soBindMaterialModal();
   soBindTableClicks();
+  soBindTableScroll();
   soBindColumnControls();
   soBindMaterialSubconInputs();
+  soBindExceptionFlags();
   soBindPsTypeDropdown();
   soRenderTableHead();
+
+  window.addEventListener('pp-vouchers-synced', () => {
+    soLoad({ refresh: true, bustCache: true });
+  });
+
   soLoad({ refresh: false });
 }
 

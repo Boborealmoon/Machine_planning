@@ -516,10 +516,13 @@ _PP_VOUCHERS_READ_MERGE_WO = os.getenv("PP_VOUCHERS_READ_MERGE_WO", "").strip().
 _BG_PP_SYNC_LOCK = threading.Lock()
 _BG_PP_SYNC: dict = {
     "running": False,
+    "post_sync_running": False,
+    "started_at": None,
     "failed_at": None,
     "error": None,
     "results": None,
 }
+_BG_PP_SYNC_STALE_SECS = int(os.getenv("ERP_SYNC_STALE_SECS", "1800"))
 
 
 def _pp_vouchers_cache_sql_parts():
@@ -1263,11 +1266,12 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
 
     planner_rows = {}
     flow_cache = {}
+    erp_bom_codes_map = {}
     bom_code_by_id = {}
     wo_completion = {}
 
     def _load(_con):
-        nonlocal wo_completion
+        nonlocal wo_completion, erp_bom_codes_map
         if source_ids:
             wo_completion = _erp_wo_completion_by_partial(_con, source_ids)
         if source_ids:
@@ -1285,10 +1289,13 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
                 planner_rows[key] = row
 
         if inventory_codes:
+            from planning.flows import erp_bom_codes_by_inventory
+
+            erp_bom_codes_map = erp_bom_codes_by_inventory(_con, list(inventory_codes))
             for row in db_rows(
                 _con.execute(
                     """
-                    SELECT bom_id, inventory_code, bom_code, bom_desc, is_default
+                    SELECT bom_id, inventory_code, bom_code, bom_desc, is_default, source_kind
                     FROM planner_bom_variation
                     WHERE inventory_code = ANY(%s)
                     ORDER BY is_default DESC, bom_id
@@ -1303,6 +1310,7 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
                         "bom_code": compact_text(row["bom_code"]),
                         "bom_desc": compact_text(row.get("bom_desc")),
                         "is_default": bool(row.get("is_default")),
+                        "source_kind": compact_text(row.get("source_kind") or "ERP"),
                     }
                 )
 
@@ -1388,7 +1396,14 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
                 entry["selected_bom_code"] = bom_code_by_id.get(bom_id, entry.get("selected_bom_code") or "")
         inv = compact_text(entry.get("inventory_code") or entry.get("part_no"))
         entry["inventory_code"] = inv
-        entry["flow_options"] = flow_cache.get(inv, entry.get("flow_options") or [])
+        erp_bom = compact_text(entry.get("erp_bom_code") or entry.get("bom_code"))
+        from planning.flows import merge_flow_options
+
+        entry["flow_options"] = merge_flow_options(
+            flow_cache.get(inv, entry.get("flow_options") or []),
+            erp_bom_codes_map.get(inv, []),
+            erp_voucher_bom=erp_bom,
+        )
         wo_flags = wo_completion.get((source_ps_id, partial_no), {})
         entry["erp_wo_stage_count"] = int(wo_flags.get("erp_wo_stage_count") or 0)
         entry["erp_all_wo_complete"] = bool(wo_flags.get("erp_all_wo_complete"))
@@ -1612,7 +1627,7 @@ def _domain_sync_unreachable_response():
     }), 503
 
 
-def _run_pp_staging_sync_pipeline(steps: list[str], force: bool) -> tuple[dict, int]:
+def _run_pp_staging_sync_pipeline(steps: list[str], force: bool, *, run_post_sync: bool = True) -> tuple[dict, int]:
     from sync import run_pp_staging_sync
 
     staging_only = [s for s in steps if s != "pp_vouchers_cache"]
@@ -1621,8 +1636,10 @@ def _run_pp_staging_sync_pipeline(steps: list[str], force: bool) -> tuple[dict, 
     results: dict = {"schema": {"updated": bool(staging_only)}}
     sync_results = run_pp_staging_sync(steps=steps, force=force)
     results.update(sync_results)
-    if "pp_vouchers_cache" in steps or staging_only:
-        _invalidate_pp_vouchers_with_ops_cache()
+    if run_post_sync and ("pp_vouchers_cache" in steps or staging_only):
+        from planning.erp_cache_refresh import refresh_after_erp_sync
+
+        results["post_sync"] = refresh_after_erp_sync(warm=True, background=True)
     failed = results.get("_failed_at")
     if failed:
         step_result = results.get(failed, {})
@@ -1631,15 +1648,38 @@ def _run_pp_staging_sync_pipeline(steps: list[str], force: bool) -> tuple[dict, 
     return results, 200
 
 
+def _run_erp_post_sync() -> dict:
+    from planning.erp_cache_refresh import refresh_after_erp_sync
+
+    return refresh_after_erp_sync(warm=True, background=True)
+
+
 def _background_pp_sync_worker(steps: list[str], force: bool) -> None:
     global _BG_PP_SYNC
     try:
-        payload, status = _run_pp_staging_sync_pipeline(steps, force)
+        payload, status = _run_pp_staging_sync_pipeline(steps, force, run_post_sync=False)
         with _BG_PP_SYNC_LOCK:
             _BG_PP_SYNC["results"] = payload
             _BG_PP_SYNC["failed_at"] = payload.get("_failed_at")
             if status >= 400 and not _BG_PP_SYNC["failed_at"]:
                 _BG_PP_SYNC["error"] = payload.get("error") or "sync failed"
+            # Staging steps finished — release the UI wait loop before cache warm / reconcile.
+            _BG_PP_SYNC["running"] = False
+            if status < 400 and not payload.get("_failed_at"):
+                _BG_PP_SYNC["post_sync_running"] = True
+
+        if status >= 400 or payload.get("_failed_at"):
+            return
+
+        try:
+            post_sync = _run_erp_post_sync()
+            with _BG_PP_SYNC_LOCK:
+                if isinstance(_BG_PP_SYNC.get("results"), dict):
+                    _BG_PP_SYNC["results"]["post_sync"] = post_sync
+        except Exception as exc:
+            log.exception("ERP post-sync (cache warm / queue reconcile) failed")
+            with _BG_PP_SYNC_LOCK:
+                _BG_PP_SYNC["post_sync_error"] = str(exc)
     except Exception as exc:
         log.exception("background PP staging sync failed")
         with _BG_PP_SYNC_LOCK:
@@ -1647,18 +1687,53 @@ def _background_pp_sync_worker(steps: list[str], force: bool) -> None:
     finally:
         with _BG_PP_SYNC_LOCK:
             _BG_PP_SYNC["running"] = False
+            _BG_PP_SYNC["post_sync_running"] = False
+            _BG_PP_SYNC["started_at"] = None
+
+
+def _bg_pp_sync_stale() -> bool:
+    with _BG_PP_SYNC_LOCK:
+        if not _BG_PP_SYNC.get("running") and not _BG_PP_SYNC.get("post_sync_running"):
+            return False
+        started = _BG_PP_SYNC.get("started_at")
+    if started is None:
+        return True
+    try:
+        return (time.monotonic() - float(started)) > _BG_PP_SYNC_STALE_SECS
+    except (TypeError, ValueError):
+        return True
+
+
+def _reset_stale_bg_pp_sync(reason: str) -> None:
+    global _BG_PP_SYNC
+    log.warning("Resetting stale ERP background sync (%s)", reason)
+    with _BG_PP_SYNC_LOCK:
+        _BG_PP_SYNC = {
+            "running": False,
+            "post_sync_running": False,
+            "started_at": None,
+            "failed_at": None,
+            "error": f"stale sync reset: {reason}",
+            "results": _BG_PP_SYNC.get("results"),
+            "post_sync_error": None,
+        }
 
 
 def _start_background_pp_sync(steps: list[str], force: bool):
     global _BG_PP_SYNC
+    if _bg_pp_sync_stale():
+        _reset_stale_bg_pp_sync("exceeded stale timeout")
     with _BG_PP_SYNC_LOCK:
-        if _BG_PP_SYNC.get("running"):
+        if _BG_PP_SYNC.get("running") or _BG_PP_SYNC.get("post_sync_running"):
             return None
         _BG_PP_SYNC = {
             "running": True,
+            "post_sync_running": False,
+            "started_at": time.monotonic(),
             "failed_at": None,
             "error": None,
             "results": None,
+            "post_sync_error": None,
         }
     threading.Thread(
         target=_background_pp_sync_worker,
@@ -1682,7 +1757,9 @@ def _pp_sync_progress_token(payload: dict) -> str:
     parts: list[str] = []
     bg = payload.get("background_sync") or {}
     parts.append("1" if bg.get("running") else "0")
+    parts.append("1" if bg.get("post_sync_running") else "0")
     parts.append(str(bg.get("failed_at") or ""))
+    parts.append(str(bg.get("post_sync_error") or ""))
     for step in order:
         info = (payload.get("steps") or {}).get(step) or {}
         if info.get("in_progress"):
@@ -1690,6 +1767,11 @@ def _pp_sync_progress_token(payload: dict) -> str:
         last = info.get("last") or {}
         parts.append(f"{step}:{last.get('recorded_at') or last.get('synced_at') or ''}")
     return "|".join(parts)
+
+
+def _pp_sync_fully_done(payload: dict) -> bool:
+    bg = payload.get("background_sync") or {}
+    return not bg.get("running") and not bg.get("post_sync_running")
 
 
 @app.post("/api/pp-vouchers/sync")
@@ -1835,12 +1917,16 @@ def api_so_detail_sync():
 
 @app.get("/api/pp-staging/status")
 def api_pp_staging_status():
+    if _bg_pp_sync_stale():
+        _reset_stale_bg_pp_sync("status poll timeout")
     return jsonify(_pp_staging_status_payload())
 
 
 @app.get("/api/pp-staging/wait")
 def api_pp_staging_wait():
     """Long-poll ERP sync progress (avoids polling /status every few seconds)."""
+    if _bg_pp_sync_stale():
+        _reset_stale_bg_pp_sync("wait poll timeout")
     try:
         timeout_sec = int(request.args.get("timeout", 30))
     except (TypeError, ValueError):
@@ -1852,7 +1938,7 @@ def api_pp_staging_wait():
         payload = _pp_staging_status_payload()
         token = _pp_sync_progress_token(payload)
         bg = payload.get("background_sync") or {}
-        if not bg.get("running"):
+        if _pp_sync_fully_done(payload):
             return jsonify({**payload, "done": True, "progress_token": token})
         if since and token != since:
             return jsonify({**payload, "done": False, "progress_token": token})
@@ -1862,9 +1948,24 @@ def api_pp_staging_wait():
     payload = _pp_staging_status_payload()
     return jsonify({
         **payload,
-        "done": not (payload.get("background_sync") or {}).get("running"),
+        "done": _pp_sync_fully_done(payload),
         "progress_token": _pp_sync_progress_token(payload),
     })
+
+
+@app.post("/api/pp-staging/cache-refresh")
+def api_pp_staging_cache_refresh():
+    """Invalidate and warm in-process ERP read caches (called after scheduled sync)."""
+    secret = os.getenv("ERP_CACHE_REFRESH_SECRET", "").strip()
+    if secret:
+        if request.headers.get("X-ERP-Cache-Refresh", "") != secret:
+            return jsonify({"error": "forbidden"}), 403
+    elif request.remote_addr not in {"127.0.0.1", "::1"}:
+        return jsonify({"error": "forbidden"}), 403
+
+    from planning.erp_cache_refresh import refresh_after_erp_sync
+
+    return jsonify(refresh_after_erp_sync(warm=True, background=True))
 
 
 @app.post("/api/pp-vouchers-cache/rebuild")
@@ -1873,7 +1974,9 @@ def api_pp_vouchers_cache_rebuild():
     from sync import run_pp_staging_sync
     try:
         results = run_pp_staging_sync(steps=["pp_vouchers_cache"], force=True)
-        _invalidate_pp_vouchers_with_ops_cache()
+        from planning.erp_cache_refresh import refresh_after_erp_sync
+
+        refresh_after_erp_sync(warm=True, background=True)
         failed = results.get("_failed_at")
         if failed:
             step_result = results.get(failed, {})
@@ -2702,7 +2805,8 @@ def api_planner_cycle_times_full_reload():
 
 
 # ── Background auto-sync (opt-in) ─────────────────────────────────────────────
-# ERP sync normally runs once daily at 08:00 via scripts/install_erp_sync_scheduler.ps1
+# ERP sync normally runs at 08:00 and 13:00 on weekdays via
+# scripts/install_erp_sync_scheduler.ps1
 # (or manual Sync ERP in the UI). Set ENABLE_AUTO_SYNC=1 to also run the full PP staging
 # pipeline every AUTO_SYNC_INTERVAL seconds inside this Flask process, then
 # program-tool-list (Google Sheet → SQLite → planner_program_tools on Supabase)
@@ -2740,6 +2844,12 @@ def _auto_sync_loop():
             run_pp_partial_sync(force=True)
             run_mfg_wo_status_sync(force=True)
             run_sync(force=True)
+            try:
+                from planning.erp_cache_refresh import refresh_after_erp_sync
+
+                refresh_after_erp_sync(warm=True, background=True)
+            except Exception as e:
+                log.error("post-sync cache refresh error: %s", e)
             try:
                 from planning.program_tool_list_route import run_auto_program_tool_list_sync
 

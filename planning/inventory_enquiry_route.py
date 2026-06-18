@@ -114,6 +114,11 @@ def _stock_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+def invalidate_inventory_enquiry_cache() -> None:
+    global _cache
+    _cache = None
+
+
 def _fetch_inventory(*, refresh: bool = False) -> list[dict[str, Any]]:
     global _cache
     now = time.time()

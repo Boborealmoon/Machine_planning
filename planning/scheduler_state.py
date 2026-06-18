@@ -187,17 +187,32 @@ def active_calendar_windows_for_machine_day(con, machine_id, work_day):
     )
 
 
+def _effective_qty_totals_for_block(con, block_row):
+    """Shop actuals plus ERP WO progress (ERP wins when shop has not reported)."""
+    try:
+        from .erp_actuals import effective_actual_totals_for_block
+
+        totals = effective_actual_totals_for_block(con, block_row)
+        output_qty = _float(totals.get("effective_output_qty"))
+        reject_qty = _float(totals.get("effective_reject_qty"))
+        good_qty = _float(totals.get("effective_good_qty"))
+    except Exception:
+        shop = actual_totals_for_block(con, int(block_row.get("block_id") or 0))
+        output_qty = _float(shop.get("output_qty"))
+        reject_qty = _float(shop.get("reject_qty"))
+        good_qty = _float(shop.get("good_qty"))
+    scheduled_qty = _float(block_row.get("scheduled_qty"))
+    remaining_qty = max(0.0, scheduled_qty - good_qty) if scheduled_qty > 0 else 0.0
+    return output_qty, reject_qty, good_qty, remaining_qty
+
+
 def refresh_machine_queue_state(con, block_id, schedule_run_id=None):
     block = one(
         con.execute(
             """
-            SELECT b.*, COALESCE(v.remaining_qty, 0) AS remaining_qty,
-                   COALESCE(v.good_qty, 0) AS good_qty,
-                   COALESCE(a.output_qty, 0) AS output_qty,
-                   COALESCE(a.reject_qty, 0) AS reject_qty
+            SELECT b.*, o.source_ps_id, o.source_op_no, o.source_op_seq_id, o.job_no
             FROM planner_run_block b
-            LEFT JOIN planner_v_block_remaining v ON v.block_id = b.block_id
-            LEFT JOIN planner_v_block_actual_totals a ON a.block_id = b.block_id
+            JOIN planner_operation o ON o.operation_id = b.operation_id
             WHERE b.block_id = %s
             """,
             (int(block_id),),
@@ -205,6 +220,8 @@ def refresh_machine_queue_state(con, block_id, schedule_run_id=None):
     )
     if not block:
         return None
+
+    output_qty, reject_qty, good_qty, remaining_qty = _effective_qty_totals_for_block(con, block)
 
     bounds = _segment_bounds(con, block_id)
     # Queue state is the live prediction shown by the scheduler. Prefer the
@@ -226,11 +243,11 @@ def refresh_machine_queue_state(con, block_id, schedule_run_id=None):
         except (ValueError, TypeError):
             planned_minutes = 0.0
 
-    output_qty = _float(block["output_qty"])
-    reject_qty = _float(block["reject_qty"])
-    good_qty = _float(block["good_qty"])
-    remaining_qty = _float(block["remaining_qty"])
     execution_status = _text(block["execution_status"] or block["status"] or "NOT_STARTED")
+    if good_qty > 0 and execution_status in {"", "NOT_STARTED", "PLANNED"}:
+        execution_status = "IN_PROGRESS"
+    if remaining_qty <= 0 and _float(block.get("scheduled_qty")) > 0:
+        execution_status = "DONE"
     schedule_status = _text(block["planning_status"] or "UNSCHEDULED")
 
     is_late = False

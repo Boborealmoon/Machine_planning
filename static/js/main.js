@@ -107,6 +107,10 @@ async function fetchPpStagingWait(since = "", timeoutSec = 30) {
 function ppSyncProgressFromStatus(status) {
   const order = status.step_order || PP_SYNC_STEPS;
   const total = order.length;
+  const bg = status.background_sync || {};
+  if (bg.post_sync_running && !bg.running) {
+    return { index: total, total, label: "Finishing", step: "post_sync" };
+  }
   for (let i = 0; i < order.length; i++) {
     const step = order[i];
     const info = status.steps?.[step] || {};
@@ -126,6 +130,24 @@ function ppSyncProgressFromStatus(status) {
     label: PP_SYNC_STEP_LABELS[step] || step,
     step,
   };
+}
+
+async function waitForPostSyncComplete(initialToken = "") {
+  let token = initialToken;
+  for (let attempt = 0; attempt < 120; attempt++) {
+    const status = await fetchPpStagingWait(token, 15);
+    token = status.progress_token || token;
+    const bg = status.background_sync || {};
+    if (!bg.post_sync_running) {
+      if (bg.post_sync_error) {
+        console.warn("ERP post-sync warning:", bg.post_sync_error);
+      }
+      return status;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  console.warn("ERP post-sync still running after wait; continuing anyway");
+  return null;
 }
 
 async function startBackgroundPpSync(steps = null) {
@@ -155,7 +177,7 @@ async function waitForBackgroundPpSync(onProgress) {
     token = status.progress_token || token;
     onProgress?.(ppSyncProgressFromStatus(status));
     const bg = status.background_sync || {};
-    if (status.done || !bg.running) {
+    if (!bg.running) {
       if (bg.error) throw new Error(bg.error);
       if (bg.failed_at) {
         const stepResult = (bg.results || {})[bg.failed_at] || {};
@@ -164,6 +186,10 @@ async function waitForBackgroundPpSync(onProgress) {
         );
         err.step = bg.failed_at;
         throw err;
+      }
+      if (bg.post_sync_running) {
+        onProgress?.({ index: PP_SYNC_STEPS.length, total: PP_SYNC_STEPS.length, label: "Finishing", step: "post_sync" });
+        await waitForPostSyncComplete(token);
       }
       return bg.results || {};
     }
