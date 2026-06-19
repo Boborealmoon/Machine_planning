@@ -25,6 +25,8 @@ from planning.planner_routes import trial_bp
 from planning.program_tool_list_route import program_tool_list_bp
 from planning.new_orders_route import new_orders_bp
 from planning.sales_orders_route import sales_orders_bp
+from planning.sales_report_route import sales_report_bp
+from planning.job_ratio_route import job_ratio_bp
 from planning.material_inspection_route import material_inspection_bp
 from planning.repeat_orders_route import repeat_orders_bp
 from planning.auk_oee_route import auk_oee_bp
@@ -52,6 +54,8 @@ app.register_blueprint(trial_bp)
 app.register_blueprint(program_tool_list_bp)
 app.register_blueprint(new_orders_bp)
 app.register_blueprint(sales_orders_bp)
+app.register_blueprint(sales_report_bp)
+app.register_blueprint(job_ratio_bp)
 app.register_blueprint(material_inspection_bp)
 app.register_blueprint(repeat_orders_bp)
 app.register_blueprint(auk_oee_bp)
@@ -390,9 +394,19 @@ def _register_machinist_decoy_routes():
 _register_machinist_decoy_routes()
 
 
+@app.get("/delivery")
+def delivery():
+    return render_template("delivery.html", active="delivery")
+
+
 @app.get("/queue-delays")
-def queue_delays():
-    return render_template("queue_delays.html", active="queue_delays")
+def queue_delays_redirect():
+    return redirect("/delivery?view=queue")
+
+
+@app.get("/delivery-schedule")
+def delivery_schedule_redirect():
+    return redirect("/delivery")
 
 
 @app.get("/daily-output")

@@ -1,0 +1,261 @@
+{% extends "base.html" %}
+
+{% block title %}Sales Report{% endblock %}
+
+{% block main_class %}app-main--new-orders app-main--sales-report{% endblock %}
+
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=sales-report-flow-20260619e">{% endblock %}
+
+{% block content %}
+
+<div class="new-orders-page sales-report-page">
+
+  <header class="sales-report-header">
+
+    <div class="sales-report-header-main">
+
+      <h1 class="new-orders-title">Sales Report</h1>
+
+      <p class="sales-report-context" id="sales-report-context">Loading…</p>
+
+    </div>
+
+    <div class="new-orders-header-actions">
+
+      <button type="button" class="btn btn-ghost btn-sm" id="sales-report-export" title="Export month line lists to CSV" hidden>Export CSV</button>
+
+      <button type="button" class="btn btn-ghost btn-sm" id="sales-report-refresh">Refresh</button>
+
+    </div>
+
+  </header>
+
+
+
+  <div class="sales-report-period card">
+
+    <div class="sales-report-period-row">
+
+      <label class="sales-report-year-field">
+
+        <span>Year</span>
+
+        <input id="sales-report-year" type="number" min="2000" max="2100" step="1">
+
+      </label>
+
+      <nav class="sales-report-month-nav" id="sales-report-month-nav" aria-label="Select month">
+
+        <button type="button" class="sales-report-month-chip is-active" data-month="">Overview</button>
+
+        <button type="button" class="sales-report-month-chip" data-month="1">Jan</button>
+
+        <button type="button" class="sales-report-month-chip" data-month="2">Feb</button>
+
+        <button type="button" class="sales-report-month-chip" data-month="3">Mar</button>
+
+        <button type="button" class="sales-report-month-chip" data-month="4">Apr</button>
+
+        <button type="button" class="sales-report-month-chip" data-month="5">May</button>
+
+        <button type="button" class="sales-report-month-chip" data-month="6">Jun</button>
+
+        <button type="button" class="sales-report-month-chip" data-month="7">Jul</button>
+
+        <button type="button" class="sales-report-month-chip" data-month="8">Aug</button>
+
+        <button type="button" class="sales-report-month-chip" data-month="9">Sep</button>
+
+        <button type="button" class="sales-report-month-chip" data-month="10">Oct</button>
+
+        <button type="button" class="sales-report-month-chip" data-month="11">Nov</button>
+
+        <button type="button" class="sales-report-month-chip" data-month="12">Dec</button>
+
+      </nav>
+
+    </div>
+
+    <div class="sales-report-period-row sales-report-period-row--filters">
+
+      <div class="sales-report-segment">
+
+        <span class="sales-report-segment-label">Segment</span>
+
+        <div class="sales-report-pp-controls">
+
+          <div class="sales-report-presets" role="group" aria-label="PP prefix presets">
+
+            <button type="button" class="sales-report-preset-btn is-active" data-pp-preset="aps-nps">APS + NPS</button>
+
+            <button type="button" class="sales-report-preset-btn" data-pp-preset="aps">APS</button>
+
+            <button type="button" class="sales-report-preset-btn" data-pp-preset="nps">NPS</button>
+
+            <button type="button" class="sales-report-preset-btn" data-pp-preset="all">All</button>
+
+          </div>
+
+          <div class="filter-dropdown" id="sales-report-ps-type-dropdown">
+
+            <button class="filter-dropdown-btn" type="button" id="sales-report-ps-type-btn">APS, NPS ▾</button>
+
+            <div class="filter-dropdown-panel" id="sales-report-ps-type-panel" hidden>
+
+              <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
+
+              <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
+
+              <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
+
+              <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
+
+              <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
+
+              <label class="filter-dropdown-item"><input type="checkbox" value="SR" /> [SR]</label>
+
+            </div>
+
+          </div>
+
+        </div>
+
+      </div>
+
+      <label class="sales-report-search-field" id="sales-report-search-wrap" hidden>
+
+        <span class="planner-page-search-wrap">
+
+          <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+
+            <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+
+            <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+
+          </svg>
+
+          <input id="sales-report-search" class="planner-page-search-input" type="search" placeholder="Search lines…" autocomplete="off">
+
+        </span>
+
+      </label>
+
+    </div>
+
+  </div>
+
+
+
+  <input id="sales-report-month" type="month" hidden>
+
+
+
+  <div id="sales-report-loading" class="sales-report-loading sales-report-loading--page" hidden aria-live="polite">
+
+    <div class="sales-report-spinner sales-report-spinner--lg" role="status" aria-label="Loading"></div>
+
+    <span id="sales-report-loading-text">Loading report…</span>
+
+  </div>
+
+
+
+  <div id="sales-report-integrity" class="sales-report-integrity card" hidden></div>
+
+
+
+  <section id="sales-report-overview" class="sales-report-overview card">
+
+    <div id="sales-report-overview-loading" class="sales-report-load-overlay" hidden aria-live="polite">
+
+      <div class="sales-report-spinner sales-report-spinner--lg" role="status" aria-label="Loading"></div>
+
+      <span id="sales-report-overview-loading-text">Loading year overview…</span>
+
+    </div>
+
+    <div class="sales-report-overview-body">
+
+      <div class="sales-report-section-head">
+
+        <div>
+
+          <h2 class="sales-report-section-title">Year overview</h2>
+
+          <p class="sales-report-section-sub" id="sales-report-ytd-sub">Past = shipped · current = overdue + due now · future = open $ by PO due date.</p>
+
+        </div>
+
+      </div>
+
+      <div class="sales-report-ytd-scroll">
+
+        <table class="sales-report-ytd-table" id="sales-report-ytd-table"></table>
+
+      </div>
+
+      <div id="sales-report-ytd-summary" class="sales-report-ytd-summary" hidden></div>
+
+    </div>
+
+  </section>
+
+
+
+  <section id="sales-report-month-panel" class="sales-report-month-panel" hidden>
+
+    <div id="sales-report-month-loading" class="sales-report-load-overlay" hidden aria-live="polite">
+
+      <div class="sales-report-spinner" role="status" aria-label="Loading"></div>
+
+      <span id="sales-report-month-loading-text">Loading month…</span>
+
+    </div>
+
+    <div class="sales-report-month-panel-body">
+
+      <div class="sales-report-section-head sales-report-month-panel-head">
+
+        <div>
+
+          <h2 class="sales-report-section-title" id="sales-report-month-title">Month detail</h2>
+
+          <p class="sales-report-section-sub" id="sales-report-month-sub"></p>
+
+        </div>
+
+        <button type="button" class="btn btn-ghost btn-sm" id="sales-report-back-overview">← Back to overview</button>
+
+      </div>
+
+      <div id="sales-report-summary" class="sales-report-kpi-grid card"></div>
+
+      <div id="sales-report-breakdown" class="sales-report-breakdown card"></div>
+
+      <div id="sales-report-details" class="sales-report-details"></div>
+
+    </div>
+
+  </section>
+
+
+
+  <div id="sales-report-empty" class="new-orders-empty card" hidden>
+
+    <p id="sales-report-empty-text">No rows match your filters.</p>
+
+  </div>
+
+  <p class="new-orders-meta" id="sales-report-meta" hidden></p>
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-report-flow-20260619e"></script>
+
+<script src="{{ url_for('static', filename='js/sales_report.js') }}?v=sales-report-flow-20260619e"></script>
+
+{% endblock %}

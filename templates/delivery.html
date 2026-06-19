@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% block title %}Delivery{% endblock %}
+{% block main_class %}app-main--delivery{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=delivery-ps-type-filter-20260619">{% endblock %}
+{% block content %}
+<div class="delivery-page">
+  <div class="delivery-header">
+    <div>
+      <h1 class="delivery-title">Delivery</h1>
+      <p class="delivery-subtitle" id="delivery-subtitle">Open process sheets (not closed). Edit Coway EDD and remarks inline. Week shows ISO week and weekday from Coway EDD, or PO due when Coway EDD is empty.</p>
+    </div>
+    <div class="delivery-header-actions">
+      <div class="delivery-view-toggle" role="tablist" aria-label="Delivery view">
+        <button type="button" class="delivery-view-btn is-active" id="delivery-view-schedule" data-delivery-view="schedule" role="tab" aria-selected="true">Delivery schedule</button>
+        <button type="button" class="delivery-view-btn" id="delivery-view-queue" data-delivery-view="queue" role="tab" aria-selected="false">Queue delays</button>
+      </div>
+      <a class="btn btn-ghost btn-sm" href="{{ planner_path }}">Open Planner</a>
+      <button type="button" class="btn btn-ghost btn-sm" id="delivery-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div id="delivery-panel-schedule" class="delivery-panel">
+    <div class="delivery-schedule-toolbar card">
+      <div class="delivery-schedule-filter">
+        <span>PP type</span>
+        <div class="filter-dropdown" id="delivery-ps-type-dropdown">
+          <button class="filter-dropdown-btn" type="button" id="delivery-ps-type-btn">APS, NPS, [Temp] ▾</button>
+          <div class="filter-dropdown-panel" id="delivery-ps-type-panel" hidden>
+            <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="SR" /> [SR]</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="TEMP" checked /> [Temp]</label>
+          </div>
+        </div>
+      </div>
+      <label class="delivery-schedule-filter delivery-schedule-filter--grow">
+        <span>Search</span>
+        <span class="planner-page-search-wrap">
+          <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input id="delivery-schedule-search" class="planner-page-search-input" type="search" placeholder="PS, part no., description..." autocomplete="off">
+        </span>
+      </label>
+      <div class="delivery-schedule-stats" id="delivery-schedule-stats"></div>
+    </div>
+
+    <div id="delivery-schedule-loading" class="loading"><div class="spinner"></div> Loading delivery schedule...</div>
+    <div id="delivery-schedule-table-wrap" class="delivery-schedule-table-wrap card" hidden>
+      <table class="delivery-schedule-table">
+        <thead>
+          <tr id="delivery-schedule-head-row">
+            <th class="delivery-schedule-sort-head" data-sort-col="ps">
+              <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="ps">
+                <span class="delivery-schedule-sort-label">PS no.</span>
+                <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
+              </button>
+            </th>
+            <th class="delivery-schedule-sort-head" data-sort-col="part_no">
+              <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="part_no">
+                <span class="delivery-schedule-sort-label">Part no.</span>
+                <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
+              </button>
+            </th>
+            <th class="delivery-schedule-sort-head" data-sort-col="part_desc">
+              <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="part_desc">
+                <span class="delivery-schedule-sort-label">Part description</span>
+                <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
+              </button>
+            </th>
+            <th class="delivery-schedule-sort-head delivery-schedule-num" data-sort-col="so_qty">
+              <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="so_qty">
+                <span class="delivery-schedule-sort-label">SO qty</span>
+                <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
+              </button>
+            </th>
+            <th class="delivery-schedule-sort-head" data-sort-col="due_date">
+              <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="due_date">
+                <span class="delivery-schedule-sort-label">PO due date</span>
+                <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
+              </button>
+            </th>
+            <th class="delivery-schedule-sort-head" data-sort-col="coway_edd">
+              <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="coway_edd">
+                <span class="delivery-schedule-sort-label">Coway EDD</span>
+                <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
+              </button>
+            </th>
+            <th class="delivery-schedule-sort-head" data-sort-col="week">
+              <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="week">
+                <span class="delivery-schedule-sort-label">Week</span>
+                <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
+              </button>
+            </th>
+            <th class="delivery-schedule-sort-head" data-sort-col="remarks">
+              <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="remarks">
+                <span class="delivery-schedule-sort-label">Remarks</span>
+                <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
+              </button>
+            </th>
+          </tr>
+        </thead>
+        <tbody id="delivery-schedule-body"></tbody>
+      </table>
+    </div>
+    <div id="delivery-schedule-empty" class="delivery-schedule-empty card" hidden>
+      <p id="delivery-schedule-empty-text">No open process sheets match your filters.</p>
+    </div>
+  </div>
+
+  <div id="delivery-panel-queue" class="delivery-panel" hidden>
+    <div class="queue-delays-toolbar card">
+      <label class="queue-delays-filter">
+        <span>Show</span>
+        <select id="queue-delays-filter">
+          <option value="all" selected>All queued jobs</option>
+          <option value="at_risk">At risk only</option>
+        </select>
+      </label>
+      <label class="queue-delays-filter">
+        <span>Sort by</span>
+        <select id="queue-delays-sort-by">
+          <option value="days_late" selected>Days past due</option>
+          <option value="ps">PS no.</option>
+          <option value="end">End date</option>
+          <option value="due">Due date</option>
+          <option value="coway">Coway EDD</option>
+        </select>
+      </label>
+      <button type="button" class="btn btn-ghost btn-sm queue-delays-sort-dir" id="queue-delays-sort-dir" title="Toggle sort direction">
+        ↓ Most late
+      </button>
+      <label class="queue-delays-filter queue-delays-filter--grow">
+        <span>Search</span>
+        <span class="planner-page-search-wrap">
+          <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input id="queue-delays-search" class="planner-page-search-input" type="search" placeholder="PS, operation, machine..." autocomplete="off">
+        </span>
+      </label>
+      <div class="queue-delays-stats" id="queue-delays-stats"></div>
+    </div>
+
+    <div class="queue-delays-legend card">
+      <span><span class="queue-delays-flag is-past-coway"></span> End past Coway EDD (when set)</span>
+      <span><span class="queue-delays-flag is-past-due"></span> End past PS due (when no Coway EDD)</span>
+    </div>
+
+    <div id="queue-delays-loading" class="loading"><div class="spinner"></div> Loading queued jobs...</div>
+    <div id="queue-delays-table-wrap" class="queue-delays-table-wrap card" hidden>
+      <table class="queue-delays-table">
+        <thead>
+          <tr>
+            <th>PS</th>
+            <th>Operation</th>
+            <th>Machine</th>
+            <th>Start</th>
+            <th>End</th>
+            <th>Due</th>
+            <th>Coway EDD</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="queue-delays-body"></tbody>
+      </table>
+    </div>
+    <div id="queue-delays-empty" class="queue-delays-empty card" hidden>
+      <p id="queue-delays-empty-text">No queued jobs match your filters.</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=delivery-unified-20260619"></script>
+<script src="{{ url_for('static', filename='js/delivery_schedule.js') }}?v=delivery-ps-default-20260619"></script>
+<script src="{{ url_for('static', filename='js/queue_delays.js') }}?v=delivery-unified-20260619"></script>
+<script src="{{ url_for('static', filename='js/delivery.js') }}?v=delivery-toggle-fix-20260619"></script>
+{% endblock %}

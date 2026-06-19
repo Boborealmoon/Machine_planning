@@ -45,7 +45,7 @@
       </a>
 
       {# Orders & intake (not under /planning-data — avoids master-data highlight) #}
-      <div class="nav-dropdown {% if nav_path in ('/new-orders', '/sales-orders', '/repeat-orders', '/planning-data/repeat-orders') or active in ('new_orders', 'sales_orders', 'repeat_orders') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/new-orders', '/sales-orders', '/sales-report', '/job-ratio', '/repeat-orders', '/planning-data/repeat-orders') or active in ('new_orders', 'sales_orders', 'sales_report', 'job_ratio', 'repeat_orders') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="orders">
           ORDERS <span class="nav-caret">▾</span>
         </button>
@@ -59,6 +59,14 @@
              class="nav-dropdown-item {% if nav_path == '/sales-orders' or active == 'sales_orders' %}nav-dropdown-item--active{% endif %}">
             S/O management
           </a>
+          <a href="/sales-report"
+             class="nav-dropdown-item {% if nav_path == '/sales-report' or active == 'sales_report' %}nav-dropdown-item--active{% endif %}">
+            Sales report
+          </a>
+          <a href="/job-ratio"
+             class="nav-dropdown-item {% if nav_path == '/job-ratio' or active == 'job_ratio' %}nav-dropdown-item--active{% endif %}">
+            Job ratio report
+          </a>
           <a href="/planning-data/repeat-orders"
              class="nav-dropdown-item {% if nav_path in ('/repeat-orders', '/planning-data/repeat-orders') or active == 'repeat_orders' %}nav-dropdown-item--active{% endif %}">
             Repeat orders
@@ -66,8 +74,8 @@
         </div>
       </div>
 
-      {# Shop floor & delays #}
-      <div class="nav-dropdown {% if nav_path in ('/actual-production', '/daily-output', '/finishing-queue', '/material-inspection', '/material-inspection/no-shipment', '/queue-delays', '/auk-oee') or active in ('actual_production', 'daily_output', 'finishing_queue', 'material_inspection', 'material_inspection_no_shipment', 'queue_delays', 'auk_oee') %}nav-dropdown--active{% endif %}">
+      {# Shop floor #}
+      <div class="nav-dropdown {% if nav_path in ('/actual-production', '/daily-output', '/finishing-queue', '/material-inspection', '/material-inspection/no-shipment', '/auk-oee') or active in ('actual_production', 'daily_output', 'finishing_queue', 'material_inspection', 'material_inspection_no_shipment', 'auk_oee') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="production">
           PRODUCTION <span class="nav-caret">▾</span>
         </button>
@@ -79,7 +87,7 @@
           </a>
           <a href="/finishing-queue"
              class="nav-dropdown-item {% if nav_path == '/finishing-queue' or active == 'finishing_queue' %}nav-dropdown-item--active{% endif %}">
-            Finishing queue
+            Post-machining queue
           </a>
           <a href="/actual-production"
              class="nav-dropdown-item {% if nav_path == '/actual-production' or active == 'actual_production' %}nav-dropdown-item--active{% endif %}">
@@ -97,13 +105,14 @@
              class="nav-dropdown-item {% if nav_path == '/auk-oee' or active == 'auk_oee' %}nav-dropdown-item--active{% endif %}">
             Auk OEE dashboard
           </a>
-          <span class="nav-dropdown-section">PLANNING</span>
-          <a href="/queue-delays"
-             class="nav-dropdown-item {% if nav_path == '/queue-delays' or active == 'queue_delays' %}nav-dropdown-item--active{% endif %}">
-            Queue delays
-          </a>
         </div>
       </div>
+
+      {# Delivery #}
+      <a href="/delivery"
+         class="nav-link {% if nav_path in ('/delivery', '/queue-delays', '/delivery-schedule') or active in ('delivery', 'queue_delays', 'delivery_schedule') %}nav-link--active{% endif %}">
+        DELIVERY
+      </a>
 
       {# Reference / master data (/planning-data/* except legacy repeat-orders URL) #}
       <div class="nav-dropdown {% if nav_path in ('/bom-variation',) or nav_path.startswith('/planning-data') and nav_path != '/planning-data/repeat-orders' or active in ('planning_data', 'bom_variation', 'aker_inventory') %}nav-dropdown--active{% endif %}">

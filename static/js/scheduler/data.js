@@ -1658,7 +1658,9 @@ function trialBlockMemberMetrics(block) {
     outputTotal = scheduledQty;
     netOutput = scheduledQty;
   }
-  const remainingQty = Math.max(0, scheduledQty - netOutput);
+  // Remaining follows ERP "WO req − finished/produced", not good qty after rejects.
+  const producedQty = outputTotal > 0 ? outputTotal : netOutput;
+  const remainingQty = Math.max(0, scheduledQty - producedQty);
   const pendingSetupMinutes = trialBlockPendingSetupMinutes(block, outputTotal, rejectTotal);
   const remainingMinutes = pendingSetupMinutes + (remainingQty * Number(block.cycle_minutes_per_qty || 0));
   return {
@@ -1684,7 +1686,7 @@ function trialBlockMemberMetrics(block) {
 function trialCombinedPairMetrics(memberMetrics, targetQty) {
   const rows = Array.isArray(memberMetrics) ? memberMetrics : [];
   const pairedOutput = rows.length
-    ? Math.min(...rows.map(row => Number(row.netOutput || row.outputTotal || 0)))
+    ? Math.min(...rows.map(row => Number(row.outputTotal || row.netOutput || 0)))
     : 0;
   const pairedRemainingQty = Math.max(0, Number(targetQty || 0) - pairedOutput);
   const pendingSetupMinutes = rows.length && Number(rows[0]?.include_setup || 0) === 1
@@ -1725,8 +1727,8 @@ function trialBuildMachineDisplayGroup(rawBlocks, summary = null) {
   const pairedOutput = Number(summary?.paired_output_qty ?? pairedMetrics.pairedOutput ?? 0);
   const enrichedBlocks = blocks.map(member => ({
     ...member,
-    pairedExcessQty: Math.max(0, Number(member.netOutput || 0) - pairedOutput),
-    pairedShortfallQty: Math.max(0, pairedOutput - Number(member.netOutput || 0)),
+    pairedExcessQty: Math.max(0, Number(member.outputTotal || member.netOutput || 0) - pairedOutput),
+    pairedShortfallQty: Math.max(0, pairedOutput - Number(member.outputTotal || member.netOutput || 0)),
   }));
   const starts = blocks.map(b => String(b.calculated_start_datetime || '')).filter(Boolean).sort();
   const ends = blocks.map(b => String(b.calculated_end_datetime || '')).filter(Boolean).sort();

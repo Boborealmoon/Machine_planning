@@ -210,15 +210,6 @@
     `;
   }
 
-  let cowaySaveTimer = null;
-
-  function scheduleCowayEddSave(inputEl) {
-    clearTimeout(cowaySaveTimer);
-    cowaySaveTimer = setTimeout(() => {
-      saveCowayProposedEdd(inputEl.dataset.psId || '', inputEl.value, inputEl);
-    }, 250);
-  }
-
   async function saveCowayProposedEdd(psId, value, inputEl) {
     const canonical = canonicalPlannerPsId(psId);
     if (!canonical) return;
@@ -3237,12 +3228,6 @@
       }
     });
     els.queue?.addEventListener('input', event => {
-      const cowayInput = event.target.closest('[data-action="coway-edd"]');
-      if (cowayInput) {
-        event.stopPropagation();
-        scheduleCowayEddSave(cowayInput);
-        return;
-      }
       const remarksInput = event.target.closest('[data-action="remarks"]');
       if (remarksInput) {
         event.stopPropagation();
@@ -3259,12 +3244,6 @@
       }
     });
     els.queue?.addEventListener('blur', event => {
-      const cowayInput = event.target.closest('[data-action="coway-edd"]');
-      if (cowayInput) {
-        clearTimeout(cowaySaveTimer);
-        saveCowayProposedEdd(cowayInput.dataset.psId || '', cowayInput.value, cowayInput);
-        return;
-      }
       const producedInput = event.target.closest('[data-action="manual-produced"]');
       if (producedInput) {
         saveManualProducedQty(

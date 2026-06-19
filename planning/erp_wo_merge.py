@@ -12,6 +12,7 @@ FINISHING_STAGE_DESCS = frozenset({
     "Final Inspection",
     "Packing",
     "Engraving & Packing",
+    "Packing & Engraving",
 })
 
 _FINISHING_STAGE_PATTERNS = (
@@ -20,6 +21,28 @@ _FINISHING_STAGE_PATTERNS = (
     re.compile(r"^packing$", re.IGNORECASE),
     re.compile(r"engraving.*packing|packing.*engraving", re.IGNORECASE),
 )
+
+
+def finishing_stage_sql_match(column: str) -> str:
+    """SQL predicate: deburr / inspect / pack / combined pack+engrave (either word order)."""
+    return f"""(
+           TRIM(COALESCE({column}, '')) = ANY(%s)
+        OR TRIM(COALESCE({column}, '')) = 'Deburring'
+        OR TRIM(COALESCE({column}, '')) = 'Final Inspection'
+        OR TRIM(COALESCE({column}, '')) = 'Packing'
+        OR {column} ILIKE 'Engraving%%Packing%%'
+        OR {column} ILIKE 'Packing%%Engraving%%'
+    )"""
+
+
+def finishing_pack_stage_sql_match(column: str) -> str:
+    """SQL predicate: packing or combined pack+engrave stage only."""
+    return f"""(
+           TRIM(COALESCE({column}, '')) = 'Packing'
+        OR TRIM(COALESCE({column}, '')) IN ('Engraving & Packing', 'Packing & Engraving')
+        OR {column} ILIKE 'Engraving%%Packing%%'
+        OR {column} ILIKE 'Packing%%Engraving%%'
+    )"""
 
 
 def is_finishing_stage_desc(stage_desc: str) -> bool:

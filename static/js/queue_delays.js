@@ -610,11 +610,6 @@ function queueDelaysBindCowayInputs() {
     if (!input) return;
     queueDelaysSaveCoway(input.dataset.psId || '', input.value, input);
   });
-  body.addEventListener('blur', (event) => {
-    const input = event.target.closest('[data-action="coway-edd"]');
-    if (!input) return;
-    queueDelaysSaveCoway(input.dataset.psId || '', input.value, input);
-  }, true);
 }
 
 function renderQueueDelays() {
@@ -676,6 +671,8 @@ async function loadQueueDelays(options = {}) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  if (!document.getElementById('queue-delays-body')) return;
+
   const sortBySelect = document.getElementById('queue-delays-sort-by');
   if (sortBySelect) {
     sortBySelect.value = queueDelaysState.sortBy;
@@ -700,8 +697,4 @@ document.addEventListener('DOMContentLoaded', () => {
     queueDelaysState.search = String(event.target.value || '');
     renderQueueDelays();
   });
-  document.getElementById('queue-delays-refresh')?.addEventListener('click', () => {
-    loadQueueDelays({ force: true });
-  });
-  loadQueueDelays();
 });

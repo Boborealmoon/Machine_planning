@@ -1,9 +1,12 @@
-// Finishing queue — Deburring / Final Inspection / Packing / Engraving & Packing.
+// Post-machining queue — Deburring / Final Inspection / Packing / Engraving & Packing.
 
 const FQ_PS_TYPE_ORDER = ['MPS', 'APS', 'NPS', 'SR', 'PPS', 'CPS'];
+const FQ_TABLE_COL_COUNT = 12;
 
 const fqState = {
   items: [],
+  recentlyPacked: [],
+  view: 'active',
   stage: 'all',
   status: 'all',
   psTypes: new Set(['APS', 'NPS']),
@@ -11,9 +14,77 @@ const fqState = {
   sortDir: 'asc',
   search: '',
   cachedAt: '',
+  packedCachedAt: '',
   cacheTtlSec: 60,
+  packedCacheTtlSec: 300,
+  weekRanges: null,
   selectedKey: '',
 };
+
+function fqStartOfDay(value) {
+  const d = value instanceof Date ? value : new Date(String(value).includes('T') ? value : String(value).replace(' ', 'T'));
+  if (Number.isNaN(d.getTime())) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/** Mon–Sat working week (matches material inspection). */
+function fqWorkingWeekRange(forDate = new Date(), offsetWeeks = 0) {
+  const anchor = fqStartOfDay(forDate);
+  if (!anchor) return { start: null, end: null };
+  const day = anchor.getDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const start = new Date(anchor);
+  start.setDate(anchor.getDate() + mondayOffset + offsetWeeks * 7);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 5);
+  return { start, end };
+}
+
+function fqFormatWeekRangeLabel(range) {
+  if (!range?.start || !range?.end) return '';
+  const fmt = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return `${fmt(range.start)} – ${fmt(range.end)}`;
+}
+
+function fqPackedDate(item) {
+  const raw = item?.packed_on;
+  if (!raw) return null;
+  const text = String(raw).trim();
+  if (!text) return null;
+  return fqStartOfDay(text.includes('T') ? text : text.replace(' ', 'T'));
+}
+
+function fqPackedWeekBucket(item, thisWeek, lastWeek) {
+  const packed = fqPackedDate(item);
+  if (!packed) return 3;
+  const t = packed.getTime();
+  if (t >= thisWeek.start.getTime() && t <= thisWeek.end.getTime()) return 0;
+  if (t >= lastWeek.start.getTime() && t <= lastWeek.end.getTime()) return 1;
+  return 2;
+}
+
+function fqPackedGroupLabel(bucket, thisWeek, lastWeek) {
+  if (bucket === 0) return `Packed this week (${fqFormatWeekRangeLabel(thisWeek)})`;
+  if (bucket === 1) return `Packed last week (${fqFormatWeekRangeLabel(lastWeek)})`;
+  if (bucket === 2) return 'Packed earlier (within range)';
+  return 'No pack date';
+}
+
+function fqRenderGroupRow(label) {
+  return `
+    <tr class="mi-group-row" aria-hidden="true">
+      <td colspan="${FQ_TABLE_COL_COUNT}">${escapeHtml(label)}</td>
+    </tr>
+  `;
+}
+
+function fqActiveSourceItems() {
+  return fqState.view === 'recently_packed' ? (fqState.recentlyPacked || []) : (fqState.items || []);
+}
+
+function fqIsRecentlyPackedView() {
+  return fqState.view === 'recently_packed';
+}
 
 function fqItemKey(item) {
   return `${String(item?.ps_id || '').trim()}::${String(item?.pp_partial_no ?? '').trim()}`;
@@ -132,12 +203,16 @@ function fqFilteredItems() {
   const term = String(fqState.search || '').trim().toLowerCase();
   const types = fqState.psTypes;
   const allTypes = types.size >= FQ_PS_TYPE_ORDER.length;
+  const source = fqActiveSourceItems();
+  const recentlyPacked = fqIsRecentlyPackedView();
 
-  const filtered = (fqState.items || []).filter((item) => {
-    if (fqState.stage !== 'all' && item.stage_bucket !== fqState.stage) return false;
-    if (fqState.status !== 'all') {
-      const code = String(item.current_stage_status || '').trim().toUpperCase();
-      if (code !== fqState.status) return false;
+  const filtered = (source || []).filter((item) => {
+    if (!recentlyPacked) {
+      if (fqState.stage !== 'all' && item.stage_bucket !== fqState.stage) return false;
+      if (fqState.status !== 'all') {
+        const code = String(item.current_stage_status || '').trim().toUpperCase();
+        if (code !== fqState.status) return false;
+      }
     }
     if (!allTypes) {
       const psType = fqGetPsType(item);
@@ -147,6 +222,20 @@ function fqFilteredItems() {
     if (term && !fqMatchesSearch(item, term)) return false;
     return true;
   });
+
+  if (recentlyPacked) {
+    const thisWeek = fqWorkingWeekRange(new Date(), 0);
+    const lastWeek = fqWorkingWeekRange(new Date(), -1);
+    return filtered.sort((a, b) => {
+      const ba = fqPackedWeekBucket(a, thisWeek, lastWeek);
+      const bb = fqPackedWeekBucket(b, thisWeek, lastWeek);
+      if (ba !== bb) return ba - bb;
+      const ad = fqPackedDate(a)?.getTime() || 0;
+      const bd = fqPackedDate(b)?.getTime() || 0;
+      if (ad !== bd) return bd - ad;
+      return fqCompareValues(fqSortValue(a, 'ps_id'), fqSortValue(b, 'ps_id'), 'asc');
+    });
+  }
 
   if (!fqState.sortCol) return filtered;
 
@@ -190,6 +279,7 @@ function fqRenderDetail(item) {
     fqDetailField('Stage', item.current_stage_desc),
     fqDetailField('Stage no.', item.current_stage_no),
     fqDetailField('Status', fqExecutionLabel(item.current_stage_status)),
+    fqDetailField('Packed on', fqFormatDate(item.packed_on)),
     fqDetailField('Stage required', fqFormatQty(item.stage_qty_required)),
     fqDetailField('Stage produced', fqFormatQty(item.stage_qty_produced)),
     fqDetailField('Stage rejected', fqFormatQty(item.stage_qty_rejected)),
@@ -249,14 +339,72 @@ function fqUpdateCounts(payload) {
     el.hidden = count <= 0;
   };
   const total = Number(payload?.count) || 0;
+  setCount('fq-count-active', total);
   setCount('fq-count-all', total);
   setCount('fq-count-deburring', stageCounts.deburring);
   setCount('fq-count-final_inspection', stageCounts.final_inspection);
   setCount('fq-count-packing', stageCounts.packing);
   setCount('fq-count-engraving_packing', stageCounts.engraving_packing);
+  setCount('fq-count-recently-packed', payload?.recently_packed_count);
+}
+
+function fqFindItemByKey(key) {
+  const active = fqState.items.find((rowItem) => fqItemKey(rowItem) === key);
+  if (active) return active;
+  return fqState.recentlyPacked.find((rowItem) => fqItemKey(rowItem) === key);
+}
+
+function fqRenderDataRow(item) {
+  const key = fqItemKey(item);
+  const selected = key === fqState.selectedKey ? ' is-selected' : '';
+  const partial = Number(item.pp_partial_no) > 1 ? item.pp_partial_no : '—';
+  const progressCell = fqIsRecentlyPackedView()
+    ? fqFormatDate(item.packed_on)
+    : fqStageProgress(item);
+  return `
+    <tr class="new-orders-row fq-row${selected}" data-key="${escapeHtml(key)}" tabindex="0" role="button">
+      <td class="new-orders-mono">${escapeHtml(item.ps_id || '—')}</td>
+      <td>${escapeHtml(String(partial))}</td>
+      <td>${escapeHtml(item.current_stage_desc || '—')}</td>
+      <td>${fqStatusPill(item.current_stage_status)}</td>
+      <td class="new-orders-mono">${escapeHtml(item.part_no || '—')}</td>
+      <td>${escapeHtml(item.part_desc || '—')}</td>
+      <td class="new-orders-mono">${escapeHtml(item.bom_code || '—')}</td>
+      <td>${escapeHtml(fqFormatQty(item.qty))}</td>
+      <td>${escapeHtml(progressCell)}</td>
+      <td class="new-orders-mono">${escapeHtml(item.sales_order_no || '—')}</td>
+      <td>${escapeHtml(fqFormatDate(item.due_date))}</td>
+      <td>${escapeHtml(item.pp_status || '—')}</td>
+    </tr>
+  `;
+}
+
+function fqRenderRecentlyPackedBody(filtered) {
+  const thisWeek = fqWorkingWeekRange(new Date(), 0);
+  const lastWeek = fqWorkingWeekRange(new Date(), -1);
+  const parts = [];
+  let lastBucket = null;
+  for (const item of filtered) {
+    const bucket = fqPackedWeekBucket(item, thisWeek, lastWeek);
+    if (bucket !== lastBucket) {
+      parts.push(fqRenderGroupRow(fqPackedGroupLabel(bucket, thisWeek, lastWeek)));
+      lastBucket = bucket;
+    }
+    parts.push(fqRenderDataRow(item));
+  }
+  return parts.join('');
+}
+
+function fqUpdateViewChrome() {
+  const recentlyPacked = fqIsRecentlyPackedView();
+  document.getElementById('fq-stage-filter-wrap')?.classList.toggle('is-hidden', recentlyPacked);
+  document.getElementById('fq-status-filter-wrap')?.classList.toggle('is-hidden', recentlyPacked);
+  const progressCol = document.getElementById('fq-col-progress');
+  if (progressCol) progressCol.textContent = recentlyPacked ? 'Packed on' : 'Stage progress';
 }
 
 function fqRenderTable() {
+  fqUpdateViewChrome();
   const filtered = fqFilteredItems();
   const tbody = document.getElementById('fq-table-body');
   const wrap = document.getElementById('fq-table-wrap');
@@ -264,62 +412,66 @@ function fqRenderTable() {
   const emptyText = document.getElementById('fq-empty-text');
   const stats = document.getElementById('fq-stats');
   const meta = document.getElementById('fq-meta');
+  const recentlyPacked = fqIsRecentlyPackedView();
+  const hasActive = (fqState.items || []).length > 0;
+  const hasPacked = (fqState.recentlyPacked || []).length > 0;
+  const hasCurrentViewData = recentlyPacked ? hasPacked : hasActive;
 
   if (!tbody || !wrap || !empty) return;
 
-  if (!fqState.items.length) {
+  if (!hasActive && !hasPacked) {
     wrap.hidden = true;
     empty.hidden = false;
-    if (emptyText) emptyText.textContent = 'No partials are currently at a finishing stage.';
+    if (emptyText) emptyText.textContent = 'No partials are currently at a post-machining stage.';
     if (stats) stats.textContent = '';
     if (meta) meta.hidden = true;
     return;
   }
 
-  if (!filtered.length) {
+  if (!hasCurrentViewData || !filtered.length) {
     wrap.hidden = true;
     empty.hidden = false;
-    if (emptyText) emptyText.textContent = 'No rows match your filters.';
+    if (emptyText) {
+      emptyText.textContent = !hasCurrentViewData
+        ? (recentlyPacked ? 'No packing completions this week or last week.' : 'No partials are currently at a post-machining stage.')
+        : 'No rows match your filters.';
+    }
   } else {
     wrap.hidden = false;
     empty.hidden = true;
-    tbody.innerHTML = filtered.map((item) => {
-      const key = fqItemKey(item);
-      const selected = key === fqState.selectedKey ? ' is-selected' : '';
-      const partial = Number(item.pp_partial_no) > 1 ? item.pp_partial_no : '—';
-      return `
-        <tr class="new-orders-row fq-row${selected}" data-key="${escapeHtml(key)}" tabindex="0" role="button">
-          <td class="new-orders-mono">${escapeHtml(item.ps_id || '—')}</td>
-          <td>${escapeHtml(String(partial))}</td>
-          <td>${escapeHtml(item.current_stage_desc || '—')}</td>
-          <td>${fqStatusPill(item.current_stage_status)}</td>
-          <td class="new-orders-mono">${escapeHtml(item.part_no || '—')}</td>
-          <td>${escapeHtml(item.part_desc || '—')}</td>
-          <td class="new-orders-mono">${escapeHtml(item.bom_code || '—')}</td>
-          <td>${escapeHtml(fqFormatQty(item.qty))}</td>
-          <td>${escapeHtml(fqStageProgress(item))}</td>
-          <td class="new-orders-mono">${escapeHtml(item.sales_order_no || '—')}</td>
-          <td>${escapeHtml(fqFormatDate(item.due_date))}</td>
-          <td>${escapeHtml(item.pp_status || '—')}</td>
-        </tr>
-      `;
-    }).join('');
+    tbody.innerHTML = recentlyPacked
+      ? fqRenderRecentlyPackedBody(filtered)
+      : filtered.map((item) => fqRenderDataRow(item)).join('');
   }
 
   if (stats) {
-    const statusCounts = { I: 0, R: 0, P: 0 };
-    for (const item of filtered) {
-      const code = String(item.current_stage_status || '').trim().toUpperCase();
-      if (code in statusCounts) statusCounts[code] += 1;
+    if (recentlyPacked) {
+      const thisWeek = fqWorkingWeekRange(new Date(), 0);
+      const lastWeek = fqWorkingWeekRange(new Date(), -1);
+      let thisCount = 0;
+      let lastCount = 0;
+      for (const item of filtered) {
+        const bucket = fqPackedWeekBucket(item, thisWeek, lastWeek);
+        if (bucket === 0) thisCount += 1;
+        else if (bucket === 1) lastCount += 1;
+      }
+      stats.textContent = `${filtered.length} shown · ${thisCount} this week · ${lastCount} last week`;
+    } else {
+      const statusCounts = { I: 0, R: 0, P: 0 };
+      for (const item of filtered) {
+        const code = String(item.current_stage_status || '').trim().toUpperCase();
+        if (code in statusCounts) statusCounts[code] += 1;
+      }
+      stats.textContent = `${filtered.length} shown · ${statusCounts.I} in process · ${statusCounts.R} ready`;
     }
-    stats.textContent = `${filtered.length} shown · ${statusCounts.I} in process · ${statusCounts.R} ready`;
   }
 
   if (meta) {
     meta.hidden = !fqState.cachedAt;
-    meta.textContent = fqState.cachedAt
-      ? `Cached ${fqState.cachedAt} · TTL ${fqState.cacheTtlSec}s`
-      : '';
+    const packedHint = recentlyPacked
+      ? `Grouped by pack week · ERP actual_end_date · cached ${fqState.packedCachedAt || fqState.cachedAt || '—'} · TTL ${fqState.packedCacheTtlSec || 300}s`
+      : `Cached ${fqState.cachedAt || '—'} · TTL ${fqState.cacheTtlSec}s`;
+    meta.textContent = fqState.cachedAt ? packedHint : '';
   }
 
   fqUpdateSortHeaders();
@@ -334,8 +486,12 @@ async function fqLoad({ refresh = false } = {}) {
     const payload = await res.json();
     if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
     fqState.items = payload.items || [];
+    fqState.recentlyPacked = payload.recently_packed || [];
     fqState.cachedAt = payload.cached_at || '';
+    fqState.packedCachedAt = payload.packed_cached_at || payload.cached_at || '';
     fqState.cacheTtlSec = payload.cache_ttl_sec || 60;
+    fqState.packedCacheTtlSec = payload.packed_cache_ttl_sec || 300;
+    fqState.weekRanges = payload.week_ranges || null;
     fqUpdateCounts(payload);
     fqRenderTable();
   } catch (err) {
@@ -348,6 +504,17 @@ async function fqLoad({ refresh = false } = {}) {
   } finally {
     if (loading) loading.hidden = true;
   }
+}
+
+function fqSetView(view) {
+  fqState.view = view;
+  document.querySelectorAll('[data-fq-view]').forEach((btn) => {
+    const active = btn.dataset.fqView === view;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  fqCloseDetail();
+  fqRenderTable();
 }
 
 function fqSetStage(stage) {
@@ -433,11 +600,15 @@ function fqBindEvents() {
     fqRenderTable();
   });
 
+  document.querySelectorAll('[data-fq-view]').forEach((btn) => {
+    btn.addEventListener('click', () => fqSetView(btn.dataset.fqView || 'active'));
+  });
+
   document.getElementById('fq-table-body')?.addEventListener('click', (e) => {
     const row = e.target.closest('.fq-row');
     if (!row) return;
     const key = row.dataset.key || '';
-    const item = fqState.items.find((rowItem) => fqItemKey(rowItem) === key);
+    const item = fqFindItemByKey(key);
     if (item) fqOpenDetail(item);
   });
 
@@ -447,7 +618,7 @@ function fqBindEvents() {
     if (!row) return;
     e.preventDefault();
     const key = row.dataset.key || '';
-    const item = fqState.items.find((rowItem) => fqItemKey(rowItem) === key);
+    const item = fqFindItemByKey(key);
     if (item) fqOpenDetail(item);
   });
 

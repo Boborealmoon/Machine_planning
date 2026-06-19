@@ -1,18 +1,18 @@
 {% extends "base.html" %}
-{% block title %}Finishing Queue{% endblock %}
+{% block title %}Post-Machining Queue{% endblock %}
 {% block main_class %}app-main--finishing-queue{% endblock %}
 {% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=finishing-queue-20260612">{% endblock %}
 {% block content %}
 <div class="fq-page new-orders-page">
   <div class="new-orders-header">
     <div>
-      <h1 class="new-orders-title">Finishing Queue</h1>
+      <h1 class="new-orders-title">Post-Machining Queue</h1>
       <p class="new-orders-subtitle">
-        Process sheet partials whose active ERP stage is
-        <strong>Deburring</strong>, <strong>Final Inspection</strong>, <strong>Packing</strong>,
-        or <strong>Engraving &amp; Packing</strong>
+        Process sheet partials at <strong>Deburring</strong>, <strong>Final Inspection</strong>,
+        <strong>Packing</strong>, <strong>Engraving &amp; Packing</strong>, or <strong>Packing &amp; Engraving</strong>
         (from <code>mfg_wo_status</code> / <code>pp_vouchers_cache</code>).
-        Excludes completed stages and fully shipped lines.
+        Toggle <strong>Recently packed</strong> to see packing completions this week and last week
+        (from ERP <code>actual_end_date</code>).
       </p>
     </div>
     <div class="new-orders-header-actions">
@@ -22,6 +22,17 @@
 
   <div class="new-orders-toolbar card">
     <div class="new-orders-filter new-orders-filter--view">
+      <span>View</span>
+      <div class="mi-view-toggle" role="tablist" aria-label="Queue view">
+        <button type="button" class="mi-view-btn is-active" data-fq-view="active" role="tab" aria-selected="true">
+          Active queue <span class="ps-view-tab-count" id="fq-count-active" hidden>0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-fq-view="recently_packed" role="tab" aria-selected="false">
+          Recently packed <span class="ps-view-tab-count" id="fq-count-recently-packed" hidden>0</span>
+        </button>
+      </div>
+    </div>
+    <div class="new-orders-filter new-orders-filter--view" id="fq-stage-filter-wrap">
       <span>Stage</span>
       <div class="mi-view-toggle" role="tablist" aria-label="Finishing stage">
         <button type="button" class="mi-view-btn is-active" data-fq-stage="all" role="tab" aria-selected="true">
@@ -37,11 +48,11 @@
           Packing <span class="ps-view-tab-count" id="fq-count-packing" hidden>0</span>
         </button>
         <button type="button" class="mi-view-btn" data-fq-stage="engraving_packing" role="tab" aria-selected="false">
-          Engraving &amp; Packing <span class="ps-view-tab-count" id="fq-count-engraving_packing" hidden>0</span>
+          Pack &amp; Engrave <span class="ps-view-tab-count" id="fq-count-engraving_packing" hidden>0</span>
         </button>
       </div>
     </div>
-    <div class="new-orders-filter new-orders-filter--view">
+    <div class="new-orders-filter new-orders-filter--view" id="fq-status-filter-wrap">
       <span>Status</span>
       <div class="mi-view-toggle" role="tablist" aria-label="Stage status">
         <button type="button" class="mi-view-btn is-active" data-fq-status="all" role="tab" aria-selected="true">All</button>
@@ -80,7 +91,7 @@
     <div class="new-orders-stats" id="fq-stats"></div>
   </div>
 
-  <div id="fq-loading" class="loading"><div class="spinner"></div> Loading finishing queue...</div>
+  <div id="fq-loading" class="loading"><div class="spinner"></div> Loading post-machining queue...</div>
   <div id="fq-table-wrap" class="new-orders-table-wrap card" hidden>
     <table class="new-orders-table fq-table">
       <thead>
@@ -100,7 +111,7 @@
           <th>Description</th>
           <th>BOM</th>
           <th>Qty</th>
-          <th>Stage progress</th>
+          <th id="fq-col-progress">Stage progress</th>
           <th>Sales order</th>
           <th class="so-col-head" data-fq-sort-col="due_date">
             <div class="so-col-head-inner">
@@ -127,7 +138,7 @@
   <aside class="new-orders-detail-panel" role="dialog" aria-modal="true" aria-labelledby="fq-detail-title">
     <div class="new-orders-detail-head">
       <div>
-        <p class="new-orders-detail-kicker">Finishing detail</p>
+        <p class="new-orders-detail-kicker">Post-machining detail</p>
         <h2 class="new-orders-detail-title" id="fq-detail-title"></h2>
       </div>
       <button type="button" class="btn btn-ghost btn-sm" id="fq-detail-close" aria-label="Close">Close</button>
@@ -139,5 +150,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=finishing-queue-20260611"></script>
-<script src="{{ url_for('static', filename='js/finishing_queue.js') }}?v=finishing-queue-20260615b"></script>
+<script src="{{ url_for('static', filename='js/finishing_queue.js') }}?v=finishing-queue-20260619"></script>
 {% endblock %}

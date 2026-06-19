@@ -1943,7 +1943,7 @@ function trialRenderRunBlockDetailBody(group, block, machine) {
             ${vm.memberMetrics.map(member => `
               <div class="trial-block-member-line">
                 <span>${escapeHtml(member.source_op_no || member.operation_name || '')}</span>
-                <span>${fmt(member.netOutput || member.outputTotal || 0, 0)} / ${fmt(member.scheduled_qty || 0, 0)} done</span>
+                <span>${fmt(member.outputTotal || member.netOutput || 0, 0)} / ${fmt(member.scheduled_qty || 0, 0)} done</span>
               </div>
             `).join('')}
           </div>
@@ -2272,7 +2272,7 @@ function trialBlockGroupViewModel(group, options = {}) {
       0
     ),
     targetQty: fmt(group.target_qty || 0, 0),
-    pairedOutput: fmt(Number(group.paired_output_qty ?? trialBlockNetOutput(group.output_qty, group.reject_qty) ?? 0), 0),
+    pairedOutput: fmt(Number(group.paired_output_qty ?? group.output_qty ?? 0), 0),
     cycleMinutesPerQty: fmt(cycleMinutesPerQty, cycleMinutesPerQty % 1 === 0 ? 0 : 2),
     queuedText: trialFormatDt(queuedAt),
     anchorText,
@@ -3116,7 +3116,7 @@ function renderTrial(options = {}) {
             <a href="/finishing-queue"
               class="btn btn-ghost btn-sm trial-finishing-queue-link"
               title="Open finishing schedule queue (Deburring, Final Inspection, Packing)">
-              Finishing queue
+              Post-machining queue
             </a>
             ${String(window.trialMachinistBoardUrl || '').trim() ? `
             <a href="${String(window.trialMachinistBoardUrl).trim()}" target="_blank" rel="noopener noreferrer"

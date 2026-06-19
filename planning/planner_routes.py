@@ -67,6 +67,7 @@ from .process_sheets import (
     due_date_map_for_planner_ps_ids,
     ensure_planner_process_sheet,
     format_planner_ps_id,
+    list_process_sheets_payload,
     material_in_map_for_planner_ps_ids,
     parse_planner_ps_id,
 )
@@ -1329,6 +1330,71 @@ def _build_queue_delay_jobs(raw_rows):
         )
     )
     return jobs
+
+
+def _delivery_schedule_so_qty(item):
+    so_qty = item.get("so_det_qty")
+    if so_qty is not None and float(so_qty or 0) > 0:
+        return float(so_qty)
+    for key in ("partial_qty", "display_qty", "wo_req_qty", "total_qty"):
+        value = item.get(key)
+        if value is not None and float(value or 0) > 0:
+            return float(value)
+    return None
+
+
+def _delivery_schedule_row_from_board(item):
+    ps_id = compact_text(item.get("ps_id"))
+    source = compact_text(item.get("source_ps_id") or item.get("display_ps_id") or ps_id)
+    ps_base = source.split("::")[0] if source else ps_id.split("::")[0]
+    try:
+        partial_no = int(item.get("pp_partial_no") or 1)
+    except (TypeError, ValueError):
+        partial_no = 1
+    if not item.get("pp_partial_no") and "::" in ps_id:
+        try:
+            partial_no = int(ps_id.rsplit("::", 1)[1])
+        except ValueError:
+            pass
+    return {
+        "planner_ps_id": ps_id,
+        "ps_id": ps_base,
+        "partial_no": partial_no,
+        "ps_display": compact_text(item.get("display_ps_id") or ps_id),
+        "part_no": compact_text(item.get("part_no") or item.get("part_name") or item.get("inventory_code")),
+        "part_desc": compact_text(item.get("part_desc")),
+        "so_qty": _delivery_schedule_so_qty(item),
+        "due_date": compact_text(item.get("due_date")),
+        "coway_edd": compact_text(item.get("coway_proposed_edd")),
+        "remarks": compact_text(item.get("remarks")),
+    }
+
+
+def _build_delivery_schedule_rows(board_items):
+    rows_out = [_delivery_schedule_row_from_board(item) for item in board_items]
+    rows_out.sort(
+        key=lambda item: (
+            item.get("coway_edd") or item.get("due_date") or "9999-12-31",
+            item.get("due_date") or "9999-12-31",
+            item.get("ps_display") or "",
+        )
+    )
+    return rows_out
+
+
+@trial_bp.get("/api/trial/delivery-schedule")
+def api_trial_delivery_schedule():
+    with planner_db() as con:
+        board_items = list_process_sheets_payload(con)
+        items = _build_delivery_schedule_rows(board_items)
+        return jsonify(
+            {
+                "items": items,
+                "summary": {
+                    "total": len(items),
+                },
+            }
+        )
 
 
 @trial_bp.get("/api/trial/queue-delays")

@@ -27,32 +27,29 @@ body.machinist-board .app-main--machinist {
 
 .machinist-board-head {
   flex: 0 0 auto;
-  padding: 4px 10px 3px;
-  border-bottom: 1px solid rgba(26, 28, 29, 0.06);
+  padding: 2px 8px 1px;
+  border-bottom: 1px solid rgba(26, 28, 29, 0.05);
   background: rgba(255, 255, 255, 0.96);
 }
 
 .machinist-board-head-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 6px 10px;
+  gap: 4px 8px;
 }
 
 .machinist-board-title {
   margin: 0;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: -0.02em;
   color: var(--text);
-  line-height: 1.2;
+  line-height: 1.15;
 }
 
 .machinist-board-note {
-  margin: 0;
-  font-size: 10px;
-  color: var(--text3);
-  line-height: 1.2;
+  display: none;
 }
 
 .machinist-lang-toggle {
@@ -67,14 +64,14 @@ body.machinist-board .app-main--machinist {
 }
 
 .machinist-lang-btn {
-  min-width: 38px;
-  min-height: 28px;
-  padding: 4px 10px;
+  min-width: 32px;
+  min-height: 22px;
+  padding: 2px 8px;
   border: none;
   background: transparent;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
-  line-height: 1.2;
+  line-height: 1.15;
   color: var(--text3);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
@@ -97,13 +94,13 @@ body.machinist-board .app-main--machinist {
 .machinist-focus-toggle,
 .machinist-stock-colors-toggle {
   margin-left: 0;
-  padding: 2px 8px;
+  padding: 1px 7px;
   border-radius: 999px;
   border: 1px solid rgba(26, 28, 29, 0.1);
   background: rgba(255, 255, 255, 0.92);
   font-size: 9px;
   font-weight: 700;
-  line-height: 1.3;
+  line-height: 1.25;
   color: var(--text3);
   cursor: pointer;
   white-space: nowrap;
@@ -187,8 +184,12 @@ body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
 
 .trial-main--machinist #trial-machine-filter-shell {
   flex: 0 0 auto;
-  padding: 4px 8px 2px;
-  border-bottom: 1px solid rgba(26, 28, 29, 0.06);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 8px;
+  padding: 2px 8px 1px;
+  border-bottom: 1px solid rgba(26, 28, 29, 0.05);
   background: rgba(255, 255, 255, 0.96);
   overflow: visible;
   position: relative;
@@ -199,14 +200,16 @@ body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  margin-bottom: 4px;
+  gap: 5px;
+  flex: 1 1 180px;
+  min-width: 140px;
+  max-width: 280px;
+  margin-bottom: 0;
 }
 
 .machinist-job-search-label {
   flex: 0 0 auto;
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 700;
   color: var(--text3);
   white-space: nowrap;
@@ -215,13 +218,13 @@ body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
 .machinist-job-search-input {
   flex: 1 1 auto;
   min-width: 0;
-  max-width: 320px;
-  height: 26px;
-  padding: 0 10px;
+  max-width: none;
+  height: 22px;
+  padding: 0 8px;
   border: 1px solid rgba(26, 28, 29, 0.12);
-  border-radius: 6px;
+  border-radius: 5px;
   background: #fff;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   color: var(--text);
 }
@@ -325,6 +328,10 @@ body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
   color: #b45309;
 }
 
+.machinist-job-search-warning {
+  display: none;
+}
+
 .trial-job-search-hit {
   animation: trial-job-search-pulse 1.2s ease-in-out 2;
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.55);
@@ -338,8 +345,10 @@ body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
 .machinist-board-filters {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 6px 10px;
+  align-items: center;
+  gap: 3px 6px;
+  flex: 1 1 auto;
+  min-width: 0;
   max-width: 100%;
 }
 
@@ -347,19 +356,29 @@ body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
   flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px 5px;
+}
+
+.machinist-board-filters .trial-filter-label {
+  font-size: 8px;
+  margin: 0;
+  line-height: 1.2;
 }
 
 .machinist-board-filters .trial-machine-filter {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 3px;
   max-width: 100%;
 }
 
 .machinist-board-filters .trial-machine-filter-btn {
-  padding: 2px 7px;
-  font-size: 9px;
-  line-height: 1.3;
+  padding: 1px 6px;
+  font-size: 8px;
+  line-height: 1.25;
 }
 
 .machinist-board-filters .trial-filter-section-machines {
@@ -368,10 +387,10 @@ body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
 }
 
 .machinist-board-filters .trial-board-machine-filter-dropdown .filter-dropdown-btn {
-  height: 24px;
+  height: 20px;
   max-width: 100%;
-  padding: 0 8px;
-  font-size: 9px;
+  padding: 0 6px;
+  font-size: 8px;
   font-weight: 700;
 }
 
@@ -388,6 +407,46 @@ body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+}
+
+body.machinist-board .trial-main--machinist .trial-grid-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+body.machinist-board .trial-main--machinist .trial-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  align-items: stretch;
+}
+
+body.machinist-board .trial-machine-board-group,
+body.machinist-board .trial-machine-board-subgroup {
+  height: 100%;
+  min-height: 0;
+  align-self: stretch;
+}
+
+body.machinist-board .trial-machine-board-group-lanes,
+body.machinist-board .trial-machine-board-subgroup-lanes {
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: stretch;
+}
+
+body.machinist-board .trial-machine {
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+}
+
+body.machinist-board .trial-lane {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
 }
 
 /* Discreet horizontal scroll strip */
@@ -764,21 +823,6 @@ body.machinist-board.machinist-board--focus .trial-machine-focus-hint {
   white-space: nowrap;
 }
 
-.machinist-job-search-warning {
-  flex: 0 0 auto;
-  margin-left: auto;
-  padding: 3px 10px;
-  border-radius: 5px;
-  border: 1px solid rgba(220, 38, 38, 0.4);
-  background: rgba(254, 226, 226, 0.7);
-  color: #b42318;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
 .machinist-focus-machine-groups {
   display: flex;
   flex-direction: row;
@@ -823,7 +867,9 @@ body.machinist-board.machinist-board--focus .trial-machine-focus-hint {
 .machinist-focus-picker {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
   width: 100%;
 }
 
@@ -831,26 +877,26 @@ body.machinist-board.machinist-board--focus .trial-machine-focus-hint {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
 }
 
 .machinist-focus-picker-count {
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   color: var(--text3);
   white-space: nowrap;
 }
 
 .machinist-focus-picker--empty {
-  padding: 4px 2px;
-  font-size: 11px;
+  padding: 2px;
+  font-size: 9px;
   font-weight: 600;
   color: var(--text3);
 }
 
 .machinist-focus-picker-prompt {
   margin: 0;
-  font-size: 11px;
+  font-size: 9px;
   font-weight: 600;
   color: var(--text3);
 }
@@ -862,12 +908,12 @@ body.machinist-board.machinist-board--focus .trial-machine-focus-hint {
 }
 
 .machinist-focus-machine-chip {
-  min-height: 28px;
-  padding: 4px 10px;
-  border-radius: 6px;
+  min-height: 22px;
+  padding: 2px 8px;
+  border-radius: 5px;
   border: 1px solid rgba(26, 28, 29, 0.12);
   background: #fff;
-  font-size: 11px;
+  font-size: 9px;
   font-weight: 700;
   color: var(--text);
   cursor: pointer;
@@ -1113,85 +1159,47 @@ body.machinist-board.machinist-board--focus .trial-empty {
 
 /* Tablets (iPad landscape, Lenovo ~1280px), touch kiosks, and phones */
 @media (max-width: 1280px), ((hover: none) and (pointer: coarse)) {
+  /* Lock viewport so lanes fill remaining height (same idea as desktop / focus view) */
   body.machinist-board {
-    overflow-x: hidden;
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    touch-action: pan-y pinch-zoom;
+    overflow: hidden;
+    touch-action: manipulation;
   }
 
   body.machinist-board .app-main--machinist {
-    height: auto;
+    height: 100dvh;
     min-height: 100dvh;
-    overflow: visible;
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    overflow: hidden;
+    padding-bottom: 0;
   }
 
   .trial-shell--machinist {
-    height: auto;
-    min-height: 100dvh;
-    overflow: visible;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .trial-layout--machinist,
   .trial-main--machinist {
-    overflow: visible;
-    height: auto;
+    overflow: hidden;
+    height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
   .machinist-board-head {
-    position: sticky;
-    top: 0;
+    position: relative;
+    top: auto;
     z-index: 20;
-    padding: max(6px, env(safe-area-inset-top, 0px)) 8px 4px;
+    padding: max(2px, env(safe-area-inset-top, 0px)) 8px 1px;
   }
 
-  .trial-main--machinist #trial-machine-filter-shell {
-    position: sticky;
-    top: calc(2rem + env(safe-area-inset-top, 0px));
-    z-index: 21;
-    padding: 6px 8px 4px;
-  }
-
-  .machinist-board-filters {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-  }
-
-  .machinist-board-filters .trial-filter-section-type {
-    width: 100%;
-  }
-
-  .machinist-board-filters .trial-filter-label {
-    display: block;
-    margin-bottom: 4px;
-  }
-
-  .machinist-board-filters .trial-filter-section-machines {
-    width: 100%;
-    margin-left: 0;
-  }
-
-  .machinist-board-filters .trial-board-machine-filter-dropdown {
-    width: 100%;
-  }
-
-  .machinist-board-filters .trial-board-machine-filter-dropdown .filter-dropdown-btn {
-    width: 100%;
-    min-height: 36px;
-    height: auto;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 12px;
-    font-size: 11px;
-    border-radius: 10px;
-    max-width: none;
+  .machinist-board-title {
+    display: none;
   }
 
   .machinist-board-head-row {
-    gap: 4px 8px;
+    gap: 3px 6px;
+    align-items: center;
   }
 
   .machinist-lang-toggle {
@@ -1200,17 +1208,117 @@ body.machinist-board.machinist-board--focus .trial-empty {
   }
 
   .machinist-lang-btn {
-    min-width: 42px;
-    min-height: 32px;
-    font-size: 12px;
+    min-width: 34px;
+    min-height: 26px;
+    padding: 3px 8px;
+    font-size: 11px;
   }
 
   .machinist-focus-toggle,
   .machinist-stock-colors-toggle {
     margin-left: 0;
+    min-height: 24px;
+    padding: 2px 8px;
+    font-size: 9px;
+  }
+
+  body.machinist-board.machinist-board--stock-colors .machinist-board-legend {
+    width: auto;
+    flex: 0 0 auto;
+    gap: 4px 8px;
+    font-size: 8px;
+  }
+
+  .trial-main--machinist #trial-machine-filter-shell {
+    position: relative;
+    top: auto;
+    z-index: 21;
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px 6px;
+    padding: 2px 8px 1px;
+  }
+
+  .machinist-job-search {
+    flex: 1 1 100%;
+    min-width: 0;
+    max-width: none;
+    gap: 6px;
+  }
+
+  .machinist-job-search-label {
+    font-size: 9px;
+  }
+
+  .machinist-job-search-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+    height: 28px;
     min-height: 28px;
-    padding: 4px 10px;
+    padding: 0 10px;
+    font-size: 11px;
+    border-radius: 6px;
+  }
+
+  .machinist-board-filters {
+    flex: 1 1 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px 6px;
+  }
+
+  .machinist-board-filters .trial-filter-section-type {
+    width: auto;
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 3px 5px;
+  }
+
+  .machinist-board-filters .trial-filter-label {
+    display: inline;
+    margin: 0;
+    font-size: 8px;
+  }
+
+  .machinist-board-filters .trial-filter-section-machines {
+    width: auto;
+    flex: 0 0 auto;
+    margin-left: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .machinist-board-filters .trial-board-machine-filter-dropdown {
+    width: auto;
+    min-width: 0;
+  }
+
+  .machinist-board-filters .trial-board-machine-filter-dropdown .filter-dropdown-btn {
+    width: auto;
+    min-width: 7rem;
+    max-width: 12rem;
+    min-height: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 8px;
     font-size: 10px;
+    border-radius: 6px;
+  }
+
+  .machinist-board-filters .trial-machine-filter-btn {
+    min-height: 26px;
+    padding: 3px 8px;
+    font-size: 9px;
   }
 
   body.machinist-board.machinist-board--focus .trial-machine--focus-lane {
@@ -1221,114 +1329,88 @@ body.machinist-board.machinist-board--focus .trial-empty {
   }
 
   body.machinist-board.machinist-board--focus .machinist-focus-picker {
-    gap: 4px;
+    flex: 1 1 100%;
+    gap: 3px;
+  }
+
+  body.machinist-board.machinist-board--focus .machinist-focus-picker-meta {
+    display: none;
   }
 
   body.machinist-board.machinist-board--focus .machinist-focus-picker-prompt {
-    font-size: 12px;
-  }
-
-  .machinist-focus-machine-chip {
-    min-height: 36px;
-    padding: 6px 12px;
-    font-size: 12px;
-  }
-
-  .machinist-focus-machine-group-label {
     font-size: 9px;
   }
 
-  .machinist-job-search-input {
-    max-width: none;
-    min-height: 36px;
-    font-size: 12px;
-  }
-
-  .machinist-job-search-label {
+  .machinist-focus-machine-chip {
+    min-height: 28px;
+    padding: 4px 10px;
     font-size: 10px;
   }
 
-  .machinist-board-legend {
-    width: 100%;
+  .machinist-focus-machine-group-label {
+    font-size: 8px;
   }
 
   .trial-main--machinist .trial-grid-scroll-host {
+    flex: 1 1 auto;
     height: auto;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   body.machinist-board .trial-grid-scroll-top-wrap {
-    position: sticky;
-    top: calc(2.4rem + env(safe-area-inset-top, 0px));
-    z-index: 10;
-    padding: 0 6px 4px;
-    gap: 3px;
-    border-bottom: 1px solid rgba(26, 28, 29, 0.06);
-    background: rgba(248, 250, 252, 0.96);
-    backdrop-filter: blur(6px);
+    position: relative;
+    top: auto;
+    flex: 0 0 auto;
+    padding: 0 6px 1px;
+    gap: 0;
+    border-bottom: none;
+    background: transparent;
+    backdrop-filter: none;
   }
 
   body.machinist-board .trial-grid-scroll-hint {
-    display: block;
-    line-height: 1.35;
+    display: none;
   }
 
   body.machinist-board .trial-grid-scroll-top {
-    height: 22px;
-    border-radius: 8px;
-    background: rgba(26, 28, 29, 0.06);
-    box-shadow: inset 0 0 0 1px rgba(26, 28, 29, 0.08);
-    scrollbar-color: rgba(37, 99, 235, 0.55) rgba(26, 28, 29, 0.08);
-    touch-action: pan-x pinch-zoom;
+    height: 10px;
+    border-radius: 5px;
+    touch-action: pan-x;
   }
 
   body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar {
-    height: 18px;
-  }
-
-  body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, rgba(59, 130, 246, 0.75), rgba(37, 99, 235, 0.85));
-    border-radius: 7px;
-    border: 2px solid rgba(248, 250, 252, 0.9);
-    min-width: 48px;
+    height: 10px;
   }
 
   body.machinist-board .trial-grid-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-x: auto;
-    overflow-y: visible;
-    overscroll-behavior: auto;
-    scrollbar-width: thin;
-    scrollbar-color: rgba(37, 99, 235, 0.45) transparent;
-    padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
-    touch-action: pan-x pan-y pinch-zoom;
-  }
-
-  body.machinist-board .trial-grid-scroll::-webkit-scrollbar {
-    display: block;
-    height: 8px;
-  }
-
-  body.machinist-board .trial-grid-scroll::-webkit-scrollbar-thumb {
-    background: rgba(37, 99, 235, 0.45);
-    border-radius: 4px;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    padding-bottom: max(4px, env(safe-area-inset-bottom, 0px));
+    touch-action: pan-x pan-y;
   }
 
   body.machinist-board .trial-grid,
   body.machinist-board .trial-grid.trial-grid--grouped {
-    height: auto;
-    align-items: flex-start;
+    height: 100%;
+    align-items: stretch;
   }
 
   body.machinist-board .trial-machine-board-group,
   body.machinist-board .trial-machine-board-subgroup {
-    height: auto;
-    align-self: flex-start;
+    height: 100%;
+    align-self: stretch;
   }
 
   body.machinist-board .trial-machine-board-group-lanes,
   body.machinist-board .trial-machine-board-subgroup-lanes {
-    align-items: flex-start;
+    align-items: stretch;
     min-height: 0;
+    flex: 1 1 auto;
   }
 
   body.machinist-board .trial-machine {
@@ -1336,17 +1418,18 @@ body.machinist-board.machinist-board--focus .trial-empty {
     width: 168px;
     max-width: 168px;
     min-width: 168px;
-    height: auto;
+    height: 100%;
     max-height: none;
-    overflow: visible;
+    overflow: hidden;
     min-height: 0;
   }
 
   body.machinist-board .trial-lane {
-    max-height: min(28rem, calc(100dvh - 14rem));
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
     overflow-y: auto;
     overflow-x: hidden;
-    flex: 0 1 auto;
     overscroll-behavior-y: contain;
     touch-action: pan-y;
     -webkit-overflow-scrolling: touch;
@@ -1368,59 +1451,6 @@ body.machinist-board.machinist-board--focus .trial-empty {
 
   body.machinist-board.machinist-board--focus .trial-focus-metric {
     font-size: 11px;
-  }
-
-  /* Focus view keeps a locked viewport on tablets so queues scroll inside lanes */
-  body.machinist-board.machinist-board--focus {
-    overflow: hidden;
-    touch-action: manipulation;
-  }
-
-  body.machinist-board.machinist-board--focus .app-main--machinist {
-    height: 100dvh;
-    min-height: 100dvh;
-    overflow: hidden;
-    padding-bottom: 0;
-  }
-
-  body.machinist-board.machinist-board--focus .trial-shell--machinist {
-    height: 100dvh;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  body.machinist-board.machinist-board--focus .trial-layout--machinist,
-  body.machinist-board.machinist-board--focus .trial-main--machinist {
-    overflow: hidden;
-    height: 100%;
-    flex: 1 1 auto;
-    min-height: 0;
-  }
-
-  body.machinist-board.machinist-board--focus .trial-main--machinist #trial-machine-filter-shell {
-    flex: 0 0 auto;
-    position: relative;
-    top: auto;
-  }
-
-  body.machinist-board.machinist-board--focus .trial-main--machinist .trial-grid-scroll-host {
-    flex: 1 1 auto;
-    height: auto;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-
-  body.machinist-board.machinist-board--focus .trial-grid-scroll {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: hidden;
-    padding-bottom: max(4px, env(safe-area-inset-bottom, 0px));
-  }
-
-  body.machinist-board.machinist-board--focus .trial-grid.trial-grid--focus {
-    height: 100%;
-    align-items: stretch;
   }
 }
 
