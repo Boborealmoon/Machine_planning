@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Delivery{% endblock %}
 {% block main_class %}app-main--delivery{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=delivery-ps-type-filter-20260619">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=delivery-week-groups-20260623">{% endblock %}
 {% block content %}
 <div class="delivery-page">
   <div class="delivery-header">
     <div>
       <h1 class="delivery-title">Delivery</h1>
-      <p class="delivery-subtitle" id="delivery-subtitle">Open process sheets (not closed). Edit Coway EDD and remarks inline. Week shows ISO week and weekday from Coway EDD, or PO due when Coway EDD is empty.</p>
+      <p class="delivery-subtitle" id="delivery-subtitle">Open partials (one row per PP partial). Search filters the loaded list; Refresh reloads from server.</p>
     </div>
     <div class="delivery-header-actions">
       <div class="delivery-view-toggle" role="tablist" aria-label="Delivery view">
@@ -36,6 +36,13 @@
           </div>
         </div>
       </div>
+      <div class="delivery-schedule-filter">
+        <span>Week</span>
+        <div class="filter-dropdown" id="delivery-week-dropdown">
+          <button class="filter-dropdown-btn" type="button" id="delivery-week-btn">All weeks ▾</button>
+          <div class="filter-dropdown-panel delivery-week-filter-panel" id="delivery-week-panel" hidden></div>
+        </div>
+      </div>
       <label class="delivery-schedule-filter delivery-schedule-filter--grow">
         <span>Search</span>
         <span class="planner-page-search-wrap">
@@ -43,17 +50,31 @@
             <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
             <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
-          <input id="delivery-schedule-search" class="planner-page-search-input" type="search" placeholder="PS, part no., description..." autocomplete="off">
+          <input id="delivery-schedule-search" class="planner-page-search-input" type="search" placeholder="Filter PS, part no., description…" autocomplete="off">
         </span>
       </label>
+      <label class="delivery-schedule-filter delivery-schedule-filter--inline">
+        <input type="checkbox" id="delivery-schedule-hide-dismissed">
+        <span>Hide dismissed</span>
+      </label>
+      <button type="button" class="btn btn-primary btn-sm" id="delivery-schedule-view-selected" disabled>View selected</button>
       <div class="delivery-schedule-stats" id="delivery-schedule-stats"></div>
     </div>
 
-    <div id="delivery-schedule-loading" class="loading"><div class="spinner"></div> Loading delivery schedule...</div>
+    <div id="delivery-schedule-loading" class="loading" hidden><div class="spinner"></div> <span class="delivery-schedule-loading-text">Loading delivery schedule...</span></div>
     <div id="delivery-schedule-table-wrap" class="delivery-schedule-table-wrap card" hidden>
       <table class="delivery-schedule-table">
         <thead>
           <tr id="delivery-schedule-head-row">
+            <th class="delivery-schedule-check" scope="col">
+              <input type="checkbox" id="delivery-schedule-select-all" aria-label="Select all visible rows" title="Select all visible rows">
+            </th>
+            <th class="delivery-schedule-dismiss" scope="col" title="Mark entries you don't need to worry about">
+              <span class="delivery-schedule-dismiss-head">OK</span>
+            </th>
+            <th class="delivery-schedule-exception" scope="col" title="Mark exceptions that need attention">
+              <span class="delivery-schedule-exception-head">!</span>
+            </th>
             <th class="delivery-schedule-sort-head" data-sort-col="ps">
               <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="ps">
                 <span class="delivery-schedule-sort-label">PS no.</span>
@@ -69,6 +90,12 @@
             <th class="delivery-schedule-sort-head" data-sort-col="part_desc">
               <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="part_desc">
                 <span class="delivery-schedule-sort-label">Part description</span>
+                <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
+              </button>
+            </th>
+            <th class="delivery-schedule-sort-head" data-sort-col="stage">
+              <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="stage">
+                <span class="delivery-schedule-sort-label">Stage</span>
                 <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
               </button>
             </th>
@@ -108,7 +135,7 @@
       </table>
     </div>
     <div id="delivery-schedule-empty" class="delivery-schedule-empty card" hidden>
-      <p id="delivery-schedule-empty-text">No open process sheets match your filters.</p>
+      <p id="delivery-schedule-empty-text">No open partials to show.</p>
     </div>
   </div>
 
@@ -175,10 +202,11 @@
     </div>
   </div>
 </div>
+<div id="delivery-schedule-modal-shell"></div>
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=delivery-unified-20260619"></script>
-<script src="{{ url_for('static', filename='js/delivery_schedule.js') }}?v=delivery-ps-default-20260619"></script>
+<script src="{{ url_for('static', filename='js/delivery_schedule.js') }}?v=delivery-flags-server-20260623"></script>
 <script src="{{ url_for('static', filename='js/queue_delays.js') }}?v=delivery-unified-20260619"></script>
-<script src="{{ url_for('static', filename='js/delivery.js') }}?v=delivery-toggle-fix-20260619"></script>
+<script src="{{ url_for('static', filename='js/delivery.js') }}?v=delivery-client-search-20260623"></script>
 {% endblock %}

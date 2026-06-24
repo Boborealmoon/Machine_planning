@@ -4,115 +4,157 @@
 
 {% block main_class %}app-main--new-orders app-main--job-ratio{% endblock %}
 
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=job-ratio-ui-20260619">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=job-ratio-ui-20260624e">{% endblock %}
 
 {% block content %}
 
 <div class="new-orders-page job-ratio-page">
 
-  <div class="new-orders-header">
-    <div>
+  <header class="sales-report-header job-ratio-header">
+    <div class="sales-report-header-main">
       <h1 class="new-orders-title">Job Ratio Report</h1>
-      <p class="new-orders-subtitle">
-        Booked SO lines by volume bucket (qty on line). Count and $ mix vs targets
-        (&gt;20% proto · &gt;30% micro · &gt;50% low volume). Month = first posted date.
-        Bucket thresholds vary by year (2025 vs 2026 rules).
+      <p class="sales-report-context">
+        Booked jobs grouped by volume category. Month uses <strong>PO due date</strong> (SO required shipment date).
+        One job = one process sheet (partials deduped). Qty = sales order qty per process sheet; value is home currency ($) retained per SO line.
+        Default scope is NPS only.
       </p>
     </div>
     <div class="new-orders-header-actions">
       <button type="button" class="btn btn-ghost btn-sm" id="job-ratio-export" title="Export visible section to CSV">Export CSV</button>
       <button type="button" class="btn btn-ghost btn-sm" id="job-ratio-refresh">Refresh</button>
     </div>
-  </div>
+  </header>
 
-  <div class="new-orders-toolbar card">
-    <label class="new-orders-filter">
-      <span>Year</span>
-      <input id="job-ratio-year" type="number" min="2000" max="2100" step="1">
-    </label>
+  <div class="sales-report-period card job-ratio-period">
+    <div class="sales-report-period-row">
+      <label class="sales-report-year-field">
+        <span>Year</span>
+        <input id="job-ratio-year" type="number" min="2000" max="2100" step="1">
+      </label>
 
-    <div class="new-orders-filter">
-      <span>PP prefix</span>
-      <div class="sales-report-pp-controls">
-        <div class="sales-report-presets" role="group" aria-label="PP prefix presets">
-          <button type="button" class="sales-report-preset-btn is-active" data-jr-preset="aps-nps">APS + NPS</button>
-          <button type="button" class="sales-report-preset-btn" data-jr-preset="aps">APS</button>
-          <button type="button" class="sales-report-preset-btn" data-jr-preset="nps">NPS</button>
-          <button type="button" class="sales-report-preset-btn" data-jr-preset="all">All</button>
+      <div class="sales-report-segment job-ratio-view-segment">
+        <span class="sales-report-segment-label">Section</span>
+        <div class="mi-view-toggle job-ratio-view-toggle" role="tablist" aria-label="Report section">
+          <button type="button" class="mi-view-btn is-active" data-jr-view="matrix" role="tab" aria-selected="true">Volume mix</button>
+          <button type="button" class="mi-view-btn" data-jr-view="jobs" role="tab" aria-selected="false">Jobs</button>
+          <button type="button" class="mi-view-btn" data-jr-view="customers" role="tab" aria-selected="false">By customer</button>
         </div>
-        <div class="filter-dropdown" id="job-ratio-ps-type-dropdown">
-          <button class="filter-dropdown-btn" type="button" id="job-ratio-ps-type-btn">APS, NPS ▾</button>
-          <div class="filter-dropdown-panel" id="job-ratio-ps-type-panel" hidden>
-            <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
-            <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
-            <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
-            <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
-            <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
-            <label class="filter-dropdown-item"><input type="checkbox" value="SR" /> [SR]</label>
+      </div>
+    </div>
+
+    <div class="sales-report-period-row sales-report-period-row--filters">
+      <div class="sales-report-segment">
+        <span class="sales-report-segment-label">PP prefix</span>
+        <div class="sales-report-pp-controls">
+          <div class="sales-report-presets" role="group" aria-label="PP prefix presets">
+            <button type="button" class="sales-report-preset-btn" data-jr-preset="aps-nps">APS + NPS</button>
+            <button type="button" class="sales-report-preset-btn" data-jr-preset="aps">APS</button>
+            <button type="button" class="sales-report-preset-btn is-active" data-jr-preset="nps">NPS</button>
+            <button type="button" class="sales-report-preset-btn" data-jr-preset="all">All</button>
+          </div>
+          <div class="filter-dropdown" id="job-ratio-ps-type-dropdown">
+            <button class="filter-dropdown-btn" type="button" id="job-ratio-ps-type-btn">NPS ▾</button>
+            <div class="filter-dropdown-panel" id="job-ratio-ps-type-panel" hidden>
+              <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
+              <label class="filter-dropdown-item"><input type="checkbox" value="APS" /> APS</label>
+              <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
+              <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
+              <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
+              <label class="filter-dropdown-item"><input type="checkbox" value="SR" /> [SR]</label>
+            </div>
           </div>
         </div>
       </div>
+
+      <label class="sales-report-search-field" id="job-ratio-search-wrap" hidden>
+        <span class="planner-page-search-wrap">
+          <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input id="job-ratio-search" class="planner-page-search-input" type="search" placeholder="Customer, SO, part…" autocomplete="off">
+        </span>
+      </label>
     </div>
 
-    <div class="new-orders-filter new-orders-filter--view">
-      <span>Section</span>
-      <div class="mi-view-toggle job-ratio-view-toggle" role="tablist" aria-label="Report section">
-        <button type="button" class="mi-view-btn is-active" data-jr-view="matrix" role="tab" aria-selected="true">Matrix</button>
-        <button type="button" class="mi-view-btn" data-jr-view="customers" role="tab" aria-selected="false">Customers</button>
-        <button type="button" class="mi-view-btn" data-jr-view="detail" role="tab" aria-selected="false">Detail</button>
-      </div>
+    <div class="job-ratio-customer-filters" id="job-ratio-customer-filters" hidden>
+      <label class="job-ratio-filter-field">
+        <span>Month</span>
+        <select id="job-ratio-customer-month"></select>
+      </label>
+      <label class="job-ratio-filter-field">
+        <span>Volume category</span>
+        <select id="job-ratio-customer-bucket"></select>
+      </label>
+      <button type="button" class="btn btn-ghost btn-sm" id="job-ratio-clear-customer-filters">Clear filters</button>
     </div>
 
-    <label class="new-orders-filter new-orders-filter--grow" id="job-ratio-search-wrap">
-      <span>Search</span>
-      <span class="planner-page-search-wrap">
-        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
-          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-        </svg>
-        <input id="job-ratio-search" class="planner-page-search-input" type="search" placeholder="Customer, SO, part..." autocomplete="off">
-      </span>
-    </label>
+    <div class="job-ratio-jobs-filters" id="job-ratio-jobs-filters" hidden>
+      <label class="job-ratio-filter-field">
+        <span>Month</span>
+        <select id="job-ratio-jobs-month"></select>
+      </label>
+      <label class="job-ratio-filter-field">
+        <span>Volume category</span>
+        <select id="job-ratio-jobs-bucket"></select>
+      </label>
+      <label class="job-ratio-filter-field">
+        <span>Sort by</span>
+        <select id="job-ratio-jobs-sort">
+          <option value="volume">Month → volume → qty</option>
+          <option value="value">Month → volume → value</option>
+          <option value="date">Due date (newest)</option>
+        </select>
+      </label>
+      <button type="button" class="btn btn-ghost btn-sm" id="job-ratio-clear-jobs-filters">Clear filters</button>
+    </div>
 
-    <div class="new-orders-stats" id="job-ratio-stats"></div>
+    <div class="job-ratio-stats" id="job-ratio-stats" hidden></div>
   </div>
 
-  <div id="job-ratio-loading" class="loading sales-report-loading" hidden>
-    <div class="spinner"></div>
+  <div id="job-ratio-loading" class="sales-report-loading sales-report-loading--page" hidden aria-live="polite">
+    <div class="sales-report-spinner sales-report-spinner--lg" role="status" aria-label="Loading"></div>
     <span>Loading job ratio…</span>
   </div>
 
-  <div id="job-ratio-matrix-wrap" class="card job-ratio-panel job-ratio-matrix-wrap" hidden>
-    <div class="job-ratio-matrix-head">
-      <h2 class="job-ratio-section-title" id="job-ratio-matrix-title">Volume mix matrix</h2>
-      <p class="job-ratio-section-sub" id="job-ratio-matrix-sub"></p>
-      <p class="job-ratio-scroll-hint" aria-hidden="true">Scroll horizontally for all months →</p>
+  <section id="job-ratio-matrix-wrap" class="card job-ratio-panel job-ratio-matrix-wrap" hidden>
+    <div class="job-ratio-matrix-body">
+      <div class="sales-report-section-head">
+        <div>
+          <h2 class="sales-report-section-title">Volume mix by month</h2>
+          <p class="sales-report-section-sub" id="job-ratio-matrix-sub"></p>
+          <p class="job-ratio-scroll-hint" aria-hidden="true">Scroll horizontally for all months →</p>
+        </div>
+      </div>
+      <div class="job-ratio-matrix-scroll" tabindex="0" aria-label="Job ratio matrix — scroll horizontally">
+        <table class="job-ratio-matrix-table" id="job-ratio-matrix-table"></table>
+      </div>
     </div>
-    <div class="job-ratio-matrix-scroll" tabindex="0" aria-label="Job ratio matrix — scroll horizontally">
-      <table class="job-ratio-matrix-table" id="job-ratio-matrix-table"></table>
-    </div>
-  </div>
+  </section>
 
-  <div id="job-ratio-customers-wrap" class="card job-ratio-panel" hidden>
-    <p class="job-ratio-scroll-hint">Scroll horizontally for all columns →</p>
-    <div class="job-ratio-table-scroll">
-      <table class="new-orders-table job-ratio-customers-table">
-        <thead id="job-ratio-customers-thead"></thead>
-        <tbody id="job-ratio-customers-body"></tbody>
-      </table>
+  <section id="job-ratio-jobs-wrap" class="card job-ratio-panel job-ratio-jobs-wrap" hidden>
+    <div class="job-ratio-jobs-body">
+      <div class="sales-report-section-head">
+        <div>
+          <h2 class="sales-report-section-title">Jobs by month &amp; volume</h2>
+          <p class="sales-report-section-sub" id="job-ratio-jobs-filter-note"></p>
+        </div>
+      </div>
+      <div id="job-ratio-jobs-content"></div>
     </div>
-  </div>
+  </section>
 
-  <div id="job-ratio-detail-wrap" class="card job-ratio-panel" hidden>
-    <div class="job-ratio-detail-filters" id="job-ratio-detail-filters"></div>
-    <p class="job-ratio-scroll-hint">Scroll horizontally for all columns →</p>
-    <div class="job-ratio-table-scroll">
-      <table class="new-orders-table job-ratio-detail-table">
-        <thead id="job-ratio-detail-thead"></thead>
-        <tbody id="job-ratio-detail-body"></tbody>
-      </table>
+  <section id="job-ratio-customers-wrap" class="card job-ratio-panel job-ratio-customers-wrap" hidden>
+    <div class="job-ratio-customers-body">
+      <div class="sales-report-section-head">
+        <div>
+          <h2 class="sales-report-section-title">Customers</h2>
+          <p class="sales-report-section-sub" id="job-ratio-customers-filter-note"></p>
+        </div>
+      </div>
+      <div class="job-ratio-customers-list" id="job-ratio-customers-list"></div>
     </div>
-  </div>
+  </section>
 
   <div id="job-ratio-empty" class="new-orders-empty card" hidden>
     <p id="job-ratio-empty-text">No rows match your filters.</p>
@@ -124,6 +166,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=job-ratio-ui-20260619"></script>
-<script src="{{ url_for('static', filename='js/job_ratio.js') }}?v=job-ratio-ui-20260619"></script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=job-ratio-ui-20260624e"></script>
+<script src="{{ url_for('static', filename='js/job_ratio.js') }}?v=job-ratio-ui-20260624e"></script>
 {% endblock %}

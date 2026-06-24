@@ -315,6 +315,73 @@ function trialAssignCatalogRows(rows) {
   if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
 }
 
+function trialNormalizeTempPsKey(psId) {
+  return String(psId || '').trim().replace(/^\[Temp\]\s*/i, '').trim();
+}
+
+function trialCatalogRowMatchesTempId(row, plannerPsId) {
+  const needle = trialNormalizeTempPsKey(plannerPsId);
+  if (!needle) return false;
+  const rowId = String(row?.ps_id || '').trim();
+  if (!rowId.startsWith('[Temp]')) return false;
+  return trialNormalizeTempPsKey(rowId) === needle || rowId === String(plannerPsId || '').trim();
+}
+
+/** Drop a deleted [Temp] PS from in-memory catalog/planned rows and client cache. */
+function trialPurgeCatalogTempPs(plannerPsId) {
+  const canonical = String(plannerPsId || '').trim();
+  if (!canonical) return;
+  const keep = row => !trialCatalogRowMatchesTempId(row, canonical);
+  if (Array.isArray(trialState?.catalog)) {
+    trialState.catalog = trialState.catalog.filter(keep);
+  }
+  if (Array.isArray(trialState?.planned)) {
+    trialState.planned = trialState.planned.filter(keep);
+  }
+  ['catalog', 'catalogAll'].forEach(key => {
+    if (!Array.isArray(trialLoadCache?.[key])) return;
+    trialLoadCache[key] = trialLoadCache[key].filter(keep);
+  });
+  const tempKey = trialNormalizeTempPsKey(canonical);
+  if (Array.isArray(trialState?.blocks) && tempKey) {
+    trialState.blocks = trialState.blocks.filter(block => {
+      const blockPs = String(block.planner_ps_id || block.source_ps_id || block.job_no || '').trim();
+      if (!blockPs.startsWith('[Temp]')) return true;
+      return trialNormalizeTempPsKey(blockPs) !== tempKey;
+    });
+  }
+  trialInvalidateCatalogCache();
+  if (typeof trialResetDataIndexes === 'function') trialResetDataIndexes();
+  if (typeof trialResetRenderIndexes === 'function') trialResetRenderIndexes();
+}
+
+async function trialRefreshCatalogAfterTempPsDeleted(event) {
+  if (!document.getElementById('trial-catalog')) return;
+  const detail = event?.detail || {};
+  const psId = String(detail.planner_ps_id || detail.ps_id || '').trim();
+  if (psId && typeof trialPurgeCatalogTempPs === 'function') {
+    trialPurgeCatalogTempPs(psId);
+  }
+  if (typeof trialRerenderCatalogFromBlocks === 'function') {
+    trialRerenderCatalogFromBlocks();
+  }
+  if (typeof loadTrial === 'function' && document.getElementById('trial-grid')) {
+    try {
+      await loadTrial({ force: true });
+      return;
+    } catch (err) {
+      console.error('board refresh after temp PS delete failed:', err);
+    }
+  }
+  if (typeof trialRefreshCatalogSidebar === 'function') {
+    try {
+      await trialRefreshCatalogSidebar();
+    } catch (err) {
+      console.error('catalog refresh after temp PS delete failed:', err);
+    }
+  }
+}
+
 let _trialMissingTempCatalogRefreshTimer = 0;
 let _trialMissingTempCatalogRefreshInFlight = false;
 
@@ -342,6 +409,7 @@ function trialCatalogClientCacheMs() {
 
 /** Re-render catalog sidebar from in-memory blocks (no /with-ops round trip). */
 function trialRerenderCatalogFromBlocks() {
+  if (typeof trialCancelDeferredCatalogRender === 'function') trialCancelDeferredCatalogRender();
   if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
   if (typeof bindTrialCatalogDnD === 'function') bindTrialCatalogDnD();
 }
@@ -422,6 +490,12 @@ window.addEventListener('temp-ps-updated', () => {
   });
 });
 
+window.addEventListener('temp-ps-deleted', event => {
+  trialRefreshCatalogAfterTempPsDeleted(event).catch(err => {
+    console.error('catalog refresh after temp PS delete failed:', err);
+  });
+});
+
 function trialNormalizeBlockFromApi(block) {
   if (!block) return null;
   return {
@@ -445,6 +519,22 @@ function trialMergeBlockFromApi(block) {
   if (idx >= 0) blocks[idx] = { ...blocks[idx], ...normalized };
   else blocks.push(normalized);
   trialState.blocks = blocks;
+  if (typeof trialResetDataIndexes === 'function') trialResetDataIndexes();
+}
+
+/** Drop deleted queue blocks from in-memory state (sidebar remove has no lane row to update). */
+function trialPurgeBlocksFromState(blockIds, options = {}) {
+  const idSet = new Set(
+    (blockIds || []).map(id => String(Number(id))).filter(id => id !== '0' && id !== 'NaN'),
+  );
+  const groupId = Number(options.groupId || 0);
+  if (!idSet.size && !(groupId > 0)) return;
+  if (!Array.isArray(trialState?.blocks)) return;
+  trialState.blocks = trialState.blocks.filter(block => {
+    if (idSet.has(String(block.block_id))) return false;
+    if (groupId > 0 && Number(block.group_id || 0) === groupId) return false;
+    return true;
+  });
   if (typeof trialResetDataIndexes === 'function') trialResetDataIndexes();
 }
 

@@ -671,6 +671,7 @@ WITH job_cycles AS (
         COALESCE(NULLIF(TRIM(pd.main_desc), ''), '') AS part_description,
         COALESCE(step.cycle_time, 0) AS bom_step_cycle_time,
         COALESCE(step.setup_time, 0) AS bom_step_set_up_time,
+        TRIM(COALESCE(step.preferred_machine, '')) AS preferred_machine,
         COALESCE(o.cycle_minutes_per_qty, 0) AS cycle_time,
         COALESCE(o.setup_minutes, 0) AS set_up_time,
         o.operation_id,
@@ -744,6 +745,7 @@ SELECT
     part_description,
     MAX(bom_step_cycle_time) AS bom_step_cycle_time,
     MAX(bom_step_set_up_time) AS bom_step_set_up_time,
+    MAX(NULLIF(preferred_machine, '')) AS preferred_machine,
     COUNT(*)::int AS job_count,
     MIN(cycle_time) AS cycle_min,
     MAX(cycle_time) AS cycle_max,
@@ -815,6 +817,55 @@ def _proposed_from_jobs(jobs: list[dict[str, Any]], strategy: str) -> tuple[floa
     )
 
 
+def _harvest_source_job(
+    jobs: list[dict[str, Any]],
+    *,
+    picked_job_index: int | None = None,
+) -> dict[str, Any] | None:
+    if not jobs:
+        return None
+    if picked_job_index is not None and 0 <= picked_job_index < len(jobs):
+        return jobs[picked_job_index]
+    return jobs[0]
+
+
+def _harvest_machine_changed(
+    jobs: list[dict[str, Any]],
+    preferred_machine: str,
+    *,
+    picked_job_index: int | None = None,
+) -> bool:
+    preferred = compact_text(preferred_machine)
+    if not preferred:
+        return False
+    source_job = _harvest_source_job(jobs, picked_job_index=picked_job_index)
+    actual = compact_text((source_job or {}).get("machine_no"))
+    if not actual:
+        return False
+    return actual.upper() != preferred.upper()
+
+
+def _harvest_recommendation(
+    *,
+    ideal_baseline: float,
+    proposed_cycle: float,
+    jobs: list[dict[str, Any]],
+    preferred_machine: str,
+    picked_job_index: int | None = None,
+) -> str:
+    if _harvest_machine_changed(
+        jobs,
+        preferred_machine,
+        picked_job_index=picked_job_index,
+    ):
+        return "clear"
+    if ideal_baseline <= 0 and proposed_cycle > 0:
+        return "review"
+    if ideal_baseline > 0 and abs(proposed_cycle - ideal_baseline) > 0.009:
+        return "review"
+    return "clear"
+
+
 def _finalize_harvest_item(item: dict[str, Any], *, strategy: str) -> dict[str, Any]:
     jobs = sorted(
         item.get("jobs") or [],
@@ -825,8 +876,11 @@ def _finalize_harvest_item(item: dict[str, Any], *, strategy: str) -> dict[str, 
         jobs, strategy
     )
     cycles = [float(j.get("cycle_time") or 0) for j in jobs]
+    setups = [float(j.get("set_up_time") or 0) for j in jobs]
     cycle_min = min(cycles) if cycles else proposed_cycle
     cycle_max = max(cycles) if cycles else proposed_cycle
+    setup_min = min(setups) if setups else proposed_setup
+    setup_max = max(setups) if setups else proposed_setup
     item.update(
         {
             "jobs": jobs,
@@ -840,6 +894,11 @@ def _finalize_harvest_item(item: dict[str, Any], *, strategy: str) -> dict[str, 
             "cycle_min": cycle_min,
             "cycle_max": cycle_max,
             "has_variance": abs(cycle_max - cycle_min) > 0.009,
+            "median_set_up_time": _median(setups),
+            "mode_set_up_time": _mode(setups),
+            "setup_min": setup_min,
+            "setup_max": setup_max,
+            "has_setup_variance": abs(setup_max - setup_min) > 0.009,
             "source_operation_id": source_operation_id,
             "source_block_id": source_block_id,
         }
@@ -849,11 +908,14 @@ def _finalize_harvest_item(item: dict[str, Any], *, strategy: str) -> dict[str, 
         if float(item.get("current_ideal_cycle_time") or 0) > 0
         else float(item.get("bom_step_cycle_time") or 0)
     )
-    recommendation = (
-        "review"
-        if ideal_baseline <= 0
-        or abs(proposed_cycle - ideal_baseline) > 0.009
-        else "clear"
+    preferred_machine = compact_text(item.get("preferred_machine"))
+    machine_changed = _harvest_machine_changed(jobs, preferred_machine)
+    item["machine_changed"] = machine_changed
+    recommendation = _harvest_recommendation(
+        ideal_baseline=ideal_baseline,
+        proposed_cycle=proposed_cycle,
+        jobs=jobs,
+        preferred_machine=preferred_machine,
     )
     item["recommendation"] = recommendation
     item["picked_job_index"] = 0 if recommendation == "clear" else None
@@ -873,6 +935,7 @@ def _finalize_harvest_item(item: dict[str, Any], *, strategy: str) -> dict[str, 
 
 def harvest_preview(con, *, strategy: str = "latest") -> list[dict[str, Any]]:
     ensure_cycle_time_snapshot_table(con)
+    master_cache = MasterTimeCache.load(con)
     merged: dict[tuple[Any, ...], dict[str, Any]] = {}
     for row in rows(con.execute(HARVEST_PREVIEW_SQL)):
         part_no = compact_text(row.get("part_no"))
@@ -896,8 +959,7 @@ def harvest_preview(con, *, strategy: str = "latest") -> list[dict[str, Any]]:
                 }
             )
 
-        master = lookup_master_row(
-            con,
+        master = master_cache.lookup(
             part_no=part_no,
             bom_code=bom_code,
             op_no=op_no,
@@ -929,6 +991,7 @@ def harvest_preview(con, *, strategy: str = "latest") -> list[dict[str, Any]]:
                 "op_type": op_type,
                 "bom_step_cycle_time": bom_step_cycle,
                 "bom_step_set_up_time": float(row.get("bom_step_set_up_time") or 0),
+                "preferred_machine": compact_text(row.get("preferred_machine")),
                 "current_master_id": int(master.get("id") or 0) if master else None,
                 "current_ideal_cycle_time": current_ideal,
                 "current_cycle_time": current_production,
@@ -961,6 +1024,8 @@ def harvest_preview(con, *, strategy: str = "latest") -> list[dict[str, Any]]:
             float(existing.get("bom_step_set_up_time") or 0),
             float(row.get("bom_step_set_up_time") or 0),
         )
+        if not compact_text(existing.get("preferred_machine")):
+            existing["preferred_machine"] = compact_text(row.get("preferred_machine"))
         if not existing.get("current_master_id") and master:
             existing["current_master_id"] = int(master.get("id") or 0)
             existing["current_ideal_cycle_time"] = current_ideal

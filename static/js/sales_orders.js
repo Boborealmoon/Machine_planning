@@ -9,7 +9,7 @@ const SO_NOTE_FIELDS = [
 ];
 
 const SO_NOTE_LABELS = {
-  material_subcon: 'Material/Sub-con',
+  material_subcon: 'Material in / Sub-con',
   mtl_part_order: 'Mtl / Part Order',
   quality_doc: 'Quality Doc',
   ops_notes: 'Ops',
@@ -78,8 +78,7 @@ const SO_COLUMNS = [
   { id: 'delivery_date', label: 'Del. date', sortable: true, filterable: true },
   { id: 'unit_selling_price', label: 'U/Price', sortable: true, filterable: true },
   { id: 'amount', label: 'Amount', sortable: true, filterable: true },
-  { id: 'material_in', label: 'Material in', sortable: true, filterable: true },
-  { id: 'material_subcon', label: 'Material/Sub-con', sortable: true, filterable: true },
+  { id: 'material_subcon', label: 'Material in / Sub-con', sortable: true, filterable: true },
   { id: 'mtl_part_order', label: 'Mtl / Part Order', sortable: true, filterable: true },
   { id: 'quality_doc', label: 'Quality Doc', sortable: true, filterable: true },
   { id: 'ops_notes', label: 'Ops', sortable: true, filterable: true },
@@ -440,7 +439,6 @@ function soRenderJobDetailFields(order, pp, partial) {
     soDetailField('U/Price', soFormatMoney(pp?.unit_selling_price)),
     soDetailField('Amount', soFormatMoney(pp?.amount)),
     soDetailField('PP status', pp?.status),
-    soDetailField('Material in', pp?.material_in ? `Yes · ${soFormatDate(pp?.material_in_date)}` : 'Awaiting'),
     ...SO_NOTE_FIELDS.map(field => soDetailField(
       SO_NOTE_LABELS[field],
       field === 'material_subcon' ? soMaterialSubconDisplay(pp?.[field]) : pp?.[field],
@@ -486,7 +484,6 @@ function soRenderPpDetail(order, pp) {
     soDetailField('Customer PO', pp?.customer_po_no, { mono: true }),
     soDetailField('Qty', pp?.pp_qty),
     soDetailField('Due date', soFormatDate(pp?.due_date)),
-    soDetailField('Material in', pp?.material_in ? `Yes · ${soFormatDate(pp?.material_in_date)}` : 'Awaiting'),
     ...SO_NOTE_FIELDS.map(field => soDetailField(
       SO_NOTE_LABELS[field],
       field === 'material_subcon' ? soMaterialSubconDisplay(pp?.[field]) : pp?.[field],
@@ -928,8 +925,6 @@ function soLeafColumnValue(leaf, colId) {
     case 'unit_selling_price': return pp?.unit_selling_price;
     case 'amount': return pp?.amount;
     case 'qty': return pp?.pp_qty;
-    case 'material_in':
-      return pp?.material_in ? `in ${soFormatDate(pp?.material_in_date)}` : 'awaiting';
     case 'material_subcon':
       return soMaterialSubconDisplay(pp?.material_subcon);
     default:
@@ -1745,61 +1740,8 @@ function soRenderPpCells(pp) {
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.delivery_date))}</td>
     <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.unit_selling_price))}</td>
     <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.amount))}</td>
-    ${soRenderMaterialInCell(pp)}
     ${soRenderMaterialSubconCell(pp)}
     ${SO_NOTE_FIELDS.filter(field => field !== 'material_subcon').map(field => soRenderEditableCell(pp, field)).join('')}
-  `;
-}
-
-function soMaterialInMeta(materialIn) {
-  if (materialIn) {
-    return {
-      stateClass: 'is-in',
-      label: 'In stock',
-      title: 'Raw material is in — click to mark as awaiting',
-    };
-  }
-  return {
-    stateClass: 'is-out',
-    label: 'Awaiting',
-    title: 'Raw material not in yet — click when stock arrives',
-  };
-}
-
-function soSyncMaterialInPill(pill, materialIn) {
-  if (!pill) return;
-  const meta = soMaterialInMeta(materialIn);
-  pill.classList.toggle('is-in', Boolean(materialIn));
-  pill.classList.toggle('is-out', !materialIn);
-  pill.setAttribute('aria-pressed', materialIn ? 'true' : 'false');
-  pill.title = meta.title;
-  const textEl = pill.querySelector('.trial-material-in-text');
-  if (textEl) textEl.textContent = meta.label;
-}
-
-function soRenderMaterialInCell(pp) {
-  const psId = String(pp.process_sheet_no || '').trim();
-  const materialIn = Boolean(pp.material_in);
-  const meta = soMaterialInMeta(materialIn);
-  const dateText = pp.material_in_date ? soFormatDate(pp.material_in_date) : '—';
-  const dateCls = materialIn ? 'so-material-in-date' : 'so-material-in-date so-material-in-date--empty';
-  return `
-    <td class="so-material-in-cell">
-      <label class="trial-material-in-pill so-material-in-pill ${meta.stateClass}"
-        title="${escapeHtml(meta.title)}"
-        aria-pressed="${materialIn ? 'true' : 'false'}"
-        aria-label="${escapeHtml(meta.label)}">
-        <input type="checkbox" class="trial-material-in-input so-material-in-input"
-          data-ps-id="${escapeHtml(psId)}"
-          ${materialIn ? 'checked' : ''}
-          tabindex="-1"
-          aria-hidden="true">
-        <span class="trial-material-in-dot" aria-hidden="true"></span>
-        <span class="trial-material-in-text">${escapeHtml(meta.label)}</span>
-      </label>
-      <span class="${dateCls}">${escapeHtml(dateText)}</span>
-      <span class="so-material-in-status" aria-live="polite"></span>
-    </td>
   `;
 }
 
@@ -1819,7 +1761,7 @@ function soRenderMaterialSubconCell(pp) {
           class="so-material-subcon-arrived${arrivedCls}"
           data-action="toggle-subcon-arrived"
           aria-pressed="${parsed.arrived ? 'true' : 'false'}"
-          title="${parsed.arrived ? 'Material arrived — click to clear' : 'Mark material as arrived'}">
+          title="${parsed.arrived ? 'Material arrived — click to clear (updates planner)' : 'Mark material as arrived (updates planner)'}">
           <span class="so-material-subcon-arrived-dot" aria-hidden="true"></span>
           Arrived
         </button>
@@ -2037,7 +1979,17 @@ async function soSaveMaterialSubconCell(cell, nextValue) {
     const saved = String(data.material_subcon || '').trim();
     soSyncMaterialSubconCell(cell, saved);
     const found = soFindPp(ppNo);
-    if (found.pp) found.pp.material_subcon = saved;
+    if (found.pp) {
+      found.pp.material_subcon = saved;
+      if (Object.prototype.hasOwnProperty.call(data, 'material_in')) {
+        found.pp.material_in = Boolean(data.material_in);
+        found.pp.material_in_date = data.material_in_date || null;
+      } else {
+        const parsed = soParseMaterialSubcon(saved);
+        found.pp.material_in = parsed.arrived;
+        if (!parsed.arrived) found.pp.material_in_date = null;
+      }
+    }
     soSetSaveStatus(cell, 'saved', 'Saved');
     window.setTimeout(() => {
       if (String(cell.dataset.lastSaved || '').trim() === saved) soSetSaveStatus(cell, '', '');
@@ -2082,80 +2034,6 @@ async function soSaveField(control) {
     soSetSaveStatus(control, 'error', err.message || 'Save failed');
   } finally {
     soState.saveInFlight.delete(key);
-  }
-}
-
-function soFindPpByPsId(psId) {
-  const target = repeatOrderPsBase(psId);
-  if (!target) return null;
-  for (const order of soAllOrders()) {
-    for (const pp of order.pp_vouchers || []) {
-      if (repeatOrderPsBase(pp.process_sheet_no) === target) {
-        return { order, pp };
-      }
-    }
-  }
-  return null;
-}
-
-function soSetMaterialInStatus(input, state, message) {
-  const status = input?.closest('.so-material-in-cell')?.querySelector('.so-material-in-status');
-  if (!status) return;
-  status.className = `so-material-in-status${state ? ` is-${state}` : ''}`;
-  status.textContent = message || '';
-}
-
-async function soSaveMaterialIn(input) {
-  const psId = String(input?.dataset?.psId || '').trim();
-  if (!psId || input.disabled) return;
-  const materialIn = Boolean(input.checked);
-  const pill = input.closest('.trial-material-in-pill');
-  const dateEl = input.closest('.so-material-in-cell')?.querySelector('.so-material-in-date');
-  const found = soFindPpByPsId(psId);
-  const previous = Boolean(found?.pp?.material_in);
-  const previousDate = found?.pp?.material_in_date || null;
-
-  soSyncMaterialInPill(pill, materialIn);
-  input.disabled = true;
-  if (pill) pill.classList.add('is-saving');
-  soSetMaterialInStatus(input, 'saving', 'Saving…');
-  try {
-    const res = await fetch('/api/process-sheets/stock-in-flag', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ps_id: psId, material_in: materialIn }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    if (found?.pp) {
-      found.pp.material_in = Boolean(data.material_in);
-      found.pp.material_in_date = data.material_in_date || null;
-    }
-    const savedIn = Boolean(data.material_in);
-    soSyncMaterialInPill(pill, savedIn);
-    input.checked = savedIn;
-    if (dateEl) {
-      const nextDate = savedIn ? soFormatDate(data.material_in_date) : '—';
-      dateEl.textContent = nextDate;
-      dateEl.classList.toggle('so-material-in-date--empty', !savedIn);
-    }
-    soSetMaterialInStatus(input, 'saved', 'Saved');
-    window.setTimeout(() => soSetMaterialInStatus(input, '', ''), 1500);
-  } catch (err) {
-    if (found?.pp) {
-      found.pp.material_in = previous;
-      found.pp.material_in_date = previousDate;
-    }
-    input.checked = previous;
-    soSyncMaterialInPill(pill, previous);
-    if (dateEl) {
-      dateEl.textContent = previous ? soFormatDate(previousDate) : '—';
-      dateEl.classList.toggle('so-material-in-date--empty', !previous);
-    }
-    soSetMaterialInStatus(input, 'error', err.message || 'Save failed');
-  } finally {
-    input.disabled = false;
-    if (pill) pill.classList.remove('is-saving');
   }
 }
 
@@ -2225,25 +2103,6 @@ function soBindExceptionFlags() {
   body.addEventListener('click', e => {
     const flag = e.target.closest('.so-exception-flag');
     if (!flag) return;
-    e.stopPropagation();
-  });
-}
-
-function soBindMaterialInInputs() {
-  const body = document.getElementById('so-table-body');
-  if (!body || body.dataset.materialInBound === '1') return;
-  body.dataset.materialInBound = '1';
-
-  body.addEventListener('change', e => {
-    const input = e.target.closest('.so-material-in-input');
-    if (!input) return;
-    e.stopPropagation();
-    soSaveMaterialIn(input);
-  });
-
-  body.addEventListener('click', e => {
-    const pill = e.target.closest('.so-material-in-pill');
-    if (!pill) return;
     e.stopPropagation();
   });
 }
@@ -2428,10 +2287,8 @@ function soRender() {
   if (body) {
     body.innerHTML = orders.map((order, idx) => soRenderOrderGroup(order, idx)).filter(Boolean).join('');
     delete body.dataset.editableBound;
-    delete body.dataset.materialInBound;
     delete body.dataset.exceptionBound;
     soBindEditableInputs();
-    soBindMaterialInInputs();
     soBindExceptionFlags();
   }
   if (meta) {

@@ -39,7 +39,13 @@ from planning.daily_output_route import (
     daily_output_page,
 )
 from planning.bom_variation_route import bom_variation_bp
-from planning.finishing_queue_route import finishing_queue_bp
+from planning.finishing_queue_route import (
+    FINISHING_QUEUE_PATH,
+    LEGACY_FINISHING_QUEUE_PATHS,
+    finishing_queue_bp,
+)
+from planning.capacity_monthly_route import capacity_monthly_bp
+from planning.preferred_machines_route import preferred_machines_bp
 from planning.inventory_enquiry_route import inventory_enquiry_bp
 from planning.excel_local_route import excel_local_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
@@ -61,6 +67,21 @@ app.register_blueprint(repeat_orders_bp)
 app.register_blueprint(auk_oee_bp)
 app.register_blueprint(bom_variation_bp)
 app.register_blueprint(finishing_queue_bp)
+
+for _legacy_fq_path in LEGACY_FINISHING_QUEUE_PATHS:
+    if _legacy_fq_path.lower() == FINISHING_QUEUE_PATH.lower():
+        continue
+
+    def _finishing_queue_legacy_redirect(_target=FINISHING_QUEUE_PATH):
+        return redirect(_target)
+
+    app.add_url_rule(
+        _legacy_fq_path,
+        f"finishing_queue_legacy_{_legacy_fq_path.strip('/').replace('/', '_')}",
+        _finishing_queue_legacy_redirect,
+    )
+app.register_blueprint(capacity_monthly_bp)
+app.register_blueprint(preferred_machines_bp)
 app.register_blueprint(inventory_enquiry_bp)
 app.register_blueprint(excel_local_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
@@ -73,6 +94,31 @@ def api_process_sheet_stock_in_flag():
     from planning.process_sheets import material_in_post_response
 
     return material_in_post_response()
+
+
+@app.post("/api/operations/tooling-flag")
+@app.post("/api/trial/operations/tooling-flag")
+def api_operation_tooling_flag():
+    from planning.process_sheets import tooling_post_response
+
+    return tooling_post_response()
+
+
+# Delivery OK / exception flags — registered on app (same reason as stock-in-flag).
+@app.post("/api/process-sheets/delivery-flags")
+@app.post("/api/trial/delivery-schedule/flags")
+def api_delivery_schedule_flags():
+    from planning.delivery_planner_service import delivery_flags_post_response
+
+    return delivery_flags_post_response()
+
+
+@app.post("/api/process-sheets/delivery-flags/bulk")
+@app.post("/api/trial/delivery-schedule/flags/bulk")
+def api_delivery_schedule_flags_bulk():
+    from planning.delivery_planner_service import delivery_flags_bulk_post_response
+
+    return delivery_flags_bulk_post_response()
 
 # Shop-floor machinist board (public — no passcode). Override via MACHINIST_BOARD_PATH in .env.
 _DEFAULT_MACHINIST_BOARD_PATH = "/machine-queue"
@@ -202,6 +248,7 @@ def _inject_board_paths():
     return {
         "machinist_board_path": MACHINIST_BOARD_PATH,
         "machinist_board_canonical_path": MACHINIST_BOARD_PATH,
+        "finishing_queue_path": FINISHING_QUEUE_PATH,
         "planner_path": PLANNER_PATH,
         "planner_gate_enabled": _planner_gate_enabled(),
         "planner_authenticated": _planner_authenticated(),
@@ -219,7 +266,7 @@ def _planner_cache_headers(response):
     if path == "/":
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
-    if path in (PLANNER_PATH.lower(), MACHINIST_BOARD_PATH.lower()):
+    if path in (PLANNER_PATH.lower(), MACHINIST_BOARD_PATH.lower(), FINISHING_QUEUE_PATH.lower()):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["CDN-Cache-Control"] = "no-store"

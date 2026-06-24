@@ -41,7 +41,14 @@ from .scheduler_state import (
     write_change_summary,
 )
 from .process_sheets import format_planner_ps_id, parse_planner_ps_id
-from .utils import compact_text, date_text, format_qty, planner_wall_datetime_to_api, trial_catalog_op_key
+from .utils import (
+    compact_text,
+    date_text,
+    format_qty,
+    planner_wall_datetime_from_input,
+    planner_wall_datetime_to_api,
+    trial_catalog_op_key,
+)
 
 
 def _catalog_ps_base_partial(source_ps_id: str):
@@ -128,16 +135,30 @@ def attach_block_ps_identity(con, blocks):
             block["pp_partial_no"] = int(partial or 1)
 
 
+def _catalog_op_tokens(op_no: str) -> set[str]:
+    text = compact_text(op_no).upper()
+    tokens: set[str] = set()
+    if not text:
+        return tokens
+    tokens.add(text)
+    digits = text[2:] if text.startswith("OP") else text
+    if digits.isdigit():
+        n = str(int(digits))
+        tokens.add(n)
+        tokens.add(f"OP{n}")
+    return tokens
+
+
 def _catalog_op_matches_row(source_op_no: str, source_op_seq_id: int, row: dict) -> bool:
-    op_no = compact_text(source_op_no)
-    op_seq = int(source_op_seq_id or 0)
-    row_op = compact_text(row.get("source_op_no"))
-    row_seq = int(row.get("source_op_seq_id") or 0)
-    if op_no and row_op and op_no == row_op:
+    want_tokens = _catalog_op_tokens(source_op_no)
+    row_tokens = _catalog_op_tokens(row.get("source_op_no"))
+    if want_tokens and row_tokens and want_tokens & row_tokens:
         return True
+    op_seq = int(source_op_seq_id or 0)
+    row_seq = int(row.get("source_op_seq_id") or 0)
     if op_seq > 0 and row_seq > 0 and op_seq == row_seq:
         return True
-    return not op_no and not op_seq
+    return not compact_text(source_op_no) and op_seq <= 0
 
 
 def find_active_catalog_lane_block(
@@ -1883,6 +1904,198 @@ def _resolve_block_candidate_start(
     return candidate_start
 
 
+def is_dummy_block_row(block) -> bool:
+    return compact_text((block or {}).get("block_type")).upper() == "DUMMY"
+
+
+def _parse_dummy_card_times(start_text, end_text=None, duration_minutes=None):
+    start_dt = planner_wall_datetime_from_input(compact_text(start_text))
+    if not start_dt:
+        raise ValueError("Start date/time is required")
+
+    end_text_clean = compact_text(end_text) if end_text is not None else ""
+    if end_text_clean:
+        end_dt = planner_wall_datetime_from_input(end_text_clean)
+        if not end_dt:
+            raise ValueError("End date/time is required")
+        if end_dt <= start_dt:
+            raise ValueError("End must be after start")
+        return start_dt, end_dt
+
+    if duration_minutes is not None:
+        try:
+            mins = float(duration_minutes)
+        except (TypeError, ValueError):
+            mins = 0
+        if mins <= 0:
+            raise ValueError("Duration must be greater than 0 minutes")
+        return start_dt, start_dt + timedelta(minutes=mins)
+
+    raise ValueError("Provide either end date/time or duration in minutes")
+
+
+def create_dummy_card(
+    con,
+    *,
+    title,
+    description="",
+    machine_id,
+    start_datetime,
+    end_datetime=None,
+    duration_minutes=None,
+    queue_position=0,
+):
+    title_text = compact_text(title)
+    if not title_text:
+        raise ValueError("Title is required")
+    machine_id = int(machine_id or 0)
+    if not machine_id:
+        raise ValueError("Machine is required")
+    start_dt, end_dt = _parse_dummy_card_times(
+        start_datetime, end_datetime, duration_minutes
+    )
+    description_text = compact_text(description)
+
+    op_cur = con.execute(
+        """
+        INSERT INTO planner_operation (
+          job_no, operation_name, total_qty, setup_minutes, cycle_minutes_per_qty,
+          status, remarks, updated_at
+        ) VALUES (%s, %s, 0, 0, 0, 'ACTIVE', %s, NOW())
+        RETURNING operation_id
+        """,
+        (title_text, description_text or title_text, description_text),
+    )
+    operation_id = int(one(op_cur)["operation_id"])
+
+    queue_position = float(queue_position or 0)
+    if queue_position <= 0:
+        queue_position = 1 + float(
+            one(
+                con.execute(
+                    "SELECT COALESCE(MAX(queue_position), 0) AS mx FROM planner_run_block WHERE machine_id = %s",
+                    (machine_id,),
+                )
+            )["mx"]
+            or 0
+        )
+
+    block_cur = con.execute(
+        """
+        INSERT INTO planner_run_block (
+          operation_id, machine_id, queue_position, scheduled_qty, include_setup, status,
+          planning_status, execution_status, block_type,
+          anchor_datetime, planned_start_at, planned_end_at,
+          calculated_start_datetime, calculated_end_datetime,
+          allow_pull_forward, remarks, updated_at
+        ) VALUES (
+          %s, %s, %s, 0, FALSE, 'PLANNED', 'PLANNED', 'NOT_STARTED', 'DUMMY',
+          %s, %s, %s, %s, %s, FALSE, %s, NOW()
+        )
+        RETURNING block_id
+        """,
+        (
+            operation_id,
+            machine_id,
+            queue_position,
+            start_dt,
+            start_dt,
+            end_dt,
+            start_dt,
+            end_dt,
+            description_text,
+        ),
+    )
+    block_id = int(one(block_cur)["block_id"])
+    return trial_block_row(con, block_id)
+
+
+def update_dummy_card(
+    con,
+    block_id,
+    *,
+    title=None,
+    description=None,
+    machine_id=None,
+    start_datetime=None,
+    end_datetime=None,
+    duration_minutes=None,
+):
+    block = trial_block_row(con, block_id)
+    if not block:
+        raise ValueError("Run block not found")
+    if not is_dummy_block_row(block):
+        raise ValueError("Not a dummy card")
+
+    op_updates = {}
+    if title is not None:
+        title_text = compact_text(title)
+        if not title_text:
+            raise ValueError("Title is required")
+        op_updates["job_no"] = title_text
+    if description is not None:
+        description_text = compact_text(description)
+        op_updates["operation_name"] = description_text or op_updates.get("job_no") or block["job_no"]
+        op_updates["remarks"] = description_text
+
+    if op_updates:
+        set_clause = ", ".join(f"{k} = %s" for k in op_updates)
+        con.execute(
+            f"UPDATE planner_operation SET {set_clause}, updated_at = NOW() WHERE operation_id = %s",
+            (*op_updates.values(), int(block["operation_id"])),
+        )
+
+    block_updates = {}
+    if machine_id is not None:
+        next_machine_id = int(machine_id or 0)
+        if not next_machine_id:
+            raise ValueError("Machine is required")
+        block_updates["machine_id"] = next_machine_id
+
+    if start_datetime is not None or end_datetime is not None or duration_minutes is not None:
+        current_start = block.get("planned_start_at") or block.get("anchor_datetime")
+        current_end = block.get("planned_end_at") or block.get("calculated_end_datetime")
+        start_bind = (
+            planner_wall_datetime_from_input(compact_text(start_datetime))
+            if start_datetime is not None
+            else (current_start if isinstance(current_start, datetime) else parse_dt_text(current_start))
+        )
+        if duration_minutes is not None:
+            try:
+                mins = float(duration_minutes)
+            except (TypeError, ValueError):
+                mins = 0
+            if mins <= 0:
+                raise ValueError("Duration must be greater than 0 minutes")
+            if not start_bind:
+                raise ValueError("Start date/time is required")
+            end_bind = start_bind + timedelta(minutes=mins)
+        else:
+            end_bind = (
+                planner_wall_datetime_from_input(compact_text(end_datetime))
+                if end_datetime is not None
+                else (current_end if isinstance(current_end, datetime) else parse_dt_text(current_end))
+            )
+            if not start_bind or not end_bind:
+                raise ValueError("Start and end date/time are required")
+            if end_bind <= start_bind:
+                raise ValueError("End must be after start")
+        block_updates["anchor_datetime"] = start_bind
+        block_updates["planned_start_at"] = start_bind
+        block_updates["planned_end_at"] = end_bind
+        block_updates["calculated_start_datetime"] = start_bind
+        block_updates["calculated_end_datetime"] = end_bind
+
+    if block_updates:
+        set_clause = ", ".join(f"{k} = %s" for k in block_updates)
+        con.execute(
+            f"UPDATE planner_run_block SET {set_clause}, updated_at = NOW() WHERE block_id = %s",
+            (*block_updates.values(), int(block_id)),
+        )
+
+    return trial_block_row(con, block_id)
+
+
 def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_id=None, tail_from_block_id=None):
     own_run = schedule_run_id is None
     if own_run:
@@ -1955,6 +2168,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         int(member["block_id"])
         for item in queue_items[start_item_idx:]
         for member in item["members"]
+        if not is_dummy_block_row(member)
     ]
     if rebuild_block_ids:
         con.execute(
@@ -2088,6 +2302,8 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
 
         if not is_combined:
             block = leader
+            if is_dummy_block_row(block):
+                continue
             planned_start = parse_dt_text(block["planned_start_at"])
             anchor_dt = parse_dt_text(block["anchor_datetime"])
             dependency_finish = dependency_finish_for_block(con, block)

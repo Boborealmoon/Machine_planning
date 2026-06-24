@@ -252,7 +252,10 @@ function trialCatalogHandlePointerMove(e) {
     const ctx = typeof trialCatalogDragContextFromElement === 'function'
       ? trialCatalogDragContextFromElement(state.sourceEl)
       : null;
-    if (ctx) state.canDrag = ctx.canDrag;
+    if (ctx) {
+      state.canDrag = ctx.canDrag;
+      state.dragBlockReason = ctx.dragBlockReason || '';
+    }
     state.hasMoved = true;
     if (!state.canDrag) {
       state.dragRejected = true;
@@ -322,7 +325,9 @@ async function trialCatalogHandlePointerUp(e) {
     }
 
     if (state.dragRejected || !state.canDrag) {
-      toast('Only the current ERP stage can be queued for this process sheet.', 'info');
+      const reason = String(state.dragBlockReason || '').trim()
+        || 'This operation cannot be queued right now.';
+      toast(reason, 'info');
       return;
     }
 
@@ -433,7 +438,9 @@ function bindTrialCatalogDnD() {
       el.dataset.catalogClickBound = '1';
       el.addEventListener('click', e => {
         if (trialPlannerBusyLock > 0) return;
-        const interactive = e.target && e.target.closest('button, a, input, select, textarea, label, [contenteditable="true"]');
+        const interactive = e.target && e.target.closest(
+        'button, a, input, select, textarea, label, [contenteditable="true"], .trial-catalog-op-remove, .trial-catalog-op-uncombine',
+      );
         if (interactive) return;
         const sourcePayload = trialEnrichOpCardPayload(el, trialOpCardPayloadFromElement(el));
         if (sourcePayload && typeof openTrialCatalogOpDetail === 'function') {
@@ -446,7 +453,9 @@ function bindTrialCatalogDnD() {
     el.addEventListener('pointerdown', e => {
       if (e.button !== 0 || !e.isPrimary) return;
       if (trialPlannerBusyLock > 0) return;
-      const interactive = e.target && e.target.closest('button, a, input, select, textarea, label, [contenteditable="true"]');
+      const interactive = e.target && e.target.closest(
+        'button, a, input, select, textarea, label, [contenteditable="true"], .trial-catalog-op-remove, .trial-catalog-op-uncombine',
+      );
       if (interactive) return;
       if (el.dataset.isComplete === 'true') return;
       const dragCtx = typeof trialCatalogDragContextFromElement === 'function'
@@ -479,7 +488,11 @@ function bindTrialCatalogDnD() {
       if (catalogCard && typeof trialCatalogOpIsComplete === 'function' && trialCatalogOpIsComplete(catalogCard)) {
         return;
       }
-      const canDrag = dragCtx ? dragCtx.canDrag : String(el.dataset.canDrag || '') === '1';
+      const eligibility = dragCtx?.workCard && typeof trialCatalogOpDragEligibility === 'function'
+        ? trialCatalogOpDragEligibility(dragCtx.workCard, dragCtx.psRow)
+        : null;
+      const canDrag = eligibility ? eligibility.ok : (dragCtx ? dragCtx.canDrag : String(el.dataset.canDrag || '') === '1');
+      const dragBlockReason = eligibility?.reason || dragCtx?.dragBlockReason || '';
       trialCatalogPointerDrag = {
         sourceEl: el,
         sourcePayload,
@@ -491,6 +504,7 @@ function bindTrialCatalogDnD() {
         hasMoved: false,
         dragRejected: false,
         canDrag,
+        dragBlockReason,
         pointerId: e.pointerId,
       };
       trialDragPayload = sourcePayload;

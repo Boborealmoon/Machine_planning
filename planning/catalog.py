@@ -32,6 +32,7 @@ from .process_sheets import (
     manual_qty_by_ps_ids,
     material_in_map_for_planner_ps_ids,
     parse_planner_ps_id,
+    tooling_map_for_ps_op_keys,
     temp_planner_ps_display_label,
     _repair_temp_ps_bom_if_missing,
     _repair_erp_ps_planner_bom_if_missing,
@@ -1117,6 +1118,15 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
     unique_planner_ps_ids = list(dict.fromkeys(planner_ps_ids))
     manual_qty_by_ps = manual_qty_by_ps_ids(con, unique_planner_ps_ids)
     material_in_by_ps = material_in_map_for_planner_ps_ids(con, unique_planner_ps_ids)
+    tooling_keys = []
+    for item in grouped.values():
+        ps_id = compact_text(item.get("ps_id"))
+        for op in item.get("ops") or []:
+            seq_id = int(op.get("source_op_seq_id") or 0)
+            op_ps = compact_text(op.get("source_ps_id")) or ps_id
+            if op_ps and seq_id > 0:
+                tooling_keys.append((op_ps, seq_id))
+    tooling_by_ps_op = tooling_map_for_ps_op_keys(con, tooling_keys)
 
     def _catalog_material_in(item):
         for pid in item.get("planner_ps_ids") or []:
@@ -1183,6 +1193,15 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
                     "source_op_seq_id": int(op["source_op_seq_id"] or 0),
                     "source_op_no": op["source_op_no"] or "",
                     "job_no": op["job_no"] or "",
+                    "tooling_ready": bool(
+                        tooling_by_ps_op.get(
+                            (
+                                compact_text(op.get("source_ps_id")) or item["ps_id"],
+                                int(op.get("source_op_seq_id") or 0),
+                            ),
+                            True,
+                        )
+                    ),
                     "planning_status": "UNSCHEDULED",
                     "card_type": "SINGLE",
                     "is_scheduled": False,

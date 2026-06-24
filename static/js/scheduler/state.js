@@ -58,3 +58,5 @@ let trialLoadCache = {
 };
 /** Optimistic material-in overrides keyed by planner ps_id (e.g. NPS25-0279::4). */
 let trialMaterialInOverrides = new Map();
+/** Optimistic tooling-ready overrides keyed by operation_id. */
+let trialToolingOverrides = new Map();

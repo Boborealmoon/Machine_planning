@@ -15,6 +15,7 @@ from .sales_report_alloc import (
     attribute_shipments,
     build_allocated_open_lines,
     index_pp_jobs_by_so_line,
+    index_pp_partials,
     index_so_lines,
     integrity_check,
     ps_type_from_process_sheet,
@@ -32,6 +33,33 @@ _ytd_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _PP_TYPES = ("MPS", "APS", "NPS", "PPS", "CPS", "SR")
 _YTD_ROW_TYPES = ("APS", "NPS", "PPS")
 
+# Home-currency $ — matches ERP pre_tax_extended_home_amt and shipment total_home_amt.
+_UNIT_FC_SQL = "COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price)"
+_EXCH_OST_SQL = "COALESCE(ost.exch_rate, 1)"
+_UNIT_HOME_SQL = f"""
+CASE
+    WHEN COALESCE(det.qty, 0) > 0 AND det.pre_tax_extended_home_amt IS NOT NULL
+        THEN det.pre_tax_extended_home_amt / det.qty
+    ELSE {_UNIT_FC_SQL} * {_EXCH_OST_SQL}
+END
+"""
+_REMAINING_HOME_SQL = f"""
+CASE
+    WHEN COALESCE(det.qty, 0) > 0 AND det.pre_tax_extended_home_amt IS NOT NULL
+        THEN det.pre_tax_extended_home_amt
+            * GREATEST(0, det.qty - COALESCE(sq.qty_shipped, 0)) / det.qty
+    ELSE GREATEST(0, det.qty - COALESCE(sq.qty_shipped, 0))
+        * {_UNIT_FC_SQL} * {_EXCH_OST_SQL}
+END
+"""
+_LINE_HOME_SQL = f"""
+CASE
+    WHEN COALESCE(det.qty, 0) > 0 AND det.pre_tax_extended_home_amt IS NOT NULL
+        THEN det.pre_tax_extended_home_amt
+    ELSE det.qty * {_UNIT_FC_SQL} * {_EXCH_OST_SQL}
+END
+"""
+
 _FIRST_POSTED_SQL = """
 SELECT sales_order_no, MIN(posted_datetime) AS first_posted_datetime
 FROM public.so_order_rev_hst_hdr
@@ -46,7 +74,7 @@ LEFT JOIN public.mfg_arc_format_sourcing_v1_view src
 """
 
 # One row per SO line — authoritative remaining qty/$ (no PP join duplication).
-_SO_LINES_SQL = """
+_SO_LINES_SQL = f"""
 SELECT
     det.sales_order_no,
     regexp_replace(det.line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
@@ -55,11 +83,11 @@ SELECT
     det.qty AS so_det_qty,
     COALESCE(sq.qty_shipped, 0) AS qty_shipped,
     GREATEST(0, det.qty - COALESCE(sq.qty_shipped, 0)) AS remaining_qty,
-    COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price) AS unit_selling_price,
-    (
-        GREATEST(0, det.qty - COALESCE(sq.qty_shipped, 0))
-        * COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price)
-    ) AS remaining_value,
+    {_UNIT_HOME_SQL.strip()} AS unit_selling_price,
+    ({_REMAINING_HOME_SQL.strip()}) AS remaining_value,
+    {_UNIT_FC_SQL} AS unit_selling_price_fc,
+    {_EXCH_OST_SQL} AS exch_rate,
+    ost.order_currency_code,
     det.required_shipment_date::date AS due_date,
     hdr.customer_code,
     hdr.customer_name,
@@ -141,14 +169,16 @@ SELECT
     d.inventory_code,
     NULLIF(TRIM(d.main_desc), '') AS description,
     d.qty_issued,
-    d.unit_selling_price,
+    d.unit_selling_price AS unit_selling_price_fc,
+    (d.unit_selling_price * d.qty_issued) AS line_fc_amt,
     COALESCE(h.exch_rate, 1) AS exch_rate,
     (d.unit_selling_price * d.qty_issued * COALESCE(h.exch_rate, 1)) AS total_home_amt,
+    hdr.order_currency_code,
     d.shipment_voucher_no,
     d.invoice_no,
     d.invoice_line_item_no,
-    COALESCE(h.do_generation_datetime, h.arrival_date) AS shipment_datetime,
-    COALESCE(h.do_generation_datetime, h.arrival_date)::date AS shipment_date,
+    COALESCE(h.arrival_date, h.do_generation_datetime) AS shipment_datetime,
+    COALESCE(h.arrival_date, h.do_generation_datetime)::date AS shipment_date,
     so_det.required_shipment_date::date AS due_date,
     v.customer_code,
     v.customer_name,
@@ -176,7 +206,7 @@ LEFT JOIN (
 ) rev ON rev.sales_order_no = d.source_voucher_no
 WHERE d.source_voucher_no LIKE 'SO/%%'
   AND NOT (d.status = 'History' AND COALESCE(d.qty_issued, 0) = 0)
-  AND COALESCE(h.do_generation_datetime, h.arrival_date)::date BETWEEN %s AND %s
+  AND COALESCE(h.arrival_date, h.do_generation_datetime)::date BETWEEN %s AND %s
 ORDER BY shipment_datetime DESC, d.source_voucher_no, line_item_no
 """
 
@@ -187,25 +217,26 @@ SELECT
     det.inventory_code,
     NULLIF(TRIM(det.line_item_description), '') AS description,
     det.qty,
-    COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price) AS unit_selling_price,
-    (
-        det.qty * COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price)
-    ) AS line_amount,
+    {_UNIT_FC_SQL} AS unit_selling_price_fc,
+    {_EXCH_OST_SQL} AS exch_rate,
+    ost.order_currency_code,
+    {_UNIT_HOME_SQL.strip()} AS unit_selling_price,
+    ({_LINE_HOME_SQL.strip()}) AS line_amount,
     det.required_shipment_date::date AS due_date,
-    COALESCE(rev.first_posted_datetime, hdr.posted_datetime) AS first_posted_datetime,
+    COALESCE(rev.first_posted_datetime, ost.posted_datetime) AS first_posted_datetime,
     v.customer_code,
     v.customer_name,
     v.sales_person_name,
     v.sbu_desc
 FROM public.so_order_ost_det det
-JOIN public.so_order_ost_hdr hdr ON hdr.sales_order_no = det.sales_order_no
+JOIN public.so_order_ost_hdr ost ON ost.sales_order_no = det.sales_order_no
 LEFT JOIN public.so_order_view v ON v.sales_order_no = det.sales_order_no
 LEFT JOIN ({_FIRST_POSTED_SQL.strip()}) rev
        ON rev.sales_order_no = det.sales_order_no
 WHERE det.sales_order_no LIKE 'SO/%%'
   AND COALESCE(det.qty, 0) > 0
-  AND COALESCE(hdr.status, '') <> 'V'
-  AND COALESCE(rev.first_posted_datetime, hdr.posted_datetime)::date BETWEEN %s AND %s
+  AND COALESCE(ost.status, '') <> 'V'
+  AND COALESCE(rev.first_posted_datetime, ost.posted_datetime)::date BETWEEN %s AND %s
 ORDER BY first_posted_datetime DESC, det.sales_order_no, line_item_no
 """
 
@@ -330,6 +361,37 @@ def _due_after_month(row: dict[str, Any], end_d: date) -> bool:
     return due is not None and due > end_d
 
 
+def _shipment_bucket_due(row: dict[str, Any]) -> date | None:
+    """Original PO due date for backlog/on-time/early — not partial schedule overrides."""
+    due = _parse_date_value(row.get("so_due_date"))
+    if due is not None:
+        return due
+    return _parse_date_value(row.get("due_date"))
+
+
+def _shipment_due_in_month(row: dict[str, Any], start_d: date, end_d: date) -> bool:
+    due = _shipment_bucket_due(row)
+    return due is not None and start_d <= due <= end_d
+
+
+def _shipment_due_before_month(row: dict[str, Any], start_d: date) -> bool:
+    due = _shipment_bucket_due(row)
+    return due is not None and due < start_d
+
+
+def _shipment_due_after_month(row: dict[str, Any], end_d: date) -> bool:
+    due = _shipment_bucket_due(row)
+    return due is not None and due > end_d
+
+
+def _outstanding_rest(row: dict[str, Any], start_d: date, end_d: date) -> bool:
+    """Open lines not overdue and not due in the current month (future due or unscheduled)."""
+    due = _parse_date_value(row.get("due_date"))
+    if due is None:
+        return True
+    return due > end_d
+
+
 def _shipment_in_month(row: dict[str, Any], start_d: date, end_d: date) -> bool:
     ship = _parse_date_value(row.get("shipment_date") or row.get("shipment_datetime"))
     return ship is not None and start_d <= ship <= end_d
@@ -342,6 +404,7 @@ def _build_open_month_summary(
 ) -> dict[str, Any]:
     due_lines = [row for row in open_lines if _due_in_month(row, start_d, end_d)]
     overdue_lines = [row for row in open_lines if _due_before_month(row, start_d)]
+    rest_lines = [row for row in open_lines if _outstanding_rest(row, start_d, end_d)]
     return {
         "mode": "open",
         "due_this_month": {
@@ -353,6 +416,11 @@ def _build_open_month_summary(
             "line_count": len(overdue_lines),
             "remaining_qty": sum(_open_qty(row) for row in overdue_lines),
             "remaining_value": sum(_open_value(row) for row in overdue_lines),
+        },
+        "outstanding_rest": {
+            "line_count": len(rest_lines),
+            "remaining_qty": sum(_open_qty(row) for row in rest_lines),
+            "remaining_value": sum(_open_value(row) for row in rest_lines),
         },
         # Legacy keys for monthly drill-down
         "on_hand": {
@@ -367,6 +435,7 @@ def _build_open_month_summary(
         },
         "on_hand_lines": due_lines,
         "backlog_lines": overdue_lines,
+        "outstanding_rest_lines": rest_lines,
     }
 
 
@@ -378,15 +447,15 @@ def _build_past_month_summary(
     month_shipments = [row for row in shipments if _shipment_in_month(row, start_d, end_d)]
     delivered = [
         row for row in month_shipments
-        if _due_in_month(row, start_d, end_d)
+        if _shipment_due_in_month(row, start_d, end_d)
     ]
     backlog_delivered = [
         row for row in month_shipments
-        if _due_before_month(row, start_d)
+        if _shipment_due_before_month(row, start_d)
     ]
     early_delivered = [
         row for row in month_shipments
-        if _due_after_month(row, end_d)
+        if _shipment_due_after_month(row, end_d)
     ]
     return {
         "mode": "past",
@@ -483,8 +552,8 @@ def _build_ytd_grid(
                             "month": month,
                             "mode": "open",
                             "open_kind": "current",
-                            "overdue": open_summary["overdue"]["remaining_value"],
-                            "due_this_month": due_val,
+                            "backlog": open_summary["backlog"]["remaining_value"],
+                            "on_hand": due_val,
                         }
                     )
                 else:
@@ -508,8 +577,8 @@ def _build_ytd_grid(
                 merged["early_delivered"] = sum(float(c[idx].get("early_delivered") or 0) for c in cell_lists)
             else:
                 if meta.get("open_kind") == "current":
-                    merged["overdue"] = sum(float(c[idx].get("overdue") or 0) for c in cell_lists)
-                    merged["due_this_month"] = sum(float(c[idx].get("due_this_month") or 0) for c in cell_lists)
+                    merged["backlog"] = sum(float(c[idx].get("backlog") or 0) for c in cell_lists)
+                    merged["on_hand"] = sum(float(c[idx].get("on_hand") or 0) for c in cell_lists)
                     merged["open_kind"] = "current"
                 else:
                     merged["due_this_month"] = sum(float(c[idx].get("due_this_month") or 0) for c in cell_lists)
@@ -531,14 +600,6 @@ def _build_ytd_grid(
             }
         )
 
-    rows.append(
-        {
-            "id": "SUB_APS_NPS",
-            "label": "Sub-Total (APS+NPS)",
-            "cells": _sum_cells([row_cells["APS"], row_cells["NPS"]]),
-            "emphasis": "subtotal",
-        }
-    )
     rows.append(
         {
             "id": "TOTAL",
@@ -610,10 +671,12 @@ def _build_allocated_payload(
     pp_partials: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     allocated_open = build_allocated_open_lines(so_lines, pp_jobs, pp_partials)
+    partials_by_voucher = index_pp_partials(pp_partials or [])
     shipments_attributed = attribute_shipments(
         shipments_raw,
         index_pp_jobs_by_so_line(pp_jobs),
         index_so_lines(so_lines),
+        partials_by_voucher=partials_by_voucher,
     )
     integrity = integrity_check(so_lines, allocated_open, shipments_raw, shipments_attributed)
     return {
@@ -651,11 +714,13 @@ def _fetch_monthly_report(year: int, month: int, start_d: date, end_d: date, *, 
         detail_backlog = period_summary["backlog_delivered_lines"]
         detail_on_hand = period_summary["delivered_lines"]
         detail_early = period_summary["early_delivered_lines"]
+        detail_outstanding_rest = []
     else:
         period_summary = _build_open_month_summary(open_lines, start_d, end_d)
         detail_backlog = period_summary["backlog_lines"]
         detail_on_hand = period_summary["on_hand_lines"]
         detail_early = []
+        detail_outstanding_rest = period_summary.get("outstanding_rest_lines") or []
 
     payload = {
         "year": year,
@@ -669,6 +734,7 @@ def _fetch_monthly_report(year: int, month: int, start_d: date, end_d: date, *, 
         "backlog": detail_backlog,
         "on_hand": detail_on_hand,
         "early_delivered": detail_early,
+        "outstanding_rest": detail_outstanding_rest,
         "shipped": shipments,
         "booked": booked,
         "open_lines": open_lines,

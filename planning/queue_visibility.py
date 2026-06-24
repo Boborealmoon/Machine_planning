@@ -108,6 +108,18 @@ def _catalog_op_is_open(card: dict) -> bool:
 
 
 
+def _stale_queue_good_qty(block) -> bool:
+    """queue_state can inherit the wrong ERP stage after BOM relinks."""
+    exec_status = _normalize_exec_status(block.get("execution_status") or block.get("status"))
+    if exec_status not in {"", "NOT_STARTED", "PLANNED", "PENDING_SI"}:
+        return False
+    qs_good = float(block.get("qs_good_qty") or block.get("good_qty") or 0)
+    if qs_good <= QTY_TOL:
+        return False
+    actual_good = float(block.get("actual_good_qty") or 0)
+    return actual_good <= QTY_TOL
+
+
 def _block_net_output(block) -> float:
 
     scheduled = float(block.get("scheduled_qty") or 0)
@@ -123,6 +135,9 @@ def _block_net_output(block) -> float:
         or 0
 
     )
+
+    if _stale_queue_good_qty(block):
+        good = float(block.get("actual_good_qty") or 0)
 
     if _execution_done(block.get("execution_status") or block.get("status")) and scheduled > 0 and good <= 0:
 

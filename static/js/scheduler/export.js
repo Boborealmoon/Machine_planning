@@ -89,18 +89,31 @@ function trialExportJobCellLines(group, displaySequenceNo) {
   return lines;
 }
 
-// Blended on white to match planner.css material-in-yes / material-in-no tints.
+// Blended on white to match planner.css material-in-yes / material-in-no / tooling-no tints.
 const TRIAL_EXPORT_MATERIAL_IN_FILL = {
   yes: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE4F8EC' } },
   no: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDECEC' } },
+  tooling: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEED9' } },
 };
 const TRIAL_EXPORT_MATERIAL_IN_BORDER = {
   yes: 'FF85DFA6',
   no: 'FFF69898',
+  tooling: 'FFFDBA74',
 };
 
 function trialExportMaterialCellStyle(leader) {
   if (!leader?.block_id) return null;
+  if (typeof trialToolingForBlockLeader === 'function' && !trialToolingForBlockLeader(leader)) {
+    return {
+      fill: TRIAL_EXPORT_MATERIAL_IN_FILL.tooling,
+      border: {
+        top: { style: 'thin', color: { argb: TRIAL_EXPORT_MATERIAL_IN_BORDER.tooling } },
+        left: { style: 'thin', color: { argb: TRIAL_EXPORT_MATERIAL_IN_BORDER.tooling } },
+        bottom: { style: 'thin', color: { argb: TRIAL_EXPORT_MATERIAL_IN_BORDER.tooling } },
+        right: { style: 'thin', color: { argb: TRIAL_EXPORT_MATERIAL_IN_BORDER.tooling } },
+      },
+    };
+  }
   const materialIn = typeof trialMaterialInForBlockLeader === 'function'
     ? trialMaterialInForBlockLeader(leader)
     : Boolean(leader.material_in);

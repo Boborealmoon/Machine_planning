@@ -365,6 +365,150 @@ def fetch_asset_chart_data(
     return data if isinstance(data, list) else []
 
 
+def fetch_asset_chart_data_bulk(
+    asset_id: int,
+    *,
+    lower: str,
+    upper: str,
+    res_x: int = 1,
+    res_period: str = "hours",
+    entity_id: int | None = None,
+) -> Any:
+    """All chart series for an asset (ops.auk.industries chart-data endpoint)."""
+    entity = entity_id if entity_id is not None else _entity_id()
+    params = _auk_range_params(lower, upper, res_x=res_x, res_period=res_period)
+    return _get(f"entity/{entity}/asset/{asset_id}/chart-data", params)
+
+
+def _last_chart_value(series: list[dict[str, Any]] | None) -> float | None:
+    if not series:
+        return None
+    for point in reversed(series):
+        value = point.get("value")
+        if value is None:
+            value = point.get("y")
+        if value is not None:
+            try:
+                return round(float(value), 4)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def fetch_asset_detail(
+    asset_id: int,
+    *,
+    lower: str | None = None,
+    upper: str | None = None,
+    res_x: int = 1,
+    res_period: str = "hours",
+    entity_id: int | None = None,
+) -> dict[str, Any]:
+    """Per-machine OEE view matching ops.auk.industries asset dashboard."""
+    if not auk_configured():
+        raise RuntimeError("AUK_ACCESS_TOKEN is not configured")
+
+    if not lower or not upper:
+        lower, upper = _default_range()
+
+    entity = entity_id if entity_id is not None else _entity_id()
+    dashboard = fetch_entity_dashboard(
+        entity_id=entity,
+        lower=lower,
+        upper=upper,
+        res_x=res_x,
+        res_period=res_period,
+    )
+    assets_by_id = {
+        int(asset["asset_id"]): asset
+        for asset in (dashboard.get("assets") or [])
+        if asset.get("asset_id") is not None
+    }
+    asset = assets_by_id.get(int(asset_id))
+    if asset is None:
+        raise ValueError(f"Asset {asset_id} not found for entity {entity}")
+
+    oee_payload = fetch_asset_oee(
+        asset_id,
+        lower=lower,
+        upper=upper,
+        res_x=res_x,
+        res_period=res_period,
+        entity_id=entity,
+    )
+    card = _card_from_asset(asset, oee_payload)
+
+    chart_defs = _asset_chart_summaries(asset)
+    charts: list[dict[str, Any]] = []
+    chart_errors: dict[int, str] = {}
+
+    def _load_chart(chart_def: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+        chart_id = int(chart_def["chart_id"])
+        try:
+            series = fetch_asset_chart_data(
+                asset_id,
+                chart_id,
+                lower=lower,
+                upper=upper,
+                res_x=res_x,
+                res_period=res_period,
+                entity_id=entity,
+            )
+            return {
+                **chart_def,
+                "data_points": len(series),
+                "last_value": _last_chart_value(series),
+                "series": series,
+                "data_url": (
+                    f"{_api_base()}/entity/{entity}/asset/{asset_id}/chart/{chart_id}/data"
+                ),
+            }, None
+        except requests.RequestException as exc:
+            return {**chart_def, "data_points": 0, "last_value": None, "series": []}, str(exc)
+
+    if chart_defs:
+        workers = min(_MAX_WORKERS, len(chart_defs))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_load_chart, chart_def) for chart_def in chart_defs]
+            for future in as_completed(futures):
+                chart_row, error = future.result()
+                charts.append(chart_row)
+                if error:
+                    chart_errors[int(chart_row["chart_id"])] = error
+
+    charts.sort(key=lambda row: int(row.get("chart_id") or 0))
+    range_params = _auk_range_params(lower, upper, res_x=res_x, res_period=res_period)
+
+    return {
+        "entity_id": entity,
+        "asset_id": int(asset_id),
+        "asset_name": asset.get("asset_name") or "",
+        "block_id": card.get("block_id"),
+        "from": lower,
+        "to": upper,
+        "res_x": res_x,
+        "res_period": res_period,
+        "card": card,
+        "hourly_oee": (oee_payload or {}).get("oee") or [],
+        "std_time": (oee_payload or {}).get("stdTime"),
+        "charts": charts,
+        "chart_errors": chart_errors,
+        "auk_oee_url": f"{_api_base()}/entity/{entity}/asset/{asset_id}/oee",
+        "auk_chart_data_url": f"{_api_base()}/entity/{entity}/asset/{asset_id}/chart-data",
+        "auk_urls_with_params": {
+            "oee": (
+                f"{_api_base()}/entity/{entity}/asset/{asset_id}/oee"
+                f"?{requests.compat.urlencode(range_params)}"
+            ),
+            "chart_data": (
+                f"{_api_base()}/entity/{entity}/asset/{asset_id}/chart-data"
+                f"?{requests.compat.urlencode(range_params)}"
+            ),
+        },
+        "fetched_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
 def _asset_chart_summaries(asset: dict[str, Any]) -> list[dict[str, Any]]:
     charts: list[dict[str, Any]] = []
     for chart in asset.get("charts") or []:

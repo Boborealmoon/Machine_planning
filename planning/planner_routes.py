@@ -21,6 +21,8 @@ Key changes vs SQLite original:
 """
 from __future__ import annotations
 
+import threading
+import time
 from datetime import date, datetime, timedelta
 
 from flask import Blueprint, jsonify, request
@@ -29,12 +31,15 @@ from .actuals import refresh_block_actual_status
 from .blocks import (
     _actual_good_qty,
     _actual_variance,
+    _row_planner_ps_identity,
     apply_actual_variance_delta_to_block_tail,
     apply_output_delta_to_block_tail,
     apply_removed_target_date_to_block_tail,
     actual_daily_rows_for_block_row,
     attach_actual_daily_to_blocks,
     create_rework_from_reject,
+    create_dummy_card,
+    update_dummy_card,
     delete_rework_from_reject_segment,
     find_rework_source_for_reject,
     recalculate_all,
@@ -67,9 +72,12 @@ from .process_sheets import (
     due_date_map_for_planner_ps_ids,
     ensure_planner_process_sheet,
     format_planner_ps_id,
+    is_temp_planner_ps_id,
+    list_delivery_schedule_board_items,
     list_process_sheets_payload,
     material_in_map_for_planner_ps_ids,
     parse_planner_ps_id,
+    tooling_map_for_operation_ids,
 )
 from .machines import default_profile_for_weekday, fetch_machines, is_public_holiday
 from .sg_public_holidays import fetch_sg_public_holidays, list_public_holidays, sync_sg_public_holidays_to_db
@@ -254,9 +262,13 @@ def _calendar_window_payload(row):
 
 
 def _attach_board_meta_to_blocks(con, blocks):
-    """Attach planner_ps_id, material_in, and due_date for board / machinist lane cards."""
+    """Attach planner_ps_id, material_in, tooling_ready, and due_date for board / machinist lane cards."""
     if not blocks:
         return
+    from .scheduler_state import refresh_stale_queue_state_fields
+
+    for row in blocks:
+        refresh_stale_queue_state_fields(con, row)
     board_ps_ids = list(dict.fromkeys(
         planner_ps_id_from_block_row(row)
         for row in blocks
@@ -266,19 +278,28 @@ def _attach_board_meta_to_blocks(con, blocks):
         return
     material_in_by_ps = material_in_map_for_planner_ps_ids(con, board_ps_ids)
     due_date_by_ps = due_date_map_for_planner_ps_ids(con, board_ps_ids)
+    operation_ids = [
+        int(row.get("operation_id") or 0)
+        for row in blocks
+        if int(row.get("operation_id") or 0) > 0
+    ]
+    tooling_by_op = tooling_map_for_operation_ids(con, operation_ids)
     for row in blocks:
         ps_id = planner_ps_id_from_block_row(row)
         if not ps_id:
             continue
         row["planner_ps_id"] = ps_id
         row["material_in"] = bool(material_in_by_ps.get(ps_id))
+        op_id = int(row.get("operation_id") or 0)
+        if op_id > 0:
+            row["tooling_ready"] = bool(tooling_by_op.get(op_id, True))
         due_text = compact_text(due_date_by_ps.get(ps_id))
         if due_text:
             row["due_date"] = due_text
 
 
 def _attach_board_meta_to_blocks_rest(blocks):
-    """REST fallback: attach material_in (and planner_ps_id) without direct DB."""
+    """REST fallback: attach material_in, tooling_ready (and planner_ps_id) without direct DB."""
     if not blocks:
         return
     import requests as req
@@ -289,30 +310,60 @@ def _attach_board_meta_to_blocks_rest(blocks):
         for row in blocks
         if planner_ps_id_from_block_row(row)
     ))
-    if not board_ps_ids:
+    operation_ids = sorted({
+        int(row.get("operation_id") or 0)
+        for row in blocks
+        if int(row.get("operation_id") or 0) > 0
+    })
+    if not board_ps_ids and not operation_ids:
         return
     material_in_by_ps = {pid: False for pid in board_ps_ids}
+    tooling_by_op = {op_id: True for op_id in operation_ids}
     try:
-        quoted = ",".join(f'"{pid}"' for pid in board_ps_ids)
-        r = req.get(
-            f"{supa_url()}/planner_process_sheet",
-            headers={**supa_headers(write=True), "Prefer": "return=representation"},
-            params={
-                "select": "planner_ps_id,material_in",
-                "planner_ps_id": f"in.({quoted})",
-            },
-            timeout=30,
-        )
-        r.raise_for_status()
-        for row in r.json() or []:
-            pid = compact_text(row.get("planner_ps_id"))
-            if pid:
-                material_in_by_ps[pid] = bool(row.get("material_in"))
+        if board_ps_ids:
+            quoted = ",".join(f'"{pid}"' for pid in board_ps_ids)
+            r = req.get(
+                f"{supa_url()}/planner_process_sheet",
+                headers={**supa_headers(write=True), "Prefer": "return=representation"},
+                params={
+                    "select": "planner_ps_id,material_in",
+                    "planner_ps_id": f"in.({quoted})",
+                },
+                timeout=30,
+            )
+            r.raise_for_status()
+            for row in r.json() or []:
+                pid = compact_text(row.get("planner_ps_id"))
+                if pid:
+                    material_in_by_ps[pid] = bool(row.get("material_in"))
     except Exception:
         import logging
 
         logging.getLogger(__name__).exception(
             "REST board material_in enrichment failed; defaulting to awaiting stock"
+        )
+    try:
+        if operation_ids:
+            quoted_ops = ",".join(str(op_id) for op_id in operation_ids)
+            r = req.get(
+                f"{supa_url()}/planner_operation",
+                headers={**supa_headers(write=True), "Prefer": "return=representation"},
+                params={
+                    "select": "operation_id,tooling_ready",
+                    "operation_id": f"in.({quoted_ops})",
+                },
+                timeout=30,
+            )
+            r.raise_for_status()
+            for row in r.json() or []:
+                op_id = int(row.get("operation_id") or 0)
+                if op_id:
+                    tooling_by_op[op_id] = bool(row.get("tooling_ready"))
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "REST board tooling enrichment failed; defaulting to awaiting tooling"
         )
     for row in blocks:
         ps_id = planner_ps_id_from_block_row(row)
@@ -320,6 +371,9 @@ def _attach_board_meta_to_blocks_rest(blocks):
             continue
         row["planner_ps_id"] = ps_id
         row["material_in"] = bool(material_in_by_ps.get(ps_id))
+        op_id = int(row.get("operation_id") or 0)
+        if op_id > 0:
+            row["tooling_ready"] = bool(tooling_by_op.get(op_id, True))
 
 
 def _trial_schedule_via_rest():
@@ -373,6 +427,7 @@ def _trial_schedule_via_rest():
             "source_ps_id":             op.get("source_ps_id"),
             "source_op_seq_id":         op.get("source_op_seq_id"),
             "source_op_no":             op.get("source_op_no"),
+            "tooling_ready":            bool(op.get("tooling_ready", True)),
             "machine_code":             machine.get("machine_no"),
             "machine_category":         machine.get("machine_category"),
             "shift_profile":            machine.get("shift_profile"),
@@ -1332,15 +1387,33 @@ def _build_queue_delay_jobs(raw_rows):
     return jobs
 
 
-def _delivery_schedule_so_qty(item):
+def _delivery_schedule_so_line_qty(item):
+    """Full sales-order line qty (same across partials of one PS)."""
     so_qty = item.get("so_det_qty")
     if so_qty is not None and float(so_qty or 0) > 0:
         return float(so_qty)
-    for key in ("partial_qty", "display_qty", "wo_req_qty", "total_qty"):
-        value = item.get(key)
-        if value is not None and float(value or 0) > 0:
-            return float(value)
     return None
+
+
+def _delivery_schedule_ops_snapshot(ops):
+    out = []
+    for op in ops or []:
+        out.append(
+            {
+                "stage_no": int(op.get("stage_no") or op.get("source_stage_no") or 0),
+                "op_no": compact_text(op.get("op_no") or op.get("source_op_no")),
+                "stage_desc": compact_text(
+                    op.get("stage_desc") or op.get("op_type") or op.get("operation_name")
+                ),
+                "execution_status": compact_text(
+                    op.get("execution_status") or op.get("erp_execution_status")
+                ),
+                "wo_qty_required": op.get("wo_qty_required") or op.get("required_qty"),
+                "finished_qty": op.get("finished_qty") or op.get("wo_qty_produced"),
+                "remaining_qty": op.get("remaining_qty"),
+            }
+        )
+    return out
 
 
 def _delivery_schedule_row_from_board(item):
@@ -1356,17 +1429,34 @@ def _delivery_schedule_row_from_board(item):
             partial_no = int(ps_id.rsplit("::", 1)[1])
         except ValueError:
             pass
+    if is_temp_planner_ps_id(ps_id):
+        ps_display = compact_text(item.get("display_ps_id") or ps_id)
+    else:
+        ps_display = format_planner_ps_id(ps_base, partial_no)
     return {
         "planner_ps_id": ps_id,
         "ps_id": ps_base,
         "partial_no": partial_no,
-        "ps_display": compact_text(item.get("display_ps_id") or ps_id),
+        "ps_display": ps_display,
         "part_no": compact_text(item.get("part_no") or item.get("part_name") or item.get("inventory_code")),
         "part_desc": compact_text(item.get("part_desc")),
-        "so_qty": _delivery_schedule_so_qty(item),
+        "so_qty": _delivery_schedule_so_line_qty(item),
         "due_date": compact_text(item.get("due_date")),
         "coway_edd": compact_text(item.get("coway_proposed_edd")),
         "remarks": compact_text(item.get("remarks")),
+        "current_stage_desc": compact_text(item.get("current_stage_desc")),
+        "current_stage_status": compact_text(item.get("current_stage_status")),
+        "current_stage_no": int(item.get("current_stage_no") or 0),
+        "planner_status": compact_text(item.get("planner_status")),
+        "execution_status": compact_text(item.get("execution_status")),
+        "is_queued": bool(item.get("is_queued")),
+        "queued_machines": [
+            compact_text(code) for code in (item.get("queued_machines") or []) if compact_text(code)
+        ],
+        "is_completed": bool(item.get("is_completed")),
+        "shipped_completed": bool(item.get("shipped_completed")),
+        "pending_do": bool(item.get("pending_do")),
+        "ops": _delivery_schedule_ops_snapshot(item.get("ops")),
     }
 
 
@@ -1382,19 +1472,87 @@ def _build_delivery_schedule_rows(board_items):
     return rows_out
 
 
+_DELIVERY_SCHEDULE_CACHE: dict[str, dict] = {}
+_DELIVERY_SCHEDULE_CACHE_LOCK = threading.Lock()
+_DELIVERY_SCHEDULE_CACHE_TTL_SEC = 45
+
+
+def _delivery_schedule_cache_key(search: str, full: bool) -> str:
+    return f"{'full' if full else 'search'}:{compact_text(search).lower()}"
+
+
+def _delivery_schedule_cache_get(key: str):
+    now = time.monotonic()
+    with _DELIVERY_SCHEDULE_CACHE_LOCK:
+        bucket = _DELIVERY_SCHEDULE_CACHE.get(key)
+        if not bucket:
+            return None
+        if now > float(bucket.get("expires_at") or 0):
+            _DELIVERY_SCHEDULE_CACHE.pop(key, None)
+            return None
+        return bucket.get("payload")
+
+
+def _delivery_schedule_cache_set(key: str, payload: dict) -> None:
+    with _DELIVERY_SCHEDULE_CACHE_LOCK:
+        _DELIVERY_SCHEDULE_CACHE[key] = {
+            "payload": payload,
+            "expires_at": time.monotonic() + _DELIVERY_SCHEDULE_CACHE_TTL_SEC,
+        }
+
+
+def clear_delivery_schedule_cache() -> None:
+    with _DELIVERY_SCHEDULE_CACHE_LOCK:
+        _DELIVERY_SCHEDULE_CACHE.clear()
+
+
+def _apply_delivery_row_flags(con, items: list) -> None:
+    from .delivery_planner_service import load_delivery_row_flags
+
+    ps_ids = [compact_text(item.get("planner_ps_id")) for item in items if compact_text(item.get("planner_ps_id"))]
+    flags_map = load_delivery_row_flags(con, ps_ids)
+    for item in items:
+        pid = compact_text(item.get("planner_ps_id"))
+        flags = flags_map.get(pid) or {"dismissed": False, "exception": False}
+        item["dismissed"] = bool(flags.get("dismissed"))
+        item["exception"] = bool(flags.get("exception"))
+
+
 @trial_bp.get("/api/trial/delivery-schedule")
 def api_trial_delivery_schedule():
+    search = compact_text(request.args.get("search"))
+    full = compact_text(request.args.get("full")).lower() in {"1", "true", "yes", "on"}
+    cache_key = _delivery_schedule_cache_key(search, full)
+    cached = _delivery_schedule_cache_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
     with planner_db() as con:
-        board_items = list_process_sheets_payload(con)
+        board_items = list_delivery_schedule_board_items(con, search=search, full=full)
         items = _build_delivery_schedule_rows(board_items)
-        return jsonify(
-            {
-                "items": items,
-                "summary": {
-                    "total": len(items),
-                },
-            }
-        )
+        _apply_delivery_row_flags(con, items)
+        payload = {
+            "items": items,
+            "summary": {
+                "total": len(items),
+            },
+        }
+        _delivery_schedule_cache_set(cache_key, payload)
+        return jsonify(payload)
+
+
+@trial_bp.post("/api/trial/delivery-schedule/flags")
+def api_trial_delivery_schedule_flags_post():
+    from .delivery_planner_service import delivery_flags_post_response
+
+    return delivery_flags_post_response()
+
+
+@trial_bp.post("/api/trial/delivery-schedule/flags/bulk")
+def api_trial_delivery_schedule_flags_bulk_post():
+    from .delivery_planner_service import delivery_flags_bulk_post_response
+
+    return delivery_flags_bulk_post_response()
 
 
 @trial_bp.get("/api/trial/queue-delays")
@@ -1972,6 +2130,8 @@ def api_trial_create_operation():
             )
             block_id = int(one(block_cur)["block_id"])
             from .auto_unschedule import apply_saved_anchor_to_new_block
+            from .preferred_machines_service import sync_preferred_machine_from_block
+            from .preferred_machines_route import invalidate_preferred_machines_cache
 
             apply_saved_anchor_to_new_block(
                 con,
@@ -1980,6 +2140,8 @@ def api_trial_create_operation():
                 compact_text(data.get("source_op_no")),
                 explicit_anchor=data.get("anchor_datetime"),
             )
+            sync_preferred_machine_from_block(con, block_id, source="BLOCK_CREATE")
+            invalidate_preferred_machines_cache()
 
             # Write planning card + operation link when this op has a process sheet source
             if source_ps_id_val:
@@ -2053,6 +2215,68 @@ def api_trial_create_operation():
                 "block": trial_block_payload(trial_block_row(con, block_id), None),
                 "machine_refresh": _trial_machine_refresh_payload(con, [machine_id], lite=True),
             })
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(exc)}), 400
+
+
+@trial_bp.post("/api/trial/dummy-cards")
+def api_trial_create_dummy_card():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        with planner_db() as con:
+            block = create_dummy_card(
+                con,
+                title=data.get("title"),
+                description=data.get("description"),
+                machine_id=int(data.get("machine_id") or 0),
+                start_datetime=data.get("start_datetime"),
+                end_datetime=data.get("end_datetime"),
+                duration_minutes=data.get("duration_minutes"),
+                queue_position=float(data.get("queue_position") or 0),
+            )
+            machine_id = int(block["machine_id"])
+            return jsonify({
+                "ok": True,
+                "block": trial_block_payload(block, None),
+                "machine_refresh": _trial_machine_refresh_payload(con, [machine_id], lite=True),
+            })
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(exc)}), 400
+
+
+@trial_bp.put("/api/trial/dummy-cards/<int:block_id>")
+def api_trial_update_dummy_card(block_id):
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        with planner_db() as con:
+            existing = trial_block_row(con, block_id)
+            if not existing:
+                return jsonify({"error": "Run block not found"}), 404
+            original_machine_id = int(existing["machine_id"])
+            block = update_dummy_card(
+                con,
+                block_id,
+                title=data.get("title") if "title" in data else None,
+                description=data.get("description") if "description" in data else None,
+                machine_id=int(data.get("machine_id")) if "machine_id" in data else None,
+                start_datetime=data.get("start_datetime") if "start_datetime" in data else None,
+                end_datetime=data.get("end_datetime") if "end_datetime" in data else None,
+                duration_minutes=data.get("duration_minutes") if "duration_minutes" in data else None,
+            )
+            machine_ids = {original_machine_id, int(block["machine_id"])}
+            return jsonify({
+                "ok": True,
+                "block": trial_block_payload(block, None),
+                "machine_refresh": _trial_machine_refresh_payload(con, sorted(machine_ids), lite=True),
+            })
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         import traceback
         traceback.print_exc()
@@ -2224,8 +2448,6 @@ def api_trial_update_block(block_id):
             block_updates["status"] = execution_status
         if "machine_id" in data:
             block_updates["machine_id"] = int(data.get("machine_id") or block["machine_id"])
-        if "queue_position" in data:
-            block_updates["queue_position"] = max(1.0, float(data.get("queue_position") or block["queue_position"]))
         if "scheduled_qty" in data:
             block_updates["scheduled_qty"] = max(0.0, parse_number(data.get("scheduled_qty"), block["scheduled_qty"]))
         if "include_setup" in data:
@@ -2244,23 +2466,55 @@ def api_trial_update_block(block_id):
             block_updates["actual_reject_qty"] = max(0.0, parse_number(data.get("actual_reject_qty"), block["actual_reject_qty"]))
         if "remarks" in data:
             block_updates["remarks"] = compact_text(data.get("remarks"))
+        original_machine_id = int(block["machine_id"])
+        new_machine_id = int(block_updates.get("machine_id") or original_machine_id)
+        machine_changed = "machine_id" in block_updates and new_machine_id != original_machine_id
         if block_updates:
             set_clause = ", ".join(f"{k} = %s" for k in block_updates)
             con.execute(
                 f"UPDATE planner_run_block SET {set_clause}, updated_at = NOW() WHERE block_id = %s",
                 (*block_updates.values(), int(block_id)),
             )
-        original_machine_id = int(block["machine_id"])
+        if machine_changed:
+            from .operation_sequence import apply_machine_queue_order, compact_machine_lane_queue
+
+            dest_rows = rows(
+                con.execute(
+                    """
+                    SELECT block_id
+                    FROM planner_run_block
+                    WHERE machine_id = %s
+                      AND COALESCE(active, TRUE) = TRUE
+                    ORDER BY queue_position, block_id
+                    """,
+                    (new_machine_id,),
+                )
+            )
+            ordered_ids = [
+                int(row["block_id"])
+                for row in dest_rows
+                if int(row["block_id"]) != int(block_id)
+            ]
+            ordered_ids.append(int(block_id))
+            apply_machine_queue_order(
+                con,
+                new_machine_id,
+                ordered_ids,
+                recalculate=recalculate,
+            )
+            if original_machine_id != new_machine_id:
+                compact_machine_lane_queue(con, original_machine_id, recalculate=False)
+        elif recalculate:
+            recalculate_machine(con, original_machine_id, tail_from_block_id=int(block_id))
+        if "machine_id" in block_updates:
+            from .preferred_machines_service import sync_preferred_machine_from_block
+            from .preferred_machines_route import invalidate_preferred_machines_cache
+
+            sync_preferred_machine_from_block(con, int(block_id), source="BLOCK_UPDATE")
+            invalidate_preferred_machines_cache()
         machine_ids = {original_machine_id}
         if "machine_id" in block_updates:
             machine_ids.add(int(block_updates["machine_id"]))
-        if recalculate:
-            new_machine_id = int(block_updates.get("machine_id") or original_machine_id)
-            if new_machine_id != original_machine_id:
-                recalculate_machine(con, original_machine_id)
-                recalculate_machine(con, new_machine_id, tail_from_block_id=int(block_id))
-            else:
-                recalculate_machine(con, original_machine_id, tail_from_block_id=int(block_id))
         affected_ids = sorted(machine_ids)
         return jsonify({
             "ok": True,

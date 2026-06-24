@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from datetime import date
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, has_request_context, request
 
 from db import planner_db_connect_error
 from .helpers import one, rows, planner_db
@@ -2818,11 +2818,10 @@ def _step_payload(step, metrics_by_op, work_qty=0):
     }
 
 
-def _apply_partial_shipped_rollup(rows):
-    """Allocate shipped qty across partials of the same source PS in order."""
+def _reconcile_partial_shipped_status(rows, *, tol=0.0001):
+    """Allocate SO shipped qty across partials in order; recompute shipped_completed/is_completed."""
     if not rows:
         return
-    qty_tolerance = 0.0001
     by_source = {}
     for row in rows:
         source = compact_text(row.get("source_ps_id") or row.get("display_ps_id") or row.get("ps_id"))
@@ -2834,21 +2833,49 @@ def _apply_partial_shipped_rollup(rows):
         source_rows.sort(key=lambda item: int(item.get("pp_partial_no") or 1))
         shipped_total = max(_to_float(item.get("qty_shipped")) for item in source_rows)
         shipped_left = max(0.0, shipped_total)
+        so_qty = next((item.get("so_det_qty") for item in source_rows if item.get("so_det_qty") is not None), None)
+        so_shipped_complete = so_qty is not None and shipped_quantity_completed(so_qty, shipped_total)
+
         for item in source_rows:
             req_qty = max(0.0, _to_float(item.get("display_qty") or item.get("wo_req_qty") or item.get("partial_qty")))
-            if req_qty <= 0:
-                continue
-            covered_qty = min(req_qty, shipped_left)
-            shipped_left = max(0.0, shipped_left - covered_qty)
-            if covered_qty + qty_tolerance < req_qty:
-                continue
             production_done = bool(item.get("production_completed")) or bool(item.get("execution_completed"))
-            if not production_done:
-                continue
-            item["finished_qty"] = max(_to_float(item.get("finished_qty")), req_qty)
-            item["remaining_qty"] = 0.0
-            item["shipped_completed"] = True
-            item["is_completed"] = True
+            has_partial_erp_evidence = bool(
+                compact_text(item.get("current_stage_status"))
+                or any(
+                    compact_text(op.get("execution_status") or op.get("erp_execution_status"))
+                    for op in (item.get("ops") or [])
+                )
+            )
+            covered_qty = min(req_qty, shipped_left) if req_qty > tol else 0.0
+            sequential_shipped = (
+                has_partial_erp_evidence
+                and production_done
+                and req_qty > tol
+                and covered_qty >= (req_qty - tol)
+            )
+            shipped_left = max(0.0, shipped_left - covered_qty)
+            item["shipped_completed"] = sequential_shipped or so_shipped_complete
+
+            if sequential_shipped and req_qty > tol:
+                item["finished_qty"] = max(_to_float(item.get("finished_qty")), req_qty)
+                item["remaining_qty"] = 0.0
+                for op in item.get("ops") or []:
+                    op_req = _to_float(op.get("wo_qty_required") or op.get("required_qty") or req_qty)
+                    if _to_float(op.get("finished_qty")) <= 0:
+                        op["finished_qty"] = min(op_req, req_qty)
+                    op["remaining_qty"] = max(0.0, op_req - _to_float(op.get("finished_qty")))
+
+            erp_all_wo_complete = bool(item.get("erp_all_wo_complete"))
+            pending_do = pending_delivery_order(item)
+            if pending_do:
+                item["is_completed"] = bool(item.get("shipped_completed"))
+            else:
+                item["is_completed"] = bool(item.get("shipped_completed")) or erp_all_wo_complete
+
+
+def _apply_partial_shipped_rollup(rows):
+    """Backward-compatible alias — reconcile before open/closed filtering."""
+    _reconcile_partial_shipped_status(rows)
 
 
 def _ps_select_sql(con=None):
@@ -2953,6 +2980,80 @@ def _ps_select_sql(con=None):
 
 def _ps_select(con):
     return _ps_select_sql(con)
+
+
+def _ps_select_search_clause(search):
+    """Narrow planner_process_sheet rows when delivery / board search is active."""
+    needle = compact_text(search).lower()
+    if not needle:
+        return "", []
+    base_term, partial_no = parse_bulk_lookup_ps_term(needle)
+    if partial_no is not None and is_ps_base_id(base_term):
+        return (
+            """
+            WHERE UPPER(COALESCE(ps.source_ps_id, '')) = UPPER(%s)
+              AND COALESCE(ps.pp_partial_no, 1) = %s
+            """,
+            [base_term, partial_no],
+        )
+    pattern = f"%{needle}%"
+    return (
+        """
+        WHERE (
+            UPPER(COALESCE(ps.source_ps_id, '')) LIKE UPPER(%s)
+            OR UPPER(COALESCE(ps.planner_ps_id, '')) LIKE UPPER(%s)
+            OR UPPER(COALESCE(v.part_no, '')) LIKE UPPER(%s)
+            OR UPPER(COALESCE(v.description, '')) LIKE UPPER(%s)
+            OR CAST(COALESCE(ps.pp_partial_no, 1) AS TEXT) LIKE %s
+        )
+        """,
+        [pattern, pattern, pattern, pattern, pattern],
+    )
+
+
+def _board_item_search_haystack(item):
+    return " ".join(
+        compact_text(item.get(key)).lower()
+        for key in (
+            "ps_id",
+            "source_ps_id",
+            "display_ps_id",
+            "pp_partial_no",
+            "part_name",
+            "part_no",
+            "part_desc",
+            "inventory_code",
+            "remarks",
+            "current_stage_desc",
+        )
+    )
+
+
+def board_item_matches_search(item, search):
+    needle = compact_text(search).lower()
+    if not needle:
+        return True
+    base_term, partial_no = parse_bulk_lookup_ps_term(needle)
+    source = compact_text(
+        item.get("source_ps_id") or item.get("display_ps_id") or item.get("ps_id") or ""
+    ).split("::")[0].lower()
+    try:
+        entry_partial = int(item.get("pp_partial_no") or 1)
+    except (TypeError, ValueError):
+        entry_partial = 1
+    ps_id = compact_text(item.get("ps_id") or "")
+    if not item.get("pp_partial_no") and "::" in ps_id:
+        try:
+            entry_partial = int(ps_id.rsplit("::", 1)[1])
+        except ValueError:
+            pass
+    if partial_no is not None and is_ps_base_id(base_term):
+        return source == base_term.lower() and entry_partial == partial_no
+    if needle in _board_item_search_haystack(item):
+        return True
+    if is_ps_base_id(base_term) and source == base_term.lower():
+        return True
+    return False
 
 
 # Backward compatibility for ad-hoc scripts (assumes overlay columns exist).
@@ -3083,20 +3184,45 @@ def process_sheet_board_identity_key(item):
     return f"{source}::{partial}"
 
 
-def list_process_sheets_payload(con):
+def _payload_filter_arg(name, explicit, *, default="", bool_values=False):
+    if explicit is not None:
+        if bool_values:
+            return bool(explicit)
+        return compact_text(explicit)
+    if has_request_context():
+        raw = request.args.get(name)
+        if bool_values:
+            return compact_text(raw).lower() in {"1", "true", "yes", "on"}
+        return compact_text(raw or default)
+    return default if not bool_values else False
+
+
+def list_process_sheets_payload(
+    con,
+    *,
+    search=None,
+    status_filter=None,
+    planner_filter=None,
+    show_completed=None,
+    overdue_only=None,
+):
     _ensure_planner_temp_process_sheet_table(con)
     _overlay_column_flags(con)
-    search = compact_text(request.args.get("search")).lower()
-    status_filter = compact_text(request.args.get("status")).upper()
-    planner_filter = compact_text(request.args.get("planner_status")).upper()
-    show_completed = compact_text(request.args.get("show_completed")).lower() in {"1", "true", "yes", "on"}
-    overdue_only = compact_text(request.args.get("overdue_only")).lower() in {"1", "true", "yes", "on"}
+    search = _payload_filter_arg("search", search).lower()
+    status_filter = _payload_filter_arg("status", status_filter).upper()
+    planner_filter = _payload_filter_arg("planner_status", planner_filter).upper()
+    show_completed = _payload_filter_arg("show_completed", show_completed, bool_values=True)
+    overdue_only = _payload_filter_arg("overdue_only", overdue_only, bool_values=True)
 
+    search_clause, search_params = _ps_select_search_clause(search)
     ps_rows = [
         dict(row)
         for row in rows(
             con.execute(
-                _ps_select(con) + " ORDER BY COALESCE(v.due_date::TEXT, ''), ps.planner_ps_id"
+                _ps_select(con)
+                + search_clause
+                + " ORDER BY COALESCE(v.due_date::TEXT, ''), ps.planner_ps_id",
+                tuple(search_params),
             )
         )
     ]
@@ -3143,7 +3269,7 @@ def list_process_sheets_payload(con):
             wo_stage_seen.add(key)
     wo_stages_cache = mfg_wo_stages_batch(con, wo_stage_keys)
 
-    result = []
+    candidates = []
     today = date.today().isoformat()
     for ps in ps_rows:
         ps_id = compact_text(ps["ps_id"])
@@ -3274,6 +3400,14 @@ def list_process_sheets_payload(con):
             )
         if payload.get("is_temp_ps"):
             haystack += " temp reject rework"
+        payload["_search_haystack"] = haystack
+        candidates.append(payload)
+
+    _reconcile_partial_shipped_status(candidates)
+
+    result = []
+    for payload in candidates:
+        haystack = payload.pop("_search_haystack", "")
         if search and search not in haystack:
             continue
         if status_filter and compact_text(payload["status"]).upper() != status_filter:
@@ -3287,9 +3421,330 @@ def list_process_sheets_payload(con):
         ):
             continue
         result.append(payload)
-    _apply_partial_shipped_rollup(result)
     enrich_items_material_inventory_codes(con, result)
     return result
+
+
+def _delivery_schedule_search_clause(search):
+    """Filter planner rows for delivery schedule search."""
+    needle = compact_text(search).lower()
+    if not needle:
+        return "", []
+    base_term, partial_no = parse_bulk_lookup_ps_term(needle)
+    if partial_no is not None and base_term:
+        if is_ps_base_id(base_term):
+            return (
+                """
+                WHERE UPPER(COALESCE(ps.source_ps_id, '')) = UPPER(%s)
+                  AND COALESCE(ps.pp_partial_no, 1) = %s
+                """,
+                [base_term, partial_no],
+            )
+        partial_pattern = f"%{base_term}%"
+        return (
+            """
+            WHERE UPPER(COALESCE(ps.source_ps_id, '')) LIKE UPPER(%s)
+              AND COALESCE(ps.pp_partial_no, 1) = %s
+            """,
+            [partial_pattern, partial_no],
+        )
+    pattern = f"%{needle}%"
+    return (
+        """
+        WHERE (
+            UPPER(COALESCE(ps.source_ps_id, '')) LIKE UPPER(%s)
+            OR UPPER(COALESCE(ps.planner_ps_id, '')) LIKE UPPER(%s)
+            OR UPPER(COALESCE(v.part_no, '')) LIKE UPPER(%s)
+            OR UPPER(COALESCE(v.description, '')) LIKE UPPER(%s)
+        )
+        """,
+        [pattern, pattern, pattern, pattern],
+    )
+
+
+def _delivery_schedule_select_sql(con=None):
+    """Fast delivery query — pp_vouchers_cache only (no mfg_wo_status / erp_stage_outputs)."""
+    flags = _overlay_column_flags(con) if con is not None else (_OVERLAY_COLUMN_CACHE or {"coway": True, "remarks": True})
+    coway_expr = (
+        "ps.coway_proposed_edd,"
+        if flags.get("coway")
+        else "NULL::DATE AS coway_proposed_edd,"
+    )
+    remarks_expr = (
+        "ps.remarks,"
+        if flags.get("remarks")
+        else "'' AS remarks,"
+    )
+    return f"""
+    WITH voucher_partials AS (
+        SELECT
+            c.ps_id,
+            c.pp_partial_no,
+            MAX(c.part_no) AS part_no,
+            MAX(c.description) AS description,
+            MIN(c.due_date) AS due_date,
+            MAX(c.status) AS status,
+            MAX(c.execution_status) AS execution_status,
+            MAX(c.total_qty) AS total_qty,
+            MAX(c.partial_qty) AS partial_qty,
+            MAX(c.qty_shipped) AS qty_shipped,
+            MAX(c.so_det_qty) AS so_det_qty,
+            MAX(c.current_stage_no) AS current_stage_no,
+            MAX(c.current_stage_desc) AS current_stage_desc,
+            MAX(c.current_stage_status) AS current_stage_status,
+            COALESCE(
+                BOOL_AND(
+                    CASE
+                        WHEN NULLIF(TRIM(COALESCE(c.execution_status, '')), '') IS NULL THEN NULL
+                        ELSE UPPER(REPLACE(REPLACE(c.execution_status, '-', '_'), ' ', '_')) IN ('C', 'COMPLETED')
+                    END
+                ),
+                FALSE
+            ) AS execution_completed
+        FROM pp_vouchers_cache c
+        GROUP BY c.ps_id, c.pp_partial_no
+    )
+    SELECT
+        ps.planner_ps_id AS ps_id,
+        ps.source_ps_id,
+        ps.pp_partial_no,
+        {coway_expr}
+        {remarks_expr}
+        ps.planner_status,
+        v.part_no,
+        v.part_no AS part_name,
+        v.description AS part_desc,
+        v.partial_qty,
+        v.total_qty,
+        v.so_det_qty,
+        v.qty_shipped,
+        v.due_date,
+        v.execution_status,
+        v.execution_completed,
+        v.current_stage_no,
+        v.current_stage_desc,
+        v.current_stage_status
+    FROM planner_process_sheet ps
+    LEFT JOIN planner_temp_process_sheet tps ON tps.planner_ps_id = ps.planner_ps_id
+    LEFT JOIN voucher_partials v
+           ON v.ps_id = ps.source_ps_id
+          AND v.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
+    """
+
+
+def _delivery_schedule_row_from_ps_row(ps_row):
+    """Lightweight delivery row from planner_process_sheet + voucher join (no flow/metrics)."""
+    ps_id = compact_text(ps_row.get("ps_id"))
+    source, partial_raw = _display_ids(ps_row)
+    try:
+        partial_no = int(partial_raw or 1)
+    except (TypeError, ValueError):
+        partial_no = 1
+    if is_temp_planner_ps_id(ps_id):
+        display_ps_id = temp_planner_ps_display_label(ps_id)
+    else:
+        display_ps_id = format_planner_ps_id(source, partial_no)
+
+    partial_qty = _to_float(ps_row.get("partial_qty"))
+    display_qty = partial_qty or _to_float(ps_row.get("total_qty"))
+    execution_completed = bool(ps_row.get("execution_completed"))
+    qty_shipped = _to_float(ps_row.get("qty_shipped"))
+    so_qty = _to_float(ps_row.get("so_det_qty")) if ps_row.get("so_det_qty") is not None else None
+    shipped_completed = (
+        execution_completed
+        and display_qty > 0
+        and qty_shipped >= (display_qty - 0.0001)
+    ) or (so_qty is not None and shipped_quantity_completed(so_qty, qty_shipped))
+
+    item = {
+        "ps_id": ps_id,
+        "source_ps_id": source,
+        "pp_partial_no": partial_no,
+        "display_ps_id": display_ps_id,
+        "is_temp_ps": is_temp_planner_ps_id(ps_id),
+        "part_no": compact_text(ps_row.get("part_no")),
+        "part_name": compact_text(ps_row.get("part_no")),
+        "part_desc": compact_text(ps_row.get("part_desc")),
+        "due_date": compact_text(ps_row.get("due_date")),
+        "coway_proposed_edd": compact_text(ps_row.get("coway_proposed_edd")),
+        "remarks": compact_text(ps_row.get("remarks")),
+        "current_stage_desc": compact_text(ps_row.get("current_stage_desc")),
+        "current_stage_status": compact_text(ps_row.get("current_stage_status")),
+        "current_stage_no": int(ps_row.get("current_stage_no") or 0),
+        "execution_status": compact_text(ps_row.get("execution_status")),
+        "planner_status": compact_text(ps_row.get("planner_status")),
+        "so_det_qty": so_qty,
+        "qty_shipped": qty_shipped,
+        "partial_qty": partial_qty,
+        "display_qty": display_qty,
+        "wo_req_qty": display_qty,
+        "execution_completed": execution_completed,
+        "production_completed": execution_completed,
+        "shipped_completed": shipped_completed,
+        "erp_all_wo_complete": execution_completed,
+        "ops": [],
+        "is_queued": False,
+        "queued_machines": [],
+    }
+    item["pending_do"] = pending_delivery_order(item)
+    item["is_completed"] = bool(item.get("shipped_completed")) or (
+        execution_completed and not item["pending_do"]
+    )
+    return item
+
+
+def _delivery_schedule_source_clause(base_term):
+    """All planner rows for one PS base (exact or partial PS number match)."""
+    base = compact_text(base_term).lower()
+    if not base:
+        return "", []
+    if is_ps_base_id(base):
+        return (
+            " WHERE UPPER(COALESCE(ps.source_ps_id, '')) = UPPER(%s) ",
+            [base],
+        )
+    pattern = f"%{base}%"
+    return (
+        " WHERE UPPER(COALESCE(ps.source_ps_id, '')) LIKE UPPER(%s) ",
+        [pattern],
+    )
+
+
+def _delivery_schedule_planner_items(con, search=""):
+    needle = compact_text(search).lower()
+    base_term, partial_no = parse_bulk_lookup_ps_term(needle)
+    if partial_no is not None and base_term:
+        search_clause, search_params = _delivery_schedule_source_clause(base_term)
+    else:
+        search_clause, search_params = _delivery_schedule_search_clause(search)
+    ps_rows = [
+        dict(row)
+        for row in rows(
+            con.execute(
+                _delivery_schedule_select_sql(con)
+                + search_clause
+                + " ORDER BY COALESCE(v.due_date::TEXT, ''), ps.planner_ps_id",
+                tuple(search_params),
+            )
+        )
+    ]
+    candidates = [_delivery_schedule_row_from_ps_row(row) for row in ps_rows]
+    _reconcile_partial_shipped_status(candidates)
+    open_items = [item for item in candidates if not item.get("is_completed")]
+    if partial_no is not None and base_term:
+        open_items = [
+            item for item in open_items
+            if int(item.get("pp_partial_no") or 1) == int(partial_no)
+        ]
+    return open_items
+
+
+def _delivery_schedule_erp_only_partial_keys(con, search):
+    """ERP open partials with no planner_process_sheet row, optionally filtered by search."""
+    from planning.utils import SHIPPED_QTY_TOLERANCE
+
+    shipped_complete = (
+        "c.so_det_qty IS NOT NULL "
+        f"AND COALESCE(c.qty_shipped, 0) >= c.so_det_qty - {SHIPPED_QTY_TOLERANCE}"
+    )
+    params: list = []
+    search_sql = ""
+    search_text = compact_text(search).lower()
+    if search_text:
+        needle = f"%{search_text}%"
+        search_sql = """
+          AND (
+              LOWER(p.ps_id) LIKE %s
+              OR LOWER(COALESCE(p.part_no, '')) LIKE %s
+              OR LOWER(COALESCE(p.description, '')) LIKE %s
+              OR LOWER(COALESCE(p.pp_partial_no::TEXT, '')) LIKE %s
+          )
+        """
+        params.extend([needle, needle, needle, needle])
+
+    sql = f"""
+        WITH partials AS (
+            SELECT
+                c.ps_id,
+                c.pp_partial_no,
+                MAX(c.part_no) AS part_no,
+                MAX(c.description) AS description
+            FROM pp_vouchers_cache c
+            WHERE NOT ({shipped_complete})
+            GROUP BY c.ps_id, c.pp_partial_no
+        )
+        SELECT p.ps_id, p.pp_partial_no
+        FROM partials p
+        LEFT JOIN planner_process_sheet ps
+               ON ps.source_ps_id = p.ps_id
+              AND ps.pp_partial_no = p.pp_partial_no
+        WHERE ps.planner_ps_id IS NULL
+        {search_sql}
+        ORDER BY p.ps_id, p.pp_partial_no
+    """
+    return [
+        (compact_text(row.get("ps_id")), int(row.get("pp_partial_no") or 1))
+        for row in rows(con.execute(sql, tuple(params) if params else None))
+        if compact_text(row.get("ps_id"))
+    ]
+
+
+def _delivery_schedule_finalize_erp_entries(entries):
+    if not entries:
+        return []
+    from app import _apply_sequential_partial_shipped, _finalize_pp_voucher_entry
+
+    for entry in entries:
+        _finalize_pp_voucher_entry(entry)
+    _apply_sequential_partial_shipped(entries)
+    open_entries = []
+    for entry in entries:
+        entry["is_completed"] = bool(entry.get("shipped_completed")) or bool(entry.get("execution_completed"))
+        entry["pending_do"] = pending_delivery_order(entry)
+        if not entry.get("is_completed"):
+            open_entries.append(entry)
+    return open_entries
+
+
+def list_delivery_schedule_board_items(con, *, search="", full=False):
+    """Open partial-level rows for delivery schedule (planner registrations + ERP-only partials)."""
+    search = compact_text(search).lower()
+    if not search and not full:
+        return []
+
+    planner_items = _delivery_schedule_planner_items(con, search)
+    merged = list(planner_items)
+    if not search:
+        return merged
+
+    planner_keys = {process_sheet_board_identity_key(item) for item in planner_items}
+    partial_keys = [
+        key
+        for key in _delivery_schedule_erp_only_partial_keys(con, search)
+        if process_sheet_board_identity_key(
+            {
+                "source_ps_id": key[0],
+                "pp_partial_no": key[1],
+                "ps_id": format_planner_ps_id(key[0], key[1]),
+            }
+        )
+        not in planner_keys
+    ]
+    if not partial_keys:
+        return merged
+
+    # Cap ERP-only enrichment — lane catalog is heavier than planner rows.
+    partial_keys = partial_keys[:25]
+
+    from app import pp_vouchers_lane_catalog_entries
+
+    erp_only = _delivery_schedule_finalize_erp_entries(
+        pp_vouchers_lane_catalog_entries(con, partial_keys, include_completed=False)
+    )
+    if erp_only:
+        enrich_board_planner_fields(con, erp_only)
+        merged.extend(erp_only)
+    return merged
 
 
 def _parse_optional_date_field(value):
@@ -3478,11 +3933,290 @@ def _update_material_in(con, ps_id, material_in):
     except Exception:
         pass
     material_in_date = (row or {}).get("material_in_date")
+    try:
+        from planning.sales_orders_route import patch_sales_orders_material_in
+
+        patch_sales_orders_material_in(canonical_ps_id, {
+            "material_in": bool((row or {}).get("material_in")),
+            "material_in_date": material_in_date.isoformat() if material_in_date else None,
+        })
+    except Exception:
+        pass
     return {
         "ps_id": canonical_ps_id,
         "material_in": bool((row or {}).get("material_in")),
         "material_in_date": material_in_date.isoformat() if material_in_date else None,
     }, None
+
+
+_TOOLING_COLUMN_CACHE = None
+_TOOLING_DEFAULTS_APPLIED = False
+
+
+def _apply_tooling_assumed_ready_defaults(con):
+    """One-time idempotent fix: assume tooling unless explicitly flagged (tooling_ready_date set)."""
+    global _TOOLING_DEFAULTS_APPLIED, _TOOLING_COLUMN_CACHE
+    if _TOOLING_DEFAULTS_APPLIED:
+        return
+    _ensure_tooling_columns(con)
+    try:
+        con.execute(
+            """
+            ALTER TABLE planner_operation
+            ALTER COLUMN tooling_ready SET DEFAULT TRUE
+            """
+        )
+        con.execute(
+            """
+            UPDATE planner_operation
+            SET tooling_ready = TRUE,
+                tooling_ready_date = NULL
+            WHERE tooling_ready IS NOT TRUE
+              AND tooling_ready_date IS NULL
+            """
+        )
+    except Exception:
+        pass
+    _TOOLING_DEFAULTS_APPLIED = True
+    _TOOLING_COLUMN_CACHE = None
+
+
+def _tooling_column_flags(con):
+    """Detect planner_operation tooling columns without DDL on hot read paths."""
+    global _TOOLING_COLUMN_CACHE
+    if _TOOLING_COLUMN_CACHE is not None:
+        return _TOOLING_COLUMN_CACHE
+    flags = {"tooling_ready": False, "tooling_ready_date": False}
+    try:
+        for row in rows(
+            con.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'planner_operation'
+                  AND column_name IN ('tooling_ready', 'tooling_ready_date')
+                """
+            )
+        ):
+            name = compact_text(row.get("column_name"))
+            if name == "tooling_ready":
+                flags["tooling_ready"] = True
+            elif name == "tooling_ready_date":
+                flags["tooling_ready_date"] = True
+    except Exception:
+        pass
+    _TOOLING_COLUMN_CACHE = flags
+    return flags
+
+
+def _ensure_tooling_columns(con):
+    """Apply tooling DDL only when a write path needs missing columns."""
+    flags = _tooling_column_flags(con)
+    if flags["tooling_ready"] and flags["tooling_ready_date"]:
+        return flags
+    global _TOOLING_COLUMN_CACHE
+    try:
+        if not flags["tooling_ready"]:
+            con.execute(
+                """
+                ALTER TABLE planner_operation
+                ADD COLUMN IF NOT EXISTS tooling_ready BOOLEAN NOT NULL DEFAULT TRUE
+                """
+            )
+            flags["tooling_ready"] = True
+        if not flags["tooling_ready_date"]:
+            con.execute(
+                """
+                ALTER TABLE planner_operation
+                ADD COLUMN IF NOT EXISTS tooling_ready_date DATE
+                """
+            )
+            flags["tooling_ready_date"] = True
+    except Exception:
+        pass
+    _TOOLING_COLUMN_CACHE = dict(flags)
+    return _TOOLING_COLUMN_CACHE
+
+
+def tooling_map_for_operation_ids(con, operation_ids):
+    """Return {operation_id: bool}; defaults True — False only for flagged exceptions."""
+    _apply_tooling_assumed_ready_defaults(con)
+    flags = _tooling_column_flags(con)
+    ids = sorted({int(i) for i in (operation_ids or []) if int(i or 0) > 0})
+    if not ids:
+        return {}
+    if not flags.get("tooling_ready"):
+        return {op_id: True for op_id in ids}
+    out = {op_id: True for op_id in ids}
+    for row in rows(
+        con.execute(
+            """
+            SELECT operation_id, COALESCE(tooling_ready, TRUE) AS tooling_ready
+            FROM planner_operation
+            WHERE operation_id = ANY(%s)
+            """,
+            (ids,),
+        )
+    ):
+        op_id = int(row.get("operation_id") or 0)
+        if op_id:
+            out[op_id] = bool(row.get("tooling_ready"))
+    return out
+
+
+def tooling_map_for_ps_op_keys(con, keys):
+    """Return {(planner_ps_id, source_op_seq_id): bool}; defaults True — False only for exceptions."""
+    _apply_tooling_assumed_ready_defaults(con)
+    flags = _tooling_column_flags(con)
+    normalized = []
+    seen = set()
+    for key in keys or []:
+        if not key or not isinstance(key, (tuple, list)) or len(key) < 2:
+            continue
+        ps_id = compact_text(key[0])
+        seq_id = int(key[1] or 0)
+        if not ps_id or seq_id <= 0:
+            continue
+        token = (ps_id, seq_id)
+        if token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    if not normalized:
+        return {}
+    if not flags.get("tooling_ready"):
+        return {token: True for token in normalized}
+    ps_ids = list(dict.fromkeys(ps for ps, _ in normalized))
+    out = {token: True for token in normalized}
+    for row in rows(
+        con.execute(
+            """
+            SELECT source_ps_id, source_op_seq_id,
+                   COALESCE(tooling_ready, TRUE) AS tooling_ready
+            FROM planner_operation
+            WHERE source_ps_id = ANY(%s)
+            """,
+            (ps_ids,),
+        )
+    ):
+        ps_id = compact_text(row.get("source_ps_id"))
+        seq_id = int(row.get("source_op_seq_id") or 0)
+        if not ps_id or seq_id <= 0:
+            continue
+        token = (ps_id, seq_id)
+        if token in out:
+            out[token] = bool(row.get("tooling_ready"))
+    return out
+
+
+def _resolve_operation_id_for_tooling(con, operation_id=None, ps_id=None, source_op_seq_id=None):
+    op_id = int(operation_id or 0)
+    if op_id > 0:
+        return op_id
+    canonical_ps_id = compact_text(ps_id)
+    seq_id = int(source_op_seq_id or 0)
+    if not canonical_ps_id or seq_id <= 0:
+        return 0
+    _, _, planner_ps_id = _planner_ps_identity(canonical_ps_id)
+    row = one(
+        con.execute(
+            """
+            SELECT operation_id
+            FROM planner_operation
+            WHERE source_ps_id = %s
+              AND source_op_seq_id = %s
+            ORDER BY operation_id DESC
+            LIMIT 1
+            """,
+            (planner_ps_id, seq_id),
+        )
+    )
+    return int((row or {}).get("operation_id") or 0)
+
+
+def _update_tooling(con, tooling_ready, operation_id=None, ps_id=None, source_op_seq_id=None):
+    _ensure_tooling_columns(con)
+    op_id = _resolve_operation_id_for_tooling(
+        con,
+        operation_id=operation_id,
+        ps_id=ps_id,
+        source_op_seq_id=source_op_seq_id,
+    )
+    if op_id <= 0:
+        return None, "operation not found"
+    tooling_bool = bool(tooling_ready)
+    con.execute(
+        """
+        UPDATE planner_operation
+        SET tooling_ready = %s,
+            tooling_ready_date = CASE
+                WHEN NOT %s THEN COALESCE(tooling_ready_date, CURRENT_DATE)
+                ELSE NULL
+            END,
+            updated_at = NOW()
+        WHERE operation_id = %s
+        """,
+        (tooling_bool, tooling_bool, op_id),
+    )
+    row = one(
+        con.execute(
+            """
+            SELECT operation_id, source_ps_id, source_op_seq_id,
+                   tooling_ready, tooling_ready_date
+            FROM planner_operation
+            WHERE operation_id = %s
+            """,
+            (op_id,),
+        )
+    )
+    tooling_date = (row or {}).get("tooling_ready_date")
+    return {
+        "operation_id": op_id,
+        "ps_id": compact_text((row or {}).get("source_ps_id")),
+        "source_op_seq_id": int((row or {}).get("source_op_seq_id") or 0),
+        "tooling_ready": bool((row or {}).get("tooling_ready")),
+        "tooling_ready_date": tooling_date.isoformat() if tooling_date else None,
+    }, None
+
+
+def tooling_post_response():
+    """Shared handler for tooling exception flags (scheduler op card modal)."""
+    data = request.get_json(force=True, silent=True) or {}
+    if "tooling_ready" not in data:
+        return jsonify({"error": "tooling_ready is required"}), 400
+    try:
+        tooling_ready = _parse_material_in_field(data.get("tooling_ready"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    operation_id = int(data.get("operation_id") or 0)
+    ps_id = compact_text(data.get("ps_id"))
+    source_op_seq_id = int(data.get("source_op_seq_id") or 0)
+    if operation_id <= 0 and (not ps_id or source_op_seq_id <= 0):
+        return jsonify({"error": "operation_id or (ps_id + source_op_seq_id) is required"}), 400
+    try:
+        with planner_db() as con:
+            payload, err = _update_tooling(
+                con,
+                tooling_ready,
+                operation_id=operation_id,
+                ps_id=ps_id,
+                source_op_seq_id=source_op_seq_id,
+            )
+            if err:
+                return jsonify({"error": err}), 404
+            return jsonify(payload)
+    except Exception as e:
+        friendly = planner_db_connect_error(e)
+        if friendly:
+            return jsonify({"error": friendly}), 503
+        raise
+
+
+@process_sheets_bp.post("/api/trial/operations/tooling-flag")
+@process_sheets_bp.post("/api/operations/tooling-flag")
+def api_operation_tooling_post():
+    return tooling_post_response()
 
 
 @process_sheets_bp.post("/api/trial/process-sheets/coway-proposed-edd")
@@ -3535,6 +4269,22 @@ def api_process_sheet_coway_proposed_edd(ps_id):
         if friendly:
             return jsonify({"error": friendly}), 503
         return jsonify({"error": str(e)}), 500
+
+
+@process_sheets_bp.post("/api/trial/delivery-schedule/flags")
+@process_sheets_bp.post("/api/process-sheets/delivery-flags")
+def api_delivery_schedule_flags_post():
+    from .delivery_planner_service import delivery_flags_post_response
+
+    return delivery_flags_post_response()
+
+
+@process_sheets_bp.post("/api/trial/delivery-schedule/flags/bulk")
+@process_sheets_bp.post("/api/process-sheets/delivery-flags/bulk")
+def api_delivery_schedule_flags_bulk_post():
+    from .delivery_planner_service import delivery_flags_bulk_post_response
+
+    return delivery_flags_bulk_post_response()
 
 
 @process_sheets_bp.post("/api/trial/process-sheets/remarks")

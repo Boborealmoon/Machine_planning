@@ -1,14 +1,55 @@
-// Post-machining queue — Deburring / Final Inspection / Packing / Engraving & Packing.
+// Post-machining queue — synced staging + planner QA overlays.
+window.__fqPageScriptLoaded = true;
+
+function fqApiUrl(key) {
+  const cfg = window.__FQ_CONFIG__ || {};
+  const urls = {
+    queue: cfg.apiQueue || '/api/finishing-queue',
+    recentlyPacked: cfg.apiRecentlyPacked || '/api/finishing-queue/recently-packed',
+    overlay: cfg.apiOverlay || '/api/finishing-queue/overlay',
+    inspectors: cfg.apiInspectors || '/api/finishing-queue/inspectors',
+  };
+  return urls[key] || urls.queue;
+}
+if (typeof escapeHtml !== 'function') {
+  window.escapeHtml = function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  };
+}
+
+function fqHideLoading() {
+  const loading = document.getElementById('fq-loading');
+  if (loading) loading.hidden = true;
+}
+
+function fqShowLoadError(message) {
+  fqHideLoading();
+  const empty = document.getElementById('fq-empty');
+  const emptyText = document.getElementById('fq-empty-text');
+  const wrap = document.getElementById('fq-table-wrap');
+  if (wrap) wrap.hidden = true;
+  if (empty) empty.hidden = false;
+  if (emptyText) emptyText.textContent = message;
+}
 
 const FQ_PS_TYPE_ORDER = ['MPS', 'APS', 'NPS', 'SR', 'PPS', 'CPS'];
-const FQ_TABLE_COL_COUNT = 12;
+const FQ_TABLE_COL_COUNT = 17;
 
 const fqState = {
   items: [],
   recentlyPacked: [],
+  inspectors: [],
+  assignmentCounts: {},
+  screen: 'queue',
   view: 'active',
   stage: 'all',
   status: 'all',
+  assignee: 'all',
   psTypes: new Set(['APS', 'NPS']),
   sortCol: '',
   sortDir: 'asc',
@@ -19,7 +60,31 @@ const fqState = {
   packedCacheTtlSec: 300,
   weekRanges: null,
   selectedKey: '',
+  savingKeys: new Set(),
+  dataSource: 'sync',
+  packedLoaded: false,
+  packedLoading: false,
+  loadHint: '',
 };
+
+function fqParseDateOnly(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const d = new Date(text.includes('T') ? text : `${text.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function fqIsoCalendarWeek(value) {
+  const date = fqParseDateOnly(value);
+  if (!date) return '';
+  const dayNum = date.getUTCDay() || 7;
+  const thursday = new Date(date);
+  thursday.setUTCDate(thursday.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((thursday - yearStart) / 86400000) + 1) / 7);
+  return `${thursday.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+}
 
 function fqStartOfDay(value) {
   const d = value instanceof Date ? value : new Date(String(value).includes('T') ? value : String(value).replace(' ', 'T'));
@@ -27,7 +92,6 @@ function fqStartOfDay(value) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
-/** Mon–Sat working week (matches material inspection). */
 function fqWorkingWeekRange(forDate = new Date(), offsetWeeks = 0) {
   const anchor = fqStartOfDay(forDate);
   if (!anchor) return { start: null, end: null };
@@ -83,17 +147,27 @@ function fqActiveSourceItems() {
 }
 
 function fqIsRecentlyPackedView() {
-  return fqState.view === 'recently_packed';
+  return fqState.screen === 'queue' && fqState.view === 'recently_packed';
+}
+
+function fqIsQueueTableVisible() {
+  return fqState.screen === 'queue' || fqState.screen === 'assignments';
 }
 
 function fqItemKey(item) {
-  return `${String(item?.ps_id || '').trim()}::${String(item?.pp_partial_no ?? '').trim()}`;
+  const stage = String(item?.current_stage_desc || '').trim();
+  return `${String(item?.ps_id || '').trim()}::${String(item?.pp_partial_no ?? '').trim()}::${stage}`;
 }
 
 function fqFormatDate(value) {
   if (!value) return '—';
   const text = String(value).trim();
   return text.length >= 10 ? text.slice(0, 10) : text || '—';
+}
+
+function fqDateInputValue(value) {
+  const text = fqFormatDate(value);
+  return text === '—' ? '' : text;
 }
 
 function fqFormatQty(value) {
@@ -149,9 +223,13 @@ function fqPsTypeLabel() {
 }
 
 function fqSortValue(item, col) {
+  if (col === 'pp_partial_no') return Number(item?.pp_partial_no || 0);
   if (col === 'ps_id') return String(item?.ps_id || '').trim();
-  if (col === 'due_date') {
-    const text = String(item?.due_date || '').trim();
+  if (col === 'current_stage_desc') return String(item?.current_stage_desc || '').trim();
+  if (col === 'current_stage_status') return String(item?.current_stage_status || '').trim().toUpperCase();
+  if (col === 'inspector_name') return String(item?.inspector_name || '').trim().toLowerCase();
+  if (col === 'due_date' || col === 'coway_proposed_edd' || col === 'qa_due_date') {
+    const text = String(item?.[col] || '').trim();
     return text.length >= 10 ? text.slice(0, 10) : text;
   }
   return '';
@@ -164,6 +242,9 @@ function fqCompareValues(a, b, dir) {
   if (aEmpty && bEmpty) return 0;
   if (aEmpty) return 1;
   if (bEmpty) return -1;
+  if (typeof a === 'number' && typeof b === 'number') {
+    return desc ? b - a : a - b;
+  }
   const cmp = String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
   return desc ? -cmp : cmp;
 }
@@ -195,6 +276,10 @@ function fqMatchesSearch(item, term) {
     item?.sales_order_line,
     item?.current_stage_desc,
     item?.pp_status,
+    item?.inspector_name,
+    item?.remarks,
+    item?.coway_proposed_edd,
+    fqIsoCalendarWeek(item?.coway_proposed_edd),
   ].filter(Boolean).join(' ').toLowerCase();
   return hay.includes(term);
 }
@@ -212,6 +297,12 @@ function fqFilteredItems() {
       if (fqState.status !== 'all') {
         const code = String(item.current_stage_status || '').trim().toUpperCase();
         if (code !== fqState.status) return false;
+      }
+      if (fqState.screen === 'assignments' && fqState.assignee !== 'all') {
+        const name = String(item.inspector_name || '').trim() || 'Unassigned';
+        if (fqState.assignee === '__unassigned__') {
+          if (name !== 'Unassigned') return false;
+        } else if (name !== fqState.assignee) return false;
       }
     }
     if (!allTypes) {
@@ -249,6 +340,89 @@ function fqFilteredItems() {
     const psCmp = fqCompareValues(fqSortValue(a, 'ps_id'), fqSortValue(b, 'ps_id'), 'asc');
     if (psCmp !== 0) return psCmp;
     return Number(a.pp_partial_no || 0) - Number(b.pp_partial_no || 0);
+  });
+}
+
+function fqInspectorOptions(selectedId) {
+  const opts = ['<option value="">— Unassigned —</option>'];
+  for (const insp of fqState.inspectors || []) {
+    const id = String(insp.inspector_id);
+    const sel = String(selectedId || '') === id ? ' selected' : '';
+    opts.push(`<option value="${escapeHtml(id)}"${sel}>${escapeHtml(insp.name || id)}</option>`);
+  }
+  return opts.join('');
+}
+
+function fqOverlayPayload(item, patch) {
+  return {
+    ps_id: item.ps_id,
+    pp_partial_no: item.pp_partial_no,
+    stage_desc: item.current_stage_desc,
+    ...patch,
+  };
+}
+
+async function fqSaveOverlay(item, patch) {
+  const key = fqItemKey(item);
+  if (fqState.savingKeys.has(key)) return null;
+  fqState.savingKeys.add(key);
+  try {
+    const res = await fetch(fqApiUrl('overlay'), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fqOverlayPayload(item, patch)),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const overlay = data.overlay || {};
+    Object.assign(item, {
+      remarks: overlay.remarks ?? item.remarks,
+      inspector_id: overlay.inspector_id ?? item.inspector_id,
+      inspector_name: overlay.inspector_name ?? item.inspector_name,
+      qa_due_date: overlay.qa_due_date ?? item.qa_due_date,
+    });
+    fqRecalcAssignmentCounts();
+    fqRenderAssigneeTabs();
+    return overlay;
+  } finally {
+    fqState.savingKeys.delete(key);
+  }
+}
+
+function fqRecalcAssignmentCounts() {
+  const counts = {};
+  for (const item of fqState.items || []) {
+    const name = String(item.inspector_name || '').trim() || 'Unassigned';
+    counts[name] = (counts[name] || 0) + 1;
+  }
+  fqState.assignmentCounts = counts;
+}
+
+function fqRenderAssigneeTabs() {
+  const wrap = document.getElementById('fq-assignee-tabs');
+  if (!wrap) return;
+  const counts = fqState.assignmentCounts || {};
+  const names = Object.keys(counts).sort((a, b) => {
+    if (a === 'Unassigned') return 1;
+    if (b === 'Unassigned') return -1;
+    return a.localeCompare(b);
+  });
+  const buttons = [
+    { id: 'all', label: 'All', count: fqState.items.length },
+    ...names.map((name) => ({
+      id: name === 'Unassigned' ? '__unassigned__' : name,
+      label: name,
+      count: counts[name] || 0,
+    })),
+  ];
+  wrap.innerHTML = buttons.map((btn) => {
+    const active = fqState.assignee === btn.id ? ' is-active' : '';
+    const selected = fqState.assignee === btn.id ? 'true' : 'false';
+    const countHtml = btn.count > 0 ? ` <span class="ps-view-tab-count">${btn.count}</span>` : '';
+    return `<button type="button" class="mi-view-btn${active}" data-fq-assignee="${escapeHtml(btn.id)}" role="tab" aria-selected="${selected}">${escapeHtml(btn.label)}${countHtml}</button>`;
+  }).join('');
+  wrap.querySelectorAll('[data-fq-assignee]').forEach((el) => {
+    el.addEventListener('click', () => fqSetAssignee(el.dataset.fqAssignee || 'all'));
   });
 }
 
@@ -293,7 +467,12 @@ function fqRenderDetail(item) {
     fqDetailField('BOM', item.bom_code, { mono: true }),
     fqDetailField('Work qty', fqFormatQty(item.qty)),
     fqDetailField('PP status', item.pp_status),
-    fqDetailField('Due date', fqFormatDate(item.due_date)),
+    fqDetailField('PO due', fqFormatDate(item.due_date)),
+    fqDetailField('Coway EDD', fqFormatDate(item.coway_proposed_edd)),
+    fqDetailField('Coway week', fqIsoCalendarWeek(item.coway_proposed_edd) || '—'),
+    fqDetailField('QA due', fqFormatDate(item.qa_due_date)),
+    fqDetailField('Assigned to', item.inspector_name || '—'),
+    fqDetailField('Remarks', item.remarks, { fullWidth: true }),
   ].join('');
   const orderHtml = [
     fqDetailField('Sales order', item.sales_order_no, { mono: true }),
@@ -354,27 +533,43 @@ function fqFindItemByKey(key) {
   return fqState.recentlyPacked.find((rowItem) => fqItemKey(rowItem) === key);
 }
 
+function fqEditableCells(item) {
+  const key = fqItemKey(item);
+  const disabled = fqIsRecentlyPackedView() ? ' disabled' : '';
+  const cowayWeek = fqIsoCalendarWeek(item.coway_proposed_edd) || '—';
+  return {
+    qaDue: `<input type="date" class="fq-cell-input fq-cell-date" data-fq-field="qa_due_date" data-key="${escapeHtml(key)}" value="${escapeHtml(fqDateInputValue(item.qa_due_date))}"${disabled}>`,
+    assignee: `<select class="fq-cell-input fq-cell-select" data-fq-field="inspector_id" data-key="${escapeHtml(key)}"${disabled}>${fqInspectorOptions(item.inspector_id)}</select>`,
+    remarks: `<input type="text" class="fq-cell-input fq-cell-text" data-fq-field="remarks" data-key="${escapeHtml(key)}" value="${escapeHtml(item.remarks || '')}" placeholder="Remarks"${disabled}>`,
+    cowayWeek,
+  };
+}
+
 function fqRenderDataRow(item) {
   const key = fqItemKey(item);
   const selected = key === fqState.selectedKey ? ' is-selected' : '';
   const partial = Number(item.pp_partial_no) > 1 ? item.pp_partial_no : '—';
-  const progressCell = fqIsRecentlyPackedView()
-    ? fqFormatDate(item.packed_on)
-    : fqStageProgress(item);
+  const progressCell = fqIsRecentlyPackedView() ? fqFormatDate(item.packed_on) : fqStageProgress(item);
+  const cells = fqEditableCells(item);
   return `
-    <tr class="new-orders-row fq-row${selected}" data-key="${escapeHtml(key)}" tabindex="0" role="button">
-      <td class="new-orders-mono">${escapeHtml(item.ps_id || '—')}</td>
-      <td>${escapeHtml(String(partial))}</td>
-      <td>${escapeHtml(item.current_stage_desc || '—')}</td>
-      <td>${fqStatusPill(item.current_stage_status)}</td>
-      <td class="new-orders-mono">${escapeHtml(item.part_no || '—')}</td>
-      <td>${escapeHtml(item.part_desc || '—')}</td>
-      <td class="new-orders-mono">${escapeHtml(item.bom_code || '—')}</td>
-      <td>${escapeHtml(fqFormatQty(item.qty))}</td>
-      <td>${escapeHtml(progressCell)}</td>
-      <td class="new-orders-mono">${escapeHtml(item.sales_order_no || '—')}</td>
-      <td>${escapeHtml(fqFormatDate(item.due_date))}</td>
-      <td>${escapeHtml(item.pp_status || '—')}</td>
+    <tr class="new-orders-row fq-row${selected}" data-key="${escapeHtml(key)}" tabindex="0">
+      <td class="new-orders-mono fq-open-detail">${escapeHtml(item.ps_id || '—')}</td>
+      <td class="fq-open-detail">${escapeHtml(String(partial))}</td>
+      <td class="fq-open-detail">${escapeHtml(item.current_stage_desc || '—')}</td>
+      <td class="fq-open-detail">${fqStatusPill(item.current_stage_status)}</td>
+      <td class="new-orders-mono fq-open-detail">${escapeHtml(item.part_no || '—')}</td>
+      <td class="fq-open-detail">${escapeHtml(item.part_desc || '—')}</td>
+      <td class="new-orders-mono fq-open-detail">${escapeHtml(item.bom_code || '—')}</td>
+      <td class="fq-open-detail">${escapeHtml(fqFormatQty(item.qty))}</td>
+      <td class="fq-open-detail">${escapeHtml(progressCell)}</td>
+      <td class="new-orders-mono fq-open-detail">${escapeHtml(item.sales_order_no || '—')}</td>
+      <td class="fq-open-detail">${escapeHtml(fqFormatDate(item.due_date))}</td>
+      <td class="fq-open-detail">${escapeHtml(fqFormatDate(item.coway_proposed_edd))}</td>
+      <td class="fq-open-detail">${escapeHtml(cells.cowayWeek)}</td>
+      <td>${cells.qaDue}</td>
+      <td>${cells.assignee}</td>
+      <td>${cells.remarks}</td>
+      <td class="fq-open-detail">${escapeHtml(item.pp_status || '—')}</td>
     </tr>
   `;
 }
@@ -395,6 +590,57 @@ function fqRenderRecentlyPackedBody(filtered) {
   return parts.join('');
 }
 
+function fqRenderInspectorPanel() {
+  const list = document.getElementById('fq-inspector-list');
+  const empty = document.getElementById('fq-inspector-empty');
+  if (!list || !empty) return;
+  const inspectors = fqState.inspectors || [];
+  if (!inspectors.length) {
+    list.innerHTML = '';
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  list.innerHTML = inspectors.map((insp) => `
+    <li class="fq-inspector-item">
+      <span>${escapeHtml(insp.name || '')}</span>
+      <button type="button" class="btn btn-ghost btn-sm" data-fq-remove-inspector="${insp.inspector_id}">Remove</button>
+    </li>
+  `).join('');
+}
+
+function fqUpdateScreenChrome() {
+  const screen = fqState.screen;
+  const queueMode = screen === 'queue';
+  const assignMode = screen === 'assignments';
+  const inspectorMode = screen === 'inspectors';
+
+  document.getElementById('fq-queue-view-wrap')?.classList.toggle('is-hidden', !queueMode);
+  document.getElementById('fq-stage-filter-wrap')?.classList.toggle('is-hidden', !queueMode && !assignMode);
+  document.getElementById('fq-status-filter-wrap')?.classList.toggle('is-hidden', !queueMode && !assignMode);
+  document.getElementById('fq-assignee-filter-wrap')?.hidden = !assignMode;
+  document.getElementById('fq-ps-type-filter')?.classList.toggle('is-hidden', inspectorMode);
+  document.getElementById('fq-search-wrap')?.classList.toggle('is-hidden', inspectorMode);
+
+  document.getElementById('fq-table-wrap')?.classList.toggle('is-hidden', inspectorMode);
+  document.getElementById('fq-inspectors-panel')?.hidden = !inspectorMode;
+
+  document.querySelectorAll('[data-fq-screen]').forEach((btn) => {
+    const active = btn.dataset.fqScreen === screen;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+
+  if (assignMode) {
+    fqState.view = 'active';
+    document.querySelectorAll('[data-fq-view]').forEach((btn) => {
+      const active = btn.dataset.fqView === 'active';
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+  }
+}
+
 function fqUpdateViewChrome() {
   const recentlyPacked = fqIsRecentlyPackedView();
   document.getElementById('fq-stage-filter-wrap')?.classList.toggle('is-hidden', recentlyPacked);
@@ -404,6 +650,19 @@ function fqUpdateViewChrome() {
 }
 
 function fqRenderTable() {
+  fqUpdateScreenChrome();
+  if (fqState.screen === 'inspectors') {
+    fqRenderInspectorPanel();
+    document.getElementById('fq-empty')?.hidden = true;
+    document.getElementById('fq-loading')?.hidden = true;
+    const meta = document.getElementById('fq-meta');
+    if (meta) {
+      meta.hidden = !fqState.cachedAt;
+      meta.textContent = fqState.cachedAt ? `ERP cached ${fqState.cachedAt} · TTL ${fqState.cacheTtlSec}s` : '';
+    }
+    return;
+  }
+
   fqUpdateViewChrome();
   const filtered = fqFilteredItems();
   const tbody = document.getElementById('fq-table-body');
@@ -417,12 +676,18 @@ function fqRenderTable() {
   const hasPacked = (fqState.recentlyPacked || []).length > 0;
   const hasCurrentViewData = recentlyPacked ? hasPacked : hasActive;
 
-  if (!tbody || !wrap || !empty) return;
+  if (!tbody || !wrap || !empty) {
+    fqShowLoadError('Queue table markup is missing from the page — hard refresh or restart the app.');
+    return;
+  }
+
+  fqHideLoading();
 
   if (!hasActive && !hasPacked) {
     wrap.hidden = true;
     empty.hidden = false;
     if (emptyText) emptyText.textContent = 'No partials are currently at a post-machining stage.';
+    if (emptyText && fqState.loadHint) emptyText.textContent = fqState.loadHint;
     if (stats) stats.textContent = '';
     if (meta) meta.hidden = true;
     return;
@@ -456,6 +721,8 @@ function fqRenderTable() {
         else if (bucket === 1) lastCount += 1;
       }
       stats.textContent = `${filtered.length} shown · ${thisCount} this week · ${lastCount} last week`;
+    } else if (fqState.screen === 'assignments') {
+      stats.textContent = `${filtered.length} assigned jobs shown`;
     } else {
       const statusCounts = { I: 0, R: 0, P: 0 };
       for (const item of filtered) {
@@ -469,41 +736,118 @@ function fqRenderTable() {
   if (meta) {
     meta.hidden = !fqState.cachedAt;
     const packedHint = recentlyPacked
-      ? `Grouped by pack week · ERP actual_end_date · cached ${fqState.packedCachedAt || fqState.cachedAt || '—'} · TTL ${fqState.packedCacheTtlSec || 300}s`
-      : `Cached ${fqState.cachedAt || '—'} · TTL ${fqState.cacheTtlSec}s`;
+      ? `Grouped by pack week · plan end date · cached ${fqState.packedCachedAt || fqState.cachedAt || '—'} · TTL ${fqState.packedCacheTtlSec || 300}s`
+      : `Source: synced staging (mfg_wo_status + pp_vouchers_cache) · cached ${fqState.cachedAt || '—'} · TTL ${fqState.cacheTtlSec}s · Sync ERP for fresh data`;
     meta.textContent = fqState.cachedAt ? packedHint : '';
   }
 
   fqUpdateSortHeaders();
 }
 
-async function fqLoad({ refresh = false } = {}) {
+async function fqFetchJson(url, { timeoutMs = 20000 } = {}) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+    return payload;
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      throw new Error('Request timed out — try again or run Sync ERP then Refresh');
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function fqApplyPayload(payload) {
+  fqState.items = payload.items || [];
+  fqState.inspectors = payload.inspectors || [];
+  fqState.assignmentCounts = payload.assignment_counts || {};
+  fqState.cachedAt = payload.cached_at || '';
+  fqState.packedCachedAt = payload.packed_cached_at || payload.cached_at || '';
+  fqState.cacheTtlSec = payload.cache_ttl_sec || 180;
+  fqState.packedCacheTtlSec = payload.packed_cache_ttl_sec || 300;
+  fqState.weekRanges = payload.week_ranges || null;
+  fqState.dataSource = payload.source || 'sync';
+  fqState.loadHint = (!fqState.items.length && payload.hint) ? payload.hint : '';
+  fqRecalcAssignmentCounts();
+  fqUpdateCounts(payload);
+  fqRenderAssigneeTabs();
+  fqRenderTable();
+}
+
+window.fqApplyPayload = fqApplyPayload;
+
+async function fqLoad({ refresh = false, includePacked = false } = {}) {
+  const loading = document.getElementById('fq-loading');
+  if (loading) loading.hidden = false;
+  const empty = document.getElementById('fq-empty');
+  if (empty) empty.hidden = true;
+  try {
+    const params = new URLSearchParams();
+    if (refresh) params.set('refresh', '1');
+    if (includePacked) params.set('include_packed', '1');
+    const qs = params.toString();
+    const url = qs ? `${fqApiUrl('queue')}?${qs}` : fqApiUrl('queue');
+    const payload = await fqFetchJson(url);
+    if (includePacked) {
+      fqState.recentlyPacked = payload.recently_packed || [];
+      fqState.packedLoaded = true;
+    }
+    fqApplyPayload(payload);
+  } catch (err) {
+    fqShowLoadError(`Failed to load: ${err.message || err}`);
+  } finally {
+    fqHideLoading();
+  }
+}
+
+window.fqLoad = fqLoad;
+
+async function fqLoadRecentlyPacked({ refresh = false } = {}) {
+  if (fqState.packedLoading) return;
+  if (fqState.packedLoaded && !refresh) {
+    fqRenderTable();
+    return;
+  }
+  fqState.packedLoading = true;
   const loading = document.getElementById('fq-loading');
   if (loading) loading.hidden = false;
   try {
-    const url = refresh ? '/api/finishing-queue?refresh=1' : '/api/finishing-queue';
-    const res = await fetch(url);
-    const payload = await res.json();
-    if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
-    fqState.items = payload.items || [];
+    const url = refresh
+      ? `${fqApiUrl('recentlyPacked')}?refresh=1`
+      : fqApiUrl('recentlyPacked');
+    const payload = await fqFetchJson(url);
     fqState.recentlyPacked = payload.recently_packed || [];
-    fqState.cachedAt = payload.cached_at || '';
-    fqState.packedCachedAt = payload.packed_cached_at || payload.cached_at || '';
-    fqState.cacheTtlSec = payload.cache_ttl_sec || 60;
+    fqState.packedLoaded = true;
+    fqState.packedCachedAt = payload.packed_cached_at || '';
     fqState.packedCacheTtlSec = payload.packed_cache_ttl_sec || 300;
-    fqState.weekRanges = payload.week_ranges || null;
-    fqUpdateCounts(payload);
+    fqState.weekRanges = payload.week_ranges || fqState.weekRanges;
+    const countEl = document.getElementById('fq-count-recently-packed');
+    if (countEl) {
+      const count = Number(payload.recently_packed_count) || fqState.recentlyPacked.length;
+      countEl.textContent = String(count);
+      countEl.hidden = count <= 0;
+    }
     fqRenderTable();
   } catch (err) {
     const empty = document.getElementById('fq-empty');
     const emptyText = document.getElementById('fq-empty-text');
-    const wrap = document.getElementById('fq-table-wrap');
-    if (wrap) wrap.hidden = true;
     if (empty) empty.hidden = false;
-    if (emptyText) emptyText.textContent = `Failed to load: ${err.message || err}`;
+    if (emptyText) emptyText.textContent = `Failed to load recently packed: ${err.message || err}`;
   } finally {
+    fqState.packedLoading = false;
     if (loading) loading.hidden = true;
   }
+}
+
+function fqSetScreen(screen) {
+  fqState.screen = screen;
+  fqCloseDetail();
+  fqRenderTable();
 }
 
 function fqSetView(view) {
@@ -514,6 +858,10 @@ function fqSetView(view) {
     btn.setAttribute('aria-selected', active ? 'true' : 'false');
   });
   fqCloseDetail();
+  if (view === 'recently_packed') {
+    fqLoadRecentlyPacked();
+    return;
+  }
   fqRenderTable();
 }
 
@@ -537,6 +885,12 @@ function fqSetStatus(status) {
   fqRenderTable();
 }
 
+function fqSetAssignee(assignee) {
+  fqState.assignee = assignee || 'all';
+  fqRenderAssigneeTabs();
+  fqRenderTable();
+}
+
 function fqBindPsTypeDropdown() {
   const dropdown = document.getElementById('fq-ps-type-dropdown');
   const btn = document.getElementById('fq-ps-type-btn');
@@ -547,23 +901,15 @@ function fqBindPsTypeDropdown() {
     e.stopPropagation();
     panel.hidden = !panel.hidden;
   });
-
-  document.addEventListener('click', () => {
-    panel.hidden = true;
-  });
-
+  document.addEventListener('click', () => { panel.hidden = true; });
   panel.addEventListener('click', (e) => e.stopPropagation());
-
   panel.querySelectorAll('input[type="checkbox"]').forEach((input) => {
     input.addEventListener('change', () => {
-      fqState.psTypes = new Set(
-        [...panel.querySelectorAll('input[type="checkbox"]:checked')].map((el) => el.value)
-      );
+      fqState.psTypes = new Set([...panel.querySelectorAll('input[type="checkbox"]:checked')].map((el) => el.value));
       btn.textContent = `${fqPsTypeLabel()} ▾`;
       fqRenderTable();
     });
   });
-
   btn.textContent = `${fqPsTypeLabel()} ▾`;
 }
 
@@ -578,14 +924,92 @@ function fqSetSort(col) {
   fqRenderTable();
 }
 
+async function fqAddInspector(name) {
+  const res = await fetch(fqApiUrl('inspectors'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (data.inspector) fqState.inspectors.push(data.inspector);
+  fqState.inspectors.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  fqRenderInspectorPanel();
+  fqRenderTable();
+}
+
+async function fqRemoveInspector(inspectorId) {
+  const res = await fetch(`${fqApiUrl('inspectors')}/${inspectorId}`, { method: 'DELETE' });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  fqState.inspectors = fqState.inspectors.filter((row) => String(row.inspector_id) !== String(inspectorId));
+  for (const item of fqState.items) {
+    if (String(item.inspector_id) === String(inspectorId)) {
+      item.inspector_id = null;
+      item.inspector_name = '';
+    }
+  }
+  fqRecalcAssignmentCounts();
+  fqRenderAssigneeTabs();
+  fqRenderInspectorPanel();
+  fqRenderTable();
+}
+
+function fqBindOverlayEditors() {
+  const tbody = document.getElementById('fq-table-body');
+  if (!tbody) return;
+
+  tbody.addEventListener('change', async (e) => {
+    const el = e.target.closest('[data-fq-field]');
+    if (!el) return;
+    const key = el.dataset.key || '';
+    const item = fqFindItemByKey(key);
+    if (!item) return;
+    const field = el.dataset.fqField;
+    try {
+      if (field === 'inspector_id') {
+        await fqSaveOverlay(item, { inspector_id: el.value || null });
+      } else if (field === 'qa_due_date') {
+        await fqSaveOverlay(item, { qa_due_date: el.value || null });
+      }
+    } catch (err) {
+      console.error('overlay save failed:', err);
+    }
+  });
+
+  tbody.addEventListener('blur', async (e) => {
+    const el = e.target.closest('[data-fq-field="remarks"]');
+    if (!el) return;
+    const key = el.dataset.key || '';
+    const item = fqFindItemByKey(key);
+    if (!item || String(item.remarks || '') === String(el.value || '')) return;
+    try {
+      await fqSaveOverlay(item, { remarks: el.value || '' });
+    } catch (err) {
+      console.error('remarks save failed:', err);
+    }
+  }, true);
+}
+
 function fqBindEvents() {
-  document.getElementById('fq-refresh')?.addEventListener('click', () => fqLoad({ refresh: true }));
+  document.getElementById('fq-refresh')?.addEventListener('click', () => {
+    const refreshPacked = fqState.view === 'recently_packed';
+    if (refreshPacked) {
+      fqLoadRecentlyPacked({ refresh: true });
+      return;
+    }
+    fqLoad({ refresh: true, includePacked: false });
+  });
 
   document.querySelectorAll('[data-fq-sort]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       fqSetSort(btn.dataset.fqSort || '');
     });
+  });
+
+  document.querySelectorAll('[data-fq-screen]').forEach((btn) => {
+    btn.addEventListener('click', () => fqSetScreen(btn.dataset.fqScreen || 'queue'));
   });
 
   document.querySelectorAll('[data-fq-stage]').forEach((btn) => {
@@ -605,6 +1029,9 @@ function fqBindEvents() {
   });
 
   document.getElementById('fq-table-body')?.addEventListener('click', (e) => {
+    if (e.target.closest('[data-fq-field]')) return;
+    const cell = e.target.closest('.fq-open-detail');
+    if (!cell) return;
     const row = e.target.closest('.fq-row');
     if (!row) return;
     const key = row.dataset.key || '';
@@ -615,7 +1042,7 @@ function fqBindEvents() {
   document.getElementById('fq-table-body')?.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     const row = e.target.closest('.fq-row');
-    if (!row) return;
+    if (!row || e.target.closest('[data-fq-field]')) return;
     e.preventDefault();
     const key = row.dataset.key || '';
     const item = fqFindItemByKey(key);
@@ -627,10 +1054,78 @@ function fqBindEvents() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') fqCloseDetail();
   });
+
+  document.getElementById('fq-inspector-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('fq-inspector-name');
+    const name = String(input?.value || '').trim();
+    if (!name) return;
+    try {
+      await fqAddInspector(name);
+      if (input) input.value = '';
+    } catch (err) {
+      alert(err.message || err);
+    }
+  });
+
+  document.getElementById('fq-inspector-list')?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-fq-remove-inspector]');
+    if (!btn) return;
+    const id = btn.dataset.fqRemoveInspector;
+    if (!id || !window.confirm('Remove this inspector from the QC team?')) return;
+    try {
+      await fqRemoveInspector(id);
+    } catch (err) {
+      alert(err.message || err);
+    }
+  });
+
+  fqBindOverlayEditors();
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  fqBindPsTypeDropdown();
-  fqBindEvents();
-  fqLoad();
+function fqInit() {
+  try {
+    fqBindPsTypeDropdown();
+    fqBindEvents();
+    if (window.__fqBootDone && window.__FQ_BOOTSTRAP_ERROR__) {
+      return;
+    }
+    const bootErr = window.__FQ_BOOTSTRAP_ERROR__;
+    if (bootErr) {
+      fqShowLoadError(`Server could not load queue: ${bootErr}`);
+      window.__fqBootDone = true;
+      return;
+    }
+    const boot = window.__FQ_BOOTSTRAP__;
+    if (boot && Array.isArray(boot.items)) {
+      try {
+        fqApplyPayload(boot);
+        fqHideLoading();
+      } catch (renderErr) {
+        console.error('finishing queue render failed:', renderErr);
+        fqShowLoadError(`Failed to render queue: ${renderErr.message || renderErr}`);
+      }
+      window.__fqBootDone = true;
+      return;
+    }
+    fqLoad().finally(() => {
+      window.__fqBootDone = true;
+    });
+  } catch (err) {
+    console.error('finishing queue init failed:', err);
+    fqShowLoadError(`Page setup failed: ${err.message || err}`);
+    window.__fqBootDone = true;
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', fqInit);
+} else {
+  fqInit();
+}
+
+window.addEventListener('error', (event) => {
+  if (String(event?.filename || '').includes('finishing_queue.js')) {
+    fqShowLoadError(`Script error: ${event.message || 'unknown error'}`);
+  }
 });

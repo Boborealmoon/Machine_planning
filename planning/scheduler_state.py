@@ -310,6 +310,30 @@ def refresh_machine_queue_state(con, block_id, schedule_run_id=None):
     }
 
 
+def refresh_stale_queue_state_fields(con, block_row):
+    """Repair queue_state rows that falsely show full output after ERP stage relinks."""
+    if not block_row or not int(block_row.get("block_id") or 0):
+        return block_row
+    exec_status = _text(block_row.get("execution_status") or block_row.get("status")).upper()
+    if exec_status not in {"", "NOT_STARTED", "PLANNED"}:
+        return block_row
+    scheduled = _float(block_row.get("scheduled_qty"))
+    qs_good = _float(block_row.get("qs_good_qty") or block_row.get("good_qty"))
+    actual_good = _float(block_row.get("actual_good_qty"))
+    if scheduled <= 0 or qs_good < scheduled - 1e-4 or actual_good > 0:
+        return block_row
+    state = refresh_machine_queue_state(con, int(block_row["block_id"]))
+    if not state:
+        return block_row
+    block_row["qs_good_qty"] = state.get("good_qty")
+    block_row["qs_remaining_qty"] = state.get("remaining_qty")
+    block_row["good_qty"] = state.get("good_qty")
+    block_row["remaining_qty"] = state.get("remaining_qty")
+    if state.get("execution_status"):
+        block_row["execution_status"] = state["execution_status"]
+    return block_row
+
+
 def refresh_operation_state(con, operation_id):
     operation = one(
         con.execute(

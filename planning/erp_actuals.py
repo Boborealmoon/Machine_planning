@@ -80,25 +80,10 @@ def _op_no_candidates(op_no, stage_no=0):
 
 def _stage_no_from_process_flow(con, source_mps_no, pp_partial_no, op_no, op_seq_id):
     op_no = compact_text(op_no)
-    if op_seq_id > 0:
-        seq = one(
-            con.execute(
-                """
-                SELECT source_stage_no, op_no
-                FROM planner_operation_seq
-                WHERE op_seq_id = %s
-                LIMIT 1
-                """,
-                (op_seq_id,),
-            )
-        )
-        if seq and int(seq.get("source_stage_no") or 0) > 0:
-            seq_op = compact_text(seq.get("op_no"))
-            if not op_no or not seq_op or seq_op in _op_no_candidates(op_no, 0):
-                return int(seq["source_stage_no"]), compact_text(seq_op or op_no)
-
-    planner_ps_id = format_planner_ps_id(source_mps_no, pp_partial_no)
     op_candidates = _op_no_candidates(op_no)
+
+    # Prefer the live process-sheet BOM step for this op label. Stale source_op_seq_id
+    # values on older queue rows can point at the wrong ERP stage (e.g. OP30 -> stage 3).
     if op_candidates:
         flow = one(
             con.execute(
@@ -116,6 +101,23 @@ def _stage_no_from_process_flow(con, source_mps_no, pp_partial_no, op_no, op_seq
         )
         if flow and int(flow.get("source_stage_no") or 0) > 0:
             return int(flow["source_stage_no"]), compact_text(flow.get("op_no") or op_no)
+
+    if int(op_seq_id or 0) > 0:
+        seq = one(
+            con.execute(
+                """
+                SELECT source_stage_no, op_no
+                FROM planner_operation_seq
+                WHERE op_seq_id = %s
+                LIMIT 1
+                """,
+                (int(op_seq_id),),
+            )
+        )
+        if seq and int(seq.get("source_stage_no") or 0) > 0:
+            seq_op = compact_text(seq.get("op_no"))
+            if not op_no or not seq_op or seq_op in _op_no_candidates(op_no, 0):
+                return int(seq["source_stage_no"]), compact_text(seq_op or op_no)
 
     for ps_id in _ps_id_candidates(source_mps_no, pp_partial_no):
         if not op_candidates:

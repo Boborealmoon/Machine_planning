@@ -525,7 +525,12 @@ function trialBoardOnlyTempCatalogEntries() {
     if (desc && !row.part_desc) row.part_desc = desc;
     const due = String(block.due_date || '').trim();
     if (due && !row.due_date) row.due_date = due;
-    if (block.material_in) row.material_in = true;
+    if (Object.prototype.hasOwnProperty.call(block, 'material_in') && block.material_in) {
+      row.material_in = true;
+    }
+    if (Object.prototype.hasOwnProperty.call(block, 'tooling_ready') && block.tooling_ready === false) {
+      row.tooling_ready = false;
+    }
     row.partial_qty = Math.max(
       Number(row.partial_qty || 0),
       Number(block.scheduled_qty || 0),
@@ -762,6 +767,10 @@ function trialBlocksForCatalogOp(card) {
     .sort((a, b) => Number(a.block_id) - Number(b.block_id));
 }
 
+function trialHasLiveBlockQueueIndex() {
+  return Array.isArray(trialState?.blocks);
+}
+
 function trialCatalogQueuedQty(cardOrPayload) {
   const card = (typeof trialCatalogCardFromPayload === 'function')
     ? (trialCatalogCardFromPayload(cardOrPayload) || cardOrPayload)
@@ -771,6 +780,8 @@ function trialCatalogQueuedQty(cardOrPayload) {
     (sum, block) => sum + Math.max(0, Number(block.scheduled_qty || 0)),
     0,
   );
+  // Board blocks are authoritative once loaded; catalog planned_qty can lag after remove.
+  if (trialHasLiveBlockQueueIndex()) return fromBlocks;
   const fromServer = Math.max(
     0,
     Number(card?.planned_qty ?? op?.planned_qty ?? 0),
@@ -783,9 +794,14 @@ function trialCatalogSchedulableRemaining(cardOrPayload) {
   const serverRemaining = Math.max(0, Number(
     cardOrPayload?.remaining_qty ?? op?.remaining_qty ?? 0,
   ));
-  const required = Math.max(0, Number(
+  let required = Math.max(0, Number(
     op?.required_qty ?? cardOrPayload?.required_qty ?? 0,
   ));
+  if (required <= 0.0001) {
+    required = Math.max(0, Number(
+      cardOrPayload?.target_qty ?? cardOrPayload?.total_qty ?? op?.total_qty ?? 0,
+    ));
+  }
   const erpFinished = Math.max(0, Number(
     op?.erp_finished_qty ?? cardOrPayload?.erp_finished_qty ?? 0,
   ));
@@ -804,10 +820,11 @@ function trialCatalogOpHasQueuedBlocks(card) {
 }
 
 function trialIsCatalogOpFullyQueued(card) {
-  return trialCatalogSchedulableRemaining(card) <= 0.0001
-    && (trialCatalogOpHasQueuedBlocks(card)
-      || Number(card?.planned_qty || 0) > 0.0001
-      || (Array.isArray(card?.queued_machines) && card.queued_machines.length > 0));
+  if (trialCatalogSchedulableRemaining(card) > 0.0001) return false;
+  if (trialCatalogOpHasQueuedBlocks(card)) return true;
+  if (trialHasLiveBlockQueueIndex()) return false;
+  return Number(card?.planned_qty || 0) > 0.0001
+    || (Array.isArray(card?.queued_machines) && card.queued_machines.length > 0);
 }
 
 /** Open catalog ops for a PS partial that can still be queued (route order). */
@@ -853,10 +870,11 @@ function trialIsCatalogOpAllocated(card) {
 }
 
 function trialQueuedMachineCodesForCatalogOp(card) {
-  const fromCard = Array.isArray(card?.queued_machines) ? card.queued_machines : [];
   const fromBlocks = trialBlocksForCatalogOp(card)
     .map(block => String(block.machine_code || '').trim())
     .filter(Boolean);
+  if (trialHasLiveBlockQueueIndex()) return [...new Set(fromBlocks)].sort();
+  const fromCard = Array.isArray(card?.queued_machines) ? card.queued_machines : [];
   return [...new Set([...fromCard, ...fromBlocks])].sort();
 }
 

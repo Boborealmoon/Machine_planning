@@ -714,3 +714,39 @@ function openTempPsPoDueModal(psId, currentDue, options = {}) {
     document.getElementById('temp-ps-edit-due-date')?.focus();
   }, 0);
 }
+
+async function deleteTempProcessSheetFromScheduler(psId) {
+  const canonical = String(psId || '').trim();
+  if (!canonical || !canonical.startsWith('[Temp]')) return;
+  const label = typeof trialTempPsDisplayId === 'function'
+    ? trialTempPsDisplayId(canonical)
+    : canonical;
+  const queued = typeof trialPsHasQueuedBlocks === 'function'
+    && trialCatalogFindPsRow(canonical)
+    && trialPsHasQueuedBlocks(trialCatalogFindPsRow(canonical));
+  const queueNote = queued
+    ? ' It is on the planner queue — scheduled blocks will be removed too.'
+    : '';
+  if (!window.confirm(`Delete ${label}?${queueNote} This cannot be undone.`)) return;
+  const urls = [
+    `/api/temp-process-sheets/${encodeURIComponent(canonical)}`,
+    `/api/trial/temp-process-sheets/${encodeURIComponent(canonical)}`,
+  ];
+  let lastError = null;
+  for (const url of urls) {
+    try {
+      await DEL(url);
+      if (typeof closeModal === 'function') closeModal();
+      window.dispatchEvent(new CustomEvent('temp-ps-deleted', {
+        detail: { planner_ps_id: canonical, ps_id: canonical },
+      }));
+      if (typeof trialToast === 'function') {
+        trialToast(`Deleted ${label}`, 'success');
+      }
+      return;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  window.alert(lastError?.message || 'Could not delete temp process sheet');
+}

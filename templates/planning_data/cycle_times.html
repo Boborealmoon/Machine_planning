@@ -269,41 +269,91 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
 #toast.show { opacity:1; }
 .empty-row td { text-align:center; color:var(--text3); padding:40px 20px; font-size:13px; }
 
-.harvest-modal .modal-box { max-width: 1100px; width: calc(100% - 32px); }
-.harvest-hint { font-size: 12px; color: var(--text2); line-height: 1.5; margin-bottom: 12px; }
-.harvest-table-wrap { max-height: 52vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
-.harvest-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.harvest-table th, .harvest-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
-.harvest-table th { position: sticky; top: 0; background: #f8fafc; z-index: 1; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text3); }
-.harvest-table tr.harvest-changed td { background: #fffbeb; }
-.harvest-table tr.harvest-variance td { background: #fef2f2; }
-.harvest-table tr.harvest-placeholder td { background: #f3f4f6; color: var(--text3); }
-.harvest-table tr.harvest-detail td { background: #f8fafc; padding: 0; }
+.harvest-modal .modal-box {
+  max-width: min(1440px, 96vw);
+  width: 96vw;
+  max-height: 92vh;
+  padding: 24px 36px 20px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.harvest-modal .modal-title { margin-bottom: 12px; flex-shrink: 0; }
+.harvest-modal .harvest-steps { flex-shrink: 0; }
+.harvest-modal .harvest-hint { flex-shrink: 0; }
+.harvest-modal .harvest-toolbar { flex-shrink: 0; margin-bottom: 12px; }
+.harvest-modal .modal-actions { flex-shrink: 0; margin-top: 16px; }
+.harvest-modal .error-msg { flex-shrink: 0; }
+.harvest-steps {
+  display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; padding: 14px 18px;
+  background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--text2);
+}
+.harvest-step { flex: 1 1 220px; line-height: 1.5; }
+.harvest-step strong { display: block; color: var(--text); font-size: 13px; margin-bottom: 4px; }
+.harvest-hint { font-size: 12px; color: var(--text3); line-height: 1.5; margin-bottom: 12px; }
+.harvest-table-wrap {
+  flex: 1 1 auto;
+  min-height: 280px;
+  max-height: min(70vh, calc(92vh - 240px));
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.harvest-table { width: 100%; min-width: 960px; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+.harvest-table th, .harvest-table td { padding: 11px 14px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+.harvest-table th { position: sticky; top: 0; background: #f8fafc; z-index: 1; font-size: 12px; font-weight: 600; color: var(--text2); white-space: nowrap; }
+.harvest-col-check { width: 40px; }
+.harvest-col-expand { width: 36px; }
+.harvest-col-part { width: 24%; }
+.harvest-col-op { width: 88px; }
+.harvest-col-status { width: 96px; }
+.harvest-col-today { width: 130px; }
+.harvest-col-apply { width: 150px; }
+.harvest-col-jobs { width: 26%; }
+.harvest-col-source { width: 80px; }
+.harvest-part-main { font-weight: 600; color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harvest-part-sub { font-size: 11px; color: var(--text3); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harvest-part-desc { font-size: 11px; color: var(--text2); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harvest-today-line { font-variant-numeric: tabular-nums; line-height: 1.5; font-size: 13px; }
+.harvest-today-line span { color: var(--text3); font-size: 11px; }
+.harvest-apply-flow { display: flex; align-items: center; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.harvest-apply-from { color: var(--text2); font-variant-numeric: tabular-nums; font-size: 12px; }
+.harvest-apply-arrow { color: var(--text3); font-weight: 700; }
+.harvest-jobs-line { font-size: 12px; color: var(--text2); line-height: 1.45; }
+.harvest-jobs-line strong { color: var(--text); font-weight: 600; }
+.harvest-jobs-sub { font-size: 11px; color: var(--text3); margin-top: 3px; }
+.harvest-table tr.harvest-detail-job td { background: #f8fafc; font-size: 12px; padding: 9px 14px; }
+.harvest-table tr.harvest-detail-job--match td { background: #eff6ff; }
+.harvest-detail-ps { display: flex; align-items: center; gap: 8px; padding: 6px 8px; }
+.harvest-detail-ps .harvest-part-sub { font-size: 11px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harvest-detail-muted { color: var(--text3); }
+.harvest-detail-time { font-size: 11px; color: var(--text2); white-space: nowrap; }
+.harvest-table tr.harvest-detail-note td { background: #f8fafc; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--text3); padding: 6px 10px 10px; }
 .harvest-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
 .harvest-toolbar label { font-size: 12px; color: var(--text2); display: flex; gap: 6px; align-items: center; }
 .harvest-toolbar select { font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); }
 .harvest-ps-search {
-  font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border);
-  min-width: 160px; max-width: 240px; flex: 1 1 160px;
+  font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 6px; border: 1px solid var(--border);
+  min-width: 200px; max-width: 320px; flex: 1 1 200px;
 }
 .harvest-ps-search:focus { outline: none; border-color: #3b82f6; }
 .harvest-filter-count { font-size: 11px; color: var(--text3); white-space: nowrap; }
-.harvest-verdict { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.harvest-verdict { display: inline-block; font-size: 10px; font-weight: 600; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
 .harvest-verdict--clear { background: #dcfce7; color: #166534; }
-.harvest-verdict--review { background: #fee2e2; color: #991b1b; }
-.harvest-publish-input { width: 72px; text-align: right; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 12px; }
-.harvest-expand-btn { border: none; background: none; cursor: pointer; font-size: 14px; padding: 0 4px; color: var(--text2); }
-.harvest-jobs-mini { width: 100%; border-collapse: collapse; font-size: 11px; margin: 0; }
-.harvest-jobs-mini th, .harvest-jobs-mini td { padding: 6px 10px; border-top: 1px solid var(--border); text-align: left; }
-.harvest-jobs-mini th { color: var(--text3); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-.harvest-pick-btn { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: #fff; cursor: pointer; }
+.harvest-verdict--sync { background: #e0f2fe; color: #0369a1; }
+.harvest-verdict--changed { background: #fffbeb; color: #92400e; }
+.harvest-verdict--new { background: #ede9fe; color: #5b21b6; }
+.harvest-verdict--note { background: #f3f4f6; color: #6b7280; }
+.harvest-publish-input { width: 72px; text-align: right; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 14px; font-weight: 600; }
+.harvest-expand-btn { border: none; background: none; cursor: pointer; font-size: 15px; padding: 0 6px; color: var(--text2); }
+.harvest-table tr.harvest-changed td { background: #fffbeb; }
+.harvest-table tr.harvest-row-expanded td:first-child { box-shadow: inset 3px 0 0 #3b82f6; }
+.harvest-table tr.harvest-variance td { background: #fef2f2; }
+.harvest-table tr.harvest-placeholder td { background: #f3f4f6; color: var(--text3); }
+.harvest-pick-btn { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: #fff; cursor: pointer; flex-shrink: 0; }
 .harvest-pick-btn.is-picked { background: #1a1c1d; color: #fff; border-color: #1a1c1d; }
 .harvest-num { text-align: right; font-variant-numeric: tabular-nums; }
-.harvest-group-row th { top: 0; z-index: 2; font-size: 10px; text-align: center; text-transform: none; letter-spacing: 0; background: #f1f5f9; border-bottom: 1px solid var(--border); color: var(--text2); }
-.harvest-cols-row th { top: 24px; z-index: 2; }
-.harvest-change { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-.harvest-current { color: var(--text2); font-variant-numeric: tabular-nums; min-width: 2.5em; text-align: right; }
-.harvest-arrow { color: var(--text3); font-weight: 600; }
+.harvest-cols-row th { top: 0; z-index: 2; }
 .harvest-delta { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px; white-space: nowrap; }
 .harvest-delta--up { background: #fef3c7; color: #92400e; }
 .harvest-delta--down { background: #dbeafe; color: #1d4ed8; }
@@ -313,7 +363,9 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
 .harvest-source strong { color: var(--text); font-weight: 600; }
 .harvest-jobs-summary { font-size: 11px; color: var(--text2); line-height: 1.35; font-variant-numeric: tabular-nums; }
 .harvest-jobs-summary .harvest-jobs-range { color: var(--text); font-weight: 600; }
+.harvest-jobs-sub { font-size: 10px; color: var(--text3); margin-top: 2px; }
 .harvest-ideal-ref { color: var(--text3); }
+.harvest-bom-fallback { color: #b45309; font-style: italic; }
 </style>
 
 <div class="ct-page">
@@ -399,63 +451,69 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
 <div class="modal-backdrop harvest-modal" id="harvest-modal">
   <div class="modal-box">
     <div class="modal-title">Import from planner jobs</div>
-    <p class="harvest-hint">
-      Reads cycle times from <strong>scheduled jobs</strong> and writes to the master table
-      <strong>production cycle</strong> column (used when you schedule new work).
-      <strong>Master/ideal cycle</strong> and <strong>existing scheduled jobs</strong> are not changed.
-      Expand a row to pick a specific job, or use the default rule to fill the new value from all jobs in that group.
-      <strong>Review</strong> means the new value differs from the machine ideal — not necessarily from current production.
-    </p>
+    <div class="harvest-steps">
+      <div class="harvest-step"><strong>1. Review</strong>Each row compares master <em>production</em> today with cycle times on scheduled jobs.</div>
+      <div class="harvest-step"><strong>2. Choose</strong>Pick a job (expand ▶) or edit <em>Apply</em>. Setup is shown for reference only — not updated here.</div>
+      <div class="harvest-step"><strong>3. Apply</strong>Tick rows and click the button below. Only master production changes; jobs on the board stay as-is.</div>
+    </div>
+    <p class="harvest-hint">Rows already matching the job are hidden by default. “Note” means the job differs from machine ideal — usually fine on another machine.</p>
     <div class="harvest-toolbar">
       <input type="search" id="harvest-ps-filter" class="harvest-ps-search"
-        placeholder="Search PS (e.g. NPS26-0260, ::2)…" autocomplete="off"
-        title="Filter rows by process sheet / job id in the expanded job list" />
-      <label title="How the new production value is filled when you have not picked a job">
-        Default for new values
+        placeholder="Search job no…" autocomplete="off" />
+      <label title="How Apply is filled when you have not picked a job">
+        Fill from
         <select id="harvest-strategy" onchange="applyHarvestStrategy()">
-          <option value="latest">Latest edited job</option>
-          <option value="median">Median across jobs</option>
-          <option value="mode">Most common value</option>
+          <option value="latest">Latest job</option>
+          <option value="median">Median</option>
+          <option value="mode">Most common</option>
         </select>
       </label>
-      <label><input type="checkbox" id="harvest-only-review" onchange="renderHarvestRows()"> Show only needs review</label>
-      <label><input type="checkbox" id="harvest-hide-placeholder" checked onchange="renderHarvestRows()"> Hide placeholder BOMs</label>
-      <button type="button" class="btn btn-ghost btn-sm" onclick="selectHarvestClear()" title="Check rows that are clear and differ from current production">Select clear rows</button>
+      <label title="What rows to show">
+        Show
+        <select id="harvest-view-filter" onchange="renderHarvestRows()">
+          <option value="needs-update" selected>Needs update</option>
+          <option value="all">All rows</option>
+          <option value="ideal-note">Ideal differs only</option>
+        </select>
+      </label>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="selectHarvestNeedsUpdate()" title="Select all visible rows that would change production">Select visible</button>
       <span class="harvest-filter-count" id="harvest-filter-count"></span>
     </div>
     <div class="harvest-table-wrap">
       <table class="harvest-table">
+        <colgroup>
+          <col class="harvest-col-check">
+          <col class="harvest-col-expand">
+          <col class="harvest-col-part">
+          <col class="harvest-col-op">
+          <col class="harvest-col-status">
+          <col class="harvest-col-today">
+          <col class="harvest-col-apply">
+          <col class="harvest-col-jobs">
+          <col class="harvest-col-source">
+        </colgroup>
         <thead>
-          <tr class="harvest-group-row">
-            <th colspan="6"></th>
-            <th colspan="1" title="Reference only — not updated">Reference</th>
-            <th colspan="1" title="Production cycle in master table today">Master table today</th>
-            <th colspan="1" title="What will be saved to production cycle when you publish">Will publish</th>
-            <th colspan="2" title="Cycle times seen on scheduled jobs for this part + BOM + op">From scheduled jobs</th>
-          </tr>
           <tr class="harvest-cols-row">
             <th><input type="checkbox" id="harvest-select-all" title="Toggle visible rows" /></th>
             <th></th>
             <th>Part</th>
-            <th>BOM</th>
             <th>Op</th>
-            <th>Check</th>
-            <th class="harvest-num harvest-ideal-ref" title="Machine ideal cycle (not changed)">Ideal</th>
-            <th class="harvest-num" title="Current production cycle in master">Prod now</th>
-            <th class="harvest-num" title="New production cycle to save">New prod</th>
-            <th title="Aggregated cycle times across scheduled jobs in this group">Job times</th>
-            <th title="Where the new value came from">Source</th>
+            <th>Status</th>
+            <th title="Production and setup in master today (ideal in tooltip)">Master today</th>
+            <th title="Production cycle to write to master">Apply</th>
+            <th title="Cycle / setup on scheduled job(s)">From jobs</th>
+            <th title="How Apply was chosen">Via</th>
           </tr>
         </thead>
         <tbody id="harvest-tbody">
-          <tr><td colspan="11">Loading…</td></tr>
+          <tr><td colspan="9">Loading…</td></tr>
         </tbody>
       </table>
     </div>
     <div class="error-msg" id="harvest-error"></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" type="button" onclick="closeHarvestModal()">Cancel</button>
-      <button class="btn btn-primary" type="button" id="harvest-publish-btn" onclick="publishHarvestSelected()">Update master production</button>
+      <button class="btn btn-primary" type="button" id="harvest-publish-btn" onclick="publishHarvestSelected()">Apply selected to master</button>
     </div>
   </div>
 </div>
@@ -493,6 +551,7 @@ let allRows = [];
 let harvestRows = [];
 let harvestStrategy = 'latest';
 let harvestPsFilter = '';
+const HARVEST_COL_COUNT = 9;
 let editingId = null;
 let filterTerm = '';
 let opTypeFilter = '';
@@ -1028,15 +1087,21 @@ function harvestRowMatchesPsFilter(row, term) {
   });
 }
 
+function harvestRowPinned(r) {
+  if (r.expanded || r.selected) return true;
+  if (r.picked_job_index != null && !harvestProductionInSync(r)) return true;
+  return false;
+}
+
 function harvestVisibleRows() {
-  const onlyReview = document.getElementById('harvest-only-review')?.checked;
-  const hidePlaceholder = document.getElementById('harvest-hide-placeholder')?.checked;
+  const view = document.getElementById('harvest-view-filter')?.value || 'needs-update';
   const psTerm = harvestPsFilter || (document.getElementById('harvest-ps-filter')?.value || '').trim().toLowerCase();
   return harvestRows
     .map((r, idx) => ({ r, idx }))
     .filter(({ r }) => {
-      if (onlyReview && r.recommendation !== 'review') return false;
-      if (hidePlaceholder && r.is_placeholder) return false;
+      if (r.is_placeholder) return false;
+      if (view === 'needs-update' && harvestProductionInSync(r) && !harvestRowPinned(r)) return false;
+      if (view === 'ideal-note' && r.recommendation !== 'review') return false;
       if (!harvestRowMatchesPsFilter(r, psTerm)) return false;
       return true;
     });
@@ -1045,16 +1110,17 @@ function harvestVisibleRows() {
 function updateHarvestFilterCount(visibleCount) {
   const el = document.getElementById('harvest-filter-count');
   if (!el) return;
-  const total = harvestRows.length;
-  const psTerm = harvestPsFilter || (document.getElementById('harvest-ps-filter')?.value || '').trim();
-  const onlyReview = document.getElementById('harvest-only-review')?.checked;
-  const hidePlaceholder = document.getElementById('harvest-hide-placeholder')?.checked;
-  const filtered = psTerm || onlyReview || hidePlaceholder;
-  if (!filtered || !total) {
+  const total = harvestRows.filter(r => !r.is_placeholder).length;
+  const view = document.getElementById('harvest-view-filter')?.value || 'needs-update';
+  if (!total) {
     el.textContent = '';
     return;
   }
-  el.textContent = `${visibleCount} of ${total} rows`;
+  if (view === 'all') {
+    el.textContent = `${visibleCount} rows`;
+    return;
+  }
+  el.textContent = `${visibleCount} of ${total}`;
 }
 
 function harvestProposedFromJobs(jobs, strategy) {
@@ -1111,25 +1177,81 @@ function applyHarvestStrategy() {
   renderHarvestRows();
 }
 
+function harvestFormatTouched(at) {
+  const text = String(at || '').trim();
+  if (!text) return '—';
+  return text.slice(0, 10);
+}
+
 function pickHarvestJob(rowIdx, jobIdx) {
   const r = harvestRows[rowIdx];
   const job = r?.jobs?.[jobIdx];
   if (!r || !job) return;
-  r.picked_job_index = jobIdx;
-  r.publish_cycle_time = Number(job.cycle_time || 0);
-  r.publish_set_up_time = Number(job.set_up_time || 0);
-  r.proposed_cycle_time = r.publish_cycle_time;
-  r.proposed_set_up_time = r.publish_set_up_time;
-  r.source_block_id = job.block_id;
-  r.source_operation_id = job.operation_id;
+  if (r.picked_job_index === jobIdx) {
+    r.picked_job_index = null;
+    const pick = harvestProposedFromJobs(r.jobs || [], harvestStrategy);
+    r.publish_cycle_time = pick.cycle;
+    r.publish_set_up_time = pick.setup;
+    r.proposed_cycle_time = pick.cycle;
+    r.proposed_set_up_time = pick.setup;
+    if (pick.jobIndex != null && r.jobs?.[pick.jobIndex]) {
+      r.source_block_id = r.jobs[pick.jobIndex].block_id;
+      r.source_operation_id = r.jobs[pick.jobIndex].operation_id;
+    }
+    toast('Reverted to fill rule');
+  } else {
+    r.picked_job_index = jobIdx;
+    r.publish_cycle_time = Number(job.cycle_time || 0);
+    r.publish_set_up_time = Number(job.set_up_time || 0);
+    r.proposed_cycle_time = r.publish_cycle_time;
+    r.proposed_set_up_time = r.publish_set_up_time;
+    r.source_block_id = job.block_id;
+    r.source_operation_id = job.operation_id;
+    const ps = job.source_ps_id || ('block ' + job.block_id);
+    toast(`Apply → ${fmtNum(job.cycle_time)} min (${ps})`);
+  }
   r.recommendation = harvestRecommendation(r);
   r.expanded = true;
-  renderHarvestRows();
+  renderHarvestRows({ preserveScroll: true });
 }
 
 function toggleHarvestExpand(idx) {
   if (harvestRows[idx]) harvestRows[idx].expanded = !harvestRows[idx].expanded;
-  renderHarvestRows();
+  renderHarvestRows({ preserveScroll: true });
+}
+
+function harvestMasterCycleCell(r) {
+  const ideal = Number(r.current_ideal_cycle_time ?? 0);
+  const rowHint = r.current_master_id ? ` (master row #${r.current_master_id})` : '';
+  if (ideal > 0) {
+    return { text: fmtNum(ideal), title: `Master cycle from master sheet${rowHint}` };
+  }
+  const bomFallback = Number(r.bom_step_cycle_time ?? 0);
+  if (bomFallback > 0) {
+    return {
+      text: fmtNum(bomFallback),
+      title: 'No master row matched — showing BOM step cycle (not master sheet)',
+      warn: true,
+    };
+  }
+  return { text: '—', title: 'No master row matched for this part + BOM + op' };
+}
+
+function harvestSourceJob(r) {
+  const jobs = r.jobs || [];
+  if (!jobs.length) return null;
+  const picked = r.picked_job_index;
+  if (picked != null && jobs[picked]) return jobs[picked];
+  return jobs[0];
+}
+
+function harvestMachineChanged(r) {
+  const preferred = String(r.preferred_machine || '').trim();
+  if (!preferred) return false;
+  const job = harvestSourceJob(r);
+  const actual = String(job?.machine_no || '').trim();
+  if (!actual) return false;
+  return actual.toUpperCase() !== preferred.toUpperCase();
 }
 
 function harvestIdealBaseline(r) {
@@ -1139,6 +1261,7 @@ function harvestIdealBaseline(r) {
 }
 
 function harvestRecommendation(r) {
+  if (harvestMachineChanged(r)) return 'clear';
   const ideal = harvestIdealBaseline(r);
   const pub = Number(r.publish_cycle_time ?? r.proposed_cycle_time ?? 0);
   if (ideal <= 0 && pub > 0) return 'review';
@@ -1146,10 +1269,89 @@ function harvestRecommendation(r) {
   return 'clear';
 }
 
-function selectHarvestClear() {
+function harvestProductionInSync(r) {
+  const pub = Number(r.publish_cycle_time ?? r.proposed_cycle_time ?? 0);
+  if (!r.current_master_id) return false;
+  return Math.abs(Number(r.current_cycle_time ?? 0) - pub) <= 0.009;
+}
+
+function harvestStatusBadge(r, verdictKind) {
+  if (harvestProductionInSync(r)) {
+    return '<span class="harvest-verdict harvest-verdict--sync" title="Master production already matches Apply">In sync</span>';
+  }
+  if (!r.current_master_id) {
+    return '<span class="harvest-verdict harvest-verdict--new" title="No master row — Apply will create one">New</span>';
+  }
+  if (verdictKind === 'review' && !harvestMachineChanged(r)) {
+    return '<span class="harvest-verdict harvest-verdict--note" title="Apply differs from machine ideal — check if intentional">Note</span>';
+  }
+  return '<span class="harvest-verdict harvest-verdict--changed" title="Production will change when you apply">Update</span>';
+}
+
+function harvestTodayCell(r) {
+  const prod = r.current_master_id ? fmtNum(r.current_cycle_time) : '—';
+  const setup = r.current_master_id ? fmtNum(r.current_set_up_time) : '—';
+  const ideal = harvestMasterCycleCell(r);
+  const idealTip = ideal.text && ideal.text !== '—' ? ` · ideal ${ideal.text}` : '';
+  const rowHint = r.current_master_id ? ` (row #${r.current_master_id})` : '';
+  return `<div class="harvest-today-line" title="Production ${prod} · setup ${setup}${idealTip}${rowHint}">
+    <div><strong>${esc(prod)}</strong> <span>prod</span></div>
+    <div>${esc(setup)} <span>setup</span></div>
+  </div>`;
+}
+
+function harvestApplyCell(r, idx) {
+  const pub = fmtNum(r.publish_cycle_time);
+  const from = r.current_master_id ? fmtNum(r.current_cycle_time) : '—';
+  const fromPart = r.current_master_id
+    ? `<span class="harvest-apply-from">${esc(from)}</span><span class="harvest-apply-arrow">→</span>`
+    : '';
+  return `<div class="harvest-apply-flow">
+    ${fromPart}
+    <input class="harvest-publish-input" type="number" step="0.1" min="0"
+      value="${esc(pub)}"
+      title="Production cycle to save to master"
+      onchange="harvestRows[${idx}].publish_cycle_time = parseFloat(this.value) || 0; harvestRows[${idx}].picked_job_index = null; renderHarvestRows({ preserveScroll: true });">
+    ${harvestProdDelta(r)}
+  </div>`;
+}
+
+function harvestJobsLine(r) {
+  const jobs = r.jobs || [];
+  const n = r.job_count || jobs.length;
+  if (!n) return '—';
+  if (r.picked_job_index != null && jobs[r.picked_job_index]) {
+    const j = jobs[r.picked_job_index];
+    const ps = j.source_ps_id || ('block ' + j.block_id);
+    return `<div class="harvest-jobs-line"><strong>${esc(j.machine_no || '—')}</strong> · ${esc(fmtNum(j.cycle_time))} min · setup ${esc(fmtNum(j.set_up_time))}</div>`
+      + `<div class="harvest-jobs-sub">Selected: ${esc(ps)}</div>`;
+  }
+  const machine = harvestJobMachineSummary(r);
+  let cycleText;
+  if (n === 1) cycleText = fmtNum(jobs[0].cycle_time);
+  else if (r.has_variance) cycleText = `${fmtNum(r.cycle_min)}–${fmtNum(r.cycle_max)}`;
+  else cycleText = fmtNum(r.median_cycle_time ?? jobs[0]?.cycle_time);
+  let setupText;
+  if (n === 1) setupText = fmtNum(jobs[0].set_up_time);
+  else {
+    const setups = jobs.map(j => Number(j.set_up_time || 0));
+    const smin = r.setup_min ?? Math.min(...setups);
+    const smax = r.setup_max ?? Math.max(...setups);
+    setupText = Math.abs(smax - smin) > 0.009 ? `${fmtNum(smin)}–${fmtNum(smax)}` : fmtNum(r.median_set_up_time ?? setups[0]);
+  }
+  const sub = n > 1 ? `<div class="harvest-jobs-sub">${n} jobs — expand ▶ to pick</div>` : '';
+  return `<div class="harvest-jobs-line"><strong>${machine}</strong> · ${esc(cycleText)} min · setup ${esc(setupText)}</div>${sub}`;
+}
+
+function harvestViaLabel(r) {
+  if (r.picked_job_index != null) return 'Picked';
+  const labels = { latest: 'Latest', median: 'Median', mode: 'Mode' };
+  return labels[harvestStrategy] || 'Latest';
+}
+
+function selectHarvestNeedsUpdate() {
   harvestRows.forEach(r => {
-    r.recommendation = harvestRecommendation(r);
-    r.selected = r.recommendation === 'clear' && r.differs_from_master;
+    r.selected = !harvestProductionInSync(r);
   });
   renderHarvestRows();
 }
@@ -1163,41 +1365,30 @@ function harvestJobMatchesPsFilter(job, term) {
   return base.includes(term);
 }
 
-function renderHarvestJobDetail(r, rowIdx, psTerm) {
+function renderHarvestJobRows(r, rowIdx, psTerm) {
   const jobs = r.jobs || [];
   if (!jobs.length) return '';
-  return `
-    <table class="harvest-jobs-mini">
-      <thead>
-        <tr>
-          <th></th>
-          <th>PS / job</th>
-          <th>Machine</th>
-          <th class="harvest-num">Cycle</th>
-          <th class="harvest-num">Setup</th>
-          <th>Last edit</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${jobs.map((j, jobIdx) => `
-          <tr${psTerm && harvestJobMatchesPsFilter(j, psTerm) ? ' style="background:#eff6ff"' : ''}>
-            <td>
-              <button type="button" class="harvest-pick-btn ${r.picked_job_index === jobIdx ? 'is-picked' : ''}"
-                onclick="pickHarvestJob(${rowIdx}, ${jobIdx})">${r.picked_job_index === jobIdx ? 'Using' : 'Use'}</button>
-            </td>
-            <td>${esc(j.source_ps_id || ('block ' + j.block_id))}</td>
-            <td>${esc(j.machine_no || '—')}</td>
-            <td class="harvest-num">${esc(fmtNum(j.cycle_time))}</td>
-            <td class="harvest-num">${esc(fmtNum(j.set_up_time))}</td>
-            <td>${esc(j.touched_at || '—')}</td>
-          </tr>`).join('')}
-      </tbody>
-      <tfoot>
-        <tr><td colspan="6" style="font-size:11px;color:var(--text3);padding:8px 10px">
-          Pick one job above, or change <strong>New prod</strong> manually. Setup is not updated from this screen.
-        </td></tr>
-      </tfoot>
-    </table>`;
+  const jobRows = jobs.map((j, jobIdx) => {
+    const hl = psTerm && harvestJobMatchesPsFilter(j, psTerm) ? ' harvest-detail-job--match' : '';
+    const ps = j.source_ps_id || ('block ' + j.block_id);
+    const picked = r.picked_job_index === jobIdx;
+    return `
+      <tr class="harvest-detail-job${hl}">
+        <td></td>
+        <td></td>
+        <td class="harvest-detail-ps">
+          <button type="button" class="harvest-pick-btn ${picked ? 'is-picked' : ''}"
+            onclick="pickHarvestJob(${rowIdx}, ${jobIdx})" title="${picked ? 'Click again to revert to fill rule' : 'Use this job for Apply'}">${picked ? 'Using' : 'Use'}</button>
+        </td>
+        <td class="harvest-part-sub" title="${esc(ps)}">${esc(ps)}</td>
+        <td></td>
+        <td class="harvest-detail-muted">—</td>
+        <td class="harvest-detail-muted">—</td>
+        <td class="harvest-jobs-line"><strong>${esc(j.machine_no || '—')}</strong> · ${esc(fmtNum(j.cycle_time))} min · setup ${esc(fmtNum(j.set_up_time))}</td>
+        <td class="harvest-detail-time">${esc(harvestFormatTouched(j.touched_at))}</td>
+      </tr>`;
+  }).join('');
+  return jobRows;
 }
 
 function harvestOpLabel(row) {
@@ -1235,22 +1426,48 @@ function harvestSourceLabel(r) {
   return labels[harvestStrategy] || labels.latest;
 }
 
-function harvestJobTimesSummary(r) {
+function harvestJobMachineSummary(r) {
   const jobs = r.jobs || [];
   const n = r.job_count || jobs.length;
   if (!n) return '—';
-  if (n === 1) {
-    const j = jobs[0];
-    return `${esc(fmtNum(j.cycle_time))} min · 1 job${j.machine_no ? ` · ${esc(j.machine_no)}` : ''}`;
-  }
+  const machines = [...new Set(jobs.map(j => String(j.machine_no || '').trim()).filter(Boolean))];
+  if (machines.length === 1) return esc(machines[0]);
+  if (machines.length > 1) return `${machines.length} machines`;
+  const preferred = String(r.preferred_machine || '').trim();
+  return preferred ? esc(preferred) + ' (pref)' : '—';
+}
+
+function harvestJobCycleSummary(r) {
+  const jobs = r.jobs || [];
+  const n = r.job_count || jobs.length;
+  if (!n) return '—';
+  if (n === 1) return esc(fmtNum(jobs[0].cycle_time));
   if (r.has_variance) {
-    return `<span class="harvest-jobs-range">${esc(fmtNum(r.cycle_min))}–${esc(fmtNum(r.cycle_max))}</span> min`
-      + ` · med ${esc(fmtNum(r.median_cycle_time))}`
-      + ` · mode ${esc(fmtNum(r.mode_cycle_time))}`
-      + ` · ${n} jobs`;
+    return `<span class="harvest-jobs-range">${esc(fmtNum(r.cycle_min))}–${esc(fmtNum(r.cycle_max))}</span>`
+      + `<div class="harvest-jobs-sub">med ${esc(fmtNum(r.median_cycle_time))} · ${n} jobs</div>`;
   }
-  const val = fmtNum(r.median_cycle_time ?? jobs[0]?.cycle_time);
-  return `<span class="harvest-jobs-range">${esc(val)}</span> min · ${n} jobs agree`;
+  return esc(fmtNum(r.median_cycle_time ?? jobs[0]?.cycle_time));
+}
+
+function harvestJobSetupSummary(r) {
+  const jobs = r.jobs || [];
+  const n = r.job_count || jobs.length;
+  if (!n) return '—';
+  const setups = jobs.map(j => Number(j.set_up_time || 0));
+  const setupMin = r.setup_min ?? Math.min(...setups);
+  const setupMax = r.setup_max ?? Math.max(...setups);
+  const medSetup = r.median_set_up_time ?? (() => {
+    const sorted = [...setups].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  })();
+  const hasVariance = r.has_setup_variance ?? Math.abs(setupMax - setupMin) > 0.009;
+  if (n === 1) return esc(fmtNum(jobs[0].set_up_time));
+  if (hasVariance) {
+    return `<span class="harvest-jobs-range">${esc(fmtNum(setupMin))}–${esc(fmtNum(setupMax))}</span>`
+      + `<div class="harvest-jobs-sub">med ${esc(fmtNum(medSetup))} · ${n} jobs</div>`;
+  }
+  return esc(fmtNum(medSetup));
 }
 
 function harvestProdDelta(r) {
@@ -1260,24 +1477,31 @@ function harvestProdDelta(r) {
   }
   const current = Number(r.current_cycle_time ?? 0);
   if (Math.abs(pub - current) <= 0.009) {
-    return '<span class="harvest-delta harvest-delta--same" title="Same as current production">no change</span>';
+    return '<span class="harvest-delta harvest-delta--same" title="Same as master production today">same</span>';
   }
   const diff = pub - current;
   const cls = diff > 0 ? 'harvest-delta--up' : 'harvest-delta--down';
   return `<span class="harvest-delta ${cls}" title="Change vs current production">${diff > 0 ? '+' : ''}${esc(fmtNum(diff))}</span>`;
 }
 
-function renderHarvestRows() {
+function renderHarvestRows(opts = {}) {
+  const preserveScroll = opts.preserveScroll !== false;
+  const wrap = document.querySelector('.harvest-table-wrap');
+  const scrollTop = preserveScroll && wrap ? wrap.scrollTop : 0;
   const tbody = document.getElementById('harvest-tbody');
   const visible = harvestVisibleRows();
   updateHarvestFilterCount(visible.length);
-  const colSpan = 11;
+  const colSpan = HARVEST_COL_COUNT;
   if (!harvestRows.length) {
     tbody.innerHTML = `<tr><td colspan="${colSpan}">No scheduled jobs with cycle time &gt; 0 found.</td></tr>`;
     return;
   }
   if (!visible.length) {
-    tbody.innerHTML = `<tr><td colspan="${colSpan}">No rows match the current filters.</td></tr>`;
+    const view = document.getElementById('harvest-view-filter')?.value || 'needs-update';
+    const hint = view === 'needs-update'
+      ? 'Nothing to update — production already matches scheduled jobs. Try <strong>Show → All rows</strong>.'
+      : 'No rows match the current filters.';
+    tbody.innerHTML = `<tr><td colspan="${colSpan}">${hint}</td></tr>`;
     return;
   }
   const psTerm = harvestPsFilter || (document.getElementById('harvest-ps-filter')?.value || '').trim().toLowerCase();
@@ -1285,39 +1509,35 @@ function renderHarvestRows() {
     const opLabel = harvestOpLabel(r);
     const verdictKind = harvestRecommendation(r);
     r.recommendation = verdictKind;
-    const verdict = verdictKind === 'clear'
-      ? '<span class="harvest-verdict harvest-verdict--clear" title="New value matches machine ideal">Clear</span>'
-      : '<span class="harvest-verdict harvest-verdict--review" title="New value differs from machine ideal">Review</span>';
-    let rowClass = verdictKind === 'review' ? 'harvest-variance' : (r.differs_from_master ? 'harvest-changed' : '');
-    if (r.is_placeholder) rowClass = 'harvest-placeholder';
-    const ideal = harvestIdealBaseline(r);
-    const prodNow = r.current_master_id ? fmtNum(r.current_cycle_time) : '—';
+    r.machine_changed = harvestMachineChanged(r);
+    const status = harvestStatusBadge(r, verdictKind);
     const autoExpand = psTerm && harvestRowMatchesPsFilter(r, psTerm);
     const expanded = psTerm ? autoExpand : r.expanded;
+    if (autoExpand) r.expanded = true;
+    let rowClass = !harvestProductionInSync(r) ? 'harvest-changed' : '';
+    if (expanded) rowClass = (rowClass ? rowClass + ' ' : '') + 'harvest-row-expanded';
+    if (r.is_placeholder) rowClass = 'harvest-placeholder';
+    const bomSub = r.bom_code ? esc(r.bom_code) : '—';
+    const descSub = r.part_description
+      ? `<div class="harvest-part-desc" title="${esc(r.part_description)}">${esc(r.part_description)}</div>`
+      : '';
     const main = `
       <tr class="${rowClass}">
         <td><input type="checkbox" class="harvest-check" data-idx="${idx}" ${r.selected ? 'checked' : ''}></td>
-        <td><button type="button" class="harvest-expand-btn" onclick="toggleHarvestExpand(${idx})" title="Show individual scheduled jobs">${expanded ? '▼' : '▶'}</button></td>
-        <td>${esc(r.part_no)}</td>
-        <td>${esc(r.bom_code || '—')}</td>
-        <td>${esc(opLabel || '—')}</td>
-        <td>${verdict}</td>
-        <td class="harvest-num harvest-ideal-ref">${ideal > 0 ? esc(fmtNum(ideal)) : '—'}</td>
-        <td class="harvest-num" title="Current production cycle in master (this is what gets replaced)">${esc(prodNow)}</td>
-        <td class="harvest-num">
-          <div class="harvest-change">
-            <input class="harvest-publish-input" type="number" step="0.1" min="0"
-              value="${esc(fmtNum(r.publish_cycle_time))}"
-              title="New production cycle to save to master"
-              onchange="harvestRows[${idx}].publish_cycle_time = parseFloat(this.value) || 0; harvestRows[${idx}].picked_job_index = null; renderHarvestRows();">
-            ${harvestProdDelta(r)}
-          </div>
+        <td><button type="button" class="harvest-expand-btn" onclick="toggleHarvestExpand(${idx})" title="Show jobs to pick from">${expanded ? '▼' : '▶'}</button></td>
+        <td>
+          <div class="harvest-part-main" title="${esc(r.part_no)}">${esc(r.part_no)}</div>
+          <div class="harvest-part-sub">${bomSub}</div>
+          ${descSub}
         </td>
-        <td class="harvest-jobs-summary">${harvestJobTimesSummary(r)}</td>
-        <td class="harvest-source">${harvestSourceLabel(r)}</td>
+        <td>${esc(opLabel || '—')}</td>
+        <td>${status}</td>
+        <td>${harvestTodayCell(r)}</td>
+        <td class="harvest-num">${harvestApplyCell(r, idx)}</td>
+        <td>${harvestJobsLine(r)}</td>
+        <td class="harvest-source">${esc(harvestViaLabel(r))}</td>
       </tr>`;
-    const detail = expanded ? `
-      <tr class="harvest-detail"><td colspan="${colSpan}">${renderHarvestJobDetail(r, idx, psTerm)}</td></tr>` : '';
+    const detail = expanded ? renderHarvestJobRows(r, idx, psTerm) : '';
     return main + detail;
   }).join('');
   tbody.querySelectorAll('.harvest-check').forEach(el => {
@@ -1331,6 +1551,7 @@ function renderHarvestRows() {
     const vis = harvestVisibleRows();
     selectAll.checked = vis.length > 0 && vis.every(({ r }) => r.selected);
   }
+  if (preserveScroll && wrap) wrap.scrollTop = scrollTop;
 }
 
 async function openHarvestModal() {
@@ -1342,8 +1563,10 @@ async function openHarvestModal() {
   if (psFilterEl) psFilterEl.value = '';
   const filterCountEl = document.getElementById('harvest-filter-count');
   if (filterCountEl) filterCountEl.textContent = '';
+  const viewFilter = document.getElementById('harvest-view-filter');
+  if (viewFilter) viewFilter.value = 'needs-update';
   document.getElementById('harvest-modal').classList.add('open');
-  document.getElementById('harvest-tbody').innerHTML = '<tr><td colspan="11">Loading…</td></tr>';
+  document.getElementById('harvest-tbody').innerHTML = `<tr><td colspan="${HARVEST_COL_COUNT}">Loading…</td></tr>`;
   harvestStrategy = document.getElementById('harvest-strategy')?.value || 'latest';
   if (btn) btn.disabled = true;
   if (publishBtn) publishBtn.disabled = true;
@@ -1375,7 +1598,7 @@ async function openHarvestModal() {
   } catch (e) {
     setHarvestError(e.message);
     document.getElementById('harvest-tbody').innerHTML =
-      `<tr><td colspan="11">${esc(e.message)}</td></tr>`;
+      `<tr><td colspan="${HARVEST_COL_COUNT}">${esc(e.message)}</td></tr>`;
   } finally {
     if (btn) btn.disabled = false;
     if (publishBtn) publishBtn.disabled = false;
@@ -1399,8 +1622,8 @@ async function publishHarvestSelected() {
   }).join('\n');
   const more = selected.length > 5 ? `\n…and ${selected.length - 5} more` : '';
   if (!confirm(
-    `Update production cycle on ${selected.length} master row(s)?\n\n`
-    + `Only the production cycle column changes. Ideal/master cycle and scheduled jobs stay as-is.\n\n`
+    `Apply production cycle to ${selected.length} master row(s)?\n\n`
+    + `Only the production column on the master sheet changes. Scheduled jobs are not edited.\n\n`
     + summary + more
   )) return;
   const publishBtn = document.getElementById('harvest-publish-btn');
@@ -1430,7 +1653,7 @@ async function publishHarvestSelected() {
     }
     const n = result.count || (result.published || []).length;
     const errN = (result.errors || []).length;
-    toast(`Updated production cycle on ${n} row(s)${errN ? ` (${errN} failed)` : ''}`);
+    toast(`Applied production cycle to ${n} row(s)${errN ? ` (${errN} failed)` : ''}`);
     closeHarvestModal();
     await loadRows();
   } catch (e) {

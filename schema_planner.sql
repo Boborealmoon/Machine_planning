@@ -266,6 +266,8 @@ CREATE TABLE IF NOT EXISTS public.planner_operation (
     source_op_no              TEXT         NOT NULL DEFAULT '',
     status                    TEXT         NOT NULL DEFAULT 'ACTIVE',
     remarks                   TEXT         NOT NULL DEFAULT '',
+    tooling_ready             BOOLEAN      NOT NULL DEFAULT TRUE,
+    tooling_ready_date        DATE,
     created_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );

@@ -3,7 +3,7 @@
 {% block body_class %}auk-oee-page{% endblock %}
 {% block main_class %}app-main--planner{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/auk_oee_dashboard.css') }}?v=auk-oee-20260611h">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/auk_oee_dashboard.css') }}?v=auk-oee-20260624a">
 {% endblock %}
 {% block content %}
 <div class="auk-oee-shell">
@@ -49,5 +49,5 @@
     configured: {{ auk_configured | tojson }},
   };
 </script>
-<script src="{{ url_for('static', filename='js/auk_oee_dashboard.js') }}?v=auk-oee-20260611h"></script>
+<script src="{{ url_for('static', filename='js/auk_oee_dashboard.js') }}?v=auk-oee-20260624a"></script>
 {% endblock %}

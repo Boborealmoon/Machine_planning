@@ -95,6 +95,18 @@ def pp_job_due_date(job: dict[str, Any], so_line: dict[str, Any] | None = None) 
     return None
 
 
+def so_line_due_date(job: dict[str, Any], so_line: dict[str, Any] | None = None) -> date | None:
+    """Authoritative month-ownership anchor for sales report open value."""
+    for candidate in (
+        so_line.get("due_date") if so_line else None,
+        job.get("so_due_date"),
+    ):
+        parsed = parse_date_value(candidate)
+        if parsed:
+            return parsed
+    return None
+
+
 def index_so_lines(so_lines: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
     indexed: dict[tuple[str, str], dict[str, Any]] = {}
     for row in so_lines:
@@ -145,6 +157,137 @@ def _partial_qty(partial: dict[str, Any]) -> float:
     return qty if qty > 0 else 0.0
 
 
+def pp_partial_due_date(partial: dict[str, Any]) -> date | None:
+    return (
+        parse_date_value(partial.get("proposed_edd"))
+        or parse_date_value(partial.get("production_due_date"))
+    )
+
+
+def _shipment_qty(row: dict[str, Any]) -> float:
+    try:
+        qty = float(row.get("qty_issued") or 0)
+    except (TypeError, ValueError):
+        qty = 0.0
+    return qty if qty > 0 else 0.0
+
+
+def _shipment_order_key(row: dict[str, Any]) -> tuple:
+    ship_dt = parse_date_value(row.get("shipment_date") or row.get("shipment_datetime"))
+    return (
+        ship_dt or date.max,
+        compact_text(row.get("shipment_voucher_no")),
+        compact_text(row.get("invoice_no")),
+        compact_text(row.get("invoice_line_item_no")),
+    )
+
+
+def _pick_partial_for_shipment(
+    partials: list[dict[str, Any]],
+    remaining: dict[int, float],
+    ship_qty: float,
+    *,
+    qty_tol: float = 0.0001,
+) -> dict[str, Any] | None:
+    """Prefer exact qty match, then FIFO partial with enough remaining."""
+    for partial in partials:
+        partial_no = int(partial.get("pp_partial_no") or 1)
+        rem = remaining.get(partial_no, 0.0)
+        if rem > qty_tol and abs(rem - ship_qty) <= qty_tol:
+            return partial
+
+    for partial in partials:
+        partial_no = int(partial.get("pp_partial_no") or 1)
+        if remaining.get(partial_no, 0.0) + qty_tol >= ship_qty:
+            return partial
+
+    for partial in partials:
+        partial_no = int(partial.get("pp_partial_no") or 1)
+        if remaining.get(partial_no, 0.0) > qty_tol:
+            return partial
+
+    if len(partials) == 1:
+        return partials[0]
+    return None
+
+
+def assign_shipment_partials(
+    shipments: list[dict[str, Any]],
+    partials_by_voucher: dict[str, list[dict[str, Any]]] | None,
+) -> list[dict[str, Any]]:
+    """Match DO qty to PP partials (FIFO). Partial schedule drives backlog/on-time/early."""
+    if not partials_by_voucher:
+        return shipments
+
+    indices_by_voucher: dict[str, list[int]] = {}
+    for idx, row in enumerate(shipments):
+        voucher = compact_text(row.get("pp_voucher_no"))
+        if voucher:
+            indices_by_voucher.setdefault(voucher, []).append(idx)
+
+    out = [dict(row) for row in shipments]
+    qty_tol = 0.0001
+
+    for voucher, idxs in indices_by_voucher.items():
+        partials = partials_by_voucher.get(voucher) or []
+        if not partials:
+            continue
+
+        partials = sorted(partials, key=lambda p: int(p.get("pp_partial_no") or 1))
+        remaining = {
+            int(p.get("pp_partial_no") or 1): _partial_qty(p) for p in partials
+        }
+        active_idxs = [i for i in idxs if _shipment_qty(out[i]) > qty_tol]
+        sole_partial_due = pp_partial_due_date(partials[0]) if len(partials) == 1 else None
+        first_ship_dates = [
+            parse_date_value(out[i].get("shipment_date") or out[i].get("shipment_datetime"))
+            for i in active_idxs
+        ]
+        first_ship_date = min((d for d in first_ship_dates if d), default=None)
+        tranche_by_ship_date = (
+            len(partials) == 1
+            and len(active_idxs) > 1
+            and sole_partial_due is not None
+            and first_ship_date is not None
+            and sole_partial_due < first_ship_date
+        )
+
+        for idx in sorted(idxs, key=lambda i: _shipment_order_key(out[i])):
+            row = out[idx]
+            ship_qty = _shipment_qty(row)
+            if ship_qty <= qty_tol:
+                continue
+
+            matched = _pick_partial_for_shipment(partials, remaining, ship_qty, qty_tol=qty_tol)
+            if not matched:
+                continue
+
+            partial_no = int(matched.get("pp_partial_no") or 1)
+            remaining[partial_no] = max(0.0, remaining.get(partial_no, 0.0) - ship_qty)
+
+            partial_due = pp_partial_due_date(matched)
+            if row.get("due_date") and not row.get("so_due_date"):
+                row["so_due_date"] = row.get("due_date")
+            row["pp_partial_no"] = matched.get("pp_partial_no")
+            # Stale single partial + split DOs: tranche month follows each shipment date.
+            ship_due = parse_date_value(row.get("shipment_date") or row.get("shipment_datetime"))
+            if tranche_by_ship_date and ship_due:
+                row["due_date"] = ship_due.isoformat()
+                if partial_due:
+                    row["partial_due_date"] = partial_due.isoformat()
+                method = compact_text(row.get("attribution_method"))
+                row["attribution_method"] = (
+                    f"{method}+ship_date_tranche" if method else "ship_date_tranche"
+                )
+            elif partial_due:
+                row["due_date"] = partial_due.isoformat()
+                row["partial_due_date"] = partial_due.isoformat()
+                method = compact_text(row.get("attribution_method"))
+                row["attribution_method"] = f"{method}+partial_fifo" if method else "partial_fifo"
+
+    return out
+
+
 def _expand_job_by_partials(
     job_row: dict[str, Any],
     partials: list[dict[str, Any]],
@@ -176,7 +319,7 @@ def _expand_job_by_partials(
         partial_due = (
             parse_date_value(partial.get("proposed_edd"))
             or parse_date_value(partial.get("production_due_date"))
-            or parse_date_value(job_row.get("due_date"))
+            or parse_date_value(job_row.get("schedule_due_date"))
         )
         expanded.append({
             **job_row,
@@ -186,7 +329,7 @@ def _expand_job_by_partials(
             "allocated_remaining_qty": part_qty,
             "allocated_remaining_value": part_value,
             "allocation_method": "pp_partial_qty_share",
-            "due_date": partial_due.isoformat() if partial_due else job_row.get("due_date"),
+            "schedule_due_date": partial_due.isoformat() if partial_due else job_row.get("schedule_due_date"),
         })
     return expanded
 
@@ -236,7 +379,8 @@ def allocate_so_line_remaining(
             qty_left -= alloc_qty
             value_left -= alloc_value
 
-        due = pp_job_due_date(job, so_line)
+        owner_due = so_line_due_date(job, so_line)
+        schedule_due = pp_job_due_date(job, so_line)
         job_row = {
             **so_line,
             "pp_voucher_no": job.get("pp_voucher_no"),
@@ -247,7 +391,9 @@ def allocate_so_line_remaining(
             "allocation_share": share,
             "allocated_remaining_qty": alloc_qty,
             "allocated_remaining_value": alloc_value,
-            "due_date": due.isoformat() if due else so_line.get("due_date"),
+            # Report ownership always follows the original SO/PO due month.
+            "due_date": owner_due.isoformat() if owner_due else so_line.get("due_date"),
+            "schedule_due_date": schedule_due.isoformat() if schedule_due else None,
             "allocation_method": "pp_qty_share",
             "so_line_key": so_key,
         }
@@ -277,6 +423,8 @@ def attribute_shipments(
     shipments: list[dict[str, Any]],
     pp_jobs_by_line: dict[tuple[str, str], list[dict[str, Any]]],
     so_lines_by_key: dict[tuple[str, str], dict[str, Any]],
+    *,
+    partials_by_voucher: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     deduped = dedupe_shipments(shipments)
     out: list[dict[str, Any]] = []
@@ -300,14 +448,18 @@ def attribute_shipments(
             matched.get("process_sheet_no") if matched else row.get("process_sheet_no")
         )
         attributed["pp_type"] = pp_type
+        so_due = parse_date_value(so_line.get("due_date")) if so_line else None
+        if so_due is None:
+            so_due = due
         attributed["due_date"] = due.isoformat() if due else row.get("due_date")
+        attributed["so_due_date"] = so_due.isoformat() if so_due else row.get("due_date")
         attributed["attribution_method"] = (
             "inventory_match" if matched and compact_text(row.get("inventory_code")) else
             ("single_pp_job" if matched else "unmatched")
         )
         attributed["so_line_key"] = key
         out.append(attributed)
-    return out
+    return assign_shipment_partials(out, partials_by_voucher)
 
 
 def build_allocated_open_lines(

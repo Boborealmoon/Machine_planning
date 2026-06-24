@@ -523,6 +523,84 @@
   padding: 2px 8px;
 }
 
+.auk-oee-row__loading {
+  font-size: 12px;
+  color: #667085;
+  margin: 8px 0 12px;
+}
+
+.auk-oee-hourly {
+  display: flex;
+  gap: 3px;
+  align-items: flex-end;
+  height: 48px;
+  margin: 12px 0;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid #eaecf0;
+  border-radius: 10px;
+}
+
+.auk-oee-hourly--empty {
+  height: auto;
+  font-size: 12px;
+  color: #98a2b3;
+}
+
+.auk-oee-hourly__cell {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.auk-oee-hourly__stack {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  height: 100%;
+  border-radius: 3px;
+  overflow: hidden;
+  background: #f04438;
+}
+
+.auk-oee-hourly__ef { background: #12b76a; width: 100%; }
+.auk-oee-hourly__sl { background: #f79009; width: 100%; }
+.auk-oee-hourly__loss { background: #f04438; width: 100%; flex: 1; }
+
+.auk-oee-chart-summary {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.auk-oee-chart-summary__row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: #fff;
+  border: 1px solid #eaecf0;
+  border-radius: 8px;
+}
+
+.auk-oee-chart-summary__name {
+  color: #344054;
+  font-weight: 600;
+}
+
+.auk-oee-chart-summary__id {
+  font-size: 10px;
+  color: #98a2b3;
+  font-variant-numeric: tabular-nums;
+}
+
+.auk-oee-chart-summary__val {
+  font-variant-numeric: tabular-nums;
+  color: #101828;
+}
+
 .auk-oee-row__loss-title {
   font-size: 11px;
   font-weight: 700;

@@ -12,6 +12,7 @@ const salesReportState = {
   month: '',
   ppTypes: new Set(['APS', 'NPS']),
   loading: false,
+  ytdCellSelection: new Set(),
 };
 
 function salesReportMonthValue(year, month) {
@@ -43,6 +44,10 @@ function salesReportSyncPeriodUI() {
       : !raw;
     btn.classList.toggle('is-active', active);
     btn.classList.toggle('is-current', Boolean(monthNum) && monthNum === curM && salesReportState.year === curY);
+    if (monthNum) {
+      btn.disabled = hasMonth;
+      btn.classList.toggle('is-disabled', hasMonth);
+    }
   });
 
   const yearInput = document.getElementById('sales-report-year');
@@ -269,6 +274,34 @@ function salesReportDueAfterMonth(row, end) {
   return due > end;
 }
 
+function salesReportShipmentBucketDue(row) {
+  return salesReportParseDate(row?.so_due_date) || salesReportParseDate(row?.due_date);
+}
+
+function salesReportShipmentDueInMonth(row, start, end) {
+  const due = salesReportShipmentBucketDue(row);
+  if (!due) return false;
+  return due >= start && due <= end;
+}
+
+function salesReportShipmentDueBeforeMonth(row, start) {
+  const due = salesReportShipmentBucketDue(row);
+  if (!due) return false;
+  return due < start;
+}
+
+function salesReportShipmentDueAfterMonth(row, end) {
+  const due = salesReportShipmentBucketDue(row);
+  if (!due) return false;
+  return due > end;
+}
+
+function salesReportOutstandingRest(row, start, end) {
+  const due = salesReportParseDate(row?.due_date);
+  if (!due) return true;
+  return due > end;
+}
+
 function salesReportShipmentInMonth(row, start, end) {
   const ship = salesReportParseDate(row?.shipment_date || row?.shipment_datetime);
   if (!ship) return false;
@@ -278,6 +311,7 @@ function salesReportShipmentInMonth(row, start, end) {
 function salesReportBuildOpenMonthSummary(openLines, start, end) {
   const dueLines = openLines.filter(row => salesReportDueInMonth(row, start, end));
   const overdueLines = openLines.filter(row => salesReportDueBeforeMonth(row, start));
+  const restLines = openLines.filter(row => salesReportOutstandingRest(row, start, end));
   const dueSummary = {
     line_count: dueLines.length,
     remaining_qty: dueLines.reduce((sum, row) => sum + salesReportOpenQty(row), 0),
@@ -288,14 +322,21 @@ function salesReportBuildOpenMonthSummary(openLines, start, end) {
     remaining_qty: overdueLines.reduce((sum, row) => sum + salesReportOpenQty(row), 0),
     remaining_value: overdueLines.reduce((sum, row) => sum + salesReportOpenValue(row), 0),
   };
+  const restSummary = {
+    line_count: restLines.length,
+    remaining_qty: restLines.reduce((sum, row) => sum + salesReportOpenQty(row), 0),
+    remaining_value: restLines.reduce((sum, row) => sum + salesReportOpenValue(row), 0),
+  };
   return {
     mode: 'open',
     due_this_month: dueSummary,
     overdue: overdueSummary,
+    outstanding_rest: restSummary,
     on_hand: dueSummary,
     backlog: overdueSummary,
     on_hand_lines: dueLines,
     backlog_lines: overdueLines,
+    outstanding_rest_lines: restLines,
   };
 }
 
@@ -307,13 +348,30 @@ function salesReportYtdMonthColspan(meta) {
 
 function salesReportYtdMonthHeaderClass(meta, idx, firstFutureIdx) {
   return [
-    'sales-report-ytd-month',
-    'sales-report-ytd-month--clickable',
+    'sales-report-ytd-month-cell',
     meta.is_current ? 'is-current' : '',
     meta.mode === 'past' ? 'is-past' : (meta.is_current ? 'is-open-current' : 'is-future'),
     idx === firstFutureIdx ? 'is-future-start' : '',
     salesReportState.focusMonth === meta.month ? 'is-selected' : '',
   ].filter(Boolean).join(' ');
+}
+
+function salesReportYtdMonthButtonClass(meta) {
+  return [
+    'sales-report-ytd-month-btn',
+    meta.is_current ? 'is-current' : '',
+    meta.mode === 'past' ? 'is-past' : (meta.is_current ? 'is-open-current' : 'is-future'),
+  ].filter(Boolean).join(' ');
+}
+
+function salesReportScrollToYtdMonth(month) {
+  const btn = document.querySelector(`#sales-report-ytd-table .sales-report-ytd-month-btn[data-ytd-month="${month}"]`);
+  const scroll = document.querySelector('.sales-report-ytd-scroll');
+  if (!btn || !scroll) return;
+  const th = btn.closest('th');
+  btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  th?.classList.add('is-scroll-flash');
+  window.setTimeout(() => th?.classList.remove('is-scroll-flash'), 1400);
 }
 
 function salesReportYtdSubheadCells(meta) {
@@ -326,31 +384,167 @@ function salesReportYtdSubheadCells(meta) {
   }
   if (meta.is_current) {
     return [
-      { label: 'Overdue', cls: 'is-overdue' },
-      { label: 'Due this month', cls: 'is-due' },
+      { label: 'Backlog', cls: 'is-overdue' },
+      { label: 'Onhand', cls: 'is-due' },
     ];
   }
-  return [{ label: 'Open due', cls: 'is-due' }];
+  return [{ label: 'Onhand', cls: 'is-due' }];
 }
 
-function salesReportYtdCellHtml(cell, meta) {
+function salesReportYtdCellKey(rowId, month, colKey) {
+  return `${rowId}|${month}|${colKey}`;
+}
+
+function salesReportYtdNumTd(value, rowId, month, colKey, extraCls = '') {
+  const num = Number(value);
+  const safeNum = Number.isFinite(num) ? num : 0;
+  const key = salesReportYtdCellKey(rowId, month, colKey);
+  const selected = salesReportState.ytdCellSelection.has(key);
+  const cls = [
+    'sales-report-ytd-num',
+    'sales-report-ytd-num--selectable',
+    extraCls,
+    selected ? 'is-selected' : '',
+  ].filter(Boolean).join(' ');
+  return `<td class="${cls}" data-ytd-row="${escapeHtml(rowId)}" data-ytd-month="${month}" data-ytd-col="${escapeHtml(colKey)}" data-ytd-value="${safeNum}" tabindex="0" role="gridcell" aria-selected="${selected ? 'true' : 'false'}" title="Click to add to sum">${salesReportFormatMoney(safeNum)}</td>`;
+}
+
+function salesReportYtdCellHtml(cell, meta, rowId) {
   if (meta.mode === 'past') {
-    return `<td class="sales-report-ytd-num">${salesReportFormatMoney(cell.backlog_delivered)}</td><td class="sales-report-ytd-num">${salesReportFormatMoney(cell.delivered)}</td><td class="sales-report-ytd-num">${salesReportFormatMoney(cell.early_delivered)}</td>`;
+    return [
+      salesReportYtdNumTd(cell.backlog_delivered, rowId, meta.month, 'backlog_delivered'),
+      salesReportYtdNumTd(cell.delivered, rowId, meta.month, 'delivered'),
+      salesReportYtdNumTd(cell.early_delivered, rowId, meta.month, 'early_delivered'),
+    ].join('');
   }
   if (meta.is_current) {
-    const overdue = cell.overdue ?? cell.backlog ?? 0;
-    const due = cell.due_this_month ?? cell.on_hand ?? 0;
-    return `<td class="sales-report-ytd-num sales-report-ytd-num--overdue">${salesReportFormatMoney(overdue)}</td><td class="sales-report-ytd-num sales-report-ytd-num--due">${salesReportFormatMoney(due)}</td>`;
+    const backlog = cell.backlog ?? cell.overdue ?? 0;
+    const onHand = cell.on_hand ?? cell.due_this_month ?? 0;
+    return [
+      salesReportYtdNumTd(backlog, rowId, meta.month, 'backlog', 'sales-report-ytd-num--overdue'),
+      salesReportYtdNumTd(onHand, rowId, meta.month, 'on_hand', 'sales-report-ytd-num--due'),
+    ].join('');
   }
   const due = cell.due_this_month ?? cell.on_hand ?? 0;
-  return `<td class="sales-report-ytd-num sales-report-ytd-num--due" colspan="1">${salesReportFormatMoney(due)}</td>`;
+  return salesReportYtdNumTd(due, rowId, meta.month, 'due_this_month', 'sales-report-ytd-num--due');
+}
+
+function salesReportPruneYtdSelection(validKeys) {
+  salesReportState.ytdCellSelection.forEach(key => {
+    if (!validKeys.has(key)) salesReportState.ytdCellSelection.delete(key);
+  });
+}
+
+function salesReportToggleYtdCell(td) {
+  const rowId = td.dataset.ytdRow;
+  const month = Number(td.dataset.ytdMonth);
+  const colKey = td.dataset.ytdCol;
+  if (!rowId || !colKey || !Number.isFinite(month)) return;
+  const key = salesReportYtdCellKey(rowId, month, colKey);
+  const selected = salesReportState.ytdCellSelection.has(key);
+  if (selected) {
+    salesReportState.ytdCellSelection.delete(key);
+    td.classList.remove('is-selected');
+    td.setAttribute('aria-selected', 'false');
+  } else {
+    salesReportState.ytdCellSelection.add(key);
+    td.classList.add('is-selected');
+    td.setAttribute('aria-selected', 'true');
+  }
+  salesReportRenderYtdAggregate();
+}
+
+function salesReportClearYtdSelection() {
+  if (!salesReportState.ytdCellSelection.size) return;
+  salesReportState.ytdCellSelection.clear();
+  document.querySelectorAll('#sales-report-ytd-table td.is-selected').forEach(td => {
+    td.classList.remove('is-selected');
+    td.setAttribute('aria-selected', 'false');
+  });
+  salesReportRenderYtdAggregate();
+}
+
+function salesReportRenderYtdAggregate() {
+  const el = document.getElementById('sales-report-ytd-aggregate');
+  const row = document.getElementById('sales-report-ytd-aggregate-row');
+  if (!el) return;
+
+  const table = document.getElementById('sales-report-ytd-table');
+  const selected = table
+    ? [...table.querySelectorAll('td.sales-report-ytd-num--selectable.is-selected')]
+    : [];
+  if (!selected.length) {
+    el.hidden = true;
+    el.innerHTML = '';
+    if (row) row.hidden = true;
+    return;
+  }
+
+  const values = selected.map(td => Number(td.dataset.ytdValue)).filter(Number.isFinite);
+  const count = values.length;
+  const sum = values.reduce((total, n) => total + n, 0);
+  const avg = count ? sum / count : 0;
+
+  el.innerHTML = `
+    <div class="sales-report-ytd-aggregate-inner">
+      <span class="sales-report-ytd-aggregate-pill sales-report-ytd-aggregate-pill--count">
+        <span class="sales-report-ytd-aggregate-label">Selected</span>
+        <strong>${count}</strong>
+        <span class="sales-report-ytd-aggregate-unit">${count === 1 ? 'cell' : 'cells'}</span>
+      </span>
+      <span class="sales-report-ytd-aggregate-pill sales-report-ytd-aggregate-pill--sum">
+        <span class="sales-report-ytd-aggregate-label">Sum</span>
+        <strong>${salesReportFormatMoney(sum)}</strong>
+      </span>
+      <span class="sales-report-ytd-aggregate-pill sales-report-ytd-aggregate-pill--avg">
+        <span class="sales-report-ytd-aggregate-label">Average</span>
+        <strong>${salesReportFormatMoney(avg)}</strong>
+      </span>
+      <button type="button" class="sales-report-ytd-aggregate-clear btn btn-ghost btn-sm">Clear sum</button>
+    </div>`;
+  el.hidden = false;
+  if (row) row.hidden = false;
+  el.querySelector('.sales-report-ytd-aggregate-clear')?.addEventListener('click', salesReportClearYtdSelection);
+}
+
+function salesReportBindYtdMonthHeaders(table) {
+  if (!table || table.dataset.ytdMonthBound) return;
+  table.dataset.ytdMonthBound = '1';
+  table.addEventListener('click', (e) => {
+    const btn = e.target.closest('.sales-report-ytd-month-btn[data-ytd-month]');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    salesReportSetFocusMonth(btn.dataset.ytdMonth);
+  });
+}
+
+function salesReportBindYtdCellSelection(table) {
+  if (!table || table.dataset.ytdSelectBound) return;
+  table.dataset.ytdSelectBound = '1';
+  table.addEventListener('click', (e) => {
+    const td = e.target.closest('td.sales-report-ytd-num--selectable');
+    if (!td) return;
+    if (e.target.closest('.sales-report-ytd-month-btn')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    salesReportToggleYtdCell(td);
+  });
+  table.addEventListener('keydown', (e) => {
+    const td = e.target.closest('td.sales-report-ytd-num--selectable');
+    if (!td) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      salesReportToggleYtdCell(td);
+    }
+  });
 }
 
 function salesReportBuildPastMonthSummary(shipments, start, end) {
   const monthShipments = shipments.filter(row => salesReportShipmentInMonth(row, start, end));
-  const delivered = monthShipments.filter(row => salesReportDueInMonth(row, start, end));
-  const backlogDelivered = monthShipments.filter(row => salesReportDueBeforeMonth(row, start));
-  const earlyDelivered = monthShipments.filter(row => salesReportDueAfterMonth(row, end));
+  const delivered = monthShipments.filter(row => salesReportShipmentDueInMonth(row, start, end));
+  const backlogDelivered = monthShipments.filter(row => salesReportShipmentDueBeforeMonth(row, start));
+  const earlyDelivered = monthShipments.filter(row => salesReportShipmentDueAfterMonth(row, end));
   return {
     mode: 'past',
     delivered: {
@@ -412,8 +606,8 @@ function salesReportBuildYtdGrid(openLines, shipments, year) {
           month: meta.month,
           mode: 'open',
           open_kind: 'current',
-          overdue: open.overdue.remaining_value,
-          due_this_month: dueVal,
+          backlog: open.backlog.remaining_value,
+          on_hand: dueVal,
         };
       }
       return {
@@ -442,8 +636,8 @@ function salesReportBuildYtdGrid(openLines, shipments, year) {
       open_kind: meta.is_current ? 'current' : 'future',
       ...(meta.is_current
         ? {
-          overdue: cellLists.reduce((sum, list) => sum + Number(list[idx]?.overdue || 0), 0),
-          due_this_month: cellLists.reduce((sum, list) => sum + Number(list[idx]?.due_this_month || 0), 0),
+          backlog: cellLists.reduce((sum, list) => sum + Number(list[idx]?.backlog || 0), 0),
+          on_hand: cellLists.reduce((sum, list) => sum + Number(list[idx]?.on_hand || 0), 0),
         }
         : {
           due_this_month: cellLists.reduce((sum, list) => sum + Number(list[idx]?.due_this_month || 0), 0),
@@ -465,15 +659,6 @@ function salesReportBuildYtdGrid(openLines, shipments, year) {
   const activeTypes = salesReportActivePpTypes().filter(type => SALES_REPORT_YTD_TYPES.includes(type));
   const activeCellLists = activeTypes.map(type => rowCells[type]);
 
-  if (activeTypes.includes('APS') && activeTypes.includes('NPS')) {
-    rows.push({
-      id: 'SUB_APS_NPS',
-      label: 'Sub-Total (APS+NPS)',
-      cells: sumCells([rowCells.APS, rowCells.NPS]),
-      emphasis: 'subtotal',
-    });
-  }
-
   if (activeCellLists.length) {
     rows.push({
       id: 'TOTAL',
@@ -488,7 +673,7 @@ function salesReportBuildYtdGrid(openLines, shipments, year) {
     current_month: year === now.getFullYear() ? now.getMonth() + 1 : (year < now.getFullYear() ? 12 : 1),
     months: monthsMeta,
     rows: rows.filter(row => {
-      if (row.id === 'SUB_APS_NPS' || row.id === 'TOTAL') return true;
+      if (row.id === 'TOTAL') return true;
       return activeTypes.includes(row.id);
     }),
   };
@@ -627,6 +812,7 @@ function salesReportRenderIntegrity(integrity) {
     <p class="sales-report-integrity-body">
       Open $ uses one SO-line total split across process sheets by quantity — never duplicated per PS.
       Shipped $ uses deduped DO/invoice lines (${dedupRows} rows${rawRows !== dedupRows ? `, ${rawRows - dedupRows} join duplicates removed` : ''}).
+      All grid and breakdown amounts are <strong>home currency</strong> (foreign unit × exch rate, or ERP pre_tax_extended_home_amt).
       ${!ok ? `Allocation gap ${salesReportFormatMoney(gap)} · shipment dedup delta ${salesReportFormatMoney(dedupSavings)}.` : ''}
     </p>
     <dl class="sales-report-integrity-metrics">
@@ -708,8 +894,8 @@ function salesReportRenderStats(summary) {
     parts.push(`<span class="new-orders-stat">Early <strong>${salesReportFormatMoney(summary.early_delivered?.total_home_amt)}</strong></span>`);
     parts.push(`<span class="new-orders-stat">All shipped <strong>${salesReportFormatMoney(summary.shipped?.total_home_amt)}</strong></span>`);
   } else {
-    parts.push(`<span class="new-orders-stat">On hand <strong>${salesReportFormatMoney(summary.on_hand?.remaining_value)}</strong></span>`);
     parts.push(`<span class="new-orders-stat">Backlog <strong>${salesReportFormatMoney(summary.backlog?.remaining_value)}</strong></span>`);
+    parts.push(`<span class="new-orders-stat">Onhand <strong>${salesReportFormatMoney(summary.on_hand?.remaining_value)}</strong></span>`);
     parts.push(`<span class="new-orders-stat">Booked <strong>${salesReportFormatMoney(summary.booked?.line_amount)}</strong></span>`);
   }
   el.innerHTML = parts.join('');
@@ -721,17 +907,22 @@ function salesReportRenderSummary(summary) {
 
   const cards = summary.mode === 'past'
     ? [
-      { title: 'Delivered (on time)', tone: 'shipped', value: summary.delivered?.total_home_amt, sub: `${summary.delivered?.line_count || 0} shipment lines`, hint: 'Shipped in month · due date also in this month' },
-      { title: 'Backlog delivered', tone: 'cleared', value: summary.backlog_delivered?.total_home_amt, sub: `${summary.backlog_delivered?.line_count || 0} shipment lines`, hint: 'Shipped in month · was overdue (due before month start)' },
-      { title: 'Early delivered', tone: 'early', value: summary.early_delivered?.total_home_amt, sub: `${summary.early_delivered?.line_count || 0} shipment lines`, hint: 'Shipped in month · due date after month end' },
+      { title: 'Delivered (on time)', tone: 'shipped', value: summary.delivered?.total_home_amt, sub: `${summary.delivered?.line_count || 0} shipment lines`, hint: 'Shipped in month · original PO due date also in this month' },
+      { title: 'Backlog delivered', tone: 'cleared', value: summary.backlog_delivered?.total_home_amt, sub: `${summary.backlog_delivered?.line_count || 0} shipment lines`, hint: 'Shipped in month · original PO due was before month start' },
+      { title: 'Early delivered', tone: 'early', value: summary.early_delivered?.total_home_amt, sub: `${summary.early_delivered?.line_count || 0} shipment lines`, hint: 'Shipped in month · original PO due after month end' },
       { title: 'All shipments', tone: 'booked', value: summary.shipped?.total_home_amt, sub: `${summary.shipped?.line_count || 0} lines`, hint: 'On-time + backlog + early (every DO dated in month)' },
     ]
-    : [
-      { title: 'Due this month', tone: 'on-hand', value: summary.on_hand?.remaining_value, sub: `${salesReportFormatQty(summary.on_hand?.remaining_qty)} pcs · ${summary.on_hand?.line_count || 0} lines`, hint: 'Unfinished open $ · PO/PP due date falls in this month' },
-      { title: 'Overdue (open)', tone: 'cleared', value: summary.backlog?.remaining_value, sub: `${salesReportFormatQty(summary.backlog?.remaining_qty)} pcs · ${summary.backlog?.line_count || 0} lines`, hint: 'Still open · PO due date was before this month' },
-      { title: 'Shipped this month', tone: 'shipped', value: summary.shipped?.total_home_amt, sub: `${summary.shipped?.line_count || 0} lines`, hint: 'DO/shipment dated in month' },
-      { title: 'Booked this month', tone: 'booked', value: summary.booked?.line_amount, sub: `${summary.booked?.line_count || 0} lines`, hint: 'First-posted in month' },
-    ];
+    : (() => {
+      const openCards = [
+        { title: 'Backlog', tone: 'cleared', value: summary.backlog?.remaining_value, sub: `${salesReportFormatQty(summary.backlog?.remaining_qty)} pcs · ${summary.backlog?.line_count || 0} lines`, hint: 'Still open · PO due before this month' },
+        { title: 'Onhand', tone: 'on-hand', value: summary.on_hand?.remaining_value, sub: `${salesReportFormatQty(summary.on_hand?.remaining_qty)} pcs · ${summary.on_hand?.line_count || 0} lines`, hint: 'Unfinished open $ · PO due this month' },
+      ];
+      openCards.push(
+        { title: 'Shipped this month', tone: 'shipped', value: summary.shipped?.total_home_amt, sub: `${summary.shipped?.line_count || 0} lines`, hint: 'DO/shipment dated in month' },
+        { title: 'Booked this month', tone: 'booked', value: summary.booked?.line_amount, sub: `${summary.booked?.line_count || 0} lines`, hint: 'First-posted in month' },
+      );
+      return openCards;
+    })();
 
   el.innerHTML = cards.map(card => `
     <article class="sales-report-kpi sales-report-kpi--${card.tone}">
@@ -749,7 +940,7 @@ function salesReportRenderBreakdown(breakdown, summary) {
   const mode = summary?.mode || 'open';
   const headers = mode === 'past'
     ? ['PP type', 'Backlog del. $', 'On-time $', 'Early $', 'All shipped $']
-    : ['PP type', 'Due this month $', 'Overdue $', 'Shipped $', 'Booked $'];
+    : ['PP type', 'Backlog $', 'Onhand $', 'Shipped $', 'Booked $'];
 
   const rows = (breakdown || []).filter(entry => {
     const s = entry.summary || {};
@@ -771,8 +962,8 @@ function salesReportRenderBreakdown(breakdown, summary) {
     }
     return `<tr>
       <td>${salesReportTypeTagHtml(entry.type)}</td>
-      <td class="sales-report-breakdown-num">${salesReportFormatMoney(s.on_hand?.remaining_value)}</td>
       <td class="sales-report-breakdown-num">${salesReportFormatMoney(s.backlog?.remaining_value)}</td>
+      <td class="sales-report-breakdown-num">${salesReportFormatMoney(s.on_hand?.remaining_value)}</td>
       <td class="sales-report-breakdown-num">${salesReportFormatMoney(s.shipped?.total_home_amt)}</td>
       <td class="sales-report-breakdown-num">${salesReportFormatMoney(s.booked?.line_amount)}</td>
     </tr>`;
@@ -781,7 +972,7 @@ function salesReportRenderBreakdown(breakdown, summary) {
   el.innerHTML = `
     <div class="sales-report-breakdown-head">
       <h2 class="sales-report-breakdown-title">Breakdown by PP type</h2>
-      <p class="sales-report-breakdown-sub">${mode === 'past' ? 'Past month — shipment outcomes' : 'Open month — unfinished $ by PO due date'} for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong></p>
+      <p class="sales-report-breakdown-sub">${mode === 'past' ? 'Past month — shipment outcomes' : 'Open month — backlog + onhand by PO due date'} for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong></p>
     </div>
     <div class="sales-report-breakdown-scroll">
       <table class="sales-report-breakdown-table">
@@ -805,8 +996,8 @@ function salesReportRenderTypeCards(breakdown, summary) {
         ['All shipped', s.shipped?.total_home_amt],
       ]
       : [
-        ['On hand', s.on_hand?.remaining_value],
         ['Backlog', s.backlog?.remaining_value],
+        ['Onhand', s.on_hand?.remaining_value],
         ['Shipped', s.shipped?.total_home_amt],
         ['Booked', s.booked?.line_amount],
       ];
@@ -841,8 +1032,8 @@ function salesReportRenderYtdSummary(grid) {
 
   let ytdShipped = 0;
   let ytdBacklogDel = 0;
-  let overdueNow = 0;
-  let dueNow = 0;
+  let backlogNow = 0;
+  let onHandNow = 0;
   let forwardDue = 0;
 
   grid.months.forEach((meta, idx) => {
@@ -851,8 +1042,8 @@ function salesReportRenderYtdSummary(grid) {
       ytdShipped += Number(cell.backlog_delivered || 0) + Number(cell.delivered || 0) + Number(cell.early_delivered || 0);
       ytdBacklogDel += Number(cell.backlog_delivered || 0);
     } else if (meta.is_current) {
-      overdueNow += Number(cell.overdue || 0);
-      dueNow += Number(cell.due_this_month || 0);
+      backlogNow += Number(cell.backlog || 0);
+      onHandNow += Number(cell.on_hand || 0);
     } else {
       forwardDue += Number(cell.due_this_month || 0);
     }
@@ -862,9 +1053,9 @@ function salesReportRenderYtdSummary(grid) {
 
   const cards = [
     { title: 'YTD shipped', tone: 'shipped', value: ytdShipped, sub: `Includes ${salesReportFormatMoney(ytdBacklogDel)} backlog cleared`, hint: 'All DO lines in past months' },
-    { title: 'Overdue now', tone: 'cleared', value: overdueNow, sub: 'Still open · due before this month', hint: 'Shown once in current month column' },
-    { title: 'Due this month', tone: 'on-hand', value: dueNow, sub: 'Unfinished · PO due in current month', hint: 'Open $ with due date this month' },
-    { title: 'Forward schedule', tone: 'early', value: forwardDue, sub: 'Unfinished · PO due in future months', hint: 'Sum of open $ by future due month' },
+    { title: 'Backlog now', tone: 'cleared', value: backlogNow, sub: 'Still open · PO due before this month', hint: 'Backlog column in current month' },
+    { title: 'Onhand now', tone: 'on-hand', value: onHandNow, sub: 'Unfinished · PO due in current month', hint: 'Onhand column in current month' },
+    { title: 'Forward onhand', tone: 'early', value: forwardDue, sub: 'Unfinished · PO due in future months', hint: 'Sum of onhand $ in future month columns' },
   ];
   if (openRemaining != null) {
     cards.push({ title: 'Total open remaining', tone: 'booked', value: openRemaining, sub: 'All unfinished open $ (filtered)', hint: 'Authoritative PP-allocated remaining' });
@@ -873,7 +1064,7 @@ function salesReportRenderYtdSummary(grid) {
   el.innerHTML = `
     <div class="sales-report-ytd-summary-head">
       <h3 class="sales-report-ytd-summary-title">Year at a glance</h3>
-      <p class="sales-report-ytd-summary-sub">Summary for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong> — click any month in the grid for line detail.</p>
+      <p class="sales-report-ytd-summary-sub">Summary for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong> — use <strong>View breakdown</strong> on a month header for line detail.</p>
     </div>
     <div class="sales-report-kpi-grid sales-report-kpi-grid--ytd card">
       ${cards.map(card => `
@@ -903,13 +1094,19 @@ function salesReportRenderYtd() {
 
   const monthTopRow = grid.months.map((meta, idx) => {
     const cls = salesReportYtdMonthHeaderClass(meta, idx, firstFutureIdx);
+    const btnCls = salesReportYtdMonthButtonClass(meta);
     const colspan = salesReportYtdMonthColspan(meta);
     const title = meta.mode === 'past'
       ? `Shipments in ${meta.label}`
       : meta.is_current
-        ? `Overdue + due in ${meta.label}`
-        : `Unfinished jobs with PO due in ${meta.label}`;
-    return `<th colspan="${colspan}" class="${cls}" data-ytd-month="${meta.month}" title="${escapeHtml(title)}">${escapeHtml(meta.label)}</th>`;
+        ? `Backlog + onhand in ${meta.label}`
+        : `Onhand with PO due in ${meta.label}`;
+    return `<th colspan="${colspan}" class="${cls}">
+      <button type="button" class="${btnCls}" data-ytd-month="${meta.month}" title="${escapeHtml(title)} — view breakdown">
+        <span class="sales-report-ytd-month-label">${escapeHtml(meta.label)}</span>
+        <span class="sales-report-ytd-month-action">View breakdown<span class="sales-report-ytd-month-arrow" aria-hidden="true">→</span></span>
+      </button>
+    </th>`;
   }).join('');
 
   const subRow = grid.months.map(meta => (
@@ -918,11 +1115,29 @@ function salesReportRenderYtd() {
     )).join('')
   )).join('');
 
+  const validKeys = new Set();
+
   const body = grid.rows.map(row => {
     const rowCls = row.emphasis === 'total' ? 'sales-report-ytd-row--total' : (row.emphasis === 'subtotal' ? 'sales-report-ytd-row--subtotal' : '');
-    const cells = row.cells.map((cell, idx) => salesReportYtdCellHtml(cell, grid.months[idx])).join('');
+    const cells = row.cells.map((cell, idx) => {
+      const meta = grid.months[idx];
+      if (meta.mode === 'past') {
+        ['backlog_delivered', 'delivered', 'early_delivered'].forEach(col => {
+          validKeys.add(salesReportYtdCellKey(row.id, meta.month, col));
+        });
+      } else if (meta.is_current) {
+        ['backlog', 'on_hand'].forEach(col => {
+          validKeys.add(salesReportYtdCellKey(row.id, meta.month, col));
+        });
+      } else {
+        validKeys.add(salesReportYtdCellKey(row.id, meta.month, 'due_this_month'));
+      }
+      return salesReportYtdCellHtml(cell, meta, row.id);
+    }).join('');
     return `<tr class="${rowCls}"><th class="sales-report-ytd-row-label">${escapeHtml(row.label)}</th>${cells}</tr>`;
   }).join('');
+
+  salesReportPruneYtdSelection(validKeys);
 
   table.innerHTML = `
     <thead>
@@ -934,22 +1149,36 @@ function salesReportRenderYtd() {
     </thead>
     <tbody>${body}</tbody>`;
 
-  table.querySelectorAll('[data-ytd-month]').forEach(th => {
-    th.addEventListener('click', () => salesReportSetFocusMonth(th.dataset.ytdMonth));
-  });
+  salesReportBindYtdMonthHeaders(table);
+  salesReportBindYtdCellSelection(table);
+  salesReportRenderYtdAggregate();
 
   salesReportRenderYtdSummary(grid);
 
+  const legend = document.getElementById('sales-report-ytd-legend');
+  if (legend) legend.hidden = Boolean(salesReportState.focusMonth);
+
   if (sub) {
     sub.textContent = salesReportState.focusMonth
-      ? 'Overview for selected year — open another month from the chips above or column headers.'
-      : 'Past months = what shipped · current month = overdue + due now · future months = unfinished open $ by PO due date (one value per month).';
+      ? 'Line detail for the month you opened from the grid. Use Overview to return.'
+      : 'Past = shipped · current = backlog + onhand · future = onhand by PO due month.';
   }
   overview.hidden = false;
 }
 
-const SALES_REPORT_COLUMNS = {
-  on_hand: [
+function salesReportFormatExchRate(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '—';
+  return num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
+
+function salesReportFormatCurrency(value) {
+  const text = String(value || '').trim();
+  return text || '—';
+}
+
+function salesReportOpenLineColumns() {
+  return [
     { id: 'sales_order_no', label: 'Sales order' },
     { id: 'line_item_no', label: 'Line' },
     { id: 'process_sheet_no', label: 'PS' },
@@ -957,42 +1186,54 @@ const SALES_REPORT_COLUMNS = {
     { id: 'description', label: 'Description' },
     { id: 'customer_name', label: 'Customer' },
     { id: 'due_date', label: 'Due', fmt: salesReportFormatDate },
+    { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency },
+    { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney },
+    { id: 'exch_rate', label: 'Exch', fmt: salesReportFormatExchRate },
+    { id: 'unit_selling_price', label: 'Home U/Price', fmt: salesReportFormatMoney },
     { id: 'remaining_qty', label: 'Remaining', fmt: (v, row) => salesReportFormatQty(salesReportOpenQty(row)) },
-    { id: 'unit_selling_price', label: 'U/Price', fmt: salesReportFormatMoney },
-    { id: 'remaining_value', label: 'Value', fmt: (v, row) => salesReportFormatMoney(salesReportOpenValue(row)) },
-  ],
-  backlog: [
+    { id: 'remaining_value', label: 'Home amt', fmt: (v, row) => salesReportFormatMoney(salesReportOpenValue(row)) },
+  ];
+}
+
+function salesReportShippedLineColumns() {
+  return [
     { id: 'sales_order_no', label: 'Sales order' },
     { id: 'line_item_no', label: 'Line' },
     { id: 'process_sheet_no', label: 'PS' },
-    { id: 'inventory_code', label: 'Part' },
-    { id: 'description', label: 'Description' },
-    { id: 'customer_name', label: 'Customer' },
-    { id: 'due_date', label: 'Due', fmt: salesReportFormatDate },
-    { id: 'remaining_qty', label: 'Remaining', fmt: (v, row) => salesReportFormatQty(salesReportOpenQty(row)) },
-    { id: 'unit_selling_price', label: 'U/Price', fmt: salesReportFormatMoney },
-    { id: 'remaining_value', label: 'Value', fmt: (v, row) => salesReportFormatMoney(salesReportOpenValue(row)) },
-  ],
-  shipped: [
-    { id: 'sales_order_no', label: 'Sales order' },
-    { id: 'line_item_no', label: 'Line' },
-    { id: 'process_sheet_no', label: 'PS' },
+    { id: 'pp_partial_no', label: 'Partial' },
     { id: 'due_date', label: 'Due', fmt: salesReportFormatDate },
     { id: 'shipment_datetime', label: 'Shipped', fmt: salesReportFormatDt },
+    { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency },
+    { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney },
+    { id: 'exch_rate', label: 'Exch', fmt: salesReportFormatExchRate },
     { id: 'qty_issued', label: 'Qty', fmt: salesReportFormatQty },
     { id: 'total_home_amt', label: 'Home amt', fmt: salesReportFormatMoney },
     { id: 'shipment_voucher_no', label: 'Shipment' },
     { id: 'invoice_no', label: 'Invoice' },
-  ],
-  booked: [
+  ];
+}
+
+function salesReportBookedLineColumns() {
+  return [
     { id: 'sales_order_no', label: 'Sales order' },
     { id: 'line_item_no', label: 'Line' },
-    { id: 'process_sheet_no', label: 'PS' },
+    { id: 'inventory_code', label: 'Part' },
     { id: 'due_date', label: 'Due', fmt: salesReportFormatDate },
     { id: 'first_posted_datetime', label: 'First post', fmt: salesReportFormatDt },
+    { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency },
+    { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney },
+    { id: 'exch_rate', label: 'Exch', fmt: salesReportFormatExchRate },
     { id: 'qty', label: 'Qty', fmt: salesReportFormatQty },
-    { id: 'line_amount', label: 'Amount', fmt: salesReportFormatMoney },
-  ],
+    { id: 'unit_selling_price', label: 'Home U/Price', fmt: salesReportFormatMoney },
+    { id: 'line_amount', label: 'Home amt', fmt: salesReportFormatMoney },
+  ];
+}
+
+const SALES_REPORT_COLUMNS = {
+  on_hand: salesReportOpenLineColumns(),
+  backlog: salesReportOpenLineColumns(),
+  shipped: salesReportShippedLineColumns(),
+  booked: salesReportBookedLineColumns(),
 };
 SALES_REPORT_COLUMNS.early_delivered = SALES_REPORT_COLUMNS.shipped;
 
@@ -1013,15 +1254,15 @@ function salesReportDetailSectionDefs(data) {
   const past = data.summary?.mode === 'past';
   if (past) {
     return [
-      { id: 'on_hand', title: 'On-time delivered', hint: 'Shipped this month · due date in same month', rows: data.on_hand || [] },
-      { id: 'backlog', title: 'Backlog delivered', hint: 'Shipped this month · was overdue before month start', rows: data.backlog || [] },
-      { id: 'early_delivered', title: 'Early delivered', hint: 'Shipped this month · due date after month end', rows: data.early_delivered || [] },
+      { id: 'on_hand', title: 'On-time delivered', hint: 'Shipped this month · original PO due in same month', rows: data.on_hand || [] },
+      { id: 'backlog', title: 'Backlog delivered', hint: 'Shipped this month · original PO due before month start', rows: data.backlog || [] },
+      { id: 'early_delivered', title: 'Early delivered', hint: 'Shipped this month · original PO due after month end', rows: data.early_delivered || [] },
       { id: 'shipped', title: 'All shipments', hint: 'Every DO/shipment dated this month', rows: data.shipped || [] },
     ];
   }
   return [
-    { id: 'on_hand', title: 'Due this month', hint: 'Unfinished open $ · PO/PP due in this month', rows: data.on_hand || [] },
-    { id: 'backlog', title: 'Overdue (still open)', hint: 'PO due before month start · not yet shipped', rows: data.backlog || [] },
+    { id: 'backlog', title: 'Backlog', hint: 'Still open · PO due before this month', rows: data.backlog || [] },
+    { id: 'on_hand', title: 'Onhand', hint: 'Unfinished open $ · PO due in this month', rows: data.on_hand || [] },
     { id: 'shipped', title: 'Shipped this month', hint: 'DO/shipment dated this month', rows: data.shipped || [] },
     { id: 'booked', title: 'Booked this month', hint: 'SO lines first-posted this month', rows: data.booked || [] },
   ];
@@ -1078,7 +1319,7 @@ function salesReportRenderTableRow(row, cols) {
   return `<tr>${cols.map(col => {
     const raw = row[col.id];
     const text = col.fmt ? col.fmt(raw, row) : (raw == null || raw === '' ? '—' : String(raw));
-    const mono = ['sales_order_no', 'inventory_code', 'process_sheet_no', 'shipment_voucher_no', 'invoice_no'].includes(col.id);
+    const mono = ['sales_order_no', 'inventory_code', 'process_sheet_no', 'shipment_voucher_no', 'invoice_no', 'order_currency_code'].includes(col.id);
     return `<td${mono ? ' class="new-orders-mono"' : ''}>${escapeHtml(text)}</td>`;
   }).join('')}</tr>`;
 }
@@ -1094,7 +1335,7 @@ function salesReportRenderMonthPanel() {
   if (sub) {
     sub.textContent = data.summary?.mode === 'past'
       ? 'How shipments in this month relate to their original due dates.'
-      : 'Unfinished open value by PO/PP due date — click a month column to see line detail.';
+      : 'Unfinished open value by PO due date.';
   }
 
   salesReportRenderIntegrity(data.integrity);
@@ -1298,8 +1539,12 @@ function salesReportBindControls() {
   document.querySelectorAll('.sales-report-month-chip').forEach(btn => {
     btn.addEventListener('click', () => {
       const raw = btn.dataset.month;
-      if (!raw) salesReportClearFocusMonth();
-      else salesReportSetFocusMonth(raw);
+      if (!raw) {
+        salesReportClearFocusMonth();
+        return;
+      }
+      if (salesReportState.focusMonth) return;
+      salesReportScrollToYtdMonth(Number(raw));
     });
   });
 
@@ -1320,6 +1565,15 @@ function salesReportBindControls() {
   });
 
   document.getElementById('sales-report-export')?.addEventListener('click', salesReportExportCsv);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (salesReportState.ytdCellSelection.size) {
+        salesReportClearYtdSelection();
+        return;
+      }
+      if (salesReportState.focusMonth) salesReportClearFocusMonth();
+    }
+  });
   salesReportSyncPeriodUI();
 }
 

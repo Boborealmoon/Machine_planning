@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Production Capacity by Month{% endblock %}
+{% block body_class %}capacity-monthly-page{% endblock %}
+{% block main_class %}app-main--planner{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/capacity_monthly.css') }}?v=capacity-monthly-20260622d">
+{% endblock %}
+{% block content %}
+<div class="pc-shell">
+  <header class="pc-head">
+    <div class="pc-head-main">
+      <h1 class="pc-title">Production Capacity by Month</h1>
+      <p class="pc-subtitle">
+        Compare scheduled machine time (from planner segments) against available machine capacity.
+        Weekday columns exclude Saturdays; Saturday columns show catch-up / overtime usage separately.
+      </p>
+    </div>
+    <div class="pc-head-actions">
+      <button type="button" class="pc-btn pc-btn--ghost" id="pc-export" title="Export table to CSV">Export CSV</button>
+      <button type="button" class="pc-btn" id="pc-refresh">Refresh</button>
+    </div>
+  </header>
+
+  <div class="pc-toolbar card">
+    <label class="pc-filter">
+      <span>Year</span>
+      <input type="number" id="pc-year" min="2000" max="2100" step="1" />
+    </label>
+    <label class="pc-filter">
+      <span>Schedule basis</span>
+      <select id="pc-mode">
+        <option value="forecast">Forward forecast (from today)</option>
+        <option value="queue">Open queue (exclude done)</option>
+        <option value="plan">Full year plan</option>
+      </select>
+    </label>
+    <label class="pc-filter">
+      <span>Machine type</span>
+      <select id="pc-category">
+        <option value="all">All machines</option>
+      </select>
+    </label>
+    <label class="pc-toggle">
+      <input type="checkbox" id="pc-show-saturday" checked />
+      <span>Show Saturday columns</span>
+    </label>
+    <div class="pc-filter pc-filter--view">
+      <span>View</span>
+      <div class="pc-view-toggle" role="tablist" aria-label="Capacity view">
+        <button type="button" class="pc-view-btn is-active" data-pc-view="overview" role="tab" aria-selected="true">Overview</button>
+        <button type="button" class="pc-view-btn" data-pc-view="breakdown" role="tab" aria-selected="false">Breakdown</button>
+      </div>
+    </div>
+    <div class="pc-meta" id="pc-meta">Loading…</div>
+  </div>
+
+  <div class="pc-alert" id="pc-alert" hidden></div>
+
+  <div class="pc-summary" id="pc-summary">
+    <article class="pc-stat card">
+      <span class="pc-stat-label">Year scheduled (weekdays)</span>
+      <strong class="pc-stat-value" id="pc-stat-weekday-sched">—</strong>
+      <span class="pc-stat-sub" id="pc-stat-weekday-sched-sub">—</span>
+    </article>
+    <article class="pc-stat card">
+      <span class="pc-stat-label">Year capacity (weekdays)</span>
+      <strong class="pc-stat-value" id="pc-stat-weekday-cap">—</strong>
+      <span class="pc-stat-sub" id="pc-stat-weekday-cap-sub">—</span>
+    </article>
+    <article class="pc-stat card pc-stat--accent">
+      <span class="pc-stat-label">Weekday utilization</span>
+      <strong class="pc-stat-value" id="pc-stat-weekday-util">—</strong>
+      <div class="pc-util-bar"><span id="pc-stat-weekday-util-bar"></span></div>
+    </article>
+    <article class="pc-stat card pc-stat--sat">
+      <span class="pc-stat-label">Saturday scheduled</span>
+      <strong class="pc-stat-value" id="pc-stat-sat-sched">—</strong>
+      <span class="pc-stat-sub" id="pc-stat-sat-sched-sub">—</span>
+    </article>
+    <article class="pc-stat card pc-stat--24hr">
+      <span class="pc-stat-label">24-hour · MPP load</span>
+      <strong class="pc-stat-value" id="pc-stat-24hr-util">—</strong>
+      <span class="pc-stat-sub" id="pc-stat-24hr-sub">—</span>
+    </article>
+    <article class="pc-stat card pc-stat--std">
+      <span class="pc-stat-label">Standard shift load</span>
+      <strong class="pc-stat-value" id="pc-stat-std-util">—</strong>
+      <span class="pc-stat-sub" id="pc-stat-std-sub">—</span>
+    </article>
+  </div>
+
+  <div class="pc-table-wrap card" id="pc-overview-panel">
+    <div class="pc-table-scroll">
+      <table class="pc-table" id="pc-table">
+        <thead>
+          <tr>
+            <th rowspan="2" class="pc-th-month">Month</th>
+            <th rowspan="2" class="pc-th-days">Work days</th>
+            <th colspan="3" class="pc-th-group pc-th-group--weekday">Weekdays (Mon–Fri)</th>
+            <th colspan="3" class="pc-th-group pc-th-group--sat pc-col-sat">Saturday</th>
+            <th colspan="3" class="pc-th-group pc-th-group--total">Combined</th>
+          </tr>
+          <tr>
+            <th class="pc-th-num">Scheduled</th>
+            <th class="pc-th-num">Capacity</th>
+            <th class="pc-th-pct">Load %</th>
+            <th class="pc-th-num pc-col-sat">Scheduled</th>
+            <th class="pc-th-num pc-col-sat">Capacity</th>
+            <th class="pc-th-pct pc-col-sat">Load %</th>
+            <th class="pc-th-num">Scheduled</th>
+            <th class="pc-th-num">Capacity</th>
+            <th class="pc-th-pct">Load %</th>
+          </tr>
+        </thead>
+        <tbody id="pc-table-body">
+          <tr><td colspan="11" class="pc-empty">Loading…</td></tr>
+        </tbody>
+        <tfoot id="pc-table-foot"></tfoot>
+      </table>
+    </div>
+  </div>
+
+  <div class="pc-breakdown card" id="pc-breakdown-panel" hidden>
+    <div class="pc-breakdown-head">
+      <div>
+        <h2 class="pc-breakdown-title">Breakdown by shift pool, group &amp; machine</h2>
+        <p class="pc-breakdown-sub">24-hour MPP is split from standard day-shift groups (Turning, Milling, Turnmill, CNC 41).</p>
+      </div>
+      <label class="pc-filter">
+        <span>Period</span>
+        <select id="pc-breakdown-month">
+          <option value="year">Full year</option>
+        </select>
+      </label>
+    </div>
+    <div class="pc-table-scroll">
+      <table class="pc-table pc-table--breakdown" id="pc-breakdown-table">
+        <thead>
+          <tr>
+            <th class="pc-th-name">Group / machine</th>
+            <th class="pc-th-num">Scheduled</th>
+            <th class="pc-th-num">Capacity</th>
+            <th class="pc-th-pct">Load %</th>
+            <th class="pc-th-num pc-col-sat">Sat sched</th>
+            <th class="pc-th-num pc-col-sat">Sat cap</th>
+            <th class="pc-th-pct pc-col-sat">Sat load %</th>
+            <th class="pc-th-num">Total sched</th>
+            <th class="pc-th-num">Total cap</th>
+            <th class="pc-th-pct">Total load %</th>
+          </tr>
+        </thead>
+        <tbody id="pc-breakdown-body">
+          <tr><td colspan="10" class="pc-empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <details class="pc-notes card">
+    <summary>How this is calculated</summary>
+    <ul id="pc-notes-list"></ul>
+  </details>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/capacity_monthly.js') }}?v=capacity-monthly-20260622d"></script>
+{% endblock %}

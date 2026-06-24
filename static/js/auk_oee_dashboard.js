@@ -188,16 +188,63 @@
     `;
   }
 
-  function renderMachineDetail(card) {
+  function renderHourlyOeeBar(slots) {
+    if (!Array.isArray(slots) || !slots.length) {
+      return '<div class="auk-oee-hourly auk-oee-hourly--empty">No hourly OEE slots.</div>';
+    }
+    const cells = slots.map((slot) => {
+      const oee = (slot && slot.oee) || {};
+      const ef = Number(oee.ef) || 0;
+      const sl = Number(oee.sl) || 0;
+      const loss = Math.max(0, 100 - ef - sl);
+      const label = slot.start
+        ? new Date(slot.start).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+        : '';
+      return `
+        <div class="auk-oee-hourly__cell" title="${escapeHtml(label)}">
+          <div class="auk-oee-hourly__stack">
+            <span class="auk-oee-hourly__ef" style="height:${ef}%"></span>
+            <span class="auk-oee-hourly__sl" style="height:${sl}%"></span>
+            <span class="auk-oee-hourly__loss" style="height:${loss}%"></span>
+          </div>
+        </div>
+      `;
+    }).join('');
+    return `<div class="auk-oee-hourly" aria-label="Hourly OEE">${cells}</div>`;
+  }
+
+  function renderChartSummary(charts) {
+    if (!Array.isArray(charts) || !charts.length) return '';
+    return `
+      <div class="auk-oee-chart-summary">
+        ${charts.map((ch) => `
+          <div class="auk-oee-chart-summary__row">
+            <span class="auk-oee-chart-summary__name">${escapeHtml(ch.title || `Chart ${ch.chart_id}`)}</span>
+            <span class="auk-oee-chart-summary__id">#${ch.chart_id}</span>
+            <strong class="auk-oee-chart-summary__val">${ch.last_value != null ? Number(ch.last_value).toFixed(2) : '—'}</strong>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function renderMachineDetail(card, assetDetail) {
     const meta = [
       card.asset_id != null ? `Asset ${card.asset_id}` : null,
       card.block_id != null ? `Block ${card.block_id}` : null,
       card.std_time_hrs != null ? `Std ${Number(card.std_time_hrs).toFixed(1)}h` : null,
       card.hourly_slots != null ? `${card.hourly_slots} hourly slots` : null,
     ].filter(Boolean);
-    const charts = Array.isArray(card.charts) ? card.charts : [];
+    const charts = assetDetail?.charts || (Array.isArray(card.charts) ? card.charts : []);
     const chartMeta = charts.length
-      ? `<div class="auk-oee-row__charts">${charts.map((ch) => `<span title="chart ${ch.chart_id}">${escapeHtml(ch.title || `Chart ${ch.chart_id}`)}</span>`).join('')}</div>`
+      ? renderChartSummary(charts)
+      : '';
+    const hourly = assetDetail?.hourly_oee ? renderHourlyOeeBar(assetDetail.hourly_oee) : '';
+    const loading = assetDetail === undefined && card.asset_id != null
+      ? '<div class="auk-oee-row__loading">Loading chart data…</div>'
+      : '';
+    const assetError = assetDetail?.error
+      ? `<div class="auk-oee-row__error">${escapeHtml(assetDetail.error)}</div>`
       : '';
 
     return `
@@ -208,7 +255,10 @@
           ${renderCompactMetric('PER', card.performance_pct)}
           ${renderCompactMetric('QUA', card.quality_pct)}
         </div>
+        ${hourly}
         ${meta.length ? `<div class="auk-oee-row__meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}</div>` : ''}
+        ${loading}
+        ${assetError}
         ${chartMeta}
         <div class="auk-oee-row__loss-title">Pareto loss breakdown (avg per hour)</div>
         ${renderLossGrid(card.losses)}
@@ -227,9 +277,10 @@
       ? `<div class="auk-oee-row__error">${escapeHtml(card.error)}</div>`
       : '';
     const inactive = !Number.isFinite(Number(oee)) || Number(oee) <= 0;
+    const assetAttr = card.asset_id != null ? ` data-asset-id="${card.asset_id}"` : '';
 
     return `
-      <details class="auk-oee-row-wrap auk-oee-row-wrap--${tone}${inactive ? ' auk-oee-row-wrap--inactive' : ''}">
+      <details class="auk-oee-row-wrap auk-oee-row-wrap--${tone}${inactive ? ' auk-oee-row-wrap--inactive' : ''}"${assetAttr}>
         <summary class="auk-oee-row auk-oee-row--${tone}${inactive ? ' auk-oee-row--inactive' : ''}">
           <div class="auk-oee-row__rank">${rank}</div>
           <div class="auk-oee-row__identity">
@@ -253,6 +304,57 @@
         ${renderMachineDetail(card)}
       </details>
     `;
+  }
+
+  const assetDetailCache = new Map();
+
+  async function loadAssetDetail(assetId) {
+    const key = `${assetId}:${currentQuery()}`;
+    if (assetDetailCache.has(key)) return assetDetailCache.get(key);
+    const res = await fetch(`/api/auk-oee/asset/${assetId}?${currentQuery()}`);
+    const raw = await res.text();
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (_err) {
+      throw new Error('Invalid asset detail response');
+    }
+    if (!res.ok) throw new Error(data.error || `Asset ${assetId} failed (${res.status})`);
+    assetDetailCache.set(key, data);
+    return data;
+  }
+
+  function bindAssetDetailLoaders() {
+    gridEl.querySelectorAll('.auk-oee-row-wrap[data-asset-id]').forEach((row) => {
+      if (row.dataset.detailBound) return;
+      row.dataset.detailBound = '1';
+      row.addEventListener('toggle', async () => {
+        if (!row.open) return;
+        const assetId = row.dataset.assetId;
+        if (!assetId || row.dataset.detailLoaded) return;
+        const detailEl = row.querySelector('.auk-oee-row__detail');
+        if (!detailEl) return;
+        try {
+          const detail = await loadAssetDetail(assetId);
+          const cardJson = row.dataset.card;
+          const card = cardJson ? JSON.parse(cardJson) : { asset_id: Number(assetId) };
+          detailEl.outerHTML = renderMachineDetail(card, detail);
+          row.dataset.detailLoaded = '1';
+        } catch (err) {
+          const cardJson = row.dataset.card;
+          const card = cardJson ? JSON.parse(cardJson) : { asset_id: Number(assetId) };
+          detailEl.outerHTML = renderMachineDetail(card, { error: err.message, charts: [] });
+        }
+      });
+    });
+  }
+
+  function stampMachineRowCards(cards) {
+    gridEl.querySelectorAll('.auk-oee-row-wrap[data-asset-id]').forEach((row) => {
+      const assetId = Number(row.dataset.assetId);
+      const card = cards.find((c) => Number(c.asset_id) === assetId);
+      if (card) row.dataset.card = JSON.stringify(card);
+    });
   }
 
   function splitSectionCards(section) {
@@ -519,6 +621,10 @@
       gridEl.innerHTML = groups.map(renderSection).join('');
       gridEl.hidden = groups.length === 0;
       hasLoadedOnce = true;
+      assetDetailCache.clear();
+      const allCards = groups.flatMap((g) => [...(g.summaries || []), ...(g.machines || [])]);
+      stampMachineRowCards(allCards);
+      bindAssetDetailLoaders();
 
       const machineCount = data.machine_count ?? groups.reduce(
         (sum, g) => sum + (g.count ?? (g.machines || []).length),

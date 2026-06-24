@@ -532,6 +532,12 @@ def _save_flow_steps(con, bom_id, steps):
             ),
         )
     _relink_planner_op_seq_ids_for_bom(con, int(bom_id))
+    try:
+        from .preferred_machines_route import invalidate_preferred_machines_cache
+
+        invalidate_preferred_machines_cache()
+    except Exception:
+        pass
     return stage_kinds
 
 

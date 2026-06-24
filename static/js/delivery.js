@@ -7,7 +7,7 @@ const deliveryPageState = {
 };
 
 const DELIVERY_SUBTITLES = {
-  schedule: 'Open process sheets (not closed). Edit Coway EDD and remarks inline. Week shows ISO week and weekday from Coway EDD, or PO due when Coway EDD is empty.',
+  schedule: 'Open partials (one row per PP partial). Search filters the loaded list; Refresh reloads from server.',
   queue: 'Queued jobs grouped by PS + partial. All schedule times are Singapore (SGT, UTC+8). Coway EDD is set once per group and overrides PS due for all ops under that partial.',
 };
 
@@ -60,6 +60,8 @@ function deliverySetView(view, options = {}) {
     if (!deliveryPageState.scheduleLoaded || options.force) {
       if (typeof loadDeliverySchedule === 'function') {
         loadDeliverySchedule({ force: Boolean(options.force) });
+      } else if (typeof renderDeliverySchedule === 'function') {
+        renderDeliverySchedule();
       }
       deliveryPageState.scheduleLoaded = true;
     }
@@ -75,6 +77,10 @@ function deliverySetView(view, options = {}) {
 }
 
 function deliveryRefreshActiveView() {
+  if (deliveryPageState.view === 'schedule' && typeof loadDeliverySchedule === 'function') {
+    loadDeliverySchedule({ force: true });
+    return;
+  }
   deliverySetView(deliveryPageState.view, { force: true, skipUrl: true });
 }
 

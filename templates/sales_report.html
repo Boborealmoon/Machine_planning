@@ -4,7 +4,7 @@
 
 {% block main_class %}app-main--new-orders app-main--sales-report{% endblock %}
 
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=sales-report-flow-20260619e">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=sales-report-backlog-onhand-20260622">{% endblock %}
 
 {% block content %}
 
@@ -44,33 +44,33 @@
 
       </label>
 
-      <nav class="sales-report-month-nav" id="sales-report-month-nav" aria-label="Select month">
+      <nav class="sales-report-month-nav" id="sales-report-month-nav" aria-label="Jump to month in grid">
 
         <button type="button" class="sales-report-month-chip is-active" data-month="">Overview</button>
 
-        <button type="button" class="sales-report-month-chip" data-month="1">Jan</button>
+        <button type="button" class="sales-report-month-chip sales-report-month-chip--jump" data-month="1" title="Jump to Jan in grid — open line detail from the blue month button">Jan</button>
 
-        <button type="button" class="sales-report-month-chip" data-month="2">Feb</button>
+        <button type="button" class="sales-report-month-chip sales-report-month-chip--jump" data-month="2" title="Jump to Feb in grid — open line detail from the blue month button">Feb</button>
 
-        <button type="button" class="sales-report-month-chip" data-month="3">Mar</button>
+        <button type="button" class="sales-report-month-chip sales-report-month-chip--jump" data-month="3" title="Jump to Mar in grid — open line detail from the blue month button">Mar</button>
 
-        <button type="button" class="sales-report-month-chip" data-month="4">Apr</button>
+        <button type="button" class="sales-report-month-chip sales-report-month-chip--jump" data-month="4" title="Jump to Apr in grid — open line detail from the blue month button">Apr</button>
 
-        <button type="button" class="sales-report-month-chip" data-month="5">May</button>
+        <button type="button" class="sales-report-month-chip sales-report-month-chip--jump" data-month="5" title="Jump to May in grid — open line detail from the blue month button">May</button>
 
-        <button type="button" class="sales-report-month-chip" data-month="6">Jun</button>
+        <button type="button" class="sales-report-month-chip sales-report-month-chip--jump" data-month="6" title="Jump to Jun in grid — open line detail from the blue month button">Jun</button>
 
-        <button type="button" class="sales-report-month-chip" data-month="7">Jul</button>
+        <button type="button" class="sales-report-month-chip sales-report-month-chip--jump" data-month="7" title="Jump to Jul in grid — open line detail from the blue month button">Jul</button>
 
-        <button type="button" class="sales-report-month-chip" data-month="8">Aug</button>
+        <button type="button" class="sales-report-month-chip sales-report-month-chip--jump" data-month="8" title="Jump to Aug in grid — open line detail from the blue month button">Aug</button>
 
-        <button type="button" class="sales-report-month-chip" data-month="9">Sep</button>
+        <button type="button" class="sales-report-month-chip sales-report-month-chip--jump" data-month="9" title="Jump to Sep in grid — open line detail from the blue month button">Sep</button>
 
-        <button type="button" class="sales-report-month-chip" data-month="10">Oct</button>
+        <button type="button" class="sales-report-month-chip sales-report-month-chip--jump" data-month="10" title="Jump to Oct in grid — open line detail from the blue month button">Oct</button>
 
-        <button type="button" class="sales-report-month-chip" data-month="11">Nov</button>
+        <button type="button" class="sales-report-month-chip sales-report-month-chip--jump" data-month="11" title="Jump to Nov in grid — open line detail from the blue month button">Nov</button>
 
-        <button type="button" class="sales-report-month-chip" data-month="12">Dec</button>
+        <button type="button" class="sales-report-month-chip sales-report-month-chip--jump" data-month="12" title="Jump to Dec in grid — open line detail from the blue month button">Dec</button>
 
       </nav>
 
@@ -182,7 +182,15 @@
 
           <h2 class="sales-report-section-title">Year overview</h2>
 
-          <p class="sales-report-section-sub" id="sales-report-ytd-sub">Past = shipped · current = overdue + due now · future = open $ by PO due date.</p>
+          <p class="sales-report-section-sub" id="sales-report-ytd-sub">Past = shipped (home $) · current = backlog + onhand (home $) · future = onhand by PO due month. Breakdown shows FC price × exch → home amt.</p>
+
+          <p class="sales-report-ytd-legend" id="sales-report-ytd-legend" hidden>
+
+            <span class="sales-report-ytd-legend-item sales-report-ytd-legend-item--month">Month buttons → view breakdown</span>
+
+            <span class="sales-report-ytd-legend-item sales-report-ytd-legend-item--sum">Click values → add to sum</span>
+
+          </p>
 
         </div>
 
@@ -191,6 +199,12 @@
       <div class="sales-report-ytd-scroll">
 
         <table class="sales-report-ytd-table" id="sales-report-ytd-table"></table>
+
+      </div>
+
+      <div id="sales-report-ytd-aggregate-row" class="sales-report-ytd-aggregate-row" hidden>
+
+        <div id="sales-report-ytd-aggregate" class="sales-report-ytd-aggregate" aria-live="polite"></div>
 
       </div>
 
@@ -254,8 +268,8 @@
 
 {% block scripts %}
 
-<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-report-flow-20260619e"></script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-report-breakdown-20260622"></script>
 
-<script src="{{ url_for('static', filename='js/sales_report.js') }}?v=sales-report-flow-20260619e"></script>
+<script src="{{ url_for('static', filename='js/sales_report.js') }}?v=sales-report-exch-breakdown-20260622"></script>
 
 {% endblock %}

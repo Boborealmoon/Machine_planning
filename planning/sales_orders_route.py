@@ -303,6 +303,117 @@ def _default_material_in_overlay() -> dict[str, Any]:
     return {"material_in": False, "material_in_date": None}
 
 
+def _material_subcon_arrived(raw: Any) -> bool:
+    return compact_text(raw).upper() == "ARRIVED"
+
+
+def _process_sheet_for_pp_voucher(con, pp_voucher_no: str) -> str:
+    from .helpers import one
+
+    pp_voucher_no = compact_text(pp_voucher_no)
+    if not pp_voucher_no:
+        return ""
+
+    if _cache:
+        for bucket in ("active", "complete"):
+            for order in _cache[1].get(bucket, []):
+                for pp in order.get("pp_vouchers") or []:
+                    if compact_text(pp.get("pp_voucher_no")) == pp_voucher_no:
+                        ps = compact_text(pp.get("process_sheet_no"))
+                        if ps:
+                            return ps
+
+    row = one(
+        con.execute(
+            """
+            SELECT process_sheet_no
+            FROM mfg_process_sheet_info
+            WHERE pp_voucher_no = %s
+            ORDER BY process_sheet_no
+            LIMIT 1
+            """,
+            (pp_voucher_no,),
+        )
+    )
+    ps = compact_text(row.get("process_sheet_no")) if row else ""
+    if ps:
+        return ps
+
+    row = one(
+        con.execute(
+            """
+            SELECT ps_id
+            FROM pp_vouchers_cache
+            WHERE ps_id = %s
+            LIMIT 1
+            """,
+            (pp_voucher_no,),
+        )
+    )
+    if row and compact_text(row.get("ps_id")):
+        return compact_text(row.get("ps_id"))
+
+    return pp_voucher_no
+
+
+def _sync_material_in_for_pp(con, pp_voucher_no: str, material_subcon_text: str) -> dict[str, Any] | None:
+    try:
+        ps_id = _process_sheet_for_pp_voucher(con, pp_voucher_no)
+        if not ps_id:
+            return None
+        from .process_sheets import _update_material_in
+
+        payload, err = _update_material_in(con, ps_id, _material_subcon_arrived(material_subcon_text))
+        return payload if not err else None
+    except Exception as exc:
+        logger.warning("material_in sync for %s skipped: %s", pp_voucher_no, exc)
+        return None
+
+
+def patch_sales_orders_material_in(ps_id: str, payload: dict[str, Any]) -> None:
+    """Keep in-memory sales-order cache aligned after planner material_in changes."""
+    global _cache
+    if not _cache:
+        return
+    base = _ps_base_id(ps_id)
+    if not base:
+        return
+    for bucket in ("active", "complete"):
+        for order in _cache[1].get(bucket, []):
+            for pp in order.get("pp_vouchers") or []:
+                if _ps_base_id(pp.get("process_sheet_no") or "") != base:
+                    continue
+                pp["material_in"] = bool(payload.get("material_in"))
+                pp["material_in_date"] = payload.get("material_in_date")
+
+
+def _reconcile_subcon_material_in(orders: list[dict[str, Any]]) -> None:
+    """Backfill planner material_in for rows already marked Arrived in S/O notes."""
+    targets: list[tuple[str, dict[str, Any]]] = []
+    for order in orders:
+        for pp in order.get("pp_vouchers") or []:
+            if not _material_subcon_arrived(pp.get("material_subcon")):
+                continue
+            if pp.get("material_in"):
+                continue
+            ps_id = compact_text(pp.get("process_sheet_no"))
+            if ps_id:
+                targets.append((ps_id, pp))
+    if not targets:
+        return
+    try:
+        from .process_sheets import _update_material_in
+
+        with planner_db() as con:
+            for ps_id, pp in targets:
+                payload, err = _update_material_in(con, ps_id, True)
+                if payload and not err:
+                    pp["material_in"] = bool(payload.get("material_in"))
+                    pp["material_in_date"] = payload.get("material_in_date")
+    except Exception as exc:
+        logger.warning("subcon material_in reconcile skipped: %s", exc)
+
+
 def _load_material_in_overlay(process_sheet_nos: list[str]) -> dict[str, dict[str, Any]]:
     bases: list[str] = []
     seen: set[str] = set()
@@ -361,6 +472,8 @@ def _apply_material_in_overlay(orders: list[dict[str, Any]], overlay: dict[str, 
         for pp in order.get("pp_vouchers") or []:
             base = _ps_base_id(pp.get("process_sheet_no") or "")
             pp.update(overlay.get(base, default))
+            if _material_subcon_arrived(pp.get("material_subcon")):
+                pp["material_in"] = True
 
 
 _QUEUED_MACHINES_SQL = """
@@ -792,6 +905,7 @@ def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, An
         if pp.get("process_sheet_no")
     ]
     _apply_material_in_overlay(orders, _load_material_in_overlay(process_sheets))
+    _reconcile_subcon_material_in(orders)
     _apply_stage_overlay(orders, _load_stage_overlay(process_sheets))
     _apply_queued_machines_overlay(orders, _load_queued_machines_by_canonical_ps())
     to_clear = _strip_completed_highlights(orders)
@@ -877,7 +991,13 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
             ),
         )
         current["highlighted_partials"] = _parse_highlighted_partials(highlighted_text)
-        return {"pp_voucher_no": pp_voucher_no, **current}
+        result = {"pp_voucher_no": pp_voucher_no, **current}
+        if "material_subcon" in patch:
+            sync_payload = _sync_material_in_for_pp(con, pp_voucher_no, current["material_subcon"])
+            if sync_payload:
+                result["material_in"] = bool(sync_payload.get("material_in"))
+                result["material_in_date"] = sync_payload.get("material_in_date")
+        return result
 
 
 @sales_orders_bp.get("/sales-orders")

@@ -129,6 +129,16 @@ def refresh_block_actual_status(con, block_id, *, auto_unschedule: bool = True):
         """,
         (good_qty, reject_qty, status, status, int(block_id)),
     )
+    if status == "DONE":
+        from .preferred_machines_service import record_completion_from_block
+
+        record_completion_from_block(con, int(block_id))
+        try:
+            from .preferred_machines_route import invalidate_preferred_machines_cache
+
+            invalidate_preferred_machines_cache()
+        except Exception:
+            pass
     if auto_unschedule and status == "DONE":
         from .auto_unschedule import maybe_auto_unschedule_block
 

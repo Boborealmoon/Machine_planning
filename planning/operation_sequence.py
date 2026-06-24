@@ -404,6 +404,16 @@ def apply_machine_queue_order(con, machine_id, ordered_ids, *, recalculate=True)
         )
         update_planning_card_machine_for_block(con, block_id, machine_id)
 
+    from .preferred_machines_service import sync_preferred_machines_for_blocks
+
+    sync_preferred_machines_for_blocks(con, ordered_ids, source="QUEUE_REORDER")
+    try:
+        from .preferred_machines_route import invalidate_preferred_machines_cache
+
+        invalidate_preferred_machines_cache()
+    except Exception:
+        pass
+
     sequence_map = sync_operation_sequences_for_machines(con, affected_machine_ids)
     sync_planning_cards_for_machines(con, affected_machine_ids)
 

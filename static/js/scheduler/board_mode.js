@@ -140,3 +140,96 @@ function trialToggleMachinistFocus() {
   }
   if (typeof renderTrial === 'function') renderTrial({ skipCatalog: true });
 }
+
+/** Planner board lane zoom (persisted; Chromium `zoom` on the machine grid). */
+const TRIAL_BOARD_ZOOM_KEY = 'planner-board-zoom-v1';
+const TRIAL_BOARD_ZOOM_MIN = 0.65;
+const TRIAL_BOARD_ZOOM_MAX = 1.4;
+const TRIAL_BOARD_ZOOM_STEP = 0.05;
+const TRIAL_BOARD_ZOOM_DEFAULT = 1;
+
+function trialClampBoardZoom(z) {
+  const n = Number(z);
+  if (!Number.isFinite(n)) return TRIAL_BOARD_ZOOM_DEFAULT;
+  return Math.min(
+    TRIAL_BOARD_ZOOM_MAX,
+    Math.max(TRIAL_BOARD_ZOOM_MIN, Math.round(n * 100) / 100)
+  );
+}
+
+function trialGetBoardZoom() {
+  try {
+    const raw = parseFloat(localStorage.getItem(TRIAL_BOARD_ZOOM_KEY));
+    if (!Number.isFinite(raw)) return TRIAL_BOARD_ZOOM_DEFAULT;
+    return trialClampBoardZoom(raw);
+  } catch (_) {
+    return TRIAL_BOARD_ZOOM_DEFAULT;
+  }
+}
+
+function trialSyncBoardZoomUi(zoom) {
+  const z = zoom ?? trialGetBoardZoom();
+  const label = document.getElementById('trial-board-zoom-label');
+  const outBtn = document.getElementById('trial-board-zoom-out');
+  const inBtn = document.getElementById('trial-board-zoom-in');
+  if (label) label.textContent = `${Math.round(z * 100)}%`;
+  if (outBtn) outBtn.disabled = z <= TRIAL_BOARD_ZOOM_MIN + 0.001;
+  if (inBtn) inBtn.disabled = z >= TRIAL_BOARD_ZOOM_MAX - 0.001;
+}
+
+function trialSetBoardZoom(z, options = {}) {
+  const zoom = trialClampBoardZoom(z);
+  const host = document.querySelector('.trial-grid-scroll-host');
+  if (host) host.style.setProperty('--trial-board-zoom', String(zoom));
+  try {
+    localStorage.setItem(TRIAL_BOARD_ZOOM_KEY, String(zoom));
+  } catch (_) {
+    // ignore quota / private mode
+  }
+  trialSyncBoardZoomUi(zoom);
+  if (!options.skipScrollSync && typeof trialSyncMachineGridScrollWidth === 'function') {
+    window.requestAnimationFrame(() => {
+      trialSyncMachineGridScrollWidth();
+      window.requestAnimationFrame(trialSyncMachineGridScrollWidth);
+    });
+  }
+  return zoom;
+}
+
+function trialBumpBoardZoom(delta) {
+  return trialSetBoardZoom(trialGetBoardZoom() + Number(delta || 0));
+}
+
+function trialInitBoardZoom() {
+  const host = document.querySelector('.trial-grid-scroll-host');
+  if (!host) return;
+  trialSetBoardZoom(trialGetBoardZoom(), { skipScrollSync: true });
+
+  const outBtn = document.getElementById('trial-board-zoom-out');
+  const inBtn = document.getElementById('trial-board-zoom-in');
+  const label = document.getElementById('trial-board-zoom-label');
+
+  if (outBtn && outBtn.dataset.zoomBound !== '1') {
+    outBtn.dataset.zoomBound = '1';
+    outBtn.addEventListener('click', () => trialBumpBoardZoom(-TRIAL_BOARD_ZOOM_STEP));
+  }
+  if (inBtn && inBtn.dataset.zoomBound !== '1') {
+    inBtn.dataset.zoomBound = '1';
+    inBtn.addEventListener('click', () => trialBumpBoardZoom(TRIAL_BOARD_ZOOM_STEP));
+  }
+  if (label && label.dataset.zoomBound !== '1') {
+    label.dataset.zoomBound = '1';
+    label.title = 'Double-click to reset zoom';
+    label.addEventListener('dblclick', () => trialSetBoardZoom(TRIAL_BOARD_ZOOM_DEFAULT));
+  }
+
+  if (host.dataset.zoomWheelBound === '1') return;
+  host.dataset.zoomWheelBound = '1';
+  host.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const delta = e.deltaY;
+    if (!delta) return;
+    trialBumpBoardZoom(delta > 0 ? -TRIAL_BOARD_ZOOM_STEP : TRIAL_BOARD_ZOOM_STEP);
+  }, { passive: false });
+}

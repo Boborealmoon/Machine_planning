@@ -186,6 +186,11 @@ def _lane_output_satisfied(row) -> bool:
     scheduled = float(row.get("scheduled_qty") or 0)
     if scheduled <= QTY_TOL:
         return False
+    exec_status = compact_text(row.get("execution_status")).upper()
+    actual_good = float(row.get("actual_good_qty") or 0)
+    qs_good = float(row.get("qs_good_qty") or row.get("good_qty") or 0)
+    if qs_good >= scheduled - QTY_TOL and exec_status in {"", "NOT_STARTED", "PLANNED"} and actual_good <= QTY_TOL:
+        return False
     good = float(
         row.get("qs_good_qty")
         or row.get("good_qty")

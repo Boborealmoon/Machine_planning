@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Preferred Machines{% endblock %}
+{% block main_class %}app-main--preferred-machines{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=preferred-machines-20260622b">{% endblock %}
+{% block content %}
+<style>
+  .pm-page { max-width: 1760px; }
+  .pm-row { cursor: pointer; }
+  .pm-row.is-selected { background: rgba(59, 130, 246, 0.08); }
+  .pm-bom-desc, .pm-col-hint { color: var(--text2); font-size: 12px; }
+  .pm-trunc { display: inline-block; max-width: 100%; }
+  .pm-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    background: #f8fafc;
+    color: var(--text2);
+  }
+  .pm-pill--live { background: rgba(59, 130, 246, 0.1); color: #1d4ed8; border-color: rgba(59, 130, 246, 0.2); }
+  .pm-pill--history { background: rgba(16, 185, 129, 0.1); color: #047857; border-color: rgba(16, 185, 129, 0.2); }
+  .pm-detail-summary {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #f8fafc;
+    overflow-x: auto;
+    font-size: 12px;
+  }
+  .pm-ps-list { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+  .pm-detail-empty { color: var(--text2); margin: 0; }
+  .pm-detail-table-wrap { overflow-x: auto; }
+  .pm-detail-table .pm-op-row--mismatch td { background: rgba(245, 158, 11, 0.08); }
+  .pm-detail-table .pm-op-row--missing td { background: rgba(239, 68, 68, 0.08); }
+  .pm-detail-table .pm-op-row--history td { background: rgba(16, 185, 129, 0.06); }
+  .mi-status-pill--warn {
+    background: rgba(245, 158, 11, 0.12);
+    color: #92400e;
+    border: 1px solid rgba(245, 158, 11, 0.25);
+  }
+  .mi-status-pill--history {
+    background: rgba(16, 185, 129, 0.12);
+    color: #047857;
+    border: 1px solid rgba(16, 185, 129, 0.25);
+  }
+</style>
+<div class="pm-page new-orders-page">
+  <div class="new-orders-header">
+    <div>
+      <h1 class="new-orders-title">Preferred Machines</h1>
+      <p class="new-orders-subtitle">
+        Live routing archive synced from the <strong>planner board</strong>.
+        Current preferred machines update when you schedule or move an op between machines
+        (e.g. CNC 22 → CNC 23). Completion history is kept separately when a block finishes on a machine.
+      </p>
+    </div>
+    <div class="new-orders-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="pm-export" title="Export visible rows to CSV">Export CSV</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="pm-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="new-orders-toolbar card">
+    <div class="new-orders-filter new-orders-filter--view">
+      <span>Filter</span>
+      <div class="mi-view-toggle" role="tablist" aria-label="Preferred machine filter">
+        <button type="button" class="mi-view-btn is-active" data-pm-filter="all" role="tab" aria-selected="true">
+          All <span class="ps-view-tab-count" id="pm-count-all" hidden>0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-pm-filter="missing" role="tab" aria-selected="false">
+          Missing preferred <span class="ps-view-tab-count" id="pm-count-missing" hidden>0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-pm-filter="history" role="tab" aria-selected="false">
+          Has history <span class="ps-view-tab-count" id="pm-count-history" hidden>0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-pm-filter="mismatch" role="tab" aria-selected="false">
+          ERP mismatch <span class="ps-view-tab-count" id="pm-count-mismatch" hidden>0</span>
+        </button>
+      </div>
+    </div>
+    <label class="new-orders-filter new-orders-filter--grow">
+      <span>Search</span>
+      <span class="planner-page-search-wrap">
+        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="pm-search" class="planner-page-search-input" type="search" placeholder="Part, description, BOM, machine, process sheet..." autocomplete="off">
+      </span>
+    </label>
+    <div class="new-orders-stats" id="pm-stats"></div>
+  </div>
+
+  <div id="pm-loading" class="loading"><div class="spinner"></div> Loading preferred machines...</div>
+  <div id="pm-table-wrap" class="new-orders-table-wrap card" hidden>
+    <table class="new-orders-table pm-table">
+      <thead>
+        <tr>
+          <th class="so-col-head" data-pm-sort-col="part_no">
+            <div class="so-col-head-inner">
+              <button type="button" class="so-col-sort-btn" data-pm-sort="part_no" title="Sort by part">
+                <span class="so-col-label">Part</span>
+                <span class="so-col-sort-icon" data-pm-sort-icon="part_no">↕</span>
+              </button>
+            </div>
+          </th>
+          <th>Description</th>
+          <th class="so-col-head" data-pm-sort-col="bom_code">
+            <div class="so-col-head-inner">
+              <button type="button" class="so-col-sort-btn" data-pm-sort="bom_code" title="Sort by BOM">
+                <span class="so-col-label">BOM</span>
+                <span class="so-col-sort-icon" data-pm-sort-icon="bom_code">↕</span>
+              </button>
+            </div>
+          </th>
+          <th><span class="pm-pill pm-pill--live">Live</span> Preferred</th>
+          <th><span class="pm-pill pm-pill--history">History</span> Completed on</th>
+          <th>Process sheets</th>
+          <th class="so-col-head" data-pm-sort-col="ps_count">
+            <div class="so-col-head-inner">
+              <button type="button" class="so-col-sort-btn" data-pm-sort="ps_count" title="Sort by PS count">
+                <span class="so-col-label">PS #</span>
+                <span class="so-col-sort-icon" data-pm-sort-icon="ps_count">↕</span>
+              </button>
+            </div>
+          </th>
+          <th>Flags</th>
+        </tr>
+      </thead>
+      <tbody id="pm-table-body"></tbody>
+    </table>
+  </div>
+  <div id="pm-empty" class="new-orders-empty card" hidden>
+    <p id="pm-empty-text">No part + BOM groups match the current filter.</p>
+  </div>
+  <p class="new-orders-meta" id="pm-meta" hidden></p>
+</div>
+
+<div id="pm-detail" class="new-orders-detail" hidden>
+  <div class="new-orders-detail-backdrop" data-action="close-detail" aria-hidden="true"></div>
+  <aside class="new-orders-detail-panel" role="dialog" aria-modal="true" aria-labelledby="pm-detail-title">
+    <div class="new-orders-detail-head">
+      <div>
+        <p class="new-orders-detail-kicker">Preferred machines detail</p>
+        <h2 class="new-orders-detail-title" id="pm-detail-title"></h2>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="pm-detail-close" aria-label="Close">Close</button>
+    </div>
+    <div class="new-orders-detail-body" id="pm-detail-body"></div>
+    <p class="new-orders-detail-foot">Live preferred syncs from planner queue moves · history records block completions</p>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=preferred-machines-20260622b"></script>
+<script src="{{ url_for('static', filename='js/preferred_machines.js') }}?v=preferred-machines-20260622b"></script>
+{% endblock %}

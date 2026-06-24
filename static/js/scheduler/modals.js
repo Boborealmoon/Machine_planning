@@ -88,14 +88,24 @@ function openModal(title, bodyHtml, size = '') {
     </div>
   `);
   document.body.classList.add('trial-modal-open');
-  setTimeout(() => {
+  window.requestAnimationFrame(() => {
     const shell = document.getElementById('trial-modal-shell');
     shell?.querySelector('[data-trial-modal-close="1"]')?.addEventListener('click', closeModal);
     shell?.querySelector('[data-trial-modal-backdrop="1"]')?.addEventListener('click', event => {
       if (event.target?.dataset?.trialModalBackdrop === '1') closeModal();
     });
-    shell?.querySelector('input, select, textarea, button')?.focus();
-  }, 0);
+    const focusTarget = shell?.querySelector(
+      'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])',
+    );
+    focusTarget?.focus?.({ preventScroll: true });
+  });
+}
+
+function trialMachineSelectOptionsHtml(selectedMachineId = '') {
+  const selected = String(selectedMachineId || '');
+  return (trialState.machines || []).map(machine =>
+    `<option value="${machine.machine_id}" ${String(machine.machine_id) === selected ? 'selected' : ''}>${escapeHtml(machine.machine_code)}</option>`
+  ).join('');
 }
 
 function trialParsePayload(dt) {
@@ -187,9 +197,7 @@ function trialClearFormModalBusy() {
 }
 
 function openTrialCreateModal(defaultMachineId = '') {
-  const machineOptions = (trialState.machines || []).map(machine =>
-    `<option value="${machine.machine_id}" ${String(machine.machine_id) === String(defaultMachineId) ? 'selected' : ''}>${machine.machine_code}</option>`
-  ).join('');
+  const machineOptions = trialMachineSelectOptionsHtml(defaultMachineId);
   openTrialForm('Add Run Block', `
     <div class="trial-modal-grid">
       <label>Job No <input id="trial-job-no" placeholder="J1001"></label>
@@ -229,6 +237,217 @@ function openTrialCreateModal(defaultMachineId = '') {
   });
 }
 
+function trialIsDummyBlock(block) {
+  return String(block?.block_type || '').toUpperCase() === 'DUMMY';
+}
+
+function trialDummyCardDurationMinutes(block) {
+  const startParts = trialParsePlannerDateTime(
+    block?.planned_start_at || block?.anchor_datetime || block?.calculated_start_datetime
+  );
+  const endParts = trialParsePlannerDateTime(
+    block?.planned_end_at || block?.calculated_end_datetime
+  );
+  if (!startParts || !endParts) return 120;
+  const startMs = Date.UTC(
+    startParts.year, startParts.month - 1, startParts.day, startParts.hour, startParts.minute
+  );
+  const endMs = Date.UTC(
+    endParts.year, endParts.month - 1, endParts.day, endParts.hour, endParts.minute
+  );
+  const diff = Math.round((endMs - startMs) / 60000);
+  return diff > 0 ? diff : 120;
+}
+
+function trialDummyCardTimeFieldsHtml({ idPrefix, startValue, endValue, durationMinutes = 120 }) {
+  return `
+    <div class="full">
+      <div class="temp-ps-mode-switch" role="tablist" aria-label="Time entry mode">
+        <button type="button" class="temp-ps-mode-btn is-active trial-dummy-mode-btn" data-dummy-time-mode="range"
+          role="tab" aria-selected="true">Start &amp; end</button>
+        <button type="button" class="temp-ps-mode-btn trial-dummy-mode-btn" data-dummy-time-mode="duration"
+          role="tab" aria-selected="false">Duration</button>
+      </div>
+    </div>
+    <label>Start <input id="${idPrefix}-start" type="datetime-local" value="${escapeHtml(startValue)}"></label>
+    <label id="${idPrefix}-end-wrap">End <input id="${idPrefix}-end" type="datetime-local" value="${escapeHtml(endValue)}"></label>
+    <label id="${idPrefix}-duration-wrap" hidden>Duration (min)
+      <input id="${idPrefix}-duration" type="number" min="1" step="1" value="${durationMinutes}">
+    </label>
+  `;
+}
+
+function trialDummyCardBindTimeMode(idPrefix) {
+  const setMode = (mode) => {
+    const isDuration = mode === 'duration';
+    document.querySelectorAll('.trial-dummy-mode-btn').forEach(btn => {
+      const active = btn.dataset.dummyTimeMode === mode;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    const endWrap = document.getElementById(`${idPrefix}-end-wrap`);
+    const durationWrap = document.getElementById(`${idPrefix}-duration-wrap`);
+    if (endWrap) endWrap.hidden = isDuration;
+    if (durationWrap) durationWrap.hidden = !isDuration;
+  };
+  document.querySelectorAll('.trial-dummy-mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => setMode(btn.dataset.dummyTimeMode || 'range'));
+  });
+  setMode('range');
+}
+
+function trialDummyCardTimePayload(idPrefix) {
+  const mode = document.querySelector('.trial-dummy-mode-btn.is-active')?.dataset.dummyTimeMode || 'range';
+  const startDatetime = trialDatetimeLocalToStorage(document.getElementById(`${idPrefix}-start`)?.value);
+  if (!startDatetime) {
+    throw new Error('Start date/time is required');
+  }
+  if (mode === 'duration') {
+    const durationMinutes = Number(document.getElementById(`${idPrefix}-duration`)?.value);
+    if (!durationMinutes || durationMinutes <= 0) {
+      throw new Error('Duration must be greater than 0 minutes');
+    }
+    return { start_datetime: startDatetime, duration_minutes: durationMinutes };
+  }
+  const endDatetime = trialDatetimeLocalToStorage(document.getElementById(`${idPrefix}-end`)?.value);
+  if (!endDatetime) {
+    throw new Error('End date/time is required');
+  }
+  return { start_datetime: startDatetime, end_datetime: endDatetime };
+}
+
+function openTrialDummyCardModal(defaultMachineId = '') {
+  const machineOptions = trialMachineSelectOptionsHtml(defaultMachineId);
+  const now = new Date();
+  const startDefault = trialDatetimeLocalValue(now);
+  const endDefault = trialDatetimeLocalValue(new Date(now.getTime() + 2 * 60 * 60 * 1000));
+  openTrialForm('Add Dummy Card', `
+    <p class="trial-modal-hint full">Placeholder card for notes, meetings, or reminders. Fixed start/end times are not changed by schedule recalculation.</p>
+    <div class="trial-modal-grid">
+      <label class="full">Title <input id="trial-dummy-title" placeholder="e.g. Machine maintenance"></label>
+      <label class="full">Description <textarea id="trial-dummy-description" rows="3" placeholder="Optional details"></textarea></label>
+      ${trialDummyCardTimeFieldsHtml({ idPrefix: 'trial-dummy', startValue: startDefault, endValue: endDefault, durationMinutes: 120 })}
+      <label>Machine <select id="trial-dummy-machine-id">${machineOptions}</select></label>
+    </div>
+  `, 'Create', async () => {
+    const title = String(document.getElementById('trial-dummy-title')?.value || '').trim();
+    if (!title) {
+      toast('Title is required', 'error');
+      return;
+    }
+    const machineId = Number(document.getElementById('trial-dummy-machine-id')?.value || 0);
+    if (!machineId) {
+      toast('Machine is required', 'error');
+      return;
+    }
+    let timePayload;
+    try {
+      timePayload = trialDummyCardTimePayload('trial-dummy');
+    } catch (e) {
+      toast(e.message, 'error');
+      return;
+    }
+    try {
+      await trialRunWithPlannerBusy(async () => {
+        const result = await POST('/api/trial/dummy-cards', {
+          title,
+          description: document.getElementById('trial-dummy-description')?.value || '',
+          machine_id: machineId,
+          ...timePayload,
+        });
+        closeModal();
+        trialClearDirtyMachines([machineId]);
+        if (!trialApplyMachineRefreshFromResponse([machineId], result)) {
+          await refreshMachines([machineId], { response: result });
+        }
+        toast('Dummy card created', 'success');
+      });
+    } catch (e) {
+      toast('Create failed: ' + e.message, 'error');
+    }
+  });
+  setTimeout(() => trialDummyCardBindTimeMode('trial-dummy'), 0);
+}
+
+function openTrialDummyCardEditor(blockId) {
+  const block = (trialState.blocks || []).find(item => String(item.block_id) === String(blockId));
+  if (!block) return;
+  const machineOptions = trialMachineSelectOptionsHtml(block.machine_id);
+  const startValue = trialDatetimeLocalValue(
+    block.planned_start_at || block.anchor_datetime || block.calculated_start_datetime || ''
+  );
+  const endValue = trialDatetimeLocalValue(
+    block.planned_end_at || block.calculated_end_datetime || ''
+  );
+  const durationMinutes = trialDummyCardDurationMinutes(block);
+  openTrialForm('Edit Dummy Card', `
+    <div class="trial-modal-grid">
+      <label class="full">Title <input id="trial-dummy-edit-title" value="${escapeHtml(block.job_no || '')}"></label>
+      <label class="full">Description <textarea id="trial-dummy-edit-description" rows="3">${escapeHtml(block.operation_name || block.remarks || '')}</textarea></label>
+      ${trialDummyCardTimeFieldsHtml({ idPrefix: 'trial-dummy-edit', startValue, endValue, durationMinutes })}
+      <label>Machine <select id="trial-dummy-edit-machine-id">${machineOptions}</select></label>
+    </div>
+  `, 'Save', async () => {
+    const title = String(document.getElementById('trial-dummy-edit-title')?.value || '').trim();
+    if (!title) {
+      toast('Title is required', 'error');
+      return;
+    }
+    const machineId = Number(document.getElementById('trial-dummy-edit-machine-id')?.value || 0);
+    const originalMachineId = Number(block.machine_id || 0);
+    if (!machineId) {
+      toast('Machine is required', 'error');
+      return;
+    }
+    let timePayload;
+    try {
+      timePayload = trialDummyCardTimePayload('trial-dummy-edit');
+    } catch (e) {
+      toast(e.message, 'error');
+      return;
+    }
+    try {
+      await trialRunWithPlannerBusy(async () => {
+        const result = await PUT(`/api/trial/dummy-cards/${blockId}`, {
+          title,
+          description: document.getElementById('trial-dummy-edit-description')?.value || '',
+          machine_id: machineId,
+          ...timePayload,
+        });
+        closeModal();
+        const machineIds = [...new Set([originalMachineId, machineId].filter(Boolean))];
+        trialClearDirtyMachines(machineIds);
+        if (!trialApplyMachineRefreshFromResponse(machineIds, result)) {
+          await refreshMachines(machineIds, { response: result });
+        }
+        toast('Dummy card saved', 'success');
+      });
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    }
+  }, `
+    <button type="button" class="btn btn-ghost btn-sm" id="trial-dummy-delete-btn">Delete</button>
+  `);
+  setTimeout(() => trialDummyCardBindTimeMode('trial-dummy-edit'), 0);
+  document.getElementById('trial-dummy-delete-btn')?.addEventListener('click', async () => {
+    if (!confirm('Delete this dummy card?')) return;
+    try {
+      await trialRunWithPlannerBusy(async () => {
+        const machineId = Number(block.machine_id || 0);
+        const result = await DEL(`/api/trial/blocks/${blockId}`);
+        closeModal();
+        trialClearDirtyMachines([machineId]);
+        if (!trialApplyMachineRefreshFromResponse([machineId], result)) {
+          await refreshMachines([machineId], { response: result });
+        }
+        toast('Dummy card deleted', 'success');
+      });
+    } catch (e) {
+      toast('Delete failed: ' + e.message, 'error');
+    }
+  });
+}
+
 function trialCycleContextStrip(ctx) {
   if (!ctx) return '';
   const master = ctx.master || {};
@@ -254,29 +473,23 @@ async function publishTrialBlockCycleToMaster(blockId) {
   }
 }
 
-async function openTrialBlockEditor(blockId) {
-  const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
-  if (!block) return;
-  let cycleCtx = null;
-  try {
-    cycleCtx = await GET(`/api/trial/blocks/${encodeURIComponent(blockId)}/cycle-time-context`);
-  } catch (_e) {
-    cycleCtx = null;
-  }
-  const machineOptions = (trialState.machines || []).map(machine =>
-    `<option value="${machine.machine_id}" ${String(machine.machine_id) === String(block.machine_id) ? 'selected' : ''}>${machine.machine_code}</option>`
-  ).join('');
-  openTrialForm('Edit Run Block', `
-    ${trialCycleContextStrip(cycleCtx)}
+function trialRunBlockEditorFormHtml(block, cycleCtxHtml = '') {
+  const machineOptions = trialMachineSelectOptionsHtml(block.machine_id);
+  return `
+    ${cycleCtxHtml}
     <div class="trial-modal-grid">
-      <label>Job No <input id="trial-edit-job-no" value="${block.job_no || ''}"></label>
-      <label>Operation Name <input id="trial-edit-operation-name" value="${block.operation_name || ''}"></label>
+      <label>Job No <input id="trial-edit-job-no" value="${escapeHtml(block.job_no || '')}"></label>
+      <label>Operation Name <input id="trial-edit-operation-name" value="${escapeHtml(block.operation_name || '')}"></label>
       <label>Total Qty <input id="trial-edit-total-qty" type="number" min="0" step="1" value="${block.total_qty || 0}"></label>
       <label>Scheduled Qty <input id="trial-edit-scheduled-qty" type="number" min="0" step="1" value="${block.scheduled_qty || 0}"></label>
       <label>Setup Minutes <input id="trial-edit-setup-minutes" type="number" min="0" step="1" value="${block.setup_minutes || 0}"></label>
       <label>Cycle Minutes / Qty <input id="trial-edit-cycle-minutes" type="number" min="0" step="0.1" value="${block.cycle_minutes_per_qty || 0}"></label>
       <label>Machine <select id="trial-edit-machine-id">${machineOptions}</select></label>
-      <label>Queue Position <input id="trial-edit-queue-position" type="number" min="1" step="1" value="${block.queue_position || 1}"></label>
+      <p class="trial-modal-hint full">Change machine to move this job to another lane — it joins the <strong>back</strong> of that machine&apos;s queue. Use drag-and-drop on the board to reorder within a lane.</p>
+      <div class="trial-modal-readonly-field">
+        <span class="trial-modal-readonly-label">Queue Position</span>
+        <span class="trial-modal-readonly-value">${Math.max(1, Math.round(Number(block.queue_position || 1)))}</span>
+      </div>
       <label>Include Setup <select id="trial-edit-include-setup">
         <option value="1" ${Number(block.include_setup || 0) === 1 ? 'selected' : ''}>Yes</option>
         <option value="0" ${Number(block.include_setup || 0) === 0 ? 'selected' : ''}>No</option>
@@ -285,9 +498,30 @@ async function openTrialBlockEditor(blockId) {
         <input id="trial-edit-anchor-datetime" type="datetime-local" value="${escapeHtml(trialAnchorDefaultDatetimeLocal(block))}">
       </label>
       <p class="trial-modal-hint full">Planning reference start. Without an anchor, the job chains from the previous queue job end; with an anchor, scheduling uses this date/time unless a prior job or dependency finishes later.</p>
-      <label class="full">Remarks <textarea id="trial-edit-remarks" rows="3">${block.remarks || ''}</textarea></label>
+      <label class="full">Remarks <textarea id="trial-edit-remarks" rows="3">${escapeHtml(block.remarks || '')}</textarea></label>
     </div>
-  `, 'Save', async () => {
+  `;
+}
+
+function trialHydrateRunBlockEditorCycleContext(blockId) {
+  const slotId = 'trial-cycle-context-slot';
+  GET(`/api/trial/blocks/${encodeURIComponent(blockId)}/cycle-time-context`)
+    .then(ctx => {
+      const slot = document.getElementById(slotId);
+      if (!slot) return;
+      const strip = trialCycleContextStrip(ctx);
+      if (strip) slot.outerHTML = strip;
+      else slot.remove();
+    })
+    .catch(() => {
+      document.getElementById(slotId)?.remove();
+    });
+}
+
+function openTrialBlockEditor(blockId) {
+  const block = trialState.blocks.find(item => String(item.block_id) === String(blockId));
+  if (!block) return;
+  openTrialForm('Edit Run Block', trialRunBlockEditorFormHtml(block, '<div id="trial-cycle-context-slot" hidden></div>'), 'Save', async () => {
     if (openTrialBlockEditor._saveInFlight) return;
     openTrialBlockEditor._saveInFlight = true;
     const saveBtn = document.getElementById('trial-save-btn');
@@ -317,7 +551,6 @@ async function openTrialBlockEditor(blockId) {
         setup_minutes: Number(document.getElementById('trial-edit-setup-minutes').value || 0),
         cycle_minutes_per_qty: Number(document.getElementById('trial-edit-cycle-minutes').value || 0),
         machine_id: _editedMachineId,
-        queue_position: Number(document.getElementById('trial-edit-queue-position').value || 1),
         include_setup: document.getElementById('trial-edit-include-setup').value === '1',
         anchor_datetime: trialDatetimeLocalToStorage(document.getElementById('trial-edit-anchor-datetime').value),
         remarks: document.getElementById('trial-edit-remarks').value,
@@ -350,6 +583,7 @@ async function openTrialBlockEditor(blockId) {
     <button type="button" class="btn btn-ghost btn-sm" id="trial-actual-output">Actual Output</button>
     <button type="button" class="btn btn-ghost btn-sm" id="trial-delete-block">Delete</button>
   `);
+  trialHydrateRunBlockEditorCycleContext(blockId);
   setTimeout(() => {
     document.getElementById('trial-publish-cycle-master')?.addEventListener('click', () => {
       publishTrialBlockCycleToMaster(block.block_id);
@@ -496,11 +730,18 @@ function trialMarkCapacityRowState(workDate, state) {
 }
 
 function openTrialCapacityModal(startDate = '', dayCount = 14) {
+  openModal('Shop Calendar', `
+    <div class="trial-capacity-modal trial-capacity-modal--loading">
+      <div class="trial-modal-busy-spinner" aria-hidden="true" style="margin: 32px auto 12px"></div>
+      <p class="trial-modal-hint" style="text-align:center;border:0;background:transparent">Loading shop calendar…</p>
+    </div>
+  `, 'lg');
   trialEnsureCapacityData(startDate, dayCount).then(() => {
     trialOpenCapacityModalBody(startDate, dayCount);
   }).catch(err => {
     console.error('capacity load failed:', err);
     toast('Could not load shop calendar: ' + err.message, 'error');
+    closeModal();
   });
 }
 
@@ -1151,6 +1392,7 @@ async function removeTrialBlock(blockId, groupId) {
     : `Remove this operation${psPart} from the machine? It will return to the side panel for re-allocation.`;
   if (!confirm(msg)) return;
   const _rmMachineId = _rmBlock ? Number(_rmBlock.machine_id || 0) : 0;
+  const _rmGroupId = Number(groupId || _rmBlock?.group_id || 0);
   const queueRow = document.querySelector(`.trial-queue-row[data-block-id="${numericBlockId}"]`);
 
   removeTrialBlock._inFlight = true;
@@ -1163,8 +1405,14 @@ async function removeTrialBlock(blockId, groupId) {
       } catch (e) {
         if (!/not found/i.test(String(e.message || ''))) throw e;
       }
+      if (typeof trialPurgeBlocksFromState === 'function') {
+        trialPurgeBlocksFromState([numericBlockId], { groupId: _rmGroupId });
+      }
       queueRow?.remove();
       await refreshMachines([_rmMachineId].filter(Boolean));
+      if (typeof trialRerenderCatalogFromBlocks === 'function') {
+        trialRerenderCatalogFromBlocks();
+      }
     }, 'Removing from queue…');
     if (typeof closeModal === 'function') closeModal();
     toast('Removed from machine — returned to side panel', 'success');

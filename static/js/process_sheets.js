@@ -2999,6 +2999,9 @@
       try {
         await deleteJson(url);
         state.details.delete(canonical);
+        window.dispatchEvent(new CustomEvent('temp-ps-deleted', {
+          detail: { planner_ps_id: canonical, ps_id: canonical },
+        }));
         await Promise.all([
           loadProcessSheets({ refresh: true }),
           loadTempTracker(),
