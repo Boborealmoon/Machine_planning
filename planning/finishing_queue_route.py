@@ -24,11 +24,13 @@ from .utils import compact_text
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_FINISHING_QUEUE_PATH = "/finishing-queue"
+_DEFAULT_FINISHING_QUEUE_PATH = "/qaqc-view"
 _LEGACY_FINISHING_QUEUE_PATHS = frozenset({
     "/finishing-queue",
     "/post-machining-queue",
     "/finishing_queue",
+    "/qaqc",
+    "/qaqc-view",
 })
 
 
@@ -44,10 +46,24 @@ def finishing_queue_path() -> str:
 FINISHING_QUEUE_PATH = finishing_queue_path()
 LEGACY_FINISHING_QUEUE_PATHS = _LEGACY_FINISHING_QUEUE_PATHS
 
+
+def finishing_queue_asset_version() -> str:
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    watch = (
+        os.path.join(root, "static", "js", "finishing_queue.js"),
+        os.path.join(root, "static", "css", "qaqc.css"),
+    )
+    try:
+        mt = max(os.path.getmtime(path) for path in watch)
+        return f"fq-{int(mt)}"
+    except OSError:
+        return "fq-dev"
+
+
 finishing_queue_bp = Blueprint("finishing_queue", __name__)
 
 _CACHE_TTL_SEC = 180
-_CACHE_VERSION = 11
+_CACHE_VERSION = 13
 _cache: tuple[float, int, list[dict[str, Any]], str, list[dict[str, Any]]] | None = None
 _RECENTLY_PACKED_CACHE_TTL_SEC = 300
 _recently_packed_cache: tuple[float, int, list[dict[str, Any]]] | None = None
@@ -237,9 +253,9 @@ def _finishing_queue_client_config() -> dict[str, str]:
     return {
         "pagePath": FINISHING_QUEUE_PATH,
         "apiQueue": url_for("finishing_queue.api_finishing_queue"),
-        "apiRecentlyPacked": url_for("finishing_queue.api_finishing_queue_recently_packed"),
         "apiOverlay": url_for("finishing_queue.api_finishing_queue_overlay"),
         "apiInspectors": url_for("finishing_queue.api_finishing_queue_inspectors"),
+        "apiWoStatusSync": url_for("api_mfg_wo_status_sync"),
     }
 
 
@@ -259,6 +275,7 @@ def finishing_queue_page():
         fq_bootstrap=fq_bootstrap,
         fq_bootstrap_error=fq_bootstrap_error,
         fq_client_config=_finishing_queue_client_config(),
+        fq_asset_version=finishing_queue_asset_version(),
     )
 
 
@@ -365,6 +382,8 @@ def api_finishing_queue_overlay():
                 remarks=payload.get("remarks") if "remarks" in payload else None,
                 inspector_id=inspector_id if "inspector_id" in payload else None,
                 qa_due_date=payload.get("qa_due_date") if "qa_due_date" in payload else None,
+                checklist_done=payload.get("checklist_done") if "checklist_done" in payload else None,
+                exception_flag=payload.get("exception_flag") if "exception_flag" in payload else None,
                 clear_inspector=payload.get("inspector_id") in ("", None) and "inspector_id" in payload,
                 clear_qa_due_date=payload.get("qa_due_date") in ("", None) and "qa_due_date" in payload,
             )
@@ -372,7 +391,14 @@ def api_finishing_queue_overlay():
         logger.exception("finishing queue overlay save failed")
         return jsonify({"ok": False, "error": str(exc)}), 500
 
+    invalidate_finishing_queue_cache()
     return jsonify({"ok": True, "overlay": row})
+
+
+@finishing_queue_bp.post("/api/finishing-queue/overlay")
+def api_finishing_queue_overlay_post():
+    """POST alias for environments that block PUT."""
+    return api_finishing_queue_overlay()
 
 
 @finishing_queue_bp.get("/api/finishing-queue/inspectors")
@@ -390,21 +416,33 @@ def api_finishing_queue_inspector_add():
         return jsonify({"ok": False, "error": "name is required"}), 400
     try:
         with planner_db() as con:
-            row = add_inspector(con, name)
+            inspector, created = add_inspector(con, name)
     except Exception as exc:
         logger.exception("finishing queue inspector add failed")
         return jsonify({"ok": False, "error": str(exc)}), 500
-    return jsonify({"ok": True, "inspector": row})
+    invalidate_finishing_queue_cache()
+    return jsonify({
+        "ok": True,
+        "inspector": inspector,
+        "created": created,
+        "message": f"Added {inspector.get('name', name)}" if created else f"{inspector.get('name', name)} is already on the team",
+    })
 
 
 @finishing_queue_bp.delete("/api/finishing-queue/inspectors/<int:inspector_id>")
 def api_finishing_queue_inspector_delete(inspector_id: int):
     try:
         with planner_db() as con:
-            deleted = delete_inspector(con, inspector_id)
+            result = delete_inspector(con, inspector_id)
     except Exception as exc:
         logger.exception("finishing queue inspector delete failed")
         return jsonify({"ok": False, "error": str(exc)}), 500
-    if not deleted:
+    if not result:
         return jsonify({"ok": False, "error": "inspector not found"}), 404
-    return jsonify({"ok": True})
+    invalidate_finishing_queue_cache()
+    return jsonify({
+        "ok": True,
+        "name": result.get("name"),
+        "removed_count": result.get("removed_count", 0),
+        "message": f"Removed {result.get('name') or 'inspector'}",
+    })

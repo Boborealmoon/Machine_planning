@@ -383,14 +383,24 @@ def maybe_auto_unschedule_block(con, block_id: int) -> dict | None:
 
 def find_done_active_block_ids(con) -> list[int]:
     """Leader block ids eligible for auto-unschedule (one per combined group)."""
+    from .machines import fetch_mpp_planner_machine_ids
+
+    mpp_ids = fetch_mpp_planner_machine_ids(con)
+    params: list = []
+    mpp_clause = ""
+    if mpp_ids:
+        mpp_clause = " AND NOT (b.machine_id = ANY(%s))"
+        params.append(mpp_ids)
     raw = rows(
         con.execute(
-            """
+            f"""
             SELECT b.block_id, b.group_id
             FROM planner_run_block b
             WHERE COALESCE(b.active, TRUE) = TRUE
+              {mpp_clause}
             ORDER BY b.machine_id, b.queue_position, b.block_id
-            """
+            """,
+            tuple(params),
         )
     )
     leaders = []
@@ -487,9 +497,12 @@ def auto_unschedule_on_lite_board_load(con) -> dict | None:
 
 def auto_unschedule_for_machines(con, machine_ids, *, reason: str = "AUTO_DONE_MACHINE_REFRESH") -> dict | None:
     """Run auto-unschedule for DONE blocks on a scoped machine list."""
+    from .machines import fetch_mpp_planner_machine_ids
+
     if not auto_unschedule_enabled():
         return None
-    mids = sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0})
+    mpp_ids = set(fetch_mpp_planner_machine_ids(con))
+    mids = sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0 and int(mid) not in mpp_ids})
     if not mids:
         return {"candidates": 0, "unscheduled": 0, "results": []}
     try:

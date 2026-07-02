@@ -241,79 +241,101 @@ function trialIsDummyBlock(block) {
   return String(block?.block_type || '').toUpperCase() === 'DUMMY';
 }
 
-function trialDummyCardDurationMinutes(block) {
-  const startParts = trialParsePlannerDateTime(
-    block?.planned_start_at || block?.anchor_datetime || block?.calculated_start_datetime
-  );
-  const endParts = trialParsePlannerDateTime(
-    block?.planned_end_at || block?.calculated_end_datetime
-  );
-  if (!startParts || !endParts) return 120;
-  const startMs = Date.UTC(
-    startParts.year, startParts.month - 1, startParts.day, startParts.hour, startParts.minute
-  );
-  const endMs = Date.UTC(
-    endParts.year, endParts.month - 1, endParts.day, endParts.hour, endParts.minute
-  );
-  const diff = Math.round((endMs - startMs) / 60000);
-  return diff > 0 ? diff : 120;
+function trialIsFixedDummyBlock(block) {
+  return trialIsDummyBlock(block) && !!(block?.anchor_datetime || block?.planned_start_at);
+}
+
+function trialIsCycleDummyBlock(block) {
+  return trialIsDummyBlock(block) && !trialIsFixedDummyBlock(block);
+}
+
+function trialDummyCardCycleMinutes(block) {
+  const cycle = Number(block?.cycle_minutes_per_qty || 0);
+  if (cycle > 0) return cycle;
+  return 120;
 }
 
 function trialDummyCardTimeFieldsHtml({ idPrefix, startValue, endValue, durationMinutes = 120 }) {
   return `
-    <div class="full">
+    <div class="full trial-dummy-time-section" id="${idPrefix}-time-section">
       <div class="temp-ps-mode-switch" role="tablist" aria-label="Time entry mode">
         <button type="button" class="temp-ps-mode-btn is-active trial-dummy-mode-btn" data-dummy-time-mode="range"
-          role="tab" aria-selected="true">Start &amp; end</button>
+          role="tab" aria-selected="true">Fixed start &amp; end</button>
         <button type="button" class="temp-ps-mode-btn trial-dummy-mode-btn" data-dummy-time-mode="duration"
-          role="tab" aria-selected="false">Duration</button>
+          role="tab" aria-selected="false">Cycle time</button>
+      </div>
+      <p class="trial-dummy-time-hint" id="${idPrefix}-time-hint">Fixed window — stays put when the queue recalculates.</p>
+
+      <div id="${idPrefix}-time-range-panel" class="trial-dummy-time-panel">
+        <div class="trial-dummy-time-panel-grid">
+          <label>Start <input id="${idPrefix}-range-start" type="datetime-local" value="${escapeHtml(startValue)}"></label>
+          <label>End <input id="${idPrefix}-range-end" type="datetime-local" value="${escapeHtml(endValue)}"></label>
+        </div>
+      </div>
+
+      <div id="${idPrefix}-time-duration-panel" class="trial-dummy-time-panel" hidden>
+        <label class="full">Cycle time (min)
+          <input id="${idPrefix}-duration" type="number" min="1" step="1" value="${durationMinutes}">
+        </label>
       </div>
     </div>
-    <label>Start <input id="${idPrefix}-start" type="datetime-local" value="${escapeHtml(startValue)}"></label>
-    <label id="${idPrefix}-end-wrap">End <input id="${idPrefix}-end" type="datetime-local" value="${escapeHtml(endValue)}"></label>
-    <label id="${idPrefix}-duration-wrap" hidden>Duration (min)
-      <input id="${idPrefix}-duration" type="number" min="1" step="1" value="${durationMinutes}">
-    </label>
   `;
 }
 
-function trialDummyCardBindTimeMode(idPrefix) {
+function trialDummyCardBindTimeMode(idPrefix, initialMode = 'range') {
+  const section = document.getElementById(`${idPrefix}-time-section`);
+  if (!section) return;
+
+  const rangePanel = document.getElementById(`${idPrefix}-time-range-panel`);
+  const durationPanel = document.getElementById(`${idPrefix}-time-duration-panel`);
+  const hint = document.getElementById(`${idPrefix}-time-hint`);
+
   const setMode = (mode) => {
     const isDuration = mode === 'duration';
-    document.querySelectorAll('.trial-dummy-mode-btn').forEach(btn => {
+    section.querySelectorAll('.trial-dummy-mode-btn').forEach(btn => {
       const active = btn.dataset.dummyTimeMode === mode;
       btn.classList.toggle('is-active', active);
       btn.setAttribute('aria-selected', active ? 'true' : 'false');
     });
-    const endWrap = document.getElementById(`${idPrefix}-end-wrap`);
-    const durationWrap = document.getElementById(`${idPrefix}-duration-wrap`);
-    if (endWrap) endWrap.hidden = isDuration;
-    if (durationWrap) durationWrap.hidden = !isDuration;
+    if (rangePanel) rangePanel.hidden = isDuration;
+    if (durationPanel) durationPanel.hidden = !isDuration;
+    if (hint) {
+      hint.textContent = isDuration
+        ? 'Queue time only — slots in like a normal operation and moves when the schedule recalculates.'
+        : 'Fixed window — stays put when the queue recalculates.';
+    }
   };
-  document.querySelectorAll('.trial-dummy-mode-btn').forEach(btn => {
+
+  section.querySelectorAll('.trial-dummy-mode-btn').forEach(btn => {
     btn.addEventListener('click', () => setMode(btn.dataset.dummyTimeMode || 'range'));
   });
-  setMode('range');
+  setMode(initialMode);
+}
+
+function trialDummyCardActiveMode(idPrefix) {
+  const durationPanel = document.getElementById(`${idPrefix}-time-duration-panel`);
+  if (durationPanel && !durationPanel.hidden) return 'duration';
+  return 'range';
 }
 
 function trialDummyCardTimePayload(idPrefix) {
-  const mode = document.querySelector('.trial-dummy-mode-btn.is-active')?.dataset.dummyTimeMode || 'range';
-  const startDatetime = trialDatetimeLocalToStorage(document.getElementById(`${idPrefix}-start`)?.value);
-  if (!startDatetime) {
-    throw new Error('Start date/time is required');
-  }
+  const mode = trialDummyCardActiveMode(idPrefix);
   if (mode === 'duration') {
     const durationMinutes = Number(document.getElementById(`${idPrefix}-duration`)?.value);
     if (!durationMinutes || durationMinutes <= 0) {
-      throw new Error('Duration must be greater than 0 minutes');
+      throw new Error('Cycle time must be greater than 0 minutes');
     }
-    return { start_datetime: startDatetime, duration_minutes: durationMinutes };
+    return { time_mode: 'cycle', duration_minutes: durationMinutes };
   }
-  const endDatetime = trialDatetimeLocalToStorage(document.getElementById(`${idPrefix}-end`)?.value);
+  const startDatetime = trialDatetimeLocalToStorage(document.getElementById(`${idPrefix}-range-start`)?.value);
+  if (!startDatetime) {
+    throw new Error('Start date/time is required');
+  }
+  const endDatetime = trialDatetimeLocalToStorage(document.getElementById(`${idPrefix}-range-end`)?.value);
   if (!endDatetime) {
     throw new Error('End date/time is required');
   }
-  return { start_datetime: startDatetime, end_datetime: endDatetime };
+  return { time_mode: 'fixed', start_datetime: startDatetime, end_datetime: endDatetime };
 }
 
 function openTrialDummyCardModal(defaultMachineId = '') {
@@ -322,7 +344,7 @@ function openTrialDummyCardModal(defaultMachineId = '') {
   const startDefault = trialDatetimeLocalValue(now);
   const endDefault = trialDatetimeLocalValue(new Date(now.getTime() + 2 * 60 * 60 * 1000));
   openTrialForm('Add Dummy Card', `
-    <p class="trial-modal-hint full">Placeholder card for notes, meetings, or reminders. Fixed start/end times are not changed by schedule recalculation.</p>
+    <p class="trial-modal-hint full">Placeholder card for notes, meetings, or reminders. Use fixed start/end for immovable blocks, or cycle time to slot into the queue like a normal operation.</p>
     <div class="trial-modal-grid">
       <label class="full">Title <input id="trial-dummy-title" placeholder="e.g. Machine maintenance"></label>
       <label class="full">Description <textarea id="trial-dummy-description" rows="3" placeholder="Optional details"></textarea></label>
@@ -366,20 +388,21 @@ function openTrialDummyCardModal(defaultMachineId = '') {
       toast('Create failed: ' + e.message, 'error');
     }
   });
-  setTimeout(() => trialDummyCardBindTimeMode('trial-dummy'), 0);
+  trialDummyCardBindTimeMode('trial-dummy');
 }
 
 function openTrialDummyCardEditor(blockId) {
   const block = (trialState.blocks || []).find(item => String(item.block_id) === String(blockId));
   if (!block) return;
   const machineOptions = trialMachineSelectOptionsHtml(block.machine_id);
+  const isCycle = trialIsCycleDummyBlock(block);
   const startValue = trialDatetimeLocalValue(
     block.planned_start_at || block.anchor_datetime || block.calculated_start_datetime || ''
   );
   const endValue = trialDatetimeLocalValue(
     block.planned_end_at || block.calculated_end_datetime || ''
   );
-  const durationMinutes = trialDummyCardDurationMinutes(block);
+  const durationMinutes = trialDummyCardCycleMinutes(block);
   openTrialForm('Edit Dummy Card', `
     <div class="trial-modal-grid">
       <label class="full">Title <input id="trial-dummy-edit-title" value="${escapeHtml(block.job_no || '')}"></label>
@@ -428,7 +451,7 @@ function openTrialDummyCardEditor(blockId) {
   }, `
     <button type="button" class="btn btn-ghost btn-sm" id="trial-dummy-delete-btn">Delete</button>
   `);
-  setTimeout(() => trialDummyCardBindTimeMode('trial-dummy-edit'), 0);
+  trialDummyCardBindTimeMode('trial-dummy-edit', isCycle ? 'duration' : 'range');
   document.getElementById('trial-dummy-delete-btn')?.addEventListener('click', async () => {
     if (!confirm('Delete this dummy card?')) return;
     try {
@@ -1384,12 +1407,18 @@ async function removeTrialBlock(blockId, groupId) {
   if (!numericBlockId) return;
   if (removeTrialBlock._inFlight) return;
   const _rmBlock = (trialState.blocks || []).find(b => String(b.block_id) === String(numericBlockId));
-  const psLabel = trialRemoveBlockPsLabel(_rmBlock);
-  const psPart = psLabel ? ` (process sheet ${psLabel})` : '';
+  const isDummy = typeof trialIsDummyBlock === 'function' && trialIsDummyBlock(_rmBlock);
+  const titleLabel = isDummy ? String(_rmBlock?.job_no || '').trim() : '';
+  const psLabel = isDummy ? '' : trialRemoveBlockPsLabel(_rmBlock);
+  const psPart = isDummy && titleLabel
+    ? ` "${titleLabel}"`
+    : (psLabel ? ` (process sheet ${psLabel})` : '');
   const isCombined = Number(groupId || 0) > 0;
-  const msg = isCombined
-    ? `Remove this combined operation${psPart} from the machine? All ops in the group will be returned to the side panel.`
-    : `Remove this operation${psPart} from the machine? It will return to the side panel for re-allocation.`;
+  const msg = isDummy
+    ? `Permanently delete this dummy card${psPart}? It will not return to the side panel.`
+    : (isCombined
+      ? `Remove this combined operation${psPart} from the machine? All ops in the group will be returned to the side panel.`
+      : `Remove this operation${psPart} from the machine? It will return to the side panel for re-allocation.`);
   if (!confirm(msg)) return;
   const _rmMachineId = _rmBlock ? Number(_rmBlock.machine_id || 0) : 0;
   const _rmGroupId = Number(groupId || _rmBlock?.group_id || 0);
@@ -1398,24 +1427,35 @@ async function removeTrialBlock(blockId, groupId) {
   removeTrialBlock._inFlight = true;
   try {
     await trialRunWithPlannerBusy(async () => {
-      trialSetFormModalBusy('Removing from queue…');
+      trialSetFormModalBusy(isDummy ? 'Deleting dummy card…' : 'Removing from queue…');
       queueRow?.classList.add('is-removing');
       try {
-        await DEL(`/api/trial/blocks/${numericBlockId}`);
+        const result = await DEL(`/api/trial/blocks/${numericBlockId}`);
+        if (typeof trialPurgeBlocksFromState === 'function') {
+          trialPurgeBlocksFromState([numericBlockId], { groupId: _rmGroupId });
+        }
+        queueRow?.remove();
+        const refreshIds = [_rmMachineId].filter(Boolean);
+        if (!trialApplyMachineRefreshFromResponse(refreshIds, result)) {
+          if (refreshIds.length) {
+            trialScheduleRender(refreshIds, { skipCatalog: true, deferCatalog: true, preserveScroll: true });
+          }
+          await refreshMachines(refreshIds);
+        }
       } catch (e) {
         if (!/not found/i.test(String(e.message || ''))) throw e;
+        if (typeof trialPurgeBlocksFromState === 'function') {
+          trialPurgeBlocksFromState([numericBlockId], { groupId: _rmGroupId });
+        }
+        queueRow?.remove();
+        await refreshMachines([_rmMachineId].filter(Boolean));
       }
-      if (typeof trialPurgeBlocksFromState === 'function') {
-        trialPurgeBlocksFromState([numericBlockId], { groupId: _rmGroupId });
-      }
-      queueRow?.remove();
-      await refreshMachines([_rmMachineId].filter(Boolean));
-      if (typeof trialRerenderCatalogFromBlocks === 'function') {
+      if (!isDummy && typeof trialRerenderCatalogFromBlocks === 'function') {
         trialRerenderCatalogFromBlocks();
       }
-    }, 'Removing from queue…');
+    }, isDummy ? 'Deleting dummy card…' : 'Removing from queue…');
     if (typeof closeModal === 'function') closeModal();
-    toast('Removed from machine — returned to side panel', 'success');
+    toast(isDummy ? 'Dummy card deleted' : 'Removed from machine — returned to side panel', 'success');
   } catch (e) {
     queueRow?.classList.remove('is-removing');
     toast('Remove failed: ' + e.message, 'error');

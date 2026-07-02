@@ -1,7 +1,7 @@
 // Monthly sales report — due-date backlog logic + YTD grid.
 
 const SALES_REPORT_PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
-const SALES_REPORT_YTD_TYPES = ['APS', 'NPS', 'PPS'];
+const SALES_REPORT_YTD_TYPES = SALES_REPORT_PS_TYPES;
 
 const salesReportState = {
   year: new Date().getFullYear(),

@@ -146,7 +146,7 @@ const TRIAL_MACHINE_BOARD_GROUPS = [
         id: 'mpp-production',
         title: 'OSS frame · 3D complex · quick-change',
         hint: 'OSS frame agreement, 3D complex parts, quick-change production',
-        machine_codes: ['CNC 35', 'CNC 36'],
+        machine_codes: ['CNC 35', 'CNC 36', 'CNC 41'],
       },
     ],
   },
@@ -718,7 +718,10 @@ function trialBlocksForCatalogPs(ps) {
   if (exactFromIndex?.length) {
     return exactFromIndex;
   }
-  const allBlocks = blocksBySourceBase.get(source) || [];
+  const allBlocks = (blocksBySourceBase.get(source) || []).filter(block => {
+    if (typeof trialIsDummyBlock === 'function' && trialIsDummyBlock(block)) return false;
+    return true;
+  });
   if (!allBlocks.length) return [];
   const exact = allBlocks.filter(block => trialCatalogPartialIndex(block) === wantPartial);
   if (exact.length) {

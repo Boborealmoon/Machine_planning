@@ -225,6 +225,14 @@ def is_ps_base_id(value):
     return bool(_PS_BASE_ID_RE.match(compact_text(value)))
 
 
+def normalize_standard_ps_id(value):
+    """Uppercase canonical ERP process sheet numbers (NPS26-0294, etc.)."""
+    raw = compact_text(value)
+    if is_ps_base_id(raw):
+        return raw.upper()
+    return raw
+
+
 def parse_bulk_lookup_ps_term(term):
     """
     Parse a bulk-lookup token into (base_or_raw, partial_no).
@@ -752,9 +760,12 @@ def _allocate_temp_planner_identity(con, source_ps_id):
 
 
 def _voucher_partial_row(con, source_ps_id, pp_partial_no):
+    source_ps_id = normalize_standard_ps_id(source_ps_id)
+    pp_partial_no = max(1, int(pp_partial_no or 1))
+    ps_predicate = "UPPER(ps_id) = UPPER(%s)" if is_ps_base_id(source_ps_id) else "ps_id = %s"
     return one(
         con.execute(
-            """
+            f"""
             SELECT ps_id, pp_partial_no,
                    MAX(part_no) AS part_no,
                    MAX(description) AS description,
@@ -764,10 +775,10 @@ def _voucher_partial_row(con, source_ps_id, pp_partial_no):
                    MAX(partial_qty) AS partial_qty,
                    MAX(status) AS erp_status
             FROM pp_vouchers_cache
-            WHERE ps_id = %s AND pp_partial_no = %s
+            WHERE {ps_predicate} AND pp_partial_no = %s
             GROUP BY ps_id, pp_partial_no
             """,
-            (compact_text(source_ps_id), max(1, int(pp_partial_no or 1))),
+            (source_ps_id, pp_partial_no),
         )
     )
 
@@ -1926,13 +1937,20 @@ def ensure_planner_process_sheet(con, planner_ps_id):
     if not planner_ps_id:
         return None
 
-    source_ps_id, _ = parse_planner_ps_id(planner_ps_id)
+    source_ps_id, pp_partial_no = parse_planner_ps_id(planner_ps_id)
+    source_ps_id = normalize_standard_ps_id(source_ps_id)
     if is_temp_planner_ps_id(source_ps_id):
         planner_ps_id = source_ps_id
+    else:
+        planner_ps_id = format_planner_ps_id(source_ps_id, pp_partial_no)
 
     existing = one(
         con.execute(
-            "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
+            """
+            SELECT * FROM planner_process_sheet
+            WHERE UPPER(planner_ps_id) = UPPER(%s)
+            LIMIT 1
+            """,
             (planner_ps_id,),
         )
     )
@@ -1944,33 +1962,26 @@ def ensure_planner_process_sheet(con, planner_ps_id):
             f"Process sheet {planner_ps_id} was not found. Create the [Temp] PS first."
         )
 
-    _, pp_partial_no = parse_planner_ps_id(planner_ps_id)
-    cache_row = one(
-        con.execute(
-            """
-            SELECT ps_id, pp_partial_no, part_no, bom_code, total_qty, partial_qty, status
-            FROM pp_vouchers_cache
-            WHERE ps_id = %s AND pp_partial_no = %s
-            LIMIT 1
-            """,
-            (source_ps_id, pp_partial_no),
-        )
-    )
+    cache_row = _voucher_partial_row(con, source_ps_id, pp_partial_no)
+    if not cache_row:
+        partial_rows = _voucher_rows_for_source_ps(con, source_ps_id, pp_partial_no)
+        if partial_rows:
+            cache_row = partial_rows[0]
+        elif pp_partial_no != 1:
+            partial_rows = _voucher_rows_for_source_ps(con, source_ps_id, 1)
+            if partial_rows:
+                cache_row = partial_rows[0]
+    if not cache_row:
+        staging_row = _mfg_process_sheet_staging_row(con, source_ps_id)
+        if staging_row:
+            cache_row = dict(staging_row)
     if not cache_row and source_ps_id != planner_ps_id:
-        cache_row = one(
-            con.execute(
-                """
-                SELECT ps_id, pp_partial_no, part_no, bom_code, total_qty, partial_qty, status
-                FROM pp_vouchers_cache
-                WHERE ps_id = %s AND pp_partial_no = 1
-                LIMIT 1
-                """,
-                (planner_ps_id,),
-            )
-        )
-        if cache_row:
-            source_ps_id = compact_text(cache_row["ps_id"]) or planner_ps_id
-            pp_partial_no = int(cache_row.get("pp_partial_no") or 1)
+        cache_row = _voucher_partial_row(con, planner_ps_id, 1)
+
+    if cache_row:
+        source_ps_id = normalize_standard_ps_id(compact_text(cache_row.get("ps_id"))) or source_ps_id
+        pp_partial_no = int(cache_row.get("pp_partial_no") or pp_partial_no or 1)
+        planner_ps_id = format_planner_ps_id(source_ps_id, pp_partial_no)
 
     if not cache_row:
         raise ValueError(
@@ -2008,7 +2019,9 @@ def ensure_planner_process_sheet(con, planner_ps_id):
         if flow:
             selected_bom_id = int(flow["bom_id"])
 
-    planned_qty = _to_float(cache_row.get("partial_qty") or cache_row.get("total_qty"))
+    planned_qty = _to_float(
+        cache_row.get("partial_qty") or cache_row.get("total_qty") or cache_row.get("display_qty")
+    )
 
     con.execute(
         """
@@ -2030,7 +2043,11 @@ def ensure_planner_process_sheet(con, planner_ps_id):
     )
     return one(
         con.execute(
-            "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
+            """
+            SELECT * FROM planner_process_sheet
+            WHERE UPPER(planner_ps_id) = UPPER(%s)
+            LIMIT 1
+            """,
             (planner_ps_id,),
         )
     )

@@ -46,8 +46,10 @@ from planning.finishing_queue_route import (
 )
 from planning.capacity_monthly_route import capacity_monthly_bp
 from planning.preferred_machines_route import preferred_machines_bp
+from planning.mpp_planner_route import mpp_planner_bp
 from planning.inventory_enquiry_route import inventory_enquiry_bp
 from planning.excel_local_route import excel_local_bp
+from planning.frame_agreement_route import frame_agreement_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
@@ -82,8 +84,10 @@ for _legacy_fq_path in LEGACY_FINISHING_QUEUE_PATHS:
     )
 app.register_blueprint(capacity_monthly_bp)
 app.register_blueprint(preferred_machines_bp)
+app.register_blueprint(mpp_planner_bp)
 app.register_blueprint(inventory_enquiry_bp)
 app.register_blueprint(excel_local_bp)
+app.register_blueprint(frame_agreement_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 
@@ -183,6 +187,11 @@ def _normalize_gate_path(path: str) -> str:
     return ((path or "/").lower().rstrip("/")) or "/"
 
 
+_FINISHING_QUEUE_PUBLIC_PATHS = frozenset(
+    {FINISHING_QUEUE_PATH.lower(), *(p.lower() for p in LEGACY_FINISHING_QUEUE_PATHS)}
+)
+
+
 def _is_gate_public_path(path: str) -> bool:
     normalized = _normalize_gate_path(path)
     if normalized in (
@@ -191,6 +200,8 @@ def _is_gate_public_path(path: str) -> bool:
         LOCK_PLANNER_PATH.lower(),
         "/favicon.ico",
     ):
+        return True
+    if normalized in _FINISHING_QUEUE_PUBLIC_PATHS:
         return True
     return normalized.startswith("/static/") or normalized.startswith("/api/")
 
@@ -260,7 +271,7 @@ def _inject_board_paths():
 def _planner_cache_headers(response):
     """Prevent Cloudflare tunnel / browser from serving stale planner HTML or JS."""
     path = (request.path or "").lower()
-    if path == MACHINIST_BOARD_PATH.lower():
+    if path in (MACHINIST_BOARD_PATH.lower(), FINISHING_QUEUE_PATH.lower()):
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
     if path == "/":
@@ -1878,8 +1889,10 @@ def api_admin_fix_execution_status():
 @app.post("/api/mfg-wo-status/sync")
 def api_mfg_wo_status_sync():
     from sync import run_mfg_wo_status_sync
+    from planning.finishing_queue_route import invalidate_finishing_queue_cache
     try:
         result = run_mfg_wo_status_sync(force=True)
+        invalidate_finishing_queue_cache()
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -3005,6 +3018,7 @@ if __name__ == "__main__":
     log.info("daily output page: http://127.0.0.1:%s/daily-output", port)
     log.info("planner: http://127.0.0.1:%s%s", port, PLANNER_PATH)
     log.info("machinist board: http://127.0.0.1:%s%s", port, MACHINIST_BOARD_PATH)
+    log.info("QAQC view: http://127.0.0.1:%s%s", port, FINISHING_QUEUE_PATH)
     if _planner_gate_enabled():
         log.info("planner passcode gate: enabled (POST / then session unlock)")
     else:

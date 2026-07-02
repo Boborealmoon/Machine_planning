@@ -111,6 +111,7 @@ const soState = {
   sortDir: 'asc',
   colFilters: {},
   openFilterCol: '',
+  frameAgreementParts: new Set(),
 };
 
 function soAllPpItems() {
@@ -128,6 +129,21 @@ function soAllPpItems() {
     });
   });
   return items;
+}
+
+function soNormalizePartKey(partNo) {
+  return String(partNo || '').trim().replace(/\s+/g, ' ').toUpperCase();
+}
+
+function soIsFrameAgreement(pp, partial) {
+  if (partial?.is_frame_agreement || pp?.is_frame_agreement) return true;
+  const code = soNormalizePartKey(partial?.inventory_code || pp?.inventory_code);
+  return code && soState.frameAgreementParts.has(code);
+}
+
+function soRenderFrameAgreementBadge(pp, partial) {
+  if (!soIsFrameAgreement(pp, partial)) return '';
+  return '<span class="so-fa-badge" title="Frame agreement part">FA</span>';
 }
 
 function soRepeatRow(order, pp) {
@@ -917,7 +933,10 @@ function soLeafColumnValue(leaf, colId) {
     case 'queued_cnc': return soQueuedMachinesLabel(pp, partial);
     case 'erp_stage': return soStageLabel(partial);
     case 'order_date': return pp?.order_date;
-    case 'part': return partial?.inventory_code || pp?.inventory_code;
+    case 'part': {
+      const code = partial?.inventory_code || pp?.inventory_code;
+      return soIsFrameAgreement(pp, partial) ? `${code} FA` : code;
+    }
     case 'description': return pp?.description;
     case 'customer_po_no': return pp?.customer_po_no;
     case 'due_date': return pp?.due_date;
@@ -1861,7 +1880,9 @@ function soRenderPartialCell(partial) {
 
 function soRenderPartCell(pp, partial) {
   const part = partial?.inventory_code || pp?.inventory_code || '—';
-  return `<td class="new-orders-num so-part-cell">${escapeHtml(String(part))}</td>`;
+  const faBadge = soRenderFrameAgreementBadge(pp, partial);
+  const faClass = faBadge ? ' so-part-cell--fa' : '';
+  return `<td class="new-orders-num so-part-cell${faClass}"><span class="so-part-text">${escapeHtml(String(part))}</span>${faBadge}</td>`;
 }
 
 function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, shadeAlt }) {
@@ -2357,6 +2378,8 @@ async function soLoad({ refresh = false, bustCache = false } = {}) {
   soState.ppCount = Number(payload.pp_count) || (soState.activeJobCount + soState.completeJobCount);
   soState.partialCount = Number(payload.partial_count) || 0;
   soState.missingHeaderCount = Number(payload.missing_header_count) || 0;
+  const faParts = Array.isArray(payload.frame_agreement_parts) ? payload.frame_agreement_parts : [];
+  soState.frameAgreementParts = new Set(faParts.map(soNormalizePartKey).filter(Boolean));
 
   const orderTotal = soState.active.length + soState.complete.length;
   const nestedPp = soState.active.concat(soState.complete)

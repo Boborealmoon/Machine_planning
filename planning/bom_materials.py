@@ -130,15 +130,17 @@ def _notice_for_mode(
     if match_mode == "alternate_bom":
         alts = ", ".join(alternate_bom_codes[:4])
         suffix = f" (+{len(alternate_bom_codes) - 4} more)" if len(alternate_bom_codes) > 4 else ""
+        bom_label = requested_bom or "requested BOM"
         return (
-            f"BOM {requested_bom or '—'} has no material requirements in ERP — "
+            f"BOM {bom_label} has no material requirements in ERP — "
             f"showing materials from alternate BOM route(s): {alts}{suffix}."
         )
     if match_mode == "any_bom_for_part":
-        return (
-            "No materials found for the PP BOM code — showing all BOM material "
-            "routes listed for this part in ERP."
-        )
+        alts = ", ".join(alternate_bom_codes[:4])
+        suffix = f" (+{len(alternate_bom_codes) - 4} more)" if len(alternate_bom_codes) > 4 else ""
+        if len(alternate_bom_codes) > 1:
+            return f"This part has multiple BOM routes in ERP — showing all: {alts}{suffix}."
+        return ""
     if match_mode == "not_found":
         return (
             "No BOM material requirements found for this part in ERP "
@@ -181,20 +183,54 @@ def resolve_bom_materials(db_query, source: str, bom: str | None = None) -> dict
     if resolved_bom:
         resolved_rows = fetch_bom_material_rows(db_query, source, resolved_bom)
         if resolved_rows:
-            if requested_bom and bom_code_match_key(resolved_bom) == bom_code_match_key(requested_bom):
+            if not requested_bom:
+                all_rows = fetch_bom_material_rows(db_query, source, None)
+                resolved_codes = sorted(
+                    {compact_text(row.get("bom_code")) for row in all_rows if row.get("bom_code")}
+                )
+                if len(resolved_codes) <= 1:
+                    return {
+                        "rows": resolved_rows,
+                        "requested_bom_code": requested_bom,
+                        "resolved_bom_code": resolved_bom,
+                        "match_mode": "exact",
+                        "alternate_bom_codes": alternate_codes,
+                        "notice": "",
+                    }
+                return {
+                    "rows": all_rows,
+                    "requested_bom_code": requested_bom,
+                    "resolved_bom_code": "",
+                    "match_mode": "any_bom_for_part",
+                    "alternate_bom_codes": resolved_codes,
+                    "notice": _notice_for_mode(
+                        match_mode="any_bom_for_part",
+                        requested_bom=requested_bom,
+                        resolved_bom=resolved_codes[0] if resolved_codes else "",
+                        alternate_bom_codes=resolved_codes,
+                    ),
+                }
+            if bom_code_match_key(resolved_bom) == bom_code_match_key(requested_bom):
                 match_mode = "normalized_bom"
+                rows = resolved_rows
+                resolved_code = resolved_bom
             else:
                 match_mode = "alternate_bom"
+                rows = fetch_bom_material_rows(db_query, source, None)
+                route_codes = sorted(
+                    {compact_text(row.get("bom_code")) for row in rows if row.get("bom_code")}
+                )
+                resolved_code = route_codes[0] if len(route_codes) == 1 else ""
             return {
-                "rows": resolved_rows,
+                "rows": rows,
                 "requested_bom_code": requested_bom,
-                "resolved_bom_code": resolved_bom,
+                "resolved_bom_code": resolved_code,
                 "match_mode": match_mode,
                 "alternate_bom_codes": alternate_codes,
                 "notice": _notice_for_mode(
                     match_mode=match_mode,
                     requested_bom=requested_bom,
-                    resolved_bom=resolved_bom,
+                    resolved_bom=resolved_code or resolved_bom,
                     alternate_bom_codes=alternate_codes,
                 ),
             }

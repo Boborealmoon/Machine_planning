@@ -1,296 +1,120 @@
 {% extends "base.html" %}
 
-{% block title %}Post-Machining Queue{% endblock %}
+{% block title %}QAQC View{% endblock %}
+
+{% block body_class %}qaqc-view{% endblock %}
 
 {% block main_class %}app-main--finishing-queue{% endblock %}
 
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=finishing-queue-20260624e">{% endblock %}
+{% block extra_css %}
+<meta name="referrer" content="no-referrer" />
+<meta name="robots" content="noindex, nofollow, noarchive" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v={{ fq_asset_version }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/qaqc.css') }}?v={{ fq_asset_version }}">
+{% endblock %}
 
 {% block content %}
 
-<div class="fq-page new-orders-page">
+<div class="fq-page">
 
-  <div class="new-orders-header">
-
-    <div>
-
-      <h1 class="new-orders-title">Post-Machining Queue</h1>
-
+  <header class="fq-header">
+    <div class="fq-header-text">
+      <h1 class="fq-title">QAQC View</h1>
+      <p class="fq-subtitle" id="fq-stats" aria-live="polite"></p>
     </div>
-
-    <div class="new-orders-header-actions">
-
-      <button type="button" class="btn btn-ghost btn-sm" id="fq-refresh" title="Reload from synced staging tables (run Sync ERP first for fresh ERP data)">Refresh</button>
-
+    <div class="fq-header-actions">
+      <button type="button" class="fq-chip fq-chip--tool" id="fq-hide-done" aria-pressed="false" title="Grey out and hide checklist-completed rows">Hide done</button>
+      <button type="button" class="fq-btn fq-btn--ghost" id="fq-manage-inspectors" title="Add or remove QC inspector names">QC team</button>
+      <button type="button" class="fq-btn fq-btn--primary" id="fq-refresh" title="Sync WO status from ERP then reload queue">Refresh</button>
     </div>
+  </header>
 
-  </div>
-
-
-
-  <div class="new-orders-toolbar card">
-
-    <div class="new-orders-filter new-orders-filter--view">
-
-      <span>Screen</span>
-
-      <div class="mi-view-toggle" role="tablist" aria-label="Screen mode">
-
-        <button type="button" class="mi-view-btn is-active" data-fq-screen="queue" role="tab" aria-selected="true">Queue</button>
-
-        <button type="button" class="mi-view-btn" data-fq-screen="assignments" role="tab" aria-selected="false">By assignee</button>
-
-        <button type="button" class="mi-view-btn" data-fq-screen="inspectors" role="tab" aria-selected="false">QC team</button>
-
+  <nav class="fq-nav" aria-label="Queue navigation">
+    <div class="fq-nav-row">
+      <div class="fq-nav-group" role="tablist" aria-label="Screen mode">
+        <button type="button" class="fq-chip is-active" data-fq-screen="queue" role="tab" aria-selected="true">Queue</button>
+        <button type="button" class="fq-chip" data-fq-screen="assignments" role="tab" aria-selected="false">By assignee</button>
       </div>
-
-    </div>
-
-    <div class="new-orders-filter new-orders-filter--view" id="fq-queue-view-wrap">
-
-      <span>View</span>
-
-      <div class="mi-view-toggle" role="tablist" aria-label="Queue view">
-
-        <button type="button" class="mi-view-btn is-active" data-fq-view="active" role="tab" aria-selected="true">
-
-          Active <span class="ps-view-tab-count" id="fq-count-active" hidden>0</span>
-
-        </button>
-
-        <button type="button" class="mi-view-btn" data-fq-view="recently_packed" role="tab" aria-selected="false">
-
-          Recently packed <span class="ps-view-tab-count" id="fq-count-recently-packed" hidden>0</span>
-
-        </button>
-
+      <div class="fq-nav-group fq-nav-group--ps-types" role="group" aria-label="PS type filter">
+        <button type="button" class="fq-chip is-active" data-fq-ps-type="APS" aria-pressed="true">APS</button>
+        <button type="button" class="fq-chip is-active" data-fq-ps-type="NPS" aria-pressed="true">NPS</button>
+        <button type="button" class="fq-chip" data-fq-ps-type="MPS" aria-pressed="false">MPS</button>
+        <button type="button" class="fq-chip" data-fq-ps-type="PPS" aria-pressed="false">PPS</button>
+        <button type="button" class="fq-chip" data-fq-ps-type="CPS" aria-pressed="false">CPS</button>
+        <button type="button" class="fq-chip" data-fq-ps-type="SR" aria-pressed="false">SR</button>
+        <button type="button" class="fq-chip" data-fq-ps-type="TEMP" aria-pressed="false">Temp</button>
       </div>
-
     </div>
-
-    <div class="new-orders-filter new-orders-filter--view" id="fq-stage-filter-wrap">
-
-      <span>Stage</span>
-
-      <div class="mi-view-toggle" role="tablist" aria-label="Finishing stage">
-
-        <button type="button" class="mi-view-btn is-active" data-fq-stage="all" role="tab" aria-selected="true">
-
-          Overall <span class="ps-view-tab-count" id="fq-count-all" hidden>0</span>
-
+    <div class="fq-nav-row">
+      <div class="fq-nav-group fq-nav-group--stages" id="fq-stage-filter-wrap" role="tablist" aria-label="Finishing stage">
+        <button type="button" class="fq-chip" data-fq-stage="all" role="tab" aria-selected="false">
+          Overall <span class="fq-chip-count" id="fq-count-all" hidden>0</span>
         </button>
-
-        <button type="button" class="mi-view-btn" data-fq-stage="deburring" role="tab" aria-selected="false">
-
-          Deburring <span class="ps-view-tab-count" id="fq-count-deburring" hidden>0</span>
-
+        <button type="button" class="fq-chip" data-fq-stage="deburring" role="tab" aria-selected="false">
+          Deburring <span class="fq-chip-count" id="fq-count-deburring" hidden>0</span>
         </button>
-
-        <button type="button" class="mi-view-btn" data-fq-stage="final_inspection" role="tab" aria-selected="false">
-
-          Final Inspection <span class="ps-view-tab-count" id="fq-count-final_inspection" hidden>0</span>
-
+        <button type="button" class="fq-chip is-active" data-fq-stage="final_inspection" role="tab" aria-selected="true">
+          Final inspection <span class="fq-chip-count" id="fq-count-final_inspection" hidden>0</span>
         </button>
-
-        <button type="button" class="mi-view-btn" data-fq-stage="packing" role="tab" aria-selected="false">
-
-          Packing <span class="ps-view-tab-count" id="fq-count-packing" hidden>0</span>
-
+        <button type="button" class="fq-chip" data-fq-stage="packing" role="tab" aria-selected="false">
+          Packing <span class="fq-chip-count" id="fq-count-packing" hidden>0</span>
         </button>
-
-        <button type="button" class="mi-view-btn" data-fq-stage="engraving_packing" role="tab" aria-selected="false">
-
-          Pack &amp; Engrave <span class="ps-view-tab-count" id="fq-count-engraving_packing" hidden>0</span>
-
+        <button type="button" class="fq-chip" data-fq-stage="engraving_packing" role="tab" aria-selected="false">
+          Pack &amp; engrave <span class="fq-chip-count" id="fq-count-engraving_packing" hidden>0</span>
         </button>
-
       </div>
-
     </div>
+  </nav>
 
-    <div class="new-orders-filter new-orders-filter--view" id="fq-status-filter-wrap">
-
-      <span>Status</span>
-
-      <div class="mi-view-toggle" role="tablist" aria-label="Stage status">
-
-        <button type="button" class="mi-view-btn is-active" data-fq-status="all" role="tab" aria-selected="true">All</button>
-
-        <button type="button" class="mi-view-btn" data-fq-status="I" role="tab" aria-selected="false">
-
-          In process <span class="mi-status-pill mi-status-pill--o">I</span>
-
-        </button>
-
-        <button type="button" class="mi-view-btn" data-fq-status="R" role="tab" aria-selected="false">
-
-          Ready <span class="mi-status-pill mi-status-pill--r">R</span>
-
-        </button>
-
-      </div>
-
-    </div>
-
-    <div class="new-orders-filter new-orders-filter--view" id="fq-assignee-filter-wrap" hidden>
-
-      <span>Assignee</span>
-
-      <div class="mi-view-toggle fq-assignee-toggle" role="tablist" aria-label="Inspector assignee" id="fq-assignee-tabs"></div>
-
-    </div>
-
-    <div class="new-orders-filter" id="fq-ps-type-filter">
-
-      <span>PS type</span>
-
-      <div class="filter-dropdown" id="fq-ps-type-dropdown">
-
-        <button class="filter-dropdown-btn" type="button" id="fq-ps-type-btn">APS, NPS ▾</button>
-
-        <div class="filter-dropdown-panel" id="fq-ps-type-panel" hidden>
-
-          <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
-
-          <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
-
-          <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
-
-          <label class="filter-dropdown-item"><input type="checkbox" value="SR" /> [SR]</label>
-
-          <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
-
-          <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
-
-        </div>
-
-      </div>
-
-    </div>
-
-    <label class="new-orders-filter new-orders-filter--grow" id="fq-search-wrap">
-
-      <span>Search</span>
-
-      <span class="planner-page-search-wrap">
-
-        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-
-          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
-
-          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-
-        </svg>
-
-        <input id="fq-search" class="planner-page-search-input" type="search" placeholder="PS, partial, part, SO, BOM, assignee..." autocomplete="off">
-
-      </span>
-
-    </label>
-
-    <div class="new-orders-stats" id="fq-stats"></div>
-
-  </div>
-
-
+  <div id="fq-assignee-board" class="fq-assignee-board" hidden aria-label="Workload by assignee"></div>
 
   <div id="fq-loading" class="fq-loading"><div class="fq-spinner" aria-hidden="true"></div> Loading post-machining queue...</div>
 
 
 
-  <div id="fq-table-wrap" class="new-orders-table-wrap card" hidden>
-
-    <table class="new-orders-table fq-table">
+  <div id="fq-table-wrap" class="fq-table-card" hidden>
+    <div class="fq-table-scroll">
+    <table class="fq-table">
 
       <thead>
 
         <tr>
 
-          <th class="so-col-head" data-fq-sort-col="ps_id">
+          <th class="fq-col-actions fq-col-sticky" title="Checklist &amp; exceptions">QA</th>
 
-            <div class="so-col-head-inner">
-
-              <button type="button" class="so-col-sort-btn" data-fq-sort="ps_id" title="Sort by process sheet">
-
-                <span class="so-col-label">Process sheet</span>
-
-                <span class="so-col-sort-icon" data-fq-sort-icon="ps_id">↕</span>
-
-              </button>
-
-            </div>
-
-          </th>
-
-          <th data-fq-sort-col="pp_partial_no">
-
-            <button type="button" class="so-col-sort-btn" data-fq-sort="pp_partial_no">Partial <span data-fq-sort-icon="pp_partial_no">↕</span></button>
-
+          <th class="fq-col-sticky fq-col-sticky--job so-col-head" data-fq-sort-col="ps_id">
+            <button type="button" class="so-col-sort-btn" data-fq-sort="ps_id">Job <span data-fq-sort-icon="ps_id">↕</span></button>
           </th>
 
           <th data-fq-sort-col="current_stage_desc">
-
             <button type="button" class="so-col-sort-btn" data-fq-sort="current_stage_desc">Stage <span data-fq-sort-icon="current_stage_desc">↕</span></button>
-
           </th>
 
           <th data-fq-sort-col="current_stage_status">
-
             <button type="button" class="so-col-sort-btn" data-fq-sort="current_stage_status">Status <span data-fq-sort-icon="current_stage_status">↕</span></button>
-
           </th>
 
-          <th>Part</th>
-
-          <th>Description</th>
-
-          <th>BOM</th>
-
-          <th>Qty</th>
-
-          <th id="fq-col-progress">Stage progress</th>
-
-          <th>Sales order</th>
-
           <th class="so-col-head" data-fq-sort-col="due_date">
-
-            <div class="so-col-head-inner">
-
-              <button type="button" class="so-col-sort-btn" data-fq-sort="due_date" title="Sort by PO due date">
-
-                <span class="so-col-label">PO due</span>
-
-                <span class="so-col-sort-icon" data-fq-sort-icon="due_date">↕</span>
-
-              </button>
-
-            </div>
-
+            <button type="button" class="so-col-sort-btn" data-fq-sort="due_date">PO due <span data-fq-sort-icon="due_date">↕</span></button>
           </th>
 
           <th class="so-col-head" data-fq-sort-col="coway_proposed_edd">
-
-            <button type="button" class="so-col-sort-btn" data-fq-sort="coway_proposed_edd">Coway EDD <span data-fq-sort-icon="coway_proposed_edd">↕</span></button>
-
+            <button type="button" class="so-col-sort-btn" data-fq-sort="coway_proposed_edd">EDD <span data-fq-sort-icon="coway_proposed_edd">↕</span></button>
           </th>
 
-          <th>Coway wk</th>
+          <th class="so-col-head" data-fq-sort-col="commitment_date">
+            <button type="button" class="so-col-sort-btn" data-fq-sort="commitment_date" title="Week and day from Coway EDD or PO due">Delivery schedule <span data-fq-sort-icon="commitment_date">↕</span></button>
+          </th>
 
           <th class="so-col-head" data-fq-sort-col="qa_due_date">
-
             <button type="button" class="so-col-sort-btn" data-fq-sort="qa_due_date">QA due <span data-fq-sort-icon="qa_due_date">↕</span></button>
-
           </th>
 
           <th data-fq-sort-col="inspector_name">
-
             <button type="button" class="so-col-sort-btn" data-fq-sort="inspector_name">Assigned <span data-fq-sort-icon="inspector_name">↕</span></button>
-
           </th>
 
-          <th>Remarks</th>
-
-          <th>PP status</th>
+          <th class="fq-col-more">More</th>
 
         </tr>
 
@@ -299,44 +123,14 @@
       <tbody id="fq-table-body"></tbody>
 
     </table>
-
-  </div>
-
-
-
-  <div id="fq-inspectors-panel" class="card fq-inspectors-panel" hidden>
-
-    <div class="fq-inspectors-head">
-
-      <h2 class="fq-inspectors-title">QC / Inspector team</h2>
-
-      <p class="fq-inspectors-hint">Add inspectors for assignment on the active queue. Removing an inspector clears them from the team list (existing assignments are unlinked).</p>
-
     </div>
-
-    <form id="fq-inspector-form" class="fq-inspector-form">
-
-      <input type="text" id="fq-inspector-name" class="planner-page-search-input" placeholder="Inspector name" autocomplete="off" required>
-
-      <button type="submit" class="btn btn-primary btn-sm">Add inspector</button>
-
-    </form>
-
-    <ul id="fq-inspector-list" class="fq-inspector-list"></ul>
-
-    <p id="fq-inspector-empty" class="new-orders-empty" hidden>No inspectors yet.</p>
-
   </div>
 
-
-
-  <div id="fq-empty" class="new-orders-empty card" hidden>
-
+  <div id="fq-empty" class="fq-empty-card" hidden>
     <p id="fq-empty-text">No partials are currently at a finishing stage.</p>
-
   </div>
 
-  <p class="new-orders-meta" id="fq-meta" hidden></p>
+  <p class="fq-meta" id="fq-meta" hidden></p>
 
 </div>
 
@@ -352,7 +146,7 @@
 
       <div>
 
-        <p class="new-orders-detail-kicker">Post-machining detail</p>
+        <p class="new-orders-detail-kicker">QAQC detail</p>
 
         <h2 class="new-orders-detail-title" id="fq-detail-title"></h2>
 
@@ -364,9 +158,45 @@
 
     <div class="new-orders-detail-body" id="fq-detail-body"></div>
 
-    <p class="new-orders-detail-foot">ERP live query · planner overlays saved locally</p>
+    <p id="fq-detail-save-status" class="fq-detail-save-status" hidden aria-live="polite"></p>
+
+    <p class="new-orders-detail-foot">Synced staging · edits save automatically</p>
 
   </aside>
+
+</div>
+
+
+
+<div id="fq-inspector-modal" class="fq-modal-backdrop" hidden>
+
+  <div class="fq-modal-box" role="dialog" aria-modal="true" aria-labelledby="fq-inspector-modal-title">
+
+    <div class="fq-modal-head">
+
+      <h2 class="fq-modal-title" id="fq-inspector-modal-title">QC inspectors</h2>
+
+      <button type="button" class="btn btn-ghost btn-sm" id="fq-inspector-modal-close" aria-label="Close">Close</button>
+
+    </div>
+
+    <p class="fq-modal-hint">Add or remove inspector names. They appear in the Assigned dropdown on the queue.</p>
+
+    <p id="fq-inspector-status" class="fq-inspector-status" hidden></p>
+
+    <form id="fq-inspector-form" class="fq-inspector-form">
+
+      <input type="text" id="fq-inspector-name" class="planner-page-search-input" placeholder="Inspector name" autocomplete="off" required>
+
+      <button type="submit" class="btn btn-primary btn-sm">Add inspector</button>
+
+    </form>
+
+    <ul id="fq-inspector-list" class="fq-inspector-list"></ul>
+
+    <p id="fq-inspector-empty" class="new-orders-empty" hidden>No inspectors yet.</p>
+
+  </div>
 
 </div>
 
@@ -391,18 +221,618 @@
     }
   }
 
+  function fqEsc(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function fqFmtDate(value) {
+    if (!value) return '—';
+    var text = String(value);
+    return text.length >= 10 ? text.slice(0, 10) : text;
+  }
+
+  function fqStatusLabel(code) {
+    var c = String(code || '').toUpperCase();
+    if (c === 'I') return 'In Process';
+    if (c === 'R') return 'Ready';
+    if (c === 'P') return 'Pending';
+    return c || '—';
+  }
+
+  function fqInlineCommitmentDate(item) {
+    var coway = item && item.coway_proposed_edd ? String(item.coway_proposed_edd).trim().slice(0, 10) : '';
+    var due = item && item.due_date ? String(item.due_date).trim().slice(0, 10) : '';
+    var commitment = item && item.commitment_date ? String(item.commitment_date).trim().slice(0, 10) : '';
+    return coway || commitment || due;
+  }
+
+  function fqFmtCowayWeek(item) {
+    var text = typeof item === 'object' ? fqInlineCommitmentDate(item) : String(item || '').trim().slice(0, 10);
+    if (!text) return '—';
+    var parts = text.split('-');
+    if (parts.length < 3) return '—';
+    var y = Number(parts[0]);
+    var m = Number(parts[1]);
+    var d = Number(parts[2]);
+    var date = new Date(Date.UTC(y, m - 1, d));
+    if (isNaN(date.getTime())) return '—';
+    var isoDay = date.getUTCDay() || 7;
+    var thursday = new Date(date);
+    thursday.setUTCDate(date.getUTCDate() + 4 - isoDay);
+    var yearStart = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 1));
+    var weekNo = Math.ceil((((thursday - yearStart) / 86400000) + 1) / 7);
+    var names = ['Sun', 'Mon', 'Tues', 'Wed', 'Thu', 'Fri', 'Sat'];
+    return 'Week ' + weekNo + ' - ' + names[date.getUTCDay()];
+  }
+
+  function fqSetCount(id, n) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var count = Number(n) || 0;
+    el.textContent = String(count);
+    el.hidden = count <= 0;
+  }
+
+  function fqInlineGetPsType(item) {
+    var psId = String(item.planner_ps_id || item.ps_id || '').trim();
+    if (/^\[temp\]/i.test(psId)) return 'TEMP';
+    var raw = String(item.ps_id || '').split('::')[0];
+    if (/\[sr\]|\(sr\)/i.test(raw) || raw.indexOf('[SR]') >= 0) return 'SR';
+    var m = raw.toUpperCase().match(/^([A-Z]+)/);
+    return m ? m[1] : null;
+  }
+
+  function fqInlinePsTypesSet() {
+    var defaults = ['APS', 'NPS'];
+    try {
+      var raw = localStorage.getItem('fq-ps-types-v1');
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length) return new Set(parsed);
+      }
+    } catch (e) {}
+    return new Set(defaults);
+  }
+
+  function fqInlineMatchesPsType(item, types) {
+    if (!types || !types.size) return false;
+    if (types.size >= 7) return true;
+    var psType = fqInlineGetPsType(item);
+    if (!psType) return false;
+    return types.has(psType);
+  }
+
+  function fqInlineRecalcCounts(items, types) {
+    var filtered = (items || []).filter(function (item) {
+      return fqInlineMatchesPsType(item, types);
+    });
+    var stageCounts = { deburring: 0, final_inspection: 0, packing: 0, engraving_packing: 0 };
+    for (var i = 0; i < filtered.length; i++) {
+      var bucket = filtered[i].stage_bucket;
+      if (bucket in stageCounts) stageCounts[bucket] += 1;
+    }
+    fqSetCount('fq-count-all', filtered.length);
+    fqSetCount('fq-count-deburring', stageCounts.deburring);
+    fqSetCount('fq-count-final_inspection', stageCounts.final_inspection);
+    fqSetCount('fq-count-packing', stageCounts.packing);
+    fqSetCount('fq-count-engraving_packing', stageCounts.engraving_packing);
+    return filtered.length;
+  }
+
+  function fqInlineBoot() {
+    var boot = window.__FQ_BOOTSTRAP__;
+    var loading = document.getElementById('fq-loading');
+    var empty = document.getElementById('fq-empty');
+    var emptyText = document.getElementById('fq-empty-text');
+    var wrap = document.getElementById('fq-table-wrap');
+    var tbody = document.getElementById('fq-table-body');
+    var stats = document.getElementById('fq-stats');
+    var meta = document.getElementById('fq-meta');
+
+    if (!boot || !boot.items || !boot.items.length) {
+      if (loading) loading.hidden = true;
+      if (wrap) wrap.hidden = true;
+      if (empty) empty.hidden = false;
+      if (emptyText) {
+        emptyText.textContent = (boot && boot.hint)
+          ? boot.hint
+          : 'No partials are currently at a finishing stage.';
+      }
+      window.__fqBootDone = true;
+      window.__fqInlineBootDone = true;
+      return;
+    }
+
+    if (!tbody || !wrap) return;
+
+    var psTypes = fqInlinePsTypesSet();
+    var filteredTotal = fqInlineRecalcCounts(boot.items, psTypes);
+
+    wrap.hidden = false;
+    if (empty) empty.hidden = true;
+    if (!window.__fqInteractive) {
+      if (loading) loading.hidden = false;
+      tbody.innerHTML = '<tr class="fq-boot-placeholder"><td colspan="10">Loading interactive queue…</td></tr>';
+      if (stats) stats.textContent = filteredTotal + ' loading…';
+    }
+
+    if (meta && boot.cached_at) {
+      meta.hidden = false;
+      meta.textContent = 'Source: synced staging · loaded ' + boot.cached_at;
+    }
+
+    window.__fqBootDone = true;
+  }
+
+  function fqInlineInspectorOptions(selectedId) {
+    var opts = ['<option value="">— Unassigned —</option>'];
+    var inspectors = fqInlineGetInspectors();
+    for (var i = 0; i < inspectors.length; i++) {
+      var insp = inspectors[i];
+      var id = String(insp.inspector_id);
+      var sel = String(selectedId || '') === id ? ' selected' : '';
+      opts.push('<option value="' + fqEsc(id) + '"' + sel + '>' + fqEsc(insp.name || id) + '</option>');
+    }
+    return opts.join('');
+  }
+
+  function fqInlineOverlayFieldAttrs(item) {
+    var psId = fqEsc(String(item.ps_id || '').trim());
+    var partial = fqEsc(String(item.pp_partial_no != null ? item.pp_partial_no : 1));
+    var stage = fqEsc(String(item.current_stage_desc || '').trim());
+    var rawKey = String(item.ps_id || '') + '::' + String(item.pp_partial_no != null ? item.pp_partial_no : 1) + '::' + String(item.current_stage_desc || '');
+    return 'data-key="' + fqEsc(rawKey) + '" data-fq-ps-id="' + psId + '" data-fq-partial-no="' + partial + '" data-fq-stage-desc="' + stage + '"';
+  }
+
+  function fqInlineEditableCells(item) {
+    var fieldAttrs = fqInlineOverlayFieldAttrs(item);
+    var qaVal = fqFmtDate(item.qa_due_date);
+    if (qaVal === '—') qaVal = '';
+    return {
+      qaDue: '<input type="date" class="fq-cell-input fq-cell-date" data-fq-field="qa_due_date" ' + fieldAttrs + ' onchange="window.fqHandleOverlayField&&window.fqHandleOverlayField(event)" value="' + fqEsc(qaVal) + '">',
+      assignee: '<select class="fq-cell-input fq-cell-select" data-fq-field="inspector_id" ' + fieldAttrs + ' onchange="window.fqHandleOverlayField&&window.fqHandleOverlayField(event)">' + fqInlineInspectorOptions(item.inspector_id) + '</select>',
+      remarks: '<textarea class="fq-cell-input fq-cell-remarks" rows="2" data-fq-field="remarks" ' + fieldAttrs + ' onblur="window.fqHandleOverlayField&&window.fqHandleOverlayField(event,\'blur\')" placeholder="Remarks">' + fqEsc(item.remarks || '') + '</textarea>',
+    };
+  }
+
+  function fqInlineResolveOverlayItem(el) {
+    if (!el) return null;
+    var psId = String(el.dataset.fqPsId || '').trim();
+    var stage = String(el.dataset.fqStageDesc || '').trim();
+    var partial = Number(el.dataset.fqPartialNo);
+    if (!partial) partial = 1;
+    if (psId && stage) {
+      var key = psId + '::' + partial + '::' + stage;
+      return fqInlineFindItem(key) || { ps_id: psId, pp_partial_no: partial, current_stage_desc: stage };
+    }
+    var keyOnly = String(el.dataset.key || '').trim();
+    return keyOnly ? fqInlineFindItem(keyOnly) : null;
+  }
+
+  function fqInlineFindItem(key) {
+    var boot = window.__FQ_BOOTSTRAP__;
+    if (!boot || !boot.items) return null;
+    for (var i = 0; i < boot.items.length; i++) {
+      var item = boot.items[i];
+      var partial = item.pp_partial_no != null ? item.pp_partial_no : 1;
+      var itemKey = String(item.ps_id || '') + '::' + String(partial) + '::' + String(item.current_stage_desc || '');
+      if (itemKey === key) return item;
+    }
+    return null;
+  }
+
+  function fqInlineOverlayUrl() {
+    var cfg = window.__FQ_CONFIG__ || {};
+    return cfg.apiOverlay || '/api/finishing-queue/overlay';
+  }
+
+  function fqInlineWoStatusSyncUrl() {
+    var cfg = window.__FQ_CONFIG__ || {};
+    return cfg.apiWoStatusSync || '/api/mfg-wo-status/sync';
+  }
+
+  async function fqInlineSaveOverlay(item, patch) {
+    var payload = {
+      ps_id: item.ps_id,
+      pp_partial_no: item.pp_partial_no != null ? item.pp_partial_no : 1,
+      stage_desc: item.current_stage_desc,
+    };
+    for (var k in patch) {
+      if (Object.prototype.hasOwnProperty.call(patch, k)) payload[k] = patch[k];
+    }
+    var requestInit = {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(payload),
+    };
+    var res = await fetch(fqInlineOverlayUrl(), requestInit);
+    if (res.status === 405 || res.status === 501) {
+      res = await fetch(fqInlineOverlayUrl(), Object.assign({}, requestInit, { method: 'POST' }));
+    }
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    var overlay = data.overlay || {};
+    if (overlay.remarks != null) item.remarks = overlay.remarks;
+    if (overlay.inspector_id != null) item.inspector_id = overlay.inspector_id;
+    if (overlay.inspector_name != null) item.inspector_name = overlay.inspector_name;
+    if (overlay.qa_due_date != null) item.qa_due_date = overlay.qa_due_date;
+    return overlay;
+  }
+
+  function fqInlineBootReadOnly() {
+    var boot = window.__FQ_BOOTSTRAP__;
+    var loading = document.getElementById('fq-loading');
+    var wrap = document.getElementById('fq-table-wrap');
+    var tbody = document.getElementById('fq-table-body');
+    var stats = document.getElementById('fq-stats');
+    if (!boot || !boot.items || !boot.items.length || !tbody || !wrap) return;
+
+    var psTypes = fqInlinePsTypesSet();
+    var rows = [];
+    for (var i = 0; i < boot.items.length; i++) {
+      var item = boot.items[i];
+      if (!fqInlineMatchesPsType(item, psTypes)) continue;
+      var partial = Number(item.pp_partial_no) > 1 ? item.pp_partial_no : '—';
+      var rawKey = String(item.ps_id || '') + '::' + String(item.pp_partial_no || '') + '::' + String(item.current_stage_desc || '');
+      var keyAttr = fqEsc(rawKey);
+      var prod = Number(item.stage_qty_produced);
+      var req = Number(item.stage_qty_required);
+      var progress = (isFinite(req) && req > 0)
+        ? String(isFinite(prod) ? prod : 0) + ' / ' + String(req)
+        : '—';
+      var cells = fqInlineEditableCells(item);
+      var partialTag = Number(item.pp_partial_no) > 1 ? ' <span class="fq-partial-tag">p' + fqEsc(String(item.pp_partial_no)) + '</span>' : '';
+      var partSub = item.part_no ? '<span class="fq-part-sub">' + fqEsc(item.part_no) + '</span>' : '';
+      var qtySub = progress !== '—' ? '<span class="fq-qty-sub">' + fqEsc(progress) + ' pcs</span>' : '';
+      rows.push(
+        '<tr class="fq-row" data-key="' + keyAttr + '" data-stage-bucket="' + fqEsc(item.stage_bucket || '') + '">' +
+        '<td class="fq-col-actions fq-col-sticky"></td>' +
+        '<td class="fq-col-sticky fq-col-sticky--job"><div class="fq-job-cell"><span class="fq-job-ps">' + fqEsc(item.ps_id || '—') + partialTag + '</span>' + partSub + qtySub + '</div></td>' +
+        '<td>' + fqEsc(item.current_stage_desc || '—') + '</td>' +
+        '<td>' + fqEsc(fqStatusLabel(item.current_stage_status)) + '</td>' +
+        '<td class="fq-col-date">' + fqEsc(fqFmtDate(item.due_date)) + '</td>' +
+        '<td class="fq-col-date">' + fqEsc(fqFmtDate(item.coway_proposed_edd)) + '</td>' +
+        '<td class="fq-col-schedule">' + fqEsc(fqFmtCowayWeek(item)) + '</td>' +
+        '<td class="fq-col-edit">' + cells.qaDue + '</td>' +
+        '<td class="fq-col-edit">' + cells.assignee + '</td>' +
+        '<td class="fq-col-more"></td>' +
+        '</tr>'
+      );
+    }
+
+    tbody.innerHTML = rows.join('');
+    wrap.hidden = false;
+    if (loading) loading.hidden = true;
+    if (stats) stats.textContent = rows.length + ' in queue';
+    window.__fqInlineBootDone = true;
+  }
+
+  function fqInlineBindOverlayEditors() {
+    if (window.__fqInteractive || window.__fqOverlayEditorsBound) return;
+    if (window.__fqInlineOverlayEditorsBound) return;
+    window.__fqInlineOverlayEditorsBound = true;
+
+    document.addEventListener('change', function (e) {
+      if (window.__fqInteractive) return;
+      var el = e.target.closest('#fq-table-body [data-fq-field]');
+      if (!el) return;
+      var item = fqInlineResolveOverlayItem(el);
+      if (!item) {
+        fqInlineToast('Could not match this row — refresh the page', 'error');
+        return;
+      }
+      var field = el.getAttribute('data-fq-field');
+      var patch = {};
+      if (field === 'inspector_id') patch.inspector_id = el.value || null;
+      else if (field === 'qa_due_date') patch.qa_due_date = el.value || null;
+      else return;
+      fqInlineSaveOverlay(item, patch).then(function () {
+        fqInlineToast(field === 'inspector_id' ? 'Assignment saved' : 'QA due date saved', 'success');
+      }).catch(function (err) {
+        fqInlineToast(err.message || 'Save failed', 'error');
+      });
+    });
+
+    var remarksTimer = null;
+    document.addEventListener('input', function (e) {
+      if (window.__fqInteractive) return;
+      var el = e.target.closest('#fq-table-body [data-fq-field="remarks"]');
+      if (!el) return;
+      clearTimeout(remarksTimer);
+      remarksTimer = setTimeout(function () {
+        var item = fqInlineResolveOverlayItem(el);
+        if (!item || String(item.remarks || '') === String(el.value || '')) return;
+        fqInlineSaveOverlay(item, { remarks: el.value || '' }).then(function () {
+          fqInlineToast('Remarks saved', 'success');
+        }).catch(function (err) {
+          fqInlineToast(err.message || 'Save failed', 'error');
+        });
+      }, 600);
+    });
+  }
+
+  function fqInlineBind() {
+    if (window.__fqInteractive) return;
+    var stage = 'final_inspection';
+
+    function rows() {
+      return document.querySelectorAll('#fq-table-body .fq-row');
+    }
+
+    function setActive(selector, attr, value, clicked) {
+      document.querySelectorAll(selector).forEach(function (btn) {
+        var active = btn === clicked;
+        btn.classList.toggle('is-active', active);
+        btn.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+    }
+
+    function applyFilter() {
+      rows().forEach(function (row) {
+        var ok = stage === 'all' || row.getAttribute('data-stage-bucket') === stage;
+        row.style.display = ok ? '' : 'none';
+      });
+    }
+
+    document.querySelectorAll('[data-fq-stage]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        stage = btn.getAttribute('data-fq-stage') || 'all';
+        setActive('[data-fq-stage]', 'data-fq-stage', stage, btn);
+        applyFilter();
+      });
+    });
+
+    var defaultStageBtn = document.querySelector('[data-fq-stage="final_inspection"]');
+    if (defaultStageBtn) {
+      setActive('[data-fq-stage]', 'data-fq-stage', stage, defaultStageBtn);
+      applyFilter();
+    }
+
+    fqInlineBindOverlayEditors();
+
+    var refresh = document.getElementById('fq-refresh');
+    if (refresh) {
+      refresh.addEventListener('click', function () {
+        if (window.__fqInteractive && typeof window.fqLoad === 'function') return;
+        var base = window.location.pathname;
+        var syncUrl = fqInlineWoStatusSyncUrl();
+        fqInlineToast('Syncing WO status from ERP…', 'info');
+        fetch(syncUrl, { method: 'POST', credentials: 'same-origin' })
+          .then(function (res) {
+            return res.json().then(function (data) {
+              if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+              window.location.href = base + (base.indexOf('?') >= 0 ? '&' : '?') + 'refresh=1&_=' + Date.now();
+            });
+          })
+          .catch(function (err) {
+            fqInlineToast((err.message || 'WO sync failed') + ' — reloading cached data', 'error');
+            window.location.href = base + (base.indexOf('?') >= 0 ? '&' : '?') + 'refresh=1&_=' + Date.now();
+          });
+      });
+    }
+
+    document.querySelectorAll('[data-fq-screen]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var screen = btn.getAttribute('data-fq-screen') || 'queue';
+        if (window.__fqInteractive && typeof window.fqSetScreen === 'function') {
+          window.fqSetScreen(screen);
+          return;
+        }
+        setActive('[data-fq-screen]', 'data-fq-screen', screen, btn);
+        var board = document.getElementById('fq-assignee-board');
+        var isAssign = screen === 'assignments';
+        if (board) board.hidden = !isAssign;
+      });
+    });
+  }
+
+  function fqInlineInspectorApiUrl() {
+    var cfg = window.__FQ_CONFIG__ || {};
+    return cfg.apiInspectors || '/api/finishing-queue/inspectors';
+  }
+
+  function fqInlineGetInspectors() {
+    if (!window.__FQ_INLINE_INSPECTORS__) {
+      var boot = window.__FQ_BOOTSTRAP__ || {};
+      window.__FQ_INLINE_INSPECTORS__ = (boot.inspectors || []).slice();
+    }
+    return window.__FQ_INLINE_INSPECTORS__;
+  }
+
+  function fqInlineRenderInspectorList() {
+    var list = document.getElementById('fq-inspector-list');
+    var empty = document.getElementById('fq-inspector-empty');
+    if (!list || !empty) return;
+    var inspectors = fqInlineGetInspectors();
+    if (!inspectors.length) {
+      list.innerHTML = '';
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+    list.innerHTML = inspectors.map(function (insp) {
+      return '<li class="fq-inspector-item"><span>' + fqEsc(insp.name || '') + '</span>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-fq-remove-inspector="' + fqEsc(insp.inspector_id) + '">Remove</button></li>';
+    }).join('');
+  }
+
+  window.fqOpenInspectorModal = window.fqOpenInspectorModal || function () {
+    var modal = document.getElementById('fq-inspector-modal');
+    if (!modal) return;
+    fqInlineRenderInspectorList();
+    modal.hidden = false;
+    modal.classList.add('is-open');
+    document.body.classList.add('fq-inspector-modal-open');
+    var input = document.getElementById('fq-inspector-name');
+    if (input) input.focus();
+  };
+
+  window.fqCloseInspectorModal = window.fqCloseInspectorModal || function () {
+    var modal = document.getElementById('fq-inspector-modal');
+    if (!modal) return;
+    modal.hidden = true;
+    modal.classList.remove('is-open');
+    document.body.classList.remove('fq-inspector-modal-open');
+  };
+
+  function fqInlineToast(message, type) {
+    if (typeof window.fqToast === 'function') {
+      window.fqToast(message, type || 'info');
+      return;
+    }
+    var status = document.getElementById('fq-inspector-status');
+    if (!status) return;
+    status.hidden = false;
+    status.textContent = message;
+    status.className = 'fq-inspector-status fq-inspector-status--' + (type || 'info');
+  }
+
+  function fqInlineSetInspectorStatus(message, type) {
+    if (typeof window.fqSetInspectorStatus === 'function') {
+      window.fqSetInspectorStatus(message, type);
+      return;
+    }
+    var status = document.getElementById('fq-inspector-status');
+    if (!status) return;
+    if (!message) {
+      status.hidden = true;
+      status.textContent = '';
+      status.className = 'fq-inspector-status';
+      return;
+    }
+    status.hidden = false;
+    status.textContent = message;
+    status.className = 'fq-inspector-status fq-inspector-status--' + (type || 'info');
+  }
+
+  async function fqInlineReloadInspectors() {
+    if (typeof window.fqReloadInspectors === 'function') {
+      return window.fqReloadInspectors();
+    }
+    var res = await fetch(fqInlineInspectorApiUrl());
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    window.__FQ_INLINE_INSPECTORS__ = data.inspectors || [];
+    fqInlineRenderInspectorList();
+    return window.__FQ_INLINE_INSPECTORS__;
+  }
+
+  function fqBindInspectorModalInline() {
+    if (window.__fqInspectorModalBound) return;
+    window.__fqInspectorModalBound = true;
+
+    var openBtn = document.getElementById('fq-manage-inspectors');
+    if (openBtn) {
+      openBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        window.fqOpenInspectorModal();
+      });
+    }
+
+    document.getElementById('fq-inspector-modal-close')?.addEventListener('click', function () {
+      window.fqCloseInspectorModal();
+    });
+
+    document.getElementById('fq-inspector-modal')?.addEventListener('click', function (e) {
+      if (e.target && e.target.id === 'fq-inspector-modal') {
+        window.fqCloseInspectorModal();
+      }
+    });
+
+    document.getElementById('fq-inspector-form')?.addEventListener('submit', function (e) {
+      if (window.__fqInteractive) return;
+      e.preventDefault();
+      var input = document.getElementById('fq-inspector-name');
+      var submitBtn = e.target.querySelector('button[type="submit"]');
+      var name = String(input && input.value || '').trim();
+      if (!name) return;
+      if (submitBtn) submitBtn.disabled = true;
+      fqInlineSetInspectorStatus('Saving…', 'pending');
+      fetch(fqInlineInspectorApiUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name }),
+      }).then(function (res) {
+        return res.json().then(function (data) {
+          if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+          return fqInlineReloadInspectors().then(function () {
+            var msg = data.message || (data.created ? ('Added ' + name) : (name + ' is already on the team'));
+            if (input) input.value = '';
+            fqInlineSetInspectorStatus(msg, data.created ? 'success' : 'info');
+            fqInlineToast(msg, data.created ? 'success' : 'info');
+          });
+        });
+      }).catch(function (err) {
+        fqInlineSetInspectorStatus(err.message || 'Could not save inspector', 'error');
+        fqInlineToast(err.message || 'Could not save inspector', 'error');
+      }).finally(function () {
+        if (submitBtn) submitBtn.disabled = false;
+      });
+    });
+
+    document.getElementById('fq-inspector-list')?.addEventListener('click', function (e) {
+      if (window.__fqInteractive) return;
+      var btn = e.target.closest('[data-fq-remove-inspector]');
+      if (!btn || btn.disabled) return;
+      var id = btn.getAttribute('data-fq-remove-inspector');
+      if (!id || !window.confirm('Remove this inspector from the QC team?')) return;
+      btn.disabled = true;
+      fqInlineSetInspectorStatus('Removing…', 'pending');
+      fetch(fqInlineInspectorApiUrl() + '/' + encodeURIComponent(id), { method: 'DELETE' })
+        .then(function (res) {
+          return res.json().then(function (data) {
+            if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+            return fqInlineReloadInspectors().then(function () {
+              var msg = data.message || ('Removed ' + (data.name || 'inspector'));
+              fqInlineSetInspectorStatus(msg, 'success');
+              fqInlineToast(msg, 'success');
+            });
+          });
+        })
+        .catch(function (err) {
+          fqInlineSetInspectorStatus(err.message || 'Could not remove inspector', 'error');
+          fqInlineToast(err.message || 'Could not remove inspector', 'error');
+        })
+        .finally(function () {
+          btn.disabled = false;
+        });
+    });
+  }
+
   window.__FQ_CONFIG__ = readJson('fq-client-config') || {};
   window.__FQ_BOOTSTRAP__ = readJson('fq-bootstrap-data');
   window.__FQ_BOOTSTRAP_ERROR__ = readJson('fq-bootstrap-error');
+  fqBindInspectorModalInline();
+
+  window.fqOnMainScriptLoad = function () {
+    window.__fqPageScriptLoaded = true;
+    if (typeof window.fqInit === 'function') {
+      try {
+        window.fqInit();
+      } catch (err) {
+        console.error('fqInit failed after script load:', err);
+      }
+    }
+    window.setTimeout(function () {
+      if (!window.__fqInteractive && typeof window.fqInit === 'function') {
+        try { window.fqInit(); } catch (err2) { console.error(err2); }
+      }
+    }, 0);
+  };
 
   window.fqScriptLoadFailed = function () {
-    var loading = document.getElementById('fq-loading');
-    var empty = document.getElementById('fq-empty');
+    if (window.__fqInteractive) return;
+    fqInlineBootReadOnly();
+    fqInlineBind();
     var text = document.getElementById('fq-empty-text');
-    if (loading) loading.hidden = true;
-    if (empty) empty.hidden = false;
     if (text) {
-      text.textContent = 'finishing_queue.js did not load — hard refresh (Ctrl+Shift+R) or check the browser console.';
+      text.textContent = 'finishing_queue.js did not load — table is read-only. Hard refresh (Ctrl+Shift+R).';
     }
     window.__fqBootDone = true;
   };
@@ -417,26 +847,22 @@
       text.textContent = 'Server could not load queue: ' + window.__FQ_BOOTSTRAP_ERROR__;
     }
     window.__fqBootDone = true;
-  }
-
-  window.setTimeout(function () {
-    if (window.__fqBootDone) return;
-    var loading = document.getElementById('fq-loading');
-    var empty = document.getElementById('fq-empty');
-    var text = document.getElementById('fq-empty-text');
-    if (loading) loading.hidden = true;
-    if (empty) empty.hidden = false;
-    if (text) {
-      if (!window.__fqPageScriptLoaded) {
-        text.textContent = 'finishing_queue.js did not start — hard refresh (Ctrl+Shift+R) or check the browser console.';
-      } else {
-        text.textContent = 'Queue table UI did not start — check the browser console for errors.';
+  } else if (window.__FQ_BOOTSTRAP__) {
+    fqInlineBoot();
+    window.setTimeout(function () {
+      if (!window.__fqInteractive) {
+        if (typeof window.fqInit === 'function') {
+          try { window.fqInit(); } catch (err) { console.error(err); }
+        }
+        if (!window.__fqInteractive) {
+          fqInlineBootReadOnly();
+          fqInlineBind();
+        }
       }
-    }
-    window.__fqBootDone = true;
-  }, 15000);
+    }, 1200);
+  }
 })();
 </script>
-<script src="{{ url_for('static', filename='js/finishing_queue.js') }}?v=finishing-queue-20260624e" onerror="window.fqScriptLoadFailed && window.fqScriptLoadFailed()"></script>
+<script src="{{ url_for('static', filename='js/finishing_queue.js') }}?v={{ fq_asset_version }}" onload="window.fqOnMainScriptLoad && window.fqOnMainScriptLoad()" onerror="window.fqScriptLoadFailed && window.fqScriptLoadFailed()"></script>
 {% endblock %}
 

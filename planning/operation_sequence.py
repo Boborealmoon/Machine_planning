@@ -268,12 +268,21 @@ def compact_machine_lane_queue(con, machine_id, *, recalculate=False):
 
 def compact_machine_lanes_with_gaps(con, machine_ids=None, *, recalculate=False):
     """Renumber lanes where queue_position leaves gaps (e.g. after auto-unschedule)."""
+    from .machines import fetch_mpp_planner_machine_ids
+
+    mpp_ids = set(fetch_mpp_planner_machine_ids(con))
     params = []
     machine_clause = ""
     mids = sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0})
     if mids:
+        mids = [mid for mid in mids if mid not in mpp_ids]
+        if not mids:
+            return []
         machine_clause = " AND machine_id = ANY(%s)"
         params.append(mids)
+    elif mpp_ids:
+        machine_clause = " AND NOT (machine_id = ANY(%s))"
+        params.append(list(mpp_ids))
     gap_rows = rows(
         con.execute(
             f"""
@@ -311,6 +320,55 @@ def tail_recalc_start_index(existing_ids, ordered_ids):
     if prefix >= len(ordered_ids) and len(ordered_ids) == len(existing_ids):
         return len(ordered_ids)
     return prefix
+
+
+def lane_tail_recalc_block_after_remove(con, machine_id, removed_block_ids):
+    """First surviving lane block that may need new schedule times after a removal."""
+    machine_id = int(machine_id)
+    removed = {int(bid) for bid in (removed_block_ids or []) if int(bid or 0) > 0}
+    if machine_id <= 0 or not removed:
+        return None
+    ordered = rows(
+        con.execute(
+            """
+            SELECT block_id
+            FROM planner_run_block
+            WHERE machine_id = %s
+              AND COALESCE(active, TRUE) = TRUE
+            ORDER BY queue_position, block_id
+            """,
+            (machine_id,),
+        )
+    )
+    first_removed_idx = None
+    for idx, row in enumerate(ordered):
+        if int(row["block_id"]) in removed:
+            first_removed_idx = idx
+            break
+    if first_removed_idx is None:
+        return None
+    for idx in range(first_removed_idx, len(ordered)):
+        bid = int(ordered[idx]["block_id"])
+        if bid not in removed:
+            return bid
+    return None
+
+
+def resync_machine_lane_after_remove(con, machine_id, *, tail_block_id=None):
+    """Compact queue positions and reschedule only the tail when needed."""
+    from .blocks import recalculate_machine
+
+    machine_id = int(machine_id)
+    if machine_id <= 0:
+        return
+    compact_machine_lane_queue(con, machine_id, recalculate=False)
+    if tail_block_id:
+        recalculate_machine(
+            con,
+            machine_id,
+            tail_from_block_id=int(tail_block_id),
+            reason="QUEUE_DELETE",
+        )
 
 
 def infer_tail_by_machine(con, machine_ids):
@@ -356,12 +414,16 @@ def infer_tail_by_machine(con, machine_ids):
     return tail_by_machine
 
 
-def apply_machine_queue_order(con, machine_id, ordered_ids, *, recalculate=True):
+def apply_machine_queue_order(con, machine_id, ordered_ids, *, recalculate=True, allow_mpp_planner=False):
     """
     Set queue_position (and machine) for ordered block ids on a lane, sync operation
     sequences, optionally recalculate affected machines.
     """
+    from .machines import is_mpp_planner_machine_id
+
     machine_id = int(machine_id)
+    if not allow_mpp_planner and is_mpp_planner_machine_id(con, machine_id):
+        return {"affected_machine_ids": [], "sequences": {}, "skipped": "mpp_planner_machine"}
     ordered_ids = [int(value) for value in ordered_ids if int(value or 0) > 0]
     if not ordered_ids:
         return {"affected_machine_ids": [], "sequences": {}}

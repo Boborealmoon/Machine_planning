@@ -22,4 +22,8 @@ CREATE INDEX IF NOT EXISTS idx_fq_overlay_inspector
     ON public.planner_finishing_queue_overlay (inspector_id)
     WHERE inspector_id IS NOT NULL;
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fq_inspector_name_active_unique
+    ON public.planner_finishing_queue_inspector (LOWER(TRIM(name)))
+    WHERE active = TRUE;
+
 NOTIFY pgrst, 'reload schema';

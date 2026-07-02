@@ -1,7 +1,20 @@
 // HTTP helpers and the main data-load function.
 
-async function GET(url) {
-  const res = await fetch(url);
+async function GET(url, options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 120000);
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(url, { signal: controller.signal });
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timer);
+  }
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
     try {
@@ -798,6 +811,29 @@ async function trialCachedGET(cacheKey, ttlMs, url) {
   return data;
 }
 
+function trialApplyCatalogPayload(erpVouchers, renderOptions = {}) {
+  const catalogCacheMs = trialCatalogClientCacheMs();
+  const cacheKey = trialCatalogCacheKey();
+  trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
+  trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + catalogCacheMs;
+  trialAssignCatalogRows(trialLoadCache[cacheKey]);
+  if (typeof trialMaterialInOverrides !== 'undefined') trialMaterialInOverrides.clear();
+  if (typeof trialBoardTempPsIdsMissingFromCatalog === 'function'
+    && trialBoardTempPsIdsMissingFromCatalog().length) {
+    trialInvalidateCatalogCache();
+    if (typeof trialScheduleMissingTempCatalogRefresh === 'function') {
+      trialScheduleMissingTempCatalogRefresh();
+    }
+    return;
+  }
+  trialScheduleRender(null, {
+    deferCatalog: true,
+    skipFilterShell: true,
+    preserveScroll: true,
+    ...renderOptions,
+  });
+}
+
 function trialApplySchedulePayload(scheduleData, machinesResult, programToolsLookup) {
   const schedule = scheduleData || {};
   const rawMachines = (schedule.machines && schedule.machines.length)
@@ -1022,12 +1058,10 @@ async function loadTrialImpl(options = {}) {
   }
 
   if (showLoadUi) trialLoadingStage('schedule');
-  if (showLoadUi && !skipCatalog) trialLoadingStage('catalog');
-  const schedulePromise = GET(scheduleUrl).catch(err => {
+  const scheduleOutcome = await GET(scheduleUrl).catch(err => {
     console.error('Failed to load trial schedule:', err);
     return { error: err };
   });
-  const [scheduleOutcome, erpVouchers] = await Promise.all([schedulePromise, catalogPromise]);
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'fetch-schedule');
   }
@@ -1054,43 +1088,11 @@ async function loadTrialImpl(options = {}) {
     });
   }
   if (showLoadUi) trialLoadingStage('renderBoard');
-  trialScheduleRender(null, { skipCatalog: true });
-  if (showLoadUi) trialLoadingCompact();
-
-  if (skipCatalog) {
-    if (showLoadUi) trialLoadingHide();
-    if (typeof trialPerfEnd === 'function') {
-      trialPerfEnd(perf, { schedule_error: Boolean(scheduleError), skip_catalog: true });
-    }
-    return;
-  }
-
-  if (typeof trialPerfMark === 'function') {
-    trialPerfMark(perf, 'fetch-catalog');
-  }
-
-  const cacheKey = trialCatalogCacheKey();
-  trialLoadCache[cacheKey] = Array.isArray(erpVouchers) ? erpVouchers : [];
-  trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + catalogCacheMs;
-  trialAssignCatalogRows(trialLoadCache[cacheKey]);
-  if (typeof trialMaterialInOverrides !== 'undefined') trialMaterialInOverrides.clear();
-  if (typeof trialBoardTempPsIdsMissingFromCatalog === 'function'
-    && trialBoardTempPsIdsMissingFromCatalog().length) {
-    trialInvalidateCatalogCache();
-    if (typeof trialScheduleMissingTempCatalogRefresh === 'function') {
-      trialScheduleMissingTempCatalogRefresh();
-    }
-  }
-  if (showLoadUi) {
-    trialLoadingStage('catalogDone');
-    trialLoadingStage('finish');
-  }
   trialScheduleRender(null, {
-    deferCatalog: true,
-    skipFilterShell: true,
-    preserveScroll: true,
+    skipCatalog: true,
     dismissLoading: showLoadUi,
   });
+  if (showLoadUi) trialLoadingCompact();
 
   trialCachedGET('programToolsLookup', 300000, '/api/program-tool-list/lookup')
     .then(programToolsLookup => {
@@ -1100,13 +1102,39 @@ async function loadTrialImpl(options = {}) {
     })
     .catch(() => {});
 
+  if (skipCatalog) {
+    if (typeof trialPerfEnd === 'function') {
+      trialPerfEnd(perf, { schedule_error: Boolean(scheduleError), skip_catalog: true });
+    }
+    return;
+  }
+
+  const applyCatalogWhenReady = erpVouchers => {
+    if (typeof trialPerfMark === 'function') {
+      trialPerfMark(perf, 'fetch-catalog');
+    }
+    trialApplyCatalogPayload(erpVouchers);
+    if (typeof trialPerfEnd === 'function') {
+      trialPerfEnd(perf, {
+        schedule_error: Boolean(scheduleError),
+        catalog_rows: Array.isArray(erpVouchers) ? erpVouchers.length : 0,
+      });
+    }
+  };
+
+  catalogPromise
+    .then(applyCatalogWhenReady)
+    .catch(err => {
+      console.error('Failed to load process sheet catalog:', err);
+      toast('Could not load PS / Ops sidebar: ' + (err?.message || err), 'error');
+      if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
+      if (typeof trialPerfEnd === 'function') {
+        trialPerfEnd(perf, { schedule_error: Boolean(scheduleError), catalog_error: true });
+      }
+    });
+
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'schedule-render-dispatch');
-  }
-  if (typeof trialPerfEnd === 'function') {
-    trialPerfEnd(perf, {
-      schedule_error: Boolean(scheduleError),
-    });
   }
   } catch (err) {
     console.error('loadTrial failed:', err);

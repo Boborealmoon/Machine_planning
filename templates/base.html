@@ -15,10 +15,6 @@
 
 <nav class="navbar" id="site-navbar">
   <div class="navbar-inner">
-    <a href="{{ planner_path }}" class="navbar-logo">
-      <span class="logo-top">PRODUCTION</span>
-      <span class="logo-bottom">PLANNING</span>
-    </a>
     <button
       type="button"
       class="navbar-menu-btn"
@@ -39,27 +35,15 @@
         PLANNER
       </a>
 
+      <a href="/mpp-planner"
+         class="nav-link {% if nav_path in ('/mpp-planner', '/archive/mpp-planner') or active == 'mpp_planner' %}nav-link--active{% endif %}">
+        MPP PLANNER
+      </a>
+
       <a href="/process-sheets"
          class="nav-link {% if nav_path in ('/process-sheets', '/temp-process-sheets') or active in ('process_sheets', 'temp_process_sheets') %}nav-link--active{% endif %}">
         PROCESS SHEETS
       </a>
-
-      {# Shop-floor & operational views #}
-      <div class="nav-dropdown {% if nav_path in (machinist_board_path, finishing_queue_path) or active in ('machinist_board', 'finishing_queue') %}nav-dropdown--active{% endif %}">
-        <button type="button" class="nav-dropdown-trigger" data-dropdown="views">
-          VIEWS <span class="nav-caret">▾</span>
-        </button>
-        <div class="nav-dropdown-menu" id="dd-views">
-          <a href="{{ machinist_board_path }}"
-             class="nav-dropdown-item {% if nav_path == machinist_board_path or active == 'machinist_board' %}nav-dropdown-item--active{% endif %}">
-            Machinist view
-          </a>
-          <a href="{{ finishing_queue_path }}"
-             class="nav-dropdown-item {% if nav_path == finishing_queue_path or active == 'finishing_queue' %}nav-dropdown-item--active{% endif %}">
-            Post-machining queue
-          </a>
-        </div>
-      </div>
 
       {# Sales / production workflow #}
       <div class="nav-dropdown {% if nav_path in ('/new-orders', '/sales-orders', '/delivery', '/queue-delays', '/delivery-schedule') or active in ('new_orders', 'sales_orders', 'delivery', 'queue_delays', 'delivery_schedule') %}nav-dropdown--active{% endif %}">
@@ -143,6 +127,27 @@
           <a href="/planning-data/program-tool-list"
              class="nav-dropdown-item {% if nav_path == '/planning-data/program-tool-list' %}nav-dropdown-item--active{% endif %}">
             Program / tool list
+          </a>
+          <a href="/planning-data/frame-agreement-parts"
+             class="nav-dropdown-item {% if nav_path == '/planning-data/frame-agreement-parts' %}nav-dropdown-item--active{% endif %}">
+            Frame agreement parts
+          </a>
+        </div>
+      </div>
+
+      {# Shop-floor & operational views #}
+      <div class="nav-dropdown {% if nav_path in (machinist_board_path, finishing_queue_path) or active in ('machinist_board', 'finishing_queue') %}nav-dropdown--active{% endif %}">
+        <button type="button" class="nav-dropdown-trigger" data-dropdown="views">
+          VIEWS <span class="nav-caret">▾</span>
+        </button>
+        <div class="nav-dropdown-menu" id="dd-views">
+          <a href="{{ machinist_board_path }}"
+             class="nav-dropdown-item {% if nav_path == machinist_board_path or active == 'machinist_board' %}nav-dropdown-item--active{% endif %}">
+            Machinist view
+          </a>
+          <a href="{{ finishing_queue_path }}"
+             class="nav-dropdown-item {% if nav_path == finishing_queue_path or active == 'finishing_queue' %}nav-dropdown-item--active{% endif %}">
+            QAQC view
           </a>
         </div>
       </div>

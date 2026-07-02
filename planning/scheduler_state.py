@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 
 from .actuals import actual_totals_for_block
 from .helpers import one, rows, parse_dt_text
-from .utils import planner_now_naive, planner_timestamptz_for_db
+from .utils import planner_now_naive, planner_timestamptz_for_db, compact_text
 
 
 def _text(value):
@@ -531,6 +531,12 @@ def refresh_states_for_machine(con, machine_id, schedule_run_id=None):
         refresh_process_sheet_state(con, ps_id)
 
 
+def _alert_timestamp_for_db(value):
+    if value is None or compact_text(value) == "":
+        return None
+    return planner_timestamptz_for_db(value)
+
+
 def upsert_schedule_alert(
     con,
     *,
@@ -579,8 +585,8 @@ def upsert_schedule_alert(
         message,
         old_value,
         new_value,
-        planned_at,
-        predicted_at,
+        _alert_timestamp_for_db(planned_at),
+        _alert_timestamp_for_db(predicted_at),
         float(delay_minutes or 0),
         status,
     )

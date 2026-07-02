@@ -245,9 +245,10 @@
   font-weight: 700;
 }
 
-.pc-pct--low { color: #027a48; }
-.pc-pct--med { color: #b54708; }
-.pc-pct--high { color: #b42318; }
+.pc-pct--green { color: #027a48; }
+.pc-pct--yellow { color: #ca8a04; }
+.pc-pct--orange { color: #c2410c; }
+.pc-pct--red { color: #b42318; }
 .pc-pct--na { color: #98a2b3; font-weight: 500; }
 
 .pc-row-bar {
@@ -470,4 +471,230 @@
     margin-left: 0;
     width: 100%;
   }
+}
+
+/* ── Page tabs ─────────────────────────────────────────────────────────── */
+.pc-page-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 4px;
+}
+
+.pc-page-tab {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #667085;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pc-page-tab.is-active {
+  background: #101828;
+  color: #fff;
+}
+
+/* ── Capacity sheet ────────────────────────────────────────────────────── */
+.pc-definitions {
+  margin-bottom: 12px;
+  padding: 12px 16px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #344054;
+}
+
+.pc-definitions p {
+  margin: 0 0 8px;
+}
+
+.pc-definitions p:last-child {
+  margin-bottom: 0;
+}
+
+.pc-definitions strong {
+  color: #101828;
+}
+
+.pc-definitions-loading {
+  color: #98a2b3;
+}
+
+.pc-toolbar--sheet {
+  margin-bottom: 10px;
+}
+
+.pc-month-picker {
+  display: flex;
+  gap: 6px;
+}
+
+.pc-month-picker select {
+  min-width: 110px;
+}
+
+.pc-month-picker input {
+  width: 80px;
+}
+
+.pc-sheet-globals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  margin-bottom: 12px;
+  padding: 12px 16px;
+}
+
+.pc-sheet-global {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pc-sheet-global-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #667085;
+}
+
+.pc-sheet-global strong {
+  font-size: 18px;
+  font-weight: 800;
+  color: #101828;
+}
+
+.pc-sheet-global--period strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pc-sheet-table-wrap {
+  margin-bottom: 12px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.pc-sheet-section-title {
+  margin: 0;
+  padding: 12px 16px 4px;
+  font-size: 14px;
+  font-weight: 800;
+  color: #101828;
+}
+
+.pc-sheet-section-desc {
+  margin: 0;
+  padding: 0 16px 10px;
+  font-size: 12px;
+  color: #667085;
+}
+
+.pc-sheet-table {
+  font-size: 12px;
+}
+
+.pc-sheet-table th,
+.pc-sheet-table td {
+  padding: 7px 10px;
+  border: 1px solid #d0d5dd;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.pc-sheet-table th.pc-sheet-th-label,
+.pc-sheet-table td.pc-sheet-label {
+  text-align: left;
+  min-width: 200px;
+  position: sticky;
+  left: 0;
+  background: #fff;
+  z-index: 1;
+  font-weight: 600;
+  color: #344054;
+}
+
+.pc-sheet-table thead th {
+  background: #d1fadf;
+  color: #027a48;
+  font-weight: 800;
+  text-align: center;
+}
+
+.pc-sheet-table thead th.pc-sheet-th-label {
+  background: #f2f4f7;
+  color: #667085;
+}
+
+.pc-sheet-table tbody tr:nth-child(odd) td:not(.pc-sheet-label) {
+  background: #f9fafb;
+}
+
+.pc-sheet-cell--input {
+  background: #fef9c3 !important;
+  color: #854d0e;
+  font-weight: 600;
+}
+
+.pc-sheet-cell--calc {
+  background: #dbeafe !important;
+  color: #1e40af;
+}
+
+.pc-sheet-cell--usage {
+  background: #e0e7ff !important;
+  color: #3730a3;
+}
+
+.pc-sheet-cell--pct {
+  font-weight: 700;
+}
+
+.pc-sheet-row--machine td {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.pc-sheet-row--machine .pc-sheet-label {
+  padding-left: 22px;
+  color: #667085;
+}
+
+.pc-work-hours {
+  margin-bottom: 12px;
+  padding: 12px 16px;
+}
+
+.pc-work-hours-title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #667085;
+}
+
+.pc-work-hours-table td {
+  padding: 4px 12px 4px 0;
+  font-size: 12px;
+  color: #344054;
+}
+
+.pc-work-hours-table td:first-child {
+  font-weight: 600;
+  min-width: 120px;
+}
+
+.pc-sheet-holidays {
+  margin-top: 12px;
+  font-size: 12px;
+  color: #344054;
+}
+
+.pc-sheet-holidays ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
 }

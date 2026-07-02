@@ -12,6 +12,10 @@ import psycopg2.extras
 from flask import Blueprint, jsonify, render_template, request
 
 from db import planner_db_connect_error
+from .frame_agreement_service import (
+    apply_frame_agreement_flags,
+    load_frame_agreement_part_keys,
+)
 from .helpers import planner_db, rows
 from .utils import compact_text, shipped_quantity_completed
 
@@ -21,7 +25,7 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 
 _NOTE_FIELDS = (
     "material_subcon",
@@ -911,7 +915,15 @@ def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, An
     to_clear = _strip_completed_highlights(orders)
     if to_clear:
         _batch_clear_ps_highlights(to_clear)
+    frame_agreement_keys: set[str] = set()
+    try:
+        with planner_db() as con:
+            frame_agreement_keys = load_frame_agreement_part_keys(con)
+        apply_frame_agreement_flags(orders, frame_agreement_keys)
+    except Exception as exc:
+        logger.warning("frame agreement overlay skipped: %s", exc)
     payload = _split_by_shipped_completion(orders)
+    payload["frame_agreement_parts"] = sorted(frame_agreement_keys)
     _cache = (now, payload)
     return payload
 
@@ -1024,6 +1036,8 @@ def api_sales_orders():
     partial_count = sum(int(row.get("partial_count") or 0) for row in active + complete)
     missing_header = sum(1 for row in active + complete if not row.get("has_header"))
 
+    frame_agreement_parts = data.get("frame_agreement_parts") or []
+
     return jsonify(
         {
             "ok": True,
@@ -1036,6 +1050,8 @@ def api_sales_orders():
             "pp_count": pp_count,
             "partial_count": partial_count,
             "missing_header_count": missing_header,
+            "frame_agreement_count": len(frame_agreement_parts),
+            "frame_agreement_parts": frame_agreement_parts,
             "count": len(active) + len(complete),
             "cached_at": datetime.fromtimestamp(cached_at, tz=None).isoformat(sep=" ", timespec="seconds"),
             "cache_ttl_sec": _CACHE_TTL_SEC,

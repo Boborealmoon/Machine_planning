@@ -104,6 +104,7 @@
 {% endblock %}
 {% block scripts %}
 <script>window.trialMachinistBoardUrl = {{ machinist_board_path|tojson }};</script>
+<script>window.trialFinishingQueueUrl = {{ finishing_queue_path|tojson }};</script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <script src="{{ url_for('static', filename='js/scheduler/board_mode.js') }}?v=board-zoom-20260619"></script>
 <script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v=material-in-20260605"></script>

@@ -438,6 +438,63 @@ def fetch_machines(con):
     )
 
 
+# MPP board machines — hidden from the normal planner scheduler lanes.
+SCHEDULER_EXCLUDED_MACHINE_CODES = frozenset({"CNC 35", "CNC 36", "CNC 41"})
+MPP_PLANNER_GUARD_MSG = (
+    "CNC 35, CNC 36, and CNC 41 are on the MPP planner — use that board to schedule them."
+)
+
+
+def is_scheduler_excluded_machine(machine_row) -> bool:
+    code = compact_text((machine_row or {}).get("machine_no") or (machine_row or {}).get("machine_code"))
+    if not code:
+        return False
+    return code.upper() in {value.upper() for value in SCHEDULER_EXCLUDED_MACHINE_CODES}
+
+
+def fetch_scheduler_machines(con):
+    """Active machines shown on the normal planner board (excludes MPP lanes)."""
+    return [dict(row) for row in fetch_machines(con) if not is_scheduler_excluded_machine(row)]
+
+
+def fetch_mpp_planner_machine_ids(con) -> list[int]:
+    """Machine ids owned by the MPP planner (CNC 35, 36, 41)."""
+    codes = [code.upper() for code in SCHEDULER_EXCLUDED_MACHINE_CODES]
+    if not codes:
+        return []
+    return [
+        int(row["machine_id"])
+        for row in rows(
+            con.execute(
+                """
+                SELECT machine_id
+                FROM planner_machines
+                WHERE UPPER(machine_no) = ANY(%s)
+                  AND COALESCE(active, TRUE) = TRUE
+                ORDER BY machine_id
+                """,
+                (codes,),
+            )
+        )
+        if int(row.get("machine_id") or 0) > 0
+    ]
+
+
+def is_mpp_planner_machine_id(con, machine_id, *, mpp_ids=None) -> bool:
+    mid = int(machine_id or 0)
+    if mid <= 0:
+        return False
+    if mpp_ids is not None:
+        return mid in {int(value) for value in mpp_ids if int(value or 0) > 0}
+    row = one(
+        con.execute(
+            "SELECT machine_id, machine_no FROM planner_machines WHERE machine_id = %s",
+            (mid,),
+        )
+    )
+    return is_scheduler_excluded_machine(row)
+
+
 def fetch_profiles(con):
     return rows(
         con.execute(

@@ -31,7 +31,7 @@ _monthly_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _ytd_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 _PP_TYPES = ("MPS", "APS", "NPS", "PPS", "CPS", "SR")
-_YTD_ROW_TYPES = ("APS", "NPS", "PPS")
+_YTD_ROW_TYPES = _PP_TYPES
 
 # Home-currency $ — matches ERP pre_tax_extended_home_amt and shipment total_home_amt.
 _UNIT_FC_SQL = "COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price)"

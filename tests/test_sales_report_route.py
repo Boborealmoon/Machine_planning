@@ -4,7 +4,11 @@ from __future__ import annotations
 import unittest
 from datetime import date
 
-from planning.sales_report_route import _build_open_month_summary, _build_past_month_summary
+from planning.sales_report_route import (
+    _build_open_month_summary,
+    _build_past_month_summary,
+    _build_ytd_grid,
+)
 
 
 class SalesReportOpenMonthTests(unittest.TestCase):
@@ -58,6 +62,25 @@ class SalesReportPastMonthTests(unittest.TestCase):
         self.assertEqual(summary["delivered"]["total_home_amt"], 0)
         self.assertAlmostEqual(summary["backlog_delivered"]["total_home_amt"], 1818.59, places=2)
         self.assertEqual(summary["early_delivered"]["total_home_amt"], 0)
+
+
+class SalesReportYtdGridTests(unittest.TestCase):
+    def test_ytd_grid_includes_mps_row(self):
+        open_lines = [
+            {
+                "process_sheet_no": "MPS26-0001",
+                "pp_type": "MPS",
+                "due_date": "2026-06-15",
+                "remaining_qty": 5,
+                "remaining_value": 5000,
+            },
+        ]
+        grid = _build_ytd_grid(open_lines, [], 2026, today=date(2026, 6, 25))
+        row_ids = [row["id"] for row in grid["rows"]]
+        self.assertIn("MPS", row_ids)
+        mps_row = next(row for row in grid["rows"] if row["id"] == "MPS")
+        june_cell = next(cell for cell in mps_row["cells"] if cell["month"] == 6)
+        self.assertAlmostEqual(float(june_cell.get("on_hand") or 0), 5000.0, places=2)
 
 
 if __name__ == "__main__":

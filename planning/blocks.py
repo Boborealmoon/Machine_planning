@@ -1908,30 +1908,118 @@ def is_dummy_block_row(block) -> bool:
     return compact_text((block or {}).get("block_type")).upper() == "DUMMY"
 
 
-def _parse_dummy_card_times(start_text, end_text=None, duration_minutes=None):
+def is_fixed_dummy_block_row(block) -> bool:
+    if not is_dummy_block_row(block):
+        return False
+    return bool(block.get("anchor_datetime") or block.get("planned_start_at"))
+
+
+def _validate_dummy_cycle_minutes(duration_minutes):
+    try:
+        mins = float(duration_minutes)
+    except (TypeError, ValueError):
+        mins = 0
+    if mins <= 0:
+        raise ValueError("Cycle time must be greater than 0 minutes")
+    return mins
+
+
+def _parse_dummy_fixed_times(start_text, end_text):
     start_dt = planner_wall_datetime_from_input(compact_text(start_text))
-    if not start_dt:
-        raise ValueError("Start date/time is required")
+    end_dt = planner_wall_datetime_from_input(compact_text(end_text))
+    if not start_dt or not end_dt:
+        raise ValueError("Start and end date/time are required")
+    if end_dt <= start_dt:
+        raise ValueError("End must be after start")
+    return start_dt, end_dt
 
-    end_text_clean = compact_text(end_text) if end_text is not None else ""
-    if end_text_clean:
-        end_dt = planner_wall_datetime_from_input(end_text_clean)
-        if not end_dt:
-            raise ValueError("End date/time is required")
-        if end_dt <= start_dt:
-            raise ValueError("End must be after start")
-        return start_dt, end_dt
 
-    if duration_minutes is not None:
-        try:
-            mins = float(duration_minutes)
-        except (TypeError, ValueError):
-            mins = 0
-        if mins <= 0:
-            raise ValueError("Duration must be greater than 0 minutes")
-        return start_dt, start_dt + timedelta(minutes=mins)
+def _machine_lane_end_before_block(con, machine_id, block_id):
+    row = one(
+        con.execute(
+            """
+            SELECT MAX(COALESCE(b.calculated_end_datetime, b.planned_end_at, b.anchor_datetime)) AS lane_end
+            FROM planner_run_block b
+            WHERE b.machine_id = %s
+              AND b.block_id <> %s
+              AND COALESCE(b.active, TRUE) = TRUE
+            """,
+            (int(machine_id), int(block_id)),
+        )
+    )
+    return _naive_schedule_dt((row or {}).get("lane_end"))
 
-    raise ValueError("Provide either end date/time or duration in minutes")
+
+def schedule_cycle_dummy_at_queue_tail(con, machine_id, block_id, cycle_minutes=None):
+    """Place a cycle-time dummy at the back of the machine queue without full recalc."""
+    from .operation_sequence import sync_machine_operation_sequence
+
+    block = trial_block_row(con, block_id)
+    if not block or not is_dummy_block_row(block) or is_fixed_dummy_block_row(block):
+        return block
+
+    machine_id = int(machine_id or block["machine_id"] or 0)
+    block_id = int(block_id)
+    cycle_mins = float(
+        cycle_minutes if cycle_minutes is not None else block.get("cycle_minutes_per_qty") or 0
+    )
+    if cycle_mins <= 0:
+        raise ValueError("Cycle time must be greater than 0 minutes")
+
+    today_start = datetime.combine(planner_today(), datetime.min.time()).replace(
+        hour=8, minute=30, second=0, microsecond=0
+    )
+    start_dt = _machine_lane_end_before_block(con, machine_id, block_id) or today_start
+    end_dt = start_dt + timedelta(minutes=cycle_mins)
+
+    con.execute(
+        """
+        UPDATE planner_run_block
+        SET calculated_start_datetime = %s,
+            calculated_end_datetime = %s,
+            updated_at = NOW()
+        WHERE block_id = %s
+        """,
+        (
+            planner_timestamptz_for_db(start_dt),
+            planner_timestamptz_for_db(end_dt),
+            block_id,
+        ),
+    )
+    con.execute(
+        """
+        DELETE FROM planner_run_block_segment
+        WHERE block_id = %s
+          AND segment_id NOT IN (
+            SELECT segment_id
+            FROM planner_production_actual
+            WHERE segment_id IS NOT NULL
+              AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+          )
+        """,
+        (block_id,),
+    )
+    con.execute(
+        """
+        INSERT INTO planner_run_block_segment (
+          block_id, machine_id, schedule_run_id, segment_date, segment_type,
+          qty_done, planned_qty, minutes_used, planned_minutes, segment_status,
+          start_datetime, end_datetime, is_actual
+        ) VALUES (%s, %s, NULL, %s, 'production', 1, 1, %s, %s, 'PLANNED', %s, %s, FALSE)
+        """,
+        (
+            block_id,
+            machine_id,
+            date_text(start_dt.date()),
+            cycle_mins,
+            cycle_mins,
+            planner_timestamptz_for_db(start_dt),
+            planner_timestamptz_for_db(end_dt),
+        ),
+    )
+    sync_machine_operation_sequence(con, machine_id)
+    refresh_states_for_machine(con, machine_id)
+    return trial_block_row(con, block_id)
 
 
 def create_dummy_card(
@@ -1940,9 +2028,10 @@ def create_dummy_card(
     title,
     description="",
     machine_id,
-    start_datetime,
+    start_datetime=None,
     end_datetime=None,
     duration_minutes=None,
+    time_mode=None,
     queue_position=0,
 ):
     title_text = compact_text(title)
@@ -1951,22 +2040,10 @@ def create_dummy_card(
     machine_id = int(machine_id or 0)
     if not machine_id:
         raise ValueError("Machine is required")
-    start_dt, end_dt = _parse_dummy_card_times(
-        start_datetime, end_datetime, duration_minutes
-    )
     description_text = compact_text(description)
-
-    op_cur = con.execute(
-        """
-        INSERT INTO planner_operation (
-          job_no, operation_name, total_qty, setup_minutes, cycle_minutes_per_qty,
-          status, remarks, updated_at
-        ) VALUES (%s, %s, 0, 0, 0, 'ACTIVE', %s, NOW())
-        RETURNING operation_id
-        """,
-        (title_text, description_text or title_text, description_text),
-    )
-    operation_id = int(one(op_cur)["operation_id"])
+    start_text = compact_text(start_datetime) if start_datetime is not None else ""
+    end_text = compact_text(end_datetime) if end_datetime is not None else ""
+    mode = compact_text(time_mode).lower()
 
     queue_position = float(queue_position or 0)
     if queue_position <= 0:
@@ -1980,34 +2057,83 @@ def create_dummy_card(
             or 0
         )
 
-    block_cur = con.execute(
-        """
-        INSERT INTO planner_run_block (
-          operation_id, machine_id, queue_position, scheduled_qty, include_setup, status,
-          planning_status, execution_status, block_type,
-          anchor_datetime, planned_start_at, planned_end_at,
-          calculated_start_datetime, calculated_end_datetime,
-          allow_pull_forward, remarks, updated_at
-        ) VALUES (
-          %s, %s, %s, 0, FALSE, 'PLANNED', 'PLANNED', 'NOT_STARTED', 'DUMMY',
-          %s, %s, %s, %s, %s, FALSE, %s, NOW()
+    cycle_mode = mode == "cycle" or (duration_minutes is not None and not end_text and mode != "fixed")
+    if cycle_mode:
+        cycle_mins = _validate_dummy_cycle_minutes(duration_minutes)
+        op_cur = con.execute(
+            """
+            INSERT INTO planner_operation (
+              job_no, operation_name, total_qty, setup_minutes, cycle_minutes_per_qty,
+              status, remarks, updated_at
+            ) VALUES (%s, %s, 1, 0, %s, 'ACTIVE', %s, NOW())
+            RETURNING operation_id
+            """,
+            (title_text, description_text or title_text, cycle_mins, description_text),
         )
-        RETURNING block_id
-        """,
-        (
-            operation_id,
-            machine_id,
-            queue_position,
-            start_dt,
-            start_dt,
-            end_dt,
-            start_dt,
-            end_dt,
-            description_text,
-        ),
-    )
-    block_id = int(one(block_cur)["block_id"])
-    return trial_block_row(con, block_id)
+        operation_id = int(one(op_cur)["operation_id"])
+        block_cur = con.execute(
+            """
+            INSERT INTO planner_run_block (
+              operation_id, machine_id, queue_position, scheduled_qty, include_setup, status,
+              planning_status, execution_status, block_type,
+              anchor_datetime, planned_start_at, planned_end_at,
+              calculated_start_datetime, calculated_end_datetime,
+              allow_pull_forward, remarks, updated_at
+            ) VALUES (
+              %s, %s, %s, 1, FALSE, 'PLANNED', 'PLANNED', 'NOT_STARTED', 'DUMMY',
+              NULL, NULL, NULL, NULL, NULL, TRUE, %s, NOW()
+            )
+            RETURNING block_id
+            """,
+            (operation_id, machine_id, queue_position, description_text),
+        )
+        block_id = int(one(block_cur)["block_id"])
+        schedule_cycle_dummy_at_queue_tail(con, machine_id, block_id, cycle_mins)
+        return trial_block_row(con, block_id)
+
+    if start_text and end_text:
+        start_dt, end_dt = _parse_dummy_fixed_times(start_datetime, end_datetime)
+        op_cur = con.execute(
+            """
+            INSERT INTO planner_operation (
+              job_no, operation_name, total_qty, setup_minutes, cycle_minutes_per_qty,
+              status, remarks, updated_at
+            ) VALUES (%s, %s, 0, 0, 0, 'ACTIVE', %s, NOW())
+            RETURNING operation_id
+            """,
+            (title_text, description_text or title_text, description_text),
+        )
+        operation_id = int(one(op_cur)["operation_id"])
+        block_cur = con.execute(
+            """
+            INSERT INTO planner_run_block (
+              operation_id, machine_id, queue_position, scheduled_qty, include_setup, status,
+              planning_status, execution_status, block_type,
+              anchor_datetime, planned_start_at, planned_end_at,
+              calculated_start_datetime, calculated_end_datetime,
+              allow_pull_forward, remarks, updated_at
+            ) VALUES (
+              %s, %s, %s, 0, FALSE, 'PLANNED', 'PLANNED', 'NOT_STARTED', 'DUMMY',
+              %s, %s, %s, %s, %s, FALSE, %s, NOW()
+            )
+            RETURNING block_id
+            """,
+            (
+                operation_id,
+                machine_id,
+                queue_position,
+                start_dt,
+                start_dt,
+                end_dt,
+                start_dt,
+                end_dt,
+                description_text,
+            ),
+        )
+        block_id = int(one(block_cur)["block_id"])
+        return trial_block_row(con, block_id)
+
+    raise ValueError("Provide start/end times or a cycle time in minutes")
 
 
 def update_dummy_card(
@@ -2020,6 +2146,7 @@ def update_dummy_card(
     start_datetime=None,
     end_datetime=None,
     duration_minutes=None,
+    time_mode=None,
 ):
     block = trial_block_row(con, block_id)
     if not block:
@@ -2046,45 +2173,68 @@ def update_dummy_card(
         )
 
     block_updates = {}
+    cycle_mode = False
     if machine_id is not None:
         next_machine_id = int(machine_id or 0)
         if not next_machine_id:
             raise ValueError("Machine is required")
         block_updates["machine_id"] = next_machine_id
 
-    if start_datetime is not None or end_datetime is not None or duration_minutes is not None:
-        current_start = block.get("planned_start_at") or block.get("anchor_datetime")
-        current_end = block.get("planned_end_at") or block.get("calculated_end_datetime")
-        start_bind = (
-            planner_wall_datetime_from_input(compact_text(start_datetime))
-            if start_datetime is not None
-            else (current_start if isinstance(current_start, datetime) else parse_dt_text(current_start))
-        )
-        if duration_minutes is not None:
-            try:
-                mins = float(duration_minutes)
-            except (TypeError, ValueError):
-                mins = 0
-            if mins <= 0:
-                raise ValueError("Duration must be greater than 0 minutes")
-            if not start_bind:
-                raise ValueError("Start date/time is required")
-            end_bind = start_bind + timedelta(minutes=mins)
-        else:
+    if start_datetime is not None or end_datetime is not None or duration_minutes is not None or time_mode is not None:
+        end_text = compact_text(end_datetime) if end_datetime is not None else ""
+        start_text = compact_text(start_datetime) if start_datetime is not None else ""
+        mode = compact_text(time_mode).lower()
+        cycle_mode = mode == "cycle" or (duration_minutes is not None and not end_text and mode != "fixed")
+
+        if cycle_mode:
+            cycle_mins = _validate_dummy_cycle_minutes(duration_minutes)
+            con.execute(
+                """
+                UPDATE planner_operation
+                SET total_qty = 1, setup_minutes = 0, cycle_minutes_per_qty = %s, updated_at = NOW()
+                WHERE operation_id = %s
+                """,
+                (cycle_mins, int(block["operation_id"])),
+            )
+            block_updates["scheduled_qty"] = 1
+            block_updates["anchor_datetime"] = None
+            block_updates["planned_start_at"] = None
+            block_updates["planned_end_at"] = None
+            block_updates["calculated_start_datetime"] = None
+            block_updates["calculated_end_datetime"] = None
+            block_updates["allow_pull_forward"] = True
+        elif start_text or end_text:
+            current_start = block.get("planned_start_at") or block.get("anchor_datetime")
+            current_end = block.get("planned_end_at") or block.get("calculated_end_datetime")
+            start_bind = (
+                planner_wall_datetime_from_input(start_text)
+                if start_text
+                else (current_start if isinstance(current_start, datetime) else parse_dt_text(current_start))
+            )
             end_bind = (
-                planner_wall_datetime_from_input(compact_text(end_datetime))
-                if end_datetime is not None
+                planner_wall_datetime_from_input(end_text)
+                if end_text
                 else (current_end if isinstance(current_end, datetime) else parse_dt_text(current_end))
             )
             if not start_bind or not end_bind:
                 raise ValueError("Start and end date/time are required")
             if end_bind <= start_bind:
                 raise ValueError("End must be after start")
-        block_updates["anchor_datetime"] = start_bind
-        block_updates["planned_start_at"] = start_bind
-        block_updates["planned_end_at"] = end_bind
-        block_updates["calculated_start_datetime"] = start_bind
-        block_updates["calculated_end_datetime"] = end_bind
+            con.execute(
+                """
+                UPDATE planner_operation
+                SET total_qty = 0, setup_minutes = 0, cycle_minutes_per_qty = 0, updated_at = NOW()
+                WHERE operation_id = %s
+                """,
+                (int(block["operation_id"]),),
+            )
+            block_updates["scheduled_qty"] = 0
+            block_updates["anchor_datetime"] = start_bind
+            block_updates["planned_start_at"] = start_bind
+            block_updates["planned_end_at"] = end_bind
+            block_updates["calculated_start_datetime"] = start_bind
+            block_updates["calculated_end_datetime"] = end_bind
+            block_updates["allow_pull_forward"] = False
 
     if block_updates:
         set_clause = ", ".join(f"{k} = %s" for k in block_updates)
@@ -2093,7 +2243,55 @@ def update_dummy_card(
             (*block_updates.values(), int(block_id)),
         )
 
-    return trial_block_row(con, block_id)
+    updated = trial_block_row(con, block_id)
+    if is_dummy_block_row(updated) and not is_fixed_dummy_block_row(updated):
+        if (
+            cycle_mode
+            or machine_id is not None
+            or duration_minutes is not None
+            or time_mode is not None
+        ):
+            machine_ids = {int(updated["machine_id"]), int(block["machine_id"])}
+            for machine_id_value in machine_ids:
+                if machine_id_value == int(updated["machine_id"]):
+                    schedule_cycle_dummy_at_queue_tail(
+                        con,
+                        machine_id_value,
+                        int(block_id),
+                        duration_minutes,
+                    )
+                else:
+                    recalculate_machine(con, machine_id_value)
+            return trial_block_row(con, block_id)
+
+    return updated
+
+
+def delete_dummy_card(con, block_id):
+    block = trial_block_row(con, block_id)
+    if not block:
+        raise ValueError("Run block not found")
+    if not is_dummy_block_row(block):
+        raise ValueError("Not a dummy card")
+    if int(block.get("group_id") or 0):
+        raise ValueError("Combined dummy cards are not supported")
+
+    machine_id = int(block["machine_id"])
+    operation_id = int(block["operation_id"])
+    block_id = int(block_id)
+
+    from .operation_sequence import lane_tail_recalc_block_after_remove, resync_machine_lane_after_remove
+
+    tail_block_id = lane_tail_recalc_block_after_remove(con, machine_id, [block_id])
+
+    con.execute(
+        "DELETE FROM planner_run_block_segment WHERE block_id = %s",
+        (block_id,),
+    )
+    con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (block_id,))
+    con.execute("DELETE FROM planner_operation WHERE operation_id = %s", (operation_id,))
+    resync_machine_lane_after_remove(con, machine_id, tail_block_id=tail_block_id)
+    return machine_id
 
 
 def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_id=None, tail_from_block_id=None):
@@ -2168,7 +2366,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         int(member["block_id"])
         for item in queue_items[start_item_idx:]
         for member in item["members"]
-        if not is_dummy_block_row(member)
+        if not is_fixed_dummy_block_row(member)
     ]
     if rebuild_block_ids:
         con.execute(
@@ -2250,8 +2448,8 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                 alert_type="NO_CAPACITY",
                 severity="WARN",
                 message="No capacity found while recalculating.",
-                planned_at=block.get("planned_end_at") or block.get("calculated_end_datetime") or "",
-                predicted_at="",
+                planned_at=block.get("planned_end_at") or block.get("calculated_end_datetime") or None,
+                predicted_at=None,
                 delay_minutes=0,
                 status="OPEN",
             )
@@ -2302,7 +2500,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
 
         if not is_combined:
             block = leader
-            if is_dummy_block_row(block):
+            if is_fixed_dummy_block_row(block):
                 continue
             planned_start = parse_dt_text(block["planned_start_at"])
             anchor_dt = parse_dt_text(block["anchor_datetime"])
@@ -2373,6 +2571,13 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                 start_dt = start_dt or prod_start
                 end_dt = prod_end or end_dt
 
+            if (start_dt is None or end_dt is None) and is_dummy_block_row(block) and cycle_time > 0:
+                fallback_start = _naive_schedule_dt(current_dt) or today_start
+                fallback_end = fallback_start + timedelta(minutes=cycle_time * max(remaining_qty, 1))
+                start_dt = start_dt or fallback_start
+                end_dt = end_dt or fallback_end
+                current_dt = fallback_end
+
             update_block_schedule_window(
                 block["block_id"],
                 start_dt,
@@ -2422,12 +2627,12 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                     add_future_segments_after_date(con, member_id, latest_actual_date, remaining_qty, schedule_run_id=schedule_run_id)
                 refresh_block_schedule_bounds(con, member_id)
                 refreshed = trial_block_row(con, member_id)
-                refreshed_end = refreshed["calculated_end_datetime"] if refreshed else None
-                if refreshed_end and not isinstance(refreshed_end, datetime):
-                    refreshed_end = parse_dt_text(refreshed_end)
+                refreshed_end = _naive_schedule_dt(
+                    refreshed["calculated_end_datetime"] if refreshed else None
+                )
                 if refreshed_end and (max_end is None or refreshed_end > max_end):
                     max_end = refreshed_end
-            current_dt = max_end or current_dt
+            current_dt = _naive_schedule_dt(max_end) or _naive_schedule_dt(current_dt)
             queue_cursor_end = current_dt
             continue
 
@@ -2463,10 +2668,11 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         else:
             refresh_block_schedule_bounds(con, int(leader["block_id"]))
         refreshed_leader = trial_block_row(con, int(leader["block_id"]))
-        refreshed_end = refreshed_leader["calculated_end_datetime"] if refreshed_leader else None
-        if refreshed_end and not isinstance(refreshed_end, datetime):
-            refreshed_end = parse_dt_text(refreshed_end)
-        if refreshed_end and refreshed_end > current_dt:
+        refreshed_end = _naive_schedule_dt(
+            refreshed_leader["calculated_end_datetime"] if refreshed_leader else None
+        )
+        current_dt = _naive_schedule_dt(current_dt)
+        if refreshed_end and current_dt and refreshed_end > current_dt:
             current_dt = refreshed_end
         queue_cursor_end = current_dt
 

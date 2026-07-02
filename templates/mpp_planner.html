@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block title %}MPP Planner{% endblock %}
+{% block main_class %}app-main--mpp-planner{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css', v='mpp-planner-20260624') }}" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/mpp_planner.css', v='mpp-planner-20260625probation') }}" />
+{% endblock %}
+{% block content %}
+<div class="mpp-page">
+  <header class="mpp-header">
+    <div>
+      <h1 class="mpp-title">MPP Planner <span class="mpp-badge">Live</span></h1>
+      <p class="mpp-subtitle" id="mpp-queue-sync">Loading queue…</p>
+    </div>
+    <div class="mpp-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="mpp-toggle-ops-pool" aria-pressed="false"
+        title="Show or hide the op card pool">Op pool</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="mpp-refresh-jobs">Refresh jobs</button>
+    </div>
+  </header>
+
+  <aside class="mpp-ops card" id="mpp-ops-panel" aria-label="Operation cards">
+    <h2 class="mpp-ops-title">Op cards</h2>
+    <p class="mpp-ops-hint">Find ops here, then drag to <strong>Probation</strong> (capacity reserve) or onto a cycle. Toggle <strong>Day</strong> / <strong>Night</strong> on each cycle.</p>
+    <input id="mpp-ops-search" class="trial-catalog-search mpp-ops-search" type="search"
+      placeholder="Search PS, part, op…" autocomplete="off" aria-label="Search op cards">
+    <label class="mpp-show-completed">
+      <input type="checkbox" id="mpp-show-completed" aria-describedby="mpp-show-completed-label">
+      <span id="mpp-show-completed-label">Show completed</span>
+    </label>
+    <p class="mpp-ops-status" id="mpp-ops-status" hidden></p>
+    <div class="mpp-ops-list trial-catalog" id="mpp-ops-list"></div>
+  </aside>
+
+  <section class="mpp-board" aria-label="MPP machine queues">
+    <div class="mpp-board-group">
+      <div class="mpp-board-group-head">
+        <span class="mpp-board-group-label">MPP</span>
+        <div class="mpp-machine-filters" id="mpp-machine-filters" aria-label="Machine lane visibility"></div>
+      </div>
+      <div class="mpp-lanes" id="mpp-lanes"></div>
+    </div>
+    <section class="mpp-probation card" id="mpp-probation" aria-label="Probation holding queue">
+      <header class="mpp-probation-head">
+        <div>
+          <h2 class="mpp-probation-title">Probation</h2>
+          <p class="mpp-probation-hint">Ops not yet on a cycle — still count toward machine load so you see full time needed.</p>
+        </div>
+        <div class="mpp-probation-totals" id="mpp-probation-totals" aria-live="polite"></div>
+      </header>
+      <div class="mpp-probation-grid" id="mpp-probation-grid"></div>
+    </section>
+  </section>
+
+</div>
+
+<div class="mpp-modal-backdrop" id="mpp-setup-modal" hidden>
+  <div class="mpp-modal card" role="dialog">
+    <h2 class="mpp-modal-title">Timing</h2>
+    <p class="mpp-modal-sub" id="mpp-setup-modal-sub"></p>
+    <div class="mpp-modal-form" id="mpp-setup-modal-form"></div>
+    <div class="mpp-modal-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-mpp-modal-cancel="setup">Cancel</button>
+      <button type="button" class="btn btn-primary btn-sm" id="mpp-setup-modal-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="mpp-modal-backdrop" id="mpp-schedule-modal" hidden>
+  <div class="mpp-modal card" role="dialog">
+    <h2 class="mpp-modal-title">Schedule job to MPP</h2>
+    <p class="mpp-modal-sub" id="mpp-schedule-modal-sub"></p>
+    <div class="mpp-modal-form" id="mpp-schedule-modal-form"></div>
+    <div class="mpp-modal-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-mpp-modal-cancel="schedule">Cancel</button>
+      <button type="button" class="btn btn-primary btn-sm" id="mpp-schedule-modal-save">Queue cycles</button>
+    </div>
+  </div>
+</div>
+
+<div class="mpp-modal-backdrop" id="mpp-anchor-modal" hidden>
+  <div class="mpp-modal card" role="dialog">
+    <h2 class="mpp-modal-title">Cycle anchor</h2>
+    <p class="mpp-modal-sub">Planning reference start for this cycle. Later cycles chain from the previous cycle end unless this anchor is later.</p>
+    <div class="mpp-modal-form">
+      <label class="mpp-form-full">Anchor datetime
+        <input id="mpp-anchor-input" type="datetime-local">
+      </label>
+    </div>
+    <div class="mpp-modal-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-mpp-modal-cancel="anchor">Cancel</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="mpp-anchor-clear">Clear anchor</button>
+      <button type="button" class="btn btn-primary btn-sm" id="mpp-anchor-save">Save</button>
+    </div>
+  </div>
+</div>
+<div class="mpp-modal-backdrop" id="mpp-replicate-modal" hidden>
+  <div class="mpp-modal card" role="dialog">
+    <h2 class="mpp-modal-title">Replicate cycle</h2>
+    <p class="mpp-modal-sub" id="mpp-replicate-modal-sub"></p>
+    <div class="mpp-modal-form" id="mpp-replicate-modal-form"></div>
+    <div class="mpp-modal-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-mpp-modal-cancel="replicate">Cancel</button>
+      <button type="button" class="btn btn-primary btn-sm" id="mpp-replicate-modal-save">Queue replicas</button>
+    </div>
+  </div>
+</div>
+
+<div class="mpp-modal-backdrop" id="mpp-queue-modal" hidden>
+  <div class="mpp-modal mpp-modal--queue card" role="dialog" aria-labelledby="mpp-queue-modal-title">
+    <div class="mpp-queue-modal-head">
+      <h2 class="mpp-modal-title" id="mpp-queue-modal-title">Queue manager</h2>
+      <button type="button" class="mpp-queue-modal-close" id="mpp-queue-modal-close" aria-label="Close queue manager">&times;</button>
+    </div>
+    <p class="mpp-modal-sub" id="mpp-queue-modal-sub"></p>
+    <div class="mpp-queue-modal-body" id="mpp-queue-modal-body"></div>
+    <div class="mpp-queue-modal-foot" id="mpp-queue-modal-foot"></div>
+    <div class="mpp-modal-actions">
+      <button type="button" class="btn btn-primary btn-sm" id="mpp-queue-modal-done">Done</button>
+    </div>
+  </div>
+</div>
+
+<div class="mpp-modal-backdrop" id="mpp-run-modal" hidden>
+  <div class="mpp-modal mpp-modal--queue card" role="dialog" aria-labelledby="mpp-run-modal-title">
+    <div class="mpp-queue-modal-head">
+      <h2 class="mpp-modal-title" id="mpp-run-modal-title">Identical cycles</h2>
+      <button type="button" class="mpp-queue-modal-close" id="mpp-run-modal-close" aria-label="Close">&times;</button>
+    </div>
+    <p class="mpp-modal-sub" id="mpp-run-modal-sub"></p>
+    <div class="mpp-queue-modal-body" id="mpp-run-modal-body"></div>
+    <div class="mpp-modal-actions">
+      <button type="button" class="btn btn-primary btn-sm" id="mpp-run-modal-done">Done</button>
+    </div>
+  </div>
+</div>
+
+<div class="mpp-modal-backdrop" id="mpp-cycle-modal" hidden>
+  <div class="mpp-modal mpp-modal--cycle card" role="dialog" aria-labelledby="mpp-cycle-modal-title">
+    <div class="mpp-queue-modal-head">
+      <h2 class="mpp-modal-title" id="mpp-cycle-modal-title">Cycle</h2>
+      <button type="button" class="mpp-queue-modal-close" id="mpp-cycle-modal-close" aria-label="Close">&times;</button>
+    </div>
+    <p class="mpp-modal-sub" id="mpp-cycle-modal-sub"></p>
+    <div class="mpp-cycle-modal-body" id="mpp-cycle-modal-body"></div>
+    <div class="mpp-modal-actions">
+      <button type="button" class="btn btn-primary btn-sm" id="mpp-cycle-modal-done">Done</button>
+    </div>
+  </div>
+</div>
+
+<div class="mpp-modal-backdrop" id="mpp-cycle-add-modal" hidden>
+  <div class="mpp-modal mpp-modal--cycle-add card" role="dialog" aria-labelledby="mpp-cycle-add-title">
+    <div class="mpp-queue-modal-head">
+      <h2 class="mpp-modal-title" id="mpp-cycle-add-title">Add op to cycle</h2>
+      <button type="button" class="mpp-queue-modal-close" id="mpp-cycle-add-close" aria-label="Close">&times;</button>
+    </div>
+    <p class="mpp-modal-sub" id="mpp-cycle-add-sub"></p>
+    <input id="mpp-cycle-add-search" class="trial-catalog-search mpp-cycle-add-search" type="search"
+      placeholder="Search PS, part, op…" autocomplete="off" aria-label="Search schedulable ops">
+    <div class="mpp-cycle-add-list" id="mpp-cycle-add-list"></div>
+    <div class="mpp-modal-actions">
+      <button type="button" class="btn btn-primary btn-sm" id="mpp-cycle-add-done">Done</button>
+    </div>
+  </div>
+</div>
+
+<div class="mpp-modal-backdrop" id="mpp-review-modal" hidden>
+  <div class="mpp-modal mpp-modal--review card" role="dialog" aria-labelledby="mpp-review-modal-title">
+    <div class="mpp-queue-modal-head">
+      <h2 class="mpp-modal-title" id="mpp-review-modal-title">Review cycle calculation</h2>
+      <button type="button" class="mpp-queue-modal-close" id="mpp-review-modal-close" aria-label="Close review">&times;</button>
+    </div>
+    <div class="mpp-review-body" id="mpp-review-body"></div>
+    <div class="mpp-modal-actions">
+      <button type="button" class="btn btn-primary btn-sm" id="mpp-review-modal-done">Done</button>
+    </div>
+  </div>
+</div>
+
+<div class="mpp-modal-backdrop" id="mpp-ps-detail-modal" hidden>
+  <div class="mpp-modal mpp-modal--ps-detail card" role="dialog" aria-labelledby="mpp-ps-detail-modal-title">
+    <div class="mpp-queue-modal-head">
+      <h2 class="mpp-modal-title" id="mpp-ps-detail-modal-title">Process sheet</h2>
+      <button type="button" class="mpp-queue-modal-close" id="mpp-ps-detail-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="mpp-ps-detail-modal-body" id="mpp-ps-detail-modal-body"></div>
+    <div class="mpp-modal-actions">
+      <button type="button" class="btn btn-primary btn-sm" id="mpp-ps-detail-done">Done</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/mpp_planner.js', v='mpp-planner-20260625probation') }}"></script>
+{% endblock %}

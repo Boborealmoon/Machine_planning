@@ -40,6 +40,8 @@ from .blocks import (
     create_rework_from_reject,
     create_dummy_card,
     update_dummy_card,
+    delete_dummy_card,
+    is_dummy_block_row,
     delete_rework_from_reject_segment,
     find_rework_source_for_reject,
     recalculate_all,
@@ -79,7 +81,16 @@ from .process_sheets import (
     parse_planner_ps_id,
     tooling_map_for_operation_ids,
 )
-from .machines import default_profile_for_weekday, fetch_machines, is_public_holiday
+from .machines import (
+    default_profile_for_weekday,
+    fetch_machines,
+    fetch_mpp_planner_machine_ids,
+    fetch_scheduler_machines,
+    is_mpp_planner_machine_id,
+    is_scheduler_excluded_machine,
+    is_public_holiday,
+    MPP_PLANNER_GUARD_MSG,
+)
 from .sg_public_holidays import fetch_sg_public_holidays, list_public_holidays, sync_sg_public_holidays_to_db
 from .planner_actuals import actual_summaries_for_block_rows
 from .visual_time import visual_timing_for_segment
@@ -95,6 +106,21 @@ from .utils import (
 )
 
 trial_bp = Blueprint("trial", __name__)
+
+
+def _mpp_planner_block_guard(con, block):
+    """Reject scheduler mutations on blocks that live on MPP planner machines."""
+    if not block:
+        return None
+    if is_mpp_planner_machine_id(con, int(block.get("machine_id") or 0)):
+        return jsonify({"error": MPP_PLANNER_GUARD_MSG}), 400
+    return None
+
+
+def _mpp_planner_machine_guard(con, machine_id):
+    if is_mpp_planner_machine_id(con, int(machine_id or 0)):
+        return jsonify({"error": MPP_PLANNER_GUARD_MSG}), 400
+    return None
 
 
 def _parse_recalculate_flag(data):
@@ -393,6 +419,8 @@ def _trial_schedule_via_rest():
         return r.json()
 
     machines_raw   = rget("planner_machines",           {"select": "machine_id,machine_no,machine_category,shift_profile,active", "active": "eq.true", "order": "machine_id"})
+    machines_raw   = [m for m in machines_raw if not is_scheduler_excluded_machine(m)]
+    excluded_ids   = {int(m["machine_id"]) for m in rget("planner_machines", {"select": "machine_id,machine_no,machine_category", "active": "eq.true"}) if is_scheduler_excluded_machine(m)}
     blocks_raw     = rget("planner_run_block",           {"select": "*", "order": "machine_id,queue_position,block_id"})
     ops_raw        = rget("planner_operation",           {"select": "*"})
     groups_raw     = rget("planner_run_block_group",     {"select": "*"})
@@ -411,6 +439,8 @@ def _trial_schedule_via_rest():
     blocks = []
     for b in blocks_raw:
         if b.get("active") is False:
+            continue
+        if int(b.get("machine_id") or 0) in excluded_ids:
             continue
         active_block_ids.add(b["block_id"])
         op      = ops_by_id.get(b.get("operation_id") or 0, {})
@@ -769,9 +799,7 @@ def _api_trial_schedule_db():
                     (group_id,),
                 )
 
-        machines = rows(con.execute(
-            "SELECT machine_id, machine_no AS machine_code, machine_category, shift_profile, active FROM planner_machines WHERE active = TRUE ORDER BY machine_id"
-        ))
+        machines = fetch_scheduler_machines(con)
         if shell_only:
             return jsonify({
                 "machines": [dict(row) for row in machines],
@@ -789,6 +817,7 @@ def _api_trial_schedule_db():
             })
 
         machine_by_id = {int(row["machine_id"]): dict(row) for row in machines}
+        scheduler_machine_ids = [int(row["machine_id"]) for row in machines]
 
         # include_completed=1 is used by Actual Production history view to include:
         # - DONE blocks that were auto-unscheduled (active = FALSE), and
@@ -810,6 +839,9 @@ def _api_trial_schedule_db():
         if is_machine_scoped:
             _block_where += " AND b.machine_id = ANY(%s)"
             _block_params.append(machine_id_filter)
+        elif scheduler_machine_ids:
+            _block_where += " AND b.machine_id = ANY(%s)"
+            _block_params.append(scheduler_machine_ids)
 
         raw_blocks = rows(
             con.execute(
@@ -1980,6 +2012,20 @@ def api_trial_create_operation():
         return jsonify({"error": "Machine is required"}), 400
     try:
         with planner_db() as con:
+            machine_row = one(
+                con.execute(
+                    """
+                    SELECT machine_id, machine_no AS machine_code, machine_no, machine_category
+                    FROM planner_machines
+                    WHERE machine_id = %s AND active = TRUE
+                    """,
+                    (machine_id,),
+                )
+            )
+            if not machine_row:
+                return jsonify({"error": "Machine not found"}), 400
+            if is_scheduler_excluded_machine(machine_row):
+                return jsonify({"error": MPP_PLANNER_GUARD_MSG}), 400
             raw_source_ps = compact_text(data.get("source_ps_id")) or job_no
             src_base, src_partial = parse_planner_ps_id(raw_source_ps)
             job_base, job_partial = parse_planner_ps_id(job_no)
@@ -2226,14 +2272,30 @@ def api_trial_create_dummy_card():
     data = request.get_json(force=True, silent=True) or {}
     try:
         with planner_db() as con:
+            machine_id = int(data.get("machine_id") or 0)
+            machine_row = one(
+                con.execute(
+                    """
+                    SELECT machine_id, machine_no AS machine_code, machine_no, machine_category
+                    FROM planner_machines
+                    WHERE machine_id = %s AND active = TRUE
+                    """,
+                    (machine_id,),
+                )
+            )
+            if not machine_row:
+                return jsonify({"error": "Machine not found"}), 400
+            if is_scheduler_excluded_machine(machine_row):
+                return jsonify({"error": MPP_PLANNER_GUARD_MSG}), 400
             block = create_dummy_card(
                 con,
                 title=data.get("title"),
                 description=data.get("description"),
-                machine_id=int(data.get("machine_id") or 0),
+                machine_id=machine_id,
                 start_datetime=data.get("start_datetime"),
                 end_datetime=data.get("end_datetime"),
                 duration_minutes=data.get("duration_minutes"),
+                time_mode=data.get("time_mode"),
                 queue_position=float(data.get("queue_position") or 0),
             )
             machine_id = int(block["machine_id"])
@@ -2268,6 +2330,7 @@ def api_trial_update_dummy_card(block_id):
                 start_datetime=data.get("start_datetime") if "start_datetime" in data else None,
                 end_datetime=data.get("end_datetime") if "end_datetime" in data else None,
                 duration_minutes=data.get("duration_minutes") if "duration_minutes" in data else None,
+                time_mode=data.get("time_mode") if "time_mode" in data else None,
             )
             machine_ids = {original_machine_id, int(block["machine_id"])}
             return jsonify({
@@ -2313,6 +2376,19 @@ def api_trial_schedule_planning_card(card_id):
     recalculate = _parse_recalculate_flag(data)
     with planner_db() as con:
         try:
+            if machine_id:
+                machine_row = one(
+                    con.execute(
+                        """
+                        SELECT machine_id, machine_no AS machine_code, machine_no, machine_category
+                        FROM planner_machines
+                        WHERE machine_id = %s AND active = TRUE
+                        """,
+                        (machine_id,),
+                    )
+                )
+                if machine_row and is_scheduler_excluded_machine(machine_row):
+                    return jsonify({"error": MPP_PLANNER_GUARD_MSG}), 400
             result = schedule_planning_card(con, card_id, machine_id, queue_position)
             affected_machine_id = int(
                 (result.get("group") or {}).get("machine_id")
@@ -2404,6 +2480,9 @@ def api_trial_update_block(block_id):
         block = trial_block_row(con, block_id)
         if not block:
             return jsonify({"error": "Run block not found"}), 404
+        guard = _mpp_planner_block_guard(con, block)
+        if guard:
+            return guard
         next_total_qty = data.get("total_qty", block["total_qty"])
         next_scheduled_qty = data.get("scheduled_qty", block["scheduled_qty"])
         next_cycle_minutes = data.get("cycle_minutes_per_qty", block["cycle_minutes_per_qty"])
@@ -2469,6 +2548,10 @@ def api_trial_update_block(block_id):
         original_machine_id = int(block["machine_id"])
         new_machine_id = int(block_updates.get("machine_id") or original_machine_id)
         machine_changed = "machine_id" in block_updates and new_machine_id != original_machine_id
+        if machine_changed:
+            guard = _mpp_planner_machine_guard(con, new_machine_id)
+            if guard:
+                return guard
         if block_updates:
             set_clause = ", ".join(f"{k} = %s" for k in block_updates)
             con.execute(
@@ -2534,6 +2617,9 @@ def api_trial_split_block(block_id):
         block = trial_block_row(con, block_id)
         if not block:
             return jsonify({"error": "Run block not found"}), 404
+        guard = _mpp_planner_block_guard(con, block)
+        if guard:
+            return guard
         if split_qty >= float(block["scheduled_qty"] or 0):
             return jsonify({"error": "Split quantity must be smaller than the scheduled quantity"}), 400
         remaining = float(block["scheduled_qty"] or 0) - split_qty
@@ -2601,7 +2687,13 @@ def api_trial_reorder_blocks(block_id):
         block = trial_block_row(con, block_id)
         if not block:
             return jsonify({"error": "Run block not found"}), 404
+        guard = _mpp_planner_block_guard(con, block)
+        if guard:
+            return guard
         machine_id = int(data.get("machine_id") or block["machine_id"])
+        guard = _mpp_planner_machine_guard(con, machine_id)
+        if guard:
+            return guard
         result = apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=recalculate)
         affected_ids = list(result.get("affected_machine_ids") or [machine_id])
         return jsonify({
@@ -2638,6 +2730,10 @@ def api_trial_reorder_queue_batch():
         return jsonify({"error": "lanes must include machine_id and ordered_ids"}), 400
 
     with planner_db() as con:
+        for entry in lane_orders:
+            guard = _mpp_planner_machine_guard(con, entry["machine_id"])
+            if guard:
+                return guard
         result = apply_machine_queue_orders(con, lane_orders, recalculate=recalculate)
         affected_ids = list(result.get("affected_machine_ids") or [])
         return jsonify({
@@ -2727,6 +2823,20 @@ def api_trial_delete_block(block_id):
         block = trial_block_row(con, block_id)
         if not block:
             return jsonify({"error": "Run block not found"}), 404
+        guard = _mpp_planner_block_guard(con, block)
+        if guard:
+            return guard
+        if is_dummy_block_row(block) and not int(block.get("group_id") or 0):
+            machine_id = delete_dummy_card(con, block_id)
+            return jsonify({
+                "ok": True,
+                "deleted": True,
+                "permanent": True,
+                "machine_refresh": _trial_machine_refresh_payload(con, [machine_id], lite=True),
+            })
+
+        from .operation_sequence import lane_tail_recalc_block_after_remove, resync_machine_lane_after_remove
+
         machine_id = int(block["machine_id"])
         operation_id = int(block["operation_id"])
         group_id = int(block.get("group_id") or 0)
@@ -2735,6 +2845,7 @@ def api_trial_delete_block(block_id):
 
         affected_machine_ids = {machine_id}
         affected_operation_ids = {operation_id}
+        removed_by_machine = {machine_id: [int(block_id)]}
 
         if group_id:
             group_blocks = rows(
@@ -2743,8 +2854,22 @@ def api_trial_delete_block(block_id):
                     (group_id,),
                 )
             )
-            affected_machine_ids.update(int(row["machine_id"]) for row in group_blocks if int(row.get("machine_id") or 0))
+            removed_by_machine = {}
+            for row in group_blocks:
+                mid = int(row.get("machine_id") or 0)
+                bid = int(row.get("block_id") or 0)
+                if mid and bid:
+                    removed_by_machine.setdefault(mid, []).append(bid)
+            affected_machine_ids.update(removed_by_machine.keys())
             affected_operation_ids.update(int(row["operation_id"]) for row in group_blocks if int(row.get("operation_id") or 0))
+
+        tail_by_machine = {}
+        for mid, removed_ids in removed_by_machine.items():
+            tail_id = lane_tail_recalc_block_after_remove(con, int(mid), removed_ids)
+            if tail_id:
+                tail_by_machine[int(mid)] = tail_id
+
+        if group_id:
             if ps_id and base_ps_id and ps_id != base_ps_id:
                 con.execute(
                     """
@@ -2779,10 +2904,17 @@ def api_trial_delete_block(block_id):
             if int((remaining or {}).get("cnt") or 0) <= 0:
                 con.execute("DELETE FROM planner_operation WHERE operation_id = %s", (int(op_id),))
 
-        for mid in affected_machine_ids:
-            if mid:
-                recalculate_machine(con, int(mid))
-        return jsonify({"ok": True})
+        refresh_ids = sorted(int(mid) for mid in affected_machine_ids if int(mid or 0) > 0)
+        for mid in refresh_ids:
+            resync_machine_lane_after_remove(
+                con,
+                mid,
+                tail_block_id=tail_by_machine.get(mid),
+            )
+        return jsonify({
+            "ok": True,
+            "machine_refresh": _trial_machine_refresh_payload(con, refresh_ids, lite=True),
+        })
 
 
 @trial_bp.route("/api/trial/segments/<int:segment_id>/actual", methods=["PATCH", "POST"])

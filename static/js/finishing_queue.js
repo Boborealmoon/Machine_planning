@@ -5,9 +5,9 @@ function fqApiUrl(key) {
   const cfg = window.__FQ_CONFIG__ || {};
   const urls = {
     queue: cfg.apiQueue || '/api/finishing-queue',
-    recentlyPacked: cfg.apiRecentlyPacked || '/api/finishing-queue/recently-packed',
     overlay: cfg.apiOverlay || '/api/finishing-queue/overlay',
     inspectors: cfg.apiInspectors || '/api/finishing-queue/inspectors',
+    woStatusSync: cfg.apiWoStatusSync || '/api/mfg-wo-status/sync',
   };
   return urls[key] || urls.queue;
 }
@@ -37,53 +37,115 @@ function fqShowLoadError(message) {
   if (emptyText) emptyText.textContent = message;
 }
 
-const FQ_PS_TYPE_ORDER = ['MPS', 'APS', 'NPS', 'SR', 'PPS', 'CPS'];
-const FQ_TABLE_COL_COUNT = 17;
+const FQ_TABLE_COL_COUNT = 10;
+
+const FQ_PS_TYPE_ORDER = ['APS', 'NPS', 'MPS', 'PPS', 'CPS', 'SR', 'TEMP'];
+const FQ_PS_TYPES_DEFAULT = new Set(['APS', 'NPS']);
 
 const fqState = {
   items: [],
-  recentlyPacked: [],
   inspectors: [],
+  inspectorBusy: false,
   assignmentCounts: {},
   screen: 'queue',
-  view: 'active',
-  stage: 'all',
-  status: 'all',
+  stage: 'final_inspection',
   assignee: 'all',
-  psTypes: new Set(['APS', 'NPS']),
+  hideDone: false,
+  psTypes: new Set(FQ_PS_TYPES_DEFAULT),
   sortCol: '',
   sortDir: 'asc',
-  search: '',
   cachedAt: '',
-  packedCachedAt: '',
   cacheTtlSec: 60,
-  packedCacheTtlSec: 300,
   weekRanges: null,
   selectedKey: '',
   savingKeys: new Set(),
   dataSource: 'sync',
-  packedLoaded: false,
-  packedLoading: false,
   loadHint: '',
 };
 
-function fqParseDateOnly(value) {
-  if (!value) return null;
-  const text = String(value).trim();
+function fqDateInputValue(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return text.slice(0, 10);
+}
+
+function fqParseDateOnlyUtc(value) {
+  const text = fqDateInputValue(value);
   if (!text) return null;
-  const d = new Date(text.includes('T') ? text : `${text.slice(0, 10)}T00:00:00`);
-  return Number.isNaN(d.getTime()) ? null : d;
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year
+    || date.getUTCMonth() !== month - 1
+    || date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
+function fqParseDateOnly(value) {
+  return fqParseDateOnlyUtc(value);
+}
+
+function fqCommitmentDate(itemOrValue) {
+  if (itemOrValue && typeof itemOrValue === 'object') {
+    return fqDateInputValue(itemOrValue.coway_proposed_edd)
+      || fqDateInputValue(itemOrValue.commitment_date)
+      || fqDateInputValue(itemOrValue.due_date);
+  }
+  return fqDateInputValue(itemOrValue);
 }
 
 function fqIsoCalendarWeek(value) {
-  const date = fqParseDateOnly(value);
+  const date = fqParseDateOnlyUtc(value);
   if (!date) return '';
   const dayNum = date.getUTCDay() || 7;
   const thursday = new Date(date);
   thursday.setUTCDate(thursday.getUTCDate() + 4 - dayNum);
-  const yearStart = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 1));
+  const isoYear = thursday.getUTCFullYear();
+  const yearStart = new Date(Date.UTC(isoYear, 0, 1));
   const weekNo = Math.ceil((((thursday - yearStart) / 86400000) + 1) / 7);
-  return `${thursday.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+  return `${isoYear}-W${String(weekNo).padStart(2, '0')}`;
+}
+
+const FQ_WEEKDAY_SHORT = ['Sun', 'Mon', 'Tues', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function fqWeekNo(value) {
+  const date = fqParseDateOnlyUtc(value);
+  if (!date) return null;
+  const dayNum = date.getUTCDay() || 7;
+  const thursday = new Date(date);
+  thursday.setUTCDate(thursday.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 1));
+  return Math.ceil((((thursday - yearStart) / 86400000) + 1) / 7);
+}
+
+function fqWeekLabel(itemOrValue) {
+  const commitment = fqCommitmentDate(itemOrValue);
+  const weekNo = fqWeekNo(commitment);
+  if (!weekNo) return '—';
+  const date = fqParseDateOnlyUtc(commitment);
+  const weekday = date ? FQ_WEEKDAY_SHORT[date.getUTCDay()] : '';
+  if (!weekday) return `Week ${weekNo}`;
+  return `Week ${weekNo} - ${weekday}`;
+}
+
+function fqWeekCellMeta(item) {
+  const coway = fqDateInputValue(item?.coway_proposed_edd);
+  const due = fqDateInputValue(item?.due_date);
+  const label = fqWeekLabel(item);
+  if (label === '—') return { label, title: '' };
+  const title = coway
+    ? `From Coway EDD (${coway})`
+    : due
+      ? `From PO due (${due})`
+      : '';
+  return { label, title };
 }
 
 function fqStartOfDay(value) {
@@ -92,62 +154,65 @@ function fqStartOfDay(value) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
-function fqWorkingWeekRange(forDate = new Date(), offsetWeeks = 0) {
-  const anchor = fqStartOfDay(forDate);
-  if (!anchor) return { start: null, end: null };
-  const day = anchor.getDay();
-  const mondayOffset = day === 0 ? -6 : 1 - day;
-  const start = new Date(anchor);
-  start.setDate(anchor.getDate() + mondayOffset + offsetWeeks * 7);
-  const end = new Date(start);
-  end.setDate(start.getDate() + 5);
-  return { start, end };
+function fqImplicitAssigneeSort() {
+  return fqState.screen === 'assignments' && fqState.assignee === 'all' && !fqState.sortCol;
 }
 
-function fqFormatWeekRangeLabel(range) {
-  if (!range?.start || !range?.end) return '';
-  const fmt = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-  return `${fmt(range.start)} – ${fmt(range.end)}`;
+function fqEffectiveSortCol() {
+  if (fqState.sortCol) return fqState.sortCol;
+  if (fqImplicitAssigneeSort()) return 'inspector_name';
+  return '';
 }
 
-function fqPackedDate(item) {
-  const raw = item?.packed_on;
-  if (!raw) return null;
-  const text = String(raw).trim();
-  if (!text) return null;
-  return fqStartOfDay(text.includes('T') ? text : text.replace(' ', 'T'));
+function fqEffectiveSortDir() {
+  if (fqState.sortCol) return fqState.sortDir;
+  return 'asc';
 }
 
-function fqPackedWeekBucket(item, thisWeek, lastWeek) {
-  const packed = fqPackedDate(item);
-  if (!packed) return 3;
-  const t = packed.getTime();
-  if (t >= thisWeek.start.getTime() && t <= thisWeek.end.getTime()) return 0;
-  if (t >= lastWeek.start.getTime() && t <= lastWeek.end.getTime()) return 1;
-  return 2;
+function fqShouldGroupByAssignee() {
+  return fqState.screen === 'assignments'
+    && fqState.assignee === 'all'
+    && (!fqState.sortCol || fqState.sortCol === 'inspector_name');
 }
 
-function fqPackedGroupLabel(bucket, thisWeek, lastWeek) {
-  if (bucket === 0) return `Packed this week (${fqFormatWeekRangeLabel(thisWeek)})`;
-  if (bucket === 1) return `Packed last week (${fqFormatWeekRangeLabel(lastWeek)})`;
-  if (bucket === 2) return 'Packed earlier (within range)';
-  return 'No pack date';
+function fqAssigneeSortRank(label) {
+  if (label === 'Unassigned') return 1;
+  return 0;
 }
 
-function fqRenderGroupRow(label) {
+function fqCompareAssigneeLabels(a, b, dir) {
+  const desc = dir === 'desc';
+  const rankA = fqAssigneeSortRank(a);
+  const rankB = fqAssigneeSortRank(b);
+  if (rankA !== rankB) return desc ? rankB - rankA : rankA - rankB;
+  const cmp = a.localeCompare(b, undefined, { sensitivity: 'base' });
+  return desc ? -cmp : cmp;
+}
+
+function fqRenderGroupRow(label, { count = 0, exceptions = 0, nextQa = '' } = {}) {
+  const initial = label === 'Unassigned' ? '?' : (label.trim().charAt(0).toUpperCase() || '?');
+  const meta = [];
+  if (count) meta.push(`${count} job${count === 1 ? '' : 's'}`);
+  if (exceptions) meta.push(`${exceptions} exception${exceptions === 1 ? '' : 's'}`);
+  if (nextQa && nextQa !== '—') meta.push(`next QA ${nextQa}`);
+  const metaHtml = meta.length
+    ? `<span class="fq-group-row-meta">${meta.map((m) => escapeHtml(m)).join(' · ')}</span>`
+    : '';
   return `
-    <tr class="mi-group-row" aria-hidden="true">
-      <td colspan="${FQ_TABLE_COL_COUNT}">${escapeHtml(label)}</td>
+    <tr class="fq-group-row">
+      <td colspan="${FQ_TABLE_COL_COUNT}">
+        <div class="fq-group-row-inner">
+          <span class="fq-group-row-avatar" aria-hidden="true">${escapeHtml(initial)}</span>
+          <span class="fq-group-row-name">${escapeHtml(label)}</span>
+          ${metaHtml}
+        </div>
+      </td>
     </tr>
   `;
 }
 
 function fqActiveSourceItems() {
-  return fqState.view === 'recently_packed' ? (fqState.recentlyPacked || []) : (fqState.items || []);
-}
-
-function fqIsRecentlyPackedView() {
-  return fqState.screen === 'queue' && fqState.view === 'recently_packed';
+  return fqState.items || [];
 }
 
 function fqIsQueueTableVisible() {
@@ -163,11 +228,6 @@ function fqFormatDate(value) {
   if (!value) return '—';
   const text = String(value).trim();
   return text.length >= 10 ? text.slice(0, 10) : text || '—';
-}
-
-function fqDateInputValue(value) {
-  const text = fqFormatDate(value);
-  return text === '—' ? '' : text;
 }
 
 function fqFormatQty(value) {
@@ -187,12 +247,25 @@ function fqExecutionLabel(code) {
 
 function fqStatusPill(code) {
   const c = String(code || '').trim().toUpperCase();
-  let cls = 'mi-status-pill';
-  if (c === 'I') cls += ' mi-status-pill--o';
-  else if (c === 'R') cls += ' mi-status-pill--r';
-  else if (c === 'P') cls += ' mi-status-pill--h';
-  const label = c || '—';
-  return `<span class="${cls}" title="${escapeHtml(fqExecutionLabel(c))}">${escapeHtml(label)}</span>`;
+  let dotCls = 'fq-status-dot';
+  if (c === 'I') dotCls += ' fq-status-dot--i';
+  else if (c === 'R') dotCls += ' fq-status-dot--r';
+  else if (c === 'P') dotCls += ' fq-status-dot--p';
+  const label = fqExecutionLabel(c);
+  return `<span class="fq-status-label" title="${escapeHtml(label)}"><span class="${dotCls}" aria-hidden="true"></span>${escapeHtml(label)}</span>`;
+}
+
+function fqStageBadge(item) {
+  const desc = String(item?.current_stage_desc || '—').trim() || '—';
+  const bucket = String(item?.stage_bucket || '').trim();
+  const cls = bucket ? ` fq-stage-badge--${bucket}` : '';
+  return `<span class="fq-stage-badge${cls}">${escapeHtml(desc)}</span>`;
+}
+
+function fqRowStatusClass(code) {
+  const c = String(code || '').trim().toLowerCase();
+  if (c === 'i' || c === 'r' || c === 'p') return ` fq-row--status-${c}`;
+  return '';
 }
 
 function fqStageProgress(item) {
@@ -203,32 +276,27 @@ function fqStageProgress(item) {
   return `${fqFormatQty(done)} / ${fqFormatQty(required)}`;
 }
 
-function fqGetPsType(item) {
-  const raw = String(item?.ps_id || '').split('::')[0];
-  if (/\[sr\]|\(sr\)/i.test(raw)) return 'SR';
-  const m = raw.toUpperCase().match(/^([A-Z]+)/);
-  if (!m) return null;
-  const prefix = m[1];
-  if (FQ_PS_TYPE_ORDER.includes(prefix)) return prefix;
-  return prefix;
-}
-
-function fqPsTypeLabel() {
-  const panel = document.getElementById('fq-ps-type-panel');
-  if (!panel) return 'APS, NPS';
-  const checked = [...panel.querySelectorAll('input[type="checkbox"]:checked')].map((el) => el.value);
-  if (!checked.length) return 'None';
-  if (checked.length >= FQ_PS_TYPE_ORDER.length) return 'All types';
-  return checked.join(', ');
+function fqStatusSortRank(code) {
+  const c = String(code || '').trim().toUpperCase();
+  if (c === 'P' || c === 'PENDING_SI') return 0;
+  if (c === 'R' || c === 'READY_TO_START') return 1;
+  if (c === 'I' || c === 'IN_PROCESS') return 2;
+  if (c === 'C' || c === 'COMPLETED') return 3;
+  return 9;
 }
 
 function fqSortValue(item, col) {
   if (col === 'pp_partial_no') return Number(item?.pp_partial_no || 0);
   if (col === 'ps_id') return String(item?.ps_id || '').trim();
   if (col === 'current_stage_desc') return String(item?.current_stage_desc || '').trim();
-  if (col === 'current_stage_status') return String(item?.current_stage_status || '').trim().toUpperCase();
-  if (col === 'inspector_name') return String(item?.inspector_name || '').trim().toLowerCase();
-  if (col === 'due_date' || col === 'coway_proposed_edd' || col === 'qa_due_date') {
+  if (col === 'current_stage_status') return fqStatusSortRank(item?.current_stage_status);
+  if (col === 'inspector_name') return fqAssigneeLabel(item).toLowerCase();
+  if (col === 'part_no') return String(item?.part_no || '').trim().toLowerCase();
+  if (col === 'part_desc') return String(item?.part_desc || '').trim().toLowerCase();
+  if (col === 'due_date' || col === 'coway_proposed_edd' || col === 'qa_due_date' || col === 'commitment_date') {
+    if (col === 'commitment_date') {
+      return fqCommitmentDate(item) || '';
+    }
     const text = String(item?.[col] || '').trim();
     return text.length >= 10 ? text.slice(0, 10) : text;
   }
@@ -250,14 +318,15 @@ function fqCompareValues(a, b, dir) {
 }
 
 function fqSortIcon(col) {
-  if (fqState.sortCol !== col) return '↕';
-  return fqState.sortDir === 'desc' ? '↓' : '↑';
+  if (fqEffectiveSortCol() !== col) return '↕';
+  return fqEffectiveSortDir() === 'desc' ? '↓' : '↑';
 }
 
 function fqUpdateSortHeaders() {
+  const activeCol = fqEffectiveSortCol();
   document.querySelectorAll('[data-fq-sort-col]').forEach((th) => {
     const col = th.dataset.fqSortCol || '';
-    th.classList.toggle('is-sorted', col && col === fqState.sortCol);
+    th.classList.toggle('is-sorted', col && col === activeCol);
   });
   document.querySelectorAll('[data-fq-sort-icon]').forEach((icon) => {
     const col = icon.dataset.fqSortIcon || '';
@@ -265,83 +334,137 @@ function fqUpdateSortHeaders() {
   });
 }
 
-function fqMatchesSearch(item, term) {
-  const hay = [
-    item?.ps_id,
-    item?.pp_partial_no,
-    item?.part_no,
-    item?.part_desc,
-    item?.bom_code,
-    item?.sales_order_no,
-    item?.sales_order_line,
-    item?.current_stage_desc,
-    item?.pp_status,
-    item?.inspector_name,
-    item?.remarks,
-    item?.coway_proposed_edd,
-    fqIsoCalendarWeek(item?.coway_proposed_edd),
-  ].filter(Boolean).join(' ').toLowerCase();
-  return hay.includes(term);
+function fqIsTempPs(item) {
+  const psId = String(item?.planner_ps_id || item?.ps_id || '').trim();
+  return /^\[temp\]/i.test(psId);
+}
+
+function fqGetPsType(item) {
+  if (fqIsTempPs(item)) return 'TEMP';
+  const raw = String(item?.ps_id || '').split('::')[0];
+  if (/\[sr\]|\(sr\)/i.test(raw) || raw.includes('[SR]')) return 'SR';
+  const m = raw.toUpperCase().match(/^([A-Z]+)/);
+  if (!m) return null;
+  return m[1];
+}
+
+function fqMatchesPsType(item) {
+  const types = fqState.psTypes;
+  if (!types?.size) return false;
+  if (types.size >= FQ_PS_TYPE_ORDER.length) return true;
+  const psType = fqGetPsType(item);
+  if (!psType) return false;
+  return types.has(psType);
+}
+
+function fqItemsMatchingPsTypes() {
+  return (fqState.items || []).filter(fqMatchesPsType);
 }
 
 function fqFilteredItems() {
-  const term = String(fqState.search || '').trim().toLowerCase();
-  const types = fqState.psTypes;
-  const allTypes = types.size >= FQ_PS_TYPE_ORDER.length;
   const source = fqActiveSourceItems();
-  const recentlyPacked = fqIsRecentlyPackedView();
 
   const filtered = (source || []).filter((item) => {
-    if (!recentlyPacked) {
-      if (fqState.stage !== 'all' && item.stage_bucket !== fqState.stage) return false;
-      if (fqState.status !== 'all') {
-        const code = String(item.current_stage_status || '').trim().toUpperCase();
-        if (code !== fqState.status) return false;
-      }
-      if (fqState.screen === 'assignments' && fqState.assignee !== 'all') {
-        const name = String(item.inspector_name || '').trim() || 'Unassigned';
-        if (fqState.assignee === '__unassigned__') {
-          if (name !== 'Unassigned') return false;
-        } else if (name !== fqState.assignee) return false;
-      }
+    if (!fqMatchesPsType(item)) return false;
+    if (fqState.hideDone && item.checklist_done) return false;
+    if (fqState.screen !== 'assignments' && fqState.stage !== 'all' && item.stage_bucket !== fqState.stage) {
+      return false;
     }
-    if (!allTypes) {
-      const psType = fqGetPsType(item);
-      if (psType && !types.has(psType)) return false;
-      if (!psType && types.size > 0) return false;
+    if (fqState.screen === 'assignments' && fqState.assignee !== 'all') {
+      const name = fqAssigneeLabel(item);
+      if (fqState.assignee === '__unassigned__') {
+        if (name !== 'Unassigned') return false;
+      } else if (name !== fqState.assignee) return false;
     }
-    if (term && !fqMatchesSearch(item, term)) return false;
     return true;
   });
 
-  if (recentlyPacked) {
-    const thisWeek = fqWorkingWeekRange(new Date(), 0);
-    const lastWeek = fqWorkingWeekRange(new Date(), -1);
+  const sortCol = fqEffectiveSortCol();
+  const sortDir = fqEffectiveSortDir();
+
+  if (!sortCol) {
     return filtered.sort((a, b) => {
-      const ba = fqPackedWeekBucket(a, thisWeek, lastWeek);
-      const bb = fqPackedWeekBucket(b, thisWeek, lastWeek);
-      if (ba !== bb) return ba - bb;
-      const ad = fqPackedDate(a)?.getTime() || 0;
-      const bd = fqPackedDate(b)?.getTime() || 0;
-      if (ad !== bd) return bd - ad;
-      return fqCompareValues(fqSortValue(a, 'ps_id'), fqSortValue(b, 'ps_id'), 'asc');
+      const edd = fqCompareValues(
+        fqSortValue(a, 'coway_proposed_edd'),
+        fqSortValue(b, 'coway_proposed_edd'),
+        'asc',
+      );
+      if (edd !== 0) return edd;
+      const psCmp = fqCompareValues(fqSortValue(a, 'ps_id'), fqSortValue(b, 'ps_id'), 'asc');
+      if (psCmp !== 0) return psCmp;
+      return Number(a.pp_partial_no || 0) - Number(b.pp_partial_no || 0);
     });
   }
 
-  if (!fqState.sortCol) return filtered;
-
   return filtered.sort((a, b) => {
-    const primary = fqCompareValues(
-      fqSortValue(a, fqState.sortCol),
-      fqSortValue(b, fqState.sortCol),
-      fqState.sortDir
+    if (sortCol === 'inspector_name') {
+      const assigneeCmp = fqCompareAssigneeLabels(fqAssigneeLabel(a), fqAssigneeLabel(b), sortDir);
+      if (assigneeCmp !== 0) return assigneeCmp;
+    } else {
+      const primary = fqCompareValues(
+        fqSortValue(a, sortCol),
+        fqSortValue(b, sortCol),
+        sortDir,
+      );
+      if (primary !== 0) return primary;
+    }
+    const edd = fqCompareValues(
+      fqSortValue(a, 'coway_proposed_edd'),
+      fqSortValue(b, 'coway_proposed_edd'),
+      'asc',
     );
-    if (primary !== 0) return primary;
+    if (edd !== 0) return edd;
     const psCmp = fqCompareValues(fqSortValue(a, 'ps_id'), fqSortValue(b, 'ps_id'), 'asc');
     if (psCmp !== 0) return psCmp;
     return Number(a.pp_partial_no || 0) - Number(b.pp_partial_no || 0);
   });
 }
+
+function fqToast(message, type = 'info') {
+  let el = document.getElementById('fq-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'fq-toast';
+    el.className = 'fq-toast';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.className = `fq-toast fq-toast--${type} is-visible`;
+  clearTimeout(fqToast._timer);
+  fqToast._timer = setTimeout(() => {
+    el.classList.remove('is-visible');
+  }, 2800);
+}
+
+function fqSetInspectorStatus(message, type = '') {
+  const el = document.getElementById('fq-inspector-status');
+  if (!el) return;
+  if (!message) {
+    el.hidden = true;
+    el.textContent = '';
+    el.className = 'fq-inspector-status';
+    return;
+  }
+  el.hidden = false;
+  el.textContent = message;
+  el.className = `fq-inspector-status fq-inspector-status--${type || 'info'}`;
+}
+
+async function fqReloadInspectors() {
+  const res = await fetch(fqApiUrl('inspectors'));
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  fqState.inspectors = data.inspectors || [];
+  window.__FQ_INLINE_INSPECTORS__ = fqState.inspectors.slice();
+  fqRenderInspectorPanel();
+  return fqState.inspectors;
+}
+
+window.fqReloadInspectors = fqReloadInspectors;
+window.fqToast = fqToast;
+window.fqSetInspectorStatus = fqSetInspectorStatus;
 
 function fqInspectorOptions(selectedId) {
   const opts = ['<option value="">— Unassigned —</option>'];
@@ -354,12 +477,137 @@ function fqInspectorOptions(selectedId) {
 }
 
 function fqOverlayPayload(item, patch) {
+  let partial = item.pp_partial_no;
+  if (partial == null || partial === '') partial = 1;
   return {
     ps_id: item.ps_id,
-    pp_partial_no: item.pp_partial_no,
+    pp_partial_no: partial,
     stage_desc: item.current_stage_desc,
     ...patch,
   };
+}
+
+function fqOverlayContextFromEl(el) {
+  if (!el) return null;
+  const psId = String(el.dataset.fqPsId || '').trim();
+  const stage = String(el.dataset.fqStageDesc || '').trim();
+  const partialRaw = el.dataset.fqPartialNo;
+  const ppPartialNo = partialRaw == null || partialRaw === '' ? 1 : Number(partialRaw) || 1;
+  if (!psId || !stage) return null;
+  return { ps_id: psId, pp_partial_no: ppPartialNo, current_stage_desc: stage };
+}
+
+function fqOverlayRowKey(ctx) {
+  return `${ctx.ps_id}::${ctx.pp_partial_no}::${ctx.current_stage_desc}`;
+}
+
+function fqOverlayFieldAttrs(item) {
+  const key = fqItemKey(item);
+  const psId = escapeHtml(String(item?.ps_id || '').trim());
+  const partial = escapeHtml(String(item?.pp_partial_no ?? 1));
+  const stage = escapeHtml(String(item?.current_stage_desc || '').trim());
+  return `data-key="${escapeHtml(key)}" data-fq-ps-id="${psId}" data-fq-partial-no="${partial}" data-fq-stage-desc="${stage}"`;
+}
+
+function fqOverlayControlHandlers(field) {
+  if (field === 'remarks') {
+    return 'onblur="window.fqHandleOverlayField&&window.fqHandleOverlayField(event,\'blur\')"';
+  }
+  return 'onchange="window.fqHandleOverlayField&&window.fqHandleOverlayField(event)"';
+}
+
+function fqSetFieldSaveStatus(el, status) {
+  const wrap = el?.closest('.fq-field-wrap');
+  const hint = wrap?.querySelector('.fq-save-hint');
+  if (!hint) return;
+  hint.className = `fq-save-hint${status ? ` fq-save-hint--${status}` : ''}`;
+  if (status === 'saving') hint.textContent = 'Saving…';
+  else if (status === 'saved') hint.textContent = 'Saved ✓';
+  else if (status === 'error') hint.textContent = 'Failed';
+  else hint.textContent = '';
+  if (status === 'saved') {
+    window.setTimeout(() => {
+      if (hint.classList.contains('fq-save-hint--saved')) fqSetFieldSaveStatus(el, '');
+    }, 2200);
+  }
+}
+
+function fqSetDetailSaveStatus(message, type = 'info') {
+  const el = document.getElementById('fq-detail-save-status');
+  if (!el) return;
+  if (!message) {
+    el.hidden = true;
+    el.textContent = '';
+    el.className = 'fq-detail-save-status';
+    return;
+  }
+  el.hidden = false;
+  el.textContent = message;
+  el.className = `fq-detail-save-status fq-detail-save-status--${type}`;
+}
+
+function fqWrapEditableField(innerHtml, field) {
+  return `<div class="fq-field-wrap" data-fq-field-wrap="${escapeHtml(field)}">${innerHtml}<span class="fq-save-hint" aria-live="polite"></span></div>`;
+}
+
+function fqJobCell(item) {
+  const ps = escapeHtml(item.ps_id || '—');
+  const partial = Number(item.pp_partial_no) > 1
+    ? `<span class="fq-partial-tag">p${escapeHtml(String(item.pp_partial_no))}</span>`
+    : '';
+  const part = item.part_no
+    ? `<span class="fq-part-sub">${escapeHtml(item.part_no)}</span>`
+    : '';
+  const qty = fqStageProgress(item);
+  const qtyHtml = qty !== '—' ? `<span class="fq-qty-sub">${escapeHtml(qty)} pcs</span>` : '';
+  return `<div class="fq-job-cell"><span class="fq-job-ps">${ps}${partial}</span>${part}${qtyHtml}</div>`;
+}
+
+function fqResolveOverlayItem(el) {
+  const ctx = fqOverlayContextFromEl(el);
+  if (!ctx) {
+    const key = String(el?.dataset?.key || '').trim();
+    return key ? fqFindItemByKey(key) : null;
+  }
+  return fqFindItemByKey(fqOverlayRowKey(ctx)) || ctx;
+}
+
+function fqSyncOverlayToState(key, overlay) {
+  const live = fqFindItemByKey(key);
+  if (live) {
+    Object.assign(live, {
+      remarks: overlay.remarks ?? live.remarks,
+      inspector_id: overlay.inspector_id ?? live.inspector_id,
+      inspector_name: overlay.inspector_name ?? live.inspector_name,
+      qa_due_date: overlay.qa_due_date ?? live.qa_due_date,
+      checklist_done: overlay.checklist_done ?? live.checklist_done,
+      exception_flag: overlay.exception_flag ?? live.exception_flag,
+    });
+  }
+  const boot = window.__FQ_BOOTSTRAP__;
+  if (boot?.items) {
+    const bootItem = boot.items.find((row) => fqItemKey(row) === key);
+    if (bootItem) {
+      Object.assign(bootItem, {
+        remarks: overlay.remarks ?? bootItem.remarks,
+        inspector_id: overlay.inspector_id ?? bootItem.inspector_id,
+        inspector_name: overlay.inspector_name ?? bootItem.inspector_name,
+        qa_due_date: overlay.qa_due_date ?? bootItem.qa_due_date,
+        checklist_done: overlay.checklist_done ?? bootItem.checklist_done,
+        exception_flag: overlay.exception_flag ?? bootItem.exception_flag,
+      });
+    }
+  }
+}
+
+async function fqParseJsonResponse(res) {
+  const text = await res.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(text.slice(0, 240) || `HTTP ${res.status}`);
+  }
 }
 
 async function fqSaveOverlay(item, patch) {
@@ -367,63 +615,129 @@ async function fqSaveOverlay(item, patch) {
   if (fqState.savingKeys.has(key)) return null;
   fqState.savingKeys.add(key);
   try {
-    const res = await fetch(fqApiUrl('overlay'), {
-      method: 'PUT',
+    const payload = fqOverlayPayload(item, patch);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 20000);
+    const requestInit = {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(fqOverlayPayload(item, patch)),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      credentials: 'same-origin',
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    };
+    let res = await fetch(fqApiUrl('overlay'), requestInit);
+    if (res.status === 405 || res.status === 501) {
+      res = await fetch(fqApiUrl('overlay'), { ...requestInit, method: 'PUT', signal: controller.signal });
+    }
+    window.clearTimeout(timer);
+    const data = await fqParseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || `Save failed (HTTP ${res.status})`);
     const overlay = data.overlay || {};
-    Object.assign(item, {
-      remarks: overlay.remarks ?? item.remarks,
-      inspector_id: overlay.inspector_id ?? item.inspector_id,
-      inspector_name: overlay.inspector_name ?? item.inspector_name,
-      qa_due_date: overlay.qa_due_date ?? item.qa_due_date,
-    });
+    fqSyncOverlayToState(key, overlay);
     fqRecalcAssignmentCounts();
-    fqRenderAssigneeTabs();
+    if (fqState.screen === 'assignments') fqRenderAssigneeBoard();
     return overlay;
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      throw new Error('Save timed out — try again');
+    }
+    throw err;
   } finally {
     fqState.savingKeys.delete(key);
   }
 }
 
+async function fqPersistOverlayField(el) {
+  const field = el?.dataset?.fqField;
+  if (!field) return;
+  const ctx = fqOverlayContextFromEl(el);
+  if (!ctx) {
+    fqToast('Could not match this row — refresh the page', 'error');
+    return;
+  }
+  const item = fqResolveOverlayItem(el);
+  if (!item) {
+    fqToast('Could not match this row — refresh the page', 'error');
+    return;
+  }
+
+  let patch = {};
+  let nextValue = '';
+  if (field === 'inspector_id') {
+    patch = { inspector_id: el.value ? el.value : null };
+    nextValue = String(el.value || '');
+    const prev = String(item.inspector_id || '');
+    if (prev === nextValue) return;
+  } else if (field === 'qa_due_date') {
+    patch = { qa_due_date: el.value || null };
+    nextValue = String(el.value || '');
+    const prev = fqDateInputValue(item.qa_due_date);
+    if (prev === nextValue) return;
+  } else if (field === 'remarks') {
+    patch = { remarks: el.value || '' };
+    nextValue = String(el.value || '');
+    if (String(item.remarks || '') === nextValue) return;
+  } else {
+    return;
+  }
+
+  try {
+    fqSetFieldSaveStatus(el, 'saving');
+    el.classList.add('fq-cell-saving');
+    await fqSaveOverlay(item, patch);
+    el.dataset.fqLastSaved = nextValue;
+    el.classList.remove('fq-cell-saving');
+    el.classList.add('fq-cell-saved');
+    fqSetFieldSaveStatus(el, 'saved');
+    window.setTimeout(() => el.classList.remove('fq-cell-saved'), 1400);
+    const inDetail = Boolean(el.closest('#fq-detail-body'));
+    if (inDetail) {
+      fqSetDetailSaveStatus(
+        field === 'inspector_id' ? 'Assignment saved ✓'
+          : field === 'qa_due_date' ? 'QA due date saved ✓'
+            : 'Remarks saved ✓',
+        'success',
+      );
+      window.setTimeout(() => fqSetDetailSaveStatus('', ''), 2200);
+    }
+  } catch (err) {
+    el.classList.remove('fq-cell-saving');
+    fqSetFieldSaveStatus(el, 'error');
+    if (el.closest('#fq-detail-body')) fqSetDetailSaveStatus(err.message || 'Save failed', 'error');
+    console.error('overlay save failed:', err);
+    fqToast(err.message || 'Save failed', 'error');
+  }
+}
+
+window.fqHandleOverlayField = function fqHandleOverlayField(event, mode) {
+  const el = event?.target;
+  if (!el || el.disabled || !el.matches('[data-fq-field]')) return;
+  const field = el.dataset.fqField;
+  if (field === 'remarks') {
+    if (mode !== 'blur') return;
+  } else if (event.type === 'blur') {
+    return;
+  }
+  void fqPersistOverlayField(el);
+};
+
+window.fqSaveOverlay = fqSaveOverlay;
+
 function fqRecalcAssignmentCounts() {
   const counts = {};
-  for (const item of fqState.items || []) {
+  for (const item of fqItemsMatchingPsTypes()) {
     const name = String(item.inspector_name || '').trim() || 'Unassigned';
     counts[name] = (counts[name] || 0) + 1;
   }
   fqState.assignmentCounts = counts;
 }
 
-function fqRenderAssigneeTabs() {
-  const wrap = document.getElementById('fq-assignee-tabs');
-  if (!wrap) return;
-  const counts = fqState.assignmentCounts || {};
-  const names = Object.keys(counts).sort((a, b) => {
-    if (a === 'Unassigned') return 1;
-    if (b === 'Unassigned') return -1;
-    return a.localeCompare(b);
-  });
-  const buttons = [
-    { id: 'all', label: 'All', count: fqState.items.length },
-    ...names.map((name) => ({
-      id: name === 'Unassigned' ? '__unassigned__' : name,
-      label: name,
-      count: counts[name] || 0,
-    })),
-  ];
-  wrap.innerHTML = buttons.map((btn) => {
-    const active = fqState.assignee === btn.id ? ' is-active' : '';
-    const selected = fqState.assignee === btn.id ? 'true' : 'false';
-    const countHtml = btn.count > 0 ? ` <span class="ps-view-tab-count">${btn.count}</span>` : '';
-    return `<button type="button" class="mi-view-btn${active}" data-fq-assignee="${escapeHtml(btn.id)}" role="tab" aria-selected="${selected}">${escapeHtml(btn.label)}${countHtml}</button>`;
-  }).join('');
-  wrap.querySelectorAll('[data-fq-assignee]').forEach((el) => {
-    el.addEventListener('click', () => fqSetAssignee(el.dataset.fqAssignee || 'all'));
-  });
+function fqAssigneeLabel(item) {
+  return String(item?.inspector_name || '').trim() || 'Unassigned';
+}
+
+function fqIsAssignmentsView() {
+  return fqState.screen === 'assignments';
 }
 
 function fqDetailField(label, value, { mono, fullWidth } = {}) {
@@ -449,41 +763,51 @@ function fqDetailSection(title, html) {
 }
 
 function fqRenderDetail(item) {
+  const fieldAttrs = fqOverlayFieldAttrs(item);
+  const qaValue = escapeHtml(fqDateInputValue(item.qa_due_date));
+  const remarksValue = escapeHtml(item.remarks || '');
+  const editHtml = `
+    <section class="fq-detail-edit card">
+      <h3 class="fq-detail-edit-title">Quick edit</h3>
+      <div class="fq-detail-edit-grid">
+        <label class="fq-detail-edit-field">
+          <span>QA due</span>
+          ${fqWrapEditableField(`<input type="date" class="fq-cell-input fq-cell-date" data-fq-field="qa_due_date" ${fieldAttrs} ${fqOverlayControlHandlers('qa_due_date')} value="${qaValue}">`, 'qa_due_date')}
+        </label>
+        <label class="fq-detail-edit-field">
+          <span>Assigned</span>
+          ${fqWrapEditableField(`<select class="fq-cell-input fq-cell-select" data-fq-field="inspector_id" ${fieldAttrs} ${fqOverlayControlHandlers('inspector_id')}>${fqInspectorOptions(item.inspector_id)}</select>`, 'inspector_id')}
+        </label>
+        <label class="fq-detail-edit-field fq-detail-edit-field--full">
+          <span>Remarks</span>
+          ${fqWrapEditableField(`<textarea class="fq-cell-input fq-cell-remarks" rows="3" data-fq-field="remarks" ${fieldAttrs} ${fqOverlayControlHandlers('remarks')} placeholder="Notes for QA team">${remarksValue}</textarea>`, 'remarks')}
+        </label>
+      </div>
+    </section>
+  `;
   const stageHtml = [
     fqDetailField('Stage', item.current_stage_desc),
-    fqDetailField('Stage no.', item.current_stage_no),
     fqDetailField('Status', fqExecutionLabel(item.current_stage_status)),
-    fqDetailField('Packed on', fqFormatDate(item.packed_on)),
+    fqDetailField('Progress', fqStageProgress(item)),
     fqDetailField('Stage required', fqFormatQty(item.stage_qty_required)),
     fqDetailField('Stage produced', fqFormatQty(item.stage_qty_produced)),
     fqDetailField('Stage rejected', fqFormatQty(item.stage_qty_rejected)),
-    fqDetailField('Stage remaining', fqFormatQty(item.stage_qty_remaining)),
   ].join('');
   const psHtml = [
     fqDetailField('Process sheet', item.ps_id, { mono: true }),
     fqDetailField('Partial', item.pp_partial_no),
     fqDetailField('Part', item.part_no, { mono: true }),
     fqDetailField('Description', item.part_desc, { fullWidth: true }),
-    fqDetailField('BOM', item.bom_code, { mono: true }),
-    fqDetailField('Work qty', fqFormatQty(item.qty)),
-    fqDetailField('PP status', item.pp_status),
     fqDetailField('PO due', fqFormatDate(item.due_date)),
     fqDetailField('Coway EDD', fqFormatDate(item.coway_proposed_edd)),
-    fqDetailField('Coway week', fqIsoCalendarWeek(item.coway_proposed_edd) || '—'),
-    fqDetailField('QA due', fqFormatDate(item.qa_due_date)),
-    fqDetailField('Assigned to', item.inspector_name || '—'),
-    fqDetailField('Remarks', item.remarks, { fullWidth: true }),
-  ].join('');
-  const orderHtml = [
-    fqDetailField('Sales order', item.sales_order_no, { mono: true }),
-    fqDetailField('SO line', item.sales_order_line, { mono: true }),
-    fqDetailField('SO qty', fqFormatQty(item.so_det_qty)),
-    fqDetailField('Qty shipped', fqFormatQty(item.qty_shipped)),
+    fqDetailField('Delivery schedule', fqWeekLabel(item)),
+    fqDetailField('Checklist done', item.checklist_done ? 'Yes' : 'No'),
+    fqDetailField('Exception', item.exception_flag ? 'Yes' : 'No'),
   ].join('');
   return [
-    fqDetailSection('Current stage', stageHtml),
-    fqDetailSection('Process sheet', psHtml),
-    fqDetailSection('Sales order', orderHtml),
+    editHtml,
+    fqDetailSection('Stage', stageHtml),
+    fqDetailSection('Job details', psHtml),
   ].join('');
 }
 
@@ -496,8 +820,10 @@ function fqOpenDetail(item) {
   const partialLabel = Number(item.pp_partial_no) > 1 ? ` · partial ${item.pp_partial_no}` : '';
   title.textContent = `${item.ps_id || '—'}${partialLabel}`;
   body.innerHTML = fqRenderDetail(item);
+  fqSetDetailSaveStatus('', '');
   panel.hidden = false;
   document.body.classList.add('new-orders-detail-open');
+  fqRenderTable();
 }
 
 function fqCloseDetail() {
@@ -508,8 +834,18 @@ function fqCloseDetail() {
   document.body.classList.remove('new-orders-detail-open');
 }
 
-function fqUpdateCounts(payload) {
-  const stageCounts = payload?.stage_counts || {};
+function fqRecalcCounts() {
+  const items = fqItemsMatchingPsTypes();
+  const stageCounts = {
+    deburring: 0,
+    final_inspection: 0,
+    packing: 0,
+    engraving_packing: 0,
+  };
+  for (const item of items) {
+    const bucket = item.stage_bucket;
+    if (bucket in stageCounts) stageCounts[bucket] += 1;
+  }
   const setCount = (id, n) => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -517,76 +853,283 @@ function fqUpdateCounts(payload) {
     el.textContent = String(count);
     el.hidden = count <= 0;
   };
-  const total = Number(payload?.count) || 0;
-  setCount('fq-count-active', total);
-  setCount('fq-count-all', total);
+  setCount('fq-count-all', items.length);
   setCount('fq-count-deburring', stageCounts.deburring);
   setCount('fq-count-final_inspection', stageCounts.final_inspection);
   setCount('fq-count-packing', stageCounts.packing);
   setCount('fq-count-engraving_packing', stageCounts.engraving_packing);
-  setCount('fq-count-recently-packed', payload?.recently_packed_count);
+}
+
+function fqUpdateCounts() {
+  fqRecalcCounts();
+}
+
+function fqSyncPsTypeChips() {
+  document.querySelectorAll('[data-fq-ps-type]').forEach((btn) => {
+    const type = btn.dataset.fqPsType || '';
+    const active = fqState.psTypes.has(type);
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+
+function fqInitPsTypes() {
+  try {
+    const raw = localStorage.getItem('fq-ps-types-v1');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length) {
+        fqState.psTypes = new Set(parsed.filter((t) => FQ_PS_TYPE_ORDER.includes(t)));
+      }
+    }
+  } catch (_) {}
+  if (!fqState.psTypes?.size) {
+    fqState.psTypes = new Set(FQ_PS_TYPES_DEFAULT);
+  }
+  fqSyncPsTypeChips();
+}
+
+function fqTogglePsType(type) {
+  if (!type || !FQ_PS_TYPE_ORDER.includes(type)) return;
+  const next = new Set(fqState.psTypes);
+  if (next.has(type)) {
+    if (next.size <= 1) return;
+    next.delete(type);
+  } else {
+    next.add(type);
+  }
+  fqState.psTypes = next;
+  try {
+    localStorage.setItem('fq-ps-types-v1', JSON.stringify([...fqState.psTypes]));
+  } catch (_) {}
+  fqSyncPsTypeChips();
+  fqRecalcAssignmentCounts();
+  fqRenderAssigneeBoard();
+  fqRecalcCounts();
+  fqRenderTable();
 }
 
 function fqFindItemByKey(key) {
-  const active = fqState.items.find((rowItem) => fqItemKey(rowItem) === key);
-  if (active) return active;
-  return fqState.recentlyPacked.find((rowItem) => fqItemKey(rowItem) === key);
+  return fqState.items.find((rowItem) => fqItemKey(rowItem) === key);
 }
 
 function fqEditableCells(item) {
-  const key = fqItemKey(item);
-  const disabled = fqIsRecentlyPackedView() ? ' disabled' : '';
-  const cowayWeek = fqIsoCalendarWeek(item.coway_proposed_edd) || '—';
+  const fieldAttrs = fqOverlayFieldAttrs(item);
+  const qaValue = escapeHtml(fqDateInputValue(item.qa_due_date));
   return {
-    qaDue: `<input type="date" class="fq-cell-input fq-cell-date" data-fq-field="qa_due_date" data-key="${escapeHtml(key)}" value="${escapeHtml(fqDateInputValue(item.qa_due_date))}"${disabled}>`,
-    assignee: `<select class="fq-cell-input fq-cell-select" data-fq-field="inspector_id" data-key="${escapeHtml(key)}"${disabled}>${fqInspectorOptions(item.inspector_id)}</select>`,
-    remarks: `<input type="text" class="fq-cell-input fq-cell-text" data-fq-field="remarks" data-key="${escapeHtml(key)}" value="${escapeHtml(item.remarks || '')}" placeholder="Remarks"${disabled}>`,
-    cowayWeek,
+    qaDue: fqWrapEditableField(
+      `<input type="date" class="fq-cell-input fq-cell-date fq-cell-date--compact" data-fq-field="qa_due_date" ${fieldAttrs} ${fqOverlayControlHandlers('qa_due_date')} value="${qaValue}">`,
+      'qa_due_date',
+    ),
+    assignee: fqWrapEditableField(
+      `<select class="fq-cell-input fq-cell-select fq-cell-select--compact" data-fq-field="inspector_id" ${fieldAttrs} ${fqOverlayControlHandlers('inspector_id')}>${fqInspectorOptions(item.inspector_id)}</select>`,
+      'inspector_id',
+    ),
   };
+}
+
+function fqRowActionCells(item) {
+  const attrs = fqOverlayFieldAttrs(item);
+  const done = Boolean(item.checklist_done);
+  const flagged = Boolean(item.exception_flag);
+  return `<div class="fq-row-actions">
+    <button type="button" class="fq-icon-btn fq-icon-btn--done${done ? ' is-on' : ''}" data-fq-toggle="checklist_done" ${attrs} aria-pressed="${done ? 'true' : 'false'}" title="${done ? 'Mark not done' : 'Mark done'}">✓</button>
+    <button type="button" class="fq-icon-btn fq-icon-btn--flag${flagged ? ' is-on' : ''}" data-fq-toggle="exception_flag" ${attrs} aria-pressed="${flagged ? 'true' : 'false'}" title="${flagged ? 'Clear exception' : 'Flag exception'}">!</button>
+  </div>`;
 }
 
 function fqRenderDataRow(item) {
   const key = fqItemKey(item);
   const selected = key === fqState.selectedKey ? ' is-selected' : '';
-  const partial = Number(item.pp_partial_no) > 1 ? item.pp_partial_no : '—';
-  const progressCell = fqIsRecentlyPackedView() ? fqFormatDate(item.packed_on) : fqStageProgress(item);
+  const statusCls = fqRowStatusClass(item.current_stage_status);
+  const doneCls = item.checklist_done ? ' fq-row--done' : '';
+  const exceptionCls = item.exception_flag ? ' fq-row--exception' : '';
   const cells = fqEditableCells(item);
+  const attrs = fqOverlayFieldAttrs(item);
+  const schedule = fqWeekCellMeta(item);
   return `
-    <tr class="new-orders-row fq-row${selected}" data-key="${escapeHtml(key)}" tabindex="0">
-      <td class="new-orders-mono fq-open-detail">${escapeHtml(item.ps_id || '—')}</td>
-      <td class="fq-open-detail">${escapeHtml(String(partial))}</td>
-      <td class="fq-open-detail">${escapeHtml(item.current_stage_desc || '—')}</td>
+    <tr class="fq-row${selected}${statusCls}${doneCls}${exceptionCls}" data-key="${escapeHtml(key)}" tabindex="0">
+      <td class="fq-col-actions fq-col-sticky">${fqRowActionCells(item)}</td>
+      <td class="fq-col-sticky fq-col-sticky--job fq-open-detail">${fqJobCell(item)}</td>
+      <td class="fq-open-detail">${fqStageBadge(item)}</td>
       <td class="fq-open-detail">${fqStatusPill(item.current_stage_status)}</td>
-      <td class="new-orders-mono fq-open-detail">${escapeHtml(item.part_no || '—')}</td>
-      <td class="fq-open-detail">${escapeHtml(item.part_desc || '—')}</td>
-      <td class="new-orders-mono fq-open-detail">${escapeHtml(item.bom_code || '—')}</td>
-      <td class="fq-open-detail">${escapeHtml(fqFormatQty(item.qty))}</td>
-      <td class="fq-open-detail">${escapeHtml(progressCell)}</td>
-      <td class="new-orders-mono fq-open-detail">${escapeHtml(item.sales_order_no || '—')}</td>
-      <td class="fq-open-detail">${escapeHtml(fqFormatDate(item.due_date))}</td>
-      <td class="fq-open-detail">${escapeHtml(fqFormatDate(item.coway_proposed_edd))}</td>
-      <td class="fq-open-detail">${escapeHtml(cells.cowayWeek)}</td>
-      <td>${cells.qaDue}</td>
-      <td>${cells.assignee}</td>
-      <td>${cells.remarks}</td>
-      <td class="fq-open-detail">${escapeHtml(item.pp_status || '—')}</td>
+      <td class="fq-open-detail fq-col-date">${escapeHtml(fqFormatDate(item.due_date))}</td>
+      <td class="fq-open-detail fq-col-date">${escapeHtml(fqFormatDate(item.coway_proposed_edd))}</td>
+      <td class="fq-open-detail fq-col-schedule"${schedule.title ? ` title="${escapeHtml(schedule.title)}"` : ''}>${escapeHtml(schedule.label)}</td>
+      <td class="fq-col-edit">${cells.qaDue}</td>
+      <td class="fq-col-edit fq-col-assignee">${cells.assignee}</td>
+      <td class="fq-col-more">
+        <button type="button" class="fq-more-btn" data-fq-open-detail ${attrs} title="Open full details">⋯</button>
+      </td>
     </tr>
   `;
 }
 
-function fqRenderRecentlyPackedBody(filtered) {
-  const thisWeek = fqWorkingWeekRange(new Date(), 0);
-  const lastWeek = fqWorkingWeekRange(new Date(), -1);
-  const parts = [];
-  let lastBucket = null;
-  for (const item of filtered) {
-    const bucket = fqPackedWeekBucket(item, thisWeek, lastWeek);
-    if (bucket !== lastBucket) {
-      parts.push(fqRenderGroupRow(fqPackedGroupLabel(bucket, thisWeek, lastWeek)));
-      lastBucket = bucket;
-    }
-    parts.push(fqRenderDataRow(item));
+function fqSyncHideDoneChrome() {
+  const btn = document.getElementById('fq-hide-done');
+  if (!btn) return;
+  btn.classList.toggle('is-active', fqState.hideDone);
+  btn.setAttribute('aria-pressed', fqState.hideDone ? 'true' : 'false');
+}
+
+function fqToggleHideDone() {
+  fqState.hideDone = !fqState.hideDone;
+  try {
+    localStorage.setItem('fq-hide-done-v1', fqState.hideDone ? '1' : '0');
+  } catch (_) {}
+  fqSyncHideDoneChrome();
+  fqRenderTable();
+}
+
+function fqInitHideDone() {
+  try {
+    fqState.hideDone = localStorage.getItem('fq-hide-done-v1') === '1';
+  } catch (_) {}
+  fqSyncHideDoneChrome();
+}
+
+async function fqToggleRowFlag(item, field) {
+  const live = fqFindItemByKey(fqItemKey(item)) || item;
+  const patch = {};
+  if (field === 'checklist_done') {
+    patch.checklist_done = !live.checklist_done;
+  } else if (field === 'exception_flag') {
+    patch.exception_flag = !live.exception_flag;
+  } else {
+    return;
   }
+  await fqSaveOverlay(live, patch);
+  fqRenderTable();
+  if (field === 'checklist_done') {
+    fqToast(patch.checklist_done ? 'Marked done ✓' : 'Unmarked', 'success');
+  } else if (field === 'exception_flag') {
+    fqToast(patch.exception_flag ? 'Exception flagged' : 'Exception cleared', 'info');
+  }
+}
+
+function fqAssigneeBoardItems() {
+  return fqItemsMatchingPsTypes().filter((item) => !(fqState.hideDone && item.checklist_done));
+}
+
+function fqAssigneeBoardStats(items) {
+  const byLabel = new Map();
+  for (const item of items) {
+    const label = fqAssigneeLabel(item);
+    if (!byLabel.has(label)) {
+      byLabel.set(label, { label, count: 0, exceptions: 0, qaDates: [] });
+    }
+    const row = byLabel.get(label);
+    row.count += 1;
+    if (item.exception_flag) row.exceptions += 1;
+    const qa = fqSortValue(item, 'qa_due_date');
+    if (qa) row.qaDates.push(qa);
+  }
+  return [...byLabel.values()].sort((a, b) => fqCompareAssigneeLabels(a.label, b.label, 'asc'));
+}
+
+function fqRenderAssigneeBoard() {
+  const board = document.getElementById('fq-assignee-board');
+  if (!board) return;
+  const show = fqState.screen === 'assignments';
+  board.hidden = !show;
+  if (!show) {
+    board.innerHTML = '';
+    return;
+  }
+
+  const stats = fqAssigneeBoardStats(fqAssigneeBoardItems());
+  const totalJobs = stats.reduce((sum, row) => sum + row.count, 0);
+  const allActive = fqState.assignee === 'all';
+  const allCard = `
+    <button type="button" class="fq-assignee-card fq-assignee-card--all${allActive ? ' is-active' : ''}" data-fq-assignee-card="all" aria-pressed="${allActive ? 'true' : 'false'}">
+      <span class="fq-assignee-card-avatar fq-assignee-card-avatar--all" aria-hidden="true">∑</span>
+      <span class="fq-assignee-card-body">
+        <span class="fq-assignee-card-name">Everyone</span>
+        <span class="fq-assignee-card-meta">
+          <span class="fq-assignee-card-stat">${totalJobs} job${totalJobs === 1 ? '' : 's'} total</span>
+          <span class="fq-assignee-card-stat">${stats.length} assignee${stats.length === 1 ? '' : 's'}</span>
+        </span>
+      </span>
+    </button>
+  `;
+
+  if (!stats.length) {
+    board.innerHTML = allCard;
+    return;
+  }
+
+  board.innerHTML = allCard + stats.map((row) => {
+    const id = row.label === 'Unassigned' ? '__unassigned__' : row.label;
+    const isActive = fqState.assignee === id;
+    const initial = row.label === 'Unassigned' ? '?' : (row.label.trim().charAt(0).toUpperCase() || '?');
+    const qaSorted = row.qaDates.sort();
+    const nextQa = qaSorted.length ? fqFormatDate(qaSorted[0]) : '—';
+    const excHtml = row.exceptions
+      ? `<span class="fq-assignee-card-stat fq-assignee-card-stat--warn">${row.exceptions} flagged</span>`
+      : '';
+    return `
+      <button type="button" class="fq-assignee-card${isActive ? ' is-active' : ''}" data-fq-assignee-card="${escapeHtml(id)}" aria-pressed="${isActive ? 'true' : 'false'}">
+        <span class="fq-assignee-card-avatar" aria-hidden="true">${escapeHtml(initial)}</span>
+        <span class="fq-assignee-card-body">
+          <span class="fq-assignee-card-name">${escapeHtml(row.label)}</span>
+          <span class="fq-assignee-card-meta">
+            <span class="fq-assignee-card-stat">${row.count} job${row.count === 1 ? '' : 's'}</span>
+            <span class="fq-assignee-card-stat">QA from ${escapeHtml(nextQa)}</span>
+            ${excHtml}
+          </span>
+        </span>
+      </button>
+    `;
+  }).join('');
+}
+
+function fqBindAssigneeBoard() {
+  const board = document.getElementById('fq-assignee-board');
+  if (!board || board.dataset.bound === '1') return;
+  board.dataset.bound = '1';
+  board.addEventListener('click', (e) => {
+    const card = e.target.closest('[data-fq-assignee-card]');
+    if (!card) return;
+    const id = card.dataset.fqAssigneeCard || 'all';
+    const next = fqState.assignee === id ? 'all' : id;
+    fqSetAssignee(next);
+  });
+}
+
+function fqGroupRowStats(items) {
+  const exceptions = items.filter((item) => item.exception_flag).length;
+  const qaDates = items.map((item) => fqSortValue(item, 'qa_due_date')).filter(Boolean).sort();
+  return {
+    count: items.length,
+    exceptions,
+    nextQa: qaDates.length ? fqFormatDate(qaDates[0]) : '',
+  };
+}
+
+function fqRenderAssignmentsBody(filtered) {
+  if (!fqShouldGroupByAssignee()) {
+    return filtered.map((item) => fqRenderDataRow(item)).join('');
+  }
+
+  const parts = [];
+  let lastLabel = null;
+  let groupItems = [];
+  const flushGroup = (label) => {
+    if (!label) return;
+    parts.push(fqRenderGroupRow(label, fqGroupRowStats(groupItems)));
+    for (const item of groupItems) parts.push(fqRenderDataRow(item));
+    groupItems = [];
+  };
+
+  for (const item of filtered) {
+    const label = fqAssigneeLabel(item);
+    if (label !== lastLabel) {
+      flushGroup(lastLabel);
+      lastLabel = label;
+    }
+    groupItems.push(item);
+  }
+  flushGroup(lastLabel);
   return parts.join('');
 }
 
@@ -601,10 +1144,11 @@ function fqRenderInspectorPanel() {
     return;
   }
   empty.hidden = true;
+  const busy = fqState.inspectorBusy ? ' disabled' : '';
   list.innerHTML = inspectors.map((insp) => `
     <li class="fq-inspector-item">
       <span>${escapeHtml(insp.name || '')}</span>
-      <button type="button" class="btn btn-ghost btn-sm" data-fq-remove-inspector="${insp.inspector_id}">Remove</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-fq-remove-inspector="${insp.inspector_id}"${busy}>Remove</button>
     </li>
   `).join('');
 }
@@ -613,17 +1157,14 @@ function fqUpdateScreenChrome() {
   const screen = fqState.screen;
   const queueMode = screen === 'queue';
   const assignMode = screen === 'assignments';
-  const inspectorMode = screen === 'inspectors';
 
-  document.getElementById('fq-queue-view-wrap')?.classList.toggle('is-hidden', !queueMode);
-  document.getElementById('fq-stage-filter-wrap')?.classList.toggle('is-hidden', !queueMode && !assignMode);
-  document.getElementById('fq-status-filter-wrap')?.classList.toggle('is-hidden', !queueMode && !assignMode);
-  document.getElementById('fq-assignee-filter-wrap')?.hidden = !assignMode;
-  document.getElementById('fq-ps-type-filter')?.classList.toggle('is-hidden', inspectorMode);
-  document.getElementById('fq-search-wrap')?.classList.toggle('is-hidden', inspectorMode);
+  document.getElementById('fq-stage-filter-wrap')?.classList.toggle('is-hidden', !queueMode);
 
-  document.getElementById('fq-table-wrap')?.classList.toggle('is-hidden', inspectorMode);
-  document.getElementById('fq-inspectors-panel')?.hidden = !inspectorMode;
+  document.querySelectorAll('[data-fq-stage]').forEach((btn) => {
+    const active = btn.dataset.fqStage === fqState.stage;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
 
   document.querySelectorAll('[data-fq-screen]').forEach((btn) => {
     const active = btn.dataset.fqScreen === screen;
@@ -631,39 +1172,24 @@ function fqUpdateScreenChrome() {
     btn.setAttribute('aria-selected', active ? 'true' : 'false');
   });
 
-  if (assignMode) {
-    fqState.view = 'active';
-    document.querySelectorAll('[data-fq-view]').forEach((btn) => {
-      const active = btn.dataset.fqView === 'active';
-      btn.classList.toggle('is-active', active);
-      btn.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
-  }
-}
+  const tableWrap = document.getElementById('fq-table-wrap');
+  tableWrap?.classList.toggle('fq-table-card--assignments', assignMode);
+  tableWrap?.classList.toggle('fq-table-card--queue', queueMode);
+  tableWrap?.classList.toggle('fq-table-card--assignee-filtered', assignMode && fqState.assignee !== 'all');
 
-function fqUpdateViewChrome() {
-  const recentlyPacked = fqIsRecentlyPackedView();
-  document.getElementById('fq-stage-filter-wrap')?.classList.toggle('is-hidden', recentlyPacked);
-  document.getElementById('fq-status-filter-wrap')?.classList.toggle('is-hidden', recentlyPacked);
-  const progressCol = document.getElementById('fq-col-progress');
-  if (progressCol) progressCol.textContent = recentlyPacked ? 'Packed on' : 'Stage progress';
+  if (assignMode) {
+    fqRenderAssigneeBoard();
+  } else {
+    const board = document.getElementById('fq-assignee-board');
+    if (board) {
+      board.hidden = true;
+      board.innerHTML = '';
+    }
+  }
 }
 
 function fqRenderTable() {
   fqUpdateScreenChrome();
-  if (fqState.screen === 'inspectors') {
-    fqRenderInspectorPanel();
-    document.getElementById('fq-empty')?.hidden = true;
-    document.getElementById('fq-loading')?.hidden = true;
-    const meta = document.getElementById('fq-meta');
-    if (meta) {
-      meta.hidden = !fqState.cachedAt;
-      meta.textContent = fqState.cachedAt ? `ERP cached ${fqState.cachedAt} · TTL ${fqState.cacheTtlSec}s` : '';
-    }
-    return;
-  }
-
-  fqUpdateViewChrome();
   const filtered = fqFilteredItems();
   const tbody = document.getElementById('fq-table-body');
   const wrap = document.getElementById('fq-table-wrap');
@@ -671,10 +1197,8 @@ function fqRenderTable() {
   const emptyText = document.getElementById('fq-empty-text');
   const stats = document.getElementById('fq-stats');
   const meta = document.getElementById('fq-meta');
-  const recentlyPacked = fqIsRecentlyPackedView();
   const hasActive = (fqState.items || []).length > 0;
-  const hasPacked = (fqState.recentlyPacked || []).length > 0;
-  const hasCurrentViewData = recentlyPacked ? hasPacked : hasActive;
+  const hasPsFiltered = fqItemsMatchingPsTypes().length > 0;
 
   if (!tbody || !wrap || !empty) {
     fqShowLoadError('Queue table markup is missing from the page — hard refresh or restart the app.');
@@ -683,7 +1207,7 @@ function fqRenderTable() {
 
   fqHideLoading();
 
-  if (!hasActive && !hasPacked) {
+  if (!hasActive) {
     wrap.hidden = true;
     empty.hidden = false;
     if (emptyText) emptyText.textContent = 'No partials are currently at a post-machining stage.';
@@ -693,52 +1217,58 @@ function fqRenderTable() {
     return;
   }
 
-  if (!hasCurrentViewData || !filtered.length) {
+  if (!hasPsFiltered) {
     wrap.hidden = true;
     empty.hidden = false;
-    if (emptyText) {
-      emptyText.textContent = !hasCurrentViewData
-        ? (recentlyPacked ? 'No packing completions this week or last week.' : 'No partials are currently at a post-machining stage.')
-        : 'No rows match your filters.';
-    }
+    if (emptyText) emptyText.textContent = 'No jobs match the selected PS types.';
+    if (stats) stats.textContent = '';
+    fqRecalcCounts();
+    return;
+  }
+
+  if (!filtered.length) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) emptyText.textContent = 'Nothing in this stage right now.';
   } else {
     wrap.hidden = false;
     empty.hidden = true;
-    tbody.innerHTML = recentlyPacked
-      ? fqRenderRecentlyPackedBody(filtered)
+    tbody.innerHTML = fqIsAssignmentsView()
+      ? fqRenderAssignmentsBody(filtered)
       : filtered.map((item) => fqRenderDataRow(item)).join('');
   }
 
   if (stats) {
-    if (recentlyPacked) {
-      const thisWeek = fqWorkingWeekRange(new Date(), 0);
-      const lastWeek = fqWorkingWeekRange(new Date(), -1);
-      let thisCount = 0;
-      let lastCount = 0;
-      for (const item of filtered) {
-        const bucket = fqPackedWeekBucket(item, thisWeek, lastWeek);
-        if (bucket === 0) thisCount += 1;
-        else if (bucket === 1) lastCount += 1;
+    if (fqState.screen === 'assignments') {
+      if (fqShouldGroupByAssignee()) {
+        const groups = new Set(filtered.map((item) => fqAssigneeLabel(item))).size;
+        stats.textContent = `${filtered.length} job${filtered.length === 1 ? '' : 's'} across ${groups} assignee${groups === 1 ? '' : 's'} · grouped workload`;
+      } else if (fqState.assignee === '__unassigned__') {
+        stats.textContent = `${filtered.length} unassigned job${filtered.length === 1 ? '' : 's'}`;
+      } else if (fqState.assignee !== 'all') {
+        stats.textContent = `${filtered.length} job${filtered.length === 1 ? '' : 's'} for ${fqState.assignee}`;
+      } else {
+        stats.textContent = `${filtered.length} job${filtered.length === 1 ? '' : 's'} · sorted by column`;
       }
-      stats.textContent = `${filtered.length} shown · ${thisCount} this week · ${lastCount} last week`;
-    } else if (fqState.screen === 'assignments') {
-      stats.textContent = `${filtered.length} assigned jobs shown`;
     } else {
       const statusCounts = { I: 0, R: 0, P: 0 };
+      let exceptionCount = 0;
       for (const item of filtered) {
         const code = String(item.current_stage_status || '').trim().toUpperCase();
         if (code in statusCounts) statusCounts[code] += 1;
+        if (item.exception_flag) exceptionCount += 1;
       }
-      stats.textContent = `${filtered.length} shown · ${statusCounts.I} in process · ${statusCounts.R} ready`;
+      const stageLabel = fqState.stage === 'all' ? 'all stages' : fqState.stage.replace(/_/g, ' ');
+      const excHint = exceptionCount ? ` · ${exceptionCount} exception${exceptionCount === 1 ? '' : 's'}` : '';
+      stats.textContent = `${filtered.length} in queue · ${statusCounts.I} in process · ${statusCounts.R} ready · ${stageLabel}${excHint}`;
     }
   }
 
   if (meta) {
     meta.hidden = !fqState.cachedAt;
-    const packedHint = recentlyPacked
-      ? `Grouped by pack week · plan end date · cached ${fqState.packedCachedAt || fqState.cachedAt || '—'} · TTL ${fqState.packedCacheTtlSec || 300}s`
-      : `Source: synced staging (mfg_wo_status + pp_vouchers_cache) · cached ${fqState.cachedAt || '—'} · TTL ${fqState.cacheTtlSec}s · Sync ERP for fresh data`;
-    meta.textContent = fqState.cachedAt ? packedHint : '';
+    meta.textContent = fqState.cachedAt
+      ? `Source: synced staging (mfg_wo_status + pp_vouchers_cache) · cached ${fqState.cachedAt} · TTL ${fqState.cacheTtlSec}s · Sync ERP for fresh data`
+      : '';
   }
 
   fqUpdateSortHeaders();
@@ -767,36 +1297,49 @@ function fqApplyPayload(payload) {
   fqState.inspectors = payload.inspectors || [];
   fqState.assignmentCounts = payload.assignment_counts || {};
   fqState.cachedAt = payload.cached_at || '';
-  fqState.packedCachedAt = payload.packed_cached_at || payload.cached_at || '';
   fqState.cacheTtlSec = payload.cache_ttl_sec || 180;
-  fqState.packedCacheTtlSec = payload.packed_cache_ttl_sec || 300;
   fqState.weekRanges = payload.week_ranges || null;
   fqState.dataSource = payload.source || 'sync';
   fqState.loadHint = (!fqState.items.length && payload.hint) ? payload.hint : '';
   fqRecalcAssignmentCounts();
-  fqUpdateCounts(payload);
-  fqRenderAssigneeTabs();
+  fqUpdateCounts();
   fqRenderTable();
 }
 
 window.fqApplyPayload = fqApplyPayload;
 
-async function fqLoad({ refresh = false, includePacked = false } = {}) {
+async function fqSyncWoStatus() {
+  const res = await fetch(fqApiUrl('woStatusSync'), {
+    method: 'POST',
+    credentials: 'same-origin',
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (data.skipped) {
+    throw new Error(data.reason || 'WO status sync was skipped');
+  }
+  return data;
+}
+
+async function fqLoad({ refresh = false } = {}) {
   const loading = document.getElementById('fq-loading');
   if (loading) loading.hidden = false;
   const empty = document.getElementById('fq-empty');
   if (empty) empty.hidden = true;
   try {
+    if (refresh) {
+      fqToast('Syncing WO status from ERP…', 'info');
+      try {
+        await fqSyncWoStatus();
+      } catch (syncErr) {
+        fqToast(`${syncErr.message || syncErr} — showing last synced data`, 'error');
+      }
+    }
     const params = new URLSearchParams();
     if (refresh) params.set('refresh', '1');
-    if (includePacked) params.set('include_packed', '1');
     const qs = params.toString();
     const url = qs ? `${fqApiUrl('queue')}?${qs}` : fqApiUrl('queue');
     const payload = await fqFetchJson(url);
-    if (includePacked) {
-      fqState.recentlyPacked = payload.recently_packed || [];
-      fqState.packedLoaded = true;
-    }
     fqApplyPayload(payload);
   } catch (err) {
     fqShowLoadError(`Failed to load: ${err.message || err}`);
@@ -807,63 +1350,22 @@ async function fqLoad({ refresh = false, includePacked = false } = {}) {
 
 window.fqLoad = fqLoad;
 
-async function fqLoadRecentlyPacked({ refresh = false } = {}) {
-  if (fqState.packedLoading) return;
-  if (fqState.packedLoaded && !refresh) {
-    fqRenderTable();
-    return;
-  }
-  fqState.packedLoading = true;
-  const loading = document.getElementById('fq-loading');
-  if (loading) loading.hidden = false;
-  try {
-    const url = refresh
-      ? `${fqApiUrl('recentlyPacked')}?refresh=1`
-      : fqApiUrl('recentlyPacked');
-    const payload = await fqFetchJson(url);
-    fqState.recentlyPacked = payload.recently_packed || [];
-    fqState.packedLoaded = true;
-    fqState.packedCachedAt = payload.packed_cached_at || '';
-    fqState.packedCacheTtlSec = payload.packed_cache_ttl_sec || 300;
-    fqState.weekRanges = payload.week_ranges || fqState.weekRanges;
-    const countEl = document.getElementById('fq-count-recently-packed');
-    if (countEl) {
-      const count = Number(payload.recently_packed_count) || fqState.recentlyPacked.length;
-      countEl.textContent = String(count);
-      countEl.hidden = count <= 0;
-    }
-    fqRenderTable();
-  } catch (err) {
-    const empty = document.getElementById('fq-empty');
-    const emptyText = document.getElementById('fq-empty-text');
-    if (empty) empty.hidden = false;
-    if (emptyText) emptyText.textContent = `Failed to load recently packed: ${err.message || err}`;
-  } finally {
-    fqState.packedLoading = false;
-    if (loading) loading.hidden = true;
-  }
-}
-
 function fqSetScreen(screen) {
-  fqState.screen = screen;
+  fqState.screen = screen || 'queue';
+  if (fqState.screen === 'assignments') {
+    if (!fqState.assignee) fqState.assignee = 'all';
+  } else {
+    fqState.assignee = 'all';
+    if (fqState.sortCol === 'inspector_name') {
+      fqState.sortCol = '';
+      fqState.sortDir = 'asc';
+    }
+  }
   fqCloseDetail();
   fqRenderTable();
 }
 
-function fqSetView(view) {
-  fqState.view = view;
-  document.querySelectorAll('[data-fq-view]').forEach((btn) => {
-    const active = btn.dataset.fqView === view;
-    btn.classList.toggle('is-active', active);
-    btn.setAttribute('aria-selected', active ? 'true' : 'false');
-  });
-  fqCloseDetail();
-  if (view === 'recently_packed') {
-    fqLoadRecentlyPacked();
-    return;
-  }
-  fqRenderTable();
-}
+window.fqSetScreen = fqSetScreen;
 
 function fqSetStage(stage) {
   fqState.stage = stage;
@@ -875,42 +1377,10 @@ function fqSetStage(stage) {
   fqRenderTable();
 }
 
-function fqSetStatus(status) {
-  fqState.status = status;
-  document.querySelectorAll('[data-fq-status]').forEach((btn) => {
-    const active = btn.dataset.fqStatus === status;
-    btn.classList.toggle('is-active', active);
-    btn.setAttribute('aria-selected', active ? 'true' : 'false');
-  });
-  fqRenderTable();
-}
-
 function fqSetAssignee(assignee) {
   fqState.assignee = assignee || 'all';
-  fqRenderAssigneeTabs();
+  fqRenderAssigneeBoard();
   fqRenderTable();
-}
-
-function fqBindPsTypeDropdown() {
-  const dropdown = document.getElementById('fq-ps-type-dropdown');
-  const btn = document.getElementById('fq-ps-type-btn');
-  const panel = document.getElementById('fq-ps-type-panel');
-  if (!dropdown || !btn || !panel) return;
-
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    panel.hidden = !panel.hidden;
-  });
-  document.addEventListener('click', () => { panel.hidden = true; });
-  panel.addEventListener('click', (e) => e.stopPropagation());
-  panel.querySelectorAll('input[type="checkbox"]').forEach((input) => {
-    input.addEventListener('change', () => {
-      fqState.psTypes = new Set([...panel.querySelectorAll('input[type="checkbox"]:checked')].map((el) => el.value));
-      btn.textContent = `${fqPsTypeLabel()} ▾`;
-      fqRenderTable();
-    });
-  });
-  btn.textContent = `${fqPsTypeLabel()} ▾`;
 }
 
 function fqSetSort(col) {
@@ -925,87 +1395,137 @@ function fqSetSort(col) {
 }
 
 async function fqAddInspector(name) {
-  const res = await fetch(fqApiUrl('inspectors'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  if (data.inspector) fqState.inspectors.push(data.inspector);
-  fqState.inspectors.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const form = document.getElementById('fq-inspector-form');
+  const submitBtn = form?.querySelector('button[type="submit"]');
+  fqState.inspectorBusy = true;
+  if (submitBtn) submitBtn.disabled = true;
+  fqSetInspectorStatus('Saving…', 'pending');
   fqRenderInspectorPanel();
+  try {
+    const res = await fetch(fqApiUrl('inspectors'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await fqReloadInspectors();
+    fqRecalcAssignmentCounts();
+    if (fqState.screen === 'assignments') fqRenderAssigneeBoard();
+    fqRenderTable();
+    const msg = data.message || (data.created ? `Added ${name}` : `${name} is already on the team`);
+    fqSetInspectorStatus(msg, data.created ? 'success' : 'info');
+    fqToast(msg, data.created ? 'success' : 'info');
+    return data;
+  } catch (err) {
+    fqSetInspectorStatus(err.message || 'Could not save inspector', 'error');
+    fqToast(err.message || 'Could not save inspector', 'error');
+    throw err;
+  } finally {
+    fqState.inspectorBusy = false;
+    if (submitBtn) submitBtn.disabled = false;
+    fqRenderInspectorPanel();
+  }
+}
+
+async function fqOpenInspectorModal() {
+  const modal = document.getElementById('fq-inspector-modal');
+  if (!modal) return;
+  fqSetInspectorStatus('');
+  modal.hidden = false;
+  modal.classList.add('is-open');
+  document.body.classList.add('fq-inspector-modal-open');
+  try {
+    await fqReloadInspectors();
+  } catch (err) {
+    console.error('inspector reload failed:', err);
+    fqRenderInspectorPanel();
+    fqSetInspectorStatus('Could not refresh inspector list', 'error');
+  }
+  document.getElementById('fq-inspector-name')?.focus();
+}
+
+function fqCloseInspectorModal() {
+  const modal = document.getElementById('fq-inspector-modal');
+  if (!modal) return;
+  modal.hidden = true;
+  modal.classList.remove('is-open');
+  document.body.classList.remove('fq-inspector-modal-open');
   fqRenderTable();
 }
 
+window.fqOpenInspectorModal = fqOpenInspectorModal;
+window.fqCloseInspectorModal = fqCloseInspectorModal;
+
 async function fqRemoveInspector(inspectorId) {
-  const res = await fetch(`${fqApiUrl('inspectors')}/${inspectorId}`, { method: 'DELETE' });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  fqState.inspectors = fqState.inspectors.filter((row) => String(row.inspector_id) !== String(inspectorId));
-  for (const item of fqState.items) {
-    if (String(item.inspector_id) === String(inspectorId)) {
-      item.inspector_id = null;
-      item.inspector_name = '';
-    }
-  }
-  fqRecalcAssignmentCounts();
-  fqRenderAssigneeTabs();
+  fqState.inspectorBusy = true;
+  fqSetInspectorStatus('Removing…', 'pending');
   fqRenderInspectorPanel();
-  fqRenderTable();
+  try {
+    const res = await fetch(`${fqApiUrl('inspectors')}/${inspectorId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const removedName = String(data.name || '').trim().toLowerCase();
+    for (const item of fqState.items) {
+      const sameId = String(item.inspector_id) === String(inspectorId);
+      const sameName = removedName && String(item.inspector_name || '').trim().toLowerCase() === removedName;
+      if (sameId || sameName) {
+        item.inspector_id = null;
+        item.inspector_name = '';
+      }
+    }
+    await fqReloadInspectors();
+    fqRecalcAssignmentCounts();
+    if (fqState.screen === 'assignments') fqRenderAssigneeBoard();
+    fqRenderTable();
+    const msg = data.message || `Removed ${data.name || 'inspector'}`;
+    fqSetInspectorStatus(msg, 'success');
+    fqToast(msg, 'success');
+    return data;
+  } catch (err) {
+    fqSetInspectorStatus(err.message || 'Could not remove inspector', 'error');
+    fqToast(err.message || 'Could not remove inspector', 'error');
+    throw err;
+  } finally {
+    fqState.inspectorBusy = false;
+    fqRenderInspectorPanel();
+  }
 }
 
 function fqBindOverlayEditors() {
-  const tbody = document.getElementById('fq-table-body');
-  if (!tbody) return;
-
-  tbody.addEventListener('change', async (e) => {
-    const el = e.target.closest('[data-fq-field]');
-    if (!el) return;
-    const key = el.dataset.key || '';
-    const item = fqFindItemByKey(key);
-    if (!item) return;
-    const field = el.dataset.fqField;
-    try {
-      if (field === 'inspector_id') {
-        await fqSaveOverlay(item, { inspector_id: el.value || null });
-      } else if (field === 'qa_due_date') {
-        await fqSaveOverlay(item, { qa_due_date: el.value || null });
-      }
-    } catch (err) {
-      console.error('overlay save failed:', err);
-    }
-  });
-
-  tbody.addEventListener('blur', async (e) => {
-    const el = e.target.closest('[data-fq-field="remarks"]');
-    if (!el) return;
-    const key = el.dataset.key || '';
-    const item = fqFindItemByKey(key);
-    if (!item || String(item.remarks || '') === String(el.value || '')) return;
-    try {
-      await fqSaveOverlay(item, { remarks: el.value || '' });
-    } catch (err) {
-      console.error('remarks save failed:', err);
-    }
+  if (window.__fqOverlayEditorsBound) return;
+  window.__fqOverlayEditorsBound = true;
+  // Inline onchange/onblur on cells is primary; this is a backup for older cached rows.
+  document.addEventListener('change', (e) => {
+    const el = e.target.closest('#fq-table-body [data-fq-field]');
+    if (!el || el.disabled || el.getAttribute('onchange')) return;
+    void fqPersistOverlayField(el);
+  }, true);
+  document.addEventListener('focusout', (e) => {
+    const el = e.target.closest('#fq-table-body [data-fq-field="remarks"]');
+    if (!el || el.disabled || el.getAttribute('onblur')) return;
+    void fqPersistOverlayField(el);
   }, true);
 }
 
 function fqBindEvents() {
-  document.getElementById('fq-refresh')?.addEventListener('click', () => {
-    const refreshPacked = fqState.view === 'recently_packed';
-    if (refreshPacked) {
-      fqLoadRecentlyPacked({ refresh: true });
-      return;
-    }
-    fqLoad({ refresh: true, includePacked: false });
+  if (window.__fqMainEventsBound) return;
+  window.__fqMainEventsBound = true;
+
+  document.getElementById('fq-table-wrap')?.addEventListener('click', (e) => {
+    const sortBtn = e.target.closest('[data-fq-sort]');
+    if (!sortBtn) return;
+    e.stopPropagation();
+    fqSetSort(sortBtn.dataset.fqSort || '');
   });
 
-  document.querySelectorAll('[data-fq-sort]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      fqSetSort(btn.dataset.fqSort || '');
-    });
+  document.getElementById('fq-refresh')?.addEventListener('click', async () => {
+    try {
+      await fqLoad({ refresh: true });
+      fqToast('Queue refreshed from ERP', 'success');
+    } catch (err) {
+      // fqLoad already surfaces load errors
+    }
   });
 
   document.querySelectorAll('[data-fq-screen]').forEach((btn) => {
@@ -1015,21 +1535,38 @@ function fqBindEvents() {
   document.querySelectorAll('[data-fq-stage]').forEach((btn) => {
     btn.addEventListener('click', () => fqSetStage(btn.dataset.fqStage || 'all'));
   });
-  document.querySelectorAll('[data-fq-status]').forEach((btn) => {
-    btn.addEventListener('click', () => fqSetStatus(btn.dataset.fqStatus || 'all'));
+
+  document.querySelectorAll('[data-fq-ps-type]').forEach((btn) => {
+    btn.addEventListener('click', () => fqTogglePsType(btn.dataset.fqPsType || ''));
   });
 
-  document.getElementById('fq-search')?.addEventListener('input', (e) => {
-    fqState.search = e.target.value || '';
-    fqRenderTable();
-  });
+  document.getElementById('fq-hide-done')?.addEventListener('click', () => fqToggleHideDone());
 
-  document.querySelectorAll('[data-fq-view]').forEach((btn) => {
-    btn.addEventListener('click', () => fqSetView(btn.dataset.fqView || 'active'));
-  });
-
-  document.getElementById('fq-table-body')?.addEventListener('click', (e) => {
+  document.getElementById('fq-table-body')?.addEventListener('click', async (e) => {
+    const toggle = e.target.closest('[data-fq-toggle]');
+    if (toggle) {
+      e.stopPropagation();
+      const item = fqResolveOverlayItem(toggle);
+      if (!item) {
+        fqToast('Could not match this row — refresh the page', 'error');
+        return;
+      }
+      const field = toggle.dataset.fqToggle;
+      try {
+        await fqToggleRowFlag(item, field);
+      } catch (err) {
+        fqToast(err.message || 'Save failed', 'error');
+      }
+      return;
+    }
     if (e.target.closest('[data-fq-field]')) return;
+    const moreBtn = e.target.closest('[data-fq-open-detail]');
+    if (moreBtn) {
+      e.stopPropagation();
+      const item = fqResolveOverlayItem(moreBtn);
+      if (item) fqOpenDetail(item);
+      return;
+    }
     const cell = e.target.closest('.fq-open-detail');
     if (!cell) return;
     const row = e.target.closest('.fq-row');
@@ -1052,55 +1589,69 @@ function fqBindEvents() {
   document.getElementById('fq-detail-close')?.addEventListener('click', fqCloseDetail);
   document.querySelector('#fq-detail [data-action="close-detail"]')?.addEventListener('click', fqCloseDetail);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') fqCloseDetail();
+    if (e.key !== 'Escape') return;
+    const inspectorModal = document.getElementById('fq-inspector-modal');
+    if (inspectorModal && !inspectorModal.hidden) {
+      fqCloseInspectorModal();
+      return;
+    }
+    fqCloseDetail();
   });
 
   document.getElementById('fq-inspector-form')?.addEventListener('submit', async (e) => {
+    if (!window.__fqInteractive) return;
     e.preventDefault();
     const input = document.getElementById('fq-inspector-name');
     const name = String(input?.value || '').trim();
-    if (!name) return;
+    if (!name || fqState.inspectorBusy) return;
     try {
       await fqAddInspector(name);
       if (input) input.value = '';
     } catch (err) {
-      alert(err.message || err);
+      // fqAddInspector already surfaced the error
     }
   });
 
   document.getElementById('fq-inspector-list')?.addEventListener('click', async (e) => {
+    if (!window.__fqInteractive) return;
     const btn = e.target.closest('[data-fq-remove-inspector]');
-    if (!btn) return;
+    if (!btn || btn.disabled || fqState.inspectorBusy) return;
     const id = btn.dataset.fqRemoveInspector;
     if (!id || !window.confirm('Remove this inspector from the QC team?')) return;
     try {
       await fqRemoveInspector(id);
     } catch (err) {
-      alert(err.message || err);
+      // fqRemoveInspector already surfaced the error
     }
   });
 
   fqBindOverlayEditors();
+  fqBindAssigneeBoard();
 }
 
 function fqInit() {
   try {
-    fqBindPsTypeDropdown();
-    fqBindEvents();
-    if (window.__fqBootDone && window.__FQ_BOOTSTRAP_ERROR__) {
-      return;
+    fqInitHideDone();
+    fqInitPsTypes();
+    if (!window.__fqEventsBound) {
+      fqBindEvents();
+      window.__fqEventsBound = true;
     }
+
     const bootErr = window.__FQ_BOOTSTRAP_ERROR__;
     if (bootErr) {
       fqShowLoadError(`Server could not load queue: ${bootErr}`);
       window.__fqBootDone = true;
       return;
     }
+
     const boot = window.__FQ_BOOTSTRAP__;
     if (boot && Array.isArray(boot.items)) {
       try {
         fqApplyPayload(boot);
         fqHideLoading();
+        window.__fqInteractive = true;
+        document.body.classList.add('fq-interactive-ready');
       } catch (renderErr) {
         console.error('finishing queue render failed:', renderErr);
         fqShowLoadError(`Failed to render queue: ${renderErr.message || renderErr}`);
@@ -1108,9 +1659,15 @@ function fqInit() {
       window.__fqBootDone = true;
       return;
     }
-    fqLoad().finally(() => {
-      window.__fqBootDone = true;
-    });
+
+    if (!window.__fqLoadStarted) {
+      window.__fqLoadStarted = true;
+      fqLoad().finally(() => {
+        window.__fqBootDone = true;
+        window.__fqInteractive = true;
+        document.body.classList.add('fq-interactive-ready');
+      });
+    }
   } catch (err) {
     console.error('finishing queue init failed:', err);
     fqShowLoadError(`Page setup failed: ${err.message || err}`);
@@ -1118,10 +1675,12 @@ function fqInit() {
   }
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', fqInit);
-} else {
+window.fqInit = fqInit;
+
+try {
   fqInit();
+} catch (bootErr) {
+  console.error('finishing queue boot failed:', bootErr);
 }
 
 window.addEventListener('error', (event) => {

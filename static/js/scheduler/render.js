@@ -2346,6 +2346,7 @@ function trialRenderDummyBlockDetailBody(group, block, machine) {
     ? `${escapeHtml(machine.machine_code || '')} · ${escapeHtml(machine.machine_category || '')}`
     : '—';
   const description = String(leader?.operation_name || leader?.remarks || '').trim();
+  const isCycle = typeof trialIsCycleDummyBlock === 'function' && trialIsCycleDummyBlock(leader);
   return `
     <div class="trial-op-detail trial-op-detail--dummy">
       <div class="trial-op-detail-head">
@@ -2356,8 +2357,9 @@ function trialRenderDummyBlockDetailBody(group, block, machine) {
       <dl class="trial-op-detail-grid">
         ${trialRenderCatalogOpDetailRow('Machine', machineLine)}
         ${vm.sequenceNo ? trialRenderCatalogOpDetailRow('Queue #', escapeHtml(String(vm.sequenceNo))) : ''}
-        ${trialRenderCatalogOpDetailRow('Start', escapeHtml(vm.scheduleTimeText || '—'))}
-        ${trialRenderCatalogOpDetailRow('End', escapeHtml(vm.outputText || '—'))}
+        ${isCycle ? trialRenderCatalogOpDetailRow('Cycle', escapeHtml(`${vm.cycleMinutesPerQty} min`)) : ''}
+        ${trialRenderCatalogOpDetailRow(isCycle ? 'Queued' : 'Start', escapeHtml(vm.scheduleTimeText || '—'))}
+        ${trialRenderCatalogOpDetailRow(isCycle ? 'Scheduled end' : 'End', escapeHtml(vm.outputText || '—'))}
       </dl>
       <div class="trial-op-detail-actions">
         <button type="button" class="btn btn-primary btn-sm" onclick="closeModal(); openTrialDummyCardEditor(${blockId})">Edit</button>
@@ -2738,6 +2740,7 @@ function trialDuePillHtml(psId) {
 function trialBlockGroupViewModel(group, options = {}) {
   const leader = group.leader;
   const isDummy = typeof trialIsDummyBlock === 'function' && trialIsDummyBlock(leader);
+  const isFixedDummy = isDummy && typeof trialIsFixedDummyBlock === 'function' && trialIsFixedDummyBlock(leader);
   const psDisplay = trialBlockPsDisplay(group, leader);
   const psDueKey = psDisplay.partial ? `${psDisplay.base}::${psDisplay.partial}` : psDisplay.base;
   const opDisplay = trialBlockOpDisplay(leader);
@@ -2751,16 +2754,16 @@ function trialBlockGroupViewModel(group, options = {}) {
   const setupTitle = setupOn ? 'Setup time is included. Click to turn it off.' : 'Setup time is excluded. Click to turn it on.';
   const anchored = !!leader?.anchor_datetime;
   const anchorText = anchored ? trialFormatDt(leader.anchor_datetime) : '';
-  const scheduleTimeLabel = isDummy ? 'Start' : (anchored ? 'Anchor' : 'Queued');
-  const scheduleTimeText = isDummy
+  const scheduleTimeLabel = isFixedDummy ? 'Start' : (anchored ? 'Anchor' : 'Queued');
+  const scheduleTimeText = isFixedDummy
     ? trialFormatDt(trialBlockQueuedAt(leader))
     : (anchored ? anchorText : trialFormatDt(queuedAt));
-  const queuedTitle = isDummy
+  const queuedTitle = isFixedDummy
     ? `Start ${trialFormatDt(trialBlockQueuedAt(leader)) || '—'}`
     : (anchored
       ? `Anchor ${anchorText} · Queued ${trialFormatDt(queuedAt)} — tap to edit`
       : `Queued ${trialFormatDt(queuedAt) || '—'} — tap to set anchor`);
-  const outputTitle = isDummy ? 'End time' : trialBlockOutputTitle(leader || group);
+  const outputTitle = isFixedDummy ? 'End time' : trialBlockOutputTitle(leader || group);
   const outputPillClass = leader?.actual_end_at ? 'green' : (leader?.actual_start_at ? 'yellow' : '');
   const cycleMinutesPerQty = group.blocks.length > 1
     ? group.blocks.reduce((sum, block) => sum + Number(block.cycle_minutes_per_qty || 0), 0)
@@ -2799,6 +2802,7 @@ function trialBlockGroupViewModel(group, options = {}) {
     outputPillClass,
     anchored,
     isDummy,
+    isFixedDummy,
     materialStatus,
     materialChipClass: trialMaterialStatusClass(materialStatus),
     combinedLine: group.blocks.length > 1 ? `${group.blocks.length} ops combined` : '',
@@ -2937,7 +2941,7 @@ function trialRenderCompactBlockCard(vm, options = {}) {
             <span>${todayTarget != null ? fmt(todayTarget, 0) : '—'}</span>
           </span>`
     : '';
-  const metricsHtml = vm.isDummy
+  const metricsHtml = vm.isFixedDummy
     ? ''
     : `<span class="trial-block-compact-metrics" title="Qty / Output / Cycle">
               <span class="trial-block-compact-metric"><span class="trial-pill-label">${escapeHtml(mb('qty'))}</span>${vm.targetQty}</span>
@@ -3651,10 +3655,10 @@ function renderTrial(options = {}) {
               title="Download lane board as Excel (matches shop-floor layout)">
               Export Excel
             </button>
-            <a href="/finishing-queue"
+            <a href="${String(window.trialFinishingQueueUrl || '/qaqc-view').trim()}"
               class="btn btn-ghost btn-sm trial-finishing-queue-link"
-              title="Open finishing schedule queue (Deburring, Final Inspection, Packing)">
-              Post-machining queue
+              title="Open QAQC view (Deburring, Final Inspection, Packing)">
+              QAQC view
             </a>
             ${String(window.trialMachinistBoardUrl || '').trim() ? `
             <a href="${String(window.trialMachinistBoardUrl).trim()}" target="_blank" rel="noopener noreferrer"

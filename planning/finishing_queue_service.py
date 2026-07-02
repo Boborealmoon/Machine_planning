@@ -13,8 +13,20 @@ from planning.erp_wo_merge import (
     is_finishing_stage_desc,
 )
 from planning.helpers import one, rows
+from planning.process_sheets import format_planner_ps_id
 from planning.utils import compact_text, shipped_quantity_completed
 from sync import _pp_ps_id_prefix_params, _pp_ps_id_prefix_sql
+
+_TEMP_PS_PREFIX_LIKE = "[Temp]%"
+
+
+def _finishing_ps_prefix_sql(column: str) -> str:
+    return f"({_pp_ps_id_prefix_sql(column)} OR {column} LIKE %s)"
+
+
+def _finishing_ps_prefix_params() -> tuple:
+    return _pp_ps_id_prefix_params() + (_TEMP_PS_PREFIX_LIKE,)
+
 
 _tables_initialized = False
 
@@ -24,6 +36,10 @@ def _ensure_tables_once(con) -> None:
     if _tables_initialized:
         return
     ensure_finishing_queue_tables(con)
+    try:
+        dedupe_active_inspectors(con)
+    except Exception:
+        pass
     _tables_initialized = True
 
 
@@ -46,7 +62,7 @@ def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
 def _build_finishing_queue_staging_sql() -> tuple[str, tuple]:
     """One row per PP partial at its current open finishing stage (synced mfg_wo_status)."""
     finishing_match = finishing_stage_sql_match("ces.stage_desc")
-    prefix_sql = _pp_ps_id_prefix_sql("ces.source_mps_no")
+    prefix_sql = _finishing_ps_prefix_sql("ces.source_mps_no")
     sql = f"""
 WITH current_execution_stage AS (
     SELECT DISTINCT ON (source_mps_no, pp_partial_no)
@@ -150,7 +166,7 @@ ORDER BY
     fc.ps_id,
     fc.pp_partial_no
 """
-    return sql, (list(FINISHING_STAGE_DESCS),) + _pp_ps_id_prefix_params()
+    return sql, (list(FINISHING_STAGE_DESCS),) + _finishing_ps_prefix_params()
 
 
 def _build_recently_packed_staging_sql() -> tuple[str, tuple]:
@@ -158,7 +174,7 @@ def _build_recently_packed_staging_sql() -> tuple[str, tuple]:
     from planning.erp_wo_merge import finishing_pack_stage_sql_match
 
     pack_match = finishing_pack_stage_sql_match("ws.stage_desc")
-    prefix_sql = _pp_ps_id_prefix_sql("ws.source_mps_no")
+    prefix_sql = _finishing_ps_prefix_sql("ws.source_mps_no")
     sql = f"""
 WITH packed AS (
     SELECT DISTINCT ON (ws.source_mps_no, ws.pp_partial_no, TRIM(COALESCE(ws.stage_desc, '')))
@@ -218,7 +234,7 @@ LEFT JOIN LATERAL (
 ) m ON TRUE
 ORDER BY p.packed_on DESC, p.ps_id, p.pp_partial_no
 """
-    return sql, _pp_ps_id_prefix_params()
+    return sql, _finishing_ps_prefix_params()
 
 
 def fetch_finishing_queue_from_planner(con) -> list[dict[str, Any]]:
@@ -269,6 +285,76 @@ def ensure_finishing_queue_tables(con) -> None:
             WHERE inspector_id IS NOT NULL
         """
     )
+    try:
+        con.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_fq_inspector_name_active_unique
+                ON public.planner_finishing_queue_inspector (LOWER(TRIM(name)))
+                WHERE active = TRUE
+            """
+        )
+    except Exception:
+        pass
+    for ddl in (
+        "ALTER TABLE public.planner_finishing_queue_overlay ADD COLUMN IF NOT EXISTS checklist_done BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE public.planner_finishing_queue_overlay ADD COLUMN IF NOT EXISTS exception_flag BOOLEAN NOT NULL DEFAULT FALSE",
+    ):
+        try:
+            con.execute(ddl)
+        except Exception:
+            pass
+
+
+def dedupe_active_inspectors(con) -> int:
+    """Keep one active row per inspector name; re-point overlays; return rows deactivated."""
+    dupes = rows(
+        con.execute(
+            """
+            WITH ranked AS (
+                SELECT inspector_id,
+                       LOWER(TRIM(name)) AS name_key,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY LOWER(TRIM(name))
+                           ORDER BY inspector_id
+                       ) AS rn,
+                       FIRST_VALUE(inspector_id) OVER (
+                           PARTITION BY LOWER(TRIM(name))
+                           ORDER BY inspector_id
+                       ) AS keep_id
+                FROM planner_finishing_queue_inspector
+                WHERE active = TRUE
+            )
+            SELECT inspector_id, keep_id
+            FROM ranked
+            WHERE rn > 1
+            """
+        )
+    )
+    if not dupes:
+        return 0
+
+    remove_ids = [int(row["inspector_id"]) for row in dupes]
+    for row in dupes:
+        keep_id = int(row["keep_id"])
+        remove_id = int(row["inspector_id"])
+        con.execute(
+            """
+            UPDATE planner_finishing_queue_overlay
+            SET inspector_id = %s
+            WHERE inspector_id = %s
+            """,
+            (keep_id, remove_id),
+        )
+
+    con.execute(
+        """
+        UPDATE planner_finishing_queue_inspector
+        SET active = FALSE
+        WHERE inspector_id = ANY(%s)
+        """,
+        (remove_ids,),
+    )
+    return len(remove_ids)
 
 
 def _overlay_key(ps_id: str, pp_partial_no: int, stage_desc: str) -> tuple[str, int, str]:
@@ -280,18 +366,20 @@ def _overlay_key(ps_id: str, pp_partial_no: int, stage_desc: str) -> tuple[str, 
 
 
 def _planner_ps_id(ps_id: str, pp_partial_no: int) -> str:
-    return f"{compact_text(ps_id)}::{int(pp_partial_no or 1)}"
+    return format_planner_ps_id(ps_id, pp_partial_no)
 
 
 def load_inspectors(con) -> list[dict[str, Any]]:
     try:
+        _ensure_tables_once(con)
         return rows(
             con.execute(
                 """
-                SELECT inspector_id, name, active, created_at
+                SELECT DISTINCT ON (LOWER(TRIM(name)))
+                       inspector_id, name, active, created_at
                 FROM planner_finishing_queue_inspector
                 WHERE active = TRUE
-                ORDER BY LOWER(name), inspector_id
+                ORDER BY LOWER(TRIM(name)), inspector_id
                 """
             )
         )
@@ -320,7 +408,7 @@ def load_overlay_map(con, items: list[dict[str, Any]]) -> dict[tuple[str, int, s
             con.execute(
                 """
                 SELECT o.ps_id, o.pp_partial_no, o.stage_desc, o.remarks, o.inspector_id,
-                       o.qa_due_date, o.updated_at,
+                       o.qa_due_date, o.checklist_done, o.exception_flag, o.updated_at,
                        i.name AS inspector_name
                 FROM planner_finishing_queue_overlay o
                 LEFT JOIN planner_finishing_queue_inspector i
@@ -333,7 +421,9 @@ def load_overlay_map(con, items: list[dict[str, Any]]) -> dict[tuple[str, int, s
                 (ps_ids, partials, stages),
             )
         )
-    except Exception:
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("load_overlay_map failed: %s", exc)
         return {}
     return {
         _overlay_key(row.get("ps_id"), row.get("pp_partial_no"), row.get("stage_desc")): dict(row)
@@ -342,35 +432,35 @@ def load_overlay_map(con, items: list[dict[str, Any]]) -> dict[tuple[str, int, s
 
 
 def load_coway_edd_map(con, items: list[dict[str, Any]]) -> dict[str, str]:
+    """Coway EDD from planner_process_sheet — same source as delivery schedule."""
     if not items:
         return {}
-    planner_ids = []
-    seen = set()
+    source_ids: set[str] = set()
     for item in items:
-        pid = _planner_ps_id(item.get("ps_id"), item.get("pp_partial_no"))
-        if pid not in seen:
-            seen.add(pid)
-            planner_ids.append(pid)
-    if not planner_ids:
+        raw = compact_text(item.get("ps_id"))
+        if not raw:
+            continue
+        source_ids.add(raw.split("::")[0])
+    if not source_ids:
         return {}
 
     try:
         coway_rows = rows(
             con.execute(
                 """
-                SELECT planner_ps_id, coway_proposed_edd
+                SELECT source_ps_id, pp_partial_no, coway_proposed_edd
                 FROM planner_process_sheet
-                WHERE planner_ps_id = ANY(%s)
+                WHERE source_ps_id = ANY(%s)
                   AND coway_proposed_edd IS NOT NULL
                 """,
-                (planner_ids,),
+                (list(source_ids),),
             )
         )
     except Exception:
         return {}
     out: dict[str, str] = {}
     for row in coway_rows:
-        pid = compact_text(row.get("planner_ps_id"))
+        pid = format_planner_ps_id(row.get("source_ps_id"), row.get("pp_partial_no"))
         edd = row.get("coway_proposed_edd")
         if pid and edd:
             out[pid] = _serialize_value(edd) or ""
@@ -402,11 +492,16 @@ def enrich_finishing_items(con, raw_items: list[dict[str, Any]]) -> list[dict[st
         item["inspector_id"] = overlay.get("inspector_id")
         item["inspector_name"] = compact_text(overlay.get("inspector_name"))
         item["qa_due_date"] = _serialize_value(overlay.get("qa_due_date"))
+        item["checklist_done"] = bool(overlay.get("checklist_done"))
+        item["exception_flag"] = bool(overlay.get("exception_flag"))
         item["overlay_updated_at"] = _serialize_value(overlay.get("updated_at"))
 
         planner_id = _planner_ps_id(item.get("ps_id"), item.get("pp_partial_no"))
         item["planner_ps_id"] = planner_id
-        item["coway_proposed_edd"] = coway_map.get(planner_id) or ""
+        coway = coway_map.get(planner_id) or ""
+        due = compact_text(item.get("due_date"))
+        item["coway_proposed_edd"] = coway
+        item["commitment_date"] = coway or due
         enriched.append(item)
     return enriched
 
@@ -418,6 +513,7 @@ def fetch_finishing_queue_rows(con, **_kwargs) -> list[dict[str, Any]]:
 
 def fetch_finishing_queue_bundle(con, **_kwargs) -> dict[str, Any]:
     """Queue rows + inspectors in one planner connection."""
+    ensure_finishing_queue_tables(con)
     raw_rows = fetch_finishing_queue_rows(con)
     items = enrich_finishing_items(con, raw_rows)
     inspectors = load_inspectors(con)
@@ -433,6 +529,8 @@ def upsert_overlay(
     remarks: str | None = None,
     inspector_id: int | None = None,
     qa_due_date: str | None = None,
+    checklist_done: bool | None = None,
+    exception_flag: bool | None = None,
     clear_inspector: bool = False,
     clear_qa_due_date: bool = False,
 ) -> dict[str, Any]:
@@ -446,7 +544,7 @@ def upsert_overlay(
     existing = one(
         con.execute(
             """
-            SELECT remarks, inspector_id, qa_due_date
+            SELECT remarks, inspector_id, qa_due_date, checklist_done, exception_flag
             FROM planner_finishing_queue_overlay
             WHERE ps_id = %s AND pp_partial_no = %s AND stage_desc = %s
             """,
@@ -457,6 +555,8 @@ def upsert_overlay(
     next_remarks = existing.get("remarks", "") if existing else ""
     next_inspector = existing.get("inspector_id") if existing else None
     next_due = existing.get("qa_due_date") if existing else None
+    next_checklist_done = bool(existing.get("checklist_done")) if existing else False
+    next_exception_flag = bool(existing.get("exception_flag")) if existing else False
 
     if remarks is not None:
         next_remarks = compact_text(remarks)
@@ -469,21 +569,29 @@ def upsert_overlay(
     elif qa_due_date is not None:
         text = compact_text(qa_due_date)
         next_due = text[:10] if text else None
+    if checklist_done is not None:
+        next_checklist_done = bool(checklist_done)
+    if exception_flag is not None:
+        next_exception_flag = bool(exception_flag)
 
     row = one(
         con.execute(
             """
             INSERT INTO planner_finishing_queue_overlay
-                (ps_id, pp_partial_no, stage_desc, remarks, inspector_id, qa_due_date, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s::date, NOW())
+                (ps_id, pp_partial_no, stage_desc, remarks, inspector_id, qa_due_date,
+                 checklist_done, exception_flag, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s::date, %s, %s, NOW())
             ON CONFLICT (ps_id, pp_partial_no, stage_desc) DO UPDATE SET
                 remarks = EXCLUDED.remarks,
                 inspector_id = EXCLUDED.inspector_id,
                 qa_due_date = EXCLUDED.qa_due_date,
+                checklist_done = EXCLUDED.checklist_done,
+                exception_flag = EXCLUDED.exception_flag,
                 updated_at = NOW()
-            RETURNING ps_id, pp_partial_no, stage_desc, remarks, inspector_id, qa_due_date, updated_at
+            RETURNING ps_id, pp_partial_no, stage_desc, remarks, inspector_id, qa_due_date,
+                      checklist_done, exception_flag, updated_at
             """,
-            (ps, partial, stage, next_remarks, next_inspector, next_due),
+            (ps, partial, stage, next_remarks, next_inspector, next_due, next_checklist_done, next_exception_flag),
         )
     )
     inspector_name = ""
@@ -503,15 +611,62 @@ def upsert_overlay(
         "inspector_id": row.get("inspector_id"),
         "inspector_name": inspector_name,
         "qa_due_date": _serialize_value(row.get("qa_due_date")),
+        "checklist_done": bool(row.get("checklist_done")),
+        "exception_flag": bool(row.get("exception_flag")),
         "updated_at": _serialize_value(row.get("updated_at")),
     }
 
 
-def add_inspector(con, name: str) -> dict[str, Any]:
+def add_inspector(con, name: str) -> tuple[dict[str, Any], bool]:
+    """Return (inspector row, created_new). Reuses active/inactive row when name matches."""
     _ensure_tables_once(con)
     clean = compact_text(name)
     if not clean:
         raise ValueError("Inspector name is required")
+
+    existing = one(
+        con.execute(
+            """
+            SELECT inspector_id, name, active, created_at
+            FROM planner_finishing_queue_inspector
+            WHERE active = TRUE
+              AND LOWER(TRIM(name)) = LOWER(TRIM(%s))
+            ORDER BY inspector_id
+            LIMIT 1
+            """,
+            (clean,),
+        )
+    )
+    if existing:
+        return dict(existing), False
+
+    inactive = one(
+        con.execute(
+            """
+            SELECT inspector_id, name, active, created_at
+            FROM planner_finishing_queue_inspector
+            WHERE active = FALSE
+              AND LOWER(TRIM(name)) = LOWER(TRIM(%s))
+            ORDER BY inspector_id
+            LIMIT 1
+            """,
+            (clean,),
+        )
+    )
+    if inactive:
+        row = one(
+            con.execute(
+                """
+                UPDATE planner_finishing_queue_inspector
+                SET active = TRUE, name = %s
+                WHERE inspector_id = %s
+                RETURNING inspector_id, name, active, created_at
+                """,
+                (clean, int(inactive["inspector_id"])),
+            )
+        )
+        return (dict(row) if row else {}), True
+
     row = one(
         con.execute(
             """
@@ -522,17 +677,56 @@ def add_inspector(con, name: str) -> dict[str, Any]:
             (clean,),
         )
     )
-    return dict(row) if row else {}
+    return (dict(row) if row else {}), True
 
 
-def delete_inspector(con, inspector_id: int) -> bool:
+def delete_inspector(con, inspector_id: int) -> dict[str, Any] | None:
+    """Deactivate all active rows matching this inspector's name; clear assignments."""
     _ensure_tables_once(con)
+    row = one(
+        con.execute(
+            """
+            SELECT inspector_id, name
+            FROM planner_finishing_queue_inspector
+            WHERE inspector_id = %s AND active = TRUE
+            """,
+            (int(inspector_id),),
+        )
+    )
+    if not row:
+        return None
+
+    name = compact_text(row.get("name"))
+    ids = rows(
+        con.execute(
+            """
+            SELECT inspector_id
+            FROM planner_finishing_queue_inspector
+            WHERE active = TRUE
+              AND LOWER(TRIM(name)) = LOWER(TRIM(%s))
+            """,
+            (name,),
+        )
+    )
+    id_list = [int(item["inspector_id"]) for item in ids]
+    if not id_list:
+        return None
+
+    con.execute(
+        """
+        UPDATE planner_finishing_queue_overlay
+        SET inspector_id = NULL
+        WHERE inspector_id = ANY(%s)
+        """,
+        (id_list,),
+    )
     cur = con.execute(
         """
         UPDATE planner_finishing_queue_inspector
         SET active = FALSE
-        WHERE inspector_id = %s AND active = TRUE
+        WHERE inspector_id = ANY(%s) AND active = TRUE
         """,
-        (int(inspector_id),),
+        (id_list,),
     )
-    return bool(getattr(cur, "rowcount", 0))
+    removed = int(getattr(cur, "rowcount", 0) or 0)
+    return {"name": name, "removed_count": removed}

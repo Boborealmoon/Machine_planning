@@ -161,6 +161,17 @@ function jobRatioHideSections() {
   });
 }
 
+function jobRatioMonthCellClass(monthIndex, edge) {
+  const band = monthIndex % 2 === 0 ? 'job-ratio-month-band-a' : 'job-ratio-month-band-b';
+  const edgeCls = edge === 'start' ? 'job-ratio-month-start' : 'job-ratio-month-end';
+  return `${band} ${edgeCls}`;
+}
+
+function jobRatioYtdCellClass(edge) {
+  const edgeCls = edge === 'start' ? 'job-ratio-month-start job-ratio-ytd-start' : 'job-ratio-month-end job-ratio-ytd-end';
+  return `job-ratio-ytd-col ${edgeCls}`;
+}
+
 function jobRatioRenderMatrix() {
   const table = document.getElementById('job-ratio-matrix-table');
   const sub = document.getElementById('job-ratio-matrix-sub');
@@ -181,14 +192,17 @@ function jobRatioRenderMatrix() {
     ].join(' · ');
   }
 
-  const monthHeaders = months.flatMap(m => [
-    `<th colspan="2" class="job-ratio-month-head">${escapeHtml(m.label)}</th>`,
-  ]).join('');
-  const ytdHeader = `<th colspan="2" class="job-ratio-month-head job-ratio-ytd-head">Year to date</th>`;
+  const monthHeaders = months.map((m, idx) => {
+    const band = idx % 2 === 0 ? 'job-ratio-month-band-a' : 'job-ratio-month-band-b';
+    return `<th colspan="2" class="job-ratio-month-head job-ratio-month-start job-ratio-month-end ${band}">${escapeHtml(m.label)}</th>`;
+  }).join('');
+  const ytdHeader = '<th colspan="2" class="job-ratio-month-head job-ratio-ytd-head job-ratio-month-start job-ratio-month-end">Year to date</th>';
 
-  const subHeaders = [...months, { label: 'YTD' }].map(() =>
-    '<th class="job-ratio-sub-head">Jobs</th><th class="job-ratio-sub-head">Value ($)</th>'
-  ).join('');
+  const subHeaders = months.map((_, idx) => {
+    const startCls = jobRatioMonthCellClass(idx, 'start');
+    const endCls = jobRatioMonthCellClass(idx, 'end');
+    return `<th class="job-ratio-sub-head ${startCls}">Jobs</th><th class="job-ratio-sub-head ${endCls}">Value ($)</th>`;
+  }).join('') + `<th class="job-ratio-sub-head ${jobRatioYtdCellClass('start')}">Jobs</th><th class="job-ratio-sub-head ${jobRatioYtdCellClass('end')}">Value ($)</th>`;
 
   let body = '';
 
@@ -196,37 +210,37 @@ function jobRatioRenderMatrix() {
     const label = bucketMeta[bucketId]?.label || bucketId;
     body += `<tr class="job-ratio-data-row">
       <th scope="row" class="job-ratio-row-label">${escapeHtml(label)}</th>`;
-    months.forEach(m => {
+    months.forEach((m, idx) => {
       const b = m.buckets?.[bucketId] || {};
-      body += `<td class="job-ratio-num job-ratio-clickable" data-jr-drill="1" data-month="${m.month}" data-bucket="${bucketId}">${jobRatioFormatQty(b.count)}</td>`;
-      body += `<td class="job-ratio-num job-ratio-money job-ratio-clickable" data-jr-drill="1" data-month="${m.month}" data-bucket="${bucketId}">${jobRatioFormatMoney(b.value)}</td>`;
+      body += `<td class="job-ratio-num job-ratio-clickable ${jobRatioMonthCellClass(idx, 'start')}" data-jr-drill="1" data-month="${m.month}" data-bucket="${bucketId}">${jobRatioFormatQty(b.count)}</td>`;
+      body += `<td class="job-ratio-num job-ratio-money job-ratio-clickable ${jobRatioMonthCellClass(idx, 'end')}" data-jr-drill="1" data-month="${m.month}" data-bucket="${bucketId}">${jobRatioFormatMoney(b.value)}</td>`;
     });
     const yb = ytd?.buckets?.[bucketId] || {};
-    body += `<td class="job-ratio-num job-ratio-clickable job-ratio-ytd-col" data-jr-drill="1" data-bucket="${bucketId}">${jobRatioFormatQty(yb.count)}</td>`;
-    body += `<td class="job-ratio-num job-ratio-money job-ratio-ytd-col">${jobRatioFormatMoney(yb.value)}</td>`;
+    body += `<td class="job-ratio-num job-ratio-clickable ${jobRatioYtdCellClass('start')}" data-jr-drill="1" data-bucket="${bucketId}">${jobRatioFormatQty(yb.count)}</td>`;
+    body += `<td class="job-ratio-num job-ratio-money ${jobRatioYtdCellClass('end')}">${jobRatioFormatMoney(yb.value)}</td>`;
     body += '</tr>';
   });
 
-  body += `<tr class="job-ratio-total-row"><th scope="row" class="job-ratio-row-label">Total</th>`;
-  months.forEach(m => {
-    body += `<td class="job-ratio-num">${jobRatioFormatQty(m.total?.count)}</td>`;
-    body += `<td class="job-ratio-num job-ratio-money">${jobRatioFormatMoney(m.total?.value)}</td>`;
+  body += '<tr class="job-ratio-total-row"><th scope="row" class="job-ratio-row-label">Total</th>';
+  months.forEach((m, idx) => {
+    body += `<td class="job-ratio-num ${jobRatioMonthCellClass(idx, 'start')}">${jobRatioFormatQty(m.total?.count)}</td>`;
+    body += `<td class="job-ratio-num job-ratio-money ${jobRatioMonthCellClass(idx, 'end')}">${jobRatioFormatMoney(m.total?.value)}</td>`;
   });
-  body += `<td class="job-ratio-num job-ratio-ytd-col">${jobRatioFormatQty(ytd?.total?.count)}</td>`;
-  body += `<td class="job-ratio-num job-ratio-money job-ratio-ytd-col">${jobRatioFormatMoney(ytd?.total?.value)}</td></tr>`;
+  body += `<td class="job-ratio-num ${jobRatioYtdCellClass('start')}">${jobRatioFormatQty(ytd?.total?.count)}</td>`;
+  body += `<td class="job-ratio-num job-ratio-money ${jobRatioYtdCellClass('end')}">${jobRatioFormatMoney(ytd?.total?.value)}</td></tr>`;
 
   JOB_RATIO_BUCKETS.forEach(bucketId => {
     const target = data.targets?.[bucketId] || 0;
     const label = bucketMeta[bucketId]?.label || bucketId;
     body += `<tr class="job-ratio-ratio-row"><th scope="row" class="job-ratio-row-label">${escapeHtml(label)} — share of jobs &amp; value (target &gt;${target}%)</th>`;
-    months.forEach(m => {
+    months.forEach((m, idx) => {
       const b = m.buckets?.[bucketId] || {};
-      body += `<td class="job-ratio-num ${jobRatioTargetClass(b.count_ok)}">${jobRatioFormatPct(b.count_pct)}</td>`;
-      body += `<td class="job-ratio-num ${jobRatioTargetClass(b.value_ok)}">${jobRatioFormatPct(b.value_pct)}</td>`;
+      body += `<td class="job-ratio-num ${jobRatioTargetClass(b.count_ok)} ${jobRatioMonthCellClass(idx, 'start')}">${jobRatioFormatPct(b.count_pct)}</td>`;
+      body += `<td class="job-ratio-num ${jobRatioTargetClass(b.value_ok)} ${jobRatioMonthCellClass(idx, 'end')}">${jobRatioFormatPct(b.value_pct)}</td>`;
     });
     const yb = ytd?.buckets?.[bucketId] || {};
-    body += `<td class="job-ratio-num job-ratio-ytd-col ${jobRatioTargetClass(yb.count_ok)}">${jobRatioFormatPct(yb.count_pct)}</td>`;
-    body += `<td class="job-ratio-num job-ratio-ytd-col ${jobRatioTargetClass(yb.value_ok)}">${jobRatioFormatPct(yb.value_pct)}</td>`;
+    body += `<td class="job-ratio-num ${jobRatioYtdCellClass('start')} ${jobRatioTargetClass(yb.count_ok)}">${jobRatioFormatPct(yb.count_pct)}</td>`;
+    body += `<td class="job-ratio-num ${jobRatioYtdCellClass('end')} ${jobRatioTargetClass(yb.value_ok)}">${jobRatioFormatPct(yb.value_pct)}</td>`;
     body += '</tr>';
   });
 
