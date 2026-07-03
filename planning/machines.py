@@ -438,23 +438,102 @@ def fetch_machines(con):
     )
 
 
-# MPP board machines — hidden from the normal planner scheduler lanes.
-SCHEDULER_EXCLUDED_MACHINE_CODES = frozenset({"CNC 35", "CNC 36", "CNC 41"})
+# MPP machines (CNC 35/36/41) appear on both the main planner board and the MPP planner tab.
+# Lane data is stored separately: planner_run_block (main planner) vs planner_mpp_* (MPP tab).
+MPP_PLANNER_MACHINE_CODES = frozenset({"CNC 35", "CNC 36", "CNC 41"})
+SCHEDULER_EXCLUDED_MACHINE_CODES = MPP_PLANNER_MACHINE_CODES  # legacy alias
 MPP_PLANNER_GUARD_MSG = (
-    "CNC 35, CNC 36, and CNC 41 are on the MPP planner — use that board to schedule them."
+    "This block belongs to the MPP planner tab — edit it there, not on the main planner board."
 )
 
 
-def is_scheduler_excluded_machine(machine_row) -> bool:
+def is_mpp_planner_machine(machine_row) -> bool:
     code = compact_text((machine_row or {}).get("machine_no") or (machine_row or {}).get("machine_code"))
     if not code:
         return False
-    return code.upper() in {value.upper() for value in SCHEDULER_EXCLUDED_MACHINE_CODES}
+    return code.upper() in {value.upper() for value in MPP_PLANNER_MACHINE_CODES}
+
+
+is_scheduler_excluded_machine = is_mpp_planner_machine  # legacy alias
+
+
+def scheduler_blocks_exclude_mpp_planner_clause(alias: str = "b") -> str:
+    """SQL fragment: main planner lane blocks only (exclude MPP planner tab storage)."""
+    table_alias = compact_text(alias) or "b"
+    return f"""(
+        NOT EXISTS (
+            SELECT 1
+            FROM planner_mpp_cycle_op co
+            WHERE co.block_id = {table_alias}.block_id
+              AND COALESCE(co.block_id, 0) > 0
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM planner_run_block_group g
+            WHERE g.group_id = {table_alias}.group_id
+              AND COALESCE({table_alias}.group_id, 0) > 0
+              AND (
+                UPPER(COALESCE(g.group_type, '')) = 'MPP_CYCLE'
+                OR COALESCE(g.group_label, '') ILIKE 'MPP cycle%%'
+              )
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM planner_mpp_cycle c
+            WHERE c.group_id = {table_alias}.group_id
+              AND COALESCE({table_alias}.group_id, 0) > 0
+        )
+    )"""
+
+
+def is_mpp_planner_owned_block(con, block_id) -> bool:
+    """True when block_id belongs to the MPP planner tab (not main planner lanes)."""
+    bid = int(block_id or 0)
+    if bid <= 0:
+        return False
+    row = one(
+        con.execute(
+            """
+            SELECT b.group_id, g.group_type, g.group_label
+            FROM planner_run_block b
+            LEFT JOIN planner_run_block_group g ON g.group_id = b.group_id
+            WHERE b.block_id = %s
+            """,
+            (bid,),
+        )
+    )
+    if row and compact_text(row.get("group_type")).upper() == "MPP_CYCLE":
+        return True
+    if row and compact_text(row.get("group_label")).lower().startswith("mpp cycle"):
+        return True
+    group_id = int((row or {}).get("group_id") or 0)
+    if group_id > 0:
+        cycle_group = one(
+            con.execute(
+                "SELECT 1 FROM planner_mpp_cycle WHERE group_id = %s LIMIT 1",
+                (group_id,),
+            )
+        )
+        if cycle_group:
+            return True
+    linked = one(
+        con.execute(
+            """
+            SELECT 1
+            FROM planner_mpp_cycle_op
+            WHERE block_id = %s
+              AND COALESCE(block_id, 0) > 0
+            LIMIT 1
+            """,
+            (bid,),
+        )
+    )
+    return bool(linked)
 
 
 def fetch_scheduler_machines(con):
-    """Active machines shown on the normal planner board (excludes MPP lanes)."""
-    return [dict(row) for row in fetch_machines(con) if not is_scheduler_excluded_machine(row)]
+    """Active machines shown on the main planner board (includes MPP lanes)."""
+    return [dict(row) for row in fetch_machines(con)]
 
 
 def fetch_mpp_planner_machine_ids(con) -> list[int]:

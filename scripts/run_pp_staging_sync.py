@@ -28,6 +28,7 @@ from sync_progress import ErpSyncProgress
 from sync import (
     PP_STAGING_STEP_LABELS,
     PP_STAGING_STEP_ORDER,
+    _ErpSyncAdvisoryLock,
     _STEP_RUNNERS,
     resolve_pp_staging_steps,
 )
@@ -89,20 +90,29 @@ def main():
             _ensure_pp_staging_schema()
             progress.emit("  schema: staging views/tables verified")
 
+        erp_lock = _ErpSyncAdvisoryLock()
+        if not erp_lock.acquire():
+            progress.emit("  skipped: ERP sync already running (UI or scheduled task)")
+            progress.run_end(False)
+            sys.exit(0)
+
         failed = False
-        for index, step in enumerate(ordered, start=1):
-            label = PP_STAGING_STEP_LABELS.get(step, step)
-            progress.step_start(index, total, step, label)
-            try:
-                result = _STEP_RUNNERS[step](force=force)
-            except Exception as exc:
-                result = {"error": str(exc)}
-            progress.step_end(index, total, step, label, result)
-            if result.get("error"):
-                failed = True
-                break
-            if result.get("skipped") and not result.get("row_count"):
-                pass  # continue pipeline unless hard error
+        try:
+            for index, step in enumerate(ordered, start=1):
+                label = PP_STAGING_STEP_LABELS.get(step, step)
+                progress.step_start(index, total, step, label)
+                try:
+                    result = _STEP_RUNNERS[step](force=force)
+                except Exception as exc:
+                    result = {"error": str(exc)}
+                progress.step_end(index, total, step, label, result)
+                if result.get("error"):
+                    failed = True
+                    break
+                if result.get("skipped") and not result.get("row_count"):
+                    pass  # continue pipeline unless hard error
+        finally:
+            erp_lock.release()
 
         if failed:
             progress.run_end(False)

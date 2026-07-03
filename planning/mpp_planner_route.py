@@ -8,7 +8,12 @@ from flask import Blueprint, jsonify, render_template, request
 
 from db import planner_db_connect_error
 from .helpers import planner_db
-from .mpp_planner_queue_service import load_mpp_planner_queue, save_mpp_planner_queue
+from .mpp_planner_queue_service import (
+    _recover_db_transaction,
+    load_mpp_planner_queue,
+    mpp_auto_dequeue_on_page_load,
+    save_mpp_planner_queue,
+)
 from .mpp_planner_service import (
     fetch_mpp_planner_intake_meta,
     fetch_mpp_planner_jobs,
@@ -70,6 +75,13 @@ def api_mpp_planner_queue_get():
     try:
         with planner_db() as con:
             queue = load_mpp_planner_queue(con)
+            try:
+                deq = mpp_auto_dequeue_on_page_load(con)
+                if int((deq or {}).get("dequeued") or 0) > 0:
+                    queue = load_mpp_planner_queue(con)
+            except Exception as exc:
+                logger.warning("mpp planner auto-dequeue skipped: %s", exc)
+                _recover_db_transaction(con)
         return jsonify({"ok": True, **queue})
     except Exception as exc:
         friendly = planner_db_connect_error(exc)

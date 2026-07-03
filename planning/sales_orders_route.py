@@ -18,6 +18,14 @@ from .frame_agreement_service import (
 )
 from .helpers import planner_db, rows
 from .utils import compact_text, shipped_quantity_completed
+from .staged_erp import (
+    STAGED_MFG_PP_PARTIAL_SQL,
+    STAGED_MFG_PP_VCH_SQL,
+    STAGED_SO_ORDER_HEADER_SQL,
+    STAGED_SO_POSTED_DATES_SQL,
+    fetch_rows,
+    live_query,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +33,7 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 10
+_SCHEMA_VERSION = 11
 
 _NOTE_FIELDS = (
     "material_subcon",
@@ -52,8 +60,8 @@ SELECT
     pp.remarks,
     pp.customer_code,
     pp.mark_as_complete,
-    COALESCE(ps.process_sheet_no, pp.pp_voucher_no) AS process_sheet_no,
-    COALESCE(ps.sales_order_date, hdr.order_date) AS order_date,
+    pp.pp_voucher_no AS process_sheet_no,
+    hdr.order_date AS order_date,
     COALESCE(
         NULLIF(TRIM(pd.main_desc), ''),
         NULLIF(TRIM(det.line_item_description), ''),
@@ -71,17 +79,8 @@ SELECT
     det.qty AS so_det_qty,
     COALESCE(sq.qty_shipped, 0) AS qty_shipped
 FROM public.mfg_pp_vch pp
-LEFT JOIN (
-    SELECT DISTINCT ON (pp_voucher_no)
-        pp_voucher_no,
-        process_sheet_no,
-        sales_order_date,
-        inventory_code
-    FROM public.mfg_process_sheet_info_v1_view
-    ORDER BY pp_voucher_no, process_sheet_no
-) ps ON ps.pp_voucher_no = pp.pp_voucher_no
 LEFT JOIN public.mt_inventory pd
-       ON pd.inventory_code = COALESCE(ps.inventory_code, pp.inventory_code)
+       ON pd.inventory_code = pp.inventory_code
 LEFT JOIN public.so_order_view hdr
        ON hdr.sales_order_no = pp.source_voucher_no
 LEFT JOIN public.so_order_ost_det det
@@ -189,17 +188,8 @@ def _order_sort_key(order: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
-def _erp_query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
-    from db import get_conn, release_conn
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows_out = cur.fetchall()
-            return [_serialize_row(dict(row)) for row in rows_out]
-    finally:
-        release_conn(conn)
+def _erp_query(sql: str, params: tuple = (), *, live_sql: str | None = None) -> list[dict[str, Any]]:
+    return fetch_rows(sql, params, live_sql=live_sql or sql, domain="sales_orders")
 
 
 def _headers_by_sales_order(headers: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -307,6 +297,96 @@ def _default_material_in_overlay() -> dict[str, Any]:
     return {"material_in": False, "material_in_date": None}
 
 
+_PROCESS_SHEET_OVERLAY_LIVE_SQL = """
+SELECT DISTINCT ON (pp_voucher_no)
+    pp_voucher_no,
+    process_sheet_no,
+    inventory_code,
+    sales_order_date
+FROM public.mfg_process_sheet_info_v1_view
+WHERE pp_voucher_no = ANY(%s)
+ORDER BY pp_voucher_no, process_sheet_no
+"""
+
+
+def _load_process_sheet_overlay(pp_voucher_nos: list[str]) -> dict[str, dict[str, Any]]:
+    ids = [compact_text(v) for v in pp_voucher_nos if compact_text(v)]
+    if not ids:
+        return {}
+    try:
+        fetched = live_query(_PROCESS_SHEET_OVERLAY_LIVE_SQL, (ids,))
+    except Exception as exc:
+        logger.warning("process sheet overlay load skipped: %s", exc)
+        return {}
+
+    out: dict[str, dict[str, Any]] = {}
+    for row in fetched:
+        pp_no = compact_text(row.get("pp_voucher_no"))
+        if not pp_no:
+            continue
+        out[pp_no] = {
+            "process_sheet_no": compact_text(row.get("process_sheet_no")) or pp_no,
+            "inventory_code": compact_text(row.get("inventory_code")),
+            "sales_order_date": _serialize_value(row.get("sales_order_date")),
+        }
+    return out
+
+
+def _load_part_desc_map(inventory_codes: list[str]) -> dict[str, str]:
+    codes = [compact_text(v) for v in inventory_codes if compact_text(v)]
+    if not codes:
+        return {}
+    try:
+        fetched = live_query(
+            """
+            SELECT inventory_code, main_desc
+            FROM public.mt_inventory
+            WHERE inventory_code = ANY(%s)
+            """,
+            (codes,),
+        )
+    except Exception as exc:
+        logger.warning("part_desc overlay load skipped: %s", exc)
+        return {}
+
+    out: dict[str, str] = {}
+    for row in fetched:
+        code = compact_text(row.get("inventory_code"))
+        desc = compact_text(row.get("main_desc"))
+        if code and desc:
+            out[code] = desc
+    return out
+
+
+def _apply_process_sheet_overlay(
+    orders: list[dict[str, Any]],
+    overlay: dict[str, dict[str, Any]],
+    desc_by_inv: dict[str, str],
+) -> None:
+    for order in orders:
+        for pp in order.get("pp_vouchers") or []:
+            pp_no = compact_text(pp.get("pp_voucher_no"))
+            row = overlay.get(pp_no)
+            if not row:
+                continue
+            ps_no = compact_text(row.get("process_sheet_no"))
+            if ps_no:
+                pp["process_sheet_no"] = ps_no
+            so_date = row.get("sales_order_date")
+            if so_date:
+                pp["order_date"] = so_date
+            inv = compact_text(row.get("inventory_code"))
+            if not inv or inv == compact_text(pp.get("inventory_code")):
+                continue
+            pp["inventory_code"] = inv
+            main_desc = desc_by_inv.get(inv)
+            if not main_desc:
+                continue
+            current = compact_text(pp.get("description"))
+            if not current or current == compact_text(pp.get("bom_desc")):
+                pp["description"] = main_desc
+
+
 def _material_subcon_arrived(raw: Any) -> bool:
     return compact_text(raw).upper() == "ARRIVED"
 
@@ -327,6 +407,22 @@ def _process_sheet_for_pp_voucher(con, pp_voucher_no: str) -> str:
                         if ps:
                             return ps
 
+    try:
+        fetched = live_query(
+            """
+            SELECT process_sheet_no
+            FROM public.mfg_process_sheet_info_v1_view
+            WHERE pp_voucher_no = %s
+            ORDER BY process_sheet_no
+            LIMIT 1
+            """,
+            (pp_voucher_no,),
+        )
+        if fetched and compact_text(fetched[0].get("process_sheet_no")):
+            return compact_text(fetched[0].get("process_sheet_no"))
+    except Exception as exc:
+        logger.warning("live process sheet lookup for %s skipped: %s", pp_voucher_no, exc)
+
     row = one(
         con.execute(
             """
@@ -342,20 +438,6 @@ def _process_sheet_for_pp_voucher(con, pp_voucher_no: str) -> str:
     ps = compact_text(row.get("process_sheet_no")) if row else ""
     if ps:
         return ps
-
-    row = one(
-        con.execute(
-            """
-            SELECT ps_id
-            FROM pp_vouchers_cache
-            WHERE ps_id = %s
-            LIMIT 1
-            """,
-            (pp_voucher_no,),
-        )
-    )
-    if row and compact_text(row.get("ps_id")):
-        return compact_text(row.get("ps_id"))
 
     return pp_voucher_no
 
@@ -540,18 +622,38 @@ def _load_queued_machines_by_canonical_ps() -> dict[str, list[str]]:
     return out
 
 
-_STAGE_OVERLAY_SQL = """
-WITH wo AS (
+_STAGE_OVERLAY_LIVE_SQL = """
+WITH pp_partials AS (
+    SELECT DISTINCT ON (pp_voucher_no, partial_qty)
+        pp_voucher_no,
+        partial_qty,
+        pp_partial_no
+    FROM public.mfg_pp_partial
+    WHERE pp_voucher_no IS NOT NULL
+    ORDER BY pp_voucher_no, partial_qty, pp_partial_no
+),
+wo AS (
     SELECT
-        source_mps_no AS ps_base,
-        pp_partial_no,
-        stage_no,
-        stage_desc,
-        execution_status,
-        total_acc_qty_produced
-    FROM mfg_wo_status
-    WHERE source_mps_no = ANY(%s)
-      AND stage_no IS NOT NULL
+        t2.source_pp_no AS ps_base,
+        COALESCE(
+            NULLIF(t2.source_pp_partial_no, 0),
+            pp.pp_partial_no,
+            1
+        ) AS pp_partial_no,
+        t3.execution_status,
+        NULLIF(t2.stage_no::TEXT, '')::INTEGER AS stage_no,
+        TRIM(COALESCE(t3.stage_desc, '')) AS stage_desc,
+        t3.total_acc_qty_produced
+    FROM mfg_mps_vch t2
+    JOIN mfg_wo_vch t3
+      ON t2.wo_voucher_no = t3.voucher_no
+     AND t2.stage_no = t3.stage_no
+    LEFT JOIN pp_partials pp
+      ON pp.pp_voucher_no = t2.source_pp_no
+     AND pp.partial_qty = t3.wo_qty_required
+     AND COALESCE(t2.source_pp_partial_no, 0) = 0
+    WHERE t2.source_pp_no = ANY(%s)
+      AND t2.stage_no IS NOT NULL
 ),
 agg AS (
     SELECT
@@ -667,8 +769,7 @@ def _load_stage_overlay(process_sheet_nos: list[str]) -> dict[tuple[str, int], d
         return {}
 
     try:
-        with planner_db() as con:
-            fetched = rows(con.execute(_STAGE_OVERLAY_SQL, (bases,)))
+        fetched = live_query(_STAGE_OVERLAY_LIVE_SQL, (bases,))
     except Exception as exc:
         logger.warning("stage overlay load skipped: %s", exc)
         return {}
@@ -882,50 +983,63 @@ def _job_count(orders: list[dict[str, Any]]) -> int:
 def invalidate_sales_orders_cache() -> None:
     global _cache
     _cache = None
+    from .erp_route_cache import invalidate_prefix
+
+    invalidate_prefix("sales_orders:")
 
 
 def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, Any]]]:
-    global _cache
-    now = time.time()
-    if not refresh and _cache and now - _cache[0] < _CACHE_TTL_SEC:
-        return _cache[1]
+    from .erp_route_cache import cached_fetch
 
-    pp_rows = _erp_query(_MFG_PP_VCH_SQL)
-    notes_map = _load_notes_map([str(row.get("pp_voucher_no") or "") for row in pp_rows])
-    partials = _erp_query(_MFG_PP_PARTIAL_SQL)
-    headers = _erp_query(_SO_ORDER_HEADER_SQL)
-    posted_dates = _erp_query(_SO_POSTED_DATES_SQL)
-    orders = _build_orders_from_pp_vouchers(
-        pp_rows,
-        _partials_by_pp_voucher(partials),
-        _headers_by_sales_order(headers),
-        _posted_dates_by_sales_order(posted_dates),
-        notes_map,
-    )
-    process_sheets = [
-        pp.get("process_sheet_no")
-        for order in orders
-        for pp in (order.get("pp_vouchers") or [])
-        if pp.get("process_sheet_no")
-    ]
-    _apply_material_in_overlay(orders, _load_material_in_overlay(process_sheets))
-    _reconcile_subcon_material_in(orders)
-    _apply_stage_overlay(orders, _load_stage_overlay(process_sheets))
-    _apply_queued_machines_overlay(orders, _load_queued_machines_by_canonical_ps())
-    to_clear = _strip_completed_highlights(orders)
-    if to_clear:
-        _batch_clear_ps_highlights(to_clear)
-    frame_agreement_keys: set[str] = set()
-    try:
-        with planner_db() as con:
-            frame_agreement_keys = load_frame_agreement_part_keys(con)
-        apply_frame_agreement_flags(orders, frame_agreement_keys)
-    except Exception as exc:
-        logger.warning("frame agreement overlay skipped: %s", exc)
-    payload = _split_by_shipped_completion(orders)
-    payload["frame_agreement_parts"] = sorted(frame_agreement_keys)
-    _cache = (now, payload)
-    return payload
+    def _load() -> dict[str, list[dict[str, Any]]]:
+        pp_rows = _erp_query(STAGED_MFG_PP_VCH_SQL, live_sql=_MFG_PP_VCH_SQL)
+        notes_map = _load_notes_map([str(row.get("pp_voucher_no") or "") for row in pp_rows])
+        partials = _erp_query(STAGED_MFG_PP_PARTIAL_SQL, live_sql=_MFG_PP_PARTIAL_SQL)
+        headers = _erp_query(STAGED_SO_ORDER_HEADER_SQL, live_sql=_SO_ORDER_HEADER_SQL)
+        posted_dates = _erp_query(STAGED_SO_POSTED_DATES_SQL, live_sql=_SO_POSTED_DATES_SQL)
+        orders = _build_orders_from_pp_vouchers(
+            pp_rows,
+            _partials_by_pp_voucher(partials),
+            _headers_by_sales_order(headers),
+            _posted_dates_by_sales_order(posted_dates),
+            notes_map,
+        )
+        pp_nos = [str(row.get("pp_voucher_no") or "") for row in pp_rows]
+        ps_overlay = _load_process_sheet_overlay(pp_nos)
+        inv_codes = sorted(
+            {
+                compact_text(v.get("inventory_code"))
+                for v in ps_overlay.values()
+                if compact_text(v.get("inventory_code"))
+            }
+        )
+        _apply_process_sheet_overlay(orders, ps_overlay, _load_part_desc_map(inv_codes))
+        process_sheets = [
+            pp.get("process_sheet_no")
+            for order in orders
+            for pp in (order.get("pp_vouchers") or [])
+            if pp.get("process_sheet_no")
+        ]
+        _apply_material_in_overlay(orders, _load_material_in_overlay(process_sheets))
+        _reconcile_subcon_material_in(orders)
+        _apply_stage_overlay(orders, _load_stage_overlay(process_sheets))
+        _apply_queued_machines_overlay(orders, _load_queued_machines_by_canonical_ps())
+        to_clear = _strip_completed_highlights(orders)
+        if to_clear:
+            _batch_clear_ps_highlights(to_clear)
+        frame_agreement_keys: set[str] = set()
+        try:
+            with planner_db() as con:
+                frame_agreement_keys = load_frame_agreement_part_keys(con)
+            apply_frame_agreement_flags(orders, frame_agreement_keys)
+        except Exception as exc:
+            logger.warning("frame agreement overlay skipped: %s", exc)
+        payload = _split_by_shipped_completion(orders)
+        payload["frame_agreement_parts"] = sorted(frame_agreement_keys)
+        return payload
+
+    cache_key = f"sales_orders:v{_SCHEMA_VERSION}"
+    return cached_fetch(cache_key, _load, ttl_sec=_CACHE_TTL_SEC, refresh=refresh)
 
 
 def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:

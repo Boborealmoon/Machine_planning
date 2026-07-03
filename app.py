@@ -28,6 +28,7 @@ from planning.sales_orders_route import sales_orders_bp
 from planning.sales_report_route import sales_report_bp
 from planning.job_ratio_route import job_ratio_bp
 from planning.material_inspection_route import material_inspection_bp
+from planning.kobelco_mps_archive_route import kobelco_mps_archive_bp
 from planning.repeat_orders_route import repeat_orders_bp
 from planning.auk_oee_route import auk_oee_bp
 from planning.daily_output_route import (
@@ -44,12 +45,18 @@ from planning.finishing_queue_route import (
     LEGACY_FINISHING_QUEUE_PATHS,
     finishing_queue_bp,
 )
+from planning.driver_view_route import (
+    DRIVER_VIEW_PATH,
+    driver_view_bp,
+)
 from planning.capacity_monthly_route import capacity_monthly_bp
 from planning.preferred_machines_route import preferred_machines_bp
+from planning.queue_exit_history_route import queue_exit_history_bp
 from planning.mpp_planner_route import mpp_planner_bp
 from planning.inventory_enquiry_route import inventory_enquiry_bp
 from planning.excel_local_route import excel_local_bp
 from planning.frame_agreement_route import frame_agreement_bp
+from planning.email_route import email_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
@@ -65,10 +72,12 @@ app.register_blueprint(sales_orders_bp)
 app.register_blueprint(sales_report_bp)
 app.register_blueprint(job_ratio_bp)
 app.register_blueprint(material_inspection_bp)
+app.register_blueprint(kobelco_mps_archive_bp)
 app.register_blueprint(repeat_orders_bp)
 app.register_blueprint(auk_oee_bp)
 app.register_blueprint(bom_variation_bp)
 app.register_blueprint(finishing_queue_bp)
+app.register_blueprint(driver_view_bp)
 
 for _legacy_fq_path in LEGACY_FINISHING_QUEUE_PATHS:
     if _legacy_fq_path.lower() == FINISHING_QUEUE_PATH.lower():
@@ -84,10 +93,12 @@ for _legacy_fq_path in LEGACY_FINISHING_QUEUE_PATHS:
     )
 app.register_blueprint(capacity_monthly_bp)
 app.register_blueprint(preferred_machines_bp)
+app.register_blueprint(queue_exit_history_bp)
 app.register_blueprint(mpp_planner_bp)
 app.register_blueprint(inventory_enquiry_bp)
 app.register_blueprint(excel_local_bp)
 app.register_blueprint(frame_agreement_bp)
+app.register_blueprint(email_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 
@@ -190,6 +201,7 @@ def _normalize_gate_path(path: str) -> str:
 _FINISHING_QUEUE_PUBLIC_PATHS = frozenset(
     {FINISHING_QUEUE_PATH.lower(), *(p.lower() for p in LEGACY_FINISHING_QUEUE_PATHS)}
 )
+_DRIVER_VIEW_PUBLIC_PATHS = frozenset({DRIVER_VIEW_PATH.lower()})
 
 
 def _is_gate_public_path(path: str) -> bool:
@@ -202,6 +214,8 @@ def _is_gate_public_path(path: str) -> bool:
     ):
         return True
     if normalized in _FINISHING_QUEUE_PUBLIC_PATHS:
+        return True
+    if normalized in _DRIVER_VIEW_PUBLIC_PATHS:
         return True
     return normalized.startswith("/static/") or normalized.startswith("/api/")
 
@@ -260,6 +274,7 @@ def _inject_board_paths():
         "machinist_board_path": MACHINIST_BOARD_PATH,
         "machinist_board_canonical_path": MACHINIST_BOARD_PATH,
         "finishing_queue_path": FINISHING_QUEUE_PATH,
+        "driver_view_path": DRIVER_VIEW_PATH,
         "planner_path": PLANNER_PATH,
         "planner_gate_enabled": _planner_gate_enabled(),
         "planner_authenticated": _planner_authenticated(),
@@ -271,13 +286,13 @@ def _inject_board_paths():
 def _planner_cache_headers(response):
     """Prevent Cloudflare tunnel / browser from serving stale planner HTML or JS."""
     path = (request.path or "").lower()
-    if path in (MACHINIST_BOARD_PATH.lower(), FINISHING_QUEUE_PATH.lower()):
+    if path in (MACHINIST_BOARD_PATH.lower(), FINISHING_QUEUE_PATH.lower(), DRIVER_VIEW_PATH.lower()):
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
     if path == "/":
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
-    if path in (PLANNER_PATH.lower(), MACHINIST_BOARD_PATH.lower(), FINISHING_QUEUE_PATH.lower()):
+    if path in (PLANNER_PATH.lower(), MACHINIST_BOARD_PATH.lower(), FINISHING_QUEUE_PATH.lower(), DRIVER_VIEW_PATH.lower()):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["CDN-Cache-Control"] = "no-store"
@@ -553,12 +568,7 @@ def operations():
     return redirect(url_for("planner"))
 
 
-@app.get("/system")
-def system():
-    return redirect(url_for("planner"))
-
-
-# ── API: PP Vouchers ───────────────────────────────────────────────────────
+# /system — email settings UI (planning.email_route)
 
 _PP_VOUCHERS_COLS = [
     "ps_id", "pp_partial_no", "part_no", "description",
@@ -595,6 +605,7 @@ _BG_PP_SYNC: dict = {
     "results": None,
 }
 _BG_PP_SYNC_STALE_SECS = int(os.getenv("ERP_SYNC_STALE_SECS", "1800"))
+_ERP_SYNC_WAIT_MAX_SECS = int(os.getenv("ERP_SYNC_WAIT_MAX_SECS", "25"))
 
 
 def _pp_vouchers_cache_sql_parts():
@@ -2005,7 +2016,7 @@ def api_pp_staging_wait():
         timeout_sec = int(request.args.get("timeout", 30))
     except (TypeError, ValueError):
         timeout_sec = 30
-    timeout_sec = max(5, min(timeout_sec, 85))
+    timeout_sec = max(5, min(timeout_sec, _ERP_SYNC_WAIT_MAX_SECS))
     since = str(request.args.get("since") or "").strip()
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
@@ -3019,6 +3030,7 @@ if __name__ == "__main__":
     log.info("planner: http://127.0.0.1:%s%s", port, PLANNER_PATH)
     log.info("machinist board: http://127.0.0.1:%s%s", port, MACHINIST_BOARD_PATH)
     log.info("QAQC view: http://127.0.0.1:%s%s", port, FINISHING_QUEUE_PATH)
+    log.info("driver view: http://127.0.0.1:%s%s", port, DRIVER_VIEW_PATH)
     if _planner_gate_enabled():
         log.info("planner passcode gate: enabled (POST / then session unlock)")
     else:

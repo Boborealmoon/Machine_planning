@@ -121,6 +121,8 @@ RELOAD_DIRECT_POSTGRES = "direct_postgres"
 RELOAD_REST_DELETE_INSERT = "rest_delete_insert"
 
 PLANNER_STATEMENT_TIMEOUT_MS = int(os.getenv("PLANNER_STATEMENT_TIMEOUT_MS", "600000"))
+PLANNER_LOCK_TIMEOUT_MS = int(os.getenv("PLANNER_LOCK_TIMEOUT_MS", "30000"))
+_ERP_SYNC_ADVISORY_LOCK_KEY = 915_042_002
 
 
 def _planner_db_available() -> bool:
@@ -129,6 +131,7 @@ def _planner_db_available() -> bool:
 
 def _planner_set_timeout(cur) -> None:
     cur.execute(f"SET LOCAL statement_timeout = '{PLANNER_STATEMENT_TIMEOUT_MS}'")
+    cur.execute(f"SET LOCAL lock_timeout = '{PLANNER_LOCK_TIMEOUT_MS}'")
 
 
 def _planner_reload(table: str, columns: list, rows: list) -> int:
@@ -485,17 +488,8 @@ def run_material_per_bom_sync(force: bool = False) -> dict:
         return {"skipped": True, "reason": "sync already in progress"}
 
     try:
-        from db import get_conn, release_conn
-
         t0 = time.monotonic()
-        src = get_conn()
-        try:
-            with src.cursor() as scur:
-                scur.execute(_MATERIAL_PER_BOM_SQL)
-                rows = scur.fetchall()
-        finally:
-            release_conn(src)
-
+        rows = _domain_fetch_rows(_MATERIAL_PER_BOM_SQL)
         _supa_reload("material_per_bom", "_loaded_at", _MATERIAL_PER_BOM_COLS, rows)
 
         _last_material_sync_at = time.monotonic()
@@ -563,17 +557,8 @@ def run_bom_op_stage_sync(force: bool = False) -> dict:
         return {"skipped": True, "reason": "sync already in progress"}
 
     try:
-        from db import get_conn, release_conn
-
         t0 = time.monotonic()
-        src = get_conn()
-        try:
-            with src.cursor() as scur:
-                scur.execute(_BOM_OP_STAGE_SQL)
-                rows = scur.fetchall()
-        finally:
-            release_conn(src)
-
+        rows = _domain_fetch_rows(_BOM_OP_STAGE_SQL)
         _supa_reload("bom_op_stage", "_loaded_at", _BOM_OP_STAGE_COLS, rows)
 
         _last_bom_stage_sync_at = time.monotonic()
@@ -644,15 +629,8 @@ def run_pp_voucher_sync(force: bool = False) -> dict:
     if not _pp_voucher_sync_lock.acquire(blocking=False):
         return {"skipped": True, "reason": "sync already in progress"}
     try:
-        from db import get_conn, release_conn
         t0 = time.monotonic()
-        src = get_conn()
-        try:
-            with src.cursor() as scur:
-                scur.execute(_PP_VOUCHER_SQL)
-                rows = scur.fetchall()
-        finally:
-            release_conn(src)
+        rows = _domain_fetch_rows(_PP_VOUCHER_SQL)
         reload_mode = _staging_reload("pp_voucher", "_loaded_at", _PP_VOUCHER_COLS, rows)
         _last_pp_voucher_sync_at = time.monotonic()
         log.info("pp_voucher sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
@@ -683,15 +661,8 @@ def run_qty_shipped_sync(force: bool = False) -> dict:
     if not _qty_shipped_sync_lock.acquire(blocking=False):
         return {"skipped": True, "reason": "sync already in progress"}
     try:
-        from db import get_conn, release_conn
         t0 = time.monotonic()
-        src = get_conn()
-        try:
-            with src.cursor() as scur:
-                scur.execute(_QTY_SHIPPED_SQL)
-                rows = scur.fetchall()
-        finally:
-            release_conn(src)
+        rows = _domain_fetch_rows(_QTY_SHIPPED_SQL)
         reload_mode = _staging_reload("sum_qty_shipped_by_sales_order", "_loaded_at", _QTY_SHIPPED_COLS, rows)
         _last_qty_shipped_sync_at = time.monotonic()
         log.info("sum_qty_shipped sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
@@ -721,15 +692,8 @@ def run_process_sheet_sync(force: bool = False) -> dict:
     if not _process_sheet_sync_lock.acquire(blocking=False):
         return {"skipped": True, "reason": "sync already in progress"}
     try:
-        from db import get_conn, release_conn
         t0 = time.monotonic()
-        src = get_conn()
-        try:
-            with src.cursor() as scur:
-                scur.execute(_PROCESS_SHEET_SQL)
-                rows = scur.fetchall()
-        finally:
-            release_conn(src)
+        rows = _domain_fetch_rows(_PROCESS_SHEET_SQL)
         reload_mode = _staging_reload("mfg_process_sheet_info", "_loaded_at", _PROCESS_SHEET_COLS, rows)
         _last_process_sheet_sync_at = time.monotonic()
         log.info("mfg_process_sheet_info sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
@@ -769,15 +733,8 @@ def run_workorder_status_sync(force: bool = False) -> dict:
     if not _workorder_status_sync_lock.acquire(blocking=False):
         return {"skipped": True, "reason": "sync already in progress"}
     try:
-        from db import get_conn, release_conn
         t0 = time.monotonic()
-        src = get_conn()
-        try:
-            with src.cursor() as scur:
-                scur.execute(_WORKORDER_STATUS_SQL)
-                rows = scur.fetchall()
-        finally:
-            release_conn(src)
+        rows = _domain_fetch_rows(_WORKORDER_STATUS_SQL)
         reload_mode = _staging_reload("workorder_status", "_loaded_at", _WORKORDER_STATUS_COLS, rows)
         _last_workorder_status_sync_at = time.monotonic()
         log.info("workorder_status sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
@@ -806,15 +763,8 @@ def run_part_desc_sync(force: bool = False) -> dict:
     if not _part_desc_sync_lock.acquire(blocking=False):
         return {"skipped": True, "reason": "sync already in progress"}
     try:
-        from db import get_conn, release_conn
         t0 = time.monotonic()
-        src = get_conn()
-        try:
-            with src.cursor() as scur:
-                scur.execute(_PART_DESC_SQL)
-                rows = scur.fetchall()
-        finally:
-            release_conn(src)
+        rows = _domain_fetch_rows(_PART_DESC_SQL)
         reload_mode = _staging_reload("part_desc", "_loaded_at", _PART_DESC_COLS, rows)
         _last_part_desc_sync_at = time.monotonic()
         log.info("part_desc sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
@@ -886,15 +836,8 @@ def run_so_detail_sync(force: bool = False) -> dict:
     if not _so_detail_sync_lock.acquire(blocking=False):
         return {"skipped": True, "reason": "sync already in progress"}
     try:
-        from db import get_conn, release_conn
         t0 = time.monotonic()
-        src = get_conn()
-        try:
-            with src.cursor() as scur:
-                scur.execute(_SO_DETAIL_SQL)
-                rows = scur.fetchall()
-        finally:
-            release_conn(src)
+        rows = _domain_fetch_rows(_SO_DETAIL_SQL)
         reload_mode = _staging_reload("so_detail", "_loaded_at", _SO_DETAIL_COLS, rows)
         _last_so_detail_sync_at = time.monotonic()
         log.info("so_detail sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
@@ -927,15 +870,8 @@ def run_pp_partial_sync(force: bool = False) -> dict:
     if not _pp_partial_sync_lock.acquire(blocking=False):
         return {"skipped": True, "reason": "sync already in progress"}
     try:
-        from db import get_conn, release_conn
         t0 = time.monotonic()
-        src = get_conn()
-        try:
-            with src.cursor() as scur:
-                scur.execute(_PP_PARTIAL_SQL)
-                rows = scur.fetchall()
-        finally:
-            release_conn(src)
+        rows = _domain_fetch_rows(_PP_PARTIAL_SQL)
         reload_mode = _staging_reload("pp_partial", "_loaded_at", _PP_PARTIAL_COLS, rows)
         _last_pp_partial_sync_at = time.monotonic()
         log.info("pp_partial sync complete (%s) - %d rows in %dms", reload_mode, len(rows), int((time.monotonic() - t0) * 1000))
@@ -1036,6 +972,70 @@ _MFG_WO_STATUS_WO_ROWS_CORE = """
 
 def _domain_set_timeout(cur) -> None:
     cur.execute(f"SET LOCAL statement_timeout = '{DOMAIN_STATEMENT_TIMEOUT_MS}'")
+
+
+def _domain_fetch_rows(sql: str, params: tuple | None = None) -> list:
+    """Run a COMAIN read with statement timeout; always releases the pool connection."""
+    from db import get_conn, release_conn
+
+    src = get_conn()
+    try:
+        with src.cursor() as scur:
+            _domain_set_timeout(scur)
+            if params:
+                scur.execute(sql, params)
+            else:
+                scur.execute(sql)
+            return scur.fetchall()
+    finally:
+        release_conn(src)
+
+
+class _ErpSyncAdvisoryLock:
+    """Cross-process mutex for ERP staging (Flask UI + scheduled run_pp_staging_sync.py)."""
+
+    def __init__(self) -> None:
+        self._conn = None
+
+    def acquire(self) -> bool:
+        if not _planner_db_available():
+            return True
+        from db import planner_get_conn, planner_release_conn
+
+        conn = planner_get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_try_advisory_lock(%s) AS ok", (_ERP_SYNC_ADVISORY_LOCK_KEY,))
+                ok = bool(cur.fetchone()[0])
+            if ok:
+                conn.commit()
+                self._conn = conn
+                return True
+            conn.rollback()
+            planner_release_conn(conn)
+            return False
+        except Exception:
+            conn.rollback()
+            planner_release_conn(conn)
+            raise
+
+    def release(self) -> None:
+        if self._conn is None:
+            return
+        from db import planner_release_conn
+
+        conn = self._conn
+        self._conn = None
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(%s)", (_ERP_SYNC_ADVISORY_LOCK_KEY,))
+            conn.commit()
+        except Exception as exc:
+            # If Supavisor/network closes the connection after the sync work completed,
+            # the backend session is already gone and its advisory lock is released.
+            log.warning("ERP advisory lock release skipped: %s", exc)
+        finally:
+            planner_release_conn(conn)
 
 
 def _mfg_wo_status_unscoped() -> bool:
@@ -1142,24 +1142,12 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
         return {"skipped": True, "reason": "sync already in progress"}
 
     try:
-        from db import get_conn, release_conn
-
         scoped = not _mfg_wo_status_unscoped()
         sql, params = _build_mfg_wo_status_sql(scoped)
         t0 = time.monotonic()
-        src = get_conn()
-        try:
-            with src.cursor() as scur:
-                _domain_set_timeout(scur)
-                t_query = time.monotonic()
-                scur.execute(sql, params or None)
-                rows = scur.fetchall()
-                query_ms = int((time.monotonic() - t_query) * 1000)
-        finally:
-            try:
-                release_conn(src)
-            except Exception:
-                src.close()
+        t_query = time.monotonic()
+        rows = _domain_fetch_rows(sql, params or None)
+        query_ms = int((time.monotonic() - t_query) * 1000)
 
         t_reload = time.monotonic()
         reload_mode = _staging_reload(
@@ -1200,6 +1188,16 @@ PP_STAGING_STEP_ORDER = [
     "workorder_status",
     "qty_shipped",
     "so_detail",
+    "pp_voucher_hdr",
+    "pp_partial_detail",
+    "so_order_header",
+    "so_order_line",
+    "so_order_posted",
+    "lg_out_shipment_line",
+    "stg_inventory_bom_stage",
+    "stg_qc_inspection",
+    "stg_inventory_enquiry",
+    "stg_kobelco_mps_archive",
     "part_desc",
     "pp_partial",
     "mfg_wo_status",
@@ -1217,6 +1215,14 @@ PP_STAGING_STEP_LABELS = {
     "mfg_wo_status": "WO status",
     "pp_vouchers_cache": "Voucher cache",
 }
+
+from planning.sync_report_staging import (
+    REPORT_STAGING_LOCKS,
+    REPORT_STAGING_RUNNERS,
+    REPORT_STAGING_STEP_LABELS,
+)
+
+PP_STAGING_STEP_LABELS.update(REPORT_STAGING_STEP_LABELS)
 
 PP_STAGING_STEP_ALIASES = {
     "cache": "pp_vouchers_cache",
@@ -1236,6 +1242,7 @@ _STEP_RUNNERS = {
     "mfg_wo_status": run_mfg_wo_status_sync,
     "pp_vouchers_cache": run_sync,
 }
+_STEP_RUNNERS.update(REPORT_STAGING_RUNNERS)
 
 _STEP_LOCKS = {
     "pp_voucher": _pp_voucher_sync_lock,
@@ -1248,6 +1255,7 @@ _STEP_LOCKS = {
     "mfg_wo_status": _wo_status_sync_lock,
     "pp_vouchers_cache": _sync_lock,
 }
+_STEP_LOCKS.update(REPORT_STAGING_LOCKS)
 
 _last_step_results: dict[str, dict] = {}
 
@@ -1286,22 +1294,36 @@ def run_pp_staging_sync(steps: list[str] | None = None, force: bool = True) -> d
     """Run selected PP staging steps in pipeline order."""
     ordered = resolve_pp_staging_steps(steps)
     results: dict[str, dict] = {}
-    for step in ordered:
-        try:
-            result = _STEP_RUNNERS[step](force=force)
-        except Exception as exc:
-            result = {"error": str(exc)}
+    erp_lock = _ErpSyncAdvisoryLock()
+    if not erp_lock.acquire():
+        msg = "ERP sync already running (scheduled task or another browser tab)"
+        lock_result = {"skipped": True, "reason": msg}
+        if force:
+            lock_result["error"] = msg
+        results["lock"] = lock_result
+        results["_steps_requested"] = ordered
+        if force:
+            results["_failed_at"] = "lock"
+        return results
+    try:
+        for step in ordered:
+            try:
+                result = _STEP_RUNNERS[step](force=force)
+            except Exception as exc:
+                result = {"error": str(exc)}
+                _record_step_result(step, result)
+                results[step] = result
+                results["_failed_at"] = step
+                break
             _record_step_result(step, result)
             results[step] = result
-            results["_failed_at"] = step
-            break
-        _record_step_result(step, result)
-        results[step] = result
-        if result.get("error"):
-            results["_failed_at"] = step
-            break
-    results["_steps_requested"] = ordered
-    return results
+            if result.get("error"):
+                results["_failed_at"] = step
+                break
+        results["_steps_requested"] = ordered
+        return results
+    finally:
+        erp_lock.release()
 
 
 def get_pp_staging_status() -> dict:

@@ -75,6 +75,16 @@ const PP_SYNC_STEPS = [
   "workorder_status",
   "qty_shipped",
   "so_detail",
+  "pp_voucher_hdr",
+  "pp_partial_detail",
+  "so_order_header",
+  "so_order_line",
+  "so_order_posted",
+  "lg_out_shipment_line",
+  "stg_inventory_bom_stage",
+  "stg_qc_inspection",
+  "stg_inventory_enquiry",
+  "stg_kobelco_mps_archive",
   "part_desc",
   "pp_partial",
   "mfg_wo_status",
@@ -82,22 +92,43 @@ const PP_SYNC_STEPS = [
 ];
 
 const PP_SYNC_STEP_LABELS = {
+  lock: "Already running",
   pp_voucher: "PP vouchers",
   mfg_process_sheet_info: "Process sheets",
   workorder_status: "Work orders",
   qty_shipped: "Qty shipped",
   so_detail: "SO lines",
+  pp_voucher_hdr: "PP headers",
+  pp_partial_detail: "PP partials+",
+  so_order_header: "SO headers",
+  so_order_line: "SO pricing",
+  so_order_posted: "SO posted",
+  lg_out_shipment_line: "Shipments",
+  stg_inventory_bom_stage: "BOM stages",
+  stg_qc_inspection: "QC inspect",
+  stg_inventory_enquiry: "Inventory",
+  stg_kobelco_mps_archive: "Kobelco MPS",
   part_desc: "Parts",
   pp_partial: "Partials",
   mfg_wo_status: "WO status",
   pp_vouchers_cache: "Cache",
 };
 
-async function fetchPpStagingWait(since = "", timeoutSec = 30) {
+async function fetchPpStagingWait(since = "", timeoutSec = 20) {
   const params = new URLSearchParams({ timeout: String(timeoutSec) });
   if (since) params.set("since", since);
   const res = await fetch(`/api/pp-staging/wait?${params}`);
-  const data = await res.json().catch(() => ({}));
+  const raw = await res.text();
+  let data = {};
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch {
+    if (res.status === 502 || (raw && raw.includes("Bad gateway"))) {
+      throw new Error(
+        "Server unreachable during ERP sync (502). The app may be busy loading PP vouchers from COMAIN — wait a minute and retry, or run scripts/run_erp_sync.ps1 on the on-prem PC."
+      );
+    }
+  }
   if (!res.ok) {
     throw new Error(data.error || res.statusText || "Could not read sync status");
   }
@@ -173,7 +204,7 @@ async function startBackgroundPpSync(steps = null) {
 async function waitForBackgroundPpSync(onProgress) {
   let token = "";
   for (;;) {
-    const status = await fetchPpStagingWait(token, 30);
+    const status = await fetchPpStagingWait(token, 20);
     token = status.progress_token || token;
     onProgress?.(ppSyncProgressFromStatus(status));
     const bg = status.background_sync || {};

@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Kobelco MPS Archive{% endblock %}
+{% block main_class %}app-main--new-orders{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=kobelco-mps-archive-20260702">{% endblock %}
+{% block content %}
+<style>
+  .kma-page { max-width: 100%; }
+  .kma-table-wrap { overflow-x: auto; }
+  .kma-table { min-width: 2200px; }
+  .kma-table .kma-desc { min-width: 180px; max-width: 280px; }
+  .kma-table .kma-line-desc { min-width: 160px; max-width: 240px; }
+</style>
+<div class="kma-page new-orders-page">
+  <div class="new-orders-header">
+    <div>
+      <h1 class="new-orders-title">Kobelco MPS Archive</h1>
+      <p class="new-orders-subtitle">
+        MPS sales order lines from <strong>so_order_kobelco_view</strong> with shipment due dates,
+        process sheet numbers, inspection report / COC references, and serial remarks.
+        Filtered to <strong>segment_1_code = MPS</strong> and <strong>order_date &gt; 2025-01-01</strong>
+        (matches the Power Query source). Live COMAIN read — cached in memory for 5 minutes.
+      </p>
+    </div>
+    <div class="new-orders-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="kma-copy-ps" title="Copy PS numbers from visible rows">Copy PS</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="kma-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="new-orders-toolbar card">
+    <label class="new-orders-filter new-orders-filter--grow">
+      <span>Search</span>
+      <span class="planner-page-search-wrap">
+        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="kma-search" class="planner-page-search-input" type="search" placeholder="SO, PS, part, customer, PO, S/N, IR, COC..." autocomplete="off">
+      </span>
+    </label>
+    <div class="new-orders-stats" id="kma-stats"></div>
+  </div>
+
+  <div id="kma-loading" class="loading"><div class="spinner"></div> Loading Kobelco MPS archive...</div>
+  <div id="kma-table-wrap" class="new-orders-table-wrap card kma-table-wrap" hidden>
+    <table class="new-orders-table kma-table">
+      <thead>
+        <tr>
+          <th>PK SO</th>
+          <th>Posted Date</th>
+          <th>PS Number</th>
+          <th>Sales Quotation No.</th>
+          <th>Customer</th>
+          <th>Line</th>
+          <th>Dwg/P/N</th>
+          <th>S/N</th>
+          <th>Description</th>
+          <th>Customer PO</th>
+          <th>Qty</th>
+          <th>Due Date</th>
+          <th>Blank1</th>
+          <th>Blank2</th>
+          <th>Inspection Report No.</th>
+          <th>COC No.</th>
+          <th>Line item description</th>
+          <th>Segment</th>
+        </tr>
+      </thead>
+      <tbody id="kma-table-body"></tbody>
+    </table>
+  </div>
+  <div id="kma-empty" class="new-orders-empty card" hidden>
+    <p id="kma-empty-text">No rows match your search.</p>
+  </div>
+  <p class="mi-meta" id="kma-meta" hidden></p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=kobelco-mps-archive-20260702"></script>
+<script src="{{ url_for('static', filename='js/kobelco_mps_archive.js') }}?v=kobelco-mps-archive-20260702"></script>
+{% endblock %}

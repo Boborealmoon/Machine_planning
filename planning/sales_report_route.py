@@ -20,6 +20,15 @@ from .sales_report_alloc import (
     integrity_check,
     ps_type_from_process_sheet,
 )
+from .staged_erp import (
+    STAGED_BOOKED_SQL,
+    STAGED_PP_JOBS_SQL,
+    STAGED_PP_PARTIALS_SQL,
+    STAGED_SHIPMENTS_SQL,
+    STAGED_SO_LINES_SQL,
+    fetch_rows,
+    serialize_row as _serialize_row,
+)
 from .utils import compact_text
 
 logger = logging.getLogger(__name__)
@@ -241,37 +250,8 @@ ORDER BY first_posted_datetime DESC, det.sales_order_no, line_item_no
 """
 
 
-def _serialize_value(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, tuple):
-        return [_serialize_value(item) for item in value]
-    if isinstance(value, datetime):
-        return value.isoformat(sep=" ", timespec="seconds")
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, Decimal):
-        return float(value)
-    if isinstance(value, bool):
-        return value
-    return value
-
-
-def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {key: _serialize_value(val) for key, val in row.items()}
-
-
-def _erp_query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
-    from db import get_conn, release_conn
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows_out = cur.fetchall()
-            return [_serialize_row(dict(row)) for row in rows_out]
-    finally:
-        release_conn(conn)
+def _erp_query(sql: str, params: tuple = (), *, live_sql: str | None = None) -> list[dict[str, Any]]:
+    return fetch_rows(sql, params, live_sql=live_sql or sql)
 
 
 def _sum_field(rows: list[dict[str, Any]], field: str) -> float:
@@ -696,14 +676,19 @@ def _fetch_monthly_report(year: int, month: int, start_d: date, end_d: date, *, 
         if cached and now - cached[0] < _CACHE_TTL_SEC:
             return cached[1]
 
-    so_lines = _erp_query(_SO_LINES_SQL)
-    pp_jobs = _erp_query(_PP_JOBS_SQL)
-    pp_partials = _erp_query(_PP_PARTIALS_SQL)
+    so_lines = _erp_query(STAGED_SO_LINES_SQL, live_sql=_SO_LINES_SQL)
+    pp_jobs = _erp_query(STAGED_PP_JOBS_SQL, live_sql=_PP_JOBS_SQL)
+    pp_partials = _erp_query(STAGED_PP_PARTIALS_SQL, live_sql=_PP_PARTIALS_SQL)
     shipments_raw = _erp_query(
-        _SHIPMENTS_SQL,
+        STAGED_SHIPMENTS_SQL,
         (start_d.isoformat(), start_d.isoformat(), end_d.isoformat()),
+        live_sql=_SHIPMENTS_SQL,
     )
-    booked = _erp_query(_BOOKED_SQL, (start_d.isoformat(), end_d.isoformat()))
+    booked = _erp_query(
+        STAGED_BOOKED_SQL,
+        (start_d.isoformat(), end_d.isoformat()),
+        live_sql=_BOOKED_SQL,
+    )
 
     alloc = _build_allocated_payload(so_lines, pp_jobs, shipments_raw, pp_partials)
     open_lines = alloc["allocated_open_lines"]
@@ -758,12 +743,13 @@ def _fetch_ytd_report(year: int, *, refresh: bool = False) -> dict[str, Any]:
 
     year_start = date(year, 1, 1)
     year_end = date(year, 12, 31)
-    so_lines = _erp_query(_SO_LINES_SQL)
-    pp_jobs = _erp_query(_PP_JOBS_SQL)
-    pp_partials = _erp_query(_PP_PARTIALS_SQL)
+    so_lines = _erp_query(STAGED_SO_LINES_SQL, live_sql=_SO_LINES_SQL)
+    pp_jobs = _erp_query(STAGED_PP_JOBS_SQL, live_sql=_PP_JOBS_SQL)
+    pp_partials = _erp_query(STAGED_PP_PARTIALS_SQL, live_sql=_PP_PARTIALS_SQL)
     shipments_raw = _erp_query(
-        _SHIPMENTS_SQL,
+        STAGED_SHIPMENTS_SQL,
         (year_start.isoformat(), year_start.isoformat(), year_end.isoformat()),
+        live_sql=_SHIPMENTS_SQL,
     )
     alloc = _build_allocated_payload(so_lines, pp_jobs, shipments_raw, pp_partials)
     open_lines = alloc["allocated_open_lines"]
@@ -787,6 +773,9 @@ def invalidate_sales_report_cache() -> None:
     global _monthly_cache, _ytd_cache
     _monthly_cache = {}
     _ytd_cache = {}
+    from .erp_route_cache import invalidate_prefix
+
+    invalidate_prefix("sales_report:")
 
 
 @sales_report_bp.get("/sales-report")

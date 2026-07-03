@@ -97,8 +97,12 @@ function trialRecalcStartIndex(existingIds, orderedIds) {
 function trialMachineBlockOrder(machineId) {
   const mid = Number(machineId || 0);
   if (!mid) return [];
-  return (trialState.blocks || [])
-    .filter(block => Number(block.machine_id) === mid && block.active !== false)
+  const blocks = typeof trialBlocksForMachine === 'function'
+    ? trialBlocksForMachine(mid)
+    : (trialState.blocks || []).filter(block =>
+      Number(block.machine_id) === mid && block.active !== false
+    );
+  return blocks
     .sort((a, b) => (
       Number(a.queue_position || 0) - Number(b.queue_position || 0)
       || Number(a.block_id || 0) - Number(b.block_id || 0)
@@ -156,6 +160,16 @@ function trialDirtyTailByMachinePayload(machineIds) {
     if (mid && blockId) payload[String(mid)] = Number(blockId);
   });
   return payload;
+}
+
+function trialAfterQueueMutation(machineIds, result, options = {}) {
+  const ids = [...new Set((machineIds || []).map(Number).filter(Boolean))];
+  if (!ids.length) return;
+  if (result?.recalculated || result?.tail_recalculated) {
+    trialClearDirtyMachines(ids);
+    return;
+  }
+  trialMarkDirtyMachines(ids, options);
 }
 
 function trialMarkDirtyMachines(machineIds, options = {}) {
@@ -527,6 +541,7 @@ function trialNormalizeBlockFromApi(block) {
 function trialMergeBlockFromApi(block) {
   const normalized = trialNormalizeBlockFromApi(block);
   if (!normalized || !normalized.block_id) return;
+  if (typeof trialIsMainPlannerLaneBlock === 'function' && !trialIsMainPlannerLaneBlock(normalized)) return;
   const blocks = Array.isArray(trialState.blocks) ? [...trialState.blocks] : [];
   const idx = blocks.findIndex(b => String(b.block_id) === String(normalized.block_id));
   if (idx >= 0) blocks[idx] = { ...blocks[idx], ...normalized };
@@ -587,11 +602,12 @@ function trialApplyMachineRefreshPayload(machineIds, payload) {
 }
 
 function trialApplyMachineRefreshFromResponse(machineIds, response) {
-  let applied = trialApplyMachineRefreshPayload(machineIds, response?.machine_refresh);
-  if (!applied && response?.block) {
+  if (response?.block) {
+    if (typeof trialPinBlock === 'function') trialPinBlock(response.block);
     trialMergeBlockFromApi(response.block);
-    applied = true;
   }
+  const applied = trialApplyMachineRefreshPayload(machineIds, response?.machine_refresh)
+    || Boolean(response?.block);
   if (!applied) return false;
   trialScheduleRender(machineIds, { deferCatalog: true });
   return true;
@@ -713,7 +729,7 @@ async function trialFinalizeCatalogQueueSchedule({ catalogCard, machineId, resul
     }
   }
   await refreshMachines(affectedIds, { response: result });
-  trialMarkDirtyMachines(affectedIds, {
+  trialAfterQueueMutation(affectedIds, result, {
     skipRender: true,
     queueOrders,
     tailFromBlockId: result?.block?.block_id,
@@ -721,8 +737,20 @@ async function trialFinalizeCatalogQueueSchedule({ catalogCard, machineId, resul
   if (typeof trialRerenderCatalogFromBlocks === 'function') {
     trialRerenderCatalogFromBlocks();
   }
+  if (typeof trialScheduleRender === 'function') {
+    trialScheduleRender(affectedIds, { deferCatalog: true, preserveScroll: true });
+  }
   const machine = (trialState.machines || []).find(row => Number(row.machine_id) === numericMachineId);
   const label = machine?.machine_code || `Machine ${numericMachineId}`;
+  const savedOnMachine = Boolean(
+    result?.ok
+    && resultBlock
+    && Number(resultBlock.machine_id) === numericMachineId,
+  );
+  if (!savedOnMachine) {
+    toast(`Could not queue on ${label}. Try again.`, 'error');
+    return { ok: false, duplicate: false };
+  }
   const onLane = trialCatalogOpOnLane(catalogCard, numericMachineId, resultBlock);
   if (result?.duplicate) {
     const partialLabel = typeof trialCatalogPartialIndex === 'function'
@@ -773,19 +801,19 @@ async function trialFinalizeCatalogQueueSchedule({ catalogCard, machineId, resul
     return { ok: true, duplicate: false };
   }
   toast(
-    `Queue saved but the card did not appear on ${label}. Clear the date filter or reload the board.`,
-    'error',
+    `Queued on ${label} — hidden by the date filter. Clear dates to see it on the lane.`,
+    'info',
   );
-  return { ok: false, duplicate: false };
+  return { ok: true, duplicate: false, hiddenByDateFilter: true };
 }
 
 function trialMergeBlocksWithSchedule(scheduleBlocks) {
   const merged = new Map();
   (scheduleBlocks || []).forEach(block => {
     const normalized = trialNormalizeBlockFromApi(block);
-    if (normalized?.block_id) {
-      merged.set(String(normalized.block_id), normalized);
-    }
+    if (!normalized?.block_id) return;
+    if (typeof trialIsMainPlannerLaneBlock === 'function' && !trialIsMainPlannerLaneBlock(normalized)) return;
+    merged.set(String(normalized.block_id), normalized);
   });
   trialPinnedBlocks.forEach((pinned, blockId) => {
     if (!merged.has(blockId)) {

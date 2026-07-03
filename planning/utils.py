@@ -122,6 +122,8 @@ SHIPPED_QTY_TOLERANCE = 0.0001
 
 
 def shipped_quantity_completed(total_qty, qty_shipped, tolerance=SHIPPED_QTY_TOLERANCE):
+    if total_qty is None:
+        return False
     total = parse_number(total_qty, 0)
     shipped = parse_number(qty_shipped, 0)
     return shipped >= total - tolerance

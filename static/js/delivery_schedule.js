@@ -597,7 +597,6 @@ function deliveryScheduleCollectWeekGroups(items) {
         key,
         weekNo,
         label: key === DELIVERY_WEEK_NONE_KEY ? 'No date' : `Week ${weekNo}`,
-        sortKey: commitment || '9999-12-31',
         minDate: commitment || null,
         maxDate: commitment || null,
         count: 0,
@@ -608,13 +607,12 @@ function deliveryScheduleCollectWeekGroups(items) {
     if (commitment) {
       if (!group.minDate || commitment < group.minDate) group.minDate = commitment;
       if (!group.maxDate || commitment > group.maxDate) group.maxDate = commitment;
-      group.sortKey = group.minDate;
     }
   });
   return [...map.values()].sort((left, right) => {
     if (left.key === DELIVERY_WEEK_NONE_KEY) return 1;
     if (right.key === DELIVERY_WEEK_NONE_KEY) return -1;
-    return left.sortKey.localeCompare(right.sortKey);
+    return left.key.localeCompare(right.key);
   });
 }
 

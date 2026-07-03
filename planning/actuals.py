@@ -140,6 +140,13 @@ def refresh_block_actual_status(con, block_id, *, auto_unschedule: bool = True):
         except Exception:
             pass
     if auto_unschedule and status == "DONE":
-        from .auto_unschedule import maybe_auto_unschedule_block
+        from .machines import is_mpp_planner_owned_block
 
-        maybe_auto_unschedule_block(con, int(block_id))
+        if is_mpp_planner_owned_block(con, int(block_id)):
+            from .mpp_planner_queue_service import maybe_auto_dequeue_mpp_block
+
+            maybe_auto_dequeue_mpp_block(con, int(block_id))
+        else:
+            from .auto_unschedule import maybe_auto_unschedule_block
+
+            maybe_auto_unschedule_block(con, int(block_id))

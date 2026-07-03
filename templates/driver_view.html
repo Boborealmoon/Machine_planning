@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}Delivery Schedule{% endblock %}
+
+{% block body_class %}driver-view{% endblock %}
+
+{% block main_class %}app-main--driver-view{% endblock %}
+
+{% block extra_css %}
+<meta name="referrer" content="no-referrer" />
+<meta name="robots" content="noindex, nofollow, noarchive" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/driver_view.css') }}?v={{ driver_asset_version }}">
+{% endblock %}
+
+{% block content %}
+<div class="dv-page">
+  <header class="dv-header">
+    <div class="dv-header-text">
+      <h1 class="dv-title">Delivery Schedule</h1>
+      <p class="dv-subtitle" id="dv-stats" aria-live="polite">Loading delivery schedule…</p>
+    </div>
+    <div class="dv-header-actions">
+      <button type="button" class="dv-btn dv-btn--primary" id="dv-refresh" title="Reload delivery schedule">Refresh</button>
+    </div>
+  </header>
+
+  <nav class="dv-nav" aria-label="Week filter">
+    <span class="dv-nav-label">Show weeks</span>
+    <div class="dv-nav-group" id="dv-week-filters" role="group" aria-label="Delivery weeks"></div>
+  </nav>
+
+  <div id="dv-loading" class="dv-loading">
+    <div class="dv-spinner" aria-hidden="true"></div>
+    Loading delivery schedule…
+  </div>
+
+  <div id="dv-table-wrap" class="dv-table-card" hidden>
+    <div class="dv-table-scroll">
+      <table class="dv-table">
+        <thead>
+          <tr>
+            <th class="dv-col-ps">PS no.</th>
+            <th class="dv-col-desc">Part description</th>
+            <th class="dv-col-qty">SO qty</th>
+            <th class="dv-col-edd">Coway EDD</th>
+            <th class="dv-col-week">Week</th>
+            <th class="dv-col-status">Scan status</th>
+            <th class="dv-col-flag">COC done</th>
+            <th class="dv-col-flag">QAQC report</th>
+            <th class="dv-col-remarks">Remarks</th>
+          </tr>
+        </thead>
+        <tbody id="dv-table-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <p id="dv-empty" class="dv-empty" hidden>No deliveries scheduled for the selected weeks.</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/driver_view.js') }}?v={{ driver_asset_version }}"></script>
+{% endblock %}

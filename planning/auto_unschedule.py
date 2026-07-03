@@ -5,6 +5,9 @@ Triggers (any one is enough):
   - Saving production actuals that mark a block DONE
   - Background thread in app.py and/or OS cron scripts (optional backup)
 
+MPP planner machines (CNC 35/36/41) use planner_mpp_cycle_op dequeue instead — see
+mpp_planner_queue_service.mpp_auto_dequeue_on_page_load and maybe_auto_dequeue_mpp_block.
+
 Opt out: DISABLE_AUTO_UNSCHEDULE_DONE_OPS=1
 """
 from __future__ import annotations
@@ -302,6 +305,10 @@ def block_ready_for_auto_unschedule(con, block_id: int) -> bool:
 
 def unschedule_done_block(con, block_id: int, *, reason: str = "AUTO_DONE", recalculate: bool = True) -> dict:
     """Soft-remove a DONE block (or DONE combined group) from its machine lane."""
+    from .machines import is_mpp_planner_owned_block
+
+    if is_mpp_planner_owned_block(con, int(block_id)):
+        return {"ok": False, "reason": "mpp_planner_owned", "block_ids": []}
     block = one(
         con.execute(
             """
@@ -340,6 +347,19 @@ def unschedule_done_block(con, block_id: int, *, reason: str = "AUTO_DONE", reca
 
     block_ids = [int(row["block_id"]) for row in target_rows]
     machine_ids = sorted({int(row["machine_id"]) for row in target_rows if int(row.get("machine_id") or 0)})
+
+    from .queue_exit_history_service import record_queue_exit_for_block
+
+    for row in target_rows:
+        try:
+            record_queue_exit_for_block(
+                con,
+                int(row["block_id"]),
+                reason=reason,
+                exit_kind="STANDARD",
+            )
+        except Exception:
+            pass
 
     _persist_saved_anchor(con, ps_id=ps_id, group_id=group_id, anchor_dt=anchor_dt)
     _release_planning_cards(con, ps_id=ps_id, group_id=group_id)
@@ -383,24 +403,18 @@ def maybe_auto_unschedule_block(con, block_id: int) -> dict | None:
 
 def find_done_active_block_ids(con) -> list[int]:
     """Leader block ids eligible for auto-unschedule (one per combined group)."""
-    from .machines import fetch_mpp_planner_machine_ids
+    from .machines import scheduler_blocks_exclude_mpp_planner_clause
 
-    mpp_ids = fetch_mpp_planner_machine_ids(con)
-    params: list = []
-    mpp_clause = ""
-    if mpp_ids:
-        mpp_clause = " AND NOT (b.machine_id = ANY(%s))"
-        params.append(mpp_ids)
+    mpp_owned_clause = scheduler_blocks_exclude_mpp_planner_clause("b")
     raw = rows(
         con.execute(
             f"""
             SELECT b.block_id, b.group_id
             FROM planner_run_block b
             WHERE COALESCE(b.active, TRUE) = TRUE
-              {mpp_clause}
+              AND {mpp_owned_clause}
             ORDER BY b.machine_id, b.queue_position, b.block_id
-            """,
-            tuple(params),
+            """
         )
     )
     leaders = []
@@ -497,25 +511,26 @@ def auto_unschedule_on_lite_board_load(con) -> dict | None:
 
 def auto_unschedule_for_machines(con, machine_ids, *, reason: str = "AUTO_DONE_MACHINE_REFRESH") -> dict | None:
     """Run auto-unschedule for DONE blocks on a scoped machine list."""
-    from .machines import fetch_mpp_planner_machine_ids
+    from .machines import scheduler_blocks_exclude_mpp_planner_clause
 
     if not auto_unschedule_enabled():
         return None
-    mpp_ids = set(fetch_mpp_planner_machine_ids(con))
-    mids = sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0 and int(mid) not in mpp_ids})
+    mids = sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0})
     if not mids:
         return {"candidates": 0, "unscheduled": 0, "results": []}
     try:
         ensure_saved_anchor_column(con)
     except Exception:
         return {"candidates": 0, "unscheduled": 0, "results": []}
+    mpp_owned_clause = scheduler_blocks_exclude_mpp_planner_clause("b")
     candidates = rows(
         con.execute(
-            """
+            f"""
             SELECT b.block_id
             FROM planner_run_block b
             WHERE COALESCE(b.active, TRUE) = TRUE
               AND b.machine_id = ANY(%s)
+              AND {mpp_owned_clause}
             ORDER BY b.machine_id, b.queue_position, b.block_id
             """,
             (mids,),

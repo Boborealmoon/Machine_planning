@@ -57,8 +57,8 @@ from .sales_report_route import (
     _LINE_HOME_SQL,
     _UNIT_HOME_SQL,
     _erp_query,
-    _serialize_row,
 )
+from .staged_erp import STAGED_SO_LINE_PRICING_SQL, serialize_row as _serialize_row
 
 from .utils import compact_text
 
@@ -254,7 +254,7 @@ def _fetch_report(year: int, pp_types: set[str], *, all_selected: bool, refresh:
         for v in pp_vouchers
     }
 
-    so_lines = _erp_query(_SO_LINE_PRICING_SQL)
+    so_lines = _erp_query(STAGED_SO_LINE_PRICING_SQL, live_sql=_SO_LINE_PRICING_SQL)
 
     so_by_key = {
         so_line_key(row.get("sales_order_no"), row.get("line_item_no")): row
@@ -345,6 +345,9 @@ def invalidate_job_ratio_cache() -> None:
     global _report_cache
 
     _report_cache = {}
+    from .erp_route_cache import invalidate_prefix
+
+    invalidate_prefix("job_ratio:")
 
 
 

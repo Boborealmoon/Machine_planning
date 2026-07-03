@@ -20,6 +20,7 @@ function trialBuildDerivedIndexes() {
   const actualTotalsByBlock = new Map();
 
   (trialState.blocks || []).forEach(block => {
+    if (typeof trialIsMainPlannerLaneBlock === 'function' && !trialIsMainPlannerLaneBlock(block)) return;
     const machineKey = String(block.machine_id || '');
     if (!blocksByMachine.has(machineKey)) blocksByMachine.set(machineKey, []);
     blocksByMachine.get(machineKey).push(block);
@@ -720,6 +721,7 @@ function trialBlocksForCatalogPs(ps) {
   }
   const allBlocks = (blocksBySourceBase.get(source) || []).filter(block => {
     if (typeof trialIsDummyBlock === 'function' && trialIsDummyBlock(block)) return false;
+    if (typeof trialIsMainPlannerLaneBlock === 'function' && !trialIsMainPlannerLaneBlock(block)) return false;
     return true;
   });
   if (!allBlocks.length) return [];
@@ -761,6 +763,7 @@ function trialBlocksForCatalogOp(card) {
     pp_partial_no: card?.pp_partial_no,
   };
   return trialBlocksForCatalogPs(psLike)
+    .filter(block => trialIsMainPlannerLaneBlock(block))
     .filter(block => trialCatalogOpMatchesBlock(
       card?.source_op_no,
       card?.source_op_seq_id,
@@ -774,15 +777,37 @@ function trialHasLiveBlockQueueIndex() {
   return Array.isArray(trialState?.blocks);
 }
 
+function trialIsMppPlannerMachine(machineId) {
+  const mid = Number(machineId || 0);
+  if (!mid) return false;
+  const machine = (trialState.machines || []).find(row => Number(row.machine_id) === mid);
+  return String(machine?.machine_category || '').toUpperCase() === 'MPP';
+}
+
+/** Lane blocks for the main planner board (MPP machines mirror the MPP planner tab). */
+function trialIsMainPlannerLaneBlock(block) {
+  if (!block) return false;
+  if (trialIsMppPlannerMachine(Number(block.machine_id))) return true;
+  if (String(block.group_type || '').toUpperCase() === 'MPP_CYCLE') return false;
+  if (block.is_mpp_planner_owned) return false;
+  const groupLabel = String(block.group_label || '').trim();
+  if (/^MPP cycle\b/i.test(groupLabel)) return false;
+  const opLabel = String(block.operation_name || '').trim();
+  if (/^MPP cycle\b/i.test(opLabel)) return false;
+  return true;
+}
+
 function trialCatalogQueuedQty(cardOrPayload) {
   const card = (typeof trialCatalogCardFromPayload === 'function')
     ? (trialCatalogCardFromPayload(cardOrPayload) || cardOrPayload)
     : cardOrPayload;
   const op = card?.op || {};
-  const fromBlocks = trialBlocksForCatalogOp(card).reduce(
-    (sum, block) => sum + Math.max(0, Number(block.scheduled_qty || 0)),
-    0,
-  );
+  const fromBlocks = trialBlocksForCatalogOp(card)
+    .filter(block => trialIsMainPlannerLaneBlock(block))
+    .reduce(
+      (sum, block) => sum + Math.max(0, Number(block.scheduled_qty || 0)),
+      0,
+    );
   // Board blocks are authoritative once loaded; catalog planned_qty can lag after remove.
   if (trialHasLiveBlockQueueIndex()) return fromBlocks;
   const fromServer = Math.max(
@@ -953,17 +978,21 @@ function trialCatalogOpVisibleOnMachineLane(card, machineId) {
   const block = trialBlockForCatalogOpOnMachine(card, machineId);
   if (!block) return false;
   const mid = Number(machineId || 0);
-  if (!mid) return false;
-  const allGroups = typeof trialBlocksGroupedForMachine === 'function'
-    ? trialBlocksGroupedForMachine(mid)
-    : [];
-  if (!allGroups.length) return false;
-  const visible = allGroups.filter(
-    row => typeof trialGroupRunsInsideDateFilter === 'function' && trialGroupRunsInsideDateFilter(row),
-  );
-  if (visible.length > 0) return true;
+  if (!mid || Number(block.machine_id) !== mid) return false;
+
   if (typeof trialHasActiveDateFilter === 'function' && trialHasActiveDateFilter()) {
-    return false;
+    const groups = typeof trialBlocksGroupedForMachine === 'function'
+      ? trialBlocksGroupedForMachine(mid)
+      : [];
+    const group = groups.find(row =>
+      String(row?.leader?.block_id) === String(block.block_id)
+      || (row?.blocks || []).some(b => String(b.block_id) === String(block.block_id)),
+    );
+    if (group && typeof trialGroupRunsInsideDateFilter === 'function') {
+      return trialGroupRunsInsideDateFilter(group);
+    }
+    // Newly queued blocks may not be grouped yet — still treat as on-lane.
+    return true;
   }
   return true;
 }
@@ -1351,7 +1380,8 @@ function trialCapacityByKey() {
 
 function trialBlocksForMachine(machineId) {
   const { blocksByMachine } = trialEnsureDataIndexes();
-  return blocksByMachine.get(String(machineId)) || [];
+  return (blocksByMachine.get(String(machineId)) || [])
+    .filter(block => typeof trialIsMainPlannerLaneBlock !== 'function' || trialIsMainPlannerLaneBlock(block));
 }
 
 function trialGroupSummaryBlocksForMachine(machineId) {
@@ -1865,9 +1895,12 @@ function trialBlocksGroupedForMachine(machineId) {
   const machineBlocks = trialBlocksForMachine(machineId);
   if (!machineBlocks.length) return [];
 
+  const isMppLane = typeof trialIsMppPlannerMachine === 'function' && trialIsMppPlannerMachine(machineId);
   const summaryByGroupId = new Map(
     (trialState.block_groups || [])
       .filter(g => String(g.machine_id || 0) === String(machineId) && Number(g.group_id || 0) > 0)
+      .filter(g => isMppLane || String(g.group_type || '').toUpperCase() !== 'MPP_CYCLE')
+      .filter(g => isMppLane || !/^MPP cycle\b/i.test(String(g.group_label || '').trim()))
       .map(g => [String(g.group_id), g])
   );
 

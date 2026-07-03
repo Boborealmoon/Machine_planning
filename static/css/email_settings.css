@@ -1,0 +1,232 @@
+.email-settings-page {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+
+.email-settings-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.email-settings-subtitle {
+  margin: 6px 0 0;
+  color: var(--text2);
+  font-size: 14px;
+  line-height: 1.5;
+  max-width: 640px;
+}
+
+.email-settings-status {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1.5px solid var(--border);
+  background: #fff;
+  white-space: nowrap;
+}
+
+.email-settings-status--ok {
+  color: #15803d;
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.email-settings-status--warn {
+  color: #b45309;
+  border-color: #fcd34d;
+  background: #fffbeb;
+}
+
+.email-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.email-settings-section {
+  padding: 18px 20px;
+}
+
+.email-settings-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.email-settings-section h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.email-settings-section h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.email-settings-subsection {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.email-settings-section-head--nested {
+  margin-bottom: 10px;
+}
+
+.email-settings-help,
+.email-settings-hint {
+  margin: 0 0 14px;
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.email-settings-hint code {
+  font-size: 12px;
+  background: var(--bg2);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.email-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.email-settings-grid--wide {
+  grid-template-columns: 1fr;
+}
+
+.email-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.email-field--full {
+  grid-column: 1 / -1;
+}
+
+.email-field > span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text2);
+}
+
+.email-field input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+  background: #fff;
+}
+
+.email-field textarea {
+  width: 100%;
+  min-height: 72px;
+  padding: 8px 10px;
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+  background: #fff;
+  resize: vertical;
+}
+
+.email-field input:focus,
+.email-field textarea:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.email-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.email-toggle--inline {
+  margin-top: 4px;
+}
+
+.email-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.email-settings-error {
+  padding: 14px 16px;
+  color: #b91c1c;
+  background: #fef2f2;
+  border-color: #fecaca;
+  margin-bottom: 16px;
+}
+
+.email-settings-log {
+  margin: 0;
+  padding: 12px;
+  background: var(--bg2);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow: auto;
+  max-height: 280px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 720px) {
+  .email-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .email-settings-header {
+    flex-direction: column;
+  }
+}
+
+#email-settings-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 9999;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #1a1c1d;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+}
+
+#email-settings-toast.toast--show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+#email-settings-toast.toast--error {
+  background: #b91c1c;
+}

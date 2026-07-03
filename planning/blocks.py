@@ -174,14 +174,18 @@ def find_active_catalog_lane_block(
     if not machine_id or not ps:
         return None
     want_base, want_partial = _catalog_ps_base_partial(ps)
+    from .machines import scheduler_blocks_exclude_mpp_planner_clause
+
+    lane_clause = scheduler_blocks_exclude_mpp_planner_clause("b")
     candidates = rows(
         con.execute(
-            """
+            f"""
             SELECT b.block_id, o.source_ps_id, o.job_no, o.source_op_no, o.source_op_seq_id
             FROM planner_run_block b
             JOIN planner_operation o ON o.operation_id = b.operation_id
             WHERE b.machine_id = %s
               AND COALESCE(b.active, TRUE) = TRUE
+              AND {lane_clause}
             ORDER BY b.queue_position, b.block_id
             """,
             (machine_id,),
@@ -2305,9 +2309,13 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
             machine_id=int(machine_id),
             notes=f"Recalculate machine {machine_id}",
         )
+    from .machines import is_mpp_planner_machine_id, scheduler_blocks_exclude_mpp_planner_clause
+
+    use_all_lane_blocks = is_mpp_planner_machine_id(con, int(machine_id))
+    lane_clause = "" if use_all_lane_blocks else f" AND {scheduler_blocks_exclude_mpp_planner_clause('b')}"
     blocks = rows(
         con.execute(
-            """
+            f"""
             SELECT b.*, o.job_no, o.operation_name, o.total_qty, o.setup_minutes, o.cycle_minutes_per_qty,
                    o.compatible_machine_group, o.source_ps_id, o.source_op_seq_id AS source_op_seq_id, o.source_op_no,
                    m.machine_no AS machine_code, m.machine_category, m.shift_profile
@@ -2316,6 +2324,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
             JOIN planner_machines m ON m.machine_id = b.machine_id
             WHERE b.machine_id = %s
               AND COALESCE(b.active, TRUE) = TRUE
+              {lane_clause}
             ORDER BY b.queue_position, b.block_id
             """,
             (int(machine_id),),

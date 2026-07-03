@@ -17,7 +17,6 @@ if str(ROOT) not in sys.path:
 from planning.auto_unschedule import apply_saved_anchor_to_new_block
 from planning.blocks import recalculate_machine
 from planning.helpers import one, planner_db, rows
-from planning.machines import fetch_mpp_planner_machine_ids
 from planning.operation_sequence import apply_machine_queue_order
 from planning.process_sheets import ensure_planner_process_sheet, parse_planner_ps_id
 from planning.utils import compact_text, parse_number
@@ -154,7 +153,6 @@ def rebuild_lanes(*, dry_run: bool = False) -> dict:
     }
 
     with planner_db() as con:
-        mpp_ids = set(fetch_mpp_planner_machine_ids(con))
         cards = _load_scheduled_cards(con)
         blocks = _load_active_blocks(con)
 
@@ -166,9 +164,7 @@ def rebuild_lanes(*, dry_run: bool = False) -> dict:
         for card in cards:
             cards_by_machine[int(card["machine_id"])].append(dict(card))
 
-        all_machine_ids = sorted(
-            mid for mid in (set(blocks_by_machine) | set(cards_by_machine)) if mid not in mpp_ids
-        )
+        all_machine_ids = sorted(set(blocks_by_machine) | set(cards_by_machine))
 
         for machine_id in all_machine_ids:
             machine_cards = cards_by_machine.get(machine_id, [])

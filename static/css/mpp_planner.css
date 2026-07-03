@@ -113,6 +113,14 @@
   cursor: pointer;
 }
 
+.mpp-ps-group--accounted > summary {
+  opacity: 0.92;
+}
+
+.mpp-ps-group--accounted .mpp-ps-op-count {
+  color: #6d28d9;
+}
+
 .mpp-ps-group--completed > summary {
   opacity: 0.72;
 }

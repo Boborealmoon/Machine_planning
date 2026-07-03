@@ -218,7 +218,7 @@ def _mpp_job_schedule_meta(op: dict[str, Any], wo_qty: float = 0) -> tuple[bool,
         return True, ""
     target = wo_qty if wo_qty > 0 else float(op.get("required_qty") or op.get("ready_qty") or 0)
     if erp_fin > 0 and target > 0 and erp_fin >= target:
-        return False, "ERP complete"
+        return False, "MPP qty met (ERP)"
     if mpp_planned > 0 and remaining <= 0:
         return False, "Fully on MPP queue"
     return False, "Fully accounted"
@@ -281,6 +281,7 @@ def _serialize_catalog_mpp_job(item: dict[str, Any], op: dict[str, Any]) -> dict
         "bomStageStatus": compact_text(item.get("bom_stage_status") or ""),
         "partialQty": float(item.get("partial_qty") or item.get("display_qty") or 0),
         "totalQty": float(item.get("total_qty") or 0),
+        "qtyShipped": float(item.get("qty_shipped") or 0) if item.get("qty_shipped") is not None else 0,
         "currentStageDesc": compact_text(item.get("current_stage_desc") or ""),
         "currentStageStatus": compact_text(item.get("current_stage_status") or ""),
         "materialIn": bool(item.get("material_in")),

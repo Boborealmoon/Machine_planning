@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Remove legacy scheduler-queue blocks on MPP planner machines (CNC 35/36/41).
+"""Detach legacy MPP-planner blocks from main scheduler lanes (CNC 35/36/41).
 
-The MPP planner owns those lanes via planner_mpp_cycle / planner_mpp_cycle_op.
-This script deletes active planner_run_block rows on those machines that are not
-linked from planner_mpp_cycle_op.
+The MPP planner tab stores cycles in planner_mpp_* tables. This script removes
+any planner_run_block rows still linked from planner_mpp_cycle_op.
 """
 from __future__ import annotations
 
@@ -15,15 +14,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from planning.helpers import planner_db, rows
-from planning.machines import fetch_mpp_planner_machine_ids
-from planning.mpp_planner_queue_service import purge_legacy_mpp_scheduler_blocks
+from planning.mpp_planner_queue_service import detach_mpp_planner_scheduler_blocks
 
 
 def main() -> int:
     dry_run = "--dry-run" in sys.argv
     with planner_db() as con:
-        machine_ids = fetch_mpp_planner_machine_ids(con)
-        print("MPP planner machines:", machine_ids)
         preview = rows(
             con.execute(
                 """
@@ -31,23 +27,17 @@ def main() -> int:
                 FROM planner_run_block b
                 JOIN planner_machines m ON m.machine_id = b.machine_id
                 LEFT JOIN planner_operation o ON o.operation_id = b.operation_id
-                WHERE b.machine_id = ANY(%s)
+                JOIN planner_mpp_cycle_op co ON co.block_id = b.block_id
+                WHERE COALESCE(co.block_id, 0) > 0
                   AND COALESCE(b.active, TRUE) = TRUE
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM planner_mpp_cycle_op co
-                    WHERE co.block_id = b.block_id
-                      AND COALESCE(co.block_id, 0) > 0
-                  )
                 ORDER BY m.machine_no, b.queue_position, b.block_id
-                """,
-                (machine_ids,),
+                """
             )
         )
         if not preview:
-            print("Nothing to purge.")
+            print("Nothing to detach.")
             return 0
-        print(f"Legacy blocks to remove: {len(preview)}")
+        print(f"MPP-linked scheduler blocks to detach: {len(preview)}")
         for row in preview:
             print(
                 f"  block {row['block_id']} · {row['machine_no']} · "
@@ -56,8 +46,8 @@ def main() -> int:
         if dry_run:
             print("DRY RUN — no deletes")
             return 0
-        removed = purge_legacy_mpp_scheduler_blocks(con)
-        print(f"Removed {len(removed)} block(s): {removed}")
+        removed = detach_mpp_planner_scheduler_blocks(con)
+        print(f"Detached {len(removed)} block(s): {removed}")
     return 0
 
 

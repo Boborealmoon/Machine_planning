@@ -1,4 +1,4 @@
-"""Inventory enquiry — live ERP ic_inventory_enquiry_summary_view."""
+"""Inventory enquiry — live ic_inventory_enquiry_summary_view on COMAIN."""
 from __future__ import annotations
 
 import logging
@@ -44,35 +44,40 @@ def _class_key(row: dict[str, Any]) -> str:
     return _CLASS_KEY_BY_CODE.get(code, "other")
 
 
-def _serialize_value(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.isoformat(sep=" ", timespec="seconds")
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, Decimal):
-        return float(value)
-    return value
+from .helpers import planner_db, rows as db_rows
+from .staged_erp import live_query, serialize_row, use_staging_reads
 
 
-def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
-    out = {key: _serialize_value(val) for key, val in row.items()}
+def _enrich_inventory_row(row: dict[str, Any]) -> dict[str, Any]:
+    out = serialize_row(row)
     out["class_key"] = _class_key(out)
     return out
 
 
-def _erp_query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
-    from db import get_conn, release_conn
+def _fetch_inventory_staged() -> list[dict[str, Any]]:
+    with planner_db() as con:
+        raw = db_rows(
+            con.execute(
+                """
+                SELECT payload
+                FROM public.stg_inventory_enquiry
+                ORDER BY inventory_code
+                """
+            )
+        )
+    rows_out: list[dict[str, Any]] = []
+    for row in raw:
+        payload = row.get("payload") or {}
+        if isinstance(payload, str):
+            import json
 
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-            return [_serialize_row(dict(row)) for row in rows]
-    finally:
-        release_conn(conn)
+            payload = json.loads(payload)
+        rows_out.append(_enrich_inventory_row(dict(payload)))
+    return rows_out
+
+
+def _fetch_inventory_live() -> list[dict[str, Any]]:
+    return [_enrich_inventory_row(row) for row in live_query(_INVENTORY_SQL)]
 
 
 def _class_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -117,6 +122,9 @@ def _stock_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
 def invalidate_inventory_enquiry_cache() -> None:
     global _cache
     _cache = None
+    from .erp_route_cache import invalidate_prefix
+
+    invalidate_prefix("inventory_enquiry:")
 
 
 def _fetch_inventory(*, refresh: bool = False) -> list[dict[str, Any]]:
@@ -130,9 +138,12 @@ def _fetch_inventory(*, refresh: bool = False) -> list[dict[str, Any]]:
     ):
         return _cache[2]
 
-    rows = _erp_query(_INVENTORY_SQL)
-    _cache = (now, _CACHE_VERSION, rows)
-    return rows
+    if use_staging_reads("inventory_enquiry"):
+        rows_out = _fetch_inventory_staged()
+    else:
+        rows_out = _fetch_inventory_live()
+    _cache = (now, _CACHE_VERSION, rows_out)
+    return rows_out
 
 
 @inventory_enquiry_bp.get("/planning-data/inventory-enquiry")

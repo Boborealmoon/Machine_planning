@@ -141,6 +141,14 @@ def _configure_mpp_save_session(con) -> None:
     con.execute(f"SET LOCAL lock_timeout = '{lock_ms}'")
 
 
+def _recover_db_transaction(con) -> None:
+    """Clear a failed PostgreSQL transaction so follow-up queries can run."""
+    try:
+        con.rollback()
+    except Exception:
+        pass
+
+
 def _machine_id_by_slug(con, slug: str) -> int:
     slug_key = compact_text(slug).lower()
     for machine in fetch_mpp_planner_machines(con):
@@ -303,10 +311,67 @@ def _load_probation(con, mpp_machines: list[dict[str, Any]]) -> dict[str, list[d
     return probation
 
 
+def _mpp_cycle_ops_need_scheduler_blocks(con) -> bool:
+    """True when planner_mpp_cycle_op rows lack an active planner_run_block mirror."""
+    from .machines import fetch_mpp_planner_machine_ids
+
+    machine_ids = fetch_mpp_planner_machine_ids(con)
+    if not machine_ids:
+        return False
+    stale = one(
+        con.execute(
+            """
+            SELECT 1
+            FROM planner_mpp_cycle c
+            JOIN planner_mpp_cycle_op co ON co.cycle_id = c.cycle_id
+            WHERE c.machine_id = ANY(%s)
+              AND (
+                COALESCE(co.block_id, 0) = 0
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM planner_run_block b
+                    WHERE b.block_id = co.block_id
+                      AND COALESCE(b.active, TRUE) = TRUE
+                )
+              )
+            LIMIT 1
+            """,
+            (machine_ids,),
+        )
+    )
+    return bool(stale)
+
+
+def rehydrate_mpp_scheduler_blocks_if_needed(con) -> dict[str, Any]:
+    """Recreate scheduler-lane blocks for MPP cycles when cycle_op.block_id links are broken."""
+    ensure_mpp_queue_schema(con)
+    if not _mpp_cycle_ops_need_scheduler_blocks(con):
+        return {"rehydrated": False}
+    queue = _hydrate_mpp_queue_from_db(con)
+    machines = queue.get("machines") or {}
+    if not any((lane.get("cycles") or []) for lane in machines.values()):
+        return {"rehydrated": False}
+    save_mpp_planner_queue(
+        con,
+        {
+            "machines": machines,
+            "jobs": queue.get("jobOverrides") or {},
+        },
+    )
+    return {"rehydrated": True}
+
+
 def load_mpp_planner_queue(con) -> dict[str, Any]:
     """Hydrate frontend queue state from planner_mpp_* tables."""
     ensure_mpp_queue_schema(con)
-    purge_legacy_mpp_scheduler_blocks(con)
+    rehydrate_mpp_scheduler_blocks_if_needed(con)
+    _recover_db_transaction(con)
+    purge_orphan_mpp_scheduler_blocks(con)
+    return _hydrate_mpp_queue_from_db(con)
+
+
+def _hydrate_mpp_queue_from_db(con) -> dict[str, Any]:
+    """Read planner_mpp_* tables into the frontend queue payload shape."""
     machines_state: dict[str, dict[str, Any]] = {}
     mpp_machines = fetch_mpp_planner_machines(con)
     machine_ids = [int(m.get("machineId") or 0) for m in mpp_machines if int(m.get("machineId") or 0) > 0]
@@ -668,7 +733,50 @@ def _delete_orphan_mpp_blocks(con, machine_id: int, keep_block_ids: set[int]) ->
         con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (block_id,))
 
 
-def purge_legacy_mpp_scheduler_blocks(con) -> list[int]:
+def detach_mpp_planner_scheduler_blocks(con, *, machine_ids: list[int] | None = None) -> list[int]:
+    """Remove legacy planner_run_block rows linked from the MPP planner tab."""
+    ensure_mpp_queue_schema(con)
+    params: list = []
+    machine_clause = ""
+    mids = sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0})
+    if mids:
+        machine_clause = " AND c.machine_id = ANY(%s)"
+        params.append(mids)
+    linked = rows(
+        con.execute(
+            f"""
+            SELECT DISTINCT co.block_id
+            FROM planner_mpp_cycle_op co
+            JOIN planner_mpp_cycle c ON c.cycle_id = co.cycle_id
+            WHERE COALESCE(co.block_id, 0) > 0
+              {machine_clause}
+            """,
+            tuple(params),
+        )
+    )
+    removed: list[int] = []
+    for row in linked:
+        block_id = int(row.get("block_id") or 0)
+        if block_id <= 0:
+            continue
+        con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (block_id,))
+        removed.append(block_id)
+    if linked:
+        con.execute(
+            f"""
+            UPDATE planner_mpp_cycle_op co
+            SET block_id = NULL, updated_at = NOW()
+            FROM planner_mpp_cycle c
+            WHERE c.cycle_id = co.cycle_id
+              AND COALESCE(co.block_id, 0) > 0
+              {machine_clause}
+            """,
+            tuple(params),
+        )
+    return removed
+
+
+def purge_orphan_mpp_scheduler_blocks(con) -> list[int]:
     """Drop scheduler-lane blocks on MPP machines that are not linked to planner_mpp_cycle_op."""
     from .machines import fetch_mpp_planner_machine_ids
 
@@ -708,6 +816,58 @@ def purge_legacy_mpp_scheduler_blocks(con) -> list[int]:
         block_id = int(row["block_id"])
         con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (block_id,))
         removed.append(block_id)
+    return removed
+
+
+def purge_legacy_mpp_scheduler_blocks(con) -> list[int]:
+    """Deprecated alias — removes orphan blocks only (keeps MPP-tab mirror blocks)."""
+    return purge_orphan_mpp_scheduler_blocks(con)
+
+
+def prune_mpp_tab_scheduler_blocks(con) -> list[int]:
+    """Remove legacy planner_run_block rows that belong to the MPP planner tab."""
+    ensure_mpp_queue_schema(con)
+    stale = rows(
+        con.execute(
+            """
+            SELECT b.block_id
+            FROM planner_run_block b
+            LEFT JOIN planner_run_block_group g ON g.group_id = b.group_id
+            WHERE COALESCE(b.active, TRUE) = TRUE
+              AND (
+                EXISTS (
+                    SELECT 1
+                    FROM planner_mpp_cycle_op co
+                    WHERE co.block_id = b.block_id
+                      AND COALESCE(co.block_id, 0) > 0
+                )
+                OR UPPER(COALESCE(g.group_type, '')) = 'MPP_CYCLE'
+                OR COALESCE(g.group_label, '') ILIKE 'MPP cycle%%'
+                OR EXISTS (
+                    SELECT 1
+                    FROM planner_mpp_cycle c
+                    WHERE c.group_id = b.group_id
+                      AND COALESCE(b.group_id, 0) > 0
+                )
+              )
+            ORDER BY b.block_id
+            """
+        )
+    )
+    removed: list[int] = []
+    for row in stale:
+        block_id = int(row["block_id"])
+        con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (block_id,))
+        removed.append(block_id)
+    if removed:
+        con.execute(
+            """
+            UPDATE planner_mpp_cycle_op
+            SET block_id = NULL, updated_at = NOW()
+            WHERE block_id = ANY(%s)
+            """,
+            (removed,),
+        )
     return removed
 
 
@@ -793,6 +953,14 @@ def _sync_machine_queue(con, machine_id: int, cycle_primary_block_ids: list[int]
 
     if ordered:
         apply_machine_queue_order(con, machine_id, ordered, recalculate=False, allow_mpp_planner=True)
+
+
+def ensure_mpp_planner_scheduler_lanes(con) -> dict[str, Any]:
+    """Mirror planner_mpp_* queue onto CNC 35/36/41 scheduler lanes for the main board."""
+    ensure_mpp_queue_schema(con)
+    result = rehydrate_mpp_scheduler_blocks_if_needed(con)
+    purge_orphan_mpp_scheduler_blocks(con)
+    return result
 
 
 def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1115,6 +1283,7 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
                     "DELETE FROM planner_run_block_group WHERE group_id = %s",
                     (int(cycle_row["group_id"]),),
                 )
+            con.execute("DELETE FROM planner_mpp_cycle_op WHERE cycle_id = %s", (cycle_id,))
             con.execute("DELETE FROM planner_mpp_cycle WHERE cycle_id = %s", (cycle_id,))
 
         _delete_orphan_mpp_blocks(con, machine_id, keep_block_ids)
@@ -1243,17 +1412,17 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
     # on planner_mpp_lane row locks held through recalculate_machine.
     con.commit()
 
-    # Capacity sheet / monthly overview sum planner_run_block_segment — rebuild after MPP lane sync.
+    # Capacity sheet / monthly overview sum planner_run_block_segment ΓÇö rebuild after MPP lane sync.
     from .blocks import recalculate_machine
 
     for machine_id in sorted(set(touched_machine_ids)):
         try:
             recalculate_machine(con, machine_id, reason="MPP_PLANNER_SAVE")
+            con.commit()
         except Exception as exc:
             logger.warning("MPP queue recalculate machine %s: %s", machine_id, exc)
             save_warnings.append(f"Schedule segments not updated for machine {machine_id}: {exc}")
-
-    con.commit()
+            _recover_db_transaction(con)
 
     return {
         "savedAt": datetime.now().isoformat(sep=" ", timespec="seconds"),
@@ -1351,3 +1520,248 @@ def _mpp_job_context(job_id: str, job_row: dict[str, Any]) -> dict[str, Any]:
         "source_op_no": source_op_no,
         "source_op_seq_id": source_op_seq_id,
     }
+
+
+_MPP_AUTO_DEQUEUE_LOCK_KEY = 915_042_002
+
+
+def mpp_auto_dequeue_enabled() -> bool:
+    from .auto_unschedule import auto_unschedule_enabled
+
+    return auto_unschedule_enabled()
+
+
+def _mpp_block_done_for_dequeue(block) -> bool:
+    """MPP cycle ops leave the queue only after this block is actually finished on the lane."""
+    if not block or not block.get("active", True):
+        return False
+    if compact_text(block.get("execution_status")).upper() in {"DONE", "COMPLETED"}:
+        return True
+    scheduled = float(block.get("scheduled_qty") or 0)
+    if scheduled <= 0.0001:
+        return False
+    actual_good = float(block.get("actual_good_qty") or 0)
+    return actual_good >= scheduled - 0.0001
+
+
+def block_ready_for_mpp_auto_dequeue(con, block_id: int) -> bool:
+    """True when a single MPP cycle-op block is done and should leave the queue."""
+    from .machines import is_mpp_planner_machine_id
+
+    block = one(
+        con.execute(
+            """
+            SELECT b.block_id, b.machine_id, b.group_id, b.execution_status, b.active,
+                   b.scheduled_qty, b.actual_good_qty,
+                   o.source_ps_id, o.job_no, o.source_op_no
+            FROM planner_run_block b
+            JOIN planner_operation o ON o.operation_id = b.operation_id
+            WHERE b.block_id = %s
+            """,
+            (int(block_id),),
+        )
+    )
+    if not block or not block.get("active", True):
+        return False
+    if not is_mpp_planner_machine_id(con, int(block.get("machine_id") or 0)):
+        return False
+    linked = one(
+        con.execute(
+            "SELECT cycle_op_id FROM planner_mpp_cycle_op WHERE block_id = %s LIMIT 1",
+            (int(block_id),),
+        )
+    )
+    if not linked:
+        return False
+    return _mpp_block_done_for_dequeue(block)
+
+
+def dequeue_done_mpp_block(
+    con,
+    block_id: int,
+    *,
+    reason: str = "AUTO_DONE",
+    recalculate: bool = True,
+) -> dict:
+    """Remove a completed MPP cycle op (and its block) from the live queue."""
+    ensure_mpp_queue_schema(con)
+    op_row = one(
+        con.execute(
+            """
+            SELECT co.cycle_op_id, co.cycle_id, c.machine_id, c.group_id
+            FROM planner_mpp_cycle_op co
+            JOIN planner_mpp_cycle c ON c.cycle_id = co.cycle_id
+            WHERE co.block_id = %s
+            """,
+            (int(block_id),),
+        )
+    )
+    if not op_row:
+        return {"ok": False, "reason": "not_mpp_cycle_op", "block_id": int(block_id)}
+
+    machine_id = int(op_row.get("machine_id") or 0)
+    cycle_id = int(op_row.get("cycle_id") or 0)
+    cycle_op_id = int(op_row.get("cycle_op_id") or 0)
+    group_id = int(op_row.get("group_id") or 0)
+
+    from .queue_exit_history_service import record_queue_exit_for_block
+
+    try:
+        record_queue_exit_for_block(
+            con,
+            int(block_id),
+            reason=reason,
+            exit_kind="MPP",
+        )
+    except Exception:
+        pass
+
+    con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (int(block_id),))
+    con.execute("DELETE FROM planner_mpp_cycle_op WHERE cycle_op_id = %s", (cycle_op_id,))
+
+    remaining = rows(
+        con.execute(
+            "SELECT cycle_op_id FROM planner_mpp_cycle_op WHERE cycle_id = %s",
+            (cycle_id,),
+        )
+    )
+    if not remaining:
+        con.execute("DELETE FROM planner_mpp_cycle WHERE cycle_id = %s", (cycle_id,))
+        if group_id > 0:
+            leftover = one(
+                con.execute(
+                    """
+                    SELECT COUNT(*) AS cnt
+                    FROM planner_run_block
+                    WHERE group_id = %s
+                    """,
+                    (group_id,),
+                )
+            )
+            if int((leftover or {}).get("cnt") or 0) == 0:
+                con.execute(
+                    "DELETE FROM planner_run_block_group WHERE group_id = %s",
+                    (group_id,),
+                )
+
+    if recalculate and machine_id > 0:
+        from .blocks import recalculate_machine
+        from .operation_sequence import compact_machine_lane_queue
+
+        try:
+            compact_machine_lane_queue(con, machine_id, recalculate=False)
+            recalculate_machine(con, machine_id, reason=f"MPP_AUTO_DEQUEUE_{reason}")
+            con.commit()
+        except Exception as exc:
+            logger.warning("MPP dequeue recalculate machine %s: %s", machine_id, exc)
+            _recover_db_transaction(con)
+
+    return {
+        "ok": True,
+        "reason": reason,
+        "block_id": int(block_id),
+        "cycle_id": cycle_id,
+        "machine_id": machine_id,
+    }
+
+
+def maybe_auto_dequeue_mpp_block(con, block_id: int) -> dict | None:
+    if not mpp_auto_dequeue_enabled():
+        return None
+    if not block_ready_for_mpp_auto_dequeue(con, block_id):
+        return None
+    return dequeue_done_mpp_block(con, block_id, reason="AUTO_DONE_ACTUAL")
+
+
+def find_done_mpp_queue_block_ids(con) -> list[int]:
+    """Block ids for completed MPP cycle ops still present on machine lanes."""
+    from .machines import fetch_mpp_planner_machine_ids
+
+    mpp_ids = fetch_mpp_planner_machine_ids(con)
+    if not mpp_ids:
+        return []
+    done: list[int] = []
+    for row in rows(
+        con.execute(
+            """
+            SELECT co.block_id
+            FROM planner_mpp_cycle_op co
+            JOIN planner_run_block b ON b.block_id = co.block_id
+            WHERE co.block_id IS NOT NULL
+              AND COALESCE(b.active, TRUE) = TRUE
+              AND b.machine_id = ANY(%s)
+            GROUP BY co.block_id, b.machine_id, b.queue_position
+            ORDER BY b.machine_id, b.queue_position, co.block_id
+            """,
+            (mpp_ids,),
+        )
+    ):
+        block_id = int(row.get("block_id") or 0)
+        if block_id > 0 and block_ready_for_mpp_auto_dequeue(con, block_id):
+            done.append(block_id)
+    return done
+
+
+def _try_mpp_dequeue_lock(con) -> bool:
+    row = one(con.execute("SELECT pg_try_advisory_lock(%s) AS ok", (_MPP_AUTO_DEQUEUE_LOCK_KEY,)))
+    return bool((row or {}).get("ok"))
+
+
+def _release_mpp_dequeue_lock(con) -> None:
+    con.execute("SELECT pg_advisory_unlock(%s)", (_MPP_AUTO_DEQUEUE_LOCK_KEY,))
+
+
+def run_mpp_auto_dequeue_sweep(
+    con,
+    *,
+    dry_run: bool = False,
+    reason: str = "AUTO_DONE_SWEEP",
+    recalculate: bool = True,
+) -> dict:
+    if not dry_run and not _try_mpp_dequeue_lock(con):
+        return {"dry_run": False, "skipped": "locked", "candidates": 0, "dequeued": 0, "results": []}
+    try:
+        block_ids = find_done_mpp_queue_block_ids(con)
+        if dry_run:
+            return {"dry_run": True, "candidates": block_ids, "results": []}
+        results = []
+        touched_machines: set[int] = set()
+        for block_id in block_ids:
+            result = dequeue_done_mpp_block(con, block_id, reason=reason, recalculate=False)
+            results.append(result)
+            if result.get("ok") and int(result.get("machine_id") or 0) > 0:
+                touched_machines.add(int(result["machine_id"]))
+        if recalculate and touched_machines:
+            from .blocks import recalculate_machine
+            from .operation_sequence import compact_machine_lane_queue
+
+            for machine_id in sorted(touched_machines):
+                try:
+                    compact_machine_lane_queue(con, machine_id, recalculate=False)
+                    recalculate_machine(con, machine_id, reason=f"MPP_AUTO_DEQUEUE_{reason}")
+                    con.commit()
+                except Exception as exc:
+                    logger.warning("MPP auto-dequeue recalculate machine %s: %s", machine_id, exc)
+                    _recover_db_transaction(con)
+        ok_count = sum(1 for item in results if item.get("ok"))
+        return {
+            "dry_run": False,
+            "candidates": len(block_ids),
+            "dequeued": ok_count,
+            "results": results,
+        }
+    finally:
+        if not dry_run:
+            _release_mpp_dequeue_lock(con)
+
+
+def mpp_auto_dequeue_on_page_load(con) -> dict | None:
+    """Sweep completed MPP cycle ops when the MPP planner queue is loaded."""
+    if not mpp_auto_dequeue_enabled():
+        return None
+    try:
+        return run_mpp_auto_dequeue_sweep(con, reason="AUTO_DONE_PAGE_LOAD")
+    except Exception as exc:
+        logger.warning("MPP auto-dequeue sweep failed: %s", exc)
+        _recover_db_transaction(con)
+        return None

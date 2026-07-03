@@ -93,7 +93,7 @@
       </div>
 
       {# ERP queries & master data #}
-      <div class="nav-dropdown {% if nav_path in ('/bom-variation', '/material-inspection') or nav_path.startswith('/planning-data') and nav_path not in ('/planning-data/repeat-orders', '/planning-data/aker-inventory') or active in ('planning_data', 'bom_variation', 'material_inspection') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/bom-variation', '/material-inspection', '/system') or nav_path.startswith('/planning-data') and nav_path not in ('/planning-data/repeat-orders', '/planning-data/aker-inventory') or active in ('planning_data', 'bom_variation', 'material_inspection', 'system') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="queries-data">
           QUERIES &amp; MASTER DATA <span class="nav-caret">▾</span>
         </button>
@@ -132,11 +132,16 @@
              class="nav-dropdown-item {% if nav_path == '/planning-data/frame-agreement-parts' %}nav-dropdown-item--active{% endif %}">
             Frame agreement parts
           </a>
+          <span class="nav-dropdown-section">SYSTEM</span>
+          <a href="/system"
+             class="nav-dropdown-item {% if nav_path == '/system' or active == 'system' %}nav-dropdown-item--active{% endif %}">
+            Email settings
+          </a>
         </div>
       </div>
 
       {# Shop-floor & operational views #}
-      <div class="nav-dropdown {% if nav_path in (machinist_board_path, finishing_queue_path) or active in ('machinist_board', 'finishing_queue') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in (machinist_board_path, finishing_queue_path, driver_view_path) or active in ('machinist_board', 'finishing_queue', 'driver_view') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="views">
           VIEWS <span class="nav-caret">▾</span>
         </button>
@@ -149,11 +154,15 @@
              class="nav-dropdown-item {% if nav_path == finishing_queue_path or active == 'finishing_queue' %}nav-dropdown-item--active{% endif %}">
             QAQC view
           </a>
+          <a href="{{ driver_view_path }}"
+             class="nav-dropdown-item {% if nav_path == driver_view_path or active == 'driver_view' %}nav-dropdown-item--active{% endif %}">
+            Delivery schedule
+          </a>
         </div>
       </div>
 
       {# Archive — historical / reference views #}
-      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/actual-production', '/material-inspection/no-shipment', '/auk-oee', '/planning-data/aker-inventory', '/preferred-machines') or active in ('daily_output', 'actual_production', 'material_inspection_no_shipment', 'auk_oee', 'aker_inventory', 'preferred_machines') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/actual-production', '/material-inspection/no-shipment', '/auk-oee', '/planning-data/aker-inventory', '/preferred-machines', '/kobelco-mps-archive') or active in ('daily_output', 'actual_production', 'material_inspection_no_shipment', 'auk_oee', 'aker_inventory', 'preferred_machines', 'kobelco_mps_archive') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="archive">
           ARCHIVE <span class="nav-caret">▾</span>
         </button>
@@ -181,6 +190,10 @@
           <a href="/preferred-machines"
              class="nav-dropdown-item {% if nav_path == '/preferred-machines' or active == 'preferred_machines' %}nav-dropdown-item--active{% endif %}">
             Preferred machines
+          </a>
+          <a href="/kobelco-mps-archive"
+             class="nav-dropdown-item {% if nav_path == '/kobelco-mps-archive' or active == 'kobelco_mps_archive' %}nav-dropdown-item--active{% endif %}">
+            Kobelco MPS archive
           </a>
         </div>
       </div>

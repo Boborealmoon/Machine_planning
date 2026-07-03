@@ -38,8 +38,22 @@ def ensure_delivery_planner_table(con) -> None:
             planner_ps_id   TEXT PRIMARY KEY,
             dismissed       BOOLEAN      NOT NULL DEFAULT FALSE,
             exception_flag  BOOLEAN      NOT NULL DEFAULT FALSE,
+            coc_done        BOOLEAN      NOT NULL DEFAULT FALSE,
+            qaqc_report_ready BOOLEAN    NOT NULL DEFAULT FALSE,
             updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         )
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_delivery_row
+        ADD COLUMN IF NOT EXISTS coc_done BOOLEAN NOT NULL DEFAULT FALSE
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_delivery_row
+        ADD COLUMN IF NOT EXISTS qaqc_report_ready BOOLEAN NOT NULL DEFAULT FALSE
         """
     )
 
@@ -51,10 +65,17 @@ def _canonical_planner_ps_id(planner_ps_id: str) -> str:
 
 def _row_to_flags(row: dict[str, Any] | None) -> dict[str, bool]:
     if not row:
-        return {"dismissed": False, "exception": False}
+        return {
+            "dismissed": False,
+            "exception": False,
+            "coc_done": False,
+            "qaqc_report_ready": False,
+        }
     return {
         "dismissed": bool(row.get("dismissed")),
         "exception": bool(row.get("exception_flag")),
+        "coc_done": bool(row.get("coc_done")),
+        "qaqc_report_ready": bool(row.get("qaqc_report_ready")),
     }
 
 
@@ -69,11 +90,19 @@ def load_delivery_row_flags(con, planner_ps_ids: list[str]) -> dict[str, dict[st
             ids.append(canonical)
     if not ids:
         return {}
-    out = {pid: {"dismissed": False, "exception": False} for pid in ids}
+    out = {
+        pid: {
+            "dismissed": False,
+            "exception": False,
+            "coc_done": False,
+            "qaqc_report_ready": False,
+        }
+        for pid in ids
+    }
     for row in rows(
         con.execute(
             """
-            SELECT planner_ps_id, dismissed, exception_flag
+            SELECT planner_ps_id, dismissed, exception_flag, coc_done, qaqc_report_ready
             FROM planner_delivery_row
             WHERE planner_ps_id = ANY(%s)
             """,
@@ -90,11 +119,17 @@ def get_delivery_row_flags(con, planner_ps_id: str) -> dict[str, Any]:
     ensure_delivery_planner_table(con)
     canonical = _canonical_planner_ps_id(planner_ps_id)
     if not canonical:
-        return {"planner_ps_id": "", "dismissed": False, "exception": False}
+        return {
+            "planner_ps_id": "",
+            "dismissed": False,
+            "exception": False,
+            "coc_done": False,
+            "qaqc_report_ready": False,
+        }
     row = one(
         con.execute(
             """
-            SELECT planner_ps_id, dismissed, exception_flag
+            SELECT planner_ps_id, dismissed, exception_flag, coc_done, qaqc_report_ready
             FROM planner_delivery_row
             WHERE planner_ps_id = %s
             """,
@@ -106,6 +141,8 @@ def get_delivery_row_flags(con, planner_ps_id: str) -> dict[str, Any]:
         "planner_ps_id": canonical,
         "dismissed": flags["dismissed"],
         "exception": flags["exception"],
+        "coc_done": flags["coc_done"],
+        "qaqc_report_ready": flags["qaqc_report_ready"],
     }
 
 
@@ -115,6 +152,8 @@ def upsert_delivery_row_flags(
     *,
     dismissed: bool | None = None,
     exception: bool | None = None,
+    coc_done: bool | None = None,
+    qaqc_report_ready: bool | None = None,
 ) -> dict[str, Any]:
     ensure_delivery_planner_table(con)
     canonical = _canonical_planner_ps_id(planner_ps_id)
@@ -124,23 +163,31 @@ def upsert_delivery_row_flags(
     current = get_delivery_row_flags(con, canonical)
     next_dismissed = current["dismissed"] if dismissed is None else bool(dismissed)
     next_exception = current["exception"] if exception is None else bool(exception)
+    next_coc_done = current["coc_done"] if coc_done is None else bool(coc_done)
+    next_qaqc_report_ready = (
+        current["qaqc_report_ready"] if qaqc_report_ready is None else bool(qaqc_report_ready)
+    )
 
     con.execute(
         """
         INSERT INTO planner_delivery_row (
-            planner_ps_id, dismissed, exception_flag, updated_at
-        ) VALUES (%s, %s, %s, NOW())
+            planner_ps_id, dismissed, exception_flag, coc_done, qaqc_report_ready, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, NOW())
         ON CONFLICT (planner_ps_id) DO UPDATE SET
             dismissed = EXCLUDED.dismissed,
             exception_flag = EXCLUDED.exception_flag,
+            coc_done = EXCLUDED.coc_done,
+            qaqc_report_ready = EXCLUDED.qaqc_report_ready,
             updated_at = NOW()
         """,
-        (canonical, next_dismissed, next_exception),
+        (canonical, next_dismissed, next_exception, next_coc_done, next_qaqc_report_ready),
     )
     return {
         "planner_ps_id": canonical,
         "dismissed": next_dismissed,
         "exception": next_exception,
+        "coc_done": next_coc_done,
+        "qaqc_report_ready": next_qaqc_report_ready,
     }
 
 
@@ -152,7 +199,14 @@ def bulk_upsert_delivery_row_flags(con, items: list[dict[str, Any]]) -> list[dic
             continue
         dismissed = item.get("dismissed")
         exception = item.get("exception")
-        if dismissed is None and exception is None:
+        coc_done = item.get("coc_done")
+        qaqc_report_ready = item.get("qaqc_report_ready")
+        if (
+            dismissed is None
+            and exception is None
+            and coc_done is None
+            and qaqc_report_ready is None
+        ):
             continue
         saved.append(
             upsert_delivery_row_flags(
@@ -160,6 +214,8 @@ def bulk_upsert_delivery_row_flags(con, items: list[dict[str, Any]]) -> list[dic
                 planner_ps_id,
                 dismissed=dismissed if dismissed is not None else None,
                 exception=exception if exception is not None else None,
+                coc_done=coc_done if coc_done is not None else None,
+                qaqc_report_ready=qaqc_report_ready if qaqc_report_ready is not None else None,
             )
         )
     return saved
@@ -173,8 +229,10 @@ def delivery_flags_post_response():
 
     dismissed = _parse_flag_bool(data.get("dismissed"))
     exception = _parse_flag_bool(data.get("exception"))
-    if dismissed is None and exception is None:
-        return jsonify({"error": "dismissed or exception is required"}), 400
+    coc_done = _parse_flag_bool(data.get("coc_done"))
+    qaqc_report_ready = _parse_flag_bool(data.get("qaqc_report_ready"))
+    if dismissed is None and exception is None and coc_done is None and qaqc_report_ready is None:
+        return jsonify({"error": "dismissed, exception, coc_done, or qaqc_report_ready is required"}), 400
 
     try:
         with planner_db() as con:
@@ -183,6 +241,8 @@ def delivery_flags_post_response():
                 planner_ps_id,
                 dismissed=dismissed,
                 exception=exception,
+                coc_done=coc_done,
+                qaqc_report_ready=qaqc_report_ready,
             )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

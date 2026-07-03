@@ -438,9 +438,14 @@ function miRender() {
     section.hidden = !hasData || viewEmpty;
   }
   if (globalEmpty) {
-    globalEmpty.hidden = !hasData || !viewEmpty;
-    if (viewEmpty && hasData) {
+    if (!hasData) {
+      globalEmpty.hidden = false;
+      globalEmpty.querySelector('p').textContent = 'No material inspection rows in ERP.';
+    } else if (viewEmpty) {
+      globalEmpty.hidden = false;
       globalEmpty.querySelector('p').textContent = `No ${miViewLabel(miState.view).toLowerCase()} inspections in ERP.`;
+    } else {
+      globalEmpty.hidden = true;
     }
   }
 

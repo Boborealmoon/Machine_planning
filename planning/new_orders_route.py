@@ -10,6 +10,15 @@ from typing import Any
 import psycopg2.extras
 from flask import Blueprint, jsonify, render_template, request
 
+from .staged_erp import (
+    STAGED_FIRST_POSTED_FOR_SOS_SQL,
+    STAGED_NEW_ORDERS_LINES_SQL,
+    STAGED_NEW_ORDERS_SHIPMENT_SQL,
+    STAGED_RECENT_SO_HDR_SQL,
+    fetch_rows,
+    live_query,
+    serialize_row as _serialize_row,
+)
 from .utils import compact_text
 
 logger = logging.getLogger(__name__)
@@ -19,62 +28,74 @@ new_orders_bp = Blueprint("new_orders", __name__)
 _CACHE_TTL_SEC = 300
 _cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
-_FIRST_POSTED_SQL = """
+_RECENT_SO_HDR_SQL = """
+SELECT sales_order_no, posted_datetime, customer_code, reference_no
+FROM public.so_order_ost_hdr
+WHERE sales_order_no LIKE 'SO/%%'
+  AND posted_datetime::date >= %s
+"""
+
+_FIRST_POSTED_FOR_SOS_SQL = """
 SELECT sales_order_no, MIN(posted_datetime) AS first_posted_datetime
 FROM public.so_order_rev_hst_hdr
+WHERE sales_order_no = ANY(%s)
 GROUP BY sales_order_no
 """
 
-_NEW_ORDERS_SQL = f"""
+_NEW_ORDERS_LINES_SQL = """
+SELECT
+    pp.source_voucher_no AS source_voucher_no,
+    regexp_replace(pp.source_line_item_no::TEXT, '\\.0+$', '') AS source_voucher_line_item_no,
+    pp.pp_voucher_no AS process_sheet_no,
+    COALESCE(pp.inventory_code, det.inventory_code) AS inventory_code,
+    COALESCE(
+        NULLIF(TRIM(det.line_item_description), ''),
+        NULLIF(TRIM(pp.bom_desc), '')
+    ) AS main_desc,
+    COALESCE(det.required_shipment_date, pp.source_rsd) AS po_due_date,
+    COALESCE(det.qty, pp.pp_qty) AS qty,
+    COALESCE(NULLIF(TRIM(part.customer_po_no), ''), NULLIF(TRIM(hdr.customer_po_no), '')) AS customer_po_no,
+    NULL::text AS customer_po_line_item_no,
+    pp.proposed_edd,
+    pp.bom_code,
+    COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price) AS unit_selling_price,
+    det.line_item_description
+FROM public.mfg_pp_vch pp
+LEFT JOIN public.so_order_ost_det det
+    ON det.sales_order_no = pp.source_voucher_no
+    AND regexp_replace(det.line_item_no::TEXT, '\\.0+$', '')
+        = regexp_replace(pp.source_line_item_no::TEXT, '\\.0+$', '')
+LEFT JOIN public.so_order_view hdr
+    ON hdr.sales_order_no = pp.source_voucher_no
+LEFT JOIN (
+    SELECT pp_voucher_no, MAX(customer_po_no) AS customer_po_no
+    FROM public.mfg_pp_partial_view
+    GROUP BY pp_voucher_no
+) part ON part.pp_voucher_no = pp.pp_voucher_no
+WHERE pp.source_voucher_no = ANY(%s)
+ORDER BY pp.source_voucher_no, source_voucher_line_item_no, pp.pp_voucher_no
+"""
+
+_NEW_ORDERS_SHIPMENT_SQL = """
 SELECT
     d.source_voucher_no,
-    d.source_voucher_line_item_no,
-    s.process_sheet_no,
-    d.inventory_code,
-    d.main_desc,
-    q.required_shipment_date AS po_due_date,
-    d.qty,
-    s.customer_po_no,
-    s.customer_po_line_item_no,
+    regexp_replace(d.source_voucher_line_item_no::TEXT, '\\.0+$', '') AS source_voucher_line_item_no,
     d.status,
     d.qty_issued,
     d.invoice_no,
     d.invoice_line_item_no,
     d.shipment_voucher_no,
     d.unit_selling_price,
-    d.line_item_description,
     h.arrival_date,
     h.exch_rate,
     h.do_no,
     h.do_generation_datetime,
-    pp.proposed_edd,
-    pp.bom_code,
-    hdr.reference_no,
-    COALESCE(rev.first_posted_datetime, hdr.posted_datetime) AS first_posted_datetime,
-    hdr.posted_datetime AS latest_posted_datetime,
-    hdr.customer_code,
     (d.unit_selling_price * d.qty_issued * h.exch_rate) AS total_home_amt
 FROM public.lg_out_shm_detail d
 LEFT JOIN public.lg_out_shm_hst_hdr h
     ON d.shipment_voucher_no = h.shipment_voucher_no
-LEFT JOIN public.so_order_ost_det q
-    ON d.source_voucher_no = q.sales_order_no
-    AND d.source_voucher_line_item_no = q.line_item_no
-LEFT JOIN public.mfg_arc_format_sourcing_v1_view s
-    ON s.pk_key_sales_order_no = d.source_voucher_no
-    AND s.pk_key_sales_line_item_no = d.source_voucher_line_item_no
-LEFT JOIN public.mfg_pp_vch pp
-    ON pp.pp_voucher_no = s.process_sheet_no
-LEFT JOIN public.so_order_ost_hdr hdr
-    ON hdr.sales_order_no = d.source_voucher_no
-LEFT JOIN ({_FIRST_POSTED_SQL.strip()}) rev
-    ON rev.sales_order_no = d.source_voucher_no
-WHERE d.source_voucher_no LIKE 'SO/%%'
-  AND NOT (d.status = 'History' AND d.qty_issued = 0)
-  AND COALESCE(rev.first_posted_datetime, hdr.posted_datetime)::date BETWEEN %s AND %s
-ORDER BY COALESCE(rev.first_posted_datetime, hdr.posted_datetime) DESC,
-         d.source_voucher_no,
-         d.source_voucher_line_item_no
+WHERE d.source_voucher_no = ANY(%s)
+  AND NOT (d.status = 'History' AND COALESCE(d.qty_issued, 0) = 0)
 """
 
 
@@ -86,33 +107,8 @@ def working_week_range(for_date: date | None = None, offset_weeks: int = 0) -> t
     return monday, saturday
 
 
-def _serialize_value(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.isoformat(sep=" ", timespec="seconds")
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, Decimal):
-        return float(value)
-    return value
-
-
-def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {key: _serialize_value(val) for key, val in row.items()}
-
-
-def _erp_query(sql: str, params: tuple) -> list[dict[str, Any]]:
-    from db import get_conn, release_conn
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-            return [_serialize_row(dict(row)) for row in rows]
-    finally:
-        release_conn(conn)
+def _erp_query(sql: str, params: tuple, *, live_sql: str | None = None) -> list[dict[str, Any]]:
+    return fetch_rows(sql, params, live_sql=live_sql or sql, domain="new_orders")
 
 
 def _cache_key(from_d: date, to_d: date) -> str:
@@ -123,15 +119,20 @@ def _ps_base_id(ps_id: str) -> str:
     return compact_text(ps_id).split("::")[0]
 
 
-_REPEAT_LOOKUP_SQL = """
+_REPEAT_LOOKUP_LIVE_SQL = """
 SELECT
-    TRIM(part_no) AS part_no,
-    TRIM(COALESCE(bom_code, '')) AS bom_code,
-    split_part(ps_id, '::', 1) AS ps_base,
-    MIN(order_date) AS order_date
-FROM pp_vouchers_cache
-WHERE COALESCE(NULLIF(TRIM(part_no), ''), '') <> ''
-GROUP BY TRIM(part_no), TRIM(COALESCE(bom_code, '')), split_part(ps_id, '::', 1)
+    TRIM(COALESCE(ps.inventory_code, pp.inventory_code)) AS part_no,
+    TRIM(COALESCE(pp.bom_code, '')) AS bom_code,
+    COALESCE(ps.process_sheet_no, pp.pp_voucher_no) AS ps_base,
+    MIN(COALESCE(ps.sales_order_date, pp.source_rsd)) AS order_date
+FROM public.mfg_pp_vch pp
+LEFT JOIN public.mfg_process_sheet_info_v1_view ps
+       ON ps.pp_voucher_no = pp.pp_voucher_no
+WHERE COALESCE(NULLIF(TRIM(COALESCE(ps.inventory_code, pp.inventory_code)), ''), '') <> ''
+GROUP BY
+    TRIM(COALESCE(ps.inventory_code, pp.inventory_code)),
+    TRIM(COALESCE(pp.bom_code, '')),
+    COALESCE(ps.process_sheet_no, pp.pp_voucher_no)
 """
 
 # Active machine-lane blocks — same "in queue" signal as process sheets / scheduler.
@@ -151,36 +152,35 @@ WITH op_ps AS (
 )
 SELECT
     q.ps_base,
-    COALESCE(
-        NULLIF(TRIM(MAX(ps.inventory_code)), ''),
-        NULLIF(TRIM(MAX(v.part_no)), '')
-    ) AS part_no
+    NULLIF(TRIM(MAX(ps.inventory_code)), '') AS part_no
 FROM op_ps q
 LEFT JOIN planner_process_sheet ps
        ON split_part(ps.planner_ps_id, '::', 1) = q.ps_base
        OR ps.source_ps_id = q.ps_base
        OR ps.planner_ps_id = q.ps_base
-LEFT JOIN (
-    SELECT ps_id, MAX(part_no) AS part_no
-    FROM pp_vouchers_cache
-    GROUP BY ps_id
-) v ON v.ps_id = q.ps_base
 WHERE q.ps_base <> ''
 GROUP BY q.ps_base
 """
 
+_LIVE_PART_NO_BY_PS_SQL = """
+SELECT
+    COALESCE(ps.process_sheet_no, pp.pp_voucher_no) AS ps_id,
+    COALESCE(ps.inventory_code, pp.inventory_code) AS part_no
+FROM public.mfg_pp_vch pp
+LEFT JOIN public.mfg_process_sheet_info_v1_view ps
+       ON ps.pp_voucher_no = pp.pp_voucher_no
+WHERE COALESCE(ps.process_sheet_no, pp.pp_voucher_no) = ANY(%s)
+"""
+
 
 def _fetch_repeat_groups_by_part() -> dict[str, list[tuple[str, Any]]]:
-    from .helpers import planner_db, rows as db_rows
-
     groups: dict[str, list[tuple[str, Any]]] = {}
-    with planner_db() as con:
-        for row in db_rows(con.execute(_REPEAT_LOOKUP_SQL)):
-            part_no = compact_text(row.get("part_no"))
-            ps_base = compact_text(row.get("ps_base"))
-            if not part_no or not ps_base:
-                continue
-            groups.setdefault(part_no, []).append((ps_base, row.get("order_date")))
+    for row in live_query(_REPEAT_LOOKUP_LIVE_SQL):
+        part_no = compact_text(row.get("part_no"))
+        ps_base = compact_text(row.get("ps_base"))
+        if not part_no or not ps_base:
+            continue
+        groups.setdefault(part_no, []).append((ps_base, row.get("order_date")))
     return groups
 
 
@@ -190,18 +190,39 @@ def _fetch_planner_queued_by_part() -> tuple[set[str], dict[str, list[str]]]:
 
     queued_bases: set[str] = set()
     by_part: dict[str, list[str]] = {}
+    planner_rows: list[dict[str, Any]] = []
     with planner_db() as con:
-        for row in db_rows(con.execute(_PLANNER_QUEUED_SQL)):
-            ps_base = compact_text(row.get("ps_base"))
+        planner_rows = db_rows(con.execute(_PLANNER_QUEUED_SQL))
+
+    missing_ps: list[str] = []
+    for row in planner_rows:
+        ps_base = compact_text(row.get("ps_base"))
+        part_no = compact_text(row.get("part_no"))
+        if not ps_base:
+            continue
+        queued_bases.add(ps_base)
+        if part_no:
+            siblings = by_part.setdefault(part_no, [])
+            if ps_base not in siblings:
+                siblings.append(ps_base)
+        else:
+            missing_ps.append(ps_base)
+
+    if missing_ps:
+        part_by_ps: dict[str, str] = {}
+        for row in live_query(_LIVE_PART_NO_BY_PS_SQL, (missing_ps,)):
+            ps_id = compact_text(row.get("ps_id"))
             part_no = compact_text(row.get("part_no"))
-            if not ps_base:
-                continue
-            queued_bases.add(ps_base)
+            if ps_id and part_no:
+                part_by_ps[ps_id] = part_no
+        for ps_base in missing_ps:
+            part_no = part_by_ps.get(ps_base)
             if not part_no:
                 continue
             siblings = by_part.setdefault(part_no, [])
             if ps_base not in siblings:
                 siblings.append(ps_base)
+
     return queued_bases, by_part
 
 
@@ -343,6 +364,150 @@ def _enrich_new_orders_repeat_info(rows: list[dict[str, Any]]) -> tuple[list[dic
 def invalidate_new_orders_cache() -> None:
     global _cache
     _cache.clear()
+    from .erp_route_cache import invalidate_prefix
+
+    invalidate_prefix("new_orders:")
+
+
+def _coerce_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = compact_text(str(value))
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
+def _resolve_posted_in_range(from_d: date, to_d: date) -> dict[str, dict[str, Any]]:
+    """Return SO numbers whose first post date falls in [from_d, to_d]."""
+    headers = _erp_query(STAGED_RECENT_SO_HDR_SQL, (from_d,), live_sql=_RECENT_SO_HDR_SQL)
+    if not headers:
+        return {}
+
+    so_nos = [
+        compact_text(row.get("sales_order_no"))
+        for row in headers
+        if compact_text(row.get("sales_order_no"))
+    ]
+    if not so_nos:
+        return {}
+
+    first_posted_rows = _erp_query(
+        STAGED_FIRST_POSTED_FOR_SOS_SQL,
+        (so_nos,),
+        live_sql=_FIRST_POSTED_FOR_SOS_SQL,
+    )
+    first_posted_by_so = {
+        compact_text(row.get("sales_order_no")): row.get("first_posted_datetime")
+        for row in first_posted_rows
+        if compact_text(row.get("sales_order_no"))
+    }
+
+    posted: dict[str, dict[str, Any]] = {}
+    for row in headers:
+        so_no = compact_text(row.get("sales_order_no"))
+        if not so_no:
+            continue
+        first_posted = first_posted_by_so.get(so_no) or row.get("posted_datetime")
+        first_posted_date = _coerce_date(first_posted)
+        if first_posted_date is None or first_posted_date < from_d or first_posted_date > to_d:
+            continue
+        posted[so_no] = {
+            "first_posted_datetime": first_posted,
+            "latest_posted_datetime": row.get("posted_datetime"),
+            "customer_code": row.get("customer_code"),
+            "reference_no": row.get("reference_no"),
+        }
+    return posted
+
+
+def _line_shipment_key(row: dict[str, Any]) -> tuple[str, str]:
+    return (
+        compact_text(row.get("source_voucher_no")),
+        compact_text(row.get("source_voucher_line_item_no")),
+    )
+
+
+def _index_shipment_rows(rows: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    indexed: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = _line_shipment_key(row)
+        if not key[0]:
+            continue
+        existing = indexed.get(key)
+        existing_qty = float(existing.get("qty_issued") or 0) if existing else 0.0
+        row_qty = float(row.get("qty_issued") or 0)
+        if existing is None or row_qty >= existing_qty:
+            indexed[key] = dict(row)
+        elif row_qty > 0:
+            merged = dict(existing)
+            merged["qty_issued"] = existing_qty + row_qty
+            indexed[key] = merged
+    return indexed
+
+
+def _merge_shipment_fields(
+    rows: list[dict[str, Any]],
+    shipment_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_line = _index_shipment_rows(shipment_rows)
+    merged_rows: list[dict[str, Any]] = []
+    for row in rows:
+        merged = dict(row)
+        shipment = by_line.get(_line_shipment_key(row))
+        if shipment:
+            merged.update(
+                {
+                    "status": shipment.get("status"),
+                    "qty_issued": shipment.get("qty_issued"),
+                    "invoice_no": shipment.get("invoice_no"),
+                    "invoice_line_item_no": shipment.get("invoice_line_item_no"),
+                    "shipment_voucher_no": shipment.get("shipment_voucher_no"),
+                    "arrival_date": shipment.get("arrival_date"),
+                    "exch_rate": shipment.get("exch_rate"),
+                    "do_no": shipment.get("do_no"),
+                    "do_generation_datetime": shipment.get("do_generation_datetime"),
+                    "total_home_amt": shipment.get("total_home_amt"),
+                }
+            )
+            if shipment.get("unit_selling_price") is not None:
+                merged["unit_selling_price"] = shipment.get("unit_selling_price")
+        else:
+            merged.setdefault("status", "Open")
+            merged.setdefault("qty_issued", 0)
+        merged_rows.append(merged)
+    return merged_rows
+
+
+def _attach_posted_headers(
+    rows: list[dict[str, Any]],
+    posted_by_so: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        so_no = compact_text(row.get("source_voucher_no"))
+        hdr = posted_by_so.get(so_no)
+        if not hdr:
+            continue
+        merged = dict(row)
+        merged.update(hdr)
+        enriched.append(merged)
+    enriched.sort(
+        key=lambda row: (
+            compact_text(row.get("first_posted_datetime")),
+            compact_text(row.get("source_voucher_no")),
+            compact_text(row.get("source_voucher_line_item_no")),
+        ),
+        reverse=True,
+    )
+    return enriched
 
 
 def _fetch_new_orders(from_d: date, to_d: date, *, refresh: bool = False) -> list[dict[str, Any]]:
@@ -353,7 +518,22 @@ def _fetch_new_orders(from_d: date, to_d: date, *, refresh: bool = False) -> lis
         if cached and now - cached[0] < _CACHE_TTL_SEC:
             return cached[1]
 
-    rows = _erp_query(_NEW_ORDERS_SQL, (from_d, to_d))
+    posted_by_so = _resolve_posted_in_range(from_d, to_d)
+    if not posted_by_so:
+        rows: list[dict[str, Any]] = []
+    else:
+        so_nos = list(posted_by_so.keys())
+        line_rows = _erp_query(STAGED_NEW_ORDERS_LINES_SQL, (so_nos,), live_sql=_NEW_ORDERS_LINES_SQL)
+        shipment_rows = _erp_query(
+            STAGED_NEW_ORDERS_SHIPMENT_SQL,
+            (so_nos,),
+            live_sql=_NEW_ORDERS_SHIPMENT_SQL,
+        )
+        rows = _attach_posted_headers(
+            _merge_shipment_fields(line_rows, shipment_rows),
+            posted_by_so,
+        )
+
     _cache[key] = (now, rows)
     return rows
 

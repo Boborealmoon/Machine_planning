@@ -253,7 +253,7 @@ def _capacity_basis_notes(basis: str, window: dict, as_of: date, *, saturday_ot_
         [
             "Weekdays less PH counts Mon–Fri in the active window, excluding Singapore public holidays.",
             f"Saturday overtime uses the SATURDAY capacity profile ({saturday_ot_hours} h per machine).",
-            "Machine plan usage is summed from planner segments in the active window (including MPP planner lanes).",
+            "Machine plan usage is summed from main planner lane segments in the active window.",
             "Completed operations (DONE/COMPLETED) are excluded from plan usage.",
         ]
     )

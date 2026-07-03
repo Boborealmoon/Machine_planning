@@ -5,6 +5,7 @@
 
 # Python
 __pycache__/
+cache/erp_routes/
 *.py[cod]
 *.pyo
 *.pyd

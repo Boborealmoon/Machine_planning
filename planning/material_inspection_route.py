@@ -1,4 +1,4 @@
-"""Material inspection — live ERP QC inspections on inbound logistic shipments."""
+"""Material inspection — synced QC inspections (stg_qc_inspection)."""
 from __future__ import annotations
 
 import logging
@@ -71,38 +71,52 @@ _MATERIAL_INSPECTION_FILTERS = {
 }
 
 
-def _material_inspection_sql(variant: str) -> str:
-    where = _MATERIAL_INSPECTION_FILTERS[variant]
-    return f"{_MATERIAL_INSPECTION_SELECT}{where}\nORDER BY created_datetime DESC NULLS LAST"
+_STAGED_MI_SELECT = """
+SELECT
+    inspection_voucher_no,
+    status,
+    inspector_code,
+    inspector_name,
+    po_no,
+    supplier_code,
+    supplier_name,
+    shipment_voucher_no,
+    grn_no,
+    shipment_line_item_no,
+    inventory_code,
+    inventory_desc,
+    uom,
+    receiving_qty,
+    inspected_qty,
+    accepted_qty,
+    rejected_qty,
+    actual_arrival_date,
+    goods_receipt_date,
+    created_by_employee_code,
+    created_by_employee_name,
+    last_updated_by_employee_code,
+    last_updated_by_employee_name,
+    created_datetime,
+    last_updated_datetime,
+    internal_remarks,
+    line_item_remarks,
+    ncr_voucher_no,
+    shipment_supplier_name,
+    shipment_receiving_location_name,
+    contact_person_name,
+    generate_ncr
+FROM public.stg_qc_inspection
+"""
 
 
-def _serialize_value(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.isoformat(sep=" ", timespec="seconds")
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, Decimal):
-        return float(value)
-    return value
+def _material_inspection_sql(variant: str) -> tuple[str, str]:
+    where = "WHERE has_shipment = true" if variant == "with_shipment" else "WHERE has_shipment = false"
+    staged = f"{_STAGED_MI_SELECT}{where}\nORDER BY created_datetime DESC NULLS LAST"
+    live = f"{_MATERIAL_INSPECTION_SELECT}{_MATERIAL_INSPECTION_FILTERS[variant]}\nORDER BY created_datetime DESC NULLS LAST"
+    return staged, live
 
 
-def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {key: _serialize_value(val) for key, val in row.items()}
-
-
-def _erp_query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
-    from db import get_conn, release_conn
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-            return [_serialize_row(dict(row)) for row in rows]
-    finally:
-        release_conn(conn)
+from .staged_erp import fetch_rows, serialize_row as _serialize_row
 
 
 def _split_by_status(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -123,6 +137,9 @@ def _split_by_status(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any
 def invalidate_material_inspection_cache() -> None:
     global _cache
     _cache.clear()
+    from .erp_route_cache import invalidate_prefix
+
+    invalidate_prefix("material_inspection:")
 
 
 def _fetch_material_inspection(
@@ -143,7 +160,8 @@ def _fetch_material_inspection(
     ):
         return cached[2]
 
-    rows = _erp_query(_material_inspection_sql(variant))
+    staged_sql, live_sql = _material_inspection_sql(variant)
+    rows = fetch_rows(staged_sql, live_sql=live_sql, staging_table="stg_qc_inspection", domain="material_inspection")
     payload = _split_by_status(rows)
     _cache[variant] = (now, _CACHE_VERSION, payload)
     return payload

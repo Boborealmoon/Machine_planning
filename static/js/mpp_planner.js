@@ -469,12 +469,58 @@
     if (modal) modal.hidden = true;
   }
 
+  function psStageIsOpen(job) {
+    const st = compactText(job?.currentStageStatus).toUpperCase();
+    if (!st) return true;
+    return !['C', 'COMPLETED', 'DONE', 'X', 'CANCELLED', 'CLOSED'].includes(st);
+  }
+
+  function psGroupHasOpenStage(group) {
+    return group.jobs.some((j) => psStageIsOpen(getJob(j.jobId)));
+  }
+
   function psGroupSchedulableCount(group) {
     return group.jobs.filter((j) => jobIsSchedulable(getJob(j.jobId))).length;
   }
 
-  function psGroupIsCompleted(group) {
+  /** No MPP qty left to schedule on any op in this partial. */
+  function psGroupIsAccounted(group) {
     return group.jobs.length > 0 && psGroupSchedulableCount(group) === 0;
+  }
+
+  function psGroupIsCompleted(group) {
+    return psGroupIsAccounted(group);
+  }
+
+  /** Grey header only when the PS itself looks finished — not just MPP ops accounted. */
+  function psGroupVisualCompleted(group) {
+    if (!psGroupIsAccounted(group)) return false;
+    if (psGroupHasOpenStage(group)) return false;
+    const sample = getJob(group.jobs[0]?.jobId);
+    const shipped = Number(sample?.partialQty || sample?.totalQty || 0);
+    const qtyShipped = Number(sample?.qtyShipped);
+    if (shipped > 0 && Number.isFinite(qtyShipped) && qtyShipped < shipped) return false;
+    return true;
+  }
+
+  function psGroupStatusLabel(group) {
+    const opCount = group.jobs.length;
+    const schedulable = psGroupSchedulableCount(group);
+    if (schedulable > 0) {
+      return schedulable < opCount
+        ? `${opCount} ops · ${schedulable} sched`
+        : `${opCount} op${opCount === 1 ? '' : 's'}`;
+    }
+    const reasons = [...new Set(
+      group.jobs.map((j) => compactText(getJob(j.jobId)?.blockedReason)).filter(Boolean),
+    )];
+    if (reasons.length === 1 && reasons[0] === 'Fully on MPP queue') {
+      return `${opCount} ops · on queue`;
+    }
+    if (psGroupHasOpenStage(group)) {
+      return `${opCount} ops · MPP accounted`;
+    }
+    return `${opCount} op${opCount === 1 ? '' : 's'} · done`;
   }
 
   function syncShowCompletedToggle() {
@@ -483,8 +529,8 @@
     if (!el) return;
     el.checked = mppShowCompleted;
     if (!label) return;
-    const completed = groupPoolJobs(JOB_TEMPLATES).filter(psGroupIsCompleted).length;
-    label.textContent = completed ? `Show completed (${completed})` : 'Show completed';
+    const accounted = groupPoolJobs(JOB_TEMPLATES).filter(psGroupIsAccounted).length;
+    label.textContent = accounted ? `Show accounted (${accounted})` : 'Show accounted';
   }
 
   function renderPsGroupSummary(group) {
@@ -495,13 +541,7 @@
     const descLine = group.partDesc
       ? `<div class="mpp-ps-desc" title="${escapeHtml(group.partDesc)}">${escapeHtml(group.partDesc)}</div>`
       : '';
-    const opCount = group.jobs.length;
-    const schedulable = psGroupSchedulableCount(group);
-    const countLabel = schedulable === 0
-      ? `${opCount} op${opCount === 1 ? '' : 's'} · done`
-      : schedulable < opCount
-        ? `${opCount} ops · ${schedulable} sched`
-        : `${opCount} op${opCount === 1 ? '' : 's'}`;
+    const countLabel = psGroupStatusLabel(group);
     const infoBtn = `<button type="button" class="trial-catalog-info-btn mpp-ps-info-btn"
       data-action="ps-detail" data-ps-id="${escapeHtml(group.psId)}"
       aria-label="View process sheet details" title="PS details — material, BOM, stage"></button>`;
@@ -523,12 +563,13 @@
 
   function renderPsGroup(group, { forceOpen = false } = {}) {
     const dueClass = mppPsDueClass(group.due);
-    const completedClass = psGroupIsCompleted(group) ? ' mpp-ps-group--completed' : '';
+    const accountedClass = psGroupIsAccounted(group) ? ' mpp-ps-group--accounted' : '';
+    const completedClass = psGroupVisualCompleted(group) ? ' mpp-ps-group--completed' : '';
     const searchBlob = mppGroupSearchBlob(group);
     const isOpen = forceOpen || mppPsExpandedSet().has(group.psId);
     const opCards = group.jobs.map((job) => renderOpPool(getJob(job.jobId), { compact: true })).join('');
     return `
-      <details class="trial-catalog-ps mpp-ps-group${completedClass} ${dueClass}" data-ps-id="${escapeHtml(group.psId)}"
+      <details class="trial-catalog-ps mpp-ps-group${accountedClass}${completedClass} ${dueClass}" data-ps-id="${escapeHtml(group.psId)}"
         data-search="${escapeHtml(searchBlob)}"${isOpen ? ' open' : ''}>
         <summary>${renderPsGroupSummary(group)}</summary>
         <div class="trial-catalog-oplist">${opCards}</div>
@@ -850,6 +891,7 @@
       requiredQty: Number(job.requiredQty) || 0,
       erpFinished: Number(job.erpFinished) || 0,
       plannedQty: Number(job.plannedQty) || 0,
+      qtyShipped: Number(job.qtyShipped ?? job.qty_shipped) || 0,
       schedulable: job.schedulable !== false,
       blockedReason: compactText(job.blockedReason),
       due: job.due || '',
@@ -914,9 +956,18 @@
     } else if (queueSyncStatus === 'error') {
       syncEl.textContent = queueSaveError ? `Save failed — ${queueSaveError}` : 'Save failed';
       syncEl.className = 'mpp-queue-sync mpp-queue-sync--error';
+    } else if (queueLoadError) {
+      syncEl.textContent = `Queue load failed — ${queueLoadError}`;
+      syncEl.className = 'mpp-queue-sync mpp-queue-sync--error';
     } else if (queueSavedAt) {
-      syncEl.textContent = `Queue synced ${queueSavedAt}`;
-      syncEl.className = 'mpp-queue-sync mpp-queue-sync--saved';
+      const cycleCount = Object.values(state.machines || {}).reduce(
+        (sum, lane) => sum + (lane?.cycles?.length || 0),
+        0,
+      );
+      syncEl.textContent = cycleCount
+        ? `Queue synced ${queueSavedAt} · ${cycleCount} cycle${cycleCount === 1 ? '' : 's'}`
+        : `Queue empty · synced ${queueSavedAt}`;
+      syncEl.className = cycleCount ? 'mpp-queue-sync mpp-queue-sync--saved' : 'mpp-queue-sync';
     } else {
       syncEl.textContent = 'Queue empty';
       syncEl.className = 'mpp-queue-sync';
@@ -965,6 +1016,7 @@
           opId: row.opId,
           jobId: row.jobId,
           palletCount: Number(row.palletCount) || 1,
+          blockId: Number(row.blockId) || 0,
         })),
       }));
     });
@@ -993,13 +1045,18 @@
   }
 
   async function loadMppQueue() {
+    queueLoadError = '';
     try {
       const res = await fetch('/api/mpp-planner/queue');
       const payload = await parseJsonResponse(res);
-      if (!res.ok || !payload.ok) return false;
+      if (!res.ok || !payload.ok) {
+        queueLoadError = compactApiError(payload?.error) || `HTTP ${res.status}`;
+        return false;
+      }
       applyQueueHydration(payload);
       return true;
-    } catch {
+    } catch (err) {
+      queueLoadError = err?.message || 'network error';
       return false;
     }
   }
@@ -1240,6 +1297,7 @@
   let queueSyncStatus = 'idle';
   let queueSaveError = '';
   let queueSavedAt = '';
+  let queueLoadError = '';
   let suppressQueueSave = false;
   let skipNextQueueSave = false;
 
@@ -1497,7 +1555,7 @@
     const groups = mppShowCompleted ? allMatching : allMatching.filter((g) => !psGroupIsCompleted(g));
     if (!groups.length) {
       if (allMatching.length && completedHidden && !mppShowCompleted) {
-        list.innerHTML = `<p class="mpp-ops-empty">Nothing left to drag — ${completedHidden} completed PS hidden. Turn on <strong>Show completed</strong> above.</p>`;
+        list.innerHTML = `<p class="mpp-ops-empty">Nothing left to drag — ${completedHidden} accounted PS hidden. Turn on <strong>Show accounted</strong> above.</p>`;
       } else {
         list.innerHTML = '<p class="mpp-ops-empty">No process sheets or ops match this search.</p>';
       }
@@ -2987,9 +3045,13 @@
   async function initMppPlanner() {
     try { localStorage.removeItem('mpp-planner-ps-expanded'); } catch { /* ignore */ }
     queueHydrated = false;
+    queueLoadError = '';
     await Promise.all([loadMppMachines(), loadFrameAgreementJobs()]);
     state = defaultState();
-    await loadMppQueue();
+    const queueOk = await loadMppQueue();
+    if (!queueOk && !queueLoadError) {
+      queueLoadError = 'could not load saved queue';
+    }
     queueHydrated = true;
     skipNextQueueSave = true;
     updateJobsSourceBadge();

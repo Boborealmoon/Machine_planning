@@ -725,6 +725,18 @@ function newOrdersBuildUrl(refresh) {
   return `/api/new-orders?${params.toString()}`;
 }
 
+async function newOrdersParseJson(res) {
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  if (ct.includes('application/json')) {
+    return res.json();
+  }
+  const text = (await res.text()).trim();
+  if (text.startsWith('<')) {
+    throw new Error(`HTTP ${res.status} — server returned HTML instead of JSON (request may have timed out)`);
+  }
+  throw new Error(text.slice(0, 160) || `HTTP ${res.status}`);
+}
+
 async function newOrdersLoad(refresh) {
   newOrdersSetLoading(true);
   try {
@@ -732,11 +744,11 @@ async function newOrdersLoad(refresh) {
       fetch(newOrdersBuildUrl(refresh)),
       fetch('/api/planning-data/repeat-orders'),
     ]);
-    const payload = await ordersRes.json();
+    const payload = await newOrdersParseJson(ordersRes);
     if (!ordersRes.ok) throw new Error(payload.error || `HTTP ${ordersRes.status}`);
     let repeatGroups = [];
     if (repeatRes.ok) {
-      const repeatPayload = await repeatRes.json();
+      const repeatPayload = await newOrdersParseJson(repeatRes);
       repeatGroups = Array.isArray(repeatPayload.rows) ? repeatPayload.rows : [];
     }
     newOrdersState.repeatGroups = repeatGroups;

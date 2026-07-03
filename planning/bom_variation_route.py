@@ -25,11 +25,31 @@ def invalidate_bom_variation_cache() -> None:
     global _bom_per_part_cache, _bom_per_ps_cache
     _bom_per_part_cache = None
     _bom_per_ps_cache = None
+    from .erp_route_cache import invalidate_prefix
+
+    invalidate_prefix("bom_variation:")
 
 
-_EXCLUDE_DO_NOT_USE = "UPPER(COALESCE(i.main_desc, '')) NOT LIKE '%DO NOT USE%'"
+_EXCLUDE_DO_NOT_USE = "UPPER(COALESCE(i.main_desc, '')) NOT LIKE '%%DO NOT USE%%'"
 
 _BOM_LOOKUP_SELECT = """
+SELECT
+    s.inventory_code           AS "Part No",
+    i.main_desc                AS "Part Name",
+    s.bom_code                 AS "BOM Code",
+    s.stage_desc               AS "OP Description",
+    bm.qty_parent              AS "Required Quantity",
+    bm.material_inventory_code AS "Material Inventory Code",
+    bm.description             AS "Material Description"
+FROM public.stg_inventory_bom_stage s
+LEFT JOIN public.part_desc i
+    ON s.inventory_code = i.inventory_code
+LEFT JOIN public.material_per_bom bm
+    ON s.inventory_code = bm.source_inventory_code
+    AND s.bom_code = bm.bom_code
+"""
+
+_LIVE_BOM_LOOKUP_SELECT = """
 SELECT
     s.inventory_code           AS "Part No",
     i.main_desc                AS "Part Name",
@@ -51,7 +71,7 @@ def _parse_lookup_terms(raw: str) -> list[str]:
     return [t.strip() for t in raw.replace(";", ",").split(",") if t.strip()]
 
 
-def _build_lookup_sql(terms: list[str]) -> tuple[str, dict[str, Any]]:
+def _build_lookup_sql(terms: list[str]) -> tuple[str, str, dict[str, Any]]:
     """Match each term against part no (exact), part name, or BOM code (contains)."""
     term_clauses: list[str] = []
     params: dict[str, Any] = {}
@@ -69,7 +89,7 @@ def _build_lookup_sql(terms: list[str]) -> tuple[str, dict[str, Any]]:
         )"""
         )
     where = f"({' OR '.join(term_clauses)}) AND {_EXCLUDE_DO_NOT_USE}"
-    sql = (
+    staged_sql = (
         _BOM_LOOKUP_SELECT
         + f"WHERE {where}\n"
         + """ORDER BY
@@ -78,9 +98,44 @@ def _build_lookup_sql(terms: list[str]) -> tuple[str, dict[str, Any]]:
     s.stage_no ASC
 """
     )
-    return sql, params
+    live_sql = (
+        _LIVE_BOM_LOOKUP_SELECT
+        + f"WHERE {where}\n"
+        + """ORDER BY
+    s.inventory_code ASC,
+    s.bom_code ASC,
+    s.stage_no ASC
+"""
+    )
+    return staged_sql, live_sql, params
 
 _BOM_PER_PART_SQL = """
+SELECT
+    s.inventory_code           AS "Part No",
+    i.main_desc                AS "Part Name",
+    s.bom_code                 AS "BOM Code",
+    CAST(
+        NULLIF(REGEXP_REPLACE(s.stage_desc, '[^0-9]', '', 'g'), '')
+        AS INTEGER
+    )                          AS "OP No",
+    s.stage_desc               AS "OP Description",
+    bm.qty_parent              AS "Inhouse Quantity",
+    bm.material_inventory_code AS "Material Inventory Code",
+    bm.description             AS "Material Description"
+FROM public.stg_inventory_bom_stage s
+LEFT JOIN public.part_desc i
+    ON s.inventory_code = i.inventory_code
+LEFT JOIN public.material_per_bom bm
+    ON s.inventory_code = bm.source_inventory_code
+    AND s.bom_code = bm.bom_code
+WHERE """ + _EXCLUDE_DO_NOT_USE + """
+ORDER BY
+    s.inventory_code ASC,
+    s.bom_code ASC,
+    "OP No" ASC
+"""
+
+_LIVE_BOM_PER_PART_SQL = """
 SELECT
     s.inventory_code           AS "Part No",
     i.main_desc                AS "Part Name",
@@ -120,6 +175,37 @@ SELECT
     bm.qty_parent              AS "Inhouse Quantity",
     bm.material_inventory_code AS "Material Inventory Code",
     bm.description             AS "Material Description"
+FROM public.mfg_process_sheet_info ps
+LEFT JOIN public.stg_inventory_bom_stage s
+    ON ps.inventory_code = s.inventory_code
+LEFT JOIN public.part_desc i
+    ON s.inventory_code = i.inventory_code
+LEFT JOIN public.material_per_bom bm
+    ON s.inventory_code = bm.source_inventory_code
+    AND s.bom_code = bm.bom_code
+WHERE (ps.process_sheet_no LIKE '%%APS%%'
+   OR ps.process_sheet_no LIKE '%%NPS%%')
+  AND """ + _EXCLUDE_DO_NOT_USE + """
+ORDER BY
+    ps.process_sheet_no ASC,
+    s.bom_code ASC,
+    "OP No" ASC
+"""
+
+_LIVE_BOM_PER_PS_SQL = """
+SELECT
+    ps.process_sheet_no        AS "Process Sheet",
+    s.inventory_code           AS "Part No",
+    i.main_desc                AS "Part Name",
+    s.bom_code                 AS "BOM Code",
+    CAST(
+        NULLIF(REGEXP_REPLACE(s.stage_desc, '[^0-9]', '', 'g'), '')
+        AS INTEGER
+    )                          AS "OP No",
+    s.stage_desc               AS "OP Description",
+    bm.qty_parent              AS "Inhouse Quantity",
+    bm.material_inventory_code AS "Material Inventory Code",
+    bm.description             AS "Material Description"
 FROM mfg_process_sheet_info_v1_view ps
 LEFT JOIN mt_inventory_bom_stage s
     ON ps.inventory_code = s.inventory_code
@@ -128,8 +214,8 @@ LEFT JOIN mt_inventory_item_view i
 LEFT JOIN inventory_bom_listing bm
     ON s.inventory_code = bm.source_inventory_code
     AND s.bom_code = bm.bom_code
-WHERE (ps.process_sheet_no LIKE '%APS%'
-   OR ps.process_sheet_no LIKE '%NPS%')
+WHERE (ps.process_sheet_no LIKE '%%APS%%'
+   OR ps.process_sheet_no LIKE '%%NPS%%')
   AND """ + _EXCLUDE_DO_NOT_USE + """
 ORDER BY
     ps.process_sheet_no ASC,
@@ -138,33 +224,7 @@ ORDER BY
 """
 
 
-def _serialize_value(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.isoformat(sep=" ", timespec="seconds")
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, Decimal):
-        return float(value)
-    return value
-
-
-def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {key: _serialize_value(val) for key, val in row.items()}
-
-
-def _erp_query(sql: str, params=None) -> list[dict[str, Any]]:
-    from db import get_conn, release_conn
-
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-            return [_serialize_row(dict(row)) for row in rows]
-    finally:
-        release_conn(conn)
+from .staged_erp import fetch_rows, serialize_row as _serialize_row
 
 
 @bom_variation_bp.get("/bom-variation")
@@ -179,8 +239,8 @@ def api_bom_lookup():
     if not terms:
         return jsonify({"error": "Enter a part no, part name, or BOM code to search"}), 400
     try:
-        sql, params = _build_lookup_sql(terms)
-        rows = _erp_query(sql, params)
+        staged_sql, live_sql, params = _build_lookup_sql(terms)
+        rows = fetch_rows(staged_sql, params, live_sql=live_sql, staging_table="stg_inventory_bom_stage", domain="bom_variation")
         return jsonify({"ok": True, "count": len(rows), "rows": rows})
     except Exception as exc:
         logger.exception("BOM lookup query failed")
@@ -203,7 +263,7 @@ def api_bom_per_part():
             "cache_ttl_sec": _CACHE_TTL_SEC,
         })
     try:
-        rows = _erp_query(_BOM_PER_PART_SQL)
+        rows = fetch_rows(_BOM_PER_PART_SQL, live_sql=_LIVE_BOM_PER_PART_SQL, staging_table="stg_inventory_bom_stage", domain="bom_variation")
         _bom_per_part_cache = (now, rows)
         return jsonify({
             "ok": True,
@@ -233,7 +293,7 @@ def api_bom_per_ps():
             "cache_ttl_sec": _CACHE_TTL_SEC,
         })
     try:
-        rows = _erp_query(_BOM_PER_PS_SQL)
+        rows = fetch_rows(_BOM_PER_PS_SQL, live_sql=_LIVE_BOM_PER_PS_SQL, domain="bom_variation")
         _bom_per_ps_cache = (now, rows)
         return jsonify({
             "ok": True,

@@ -3471,16 +3471,38 @@ def _delivery_schedule_search_clause(search):
         WHERE (
             UPPER(COALESCE(ps.source_ps_id, '')) LIKE UPPER(%s)
             OR UPPER(COALESCE(ps.planner_ps_id, '')) LIKE UPPER(%s)
-            OR UPPER(COALESCE(v.part_no, '')) LIKE UPPER(%s)
-            OR UPPER(COALESCE(v.description, '')) LIKE UPPER(%s)
         )
         """,
-        [pattern, pattern, pattern, pattern],
+        [pattern, pattern],
     )
 
 
+def _delivery_schedule_matches_search(item: dict, search: str) -> bool:
+    needle = compact_text(search).lower()
+    if not needle:
+        return True
+    base_term, partial_no = parse_bulk_lookup_ps_term(needle)
+    if partial_no is not None and base_term:
+        source = compact_text(item.get("source_ps_id")).lower()
+        if is_ps_base_id(base_term):
+            return source == base_term.lower() and int(item.get("pp_partial_no") or 1) == int(partial_no)
+        return base_term in source and int(item.get("pp_partial_no") or 1) == int(partial_no)
+    haystack = " ".join(
+        str(item.get(key) or "")
+        for key in (
+            "source_ps_id",
+            "display_ps_id",
+            "ps_id",
+            "part_no",
+            "part_name",
+            "part_desc",
+        )
+    ).lower()
+    return needle in haystack
+
+
 def _delivery_schedule_select_sql(con=None):
-    """Fast delivery query — pp_vouchers_cache only (no mfg_wo_status / erp_stage_outputs)."""
+    """Fast delivery query — planner rows only; ERP voucher fields merged from live COMAIN."""
     flags = _overlay_column_flags(con) if con is not None else (_OVERLAY_COLUMN_CACHE or {"coway": True, "remarks": True})
     coway_expr = (
         "ps.coway_proposed_edd,"
@@ -3493,60 +3515,25 @@ def _delivery_schedule_select_sql(con=None):
         else "'' AS remarks,"
     )
     return f"""
-    WITH voucher_partials AS (
-        SELECT
-            c.ps_id,
-            c.pp_partial_no,
-            MAX(c.part_no) AS part_no,
-            MAX(c.description) AS description,
-            MIN(c.due_date) AS due_date,
-            MAX(c.status) AS status,
-            MAX(c.execution_status) AS execution_status,
-            MAX(c.total_qty) AS total_qty,
-            MAX(c.partial_qty) AS partial_qty,
-            MAX(c.qty_shipped) AS qty_shipped,
-            MAX(c.so_det_qty) AS so_det_qty,
-            MAX(c.current_stage_no) AS current_stage_no,
-            MAX(c.current_stage_desc) AS current_stage_desc,
-            MAX(c.current_stage_status) AS current_stage_status,
-            COALESCE(
-                BOOL_AND(
-                    CASE
-                        WHEN NULLIF(TRIM(COALESCE(c.execution_status, '')), '') IS NULL THEN NULL
-                        ELSE UPPER(REPLACE(REPLACE(c.execution_status, '-', '_'), ' ', '_')) IN ('C', 'COMPLETED')
-                    END
-                ),
-                FALSE
-            ) AS execution_completed
-        FROM pp_vouchers_cache c
-        GROUP BY c.ps_id, c.pp_partial_no
-    )
     SELECT
         ps.planner_ps_id AS ps_id,
         ps.source_ps_id,
         ps.pp_partial_no,
         {coway_expr}
         {remarks_expr}
-        ps.planner_status,
-        v.part_no,
-        v.part_no AS part_name,
-        v.description AS part_desc,
-        v.partial_qty,
-        v.total_qty,
-        v.so_det_qty,
-        v.qty_shipped,
-        v.due_date,
-        v.execution_status,
-        v.execution_completed,
-        v.current_stage_no,
-        v.current_stage_desc,
-        v.current_stage_status
+        ps.planner_status
     FROM planner_process_sheet ps
     LEFT JOIN planner_temp_process_sheet tps ON tps.planner_ps_id = ps.planner_ps_id
-    LEFT JOIN voucher_partials v
-           ON v.ps_id = ps.source_ps_id
-          AND v.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
     """
+
+
+def _merge_live_voucher_fields(ps_row: dict, voucher_row: dict | None) -> dict:
+    merged = dict(ps_row)
+    if not voucher_row:
+        return merged
+    for key, value in voucher_row.items():
+        merged[key] = value
+    return merged
 
 
 def _delivery_schedule_row_from_ps_row(ps_row):
@@ -3628,10 +3615,21 @@ def _delivery_schedule_source_clause(base_term):
 
 
 def _delivery_schedule_planner_items(con, search=""):
+    from .live_voucher_partials import fetch_live_voucher_partials
+
     needle = compact_text(search).lower()
     base_term, partial_no = parse_bulk_lookup_ps_term(needle)
+    live_search_keys = (
+        fetch_live_voucher_partials(search=search, include_completed=False)
+        if search and not (partial_no is not None and base_term)
+        else {}
+    )
     if partial_no is not None and base_term:
         search_clause, search_params = _delivery_schedule_source_clause(base_term)
+    elif live_search_keys:
+        ps_ids = sorted({ps_id for ps_id, _partial in live_search_keys.keys() if ps_id})
+        search_clause = " WHERE ps.source_ps_id = ANY(%s) "
+        search_params = [ps_ids]
     else:
         search_clause, search_params = _delivery_schedule_search_clause(search)
     ps_rows = [
@@ -3640,12 +3638,26 @@ def _delivery_schedule_planner_items(con, search=""):
             con.execute(
                 _delivery_schedule_select_sql(con)
                 + search_clause
-                + " ORDER BY COALESCE(v.due_date::TEXT, ''), ps.planner_ps_id",
+                + " ORDER BY ps.planner_ps_id",
                 tuple(search_params),
             )
         )
     ]
-    candidates = [_delivery_schedule_row_from_ps_row(row) for row in ps_rows]
+    ps_ids = sorted({compact_text(row.get("source_ps_id")) for row in ps_rows if compact_text(row.get("source_ps_id"))})
+    if live_search_keys:
+        ps_ids = sorted(set(ps_ids) | {ps_id for ps_id, _partial in live_search_keys.keys()})
+    voucher_by_key = fetch_live_voucher_partials(ps_ids=ps_ids, include_completed=False)
+    candidates = []
+    for ps_row in ps_rows:
+        source = compact_text(ps_row.get("source_ps_id"))
+        try:
+            row_partial = max(1, int(ps_row.get("pp_partial_no") or 1))
+        except (TypeError, ValueError):
+            row_partial = 1
+        voucher_row = voucher_by_key.get((source, row_partial))
+        candidates.append(_delivery_schedule_row_from_ps_row(_merge_live_voucher_fields(ps_row, voucher_row)))
+    if search:
+        candidates = [item for item in candidates if _delivery_schedule_matches_search(item, search)]
     _reconcile_partial_shipped_status(candidates)
     open_items = [item for item in candidates if not item.get("is_completed")]
     if partial_no is not None and base_term:
@@ -3658,52 +3670,42 @@ def _delivery_schedule_planner_items(con, search=""):
 
 def _delivery_schedule_erp_only_partial_keys(con, search):
     """ERP open partials with no planner_process_sheet row, optionally filtered by search."""
-    from planning.utils import SHIPPED_QTY_TOLERANCE
+    from .live_voucher_partials import fetch_live_voucher_partials
 
-    shipped_complete = (
-        "c.so_det_qty IS NOT NULL "
-        f"AND COALESCE(c.qty_shipped, 0) >= c.so_det_qty - {SHIPPED_QTY_TOLERANCE}"
-    )
-    params: list = []
-    search_sql = ""
     search_text = compact_text(search).lower()
-    if search_text:
-        needle = f"%{search_text}%"
-        search_sql = """
-          AND (
-              LOWER(p.ps_id) LIKE %s
-              OR LOWER(COALESCE(p.part_no, '')) LIKE %s
-              OR LOWER(COALESCE(p.description, '')) LIKE %s
-              OR LOWER(COALESCE(p.pp_partial_no::TEXT, '')) LIKE %s
-          )
-        """
-        params.extend([needle, needle, needle, needle])
+    live_partials = fetch_live_voucher_partials(search=search_text, include_completed=False)
+    if not live_partials:
+        return []
 
-    sql = f"""
-        WITH partials AS (
-            SELECT
-                c.ps_id,
-                c.pp_partial_no,
-                MAX(c.part_no) AS part_no,
-                MAX(c.description) AS description
-            FROM pp_vouchers_cache c
-            WHERE NOT ({shipped_complete})
-            GROUP BY c.ps_id, c.pp_partial_no
+    ps_ids = sorted({ps_id for ps_id, _partial in live_partials.keys() if ps_id})
+    if not ps_ids:
+        return []
+
+    planner_keys = {
+        (
+            compact_text(row.get("source_ps_id")),
+            max(1, int(row.get("pp_partial_no") or 1)),
         )
-        SELECT p.ps_id, p.pp_partial_no
-        FROM partials p
-        LEFT JOIN planner_process_sheet ps
-               ON ps.source_ps_id = p.ps_id
-              AND ps.pp_partial_no = p.pp_partial_no
-        WHERE ps.planner_ps_id IS NULL
-        {search_sql}
-        ORDER BY p.ps_id, p.pp_partial_no
-    """
-    return [
-        (compact_text(row.get("ps_id")), int(row.get("pp_partial_no") or 1))
-        for row in rows(con.execute(sql, tuple(params) if params else None))
-        if compact_text(row.get("ps_id"))
+        for row in rows(
+            con.execute(
+                """
+                SELECT source_ps_id, pp_partial_no
+                FROM planner_process_sheet
+                WHERE source_ps_id = ANY(%s)
+                """,
+                (ps_ids,),
+            )
+        )
+        if compact_text(row.get("source_ps_id"))
+    }
+
+    erp_only = [
+        key
+        for key in live_partials.keys()
+        if key not in planner_keys
     ]
+    erp_only.sort()
+    return erp_only
 
 
 def _delivery_schedule_finalize_erp_entries(entries):
@@ -3750,13 +3752,33 @@ def list_delivery_schedule_board_items(con, *, search="", full=False):
     if not partial_keys:
         return merged
 
-    # Cap ERP-only enrichment — lane catalog is heavier than planner rows.
+    # Cap ERP-only enrichment — build from live COMAIN partial rows (no pp_vouchers_cache).
     partial_keys = partial_keys[:25]
 
-    from app import pp_vouchers_lane_catalog_entries
+    from .live_voucher_partials import fetch_live_voucher_partials
 
+    live_by_key = fetch_live_voucher_partials(
+        ps_ids=[key[0] for key in partial_keys],
+        include_completed=False,
+    )
     erp_only = _delivery_schedule_finalize_erp_entries(
-        pp_vouchers_lane_catalog_entries(con, partial_keys, include_completed=False)
+        [
+            _delivery_schedule_row_from_ps_row(
+                _merge_live_voucher_fields(
+                    {
+                        "ps_id": format_planner_ps_id(ps_id, partial_no),
+                        "source_ps_id": ps_id,
+                        "pp_partial_no": partial_no,
+                        "planner_status": "",
+                        "coway_proposed_edd": None,
+                        "remarks": "",
+                    },
+                    live_by_key.get((ps_id, partial_no)),
+                )
+            )
+            for ps_id, partial_no in partial_keys
+            if live_by_key.get((ps_id, partial_no))
+        ]
     )
     if erp_only:
         enrich_board_planner_fields(con, erp_only)

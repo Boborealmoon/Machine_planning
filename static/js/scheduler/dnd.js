@@ -604,7 +604,7 @@ async function moveTrialBlockToMachine(blockId, machineId, queuePosition = 0, op
       });
     }
     await refreshMachines(machineIds, { response: result });
-    trialMarkDirtyMachines(machineIds, { queueOrders });
+    trialAfterQueueMutation(machineIds, result, { queueOrders });
     if (!options.quiet) toast('Job moved', 'success');
   };
   if (options.skipBusy) {
@@ -728,7 +728,7 @@ function initTrialQueuePanelSortable() {
           if (!order) return;
           const result = await postTrialQueueReorder([order], { recalculate: false });
           await refreshMachines([machineId].filter(Boolean), { response: result });
-          trialMarkDirtyMachines([machineId], {
+          trialAfterQueueMutation([machineId], result, {
             queueOrders: { [machineId]: order.ordered_ids },
           });
         }, 'Saving order…', '');
@@ -800,7 +800,7 @@ function initTrialMachineSortables(machineIds = null) {
               queueOrders[Number(lane.machine_id)] = lane.ordered_ids;
             });
             await refreshMachines(affected, { response: result });
-            trialMarkDirtyMachines(affected, { queueOrders });
+            trialAfterQueueMutation(affected, result, { queueOrders });
           }, 'Updating queue…', '');
         } catch (e) {
           toast('Reorder failed: ' + e.message, 'error');
@@ -1013,12 +1013,8 @@ async function scheduleTrialPsAllOps(psId, machineIdOrAssignments, options = {})
     }
     if (queued > 0) {
       await refreshMachines(affectedMachineIds);
-      if (typeof trialMarkDirtyMachines === 'function') {
-        const queueOrders = {};
-        affectedMachineIds.forEach(mid => {
-          queueOrders[mid] = trialMachineBlockOrder(mid);
-        });
-        trialMarkDirtyMachines(affectedMachineIds, { skipRender: true, queueOrders });
+      if (typeof trialClearDirtyMachines === 'function') {
+        trialClearDirtyMachines(affectedMachineIds);
       }
       if (typeof trialRerenderCatalogFromBlocks === 'function') {
         trialRerenderCatalogFromBlocks();
@@ -1071,13 +1067,19 @@ async function scheduleTrialCombinedOpCard(cardId, machineId, queuePosition = 0)
     });
     const affectedIds = [numericMachineId].filter(Boolean);
     await refreshMachines(affectedIds, { response: result });
-    trialMarkDirtyMachines(affectedIds, {
+    trialAfterQueueMutation(affectedIds, result, {
       skipRender: true,
       tailFromBlockId: result?.block?.block_id,
     });
     const machine = (trialState.machines || []).find(row => Number(row.machine_id) === numericMachineId);
     const label = machine?.machine_code || `Machine ${numericMachineId}`;
-    toast(`Queued on ${label} — click Recalculate schedules for times`, 'success');
+    const stale = !result?.recalculated && !result?.tail_recalculated;
+    toast(
+      stale
+        ? `Queued on ${label} — click Recalculate schedules for times`
+        : `Queued on ${label}`,
+      'success',
+    );
   } catch (e) {
     toast('Schedule failed: ' + e.message, 'error');
   }

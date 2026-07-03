@@ -380,20 +380,11 @@ def _catalog_ops_for_sidebar(refreshed_ops):
 
 def _catalog_lane_qty_maps(con):
     """Planned + queued qty keyed for catalog / PP sidebar op cards."""
-    from .machines import fetch_mpp_planner_machine_ids
-    from .mpp_planner_service import _mpp_planned_qty_maps
-
-    mpp_ids = fetch_mpp_planner_machine_ids(con)
     planned_qty_by_op = {}
     queued_machines_by_op = {}
-    params: list = []
-    mpp_clause = ""
-    if mpp_ids:
-        mpp_clause = " AND NOT (b.machine_id = ANY(%s))"
-        params.append(mpp_ids)
     for row in rows(
         con.execute(
-            f"""
+            """
             SELECT o.source_ps_id,
                    o.source_op_no, o.source_op_seq_id AS source_op_seq_id,
                    COALESCE(SUM(COALESCE(b.scheduled_qty, 0)), 0) AS planned_qty
@@ -402,23 +393,16 @@ def _catalog_lane_qty_maps(con):
             WHERE COALESCE(o.source_ps_id, '') <> ''
               AND COALESCE(b.active, TRUE) = TRUE
               AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
-              {mpp_clause}
             GROUP BY o.source_ps_id, o.source_op_no, o.source_op_seq_id
-            """,
-            tuple(params),
+            """
         )
     ):
         canonical_ps = _canonical_catalog_ps_id(row["source_ps_id"])
         key = trial_catalog_op_key(canonical_ps, row["source_op_no"], row["source_op_seq_id"])
         planned_qty_by_op[key] = float(planned_qty_by_op.get(key, 0) or 0) + float(row["planned_qty"] or 0)
-    queue_params: list = []
-    queue_mpp_clause = ""
-    if mpp_ids:
-        queue_mpp_clause = " AND NOT (b.machine_id = ANY(%s))"
-        queue_params.append(mpp_ids)
     for row in rows(
         con.execute(
-            f"""
+            """
             SELECT DISTINCT o.source_ps_id, o.source_op_no, o.source_op_seq_id AS source_op_seq_id,
                    m.machine_no AS machine_code
             FROM planner_operation o
@@ -427,10 +411,8 @@ def _catalog_lane_qty_maps(con):
             WHERE COALESCE(o.source_ps_id, '') <> ''
               AND COALESCE(b.active, TRUE) = TRUE
               AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
-              {queue_mpp_clause}
             ORDER BY m.machine_no
-            """,
-            tuple(queue_params),
+            """
         )
     ):
         canonical_ps = _canonical_catalog_ps_id(row["source_ps_id"])
@@ -438,13 +420,6 @@ def _catalog_lane_qty_maps(con):
         code = compact_text(row.get("machine_code"))
         if code:
             queued_machines_by_op.setdefault(key, []).append(code)
-    mpp_planned, mpp_queued = _mpp_planned_qty_maps(con, mpp_ids)
-    for key, qty in mpp_planned.items():
-        planned_qty_by_op[key] = float(planned_qty_by_op.get(key, 0) or 0) + float(qty or 0)
-    for key, codes in mpp_queued.items():
-        merged = set(queued_machines_by_op.get(key) or [])
-        merged.update(codes or [])
-        queued_machines_by_op[key] = sorted(merged)
     for key, codes in list(queued_machines_by_op.items()):
         queued_machines_by_op[key] = sorted({c for c in codes if c})
     return planned_qty_by_op, queued_machines_by_op

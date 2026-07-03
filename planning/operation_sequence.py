@@ -4,6 +4,97 @@ from __future__ import annotations
 from .helpers import one, rows
 
 
+def _main_planner_lane_clause(alias: str = "b") -> str:
+    from .machines import scheduler_blocks_exclude_mpp_planner_clause
+
+    return scheduler_blocks_exclude_mpp_planner_clause(alias)
+
+
+def main_planner_lane_block_ids(con, machine_id):
+    """Active lane blocks in queue order (MPP machines include mirrored MPP-tab cycles)."""
+    machine_id = int(machine_id or 0)
+    if machine_id <= 0:
+        return []
+    from .machines import is_mpp_planner_machine_id
+
+    if is_mpp_planner_machine_id(con, machine_id):
+        return [
+            int(row["block_id"])
+            for row in rows(
+                con.execute(
+                    """
+                    SELECT block_id
+                    FROM planner_run_block
+                    WHERE machine_id = %s
+                      AND COALESCE(active, TRUE) = TRUE
+                    ORDER BY queue_position, block_id
+                    """,
+                    (machine_id,),
+                )
+            )
+        ]
+    clause = _main_planner_lane_clause("b")
+    return [
+        int(row["block_id"])
+        for row in rows(
+            con.execute(
+                f"""
+                SELECT block_id
+                FROM planner_run_block b
+                WHERE b.machine_id = %s
+                  AND COALESCE(b.active, TRUE) = TRUE
+                  AND {clause}
+                ORDER BY b.queue_position, b.block_id
+                """,
+                (machine_id,),
+            )
+        )
+    ]
+
+
+def main_planner_lane_max_queue_position(con, machine_id) -> float:
+    machine_id = int(machine_id or 0)
+    if machine_id <= 0:
+        return 0.0
+    from .machines import is_mpp_planner_machine_id
+
+    if is_mpp_planner_machine_id(con, machine_id):
+        row = one(
+            con.execute(
+                """
+                SELECT COALESCE(MAX(queue_position), 0) AS mx
+                FROM planner_run_block
+                WHERE machine_id = %s
+                  AND COALESCE(active, TRUE) = TRUE
+                """,
+                (machine_id,),
+            )
+        )
+        return float((row or {}).get("mx") or 0)
+    clause = _main_planner_lane_clause("b")
+    row = one(
+        con.execute(
+            f"""
+            SELECT COALESCE(MAX(b.queue_position), 0) AS mx
+            FROM planner_run_block b
+            WHERE b.machine_id = %s
+              AND COALESCE(b.active, TRUE) = TRUE
+              AND {clause}
+            """,
+            (machine_id,),
+        )
+    )
+    return float((row or {}).get("mx") or 0)
+
+
+def compact_main_planner_lane_queue(con, machine_id, *, recalculate=False):
+    """Renumber main-planner lane blocks to 1..n and sync operation sequences."""
+    ordered_ids = main_planner_lane_block_ids(con, machine_id)
+    if not ordered_ids:
+        return {"affected_machine_ids": [], "sequences": {}}
+    return apply_machine_queue_order(con, int(machine_id), ordered_ids, recalculate=recalculate)
+
+
 def _planning_card_schedule_columns(con):
     """Return optional schedule mirror columns present on planner_planning_card."""
     found = rows(
@@ -24,19 +115,7 @@ def _planning_card_schedule_columns(con):
 def sync_machine_operation_sequence(con, machine_id):
     """Rebuild sequence rows for one machine from planner_run_block.queue_position."""
     machine_id = int(machine_id)
-    block_rows = rows(
-        con.execute(
-            """
-            SELECT block_id
-            FROM planner_run_block
-            WHERE machine_id = %s
-              AND COALESCE(active, TRUE) = TRUE
-            ORDER BY queue_position, block_id
-            """,
-            (machine_id,),
-        )
-    )
-    active_block_ids = [int(row["block_id"]) for row in block_rows]
+    active_block_ids = main_planner_lane_block_ids(con, machine_id)
 
     if active_block_ids:
         con.execute(
@@ -90,19 +169,11 @@ def append_block_operation_sequence(con, machine_id, block_id):
     block_id = int(block_id)
     if machine_id <= 0 or block_id <= 0:
         return None
-    next_seq = int(
-        one(
-            con.execute(
-                """
-                SELECT COALESCE(MAX(os.sequence_no), 0) AS mx
-                FROM planner_operation_sequence os
-                WHERE os.machine_id = %s
-                """,
-                (machine_id,),
-            )
-        )["mx"]
-        or 0
-    ) + 1
+    ordered_ids = main_planner_lane_block_ids(con, machine_id)
+    if block_id in ordered_ids:
+        next_seq = ordered_ids.index(int(block_id)) + 1
+    else:
+        next_seq = len(ordered_ids) + 1
     row = one(
         con.execute(
             """
@@ -246,21 +317,7 @@ def compact_machine_lane_queue(con, machine_id, *, recalculate=False):
     machine_id = int(machine_id)
     if machine_id <= 0:
         return {"affected_machine_ids": [], "sequences": {}}
-    ordered_ids = [
-        int(row["block_id"])
-        for row in rows(
-            con.execute(
-                """
-                SELECT block_id
-                FROM planner_run_block
-                WHERE machine_id = %s
-                  AND COALESCE(active, TRUE) = TRUE
-                ORDER BY queue_position, block_id
-                """,
-                (machine_id,),
-            )
-        )
-    ]
+    ordered_ids = main_planner_lane_block_ids(con, machine_id)
     if not ordered_ids:
         return {"affected_machine_ids": [], "sequences": {}}
     return apply_machine_queue_order(con, machine_id, ordered_ids, recalculate=recalculate)
@@ -268,31 +325,24 @@ def compact_machine_lane_queue(con, machine_id, *, recalculate=False):
 
 def compact_machine_lanes_with_gaps(con, machine_ids=None, *, recalculate=False):
     """Renumber lanes where queue_position leaves gaps (e.g. after auto-unschedule)."""
-    from .machines import fetch_mpp_planner_machine_ids
-
-    mpp_ids = set(fetch_mpp_planner_machine_ids(con))
     params = []
     machine_clause = ""
     mids = sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0})
     if mids:
-        mids = [mid for mid in mids if mid not in mpp_ids]
-        if not mids:
-            return []
         machine_clause = " AND machine_id = ANY(%s)"
         params.append(mids)
-    elif mpp_ids:
-        machine_clause = " AND NOT (machine_id = ANY(%s))"
-        params.append(list(mpp_ids))
+    lane_clause = _main_planner_lane_clause("b")
     gap_rows = rows(
         con.execute(
             f"""
-            SELECT machine_id
-            FROM planner_run_block
-            WHERE COALESCE(active, TRUE) = TRUE
-              AND machine_id IS NOT NULL
-              {machine_clause}
-            GROUP BY machine_id
-            HAVING COALESCE(MAX(queue_position), 0) > COUNT(*)
+            SELECT b.machine_id
+            FROM planner_run_block b
+            WHERE COALESCE(b.active, TRUE) = TRUE
+              AND b.machine_id IS NOT NULL
+              AND {lane_clause}
+              {machine_clause.replace("machine_id", "b.machine_id") if machine_clause else ""}
+            GROUP BY b.machine_id
+            HAVING COALESCE(MAX(b.queue_position), 0) > COUNT(*)
             """,
             tuple(params),
         )
@@ -378,15 +428,17 @@ def infer_tail_by_machine(con, machine_ids):
     defers recalc after reordering.
     """
     tail_by_machine = {}
+    clause = _main_planner_lane_clause("b")
     for machine_id in sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0}):
         blocks = rows(
             con.execute(
-                """
+                f"""
                 SELECT block_id, queue_position, calculated_start_datetime
-                FROM planner_run_block
-                WHERE machine_id = %s
-                  AND COALESCE(active, TRUE) = TRUE
-                ORDER BY queue_position, block_id
+                FROM planner_run_block b
+                WHERE b.machine_id = %s
+                  AND COALESCE(b.active, TRUE) = TRUE
+                  AND {clause}
+                ORDER BY b.queue_position, b.block_id
                 """,
                 (int(machine_id),),
             )
@@ -419,30 +471,12 @@ def apply_machine_queue_order(con, machine_id, ordered_ids, *, recalculate=True,
     Set queue_position (and machine) for ordered block ids on a lane, sync operation
     sequences, optionally recalculate affected machines.
     """
-    from .machines import is_mpp_planner_machine_id
-
     machine_id = int(machine_id)
-    if not allow_mpp_planner and is_mpp_planner_machine_id(con, machine_id):
-        return {"affected_machine_ids": [], "sequences": {}, "skipped": "mpp_planner_machine"}
     ordered_ids = [int(value) for value in ordered_ids if int(value or 0) > 0]
     if not ordered_ids:
         return {"affected_machine_ids": [], "sequences": {}}
 
-    existing_lane_ids = [
-        int(row["block_id"])
-        for row in rows(
-            con.execute(
-                """
-                SELECT block_id
-                FROM planner_run_block
-                WHERE machine_id = %s
-                  AND COALESCE(active, TRUE) = TRUE
-                ORDER BY queue_position, block_id
-                """,
-                (machine_id,),
-            )
-        )
-    ]
+    existing_lane_ids = main_planner_lane_block_ids(con, machine_id)
     tail_start_index = tail_recalc_start_index(existing_lane_ids, ordered_ids)
     tail_from_block_id = ordered_ids[tail_start_index] if tail_start_index < len(ordered_ids) else None
 
@@ -479,6 +513,7 @@ def apply_machine_queue_order(con, machine_id, ordered_ids, *, recalculate=True,
     sequence_map = sync_operation_sequences_for_machines(con, affected_machine_ids)
     sync_planning_cards_for_machines(con, affected_machine_ids)
 
+    tail_recalculated = False
     if recalculate:
         from .blocks import recalculate_machines
         from .scheduler_state import refresh_states_for_machine
@@ -488,13 +523,26 @@ def apply_machine_queue_order(con, machine_id, ordered_ids, *, recalculate=True,
             if tail_from_block_id:
                 tail_by_machine[int(machine_id)] = int(tail_from_block_id)
             recalculate_machines(con, sorted(affected_machine_ids), tail_by_machine=tail_by_machine)
+            tail_recalculated = True
         else:
             for affected_id in sorted(affected_machine_ids):
                 sync_machine_operation_sequence(con, int(affected_id))
                 refresh_states_for_machine(con, int(affected_id))
+    elif tail_from_block_id and tail_start_index < len(ordered_ids):
+        from .blocks import recalculate_machine
+
+        recalculate_machine(
+            con,
+            int(machine_id),
+            tail_from_block_id=int(tail_from_block_id),
+            reason="QUEUE_TAIL_SYNC",
+        )
+        tail_recalculated = True
 
     return {
         "affected_machine_ids": sorted(affected_machine_ids),
+        "recalculated": bool(recalculate or tail_recalculated),
+        "tail_recalculated": tail_recalculated,
         "sequences": {
             str(block_id): {
                 "operation_sequence_id": int(row["operation_sequence_id"]),
@@ -520,21 +568,7 @@ def apply_machine_queue_orders(con, lane_orders, *, recalculate=True):
         ordered_ids = [int(value) for value in (entry.get("ordered_ids") or []) if int(value or 0) > 0]
         if not machine_id or not ordered_ids:
             continue
-        existing_lane_ids = [
-            int(row["block_id"])
-            for row in rows(
-                con.execute(
-                    """
-                    SELECT block_id
-                    FROM planner_run_block
-                    WHERE machine_id = %s
-                      AND COALESCE(active, TRUE) = TRUE
-                    ORDER BY queue_position, block_id
-                    """,
-                    (machine_id,),
-                )
-            )
-        ]
+        existing_lane_ids = main_planner_lane_block_ids(con, machine_id)
         tail_start_index = tail_recalc_start_index(existing_lane_ids, ordered_ids)
         if tail_start_index < len(ordered_ids):
             tail_by_machine[machine_id] = int(ordered_ids[tail_start_index])
