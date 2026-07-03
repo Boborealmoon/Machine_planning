@@ -1488,7 +1488,7 @@ def _delivery_schedule_row_from_board(item):
         "partial_no": partial_no,
         "ps_display": ps_display,
         "part_no": compact_text(item.get("part_no") or item.get("part_name") or item.get("inventory_code")),
-        "part_desc": compact_text(item.get("part_desc")),
+        "part_desc": compact_text(item.get("part_desc") or item.get("description")),
         "so_qty": _delivery_schedule_so_line_qty(item),
         "due_date": compact_text(item.get("due_date")),
         "coway_edd": compact_text(item.get("coway_proposed_edd")),
@@ -1523,7 +1523,7 @@ def _build_delivery_schedule_rows(board_items):
 
 _DELIVERY_SCHEDULE_CACHE: dict[str, dict] = {}
 _DELIVERY_SCHEDULE_CACHE_LOCK = threading.Lock()
-_DELIVERY_SCHEDULE_CACHE_TTL_SEC = 45
+_DELIVERY_SCHEDULE_CACHE_TTL_SEC = 0
 
 
 def _delivery_schedule_cache_key(search: str, full: bool) -> str:
@@ -2228,8 +2228,8 @@ def api_trial_create_operation():
                         source_ps_id_val,
                         int(data.get("source_op_seq_id") or 0),
                         compact_text(data.get("source_op_no")),
-                        parse_number(data.get("setup_minutes"), 0),
-                        parse_number(data.get("cycle_minutes_per_qty"), 0),
+                        setup_minutes,
+                        cycle_minutes_per_qty,
                         scheduled_qty_val,
                     ),
                 )

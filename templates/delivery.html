@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Delivery{% endblock %}
 {% block main_class %}app-main--delivery{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=delivery-week-groups-20260623">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=delivery-opaque-rows-20260703">{% endblock %}
 {% block content %}
 <div class="delivery-page">
   <div class="delivery-header">
@@ -206,7 +206,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=delivery-unified-20260619"></script>
-<script src="{{ url_for('static', filename='js/delivery_schedule.js') }}?v=delivery-flags-server-20260623"></script>
+<script src="{{ url_for('static', filename='js/delivery_schedule.js') }}?v=delivery-week-filter-edd-20260703"></script>
 <script src="{{ url_for('static', filename='js/queue_delays.js') }}?v=delivery-unified-20260619"></script>
 <script src="{{ url_for('static', filename='js/delivery.js') }}?v=delivery-client-search-20260623"></script>
 {% endblock %}

@@ -485,7 +485,8 @@ function bindTrialCatalogDnD() {
         );
         return;
       }
-      if (catalogCard && typeof trialCatalogOpIsComplete === 'function' && trialCatalogOpIsComplete(catalogCard)) {
+      if (catalogCard && typeof trialCatalogOpIsComplete === 'function'
+        && trialCatalogOpIsComplete(catalogCard, dragCtx?.psRow)) {
         return;
       }
       const eligibility = dragCtx?.workCard && typeof trialCatalogOpDragEligibility === 'function'

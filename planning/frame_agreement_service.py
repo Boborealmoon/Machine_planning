@@ -15,6 +15,570 @@ logger = logging.getLogger(__name__)
 
 _SCHEMA_READY = False
 _PART_KEY_RE = re.compile(r"\s+")
+_FA_MPP_MACHINE_CODES = frozenset({"CNC 35", "CNC 36", "CNC 41"})
+_MPP_MACHINE_NOTE_RE = re.compile(r"\bCNC\s*3[561]\b", re.IGNORECASE)
+
+
+def normalize_mpp_machine_no(value: Any) -> str:
+    raw = compact_text(value).upper().replace("  ", " ")
+    if raw in {code.upper() for code in _FA_MPP_MACHINE_CODES}:
+        for code in _FA_MPP_MACHINE_CODES:
+            if raw == code.upper():
+                return code
+    match = _MPP_MACHINE_NOTE_RE.search(compact_text(value))
+    if not match:
+        return ""
+    token = re.sub(r"\s+", " ", match.group(0).upper())
+    for code in _FA_MPP_MACHINE_CODES:
+        if token.replace(" ", "") == code.replace(" ", ""):
+            return code
+    return ""
+
+
+def parse_mpp_machine_from_notes(notes: str) -> str:
+    return normalize_mpp_machine_no(notes)
+
+
+def infer_fa_mpp_machine(description: str = "", notes: str = "") -> str:
+    """Business defaults: valve body → CNC 36, end cap → CNC 35."""
+    blob = f"{description} {notes}".upper()
+    if "END CAP" in blob or "PISTON END CAP" in blob:
+        return "CNC 35"
+    if "VALVE BODY" in blob:
+        return "CNC 36"
+    parsed = parse_mpp_machine_from_notes(notes)
+    if parsed:
+        return parsed
+    return parse_mpp_machine_from_notes(description)
+
+
+def normalize_bom_key(bom_code: str) -> str:
+    return compact_text(bom_code).upper()
+
+
+def normalize_op_no(op_no: Any) -> str:
+    raw = compact_text(op_no).upper()
+    if raw.startswith("OP"):
+        raw = raw[2:].strip()
+    return raw
+
+
+def fa_op_lookup_key(part_no: str, bom_code: str, op_no: Any) -> str:
+    return f"{normalize_part_key(part_no)}::{normalize_bom_key(bom_code)}::{normalize_op_no(op_no)}"
+
+
+def fa_mpp_lookup_key(part_no: str, bom_code: str = "", op_no: Any = "") -> str:
+    op_key = normalize_op_no(op_no)
+    if op_key:
+        return fa_op_lookup_key(part_no, bom_code, op_key)
+    return f"{normalize_part_key(part_no)}::{normalize_bom_key(bom_code)}"
+
+
+def _derive_run_min_per_pallet(cycle_min_per_piece: float, pcs_per_pallet: float, run_min_per_pallet: float) -> float:
+    if run_min_per_pallet > 0:
+        return run_min_per_pallet
+    if cycle_min_per_piece > 0 and pcs_per_pallet > 0:
+        return cycle_min_per_piece * pcs_per_pallet
+    return 0.0
+
+
+def effective_fa_op_settings(row: dict[str, Any]) -> dict[str, Any]:
+    cycle_pc = max(0.0, float(row.get("cycle_min_per_piece") or 0))
+    pcs = max(0.0, float(row.get("pcs_per_pallet") or row.get("mpp_pcs_per_pallet") or 0))
+    run_pallet = _derive_run_min_per_pallet(
+        cycle_pc,
+        pcs,
+        max(0.0, float(row.get("run_min_per_pallet") or row.get("mpp_run_min_per_pallet") or 0)),
+    )
+    pallets = max(0.0, float(row.get("pallets_count") or row.get("mpp_pallets_per_cycle") or 0))
+    machine = normalize_mpp_machine_no(row.get("mpp_machine_no"))
+    if not machine:
+        machine = infer_fa_mpp_machine(
+            compact_text(row.get("description")),
+            compact_text(row.get("notes")),
+        )
+    return {
+        "part_no": compact_text(row.get("part_no")),
+        "bom_code": compact_text(row.get("bom_code")),
+        "op_no": normalize_op_no(row.get("op_no")),
+        "stage_no": row.get("stage_no"),
+        "stage_desc": compact_text(row.get("stage_desc")),
+        "cycle_min_per_piece": cycle_pc,
+        "pcs_per_pallet": pcs,
+        "run_min_per_pallet": run_pallet,
+        "pallets_count": pallets,
+        "mpp_machine_no": machine,
+        "mpp_setup_minutes": max(0.0, float(row.get("setup_minutes") or row.get("mpp_setup_minutes") or 0)),
+        # MPP planner aliases
+        "mpp_run_min_per_pallet": run_pallet,
+        "mpp_pcs_per_pallet": pcs,
+        "mpp_pallets_per_cycle": pallets,
+    }
+
+
+def effective_fa_mpp_settings(row: dict[str, Any]) -> dict[str, Any]:
+    return effective_fa_op_settings(row)
+
+
+def load_frame_agreement_mpp_by_part(con) -> dict[str, dict[str, Any]]:
+    return load_frame_agreement_mpp_lookup(con)
+
+
+def load_frame_agreement_mpp_lookup(con) -> dict[str, dict[str, Any]]:
+    """FA MPP overrides keyed by part::bom::op (with part-level fallback)."""
+    ensure_frame_agreement_schema(con)
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows(
+        con.execute(
+            """
+            SELECT part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes
+            FROM planner_frame_agreement_part
+            """
+        )
+    ):
+        part_key = normalize_part_key(row.get("part_no"))
+        if not part_key:
+            continue
+        settings = effective_fa_op_settings(dict(row))
+        out[fa_mpp_lookup_key(row.get("part_no"), "")] = settings
+        out[part_key] = settings
+    for row in rows(
+        con.execute(
+            """
+            SELECT part_no, bom_code, op_no, stage_no, stage_desc,
+                   cycle_min_per_piece, pcs_per_pallet, run_min_per_pallet,
+                   pallets_count, setup_minutes, mpp_machine_no
+            FROM planner_frame_agreement_op_config
+            """
+        )
+    ):
+        if not normalize_op_no(row.get("op_no")):
+            continue
+        settings = effective_fa_op_settings(dict(row))
+        out[fa_op_lookup_key(row.get("part_no"), row.get("bom_code"), row.get("op_no"))] = settings
+    return out
+
+
+def resolve_fa_mpp_settings(
+    lookup: dict[str, dict[str, Any]],
+    part_no: str,
+    bom_code: str = "",
+    op_no: Any = "",
+) -> dict[str, Any] | None:
+    part_key = normalize_part_key(part_no)
+    if not part_key:
+        return None
+    op_key = normalize_op_no(op_no)
+    bom_key = normalize_bom_key(bom_code)
+    if op_key and bom_key:
+        exact = lookup.get(fa_op_lookup_key(part_no, bom_code, op_key))
+        if exact:
+            return exact
+    if bom_key:
+        bom_only = lookup.get(fa_mpp_lookup_key(part_no, bom_code))
+        if bom_only:
+            return bom_only
+    return lookup.get(fa_mpp_lookup_key(part_no, "")) or lookup.get(part_key)
+
+
+def load_frame_agreement_op_configs(
+    con, part_no: str, bom_code: str | None = None
+) -> dict[str, dict[str, Any]]:
+    ensure_frame_agreement_schema(con)
+    part_no = compact_text(part_no)
+    if not part_no:
+        return {}
+    params: list[Any] = [part_no]
+    bom_filter = ""
+    if compact_text(bom_code):
+        bom_filter = " AND bom_code = %s"
+        params.append(compact_text(bom_code))
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows(
+        con.execute(
+            f"""
+            SELECT part_no, bom_code, op_no, stage_no, stage_desc,
+                   cycle_min_per_piece, pcs_per_pallet, run_min_per_pallet,
+                   pallets_count, setup_minutes, mpp_machine_no,
+                   created_at, updated_at
+            FROM planner_frame_agreement_op_config
+            WHERE part_no = %s{bom_filter}
+            ORDER BY bom_code, stage_no NULLS LAST, op_no
+            """,
+            tuple(params),
+        )
+    ):
+        op_no = normalize_op_no(row.get("op_no"))
+        if not op_no:
+            continue
+        out[op_no] = {
+            **effective_fa_op_settings(dict(row)),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        }
+    return out
+
+
+def load_frame_agreement_op_configs_batch(
+    con, part_nos: list[str]
+) -> dict[str, dict[str, dict[str, dict[str, Any]]]]:
+    """part_no -> bom_code -> op_no -> config."""
+    ensure_frame_agreement_schema(con)
+    cleaned = [compact_text(p) for p in part_nos if compact_text(p)]
+    if not cleaned:
+        return {}
+    out: dict[str, dict[str, dict[str, dict[str, Any]]]] = {part_no: {} for part_no in cleaned}
+    for row in rows(
+        con.execute(
+            """
+            SELECT part_no, bom_code, op_no, stage_no, stage_desc,
+                   cycle_min_per_piece, pcs_per_pallet, run_min_per_pallet,
+                   pallets_count, setup_minutes, mpp_machine_no,
+                   created_at, updated_at
+            FROM planner_frame_agreement_op_config
+            WHERE part_no = ANY(%s)
+            ORDER BY part_no, bom_code, stage_no NULLS LAST, op_no
+            """,
+            (cleaned,),
+        )
+    ):
+        part_no = compact_text(row.get("part_no"))
+        bom_code = compact_text(row.get("bom_code"))
+        op_no = normalize_op_no(row.get("op_no"))
+        if not part_no or not bom_code or not op_no:
+            continue
+        out.setdefault(part_no, {}).setdefault(bom_code, {})[op_no] = {
+            **effective_fa_op_settings(dict(row)),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        }
+    return out
+
+
+def upsert_frame_agreement_op_config(
+    con,
+    part_no: str,
+    bom_code: str,
+    op_no: Any,
+    *,
+    stage_no: int | None = None,
+    stage_desc: str | None = None,
+    cycle_min_per_piece: float | None = None,
+    pcs_per_pallet: float | None = None,
+    run_min_per_pallet: float | None = None,
+    pallets_count: float | None = None,
+    setup_minutes: float | None = None,
+    mpp_machine_no: str | None = None,
+) -> dict[str, Any]:
+    ensure_frame_agreement_schema(con)
+    part_no = compact_text(part_no)
+    bom_code = compact_text(bom_code)
+    op_no_text = normalize_op_no(op_no)
+    if not part_no:
+        raise ValueError("part_no is required")
+    if not bom_code:
+        raise ValueError("bom_code is required")
+    if not op_no_text:
+        raise ValueError("op_no is required")
+    existing = one(
+        con.execute(
+            """
+            SELECT stage_no, stage_desc, cycle_min_per_piece, pcs_per_pallet,
+                   run_min_per_pallet, pallets_count, setup_minutes, mpp_machine_no
+            FROM planner_frame_agreement_op_config
+            WHERE part_no = %s AND bom_code = %s AND op_no = %s
+            """,
+            (part_no, bom_code, op_no_text),
+        )
+    ) or {}
+    stage_no_val = int(stage_no) if stage_no is not None else existing.get("stage_no")
+    stage_desc_val = compact_text(stage_desc) if stage_desc is not None else compact_text(existing.get("stage_desc"))
+    cycle_pc = (
+        max(0.0, float(cycle_min_per_piece))
+        if cycle_min_per_piece is not None
+        else max(0.0, float(existing.get("cycle_min_per_piece") or 0))
+    )
+    pcs = (
+        max(0.0, float(pcs_per_pallet))
+        if pcs_per_pallet is not None
+        else max(0.0, float(existing.get("pcs_per_pallet") or 0))
+    )
+    run_pallet = (
+        max(0.0, float(run_min_per_pallet))
+        if run_min_per_pallet is not None
+        else max(0.0, float(existing.get("run_min_per_pallet") or 0))
+    )
+    if run_min_per_pallet is None and cycle_min_per_piece is not None and pcs > 0 and cycle_pc > 0:
+        run_pallet = cycle_pc * pcs
+    pallets = (
+        max(0.0, float(pallets_count))
+        if pallets_count is not None
+        else max(0.0, float(existing.get("pallets_count") or 0))
+    )
+    setup = (
+        max(0.0, float(setup_minutes))
+        if setup_minutes is not None
+        else max(0.0, float(existing.get("setup_minutes") or 0))
+    )
+    machine = (
+        normalize_mpp_machine_no(mpp_machine_no)
+        if mpp_machine_no is not None
+        else normalize_mpp_machine_no(existing.get("mpp_machine_no"))
+    )
+    row = one(
+        con.execute(
+            """
+            INSERT INTO planner_frame_agreement_op_config (
+                part_no, bom_code, op_no, stage_no, stage_desc,
+                cycle_min_per_piece, pcs_per_pallet, run_min_per_pallet,
+                pallets_count, setup_minutes, mpp_machine_no, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (part_no, bom_code, op_no) DO UPDATE SET
+                stage_no = EXCLUDED.stage_no,
+                stage_desc = EXCLUDED.stage_desc,
+                cycle_min_per_piece = EXCLUDED.cycle_min_per_piece,
+                pcs_per_pallet = EXCLUDED.pcs_per_pallet,
+                run_min_per_pallet = EXCLUDED.run_min_per_pallet,
+                pallets_count = EXCLUDED.pallets_count,
+                setup_minutes = EXCLUDED.setup_minutes,
+                mpp_machine_no = EXCLUDED.mpp_machine_no,
+                updated_at = NOW()
+            RETURNING part_no, bom_code, op_no, stage_no, stage_desc,
+                      cycle_min_per_piece, pcs_per_pallet, run_min_per_pallet,
+                      pallets_count, setup_minutes, mpp_machine_no,
+                      created_at, updated_at
+            """,
+            (
+                part_no,
+                bom_code,
+                op_no_text,
+                stage_no_val,
+                stage_desc_val,
+                cycle_pc,
+                pcs,
+                run_pallet,
+                pallets,
+                setup,
+                machine,
+            ),
+        )
+    )
+    return {
+        **effective_fa_op_settings(dict(row or {})),
+        "created_at": (row or {}).get("created_at"),
+        "updated_at": (row or {}).get("updated_at"),
+    }
+
+
+_BOM_OP_STAGE_OPS_SQL = """
+    SELECT stage_no, stage_desc, op_no, op_index, machine_no, setup_time, cycle_time
+    FROM public.bom_op_stage
+    WHERE inventory_code = %s
+      AND UPPER(bom_code) = UPPER(%s)
+    ORDER BY op_no NULLS LAST, op_index, stage_no
+"""
+
+_BOM_MACHINING_OPS_FALLBACK_SQL = """
+    SELECT
+        stage_no,
+        stage_desc,
+        CASE
+            WHEN stage_desc ~ ' [0-9]+$'
+            THEN substring(stage_desc FROM ' ([0-9]+)$')::INTEGER
+            WHEN SPLIT_PART(stage_desc, ' ', 2) ~ '^\\d+$'
+            THEN SPLIT_PART(stage_desc, ' ', 2)::INTEGER
+            WHEN UPPER(SPLIT_PART(stage_desc, ' ', 2)) ~ '^OP[0-9]+$'
+            THEN NULLIF(substring(UPPER(SPLIT_PART(stage_desc, ' ', 2)) FROM 'OP([0-9]+)'), '')::INTEGER
+            ELSE NULL
+        END AS op_no,
+        NULL::TEXT AS machine_no,
+        180::NUMERIC AS setup_time,
+        20::NUMERIC AS cycle_time
+    FROM public.mt_inventory_bom_stage
+    WHERE stage_desc IS NOT NULL
+      AND (
+          stage_desc LIKE 'Turning%%'
+       OR stage_desc LIKE 'Milling%%'
+       OR stage_desc LIKE 'Turnmill%%'
+      )
+      AND inventory_code = %s
+      AND UPPER(bom_code) = UPPER(%s)
+    ORDER BY stage_no ASC
+"""
+
+
+def _resolve_machining_op_no(stage_desc: str, stage_no: Any, raw_op_no: Any = None) -> str:
+    op = normalize_op_no(raw_op_no)
+    if op:
+        return op
+    desc = compact_text(stage_desc)
+    if desc:
+        tail = re.search(r" (\d+)$", desc)
+        if tail:
+            op = normalize_op_no(tail.group(1))
+            if op:
+                return op
+        parts = desc.split(None, 2)
+        if len(parts) >= 2:
+            op = normalize_op_no(parts[1])
+            if op:
+                return op
+    stage = int(stage_no or 0)
+    if stage > 0:
+        return str(stage)
+    return ""
+
+
+def _normalize_machining_op_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    stage_no = row.get("stage_no")
+    stage_desc = compact_text(row.get("stage_desc"))
+    op_no = _resolve_machining_op_no(stage_desc, stage_no, row.get("op_no"))
+    if not op_no:
+        return None
+    return {
+        "stage_no": stage_no,
+        "stage_desc": stage_desc,
+        "op_no": op_no,
+        "machine_no": compact_text(row.get("machine_no")),
+        "setup_time": max(0.0, float(row.get("setup_time") or 0)),
+        "cycle_time": max(0.0, float(row.get("cycle_time") or 0)),
+    }
+
+
+def _sort_machining_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _key(row: dict[str, Any]) -> tuple[int, int, str]:
+        op_no = compact_text(row.get("op_no"))
+        try:
+            return (0, int(op_no), op_no)
+        except ValueError:
+            return (1, int(row.get("stage_no") or 0), op_no)
+
+    return sorted(ops, key=_key)
+
+
+def fetch_bom_machining_operations(db_query: Callable, part_no: str, bom_code: str) -> list[dict[str, Any]]:
+    del db_query  # ERP reads use RealDictCursor via _erp_query_dict.
+    part_no = compact_text(part_no)
+    bom_code = compact_text(bom_code)
+    if not part_no or not bom_code:
+        return []
+
+    raw = _erp_query_dict(_BOM_OP_STAGE_OPS_SQL, (part_no, bom_code))
+    if not raw:
+        raw = _erp_query_dict(_BOM_MACHINING_OPS_FALLBACK_SQL, (part_no, bom_code))
+
+    by_op: dict[str, dict[str, Any]] = {}
+    for row in raw:
+        normalized = _normalize_machining_op_row(row)
+        if not normalized:
+            continue
+        op_key = normalized["op_no"]
+        prev = by_op.get(op_key)
+        if prev is None or int(normalized.get("stage_no") or 0) < int(prev.get("stage_no") or 0):
+            by_op[op_key] = normalized
+    return _sort_machining_ops(list(by_op.values()))
+
+
+def build_fa_operation_line_items(
+    db_query: Callable,
+    con,
+    part_row: dict[str, Any],
+    bom_code: str,
+) -> list[dict[str, Any]]:
+    part_no = compact_text(part_row.get("part_no"))
+    bom_code = compact_text(bom_code)
+    if not part_no or not bom_code:
+        return []
+    ops = fetch_bom_machining_operations(db_query, part_no, bom_code)
+    saved = load_frame_agreement_op_configs(con, part_no, bom_code)
+    desc = compact_text(part_row.get("description"))
+    notes = compact_text(part_row.get("notes"))
+    default_machine = normalize_mpp_machine_no(part_row.get("mpp_machine_no")) or infer_fa_mpp_machine(desc, notes)
+    line_items: list[dict[str, Any]] = []
+    seen_ops: set[str] = set()
+
+    def _append_line(op_no: str, op: dict[str, Any], config: dict[str, Any]) -> None:
+        erp_machine = normalize_mpp_machine_no(op.get("machine_no"))
+        cycle_pc = float(config.get("cycle_min_per_piece") or op.get("cycle_time") or 0)
+        pcs = float(config.get("pcs_per_pallet") or 0)
+        run_pallet = _derive_run_min_per_pallet(
+            cycle_pc,
+            pcs,
+            float(config.get("run_min_per_pallet") or 0),
+        )
+        setup = float(
+            config.get("setup_minutes")
+            or config.get("mpp_setup_minutes")
+            or op.get("setup_time")
+            or 0
+        )
+        line_items.append(
+            {
+                "part_no": part_no,
+                "bom_code": bom_code,
+                "op_no": op_no,
+                "stage_no": op.get("stage_no"),
+                "stage_desc": compact_text(config.get("stage_desc")) or compact_text(op.get("stage_desc")),
+                "cycle_min_per_piece": cycle_pc,
+                "pcs_per_pallet": pcs,
+                "run_min_per_pallet": run_pallet,
+                "pallets_count": float(config.get("pallets_count") or 0),
+                "setup_minutes": setup,
+                "mpp_machine_no": compact_text(config.get("mpp_machine_no")) or erp_machine or default_machine,
+                "updated_at": config.get("updated_at"),
+            }
+        )
+        seen_ops.add(op_no)
+
+    for op in ops:
+        op_no = normalize_op_no(op.get("op_no"))
+        if not op_no:
+            continue
+        _append_line(op_no, op, saved.get(op_no, {}))
+
+    for op_no, config in saved.items():
+        if op_no in seen_ops:
+            continue
+        _append_line(
+            op_no,
+            {
+                "stage_no": config.get("stage_no"),
+                "stage_desc": config.get("stage_desc"),
+                "machine_no": config.get("mpp_machine_no"),
+                "cycle_time": config.get("cycle_min_per_piece"),
+                "setup_time": config.get("setup_minutes") or config.get("mpp_setup_minutes"),
+            },
+            config,
+        )
+
+    return _sort_machining_ops(line_items)
+
+
+def apply_fa_mpp_overrides(job: dict[str, Any], fa_settings: dict[str, Any] | None) -> None:
+    """Apply FA master run time + machine to an MPP planner job payload."""
+    if not fa_settings:
+        return
+    machine = compact_text(fa_settings.get("mpp_machine_no"))
+    if machine:
+        job["preferredMachine"] = machine
+    run_min = float(
+        fa_settings.get("run_min_per_pallet")
+        or fa_settings.get("mpp_run_min_per_pallet")
+        or 0
+    )
+    if run_min > 0:
+        job["minPerPallet"] = max(0.1, run_min)
+    setup = float(fa_settings.get("setup_minutes") or fa_settings.get("mpp_setup_minutes") or 0)
+    if setup > 0:
+        job["setupMinutes"] = setup
+    pcs = float(fa_settings.get("pcs_per_pallet") or fa_settings.get("mpp_pcs_per_pallet") or 0)
+    if pcs > 0:
+        job["pcsPerPallet"] = max(1, int(round(pcs)))
+    pallets = float(fa_settings.get("pallets_count") or fa_settings.get("mpp_pallets_per_cycle") or 0)
+    if pallets > 0:
+        job["defaultPalletsPerCycle"] = max(1, int(round(pallets)))
+    job["faMppMaster"] = True
 
 
 def normalize_part_key(part_no: str) -> str:
@@ -39,6 +603,72 @@ def ensure_frame_agreement_schema(con) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_planner_frame_agreement_part_updated
             ON planner_frame_agreement_part (updated_at DESC)
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_frame_agreement_part
+            ADD COLUMN IF NOT EXISTS mpp_machine_no TEXT NOT NULL DEFAULT ''
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_frame_agreement_part
+            ADD COLUMN IF NOT EXISTS mpp_run_min_per_pallet NUMERIC NOT NULL DEFAULT 0
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_frame_agreement_part
+            ADD COLUMN IF NOT EXISTS mpp_setup_minutes NUMERIC NOT NULL DEFAULT 0
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS planner_frame_agreement_bom_config (
+            part_no                  TEXT         NOT NULL,
+            bom_code                 TEXT         NOT NULL DEFAULT '',
+            mpp_machine_no           TEXT         NOT NULL DEFAULT '',
+            mpp_run_min_per_pallet   NUMERIC      NOT NULL DEFAULT 0,
+            mpp_setup_minutes        NUMERIC      NOT NULL DEFAULT 0,
+            mpp_pcs_per_pallet       NUMERIC      NOT NULL DEFAULT 0,
+            mpp_pallets_per_cycle    NUMERIC      NOT NULL DEFAULT 0,
+            created_at               TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at               TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (part_no, bom_code)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_planner_fa_bom_config_part
+            ON planner_frame_agreement_bom_config (part_no)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS planner_frame_agreement_op_config (
+            part_no              TEXT         NOT NULL,
+            bom_code             TEXT         NOT NULL DEFAULT '',
+            op_no                TEXT         NOT NULL DEFAULT '',
+            stage_no             INTEGER,
+            stage_desc           TEXT         NOT NULL DEFAULT '',
+            cycle_min_per_piece  NUMERIC      NOT NULL DEFAULT 0,
+            pcs_per_pallet       NUMERIC      NOT NULL DEFAULT 0,
+            run_min_per_pallet   NUMERIC      NOT NULL DEFAULT 0,
+            pallets_count        NUMERIC      NOT NULL DEFAULT 0,
+            setup_minutes        NUMERIC      NOT NULL DEFAULT 0,
+            mpp_machine_no       TEXT         NOT NULL DEFAULT '',
+            created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (part_no, bom_code, op_no)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_planner_fa_op_config_part_bom
+            ON planner_frame_agreement_op_config (part_no, bom_code)
         """
     )
     _SCHEMA_READY = True
@@ -292,9 +922,18 @@ def serialize_part_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
     out = {
         "part_no": part_no,
         "notes": compact_text(row.get("notes")),
+        "mpp_machine_no": normalize_mpp_machine_no(row.get("mpp_machine_no"))
+        or infer_fa_mpp_machine(compact_text(row.get("description")), compact_text(row.get("notes"))),
+        "mpp_run_min_per_pallet": max(0.0, float(row.get("mpp_run_min_per_pallet") or 0)),
+        "mpp_setup_minutes": max(0.0, float(row.get("mpp_setup_minutes") or 0)),
+        "mpp_pcs_per_pallet": max(0.0, float(row.get("mpp_pcs_per_pallet") or 0)),
+        "mpp_pallets_per_cycle": max(0.0, float(row.get("mpp_pallets_per_cycle") or 0)),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
+    op_configs = row.get("op_configs")
+    if isinstance(op_configs, dict):
+        out["op_configs"] = op_configs
     for key in (
         "description",
         "bom_code",
@@ -319,7 +958,8 @@ def list_frame_agreement_parts(con, *, search: str = "") -> list[dict[str, Any]]
         raw = rows(
             con.execute(
                 """
-                SELECT part_no, notes, created_at, updated_at
+                SELECT part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
+                       created_at, updated_at
                 FROM planner_frame_agreement_part
                 WHERE LOWER(part_no) LIKE %s OR LOWER(notes) LIKE %s
                 ORDER BY part_no
@@ -331,14 +971,22 @@ def list_frame_agreement_parts(con, *, search: str = "") -> list[dict[str, Any]]
         raw = rows(
             con.execute(
                 """
-                SELECT part_no, notes, created_at, updated_at
+                SELECT part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
+                       created_at, updated_at
                 FROM planner_frame_agreement_part
                 ORDER BY part_no
                 """
             )
         )
-    out = [serialize_part_row(dict(row)) for row in raw]
-    return [row for row in out if row]
+    part_nos = [compact_text(row.get("part_no")) for row in raw if compact_text(row.get("part_no"))]
+    op_configs_by_part = load_frame_agreement_op_configs_batch(con, part_nos)
+    out = []
+    for row in raw:
+        part_no = compact_text(row.get("part_no"))
+        serialized = serialize_part_row({**dict(row), "op_configs": op_configs_by_part.get(part_no, {})})
+        if serialized:
+            out.append(serialized)
+    return out
 
 
 def load_frame_agreement_part_keys(con) -> set[str]:
@@ -358,45 +1006,141 @@ def is_frame_agreement_part(part_no: str, keys: set[str] | None = None) -> bool:
     return key in keys
 
 
-def add_frame_agreement_part(con, part_no: str, *, notes: str = "") -> dict[str, Any]:
+def add_frame_agreement_part(
+    con,
+    part_no: str,
+    *,
+    notes: str = "",
+    mpp_machine_no: str = "",
+    mpp_run_min_per_pallet: float = 0,
+    mpp_setup_minutes: float = 0,
+    description: str = "",
+) -> dict[str, Any]:
     ensure_frame_agreement_schema(con)
     part_no = compact_text(part_no)
     if not part_no:
         raise ValueError("part_no is required")
     notes = compact_text(notes)
+    machine = normalize_mpp_machine_no(mpp_machine_no) or infer_fa_mpp_machine(description, notes)
+    run_min = max(0.0, float(mpp_run_min_per_pallet or 0))
+    setup_min = max(0.0, float(mpp_setup_minutes or 0))
     row = one(
         con.execute(
             """
-            INSERT INTO planner_frame_agreement_part (part_no, notes, updated_at)
-            VALUES (%s, %s, NOW())
+            INSERT INTO planner_frame_agreement_part (
+                part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, NOW())
             ON CONFLICT (part_no) DO UPDATE SET
                 notes = EXCLUDED.notes,
+                mpp_machine_no = EXCLUDED.mpp_machine_no,
+                mpp_run_min_per_pallet = EXCLUDED.mpp_run_min_per_pallet,
+                mpp_setup_minutes = EXCLUDED.mpp_setup_minutes,
                 updated_at = NOW()
-            RETURNING part_no, notes, created_at, updated_at
+            RETURNING part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
+                      created_at, updated_at
             """,
-            (part_no, notes),
+            (part_no, notes, machine, run_min, setup_min),
         )
     )
-    return serialize_part_row(row) or {"part_no": part_no, "notes": notes}
+    return serialize_part_row(row) or {
+        "part_no": part_no,
+        "notes": notes,
+        "mpp_machine_no": machine,
+        "mpp_run_min_per_pallet": run_min,
+        "mpp_setup_minutes": setup_min,
+    }
 
 
-def update_frame_agreement_part(con, part_no: str, *, notes: str) -> dict[str, Any] | None:
+def update_frame_agreement_part(
+    con,
+    part_no: str,
+    *,
+    notes: str | None = None,
+    bom_code: str | None = None,
+    op_no: Any = None,
+    stage_no: int | None = None,
+    stage_desc: str | None = None,
+    cycle_min_per_piece: float | None = None,
+    pcs_per_pallet: float | None = None,
+    run_min_per_pallet: float | None = None,
+    pallets_count: float | None = None,
+    setup_minutes: float | None = None,
+    mpp_machine_no: str | None = None,
+    mpp_run_min_per_pallet: float | None = None,
+    mpp_setup_minutes: float | None = None,
+    mpp_pcs_per_pallet: float | None = None,
+    mpp_pallets_per_cycle: float | None = None,
+) -> dict[str, Any] | None:
     ensure_frame_agreement_schema(con)
     part_no = compact_text(part_no)
     if not part_no:
         raise ValueError("part_no is required")
-    row = one(
-        con.execute(
-            """
-            UPDATE planner_frame_agreement_part
-            SET notes = %s, updated_at = NOW()
-            WHERE part_no = %s
-            RETURNING part_no, notes, created_at, updated_at
-            """,
-            (compact_text(notes), part_no),
+
+    op_config_saved: dict[str, Any] | None = None
+    if compact_text(bom_code) and normalize_op_no(op_no):
+        op_config_saved = upsert_frame_agreement_op_config(
+            con,
+            part_no,
+            compact_text(bom_code),
+            op_no,
+            stage_no=stage_no,
+            stage_desc=stage_desc,
+            cycle_min_per_piece=cycle_min_per_piece,
+            pcs_per_pallet=pcs_per_pallet if pcs_per_pallet is not None else mpp_pcs_per_pallet,
+            run_min_per_pallet=run_min_per_pallet
+            if run_min_per_pallet is not None
+            else mpp_run_min_per_pallet,
+            pallets_count=pallets_count if pallets_count is not None else mpp_pallets_per_cycle,
+            setup_minutes=setup_minutes if setup_minutes is not None else mpp_setup_minutes,
+            mpp_machine_no=mpp_machine_no,
         )
+
+    updates: list[str] = []
+    params: list[Any] = []
+    if notes is not None:
+        updates.append("notes = %s")
+        params.append(compact_text(notes))
+    if not updates and op_config_saved is None:
+        raise ValueError("No fields to update")
+    row = None
+    if updates:
+        updates.append("updated_at = NOW()")
+        params.append(part_no)
+        row = one(
+            con.execute(
+                f"""
+                UPDATE planner_frame_agreement_part
+                SET {", ".join(updates)}
+                WHERE part_no = %s
+                RETURNING part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
+                          created_at, updated_at
+                """,
+                tuple(params),
+            )
+        )
+    else:
+        row = one(
+            con.execute(
+                """
+                SELECT part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
+                       created_at, updated_at
+                FROM planner_frame_agreement_part
+                WHERE part_no = %s
+                """,
+                (part_no,),
+            )
+        )
+    if not row:
+        return None
+    serialized = serialize_part_row(
+        {**dict(row), "op_configs": load_frame_agreement_op_configs_batch(con, [part_no]).get(part_no, {})}
     )
-    return serialize_part_row(row)
+    if op_config_saved and serialized:
+        serialized["saved_op_config"] = op_config_saved
+        serialized["saved_bom_code"] = compact_text(bom_code)
+        serialized["saved_op_no"] = normalize_op_no(op_no)
+    return serialized
 
 
 def delete_frame_agreement_part(con, part_no: str) -> bool:
@@ -404,6 +1148,14 @@ def delete_frame_agreement_part(con, part_no: str) -> bool:
     part_no = compact_text(part_no)
     if not part_no:
         return False
+    con.execute(
+        "DELETE FROM planner_frame_agreement_op_config WHERE part_no = %s",
+        (part_no,),
+    )
+    con.execute(
+        "DELETE FROM planner_frame_agreement_bom_config WHERE part_no = %s",
+        (part_no,),
+    )
     cur = con.execute(
         "DELETE FROM planner_frame_agreement_part WHERE part_no = %s",
         (part_no,),
@@ -425,8 +1177,26 @@ def apply_frame_agreement_flags(orders: list[dict[str, Any]], keys: set[str]) ->
 
 _MPP_JOBS_SQL = """
 WITH fa AS (
-    SELECT TRIM(part_no) AS part_no, notes
+    SELECT
+        TRIM(part_no) AS part_no,
+        notes,
+        TRIM(COALESCE(mpp_machine_no, '')) AS mpp_machine_no,
+        COALESCE(mpp_run_min_per_pallet, 0) AS mpp_run_min_per_pallet,
+        COALESCE(mpp_setup_minutes, 0) AS mpp_setup_minutes
     FROM planner_frame_agreement_part
+),
+fa_op AS (
+    SELECT
+        TRIM(part_no) AS part_no,
+        TRIM(COALESCE(bom_code, '')) AS bom_code,
+        TRIM(COALESCE(op_no, '')) AS op_no,
+        TRIM(COALESCE(mpp_machine_no, '')) AS mpp_machine_no,
+        COALESCE(cycle_min_per_piece, 0) AS cycle_min_per_piece,
+        COALESCE(pcs_per_pallet, 0) AS pcs_per_pallet,
+        COALESCE(run_min_per_pallet, 0) AS run_min_per_pallet,
+        COALESCE(setup_minutes, 0) AS setup_minutes,
+        COALESCE(pallets_count, 0) AS pallets_count
+    FROM planner_frame_agreement_op_config
 ),
 partials AS (
     SELECT
@@ -500,12 +1270,30 @@ SELECT
     m.op_no,
     m.op_type,
     m.machine_category,
-    m.preferred_machine,
-    COALESCE(ct.cycle_time, 0) AS cycle_time,
+    COALESCE(NULLIF(TRIM(fa_op.mpp_machine_no), ''), NULLIF(TRIM(fa.mpp_machine_no), ''), m.preferred_machine) AS preferred_machine,
+    COALESCE(
+        NULLIF(fa_op.run_min_per_pallet, 0),
+        CASE
+            WHEN COALESCE(fa_op.cycle_min_per_piece, 0) > 0 AND COALESCE(fa_op.pcs_per_pallet, 0) > 0
+            THEN fa_op.cycle_min_per_piece * fa_op.pcs_per_pallet
+            ELSE 0
+        END,
+        NULLIF(fa.mpp_run_min_per_pallet, 0),
+        ct.cycle_time,
+        0
+    ) AS cycle_time,
+    COALESCE(NULLIF(fa_op.setup_minutes, 0), NULLIF(fa.mpp_setup_minutes, 0), 0) AS setup_minutes,
+    COALESCE(NULLIF(fa_op.pcs_per_pallet, 0), 0) AS mpp_pcs_per_pallet,
+    COALESCE(NULLIF(fa_op.pallets_count, 0), 0) AS mpp_pallets_per_cycle,
     COALESCE(ct.stage_name, '') AS stage_name,
     COALESCE(erp.erp_acc_qty, 0) AS erp_acc_qty,
     COALESCE(erp.erp_req_qty, 0) AS erp_req_qty
 FROM partials p
+JOIN fa ON UPPER(TRIM(fa.part_no)) = UPPER(TRIM(p.part_no))
+LEFT JOIN fa_op
+  ON UPPER(TRIM(fa_op.part_no)) = UPPER(TRIM(p.part_no))
+ AND TRIM(fa_op.bom_code) = TRIM(COALESCE(p.bom_code, ''))
+ AND TRIM(fa_op.op_no) = TRIM(COALESCE(m.op_no::text, ''))
 JOIN mpp_steps m
   ON UPPER(TRIM(m.part_no)) = UPPER(TRIM(p.part_no))
  AND (
@@ -590,6 +1378,9 @@ def fetch_mpp_job_candidates(con, *, mpp_machine_codes: set[str] | None = None) 
         op_label = _op_label(row.get("op_no"), row.get("op_type"), row.get("stage_name"))
         cycle_time = float(row.get("cycle_time") or 0)
         min_per_pallet = max(1, int(round(cycle_time))) if cycle_time > 0 else 90
+        setup_minutes = max(0.0, float(row.get("setup_minutes") or 0))
+        pcs_per_pallet = max(1, int(round(float(row.get("mpp_pcs_per_pallet") or 0)))) if float(row.get("mpp_pcs_per_pallet") or 0) > 0 else 1
+        pallets_per_cycle = max(1, int(round(float(row.get("mpp_pallets_per_cycle") or 0)))) if float(row.get("mpp_pallets_per_cycle") or 0) > 0 else 1
         wo_qty = float(row.get("erp_req_qty") or row.get("qty") or 0)
         erp_acc = max(0.0, float(row.get("erp_acc_qty") or 0))
         remaining = max(0.0, wo_qty - erp_acc) if wo_qty > 0 else 0.0
@@ -604,9 +1395,11 @@ def fetch_mpp_job_candidates(con, *, mpp_machine_codes: set[str] | None = None) 
                 "partNo": part_no,
                 "partDesc": compact_text(row.get("part_desc")),
                 "opLabel": op_label,
+                "opNo": normalize_op_no(row.get("op_no")),
                 "minPerPallet": min_per_pallet,
-                "pcsPerPallet": 1,
-                "defaultPalletsPerCycle": 1,
+                "setupMinutes": setup_minutes,
+                "pcsPerPallet": pcs_per_pallet,
+                "defaultPalletsPerCycle": pallets_per_cycle,
                 "qty": wo_qty or remaining,
                 "out": erp_acc,
                 "remainingQty": remaining,
@@ -621,6 +1414,7 @@ def fetch_mpp_job_candidates(con, *, mpp_machine_codes: set[str] | None = None) 
                 "machineCategory": compact_text(row.get("machine_category")) or "MPP",
                 "status": compact_text(row.get("status")),
                 "isFrameAgreement": True,
+                "faMppMaster": bool(cycle_time > 0 or setup_minutes > 0 or compact_text(row.get("preferred_machine"))),
             }
         )
     return jobs

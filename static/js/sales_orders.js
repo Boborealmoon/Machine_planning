@@ -61,6 +61,7 @@ function soMaterialSubconSortValue(raw) {
 }
 
 const SO_PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
+const SO_STAGE_EXCLUDE_ALL_COMPLETE = 'all complete';
 
 const SO_COLUMNS = [
   { id: '_so', label: 'SO', side: true, sortable: true, filterable: true },
@@ -75,7 +76,8 @@ const SO_COLUMNS = [
   { id: 'description', label: 'Description', sortable: true, filterable: true },
   { id: 'customer_po_no', label: 'P/O No.', sortable: true, filterable: true },
   { id: 'due_date', label: 'Due date', sortable: true, filterable: true },
-  { id: 'delivery_date', label: 'Del. date', sortable: true, filterable: true },
+  { id: 'proposed_edd', label: 'Prop. EDD', sortable: true, filterable: true },
+  { id: 'delivery_date', label: 'Delivered', sortable: true, filterable: true },
   { id: 'unit_selling_price', label: 'U/Price', sortable: true, filterable: true },
   { id: 'amount', label: 'Amount', sortable: true, filterable: true },
   { id: 'material_subcon', label: 'Material in / Sub-con', sortable: true, filterable: true },
@@ -110,6 +112,8 @@ const soState = {
   sortCol: '',
   sortDir: 'asc',
   colFilters: {},
+  colExcludeFilters: {},
+  colEmptyFilters: {},
   openFilterCol: '',
   frameAgreementParts: new Set(),
 };
@@ -198,6 +202,10 @@ function soFormatDate(value) {
   if (!value) return '—';
   const text = String(value).trim();
   return text.length >= 10 ? text.slice(0, 10) : text || '—';
+}
+
+function soProposedEddDisplay(pp, partial) {
+  return String(partial?.coway_proposed_edd || pp?.coway_proposed_edd || '').trim();
 }
 
 function soFormatMoney(value) {
@@ -375,6 +383,14 @@ function soStageLabel(partial) {
   return '';
 }
 
+function soStageFilterText(partial) {
+  const stage = soPartialStage(partial);
+  const parts = [soStageLabel(partial)];
+  if (stage.mode === 'completed') parts.push('All complete');
+  if (stage.mode === 'unassigned') parts.push('No WO');
+  return parts.filter(Boolean).join(' ');
+}
+
 function soPartialIsNoWo(partial) {
   const stage = soPartialStage(partial);
   return !stage.desc && !stage.status && stage.mode === 'unassigned';
@@ -450,7 +466,8 @@ function soRenderJobDetailFields(order, pp, partial) {
     soDetailField('Customer PO', partial?.customer_po_no || pp?.customer_po_no || order?.customer_po_no, { mono: true }),
     soDetailField('SO line', pp?.source_line_item_no),
     soDetailField('Due date', soFormatDate(pp?.due_date)),
-    soDetailField('Del. date', soFormatDate(pp?.delivery_date)),
+    ...(soProposedEddDisplay(pp, partial) ? [soDetailField('Prop. EDD', soFormatDate(soProposedEddDisplay(pp, partial)))] : []),
+    ...(pp?.delivery_date ? [soDetailField('Delivered', soFormatDate(pp?.delivery_date))] : []),
     soDetailField('Qty', pp?.pp_qty),
     soDetailField('U/Price', soFormatMoney(pp?.unit_selling_price)),
     soDetailField('Amount', soFormatMoney(pp?.amount)),
@@ -841,6 +858,7 @@ function soLeafRows(order) {
           erp_last_stage_no: pp.erp_last_stage_no,
           erp_last_stage_desc: pp.erp_last_stage_desc,
           erp_last_stage_status: pp.erp_last_stage_status,
+          coway_proposed_edd: pp.coway_proposed_edd,
         },
       });
       return;
@@ -931,7 +949,7 @@ function soLeafColumnValue(leaf, colId) {
     case 'exception': return soIsPartialException(pp, partial) ? 'flagged' : '';
     case 'process_sheet_no': return soPsDisplayId(pp);
     case 'queued_cnc': return soQueuedMachinesLabel(pp, partial);
-    case 'erp_stage': return soStageLabel(partial);
+    case 'erp_stage': return soStageFilterText(partial);
     case 'order_date': return pp?.order_date;
     case 'part': {
       const code = partial?.inventory_code || pp?.inventory_code;
@@ -940,6 +958,7 @@ function soLeafColumnValue(leaf, colId) {
     case 'description': return pp?.description;
     case 'customer_po_no': return pp?.customer_po_no;
     case 'due_date': return pp?.due_date;
+    case 'proposed_edd': return soProposedEddDisplay(pp, partial);
     case 'delivery_date': return pp?.delivery_date;
     case 'unit_selling_price': return pp?.unit_selling_price;
     case 'amount': return pp?.amount;
@@ -976,12 +995,69 @@ function soLeafPassesPrefixFilter(pp) {
   return soState.ppTypes.has(psType);
 }
 
+function soLeafColumnIsEmpty(leaf, colId) {
+  const { order, pp, partial } = leaf;
+  switch (colId) {
+    case '_so':
+      return !String(order?.sales_order_no || '').trim();
+    case 'process_sheet_no': {
+      const v = soPsDisplayId(pp);
+      return !v || v === '—';
+    }
+    case 'partial':
+      return partial?.pp_partial_no == null || partial?.pp_partial_no === '';
+    case 'queued_cnc':
+      return soPartialQueuedMachines(pp, partial).length === 0;
+    case 'erp_stage': {
+      const stage = soPartialStage(partial);
+      return !stage.desc && !stage.status && stage.mode !== 'unassigned' && stage.mode !== 'completed';
+    }
+    case 'order_date':
+      return !String(pp?.order_date || '').trim();
+    case 'part':
+      return !String(partial?.inventory_code || pp?.inventory_code || '').trim();
+    case 'description':
+      return !String(pp?.description || '').trim();
+    case 'customer_po_no':
+      return !String(pp?.customer_po_no || '').trim();
+    case 'due_date':
+      return !String(pp?.due_date || '').trim();
+    case 'proposed_edd':
+      return !soProposedEddDisplay(pp, partial);
+    case 'delivery_date':
+      return !String(pp?.delivery_date || '').trim();
+    case 'unit_selling_price':
+      return !Number.isFinite(Number(pp?.unit_selling_price));
+    case 'amount':
+      return !Number.isFinite(Number(pp?.amount));
+    case 'qty':
+      return pp?.pp_qty == null || pp?.pp_qty === '';
+    case 'material_subcon':
+      return !soMaterialSubconDisplay(pp?.material_subcon);
+    default:
+      if (SO_NOTE_FIELDS.includes(colId)) return !String(pp?.[colId] || '').trim();
+      return false;
+  }
+}
+
 function soLeafPassesColumnFilters(leaf) {
+  for (const [colId, emptyOnly] of Object.entries(soState.colEmptyFilters)) {
+    if (!emptyOnly) continue;
+    if (!soLeafColumnIsEmpty(leaf, colId)) return false;
+  }
   for (const [colId, text] of Object.entries(soState.colFilters)) {
+    if (soState.colEmptyFilters[colId]) continue;
     const q = String(text || '').trim().toLowerCase();
     if (!q) continue;
     const val = String(soLeafColumnValue(leaf, colId) ?? '').toLowerCase();
     if (!val.includes(q)) return false;
+  }
+  for (const [colId, text] of Object.entries(soState.colExcludeFilters)) {
+    if (soState.colEmptyFilters[colId]) continue;
+    const q = String(text || '').trim().toLowerCase();
+    if (!q) continue;
+    const val = String(soLeafColumnValue(leaf, colId) ?? '').toLowerCase();
+    if (val.includes(q)) return false;
   }
   return true;
 }
@@ -1027,6 +1103,8 @@ function soVisibleOrders(orders) {
 
 function soColumnFilterActive(colId) {
   if (colId === 'process_sheet_no' && !soPpTypesAllSelected()) return true;
+  if (soState.colEmptyFilters[colId]) return true;
+  if (String(soState.colExcludeFilters[colId] || '').trim()) return true;
   return Boolean(String(soState.colFilters[colId] || '').trim());
 }
 
@@ -1101,11 +1179,56 @@ function soRenderPrefixFilterPanel(colId) {
   `;
 }
 
+function soStageExcludeAllCompleteActive() {
+  const exclude = String(soState.colExcludeFilters.erp_stage || '').trim().toLowerCase();
+  return exclude === SO_STAGE_EXCLUDE_ALL_COMPLETE;
+}
+
+function soSyncStageExcludeInputs(panel, colId, emptyOnly) {
+  const disabled = emptyOnly ? ' disabled' : '';
+  panel.querySelectorAll(`[data-so-filter-input="${CSS.escape(colId)}"], [data-so-filter-exclude-input="${CSS.escape(colId)}"], [data-so-filter-exclude-preset="${CSS.escape(colId)}"]`).forEach(input => {
+    input.disabled = emptyOnly;
+  });
+}
+
 function soRenderTextFilterPanel(colId, label) {
   const textVal = escapeHtml(soState.colFilters[colId] || '');
+  const emptyOnly = soState.colEmptyFilters[colId] ? ' checked' : '';
+  const textDisabled = soState.colEmptyFilters[colId] ? ' disabled' : '';
   return `
     <div class="so-col-filter-title">Filter: ${escapeHtml(label)}</div>
-    <input type="search" class="so-col-filter-input" data-so-filter-input="${escapeHtml(colId)}" value="${textVal}" placeholder="Contains…" autocomplete="off" />
+    <label class="so-col-filter-check so-col-filter-empty-only">
+      <input type="checkbox" data-so-filter-empty="${escapeHtml(colId)}"${emptyOnly} />
+      Empty only
+    </label>
+    <label class="so-col-filter-text-label">Contains</label>
+    <input type="search" class="so-col-filter-input" data-so-filter-input="${escapeHtml(colId)}" value="${textVal}" placeholder="Contains…" autocomplete="off"${textDisabled} />
+    <div class="so-col-filter-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-action="clear-col-filter" data-so-col="${escapeHtml(colId)}">Clear</button>
+    </div>
+  `;
+}
+
+function soRenderStageFilterPanel(colId, label) {
+  const textVal = escapeHtml(soState.colFilters[colId] || '');
+  const excludeVal = escapeHtml(soState.colExcludeFilters[colId] || '');
+  const emptyOnly = soState.colEmptyFilters[colId] ? ' checked' : '';
+  const textDisabled = soState.colEmptyFilters[colId] ? ' disabled' : '';
+  const excludeAllComplete = soStageExcludeAllCompleteActive() ? ' checked' : '';
+  return `
+    <div class="so-col-filter-title">Filter: ${escapeHtml(label)}</div>
+    <label class="so-col-filter-check so-col-filter-empty-only">
+      <input type="checkbox" data-so-filter-empty="${escapeHtml(colId)}"${emptyOnly} />
+      Empty only
+    </label>
+    <label class="so-col-filter-text-label">Contains</label>
+    <input type="search" class="so-col-filter-input" data-so-filter-input="${escapeHtml(colId)}" value="${textVal}" placeholder="Contains…" autocomplete="off"${textDisabled} />
+    <label class="so-col-filter-text-label">Does not contain</label>
+    <input type="search" class="so-col-filter-input" data-so-filter-exclude-input="${escapeHtml(colId)}" value="${excludeVal}" placeholder="Does not contain…" autocomplete="off"${textDisabled} />
+    <label class="so-col-filter-check so-col-filter-exclude-preset">
+      <input type="checkbox" data-so-filter-exclude-preset="${escapeHtml(colId)}" data-so-exclude-preset-value="${escapeHtml(SO_STAGE_EXCLUDE_ALL_COMPLETE)}"${excludeAllComplete}${textDisabled} />
+      All complete
+    </label>
     <div class="so-col-filter-actions">
       <button type="button" class="btn btn-ghost btn-sm" data-action="clear-col-filter" data-so-col="${escapeHtml(colId)}">Clear</button>
     </div>
@@ -1125,7 +1248,9 @@ function soOpenColumnFilter(btn, colId) {
   soState.openFilterCol = colId;
   pop.innerHTML = col.filterType === 'prefix'
     ? soRenderPrefixFilterPanel(colId)
-    : soRenderTextFilterPanel(colId, col.label);
+    : colId === 'erp_stage'
+      ? soRenderStageFilterPanel(colId, col.label)
+      : soRenderTextFilterPanel(colId, col.label);
 
   pop.hidden = false;
   soRepositionColumnFilter();
@@ -1190,11 +1315,46 @@ function soBindColumnControls() {
         soSyncPsTypeCheckboxes();
       }
       delete soState.colFilters[colId];
+      delete soState.colExcludeFilters[colId];
+      delete soState.colEmptyFilters[colId];
       soCloseColumnFilter();
       soRender();
       return;
     }
     e.stopPropagation();
+  });
+
+  pop?.addEventListener('change', e => {
+    const emptyInput = e.target.closest('input[data-so-filter-empty]');
+    if (!emptyInput) return;
+    const colId = emptyInput.getAttribute('data-so-filter-empty');
+    if (!colId) return;
+    if (emptyInput.checked) {
+      soState.colEmptyFilters[colId] = true;
+    } else {
+      delete soState.colEmptyFilters[colId];
+    }
+    const textInput = pop.querySelector(`[data-so-filter-input="${CSS.escape(colId)}"]`);
+    if (textInput) textInput.disabled = emptyInput.checked;
+    soSyncStageExcludeInputs(pop, colId, emptyInput.checked);
+    soRender();
+  });
+
+  pop?.addEventListener('change', e => {
+    const presetInput = e.target.closest('input[data-so-filter-exclude-preset]');
+    if (!presetInput) return;
+    const colId = presetInput.getAttribute('data-so-filter-exclude-preset');
+    if (!colId || soState.colEmptyFilters[colId]) return;
+    const presetVal = String(presetInput.getAttribute('data-so-exclude-preset-value') || '').trim();
+    const excludeInput = pop.querySelector(`[data-so-filter-exclude-input="${CSS.escape(colId)}"]`);
+    if (presetInput.checked) {
+      soState.colExcludeFilters[colId] = presetVal;
+      if (excludeInput) excludeInput.value = presetVal;
+    } else if (String(soState.colExcludeFilters[colId] || '').trim().toLowerCase() === presetVal.toLowerCase()) {
+      delete soState.colExcludeFilters[colId];
+      if (excludeInput) excludeInput.value = '';
+    }
+    soRender();
   });
 
   pop?.addEventListener('input', e => {
@@ -1207,8 +1367,23 @@ function soBindColumnControls() {
     const textInput = e.target.closest('[data-so-filter-input]');
     if (textInput) {
       const colId = textInput.getAttribute('data-so-filter-input');
-      if (!colId) return;
+      if (!colId || soState.colEmptyFilters[colId]) return;
       soState.colFilters[colId] = textInput.value || '';
+      soRender();
+      return;
+    }
+    const excludeInput = e.target.closest('[data-so-filter-exclude-input]');
+    if (excludeInput) {
+      const colId = excludeInput.getAttribute('data-so-filter-exclude-input');
+      if (!colId || soState.colEmptyFilters[colId]) return;
+      const val = String(excludeInput.value || '').trim();
+      if (val) soState.colExcludeFilters[colId] = val;
+      else delete soState.colExcludeFilters[colId];
+      const presetInput = pop.querySelector(`[data-so-filter-exclude-preset="${CSS.escape(colId)}"]`);
+      if (presetInput) {
+        const presetVal = String(presetInput.getAttribute('data-so-exclude-preset-value') || '').trim().toLowerCase();
+        presetInput.checked = val.toLowerCase() === presetVal;
+      }
       soRender();
     }
   });
@@ -1751,11 +1926,12 @@ function soRenderQtyCell(pp) {
   return `<td class="new-orders-num so-qty-cell">${escapeHtml(String(pp?.pp_qty ?? '—'))}</td>`;
 }
 
-function soRenderPpCells(pp) {
+function soRenderPpCells(pp, partial) {
   return `
     <td class="new-orders-desc" title="${escapeHtml(String(pp.description || ''))}">${escapeHtml(String(pp.description || '—'))}</td>
     <td class="new-orders-mono">${escapeHtml(String(pp.customer_po_no || '—'))}</td>
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.due_date))}</td>
+    <td class="new-orders-date">${escapeHtml(soFormatDate(soProposedEddDisplay(pp, partial)))}</td>
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.delivery_date))}</td>
     <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.unit_selling_price))}</td>
     <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.amount))}</td>
@@ -1906,7 +2082,7 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, shade
       ${soRenderQtyCell(pp)}
       ${orderDateCell}
       ${soRenderPartCell(pp, partial)}
-      ${soRenderPpCells(pp)}
+      ${soRenderPpCells(pp, partial)}
     </tr>
   `;
 }

@@ -198,11 +198,7 @@ SELECT
     ) AS description,
     COALESCE(NULLIF(TRIM(part.customer_po_no), ''), NULLIF(TRIM(hdr.customer_po_no), '')) AS customer_po_no,
     COALESCE(det.required_shipment_date, pp.source_rsd) AS due_date,
-    CASE
-        WHEN pp.proposed_edd IS NULL THEN NULL
-        WHEN pp.proposed_edd::date = COALESCE(det.required_shipment_date, pp.source_rsd)::date THEN NULL
-        ELSE pp.proposed_edd
-    END AS delivery_date,
+    shipped.last_shipment_date AS delivery_date,
     COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price) AS unit_selling_price,
     (COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price) * pp.pp_qty) AS amount,
     det.qty AS so_det_qty,
@@ -218,6 +214,17 @@ LEFT JOIN public.so_order_line det
 LEFT JOIN public.sum_qty_shipped_by_sales_order sq
        ON sq.sales_order_no = pp.source_voucher_no
       AND sq.line_item_no = pp.source_line_item_no
+LEFT JOIN (
+    SELECT
+        sales_order_no,
+        line_item_no,
+        MAX(shipment_date) AS last_shipment_date
+    FROM public.lg_out_shipment_line
+    WHERE COALESCE(qty_issued, 0) > 0
+    GROUP BY sales_order_no, line_item_no
+) shipped
+       ON shipped.sales_order_no = pp.source_voucher_no
+      AND shipped.line_item_no = pp.source_line_item_no
 LEFT JOIN (
     SELECT pp_voucher_no, MAX(customer_po_no) AS customer_po_no
     FROM public.pp_partial_detail

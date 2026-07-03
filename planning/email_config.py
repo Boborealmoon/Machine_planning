@@ -101,13 +101,51 @@ def load_email_config(*, force_reload: bool = False) -> EmailConfig:
         return _config_cache
 
 
+def load_email_config_with_overrides(overrides: dict | None = None, *, force_reload: bool = False) -> EmailConfig:
+    """Load config from DB, optionally overlay unsaved form values."""
+    from .email_settings_store import _normalize_row, get_email_settings_row
+
+    if not overrides:
+        return load_email_config(force_reload=force_reload)
+    row = get_email_settings_row()
+    merged = dict(row)
+    for key, value in overrides.items():
+        if key == "smtp_password" and not str(value or "").strip():
+            continue
+        merged[key] = value
+    return _build_config(_normalize_row(merged))
+
+
 def smtp_ready(cfg: EmailConfig) -> bool:
     smtp = cfg.smtp
     return bool(smtp.enabled and smtp.host and smtp.from_address)
 
 
+def smtp_config_issues(cfg: EmailConfig) -> list[str]:
+    issues: list[str] = []
+    smtp = cfg.smtp
+    if not smtp.enabled:
+        issues.append("Enable SMTP (checkbox at top)")
+    if not smtp.host:
+        issues.append("Set SMTP host")
+    if not smtp.from_address:
+        issues.append("Set From address")
+    return issues
+
+
+def new_so_config_issues(cfg: EmailConfig) -> list[str]:
+    issues: list[str] = []
+    trigger = cfg.new_sales_order
+    if not trigger.enabled:
+        issues.append("Enable New sales order alert")
+    if not trigger.recipients:
+        issues.append("Add at least one To recipient")
+    issues.extend(smtp_config_issues(cfg))
+    return issues
+
+
 def trigger_ready(cfg: EmailConfig, trigger: EmailTriggerConfig) -> bool:
-    return bool(smtp_ready(cfg) and trigger.enabled and trigger.recipients)
+    return bool(trigger.enabled and trigger.recipients and smtp_ready(cfg))
 
 
 def public_config_dict(cfg: EmailConfig, *, row: dict | None = None) -> dict:
@@ -125,6 +163,7 @@ def public_config_dict(cfg: EmailConfig, *, row: dict | None = None) -> dict:
             "timeout_sec": smtp.timeout_sec,
             "password_set": bool(str(row.get("smtp_password") or "").strip()),
             "configured": smtp_ready(cfg),
+            "issues": smtp_config_issues(cfg),
         },
         "triggers": {
             "new_sales_order": {
@@ -141,6 +180,7 @@ def public_config_dict(cfg: EmailConfig, *, row: dict | None = None) -> dict:
                 "ps_heading": new_so.ps_heading,
                 "ps_line_template": new_so.ps_line_template,
                 "configured": trigger_ready(cfg, new_so),
+                "issues": new_so_config_issues(cfg),
             },
         },
         "updated_at": row.get("updated_at"),

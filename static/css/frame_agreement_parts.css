@@ -1,5 +1,16 @@
+.app-main--frame-agreement {
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 20px clamp(12px, 2vw, 28px) 40px;
+  box-sizing: border-box;
+}
+
 .fa-page {
-  max-width: 1400px;
+  width: 100%;
+  max-width: none;
+  display: grid;
+  gap: 14px;
 }
 
 .fa-header-sub {
@@ -91,6 +102,7 @@
 .fa-table-wrap {
   overflow: hidden;
   padding: 0;
+  width: 100%;
 }
 
 .fa-loading,
@@ -109,11 +121,11 @@
 .fa-table-scroll {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+  width: 100%;
 }
 
 .fa-table {
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
   border-collapse: collapse;
   table-layout: auto;
 }
@@ -147,6 +159,16 @@
   padding: 10px 14px;
   font-size: 13px;
   vertical-align: middle;
+}
+
+.fa-table td.fa-part-cell,
+.fa-table td.fa-qty-cell,
+.fa-table td.fa-mpp-num-cell,
+.fa-table td.fa-updated,
+.fa-table td.fa-col-actions,
+.fa-table th.fa-col-qty,
+.fa-table th.fa-col-mpp-num,
+.fa-table th.fa-col-actions {
   white-space: nowrap;
 }
 
@@ -176,13 +198,15 @@
 }
 
 .fa-desc-cell {
-  min-width: 120px;
+  min-width: 140px;
   color: var(--text2);
   line-height: 1.35;
+  white-space: normal;
 }
 
 .fa-bom-cell {
-  min-width: 160px;
+  min-width: 120px;
+  white-space: normal;
 }
 
 .fa-bom-single {
@@ -191,8 +215,9 @@
 }
 
 .fa-material-cell {
-  min-width: 140px;
+  min-width: 120px;
   font-size: 12px;
+  white-space: normal;
 }
 
 .fa-col-qty {
@@ -219,11 +244,150 @@
 
 .fa-notes-input {
   width: 100%;
-  min-width: 160px;
+  min-width: 120px;
   padding: 6px 8px;
   border: 1.5px solid var(--border);
   border-radius: 6px;
   font-size: 13px;
+}
+
+.fa-col-op {
+  width: 1%;
+  min-width: 48px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.fa-op-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.fa-process-cell {
+  min-width: 120px;
+  white-space: normal;
+  color: var(--text2);
+}
+
+.fa-op-line td {
+  border-top: 1px solid var(--border);
+}
+
+.fa-op-line--first td {
+  border-top: 1.5px solid #cbd5e1;
+}
+
+.fa-op-line--muted td.fa-part-cell,
+.fa-op-line--muted td.fa-desc-cell,
+.fa-op-line--muted td.fa-bom-cell,
+.fa-op-line--muted td.fa-material-cell,
+.fa-op-line--muted td.fa-qty-cell,
+.fa-op-line--muted td.fa-materials-cell {
+  color: transparent;
+  user-select: none;
+}
+
+.fa-op-line--muted .fa-part-no,
+.fa-op-line--muted .fa-badge-demo {
+  visibility: hidden;
+}
+
+.fa-mpp-panel {
+  max-width: 1080px;
+}
+
+.fa-mpp-modal-hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.45;
+}
+
+.fa-mpp-modal-table-wrap {
+  overflow-x: auto;
+}
+
+.fa-mpp-modal-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.fa-mpp-modal-table thead th {
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text2);
+  border-bottom: 1.5px solid var(--border);
+  background: var(--bg2);
+  white-space: nowrap;
+}
+
+.fa-mpp-modal-table tbody td {
+  padding: 8px 10px;
+  font-size: 13px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border);
+}
+
+.fa-mpp-config-cell {
+  white-space: nowrap;
+}
+
+.fa-col-mpp {
+  min-width: 100px;
+  white-space: nowrap;
+}
+
+.fa-col-mpp-num {
+  width: 1%;
+  min-width: 72px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.fa-mpp-machine-select,
+.fa-mpp-num-input,
+.fa-op-process-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--surface);
+}
+
+.fa-mpp-num-input {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.fa-confirm-mpp-wrap {
+  padding: 0 20px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.fa-confirm-mpp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.fa-confirm-mpp-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.4;
+}
+
+@media (max-width: 720px) {
+  .fa-confirm-mpp-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .fa-col-actions {

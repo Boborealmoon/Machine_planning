@@ -224,13 +224,15 @@ def normalize_op_no_key(op_no) -> str:
     return text
 
 
-def voucher_erp_qty_maps_for_partial(con, source_ps_id, pp_partial_no) -> tuple[dict[str, float], dict[int, float]]:
-    """ERP accepted/required qty per op_no and stage_no for one PS partial."""
+def voucher_erp_qty_maps_for_partial(con, source_ps_id, pp_partial_no) -> tuple[
+    dict[str, float], dict[int, float], dict[str, str], dict[int, str]
+]:
+    """ERP accepted/required qty and execution status per op_no and stage_no for one PS partial."""
     from planning.helpers import rows
 
     source_ps_id = compact_text(source_ps_id)
     if not source_ps_id:
-        return {}, {}
+        return {}, {}, {}, {}
     try:
         pp_partial_no = int(pp_partial_no or 1)
     except (TypeError, ValueError):
@@ -238,6 +240,8 @@ def voucher_erp_qty_maps_for_partial(con, source_ps_id, pp_partial_no) -> tuple[
 
     by_op: dict[str, float] = {}
     by_stage: dict[int, float] = {}
+    status_by_op: dict[str, str] = {}
+    status_by_stage: dict[int, str] = {}
     for row in rows(
         con.execute(
             ERP_CACHE_STEPS_SELECT + ERP_CACHE_STEPS_WHERE_SINGLE,
@@ -249,12 +253,30 @@ def voucher_erp_qty_maps_for_partial(con, source_ps_id, pp_partial_no) -> tuple[
         )
         stage_no = int(row.get("stage_no") or 0)
         produced = max(0.0, float(row.get("wo_qty_produced") or 0))
+        status = compact_text(row.get("execution_status") or "")
         for key in {op_no, normalize_op_no_key(op_no)}:
             if key:
                 by_op[key] = max(by_op.get(key, 0.0), produced)
+                if status:
+                    status_by_op[key] = status
         if stage_no:
             by_stage[stage_no] = max(by_stage.get(stage_no, 0.0), produced)
-    return by_op, by_stage
+            if status:
+                status_by_stage[stage_no] = status
+    return by_op, by_stage, status_by_op, status_by_stage
+
+
+def erp_exec_status_for_op(
+    status_by_op: dict[str, str],
+    status_by_stage: dict[int, str],
+    *,
+    op_no,
+    source_stage_no: int = 0,
+) -> str:
+    for key in {compact_text(op_no), normalize_op_no_key(op_no)}:
+        if key and key in status_by_op:
+            return status_by_op[key]
+    return status_by_stage.get(int(source_stage_no or 0), "")
 
 
 def erp_accepted_qty_for_op(

@@ -1060,7 +1060,7 @@ function trialCatalogOpBypassesStageInQueuedOp40View(card, ps) {
   if (!trialCatalogOpIsOp40(card)) return false;
   const pool = typeof trialCatalogPsPools === 'function' ? trialCatalogPsPools().all : [];
   if (!trialCatalogPsHasQueuedBlocksIncludingTemp(ps, pool)) return false;
-  if (trialCatalogOpIsComplete(card)) return false;
+  if (trialCatalogOpIsComplete(card, ps)) return false;
   if (trialIsCatalogOpAllocatedIncludingTemp(card, ps, pool)) return false;
   if (trialCatalogSchedulableRemaining(card) <= 0.0001) return false;
   return true;
@@ -1100,6 +1100,12 @@ function trialCatalogOpNumericNo(card) {
 
 /** ERP WO has already advanced past this operation number. */
 function trialCatalogOpIsBeforeCurrentErpStage(card, ps) {
+  if (!card || !ps) return false;
+  const currentStageNo = Number(ps?.current_stage_no || 0);
+  const opStageNo = Number(card?.source_stage_no ?? card?.op?.source_stage_no ?? 0);
+  if (currentStageNo > 0 && opStageNo > 0) {
+    return opStageNo < currentStageNo;
+  }
   const stageNo = trialCatalogErpCurrentStageNo(ps);
   const opNo = trialCatalogOpNumericNo(card);
   return stageNo > 0 && opNo > 0 && opNo < stageNo;
@@ -1108,7 +1114,7 @@ function trialCatalogOpIsBeforeCurrentErpStage(card, ps) {
 /** True when every earlier route op is complete or fully queued on a machine lane. */
 function trialCatalogPriorOpSatisfiedForRoute(prior, ps, pool) {
   if (trialCatalogOpIsBeforeCurrentErpStage(prior, ps)) return true;
-  if (trialCatalogOpIsComplete(prior) || trialCatalogOpIsManualBom(prior)) return true;
+  if (trialCatalogOpIsComplete(prior, ps) || trialCatalogOpIsManualBom(prior)) return true;
   if (trialIsCatalogOpAllocatedIncludingTemp(prior, ps, pool)) return true;
   if (typeof trialIsCatalogOpFullyQueued === 'function' && trialIsCatalogOpFullyQueued(prior)) return true;
   if (trialCatalogSchedulableRemaining(prior) <= 0.0001) return true;
@@ -1148,7 +1154,7 @@ function trialCatalogOpBypassesStageForRouteProgress(card, ps) {
 
 function trialCatalogOpDragEligibility(card, ps) {
   if (!card) return { ok: false, reason: 'Operation not found.' };
-  if (trialCatalogOpIsComplete(card)) {
+  if (trialCatalogOpIsComplete(card, ps)) {
     return { ok: false, reason: 'This operation is already complete.' };
   }
   if (trialCatalogSchedulableRemaining(card) <= 0.0001) {
@@ -1303,7 +1309,7 @@ function trialResolvedOpCardsForPs(ps) {
     const key = trialCatalogOpCardKey(card);
     if (seen.has(key)) return;
     if (!trialCatalogOpIsRelevant(card)) return;
-    if (!trialCatalogOpShouldShow(card, () => false)) return;
+    if (!trialCatalogOpShouldShow(card, () => false, ps)) return;
     merged.push(card);
     seen.add(key);
   });
@@ -1313,22 +1319,35 @@ function trialResolvedOpCardsForPs(ps) {
   );
 }
 
-function trialCatalogOpIsComplete(card) {
+function trialCatalogOpErpProducedQty(card) {
+  const op = card?.op || {};
+  return Math.max(
+    0,
+    Number(card?.finished_qty ?? card?.erp_finished_qty ?? card?.wo_qty_produced ?? 0),
+    Number(op?.erp_finished_qty ?? op?.finished_qty ?? op?.wo_qty_produced ?? 0),
+  );
+}
+
+function trialCatalogOpIsComplete(card, ps) {
   if (!card || trialCatalogOpIsManualBom(card)) return false;
-  if (trialCatalogOpIsOpen(card)) return false;
+  if (ps && trialCatalogOpIsBeforeCurrentErpStage(card, ps)) return true;
   const exec = trialNormalizeExecStatus(trialCatalogOpExecStatus(card));
   if (exec === 'C' || exec === 'COMPLETED') return true;
   const required = Number(card?.required_qty ?? card?.wo_qty_required ?? 0);
-  const produced = Number(card?.finished_qty ?? card?.erp_finished_qty ?? card?.wo_qty_produced ?? 0);
+  const produced = trialCatalogOpErpProducedQty(card);
   if (required > 0.0001 && produced >= required - 0.0001) return true;
+  const schedRemaining = typeof trialCatalogSchedulableRemaining === 'function'
+    ? trialCatalogSchedulableRemaining(card)
+    : Math.max(0, Number(card?.remaining_qty ?? card?.target_qty ?? 0));
+  if (schedRemaining <= 0.0001 && produced > 0.0001) return true;
   const remaining = Number(card?.remaining_qty ?? card?.target_qty ?? 0);
   const hasWork = required > 0.0001 || produced > 0.0001;
   return remaining <= 0.0001 && hasWork;
 }
 
-function trialCatalogOpShouldShow(card, isOpAllocated) {
-  return trialCatalogOpIsOpen(card)
-    || trialCatalogOpIsComplete(card)
+function trialCatalogOpShouldShow(card, isOpAllocated, ps) {
+  return trialCatalogOpIsOpen(card, ps)
+    || trialCatalogOpIsComplete(card, ps)
     || trialCatalogOpIsManualBom(card)
     || isOpAllocated(card)
     || trialCatalogOpHasQueuedBlocks(card);
@@ -1346,7 +1365,7 @@ function trialPsIsUnassignedCatalog(ps) {
     return true;
   }
   // ERP partials without WO status codes still have open stage rows — not blank.
-  if (cards.some(card => trialCatalogOpIsOpen(card))) return false;
+  if (cards.some(card => trialCatalogOpIsOpen(card, ps))) return false;
   const workQty = Number(ps?.partial_qty ?? ps?.display_qty ?? ps?.wo_req_qty ?? 0);
   if (workQty > 0.0001 && !trialPsShippedComplete(ps)) return false;
   return !trialPsHasCatalogTags(ps);
@@ -2499,7 +2518,10 @@ function renderTrialOpCardHtml(card, ps) {
   const setupMinutes = fmt(card.setup_minutes || 0, 0);
   const cycleMinutes = fmt(card.cycle_minutes_per_qty || 0, 0);
   const opName = String(card.operation_name || '').trim();
-  const execStatus = card.execution_status || card.op?.execution_status || '';
+  const isComplete = trialCatalogOpIsComplete(card, ps);
+  const execStatus = isComplete
+    ? 'C'
+    : (card.execution_status || card.op?.execution_status || '');
   const execStatusHtml = trialOpStatusHtml(execStatus, {
     opNo: card.operation_label || card.source_op_no || '',
     title: opName,
@@ -2581,7 +2603,6 @@ function renderTrialOpCardHtml(card, ps) {
   const opLabel = String(card.operation_label || '').trim();
   const showOpName = opName && opName !== opLabel;
   const isManualBom = trialCatalogOpIsManualBom(card);
-  const isComplete = trialCatalogOpIsComplete(card);
   const dragEligibility = typeof trialCatalogOpDragEligibility === 'function'
     ? trialCatalogOpDragEligibility(card, ps)
     : { ok: trialCatalogOpCanDrag(card, ps), reason: '' };
@@ -3809,11 +3830,22 @@ function trialCatalogOpExecStatus(card) {
 }
 
 function trialPsRollupExecStatus(ps) {
-  const cards = ps?.op_cards || [];
-  if (cards.some(card => Number(card?.remaining_qty ?? 0) > 0.0001)) {
-    const open = cards.find(card => Number(card?.remaining_qty ?? 0) > 0.0001);
-    const openStatus = trialNormalizeExecStatus(trialCatalogOpExecStatus(open));
+  const stageStatus = trialNormalizeExecStatus(ps?.current_stage_status || ps?.execution_status || '');
+  const cards = (ps && typeof trialResolvedOpCardsForPs === 'function')
+    ? trialResolvedOpCardsForPs(ps)
+    : (Array.isArray(ps?.op_cards) ? ps.op_cards : []);
+  const openCards = cards.filter(card => (
+    typeof trialCatalogOpIsOpen === 'function'
+      ? trialCatalogOpIsOpen(card, ps)
+      : Number(card?.remaining_qty ?? 0) > 0.0001
+  ));
+  if (openCards.length) {
+    const currentOpen = (ps && typeof trialCatalogOpMatchesCurrentStage === 'function'
+      ? openCards.find(card => trialCatalogOpMatchesCurrentStage(card, ps))
+      : null) || openCards[0];
+    const openStatus = trialNormalizeExecStatus(trialCatalogOpExecStatus(currentOpen));
     if (openStatus && openStatus !== 'C' && openStatus !== 'COMPLETED') return openStatus;
+    if (stageStatus && stageStatus !== 'C' && stageStatus !== 'COMPLETED') return stageStatus;
     return 'P';
   }
   const statuses = cards
@@ -3821,17 +3853,16 @@ function trialPsRollupExecStatus(ps) {
     .map(s => trialNormalizeExecStatus(s))
     .filter(Boolean);
   if (!statuses.length) {
-    return ps?.current_stage_status || ps?.execution_status || '';
+    return stageStatus;
   }
   if (statuses.some(s => s === 'P' || s === 'PENDING_SI')) return 'P';
   if (statuses.some(s => s === 'I' || s === 'IN_PROCESS')) return 'I';
   if (statuses.some(s => s === 'R' || s === 'READY_TO_START')) return 'R';
   if (statuses.length === cards.length && statuses.every(s => s === 'C' || s === 'COMPLETED')) {
-    const current = trialNormalizeExecStatus(ps?.current_stage_status || ps?.execution_status || '');
-    if (current && current !== 'C' && current !== 'COMPLETED') return current;
+    if (stageStatus && stageStatus !== 'C' && stageStatus !== 'COMPLETED') return stageStatus;
     return 'C';
   }
-  return ps?.current_stage_status || ps?.execution_status || statuses[0] || '';
+  return stageStatus || statuses[0] || '';
 }
 
 function trialCatalogOpIsManualBom(card) {
@@ -3844,22 +3875,29 @@ function trialCatalogOpIsManualBom(card) {
 }
 
 /** True when an op card still belongs in the planner catalog (not fully done). */
-function trialCatalogOpIsOpen(card) {
+function trialCatalogOpIsOpen(card, ps) {
   if (trialCatalogOpIsManualBom(card)) return true;
+  if (trialCatalogOpIsComplete(card, ps)) return false;
   const exec = trialNormalizeExecStatus(trialCatalogOpExecStatus(card));
   const remaining = Number(card?.remaining_qty ?? card?.target_qty ?? 0);
   if (remaining > 0.0001) return true;
+  const schedRemaining = typeof trialCatalogSchedulableRemaining === 'function'
+    ? trialCatalogSchedulableRemaining(card)
+    : remaining;
+  if (schedRemaining > 0.0001) return true;
   const required = Number(card?.wo_qty_required ?? card?.required_qty ?? 0);
-  const produced = Number(card?.finished_qty ?? card?.wo_qty_produced ?? 0);
+  const produced = trialCatalogOpErpProducedQty(card);
+  if (required > 0.0001 && produced >= required - 0.0001) return false;
+  if (produced > 0.0001 && schedRemaining <= 0.0001) return false;
   const hasWoOutput = required > 0.0001 || produced > 0.0001 || Boolean(exec);
   if (!hasWoOutput) return false;
   return exec !== 'C' && exec !== 'COMPLETED';
 }
 
-function trialCatalogOpOpenProbe(op) {
+function trialCatalogOpOpenProbe(op, ps) {
   if (!op || typeof op !== 'object') return false;
   if (String(op.source_kind || '').toUpperCase() === 'MANUAL') return true;
-  return trialCatalogOpIsOpen({
+  const card = {
     execution_status: op.execution_status || op.op?.execution_status || '',
     remaining_qty: op.remaining_qty,
     target_qty: op.total_qty ?? op.remaining_qty,
@@ -3867,15 +3905,22 @@ function trialCatalogOpOpenProbe(op) {
     wo_qty_required: op.required_qty,
     finished_qty: op.finished_qty ?? op.erp_finished_qty,
     wo_qty_produced: op.wo_qty_produced ?? op.erp_finished_qty,
+    erp_finished_qty: op.erp_finished_qty,
+    source_stage_no: op.source_stage_no,
+    source_op_no: op.source_op_no || op.op_no,
+    source_kind: op.source_kind,
     op,
-  });
+  };
+  return trialCatalogOpIsOpen(card, ps);
 }
 
 function trialCatalogPsHasOpenOps(ps) {
-  const cards = ps?.op_cards || [];
-  if (cards.some(card => trialCatalogOpIsOpen(card))) return true;
+  const cards = (ps && typeof trialResolvedOpCardsForPs === 'function')
+    ? trialResolvedOpCardsForPs(ps)
+    : (ps?.op_cards || []);
+  if (cards.some(card => trialCatalogOpIsOpen(card, ps))) return true;
   const allOps = ps?.all_ops || [];
-  if (allOps.some(op => trialCatalogOpOpenProbe(op))) return true;
+  if (allOps.some(op => trialCatalogOpOpenProbe(op, ps))) return true;
   const current = trialNormalizeExecStatus(ps?.current_stage_status || ps?.execution_status || '');
   return Boolean(current) && current !== 'C' && current !== 'COMPLETED';
 }
@@ -4321,15 +4366,15 @@ function trialCatalogOp40CardsForPs(ps) {
   return pool.filter(trialCatalogOpIsOp40);
 }
 
-function trialCatalogOpMatchesUnqueuedFilter(card, isOpAllocated) {
-  if (trialCatalogOpIsComplete(card)) return false;
+function trialCatalogOpMatchesUnqueuedFilter(card, isOpAllocated, ps) {
+  if (trialCatalogOpIsComplete(card, ps)) return false;
   if (isOpAllocated(card)) return false;
-  return trialCatalogOpIsOpen(card) || trialCatalogOpIsManualBom(card);
+  return trialCatalogOpIsOpen(card, ps) || trialCatalogOpIsManualBom(card);
 }
 
-function trialCatalogOpMatchesQueuedOp40PendingFilter(card, isOpAllocated) {
+function trialCatalogOpMatchesQueuedOp40PendingFilter(card, isOpAllocated, ps) {
   if (!trialCatalogOpIsOp40(card)) return false;
-  return trialCatalogOpMatchesUnqueuedFilter(card, isOpAllocated);
+  return trialCatalogOpMatchesUnqueuedFilter(card, isOpAllocated, ps);
 }
 
 function trialCatalogPsHasUnqueuedWork(ps, isOpAllocated) {
@@ -4340,7 +4385,7 @@ function trialCatalogPsHasUnqueuedWork(ps, isOpAllocated) {
     ? isOpAllocated
     : card => trialIsCatalogOpAllocated(card);
   if (!cards.length) return trialCatalogPsHasOpenOps(ps);
-  return cards.some(card => trialCatalogOpMatchesUnqueuedFilter(card, allocated));
+  return cards.some(card => trialCatalogOpMatchesUnqueuedFilter(card, allocated, ps));
 }
 
 function trialCatalogPsQueuedWithUnqueuedOp40(ps, isOpAllocated) {
@@ -4351,15 +4396,15 @@ function trialCatalogPsQueuedWithUnqueuedOp40(ps, isOpAllocated) {
     ? isOpAllocated
     : card => trialIsCatalogOpAllocatedIncludingTemp(card, ps, pool);
   return trialCatalogOp40CardsForPs(ps)
-    .some(card => trialCatalogOpMatchesQueuedOp40PendingFilter(card, allocated));
+    .some(card => trialCatalogOpMatchesQueuedOp40PendingFilter(card, allocated, ps));
 }
 
-function trialCatalogOpVisibleInList(card, isOpAllocated) {
+function trialCatalogOpVisibleInList(card, isOpAllocated, ps) {
   if (!trialCatalogOpIsRelevant(card)) return false;
   if (trialCatalogUnqueuedFilterActive()) {
-    return trialCatalogOpMatchesUnqueuedFilter(card, isOpAllocated);
+    return trialCatalogOpMatchesUnqueuedFilter(card, isOpAllocated, ps);
   }
-  return trialCatalogOpShouldShow(card, isOpAllocated);
+  return trialCatalogOpShouldShow(card, isOpAllocated, ps);
 }
 
 function trialCatalogMatchesQueueFilter(ps) {
@@ -4701,7 +4746,7 @@ function renderTrialCatalog() {
     }
     const cards = cachedResolvedCards(ps);
     const hasActiveWork = cards.some(card =>
-      trialCatalogOpIsOpen(card) || trialCatalogOpIsManualBom(card) || isOpAllocated(card))
+      trialCatalogOpIsOpen(card, ps) || trialCatalogOpIsManualBom(card) || isOpAllocated(card))
       || trialCatalogPsHasOpenOps(ps);
     if (!trialShowCompleted) return hasActiveWork;
     // Show completed on: include shipped jobs and any PS with stage rows for reference.
@@ -4715,7 +4760,7 @@ function renderTrialCatalog() {
     const cards = cachedResolvedCards(ps);
     const isOpAllocated = card => cachedIsOpAllocated(card, ps);
     const opCardsHtml = cards
-      .filter(card => trialCatalogOpVisibleInList(card, isOpAllocated))
+      .filter(card => trialCatalogOpVisibleInList(card, isOpAllocated, ps))
       .map(card => {
         const ctx = typeof trialCatalogOpForPs === 'function' ? trialCatalogOpForPs(card, ps) : card;
         return renderTrialOpCardHtml({
@@ -4753,7 +4798,7 @@ function renderTrialCatalog() {
       return true;
     }
     const cards = cachedResolvedCards(ps);
-    const hasOpenOps = cards.some(card => trialCatalogOpShouldShow(card, isOpAllocated));
+    const hasOpenOps = cards.some(card => trialCatalogOpShouldShow(card, isOpAllocated, ps));
     if (hasOpenOps) return true;
     // Other PS: show header-only rows (no work orders).
     return !(ps.op_cards || []).length;
@@ -4779,7 +4824,7 @@ function renderTrialCatalog() {
         ${(() => {
           const isOpAllocated = card => cachedIsOpAllocated(card, ps);
           return cachedResolvedCards(ps)
-            .filter(card => trialCatalogOpVisibleInList(card, isOpAllocated))
+            .filter(card => trialCatalogOpVisibleInList(card, isOpAllocated, ps))
             .map(card => {
               const ctx = typeof trialCatalogOpForPs === 'function' ? trialCatalogOpForPs(card, ps) : card;
               return renderTrialOpCardHtml({

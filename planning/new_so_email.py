@@ -3,16 +3,40 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 import threading
 from datetime import datetime
 from typing import Any
 
-from .email_config import EmailConfig, EmailTriggerConfig, load_email_config, trigger_ready
+from .email_config import (
+    EmailConfig,
+    EmailTriggerConfig,
+    load_email_config,
+    new_so_config_issues,
+    trigger_ready,
+)
 from .emailer import render_template, send_email
 from .helpers import planner_db, rows
 from .utils import PLANNER_TZ, compact_text, planner_wall_datetime_to_api
 
 logger = logging.getLogger(__name__)
+
+# New sales order emails only include NPS process sheets (not MPS, APS, PPS, etc.).
+_EMAIL_PS_PREFIXES = frozenset({"NPS"})
+_PS_PREFIX_RE = re.compile(r"^(APS|NPS|PPS|CPS|MPS|SR)", re.IGNORECASE)
+
+
+def _ps_type(process_sheet_no: str) -> str:
+    match = _PS_PREFIX_RE.match(compact_text(process_sheet_no))
+    return match.group(1).upper() if match else ""
+
+
+def _include_ps_in_email(process_sheet_no: str) -> bool:
+    return _ps_type(process_sheet_no) in _EMAIL_PS_PREFIXES
+
+
+def _filter_email_ps_rows(ps_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in ps_rows if _include_ps_in_email(row.get("process_sheet_no"))]
 
 _ENSURE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS public.planner_email_notification (
@@ -45,6 +69,12 @@ FROM public.so_order_posted p
 LEFT JOIN public.so_order_header h
        ON h.sales_order_no = p.sales_order_no
 WHERE p.first_posted_datetime >= NOW() - (%s * INTERVAL '1 day')
+  AND EXISTS (
+      SELECT 1
+      FROM public.pp_voucher_hdr h
+      WHERE h.source_voucher_no = p.sales_order_no
+        AND h.pp_voucher_no ILIKE 'NPS%%'
+  )
   AND NOT EXISTS (
       SELECT 1
       FROM public.planner_email_notification n
@@ -77,6 +107,7 @@ SELECT
     h.bom_desc AS description
 FROM public.pp_voucher_hdr h
 WHERE h.source_voucher_no = %s
+  AND h.pp_voucher_no ILIKE 'NPS%%'
 ORDER BY h.source_line_item_no, h.pp_voucher_no
 """
 
@@ -258,13 +289,15 @@ def _record_notification(
 
 def notify_new_sales_orders(*, cfg: EmailConfig | None = None, dry_run: bool = False) -> dict:
     """Find un-notified posted SOs and email configured recipients."""
-    cfg = cfg or load_email_config()
+    cfg = cfg or load_email_config(force_reload=True)
     trigger = cfg.new_sales_order
-    if not trigger_ready(cfg, trigger):
+    issues = new_so_config_issues(cfg)
+    if not dry_run and not trigger_ready(cfg, trigger):
         return {
             "ok": False,
             "skipped": True,
-            "reason": "new_sales_order email trigger is not configured",
+            "reason": "Cannot send — finish configuration first",
+            "issues": issues,
         }
 
     with planner_db() as con:
@@ -278,7 +311,9 @@ def notify_new_sales_orders(*, cfg: EmailConfig | None = None, dry_run: bool = F
             if not so_no:
                 continue
             line_rows = rows(con.execute(_SO_LINES_SQL, (so_no,)))
-            ps_rows = rows(con.execute(_SO_PROCESS_SHEETS_SQL, (so_no,)))
+            ps_rows = _filter_email_ps_rows(rows(con.execute(_SO_PROCESS_SHEETS_SQL, (so_no,))))
+            if not ps_rows:
+                continue
             _, _, ps_numbers = _render_process_sheet_lines(trigger, ps_rows)
             subject = render_template(trigger.subject_template, **order, process_sheets=", ".join(ps_numbers))
             body_text, body_html = _build_new_so_bodies(order, line_rows, ps_rows, trigger)
@@ -314,7 +349,7 @@ def notify_new_sales_orders(*, cfg: EmailConfig | None = None, dry_run: bool = F
             con.commit()
 
     return {
-        "ok": not failed,
+        "ok": not failed if not dry_run else True,
         "checked_at": datetime.now(PLANNER_TZ).isoformat(),
         "lookback_days": trigger.lookback_days,
         "pending_count": len(pending),
@@ -323,6 +358,9 @@ def notify_new_sales_orders(*, cfg: EmailConfig | None = None, dry_run: bool = F
         "sent": sent,
         "failed": failed,
         "dry_run": dry_run,
+        "issues": issues,
+        "send_ready": trigger_ready(cfg, trigger),
+        "ps_filter": "NPS only",
     }
 
 

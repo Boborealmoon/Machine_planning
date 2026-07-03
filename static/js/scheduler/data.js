@@ -866,7 +866,7 @@ function trialSchedulableOpCardsForPs(ps) {
   return cards
     .map(enrich)
     .filter(card => String(card.card_kind || 'single') !== 'group')
-    .filter(card => !trialCatalogOpIsComplete(card))
+    .filter(card => !trialCatalogOpIsComplete(card, ps))
     .filter(card => typeof trialCatalogOpCanDrag !== 'function' || trialCatalogOpCanDrag(card, ps))
     .filter(card => trialCatalogSchedulableRemaining(card) > 0.0001)
     .sort((a, b) => (
@@ -1865,7 +1865,7 @@ function trialGroupCompletedForQueue(group) {
         block,
       ));
       if (!hit) continue;
-      return !trialCatalogOpIsOpen(hit);
+      return !trialCatalogOpIsOpen(hit, ps);
     }
     return false;
   };

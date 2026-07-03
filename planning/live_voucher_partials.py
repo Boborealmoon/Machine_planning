@@ -216,5 +216,8 @@ def fetch_live_voucher_partials(
             partial_no = 1
         if not include_completed and _shipped_complete(row):
             continue
-        out[(ps_id, partial_no)] = row
+        normalized = dict(row)
+        if compact_text(normalized.get("description")) and not compact_text(normalized.get("part_desc")):
+            normalized["part_desc"] = normalized["description"]
+        out[(ps_id, partial_no)] = normalized
     return out

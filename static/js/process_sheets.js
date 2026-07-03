@@ -865,37 +865,86 @@
     return op?.execution_status || op?.erp_execution_status || '';
   }
 
-  function rollupExecutionStatus(item) {
-    const ops = Array.isArray(item?.ops) ? item.ops : [];
-    const statuses = ops.map(op => opExecutionStatus(op)).filter(status => normalizeStatus(status));
-    if (statuses.length) return statuses[0];
-    return item?.execution_status || item?.erp_execution_status || '';
-  }
-
   function isExecutionCompletedStatus(value) {
     const status = normalizeStatus(value);
     return status === 'COMPLETED' || status === 'C';
+  }
+
+  function opErpProducedQty(op) {
+    return Math.max(
+      numberValue(op?.finished_qty ?? op?.wo_qty_produced),
+      numberValue(op?.erp_finished_qty),
+    );
+  }
+
+  function opIsBeforeCurrentErpStage(op, item) {
+    if (!op || !item) return false;
+    const currentStage = Number(item?.current_stage_no || 0);
+    const opStage = Number(op?.source_stage_no ?? op?.stage_no ?? 0);
+    if (currentStage > 0 && opStage > 0) return opStage < currentStage;
+    const currentDesc = compactText(item?.current_stage_desc);
+    const tail = currentDesc.match(/(\d+)\s*$/);
+    const currentOpNo = tail ? Number(tail[1]) : 0;
+    const opNo = Number(op?.op_no || op?.source_op_no || 0);
+    return currentOpNo > 0 && opNo > 0 && opNo < currentOpNo;
   }
 
   function opRemainingQty(op) {
     const direct = numberValue(op?.remaining_qty);
     if (direct > SHIPPED_QTY_TOLERANCE) return direct;
     const required = numberValue(op?.wo_qty_required ?? op?.required_qty ?? 0);
-    const finished = numberValue(op?.finished_qty ?? op?.wo_qty_produced ?? 0);
+    const finished = opErpProducedQty(op);
     return Math.max(0, required - finished);
   }
 
   function opHasWorkOrderEvidence(op) {
     const required = numberValue(op?.wo_qty_required ?? op?.required_qty ?? 0);
-    const produced = numberValue(op?.finished_qty ?? op?.wo_qty_produced ?? 0);
+    const produced = opErpProducedQty(op);
     const status = normalizeStatus(opExecutionStatus(op));
     return required > SHIPPED_QTY_TOLERANCE || produced > SHIPPED_QTY_TOLERANCE || Boolean(status);
   }
 
-  function isOpProductionComplete(op) {
+  function isOpProductionComplete(op, item) {
+    if (item && opIsBeforeCurrentErpStage(op, item)) return true;
     if (!opHasWorkOrderEvidence(op)) return true;
+    const finished = opErpProducedQty(op);
+    const required = numberValue(op?.wo_qty_required ?? op?.required_qty ?? 0);
+    if (required > SHIPPED_QTY_TOLERANCE && finished >= required - SHIPPED_QTY_TOLERANCE) return true;
     if (opRemainingQty(op) > SHIPPED_QTY_TOLERANCE) return false;
+    if (finished > SHIPPED_QTY_TOLERANCE) return true;
     return isExecutionCompletedStatus(opExecutionStatus(op));
+  }
+
+  function rollupExecutionStatus(item) {
+    const stageStatus = normalizeStatus(item?.current_stage_status || item?.execution_status || '');
+    const ops = sortedOpsForStage(item);
+    const openOps = ops.filter(op => !isOpProductionComplete(op, item));
+    if (openOps.length) {
+      const currentOpen = openOps.find(op => {
+        const stageDesc = compactText(item?.current_stage_desc);
+        const opNo = compactText(op?.op_no || op?.source_op_no);
+        const opType = compactText(op?.op_type || op?.operation_name);
+        if (stageDesc && opNo && stageDesc.includes(opNo)) return true;
+        if (stageDesc && opType && stageDesc.toLowerCase().includes(opType.toLowerCase())) return true;
+        const currentStage = Number(item?.current_stage_no || 0);
+        const opStage = Number(op?.source_stage_no ?? op?.stage_no ?? 0);
+        return currentStage > 0 && opStage > 0 && opStage === currentStage;
+      }) || openOps[0];
+      const openStatus = normalizeStatus(opExecutionStatus(currentOpen));
+      if (openStatus && !isExecutionCompletedStatus(openStatus)) return opExecutionStatus(currentOpen);
+      if (stageStatus && !isExecutionCompletedStatus(stageStatus)) {
+        return item?.current_stage_status || item?.execution_status || '';
+      }
+    }
+    const statuses = ops
+      .map(op => opExecutionStatus(op))
+      .filter(status => normalizeStatus(status));
+    if (statuses.length) {
+      const pending = statuses.find(status => !isExecutionCompletedStatus(status));
+      if (pending) return pending;
+      return statuses[0];
+    }
+    return item?.current_stage_status || item?.execution_status || item?.erp_execution_status || '';
   }
 
   function executionStatusRank(value) {
@@ -972,7 +1021,7 @@
       }
     }
 
-    const openOp = trackedOps.find(op => !isOpProductionComplete(op));
+    const openOp = trackedOps.find(op => !isOpProductionComplete(op, item));
     if (openOp) {
       const resolved = stageFromOp(openOp);
       if (resolved) {
@@ -993,7 +1042,7 @@
       }
     }
 
-    if (trackedOps.every(op => isOpProductionComplete(op))) {
+    if (trackedOps.every(op => isOpProductionComplete(op, item))) {
       const lastOp = trackedOps[trackedOps.length - 1];
       const resolved = stageFromOp(lastOp, { allComplete: true });
       if (resolved) {
@@ -1073,10 +1122,10 @@
     if (isPendingDo(item)) return false;
     const ops = Array.isArray(item?.ops) ? item.ops : [];
     const trackedOps = ops.filter(op => opHasWorkOrderEvidence(op));
-    if (trackedOps.some(op => !isOpProductionComplete(op))) return false;
+    if (trackedOps.some(op => !isOpProductionComplete(op, item))) return false;
     if (isShippedComplete(item)) return true;
     if (trackedOps.length) {
-      return trackedOps.every(op => isOpProductionComplete(op));
+      return trackedOps.every(op => isOpProductionComplete(op, item));
     }
     const remaining = numberValue(item?.remaining_qty);
     const finished = numberValue(item?.finished_qty);

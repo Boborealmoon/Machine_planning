@@ -3,7 +3,7 @@
 {% block main_class %}app-main--frame-agreement{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=frame-agreement-20260624h">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/frame_agreement_parts.css') }}?v=frame-agreement-20260624h">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/frame_agreement_parts.css') }}?v=frame-agreement-20260703e">
 {% endblock %}
 {% block content %}
 <div class="fa-page new-orders-page">
@@ -51,6 +51,7 @@
             <th>Material</th>
             <th class="fa-col-qty">Qty / FG</th>
             <th>BOM detail</th>
+            <th>MPP config</th>
             <th>Notes</th>
             <th>Updated</th>
             <th class="fa-col-actions">Actions</th>
@@ -80,6 +81,36 @@
     <div class="so-material-modal-body" id="fa-confirm-modal-body">
       <div class="so-material-modal-loading"><div class="spinner"></div> Loading part details…</div>
     </div>
+    <div class="fa-confirm-mpp-wrap">
+      <div class="fa-confirm-mpp-grid">
+        <div class="fa-field">
+          <label class="fa-field-label" for="fa-confirm-mpp-machine">MPP machine</label>
+          <select id="fa-confirm-mpp-machine" class="fa-input fa-mpp-machine-select">
+            <option value="">—</option>
+            <option value="CNC 35">CNC 35</option>
+            <option value="CNC 36">CNC 36</option>
+            <option value="CNC 41">CNC 41</option>
+          </select>
+        </div>
+        <div class="fa-field">
+          <label class="fa-field-label" for="fa-confirm-mpp-run">Run min / pallet</label>
+          <input type="number" id="fa-confirm-mpp-run" class="fa-input fa-mpp-num-input" min="0" step="0.1" placeholder="MPP cycle" />
+        </div>
+        <div class="fa-field">
+          <label class="fa-field-label" for="fa-confirm-mpp-setup">Setup min</label>
+          <input type="number" id="fa-confirm-mpp-setup" class="fa-input fa-mpp-num-input" min="0" step="0.1" placeholder="Setup" />
+        </div>
+        <div class="fa-field">
+          <label class="fa-field-label" for="fa-confirm-mpp-pcs">Pcs / pallet</label>
+          <input type="number" id="fa-confirm-mpp-pcs" class="fa-input fa-mpp-num-input" min="1" step="1" placeholder="Pieces" />
+        </div>
+        <div class="fa-field">
+          <label class="fa-field-label" for="fa-confirm-mpp-pallets">Pallets / cycle</label>
+          <input type="number" id="fa-confirm-mpp-pallets" class="fa-input fa-mpp-num-input" min="1" step="1" placeholder="Pallets" />
+        </div>
+      </div>
+      <p class="fa-confirm-mpp-hint">After adding, open <strong>MPP config</strong> on the row to set pallet settings per operation (fixture-specific qty/pallets/cycle time).</p>
+    </div>
     <div class="fa-confirm-notes-wrap">
       <label class="fa-field-label" for="fa-confirm-notes-input">Notes <span class="fa-optional">(optional)</span></label>
       <input type="text" id="fa-confirm-notes-input" class="fa-input" placeholder="Customer / program / remarks" autocomplete="off" />
@@ -88,6 +119,21 @@
       <button type="button" class="btn btn-ghost" data-action="close-confirm-modal">Cancel</button>
       <button type="button" class="btn btn-primary" id="fa-confirm-add-btn" disabled>Add to list</button>
     </div>
+  </div>
+</div>
+
+<div id="fa-mpp-modal" class="so-material-modal" hidden>
+  <div class="so-material-modal-backdrop" data-action="close-mpp-modal" aria-hidden="true"></div>
+  <div class="so-material-modal-panel fa-mpp-panel" role="dialog" aria-modal="true" aria-labelledby="fa-mpp-modal-title">
+    <div class="so-material-modal-head">
+      <div>
+        <p class="so-material-modal-kicker">MPP pallet config — per operation</p>
+        <div class="so-material-modal-identifiers" id="fa-mpp-modal-title"></div>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="fa-mpp-modal-close" aria-label="Close">Close</button>
+    </div>
+    <div class="fa-bom-tabs-host" id="fa-mpp-modal-bom-tabs" hidden></div>
+    <div class="so-material-modal-body" id="fa-mpp-modal-body"></div>
   </div>
 </div>
 
@@ -124,5 +170,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/frame_agreement_parts.js') }}?v=frame-agreement-20260624h"></script>
+<script src="{{ url_for('static', filename='js/frame_agreement_parts.js') }}?v=frame-agreement-20260703e"></script>
 {% endblock %}

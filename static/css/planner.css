@@ -5884,7 +5884,7 @@
     position: sticky;
     top: 0;
     z-index: 2;
-    background: var(--surface2);
+    background: var(--surface2, #f1f5f9);
     border-bottom: 2px solid var(--border);
     border-right: 1px solid var(--border);
     padding: 0;
@@ -5898,7 +5898,7 @@
     vertical-align: middle;
   }
   .delivery-schedule-sort-head.is-sorted {
-    background: color-mix(in oklab, #2563eb 8%, var(--surface2));
+    background: color-mix(in oklab, #2563eb 8%, var(--surface2, #f1f5f9));
   }
   .delivery-schedule-sort-btn {
     display: inline-flex;
@@ -5939,7 +5939,7 @@
     border-right: 1px solid var(--border);
     padding: 6px 10px;
     vertical-align: middle;
-    background: var(--surface);
+    background: var(--surface, #fff);
   }
   .delivery-schedule-table tbody tr:hover td {
     background: rgba(148, 163, 184, 0.08);
@@ -6186,12 +6186,7 @@
     outline-offset: 2px;
   }
   .delivery-schedule-row.is-dismissed td {
-    opacity: 0.48;
-  }
-  .delivery-schedule-row.is-dismissed .delivery-schedule-dismiss-toggle,
-  .delivery-schedule-row.is-dismissed .delivery-schedule-check,
-  .delivery-schedule-row.is-dismissed .delivery-schedule-exception-btn {
-    opacity: 1;
+    color: var(--text2);
   }
   .delivery-schedule-row.is-exception td {
     background: rgba(254, 226, 226, 0.55);
@@ -8413,6 +8408,20 @@
   .so-col-filter-actions {
     display: flex;
     justify-content: flex-end;
+  }
+  .so-col-filter-empty-only {
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .so-col-filter-exclude-preset {
+    margin-top: -4px;
+    margin-bottom: 8px;
+  }
+  .so-col-filter-input:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    background: #f8fafc;
   }
 
   .new-orders-side-rail {

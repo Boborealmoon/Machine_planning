@@ -33,7 +33,7 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 11
+_SCHEMA_VERSION = 13
 
 _NOTE_FIELDS = (
     "material_subcon",
@@ -69,11 +69,7 @@ SELECT
     ) AS description,
     COALESCE(NULLIF(TRIM(part.customer_po_no), ''), NULLIF(TRIM(hdr.customer_po_no), '')) AS customer_po_no,
     COALESCE(det.required_shipment_date, pp.source_rsd) AS due_date,
-    CASE
-        WHEN pp.proposed_edd IS NULL THEN NULL
-        WHEN pp.proposed_edd::date = COALESCE(det.required_shipment_date, pp.source_rsd)::date THEN NULL
-        ELSE pp.proposed_edd
-    END AS delivery_date,
+    shipped.last_shipment_date AS delivery_date,
     COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price) AS unit_selling_price,
     (COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price) * pp.pp_qty) AS amount,
     det.qty AS so_det_qty,
@@ -91,6 +87,21 @@ LEFT JOIN public.sum_qty_shipped_by_sales_order sq
        ON sq.sales_order_no = pp.source_voucher_no
       AND regexp_replace(sq.line_item_no::TEXT, '\\.0+$', '')
           = regexp_replace(pp.source_line_item_no::TEXT, '\\.0+$', '')
+LEFT JOIN (
+    SELECT
+        d.source_voucher_no AS sales_order_no,
+        regexp_replace(d.source_voucher_line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
+        MAX(COALESCE(h.arrival_date, h.do_generation_datetime)::date) AS last_shipment_date
+    FROM public.lg_out_shm_detail d
+    LEFT JOIN public.lg_out_shm_hst_hdr h
+           ON d.shipment_voucher_no = h.shipment_voucher_no
+    WHERE NOT (d.status = 'History' AND COALESCE(d.qty_issued, 0) = 0)
+      AND COALESCE(d.qty_issued, 0) > 0
+    GROUP BY d.source_voucher_no,
+             regexp_replace(d.source_voucher_line_item_no::TEXT, '\\.0+$', '')
+) shipped
+       ON shipped.sales_order_no = pp.source_voucher_no
+      AND shipped.line_item_no = regexp_replace(pp.source_line_item_no::TEXT, '\\.0+$', '')
 LEFT JOIN (
     SELECT pp_voucher_no, MAX(customer_po_no) AS customer_po_no
     FROM public.mfg_pp_partial_view
@@ -562,6 +573,81 @@ def _apply_material_in_overlay(orders: list[dict[str, Any]], overlay: dict[str, 
                 pp["material_in"] = True
 
 
+def _load_coway_edd_overlay(process_sheet_nos: list[str]) -> dict[tuple[str, int], str]:
+    """Planner proposed EDD from Supabase (coway_proposed_edd), keyed by PS base + partial."""
+    bases: list[str] = []
+    seen: set[str] = set()
+    for raw in process_sheet_nos:
+        base = _ps_base_id(raw)
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        bases.append(base)
+    if not bases:
+        return {}
+
+    try:
+        from .process_sheets import _ensure_coway_proposed_edd_column
+
+        with planner_db() as con:
+            _ensure_coway_proposed_edd_column(con)
+            fetched = rows(
+                con.execute(
+                    """
+                    SELECT planner_ps_id, source_ps_id, pp_partial_no, coway_proposed_edd
+                    FROM planner_process_sheet
+                    WHERE coway_proposed_edd IS NOT NULL
+                      AND (
+                        planner_ps_id = ANY(%s)
+                        OR source_ps_id = ANY(%s)
+                        OR split_part(planner_ps_id, '::', 1) = ANY(%s)
+                      )
+                    """,
+                    (bases, bases, bases),
+                )
+            )
+    except Exception as exc:
+        logger.warning("coway_proposed_edd overlay load skipped: %s", exc)
+        return {}
+
+    out: dict[tuple[str, int], str] = {}
+    for row in fetched:
+        edd = _serialize_value(row.get("coway_proposed_edd"))
+        if not edd:
+            continue
+        try:
+            partial_no = max(1, int(row.get("pp_partial_no") or 1))
+        except (TypeError, ValueError):
+            partial_no = 1
+        for key in (
+            compact_text(row.get("source_ps_id")),
+            compact_text(row.get("planner_ps_id")),
+        ):
+            base = _ps_base_id(key)
+            if base:
+                out[(base, partial_no)] = str(edd)
+    return out
+
+
+def _apply_coway_edd_overlay(
+    orders: list[dict[str, Any]],
+    overlay: dict[tuple[str, int], str],
+) -> None:
+    for order in orders:
+        for pp in order.get("pp_vouchers") or []:
+            base = _pp_ps_base(pp)
+            partial_rows = pp.get("partials") or []
+            if not partial_rows:
+                pp["coway_proposed_edd"] = overlay.get((base, 1), "")
+                continue
+            for partial in partial_rows:
+                try:
+                    partial_no = max(1, int(partial.get("pp_partial_no") or 1))
+                except (TypeError, ValueError):
+                    partial_no = 1
+                partial["coway_proposed_edd"] = overlay.get((base, partial_no), "")
+
+
 _QUEUED_MACHINES_SQL = """
 SELECT DISTINCT
     COALESCE(NULLIF(TRIM(o.source_ps_id), ''), NULLIF(TRIM(o.job_no), '')) AS raw_ps_id,
@@ -1021,6 +1107,7 @@ def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, An
             if pp.get("process_sheet_no")
         ]
         _apply_material_in_overlay(orders, _load_material_in_overlay(process_sheets))
+        _apply_coway_edd_overlay(orders, _load_coway_edd_overlay(process_sheets))
         _reconcile_subcon_material_in(orders)
         _apply_stage_overlay(orders, _load_stage_overlay(process_sheets))
         _apply_queued_machines_overlay(orders, _load_queued_machines_by_canonical_ps())

@@ -6,15 +6,19 @@ from dataclasses import dataclass
 from typing import Any
 
 from .frame_agreement_service import (
+    apply_fa_mpp_overrides,
     ensure_frame_agreement_schema,
     fetch_mpp_job_candidates as _fetch_erp_mpp_job_candidates,
     is_frame_agreement_part,
+    load_frame_agreement_mpp_lookup,
     load_frame_agreement_part_keys,
+    normalize_part_key,
+    resolve_fa_mpp_settings,
 )
 from .helpers import rows
 from .machines import fetch_machines
 from .process_sheets import format_planner_ps_id, manual_qty_by_ps_ids
-from .utils import compact_text
+from .utils import compact_text, parse_number
 
 MPP_PLANNER_EXTRA_MACHINE_CODES = frozenset({"CNC 41"})
 MPP_DEFAULT_LOAD_MIN_PER_PALLET = 15.0
@@ -33,6 +37,7 @@ class MppIntakeContext:
     erp_steps_cache: dict[tuple[str, int], list[dict[str, Any]]]
     manual_qty_by_ps: dict[str, dict]
     mpp_codes: set[str]
+    fa_mpp_by_part: dict[str, dict[str, Any]]
 
 
 def mpp_machine_slug(machine_no: str) -> str:
@@ -224,7 +229,47 @@ def _mpp_job_schedule_meta(op: dict[str, Any], wo_qty: float = 0) -> tuple[bool,
     return False, "Fully accounted"
 
 
-def _serialize_catalog_mpp_job(item: dict[str, Any], op: dict[str, Any]) -> dict[str, Any]:
+def _mpp_op_times_from_master(
+    item: dict[str, Any],
+    op: dict[str, Any],
+    ctx: MppIntakeContext | None,
+) -> tuple[float, float]:
+    """Master production cycle/setup for MPP job intake (before FA overrides)."""
+    fallback_cycle = float(op.get("cycle_time") or 0)
+    fallback_setup = float(op.get("setup_time") or 0)
+    if not ctx or not ctx.master_cache:
+        return fallback_cycle, fallback_setup
+    from .cycle_time_service import _parse_op_no
+
+    part_no = compact_text(item.get("part_no") or item.get("inventory_code") or "")
+    if not part_no:
+        return fallback_cycle, fallback_setup
+    bom_code = compact_text(item.get("selected_bom_code") or item.get("erp_bom_code") or "")
+    master = ctx.master_cache.lookup(
+        part_no=part_no,
+        bom_code=bom_code,
+        op_no=_parse_op_no(op.get("op_no") or op.get("source_op_no")),
+        op_type=compact_text(op.get("op_type") or ""),
+        stage_no=int(op.get("source_stage_no") or 0) or None,
+        extra_part_nos=[compact_text(item.get("part_desc") or "")],
+    )
+    if not master:
+        return fallback_cycle, fallback_setup
+    ideal = parse_number(master.get("ideal_cycle_time"), 0)
+    production = parse_number(master.get("cycle_time"), 0)
+    cycle = production if production > 0 else ideal
+    setup = parse_number(master.get("set_up_time"), 0)
+    return (
+        cycle if cycle > 0 else fallback_cycle,
+        setup if setup > 0 else fallback_setup,
+    )
+
+
+def _serialize_catalog_mpp_job(
+    item: dict[str, Any],
+    op: dict[str, Any],
+    ctx: MppIntakeContext | None = None,
+) -> dict[str, Any]:
     source_ps_id = compact_text(item.get("source_ps_id") or "")
     if not source_ps_id:
         raw_ps = compact_text(item.get("ps_id") or "")
@@ -235,9 +280,9 @@ def _serialize_catalog_mpp_job(item: dict[str, Any], op: dict[str, Any]) -> dict
     op_no = compact_text(op.get("op_no") or op.get("source_op_no") or "")
     if op_no.upper().startswith("OP"):
         op_no = op_no[2:].strip()
-    cycle_time = float(op.get("cycle_time") or 0)
+    cycle_time, setup_minutes = _mpp_op_times_from_master(item, op, ctx)
     min_per_pallet = max(1, int(round(cycle_time))) if cycle_time > 0 else 90
-    setup_minutes = max(0.0, float(op.get("setup_time") or 0))
+    setup_minutes = max(0.0, setup_minutes)
     wo_qty = float(
         op.get("erp_required_qty")
         or op.get("required_qty")
@@ -293,6 +338,7 @@ def _serialize_catalog_mpp_job(item: dict[str, Any], op: dict[str, Any]) -> dict
         "status": compact_text(item.get("status") or item.get("planner_status") or ""),
         "isFrameAgreement": is_fa,
         "opSeqId": op_seq_id,
+        "opNo": op_no,
         "ppPartialNo": pp_partial_no,
         "source": "process_sheet",
     }
@@ -388,6 +434,7 @@ def _build_intake_context(con, sheet_rows: list[dict[str, Any]], mpp_codes: set[
         erp_steps_cache=_erp_cache_steps_batch(con, partial_keys),
         manual_qty_by_ps=manual_qty_by_ps_ids(con, planner_ps_ids),
         mpp_codes=mpp_codes,
+        fa_mpp_by_part={},
     )
 
 
@@ -434,6 +481,10 @@ def _merge_erp_into_ops(entry: dict[str, Any], ctx: MppIntakeContext) -> None:
                 row["execution_status"] = erp.get("erp_execution_status")
             if compact_text(erp.get("stage_desc")):
                 row["stage_desc"] = compact_text(erp.get("stage_desc"))
+        remaining = max(0.0, float(row.get("remaining_qty") or 0))
+        finished = max(0.0, float(row.get("erp_finished_qty") or 0))
+        if not compact_text(row.get("execution_status")) and finished > 0 and remaining <= 0:
+            row["execution_status"] = "C"
         refreshed.append(row)
     entry["all_ops"] = refreshed
 
@@ -555,7 +606,15 @@ def _emit_jobs_from_item(
     for op in item.get("all_ops") or []:
         if not _is_mpp_intake_op(op, ctx.mpp_codes):
             continue
-        job = _serialize_catalog_mpp_job(item, op)
+        job = _serialize_catalog_mpp_job(item, op, ctx)
+        if job.get("isFrameAgreement"):
+            part_key = normalize_part_key(job.get("partNo") or job.get("inventoryCode") or "")
+            bom_code = compact_text(job.get("bomCode") or job.get("erpBomCode") or "")
+            op_no = compact_text(job.get("opNo") or "")
+            apply_fa_mpp_overrides(
+                job,
+                resolve_fa_mpp_settings(ctx.fa_mpp_by_part, part_key, bom_code, op_no),
+            )
         if job["jobId"] in seen:
             continue
         seen.add(job["jobId"])
@@ -574,6 +633,7 @@ def _mpp_jobs_from_process_sheets(con, fa_keys: set[str], mpp_codes: set[str]) -
         pid = compact_text(entry.get("ps_id"))
         entry["material_in"] = bool(material_map.get(pid))
     ctx = _build_intake_context(con, sheet_rows, mpp_codes)
+    ctx.fa_mpp_by_part = load_frame_agreement_mpp_lookup(con)
     jobs: list[dict[str, Any]] = []
     seen: set[str] = set()
     for entry in sheet_rows:
@@ -594,6 +654,7 @@ def fetch_mpp_planner_jobs(con) -> list[dict[str, Any]]:
         return []
 
     mpp_codes = mpp_machine_code_set(con)
+    fa_mpp_lookup = load_frame_agreement_mpp_lookup(con)
     jobs = _mpp_jobs_from_process_sheets(con, fa_keys, mpp_codes)
     seen = {job["jobId"] for job in jobs}
 
@@ -604,6 +665,14 @@ def fetch_mpp_planner_jobs(con) -> list[dict[str, Any]]:
         seen.add(job_id)
         merged = dict(row)
         merged["source"] = "erp"
+        part_key = normalize_part_key(merged.get("partNo") or merged.get("inventoryCode") or "")
+        bom_code = compact_text(merged.get("bomCode") or "")
+        op_no = compact_text(merged.get("opNo") or "")
+        if not op_no:
+            op_label = compact_text(merged.get("opLabel") or "")
+            if op_label.upper().startswith("OP"):
+                op_no = op_label[2:].split(" ", 1)[0].strip()
+        apply_fa_mpp_overrides(merged, resolve_fa_mpp_settings(fa_mpp_lookup, part_key, bom_code, op_no))
         jobs.append(merged)
 
     jobs.sort(key=lambda j: (j.get("due") or "9999-12-31", j.get("psId") or "", j.get("opLabel") or ""))

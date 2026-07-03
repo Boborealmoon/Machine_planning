@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, render_template, request
 from .email_config import (
     invalidate_email_config_cache,
     load_email_config,
+    load_email_config_with_overrides,
     public_config_dict,
 )
 from .email_settings_store import save_email_settings_row
@@ -64,11 +65,7 @@ def api_email_config_get():
     return jsonify(public_config_dict(cfg, row=row))
 
 
-@email_bp.put("/api/email/config")
-def api_email_config_put():
-    if not _planner_authenticated():
-        return _auth_error()
-    body = request.get_json(silent=True) or {}
+def _settings_payload_from_body(body: dict) -> dict:
     smtp = body.get("smtp") if isinstance(body.get("smtp"), dict) else body
     trigger = body.get("triggers", {}).get("new_sales_order")
     if not isinstance(trigger, dict):
@@ -123,6 +120,15 @@ def api_email_config_put():
             payload["new_so_ps_heading"] = trigger.get("ps_heading")
         if "ps_line_template" in trigger:
             payload["new_so_ps_line_template"] = trigger.get("ps_line_template")
+    return payload
+
+
+@email_bp.put("/api/email/config")
+def api_email_config_put():
+    if not _planner_authenticated():
+        return _auth_error()
+    body = request.get_json(silent=True) or {}
+    payload = _settings_payload_from_body(body)
 
     try:
         row = save_email_settings_row(payload)
@@ -138,8 +144,13 @@ def api_email_config_put():
 def api_email_send_test():
     if not _authorized():
         return _auth_error()
+    body = request.get_json(silent=True) or {}
+    payload = _settings_payload_from_body(body) if body.get("smtp") else {}
+    if payload:
+        save_email_settings_row(payload)
     invalidate_email_config_cache()
-    result = send_test_email()
+    cfg = load_email_config_with_overrides(payload or None, force_reload=True)
+    result = send_test_email(cfg=cfg)
     status = 200 if result.get("ok") else 400
     return jsonify(result), status
 
@@ -153,4 +164,6 @@ def api_email_notify_new_sales_orders():
     invalidate_email_config_cache()
     result = notify_new_sales_orders(dry_run=dry_run)
     status = 200 if result.get("ok") or result.get("skipped") or dry_run else 500
+    if result.get("skipped") and result.get("issues"):
+        status = 400
     return jsonify(result), status

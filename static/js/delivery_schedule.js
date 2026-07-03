@@ -665,7 +665,8 @@ function deliveryScheduleRebuildWeekDropdown() {
     groups.forEach((group) => {
       if (!prevSelected.has(group.key)) next.add(group.key);
     });
-    deliveryScheduleState.weekKeys = next;
+    // Never leave an empty selection when weeks exist — that hides every row.
+    deliveryScheduleState.weekKeys = next.size ? next : new Set(allKeys);
   }
 
   const actionsHtml = groups.length ? `
@@ -1207,23 +1208,33 @@ async function deliveryScheduleSaveCoway(plannerPsId, value, inputEl) {
     const saved = deliveryScheduleDateInputValue(data.coway_proposed_edd);
     const savedPsId = String(data.ps_id || psId).trim() || psId;
     const updated = deliveryScheduleUpdateItem(savedPsId, { coway_edd: saved, planner_ps_id: savedPsId });
-    if (inputEl) {
-      inputEl.value = saved;
-      inputEl.dataset.lastSaved = saved;
-      inputEl.disabled = false;
-      deliveryScheduleSetFieldStatus(wrap, 'is-saved', 'Saved');
+    // Keep the edited row visible when it moves to another week under a partial week filter.
+    if (updated) {
+      const editedWeekKey = deliveryScheduleItemWeekKey(updated);
+      if (editedWeekKey) deliveryScheduleState.weekKeys.add(editedWeekKey);
+    }
+    deliveryScheduleRebuildWeekDropdown();
+    if (deliveryScheduleState.sortBy === 'coway_edd' || deliveryScheduleState.sortBy === 'week') {
+      renderDeliveryScheduleBody();
+    } else {
+      deliveryScheduleUpdateWeekCell(savedPsId, updated);
+    }
+    const liveInput = document.querySelector(
+      `[data-action="coway-edd"][data-ps-id="${CSS.escape(savedPsId)}"]`,
+    );
+    const liveWrap = liveInput?.closest('[data-action="coway-edd-wrap"]') || wrap;
+    if (liveInput) {
+      liveInput.value = saved;
+      liveInput.dataset.lastSaved = saved;
+      liveInput.disabled = false;
+      deliveryScheduleSetFieldStatus(liveWrap, 'is-saved', 'Saved');
       window.setTimeout(() => {
-        if (inputEl.dataset.lastSaved === saved) {
-          deliveryScheduleSetFieldStatus(wrap, '', '');
+        if (liveInput.dataset.lastSaved === saved) {
+          deliveryScheduleSetFieldStatus(liveWrap, '', '');
         }
       }, 1600);
-    }
-    deliveryScheduleUpdateWeekCell(savedPsId, updated);
-    const weekFilterActive = deliveryScheduleState.weekGroups.length > 0
-      && deliveryScheduleState.weekKeys.size < deliveryScheduleState.weekGroups.length;
-    if (deliveryScheduleState.sortBy === 'coway_edd' || deliveryScheduleState.sortBy === 'week' || weekFilterActive) {
-      if (weekFilterActive) deliveryScheduleRebuildWeekDropdown();
-      renderDeliveryScheduleBody();
+    } else if (inputEl) {
+      inputEl.disabled = false;
     }
   } catch (err) {
     if (inputEl) {

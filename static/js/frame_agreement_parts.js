@@ -6,6 +6,8 @@
     search: '',
     loading: false,
     saving: new Set(),
+    opsCache: {},
+    opsLoading: new Set(),
     partSearch: {
       query: '',
       hits: [],
@@ -19,7 +21,168 @@
     confirmModal: { partNo: '', selectedBom: '' },
     materialModal: { partNo: '', bomCodes: [], selectedBom: '' },
     stepsModal: { partNo: '', bomCodes: [], selectedBom: '' },
+    mppModal: { partNo: '', bomCodes: [], selectedBom: '' },
   };
+
+  const FA_MPP_MACHINES = ['CNC 35', 'CNC 36', 'CNC 41'];
+
+  function inferFaMppMachine(description, notes) {
+    const blob = `${description || ''} ${notes || ''}`.toUpperCase();
+    if (blob.includes('END CAP')) return 'CNC 35';
+    if (blob.includes('VALVE BODY')) return 'CNC 36';
+    for (const code of FA_MPP_MACHINES) {
+      if (blob.includes(code.toUpperCase())) return code;
+    }
+    return '';
+  }
+
+  function faMppMachineOptions(selected) {
+    const sel = String(selected || '');
+    return ['<option value="">—</option>']
+      .concat(FA_MPP_MACHINES.map((code) => (
+        `<option value="${escapeHtml(code)}"${sel === code ? ' selected' : ''}>${escapeHtml(code)}</option>`
+      )))
+      .join('');
+  }
+
+  function faMppNumValue(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num <= 0) return '';
+    return String(num);
+  }
+
+  function faMppIntValue(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num <= 0) return '';
+    return String(Math.round(num));
+  }
+
+  function faOpsCacheKey(partNo, bomCode) {
+    return `${String(partNo || '').trim()}::${String(bomCode || '').trim()}`;
+  }
+
+  function faOpNoLabel(op) {
+    const raw = op?.op_no ?? op?.opNo;
+    if (raw === 0) return '0';
+    const text = String(raw ?? '').trim();
+    return text || '—';
+  }
+
+  function faOpProcessLabel(op) {
+    const full = String(op?.stage_desc || '').trim();
+    if (!full) return '';
+    const stripped = full.replace(/^(Turning|Milling|Turnmill)\s+(?:OP)?\d+\s*/i, '').trim();
+    return stripped || full;
+  }
+
+  function faSortOps(ops) {
+    return [...ops].sort((a, b) => {
+      const aNum = Number.parseInt(String(a?.op_no ?? ''), 10);
+      const bNum = Number.parseInt(String(b?.op_no ?? ''), 10);
+      const aOk = Number.isFinite(aNum);
+      const bOk = Number.isFinite(bNum);
+      if (aOk && bOk && aNum !== bNum) return aNum - bNum;
+      if (aOk !== bOk) return aOk ? -1 : 1;
+      return Number(a?.stage_no || 0) - Number(b?.stage_no || 0);
+    });
+  }
+
+  function faDerivedRunMinPerPallet(cyclePc, pcs, runPal) {
+    const run = Number(runPal);
+    if (Number.isFinite(run) && run > 0) return run;
+    const cycle = Number(cyclePc);
+    const pieces = Number(pcs);
+    if (Number.isFinite(cycle) && cycle > 0 && Number.isFinite(pieces) && pieces > 0) {
+      return cycle * pieces;
+    }
+    return 0;
+  }
+
+  function faFormatCalcPal(cyclePc, pcs, runPal) {
+    const val = faDerivedRunMinPerPallet(cyclePc, pcs, runPal);
+    if (!Number.isFinite(val) || val <= 0) return '—';
+    return Number.isInteger(val) ? String(val) : val.toFixed(2).replace(/\.?0+$/, '');
+  }
+
+  function faLineSaveKey(partNo, bomCode, opNo) {
+    return `${partNo}::${bomCode}::${opNo}`;
+  }
+
+  async function faEnsureOpsLoaded(partNo, bomCode, row) {
+    const part = String(partNo || '').trim();
+    const bom = String(bomCode || '').trim();
+    if (!part || !bom) return [];
+    const key = faOpsCacheKey(part, bom);
+    if (Array.isArray(state.opsCache[key])) return state.opsCache[key];
+    if (state.opsLoading.has(key)) return [];
+    state.opsLoading.add(key);
+    try {
+      const params = new URLSearchParams({ action: 'operations', part_no: part, bom });
+      const res = await fetch(`/api/planning-data/frame-agreement-parts?${params}`);
+      const payload = await parseJsonResponse(res);
+      if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+      const items = faSortOps(
+        (Array.isArray(payload.rows) ? payload.rows : [])
+          .filter((op) => String(op?.op_no ?? '').trim())
+      );
+      state.opsCache[key] = items;
+      return items;
+    } catch (err) {
+      state.opsCache[key] = [];
+      if (row) row.ops_error = err.message;
+      return [];
+    } finally {
+      state.opsLoading.delete(key);
+      if (document.getElementById('fa-mpp-modal')?.hidden === false) {
+        faRenderMppModalBody();
+      }
+    }
+  }
+
+  function faConfiguredOpCount(row, bomCode) {
+    const bom = String(bomCode || '').trim();
+    const configs = row?.op_configs?.[bom];
+    if (!configs || typeof configs !== 'object') return 0;
+    return Object.keys(configs).length;
+  }
+
+  function faMppConfigBtnLabel(row, bomCode) {
+    const count = faConfiguredOpCount(row, bomCode);
+    return count > 0 ? `MPP config (${count})` : 'MPP config';
+  }
+
+  function readFaOpRowSettings(partNo, bomCode, opNo) {
+    const root = document.getElementById('fa-mpp-modal');
+    const part = String(partNo || '').trim();
+    const bom = String(bomCode || '').trim();
+    const op = String(opNo || '').trim();
+    const sel = (cls) => (root || document).querySelector(
+      `${cls}[data-part-no="${CSS.escape(part)}"][data-bom-code="${CSS.escape(bom)}"][data-op-no="${CSS.escape(op)}"]`
+    );
+    const cycle = sel('.fa-op-cycle-input');
+    const pcs = sel('.fa-op-pcs-input');
+    const run = sel('.fa-op-run-input');
+    const pallets = sel('.fa-op-pallets-input');
+    const machine = sel('.fa-op-machine-select');
+    const setup = sel('.fa-op-setup-input');
+    const process = sel('.fa-op-process-input');
+    return {
+      bom_code: bom,
+      op_no: op,
+      cycle_min_per_piece: Number(cycle?.value || 0),
+      pcs_per_pallet: Number(pcs?.value || 0),
+      run_min_per_pallet: Number(run?.value || 0),
+      pallets_count: Number(pallets?.value || 0),
+      mpp_machine_no: String(machine?.value || '').trim(),
+      setup_minutes: Number(setup?.value || 0),
+      stage_desc: String(process?.value || '').trim(),
+    };
+  }
+
+  function readFaPartNotes(partNo) {
+    const notes = document.querySelector(`.fa-notes-input[data-part-no="${CSS.escape(partNo)}"]`);
+    return String(notes?.value || '').trim();
+  }
 
   function escapeHtml(raw) {
     return String(raw ?? '')
@@ -170,7 +333,174 @@
         qty_per_fg: fields.qtyFg === '—' ? '' : fields.qtyFg,
       };
     }
+    delete state.opsCache[faOpsCacheKey(part, bom)];
     if (rerender) render();
+  }
+
+  function faRenderMppOpRow(row, partNo, bomCode, op) {
+    const desc = String(row?.description || '');
+    const opNo = faOpNoLabel(op);
+    const opKey = String(op?.op_no ?? '').trim();
+    const saveKey = faLineSaveKey(partNo, bomCode, opKey);
+    const lineSaving = state.saving.has(saveKey);
+    const cycle = Number(op.cycle_min_per_piece || 0);
+    const pcs = Number(op.pcs_per_pallet || 0);
+    const runPal = Number(op.run_min_per_pallet || 0);
+    const calcPal = faFormatCalcPal(cycle, pcs, runPal);
+    const processDesc = faOpProcessLabel(op);
+    return `
+      <tr data-part-no="${escapeHtml(partNo)}" data-bom-code="${escapeHtml(bomCode)}" data-op-no="${escapeHtml(opKey)}">
+        <td class="fa-op-cell">${escapeHtml(opNo)}</td>
+        <td class="fa-process-cell">
+          <input type="text" class="fa-op-process-input" data-part-no="${escapeHtml(partNo)}" data-bom-code="${escapeHtml(bomCode)}" data-op-no="${escapeHtml(opKey)}" value="${escapeHtml(processDesc)}" placeholder="${escapeHtml(String(op.stage_desc || '').trim())}" ${lineSaving ? 'disabled' : ''} />
+        </td>
+        <td class="fa-mpp-num-cell">
+          <input type="number" class="fa-mpp-num-input fa-op-cycle-input" data-part-no="${escapeHtml(partNo)}" data-bom-code="${escapeHtml(bomCode)}" data-op-no="${escapeHtml(opKey)}" min="0" step="0.01" value="${escapeHtml(faMppNumValue(cycle))}" placeholder="—" ${lineSaving ? 'disabled' : ''} />
+        </td>
+        <td class="fa-mpp-num-cell">
+          <input type="number" class="fa-mpp-num-input fa-op-pcs-input" data-part-no="${escapeHtml(partNo)}" data-bom-code="${escapeHtml(bomCode)}" data-op-no="${escapeHtml(opKey)}" min="1" step="1" value="${escapeHtml(faMppIntValue(pcs))}" placeholder="—" ${lineSaving ? 'disabled' : ''} />
+        </td>
+        <td class="fa-mpp-num-cell">
+          <input type="number" class="fa-mpp-num-input fa-op-run-input" data-part-no="${escapeHtml(partNo)}" data-bom-code="${escapeHtml(bomCode)}" data-op-no="${escapeHtml(opKey)}" min="0" step="0.01" value="${escapeHtml(faMppNumValue(runPal))}" placeholder="${escapeHtml(calcPal === '—' ? 'auto' : calcPal)}" title="Auto: min/pc × pcs/pal = ${escapeHtml(calcPal)}" ${lineSaving ? 'disabled' : ''} />
+        </td>
+        <td class="fa-mpp-num-cell">
+          <input type="number" class="fa-mpp-num-input fa-op-pallets-input" data-part-no="${escapeHtml(partNo)}" data-bom-code="${escapeHtml(bomCode)}" data-op-no="${escapeHtml(opKey)}" min="1" step="1" value="${escapeHtml(faMppIntValue(op.pallets_count))}" placeholder="—" ${lineSaving ? 'disabled' : ''} />
+        </td>
+        <td class="fa-mpp-machine-cell">
+          <select class="fa-mpp-machine-select fa-op-machine-select" data-part-no="${escapeHtml(partNo)}" data-bom-code="${escapeHtml(bomCode)}" data-op-no="${escapeHtml(opKey)}" ${lineSaving ? 'disabled' : ''}>
+            ${faMppMachineOptions(op.mpp_machine_no || inferFaMppMachine(desc, row?.notes))}
+          </select>
+        </td>
+        <td class="fa-mpp-num-cell">
+          <input type="number" class="fa-mpp-num-input fa-op-setup-input" data-part-no="${escapeHtml(partNo)}" data-bom-code="${escapeHtml(bomCode)}" data-op-no="${escapeHtml(opKey)}" min="0" step="0.1" value="${escapeHtml(faMppNumValue(op.setup_minutes))}" placeholder="—" ${lineSaving ? 'disabled' : ''} />
+        </td>
+        <td class="fa-col-actions">
+          <button type="button" class="btn btn-ghost btn-sm fa-save-op-btn" data-part-no="${escapeHtml(partNo)}" data-bom-code="${escapeHtml(bomCode)}" data-op-no="${escapeHtml(opKey)}" data-stage-no="${escapeHtml(String(op.stage_no ?? ''))}" ${lineSaving || !opKey ? 'disabled' : ''}>Save</button>
+        </td>
+      </tr>
+    `;
+  }
+
+  function faRenderMppModalBody() {
+    const bodyEl = document.getElementById('fa-mpp-modal-body');
+    const { partNo, selectedBom } = state.mppModal;
+    const row = state.rows.find((r) => r.part_no === partNo);
+    if (!bodyEl || !partNo || !row) return;
+
+    const bom = String(selectedBom || '').trim();
+    if (!bom) {
+      bodyEl.innerHTML = '<p class="so-material-modal-empty">Select a BOM route to configure operation pallet settings.</p>';
+      return;
+    }
+
+    const key = faOpsCacheKey(partNo, bom);
+    if (state.opsLoading.has(key)) {
+      bodyEl.innerHTML = '<div class="so-material-modal-loading"><div class="spinner"></div> Loading operations…</div>';
+      return;
+    }
+
+    const ops = state.opsCache[key];
+    if (!Array.isArray(ops)) {
+      bodyEl.innerHTML = '<div class="so-material-modal-loading"><div class="spinner"></div> Loading operations…</div>';
+      faEnsureOpsLoaded(partNo, bom, row);
+      return;
+    }
+
+    if (!ops.length) {
+      bodyEl.innerHTML = `<p class="so-material-modal-empty">No machining operations found for ${escapeHtml(bom)}.</p>`;
+      return;
+    }
+
+    bodyEl.innerHTML = `
+      <p class="fa-mpp-modal-hint">Each operation can have its own fixture profile — min/pc, pcs per pallet, pallets per cycle, and machine. These apply when a process sheet matches this part, BOM, and op.</p>
+      <div class="fa-mpp-modal-table-wrap">
+        <table class="fa-mpp-modal-table">
+          <thead>
+            <tr>
+              <th>Op</th>
+              <th>Process</th>
+              <th>Min / pc</th>
+              <th>Pcs / pal</th>
+              <th>Min / pal</th>
+              <th>Pallets</th>
+              <th>MPP machine</th>
+              <th>Setup</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${ops.map((op) => faRenderMppOpRow(row, partNo, bom, op)).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function faOpenMppModal({ partNo, bomCode, bomCodes } = {}) {
+    const shell = document.getElementById('fa-mpp-modal');
+    if (!shell) return;
+    const part = String(partNo || '').trim();
+    if (!part) return;
+    const row = state.rows.find((r) => r.part_no === part);
+    const codes = (bomCodes && bomCodes.length) ? bomCodes : (row ? faBomCodesForRow(row) : []);
+    const selectedBom = String(bomCode || '').trim() || (row ? faSelectedBom(part, row) : codes[0] || '');
+    state.mppModal = { partNo: part, bomCodes: codes, selectedBom };
+
+    const titleEl = document.getElementById('fa-mpp-modal-title');
+    if (titleEl) {
+      titleEl.innerHTML = `
+        <div class="so-material-modal-id-row"><span class="so-material-modal-id-label">Part no</span><span class="so-material-modal-id-value so-material-modal-id-value--mono">${escapeHtml(part)}</span></div>
+        ${row?.description ? `<div class="so-material-modal-id-row"><span class="so-material-modal-id-label">Description</span><span class="so-material-modal-id-value">${escapeHtml(row.description)}</span></div>` : ''}
+      `;
+    }
+    faRenderBomTabsBar('fa-mpp-modal-bom-tabs', {
+      partNo: part,
+      bomCodes: codes,
+      selectedBom,
+      context: 'mpp',
+    });
+    shell.hidden = false;
+    document.body.classList.add('so-material-modal-open');
+    faRenderMppModalBody();
+    if (!state.opsCache[faOpsCacheKey(part, selectedBom)]) {
+      faEnsureOpsLoaded(part, selectedBom, row);
+    }
+  }
+
+  function faCloseMppModal() {
+    const shell = document.getElementById('fa-mpp-modal');
+    if (!shell) return;
+    shell.hidden = true;
+    const bodyEl = document.getElementById('fa-mpp-modal-body');
+    const titleEl = document.getElementById('fa-mpp-modal-title');
+    const tabsEl = document.getElementById('fa-mpp-modal-bom-tabs');
+    if (bodyEl) bodyEl.innerHTML = '';
+    if (titleEl) titleEl.innerHTML = '';
+    if (tabsEl) { tabsEl.innerHTML = ''; tabsEl.hidden = true; }
+    state.mppModal = { partNo: '', bomCodes: [], selectedBom: '' };
+    const confirmShell = document.getElementById('fa-confirm-modal');
+    const materialShell = document.getElementById('fa-material-modal');
+    const stepsShell = document.getElementById('fa-steps-modal');
+    if ((!confirmShell || confirmShell.hidden)
+      && (!materialShell || materialShell.hidden)
+      && (!stepsShell || stepsShell.hidden)) {
+      document.body.classList.remove('so-material-modal-open');
+    }
+  }
+
+  function renderMppConfigBtn(partNo, bomCode, row) {
+    const bom = String(bomCode || '').trim();
+    if (!bom) {
+      return '<button type="button" class="btn btn-ghost btn-sm" disabled title="Select a BOM route first">MPP config</button>';
+    }
+    const label = faMppConfigBtnLabel(row, bom);
+    return `
+      <button type="button" class="btn btn-ghost btn-sm"
+        data-action="open-mpp-config"
+        data-part-no="${escapeHtml(partNo)}"
+        data-bom-code="${escapeHtml(bom)}"
+        title="Configure pallet settings per operation for ${escapeHtml(partNo)} · ${escapeHtml(bom)}">${escapeHtml(label)}</button>
+    `;
   }
 
   function filteredRows() {
@@ -263,19 +593,14 @@
           <td class="new-orders-mono fa-material-cell" title="${escapeHtml(fields.materialDesc)}">${escapeHtml(fields.material)}</td>
           <td class="new-orders-num fa-qty-cell">${escapeHtml(fields.qtyFg)}</td>
           <td class="fa-materials-cell">${renderBomDetailBtns(partNo, selectedBom)}</td>
+          <td class="fa-mpp-config-cell">${renderMppConfigBtn(partNo, selectedBom, row)}</td>
           <td class="fa-notes-cell">
-            <input
-              type="text"
-              class="fa-notes-input"
-              data-part-no="${escapeHtml(partNo)}"
-              value="${escapeHtml(row.notes || '')}"
-              ${saving ? 'disabled' : ''}
-            />
+            <input type="text" class="fa-notes-input" data-part-no="${escapeHtml(partNo)}" value="${escapeHtml(row.notes || '')}" ${saving ? 'disabled' : ''} />
           </td>
           <td class="fa-updated">${escapeHtml(formatUpdated(row.updated_at))}</td>
           <td class="fa-col-actions">
             <div class="fa-actions">
-              <button type="button" class="btn btn-ghost btn-sm fa-save-btn" data-part-no="${escapeHtml(partNo)}" ${saving ? 'disabled' : ''}>Save</button>
+              <button type="button" class="btn btn-ghost btn-sm fa-save-part-btn" data-part-no="${escapeHtml(partNo)}" ${saving ? 'disabled' : ''}>Save</button>
               <button type="button" class="btn btn-ghost btn-sm fa-delete-btn" data-part-no="${escapeHtml(partNo)}" ${saving ? 'disabled' : ''}>Remove</button>
             </div>
           </td>
@@ -313,26 +638,32 @@
     }
   }
 
-  async function addPart(partNo, notes) {
-    const res = await fetch('/api/planning-data/frame-agreement-parts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ part_no: partNo, notes }),
-    });
-    const payload = await parseJsonResponse(res);
-    if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${res.status}`);
-    return payload.row;
-  }
-
-  async function saveNotes(partNo, notes) {
+  async function saveOpSettings(partNo, payload, notes) {
+    const body = { ...payload };
+    if (notes !== undefined) body.notes = notes;
     const res = await fetch(`/api/planning-data/frame-agreement-parts/${encodeURIComponent(partNo)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ notes }),
+      body: JSON.stringify(body),
     });
-    const payload = await parseJsonResponse(res);
-    if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${res.status}`);
-    return payload.row;
+    const data = await parseJsonResponse(res);
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data.row;
+  }
+
+  async function addPart(partNo, payload) {
+    const res = await fetch('/api/planning-data/frame-agreement-parts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ part_no: partNo, ...payload }),
+    });
+    const data = await parseJsonResponse(res);
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data.row;
+  }
+
+  async function savePartSettings(partNo, payload) {
+    return saveOpSettings(partNo, payload);
   }
 
   async function removePart(partNo) {
@@ -563,6 +894,20 @@
       context: 'confirm',
     });
     if (addBtn) addBtn.disabled = false;
+
+    const machineEl = document.getElementById('fa-confirm-mpp-machine');
+    const runEl = document.getElementById('fa-confirm-mpp-run');
+    const setupEl = document.getElementById('fa-confirm-mpp-setup');
+    const pcsEl = document.getElementById('fa-confirm-mpp-pcs');
+    const palletsEl = document.getElementById('fa-confirm-mpp-pallets');
+    const desc = String(preview?.description || '');
+    if (machineEl && !machineEl.value) {
+      machineEl.value = inferFaMppMachine(desc, '');
+    }
+    if (runEl && !runEl.value) runEl.value = '';
+    if (setupEl && !setupEl.value) setupEl.value = '';
+    if (pcsEl && !pcsEl.value) pcsEl.value = '';
+    if (palletsEl && !palletsEl.value) palletsEl.value = '';
   }
 
   async function reloadConfirmPreview(partNo, bomCode) {
@@ -583,7 +928,17 @@
 
     state.confirmModal = { partNo, selectedBom: String(bomCode || '').trim() };
     const confirmNotes = document.getElementById('fa-confirm-notes-input');
+    const machineEl = document.getElementById('fa-confirm-mpp-machine');
+    const runEl = document.getElementById('fa-confirm-mpp-run');
+    const setupEl = document.getElementById('fa-confirm-mpp-setup');
+    const pcsEl = document.getElementById('fa-confirm-mpp-pcs');
+    const palletsEl = document.getElementById('fa-confirm-mpp-pallets');
     if (confirmNotes) confirmNotes.value = '';
+    if (machineEl) machineEl.value = '';
+    if (runEl) runEl.value = '';
+    if (setupEl) setupEl.value = '';
+    if (pcsEl) pcsEl.value = '';
+    if (palletsEl) palletsEl.value = '';
     titleEl.innerHTML = `<span class="so-material-modal-id-value so-material-modal-id-value--mono">${escapeHtml(partNo)}</span>`;
     bodyEl.innerHTML = '<div class="so-material-modal-loading"><div class="spinner"></div> Loading part details…</div>';
     faRenderBomTabsBar('fa-confirm-modal-bom-tabs', { partNo, bomCodes: [], selectedBom: '', context: 'confirm' });
@@ -619,16 +974,31 @@
     const partNo = state.pendingPart;
     if (!partNo) return;
     const notesInput = document.getElementById('fa-confirm-notes-input');
+    const machineEl = document.getElementById('fa-confirm-mpp-machine');
+    const runEl = document.getElementById('fa-confirm-mpp-run');
+    const setupEl = document.getElementById('fa-confirm-mpp-setup');
+    const pcsEl = document.getElementById('fa-confirm-mpp-pcs');
+    const palletsEl = document.getElementById('fa-confirm-mpp-pallets');
     const notes = String(notesInput?.value || '').trim();
+    const description = String(state.pendingPreview?.description || '');
+    const selectedBom = String(state.confirmModal.selectedBom || state.pendingPreview?.bom_code || '').trim();
     const addBtn = document.getElementById('fa-confirm-add-btn');
     if (addBtn) addBtn.disabled = true;
     setAddStatus('Saving…', '');
     try {
-      await addPart(partNo, notes);
+      await addPart(partNo, {
+        notes,
+        description,
+      });
       closeConfirmModal();
       state.pendingPart = null;
       state.pendingPreview = null;
       if (notesInput) notesInput.value = '';
+      if (machineEl) machineEl.value = '';
+      if (runEl) runEl.value = '';
+      if (setupEl) setupEl.value = '';
+      if (pcsEl) pcsEl.value = '';
+      if (palletsEl) palletsEl.value = '';
       const partInput = document.getElementById('fa-part-input');
       if (partInput) partInput.value = '';
       updateAddButtonState();
@@ -1032,6 +1402,19 @@
       faSetSelectedBom(partNo, bomCode);
       return;
     }
+    if (context === 'mpp') {
+      state.mppModal = { ...state.mppModal, partNo, selectedBom: bomCode };
+      delete state.opsCache[faOpsCacheKey(partNo, bomCode)];
+      faRenderBomTabsBar('fa-mpp-modal-bom-tabs', {
+        partNo,
+        bomCodes: state.mppModal.bomCodes || [],
+        selectedBom: bomCode,
+        context: 'mpp',
+      });
+      await faEnsureOpsLoaded(partNo, bomCode, state.rows.find((r) => r.part_no === partNo));
+      faRenderMppModalBody();
+      return;
+    }
     if (context === 'confirm') {
       state.confirmModal = { partNo, selectedBom: bomCode };
       try {
@@ -1178,20 +1561,31 @@
         return;
       }
 
-      const saveBtn = e.target.closest('.fa-save-btn');
+      const mppBtn = e.target.closest('[data-action="open-mpp-config"]');
+      if (mppBtn) {
+        e.stopPropagation();
+        const partNo = mppBtn.getAttribute('data-part-no');
+        const row = state.rows.find((r) => r.part_no === partNo);
+        faOpenMppModal({
+          partNo,
+          bomCode: mppBtn.getAttribute('data-bom-code'),
+          bomCodes: row ? faBomCodesForRow(row) : [],
+        });
+        return;
+      }
+
+      const savePartBtn = e.target.closest('.fa-save-part-btn');
       const deleteBtn = e.target.closest('.fa-delete-btn');
-      if (saveBtn) {
-        const partNo = saveBtn.getAttribute('data-part-no');
-        const input = document.querySelector(`.fa-notes-input[data-part-no="${CSS.escape(partNo)}"]`);
-        if (!partNo || !input) return;
+      if (savePartBtn) {
+        const partNo = savePartBtn.getAttribute('data-part-no');
+        if (!partNo) return;
+        const notes = readFaPartNotes(partNo);
         state.saving.add(partNo);
         render();
         try {
-          const row = await saveNotes(partNo, input.value);
+          const row = await saveOpSettings(partNo, { notes });
           const idx = state.rows.findIndex((r) => r.part_no === partNo);
-          if (idx >= 0 && row) {
-            state.rows[idx] = { ...state.rows[idx], notes: row.notes, updated_at: row.updated_at };
-          }
+          if (idx >= 0 && row) state.rows[idx] = { ...state.rows[idx], ...row, notes };
           setAddStatus(`Saved notes for ${partNo}.`, 'success');
         } catch (err) {
           setAddStatus(err.message, 'error');
@@ -1245,6 +1639,53 @@
       }
     });
 
+    const mppModal = document.getElementById('fa-mpp-modal');
+    mppModal?.querySelector('[data-action="close-mpp-modal"]')?.addEventListener('click', faCloseMppModal);
+    document.getElementById('fa-mpp-modal-close')?.addEventListener('click', faCloseMppModal);
+    mppModal?.addEventListener('click', async (e) => {
+      const bomBtn = e.target.closest('[data-action="select-bom"]');
+      if (bomBtn) {
+        e.stopPropagation();
+        await faHandleBomSelect(bomBtn);
+        return;
+      }
+      const saveBtn = e.target.closest('.fa-save-op-btn');
+      if (!saveBtn) return;
+      const partNo = saveBtn.getAttribute('data-part-no');
+      const bomCode = saveBtn.getAttribute('data-bom-code');
+      const opNo = saveBtn.getAttribute('data-op-no');
+      if (!partNo || !bomCode || !opNo) return;
+      const payload = readFaOpRowSettings(partNo, bomCode, opNo);
+      const stageNo = Number(saveBtn.getAttribute('data-stage-no') || 0);
+      if (stageNo > 0) payload.stage_no = stageNo;
+      const saveKey = faLineSaveKey(partNo, bomCode, opNo);
+      state.saving.add(saveKey);
+      faRenderMppModalBody();
+      try {
+        const row = await saveOpSettings(partNo, payload);
+        const idx = state.rows.findIndex((r) => r.part_no === partNo);
+        if (idx >= 0 && row) {
+          const merged = { ...state.rows[idx], ...row };
+          if (row.op_configs) merged.op_configs = row.op_configs;
+          if (row.saved_op_config && row.saved_bom_code && row.saved_op_no) {
+            merged.op_configs = merged.op_configs || {};
+            merged.op_configs[row.saved_bom_code] = merged.op_configs[row.saved_bom_code] || {};
+            merged.op_configs[row.saved_bom_code][row.saved_op_no] = row.saved_op_config;
+          }
+          state.rows[idx] = merged;
+        }
+        delete state.opsCache[faOpsCacheKey(partNo, bomCode)];
+        await faEnsureOpsLoaded(partNo, bomCode, state.rows[idx]);
+        setAddStatus(`Saved op ${opNo} for ${partNo} · ${bomCode}.`, 'success');
+        render();
+      } catch (err) {
+        setAddStatus(err.message, 'error');
+      } finally {
+        state.saving.delete(saveKey);
+        faRenderMppModalBody();
+      }
+    });
+
     const stepsModal = document.getElementById('fa-steps-modal');
     stepsModal?.querySelector('[data-action="close-steps-modal"]')?.addEventListener('click', faCloseStepsModal);
     document.getElementById('fa-steps-modal-close')?.addEventListener('click', faCloseStepsModal);
@@ -1258,7 +1699,8 @@
 
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
-      if (!document.getElementById('fa-steps-modal')?.hidden) faCloseStepsModal();
+      if (!document.getElementById('fa-mpp-modal')?.hidden) faCloseMppModal();
+      else if (!document.getElementById('fa-steps-modal')?.hidden) faCloseStepsModal();
       else if (!document.getElementById('fa-material-modal')?.hidden) faCloseMaterialModal();
       else if (!document.getElementById('fa-confirm-modal')?.hidden) closeConfirmModal();
     });

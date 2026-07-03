@@ -65,7 +65,7 @@
           <span>Enabled</span>
         </label>
       </div>
-      <p class="email-settings-help">Sends one email per newly posted sales order (deduped). Matches the New Orders screen — first post date within the lookback window.</p>
+      <p class="email-settings-help">Sends one email per newly posted sales order that has <strong>NPS</strong> process sheets (MPS, APS, PPS, etc. are excluded). Deduped by first post date within the lookback window.</p>
       <div class="email-settings-grid email-settings-grid--wide">
         <label class="email-field email-field--full">
           <span>To (comma-separated)</span>
@@ -128,5 +128,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/email_settings.js', v='20260703b') }}"></script>
+<script src="{{ url_for('static', filename='js/email_settings.js', v='20260703d') }}"></script>
 {% endblock %}

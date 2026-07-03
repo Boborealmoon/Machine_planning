@@ -56,17 +56,25 @@
 
   function setStatus(config) {
     if (!statusEl) return;
-    const smtpOk = config?.smtp?.configured;
-    const triggerOk = config?.triggers?.new_sales_order?.configured;
-    if (smtpOk && triggerOk) {
+    const smtp = config?.smtp || {};
+    const trigger = config?.triggers?.new_sales_order || {};
+    const issues = trigger.issues || [];
+    if (trigger.configured) {
       statusEl.textContent = "Ready to send";
       statusEl.className = "email-settings-status email-settings-status--ok";
-    } else if (smtpOk) {
-      statusEl.textContent = "SMTP OK — add recipients";
+      statusEl.title = "";
+    } else if (issues.length) {
+      statusEl.textContent = issues[0];
       statusEl.className = "email-settings-status email-settings-status--warn";
+      statusEl.title = issues.join("\n");
+    } else if (smtp.configured) {
+      statusEl.textContent = "SMTP OK — enable alert and add recipients";
+      statusEl.className = "email-settings-status email-settings-status--warn";
+      statusEl.title = "";
     } else {
       statusEl.textContent = "Not configured";
       statusEl.className = "email-settings-status email-settings-status--warn";
+      statusEl.title = "";
     }
     statusEl.hidden = false;
   }
@@ -163,10 +171,14 @@
 
   document.getElementById("email-settings-test")?.addEventListener("click", async () => {
     try {
-      await api("PUT", "/api/email/config", collectPayload());
-      const result = await api("POST", "/api/email/send-test");
+      const payload = collectPayload();
+      const result = await api("POST", "/api/email/send-test", payload);
       showLog(result);
-      showToast(result.ok ? "Test email sent" : (result.error || "Send failed"), !result.ok);
+      if (result.ok) {
+        showToast("Test email sent");
+      } else {
+        showToast(result.error || result.issues?.join("; ") || "Send failed", true);
+      }
     } catch (err) {
       showToast(err.message || "Test failed", true);
     }
@@ -178,7 +190,8 @@
       const result = await api("POST", "/api/email/notify-new-sales-orders", { dry_run: true });
       showLog(result);
       const count = result.pending_count ?? (result.sent || []).length;
-      showToast(`Preview: ${count} pending sales order(s)`);
+      const hint = result.send_ready ? "" : " (save SMTP + recipients to send)";
+      showToast(`Preview: ${count} pending sales order(s)${hint}`);
     } catch (err) {
       showToast(err.message || "Preview failed", true);
     }
@@ -190,6 +203,10 @@
       await api("PUT", "/api/email/config", collectPayload());
       const result = await api("POST", "/api/email/notify-new-sales-orders");
       showLog(result);
+      if (result.skipped && result.issues?.length) {
+        showToast(result.issues.join("; "), true);
+        return;
+      }
       showToast(`Sent ${result.sent_count || 0} email(s)`, !!result.failed_count);
     } catch (err) {
       showToast(err.message || "Notify failed", true);

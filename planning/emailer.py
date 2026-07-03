@@ -6,7 +6,7 @@ import smtplib
 from email.message import EmailMessage
 from typing import Iterable
 
-from .email_config import EmailConfig, load_email_config, smtp_ready
+from .email_config import EmailConfig, load_email_config, smtp_config_issues, smtp_ready
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +45,11 @@ def send_email(
     cfg: EmailConfig | None = None,
 ) -> dict:
     """Send one email. Returns {ok, message_id?, error?}."""
-    cfg = cfg or load_email_config()
+    cfg = cfg or load_email_config(force_reload=True)
     if not smtp_ready(cfg):
-        return {"ok": False, "error": "SMTP is not configured (set EMAIL_ENABLED, SMTP_HOST, SMTP_FROM)"}
+        issues = smtp_config_issues(cfg)
+        detail = "; ".join(issues) if issues else "Check SMTP settings on the System page"
+        return {"ok": False, "error": f"SMTP is not ready — {detail}", "issues": issues}
 
     recipients = _normalize_addresses(to)
     cc_list = _normalize_addresses(cc or [])
@@ -85,12 +87,15 @@ def send_email(
 
 
 def send_test_email(cfg: EmailConfig | None = None) -> dict:
-    cfg = cfg or load_email_config()
+    cfg = cfg or load_email_config(force_reload=True)
+    issues = smtp_config_issues(cfg)
+    if not smtp_ready(cfg):
+        return {"test": True, "ok": False, "error": f"SMTP is not ready — {'; '.join(issues)}", "issues": issues}
     trigger = cfg.new_sales_order
     recipients = list(trigger.recipients) or list(_normalize_addresses(cfg.smtp.from_address))
     sample_ps = [
-        {"process_sheet_no": "APS-TEST-001", "part_no": "PART-123", "line_item_no": "1", "qty": 10, "bom_code": "BOM-A", "po_due_date": "2026-07-15", "description": "Sample part"},
-        {"process_sheet_no": "APS-TEST-002", "part_no": "PART-456", "line_item_no": "2", "qty": 5, "bom_code": "BOM-B", "po_due_date": "2026-07-20", "description": "Another part"},
+        {"process_sheet_no": "NPS26-TEST-001", "part_no": "PART-123", "line_item_no": "1", "qty": 10, "bom_code": "BOM-A", "po_due_date": "2026-07-15", "description": "Sample NPS part"},
+        {"process_sheet_no": "NPS26-TEST-002", "part_no": "PART-456", "line_item_no": "2", "qty": 5, "bom_code": "BOM-B", "po_due_date": "2026-07-20", "description": "Another NPS part"},
     ]
     from .new_so_email import _render_process_sheet_lines
 

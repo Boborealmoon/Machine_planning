@@ -243,6 +243,8 @@ def _apply_catalog_op_qty_cascade(item, manual_qty_by_ps):
         refreshed["remaining_qty"] = schedulable_remaining
         refreshed["needs_manual_produced"] = bool(step.get("needs_manual_produced"))
         refreshed["manual_produced_qty"] = float(step.get("manual_produced_qty") or 0)
+        refreshed["erp_finished_qty"] = max(float(refreshed.get("erp_finished_qty") or 0), finished)
+        _finalize_catalog_op_execution_status(refreshed)
         refreshed_ops.append(refreshed)
     item["all_ops"] = refreshed_ops
     if item.get("is_temp_ps"):
@@ -278,6 +280,23 @@ def _is_manual_bom_step(op):
     if int(row.get("source_stage_no") or 0) > 0:
         return False
     return compact_text(row.get("source_kind")).upper() == "MANUAL" and bool(compact_text(row.get("op_type")))
+
+
+def _finalize_catalog_op_execution_status(op_item: dict) -> None:
+    """Normalize per-op ERP execution status after qty merge / cascade."""
+    status = compact_text(op_item.get("execution_status") or "")
+    finished = max(0.0, float(op_item.get("erp_finished_qty") or 0))
+    remaining = max(0.0, float(op_item.get("remaining_qty") or 0))
+    required = max(
+        0.0,
+        float(op_item.get("required_qty") or op_item.get("wo_qty_required") or 0),
+    )
+    if not status:
+        if finished > 0 and remaining <= 0:
+            status = "C"
+        elif required > 0 and finished >= required - 1e-6:
+            status = "C"
+    op_item["execution_status"] = status
 
 
 def _is_machining_plannable_op(op_type, machine_category, source_kind=None, preferred_machine=None):
@@ -481,6 +500,7 @@ def _catalog_op_card_from_planner_op(op, entry):
         "source_op_seq_id": int(op.get("source_op_seq_id") or 0),
         "source_op_no": op.get("source_op_no") or "",
         "source_kind": compact_text(op.get("source_kind") or ""),
+        "source_stage_no": int(op.get("source_stage_no") or 0),
         "is_manual_bom": _is_manual_bom_step(op),
         "job_no": op.get("job_no") or ps_id,
         "planning_status": "UNSCHEDULED",
@@ -565,9 +585,15 @@ def attach_planner_bom_ops_to_catalog_entry(
 
         master_cache = MasterTimeCache.load(con)
 
-    from planning.erp_wo_merge import erp_accepted_qty_for_op, voucher_erp_qty_maps_for_partial
+    from planning.erp_wo_merge import (
+        erp_accepted_qty_for_op,
+        erp_exec_status_for_op,
+        voucher_erp_qty_maps_for_partial,
+    )
 
-    erp_by_op, erp_by_stage = voucher_erp_qty_maps_for_partial(con, source_ps_id, pp_partial_no)
+    erp_by_op, erp_by_stage, erp_status_by_op, erp_status_by_stage = voucher_erp_qty_maps_for_partial(
+        con, source_ps_id, pp_partial_no
+    )
 
     all_ops = []
     for row in step_rows:
@@ -581,6 +607,12 @@ def attach_planner_bom_ops_to_catalog_entry(
             source_stage_no=int(row.get("source_stage_no") or 0),
         )
         remaining_qty = max(0.0, launch_qty - planned_qty - erp_finished_qty)
+        execution_status = erp_exec_status_for_op(
+            erp_status_by_op,
+            erp_status_by_stage,
+            op_no=row.get("op_no"),
+            source_stage_no=int(row.get("source_stage_no") or 0),
+        )
         queued_machines = list(queued_machines_by_op.get(op_key, []) or [])
         cycle_time = float(row["cycle_time"] or 0)
         setup_time = float(row["setup_time"] or 0)
@@ -623,9 +655,10 @@ def attach_planner_bom_ops_to_catalog_entry(
                 "queued_machines": queued_machines,
                 "is_allocated": planned_qty > 0,
                 "compatible_machine_group": row["machine_category"] or "",
-                "execution_status": "",
+                "execution_status": execution_status,
             }
         )
+        _finalize_catalog_op_execution_status(all_ops[-1])
 
     from planning.erp_wo_merge import mfg_wo_stages_batch, merge_finishing_steps_into_flow_steps
 
@@ -1079,6 +1112,7 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
             "compatible_machine_group": row["machine_category"] or "",
             "execution_status": compact_text(row.get("op_execution_status") or ""),
         }
+        _finalize_catalog_op_execution_status(op_item)
         item["all_ops"].append(op_item)
         if is_temp or _is_manual_bom_step(op_item) or (
             remaining_qty > 0
@@ -1201,6 +1235,7 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
                     "erp_finished_qty": float(op.get("erp_finished_qty") or 0),
                     "source_op_seq_id": int(op["source_op_seq_id"] or 0),
                     "source_op_no": op["source_op_no"] or "",
+                    "source_stage_no": int(op.get("source_stage_no") or 0),
                     "job_no": op["job_no"] or "",
                     "tooling_ready": bool(
                         tooling_by_ps_op.get(

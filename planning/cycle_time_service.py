@@ -90,19 +90,12 @@ def resolve_schedule_times(
     """Master-first cycle/setup for new scheduler jobs (catalog drag-drop path)."""
     fallback_cycle = max(0.0, float(cycle_minutes_per_qty or 0))
     fallback_setup = max(0.0, float(setup_minutes or 0))
-    # Catalog drag-drop already sends BOM/cycle-times; avoid master REST on every queue POST.
-    if fallback_cycle > 0:
-        return {
-            "cycle_minutes_per_qty": fallback_cycle,
-            "setup_minutes": fallback_setup,
-            "source": "client",
-        }
     source_ps_id = compact_text(source_ps_id)
     if not source_ps_id:
         return {
             "cycle_minutes_per_qty": fallback_cycle,
             "setup_minutes": fallback_setup,
-            "source": "client",
+            "source": "bom_step" if fallback_cycle > 0 else "none",
         }
 
     from .process_sheets import ensure_planner_process_sheet
@@ -112,7 +105,7 @@ def resolve_schedule_times(
         return {
             "cycle_minutes_per_qty": fallback_cycle,
             "setup_minutes": fallback_setup,
-            "source": "client",
+            "source": "bom_step" if fallback_cycle > 0 else "none",
         }
 
     bom_id = int(ps.get("selected_bom_id") or 0)
@@ -152,7 +145,7 @@ def resolve_schedule_times(
         return {
             "cycle_minutes_per_qty": fallback_cycle,
             "setup_minutes": fallback_setup,
-            "source": "client",
+            "source": "bom_step" if fallback_cycle > 0 else "none",
         }
 
     master_cache = MasterTimeCache.load(con)
@@ -160,7 +153,11 @@ def resolve_schedule_times(
         con,
         part_no=part_no,
         bom_code=bom_code,
-        step=step or {},
+        step=step or {
+            "op_no": source_op_no,
+            "cycle_time": fallback_cycle,
+            "setup_time": fallback_setup,
+        },
         extra_part_nos=[compact_text(ps.get("inventory_code") or "")],
         master_cache=master_cache,
     )
@@ -182,6 +179,7 @@ def resolve_schedule_times(
             bom_code=bom_code,
             op_no=op_no,
             op_type=op_type,
+            master_cache=master_cache,
         )
         if master:
             ideal = parse_number(master.get("ideal_cycle_time"), 0)
@@ -199,7 +197,7 @@ def resolve_schedule_times(
     return {
         "cycle_minutes_per_qty": fallback_cycle,
         "setup_minutes": fallback_setup,
-        "source": "client",
+        "source": "bom_step" if fallback_cycle > 0 else "none",
     }
 
 
