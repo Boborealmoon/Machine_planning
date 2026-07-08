@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from planning.utils import compact_text
+from planning.utils import compact_text, op_production_complete
 
 # Post-machining stages live in mfg_wo_status but are omitted from pp_voucher BOM rows.
 FINISHING_STAGE_DESCS = frozenset({
@@ -14,6 +14,8 @@ FINISHING_STAGE_DESCS = frozenset({
     "Engraving & Packing",
     "Packing & Engraving",
 })
+
+MATERIAL_ISSUE_ASSEMBLY_STAGE_DESC = "Material Issue & Assembly"
 
 _FINISHING_STAGE_PATTERNS = (
     re.compile(r"^deburring$", re.IGNORECASE),
@@ -43,6 +45,21 @@ def finishing_pack_stage_sql_match(column: str) -> str:
         OR {column} ILIKE 'Engraving%%Packing%%'
         OR {column} ILIKE 'Packing%%Engraving%%'
     )"""
+
+
+_ASSEMBLY_STAGE_WORD = re.compile(r"(?:^|[^a-z])assembly(?:[^a-z]|$)", re.IGNORECASE)
+
+
+def material_issue_assembly_stage_sql_match(column: str) -> str:
+    """SQL predicate: WO stage description contains the word assembly."""
+    return f"({column} ~* '(^|[^a-z])assembly([^a-z]|$)')"
+
+
+def is_material_issue_assembly_stage_desc(stage_desc: str) -> bool:
+    text = compact_text(stage_desc)
+    if not text:
+        return False
+    return bool(_ASSEMBLY_STAGE_WORD.search(text))
 
 
 def is_finishing_stage_desc(stage_desc: str) -> bool:
@@ -539,7 +556,30 @@ def apply_wo_current_stage(entry: dict, wo_stages) -> None:
 def wo_stages_all_complete(wo_stages) -> bool:
     if not wo_stages:
         return False
-    return all(_execution_status_completed(row.get("execution_status")) for row in wo_stages)
+    tracked = []
+    for row in wo_stages:
+        required = float(row.get("wo_qty_required") or 0)
+        finished = float(row.get("total_acc_qty_produced") or row.get("wo_qty_produced") or 0)
+        status = compact_text(row.get("execution_status") or "")
+        if required > 0.0001 or finished > 0.0001 or status:
+            tracked.append(row)
+    if not tracked:
+        return False
+    return all(
+        op_production_complete(
+            {
+                "required_qty": float(row.get("wo_qty_required") or 0),
+                "finished_qty": float(row.get("total_acc_qty_produced") or row.get("wo_qty_produced") or 0),
+                "remaining_qty": max(
+                    0.0,
+                    float(row.get("wo_qty_required") or 0)
+                    - float(row.get("total_acc_qty_produced") or row.get("wo_qty_produced") or 0),
+                ),
+                "execution_status": row.get("execution_status") or "",
+            }
+        )
+        for row in tracked
+    )
 
 
 def apply_wo_stage_metadata(entry: dict, wo_stages) -> None:

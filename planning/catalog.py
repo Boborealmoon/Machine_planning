@@ -121,6 +121,7 @@ def _sanitize_temp_ps_catalog_item(item):
     item["execution_status"] = None
     item["current_stage_status"] = ""
     item["current_stage_desc"] = ""
+    item["current_stage_no"] = 0
     item["status"] = compact_text(item.get("planner_status") or item.get("status") or "ACTIVE")
     for op in item.get("ops") or []:
         op["pp_partial_no"] = item["pp_partial_no"]
@@ -284,6 +285,8 @@ def _is_manual_bom_step(op):
 
 def _finalize_catalog_op_execution_status(op_item: dict) -> None:
     """Normalize per-op ERP execution status after qty merge / cascade."""
+    from planning.utils import sanitize_erp_execution_status
+
     status = compact_text(op_item.get("execution_status") or "")
     finished = max(0.0, float(op_item.get("erp_finished_qty") or 0))
     remaining = max(0.0, float(op_item.get("remaining_qty") or 0))
@@ -291,12 +294,12 @@ def _finalize_catalog_op_execution_status(op_item: dict) -> None:
         0.0,
         float(op_item.get("required_qty") or op_item.get("wo_qty_required") or 0),
     )
-    if not status:
-        if finished > 0 and remaining <= 0:
-            status = "C"
-        elif required > 0 and finished >= required - 1e-6:
-            status = "C"
-    op_item["execution_status"] = status
+    op_item["execution_status"] = sanitize_erp_execution_status(
+        status,
+        required=required,
+        finished=finished,
+        remaining=remaining,
+    )
 
 
 def _is_machining_plannable_op(op_type, machine_category, source_kind=None, preferred_machine=None):

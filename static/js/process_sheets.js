@@ -905,14 +905,30 @@
   }
 
   function isOpProductionComplete(op, item) {
-    if (item && opIsBeforeCurrentErpStage(op, item)) return true;
     if (!opHasWorkOrderEvidence(op)) return true;
     const finished = opErpProducedQty(op);
     const required = numberValue(op?.wo_qty_required ?? op?.required_qty ?? 0);
     if (required > SHIPPED_QTY_TOLERANCE && finished >= required - SHIPPED_QTY_TOLERANCE) return true;
     if (opRemainingQty(op) > SHIPPED_QTY_TOLERANCE) return false;
     if (finished > SHIPPED_QTY_TOLERANCE) return true;
-    return isExecutionCompletedStatus(opExecutionStatus(op));
+    if (isExecutionCompletedStatus(opExecutionStatus(op))) {
+      if (required > SHIPPED_QTY_TOLERANCE) return finished >= required - SHIPPED_QTY_TOLERANCE;
+      return finished > SHIPPED_QTY_TOLERANCE;
+    }
+    return false;
+  }
+
+  function opDisplayExecutionStatus(op, item) {
+    const status = opExecutionStatus(op);
+    const norm = normalizeStatus(status);
+    if (!norm) return '';
+    if (isExecutionCompletedStatus(norm) && !isOpProductionComplete(op, item)) return '';
+    return status;
+  }
+
+  function isOpRouteSatisfied(op, item) {
+    if (item && opIsBeforeCurrentErpStage(op, item)) return true;
+    return isOpProductionComplete(op, item);
   }
 
   function rollupExecutionStatus(item) {
@@ -979,11 +995,12 @@
   function stageFromOp(op, options = {}) {
     const desc = stageDescFromOp(op);
     if (!desc) return null;
+    const item = options.item || null;
     return {
       stageNo: Number(op?.stage_no || op?.source_stage_no || 0) || null,
       opNo: compactText(op?.op_no || op?.source_op_no || op?.operation_label),
       desc,
-      status: opExecutionStatus(op),
+      status: item ? opDisplayExecutionStatus(op, item) : opExecutionStatus(op),
       allComplete: Boolean(options.allComplete),
     };
   }
@@ -1014,7 +1031,7 @@
         numberValue(b?.finished_qty ?? b?.wo_qty_produced)
         - numberValue(a?.finished_qty ?? a?.wo_qty_produced)
       ))[0];
-      const resolved = stageFromOp(active);
+      const resolved = stageFromOp(active, { item });
       if (resolved) {
         resolved.source = 'derived';
         return resolved;
@@ -1023,19 +1040,19 @@
 
     const openOp = trackedOps.find(op => !isOpProductionComplete(op, item));
     if (openOp) {
-      const resolved = stageFromOp(openOp);
+      const resolved = stageFromOp(openOp, { item });
       if (resolved) {
         resolved.source = 'derived';
         return resolved;
       }
     }
 
-    const pendingOps = trackedOps.filter(op => !isExecutionCompletedStatus(opExecutionStatus(op)));
+    const pendingOps = trackedOps.filter(op => !isOpProductionComplete(op, item));
     if (pendingOps.length) {
       const nextOp = pendingOps.sort((a, b) => (
         executionStatusRank(opExecutionStatus(a)) - executionStatusRank(opExecutionStatus(b))
       ))[0];
-      const resolved = stageFromOp(nextOp);
+      const resolved = stageFromOp(nextOp, { item });
       if (resolved) {
         resolved.source = 'derived';
         return resolved;
@@ -1044,7 +1061,7 @@
 
     if (trackedOps.every(op => isOpProductionComplete(op, item))) {
       const lastOp = trackedOps[trackedOps.length - 1];
-      const resolved = stageFromOp(lastOp, { allComplete: true });
+      const resolved = stageFromOp(lastOp, { item, allComplete: true });
       if (resolved) {
         resolved.source = 'derived';
         resolved.allComplete = true;
@@ -1081,7 +1098,7 @@
   function trackedExecutionStatuses(item) {
     const ops = Array.isArray(item?.ops) ? item.ops : [];
     const opStatuses = ops
-      .map(op => opExecutionStatus(op))
+      .map(op => opDisplayExecutionStatus(op, item))
       .filter(status => normalizeStatus(status));
     if (opStatuses.length) return opStatuses;
     const itemStatus = item?.execution_status || item?.erp_execution_status || '';
@@ -1097,8 +1114,8 @@
     return 'is-unknown';
   }
 
-  function renderOpStatusCell(op) {
-    const status = opExecutionStatus(op);
+  function renderOpStatusCell(op, item) {
+    const status = opDisplayExecutionStatus(op, item);
     if (!normalizeStatus(status)) return '<span class="ps-row-muted">-</span>';
     return `<span class="ps-op-status ${opStatusClass(status)}">${escapeHtml(displayExecutionStatus(status))}</span>`;
   }
@@ -1131,7 +1148,7 @@
     const finished = numberValue(item?.finished_qty);
     const required = numberValue(firstQuantity(item?.wo_req_qty, item?.display_qty, item?.partial_qty, item?.total_qty, 0));
     const executionDone = boolValue(item?.execution_completed)
-      || trackedExecutionStatuses(item).every(status => isExecutionCompletedStatus(status));
+      || (trackedOps.length > 0 && trackedOps.every(op => isOpProductionComplete(op, item)));
     const productionDone = (required > 0 && finished >= (required - SHIPPED_QTY_TOLERANCE))
       || (executionDone && remaining <= SHIPPED_QTY_TOLERANCE);
     if (productionDone) return true;
@@ -1540,6 +1557,55 @@
     });
   }
 
+  function bulkLookupPricingKey(item) {
+    const so = String(item?.source_voucher_no || '').trim();
+    const line = String(item?.source_line_item_no || '').trim().replace(/\.0+$/, '');
+    return so && line ? `${so}|${line}` : '';
+  }
+
+  async function enrichBulkLookupPricing(items) {
+    const keys = [];
+    const seen = new Set();
+    (Array.isArray(items) ? items : []).forEach(item => {
+      const key = bulkLookupPricingKey(item);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      const [salesOrderNo, lineItemNo] = key.split('|');
+      keys.push({ sales_order_no: salesOrderNo, line_item_no: lineItemNo });
+    });
+    if (!keys.length) return items;
+    const data = await postJson('/api/process-sheets/so-line-pricing', { keys }).catch(() => null);
+    const pricing = data?.pricing || {};
+    if (!Object.keys(pricing).length) return items;
+    return items.map(item => {
+      const key = bulkLookupPricingKey(item);
+      const row = key ? pricing[key] : null;
+      if (!row) return item;
+      return {
+        ...item,
+        unit_cost: row.unit_cost,
+        exch_rate: row.exch_rate,
+        unit_cost_home: row.unit_cost_home,
+      };
+    });
+  }
+
+  function bulkLookupPricingExportFields(item) {
+    const qty = firstQuantity(item.display_qty, item.partial_qty, item.wo_req_qty, item.total_qty, 0);
+    const unitCost = numberValue(item.unit_cost);
+    const exchRate = numberValue(item.exch_rate);
+    if (!unitCost) {
+      return { unit_cost: '', exchange_rate: '', final_amount: '' };
+    }
+    const rate = exchRate > 0 ? exchRate : 1;
+    const finalAmount = qty > 0 ? Math.round(unitCost * qty * rate * 100) / 100 : '';
+    return {
+      unit_cost: unitCost,
+      exchange_rate: exchRate > 0 ? exchRate : '',
+      final_amount: finalAmount,
+    };
+  }
+
   async function fetchBulkLookupResults(raw) {
     const terms = parseBulkLookupTerms(raw);
     const parsedTerms = terms.map(parseBulkLookupPsTerm).filter(Boolean);
@@ -1566,8 +1632,9 @@
         .map(item => enrichBulkLookupPlannerFields(item, plannerByKey)),
       parsedTerms,
     );
+    const pricedItems = await enrichBulkLookupPricing(items);
     const missedTerms = unmatchedBulkLookupTerms(parsedTerms, items);
-    return { terms, parsedTerms, items, missedTerms };
+    return { terms, parsedTerms, items: pricedItems, missedTerms };
   }
 
   const PS_EXPORT_COLUMNS = [
@@ -1577,6 +1644,9 @@
     { key: 'description', header: 'Description', width: 28 },
     { key: 'material', header: 'Material', width: 18 },
     { key: 'qty', header: 'Qty', width: 10 },
+    { key: 'unit_cost', header: 'Unit cost', width: 12 },
+    { key: 'exchange_rate', header: 'Exchange rate', width: 12 },
+    { key: 'final_amount', header: 'Final amount', width: 14 },
     { key: 'po_due', header: 'PO due', width: 12 },
     { key: 'coway_edd', header: 'Coway EDD', width: 12 },
     { key: 'coway_week', header: 'Coway week', width: 12 },
@@ -1603,6 +1673,7 @@
     const stageStatus = stage?.status ? displayExecutionStatus(stage.status) : '';
     const machines = queuedMachines(item);
     const schedule = bulkLookupScheduleFields(item);
+    const pricing = bulkLookupPricingExportFields(item);
     return {
       process_sheet: tempPsDisplayId(item) || item.display_ps_id || item.ps_id || '',
       partial: partialLabel(item),
@@ -1610,6 +1681,9 @@
       description: item.part_desc || '',
       material: materialInventoryLabel(item),
       qty: firstQuantity(item.display_qty, item.partial_qty, item.wo_req_qty, item.total_qty, 0),
+      unit_cost: pricing.unit_cost,
+      exchange_rate: pricing.exchange_rate,
+      final_amount: pricing.final_amount,
       po_due: fmtDate(item.due_date) === '-' ? '' : fmtDate(item.due_date),
       coway_edd: fmtDate(item.coway_proposed_edd) === '-' ? '' : fmtDate(item.coway_proposed_edd),
       coway_week: isoCalendarWeek(item.coway_proposed_edd),
@@ -1889,6 +1963,7 @@
       material_status: item.material_status || { severity: 'none', label: '' },
       warnings: item.warnings || [],
       source_voucher_no: item.source_voucher_no || '',
+      source_line_item_no: item.source_line_item_no || '',
       qty_shipped: item.qty_shipped || 0,
       so_det_qty: item.so_det_qty,
       current_stage_no: item.current_stage_no,
@@ -2369,14 +2444,14 @@
 
   function renderOpStatusStrip(ops, item) {
     const visibleOps = (Array.isArray(ops) ? ops : [])
-      .filter(op => op && normalizeStatus(opExecutionStatus(op)));
+      .filter(op => op && normalizeStatus(opDisplayExecutionStatus(op, item)));
     if (!visibleOps.length) return '';
 
     const maxVisible = 6;
     const chips = visibleOps.slice(0, maxVisible).map(op => {
       const opNo = op.op_no || op.source_op_no || op.stage_no || op.operation_label || '-';
       const opName = op.op_type || op.operation_name || op.stage_desc || '';
-      const status = opExecutionStatus(op);
+      const status = opDisplayExecutionStatus(op, item);
       const label = displayExecutionStatus(status);
       return `
         <span class="ps-op-status ${opStatusClass(status)}" title="${escapeHtml(opName)}">
@@ -2667,7 +2742,7 @@
                   || compactText(op.preferred_machine)
                   || '-'
                 )}</td>
-                <td>${renderOpStatusCell(op)}</td>
+                <td>${renderOpStatusCell(op, summary)}</td>
                 <td>${escapeHtml(fmtQty(op.wo_qty_required))}</td>
                 <td>${escapeHtml(fmtQty(op.planned_qty))}</td>
                 <td>${renderManualProducedCell(op, psId)}</td>
@@ -2818,6 +2893,7 @@
         item.part_no,
         item.part_desc,
         item.selected_bom_code,
+        item.current_stage_desc,
         item.remarks,
       ].join(' ').toLowerCase();
       return hay.includes(needle);
@@ -2863,7 +2939,7 @@
               <th>Part</th>
               <th>PO due</th>
               <th>Route</th>
-              <th>Planner</th>
+              <th>Stage</th>
               <th>Created</th>
               <th>Actions</th>
             </tr>
@@ -2876,14 +2952,43 @@
     `;
   }
 
+  function tempPlannerQueueLabel(item) {
+    if (item.is_resolved) return 'Resolved';
+    if (item.is_queued) {
+      return `On planner${item.queued_machines?.length ? `: ${item.queued_machines.join(', ')}` : ''}`;
+    }
+    return 'Needs scheduling';
+  }
+
+  function renderTempStageDropdown(item) {
+    const psId = item.planner_ps_id || '';
+    const stages = Array.isArray(item.bom_stages) ? item.bom_stages : [];
+    const currentId = Number(item.current_stage_seq_no || item.current_stage_op_seq_id || 0);
+    const disabled = item.is_resolved ? ' disabled' : '';
+    const options = [
+      '<option value="">— Not set —</option>',
+      ...stages.map(stage => {
+        const stageId = Number(stage.stage_no || stage.op_seq_id || 0);
+        const selected = stageId > 0 && stageId === currentId ? ' selected' : '';
+        const label = stage.label || stage.stage_desc || `Step ${stage.seq_no || ''}`;
+        return `<option value="${escapeHtml(String(stageId))}"${selected}>${escapeHtml(label)}</option>`;
+      }),
+    ];
+    if (!stages.length) {
+      options.push('<option value="" disabled>No source PS stages</option>');
+    }
+    return `
+      <select class="ps-temp-stage-select" data-ps-id="${escapeHtml(psId)}"${disabled}
+        title="Current stage from the source process sheet (${escapeHtml(item.source_label || item.source_ps_id || '')})">
+        ${options.join('')}
+      </select>
+    `;
+  }
+
   function renderTempTrackerRow(item) {
     const psId = item.planner_ps_id || '';
     const queueClass = item.is_resolved ? 'is-resolved' : (item.is_queued ? 'is-queued' : 'is-needs');
-    const queueLabel = item.is_resolved
-      ? 'Resolved'
-      : item.is_queued
-        ? `On planner${item.queued_machines?.length ? `: ${item.queued_machines.join(', ')}` : ''}`
-        : 'Needs scheduling';
+    const queueLabel = tempPlannerQueueLabel(item);
     const created = item.created_at
       ? new Date(item.created_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
       : '—';
@@ -2914,9 +3019,12 @@
           <span>${escapeHtml(dueDate)}</span>
         </td>
         <td>${escapeHtml(item.selected_bom_code || item.erp_bom_code || '—')}</td>
-        <td class="ps-temp-planner-cell">
-          <span class="ps-planning-flag ${queueClass}" aria-hidden="true"></span>
-          <span class="ps-temp-planner-label">${escapeHtml(queueLabel)}</span>
+        <td class="ps-temp-stage-cell">
+          ${renderTempStageDropdown(item)}
+          <div class="ps-temp-tracker-sub ps-temp-planner-label">
+            <span class="ps-planning-flag ${queueClass}" aria-hidden="true"></span>
+            ${escapeHtml(queueLabel)}
+          </div>
         </td>
         <td>${escapeHtml(created)}</td>
         <td class="ps-temp-tracker-actions">
@@ -3063,6 +3171,45 @@
     window.alert(lastError?.message || 'Could not delete temp process sheet');
   }
 
+  async function saveTempPsStage(psId, opSeqId) {
+    const canonical = String(psId || '').trim();
+    if (!canonical) return;
+    const item = tempState.items.find(row => row.planner_ps_id === canonical);
+    const previousSeq = item?.current_stage_seq_no ?? null;
+    const previousOp = item?.current_stage_op_seq_id ?? null;
+    const payload = {
+      current_stage_op_seq_id: opSeqId ? Number(opSeqId) : null,
+    };
+    const urls = [
+      `/api/temp-process-sheets/${encodeURIComponent(canonical)}`,
+      `/api/trial/temp-process-sheets/${encodeURIComponent(canonical)}`,
+    ];
+    let lastError = null;
+    for (const url of urls) {
+      try {
+        const data = await patchJson(url, payload);
+        if (item) {
+          item.current_stage_op_seq_id = data.current_stage_op_seq_id ?? null;
+          item.current_stage_seq_no = data.current_stage_seq_no ?? null;
+          item.current_stage_desc = data.current_stage_desc || '';
+          item.current_stage_status = data.current_stage_status || '';
+          if (Array.isArray(data.bom_stages) && data.bom_stages.length) {
+            item.bom_stages = data.bom_stages;
+          }
+        }
+        return;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (item) {
+      item.current_stage_op_seq_id = previousOp;
+      item.current_stage_seq_no = previousSeq;
+    }
+    renderTempTracker();
+    window.alert(lastError?.message || 'Could not update temp PS stage');
+  }
+
   async function loadTempTracker() {
     if (!els.tempTracker) return;
     tempState.loading = true;
@@ -3117,6 +3264,13 @@
     els.tempRefreshBtn?.addEventListener('click', () => loadTempTracker());
     els.tempCreateBtn?.addEventListener('click', () => {
       if (typeof openTempProcessSheetModal === 'function') openTempProcessSheetModal();
+    });
+    els.tempTracker?.addEventListener('change', event => {
+      const select = event.target.closest('.ps-temp-stage-select');
+      if (!select) return;
+      const psId = select.dataset.psId || '';
+      const value = String(select.value || '').trim();
+      saveTempPsStage(psId, value);
     });
     els.tempTracker?.addEventListener('click', event => {
       const resolveBtn = event.target.closest('[data-action="resolve-temp-ps"]');

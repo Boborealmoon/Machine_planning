@@ -627,6 +627,10 @@ def _trial_machine_refresh_payload(con, machine_ids, *, lite=True):
             item.pop(drop_key, None)
         blocks.append(item)
 
+    from .mpp_planner_queue_service import tag_mpp_planner_mirror_blocks
+
+    tag_mpp_planner_mirror_blocks(con, blocks)
+
     if not lite:
         from .erp_actuals import effective_actual_totals_for_block, erp_reconciliation_for_block
 
@@ -752,7 +756,24 @@ def _api_trial_schedule_db():
     )
 
     with planner_db() as con:
-        if not is_machine_scoped:
+        if shell_only:
+            machines = fetch_scheduler_machines(con)
+            return jsonify({
+                "machines": [dict(row) for row in machines],
+                "blocks": [],
+                "segments": [],
+                "actuals": [],
+                "capacities": [],
+                "profiles": [],
+                "public_holidays": [],
+                "block_groups": [],
+                "catalog": [],
+                "planned": [],
+                "planning_cards": [],
+                "calendar_windows": [],
+            })
+
+        if not is_machine_scoped and not board_lite:
             from .mpp_planner_queue_service import ensure_mpp_planner_scheduler_lanes
 
             ensure_mpp_planner_scheduler_lanes(con)
@@ -817,21 +838,6 @@ def _api_trial_schedule_db():
                 )
 
         machines = fetch_scheduler_machines(con)
-        if shell_only:
-            return jsonify({
-                "machines": [dict(row) for row in machines],
-                "blocks": [],
-                "segments": [],
-                "actuals": [],
-                "capacities": [],
-                "profiles": [],
-                "public_holidays": [],
-                "block_groups": [],
-                "catalog": [],
-                "planned": [],
-                "planning_cards": [],
-                "calendar_windows": [],
-            })
 
         machine_by_id = {int(row["machine_id"]): dict(row) for row in machines}
         scheduler_machine_ids = [int(row["machine_id"]) for row in machines]
@@ -1021,6 +1027,10 @@ def _api_trial_schedule_db():
                 ):
                     item.pop(drop_key, None)
             blocks.append(item)
+
+        from .mpp_planner_queue_service import tag_mpp_planner_mirror_blocks
+
+        tag_mpp_planner_mirror_blocks(con, blocks)
 
         attach_block_ps_identity(con, blocks)
 
@@ -1444,6 +1454,28 @@ def _delivery_schedule_so_line_qty(item):
     return None
 
 
+def _delivery_schedule_pp_partial_qty(item):
+    """Qty for this PP partial. Temp PS reports its stipulated (reject) qty."""
+    if item.get("is_temp_ps"):
+        candidates = (item.get("pp_partial_qty"), item.get("temp_qty"))
+    else:
+        candidates = (
+            item.get("pp_partial_qty"),
+            item.get("partial_qty"),
+            item.get("display_qty"),
+        )
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            qty = float(value)
+        except (TypeError, ValueError):
+            continue
+        if qty > 0:
+            return qty
+    return None
+
+
 def _delivery_schedule_ops_snapshot(ops):
     out = []
     for op in ops or []:
@@ -1490,6 +1522,8 @@ def _delivery_schedule_row_from_board(item):
         "part_no": compact_text(item.get("part_no") or item.get("part_name") or item.get("inventory_code")),
         "part_desc": compact_text(item.get("part_desc") or item.get("description")),
         "so_qty": _delivery_schedule_so_line_qty(item),
+        "pp_partial_qty": _delivery_schedule_pp_partial_qty(item),
+        "is_temp_ps": bool(item.get("is_temp_ps")),
         "due_date": compact_text(item.get("due_date")),
         "coway_edd": compact_text(item.get("coway_proposed_edd")),
         "remarks": compact_text(item.get("remarks")),

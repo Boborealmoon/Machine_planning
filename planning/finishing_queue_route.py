@@ -20,6 +20,7 @@ from .finishing_queue_service import (
     upsert_overlay,
 )
 from .helpers import planner_db
+from .material_issue_queue_service import fetch_material_issue_queue
 from .utils import compact_text
 
 logger = logging.getLogger(__name__)
@@ -63,8 +64,8 @@ def finishing_queue_asset_version() -> str:
 finishing_queue_bp = Blueprint("finishing_queue", __name__)
 
 _CACHE_TTL_SEC = 180
-_CACHE_VERSION = 13
-_cache: tuple[float, int, list[dict[str, Any]], str, list[dict[str, Any]]] | None = None
+_CACHE_VERSION = 16
+_cache: tuple[float, int, list[dict[str, Any]], str, list[dict[str, Any]], list[dict[str, Any]]] | None = None
 _RECENTLY_PACKED_CACHE_TTL_SEC = 300
 _recently_packed_cache: tuple[float, int, list[dict[str, Any]]] | None = None
 
@@ -144,7 +145,7 @@ def invalidate_finishing_queue_cache() -> None:
     _recently_packed_cache = None
 
 
-def _fetch_finishing_queue(*, refresh: bool = False) -> tuple[list[dict[str, Any]], str, list[dict[str, Any]]]:
+def _fetch_finishing_queue(*, refresh: bool = False) -> tuple[list[dict[str, Any]], str, list[dict[str, Any]], list[dict[str, Any]]]:
     global _cache
     now = time.time()
     if (
@@ -153,23 +154,25 @@ def _fetch_finishing_queue(*, refresh: bool = False) -> tuple[list[dict[str, Any
         and _cache[1] == _CACHE_VERSION
         and now - _cache[0] < _CACHE_TTL_SEC
     ):
-        return _cache[2], _cache[3], _cache[4]
+        return _cache[2], _cache[3], _cache[4], _cache[5]
 
     t0 = time.perf_counter()
     with planner_db() as con:
         bundle = fetch_finishing_queue_bundle(con)
         items = bundle["items"]
         inspectors = bundle["inspectors"]
+        material_issue_items = fetch_material_issue_queue(con)
     source = "staging"
     logger.info(
-        "finishing queue loaded (%s): %d rows in %dms",
+        "finishing queue loaded (%s): %d rows, %d material-issue rows in %dms",
         source,
         len(items),
+        len(material_issue_items),
         int((time.perf_counter() - t0) * 1000),
     )
 
-    _cache = (now, _CACHE_VERSION, items, source, inspectors)
-    return items, source, inspectors
+    _cache = (now, _CACHE_VERSION, items, source, inspectors, material_issue_items)
+    return items, source, inspectors, material_issue_items
 
 
 def _build_queue_payload(
@@ -177,8 +180,10 @@ def _build_queue_payload(
     items: list[dict[str, Any]],
     source: str,
     inspectors: list[dict[str, Any]],
+    material_issue_items: list[dict[str, Any]] | None = None,
     recently_packed: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    material_issue_items = material_issue_items or []
     recently_packed = recently_packed or []
     packed_this_week = 0
     packed_last_week = 0
@@ -209,6 +214,14 @@ def _build_queue_payload(
     return {
         "ok": True,
         "items": items,
+        "material_issue_items": material_issue_items,
+        "material_issue_count": len(material_issue_items),
+        "material_issue_hint": (
+            "No open jobs with an assembly WO stage (SO qty not fully shipped). "
+            "Run Sync ERP then Refresh."
+            if not material_issue_items
+            else ""
+        ),
         "recently_packed": recently_packed,
         "inspectors": inspectors,
         "count": len(items),
@@ -264,8 +277,13 @@ def finishing_queue_page():
     fq_bootstrap = None
     fq_bootstrap_error = None
     try:
-        items, source, inspectors = _fetch_finishing_queue(refresh=False)
-        fq_bootstrap = _build_queue_payload(items=items, source=source, inspectors=inspectors)
+        items, source, inspectors, material_issue_items = _fetch_finishing_queue(refresh=False)
+        fq_bootstrap = _build_queue_payload(
+            items=items,
+            source=source,
+            inspectors=inspectors,
+            material_issue_items=material_issue_items,
+        )
     except Exception as exc:
         logger.exception("post-machining queue page bootstrap failed")
         fq_bootstrap_error = str(exc)
@@ -279,13 +297,18 @@ def finishing_queue_page():
     )
 
 
+@finishing_queue_bp.get("/material-issue-assembly")
+def material_issue_queue_legacy_redirect():
+    return redirect(f"{FINISHING_QUEUE_PATH}?tab=material_issue")
+
+
 @finishing_queue_bp.get("/api/finishing-queue")
 def api_finishing_queue():
     refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
     include_packed = compact_text(request.args.get("include_packed")).lower() in {"1", "true", "yes"}
 
     try:
-        items, source, inspectors = _fetch_finishing_queue(refresh=refresh)
+        items, source, inspectors, material_issue_items = _fetch_finishing_queue(refresh=refresh)
     except Exception as exc:
         logger.exception("post-machining queue query failed")
         return jsonify({"error": str(exc)}), 502
@@ -303,6 +326,7 @@ def api_finishing_queue():
             items=items,
             source=source,
             inspectors=inspectors,
+            material_issue_items=material_issue_items,
             recently_packed=recently_packed,
         )
     )

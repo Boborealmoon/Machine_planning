@@ -46,7 +46,7 @@
       </a>
 
       {# Sales / production workflow #}
-      <div class="nav-dropdown {% if nav_path in ('/new-orders', '/sales-orders', '/delivery', '/queue-delays', '/delivery-schedule') or active in ('new_orders', 'sales_orders', 'delivery', 'queue_delays', 'delivery_schedule') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/new-orders', '/sales-orders', '/pending-pp', '/delivery', '/queue-delays', '/delivery-schedule') or active in ('new_orders', 'sales_orders', 'pending_pp', 'delivery', 'queue_delays', 'delivery_schedule') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="sales-prod">
           SALES / PROD <span class="nav-caret">▾</span>
         </button>
@@ -58,6 +58,10 @@
           <a href="/sales-orders"
              class="nav-dropdown-item {% if nav_path == '/sales-orders' or active == 'sales_orders' %}nav-dropdown-item--active{% endif %}">
             S/O management
+          </a>
+          <a href="/pending-pp"
+             class="nav-dropdown-item {% if nav_path == '/pending-pp' or active == 'pending_pp' %}nav-dropdown-item--active{% endif %}">
+            Outstanding PS
           </a>
           <span class="nav-dropdown-section">DELIVERY</span>
           <a href="/delivery"

@@ -871,10 +871,11 @@ function trialApplySchedulePayload(scheduleData, machinesResult, programToolsLoo
     .filter(m => m.active !== false)
     .map(m => ({ ...m, machine_code: m.machine_no || m.machine_code }));
 
+  // Apply machines before merging blocks — trialIsMainPlannerLaneBlock reads trialState.machines
+  // for MPP lanes, and MPP_CYCLE rows must not be dropped during the same assignment.
   trialState = {
     ...trialState,
     machines,
-    blocks: trialMergeBlocksWithSchedule(schedule.blocks || []),
     block_groups: schedule.block_groups || [],
     segments: schedule.segments || [],
     actuals: schedule.actuals || [],
@@ -884,6 +885,7 @@ function trialApplySchedulePayload(scheduleData, machinesResult, programToolsLoo
     planning_cards: schedule.planning_cards || [],
     program_tools_lookup: programToolsLookup ?? trialState.program_tools_lookup ?? null,
   };
+  trialState.blocks = trialMergeBlocksWithSchedule(schedule.blocks || []);
   if (typeof trialResetDataIndexes === 'function') trialResetDataIndexes();
   if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
 }

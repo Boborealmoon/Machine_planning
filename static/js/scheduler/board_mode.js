@@ -54,6 +54,30 @@ function trialBoardGroupMachineCount(group) {
   return (group?.machines || []).length;
 }
 
+/** Main planner: show CNC 35/36/41 lanes (default hidden — use MPP planner tab). */
+const TRIAL_MPP_MACHINES_VISIBLE_KEY = 'planner-mpp-machines-visible-v1';
+
+function trialIsMppMachinesVisible() {
+  try {
+    return localStorage.getItem(TRIAL_MPP_MACHINES_VISIBLE_KEY) === '1';
+  } catch (_) {
+    return false;
+  }
+}
+
+function trialSetMppMachinesVisible(visible) {
+  try {
+    localStorage.setItem(TRIAL_MPP_MACHINES_VISIBLE_KEY, visible ? '1' : '0');
+  } catch (_) {
+    // ignore quota / private mode
+  }
+}
+
+function trialToggleMppMachinesVisible() {
+  trialSetMppMachinesVisible(!trialIsMppMachinesVisible());
+  if (typeof renderTrial === 'function') renderTrial({ skipCatalog: true });
+}
+
 /** Machinist board: green/red stock tint on lane cards (default off). */
 const TRIAL_MACHINIST_STOCK_COLORS_KEY = 'machinist-board-stock-colors-v1';
 

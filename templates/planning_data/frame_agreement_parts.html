@@ -3,7 +3,7 @@
 {% block main_class %}app-main--frame-agreement{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=frame-agreement-20260624h">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/frame_agreement_parts.css') }}?v=frame-agreement-20260703e">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/frame_agreement_parts.css') }}?v=frame-agreement-20260706g">
 {% endblock %}
 {% block content %}
 <div class="fa-page new-orders-page">
@@ -52,6 +52,7 @@
             <th class="fa-col-qty">Qty / FG</th>
             <th>BOM detail</th>
             <th>MPP config</th>
+            <th class="fa-col-mpp">MPP machine</th>
             <th>Notes</th>
             <th>Updated</th>
             <th class="fa-col-actions">Actions</th>
@@ -109,7 +110,7 @@
           <input type="number" id="fa-confirm-mpp-pallets" class="fa-input fa-mpp-num-input" min="1" step="1" placeholder="Pallets" />
         </div>
       </div>
-      <p class="fa-confirm-mpp-hint">After adding, open <strong>MPP config</strong> on the row to set pallet settings per operation (fixture-specific qty/pallets/cycle time).</p>
+      <p class="fa-confirm-mpp-hint">Default machine and pallet settings for this part. After adding, use <strong>MPP config</strong> on the row to set pcs/pallet, pallets/cycle, cycle time, and setup per operation.</p>
     </div>
     <div class="fa-confirm-notes-wrap">
       <label class="fa-field-label" for="fa-confirm-notes-input">Notes <span class="fa-optional">(optional)</span></label>
@@ -170,5 +171,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/frame_agreement_parts.js') }}?v=frame-agreement-20260703e"></script>
+<script src="{{ url_for('static', filename='js/frame_agreement_parts.js') }}?v=frame-agreement-20260706g"></script>
 {% endblock %}

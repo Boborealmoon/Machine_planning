@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Outstanding PS{% endblock %}
+{% block main_class %}app-main--new-orders{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=pending-pp-20260707f">{% endblock %}
+{% block content %}
+<div class="new-orders-page">
+  <div class="new-orders-header">
+    <div>
+      <h1 class="new-orders-title">Outstanding PS</h1>
+      <p class="new-orders-subtitle" id="pending-pp-desc">Gaps in the sales order → process sheet → work order pipeline. Read live from COMAIN, cached in memory for 5 minutes.</p>
+    </div>
+    <div class="new-orders-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="pending-pp-copy-so" title="Copy sales order numbers from visible rows">Copy S/O</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="pending-pp-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="pending-pp-tabs" role="tablist">
+    <button type="button" class="pending-pp-tab is-active" data-tab="no-pp" role="tab">
+      No PP voucher <span class="pending-pp-tab-count" data-count="no-pp"></span>
+    </button>
+    <button type="button" class="pending-pp-tab" data-tab="no-wo" role="tab">
+      Has PP · no WO <span class="pending-pp-tab-count" data-count="no-wo"></span>
+    </button>
+  </div>
+
+  <div class="new-orders-toolbar card">
+    <div class="new-orders-filter new-orders-filter--checkbox">
+      <span>Due</span>
+      <label class="checkbox-label">
+        <input type="checkbox" id="pending-pp-overdue-only" />
+        Overdue only
+      </label>
+    </div>
+    <div class="new-orders-filter" id="pending-pp-ps-type-wrap" hidden>
+      <span>PS type</span>
+      <div class="filter-dropdown" id="pp-ps-type-dropdown">
+        <button class="filter-dropdown-btn" type="button" id="pp-ps-type-btn">APS, NPS ▾</button>
+        <div class="filter-dropdown-panel" id="pp-ps-type-panel" hidden>
+          <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="SR" /> [SR]</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
+        </div>
+      </div>
+    </div>
+    <label class="new-orders-filter new-orders-filter--grow">
+      <span>Search</span>
+      <span class="planner-page-search-wrap">
+        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="pending-pp-search" class="planner-page-search-input" type="search" placeholder="SO, PP, part, description, customer, PO..." autocomplete="off">
+      </span>
+    </label>
+    <div class="new-orders-stats" id="pending-pp-stats"></div>
+  </div>
+
+  <div id="pending-pp-loading" class="loading"><div class="spinner"></div> Loading...</div>
+  <div id="pending-pp-table-wrap" class="new-orders-table-wrap card" hidden>
+    <table class="new-orders-table" id="pending-pp-table">
+      <thead id="pending-pp-head"></thead>
+      <tbody id="pending-pp-body"></tbody>
+    </table>
+  </div>
+  <div id="pending-pp-empty" class="new-orders-empty card" hidden>
+    <p id="pending-pp-empty-text"></p>
+  </div>
+  <p class="new-orders-meta" id="pending-pp-meta" hidden></p>
+</div>
+
+<div id="so-material-modal" class="so-material-modal" hidden>
+  <div class="so-material-modal-backdrop" data-action="close-material-modal" aria-hidden="true"></div>
+  <div class="so-material-modal-panel" role="dialog" aria-modal="true" aria-labelledby="so-material-modal-title">
+    <div class="so-material-modal-head">
+      <div>
+        <p class="so-material-modal-kicker">BOM materials</p>
+        <div class="so-material-modal-identifiers" id="so-material-modal-title"></div>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="so-material-modal-close" aria-label="Close">Close</button>
+    </div>
+    <div class="so-material-modal-body" id="so-material-modal-body"></div>
+    <p class="so-material-modal-foot">BOM: <code>inventory_bom_listing</code> · Inventory: <code>ic_inventory_enquiry_summary_view</code></p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/material_modal.js') }}?v=pending-pp-20260707f"></script>
+<script src="{{ url_for('static', filename='js/pending_pp.js') }}?v=pending-pp-20260707f"></script>
+{% endblock %}

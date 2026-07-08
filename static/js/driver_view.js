@@ -190,137 +190,17 @@
       </div>`;
   }
 
-  function flagToggleHtml(item, field, label) {
-    const psId = escapeHtml(item.planner_ps_id || '');
-    const checked = item[field] ? 'checked' : '';
-    return `
-      <label class="dv-flag-toggle" title="${escapeHtml(label)}">
-        <input type="checkbox"
-               class="dv-flag-input"
-               data-action="flag"
-               data-flag-field="${escapeHtml(field)}"
-               data-ps-id="${psId}"
-               aria-label="${escapeHtml(label)} for ${escapeHtml(item.ps_display || psId)}"
-               ${checked}>
-        <span class="dv-flag-switch" aria-hidden="true"></span>
-      </label>`;
+  function flagStatusHtml(item, field, label) {
+    const on = Boolean(item[field]);
+    const badgeClass = on ? 'dv-badge dv-badge--ok' : 'dv-badge dv-badge--muted';
+    const text = on ? 'Yes' : 'No';
+    return `<span class="${badgeClass}" title="${escapeHtml(label)}">${text}</span>`;
   }
 
-  function remarksInputHtml(item) {
-    const psId = escapeHtml(item.planner_ps_id || '');
-    const value = escapeHtml(item.remarks || '');
-    return `
-      <div class="dv-remarks-wrap" data-action="remarks-wrap">
-        <input type="text"
-               class="dv-remarks-input"
-               data-action="remarks"
-               data-ps-id="${psId}"
-               value="${value}"
-               data-last-saved="${value}"
-               placeholder="Remarks">
-        <span class="dv-field-status" hidden></span>
-      </div>`;
-  }
-
-  function findItem(plannerPsId) {
-    const needle = String(plannerPsId || '').trim();
-    return (state.items || []).find((row) => String(row.planner_ps_id || '').trim() === needle) || null;
-  }
-
-  function setFieldStatus(wrap, status, message) {
-    if (!wrap) return;
-    wrap.classList.remove('is-saving', 'is-saved', 'is-error');
-    if (status) wrap.classList.add(status);
-    const note = wrap.querySelector('.dv-field-status');
-    if (!note) return;
-    if (!message) {
-      note.hidden = true;
-      note.textContent = '';
-      return;
-    }
-    note.hidden = false;
-    note.textContent = message;
-  }
-
-  async function saveFlag(plannerPsId, field, value, inputEl) {
-    const psId = String(plannerPsId || '').trim();
-    if (!psId || !field) return;
-
-    const toggle = inputEl?.closest('.dv-flag-toggle');
-    if (toggle) toggle.classList.add('is-saving');
-
-    try {
-      const res = await fetch('/api/process-sheets/delivery-flags', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          planner_ps_id: psId,
-          [field]: Boolean(value),
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
-
-      const item = findItem(data.planner_ps_id || psId);
-      if (item) {
-        item.coc_done = Boolean(data.coc_done);
-        item.qaqc_report_ready = Boolean(data.qaqc_report_ready);
-        item.dismissed = Boolean(data.dismissed);
-        item.exception = Boolean(data.exception);
-      }
-      const row = inputEl?.closest('tr');
-      if (row && item) {
-        row.className = rowClasses(item);
-      }
-    } catch (err) {
-      console.error(err);
-      if (inputEl) inputEl.checked = !value;
-    } finally {
-      if (toggle) toggle.classList.remove('is-saving');
-    }
-  }
-
-  async function saveRemarks(plannerPsId, value, inputEl) {
-    const psId = String(plannerPsId || '').trim();
-    if (!psId) return;
-    const nextValue = String(value || '').trim();
-    if (inputEl && inputEl.dataset.lastSaved === nextValue) return;
-
-    const wrap = inputEl?.closest('[data-action="remarks-wrap"]') || null;
-    if (inputEl) {
-      inputEl.disabled = true;
-      setFieldStatus(wrap, 'is-saving', 'Saving…');
-    }
-
-    try {
-      const res = await fetch('/api/process-sheets/remarks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ps_id: psId, remarks: nextValue }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
-
-      const saved = String(data.remarks || '').trim();
-      const savedPsId = String(data.ps_id || psId).trim() || psId;
-      const item = findItem(savedPsId);
-      if (item) item.remarks = saved;
-      if (inputEl) {
-        inputEl.value = saved;
-        inputEl.dataset.lastSaved = saved;
-        inputEl.disabled = false;
-        setFieldStatus(wrap, 'is-saved', saved ? 'Saved' : 'Cleared');
-        window.setTimeout(() => {
-          if (inputEl.dataset.lastSaved === saved) setFieldStatus(wrap, '', '');
-        }, 1600);
-      }
-    } catch (err) {
-      console.error(err);
-      if (inputEl) {
-        inputEl.disabled = false;
-        setFieldStatus(wrap, 'is-error', 'Save failed');
-      }
-    }
+  function remarksReadonlyHtml(item) {
+    const value = String(item.remarks || '').trim();
+    if (!value) return '<span class="dv-remarks-empty">—</span>';
+    return `<span class="dv-remarks-text">${escapeHtml(value)}</span>`;
   }
 
   function buildWeekOptions() {
@@ -417,9 +297,9 @@
           <td>${escapeHtml(formatDate(item.coway_edd))}</td>
           <td>${escapeHtml(weekLabel(item))}</td>
           <td>${scanStatusHtml(item)}</td>
-          <td class="dv-flag-cell">${flagToggleHtml(item, 'coc_done', 'COC done')}</td>
-          <td class="dv-flag-cell">${flagToggleHtml(item, 'qaqc_report_ready', 'QAQC report ready')}</td>
-          <td class="dv-remarks">${remarksInputHtml(item)}</td>
+          <td class="dv-flag-cell">${flagStatusHtml(item, 'coc_done', 'COC done')}</td>
+          <td class="dv-flag-cell">${flagStatusHtml(item, 'qaqc_report_ready', 'QAQC report ready')}</td>
+          <td class="dv-remarks">${remarksReadonlyHtml(item)}</td>
         </tr>
       `).join('');
     }
@@ -474,35 +354,6 @@
     renderTable();
   }
 
-  function bindTableEvents() {
-    if (!els.tableBody || els.tableBody.dataset.bound === '1') return;
-    els.tableBody.dataset.bound = '1';
-
-    els.tableBody.addEventListener('change', (event) => {
-      const flagInput = event.target.closest('[data-action="flag"]');
-      if (flagInput) {
-        saveFlag(
-          flagInput.dataset.psId || '',
-          flagInput.dataset.flagField || '',
-          flagInput.checked,
-          flagInput,
-        );
-        return;
-      }
-      const remarksInput = event.target.closest('[data-action="remarks"]');
-      if (remarksInput) {
-        saveRemarks(remarksInput.dataset.psId || '', remarksInput.value, remarksInput);
-      }
-    });
-
-    els.tableBody.addEventListener('keydown', (event) => {
-      const remarksInput = event.target.closest('[data-action="remarks"]');
-      if (!remarksInput || event.key !== 'Enter') return;
-      event.preventDefault();
-      remarksInput.blur();
-    });
-  }
-
   if (els.weekFilters) {
     els.weekFilters.addEventListener('click', onWeekChipClick);
   }
@@ -510,7 +361,6 @@
     els.refresh.addEventListener('click', () => loadSchedule());
   }
 
-  bindTableEvents();
   initWeekFilters();
   loadSchedule();
 })();

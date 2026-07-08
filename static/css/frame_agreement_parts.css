@@ -297,6 +297,16 @@
   max-width: 1080px;
 }
 
+.fa-mpp-modal-status {
+  min-height: 18px;
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text2);
+}
+
+.fa-mpp-modal-status.is-error { color: #dc2626; }
+.fa-mpp-modal-status.is-success { color: #15803d; }
+
 .fa-mpp-modal-hint {
   margin: 0 0 12px;
   font-size: 12px;
@@ -335,6 +345,19 @@
 
 .fa-mpp-config-cell {
   white-space: nowrap;
+}
+
+.fa-mpp-machine-cell {
+  min-width: 108px;
+  white-space: nowrap;
+}
+
+.fa-table td.fa-mpp-machine-cell {
+  padding: 8px 10px;
+}
+
+.fa-part-machine-select {
+  min-width: 96px;
 }
 
 .fa-col-mpp {
@@ -526,6 +549,29 @@
   background: #111827;
   border-color: #111827;
   color: #fff;
+}
+
+.fa-bom-tab--no-ops:not(.fa-bom-tab--active) {
+  opacity: 0.72;
+  border-style: dashed;
+}
+
+.fa-bom-op-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  background: rgba(15, 23, 42, 0.08);
+}
+
+.fa-bom-tab--active .fa-bom-op-count {
+  background: rgba(255, 255, 255, 0.18);
 }
 
 .fa-dash {

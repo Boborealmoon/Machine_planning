@@ -955,12 +955,128 @@ def _sync_machine_queue(con, machine_id: int, cycle_primary_block_ids: list[int]
         apply_machine_queue_order(con, machine_id, ordered, recalculate=False, allow_mpp_planner=True)
 
 
+def repair_mpp_block_machine_mismatches(con) -> list[int]:
+    """Align planner_run_block.machine_id with planner_mpp_cycle when they diverge."""
+    ensure_mpp_queue_schema(con)
+    fixed: list[int] = []
+    for row in rows(
+        con.execute(
+            """
+            SELECT co.block_id, c.machine_id AS correct_machine_id
+            FROM planner_mpp_cycle_op co
+            JOIN planner_mpp_cycle c ON c.cycle_id = co.cycle_id
+            JOIN planner_run_block b ON b.block_id = co.block_id
+            WHERE COALESCE(co.block_id, 0) > 0
+              AND COALESCE(b.active, TRUE) = TRUE
+              AND c.machine_id <> b.machine_id
+            """
+        )
+    ):
+        block_id = int(row["block_id"])
+        machine_id = int(row["correct_machine_id"])
+        con.execute(
+            """
+            UPDATE planner_run_block
+            SET machine_id = %s, updated_at = NOW()
+            WHERE block_id = %s
+            """,
+            (machine_id, block_id),
+        )
+        fixed.append(block_id)
+    if fixed:
+        from .operation_sequence import sync_operation_sequences_for_machines
+        from .machines import fetch_mpp_planner_machine_ids
+
+        machine_ids = fetch_mpp_planner_machine_ids(con)
+        sync_operation_sequences_for_machines(con, machine_ids)
+    return fixed
+
+
+def mpp_planner_mirror_block_ids(con) -> set[int]:
+    """Block ids linked from planner_mpp_cycle_op (mirrored MPP planner queue)."""
+    ensure_mpp_queue_schema(con)
+    return {
+        int(row["block_id"])
+        for row in rows(
+            con.execute(
+                """
+                SELECT DISTINCT block_id
+                FROM planner_mpp_cycle_op
+                WHERE COALESCE(block_id, 0) > 0
+                """
+            )
+        )
+        if int(row.get("block_id") or 0) > 0
+    }
+
+
+def tag_mpp_planner_mirror_blocks(con, blocks: list[dict]) -> None:
+    """Mark schedule payload rows mirrored from the MPP planner tab."""
+    if not blocks:
+        return
+    mirror_ids = mpp_planner_mirror_block_ids(con)
+    if not mirror_ids:
+        return
+    for item in blocks:
+        bid = int(item.get("block_id") or 0)
+        if bid in mirror_ids:
+            item["is_mpp_planner_mirror"] = True
+
+
 def ensure_mpp_planner_scheduler_lanes(con) -> dict[str, Any]:
     """Mirror planner_mpp_* queue onto CNC 35/36/41 scheduler lanes for the main board."""
     ensure_mpp_queue_schema(con)
+    repaired = repair_mpp_block_machine_mismatches(con)
     result = rehydrate_mpp_scheduler_blocks_if_needed(con)
     purge_orphan_mpp_scheduler_blocks(con)
+    if repaired:
+        result = {**(result or {}), "repaired_block_ids": repaired, "repaired": True}
     return result
+
+
+def reset_mpp_planner_lanes(
+    con,
+    *,
+    slugs: list[str] | None = None,
+    machine_ids: list[int] | None = None,
+) -> dict[str, Any]:
+    """Clear MPP planner cycles and mirrored scheduler blocks for selected CNC lanes."""
+    ensure_mpp_queue_schema(con)
+    slug_set: set[str] = set()
+    if slugs:
+        slug_set.update(compact_text(s).lower() for s in slugs if compact_text(s))
+    if machine_ids:
+        for mid in machine_ids:
+            slug = _slug_by_machine_id(con, int(mid))
+            if slug:
+                slug_set.add(slug)
+    if not slug_set:
+        return {"reset": [], "saved": {}}
+
+    machines_payload: dict[str, dict[str, Any]] = {}
+    probation_payload: dict[str, list] = {}
+    for slug in sorted(slug_set):
+        machines_payload[slug] = {"laneAnchor": "", "cycles": []}
+        probation_payload[slug] = []
+
+    saved = save_mpp_planner_queue(
+        con,
+        {
+            "machines": machines_payload,
+            "jobs": {},
+            "probation": probation_payload,
+        },
+    )
+    from .operation_sequence import sync_operation_sequences_for_machines
+
+    reset_mids = [
+        _machine_id_by_slug(con, slug)
+        for slug in slug_set
+        if _machine_id_by_slug(con, slug) > 0
+    ]
+    if reset_mids:
+        sync_operation_sequences_for_machines(con, reset_mids)
+    return {"reset": sorted(slug_set), "machine_ids": reset_mids, "saved": saved}
 
 
 def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1030,6 +1146,28 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
             sprint_setup_total = _sprint_setup_minutes(cycle_timing, cycle_ops, job_overrides)
 
             cycle_id = existing_cycles.get(client_cycle_id)
+            if not cycle_id:
+                global_cycle = one(
+                    con.execute(
+                        """
+                        SELECT cycle_id, machine_id
+                        FROM planner_mpp_cycle
+                        WHERE client_cycle_id = %s
+                        """,
+                        (client_cycle_id,),
+                    )
+                )
+                if global_cycle:
+                    cycle_id = int(global_cycle["cycle_id"])
+                    if int(global_cycle.get("machine_id") or 0) != machine_id:
+                        con.execute(
+                            """
+                            UPDATE planner_mpp_cycle
+                            SET machine_id = %s, updated_at = NOW()
+                            WHERE cycle_id = %s
+                            """,
+                            (machine_id, cycle_id),
+                        )
             if cycle_id:
                 con.execute(
                     """
@@ -1038,6 +1176,7 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
                         cycle_label = %s, setup_minutes = %s,
                         load_min_per_cycle = %s, unload_min_per_cycle = %s,
                         sequential_ops = %s, setup_per_op = %s,
+                        machine_id = %s,
                         updated_at = NOW()
                     WHERE cycle_id = %s
                     """,
@@ -1051,6 +1190,7 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
                         cycle_timing["unload_min"],
                         cycle_timing["sequential"],
                         cycle_timing["setup_per_op"],
+                        machine_id,
                         cycle_id,
                     ),
                 )

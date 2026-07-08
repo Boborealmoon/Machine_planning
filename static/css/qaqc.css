@@ -967,3 +967,42 @@ body.qaqc-view {
     max-width: 9rem;
   }
 }
+
+#fq-hide-done.is-hidden,
+#fq-manage-inspectors.is-hidden {
+  display: none !important;
+}
+
+.fq-table-card--material-issue {
+  margin-top: 0;
+}
+
+.fq-stage-badge--material_issue {
+  background: rgba(139, 92, 246, 0.12);
+  border-color: rgba(139, 92, 246, 0.28);
+  color: #6d28d9;
+}
+
+.fq-mia-pill {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+
+.fq-mia-pill--yes {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.fq-mia-pill--no {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.fq-col-remarks {
+  max-width: 220px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

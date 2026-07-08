@@ -112,6 +112,9 @@ function trialMachinesInCategory() {
 
 function trialVisibleMachines() {
   let machines = trialMachinesInCategory();
+  if (typeof trialIsMppMachinesVisible === 'function' && !trialIsMppMachinesVisible()) {
+    machines = machines.filter(m => !trialIsMppPlannerMachine(Number(m.machine_id), m.machine_code));
+  }
   if (trialMachineHiddenSet.size > 0) {
     machines = machines.filter(m => !trialMachineHiddenSet.has(m.machine_code));
   }
@@ -777,17 +780,25 @@ function trialHasLiveBlockQueueIndex() {
   return Array.isArray(trialState?.blocks);
 }
 
-function trialIsMppPlannerMachine(machineId) {
+/** CNC lanes owned by the MPP planner tab — must mirror on the main board (planning/machines.py). */
+const TRIAL_MPP_PLANNER_MACHINE_CODES = new Set(['CNC 35', 'CNC 36', 'CNC 41']);
+
+function trialIsMppPlannerMachine(machineId, machineCode) {
+  const code = trialNormalizeMachineCode(machineCode);
+  if (code && TRIAL_MPP_PLANNER_MACHINE_CODES.has(code)) return true;
   const mid = Number(machineId || 0);
   if (!mid) return false;
   const machine = (trialState.machines || []).find(row => Number(row.machine_id) === mid);
+  const fromState = trialNormalizeMachineCode(machine?.machine_code || machine?.machine_no);
+  if (TRIAL_MPP_PLANNER_MACHINE_CODES.has(fromState)) return true;
   return String(machine?.machine_category || '').toUpperCase() === 'MPP';
 }
 
 /** Lane blocks for the main planner board (MPP machines mirror the MPP planner tab). */
 function trialIsMainPlannerLaneBlock(block) {
   if (!block) return false;
-  if (trialIsMppPlannerMachine(Number(block.machine_id))) return true;
+  if (block.is_mpp_planner_mirror) return true;
+  if (trialIsMppPlannerMachine(Number(block.machine_id), block.machine_code)) return true;
   if (String(block.group_type || '').toUpperCase() === 'MPP_CYCLE') return false;
   if (block.is_mpp_planner_owned) return false;
   const groupLabel = String(block.group_label || '').trim();
@@ -1100,6 +1111,13 @@ function trialEnsureMachineLaneVisibleForSearch(machine) {
   const code = String(machine.machine_code || '').trim();
   if (code && trialMachineHiddenSet.has(code)) {
     trialMachineHiddenSet.delete(code);
+    changed = true;
+  }
+  if (typeof trialIsMppPlannerMachine === 'function'
+    && trialIsMppPlannerMachine(Number(machine.machine_id), code)
+    && typeof trialIsMppMachinesVisible === 'function'
+    && !trialIsMppMachinesVisible()) {
+    if (typeof trialSetMppMachinesVisible === 'function') trialSetMppMachinesVisible(true);
     changed = true;
   }
   const machineCat = String(machine.machine_category || '').trim().toUpperCase();

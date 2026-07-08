@@ -214,6 +214,52 @@ def execution_status_is_completed(value):
     return norm in {"C", "COMPLETED"}
 
 
+def sanitize_erp_execution_status(status, *, required=0.0, finished=0.0, remaining=None, tol=None):
+    """Drop or infer ERP Completed only when production qty supports it."""
+    tol = SHIPPED_QTY_TOLERANCE if tol is None else float(tol)
+    status = compact_text(status)
+    required = max(0.0, float(required or 0))
+    finished = max(0.0, float(finished or 0))
+    if remaining is None:
+        remaining = max(0.0, required - finished)
+    else:
+        remaining = max(0.0, float(remaining))
+    if execution_status_is_completed(status):
+        if required > tol and finished < required - tol:
+            return ""
+        if required <= tol and finished <= tol:
+            return ""
+    if not status:
+        if finished > tol and remaining <= tol:
+            return "C"
+        if required > tol and finished >= required - tol:
+            return "C"
+    return status
+
+
+def op_production_complete(op, *, tol=None):
+    """True when an operation is production-complete (qty-backed, not stage position)."""
+    tol = SHIPPED_QTY_TOLERANCE if tol is None else float(tol)
+    if not isinstance(op, dict):
+        return False
+    required = parse_number(op.get("required_qty") or op.get("wo_qty_required"), 0)
+    finished = parse_number(
+        op.get("finished_qty") or op.get("wo_qty_produced") or op.get("erp_finished_qty"),
+        0,
+    )
+    remaining = parse_number(op.get("remaining_qty"), max(0.0, required - finished))
+    status = compact_text(op.get("execution_status") or op.get("erp_execution_status") or "")
+    if required > tol and finished >= required - tol:
+        return True
+    if remaining <= tol and finished > tol:
+        return True
+    if execution_status_is_completed(status):
+        if required > tol:
+            return finished >= required - tol
+        return finished > tol
+    return False
+
+
 def pending_delivery_order(entry):
     """All ERP stages done but SO qty not fully shipped (qty_shipped < so_det_qty)."""
     so_qty = entry.get("so_det_qty")
@@ -232,12 +278,19 @@ def pending_delivery_order(entry):
 
     ops = entry.get("ops") or entry.get("op_cards") or []
     if ops:
+        tracked = []
         for op in ops:
-            if not execution_status_is_completed(op.get("execution_status")):
-                return False
-            if parse_number(op.get("remaining_qty"), 0) > SHIPPED_QTY_TOLERANCE:
-                return False
-        return True
+            required = parse_number(op.get("required_qty") or op.get("wo_qty_required"), 0)
+            finished = parse_number(
+                op.get("finished_qty") or op.get("wo_qty_produced") or op.get("erp_finished_qty"),
+                0,
+            )
+            status = compact_text(op.get("execution_status") or op.get("erp_execution_status") or "")
+            if required > SHIPPED_QTY_TOLERANCE or finished > SHIPPED_QTY_TOLERANCE or status:
+                tracked.append(op)
+        if tracked:
+            return all(op_production_complete(op) for op in tracked)
+        return False
 
     header = entry.get("current_stage_status") or entry.get("execution_status") or ""
     return execution_status_is_completed(header)

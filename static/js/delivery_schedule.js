@@ -12,10 +12,13 @@ const DELIVERY_EXPORT_COLUMNS = [
   { id: 'part_desc', label: 'Part description', value: item => String(item.part_desc || '') },
   { id: 'stage', label: 'Stage', value: item => deliveryScheduleStageLabel(item) },
   { id: 'so_qty', label: 'SO qty', value: item => deliveryScheduleFormatQty(item.so_qty) },
+  { id: 'pp_partial_qty', label: 'PP partial qty', value: item => deliveryScheduleFormatQty(item.pp_partial_qty) },
   { id: 'due_date', label: 'PO due date', value: item => deliveryScheduleFormatDate(item.due_date) },
   { id: 'coway_edd', label: 'Coway EDD', value: item => deliveryScheduleFormatDate(item.coway_edd) },
   { id: 'week', label: 'Week', value: item => deliveryScheduleWeekLabel(item) },
   { id: 'exception', label: 'Exception', value: item => (deliveryScheduleIsException(deliverySchedulePlannerPsId(item)) ? 'Yes' : '') },
+  { id: 'coc_done', label: 'COC done', value: item => (item.coc_done ? 'Yes' : '') },
+  { id: 'qaqc_report', label: 'QAQC report', value: item => (item.qaqc_report_ready ? 'Yes' : '') },
   { id: 'remarks', label: 'Remarks', value: item => String(item.remarks || '') },
 ];
 
@@ -314,6 +317,30 @@ async function deliveryScheduleToggleException(plannerPsId, flagged, buttonEl) {
     toast('Could not save exception flag: ' + err.message, 'error');
   } finally {
     if (buttonEl) buttonEl.disabled = false;
+  }
+}
+
+async function deliveryScheduleSaveFlag(plannerPsId, field, checked, inputEl) {
+  const psId = String(plannerPsId || '').trim();
+  if (!psId || !field) return;
+  const previous = !checked;
+  const toggle = inputEl?.closest('.delivery-schedule-flag-toggle') || null;
+  if (inputEl) inputEl.disabled = true;
+  if (toggle) toggle.classList.add('is-saving');
+  try {
+    const data = await deliveryScheduleSaveFlags(psId, { [field]: Boolean(checked) });
+    const savedPsId = String(data.planner_ps_id || psId).trim() || psId;
+    deliveryScheduleUpdateItem(savedPsId, {
+      coc_done: Boolean(data.coc_done),
+      qaqc_report_ready: Boolean(data.qaqc_report_ready),
+    });
+    if (inputEl) inputEl.checked = Boolean(data[field]);
+  } catch (err) {
+    if (inputEl) inputEl.checked = previous;
+    toast('Could not save flag: ' + err.message, 'error');
+  } finally {
+    if (inputEl) inputEl.disabled = false;
+    if (toggle) toggle.classList.remove('is-saving');
   }
 }
 
@@ -927,6 +954,8 @@ function deliveryScheduleSortValue(item, sortBy) {
       return deliveryScheduleStageSortValue(item);
     case 'so_qty':
       return item.so_qty == null ? -1 : Number(item.so_qty);
+    case 'pp_partial_qty':
+      return item.pp_partial_qty == null ? -1 : Number(item.pp_partial_qty);
     case 'due_date':
       return deliveryScheduleDateInputValue(item.due_date) || '9999-12-31';
     case 'week':
@@ -1124,6 +1153,26 @@ function deliveryScheduleRemarksInputHtml(item) {
   `;
 }
 
+function deliveryScheduleFlagToggleHtml(item, field, label) {
+  const psId = escapeHtml(item.planner_ps_id || '');
+  const checked = item[field] ? ' checked' : '';
+  const displayId = escapeHtml(item.ps_display || item.planner_ps_id || '');
+  return `
+    <label class="delivery-schedule-flag-toggle" title="${escapeHtml(label)}">
+      <input
+        type="checkbox"
+        class="delivery-schedule-flag-input"
+        data-action="flag"
+        data-flag-field="${escapeHtml(field)}"
+        data-ps-id="${psId}"
+        aria-label="${escapeHtml(label)} for ${displayId}"
+        ${checked}
+      >
+      <span class="delivery-schedule-flag-switch" aria-hidden="true"></span>
+    </label>
+  `;
+}
+
 function deliveryScheduleRowHtml(item) {
   const psId = deliverySchedulePlannerPsId(item);
   const rowClasses = [
@@ -1141,9 +1190,12 @@ function deliveryScheduleRowHtml(item) {
       <td class="delivery-schedule-desc">${escapeHtml(item.part_desc || '—')}</td>
       <td class="delivery-schedule-stage-col">${deliveryScheduleStageCellHtml(item)}</td>
       <td class="delivery-schedule-num">${escapeHtml(deliveryScheduleFormatQty(item.so_qty))}</td>
+      <td class="delivery-schedule-num">${escapeHtml(deliveryScheduleFormatQty(item.pp_partial_qty))}</td>
       <td class="delivery-schedule-date">${escapeHtml(deliveryScheduleFormatDate(item.due_date))}</td>
       <td class="delivery-schedule-coway">${deliveryScheduleCowayInputHtml(item)}</td>
       <td class="delivery-schedule-week" data-week-for="${escapeHtml(item.planner_ps_id || '')}">${escapeHtml(deliveryScheduleWeekLabel(item))}</td>
+      <td class="delivery-schedule-flag-cell">${deliveryScheduleFlagToggleHtml(item, 'coc_done', 'COC done')}</td>
+      <td class="delivery-schedule-flag-cell">${deliveryScheduleFlagToggleHtml(item, 'qaqc_report_ready', 'QAQC report ready')}</td>
       <td class="delivery-schedule-remarks">${deliveryScheduleRemarksInputHtml(item)}</td>
     </tr>
   `;
@@ -1306,6 +1358,16 @@ function deliveryScheduleBindInputs() {
     const dismissInput = event.target.closest('[data-action="dismiss"]');
     if (dismissInput) {
       deliveryScheduleToggleDismissed(dismissInput.dataset.psId || '', dismissInput.checked, dismissInput);
+      return;
+    }
+    const flagInput = event.target.closest('[data-action="flag"]');
+    if (flagInput) {
+      deliveryScheduleSaveFlag(
+        flagInput.dataset.psId || '',
+        flagInput.dataset.flagField || '',
+        flagInput.checked,
+        flagInput,
+      );
       return;
     }
     const cowayInput = event.target.closest('[data-action="coway-edd"]');

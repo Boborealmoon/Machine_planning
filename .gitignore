@@ -6,6 +6,7 @@
 # Python
 __pycache__/
 cache/erp_routes/
+cache/pp_vouchers_with_ops/
 *.py[cod]
 *.pyo
 *.pyd

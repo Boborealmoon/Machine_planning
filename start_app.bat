@@ -1,4 +1,5 @@
 @echo off
-cd /d C:\Users\zhenyue\Documents\GitHub\Machine_planning
+REM Legacy dev server — prefer start_machine_planning.bat (Waitress + tunnel).
+cd /d "%~dp0"
 call .venv\Scripts\activate
 python app.py

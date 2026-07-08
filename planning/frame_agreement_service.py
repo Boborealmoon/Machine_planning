@@ -8,6 +8,7 @@ from typing import Any, Callable
 import psycopg2.extras
 
 from .bom_materials import _list_bom_codes_with_counts, resolve_bom_materials
+from .bom_operations import fetch_machining_operations, machining_op_counts_by_bom as erp_machining_op_counts
 from .helpers import one, rows
 from .utils import compact_text
 
@@ -97,6 +98,7 @@ def effective_fa_op_settings(row: dict[str, Any]) -> dict[str, Any]:
             compact_text(row.get("description")),
             compact_text(row.get("notes")),
         )
+    setup_min = max(0.0, float(row.get("setup_minutes") or row.get("mpp_setup_minutes") or 0))
     return {
         "part_no": compact_text(row.get("part_no")),
         "bom_code": compact_text(row.get("bom_code")),
@@ -108,7 +110,8 @@ def effective_fa_op_settings(row: dict[str, Any]) -> dict[str, Any]:
         "run_min_per_pallet": run_pallet,
         "pallets_count": pallets,
         "mpp_machine_no": machine,
-        "mpp_setup_minutes": max(0.0, float(row.get("setup_minutes") or row.get("mpp_setup_minutes") or 0)),
+        "setup_minutes": setup_min,
+        "mpp_setup_minutes": setup_min,
         # MPP planner aliases
         "mpp_run_min_per_pallet": run_pallet,
         "mpp_pcs_per_pallet": pcs,
@@ -371,40 +374,12 @@ def upsert_frame_agreement_op_config(
     }
 
 
-_BOM_OP_STAGE_OPS_SQL = """
-    SELECT stage_no, stage_desc, op_no, op_index, machine_no, setup_time, cycle_time
-    FROM public.bom_op_stage
-    WHERE inventory_code = %s
-      AND UPPER(bom_code) = UPPER(%s)
-    ORDER BY op_no NULLS LAST, op_index, stage_no
-"""
-
-_BOM_MACHINING_OPS_FALLBACK_SQL = """
-    SELECT
-        stage_no,
-        stage_desc,
-        CASE
-            WHEN stage_desc ~ ' [0-9]+$'
-            THEN substring(stage_desc FROM ' ([0-9]+)$')::INTEGER
-            WHEN SPLIT_PART(stage_desc, ' ', 2) ~ '^\\d+$'
-            THEN SPLIT_PART(stage_desc, ' ', 2)::INTEGER
-            WHEN UPPER(SPLIT_PART(stage_desc, ' ', 2)) ~ '^OP[0-9]+$'
-            THEN NULLIF(substring(UPPER(SPLIT_PART(stage_desc, ' ', 2)) FROM 'OP([0-9]+)'), '')::INTEGER
-            ELSE NULL
-        END AS op_no,
-        NULL::TEXT AS machine_no,
-        180::NUMERIC AS setup_time,
-        20::NUMERIC AS cycle_time
-    FROM public.mt_inventory_bom_stage
-    WHERE stage_desc IS NOT NULL
+_BOM_STAGE_FILTER = """
       AND (
-          stage_desc LIKE 'Turning%%'
-       OR stage_desc LIKE 'Milling%%'
-       OR stage_desc LIKE 'Turnmill%%'
+          s.stage_desc LIKE 'Turning%%'
+       OR s.stage_desc LIKE 'Milling%%'
+       OR s.stage_desc LIKE 'Turnmill%%'
       )
-      AND inventory_code = %s
-      AND UPPER(bom_code) = UPPER(%s)
-    ORDER BY stage_no ASC
 """
 
 
@@ -457,17 +432,14 @@ def _sort_machining_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(ops, key=_key)
 
 
+def machining_op_counts_by_bom(db_query: Callable, part_no: str) -> dict[str, int]:
+    """BOM code -> machining stage count (same source as Steps modal)."""
+    return erp_machining_op_counts(db_query, part_no)
+
+
 def fetch_bom_machining_operations(db_query: Callable, part_no: str, bom_code: str) -> list[dict[str, Any]]:
-    del db_query  # ERP reads use RealDictCursor via _erp_query_dict.
-    part_no = compact_text(part_no)
-    bom_code = compact_text(bom_code)
-    if not part_no or not bom_code:
-        return []
-
-    raw = _erp_query_dict(_BOM_OP_STAGE_OPS_SQL, (part_no, bom_code))
-    if not raw:
-        raw = _erp_query_dict(_BOM_MACHINING_OPS_FALLBACK_SQL, (part_no, bom_code))
-
+    """Machining ops for FA MPP config — aligned with GET /api/bom/operations."""
+    raw = fetch_machining_operations(db_query, part_no, bom_code)
     by_op: dict[str, dict[str, Any]] = {}
     for row in raw:
         normalized = _normalize_machining_op_row(row)
@@ -671,16 +643,18 @@ def ensure_frame_agreement_schema(con) -> None:
             ON planner_frame_agreement_op_config (part_no, bom_code)
         """
     )
+    for stmt in (
+        "ALTER TABLE planner_frame_agreement_op_config ADD COLUMN IF NOT EXISTS stage_no INTEGER",
+        "ALTER TABLE planner_frame_agreement_op_config ADD COLUMN IF NOT EXISTS stage_desc TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE planner_frame_agreement_op_config ADD COLUMN IF NOT EXISTS cycle_min_per_piece NUMERIC NOT NULL DEFAULT 0",
+        "ALTER TABLE planner_frame_agreement_op_config ADD COLUMN IF NOT EXISTS pcs_per_pallet NUMERIC NOT NULL DEFAULT 0",
+        "ALTER TABLE planner_frame_agreement_op_config ADD COLUMN IF NOT EXISTS run_min_per_pallet NUMERIC NOT NULL DEFAULT 0",
+        "ALTER TABLE planner_frame_agreement_op_config ADD COLUMN IF NOT EXISTS pallets_count NUMERIC NOT NULL DEFAULT 0",
+        "ALTER TABLE planner_frame_agreement_op_config ADD COLUMN IF NOT EXISTS setup_minutes NUMERIC NOT NULL DEFAULT 0",
+        "ALTER TABLE planner_frame_agreement_op_config ADD COLUMN IF NOT EXISTS mpp_machine_no TEXT NOT NULL DEFAULT ''",
+    ):
+        con.execute(stmt)
     _SCHEMA_READY = True
-
-
-_BOM_STAGE_FILTER = """
-      AND (
-          s.stage_desc LIKE 'Turning%%'
-       OR s.stage_desc LIKE 'Milling%%'
-       OR s.stage_desc LIKE 'Turnmill%%'
-      )
-"""
 
 
 def _erp_query_dict(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
@@ -779,6 +753,7 @@ def search_frame_agreement_parts(db_query: Callable, search: str, *, limit: int 
 def _build_bom_variants(
     db_query: Callable, part_no: str, bom_codes: list[str]
 ) -> list[dict[str, Any]]:
+    op_counts = machining_op_counts_by_bom(db_query, part_no)
     variants: list[dict[str, Any]] = []
     for code in bom_codes:
         result = resolve_bom_materials(db_query, part_no, code)
@@ -795,6 +770,7 @@ def _build_bom_variants(
                 "primary_material_desc": summary["primary_material_desc"],
                 "qty_per_fg": summary["qty_per_fg"],
                 "material_count": int(summary["material_count"] or 0),
+                "machining_op_count": int(op_counts.get(code, 0)),
             }
         )
     return variants
@@ -1052,6 +1028,36 @@ def add_frame_agreement_part(
     }
 
 
+def _lookup_frame_agreement_part_row(con, part_no: str) -> dict[str, Any] | None:
+    part_no = compact_text(part_no)
+    if not part_no:
+        return None
+    row = one(
+        con.execute(
+            """
+            SELECT part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
+                   created_at, updated_at
+            FROM planner_frame_agreement_part
+            WHERE part_no = %s
+            """,
+            (part_no,),
+        )
+    )
+    if row:
+        return dict(row)
+    return one(
+        con.execute(
+            """
+            SELECT part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
+                   created_at, updated_at
+            FROM planner_frame_agreement_part
+            WHERE UPPER(TRIM(part_no)) = UPPER(TRIM(%s))
+            """,
+            (part_no,),
+        )
+    )
+
+
 def update_frame_agreement_part(
     con,
     part_no: str,
@@ -1077,6 +1083,11 @@ def update_frame_agreement_part(
     if not part_no:
         raise ValueError("part_no is required")
 
+    existing_part = _lookup_frame_agreement_part_row(con, part_no)
+    if not existing_part:
+        raise ValueError("Part not found")
+    part_no = compact_text(existing_part.get("part_no")) or part_no
+
     op_config_saved: dict[str, Any] | None = None
     if compact_text(bom_code) and normalize_op_no(op_no):
         op_config_saved = upsert_frame_agreement_op_config(
@@ -1101,6 +1112,15 @@ def update_frame_agreement_part(
     if notes is not None:
         updates.append("notes = %s")
         params.append(compact_text(notes))
+    if mpp_machine_no is not None:
+        updates.append("mpp_machine_no = %s")
+        params.append(normalize_mpp_machine_no(mpp_machine_no))
+    if mpp_run_min_per_pallet is not None:
+        updates.append("mpp_run_min_per_pallet = %s")
+        params.append(max(0.0, float(mpp_run_min_per_pallet)))
+    if mpp_setup_minutes is not None:
+        updates.append("mpp_setup_minutes = %s")
+        params.append(max(0.0, float(mpp_setup_minutes)))
     if not updates and op_config_saved is None:
         raise ValueError("No fields to update")
     row = None
@@ -1120,17 +1140,7 @@ def update_frame_agreement_part(
             )
         )
     else:
-        row = one(
-            con.execute(
-                """
-                SELECT part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
-                       created_at, updated_at
-                FROM planner_frame_agreement_part
-                WHERE part_no = %s
-                """,
-                (part_no,),
-            )
-        )
+        row = dict(existing_part)
     if not row:
         return None
     serialized = serialize_part_row(
@@ -1290,10 +1300,6 @@ SELECT
     COALESCE(erp.erp_req_qty, 0) AS erp_req_qty
 FROM partials p
 JOIN fa ON UPPER(TRIM(fa.part_no)) = UPPER(TRIM(p.part_no))
-LEFT JOIN fa_op
-  ON UPPER(TRIM(fa_op.part_no)) = UPPER(TRIM(p.part_no))
- AND TRIM(fa_op.bom_code) = TRIM(COALESCE(p.bom_code, ''))
- AND TRIM(fa_op.op_no) = TRIM(COALESCE(m.op_no::text, ''))
 JOIN mpp_steps m
   ON UPPER(TRIM(m.part_no)) = UPPER(TRIM(p.part_no))
  AND (
@@ -1301,6 +1307,10 @@ JOIN mpp_steps m
      OR TRIM(COALESCE(p.bom_code, '')) = ''
      OR TRIM(m.bom_code) = TRIM(p.bom_code)
  )
+LEFT JOIN fa_op
+  ON UPPER(TRIM(fa_op.part_no)) = UPPER(TRIM(p.part_no))
+ AND TRIM(fa_op.bom_code) = TRIM(COALESCE(p.bom_code, ''))
+ AND TRIM(fa_op.op_no) = TRIM(COALESCE(m.op_no::text, ''))
 LEFT JOIN ctm ct
   ON UPPER(TRIM(ct.part_no)) = UPPER(TRIM(p.part_no))
  AND (

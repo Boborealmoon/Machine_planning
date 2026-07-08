@@ -727,7 +727,7 @@ function soBindTableClicks() {
   wrap.dataset.detailBound = '1';
 
   wrap.addEventListener('click', e => {
-    if (e.target.closest('.so-editable-input, .so-editable-cell, .so-material-subcon-cell, .so-exception-cell')) return;
+    if (e.target.closest('.so-editable-input, .so-editable-cell, .so-material-subcon-cell, .so-exception-cell, .so-coway-edd-cell')) return;
 
     const materialBtn = e.target.closest('[data-action="open-material"]');
     if (materialBtn) {
@@ -1931,7 +1931,7 @@ function soRenderPpCells(pp, partial) {
     <td class="new-orders-desc" title="${escapeHtml(String(pp.description || ''))}">${escapeHtml(String(pp.description || '—'))}</td>
     <td class="new-orders-mono">${escapeHtml(String(pp.customer_po_no || '—'))}</td>
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.due_date))}</td>
-    <td class="new-orders-date">${escapeHtml(soFormatDate(soProposedEddDisplay(pp, partial)))}</td>
+    ${soRenderProposedEddCell(pp, partial)}
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.delivery_date))}</td>
     <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.unit_selling_price))}</td>
     <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.amount))}</td>
@@ -1967,6 +1967,40 @@ function soRenderMaterialSubconCell(pp) {
           aria-label="Material/Sub-con expected date">
         ${legacyHtml}
       </div>
+      <span class="so-editable-status" aria-live="polite"></span>
+    </td>
+  `;
+}
+
+function soProposedEddPsBase(pp) {
+  return String(pp?.process_sheet_no || pp?.pp_voucher_no || '').split('::')[0].trim();
+}
+
+function soProposedEddPsId(pp, partial) {
+  const base = soProposedEddPsBase(pp);
+  if (!base) return '';
+  const partialNo = soPartialNo(partial);
+  return partialNo > 1 ? `${base}::${partialNo}` : base;
+}
+
+function soRenderProposedEddCell(pp, partial) {
+  const ppNo = String(pp?.pp_voucher_no || '').trim();
+  const psId = soProposedEddPsId(pp, partial);
+  const value = String(soProposedEddDisplay(pp, partial) || '').slice(0, 10);
+  const editable = Boolean(psId);
+  if (!editable) {
+    return `<td class="new-orders-date so-coway-edd-cell"><span class="so-coway-edd-static">${escapeHtml(soFormatDate(value))}</span></td>`;
+  }
+  return `
+    <td class="new-orders-date so-coway-edd-cell">
+      <input type="date"
+        class="so-coway-edd-input"
+        value="${escapeHtml(value)}"
+        data-pp-voucher-no="${escapeHtml(ppNo)}"
+        data-ps-id="${escapeHtml(psId)}"
+        data-partial-no="${escapeHtml(String(soPartialNo(partial)))}"
+        data-last-saved="${escapeHtml(value)}"
+        aria-label="Proposed EDD">
       <span class="so-editable-status" aria-live="polite"></span>
     </td>
   `;
@@ -2119,7 +2153,7 @@ function soRenderOrderGroup(order, soGroupIndex = 0) {
 }
 
 function soSetSaveStatus(control, state, message) {
-  const status = control?.closest('.so-editable-cell, .so-material-subcon-cell')?.querySelector('.so-editable-status');
+  const status = control?.closest('.so-editable-cell, .so-material-subcon-cell, .so-coway-edd-cell')?.querySelector('.so-editable-status');
   if (!status) return;
   status.className = `so-editable-status${state ? ` is-${state}` : ''}`;
   status.textContent = message || '';
@@ -2195,6 +2229,59 @@ async function soSaveMaterialSubconCell(cell, nextValue) {
     soSyncMaterialSubconCell(cell, lastSaved);
     soSetSaveStatus(cell, 'error', err.message || 'Save failed');
   } finally {
+    soState.saveInFlight.delete(key);
+  }
+}
+
+function soUpdateProposedEddModel(ppNo, partialNo, savedValue) {
+  const found = soFindPp(ppNo);
+  if (!found.pp) return;
+  const target = Math.max(1, Number(partialNo) || 1);
+  const partials = Array.isArray(found.pp.partials) ? found.pp.partials : [];
+  const match = partials.find(row => soPartialNo(row) === target);
+  if (match) match.coway_proposed_edd = savedValue;
+  if (!partials.length || target === 1) found.pp.coway_proposed_edd = savedValue;
+}
+
+async function soSaveProposedEdd(input) {
+  const cell = input?.closest('.so-coway-edd-cell');
+  const ppNo = String(input?.dataset?.ppVoucherNo || '').trim();
+  const psId = String(input?.dataset?.psId || '').trim();
+  const partialNo = Math.max(1, Number(input?.dataset?.partialNo) || 1);
+  if (!psId) return;
+
+  const nextValue = String(input.value || '').slice(0, 10);
+  const lastSaved = String(input.dataset.lastSaved || '');
+  if (nextValue === lastSaved) return;
+
+  const key = `${psId}::coway_proposed_edd`;
+  if (soState.saveInFlight.has(key)) return;
+
+  soState.saveInFlight.add(key);
+  input.disabled = true;
+  soSetSaveStatus(input, 'saving', 'Saving…');
+  try {
+    const res = await fetch('/api/process-sheets/coway-proposed-edd', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ps_id: psId, coway_proposed_edd: nextValue || null }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    const saved = String(data.coway_proposed_edd || '').slice(0, 10);
+    input.value = saved;
+    input.dataset.lastSaved = saved;
+    soUpdateProposedEddModel(ppNo, partialNo, saved);
+    soSetSaveStatus(input, 'saved', 'Saved');
+    window.setTimeout(() => {
+      if (input.dataset.lastSaved === saved) soSetSaveStatus(input, '', '');
+    }, 1500);
+  } catch (err) {
+    input.value = lastSaved;
+    soSetSaveStatus(input, 'error', err.message || 'Save failed');
+  } finally {
+    input.disabled = false;
     soState.saveInFlight.delete(key);
   }
 }
@@ -2332,6 +2419,19 @@ function soBindMaterialSubconInputs() {
       arrived: false,
       date: dateInput.value,
     }));
+  });
+}
+
+function soBindProposedEddInputs() {
+  const body = document.getElementById('so-table-body');
+  if (!body || body.dataset.cowayEddBound === '1') return;
+  body.dataset.cowayEddBound = '1';
+
+  body.addEventListener('change', e => {
+    const input = e.target.closest('.so-coway-edd-input');
+    if (!input || input.disabled) return;
+    e.stopPropagation();
+    soSaveProposedEdd(input);
   });
 }
 
@@ -2593,6 +2693,7 @@ function soInit() {
   soBindTableScroll();
   soBindColumnControls();
   soBindMaterialSubconInputs();
+  soBindProposedEddInputs();
   soBindExceptionFlags();
   soBindPsTypeDropdown();
   soRenderTableHead();

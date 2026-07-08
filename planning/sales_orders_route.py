@@ -729,6 +729,7 @@ wo AS (
         t3.execution_status,
         NULLIF(t2.stage_no::TEXT, '')::INTEGER AS stage_no,
         TRIM(COALESCE(t3.stage_desc, '')) AS stage_desc,
+        t3.wo_qty_required,
         t3.total_acc_qty_produced
     FROM mfg_mps_vch t2
     JOIN mfg_wo_vch t3
@@ -746,7 +747,14 @@ agg AS (
         ps_base,
         pp_partial_no,
         COUNT(*)::int AS erp_wo_stage_count,
-        BOOL_AND(UPPER(COALESCE(execution_status, '')) IN ('C', 'COMPLETED')) AS erp_all_wo_complete
+        BOOL_AND(
+            UPPER(COALESCE(execution_status, '')) IN ('C', 'COMPLETED')
+            AND (
+                COALESCE(wo_qty_required, 0) <= 0.0001
+                OR COALESCE(total_acc_qty_produced, 0)
+                   >= COALESCE(wo_qty_required, 0) - 0.0001
+            )
+        ) AS erp_all_wo_complete
     FROM wo
     GROUP BY ps_base, pp_partial_no
 ),

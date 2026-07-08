@@ -28,6 +28,11 @@
     day: { label: 'Day', window: '08:30–20:00' },
     night: { label: 'Night', window: '20:00–08:30' },
   };
+  /** Debounced autosave delay after the last queue edit. */
+  const QUEUE_SAVE_DEBOUNCE_MS = 1200;
+  /** Retry failed queue saves; also flush if still pending while idle. */
+  const QUEUE_SAVE_RETRY_MS = 5000;
+  const QUEUE_SAVE_IDLE_FLUSH_MS = 30000;
 
   function loadHiddenMachineIds() {
     try {
@@ -951,7 +956,7 @@
       syncEl.textContent = 'Saving queue…';
       syncEl.className = 'mpp-queue-sync mpp-queue-sync--saving';
     } else if (queueSyncStatus === 'pending') {
-      syncEl.textContent = 'Unsaved changes';
+      syncEl.textContent = 'Autosave pending…';
       syncEl.className = 'mpp-queue-sync mpp-queue-sync--pending';
     } else if (queueSyncStatus === 'error') {
       syncEl.textContent = queueSaveError ? `Save failed — ${queueSaveError}` : 'Save failed';
@@ -1099,6 +1104,7 @@
     } catch (err) {
       queueSyncStatus = 'error';
       queueSaveError = err?.message || 'save failed';
+      scheduleQueueSaveRetry();
     } finally {
       queueSaveInFlight = false;
       updateJobsSourceBadge();
@@ -1107,6 +1113,41 @@
         scheduleQueueSave();
       }
     }
+  }
+
+  function queueSaveUrl() {
+    return '/api/mpp-planner/queue';
+  }
+
+  function flushQueueSaveOnExit() {
+    if (suppressQueueSave || !queueHydrated) return;
+    if (queueSyncStatus !== 'pending' && queueSyncStatus !== 'error') return;
+    clearTimeout(queueSaveTimer);
+    queueSaveTimer = null;
+    clearTimeout(queueSaveRetryTimer);
+    queueSaveRetryTimer = null;
+    try {
+      const body = JSON.stringify(buildQueueSavePayload());
+      if (typeof fetch === 'function') {
+        fetch(queueSaveUrl(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          keepalive: true,
+        }).catch(() => { /* page is unloading */ });
+      }
+    } catch { /* ignore */ }
+  }
+
+  function scheduleQueueSaveRetry() {
+    clearTimeout(queueSaveRetryTimer);
+    queueSaveRetryTimer = window.setTimeout(() => {
+      queueSaveRetryTimer = null;
+      if (queueSyncStatus !== 'error' || !queueHydrated || suppressQueueSave) return;
+      queueSyncStatus = 'pending';
+      updateJobsSourceBadge();
+      flushQueueSave();
+    }, QUEUE_SAVE_RETRY_MS);
   }
 
   function scheduleQueueSave() {
@@ -1118,10 +1159,12 @@
     queueSyncStatus = 'pending';
     updateJobsSourceBadge();
     clearTimeout(queueSaveTimer);
+    clearTimeout(queueSaveRetryTimer);
+    queueSaveRetryTimer = null;
     queueSaveTimer = window.setTimeout(() => {
       queueSaveTimer = null;
       flushQueueSave();
-    }, 1200);
+    }, QUEUE_SAVE_DEBOUNCE_MS);
   }
 
   async function loadFrameAgreementJobs() {
@@ -1292,6 +1335,8 @@
   let state = defaultState();
   let queueHydrated = false;
   let queueSaveTimer = null;
+  let queueSaveRetryTimer = null;
+  let queueSaveIdleTimer = null;
   let queueSaveInFlight = false;
   let queueSavePending = false;
   let queueSyncStatus = 'idle';
@@ -1698,13 +1743,20 @@
     return renderCollapsedCycleRun(machineId, run, runIdx);
   }
 
-  function findRunContext(runKey) {
-    for (const [machineId, lane] of Object.entries(state.machines)) {
-      const machine = machineById(machineId);
+  function findRunContext(runKey, machineId = null, fingerprint = null) {
+    const entries = machineId && state.machines[machineId]
+      ? [[machineId, state.machines[machineId]]]
+      : Object.entries(state.machines);
+    for (const [mid, lane] of entries) {
+      if (!lane) continue;
+      const machine = machineById(mid);
       const scheduled = scheduleLane(lane, machine);
       const runs = groupIdenticalCycleRuns(scheduled);
-      const run = runs.find((r) => r.items[0]?.cycle.cycleId === runKey);
-      if (run) return { machineId, machine, run, scheduled };
+      let run = runs.find((r) => r.items[0]?.cycle.cycleId === runKey);
+      if (!run && fingerprint) {
+        run = runs.find((r) => r.fingerprint === fingerprint && r.items.length > 1);
+      }
+      if (run) return { machineId: mid, machine, run, scheduled };
     }
     return null;
   }
@@ -1717,7 +1769,13 @@
 
   function openCycleRunModal(machineId, runKey) {
     if (!machineId || !runKey) return;
-    cycleRunModal = { machineId, runKey };
+    const ctx = findRunContext(runKey, machineId);
+    if (!ctx || ctx.run.items.length <= 1) return;
+    cycleRunModal = {
+      machineId,
+      runKey: ctx.run.items[0].cycle.cycleId,
+      fingerprint: ctx.run.fingerprint,
+    };
     renderCycleRunModal();
     const el = document.getElementById('mpp-run-modal');
     if (el) el.hidden = false;
@@ -1738,11 +1796,17 @@
     const title = document.getElementById('mpp-run-modal-title');
     const sub = document.getElementById('mpp-run-modal-sub');
     if (!cycleRunModal || !body || !title || !sub) return;
-    const ctx = findRunContext(cycleRunModal.runKey);
+    const ctx = findRunContext(
+      cycleRunModal.runKey,
+      cycleRunModal.machineId,
+      cycleRunModal.fingerprint,
+    );
     if (!ctx || ctx.run.items.length <= 1) {
       closeCycleRunModal();
       return;
     }
+    cycleRunModal.runKey = ctx.run.items[0].cycle.cycleId;
+    cycleRunModal.fingerprint = ctx.run.fingerprint;
     const { machine, run, scheduled } = ctx;
     const first = run.items[0];
     const last = run.items[run.items.length - 1];
@@ -2370,7 +2434,6 @@
     if (!found) return;
     found.lane.cycles = found.lane.cycles.filter((c) => c.cycleId !== cycleId);
     if (cycleDetailModalCycleId === cycleId) closeCycleDetailModal();
-    if (cycleRunModal?.runKey === cycleId) closeCycleRunModal();
     if (reviewModalCycleId === cycleId) closeReviewPanel();
     render();
   }
@@ -3052,12 +3115,38 @@
     if (!queueOk && !queueLoadError) {
       queueLoadError = 'could not load saved queue';
     }
-    queueHydrated = true;
+    queueHydrated = queueOk;
     skipNextQueueSave = true;
     updateJobsSourceBadge();
     updateJobsStatusLine();
     render();
+    startQueueSaveIdleFlush();
   }
+
+  function startQueueSaveIdleFlush() {
+    clearInterval(queueSaveIdleTimer);
+    queueSaveIdleTimer = window.setInterval(() => {
+      if (!queueHydrated || suppressQueueSave || queueSaveInFlight) return;
+      if (queueSyncStatus === 'pending') flushQueueSave();
+      else if (queueSyncStatus === 'error') scheduleQueueSaveRetry();
+    }, QUEUE_SAVE_IDLE_FLUSH_MS);
+  }
+
+  window.addEventListener('pagehide', flushQueueSaveOnExit);
+  window.addEventListener('beforeunload', flushQueueSaveOnExit);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      if (queueSyncStatus === 'pending' && !queueSaveInFlight) {
+        clearTimeout(queueSaveTimer);
+        queueSaveTimer = null;
+        flushQueueSave();
+      } else {
+        flushQueueSaveOnExit();
+      }
+      return;
+    }
+    if (queueSyncStatus === 'error') scheduleQueueSaveRetry();
+  });
 
   initMppPlanner();
 })();

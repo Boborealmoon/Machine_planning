@@ -252,7 +252,15 @@ function trialCatalogHandlePointerMove(e) {
     const ctx = typeof trialCatalogDragContextFromElement === 'function'
       ? trialCatalogDragContextFromElement(state.sourceEl)
       : null;
-    if (ctx) {
+    const workCard = ctx?.workCard;
+    const psRow = ctx?.psRow;
+    const eligibility = workCard && typeof trialCatalogOpDragEligibility === 'function'
+      ? trialCatalogOpDragEligibility(workCard, psRow)
+      : null;
+    if (eligibility) {
+      state.canDrag = eligibility.ok;
+      state.dragBlockReason = eligibility.reason || '';
+    } else if (ctx) {
       state.canDrag = ctx.canDrag;
       state.dragBlockReason = ctx.dragBlockReason || '';
     }
@@ -457,7 +465,6 @@ function bindTrialCatalogDnD() {
         'button, a, input, select, textarea, label, [contenteditable="true"], .trial-catalog-op-remove, .trial-catalog-op-uncombine',
       );
       if (interactive) return;
-      if (el.dataset.isComplete === 'true') return;
       const dragCtx = typeof trialCatalogDragContextFromElement === 'function'
         ? trialCatalogDragContextFromElement(el)
         : null;
@@ -475,23 +482,13 @@ function bindTrialCatalogDnD() {
         toast('Already queuing this operation — please wait.', 'info');
         return;
       }
-      if (catalogCard && trialIsCatalogOpFullyQueued(catalogCard)) {
-        const machines = trialQueuedMachineCodesForCatalogOp(catalogCard);
-        toast(
-          machines.length
-            ? `Fully queued on ${machines.join(', ')} — remove a run block to reschedule.`
-            : 'This operation is already fully queued.',
-          'info',
-        );
-        return;
-      }
-      if (catalogCard && typeof trialCatalogOpIsComplete === 'function'
-        && trialCatalogOpIsComplete(catalogCard, dragCtx?.psRow)) {
-        return;
-      }
-      const eligibility = dragCtx?.workCard && typeof trialCatalogOpDragEligibility === 'function'
-        ? trialCatalogOpDragEligibility(dragCtx.workCard, dragCtx.psRow)
+      const eligibility = (dragCtx?.workCard || catalogCard) && typeof trialCatalogOpDragEligibility === 'function'
+        ? trialCatalogOpDragEligibility(dragCtx?.workCard || catalogCard, dragCtx?.psRow)
         : null;
+      if (eligibility && !eligibility.ok) {
+        if (eligibility.reason) toast(eligibility.reason, 'info');
+        return;
+      }
       const canDrag = eligibility ? eligibility.ok : (dragCtx ? dragCtx.canDrag : String(el.dataset.canDrag || '') === '1');
       const dragBlockReason = eligibility?.reason || dragCtx?.dragBlockReason || '';
       trialCatalogPointerDrag = {

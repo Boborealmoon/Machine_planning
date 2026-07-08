@@ -120,7 +120,7 @@ def main():
 
         from planning.erp_cache_refresh import refresh_after_erp_sync
 
-        refresh_after_erp_sync(warm=False, background=False)
+        refresh_after_erp_sync(warm=True, background=False)
 
         notify_result = None
         try:

@@ -44,6 +44,8 @@ const FQ_PS_TYPES_DEFAULT = new Set(['APS', 'NPS']);
 
 const fqState = {
   items: [],
+  materialIssueItems: [],
+  materialIssueHint: '',
   inspectors: [],
   inspectorBusy: false,
   assignmentCounts: {},
@@ -212,7 +214,14 @@ function fqRenderGroupRow(label, { count = 0, exceptions = 0, nextQa = '' } = {}
 }
 
 function fqActiveSourceItems() {
+  if (fqState.screen === 'material_issue') {
+    return fqState.materialIssueItems || [];
+  }
   return fqState.items || [];
+}
+
+function fqIsMaterialIssueScreen() {
+  return fqState.screen === 'material_issue';
 }
 
 function fqIsQueueTableVisible() {
@@ -358,7 +367,7 @@ function fqMatchesPsType(item) {
 }
 
 function fqItemsMatchingPsTypes() {
-  return (fqState.items || []).filter(fqMatchesPsType);
+  return fqActiveSourceItems().filter(fqMatchesPsType);
 }
 
 function fqFilteredItems() {
@@ -366,8 +375,8 @@ function fqFilteredItems() {
 
   const filtered = (source || []).filter((item) => {
     if (!fqMatchesPsType(item)) return false;
-    if (fqState.hideDone && item.checklist_done) return false;
-    if (fqState.screen !== 'assignments' && fqState.stage !== 'all' && item.stage_bucket !== fqState.stage) {
+    if (!fqIsMaterialIssueScreen() && fqState.hideDone && item.checklist_done) return false;
+    if (fqState.screen !== 'assignments' && !fqIsMaterialIssueScreen() && fqState.stage !== 'all' && item.stage_bucket !== fqState.stage) {
       return false;
     }
     if (fqState.screen === 'assignments' && fqState.assignee !== 'all') {
@@ -858,6 +867,8 @@ function fqRecalcCounts() {
   setCount('fq-count-final_inspection', stageCounts.final_inspection);
   setCount('fq-count-packing', stageCounts.packing);
   setCount('fq-count-engraving_packing', stageCounts.engraving_packing);
+  const miaItems = (fqState.materialIssueItems || []).filter(fqMatchesPsType);
+  setCount('fq-count-material_issue', miaItems.length);
 }
 
 function fqUpdateCounts() {
@@ -936,6 +947,97 @@ function fqRowActionCells(item) {
     <button type="button" class="fq-icon-btn fq-icon-btn--done${done ? ' is-on' : ''}" data-fq-toggle="checklist_done" ${attrs} aria-pressed="${done ? 'true' : 'false'}" title="${done ? 'Mark not done' : 'Mark done'}">✓</button>
     <button type="button" class="fq-icon-btn fq-icon-btn--flag${flagged ? ' is-on' : ''}" data-fq-toggle="exception_flag" ${attrs} aria-pressed="${flagged ? 'true' : 'false'}" title="${flagged ? 'Clear exception' : 'Flag exception'}">!</button>
   </div>`;
+}
+
+function fqMaterialInPill(item) {
+  const yes = Boolean(item?.material_in);
+  return `<span class="fq-mia-pill ${yes ? 'fq-mia-pill--yes' : 'fq-mia-pill--no'}">${yes ? 'Yes' : 'No'}</span>`;
+}
+
+function fqRenderMaterialIssueRow(item) {
+  const psId = String(item?.ps_id || '').trim() || '—';
+  const partial = Number(item?.pp_partial_no) > 1 ? item.pp_partial_no : null;
+  return `
+    <tr class="fq-row fq-row--material-issue">
+      <td class="fq-col-sticky fq-col-sticky--job">
+        <div class="fq-job-cell">
+          <span class="fq-job-ps">${escapeHtml(psId)}</span>
+          ${partial ? `<span class="fq-partial-tag">P${escapeHtml(partial)}</span>` : ''}
+        </div>
+        <span class="fq-stage-badge fq-stage-badge--material_issue">${escapeHtml(item?.current_stage_desc || 'Material Issue & Assembly')}</span>
+      </td>
+      <td class="fq-col-mono">${escapeHtml(item?.part_no || '—')}</td>
+      <td>${escapeHtml(item?.part_desc || '—')}</td>
+      <td>${fqStatusPill(item?.current_stage_status)}</td>
+      <td class="fq-col-num">${escapeHtml(fqFormatQty(item?.qty))}</td>
+      <td class="fq-col-num">${escapeHtml(fqFormatQty(item?.so_det_qty))}</td>
+      <td class="fq-col-num">${escapeHtml(fqFormatQty(item?.qty_shipped))}</td>
+      <td class="fq-col-date">${escapeHtml(fqFormatDate(item?.due_date))}</td>
+      <td class="fq-col-date">${escapeHtml(fqFormatDate(item?.coway_proposed_edd))}</td>
+      <td>${fqMaterialInPill(item)}</td>
+      <td class="fq-col-remarks">${escapeHtml(item?.remarks || '—')}</td>
+    </tr>
+  `;
+}
+
+function fqRenderMaterialIssueTable() {
+  fqUpdateScreenChrome();
+  const filtered = fqFilteredItems();
+  const miaWrap = document.getElementById('fq-mia-table-wrap');
+  const qaWrap = document.getElementById('fq-table-wrap');
+  const empty = document.getElementById('fq-empty');
+  const emptyText = document.getElementById('fq-empty-text');
+  const stats = document.getElementById('fq-stats');
+  const meta = document.getElementById('fq-meta');
+  const tbody = document.getElementById('fq-mia-table-body');
+
+  if (qaWrap) qaWrap.hidden = true;
+  fqHideLoading();
+
+  if (!tbody || !miaWrap || !empty) {
+    fqShowLoadError('Material issue table markup is missing from the page — hard refresh or restart the app.');
+    return;
+  }
+
+  const hasAny = (fqState.materialIssueItems || []).length > 0;
+  const hasPsFiltered = fqItemsMatchingPsTypes().length > 0;
+
+  if (!hasAny) {
+    miaWrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) {
+      emptyText.textContent = fqState.materialIssueHint
+        || 'No open jobs with an assembly WO stage (SO qty not fully shipped).';
+    }
+    if (stats) stats.textContent = '';
+    if (meta) meta.hidden = true;
+    return;
+  }
+
+  if (!hasPsFiltered) {
+    miaWrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) emptyText.textContent = 'No jobs match the selected PS types.';
+    if (stats) stats.textContent = '';
+    fqRecalcCounts();
+    return;
+  }
+
+  if (!filtered.length) {
+    miaWrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) emptyText.textContent = 'No jobs match the selected PS types.';
+  } else {
+    miaWrap.hidden = false;
+    empty.hidden = true;
+    tbody.innerHTML = filtered.map((item) => fqRenderMaterialIssueRow(item)).join('');
+  }
+
+  if (stats) {
+    stats.textContent = `${filtered.length} job${filtered.length === 1 ? '' : 's'} with assembly stage`;
+  }
+  if (meta) meta.hidden = true;
+  fqRecalcCounts();
 }
 
 function fqRenderDataRow(item) {
@@ -1157,8 +1259,11 @@ function fqUpdateScreenChrome() {
   const screen = fqState.screen;
   const queueMode = screen === 'queue';
   const assignMode = screen === 'assignments';
+  const miaMode = screen === 'material_issue';
 
   document.getElementById('fq-stage-filter-wrap')?.classList.toggle('is-hidden', !queueMode);
+  document.getElementById('fq-hide-done')?.classList.toggle('is-hidden', miaMode);
+  document.getElementById('fq-manage-inspectors')?.classList.toggle('is-hidden', miaMode);
 
   document.querySelectorAll('[data-fq-stage]').forEach((btn) => {
     const active = btn.dataset.fqStage === fqState.stage;
@@ -1176,6 +1281,10 @@ function fqUpdateScreenChrome() {
   tableWrap?.classList.toggle('fq-table-card--assignments', assignMode);
   tableWrap?.classList.toggle('fq-table-card--queue', queueMode);
   tableWrap?.classList.toggle('fq-table-card--assignee-filtered', assignMode && fqState.assignee !== 'all');
+  if (miaMode && tableWrap) tableWrap.hidden = true;
+
+  const miaWrap = document.getElementById('fq-mia-table-wrap');
+  if (miaWrap && !miaMode) miaWrap.hidden = true;
 
   if (assignMode) {
     fqRenderAssigneeBoard();
@@ -1189,6 +1298,10 @@ function fqUpdateScreenChrome() {
 }
 
 function fqRenderTable() {
+  if (fqIsMaterialIssueScreen()) {
+    fqRenderMaterialIssueTable();
+    return;
+  }
   fqUpdateScreenChrome();
   const filtered = fqFilteredItems();
   const tbody = document.getElementById('fq-table-body');
@@ -1294,6 +1407,10 @@ async function fqFetchJson(url, { timeoutMs = 20000 } = {}) {
 
 function fqApplyPayload(payload) {
   fqState.items = payload.items || [];
+  fqState.materialIssueItems = payload.material_issue_items || [];
+  fqState.materialIssueHint = (!fqState.materialIssueItems.length && payload.material_issue_hint)
+    ? payload.material_issue_hint
+    : '';
   fqState.inspectors = payload.inspectors || [];
   fqState.assignmentCounts = payload.assignment_counts || {};
   fqState.cachedAt = payload.cached_at || '';
@@ -1304,6 +1421,9 @@ function fqApplyPayload(payload) {
   fqRecalcAssignmentCounts();
   fqUpdateCounts();
   fqRenderTable();
+  if (fqIsMaterialIssueScreen() && !fqState.materialIssueItems.length) {
+    void fqReloadMaterialIssueItems();
+  }
 }
 
 window.fqApplyPayload = fqApplyPayload;
@@ -1363,6 +1483,32 @@ function fqSetScreen(screen) {
   }
   fqCloseDetail();
   fqRenderTable();
+  if (fqState.screen === 'material_issue' && !(fqState.materialIssueItems || []).length) {
+    void fqReloadMaterialIssueItems();
+  }
+}
+
+async function fqReloadMaterialIssueItems() {
+  try {
+    const payload = await fqFetchJson(fqApiUrl('queue'));
+    fqState.materialIssueItems = payload.material_issue_items || [];
+    fqState.materialIssueHint = (!fqState.materialIssueItems.length && payload.material_issue_hint)
+      ? payload.material_issue_hint
+      : '';
+    fqRecalcCounts();
+    if (fqIsMaterialIssueScreen()) fqRenderMaterialIssueTable();
+  } catch (err) {
+    if (fqIsMaterialIssueScreen()) {
+      fqShowLoadError(`Failed to load material issue jobs: ${err.message || err}`);
+    }
+  }
+}
+
+function fqInitScreenFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('tab') === 'material_issue') {
+    fqSetScreen('material_issue');
+  }
 }
 
 window.fqSetScreen = fqSetScreen;
@@ -1646,9 +1792,10 @@ function fqInit() {
     }
 
     const boot = window.__FQ_BOOTSTRAP__;
-    if (boot && Array.isArray(boot.items)) {
+    if (boot && (Array.isArray(boot.items) || Array.isArray(boot.material_issue_items))) {
       try {
         fqApplyPayload(boot);
+        fqInitScreenFromUrl();
         fqHideLoading();
         window.__fqInteractive = true;
         document.body.classList.add('fq-interactive-ready');
@@ -1663,6 +1810,7 @@ function fqInit() {
     if (!window.__fqLoadStarted) {
       window.__fqLoadStarted = true;
       fqLoad().finally(() => {
+        fqInitScreenFromUrl();
         window.__fqBootDone = true;
         window.__fqInteractive = true;
         document.body.classList.add('fq-interactive-ready');

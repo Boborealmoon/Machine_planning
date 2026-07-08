@@ -434,11 +434,20 @@ def run_sync(force: bool = False) -> dict:
             row_count,
             int((time.monotonic() - t0) * 1000),
         )
+        catalog_summary = None
+        try:
+            from app import rebuild_pp_vouchers_with_ops_catalog
+
+            catalog_summary = rebuild_pp_vouchers_with_ops_catalog()
+        except Exception as exc:
+            log.warning("pp-vouchers with-ops prebuild after cache rebuild failed: %s", exc)
+            catalog_summary = {"error": str(exc)}
         return {
             "synced_at": datetime.now(timezone.utc).isoformat(),
             "duration_ms": int((time.monotonic() - t0) * 1000),
             "row_count": row_count,
             "reload": reload_mode,
+            "catalog": catalog_summary,
         }
 
     finally:

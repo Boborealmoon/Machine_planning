@@ -179,9 +179,91 @@ def api_add_frame_agreement_part():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@frame_agreement_bp.post("/api/planning-data/frame-agreement-parts/save-op-config")
+def api_save_frame_agreement_op_config():
+    """Save MPP pallet config for one operation (part_no in JSON body — no URL encoding issues)."""
+    data = request.get_json(force=True, silent=True) or {}
+    part_no = compact_text(data.get("part_no"))
+    bom_code = compact_text(data.get("bom_code"))
+    op_no = data.get("op_no")
+    if not part_no:
+        return jsonify({"ok": False, "error": "part_no is required"}), 400
+    if not bom_code:
+        return jsonify({"ok": False, "error": "bom_code is required"}), 400
+    if not compact_text(op_no):
+        return jsonify({"ok": False, "error": "op_no is required"}), 400
+    updates: dict[str, Any] = {"bom_code": bom_code, "op_no": op_no}
+    for key in (
+        "stage_no",
+        "stage_desc",
+        "cycle_min_per_piece",
+        "pcs_per_pallet",
+        "run_min_per_pallet",
+        "pallets_count",
+        "setup_minutes",
+        "mpp_machine_no",
+        "notes",
+        "mpp_run_min_per_pallet",
+        "mpp_setup_minutes",
+        "mpp_pcs_per_pallet",
+        "mpp_pallets_per_cycle",
+    ):
+        if key in data:
+            updates[key] = data.get(key)
+    try:
+        with planner_db() as con:
+            row = update_frame_agreement_part(con, part_no, **updates)
+        if not row:
+            return jsonify({"ok": False, "error": "Part not found"}), 404
+        invalidate_sales_orders_cache()
+        return jsonify({"ok": True, "row": row})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        friendly = planner_db_connect_error(exc)
+        if friendly:
+            return jsonify({"ok": False, "error": friendly}), 503
+        logger.exception("frame agreement op config save failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@frame_agreement_bp.post("/api/planning-data/frame-agreement-parts/save-part")
+def api_save_frame_agreement_part():
+    """Save part-level notes / default MPP machine."""
+    data = request.get_json(force=True, silent=True) or {}
+    part_no = compact_text(data.get("part_no"))
+    if not part_no:
+        return jsonify({"ok": False, "error": "part_no is required"}), 400
+    updates: dict[str, Any] = {}
+    for key in ("notes", "mpp_machine_no", "mpp_run_min_per_pallet", "mpp_setup_minutes"):
+        if key in data:
+            updates[key] = data.get(key)
+    if not updates:
+        return jsonify({"ok": False, "error": "No fields to update"}), 400
+    try:
+        with planner_db() as con:
+            row = update_frame_agreement_part(con, part_no, **updates)
+        if not row:
+            return jsonify({"ok": False, "error": "Part not found"}), 404
+        invalidate_sales_orders_cache()
+        return jsonify({"ok": True, "row": row})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        friendly = planner_db_connect_error(exc)
+        if friendly:
+            return jsonify({"ok": False, "error": friendly}), 503
+        logger.exception("frame agreement part save failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @frame_agreement_bp.patch("/api/planning-data/frame-agreement-parts/<path:part_no>")
+@frame_agreement_bp.post("/api/planning-data/frame-agreement-parts/<path:part_no>")
+@frame_agreement_bp.post("/api/planning-data/frame-agreement-parts/<path:part_no>/save")
 def api_update_frame_agreement_part(part_no: str):
     data = request.get_json(force=True, silent=True) or {}
+    if compact_text(data.get("part_no")):
+        part_no = compact_text(data.get("part_no"))
     updates: dict[str, Any] = {}
     for key in (
         "notes",

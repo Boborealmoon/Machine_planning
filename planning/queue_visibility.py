@@ -108,11 +108,35 @@ def _catalog_op_is_open(card: dict) -> bool:
 
 
 
+def _is_mpp_planner_mirror_block(block) -> bool:
+    """True for rows mirrored from the MPP planner tab onto CNC 35/36/41."""
+    if not block:
+        return False
+    if block.get("is_mpp_planner_mirror"):
+        return True
+    if str(block.get("group_type") or "").upper() == "MPP_CYCLE":
+        return True
+    group_label = compact_text(block.get("group_label")).lower()
+    return group_label.startswith("mpp cycle")
+
+
 def _stale_queue_good_qty(block) -> bool:
     """queue_state can inherit the wrong ERP stage after BOM relinks."""
     exec_status = _normalize_exec_status(block.get("execution_status") or block.get("status"))
     if exec_status not in {"", "NOT_STARTED", "PLANNED", "PENDING_SI"}:
         return False
+    scheduled = float(block.get("scheduled_qty") or 0)
+    good = float(
+        block.get("qs_good_qty")
+        or block.get("good_qty")
+        or block.get("actual_good_qty")
+        or 0
+    )
+    if good <= QTY_TOL:
+        return False
+    # Inflated queue_state from another WO/op stage — not real output on this block.
+    if scheduled > QTY_TOL and good > scheduled + QTY_TOL:
+        return True
     qs_good = float(block.get("qs_good_qty") or block.get("good_qty") or 0)
     if qs_good <= QTY_TOL:
         return False
@@ -226,6 +250,8 @@ def _block_completed_by_catalog(block, op_cards_by_partial) -> bool:
 
 
 def _row_done_for_queue(block, op_cards_by_partial) -> bool:
+    if _is_mpp_planner_mirror_block(block):
+        return False
 
     if _execution_done(block.get("execution_status") or block.get("status")):
 
@@ -291,6 +317,8 @@ def apply_lane_due_dates_from_catalog(blocks, due_by_partial) -> None:
 
 def _row_done_fast_for_lane(block) -> bool:
     """Hide lane rows by status/qty only — no with-ops catalog round trip."""
+    if _is_mpp_planner_mirror_block(block):
+        return False
     if _execution_done(block.get("execution_status") or block.get("status")):
         return True
     scheduled = float(block.get("scheduled_qty") or 0)

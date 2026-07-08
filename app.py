@@ -1,8 +1,10 @@
+import json
 import logging
 import os
 import secrets
 import threading
 import time
+from pathlib import Path
 from flask import Flask, render_template, jsonify, request, redirect, session, url_for
 from dotenv import load_dotenv
 
@@ -12,8 +14,9 @@ _APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_APP_ROOT, ".env"))
 
 app = Flask(__name__)
-app.config["TEMPLATES_AUTO_RELOAD"] = True
-app.jinja_env.auto_reload = True
+_dev_mode = os.getenv("FLASK_ENV", "").strip().lower() == "development"
+app.config["TEMPLATES_AUTO_RELOAD"] = _dev_mode
+app.jinja_env.auto_reload = _dev_mode
 
 # ── Planning blueprints ────────────────────────────────────────────────────
 from planning.process_sheets import process_sheets_bp
@@ -25,6 +28,7 @@ from planning.planner_routes import trial_bp
 from planning.program_tool_list_route import program_tool_list_bp
 from planning.new_orders_route import new_orders_bp
 from planning.sales_orders_route import sales_orders_bp
+from planning.pending_pp_route import pending_pp_bp
 from planning.sales_report_route import sales_report_bp
 from planning.job_ratio_route import job_ratio_bp
 from planning.material_inspection_route import material_inspection_bp
@@ -47,6 +51,7 @@ from planning.finishing_queue_route import (
 )
 from planning.driver_view_route import (
     DRIVER_VIEW_PATH,
+    _LEGACY_DRIVER_VIEW_PATH,
     driver_view_bp,
 )
 from planning.capacity_monthly_route import capacity_monthly_bp
@@ -69,6 +74,7 @@ app.register_blueprint(trial_bp)
 app.register_blueprint(program_tool_list_bp)
 app.register_blueprint(new_orders_bp)
 app.register_blueprint(sales_orders_bp)
+app.register_blueprint(pending_pp_bp)
 app.register_blueprint(sales_report_bp)
 app.register_blueprint(job_ratio_bp)
 app.register_blueprint(material_inspection_bp)
@@ -201,7 +207,9 @@ def _normalize_gate_path(path: str) -> str:
 _FINISHING_QUEUE_PUBLIC_PATHS = frozenset(
     {FINISHING_QUEUE_PATH.lower(), *(p.lower() for p in LEGACY_FINISHING_QUEUE_PATHS)}
 )
-_DRIVER_VIEW_PUBLIC_PATHS = frozenset({DRIVER_VIEW_PATH.lower()})
+_DRIVER_VIEW_PUBLIC_PATHS = frozenset(
+    {DRIVER_VIEW_PATH.lower(), _LEGACY_DRIVER_VIEW_PATH.lower()}
+)
 
 
 def _is_gate_public_path(path: str) -> bool:
@@ -247,6 +255,7 @@ def _scheduler_asset_version() -> str:
     root = os.path.dirname(os.path.abspath(__file__))
     watch = (
         "static/js/scheduler/data.js",
+        "static/js/scheduler/catalog_op_rules.js",
         "static/js/scheduler/api.js",
         "static/js/scheduler/dnd.js",
         "static/js/scheduler/render.js",
@@ -586,6 +595,14 @@ _PP_VOUCHERS_WITH_OPS_CACHE_LOCK = threading.Lock()
 # In-process catalog payload — avoids re-querying Supabase on every planner load.
 _PP_VOUCHERS_WITH_OPS_TTL_SECS = int(os.getenv("PP_VOUCHERS_WITH_OPS_TTL_SECS", "300"))
 _PP_VOUCHERS_STALE_SECS = int(os.getenv("PP_VOUCHERS_STALE_SECS", "86400"))
+_PP_VOUCHERS_DISK_CACHE_DIR = Path(
+    os.getenv(
+        "PP_VOUCHERS_DISK_CACHE_DIR",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "pp_vouchers_with_ops"),
+    )
+)
+_PP_VOUCHERS_BUILD_LOCK = threading.Lock()
+_PP_VOUCHERS_BG_REFRESH: set[str] = set()
 _PP_VOUCHERS_AUTO_SYNC_ON_READ = os.getenv("PP_VOUCHERS_AUTO_SYNC_ON_READ", "").strip().lower() in {
     "1", "true", "yes", "on",
 }
@@ -648,6 +665,119 @@ def _store_pp_vouchers_with_ops_cache(scope: str, data: list) -> None:
             "expires_at": now + _PP_VOUCHERS_WITH_OPS_TTL_SECS,
             "stale_expires_at": now + _PP_VOUCHERS_STALE_SECS,
         }
+    _pp_vouchers_disk_cache_store(scope, data)
+
+
+def _pp_vouchers_disk_cache_path(scope: str) -> Path:
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(scope or "open"))
+    return _PP_VOUCHERS_DISK_CACHE_DIR / f"{safe}.json"
+
+
+def _pp_vouchers_disk_cache_load(scope: str) -> list | None:
+    path = _pp_vouchers_disk_cache_path(scope)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        data = payload.get("data")
+        return list(data) if isinstance(data, list) else None
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _pp_vouchers_disk_cache_store(scope: str, data: list) -> None:
+    path = _pp_vouchers_disk_cache_path(scope)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    body = json.dumps({"cached_at": time.time(), "data": data}, default=str)
+    tmp.write_text(body, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _build_pp_vouchers_with_ops_cached(include_completed: bool, *, lite: bool = False) -> list:
+    from planning.helpers import planner_db
+
+    timeout_ms = "120000" if lite else "45000"
+    with planner_db() as con:
+        con.execute(f"SET LOCAL statement_timeout = '{timeout_ms}'")
+        return _build_pp_vouchers_with_ops_data(include_completed, con, lite=lite)
+
+
+def _refresh_pp_vouchers_with_ops_scope(scope: str, include_completed: bool) -> list | None:
+    use_lite = os.getenv("PP_VOUCHERS_CATALOG_FULL", "").strip().lower() not in {
+        "1", "true", "yes", "on",
+    }
+    with _PP_VOUCHERS_BUILD_LOCK:
+        try:
+            data = _build_pp_vouchers_with_ops_cached(include_completed, lite=use_lite)
+        except Exception as exc:
+            log.warning("pp-vouchers with-ops rebuild failed (%s): %s", scope, exc)
+            return None
+        _store_pp_vouchers_with_ops_cache(scope, data)
+        return data
+
+
+def rebuild_pp_vouchers_with_ops_catalog() -> dict:
+    """Pre-build catalog JSON for both open/all scopes (run after ERP sync, not on page load)."""
+    started = time.monotonic()
+    summary: dict[str, object] = {}
+    for include_completed in (False, True):
+        scope = _pp_vouchers_cache_scope(include_completed)
+        step_started = time.monotonic()
+        data = _refresh_pp_vouchers_with_ops_scope(scope, include_completed)
+        if data is None:
+            disk_rows = len(_pp_vouchers_disk_cache_load(scope) or [])
+            summary[scope] = {
+                "error": "rebuild failed",
+                "disk_fallback_rows": disk_rows,
+            }
+        else:
+            summary[scope] = {
+                "rows": len(data),
+                "ms": int((time.monotonic() - step_started) * 1000),
+            }
+    summary["total_ms"] = int((time.monotonic() - started) * 1000)
+    log.info("pp-vouchers catalog prebuilt: %s", summary)
+    return summary
+
+
+def load_pp_vouchers_with_ops_catalog_from_disk() -> bool:
+    """Load pre-built catalog from disk into memory (server startup)."""
+    loaded = False
+    for scope in ("open", "all"):
+        disk = _pp_vouchers_disk_cache_load(scope)
+        if disk is None:
+            continue
+        _store_pp_vouchers_with_ops_cache(scope, disk)
+        log.info("pp-vouchers disk cache loaded (%s, %d rows)", scope, len(disk))
+        loaded = True
+    return loaded
+
+
+def _schedule_pp_vouchers_with_ops_refresh(scope: str, include_completed: bool) -> None:
+    with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+        if scope in _PP_VOUCHERS_BG_REFRESH:
+            return
+        _PP_VOUCHERS_BG_REFRESH.add(scope)
+
+    def _worker():
+        try:
+            _refresh_pp_vouchers_with_ops_scope(scope, include_completed)
+        finally:
+            with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
+                _PP_VOUCHERS_BG_REFRESH.discard(scope)
+
+    threading.Thread(target=_worker, daemon=True, name=f"pp-vouchers-{scope}").start()
+
+
+def warm_pp_vouchers_with_ops_cache() -> None:
+    """Startup: load pre-built catalog from disk only (no Supabase build on page open)."""
+    if load_pp_vouchers_with_ops_catalog_from_disk():
+        return
+    log.info(
+        "pp-vouchers catalog not on disk yet — sidebar fills after ERP sync "
+        "(scheduled task or Sync ERP)"
+    )
 
 
 def _pp_vouchers_include_completed() -> bool:
@@ -689,11 +819,15 @@ def _fetch_pp_vouchers_cache_rows(include_completed: bool, con=None):
         return _run(_con)
 
 
-def _build_pp_vouchers_with_ops_data(include_completed: bool, con, cache_rows=None) -> list:
+def _build_pp_vouchers_with_ops_data(include_completed: bool, con, cache_rows=None, *, lite: bool = False) -> list:
     from planning.erp_wo_merge import merge_finishing_stages_into_voucher_entries
 
     rows = cache_rows if cache_rows is not None else _fetch_pp_vouchers_cache_rows(include_completed, con=con)
     payload = _pp_vouchers_with_ops_payload(rows)
+    if lite:
+        for entry in payload:
+            _finalize_pp_voucher_entry(entry)
+        return payload
     merge_finishing_stages_into_voucher_entries(payload, con)
     for entry in payload:
         _finalize_pp_voucher_entry(entry)
@@ -759,10 +893,14 @@ def pp_vouchers_lane_catalog_entries(con, partial_keys, include_completed=True):
     )
 
 
-def _invalidate_pp_vouchers_with_ops_cache():
+def _invalidate_pp_vouchers_with_ops_cache(*, schedule_rebuild=False):
     with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
         _PP_VOUCHERS_WITH_OPS_CACHE.clear()
         _PP_VOUCHERS_BOARD_ERP_CACHE.clear()
+    if schedule_rebuild:
+        for include_completed in (False, True):
+            scope = _pp_vouchers_cache_scope(include_completed)
+            _schedule_pp_vouchers_with_ops_refresh(scope, include_completed)
 
 
 def _pp_vouchers_board_cache_lookup(scope: str, *, allow_stale: bool):
@@ -974,24 +1112,20 @@ def _finalize_pp_voucher_entry(entry: dict) -> None:
 
 
 def _entry_production_completed_from_ops(entry, *, tol=0.0001):
-    """True only when every ERP stage with WO evidence is Completed and has no remaining qty."""
+    """True only when every ERP stage with WO evidence is qty-complete."""
+    from planning.utils import op_production_complete
+
     ops = entry.get("op_cards") or entry.get("ops") or []
     tracked = []
     for op in ops:
-        status = _normalize_execution_status(op.get("execution_status"))
         required = float(op.get("wo_qty_required") or op.get("required_qty") or 0)
         produced = float(op.get("finished_qty") or op.get("wo_qty_produced") or 0)
-        remaining = float(op.get("remaining_qty") or max(0.0, required - produced))
-        has_wo = required > tol or produced > tol or bool(status)
-        if not has_wo:
-            continue
-        tracked.append((status, remaining))
+        status = _normalize_execution_status(op.get("execution_status"))
+        if required > tol or produced > tol or status:
+            tracked.append(op)
     if not tracked:
         return False
-    return all(
-        status in {"C", "COMPLETED"} and remaining <= tol
-        for status, remaining in tracked
-    )
+    return all(op_production_complete(op, tol=tol) for op in tracked)
 
 
 def _apply_sequential_partial_shipped(entries, *, tol=0.0001):
@@ -1084,6 +1218,8 @@ def _merge_pp_voucher_op_card(existing, incoming):
 
 
 def _pp_vouchers_with_ops_payload(cache_rows):
+    from planning.utils import sanitize_erp_execution_status
+
     # Group cache rows by (ps_id, pp_partial_no). Duplicate cache rows for the same
     # stage/op (split ERP WOs) are merged into one op card per stage.
     grouped = {}
@@ -1188,6 +1324,12 @@ def _pp_vouchers_with_ops_payload(cache_rows):
             else:
                 remaining_qty = max(0.0, qty - stage_produced)
             machine_group = stage_desc.split()[0].upper() if stage_desc else ""
+            row_execution_status = sanitize_erp_execution_status(
+                row_execution_status,
+                required=stage_required,
+                finished=stage_produced,
+                remaining=remaining_qty,
+            )
             op_card = {
                 "card_kind": "single",
                 "card_id": None,
@@ -1270,7 +1412,14 @@ def _erp_wo_completion_by_partial(con, source_ids):
             """
             SELECT source_mps_no, pp_partial_no,
                    COUNT(*)::INTEGER AS stage_count,
-                   BOOL_AND(COALESCE(execution_status, '') = 'C') AS all_complete
+                   BOOL_AND(
+                       COALESCE(execution_status, '') = 'C'
+                       AND (
+                           COALESCE(wo_qty_required, 0) <= 0.0001
+                           OR COALESCE(total_acc_qty_produced, 0)
+                              >= COALESCE(wo_qty_required, 0) - 0.0001
+                       )
+                   ) AS all_complete
             FROM mfg_wo_status
             WHERE source_mps_no = ANY(%s)
             GROUP BY source_mps_no, pp_partial_no
@@ -1285,6 +1434,25 @@ def _erp_wo_completion_by_partial(con, source_ids):
             "erp_all_wo_complete": stage_count > 0 and bool(row.get("all_complete")),
         }
     return out
+
+
+def _merge_fresh_temp_ps_catalog_entries(entries, include_completed=False):
+    """Replace cached [Temp] rows with current planner DB state (cheap vs full ERP rebuild)."""
+    from planning.helpers import planner_db
+    from planning.process_sheets import is_temp_planner_ps_id
+    from planning.utils import compact_text
+
+    base = [
+        entry
+        for entry in (entries or [])
+        if not is_temp_planner_ps_id(compact_text(entry.get("ps_id")))
+    ]
+    try:
+        with planner_db() as con:
+            return _append_temp_ps_catalog_entries(base, con, include_completed=include_completed)
+    except Exception as exc:
+        log.warning("temp PS catalog merge failed: %s", exc)
+        return list(entries or [])
 
 
 def _append_temp_ps_catalog_entries(entries, con, include_completed=False):
@@ -1521,80 +1689,27 @@ def api_pp_vouchers():
 
 @app.get("/api/pp-vouchers/with-ops")
 def api_pp_vouchers_with_ops():
-    """PP vouchers from in-process cache, then pp_vouchers_cache (no sync-on-read by default)."""
+    """Pre-built catalog only — rebuilt during ERP sync, not on page load."""
     include_completed = _pp_vouchers_include_completed()
     scope = _pp_vouchers_cache_scope(include_completed)
     raw_search = str(request.args.get("search") or "").strip()
-    try:
-        refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
-        if not refresh:
-            cached_data = _pp_vouchers_memory_cache_lookup(scope, allow_stale=True)
-            if cached_data is not None:
-                return jsonify(_filter_pp_vouchers_by_search(cached_data, raw_search))
+    refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
 
-        if _PP_VOUCHERS_AUTO_SYNC_ON_READ and not refresh:
-            from sync import is_sync_needed, run_mfg_wo_status_sync, run_qty_shipped_sync, run_sync
+    cached_data = _pp_vouchers_memory_cache_lookup(scope, allow_stale=True)
+    if cached_data is None:
+        cached_data = _pp_vouchers_disk_cache_load(scope)
+        if cached_data is not None:
+            _store_pp_vouchers_with_ops_cache(scope, cached_data)
 
-            if is_sync_needed():
+    if cached_data is not None:
+        if refresh:
+            _schedule_pp_vouchers_with_ops_refresh(scope, include_completed)
+        merged = _merge_fresh_temp_ps_catalog_entries(cached_data, include_completed)
+        return jsonify(_filter_pp_vouchers_by_search(merged, raw_search))
 
-                def _bg_sync():
-                    try:
-                        _ensure_pp_staging_schema()
-                    except Exception:
-                        return
-                    try:
-                        from sync import run_pp_partial_sync
-
-                        run_pp_partial_sync()
-                    except Exception:
-                        pass
-                    try:
-                        run_mfg_wo_status_sync()
-                    except Exception:
-                        pass
-                    try:
-                        run_qty_shipped_sync()
-                    except Exception:
-                        pass
-                    try:
-                        run_sync()
-                    except Exception:
-                        pass
-
-                threading.Thread(target=_bg_sync, daemon=True).start()
-
-        from planning.helpers import planner_db
-
-        with planner_db() as con:
-            data = _build_pp_vouchers_with_ops_data(include_completed, con)
-        _store_pp_vouchers_with_ops_cache(scope, data)
-        return jsonify(_filter_pp_vouchers_by_search(data, raw_search))
-    except Exception as e:
-        # Fall back to REST if direct DB query fails
-        try:
-            from db import supa_url, supa_headers
-            from sync import _supa_fetch_all
-            params = {
-                "select": ",".join(_PP_VOUCHERS_COLS),
-                "order": "ps_id,pp_partial_no,stage_no",
-            }
-            cache_rows = _supa_fetch_all(
-                f"{supa_url()}/pp_vouchers_cache",
-                headers=supa_headers(write=True),
-                params=params,
-            )
-            from planning.helpers import planner_db
-
-            with planner_db() as con:
-                data = _build_pp_vouchers_with_ops_data(
-                    include_completed,
-                    con,
-                    cache_rows=cache_rows,
-                )
-            _store_pp_vouchers_with_ops_cache(scope, data)
-            return jsonify(_filter_pp_vouchers_by_search(data, raw_search))
-        except Exception as e2:
-            return jsonify({"error": str(e2)}), 500
+    if refresh:
+        _schedule_pp_vouchers_with_ops_refresh(scope, include_completed)
+    return jsonify([])
 
 
 @app.get("/api/process-sheets/board")
@@ -2050,7 +2165,7 @@ def api_pp_staging_cache_refresh():
 
     from planning.erp_cache_refresh import refresh_after_erp_sync
 
-    return jsonify(refresh_after_erp_sync(warm=True, background=True))
+    return jsonify(refresh_after_erp_sync(warm=True, background=False))
 
 
 @app.post("/api/pp-vouchers-cache/rebuild")
@@ -2229,92 +2344,19 @@ def api_bom_operations():
     if not source or not bom:
         return jsonify({"error": "source and bom are required"}), 400
     try:
-        rows = db_query(
-            """
-            WITH bom_machining AS (
-                SELECT
-                    inventory_code,
-                    bom_code,
-                    stage_no,
-                    stage_desc,
-                    CASE
-                        WHEN SPLIT_PART(stage_desc, ' ', 2) ~ '^\\d+$'
-                        THEN SPLIT_PART(stage_desc, ' ', 2)::INTEGER
-                        ELSE NULL
-                    END AS op_no
-                FROM public.mt_inventory_bom_stage
-                WHERE stage_desc IS NOT NULL
-                  AND (
-                      stage_desc LIKE 'Turning%%'
-                   OR stage_desc LIKE 'Milling%%'
-                   OR stage_desc LIKE 'Turnmill%%'
-                  )
-                  AND inventory_code = %s
-                  AND bom_code = %s
-            ),
+        from planning.bom_operations import fetch_machining_operations
 
-            wt_raw AS (
-                SELECT
-                    t2.inventory_code,
-                    t1.voucher_no,
-                    t1.machine_no,
-                    t2.stage_desc,
-                    t3.total_acc_qty_produced,
-                    CASE WHEN t1.status = 'H' THEN 1 ELSE 0 END AS status_rank
-                FROM mfg_wo_comp_vch t1
-                LEFT JOIN mfg_mps_vch t2 ON t1.voucher_no = t2.wo_voucher_no
-                LEFT JOIN mfg_wo_vch  t3 ON t1.voucher_no = t3.voucher_no
-                WHERE t2.inventory_code = %s
-                  AND (
-                      t2.stage_desc LIKE 'Turning%%'
-                   OR t2.stage_desc LIKE 'Milling%%'
-                   OR t2.stage_desc LIKE 'Turnmill%%'
-                  )
-            ),
-
-            wt_ranked AS (
-                SELECT *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY voucher_no
-                        ORDER BY total_acc_qty_produced DESC, status_rank DESC
-                    ) AS rn
-                FROM wt_raw
-            ),
-
-            wo_machines AS (
-                SELECT inventory_code, stage_desc, MIN(machine_no) AS machine_no
-                FROM wt_ranked
-                WHERE rn = 1
-                GROUP BY inventory_code, stage_desc
-            )
-
-            SELECT
-                b.inventory_code,
-                b.bom_code,
-                b.stage_no,
-                b.stage_desc,
-                b.op_no,
-                w.machine_no
-            FROM bom_machining b
-            LEFT JOIN wo_machines w
-                ON  w.inventory_code = b.inventory_code
-                AND w.stage_desc     = b.stage_desc
-            ORDER BY
-                b.stage_no  ASC,
-                b.op_no     ASC NULLS LAST
-            """,
-            (source, bom, source), fetchall=True
-        )
+        rows = fetch_machining_operations(db_query, source, bom)
         return jsonify([
             {
-                "inventory_code": r[0],
-                "bom_code":       r[1],
-                "stage_no":       r[2],
-                "stage_desc":     r[3] or "",
-                "op_no":          r[4],
-                "machine_no":     r[5] or "",
+                "inventory_code": r["inventory_code"],
+                "bom_code":       r["bom_code"],
+                "stage_no":       r["stage_no"],
+                "stage_desc":     r["stage_desc"] or "",
+                "op_no":          r["op_no"],
+                "machine_no":     r["machine_no"] or "",
             }
-            for r in (rows or [])
+            for r in rows
         ])
     except Exception as e:
         return jsonify({"error": str(e)}), 500

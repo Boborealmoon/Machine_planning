@@ -481,10 +481,9 @@ def _merge_erp_into_ops(entry: dict[str, Any], ctx: MppIntakeContext) -> None:
                 row["execution_status"] = erp.get("erp_execution_status")
             if compact_text(erp.get("stage_desc")):
                 row["stage_desc"] = compact_text(erp.get("stage_desc"))
-        remaining = max(0.0, float(row.get("remaining_qty") or 0))
-        finished = max(0.0, float(row.get("erp_finished_qty") or 0))
-        if not compact_text(row.get("execution_status")) and finished > 0 and remaining <= 0:
-            row["execution_status"] = "C"
+        from .catalog import _finalize_catalog_op_execution_status
+
+        _finalize_catalog_op_execution_status(row)
         refreshed.append(row)
     entry["all_ops"] = refreshed
 

@@ -105,6 +105,12 @@
                 <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
               </button>
             </th>
+            <th class="delivery-schedule-sort-head delivery-schedule-num" data-sort-col="pp_partial_qty">
+              <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="pp_partial_qty">
+                <span class="delivery-schedule-sort-label">PP partial qty</span>
+                <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
+              </button>
+            </th>
             <th class="delivery-schedule-sort-head" data-sort-col="due_date">
               <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="due_date">
                 <span class="delivery-schedule-sort-label">PO due date</span>
@@ -122,6 +128,12 @@
                 <span class="delivery-schedule-sort-label">Week</span>
                 <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
               </button>
+            </th>
+            <th class="delivery-schedule-flag" scope="col" title="COC done">
+              <span class="delivery-schedule-flag-head">COC</span>
+            </th>
+            <th class="delivery-schedule-flag" scope="col" title="QAQC report ready">
+              <span class="delivery-schedule-flag-head">QAQC</span>
             </th>
             <th class="delivery-schedule-sort-head" data-sort-col="remarks">
               <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="remarks">
@@ -206,7 +218,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=delivery-unified-20260619"></script>
-<script src="{{ url_for('static', filename='js/delivery_schedule.js') }}?v=delivery-week-filter-edd-20260703"></script>
+<script src="{{ url_for('static', filename='js/delivery_schedule.js') }}?v=delivery-coc-qaqc-save-20260707b"></script>
 <script src="{{ url_for('static', filename='js/queue_delays.js') }}?v=delivery-unified-20260619"></script>
 <script src="{{ url_for('static', filename='js/delivery.js') }}?v=delivery-client-search-20260623"></script>
 {% endblock %}

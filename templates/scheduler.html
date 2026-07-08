@@ -34,12 +34,20 @@
             <button type="button" class="trial-board-zoom-btn" id="trial-board-zoom-in" title="Zoom in (Ctrl + scroll)">+</button>
           </div>
           <span class="trial-legend-note">Times in Singapore (SGT) · Ctrl + scroll to zoom</span>
+          <button
+            type="button"
+            class="trial-catalog-mobile-btn"
+            id="trial-catalog-mobile-btn"
+            aria-expanded="false"
+            aria-controls="trial-sidebar"
+            title="Show or hide PS / Ops catalog"
+          >PS / Ops</button>
         </div>
         <div id="trial-machine-filter-shell"></div>
       </div>
       <div class="trial-grid-scroll-host">
         <div class="trial-grid-scroll-top-wrap">
-          <div class="trial-grid-scroll-hint" aria-hidden="true">Drag to scroll machines · Shift + wheel · Ctrl + wheel to zoom</div>
+          <div class="trial-grid-scroll-hint" aria-hidden="true">Swipe sideways for machines · scroll down for queues · drag bar or Shift+wheel on desktop</div>
           <div class="trial-grid-scroll-top" aria-label="Scroll machine lanes horizontally" title="Drag to scroll · Shift + mouse wheel">
             <div class="trial-grid-scroll-top-inner"></div>
           </div>
@@ -51,12 +59,30 @@
     </div>
     <div class="trial-resize-handle" id="trial-resize-handle"></div>
     <aside class="trial-sidebar" id="trial-sidebar" aria-label="Available PS and operations">
+      <button
+        type="button"
+        class="trial-sidebar-expand-tab"
+        id="trial-sidebar-expand-tab"
+        title="Show PS / Ops catalog"
+        aria-label="Show PS / Ops catalog"
+      >
+        <span class="trial-sidebar-expand-tab-icon" aria-hidden="true">‹</span>
+        <span class="trial-sidebar-expand-tab-label">PS / Ops</span>
+      </button>
       <div class="trial-sidebar-card">
         <div class="trial-sidebar-head">
           <div class="trial-sidebar-head-text">
             <div class="trial-sidebar-title">PS / Ops</div>
           </div>
           <div class="trial-sidebar-head-actions">
+            <button
+              type="button"
+              class="trial-sidebar-collapse-btn"
+              id="trial-sidebar-collapse-btn"
+              title="Hide PS / Ops catalog"
+              aria-expanded="true"
+              aria-controls="trial-sidebar"
+            >›</button>
             <button
               type="button"
               class="btn btn-ghost btn-sm trial-sidebar-head-btn"
@@ -97,6 +123,7 @@
       </div>
     </aside>
   </div>
+  <div class="trial-catalog-sheet-backdrop" id="trial-catalog-sheet-backdrop" hidden aria-hidden="true"></div>
 </div>
 
 <div id="trial-modal-shell"></div>
@@ -111,6 +138,7 @@
 <script>window.SCHEDULER_BUILD = {{ (scheduler_asset_version or 'partial-lane-dev')|tojson }};</script>
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v={{ scheduler_asset_version }}"></script>
+<script src="{{ url_for('static', filename='js/scheduler/catalog_op_rules.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/program_tools.js') }}?v=lane-height-viewport-20260529"></script>
 <script src="{{ url_for('static', filename='js/scheduler/render.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/api.js') }}?v={{ scheduler_asset_version }}"></script>
@@ -172,10 +200,36 @@ document.addEventListener('DOMContentLoaded', () => {
 </script>
 <script>
 (function () {
-  const STORAGE_KEY = 'planner-sidebar-w-v2';
+  const WIDTH_KEY = 'planner-sidebar-w-v2';
+  const COLLAPSE_KEY = 'planner-sidebar-collapsed-v1';
   const DEFAULT_W = 208;
   const MIN_W = 176;
   const MAX_W = 480;
+
+  function isStackedLayout() {
+    try {
+      return window.matchMedia('(max-width: 1024px)').matches;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isMobileLayout() {
+    try {
+      return window.matchMedia('(max-width: 768px)').matches;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function readSidebarCollapsed() {
+    try {
+      const stored = localStorage.getItem(COLLAPSE_KEY);
+      if (stored === '1') return true;
+      if (stored === '0') return false;
+    } catch (_) {}
+    return isMobileLayout();
+  }
 
   function sidebarWidthLimits() {
     const w = window.innerWidth;
@@ -191,26 +245,71 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const layout = document.getElementById('trial-layout');
   const handle = document.getElementById('trial-resize-handle');
-  if (!layout || !handle) return;
+  const collapseBtn = document.getElementById('trial-sidebar-collapse-btn');
+  const expandTab = document.getElementById('trial-sidebar-expand-tab');
+  const mobileBtn = document.getElementById('trial-catalog-mobile-btn');
+  const sheetBackdrop = document.getElementById('trial-catalog-sheet-backdrop');
+  if (!layout) return;
+
+  let sidebarCollapsed = readSidebarCollapsed();
+
+  function syncSidebarCollapsedUi() {
+    layout.classList.toggle('is-sidebar-collapsed', sidebarCollapsed);
+    const expanded = !sidebarCollapsed;
+    collapseBtn?.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    mobileBtn?.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    mobileBtn?.classList.toggle('is-active', expanded);
+    const sheetOpen = isMobileLayout() && expanded;
+    layout.classList.toggle('is-sidebar-sheet-open', sheetOpen);
+    document.body.classList.toggle('trial-catalog-sheet-open', sheetOpen);
+    if (sheetBackdrop) {
+      sheetBackdrop.hidden = !sheetOpen;
+      sheetBackdrop.setAttribute('aria-hidden', sheetOpen ? 'false' : 'true');
+    }
+  }
+
+  function setSidebarCollapsed(next, persist) {
+    sidebarCollapsed = !!next;
+    if (persist !== false) {
+      try {
+        localStorage.setItem(COLLAPSE_KEY, sidebarCollapsed ? '1' : '0');
+      } catch (_) {}
+    }
+    syncSidebarCollapsedUi();
+  }
+
+  collapseBtn?.addEventListener('click', () => setSidebarCollapsed(true));
+  expandTab?.addEventListener('click', () => setSidebarCollapsed(false));
+  mobileBtn?.addEventListener('click', () => setSidebarCollapsed(!sidebarCollapsed));
+  sheetBackdrop?.addEventListener('click', () => setSidebarCollapsed(true));
+
+  syncSidebarCollapsedUi();
 
   const limits = sidebarWidthLimits();
-  const saved = parseInt(localStorage.getItem(STORAGE_KEY), 10);
+  const saved = parseInt(localStorage.getItem(WIDTH_KEY), 10);
   const width = clampSidebarWidth(
     !isNaN(saved) ? saved : limits.def
   );
   layout.style.setProperty('--sidebar-w', width + 'px');
 
   window.addEventListener('resize', () => {
+    if (!isStackedLayout() && sidebarCollapsed) {
+      setSidebarCollapsed(false, false);
+    }
+    syncSidebarCollapsedUi();
     const current = parseFloat(layout.style.getPropertyValue('--sidebar-w'));
     if (!isNaN(current)) {
       layout.style.setProperty('--sidebar-w', clampSidebarWidth(current) + 'px');
     }
   });
 
+  if (!handle) return;
+
   let startX = 0;
   let startW = 0;
 
   handle.addEventListener('mousedown', (e) => {
+    if (isStackedLayout()) return;
     e.preventDefault();
     handle.classList.add('is-dragging');
     startX = e.clientX;
@@ -228,7 +327,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function onUp() {
       handle.classList.remove('is-dragging');
       const current = parseFloat(layout.style.getPropertyValue('--sidebar-w'));
-      if (!isNaN(current)) localStorage.setItem(STORAGE_KEY, Math.round(current));
+      if (!isNaN(current)) localStorage.setItem(WIDTH_KEY, Math.round(current));
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     }

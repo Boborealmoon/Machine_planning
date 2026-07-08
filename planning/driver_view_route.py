@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import os
 
-from flask import Blueprint, render_template
+from flask import Blueprint, redirect, render_template, url_for
 
-_DEFAULT_DRIVER_VIEW_PATH = "/driver-view"
+_DEFAULT_DRIVER_VIEW_PATH = "/delivery-schedule-view"
+_LEGACY_DRIVER_VIEW_PATH = "/driver-view"
 
 
 def driver_view_path() -> str:
@@ -43,3 +44,10 @@ def driver_view_page():
         active="driver_view",
         driver_asset_version=driver_view_asset_version(),
     )
+
+
+if DRIVER_VIEW_PATH != _LEGACY_DRIVER_VIEW_PATH:
+
+    @driver_view_bp.get(_LEGACY_DRIVER_VIEW_PATH)
+    def driver_view_legacy_redirect():
+        return redirect(url_for("driver_view.driver_view_page"), code=301)

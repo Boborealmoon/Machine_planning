@@ -501,7 +501,8 @@ body.machinist-board .trial-grid-scroll-top::-webkit-scrollbar-thumb:hover {
 body.machinist-board .trial-grid-scroll {
   padding-bottom: 2px;
   -webkit-overflow-scrolling: touch;
-  touch-action: pan-x pan-y;
+  overscroll-behavior: contain;
+  touch-action: pan-x;
 }
 
 body.machinist-board .trial-grid {
@@ -774,7 +775,9 @@ body.machinist-board.machinist-board--focus .trial-grid-scroll {
   padding: 0 4px 4px;
   overflow-x: auto !important;
   overflow-y: hidden;
-  touch-action: pan-x pan-y;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x;
   display: flex;
   flex-direction: column;
 }
@@ -1180,7 +1183,6 @@ body.machinist-board.machinist-board--focus .trial-empty {
   /* Lock viewport so lanes fill remaining height (same idea as desktop / focus view) */
   body.machinist-board {
     overflow: hidden;
-    touch-action: manipulation;
   }
 
   body.machinist-board .app-main--machinist {
@@ -1407,9 +1409,10 @@ body.machinist-board.machinist-board--focus .trial-empty {
     min-height: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    overscroll-behavior-x: contain;
+    overscroll-behavior: contain;
     padding-bottom: max(4px, env(safe-area-inset-bottom, 0px));
-    touch-action: pan-x pan-y;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-x;
   }
 
   body.machinist-board .trial-grid,

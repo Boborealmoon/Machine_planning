@@ -29,7 +29,13 @@ from .materials import (
     material_requirement_payload,
     material_status_map_for_ps_ids,
 )
-from .utils import compact_text, pending_delivery_order, shipped_quantity_completed
+from .utils import (
+    compact_text,
+    op_production_complete,
+    pending_delivery_order,
+    sanitize_erp_execution_status,
+    shipped_quantity_completed,
+)
 
 process_sheets_bp = Blueprint("planner_process_sheets", __name__)
 
@@ -332,7 +338,125 @@ def _ensure_planner_temp_process_sheet_table(con):
         """,
         (f"{TEMP_PS_PREFIX}%",),
     )
+    for stmt in (
+        "ALTER TABLE public.planner_temp_process_sheet ADD COLUMN IF NOT EXISTS current_stage_op_seq_id BIGINT",
+        "ALTER TABLE public.planner_temp_process_sheet ADD COLUMN IF NOT EXISTS current_stage_seq_no INTEGER",
+        "ALTER TABLE public.planner_temp_process_sheet ADD COLUMN IF NOT EXISTS current_stage_desc TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE public.planner_temp_process_sheet ADD COLUMN IF NOT EXISTS current_stage_status TEXT NOT NULL DEFAULT ''",
+    ):
+        con.execute(stmt)
     _TEMP_TABLE_READY = True
+
+
+def _temp_source_ps_stage_label(stage_no, op_no, stage_desc, seq_no=0):
+    stage_desc = compact_text(stage_desc)
+    if stage_desc:
+        return stage_desc
+    op_no = compact_text(op_no)
+    if op_no:
+        return op_no if op_no.upper().startswith("OP") else f"OP{op_no}"
+    if stage_no:
+        return f"Stage {stage_no}"
+    return f"Step {seq_no or '?'}"
+
+
+def _format_source_ps_stage_options(steps):
+    out = []
+    for idx, step in enumerate(steps or []):
+        stage_no = int(step.get("source_stage_no") or step.get("stage_no") or step.get("op_seq_id") or 0)
+        stage_desc = compact_text(step.get("stage_desc") or step.get("op_type") or "")
+        op_no = compact_text(step.get("op_no"))
+        seq_no = int(step.get("seq_no") or idx + 1)
+        label = _temp_source_ps_stage_label(stage_no, op_no, stage_desc, seq_no)
+        if not label:
+            continue
+        stage_key = stage_no or seq_no
+        out.append(
+            {
+                "stage_no": stage_key,
+                "seq_no": seq_no,
+                "op_no": op_no,
+                "stage_desc": stage_desc,
+                "label": label,
+                "op_seq_id": stage_key,
+            }
+        )
+    return out
+
+
+def _temp_source_ps_stages_for_keys(con, partial_keys):
+    keys = []
+    seen = set()
+    for source_ps_id, pp_partial_no in partial_keys or []:
+        source_ps_id = compact_text(source_ps_id)
+        if not source_ps_id:
+            continue
+        try:
+            partial = int(pp_partial_no or 1)
+        except (TypeError, ValueError):
+            partial = 1
+        key = (source_ps_id, partial)
+        if key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    if not keys:
+        return {}
+
+    canonical_ids = [format_planner_ps_id(source_ps_id, partial) for source_ps_id, partial in keys]
+    flow_by_ps = _flow_steps_for_ps_ids(con, canonical_ids)
+    erp_cache = _erp_cache_steps_batch(con, keys)
+    out = {}
+    for source_ps_id, partial in keys:
+        canonical = format_planner_ps_id(source_ps_id, partial)
+        ps_row = one(
+            con.execute(
+                "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
+                (canonical,),
+            )
+        )
+        ps = dict(ps_row or {})
+        ps["ps_id"] = canonical
+        ps["planner_ps_id"] = canonical
+        ps["source_ps_id"] = source_ps_id
+        ps["pp_partial_no"] = partial
+        flow_steps = flow_by_ps.get(canonical, [])
+        steps, _ = _prepare_process_sheet_steps(con, ps, flow_steps, erp_cache)
+        out[(source_ps_id, partial)] = _format_source_ps_stage_options(steps)
+    return out
+
+
+def _temp_source_ps_stage_row(con, source_ps_id, pp_partial_no, *, stage_no=None):
+    source_ps_id = compact_text(source_ps_id)
+    try:
+        pp_partial_no = int(pp_partial_no or 1)
+    except (TypeError, ValueError):
+        pp_partial_no = 1
+    try:
+        stage_no = int(stage_no or 0)
+    except (TypeError, ValueError):
+        stage_no = 0
+    if not source_ps_id or stage_no <= 0:
+        return None
+    stages = _temp_source_ps_stages_for_keys(con, [(source_ps_id, pp_partial_no)]).get(
+        (source_ps_id, pp_partial_no),
+        [],
+    )
+    for stage in stages:
+        if int(stage.get("stage_no") or stage.get("op_seq_id") or 0) == stage_no:
+            return stage
+    return None
+
+
+def _apply_temp_ps_stage_fields(payload, temp_reg):
+    if not temp_reg:
+        return
+    op_seq_id = int(temp_reg.get("current_stage_op_seq_id") or 0)
+    stage_no = int(temp_reg.get("current_stage_seq_no") or 0) or op_seq_id
+    payload["current_stage_op_seq_id"] = stage_no or None
+    payload["current_stage_no"] = stage_no
+    payload["current_stage_desc"] = compact_text(temp_reg.get("current_stage_desc") or "")
+    payload["current_stage_status"] = compact_text(temp_reg.get("current_stage_status") or "")
 
 
 def _parse_temp_due_date(raw) -> date | None:
@@ -422,6 +546,12 @@ def list_temp_process_sheets_payload(con, limit=500):
     rows_raw = list_temp_process_sheets(con, limit=limit)
     ps_ids = [compact_text(r.get("planner_ps_id")) for r in rows_raw if compact_text(r.get("planner_ps_id"))]
     metrics_by_ps, _ = _block_metrics_for_ps_ids(con, ps_ids)
+    partial_keys = [
+        (compact_text(r.get("source_ps_id")), int(r.get("source_pp_partial_no") or 1))
+        for r in rows_raw
+        if compact_text(r.get("source_ps_id"))
+    ]
+    stages_by_source = _temp_source_ps_stages_for_keys(con, partial_keys)
     out = []
     for row in rows_raw:
         pid = compact_text(row.get("planner_ps_id"))
@@ -457,6 +587,18 @@ def list_temp_process_sheets_payload(con, limit=500):
                 "remaining_qty": max(0.0, _to_float(row.get("reject_qty")) - _to_float(row.get("finished_qty"))),
                 "is_resolved": compact_text(row.get("planner_status")).upper() == "COMPLETED"
                 or compact_text(row.get("ps_status")).upper() == "COMPLETED",
+                "selected_bom_id": int(row.get("selected_bom_id") or 0),
+                "current_stage_op_seq_id": int(row.get("current_stage_op_seq_id") or 0) or None,
+                "current_stage_seq_no": int(row.get("current_stage_seq_no") or 0) or None,
+                "current_stage_desc": compact_text(row.get("current_stage_desc")),
+                "current_stage_status": compact_text(row.get("current_stage_status")),
+                "bom_stages": stages_by_source.get(
+                    (
+                        compact_text(row.get("source_ps_id")),
+                        int(row.get("source_pp_partial_no") or 1),
+                    ),
+                    [],
+                ),
                 "stored_in": "planner_temp_process_sheet",
             }
         )
@@ -1108,6 +1250,54 @@ def update_temp_process_sheet(con, planner_ps_id, updates=None):
         ps_sets.append("source_ps_id = %s")
         ps_vals.append(source_ps_id)
 
+    if "current_stage_op_seq_id" in updates or "current_stage_seq_no" in updates:
+        source_ps_id = compact_text(temp_row.get("source_ps_id"))
+        source_partial = int(temp_row.get("source_pp_partial_no") or 1)
+        raw_op_seq = updates.get("current_stage_op_seq_id") if "current_stage_op_seq_id" in updates else None
+        raw_seq_no = updates.get("current_stage_seq_no") if "current_stage_seq_no" in updates else None
+        clear_stage = False
+        if "current_stage_op_seq_id" in updates:
+            clear_stage = raw_op_seq in (None, "", 0, "0")
+        elif "current_stage_seq_no" in updates:
+            clear_stage = raw_seq_no in (None, "", 0, "0")
+        if clear_stage:
+            temp_sets.extend(
+                [
+                    "current_stage_op_seq_id = NULL",
+                    "current_stage_seq_no = NULL",
+                    "current_stage_desc = %s",
+                    "current_stage_status = %s",
+                ]
+            )
+            temp_vals.extend(["", ""])
+        else:
+            raw_stage = raw_op_seq if "current_stage_op_seq_id" in updates else raw_seq_no
+            stage_row = _temp_source_ps_stage_row(
+                con,
+                source_ps_id,
+                source_partial,
+                stage_no=raw_stage,
+            )
+            if not stage_row:
+                raise ValueError("Selected stage is not part of the source process sheet.")
+            stage_no = int(stage_row.get("stage_no") or stage_row.get("op_seq_id") or 0)
+            temp_sets.extend(
+                [
+                    "current_stage_op_seq_id = %s",
+                    "current_stage_seq_no = %s",
+                    "current_stage_desc = %s",
+                    "current_stage_status = %s",
+                ]
+            )
+            temp_vals.extend(
+                [
+                    stage_no,
+                    stage_no,
+                    compact_text(stage_row.get("label") or stage_row.get("stage_desc")),
+                    compact_text(updates.get("current_stage_status") or "P"),
+                ]
+            )
+
     if not temp_sets and not ps_sets:
         raise ValueError("No supported fields to update")
 
@@ -1137,6 +1327,8 @@ def update_temp_process_sheet(con, planner_ps_id, updates=None):
             """
             SELECT t.reject_qty, t.part_no, t.part_desc, t.due_date, t.remarks,
                    t.source_ps_id, t.source_pp_partial_no,
+                   t.selected_bom_id, t.current_stage_op_seq_id, t.current_stage_seq_no,
+                   t.current_stage_desc, t.current_stage_status,
                    ps.planned_qty, ps.finished_qty
             FROM planner_temp_process_sheet t
             JOIN planner_process_sheet ps ON ps.planner_ps_id = t.planner_ps_id
@@ -1160,6 +1352,14 @@ def update_temp_process_sheet(con, planner_ps_id, updates=None):
         "source_ps_id": source_ps_id,
         "source_pp_partial_no": source_partial,
         "source_label": format_planner_ps_id(source_ps_id, source_partial),
+        "selected_bom_id": int((refreshed or {}).get("selected_bom_id") or 0),
+        "current_stage_op_seq_id": int((refreshed or {}).get("current_stage_op_seq_id") or 0) or None,
+        "current_stage_seq_no": int((refreshed or {}).get("current_stage_seq_no") or 0) or None,
+        "current_stage_desc": compact_text((refreshed or {}).get("current_stage_desc")),
+        "current_stage_status": compact_text((refreshed or {}).get("current_stage_status")),
+        "bom_stages": _temp_source_ps_stages_for_keys(
+            con, [(source_ps_id, source_partial)]
+        ).get((source_ps_id, source_partial), []),
     }
 
 
@@ -2538,6 +2738,13 @@ def _execution_status_completed(value):
     return compact_text(value).upper().replace("-", "_").replace(" ", "_") in {"C", "COMPLETED"}
 
 
+def _op_has_wo_evidence(op):
+    required = _to_float(op.get("required_qty") or op.get("wo_qty_required"))
+    finished = _to_float(op.get("finished_qty") or op.get("wo_qty_produced") or op.get("erp_finished_qty"))
+    status = compact_text(op.get("execution_status") or op.get("erp_execution_status"))
+    return required > 0.0001 or finished > 0.0001 or bool(status)
+
+
 def _tracked_stage_statuses(ops):
     return [
         compact_text(op.get("execution_status"))
@@ -2619,9 +2826,9 @@ def _process_sheet_payload(ps, steps, metrics, material_status, manual_by_op_seq
     if not tracked_statuses and compact_text(ps.get("execution_status")):
         tracked_statuses = [compact_text(ps.get("execution_status"))]
     if steps:
-        execution_completed = all(
-            _execution_status_completed(compact_text(step.get("erp_execution_status") or ""))
-            for step in steps
+        tracked_ops = [op for op in ops if _op_has_wo_evidence(op)]
+        execution_completed = bool(tracked_ops) and all(
+            op_production_complete(op) for op in tracked_ops
         )
     elif ps.get("execution_completed") is not None:
         execution_completed = bool(ps.get("execution_completed"))
@@ -2739,12 +2946,12 @@ def _process_sheet_payload(ps, steps, metrics, material_status, manual_by_op_seq
         "source_voucher_no": compact_text(ps.get("source_voucher_no") or ""),
         "qty_shipped": _to_float(ps.get("qty_shipped")),
         "so_det_qty": _to_float(ps.get("so_det_qty")) if ps.get("so_det_qty") is not None else None,
-        "current_stage_no": int(ps.get("current_stage_no") or 0),
-        "current_stage_desc": compact_text(ps.get("current_stage_desc") or ""),
-        "current_stage_status": compact_text(ps.get("current_stage_status") or ""),
+        "current_stage_no": 0 if is_temp else int(ps.get("current_stage_no") or 0),
+        "current_stage_desc": "" if is_temp else compact_text(ps.get("current_stage_desc") or ""),
+        "current_stage_status": "" if is_temp else compact_text(ps.get("current_stage_status") or ""),
         "ops": ops,
     }
-    if wo_stages and not payload["current_stage_desc"]:
+    if not is_temp and wo_stages and not payload["current_stage_desc"]:
         from planning.erp_wo_merge import resolve_current_stage_from_wo_stages
 
         resolved = resolve_current_stage_from_wo_stages(
@@ -2815,7 +3022,12 @@ def _step_payload(step, metrics_by_op, work_qty=0):
         "stage_no": int(step.get("source_stage_no") or 0),
         "source_kind": compact_text(step.get("source_kind") or ""),
         "needs_manual_produced": bool(step.get("needs_manual_produced")),
-        "execution_status": compact_text(step.get("erp_execution_status") or ""),
+        "execution_status": sanitize_erp_execution_status(
+            compact_text(step.get("erp_execution_status") or ""),
+            required=wo_req_qty,
+            finished=finished_qty,
+            remaining=wo_remaining,
+        ),
         "required_qty": wo_req_qty,
         "wo_qty_required": wo_req_qty,
         "ready_qty": ready_qty,
@@ -2855,7 +3067,12 @@ def _reconcile_partial_shipped_status(rows, *, tol=0.0001):
 
         for item in source_rows:
             req_qty = max(0.0, _to_float(item.get("display_qty") or item.get("wo_req_qty") or item.get("partial_qty")))
-            production_done = bool(item.get("production_completed")) or bool(item.get("execution_completed"))
+            ops = item.get("ops") or []
+            tracked_ops = [op for op in ops if _op_has_wo_evidence(op)]
+            if tracked_ops:
+                production_done = all(op_production_complete(op) for op in tracked_ops)
+            else:
+                production_done = bool(item.get("production_completed")) or bool(item.get("execution_completed"))
             has_partial_erp_evidence = bool(
                 compact_text(item.get("current_stage_status"))
                 or any(
@@ -3087,7 +3304,14 @@ def _erp_wo_completion_map(con, source_ps_ids):
         con.execute(
             """
             SELECT source_mps_no, pp_partial_no,
-                   BOOL_AND(COALESCE(execution_status, '') = 'C') AS all_complete,
+                   BOOL_AND(
+                       COALESCE(execution_status, '') = 'C'
+                       AND (
+                           COALESCE(wo_qty_required, 0) <= 0.0001
+                           OR COALESCE(total_acc_qty_produced, 0)
+                              >= COALESCE(wo_qty_required, 0) - 0.0001
+                       )
+                   ) AS all_complete,
                    COUNT(*)::INTEGER AS stage_count
             FROM mfg_wo_status
             WHERE source_mps_no = ANY(%s)
@@ -3366,6 +3590,7 @@ def list_process_sheets_payload(
                     payload["due_date"] = compact_text(temp_reg.get("due_date"))
                 if compact_text(temp_reg.get("selected_bom_code")):
                     payload["selected_flow_code"] = compact_text(temp_reg.get("selected_bom_code"))
+                _apply_temp_ps_stage_fields(payload, temp_reg)
                 payload["stored_in"] = "planner_temp_process_sheet"
             if not compact_text(payload.get("due_date")):
                 source_row = _voucher_partial_row(
@@ -3550,6 +3775,7 @@ def _delivery_schedule_select_sql(con=None):
         {coway_expr}
         {remarks_expr}
         ps.planner_status,
+        tps.reject_qty AS temp_qty,
         v.part_no,
         v.part_no AS part_name,
         v.description AS part_desc,
@@ -3586,6 +3812,11 @@ def _delivery_schedule_row_from_ps_row(ps_row):
 
     partial_qty = _to_float(ps_row.get("partial_qty"))
     display_qty = partial_qty or _to_float(ps_row.get("total_qty"))
+    is_temp = is_temp_planner_ps_id(ps_id)
+    temp_qty = _to_float(ps_row.get("temp_qty"))
+    # Temp PS carries the qty the planner stipulated (reject/rework qty), which
+    # differs from the source voucher partial qty it was cloned from.
+    pp_partial_qty = temp_qty if is_temp else partial_qty
     execution_completed = bool(ps_row.get("execution_completed"))
     qty_shipped = _to_float(ps_row.get("qty_shipped"))
     so_qty = _to_float(ps_row.get("so_det_qty")) if ps_row.get("so_det_qty") is not None else None
@@ -3615,6 +3846,8 @@ def _delivery_schedule_row_from_ps_row(ps_row):
         "so_det_qty": so_qty,
         "qty_shipped": qty_shipped,
         "partial_qty": partial_qty,
+        "temp_qty": temp_qty,
+        "pp_partial_qty": pp_partial_qty,
         "display_qty": display_qty,
         "wo_req_qty": display_qty,
         "execution_completed": execution_completed,
@@ -3918,6 +4151,76 @@ def due_date_map_for_planner_ps_ids(con, planner_ps_ids):
         coway_text = compact_text(row.get("coway_proposed_edd"))
         # Match catalog sidebar: ERP due date wins; Coway proposed EDD is fallback only.
         out[pid] = due_text or coway_text
+    return out
+
+
+def _so_line_pricing_key(sales_order_no, line_item_no) -> str:
+    so = compact_text(sales_order_no)
+    line = compact_text(line_item_no)
+    if line:
+        line = re.sub(r"\.0+$", "", line)
+    return f"{so}|{line}" if so and line else ""
+
+
+def fetch_so_line_pricing_map(keys: list[tuple[str, str]]) -> dict[str, dict]:
+    """Home-currency SO line unit cost + exchange rate keyed by sales_order_no|line_item_no."""
+    from planning.sales_report_route import _EXCH_OST_SQL, _UNIT_FC_SQL, _UNIT_HOME_SQL
+    from planning.staged_erp import _EXCH_STAGED, _UNIT_FC_STAGED, _UNIT_HOME_STAGED, fetch_rows
+
+    unique: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for sales_order_no, line_item_no in keys:
+        so = compact_text(sales_order_no)
+        line = compact_text(line_item_no)
+        if line:
+            line = re.sub(r"\.0+$", "", line)
+        if not so or not line:
+            continue
+        pair = (so, line)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        unique.append(pair)
+    if not unique:
+        return {}
+
+    sos = [pair[0] for pair in unique]
+    lines = [pair[1] for pair in unique]
+    staged_sql = f"""
+    SELECT
+        det.sales_order_no,
+        det.line_item_no,
+        {_UNIT_FC_STAGED} AS unit_cost,
+        {_EXCH_STAGED} AS exch_rate,
+        {_UNIT_HOME_STAGED.strip()} AS unit_cost_home
+    FROM public.so_order_line det
+    WHERE (det.sales_order_no, det.line_item_no) IN (
+        SELECT * FROM unnest(%s::text[], %s::text[])
+    )
+    """
+    live_sql = f"""
+    SELECT
+        det.sales_order_no,
+        regexp_replace(det.line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
+        {_UNIT_FC_SQL} AS unit_cost,
+        {_EXCH_OST_SQL} AS exch_rate,
+        {_UNIT_HOME_SQL.strip()} AS unit_cost_home
+    FROM public.so_order_ost_det det
+    JOIN public.so_order_ost_hdr ost ON ost.sales_order_no = det.sales_order_no
+    WHERE (det.sales_order_no, regexp_replace(det.line_item_no::TEXT, '\\.0+$', ''))
+        IN (SELECT * FROM unnest(%s::text[], %s::text[]))
+    """
+    fetched = fetch_rows(staged_sql, (sos, lines), live_sql=live_sql, domain="sales_orders")
+    out: dict[str, dict] = {}
+    for row in fetched:
+        key = _so_line_pricing_key(row.get("sales_order_no"), row.get("line_item_no"))
+        if not key:
+            continue
+        out[key] = {
+            "unit_cost": _to_float(row.get("unit_cost")),
+            "exch_rate": _to_float(row.get("exch_rate")),
+            "unit_cost_home": _to_float(row.get("unit_cost_home")),
+        }
     return out
 
 
@@ -4324,6 +4627,25 @@ def api_delivery_schedule_flags_bulk_post():
     from .delivery_planner_service import delivery_flags_bulk_post_response
 
     return delivery_flags_bulk_post_response()
+
+
+@process_sheets_bp.post("/api/trial/process-sheets/so-line-pricing")
+@process_sheets_bp.post("/api/process-sheets/so-line-pricing")
+def api_process_sheets_so_line_pricing():
+    data = request.get_json(force=True, silent=True) or {}
+    raw_keys = data.get("keys") or []
+    pairs: list[tuple[str, str]] = []
+    for item in raw_keys:
+        if not isinstance(item, dict):
+            continue
+        pairs.append((item.get("sales_order_no"), item.get("line_item_no")))
+    try:
+        return jsonify({"pricing": fetch_so_line_pricing_map(pairs)})
+    except Exception as e:
+        friendly = planner_db_connect_error(e)
+        if friendly:
+            return jsonify({"error": friendly}), 503
+        return jsonify({"error": str(e)}), 500
 
 
 @process_sheets_bp.post("/api/trial/process-sheets/remarks")
@@ -4809,7 +5131,7 @@ def api_create_temp_process_sheet():
             try:
                 from app import _invalidate_pp_vouchers_with_ops_cache
 
-                _invalidate_pp_vouchers_with_ops_cache()
+                _invalidate_pp_vouchers_with_ops_cache(schedule_rebuild=True)
             except Exception:
                 pass
             return jsonify(result)
@@ -4834,6 +5156,9 @@ def api_patch_temp_process_sheet(planner_ps_id):
         "source_ps_id",
         "source_label",
         "source_pp_partial_no",
+        "current_stage_op_seq_id",
+        "current_stage_seq_no",
+        "current_stage_status",
     }
     updates = {key: data[key] for key in allowed if key in data}
     if not updates:
@@ -4845,7 +5170,7 @@ def api_patch_temp_process_sheet(planner_ps_id):
             try:
                 from app import _invalidate_pp_vouchers_with_ops_cache
 
-                _invalidate_pp_vouchers_with_ops_cache()
+                _invalidate_pp_vouchers_with_ops_cache(schedule_rebuild=True)
             except Exception:
                 pass
             return jsonify({"ok": True, **result})
@@ -4879,7 +5204,7 @@ def api_resolve_temp_process_sheet(planner_ps_id):
             try:
                 from app import _invalidate_pp_vouchers_with_ops_cache
 
-                _invalidate_pp_vouchers_with_ops_cache()
+                _invalidate_pp_vouchers_with_ops_cache(schedule_rebuild=True)
             except Exception:
                 pass
             return jsonify(result)
@@ -4899,7 +5224,7 @@ def api_delete_temp_process_sheet(planner_ps_id):
             try:
                 from app import _invalidate_pp_vouchers_with_ops_cache
 
-                _invalidate_pp_vouchers_with_ops_cache()
+                _invalidate_pp_vouchers_with_ops_cache(schedule_rebuild=True)
             except Exception:
                 pass
             return jsonify(result)
