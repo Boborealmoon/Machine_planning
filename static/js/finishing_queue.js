@@ -63,6 +63,18 @@ const fqState = {
   savingKeys: new Set(),
   dataSource: 'sync',
   loadHint: '',
+  mi: {
+    view: 'outstanding',
+    search: '',
+    outstanding: [],
+    ready: [],
+    historical: [],
+    loaded: false,
+    loading: false,
+    error: '',
+    cachedAt: '',
+    savingVouchers: new Set(),
+  },
 };
 
 function fqDateInputValue(value) {
@@ -222,6 +234,10 @@ function fqActiveSourceItems() {
 
 function fqIsMaterialIssueScreen() {
   return fqState.screen === 'material_issue';
+}
+
+function fqIsMaterialInspectionScreen() {
+  return fqState.screen === 'material_inspection';
 }
 
 function fqIsQueueTableVisible() {
@@ -869,6 +885,7 @@ function fqRecalcCounts() {
   setCount('fq-count-engraving_packing', stageCounts.engraving_packing);
   const miaItems = (fqState.materialIssueItems || []).filter(fqMatchesPsType);
   setCount('fq-count-material_issue', miaItems.length);
+  setCount('fq-count-material_inspection', (fqState.mi.outstanding || []).length);
 }
 
 function fqUpdateCounts() {
@@ -1038,6 +1055,350 @@ function fqRenderMaterialIssueTable() {
   }
   if (meta) meta.hidden = true;
   fqRecalcCounts();
+}
+
+/* ── Material inspection screen (ERP QC inspections + QC-team assignment) ── */
+
+function fqMiApiUrl() {
+  const cfg = window.__FQ_CONFIG__ || {};
+  return cfg.apiMaterialInspection || '/api/material-inspection';
+}
+
+function fqMiOverlayUrl() {
+  const cfg = window.__FQ_CONFIG__ || {};
+  return cfg.apiMaterialInspectionOverlay || '/api/material-inspection/overlay';
+}
+
+function fqMiVoucher(row) {
+  return String(row?.inspection_voucher_no || '').trim();
+}
+
+function fqMiRowKey(row) {
+  const insp = fqMiVoucher(row);
+  const ship = String(row?.shipment_voucher_no || '').trim();
+  const line = String(row?.shipment_line_item_no ?? '').trim();
+  return `${insp}::${ship}::${line}`;
+}
+
+function fqMiActiveRows() {
+  const view = fqState.mi.view;
+  if (view === 'ready') return fqState.mi.ready || [];
+  if (view === 'historical') return fqState.mi.historical || [];
+  return fqState.mi.outstanding || [];
+}
+
+function fqMiViewLabel(view) {
+  if (view === 'ready') return 'Ready';
+  if (view === 'historical') return 'Historical';
+  return 'Outstanding';
+}
+
+function fqMiCreatedTime(row) {
+  const raw = row?.created_datetime;
+  if (!raw) return 0;
+  const t = new Date(String(raw).replace(' ', 'T')).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
+function fqMiSortRows(rows) {
+  return [...(rows || [])].sort((a, b) => fqMiCreatedTime(b) - fqMiCreatedTime(a));
+}
+
+function fqMiRowSearchText(row) {
+  return [
+    row.inspection_voucher_no, row.po_no, row.supplier_name, row.shipment_voucher_no,
+    row.shipment_line_item_no, row.grn_no, row.inspector_code, row.inspector_name,
+    row.inventory_code, row.inventory_desc, row.assigned_inspector_name,
+  ].map((v) => String(v == null ? '' : v).toLowerCase()).join(' ');
+}
+
+function fqMiFilterRows(rows) {
+  const q = String(fqState.mi.search || '').trim().toLowerCase();
+  if (!q) return rows || [];
+  return (rows || []).filter((row) => fqMiRowSearchText(row).includes(q));
+}
+
+function fqMiFormatDate(value) {
+  if (!value) return '—';
+  const text = String(value).trim();
+  return text.length >= 10 ? text.slice(0, 10) : text || '—';
+}
+
+function fqMiStatusPill(code) {
+  const c = String(code || '').trim().toUpperCase();
+  const cls = c === 'O' ? 'o' : c === 'R' ? 'r' : c === 'H' ? 'h' : '';
+  const label = c === 'O' ? 'Outstanding' : c === 'R' ? 'Ready' : c === 'H' ? 'Historical' : (c || '—');
+  return `<span class="fq-mi-status"><span class="fq-mi-pill fq-mi-pill--${cls}">${escapeHtml(c || '—')}</span>${escapeHtml(label)}</span>`;
+}
+
+function fqMiErpInspectorLabel(row) {
+  return String(row?.inspector_name || row?.inspector_code || '').trim() || '—';
+}
+
+function fqMiRenderRow(row) {
+  const voucher = fqMiVoucher(row);
+  const isHistorical = fqState.mi.view === 'historical';
+  const done = Boolean(row.assignment_done);
+  const assigneeCell = isHistorical
+    ? `<span class="fq-mi-inspector-stated">${escapeHtml(fqMiErpInspectorLabel(row))}</span>`
+    : `<select class="fq-cell-input fq-cell-select fq-cell-select--compact" data-fq-mi-field="inspector_id" data-fq-mi-voucher="${escapeHtml(voucher)}">${fqInspectorOptions(row.assigned_inspector_id)}</select>`;
+  const doneBtn = isHistorical
+    ? ''
+    : `<button type="button" class="fq-icon-btn fq-icon-btn--done${done ? ' is-on' : ''}" data-fq-mi-toggle="done" data-fq-mi-voucher="${escapeHtml(voucher)}" aria-pressed="${done ? 'true' : 'false'}" title="${done ? 'Mark not done' : 'Mark inspection done'}">✓</button>`;
+  const desc = String(row.inventory_desc || '').trim();
+  return `
+    <tr class="fq-row fq-row--mi${!isHistorical && done ? ' fq-row--done' : ''}" data-mi-key="${escapeHtml(fqMiRowKey(row))}">
+      <td class="fq-col-sticky fq-col-sticky--mi fq-col-mono">${escapeHtml(voucher || '—')}</td>
+      <td class="fq-col-mono">${escapeHtml(String(row.po_no || '—'))}</td>
+      <td>${escapeHtml(String(row.supplier_name || '—'))}</td>
+      <td class="fq-col-mono">${escapeHtml(String(row.shipment_voucher_no || '—'))}</td>
+      <td class="fq-col-mono">${escapeHtml(String(row.grn_no || '—'))}</td>
+      <td class="fq-col-date">${escapeHtml(fqMiFormatDate(row.actual_arrival_date || row.goods_receipt_date))}</td>
+      <td class="fq-col-mono">${escapeHtml(String(row.inventory_code || '—'))}</td>
+      <td class="fq-col-desc" title="${escapeHtml(desc)}">${escapeHtml(desc || '—')}</td>
+      <td class="fq-col-num">${escapeHtml(row.receiving_qty == null ? '—' : String(row.receiving_qty))}</td>
+      <td>${fqMiStatusPill(row.status)}</td>
+      <td class="fq-col-mi-assignee${isHistorical ? ' fq-col-mi-assignee--stated' : ' fq-col-edit'}">${assigneeCell}</td>
+      <td class="fq-col-mi-done">${doneBtn}</td>
+    </tr>
+  `;
+}
+
+function fqMiSyncToolbarChrome() {
+  const toolbar = document.getElementById('fq-mi-toolbar');
+  if (toolbar) toolbar.hidden = !fqIsMaterialInspectionScreen();
+  document.querySelectorAll('[data-fq-mi-view]').forEach((btn) => {
+    const active = btn.dataset.fqMiView === fqState.mi.view;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const setCount = (id, n) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const count = Number(n) || 0;
+    el.textContent = String(count);
+    el.hidden = count <= 0;
+  };
+  setCount('fq-count-mi-outstanding', (fqState.mi.outstanding || []).length);
+  setCount('fq-count-mi-ready', (fqState.mi.ready || []).length);
+  setCount('fq-count-mi-historical', (fqState.mi.historical || []).length);
+  setCount('fq-count-material_inspection', (fqState.mi.outstanding || []).length);
+}
+
+function fqRenderMaterialInspectionTable() {
+  fqUpdateScreenChrome();
+  fqMiSyncToolbarChrome();
+
+  const wrap = document.getElementById('fq-mi-table-wrap');
+  const tbody = document.getElementById('fq-mi-table-body');
+  const empty = document.getElementById('fq-empty');
+  const emptyText = document.getElementById('fq-empty-text');
+  const stats = document.getElementById('fq-stats');
+  const meta = document.getElementById('fq-meta');
+
+  document.getElementById('fq-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-mia-table-wrap')?.setAttribute('hidden', '');
+  fqHideLoading();
+
+  if (!wrap || !tbody || !empty) {
+    fqShowLoadError('Material inspection table markup is missing — hard refresh the page.');
+    return;
+  }
+
+  if (fqState.mi.loading && !fqState.mi.loaded) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) emptyText.textContent = 'Loading material inspections…';
+    if (stats) stats.textContent = 'Loading…';
+    if (meta) meta.hidden = true;
+    return;
+  }
+
+  if (fqState.mi.error) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) emptyText.textContent = fqState.mi.error;
+    if (stats) stats.textContent = '';
+    if (meta) meta.hidden = true;
+    return;
+  }
+
+  const filtered = fqMiSortRows(fqMiFilterRows(fqMiActiveRows()));
+  const viewLabel = fqMiViewLabel(fqState.mi.view);
+  const isHistorical = fqState.mi.view === 'historical';
+
+  wrap.classList.toggle('fq-table-card--mi-historical', isHistorical);
+  const assigneeHead = wrap.querySelector('th.fq-col-mi-assignee');
+  const doneHead = wrap.querySelector('th.fq-col-mi-done');
+  if (assigneeHead) assigneeHead.textContent = isHistorical ? 'Inspector' : 'Assigned to';
+  if (doneHead) doneHead.hidden = isHistorical;
+
+  if (!filtered.length) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) {
+      emptyText.textContent = fqState.mi.search
+        ? 'No inspections match your search in this view.'
+        : `No ${viewLabel.toLowerCase()} inspections right now.`;
+    }
+  } else {
+    wrap.hidden = false;
+    empty.hidden = true;
+    tbody.innerHTML = filtered.map((row) => fqMiRenderRow(row)).join('');
+  }
+
+  if (stats) {
+    const o = (fqState.mi.outstanding || []).length;
+    const r = (fqState.mi.ready || []).length;
+    const h = (fqState.mi.historical || []).length;
+    stats.textContent = `${viewLabel}: ${filtered.length} · O ${o} · R ${r} · H ${h}`;
+  }
+  if (meta) {
+    meta.hidden = !fqState.mi.cachedAt;
+    meta.textContent = fqState.mi.cachedAt
+      ? `Material inspection · live COMAIN ERP read · cached ${fqState.mi.cachedAt} · assign a QC team member to plan the work`
+      : '';
+  }
+}
+
+function fqMiApplyRows(payload) {
+  const collect = (list) => (Array.isArray(list) ? list : []);
+  fqState.mi.outstanding = collect(payload.outstanding);
+  fqState.mi.ready = collect(payload.ready);
+  fqState.mi.historical = collect(payload.historical);
+  fqState.mi.cachedAt = payload.cached_at || '';
+  if (Array.isArray(payload.inspectors) && payload.inspectors.length) {
+    fqState.inspectors = payload.inspectors;
+    window.__FQ_INLINE_INSPECTORS__ = fqState.inspectors.slice();
+  }
+}
+
+async function fqLoadMaterialInspection({ refresh = false } = {}) {
+  if (fqState.mi.loading) return;
+  fqState.mi.loading = true;
+  fqState.mi.error = '';
+  if (fqIsMaterialInspectionScreen()) fqRenderMaterialInspectionTable();
+  try {
+    const params = new URLSearchParams();
+    if (refresh) params.set('refresh', '1');
+    const qs = params.toString();
+    const url = qs ? `${fqMiApiUrl()}?${qs}` : fqMiApiUrl();
+    const payload = await fqFetchJson(url);
+    fqMiApplyRows(payload);
+    fqState.mi.loaded = true;
+  } catch (err) {
+    fqState.mi.error = `Failed to load material inspections: ${err.message || err}`;
+  } finally {
+    fqState.mi.loading = false;
+    if (fqIsMaterialInspectionScreen()) {
+      fqRenderMaterialInspectionTable();
+    } else {
+      fqMiSyncToolbarChrome();
+    }
+  }
+}
+
+function fqMiEachVoucherRow(voucher, fn) {
+  const target = String(voucher || '').trim();
+  if (!target) return;
+  for (const list of [fqState.mi.outstanding, fqState.mi.ready, fqState.mi.historical]) {
+    for (const row of list || []) {
+      if (fqMiVoucher(row) === target) fn(row);
+    }
+  }
+}
+
+async function fqSaveMiOverlay(voucher, patch) {
+  const target = String(voucher || '').trim();
+  if (!target || fqState.mi.savingVouchers.has(target)) return null;
+  fqState.mi.savingVouchers.add(target);
+  try {
+    const body = JSON.stringify({ inspection_voucher_no: target, ...patch });
+    const requestInit = {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body,
+    };
+    let res = await fetch(fqMiOverlayUrl(), requestInit);
+    if (res.status === 405 || res.status === 501) {
+      res = await fetch(fqMiOverlayUrl(), { ...requestInit, method: 'POST' });
+    }
+    const data = await fqParseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || `Save failed (HTTP ${res.status})`);
+    const overlay = data.overlay || {};
+    fqMiEachVoucherRow(target, (row) => {
+      row.assigned_inspector_id = overlay.inspector_id ?? null;
+      row.assigned_inspector_name = overlay.inspector_name ?? '';
+      row.assignment_done = Boolean(overlay.done);
+      row.assignment_remarks = overlay.remarks ?? '';
+    });
+    return overlay;
+  } finally {
+    fqState.mi.savingVouchers.delete(target);
+  }
+}
+
+function fqSetMiView(view) {
+  const next = ['ready', 'historical'].includes(view) ? view : 'outstanding';
+  fqState.mi.view = next;
+  fqRenderMaterialInspectionTable();
+}
+
+function fqBindMaterialInspection() {
+  if (window.__fqMiBound) return;
+  window.__fqMiBound = true;
+
+  document.querySelectorAll('[data-fq-mi-view]').forEach((btn) => {
+    btn.addEventListener('click', () => fqSetMiView(btn.dataset.fqMiView || 'outstanding'));
+  });
+
+  const search = document.getElementById('fq-mi-search');
+  if (search) {
+    search.addEventListener('input', () => {
+      fqState.mi.search = search.value;
+      if (fqIsMaterialInspectionScreen()) fqRenderMaterialInspectionTable();
+    });
+  }
+
+  const tbody = document.getElementById('fq-mi-table-body');
+  if (tbody) {
+    tbody.addEventListener('change', async (e) => {
+      const el = e.target.closest('[data-fq-mi-field="inspector_id"]');
+      if (!el) return;
+      const voucher = el.dataset.fqMiVoucher || '';
+      el.classList.add('fq-cell-saving');
+      try {
+        await fqSaveMiOverlay(voucher, { inspector_id: el.value || '' });
+        el.classList.remove('fq-cell-saving');
+        el.classList.add('fq-cell-saved');
+        window.setTimeout(() => el.classList.remove('fq-cell-saved'), 1400);
+        fqRenderMaterialInspectionTable();
+        fqToast('Assignment saved', 'success');
+      } catch (err) {
+        el.classList.remove('fq-cell-saving');
+        fqToast(err.message || 'Save failed', 'error');
+      }
+    });
+
+    tbody.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-fq-mi-toggle="done"]');
+      if (!btn) return;
+      const voucher = btn.dataset.fqMiVoucher || '';
+      let nextDone = true;
+      fqMiEachVoucherRow(voucher, (row) => { nextDone = !row.assignment_done; });
+      btn.disabled = true;
+      try {
+        await fqSaveMiOverlay(voucher, { done: nextDone });
+        fqRenderMaterialInspectionTable();
+        fqToast(nextDone ? 'Marked inspection done ✓' : 'Unmarked', nextDone ? 'success' : 'info');
+      } catch (err) {
+        fqToast(err.message || 'Save failed', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
 }
 
 function fqRenderDataRow(item) {
@@ -1260,10 +1621,17 @@ function fqUpdateScreenChrome() {
   const queueMode = screen === 'queue';
   const assignMode = screen === 'assignments';
   const miaMode = screen === 'material_issue';
+  const miMode = screen === 'material_inspection';
 
   document.getElementById('fq-stage-filter-wrap')?.classList.toggle('is-hidden', !queueMode);
-  document.getElementById('fq-hide-done')?.classList.toggle('is-hidden', miaMode);
+  document.getElementById('fq-hide-done')?.classList.toggle('is-hidden', miaMode || miMode);
+  // QC team is shared with material inspection assignment, so keep it available there.
   document.getElementById('fq-manage-inspectors')?.classList.toggle('is-hidden', miaMode);
+  const miToolbar = document.getElementById('fq-mi-toolbar');
+  if (miToolbar) miToolbar.hidden = !miMode;
+  if (!miMode) {
+    document.getElementById('fq-mi-table-wrap')?.setAttribute('hidden', '');
+  }
 
   document.querySelectorAll('[data-fq-stage]').forEach((btn) => {
     const active = btn.dataset.fqStage === fqState.stage;
@@ -1281,7 +1649,7 @@ function fqUpdateScreenChrome() {
   tableWrap?.classList.toggle('fq-table-card--assignments', assignMode);
   tableWrap?.classList.toggle('fq-table-card--queue', queueMode);
   tableWrap?.classList.toggle('fq-table-card--assignee-filtered', assignMode && fqState.assignee !== 'all');
-  if (miaMode && tableWrap) tableWrap.hidden = true;
+  if ((miaMode || miMode) && tableWrap) tableWrap.hidden = true;
 
   const miaWrap = document.getElementById('fq-mia-table-wrap');
   if (miaWrap && !miaMode) miaWrap.hidden = true;
@@ -1298,6 +1666,10 @@ function fqUpdateScreenChrome() {
 }
 
 function fqRenderTable() {
+  if (fqIsMaterialInspectionScreen()) {
+    fqRenderMaterialInspectionTable();
+    return;
+  }
   if (fqIsMaterialIssueScreen()) {
     fqRenderMaterialIssueTable();
     return;
@@ -1486,6 +1858,9 @@ function fqSetScreen(screen) {
   if (fqState.screen === 'material_issue' && !(fqState.materialIssueItems || []).length) {
     void fqReloadMaterialIssueItems();
   }
+  if (fqState.screen === 'material_inspection' && !fqState.mi.loaded && !fqState.mi.loading) {
+    void fqLoadMaterialInspection();
+  }
 }
 
 async function fqReloadMaterialIssueItems() {
@@ -1506,8 +1881,11 @@ async function fqReloadMaterialIssueItems() {
 
 function fqInitScreenFromUrl() {
   const params = new URLSearchParams(window.location.search);
-  if (params.get('tab') === 'material_issue') {
+  const tab = params.get('tab');
+  if (tab === 'material_issue') {
     fqSetScreen('material_issue');
+  } else if (tab === 'material_inspection') {
+    fqSetScreen('material_inspection');
   }
 }
 
@@ -1773,6 +2151,7 @@ function fqBindEvents() {
 
   fqBindOverlayEditors();
   fqBindAssigneeBoard();
+  fqBindMaterialInspection();
 }
 
 function fqInit() {
@@ -1799,6 +2178,9 @@ function fqInit() {
         fqHideLoading();
         window.__fqInteractive = true;
         document.body.classList.add('fq-interactive-ready');
+        if (!fqState.mi.loaded && !fqState.mi.loading) {
+          void fqLoadMaterialInspection();
+        }
       } catch (renderErr) {
         console.error('finishing queue render failed:', renderErr);
         fqShowLoadError(`Failed to render queue: ${renderErr.message || renderErr}`);

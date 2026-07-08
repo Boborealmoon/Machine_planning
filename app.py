@@ -218,6 +218,7 @@ def _is_gate_public_path(path: str) -> bool:
         "/",
         MACHINIST_BOARD_PATH.lower(),
         LOCK_PLANNER_PATH.lower(),
+        REPORTS_GATE_PATH.lower(),
         "/favicon.ico",
     ):
         return True
@@ -245,6 +246,118 @@ def _require_planner_passcode():
     if _planner_authenticated():
         return None
     return redirect(url_for("site_root_gate", next=path))
+
+
+# ── Reports / Analytics passcode gate ───────────────────────────────────────
+# Separate blanket lock in front of every REPORTS / ANALYTICS tab. Enabled only
+# when REPORTS_PASSCODE is set in .env. Independent of the planner gate.
+REPORTS_SESSION_KEY = "reports_access_ok"
+REPORTS_GATE_PATH = "/reports-gate"
+LOCK_REPORTS_PATH = "/lock-reports"
+
+# Page URLs behind the reports lock (must match the REPORTS / ANALYTICS dropdown).
+_REPORTS_PAGE_PREFIXES = (
+    "/sales-report",
+    "/job-ratio",
+    "/production-capacity",
+    "/repeat-orders",
+    "/planning-data/repeat-orders",
+)
+# API URLs that feed those pages — locked too so the data can't be fetched directly.
+_REPORTS_API_PREFIXES = (
+    "/api/sales-report",
+    "/api/job-ratio",
+    "/api/production-capacity",
+    "/api/planning-data/repeat-orders",
+)
+
+
+def _reports_passcode() -> str:
+    return (os.getenv("REPORTS_PASSCODE") or "").strip()
+
+
+def _reports_gate_enabled() -> bool:
+    return bool(_reports_passcode())
+
+
+def _reports_authenticated() -> bool:
+    return session.get(REPORTS_SESSION_KEY) is True
+
+
+def _path_has_prefix(path: str, prefixes) -> bool:
+    normalized = _normalize_gate_path(path)
+    return any(normalized == p or normalized.startswith(p + "/") for p in prefixes)
+
+
+def _is_reports_page_path(path: str) -> bool:
+    return _path_has_prefix(path, _REPORTS_PAGE_PREFIXES)
+
+
+def _is_reports_api_path(path: str) -> bool:
+    return _path_has_prefix(path, _REPORTS_API_PREFIXES)
+
+
+def _safe_reports_next(raw: str) -> str:
+    target = (raw or "").strip()
+    if _is_reports_page_path(target):
+        return target
+    return "/sales-report"
+
+
+def _render_reports_gate(error=None, next_path="/sales-report", status=200, disabled=False):
+    html = render_template(
+        "site_gate.html",
+        error=error,
+        next_path=next_path,
+        gate_action=url_for("reports_gate"),
+        gate_disabled=disabled,
+        gate_title="Reports locked",
+        gate_message="Enter the passcode to open Reports / Analytics.",
+        gate_env_var="REPORTS_PASSCODE",
+    )
+    return (html, status) if status != 200 else html
+
+
+@app.before_request
+def _require_reports_passcode():
+    if not _reports_gate_enabled():
+        return None
+    if _reports_authenticated():
+        return None
+    path = request.path or "/"
+    if _is_reports_api_path(path):
+        return jsonify({"error": "Reports access locked."}), 401
+    if _is_reports_page_path(path):
+        return redirect(url_for("reports_gate", next=path))
+    return None
+
+
+@app.route(REPORTS_GATE_PATH, methods=["GET", "POST"], endpoint="reports_gate")
+def reports_gate():
+    next_path = _safe_reports_next(request.values.get("next"))
+
+    if not _reports_gate_enabled():
+        return _render_reports_gate(next_path=next_path, disabled=True)
+
+    if request.method == "POST":
+        entered = (request.form.get("passcode") or "").strip()
+        passcode = _reports_passcode()
+        if passcode and secrets.compare_digest(entered, passcode):
+            session[REPORTS_SESSION_KEY] = True
+            session.permanent = True
+            return redirect(_safe_reports_next(request.form.get("next")))
+        return _render_reports_gate(error="Invalid passcode.", next_path=next_path, status=401)
+
+    if _reports_authenticated():
+        return redirect(next_path)
+
+    return _render_reports_gate(next_path=next_path)
+
+
+@app.post(LOCK_REPORTS_PATH, endpoint="lock_reports")
+def lock_reports():
+    session.pop(REPORTS_SESSION_KEY, None)
+    return redirect(url_for("reports_gate"))
 
 
 def _scheduler_asset_version() -> str:
@@ -287,6 +400,8 @@ def _inject_board_paths():
         "planner_path": PLANNER_PATH,
         "planner_gate_enabled": _planner_gate_enabled(),
         "planner_authenticated": _planner_authenticated(),
+        "reports_gate_enabled": _reports_gate_enabled(),
+        "reports_authenticated": _reports_authenticated(),
         "scheduler_asset_version": SCHEDULER_ASSET_VERSION,
     }
 

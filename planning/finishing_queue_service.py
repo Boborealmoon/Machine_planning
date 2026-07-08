@@ -305,6 +305,132 @@ def ensure_finishing_queue_tables(con) -> None:
             pass
 
 
+def ensure_material_inspection_overlay_table(con) -> None:
+    """Planner-side assignment overlay for ERP material inspections (shares the QC inspector team)."""
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS public.planner_material_inspection_overlay (
+            inspection_voucher_no TEXT         PRIMARY KEY,
+            inspector_id          BIGINT       REFERENCES public.planner_finishing_queue_inspector(inspector_id) ON DELETE SET NULL,
+            remarks               TEXT         NOT NULL DEFAULT '',
+            done                  BOOLEAN      NOT NULL DEFAULT FALSE,
+            updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_mi_overlay_inspector
+            ON public.planner_material_inspection_overlay (inspector_id)
+            WHERE inspector_id IS NOT NULL
+        """
+    )
+
+
+def load_mi_overlay_map(con, voucher_nos: list[str]) -> dict[str, dict[str, Any]]:
+    """Map inspection_voucher_no -> overlay row (assignment + done flag)."""
+    clean = sorted({compact_text(v) for v in (voucher_nos or []) if compact_text(v)})
+    if not clean:
+        return {}
+    try:
+        ensure_material_inspection_overlay_table(con)
+        overlay_rows = rows(
+            con.execute(
+                """
+                SELECT o.inspection_voucher_no, o.inspector_id, o.remarks, o.done, o.updated_at,
+                       i.name AS inspector_name
+                FROM planner_material_inspection_overlay o
+                LEFT JOIN planner_finishing_queue_inspector i
+                       ON i.inspector_id = o.inspector_id
+                WHERE o.inspection_voucher_no = ANY(%s)
+                """,
+                (clean,),
+            )
+        )
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("load_mi_overlay_map failed: %s", exc)
+        return {}
+    return {
+        compact_text(row.get("inspection_voucher_no")): dict(row)
+        for row in overlay_rows
+        if compact_text(row.get("inspection_voucher_no"))
+    }
+
+
+def upsert_mi_overlay(
+    con,
+    *,
+    inspection_voucher_no: str,
+    inspector_id: int | None = None,
+    remarks: str | None = None,
+    done: bool | None = None,
+    clear_inspector: bool = False,
+) -> dict[str, Any]:
+    ensure_material_inspection_overlay_table(con)
+    voucher = compact_text(inspection_voucher_no)
+    if not voucher:
+        raise ValueError("inspection_voucher_no is required")
+
+    existing = one(
+        con.execute(
+            """
+            SELECT inspector_id, remarks, done
+            FROM planner_material_inspection_overlay
+            WHERE inspection_voucher_no = %s
+            """,
+            (voucher,),
+        )
+    )
+    next_inspector = existing.get("inspector_id") if existing else None
+    next_remarks = existing.get("remarks", "") if existing else ""
+    next_done = bool(existing.get("done")) if existing else False
+
+    if clear_inspector:
+        next_inspector = None
+    elif inspector_id is not None:
+        next_inspector = int(inspector_id) if inspector_id else None
+    if remarks is not None:
+        next_remarks = compact_text(remarks)
+    if done is not None:
+        next_done = bool(done)
+
+    row = one(
+        con.execute(
+            """
+            INSERT INTO planner_material_inspection_overlay
+                (inspection_voucher_no, inspector_id, remarks, done, updated_at)
+            VALUES (%s, %s, %s, %s, NOW())
+            ON CONFLICT (inspection_voucher_no) DO UPDATE SET
+                inspector_id = EXCLUDED.inspector_id,
+                remarks = EXCLUDED.remarks,
+                done = EXCLUDED.done,
+                updated_at = NOW()
+            RETURNING inspection_voucher_no, inspector_id, remarks, done, updated_at
+            """,
+            (voucher, next_inspector, next_remarks, next_done),
+        )
+    )
+    inspector_name = ""
+    if row and row.get("inspector_id"):
+        insp = one(
+            con.execute(
+                "SELECT name FROM planner_finishing_queue_inspector WHERE inspector_id = %s",
+                (int(row["inspector_id"]),),
+            )
+        )
+        inspector_name = compact_text(insp.get("name")) if insp else ""
+    return {
+        "inspection_voucher_no": voucher,
+        "inspector_id": row.get("inspector_id") if row else None,
+        "inspector_name": inspector_name,
+        "remarks": compact_text(row.get("remarks")) if row else "",
+        "done": bool(row.get("done")) if row else False,
+        "updated_at": _serialize_value(row.get("updated_at")) if row else None,
+    }
+
+
 def dedupe_active_inspectors(con) -> int:
     """Keep one active row per inspector name; re-point overlays; return rows deactivated."""
     dupes = rows(

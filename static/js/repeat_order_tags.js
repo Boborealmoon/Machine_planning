@@ -135,31 +135,31 @@ function repeatOrderRenderNewOrdersHints(row, similar, options = {}) {
 
   if (similarList.length && crossSlot.length) {
     const { preview, overflow } = repeatOrderFormatPsList(crossSlot);
-    const title = `Repeat order — same part already queued on planner: ${crossSlot.join(', ')}`;
+    const title = `Repeat — same part from other sales orders already on the planner: ${crossSlot.join(', ')}. Consider batching/slotting together.`;
     parts.push(`
       <div class="new-orders-repeat-wrap" title="${escapeHtml(title)}">
         <span class="new-orders-repeat-badge">Repeat</span>
-        <span class="new-orders-repeat-ref">Slot with ${escapeHtml(preview)}${escapeHtml(overflow)}</span>
+        <span class="new-orders-repeat-ref">Slot with ${escapeHtml(preview)}${escapeHtml(overflow)} <span class="new-orders-repeat-scope">· other orders</span></span>
       </div>
     `);
   }
 
   if (soSlot.length) {
     const { preview, overflow } = repeatOrderFormatPsList(soSlot);
-    const title = `Same sales order — same part already queued: ${soSlot.join(', ')}`;
+    const title = `Same order — same part on another line of this sales order, already on the planner: ${soSlot.join(', ')}.`;
     parts.push(`
       <div class="new-orders-repeat-wrap" title="${escapeHtml(title)}">
         <span class="new-orders-repeat-badge new-orders-repeat-badge--same-so">Same order</span>
-        <span class="new-orders-repeat-ref new-orders-repeat-ref--same-so">Slot with ${escapeHtml(preview)}${escapeHtml(overflow)}</span>
+        <span class="new-orders-repeat-ref new-orders-repeat-ref--same-so">Slot with ${escapeHtml(preview)}${escapeHtml(overflow)} <span class="new-orders-repeat-scope">· this order</span></span>
       </div>
     `);
   } else if (sameSoOnly.length) {
     const { preview, overflow } = repeatOrderFormatPsList(sameSoOnly);
-    const title = `Same sales order — same part on another line: ${sameSoOnly.join(', ')}`;
+    const title = `Same order — same part appears on another line of this sales order: ${sameSoOnly.join(', ')}.`;
     parts.push(`
       <div class="new-orders-repeat-wrap" title="${escapeHtml(title)}">
         <span class="new-orders-repeat-badge new-orders-repeat-badge--same-so">Same order</span>
-        <span class="new-orders-repeat-ref new-orders-repeat-ref--same-so">Also ${escapeHtml(preview)}${escapeHtml(overflow)}</span>
+        <span class="new-orders-repeat-ref new-orders-repeat-ref--same-so">Also on ${escapeHtml(preview)}${escapeHtml(overflow)} <span class="new-orders-repeat-scope">· this order</span></span>
       </div>
     `);
   }

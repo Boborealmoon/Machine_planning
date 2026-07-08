@@ -46,7 +46,7 @@
       </a>
 
       {# Sales / production workflow #}
-      <div class="nav-dropdown {% if nav_path in ('/new-orders', '/sales-orders', '/pending-pp', '/delivery', '/queue-delays', '/delivery-schedule') or active in ('new_orders', 'sales_orders', 'pending_pp', 'delivery', 'queue_delays', 'delivery_schedule') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/new-orders', '/sales-orders', '/delivery', '/queue-delays', '/delivery-schedule') or active in ('new_orders', 'sales_orders', 'delivery', 'queue_delays', 'delivery_schedule') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="sales-prod">
           SALES / PROD <span class="nav-caret">▾</span>
         </button>
@@ -58,10 +58,6 @@
           <a href="/sales-orders"
              class="nav-dropdown-item {% if nav_path == '/sales-orders' or active == 'sales_orders' %}nav-dropdown-item--active{% endif %}">
             S/O management
-          </a>
-          <a href="/pending-pp"
-             class="nav-dropdown-item {% if nav_path == '/pending-pp' or active == 'pending_pp' %}nav-dropdown-item--active{% endif %}">
-            Outstanding PS
           </a>
           <span class="nav-dropdown-section">DELIVERY</span>
           <a href="/delivery"
@@ -115,7 +111,7 @@
              class="nav-dropdown-item {% if nav_path == '/bom-variation' or active == 'bom_variation' %}nav-dropdown-item--active{% endif %}">
             BOM variation
           </a>
-          <a href="/material-inspection"
+          <a href="{{ finishing_queue_path }}?tab=material_inspection"
              class="nav-dropdown-item {% if nav_path == '/material-inspection' or active == 'material_inspection' %}nav-dropdown-item--active{% endif %}">
             Material inspection
           </a>
@@ -166,7 +162,7 @@
       </div>
 
       {# Archive — historical / reference views #}
-      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/actual-production', '/material-inspection/no-shipment', '/auk-oee', '/planning-data/aker-inventory', '/preferred-machines', '/kobelco-mps-archive') or active in ('daily_output', 'actual_production', 'material_inspection_no_shipment', 'auk_oee', 'aker_inventory', 'preferred_machines', 'kobelco_mps_archive') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/actual-production', '/material-inspection/no-shipment', '/auk-oee', '/planning-data/aker-inventory', '/preferred-machines', '/kobelco-mps-archive', '/pending-pp') or active in ('daily_output', 'actual_production', 'material_inspection_no_shipment', 'auk_oee', 'aker_inventory', 'preferred_machines', 'kobelco_mps_archive', 'pending_pp') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="archive">
           ARCHIVE <span class="nav-caret">▾</span>
         </button>
@@ -199,6 +195,10 @@
              class="nav-dropdown-item {% if nav_path == '/kobelco-mps-archive' or active == 'kobelco_mps_archive' %}nav-dropdown-item--active{% endif %}">
             Kobelco MPS archive
           </a>
+          <a href="/pending-pp"
+             class="nav-dropdown-item {% if nav_path == '/pending-pp' or active == 'pending_pp' %}nav-dropdown-item--active{% endif %}">
+            Outstanding PS
+          </a>
         </div>
       </div>
     </div>
@@ -208,6 +208,58 @@
         <button type="submit" class="nav-lock-btn">Lock planner</button>
       </form>
       {% endif %}
+      {% if reports_gate_enabled and reports_authenticated %}
+      <form method="post" action="{{ url_for('lock_reports') }}" class="navbar-lock-form">
+        <button type="submit" class="nav-lock-btn">Lock reports</button>
+      </form>
+      {% endif %}
+      <div class="nav-notif" id="nav-notif">
+        <button
+          type="button"
+          class="nav-notif-btn"
+          id="nav-notif-btn"
+          aria-haspopup="true"
+          aria-expanded="false"
+          aria-label="Notifications"
+          title="Notifications"
+        >
+          <svg class="nav-notif-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+            <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+          </svg>
+          <span class="nav-notif-badge" id="nav-notif-badge" hidden>0</span>
+        </button>
+        <div class="nav-notif-panel" id="nav-notif-panel" hidden role="dialog" aria-label="Notifications">
+          <div class="nav-notif-head">
+            <span class="nav-notif-title">Notifications</span>
+            <div class="nav-notif-head-actions">
+              <button
+                type="button"
+                class="nav-notif-filter-btn"
+                id="nav-notif-filter-btn"
+                aria-haspopup="true"
+                aria-expanded="false"
+                title="Notification settings"
+                aria-label="Notification settings"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="4" y1="6" x2="20" y2="6" />
+                  <line x1="7" y1="12" x2="17" y2="12" />
+                  <line x1="10" y1="18" x2="14" y2="18" />
+                </svg>
+              </button>
+              <button type="button" class="nav-notif-markread" id="nav-notif-markread">Mark all read</button>
+            </div>
+            <div class="nav-notif-filter-panel" id="nav-notif-filter-panel" hidden>
+              <div class="nav-notif-filter-title">Show new sales orders for</div>
+              <div class="nav-notif-filter-opts" id="nav-notif-filter-opts"></div>
+            </div>
+          </div>
+          <div class="nav-notif-list" id="nav-notif-list">
+            <div class="nav-notif-empty" id="nav-notif-empty">No notifications yet.</div>
+          </div>
+        </div>
+      </div>
       <button type="button" class="nav-sync-btn" id="nav-erp-sync-btn" data-default-label="Sync ERP">
         Sync ERP
       </button>
@@ -221,7 +273,7 @@
   {% block content %}{% endblock %}
 </main>
 
-<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}?v=reports-gate-fetch-20260708"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

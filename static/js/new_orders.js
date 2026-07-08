@@ -68,7 +68,7 @@ function newOrdersRenderLineDetail(row) {
       ? repeatOrderNewOrdersDetailHtml(row, similar, repeatOpts)
       : (typeof repeatOrderDetailHtml === 'function' ? repeatOrderDetailHtml(similar, repeatOpts) : ''),
     newOrdersDetailField('Part / inventory', row.inventory_code, { mono: true }),
-    newOrdersDetailField('Main description', row.main_desc),
+    newOrdersDetailField('Part description', row.part_desc),
     newOrdersDetailField('Line description', desc),
     newOrdersDetailField('PO due date', newOrdersDateOnly(row.po_due_date)),
     newOrdersDetailField('Proposed EDD', newOrdersDateOnly(row.proposed_edd)),
@@ -497,6 +497,7 @@ function newOrdersSearchText(row) {
     ...(row.queued_in_so || []),
     ...(row.same_so_similar_ps || []),
     row.inventory_code,
+    row.part_desc,
     row.main_desc,
     row.line_item_description,
     row.customer_po_no,
@@ -581,21 +582,28 @@ function newOrdersRenderSideRail(group, rowSpan) {
 }
 
 function newOrdersDescParts(row) {
+  const part = String(row.part_desc || '').trim();
   const main = String(row.main_desc || '').trim();
   const line = String(row.line_item_description || '').trim();
-  return { main, line };
+  return { part, main, line };
 }
 
 function newOrdersRenderDescription(row) {
-  const { main, line } = newOrdersDescParts(row);
-  if (!main && !line) return '—';
-  if (main && line && main !== line) {
-    return `
-      <div class="new-orders-desc-main">${escapeHtml(main)}</div>
-      <div class="new-orders-desc-line">${escapeHtml(line)}</div>
-    `;
+  const { part, main, line } = newOrdersDescParts(row);
+  const partDesc = part;
+  const orderNote = line || main;
+  const note = orderNote && orderNote !== partDesc ? orderNote : '';
+  if (!partDesc && !note) return '—';
+  const bits = [];
+  if (partDesc) {
+    bits.push(`<div class="new-orders-desc-part" title="Part description">${escapeHtml(partDesc)}</div>`);
   }
-  return `<div class="new-orders-desc-main">${escapeHtml(main || line)}</div>`;
+  if (note) {
+    const noteClass = partDesc ? 'new-orders-desc-line' : 'new-orders-desc-part';
+    const noteTitle = partDesc ? 'Order / PO line note' : 'Description';
+    bits.push(`<div class="${noteClass}" title="${noteTitle}">${escapeHtml(note)}</div>`);
+  }
+  return bits.join('');
 }
 
 function newOrdersRenderLineCells(row) {

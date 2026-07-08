@@ -68,6 +68,30 @@ document.addEventListener("click", () => {
   );
 });
 
+/** Fetch helper for REPORTS / ANALYTICS APIs — redirects to passcode gate on 401. */
+const REPORTS_API_MARKERS = [
+  "/api/sales-report",
+  "/api/job-ratio",
+  "/api/production-capacity",
+  "/api/planning-data/repeat-orders",
+];
+
+function isReportsApiUrl(url) {
+  return REPORTS_API_MARKERS.some((marker) => String(url).includes(marker));
+}
+
+async function reportsApiFetch(url, options = {}) {
+  const res = await fetch(url, options);
+  if (res.status === 401 && isReportsApiUrl(url)) {
+    const next = encodeURIComponent(window.location.pathname + window.location.search);
+    window.location.href = `/reports-gate?next=${next}`;
+    return new Promise(() => {});
+  }
+  return res;
+}
+
+window.reportsApiFetch = reportsApiFetch;
+
 /** PP staging steps (must match sync.PP_STAGING_STEP_ORDER). */
 const PP_SYNC_STEPS = [
   "pp_voucher",
@@ -282,3 +306,385 @@ window.PP_SYNC_STEPS = PP_SYNC_STEPS;
 document.getElementById("nav-erp-sync-btn")?.addEventListener("click", () => {
   syncErpPpVouchers().catch(() => {});
 });
+
+/* ---------------------------------------------------------------------------
+ * Notification bell — logs when an operation card is popped off a machine queue
+ * (data comes from /api/queue-exit-history, recorded server-side on exit).
+ * ------------------------------------------------------------------------- */
+(function initNotifications() {
+  const root = document.getElementById("nav-notif");
+  const btn = document.getElementById("nav-notif-btn");
+  const panel = document.getElementById("nav-notif-panel");
+  const list = document.getElementById("nav-notif-list");
+  const empty = document.getElementById("nav-notif-empty");
+  const badge = document.getElementById("nav-notif-badge");
+  const markReadBtn = document.getElementById("nav-notif-markread");
+  const filterBtn = document.getElementById("nav-notif-filter-btn");
+  const filterPanel = document.getElementById("nav-notif-filter-panel");
+  const filterOpts = document.getElementById("nav-notif-filter-opts");
+  if (!root || !btn || !panel || !list || !badge) return;
+
+  const LAST_SEEN_KEY = "notif-last-seen-exit-id";
+  const LAST_SEEN_SO_KEY = "notif-last-seen-so-time";
+  const POLL_MS = 60000;
+  const FETCH_LIMIT = 50;
+  const SO_PARTS_MAX = 4; // parts listed per new-order card before "+N more"
+
+  // In-memory copy is the source of truth so Mark all read works even when
+  // localStorage is unavailable/blocked (e.g. embedded webviews); persistence
+  // to localStorage is best-effort on top of that.
+  const readNum = (key) => {
+    try {
+      return Number(localStorage.getItem(key) || 0) || 0;
+    } catch {
+      return 0;
+    }
+  };
+  let lastSeenMem = readNum(LAST_SEEN_KEY);
+  let lastSeenSoMem = readNum(LAST_SEEN_SO_KEY);
+
+  const getLastSeen = () => lastSeenMem;
+  const setLastSeen = (val) => {
+    lastSeenMem = Number(val) || 0;
+    try {
+      localStorage.setItem(LAST_SEEN_KEY, String(lastSeenMem));
+    } catch {}
+  };
+  const getLastSeenSo = () => lastSeenSoMem;
+  const setLastSeenSo = (val) => {
+    lastSeenSoMem = Number(val) || 0;
+    try {
+      localStorage.setItem(LAST_SEEN_SO_KEY, String(lastSeenSoMem));
+    } catch {}
+  };
+
+  let events = [];
+  let maxExitId = 0;
+  let newOrders = [];
+  let maxSoTime = 0;
+
+  // Which PS types show up as new-sales-order notifications (user-configurable).
+  const PS_TYPES = ["MPS", "APS", "NPS", "PPS", "CPS", "SR"];
+  const DEFAULT_SO_PS_TYPES = ["APS", "NPS"];
+  const SO_PS_TYPES_KEY = "notif-so-ps-types";
+  let soPsTypes = new Set(DEFAULT_SO_PS_TYPES);
+  try {
+    const raw = localStorage.getItem(SO_PS_TYPES_KEY);
+    if (raw != null) {
+      soPsTypes = new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+    }
+  } catch {}
+  const saveSoPsTypes = () => {
+    try {
+      localStorage.setItem(SO_PS_TYPES_KEY, [...soPsTypes].join(","));
+    } catch {}
+  };
+
+  const psTypeOf = (ps) => {
+    const raw = String(ps || "").split("::")[0];
+    if (/\[sr\]/i.test(raw)) return "SR";
+    const m = raw.toUpperCase().match(/^([A-Z]+)/);
+    return m ? m[1] : null;
+  };
+  // Unknown/blank prefixes always show; known types respect the filter.
+  const psTypeSelected = (type) => !type || soPsTypes.has(type);
+
+  const num = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const fmtQty = (v) => {
+    const n = num(v);
+    return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
+  };
+
+  const fmtTime = (iso) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso);
+    const now = new Date();
+    const diffMs = now - d;
+    const diffMin = Math.round(diffMs / 60000);
+    let rel;
+    if (diffMin < 1) rel = "just now";
+    else if (diffMin < 60) rel = `${diffMin} min ago`;
+    else if (diffMin < 1440) rel = `${Math.round(diffMin / 60)} hr ago`;
+    else rel = `${Math.round(diffMin / 1440)} d ago`;
+    const abs = d.toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    return `${rel} · ${abs}`;
+  };
+
+  const esc = (s) =>
+    String(s ?? "").replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[c]));
+
+  const buildNotif = (row) => {
+    let ps = String(row.source_ps_id || row.planner_ps_id || "").trim() || "(unknown job)";
+    const partial = num(row.pp_partial_no);
+    if (partial > 1 && !/-\d+$/.test(ps)) ps = `${ps} · P${partial}`;
+    const opNo = String(row.source_op_no || "").trim();
+    const stage = String(row.stage_desc || row.op_type || "").trim();
+    const opLabel = [opNo && `Operation ${opNo}`, stage].filter(Boolean).join(" ");
+    const qty = fmtQty(row.good_qty || row.scheduled_qty);
+    const machine = String(row.machine_no || "").trim();
+    const machineLabel = machine
+      ? /^cnc/i.test(machine)
+        ? machine
+        : `CNC ${machine}`
+      : "the machine";
+    return { ps, opLabel, qty, machineLabel, exitedAt: row.exited_at };
+  };
+
+  const toMs = (v) => {
+    if (!v) return 0;
+    const t = Date.parse(String(v).replace(" ", "T"));
+    return Number.isFinite(t) ? t : 0;
+  };
+
+  // Collapse the line-level /api/new-orders rows into one card per sales order,
+  // keeping a de-duplicated list of its PS + part lines.
+  const groupNewOrders = (rows) => {
+    const bySo = new Map();
+    for (const row of rows) {
+      const so = String(row.source_voucher_no || "").trim();
+      if (!so) continue;
+      let g = bySo_get(bySo, so, row);
+      const ps = String(row.process_sheet_no || "").trim();
+      const part = String(row.inventory_code || "").trim();
+      const desc = String(row.part_desc || row.main_desc || "").trim();
+      if (!ps && !part) continue;
+      const key = `${ps}|${part}`;
+      if (g.seen.has(key)) continue;
+      g.seen.add(key);
+      g.parts.push({ ps, part, desc, type: psTypeOf(ps) });
+    }
+    newOrders = Array.from(bySo.values());
+    maxSoTime = newOrders.reduce((m, g) => Math.max(m, toMs(g.postedAt)), 0);
+  };
+
+  const bySo_get = (map, so, row) => {
+    let g = map.get(so);
+    if (!g) {
+      g = {
+        so,
+        customer: String(row.customer_code || "").trim(),
+        postedAt: row.first_posted_datetime || null,
+        parts: [],
+        seen: new Set(),
+      };
+      map.set(so, g);
+    }
+    if (!g.postedAt && row.first_posted_datetime) g.postedAt = row.first_posted_datetime;
+    return g;
+  };
+
+  const exitItemHtml = (row, isUnread) => {
+    const n = buildNotif(row);
+    return `
+      <div class="nav-notif-item${isUnread ? " is-unread" : ""}">
+        <div class="nav-notif-ps">${esc(n.ps)}</div>
+        ${n.opLabel ? `<div class="nav-notif-op">${esc(n.opLabel)}</div>` : ""}
+        ${n.qty ? `<div class="nav-notif-qty">(Qty ${esc(n.qty)})</div>` : ""}
+        <div class="nav-notif-action">has been scanned and taken off <strong>${esc(n.machineLabel)}</strong></div>
+        <div class="nav-notif-time">${esc(fmtTime(n.exitedAt))}</div>
+      </div>`;
+  };
+
+  const soItemHtml = (g, parts, isUnread) => {
+    const shown = parts.slice(0, SO_PARTS_MAX);
+    const extra = parts.length - shown.length;
+    const partsHtml = shown
+      .map((p) => {
+        const detail = [p.part, p.desc].filter(Boolean).join(" · ");
+        return `
+          <li class="nav-notif-part">
+            <span class="nav-notif-part-ps">${esc(p.ps || "—")}</span>
+            ${detail ? `<span class="nav-notif-part-no">${esc(detail)}</span>` : ""}
+          </li>`;
+      })
+      .join("");
+    const moreHtml = extra > 0 ? `<li class="nav-notif-part-more">+${extra} more</li>` : "";
+    return `
+      <div class="nav-notif-item nav-notif-item--so${isUnread ? " is-unread" : ""}">
+        <div class="nav-notif-tag">New sales order</div>
+        <div class="nav-notif-ps">${esc(g.so)}</div>
+        ${g.customer ? `<div class="nav-notif-action">from <strong>${esc(g.customer)}</strong></div>` : ""}
+        <ul class="nav-notif-parts">${partsHtml}${moreHtml}</ul>
+        <div class="nav-notif-time">${esc(fmtTime(g.postedAt))}</div>
+      </div>`;
+  };
+
+  const render = () => {
+    const lastSeen = getLastSeen();
+    const lastSeenSo = getLastSeenSo();
+    const items = [];
+    let unread = 0;
+
+    for (const row of events) {
+      const id = num(row.exit_id);
+      const isUnread = id > lastSeen;
+      if (isUnread) unread += 1;
+      items.push({ sortMs: toMs(row.exited_at), html: exitItemHtml(row, isUnread) });
+    }
+    for (const g of newOrders) {
+      const parts = g.parts.filter((p) => psTypeSelected(p.type));
+      if (!parts.length) continue;
+      const ms = toMs(g.postedAt);
+      const isUnread = ms > 0 && ms > lastSeenSo;
+      if (isUnread) unread += 1;
+      items.push({ sortMs: ms, html: soItemHtml(g, parts, isUnread) });
+    }
+
+    if (!items.length) {
+      list.innerHTML = "";
+      if (empty) {
+        empty.hidden = false;
+        list.appendChild(empty);
+      }
+    } else {
+      items.sort((a, b) => b.sortMs - a.sortMs);
+      list.innerHTML = items.map((i) => i.html).join("");
+    }
+
+    if (unread > 0) {
+      badge.textContent = unread > 99 ? "99+" : String(unread);
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  };
+
+  const fetchEvents = async () => {
+    try {
+      const res = await fetch(`/api/queue-exit-history?limit=${FETCH_LIMIT}`, {
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data || data.ok === false || !Array.isArray(data.rows)) return;
+      events = data.rows;
+      maxExitId = events.reduce((m, r) => Math.max(m, num(r.exit_id)), 0);
+      render();
+    } catch {
+      /* silent — bell just won't update */
+    }
+  };
+
+  const fetchNewOrders = async () => {
+    try {
+      const res = await fetch("/api/new-orders?week=this_week", {
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data || data.ok === false || !Array.isArray(data.rows)) return;
+      groupNewOrders(data.rows);
+      render();
+    } catch {
+      /* silent — bell just won't update */
+    }
+  };
+
+  const refresh = () => {
+    fetchEvents();
+    fetchNewOrders();
+  };
+
+  const markAllRead = () => {
+    if (maxExitId > getLastSeen()) setLastSeen(maxExitId);
+    if (maxSoTime > getLastSeenSo()) setLastSeenSo(maxSoTime);
+    render();
+  };
+
+  const openPanel = () => {
+    panel.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    refresh();
+  };
+  const closeFilter = () => {
+    if (!filterPanel) return;
+    filterPanel.hidden = true;
+    filterBtn?.setAttribute("aria-expanded", "false");
+  };
+  const closePanel = () => {
+    panel.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+    closeFilter();
+  };
+
+  const buildFilter = () => {
+    if (!filterOpts) return;
+    filterOpts.innerHTML = PS_TYPES.map(
+      (t) => `
+        <label class="nav-notif-filter-opt">
+          <input type="checkbox" value="${t}"${soPsTypes.has(t) ? " checked" : ""} />
+          <span>${t}</span>
+        </label>`
+    ).join("");
+    filterOpts.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+      cb.addEventListener("change", () => {
+        if (cb.checked) soPsTypes.add(cb.value);
+        else soPsTypes.delete(cb.value);
+        saveSoPsTypes();
+        render();
+      });
+    });
+  };
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (panel.hidden) openPanel();
+    else closePanel();
+  });
+
+  markReadBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    markAllRead();
+  });
+
+  filterBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!filterPanel) return;
+    const willOpen = filterPanel.hidden;
+    filterPanel.hidden = !willOpen;
+    filterBtn.setAttribute("aria-expanded", String(willOpen));
+  });
+
+  document.addEventListener("click", (e) => {
+    if (
+      filterPanel &&
+      !filterPanel.hidden &&
+      !filterPanel.contains(e.target) &&
+      !filterBtn?.contains(e.target)
+    ) {
+      closeFilter();
+    }
+    if (!panel.hidden && !root.contains(e.target)) closePanel();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (filterPanel && !filterPanel.hidden) closeFilter();
+    else if (!panel.hidden) closePanel();
+  });
+
+  buildFilter();
+
+  refresh();
+  window.setInterval(() => {
+    if (document.visibilityState === "visible") refresh();
+  }, POLL_MS);
+  window.addEventListener("focus", () => refresh());
+  // Refetch right after an ERP sync so brand-new orders show without waiting for the poll.
+  window.addEventListener("pp-vouchers-synced", () => fetchNewOrders());
+})();

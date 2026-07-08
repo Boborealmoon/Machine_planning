@@ -10,6 +10,12 @@ from typing import Any
 import psycopg2.extras
 from flask import Blueprint, jsonify, render_template, request
 
+from .finishing_queue_service import (
+    load_inspectors,
+    load_mi_overlay_map,
+    upsert_mi_overlay,
+)
+from .helpers import planner_db
 from .utils import compact_text
 
 logger = logging.getLogger(__name__)
@@ -167,6 +173,49 @@ def _fetch_material_inspection(
     return payload
 
 
+def _voucher_no(row: dict[str, Any]) -> str:
+    return compact_text(row.get("inspection_voucher_no"))
+
+
+def _apply_assignment_overlay(
+    buckets: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Merge planner-side QC assignment + done flag onto each ERP row.
+
+    Returns the shared QC inspector team (empty on any DB hiccup so the ERP
+    view still renders). Assignment is keyed by inspection voucher, so all
+    lines of one inspection share the assignee. Applied per-request (not
+    cached) so a fresh assignment shows immediately.
+    """
+    vouchers: list[str] = []
+    for rows_list in buckets.values():
+        for row in rows_list:
+            voucher = _voucher_no(row)
+            if voucher:
+                vouchers.append(voucher)
+
+    inspectors: list[dict[str, Any]] = []
+    overlay_map: dict[str, dict[str, Any]] = {}
+    if vouchers:
+        try:
+            with planner_db() as con:
+                inspectors = [dict(i) for i in load_inspectors(con)]
+                overlay_map = load_mi_overlay_map(con, vouchers)
+        except Exception:
+            logger.exception("material inspection assignment overlay load failed")
+            inspectors = []
+            overlay_map = {}
+
+    for rows_list in buckets.values():
+        for row in rows_list:
+            overlay = overlay_map.get(_voucher_no(row)) or {}
+            row["assigned_inspector_id"] = overlay.get("inspector_id")
+            row["assigned_inspector_name"] = compact_text(overlay.get("inspector_name"))
+            row["assignment_done"] = bool(overlay.get("done"))
+            row["assignment_remarks"] = compact_text(overlay.get("remarks"))
+    return inspectors
+
+
 def _material_inspection_api_response(variant: str):
     refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
 
@@ -179,6 +228,9 @@ def _material_inspection_api_response(variant: str):
     outstanding = data.get("outstanding") or []
     ready = data.get("ready") or []
     historical = data.get("historical") or []
+    inspectors = _apply_assignment_overlay(
+        {"outstanding": outstanding, "ready": ready, "historical": historical}
+    )
     cached = _cache.get(variant)
     cached_at = cached[0] if cached else time.time()
 
@@ -192,11 +244,25 @@ def _material_inspection_api_response(variant: str):
             "count": len(outstanding) + len(ready) + len(historical),
             "cached_at": datetime.fromtimestamp(cached_at, tz=None).isoformat(sep=" ", timespec="seconds"),
             "cache_ttl_sec": _CACHE_TTL_SEC,
+            "inspectors": inspectors,
             "outstanding": outstanding,
             "ready": ready,
             "historical": historical,
         }
     )
+
+
+def _parse_overlay_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = compact_text(value).lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return None
 
 
 @material_inspection_bp.get("/material-inspection")
@@ -239,3 +305,49 @@ def api_material_inspection():
 @material_inspection_bp.get("/api/material-inspection/no-shipment")
 def api_material_inspection_no_shipment():
     return _material_inspection_api_response("no_shipment")
+
+
+@material_inspection_bp.put("/api/material-inspection/overlay")
+def api_material_inspection_overlay():
+    payload = request.get_json(silent=True) or {}
+    voucher = compact_text(payload.get("inspection_voucher_no"))
+    if not voucher:
+        return jsonify({"ok": False, "error": "inspection_voucher_no is required"}), 400
+
+    has_inspector = "inspector_id" in payload
+    inspector_raw = payload.get("inspector_id")
+    inspector_id: int | None = None
+    clear_inspector = has_inspector and inspector_raw in (None, "")
+    if has_inspector and not clear_inspector:
+        try:
+            inspector_id = int(inspector_raw)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "invalid inspector_id"}), 400
+
+    done = _parse_overlay_bool(payload.get("done")) if "done" in payload else None
+    remarks = payload.get("remarks") if "remarks" in payload else None
+
+    if not has_inspector and done is None and remarks is None:
+        return jsonify({"ok": False, "error": "inspector_id, done, or remarks is required"}), 400
+
+    try:
+        with planner_db() as con:
+            row = upsert_mi_overlay(
+                con,
+                inspection_voucher_no=voucher,
+                inspector_id=inspector_id if has_inspector and not clear_inspector else None,
+                remarks=remarks,
+                done=done,
+                clear_inspector=clear_inspector,
+            )
+    except Exception as exc:
+        logger.exception("material inspection overlay save failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    return jsonify({"ok": True, "overlay": row})
+
+
+@material_inspection_bp.post("/api/material-inspection/overlay")
+def api_material_inspection_overlay_post():
+    """POST alias for environments that block PUT."""
+    return api_material_inspection_overlay()

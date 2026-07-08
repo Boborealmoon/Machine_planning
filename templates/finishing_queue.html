@@ -37,6 +37,9 @@
         <button type="button" class="fq-chip" data-fq-screen="material_issue" role="tab" aria-selected="false">
           Mat issue &amp; assy <span class="fq-chip-count" id="fq-count-material_issue" hidden>0</span>
         </button>
+        <button type="button" class="fq-chip" data-fq-screen="material_inspection" role="tab" aria-selected="false">
+          Material inspection <span class="fq-chip-count" id="fq-count-material_inspection" hidden>0</span>
+        </button>
       </div>
       <div class="fq-nav-group fq-nav-group--ps-types" role="group" aria-label="PS type filter">
         <button type="button" class="fq-chip is-active" data-fq-ps-type="APS" aria-pressed="true">APS</button>
@@ -66,6 +69,28 @@
           Pack &amp; engrave <span class="fq-chip-count" id="fq-count-engraving_packing" hidden>0</span>
         </button>
       </div>
+    </div>
+    <div class="fq-nav-row fq-nav-row--material-inspection" id="fq-mi-toolbar" hidden>
+      <div class="fq-nav-group" role="tablist" aria-label="Material inspection status">
+        <button type="button" class="fq-chip is-active" data-fq-mi-view="outstanding" role="tab" aria-selected="true">
+          Outstanding <span class="fq-mi-pill fq-mi-pill--o">O</span> <span class="fq-chip-count" id="fq-count-mi-outstanding" hidden>0</span>
+        </button>
+        <button type="button" class="fq-chip" data-fq-mi-view="ready" role="tab" aria-selected="false">
+          Ready <span class="fq-mi-pill fq-mi-pill--r">R</span> <span class="fq-chip-count" id="fq-count-mi-ready" hidden>0</span>
+        </button>
+        <button type="button" class="fq-chip" data-fq-mi-view="historical" role="tab" aria-selected="false">
+          Historical <span class="fq-mi-pill fq-mi-pill--h">H</span> <span class="fq-chip-count" id="fq-count-mi-historical" hidden>0</span>
+        </button>
+      </div>
+      <label class="fq-mi-search">
+        <span class="planner-page-search-wrap">
+          <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input id="fq-mi-search" class="planner-page-search-input" type="search" placeholder="Inspection, PO, supplier, GRN, part..." autocomplete="off">
+        </span>
+      </label>
     </div>
   </nav>
 
@@ -148,6 +173,30 @@
           </tr>
         </thead>
         <tbody id="fq-mia-table-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="fq-mi-table-wrap" class="fq-table-card fq-table-card--material-inspection" hidden>
+    <div class="fq-table-scroll">
+      <table class="fq-table fq-table--material-inspection">
+        <thead>
+          <tr>
+            <th class="fq-col-sticky fq-col-sticky--mi">Inspection</th>
+            <th>PO</th>
+            <th>Supplier</th>
+            <th>Shipment</th>
+            <th>GRN</th>
+            <th>Arrival</th>
+            <th>Part</th>
+            <th>Description</th>
+            <th>Qty</th>
+            <th>ERP status</th>
+            <th class="fq-col-mi-assignee">Assigned to</th>
+            <th class="fq-col-mi-done">Done</th>
+          </tr>
+        </thead>
+        <tbody id="fq-mi-table-body"></tbody>
       </table>
     </div>
   </div>

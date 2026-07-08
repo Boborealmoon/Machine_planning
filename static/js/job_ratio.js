@@ -1034,7 +1034,7 @@ async function jobRatioFetchJson(url, timeoutMs = 120000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const resp = await fetch(url, { signal: controller.signal });
+    const resp = await (window.reportsApiFetch || fetch)(url, { signal: controller.signal });
     let payload = {};
     try {
       payload = await resp.json();

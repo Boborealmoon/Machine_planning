@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}S/O Management{% endblock %}
 {% block main_class %}app-main--new-orders app-main--sales-orders-wide{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-coway-edd-edit-20260707">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-badge-colours-20260708d">{% endblock %}
 {% block content %}
 <div class="new-orders-page new-orders-page--sales-orders">
   <div class="new-orders-header">
@@ -19,7 +19,8 @@
             Note columns autosave to Supabase per PP voucher.
             <strong>Exception</strong> flags a line item (saved per partial) and highlights the row in red.
             <strong>FA</strong> marks frame agreement parts from the master list under Queries &amp; Master Data.
-            Toggle <strong>Active</strong> (SO line not fully shipped) or <strong>Complete</strong> (fully shipped qty on the SO line).
+            Toggle <strong>Active</strong> (SO line not fully shipped), <strong>Complete</strong> (fully shipped qty on the SO line),
+            or <strong>No WO</strong> (active PP vouchers / process sheets with no work order raised yet — same gap as the Outstanding PS "Has PP · no WO" tab).
           </span>
         </button>
       </div>
@@ -42,6 +43,11 @@
         <button type="button" class="mi-view-btn" data-so-view="complete" role="tab" aria-selected="false">
           Complete <span class="mi-status-pill mi-status-pill--h">C</span>
           <span class="ps-view-tab-count" id="so-complete-tab-count" hidden>0</span>
+        </button>
+        <button type="button" class="mi-view-btn" data-so-view="no-wo" role="tab" aria-selected="false"
+                title="Active PP vouchers (process sheets) that have a PP raised but no work order (WO) voucher yet">
+          No WO <span class="mi-status-pill mi-status-pill--o">W</span>
+          <span class="ps-view-tab-count" id="so-no-wo-tab-count" hidden>0</span>
         </button>
       </div>
     </div>
@@ -127,5 +133,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-orders-pp-20260608"></script>
 <script src="{{ url_for('static', filename='js/repeat_order_tags.js') }}?v=repeat-tags-detail-20260612"></script>
-<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=so-coway-edd-edit-20260707"></script>
+<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=so-badge-colours-20260708d"></script>
 {% endblock %}

@@ -269,6 +269,8 @@ def _finishing_queue_client_config() -> dict[str, str]:
         "apiOverlay": url_for("finishing_queue.api_finishing_queue_overlay"),
         "apiInspectors": url_for("finishing_queue.api_finishing_queue_inspectors"),
         "apiWoStatusSync": url_for("api_mfg_wo_status_sync"),
+        "apiMaterialInspection": url_for("material_inspection.api_material_inspection"),
+        "apiMaterialInspectionOverlay": url_for("material_inspection.api_material_inspection_overlay"),
     }
 
 

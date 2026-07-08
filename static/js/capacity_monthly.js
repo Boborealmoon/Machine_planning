@@ -26,7 +26,7 @@
   }
 
   async function fetchJson(url) {
-    const res = await fetch(url);
+    const res = await (window.reportsApiFetch || fetch)(url);
     const contentType = String(res.headers.get('content-type') || '').toLowerCase();
     if (!contentType.includes('application/json')) {
       const snippet = (await res.text()).trim().slice(0, 120);

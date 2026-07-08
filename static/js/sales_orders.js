@@ -180,6 +180,17 @@ function soRenderRepeatPill(order, pp) {
   return repeatOrderRenderPill(soSimilarPsForPp(order, pp));
 }
 
+function soIsNewPart(order, pp) {
+  const partNo = String(pp?.inventory_code || '').trim();
+  if (!partNo) return false;
+  return soSimilarPsForPp(order, pp).length === 0;
+}
+
+function soRenderNewPartBadge(order, pp) {
+  if (!soIsNewPart(order, pp)) return '';
+  return '<span class="so-new-part-badge" title="New part — no prior process sheet history">NEW</span>';
+}
+
 function soPartialKey(order, pp, partial) {
   const so = String(order?.sales_order_no || '').trim();
   const ppNo = String(pp?.pp_voucher_no || '').trim();
@@ -222,6 +233,38 @@ function soIsReposted(order) {
   const first = String(order?.first_posted_datetime || '').trim();
   const latest = String(order?.latest_posted_datetime || '').trim();
   return Boolean(first && latest && first !== latest);
+}
+
+function soWorkingWeekRange(offsetWeeks = 0) {
+  const anchor = new Date();
+  const weekday = anchor.getDay();
+  const diffToMonday = weekday === 0 ? -6 : 1 - weekday;
+  const monday = new Date(anchor);
+  monday.setHours(0, 0, 0, 0);
+  monday.setDate(anchor.getDate() + diffToMonday + offsetWeeks * 7);
+  const saturday = new Date(monday);
+  saturday.setDate(monday.getDate() + 5);
+  saturday.setHours(23, 59, 59, 999);
+  return { from: monday, to: saturday };
+}
+
+function soParseOrderDate(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const d = new Date(text.replace(' ', 'T'));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function soIsNewOrder(order) {
+  const posted = soParseOrderDate(order?.first_posted_datetime);
+  if (!posted) return false;
+  const { from, to } = soWorkingWeekRange();
+  return posted >= from && posted <= to;
+}
+
+function soRenderNewOrderBadge(order) {
+  if (!soIsNewOrder(order)) return '';
+  return '<span class="so-new-order-badge" title="First posted this working week (Mon–Sat)">New</span>';
 }
 
 function soPostedDetailFields(order) {
@@ -775,6 +818,8 @@ function soBindTableClicks() {
 }
 
 function soActiveOrders() {
+  // The "no-wo" view is scoped to active (not fully shipped) jobs, matching the
+  // Outstanding PS "Has PP · no WO" tab which excludes fully-shipped lines.
   return soState.view === 'complete' ? soState.complete : soState.active;
 }
 
@@ -1063,6 +1108,7 @@ function soLeafPassesColumnFilters(leaf) {
 }
 
 function soLeafPassesFilters(leaf) {
+  if (soState.view === 'no-wo' && !soPartialIsNoWo(leaf.partial)) return false;
   if (!soLeafPassesPrefixFilter(leaf.pp)) return false;
   return soLeafPassesColumnFilters(leaf);
 }
@@ -1446,7 +1492,7 @@ function soRenderSideRail(order, rowSpan, { shadeAlt = false } = {}) {
         <div class="new-orders-side-rail-top">
           <button type="button" class="new-orders-group-toggle" data-action="toggle-group" data-sales-order="${escapeHtml(soNo)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} PP vouchers">${chevron}</button>
         </div>
-        <strong class="new-orders-side-so">${escapeHtml(soNo || '—')}</strong>
+        <strong class="new-orders-side-so">${escapeHtml(soNo || '—')}${soRenderNewOrderBadge(order)}</strong>
         <span class="new-orders-side-posted-compact" title="${escapeHtml(posted)}">${escapeHtml(postedShort)}</span>
         <span class="new-orders-side-customer-compact" title="${escapeHtml(customer)}">${escapeHtml(customer)}</span>
       </div>
@@ -2088,11 +2134,12 @@ function soRenderPartialCell(partial) {
   return `<td class="new-orders-num so-partial-cell">${escapeHtml(String(partial?.pp_partial_no ?? '—'))}</td>`;
 }
 
-function soRenderPartCell(pp, partial) {
+function soRenderPartCell(order, pp, partial) {
   const part = partial?.inventory_code || pp?.inventory_code || '—';
   const faBadge = soRenderFrameAgreementBadge(pp, partial);
+  const newBadge = soRenderNewPartBadge(order, pp);
   const faClass = faBadge ? ' so-part-cell--fa' : '';
-  return `<td class="new-orders-num so-part-cell${faClass}"><span class="so-part-text">${escapeHtml(String(part))}</span>${faBadge}</td>`;
+  return `<td class="new-orders-num so-part-cell${faClass}"><span class="so-part-text">${escapeHtml(String(part))}</span>${newBadge}${faBadge}</td>`;
 }
 
 function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, shadeAlt }) {
@@ -2115,7 +2162,7 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, shade
       ${soRenderStageCell(pp, partial)}
       ${soRenderQtyCell(pp)}
       ${orderDateCell}
-      ${soRenderPartCell(pp, partial)}
+      ${soRenderPartCell(order, pp, partial)}
       ${soRenderPpCells(pp, partial)}
     </tr>
   `;
@@ -2478,11 +2525,27 @@ function soFilteredJobCount(orders) {
   return count;
 }
 
+/** No-WO job count for the tab badge — PP vouchers (jobs) with at least one partial that has no WO raised. */
+function soFilteredNoWoJobCount(orders) {
+  const seen = new Set();
+  (orders || []).forEach(order => {
+    soLeafRows(order).forEach(leaf => {
+      if (!soLeafPassesPrefixFilter(leaf.pp)) return;
+      if (!soPartialIsNoWo(leaf.partial)) return;
+      const key = `${order.sales_order_no}::${leaf.pp?.pp_voucher_no || ''}`;
+      seen.add(key);
+    });
+  });
+  return seen.size;
+}
+
 function soUpdateTabCounts() {
   const activeEl = document.getElementById('so-active-tab-count');
   const completeEl = document.getElementById('so-complete-tab-count');
+  const noWoEl = document.getElementById('so-no-wo-tab-count');
   const activeJobs = soFilteredJobCount(soState.active);
   const completeJobs = soFilteredJobCount(soState.complete);
+  const noWoJobs = soFilteredNoWoJobCount(soState.active);
   if (activeEl) {
     activeEl.textContent = String(activeJobs);
     activeEl.hidden = activeJobs === 0;
@@ -2491,10 +2554,14 @@ function soUpdateTabCounts() {
     completeEl.textContent = String(completeJobs);
     completeEl.hidden = completeJobs === 0;
   }
+  if (noWoEl) {
+    noWoEl.textContent = String(noWoJobs);
+    noWoEl.hidden = noWoJobs === 0;
+  }
 }
 
 function soSetView(view) {
-  const next = view === 'complete' ? 'complete' : 'active';
+  const next = ['complete', 'no-wo'].includes(view) ? view : 'active';
   soState.view = next;
   soCloseDetail();
   soCloseMaterialModal();
@@ -2516,7 +2583,9 @@ function soUpdateStats() {
   });
   const activeN = soVisibleOrders(soState.active).length;
   const completeN = soVisibleOrders(soState.complete).length;
-  const viewLabel = soState.view === 'complete' ? 'Complete' : 'Active';
+  const viewLabel = soState.view === 'complete'
+    ? 'Complete'
+    : (soState.view === 'no-wo' ? 'No WO' : 'Active');
   const { typeCounts, ppCount } = soVisibleTypeCounts();
   const hasLoaded = (soState.active?.length || 0) + (soState.complete?.length || 0) > 0;
   if (!hasLoaded) {
@@ -2548,11 +2617,16 @@ function soRender() {
   const hasData = (soState.active?.length || 0) + (soState.complete?.length || 0) > 0;
 
   if (!orders.length) {
-    const emptyMsg = !hasData
-      ? `No ${soState.view === 'complete' ? 'complete' : 'active'} sales orders in ERP.`
-      : (soState.ppTypes.size === 0
-        ? 'Select at least one PP prefix (APS, NPS, …).'
-        : 'No rows match your search or column filters — adjust filters in the column headers above.');
+    let emptyMsg;
+    if (!hasData) {
+      emptyMsg = `No ${soState.view === 'complete' ? 'complete' : 'active'} sales orders in ERP.`;
+    } else if (soState.ppTypes.size === 0) {
+      emptyMsg = 'Select at least one PP prefix (APS, NPS, …).';
+    } else if (soState.view === 'no-wo') {
+      emptyMsg = 'No PP vouchers are missing a work order — every process sheet in view has a WO raised.';
+    } else {
+      emptyMsg = 'No rows match your search or column filters — adjust filters in the column headers above.';
+    }
     if (hasData) {
       if (host) host.hidden = false;
       if (empty) empty.hidden = true;

@@ -1421,9 +1421,14 @@ async function salesReportLoadMonthly(options = {}) {
   if (options.force) qs.set('refresh', '1');
 
   try {
-    const res = await fetch(`/api/sales-report/monthly?${qs.toString()}`);
+    const res = await (window.reportsApiFetch || fetch)(`/api/sales-report/monthly?${qs.toString()}`);
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      const msg = res.status === 502
+        ? 'Server busy or restarting (502). Wait a moment and click Refresh.'
+        : (data.error || `${res.status} ${res.statusText}`.trim());
+      throw new Error(msg);
+    }
     salesReportState.data = data;
     salesReportState.month = month;
     salesReportState.year = Number(year);
@@ -1452,9 +1457,14 @@ async function salesReportLoadYtd(options = {}) {
   if (options.force) qs.set('refresh', '1');
 
   try {
-    const res = await fetch(`/api/sales-report/ytd?${qs.toString()}`);
+    const res = await (window.reportsApiFetch || fetch)(`/api/sales-report/ytd?${qs.toString()}`);
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      const msg = res.status === 502
+        ? 'Server busy or restarting (502). Wait a moment and click Refresh.'
+        : (data.error || `${res.status} ${res.statusText}`.trim());
+      throw new Error(msg);
+    }
     salesReportState.ytdData = data;
     salesReportEndLoad();
     salesReportRender();

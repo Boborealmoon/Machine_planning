@@ -336,7 +336,7 @@
     if (refresh) params.set('refresh', '1');
 
     try {
-      const res = await fetch(`/api/planning-data/repeat-orders?${params.toString()}`);
+      const res = await (window.reportsApiFetch || fetch)(`/api/planning-data/repeat-orders?${params.toString()}`);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
       state.rows = data.rows || [];

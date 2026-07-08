@@ -1006,3 +1006,114 @@ body.qaqc-view {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ── Material inspection screen ─────────────────────────── */
+
+.fq-nav-row--material-inspection {
+  gap: 12px;
+}
+
+.fq-mi-search {
+  flex: 1 1 240px;
+  min-width: 200px;
+  max-width: 420px;
+}
+
+.fq-mi-search .planner-page-search-wrap {
+  width: 100%;
+}
+
+.fq-mi-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 5px;
+  border-radius: 5px;
+  font-size: 0.66rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.fq-mi-pill--o { background: #fef3c7; color: #92400e; }
+.fq-mi-pill--r { background: #dbeafe; color: #1d4ed8; }
+.fq-mi-pill--h { background: #e2e8f0; color: #475569; }
+
+.fq-mi-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #475569;
+  white-space: nowrap;
+}
+
+.fq-table-card--material-inspection {
+  margin-top: 0;
+}
+
+.fq-table td.fq-col-mono,
+.fq-table .fq-col-mono {
+  font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.fq-table td.fq-col-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.fq-col-sticky--mi,
+.fq-table thead th.fq-col-sticky--mi {
+  left: 0;
+  min-width: 9rem;
+  max-width: 12rem;
+  box-shadow: 2px 0 8px rgba(15, 23, 42, 0.05);
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.fq-col-mi-assignee {
+  min-width: 8.5rem;
+  max-width: 11rem;
+}
+
+.fq-col-mi-done {
+  width: 3rem;
+  text-align: center;
+}
+
+.fq-table-card--mi-historical .fq-col-mi-done {
+  display: none;
+}
+
+.fq-mi-inspector-stated {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #334155;
+  white-space: nowrap;
+}
+
+.fq-col-mi-assignee--stated {
+  min-width: 7rem;
+}
+
+.fq-table--material-inspection tbody tr.fq-row--mi {
+  cursor: default;
+}
+
+.fq-table--material-inspection tbody tr.fq-row--mi:hover td {
+  background: #f8fafc;
+}
+
+.fq-table--material-inspection tbody tr.fq-row--mi.fq-row--done td {
+  color: #94a3b8;
+}
+
+.fq-table--material-inspection tbody tr.fq-row--mi .fq-col-desc {
+  max-width: 260px;
+}

@@ -7091,8 +7091,10 @@
     word-break: break-word;
     overflow: visible;
   }
-  .new-orders-desc-main {
+  .new-orders-desc-main,
+  .new-orders-desc-part {
     font-weight: 600;
+    color: #0f172a;
   }
   .new-orders-desc-line {
     margin-top: 5px;
@@ -7146,6 +7148,22 @@
   .new-orders-repeat-badge--same-so {
     background: #7c3aed;
   }
+  .new-orders-page--sales-orders .so-new-order-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 4px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(2, 132, 199, 0.12);
+    color: #0369a1;
+    border: 1px solid rgba(2, 132, 199, 0.3);
+    font-size: 9px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    line-height: 1.5;
+    vertical-align: middle;
+  }
   .new-orders-repeat-ref {
     font-size: 10px;
     font-weight: 600;
@@ -7155,6 +7173,41 @@
   }
   .new-orders-repeat-ref--same-so {
     color: #5b21b6;
+  }
+  .new-orders-repeat-scope {
+    font-weight: 700;
+    opacity: 0.7;
+    white-space: nowrap;
+  }
+  .new-orders-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 18px;
+    margin: 10px 0 4px;
+    padding: 10px 14px;
+    border: 1px solid var(--border, #e2e8f0);
+    border-radius: 8px;
+    background: #f8fafc;
+    font-size: 11px;
+    line-height: 1.4;
+    color: #475569;
+  }
+  .new-orders-legend-label {
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #94a3b8;
+  }
+  .new-orders-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .new-orders-legend-item strong {
+    color: #0f172a;
+    font-weight: 700;
   }
   .new-orders-empty {
     padding: 28px 20px;
@@ -8463,6 +8516,20 @@
   .new-orders-page--sales-orders tr.is-so-exception td.so-part-cell--fa .so-fa-badge {
     background: rgba(126, 34, 206, 0.18);
     border-color: rgba(126, 34, 206, 0.35);
+  }
+  .new-orders-page--sales-orders .so-new-part-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 4px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    vertical-align: middle;
+    background: rgba(2, 132, 199, 0.12);
+    color: #0369a1;
+    border: 1px solid rgba(2, 132, 199, 0.3);
   }
   .new-orders-page--sales-orders .so-process-sheet-cell .new-orders-repeat-wrap {
     margin-top: 2px;
@@ -11168,9 +11235,9 @@
   font-weight: 700;
   line-height: 1.4;
   letter-spacing: 0.02em;
-  background: rgba(5, 150, 105, 0.12);
-  color: #047857;
-  border: 1px solid rgba(5, 150, 105, 0.3);
+  background: rgba(2, 132, 199, 0.12);
+  color: #0369a1;
+  border: 1px solid rgba(2, 132, 199, 0.3);
   vertical-align: middle;
 }
 .pending-pp-part-link {

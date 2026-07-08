@@ -95,14 +95,14 @@
 </head>
 <body>
   <main class="gate-card">
-    <h1>Access required</h1>
+    <h1>{{ gate_title or "Access required" }}</h1>
     {% if gate_disabled %}
     <p>Passcode gate is not active yet.</p>
     <div class="gate-error" role="alert">
-      Add <strong>PLANNER_PASSCODE</strong> to the <strong>.env</strong> file in the project folder, then restart Flask.
+      Add <strong>{{ gate_env_var or "PLANNER_PASSCODE" }}</strong> to the <strong>.env</strong> file in the project folder, then restart Flask.
     </div>
     {% else %}
-    <p>Enter the passcode to open the planner.</p>
+    <p>{{ gate_message or "Enter the passcode to open the planner." }}</p>
     {% if error %}
     <div class="gate-error" role="alert">{{ error }}</div>
     {% endif %}

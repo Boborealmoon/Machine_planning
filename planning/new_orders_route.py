@@ -52,6 +52,7 @@ SELECT
         NULLIF(TRIM(det.line_item_description), ''),
         NULLIF(TRIM(pp.bom_desc), '')
     ) AS main_desc,
+    NULLIF(TRIM(pp.bom_desc), '') AS part_desc,
     COALESCE(det.required_shipment_date, pp.source_rsd) AS po_due_date,
     COALESCE(det.qty, pp.pp_qty) AS qty,
     COALESCE(NULLIF(TRIM(part.customer_po_no), ''), NULLIF(TRIM(hdr.customer_po_no), '')) AS customer_po_no,

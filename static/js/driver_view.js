@@ -21,6 +21,7 @@
     tableBody: document.getElementById('dv-table-body'),
     empty: document.getElementById('dv-empty'),
     refresh: document.getElementById('dv-refresh'),
+    exportBtn: document.getElementById('dv-export'),
   };
 
   function escapeHtml(value) {
@@ -338,6 +339,102 @@
     }
   }
 
+  async function ensureExcelJs() {
+    if (window.ExcelJS) return window.ExcelJS;
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+      script.async = true;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('Could not load Excel export library'));
+      document.head.appendChild(script);
+    });
+    return window.ExcelJS;
+  }
+
+  function selectedWeekNumbers() {
+    return state.weekOptions
+      .filter((opt) => state.selectedWeekKeys.has(opt.key))
+      .map((opt) => opt.weekNo)
+      .sort((a, b) => a - b);
+  }
+
+  function exportFilename() {
+    const stamp = new Date().toISOString().slice(0, 10);
+    const weeks = selectedWeekNumbers();
+    const weekPart = weeks.length ? `-wk${weeks.join('-')}` : '';
+    return `delivery-schedule${weekPart}-${stamp}.xlsx`;
+  }
+
+  async function exportToExcel() {
+    const items = visibleItems();
+    if (!items.length) {
+      window.alert('No deliveries in the selected weeks to export.');
+      return;
+    }
+    if (els.exportBtn) els.exportBtn.disabled = true;
+    try {
+      const ExcelJS = await ensureExcelJs();
+      const workbook = new ExcelJS.Workbook();
+      workbook.creator = 'Production Planner';
+      workbook.created = new Date();
+      const sheet = workbook.addWorksheet('Delivery schedule');
+
+      const headers = [
+        'PS no.', 'Part description', 'SO qty', 'Coway EDD', 'Week',
+        'Current stage', 'Fully scanned', 'COC done', 'QAQC report', 'Remarks',
+      ];
+      const headerRow = sheet.addRow(headers);
+      headerRow.font = { bold: true, size: 11 };
+      headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+      headerRow.alignment = { vertical: 'middle' };
+
+      items.forEach((item) => {
+        const qty = Number(item.so_qty);
+        sheet.addRow([
+          item.ps_display || item.ps_id || '',
+          item.part_desc || '',
+          Number.isFinite(qty) ? qty : '',
+          formatDate(item.coway_edd) === '—' ? '' : formatDate(item.coway_edd),
+          weekLabel(item) === '—' ? '' : weekLabel(item),
+          stageLabel(item) === '—' ? '' : stageLabel(item),
+          isFullyScanned(item) ? 'Yes' : 'No',
+          item.coc_done ? 'Yes' : 'No',
+          item.qaqc_report_ready ? 'Yes' : 'No',
+          String(item.remarks || '').trim(),
+        ]);
+      });
+
+      sheet.columns.forEach((col, i) => {
+        let max = headers[i]?.length || 10;
+        col.eachCell({ includeEmpty: false }, (cell) => {
+          const len = String(cell.value ?? '').length;
+          if (len > max) max = len;
+        });
+        col.width = Math.min(Math.max(max + 2, 10), 48);
+      });
+      sheet.views = [{ state: 'frozen', ySplit: 1, xSplit: 0, activeCell: 'A2' }];
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = exportFilename();
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      window.alert(`Export failed: ${err.message}`);
+    } finally {
+      if (els.exportBtn) els.exportBtn.disabled = false;
+    }
+  }
+
   function onWeekChipClick(event) {
     const btn = event.target.closest('[data-week-key]');
     if (!btn) return;
@@ -359,6 +456,9 @@
   }
   if (els.refresh) {
     els.refresh.addEventListener('click', () => loadSchedule());
+  }
+  if (els.exportBtn) {
+    els.exportBtn.addEventListener('click', () => exportToExcel());
   }
 
   initWeekFilters();
