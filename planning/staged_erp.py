@@ -315,7 +315,10 @@ SELECT
     det.sales_order_no,
     det.line_item_no,
     det.inventory_code,
-    NULLIF(TRIM(det.line_item_description), '') AS description,
+    COALESCE(
+        NULLIF(TRIM(pd.main_desc), ''),
+        NULLIF(TRIM(det.line_item_description), '')
+    ) AS description,
     det.qty AS so_det_qty,
     COALESCE(sq.qty_shipped, 0) AS qty_shipped,
     GREATEST(0, det.qty - COALESCE(sq.qty_shipped, 0)) AS remaining_qty,
@@ -331,6 +334,8 @@ SELECT
     det.sbu_desc,
     COALESCE(det.first_posted_datetime, det.posted_datetime) AS first_posted_datetime
 FROM public.so_order_line det
+LEFT JOIN public.part_desc pd
+       ON pd.inventory_code = det.inventory_code
 LEFT JOIN public.sum_qty_shipped_by_sales_order sq
        ON sq.sales_order_no = det.sales_order_no
       AND sq.line_item_no = det.line_item_no
@@ -420,7 +425,10 @@ SELECT
     det.sales_order_no,
     det.line_item_no,
     det.inventory_code,
-    NULLIF(TRIM(det.line_item_description), '') AS description,
+    COALESCE(
+        NULLIF(TRIM(pd.main_desc), ''),
+        NULLIF(TRIM(det.line_item_description), '')
+    ) AS description,
     det.qty,
     {_UNIT_FC_STAGED} AS unit_selling_price_fc,
     {_EXCH_STAGED} AS exch_rate,
@@ -434,6 +442,8 @@ SELECT
     det.sales_person_name,
     det.sbu_desc
 FROM public.so_order_line det
+LEFT JOIN public.part_desc pd
+       ON pd.inventory_code = det.inventory_code
 WHERE det.sales_order_no LIKE 'SO/%%'
   AND COALESCE(det.qty, 0) > 0
   AND COALESCE(det.ost_status, '') <> 'V'
@@ -446,7 +456,10 @@ SELECT
     det.sales_order_no,
     det.line_item_no,
     det.inventory_code,
-    NULLIF(TRIM(det.line_item_description), '') AS description,
+    COALESCE(
+        NULLIF(TRIM(pd.main_desc), ''),
+        NULLIF(TRIM(det.line_item_description), '')
+    ) AS description,
     det.qty,
     {_UNIT_HOME_STAGED.strip()} AS unit_selling_price,
     ({_LINE_HOME_STAGED.strip()}) AS line_amount,
@@ -459,6 +472,8 @@ SELECT
     det.sales_person_name,
     det.sbu_desc
 FROM public.so_order_line det
+LEFT JOIN public.part_desc pd
+       ON pd.inventory_code = det.inventory_code
 WHERE det.sales_order_no LIKE 'SO/%%'
   AND COALESCE(det.qty, 0) > 0
   AND COALESCE(det.ost_status, '') <> 'V'
@@ -487,9 +502,9 @@ SELECT
     pp.pp_voucher_no AS process_sheet_no,
     COALESCE(pp.inventory_code, det.inventory_code) AS inventory_code,
     COALESCE(
-        NULLIF(TRIM(det.line_item_description), ''),
+        NULLIF(TRIM(pd.main_desc), ''),
         NULLIF(TRIM(pp.bom_desc), '')
-    ) AS main_desc,
+    ) AS part_desc,
     COALESCE(det.required_shipment_date, pp.source_rsd) AS po_due_date,
     COALESCE(det.qty, pp.pp_qty) AS qty,
     COALESCE(NULLIF(TRIM(part.customer_po_no), ''), NULLIF(TRIM(hdr.customer_po_no), '')) AS customer_po_no,
@@ -504,6 +519,8 @@ LEFT JOIN public.so_order_line det
     AND det.line_item_no = pp.source_line_item_no
 LEFT JOIN public.so_order_header hdr
     ON hdr.sales_order_no = pp.source_voucher_no
+LEFT JOIN public.part_desc pd
+    ON pd.inventory_code = COALESCE(pp.inventory_code, det.inventory_code)
 LEFT JOIN (
     SELECT pp_voucher_no, MAX(customer_po_no) AS customer_po_no
     FROM public.pp_partial_detail

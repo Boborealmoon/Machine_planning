@@ -1,10 +1,10 @@
-{% extends "base.html" %}
+{% extends "base_standalone.html" %}
 
 {% block title %}Sales Report{% endblock %}
 
 {% block main_class %}app-main--new-orders app-main--sales-report{% endblock %}
 
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=sales-report-backlog-onhand-20260622">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=sales-report-table-peek-20260708">{% endblock %}
 
 {% block content %}
 
@@ -270,6 +270,6 @@
 
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-report-breakdown-20260622"></script>
 
-<script src="{{ url_for('static', filename='js/sales_report.js') }}?v=sales-report-exch-breakdown-20260622"></script>
+<script src="{{ url_for('static', filename='js/sales_report.js') }}?v=sales-report-table-peek-20260708"></script>
 
 {% endblock %}

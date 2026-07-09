@@ -29,10 +29,12 @@
     night: { label: 'Night', window: '20:00–08:30' },
   };
   /** Debounced autosave delay after the last queue edit. */
-  const QUEUE_SAVE_DEBOUNCE_MS = 1200;
+  const QUEUE_SAVE_DEBOUNCE_MS = 600;
   /** Retry failed queue saves; also flush if still pending while idle. */
   const QUEUE_SAVE_RETRY_MS = 5000;
   const QUEUE_SAVE_IDLE_FLUSH_MS = 30000;
+  /** Debounced segment recalc after a fast autosave (no inline recalculate). */
+  const QUEUE_RECALC_DEBOUNCE_MS = 8000;
 
   function loadHiddenMachineIds() {
     try {
@@ -955,11 +957,20 @@
     if (queueSyncStatus === 'saving') {
       syncEl.textContent = 'Saving queue…';
       syncEl.className = 'mpp-queue-sync mpp-queue-sync--saving';
+    } else if (queueRecalcStatus === 'running') {
+      syncEl.textContent = 'Updating schedule segments…';
+      syncEl.className = 'mpp-queue-sync mpp-queue-sync--saving';
     } else if (queueSyncStatus === 'pending') {
       syncEl.textContent = 'Autosave pending…';
       syncEl.className = 'mpp-queue-sync mpp-queue-sync--pending';
     } else if (queueSyncStatus === 'error') {
       syncEl.textContent = queueSaveError ? `Save failed — ${queueSaveError}` : 'Save failed';
+      syncEl.className = 'mpp-queue-sync mpp-queue-sync--error';
+    } else if (queueRecalcStatus === 'pending') {
+      syncEl.textContent = 'Queue saved · schedule update pending…';
+      syncEl.className = 'mpp-queue-sync mpp-queue-sync--pending';
+    } else if (queueRecalcStatus === 'error') {
+      syncEl.textContent = queueRecalcError ? `Schedule update failed — ${queueRecalcError}` : 'Schedule update failed';
       syncEl.className = 'mpp-queue-sync mpp-queue-sync--error';
     } else if (queueLoadError) {
       syncEl.textContent = `Queue load failed — ${queueLoadError}`;
@@ -979,7 +990,7 @@
     }
   }
 
-  function buildQueueSavePayload() {
+  function buildQueueSavePayload({ recalculate = false } = {}) {
     const jobIds = new Set();
     Object.values(state.machines).forEach((lane) => {
       (lane.cycles || []).forEach((cycle) => {
@@ -998,7 +1009,48 @@
       const job = state.jobs[jobId] || getJob(jobId);
       if (job) jobs[jobId] = job;
     });
-    return { machines: state.machines, jobs, probation: state.probation || buildProbationState() };
+    return {
+      machines: state.machines,
+      jobs,
+      probation: state.probation || buildProbationState(),
+      dirtyMachines: [...dirtyMachineSlugs],
+      recalculate: recalculate === true,
+    };
+  }
+
+  function machineDbId(machineSlug) {
+    return Number(machineById(machineSlug)?.machineId || 0);
+  }
+
+  function markMachineDirty(machineSlug) {
+    if (!machineSlug || suppressQueueSave || !queueHydrated) return;
+    dirtyMachineSlugs.add(String(machineSlug));
+    const dbId = machineDbId(machineSlug);
+    if (dbId > 0) queueRecalcMachineIds.add(dbId);
+  }
+
+  function markMachinesWithJob(jobId) {
+    if (!jobId) return;
+    Object.entries(state.machines).forEach(([slug, lane]) => {
+      const hasJob = (lane.cycles || []).some((cycle) =>
+        (cycle.ops || []).some((row) => row.jobId === jobId),
+      );
+      if (hasJob) markMachineDirty(slug);
+    });
+  }
+
+  function mergeTouchedMachineIds(payload) {
+    const touched = Array.isArray(payload?.touchedMachineIds) ? payload.touchedMachineIds : [];
+    touched.forEach((id) => {
+      const dbId = Number(id);
+      if (dbId > 0) queueRecalcMachineIds.add(dbId);
+    });
+    dirtyMachineSlugs.clear();
+  }
+
+  function buildQueueRecalcBody() {
+    const machineIds = [...queueRecalcMachineIds].filter((id) => Number(id) > 0);
+    return JSON.stringify({ machine_ids: machineIds });
   }
 
   function applyQueueHydration(queuePayload) {
@@ -1066,17 +1118,18 @@
     }
   }
 
-  async function flushQueueSave() {
+  async function flushQueueSave({ recalculate = false } = {}) {
     if (suppressQueueSave || !queueHydrated) return;
     if (queueSaveInFlight) {
       queueSavePending = true;
+      queueSavePendingRecalculate = queueSavePendingRecalculate || recalculate === true;
       return;
     }
     queueSaveInFlight = true;
     queueSyncStatus = 'saving';
     updateJobsSourceBadge();
     try {
-      const body = JSON.stringify(buildQueueSavePayload());
+      const body = JSON.stringify(buildQueueSavePayload({ recalculate }));
       let res = await fetch('/api/mpp-planner/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1100,6 +1153,21 @@
       if (warnings.length) {
         queueSyncStatus = 'error';
         queueSaveError = warnings[0];
+      } else if (!recalculate && !payload.recalculated) {
+        mergeTouchedMachineIds(payload);
+        if (queueRecalcMachineIds.size > 0) {
+          queueRecalcPending = true;
+          scheduleQueueRecalc();
+        } else {
+          queueRecalcPending = false;
+          queueRecalcStatus = 'idle';
+          queueRecalcError = '';
+        }
+      } else {
+        queueRecalcPending = false;
+        queueRecalcMachineIds.clear();
+        queueRecalcStatus = 'idle';
+        queueRecalcError = '';
       }
     } catch (err) {
       queueSyncStatus = 'error';
@@ -1109,10 +1177,88 @@
       queueSaveInFlight = false;
       updateJobsSourceBadge();
       if (queueSavePending) {
+        const pendingRecalc = queueSavePendingRecalculate;
         queueSavePending = false;
-        scheduleQueueSave();
+        queueSavePendingRecalculate = false;
+        scheduleQueueSave({ recalculate: pendingRecalc });
       }
     }
+  }
+
+  async function flushQueueRecalc() {
+    if (!queueHydrated || suppressQueueSave) return;
+    if (queueRecalcInFlight) {
+      queueRecalcPending = true;
+      return;
+    }
+    if (!queueRecalcPending && queueRecalcStatus !== 'error') return;
+    if (!queueRecalcMachineIds.size) {
+      queueRecalcPending = false;
+      queueRecalcStatus = 'idle';
+      return;
+    }
+    queueRecalcInFlight = true;
+    queueRecalcStatus = 'running';
+    queueRecalcError = '';
+    updateJobsSourceBadge();
+    const recalcIds = [...queueRecalcMachineIds];
+    try {
+      const res = await fetch('/api/mpp-planner/recalculate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: buildQueueRecalcBody(),
+      });
+      const payload = await parseJsonResponse(res);
+      if (!res.ok || !payload.ok) {
+        throw new Error(compactApiError(payload?.error) || `HTTP ${res.status}`);
+      }
+      const warnings = Array.isArray(payload.warnings) ? payload.warnings.filter(Boolean) : [];
+      if (warnings.length) {
+        throw new Error(warnings[0]);
+      }
+      recalcIds.forEach((id) => queueRecalcMachineIds.delete(id));
+      if (!queueRecalcMachineIds.size) {
+        queueRecalcPending = false;
+        queueRecalcStatus = 'idle';
+        queueRecalcError = '';
+      } else {
+        queueRecalcPending = true;
+        queueRecalcStatus = 'pending';
+      }
+    } catch (err) {
+      queueRecalcStatus = 'error';
+      queueRecalcError = err?.message || 'recalculate failed';
+      scheduleQueueRecalcRetry();
+    } finally {
+      queueRecalcInFlight = false;
+      updateJobsSourceBadge();
+      if (queueRecalcPending && queueRecalcStatus !== 'error') {
+        scheduleQueueRecalc();
+      }
+    }
+  }
+
+  function queueRecalcUrl() {
+    return '/api/mpp-planner/recalculate';
+  }
+
+  function flushQueueRecalcOnExit() {
+    if (!queueHydrated || suppressQueueSave) return;
+    if (!queueRecalcMachineIds.size && queueRecalcStatus !== 'error') return;
+    clearTimeout(queueRecalcTimer);
+    queueRecalcTimer = null;
+    clearTimeout(queueRecalcRetryTimer);
+    queueRecalcRetryTimer = null;
+    try {
+      if (typeof fetch === 'function' && queueRecalcMachineIds.size) {
+        fetch(queueRecalcUrl(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: buildQueueRecalcBody(),
+          keepalive: true,
+        }).catch(() => { /* page is unloading */ });
+      }
+    } catch { /* ignore */ }
   }
 
   function queueSaveUrl() {
@@ -1121,13 +1267,16 @@
 
   function flushQueueSaveOnExit() {
     if (suppressQueueSave || !queueHydrated) return;
-    if (queueSyncStatus !== 'pending' && queueSyncStatus !== 'error') return;
+    if (queueSyncStatus !== 'pending' && queueSyncStatus !== 'error') {
+      flushQueueRecalcOnExit();
+      return;
+    }
     clearTimeout(queueSaveTimer);
     queueSaveTimer = null;
     clearTimeout(queueSaveRetryTimer);
     queueSaveRetryTimer = null;
     try {
-      const body = JSON.stringify(buildQueueSavePayload());
+      const body = JSON.stringify(buildQueueSavePayload({ recalculate: false }));
       if (typeof fetch === 'function') {
         fetch(queueSaveUrl(), {
           method: 'POST',
@@ -1137,6 +1286,33 @@
         }).catch(() => { /* page is unloading */ });
       }
     } catch { /* ignore */ }
+    flushQueueRecalcOnExit();
+  }
+
+  function scheduleQueueRecalcRetry() {
+    clearTimeout(queueRecalcRetryTimer);
+    queueRecalcRetryTimer = window.setTimeout(() => {
+      queueRecalcRetryTimer = null;
+      if (queueRecalcStatus !== 'error' || !queueHydrated || suppressQueueSave) return;
+      queueRecalcPending = true;
+      updateJobsSourceBadge();
+      flushQueueRecalc();
+    }, QUEUE_SAVE_RETRY_MS);
+  }
+
+  function scheduleQueueRecalc() {
+    if (!queueHydrated || suppressQueueSave) return;
+    if (!queueRecalcMachineIds.size && queueRecalcStatus !== 'error') return;
+    queueRecalcPending = true;
+    queueRecalcStatus = 'pending';
+    updateJobsSourceBadge();
+    clearTimeout(queueRecalcTimer);
+    clearTimeout(queueRecalcRetryTimer);
+    queueRecalcRetryTimer = null;
+    queueRecalcTimer = window.setTimeout(() => {
+      queueRecalcTimer = null;
+      flushQueueRecalc();
+    }, QUEUE_RECALC_DEBOUNCE_MS);
   }
 
   function scheduleQueueSaveRetry() {
@@ -1146,11 +1322,11 @@
       if (queueSyncStatus !== 'error' || !queueHydrated || suppressQueueSave) return;
       queueSyncStatus = 'pending';
       updateJobsSourceBadge();
-      flushQueueSave();
+      flushQueueSave({ recalculate: false });
     }, QUEUE_SAVE_RETRY_MS);
   }
 
-  function scheduleQueueSave() {
+  function scheduleQueueSave({ recalculate = false } = {}) {
     if (suppressQueueSave || !queueHydrated) return;
     if (skipNextQueueSave) {
       skipNextQueueSave = false;
@@ -1163,7 +1339,7 @@
     queueSaveRetryTimer = null;
     queueSaveTimer = window.setTimeout(() => {
       queueSaveTimer = null;
-      flushQueueSave();
+      flushQueueSave({ recalculate });
     }, QUEUE_SAVE_DEBOUNCE_MS);
   }
 
@@ -1291,6 +1467,7 @@
         shift: normalizeShift(shift, machine),
       });
     }
+    markMachineDirty(machineId);
     render();
     return true;
   }
@@ -1298,6 +1475,7 @@
   function removeFromProbation(entryId) {
     const found = findProbationEntry(entryId);
     if (!found) return;
+    markMachineDirty(found.machineId);
     found.entries.splice(found.index, 1);
     render();
   }
@@ -1314,6 +1492,9 @@
       palletsLeft -= 1;
     }
     found.entries.splice(found.index, 1);
+    markMachineDirty(found.machineId);
+    const cycleFound = findCycle(cycleId);
+    if (cycleFound) markMachineDirty(cycleFound.machineId);
     render();
     return true;
   }
@@ -1337,10 +1518,19 @@
   let queueSaveTimer = null;
   let queueSaveRetryTimer = null;
   let queueSaveIdleTimer = null;
+  let queueRecalcTimer = null;
+  let queueRecalcRetryTimer = null;
   let queueSaveInFlight = false;
   let queueSavePending = false;
+  let queueSavePendingRecalculate = false;
+  let queueRecalcInFlight = false;
+  let queueRecalcPending = false;
+  let queueRecalcMachineIds = new Set();
+  let dirtyMachineSlugs = new Set();
   let queueSyncStatus = 'idle';
+  let queueRecalcStatus = 'idle';
   let queueSaveError = '';
+  let queueRecalcError = '';
   let queueSavedAt = '';
   let queueLoadError = '';
   let suppressQueueSave = false;
@@ -2296,6 +2486,7 @@
     }
     syncCycleSequentialFlag(found.cycle);
     activateCycle(cycleId, found.index);
+    markMachineDirty(found.machineId);
     if (renderAfter) render();
     return true;
   }
@@ -2325,6 +2516,7 @@
     syncCycleSequentialFlag(cycle);
     lane.cycles = [...(lane.cycles || []), cycle];
     activateCycle(cycle.cycleId, lane.cycles.length - 1);
+    markMachineDirty(machineId);
     render();
   }
 
@@ -2356,6 +2548,7 @@
       lane.cycles = [...(lane.cycles || []), cycle];
       left -= pallets * pcsPerPallet;
     }
+    markMachineDirty(machineId);
     render();
   }
 
@@ -2426,6 +2619,7 @@
       found.lane.cycles = found.lane.cycles.filter((c) => c.cycleId !== loc.cycleId);
       if (cycleDetailModalCycleId === loc.cycleId) closeCycleDetailModal();
     }
+    markMachineDirty(found.machineId);
     render();
   }
 
@@ -2435,6 +2629,7 @@
     found.lane.cycles = found.lane.cycles.filter((c) => c.cycleId !== cycleId);
     if (cycleDetailModalCycleId === cycleId) closeCycleDetailModal();
     if (reviewModalCycleId === cycleId) closeReviewPanel();
+    markMachineDirty(found.machineId);
     render();
   }
 
@@ -2444,6 +2639,7 @@
     const cycle = newCyclePayload(machineId, shift);
     lane.cycles = [...(lane.cycles || []), cycle];
     activateCycle(cycle.cycleId, lane.cycles.length - 1);
+    markMachineDirty(machineId);
     render();
   }
 
@@ -2454,6 +2650,7 @@
     const next = normalizeShift(shift, machine);
     if (found.cycle.shift === next) return;
     found.cycle.shift = next;
+    markMachineDirty(found.machineId);
     render();
   }
 
@@ -2464,6 +2661,7 @@
     const [moved] = cycles.splice(fromIdx, 1);
     cycles.splice(toIdx, 0, moved);
     lane.cycles = cycles;
+    markMachineDirty(machineId);
     render();
   }
 
@@ -2482,6 +2680,8 @@
     } else {
       target.cycle.ops = [...(target.cycle.ops || []), row];
     }
+    markMachineDirty(src.machineId);
+    if (target.machineId !== src.machineId) markMachineDirty(target.machineId);
     render();
   }
 
@@ -2572,9 +2772,14 @@
     const count = isCount
       ? Number(document.getElementById('mpp-replicate-count')?.value || 0)
       : state.modal.maxAdditional;
-    const added = replicateCycle(state.modal.cycleId, count);
+    const cycleId = state.modal.cycleId;
+    const added = replicateCycle(cycleId, count);
+    const found = added > 0 ? findCycle(cycleId) : null;
     closeModal();
-    if (added > 0) render();
+    if (added > 0 && found) {
+      markMachineDirty(found.machineId);
+      render();
+    }
   }
 
   function openCycleTimingModal(cycleId) {
@@ -2644,6 +2849,7 @@
     if (setupPerOpEl) cycle.setupPerOp = setupPerOpEl.checked;
     normalizeCycle(cycle);
     closeModal();
+    markMachineDirty(found.machineId);
     render();
   }
 
@@ -2677,6 +2883,7 @@
     job.out = Math.max(0, Number(document.getElementById('mpp-f-out')?.value || 0));
     state.jobs[job.jobId] = job;
     closeModal();
+    markMachinesWithJob(job.jobId);
     render();
   }
 
@@ -2814,6 +3021,7 @@
     if (found.index === 0 && found.cycle.anchor) {
       found.lane.laneAnchor = found.cycle.anchor;
     }
+    markMachineDirty(found.machineId);
     closeModal();
     render();
   }
@@ -3126,26 +3334,41 @@
   function startQueueSaveIdleFlush() {
     clearInterval(queueSaveIdleTimer);
     queueSaveIdleTimer = window.setInterval(() => {
-      if (!queueHydrated || suppressQueueSave || queueSaveInFlight) return;
-      if (queueSyncStatus === 'pending') flushQueueSave();
+      if (!queueHydrated || suppressQueueSave || queueSaveInFlight || queueRecalcInFlight) return;
+      if (queueSyncStatus === 'pending') flushQueueSave({ recalculate: false });
       else if (queueSyncStatus === 'error') scheduleQueueSaveRetry();
+      else if (queueRecalcPending || queueRecalcStatus === 'error') flushQueueRecalc();
     }, QUEUE_SAVE_IDLE_FLUSH_MS);
   }
 
-  window.addEventListener('pagehide', flushQueueSaveOnExit);
-  window.addEventListener('beforeunload', flushQueueSaveOnExit);
+  window.addEventListener('pagehide', () => {
+    flushQueueSaveOnExit();
+    flushQueueRecalcOnExit();
+  });
+  window.addEventListener('beforeunload', () => {
+    flushQueueSaveOnExit();
+    flushQueueRecalcOnExit();
+  });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
       if (queueSyncStatus === 'pending' && !queueSaveInFlight) {
         clearTimeout(queueSaveTimer);
         queueSaveTimer = null;
-        flushQueueSave();
+        flushQueueSave({ recalculate: false });
       } else {
         flushQueueSaveOnExit();
+      }
+      if (queueRecalcPending && !queueRecalcInFlight) {
+        clearTimeout(queueRecalcTimer);
+        queueRecalcTimer = null;
+        flushQueueRecalc();
+      } else {
+        flushQueueRecalcOnExit();
       }
       return;
     }
     if (queueSyncStatus === 'error') scheduleQueueSaveRetry();
+    if (queueRecalcStatus === 'error') scheduleQueueRecalcRetry();
   });
 
   initMppPlanner();

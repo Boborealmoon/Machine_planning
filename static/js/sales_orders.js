@@ -60,6 +60,23 @@ function soMaterialSubconSortValue(raw) {
   return '9-empty';
 }
 
+function soMaterialSubconHasDate(parsed) {
+  return Boolean(parsed?.date) && !parsed?.arrived;
+}
+
+function soMaterialSubconCellClasses(parsed) {
+  const parts = [];
+  if (soMaterialSubconHasDate(parsed)) parts.push('has-material-date');
+  if (parsed?.arrived) parts.push('has-material-arrived');
+  return parts.length ? ` ${parts.join(' ')}` : '';
+}
+
+function soApplyMaterialSubconCellState(cell, parsed) {
+  if (!cell) return;
+  cell.classList.toggle('has-material-date', soMaterialSubconHasDate(parsed));
+  cell.classList.toggle('has-material-arrived', Boolean(parsed?.arrived));
+}
+
 const SO_PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
 const SO_STAGE_EXCLUDE_ALL_COMPLETE = 'all complete';
 
@@ -210,9 +227,7 @@ async function soPostJson(url, body) {
 }
 
 function soFormatDate(value) {
-  if (!value) return '—';
-  const text = String(value).trim();
-  return text.length >= 10 ? text.slice(0, 10) : text || '—';
+  return typeof trialFormatDate === 'function' ? trialFormatDate(value) : String(value || '—');
 }
 
 function soProposedEddDisplay(pp, partial) {
@@ -434,16 +449,39 @@ function soStageFilterText(partial) {
   return parts.filter(Boolean).join(' ');
 }
 
-function soPartialIsNoWo(partial) {
-  const stage = soPartialStage(partial);
-  return !stage.desc && !stage.status && stage.mode === 'unassigned';
+/** SO-linked PP with qty still awaiting WO voucher issuance (incl. partial batches). */
+function soPpPendingWoQty(pp) {
+  const pending = Number(pp?.erp_pending_wo_qty);
+  if (Number.isFinite(pending) && pending > 0.0001) return pending;
+  const ppQty = Number(pp?.pp_qty);
+  const issued = Number(pp?.erp_wo_issued_qty);
+  if (Number.isFinite(ppQty) && Number.isFinite(issued) && ppQty - issued > 0.0001) {
+    return ppQty - issued;
+  }
+  return 0;
+}
+
+function soPpIsNoWo(pp) {
+  const soNo = String(pp?.source_voucher_no || '').trim();
+  if (!soNo.startsWith('SO/')) return false;
+
+  if (typeof pp?.erp_pending_no_wo === 'boolean') return pp.erp_pending_no_wo;
+
+  const pendingQty = soPpPendingWoQty(pp);
+  if (pendingQty > 0.0001) return true;
+
+  if (typeof pp?.erp_has_wo === 'boolean') return !pp.erp_has_wo;
+
+  const partials = Array.isArray(pp?.partials) && pp.partials.length ? pp.partials : [pp];
+  const hasWoRaised = partials.some(p => (Number(p?.erp_wo_stage_count) || 0) > 0);
+  return !hasWoRaised;
 }
 
 function soCollectNoWoProcessSheets() {
   const sheets = [];
   soVisibleOrders(soActiveOrders()).forEach(order => {
     soVisibleLeaves(order).forEach(leaf => {
-      if (!soPartialIsNoWo(leaf.partial)) return;
+      if (!soPpIsNoWo(leaf.pp)) return;
       const ps = soPsDisplayForPartial(leaf.pp, leaf.partial);
       if (!ps || ps === '—') return;
       sheets.push(ps);
@@ -1108,7 +1146,7 @@ function soLeafPassesColumnFilters(leaf) {
 }
 
 function soLeafPassesFilters(leaf) {
-  if (soState.view === 'no-wo' && !soPartialIsNoWo(leaf.partial)) return false;
+  if (soState.view === 'no-wo' && !soPpIsNoWo(leaf.pp)) return false;
   if (!soLeafPassesPrefixFilter(leaf.pp)) return false;
   return soLeafPassesColumnFilters(leaf);
 }
@@ -1567,10 +1605,15 @@ function soRenderStageCell(pp, partial) {
   } else {
     stageHtml = '<span class="so-dash">—</span>';
   }
+  const pendingWo = soPpPendingWoQty(pp);
+  const pendingHtml = pendingWo > 0.0001
+    ? `<span class="so-stage-mode so-stage-mode--pending-wo" title="${escapeHtml(`${pendingWo} PP qty awaiting WO voucher issuance`)}">${escapeHtml(String(pendingWo))} awaiting WO</span>`
+    : '';
   return `
     <td class="so-stage-cell">
       <div class="so-stage-stack">
         ${stageHtml}
+        ${pendingHtml}
         ${soRenderStageMaterialBtn(pp, partial)}
       </div>
     </td>`;
@@ -1992,11 +2035,12 @@ function soRenderMaterialSubconCell(pp) {
   const parsed = soParseMaterialSubcon(raw);
   const arrivedCls = parsed.arrived ? ' is-active' : '';
   const dateHiddenCls = parsed.arrived ? ' is-hidden' : '';
+  const cellStateCls = soMaterialSubconCellClasses(parsed);
   const legacyHtml = parsed.legacy
     ? `<span class="so-material-subcon-legacy" title="Previous note">${escapeHtml(parsed.legacy)}</span>`
     : '';
   return `
-    <td class="so-material-subcon-cell" data-pp-voucher-no="${escapeHtml(ppNo)}" data-last-saved="${escapeHtml(raw)}">
+    <td class="so-material-subcon-cell${cellStateCls}" data-pp-voucher-no="${escapeHtml(ppNo)}" data-last-saved="${escapeHtml(raw)}">
       <div class="so-material-subcon-controls">
         <button type="button"
           class="so-material-subcon-arrived${arrivedCls}"
@@ -2209,6 +2253,7 @@ function soSetSaveStatus(control, state, message) {
 function soSyncMaterialSubconCell(cell, raw) {
   if (!cell) return;
   const parsed = soParseMaterialSubcon(raw);
+  soApplyMaterialSubconCellState(cell, parsed);
   cell.dataset.lastSaved = String(raw || '');
   const btn = cell.querySelector('.so-material-subcon-arrived');
   const dateInput = cell.querySelector('.so-material-subcon-date');
@@ -2453,6 +2498,7 @@ function soBindMaterialSubconInputs() {
     const nextArrived = !parsed.arrived;
     const dateInput = cell.querySelector('.so-material-subcon-date');
     const date = nextArrived ? '' : String(dateInput?.value || '').trim();
+    soApplyMaterialSubconCellState(cell, { arrived: nextArrived, date });
     soSaveMaterialSubconCell(cell, soSerializeMaterialSubcon({ arrived: nextArrived, date }));
   });
 
@@ -2462,9 +2508,11 @@ function soBindMaterialSubconInputs() {
     e.stopPropagation();
     const cell = dateInput.closest('.so-material-subcon-cell');
     if (!cell) return;
+    const date = String(dateInput.value || '').trim();
+    soApplyMaterialSubconCellState(cell, { arrived: false, date });
     soSaveMaterialSubconCell(cell, soSerializeMaterialSubcon({
       arrived: false,
-      date: dateInput.value,
+      date,
     }));
   });
 }
@@ -2525,13 +2573,13 @@ function soFilteredJobCount(orders) {
   return count;
 }
 
-/** No-WO job count for the tab badge — PP vouchers (jobs) with at least one partial that has no WO raised. */
+/** No-WO job count for the tab badge — active PP vouchers with no WO raised (PP-level). */
 function soFilteredNoWoJobCount(orders) {
   const seen = new Set();
   (orders || []).forEach(order => {
     soLeafRows(order).forEach(leaf => {
       if (!soLeafPassesPrefixFilter(leaf.pp)) return;
-      if (!soPartialIsNoWo(leaf.partial)) return;
+      if (!soPpIsNoWo(leaf.pp)) return;
       const key = `${order.sales_order_no}::${leaf.pp?.pp_voucher_no || ''}`;
       seen.add(key);
     });
@@ -2623,7 +2671,7 @@ function soRender() {
     } else if (soState.ppTypes.size === 0) {
       emptyMsg = 'Select at least one PP prefix (APS, NPS, …).';
     } else if (soState.view === 'no-wo') {
-      emptyMsg = 'No PP vouchers are missing a work order — every process sheet in view has a WO raised.';
+      emptyMsg = 'No PP vouchers have qty awaiting WO issuance — every process sheet in view is fully issued.';
     } else {
       emptyMsg = 'No rows match your search or column filters — adjust filters in the column headers above.';
     }

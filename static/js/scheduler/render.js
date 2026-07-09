@@ -549,6 +549,7 @@ const _PS_TYPES = [
   { key: 'A', label: 'Aerospace' },
   { key: 'M', label: 'MRO' },
   { key: 'N', label: 'Non-Aerospace' },
+  { key: 'P', label: 'PPS' },
   { key: 'T', label: '[Temp]' },
 ];
 
@@ -556,6 +557,21 @@ function trialGetPsType(psId) {
   const raw = String(psId || '').trim();
   if (/^\[Temp\]/i.test(raw) || raw.toUpperCase().startsWith('[TEMP]')) return 'T';
   return raw.toUpperCase()[0] || '?';
+}
+
+function trialGetPsTypeForRow(ps) {
+  if (!ps) return '?';
+  if (ps.is_temp_ps || (typeof trialIsTempCatalogPs === 'function' && trialIsTempCatalogPs(ps))) {
+    return 'T';
+  }
+  return trialGetPsType(ps.ps_id);
+}
+
+function trialCatalogPsMatchesTypeFilter(ps) {
+  if (!ps) return false;
+  if (!trialPsTypeFilter.has(trialGetPsTypeForRow(ps))) return false;
+  if (!trialShowSrOrders && String(ps.ps_id || '').includes('[SR]')) return false;
+  return true;
 }
 
 function renderTrialPsTypeFilter() {
@@ -677,20 +693,11 @@ function trialCatalogSupersededByTempSibling(ps, pool) {
   if (ps?.is_temp_ps || (typeof trialIsTempCatalogPs === 'function' && trialIsTempCatalogPs(ps))) {
     return false;
   }
-  const sourceKey = String(
-    ps?.source_ps_id || trialSplitPsId(String(ps?.ps_id || '')).base || '',
-  ).trim();
-  if (!sourceKey || sourceKey.startsWith('[Temp]')) return false;
-  const partial = trialCatalogPartialIndex(ps);
-  return (pool || []).some(row => {
-    if (!row?.is_temp_ps && !(typeof trialIsTempCatalogPs === 'function' && trialIsTempCatalogPs(row))) {
-      return false;
-    }
-    if (!trialCatalogTempPsIsActive(row)) return false;
-    if (String(row?.source_ps_id || '').trim() !== sourceKey) return false;
-    const tempPartial = Number(row?.source_pp_partial_no || row?.pp_partial_no || 1);
-    return tempPartial === partial;
-  });
+  // When [Temp] is filtered out, show the ERP source again.
+  if (!trialPsTypeFilter.has('T')) return false;
+  const tempSibling = trialCatalogFindTempSiblingRow(ps, pool);
+  if (!tempSibling || !trialCatalogTempPsIsActive(tempSibling)) return false;
+  return true;
 }
 
 let trialCatalogDueDateIndex = null;
@@ -1195,6 +1202,8 @@ function trialPsIsUnassignedCatalog(ps) {
 function toggleTrialPsTypeFilter(key, visible) {
   if (visible) trialPsTypeFilter.add(key);
   else trialPsTypeFilter.delete(key);
+  clearTimeout(trialCatalogSearchTimer);
+  trialCatalogSearchTimer = null;
   renderTrialCatalog();
 }
 
@@ -4082,12 +4091,16 @@ function trialApplyCatalogSearchFilter(rawQuery) {
   psEls.forEach(el => {
     const psId = String(el.dataset.psId || '').trim();
     const planned = el.classList.contains('trial-catalog-planned-ps');
+    const ps = typeof trialCatalogFindPsRow === 'function' ? trialCatalogFindPsRow(psId) : null;
+    if (!trialCatalogPsMatchesTypeFilter(ps)) {
+      el.hidden = true;
+      return;
+    }
     const tokens = trialCatalogSearchTokensForPsId(psId, planned);
     const match = trialQueryMatchesSearchTokens(tokens, rawLower);
     el.hidden = !match;
     if (match) {
       if (el.tagName === 'DETAILS') el.open = true;
-      const ps = typeof trialCatalogFindPsRow === 'function' ? trialCatalogFindPsRow(psId) : null;
       if (ps) trialCatalogSearchBaseKeys(ps).forEach(key => matchedBases.add(key));
     }
   });
@@ -4096,7 +4109,7 @@ function trialApplyCatalogSearchFilter(rawQuery) {
     if (!el.hidden) return;
     const psId = String(el.dataset.psId || '').trim();
     const ps = typeof trialCatalogFindPsRow === 'function' ? trialCatalogFindPsRow(psId) : null;
-    if (!ps) return;
+    if (!ps || !trialCatalogPsMatchesTypeFilter(ps)) return;
     const keys = trialCatalogSearchBaseKeys(ps);
     if ([...keys].some(key => matchedBases.has(key))) {
       el.hidden = false;
@@ -4127,7 +4140,7 @@ function scheduleTrialCatalogSearchRender() {
   }, delay);
 }
 
-const _PS_TYPE_ORDER = { A: 0, M: 1, N: 2 };
+const _PS_TYPE_ORDER = { A: 0, M: 1, N: 2, P: 3 };
 
 function trialCatalogDueDateSortKey(ps) {
   const dueDate = String(ps?.due_date || '').trim().slice(0, 10);
@@ -4142,8 +4155,8 @@ function trialCompareCatalogPs(a, b) {
     const db = trialCatalogDueDateSortKey(b);
     if (da !== db) return da - db;
   }
-  const ta = _PS_TYPE_ORDER[trialGetPsType(a.ps_id)] ?? 9;
-  const tb = _PS_TYPE_ORDER[trialGetPsType(b.ps_id)] ?? 9;
+  const ta = _PS_TYPE_ORDER[trialGetPsTypeForRow(a)] ?? 9;
+  const tb = _PS_TYPE_ORDER[trialGetPsTypeForRow(b)] ?? 9;
   return ta !== tb ? ta - tb : String(a.ps_id).localeCompare(String(b.ps_id));
 }
 
@@ -4517,9 +4530,7 @@ function renderTrialCatalog() {
   const catalogMatchesSearch = ps => trialQueryMatchesSearchTokens(cachedCatalogHaystack(ps), rawQuery);
 
   const catalog = catalogSource.filter(ps => {
-    const psType = trialGetPsType(ps.ps_id);
-    if (!trialPsTypeFilter.has(psType)) return false;
-    if (!trialShowSrOrders && String(ps.ps_id || '').includes('[SR]')) return false;
+    if (!trialCatalogPsMatchesTypeFilter(ps)) return false;
     if (!trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
     if (!rawQuery && trialCatalogSupersededByTempSibling(ps, catalogSource)) return false;
     if (!rawQuery && !trialCatalogMatchesQueueFilter(ps)) return false;
@@ -4539,8 +4550,7 @@ function renderTrialCatalog() {
       const keys = trialCatalogSearchBaseKeys(ps);
       if (!keys.size || ![...keys].some(key => matchedBases.has(key))) continue;
       if (!rawQuery && trialCatalogSupersededByTempSibling(ps, catalogSource)) continue;
-      if (!trialPsTypeFilter.has(trialGetPsType(ps.ps_id))) continue;
-      if (!trialShowSrOrders && psId.includes('[SR]')) continue;
+      if (!trialCatalogPsMatchesTypeFilter(ps)) continue;
       if (!trialShowCompleted && trialPsCatalogCompleted(ps)) continue;
       if (!rawQuery && !trialCatalogMatchesQueueFilter(ps)) continue;
       catalog.push(ps);
@@ -4551,9 +4561,7 @@ function renderTrialCatalog() {
   catalog.sort(trialCompareCatalogPs);
 
   const plannedCatalog = (trialState.planned || []).filter(ps => {
-    const psType = trialGetPsType(ps.ps_id);
-    if (!trialPsTypeFilter.has(psType)) return false;
-    if (!trialShowSrOrders && String(ps.ps_id || '').includes('[SR]')) return false;
+    if (!trialCatalogPsMatchesTypeFilter(ps)) return false;
     if (!trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
     if (!rawQuery && trialCatalogSupersededByTempSibling(ps, catalogSource)) return false;
     if (!rawQuery && !trialCatalogMatchesQueueFilter(ps)) return false;

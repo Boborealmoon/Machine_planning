@@ -83,12 +83,16 @@ LEFT JOIN public.mfg_arc_format_sourcing_v1_view src
 """
 
 # One row per SO line — authoritative remaining qty/$ (no PP join duplication).
+# Prefer part master description over SO line_item_description (often BATCH#/SERIAL#).
 _SO_LINES_SQL = f"""
 SELECT
     det.sales_order_no,
     regexp_replace(det.line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
     det.inventory_code,
-    NULLIF(TRIM(det.line_item_description), '') AS description,
+    COALESCE(
+        NULLIF(TRIM(pd.main_desc), ''),
+        NULLIF(TRIM(det.line_item_description), '')
+    ) AS description,
     det.qty AS so_det_qty,
     COALESCE(sq.qty_shipped, 0) AS qty_shipped,
     GREATEST(0, det.qty - COALESCE(sq.qty_shipped, 0)) AS remaining_qty,
@@ -106,6 +110,8 @@ SELECT
 FROM public.so_order_ost_det det
 JOIN public.so_order_ost_hdr ost ON ost.sales_order_no = det.sales_order_no
 LEFT JOIN public.so_order_view hdr ON hdr.sales_order_no = det.sales_order_no
+LEFT JOIN public.mt_inventory pd
+       ON pd.inventory_code = det.inventory_code
 LEFT JOIN public.sum_qty_shipped_by_sales_order sq
        ON sq.sales_order_no = det.sales_order_no
       AND regexp_replace(sq.line_item_no::TEXT, '\\.0+$', '')
@@ -224,7 +230,10 @@ SELECT
     det.sales_order_no,
     regexp_replace(det.line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
     det.inventory_code,
-    NULLIF(TRIM(det.line_item_description), '') AS description,
+    COALESCE(
+        NULLIF(TRIM(pd.main_desc), ''),
+        NULLIF(TRIM(det.line_item_description), '')
+    ) AS description,
     det.qty,
     {_UNIT_FC_SQL} AS unit_selling_price_fc,
     {_EXCH_OST_SQL} AS exch_rate,
@@ -240,6 +249,8 @@ SELECT
 FROM public.so_order_ost_det det
 JOIN public.so_order_ost_hdr ost ON ost.sales_order_no = det.sales_order_no
 LEFT JOIN public.so_order_view v ON v.sales_order_no = det.sales_order_no
+LEFT JOIN public.mt_inventory pd
+       ON pd.inventory_code = det.inventory_code
 LEFT JOIN ({_FIRST_POSTED_SQL.strip()}) rev
        ON rev.sales_order_no = det.sales_order_no
 WHERE det.sales_order_no LIKE 'SO/%%'

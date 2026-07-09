@@ -5,8 +5,11 @@ import secrets
 import threading
 import time
 from pathlib import Path
+from urllib.parse import quote
+
 from flask import Flask, render_template, jsonify, request, redirect, session, url_for
 from dotenv import load_dotenv
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 log = logging.getLogger(__name__)
 
@@ -251,9 +254,11 @@ def _require_planner_passcode():
 # ── Reports / Analytics passcode gate ───────────────────────────────────────
 # Separate blanket lock in front of every REPORTS / ANALYTICS tab. Enabled only
 # when REPORTS_PASSCODE is set in .env. Independent of the planner gate.
-REPORTS_SESSION_KEY = "reports_access_ok"
+# Auth is a short-lived signed token per visit — refreshing the page requires
+# the passcode again (no persistent session).
 REPORTS_GATE_PATH = "/reports-gate"
-LOCK_REPORTS_PATH = "/lock-reports"
+REPORTS_TOKEN_SALT = "reports-analytics-gate"
+REPORTS_TOKEN_MAX_AGE = 8 * 3600
 
 # Page URLs behind the reports lock (must match the REPORTS / ANALYTICS dropdown).
 _REPORTS_PAGE_PREFIXES = (
@@ -280,8 +285,27 @@ def _reports_gate_enabled() -> bool:
     return bool(_reports_passcode())
 
 
-def _reports_authenticated() -> bool:
-    return session.get(REPORTS_SESSION_KEY) is True
+def _reports_token_serializer() -> URLSafeTimedSerializer:
+    secret = _reports_passcode() or app.secret_key
+    return URLSafeTimedSerializer(secret, salt=REPORTS_TOKEN_SALT)
+
+
+def _issue_reports_token() -> str:
+    return _reports_token_serializer().dumps({"v": 1})
+
+
+def _reports_token_valid(token: str) -> bool:
+    if not token:
+        return False
+    try:
+        payload = _reports_token_serializer().loads(token, max_age=REPORTS_TOKEN_MAX_AGE)
+        return isinstance(payload, dict) and payload.get("v") == 1
+    except (BadSignature, SignatureExpired):
+        return False
+
+
+def _reports_request_token() -> str:
+    return (request.args.get("rt") or request.headers.get("X-Reports-Token") or "").strip()
 
 
 def _path_has_prefix(path: str, prefixes) -> bool:
@@ -322,14 +346,14 @@ def _render_reports_gate(error=None, next_path="/sales-report", status=200, disa
 def _require_reports_passcode():
     if not _reports_gate_enabled():
         return None
-    if _reports_authenticated():
-        return None
     path = request.path or "/"
+    if not _is_reports_page_path(path) and not _is_reports_api_path(path):
+        return None
+    if _reports_token_valid(_reports_request_token()):
+        return None
     if _is_reports_api_path(path):
         return jsonify({"error": "Reports access locked."}), 401
-    if _is_reports_page_path(path):
-        return redirect(url_for("reports_gate", next=path))
-    return None
+    return redirect(url_for("reports_gate", next=path))
 
 
 @app.route(REPORTS_GATE_PATH, methods=["GET", "POST"], endpoint="reports_gate")
@@ -343,21 +367,12 @@ def reports_gate():
         entered = (request.form.get("passcode") or "").strip()
         passcode = _reports_passcode()
         if passcode and secrets.compare_digest(entered, passcode):
-            session[REPORTS_SESSION_KEY] = True
-            session.permanent = True
-            return redirect(_safe_reports_next(request.form.get("next")))
+            token = _issue_reports_token()
+            next_path = _safe_reports_next(request.form.get("next"))
+            return redirect(f"{next_path}?rt={quote(token, safe='')}")
         return _render_reports_gate(error="Invalid passcode.", next_path=next_path, status=401)
 
-    if _reports_authenticated():
-        return redirect(next_path)
-
     return _render_reports_gate(next_path=next_path)
-
-
-@app.post(LOCK_REPORTS_PATH, endpoint="lock_reports")
-def lock_reports():
-    session.pop(REPORTS_SESSION_KEY, None)
-    return redirect(url_for("reports_gate"))
 
 
 def _scheduler_asset_version() -> str:
@@ -401,7 +416,6 @@ def _inject_board_paths():
         "planner_gate_enabled": _planner_gate_enabled(),
         "planner_authenticated": _planner_authenticated(),
         "reports_gate_enabled": _reports_gate_enabled(),
-        "reports_authenticated": _reports_authenticated(),
         "scheduler_asset_version": SCHEDULER_ASSET_VERSION,
     }
 
@@ -1824,6 +1838,16 @@ def api_pp_vouchers_with_ops():
 
     if refresh:
         _schedule_pp_vouchers_with_ops_refresh(scope, include_completed)
+    # Planner-only [Temp] rows still belong in the sidebar when ERP cache is cold.
+    try:
+        from planning.helpers import planner_db
+
+        with planner_db() as con:
+            temp_only = _append_temp_ps_catalog_entries([], con, include_completed=include_completed)
+        if temp_only:
+            return jsonify(_filter_pp_vouchers_by_search(temp_only, raw_search))
+    except Exception as exc:
+        log.warning("temp-only catalog fallback failed: %s", exc)
     return jsonify([])
 
 

@@ -74,26 +74,30 @@
         </button>
         <div class="nav-dropdown-menu" id="dd-reports">
           <a href="/sales-report"
-             class="nav-dropdown-item {% if nav_path == '/sales-report' or active == 'sales_report' %}nav-dropdown-item--active{% endif %}">
+             class="nav-dropdown-item {% if nav_path == '/sales-report' or active == 'sales_report' %}nav-dropdown-item--active{% endif %}"
+             target="_blank" rel="noopener noreferrer">
             Sales report
           </a>
           <a href="/job-ratio"
-             class="nav-dropdown-item {% if nav_path == '/job-ratio' or active == 'job_ratio' %}nav-dropdown-item--active{% endif %}">
+             class="nav-dropdown-item {% if nav_path == '/job-ratio' or active == 'job_ratio' %}nav-dropdown-item--active{% endif %}"
+             target="_blank" rel="noopener noreferrer">
             Job ratio report
           </a>
           <a href="/production-capacity"
-             class="nav-dropdown-item {% if nav_path == '/production-capacity' or active == 'production_capacity' %}nav-dropdown-item--active{% endif %}">
+             class="nav-dropdown-item {% if nav_path == '/production-capacity' or active == 'production_capacity' %}nav-dropdown-item--active{% endif %}"
+             target="_blank" rel="noopener noreferrer">
             Machine capacity
           </a>
           <a href="/planning-data/repeat-orders"
-             class="nav-dropdown-item {% if nav_path in ('/repeat-orders', '/planning-data/repeat-orders') or active == 'repeat_orders' %}nav-dropdown-item--active{% endif %}">
+             class="nav-dropdown-item {% if nav_path in ('/repeat-orders', '/planning-data/repeat-orders') or active == 'repeat_orders' %}nav-dropdown-item--active{% endif %}"
+             target="_blank" rel="noopener noreferrer">
             Repeat orders
           </a>
         </div>
       </div>
 
       {# ERP queries & master data #}
-      <div class="nav-dropdown {% if nav_path in ('/bom-variation', '/material-inspection', '/system') or nav_path.startswith('/planning-data') and nav_path not in ('/planning-data/repeat-orders', '/planning-data/aker-inventory') or active in ('planning_data', 'bom_variation', 'material_inspection', 'system') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/bom-variation', '/system') or nav_path.startswith('/planning-data') and nav_path not in ('/planning-data/repeat-orders', '/planning-data/aker-inventory') or active in ('planning_data', 'bom_variation', 'system') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="queries-data">
           QUERIES &amp; MASTER DATA <span class="nav-caret">▾</span>
         </button>
@@ -110,10 +114,6 @@
           <a href="/bom-variation"
              class="nav-dropdown-item {% if nav_path == '/bom-variation' or active == 'bom_variation' %}nav-dropdown-item--active{% endif %}">
             BOM variation
-          </a>
-          <a href="{{ finishing_queue_path }}?tab=material_inspection"
-             class="nav-dropdown-item {% if nav_path == '/material-inspection' or active == 'material_inspection' %}nav-dropdown-item--active{% endif %}">
-            Material inspection
           </a>
           <span class="nav-dropdown-section">MASTER DATA</span>
           <a href="/planning-data/machines"
@@ -208,11 +208,6 @@
         <button type="submit" class="nav-lock-btn">Lock planner</button>
       </form>
       {% endif %}
-      {% if reports_gate_enabled and reports_authenticated %}
-      <form method="post" action="{{ url_for('lock_reports') }}" class="navbar-lock-form">
-        <button type="submit" class="nav-lock-btn">Lock reports</button>
-      </form>
-      {% endif %}
       <div class="nav-notif" id="nav-notif">
         <button
           type="button"
@@ -273,7 +268,7 @@
   {% block content %}{% endblock %}
 </main>
 
-<script src="{{ url_for('static', filename='js/main.js') }}?v=reports-gate-fetch-20260708"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}?v=reports-standalone-20260709"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

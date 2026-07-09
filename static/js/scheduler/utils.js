@@ -23,6 +23,19 @@ function trialFormatDt(value) {
   return text.slice(0, 16);
 }
 
+/** Display ISO or API date strings as DD/MM/YYYY. */
+function trialFormatDate(value) {
+  const text = String(value || '').trim();
+  if (!text) return '—';
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
+  const dmy = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (dmy) {
+    return `${String(dmy[1]).padStart(2, '0')}/${String(dmy[2]).padStart(2, '0')}/${dmy[3]}`;
+  }
+  return text;
+}
+
 function trialParseVisualDateTime(value) {
   return trialParsePlannerDateTime(value);
 }

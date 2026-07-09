@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -26,7 +27,13 @@ logger = logging.getLogger(__name__)
 new_orders_bp = Blueprint("new_orders", __name__)
 
 _CACHE_TTL_SEC = 300
+_ROWS_SCHEMA_VERSION = 3
 _cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+_GENERIC_SO_LINE_DESC_RE = re.compile(
+    r"^\s*(?:PR\s*NO|BATCH\s*#|SERIAL\s*#|SO\s*/\s*MO\s*NO)\b",
+    re.IGNORECASE,
+)
 
 _RECENT_SO_HDR_SQL = """
 SELECT sales_order_no, posted_datetime, customer_code, reference_no
@@ -47,12 +54,12 @@ SELECT
     pp.source_voucher_no AS source_voucher_no,
     regexp_replace(pp.source_line_item_no::TEXT, '\\.0+$', '') AS source_voucher_line_item_no,
     pp.pp_voucher_no AS process_sheet_no,
-    COALESCE(pp.inventory_code, det.inventory_code) AS inventory_code,
+    COALESCE(ps_info.inventory_code, pp.inventory_code, det.inventory_code) AS inventory_code,
     COALESCE(
-        NULLIF(TRIM(det.line_item_description), ''),
+        NULLIF(TRIM(ps_info.inventory_main_desc), ''),
+        NULLIF(TRIM(pd.main_desc), ''),
         NULLIF(TRIM(pp.bom_desc), '')
-    ) AS main_desc,
-    NULLIF(TRIM(pp.bom_desc), '') AS part_desc,
+    ) AS part_desc,
     COALESCE(det.required_shipment_date, pp.source_rsd) AS po_due_date,
     COALESCE(det.qty, pp.pp_qty) AS qty,
     COALESCE(NULLIF(TRIM(part.customer_po_no), ''), NULLIF(TRIM(hdr.customer_po_no), '')) AS customer_po_no,
@@ -68,6 +75,17 @@ LEFT JOIN public.so_order_ost_det det
         = regexp_replace(pp.source_line_item_no::TEXT, '\\.0+$', '')
 LEFT JOIN public.so_order_view hdr
     ON hdr.sales_order_no = pp.source_voucher_no
+LEFT JOIN LATERAL (
+    SELECT
+        ps.inventory_code,
+        ps.inventory_main_desc
+    FROM public.mfg_process_sheet_info_v1_view ps
+    WHERE ps.pp_voucher_no = pp.pp_voucher_no
+    ORDER BY ps.process_sheet_no
+    LIMIT 1
+) ps_info ON TRUE
+LEFT JOIN public.mt_inventory pd
+    ON pd.inventory_code = COALESCE(ps_info.inventory_code, pp.inventory_code, det.inventory_code)
 LEFT JOIN (
     SELECT pp_voucher_no, MAX(customer_po_no) AS customer_po_no
     FROM public.mfg_pp_partial_view
@@ -112,8 +130,74 @@ def _erp_query(sql: str, params: tuple, *, live_sql: str | None = None) -> list[
     return fetch_rows(sql, params, live_sql=live_sql or sql, domain="new_orders")
 
 
+def _is_generic_so_line_description(raw: Any) -> bool:
+    text = compact_text(raw)
+    if not text:
+        return True
+    first_line = text.splitlines()[0].strip()
+    return bool(_GENERIC_SO_LINE_DESC_RE.match(first_line))
+
+
+def _load_part_desc_map(inventory_codes: list[str]) -> dict[str, str]:
+    codes = [compact_text(code) for code in inventory_codes if compact_text(code)]
+    if not codes:
+        return {}
+    try:
+        fetched = live_query(
+            """
+            SELECT
+                inventory_code,
+                COALESCE(
+                    NULLIF(TRIM(main_desc), ''),
+                    NULLIF(TRIM(short_desc), '')
+                ) AS part_desc
+            FROM public.mt_inventory
+            WHERE inventory_code = ANY(%s)
+            """,
+            (codes,),
+        )
+    except Exception as exc:
+        logger.warning("new orders part_desc overlay skipped: %s", exc)
+        return {}
+
+    out: dict[str, str] = {}
+    for row in fetched:
+        code = compact_text(row.get("inventory_code"))
+        desc = compact_text(row.get("part_desc"))
+        if code and desc and not _is_generic_so_line_description(desc):
+            out[code] = desc
+    return out
+
+
+def _resolve_part_description(
+    row: dict[str, Any],
+    desc_by_inv: dict[str, str],
+) -> str:
+    inv = compact_text(row.get("inventory_code"))
+    candidates = [
+        desc_by_inv.get(inv),
+        row.get("part_desc"),
+        row.get("main_desc"),
+        row.get("bom_desc"),
+    ]
+    for raw in candidates:
+        desc = compact_text(raw)
+        if desc and not _is_generic_so_line_description(desc):
+            return desc
+    return ""
+
+
+def _apply_part_descriptions(rows: list[dict[str, Any]]) -> None:
+    inv_codes = [compact_text(row.get("inventory_code")) for row in rows]
+    desc_by_inv = _load_part_desc_map(inv_codes)
+    for row in rows:
+        part_desc = _resolve_part_description(row, desc_by_inv)
+        row["part_desc"] = part_desc
+        row["main_desc"] = part_desc
+
+
 def _cache_key(from_d: date, to_d: date) -> str:
-    return f"{from_d.isoformat()}:{to_d.isoformat()}"
+    return f"v{_ROWS_SCHEMA_VERSION}:{from_d.isoformat()}:{to_d.isoformat()}"
 
 
 def _ps_base_id(ps_id: str) -> str:
@@ -534,6 +618,7 @@ def _fetch_new_orders(from_d: date, to_d: date, *, refresh: bool = False) -> lis
             _merge_shipment_fields(line_rows, shipment_rows),
             posted_by_so,
         )
+        _apply_part_descriptions(rows)
 
     _cache[key] = (now, rows)
     return rows

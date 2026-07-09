@@ -534,6 +534,12 @@
     color: #c2410c;
   }
   .trial-ps-type-checkbox.trial-ps-type-n input { accent-color: #ea580c; }
+  .trial-ps-type-checkbox.trial-ps-type-p:has(input:checked) {
+    background: rgba(219, 39, 119, 0.10);
+    border-color: rgba(219, 39, 119, 0.35);
+    color: #9d174d;
+  }
+  .trial-ps-type-checkbox.trial-ps-type-p input { accent-color: #db2777; }
   .trial-ps-type-checkbox.trial-ps-type-t:has(input:checked) {
     background: rgba(14, 165, 233, 0.14);
     border-color: rgba(14, 165, 233, 0.45);
@@ -7584,7 +7590,15 @@
     margin: 0;
   }
   .sales-report-detail-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
     margin-bottom: 10px;
+  }
+  .sales-report-detail-head-main {
+    min-width: 0;
+    flex: 1 1 auto;
   }
   .sales-report-detail-title {
     margin: 0 0 4px;
@@ -7595,6 +7609,11 @@
     margin: 0;
     font-size: 12px;
     color: var(--text3);
+  }
+  .sales-report-table-toggle {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    margin-top: 0;
   }
   .sales-report-detail-table-wrap {
     margin: 0;
@@ -8215,6 +8234,20 @@
     padding: 4px 6px !important;
     vertical-align: middle;
   }
+  .new-orders-page--sales-orders .so-material-subcon-cell.has-material-date {
+    background: color-mix(in srgb, #0ea5e9 20%, #ffffff) !important;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, #0ea5e9 35%, #ffffff);
+  }
+  .new-orders-page--sales-orders tr:hover .so-material-subcon-cell.has-material-date {
+    background: color-mix(in srgb, #0ea5e9 26%, #ffffff) !important;
+  }
+  .new-orders-page--sales-orders .so-material-subcon-cell.has-material-arrived {
+    background: color-mix(in srgb, #16a34a 22%, #ffffff) !important;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, #16a34a 38%, #ffffff);
+  }
+  .new-orders-page--sales-orders tr:hover .so-material-subcon-cell.has-material-arrived {
+    background: color-mix(in srgb, #16a34a 28%, #ffffff) !important;
+  }
   .so-material-subcon-controls {
     display: grid;
     gap: 4px;
@@ -8378,6 +8411,14 @@
     color: #9a3412;
     background: #ffedd5;
     border: 1px solid #fdba74;
+  }
+  .new-orders-page--sales-orders .so-stage-cell .so-stage-mode--pending-wo {
+    color: #92400e;
+    background: #fef3c7;
+    border: 1px solid #fcd34d;
+    font-size: 9px;
+    font-weight: 700;
+    white-space: nowrap;
   }
   .new-orders-page--sales-orders .so-stage-cell .so-stage-mode--completed {
     color: #166534;

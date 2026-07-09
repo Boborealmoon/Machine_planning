@@ -131,6 +131,21 @@ def ensure_mpp_queue_schema(con) -> None:
     _SCHEMA_READY = True
 
 
+def _parse_recalculate_flag(data: dict[str, Any] | None) -> bool:
+    """Request body recalculate flag; default True for backward compatibility."""
+    if not isinstance(data, dict) or "recalculate" not in data:
+        return True
+    value = data.get("recalculate")
+    if isinstance(value, bool):
+        return value
+    text = compact_text(value).lower()
+    if text in {"0", "false", "no", "off"}:
+        return False
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    return bool(value)
+
+
 def _configure_mpp_save_session(con) -> None:
     """Longer timeouts for queue sync; lock_timeout fails fast instead of waiting the full statement budget."""
     import os
@@ -149,12 +164,22 @@ def _recover_db_transaction(con) -> None:
         pass
 
 
-def _machine_id_by_slug(con, slug: str) -> int:
-    slug_key = compact_text(slug).lower()
+def _machine_slug_map(con) -> dict[str, int]:
+    """Slug -> planner_machines.machine_id for the MPP fleet."""
+    out: dict[str, int] = {}
     for machine in fetch_mpp_planner_machines(con):
-        if machine["id"] == slug_key:
-            return int(machine.get("machineId") or 0)
-    return 0
+        slug = compact_text(machine.get("id")).lower()
+        machine_id = int(machine.get("machineId") or 0)
+        if slug and machine_id > 0:
+            out[slug] = machine_id
+    return out
+
+
+def _machine_id_by_slug(con, slug: str, slug_map: dict[str, int] | None = None) -> int:
+    slug_key = compact_text(slug).lower()
+    if slug_map is not None:
+        return int(slug_map.get(slug_key) or 0)
+    return _machine_slug_map(con).get(slug_key, 0)
 
 
 def _slug_by_machine_id(con, machine_id: int) -> str:
@@ -1079,20 +1104,77 @@ def reset_mpp_planner_lanes(
     return {"reset": sorted(slug_set), "machine_ids": reset_mids, "saved": saved}
 
 
+def _recalc_machine_ids_from_payload(
+    con,
+    payload: dict[str, Any],
+    touched_machine_ids: list[int] | None = None,
+) -> list[int]:
+    """Machine ids to rebuild — explicit dirtyMachines from client, else all touched lanes."""
+    if "dirtyMachines" in payload or "dirtyMachineSlugs" in payload:
+        slug_map = _machine_slug_map(con)
+        dirty_slugs = payload.get("dirtyMachines") or payload.get("dirtyMachineSlugs") or []
+        ids: list[int] = []
+        for slug in dirty_slugs:
+            machine_id = _machine_id_by_slug(con, compact_text(slug), slug_map)
+            if machine_id > 0:
+                ids.append(machine_id)
+        return sorted(set(ids))
+    return sorted({int(mid) for mid in (touched_machine_ids or []) if int(mid or 0) > 0})
+
+
+def recalculate_mpp_planner_machines(
+    con,
+    machine_ids: list[int] | None = None,
+    *,
+    reason: str = "MPP_PLANNER_RECALC",
+) -> dict[str, Any]:
+    """Rebuild planner_run_block_segment rows for MPP planner lanes."""
+    from .blocks import recalculate_machine
+    from .machines import fetch_mpp_planner_machine_ids
+
+    _configure_mpp_save_session(con)
+    ensure_mpp_queue_schema(con)
+    ids = sorted(
+        {
+            int(mid)
+            for mid in (machine_ids or fetch_mpp_planner_machine_ids(con))
+            if int(mid or 0) > 0
+        }
+    )
+    recalculated: list[int] = []
+    warnings: list[str] = []
+    for machine_id in ids:
+        try:
+            recalculate_machine(con, machine_id, reason=reason)
+            con.commit()
+            recalculated.append(machine_id)
+        except Exception as exc:
+            logger.warning("MPP planner recalculate machine %s: %s", machine_id, exc)
+            warnings.append(f"Schedule segments not updated for machine {machine_id}: {exc}")
+            _recover_db_transaction(con)
+    return {
+        "recalculated": len(recalculated),
+        "machineIds": recalculated,
+        "warnings": warnings,
+    }
+
+
 def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
     """Persist queue state and sync planner_run_block groups for MPP machines."""
     _configure_mpp_save_session(con)
     ensure_mpp_queue_schema(con)
+    recalculate = _parse_recalculate_flag(payload)
     machines_payload = payload.get("machines") or {}
     job_overrides = payload.get("jobs") or payload.get("jobOverrides") or {}
 
+    slug_map = _machine_slug_map(con)
     touched_machine_ids: list[int] = []
     keep_block_ids: set[int] = set()
     primary_blocks_by_machine: dict[int, list[int]] = {}
     save_warnings: list[str] = []
 
     for slug, lane in machines_payload.items():
-        machine_id = _machine_id_by_slug(con, slug)
+        machine_id = _machine_id_by_slug(con, slug, slug_map)
         if machine_id <= 0:
             continue
         touched_machine_ids.append(machine_id)
@@ -1432,7 +1514,7 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
     probation_payload = payload.get("probation")
     if probation_payload is not None:
         for slug, entries in probation_payload.items():
-            machine_id = _machine_id_by_slug(con, slug)
+            machine_id = _machine_id_by_slug(con, slug, slug_map)
             if machine_id <= 0:
                 continue
             existing = {
@@ -1552,22 +1634,23 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
     # on planner_mpp_lane row locks held through recalculate_machine.
     con.commit()
 
-    # Capacity sheet / monthly overview sum planner_run_block_segment ΓÇö rebuild after MPP lane sync.
-    from .blocks import recalculate_machine
-
-    for machine_id in sorted(set(touched_machine_ids)):
-        try:
-            recalculate_machine(con, machine_id, reason="MPP_PLANNER_SAVE")
-            con.commit()
-        except Exception as exc:
-            logger.warning("MPP queue recalculate machine %s: %s", machine_id, exc)
-            save_warnings.append(f"Schedule segments not updated for machine {machine_id}: {exc}")
-            _recover_db_transaction(con)
+    recalc_machine_ids = _recalc_machine_ids_from_payload(con, payload, touched_machine_ids)
+    recalc_result: dict[str, Any] = {"recalculated": 0, "machineIds": []}
+    if recalculate and recalc_machine_ids:
+        recalc_result = recalculate_mpp_planner_machines(
+            con,
+            recalc_machine_ids,
+            reason="MPP_PLANNER_SAVE",
+        )
+        save_warnings.extend(recalc_result.get("warnings") or [])
 
     return {
         "savedAt": datetime.now().isoformat(sep=" ", timespec="seconds"),
         "machinesTouched": len(touched_machine_ids),
         "blocksSynced": len(keep_block_ids),
+        "touchedMachineIds": recalc_machine_ids,
+        "recalculated": bool(recalculate and int(recalc_result.get("recalculated") or 0) > 0),
+        "recalculatedMachines": int(recalc_result.get("recalculated") or 0),
         "warnings": save_warnings,
     }
 

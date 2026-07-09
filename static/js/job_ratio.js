@@ -187,6 +187,7 @@ function jobRatioRenderMatrix() {
     sub.textContent = [
       'Month = PO / SO required shipment date.',
       'One job = one process sheet (partials deduped). Qty = SO qty per process sheet; value is home $ retained per SO line.',
+      'Value basis uses ERP home amount (pre_tax_extended_home_amt); exchange rate is already included on the SO line.',
       `Targets: proto >${data.targets?.proto || 20}% · micro >${data.targets?.micro || 30}% · low >${data.targets?.low || 50}%`,
       'Click a count or value to drill into jobs.',
     ].join(' · ');
@@ -994,6 +995,7 @@ function jobRatioRenderMeta() {
   el.textContent = [
     `Year ${data.year}`,
     `PP: ${jobRatioPsTypeLabel()}`,
+    'Value basis: ERP home amount (FX included)',
     data.cached_at ? `Cached ${data.cached_at}` : '',
   ].filter(Boolean).join(' · ');
   el.hidden = false;

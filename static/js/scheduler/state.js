@@ -19,7 +19,7 @@ let trialCatalogSortByDueDate = false;
 /** '', 'unqueued', or 'queued-op40-pending' — filter PS / Ops sidebar by machine queue state. */
 let trialCatalogQueueFilter = '';
 let trialShowCompleted = false;
-let trialPsTypeFilter = new Set(['A', 'N', 'T']);
+let trialPsTypeFilter = new Set(['A', 'N', 'P', 'T']);
 let trialShowSrOrders = false;
 let trialMachineCategoryFilter = 'ALL';
 let trialMachineHiddenSet = new Set();

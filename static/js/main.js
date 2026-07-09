@@ -81,7 +81,12 @@ function isReportsApiUrl(url) {
 }
 
 async function reportsApiFetch(url, options = {}) {
-  const res = await fetch(url, options);
+  const token = window.__reportsAuthToken || "";
+  const headers = new Headers(options.headers || {});
+  if (token && !headers.has("X-Reports-Token")) {
+    headers.set("X-Reports-Token", token);
+  }
+  const res = await fetch(url, { ...options, headers });
   if (res.status === 401 && isReportsApiUrl(url)) {
     const next = encodeURIComponent(window.location.pathname + window.location.search);
     window.location.href = `/reports-gate?next=${next}`;

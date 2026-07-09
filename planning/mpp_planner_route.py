@@ -12,6 +12,7 @@ from .mpp_planner_queue_service import (
     _recover_db_transaction,
     load_mpp_planner_queue,
     mpp_auto_dequeue_on_page_load,
+    recalculate_mpp_planner_machines,
     save_mpp_planner_queue,
 )
 from .mpp_planner_service import (
@@ -88,6 +89,25 @@ def api_mpp_planner_queue_get():
         if friendly:
             return jsonify({"ok": False, "error": friendly}), 503
         logger.exception("mpp planner queue load failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@mpp_planner_bp.post("/api/mpp-planner/recalculate")
+def api_mpp_planner_recalculate():
+    try:
+        data = request.get_json(silent=True) or {}
+        machine_ids = data.get("machine_ids") or data.get("machineIds")
+        ids = sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0})
+        if not ids:
+            return jsonify({"ok": True, "recalculated": 0, "machineIds": [], "warnings": []})
+        with planner_db() as con:
+            result = recalculate_mpp_planner_machines(con, ids)
+        return jsonify({"ok": True, **result})
+    except Exception as exc:
+        friendly = planner_db_connect_error(exc)
+        if friendly:
+            return jsonify({"ok": False, "error": friendly}), 503
+        logger.exception("mpp planner recalculate failed")
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 

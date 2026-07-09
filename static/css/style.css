@@ -625,6 +625,11 @@ input, select { font-family: inherit; }
   margin: 0 auto;
 }
 
+.app-main--standalone {
+  max-width: none;
+  min-height: 100vh;
+}
+
 .page { display: flex; flex-direction: column; gap: 20px; }
 
 .page-header {

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow, noarchive" />
+  <meta name="referrer" content="no-referrer" />
+  <title>{% block title %}Production Planner{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='ps-rejected-qty-tab-20260616') }}" />
+  {% block extra_css %}{% endblock %}
+  <script>
+    (function () {
+      var params = new URLSearchParams(window.location.search);
+      var rt = params.get("rt");
+      if (rt) {
+        window.__reportsAuthToken = rt;
+        params.delete("rt");
+        var qs = params.toString();
+        history.replaceState({}, "", window.location.pathname + (qs ? "?" + qs : ""));
+      }
+    })();
+  </script>
+</head>
+<body class="standalone-page {% block body_class %}{% endblock %}">
+
+<main class="app-main app-main--standalone {% block main_class %}{% endblock %}">
+  {% block content %}{% endblock %}
+</main>
+
+<script src="{{ url_for('static', filename='js/main.js') }}?v=reports-standalone-20260709"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

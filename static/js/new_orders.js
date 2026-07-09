@@ -50,7 +50,7 @@ function newOrdersDetailSection(title, html) {
 }
 
 function newOrdersRenderLineDetail(row) {
-  const desc = String(row.line_item_description || row.main_desc || '').trim() || '—';
+  const lineDesc = String(row.line_item_description || '').trim() || '—';
   const html = [
     newOrdersDetailField('Sales order', row.source_voucher_no, { mono: true }),
     newOrdersDetailField('Line', row.source_voucher_line_item_no),
@@ -68,8 +68,8 @@ function newOrdersRenderLineDetail(row) {
       ? repeatOrderNewOrdersDetailHtml(row, similar, repeatOpts)
       : (typeof repeatOrderDetailHtml === 'function' ? repeatOrderDetailHtml(similar, repeatOpts) : ''),
     newOrdersDetailField('Part / inventory', row.inventory_code, { mono: true }),
-    newOrdersDetailField('Part description', row.part_desc),
-    newOrdersDetailField('Line description', desc),
+    newOrdersDetailField('Part description', newOrdersPartDescription(row) || '—'),
+    newOrdersDetailField('Line description', lineDesc),
     newOrdersDetailField('PO due date', newOrdersDateOnly(row.po_due_date)),
     newOrdersDetailField('Proposed EDD', newOrdersDateOnly(row.proposed_edd)),
     newOrdersDetailField('Qty ordered', row.qty),
@@ -108,7 +108,7 @@ function newOrdersRenderGroupDetail(group) {
   ].join('');
   const linesHtml = (group.children || []).map(row => {
     const key = newOrdersLineKey(row);
-    const desc = String(row.line_item_description || row.main_desc || '').trim();
+    const desc = newOrdersPartDescription(row);
     const repeatPill = newOrdersRenderSimilarPs(row);
     return `
       <button type="button" class="new-orders-detail-line-pick" data-line-key="${escapeHtml(key)}">
@@ -581,29 +581,25 @@ function newOrdersRenderSideRail(group, rowSpan) {
   `;
 }
 
-function newOrdersDescParts(row) {
-  const part = String(row.part_desc || '').trim();
-  const main = String(row.main_desc || '').trim();
-  const line = String(row.line_item_description || '').trim();
-  return { part, main, line };
+function newOrdersIsGenericLineDescription(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return true;
+  const firstLine = raw.split(/\r?\n/)[0].trim();
+  return /^(PR\s*NO|BATCH\s*#|SERIAL\s*#|SO\s*\/\s*MO\s*NO)\b/i.test(firstLine);
+}
+
+function newOrdersPartDescription(row) {
+  const partDesc = String(row?.part_desc || '').trim();
+  if (partDesc && !newOrdersIsGenericLineDescription(partDesc)) return partDesc;
+  const mainDesc = String(row?.main_desc || '').trim();
+  if (mainDesc && !newOrdersIsGenericLineDescription(mainDesc)) return mainDesc;
+  return '';
 }
 
 function newOrdersRenderDescription(row) {
-  const { part, main, line } = newOrdersDescParts(row);
-  const partDesc = part;
-  const orderNote = line || main;
-  const note = orderNote && orderNote !== partDesc ? orderNote : '';
-  if (!partDesc && !note) return '—';
-  const bits = [];
-  if (partDesc) {
-    bits.push(`<div class="new-orders-desc-part" title="Part description">${escapeHtml(partDesc)}</div>`);
-  }
-  if (note) {
-    const noteClass = partDesc ? 'new-orders-desc-line' : 'new-orders-desc-part';
-    const noteTitle = partDesc ? 'Order / PO line note' : 'Description';
-    bits.push(`<div class="${noteClass}" title="${noteTitle}">${escapeHtml(note)}</div>`);
-  }
-  return bits.join('');
+  const partDesc = newOrdersPartDescription(row);
+  if (!partDesc) return '—';
+  return `<div class="new-orders-desc-part" title="Part description">${escapeHtml(partDesc)}</div>`;
 }
 
 function newOrdersRenderLineCells(row) {

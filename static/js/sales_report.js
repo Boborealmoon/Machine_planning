@@ -3,6 +3,8 @@
 const SALES_REPORT_PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
 const SALES_REPORT_YTD_TYPES = SALES_REPORT_PS_TYPES;
 
+const SALES_REPORT_TABLE_PEEK = 3;
+
 const salesReportState = {
   year: new Date().getFullYear(),
   focusMonth: null,
@@ -13,6 +15,8 @@ const salesReportState = {
   ppTypes: new Set(['APS', 'NPS']),
   loading: false,
   ytdCellSelection: new Set(),
+  /** Section ids currently showing full tables (default = peek of SALES_REPORT_TABLE_PEEK). */
+  expandedSections: new Set(),
 };
 
 function salesReportMonthValue(year, month) {
@@ -70,6 +74,7 @@ function salesReportSetFocusMonth(month, options = {}) {
   if (next && (next < 1 || next > 12)) return;
   if (salesReportState.focusMonth === next) return;
   salesReportState.focusMonth = next;
+  salesReportState.expandedSections.clear();
   salesReportSyncPeriodUI();
   if (next) {
     salesReportState.month = salesReportMonthValue(salesReportState.year, next);
@@ -93,6 +98,7 @@ function salesReportSetFocusMonth(month, options = {}) {
 function salesReportClearFocusMonth() {
   salesReportState.focusMonth = null;
   salesReportState.search = '';
+  salesReportState.expandedSections.clear();
   const search = document.getElementById('sales-report-search');
   if (search) search.value = '';
   salesReportSyncPeriodUI();
@@ -114,9 +120,7 @@ function salesReportFormatQty(value) {
 }
 
 function salesReportFormatDate(value) {
-  const text = String(value || '').trim();
-  if (!text) return '—';
-  return text.slice(0, 10);
+  return typeof trialFormatDate === 'function' ? trialFormatDate(value) : String(value || '—');
 }
 
 function salesReportFormatDt(value) {
@@ -1290,6 +1294,18 @@ function salesReportBuildTableHtml(rows, cols) {
     </table>`;
 }
 
+function salesReportSectionToggleHtml(sectionId, rowCount, expanded) {
+  if (rowCount <= SALES_REPORT_TABLE_PEEK) return '';
+  const hidden = rowCount - SALES_REPORT_TABLE_PEEK;
+  const label = expanded ? 'Collapse' : `Show all ${rowCount}`;
+  const title = expanded
+    ? `Show first ${SALES_REPORT_TABLE_PEEK} lines`
+    : `Show ${hidden} more line${hidden === 1 ? '' : 's'}`;
+  return `<button type="button" class="btn btn-ghost btn-sm sales-report-table-toggle"
+      data-action="toggle-section" data-section="${escapeHtml(sectionId)}"
+      aria-expanded="${expanded ? 'true' : 'false'}" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
+}
+
 function salesReportRenderDetails(data) {
   const wrap = document.getElementById('sales-report-details');
   if (!wrap || !data) return;
@@ -1301,14 +1317,25 @@ function salesReportRenderDetails(data) {
   }
   wrap.innerHTML = sections.map(section => {
     const cols = salesReportColumnsForSection(section.id);
+    const expanded = salesReportState.expandedSections.has(section.id);
+    const canPeek = section.rows.length > SALES_REPORT_TABLE_PEEK;
+    const displayRows = (!expanded && canPeek)
+      ? section.rows.slice(0, SALES_REPORT_TABLE_PEEK)
+      : section.rows;
+    const peekNote = (!expanded && canPeek)
+      ? ` · showing ${SALES_REPORT_TABLE_PEEK} of ${section.rows.length}`
+      : ` · ${section.rows.length} lines`;
     return `
-      <section class="sales-report-detail-section card">
+      <section class="sales-report-detail-section card${expanded ? ' is-expanded' : ''}" data-section="${escapeHtml(section.id)}">
         <div class="sales-report-detail-head">
-          <h2 class="sales-report-detail-title">${escapeHtml(section.title)}</h2>
-          <p class="sales-report-detail-hint">${escapeHtml(section.hint)} · ${section.rows.length} lines</p>
+          <div class="sales-report-detail-head-main">
+            <h2 class="sales-report-detail-title">${escapeHtml(section.title)}</h2>
+            <p class="sales-report-detail-hint">${escapeHtml(section.hint)}${escapeHtml(peekNote)}</p>
+          </div>
+          ${salesReportSectionToggleHtml(section.id, section.rows.length, expanded)}
         </div>
         <div class="new-orders-table-wrap sales-report-detail-table-wrap">
-          ${salesReportBuildTableHtml(section.rows, cols)}
+          ${salesReportBuildTableHtml(displayRows, cols)}
         </div>
       </section>`;
   }).join('');
@@ -1575,6 +1602,20 @@ function salesReportBindControls() {
   });
 
   document.getElementById('sales-report-export')?.addEventListener('click', salesReportExportCsv);
+
+  document.getElementById('sales-report-details')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action="toggle-section"]');
+    if (!btn) return;
+    const sectionId = btn.dataset.section;
+    if (!sectionId) return;
+    if (salesReportState.expandedSections.has(sectionId)) {
+      salesReportState.expandedSections.delete(sectionId);
+    } else {
+      salesReportState.expandedSections.add(sectionId);
+    }
+    salesReportRenderDetails(salesReportFilteredPayload());
+  });
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (salesReportState.ytdCellSelection.size) {

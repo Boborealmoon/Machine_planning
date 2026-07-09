@@ -33,7 +33,7 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 13
+_SCHEMA_VERSION = 16
 
 _NOTE_FIELDS = (
     "material_subcon",
@@ -881,6 +881,110 @@ def _load_stage_overlay(process_sheet_nos: list[str]) -> dict[tuple[str, int], d
     return out
 
 
+_WO_QTY_OVERLAY_LIVE_SQL = """
+WITH partials AS (
+    SELECT pp_voucher_no, pp_partial_no, partial_qty
+    FROM public.mfg_pp_partial
+    WHERE pp_voucher_no = ANY(%s)
+),
+wo_partials AS (
+    SELECT DISTINCT
+        t2.source_pp_no AS pp_voucher_no,
+        COALESCE(
+            NULLIF(t2.source_pp_partial_no, 0),
+            pp.pp_partial_no,
+            1
+        ) AS pp_partial_no
+    FROM public.mfg_mps_vch t2
+    JOIN public.mfg_wo_vch t3 ON t2.wo_voucher_no = t3.voucher_no
+    LEFT JOIN public.mfg_pp_partial pp
+           ON pp.pp_voucher_no = t2.source_pp_no
+          AND pp.partial_qty = t3.wo_qty_required
+          AND COALESCE(t2.source_pp_partial_no, 0) = 0
+    WHERE t2.source_pp_no = ANY(%s)
+),
+issued AS (
+    SELECT
+        p.pp_voucher_no,
+        COALESCE(SUM(p.partial_qty), 0) AS wo_issued_qty
+    FROM partials p
+    JOIN wo_partials w
+      ON w.pp_voucher_no = p.pp_voucher_no
+     AND w.pp_partial_no = p.pp_partial_no
+    GROUP BY p.pp_voucher_no
+),
+has_wo AS (
+    SELECT DISTINCT m.source_pp_no AS pp_voucher_no
+    FROM public.mfg_mps_vch m
+    JOIN public.mfg_wo_vch w ON w.voucher_no = m.wo_voucher_no
+    WHERE m.source_pp_no = ANY(%s)
+)
+SELECT
+    v.pp_voucher_no,
+    (h.pp_voucher_no IS NOT NULL) AS erp_has_wo,
+    COALESCE(i.wo_issued_qty, 0) AS erp_wo_issued_qty,
+    v.pp_qty
+FROM public.mfg_pp_vch v
+LEFT JOIN issued i ON i.pp_voucher_no = v.pp_voucher_no
+LEFT JOIN has_wo h ON h.pp_voucher_no = v.pp_voucher_no
+WHERE v.pp_voucher_no = ANY(%s)
+"""
+
+
+def _load_wo_qty_overlay(pp_voucher_nos: list[str]) -> dict[str, dict[str, Any]]:
+    """Per PP: WO issued qty (partial batches with vouchers) and remaining PP qty awaiting WO."""
+    ids = [compact_text(v) for v in pp_voucher_nos if compact_text(v)]
+    if not ids:
+        return {}
+    try:
+        fetched = live_query(
+            _WO_QTY_OVERLAY_LIVE_SQL,
+            (ids, ids, ids, ids),
+        )
+    except Exception as exc:
+        logger.warning("wo qty overlay load skipped: %s", exc)
+        return {}
+
+    out: dict[str, dict[str, Any]] = {}
+    for row in fetched:
+        pp_no = compact_text(row.get("pp_voucher_no"))
+        if not pp_no:
+            continue
+        pp_qty = float(row.get("pp_qty") or 0)
+        issued = float(row.get("erp_wo_issued_qty") or 0)
+        pending = max(0.0, pp_qty - issued)
+        out[pp_no] = {
+            "erp_has_wo": bool(row.get("erp_has_wo")),
+            "erp_wo_issued_qty": issued,
+            "erp_pending_wo_qty": pending,
+        }
+    return out
+
+
+def _apply_wo_qty_overlay(
+    orders: list[dict[str, Any]],
+    overlay: dict[str, dict[str, Any]],
+) -> None:
+    """SO-linked PP with PP qty not yet fully issued as WO vouchers (partial batches)."""
+    for order in orders:
+        for pp in order.get("pp_vouchers") or []:
+            pp_no = compact_text(pp.get("pp_voucher_no"))
+            so_no = compact_text(pp.get("source_voucher_no"))
+            data = overlay.get(pp_no, {})
+            has_wo = bool(data.get("erp_has_wo"))
+            issued = float(data.get("erp_wo_issued_qty") or 0)
+            pending = float(data.get("erp_pending_wo_qty") or 0)
+            if not data and pp_no:
+                pp_qty = float(pp.get("pp_qty") or 0)
+                pending = pp_qty
+                has_wo = False
+                issued = 0.0
+            pp["erp_has_wo"] = has_wo
+            pp["erp_wo_issued_qty"] = issued
+            pp["erp_pending_wo_qty"] = pending
+            pp["erp_pending_no_wo"] = so_no.startswith("SO/") and pending > 0.0001
+
+
 def _apply_stage_overlay(
     orders: list[dict[str, Any]],
     overlay: dict[tuple[str, int], dict[str, Any]],
@@ -1118,6 +1222,13 @@ def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, An
         _apply_coway_edd_overlay(orders, _load_coway_edd_overlay(process_sheets))
         _reconcile_subcon_material_in(orders)
         _apply_stage_overlay(orders, _load_stage_overlay(process_sheets))
+        pp_voucher_nos = [
+            compact_text(pp.get("pp_voucher_no"))
+            for order in orders
+            for pp in (order.get("pp_vouchers") or [])
+            if compact_text(pp.get("pp_voucher_no"))
+        ]
+        _apply_wo_qty_overlay(orders, _load_wo_qty_overlay(pp_voucher_nos))
         _apply_queued_machines_overlay(orders, _load_queued_machines_by_canonical_ps())
         to_clear = _strip_completed_highlights(orders)
         if to_clear:
