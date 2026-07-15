@@ -1,0 +1,1513 @@
+/* MRO application — standalone ARC format view */
+
+body.mro-app {
+  background: linear-gradient(165deg, #f4f6f9 0%, #e9edf4 45%, #f7f8fb 100%);
+  color: #1e293b;
+}
+
+body.mro-app .navbar,
+body.mro-app .navbar-backdrop {
+  display: none !important;
+}
+
+body.mro-app .app-main--mro {
+  min-height: 100dvh;
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 16px 20px 32px;
+  box-sizing: border-box;
+}
+
+.mro-page {
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+.mro-appbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.mro-appbar-brand {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+}
+
+.mro-appbar-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #0f766e 0%, #115e59 100%);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(15, 118, 110, 0.28);
+}
+
+.mro-appbar-title {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+}
+
+.mro-appbar-subtitle {
+  margin: 4px 0 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #64748b;
+  min-height: 1.25em;
+}
+
+.mro-appbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.mro-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.mro-btn:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+.mro-btn--primary {
+  background: #0f766e;
+  border-color: #0f766e;
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(15, 118, 110, 0.25);
+}
+
+.mro-btn--primary:hover {
+  background: #115e59;
+  border-color: #115e59;
+}
+
+.mro-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #dbe3ee;
+}
+
+.mro-nav-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #475569;
+  text-decoration: none;
+  border: 1px solid transparent;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.mro-nav-link:hover {
+  background: #fff;
+  color: #0f172a;
+  border-color: #e2e8f0;
+}
+
+.mro-nav-link.is-active {
+  background: #fff;
+  color: #0f766e;
+  border-color: #99f6e4;
+  box-shadow: 0 1px 2px rgba(15, 118, 110, 0.08);
+}
+
+.mro-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.mro-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mro-filter--grow {
+  flex: 1 1 280px;
+  min-width: 200px;
+}
+
+.mro-select {
+  min-width: 120px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #1e293b;
+}
+
+.mro-search-wrap {
+  position: relative;
+  display: block;
+}
+
+.mro-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  transform: translateY(-50%);
+  color: #94a3b8;
+  pointer-events: none;
+}
+
+.mro-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px 9px 36px;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  font: inherit;
+  font-size: 0.9rem;
+  color: #1e293b;
+}
+
+.mro-search-input:focus {
+  outline: none;
+  border-color: #14b8a6;
+  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.15);
+}
+
+.mro-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px 20px;
+  color: #64748b;
+  font-size: 0.95rem;
+}
+
+.mro-loading[hidden],
+.mro-table-card[hidden],
+.mro-empty[hidden],
+.mro-panel[hidden],
+.mro-modal[hidden] {
+  display: none !important;
+}
+
+.mro-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid #cbd5e1;
+  border-top-color: #0f766e;
+  border-radius: 50%;
+  animation: mro-spin 0.7s linear infinite;
+}
+
+@keyframes mro-spin {
+  to { transform: rotate(360deg); }
+}
+
+.mro-table-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  overflow: hidden;
+}
+
+.mro-table-scroll {
+  overflow-x: auto;
+}
+
+.mro-table {
+  width: 100%;
+  min-width: 1180px;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.mro-table th,
+.mro-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #eef2f7;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.mro-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+}
+
+.mro-table tbody tr.mro-row {
+  cursor: pointer;
+}
+
+.mro-table tbody tr.mro-row:hover {
+  background: #f0fdfa;
+}
+
+.mro-table tbody tr.mro-row:focus-visible {
+  outline: 2px solid #14b8a6;
+  outline-offset: -2px;
+}
+
+.mro-table .mro-desc {
+  min-width: 180px;
+  max-width: 280px;
+  white-space: normal;
+}
+
+.mro-col-action {
+  width: 72px;
+  text-align: center;
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: #fff;
+  box-shadow: 1px 0 0 #eef2f7;
+}
+
+.mro-table thead .mro-col-action {
+  background: #f8fafc;
+  z-index: 3;
+}
+
+.mro-generate-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid #99f6e4;
+  background: #f0fdfa;
+  color: #0f766e;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.mro-generate-btn:hover {
+  background: #ccfbf1;
+  border-color: #5eead4;
+  box-shadow: 0 1px 3px rgba(15, 118, 110, 0.15);
+}
+
+.mro-col-status {
+  white-space: nowrap;
+}
+
+.mro-status-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+}
+
+.mro-status-badge--done {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.mro-status-badge--open {
+  background: #fff7ed;
+  color: #9a3412;
+  border: 1px solid #fed7aa;
+}
+
+.mro-table--history {
+  min-width: 2600px;
+  font-size: 0.78rem;
+}
+
+.mro-table--history thead th {
+  vertical-align: middle;
+  white-space: normal;
+  line-height: 1.25;
+  max-width: 9rem;
+}
+
+.mro-table--history .mro-th-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.mro-th-track-prefix,
+.mro-th-track-no {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.mro-th-form--c {
+  background: #f59e0b !important;
+  color: #111827 !important;
+  text-align: center;
+  min-width: 2.4rem;
+}
+
+.mro-th-form--d {
+  background: #2563eb !important;
+  color: #fff !important;
+  text-align: center;
+  min-width: 2.4rem;
+}
+
+.mro-track-prefix {
+  white-space: nowrap;
+  color: #334155;
+  font-weight: 600;
+  min-width: 6.5rem;
+}
+
+.mro-track-no {
+  white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.mro-history-sn {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mro-form-flag {
+  text-align: center;
+  font-weight: 800;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.mro-form-flag--c {
+  background: #fffbeb;
+}
+
+.mro-form-flag--d {
+  background: #eff6ff;
+}
+
+.mro-history-remark {
+  min-width: 16rem;
+  max-width: 28rem;
+  white-space: pre-wrap;
+  line-height: 1.35;
+}
+
+.mro-history-actions {
+  white-space: nowrap;
+  vertical-align: middle;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  position: sticky;
+  right: 0;
+  background: #fff;
+  box-shadow: -6px 0 8px -6px rgba(15, 23, 42, 0.18);
+}
+
+.mro-history-delete {
+  font-size: 0.78rem;
+  padding: 4px 10px;
+}
+
+.mro-history-test-note {
+  margin-top: 6px;
+  color: #9a3412;
+}
+
+.mro-doc-link {
+  color: #2563eb;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.mro-doc-link:hover {
+  text-decoration: underline;
+}
+
+.mro-history-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #0f766e;
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.mro-wip {
+  padding: 32px 28px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.mro-wip-badge {
+  display: inline-flex;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.mro-wip-title {
+  margin: 12px 0 8px;
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.mro-wip-text {
+  margin: 0;
+  color: #64748b;
+  max-width: 52ch;
+  line-height: 1.55;
+}
+
+body.mro-modal-open {
+  overflow: hidden;
+}
+
+.mro-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.mro-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.mro-modal-dialog {
+  position: relative;
+  width: min(520px, 100%);
+  max-height: min(90dvh, 720px);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.2);
+  overflow: hidden;
+}
+
+.mro-modal-dialog--wide {
+  width: min(640px, 100%);
+}
+
+.mro-modal-dialog--arc {
+  width: min(1120px, 94vw);
+  max-height: min(88dvh, 780px);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  box-shadow:
+    0 18px 44px rgba(15, 23, 42, 0.18),
+    0 0 0 1px rgba(255, 255, 255, 0.4) inset;
+}
+
+.mro-arc-header {
+  align-items: center;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, 0.06), rgba(14, 165, 233, 0.04)),
+    #fff;
+}
+
+.mro-arc-header-main {
+  min-width: 0;
+}
+
+.mro-arc-header-sub {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #0f766e;
+  letter-spacing: 0.01em;
+}
+
+.mro-arc-body {
+  padding: 0;
+  background: #f5f7fa;
+}
+
+.mro-arc-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  min-height: 0;
+}
+
+.mro-arc-main {
+  padding: 10px 12px 12px;
+  display: grid;
+  gap: 8px;
+  border-right: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.mro-arc-card {
+  background: #fff;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: none;
+}
+
+.mro-arc-card--compact {
+  padding: 8px 10px;
+}
+
+.mro-arc-card-head {
+  margin-bottom: 8px;
+}
+
+.mro-arc-card-head--inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.mro-arc-card-title {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+}
+
+.mro-arc-card-hint {
+  margin: 0;
+  font-size: 0.7rem;
+  color: #94a3b8;
+  line-height: 1.3;
+}
+
+.mro-req {
+  color: #dc2626;
+}
+
+.mro-arc-variants {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mro-arc-variant-chip {
+  position: relative;
+  cursor: pointer;
+}
+
+.mro-arc-variant-chip input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mro-arc-variant-chip-ui {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  border: 1px solid #dbe3ee;
+  background: #fff;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+
+.mro-arc-variant-chip-name {
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.mro-arc-variant-chip-desc {
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.mro-arc-variant-chip:hover .mro-arc-variant-chip-ui {
+  border-color: #99f6e4;
+}
+
+.mro-arc-variant-chip input:checked + .mro-arc-variant-chip-ui {
+  border-color: #14b8a6;
+  background: #f0fdfa;
+  box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.14);
+}
+
+.mro-arc-variant-chip input:focus-visible + .mro-arc-variant-chip-ui {
+  outline: 2px solid #0f766e;
+  outline-offset: 1px;
+}
+
+.mro-arc-caac-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #e2e8f0;
+  font-size: 0.78rem;
+  color: #475569;
+}
+
+.mro-arc-caac-inline[hidden] {
+  display: none !important;
+}
+
+.mro-arc-caac-cert {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.mro-arc-caac-cert-label {
+  font-weight: 700;
+  color: #475569;
+}
+
+.mro-arc-caac-cert-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid #d0d9e4;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.mro-arc-caac-cert-option:has(input:checked) {
+  border-color: #14b8a6;
+  background: #f0fdfa;
+  color: #0f766e;
+}
+
+.mro-arc-caac-cert-option input {
+  accent-color: #0f766e;
+  margin: 0;
+}
+
+.mro-arc-caac-eligibility {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mro-arc-input--slim {
+  min-width: 120px;
+  width: auto;
+  padding: 4px 8px;
+  font-size: 0.78rem;
+}
+
+.mro-arc-field-meta {
+  margin-left: 6px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.mro-arc-fields-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.mro-arc-fields-grid--remarks {
+  grid-template-columns: 1.4fr 1fr;
+}
+
+.mro-arc-fields-grid--cert {
+  grid-template-columns: minmax(180px, 1fr) minmax(120px, 160px);
+  margin-bottom: 8px;
+}
+
+.mro-arc-fields-grid--caac {
+  grid-template-columns: 1.4fr 1fr;
+  align-items: start;
+}
+
+.mro-arc-caac-panel .mro-arc-part-type {
+  margin-bottom: 0;
+  margin-top: 6px;
+}
+
+.mro-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 20px 18px;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.mro-modal-footer--arc {
+  flex-wrap: wrap;
+}
+
+.mro-arc-footer-notes {
+  flex: 1 1 240px;
+  margin-right: auto;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mro-arc-generate-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+.mro-arc-generate-hint[hidden] {
+  display: none !important;
+}
+
+.mro-arc-test-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #64748b;
+  line-height: 1.35;
+}
+
+.mro-arc-field {
+  display: grid;
+  gap: 6px;
+}
+
+.mro-arc-field > span:not(.mro-arc-tag) {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #475569;
+}
+
+.mro-arc-variant-panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.mro-arc-variant-panel[hidden] {
+  display: none !important;
+}
+
+.mro-arc-tag {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.mro-arc-tag--caas {
+  background: #ccfbf1;
+  color: #0f766e;
+}
+
+.mro-arc-tag--faa {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.mro-arc-tag--easa {
+  background: #fce7f3;
+  color: #be185d;
+}
+
+.mro-arc-tag--jcab {
+  background: #ffedd5;
+  color: #c2410c;
+}
+
+.mro-arc-tag--caac {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.mro-arc-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.mro-btn--compact {
+  padding: 6px 10px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.mro-arc-correction-panel {
+  display: grid;
+  gap: 6px;
+}
+
+.mro-modal-dialog--workscope {
+  width: min(880px, 100%);
+}
+
+.mro-workscope-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.3fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.mro-arc-field--grow {
+  min-width: 0;
+}
+
+.mro-workscope-results {
+  display: grid;
+  gap: 10px;
+  max-height: min(48vh, 420px);
+  overflow: auto;
+}
+
+.mro-workscope-result {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.mro-workscope-result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  font-size: 0.78rem;
+  color: #475569;
+}
+
+.mro-workscope-result-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  font-size: 0.86rem;
+  color: #0f172a;
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 10px 12px;
+  border: 1px solid #eef2f7;
+}
+
+@media (max-width: 900px) {
+  .mro-workscope-filters {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .mro-workscope-filters {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mro-arc-empty-hint {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px dashed #cbd5e1;
+  background: #f8fafc;
+  color: #94a3b8;
+  font-size: 0.72rem;
+}
+
+.mro-arc-empty-hint[hidden] {
+  display: none !important;
+}
+
+.mro-arc-used-parts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.mro-arc-used-col {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fff, #f8fafc);
+  overflow: hidden;
+}
+
+.mro-arc-used-col-head {
+  padding: 10px 12px;
+  border-bottom: 1px solid #eef2f7;
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.mro-arc-used-col-body {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 12px;
+}
+
+.mro-arc-check-card {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: #fff;
+  font-size: 0.82rem;
+  color: #334155;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.mro-arc-check-card:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.mro-arc-check-card:has(input:checked) {
+  border-color: #99f6e4;
+  background: #f0fdfa;
+}
+
+.mro-arc-check-card input {
+  margin-top: 2px;
+  accent-color: #0f766e;
+}
+
+.mro-arc-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.mro-arc-status-field {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+}
+
+.mro-arc-textarea,
+.mro-arc-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #d0d9e4;
+  border-radius: 10px;
+  background: #fff;
+  font: inherit;
+  font-size: 0.875rem;
+  color: #1e293b;
+  resize: vertical;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.mro-arc-textarea:focus,
+.mro-arc-input:focus {
+  outline: none;
+  border-color: #14b8a6;
+  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.15);
+}
+
+.mro-arc-input--compact {
+  width: 56px;
+  text-align: center;
+}
+
+.mro-arc-input--qty {
+  width: 96px;
+}
+
+.mro-arc-card--items {
+  padding-bottom: 8px;
+}
+
+.mro-arc-items-scroll {
+  overflow-x: auto;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+}
+
+.mro-arc-items-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  background: #fff;
+}
+
+.mro-arc-items-table th,
+.mro-arc-items-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #eef2f7;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.mro-arc-items-col-check {
+  width: 64px;
+  text-align: center;
+}
+
+.mro-arc-items-col-action {
+  width: 96px;
+  text-align: right;
+}
+
+.mro-arc-item-row:not(:has(.mro-arc-item-include:checked)) {
+  opacity: 0.55;
+}
+
+.mro-arc-items-table th {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #64748b;
+  background: #f8fafc;
+  white-space: nowrap;
+}
+
+.mro-arc-general {
+  padding: 10px 10px 12px;
+  background: #fff7ed;
+}
+
+.mro-arc-general-title {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: #ea580c;
+}
+
+.mro-arc-general-list {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.mro-arc-general-list > div {
+  display: grid;
+  gap: 1px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(253, 186, 116, 0.22);
+}
+
+.mro-arc-general-list dt {
+  margin: 0;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: #9a3412;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.mro-arc-general-list dd {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #0f172a;
+  word-break: break-word;
+  line-height: 1.25;
+}
+
+@media (max-width: 900px) {
+  .mro-arc-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .mro-arc-main {
+    border-right: none;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .mro-arc-variants,
+  .mro-arc-fields-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mro-modal-dialog--staff {
+  width: min(640px, 100%);
+}
+
+.mro-staff-hint {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.mro-staff-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.mro-staff-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.mro-staff-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+}
+
+.mro-staff-item-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mro-staff-item-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.mro-staff-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.mro-staff-sig-preview {
+  display: block;
+  max-width: 160px;
+  max-height: 48px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 4px 8px;
+}
+
+.mro-staff-sig-missing {
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.mro-staff-upload-btn {
+  cursor: pointer;
+  margin: 0;
+}
+
+.mro-btn--ghost {
+  border-color: #cbd5e1;
+  color: #334155;
+  background: #fff;
+}
+
+.mro-btn--ghost:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+.mro-arc-part-type {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.mro-arc-part-type-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid #d0d9e4;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+}
+
+.mro-arc-part-type-option:has(input:checked) {
+  border-color: #14b8a6;
+  background: #f0fdfa;
+  color: #0f766e;
+}
+
+.mro-arc-part-type-option input {
+  accent-color: #0f766e;
+}
+
+.mro-arc-part-panel-title {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.mro-arc-new-parts {
+  display: grid;
+  gap: 8px;
+}
+
+.mro-btn--danger-ghost {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fff;
+}
+
+.mro-btn--danger-ghost:hover {
+  background: #fef2f2;
+  border-color: #fca5a5;
+}
+
+.mro-staff-status {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.mro-staff-status--info {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.mro-staff-status--success {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.mro-staff-status--pending {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.mro-staff-status--error {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.mro-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.mro-modal-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.mro-modal-close {
+  border: none;
+  background: transparent;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.mro-modal-close:hover {
+  color: #475569;
+}
+
+.mro-modal-body {
+  padding: 18px 20px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+
+.mro-modal-lead {
+  margin: 0 0 16px;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.mro-modal-summary {
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.mro-modal-summary-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 10px;
+  font-size: 0.875rem;
+}
+
+.mro-modal-summary-row dt {
+  margin: 0;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.mro-modal-summary-row dd {
+  margin: 0;
+  color: #1e293b;
+  word-break: break-word;
+}
+
+.mro-modal-footer .mro-btn--primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.mro-empty {
+  margin: 24px 0 0;
+  padding: 28px;
+  text-align: center;
+  color: #64748b;
+  background: #fff;
+  border: 1px dashed #cbd5e1;
+  border-radius: 14px;
+}
+
+.mro-meta {
+  margin: 14px 0 0;
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+@media (max-width: 720px) {
+  body.mro-app .app-main--mro {
+    padding: 12px 12px 24px;
+  }
+
+  .mro-appbar-title {
+    font-size: 1.25rem;
+  }
+}

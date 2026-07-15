@@ -932,7 +932,8 @@ def next_capacity_date_for_machine(con, machine_id, after_date: date):
     return probe, cap
 
 
-def dependency_finish_for_block(con, block):
+def _dependency_finish_max_prior_ops(con, block):
+    """Legacy: wait for the latest finish among all prior ops on the same PS."""
     source_ps_id = compact_text(block.get("source_ps_id") or "")
     source_op_seq_id = int(block.get("source_op_seq_id") or 0)
     if not source_ps_id or not source_op_seq_id:
@@ -951,6 +952,7 @@ def dependency_finish_for_block(con, block):
                 WHERE COALESCE(o.source_ps_id, '') = %s
                   AND COALESCE(b.active, TRUE) = TRUE
                   AND COALESCE(o.source_op_seq_id, 0) < %s
+                  AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
                 """,
                 (source_ps_id, source_op_seq_id),
             )
@@ -977,6 +979,7 @@ def dependency_finish_for_block(con, block):
             LEFT JOIN planner_machine_queue_state q ON q.block_id = b.block_id
             WHERE COALESCE(o.source_ps_id, '') = %s
               AND COALESCE(b.active, TRUE) = TRUE
+              AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
               AND s.seq_no < %s
             """,
             (source_ps_id, int(current_step["seq_no"] or 0)),
@@ -986,6 +989,142 @@ def dependency_finish_for_block(con, block):
     if not finish_val:
         return None
     return parse_dt_text(finish_val)
+
+
+def previous_operation_step_for_block(con, block):
+    """Immediate previous planner_operation_seq step for this block's route."""
+    source_op_seq_id = int(block.get("source_op_seq_id") or 0)
+    if not source_op_seq_id:
+        return None
+    has_operation_seq = one(
+        con.execute("SELECT to_regclass('public.planner_operation_seq') AS table_name")
+    )
+    if not (has_operation_seq and has_operation_seq.get("table_name")):
+        return None
+    current_step = one(
+        con.execute(
+            """
+            SELECT op_seq_id, seq_no, bom_id
+            FROM planner_operation_seq
+            WHERE op_seq_id = %s
+            """,
+            (source_op_seq_id,),
+        )
+    )
+    if not current_step:
+        return None
+    return one(
+        con.execute(
+            """
+            SELECT op_seq_id, seq_no, bom_id
+            FROM planner_operation_seq
+            WHERE bom_id = %s
+              AND seq_no < %s
+            ORDER BY seq_no DESC, op_seq_id DESC
+            LIMIT 1
+            """,
+            (int(current_step["bom_id"] or 0), int(current_step["seq_no"] or 0)),
+        )
+    )
+
+
+def cumulative_required_qty_for_block(con, block):
+    """FIFO cumulative scheduled qty for this op's splits up to and including this block."""
+    source_ps_id = compact_text(block.get("source_ps_id") or "")
+    source_op_seq_id = int(block.get("source_op_seq_id") or 0)
+    block_id = int(block.get("block_id") or 0)
+    if not source_ps_id or not source_op_seq_id or not block_id:
+        return max(0.0, float(block.get("scheduled_qty") or 0))
+
+    ordered_blocks = rows(
+        con.execute(
+            """
+            SELECT b.block_id, b.scheduled_qty
+            FROM planner_run_block b
+            JOIN planner_operation o ON o.operation_id = b.operation_id
+            WHERE COALESCE(o.source_ps_id, '') = %s
+              AND COALESCE(o.source_op_seq_id, 0) = %s
+              AND COALESCE(b.active, TRUE) = TRUE
+              AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
+            ORDER BY COALESCE(b.queue_position, 0) ASC, b.block_id ASC
+            """,
+            (source_ps_id, source_op_seq_id),
+        )
+    )
+    running_qty = 0.0
+    for row in ordered_blocks:
+        running_qty += max(0.0, float(row["scheduled_qty"] or 0))
+        if int(row["block_id"] or 0) == block_id:
+            return running_qty
+    return max(0.0, float(block.get("scheduled_qty") or 0))
+
+
+def dependency_ready_time_by_quantity(con, block):
+    """Wait until the immediate previous op has produced enough qty for this split (FIFO).
+
+    Split siblings share one operation_id / PS. Using MAX(prior ends) makes an early
+    OP30(29) wait for a later OP20(51). Instead, consume prior-op finishes in finish
+    order until this block's cumulative required qty is covered.
+    """
+    previous_step = previous_operation_step_for_block(con, block)
+    if not previous_step:
+        return None
+
+    required_qty = cumulative_required_qty_for_block(con, block)
+    if required_qty <= 0:
+        required_qty = max(0.0, float(block.get("scheduled_qty") or 0))
+    if required_qty <= 0:
+        return None
+
+    source_ps_id = compact_text(block.get("source_ps_id") or "")
+    prior_blocks = rows(
+        con.execute(
+            """
+            SELECT b.block_id,
+                   b.scheduled_qty,
+                   COALESCE(b.calculated_end_datetime, q.predicted_end_at, b.planned_end_at, b.anchor_datetime) AS finish_at,
+                   COALESCE(b.queue_position, 0) AS queue_position
+            FROM planner_run_block b
+            JOIN planner_operation o ON o.operation_id = b.operation_id
+            LEFT JOIN planner_machine_queue_state q ON q.block_id = b.block_id
+            WHERE COALESCE(o.source_ps_id, '') = %s
+              AND COALESCE(o.source_op_seq_id, 0) = %s
+              AND COALESCE(b.active, TRUE) = TRUE
+              AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
+            ORDER BY COALESCE(b.calculated_end_datetime, q.predicted_end_at, b.planned_end_at, b.anchor_datetime) ASC NULLS LAST,
+                     COALESCE(b.queue_position, 0) ASC,
+                     b.block_id ASC
+            """,
+            (source_ps_id, int(previous_step["op_seq_id"] or 0)),
+        )
+    )
+    if not prior_blocks:
+        return None
+
+    running_qty = 0.0
+    covering_finish = None
+    for row in prior_blocks:
+        running_qty += max(0.0, float(row["scheduled_qty"] or 0))
+        finish_dt = parse_dt_text(row.get("finish_at"))
+        if finish_dt:
+            covering_finish = finish_dt
+        if running_qty + 1e-9 >= required_qty:
+            return covering_finish
+
+    return covering_finish
+
+
+def dependency_finish_for_block(con, block):
+    """Prior-op dependency finish for scheduling.
+
+    Prefers qty-aware FIFO ready time so quantity splits do not wait on unrelated
+    sibling prior-op pieces. Falls back to MAX(all prior ops) when qty flow cannot
+    resolve a ready time.
+    """
+    qty_ready = dependency_ready_time_by_quantity(con, block)
+    if qty_ready is not None:
+        return qty_ready
+    return _dependency_finish_max_prior_ops(con, block)
 
 
 def add_future_segments_after_date(con, block_id, after_date: date, qty_to_add, schedule_run_id=None):

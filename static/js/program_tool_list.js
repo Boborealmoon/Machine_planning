@@ -1,6 +1,6 @@
 /* Program / Tool List */
 
-const COLSPAN    = 21;
+const COLSPAN    = 22;
 const PAGE_SIZE  = 100;
 
 let debounceTimer = null;
@@ -15,6 +15,8 @@ let summaryEntries = [];        // full built summary, pre-search
 // ── Boot ──────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
+  if (!document.getElementById("ptl-tbody")) return;
+
   loadData();
 
   // Search (client-side on enriched display fields)
@@ -27,7 +29,8 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Sync
-  document.getElementById("btn-sync").addEventListener("click", syncData);
+  document.getElementById("btn-sync")?.addEventListener("click", syncData);
+  document.getElementById("btn-sync-supabase")?.addEventListener("click", syncToSupabase);
 
   // OP TYPE chips
   document.getElementById("optype-chips").addEventListener("click", (e) => {
@@ -112,6 +115,7 @@ async function loadData() {
 
 async function syncData() {
   const btn = document.getElementById("btn-sync");
+  if (!btn) return;
   btn.textContent = "Syncing…";
   btn.classList.add("btn-syncing");
 
@@ -323,6 +327,13 @@ function applySummaryFilter() {
 
 // ── Render ────────────────────────────────────────────────────────────────
 
+function cellText(value, clip = false) {
+  const text = String(value ?? "").trim();
+  if (!text) return '<span class="ptl-dash">—</span>';
+  if (!clip || text.length <= 28) return esc(text);
+  return `<span class="ptl-cell-clip" title="${esc(text)}">${esc(text)}</span>`;
+}
+
 function renderTable(rows) {
   const tbody = document.getElementById("ptl-tbody");
 
@@ -333,30 +344,31 @@ function renderTable(rows) {
 
   tbody.innerHTML = rows.map((r) => `
     <tr>
-      <td class="ptl-sticky-1">${esc(r.ps_no)}</td>
-      <td class="ptl-sticky-2">${esc(r.part_no_erp)}</td>
-      <td>${esc(r.program_no)}</td>
+      <td class="ptl-sticky-1">${cellText(r.ps_no)}</td>
+      <td class="ptl-sticky-2">${cellText(r.part_no_erp)}</td>
+      <td>${cellText(r.bom_code || r.erp_bom_code, true)}</td>
+      <td>${cellText(r.program_no, true)}</td>
 
-      <td class="ptl-group-start">${esc(r.cnc_machine_no || r.cnc_machine_no_2)}</td>
-      <td class="ptl-actual-machine">${esc(r.actual_machine_no)}</td>
-      <td>${esc(r.operation_no || r.operation_no_2)}</td>
-      <td>${esc(r.operation_type)}</td>
-      <td>${esc(r.setup_time)}</td>
-      <td>${esc(r.cycle_time)}</td>
-      <td>${esc(r.original_setup_time)}</td>
+      <td class="ptl-group-start">${cellText(r.cnc_machine_no || r.cnc_machine_no_2)}</td>
+      <td class="ptl-actual-machine">${cellText(r.actual_machine_no)}</td>
+      <td>${cellText(r.operation_no || r.operation_no_2)}</td>
+      <td>${cellText(r.operation_type)}</td>
+      <td>${cellText(r.setup_time)}</td>
+      <td>${cellText(r.cycle_time)}</td>
+      <td>${cellText(r.original_setup_time)}</td>
 
-      <td class="ptl-group-start">${esc(r.quoted_setup_price)}</td>
-      <td>${esc(r.quoted_ct_price)}</td>
+      <td class="ptl-group-start">${cellText(r.quoted_setup_price)}</td>
+      <td>${cellText(r.quoted_ct_price)}</td>
 
-      <td class="ptl-group-start">${esc(r.quoted_ct_price_2)}</td>
+      <td class="ptl-group-start">${cellText(r.quoted_ct_price_2, true)}</td>
 
-      <td class="ptl-group-start">${esc(r.material_extension_mm)}</td>
-      <td>${esc(r.setup_diagram_mm)}</td>
-      <td>${esc(r.kit_assembly_number || r.kit_assembly_no)}</td>
+      <td class="ptl-group-start">${cellText(r.material_extension_mm)}</td>
+      <td>${cellText(r.setup_diagram_mm)}</td>
+      <td>${cellText(r.kit_assembly_number || r.kit_assembly_no, true)}</td>
 
-      <td class="ptl-group-start">${esc(r.programmer_name)}</td>
-      <td>${esc(r.date)}</td>
-      <td>${esc(r.verified_by)}</td>
+      <td class="ptl-group-start">${cellText(r.programmer_name)}</td>
+      <td>${cellText(r.date)}</td>
+      <td>${cellText(r.verified_by)}</td>
 
       <td class="ptl-group-start">${fileLink(r.program_file)}</td>
       <td>${fileLink(r.tool_list_files)}</td>
@@ -400,6 +412,9 @@ function rowSearchHaystack(row) {
     [
       row.part_no_erp,
       row.part_number,
+      row.bom_code,
+      row.erp_bom_code,
+      row.bom_desc,
       row.program_no,
       row.programmer_name,
       row.process_sheet_no,
@@ -425,4 +440,54 @@ function rowMatchesSearch(row, query) {
   if (haystack.includes(q)) return true;
   const tokens = q.split(" ");
   return tokens.length > 1 && tokens.every((token) => haystack.includes(token));
+}
+
+async function syncToSupabase() {
+  const btn = document.getElementById("btn-sync-supabase");
+  if (!btn) return;
+  const orig = btn.textContent;
+  btn.textContent = "Syncing…";
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/program-tool-list/sync-to-supabase", { method: "POST" });
+    const contentType = res.headers.get("content-type");
+    if (!contentType || !contentType.includes("application/json")) {
+      const text = await res.text();
+      throw new Error(`Server ${res.status}: ${text.substring(0, 150)}`);
+    }
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    if (data.sync_api_version == null || data.sync_api_version < 4) {
+      throw new Error(
+        "Server returned old sync API. Restart Flask so it loads program_tool_list_route.py (sync_api_version 4 with bom_code)."
+      );
+    }
+    const ct = data.sample_payload?.cycle_time;
+    const cycleTimeNote = data.with_cycle_time != null
+      ? ` (${data.with_cycle_time} w/ cycle time${ct != null ? `, e.g. ${ct}` : ""})`
+      : "";
+    const skipped = (data.skipped_missing_program_file || 0)
+      + (data.skipped_missing_tool_list_files || 0)
+      + (data.skipped_missing_part_no_erp || 0);
+    const skipNote = skipped > 0 ? `, ${skipped} skipped` : "";
+    const payloadNote = data.payload_rows != null
+      ? ` (${data.synced}/${data.payload_rows} valid)`
+      : "";
+    btn.textContent = `✓ Upserted ${data.synced}${payloadNote}${skipNote}${cycleTimeNote}`;
+    if (data.warnings && data.warnings.length) {
+      let wmsg = `Synced ${data.synced} row(s)`;
+      if (data.supabase_host) wmsg += ` → ${data.supabase_host}`;
+      wmsg += "\n\n" + data.warnings.join("\n\n");
+      if (data.read_back?.sample?.length) {
+        wmsg += "\n\nRead-back sample: " + JSON.stringify(data.read_back.sample);
+      }
+      alert(wmsg);
+    }
+    if (document.getElementById("ptl-tbody")) await loadData();
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+  } catch (err) {
+    alert("Supabase sync error: " + err.message);
+    btn.textContent = "Sync Failed";
+    btn.disabled = false;
+  }
 }

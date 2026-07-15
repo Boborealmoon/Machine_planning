@@ -154,6 +154,8 @@ def upsert_delivery_row_flags(
     exception: bool | None = None,
     coc_done: bool | None = None,
     qaqc_report_ready: bool | None = None,
+    stage_desc: str | None = None,
+    sync_qaqc_checklist: bool = True,
 ) -> dict[str, Any]:
     ensure_delivery_planner_table(con)
     canonical = _canonical_planner_ps_id(planner_ps_id)
@@ -182,6 +184,22 @@ def upsert_delivery_row_flags(
         """,
         (canonical, next_dismissed, next_exception, next_coc_done, next_qaqc_report_ready),
     )
+    if sync_qaqc_checklist and qaqc_report_ready is not None:
+        from planning.finishing_queue_service import set_checklist_done_for_planner_ps
+
+        set_checklist_done_for_planner_ps(
+            con,
+            canonical,
+            next_qaqc_report_ready,
+            stage_desc=stage_desc,
+        )
+        try:
+            from planning.finishing_queue_route import invalidate_finishing_queue_cache
+
+            invalidate_finishing_queue_cache()
+        except Exception:
+            pass
+    _clear_delivery_schedule_cache()
     return {
         "planner_ps_id": canonical,
         "dismissed": next_dismissed,
@@ -231,6 +249,7 @@ def delivery_flags_post_response():
     exception = _parse_flag_bool(data.get("exception"))
     coc_done = _parse_flag_bool(data.get("coc_done"))
     qaqc_report_ready = _parse_flag_bool(data.get("qaqc_report_ready"))
+    stage_desc = compact_text(data.get("stage_desc") or data.get("current_stage_desc"))
     if dismissed is None and exception is None and coc_done is None and qaqc_report_ready is None:
         return jsonify({"error": "dismissed, exception, coc_done, or qaqc_report_ready is required"}), 400
 
@@ -243,6 +262,7 @@ def delivery_flags_post_response():
                 exception=exception,
                 coc_done=coc_done,
                 qaqc_report_ready=qaqc_report_ready,
+                stage_desc=stage_desc or None,
             )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

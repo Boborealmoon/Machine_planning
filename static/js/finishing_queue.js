@@ -75,6 +75,18 @@ const fqState = {
     cachedAt: '',
     savingVouchers: new Set(),
   },
+  qcq: {
+    view: 'outstanding',
+    search: '',
+    segments: new Set(FQ_PS_TYPES_DEFAULT),
+    outstanding: [],
+    historical: [],
+    loaded: false,
+    loading: false,
+    error: '',
+    cachedAt: '',
+    totalCount: 0,
+  },
 };
 
 function fqDateInputValue(value) {
@@ -144,9 +156,13 @@ function fqWeekLabel(itemOrValue) {
   const weekNo = fqWeekNo(commitment);
   if (!weekNo) return '—';
   const date = fqParseDateOnlyUtc(commitment);
-  const weekday = date ? FQ_WEEKDAY_SHORT[date.getUTCDay()] : '';
-  if (!weekday) return `Week ${weekNo}`;
-  return `Week ${weekNo} - ${weekday}`;
+  const weekday = date
+    ? ((typeof fqWeekdayShort === 'function') ? fqWeekdayShort(date.getUTCDay()) : FQ_WEEKDAY_SHORT[date.getUTCDay()])
+    : '';
+  if (!weekday) return (typeof fqT === 'function') ? fqT('week_label', { n: weekNo }) : `Week ${weekNo}`;
+  return (typeof fqT === 'function')
+    ? fqT('week_day', { n: weekNo, day: weekday })
+    : `Week ${weekNo} - ${weekday}`;
 }
 
 function fqWeekCellMeta(item) {
@@ -155,9 +171,9 @@ function fqWeekCellMeta(item) {
   const label = fqWeekLabel(item);
   if (label === '—') return { label, title: '' };
   const title = coway
-    ? `From Coway EDD (${coway})`
+    ? ((typeof fqT === 'function') ? fqT('from_coway_edd', { date: coway }) : `From Coway EDD (${coway})`)
     : due
-      ? `From PO due (${due})`
+      ? ((typeof fqT === 'function') ? fqT('from_po_due', { date: due }) : `From PO due (${due})`)
       : '';
   return { label, title };
 }
@@ -189,8 +205,12 @@ function fqShouldGroupByAssignee() {
     && (!fqState.sortCol || fqState.sortCol === 'inspector_name');
 }
 
+function fqUnassignedLabel() {
+  return (typeof fqT === 'function') ? fqT('unassigned_label') : 'Unassigned';
+}
+
 function fqAssigneeSortRank(label) {
-  if (label === 'Unassigned') return 1;
+  if (label === fqUnassignedLabel() || label === 'Unassigned') return 1;
   return 0;
 }
 
@@ -204,11 +224,21 @@ function fqCompareAssigneeLabels(a, b, dir) {
 }
 
 function fqRenderGroupRow(label, { count = 0, exceptions = 0, nextQa = '' } = {}) {
-  const initial = label === 'Unassigned' ? '?' : (label.trim().charAt(0).toUpperCase() || '?');
+  const initial = (label === fqUnassignedLabel() || label === 'Unassigned') ? '?' : (label.trim().charAt(0).toUpperCase() || '?');
   const meta = [];
-  if (count) meta.push(`${count} job${count === 1 ? '' : 's'}`);
-  if (exceptions) meta.push(`${exceptions} exception${exceptions === 1 ? '' : 's'}`);
-  if (nextQa && nextQa !== '—') meta.push(`next QA ${nextQa}`);
+  if (count) {
+    meta.push(typeof fqPlural === 'function'
+      ? fqPlural('jobs_count', count)
+      : `${count} job${count === 1 ? '' : 's'}`);
+  }
+  if (exceptions) {
+    meta.push(typeof fqPlural === 'function'
+      ? fqPlural('exceptions_count', exceptions)
+      : `${exceptions} exception${exceptions === 1 ? '' : 's'}`);
+  }
+  if (nextQa && nextQa !== '—') {
+    meta.push(typeof fqT === 'function' ? fqT('next_qa', { date: nextQa }) : `next QA ${nextQa}`);
+  }
   const metaHtml = meta.length
     ? `<span class="fq-group-row-meta">${meta.map((m) => escapeHtml(m)).join(' · ')}</span>`
     : '';
@@ -240,6 +270,10 @@ function fqIsMaterialInspectionScreen() {
   return fqState.screen === 'material_inspection';
 }
 
+function fqIsQcQueueScreen() {
+  return fqState.screen === 'qc_queue';
+}
+
 function fqIsQueueTableVisible() {
   return fqState.screen === 'queue' || fqState.screen === 'assignments';
 }
@@ -262,6 +296,7 @@ function fqFormatQty(value) {
 }
 
 function fqExecutionLabel(code) {
+  if (typeof fqExecutionLabelI18n === 'function') return fqExecutionLabelI18n(code);
   const c = String(code || '').trim().toUpperCase();
   if (c === 'I' || c === 'IN_PROCESS') return 'In Process';
   if (c === 'R' || c === 'READY_TO_START') return 'Ready to Start';
@@ -281,7 +316,9 @@ function fqStatusPill(code) {
 }
 
 function fqStageBadge(item) {
-  const desc = String(item?.current_stage_desc || '—').trim() || '—';
+  const desc = (typeof fqStageDescI18n === 'function')
+    ? fqStageDescI18n(item?.current_stage_desc)
+    : (String(item?.current_stage_desc || '—').trim() || '—');
   const bucket = String(item?.stage_bucket || '').trim();
   const cls = bucket ? ` fq-stage-badge--${bucket}` : '';
   return `<span class="fq-stage-badge${cls}">${escapeHtml(desc)}</span>`;
@@ -382,8 +419,19 @@ function fqMatchesPsType(item) {
   return types.has(psType);
 }
 
+function fqQueueItemsMatchingPsTypes() {
+  return (fqState.items || []).filter(fqMatchesPsType);
+}
+
+function fqMaterialIssueItemsMatchingPsTypes() {
+  return (fqState.materialIssueItems || []).filter(fqMatchesPsType);
+}
+
 function fqItemsMatchingPsTypes() {
-  return fqActiveSourceItems().filter(fqMatchesPsType);
+  if (fqState.screen === 'material_issue') {
+    return fqMaterialIssueItemsMatchingPsTypes();
+  }
+  return fqQueueItemsMatchingPsTypes();
 }
 
 function fqFilteredItems() {
@@ -397,8 +445,8 @@ function fqFilteredItems() {
     }
     if (fqState.screen === 'assignments' && fqState.assignee !== 'all') {
       const name = fqAssigneeLabel(item);
-      if (fqState.assignee === '__unassigned__') {
-        if (name !== 'Unassigned') return false;
+        if (fqState.assignee === '__unassigned__') {
+        if (name !== fqUnassignedLabel() && name !== 'Unassigned') return false;
       } else if (name !== fqState.assignee) return false;
     }
     return true;
@@ -492,7 +540,7 @@ window.fqToast = fqToast;
 window.fqSetInspectorStatus = fqSetInspectorStatus;
 
 function fqInspectorOptions(selectedId) {
-  const opts = ['<option value="">— Unassigned —</option>'];
+  const opts = [`<option value="">${escapeHtml((typeof fqT === 'function') ? fqT('unassigned') : '— Unassigned —')}</option>`];
   for (const insp of fqState.inspectors || []) {
     const id = String(insp.inspector_id);
     const sel = String(selectedId || '') === id ? ' selected' : '';
@@ -546,9 +594,9 @@ function fqSetFieldSaveStatus(el, status) {
   const hint = wrap?.querySelector('.fq-save-hint');
   if (!hint) return;
   hint.className = `fq-save-hint${status ? ` fq-save-hint--${status}` : ''}`;
-  if (status === 'saving') hint.textContent = 'Saving…';
-  else if (status === 'saved') hint.textContent = 'Saved ✓';
-  else if (status === 'error') hint.textContent = 'Failed';
+  if (status === 'saving') hint.textContent = (typeof fqT === 'function') ? fqT('saving') : 'Saving…';
+  else if (status === 'saved') hint.textContent = (typeof fqT === 'function') ? fqT('saved') : 'Saved ✓';
+  else if (status === 'error') hint.textContent = (typeof fqT === 'function') ? fqT('failed') : 'Failed';
   else hint.textContent = '';
   if (status === 'saved') {
     window.setTimeout(() => {
@@ -584,7 +632,9 @@ function fqJobCell(item) {
     ? `<span class="fq-part-sub">${escapeHtml(item.part_no)}</span>`
     : '';
   const qty = fqStageProgress(item);
-  const qtyHtml = qty !== '—' ? `<span class="fq-qty-sub">${escapeHtml(qty)} pcs</span>` : '';
+  const qtyHtml = qty !== '—'
+    ? `<span class="fq-qty-sub">${escapeHtml(qty)} ${(typeof fqT === 'function') ? fqT('pcs') : 'pcs'}</span>`
+    : '';
   return `<div class="fq-job-cell"><span class="fq-job-ps">${ps}${partial}</span>${part}${qtyHtml}</div>`;
 }
 
@@ -751,14 +801,14 @@ window.fqSaveOverlay = fqSaveOverlay;
 function fqRecalcAssignmentCounts() {
   const counts = {};
   for (const item of fqItemsMatchingPsTypes()) {
-    const name = String(item.inspector_name || '').trim() || 'Unassigned';
+    const name = String(item.inspector_name || '').trim() || fqUnassignedLabel();
     counts[name] = (counts[name] || 0) + 1;
   }
   fqState.assignmentCounts = counts;
 }
 
 function fqAssigneeLabel(item) {
-  return String(item?.inspector_name || '').trim() || 'Unassigned';
+  return String(item?.inspector_name || '').trim() || fqUnassignedLabel();
 }
 
 function fqIsAssignmentsView() {
@@ -791,48 +841,49 @@ function fqRenderDetail(item) {
   const fieldAttrs = fqOverlayFieldAttrs(item);
   const qaValue = escapeHtml(fqDateInputValue(item.qa_due_date));
   const remarksValue = escapeHtml(item.remarks || '');
+  const t = (typeof fqT === 'function') ? fqT : (k) => k;
   const editHtml = `
     <section class="fq-detail-edit card">
-      <h3 class="fq-detail-edit-title">Quick edit</h3>
+      <h3 class="fq-detail-edit-title">${escapeHtml(t('detail_quick_edit'))}</h3>
       <div class="fq-detail-edit-grid">
         <label class="fq-detail-edit-field">
-          <span>QA due</span>
+          <span>${escapeHtml(t('detail_qa_due'))}</span>
           ${fqWrapEditableField(`<input type="date" class="fq-cell-input fq-cell-date" data-fq-field="qa_due_date" ${fieldAttrs} ${fqOverlayControlHandlers('qa_due_date')} value="${qaValue}">`, 'qa_due_date')}
         </label>
         <label class="fq-detail-edit-field">
-          <span>Assigned</span>
+          <span>${escapeHtml(t('detail_assigned'))}</span>
           ${fqWrapEditableField(`<select class="fq-cell-input fq-cell-select" data-fq-field="inspector_id" ${fieldAttrs} ${fqOverlayControlHandlers('inspector_id')}>${fqInspectorOptions(item.inspector_id)}</select>`, 'inspector_id')}
         </label>
         <label class="fq-detail-edit-field fq-detail-edit-field--full">
-          <span>Remarks</span>
-          ${fqWrapEditableField(`<textarea class="fq-cell-input fq-cell-remarks" rows="3" data-fq-field="remarks" ${fieldAttrs} ${fqOverlayControlHandlers('remarks')} placeholder="Notes for QA team">${remarksValue}</textarea>`, 'remarks')}
+          <span>${escapeHtml(t('detail_remarks'))}</span>
+          ${fqWrapEditableField(`<textarea class="fq-cell-input fq-cell-remarks" rows="3" data-fq-field="remarks" ${fieldAttrs} ${fqOverlayControlHandlers('remarks')} placeholder="${escapeHtml(t('detail_remarks_placeholder'))}">${remarksValue}</textarea>`, 'remarks')}
         </label>
       </div>
     </section>
   `;
   const stageHtml = [
-    fqDetailField('Stage', item.current_stage_desc),
-    fqDetailField('Status', fqExecutionLabel(item.current_stage_status)),
-    fqDetailField('Progress', fqStageProgress(item)),
-    fqDetailField('Stage required', fqFormatQty(item.stage_qty_required)),
-    fqDetailField('Stage produced', fqFormatQty(item.stage_qty_produced)),
-    fqDetailField('Stage rejected', fqFormatQty(item.stage_qty_rejected)),
+    fqDetailField(t('detail_field_stage'), (typeof fqStageDescI18n === 'function') ? fqStageDescI18n(item.current_stage_desc) : item.current_stage_desc),
+    fqDetailField(t('detail_field_status'), fqExecutionLabel(item.current_stage_status)),
+    fqDetailField(t('detail_field_progress'), fqStageProgress(item)),
+    fqDetailField(t('detail_field_stage_required'), fqFormatQty(item.stage_qty_required)),
+    fqDetailField(t('detail_field_stage_produced'), fqFormatQty(item.stage_qty_produced)),
+    fqDetailField(t('detail_field_stage_rejected'), fqFormatQty(item.stage_qty_rejected)),
   ].join('');
   const psHtml = [
-    fqDetailField('Process sheet', item.ps_id, { mono: true }),
-    fqDetailField('Partial', item.pp_partial_no),
-    fqDetailField('Part', item.part_no, { mono: true }),
-    fqDetailField('Description', item.part_desc, { fullWidth: true }),
-    fqDetailField('PO due', fqFormatDate(item.due_date)),
-    fqDetailField('Coway EDD', fqFormatDate(item.coway_proposed_edd)),
-    fqDetailField('Delivery schedule', fqWeekLabel(item)),
-    fqDetailField('Checklist done', item.checklist_done ? 'Yes' : 'No'),
-    fqDetailField('Exception', item.exception_flag ? 'Yes' : 'No'),
+    fqDetailField(t('detail_field_ps'), item.ps_id, { mono: true }),
+    fqDetailField(t('detail_field_partial'), item.pp_partial_no),
+    fqDetailField(t('detail_field_part'), item.part_no, { mono: true }),
+    fqDetailField(t('detail_field_description'), item.part_desc, { fullWidth: true }),
+    fqDetailField(t('detail_field_po_due'), fqFormatDate(item.due_date)),
+    fqDetailField(t('detail_field_coway_edd'), fqFormatDate(item.coway_proposed_edd)),
+    fqDetailField(t('detail_field_delivery'), fqWeekLabel(item)),
+    fqDetailField(t('detail_field_checklist'), item.checklist_done ? t('yes') : t('no')),
+    fqDetailField(t('detail_field_exception'), item.exception_flag ? t('yes') : t('no')),
   ].join('');
   return [
     editHtml,
-    fqDetailSection('Stage', stageHtml),
-    fqDetailSection('Job details', psHtml),
+    fqDetailSection(t('detail_section_stage'), stageHtml),
+    fqDetailSection(t('detail_section_job'), psHtml),
   ].join('');
 }
 
@@ -842,7 +893,9 @@ function fqOpenDetail(item) {
   const body = document.getElementById('fq-detail-body');
   if (!panel || !title || !body) return;
   fqState.selectedKey = fqItemKey(item);
-  const partialLabel = Number(item.pp_partial_no) > 1 ? ` · partial ${item.pp_partial_no}` : '';
+  const partialLabel = Number(item.pp_partial_no) > 1
+    ? ` · ${(typeof fqT === 'function') ? fqT('partial', { n: item.pp_partial_no }) : `partial ${item.pp_partial_no}`}`
+    : '';
   title.textContent = `${item.ps_id || '—'}${partialLabel}`;
   body.innerHTML = fqRenderDetail(item);
   fqSetDetailSaveStatus('', '');
@@ -859,33 +912,51 @@ function fqCloseDetail() {
   document.body.classList.remove('new-orders-detail-open');
 }
 
-function fqRecalcCounts() {
-  const items = fqItemsMatchingPsTypes();
+function fqSetNavCount(id, count) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const n = Number(count) || 0;
+  el.textContent = String(n);
+  el.hidden = n <= 0;
+}
+
+function fqUpdateNavCounts() {
+  const queueItems = fqQueueItemsMatchingPsTypes();
   const stageCounts = {
     deburring: 0,
     final_inspection: 0,
     packing: 0,
     engraving_packing: 0,
   };
-  for (const item of items) {
+  for (const item of queueItems) {
     const bucket = item.stage_bucket;
     if (bucket in stageCounts) stageCounts[bucket] += 1;
   }
-  const setCount = (id, n) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    const count = Number(n) || 0;
-    el.textContent = String(count);
-    el.hidden = count <= 0;
-  };
-  setCount('fq-count-all', items.length);
-  setCount('fq-count-deburring', stageCounts.deburring);
-  setCount('fq-count-final_inspection', stageCounts.final_inspection);
-  setCount('fq-count-packing', stageCounts.packing);
-  setCount('fq-count-engraving_packing', stageCounts.engraving_packing);
-  const miaItems = (fqState.materialIssueItems || []).filter(fqMatchesPsType);
-  setCount('fq-count-material_issue', miaItems.length);
-  setCount('fq-count-material_inspection', (fqState.mi.outstanding || []).length);
+
+  fqSetNavCount('fq-count-all', queueItems.length);
+  fqSetNavCount('fq-count-deburring', stageCounts.deburring);
+  fqSetNavCount('fq-count-final_inspection', stageCounts.final_inspection);
+  fqSetNavCount('fq-count-packing', stageCounts.packing);
+  fqSetNavCount('fq-count-engraving_packing', stageCounts.engraving_packing);
+  fqSetNavCount('fq-count-material_issue', fqMaterialIssueItemsMatchingPsTypes().length);
+
+  const miOutstanding = (fqState.mi.outstanding || []).length;
+  const miReady = (fqState.mi.ready || []).length;
+  const miHistorical = (fqState.mi.historical || []).length;
+  fqSetNavCount('fq-count-material_inspection', miOutstanding);
+  fqSetNavCount('fq-count-mi-outstanding', miOutstanding);
+  fqSetNavCount('fq-count-mi-ready', miReady);
+  fqSetNavCount('fq-count-mi-historical', miHistorical);
+
+  const qcqOutstanding = fqQcqRowsMatchingSegments(fqState.qcq.outstanding || []).length;
+  const qcqHistorical = fqQcqRowsMatchingSegments(fqState.qcq.historical || []).length;
+  fqSetNavCount('fq-count-qc_queue', qcqOutstanding);
+  fqSetNavCount('fq-count-qcq-outstanding', qcqOutstanding);
+  fqSetNavCount('fq-count-qcq-historical', qcqHistorical);
+}
+
+function fqRecalcCounts() {
+  fqUpdateNavCounts();
 }
 
 function fqUpdateCounts() {
@@ -961,14 +1032,14 @@ function fqRowActionCells(item) {
   const done = Boolean(item.checklist_done);
   const flagged = Boolean(item.exception_flag);
   return `<div class="fq-row-actions">
-    <button type="button" class="fq-icon-btn fq-icon-btn--done${done ? ' is-on' : ''}" data-fq-toggle="checklist_done" ${attrs} aria-pressed="${done ? 'true' : 'false'}" title="${done ? 'Mark not done' : 'Mark done'}">✓</button>
-    <button type="button" class="fq-icon-btn fq-icon-btn--flag${flagged ? ' is-on' : ''}" data-fq-toggle="exception_flag" ${attrs} aria-pressed="${flagged ? 'true' : 'false'}" title="${flagged ? 'Clear exception' : 'Flag exception'}">!</button>
+    <button type="button" class="fq-icon-btn fq-icon-btn--done${done ? ' is-on' : ''}" data-fq-toggle="checklist_done" ${attrs} aria-pressed="${done ? 'true' : 'false'}" title="${done ? ((typeof fqT === 'function') ? fqT('mark_not_done') : 'Mark not done') : ((typeof fqT === 'function') ? fqT('mark_done') : 'Mark done')}">✓</button>
+    <button type="button" class="fq-icon-btn fq-icon-btn--flag${flagged ? ' is-on' : ''}" data-fq-toggle="exception_flag" ${attrs} aria-pressed="${flagged ? 'true' : 'false'}" title="${flagged ? ((typeof fqT === 'function') ? fqT('clear_exception') : 'Clear exception') : ((typeof fqT === 'function') ? fqT('flag_exception') : 'Flag exception')}">!</button>
   </div>`;
 }
 
 function fqMaterialInPill(item) {
   const yes = Boolean(item?.material_in);
-  return `<span class="fq-mia-pill ${yes ? 'fq-mia-pill--yes' : 'fq-mia-pill--no'}">${yes ? 'Yes' : 'No'}</span>`;
+  return `<span class="fq-mia-pill ${yes ? 'fq-mia-pill--yes' : 'fq-mia-pill--no'}">${yes ? ((typeof fqT === 'function') ? fqT('yes') : 'Yes') : ((typeof fqT === 'function') ? fqT('no') : 'No')}</span>`;
 }
 
 function fqRenderMaterialIssueRow(item) {
@@ -981,7 +1052,7 @@ function fqRenderMaterialIssueRow(item) {
           <span class="fq-job-ps">${escapeHtml(psId)}</span>
           ${partial ? `<span class="fq-partial-tag">P${escapeHtml(partial)}</span>` : ''}
         </div>
-        <span class="fq-stage-badge fq-stage-badge--material_issue">${escapeHtml(item?.current_stage_desc || 'Material Issue & Assembly')}</span>
+        <span class="fq-stage-badge fq-stage-badge--material_issue">${escapeHtml((typeof fqStageDescI18n === 'function') ? fqStageDescI18n(item?.current_stage_desc || 'Material Issue & Assembly') : (item?.current_stage_desc || 'Material Issue & Assembly'))}</span>
       </td>
       <td class="fq-col-mono">${escapeHtml(item?.part_no || '—')}</td>
       <td>${escapeHtml(item?.part_desc || '—')}</td>
@@ -1024,26 +1095,27 @@ function fqRenderMaterialIssueTable() {
     empty.hidden = false;
     if (emptyText) {
       emptyText.textContent = fqState.materialIssueHint
-        || 'No open jobs with an assembly WO stage (SO qty not fully shipped).';
+        || ((typeof fqT === 'function') ? fqT('empty_mia') : 'No open jobs with an assembly WO stage (SO qty not fully shipped).');
     }
     if (stats) stats.textContent = '';
     if (meta) meta.hidden = true;
+    fqUpdateNavCounts();
     return;
   }
 
   if (!hasPsFiltered) {
     miaWrap.hidden = true;
     empty.hidden = false;
-    if (emptyText) emptyText.textContent = 'No jobs match the selected PS types.';
+    if (emptyText) emptyText.textContent = (typeof fqT === 'function') ? fqT('empty_ps_types') : 'No jobs match the selected PS types.';
     if (stats) stats.textContent = '';
-    fqRecalcCounts();
+    fqUpdateNavCounts();
     return;
   }
 
   if (!filtered.length) {
     miaWrap.hidden = true;
     empty.hidden = false;
-    if (emptyText) emptyText.textContent = 'No jobs match the selected PS types.';
+    if (emptyText) emptyText.textContent = (typeof fqT === 'function') ? fqT('empty_ps_types') : 'No jobs match the selected PS types.';
   } else {
     miaWrap.hidden = false;
     empty.hidden = true;
@@ -1051,10 +1123,12 @@ function fqRenderMaterialIssueTable() {
   }
 
   if (stats) {
-    stats.textContent = `${filtered.length} job${filtered.length === 1 ? '' : 's'} with assembly stage`;
+    stats.textContent = typeof fqPlural === 'function'
+      ? fqPlural('stats_mia', filtered.length)
+      : `${filtered.length} job${filtered.length === 1 ? '' : 's'} with assembly stage`;
   }
   if (meta) meta.hidden = true;
-  fqRecalcCounts();
+  fqUpdateNavCounts();
 }
 
 /* ── Material inspection screen (ERP QC inspections + QC-team assignment) ── */
@@ -1088,9 +1162,23 @@ function fqMiActiveRows() {
 }
 
 function fqMiViewLabel(view) {
+  if (typeof window.fqMiViewLabelI18n === 'function') return window.fqMiViewLabelI18n(view);
+  if (typeof fqT === 'function') {
+    if (view === 'ready') return fqT('mi_ready');
+    if (view === 'historical') return fqT('mi_historical');
+    return fqT('mi_outstanding');
+  }
   if (view === 'ready') return 'Ready';
   if (view === 'historical') return 'Historical';
   return 'Outstanding';
+}
+
+function fqMiStatusLabel(code) {
+  const c = String(code || '').trim().toUpperCase();
+  if (c === 'O') return (typeof fqT === 'function') ? fqT('mi_outstanding') : 'Outstanding';
+  if (c === 'R') return (typeof fqT === 'function') ? fqT('status_ready_short') : 'Ready';
+  if (c === 'H') return (typeof fqT === 'function') ? fqT('mi_historical') : 'Historical';
+  return c || '—';
 }
 
 function fqMiCreatedTime(row) {
@@ -1127,7 +1215,7 @@ function fqMiFormatDate(value) {
 function fqMiStatusPill(code) {
   const c = String(code || '').trim().toUpperCase();
   const cls = c === 'O' ? 'o' : c === 'R' ? 'r' : c === 'H' ? 'h' : '';
-  const label = c === 'O' ? 'Outstanding' : c === 'R' ? 'Ready' : c === 'H' ? 'Historical' : (c || '—');
+  const label = fqMiStatusLabel(c);
   return `<span class="fq-mi-status"><span class="fq-mi-pill fq-mi-pill--${cls}">${escapeHtml(c || '—')}</span>${escapeHtml(label)}</span>`;
 }
 
@@ -1144,7 +1232,7 @@ function fqMiRenderRow(row) {
     : `<select class="fq-cell-input fq-cell-select fq-cell-select--compact" data-fq-mi-field="inspector_id" data-fq-mi-voucher="${escapeHtml(voucher)}">${fqInspectorOptions(row.assigned_inspector_id)}</select>`;
   const doneBtn = isHistorical
     ? ''
-    : `<button type="button" class="fq-icon-btn fq-icon-btn--done${done ? ' is-on' : ''}" data-fq-mi-toggle="done" data-fq-mi-voucher="${escapeHtml(voucher)}" aria-pressed="${done ? 'true' : 'false'}" title="${done ? 'Mark not done' : 'Mark inspection done'}">✓</button>`;
+    : `<button type="button" class="fq-icon-btn fq-icon-btn--done${done ? ' is-on' : ''}" data-fq-mi-toggle="done" data-fq-mi-voucher="${escapeHtml(voucher)}" aria-pressed="${done ? 'true' : 'false'}" title="${done ? ((typeof fqT === 'function') ? fqT('mark_not_done') : 'Mark not done') : ((typeof fqT === 'function') ? fqT('mark_inspection_done') : 'Mark inspection done')}">✓</button>`;
   const desc = String(row.inventory_desc || '').trim();
   return `
     <tr class="fq-row fq-row--mi${!isHistorical && done ? ' fq-row--done' : ''}" data-mi-key="${escapeHtml(fqMiRowKey(row))}">
@@ -1172,17 +1260,7 @@ function fqMiSyncToolbarChrome() {
     btn.classList.toggle('is-active', active);
     btn.setAttribute('aria-selected', active ? 'true' : 'false');
   });
-  const setCount = (id, n) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    const count = Number(n) || 0;
-    el.textContent = String(count);
-    el.hidden = count <= 0;
-  };
-  setCount('fq-count-mi-outstanding', (fqState.mi.outstanding || []).length);
-  setCount('fq-count-mi-ready', (fqState.mi.ready || []).length);
-  setCount('fq-count-mi-historical', (fqState.mi.historical || []).length);
-  setCount('fq-count-material_inspection', (fqState.mi.outstanding || []).length);
+  fqUpdateNavCounts();
 }
 
 function fqRenderMaterialInspectionTable() {
@@ -1208,9 +1286,10 @@ function fqRenderMaterialInspectionTable() {
   if (fqState.mi.loading && !fqState.mi.loaded) {
     wrap.hidden = true;
     empty.hidden = false;
-    if (emptyText) emptyText.textContent = 'Loading material inspections…';
-    if (stats) stats.textContent = 'Loading…';
+    if (emptyText) emptyText.textContent = (typeof fqT === 'function') ? fqT('loading_mi') : 'Loading material inspections…';
+    if (stats) stats.textContent = (typeof fqT === 'function') ? fqT('loading_short') : 'Loading…';
     if (meta) meta.hidden = true;
+    fqUpdateNavCounts();
     return;
   }
 
@@ -1220,6 +1299,7 @@ function fqRenderMaterialInspectionTable() {
     if (emptyText) emptyText.textContent = fqState.mi.error;
     if (stats) stats.textContent = '';
     if (meta) meta.hidden = true;
+    fqUpdateNavCounts();
     return;
   }
 
@@ -1230,7 +1310,11 @@ function fqRenderMaterialInspectionTable() {
   wrap.classList.toggle('fq-table-card--mi-historical', isHistorical);
   const assigneeHead = wrap.querySelector('th.fq-col-mi-assignee');
   const doneHead = wrap.querySelector('th.fq-col-mi-done');
-  if (assigneeHead) assigneeHead.textContent = isHistorical ? 'Inspector' : 'Assigned to';
+  if (assigneeHead) {
+    assigneeHead.textContent = isHistorical
+      ? ((typeof fqT === 'function') ? fqT('mi_col_inspector') : 'Inspector')
+      : ((typeof fqT === 'function') ? fqT('mi_col_assigned_to') : 'Assigned to');
+  }
   if (doneHead) doneHead.hidden = isHistorical;
 
   if (!filtered.length) {
@@ -1238,8 +1322,8 @@ function fqRenderMaterialInspectionTable() {
     empty.hidden = false;
     if (emptyText) {
       emptyText.textContent = fqState.mi.search
-        ? 'No inspections match your search in this view.'
-        : `No ${viewLabel.toLowerCase()} inspections right now.`;
+        ? ((typeof fqT === 'function') ? fqT('empty_mi_search') : 'No inspections match your search in this view.')
+        : ((typeof fqT === 'function') ? fqT('empty_mi_none', { view: viewLabel }) : `No ${viewLabel.toLowerCase()} inspections right now.`);
     }
   } else {
     wrap.hidden = false;
@@ -1251,14 +1335,19 @@ function fqRenderMaterialInspectionTable() {
     const o = (fqState.mi.outstanding || []).length;
     const r = (fqState.mi.ready || []).length;
     const h = (fqState.mi.historical || []).length;
-    stats.textContent = `${viewLabel}: ${filtered.length} · O ${o} · R ${r} · H ${h}`;
+    stats.textContent = (typeof fqT === 'function')
+      ? fqT('stats_mi', { view: viewLabel, n: filtered.length, o, r, h })
+      : `${viewLabel}: ${filtered.length} · O ${o} · R ${r} · H ${h}`;
   }
   if (meta) {
     meta.hidden = !fqState.mi.cachedAt;
     meta.textContent = fqState.mi.cachedAt
-      ? `Material inspection · live COMAIN ERP read · cached ${fqState.mi.cachedAt} · assign a QC team member to plan the work`
+      ? ((typeof fqT === 'function')
+        ? fqT('meta_mi', { at: fqState.mi.cachedAt })
+        : `Material inspection · live COMAIN ERP read · cached ${fqState.mi.cachedAt} · assign a QC team member to plan the work`)
       : '';
   }
+  fqUpdateNavCounts();
 }
 
 function fqMiApplyRows(payload) {
@@ -1290,10 +1379,9 @@ async function fqLoadMaterialInspection({ refresh = false } = {}) {
     fqState.mi.error = `Failed to load material inspections: ${err.message || err}`;
   } finally {
     fqState.mi.loading = false;
+    fqUpdateNavCounts();
     if (fqIsMaterialInspectionScreen()) {
       fqRenderMaterialInspectionTable();
-    } else {
-      fqMiSyncToolbarChrome();
     }
   }
 }
@@ -1374,7 +1462,7 @@ function fqBindMaterialInspection() {
         el.classList.add('fq-cell-saved');
         window.setTimeout(() => el.classList.remove('fq-cell-saved'), 1400);
         fqRenderMaterialInspectionTable();
-        fqToast('Assignment saved', 'success');
+        fqToast((typeof fqT === 'function') ? fqT('toast_assignment_saved') : 'Assignment saved', 'success');
       } catch (err) {
         el.classList.remove('fq-cell-saving');
         fqToast(err.message || 'Save failed', 'error');
@@ -1391,12 +1479,407 @@ function fqBindMaterialInspection() {
       try {
         await fqSaveMiOverlay(voucher, { done: nextDone });
         fqRenderMaterialInspectionTable();
-        fqToast(nextDone ? 'Marked inspection done ✓' : 'Unmarked', nextDone ? 'success' : 'info');
+        fqToast(nextDone
+          ? ((typeof fqT === 'function') ? fqT('toast_inspection_done') : 'Marked inspection done ✓')
+          : ((typeof fqT === 'function') ? fqT('toast_unmarked') : 'Unmarked'), nextDone ? 'success' : 'info');
       } catch (err) {
         fqToast(err.message || 'Save failed', 'error');
       } finally {
         btn.disabled = false;
       }
+    });
+  }
+}
+
+/* ── QC queue screen (ERP qc_quality_inspection · type M · status O/H) ── */
+
+const FQ_QCQ_DISPLAY_CAP = 500;
+
+function fqQcqApiUrl() {
+  const cfg = window.__FQ_CONFIG__ || {};
+  return cfg.apiQcQualityQueue || '/api/qc-quality-queue';
+}
+
+function fqQcqVoucher(row) {
+  return String(row?.inspection_voucher_no || '').trim();
+}
+
+function fqQcqViewLabel(view) {
+  return fqMiViewLabel(view === 'historical' ? 'historical' : 'outstanding');
+}
+
+function fqQcqActiveRows() {
+  return fqState.qcq.view === 'historical'
+    ? (fqState.qcq.historical || [])
+    : (fqState.qcq.outstanding || []);
+}
+
+function fqQcqFormatDate(value) {
+  if (!value) return '—';
+  const text = String(value).trim();
+  if (text.length >= 16) return text.slice(0, 16).replace('T', ' ');
+  return text.length >= 10 ? text.slice(0, 10) : text || '—';
+}
+
+function fqQcqPartLabel(row) {
+  return String(
+    row?.wo_part_no || row?.job_lot_part_no || row?.alloc_wo_part_no || row?.inventory_code || '',
+  ).trim() || '—';
+}
+
+function fqQcqWoNo(row) {
+  return String(row?.wo_voucher_no || row?.work_order_no || row?.header_work_order_no || '').trim() || '—';
+}
+
+function fqQcqMpsNo(row) {
+  return String(row?.mps_no || row?.alloc_source_mps_no || '').trim() || '—';
+}
+
+function fqQcqProcessSheetNo(row) {
+  return String(row?.process_sheet_no || '').trim() || '—';
+}
+
+function fqQcqSegmentCode(row) {
+  const code = String(row?.wo_segment_code || '').trim().toUpperCase();
+  return FQ_PS_TYPE_ORDER.includes(code) ? code : null;
+}
+
+function fqQcqMatchesSegment(row) {
+  const segments = fqState.qcq.segments;
+  if (!segments?.size) return false;
+  if (segments.size >= FQ_PS_TYPE_ORDER.length) return true;
+  const code = fqQcqSegmentCode(row);
+  if (!code) return false;
+  return segments.has(code);
+}
+
+function fqQcqRowsMatchingSegments(rows) {
+  return (rows || []).filter(fqQcqMatchesSegment);
+}
+
+function fqQcqSegmentLabel() {
+  const checked = FQ_PS_TYPE_ORDER.filter((t) => fqState.qcq.segments.has(t));
+  if (!checked.length) return 'None';
+  if (checked.length >= FQ_PS_TYPE_ORDER.length) return 'All segments';
+  return checked.join(', ');
+}
+
+function fqInitQcqSegments() {
+  try {
+    const raw = localStorage.getItem('fq-qcq-segments-v1');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length) {
+        fqState.qcq.segments = new Set(parsed.filter((t) => FQ_PS_TYPE_ORDER.includes(t)));
+      }
+    }
+  } catch (_) {}
+  if (!fqState.qcq.segments?.size) {
+    fqState.qcq.segments = new Set(FQ_PS_TYPES_DEFAULT);
+  }
+  fqQcqSyncSegmentDropdown();
+}
+
+function fqQcqPersistSegments() {
+  try {
+    localStorage.setItem('fq-qcq-segments-v1', JSON.stringify([...fqState.qcq.segments]));
+  } catch (_) {}
+}
+
+function fqQcqSyncSegmentDropdown() {
+  const btn = document.getElementById('fq-qcq-segment-btn');
+  const panel = document.getElementById('fq-qcq-segment-panel');
+  if (!btn || !panel) return;
+  btn.textContent = `${fqQcqSegmentLabel()} ▾`;
+  panel.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+    input.checked = fqState.qcq.segments.has(input.value);
+  });
+}
+
+function fqQcqInspector(row) {
+  return String(row?.inspector_code || row?.job_inspector_code || '').trim() || '—';
+}
+
+function fqQcqWoStatusPill(code) {
+  const c = String(code || '').trim().toUpperCase();
+  if (!c) return '—';
+  const label = c === 'I' ? 'In process' : c === 'R' ? 'Ready' : c === 'C' ? 'Completed' : c === 'P' ? 'Pending' : c;
+  return `<span class="fq-mi-pill fq-mi-pill--${c === 'R' ? 'r' : c === 'C' || c === 'H' ? 'h' : 'o'}">${escapeHtml(label)}</span>`;
+}
+
+function fqQcqRowKey(row) {
+  const voucher = fqQcqVoucher(row);
+  const lotSeq = String(row?.job_lot_seq_no ?? row?.lot_seq_no ?? '').trim();
+  return lotSeq ? `${voucher}::${lotSeq}` : voucher;
+}
+
+function fqQcqRowSearchText(row) {
+  return [
+    row.inspection_voucher_no, row.wo_voucher_no, row.work_order_no, row.mps_no,
+    row.alloc_source_mps_no, row.process_sheet_no, row.wo_part_no, row.job_lot_part_no, row.so_no,
+    row.wo_stage_desc, row.inspector_code, row.job_inspector_code, row.ncr_voucher_no,
+    row.reference_no, row.alloc_wo_voucher_no, row.wo_segment_code,
+  ].map((v) => String(v == null ? '' : v).toLowerCase()).join(' ');
+}
+
+function fqQcqSortRows(rows) {
+  const list = [...(rows || [])];
+  if (fqState.qcq.view === 'outstanding') {
+    return list.sort((a, b) => fqQcqVoucher(b).localeCompare(fqQcqVoucher(a)));
+  }
+  return list;
+}
+
+function fqQcqFilterRows(rows) {
+  const q = String(fqState.qcq.search || '').trim().toLowerCase();
+  if (!q) return rows || [];
+  return (rows || []).filter((row) => fqQcqRowSearchText(row).includes(q));
+}
+
+function fqQcqVisibleRows(rows) {
+  return fqQcqFilterRows(fqQcqRowsMatchingSegments(rows || []));
+}
+
+function fqQcqStatusPill(code) {
+  const c = String(code || '').trim().toUpperCase();
+  const cls = c === 'O' ? 'o' : c === 'R' ? 'r' : c === 'H' ? 'h' : '';
+  const label = fqMiStatusLabel(c);
+  return `<span class="fq-mi-status"><span class="fq-mi-pill fq-mi-pill--${cls}">${escapeHtml(c || '—')}</span>${escapeHtml(label)}</span>`;
+}
+
+function fqQcqRenderRow(row) {
+  const voucher = fqQcqVoucher(row);
+  const part = fqQcqPartLabel(row);
+  return `
+    <tr class="fq-row fq-row--qcq" data-qcq-key="${escapeHtml(fqQcqRowKey(row))}">
+      <td class="fq-col-sticky fq-col-sticky--mi fq-col-mono">${escapeHtml(voucher || '—')}</td>
+      <td class="fq-col-mono">${escapeHtml(fqQcqWoNo(row))}</td>
+      <td class="fq-col-mono">${escapeHtml(fqQcqMpsNo(row))}</td>
+      <td class="fq-col-ps">${escapeHtml(fqQcqProcessSheetNo(row))}</td>
+      <td class="fq-col-mono">${escapeHtml(fqQcqSegmentCode(row) || '—')}</td>
+      <td class="fq-col-mono" title="${escapeHtml(part)}">${escapeHtml(part)}</td>
+      <td>${escapeHtml(String(row.wo_stage_desc || row.alloc_wo_stage_desc || '—'))}</td>
+      <td class="fq-col-mono">${escapeHtml(String(row.so_no || '—'))}</td>
+      <td class="fq-col-num">${escapeHtml(row.wo_qty_required == null ? '—' : String(row.wo_qty_required))}</td>
+      <td class="fq-col-num">${escapeHtml(row.job_qty_assigned == null ? '—' : String(row.job_qty_assigned))}</td>
+      <td>${fqQcqStatusPill(row.status)}</td>
+      <td>${fqQcqWoStatusPill(row.wo_execution_status)}</td>
+      <td>${escapeHtml(fqQcqInspector(row))}</td>
+      <td class="fq-col-date">${escapeHtml(fqQcqFormatDate(row.actual_start_date))}</td>
+      <td class="fq-col-date">${escapeHtml(fqQcqFormatDate(row.actual_end_date))}</td>
+      <td class="fq-col-mono">${escapeHtml(String(row.ncr_voucher_no || '—'))}</td>
+    </tr>
+  `;
+}
+
+function fqQcqSyncToolbarChrome() {
+  const toolbar = document.getElementById('fq-qcq-toolbar');
+  if (toolbar) toolbar.hidden = !fqIsQcQueueScreen();
+  document.querySelectorAll('[data-fq-qcq-view]').forEach((btn) => {
+    const active = btn.dataset.fqQcqView === fqState.qcq.view;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  fqUpdateNavCounts();
+}
+
+function fqQcqRowsForDisplay() {
+  const filtered = fqQcqSortRows(fqQcqVisibleRows(fqQcqActiveRows()));
+  const q = String(fqState.qcq.search || '').trim();
+  if (q || fqState.qcq.view !== 'historical') return filtered;
+  if (filtered.length <= FQ_QCQ_DISPLAY_CAP) return filtered;
+  return filtered.slice(-FQ_QCQ_DISPLAY_CAP);
+}
+
+function fqRenderQcQueueTable() {
+  fqUpdateScreenChrome();
+  fqQcqSyncToolbarChrome();
+
+  const wrap = document.getElementById('fq-qcq-table-wrap');
+  const tbody = document.getElementById('fq-qcq-table-body');
+  const empty = document.getElementById('fq-empty');
+  const emptyText = document.getElementById('fq-empty-text');
+  const stats = document.getElementById('fq-stats');
+  const meta = document.getElementById('fq-meta');
+
+  document.getElementById('fq-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-mia-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-mi-table-wrap')?.setAttribute('hidden', '');
+
+  fqHideLoading();
+
+  if (!wrap || !tbody || !empty) {
+    fqShowLoadError('QC queue table markup is missing from the page — hard refresh or restart the app.');
+    return;
+  }
+
+  if (fqState.qcq.loading && !fqState.qcq.loaded) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) emptyText.textContent = (typeof fqT === 'function') ? fqT('loading_qcq') : 'Loading ERP QC queue…';
+    if (stats) stats.textContent = '';
+    if (meta) meta.hidden = true;
+    fqUpdateNavCounts();
+    return;
+  }
+
+  if (fqState.qcq.error) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) emptyText.textContent = fqState.qcq.error;
+    if (stats) stats.textContent = '';
+    if (meta) meta.hidden = true;
+    fqUpdateNavCounts();
+    return;
+  }
+
+  const viewLabel = fqQcqViewLabel(fqState.qcq.view);
+  const sourceRows = fqQcqActiveRows();
+  const segmentRows = fqQcqRowsMatchingSegments(sourceRows);
+  const filtered = fqQcqVisibleRows(sourceRows);
+  const displayRows = fqQcqRowsForDisplay();
+  const capped = fqState.qcq.view === 'historical'
+    && !String(fqState.qcq.search || '').trim()
+    && filtered.length > FQ_QCQ_DISPLAY_CAP;
+
+  if (!displayRows.length) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) {
+      if (fqState.qcq.search) {
+        emptyText.textContent = (typeof fqT === 'function')
+          ? fqT('empty_qcq_search', { view: viewLabel })
+          : `No ${viewLabel.toLowerCase()} QC records match your search.`;
+      } else if (sourceRows.length && !segmentRows.length) {
+        emptyText.textContent = (typeof fqT === 'function')
+          ? fqT('empty_qcq_segment', { view: viewLabel })
+          : `No ${viewLabel.toLowerCase()} records match the selected segment filter.`;
+      } else {
+        emptyText.textContent = (typeof fqT === 'function')
+          ? fqT('empty_qcq_none', { view: viewLabel })
+          : `No ${viewLabel.toLowerCase()} records in the ERP QC queue.`;
+      }
+    }
+  } else {
+    wrap.hidden = false;
+    empty.hidden = true;
+    tbody.innerHTML = displayRows.map((row) => fqQcqRenderRow(row)).join('');
+  }
+
+  if (stats) {
+    const o = (fqState.qcq.outstanding || []).length;
+    const h = (fqState.qcq.historical || []).length;
+    const segO = fqQcqRowsMatchingSegments(fqState.qcq.outstanding || []).length;
+    const segH = fqQcqRowsMatchingSegments(fqState.qcq.historical || []).length;
+    const segmentNote = (segO !== o || segH !== h)
+      ? ` · ${fqQcqSegmentLabel()}`
+      : '';
+    stats.textContent = ((typeof fqT === 'function')
+      ? fqT('stats_qcq', { view: viewLabel, n: filtered.length, o: segO, h: segH, total: fqState.qcq.totalCount || o + h })
+      : `${viewLabel}: ${filtered.length} shown · ${segO} O · ${segH} H · ${fqState.qcq.totalCount || o + h} total ERP records`) + segmentNote;
+  }
+
+  if (meta) {
+    meta.hidden = !fqState.qcq.cachedAt;
+    let text = fqState.qcq.cachedAt
+      ? ((typeof fqT === 'function')
+        ? fqT('meta_qcq', { at: fqState.qcq.cachedAt })
+        : `QC queue · live COMAIN ERP · inspection + job assignment + mfg WO · cached ${fqState.qcq.cachedAt}`)
+      : '';
+    if (capped) {
+      text += ` · showing ${FQ_QCQ_DISPLAY_CAP} most recent of ${filtered.length}`;
+    }
+    meta.textContent = text;
+    meta.hidden = !text;
+  }
+  fqUpdateNavCounts();
+}
+
+function fqQcqApplyRows(payload) {
+  const collect = (rows) => (Array.isArray(rows) ? rows : []);
+  fqState.qcq.outstanding = collect(payload.outstanding);
+  fqState.qcq.historical = collect(payload.historical);
+  fqState.qcq.totalCount = Number(payload.count)
+    || fqState.qcq.outstanding.length + fqState.qcq.historical.length;
+  fqState.qcq.cachedAt = payload.cached_at || '';
+}
+
+async function fqLoadQcQueue({ refresh = false } = {}) {
+  if (fqState.qcq.loading) return;
+  fqState.qcq.loading = true;
+  fqState.qcq.error = '';
+  if (fqIsQcQueueScreen()) fqRenderQcQueueTable();
+  try {
+    const params = new URLSearchParams();
+    if (refresh) params.set('refresh', '1');
+    const qs = params.toString();
+    const url = qs ? `${fqQcqApiUrl()}?${qs}` : fqQcqApiUrl();
+    const payload = await fqFetchJson(url, { timeoutMs: 120000 });
+    fqQcqApplyRows(payload);
+    fqState.qcq.loaded = true;
+  } catch (err) {
+    fqState.qcq.error = `Failed to load QC queue: ${err.message || err}`;
+  } finally {
+    fqState.qcq.loading = false;
+    fqUpdateNavCounts();
+    if (fqIsQcQueueScreen()) {
+      fqRenderQcQueueTable();
+    }
+  }
+}
+
+function fqSetQcqView(view) {
+  fqState.qcq.view = view === 'historical' ? 'historical' : 'outstanding';
+  fqRenderQcQueueTable();
+}
+
+function fqBindQcQueueSegmentDropdown() {
+  const btn = document.getElementById('fq-qcq-segment-btn');
+  const panel = document.getElementById('fq-qcq-segment-panel');
+  if (!btn || !panel) return;
+
+  fqQcqSyncSegmentDropdown();
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    panel.hidden = !panel.hidden;
+  });
+  document.addEventListener('click', (e) => {
+    if (!panel.hidden && !panel.contains(e.target) && e.target !== btn) {
+      panel.hidden = true;
+    }
+  });
+  panel.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+    input.addEventListener('change', () => {
+      const checked = [...panel.querySelectorAll('input[type="checkbox"]:checked')].map((el) => el.value);
+      if (!checked.length) {
+        input.checked = true;
+        return;
+      }
+      fqState.qcq.segments = new Set(checked);
+      fqQcqPersistSegments();
+      fqQcqSyncSegmentDropdown();
+      fqUpdateNavCounts();
+      if (fqIsQcQueueScreen()) fqRenderQcQueueTable();
+    });
+  });
+}
+
+function fqBindQcQueue() {
+  if (window.__fqQcqBound) return;
+  window.__fqQcqBound = true;
+
+  fqBindQcQueueSegmentDropdown();
+
+  document.querySelectorAll('[data-fq-qcq-view]').forEach((btn) => {
+    btn.addEventListener('click', () => fqSetQcqView(btn.dataset.fqQcqView || 'outstanding'));
+  });
+
+  const search = document.getElementById('fq-qcq-search');
+  if (search) {
+    search.addEventListener('input', () => {
+      fqState.qcq.search = search.value;
+      if (fqIsQcQueueScreen()) fqRenderQcQueueTable();
     });
   }
 }
@@ -1422,7 +1905,7 @@ function fqRenderDataRow(item) {
       <td class="fq-col-edit">${cells.qaDue}</td>
       <td class="fq-col-edit fq-col-assignee">${cells.assignee}</td>
       <td class="fq-col-more">
-        <button type="button" class="fq-more-btn" data-fq-open-detail ${attrs} title="Open full details">⋯</button>
+        <button type="button" class="fq-more-btn" data-fq-open-detail ${attrs} title="${(typeof fqT === 'function') ? fqT('open_details') : 'Open full details'}">⋯</button>
       </td>
     </tr>
   `;
@@ -1464,9 +1947,13 @@ async function fqToggleRowFlag(item, field) {
   await fqSaveOverlay(live, patch);
   fqRenderTable();
   if (field === 'checklist_done') {
-    fqToast(patch.checklist_done ? 'Marked done ✓' : 'Unmarked', 'success');
+    fqToast(patch.checklist_done
+      ? ((typeof fqT === 'function') ? fqT('toast_marked_done') : 'Marked done ✓')
+      : ((typeof fqT === 'function') ? fqT('toast_unmarked') : 'Unmarked'), 'success');
   } else if (field === 'exception_flag') {
-    fqToast(patch.exception_flag ? 'Exception flagged' : 'Exception cleared', 'info');
+    fqToast(patch.exception_flag
+      ? ((typeof fqT === 'function') ? fqT('toast_exception_flagged') : 'Exception flagged')
+      : ((typeof fqT === 'function') ? fqT('toast_exception_cleared') : 'Exception cleared'), 'info');
   }
 }
 
@@ -1507,10 +1994,10 @@ function fqRenderAssigneeBoard() {
     <button type="button" class="fq-assignee-card fq-assignee-card--all${allActive ? ' is-active' : ''}" data-fq-assignee-card="all" aria-pressed="${allActive ? 'true' : 'false'}">
       <span class="fq-assignee-card-avatar fq-assignee-card-avatar--all" aria-hidden="true">∑</span>
       <span class="fq-assignee-card-body">
-        <span class="fq-assignee-card-name">Everyone</span>
+        <span class="fq-assignee-card-name">${escapeHtml((typeof fqT === 'function') ? fqT('everyone') : 'Everyone')}</span>
         <span class="fq-assignee-card-meta">
-          <span class="fq-assignee-card-stat">${totalJobs} job${totalJobs === 1 ? '' : 's'} total</span>
-          <span class="fq-assignee-card-stat">${stats.length} assignee${stats.length === 1 ? '' : 's'}</span>
+          <span class="fq-assignee-card-stat">${typeof fqPlural === 'function' ? fqPlural('jobs_total', totalJobs) : `${totalJobs} job${totalJobs === 1 ? '' : 's'} total`}</span>
+          <span class="fq-assignee-card-stat">${typeof fqPlural === 'function' ? fqPlural('assignees_count', stats.length) : `${stats.length} assignee${stats.length === 1 ? '' : 's'}`}</span>
         </span>
       </span>
     </button>
@@ -1522,13 +2009,13 @@ function fqRenderAssigneeBoard() {
   }
 
   board.innerHTML = allCard + stats.map((row) => {
-    const id = row.label === 'Unassigned' ? '__unassigned__' : row.label;
+    const id = (row.label === fqUnassignedLabel() || row.label === 'Unassigned') ? '__unassigned__' : row.label;
     const isActive = fqState.assignee === id;
-    const initial = row.label === 'Unassigned' ? '?' : (row.label.trim().charAt(0).toUpperCase() || '?');
+    const initial = (row.label === fqUnassignedLabel() || row.label === 'Unassigned') ? '?' : (row.label.trim().charAt(0).toUpperCase() || '?');
     const qaSorted = row.qaDates.sort();
     const nextQa = qaSorted.length ? fqFormatDate(qaSorted[0]) : '—';
     const excHtml = row.exceptions
-      ? `<span class="fq-assignee-card-stat fq-assignee-card-stat--warn">${row.exceptions} flagged</span>`
+      ? `<span class="fq-assignee-card-stat fq-assignee-card-stat--warn">${typeof fqT === 'function' ? fqT('flagged', { n: row.exceptions }) : `${row.exceptions} flagged`}</span>`
       : '';
     return `
       <button type="button" class="fq-assignee-card${isActive ? ' is-active' : ''}" data-fq-assignee-card="${escapeHtml(id)}" aria-pressed="${isActive ? 'true' : 'false'}">
@@ -1536,8 +2023,8 @@ function fqRenderAssigneeBoard() {
         <span class="fq-assignee-card-body">
           <span class="fq-assignee-card-name">${escapeHtml(row.label)}</span>
           <span class="fq-assignee-card-meta">
-            <span class="fq-assignee-card-stat">${row.count} job${row.count === 1 ? '' : 's'}</span>
-            <span class="fq-assignee-card-stat">QA from ${escapeHtml(nextQa)}</span>
+            <span class="fq-assignee-card-stat">${typeof fqPlural === 'function' ? fqPlural('jobs_count', row.count) : `${row.count} job${row.count === 1 ? '' : 's'}`}</span>
+            <span class="fq-assignee-card-stat">${escapeHtml(typeof fqT === 'function' ? fqT('qa_from', { date: nextQa }) : `QA from ${nextQa}`)}</span>
             ${excHtml}
           </span>
         </span>
@@ -1611,7 +2098,7 @@ function fqRenderInspectorPanel() {
   list.innerHTML = inspectors.map((insp) => `
     <li class="fq-inspector-item">
       <span>${escapeHtml(insp.name || '')}</span>
-      <button type="button" class="btn btn-ghost btn-sm" data-fq-remove-inspector="${insp.inspector_id}"${busy}>Remove</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-fq-remove-inspector="${insp.inspector_id}"${busy}>${(typeof fqT === 'function') ? fqT('inspectors_remove') : 'Remove'}</button>
     </li>
   `).join('');
 }
@@ -1622,15 +2109,22 @@ function fqUpdateScreenChrome() {
   const assignMode = screen === 'assignments';
   const miaMode = screen === 'material_issue';
   const miMode = screen === 'material_inspection';
+  const qcqMode = screen === 'qc_queue';
 
   document.getElementById('fq-stage-filter-wrap')?.classList.toggle('is-hidden', !queueMode);
-  document.getElementById('fq-hide-done')?.classList.toggle('is-hidden', miaMode || miMode);
+  document.querySelector('.fq-nav-group--ps-types')?.classList.toggle('is-hidden', miaMode || miMode || qcqMode);
+  document.getElementById('fq-hide-done')?.classList.toggle('is-hidden', miaMode || miMode || qcqMode);
   // QC team is shared with material inspection assignment, so keep it available there.
-  document.getElementById('fq-manage-inspectors')?.classList.toggle('is-hidden', miaMode);
+  document.getElementById('fq-manage-inspectors')?.classList.toggle('is-hidden', miaMode || qcqMode);
   const miToolbar = document.getElementById('fq-mi-toolbar');
   if (miToolbar) miToolbar.hidden = !miMode;
+  const qcqToolbar = document.getElementById('fq-qcq-toolbar');
+  if (qcqToolbar) qcqToolbar.hidden = !qcqMode;
   if (!miMode) {
     document.getElementById('fq-mi-table-wrap')?.setAttribute('hidden', '');
+  }
+  if (!qcqMode) {
+    document.getElementById('fq-qcq-table-wrap')?.setAttribute('hidden', '');
   }
 
   document.querySelectorAll('[data-fq-stage]').forEach((btn) => {
@@ -1649,7 +2143,7 @@ function fqUpdateScreenChrome() {
   tableWrap?.classList.toggle('fq-table-card--assignments', assignMode);
   tableWrap?.classList.toggle('fq-table-card--queue', queueMode);
   tableWrap?.classList.toggle('fq-table-card--assignee-filtered', assignMode && fqState.assignee !== 'all');
-  if ((miaMode || miMode) && tableWrap) tableWrap.hidden = true;
+  if ((miaMode || miMode || qcqMode) && tableWrap) tableWrap.hidden = true;
 
   const miaWrap = document.getElementById('fq-mia-table-wrap');
   if (miaWrap && !miaMode) miaWrap.hidden = true;
@@ -1668,6 +2162,10 @@ function fqUpdateScreenChrome() {
 function fqRenderTable() {
   if (fqIsMaterialInspectionScreen()) {
     fqRenderMaterialInspectionTable();
+    return;
+  }
+  if (fqIsQcQueueScreen()) {
+    fqRenderQcQueueTable();
     return;
   }
   if (fqIsMaterialIssueScreen()) {
@@ -1695,26 +2193,27 @@ function fqRenderTable() {
   if (!hasActive) {
     wrap.hidden = true;
     empty.hidden = false;
-    if (emptyText) emptyText.textContent = 'No partials are currently at a post-machining stage.';
+    if (emptyText) emptyText.textContent = (typeof fqT === 'function') ? fqT('empty_post_machining') : 'No partials are currently at a post-machining stage.';
     if (emptyText && fqState.loadHint) emptyText.textContent = fqState.loadHint;
     if (stats) stats.textContent = '';
     if (meta) meta.hidden = true;
+    fqUpdateNavCounts();
     return;
   }
 
   if (!hasPsFiltered) {
     wrap.hidden = true;
     empty.hidden = false;
-    if (emptyText) emptyText.textContent = 'No jobs match the selected PS types.';
+    if (emptyText) emptyText.textContent = (typeof fqT === 'function') ? fqT('empty_ps_types') : 'No jobs match the selected PS types.';
     if (stats) stats.textContent = '';
-    fqRecalcCounts();
+    fqUpdateNavCounts();
     return;
   }
 
   if (!filtered.length) {
     wrap.hidden = true;
     empty.hidden = false;
-    if (emptyText) emptyText.textContent = 'Nothing in this stage right now.';
+    if (emptyText) emptyText.textContent = (typeof fqT === 'function') ? fqT('empty_stage') : 'Nothing in this stage right now.';
   } else {
     wrap.hidden = false;
     empty.hidden = true;
@@ -1727,13 +2226,21 @@ function fqRenderTable() {
     if (fqState.screen === 'assignments') {
       if (fqShouldGroupByAssignee()) {
         const groups = new Set(filtered.map((item) => fqAssigneeLabel(item))).size;
-        stats.textContent = `${filtered.length} job${filtered.length === 1 ? '' : 's'} across ${groups} assignee${groups === 1 ? '' : 's'} · grouped workload`;
+        stats.textContent = typeof fqPlural === 'function'
+          ? fqPlural('stats_jobs_assignees', filtered.length, { groups })
+          : `${filtered.length} job${filtered.length === 1 ? '' : 's'} across ${groups} assignee${groups === 1 ? '' : 's'} · grouped workload`;
       } else if (fqState.assignee === '__unassigned__') {
-        stats.textContent = `${filtered.length} unassigned job${filtered.length === 1 ? '' : 's'}`;
+        stats.textContent = typeof fqPlural === 'function'
+          ? fqPlural('stats_unassigned', filtered.length)
+          : `${filtered.length} unassigned job${filtered.length === 1 ? '' : 's'}`;
       } else if (fqState.assignee !== 'all') {
-        stats.textContent = `${filtered.length} job${filtered.length === 1 ? '' : 's'} for ${fqState.assignee}`;
+        stats.textContent = typeof fqPlural === 'function'
+          ? fqPlural('stats_for_assignee', filtered.length, { name: fqState.assignee })
+          : `${filtered.length} job${filtered.length === 1 ? '' : 's'} for ${fqState.assignee}`;
       } else {
-        stats.textContent = `${filtered.length} job${filtered.length === 1 ? '' : 's'} · sorted by column`;
+        stats.textContent = typeof fqPlural === 'function'
+          ? fqPlural('stats_sorted', filtered.length)
+          : `${filtered.length} job${filtered.length === 1 ? '' : 's'} · sorted by column`;
       }
     } else {
       const statusCounts = { I: 0, R: 0, P: 0 };
@@ -1743,19 +2250,30 @@ function fqRenderTable() {
         if (code in statusCounts) statusCounts[code] += 1;
         if (item.exception_flag) exceptionCount += 1;
       }
-      const stageLabel = fqState.stage === 'all' ? 'all stages' : fqState.stage.replace(/_/g, ' ');
-      const excHint = exceptionCount ? ` · ${exceptionCount} exception${exceptionCount === 1 ? '' : 's'}` : '';
-      stats.textContent = `${filtered.length} in queue · ${statusCounts.I} in process · ${statusCounts.R} ready · ${stageLabel}${excHint}`;
+      const stageLabel = (typeof fqStageBucketLabel === 'function')
+        ? fqStageBucketLabel(fqState.stage)
+        : (fqState.stage === 'all' ? 'all stages' : fqState.stage.replace(/_/g, ' '));
+      const excText = exceptionCount
+        ? ((typeof fqT === 'function')
+          ? fqT(exceptionCount === 1 ? 'stats_exceptions' : 'stats_exceptions_plural', { n: exceptionCount })
+          : ` · ${exceptionCount} exception${exceptionCount === 1 ? '' : 's'}`)
+        : '';
+      stats.textContent = (typeof fqT === 'function')
+        ? fqT('stats_queue', { n: filtered.length, i: statusCounts.I, r: statusCounts.R, stage: stageLabel }) + excText
+        : `${filtered.length} in queue · ${statusCounts.I} in process · ${statusCounts.R} ready · ${stageLabel}${excText}`;
     }
   }
 
   if (meta) {
     meta.hidden = !fqState.cachedAt;
     meta.textContent = fqState.cachedAt
-      ? `Source: synced staging (mfg_wo_status + pp_vouchers_cache) · cached ${fqState.cachedAt} · TTL ${fqState.cacheTtlSec}s · Sync ERP for fresh data`
+      ? ((typeof fqT === 'function')
+        ? fqT('meta_queue', { at: fqState.cachedAt, ttl: fqState.cacheTtlSec })
+        : `Source: synced staging (mfg_wo_status + pp_vouchers_cache) · cached ${fqState.cachedAt} · TTL ${fqState.cacheTtlSec}s · Sync ERP for fresh data`)
       : '';
   }
 
+  fqUpdateNavCounts();
   fqUpdateSortHeaders();
 }
 
@@ -1820,7 +2338,7 @@ async function fqLoad({ refresh = false } = {}) {
   if (empty) empty.hidden = true;
   try {
     if (refresh) {
-      fqToast('Syncing WO status from ERP…', 'info');
+      fqToast((typeof fqT === 'function') ? fqT('toast_syncing') : 'Syncing WO status from ERP…', 'info');
       try {
         await fqSyncWoStatus();
       } catch (syncErr) {
@@ -1855,11 +2373,15 @@ function fqSetScreen(screen) {
   }
   fqCloseDetail();
   fqRenderTable();
+  fqUpdateNavCounts();
   if (fqState.screen === 'material_issue' && !(fqState.materialIssueItems || []).length) {
     void fqReloadMaterialIssueItems();
   }
   if (fqState.screen === 'material_inspection' && !fqState.mi.loaded && !fqState.mi.loading) {
     void fqLoadMaterialInspection();
+  }
+  if (fqState.screen === 'qc_queue' && !fqState.qcq.loaded && !fqState.qcq.loading) {
+    void fqLoadQcQueue();
   }
 }
 
@@ -1886,6 +2408,8 @@ function fqInitScreenFromUrl() {
     fqSetScreen('material_issue');
   } else if (tab === 'material_inspection') {
     fqSetScreen('material_inspection');
+  } else if (tab === 'qc_queue') {
+    fqSetScreen('qc_queue');
   }
 }
 
@@ -2045,10 +2569,20 @@ function fqBindEvents() {
 
   document.getElementById('fq-refresh')?.addEventListener('click', async () => {
     try {
+      if (fqIsMaterialInspectionScreen()) {
+        await fqLoadMaterialInspection({ refresh: true });
+        fqToast((typeof fqT === 'function') ? fqT('toast_mi_refreshed') : 'Material inspection refreshed from ERP', 'success');
+        return;
+      }
+      if (fqIsQcQueueScreen()) {
+        await fqLoadQcQueue({ refresh: true });
+        fqToast((typeof fqT === 'function') ? fqT('toast_qcq_refreshed') : 'QC queue refreshed from ERP', 'success');
+        return;
+      }
       await fqLoad({ refresh: true });
-      fqToast('Queue refreshed from ERP', 'success');
+      fqToast((typeof fqT === 'function') ? fqT('toast_queue_refreshed') : 'Queue refreshed from ERP', 'success');
     } catch (err) {
-      // fqLoad already surfaces load errors
+      // load handlers already surface errors
     }
   });
 
@@ -2141,7 +2675,7 @@ function fqBindEvents() {
     const btn = e.target.closest('[data-fq-remove-inspector]');
     if (!btn || btn.disabled || fqState.inspectorBusy) return;
     const id = btn.dataset.fqRemoveInspector;
-    if (!id || !window.confirm('Remove this inspector from the QC team?')) return;
+    if (!id || !window.confirm((typeof fqT === 'function') ? fqT('inspectors_confirm_remove') : 'Remove this inspector from the QC team?')) return;
     try {
       await fqRemoveInspector(id);
     } catch (err) {
@@ -2152,12 +2686,15 @@ function fqBindEvents() {
   fqBindOverlayEditors();
   fqBindAssigneeBoard();
   fqBindMaterialInspection();
+  fqBindQcQueue();
 }
 
 function fqInit() {
   try {
+    if (typeof fqBindLocaleToggle === 'function') fqBindLocaleToggle();
     fqInitHideDone();
     fqInitPsTypes();
+    fqInitQcqSegments();
     if (!window.__fqEventsBound) {
       fqBindEvents();
       window.__fqEventsBound = true;

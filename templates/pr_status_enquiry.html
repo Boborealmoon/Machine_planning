@@ -1,0 +1,328 @@
+{% extends "base.html" %}
+{% block title %}Tooling PR Analytics{% endblock %}
+{% block main_class %}app-main--new-orders{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=pr-status-enquiry-20260713c">{% endblock %}
+{% block content %}
+<style>
+  .pse-kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.65rem;
+    margin-bottom: 0.85rem;
+  }
+  .pse-kpi {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 0.7rem 0.85rem;
+  }
+  .pse-kpi-label {
+    margin: 0;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #64748b;
+  }
+  .pse-kpi-value {
+    margin: 0.2rem 0 0;
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #0f172a;
+    line-height: 1.2;
+  }
+  .pse-kpi-hint {
+    margin: 0.15rem 0 0;
+    font-size: 0.75rem;
+    color: #94a3b8;
+  }
+  .pse-kpi--warn .pse-kpi-value { color: #b45309; }
+  .pse-kpi--danger .pse-kpi-value { color: #b91c1c; }
+  .pse-kpi--ok .pse-kpi-value { color: #15803d; }
+  .pse-prefix {
+    display: inline-block;
+    min-width: 2.6rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-align: center;
+    background: #e8eef5;
+    color: #334155;
+  }
+  .pse-prefix--chm { background: #dbeafe; color: #1e40af; }
+  .pse-prefix--t { background: #dcfce7; color: #166534; }
+  .pse-prefix--d { background: #fef3c7; color: #92400e; }
+  .pse-prefix--drl { background: #fce7f3; color: #9d174d; }
+  .pse-prefix--other { background: #f1f5f9; color: #64748b; }
+  .pse-item-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent, #2563eb);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: left;
+  }
+  .pse-item-link:hover { text-decoration: underline; }
+  .pse-urgency {
+    display: inline-block;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .pse-urgency--overdue { background: #fee2e2; color: #991b1b; }
+  .pse-urgency--due { background: #ffedd5; color: #9a3412; }
+  .pse-urgency--ok { background: #dcfce7; color: #166534; }
+  .pse-urgency--new { background: #e2e8f0; color: #475569; }
+  .pse-trend-up { color: #b91c1c; font-weight: 600; }
+  .pse-trend-down { color: #15803d; font-weight: 600; }
+  .pse-trend-flat { color: #64748b; }
+  .pse-status-mix {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+  .pse-status-chip {
+    display: inline-block;
+    padding: 0.05rem 0.35rem;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    background: #f1f5f9;
+    color: #475569;
+    white-space: nowrap;
+  }
+  .pse-status-chip--rejected { background: #fee2e2; color: #991b1b; }
+  .pse-status-chip--draft { background: #e2e8f0; color: #475569; }
+  .pse-status-chip--approved,
+  .pse-status-chip--po,
+  .pse-status-chip--grn { background: #dcfce7; color: #166534; }
+  .pse-drill-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.35);
+    z-index: 80;
+  }
+  .pse-drill-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: min(1040px, 100vw);
+    height: 100vh;
+    background: #fff;
+    z-index: 81;
+    display: flex;
+    flex-direction: column;
+    box-shadow: -8px 0 24px rgba(15, 23, 42, 0.12);
+  }
+  .pse-drill-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .pse-drill-kicker {
+    margin: 0;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #64748b;
+  }
+  .pse-drill-title { margin: 0.2rem 0 0; font-size: 1.1rem; }
+  .pse-drill-sub { margin: 0.25rem 0 0; color: #64748b; font-size: 0.875rem; }
+  .pse-drill-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 0.5rem;
+    padding: 0.75rem 1.25rem;
+    border-bottom: 1px solid #e2e8f0;
+    background: #f8fafc;
+  }
+  .pse-drill-metric-label {
+    margin: 0;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #64748b;
+  }
+  .pse-drill-metric-value {
+    margin: 0.1rem 0 0;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #0f172a;
+  }
+  .pse-drill-body {
+    flex: 1;
+    overflow: auto;
+    padding: 0.75rem 1.25rem 1.5rem;
+  }
+  .pse-drill-table { min-width: 1100px; }
+  .pse-prefix-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    align-items: center;
+  }
+  .pse-prefix-btn {
+    border: 1px solid #cbd5e1;
+    background: #fff;
+    border-radius: 999px;
+    padding: 0.2rem 0.65rem;
+    font-size: 0.78rem;
+    cursor: pointer;
+    color: #334155;
+  }
+  .pse-prefix-btn.is-active {
+    background: #1e293b;
+    border-color: #1e293b;
+    color: #fff;
+  }
+  .pse-desc {
+    max-width: 220px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pse-table-wrap { overflow-x: auto; }
+  .pse-table { min-width: 1480px; }
+  .pse-table th.pse-sortable {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .pse-table th.pse-sortable:hover { color: #0f172a; }
+  .pse-sort-ind { font-size: 0.7rem; opacity: 0.55; }
+  .pse-sort-ind.is-active { opacity: 1; color: #2563eb; }
+  .pse-formula {
+    margin: 0.35rem 0 0;
+    font-size: 0.78rem;
+    color: #64748b;
+    max-width: 72rem;
+  }
+</style>
+<div class="new-orders-page">
+  <div class="new-orders-header">
+    <div>
+      <h1 class="new-orders-title">Tooling PR Analytics</h1>
+      <p class="new-orders-subtitle">
+        Consumable / tooling purchase analytics from <strong>pr_status_enquiry_view</strong>.
+        Default SBU <strong>MFG</strong>. Rejected PRs are excluded from burn &amp; cycle metrics.
+        Click an item for PR history and reorder guidance.
+      </p>
+      <p class="pse-formula">
+        Metrics: avg monthly qty = total qty ÷ active months · avg cycle = mean days between PR dates ·
+        recommended cycle qty = avg monthly × (cycle days ÷ 30.4) × 1.15 safety ·
+        urgency compares days since last PR vs avg cycle.
+      </p>
+    </div>
+    <div class="new-orders-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="pse-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="pse-kpi-row" id="pse-kpis" hidden></div>
+
+  <div class="new-orders-toolbar card">
+    <div class="new-orders-filter">
+      <span>SBU</span>
+      <div class="filter-dropdown" id="pse-sbu-dropdown">
+        <button class="filter-dropdown-btn" type="button" id="pse-sbu-btn">MFG ▾</button>
+        <div class="filter-dropdown-panel" id="pse-sbu-panel" hidden></div>
+      </div>
+    </div>
+    <div class="new-orders-filter">
+      <span>Status</span>
+      <div class="filter-dropdown" id="pse-status-dropdown">
+        <button class="filter-dropdown-btn" type="button" id="pse-status-btn">All statuses ▾</button>
+        <div class="filter-dropdown-panel" id="pse-status-panel" hidden></div>
+      </div>
+    </div>
+    <div class="new-orders-filter">
+      <span>Prefix</span>
+      <div class="pse-prefix-filters" id="pse-prefix-filters" role="group" aria-label="Item prefix filter"></div>
+    </div>
+    <div class="new-orders-filter">
+      <span>Focus</span>
+      <div class="filter-dropdown" id="pse-focus-dropdown">
+        <button class="filter-dropdown-btn" type="button" id="pse-focus-btn">All items ▾</button>
+        <div class="filter-dropdown-panel" id="pse-focus-panel" hidden>
+          <label class="filter-dropdown-item"><input type="radio" name="pse-focus" value="all" checked /> All items</label>
+          <label class="filter-dropdown-item"><input type="radio" name="pse-focus" value="repeat" /> Repeat buyers (2+ PRs)</label>
+          <label class="filter-dropdown-item"><input type="radio" name="pse-focus" value="overdue" /> Overdue reorders</label>
+          <label class="filter-dropdown-item"><input type="radio" name="pse-focus" value="due" /> Due soon</label>
+          <label class="filter-dropdown-item"><input type="radio" name="pse-focus" value="highburn" /> High monthly burn</label>
+        </div>
+      </div>
+    </div>
+    <label class="new-orders-filter new-orders-filter--grow">
+      <span>Search</span>
+      <span class="planner-page-search-wrap">
+        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="pse-search" class="planner-page-search-input" type="search"
+               placeholder="Item, PR, PO, supplier, project..." autocomplete="off">
+      </span>
+    </label>
+    <div class="new-orders-stats" id="pse-stats"></div>
+  </div>
+
+  <div id="pse-loading" class="loading"><div class="spinner"></div> Loading tooling analytics...</div>
+  <div id="pse-table-wrap" class="new-orders-table-wrap card pse-table-wrap" hidden>
+    <table class="new-orders-table pse-table" id="pse-table">
+      <thead id="pse-head"></thead>
+      <tbody id="pse-body"></tbody>
+    </table>
+  </div>
+  <div id="pse-empty" class="new-orders-empty card" hidden>
+    <p id="pse-empty-text">No rows match your filters.</p>
+  </div>
+  <p class="new-orders-meta" id="pse-meta" hidden></p>
+</div>
+
+<div id="pse-drill" hidden>
+  <div class="pse-drill-backdrop" data-action="close-drill" aria-hidden="true"></div>
+  <div class="pse-drill-panel" role="dialog" aria-modal="true" aria-labelledby="pse-drill-title">
+    <div class="pse-drill-head">
+      <div>
+        <p class="pse-drill-kicker">Item analytics + PR lines</p>
+        <h2 class="pse-drill-title" id="pse-drill-title"></h2>
+        <p class="pse-drill-sub" id="pse-drill-sub"></p>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" data-action="close-drill">Close</button>
+    </div>
+    <div class="pse-drill-metrics" id="pse-drill-metrics"></div>
+    <div class="pse-drill-body">
+      <div class="new-orders-table-wrap">
+        <table class="new-orders-table pse-drill-table">
+          <thead>
+            <tr>
+              <th>PR no</th>
+              <th>Rev</th>
+              <th>Status</th>
+              <th>PR date</th>
+              <th class="num">Qty</th>
+              <th>Required</th>
+              <th>PO no</th>
+              <th>Supplier</th>
+              <th>Project</th>
+              <th>GRN</th>
+              <th>Line desc</th>
+            </tr>
+          </thead>
+          <tbody id="pse-drill-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/pr_status_enquiry.js') }}?v=pr-status-enquiry-20260713d"></script>
+{% endblock %}

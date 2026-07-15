@@ -88,7 +88,7 @@ candidates AS (
 
             g.*,
 
-            b.bom_code,
+            COALESCE(NULLIF(trim(g.erp_bom_code), ''), b.bom_code) AS bom_code,
 
             b.stage_no AS bom_stage_no,
 
@@ -101,6 +101,8 @@ candidates AS (
             SELECT
 
                 NULLIF(trim(p.part_no_erp), '') AS part_no_erp,
+
+                NULLIF(trim(p.bom_code), '') AS erp_bom_code,
 
                 NULLIF(trim(p.operation_no), '') AS operation_no_raw,
 
@@ -139,6 +141,14 @@ candidates AS (
             FROM public.bom_op_stage b
 
             WHERE b.inventory_code = g.part_no_erp
+
+              AND (
+
+                    NULLIF(trim(g.erp_bom_code), '') IS NULL
+
+                    OR trim(b.bom_code) = trim(g.erp_bom_code)
+
+              )
 
               AND (
 
@@ -242,6 +252,204 @@ WHERE EXISTS (
             )
       )
 )
+"""
+
+# Machining BOM steps from ERP cache + planner BOM routes (process-sheet source of truth).
+BOM_STEP_CANDIDATES_CTE = """
+bom_step_raw AS (
+    SELECT
+        b.inventory_code AS part_no,
+        b.bom_code,
+        COALESCE(NULLIF(trim(pd.main_desc), ''), '') AS part_description,
+        COALESCE(b.stage_no, 0) AS stage_no,
+        COALESCE(b.stage_desc, '') AS stage_name,
+        b.op_no,
+        CASE
+            WHEN b.stage_desc LIKE 'Turning%%' THEN 'Turning'
+            WHEN b.stage_desc LIKE 'Milling%%' THEN 'Milling'
+            WHEN b.stage_desc LIKE 'Turnmill%%' THEN 'Turnmill'
+            ELSE ''
+        END AS op_type,
+        COALESCE(b.cycle_time, 0) AS cycle_time,
+        COALESCE(b.setup_time, 0) AS set_up_time,
+        1 AS source_rank
+    FROM public.bom_op_stage b
+    LEFT JOIN public.part_desc pd ON pd.inventory_code = b.inventory_code
+    WHERE NULLIF(trim(b.inventory_code), '') IS NOT NULL
+      AND NULLIF(trim(b.bom_code), '') IS NOT NULL
+      AND (
+          b.stage_desc LIKE 'Turning%%'
+       OR b.stage_desc LIKE 'Milling%%'
+       OR b.stage_desc LIKE 'Turnmill%%'
+      )
+
+    UNION ALL
+
+    SELECT
+        bv.inventory_code AS part_no,
+        bv.bom_code,
+        COALESCE(NULLIF(trim(pd.main_desc), ''), '') AS part_description,
+        COALESCE(os.source_stage_no, 0) AS stage_no,
+        trim(
+            COALESCE(os.op_type, '')
+            || CASE
+                WHEN NULLIF(trim(COALESCE(os.op_no, '')), '') IS NOT NULL
+                THEN ' ' || trim(os.op_no)
+                ELSE ''
+               END
+        ) AS stage_name,
+        NULLIF(
+            substring(trim(COALESCE(os.op_no, '')) FROM '^[^0-9]*([0-9]+)'),
+            ''
+        )::integer AS op_no,
+        CASE
+            WHEN trim(COALESCE(os.op_type, '')) IN ('Turning', 'Milling', 'Turnmill')
+            THEN trim(os.op_type)
+            WHEN os.op_type LIKE 'Turning%%' THEN 'Turning'
+            WHEN os.op_type LIKE 'Milling%%' THEN 'Milling'
+            WHEN os.op_type LIKE 'Turnmill%%' THEN 'Turnmill'
+            ELSE ''
+        END AS op_type,
+        COALESCE(os.cycle_time, 0) AS cycle_time,
+        COALESCE(os.setup_time, 0) AS set_up_time,
+        2 AS source_rank
+    FROM public.planner_operation_seq os
+    JOIN public.planner_bom_variation bv ON bv.bom_id = os.bom_id
+    LEFT JOIN public.part_desc pd ON pd.inventory_code = bv.inventory_code
+    WHERE NULLIF(trim(bv.inventory_code), '') IS NOT NULL
+      AND NULLIF(trim(bv.bom_code), '') IS NOT NULL
+      AND (
+          trim(COALESCE(os.op_type, '')) IN ('Turning', 'Milling', 'Turnmill')
+       OR os.op_type LIKE 'Turning%%'
+       OR os.op_type LIKE 'Milling%%'
+       OR os.op_type LIKE 'Turnmill%%'
+       OR trim(COALESCE(os.machine_category, '')) IN ('TURNING', 'MILLING', 'TURNMILL')
+      )
+),
+
+bom_step_candidates AS (
+    SELECT DISTINCT ON (
+        trim(part_no),
+        trim(bom_code),
+        COALESCE(op_no, -1),
+        COALESCE(stage_no, 0)
+    )
+        part_no,
+        bom_code,
+        part_description,
+        stage_no,
+        stage_name,
+        op_no,
+        op_type,
+        cycle_time,
+        set_up_time
+    FROM bom_step_raw
+    WHERE op_no IS NOT NULL OR stage_no > 0
+    ORDER BY
+        trim(part_no),
+        trim(bom_code),
+        COALESCE(op_no, -1),
+        COALESCE(stage_no, 0),
+        source_rank
+)
+"""
+
+BOM_MASTER_EXISTS_SQL = """
+    trim(m.part_no) = trim(c.part_no)
+    AND (
+        (c.op_no IS NOT NULL AND m.op_no IS NOT DISTINCT FROM c.op_no)
+        OR (
+            c.op_no IS NULL
+            AND c.stage_no > 0
+            AND m.stage_no = c.stage_no
+            AND trim(m.bom_code) = trim(c.bom_code)
+        )
+    )
+"""
+
+PRUNE_DUPLICATE_BOM_MASTER_ROWS_SQL = """
+DELETE FROM public.planner_cycle_time_master m
+WHERE EXISTS (
+    SELECT 1
+    FROM public.planner_cycle_time_master b
+    WHERE trim(b.part_no) = trim(m.part_no)
+      AND b.op_no IS NOT DISTINCT FROM m.op_no
+      AND b.id <> m.id
+      AND (
+            (COALESCE(b.cycle_time, 0) > 0 AND COALESCE(m.cycle_time, 0) = 0)
+         OR (
+                COALESCE(b.cycle_time, 0) = COALESCE(m.cycle_time, 0)
+            AND b.bom_code NOT LIKE '%%TEMP%%'
+            AND m.bom_code LIKE '%%TEMP%%'
+            )
+         OR (
+                COALESCE(b.cycle_time, 0) = COALESCE(m.cycle_time, 0)
+            AND trim(COALESCE(b.bom_code, '')) = trim(COALESCE(m.bom_code, ''))
+            AND b.id < m.id
+            )
+      )
+)
+"""
+
+INSERT_NEW_FROM_BOM_STEPS_SQL = f"""
+WITH {BOM_STEP_CANDIDATES_CTE},
+new_rows AS (
+    SELECT c.*
+    FROM bom_step_candidates c
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM public.planner_cycle_time_master m
+        WHERE {BOM_MASTER_EXISTS_SQL}
+    )
+)
+INSERT INTO public.planner_cycle_time_master (
+    bom_code,
+    part_no,
+    part_description,
+    stage_no,
+    stage_name,
+    op_no,
+    op_type,
+    program_no,
+    program_file,
+    tool_list_file,
+    ideal_cycle_time,
+    cycle_time,
+    set_up_time
+)
+SELECT
+    bom_code,
+    part_no,
+    part_description,
+    stage_no,
+    stage_name,
+    op_no,
+    op_type,
+    '',
+    '',
+    '',
+    CASE WHEN cycle_time > 1.01 THEN cycle_time ELSE 0 END,
+    CASE WHEN cycle_time > 1.01 THEN cycle_time ELSE 0 END,
+    CASE WHEN set_up_time > 0 THEN set_up_time ELSE 0 END
+FROM new_rows
+"""
+
+COUNT_BOM_STEP_IMPORT_STATS_SQL = f"""
+WITH {BOM_STEP_CANDIDATES_CTE},
+new_rows AS (
+    SELECT c.*
+    FROM bom_step_candidates c
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM public.planner_cycle_time_master m
+        WHERE {BOM_MASTER_EXISTS_SQL}
+    )
+)
+SELECT
+    (SELECT COUNT(*)::int FROM bom_step_candidates) AS source_count,
+    (SELECT COUNT(*)::int FROM new_rows) AS insertable_count,
+    (SELECT COUNT(*)::int FROM bom_step_candidates)
+        - (SELECT COUNT(*)::int FROM new_rows) AS skipped_existing_count
 """
 
 
@@ -556,6 +764,46 @@ def import_new_from_program_tools() -> dict:
     }
 
 
+def import_new_from_bom_steps() -> dict:
+    """
+    Insert machining BOM steps (bom_op_stage + planner_operation_seq) missing from master.
+
+    Never UPDATE existing master rows. Fills gaps when ERP/process-sheet routes have more
+    machining ops than program-tool sheet rows.
+    """
+    if not _planner_db_available():
+        return {
+            "error": "SUPA_DB_URL is not set. Direct Postgres is required for import.",
+            "inserted": 0,
+            "skipped_existing": 0,
+            "source_count": 0,
+        }
+
+    from sync import PLANNER_STATEMENT_TIMEOUT_MS
+    from planning.helpers import planner_db, rows
+
+    with planner_db() as con:
+        con.execute(f"SET LOCAL statement_timeout = '{PLANNER_STATEMENT_TIMEOUT_MS}'")
+        stats = rows(con.execute(COUNT_BOM_STEP_IMPORT_STATS_SQL))[0]
+        cur = con.execute(INSERT_NEW_FROM_BOM_STEPS_SQL)
+        inserted = int(cur.rowcount or 0)
+        prune_cur = con.execute(PRUNE_DUPLICATE_BOM_MASTER_ROWS_SQL)
+        pruned = int(prune_cur.rowcount or 0)
+
+    source = int(stats.get("source_count") or 0)
+    skipped = int(stats.get("skipped_existing_count") or 0)
+    return {
+        "inserted": inserted,
+        "skipped_existing": skipped,
+        "source_count": source,
+        "pruned_duplicates": pruned,
+        "message": (
+            f"Inserted {inserted} BOM step row(s); "
+            f"skipped {skipped} already in master (not overwritten); "
+            f"pruned {pruned} duplicate row(s)."
+        ),
+    }
+
 
 def sync_ideal_cycle_times_from_program_tools() -> dict:
 
@@ -767,14 +1015,18 @@ def sync_cycle_times_incremental() -> dict:
         return out
 
     out["master"] = import_new_from_program_tools()
+    out["bom_steps"] = import_new_from_bom_steps()
     out["ideal_sync"] = sync_ideal_cycle_times_from_program_tools()
     imp = out["master"]
+    bom = out["bom_steps"]
     ideal = out["ideal_sync"]
     out["message"] = (
         f"Program tools upserted {out['program_tools'].get('upserted', out['program_tools'].get('synced', 0))} row(s); "
-        f"master inserted {imp.get('inserted', 0)} new, "
+        f"master inserted {imp.get('inserted', 0)} new from sheet, "
         f"skipped {imp.get('skipped_existing', 0)} already in master, "
         f"pruned {imp.get('pruned_stale', 0)} stale; "
+        f"BOM steps inserted {bom.get('inserted', 0)}, "
+        f"skipped {bom.get('skipped_existing', 0)}; "
         f"updated ideal on {ideal.get('updated', 0)} existing row(s)."
     )
     return out

@@ -261,6 +261,56 @@ def _cycle_timing_from_payload(cycle: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _resolve_cycle_op_pcs_per_pallet(
+    op: dict[str, Any],
+    job_row: dict[str, Any],
+    prior: dict[str, Any] | None = None,
+) -> float:
+    """Keep pcs/pallet frozen on queued cycle ops — job-level edits must not inflate block qty."""
+    client_pcs = parse_number(op.get("pcsPerPallet"), 0)
+    if client_pcs > 0:
+        return max(1.0, float(client_pcs))
+    prior_pcs = parse_number((prior or {}).get("pcs_per_pallet"), 0)
+    if prior_pcs > 0:
+        return max(1.0, float(prior_pcs))
+    job_pcs = parse_number(job_row.get("pcsPerPallet"), 0)
+    return max(1.0, float(job_pcs) if job_pcs > 0 else 1.0)
+
+
+def _mpp_queue_overrun_warnings(
+    machines_payload: dict[str, Any],
+    job_overrides: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Warn when queued cycle output exceeds the job WO qty (common after pcs/pallet edits)."""
+    planned_by_job: dict[str, float] = {}
+    for lane in (machines_payload or {}).values():
+        for cycle in lane.get("cycles") or []:
+            for op in cycle.get("ops") or []:
+                job_id = compact_text(op.get("jobId"))
+                if not job_id:
+                    continue
+                job_row = job_overrides.get(job_id) or {}
+                prior_stub = {"pcs_per_pallet": op.get("pcsPerPallet")}
+                pcs = _resolve_cycle_op_pcs_per_pallet(op, job_row, prior_stub)
+                pallets = max(1, int(op.get("palletCount") or 1))
+                planned_by_job[job_id] = float(planned_by_job.get(job_id, 0) or 0) + float(pallets * pcs)
+
+    warnings: list[str] = []
+    for job_id, planned in planned_by_job.items():
+        job_row = job_overrides.get(job_id) or {}
+        wo_qty = max(
+            0.0,
+            parse_number(job_row.get("qty"), 0) - parse_number(job_row.get("out") or job_row.get("outQty"), 0),
+        )
+        if wo_qty > 0 and planned > wo_qty + 0.0001:
+            ps_id = compact_text(job_row.get("psId") or job_id)
+            warnings.append(
+                f"{ps_id} is queued for {planned:.0f} pc but WO qty is {wo_qty:.0f} — "
+                f"remove {planned - wo_qty:.0f} pc from the MPP queue."
+            )
+    return warnings
+
+
 def _sprint_setup_minutes(
     cycle_timing: dict[str, Any],
     cycle_ops: list[dict[str, Any]],
@@ -449,12 +499,30 @@ def _hydrate_mpp_queue_from_db(con) -> dict[str, Any]:
             continue
         ops = []
         for op in ops_by_cycle.get(int(cycle["cycle_id"]), []):
+            job_id = compact_text(op.get("job_id"))
+            parsed = parse_mpp_job_id(job_id)
+            source_ps_id = compact_text(op.get("source_ps_id")) or compact_text(
+                parsed.get("source_ps_id")
+            )
+            pp_partial = int(op.get("pp_partial_no") or parsed.get("pp_partial_no") or 1)
+            source_op_no = compact_text(op.get("source_op_no")) or compact_text(
+                parsed.get("op_no")
+            )
+            ps_id = ""
+            if source_ps_id:
+                ps_id = format_planner_ps_id(source_ps_id, pp_partial) or source_ps_id
+            op_label = f"OP{source_op_no}" if source_op_no else ""
             ops.append(
                 {
                     "opId": compact_text(op.get("client_op_id")),
-                    "jobId": compact_text(op.get("job_id")),
+                    "jobId": job_id,
                     "palletCount": int(op.get("pallet_count") or 1),
+                    "pcsPerPallet": max(1.0, float(op.get("pcs_per_pallet") or 1)),
                     "blockId": int(op.get("block_id") or 0),
+                    "sourcePsId": source_ps_id,
+                    "psId": ps_id,
+                    "opNo": source_op_no,
+                    "opLabel": op_label,
                 }
             )
         machines_state[slug]["cycles"].append(
@@ -1172,6 +1240,7 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
     keep_block_ids: set[int] = set()
     primary_blocks_by_machine: dict[int, list[int]] = {}
     save_warnings: list[str] = []
+    save_warnings.extend(_mpp_queue_overrun_warnings(machines_payload, job_overrides))
 
     for slug, lane in machines_payload.items():
         machine_id = _machine_id_by_slug(con, slug, slug_map)
@@ -1353,6 +1422,7 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
                     continue
                 pallet_count = max(1, int(op.get("palletCount") or 1))
                 job_row = job_overrides.get(job_id) or {}
+                prior = existing_ops.get(client_op_id) or {}
                 ctx = _mpp_job_context(job_id, job_row)
                 source_ps_id = ctx["source_ps_id"]
                 pp_partial_no = ctx["pp_partial_no"]
@@ -1360,7 +1430,7 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
                 source_op_seq_id = ctx["source_op_seq_id"]
                 planner_ps_id = _canonical_planner_ps_id(con, source_ps_id, pp_partial_no)
                 min_per_pallet = max(0.1, float(job_row.get("minPerPallet") or op.get("minPerPallet") or 90))
-                pcs_per_pallet = max(1.0, float(job_row.get("pcsPerPallet") or op.get("pcsPerPallet") or 1))
+                pcs_per_pallet = _resolve_cycle_op_pcs_per_pallet(op, job_row, prior)
                 scheduled_qty = float(pallet_count) * pcs_per_pallet
 
                 step = _resolve_bom_step(con, planner_ps_id, source_op_seq_id, source_op_no)
@@ -1388,7 +1458,6 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
                     sprint_setup_total=sprint_setup_total if is_sprint_start else 0.0,
                 )
 
-                prior = existing_ops.get(client_op_id) or {}
                 block_id = int(prior.get("block_id") or op.get("blockId") or 0)
                 anchor_for_block = anchor_dt if op_index == 0 else None
                 include_setup = is_sprint_start and op_index == 0
@@ -1769,6 +1838,7 @@ def _mpp_block_done_for_dequeue(block) -> bool:
 
 def block_ready_for_mpp_auto_dequeue(con, block_id: int) -> bool:
     """True when a single MPP cycle-op block is done and should leave the queue."""
+    from .auto_unschedule import _erp_marks_row_done
     from .machines import is_mpp_planner_machine_id
 
     block = one(
@@ -1796,7 +1866,9 @@ def block_ready_for_mpp_auto_dequeue(con, block_id: int) -> bool:
     )
     if not linked:
         return False
-    return _mpp_block_done_for_dequeue(block)
+    if _mpp_block_done_for_dequeue(block):
+        return True
+    return _erp_marks_row_done(con, block)
 
 
 def dequeue_done_mpp_block(

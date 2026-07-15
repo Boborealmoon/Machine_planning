@@ -323,12 +323,19 @@ async function deliveryScheduleToggleException(plannerPsId, flagged, buttonEl) {
 async function deliveryScheduleSaveFlag(plannerPsId, field, checked, inputEl) {
   const psId = String(plannerPsId || '').trim();
   if (!psId || !field) return;
+  const item = (deliveryScheduleState.items || []).find(
+    row => String(row.planner_ps_id || '').trim() === psId,
+  );
   const previous = !checked;
   const toggle = inputEl?.closest('.delivery-schedule-flag-toggle') || null;
   if (inputEl) inputEl.disabled = true;
   if (toggle) toggle.classList.add('is-saving');
   try {
-    const data = await deliveryScheduleSaveFlags(psId, { [field]: Boolean(checked) });
+    const patch = { [field]: Boolean(checked) };
+    if (field === 'qaqc_report_ready') {
+      patch.stage_desc = String(item?.current_stage_desc || '').trim();
+    }
+    const data = await deliveryScheduleSaveFlags(psId, patch);
     const savedPsId = String(data.planner_ps_id || psId).trim() || psId;
     deliveryScheduleUpdateItem(savedPsId, {
       coc_done: Boolean(data.coc_done),
@@ -675,6 +682,28 @@ function deliveryScheduleApplyWeekFilterSelection(keys) {
   renderDeliveryScheduleBody();
 }
 
+function deliveryScheduleWeekFilterItemHtml(group) {
+  const range = deliveryScheduleFormatWeekGroupRange(group.minDate, group.maxDate);
+  const meta = range
+    ? `<span class="delivery-week-filter-item-meta">${escapeHtml(range)}</span>`
+    : '';
+  return `
+    <label class="delivery-week-filter-item filter-dropdown-item">
+      <input
+        type="checkbox"
+        class="delivery-week-filter-input"
+        value="${escapeHtml(group.key)}"
+        ${deliveryScheduleState.weekKeys.has(group.key) ? 'checked' : ''}
+      />
+      <span class="delivery-week-filter-item-body">
+        <span class="delivery-week-filter-item-title">${escapeHtml(group.label)}</span>
+        ${meta}
+      </span>
+      <span class="delivery-week-filter-item-count">${group.count}</span>
+    </label>
+  `;
+}
+
 function deliveryScheduleRebuildWeekDropdown() {
   const panel = document.getElementById('delivery-week-panel');
   if (!panel) return;
@@ -703,27 +732,57 @@ function deliveryScheduleRebuildWeekDropdown() {
     </div>
   ` : '';
 
-  panel.innerHTML = `${actionsHtml}${groups.map((group) => {
+  panel.innerHTML = `${actionsHtml}${groups.map(deliveryScheduleWeekFilterItemHtml).join('')}`;
+
+  deliveryScheduleSyncWeekCheckboxes();
+}
+
+function deliveryScheduleRefreshWeekGroups(options = {}) {
+  const panel = document.getElementById('delivery-week-panel');
+  const baseItems = (deliveryScheduleState.items || []).filter(deliveryScheduleMatchesPsType);
+  const groups = deliveryScheduleCollectWeekGroups(baseItems);
+  deliveryScheduleState.weekGroups = groups;
+
+  const allKeys = new Set(groups.map(group => group.key));
+  if (options.addWeekKey && allKeys.has(options.addWeekKey)) {
+    deliveryScheduleState.weekKeys.add(options.addWeekKey);
+  }
+  deliveryScheduleState.weekKeys = new Set(
+    [...deliveryScheduleState.weekKeys].filter(key => allKeys.has(key)),
+  );
+  if (!deliveryScheduleState.weekKeys.size && allKeys.size) {
+    deliveryScheduleState.weekKeys = new Set(allKeys);
+  }
+
+  if (!panel) return;
+
+  const existingInputs = [...panel.querySelectorAll('.delivery-week-filter-input')];
+  if (!existingInputs.length) {
+    deliveryScheduleRebuildWeekDropdown();
+    return;
+  }
+
+  const groupByKey = new Map(groups.map(group => [group.key, group]));
+  existingInputs.forEach((input) => {
+    const group = groupByKey.get(input.value);
+    const item = input.closest('.delivery-week-filter-item');
+    if (!group) {
+      item?.remove();
+      return;
+    }
+    const countEl = item?.querySelector('.delivery-week-filter-item-count');
+    if (countEl) countEl.textContent = String(group.count);
+    const metaEl = item?.querySelector('.delivery-week-filter-item-meta');
     const range = deliveryScheduleFormatWeekGroupRange(group.minDate, group.maxDate);
-    const meta = range
-      ? `<span class="delivery-week-filter-item-meta">${escapeHtml(range)}</span>`
-      : '';
-    return `
-      <label class="delivery-week-filter-item filter-dropdown-item">
-        <input
-          type="checkbox"
-          class="delivery-week-filter-input"
-          value="${escapeHtml(group.key)}"
-          ${deliveryScheduleState.weekKeys.has(group.key) ? 'checked' : ''}
-        />
-        <span class="delivery-week-filter-item-body">
-          <span class="delivery-week-filter-item-title">${escapeHtml(group.label)}</span>
-          ${meta}
-        </span>
-        <span class="delivery-week-filter-item-count">${group.count}</span>
-      </label>
-    `;
-  }).join('')}`;
+    if (range && metaEl) {
+      metaEl.textContent = range;
+    }
+    groupByKey.delete(input.value);
+  });
+
+  groupByKey.forEach((group) => {
+    panel.insertAdjacentHTML('beforeend', deliveryScheduleWeekFilterItemHtml(group));
+  });
 
   deliveryScheduleSyncWeekCheckboxes();
 }
@@ -996,6 +1055,75 @@ function deliveryScheduleVisibleItems() {
   return items;
 }
 
+function deliveryScheduleUpdateStats() {
+  const stats = document.getElementById('delivery-schedule-stats');
+  if (!stats || deliveryScheduleState.loading) return;
+  const items = deliveryScheduleVisibleItems();
+  const total = (deliveryScheduleState.items || []).length;
+  const visible = items.length;
+  const needle = deliveryScheduleSearchNeedle();
+  if (needle && total) {
+    stats.textContent = visible === total
+      ? `${visible} PS`
+      : `${visible} of ${total} PS`;
+  } else {
+    stats.textContent = `${visible} PS`;
+  }
+}
+
+function deliveryScheduleFindRowEl(plannerPsId) {
+  const body = document.getElementById('delivery-schedule-body');
+  if (!body) return null;
+  const psId = String(plannerPsId || '').trim();
+  if (!psId) return null;
+  return body.querySelector(`tr[data-ps-id="${CSS.escape(psId)}"]`);
+}
+
+function deliveryScheduleRepositionRow(plannerPsId) {
+  const body = document.getElementById('delivery-schedule-body');
+  const rowEl = deliveryScheduleFindRowEl(plannerPsId);
+  if (!body || !rowEl) return;
+
+  const psId = String(plannerPsId || '').trim();
+  const visible = deliveryScheduleVisibleItems();
+  const index = visible.findIndex(row => deliverySchedulePlannerPsId(row) === psId);
+  if (index < 0) {
+    rowEl.remove();
+    deliveryScheduleUpdateStats();
+    deliveryScheduleUpdateSelectionUi();
+    return;
+  }
+
+  let insertBefore = null;
+  if (index + 1 < visible.length) {
+    const nextPsId = deliverySchedulePlannerPsId(visible[index + 1]);
+    const nextRow = deliveryScheduleFindRowEl(nextPsId);
+    if (nextRow && nextRow !== rowEl) insertBefore = nextRow;
+  }
+
+  if (insertBefore) {
+    if (rowEl.nextElementSibling !== insertBefore) {
+      body.insertBefore(rowEl, insertBefore);
+    }
+    return;
+  }
+  if (rowEl !== body.lastElementChild) {
+    body.appendChild(rowEl);
+  }
+}
+
+function deliveryScheduleAfterCowaySave(plannerPsId, updated) {
+  const editedWeekKey = updated ? deliveryScheduleItemWeekKey(updated) : '';
+  deliveryScheduleRefreshWeekGroups({ addWeekKey: editedWeekKey });
+  deliveryScheduleUpdateWeekCell(plannerPsId, updated);
+
+  if (deliveryScheduleState.sortBy === 'coway_edd' || deliveryScheduleState.sortBy === 'week') {
+    deliveryScheduleRepositionRow(plannerPsId);
+  }
+
+  deliveryScheduleUpdateStats();
+}
+
 function renderDeliveryScheduleBody() {
   const loading = document.getElementById('delivery-schedule-loading');
   const wrap = document.getElementById('delivery-schedule-table-wrap');
@@ -1016,19 +1144,7 @@ function renderDeliveryScheduleBody() {
   }
 
   const items = deliveryScheduleVisibleItems();
-
-  if (stats) {
-    const total = (deliveryScheduleState.items || []).length;
-    const visible = items.length;
-    const needle = deliveryScheduleSearchNeedle();
-    if (needle && total) {
-      stats.textContent = visible === total
-        ? `${visible} PS`
-        : `${visible} of ${total} PS`;
-    } else {
-      stats.textContent = `${visible} PS`;
-    }
-  }
+  deliveryScheduleUpdateStats();
 
   if (loading) loading.hidden = true;
   if (!items.length) {
@@ -1260,18 +1376,8 @@ async function deliveryScheduleSaveCoway(plannerPsId, value, inputEl) {
     const saved = deliveryScheduleDateInputValue(data.coway_proposed_edd);
     const savedPsId = String(data.ps_id || psId).trim() || psId;
     const updated = deliveryScheduleUpdateItem(savedPsId, { coway_edd: saved, planner_ps_id: savedPsId });
-    // Keep the edited row visible when it moves to another week under a partial week filter.
-    if (updated) {
-      const editedWeekKey = deliveryScheduleItemWeekKey(updated);
-      if (editedWeekKey) deliveryScheduleState.weekKeys.add(editedWeekKey);
-    }
-    deliveryScheduleRebuildWeekDropdown();
-    if (deliveryScheduleState.sortBy === 'coway_edd' || deliveryScheduleState.sortBy === 'week') {
-      renderDeliveryScheduleBody();
-    } else {
-      deliveryScheduleUpdateWeekCell(savedPsId, updated);
-    }
-    const liveInput = document.querySelector(
+    deliveryScheduleAfterCowaySave(savedPsId, updated);
+    const liveInput = inputEl || document.querySelector(
       `[data-action="coway-edd"][data-ps-id="${CSS.escape(savedPsId)}"]`,
     );
     const liveWrap = liveInput?.closest('[data-action="coway-edd-wrap"]') || wrap;

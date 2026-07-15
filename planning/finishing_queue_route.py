@@ -52,7 +52,9 @@ def finishing_queue_asset_version() -> str:
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     watch = (
         os.path.join(root, "static", "js", "finishing_queue.js"),
+        os.path.join(root, "static", "js", "qaqc_i18n.js"),
         os.path.join(root, "static", "css", "qaqc.css"),
+        os.path.join(root, "templates", "finishing_queue.html"),
     )
     try:
         mt = max(os.path.getmtime(path) for path in watch)
@@ -271,6 +273,7 @@ def _finishing_queue_client_config() -> dict[str, str]:
         "apiWoStatusSync": url_for("api_mfg_wo_status_sync"),
         "apiMaterialInspection": url_for("material_inspection.api_material_inspection"),
         "apiMaterialInspectionOverlay": url_for("material_inspection.api_material_inspection_overlay"),
+        "apiQcQualityQueue": url_for("qc_quality_queue.api_qc_quality_queue"),
     }
 
 

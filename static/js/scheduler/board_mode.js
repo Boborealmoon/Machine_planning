@@ -56,18 +56,27 @@ function trialBoardGroupMachineCount(group) {
 
 /** Main planner: show CNC 35/36/41 lanes (default hidden — use MPP planner tab). */
 const TRIAL_MPP_MACHINES_VISIBLE_KEY = 'planner-mpp-machines-visible-v1';
+/** Machine Queue: same lanes, default shown; store '0' only when shop floor hides them. */
+const TRIAL_MACHINIST_MPP_VISIBLE_KEY = 'machinist-mpp-machines-visible-v1';
 
 function trialIsMppMachinesVisible() {
   try {
+    if (typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard()) {
+      return localStorage.getItem(TRIAL_MACHINIST_MPP_VISIBLE_KEY) !== '0';
+    }
     return localStorage.getItem(TRIAL_MPP_MACHINES_VISIBLE_KEY) === '1';
   } catch (_) {
-    return false;
+    return typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
   }
 }
 
 function trialSetMppMachinesVisible(visible) {
   try {
-    localStorage.setItem(TRIAL_MPP_MACHINES_VISIBLE_KEY, visible ? '1' : '0');
+    if (typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard()) {
+      localStorage.setItem(TRIAL_MACHINIST_MPP_VISIBLE_KEY, visible ? '1' : '0');
+    } else {
+      localStorage.setItem(TRIAL_MPP_MACHINES_VISIBLE_KEY, visible ? '1' : '0');
+    }
   } catch (_) {
     // ignore quota / private mode
   }
@@ -76,6 +85,47 @@ function trialSetMppMachinesVisible(visible) {
 function trialToggleMppMachinesVisible() {
   trialSetMppMachinesVisible(!trialIsMppMachinesVisible());
   if (typeof renderTrial === 'function') renderTrial({ skipCatalog: true });
+}
+
+/** Expanded identical-cycle stacks on MPP lanes (session + localStorage). */
+const TRIAL_MPP_RUN_EXPANDED_KEY = 'machinist-mpp-run-expanded-v1';
+
+function trialMppRunExpandedSet() {
+  if (!window._trialMppRunExpanded) {
+    try {
+      const raw = localStorage.getItem(TRIAL_MPP_RUN_EXPANDED_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      window._trialMppRunExpanded = new Set(
+        Array.isArray(parsed) ? parsed.map(id => String(id)) : []
+      );
+    } catch (_) {
+      window._trialMppRunExpanded = new Set();
+    }
+  }
+  return window._trialMppRunExpanded;
+}
+
+function trialMppRunExpandKey(machineId, fingerprint) {
+  return `${Number(machineId || 0)}::${String(fingerprint || '')}`;
+}
+
+function trialIsMppRunExpanded(machineId, fingerprint) {
+  return trialMppRunExpandedSet().has(trialMppRunExpandKey(machineId, fingerprint));
+}
+
+function trialToggleMppRunExpanded(machineId, fingerprint) {
+  const key = trialMppRunExpandKey(machineId, fingerprint);
+  if (!key || key.endsWith('::')) return false;
+  const set = trialMppRunExpandedSet();
+  if (set.has(key)) set.delete(key);
+  else set.add(key);
+  try {
+    localStorage.setItem(TRIAL_MPP_RUN_EXPANDED_KEY, JSON.stringify([...set]));
+  } catch (_) {
+    // ignore quota / private mode
+  }
+  if (typeof renderTrial === 'function') renderTrial({ skipCatalog: true });
+  return trialIsMppRunExpanded(machineId, fingerprint);
 }
 
 /** Machinist board: green/red stock tint on lane cards (default off). */

@@ -212,17 +212,52 @@ body.driver-view .app-main--driver-view {
 
 .dv-table tbody td {
   padding: 10px 12px;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid #e2e8f0;
   vertical-align: top;
   color: #1e293b;
+  background: #fff;
 }
 
-.dv-table tbody tr:nth-child(even) {
-  background: #fafbfc;
+.dv-table tbody tr:hover td {
+  background: #f8fafc;
 }
 
-.dv-table tbody tr:hover {
-  background: #f0f7ff;
+.dv-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.dv-col-exception {
+  width: 40px;
+  min-width: 40px;
+  text-align: center;
+}
+
+.dv-table thead th.dv-col-exception {
+  text-align: center;
+  color: #b91c1c;
+}
+
+.dv-exception-cell {
+  text-align: center;
+}
+
+.dv-exception-flag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: #fee2e2;
+  border: 1px solid #fca5a5;
+  color: #b91c1c;
+  font-weight: 800;
+  font-size: 0.8125rem;
+  line-height: 1;
+}
+
+.dv-exception-empty {
+  color: #cbd5e1;
 }
 
 .dv-col-ps {
@@ -233,8 +268,21 @@ body.driver-view .app-main--driver-view {
   min-width: 200px;
 }
 
+.dv-col-partial {
+  min-width: 72px;
+  text-align: right;
+}
+
+.dv-table thead th.dv-col-partial {
+  text-align: right;
+}
+
 .dv-col-qty {
   min-width: 70px;
+  text-align: right;
+}
+
+.dv-table thead th.dv-col-qty {
   text-align: right;
 }
 
@@ -314,24 +362,77 @@ body.driver-view .app-main--driver-view {
   color: #64748b;
 }
 
-.dv-row.is-not-scanned {
-  box-shadow: inset 3px 0 0 #f59e0b;
+.dv-row.is-exception td {
+  background: rgba(254, 226, 226, 0.75);
 }
 
-.dv-row.is-pending-docs {
-  background: #fffbeb;
+.dv-row.is-exception:hover td {
+  background: rgba(254, 202, 202, 0.85);
 }
 
-.dv-row.is-ready {
-  background: #f0fdf4;
-}
-
-.dv-row.is-ready.is-pending-docs {
-  background: #fffbeb;
+.dv-row.is-exception .dv-ps {
+  color: #b91c1c;
 }
 
 .dv-flag-cell {
   text-align: center;
+}
+
+.dv-flag-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  margin: 0 auto;
+}
+
+.dv-flag-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.dv-flag-switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transition: background 0.15s ease;
+  box-shadow: inset 0 0 0 1px rgba(100, 116, 139, 0.45);
+}
+
+.dv-flag-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
+  transition: transform 0.15s ease;
+}
+
+.dv-flag-input:checked + .dv-flag-switch {
+  background: #16a34a;
+  box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.35);
+}
+
+.dv-flag-input:checked + .dv-flag-switch::after {
+  transform: translateX(14px);
+}
+
+.dv-flag-input:focus-visible + .dv-flag-switch {
+  outline: 2px solid rgba(37, 99, 235, 0.45);
+  outline-offset: 2px;
+}
+
+.dv-flag-toggle.is-saving .dv-flag-switch {
+  opacity: 0.55;
 }
 
 .dv-remarks-text {

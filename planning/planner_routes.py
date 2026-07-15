@@ -773,7 +773,9 @@ def _api_trial_schedule_db():
                 "calendar_windows": [],
             })
 
-        if not is_machine_scoped and not board_lite:
+        # Keep MPP mirrors healthy on full and lite board loads (Machine Queue uses lite).
+        # Cheap no-op when cycle_op.block_id links are intact.
+        if not is_machine_scoped:
             from .mpp_planner_queue_service import ensure_mpp_planner_scheduler_lanes
 
             ensure_mpp_planner_scheduler_lanes(con)
@@ -1518,6 +1520,7 @@ def _delivery_schedule_row_from_board(item):
         "planner_ps_id": ps_id,
         "ps_id": ps_base,
         "partial_no": partial_no,
+        "pp_partial_no": partial_no,
         "ps_display": ps_display,
         "part_no": compact_text(item.get("part_no") or item.get("part_name") or item.get("inventory_code")),
         "part_desc": compact_text(item.get("part_desc") or item.get("description")),
@@ -1532,6 +1535,8 @@ def _delivery_schedule_row_from_board(item):
         "current_stage_no": int(item.get("current_stage_no") or 0),
         "planner_status": compact_text(item.get("planner_status")),
         "execution_status": compact_text(item.get("execution_status")),
+        "execution_completed": bool(item.get("execution_completed")),
+        "erp_all_wo_complete": bool(item.get("erp_all_wo_complete")),
         "is_queued": bool(item.get("is_queued")),
         "queued_machines": [
             compact_text(code) for code in (item.get("queued_machines") or []) if compact_text(code)
@@ -1591,9 +1596,11 @@ def clear_delivery_schedule_cache() -> None:
 
 def _apply_delivery_row_flags(con, items: list) -> None:
     from .delivery_planner_service import load_delivery_row_flags
+    from .finishing_queue_service import load_checklist_done_flags
 
     ps_ids = [compact_text(item.get("planner_ps_id")) for item in items if compact_text(item.get("planner_ps_id"))]
     flags_map = load_delivery_row_flags(con, ps_ids)
+    checklist_map = load_checklist_done_flags(con, ps_ids)
     for item in items:
         pid = compact_text(item.get("planner_ps_id"))
         flags = flags_map.get(pid) or {
@@ -1605,7 +1612,7 @@ def _apply_delivery_row_flags(con, items: list) -> None:
         item["dismissed"] = bool(flags.get("dismissed"))
         item["exception"] = bool(flags.get("exception"))
         item["coc_done"] = bool(flags.get("coc_done"))
-        item["qaqc_report_ready"] = bool(flags.get("qaqc_report_ready"))
+        item["qaqc_report_ready"] = bool(flags.get("qaqc_report_ready")) or bool(checklist_map.get(pid))
 
 
 @trial_bp.get("/api/trial/delivery-schedule")
@@ -2653,11 +2660,37 @@ def api_trial_split_block(block_id):
         if split_qty >= float(block["scheduled_qty"] or 0):
             return jsonify({"error": "Split quantity must be smaller than the scheduled quantity"}), 400
         remaining = float(block["scheduled_qty"] or 0) - split_qty
-        from .operation_sequence import main_planner_lane_max_queue_position
-
-        max_position = main_planner_lane_max_queue_position(con, int(block["machine_id"]))
+        machine_id = int(block["machine_id"])
+        current_position = float(block["queue_position"] or 0)
+        next_block = one(
+            con.execute(
+                """
+                SELECT block_id, queue_position
+                FROM planner_run_block
+                WHERE machine_id = %s
+                  AND COALESCE(active, TRUE) = TRUE
+                  AND queue_position > %s
+                  AND block_id <> %s
+                ORDER BY queue_position, block_id
+                LIMIT 1
+                """,
+                (machine_id, current_position, int(block_id)),
+            )
+        )
+        if next_block:
+            next_position = float(next_block["queue_position"] or 0)
+            new_queue_position = (current_position + next_position) / 2.0
+        else:
+            new_queue_position = current_position + 1.0
         con.execute(
-            "UPDATE planner_run_block SET scheduled_qty = %s, updated_at = NOW() WHERE block_id = %s",
+            """
+            UPDATE planner_run_block
+            SET scheduled_qty = %s,
+                calculated_start_datetime = NULL,
+                calculated_end_datetime = NULL,
+                updated_at = NOW()
+            WHERE block_id = %s
+            """,
             (split_qty, block_id),
         )
         planning_status, execution_status = normalize_block_status_inputs(
@@ -2676,10 +2709,10 @@ def api_trial_split_block(block_id):
             """,
             (
                 int(block["operation_id"]),
-                int(block["machine_id"]),
-                float(max_position) + 1,
+                machine_id,
+                float(new_queue_position),
                 remaining,
-                bool(block.get("include_setup")),
+                False,  # remainder does not re-charge setup
                 execution_status,
                 planning_status,
                 execution_status,
@@ -2688,11 +2721,12 @@ def api_trial_split_block(block_id):
             ),
         )
         new_block_id = int(one(new_cur)["block_id"])
-        machine_id = int(block["machine_id"])
-        refresh_block_actual_status(con, block_id, auto_unschedule=False)
-        refresh_block_actual_status(con, new_block_id, auto_unschedule=False)
+        from .operation_sequence import sync_operation_sequences_for_machines
         from .scheduler_state import refresh_machine_queue_state
 
+        sync_operation_sequences_for_machines(con, [machine_id])
+        refresh_block_actual_status(con, block_id, auto_unschedule=False)
+        refresh_block_actual_status(con, new_block_id, auto_unschedule=False)
         refresh_machine_queue_state(con, block_id)
         refresh_machine_queue_state(con, new_block_id)
         # Defer schedule times — same as queue/reorder; user clicks Recalculate schedules.

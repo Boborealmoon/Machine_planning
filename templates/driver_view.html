@@ -1,6 +1,10 @@
 {% extends "base.html" %}
 
-{% block title %}Delivery Schedule{% endblock %}
+{% block title %}Delivery Schedule View{% endblock %}
+
+{% block favicon %}
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-delivery.svg') }}" />
+{% endblock %}
 
 {% block body_class %}driver-view{% endblock %}
 
@@ -16,7 +20,7 @@
 <div class="dv-page">
   <header class="dv-header">
     <div class="dv-header-text">
-      <h1 class="dv-title">Delivery Schedule</h1>
+      <h1 class="dv-title">Delivery Schedule View</h1>
       <p class="dv-subtitle" id="dv-stats" aria-live="polite">Loading delivery schedule…</p>
     </div>
     <div class="dv-header-actions">
@@ -40,9 +44,12 @@
       <table class="dv-table">
         <thead>
           <tr>
+            <th class="dv-col-exception" title="Exception / important delivery">!</th>
             <th class="dv-col-ps">PS no.</th>
             <th class="dv-col-desc">Part description</th>
+            <th class="dv-col-partial">PP partial</th>
             <th class="dv-col-qty">SO qty</th>
+            <th class="dv-col-qty">PP partial qty</th>
             <th class="dv-col-edd">Coway EDD</th>
             <th class="dv-col-week">Week</th>
             <th class="dv-col-status">Scan status</th>

@@ -173,6 +173,7 @@ function soRepeatRow(order, pp) {
     inventory_code: pp?.inventory_code,
     bom_code: pp?.bom_code,
     process_sheet_no: pp?.process_sheet_no,
+    similar_ps: pp?.similar_ps,
   };
 }
 
@@ -198,6 +199,7 @@ function soRenderRepeatPill(order, pp) {
 }
 
 function soIsNewPart(order, pp) {
+  if (typeof pp?.is_new_part === 'boolean') return pp.is_new_part;
   const partNo = String(pp?.inventory_code || '').trim();
   if (!partNo) return false;
   return soSimilarPsForPp(order, pp).length === 0;
@@ -2737,10 +2739,7 @@ async function soLoad({ refresh = false, bustCache = false } = {}) {
 
   let payload;
   try {
-    const [ordersRes, repeatRes] = await Promise.all([
-      fetch(`/api/sales-orders?${params}`),
-      fetch('/api/planning-data/repeat-orders'),
-    ]);
+    const ordersRes = await fetch(`/api/sales-orders?${params}`);
     const raw = await ordersRes.text();
     try {
       payload = raw ? JSON.parse(raw) : {};
@@ -2752,12 +2751,7 @@ async function soLoad({ refresh = false, bustCache = false } = {}) {
       );
     }
     if (!ordersRes.ok) throw new Error(payload?.error || `HTTP ${ordersRes.status}`);
-    if (repeatRes.ok) {
-      const repeatPayload = await repeatRes.json();
-      soState.repeatGroups = Array.isArray(repeatPayload.rows) ? repeatPayload.rows : [];
-    } else {
-      soState.repeatGroups = [];
-    }
+    soState.repeatGroups = [];
   } catch (err) {
     if (loading) loading.hidden = true;
     const empty = document.getElementById('so-empty');

@@ -4,7 +4,7 @@ const TRIAL_MACHINIST_LOCALE_KEY = 'machinist-board-locale-v1';
 
 const TRIAL_MACHINIST_STRINGS = {
   en: {
-    page_title: 'Machine queue board',
+    page_title: 'Machine Queue Overview',
     read_only_note: 'Read-only · auto-refresh',
     focus_view: 'Focus view',
     focus_view_title: 'Select up to 4 machines to show their lanes',
@@ -68,6 +68,21 @@ const TRIAL_MACHINIST_STRINGS = {
     cat_milling: 'Milling',
     cat_turning: 'Turning',
     cat_turnmill: 'Turnmill',
+    cat_mpp: 'MPP',
+    mpp_label: 'MPP',
+    mpp_lanes_on: 'MPP lanes on',
+    mpp_lanes_show: 'Show MPP lanes',
+    mpp_lanes_on_title: 'Hide CNC 35, 36, and 41 (MPP planner) lanes',
+    mpp_lanes_show_title: 'Show CNC 35, 36, and 41 (MPP planner) lanes',
+    mpp_badge_title: 'Scheduled in MPP planner',
+    mpp_lane_title: 'MPP planner machine',
+    mpp_cycles_count: '{n}× cycles',
+    mpp_cycle_span: '#{from}–#{to}',
+    mpp_expand_cycles: 'Expand',
+    mpp_collapse_cycles: 'Collapse',
+    mpp_qty_per_cycle: '{qty}/cycle',
+    mpp_qty_total: '{total} total',
+    mpp_jobs_count: '{n} jobs',
   },
   zh: {
     page_title: '机床队列看板',
@@ -134,6 +149,21 @@ const TRIAL_MACHINIST_STRINGS = {
     cat_milling: '铣削',
     cat_turning: '车削',
     cat_turnmill: '车铣',
+    cat_mpp: 'MPP',
+    mpp_label: 'MPP',
+    mpp_lanes_on: '已显示 MPP',
+    mpp_lanes_show: '显示 MPP',
+    mpp_lanes_on_title: '隐藏 CNC 35、36、41（MPP 排产）机床列',
+    mpp_lanes_show_title: '显示 CNC 35、36、41（MPP 排产）机床列',
+    mpp_badge_title: '来自 MPP 排产',
+    mpp_lane_title: 'MPP 排产机床',
+    mpp_cycles_count: '{n}× 循环',
+    mpp_cycle_span: '#{from}–#{to}',
+    mpp_expand_cycles: '展开',
+    mpp_collapse_cycles: '收起',
+    mpp_qty_per_cycle: '每循环 {qty}',
+    mpp_qty_total: '共 {total}',
+    mpp_jobs_count: '{n} 工单',
   },
 };
 
@@ -161,7 +191,8 @@ function trialMachinistCategoryLabel(category) {
   if (raw === 'MILLING') return trialMachinistT('cat_milling');
   if (raw === 'TURNING') return trialMachinistT('cat_turning');
   if (raw === 'TURNMILL') return trialMachinistT('cat_turnmill');
-  if (raw.length <= 3 || raw === 'MPP') return raw;
+  if (raw === 'MPP') return trialMachinistT('cat_mpp');
+  if (raw.length <= 3) return raw;
   return raw.charAt(0) + raw.slice(1).toLowerCase();
 }
 

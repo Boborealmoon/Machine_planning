@@ -1,0 +1,496 @@
+{% extends "base.html" %}
+
+{% block title %}MRO — ARC{% endblock %}
+
+{% block favicon %}
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-mro.svg') }}" />
+{% endblock %}
+
+{% block body_class %}mro-app{% endblock %}
+
+{% block main_class %}app-main--mro{% endblock %}
+
+{% block extra_css %}
+<meta name="referrer" content="no-referrer" />
+<meta name="robots" content="noindex, nofollow, noarchive" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/mro.css') }}?v={{ mro_asset_version }}">
+{% endblock %}
+
+{% block content %}
+<div class="mro-page">
+  <header class="mro-appbar">
+    <div class="mro-appbar-brand">
+      <span class="mro-appbar-logo" aria-hidden="true">MRO</span>
+      <div class="mro-appbar-text">
+        <h1 class="mro-appbar-title">Maintenance, Repair &amp; Overhaul</h1>
+        <p class="mro-appbar-subtitle" id="mro-stats" aria-live="polite">Loading ARC data…</p>
+      </div>
+    </div>
+    <div class="mro-appbar-actions">
+      <button type="button" class="mro-btn" id="mro-manage-staff" title="Add or remove certifying staff names">Manage Certifying Staff</button>
+      <button type="button" class="mro-btn mro-btn--primary" id="mro-refresh" title="Reload from ERP">Refresh</button>
+    </div>
+  </header>
+
+  <nav class="mro-nav" aria-label="MRO sections" role="tablist">
+    <button type="button" class="mro-nav-link is-active" data-mro-tab="arc" role="tab" aria-selected="true" aria-controls="mro-panel-arc">ARC</button>
+    <button type="button" class="mro-nav-link" data-mro-tab="history" role="tab" aria-selected="false" aria-controls="mro-panel-history">ARC creation history</button>
+  </nav>
+
+  <section id="mro-panel-arc" class="mro-panel" role="tabpanel" aria-labelledby="mro-tab-arc">
+    <div class="mro-toolbar card" aria-label="Filters">
+      <label class="mro-filter">
+        <span>PS type</span>
+        <select id="mro-ps-type-filter" class="mro-select">
+          <option value="MPS" selected>MPS</option>
+          <option value="APS">APS</option>
+          <option value="NPS">NPS</option>
+          <option value="PPS">PPS</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+      <label class="mro-filter">
+        <span>ARC status</span>
+        <select id="mro-status-filter" class="mro-select">
+          <option value="all" selected>All</option>
+          <option value="completed">Completed</option>
+          <option value="incomplete">Incomplete</option>
+        </select>
+      </label>
+      <label class="mro-filter mro-filter--grow">
+        <span>Search</span>
+        <span class="mro-search-wrap">
+          <svg class="mro-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input id="mro-search" class="mro-search-input" type="search" placeholder="SO, PS, part, customer, PO, S/N, ARC docs…" autocomplete="off">
+        </span>
+      </label>
+    </div>
+
+    <div id="mro-loading" class="mro-loading">
+      <div class="mro-spinner" aria-hidden="true"></div>
+      Loading ARC format from <code>mfg_arc_format_v1_view</code>…
+    </div>
+
+    <div id="mro-table-wrap" class="mro-table-card" hidden>
+      <div class="mro-table-scroll">
+        <table class="mro-table">
+          <thead>
+            <tr>
+              <th class="mro-col-action">ARC</th>
+              <th>Status</th>
+              <th>Order date</th>
+              <th>Process sheet no.</th>
+              <th>Part no.</th>
+              <th>Description</th>
+              <th>S/N</th>
+              <th>Customer code</th>
+              <th>Customer PO</th>
+              <th>PO item no.</th>
+              <th>SO qty</th>
+              <th>Sales order no.</th>
+            </tr>
+          </thead>
+          <tbody id="mro-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <p id="mro-empty" class="mro-empty" hidden>No rows match your filters.</p>
+    <p class="mro-meta" id="mro-meta" hidden></p>
+  </section>
+
+  <section id="mro-panel-history" class="mro-panel" role="tabpanel" hidden>
+    <div class="mro-toolbar card" aria-label="History filters">
+      <label class="mro-filter mro-filter--grow">
+        <span>Search history</span>
+        <span class="mro-search-wrap">
+          <svg class="mro-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input id="mro-history-search" class="mro-search-input" type="search" placeholder="S/N, tracking no., PS, part, customer, remark…" autocomplete="off">
+        </span>
+      </label>
+      <button type="button" class="mro-btn" id="mro-history-refresh" title="Reload creation history">Refresh history</button>
+    </div>
+
+    <div id="mro-history-loading" class="mro-loading" hidden>
+      <div class="mro-spinner" aria-hidden="true"></div>
+      Loading ARC creation history…
+    </div>
+
+    <div id="mro-history-table-wrap" class="mro-table-card" hidden>
+      <div class="mro-table-scroll">
+        <table class="mro-table mro-table--history">
+          <thead>
+            <tr>
+              <th rowspan="2">S/N</th>
+              <th colspan="2">CAAS tracking number</th>
+              <th colspan="2">FAA tracking number</th>
+              <th colspan="2">EASA tracking number</th>
+              <th colspan="2">JCAB tracking number</th>
+              <th colspan="2">CAAC tracking number</th>
+              <th class="mro-th-form mro-th-form--c" rowspan="2" title="CAAS-only release (inferred)">C1</th>
+              <th class="mro-th-form mro-th-form--c" rowspan="2" title="Not mapped yet">C7</th>
+              <th class="mro-th-form mro-th-form--c" rowspan="2" title="Not mapped yet">C14</th>
+              <th class="mro-th-form mro-th-form--d" rowspan="2" title="Multi-authority / dual release (inferred)">D1</th>
+              <th rowspan="2">Released date</th>
+              <th rowspan="2">Released &amp; certified by</th>
+              <th rowspan="2">Customer</th>
+              <th rowspan="2">Part no.</th>
+              <th rowspan="2">Description</th>
+              <th rowspan="2">Purchase order</th>
+              <th rowspan="2">Process sheet no.</th>
+              <th rowspan="2">Final inspection report / NDT report</th>
+              <th rowspan="2">Job no. / serial no. / batch no. / work order no.</th>
+              <th rowspan="2">No. of item</th>
+              <th rowspan="2">PO item no.</th>
+              <th rowspan="2">Qty</th>
+              <th rowspan="2">Remark<br><span class="mro-th-sub">CMM / CRM / SB details</span></th>
+              <th rowspan="2">Actions</th>
+            </tr>
+            <tr>
+              <th class="mro-th-track-prefix">Prefix</th>
+              <th class="mro-th-track-no">No.</th>
+              <th class="mro-th-track-prefix">Prefix</th>
+              <th class="mro-th-track-no">No.</th>
+              <th class="mro-th-track-prefix">Prefix</th>
+              <th class="mro-th-track-no">No.</th>
+              <th class="mro-th-track-prefix">Prefix</th>
+              <th class="mro-th-track-no">No.</th>
+              <th class="mro-th-track-prefix">Prefix</th>
+              <th class="mro-th-track-no">No.</th>
+            </tr>
+          </thead>
+          <tbody id="mro-history-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <p id="mro-history-empty" class="mro-empty" hidden>No ARC creations yet. Open a row from the ARC tab → Create ARC to start.</p>
+    <p class="mro-meta" id="mro-history-meta" hidden></p>
+    <p class="mro-meta mro-history-test-note">Each Create ARC stores an immutable serialised history record and PDF. Multiple ARCs can be created for the same process sheet. Click Download / View PDF to retrieve a past certificate.</p>
+  </section>
+</div>
+
+<div id="mro-staff-modal" class="mro-modal" hidden>
+  <div class="mro-modal-backdrop" data-mro-staff-close tabindex="-1"></div>
+  <div class="mro-modal-dialog mro-modal-dialog--staff" role="dialog" aria-modal="true" aria-labelledby="mro-staff-modal-title">
+    <header class="mro-modal-header">
+      <div>
+        <h2 class="mro-modal-title" id="mro-staff-modal-title">Certifying staff</h2>
+        <p class="mro-staff-hint">Add names and optional e-signatures. The selected name and signature fill the ARC signature block on generate.</p>
+      </div>
+      <button type="button" class="mro-modal-close" data-mro-staff-close aria-label="Close">&times;</button>
+    </header>
+    <div class="mro-modal-body">
+      <p id="mro-staff-status" class="mro-staff-status" hidden></p>
+      <form id="mro-staff-form" class="mro-staff-form">
+        <input type="text" id="mro-staff-name" class="mro-arc-input" placeholder="Staff name" autocomplete="off" required>
+        <button type="submit" class="mro-btn mro-btn--primary">Add</button>
+      </form>
+      <ul id="mro-staff-list" class="mro-staff-list"></ul>
+      <p id="mro-staff-empty" class="mro-arc-empty-hint" hidden>No certifying staff yet.</p>
+    </div>
+    <footer class="mro-modal-footer">
+      <button type="button" class="mro-btn mro-btn--primary" data-mro-staff-close>Done</button>
+    </footer>
+  </div>
+</div>
+
+<div id="mro-detail-modal" class="mro-modal" hidden>
+  <div class="mro-modal-backdrop" data-mro-detail-close tabindex="-1"></div>
+  <div class="mro-modal-dialog mro-modal-dialog--wide" role="dialog" aria-modal="true" aria-labelledby="mro-detail-modal-title">
+    <header class="mro-modal-header">
+      <h2 class="mro-modal-title" id="mro-detail-modal-title">ARC entry details</h2>
+      <button type="button" class="mro-modal-close" data-mro-detail-close aria-label="Close">&times;</button>
+    </header>
+    <div class="mro-modal-body">
+      <dl class="mro-modal-summary" id="mro-detail-modal-summary"></dl>
+    </div>
+    <footer class="mro-modal-footer">
+      <button type="button" class="mro-btn" data-mro-detail-close>Close</button>
+      <button type="button" class="mro-btn mro-btn--primary" id="mro-detail-generate">Generate ARC</button>
+    </footer>
+  </div>
+</div>
+
+<div id="mro-arc-modal" class="mro-modal" hidden>
+  <div class="mro-modal-backdrop" data-mro-modal-close tabindex="-1"></div>
+  <div class="mro-modal-dialog mro-modal-dialog--arc" role="dialog" aria-modal="true" aria-labelledby="mro-arc-modal-title">
+    <header class="mro-modal-header mro-arc-header">
+      <div class="mro-arc-header-main">
+        <h2 class="mro-modal-title" id="mro-arc-modal-title">Authorisation Release Certificate (ARC)</h2>
+        <p class="mro-arc-header-sub" id="mro-arc-modal-so"></p>
+      </div>
+      <button type="button" class="mro-modal-close" data-mro-modal-close aria-label="Close">&times;</button>
+    </header>
+
+    <div class="mro-modal-body mro-arc-body" id="mro-arc-modal-body">
+      <form id="mro-arc-form" class="mro-arc-layout" autocomplete="off">
+        <div class="mro-arc-main">
+          <section class="mro-arc-card mro-arc-card--compact">
+            <div class="mro-arc-card-head mro-arc-card-head--inline">
+              <h3 class="mro-arc-card-title">Variant <span class="mro-req">*</span></h3>
+            </div>
+            <div class="mro-arc-variants" role="group" aria-label="Variant required">
+              <label class="mro-arc-variant-chip">
+                <input type="checkbox" name="mro-arc-variant" value="CAAS" checked>
+                <span class="mro-arc-variant-chip-ui">
+                  <span class="mro-arc-variant-chip-name">CAAS</span>
+                  <span class="mro-arc-variant-chip-desc">SG</span>
+                </span>
+              </label>
+              <label class="mro-arc-variant-chip">
+                <input type="checkbox" name="mro-arc-variant" value="FAA">
+                <span class="mro-arc-variant-chip-ui">
+                  <span class="mro-arc-variant-chip-name">FAA</span>
+                  <span class="mro-arc-variant-chip-desc">US</span>
+                </span>
+              </label>
+              <label class="mro-arc-variant-chip">
+                <input type="checkbox" name="mro-arc-variant" value="EASA">
+                <span class="mro-arc-variant-chip-ui">
+                  <span class="mro-arc-variant-chip-name">EASA</span>
+                  <span class="mro-arc-variant-chip-desc">EU</span>
+                </span>
+              </label>
+              <label class="mro-arc-variant-chip">
+                <input type="checkbox" name="mro-arc-variant" value="JCAB">
+                <span class="mro-arc-variant-chip-ui">
+                  <span class="mro-arc-variant-chip-name">JCAB</span>
+                  <span class="mro-arc-variant-chip-desc">JP</span>
+                </span>
+              </label>
+              <label class="mro-arc-variant-chip">
+                <input type="checkbox" name="mro-arc-variant" value="CAAC">
+                <span class="mro-arc-variant-chip-ui">
+                  <span class="mro-arc-variant-chip-name">CAAC</span>
+                  <span class="mro-arc-variant-chip-desc">CN</span>
+                </span>
+              </label>
+            </div>
+            <div id="mro-arc-caac-panel" class="mro-arc-caac-inline" hidden>
+              <div class="mro-arc-caac-cert" role="radiogroup" aria-label="CAAC Conformity or Airworthiness">
+                <span class="mro-arc-caac-cert-label">2. Certificate</span>
+                <label class="mro-arc-caac-cert-option">
+                  <input type="radio" name="mro-arc-caac-cert-type" value="airworthiness" checked>
+                  <span>适航性 Airworthiness</span>
+                </label>
+                <label class="mro-arc-caac-cert-option">
+                  <input type="radio" name="mro-arc-caac-cert-type" value="conformity">
+                  <span>符合性 Conformity</span>
+                </label>
+              </div>
+              <label class="mro-arc-caac-eligibility">
+                <span>9. Eligibility</span>
+                <select id="mro-arc-caac-eligibility" class="mro-arc-input mro-arc-input--slim">
+                  <option value="NOT KNOWN" selected>NOT KNOWN</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section class="mro-arc-card mro-arc-card--compact">
+            <div class="mro-arc-card-head mro-arc-card-head--inline">
+              <h3 class="mro-arc-card-title">12. Remarks</h3>
+              <button type="button" class="mro-btn mro-btn--ghost mro-btn--compact" id="mro-arc-workscope-search">Search ERP</button>
+            </div>
+            <div class="mro-arc-fields-grid mro-arc-fields-grid--remarks">
+              <div class="mro-arc-field">
+                <span>Workscope <span class="mro-arc-field-meta" id="mro-arc-workscope-meta"></span></span>
+                <textarea id="mro-arc-workscope" class="mro-arc-textarea" rows="2" placeholder="Auto-filled from PS BOM remarks…"></textarea>
+              </div>
+              <label class="mro-arc-field">
+                <span>Supplementary</span>
+                <textarea id="mro-arc-supplementary" class="mro-arc-textarea" rows="2" placeholder="Optional…"></textarea>
+              </label>
+            </div>
+
+            <div id="mro-arc-corrections" class="mro-arc-variant-panels"></div>
+            <p id="mro-arc-corrections-empty" class="mro-arc-empty-hint" hidden>Select a variant to show ARC Correction remarks.</p>
+          </section>
+
+          <section class="mro-arc-card mro-arc-card--compact">
+            <div class="mro-arc-card-head mro-arc-card-head--inline">
+              <h3 class="mro-arc-card-title">Parts release <span class="mro-req">*</span></h3>
+            </div>
+            <div class="mro-arc-part-type" role="radiogroup" aria-label="Parts release type">
+              <label class="mro-arc-part-type-option">
+                <input type="radio" name="mro-arc-part-type" value="used" checked>
+                <span>14. Used</span>
+              </label>
+              <label class="mro-arc-part-type-option">
+                <input type="radio" name="mro-arc-part-type" value="new">
+                <span>13. New</span>
+              </label>
+            </div>
+
+            <div id="mro-arc-used-panel" class="mro-arc-part-panel">
+              <div id="mro-arc-used-parts" class="mro-arc-used-parts-grid"></div>
+              <p id="mro-arc-used-parts-empty" class="mro-arc-empty-hint" hidden>Select a variant to show release-to-service options.</p>
+            </div>
+
+            <div id="mro-arc-new-panel" class="mro-arc-part-panel" hidden>
+              <div class="mro-arc-new-parts" role="group" aria-label="New parts conformity">
+                <label class="mro-arc-check-card">
+                  <input type="checkbox" name="mro-arc-new-part" value="approved_design" checked>
+                  <span>approved design data — safe operation</span>
+                </label>
+                <label class="mro-arc-check-card">
+                  <input type="checkbox" name="mro-arc-new-part" value="non_approved_block_12">
+                  <span>non-approved design data (Block 12)</span>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section class="mro-arc-card mro-arc-card--compact">
+            <div class="mro-arc-card-head mro-arc-card-head--inline">
+              <h3 class="mro-arc-card-title">Certification</h3>
+            </div>
+            <div class="mro-arc-fields-grid mro-arc-fields-grid--cert">
+              <label class="mro-arc-field">
+                <span id="mro-arc-staff-label">14d. Name <span class="mro-req">*</span></span>
+                <select id="mro-arc-certifying-staff" class="mro-arc-input">
+                  <option value="">Select…</option>
+                </select>
+              </label>
+              <label class="mro-arc-field">
+                <span id="mro-arc-date-label">14e. Date <span class="mro-req">*</span></span>
+                <input type="date" id="mro-arc-cert-date" class="mro-arc-input">
+              </label>
+            </div>
+            <div id="mro-arc-status-panels" class="mro-arc-status-grid"></div>
+            <p id="mro-arc-status-empty" class="mro-arc-empty-hint" hidden>Select a variant to show Status/Work options.</p>
+          </section>
+
+          <section class="mro-arc-card mro-arc-card--items mro-arc-card--compact">
+            <div class="mro-arc-card-head mro-arc-card-head--inline">
+              <h3 class="mro-arc-card-title">Items</h3>
+              <p class="mro-arc-card-hint" id="mro-arc-items-hint">Uncheck = Qty 0</p>
+            </div>
+            <div class="mro-arc-items-scroll">
+              <table class="mro-arc-items-table">
+                <thead>
+                  <tr>
+                    <th class="mro-arc-items-col-check">Include</th>
+                    <th>6. Iter</th>
+                    <th>7. Inventory Description</th>
+                    <th>8. Part No.</th>
+                    <th>9. Quantity</th>
+                    <th>10. Serial/Batch No</th>
+                    <th class="mro-arc-items-col-action"></th>
+                  </tr>
+                </thead>
+                <tbody id="mro-arc-items-body"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <aside class="mro-arc-general" aria-label="General information">
+          <h3 class="mro-arc-general-title">General</h3>
+          <dl class="mro-arc-general-list">
+            <div>
+              <dt>Sales Quotation No.</dt>
+              <dd id="mro-arc-g-quotation">—</dd>
+            </div>
+            <div>
+              <dt>Sales Person</dt>
+              <dd id="mro-arc-g-salesperson">—</dd>
+            </div>
+            <div>
+              <dt>Sales Order No.</dt>
+              <dd id="mro-arc-g-so">—</dd>
+            </div>
+            <div>
+              <dt>Customer</dt>
+              <dd id="mro-arc-g-customer">—</dd>
+            </div>
+            <div>
+              <dt>5. Customer PO No.</dt>
+              <dd id="mro-arc-g-po">—</dd>
+            </div>
+            <div>
+              <dt>SBU</dt>
+              <dd id="mro-arc-g-sbu">—</dd>
+            </div>
+            <div>
+              <dt>Sales Category</dt>
+              <dd id="mro-arc-g-category">—</dd>
+            </div>
+            <div>
+              <dt>Segment 1 <span class="mro-req" aria-hidden="true">*</span></dt>
+              <dd id="mro-arc-g-segment">—</dd>
+            </div>
+            <div>
+              <dt>Process Sheet</dt>
+              <dd id="mro-arc-g-ps">—</dd>
+            </div>
+          </dl>
+        </aside>
+      </form>
+    </div>
+
+    <footer class="mro-modal-footer mro-modal-footer--arc">
+      <div class="mro-arc-footer-notes">
+        <p class="mro-arc-generate-hint" id="mro-arc-generate-hint" hidden></p>
+        <p class="mro-arc-test-hint">Preview checks the PDF only. Create ARC saves dummy serials to history — you can Delete while testing.</p>
+      </div>
+      <button type="button" class="mro-btn" data-mro-modal-close>Cancel</button>
+      <button type="button" class="mro-btn" id="mro-arc-modal-preview">Preview PDF</button>
+      <button type="button" class="mro-btn mro-btn--primary" id="mro-arc-modal-submit">Create ARC</button>
+    </footer>
+  </div>
+</div>
+
+<div id="mro-workscope-modal" class="mro-modal" hidden>
+  <div class="mro-modal-backdrop" data-mro-workscope-close tabindex="-1"></div>
+  <div class="mro-modal-dialog mro-modal-dialog--workscope" role="dialog" aria-modal="true" aria-labelledby="mro-workscope-modal-title">
+    <header class="mro-modal-header">
+      <div>
+        <h2 class="mro-modal-title" id="mro-workscope-modal-title">Search ERP workscope remarks</h2>
+        <p class="mro-staff-hint">Look up the process sheet’s assigned part / BOM, then insert PP voucher (BOM) remarks into Block 12 Workscope.</p>
+      </div>
+      <button type="button" class="mro-modal-close" data-mro-workscope-close aria-label="Close">&times;</button>
+    </header>
+    <div class="mro-modal-body">
+      <form id="mro-workscope-search-form" class="mro-workscope-filters">
+        <label class="mro-arc-field">
+          <span>Part no.</span>
+          <input type="text" id="mro-workscope-part" class="mro-arc-input" autocomplete="off">
+        </label>
+        <label class="mro-arc-field">
+          <span>BOM code</span>
+          <input type="text" id="mro-workscope-bom" class="mro-arc-input" autocomplete="off">
+        </label>
+        <label class="mro-arc-field">
+          <span>Process sheet</span>
+          <input type="text" id="mro-workscope-ps" class="mro-arc-input" autocomplete="off">
+        </label>
+        <label class="mro-arc-field mro-arc-field--grow">
+          <span>Contains text</span>
+          <input type="search" id="mro-workscope-q" class="mro-arc-input" placeholder="Optional keyword…" autocomplete="off">
+        </label>
+        <button type="submit" class="mro-btn mro-btn--primary" id="mro-workscope-search-btn">Search</button>
+      </form>
+      <p id="mro-workscope-status" class="mro-staff-status" hidden></p>
+      <div id="mro-workscope-results" class="mro-workscope-results"></div>
+      <p id="mro-workscope-empty" class="mro-arc-empty-hint" hidden>No matching ERP remarks.</p>
+    </div>
+    <footer class="mro-modal-footer">
+      <button type="button" class="mro-btn" data-mro-workscope-close>Close</button>
+    </footer>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v={{ mro_asset_version }}"></script>
+<script src="{{ url_for('static', filename='js/mro.js') }}?v={{ mro_asset_version }}"></script>
+{% endblock %}

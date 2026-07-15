@@ -13,7 +13,7 @@ from planning.erp_wo_merge import (
     is_finishing_stage_desc,
 )
 from planning.helpers import one, rows
-from planning.process_sheets import format_planner_ps_id
+from planning.process_sheets import format_planner_ps_id, parse_planner_ps_id
 from planning.utils import compact_text, shipped_quantity_completed
 from sync import _pp_ps_id_prefix_params, _pp_ps_id_prefix_sql
 
@@ -646,6 +646,84 @@ def fetch_finishing_queue_bundle(con, **_kwargs) -> dict[str, Any]:
     return {"items": items, "inspectors": [_serialize_row(dict(i)) for i in inspectors]}
 
 
+def load_checklist_done_flags(con, planner_ps_ids: list[str]) -> dict[str, bool]:
+    """Return {planner_ps_id: True} when any finishing overlay row is checklist_done."""
+    ids = [compact_text(pid) for pid in (planner_ps_ids or []) if compact_text(pid)]
+    if not ids:
+        return {}
+    _ensure_tables_once(con)
+    by_partial: dict[tuple[str, int], str] = {}
+    for pid in ids:
+        ps_id, partial_no = parse_planner_ps_id(pid)
+        if ps_id:
+            by_partial[(ps_id, int(partial_no))] = format_planner_ps_id(ps_id, partial_no)
+    if not by_partial:
+        return {}
+    clauses = []
+    params: list[Any] = []
+    for (ps_id, partial_no), _planner_id in by_partial.items():
+        clauses.append("(ps_id = %s AND pp_partial_no = %s)")
+        params.extend([ps_id, partial_no])
+    overlay_rows = rows(
+        con.execute(
+            f"""
+            SELECT ps_id, pp_partial_no, checklist_done
+            FROM planner_finishing_queue_overlay
+            WHERE {' OR '.join(clauses)}
+            """,
+            tuple(params),
+        )
+    )
+    done_by_planner: dict[str, bool] = {}
+    for row in overlay_rows:
+        if not bool(row.get("checklist_done")):
+            continue
+        ps_id = compact_text(row.get("ps_id"))
+        try:
+            partial_no = int(row.get("pp_partial_no") or 1)
+        except (TypeError, ValueError):
+            partial_no = 1
+        planner_id = format_planner_ps_id(ps_id, partial_no)
+        done_by_planner[planner_id] = True
+    return done_by_planner
+
+
+def set_checklist_done_for_planner_ps(
+    con,
+    planner_ps_id: str,
+    checklist_done: bool,
+    *,
+    stage_desc: str | None = None,
+) -> None:
+    """Sync delivery-schedule QAQC report flag into finishing-queue overlay rows."""
+    ps_id, partial_no = parse_planner_ps_id(planner_ps_id)
+    if not ps_id:
+        return
+    _ensure_tables_once(con)
+    stage = compact_text(stage_desc)
+    if stage:
+        con.execute(
+            """
+            INSERT INTO planner_finishing_queue_overlay
+                (ps_id, pp_partial_no, stage_desc, checklist_done, updated_at)
+            VALUES (%s, %s, %s, %s, NOW())
+            ON CONFLICT (ps_id, pp_partial_no, stage_desc) DO UPDATE SET
+                checklist_done = EXCLUDED.checklist_done,
+                updated_at = NOW()
+            """,
+            (ps_id, int(partial_no), stage, bool(checklist_done)),
+        )
+        return
+    con.execute(
+        """
+        UPDATE planner_finishing_queue_overlay
+        SET checklist_done = %s, updated_at = NOW()
+        WHERE ps_id = %s AND pp_partial_no = %s
+        """,
+        (bool(checklist_done), ps_id, int(partial_no)),
+    )
+
+
 def upsert_overlay(
     con,
     *,
@@ -729,6 +807,17 @@ def upsert_overlay(
             )
         )
         inspector_name = compact_text(insp.get("name")) if insp else ""
+
+    if checklist_done is not None:
+        from planning.delivery_planner_service import upsert_delivery_row_flags
+
+        upsert_delivery_row_flags(
+            con,
+            format_planner_ps_id(ps, partial),
+            qaqc_report_ready=bool(next_checklist_done),
+            sync_qaqc_checklist=False,
+        )
+
     return {
         "ps_id": ps,
         "pp_partial_no": partial,

@@ -1846,7 +1846,14 @@ function trialBuildMachineDisplayGroup(rawBlocks, summary = null) {
     remaining_minutes: pairedMetrics.pairedRemainingMinutes,
     status,
     planning_status: planningStatus,
-    group_type: blocks.length > 1 ? 'COMBINED' : (leader.group_type || summary?.group_type || ''),
+    group_type: (() => {
+      const fromLeader = String(leader.group_type || summary?.group_type || '').toUpperCase();
+      if (fromLeader === 'MPP_CYCLE') return 'MPP_CYCLE';
+      if (/^MPP cycle\b/i.test(String(summary?.group_label || leader.group_label || '').trim())) {
+        return 'MPP_CYCLE';
+      }
+      return blocks.length > 1 ? 'COMBINED' : (leader.group_type || summary?.group_type || '');
+    })(),
     group_start: summary?.group_start || starts[0] || leader.calculated_start_datetime || '',
     group_end: summary?.group_end || ends[ends.length - 1] || leader.calculated_end_datetime || '',
     visual_start_datetime: visualStarts[0] || leader.visual_start_datetime || leader.calculated_start_datetime || leader.anchor_datetime || '',
@@ -1938,4 +1945,122 @@ function trialBlocksGroupedForMachine(machineId) {
     })
     .filter(Boolean)
     .sort(trialCompareMachineGroups);
+}
+
+/** Stable identity for an MPP cycle member (PS + partial + op + qty). */
+function trialMppBlockIdentityKey(block) {
+  if (!block) return '';
+  let base = '';
+  let partial = '1';
+  if (typeof trialCatalogSourceBase === 'function') {
+    base = String(trialCatalogSourceBase({
+      planner_ps_id: block.planner_ps_id,
+      source_ps_id: block.source_ps_id,
+      job_no: block.job_no,
+      ps_id: block.ps_id,
+    }) || '').trim();
+  }
+  if (!base) {
+    const raw = String(block.planner_ps_id || block.source_ps_id || block.job_no || '').trim();
+    const parts = typeof trialSplitPsId === 'function' ? trialSplitPsId(raw) : { base: raw, partial: '' };
+    base = String(parts.base || raw).trim();
+    if (parts.partial) partial = String(parts.partial);
+  }
+  if (typeof trialCatalogPartialIndex === 'function') {
+    const n = Number(trialCatalogPartialIndex({
+      planner_ps_id: block.planner_ps_id,
+      pp_partial_no: block.pp_partial_no,
+      source_ps_id: block.source_ps_id,
+      job_no: block.job_no,
+    }) || 0);
+    if (n > 0) partial = String(n);
+  } else if (block.pp_partial_no != null && Number(block.pp_partial_no) > 0) {
+    partial = String(Number(block.pp_partial_no));
+  }
+  const op = String(block.source_op_no || block.operation_name || block.source_op_seq_id || '').trim();
+  const qty = Math.max(0, Number(block.scheduled_qty || 0));
+  return `${base}::p${partial}::${op}:q${qty}`;
+}
+
+/** Fingerprint so consecutive identical MPP cycles can collapse into one stack. */
+function trialMppCycleFingerprint(group) {
+  const blocks = Array.isArray(group?.blocks) ? group.blocks : [];
+  if (!blocks.length) {
+    return `empty:${Number(group?.group_id || group?.leader?.block_id || 0)}`;
+  }
+  return blocks.map(trialMppBlockIdentityKey).filter(Boolean).sort().join('|')
+    || `g:${Number(group?.group_id || 0)}`;
+}
+
+/**
+ * Collapse consecutive identical MPP cycles (same PS/op mix + qty) into runs.
+ * Non-MPP lanes should pass groups through unchanged via trialGroupMppLaneRuns.
+ */
+function trialGroupIdenticalMppCycleRuns(groups) {
+  const runs = [];
+  (groups || []).forEach((group, index) => {
+    const fingerprint = trialMppCycleFingerprint(group);
+    const tail = runs[runs.length - 1];
+    if (tail && tail.fingerprint === fingerprint) {
+      tail.groups.push(group);
+      tail.endIndex = index;
+    } else {
+      runs.push({
+        fingerprint,
+        groups: [group],
+        startIndex: index,
+        endIndex: index,
+      });
+    }
+  });
+  return runs;
+}
+
+function trialGroupMppLaneRuns(groups) {
+  return trialGroupIdenticalMppCycleRuns(groups);
+}
+
+/** Distinct PS/op lines inside one MPP cycle (supports multi-PS cycles). */
+function trialMppCycleMemberSummaries(group) {
+  const seen = new Set();
+  const rows = [];
+  (group?.blocks || []).forEach(block => {
+    let base = '';
+    let partial = '';
+    if (typeof trialCatalogSourceBase === 'function') {
+      base = String(trialCatalogSourceBase({
+        planner_ps_id: block.planner_ps_id,
+        source_ps_id: block.source_ps_id,
+        job_no: block.job_no,
+      }) || '').trim();
+    }
+    if (!base) {
+      const raw = String(block.planner_ps_id || block.source_ps_id || block.job_no || '').trim();
+      const parts = typeof trialSplitPsId === 'function' ? trialSplitPsId(raw) : { base: raw, partial: '' };
+      base = String(parts.base || raw).trim();
+      partial = String(parts.partial || '').trim();
+    }
+    if (typeof trialCatalogPartialIndex === 'function') {
+      const n = Number(trialCatalogPartialIndex({
+        planner_ps_id: block.planner_ps_id,
+        pp_partial_no: block.pp_partial_no,
+        source_ps_id: block.source_ps_id,
+        job_no: block.job_no,
+      }) || 0);
+      if (n > 1) partial = String(n);
+    }
+    const opNo = String(block.source_op_no || '').trim();
+    const opName = String(block.operation_name || '').trim();
+    const op = [opNo, opName].filter(Boolean).join(' ') || opNo || opName;
+    const key = `${base}::${partial}::${opNo || opName}`;
+    if (!base || seen.has(key)) return;
+    seen.add(key);
+    rows.push({
+      base,
+      partial,
+      op,
+      qty: Math.max(0, Number(block.scheduled_qty || 0)),
+    });
+  });
+  return rows;
 }

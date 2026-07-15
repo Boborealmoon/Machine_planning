@@ -496,12 +496,16 @@ document.getElementById("nav-erp-sync-btn")?.addEventListener("click", () => {
 
   const exitItemHtml = (row, isUnread) => {
     const n = buildNotif(row);
+    const action =
+      String(row.exit_kind || "").toUpperCase() === "MPP"
+        ? "has been completed and taken off"
+        : "has been scanned and taken off";
     return `
       <div class="nav-notif-item${isUnread ? " is-unread" : ""}">
         <div class="nav-notif-ps">${esc(n.ps)}</div>
         ${n.opLabel ? `<div class="nav-notif-op">${esc(n.opLabel)}</div>` : ""}
         ${n.qty ? `<div class="nav-notif-qty">(Qty ${esc(n.qty)})</div>` : ""}
-        <div class="nav-notif-action">has been scanned and taken off <strong>${esc(n.machineLabel)}</strong></div>
+        <div class="nav-notif-action">${action} <strong>${esc(n.machineLabel)}</strong></div>
         <div class="nav-notif-time">${esc(fmtTime(n.exitedAt))}</div>
       </div>`;
   };

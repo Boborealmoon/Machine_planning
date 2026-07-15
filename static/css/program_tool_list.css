@@ -1,0 +1,364 @@
+/* ── Program / Tool List page ─────────────────────────────────────────── */
+.ptl-page {
+  max-width: 100%;
+}
+
+.ptl-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ptl-search-wrap {
+  flex: 1 1 280px;
+  max-width: 420px;
+  min-width: 200px;
+}
+
+.ptl-count {
+  font-size: 12px;
+  color: #999;
+  white-space: nowrap;
+}
+
+.ptl-sync-info {
+  font-size: 11px;
+  color: #bbb;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* Scrollable table wrapper */
+.ptl-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ptl-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  --ptl-sticky-1-width: 112px;
+  --ptl-sticky-2-width: 148px;
+}
+
+.ptl-table thead th {
+  padding: 9px 14px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #888;
+  border-bottom: 1px solid #e8e8e8;
+  white-space: nowrap;
+  background: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+/* Corner cells: sticky on both axes */
+.ptl-table thead th.ptl-sticky-1,
+.ptl-table thead th.ptl-sticky-2 {
+  z-index: 5;
+}
+
+.ptl-table td {
+  padding: 9px 14px;
+  border-bottom: 1px solid #f4f4f4;
+  white-space: nowrap;
+  color: #333;
+  vertical-align: middle;
+}
+
+.ptl-table tbody tr:hover td { background: #fafafa; }
+
+/* Sticky left columns */
+.ptl-sticky-1 {
+  position: sticky;
+  left: 0;
+  background: #fff;
+  z-index: 2;
+  width: var(--ptl-sticky-1-width);
+  min-width: var(--ptl-sticky-1-width);
+  max-width: var(--ptl-sticky-1-width);
+  box-sizing: border-box;
+}
+.ptl-sticky-2 {
+  position: sticky;
+  left: var(--ptl-sticky-1-width);
+  background: #fff;
+  z-index: 2;
+  border-right: 1px solid #ececec;
+  width: var(--ptl-sticky-2-width);
+  min-width: var(--ptl-sticky-2-width);
+  max-width: var(--ptl-sticky-2-width);
+  box-sizing: border-box;
+}
+.ptl-table tbody tr:hover td.ptl-sticky-1,
+.ptl-table tbody tr:hover td.ptl-sticky-2 { background: #fafafa; }
+.ptl-table thead th.ptl-sticky-1,
+.ptl-table thead th.ptl-sticky-2 { background: #fff; }
+
+/* Column group dividers */
+.ptl-table th.ptl-group-start,
+.ptl-table td.ptl-group-start {
+  border-left: 1px solid #ececec;
+}
+
+.ptl-part-no {
+  font-weight: 600;
+  color: #111;
+}
+
+.ptl-cell-clip {
+  display: block;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ptl-link {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 4px;
+  background: #f0f0f0;
+  color: #333;
+  font-size: 11px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.12s;
+}
+.ptl-link:hover { background: #ddd; }
+
+.ptl-dash { color: #ccc; }
+
+.ptl-actual-machine { color: #2a7ae4; font-weight: 500; }
+
+.ptl-empty {
+  padding: 56px 20px;
+  text-align: center;
+  color: #bbb;
+  font-size: 13px;
+}
+
+.btn-syncing {
+  opacity: 0.6;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ── Filter bar ──────────────────────────────────────────────────── */
+.ptl-filters {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  border-top: 1px solid #f0f0f0;
+  margin-top: 8px;
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #aaa;
+  white-space: nowrap;
+}
+
+.filter-chips { display: flex; gap: 4px; }
+
+.filter-chip {
+  padding: 4px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 20px;
+  background: #fff;
+  font-size: 11px;
+  color: #555;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+.filter-chip:hover { background: #f5f5f5; }
+.filter-chip--active { background: #111; color: #fff; border-color: #111; }
+
+/* Machine picker */
+.machine-picker { position: relative; }
+
+.machine-picker-btn {
+  padding: 4px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 20px;
+  background: #fff;
+  font-size: 11px;
+  color: #555;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+.machine-picker-btn:hover { background: #f5f5f5; }
+.machine-picker-btn--active { background: #111; color: #fff; border-color: #111; }
+
+.machine-dd {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+  z-index: 100;
+  min-width: 160px;
+}
+
+.machine-dd-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #f0f0f0;
+}
+.machine-dd-actions button {
+  font-size: 11px;
+  color: #666;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+.machine-dd-actions button:hover { color: #111; }
+
+.machine-cb-list { max-height: 220px; overflow-y: auto; padding: 6px 0; }
+
+.machine-cb-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  font-size: 12px;
+  color: #333;
+  cursor: pointer;
+}
+.machine-cb-label:hover { background: #fafafa; }
+
+/* ── Summary modal ──────────────────────────────────────── */
+.ptl-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.35);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ptl-modal-backdrop[hidden] { display: none; }
+.ptl-modal {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  width: 500px;
+  max-width: 92vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ptl-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid #f0f0f0;
+  flex-shrink: 0;
+}
+.ptl-modal-title { font-size: 13px; font-weight: 700; color: #111; }
+.ptl-modal-subtitle { font-size: 11px; color: #aaa; margin-top: 2px; }
+.ptl-modal-close {
+  background: none; border: none; cursor: pointer;
+  color: #bbb; font-size: 20px; padding: 0; line-height: 1;
+}
+.ptl-modal-close:hover { color: #333; }
+.ptl-modal-search {
+  padding: 10px 16px;
+  border-bottom: 1px solid #f0f0f0;
+  flex-shrink: 0;
+}
+.ptl-modal-search-input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #333;
+  outline: none;
+  box-sizing: border-box;
+}
+.ptl-modal-search-input:focus { border-color: #bbb; }
+.ptl-modal-body { overflow-y: auto; flex: 1; }
+.ptl-summary-table { width: 100%; border-collapse: collapse; }
+.ptl-summary-table th {
+  padding: 8px 16px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #888;
+  border-bottom: 1px solid #e8e8e8;
+  white-space: nowrap;
+  background: #fafafa;
+  position: sticky;
+  top: 0;
+}
+.ptl-summary-table td {
+  padding: 7px 16px;
+  border-bottom: 1px solid #f4f4f4;
+  font-size: 12px;
+  color: #333;
+  vertical-align: top;
+}
+.ptl-summary-table tbody tr:hover td { background: #fafafa; }
+.ptl-summary-group-first td { border-top: 1px solid #e8e8e8; }
+.ptl-summary-table tbody tr:first-child td { border-top: none; }
+.ptl-summary-count { font-weight: 600; text-align: right; }
+.ptl-summary-part  { font-weight: 600; color: #111; white-space: nowrap; }
+.ptl-summary-op    { font-weight: 500; color: #333; white-space: nowrap; }
+
+/* ── Pagination ──────────────────────────────────────────── */
+.ptl-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid #f0f0f0;
+}
+.ptl-page-info {
+  font-size: 12px;
+  color: #666;
+  min-width: 110px;
+  text-align: center;
+}
+.ptl-page-btn {
+  padding: 4px 14px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  color: #333;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.ptl-page-btn:hover:not(:disabled) { background: #f5f5f5; }
+.ptl-page-btn:disabled { opacity: 0.35; cursor: not-allowed; }

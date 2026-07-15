@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Program / Tool List{% endblock %}
+{% block main_class %}app-main--new-orders{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/program_tool_list.css') }}?v=ptl-20260709g">
+{% endblock %}
+{% block content %}
+<div class="ptl-page page">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">Program / Tool List</h1>
+      <p class="section-desc">
+        Full synced programme / tool list from Google Sheets. Sync to refresh local data and upsert to Supabase.
+      </p>
+    </div>
+    <div class="page-actions">
+      <button type="button" class="btn" id="btn-summary">Part × Op summary ▸</button>
+      <button type="button" class="btn btn-ghost" id="btn-sync-supabase">↗ Sync to Supabase</button>
+      <button type="button" class="btn btn-dark" id="btn-sync">Sync from Google Sheets</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="ptl-toolbar">
+      <div class="search-wrap ptl-search-wrap">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input class="search-input" id="ptl-search" type="text"
+               placeholder="Search part, program, programmer, machine…" />
+      </div>
+      <span class="ptl-count" id="ptl-count"></span>
+      <span class="ptl-sync-info" id="ptl-sync-info"></span>
+    </div>
+
+    <div class="ptl-filters">
+      <div class="filter-group">
+        <span class="filter-label">OP TYPE</span>
+        <div class="filter-chips" id="optype-chips">
+          <button type="button" class="filter-chip filter-chip--active" data-val="">All</button>
+          <button type="button" class="filter-chip" data-val="Turning">Turning</button>
+          <button type="button" class="filter-chip" data-val="Milling">Milling</button>
+          <button type="button" class="filter-chip" data-val="Turnmill">Turnmill</button>
+        </div>
+      </div>
+      <div class="filter-group">
+        <span class="filter-label">CNC MACHINE</span>
+        <div class="machine-picker">
+          <button type="button" class="machine-picker-btn" id="machine-picker-btn">All machines ▾</button>
+          <div class="machine-dd" id="machine-dd" hidden>
+            <div class="machine-dd-actions">
+              <button type="button" id="machine-select-all">Select all</button>
+              <button type="button" id="machine-clear-all">Clear</button>
+            </div>
+            <div class="machine-cb-list" id="machine-cb-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card card--flush">
+    <div class="ptl-wrap">
+      <table class="ptl-table">
+        <thead>
+          <tr>
+            <th class="ptl-sticky-1">P/S NO.</th>
+            <th class="ptl-sticky-2">PART NO. (ERP)</th>
+            <th>PROGRAM NO.</th>
+            <th class="ptl-group-start">CNC MACHINE</th>
+            <th>WO MACHINE</th>
+            <th>OP NO.</th>
+            <th>OP TYPE</th>
+            <th>SET-UP TIME</th>
+            <th>CYCLE TIME</th>
+            <th>ORIG. SETUP</th>
+            <th class="ptl-group-start">QUOTED SETUP</th>
+            <th>QUOTED C/T</th>
+            <th class="ptl-group-start">QUOTED C/T 2</th>
+            <th class="ptl-group-start">MAT. EXT. (mm)</th>
+            <th>SETUP DIAG. (mm)</th>
+            <th>KIT / ASSY NO.</th>
+            <th class="ptl-group-start">PROGRAMMER</th>
+            <th>DATE</th>
+            <th>VERIFIED</th>
+            <th class="ptl-group-start">PROGRAM FILE</th>
+            <th>TOOL LIST</th>
+          </tr>
+        </thead>
+        <tbody id="ptl-tbody">
+          <tr><td colspan="21" class="ptl-empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="ptl-pagination" id="ptl-pagination" hidden>
+      <button type="button" class="ptl-page-btn" id="btn-prev-page">← Prev</button>
+      <span class="ptl-page-info" id="ptl-page-info"></span>
+      <button type="button" class="ptl-page-btn" id="btn-next-page">Next →</button>
+    </div>
+  </div>
+</div>
+
+<div class="ptl-modal-backdrop" id="ptl-modal-backdrop" hidden>
+  <div class="ptl-modal">
+    <div class="ptl-modal-header">
+      <div>
+        <div class="ptl-modal-title">Part × Op × Machine Summary</div>
+        <div class="ptl-modal-subtitle">Grouped by part and op no.; count per CNC machine (current filters)</div>
+      </div>
+      <button type="button" class="ptl-modal-close" id="ptl-modal-close">✕</button>
+    </div>
+    <div class="ptl-modal-search">
+      <input class="ptl-modal-search-input" id="ptl-summary-search" type="text"
+             placeholder="Filter by part or op no.…" />
+    </div>
+    <div class="ptl-modal-body">
+      <table class="ptl-summary-table">
+        <thead>
+          <tr>
+            <th>PART NO. (ERP)</th>
+            <th>OP NO.</th>
+            <th>CNC MACHINE</th>
+            <th>COUNT</th>
+          </tr>
+        </thead>
+        <tbody id="ptl-summary-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/program_tool_list.js') }}?v=ptl-20260709g"></script>
+{% endblock %}

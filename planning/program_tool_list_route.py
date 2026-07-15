@@ -13,12 +13,14 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, redirect, render_template, request
+
+from .utils import compact_text
 
 program_tool_list_bp = Blueprint("program_tool_list", __name__)
 
 # Bump when sync response shape changes (visible in Network tab).
-SYNC_API_VERSION = 3
+SYNC_API_VERSION = 4
 
 # PostgREST upsert: requires migrations/add_planner_program_tools_upsert_unique_key.sql
 UPSERT_ON_CONFLICT = (
@@ -32,6 +34,7 @@ DEFAULT_SET_UP_TIME = 180
 
 SUPABASE_COLUMNS = (
     "part_no_erp",
+    "bom_code",
     "cnc_machine_no",
     "operation_no",
     "operation_type",
@@ -59,22 +62,52 @@ def _db_query(sql, params=(), fetchall=False):
         release_conn(conn)
 
 
-def _part_no_erp_map_for_ps_nos(ps_nos: list[str]) -> dict[str, str]:
+def _erp_ps_context_for_ps_nos(ps_nos: list[str]) -> dict[str, dict[str, str]]:
+    """Resolve ERP inventory_code and PP voucher BOM route for each process sheet no."""
     if not ps_nos:
         return {}
     try:
         erp_rows = _db_query(
             """
-            SELECT DISTINCT process_sheet_no, inventory_code
-            FROM public.mfg_process_sheet_info_v1_view
-            WHERE process_sheet_no = ANY(%s)
+            SELECT
+                COALESCE(ps.process_sheet_no, pp.pp_voucher_no) AS process_sheet_no,
+                COALESCE(
+                    NULLIF(TRIM(ps.inventory_code), ''),
+                    NULLIF(TRIM(pp.inventory_code), '')
+                ) AS inventory_code,
+                NULLIF(TRIM(pp.bom_code), '') AS bom_code,
+                NULLIF(TRIM(pp.bom_desc), '') AS bom_desc
+            FROM public.mfg_pp_vch pp
+            LEFT JOIN public.mfg_process_sheet_info_v1_view ps
+                   ON ps.pp_voucher_no = pp.pp_voucher_no
+            WHERE COALESCE(ps.process_sheet_no, pp.pp_voucher_no) = ANY(%s)
             """,
             (ps_nos,),
             fetchall=True,
         )
-        return {er[0]: er[1] for er in erp_rows} if erp_rows else {}
+        out: dict[str, dict[str, str]] = {}
+        for row in erp_rows or []:
+            ps_no = compact_text(row[0])
+            if not ps_no:
+                continue
+            ctx = {
+                "inventory_code": compact_text(row[1]),
+                "bom_code": compact_text(row[2]),
+                "bom_desc": compact_text(row[3]) if len(row) > 3 else "",
+            }
+            existing = out.get(ps_no)
+            if not existing or (ctx["bom_code"] and not existing.get("bom_code")):
+                out[ps_no] = ctx
+        return out
     except Exception:
         return {}
+
+
+def _part_no_erp_map_for_ps_nos(ps_nos: list[str]) -> dict[str, str]:
+    return {
+        ps_no: ctx.get("inventory_code") or ""
+        for ps_no, ctx in _erp_ps_context_for_ps_nos(ps_nos).items()
+    }
 
 
 def _actual_machine_map_for_parts(part_no_erp_list: list[str]) -> dict[tuple[str, str], str]:
@@ -130,6 +163,9 @@ def _row_search_haystack(row: dict[str, Any]) -> str:
     parts = [
         row.get("part_no_erp"),
         row.get("part_number"),
+        row.get("bom_code"),
+        row.get("erp_bom_code"),
+        row.get("bom_desc"),
         row.get("program_no"),
         row.get("programmer_name"),
         row.get("process_sheet_no"),
@@ -164,10 +200,22 @@ def _filter_rows_by_search(rows: list[dict[str, Any]], search: str) -> list[dict
 
 
 def _enrich_rows_for_display(rows: list[dict[str, Any]]) -> None:
-    ps_nos = list({r.get("ps_no") for r in rows if r.get("ps_no")})
-    part_no_erp_map = _part_no_erp_map_for_ps_nos(ps_nos)
+    ps_nos = list(
+        {
+            compact_text(r.get("ps_no") or r.get("process_sheet_no") or "")
+            for r in rows
+            if compact_text(r.get("ps_no") or r.get("process_sheet_no") or "")
+        }
+    )
+    erp_ctx = _erp_ps_context_for_ps_nos(ps_nos)
     for row in rows:
-        row["part_no_erp"] = part_no_erp_map.get(row.get("ps_no") or "", "") or row.get("part_number") or ""
+        ps_key = compact_text(row.get("ps_no") or row.get("process_sheet_no") or "")
+        ctx = erp_ctx.get(ps_key, {})
+        row["part_no_erp"] = ctx.get("inventory_code") or row.get("part_number") or ""
+        bom_code = ctx.get("bom_code") or ""
+        row["bom_code"] = bom_code
+        row["erp_bom_code"] = bom_code
+        row["bom_desc"] = ctx.get("bom_desc") or ""
 
     part_no_erp_list = list({row["part_no_erp"] for row in rows if row.get("part_no_erp")})
     actual_machine_map = _actual_machine_map_for_parts(part_no_erp_list)
@@ -275,6 +323,7 @@ def _coerce_row_for_supabase_insert(row: dict[str, Any]) -> dict[str, Any]:
 
     out: dict[str, Any] = {
         "part_no_erp": str(row.get("part_no_erp") or "").strip(),
+        "bom_code": str(row.get("bom_code") or row.get("erp_bom_code") or "").strip(),
         "cnc_machine_no": str(row.get("cnc_machine_no") or "").strip(),
         "operation_no": str(row.get("operation_no") or "").strip(),
         "operation_type": str(row.get("operation_type") or "").strip(),
@@ -309,9 +358,12 @@ def build_planner_program_tools_payload(
 
     for r in rows:
         ps_no = r.get("ps_no") or ""
-        part_no_erp = (part_no_erp_map.get(ps_no) or (r.get("part_number") or "")).strip()
+        part_no_erp = (
+            (r.get("part_no_erp") or part_no_erp_map.get(ps_no) or (r.get("part_number") or ""))
+        ).strip()
         if not part_no_erp and ps_no:
             part_no_erp = ps_no.strip()
+        bom_code = (r.get("bom_code") or r.get("erp_bom_code") or "").strip()
         program_file = (r.get("program_file") or "").strip()
         tool_list_files = (r.get("tool_list_files") or "").strip()
 
@@ -335,6 +387,7 @@ def build_planner_program_tools_payload(
         candidates.append(
             {
                 "part_no_erp": part_no_erp,
+                "bom_code": bom_code,
                 "cnc_machine_no": cnc_machine,
                 "operation_no": op_no,
                 "operation_type": op_type,
@@ -403,13 +456,19 @@ def push_planner_program_tools_to_supabase(
     read_hdrs = {k: v for k, v in hdrs.items() if k.lower() != "prefer"}
     read_hdrs.setdefault("Accept", "application/json")
     col_probe = req.get(
-        f"{url}?select=cycle_time,set_up_time,operation_type,program_no&limit=1",
+        f"{url}?select=cycle_time,set_up_time,operation_type,program_no,bom_code&limit=1",
         headers=read_hdrs,
         timeout=30,
     )
     if not col_probe.ok:
         detail = (col_probe.text or col_probe.reason or "").strip()
         detail_lower = detail.lower()
+        if "bom_code" in detail_lower:
+            raise RuntimeError(
+                "Supabase table planner_program_tools is missing bom_code. "
+                "Run migrations/add_planner_program_tools_bom_code.sql in the SQL editor, "
+                "then reload the API schema (Project Settings → API → Reload schema)."
+            )
         if "cycle_time" in detail_lower or "set_up_time" in detail_lower:
             raise RuntimeError(
                 "Supabase table planner_program_tools is missing cycle_time (and/or set_up_time). "
@@ -581,14 +640,12 @@ def sync_program_tool_list_to_supabase(*, full_refresh: bool = False) -> dict[st
             "mode": "full_refresh" if full_refresh else "upsert",
         }
 
-    ps_nos = list({r.get("ps_no") for r in rows if r.get("ps_no")})
-    part_no_erp_map = _part_no_erp_map_for_ps_nos(ps_nos)
-    part_no_erp_list = list(set(part_no_erp_map.values()))
+    _enrich_rows_for_display(rows)
+    part_no_erp_list = list({row["part_no_erp"] for row in rows if row.get("part_no_erp")})
     actual_machine_map = _actual_machine_map_for_parts(part_no_erp_list)
 
     payload, build_stats = build_planner_program_tools_payload(
         rows,
-        part_no_erp_map=part_no_erp_map,
         actual_machine_map=actual_machine_map,
     )
     if not payload:
@@ -603,6 +660,7 @@ def sync_program_tool_list_to_supabase(*, full_refresh: bool = False) -> dict[st
         }
 
     with_cycle_time = sum(1 for p in payload if p.get("cycle_time") is not None)
+    with_bom_code = sum(1 for p in payload if compact_text(p.get("bom_code")))
     result = push_planner_program_tools_to_supabase(payload, full_refresh=full_refresh)
     result["sync_api_version"] = SYNC_API_VERSION
     result["source_rows"] = len(rows)
@@ -610,6 +668,8 @@ def sync_program_tool_list_to_supabase(*, full_refresh: bool = False) -> dict[st
     result.update(build_stats)
     result["with_cycle_time"] = with_cycle_time
     result["without_cycle_time"] = len(payload) - with_cycle_time
+    result["with_bom_code"] = with_bom_code
+    result["without_bom_code"] = len(payload) - with_bom_code
     if result.get("sample_payload") is None and payload:
         result["sample_payload"] = _coerce_row_for_supabase_insert(payload[0])
 
@@ -685,7 +745,7 @@ def run_auto_program_tool_list_sync(logger: logging.Logger | None = None) -> Non
         return
 
     try:
-        from planning.cycle_time_master_import import import_new_from_program_tools
+        from planning.cycle_time_master_import import import_new_from_bom_steps, import_new_from_program_tools
 
         imp = import_new_from_program_tools()
         if imp.get("error"):
@@ -697,6 +757,15 @@ def run_auto_program_tool_list_sync(logger: logging.Logger | None = None) -> Non
                 imp.get("skipped_existing"),
                 imp.get("pruned_stale"),
             )
+        bom = import_new_from_bom_steps()
+        if bom.get("error"):
+            log.warning("auto master cycle-times bom-steps: %s", bom["error"])
+        elif int(bom.get("inserted") or 0) > 0:
+            log.info(
+                "auto master cycle-times bom-steps: inserted=%s skipped_existing=%s",
+                bom.get("inserted"),
+                bom.get("skipped_existing"),
+            )
     except Exception as e:
         log.error("auto master cycle-times import-new failed: %s", e)
 
@@ -705,8 +774,9 @@ def run_auto_program_tool_list_sync(logger: logging.Logger | None = None) -> Non
 
 
 @program_tool_list_bp.get("/planning-data/program-tool-list")
-def program_tool_list_page():
-    return render_template("planning_data/program_tool_list.html", active="planning_data")
+@program_tool_list_bp.get("/archive/program-tool-list")
+def program_tool_list_redirect():
+    return redirect("/planning-data/program-tool-tracker?view=catalogue")
 
 
 @program_tool_list_bp.post("/api/program-tool-list/sync")
@@ -743,6 +813,7 @@ def api_ptl_lookup():
         payload = {
             "last_synced": synced,
             "ps_op_count": len(lookup.get("by_ps_op") or {}),
+            "part_bom_op_count": len(lookup.get("by_part_bom_op") or {}),
             "part_op_count": len(lookup.get("by_part_op") or {}),
             **lookup,
         }

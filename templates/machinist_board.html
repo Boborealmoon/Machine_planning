@@ -1,5 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Queue{% endblock %}
+{% block title %}Machine Queue Overview{% endblock %}
+{% block favicon %}
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-machine-queue.svg') }}" />
+{% endblock %}
 {% block body_class %}machinist-board{% endblock %}
 {% block main_class %}app-main--planner app-main--machinist{% endblock %}
 {% block extra_css %}
@@ -7,7 +10,7 @@
 <meta name="referrer" content="no-referrer" />
 <meta name="robots" content="noindex, nofollow, noarchive" />
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v={{ scheduler_asset_version }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/machinist_board.css') }}?v=machinist-ipad-compact-20260618">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/machinist_board.css') }}?v=machinist-mpp-stack-20260713">
 {% endblock %}
 {% block content %}
 <script>
@@ -21,9 +24,9 @@ try {
 } catch (_) {}
 </script>
 <div class="trial-shell trial-shell--machinist">
-  <header class="machinist-board-head" aria-label="Machine queue board">
+  <header class="machinist-board-head" aria-label="Machine Queue Overview">
     <div class="machinist-board-head-row">
-      <h1 class="machinist-board-title" data-machinist-i18n="page_title">Machine queue board</h1>
+      <h1 class="machinist-board-title" data-machinist-i18n="page_title">Machine Queue Overview</h1>
       <span class="machinist-board-note" data-machinist-i18n="read_only_note">Read-only · auto-refresh</span>
       <div class="machinist-lang-toggle" role="group" aria-label="Language" data-machinist-i18n-aria="lang_toggle_aria">
         <button type="button" id="machinist-lang-en" class="machinist-lang-btn is-active" aria-pressed="true">EN</button>
@@ -95,8 +98,8 @@ try {
   } catch (_) {}
 })();
 </script>
-<script src="{{ url_for('static', filename='js/scheduler/board_mode.js') }}?v=machinist-focus-v3-20260610"></script>
-<script src="{{ url_for('static', filename='js/scheduler/machinist_i18n.js') }}?v=machinist-i18n-20260611"></script>
+<script src="{{ url_for('static', filename='js/scheduler/board_mode.js') }}?v=machinist-mpp-stack-v1-20260713"></script>
+<script src="{{ url_for('static', filename='js/scheduler/machinist_i18n.js') }}?v=machinist-mpp-stack-i18n-20260713"></script>
 <script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v={{ scheduler_asset_version }}"></script>

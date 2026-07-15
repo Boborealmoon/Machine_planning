@@ -2,6 +2,10 @@
 
 {% block title %}QAQC View{% endblock %}
 
+{% block favicon %}
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-qaqc.svg') }}" />
+{% endblock %}
+
 {% block body_class %}qaqc-view{% endblock %}
 
 {% block main_class %}app-main--finishing-queue{% endblock %}
@@ -19,67 +23,74 @@
 
   <header class="fq-header">
     <div class="fq-header-text">
-      <h1 class="fq-title">QAQC View</h1>
+      <h1 class="fq-title" data-fq-i18n="page_title">QAQC View</h1>
       <p class="fq-subtitle" id="fq-stats" aria-live="polite"></p>
     </div>
     <div class="fq-header-actions">
-      <button type="button" class="fq-chip fq-chip--tool" id="fq-hide-done" aria-pressed="false" title="Grey out and hide checklist-completed rows">Hide done</button>
-      <button type="button" class="fq-btn fq-btn--ghost" id="fq-manage-inspectors" title="Add or remove QC inspector names">QC team</button>
-      <button type="button" class="fq-btn fq-btn--primary" id="fq-refresh" title="Sync WO status from ERP then reload queue">Refresh</button>
+      <div class="fq-lang-toggle" role="group" aria-label="Language" data-fq-i18n-aria="lang_toggle_aria">
+        <button type="button" id="fq-lang-en" class="fq-lang-btn is-active" aria-pressed="true">EN</button>
+        <button type="button" id="fq-lang-zh" class="fq-lang-btn" aria-pressed="false">中文</button>
+      </div>
+      <button type="button" class="fq-chip fq-chip--tool" id="fq-hide-done" aria-pressed="false" data-fq-i18n="hide_done" data-fq-i18n-title="hide_done_title" title="Grey out and hide checklist-completed rows">Hide done</button>
+      <button type="button" class="fq-btn fq-btn--ghost" id="fq-manage-inspectors" data-fq-i18n="qc_team" data-fq-i18n-title="qc_team_title" title="Add or remove QC inspector names">QC team</button>
+      <button type="button" class="fq-btn fq-btn--primary" id="fq-refresh" data-fq-i18n="refresh" data-fq-i18n-title="refresh_title" title="Sync WO status from ERP then reload queue">Refresh</button>
     </div>
   </header>
 
-  <nav class="fq-nav" aria-label="Queue navigation">
+  <nav class="fq-nav" aria-label="Queue navigation" data-fq-i18n-aria="nav_aria">
     <div class="fq-nav-row">
-      <div class="fq-nav-group" role="tablist" aria-label="Screen mode">
-        <button type="button" class="fq-chip is-active" data-fq-screen="queue" role="tab" aria-selected="true">Queue</button>
-        <button type="button" class="fq-chip" data-fq-screen="assignments" role="tab" aria-selected="false">By assignee</button>
+      <div class="fq-nav-group" role="tablist" aria-label="Screen mode" data-fq-i18n-aria="screen_aria">
+        <button type="button" class="fq-chip is-active" data-fq-screen="queue" role="tab" aria-selected="true" data-fq-i18n="screen_queue">Queue</button>
+        <button type="button" class="fq-chip" data-fq-screen="assignments" role="tab" aria-selected="false" data-fq-i18n="screen_assignments">By assignee</button>
         <button type="button" class="fq-chip" data-fq-screen="material_issue" role="tab" aria-selected="false">
-          Mat issue &amp; assy <span class="fq-chip-count" id="fq-count-material_issue" hidden>0</span>
+          <span data-fq-i18n="screen_material_issue">Mat issue &amp; assy</span> <span class="fq-chip-count" id="fq-count-material_issue" hidden>0</span>
         </button>
         <button type="button" class="fq-chip" data-fq-screen="material_inspection" role="tab" aria-selected="false">
-          Material inspection <span class="fq-chip-count" id="fq-count-material_inspection" hidden>0</span>
+          <span data-fq-i18n="screen_material_inspection">Material inspection</span> <span class="fq-chip-count" id="fq-count-material_inspection" hidden>0</span>
+        </button>
+        <button type="button" class="fq-chip" data-fq-screen="qc_queue" role="tab" aria-selected="false">
+          <span data-fq-i18n="screen_qc_queue">QC queue</span> <span class="fq-chip-count" id="fq-count-qc_queue" hidden>0</span>
         </button>
       </div>
-      <div class="fq-nav-group fq-nav-group--ps-types" role="group" aria-label="PS type filter">
+      <div class="fq-nav-group fq-nav-group--ps-types" role="group" aria-label="PS type filter" data-fq-i18n-aria="ps_type_aria">
         <button type="button" class="fq-chip is-active" data-fq-ps-type="APS" aria-pressed="true">APS</button>
         <button type="button" class="fq-chip is-active" data-fq-ps-type="NPS" aria-pressed="true">NPS</button>
         <button type="button" class="fq-chip" data-fq-ps-type="MPS" aria-pressed="false">MPS</button>
         <button type="button" class="fq-chip" data-fq-ps-type="PPS" aria-pressed="false">PPS</button>
         <button type="button" class="fq-chip" data-fq-ps-type="CPS" aria-pressed="false">CPS</button>
         <button type="button" class="fq-chip" data-fq-ps-type="SR" aria-pressed="false">SR</button>
-        <button type="button" class="fq-chip" data-fq-ps-type="TEMP" aria-pressed="false">Temp</button>
+        <button type="button" class="fq-chip" data-fq-ps-type="TEMP" aria-pressed="false" data-fq-i18n="temp">Temp</button>
       </div>
     </div>
     <div class="fq-nav-row">
-      <div class="fq-nav-group fq-nav-group--stages" id="fq-stage-filter-wrap" role="tablist" aria-label="Finishing stage">
+      <div class="fq-nav-group fq-nav-group--stages" id="fq-stage-filter-wrap" role="tablist" aria-label="Finishing stage" data-fq-i18n-aria="stage_aria">
         <button type="button" class="fq-chip" data-fq-stage="all" role="tab" aria-selected="false">
-          Overall <span class="fq-chip-count" id="fq-count-all" hidden>0</span>
+          <span data-fq-i18n="stage_all">Overall</span> <span class="fq-chip-count" id="fq-count-all" hidden>0</span>
         </button>
         <button type="button" class="fq-chip" data-fq-stage="deburring" role="tab" aria-selected="false">
-          Deburring <span class="fq-chip-count" id="fq-count-deburring" hidden>0</span>
+          <span data-fq-i18n="stage_deburring">Deburring</span> <span class="fq-chip-count" id="fq-count-deburring" hidden>0</span>
         </button>
         <button type="button" class="fq-chip is-active" data-fq-stage="final_inspection" role="tab" aria-selected="true">
-          Final inspection <span class="fq-chip-count" id="fq-count-final_inspection" hidden>0</span>
+          <span data-fq-i18n="stage_final_inspection">Final inspection</span> <span class="fq-chip-count" id="fq-count-final_inspection" hidden>0</span>
         </button>
         <button type="button" class="fq-chip" data-fq-stage="packing" role="tab" aria-selected="false">
-          Packing <span class="fq-chip-count" id="fq-count-packing" hidden>0</span>
+          <span data-fq-i18n="stage_packing">Packing</span> <span class="fq-chip-count" id="fq-count-packing" hidden>0</span>
         </button>
         <button type="button" class="fq-chip" data-fq-stage="engraving_packing" role="tab" aria-selected="false">
-          Pack &amp; engrave <span class="fq-chip-count" id="fq-count-engraving_packing" hidden>0</span>
+          <span data-fq-i18n="stage_engraving_packing">Pack &amp; engrave</span> <span class="fq-chip-count" id="fq-count-engraving_packing" hidden>0</span>
         </button>
       </div>
     </div>
     <div class="fq-nav-row fq-nav-row--material-inspection" id="fq-mi-toolbar" hidden>
-      <div class="fq-nav-group" role="tablist" aria-label="Material inspection status">
+      <div class="fq-nav-group" role="tablist" aria-label="Material inspection status" data-fq-i18n-aria="mi_status_aria">
         <button type="button" class="fq-chip is-active" data-fq-mi-view="outstanding" role="tab" aria-selected="true">
-          Outstanding <span class="fq-mi-pill fq-mi-pill--o">O</span> <span class="fq-chip-count" id="fq-count-mi-outstanding" hidden>0</span>
+          <span data-fq-i18n="mi_outstanding">Outstanding</span> <span class="fq-mi-pill fq-mi-pill--o">O</span> <span class="fq-chip-count" id="fq-count-mi-outstanding" hidden>0</span>
         </button>
         <button type="button" class="fq-chip" data-fq-mi-view="ready" role="tab" aria-selected="false">
-          Ready <span class="fq-mi-pill fq-mi-pill--r">R</span> <span class="fq-chip-count" id="fq-count-mi-ready" hidden>0</span>
+          <span data-fq-i18n="mi_ready">Ready</span> <span class="fq-mi-pill fq-mi-pill--r">R</span> <span class="fq-chip-count" id="fq-count-mi-ready" hidden>0</span>
         </button>
         <button type="button" class="fq-chip" data-fq-mi-view="historical" role="tab" aria-selected="false">
-          Historical <span class="fq-mi-pill fq-mi-pill--h">H</span> <span class="fq-chip-count" id="fq-count-mi-historical" hidden>0</span>
+          <span data-fq-i18n="mi_historical">Historical</span> <span class="fq-mi-pill fq-mi-pill--h">H</span> <span class="fq-chip-count" id="fq-count-mi-historical" hidden>0</span>
         </button>
       </div>
       <label class="fq-mi-search">
@@ -88,68 +99,85 @@
             <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
             <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
-          <input id="fq-mi-search" class="planner-page-search-input" type="search" placeholder="Inspection, PO, supplier, GRN, part..." autocomplete="off">
+          <input id="fq-mi-search" class="planner-page-search-input" type="search" placeholder="Inspection, PO, supplier, GRN, part..." data-fq-i18n-placeholder="mi_search_placeholder" autocomplete="off">
+        </span>
+      </label>
+    </div>
+    <div class="fq-nav-row fq-nav-row--material-inspection" id="fq-qcq-toolbar" hidden>
+      <div class="fq-nav-group" role="tablist" aria-label="QC queue status" data-fq-i18n-aria="qcq_status_aria">
+        <button type="button" class="fq-chip is-active" data-fq-qcq-view="outstanding" role="tab" aria-selected="true">
+          <span data-fq-i18n="mi_outstanding">Outstanding</span> <span class="fq-mi-pill fq-mi-pill--o">O</span> <span class="fq-chip-count" id="fq-count-qcq-outstanding" hidden>0</span>
+        </button>
+        <button type="button" class="fq-chip" data-fq-qcq-view="historical" role="tab" aria-selected="false">
+          <span data-fq-i18n="mi_historical">Historical</span> <span class="fq-mi-pill fq-mi-pill--h">H</span> <span class="fq-chip-count" id="fq-count-qcq-historical" hidden>0</span>
+        </button>
+      </div>
+      <div class="fq-qcq-segment-filter">
+        <div class="filter-dropdown" id="fq-qcq-segment-dropdown">
+          <button class="filter-dropdown-btn" type="button" id="fq-qcq-segment-btn">APS, NPS ▾</button>
+          <div class="filter-dropdown-panel" id="fq-qcq-segment-panel" hidden>
+            <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="SR" /> [SR]</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
+            <label class="filter-dropdown-item"><input type="checkbox" value="TEMP" /> TEMP</label>
+          </div>
+        </div>
+      </div>
+      <label class="fq-mi-search">
+        <span class="planner-page-search-wrap">
+          <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input id="fq-qcq-search" class="planner-page-search-input" type="search" placeholder="Inspection, WO, MPS, process sheet, part, SO, stage, segment..." data-fq-i18n-placeholder="qcq_search_placeholder" autocomplete="off">
         </span>
       </label>
     </div>
   </nav>
 
-  <div id="fq-assignee-board" class="fq-assignee-board" hidden aria-label="Workload by assignee"></div>
+  <div id="fq-assignee-board" class="fq-assignee-board" hidden aria-label="Workload by assignee" data-fq-i18n-aria="board_aria"></div>
 
-  <div id="fq-loading" class="fq-loading"><div class="fq-spinner" aria-hidden="true"></div> Loading post-machining queue...</div>
+  <div id="fq-loading" class="fq-loading"><div class="fq-spinner" aria-hidden="true"></div> <span data-fq-i18n="loading">Loading post-machining queue...</span></div>
 
 
 
   <div id="fq-table-wrap" class="fq-table-card" hidden>
     <div class="fq-table-scroll">
     <table class="fq-table">
-
       <thead>
-
         <tr>
-
-          <th class="fq-col-actions fq-col-sticky" title="Checklist &amp; exceptions">QA</th>
-
+          <th class="fq-col-actions fq-col-sticky" data-fq-i18n="col_done" data-fq-i18n-title="col_done_title" title="Checklist &amp; exceptions">Done</th>
           <th class="fq-col-sticky fq-col-sticky--job so-col-head" data-fq-sort-col="ps_id">
-            <button type="button" class="so-col-sort-btn" data-fq-sort="ps_id">Job <span data-fq-sort-icon="ps_id">↕</span></button>
+            <button type="button" class="so-col-sort-btn" data-fq-sort="ps_id"><span data-fq-i18n="col_job">Job</span> <span data-fq-sort-icon="ps_id">↕</span></button>
           </th>
-
           <th data-fq-sort-col="current_stage_desc">
-            <button type="button" class="so-col-sort-btn" data-fq-sort="current_stage_desc">Stage <span data-fq-sort-icon="current_stage_desc">↕</span></button>
+            <button type="button" class="so-col-sort-btn" data-fq-sort="current_stage_desc"><span data-fq-i18n="col_stage">Stage</span> <span data-fq-sort-icon="current_stage_desc">↕</span></button>
           </th>
-
           <th data-fq-sort-col="current_stage_status">
-            <button type="button" class="so-col-sort-btn" data-fq-sort="current_stage_status">Status <span data-fq-sort-icon="current_stage_status">↕</span></button>
+            <button type="button" class="so-col-sort-btn" data-fq-sort="current_stage_status"><span data-fq-i18n="col_status">Status</span> <span data-fq-sort-icon="current_stage_status">↕</span></button>
           </th>
-
           <th class="so-col-head" data-fq-sort-col="due_date">
-            <button type="button" class="so-col-sort-btn" data-fq-sort="due_date">PO due <span data-fq-sort-icon="due_date">↕</span></button>
+            <button type="button" class="so-col-sort-btn" data-fq-sort="due_date"><span data-fq-i18n="col_po_due">PO due</span> <span data-fq-sort-icon="due_date">↕</span></button>
           </th>
-
           <th class="so-col-head" data-fq-sort-col="coway_proposed_edd">
-            <button type="button" class="so-col-sort-btn" data-fq-sort="coway_proposed_edd">EDD <span data-fq-sort-icon="coway_proposed_edd">↕</span></button>
+            <button type="button" class="so-col-sort-btn" data-fq-sort="coway_proposed_edd"><span data-fq-i18n="col_edd">EDD</span> <span data-fq-sort-icon="coway_proposed_edd">↕</span></button>
           </th>
-
           <th class="so-col-head" data-fq-sort-col="commitment_date">
-            <button type="button" class="so-col-sort-btn" data-fq-sort="commitment_date" title="Week and day from Coway EDD or PO due">Delivery schedule <span data-fq-sort-icon="commitment_date">↕</span></button>
+            <button type="button" class="so-col-sort-btn" data-fq-sort="commitment_date" data-fq-i18n-title="col_delivery_schedule_title" title="Week and day from Coway EDD or PO due"><span data-fq-i18n="col_delivery_schedule">Delivery schedule</span> <span data-fq-sort-icon="commitment_date">↕</span></button>
           </th>
-
           <th class="so-col-head" data-fq-sort-col="qa_due_date">
-            <button type="button" class="so-col-sort-btn" data-fq-sort="qa_due_date">QA due <span data-fq-sort-icon="qa_due_date">↕</span></button>
+            <button type="button" class="so-col-sort-btn" data-fq-sort="qa_due_date"><span data-fq-i18n="col_qa_due">QA due</span> <span data-fq-sort-icon="qa_due_date">↕</span></button>
           </th>
-
           <th data-fq-sort-col="inspector_name">
-            <button type="button" class="so-col-sort-btn" data-fq-sort="inspector_name">Assigned <span data-fq-sort-icon="inspector_name">↕</span></button>
+            <button type="button" class="so-col-sort-btn" data-fq-sort="inspector_name"><span data-fq-i18n="col_assigned">Assigned</span> <span data-fq-sort-icon="inspector_name">↕</span></button>
           </th>
-
-          <th class="fq-col-more">More</th>
-
+          <th class="fq-col-more" data-fq-i18n="col_more">More</th>
         </tr>
-
       </thead>
-
       <tbody id="fq-table-body"></tbody>
-
     </table>
     </div>
   </div>
@@ -159,17 +187,17 @@
       <table class="fq-table fq-table--material-issue">
         <thead>
           <tr>
-            <th class="fq-col-sticky fq-col-sticky--job">Job</th>
-            <th>Part</th>
-            <th>Description</th>
-            <th>Status</th>
-            <th>Qty</th>
-            <th>SO qty</th>
-            <th>Shipped</th>
-            <th>PO due</th>
-            <th>EDD</th>
-            <th>Material in</th>
-            <th>Remarks</th>
+            <th class="fq-col-sticky fq-col-sticky--job" data-fq-i18n="mia_col_job">Job</th>
+            <th data-fq-i18n="mia_col_part">Part</th>
+            <th data-fq-i18n="mia_col_description">Description</th>
+            <th data-fq-i18n="mia_col_status">Status</th>
+            <th data-fq-i18n="mia_col_qty">Qty</th>
+            <th data-fq-i18n="mia_col_so_qty">SO qty</th>
+            <th data-fq-i18n="mia_col_shipped">Shipped</th>
+            <th data-fq-i18n="mia_col_po_due">PO due</th>
+            <th data-fq-i18n="mia_col_edd">EDD</th>
+            <th data-fq-i18n="mia_col_material_in">Material in</th>
+            <th data-fq-i18n="mia_col_remarks">Remarks</th>
           </tr>
         </thead>
         <tbody id="fq-mia-table-body"></tbody>
@@ -182,18 +210,18 @@
       <table class="fq-table fq-table--material-inspection">
         <thead>
           <tr>
-            <th class="fq-col-sticky fq-col-sticky--mi">Inspection</th>
-            <th>PO</th>
-            <th>Supplier</th>
-            <th>Shipment</th>
-            <th>GRN</th>
-            <th>Arrival</th>
-            <th>Part</th>
-            <th>Description</th>
-            <th>Qty</th>
-            <th>ERP status</th>
-            <th class="fq-col-mi-assignee">Assigned to</th>
-            <th class="fq-col-mi-done">Done</th>
+            <th class="fq-col-sticky fq-col-sticky--mi" data-fq-i18n="mi_col_inspection">Inspection</th>
+            <th data-fq-i18n="mi_col_po">PO</th>
+            <th data-fq-i18n="mi_col_supplier">Supplier</th>
+            <th data-fq-i18n="mi_col_shipment">Shipment</th>
+            <th data-fq-i18n="mi_col_grn">GRN</th>
+            <th data-fq-i18n="mi_col_arrival">Arrival</th>
+            <th data-fq-i18n="mi_col_part">Part</th>
+            <th data-fq-i18n="mi_col_description">Description</th>
+            <th data-fq-i18n="mi_col_qty">Qty</th>
+            <th data-fq-i18n="mi_col_erp_status">ERP status</th>
+            <th class="fq-col-mi-assignee" data-fq-i18n="mi_col_assigned_to">Assigned to</th>
+            <th class="fq-col-mi-done" data-fq-i18n="mi_col_done">Done</th>
           </tr>
         </thead>
         <tbody id="fq-mi-table-body"></tbody>
@@ -201,8 +229,36 @@
     </div>
   </div>
 
+  <div id="fq-qcq-table-wrap" class="fq-table-card fq-table-card--qc-queue" hidden>
+    <div class="fq-table-scroll">
+      <table class="fq-table fq-table--qc-queue">
+        <thead>
+          <tr>
+            <th class="fq-col-sticky fq-col-sticky--mi" data-fq-i18n="qcq_col_inspection">Inspection</th>
+            <th data-fq-i18n="qcq_col_wo">WO</th>
+            <th data-fq-i18n="qcq_col_mps">MPS</th>
+            <th data-fq-i18n="qcq_col_process_sheet">Process sheet</th>
+            <th data-fq-i18n="qcq_col_segment">Segment</th>
+            <th data-fq-i18n="qcq_col_part">Part</th>
+            <th data-fq-i18n="qcq_col_stage">Stage</th>
+            <th data-fq-i18n="qcq_col_so">SO</th>
+            <th data-fq-i18n="qcq_col_wo_qty">WO qty</th>
+            <th data-fq-i18n="qcq_col_assigned">Assigned</th>
+            <th data-fq-i18n="qcq_col_erp_status">ERP status</th>
+            <th data-fq-i18n="qcq_col_wo_status">WO status</th>
+            <th data-fq-i18n="qcq_col_inspector">Inspector</th>
+            <th data-fq-i18n="qcq_col_started">Started</th>
+            <th data-fq-i18n="qcq_col_ended">Ended</th>
+            <th data-fq-i18n="qcq_col_ncr">NCR</th>
+          </tr>
+        </thead>
+        <tbody id="fq-qcq-table-body"></tbody>
+      </table>
+    </div>
+  </div>
+
   <div id="fq-empty" class="fq-empty-card" hidden>
-    <p id="fq-empty-text">No partials are currently at a finishing stage.</p>
+    <p id="fq-empty-text" data-fq-i18n="empty_default">No partials are currently at a finishing stage.</p>
   </div>
 
   <p class="fq-meta" id="fq-meta" hidden></p>
@@ -212,67 +268,36 @@
 
 
 <div id="fq-detail" class="new-orders-detail" hidden>
-
   <div class="new-orders-detail-backdrop" data-action="close-detail" aria-hidden="true"></div>
-
   <aside class="new-orders-detail-panel" role="dialog" aria-modal="true" aria-labelledby="fq-detail-title">
-
     <div class="new-orders-detail-head">
-
       <div>
-
-        <p class="new-orders-detail-kicker">QAQC detail</p>
-
+        <p class="new-orders-detail-kicker" data-fq-i18n="detail_kicker">QAQC detail</p>
         <h2 class="new-orders-detail-title" id="fq-detail-title"></h2>
-
       </div>
-
-      <button type="button" class="btn btn-ghost btn-sm" id="fq-detail-close" aria-label="Close">Close</button>
-
+      <button type="button" class="btn btn-ghost btn-sm" id="fq-detail-close" aria-label="Close" data-fq-i18n="detail_close" data-fq-i18n-aria="detail_close_aria">Close</button>
     </div>
-
     <div class="new-orders-detail-body" id="fq-detail-body"></div>
-
     <p id="fq-detail-save-status" class="fq-detail-save-status" hidden aria-live="polite"></p>
-
-    <p class="new-orders-detail-foot">Synced staging · edits save automatically</p>
-
+    <p class="new-orders-detail-foot" data-fq-i18n="detail_foot">Synced staging · edits save automatically</p>
   </aside>
-
 </div>
 
-
-
 <div id="fq-inspector-modal" class="fq-modal-backdrop" hidden>
-
   <div class="fq-modal-box" role="dialog" aria-modal="true" aria-labelledby="fq-inspector-modal-title">
-
     <div class="fq-modal-head">
-
-      <h2 class="fq-modal-title" id="fq-inspector-modal-title">QC inspectors</h2>
-
-      <button type="button" class="btn btn-ghost btn-sm" id="fq-inspector-modal-close" aria-label="Close">Close</button>
-
+      <h2 class="fq-modal-title" id="fq-inspector-modal-title" data-fq-i18n="inspectors_title">QC inspectors</h2>
+      <button type="button" class="btn btn-ghost btn-sm" id="fq-inspector-modal-close" aria-label="Close" data-fq-i18n="detail_close" data-fq-i18n-aria="detail_close_aria">Close</button>
     </div>
-
-    <p class="fq-modal-hint">Add or remove inspector names. They appear in the Assigned dropdown on the queue.</p>
-
+    <p class="fq-modal-hint" data-fq-i18n="inspectors_hint">Add or remove inspector names. They appear in the Assigned dropdown on the queue.</p>
     <p id="fq-inspector-status" class="fq-inspector-status" hidden></p>
-
     <form id="fq-inspector-form" class="fq-inspector-form">
-
-      <input type="text" id="fq-inspector-name" class="planner-page-search-input" placeholder="Inspector name" autocomplete="off" required>
-
-      <button type="submit" class="btn btn-primary btn-sm">Add inspector</button>
-
+      <input type="text" id="fq-inspector-name" class="planner-page-search-input" placeholder="Inspector name" data-fq-i18n-placeholder="inspectors_placeholder" autocomplete="off" required>
+      <button type="submit" class="btn btn-primary btn-sm" data-fq-i18n="inspectors_add">Add inspector</button>
     </form>
-
     <ul id="fq-inspector-list" class="fq-inspector-list"></ul>
-
-    <p id="fq-inspector-empty" class="new-orders-empty" hidden>No inspectors yet.</p>
-
+    <p id="fq-inspector-empty" class="new-orders-empty" hidden data-fq-i18n="inspectors_empty">No inspectors yet.</p>
   </div>
-
 </div>
 
 {% endblock %}
@@ -1028,6 +1053,10 @@
     }, 1200);
   }
 })();
+</script>
+<script src="{{ url_for('static', filename='js/qaqc_i18n.js') }}?v={{ fq_asset_version }}"></script>
+<script>
+  if (typeof window.fqBindLocaleToggle === 'function') window.fqBindLocaleToggle();
 </script>
 <script src="{{ url_for('static', filename='js/finishing_queue.js') }}?v={{ fq_asset_version }}" onload="window.fqOnMainScriptLoad && window.fqOnMainScriptLoad()" onerror="window.fqScriptLoadFailed && window.fqScriptLoadFailed()"></script>
 {% endblock %}

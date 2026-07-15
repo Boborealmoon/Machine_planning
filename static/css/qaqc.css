@@ -45,6 +45,44 @@ body.qaqc-view {
   flex-wrap: wrap;
 }
 
+.fq-lang-toggle {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid rgba(148, 163, 184, 0.55);
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+
+.fq-lang-btn {
+  min-width: 34px;
+  min-height: 30px;
+  padding: 2px 10px;
+  border: none;
+  background: transparent;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1.15;
+  color: #64748b;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.fq-lang-btn + .fq-lang-btn {
+  border-left: 1px solid rgba(148, 163, 184, 0.4);
+}
+
+.fq-lang-btn:hover {
+  color: #1e293b;
+  background: rgba(241, 245, 249, 0.9);
+}
+
+.fq-lang-btn.is-active {
+  background: rgba(59, 130, 246, 0.14);
+  color: #1d4ed8;
+}
+
 .fq-chip--tool {
   padding: 6px 11px;
   font-size: 0.75rem;
@@ -241,14 +279,19 @@ body.qaqc-view {
   z-index: 2;
   padding: 11px 12px;
   text-align: left;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: #64748b;
+  text-transform: none;
+  letter-spacing: 0.01em;
+  color: #475569;
   background: #f8fafc;
   border-bottom: 2px solid #e2e8f0;
   white-space: nowrap;
+}
+
+.qaqc-view--zh .fq-table thead th {
+  font-size: 0.78rem;
+  letter-spacing: 0;
 }
 
 .fq-table tbody td {
@@ -284,12 +327,12 @@ body.qaqc-view {
 }
 
 .fq-table tbody tr.fq-row--done td {
-  background: #f1f5f9;
+  background: #f0fdf4;
   color: #94a3b8;
 }
 
 .fq-table tbody tr.fq-row--done:hover td {
-  background: #e8edf3;
+  background: #dcfce7;
 }
 
 .fq-table tbody tr.fq-row--done .fq-job-ps,
@@ -391,7 +434,7 @@ body.qaqc-view {
 }
 
 .fq-table tbody tr.fq-row--done .fq-col-sticky {
-  background: #f1f5f9;
+  background: #f0fdf4;
 }
 
 .fq-col-sticky.fq-col-actions,
@@ -716,6 +759,8 @@ body.qaqc-view {
   color: inherit;
   cursor: pointer;
   padding: 0;
+  text-transform: none;
+  letter-spacing: 0.01em;
 }
 
 .fq-table thead th.is-sorted {
@@ -1013,6 +1058,10 @@ body.qaqc-view {
   gap: 12px;
 }
 
+.fq-qcq-segment-filter {
+  flex: 0 0 auto;
+}
+
 .fq-mi-search {
   flex: 1 1 240px;
   min-width: 200px;
@@ -1116,4 +1165,12 @@ body.qaqc-view {
 
 .fq-table--material-inspection tbody tr.fq-row--mi .fq-col-desc {
   max-width: 260px;
+}
+
+.fq-table-card--qc-queue {
+  margin-top: 0.5rem;
+}
+
+.fq-table--qc-queue tbody tr.fq-row--qcq:hover td {
+  background: rgba(15, 23, 42, 0.04);
 }

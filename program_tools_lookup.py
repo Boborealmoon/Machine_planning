@@ -40,6 +40,19 @@ def ps_op_key(ps_id: str, *op_candidates: str) -> str:
     return f"{ps}|{op}"
 
 
+def normalize_bom_code(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip().upper())
+
+
+def part_bom_op_key(part_no: str, bom_code: str, *op_candidates: str) -> str:
+    part = normalize_part_no(part_no)
+    bom = normalize_bom_code(bom_code)
+    op = normalize_op_no(*op_candidates)
+    if not part or not bom or not op:
+        return ""
+    return f"PART|{part}|{bom}|{op}"
+
+
 def part_op_key(part_no: str, *op_candidates: str) -> str:
     part = normalize_part_no(part_no)
     op = normalize_op_no(*op_candidates)
@@ -68,8 +81,9 @@ def _prefer_row(current: dict[str, str] | None, candidate: dict[str, str]) -> di
 
 
 def build_program_tools_lookup(rows: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
-    """Build lookup maps keyed by ps|op and PART|part|op."""
+    """Build lookup maps keyed by ps|op, PART|part|bom|op, and PART|part|op."""
     by_ps_op: dict[str, dict[str, str]] = {}
+    by_part_bom_op: dict[str, dict[str, str]] = {}
     by_part_op: dict[str, dict[str, str]] = {}
 
     for row in rows:
@@ -89,6 +103,9 @@ def build_program_tools_lookup(rows: list[dict[str, Any]]) -> dict[str, dict[str
             row.get("part_number"),
             row.get("part_no_erp"),
         ]
+        bom_code = str(
+            row.get("bom_code") or row.get("erp_bom_code") or ""
+        ).strip()
 
         for ps in ps_values:
             key = ps_op_key(ps, *op_values)
@@ -96,11 +113,20 @@ def build_program_tools_lookup(rows: list[dict[str, Any]]) -> dict[str, dict[str
                 by_ps_op[key] = _prefer_row(by_ps_op.get(key), links)
 
         part = next((str(p or "").strip() for p in part_values if p), "")
+        if part and bom_code:
+            pbkey = part_bom_op_key(part, bom_code, *op_values)
+            if pbkey:
+                by_part_bom_op[pbkey] = _prefer_row(by_part_bom_op.get(pbkey), links)
+
         pkey = part_op_key(part, *op_values)
         if pkey:
             by_part_op[pkey] = _prefer_row(by_part_op.get(pkey), links)
 
-    return {"by_ps_op": by_ps_op, "by_part_op": by_part_op}
+    return {
+        "by_ps_op": by_ps_op,
+        "by_part_bom_op": by_part_bom_op,
+        "by_part_op": by_part_op,
+    }
 
 
 def lookup_program_tools(
@@ -108,6 +134,7 @@ def lookup_program_tools(
     *,
     ps_id: str,
     part_no: str = "",
+    bom_code: str = "",
     source_op_no: str = "",
     operation_label: str = "",
     operation_name: str = "",
@@ -119,5 +146,10 @@ def lookup_program_tools(
     hit = lookup.get("by_ps_op", {}).get(key)
     if hit:
         return hit
+    pbkey = part_bom_op_key(part_no, bom_code, *op_candidates)
+    if pbkey:
+        hit = lookup.get("by_part_bom_op", {}).get(pbkey)
+        if hit:
+            return hit
     pkey = part_op_key(part_no, *op_candidates)
     return lookup.get("by_part_op", {}).get(pkey)

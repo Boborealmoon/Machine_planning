@@ -35,7 +35,10 @@ from planning.pending_pp_route import pending_pp_bp
 from planning.sales_report_route import sales_report_bp
 from planning.job_ratio_route import job_ratio_bp
 from planning.material_inspection_route import material_inspection_bp
+from planning.qc_quality_queue_route import qc_quality_queue_bp
 from planning.kobelco_mps_archive_route import kobelco_mps_archive_bp
+from planning.pr_status_enquiry_route import pr_status_enquiry_bp
+from planning.program_tool_tracker_route import program_tool_tracker_bp
 from planning.repeat_orders_route import repeat_orders_bp
 from planning.auk_oee_route import auk_oee_bp
 from planning.daily_output_route import (
@@ -65,6 +68,7 @@ from planning.inventory_enquiry_route import inventory_enquiry_bp
 from planning.excel_local_route import excel_local_bp
 from planning.frame_agreement_route import frame_agreement_bp
 from planning.email_route import email_bp
+from planning.mro_route import MRO_PATH, mro_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
@@ -81,7 +85,10 @@ app.register_blueprint(pending_pp_bp)
 app.register_blueprint(sales_report_bp)
 app.register_blueprint(job_ratio_bp)
 app.register_blueprint(material_inspection_bp)
+app.register_blueprint(qc_quality_queue_bp)
 app.register_blueprint(kobelco_mps_archive_bp)
+app.register_blueprint(pr_status_enquiry_bp)
+app.register_blueprint(program_tool_tracker_bp)
 app.register_blueprint(repeat_orders_bp)
 app.register_blueprint(auk_oee_bp)
 app.register_blueprint(bom_variation_bp)
@@ -108,6 +115,7 @@ app.register_blueprint(inventory_enquiry_bp)
 app.register_blueprint(excel_local_bp)
 app.register_blueprint(frame_agreement_bp)
 app.register_blueprint(email_bp)
+app.register_blueprint(mro_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 
@@ -213,6 +221,7 @@ _FINISHING_QUEUE_PUBLIC_PATHS = frozenset(
 _DRIVER_VIEW_PUBLIC_PATHS = frozenset(
     {DRIVER_VIEW_PATH.lower(), _LEGACY_DRIVER_VIEW_PATH.lower()}
 )
+_MRO_PUBLIC_PATHS = frozenset({MRO_PATH.lower(), "/mro"})
 
 
 def _is_gate_public_path(path: str) -> bool:
@@ -229,6 +238,8 @@ def _is_gate_public_path(path: str) -> bool:
         return True
     if normalized in _DRIVER_VIEW_PUBLIC_PATHS:
         return True
+    if normalized in _MRO_PUBLIC_PATHS:
+        return True
     return normalized.startswith("/static/") or normalized.startswith("/api/")
 
 
@@ -237,18 +248,6 @@ def _safe_next_path(raw: str) -> str:
     if not target.startswith("/") or target.startswith("//"):
         return PLANNER_PATH
     return target
-
-
-@app.before_request
-def _require_planner_passcode():
-    if not _planner_gate_enabled():
-        return None
-    path = request.path or "/"
-    if _is_gate_public_path(path):
-        return None
-    if _planner_authenticated():
-        return None
-    return redirect(url_for("site_root_gate", next=path))
 
 
 # ── Reports / Analytics passcode gate ───────────────────────────────────────
@@ -319,6 +318,21 @@ def _is_reports_page_path(path: str) -> bool:
 
 def _is_reports_api_path(path: str) -> bool:
     return _path_has_prefix(path, _REPORTS_API_PREFIXES)
+
+
+@app.before_request
+def _require_planner_passcode():
+    if not _planner_gate_enabled():
+        return None
+    path = request.path or "/"
+    if _is_gate_public_path(path):
+        return None
+    # Reports / Analytics use REPORTS_PASSCODE only — not the planner passcode.
+    if _is_reports_page_path(path) or _is_reports_api_path(path):
+        return None
+    if _planner_authenticated():
+        return None
+    return redirect(url_for("site_root_gate", next=path))
 
 
 def _safe_reports_next(raw: str) -> str:
@@ -502,6 +516,10 @@ def supabase_query(sql, params=(), fetchone=False, fetchall=False, commit=False)
 def site_root_gate():
     next_path = _safe_next_path(request.values.get("next") or PLANNER_PATH)
     gate_action = url_for("site_root_gate")
+
+    # Report tabs use REPORTS_PASSCODE — never the planner gate at "/".
+    if _is_reports_page_path(next_path):
+        return redirect(url_for("reports_gate", next=next_path))
 
     if not _planner_gate_enabled():
         return render_template(
@@ -2945,16 +2963,27 @@ def api_trial_block_cycle_time_context(block_id):
 @app.post("/api/planner/cycle-times/import-new")
 def api_planner_cycle_times_import_new():
     """
-    Insert new master rows from planner_program_tools only.
+    Insert new master rows from planner_program_tools and ERP BOM machining steps.
     Existing master rows are never updated or overwritten.
     """
-    from planning.cycle_time_master_import import import_new_from_program_tools
+    from planning.cycle_time_master_import import import_new_from_bom_steps, import_new_from_program_tools
 
     try:
-        result = import_new_from_program_tools()
-        if result.get("error"):
-            return jsonify(result), 503
-        return jsonify(result)
+        sheet = import_new_from_program_tools()
+        if sheet.get("error"):
+            return jsonify(sheet), 503
+        bom = import_new_from_bom_steps()
+        if bom.get("error"):
+            return jsonify(bom), 503
+        return jsonify({
+            "sheet": sheet,
+            "bom_steps": bom,
+            "inserted": int(sheet.get("inserted") or 0) + int(bom.get("inserted") or 0),
+            "message": (
+                f"Sheet: {sheet.get('message', '')} "
+                f"BOM steps: {bom.get('message', '')}"
+            ).strip(),
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -3160,6 +3189,7 @@ def _auto_unschedule_loop():
         run_auto_unschedule_sweep,
     )
     from planning.helpers import planner_db
+    from planning.mpp_planner_queue_service import run_mpp_auto_dequeue_sweep
 
     log.info("auto-unschedule thread started, interval=%ds", AUTO_UNSCHEDULE_INTERVAL)
     migration_done = False
@@ -3173,11 +3203,18 @@ def _auto_unschedule_loop():
                     ensure_saved_anchor_column(con)
                     migration_done = True
                 summary = run_auto_unschedule_sweep(con, dry_run=False)
+                mpp_summary = run_mpp_auto_dequeue_sweep(con, dry_run=False)
             unscheduled = int(summary.get("unscheduled") or 0)
             if unscheduled:
                 log.info(
                     "auto-unschedule: returned %d done block(s) to catalog (anchor preserved)",
                     unscheduled,
+                )
+            dequeued = int(mpp_summary.get("dequeued") or 0)
+            if dequeued:
+                log.info(
+                    "auto-unschedule: dequeued %d completed MPP cycle op(s) from machine lanes",
+                    dequeued,
                 )
         except Exception as e:
             log.error("auto-unschedule error: %s", e)
@@ -3212,6 +3249,7 @@ if __name__ == "__main__":
     log.info("machinist board: http://127.0.0.1:%s%s", port, MACHINIST_BOARD_PATH)
     log.info("QAQC view: http://127.0.0.1:%s%s", port, FINISHING_QUEUE_PATH)
     log.info("driver view: http://127.0.0.1:%s%s", port, DRIVER_VIEW_PATH)
+    log.info("MRO app: http://127.0.0.1:%s%s", port, MRO_PATH)
     if _planner_gate_enabled():
         log.info("planner passcode gate: enabled (POST / then session unlock)")
     else:

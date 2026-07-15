@@ -4,7 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}Production Planner{% endblock %}</title>
+  {% block favicon %}
   <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}" />
+  {% endblock %}
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -97,7 +99,7 @@
       </div>
 
       {# ERP queries & master data #}
-      <div class="nav-dropdown {% if nav_path in ('/bom-variation', '/system') or nav_path.startswith('/planning-data') and nav_path not in ('/planning-data/repeat-orders', '/planning-data/aker-inventory') or active in ('planning_data', 'bom_variation', 'system') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/bom-variation', '/system', '/planning-data/program-tool-tracker') or nav_path.startswith('/planning-data') and nav_path not in ('/planning-data/repeat-orders', '/planning-data/aker-inventory') or active in ('planning_data', 'bom_variation', 'system', 'program_tool_tracker') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="queries-data">
           QUERIES &amp; MASTER DATA <span class="nav-caret">▾</span>
         </button>
@@ -124,9 +126,9 @@
              class="nav-dropdown-item {% if nav_path == '/planning-data/cycle-times' %}nav-dropdown-item--active{% endif %}">
             Master cycle times
           </a>
-          <a href="/planning-data/program-tool-list"
-             class="nav-dropdown-item {% if nav_path == '/planning-data/program-tool-list' %}nav-dropdown-item--active{% endif %}">
-            Program / tool list
+          <a href="/planning-data/program-tool-tracker"
+             class="nav-dropdown-item {% if nav_path == '/planning-data/program-tool-tracker' or active == 'program_tool_tracker' %}nav-dropdown-item--active{% endif %}">
+            Program / tool tracker
           </a>
           <a href="/planning-data/frame-agreement-parts"
              class="nav-dropdown-item {% if nav_path == '/planning-data/frame-agreement-parts' %}nav-dropdown-item--active{% endif %}">
@@ -148,21 +150,21 @@
         <div class="nav-dropdown-menu" id="dd-views">
           <a href="{{ machinist_board_path }}"
              class="nav-dropdown-item {% if nav_path == machinist_board_path or active == 'machinist_board' %}nav-dropdown-item--active{% endif %}">
-            Machinist view
+            Machine Queue Overview
           </a>
           <a href="{{ finishing_queue_path }}"
              class="nav-dropdown-item {% if nav_path == finishing_queue_path or active == 'finishing_queue' %}nav-dropdown-item--active{% endif %}">
-            QAQC view
+            QAQC View
           </a>
           <a href="{{ driver_view_path }}"
              class="nav-dropdown-item {% if nav_path == driver_view_path or active == 'driver_view' %}nav-dropdown-item--active{% endif %}">
-            Delivery schedule
+            Delivery Schedule View
           </a>
         </div>
       </div>
 
       {# Archive — historical / reference views #}
-      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/actual-production', '/material-inspection/no-shipment', '/auk-oee', '/planning-data/aker-inventory', '/preferred-machines', '/kobelco-mps-archive', '/pending-pp') or active in ('daily_output', 'actual_production', 'material_inspection_no_shipment', 'auk_oee', 'aker_inventory', 'preferred_machines', 'kobelco_mps_archive', 'pending_pp') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/actual-production', '/material-inspection/no-shipment', '/auk-oee', '/planning-data/aker-inventory', '/preferred-machines', '/kobelco-mps-archive', '/pending-pp', '/pr-status-enquiry') or active in ('daily_output', 'actual_production', 'material_inspection_no_shipment', 'auk_oee', 'aker_inventory', 'preferred_machines', 'kobelco_mps_archive', 'pending_pp', 'pr_status_enquiry') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="archive">
           ARCHIVE <span class="nav-caret">▾</span>
         </button>
@@ -198,6 +200,10 @@
           <a href="/pending-pp"
              class="nav-dropdown-item {% if nav_path == '/pending-pp' or active == 'pending_pp' %}nav-dropdown-item--active{% endif %}">
             Outstanding PS
+          </a>
+          <a href="/pr-status-enquiry"
+             class="nav-dropdown-item {% if nav_path == '/pr-status-enquiry' or active == 'pr_status_enquiry' %}nav-dropdown-item--active{% endif %}">
+            Tooling PR analytics
           </a>
         </div>
       </div>

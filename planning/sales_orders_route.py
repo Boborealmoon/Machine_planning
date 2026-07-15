@@ -33,7 +33,7 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 16
+_SCHEMA_VERSION = 17
 
 _NOTE_FIELDS = (
     "material_subcon",
@@ -1032,6 +1032,41 @@ def _apply_queued_machines_overlay(
             pp["queued_machines_by_partial"] = by_partial
 
 
+def _apply_new_part_overlay(orders: list[dict[str, Any]]) -> None:
+    """Flag PP lines with no prior process-sheet history on other sales orders."""
+    from .new_orders_route import _fetch_repeat_groups_by_part, _ps_base_id, _similar_ps_for_row
+
+    try:
+        groups = _fetch_repeat_groups_by_part()
+    except Exception as exc:
+        logger.warning("new-part overlay skipped: %s", exc)
+        return
+
+    so_ps: dict[str, set[str]] = {}
+    for order in orders:
+        so_no = compact_text(order.get("sales_order_no"))
+        if not so_no:
+            continue
+        bases = so_ps.setdefault(so_no, set())
+        for pp in order.get("pp_vouchers") or []:
+            ps_base = _ps_base_id(pp.get("process_sheet_no") or pp.get("pp_voucher_no") or "")
+            if ps_base:
+                bases.add(ps_base)
+
+    for order in orders:
+        so_no = compact_text(order.get("sales_order_no"))
+        exclude = so_ps.get(so_no)
+        for pp in order.get("pp_vouchers") or []:
+            row = {
+                "source_voucher_no": so_no,
+                "inventory_code": pp.get("inventory_code"),
+                "process_sheet_no": pp.get("process_sheet_no") or pp.get("pp_voucher_no"),
+            }
+            similar = _similar_ps_for_row(row, groups, exclude_ps=exclude) if groups else []
+            pp["similar_ps"] = similar
+            pp["is_new_part"] = not similar
+
+
 def _strip_completed_highlights(orders: list[dict[str, Any]]) -> list[str]:
     to_clear: list[str] = []
     for order in orders:
@@ -1240,6 +1275,7 @@ def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, An
             apply_frame_agreement_flags(orders, frame_agreement_keys)
         except Exception as exc:
             logger.warning("frame agreement overlay skipped: %s", exc)
+        _apply_new_part_overlay(orders)
         payload = _split_by_shipped_completion(orders)
         payload["frame_agreement_parts"] = sorted(frame_agreement_keys)
         return payload

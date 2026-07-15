@@ -1,0 +1,230 @@
+{% extends "base.html" %}
+{% block title %}Program / Tool Tracker{% endblock %}
+{% block main_class %}app-main--new-orders{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=ptt-20260710a">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/program_tool_tracker.css') }}?v=ptt-20260710a">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/program_tool_list.css') }}?v=ptt-20260710a">
+{% endblock %}
+{% block content %}
+<div class="ptt-page new-orders-page">
+  <div class="new-orders-header">
+    <div>
+      <h1 class="new-orders-title">Program / Tool Tracker</h1>
+      <p class="new-orders-subtitle" id="ptt-subtitle">
+        Outstanding process sheet tracker for programme / tool-list coverage.
+        Outstanding = active PS still open (SO qty &gt; shipped, production not complete).
+        Defaults to <strong>NPS</strong>. Toggle to include completed PS.
+      </p>
+    </div>
+    <div class="new-orders-header-actions">
+      <span class="ptt-catalogue-only" hidden>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-summary">Part × Op summary ▸</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-sync-supabase">↗ Sync to Supabase</button>
+        <button type="button" class="btn btn-dark btn-sm" id="btn-sync">Sync from Google Sheets</button>
+      </span>
+      <button type="button" class="btn btn-ghost btn-sm ptt-tracker-only" id="ptt-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <div class="ptt-view-tabs" role="tablist" aria-label="Program tool views">
+    <button type="button" class="ptt-view-tab ptt-view-tab--active" data-view="tracker" role="tab" aria-selected="true">
+      PS Tracker
+    </button>
+    <button type="button" class="ptt-view-tab" data-view="catalogue" role="tab" aria-selected="false">
+      Program / Tool List
+    </button>
+  </div>
+
+  <div id="ptt-panel-tracker" class="ptt-panel">
+    <div class="ptt-toolbar card">
+      <div class="ptt-toolbar-row">
+        <label class="new-orders-filter new-orders-filter--grow">
+          <span>Search</span>
+          <span class="planner-page-search-wrap">
+            <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <input id="ptt-search" class="planner-page-search-input" type="search"
+                   placeholder="PS, part no., BOM, programme no..." autocomplete="off">
+          </span>
+        </label>
+        <label class="new-orders-filter">
+          <span>PS type</span>
+          <select id="ptt-ps-type" class="planner-page-search-input">
+            <option value="NPS" selected>NPS</option>
+            <option value="APS">APS</option>
+            <option value="MPS">MPS</option>
+            <option value="PPS">PPS</option>
+            <option value="CPS">CPS</option>
+            <option value="SR">SR</option>
+            <option value="TEMP">[Temp]</option>
+            <option value="">All types</option>
+          </select>
+        </label>
+        <label class="new-orders-filter">
+          <span>Match filter</span>
+          <select id="ptt-match-filter" class="planner-page-search-input">
+            <option value="" selected>All loaded PS</option>
+            <option value="any_gap">Has gaps (missing/partial)</option>
+            <option value="missing">Missing programme/tools</option>
+            <option value="partial">Partial matches only</option>
+            <option value="full">Fully matched CNC ops</option>
+          </select>
+        </label>
+        <label class="new-orders-filter new-orders-filter--checkbox">
+          <input type="checkbox" id="ptt-show-completed">
+          <span>Include completed PS</span>
+        </label>
+        <div class="new-orders-stats" id="ptt-stats"></div>
+      </div>
+      <div class="ptt-chip-row" id="ptt-quick-filters" aria-label="Quick filters"></div>
+      <p class="ptt-filter-note" id="ptt-filter-note"></p>
+    </div>
+
+    <div class="ptt-summary-grid card" id="ptt-summary" hidden></div>
+
+    <div id="ptt-loading" class="loading"><div class="spinner"></div> Loading tracker...</div>
+    <div id="ptt-table-wrap" class="new-orders-table-wrap card ptt-table-wrap" hidden>
+      <table class="ptt-tracker-table">
+        <thead>
+          <tr>
+            <th>PS</th>
+            <th>Part</th>
+            <th>BOM / Route</th>
+            <th>Qty</th>
+            <th>Shipped</th>
+            <th>Due</th>
+            <th>CNC ops</th>
+            <th>Coverage</th>
+            <th>Gaps</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="ptt-table-body"></tbody>
+      </table>
+    </div>
+    <div id="ptt-empty" class="new-orders-empty card" hidden>
+      <p id="ptt-empty-text">No process sheets match your filters.</p>
+    </div>
+    <p class="mi-meta" id="ptt-meta" hidden></p>
+  </div>
+
+  <div id="ptt-panel-catalogue" class="ptt-panel" hidden>
+    <div class="card">
+      <div class="ptl-toolbar">
+        <div class="search-wrap ptl-search-wrap">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input class="search-input" id="ptl-search" type="text"
+                 placeholder="Search part, program, programmer, machine…" />
+        </div>
+        <span class="ptl-count" id="ptl-count"></span>
+        <span class="ptl-sync-info" id="ptl-sync-info"></span>
+      </div>
+      <div class="ptl-filters">
+        <div class="filter-group">
+          <span class="filter-label">OP TYPE</span>
+          <div class="filter-chips" id="optype-chips">
+            <button type="button" class="filter-chip filter-chip--active" data-val="">All</button>
+            <button type="button" class="filter-chip" data-val="Turning">Turning</button>
+            <button type="button" class="filter-chip" data-val="Milling">Milling</button>
+            <button type="button" class="filter-chip" data-val="Turnmill">Turnmill</button>
+          </div>
+        </div>
+        <div class="filter-group">
+          <span class="filter-label">CNC MACHINE</span>
+          <div class="machine-picker">
+            <button type="button" class="machine-picker-btn" id="machine-picker-btn">All machines ▾</button>
+            <div class="machine-dd" id="machine-dd" hidden>
+              <div class="machine-dd-actions">
+                <button type="button" id="machine-select-all">Select all</button>
+                <button type="button" id="machine-clear-all">Clear</button>
+              </div>
+              <div class="machine-cb-list" id="machine-cb-list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card card--flush ptt-catalogue-table-card">
+      <div class="ptl-wrap">
+        <table class="ptl-table">
+          <thead>
+            <tr>
+              <th class="ptl-sticky-1">P/S NO.</th>
+              <th class="ptl-sticky-2">PART NO. (ERP)</th>
+              <th>BOM CODE</th>
+              <th>PROGRAM NO.</th>
+              <th class="ptl-group-start">CNC MACHINE</th>
+              <th>WO MACHINE</th>
+              <th>OP NO.</th>
+              <th>OP TYPE</th>
+              <th>SET-UP TIME</th>
+              <th>CYCLE TIME</th>
+              <th>ORIG. SETUP</th>
+              <th class="ptl-group-start">QUOTED SETUP</th>
+              <th>QUOTED C/T</th>
+              <th class="ptl-group-start">QUOTED C/T 2</th>
+              <th class="ptl-group-start">MAT. EXT. (mm)</th>
+              <th>SETUP DIAG. (mm)</th>
+              <th>KIT / ASSY NO.</th>
+              <th class="ptl-group-start">PROGRAMMER</th>
+              <th>DATE</th>
+              <th>VERIFIED</th>
+              <th class="ptl-group-start">PROGRAM FILE</th>
+              <th>TOOL LIST</th>
+            </tr>
+          </thead>
+          <tbody id="ptl-tbody">
+            <tr><td colspan="22" class="ptl-empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="ptl-pagination" id="ptl-pagination" hidden>
+        <button type="button" class="ptl-page-btn" id="btn-prev-page">← Prev</button>
+        <span class="ptl-page-info" id="ptl-page-info"></span>
+        <button type="button" class="ptl-page-btn" id="btn-next-page">Next →</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="ptl-modal-backdrop" id="ptl-modal-backdrop" hidden>
+    <div class="ptl-modal">
+      <div class="ptl-modal-header">
+        <div>
+          <div class="ptl-modal-title">Part × Op × Machine Summary</div>
+          <div class="ptl-modal-subtitle">Grouped by part and op no.; count per CNC machine (current filters)</div>
+        </div>
+        <button type="button" class="ptl-modal-close" id="ptl-modal-close">✕</button>
+      </div>
+      <div class="ptl-modal-search">
+        <input class="ptl-modal-search-input" id="ptl-summary-search" type="text"
+               placeholder="Filter by part or op no.…" />
+      </div>
+      <div class="ptl-modal-body">
+        <table class="ptl-summary-table">
+          <thead>
+            <tr>
+              <th>PART NO. (ERP)</th>
+              <th>OP NO.</th>
+              <th>CNC MACHINE</th>
+              <th>COUNT</th>
+            </tr>
+          </thead>
+          <tbody id="ptl-summary-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>window.PTT_INITIAL_VIEW = {{ initial_view|tojson }};</script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=ptt-20260710a"></script>
+<script src="{{ url_for('static', filename='js/program_tool_tracker.js') }}?v=ptt-20260710a"></script>
+<script src="{{ url_for('static', filename='js/program_tool_list.js') }}?v=ptt-20260710a"></script>
+{% endblock %}

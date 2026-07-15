@@ -1706,6 +1706,7 @@ function renderTrialMachinistBoardFilters() {
           `).join('')}
         </div>
       </div>
+      ${renderTrialMppMachinesToggle()}
       ${renderTrialMachineDropdownFilter('machinist')}
     </div>
   `;
@@ -1731,22 +1732,250 @@ function renderTrialMachineTypeFilter() {
 
 function renderTrialMppMachinesToggle() {
   const visible = typeof trialIsMppMachinesVisible === 'function' && trialIsMppMachinesVisible();
+  const machinist = typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
+  const t = machinist && typeof trialMachinistT === 'function' ? trialMachinistT : null;
+  const label = visible
+    ? (t ? t('mpp_lanes_on') : 'MPP lanes on')
+    : (t ? t('mpp_lanes_show') : 'Show MPP lanes');
+  const title = visible
+    ? (t ? t('mpp_lanes_on_title') : 'Hide CNC 35, 36, and 41 lanes (use MPP planner tab)')
+    : (t ? t('mpp_lanes_show_title') : 'Show CNC 35, 36, and 41 lanes on this board');
+  const sectionLabel = t ? t('mpp_label') : 'MPP';
   return `
     <div class="trial-filter-inline trial-filter-section-mpp">
-      <span class="trial-filter-label">MPP</span>
+      <span class="trial-filter-label">${escapeHtml(sectionLabel)}</span>
       <button type="button"
         class="trial-machine-filter-btn trial-mpp-machines-toggle${visible ? ' active' : ''}"
         onclick="trialToggleMppMachinesVisible()"
         aria-pressed="${visible ? 'true' : 'false'}"
-        title="${visible ? 'Hide CNC 35, 36, and 41 lanes (use MPP planner tab)' : 'Show CNC 35, 36, and 41 lanes on this board'}">
-        ${visible ? 'MPP lanes on' : 'Show MPP lanes'}
+        title="${escapeHtml(title)}">
+        ${escapeHtml(label)}
       </button>
     </div>
   `;
 }
 
+function trialIsMppMirrorDisplayGroup(group, leader = null) {
+  const head = leader || group?.leader || (Array.isArray(group?.blocks) ? group.blocks[0] : null);
+  if (!head && !group) return false;
+  if (head?.is_mpp_planner_mirror) return true;
+  if (String(group?.group_type || head?.group_type || '').toUpperCase() === 'MPP_CYCLE') return true;
+  const label = String(group?.group_label || group?.operation_label || head?.group_label || '').trim();
+  if (/^MPP cycle\b/i.test(label)) return true;
+  if (typeof trialIsMppPlannerMachine === 'function'
+    && trialIsMppPlannerMachine(Number(head?.machine_id || group?.machine_id || 0), head?.machine_code)) {
+    return true;
+  }
+  return false;
+}
+
+function trialMppOriginBadgeHtml(options = {}) {
+  const compact = options.compact !== false;
+  const title = typeof trialMachinistT === 'function'
+    ? trialMachinistT('mpp_badge_title')
+    : 'Scheduled in MPP planner';
+  const label = typeof trialMachinistT === 'function'
+    ? trialMachinistT('mpp_label')
+    : 'MPP';
+  const cls = compact ? 'trial-mpp-origin-badge' : 'trial-mpp-origin-badge trial-mpp-origin-badge--lane';
+  return `<span class="${cls}" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+}
+
+function trialMppCyclePillsHtml(group) {
+  const rows = typeof trialMppCycleMemberSummaries === 'function'
+    ? trialMppCycleMemberSummaries(group)
+    : [];
+  if (!rows.length) {
+    const vm = trialBlockGroupViewModel(group);
+    return `<span class="trial-mpp-cycle-pill">${escapeHtml(vm.psDisplay.base || '—')}</span>`;
+  }
+  return rows.map(row => {
+    const ps = row.partial ? `${row.base} · P${row.partial}` : row.base;
+    const label = [ps, row.op].filter(Boolean).join(' · ');
+    return `<span class="trial-mpp-cycle-pill" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+  }).join('');
+}
+
+function trialRenderMppCycleStackCard(run, options = {}) {
+  const groups = run.groups || [];
+  if (!groups.length) return '';
+  const machineId = Number(options.machineId || 0);
+  const first = groups[0];
+  const last = groups[groups.length - 1];
+  const count = groups.length;
+  const startSeq = Number(options.startSeq || run.startIndex + 1);
+  const endSeq = Number(options.endSeq || run.endIndex + 1);
+  const t = typeof trialMachinistT === 'function' ? trialMachinistT : (key, vars) => {
+    if (key === 'mpp_cycles_count') return `${vars.n}× cycles`;
+    if (key === 'mpp_cycle_span') return `#${vars.from}–#${vars.to}`;
+    if (key === 'mpp_expand_cycles') return 'Expand';
+    if (key === 'mpp_collapse_cycles') return 'Collapse';
+    if (key === 'mpp_qty_per_cycle') return `${vars.qty}/cycle`;
+    if (key === 'mpp_qty_total') return `${vars.total} total`;
+    return key;
+  };
+  const expanded = typeof trialIsMppRunExpanded === 'function'
+    && trialIsMppRunExpanded(machineId, run.fingerprint);
+  const queueLabel = startSeq === endSeq
+    ? `#${startSeq}`
+    : t('mpp_cycle_span', { from: startSeq, to: endSeq });
+  const firstStart = trialBlockQueuedAt(first.leader || first)
+    || first.visual_start_datetime
+    || first.group_start
+    || '';
+  const lastEnd = trialBlockOutputAt(last.leader || last)
+    || last.visual_end_datetime
+    || last.group_end
+    || '';
+  const perCycleQty = Math.max(0, Number(first.target_qty || first.leader?.scheduled_qty || 0));
+  const totalQty = groups.reduce(
+    (sum, g) => sum + Math.max(0, Number(g.target_qty || g.leader?.scheduled_qty || 0)),
+    0,
+  );
+  const bandClass = (options.runIdx || 0) % 2 ? 'is-band-b' : 'is-band-a';
+  const expandLabel = expanded ? t('mpp_collapse_cycles') : t('mpp_expand_cycles');
+  const fpAttr = escapeHtml(String(run.fingerprint || ''));
+  const childHtml = expanded
+    ? groups.map((group, i) => {
+      const seq = startSeq + i;
+      const vm = trialBlockGroupViewModel(group, { displaySequenceNo: seq });
+      return `
+        <div class="trial-mpp-run-child">
+          <span class="trial-mpp-run-child-seq">#${seq}</span>
+          <span class="trial-mpp-run-child-time">${escapeHtml(vm.scheduleTimeText || '—')} → ${escapeHtml(vm.outputText || '—')}</span>
+          <span class="trial-mpp-run-child-qty">${escapeHtml(vm.targetQty)}</span>
+        </div>
+      `;
+    }).join('')
+    : '';
+  return `
+    <article class="trial-mpp-run-stack ${bandClass}${expanded ? ' is-expanded' : ''}"
+      data-mpp-run-fp="${fpAttr}"
+      data-machine-id="${machineId}">
+      <header class="trial-mpp-run-head">
+        <span class="trial-mpp-run-seq">${escapeHtml(queueLabel)}</span>
+        <span class="trial-mpp-run-count">${escapeHtml(t('mpp_cycles_count', { n: count }))}</span>
+        <button type="button"
+          class="trial-mpp-run-toggle"
+          data-mpp-run-toggle="1"
+          data-machine-id="${machineId}"
+          data-mpp-run-fp="${fpAttr}"
+          aria-expanded="${expanded ? 'true' : 'false'}">
+          ${escapeHtml(expandLabel)}
+        </button>
+      </header>
+      <div class="trial-mpp-run-pills">${trialMppCyclePillsHtml(first)}</div>
+      <div class="trial-mpp-run-meta">
+        <span>${escapeHtml(t('mpp_qty_per_cycle', { qty: fmt(perCycleQty, 0) }))}</span>
+        <span>${escapeHtml(t('mpp_qty_total', { total: fmt(totalQty, 0) }))}</span>
+      </div>
+      <div class="trial-mpp-run-timing">
+        ${escapeHtml(trialFormatDt(firstStart) || '—')}
+        <span class="trial-mpp-run-timing-sep">→</span>
+        ${escapeHtml(trialFormatDt(lastEnd) || '—')}
+      </div>
+      ${expanded ? `<div class="trial-mpp-run-children">${childHtml}</div>` : ''}
+    </article>
+  `;
+}
+
+function trialRenderMppLaneBlockHtml(groups, options = {}) {
+  const machineId = Number(options.machineId || 0);
+  const focusMode = !!options.focusMode;
+  const queueGroups = Array.isArray(options.queueGroups) ? options.queueGroups : groups;
+  const absSeq = (group, fallbackIndex) => {
+    const qi = queueGroups.indexOf(group);
+    return qi >= 0 ? qi + 1 : fallbackIndex + 1;
+  };
+  const runs = typeof trialGroupMppLaneRuns === 'function'
+    ? trialGroupMppLaneRuns(groups)
+    : (groups || []).map((group, index) => ({
+      fingerprint: String(index),
+      groups: [group],
+      startIndex: index,
+      endIndex: index,
+    }));
+  if (!runs.length) return '';
+
+  const parts = [];
+  runs.forEach((run, runIdx) => {
+    const isHeadRun = run.startIndex === 0;
+    const renderOne = (group, seq, isCurrent, upcomingIdx = 0) => {
+      const vm = trialBlockGroupViewModel(group, { displaySequenceNo: seq });
+      if (focusMode) {
+        return trialRenderFocusBlockCard(vm, { isCurrent, upcomingIdx });
+      }
+      return trialRenderCompactBlockCard(vm, { focusMode: false, isCurrent });
+    };
+
+    if (isHeadRun) {
+      // Keep the live cycle fully visible; stack only the identical repeats behind it.
+      const headSeq = absSeq(run.groups[0], run.startIndex);
+      parts.push(renderOne(run.groups[0], headSeq, true, 0));
+      const rest = run.groups.slice(1);
+      if (rest.length === 1) {
+        const seq = absSeq(rest[0], run.startIndex + 1);
+        parts.push(renderOne(rest[0], seq, false, 1));
+      } else if (rest.length > 1) {
+        const startSeq = absSeq(rest[0], run.startIndex + 1);
+        const endSeq = absSeq(rest[rest.length - 1], run.endIndex);
+        parts.push(trialRenderMppCycleStackCard({
+          ...run,
+          groups: rest,
+          startIndex: run.startIndex + 1,
+          endIndex: run.endIndex,
+        }, {
+          machineId,
+          startSeq,
+          endSeq,
+          runIdx,
+        }));
+      }
+      return;
+    }
+
+    if (run.groups.length === 1) {
+      const seq = absSeq(run.groups[0], run.startIndex);
+      parts.push(renderOne(run.groups[0], seq, false, Math.max(0, seq - 1)));
+      return;
+    }
+
+    parts.push(trialRenderMppCycleStackCard(run, {
+      machineId,
+      startSeq: absSeq(run.groups[0], run.startIndex),
+      endSeq: absSeq(run.groups[run.groups.length - 1], run.endIndex),
+      runIdx,
+    }));
+  });
+
+  return parts.join('');
+}
+
+function trialBindMppRunStackToggle() {
+  const grid = document.getElementById('trial-grid');
+  if (!grid || grid.dataset.mppRunToggleBound === '1') return;
+  grid.dataset.mppRunToggleBound = '1';
+  grid.addEventListener('click', e => {
+    const btn = e.target.closest('[data-mpp-run-toggle]');
+    if (!btn || !grid.contains(btn)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const machineId = Number(btn.dataset.machineId || 0);
+    const fingerprint = String(btn.dataset.mppRunFp || '');
+    if (typeof trialToggleMppRunExpanded === 'function') {
+      trialToggleMppRunExpanded(machineId, fingerprint);
+    }
+  });
+}
+
 function setTrialMachineCategoryFilter(category) {
   trialMachineCategoryFilter = String(category || 'ALL').toUpperCase();
+  if (trialMachineCategoryFilter === 'MPP'
+    && typeof trialIsMppMachinesVisible === 'function'
+    && !trialIsMppMachinesVisible()
+    && typeof trialSetMppMachinesVisible === 'function') {
+    trialSetMppMachinesVisible(true);
+  }
   trialCloseAllMachineFilterPanels();
   renderTrial();
 }
@@ -2257,6 +2486,13 @@ function trialRenderRunBlockDetailBody(group, block, machine) {
   const dueEditBtn = isTempPs && typeof openTempPsPoDueModal === 'function'
     ? `<button type="button" class="btn btn-ghost btn-sm" onclick="openTempPsPoDueModal(${JSON.stringify(psIdForDue)}, ${JSON.stringify(dueDateText === '—' ? '' : dueDateText)})">Set PO due</button>`
     : '';
+  const psRow = typeof trialCatalogPsFromPayload === 'function'
+    ? trialCatalogPsFromPayload(leader || block)
+    : trialCatalogPsRecord(leader?.planner_ps_id || leader?.source_ps_id || leader?.job_no || vm.psDueKey || '');
+  const partNo = String(
+    psRow?.part_no || psRow?.part_name || leader?.part_no || leader?.part_name || ptlCard?.part_no || '',
+  ).trim();
+  const partDesc = String(psRow?.part_desc || leader?.part_desc || '').trim();
 
   return `
     <div class="trial-op-detail">
@@ -2266,6 +2502,8 @@ function trialRenderRunBlockDetailBody(group, block, machine) {
         <div class="trial-op-detail-badges">${execHtml}</div>
       </div>
       <dl class="trial-op-detail-grid">
+        ${partNo ? trialRenderCatalogOpDetailRow('Part no.', escapeHtml(partNo)) : ''}
+        ${partDesc ? trialRenderCatalogOpDetailRow('Description', escapeHtml(partDesc)) : ''}
         ${trialRenderCatalogOpDetailRow('Machine', escapeHtml(machineLine))}
         ${vm.sequenceNo ? trialRenderCatalogOpDetailRow('Queue #', escapeHtml(String(vm.sequenceNo))) : ''}
         ${trialRenderCatalogOpDetailRow('Target qty', vm.targetQty)}
@@ -2625,9 +2863,24 @@ function trialBlockGroupViewModel(group, options = {}) {
   const psDisplay = trialBlockPsDisplay(group, leader);
   const psDueKey = psDisplay.partial ? `${psDisplay.base}::${psDisplay.partial}` : psDisplay.base;
   const opDisplay = trialBlockOpDisplay(leader);
-  const operationLine = group.blocks.length > 1
-    ? String(group.operation_label || group.group_label || '').trim()
-    : [opDisplay.op_no, opDisplay.op_name].filter(Boolean).join(' ');
+  const isMppMirror = typeof trialIsMppMirrorDisplayGroup === 'function'
+    && trialIsMppMirrorDisplayGroup(group, leader);
+  let operationLine = '';
+  if (group.blocks.length > 1 && isMppMirror) {
+    const opParts = group.blocks.map(block => {
+      const disp = typeof trialBlockOpDisplay === 'function' ? trialBlockOpDisplay(block) : null;
+      const no = String(disp?.op_no || block.source_op_no || '').trim();
+      const name = String(disp?.op_name || block.operation_name || '').trim();
+      return [no, name].filter(Boolean).join(' ');
+    }).filter(Boolean);
+    operationLine = opParts.length
+      ? opParts.join(' · ')
+      : String(group.operation_label || group.group_label || '').trim();
+  } else if (group.blocks.length > 1) {
+    operationLine = String(group.operation_label || group.group_label || '').trim();
+  } else {
+    operationLine = [opDisplay.op_no, opDisplay.op_name].filter(Boolean).join(' ');
+  }
   const queuedAt = trialBlockQueuedAt(leader || group);
   const outputAt = trialBlockOutputAt(leader || group);
   const materialStatus = group.material_status || leader?.material_status || {};
@@ -2664,6 +2917,7 @@ function trialBlockGroupViewModel(group, options = {}) {
     psDisplay,
     psDueKey,
     operationLine,
+    isMppMirror,
     sequenceNo: Number(
       options.displaySequenceNo ??
       leader?.sequence_no ??
@@ -2751,8 +3005,11 @@ function trialRenderFocusBlockCard(vm, options = {}) {
   const partialBadge = hasPartial
     ? `<span class="trial-focus-partial-badge" title="${escapeHtml(t('partial_title'))}">${escapeHtml(t('partial', { n: partialNo }))}</span>`
     : '';
+  const mppBadge = vm.isMppMirror && typeof trialMppOriginBadgeHtml === 'function'
+    ? trialMppOriginBadgeHtml()
+    : '';
   return `
-    <article class="trial-focus-card ${materialInClass}${isCurrent ? ' is-current' : ''}${hasPartial ? ' has-partial' : ''}"
+    <article class="trial-focus-card ${materialInClass}${isCurrent ? ' is-current' : ''}${hasPartial ? ' has-partial' : ''}${vm.isMppMirror ? ' is-mpp-mirror' : ''}"
       data-block-id="${leader?.block_id || ''}"
       data-group-id="${vm.group.group_id || 0}">
       <div class="trial-focus-card-top">
@@ -2766,6 +3023,7 @@ function trialRenderFocusBlockCard(vm, options = {}) {
       </div>
       <div class="trial-focus-ps-row">
         <div class="trial-focus-ps">${escapeHtml(vm.psDisplay.base || vm.group.title || '')}</div>
+        ${mppBadge}
         ${partialBadge}
       </div>
       ${hasPartial ? `<div class="trial-focus-partial-note">${escapeHtml(t('partial_note', { n: partialNo }))}</div>` : ''}
@@ -2829,8 +3087,12 @@ function trialRenderCompactBlockCard(vm, options = {}) {
               <span class="trial-block-compact-metric"><span class="trial-pill-label">${escapeHtml(mb('out'))}</span>${vm.pairedOutput}</span>
               ${readOnly ? `<span class="trial-block-compact-metric trial-block-compact-metric--cycle" title="Cycle time per piece"><span class="trial-pill-label">${escapeHtml(mb('cycle'))}</span>${vm.cycleMinutesPerQty}m</span>` : ''}
             </span>`;
+  const mppBadge = vm.isMppMirror && typeof trialMppOriginBadgeHtml === 'function'
+    ? trialMppOriginBadgeHtml()
+    : '';
+  const mppClass = vm.isMppMirror ? ' is-mpp-mirror' : '';
   return `
-    <div class="trial-block-card trial-block-card--compact${clickableClass}${readOnly ? ' trial-block-card--readonly' : ''}${focusClass}${currentClass}${dummyClass} ${vm.isCombined ? 'combined' : ''} ${materialInClass}"
+    <div class="trial-block-card trial-block-card--compact${clickableClass}${readOnly ? ' trial-block-card--readonly' : ''}${focusClass}${currentClass}${dummyClass}${mppClass} ${vm.isCombined ? 'combined' : ''} ${materialInClass}"
       data-block-id="${leader?.block_id || ''}"
       data-group-id="${vm.group.group_id || 0}"
       data-block-ids="${vm.groupBlockIds}"
@@ -2844,11 +3106,31 @@ function trialRenderCompactBlockCard(vm, options = {}) {
             ${removeBtn}
           </div>
         </div>
-        <div class="trial-block-title">${escapeHtml(vm.psDisplay.base || vm.group.title || '')}</div>
+        ${(() => {
+          const members = (vm.isMppMirror && typeof trialMppCycleMemberSummaries === 'function')
+            ? trialMppCycleMemberSummaries(vm.group)
+            : [];
+          if (vm.isMppMirror && members.length > 1) {
+            const jobsLabel = typeof trialMachinistT === 'function'
+              ? trialMachinistT('mpp_jobs_count', { n: members.length })
+              : `${members.length} jobs`;
+            return `
+        <div class="trial-block-title-row">
+          <div class="trial-block-title">${escapeHtml(jobsLabel)}</div>
+          ${mppBadge}
+        </div>
+        <div class="trial-mpp-cycle-pills">${trialMppCyclePillsHtml(vm.group)}</div>`;
+          }
+          return `
+        <div class="trial-block-title-row">
+          <div class="trial-block-title">${escapeHtml(vm.psDisplay.base || vm.group.title || '')}</div>
+          ${mppBadge}
+        </div>
         ${vm.psDisplay.partial
     ? `<div class="trial-block-partial">${escapeHtml(mb('partial', { n: vm.psDisplay.partial }))}</div>`
     : ''}
-        <div class="trial-block-op">${escapeHtml(vm.operationLine)}</div>
+        <div class="trial-block-op">${escapeHtml(vm.operationLine)}</div>`;
+        })()}
         ${vm.splitAllocationHtml ? `<div class="trial-block-split-machines">${vm.splitAllocationHtml}</div>` : ''}
         <div class="trial-block-compact-dates">
           ${vm.isDummy ? '' : `<span class="trial-block-compact-date ${dueClass}" title="Due">
@@ -3218,26 +3500,43 @@ function renderTrialMachine(machine) {
 
   const focusMode = typeof trialMachinistFocusLayoutActive === 'function'
     && trialMachinistFocusLayoutActive();
+  const isMppLane = typeof trialIsMppPlannerMachine === 'function'
+    && trialIsMppPlannerMachine(Number(machine.machine_id || 0), machine.machine_code);
+  const mppLaneBadge = isMppLane && typeof trialMppOriginBadgeHtml === 'function'
+    ? trialMppOriginBadgeHtml({ compact: false })
+    : '';
+  const mppLaneTitle = isMppLane
+    ? (typeof trialMachinistT === 'function' ? trialMachinistT('mpp_lane_title') : 'MPP planner machine')
+    : '';
   const displayGroups = focusMode && typeof trialMachinistFocusGroups === 'function'
     ? trialMachinistFocusGroups(groups)
     : groups;
   const blockHtml = displayGroups.length
-    ? displayGroups.map((group, idx) => {
-      const queueIndex = groups.indexOf(group);
-      const sequenceNo = queueIndex >= 0 ? queueIndex + 1 : idx + 1;
-      const vm = trialBlockGroupViewModel(group, { displaySequenceNo: sequenceNo });
-      if (focusMode) {
-        return trialRenderFocusBlockCard(vm, { isCurrent: idx === 0, upcomingIdx: idx });
-      }
-      return trialRenderCompactBlockCard(vm, { focusMode: false, isCurrent: idx === 0 });
-    }).join('')
+    ? (isMppLane && typeof trialRenderMppLaneBlockHtml === 'function'
+      ? trialRenderMppLaneBlockHtml(displayGroups, {
+        machineId: machine.machine_id,
+        focusMode,
+        queueGroups: groups,
+      })
+      : displayGroups.map((group, idx) => {
+        const queueIndex = groups.indexOf(group);
+        const sequenceNo = queueIndex >= 0 ? queueIndex + 1 : idx + 1;
+        const vm = trialBlockGroupViewModel(group, { displaySequenceNo: sequenceNo });
+        if (focusMode) {
+          return trialRenderFocusBlockCard(vm, { isCurrent: idx === 0, upcomingIdx: idx });
+        }
+        return trialRenderCompactBlockCard(vm, { focusMode: false, isCurrent: idx === 0 });
+      }).join(''))
     : `<div class="trial-empty">${escapeHtml(trialMachineLaneEmptyMessage(allGroups.length, groups.length))}</div>`;
 
   if (focusMode) {
     return `
-    <section class="trial-machine trial-machine--focus trial-machine--focus-lane" data-machine-id="${machine.machine_id}">
+    <section class="trial-machine trial-machine--focus trial-machine--focus-lane${isMppLane ? ' trial-machine--mpp' : ''}" data-machine-id="${machine.machine_id}">
       <header class="trial-machine-head trial-machine-head--focus">
-        <div class="trial-machine-title">${escapeHtml(machine.machine_code)}</div>
+        <div class="trial-machine-title-row">
+          <div class="trial-machine-title"${mppLaneTitle ? ` title="${escapeHtml(mppLaneTitle)}"` : ''}>${escapeHtml(machine.machine_code)}</div>
+          ${mppLaneBadge}
+        </div>
         <span class="trial-machine-focus-hint">${escapeHtml(
           typeof trialMachinistT === 'function'
             ? trialMachinistT('focus_hint', { n: trialMachinistFocusMaxJobs() - 1 })
@@ -3264,11 +3563,14 @@ function renderTrialMachine(machine) {
           ${staleBadge ? `<button class="btn btn-primary btn-sm" type="button" data-trial-recalc-btn="1" onclick="event.stopPropagation(); trialRecalculateSingleMachine(${machine.machine_id})">Recalc</button>` : ''}
         </div>`;
   return `
-    <section class="trial-machine" data-machine-id="${machine.machine_id}">
+    <section class="trial-machine${isMppLane ? ' trial-machine--mpp' : ''}" data-machine-id="${machine.machine_id}">
       <div class="trial-machine-head">
         <div class="trial-machine-head-main"${headMainAttrs}>
-          <div class="trial-machine-title">${machine.machine_code}</div>
-          <div class="trial-machine-meta">${machine.machine_category} - ${machine.shift_profile || 'STANDARD'}</div>
+          <div class="trial-machine-title-row">
+            <div class="trial-machine-title"${mppLaneTitle ? ` title="${escapeHtml(mppLaneTitle)}"` : ''}>${escapeHtml(machine.machine_code)}</div>
+            ${mppLaneBadge}
+          </div>
+          <div class="trial-machine-meta">${escapeHtml(machine.machine_category)} - ${escapeHtml(machine.shift_profile || 'STANDARD')}</div>
           <div class="trial-machine-queue-summary">${queueSummary}</div>
           ${readOnly ? '' : staleBadge}
         </div>
@@ -3635,6 +3937,7 @@ function renderTrial(options = {}) {
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'bind-lane-block-clicks');
   trialBindMachineGridScroll();
   trialBindBoardGroupCollapse();
+  trialBindMppRunStackToggle();
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'bind-grid-scroll');
   if (savedScrollLeft != null && scrollHost) {
     scrollHost.scrollLeft = savedScrollLeft;

@@ -2,7 +2,6 @@
   'use strict';
 
   const MAX_WEEKS = 4;
-  const DEFAULT_WEEKS = 2;
   const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -120,6 +119,13 @@
     return String(num);
   }
 
+  function formatPartialNo(item) {
+    const value = item?.partial_no ?? item?.pp_partial_no;
+    if (value === null || value === undefined || value === '') return '—';
+    const num = Number(value);
+    return Number.isFinite(num) ? String(num) : '—';
+  }
+
   function formatShortDay(iso) {
     const parts = String(iso || '').split('-');
     if (parts.length !== 3) return String(iso || '');
@@ -152,7 +158,9 @@
 
   function stageLabel(item) {
     const desc = String(item?.current_stage_desc || '').trim();
-    return desc || '—';
+    if (desc) return desc;
+    if (isWoComplete(item)) return 'Complete';
+    return '—';
   }
 
   function isPackingStage(stageDesc) {
@@ -163,20 +171,43 @@
     return lowered.includes('engraving') && lowered.includes('packing');
   }
 
+  function isWoComplete(item) {
+    return Boolean(item?.execution_completed)
+      || Boolean(item?.erp_all_wo_complete)
+      || Boolean(item?.production_completed);
+  }
+
   function isFullyScanned(item) {
-    return isPackingStage(item?.current_stage_desc);
+    if (Boolean(item?.shipped_completed)) return true;
+    const stage = stageLabel(item);
+    // Fully scanned only at the last BOM stage (packing) or when all stages are done.
+    if (stage === 'Complete') return isWoComplete(item);
+    return isPackingStage(stage) && isWoComplete(item);
   }
 
   function isRowReady(item) {
     return Boolean(item?.coc_done) && Boolean(item?.qaqc_report_ready) && isFullyScanned(item);
   }
 
+  function isException(item) {
+    return Boolean(item?.exception);
+  }
+
   function rowClasses(item) {
     const classes = ['dv-row'];
-    if (!isFullyScanned(item)) classes.push('is-not-scanned');
-    if (isRowReady(item)) classes.push('is-ready');
-    if (!item?.coc_done || !item?.qaqc_report_ready) classes.push('is-pending-docs');
+    if (isException(item)) classes.push('is-exception');
     return classes.join(' ');
+  }
+
+  function exceptionHtml(item) {
+    if (!isException(item)) {
+      return '<span class="dv-exception-empty" aria-hidden="true">—</span>';
+    }
+    const remarks = String(item.remarks || '').trim();
+    const title = remarks
+      ? `Exception — ${remarks}`
+      : 'Exception — important delivery / needs attention';
+    return `<span class="dv-exception-flag" title="${escapeHtml(title)}" aria-label="Exception delivery">!</span>`;
   }
 
   function scanStatusHtml(item) {
@@ -191,11 +222,99 @@
       </div>`;
   }
 
-  function flagStatusHtml(item, field, label) {
-    const on = Boolean(item[field]);
-    const badgeClass = on ? 'dv-badge dv-badge--ok' : 'dv-badge dv-badge--muted';
-    const text = on ? 'Yes' : 'No';
-    return `<span class="${badgeClass}" title="${escapeHtml(label)}">${text}</span>`;
+  function flagToggleHtml(item, field, label) {
+    const psId = escapeHtml(item.planner_ps_id || '');
+    const checked = item[field] ? ' checked' : '';
+    const displayId = escapeHtml(item.ps_display || item.planner_ps_id || '');
+    return `
+      <label class="dv-flag-toggle" title="${escapeHtml(label)}">
+        <input
+          type="checkbox"
+          class="dv-flag-input"
+          data-action="flag"
+          data-flag-field="${escapeHtml(field)}"
+          data-ps-id="${psId}"
+          aria-label="${escapeHtml(label)} for ${displayId}"
+          ${checked}
+        >
+        <span class="dv-flag-switch" aria-hidden="true"></span>
+      </label>
+    `;
+  }
+
+  function findItem(plannerPsId) {
+    const needle = String(plannerPsId || '').trim();
+    return (state.items || []).find((row) => String(row.planner_ps_id || '').trim() === needle) || null;
+  }
+
+  function updateItem(plannerPsId, patch) {
+    const item = findItem(plannerPsId);
+    if (!item) return null;
+    Object.assign(item, patch);
+    return item;
+  }
+
+  async function saveFlag(plannerPsId, field, checked, inputEl) {
+    const psId = String(plannerPsId || '').trim();
+    if (!psId || !field) return;
+    const item = findItem(psId);
+    const previous = Boolean(item?.[field]);
+    const toggle = inputEl?.closest('.dv-flag-toggle') || null;
+    if (inputEl) inputEl.disabled = true;
+    if (toggle) toggle.classList.add('is-saving');
+
+    const body = {
+      planner_ps_id: psId,
+      [field]: Boolean(checked),
+    };
+    if (field === 'qaqc_report_ready') {
+      body.stage_desc = String(item?.current_stage_desc || '').trim();
+    }
+
+    try {
+      const response = await fetch('/api/process-sheets/delivery-flags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+
+      const savedPsId = String(data.planner_ps_id || psId).trim() || psId;
+      updateItem(savedPsId, {
+        coc_done: Boolean(data.coc_done),
+        qaqc_report_ready: Boolean(data.qaqc_report_ready),
+      });
+      if (inputEl) inputEl.checked = Boolean(data[field]);
+      renderTable();
+    } catch (err) {
+      if (inputEl) inputEl.checked = previous;
+      window.alert(`Could not save ${labelForField(field)}: ${err.message}`);
+    } finally {
+      if (inputEl) inputEl.disabled = false;
+      if (toggle) toggle.classList.remove('is-saving');
+    }
+  }
+
+  function labelForField(field) {
+    if (field === 'coc_done') return 'COC done';
+    if (field === 'qaqc_report_ready') return 'QAQC report';
+    return 'flag';
+  }
+
+  function bindFlagInputs() {
+    if (!els.tableBody || els.tableBody.dataset.flagsBound === '1') return;
+    els.tableBody.dataset.flagsBound = '1';
+    els.tableBody.addEventListener('change', (event) => {
+      const input = event.target.closest('[data-action="flag"]');
+      if (!input) return;
+      saveFlag(
+        input.dataset.psId || '',
+        input.dataset.flagField || '',
+        input.checked,
+        input,
+      );
+    });
   }
 
   function remarksReadonlyHtml(item) {
@@ -227,7 +346,7 @@
         isoYear,
         isCurrent: key === todayKey,
         rangeLabel: weekRangeLabel(isoYear, weekNo),
-        defaultOn: i < DEFAULT_WEEKS,
+        defaultOn: key === todayKey,
       });
       cursor = new Date(cursor);
       cursor.setUTCDate(cursor.getUTCDate() + 7);
@@ -284,22 +403,29 @@
     if (els.stats) {
       const weekCount = state.selectedWeekKeys.size;
       const readyCount = items.filter(isRowReady).length;
+      const exceptionCount = items.filter(isException).length;
+      const exceptionPart = exceptionCount
+        ? ` · ${exceptionCount} exception${exceptionCount === 1 ? '' : 's'}`
+        : '';
       els.stats.textContent = items.length
-        ? `${items.length} deliver${items.length === 1 ? 'y' : 'ies'} across ${weekCount} week${weekCount === 1 ? '' : 's'} · ${readyCount} ready · ${total} total`
+        ? `${items.length} deliver${items.length === 1 ? 'y' : 'ies'} across ${weekCount} week${weekCount === 1 ? '' : 's'} · ${readyCount} ready${exceptionPart} · ${total} total`
         : `No deliveries in selected weeks · ${total} total on schedule`;
     }
 
     if (els.tableBody) {
       els.tableBody.innerHTML = items.map((item) => `
         <tr class="${rowClasses(item)}" data-ps-id="${escapeHtml(item.planner_ps_id || '')}">
+          <td class="dv-exception-cell">${exceptionHtml(item)}</td>
           <td class="dv-ps">${escapeHtml(item.ps_display || item.ps_id || '—')}</td>
           <td>${escapeHtml(item.part_desc || '—')}</td>
+          <td class="dv-num">${escapeHtml(formatPartialNo(item))}</td>
           <td class="dv-num">${escapeHtml(formatQty(item.so_qty))}</td>
+          <td class="dv-num">${escapeHtml(formatQty(item.pp_partial_qty))}</td>
           <td>${escapeHtml(formatDate(item.coway_edd))}</td>
           <td>${escapeHtml(weekLabel(item))}</td>
           <td>${scanStatusHtml(item)}</td>
-          <td class="dv-flag-cell">${flagStatusHtml(item, 'coc_done', 'COC done')}</td>
-          <td class="dv-flag-cell">${flagStatusHtml(item, 'qaqc_report_ready', 'QAQC report ready')}</td>
+          <td class="dv-flag-cell">${flagToggleHtml(item, 'coc_done', 'COC done')}</td>
+          <td class="dv-flag-cell">${flagToggleHtml(item, 'qaqc_report_ready', 'QAQC report ready')}</td>
           <td class="dv-remarks">${remarksReadonlyHtml(item)}</td>
         </tr>
       `).join('');
@@ -308,6 +434,7 @@
     const hasRows = items.length > 0;
     if (els.tableWrap) els.tableWrap.hidden = !hasRows;
     if (els.empty) els.empty.hidden = hasRows || state.loading;
+    bindFlagInputs();
   }
 
   function setLoading(loading) {
@@ -381,7 +508,7 @@
       const sheet = workbook.addWorksheet('Delivery schedule');
 
       const headers = [
-        'PS no.', 'Part description', 'SO qty', 'Coway EDD', 'Week',
+        'Exception', 'PS no.', 'Part description', 'PP partial', 'SO qty', 'PP partial qty', 'Coway EDD', 'Week',
         'Current stage', 'Fully scanned', 'COC done', 'QAQC report', 'Remarks',
       ];
       const headerRow = sheet.addRow(headers);
@@ -390,11 +517,13 @@
       headerRow.alignment = { vertical: 'middle' };
 
       items.forEach((item) => {
-        const qty = Number(item.so_qty);
         sheet.addRow([
+          isException(item) ? 'Yes' : '',
           item.ps_display || item.ps_id || '',
           item.part_desc || '',
-          Number.isFinite(qty) ? qty : '',
+          formatPartialNo(item) === '—' ? '' : formatPartialNo(item),
+          Number.isFinite(Number(item.so_qty)) ? Number(item.so_qty) : '',
+          Number.isFinite(Number(item.pp_partial_qty)) ? Number(item.pp_partial_qty) : '',
           formatDate(item.coway_edd) === '—' ? '' : formatDate(item.coway_edd),
           weekLabel(item) === '—' ? '' : weekLabel(item),
           stageLabel(item) === '—' ? '' : stageLabel(item),

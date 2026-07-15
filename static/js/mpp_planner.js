@@ -225,13 +225,21 @@
     return runs;
   }
 
+  function jobDisplayLabel(job, { palletSuffix = '' } = {}) {
+    if (!job) return 'Unknown job';
+    const ps = compactText(job.psId || job.sourcePsId);
+    const op = compactText(job.opLabel || (job.opNo ? `OP${job.opNo}` : ''));
+    const base = [ps, op].filter(Boolean).join(' ') || compactText(job.jobId) || 'Unknown job';
+    return `${base}${palletSuffix || ''}`;
+  }
+
   function cycleOpsSummary(cycle) {
     const metrics = cycleMetrics(cycle);
     if (!metrics.rows.length) return 'Empty cycle';
     return metrics.rows
       .map(({ row, job }) => {
         const pal = row.palletCount > 1 ? ` ×${row.palletCount}pal` : '';
-        return `${job.psId} ${job.opLabel}${pal}`;
+        return jobDisplayLabel(job, { palletSuffix: pal });
       })
       .join(' · ');
   }
@@ -244,7 +252,7 @@
     return metrics.rows
       .map(({ row, job }) => {
         const pal = row.palletCount > 1 ? ` ×${row.palletCount}pal` : '';
-        const label = `${job.psId} ${job.opLabel}${pal}`;
+        const label = jobDisplayLabel(job, { palletSuffix: pal });
         return `<span class="mpp-collapsed-op-pill">${escapeHtml(label)}</span>`;
       })
       .join('');
@@ -874,8 +882,24 @@
     return jobRunMinutes(job, palletCount);
   }
 
-  function opOutput(job, palletCount) {
-    return Number(palletCount || 0) * Number(job.pcsPerPallet || 0);
+  function opPcsPerPallet(row, job) {
+    const frozen = Number(row?.pcsPerPallet);
+    if (Number.isFinite(frozen) && frozen > 0) return frozen;
+    return Math.max(1, Number(job?.pcsPerPallet) || 1);
+  }
+
+  function newCycleOp(jobId, palletCount, job = null) {
+    const resolved = job || getJob(jobId);
+    return {
+      opId: newId('op'),
+      jobId,
+      palletCount: Math.max(1, Number(palletCount) || 1),
+      pcsPerPallet: opPcsPerPallet(null, resolved),
+    };
+  }
+
+  function opOutput(job, palletCount, row = null) {
+    return Number(palletCount || 0) * opPcsPerPallet(row, job);
   }
 
 
@@ -1069,12 +1093,31 @@
         unloadMinPerCycle: cycle.unloadMinPerCycle ?? cycle.unloadMinPerPallet,
         sequential: cycle.sequential,
         setupPerOp: cycle.setupPerOp,
-        ops: (cycle.ops || []).map((row) => ({
-          opId: row.opId,
-          jobId: row.jobId,
-          palletCount: Number(row.palletCount) || 1,
-          blockId: Number(row.blockId) || 0,
-        })),
+        ops: (cycle.ops || []).map((row) => {
+          const jobId = row.jobId;
+          if (jobId) {
+            const identity = {
+              jobId,
+              psId: compactText(row.psId) || undefined,
+              sourcePsId: compactText(row.sourcePsId) || undefined,
+              opNo: compactText(row.opNo) || undefined,
+              opLabel: compactText(row.opLabel) || undefined,
+            };
+            const existing = getJob(jobId) || { jobId };
+            const merged = { ...existing };
+            Object.entries(identity).forEach(([key, val]) => {
+              if (val && !compactText(merged[key])) merged[key] = val;
+            });
+            state.jobs[jobId] = merged;
+          }
+          return {
+            opId: row.opId,
+            jobId: row.jobId,
+            palletCount: Number(row.palletCount) || 1,
+            pcsPerPallet: opPcsPerPallet(row, getJob(row.jobId)),
+            blockId: Number(row.blockId) || 0,
+          };
+        }),
       }));
     });
     const probation = queuePayload?.probation || {};
@@ -1547,7 +1590,7 @@
         (cycle.ops || []).forEach((row) => {
           if (row.jobId === jobId) {
             const job = getJob(jobId);
-            sum += opOutput(job, row.palletCount);
+            sum += opOutput(job, row.palletCount, row);
           }
         });
       });
@@ -1559,22 +1602,23 @@
     return jobScheduledPcs(jobId);
   }
 
+  function jobAccountedPcs(jobId) {
+    const uiQueued = jobScheduledPcs(jobId);
+    const dbPlanned = Math.max(0, Number(getJob(jobId)?.plannedQty) || 0);
+    return Math.max(uiQueued, dbPlanned);
+  }
+
   function jobRemaining(jobId) {
     const job = getJob(jobId);
     if (!job) return 0;
-    const queued = jobScheduledPcs(jobId);
     const openWo = Math.max(0, Number(job.qty || 0) - Number(job.out || 0));
-    // Subtract pallets already placed on MPP lanes in this board (incl. hidden machines).
-    if (queued > 0) {
-      return Math.max(0, openWo - queued);
+    const accounted = jobAccountedPcs(jobId);
+    if (accounted > 0) {
+      return Math.max(0, openWo - accounted);
     }
-    // When nothing is on the board yet, trust server remaining (WO − ERP out − DB-planned on MPP).
     const serverRem = Number(job.remainingQty);
     if (Number.isFinite(serverRem) && serverRem >= 0) {
-      const dbPlanned = Number(job.plannedQty || 0);
-      if (serverRem > 0 || dbPlanned > 0) {
-        return Math.max(0, serverRem);
-      }
+      return Math.max(0, serverRem);
     }
     return openWo;
   }
@@ -1702,7 +1746,7 @@
   }
 
   function renderOpInCycle(job, row) {
-    const pcs = opOutput(job, row.palletCount);
+    const pcs = opOutput(job, row.palletCount, row);
     const runMins = jobRunMinutes(job, row.palletCount);
     const palletLabel = row.palletCount === 1 ? '1 pallet' : `${row.palletCount} pallets`;
     return `
@@ -2307,7 +2351,7 @@
     const opsHtml = metrics.rows.length
       ? metrics.rows.map(({ row, job }) => `
           <div class="mpp-queue-op-line">
-            <span><strong>${escapeHtml(job.psId)}</strong> · ${escapeHtml(job.opLabel)} · ${row.palletCount} pal · ${opOutput(job, row.palletCount)} pc</span>
+            <span><strong>${escapeHtml(job.psId)}</strong> · ${escapeHtml(job.opLabel)} · ${row.palletCount} pal · ${opOutput(job, row.palletCount, row)} pc</span>
             <button type="button" class="trial-block-remove mpp-op-remove" data-action="remove-op"
               data-op-id="${escapeHtml(row.opId)}" title="Remove op from cycle" aria-label="Remove op">×</button>
           </div>
@@ -2403,7 +2447,7 @@
       <div class="mpp-review-row">
         <strong>${escapeHtml(job.psId)}</strong> ${escapeHtml(job.opLabel)}<br>
         Run <strong>${fmtMinutes(runMins)}</strong>
-        · ${row.palletCount} × ${job.pcsPerPallet} pc = <strong>${opOutput(job, row.palletCount)} pc</strong>
+        · ${row.palletCount} × ${opPcsPerPallet(row, job)} pc = <strong>${opOutput(job, row.palletCount, row)} pc</strong>
       </div>
     `;
     }).join('');
@@ -2481,7 +2525,7 @@
     if (existing) {
       existing.palletCount += 1;
     } else {
-      found.cycle.ops = [...(found.cycle.ops || []), { opId: newId('op'), jobId, palletCount: 1 }];
+      found.cycle.ops = [...(found.cycle.ops || []), newCycleOp(jobId, 1, job)];
       seedCycleTimingFromJob(found.cycle, job);
     }
     syncCycleSequentialFlag(found.cycle);
@@ -2511,7 +2555,7 @@
     const lane = state.machines[machineId];
     if (!job || !lane || jobRemaining(jobId) < job.pcsPerPallet) return;
     const cycle = newCyclePayload(machineId, shift);
-    cycle.ops = [{ opId: newId('op'), jobId, palletCount: 1 }];
+    cycle.ops = [newCycleOp(jobId, 1, job)];
     seedCycleTimingFromJob(cycle, job);
     syncCycleSequentialFlag(cycle);
     lane.cycles = [...(lane.cycles || []), cycle];
@@ -2525,15 +2569,16 @@
     const lane = state.machines[machineId];
     const machine = machineById(machineId);
     if (!job || !lane) return;
+    const effectivePcs = Math.max(1, Number(pcsPerPallet) || Number(job.pcsPerPallet) || 1);
     job.minPerPallet = minPerPallet;
-    job.pcsPerPallet = pcsPerPallet;
+    job.pcsPerPallet = effectivePcs;
     state.jobs[jobId] = job;
     const cycleShift = normalizeShift(shift || defaultShiftForMachine(machine), machine);
     let left = Math.min(qty, jobRemaining(jobId));
-    const maxPerCycle = palletsPerCycle * pcsPerPallet;
+    const maxPerCycle = palletsPerCycle * effectivePcs;
     while (left > 0) {
       const cyclePcs = Math.min(left, maxPerCycle);
-      const pallets = Math.min(palletsPerCycle, Math.ceil(cyclePcs / pcsPerPallet));
+      const pallets = Math.min(palletsPerCycle, Math.ceil(cyclePcs / effectivePcs));
       const cycle = normalizeCycle({
         cycleId: newId('c'),
         anchor: null,
@@ -2543,10 +2588,10 @@
         unloadMinPerCycle: MPP_DEFAULT_UNLOAD_MIN_PER_CYCLE,
         sequential: false,
         setupPerOp: false,
-        ops: [{ opId: newId('op'), jobId, palletCount: pallets }],
+        ops: [newCycleOp(jobId, pallets, job)],
       });
       lane.cycles = [...(lane.cycles || []), cycle];
-      left -= pallets * pcsPerPallet;
+      left -= pallets * effectivePcs;
     }
     markMachineDirty(machineId);
     render();
@@ -2568,6 +2613,7 @@
         opId: newId('op'),
         jobId: row.jobId,
         palletCount: row.palletCount,
+        pcsPerPallet: opPcsPerPallet(row, getJob(row.jobId)),
       })),
     });
   }
@@ -2577,7 +2623,7 @@
     if (!ops.length) return { maxAdditional: 0, perOp: [] };
     const perOp = ops.map((row) => {
       const job = getJob(row.jobId);
-      const pcsPerRep = opOutput(job, row.palletCount);
+      const pcsPerRep = opOutput(job, row.palletCount, row);
       const rem = jobRemaining(row.jobId);
       const maxForJob = pcsPerRep > 0 ? Math.floor(rem / pcsPerRep) : 0;
       return {
@@ -2860,7 +2906,7 @@
     const title = document.querySelector('#mpp-setup-modal .mpp-modal-title');
     if (!job || !form || !sub) return;
     if (title) title.textContent = 'Op run time';
-    sub.textContent = `${job.psId} · ${job.opLabel} — run per pallet only. Setup / load / unload are on the cycle card.`;
+    sub.textContent = `${jobDisplayLabel(job)} — run per pallet only. Setup / load / unload are on the cycle card.`;
     form.innerHTML = `
       <div class="mpp-form-grid">
         <label>Run / pallet (min)<input id="mpp-f-min" type="number" min="0.1" step="1" value="${job.minPerPallet}"></label>
