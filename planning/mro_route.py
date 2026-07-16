@@ -28,7 +28,7 @@ _ERP_COMPLETED_STATUS = "C"
 # Parked: multiple ARCs per process sheet are allowed; do not mark local completion.
 _APP_COMPLETION_ENABLED = False
 
-# Status tokens that may be embedded in PP voucher (BOM) remarks.
+# Status tokens that may be embedded in Inventory BOM remarks.
 _ARC_STATUS_TOKENS = (
     "OVERHAULED",
     "INSPECTED/TESTED",
@@ -59,14 +59,16 @@ _STATUS_FROM_REMARKS_RE = re.compile(
     """,
 )
 
-_WORKSCOPE_REMARKS_SQL = """
+# Inventory BOM header remarks (mt_inventory_bom) by part_no + bom_code.
+_WORKSCOPE_INVENTORY_BOM_REMARKS_SQL = """
 SELECT
-    pp_voucher_no,
     inventory_code,
     bom_code,
+    bom_desc,
     remarks,
-    source_voucher_no
-FROM public.mfg_pp_vch
+    is_default,
+    status
+FROM public.mt_inventory_bom
 WHERE NULLIF(TRIM(remarks), '') IS NOT NULL
   AND (
         %s = ''
@@ -78,73 +80,32 @@ WHERE NULLIF(TRIM(remarks), '') IS NOT NULL
       )
   AND (
         %s = ''
-        OR LOWER(TRIM(pp_voucher_no)) = LOWER(TRIM(%s))
-        OR LOWER(TRIM(COALESCE(pp_voucher_no, ''))) LIKE LOWER('%%' || TRIM(%s) || '%%')
-      )
-  AND (
-        %s = ''
         OR LOWER(COALESCE(remarks, '')) LIKE LOWER('%%' || TRIM(%s) || '%%')
         OR LOWER(COALESCE(inventory_code, '')) LIKE LOWER('%%' || TRIM(%s) || '%%')
         OR LOWER(COALESCE(bom_code, '')) LIKE LOWER('%%' || TRIM(%s) || '%%')
-        OR LOWER(COALESCE(pp_voucher_no, '')) LIKE LOWER('%%' || TRIM(%s) || '%%')
+        OR LOWER(COALESCE(bom_desc, '')) LIKE LOWER('%%' || TRIM(%s) || '%%')
       )
 ORDER BY
     CASE
-        WHEN LOWER(TRIM(pp_voucher_no)) = LOWER(TRIM(%s)) THEN 0
+        WHEN LOWER(TRIM(inventory_code)) = LOWER(TRIM(%s))
+         AND LOWER(TRIM(COALESCE(bom_code, ''))) = LOWER(TRIM(%s)) THEN 0
         WHEN LOWER(TRIM(inventory_code)) = LOWER(TRIM(%s)) THEN 1
         ELSE 2
     END,
-    pp_voucher_no DESC
-LIMIT 80
-"""
-
-_WORKSCOPE_REMARKS_STAGED_SQL = """
-SELECT
-    pp_voucher_no,
+    CASE WHEN UPPER(TRIM(COALESCE(is_default, ''))) IN ('Y', 'YES', '1', 'TRUE') THEN 0 ELSE 1 END,
     inventory_code,
-    bom_code,
-    remarks,
-    source_voucher_no
-FROM public.pp_voucher_hdr
-WHERE NULLIF(TRIM(remarks), '') IS NOT NULL
-  AND (
-        %s = ''
-        OR LOWER(TRIM(inventory_code)) = LOWER(TRIM(%s))
-      )
-  AND (
-        %s = ''
-        OR LOWER(TRIM(COALESCE(bom_code, ''))) = LOWER(TRIM(%s))
-      )
-  AND (
-        %s = ''
-        OR LOWER(TRIM(pp_voucher_no)) = LOWER(TRIM(%s))
-        OR LOWER(TRIM(COALESCE(pp_voucher_no, ''))) LIKE LOWER('%%' || TRIM(%s) || '%%')
-      )
-  AND (
-        %s = ''
-        OR LOWER(COALESCE(remarks, '')) LIKE LOWER('%%' || TRIM(%s) || '%%')
-        OR LOWER(COALESCE(inventory_code, '')) LIKE LOWER('%%' || TRIM(%s) || '%%')
-        OR LOWER(COALESCE(bom_code, '')) LIKE LOWER('%%' || TRIM(%s) || '%%')
-        OR LOWER(COALESCE(pp_voucher_no, '')) LIKE LOWER('%%' || TRIM(%s) || '%%')
-      )
-ORDER BY
-    CASE
-        WHEN LOWER(TRIM(pp_voucher_no)) = LOWER(TRIM(%s)) THEN 0
-        WHEN LOWER(TRIM(inventory_code)) = LOWER(TRIM(%s)) THEN 1
-        ELSE 2
-    END,
-    pp_voucher_no DESC
+    bom_code
 LIMIT 80
 """
 
-# Process sheet → linked PP voucher (part / BOM / remarks).
+# Process sheet → linked PP (+ staged BOM code). Work order is resolved live.
 _WORKSCOPE_PS_RESOLVE_STAGED_SQL = """
 SELECT
     ps.process_sheet_no,
     ps.pp_voucher_no,
     COALESCE(NULLIF(TRIM(pp.inventory_code), ''), NULLIF(TRIM(ps.inventory_code), '')) AS inventory_code,
     pp.bom_code,
-    pp.remarks,
+    NULL::text AS wo_voucher_no,
     pp.source_voucher_no
 FROM public.mfg_process_sheet_info ps
 LEFT JOIN public.pp_voucher_hdr pp
@@ -158,17 +119,33 @@ ORDER BY
 LIMIT 40
 """
 
+# Process sheet → PP → work order (MPS) → bom_code (prefer WO/MPS own_bom_code).
 _WORKSCOPE_PS_RESOLVE_LIVE_SQL = """
 SELECT
     ps.process_sheet_no,
     ps.pp_voucher_no,
     COALESCE(NULLIF(TRIM(pp.inventory_code), ''), NULLIF(TRIM(ps.inventory_code), '')) AS inventory_code,
-    pp.bom_code,
-    pp.remarks,
+    COALESCE(
+        NULLIF(TRIM(mps.own_bom_code), ''),
+        NULLIF(TRIM(pp.bom_code), '')
+    ) AS bom_code,
+    mps.wo_voucher_no,
     pp.source_voucher_no
 FROM public.mfg_process_sheet_info_v1_view ps
 LEFT JOIN public.mfg_pp_vch pp
        ON pp.pp_voucher_no = ps.pp_voucher_no
+LEFT JOIN LATERAL (
+    SELECT
+        NULLIF(TRIM(m.own_bom_code), '') AS own_bom_code,
+        NULLIF(TRIM(m.wo_voucher_no), '') AS wo_voucher_no
+    FROM public.mfg_mps_vch m
+    WHERE m.source_pp_no = ps.pp_voucher_no
+      AND NULLIF(TRIM(m.wo_voucher_no), '') IS NOT NULL
+    ORDER BY
+        CASE WHEN NULLIF(TRIM(m.own_bom_code), '') IS NOT NULL THEN 0 ELSE 1 END,
+        m.wo_voucher_no
+    LIMIT 1
+) mps ON TRUE
 WHERE LOWER(TRIM(ps.process_sheet_no)) = LOWER(TRIM(%s))
    OR LOWER(TRIM(COALESCE(ps.process_sheet_no, ''))) LIKE LOWER('%%' || TRIM(%s) || '%%')
 ORDER BY
@@ -1688,27 +1665,25 @@ def api_mro_arc_correction_templates():
     return jsonify({"ok": True, "templates": dict(ARC_CORRECTION_TEMPLATES)})
 
 
-def _workscope_query_params(part_no: str, bom_code: str, pp_voucher_no: str, q: str) -> tuple:
+def _workscope_query_params(part_no: str, bom_code: str, q: str) -> tuple:
     return (
         part_no,
         part_no,
         bom_code,
         bom_code,
-        pp_voucher_no,
-        pp_voucher_no,
-        pp_voucher_no,
         q,
         q,
         q,
         q,
         q,
-        pp_voucher_no,
+        part_no,
+        bom_code,
         part_no,
     )
 
 
 def split_remarks_status(text: str) -> tuple[str, str | None]:
-    """Strip trailing status markers from BOM remarks.
+    """Strip trailing status markers from Inventory BOM remarks.
 
     ERP remarks often append Status (Inspected/Tested) / Status: Repaired /
     or a bare parenthetical status. Returns (cleaned_remarks, STATUS_TOKEN).
@@ -1736,21 +1711,32 @@ def _format_workscope_remark_row(
     row: dict[str, Any],
     *,
     process_sheet_no: str = "",
+    pp_voucher_no: str = "",
+    wo_voucher_no: str = "",
+    sales_order_no: str = "",
 ) -> dict[str, Any] | None:
     remarks = compact_text(row.get("remarks"))
     if not remarks:
         return None
     cleaned, status = split_remarks_status(remarks)
+    inventory_code = compact_text(row.get("inventory_code") or row.get("part_no"))
     return {
-        "pp_voucher_no": compact_text(row.get("pp_voucher_no")),
-        "process_sheet_no": compact_text(process_sheet_no or row.get("process_sheet_no") or row.get("pp_voucher_no")),
-        "inventory_code": compact_text(row.get("inventory_code")),
-        "part_no": compact_text(row.get("inventory_code")),
+        "pp_voucher_no": compact_text(pp_voucher_no or row.get("pp_voucher_no")),
+        "process_sheet_no": compact_text(
+            process_sheet_no or row.get("process_sheet_no") or row.get("pp_voucher_no")
+        ),
+        "wo_voucher_no": compact_text(wo_voucher_no or row.get("wo_voucher_no")),
+        "inventory_code": inventory_code,
+        "part_no": inventory_code,
         "bom_code": compact_text(row.get("bom_code")),
-        "sales_order_no": compact_text(row.get("source_voucher_no")),
+        "bom_desc": compact_text(row.get("bom_desc")),
+        "sales_order_no": compact_text(
+            sales_order_no or row.get("source_voucher_no") or row.get("sales_order_no")
+        ),
         "remarks": remarks,
         "remarks_trimmed": cleaned,
         "extracted_status": status,
+        "source": "inventory_bom",
     }
 
 
@@ -1762,7 +1748,6 @@ def _dedupe_workscope_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         key = "|".join(
             [
-                compact_text(row.get("pp_voucher_no")),
                 compact_text(row.get("inventory_code") or row.get("part_no")),
                 compact_text(row.get("bom_code")),
                 compact_text(row.get("remarks")),
@@ -1776,7 +1761,7 @@ def _dedupe_workscope_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _resolve_process_sheet_workscope(process_sheet_no: str) -> list[dict[str, Any]]:
-    """Map a process sheet to its PP voucher part/BOM (and remarks when present)."""
+    """Map a process sheet to part_no + bom_code via linked PP / work order."""
     process_sheet_no = compact_text(process_sheet_no)
     if not process_sheet_no:
         return []
@@ -1792,10 +1777,18 @@ def _resolve_process_sheet_workscope(process_sheet_no: str) -> list[dict[str, An
         if "does not exist" not in msg and "undefinedtable" not in msg:
             logger.warning("Staged process-sheet workscope resolve failed: %s", exc)
 
-    if not rows:
-        try:
-            rows = live_query(_WORKSCOPE_PS_RESOLVE_LIVE_SQL, params)
-        except Exception:
+    # Prefer live resolve so work-order bom_code (MPS own_bom_code) is available.
+    try:
+        live_rows = live_query(_WORKSCOPE_PS_RESOLVE_LIVE_SQL, params)
+        if live_rows:
+            rows = live_rows
+    except Exception:
+        if rows:
+            logger.warning(
+                "Live process-sheet workscope resolve failed; using staged identity",
+                exc_info=True,
+            )
+        else:
             logger.exception("Live process-sheet workscope resolve failed")
             raise
 
@@ -1807,41 +1800,27 @@ def _resolve_process_sheet_workscope(process_sheet_no: str) -> list[dict[str, An
                 "pp_voucher_no": compact_text(row.get("pp_voucher_no")),
                 "inventory_code": compact_text(row.get("inventory_code")),
                 "bom_code": compact_text(row.get("bom_code")),
-                "remarks": compact_text(row.get("remarks")),
+                "wo_voucher_no": compact_text(row.get("wo_voucher_no")),
                 "source_voucher_no": compact_text(row.get("source_voucher_no")),
             }
         )
     return out
 
 
-def _fetch_workscope_remark_rows(
+def _fetch_inventory_bom_remark_rows(
     *,
     part_no: str = "",
     bom_code: str = "",
-    pp_voucher_no: str = "",
     q: str = "",
 ) -> list[dict[str, Any]]:
-    if not any((part_no, bom_code, pp_voucher_no, q)):
+    if not any((part_no, bom_code, q)):
         return []
-    params = _workscope_query_params(part_no, bom_code, pp_voucher_no, q)
-    rows: list[dict[str, Any]] = []
-
+    params = _workscope_query_params(part_no, bom_code, q)
     try:
-        with planner_db() as con:
-            fetched = db_rows(con.execute(_WORKSCOPE_REMARKS_STAGED_SQL, params))
-            rows = [dict(row) for row in fetched]
-    except Exception as exc:
-        msg = str(exc).lower()
-        if "does not exist" not in msg and "undefinedtable" not in msg:
-            logger.warning("Staged workscope remarks lookup failed: %s", exc)
-
-    if not rows:
-        try:
-            rows = live_query(_WORKSCOPE_REMARKS_SQL, params)
-        except Exception:
-            logger.exception("Live workscope remarks lookup failed")
-            raise
-    return rows
+        return live_query(_WORKSCOPE_INVENTORY_BOM_REMARKS_SQL, params)
+    except Exception:
+        logger.exception("Inventory BOM workscope remarks lookup failed")
+        raise
 
 
 def search_workscope_remarks(
@@ -1851,10 +1830,10 @@ def search_workscope_remarks(
     process_sheet_no: str = "",
     q: str = "",
 ) -> dict[str, Any]:
-    """Search ERP PP voucher remarks by part / BOM / process sheet.
+    """Search Inventory BOM remarks by part / BOM / process sheet.
 
-    Process sheet lookup resolves the assigned part_no + bom_code from the
-    linked PP voucher, then returns that voucher's remarks (bom remarks).
+    Process sheet lookup resolves the tagged work order (via MPS) to get
+    bom_code, then returns mt_inventory_bom.remarks for that part + BOM.
     """
     part_no = compact_text(part_no)
     bom_code = compact_text(bom_code)
@@ -1883,31 +1862,17 @@ def search_workscope_remarks(
             resolved = {
                 "process_sheet_no": compact_text(primary.get("process_sheet_no")),
                 "pp_voucher_no": compact_text(primary.get("pp_voucher_no")),
+                "wo_voucher_no": compact_text(primary.get("wo_voucher_no")),
                 "part_no": compact_text(primary.get("inventory_code")),
                 "inventory_code": compact_text(primary.get("inventory_code")),
                 "bom_code": compact_text(primary.get("bom_code")),
             }
-            # Prefer identity from the process sheet over free-typed filters.
+            # Prefer identity from the process sheet / work order over free-typed filters.
             part_no = resolved["part_no"] or part_no
             bom_code = resolved["bom_code"] or bom_code
 
-            for row in picks:
-                item = _format_workscope_remark_row(
-                    {
-                        "pp_voucher_no": row.get("pp_voucher_no"),
-                        "inventory_code": row.get("inventory_code"),
-                        "bom_code": row.get("bom_code"),
-                        "remarks": row.get("remarks"),
-                        "source_voucher_no": row.get("source_voucher_no"),
-                    },
-                    process_sheet_no=compact_text(row.get("process_sheet_no")),
-                )
-                if item and (not q or q.lower() in item["remarks"].lower()):
-                    formatted.append(item)
-
-            # Linked voucher has no remarks — fall back to same part + BOM.
-            if not formatted and (part_no or bom_code):
-                for row in _fetch_workscope_remark_rows(
+            if part_no or bom_code:
+                for row in _fetch_inventory_bom_remark_rows(
                     part_no=part_no,
                     bom_code=bom_code,
                     q=q,
@@ -1915,13 +1880,16 @@ def search_workscope_remarks(
                     item = _format_workscope_remark_row(
                         row,
                         process_sheet_no=resolved["process_sheet_no"],
+                        pp_voucher_no=resolved["pp_voucher_no"],
+                        wo_voucher_no=resolved["wo_voucher_no"],
+                        sales_order_no=compact_text(primary.get("source_voucher_no")),
                     )
                     if item:
                         formatted.append(item)
 
             return {"rows": _dedupe_workscope_rows(formatted), "resolved": resolved}
 
-    for row in _fetch_workscope_remark_rows(
+    for row in _fetch_inventory_bom_remark_rows(
         part_no=part_no,
         bom_code=bom_code,
         q=q,

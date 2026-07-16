@@ -5,6 +5,11 @@ header 1|2|3, org 4|5, multi-line item table 6-11 (with blank ruled slots),
 remarks 12, then 13|14 with 14a release text above a 2x2 signature grid
 (14b|14c over 14d|14e).
 
+CAAS(AW)95 Issue 3: USER/INSTALLER RESPONSIBILITIES sit under the form on the
+same page (form id + NOTE: + three CAAS-specific points). FAA and EASA box those
+notes inside the form perimeter. EASA omits Block 13 (New Parts) entirely —
+Block 14 spans the full width for Part-145 release.
+
 CAAC uses AAC-038 (9/2022): bilingual Chinese/English, Conformity/Airworthiness
 in Block 2, Eligibility in Block 9, remarks in Block 13, New/Used in 14|15,
 shared signature Blocks 16–19, plus a full page-2 responsibilities sheet.
@@ -114,8 +119,25 @@ def _cjk_centred(c: canvas.Canvas, text: str, cx: float, y: float, size: float) 
     """Centre Chinese text via drawString (more reliable than drawCentredString for CJK)."""
     font = _cjk_font()
     c.setFont(font, size)
-    width = c.stringWidth(text, font, size)
+    measured = c.stringWidth(text, font, size)
+    # CID/TTF stringWidth often under-reports CJK glyph advances, which shifts
+    # text to the right of true centre. Blend with a glyph estimate.
+    if text and any(_is_cjk(ch) for ch in text):
+        estimated = sum(size * 0.95 if _is_cjk(ch) else size * 0.52 for ch in text)
+        width = max(measured, (measured + estimated) / 2.0)
+    else:
+        width = measured
     c.drawString(cx - width / 2.0, y, text)
+
+
+def _cjk_text_width(c: canvas.Canvas, text: str, size: float) -> float:
+    """Width for bilingual CAAC labels (guards against under-reported CJK metrics)."""
+    font = _cjk_font()
+    measured = c.stringWidth(text, font, size)
+    if text and any(_is_cjk(ch) for ch in text):
+        estimated = sum(size * 0.95 if _is_cjk(ch) else size * 0.52 for ch in text)
+        return max(measured, (measured + estimated) / 2.0)
+    return measured
 
 
 VARIANT_META = {
@@ -132,27 +154,30 @@ VARIANT_META = {
         "part_label": "8. Part No.",
         "approval_no": "AWI / 376",
         "show_org_approval": False,
-        "block13_title": "13.  NEW PARTS",
-        "block13_heading": "13a.  Certifies that the items identified above were manufactured in conformity to:",
+        # Official CAAS(AW)95: section starts at 13a / 14a — no separate "13." / "14." titles.
+        "show_part_section_titles": False,
+        "block13_lead": "13a. NEW PARTS",
+        "block13_heading": "Certifies that the items identified above were manufactured in conformity to:",
         "block13_options": [
-            ("approved_design", "approved design data and are in a condition for safe operation"),
-            ("non_approved_block_12", "non-approved design data specified in Block 12"),
+            ("approved_design", "Approved design data and are in a condition for safe operation"),
+            ("non_approved_block_12", "Non-approved design data specified in Block 12"),
         ],
         "sig13b": "13b. Authorised Signature",
-        "sig13c": "13c. Approval/Authorisation Number",
+        "sig13c": "13c. CAAS Approval No.",
         "sig13d": "13d. Name",
         "sig13e": "13e. Date (dd/mmm/yyyy)",
-        "block14_title": "14.  USED PARTS",
-        "block14_heading": "14a.",
+        "block14_heading": "14a. USED PARTS",
+        "release_heading_inline": False,
         "release_options": [
             ("sar_145_50", "SAR-145.50 Release to Service"),
             ("other_block_12", "Other regulation specified in Block 12"),
         ],
+        # Official CAAS(AW)95 Issue 3 used-parts statement (no "THIS IS NOT A NEW PART…" suffix).
         "release_text": (
             "Certifies that unless specified in Block 12, the work identified in Block 11 "
             "and described in Block 12, was accomplished in accordance with SAR-145 and the "
             "Air Navigation Order and in respect to that work the items are considered ready "
-            "for release to service. THIS IS NOT A NEW PART RELEASE STATEMENT."
+            "for release to service."
         ),
         "sig14b": "14b. Authorised Signature",
         "sig14c": "14c. CAAS Approval No.",
@@ -160,7 +185,10 @@ VARIANT_META = {
         "sig14e": "14e. Date (dd/mmm/yyyy)",
         "footer_form": "CAAS(AW)95 - Issue 3",
         "footer_right": "",
+        # Same-page footer under the form (official filled samples).
+        "responsibilities_style": "footer_under_form",
         "responsibilities_title": "USER / INSTALLER RESPONSIBILITIES",
+        "typography": "caas",
     },
     "FAA": {
         "authority_label": "1. Approving Civil Aviation Authority/Country:",
@@ -185,8 +213,12 @@ VARIANT_META = {
         "sig13c": "13c. Approval/Authorization No.:",
         "sig13d": "13d. Name (Typed or Printed):",
         "sig13e": "13e. Date (dd/mmm/yyyy):",
+        # Official FAA Form 8130-3 has no "13. NEW PARTS" / "14. USED PARTS" cell titles —
+        # the section starts at 13a / 14a.
+        "show_part_section_titles": False,
         "block14_title": "14.  USED PARTS",
         "block14_heading": "14a.",
+        "release_options_layout": "horizontal",
         "release_options": [
             ("cfr_43_9", "14 CFR 43.9 Return to Service"),
             ("other_block_12", "Other regulation specified in Block 12"),
@@ -194,7 +226,7 @@ VARIANT_META = {
         "release_text": (
             "Certifies that unless otherwise specified in Block 12, the work identified in "
             "Block 11 and described in Block 12 was accomplished in accordance with Title 14, "
-            "Code of Federal Regulations, part 43 and in respect to that work, the items are "
+            "Code of Federal Regulations, part\u00a043 and in respect to that work, the items are "
             "approved for return to service."
         ),
         "sig14b": "14b. Authorized Signature:",
@@ -203,7 +235,12 @@ VARIANT_META = {
         "sig14e": "14e. Date (dd/mmm/yyyy):",
         "footer_form": "FAA Form 8130-3 (02-14)",
         "footer_right": "NSN: 0052-00-012-9005",
-        "responsibilities_title": "User/Installer Responsibilities",
+        # Boxed inside the form perimeter (not a floating CAAS-style footer / reverse page).
+        "responsibilities_style": "boxed_in_form",
+        "responsibilities_title": "User / Installer Responsibilities",
+        "responsibilities_notes": "faa",
+        # Larger type than the shared Form 1 defaults — 8130-3 print is more readable.
+        "typography": "faa",
     },
     "EASA": {
         "authority_label": "1. Approving Competent Authority / Country",
@@ -218,11 +255,14 @@ VARIANT_META = {
         "part_label": "8. Part No.",
         "approval_no": "EASA.145.0910",
         "show_org_approval": False,
+        # Part-145 only: do not emit Block 13 (New Parts) — Block 14 spans full width.
+        "omit_block13": True,
+        "show_part_section_titles": False,
         "block13_title": "13.  NEW PARTS",
         "block13_heading": "13a.  Certifies that the items identified above were manufactured in conformity to:",
         "block13_options": [
-            ("approved_design", "approved design data and are in a condition for safe operation"),
-            ("non_approved_block_12", "non-approved design data specified in Block 12"),
+            ("approved_design", "Approved design data and are in a condition for safe operation"),
+            ("non_approved_block_12", "Non-approved design data specified in Block 12"),
         ],
         "sig13b": "13b. Authorised Signature",
         "sig13c": "13c. Approval/Authorisation Number",
@@ -230,13 +270,14 @@ VARIANT_META = {
         "sig13e": "13e. Date (dd mmm yyyy)",
         "block14_title": "14.  USED PARTS",
         "block14_heading": "14a.",
+        "release_options_layout": "horizontal",
         "release_options": [
             ("part_145_a_50", "Part-145.A.50 Release to Service"),
-            ("other_block_12", "Other regulation specified in block 12"),
+            ("other_block_12", "Other regulation specified in Block 12"),
         ],
         "release_text": (
-            "Certifies that unless otherwise specified in block 12, the work identified in "
-            "block 11 and described in block 12, was accomplished in accordance with Part-145 "
+            "Certifies that unless otherwise specified in Block 12, the work identified in "
+            "Block 11 and described in Block 12, was accomplished in accordance with Part-145 "
             "and in respect to that work the items are considered ready for release to service."
         ),
         "sig14b": "14b. Authorised Signature",
@@ -245,7 +286,11 @@ VARIANT_META = {
         "sig14e": "14e. Date (dd mmm yyyy)",
         "footer_form": "EASA Form 1 - MF/CAO/145 Issue 3",
         "footer_right": "",
+        # Boxed inside the form perimeter (same layout pattern as FAA 8130-3).
+        "responsibilities_style": "boxed_in_form",
         "responsibilities_title": "USER/INSTALLER RESPONSIBILITIES",
+        "responsibilities_notes": "easa",
+        "typography": "easa",
     },
     "JCAB": {
         # Same CAAS(AW)95 layout/wording; only Block 1 authority + tracking serial differ.
@@ -261,18 +306,19 @@ VARIANT_META = {
         "part_label": "8. Part No.",
         "approval_no": "AWI / 376",
         "show_org_approval": False,
-        "block13_title": "13.  NEW PARTS",
-        "block13_heading": "13a.  Certifies that the items identified above were manufactured in conformity to:",
+        "show_part_section_titles": False,
+        "block13_lead": "13a. NEW PARTS",
+        "block13_heading": "Certifies that the items identified above were manufactured in conformity to:",
         "block13_options": [
-            ("approved_design", "approved design data and are in a condition for safe operation"),
-            ("non_approved_block_12", "non-approved design data specified in Block 12"),
+            ("approved_design", "Approved design data and are in a condition for safe operation"),
+            ("non_approved_block_12", "Non-approved design data specified in Block 12"),
         ],
         "sig13b": "13b. Authorised Signature",
-        "sig13c": "13c. Approval/Authorisation Number",
+        "sig13c": "13c. CAAS Approval No.",
         "sig13d": "13d. Name",
         "sig13e": "13e. Date (dd/mmm/yyyy)",
-        "block14_title": "14.  USED PARTS",
-        "block14_heading": "14a.",
+        "block14_heading": "14a. USED PARTS",
+        "release_heading_inline": False,
         "release_options": [
             ("sar_145_50", "SAR-145.50 Release to Service"),
             ("other_block_12", "Other regulation specified in Block 12"),
@@ -281,7 +327,7 @@ VARIANT_META = {
             "Certifies that unless specified in Block 12, the work identified in Block 11 "
             "and described in Block 12, was accomplished in accordance with SAR-145 and the "
             "Air Navigation Order and in respect to that work the items are considered ready "
-            "for release to service. THIS IS NOT A NEW PART RELEASE STATEMENT."
+            "for release to service."
         ),
         "sig14b": "14b. Authorised Signature",
         "sig14c": "14c. CAAS Approval No.",
@@ -289,7 +335,9 @@ VARIANT_META = {
         "sig14e": "14e. Date (dd/mmm/yyyy)",
         "footer_form": "CAAS(AW)95 - Issue 3",
         "footer_right": "",
+        "responsibilities_style": "footer_under_form",
         "responsibilities_title": "USER / INSTALLER RESPONSIBILITIES",
+        "typography": "caas",
     },
     "CAAC": {
         "authority_label": "1 国家 Country",
@@ -335,8 +383,8 @@ VARIANT_META = {
         "block13_title_legacy": "13.  NEW PARTS",
         "block13_heading": "13a.  Certifies that the items identified above were manufactured in conformity to:",
         "block13_options": [
-            ("approved_design", "approved design data and are in a condition for safe operation"),
-            ("non_approved_block_12", "non-approved design data specified in Block 12"),
+            ("approved_design", "Approved design data and are in a condition for safe operation"),
+            ("non_approved_block_12", "Non-approved design data specified in Block 12"),
         ],
         "sig13b": "13b. Authorised Signature",
         "sig13c": "13c. Approval/Authorisation Number",
@@ -413,9 +461,10 @@ ARC_CORRECTION_TEMPLATES = {
         "_______ DATED _______ AND DOES NOT COVER CONFORMITY/CONDITION/RELEASE TO SERVICE."
     ),
     "CAAC": (
-        "Dual release / ARC correction — CAAC (Civil Aviation Administration of China): "
-        "Work performed under applicable CAAC Part-145 requirements. Refer to workscope and "
-        "supplementary documents above."
+        "THIS CERTIFICATE CORRECTS THE ERROR(S) IN BLOCK(S) 13 OF THE CERTIFICATE "
+        "CEM/CAAC-1097 DATED _______ AND DOES NOT COVER CONFORMITY/CONDITION/RELEASE TO SERVICE.\n\n"
+        "FURTHER MAINTENANCE/ TEST MIGHT BE REQUIRED.\n"
+        "FOR DETAILS OF INSPECTION, REFER TO NON-DESTRUCTIVE TEST REPORT, _______"
     ),
 }
 
@@ -430,6 +479,158 @@ USER_RESPONSIBILITIES = [
     "aircraft maintenance record must contain an installation certification issued in accordance "
     "with the national regulations by the user/installer before the aircraft may be flown.",
 ]
+
+# CAAS Form CAAS(AW)95 — same-page USER / INSTALLER RESPONSIBILITIES (Issue 3).
+CAAS_USER_RESPONSIBILITIES = [
+    "1. It is important to understand that the existence of the Certificate alone does not "
+    "automatically constitute authority to install the part/component/assembly.",
+    "2. Where the user/installer works in accordance with the national regulations of an "
+    "Airworthiness Authority different from the Civil Aviation Authority of Singapore (CAAS), "
+    "it is essential that the user/installer ensures that his/her Airworthiness Authority "
+    "accepts parts/components/assemblies from the CAAS.",
+    "3. Statements 13a and 14a do not constitute installation certification. In all cases, the "
+    "aircraft maintenance record must contain an installation certification issued in accordance "
+    "with the national regulations by the user/installer before the aircraft may be flown.",
+]
+
+# FAA Form 8130-3 — boxed User / Installer Responsibilities (official wording).
+# Third sentence starts on its own paragraph (break before "Statements in Blocks 13a and 14a").
+FAA_USER_RESPONSIBILITIES = [
+    "It is important to understand that the existence of this document alone does not "
+    "automatically constitute authority to install the aircraft engine/propeller/article.",
+    "Where the user/installer performs work in accordance with the national regulations of an "
+    "airworthiness authority different than the airworthiness authority of the country specified "
+    "in Block 1, it is essential that the user/installer ensures that his/her airworthiness "
+    "authority accepts aircraft engine(s)/propeller(s)/article(s) from the airworthiness authority "
+    "of the country specified in Block 1.",
+    "Statements in Blocks 13a and 14a do not constitute installation certification. In all cases, "
+    "aircraft maintenance records must contain an installation certification issued in accordance "
+    "with the national regulations by the user/installer before the aircraft may be flown.",
+]
+
+# Shared Form 1 defaults vs FAA Form 8130-3 (larger, more legible print).
+_TYPO_DEFAULT: dict[str, float] = {
+    "label": 5.2,
+    "col_label": 5.0,
+    "value": 9.5,
+    "title1": 11.0,
+    "title2": 8.0,
+    "tracking": 8.2,
+    "org_name": 7.6,
+    "org_addr": 6.6,
+    "org_approval": 6.0,
+    "block5": 8.5,
+    "item": 8.0,
+    "remarks": 6.8,
+    "remarks_leading": 8.4,
+    "remarks_label": 5.5,
+    "block13_heading": 4.6,
+    "block13_heading_leading": 5.6,
+    "checkbox": 5.2,
+    "release_heading": 5.4,
+    "release_text": 5.0,
+    "release_leading": 6.2,
+    "section_title": 5.6,
+    "sig_label": 5.0,
+    "sig_value": 7.5,
+    "sig_label_band": 22.0,
+    "resp_title": 7.2,
+    "resp_body": 5.0,
+    "resp_leading": 6.2,
+    "footer": 5.4,
+    "h1_mm": 12.0,
+    "h45_mm": 11.0,
+    "h1314_mm": 56.0,
+    "sig_h_mm": 22.0,
+    "resp_h_mm": 32.0,
+}
+
+_TYPO_FAA: dict[str, float] = {
+    **_TYPO_DEFAULT,
+    "label": 7.4,
+    "col_label": 7.0,
+    "value": 11.0,
+    "title1": 13.5,
+    "title2": 9.4,
+    "tracking": 10.0,
+    "org_name": 9.0,
+    "org_addr": 7.8,
+    "org_approval": 7.4,
+    "block5": 10.0,
+    "item": 9.6,
+    "remarks": 8.4,
+    "remarks_leading": 10.2,
+    "remarks_label": 7.2,
+    "block13_heading": 6.8,
+    "block13_heading_leading": 8.2,
+    "checkbox": 7.2,
+    "release_heading": 7.2,
+    "release_text": 7.4,
+    "release_leading": 9.0,
+    "section_title": 7.2,
+    "sig_label": 6.4,
+    "sig_value": 8.8,
+    "sig_label_band": 26.0,
+    "resp_title": 9.5,
+    "resp_body": 8.2,
+    "resp_leading": 10.0,
+    "footer": 7.0,
+    "h1_mm": 14.0,
+    "h45_mm": 13.0,
+    "h1314_mm": 68.0,
+    "sig_h_mm": 25.0,
+    "resp_h_mm": 40.0,
+}
+
+_TYPO_CAAS: dict[str, float] = {
+    **_TYPO_DEFAULT,
+    "block13_heading": 5.4,
+    "block13_heading_leading": 6.6,
+    "checkbox": 5.6,
+    "release_heading": 5.8,
+    "release_text": 5.4,
+    "release_leading": 6.6,
+    "section_title": 6.0,
+    "resp_title": 9.0,
+    "resp_body": 7.2,
+    "resp_leading": 9.0,
+    "resp_note": 7.4,
+    "footer": 6.0,
+    "footer_reserve_mm": 46.0,
+    "h1314_mm": 60.0,
+}
+
+# EASA Form 1 — boxed responsibilities (numbered USER/INSTALLER points).
+_TYPO_EASA: dict[str, float] = {
+    **_TYPO_DEFAULT,
+    "resp_title": 8.0,
+    "resp_body": 5.6,
+    "resp_leading": 7.0,
+    "resp_h_mm": 36.0,
+    "h1314_mm": 58.0,
+}
+
+
+def _typography(meta: dict[str, Any]) -> dict[str, float]:
+    key = str(meta.get("typography") or "default").strip().lower()
+    if key == "faa":
+        return dict(_TYPO_FAA)
+    if key == "caas":
+        return dict(_TYPO_CAAS)
+    if key == "easa":
+        return dict(_TYPO_EASA)
+    return dict(_TYPO_DEFAULT)
+
+
+def _responsibilities_notes(meta: dict[str, Any]) -> list[str]:
+    key = str(meta.get("responsibilities_notes") or "").strip().lower()
+    if key == "faa":
+        return FAA_USER_RESPONSIBILITIES
+    if key == "caas":
+        return CAAS_USER_RESPONSIBILITIES
+    if key == "easa":
+        return USER_RESPONSIBILITIES
+    return USER_RESPONSIBILITIES
 
 
 def _text(value: Any, fallback: str = "") -> str:
@@ -564,7 +765,14 @@ def _vline(c: canvas.Canvas, x: float, y1: float, y2: float, lw: float = 0.7) ->
 def _label(c: canvas.Canvas, text: str, x: float, top: float, size: float = 6.0) -> None:
     font = _pick_font(text, bold=False)
     c.setFont(font, size)
-    c.drawString(x, top - 8, text)
+    c.drawString(x, top - size - 1.8, text)
+
+
+def _caac_label(c: canvas.Canvas, text: str, x: float, top: float, size: float = 7.4) -> None:
+    """CAAC field labels — larger + size-aware baseline for bilingual readability."""
+    font = _pick_font(text, bold=False)
+    c.setFont(font, size)
+    c.drawString(x, top - size - 1.8, text)
 
 
 def _value(c: canvas.Canvas, text: str, x: float, y: float, size: float = 9.5) -> None:
@@ -664,15 +872,19 @@ def _doc_running_number(doc_no: str) -> str | None:
 
 
 def _tracking_number(payload: dict[str, Any], variant: str) -> str:
-    """Form tracking no. as ``CEM / EASA - 01337`` (prefix + dummy running number)."""
+    """Form tracking no. as ``CEM / AW - 8347`` (prefix + running number)."""
     meta = VARIANT_META[variant]
     prefix = meta["tracking_prefix"]
     doc_nos = payload.get("doc_nos") if isinstance(payload.get("doc_nos"), dict) else {}
     explicit = _text(doc_nos.get(variant)) or _text(payload.get("tracking_number"))
     number = _doc_running_number(explicit) if explicit else None
-    # Preview has no allocated serial yet — keep the display format stable.
+    # Preview has no allocated serial yet — keep a fixed-width placeholder.
     if not number:
         number = "00000"
+    elif number.isdigit():
+        n = int(number)
+        # FAA filled samples commonly show 4-digit padded tracking (e.g. 0001).
+        number = f"{n:04d}" if variant == "FAA" else str(n)
     return f"{prefix} - {number}"
 
 
@@ -872,6 +1084,10 @@ def _draw_sig_grid(
     labels: tuple[str, str, str, str],
     values: tuple[str, str, str, str],
     signature_image: ImageReader | None = None,
+    *,
+    label_size: float = 5.0,
+    value_size: float = 7.5,
+    label_band: float = 22.0,
 ) -> None:
     """2x2 signature grid: 14b|14c over 14d|14e (same for block 13).
 
@@ -891,15 +1107,10 @@ def _draw_sig_grid(
         (x, y, w / 2, h / 2, labels[2], values[2], False),  # d
         (mid_x, y, w / 2, h / 2, labels[3], values[3], False),  # e
     ]
-    label_size = 5.0
-    value_size = 7.5
-    # Fixed label band keeps every value on one shared baseline clearly
-    # below the label (long labels like 13c/14c sit on one line at left).
-    label_band = 22.0
     for cx, cy, cw, ch, label, value, is_sig_cell in cells:
         label_pad_x = 2.5
         label_max_w = cw - label_pad_x * 2
-        first_label_y = cy + ch - 6.5
+        first_label_y = cy + ch - (label_size + 1.2)
         _wrap(
             c,
             label,
@@ -908,7 +1119,7 @@ def _draw_sig_grid(
             label_max_w,
             "Helvetica",
             label_size,
-            label_size + 1.15,
+            label_size + 1.2,
             max_lines=2,
         )
         content_top = cy + ch - label_band
@@ -931,10 +1142,51 @@ def _draw_sig_grid(
             while size > 6.0 and c.stringWidth(value, "Helvetica-Bold", size) > max_w:
                 size -= 0.4
                 c.setFont("Helvetica-Bold", size)
-            value_y = max(content_bottom + 1.0, content_top)
-            # Left-align under the label so long labels (13c/14c) never sit
-            # beside the value on a near-shared baseline.
-            _value(c, value, cx + label_pad_x + 0.5, value_y, size)
+            # Centre value in the lower content band (official Form 1 / CAAS samples).
+            value_y = content_bottom + max(1.0, (content_h - size) * 0.35)
+            _value_centered(c, value, cx + cw / 2, value_y, size)
+
+
+def draw_caas_footer(
+    c: canvas.Canvas,
+    *,
+    x0: float,
+    width: float,
+    form_bottom: float,
+    margin_bottom: float,
+    meta: dict[str, Any],
+    typo: dict[str, float] | None = None,
+) -> None:
+    """CAAS(AW)95 same-page footer: form id, then USER / INSTALLER RESPONSIBILITIES."""
+    typo = typo or _typography(meta)
+    resp_title = typo.get("resp_title", 9.0)
+    resp_body = typo.get("resp_body", 7.2)
+    resp_leading = typo.get("resp_leading", 9.0)
+    resp_note = typo.get("resp_note", 7.4)
+    footer_size = typo.get("footer", 6.0)
+
+    band_bottom = margin_bottom + 3.0
+    band_top = form_bottom - 4.0
+
+    c.setFont("Helvetica", footer_size)
+    c.drawString(x0, band_bottom, meta["footer_form"])
+    if meta.get("footer_right"):
+        c.drawRightString(x0 + width, band_bottom, meta["footer_right"])
+
+    content_bottom = band_bottom + footer_size + 5.0
+    y = band_top
+    c.setFont("Helvetica-Bold", resp_title)
+    c.drawCentredString(x0 + width / 2, y - resp_title, meta.get("responsibilities_title") or "USER / INSTALLER RESPONSIBILITIES")
+    y -= resp_title + 6.0
+    c.setFont("Helvetica-Bold", resp_note)
+    c.drawString(x0, y, "NOTE:")
+    y -= resp_body + 2.0
+
+    for note in CAAS_USER_RESPONSIBILITIES:
+        y = _wrap(c, note, x0, y, width, "Helvetica", resp_body, resp_leading)
+        y -= 4.0
+        if y < content_bottom:
+            break
 
 
 def draw_caac_responsibilities_page(c: canvas.Canvas) -> None:
@@ -1006,12 +1258,13 @@ def draw_caac_arc_page(c: canvas.Canvas, payload: dict[str, Any]) -> None:
     page_w, page_h = landscape(A4)
     margin_x = 7 * mm
     margin_top = 5 * mm
-    margin_bottom = 7 * mm
+    margin_bottom = 8 * mm
     width = page_w - 2 * margin_x
     x0 = margin_x
     y_top = page_h - margin_top
 
-    form_bottom = margin_bottom + 6 * mm
+    # Leave a clear strip under the form for AAC-038 / eligibility footnotes.
+    form_bottom = margin_bottom + 10 * mm
     form_height = y_top - form_bottom
     _box(c, x0, form_bottom, width, form_height, lw=1.5)
 
@@ -1026,7 +1279,7 @@ def draw_caac_arc_page(c: canvas.Canvas, payload: dict[str, Any]) -> None:
     #   top:  "2. 中国民用航空局 CAAC" + Conformity/Airworthiness checkboxes
     #   mid:  批准放行证书/适航批准标签
     #   bot:  AUTHORIZED RELEASE CERTIFICATE/AIRWORTHINESS APPROVAL TAG
-    h1 = 20 * mm
+    h1 = 22 * mm
     w1 = width * 0.14
     w3 = width * 0.24
     w2 = width - w1 - w3
@@ -1035,78 +1288,88 @@ def draw_caac_arc_page(c: canvas.Canvas, payload: dict[str, Any]) -> None:
     _box(c, x0 + w1, y, w2, h1)
     _box(c, x0 + w1 + w2, y, w3, h1)
 
-    _label(c, meta["authority_label"], x0 + 2.5, y + h1, 5.0)
-    _value_centered(c, meta["authority"], x0 + w1 / 2, y + h1 * 0.38, 12)
+    _caac_label(c, meta["authority_label"], x0 + 2.5, y + h1, 7.4)
+    _value_centered(c, meta["authority"], x0 + w1 / 2, y + h1 * 0.35, 13)
 
-    # Block 2 top row: authority + checkboxes (same line as official AAC-038)
+    # Block 2: centre authority + checkbox row, then titles under it
     block2_x = x0 + w1
     block2_cx = block2_x + w2 / 2
-    top_row_y = y + h1 - 11.5
+    top_row_y = y + h1 - 13.5
     cjk = _cjk_font()
     if cjk == "Helvetica":
         raise RuntimeError(
             "CAAC PDF requires a Chinese system font (SimSun / YaHei / Noto CJK). "
             "None was found — Chinese text cannot be drawn."
         )
-    c.setFont(cjk, 7.0)
-    c.drawString(block2_x + 3, top_row_y, meta["title_authority"])
-    auth_w = c.stringWidth(meta["title_authority"], cjk, 7.0)
-    check_gap = 8
-    check1_x = block2_x + 3 + auth_w + check_gap
+    auth_size = 9.0
+    label_size = 8.0
+    box_size = 7.5
     label1 = "符合性 Conformity"
     label2 = "适航性 Airworthiness"
-    box_size = 7.5
-    c.setFont(cjk, 5.8)
-    label1_w = c.stringWidth(label1, cjk, 5.8)
-    check2_x = check1_x + box_size + 3.5 + label1_w + 12
-    # Keep second checkbox inside Block 2 if space is tight
-    max_check2 = block2_x + w2 - (box_size + 3.5 + c.stringWidth(label2, cjk, 5.8) + 4)
-    if check2_x > max_check2:
-        check2_x = max(check1_x + 70, max_check2)
+    auth_w = _cjk_text_width(c, meta["title_authority"], auth_size)
+    label1_w = _cjk_text_width(c, label1, label_size)
+    label2_w = _cjk_text_width(c, label2, label_size)
+    gap_auth = 10
+    gap_mid = 14
+    group_w = (
+        auth_w
+        + gap_auth
+        + box_size + 3.5 + label1_w
+        + gap_mid
+        + box_size + 3.5 + label2_w
+    )
+    group_x = block2_cx - group_w / 2
+    # Keep the group inside Block 2 with a small inset
+    group_x = max(block2_x + 3, min(group_x, block2_x + w2 - group_w - 3))
+
+    c.setFont(cjk, auth_size)
+    c.drawString(group_x, top_row_y, meta["title_authority"])
+    check1_x = group_x + auth_w + gap_auth
+    check2_x = check1_x + box_size + 3.5 + label1_w + gap_mid
     _checkbox(
         c,
         check1_x,
-        top_row_y - 0.8,
+        top_row_y - 1.0,
         cert_type == "conformity",
         label1,
-        label_size=5.8,
+        label_size=label_size,
         bilingual=True,
     )
     _checkbox(
         c,
         check2_x,
-        top_row_y - 0.8,
+        top_row_y - 1.0,
         cert_type == "airworthiness",
         label2,
-        label_size=5.8,
+        label_size=label_size,
         bilingual=True,
     )
 
-    # Titles centred under the checkbox row (same CJK face — never incomplete "bold")
-    _cjk_centred(c, meta["title_line1"], block2_cx, y + h1 * 0.40, 9.2)
-    c.setFont("Helvetica-Bold", 7.0)
-    c.drawCentredString(block2_cx, y + 5.2, meta["title_line2"])
+    # Titles centred in Block 2
+    _cjk_centred(c, meta["title_line1"], block2_cx, y + h1 * 0.40, 11.5)
+    c.setFont("Helvetica-Bold", 9.0)
+    c.drawCentredString(block2_cx, y + 5.5, meta["title_line2"])
 
-    _label(c, "3 证书编号 Certificate Ref. No.", x0 + w1 + w2 + 2.5, y + h1, 5.0)
-    _value(c, _tracking_number(payload, "CAAC"), x0 + w1 + w2 + 3, y + h1 * 0.38, 8.2)
+    _caac_label(c, "3 证书编号 Certificate Ref. No.", x0 + w1 + w2 + 2.5, y + h1, 7.4)
+    _value(c, _tracking_number(payload, "CAAC"), x0 + w1 + w2 + 3, y + h1 * 0.35, 9.0)
 
     # ── Row 2: blocks 4 | 5 ─────────────────────────────────────────────
-    h45 = 11 * mm
+    h45 = 12.5 * mm
     y -= h45
     w4 = width * 0.72
     w5 = width - w4
     _box(c, x0, y, w4, h45)
     _box(c, x0 + w4, y, w5, h45)
 
-    _label(c, meta["org_label"], x0 + 2.5, y + h45, 5.0)
-    _value(c, ORG_NAME, x0 + 3, y + 14.5, 7.4)
-    c.setFont("Helvetica", 6.4)
-    c.drawString(x0 + 3, y + 5.2, ORG_ADDRESS)
+    _caac_label(c, meta["org_label"], x0 + 2.5, y + h45, 7.4)
+    _value(c, ORG_NAME, x0 + 3, y + 16.0, 8.0)
+    c.setFont("Helvetica", 7.4)
+    c.drawString(x0 + 3, y + 5.5, ORG_ADDRESS)
 
-    _label(c, meta["work_label"], x0 + w4 + 2.5, y + h45, 4.8)
+    _caac_label(c, meta["work_label"], x0 + w4 + 2.5, y + h45, 7.2)
     po = _text(payload.get("customer_po_no"))
     block5 = f"PO: {po}" if po else _text(payload.get("sales_order_no"), "")
-    _value(c, block5, x0 + w4 + 3, y + 4.2, 8.2)
+    _value(c, block5, x0 + w4 + 3, y + 4.5, 8.6)
 
     # ── Row 3: item columns 6-12 (Eligibility is Block 9) ────────────────
     cols = [
@@ -1126,7 +1389,7 @@ def draw_caac_arc_page(c: canvas.Canvas, payload: dict[str, Any]) -> None:
         items = [{}]
     # Only draw rows for selected item lines — no blank pad slots.
     slot_count = max(1, len(items))
-    h_header = 6.2 * mm
+    h_header = 8.2 * mm
     h_row = 9.0 * mm if slot_count <= 2 else (7.2 * mm if slot_count <= 4 else 6.4 * mm)
     h_item_block = h_header + (h_row * slot_count)
     y -= h_item_block
@@ -1135,7 +1398,7 @@ def draw_caac_arc_page(c: canvas.Canvas, payload: dict[str, Any]) -> None:
     for label, frac, _align in cols:
         cw = width * frac
         _box(c, cx, y + h_item_block - h_header, cw, h_header)
-        _label(c, label, cx + 1.5, y + h_item_block, 4.4)
+        _caac_label(c, label, cx + 1.5, y + h_item_block, 7.4)
         cx += cw
 
     font_size = 7.2 if slot_count <= 2 else 6.6
@@ -1180,13 +1443,13 @@ def draw_caac_arc_page(c: canvas.Canvas, payload: dict[str, Any]) -> None:
     h13 = max(16 * mm, y - form_bottom - h1415 - h_sig)
     y -= h13
     _box(c, x0, y, width, h13)
-    _label(c, meta["block13_title"], x0 + 2.5, y + h13, 5.4)
+    _caac_label(c, meta["block13_title"], x0 + 2.5, y + h13, 7.6)
     remarks = build_remarks(payload, "CAAC")
     _wrap_paragraphs(
         c,
         remarks or "",
         x0 + 3.5,
-        y + h13 - 20,
+        y + h13 - 22,
         width - 8,
         "Helvetica",
         6.6,
@@ -1206,8 +1469,8 @@ def draw_caac_arc_page(c: canvas.Canvas, payload: dict[str, Any]) -> None:
     if is_new:
         _draw_x(c, right_x, y, half, h1415)
 
-    _label(c, meta["block14_title"], left_x + 2.5, y + h1415, 5.4)
-    text_y = y + h1415 - 16
+    _caac_label(c, meta["block14_title"], left_x + 2.5, y + h1415, 7.6)
+    text_y = y + h1415 - 20
     text_y = _wrap(
         c,
         meta["block14_text_zh"],
@@ -1215,8 +1478,8 @@ def draw_caac_arc_page(c: canvas.Canvas, payload: dict[str, Any]) -> None:
         text_y,
         half - 8,
         cjk,
-        5.4,
-        6.8,
+        7.2,
+        9.0,
         max_lines=5,
     )
     _wrap(
@@ -1226,13 +1489,13 @@ def draw_caac_arc_page(c: canvas.Canvas, payload: dict[str, Any]) -> None:
         text_y - 2,
         half - 8,
         "Helvetica",
-        4.8,
-        5.9,
+        6.6,
+        8.0,
         max_lines=7,
     )
 
-    _label(c, meta["block15_title"], right_x + 2.5, y + h1415, 5.4)
-    text_y = y + h1415 - 16
+    _caac_label(c, meta["block15_title"], right_x + 2.5, y + h1415, 7.6)
+    text_y = y + h1415 - 20
     text_y = _wrap(
         c,
         meta["block15_text_zh"],
@@ -1240,8 +1503,8 @@ def draw_caac_arc_page(c: canvas.Canvas, payload: dict[str, Any]) -> None:
         text_y,
         half - 8,
         cjk,
-        5.4,
-        6.8,
+        7.2,
+        9.0,
         max_lines=5,
     )
     _wrap(
@@ -1251,8 +1514,8 @@ def draw_caac_arc_page(c: canvas.Canvas, payload: dict[str, Any]) -> None:
         text_y - 2,
         half - 8,
         "Helvetica",
-        4.8,
-        5.9,
+        6.6,
+        8.0,
         max_lines=7,
     )
 
@@ -1279,31 +1542,32 @@ def draw_caac_arc_page(c: canvas.Canvas, payload: dict[str, Any]) -> None:
     _hline(c, x0, x0 + w_left, mid_y, lw=0.7)
 
     # 16 Signature
-    _label(c, meta["sig16"], x0 + 2.2, y + h_sig, 4.6)
+    _caac_label(c, meta["sig16"], x0 + 2.2, y + h_sig, 7.0)
     if signature_image is not None:
         _draw_signature_image(c, signature_image, x0 + 2, mid_y + 1.5, w16 - 4, h_top - 11)
 
     # 18 Date
-    _label(c, meta["sig18"], x0 + w16 + 2.2, y + h_sig, 4.6)
+    _caac_label(c, meta["sig18"], x0 + w16 + 2.2, y + h_sig, 7.0)
     if cert_date:
-        _value(c, cert_date, x0 + w16 + 3, mid_y + 4, 7.4)
+        _value(c, cert_date, x0 + w16 + 3, mid_y + 4, 7.6)
 
     # 17 Name (Printed) — spans under 16 + 18
-    _label(c, meta["sig17"], x0 + 2.2, mid_y, 4.6)
+    _caac_label(c, meta["sig17"], x0 + 2.2, mid_y, 7.0)
     if staff_name:
         _value(c, staff_name, x0 + 3, y + 4.5, 8.0)
 
     # 19 Issued by / Certificate No — full height on the right
-    _label(c, meta["sig19"], x0 + w_left + 2.2, y + h_sig, 4.4)
+    _caac_label(c, meta["sig19"], x0 + w_left + 2.2, y + h_sig, 6.8)
     cert_no = f"Certificate No: {meta['approval_no']}"
     c.setFont("Helvetica-Bold", 8.0)
     c.drawCentredString(x0 + w_left + w19 / 2, y + h_sig * 0.42, cert_no)
 
-    # Footer strip under form
-    c.setFont("Helvetica", 5.4)
-    c.drawString(x0, form_bottom - 5, meta["footer_form"])
-    c.setFont(cjk, 5.0)
-    c.drawRightString(x0 + width, form_bottom - 5, meta["footer_right"])
+    # Footer strip under form — keep a clear gap from the outer border
+    footer_y = form_bottom - 14
+    c.setFont("Helvetica", 7.2)
+    c.drawString(x0, footer_y, meta["footer_form"])
+    c.setFont(cjk, 6.8)
+    c.drawRightString(x0 + width, footer_y, meta["footer_right"])
 
     c.showPage()
     draw_caac_responsibilities_page(c)
@@ -1311,21 +1575,37 @@ def draw_caac_arc_page(c: canvas.Canvas, payload: dict[str, Any]) -> None:
 
 def draw_arc_page(c: canvas.Canvas, payload: dict[str, Any], variant: str) -> None:
     meta = VARIANT_META[variant]
+    typo = _typography(meta)
     page_w, page_h = landscape(A4)  # 297 x 210 mm — matches CAAS/FAA sample
     margin_x = 7 * mm
     margin_top = 5 * mm
-    margin_bottom = 4 * mm
+    margin_bottom = 5 * mm
     width = page_w - 2 * margin_x
     x0 = margin_x
     y_top = page_h - margin_top
 
-    # Outer frame — leave clear strip under the form for responsibilities
-    form_bottom = margin_bottom + 18 * mm
+    resp_style = _text(meta.get("responsibilities_style"), "footer_loose")
+    # FAA / EASA: responsibilities live inside the form as a bottom table cell.
+    # CAAS/JCAB: same-page footer under the form (official Issue 3 samples).
+    if resp_style == "boxed_in_form":
+        resp_h = typo["resp_h_mm"] * mm
+        form_bottom = margin_bottom + 7 * mm
+        content_floor = form_bottom + resp_h
+    elif resp_style == "footer_under_form":
+        resp_h = 0
+        footer_reserve = typo.get("footer_reserve_mm", 32.0) * mm
+        form_bottom = margin_bottom + footer_reserve
+        content_floor = form_bottom
+    else:
+        resp_h = 0
+        form_bottom = margin_bottom + 28 * mm
+        content_floor = form_bottom
+
     form_height = y_top - form_bottom
     _box(c, x0, form_bottom, width, form_height, lw=1.5)
 
     # ── Row 1: blocks 1 | 2 | 3 ─────────────────────────────────────────
-    h1 = 12 * mm
+    h1 = typo["h1_mm"] * mm
     w1 = width * 0.22
     w3 = width * 0.22
     w2 = width - w1 - w3
@@ -1334,37 +1614,42 @@ def draw_arc_page(c: canvas.Canvas, payload: dict[str, Any], variant: str) -> No
     _box(c, x0 + w1, y, w2, h1)
     _box(c, x0 + w1 + w2, y, w3, h1)
 
-    _label(c, meta["authority_label"], x0 + 2.5, y + h1, 5.2)
-    _value(c, meta["authority"], x0 + 3, y + 4.2, 9.5)
+    _label(c, meta["authority_label"], x0 + 2.5, y + h1, typo["label"])
+    auth_y = max(y + 3.5, y + h1 - typo["label"] - typo["value"] - 2.5)
+    _value(c, meta["authority"], x0 + 3, auth_y, typo["value"])
 
-    c.setFont("Helvetica-Bold", 11)
-    c.drawCentredString(x0 + w1 + w2 / 2, y + h1 - 10, meta["title_line1"])
-    c.setFont("Helvetica-Bold", 8)
-    c.drawCentredString(x0 + w1 + w2 / 2, y + 3.8, meta["title_line2"])
+    c.setFont("Helvetica-Bold", typo["title1"])
+    c.drawCentredString(x0 + w1 + w2 / 2, y + h1 - typo["title1"] - 2.0, meta["title_line1"])
+    c.setFont("Helvetica-Bold", typo["title2"])
+    c.drawCentredString(x0 + w1 + w2 / 2, y + 4.0, meta["title_line2"])
 
-    _label(c, "3. Form Tracking Number", x0 + w1 + w2 + 2.5, y + h1, 5.2)
-    _value(c, _tracking_number(payload, variant), x0 + w1 + w2 + 3, y + 4.2, 8.2)
+    _label(c, "3. Form Tracking Number", x0 + w1 + w2 + 2.5, y + h1, typo["label"])
+    track_y = max(y + 3.5, y + h1 - typo["label"] - typo["tracking"] - 2.5)
+    _value(c, _tracking_number(payload, variant), x0 + w1 + w2 + 3, track_y, typo["tracking"])
 
     # ── Row 2: blocks 4 | 5 ─────────────────────────────────────────────
-    h45 = 11 * mm
+    h45 = typo["h45_mm"] * mm
     y -= h45
     w4 = width * 0.72
     w5 = width - w4
     _box(c, x0, y, w4, h45)
     _box(c, x0 + w4, y, w5, h45)
 
-    _label(c, meta["org_label"], x0 + 2.5, y + h45, 5.2)
-    _value(c, ORG_NAME, x0 + 3, y + 14.5, 7.6)
-    c.setFont("Helvetica", 6.6)
-    c.drawString(x0 + 3, y + 5.5, ORG_ADDRESS)
+    _label(c, meta["org_label"], x0 + 2.5, y + h45, typo["label"])
+    # Keep org name clear below the larger FAA field label.
+    name_y = y + h45 - typo["label"] - typo["org_name"] - 3.5
+    addr_y = max(y + 4.0, name_y - typo["org_addr"] - 2.5)
+    _value(c, ORG_NAME, x0 + 3, name_y, typo["org_name"])
+    c.setFont("Helvetica", typo["org_addr"])
+    c.drawString(x0 + 3, addr_y, ORG_ADDRESS)
     if meta["show_org_approval"]:
-        c.setFont("Helvetica", 6.0)
-        c.drawRightString(x0 + w4 - 4, y + 5.5, f"Approval number: {meta['approval_no']}")
+        c.setFont("Helvetica", typo["org_approval"])
+        c.drawRightString(x0 + w4 - 4, addr_y, f"Approval number: {meta['approval_no']}")
 
-    _label(c, meta["work_label"], x0 + w4 + 2.5, y + h45, 5.2)
+    _label(c, meta["work_label"], x0 + w4 + 2.5, y + h45, typo["label"])
     po = _text(payload.get("customer_po_no"))
     block5 = f"PO: {po}" if po else _text(payload.get("sales_order_no"), "")
-    _value(c, block5, x0 + w4 + 3, y + 4.2, 8.5)
+    _value(c, block5, x0 + w4 + 3, y + 4.2, typo["block5"])
 
     # ── Row 3: item columns 6-11 (Form 1 multi-line: CAAS / FAA / EASA / …) ──
     # Column fractions mirror official Form 1 / CAAS(AW)95 / 8130-3 samples.
@@ -1384,8 +1669,10 @@ def draw_arc_page(c: canvas.Canvas, payload: dict[str, Any], variant: str) -> No
         items = [{}]
     # Only draw rows for selected item lines — no blank pad slots.
     slot_count = max(1, len(items))
-    h_header = 5.5 * mm
+    h_header = 5.5 * mm if typo["col_label"] <= 5.5 else 6.5 * mm
     h_row = 10.0 * mm if slot_count <= 2 else (7.5 * mm if slot_count <= 4 else 6.6 * mm)
+    if typo["item"] >= 9.0 and slot_count <= 2:
+        h_row = 11.0 * mm
     h_item_block = h_header + (h_row * slot_count)
     y -= h_item_block
 
@@ -1394,10 +1681,10 @@ def draw_arc_page(c: canvas.Canvas, payload: dict[str, Any], variant: str) -> No
     for label, frac, _align in cols:
         cw = width * frac
         _box(c, cx, y + h_item_block - h_header, cw, h_header)
-        _label(c, label, cx + 2, y + h_item_block, 5.0)
+        _label(c, label, cx + 2, y + h_item_block, typo["col_label"])
         cx += cw
 
-    font_size = 8.0 if slot_count <= 2 else 7.0
+    font_size = typo["item"] if slot_count <= 2 else max(7.0, typo["item"] - 1.0)
     for idx in range(slot_count):
         row_top = y + h_item_block - h_header - (idx * h_row)
         row_bottom = row_top - h_row
@@ -1431,119 +1718,179 @@ def draw_arc_page(c: canvas.Canvas, payload: dict[str, Any], variant: str) -> No
             cx += cw
 
     # ── Row 4: remarks block 12 ─────────────────────────────────────────
-    # Keep 13|14 tall enough for checkboxes + a 22mm signature grid.
-    h1314 = 56 * mm
-    h12 = max(18 * mm, y - form_bottom - h1314)
+    h1314 = typo["h1314_mm"] * mm
+    h12 = max(18 * mm, y - content_floor - h1314)
     y -= h12
     _box(c, x0, y, width, h12)
-    _label(c, "12. Remarks", x0 + 2.5, y + h12, 5.5)
+    _label(c, "12. Remarks", x0 + 2.5, y + h12, typo["remarks_label"])
     remarks = build_remarks(payload, variant)
     # Start remarks clearly below the "12. Remarks" label band.
     _wrap_paragraphs(
         c,
         remarks or "",
         x0 + 3.5,
-        y + h12 - 22,
+        y + h12 - (24 if typo["remarks_label"] > 6 else 22),
         width - 8,
         "Helvetica",
-        6.8,
-        8.4,
+        typo["remarks"],
+        typo["remarks_leading"],
     )
 
-    # ── Row 5: blocks 13 | 14 (half width each — same as sample) ────────
+    # ── Row 5: blocks 13 | 14 (or full-width 14 when Block 13 is omitted) ─
     y -= h1314
+    omit_block13 = bool(meta.get("omit_block13"))
     half = width / 2
     left_x = x0
-    right_x = x0 + half
-    is_new = _part_type(payload) == "new"
+    right_x = x0 if omit_block13 else (x0 + half)
+    block14_w = width if omit_block13 else half
+    is_new = False if omit_block13 else (_part_type(payload) == "new")
     signature_image = _signature_image_reader(payload)
 
-    _box(c, left_x, y, half, h1314)
-    _box(c, right_x, y, half, h1314)
+    if omit_block13:
+        _box(c, x0, y, width, h1314)
+    else:
+        _box(c, left_x, y, half, h1314)
+        _box(c, right_x, y, half, h1314)
 
-    # Taller signature band so labels and values have a clear vertical gap.
-    sig_h = 22 * mm
+    sig_h = typo["sig_h_mm"] * mm
     top_h = h1314 - sig_h
     sig_y = y
     top_y = y + sig_h
-    _hline(c, left_x, left_x + half, top_y, lw=0.8)
-    _hline(c, right_x, right_x + half, top_y, lw=0.8)
+    if not omit_block13:
+        _hline(c, left_x, left_x + half, top_y, lw=0.8)
+    _hline(c, right_x, right_x + block14_w, top_y, lw=0.8)
 
     staff_name = _text(payload.get("certifying_staff"), "")
     cert_date = _format_date(payload.get("cert_date"))
 
     # Strike unused half first (under ink) so labels stay readable.
-    if not is_new:
-        _draw_x(c, left_x, y, half, h1314)
-    if is_new:
-        _draw_x(c, right_x, y, half, h1314)
+    if not omit_block13:
+        if not is_new:
+            _draw_x(c, left_x, y, half, h1314)
+        if is_new:
+            _draw_x(c, right_x, y, half, h1314)
 
     # --- 13 (new parts) ---
-    _label(c, meta["block13_title"], left_x + 2.5, top_y + top_h - 0.5, 5.6)
-    heading_y = _wrap(
-        c,
-        meta["block13_heading"],
-        left_x + 2.5,
-        top_y + top_h - 14,
-        half - 8,
-        "Helvetica",
-        4.5,
-        5.4,
-        max_lines=3,
-    )
-    new_options = meta["block13_options"]
-    default_new = new_options[0][0]
-    opt_y = heading_y - 5
-    for value, label in new_options:
-        checked = is_new and _new_checked(payload, value, default_new)
-        _checkbox(c, left_x + 4, opt_y, checked, label, label_size=5.0)
-        opt_y -= 9.0
+    show_titles = bool(meta.get("show_part_section_titles", True))
+    section_title_size = typo["section_title"]
+    # Title baseline sits at (band_top - size - 1.8); content must start fully below it.
+    band_top = top_y + top_h - 0.5
+    title_baseline = band_top - section_title_size - 1.8
+    opt_step = 11.0 if typo["checkbox"] >= 6.0 else 9.5
 
-    _draw_sig_grid(
-        c,
-        left_x,
-        sig_y,
-        half,
-        sig_h,
-        (meta["sig13b"], meta["sig13c"], meta["sig13d"], meta["sig13e"]),
-        (
-            "",
-            meta["approval_no"] if is_new else "",
-            staff_name if is_new else "",
-            cert_date if is_new else "",
-        ),
-        signature_image=signature_image if is_new else None,
-    )
+    if not omit_block13:
+        block13_lead = _text(meta.get("block13_lead"))
+        content_start = title_baseline - typo["block13_heading"] - 4.0
+        if block13_lead:
+            _label(c, block13_lead, left_x + 2.5, band_top, section_title_size)
+            heading_top = content_start
+        elif show_titles:
+            _label(c, meta["block13_title"], left_x + 2.5, band_top, section_title_size)
+            heading_top = content_start
+        else:
+            heading_top = band_top - 7
+        heading_y = _wrap(
+            c,
+            meta["block13_heading"],
+            left_x + 3.5,
+            heading_top,
+            half - 9,
+            "Helvetica",
+            typo["block13_heading"],
+            typo["block13_heading_leading"],
+            max_lines=3,
+        )
+        new_options = meta["block13_options"]
+        default_new = new_options[0][0]
+        opt_y = heading_y - 9
+        for value, label in new_options:
+            checked = is_new and _new_checked(payload, value, default_new)
+            _checkbox(c, left_x + 5, opt_y, checked, label, label_size=typo["checkbox"])
+            opt_y -= opt_step
+
+        _draw_sig_grid(
+            c,
+            left_x,
+            sig_y,
+            half,
+            sig_h,
+            (meta["sig13b"], meta["sig13c"], meta["sig13d"], meta["sig13e"]),
+            (
+                "",
+                meta["approval_no"] if is_new else "",
+                staff_name if is_new else "",
+                cert_date if is_new else "",
+            ),
+            signature_image=signature_image if is_new else None,
+            label_size=typo["sig_label"],
+            value_size=typo["sig_value"],
+            label_band=typo["sig_label_band"],
+        )
 
     # --- 14 (used / return to service) ---
-    _label(c, meta["block14_title"], right_x + 2.5, top_y + top_h - 0.5, 5.6)
-    _label(c, meta["block14_heading"], right_x + 2.5, top_y + top_h - 12, 4.6)
+    # FAA: 14a inline with horizontal checkboxes. CAAS: "14a. USED PARTS" then stacked options.
+    if show_titles and not _text(meta.get("block14_heading")).startswith("14a."):
+        _label(c, meta["block14_title"], right_x + 2.5, band_top, section_title_size)
     used_options = meta["release_options"]
     default_first = used_options[0][0]
-    opt_y = top_y + top_h - 24
-    for value, label in used_options:
-        checked = (not is_new) and _used_checked(payload, variant, value, default_first)
-        _checkbox(c, right_x + 4, opt_y, checked, label, label_size=5.2)
-        opt_y -= 8.0
+    heading_14a = _text(meta.get("block14_heading"), "14a.")
+    heading_inline = bool(meta.get("release_heading_inline", True))
+    heading_size = typo["release_heading"]
+    label_size = typo["checkbox"]
+    box_size = 7.5
+
+    if heading_inline:
+        opt_y = top_y + top_h - (22 if show_titles else 13)
+        c.setFont("Helvetica", heading_size)
+        heading_w = c.stringWidth(heading_14a, "Helvetica", heading_size)
+        c.drawString(right_x + 3.5, opt_y + 1.0, heading_14a)
+        check_x = right_x + 3.5 + heading_w + 10.0
+    else:
+        _label(c, heading_14a, right_x + 2.5, band_top, section_title_size)
+        # Checkbox box is drawn from opt_y upward by box_size — keep fully under title.
+        opt_y = title_baseline - box_size - 3.0
+        check_x = right_x + 5
+
+    layout = _text(meta.get("release_options_layout"), "vertical").lower()
+
+    if layout == "horizontal" and len(used_options) >= 1:
+        x = check_x
+        max_x = right_x + block14_w - 4
+        for value, label in used_options:
+            checked = (not is_new) and _used_checked(payload, variant, value, default_first)
+            c.setFont("Helvetica", label_size)
+            label_w = c.stringWidth(label, "Helvetica", label_size)
+            needed = box_size + 3.5 + label_w + 12
+            if x > check_x and (x + needed) > max_x:
+                opt_y -= 11
+                x = check_x
+            _checkbox(c, x, opt_y, checked, label, label_size=label_size)
+            x += needed
+        opt_y -= 13
+    else:
+        for value, label in used_options:
+            checked = (not is_new) and _used_checked(payload, variant, value, default_first)
+            _checkbox(c, check_x, opt_y, checked, label, label_size=label_size)
+            opt_y -= opt_step
 
     if not is_new:
         _wrap(
             c,
             meta["release_text"],
             right_x + 3.5,
-            opt_y - 0.5,
-            half - 8,
+            opt_y - 1.0,
+            block14_w - 8,
             "Helvetica",
-            4.6,
-            5.5,
-            max_lines=5,
+            typo["release_text"],
+            typo["release_leading"],
+            max_lines=7,
         )
 
     _draw_sig_grid(
         c,
         right_x,
         sig_y,
-        half,
+        block14_w,
         sig_h,
         (meta["sig14b"], meta["sig14c"], meta["sig14d"], meta["sig14e"]),
         (
@@ -1553,25 +1900,71 @@ def draw_arc_page(c: canvas.Canvas, payload: dict[str, Any], variant: str) -> No
             cert_date if not is_new else "",
         ),
         signature_image=signature_image if not is_new else None,
+        label_size=typo["sig_label"],
+        value_size=typo["sig_value"],
+        label_band=typo["sig_label_band"],
     )
 
-    # ── Footer outside form grid ────────────────────────────────────────
+    # ── Responsibilities / footer (authority-specific) ─────────────────
+    if resp_style == "boxed_in_form":
+        # FAA / EASA: bordered responsibilities cell inside the form.
+        _box(c, x0, form_bottom, width, resp_h, lw=1.0)
+        title = _text(meta.get("responsibilities_title"), "User / Installer Responsibilities")
+        c.setFont("Helvetica-Bold", typo["resp_title"])
+        c.drawCentredString(x0 + width / 2, form_bottom + resp_h - 12, title)
+        _hline(c, x0 + 3, x0 + width - 3, form_bottom + resp_h - 15, lw=0.7)
+        note_y = form_bottom + resp_h - 26
+        for note in _responsibilities_notes(meta):
+            note_y = _wrap(
+                c,
+                note,
+                x0 + 4,
+                note_y,
+                width - 8,
+                "Helvetica",
+                typo["resp_body"],
+                typo["resp_leading"],
+            )
+            note_y -= 4.0
+        c.setFont("Helvetica", typo["footer"])
+        c.drawString(x0, form_bottom - 9, meta["footer_form"])
+        if meta["footer_right"]:
+            c.drawRightString(x0 + width, form_bottom - 9, meta["footer_right"])
+        c.showPage()
+        return
+
+    if resp_style == "footer_under_form":
+        draw_caas_footer(
+            c,
+            x0=x0,
+            width=width,
+            form_bottom=form_bottom,
+            margin_bottom=margin_bottom,
+            meta=meta,
+            typo=typo,
+        )
+        c.showPage()
+        return
+
     footer_top = form_bottom - 2.5
-    c.setFont("Helvetica-Bold", 6.2)
-    c.drawCentredString(x0 + width / 2, footer_top - 6.5, meta["responsibilities_title"])
-    _hline(c, x0 + width * 0.28, x0 + width * 0.72, footer_top - 8.2, lw=0.55)
+    c.setFont("Helvetica-Bold", 6.6)
+    c.drawCentredString(x0 + width / 2, footer_top - 8.0, meta["responsibilities_title"])
+    _hline(c, x0 + width * 0.30, x0 + width * 0.70, footer_top - 9.8, lw=0.55)
 
-    note_y = footer_top - 14.5
+    note_y = footer_top - 16.0
     for note in USER_RESPONSIBILITIES:
-        note_y = _wrap(c, note, x0, note_y, width, "Helvetica", 4.7, 5.7)
-        note_y -= 0.4
+        note_y = _wrap(c, note, x0, note_y, width, "Helvetica", 4.4, 5.4)
+        note_y -= 2.0
+        if note_y < margin_bottom + 10:
+            break
 
-    c.setFont("Helvetica", 5.3)
-    c.drawString(x0, margin_bottom - 0.5, meta["footer_form"])
+    c.setFont("Helvetica", 5.4)
+    c.drawString(x0, margin_bottom + 1.0, meta["footer_form"])
     if meta["footer_right"]:
-        c.drawRightString(x0 + width, margin_bottom - 0.5, meta["footer_right"])
+        c.drawRightString(x0 + width, margin_bottom + 1.0, meta["footer_right"])
 
     c.showPage()
+
 
 
 def generate_arc_pdf_bytes(payload: dict[str, Any], variants: str | list[str]) -> bytes:

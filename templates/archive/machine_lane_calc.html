@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% block title %}Machine Lane Calc{% endblock %}
+{% block main_class %}app-main--new-orders{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=machine-lane-calc-20260715">{% endblock %}
+{% block content %}
+<style>
+  .mlc-page { max-width: 1680px; }
+  .mlc-totals {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .mlc-total-card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #f8fafc;
+    padding: 12px 14px;
+  }
+  .mlc-total-card strong {
+    display: block;
+    font-size: 22px;
+    line-height: 1.1;
+    margin-top: 4px;
+  }
+  .mlc-total-card span { color: var(--text2); font-size: 12px; font-weight: 600; }
+  .mlc-total-card small { color: var(--text2); font-size: 11px; }
+  .mlc-duration-sub { margin-top: 4px; color: var(--text2); font-size: 12px; }
+  .mlc-lanes {
+    display: grid;
+    gap: 14px;
+    margin-bottom: 12px;
+  }
+  .mlc-lane {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #fff;
+    padding: 12px 14px;
+  }
+  .mlc-lane-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 8px;
+    gap: 10px;
+  }
+  .mlc-lane-head h3 { margin: 0; font-size: 14px; }
+  .mlc-lane-stats { color: var(--text2); font-size: 12px; line-height: 1.45; text-align: right; }
+  .mlc-lane-track {
+    position: relative;
+    min-height: 28px;
+    background: linear-gradient(90deg, #f1f5f9 0%, #f8fafc 100%);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .mlc-bar {
+    height: 28px;
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border-right: 1px solid rgba(255,255,255,0.35);
+  }
+  .mlc-bar:last-child { border-right: 0; }
+  .mlc-bar-stack { display: flex; width: 100%; min-height: 28px; }
+  .mlc-empty-lane { color: var(--text2); font-size: 12px; padding: 6px 2px; }
+  .mlc-table-wrap { overflow-x: auto; }
+  .mlc-table { min-width: 1180px; }
+  .mlc-table th, .mlc-table td { white-space: nowrap; }
+  .mlc-table .mlc-part { font-weight: 600; }
+  .mlc-table input[type="number"],
+  .mlc-table select {
+    width: 72px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 6px;
+    font: inherit;
+    background: #fff;
+  }
+  .mlc-table select.mlc-assign { width: 78px; }
+  .mlc-table input.mlc-qty { width: 56px; }
+  .mlc-table input.mlc-ct { width: 68px; background: #eff6ff; }
+  .mlc-row--zero td { background: rgba(248, 113, 113, 0.08); color: var(--text2); }
+  .mlc-machine-cell { text-align: right; font-variant-numeric: tabular-nums; }
+  .mlc-machine-cell.is-hit { background: rgba(59, 130, 246, 0.08); font-weight: 600; color: #1d4ed8; }
+  .mlc-hint { color: var(--text2); font-size: 12px; margin: 0 0 10px; }
+  .mlc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .mlc-sets-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+    margin-bottom: 12px;
+    padding: 12px 14px;
+  }
+  .mlc-sets-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text2);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .mlc-sets-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .mlc-set-chip {
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text);
+    border-radius: 999px;
+    padding: 6px 12px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .mlc-set-chip:hover { border-color: #93c5fd; background: #eff6ff; }
+  .mlc-set-chip.is-active {
+    background: #1d4ed8;
+    border-color: #1d4ed8;
+    color: #fff;
+  }
+  .mlc-sets-meta { color: var(--text2); font-size: 12px; margin-left: auto; }
+  .mlc-table .mlc-pieces { color: var(--text2); font-size: 11px; font-weight: 500; }
+</style>
+<div class="mlc-page new-orders-page">
+  <div class="new-orders-header">
+    <div>
+      <h1 class="new-orders-title">Machine Lane Calc</h1>
+      <p class="new-orders-subtitle">
+        What-if calculator from the turnmill spreadsheet seed data.
+        Change <strong>Assignment (TN / ML / Turnmill)</strong> to route each part’s duration into a machine lane.
+      </p>
+    </div>
+    <div class="new-orders-header-actions mlc-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="mlc-reset">Reset seed</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="mlc-swap-39-40" title="Swap Turnmill assignments between 39 and 40">Swap 39 ↔ 40</button>
+    </div>
+  </div>
+
+  <p class="mlc-hint">
+    Qty is per set. Pieces = Qty/set × sets.
+    TN duration = Pieces × CT(TN) · ML duration = Pieces × CT(ML) · Turnmill = TN + ML.
+    Assignment cells decide which machine column receives that duration.
+  </p>
+
+  <div class="card mlc-sets-row" id="mlc-sets-row">
+    <span class="mlc-sets-label">Sets multiplier</span>
+    <div class="mlc-sets-chips" id="mlc-sets-chips" role="group" aria-label="Number of sets"></div>
+    <div class="mlc-sets-meta" id="mlc-sets-meta"></div>
+  </div>
+
+  <div class="mlc-totals" id="mlc-totals"></div>
+  <div class="mlc-lanes card" id="mlc-lanes" style="padding:12px 14px;"></div>
+
+  <div class="new-orders-toolbar card">
+    <label class="new-orders-filter new-orders-filter--grow">
+      <span>Search</span>
+      <span class="planner-page-search-wrap">
+        <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="mlc-search" class="planner-page-search-input" type="search" placeholder="Part no..." autocomplete="off">
+      </span>
+    </label>
+    <div class="new-orders-stats" id="mlc-stats"></div>
+  </div>
+
+  <div class="new-orders-table-wrap card mlc-table-wrap">
+    <table class="new-orders-table mlc-table">
+      <thead>
+        <tr>
+          <th>Part no.</th>
+          <th>Qty / set</th>
+          <th>CT (TN)</th>
+          <th>CT (ML)</th>
+          <th>TN dur.</th>
+          <th>ML dur.</th>
+          <th>Turnmill</th>
+          <th>Assign TN</th>
+          <th>Assign ML</th>
+          <th>Assign Turnmill</th>
+          <th>15</th>
+          <th>31</th>
+          <th>32</th>
+          <th>39</th>
+          <th>40</th>
+        </tr>
+      </thead>
+      <tbody id="mlc-tbody"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/machine_lane_calc.js') }}?v=machine-lane-calc-20260715c"></script>
+{% endblock %}

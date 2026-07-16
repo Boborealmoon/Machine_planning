@@ -164,7 +164,7 @@
       </div>
 
       {# Archive — historical / reference views #}
-      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/actual-production', '/material-inspection/no-shipment', '/auk-oee', '/planning-data/aker-inventory', '/preferred-machines', '/kobelco-mps-archive', '/pending-pp', '/pr-status-enquiry') or active in ('daily_output', 'actual_production', 'material_inspection_no_shipment', 'auk_oee', 'aker_inventory', 'preferred_machines', 'kobelco_mps_archive', 'pending_pp', 'pr_status_enquiry') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/actual-production', '/material-inspection/no-shipment', '/auk-oee', '/planning-data/aker-inventory', '/preferred-machines', '/kobelco-mps-archive', '/archive/machine-lane-calc', '/pending-pp', '/pr-status-enquiry') or active in ('daily_output', 'actual_production', 'material_inspection_no_shipment', 'auk_oee', 'aker_inventory', 'preferred_machines', 'kobelco_mps_archive', 'machine_lane_calc', 'pending_pp', 'pr_status_enquiry') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="archive">
           ARCHIVE <span class="nav-caret">▾</span>
         </button>
@@ -196,6 +196,10 @@
           <a href="/kobelco-mps-archive"
              class="nav-dropdown-item {% if nav_path == '/kobelco-mps-archive' or active == 'kobelco_mps_archive' %}nav-dropdown-item--active{% endif %}">
             Kobelco MPS archive
+          </a>
+          <a href="/archive/machine-lane-calc"
+             class="nav-dropdown-item {% if nav_path == '/archive/machine-lane-calc' or active == 'machine_lane_calc' %}nav-dropdown-item--active{% endif %}">
+            Machine lane calc
           </a>
           <a href="/pending-pp"
              class="nav-dropdown-item {% if nav_path == '/pending-pp' or active == 'pending_pp' %}nav-dropdown-item--active{% endif %}">

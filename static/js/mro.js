@@ -562,7 +562,7 @@ async function mroAutofillWorkscopeFromBom(row) {
     }
     const hit = (data.rows || []).find((r) => r.remarks_trimmed || r.remarks);
     if (!hit) {
-      if (meta) meta.textContent = ps ? `no BOM remarks for ${ps}` : 'no BOM remarks';
+      if (meta) meta.textContent = ps ? `no Inventory BOM remarks for ${ps}` : 'no Inventory BOM remarks';
       return;
     }
     const text = String(hit.remarks_trimmed || hit.remarks || '').trim();
@@ -573,12 +573,12 @@ async function mroAutofillWorkscopeFromBom(row) {
     const bom = hit.bom_code || data.resolved?.bom_code || '';
     if (meta) {
       meta.textContent = bom
-        ? `BOM ${bom}${hit.extracted_status ? ` · status ${hit.extracted_status}` : ''}`
-        : (hit.extracted_status ? `status ${hit.extracted_status}` : 'from PS BOM');
+        ? `Inventory BOM ${bom}${hit.extracted_status ? ` · status ${hit.extracted_status}` : ''}`
+        : (hit.extracted_status ? `status ${hit.extracted_status}` : 'from Inventory BOM');
     }
   } catch (err) {
     if (meta) meta.textContent = '';
-    console.warn('MRO BOM remarks autofill failed:', err);
+    console.warn('MRO Inventory BOM remarks autofill failed:', err);
   }
 }
 
@@ -1530,6 +1530,7 @@ function mroRenderWorkscopeResults(rows) {
     <article class="mro-workscope-result">
       <div class="mro-workscope-result-meta">
         <span><strong>PS</strong> ${mroEscapeHtml(row.process_sheet_no || row.pp_voucher_no || '—')}</span>
+        <span><strong>WO</strong> ${mroEscapeHtml(row.wo_voucher_no || '—')}</span>
         <span><strong>Part</strong> ${mroEscapeHtml(row.part_no || row.inventory_code || '—')}</span>
         <span><strong>BOM</strong> ${mroEscapeHtml(row.bom_code || '—')}</span>
         <span><strong>SO</strong> ${mroEscapeHtml(row.sales_order_no || '—')}</span>
@@ -1592,7 +1593,7 @@ async function mroSearchWorkscopeRemarks() {
       if (resolved.part_no) bits.push(`part ${resolved.part_no}`);
       if (resolved.bom_code) bits.push(`BOM ${resolved.bom_code}`);
       mroSetWorkscopeStatus(
-        `Resolved ${bits.join(' / ')} from process sheet, but no BOM remarks found`,
+        `Resolved ${bits.join(' / ')} from process sheet / work order, but no Inventory BOM remarks found`,
         'info'
       );
     } else {
