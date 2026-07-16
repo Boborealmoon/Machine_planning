@@ -1,6 +1,23 @@
 (function accountsAppInit() {
   'use strict';
 
+  // FINANCE gate passes a short-lived token on the URL as `ft=...`.
+  // We must send it on every `/api/accounts/*` call so the unlocked page can load data.
+  const FINANCE_GATE_TOKEN = new URLSearchParams(window.location.search).get('ft') || '';
+  const financeNativeFetch = window.fetch.bind(window);
+
+  if (FINANCE_GATE_TOKEN) {
+    window.fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+      const isAccountsApi = typeof url === 'string' && url.startsWith('/api/accounts');
+      if (!isAccountsApi) return financeNativeFetch(input, init);
+      const nextInit = { ...(init || {}) };
+      nextInit.headers = { ...(nextInit.headers || {}) };
+      nextInit.headers['X-Finance-Token'] = FINANCE_GATE_TOKEN;
+      return financeNativeFetch(input, nextInit);
+    };
+  }
+
   const state = {
     section: 'credit-notes',
     bucket: 'posted',
@@ -724,6 +741,10 @@
       await loadList();
     } catch (error) {
       els.stats.textContent = error.message || 'Failed to initialize accounts app';
+      // If the first API call fails (e.g. finance gate), avoid leaving the initial loading spinner visible.
+      if (els.loading) els.loading.hidden = true;
+      if (els.tableWrap) els.tableWrap.hidden = true;
+      if (els.empty) els.empty.hidden = false;
     }
   }());
 }());
