@@ -1497,6 +1497,7 @@ def mro_page():
         "mro.html",
         mro_path=MRO_PATH,
         mro_asset_version=mro_asset_version(),
+        mro_token=(request.args.get("mt") or "").strip(),
     )
 
 

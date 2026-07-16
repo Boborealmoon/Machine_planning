@@ -70,6 +70,7 @@ from planning.excel_local_route import excel_local_bp
 from planning.frame_agreement_route import frame_agreement_bp
 from planning.email_route import email_bp
 from planning.mro_route import MRO_PATH, mro_bp
+from planning.accounts_route import ACCOUNTS_PATH, accounts_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
@@ -118,6 +119,7 @@ app.register_blueprint(excel_local_bp)
 app.register_blueprint(frame_agreement_bp)
 app.register_blueprint(email_bp)
 app.register_blueprint(mro_bp)
+app.register_blueprint(accounts_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 
@@ -224,6 +226,7 @@ _DRIVER_VIEW_PUBLIC_PATHS = frozenset(
     {DRIVER_VIEW_PATH.lower(), _LEGACY_DRIVER_VIEW_PATH.lower()}
 )
 _MRO_PUBLIC_PATHS = frozenset({MRO_PATH.lower(), "/mro"})
+_ACCOUNTS_PUBLIC_PATHS = frozenset({ACCOUNTS_PATH.lower(), "/accounts"})
 
 
 def _is_gate_public_path(path: str) -> bool:
@@ -233,6 +236,8 @@ def _is_gate_public_path(path: str) -> bool:
         MACHINIST_BOARD_PATH.lower(),
         LOCK_PLANNER_PATH.lower(),
         REPORTS_GATE_PATH.lower(),
+        FINANCE_GATE_PATH.lower(),
+        MRO_GATE_PATH.lower(),
         "/favicon.ico",
     ):
         return True
@@ -241,6 +246,8 @@ def _is_gate_public_path(path: str) -> bool:
     if normalized in _DRIVER_VIEW_PUBLIC_PATHS:
         return True
     if normalized in _MRO_PUBLIC_PATHS:
+        return True
+    if normalized in _ACCOUNTS_PUBLIC_PATHS:
         return True
     return normalized.startswith("/static/") or normalized.startswith("/api/")
 
@@ -311,7 +318,8 @@ def _reports_request_token() -> str:
 
 def _path_has_prefix(path: str, prefixes) -> bool:
     normalized = _normalize_gate_path(path)
-    return any(normalized == p or normalized.startswith(p + "/") for p in prefixes)
+    normalized_prefixes = tuple(_normalize_gate_path(p) for p in prefixes)
+    return any(normalized == p or normalized.startswith(p + "/") for p in normalized_prefixes)
 
 
 def _is_reports_page_path(path: str) -> bool:
@@ -320,6 +328,97 @@ def _is_reports_page_path(path: str) -> bool:
 
 def _is_reports_api_path(path: str) -> bool:
     return _path_has_prefix(path, _REPORTS_API_PREFIXES)
+
+
+FINANCE_GATE_PATH = "/finance-gate"
+FINANCE_TOKEN_SALT = "finance-gate"
+FINANCE_TOKEN_MAX_AGE = 8 * 3600
+_FINANCE_PAGE_PREFIXES = (ACCOUNTS_PATH,)
+_FINANCE_API_PREFIXES = ("/api/accounts",)
+
+MRO_GATE_PATH = "/mro-gate"
+MRO_TOKEN_SALT = "mro-gate"
+MRO_TOKEN_MAX_AGE = 8 * 3600
+_MRO_PAGE_PREFIXES = (MRO_PATH,)
+_MRO_API_PREFIXES = ("/api/mro",)
+
+
+def _finance_passcode() -> str:
+    return (os.getenv("FINANCE_PASSCODE") or "").strip()
+
+
+def _finance_gate_enabled() -> bool:
+    return bool(_finance_passcode())
+
+
+def _mro_passcode() -> str:
+    return (os.getenv("MRO_PASSCODE") or "").strip()
+
+
+def _mro_gate_enabled() -> bool:
+    return bool(_mro_passcode())
+
+
+def _finance_token_serializer() -> URLSafeTimedSerializer:
+    secret = _finance_passcode() or app.secret_key
+    return URLSafeTimedSerializer(secret, salt=FINANCE_TOKEN_SALT)
+
+
+def _issue_finance_token() -> str:
+    return _finance_token_serializer().dumps({"v": 1})
+
+
+def _mro_token_serializer() -> URLSafeTimedSerializer:
+    secret = _mro_passcode() or app.secret_key
+    return URLSafeTimedSerializer(secret, salt=MRO_TOKEN_SALT)
+
+
+def _issue_mro_token() -> str:
+    return _mro_token_serializer().dumps({"v": 1})
+
+
+def _finance_token_valid(token: str) -> bool:
+    if not token:
+        return False
+    try:
+        payload = _finance_token_serializer().loads(token, max_age=FINANCE_TOKEN_MAX_AGE)
+        return isinstance(payload, dict) and payload.get("v") == 1
+    except (BadSignature, SignatureExpired):
+        return False
+
+
+def _mro_token_valid(token: str) -> bool:
+    if not token:
+        return False
+    try:
+        payload = _mro_token_serializer().loads(token, max_age=MRO_TOKEN_MAX_AGE)
+        return isinstance(payload, dict) and payload.get("v") == 1
+    except (BadSignature, SignatureExpired):
+        return False
+
+
+def _finance_request_token() -> str:
+    return (request.args.get("ft") or request.headers.get("X-Finance-Token") or "").strip()
+
+
+def _mro_request_token() -> str:
+    return (request.args.get("mt") or request.headers.get("X-MRO-Token") or "").strip()
+
+
+def _is_finance_page_path(path: str) -> bool:
+    return _path_has_prefix(path, _FINANCE_PAGE_PREFIXES)
+
+
+def _is_finance_api_path(path: str) -> bool:
+    return _path_has_prefix(path, _FINANCE_API_PREFIXES)
+
+
+def _is_mro_page_path(path: str) -> bool:
+    return _path_has_prefix(path, _MRO_PAGE_PREFIXES)
+
+
+def _is_mro_api_path(path: str) -> bool:
+    return _path_has_prefix(path, _MRO_API_PREFIXES)
 
 
 @app.before_request
@@ -331,6 +430,12 @@ def _require_planner_passcode():
         return None
     # Reports / Analytics use REPORTS_PASSCODE only — not the planner passcode.
     if _is_reports_page_path(path) or _is_reports_api_path(path):
+        return None
+    # Finance pages use FINANCE_PASSCODE only — not the planner passcode.
+    if _is_finance_page_path(path) or _is_finance_api_path(path):
+        return None
+    # MRO pages use MRO_PASSCODE only — not the planner passcode.
+    if _is_mro_page_path(path) or _is_mro_api_path(path):
         return None
     if _planner_authenticated():
         return None
@@ -391,6 +496,114 @@ def reports_gate():
     return _render_reports_gate(next_path=next_path)
 
 
+def _safe_finance_next(raw: str) -> str:
+    target = (raw or "").strip()
+    if _is_finance_page_path(target):
+        return target
+    return ACCOUNTS_PATH
+
+
+def _render_finance_gate(error=None, next_path=ACCOUNTS_PATH, status=200, disabled=False):
+    html = render_template(
+        "site_gate.html",
+        error=error,
+        next_path=next_path,
+        gate_action=url_for("finance_gate"),
+        gate_disabled=disabled,
+        gate_title="Finance locked",
+        gate_message="Enter the passcode to open Finance pages.",
+        gate_env_var="FINANCE_PASSCODE",
+    )
+    return (html, status) if status != 200 else html
+
+
+@app.before_request
+def _require_finance_passcode():
+    if not _finance_gate_enabled():
+        return None
+    path = request.path or "/"
+    if not _is_finance_page_path(path) and not _is_finance_api_path(path):
+        return None
+    if _finance_token_valid(_finance_request_token()):
+        return None
+    if _is_finance_api_path(path):
+        return jsonify({"error": "Finance access locked."}), 401
+    return redirect(url_for("finance_gate", next=path))
+
+
+@app.route(FINANCE_GATE_PATH, methods=["GET", "POST"], endpoint="finance_gate")
+def finance_gate():
+    next_path = _safe_finance_next(request.values.get("next"))
+
+    if not _finance_gate_enabled():
+        return _render_finance_gate(next_path=next_path, disabled=True)
+
+    if request.method == "POST":
+        entered = (request.form.get("passcode") or "").strip()
+        passcode = _finance_passcode()
+        if passcode and secrets.compare_digest(entered, passcode):
+            token = _issue_finance_token()
+            next_path = _safe_finance_next(request.form.get("next"))
+            return redirect(f"{next_path}?ft={quote(token, safe='')}")
+        return _render_finance_gate(error="Invalid passcode.", next_path=next_path, status=401)
+
+    return _render_finance_gate(next_path=next_path)
+
+
+def _safe_mro_next(raw: str) -> str:
+    target = (raw or "").strip()
+    if _is_mro_page_path(target):
+        return target
+    return MRO_PATH
+
+
+def _render_mro_gate(error=None, next_path=MRO_PATH, status=200, disabled=False):
+    html = render_template(
+        "site_gate.html",
+        error=error,
+        next_path=next_path,
+        gate_action=url_for("mro_gate"),
+        gate_disabled=disabled,
+        gate_title="MRO locked",
+        gate_message="Enter the passcode to open the MRO app.",
+        gate_env_var="MRO_PASSCODE",
+    )
+    return (html, status) if status != 200 else html
+
+
+@app.before_request
+def _require_mro_passcode():
+    if not _mro_gate_enabled():
+        return None
+    path = request.path or "/"
+    if not _is_mro_page_path(path) and not _is_mro_api_path(path):
+        return None
+    if _mro_token_valid(_mro_request_token()):
+        return None
+    if _is_mro_api_path(path):
+        return jsonify({"error": "MRO access locked."}), 401
+    return redirect(url_for("mro_gate", next=path))
+
+
+@app.route(MRO_GATE_PATH, methods=["GET", "POST"], endpoint="mro_gate")
+def mro_gate():
+    next_path = _safe_mro_next(request.values.get("next"))
+
+    if not _mro_gate_enabled():
+        return _render_mro_gate(next_path=next_path, disabled=True)
+
+    if request.method == "POST":
+        entered = (request.form.get("passcode") or "").strip()
+        passcode = _mro_passcode()
+        if passcode and secrets.compare_digest(entered, passcode):
+            token = _issue_mro_token()
+            next_path = _safe_mro_next(request.form.get("next"))
+            return redirect(f"{next_path}?mt={quote(token, safe='')}")
+        return _render_mro_gate(error="Invalid passcode.", next_path=next_path, status=401)
+
+    return _render_mro_gate(next_path=next_path)
+
+
 def _scheduler_asset_version() -> str:
     """Cache-bust token for planner JS — changes when scheduler scripts change."""
     override = (os.getenv("SCHEDULER_ASSET_VERSION") or "").strip()
@@ -432,6 +645,8 @@ def _inject_board_paths():
         "planner_gate_enabled": _planner_gate_enabled(),
         "planner_authenticated": _planner_authenticated(),
         "reports_gate_enabled": _reports_gate_enabled(),
+        "finance_gate_enabled": _finance_gate_enabled(),
+        "mro_gate_enabled": _mro_gate_enabled(),
         "scheduler_asset_version": SCHEDULER_ASSET_VERSION,
     }
 
@@ -522,6 +737,10 @@ def site_root_gate():
     # Report tabs use REPORTS_PASSCODE — never the planner gate at "/".
     if _is_reports_page_path(next_path):
         return redirect(url_for("reports_gate", next=next_path))
+    if _is_finance_page_path(next_path):
+        return redirect(url_for("finance_gate", next=next_path))
+    if _is_mro_page_path(next_path):
+        return redirect(url_for("mro_gate", next=next_path))
 
     if not _planner_gate_enabled():
         return render_template(
@@ -3252,6 +3471,7 @@ if __name__ == "__main__":
     log.info("QAQC view: http://127.0.0.1:%s%s", port, FINISHING_QUEUE_PATH)
     log.info("driver view: http://127.0.0.1:%s%s", port, DRIVER_VIEW_PATH)
     log.info("MRO app: http://127.0.0.1:%s%s", port, MRO_PATH)
+    log.info("accounts receivable: http://127.0.0.1:%s%s", port, ACCOUNTS_PATH)
     if _planner_gate_enabled():
         log.info("planner passcode gate: enabled (POST / then session unlock)")
     else:

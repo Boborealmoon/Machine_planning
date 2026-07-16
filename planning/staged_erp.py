@@ -23,6 +23,7 @@ _LIVE_READ_DOMAINS = frozenset({
     "bom_variation",
     "material_inspection",
     "qc_quality_queue",
+    "accounts",
 })
 
 _staging_populated_cache: tuple[float, bool] | None = None

@@ -20,6 +20,28 @@ const mroState = {
   arcItemRows: [],
 };
 
+const MRO_GATE_TOKEN = String(globalThis.__MRO_GATE_TOKEN__ || '').trim();
+const mroNativeFetch = globalThis.fetch.bind(globalThis);
+
+function mroAuthorizedUrl(input) {
+  if (!MRO_GATE_TOKEN || typeof input !== 'string') return input;
+  if (!input.startsWith('/api/mro')) return input;
+  const joiner = input.includes('?') ? '&' : '?';
+  return `${input}${joiner}mt=${encodeURIComponent(MRO_GATE_TOKEN)}`;
+}
+
+function mroFetch(input, init) {
+  const nextInput = mroAuthorizedUrl(input);
+  const nextInit = { ...(init || {}) };
+  if (MRO_GATE_TOKEN) {
+    nextInit.headers = {
+      ...(nextInit.headers || {}),
+      'X-MRO-Token': MRO_GATE_TOKEN,
+    };
+  }
+  return mroNativeFetch(nextInput, nextInit);
+}
+
 const MRO_ARC_VARIANTS = {
   CAAS: {
     label: 'CAAS',
@@ -555,7 +577,7 @@ async function mroAutofillWorkscopeFromBom(row) {
   if (partNo) params.set('part_no', partNo);
   try {
     if (meta) meta.textContent = 'loading…';
-    const res = await fetch(`/api/mro/workscope-remarks?${params.toString()}`);
+    const res = await mroFetch(`/api/mro/workscope-remarks?${params.toString()}`);
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) {
       throw new Error(data.error || `Workscope lookup failed (${res.status})`);
@@ -629,7 +651,7 @@ async function mroFetchSoHeader(salesOrderNo, { force = false } = {}) {
   const url = force
     ? `/api/mro/sales-order-header?sales_order_no=${encodeURIComponent(so)}&refresh=1`
     : `/api/mro/sales-order-header?sales_order_no=${encodeURIComponent(so)}`;
-  const res = await fetch(url);
+  const res = await mroFetch(url);
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) {
     throw new Error(data.error || `Sales order lookup failed (${res.status})`);
@@ -955,7 +977,7 @@ async function mroPreviewArc() {
   mroSetArcActionBusy(true, { previewLabel: 'Previewing…' });
 
   try {
-    const res = await fetch('/api/mro/generate-arc-pdf', {
+    const res = await mroFetch('/api/mro/generate-arc-pdf', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -1006,7 +1028,7 @@ async function mroCreateArc() {
   mroSetArcActionBusy(true, { submitLabel: 'Creating…' });
 
   try {
-    const res = await fetch('/api/mro/create-arc', {
+    const res = await mroFetch('/api/mro/create-arc', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -1310,7 +1332,7 @@ async function mroDeleteHistory(historyId) {
   if (btn) btn.disabled = true;
 
   try {
-    const res = await fetch(`/api/mro/arc-history/${encodeURIComponent(id)}`, {
+    const res = await mroFetch(`/api/mro/arc-history/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
     const data = await res.json();
@@ -1333,7 +1355,7 @@ async function mroLoadHistory({ quiet = false } = {}) {
   if (!quiet && loading) loading.hidden = false;
 
   try {
-    const res = await fetch('/api/mro/arc-history');
+    const res = await mroFetch('/api/mro/arc-history');
     const data = await res.json();
     if (!res.ok || !data.ok) {
       throw new Error(data.error || `Request failed (${res.status})`);
@@ -1407,7 +1429,7 @@ function mroRenderStaffList() {
         <div class="mro-staff-item-main">
           <span class="mro-staff-item-name">${mroEscapeHtml(person.name)}</span>
           ${hasSig
-            ? `<img class="mro-staff-sig-preview" src="/api/mro/certifying-staff/${encodeURIComponent(staffId)}/signature?t=${Date.now()}" alt="E-signature for ${mroEscapeHtml(person.name)}" />`
+            ? `<img class="mro-staff-sig-preview" src="${mroAuthorizedUrl(`/api/mro/certifying-staff/${encodeURIComponent(staffId)}/signature?t=${Date.now()}`)}" alt="E-signature for ${mroEscapeHtml(person.name)}" />`
             : '<span class="mro-staff-sig-missing">No e-signature</span>'}
         </div>
         <div class="mro-staff-item-actions">
@@ -1439,7 +1461,7 @@ function mroRenderStaffList() {
 }
 
 async function mroReloadCertifyingStaff() {
-  const res = await fetch('/api/mro/certifying-staff');
+  const res = await mroFetch('/api/mro/certifying-staff');
   const data = await res.json();
   if (!res.ok || !data.ok) {
     throw new Error(data.error || `Request failed (${res.status})`);
@@ -1473,7 +1495,7 @@ function mroCloseStaffModal() {
 
 async function mroLoadCorrectionTemplates() {
   try {
-    const res = await fetch('/api/mro/arc-correction-templates');
+    const res = await mroFetch('/api/mro/arc-correction-templates');
     const data = await res.json();
     if (!res.ok || !data.ok) return;
     const templates = data.templates || {};
@@ -1570,7 +1592,7 @@ async function mroSearchWorkscopeRemarks() {
   if (btn) btn.disabled = true;
   mroSetWorkscopeStatus('Searching…', 'pending');
   try {
-    const res = await fetch(`/api/mro/workscope-remarks?${params.toString()}`);
+    const res = await mroFetch(`/api/mro/workscope-remarks?${params.toString()}`);
     const data = await res.json();
     if (!res.ok || !data.ok) {
       throw new Error(data.error || `Request failed (${res.status})`);
@@ -1728,7 +1750,7 @@ async function mroLoad({ force = false } = {}) {
 
   try {
     const url = force ? '/api/mro/arc-format?refresh=1' : '/api/mro/arc-format';
-    const res = await fetch(url);
+    const res = await mroFetch(url);
     const data = await res.json();
     if (!res.ok || !data.ok) {
       throw new Error(data.error || `Request failed (${res.status})`);
@@ -1857,7 +1879,7 @@ async function mroDownloadHistoryPdf(historyId, { download = false } = {}) {
   const btn = document.querySelector(`[data-mro-download-history="${id}"]`);
   if (btn) btn.disabled = true;
   try {
-    const res = await fetch(`/api/mro/arc-history/${encodeURIComponent(id)}/pdf`);
+    const res = await mroFetch(`/api/mro/arc-history/${encodeURIComponent(id)}/pdf`);
     const contentType = res.headers.get('content-type') || '';
     if (!res.ok) {
       let message = `Request failed (${res.status})`;
@@ -1963,7 +1985,7 @@ document.getElementById('mro-staff-form')?.addEventListener('submit', async (eve
   if (submitBtn) submitBtn.disabled = true;
   mroSetStaffStatus('Saving…', 'pending');
   try {
-    const res = await fetch('/api/mro/certifying-staff', {
+    const res = await mroFetch('/api/mro/certifying-staff', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -1991,7 +2013,7 @@ document.getElementById('mro-staff-list')?.addEventListener('click', async (even
     clearBtn.disabled = true;
     mroSetStaffStatus('Clearing signature…', 'pending');
     try {
-      const res = await fetch(`/api/mro/certifying-staff/${encodeURIComponent(staffId)}/signature`, {
+      const res = await mroFetch(`/api/mro/certifying-staff/${encodeURIComponent(staffId)}/signature`, {
         method: 'DELETE',
       });
       const data = await res.json();
@@ -2014,7 +2036,7 @@ document.getElementById('mro-staff-list')?.addEventListener('click', async (even
   btn.disabled = true;
   mroSetStaffStatus('Removing…', 'pending');
   try {
-    const res = await fetch(`/api/mro/certifying-staff/${encodeURIComponent(staffId)}`, {
+    const res = await mroFetch(`/api/mro/certifying-staff/${encodeURIComponent(staffId)}`, {
       method: 'DELETE',
     });
     const data = await res.json();
@@ -2040,7 +2062,7 @@ document.getElementById('mro-staff-list')?.addEventListener('change', async (eve
   try {
     const body = new FormData();
     body.append('signature', file);
-    const res = await fetch(`/api/mro/certifying-staff/${encodeURIComponent(staffId)}/signature`, {
+    const res = await mroFetch(`/api/mro/certifying-staff/${encodeURIComponent(staffId)}/signature`, {
       method: 'POST',
       body,
     });

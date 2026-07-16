@@ -16,15 +16,15 @@ logger = logging.getLogger(__name__)
 qc_quality_queue_bp = Blueprint("qc_quality_queue", __name__)
 
 _CACHE_TTL_SEC = 300
-_CACHE_VERSION = 6
+_CACHE_VERSION = 8
 _cache: tuple[float, int, list[dict[str, Any]]] | None = None
 
 # Link chain:
 #   qc_quality_inspection.source_job_assignment_seq -> qc_job_assignment.job_assignment_seq_no
 #   qc_job_assignment.work_order_no -> mfg_wo_vch.voucher_no
 #   qc_job_assignment_alloc.source_voucher_no -> mfg_wo_vch.source_mps_no (when alloc exists)
-#   mfg_mps_vch.wo_voucher_no + stage_no -> mfg_wo_vch; source_pp_no -> process sheet / PP
-#   mfg_process_sheet_info_v1_view.pp_voucher_no -> process_sheet_no (when distinct from PP)
+#   mfg_mps_vch.wo_voucher_no + stage_no -> source_pp_no (process sheet / PP / APS)
+#   Avoid per-row LATERAL on mfg_mps_vch — hash joins stay fast across ~16k inspections.
 _QC_QUALITY_QUEUE_SQL = """
 SELECT
     h.inspection_voucher_no,
@@ -66,17 +66,17 @@ SELECT
     ja.work_order_no,
     ja.qty_assigned AS job_qty_assigned,
     ja.inspector_code AS job_inspector_code,
-    w.voucher_no AS wo_voucher_no,
-    w.source_mps_no AS mps_no,
-    w.inventory_code AS wo_part_no,
-    w.stage_desc AS wo_stage_desc,
-    w.stage_no AS wo_stage_no,
-    w.execution_status AS wo_execution_status,
-    w.origin_voucher_no AS so_no,
-    w.segment_1_code AS wo_segment_code,
-    w.wo_qty_required,
-    w.plan_start_date AS wo_plan_start_date,
-    w.plan_end_date AS wo_plan_end_date,
+    COALESCE(w.voucher_no, w_alloc.voucher_no) AS wo_voucher_no,
+    COALESCE(w.source_mps_no, a.source_voucher_no) AS mps_no,
+    COALESCE(w.inventory_code, w_alloc.inventory_code) AS wo_part_no,
+    COALESCE(w.stage_desc, w_alloc.stage_desc) AS wo_stage_desc,
+    COALESCE(w.stage_no, w_alloc.stage_no) AS wo_stage_no,
+    COALESCE(w.execution_status, w_alloc.execution_status) AS wo_execution_status,
+    COALESCE(w.origin_voucher_no, w_alloc.origin_voucher_no) AS so_no,
+    COALESCE(w.segment_1_code, w_alloc.segment_1_code) AS wo_segment_code,
+    COALESCE(w.wo_qty_required, w_alloc.wo_qty_required) AS wo_qty_required,
+    COALESCE(w.plan_start_date, w_alloc.plan_start_date) AS wo_plan_start_date,
+    COALESCE(w.plan_end_date, w_alloc.plan_end_date) AS wo_plan_end_date,
     a.source_voucher_no AS alloc_source_mps_no,
     a.receiving_alloc_qty AS alloc_receiving_qty,
     a.source_allocation_type AS alloc_source_type,
@@ -88,7 +88,7 @@ SELECT
     jl.source_location_code AS job_lot_location,
     jl.lot_no AS job_lot_no,
     jl.accepted_qty AS job_lot_accepted_qty,
-    COALESCE(psi.process_sheet_no, mps.source_pp_no) AS process_sheet_no
+    COALESCE(mps_by_wo.source_pp_no, mps_by_no.source_pp_no) AS process_sheet_no
 FROM public.qc_quality_inspection h
 LEFT JOIN public.qc_job_assignment ja
   ON ja.job_assignment_seq_no = h.source_job_assignment_seq
@@ -97,58 +97,43 @@ LEFT JOIN public.mfg_wo_vch w
 LEFT JOIN public.qc_job_assignment_alloc a
   ON a.job_assignment_seq_no = ja.job_assignment_seq_no
  AND a.source_allocation_type = 'W'
- AND a.source_voucher_no IS NOT NULL
- AND BTRIM(a.source_voucher_no) <> ''
-LEFT JOIN public.mfg_wo_vch w_alloc
-  ON w_alloc.source_mps_no = a.source_voucher_no
+ AND NULLIF(BTRIM(a.source_voucher_no), '') IS NOT NULL
+LEFT JOIN LATERAL (
+    SELECT w2.voucher_no, w2.inventory_code, w2.stage_desc, w2.stage_no,
+           w2.execution_status, w2.origin_voucher_no, w2.segment_1_code,
+           w2.wo_qty_required, w2.plan_start_date, w2.plan_end_date
+    FROM public.mfg_wo_vch w2
+    WHERE w.voucher_no IS NULL
+      AND w2.source_mps_no = a.source_voucher_no
+    ORDER BY w2.voucher_no
+    LIMIT 1
+) w_alloc ON TRUE
 LEFT JOIN public.qc_job_assignment_lot jl
   ON jl.job_assignment_seq_no = ja.job_assignment_seq_no
-LEFT JOIN LATERAL (
-    SELECT m.source_pp_no
-    FROM public.mfg_mps_vch m
-    WHERE (
-            w.voucher_no IS NOT NULL
-        AND m.wo_voucher_no = w.voucher_no
-        AND (w.stage_no IS NULL OR m.stage_no = w.stage_no)
-    ) OR (
-            w.source_mps_no IS NOT NULL
-        AND BTRIM(w.source_mps_no) <> ''
-        AND m.voucher_no = w.source_mps_no
-    ) OR (
-            w_alloc.voucher_no IS NOT NULL
-        AND m.wo_voucher_no = w_alloc.voucher_no
-        AND (w_alloc.stage_no IS NULL OR m.stage_no = w_alloc.stage_no)
-    ) OR (
-            a.source_voucher_no IS NOT NULL
-        AND BTRIM(a.source_voucher_no) <> ''
-        AND m.voucher_no = a.source_voucher_no
-    )
-    ORDER BY
-      CASE
-        WHEN w.voucher_no IS NOT NULL
-         AND m.wo_voucher_no = w.voucher_no
-         AND m.stage_no IS NOT DISTINCT FROM w.stage_no THEN 0
-        WHEN w.source_mps_no IS NOT NULL
-         AND m.voucher_no = w.source_mps_no THEN 1
-        WHEN w_alloc.voucher_no IS NOT NULL
-         AND m.wo_voucher_no = w_alloc.voucher_no THEN 2
-        ELSE 3
-      END,
-      m.stage_no NULLS LAST
-    LIMIT 1
-) mps ON TRUE
-LEFT JOIN LATERAL (
-    SELECT p.process_sheet_no
-    FROM public.mfg_process_sheet_info_v1_view p
-    WHERE mps.source_pp_no IS NOT NULL
-      AND BTRIM(mps.source_pp_no) <> ''
-      AND (
-           p.pp_voucher_no = mps.source_pp_no
-        OR p.process_sheet_no = mps.source_pp_no
-      )
-    ORDER BY p.process_sheet_no
-    LIMIT 1
-) psi ON TRUE
+LEFT JOIN (
+    SELECT DISTINCT ON (wo_voucher_no, stage_no)
+           wo_voucher_no, stage_no, source_pp_no
+    FROM public.mfg_mps_vch
+    WHERE NULLIF(BTRIM(wo_voucher_no), '') IS NOT NULL
+    ORDER BY wo_voucher_no, stage_no, source_pp_no
+) mps_by_wo
+  ON mps_by_wo.wo_voucher_no = COALESCE(w.voucher_no, w_alloc.voucher_no)
+ AND (
+       COALESCE(w.stage_no, w_alloc.stage_no) IS NULL
+    OR mps_by_wo.stage_no IS NOT DISTINCT FROM COALESCE(w.stage_no, w_alloc.stage_no)
+ )
+LEFT JOIN (
+    SELECT DISTINCT ON (mps_voucher_no)
+           mps_voucher_no, source_pp_no
+    FROM public.mfg_mps_vch
+    WHERE NULLIF(BTRIM(mps_voucher_no), '') IS NOT NULL
+    ORDER BY mps_voucher_no, stage_no NULLS LAST, source_pp_no
+) mps_by_no
+  ON mps_by_wo.source_pp_no IS NULL
+ AND mps_by_no.mps_voucher_no = COALESCE(
+       NULLIF(BTRIM(COALESCE(w.source_mps_no, '')), ''),
+       NULLIF(BTRIM(COALESCE(a.source_voucher_no, '')), '')
+     )
 WHERE h.type = 'M'
 ORDER BY h.inspection_voucher_no ASC, jl.lot_seq_no ASC NULLS LAST, a.allocation_no ASC NULLS LAST
 """

@@ -1,0 +1,272 @@
+{% extends "base.html" %}
+
+{% block title %}Accounts Receivable{% endblock %}
+
+{% block favicon %}
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-accounts.svg') }}" />
+{% endblock %}
+
+{% block body_class %}accounts-app{% endblock %}
+
+{% block main_class %}app-main--accounts{% endblock %}
+
+{% block extra_css %}
+<meta name="referrer" content="no-referrer" />
+<meta name="robots" content="noindex, nofollow, noarchive" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/accounts.css') }}?v={{ accounts_asset_version }}">
+{% endblock %}
+
+{% block content %}
+<div class="ar-page">
+  <header class="ar-header">
+    <div class="ar-header-text">
+      <p class="ar-eyebrow">Finance</p>
+      <h1 class="ar-title">Accounts Receivable</h1>
+      <p class="ar-subtitle" id="ar-stats" aria-live="polite">Loading...</p>
+    </div>
+    <div class="ar-header-actions">
+      <button type="button" class="ar-btn" id="ar-clear-filters" title="Reset search filters">Clear filters</button>
+      <button type="button" class="ar-btn ar-btn--primary" id="ar-refresh" title="Reload from ERP">Refresh</button>
+    </div>
+  </header>
+
+  <nav class="ar-section-nav" aria-label="Accounts sections" role="tablist">
+    <button type="button" class="ar-section-link is-active" data-ar-section="credit-notes" role="tab" aria-selected="true" aria-controls="ar-section-credit-notes">
+      Credit Notes
+    </button>
+    <button type="button" class="ar-section-link" data-ar-section="soa" role="tab" aria-selected="false" aria-controls="ar-section-soa">
+      Customer SOA
+    </button>
+  </nav>
+
+  <section id="ar-section-credit-notes" class="ar-section" role="tabpanel" aria-label="Credit notes">
+    <nav class="ar-tabs" aria-label="Credit note status" role="tablist">
+      <button type="button" class="ar-tab" data-ar-bucket="new" role="tab" aria-selected="false" aria-controls="ar-panel-list">
+        New <span class="ar-tab-count" id="ar-count-new">-</span>
+      </button>
+      <button type="button" class="ar-tab" data-ar-bucket="outstanding" role="tab" aria-selected="false" aria-controls="ar-panel-list">
+        Outstanding <span class="ar-tab-count" id="ar-count-outstanding">-</span>
+      </button>
+      <button type="button" class="ar-tab is-active" data-ar-bucket="posted" role="tab" aria-selected="true" aria-controls="ar-panel-list">
+        Posted <span class="ar-tab-count" id="ar-count-posted">-</span>
+      </button>
+    </nav>
+
+    <section class="ar-summary" id="ar-summary" aria-label="Summary" hidden>
+      <article class="ar-summary-card">
+        <span class="ar-summary-label">Credit notes</span>
+        <strong class="ar-summary-value" id="ar-summary-count">0</strong>
+      </article>
+      <article class="ar-summary-card">
+        <span class="ar-summary-label">Customers</span>
+        <strong class="ar-summary-value" id="ar-summary-customers">0</strong>
+      </article>
+      <article class="ar-summary-card ar-summary-card--wide">
+        <span class="ar-summary-label">Total after tax</span>
+        <strong class="ar-summary-value ar-summary-value--sm" id="ar-summary-totals">-</strong>
+      </article>
+    </section>
+
+    <section class="ar-toolbar card" aria-label="Credit note filters">
+      <label class="ar-filter ar-filter--grow">
+        <span>Search</span>
+        <input type="search" id="ar-search" class="ar-input" placeholder="Credit note, customer, PO, invoice, reference..." autocomplete="off" />
+      </label>
+      <label class="ar-filter">
+        <span>Customer</span>
+        <input type="text" id="ar-customer" class="ar-input" placeholder="Code or name" autocomplete="off" />
+      </label>
+      <label class="ar-filter">
+        <span>Currency</span>
+        <select id="ar-currency" class="ar-select">
+          <option value="">All</option>
+        </select>
+      </label>
+      <label class="ar-filter">
+        <span>From</span>
+        <input type="date" id="ar-date-from" class="ar-input" />
+      </label>
+      <label class="ar-filter">
+        <span>To</span>
+        <input type="date" id="ar-date-to" class="ar-input" />
+      </label>
+    </section>
+
+    <div class="ar-layout">
+      <section class="ar-list-panel card" id="ar-panel-list" aria-label="Credit note list">
+        <div id="ar-loading" class="ar-loading" hidden>
+          <div class="ar-spinner" aria-hidden="true"></div>
+          Loading credit notes...
+        </div>
+
+        <div id="ar-table-wrap" class="ar-table-wrap" hidden>
+          <div class="ar-table-scroll">
+            <table class="ar-table">
+              <thead>
+                <tr>
+                  <th>Credit note</th>
+                  <th>Date</th>
+                  <th>Customer</th>
+                  <th>Type</th>
+                  <th class="ar-col-num">Lines</th>
+                  <th class="ar-col-num">Pre-tax</th>
+                  <th class="ar-col-num">After tax</th>
+                  <th class="ar-col-num">Applied</th>
+                  <th>Currency</th>
+                  <th>Source / invoice</th>
+                </tr>
+              </thead>
+              <tbody id="ar-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <p id="ar-empty" class="ar-empty" hidden>No credit notes match the current filters.</p>
+      </section>
+
+      <aside class="ar-detail card" id="ar-detail" aria-label="Credit note detail" hidden>
+        <div class="ar-detail-header">
+          <div>
+            <p class="ar-detail-eyebrow" id="ar-detail-bucket">Posted</p>
+            <h2 class="ar-detail-title" id="ar-detail-title">-</h2>
+            <p class="ar-detail-meta" id="ar-detail-meta"></p>
+          </div>
+          <button type="button" class="ar-detail-close" id="ar-detail-close" title="Close detail panel" aria-label="Close detail panel">&times;</button>
+        </div>
+
+        <div id="ar-detail-loading" class="ar-loading ar-loading--compact" hidden>
+          <div class="ar-spinner" aria-hidden="true"></div>
+          Loading lines...
+        </div>
+
+        <div id="ar-detail-body" hidden>
+          <dl class="ar-detail-grid" id="ar-detail-fields"></dl>
+
+          <h3 class="ar-lines-title">Line items</h3>
+          <div class="ar-lines-scroll">
+            <table class="ar-lines-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Part / service</th>
+                  <th>Description</th>
+                  <th class="ar-col-num">Qty</th>
+                  <th class="ar-col-num">Unit price</th>
+                  <th class="ar-col-num">Pre-tax</th>
+                  <th>Invoice</th>
+                  <th>S/O</th>
+                </tr>
+              </thead>
+              <tbody id="ar-lines-body"></tbody>
+            </table>
+          </div>
+          <p id="ar-lines-empty" class="ar-empty ar-empty--compact" hidden>No line items on this credit note.</p>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section id="ar-section-soa" class="ar-section" role="tabpanel" aria-label="Customer statement of account" hidden>
+    <p class="ar-soa-intro">
+      Standard Customer Statement of Account from <code>cust_soa_std</code> &mdash; grossed-up ledger activity with invoices, credit notes, applications, and running balances.
+    </p>
+
+    <section class="ar-toolbar card" aria-label="SOA filters">
+      <label class="ar-filter">
+        <span>Period</span>
+        <select id="ar-soa-period" class="ar-select"></select>
+      </label>
+      <label class="ar-filter ar-filter--grow">
+        <span>Customer</span>
+        <input type="search" id="ar-soa-customer" class="ar-input" placeholder="Customer code or name..." autocomplete="off" />
+      </label>
+      <label class="ar-filter">
+        <span>Currency</span>
+        <select id="ar-soa-currency" class="ar-select">
+          <option value="">All</option>
+        </select>
+      </label>
+    </section>
+
+    <div class="ar-soa-layout">
+      <section class="ar-soa-customers card" aria-label="Customers for period">
+        <div class="ar-soa-panel-head">
+          <h2 class="ar-soa-panel-title">Customers</h2>
+          <span class="ar-soa-panel-meta" id="ar-soa-customer-meta">Select a period</span>
+        </div>
+        <div id="ar-soa-customers-loading" class="ar-loading ar-loading--compact">
+          <div class="ar-spinner" aria-hidden="true"></div>
+          Loading customers...
+        </div>
+        <div id="ar-soa-customers-wrap" class="ar-soa-customers-scroll" hidden>
+          <table class="ar-table ar-soa-customer-table">
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th>Currency</th>
+                <th class="ar-col-num">Closing balance</th>
+              </tr>
+            </thead>
+            <tbody id="ar-soa-customers-body"></tbody>
+          </table>
+        </div>
+        <p id="ar-soa-customers-empty" class="ar-empty ar-empty--compact" hidden>No customers for this period.</p>
+      </section>
+
+      <section class="ar-soa-statement card" aria-label="Statement detail">
+        <div id="ar-soa-statement-placeholder" class="ar-soa-placeholder">
+          Select a customer to view their statement for the chosen period.
+        </div>
+
+        <div id="ar-soa-statement-loading" class="ar-loading ar-loading--compact" hidden>
+          <div class="ar-spinner" aria-hidden="true"></div>
+          Loading statement...
+        </div>
+
+        <div id="ar-soa-statement-body" hidden>
+          <header class="ar-soa-statement-header">
+            <div>
+              <p class="ar-soa-statement-eyebrow" id="ar-soa-statement-period">Period</p>
+              <h2 class="ar-soa-statement-title" id="ar-soa-statement-party">-</h2>
+              <p class="ar-soa-statement-address" id="ar-soa-statement-address"></p>
+            </div>
+            <div class="ar-soa-balance-grid">
+              <article class="ar-soa-balance-card">
+                <span>Opening balance</span>
+                <strong id="ar-soa-opening-balance">-</strong>
+              </article>
+              <article class="ar-soa-balance-card">
+                <span>Closing balance</span>
+                <strong id="ar-soa-closing-balance">-</strong>
+              </article>
+            </div>
+          </header>
+
+          <div class="ar-soa-lines-scroll">
+            <table class="ar-table ar-soa-lines-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Due</th>
+                  <th>Type</th>
+                  <th>Document</th>
+                  <th class="ar-col-num">Debit</th>
+                  <th class="ar-col-num">Credit</th>
+                  <th class="ar-col-num">Balance</th>
+                  <th>PO / remarks</th>
+                </tr>
+              </thead>
+              <tbody id="ar-soa-lines-body"></tbody>
+            </table>
+          </div>
+          <p id="ar-soa-lines-empty" class="ar-empty ar-empty--compact" hidden>No transactions on this statement.</p>
+        </div>
+      </section>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/accounts.js') }}?v={{ accounts_asset_version }}"></script>
+{% endblock %}
