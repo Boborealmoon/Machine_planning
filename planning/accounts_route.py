@@ -653,6 +653,7 @@ def accounts_page():
         active="accounts",
         accounts_path=ACCOUNTS_PATH,
         accounts_asset_version=accounts_asset_version(),
+        finance_token=(request.args.get("ft") or "").strip(),
     )
 
 

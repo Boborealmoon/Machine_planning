@@ -268,5 +268,6 @@
 {% endblock %}
 
 {% block scripts %}
+<script>window.__FINANCE_GATE_TOKEN__ = {{ (finance_token or "") | tojson }};</script>
 <script src="{{ url_for('static', filename='js/accounts.js') }}?v={{ accounts_asset_version }}"></script>
 {% endblock %}

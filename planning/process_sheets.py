@@ -23,7 +23,7 @@ from datetime import date
 from flask import Blueprint, jsonify, has_request_context, request
 
 from db import planner_db_connect_error
-from .helpers import one, rows, planner_db
+from .helpers import one, rows, planner_db, planner_try_savepoint
 from .materials import (
     enrich_items_material_inventory_codes,
     material_requirement_payload,
@@ -2049,7 +2049,7 @@ def _overlay_column_flags(con):
     if _OVERLAY_COLUMN_CACHE is not None:
         return _OVERLAY_COLUMN_CACHE
     flags = {"coway": False, "remarks": False, "material_in": False, "material_in_date": False}
-    try:
+    def _load_flags():
         for row in rows(
             con.execute(
                 """
@@ -2072,8 +2072,9 @@ def _overlay_column_flags(con):
                 flags["material_in"] = True
             elif name == "material_in_date":
                 flags["material_in_date"] = True
-    except Exception:
-        pass
+        return True
+
+    planner_try_savepoint(con, "overlay_column_flags", _load_flags)
     _OVERLAY_COLUMN_CACHE = flags
     return flags
 
@@ -2084,7 +2085,7 @@ def _ensure_planner_overlay_columns(con):
     if flags["coway"] and flags["remarks"] and flags["material_in"] and flags["material_in_date"]:
         return flags
     global _OVERLAY_COLUMN_CACHE
-    try:
+    def _ensure():
         if not flags["coway"]:
             con.execute(
                 """
@@ -2117,8 +2118,9 @@ def _ensure_planner_overlay_columns(con):
                 """
             )
             flags["material_in_date"] = True
-    except Exception:
-        pass
+        return True
+
+    planner_try_savepoint(con, "ensure_planner_overlay_columns", _ensure)
     _OVERLAY_COLUMN_CACHE = dict(flags)
     return _OVERLAY_COLUMN_CACHE
 

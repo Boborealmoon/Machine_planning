@@ -1599,8 +1599,18 @@ def _apply_delivery_row_flags(con, items: list) -> None:
     from .finishing_queue_service import load_checklist_done_flags
 
     ps_ids = [compact_text(item.get("planner_ps_id")) for item in items if compact_text(item.get("planner_ps_id"))]
-    flags_map = load_delivery_row_flags(con, ps_ids)
-    checklist_map = load_checklist_done_flags(con, ps_ids)
+    flags_map = planner_try_savepoint(
+        con,
+        "delivery_row_flags",
+        lambda: load_delivery_row_flags(con, ps_ids),
+        default={},
+    ) or {}
+    checklist_map = planner_try_savepoint(
+        con,
+        "delivery_checklist_flags",
+        lambda: load_checklist_done_flags(con, ps_ids),
+        default={},
+    ) or {}
     for item in items:
         pid = compact_text(item.get("planner_ps_id"))
         flags = flags_map.get(pid) or {

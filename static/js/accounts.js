@@ -1,21 +1,29 @@
 (function accountsAppInit() {
   'use strict';
 
-  // FINANCE gate passes a short-lived token on the URL as `ft=...`.
-  // We must send it on every `/api/accounts/*` call so the unlocked page can load data.
-  const FINANCE_GATE_TOKEN = new URLSearchParams(window.location.search).get('ft') || '';
-  const financeNativeFetch = window.fetch.bind(window);
+  const FINANCE_GATE_TOKEN = String(globalThis.__FINANCE_GATE_TOKEN__ || '').trim();
+  const accountsNativeFetch = globalThis.fetch.bind(globalThis);
 
-  if (FINANCE_GATE_TOKEN) {
-    window.fetch = (input, init) => {
-      const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
-      const isAccountsApi = typeof url === 'string' && url.startsWith('/api/accounts');
-      if (!isAccountsApi) return financeNativeFetch(input, init);
-      const nextInit = { ...(init || {}) };
-      nextInit.headers = { ...(nextInit.headers || {}) };
-      nextInit.headers['X-Finance-Token'] = FINANCE_GATE_TOKEN;
-      return financeNativeFetch(input, nextInit);
-    };
+  const ACCOUNTS_FETCH_TIMEOUT_MS = 30000;
+
+  function accountsFetch(input, init) {
+    const nextInit = { ...(init || {}) };
+    const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+    const isAccountsApi = typeof url === 'string' && url.startsWith('/api/accounts');
+    if (FINANCE_GATE_TOKEN && isAccountsApi) {
+      nextInit.headers = {
+        ...(nextInit.headers || {}),
+        'X-Finance-Token': FINANCE_GATE_TOKEN,
+      };
+    }
+    // Prevent the UI from being stuck on "Loading..." if ERP/DB queries hang.
+    if (!nextInit.signal && typeof AbortController !== 'undefined') {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), ACCOUNTS_FETCH_TIMEOUT_MS);
+      const p = accountsNativeFetch(input, { ...nextInit, signal: controller.signal });
+      return p.finally(() => window.clearTimeout(timeoutId));
+    }
+    return accountsNativeFetch(input, nextInit);
   }
 
   const state = {
@@ -120,6 +128,12 @@
     const text = compact(value);
     if (!text) return '-';
     return text.slice(0, 10);
+  }
+
+  function accountsErrorText(error, fallback) {
+    if (!error) return fallback;
+    if (error.name === 'AbortError') return 'Request timed out. Please try again.';
+    return error.message || fallback;
   }
 
   const BUCKET_LABELS = {
@@ -339,7 +353,7 @@
 
   async function loadSummaryCounts(refresh) {
     const suffix = refresh ? '?refresh=1' : '';
-    const response = await fetch(`/api/accounts/summary${suffix}`);
+    const response = await accountsFetch(`/api/accounts/summary${suffix}`);
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
       throw new Error(payload.error || 'Failed to load summary');
@@ -354,7 +368,7 @@
     setLoading(true);
     try {
       const params = queryParams(refresh);
-      const response = await fetch(`/api/accounts/credit-notes?${params.toString()}`);
+      const response = await accountsFetch(`/api/accounts/credit-notes?${params.toString()}`);
       const payload = await response.json();
       if (!response.ok || !payload.ok) {
         throw new Error(payload.error || 'Failed to load credit notes');
@@ -372,7 +386,7 @@
       }
     } catch (error) {
       if (state.section === 'credit-notes') {
-        els.stats.textContent = error.message || 'Failed to load credit notes';
+        els.stats.textContent = accountsErrorText(error, 'Failed to load credit notes');
       }
       state.items = [];
       renderTable();
@@ -392,7 +406,7 @@
 
     try {
       const params = new URLSearchParams({ bucket: state.bucket });
-      const response = await fetch(`/api/accounts/credit-notes/${encodeURIComponent(creditNoteNo)}?${params}`);
+      const response = await accountsFetch(`/api/accounts/credit-notes/${encodeURIComponent(creditNoteNo)}?${params}`);
       const payload = await response.json();
       if (!response.ok || !payload.ok) {
         throw new Error(payload.error || 'Failed to load credit note detail');
@@ -400,7 +414,7 @@
       state.detail = payload;
       renderDetail();
     } catch (error) {
-      els.detailMeta.textContent = error.message || 'Failed to load detail';
+      els.detailMeta.textContent = accountsErrorText(error, 'Failed to load detail');
       els.detailLoading.hidden = true;
       els.detailBody.hidden = true;
     } finally {
@@ -541,7 +555,7 @@
 
   async function loadSoaPeriods(refresh) {
     const suffix = refresh ? '?refresh=1' : '';
-    const response = await fetch(`/api/accounts/soa/periods${suffix}`);
+    const response = await accountsFetch(`/api/accounts/soa/periods${suffix}`);
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
       throw new Error(payload.error || 'Failed to load SOA periods');
@@ -571,7 +585,7 @@
       if (compact(els.soaCustomer.value)) params.set('q', els.soaCustomer.value.trim());
       if (compact(els.soaCurrency.value)) params.set('currency', els.soaCurrency.value);
 
-      const response = await fetch(`/api/accounts/soa/customers?${params.toString()}`);
+      const response = await accountsFetch(`/api/accounts/soa/customers?${params.toString()}`);
       const payload = await response.json();
       if (!response.ok || !payload.ok) {
         throw new Error(payload.error || 'Failed to load SOA customers');
@@ -583,7 +597,7 @@
       }
     } catch (error) {
       if (state.section === 'soa') {
-        els.stats.textContent = error.message || 'Failed to load SOA customers';
+        els.stats.textContent = accountsErrorText(error, 'Failed to load SOA customers');
       }
       state.soaCustomers = [];
       renderSoaCustomers();
@@ -610,7 +624,7 @@
         year: String(year),
         period: String(period),
       });
-      const response = await fetch(`/api/accounts/soa/statement?${params.toString()}`);
+      const response = await accountsFetch(`/api/accounts/soa/statement?${params.toString()}`);
       const payload = await response.json();
       if (!response.ok || !payload.ok) {
         throw new Error(payload.error || 'Failed to load statement');
@@ -620,7 +634,7 @@
     } catch (error) {
       state.soaStatement = null;
       els.soaStatementPlaceholder.hidden = false;
-      els.soaStatementPlaceholder.textContent = error.message || 'Failed to load statement';
+      els.soaStatementPlaceholder.textContent = accountsErrorText(error, 'Failed to load statement');
       els.soaStatementBody.hidden = true;
       els.soaStatementLoading.hidden = true;
     } finally {
@@ -659,7 +673,7 @@
       loadSoaPeriods(false)
         .then(() => loadSoaCustomers())
         .catch((error) => {
-          els.stats.textContent = error.message || 'Failed to initialize SOA view';
+          els.stats.textContent = accountsErrorText(error, 'Failed to initialize SOA view');
         });
       return;
     }
@@ -711,7 +725,7 @@
       await loadSummaryCounts(true);
       await loadList({ refresh: true });
     } catch (error) {
-      els.stats.textContent = error.message || 'Refresh failed';
+      els.stats.textContent = accountsErrorText(error, 'Refresh failed');
     }
   });
 
@@ -740,7 +754,7 @@
       await loadSummaryCounts(false);
       await loadList();
     } catch (error) {
-      els.stats.textContent = error.message || 'Failed to initialize accounts app';
+      els.stats.textContent = accountsErrorText(error, 'Failed to initialize accounts app');
       // If the first API call fails (e.g. finance gate), avoid leaving the initial loading spinner visible.
       if (els.loading) els.loading.hidden = true;
       if (els.tableWrap) els.tableWrap.hidden = true;
