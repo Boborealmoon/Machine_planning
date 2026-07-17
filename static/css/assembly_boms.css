@@ -1,0 +1,430 @@
+.app-main--assembly-boms {
+  max-width: none;
+  padding: 24px 30px 48px;
+  background:
+    radial-gradient(circle at 90% 0, rgba(34, 197, 94, 0.08), transparent 26rem),
+    #f6f8f7;
+}
+
+.ab-page {
+  max-width: 1580px;
+  margin: 0 auto;
+  color: #17211b;
+}
+
+.ab-page [hidden] {
+  display: none !important;
+}
+
+.ab-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+}
+
+.ab-header h1 {
+  margin: 3px 0 5px;
+  font-size: clamp(1.8rem, 3vw, 2.55rem);
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+}
+
+.ab-eyebrow {
+  color: #15803d;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.ab-subtitle {
+  margin: 0;
+  color: #647067;
+}
+
+.ab-toolbar {
+  display: flex;
+  align-items: end;
+  gap: 16px;
+  padding: 14px;
+  margin-bottom: 16px;
+  border: 1px solid #dde5df;
+  box-shadow: 0 8px 28px rgba(29, 58, 40, 0.05);
+}
+
+.ab-search {
+  display: grid;
+  flex: 1;
+  gap: 5px;
+  min-width: 240px;
+  color: #66736a;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.ab-search input,
+.ab-select-label select {
+  height: 40px;
+  border: 1px solid #ccd7cf;
+  border-radius: 8px;
+  background: #fff;
+  color: #17211b;
+  font: inherit;
+  font-size: 0.9rem;
+  text-transform: none;
+}
+
+.ab-search input {
+  padding: 0 12px;
+}
+
+.ab-search input:focus,
+.ab-select-label select:focus {
+  border-color: #22a34a;
+  outline: 3px solid rgba(34, 163, 74, 0.12);
+}
+
+.ab-filter-group {
+  display: flex;
+  gap: 6px;
+}
+
+.ab-filter {
+  height: 40px;
+  padding: 0 14px;
+  border: 1px solid #ccd7cf;
+  border-radius: 8px;
+  background: #fff;
+  color: #657069;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.ab-filter.is-active {
+  border-color: #16823d;
+  background: #eaf8ee;
+  color: #126b33;
+}
+
+.ab-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  color: #465149;
+  font-size: 0.86rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.ab-check input {
+  width: 17px;
+  height: 17px;
+  accent-color: #16823d;
+}
+
+.ab-select-label {
+  display: grid;
+  gap: 5px;
+  color: #66736a;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.ab-select-label select {
+  min-width: 180px;
+  padding: 0 10px;
+}
+
+.ab-state {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 42px 24px;
+  border: 1px dashed #cbd6ce;
+  color: #68736b;
+  text-align: center;
+}
+
+.ab-state strong {
+  color: #29352c;
+  font-size: 1.05rem;
+}
+
+.ab-state--error {
+  border-color: #fecaca;
+  background: #fff7f7;
+  color: #b42318;
+}
+
+.ab-list {
+  display: grid;
+  gap: 12px;
+}
+
+.ab-job {
+  overflow: clip;
+  border: 1px solid #dae3dc;
+  box-shadow: 0 9px 30px rgba(27, 55, 36, 0.055);
+}
+
+.ab-job summary {
+  display: grid;
+  grid-template-columns: minmax(320px, 1.5fr) 120px 150px minmax(190px, 0.7fr) 18px;
+  gap: 20px;
+  align-items: center;
+  padding: 17px 18px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.ab-job summary::-webkit-details-marker {
+  display: none;
+}
+
+.ab-job[open] summary {
+  border-bottom: 1px solid #e1e8e3;
+  background: #fbfdfb;
+}
+
+.ab-job-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #123f25;
+  font-size: 1.04rem;
+  font-weight: 850;
+}
+
+.ab-job-part {
+  margin-top: 3px;
+  color: #526057;
+  font-size: 0.84rem;
+}
+
+.ab-mono,
+.ab-job code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.ab-partial {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #edf2ee;
+  color: #5c6860;
+  font-size: 0.67rem;
+}
+
+.ab-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.ab-badge,
+.ab-route {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.ab-badge--info {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.ab-badge--warn,
+.ab-route--warn {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #a16207;
+}
+
+.ab-badge--danger,
+.ab-route--danger {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #be123c;
+}
+
+.ab-route--ok {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.ab-metric,
+.ab-job-order {
+  display: grid;
+  gap: 2px;
+}
+
+.ab-metric > span,
+.ab-job-order > span {
+  color: #778178;
+  font-size: 0.69rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ab-metric strong {
+  font-size: 1.35rem;
+}
+
+.ab-metric small,
+.ab-job-order small {
+  overflow: hidden;
+  color: #6d786f;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ab-job-order strong {
+  font-size: 0.9rem;
+}
+
+.ab-chevron {
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid #718078;
+  border-bottom: 2px solid #718078;
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+}
+
+.ab-job[open] .ab-chevron {
+  transform: rotate(225deg);
+}
+
+.ab-job-detail {
+  padding: 16px 18px 20px;
+  background: #f9fbfa;
+}
+
+.ab-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  margin-bottom: 13px;
+  color: #58655c;
+  font-size: 0.8rem;
+}
+
+.ab-detail-meta b {
+  margin-right: 4px;
+  color: #2d3930;
+}
+
+.ab-table-scroll {
+  overflow-x: auto;
+  border: 1px solid #dce5de;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.ab-child-table {
+  width: 100%;
+  min-width: 1050px;
+  border-collapse: collapse;
+  font-size: 0.79rem;
+}
+
+.ab-child-table th {
+  padding: 9px 11px;
+  border-bottom: 1px solid #dce5de;
+  background: #edf4ef;
+  color: #536158;
+  font-size: 0.67rem;
+  letter-spacing: 0.04em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.ab-child-table td {
+  padding: 10px 11px;
+  border-bottom: 1px solid #edf1ee;
+  color: #344038;
+  vertical-align: top;
+}
+
+.ab-child-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.ab-child-table code {
+  color: #284b34;
+  font-size: 0.74rem;
+}
+
+.ab-cell-sub {
+  display: block;
+  margin-top: 3px;
+  color: #77827a;
+  font-size: 0.7rem;
+}
+
+.ab-number {
+  text-align: right;
+}
+
+.ab-muted {
+  color: #909a93;
+}
+
+@media (max-width: 1050px) {
+  .app-main--assembly-boms {
+    padding: 18px 16px 36px;
+  }
+
+  .ab-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .ab-search {
+    flex: 1 0 100%;
+  }
+
+  .ab-job summary {
+    grid-template-columns: minmax(260px, 1fr) 90px 110px 18px;
+  }
+
+  .ab-job-order {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+@media (max-width: 700px) {
+  .ab-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ab-job summary {
+    grid-template-columns: 1fr 18px;
+  }
+
+  .ab-metric,
+  .ab-job-order {
+    grid-column: 1;
+  }
+
+  .ab-chevron {
+    grid-column: 2;
+    grid-row: 1;
+  }
+}

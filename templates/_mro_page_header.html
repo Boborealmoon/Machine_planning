@@ -1,0 +1,30 @@
+<header class="mro-appbar">
+  <div class="mro-appbar-brand">
+    <span class="mro-appbar-logo" aria-hidden="true">MRO</span>
+    <div class="mro-appbar-text">
+      <h1 class="mro-appbar-title">Maintenance, Repair &amp; Overhaul</h1>
+      <p class="mro-appbar-subtitle" id="mro-stats" aria-live="polite">{{ mro_subtitle }}</p>
+    </div>
+  </div>
+  {% if mro_active_page == "arc" %}
+  <div class="mro-appbar-actions">
+    <button type="button" class="mro-btn" id="mro-manage-staff" title="Add or remove certifying staff names">Manage Certifying Staff</button>
+    <button type="button" class="mro-btn mro-btn--primary" id="mro-refresh" title="Reload from ERP">Refresh</button>
+  </div>
+  {% endif %}
+</header>
+
+<nav class="mro-primary-nav" aria-label="MRO navigation">
+  <a
+    id="mro-section-arc"
+    class="mro-primary-nav-link{% if mro_active_page == 'arc' %} is-active{% endif %}"
+    href="{{ mro_arc_url }}"
+    {% if mro_active_page == "arc" %}aria-current="page"{% endif %}
+  >ARC</a>
+  <a
+    id="mro-section-tracking"
+    class="mro-primary-nav-link{% if mro_active_page == 'tracking' %} is-active{% endif %}"
+    href="{{ mro_tracking_url }}"
+    {% if mro_active_page == "tracking" %}aria-current="page"{% endif %}
+  >PS Tracking</a>
+</nav>

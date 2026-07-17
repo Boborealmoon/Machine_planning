@@ -36,6 +36,7 @@ from reportlab.pdfgen import canvas
 
 ORG_NAME = "COWAY ENGINEERING & MARKETING PTE LTD"
 ORG_ADDRESS = "9A Seletar Aerospace Link, Singapore 797365"
+JCAB_FIXED_REMARK = "Released under the terms of the CAAS and JCAB TA-M"
 
 # ReportLab built-ins cannot draw CJK. Prefer Adobe CID Song (STSong-Light),
 # then a system Song/Ming TTF. Never use SimSun Bold — incomplete glyph coverage
@@ -738,6 +739,44 @@ def _wrap(
     return y
 
 
+def _wrap_centered(
+    c: canvas.Canvas,
+    text: str,
+    cx: float,
+    y: float,
+    max_width: float,
+    font: str,
+    size: float,
+    leading: float | None = None,
+    max_lines: int | None = None,
+) -> float:
+    """Wrap text and centre each resulting line around ``cx``."""
+    leading = leading or (size + 1.6)
+    c.setFont(font, size)
+    words = _tokenize_for_wrap(text)
+    if not words:
+        return y
+    lines: list[str] = []
+    line = words[0]
+    for word in words[1:]:
+        joiner = "" if (line and (_is_cjk(line[-1]) or _is_cjk(word[0]))) else " "
+        trial = f"{line}{joiner}{word}"
+        if c.stringWidth(trial, font, size) <= max_width:
+            line = trial
+        else:
+            lines.append(line)
+            line = word
+    lines.append(line)
+    if max_lines is not None and len(lines) > max_lines:
+        lines = lines[:max_lines]
+        if len(lines[-1]) > 3:
+            lines[-1] = lines[-1][:-3].rstrip() + "..."
+    for drawn in lines:
+        c.drawCentredString(cx, y, drawn)
+        y -= leading
+    return y
+
+
 def _wrap_paragraphs(
     c: canvas.Canvas,
     text: str,
@@ -756,6 +795,50 @@ def _wrap_paragraphs(
         y = _wrap(c, paragraph.strip(), x, y, max_width, font, size, leading)
         y -= 1.2
     return y
+
+
+def _wrap_paragraphs_bottom(
+    c: canvas.Canvas,
+    text: str,
+    x: float,
+    bottom_y: float,
+    max_width: float,
+    font: str,
+    size: float,
+    leading: float,
+) -> None:
+    """Wrap paragraphs with the final rendered line anchored at ``bottom_y``."""
+    paragraphs: list[list[str]] = []
+    c.setFont(font, size)
+    for paragraph in (text or "").splitlines():
+        words = _tokenize_for_wrap(paragraph.strip())
+        if not words:
+            continue
+        lines: list[str] = []
+        line = words[0]
+        for word in words[1:]:
+            joiner = "" if (line and (_is_cjk(line[-1]) or _is_cjk(word[0]))) else " "
+            trial = f"{line}{joiner}{word}"
+            if c.stringWidth(trial, font, size) <= max_width:
+                line = trial
+            else:
+                lines.append(line)
+                line = word
+        lines.append(line)
+        paragraphs.append(lines)
+
+    if not paragraphs:
+        return
+
+    paragraph_gap = 4.0
+    line_count = sum(len(lines) for lines in paragraphs)
+    y = bottom_y + (line_count - 1) * leading + (len(paragraphs) - 1) * paragraph_gap
+    for paragraph_index, lines in enumerate(paragraphs):
+        for line in lines:
+            c.drawString(x, y, line)
+            y -= leading
+        if paragraph_index < len(paragraphs) - 1:
+            y -= paragraph_gap
 
 
 def _box(c: canvas.Canvas, x: float, y: float, w: float, h: float, lw: float = 0.9) -> None:
@@ -780,6 +863,12 @@ def _label(c: canvas.Canvas, text: str, x: float, top: float, size: float = 6.0)
     font = _pick_font(text, bold=False)
     c.setFont(font, size)
     c.drawString(x, top - size - 1.8, text)
+
+
+def _label_centered(c: canvas.Canvas, text: str, cx: float, top: float, size: float = 6.0) -> None:
+    font = _pick_font(text, bold=False)
+    c.setFont(font, size)
+    c.drawCentredString(cx, top - size - 1.8, text)
 
 
 def _caac_label(c: canvas.Canvas, text: str, x: float, top: float, size: float = 7.4) -> None:
@@ -1002,17 +1091,33 @@ def _draw_item_cell_value(
     max_w = cw - 5
     c.setFont("Helvetica-Bold", font_size)
     if value and c.stringWidth(value, "Helvetica-Bold", font_size) > max_w:
-        _wrap(
-            c,
-            value,
-            cx + 2.5,
-            row_bottom + h_row - 10,
-            max_w,
-            "Helvetica-Bold",
-            max(5.8, font_size - 1.0),
-            max(6.6, font_size),
-            max_lines=2,
-        )
+        wrap_size = max(5.8, font_size - 1.0)
+        wrap_y = row_bottom + h_row - 10
+        wrap_leading = max(6.6, font_size)
+        if align == "left":
+            _wrap(
+                c,
+                value,
+                cx + 2.5,
+                wrap_y,
+                max_w,
+                "Helvetica-Bold",
+                wrap_size,
+                wrap_leading,
+                max_lines=2,
+            )
+        else:
+            _wrap_centered(
+                c,
+                value,
+                cx + cw / 2,
+                wrap_y,
+                max_w,
+                "Helvetica-Bold",
+                wrap_size,
+                wrap_leading,
+                max_lines=2,
+            )
         return
     baseline = row_bottom + (h_row * 0.28)
     if align == "left":
@@ -1189,15 +1294,15 @@ def draw_caas_footer(
     band_bottom = margin_bottom + 3.0
     band_top = form_bottom - 4.0
 
-    c.setFont("Helvetica", footer_size)
-    c.drawString(x0, band_bottom, meta["footer_form"])
-    if meta.get("footer_right"):
-        c.drawRightString(x0 + width, band_bottom, meta["footer_right"])
-
     content_bottom = band_bottom + footer_size + 5.0
     y = band_top
+    c.setFont("Helvetica", footer_size)
+    c.drawString(x0, y - footer_size, meta["footer_form"])
+    if meta.get("footer_right"):
+        c.drawRightString(x0 + width, y - footer_size, meta["footer_right"])
+    y -= footer_size + 5.0
     c.setFont("Helvetica-Bold", resp_title)
-    c.drawCentredString(x0 + width / 2, y - resp_title, meta.get("responsibilities_title") or "USER / INSTALLER RESPONSIBILITIES")
+    c.drawString(x0, y - resp_title, meta.get("responsibilities_title") or "USER / INSTALLER RESPONSIBILITIES")
     y -= resp_title + 6.0
     c.setFont("Helvetica-Bold", resp_note)
     c.drawString(x0, y, "NOTE:")
@@ -1635,18 +1740,35 @@ def draw_arc_page(c: canvas.Canvas, payload: dict[str, Any], variant: str) -> No
     _box(c, x0 + w1, y, w2, h1)
     _box(c, x0 + w1 + w2, y, w3, h1)
 
-    _label(c, meta["authority_label"], x0 + 2.5, y + h1, typo["label"])
+    if variant in {"CAAS", "FAA"}:
+        _label_centered(c, meta["authority_label"], x0 + w1 / 2, y + h1, typo["label"])
+    else:
+        _label(c, meta["authority_label"], x0 + 2.5, y + h1, typo["label"])
     auth_y = max(y + 3.5, y + h1 - typo["label"] - typo["value"] - 2.5)
-    _value(c, meta["authority"], x0 + 3, auth_y, typo["value"])
+    if variant in {"CAAS", "FAA"}:
+        _value_centered(c, meta["authority"], x0 + w1 / 2, auth_y, typo["value"])
+    else:
+        _value(c, meta["authority"], x0 + 3, auth_y, typo["value"])
 
     c.setFont("Helvetica-Bold", typo["title1"])
     c.drawCentredString(x0 + w1 + w2 / 2, y + h1 - typo["title1"] - 2.0, meta["title_line1"])
     c.setFont("Helvetica-Bold", typo["title2"])
     c.drawCentredString(x0 + w1 + w2 / 2, y + 4.0, meta["title_line2"])
 
-    _label(c, "3. Form Tracking Number", x0 + w1 + w2 + 2.5, y + h1, typo["label"])
-    track_y = max(y + 3.5, y + h1 - typo["label"] - typo["tracking"] - 2.5)
-    _value(c, _tracking_number(payload, variant), x0 + w1 + w2 + 3, track_y, typo["tracking"])
+    tracking_cx = x0 + w1 + w2 + w3 / 2
+    if variant == "CAAS":
+        _label(c, "3. Form Tracking Number", x0 + w1 + w2 + 2.5, y + h1, typo["label"])
+    else:
+        _label(c, "3. Form Tracking Number", x0 + w1 + w2 + 2.5, y + h1, typo["label"])
+    if variant == "CAAS":
+        content_h = h1 - typo["label"] - 3.8
+        track_y = y + (content_h - typo["tracking"]) / 2 + 1.5
+    else:
+        track_y = max(y + 3.5, y + h1 - typo["label"] - typo["tracking"] - 2.5)
+    if variant in {"CAAS", "FAA"}:
+        _value_centered(c, _tracking_number(payload, variant), tracking_cx, track_y, typo["tracking"])
+    else:
+        _value(c, _tracking_number(payload, variant), x0 + w1 + w2 + 3, track_y, typo["tracking"])
 
     # ── Row 2: blocks 4 | 5 ─────────────────────────────────────────────
     h45 = typo["h45_mm"] * mm
@@ -1670,13 +1792,21 @@ def draw_arc_page(c: canvas.Canvas, payload: dict[str, Any], variant: str) -> No
     _label(c, meta["work_label"], x0 + w4 + 2.5, y + h45, typo["label"])
     po = _text(payload.get("customer_po_no"))
     block5 = f"PO: {po}" if po else _text(payload.get("sales_order_no"), "")
-    _value(c, block5, x0 + w4 + 3, y + 4.2, typo["block5"])
+    if variant in {"CAAS", "FAA"}:
+        if variant == "CAAS":
+            content_h = h45 - typo["label"] - 3.8
+            block5_y = y + (content_h - typo["block5"]) / 2 + 1.5
+        else:
+            block5_y = y + 4.2
+        _value_centered(c, block5, x0 + w4 + w5 / 2, block5_y, typo["block5"])
+    else:
+        _value(c, block5, x0 + w4 + 3, y + 4.2, typo["block5"])
 
     # ── Row 3: item columns 6-11 (Form 1 multi-line: CAAS / FAA / EASA / …) ──
     # Column fractions mirror official Form 1 / CAAS(AW)95 / 8130-3 samples.
     cols = [
         ("6. Item", 0.055, "center"),
-        ("7. Description", 0.27, "left"),
+        ("7. Description", 0.27, "center" if variant in {"CAAS", "FAA"} else "left"),
         (meta["part_label"], 0.15, "center"),
         (meta["qty_label"], 0.08, "center"),
         (meta["serial_label"], 0.185, "center"),
@@ -1699,10 +1829,13 @@ def draw_arc_page(c: canvas.Canvas, payload: dict[str, Any], variant: str) -> No
 
     # Header labels (drawn once; value rows stack underneath — Form 1 style).
     cx = x0
-    for label, frac, _align in cols:
+    for label, frac, align in cols:
         cw = width * frac
         _box(c, cx, y + h_item_block - h_header, cw, h_header)
-        _label(c, label, cx + 2, y + h_item_block, typo["col_label"])
+        if variant == "CAAS" and align == "center":
+            _label_centered(c, label, cx + cw / 2, y + h_item_block, typo["col_label"])
+        else:
+            _label(c, label, cx + 2, y + h_item_block, typo["col_label"])
         cx += cw
 
     font_size = typo["item"] if slot_count <= 2 else max(7.0, typo["item"] - 1.0)
@@ -1746,16 +1879,46 @@ def draw_arc_page(c: canvas.Canvas, payload: dict[str, Any], variant: str) -> No
     _label(c, "12. Remarks", x0 + 2.5, y + h12, typo["remarks_label"])
     remarks = build_remarks(payload, variant)
     # Start remarks clearly below the "12. Remarks" label band.
-    _wrap_paragraphs(
-        c,
-        remarks or "",
-        x0 + 3.5,
-        y + h12 - (24 if typo["remarks_label"] > 6 else 22),
-        width - 8,
-        "Helvetica",
-        typo["remarks"],
-        typo["remarks_leading"],
-    )
+    remarks_top = y + h12 - (24 if typo["remarks_label"] > 6 else 22)
+    bottom_marker = "FURTHER MAINTENANCE/ TEST MIGHT BE REQUIRED."
+    if variant in {"CAAS", "FAA"} and bottom_marker in remarks:
+        upper_remarks, lower_remarks = remarks.split(bottom_marker, 1)
+        _wrap_paragraphs(
+            c,
+            upper_remarks.rstrip(),
+            x0 + 3.5,
+            remarks_top,
+            width - 8,
+            "Helvetica",
+            typo["remarks"],
+            typo["remarks_leading"],
+        )
+        _wrap_paragraphs_bottom(
+            c,
+            f"{bottom_marker}{lower_remarks}",
+            x0 + 3.5,
+            y + 4.0,
+            width - 8,
+            "Helvetica",
+            typo["remarks"],
+            typo["remarks_leading"],
+        )
+    else:
+        _wrap_paragraphs(
+            c,
+            remarks or "",
+            x0 + 3.5,
+            remarks_top,
+            width - 8,
+            "Helvetica",
+            typo["remarks"],
+            typo["remarks_leading"],
+        )
+    if variant == "JCAB":
+        # Mandatory JCAB wording is independent of entered remarks and remains
+        # anchored at the lower-left of Block 12 in regular (unbolded) type.
+        c.setFont("Helvetica", typo["remarks"])
+        c.drawString(x0 + 3.5, y + 4.0, JCAB_FIXED_REMARK)
 
     # ── Row 5: blocks 13 | 14 (half width each — same as sample) ────────
     y -= h1314

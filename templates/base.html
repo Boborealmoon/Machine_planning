@@ -143,7 +143,7 @@
       </div>
 
       {# Shop-floor & operational views #}
-      <div class="nav-dropdown {% if nav_path in (machinist_board_path, finishing_queue_path, driver_view_path) or active in ('machinist_board', 'finishing_queue', 'driver_view') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in (machinist_board_path, finishing_queue_path, driver_view_path, '/assembly-boms') or active in ('machinist_board', 'finishing_queue', 'driver_view', 'assembly_boms') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="views">
           VIEWS <span class="nav-caret">▾</span>
         </button>
@@ -155,6 +155,10 @@
           <a href="{{ finishing_queue_path }}"
              class="nav-dropdown-item {% if nav_path == finishing_queue_path or active == 'finishing_queue' %}nav-dropdown-item--active{% endif %}">
             QAQC View
+          </a>
+          <a href="/assembly-boms"
+             class="nav-dropdown-item {% if nav_path == '/assembly-boms' or active == 'assembly_boms' %}nav-dropdown-item--active{% endif %}">
+            Assembly BOMs
           </a>
           <a href="{{ driver_view_path }}"
              class="nav-dropdown-item {% if nav_path == driver_view_path or active == 'driver_view' %}nav-dropdown-item--active{% endif %}">

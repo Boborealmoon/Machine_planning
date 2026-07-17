@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}MRO - PS Tracking{% endblock %}
+
+{% block favicon %}
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-mro.svg') }}" />
+{% endblock %}
+
+{% block body_class %}mro-app{% endblock %}
+{% block main_class %}app-main--mro{% endblock %}
+
+{% block extra_css %}
+<meta name="referrer" content="no-referrer" />
+<meta name="robots" content="noindex, nofollow, noarchive" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/mro.css') }}?v={{ mro_asset_version }}">
+{% endblock %}
+
+{% block content %}
+<div class="mro-page">
+  {% include "_mro_page_header.html" %}
+
+  <section id="mro-panel-tracking" class="mro-panel" aria-labelledby="mro-section-tracking">
+    <div class="mro-toolbar card" aria-label="Process sheet tracking filters">
+      <label class="mro-filter">
+        <span>Stage status</span>
+        <select id="mro-tracking-status" class="mro-select">
+          <option value="active" selected>Active jobs</option>
+          <option value="incomplete">All incomplete</option>
+          <option value="not-started">Not started</option>
+          <option value="completed">Completed</option>
+          <option value="all">All incl. completed</option>
+        </select>
+      </label>
+      <label class="mro-filter mro-filter--checkbox">
+        <span>Sales order value</span>
+        <span class="mro-checkbox-control">
+          <input id="mro-tracking-hide-zero-value" type="checkbox" checked>
+          Hide $0 sales orders
+        </span>
+      </label>
+      <label class="mro-filter mro-filter--grow">
+        <span>Search MRO process sheets</span>
+        <span class="mro-search-wrap">
+          <svg class="mro-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input id="mro-tracking-search" class="mro-search-input" type="search" placeholder="PS, part, description, SO or stage..." autocomplete="off">
+        </span>
+      </label>
+      <button type="button" class="mro-btn" id="mro-tracking-refresh" title="Reload process sheet stages">Refresh tracking</button>
+    </div>
+
+    <div id="mro-tracking-summary" class="mro-tracking-summary" aria-live="polite"></div>
+    <div id="mro-tracking-loading" class="mro-loading" hidden>
+      <div class="mro-spinner" aria-hidden="true"></div>
+      Loading MRO process sheets and stages...
+    </div>
+    <div id="mro-tracking-table-wrap" class="mro-table-card" hidden>
+      <div class="mro-table-scroll">
+        <table class="mro-table mro-table--tracking">
+          <thead>
+            <tr>
+              <th>Process sheet</th>
+              <th>Part no.</th>
+              <th>Description</th>
+              <th>Current stage</th>
+              <th>Stage status</th>
+              <th>Progress</th>
+              <th>Due date</th>
+              <th>Sales order</th>
+            </tr>
+          </thead>
+          <tbody id="mro-tracking-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <p id="mro-tracking-empty" class="mro-empty" hidden>No MRO process sheets match your filters.</p>
+    <p class="mro-meta" id="mro-tracking-meta" hidden></p>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.__MRO_GATE_TOKEN__ = {{ (mro_token or "") | tojson }};
+window.__MRO_PAGE__ = "tracking";
+</script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v={{ mro_asset_version }}"></script>
+<script src="{{ url_for('static', filename='js/mro.js') }}?v={{ mro_asset_version }}"></script>
+{% endblock %}

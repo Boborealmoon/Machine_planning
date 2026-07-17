@@ -112,6 +112,54 @@ body.mro-app .app-main--mro {
   border-color: #115e59;
 }
 
+.mro-appbar-actions[hidden] {
+  display: none !important;
+}
+
+.mro-primary-nav {
+  display: flex;
+  align-items: stretch;
+  gap: 28px;
+  margin: 0 -20px 14px;
+  padding: 0 20px;
+  background: rgba(255, 255, 255, 0.82);
+  border-top: 1px solid #e2e8f0;
+  border-bottom: 1px solid #cbd5e1;
+}
+
+.mro-primary-nav-link {
+  position: relative;
+  display: inline-block;
+  padding: 13px 2px 12px;
+  border: 0;
+  background: transparent;
+  color: #64748b;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.mro-primary-nav-link:hover {
+  color: #0f172a;
+}
+
+.mro-primary-nav-link.is-active {
+  color: #0f766e;
+}
+
+.mro-primary-nav-link.is-active::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: #0f766e;
+}
+
 .mro-nav {
   display: flex;
   align-items: center;
@@ -120,6 +168,10 @@ body.mro-app .app-main--mro {
   margin-bottom: 16px;
   padding-bottom: 12px;
   border-bottom: 1px solid #dbe3ee;
+}
+
+.mro-subnav[hidden] {
+  display: none !important;
 }
 
 .mro-nav-link {
@@ -178,6 +230,33 @@ body.mro-app .app-main--mro {
 .mro-filter--grow {
   flex: 1 1 280px;
   min-width: 200px;
+}
+
+.mro-filter--checkbox {
+  min-width: 160px;
+}
+
+.mro-checkbox-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #1e293b;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.mro-checkbox-control input {
+  width: 15px;
+  height: 15px;
+  accent-color: #0f766e;
 }
 
 .mro-select {
@@ -308,6 +387,122 @@ body.mro-app .app-main--mro {
 .mro-table tbody tr.mro-row:focus-visible {
   outline: 2px solid #14b8a6;
   outline-offset: -2px;
+}
+
+.mro-table tbody tr.mro-tracking-row {
+  cursor: pointer;
+}
+
+.mro-table tbody tr.mro-tracking-row:hover {
+  background: #f0fdfa;
+}
+
+.mro-table tbody tr.mro-tracking-row:focus-visible {
+  outline: 2px solid #14b8a6;
+  outline-offset: -2px;
+}
+
+.mro-table tbody tr.mro-tracking-row[aria-expanded="true"] {
+  background: #ccfbf1;
+}
+
+.mro-table tbody tr.mro-tracking-row[aria-expanded="true"] > td {
+  border-top: 2px solid #0f766e;
+  border-bottom-color: #5eead4;
+}
+
+.mro-table tbody tr.mro-tracking-row[aria-expanded="true"] > td:first-child {
+  border-left: 2px solid #0f766e;
+}
+
+.mro-table tbody tr.mro-tracking-row[aria-expanded="true"] > td:last-child {
+  border-right: 2px solid #0f766e;
+}
+
+.mro-tracking-expand-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: #e2e8f0;
+  color: #475569;
+  font-size: 1rem;
+  line-height: 1;
+  transition: transform 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.mro-tracking-row[aria-expanded="true"] .mro-tracking-expand-icon {
+  transform: rotate(90deg);
+  background: #0f766e;
+  color: #fff;
+}
+
+.mro-tracking-detail-row[hidden] {
+  display: none !important;
+}
+
+.mro-table .mro-tracking-detail-row > td {
+  padding: 0 12px 20px;
+  white-space: normal;
+  background: #f1f5f9;
+  border-right: 2px solid #0f766e;
+  border-bottom: 2px solid #0f766e;
+  border-left: 2px solid #0f766e;
+}
+
+.mro-tracking-inline-detail {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 16px;
+  border: 1px solid #99f6e4;
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  background: #fff;
+  box-shadow: 0 8px 20px -12px rgba(15, 23, 42, 0.45);
+}
+
+.mro-tracking-inline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -16px -16px 2px;
+  padding: 12px 16px;
+  background: #0f766e;
+}
+
+.mro-tracking-inline-head > div {
+  display: grid;
+  gap: 2px;
+}
+
+.mro-tracking-inline-head strong {
+  color: #fff;
+  font-size: 1.05rem;
+}
+
+.mro-tracking-inline-head span {
+  color: #ccfbf1;
+  font-size: 0.75rem;
+}
+
+.mro-tracking-inline-head .mro-tracking-inline-eyebrow {
+  color: #99f6e4;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mro-tracking-inline-head .mro-btn {
+  border-color: rgba(255, 255, 255, 0.65);
+  background: #fff;
+  color: #0f766e;
 }
 
 .mro-table .mro-desc {
@@ -514,6 +709,527 @@ body.mro-app .app-main--mro {
   font-size: 0.68rem;
   font-weight: 800;
   line-height: 1;
+}
+
+.mro-tracking-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.mro-tracking-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 13px 15px;
+  border: 1px solid #dbe3ee;
+  border-radius: 12px;
+  background: #fff;
+  color: #475569;
+}
+
+.mro-tracking-stat strong {
+  font-size: 1.35rem;
+  line-height: 1;
+  color: #0f172a;
+}
+
+.mro-tracking-stat span {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.mro-tracking-stat--active {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.mro-tracking-stat--waiting {
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
+.mro-tracking-stat--done {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+}
+
+.mro-table--tracking {
+  min-width: 1180px;
+}
+
+.mro-tracking-ps {
+  font-weight: 800;
+  color: #0f766e;
+}
+
+.mro-tracking-stage {
+  min-width: 180px;
+  max-width: 300px;
+  white-space: normal !important;
+}
+
+.mro-stage-badge {
+  display: inline-flex;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.mro-stage-badge--active {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.mro-stage-badge--not-started {
+  color: #9a3412;
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
+.mro-stage-badge--completed {
+  color: #047857;
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+}
+
+.mro-progress-cell {
+  display: grid;
+  grid-template-columns: 90px auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 145px;
+  font-variant-numeric: tabular-nums;
+  color: #64748b;
+}
+
+.mro-progress {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.mro-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #14b8a6, #0f766e);
+}
+
+.mro-modal-dialog--tracking {
+  width: min(1120px, 96vw);
+  max-height: min(92dvh, 880px);
+}
+
+.mro-tracking-modal-body {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.mro-tracking-current-stage {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 1px solid #99f6e4;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #f0fdfa, #f8fafc);
+}
+
+.mro-tracking-current-stage > div {
+  display: grid;
+  gap: 2px;
+}
+
+.mro-tracking-current-stage strong {
+  font-size: 1rem;
+  color: #0f172a;
+}
+
+.mro-tracking-current-stage small {
+  color: #475569;
+  font-size: 0.72rem;
+}
+
+.mro-tracking-current-label {
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: #0f766e;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.mro-tracking-description {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mro-tracking-description > span {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 0.67rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.mro-tracking-description > strong {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 0.82rem;
+}
+
+.mro-tracking-info-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mro-tracking-info-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid #dbe3ee;
+  border-radius: 999px;
+  background: #f8fafc;
+  white-space: nowrap;
+}
+
+.mro-tracking-info-pill small {
+  color: #64748b;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.mro-tracking-info-pill strong {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+}
+
+.mro-tracking-info-pill--done {
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+}
+
+.mro-tracking-info-pill--remaining {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.mro-tracking-detail-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.mro-tracking-detail-grid .mro-modal-summary-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+
+.mro-tracking-detail-grid .mro-modal-summary-row dt {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mro-tracking-quantities {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(110px, 100%), 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.mro-tracking-quantity {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid #dbe3ee;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.mro-tracking-quantity span {
+  font-size: 0.66rem;
+  font-weight: 800;
+  color: #64748b;
+  text-transform: uppercase;
+}
+
+.mro-tracking-quantity strong {
+  font-size: 1rem;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.mro-tracking-quantity--done {
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+}
+
+.mro-tracking-quantity--reject {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.mro-tracking-quantity--remaining {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.mro-tracking-operations {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mro-tracking-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mro-tracking-section-head h3,
+.mro-tracking-notes h3 {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #0f172a;
+}
+
+.mro-tracking-section-head span {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.mro-tracking-detail-sections {
+  display: grid;
+  gap: 8px;
+}
+
+.mro-tracking-detail-section {
+  overflow: hidden;
+  border: 1px solid #dbe3ee;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.mro-tracking-detail-section > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 13px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+  list-style: none;
+}
+
+.mro-tracking-detail-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.mro-tracking-detail-section > summary::before {
+  content: "›";
+  flex: 0 0 auto;
+  color: #0f766e;
+  font-size: 1rem;
+  transition: transform 160ms ease;
+}
+
+.mro-tracking-detail-section[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.mro-tracking-detail-section > summary > span {
+  margin-right: auto;
+}
+
+.mro-tracking-detail-section > summary > strong {
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.mro-tracking-detail-section[open] > summary {
+  border-bottom: 1px solid #dbe3ee;
+  background: #f0fdfa;
+}
+
+.mro-tracking-section-content {
+  padding: 12px;
+}
+
+.mro-tracking-section-content > .mro-arc-empty-hint {
+  margin: 0;
+}
+
+.mro-tracking-ops-table {
+  min-width: 860px;
+}
+
+.mro-tracking-bom-table {
+  min-width: 520px;
+}
+
+.mro-tracking-bom-table th:first-child,
+.mro-tracking-bom-table td:first-child {
+  width: 80px;
+}
+
+.mro-tracking-bom-table th:last-child,
+.mro-tracking-bom-table td:last-child {
+  width: 140px;
+}
+
+.mro-scan-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border: 1px solid #fecaca;
+  border-radius: 999px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 0.68rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.mro-scan-badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.mro-scan-badge.is-scanned {
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+  color: #047857;
+}
+
+#mro-tracking-modal-ops-wrap {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+#mro-tracking-modal-ops-wrap[hidden] {
+  display: none !important;
+}
+
+#mro-tracking-modal-bom-wrap {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+#mro-tracking-modal-bom-wrap[hidden] {
+  display: none !important;
+}
+
+.mro-tracking-op-name {
+  min-width: 180px;
+  white-space: normal;
+}
+
+.mro-tracking-op-name strong,
+.mro-tracking-op-name span {
+  display: block;
+}
+
+.mro-tracking-op-name span {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 0.75rem;
+}
+
+.mro-tracking-notes {
+  display: grid;
+  gap: 7px;
+  padding: 12px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.mro-tracking-remarks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.mro-tracking-remarks-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  color: #475569;
+}
+
+.mro-tracking-remark-item {
+  display: grid;
+  gap: 3px;
+  padding-top: 8px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.mro-tracking-remark-item:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.mro-tracking-remark-item strong {
+  font-size: 0.7rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mro-tracking-remark-item p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mro-tracking-remarks-empty {
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+.mro-tracking-notes p {
+  margin: 0;
+  color: #475569;
+  white-space: pre-wrap;
 }
 
 .mro-wip {
@@ -1238,6 +1954,14 @@ body.mro-modal-open {
   .mro-arc-fields-grid {
     grid-template-columns: 1fr;
   }
+
+  .mro-tracking-detail-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .mro-tracking-quantities {
+    grid-template-columns: repeat(3, minmax(100px, 1fr));
+  }
 }
 
 .mro-modal-dialog--staff {
@@ -1509,5 +2233,20 @@ body.mro-modal-open {
 
   .mro-appbar-title {
     font-size: 1.25rem;
+  }
+
+  .mro-primary-nav {
+    margin-right: -12px;
+    margin-left: -12px;
+    padding: 0 12px;
+  }
+
+  .mro-tracking-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .mro-tracking-detail-grid,
+  .mro-tracking-quantities {
+    grid-template-columns: 1fr 1fr;
   }
 }

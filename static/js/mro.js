@@ -3,8 +3,14 @@
 const mroState = {
   rows: [],
   historyRows: [],
+  trackingRows: [],
   search: '',
   historySearch: '',
+  trackingSearch: '',
+  trackingStatus: 'active',
+  trackingHideZeroValue: true,
+  trackingIncludesCompleted: false,
+  trackingModalKey: '',
   historyFlash: '',
   psTypeFilter: 'MPS',
   statusFilter: 'all',
@@ -17,6 +23,7 @@ const mroState = {
   arcVariants: ['CAAS'],
   certifyingStaff: [],
   historyLoaded: false,
+  trackingLoaded: false,
   arcItemRows: [],
 };
 
@@ -337,17 +344,682 @@ function mroRenderTable() {
   }).join('');
 }
 
+function mroTrackingIsShippedComplete(row) {
+  const shipped = Number(row?.qty_shipped || 0);
+  const soQty = Number(row?.so_det_qty || 0);
+  return Number.isFinite(shipped) && Number.isFinite(soQty) && soQty > 0 && shipped >= soQty - 0.0001;
+}
+
+function mroTrackingStageKind(row) {
+  if (mroTrackingIsShippedComplete(row)) return 'completed';
+  const status = String(row.current_stage_status || row.execution_status || '').trim();
+  if (!status && !Number(row.current_stage_no || 0) && !String(row.current_stage_desc || '').trim()) {
+    return 'not-started';
+  }
+  return 'active';
+}
+
+function mroTrackingStatusLabel(row) {
+  const kind = mroTrackingStageKind(row);
+  if (kind === 'completed') return 'Completed';
+  if (kind === 'not-started') return 'Not started';
+  return 'Active';
+}
+
+function mroTrackingStateExplanation(row) {
+  const kind = mroTrackingStageKind(row);
+  if (kind === 'completed') {
+    return 'Completed — sales-order quantity is fully shipped.';
+  }
+  if (kind === 'not-started') return 'Not started — no production stage has begun.';
+  return 'Active — currently moving through production stages.';
+}
+
+function mroTrackingErpRecordState(row) {
+  const value = String(row.status || '').trim();
+  if (!value) return '—';
+  return value.toLowerCase() === 'history'
+    ? 'History (ERP record state only)'
+    : value;
+}
+
+function mroTrackingHaystack(row) {
+  return [
+    row.ps_id,
+    row.source_ps_id,
+    row.display_ps_id,
+    row.inventory_code,
+    row.part_no,
+    row.part_name,
+    row.part_desc,
+    row.current_stage_no,
+    row.current_stage_desc,
+    row.current_stage_status,
+    row.execution_status,
+    row.source_voucher_no,
+  ].filter((value) => value != null).join(' ').toLowerCase();
+}
+
+function mroFilteredTrackingRows() {
+  const search = mroState.trackingSearch.trim().toLowerCase();
+  return mroState.trackingRows.filter((row) => {
+    const kind = mroTrackingStageKind(row);
+    const hasSalesOrderValue = row.sales_order_value != null
+      && String(row.sales_order_value).trim() !== '';
+    const salesOrderValue = Number(row.sales_order_value);
+    if (
+      mroState.trackingHideZeroValue
+      && hasSalesOrderValue
+      && Number.isFinite(salesOrderValue)
+      && Math.abs(salesOrderValue) < 0.0001
+    ) {
+      return false;
+    }
+    if (mroState.trackingStatus === 'incomplete' && kind === 'completed') {
+      return false;
+    }
+    if (
+      !['all', 'incomplete'].includes(mroState.trackingStatus)
+      && kind !== mroState.trackingStatus
+    ) {
+      return false;
+    }
+    return !search || mroTrackingHaystack(row).includes(search);
+  });
+}
+
+function mroTrackingProgress(row) {
+  const total = Number(row.display_qty || row.wo_req_qty || row.total_qty || 0);
+  const finished = Number(row.finished_qty || 0);
+  if (mroTrackingStageKind(row) === 'completed') return 100;
+  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(finished)) return 0;
+  return Math.max(0, Math.min(100, Math.round((finished / total) * 100)));
+}
+
+function mroTrackingStageLabel(row) {
+  const number = Number(row.current_stage_no || 0);
+  const description = String(row.current_stage_desc || '').trim();
+  if (number && description) return `${number} · ${description}`;
+  if (description) return description;
+  if (number) return `Stage ${number}`;
+  return mroTrackingIsShippedComplete(row) ? 'Completed · fully shipped' : 'Awaiting first stage';
+}
+
+function mroRenderTrackingTable() {
+  const wrap = document.getElementById('mro-tracking-table-wrap');
+  const body = document.getElementById('mro-tracking-table-body');
+  const empty = document.getElementById('mro-tracking-empty');
+  const summary = document.getElementById('mro-tracking-summary');
+  const meta = document.getElementById('mro-tracking-meta');
+  if (!wrap || !body || !empty) return;
+
+  const rows = mroFilteredTrackingRows();
+  const counts = mroState.trackingRows.reduce((acc, row) => {
+    acc[mroTrackingStageKind(row)] += 1;
+    return acc;
+  }, { active: 0, completed: 0, 'not-started': 0 });
+
+  if (summary) {
+    summary.innerHTML = `
+      <div class="mro-tracking-stat"><strong>${mroState.trackingRows.length}</strong><span>MRO process sheets</span></div>
+      <div class="mro-tracking-stat mro-tracking-stat--active"><strong>${counts.active}</strong><span>Active stages</span></div>
+      <div class="mro-tracking-stat mro-tracking-stat--waiting"><strong>${counts['not-started']}</strong><span>Not started</span></div>
+      <div class="mro-tracking-stat mro-tracking-stat--done"><strong>${counts.completed}</strong><span>Completed</span></div>
+    `;
+  }
+  if (meta) {
+    meta.hidden = false;
+    const scope = mroState.trackingIncludesCompleted ? 'including completed history' : 'open/incomplete scope';
+    meta.textContent = `${rows.length} shown · ${mroState.trackingRows.length} ERP MPS records · ${scope}`;
+  }
+  if (mroState.activeTab === 'tracking') {
+    const statsEl = document.getElementById('mro-stats');
+    if (statsEl) statsEl.textContent = `${rows.length} MRO process sheets shown · ${counts.active} active`;
+  }
+
+  if (!rows.length) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    empty.textContent = mroState.trackingRows.length
+      ? 'No MRO process sheets match your filters.'
+      : 'No MRO process sheets are currently available.';
+    return;
+  }
+
+  wrap.hidden = false;
+  empty.hidden = true;
+  body.innerHTML = rows.map((row, index) => {
+    const kind = mroTrackingStageKind(row);
+    const progress = mroTrackingProgress(row);
+    const ps = row.display_ps_id || row.source_ps_id || row.ps_id;
+    return `
+      <tr class="mro-tracking-row" data-tracking-index="${index}" tabindex="0" title="Expand detailed process sheet tracking" aria-expanded="false">
+        <td class="mro-tracking-ps">
+          <span class="mro-tracking-expand-icon" aria-hidden="true">›</span>
+          <span>${mroEscapeHtml(mroDisplay(ps))}</span>
+        </td>
+        ${mroCell(row.part_no || row.inventory_code)}
+        ${mroCell(row.part_desc, 'mro-desc')}
+        ${mroCell(mroTrackingStageLabel(row), 'mro-tracking-stage')}
+        <td><span class="mro-stage-badge mro-stage-badge--${kind}">${mroEscapeHtml(mroTrackingStatusLabel(row))}</span></td>
+        <td class="mro-progress-cell">
+          <div class="mro-progress" title="${progress}% complete"><span style="width:${progress}%"></span></div>
+          <span>${progress}%</span>
+        </td>
+        ${mroCell(mroFormatDate(row.due_date))}
+        ${mroCell(row.source_voucher_no)}
+      </tr>
+      <tr class="mro-tracking-detail-row" data-tracking-detail-index="${index}" hidden>
+        <td colspan="8"><div class="mro-tracking-inline-detail"></div></td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function mroTrackingOpValue(op, keys, fallback = '') {
+  for (const key of keys) {
+    const value = op?.[key];
+    if (value != null && String(value).trim() !== '') return value;
+  }
+  return fallback;
+}
+
+function mroTrackingOpQuantity(op, keys) {
+  const value = mroTrackingOpValue(op, keys, 0);
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function mroTrackingOperationRows(row) {
+  const ops = Array.isArray(row?.ops)
+    ? row.ops
+    : (Array.isArray(row?.op_cards) ? row.op_cards : []);
+  return ops.slice().sort((a, b) => (
+    Number(mroTrackingOpValue(a, ['stage_no', 'source_stage_no', 'seq_no', 'op_seq_id'], 0))
+    - Number(mroTrackingOpValue(b, ['stage_no', 'source_stage_no', 'seq_no', 'op_seq_id'], 0))
+  ));
+}
+
+function mroTrackingQuantityCard(label, value, modifier = '') {
+  const cls = modifier ? ` mro-tracking-quantity--${modifier}` : '';
+  return `<div class="mro-tracking-quantity${cls}"><span>${mroEscapeHtml(label)}</span><strong>${mroFormatQty(value)}</strong></div>`;
+}
+
+function mroTrackingInfoPill(label, value, modifier = '') {
+  const cls = modifier ? ` mro-tracking-info-pill--${modifier}` : '';
+  return `
+    <span class="mro-tracking-info-pill${cls}">
+      <small>${mroEscapeHtml(label)}</small>
+      <strong>${mroEscapeHtml(mroDisplay(value))}</strong>
+    </span>
+  `;
+}
+
+function mroTrackingBomStageScan(row, stage) {
+  const stageNo = Number(stage?.stage_no || 0);
+  const opNo = String(stage?.op_no || '').trim().toLowerCase();
+  const matches = mroTrackingOperationRows(row).filter((op) => {
+    const candidateStage = Number(mroTrackingOpValue(op, ['stage_no', 'source_stage_no', 'seq_no', 'op_seq_id'], 0));
+    const candidateOp = String(mroTrackingOpValue(op, ['op_no', 'source_op_no'], '')).trim().toLowerCase();
+    return (stageNo > 0 && candidateStage === stageNo) || (opNo && candidateOp === opNo);
+  });
+  const scanned = matches.some((op) => {
+    const status = String(mroTrackingOpValue(op, ['execution_status', 'erp_execution_status', 'status'], ''))
+      .trim()
+      .toUpperCase()
+      .replaceAll('-', '_')
+      .replaceAll(' ', '_');
+    const produced = mroTrackingOpQuantity(op, [
+      'cascade_output_qty',
+      'total_acc_qty_produced',
+      'wo_qty_produced',
+      'erp_finished_qty',
+      'finished_qty',
+    ]);
+    return produced > 0 || ['I', 'IN_PROCESS', 'C', 'COMPLETED'].includes(status);
+  });
+  return {
+    scanned,
+    label: scanned ? 'Scanned' : 'Not scanned',
+  };
+}
+
+function mroTrackingModalKey(row) {
+  return [
+    row.source_ps_id || row.ps_id || '',
+    row.pp_partial_no || 1,
+    row.inventory_code || row.part_no || '',
+    row.bom_code || row.erp_bom_code || '',
+  ].join('|');
+}
+
+function mroRenderTrackingRemarks(container, entries, emptyText) {
+  if (!container) return;
+  if (!entries.length) {
+    container.innerHTML = `<span class="mro-tracking-remarks-empty">${mroEscapeHtml(emptyText)}</span>`;
+    return;
+  }
+  container.innerHTML = entries.map((entry) => `
+    <div class="mro-tracking-remark-item">
+      ${entry.label ? `<strong>${mroEscapeHtml(entry.label)}</strong>` : ''}
+      <p>${mroEscapeHtml(entry.text)}</p>
+    </div>
+  `).join('');
+}
+
+async function mroLoadTrackingBomRemarks(row, modalKey, container) {
+  const params = new URLSearchParams({
+    part_no: String(row.inventory_code || row.part_no || ''),
+    bom_code: String(row.bom_code || row.erp_bom_code || ''),
+  });
+  try {
+    const res = await mroFetch(`/api/mro/workscope-remarks?${params.toString()}`);
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `Request failed (${res.status})`);
+    }
+    if (mroState.trackingModalKey !== modalKey) return;
+    const entries = (Array.isArray(data.rows) ? data.rows : [])
+      .map((item) => ({
+        label: item.bom_desc || item.bom_code || '',
+        text: String(item.remarks_trimmed || item.remarks || '').trim(),
+      }))
+      .filter((item) => item.text);
+    mroRenderTrackingRemarks(container, entries, 'No Inventory BOM remarks.');
+  } catch (err) {
+    if (mroState.trackingModalKey !== modalKey) return;
+    mroRenderTrackingRemarks(container, [], 'BOM remarks unavailable.');
+  }
+}
+
+async function mroLoadTrackingSupplement(row) {
+  const modalKey = mroTrackingModalKey(row);
+  mroState.trackingModalKey = modalKey;
+  const bomCount = document.getElementById('mro-tracking-modal-bom-count');
+  const bomWrap = document.getElementById('mro-tracking-modal-bom-wrap');
+  const bomBody = document.getElementById('mro-tracking-modal-bom-stages');
+  const noBom = document.getElementById('mro-tracking-modal-no-bom');
+  const bomRemarks = document.getElementById('mro-tracking-modal-bom-remarks');
+  const soRemarks = document.getElementById('mro-tracking-modal-so-remarks');
+  if (bomCount) bomCount.textContent = 'Loading…';
+  if (bomWrap) bomWrap.hidden = true;
+  if (bomBody) bomBody.innerHTML = '';
+  if (noBom) {
+    noBom.hidden = false;
+    noBom.textContent = 'Loading BOM stages…';
+  }
+  if (bomRemarks) bomRemarks.textContent = 'Loading…';
+  if (soRemarks) soRemarks.textContent = 'Loading…';
+  mroLoadTrackingBomRemarks(row, modalKey, bomRemarks);
+
+  const params = new URLSearchParams({
+    inventory_code: String(row.inventory_code || row.part_no || ''),
+    bom_code: String(row.bom_code || row.erp_bom_code || ''),
+    sales_order_no: String(row.source_voucher_no || ''),
+  });
+  try {
+    const res = await mroFetch(`/api/mro/process-sheet-tracking/details?${params.toString()}`);
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `Request failed (${res.status})`);
+    }
+    if (mroState.trackingModalKey !== modalKey) return;
+
+    const stages = Array.isArray(data.bom_stages) ? data.bom_stages : [];
+    if (bomCount) bomCount.textContent = `${stages.length} stage${stages.length === 1 ? '' : 's'}`;
+    if (bomWrap) bomWrap.hidden = stages.length === 0;
+    if (noBom) {
+      noBom.hidden = stages.length > 0;
+      noBom.textContent = 'No BOM stages found for this part and BOM.';
+    }
+    if (bomBody) {
+      bomBody.innerHTML = stages.map((stage) => `
+        <tr>
+          <td>${mroEscapeHtml(mroDisplay(stage.stage_no))}</td>
+          <td class="mro-tracking-op-name">${mroEscapeHtml(mroDisplay(stage.stage_desc))}</td>
+          <td>${mroEscapeHtml(mroDisplay(stage.op_no))}</td>
+          <td>${mroEscapeHtml(mroDisplay(stage.machine_no))}</td>
+          <td>${mroFormatQty(stage.setup_time)} min</td>
+          <td>${mroFormatQty(stage.cycle_time)} min/pc</td>
+        </tr>
+      `).join('');
+    }
+
+    const so = data.sales_order_remarks || {};
+    const soRemarkRows = [
+      { label: 'Subject', text: String(so.subject || '').trim() },
+      { label: 'Internal', text: String(so.remarks || '').trim() },
+      { label: 'External', text: String(so.external_remarks || '').trim() },
+    ].filter((item) => item.text);
+    mroRenderTrackingRemarks(soRemarks, soRemarkRows, 'No sales-order remarks.');
+  } catch (err) {
+    if (mroState.trackingModalKey !== modalKey) return;
+    if (bomCount) bomCount.textContent = 'Unavailable';
+    if (noBom) {
+      noBom.hidden = false;
+      noBom.textContent = err.message || 'Could not load BOM stages.';
+    }
+    mroRenderTrackingRemarks(soRemarks, [], 'Sales-order remarks unavailable.');
+  }
+}
+
+function mroOpenTrackingModal(row) {
+  const modal = document.getElementById('mro-tracking-modal');
+  const title = document.getElementById('mro-tracking-modal-title');
+  const subtitle = document.getElementById('mro-tracking-modal-subtitle');
+  const stage = document.getElementById('mro-tracking-modal-stage');
+  const summary = document.getElementById('mro-tracking-modal-summary');
+  const quantities = document.getElementById('mro-tracking-modal-quantities');
+  const opsBody = document.getElementById('mro-tracking-modal-ops');
+  const opsWrap = document.getElementById('mro-tracking-modal-ops-wrap');
+  const opCount = document.getElementById('mro-tracking-modal-op-count');
+  const noOps = document.getElementById('mro-tracking-modal-no-ops');
+  if (!modal || !summary || !opsBody) return;
+
+  const ps = row.display_ps_id || row.source_ps_id || row.ps_id || 'Process sheet';
+  if (title) title.textContent = ps;
+  if (subtitle) subtitle.textContent = `ERP MPS details · Partial ${Number(row.pp_partial_no || 1)}`;
+  if (stage) {
+    const kind = mroTrackingStageKind(row);
+    stage.innerHTML = `
+      <div>
+        <span class="mro-tracking-current-label">Current stage</span>
+        <strong>${mroEscapeHtml(mroTrackingStageLabel(row))}</strong>
+      </div>
+      <span class="mro-stage-badge mro-stage-badge--${kind}">${mroEscapeHtml(mroTrackingStatusLabel(row))}</span>
+    `;
+  }
+  summary.innerHTML = mroSummaryHtml([
+    ['Part no.', row.part_no || row.inventory_code],
+    ['Description', row.part_desc],
+    ['Sales order', row.source_voucher_no],
+    ['SO line item', row.source_line_item_no],
+    ['Order date', mroFormatDate(row.order_date)],
+    ['Due date', mroFormatDate(row.due_date)],
+    ['BOM / route', row.selected_flow_code || row.selected_bom_code || row.erp_bom_code || row.bom_code],
+    ['MPS status', row.status],
+    ['Execution status', row.execution_status],
+    ['Material', row.material_inventory_code || row.inventory_code],
+  ]);
+
+  if (quantities) {
+    const remaining = mroTrackingIsShippedComplete(row) ? 0 : row.remaining_qty;
+    quantities.innerHTML = [
+      mroTrackingQuantityCard('Required', row.display_qty || row.wo_req_qty || row.total_qty),
+      mroTrackingQuantityCard('Produced', row.finished_qty || row.wo_qty_produced, 'done'),
+      mroTrackingQuantityCard('Rejected', row.reject_qty || row.wo_qty_rejected, 'reject'),
+      mroTrackingQuantityCard('Remaining', remaining, 'remaining'),
+      mroTrackingQuantityCard('Shipped', row.qty_shipped),
+    ].join('');
+  }
+
+  const ops = mroTrackingOperationRows(row);
+  if (opCount) opCount.textContent = `${ops.length} stage${ops.length === 1 ? '' : 's'}`;
+  if (opsWrap) opsWrap.hidden = ops.length === 0;
+  if (noOps) noOps.hidden = ops.length > 0;
+  opsBody.innerHTML = ops.map((op) => {
+    const stageNo = mroTrackingOpValue(op, ['stage_no', 'source_stage_no', 'seq_no', 'op_seq_id']);
+    const opNo = mroTrackingOpValue(op, ['op_no', 'source_op_no']);
+    const description = mroTrackingOpValue(op, ['stage_desc', 'operation_name', 'op_desc', 'op_name', 'description']);
+    const machine = mroTrackingOpValue(op, ['wo_voucher_no', 'work_order_no', 'machine_code']);
+    const statusText = String(mroTrackingOpValue(op, ['execution_status', 'erp_execution_status', 'status'], '')).trim();
+    const required = mroTrackingOpQuantity(op, ['cascade_required_qty', 'wo_qty_required', 'erp_required_qty', 'required_qty']);
+    const produced = mroTrackingOpQuantity(op, ['cascade_output_qty', 'total_acc_qty_produced', 'wo_qty_produced', 'erp_finished_qty', 'finished_qty']);
+    const rejected = mroTrackingOpQuantity(op, ['cascade_reject_qty', 'wo_qty_rejected', 'erp_reject_qty', 'reject_qty']);
+    const explicitRemaining = mroTrackingOpValue(op, ['remaining_qty'], null);
+    const remaining = explicitRemaining == null ? Math.max(0, required - produced - rejected) : explicitRemaining;
+    return `
+      <tr>
+        <td>${mroEscapeHtml(mroDisplay(stageNo))}</td>
+        <td class="mro-tracking-op-name"><strong>${mroEscapeHtml(mroDisplay(opNo))}</strong><span>${mroEscapeHtml(mroDisplay(description))}</span></td>
+        <td>${mroEscapeHtml(mroDisplay(machine))}</td>
+        <td>${mroEscapeHtml(mroDisplay(statusText))}</td>
+        <td>${mroFormatQty(required)}</td>
+        <td>${mroFormatQty(produced)}</td>
+        <td>${mroFormatQty(rejected)}</td>
+        <td>${mroFormatQty(remaining)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  modal.hidden = false;
+  document.body.classList.add('mro-modal-open');
+  modal.querySelector('.mro-modal-close')?.focus();
+  mroLoadTrackingSupplement(row);
+}
+
+function mroCloseTrackingModal() {
+  const modal = document.getElementById('mro-tracking-modal');
+  if (modal) modal.hidden = true;
+  mroState.trackingModalKey = '';
+  mroSyncBodyModalClass();
+}
+
+function mroTrackingOpsTableHtml(row) {
+  const ops = mroTrackingOperationRows(row);
+  if (!ops.length) {
+    return '<p class="mro-arc-empty-hint">No MPS or work-order stages are available.</p>';
+  }
+  const body = ops.map((op) => {
+    const stageNo = mroTrackingOpValue(op, ['stage_no', 'source_stage_no', 'seq_no', 'op_seq_id']);
+    const opNo = mroTrackingOpValue(op, ['op_no', 'source_op_no']);
+    const description = mroTrackingOpValue(op, ['stage_desc', 'operation_name', 'op_desc', 'op_name', 'description']);
+    const machine = mroTrackingOpValue(op, ['wo_voucher_no', 'work_order_no', 'machine_code']);
+    const status = mroTrackingOpValue(op, ['execution_status', 'erp_execution_status', 'status']);
+    const required = mroTrackingOpQuantity(op, ['cascade_required_qty', 'wo_qty_required', 'erp_required_qty', 'required_qty']);
+    const produced = mroTrackingOpQuantity(op, ['cascade_output_qty', 'total_acc_qty_produced', 'wo_qty_produced', 'erp_finished_qty', 'finished_qty']);
+    const rejected = mroTrackingOpQuantity(op, ['cascade_reject_qty', 'wo_qty_rejected', 'erp_reject_qty', 'reject_qty']);
+    const explicitRemaining = mroTrackingOpValue(op, ['remaining_qty'], null);
+    const remaining = explicitRemaining == null ? Math.max(0, required - produced - rejected) : explicitRemaining;
+    return `
+      <tr>
+        <td>${mroEscapeHtml(mroDisplay(stageNo))}</td>
+        <td class="mro-tracking-op-name"><strong>${mroEscapeHtml(mroDisplay(opNo))}</strong><span>${mroEscapeHtml(mroDisplay(description))}</span></td>
+        <td>${mroEscapeHtml(mroDisplay(machine))}</td>
+        <td>${mroEscapeHtml(mroDisplay(status))}</td>
+        <td>${mroFormatQty(required)}</td>
+        <td>${mroFormatQty(produced)}</td>
+        <td>${mroFormatQty(rejected)}</td>
+        <td>${mroFormatQty(remaining)}</td>
+      </tr>
+    `;
+  }).join('');
+  return `
+    <div class="mro-arc-items-scroll">
+      <table class="mro-arc-items-table mro-tracking-ops-table">
+        <thead><tr><th>Stage</th><th>Operation</th><th>Work order / machine</th><th>Status</th><th>Required</th><th>Produced</th><th>Rejected</th><th>Remaining</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function mroTrackingInlineHtml(row) {
+  const kind = mroTrackingStageKind(row);
+  const remaining = mroTrackingIsShippedComplete(row) ? 0 : row.remaining_qty;
+  return `
+    <div class="mro-tracking-inline-head">
+      <div>
+        <span class="mro-tracking-inline-eyebrow">Expanded process sheet</span>
+        <strong>${mroEscapeHtml(row.display_ps_id || row.source_ps_id || row.ps_id || 'MPS details')}</strong>
+        <span>ERP MPS details · Partial ${Number(row.pp_partial_no || 1)}</span>
+      </div>
+      <button type="button" class="mro-btn mro-btn--compact" data-tracking-collapse>Collapse</button>
+    </div>
+    <div class="mro-tracking-current-stage">
+      <div>
+        <span class="mro-tracking-current-label">Operational job state</span>
+        <strong>${mroEscapeHtml(mroTrackingStageLabel(row))}</strong>
+        <small>${mroEscapeHtml(mroTrackingStateExplanation(row))}</small>
+      </div>
+      <span class="mro-stage-badge mro-stage-badge--${kind}">${mroEscapeHtml(mroTrackingStatusLabel(row))}</span>
+    </div>
+    <div class="mro-tracking-description">
+      <span>Description</span>
+      <strong>${mroEscapeHtml(mroDisplay(row.part_desc))}</strong>
+    </div>
+    <div class="mro-tracking-info-pills">
+      ${mroTrackingInfoPill('Part', row.part_no || row.inventory_code)}
+      ${mroTrackingInfoPill('Sales order', row.source_voucher_no)}
+      ${mroTrackingInfoPill('Due', mroFormatDate(row.due_date))}
+      ${mroTrackingInfoPill('BOM', row.erp_bom_code || row.bom_code)}
+      ${mroTrackingInfoPill('ERP record', mroTrackingErpRecordState(row))}
+      ${mroTrackingInfoPill('SO qty', mroFormatQty(row.so_det_qty))}
+      ${mroTrackingInfoPill('Produced', mroFormatQty(row.finished_qty || row.wo_qty_produced), 'done')}
+      ${mroTrackingInfoPill('Remaining', mroFormatQty(remaining), 'remaining')}
+      ${mroTrackingInfoPill('Shipped', mroFormatQty(row.qty_shipped))}
+    </div>
+    <section class="mro-tracking-operations">
+      <div class="mro-tracking-section-head"><h3>BOM stages</h3><span data-inline-bom-count>Loading…</span></div>
+      <div class="mro-arc-items-scroll" data-inline-bom-wrap hidden>
+        <table class="mro-arc-items-table mro-tracking-bom-table">
+          <thead><tr><th>Stage</th><th>Description</th><th>Stage status</th></tr></thead>
+          <tbody data-inline-bom-body></tbody>
+        </table>
+      </div>
+      <p class="mro-arc-empty-hint" data-inline-no-bom>Loading BOM stages…</p>
+    </section>
+    <section class="mro-tracking-remarks">
+      <article class="mro-tracking-notes">
+        <h3>Inventory BOM remarks</h3>
+        <div class="mro-tracking-remarks-list" data-inline-bom-remarks>Loading…</div>
+      </article>
+      <article class="mro-tracking-notes">
+        <h3>Sales order remarks</h3>
+        <div class="mro-tracking-remarks-list" data-inline-so-remarks>Loading…</div>
+      </article>
+    </section>
+  `;
+}
+
+async function mroLoadTrackingInlineSupplement(row, panel, detailKey) {
+  const bomCount = panel.querySelector('[data-inline-bom-count]');
+  const bomWrap = panel.querySelector('[data-inline-bom-wrap]');
+  const bomBody = panel.querySelector('[data-inline-bom-body]');
+  const noBom = panel.querySelector('[data-inline-no-bom]');
+  const bomRemarks = panel.querySelector('[data-inline-bom-remarks]');
+  const soRemarks = panel.querySelector('[data-inline-so-remarks]');
+  mroLoadTrackingBomRemarks(row, detailKey, bomRemarks);
+  const params = new URLSearchParams({
+    inventory_code: String(row.inventory_code || row.part_no || ''),
+    bom_code: String(row.bom_code || row.erp_bom_code || ''),
+    sales_order_no: String(row.source_voucher_no || ''),
+  });
+  try {
+    const res = await mroFetch(`/api/mro/process-sheet-tracking/details?${params.toString()}`);
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    if (mroState.trackingModalKey !== detailKey || !panel.isConnected) return;
+    const stages = Array.isArray(data.bom_stages) ? data.bom_stages : [];
+    bomCount.textContent = `${stages.length} stage${stages.length === 1 ? '' : 's'}`;
+    bomWrap.hidden = stages.length === 0;
+    noBom.hidden = stages.length > 0;
+    noBom.textContent = 'No BOM stages found for this part and BOM.';
+    bomBody.innerHTML = stages.map((stage) => {
+      const scan = mroTrackingBomStageScan(row, stage);
+      return `
+        <tr>
+          <td>${mroEscapeHtml(mroDisplay(stage.stage_no))}</td>
+          <td>${mroEscapeHtml(mroDisplay(stage.stage_desc))}</td>
+          <td><span class="mro-scan-badge${scan.scanned ? ' is-scanned' : ''}">${mroEscapeHtml(scan.label)}</span></td>
+        </tr>
+      `;
+    }).join('');
+    const so = data.sales_order_remarks || {};
+    mroRenderTrackingRemarks(soRemarks, [
+      { label: 'Subject', text: String(so.subject || '').trim() },
+      { label: 'Internal', text: String(so.remarks || '').trim() },
+      { label: 'External', text: String(so.external_remarks || '').trim() },
+    ].filter((item) => item.text), 'No sales-order remarks.');
+  } catch (err) {
+    if (mroState.trackingModalKey !== detailKey || !panel.isConnected) return;
+    bomCount.textContent = 'Unavailable';
+    noBom.hidden = false;
+    noBom.textContent = err.message || 'Could not load BOM stages.';
+    mroRenderTrackingRemarks(soRemarks, [], 'Sales-order remarks unavailable.');
+  }
+}
+
+function mroToggleTrackingDetail(row, rowEl) {
+  const detailRow = rowEl.nextElementSibling;
+  const panel = detailRow?.querySelector('.mro-tracking-inline-detail');
+  if (!detailRow || !panel) return;
+  const opening = detailRow.hidden;
+  document.querySelectorAll('tr.mro-tracking-detail-row:not([hidden])').forEach((openRow) => {
+    openRow.hidden = true;
+    openRow.previousElementSibling?.setAttribute('aria-expanded', 'false');
+  });
+  mroState.trackingModalKey = '';
+  if (!opening) return;
+  detailRow.hidden = false;
+  rowEl.setAttribute('aria-expanded', 'true');
+  panel.innerHTML = mroTrackingInlineHtml(row);
+  const detailKey = mroTrackingModalKey(row);
+  mroState.trackingModalKey = detailKey;
+  mroLoadTrackingInlineSupplement(row, panel, detailKey);
+}
+
+async function mroLoadTracking({ force = false, includeCompleted = false } = {}) {
+  const loading = document.getElementById('mro-tracking-loading');
+  if (loading) loading.hidden = false;
+  try {
+    const params = new URLSearchParams();
+    if (force) params.set('refresh', '1');
+    if (includeCompleted) params.set('show_completed', '1');
+    const query = params.toString();
+    const res = await mroFetch(`/api/mro/process-sheet-tracking${query ? `?${query}` : ''}`);
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `Request failed (${res.status})`);
+    }
+    mroState.trackingRows = Array.isArray(data.rows) ? data.rows : [];
+    mroState.trackingIncludesCompleted = !!data.include_completed;
+    mroState.trackingLoaded = true;
+    mroRenderTrackingTable();
+  } catch (err) {
+    mroState.trackingRows = [];
+    mroState.trackingLoaded = false;
+    mroRenderTrackingTable();
+    const empty = document.getElementById('mro-tracking-empty');
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = `Failed to load PS tracking: ${err.message || err}`;
+    }
+  } finally {
+    if (loading) loading.hidden = true;
+  }
+}
+
 function mroSetTab(tab) {
   mroState.activeTab = tab;
+  const section = tab === 'tracking' ? 'tracking' : 'arc';
   const arcPanel = document.getElementById('mro-panel-arc');
+  const trackingPanel = document.getElementById('mro-panel-tracking');
   const historyPanel = document.getElementById('mro-panel-history');
+  const arcSubnav = document.getElementById('mro-arc-subnav');
+  const appbarActions = document.querySelector('.mro-appbar-actions');
+  document.querySelectorAll('[data-mro-section]').forEach((btn) => {
+    const active = btn.getAttribute('data-mro-section') === section;
+    btn.classList.toggle('is-active', active);
+    if (active) btn.setAttribute('aria-current', 'page');
+    else btn.removeAttribute('aria-current');
+  });
   document.querySelectorAll('[data-mro-tab]').forEach((btn) => {
     const active = btn.getAttribute('data-mro-tab') === tab;
     btn.classList.toggle('is-active', active);
     btn.setAttribute('aria-selected', active ? 'true' : 'false');
   });
+  if (arcSubnav) arcSubnav.hidden = section !== 'arc';
+  if (appbarActions) appbarActions.hidden = section === 'tracking';
   if (arcPanel) arcPanel.hidden = tab !== 'arc';
+  if (trackingPanel) trackingPanel.hidden = tab !== 'tracking';
   if (historyPanel) historyPanel.hidden = tab !== 'history';
+  if (tab === 'tracking') {
+    if (mroState.trackingLoaded) mroRenderTrackingTable();
+    else mroLoadTracking();
+  } else if (tab === 'arc') {
+    mroRenderStats();
+  }
   if (tab === 'history') {
     mroLoadHistory();
   }
@@ -1801,6 +2473,12 @@ document.querySelectorAll('[data-mro-tab]').forEach((btn) => {
   });
 });
 
+document.querySelectorAll('[data-mro-section]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    mroSetTab(btn.getAttribute('data-mro-section') === 'tracking' ? 'tracking' : 'arc');
+  });
+});
+
 document.getElementById('mro-table-body')?.addEventListener('click', (event) => {
   const btn = event.target.closest('.mro-generate-btn');
   if (btn) {
@@ -1865,6 +2543,58 @@ document.getElementById('mro-arc-modal-submit')?.addEventListener('click', () =>
 document.getElementById('mro-history-search')?.addEventListener('input', (event) => {
   mroState.historySearch = event.target.value || '';
   mroRenderHistoryTable();
+});
+
+document.getElementById('mro-tracking-search')?.addEventListener('input', (event) => {
+  mroState.trackingSearch = event.target.value || '';
+  mroRenderTrackingTable();
+});
+
+document.getElementById('mro-tracking-status')?.addEventListener('change', (event) => {
+  mroState.trackingStatus = event.target.value || 'active';
+  const needsCompleted = ['all', 'completed'].includes(mroState.trackingStatus);
+  if (needsCompleted && !mroState.trackingIncludesCompleted) {
+    mroLoadTracking({ includeCompleted: true });
+  } else {
+    mroRenderTrackingTable();
+  }
+});
+
+document.getElementById('mro-tracking-hide-zero-value')?.addEventListener('change', (event) => {
+  mroState.trackingHideZeroValue = event.target.checked;
+  mroRenderTrackingTable();
+});
+
+document.getElementById('mro-tracking-refresh')?.addEventListener('click', () => {
+  mroState.trackingLoaded = false;
+  const includeCompleted = ['all', 'completed'].includes(mroState.trackingStatus);
+  mroLoadTracking({ force: true, includeCompleted });
+});
+
+document.getElementById('mro-tracking-table-body')?.addEventListener('click', (event) => {
+  const collapseBtn = event.target.closest('[data-tracking-collapse]');
+  if (collapseBtn) {
+    const detailRow = collapseBtn.closest('tr.mro-tracking-detail-row');
+    if (detailRow) {
+      detailRow.hidden = true;
+      detailRow.previousElementSibling?.setAttribute('aria-expanded', 'false');
+      mroState.trackingModalKey = '';
+    }
+    return;
+  }
+  const rowEl = event.target.closest('tr[data-tracking-index]');
+  if (!rowEl) return;
+  const row = mroFilteredTrackingRows()[Number(rowEl.getAttribute('data-tracking-index'))];
+  if (row) mroToggleTrackingDetail(row, rowEl);
+});
+
+document.getElementById('mro-tracking-table-body')?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const rowEl = event.target.closest('tr[data-tracking-index]');
+  if (!rowEl) return;
+  event.preventDefault();
+  const row = mroFilteredTrackingRows()[Number(rowEl.getAttribute('data-tracking-index'))];
+  if (row) mroToggleTrackingDetail(row, rowEl);
 });
 
 document.getElementById('mro-history-refresh')?.addEventListener('click', () => {
@@ -2094,8 +2824,12 @@ document.addEventListener('keydown', (event) => {
   mroCloseDetailModal();
 });
 
-mroSetTab('arc');
-mroLoadCorrectionTemplates().catch(() => {});
-mroReloadCertifyingStaff().catch(() => {});
-mroLoadHistory({ quiet: true }).catch(() => {});
-mroLoad();
+if (window.__MRO_PAGE__ === 'tracking') {
+  mroSetTab('tracking');
+} else {
+  mroSetTab('arc');
+  mroLoadCorrectionTemplates().catch(() => {});
+  mroReloadCertifyingStaff().catch(() => {});
+  mroLoadHistory({ quiet: true }).catch(() => {});
+  mroLoad();
+}

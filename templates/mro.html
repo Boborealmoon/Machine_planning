@@ -18,23 +18,11 @@
 
 {% block content %}
 <div class="mro-page">
-  <header class="mro-appbar">
-    <div class="mro-appbar-brand">
-      <span class="mro-appbar-logo" aria-hidden="true">MRO</span>
-      <div class="mro-appbar-text">
-        <h1 class="mro-appbar-title">Maintenance, Repair &amp; Overhaul</h1>
-        <p class="mro-appbar-subtitle" id="mro-stats" aria-live="polite">Loading ARC data…</p>
-      </div>
-    </div>
-    <div class="mro-appbar-actions">
-      <button type="button" class="mro-btn" id="mro-manage-staff" title="Add or remove certifying staff names">Manage Certifying Staff</button>
-      <button type="button" class="mro-btn mro-btn--primary" id="mro-refresh" title="Reload from ERP">Refresh</button>
-    </div>
-  </header>
+  {% include "_mro_page_header.html" %}
 
-  <nav class="mro-nav" aria-label="MRO sections" role="tablist">
-    <button type="button" class="mro-nav-link is-active" data-mro-tab="arc" role="tab" aria-selected="true" aria-controls="mro-panel-arc">ARC</button>
-    <button type="button" class="mro-nav-link" data-mro-tab="history" role="tab" aria-selected="false" aria-controls="mro-panel-history">ARC creation history</button>
+  <nav id="mro-arc-subnav" class="mro-nav mro-subnav" aria-label="ARC sections" role="tablist">
+    <button type="button" id="mro-tab-arc" class="mro-nav-link is-active" data-mro-tab="arc" role="tab" aria-selected="true" aria-controls="mro-panel-arc">ARC</button>
+    <button type="button" id="mro-tab-history" class="mro-nav-link" data-mro-tab="history" role="tab" aria-selected="false" aria-controls="mro-panel-history">Creation history</button>
   </nav>
 
   <section id="mro-panel-arc" class="mro-panel" role="tabpanel" aria-labelledby="mro-tab-arc">
@@ -491,7 +479,10 @@
 {% endblock %}
 
 {% block scripts %}
-<script>window.__MRO_GATE_TOKEN__ = {{ (mro_token or "") | tojson }};</script>
+<script>
+window.__MRO_GATE_TOKEN__ = {{ (mro_token or "") | tojson }};
+window.__MRO_PAGE__ = "arc";
+</script>
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v={{ mro_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/mro.js') }}?v={{ mro_asset_version }}"></script>
 {% endblock %}

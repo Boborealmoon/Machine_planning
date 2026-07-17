@@ -51,6 +51,7 @@ from planning.daily_output_route import (
     daily_output_page,
 )
 from planning.bom_variation_route import bom_variation_bp
+from planning.assembly_bom_route import assembly_bom_bp
 from planning.finishing_queue_route import (
     FINISHING_QUEUE_PATH,
     LEGACY_FINISHING_QUEUE_PATHS,
@@ -95,6 +96,7 @@ app.register_blueprint(program_tool_tracker_bp)
 app.register_blueprint(repeat_orders_bp)
 app.register_blueprint(auk_oee_bp)
 app.register_blueprint(bom_variation_bp)
+app.register_blueprint(assembly_bom_bp)
 app.register_blueprint(finishing_queue_bp)
 app.register_blueprint(driver_view_bp)
 
