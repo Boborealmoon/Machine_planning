@@ -4,7 +4,7 @@
 
 {% block main_class %}app-main--new-orders app-main--job-ratio{% endblock %}
 
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=job-ratio-ui-20260625a">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=job-ratio-ui-20260717b">{% endblock %}
 
 {% block content %}
 
@@ -38,6 +38,7 @@
           <button type="button" class="mi-view-btn is-active" data-jr-view="matrix" role="tab" aria-selected="true">Volume mix</button>
           <button type="button" class="mi-view-btn" data-jr-view="jobs" role="tab" aria-selected="false">Jobs</button>
           <button type="button" class="mi-view-btn" data-jr-view="customers" role="tab" aria-selected="false">By customer</button>
+          <button type="button" class="mi-view-btn" data-jr-view="parts" role="tab" aria-selected="false">Parts analysis</button>
         </div>
       </div>
     </div>
@@ -109,6 +110,43 @@
       <button type="button" class="btn btn-ghost btn-sm" id="job-ratio-clear-jobs-filters">Clear filters</button>
     </div>
 
+    <div class="job-ratio-parts-filters" id="job-ratio-parts-filters" hidden>
+      <label class="job-ratio-filter-field">
+        <span>Customer</span>
+        <select id="job-ratio-parts-customer"><option value="">All customers</option></select>
+      </label>
+      <label class="job-ratio-filter-field">
+        <span>Month</span>
+        <select id="job-ratio-parts-month"></select>
+      </label>
+      <label class="job-ratio-filter-field">
+        <span>Min qty</span>
+        <input id="job-ratio-parts-min-qty" type="number" min="0" step="1" placeholder="0">
+      </label>
+      <label class="job-ratio-filter-field">
+        <span>Min value ($)</span>
+        <input id="job-ratio-parts-min-value" type="number" min="0" step="100" placeholder="0">
+      </label>
+      <label class="job-ratio-filter-field">
+        <span>Score model</span>
+        <select id="job-ratio-parts-score-mode">
+          <option value="volume_value">Volume + value</option>
+          <option value="repeat_demand">Repeat demand</option>
+        </select>
+      </label>
+      <label class="job-ratio-filter-field">
+        <span>Sort by</span>
+        <select id="job-ratio-parts-sort">
+          <option value="score">Balanced score</option>
+          <option value="volume">Volume</option>
+          <option value="value">Value</option>
+          <option value="orders">Orders</option>
+          <option value="part">Part number</option>
+        </select>
+      </label>
+      <button type="button" class="btn btn-ghost btn-sm" id="job-ratio-clear-parts-filters">Clear filters</button>
+    </div>
+
     <div class="job-ratio-stats" id="job-ratio-stats" hidden></div>
   </div>
 
@@ -156,6 +194,26 @@
     </div>
   </section>
 
+  <section id="job-ratio-parts-wrap" class="card job-ratio-panel job-ratio-parts-wrap" hidden>
+    <div class="job-ratio-parts-body">
+      <div class="sales-report-section-head">
+        <div>
+          <h2 class="sales-report-section-title">High-volume, high-value parts by customer</h2>
+          <p class="sales-report-section-sub" id="job-ratio-parts-note">
+            Balanced score is the geometric mean of each customer-part row's volume and booked-value percentiles.
+          </p>
+        </div>
+      </div>
+      <div class="job-ratio-score-legend" aria-label="Parts analysis score legend">
+        <strong>Score legend</strong>
+        <span><b>Volume + value:</b> √(quantity percentile × value percentile).</span>
+        <span><b>Repeat demand:</b> weighted geometric mean — 30% quantity, 40% booked value, 30% distinct sales orders.</span>
+        <span>Percentiles are recalculated within the active filters using non-zero ranks; higher scores indicate stronger priority.</span>
+      </div>
+      <div id="job-ratio-parts-content"></div>
+    </div>
+  </section>
+
   <div id="job-ratio-empty" class="new-orders-empty card" hidden>
     <p id="job-ratio-empty-text">No rows match your filters.</p>
   </div>
@@ -166,6 +224,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=job-ratio-ui-20260625a"></script>
-<script src="{{ url_for('static', filename='js/job_ratio.js') }}?v=job-ratio-ui-20260625a"></script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=job-ratio-ui-20260717b"></script>
+<script src="{{ url_for('static', filename='js/job_ratio.js') }}?v=job-ratio-ui-20260717b"></script>
 {% endblock %}

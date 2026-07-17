@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from math import sqrt
 from typing import Any
 
 from .sales_report_alloc import ps_type_from_process_sheet
@@ -711,6 +712,154 @@ def aggregate_customer_rows(rows: list[dict[str, Any]], year: int) -> list[dict[
             }
         )
     out.sort(key=lambda row: (-float(row.get("total_value") or 0), row.get("customer_name") or ""))
+    return out
+
+
+def _percentile_scores(rows: list[dict[str, Any]], field: str) -> dict[int, float]:
+    """Return non-zero percentile ranks, assigning tied values their average rank."""
+    if not rows:
+        return {}
+    if len(rows) == 1:
+        return {id(rows[0]): 100.0}
+
+    ordered = sorted(
+        ((float(row.get(field) or 0), index, row) for index, row in enumerate(rows)),
+        key=lambda item: (item[0], item[1]),
+    )
+    scores: dict[int, float] = {}
+    start = 0
+    while start < len(ordered):
+        end = start + 1
+        while end < len(ordered) and ordered[end][0] == ordered[start][0]:
+            end += 1
+        average_rank = (start + end - 1) / 2.0
+        score = (average_rank + 1.0) / len(ordered) * 100.0
+        for _, _, row in ordered[start:end]:
+            scores[id(row)] = round(score, 1)
+        start = end
+    return scores
+
+
+def aggregate_ranked_parts(
+    rows: list[dict[str, Any]],
+    year: int,
+    *,
+    month: int | None = None,
+    customer_code: str | None = None,
+    min_qty: float = 0.0,
+    min_value: float = 0.0,
+    sort: str = "score",
+    score_mode: str = "volume_value",
+) -> list[dict[str, Any]]:
+    """Aggregate booked PS jobs by customer + part and rank volume/value performance."""
+    customer_key = compact_text(customer_code) if customer_code else None
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for row in rows:
+        if row_report_year(row) != year or not row_has_positive_qty(row):
+            continue
+        if month is not None and row_report_month(row) != month:
+            continue
+
+        code = compact_text(row.get("customer_code")) or "—"
+        if customer_key is not None and code != customer_key:
+            continue
+        part_no = compact_text(row.get("inventory_code")) or "—"
+        key = (code, part_no)
+        entry = grouped.setdefault(
+            key,
+            {
+                "customer_code": code,
+                "customer_name": compact_text(row.get("customer_name")) or code,
+                "part_no": part_no,
+                "description": compact_text(row.get("description")),
+                "total_qty": 0.0,
+                "total_value": 0.0,
+                "_process_sheets": set(),
+                "_sales_orders": set(),
+            },
+        )
+        if not entry["description"]:
+            entry["description"] = compact_text(row.get("description"))
+        entry["total_qty"] += _detail_row_qty(row)
+        entry["total_value"] += _detail_row_amount(row)
+        process_sheet = compact_text(row.get("process_sheet_no"))
+        sales_order = compact_text(row.get("sales_order_no"))
+        if process_sheet:
+            entry["_process_sheets"].add(process_sheet)
+        if sales_order:
+            entry["_sales_orders"].add(sales_order)
+
+    out: list[dict[str, Any]] = []
+    for entry in grouped.values():
+        total_qty = float(entry["total_qty"])
+        total_value = float(entry["total_value"])
+        if total_qty < min_qty or total_value < min_value:
+            continue
+        out.append(
+            {
+                "customer_code": entry["customer_code"],
+                "customer_name": entry["customer_name"],
+                "part_no": entry["part_no"],
+                "description": entry["description"],
+                "total_qty": round(total_qty, 2),
+                "total_value": round(total_value, 2),
+                "process_sheet_count": len(entry["_process_sheets"]),
+                "order_count": len(entry["_sales_orders"]),
+                "average_unit_value": round(total_value / total_qty, 2) if total_qty else 0.0,
+            }
+        )
+
+    volume_scores = _percentile_scores(out, "total_qty")
+    value_scores = _percentile_scores(out, "total_value")
+    order_scores = _percentile_scores(out, "order_count")
+    for row in out:
+        row["volume_percentile"] = volume_scores[id(row)]
+        row["value_percentile"] = value_scores[id(row)]
+        row["order_percentile"] = order_scores[id(row)]
+        row["volume_value_score"] = round(
+            sqrt(row["volume_percentile"] * row["value_percentile"]),
+            1,
+        )
+        row["repeat_demand_score"] = round(
+            (row["volume_percentile"] ** 0.30)
+            * (row["value_percentile"] ** 0.40)
+            * (row["order_percentile"] ** 0.30),
+            1,
+        )
+        row["score"] = (
+            row["repeat_demand_score"]
+            if score_mode == "repeat_demand"
+            else row["volume_value_score"]
+        )
+
+    def text_key(row: dict[str, Any]) -> tuple[str, str, str]:
+        return (
+            str(row.get("customer_name") or "").casefold(),
+            str(row.get("customer_code") or "").casefold(),
+            str(row.get("part_no") or "").casefold(),
+        )
+
+    if sort == "volume":
+        out.sort(key=lambda row: (-float(row["total_qty"]), -float(row["total_value"]), text_key(row)))
+    elif sort == "value":
+        out.sort(key=lambda row: (-float(row["total_value"]), -float(row["total_qty"]), text_key(row)))
+    elif sort == "orders":
+        out.sort(key=lambda row: (-int(row["order_count"]), -float(row["score"]), text_key(row)))
+    elif sort == "part":
+        out.sort(key=lambda row: (str(row["part_no"]).casefold(), text_key(row)))
+    else:
+        out.sort(
+            key=lambda row: (
+                -float(row["score"]),
+                -float(row["total_value"]),
+                -float(row["total_qty"]),
+                text_key(row),
+            )
+        )
+
+    for rank, row in enumerate(out, start=1):
+        row["rank"] = rank
     return out
 
 

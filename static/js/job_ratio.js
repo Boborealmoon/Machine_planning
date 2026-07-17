@@ -18,6 +18,14 @@ const jobRatioState = {
   jobsRows: null,
   jobsTotalValue: null,
   jobsLoading: false,
+  partsCustomer: '',
+  partsMonth: null,
+  partsMinQty: 0,
+  partsMinValue: 0,
+  partsScoreMode: 'volume_value',
+  partsSort: 'score',
+  partsData: null,
+  partsLoading: false,
   expandedJobGroups: new Set(),
   expandedCustomers: new Set(),
   customerLines: new Map(),
@@ -155,7 +163,7 @@ function jobRatioSetLoading(on) {
 }
 
 function jobRatioHideSections() {
-  ['job-ratio-matrix-wrap', 'job-ratio-jobs-wrap', 'job-ratio-customers-wrap', 'job-ratio-empty'].forEach(id => {
+  ['job-ratio-matrix-wrap', 'job-ratio-jobs-wrap', 'job-ratio-customers-wrap', 'job-ratio-parts-wrap', 'job-ratio-empty'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.hidden = true;
   });
@@ -276,6 +284,23 @@ function jobRatioSyncJobsFilters() {
   if (sortEl) sortEl.value = jobRatioState.jobsSort || 'volume';
   const filtersWrap = document.getElementById('job-ratio-jobs-filters');
   if (filtersWrap) filtersWrap.hidden = jobRatioState.view !== 'jobs';
+}
+
+function jobRatioSyncPartsFilters() {
+  const values = {
+    'job-ratio-parts-customer': jobRatioState.partsCustomer,
+    'job-ratio-parts-month': jobRatioState.partsMonth ? String(jobRatioState.partsMonth) : '',
+    'job-ratio-parts-min-qty': jobRatioState.partsMinQty || '',
+    'job-ratio-parts-min-value': jobRatioState.partsMinValue || '',
+    'job-ratio-parts-score-mode': jobRatioState.partsScoreMode,
+    'job-ratio-parts-sort': jobRatioState.partsSort,
+  };
+  Object.entries(values).forEach(([id, value]) => {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+  });
+  const wrap = document.getElementById('job-ratio-parts-filters');
+  if (wrap) wrap.hidden = jobRatioState.view !== 'parts';
 }
 
 function jobRatioJobGroupKey(type, id) {
@@ -946,6 +971,80 @@ function jobRatioRenderCustomers() {
   wrap.hidden = false;
 }
 
+function jobRatioFilteredParts() {
+  const rows = jobRatioState.partsData?.rows || [];
+  const q = String(jobRatioState.search || '').trim().toLowerCase();
+  if (!q) return rows;
+  return rows.filter(row =>
+    [
+      row.customer_code, row.customer_name, row.part_no, row.description,
+    ].map(value => String(value || '').toLowerCase()).join(' ').includes(q)
+  );
+}
+
+function jobRatioRenderParts() {
+  const wrap = document.getElementById('job-ratio-parts-wrap');
+  const content = document.getElementById('job-ratio-parts-content');
+  const note = document.getElementById('job-ratio-parts-note');
+  if (!wrap || !content) return;
+
+  if (jobRatioState.partsLoading) {
+    content.innerHTML = '<p class="job-ratio-cust-loading">Loading ranked parts…</p>';
+    wrap.hidden = false;
+    return;
+  }
+  if (!jobRatioState.partsData) {
+    content.innerHTML = '<p class="job-ratio-cust-empty">No parts analysis loaded.</p>';
+    wrap.hidden = false;
+    return;
+  }
+
+  const rows = jobRatioFilteredParts();
+  if (note) {
+    const data = jobRatioState.partsData;
+    const scoreText = jobRatioState.partsScoreMode === 'repeat_demand'
+      ? 'Repeat demand score: 30% quantity, 40% value, 30% distinct orders.'
+      : 'Volume + value score: geometric mean of quantity and value percentiles.';
+    note.textContent = `${jobRatioFormatQty(rows.length)} customer-part combinations · ${jobRatioFormatQty(data.total_qty)} total qty · $${jobRatioFormatMoneyFull(data.total_value)} booked value. ${scoreText}`;
+  }
+  if (!rows.length) {
+    content.innerHTML = '<p class="job-ratio-cust-empty">No parts match the current filters.</p>';
+    wrap.hidden = false;
+    return;
+  }
+
+  const body = rows.map(row => `<tr>
+    <td class="job-ratio-num job-ratio-parts-rank">${jobRatioFormatQty(row.rank)}</td>
+    <td class="job-ratio-num"><strong>${jobRatioFormatQty(row.score)}</strong></td>
+    <td>${escapeHtml(row.customer_name || '—')}<br><span class="new-orders-mono job-ratio-parts-muted">${escapeHtml(row.customer_code || '—')}</span></td>
+    <td class="new-orders-mono">${escapeHtml(row.part_no || '—')}</td>
+    <td class="job-ratio-line-desc" title="${escapeHtml(row.description || '')}">${escapeHtml(jobRatioTruncate(row.description || '—', 64))}</td>
+    <td class="job-ratio-num">${jobRatioFormatQty(row.total_qty)}</td>
+    <td class="job-ratio-num">$${jobRatioFormatMoneyFull(row.total_value)}</td>
+    <td class="job-ratio-num">$${jobRatioFormatMoneyFull(row.average_unit_value)}</td>
+    <td class="job-ratio-num">${jobRatioFormatQty(row.process_sheet_count)}</td>
+    <td class="job-ratio-num">${jobRatioFormatQty(row.order_count)}</td>
+    <td class="job-ratio-num">${jobRatioFormatPct(row.volume_percentile)}</td>
+    <td class="job-ratio-num">${jobRatioFormatPct(row.value_percentile)}</td>
+    <td class="job-ratio-num">${jobRatioFormatPct(row.order_percentile)}</td>
+  </tr>`).join('');
+
+  content.innerHTML = `<div class="job-ratio-parts-scroll">
+    <table class="job-ratio-parts-table">
+      <thead><tr>
+        <th>Rank</th><th><button type="button" data-jr-parts-sort="score">Score</button></th>
+        <th>Customer</th><th><button type="button" data-jr-parts-sort="part">Part</button></th><th>Description</th>
+        <th><button type="button" data-jr-parts-sort="volume">Qty</button></th>
+        <th><button type="button" data-jr-parts-sort="value">Booked value</button></th>
+        <th>Avg unit value</th><th>PS</th><th><button type="button" data-jr-parts-sort="orders">Orders</button></th>
+        <th>Volume pct.</th><th>Value pct.</th><th>Order pct.</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  </div>`;
+  wrap.hidden = false;
+}
+
 function jobRatioShowEmpty(text) {
   const empty = document.getElementById('job-ratio-empty');
   const textEl = document.getElementById('job-ratio-empty-text');
@@ -978,6 +1077,11 @@ function jobRatioRenderStats() {
       pills.push(`<span class="sales-report-stat-pill">$${jobRatioFormatMoneyFull(val)} value</span>`);
     }
   }
+  if (jobRatioState.view === 'parts' && jobRatioState.partsData) {
+    pills.push(`<span class="sales-report-stat-pill">${jobRatioFormatQty(jobRatioState.partsData.count)} ranked parts</span>`);
+    pills.push(`<span class="sales-report-stat-pill">${jobRatioFormatQty(jobRatioState.partsData.total_qty)} qty</span>`);
+    pills.push(`<span class="sales-report-stat-pill">$${jobRatioFormatMoneyFull(jobRatioState.partsData.total_value)} booked value</span>`);
+  }
   if (Number(report?.unclassified_count) > 0) {
     pills.push(`<span class="sales-report-stat-pill job-ratio-stat-warn">${jobRatioFormatQty(report.unclassified_count)} unclassified (qty ≤ 0)</span>`);
   }
@@ -1006,6 +1110,7 @@ function jobRatioRender() {
   jobRatioHideSections();
   jobRatioSyncCustomerFilters();
   jobRatioSyncJobsFilters();
+  jobRatioSyncPartsFilters();
 
   if (jobRatioNoPsTypesSelected()) {
     jobRatioShowEmpty('Select at least one PP prefix.');
@@ -1027,6 +1132,8 @@ function jobRatioRender() {
     jobRatioRenderMatrix();
   } else if (jobRatioState.view === 'jobs') {
     jobRatioRenderJobs();
+  } else if (jobRatioState.view === 'parts') {
+    jobRatioRenderParts();
   } else {
     jobRatioRenderCustomers();
   }
@@ -1090,6 +1197,52 @@ async function jobRatioLoadJobs() {
   }
 }
 
+function jobRatioPopulatePartsCustomerOptions(options) {
+  const el = document.getElementById('job-ratio-parts-customer');
+  if (!el) return;
+  const current = jobRatioState.partsCustomer;
+  const items = ['<option value="">All customers</option>'];
+  (options || []).forEach(customer => {
+    const code = String(customer.customer_code || '');
+    const name = String(customer.customer_name || code);
+    items.push(`<option value="${escapeHtml(code)}">${escapeHtml(name)} (${escapeHtml(code)})</option>`);
+  });
+  el.innerHTML = items.join('');
+  el.value = current;
+}
+
+async function jobRatioLoadParts(refresh = false) {
+  if (jobRatioNoPsTypesSelected()) return;
+  jobRatioState.partsLoading = true;
+  if (jobRatioState.view === 'parts') jobRatioRenderParts();
+
+  const params = new URLSearchParams({
+    year: String(jobRatioState.year),
+    pp_types: jobRatioPpTypesQuery(),
+    score_mode: jobRatioState.partsScoreMode,
+    sort: jobRatioState.partsSort || 'score',
+  });
+  if (jobRatioState.partsCustomer) params.set('customer_code', jobRatioState.partsCustomer);
+  if (jobRatioState.partsMonth) params.set('month', String(jobRatioState.partsMonth));
+  if (jobRatioState.partsMinQty > 0) params.set('min_qty', String(jobRatioState.partsMinQty));
+  if (jobRatioState.partsMinValue > 0) params.set('min_value', String(jobRatioState.partsMinValue));
+  if (refresh) params.set('refresh', '1');
+
+  try {
+    const payload = await jobRatioFetchJson(`/api/job-ratio/parts?${params}`);
+    jobRatioState.partsData = payload;
+    jobRatioPopulatePartsCustomerOptions(payload.customer_options);
+    jobRatioState.error = '';
+  } catch (err) {
+    jobRatioState.partsData = null;
+    jobRatioState.error = String(err.message || err);
+    console.error(err);
+  } finally {
+    jobRatioState.partsLoading = false;
+    if (jobRatioState.view === 'parts') jobRatioRender();
+  }
+}
+
 async function jobRatioLoadCustomerLines(customerCode) {
   const cacheKey = jobRatioCustomerLinesCacheKey(customerCode);
   if (jobRatioState.customerLines.has(cacheKey)) return;
@@ -1150,6 +1303,7 @@ async function jobRatioLoad(refresh = false) {
     jobRatioState.expandedLineGroups.clear();
     jobRatioState.jobsRows = null;
     jobRatioState.jobsTotalValue = null;
+    jobRatioState.partsData = null;
     jobRatioState.expandedJobGroups.clear();
     jobRatioState.error = '';
     jobRatioPopulateFilterOptions();
@@ -1160,6 +1314,9 @@ async function jobRatioLoad(refresh = false) {
   } finally {
     jobRatioSetLoading(false);
     jobRatioRender();
+  }
+  if (jobRatioState.view === 'parts' && jobRatioState.data) {
+    await jobRatioLoadParts(false);
   }
 }
 
@@ -1172,9 +1329,24 @@ function jobRatioSetView(view) {
   });
   if (view === 'jobs' && jobRatioState.jobsRows === null) {
     jobRatioLoadJobs();
+  } else if (view === 'parts' && jobRatioState.partsData === null) {
+    jobRatioLoadParts();
   } else {
     jobRatioRender();
   }
+}
+
+function jobRatioApplyPartsFilters(options = {}) {
+  if (options.customer !== undefined) jobRatioState.partsCustomer = options.customer;
+  if (options.month !== undefined) jobRatioState.partsMonth = options.month;
+  if (options.minQty !== undefined) jobRatioState.partsMinQty = options.minQty;
+  if (options.minValue !== undefined) jobRatioState.partsMinValue = options.minValue;
+  if (options.scoreMode !== undefined) jobRatioState.partsScoreMode = options.scoreMode;
+  if (options.sort !== undefined) jobRatioState.partsSort = options.sort;
+  jobRatioState.partsData = null;
+  jobRatioSyncPartsFilters();
+  if (jobRatioState.view === 'parts') jobRatioLoadParts();
+  else jobRatioRender();
 }
 
 function jobRatioApplyJobsFilters(options = {}) {
@@ -1327,6 +1499,22 @@ function jobRatioExportCsv() {
       ]);
     });
     filename = `job-ratio-jobs-${data.year}.csv`;
+  } else if (jobRatioState.view === 'parts') {
+    rows.push([
+      'Rank', 'Active score', 'Volume + value score', 'Repeat demand score',
+      'Customer', 'Customer code', 'Part', 'Description',
+      'Total qty', 'Booked value ($)', 'Average unit value ($)', 'Process sheets',
+      'Sales orders', 'Volume percentile', 'Value percentile', 'Order percentile',
+    ]);
+    jobRatioFilteredParts().forEach(row => {
+      rows.push([
+        row.rank, row.score, row.volume_value_score, row.repeat_demand_score,
+        row.customer_name, row.customer_code, row.part_no, row.description,
+        row.total_qty, row.total_value, row.average_unit_value, row.process_sheet_count,
+        row.order_count, row.volume_percentile, row.value_percentile, row.order_percentile,
+      ]);
+    });
+    filename = `job-ratio-parts-${data.year}.csv`;
   } else {
     const report = jobRatioReportData();
     rows.push([
@@ -1375,7 +1563,7 @@ function jobRatioPopulateFilterOptions() {
     bucketOpts.push(`<option value="${bid}">${escapeHtml(label)}</option>`);
   });
 
-  ['job-ratio-customer-month', 'job-ratio-jobs-month'].forEach(id => {
+  ['job-ratio-customer-month', 'job-ratio-jobs-month', 'job-ratio-parts-month'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.innerHTML = monthOpts.join('');
   });
@@ -1395,6 +1583,7 @@ function jobRatioPopulateFilterOptions() {
   if (jobsMonthEl) jobsMonthEl.value = jobRatioState.jobsMonth ? String(jobRatioState.jobsMonth) : '';
   if (jobsBucketEl) jobsBucketEl.value = jobRatioState.jobsBucket || '';
   if (jobsSortEl) jobsSortEl.value = jobRatioState.jobsSort || 'volume';
+  jobRatioSyncPartsFilters();
 }
 
 function jobRatioPopulateCustomerFilterOptions() {
@@ -1474,6 +1663,42 @@ function jobRatioInit() {
 
   document.getElementById('job-ratio-clear-jobs-filters')?.addEventListener('click', () => {
     jobRatioApplyJobsFilters({ month: null, bucket: null, sort: 'volume' });
+  });
+
+  document.getElementById('job-ratio-parts-customer')?.addEventListener('change', (ev) => {
+    jobRatioApplyPartsFilters({ customer: ev.target.value || '' });
+  });
+  document.getElementById('job-ratio-parts-month')?.addEventListener('change', (ev) => {
+    const month = ev.target.value ? parseInt(ev.target.value, 10) : null;
+    jobRatioApplyPartsFilters({ month: Number.isFinite(month) ? month : null });
+  });
+  document.getElementById('job-ratio-parts-min-qty')?.addEventListener('change', (ev) => {
+    const value = Number(ev.target.value);
+    jobRatioApplyPartsFilters({ minQty: Number.isFinite(value) && value > 0 ? value : 0 });
+  });
+  document.getElementById('job-ratio-parts-min-value')?.addEventListener('change', (ev) => {
+    const value = Number(ev.target.value);
+    jobRatioApplyPartsFilters({ minValue: Number.isFinite(value) && value > 0 ? value : 0 });
+  });
+  document.getElementById('job-ratio-parts-score-mode')?.addEventListener('change', (ev) => {
+    jobRatioApplyPartsFilters({ scoreMode: ev.target.value || 'volume_value' });
+  });
+  document.getElementById('job-ratio-parts-sort')?.addEventListener('change', (ev) => {
+    jobRatioApplyPartsFilters({ sort: ev.target.value || 'score' });
+  });
+  document.getElementById('job-ratio-clear-parts-filters')?.addEventListener('click', () => {
+    jobRatioApplyPartsFilters({
+      customer: '',
+      month: null,
+      minQty: 0,
+      minValue: 0,
+      scoreMode: 'volume_value',
+      sort: 'score',
+    });
+  });
+  document.getElementById('job-ratio-parts-content')?.addEventListener('click', (ev) => {
+    const sortButton = ev.target.closest('[data-jr-parts-sort]');
+    if (sortButton) jobRatioApplyPartsFilters({ sort: sortButton.dataset.jrPartsSort });
   });
 
   document.getElementById('job-ratio-matrix-wrap')?.addEventListener('click', (ev) => {

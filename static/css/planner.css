@@ -10439,7 +10439,8 @@
     color: var(--text3);
     min-width: 0;
   }
-  .job-ratio-filter-field select {
+  .job-ratio-filter-field select,
+  .job-ratio-filter-field input {
     min-width: 140px;
     padding: 8px 10px;
     font-size: 13px;
@@ -10488,7 +10489,8 @@
   }
   .job-ratio-matrix-wrap,
   .job-ratio-jobs-wrap,
-  .job-ratio-customers-wrap {
+  .job-ratio-customers-wrap,
+  .job-ratio-parts-wrap {
     padding: 0 0 12px;
     overflow: hidden;
   }
@@ -10496,7 +10498,8 @@
     flex: 0 1 auto;
     min-width: 0;
   }
-  .job-ratio-jobs-filters {
+  .job-ratio-jobs-filters,
+  .job-ratio-parts-filters {
     display: flex;
     flex-wrap: wrap;
     gap: 10px 14px;
@@ -10504,13 +10507,84 @@
     padding: 0 12px 10px;
     border-top: 1px solid var(--border);
   }
-  .job-ratio-jobs-filters[hidden] {
+  .job-ratio-jobs-filters[hidden],
+  .job-ratio-parts-filters[hidden] {
     display: none !important;
   }
   .job-ratio-jobs-body {
     padding: 0 0 8px;
   }
   .job-ratio-jobs-table {
+    font-size: 11px;
+  }
+  .job-ratio-parts-body {
+    padding: 0 0 8px;
+  }
+  .job-ratio-score-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    margin: 0 12px 12px;
+    padding: 10px 12px;
+    border: 1px solid rgba(29, 78, 216, 0.16);
+    border-radius: 9px;
+    background: rgba(29, 78, 216, 0.05);
+    color: var(--text2);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .job-ratio-score-legend strong {
+    color: var(--text1);
+  }
+  .job-ratio-parts-scroll {
+    overflow: auto;
+    max-width: 100%;
+  }
+  .job-ratio-parts-table {
+    width: 100%;
+    min-width: 1180px;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .job-ratio-parts-table th,
+  .job-ratio-parts-table td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+  .job-ratio-parts-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface, #fff);
+    color: var(--text3);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .job-ratio-parts-table th button {
+    appearance: none;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-transform: inherit;
+    letter-spacing: inherit;
+    cursor: pointer;
+  }
+  .job-ratio-parts-table th button:hover {
+    color: var(--primary);
+    text-decoration: underline;
+  }
+  .job-ratio-parts-rank {
+    color: var(--text3);
+    font-weight: 700;
+  }
+  .job-ratio-parts-muted {
+    color: var(--text3);
     font-size: 11px;
   }
   .job-ratio-scroll-hint {
@@ -11087,14 +11161,17 @@
       align-items: stretch;
       width: 100%;
     }
-    .job-ratio-customer-filters {
+    .job-ratio-customer-filters,
+    .job-ratio-parts-filters,
+    .job-ratio-jobs-filters {
       flex-direction: column;
       align-items: stretch;
     }
     .job-ratio-filter-field {
       width: 100%;
     }
-    .job-ratio-filter-field select {
+    .job-ratio-filter-field select,
+    .job-ratio-filter-field input {
       width: 100%;
       min-width: 0;
     }

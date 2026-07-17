@@ -30,6 +30,8 @@ from .job_ratio import (
 
     aggregate_month_bucket,
 
+    aggregate_ranked_parts,
+
     bucket_label,
 
     build_job_rows_from_pp_vouchers,
@@ -529,5 +531,95 @@ def api_job_ratio_detail():
 
         }
 
+    )
+
+
+@job_ratio_bp.get("/api/job-ratio/parts")
+def api_job_ratio_parts():
+    refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
+    month_raw = compact_text(request.args.get("month"))
+    customer_code = compact_text(request.args.get("customer_code")) or None
+    sort = compact_text(request.args.get("sort")).lower() or "score"
+    score_mode = compact_text(request.args.get("score_mode")).lower() or "volume_value"
+    if sort not in {"score", "volume", "value", "orders", "part"}:
+        return jsonify({"error": "sort must be score, volume, value, orders, or part"}), 400
+    if score_mode not in {"volume_value", "repeat_demand"}:
+        return jsonify({"error": "score_mode must be volume_value or repeat_demand"}), 400
+
+    month: int | None = None
+    if month_raw:
+        try:
+            month = int(month_raw)
+        except ValueError:
+            return jsonify({"error": "month must be an integer"}), 400
+        if month < 1 or month > 12:
+            return jsonify({"error": "month must be between 1 and 12"}), 400
+
+    thresholds: dict[str, float] = {}
+    for name in ("min_qty", "min_value"):
+        raw = compact_text(request.args.get(name))
+        try:
+            value = float(raw) if raw else 0.0
+        except ValueError:
+            return jsonify({"error": f"{name} must be a number"}), 400
+        if value < 0:
+            return jsonify({"error": f"{name} must be zero or greater"}), 400
+        thresholds[name] = value
+
+    try:
+        year = _parse_year_arg()
+        pp_types, all_selected = _parse_pp_types_arg()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    try:
+        data = _fetch_report(year, pp_types, all_selected=all_selected, refresh=refresh)
+    except Exception as exc:
+        logger.exception("job ratio parts query failed")
+        return jsonify({"error": f"Job ratio query failed: {exc}"}), 502
+
+    rows = aggregate_ranked_parts(
+        data.get("booked_lines") or [],
+        year,
+        month=month,
+        customer_code=customer_code,
+        min_qty=thresholds["min_qty"],
+        min_value=thresholds["min_value"],
+        sort=sort,
+        score_mode=score_mode,
+    )
+    total_qty = sum(float(row.get("total_qty") or 0) for row in rows)
+    total_value = sum(float(row.get("total_value") or 0) for row in rows)
+    customer_options = [
+        {
+            "customer_code": row.get("customer_code"),
+            "customer_name": row.get("customer_name"),
+        }
+        for row in data.get("customers") or []
+    ]
+    customer_options.sort(
+        key=lambda row: (
+            str(row.get("customer_name") or "").casefold(),
+            str(row.get("customer_code") or "").casefold(),
+        )
+    )
+
+    return jsonify(
+        {
+            "ok": True,
+            "year": year,
+            "month": month,
+            "customer_code": customer_code,
+            "min_qty": thresholds["min_qty"],
+            "min_value": thresholds["min_value"],
+            "sort": sort,
+            "score_mode": score_mode,
+            "pp_types": data.get("pp_types") or [],
+            "count": len(rows),
+            "total_qty": round(total_qty, 2),
+            "total_value": round(total_value, 2),
+            "customer_options": customer_options,
+            "rows": rows,
+        }
     )
 

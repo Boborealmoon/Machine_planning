@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
+
+from flask import Flask
 
 from planning.job_ratio import (
     MONTH_LENS_PO_DUE,
     MONTH_LENS_POSTED,
     aggregate_customer_rows,
     aggregate_month_bucket,
+    aggregate_ranked_parts,
     attach_pp_metadata,
     build_job_rows_from_pp_vouchers,
     build_portion_summary,
@@ -22,6 +26,7 @@ from planning.job_ratio import (
     sort_detail_rows,
 )
 from planning.sales_report_alloc import so_line_key
+from planning.job_ratio_route import job_ratio_bp
 
 
 def _line(
@@ -386,6 +391,181 @@ class JobRatioAggregationTests(unittest.TestCase):
         detail = sort_detail_rows(rows, sort="value")
         self.assertEqual(detail[0]["sales_order_no"], "SO/B")
         self.assertEqual(detail[1]["sales_order_no"], "SO/A")
+
+
+class JobRatioRankedPartsTests(unittest.TestCase):
+    def _part_row(
+        self,
+        so: str,
+        part: str,
+        *,
+        qty: float,
+        amount: float,
+        month: int = 1,
+        customer_code: str = "C1",
+        customer_name: str = "Customer One",
+        process_sheet: str | None = None,
+    ) -> dict:
+        row = _line(
+            so,
+            qty=qty,
+            amount=amount,
+            month=month,
+            customer_code=customer_code,
+            customer_name=customer_name,
+            process_sheet_no=process_sheet or f"NPS-{so}",
+        )
+        row["inventory_code"] = part
+        row["description"] = f"Description {part}"
+        return enrich_booked_row(row, 2026)
+
+    def test_groups_customer_part_and_counts_distinct_orders_and_sheets(self):
+        rows = [
+            self._part_row("SO/1", "P1", qty=10, amount=100, process_sheet="NPS-1"),
+            self._part_row("SO/1", "P1", qty=5, amount=75, process_sheet="NPS-2"),
+            self._part_row("SO/2", "P1", qty=20, amount=300, process_sheet="NPS-3"),
+        ]
+        ranked = aggregate_ranked_parts(rows, 2026)
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0]["total_qty"], 35)
+        self.assertEqual(ranked[0]["total_value"], 475)
+        self.assertEqual(ranked[0]["order_count"], 2)
+        self.assertEqual(ranked[0]["process_sheet_count"], 3)
+        self.assertEqual(ranked[0]["average_unit_value"], 13.57)
+
+    def test_filters_by_customer_month_and_thresholds(self):
+        rows = [
+            self._part_row("SO/1", "P1", qty=10, amount=100, month=1),
+            self._part_row("SO/2", "P2", qty=25, amount=500, month=2),
+            self._part_row(
+                "SO/3",
+                "P3",
+                qty=50,
+                amount=900,
+                month=2,
+                customer_code="C2",
+                customer_name="Customer Two",
+            ),
+        ]
+        ranked = aggregate_ranked_parts(
+            rows,
+            2026,
+            month=2,
+            customer_code="C1",
+            min_qty=20,
+            min_value=400,
+        )
+        self.assertEqual([row["part_no"] for row in ranked], ["P2"])
+
+    def test_geometric_score_rewards_strength_in_both_dimensions(self):
+        rows = [
+            self._part_row("SO/HV", "HIGH-VOLUME", qty=100, amount=100),
+            self._part_row("SO/H$", "HIGH-VALUE", qty=10, amount=1000),
+            self._part_row("SO/B", "BALANCED", qty=60, amount=600),
+        ]
+        ranked = aggregate_ranked_parts(rows, 2026)
+        self.assertEqual([row["part_no"] for row in ranked], ["BALANCED", "HIGH-VALUE", "HIGH-VOLUME"])
+        self.assertEqual(ranked[0]["score"], 66.7)
+        self.assertEqual({row["score"] for row in ranked[1:]}, {57.7})
+        self.assertEqual([row["rank"] for row in ranked], [1, 2, 3])
+
+    def test_repeat_demand_score_includes_nonzero_order_frequency(self):
+        rows = [
+            self._part_row("SO/A", "ONE-OFF", qty=100, amount=1000),
+            self._part_row("SO/B1", "BALANCED", qty=25, amount=250),
+            self._part_row("SO/B2", "BALANCED", qty=25, amount=250),
+            self._part_row("SO/C1", "FREQUENT-LOW", qty=5, amount=50),
+            self._part_row("SO/C2", "FREQUENT-LOW", qty=5, amount=50),
+            self._part_row("SO/C3", "FREQUENT-LOW", qty=5, amount=50),
+        ]
+        volume_value = aggregate_ranked_parts(rows, 2026)
+        repeat_demand = aggregate_ranked_parts(rows, 2026, score_mode="repeat_demand")
+        self.assertEqual(volume_value[0]["part_no"], "ONE-OFF")
+        self.assertEqual(repeat_demand[0]["part_no"], "ONE-OFF")
+        self.assertEqual(repeat_demand[0]["order_percentile"], 33.3)
+        self.assertEqual(repeat_demand[0]["score"], 71.9)
+        balanced = next(row for row in repeat_demand if row["part_no"] == "BALANCED")
+        self.assertEqual(balanced["score"], 66.7)
+        self.assertEqual(balanced["score"], balanced["repeat_demand_score"])
+
+    def test_ties_receive_equal_percentiles_and_deterministic_order(self):
+        rows = [
+            self._part_row("SO/2", "B", qty=10, amount=100),
+            self._part_row("SO/1", "A", qty=10, amount=100),
+        ]
+        ranked = aggregate_ranked_parts(rows, 2026)
+        self.assertEqual([row["part_no"] for row in ranked], ["A", "B"])
+        self.assertEqual(ranked[0]["score"], ranked[1]["score"])
+
+    def test_explicit_sort_modes(self):
+        rows = [
+            self._part_row("SO/1", "P1", qty=100, amount=100),
+            self._part_row("SO/2", "P2", qty=10, amount=1000),
+        ]
+        self.assertEqual(aggregate_ranked_parts(rows, 2026, sort="volume")[0]["part_no"], "P1")
+        self.assertEqual(aggregate_ranked_parts(rows, 2026, sort="value")[0]["part_no"], "P2")
+        self.assertEqual(aggregate_ranked_parts(rows, 2026, sort="part")[0]["part_no"], "P1")
+
+
+class JobRatioPartsRouteTests(unittest.TestCase):
+    def setUp(self):
+        app = Flask(__name__)
+        app.register_blueprint(job_ratio_bp)
+        app.testing = True
+        self.client = app.test_client()
+        self.report = {
+            "pp_types": ["NPS"],
+            "customers": [{"customer_code": "C1", "customer_name": "Customer One"}],
+            "booked_lines": [
+                {
+                    "report_year": 2026,
+                    "report_month": 2,
+                    "customer_code": "C1",
+                    "customer_name": "Customer One",
+                    "inventory_code": "P1",
+                    "description": "Part One",
+                    "qty": 25,
+                    "line_amount": 500,
+                    "process_sheet_no": "NPS-1",
+                    "sales_order_no": "SO/1",
+                }
+            ],
+        }
+
+    @patch("planning.job_ratio_route._fetch_report")
+    def test_parts_endpoint_defaults_to_nps_and_returns_ranking(self, fetch_report):
+        fetch_report.return_value = self.report
+        response = self.client.get("/api/job-ratio/parts?year=2026")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["rows"][0]["part_no"], "P1")
+        self.assertEqual(payload["rows"][0]["rank"], 1)
+        self.assertEqual(fetch_report.call_args.args[:2], (2026, {"NPS"}))
+
+    @patch("planning.job_ratio_route._fetch_report")
+    def test_parts_endpoint_applies_filters(self, fetch_report):
+        fetch_report.return_value = self.report
+        response = self.client.get(
+            "/api/job-ratio/parts?year=2026&month=2&customer_code=C1"
+            "&min_qty=20&min_value=400&sort=value&score_mode=repeat_demand"
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["sort"], "value")
+        self.assertEqual(payload["score_mode"], "repeat_demand")
+
+    def test_parts_endpoint_rejects_invalid_parameters(self):
+        for query in (
+            "month=13",
+            "min_qty=-1",
+            "min_value=nope",
+            "sort=unknown",
+            "score_mode=unknown",
+        ):
+            response = self.client.get(f"/api/job-ratio/parts?year=2026&{query}")
+            self.assertEqual(response.status_code, 400, query)
 
 
 if __name__ == "__main__":

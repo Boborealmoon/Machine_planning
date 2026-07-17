@@ -1,4 +1,4 @@
-/* Accounts Receivable ù isolated credit notes app */
+/* Accounts Receivable ÔøΩ isolated credit notes app */
 
 body.accounts-app {
   background: linear-gradient(165deg, #f8fafc 0%, #eef2ff 42%, #f1f5f9 100%);
@@ -135,6 +135,11 @@ body.accounts-app .app-main--accounts {
 }
 
 .ar-section[hidden] {
+  display: none !important;
+}
+
+/* JS toggles many AR panels/loaders with the native `hidden` attribute. */
+.ar-page [hidden] {
   display: none !important;
 }
 
