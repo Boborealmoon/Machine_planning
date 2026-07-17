@@ -76,7 +76,7 @@
 .mpp-ops {
   grid-row: 2;
   padding: 12px;
-  max-height: calc(100vh - 160px);
+  max-height: calc(100dvh - 160px);
   overflow-y: auto;
 }
 
@@ -178,7 +178,7 @@
 
 .mpp-modal--ps-detail {
   width: min(520px, calc(100vw - 24px));
-  max-height: min(82vh, 720px);
+  max-height: min(82dvh, 720px);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -577,7 +577,7 @@
   gap: 12px;
   padding: 10px;
   min-height: 200px;
-  max-height: min(72vh, 820px);
+  max-height: min(72dvh, 820px);
   overflow-y: auto;
 }
 
@@ -1176,7 +1176,7 @@
 
 .mpp-modal--review {
   width: min(520px, 100%);
-  max-height: min(88vh, 900px);
+  max-height: min(88dvh, 900px);
   display: flex;
   flex-direction: column;
   padding: 0;
@@ -1206,7 +1206,7 @@
 
 .mpp-modal--queue {
   width: min(640px, 100%);
-  max-height: min(88vh, 900px);
+  max-height: min(88dvh, 900px);
   display: flex;
   flex-direction: column;
   padding: 0;
@@ -1215,7 +1215,7 @@
 
 .mpp-modal--cycle {
   width: min(520px, 100%);
-  max-height: min(88vh, 820px);
+  max-height: min(88dvh, 820px);
   display: flex;
   flex-direction: column;
   padding: 0;
@@ -1265,7 +1265,7 @@
 
 .mpp-modal--cycle-add {
   width: min(480px, 100%);
-  max-height: min(82vh, 720px);
+  max-height: min(82dvh, 720px);
   display: flex;
   flex-direction: column;
   padding: 0 16px 16px;
@@ -1285,7 +1285,7 @@
   overflow: auto;
   flex: 1;
   min-height: 120px;
-  max-height: min(52vh, 480px);
+  max-height: min(52dvh, 480px);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -2258,4 +2258,87 @@
 .mpp-probation-btn {
   width: 100%;
   justify-content: center;
+}
+
+@media (max-width: 640px) {
+  .mpp-header,
+  .mpp-header-actions {
+    width: 100%;
+  }
+
+  .mpp-header-actions {
+    flex-wrap: wrap;
+    justify-content: stretch;
+  }
+
+  .mpp-header-actions > * {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .mpp-machine-filters {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .mpp-machine-filter {
+    flex: 0 0 auto;
+  }
+
+  .mpp-lanes {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 8px;
+  }
+
+  .mpp-machine-lane {
+    max-height: min(62dvh, 640px);
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mpp-modal-backdrop {
+    align-items: flex-start;
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    overflow-y: auto;
+  }
+
+  .mpp-modal,
+  .mpp-modal--review,
+  .mpp-modal--queue,
+  .mpp-modal--cycle,
+  .mpp-modal--cycle-add,
+  .mpp-modal--ps-detail {
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(100dvh - 16px);
+  }
+
+  .mpp-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mpp-modal-actions,
+  .mpp-queue-modal-foot {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 360px) {
+  .mpp-modal-actions > *,
+  .mpp-queue-modal-foot > *,
+  .mpp-new-cycle-actions > * {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .mpp-cycle-add-row,
+  .mpp-ps-detail-op {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }

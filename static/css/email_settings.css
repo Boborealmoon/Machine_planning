@@ -230,3 +230,62 @@
 #email-settings-toast.toast--error {
   background: #b91c1c;
 }
+
+.email-settings-page {
+  overflow-x: hidden;
+  box-sizing: border-box;
+}
+
+.email-settings-page *,
+.email-settings-page *::before,
+.email-settings-page *::after {
+  box-sizing: border-box;
+}
+
+@media (max-width: 768px) {
+  .email-settings-status {
+    white-space: normal;
+  }
+
+  .email-field input,
+  .email-field textarea,
+  .email-settings-actions > * {
+    min-height: 44px;
+  }
+
+  .email-toggle {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 520px) {
+  .email-settings-page {
+    padding: 16px 8px 32px;
+  }
+
+  .email-settings-section {
+    padding: 14px 12px;
+  }
+
+  .email-settings-section-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .email-settings-actions {
+    flex-direction: column;
+  }
+
+  .email-settings-actions > * {
+    width: 100%;
+  }
+
+  #email-settings-toast {
+    right: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    left: 8px;
+    max-height: calc(100dvh - 16px);
+    overflow: auto;
+    text-align: center;
+  }
+}

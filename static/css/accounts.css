@@ -665,3 +665,109 @@ body.accounts-app .app-main--accounts {
     grid-template-columns: 1fr;
   }
 }
+
+body.accounts-app {
+  overflow-x: hidden;
+}
+
+.ar-section-nav,
+.ar-tabs,
+.ar-table-scroll,
+.ar-lines-scroll,
+.ar-soa-customers-scroll,
+.ar-soa-lines-scroll {
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-inline: contain;
+}
+
+@media (max-width: 1024px) {
+  .ar-table {
+    min-width: 760px;
+  }
+
+  .ar-lines-table,
+  .ar-soa-customer-table {
+    min-width: 680px;
+  }
+}
+
+@media (max-width: 768px) {
+  .ar-header,
+  .ar-soa-statement-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .ar-header-actions {
+    width: 100%;
+  }
+
+  .ar-section-nav,
+  .ar-tabs {
+    display: flex;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 4px;
+  }
+
+  .ar-section-link,
+  .ar-tab {
+    flex: 0 0 auto;
+    min-height: 44px;
+  }
+
+  .ar-btn,
+  .ar-input,
+  .ar-select,
+  .ar-detail-close {
+    min-height: 44px;
+  }
+
+  .ar-soa-customers-scroll,
+  .ar-soa-lines-scroll,
+  .ar-table-scroll,
+  .ar-lines-scroll {
+    max-height: none;
+  }
+}
+
+@media (max-width: 520px) {
+  body.accounts-app .app-main--accounts {
+    padding-inline: 8px;
+  }
+
+  .ar-header-actions,
+  .ar-soa-balance-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .ar-header-actions .ar-btn {
+    width: 100%;
+  }
+
+  .ar-toolbar {
+    padding: 12px;
+  }
+
+  .ar-table {
+    min-width: 660px;
+  }
+
+  .ar-lines-table,
+  .ar-soa-customer-table {
+    min-width: 600px;
+  }
+
+  .ar-table thead th,
+  .ar-lines-table thead th,
+  .ar-table tbody td,
+  .ar-lines-table tbody td {
+    padding-inline: 8px;
+  }
+
+  .ar-detail-header {
+    padding-inline: 12px;
+  }
+}

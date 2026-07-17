@@ -401,6 +401,57 @@
   border-radius: 10px;
   background: #fff;
 }
+@media (max-width: 1024px) {
+  .ro-page { padding: 22px 20px 36px; }
+  .ro-table-wrap { -webkit-overflow-scrolling: touch; }
+  .ro-table { min-width: 1040px; }
+  .ro-table > thead > tr > th:first-child,
+  .ro-table > tbody > tr:not(.ro-detail-row) > td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    background: #fff;
+  }
+  .ro-table > thead > tr > th:nth-child(2),
+  .ro-table > tbody > tr:not(.ro-detail-row) > td:nth-child(2) {
+    position: sticky;
+    left: 44px;
+    z-index: 3;
+    background: #fff;
+    box-shadow: 1px 0 0 #e2e8f0;
+  }
+  .ro-table > thead > tr > th:nth-child(-n+2) { z-index: 5; background: #f8fafc; }
+  .ro-table > tbody > tr.is-expanded > td:nth-child(-n+2) { background: #eff6ff; }
+}
+@media (max-width: 768px) {
+  .ro-page { padding: 18px 14px 30px; }
+  .ro-header { gap: 12px; }
+  .ro-actions, .ro-actions .btn { width: 100%; }
+  .ro-actions .btn { justify-content: center; min-height: 40px; }
+  .ro-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ro-toolbar { align-items: stretch; }
+  .ro-search { flex-basis: 100%; min-width: 0; max-width: none; min-height: 42px; }
+  .ro-toolbar-divider { display: none; }
+  .ro-sort-select, .ro-toolbar .filter-dropdown-btn { min-height: 42px; }
+  .ro-filter-label { min-height: 42px; padding: 0 8px; }
+  .ro-detail-row td { padding: 10px; }
+  .ro-detail-panels { grid-template-columns: 1fr; }
+  .ro-lines-wrap { -webkit-overflow-scrolling: touch; }
+  .ro-expand-btn, .ro-file-link { min-height: 40px; }
+}
+@media (max-width: 520px) {
+  .ro-page { padding: 14px 10px 24px; }
+  .ro-title { font-size: 20px; }
+  .ro-stats { gap: 8px; }
+  .ro-chip { padding: 9px 10px; }
+  .ro-toolbar .filter-dropdown,
+  .ro-toolbar .filter-dropdown-btn,
+  .ro-sort-select { width: 100%; }
+  .ro-filter-label { width: 100%; }
+  .ro-table { min-width: 940px; }
+  .ro-detail-panel { min-width: 720px; }
+  .ro-detail-row td { max-width: calc(100vw - 22px); overflow-x: auto; }
+}
 </style>
 
 <div class="ro-page">

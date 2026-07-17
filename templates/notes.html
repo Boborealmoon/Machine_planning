@@ -1,0 +1,176 @@
+{% extends "base_standalone.html" %}
+
+{% block title %}Admin Hub{% endblock %}
+{% block body_class %}notes-body{% endblock %}
+{% block main_class %}notes-main{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/notes.css') }}?v=20260717b">{% endblock %}
+
+{% block content %}
+{% macro launch_link(label, href, description="") -%}
+<a class="admin-launch-link" href="{{ href }}">
+  <span class="admin-launch-name">{{ label }}</span>
+  {% if description %}<span class="admin-launch-description">{{ description }}</span>{% endif %}
+  <span class="admin-launch-arrow" aria-hidden="true">&rarr;</span>
+</a>
+{%- endmacro %}
+
+<div class="notes-page">
+  <header class="notes-header">
+    <div>
+      <p class="notes-kicker">Control centre</p>
+      <h1>Admin</h1>
+      <p>Open any workspace or capture a process-sheet note.</p>
+    </div>
+    <button class="notes-refresh" id="notes-refresh" type="button">Refresh</button>
+  </header>
+
+  <section class="admin-launcher" aria-labelledby="admin-launcher-title">
+    <div class="admin-launcher-heading">
+      <div>
+        <h2 id="admin-launcher-title">Screen directory</h2>
+        <p>Select a screen to open it directly.</p>
+      </div>
+    </div>
+
+    <div class="admin-launch-groups">
+      <section class="admin-launch-group admin-launch-group--mro">
+        <div class="admin-launch-group-heading">
+          <span class="admin-launch-icon" aria-hidden="true">M</span>
+          <div><h3>MRO</h3><p>Repair and overhaul workflows</p></div>
+        </div>
+        <div class="admin-launch-links">
+          {{ launch_link("ARC Certificate", url_for("mro.mro_page"), "Create and review certificates") }}
+          {{ launch_link("Process Sheet Tracking", url_for("mro.mro_tracking_page"), "Track MRO process sheets") }}
+        </div>
+      </section>
+
+      <section class="admin-launch-group admin-launch-group--accounts">
+        <div class="admin-launch-group-heading">
+          <span class="admin-launch-icon" aria-hidden="true">A</span>
+          <div><h3>Accounts</h3><p>Finance and customer records</p></div>
+        </div>
+        <div class="admin-launch-links">
+          {{ launch_link("Accounts Dashboard", url_for("accounts.accounts_page"), "Credit notes and statements") }}
+        </div>
+      </section>
+
+      <section class="admin-launch-group admin-launch-group--views">
+        <div class="admin-launch-group-heading">
+          <span class="admin-launch-icon" aria-hidden="true">V</span>
+          <div><h3>Views</h3><p>Operational display screens</p></div>
+        </div>
+        <div class="admin-launch-links">
+          {{ launch_link("Machinist Board", url_for("machinist_board"), "Live machine queue") }}
+          {{ launch_link("QAQC View", url_for("finishing_queue.finishing_queue_page"), "Finishing and inspection queue") }}
+          {{ launch_link("Assembly BOMs", url_for("assembly_bom.assembly_bom_page"), "Assembly structure view") }}
+          {{ launch_link("Delivery Schedule", url_for("driver_view.driver_view_page"), "Driver and delivery view") }}
+        </div>
+      </section>
+
+      <section class="admin-launch-group admin-launch-group--planner">
+        <div class="admin-launch-group-heading">
+          <span class="admin-launch-icon" aria-hidden="true">P</span>
+          <div><h3>Planner</h3><p>Planning, reports, data, and archives</p></div>
+        </div>
+
+        <div class="admin-planner-section">
+          <h4>Planning</h4>
+          <div class="admin-launch-links">
+            {{ launch_link("Production Planner", url_for("planner")) }}
+            {{ launch_link("MPP Planner", "/mpp-planner") }}
+            {{ launch_link("Process Sheets", url_for("process_sheets")) }}
+            {{ launch_link("New Orders", url_for("new_orders.new_orders_page")) }}
+            {{ launch_link("Sales Orders", url_for("sales_orders.sales_orders_page")) }}
+            {{ launch_link("Delivery", url_for("delivery")) }}
+            {{ launch_link("Material Inspection", url_for("material_inspection.material_inspection_page")) }}
+          </div>
+        </div>
+
+        <div class="admin-planner-section">
+          <h4>Reports and queries</h4>
+          <div class="admin-launch-links">
+            {{ launch_link("Sales Report", url_for("sales_report.sales_report_page")) }}
+            {{ launch_link("Job Ratio", url_for("job_ratio.job_ratio_page")) }}
+            {{ launch_link("Production Capacity", url_for("capacity_monthly.production_capacity_page")) }}
+            {{ launch_link("Repeat Orders", url_for("repeat_orders.repeat_orders_page")) }}
+            {{ launch_link("Inventory Enquiry", url_for("inventory_enquiry.inventory_enquiry_page")) }}
+            {{ launch_link("Inventory BOM", url_for("inventory_bom")) }}
+            {{ launch_link("BOM Variation", url_for("bom_variation.bom_variation_page")) }}
+          </div>
+        </div>
+
+        <div class="admin-planner-section">
+          <h4>Master data and system</h4>
+          <div class="admin-launch-links">
+            {{ launch_link("Machines", url_for("machines_page")) }}
+            {{ launch_link("Materials", url_for("materials")) }}
+            {{ launch_link("Cycle Times", url_for("cycle_times_page")) }}
+            {{ launch_link("Program Tool Tracker", url_for("program_tool_tracker.program_tool_tracker_page")) }}
+            {{ launch_link("Program Tool Catalogue", url_for("program_tool_tracker.program_tool_tracker_page", view="catalogue")) }}
+            {{ launch_link("Frame Agreement Parts", url_for("frame_agreement.frame_agreement_parts_page")) }}
+            {{ launch_link("Email Settings", url_for("email.system_page")) }}
+          </div>
+        </div>
+
+        <div class="admin-planner-section">
+          <h4>Archive</h4>
+          <div class="admin-launch-links">
+            {{ launch_link("Daily Output", url_for("daily_output_view")) }}
+            {{ launch_link("Actual Production", url_for("actual_production")) }}
+            {{ launch_link("No-shipment Inspection", url_for("material_inspection.material_inspection_no_shipment_page")) }}
+            {{ launch_link("AUK OEE", url_for("auk_oee.auk_oee_page")) }}
+            {{ launch_link("Aker Inventory", url_for("excel_local.aker_inventory_page")) }}
+            {{ launch_link("Preferred Machines", url_for("preferred_machines.preferred_machines_page")) }}
+            {{ launch_link("Kobelco MPS Archive", url_for("kobelco_mps_archive.kobelco_mps_archive_page")) }}
+            {{ launch_link("Machine Lane Calculator", url_for("machine_lane_calc.machine_lane_calc_page")) }}
+            {{ launch_link("Pending PP", url_for("pending_pp.pending_pp_page")) }}
+            {{ launch_link("PR Status Enquiry", url_for("pr_status_enquiry.pr_status_enquiry_page")) }}
+          </div>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <section class="notes-composer" aria-labelledby="new-note-title">
+    <div class="notes-section-heading">
+      <p class="notes-kicker">Process sheet notes</p>
+      <h2 id="new-note-title">New note</h2>
+    </div>
+    <form id="note-form">
+      <label class="notes-field">
+        <span>Note</span>
+        <textarea id="note-body" maxlength="10000" rows="5" placeholder="Write your note..." required></textarea>
+      </label>
+
+      <div class="notes-field notes-tag-field">
+        <label for="process-sheet-search">Tag process sheets</label>
+        <div class="notes-selected-tags" id="selected-process-sheets" aria-live="polite"></div>
+        <div class="notes-search-wrap">
+          <input id="process-sheet-search" type="search" autocomplete="off"
+                 placeholder="Search PS number, part number, or description"
+                 aria-autocomplete="list" aria-controls="process-sheet-results">
+          <div class="notes-search-results" id="process-sheet-results" role="listbox" hidden></div>
+        </div>
+        <p class="notes-help" id="process-sheet-search-status">Select a result to attach it to this note.</p>
+      </div>
+
+      <div class="notes-form-footer">
+        <p class="notes-form-message" id="note-form-message" role="status"></p>
+        <button class="notes-save" id="note-save" type="submit">Add note</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="notes-feed" aria-labelledby="saved-notes-title">
+    <div class="notes-feed-heading">
+      <h2 id="saved-notes-title">Saved notes</h2>
+      <span id="notes-count"></span>
+    </div>
+    <div id="notes-list">
+      <div class="notes-empty">Loading notes...</div>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}<script src="{{ url_for('static', filename='js/notes.js') }}?v=20260717a"></script>{% endblock %}

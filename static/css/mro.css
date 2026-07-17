@@ -346,6 +346,8 @@ body.mro-app .app-main--mro {
 
 .mro-table-scroll {
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .mro-table {
@@ -1852,6 +1854,8 @@ body.mro-modal-open {
 
 .mro-arc-items-scroll {
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
   border-radius: 12px;
   border: 1px solid #e2e8f0;
 }
@@ -2239,6 +2243,92 @@ body.mro-modal-open {
     margin-right: -12px;
     margin-left: -12px;
     padding: 0 12px;
+    gap: 20px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .mro-primary-nav-link {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .mro-nav {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .mro-nav-link {
+    flex: 0 0 auto;
+  }
+
+  .mro-toolbar {
+    align-items: stretch;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .mro-filter,
+  .mro-filter--grow,
+  .mro-filter--checkbox,
+  .mro-select {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .mro-col-action {
+    width: 56px;
+    min-width: 56px;
+    max-width: 56px;
+    padding-inline: 6px !important;
+  }
+
+  .mro-history-actions {
+    max-width: 96px;
+  }
+
+  .mro-modal {
+    align-items: flex-start;
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    overflow-y: auto;
+  }
+
+  .mro-modal-dialog,
+  .mro-modal-dialog--wide,
+  .mro-modal-dialog--arc,
+  .mro-modal-dialog--tracking,
+  .mro-modal-dialog--workscope,
+  .mro-modal-dialog--staff {
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(100dvh - 16px);
+  }
+
+  .mro-modal-header,
+  .mro-modal-body,
+  .mro-modal-footer {
+    padding-inline: 14px;
+  }
+
+  .mro-modal-footer {
+    flex-wrap: wrap;
+  }
+
+  .mro-arc-layout,
+  .mro-arc-fields-grid,
+  .mro-arc-fields-grid--remarks,
+  .mro-arc-fields-grid--cert,
+  .mro-arc-fields-grid--caac {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .mro-tracking-summary {
@@ -2248,5 +2338,30 @@ body.mro-modal-open {
   .mro-tracking-detail-grid,
   .mro-tracking-quantities {
     grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 360px) {
+  .mro-appbar-brand,
+  .mro-appbar-actions,
+  .mro-appbar-actions > *,
+  .mro-modal-footer > * {
+    width: 100%;
+  }
+
+  .mro-appbar-logo {
+    width: 40px;
+    height: 40px;
+  }
+
+  .mro-tracking-summary,
+  .mro-tracking-detail-grid,
+  .mro-tracking-quantities,
+  .mro-staff-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mro-modal-summary-row {
+    grid-template-columns: 1fr;
   }
 }

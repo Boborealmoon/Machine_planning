@@ -428,3 +428,79 @@
     grid-row: 1;
   }
 }
+
+.app-main--assembly-boms,
+.ab-page {
+  overflow-x: hidden;
+}
+
+.ab-table-scroll {
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-inline: contain;
+}
+
+@media (max-width: 768px) {
+  .ab-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .ab-search {
+    min-width: 0;
+  }
+
+  .ab-filter-group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ab-filter,
+  .ab-search input,
+  .ab-select-label select,
+  .ab-check {
+    width: 100%;
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+
+  .ab-check {
+    height: auto;
+  }
+
+  .ab-select-label select {
+    min-width: 0;
+  }
+
+  .ab-job summary {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 520px) {
+  .app-main--assembly-boms {
+    padding: 14px 8px 28px;
+  }
+
+  .ab-toolbar {
+    padding: 12px;
+  }
+
+  .ab-job summary,
+  .ab-job-detail {
+    padding-inline: 12px;
+  }
+
+  .ab-filter-group {
+    grid-template-columns: 1fr;
+  }
+
+  .ab-child-table {
+    min-width: 900px;
+  }
+
+  .ab-child-table th,
+  .ab-child-table td {
+    padding-inline: 8px;
+  }
+}

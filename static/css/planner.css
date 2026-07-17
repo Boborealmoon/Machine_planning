@@ -5354,7 +5354,7 @@
 
   @media (max-width: 1024px) {
     /* Stack board above PS / Ops catalog — side rail is too narrow on tablet */
-    .app-main--planner {
+    .app-main--planner:has(> .trial-shell) {
       padding-inline: 12px;
       padding-block: 10px 14px;
       height: calc(100dvh - 52px);
@@ -11558,5 +11558,183 @@
 }
 .pending-pp-part-link:hover {
   text-decoration-style: solid;
+}
+
+/* Mobile safeguards for planner-specific tables, tabs, toolbars, and dialogs. */
+@media (max-width: 768px) {
+  .app-main--delivery,
+  .app-main--delivery-schedule {
+    height: auto;
+    min-height: calc(100dvh - 52px);
+    overflow: visible;
+  }
+
+  .delivery-page,
+  .delivery-panel {
+    height: auto;
+    overflow: visible;
+  }
+
+  .app-main--new-orders,
+  .app-main--sales-report,
+  .app-main--sales-orders-wide {
+    padding-inline: 10px;
+  }
+
+  .queue-delays-toolbar,
+  .actual-production-toolbar,
+  .delivery-schedule-toolbar,
+  .new-orders-toolbar,
+  .mi-toolbar {
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .queue-delays-toolbar > *,
+  .actual-production-toolbar > *,
+  .delivery-schedule-toolbar > *,
+  .new-orders-toolbar > *,
+  .mi-toolbar > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .planner-page-search-wrap,
+  .planner-page-toolbar-select,
+  .new-orders-filter,
+  .new-orders-filter select,
+  .new-orders-filter input[type="date"],
+  .fq-mi-search {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .pending-pp-tabs,
+  .sales-orders-page .ps-view-tabs,
+  .sales-report-month-nav {
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .pending-pp-tab,
+  .sales-report-month-chip {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .mi-view-toggle {
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .mi-view-toggle .mi-view-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .aker-inv-page .mi-toolbar {
+    overflow: hidden;
+  }
+
+  .aker-inv-page .aker-inv-sheet-toggle {
+    width: 100%;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .new-orders-table-wrap,
+  .queue-delays-table-wrap,
+  .delivery-schedule-table-wrap,
+  .actual-production-table-wrap,
+  .mi-table-wrap {
+    min-height: 0;
+    max-height: calc(100dvh - 220px);
+    overflow: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mi-table thead th:first-child,
+  .mi-table tbody td:first-child,
+  .queue-delays-table thead th:first-child,
+  .queue-delays-table tbody td:first-child,
+  .delivery-schedule-table thead th:nth-child(4),
+  .delivery-schedule-table tbody td:nth-child(4) {
+    position: sticky;
+    left: 0;
+    background: var(--surface, #fff);
+    box-shadow: 1px 0 0 var(--border, #e2e8f0);
+  }
+
+  .mi-table thead th:first-child,
+  .queue-delays-table thead th:first-child,
+  .delivery-schedule-table thead th:nth-child(4) {
+    z-index: 4;
+    background: var(--surface2, #f1f5f9);
+  }
+
+  .mi-table tbody td:first-child,
+  .queue-delays-table tbody td:first-child,
+  .delivery-schedule-table tbody td:nth-child(4) {
+    z-index: 1;
+  }
+
+  .new-orders-page--sales-orders .new-orders-table-wrap.so-table-wrap--wide {
+    --so-side-rail-width: 72px;
+    --so-sticky-ps-width: 128px;
+  }
+
+  .new-orders-page--sales-orders .so-table--wide thead th.new-orders-side-head,
+  .new-orders-page--sales-orders .new-orders-side-rail--compact {
+    min-width: 72px;
+    width: 72px;
+    max-width: 72px;
+  }
+
+  .trial-modal-backdrop,
+  .so-material-modal {
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  }
+
+  .trial-modal-panel,
+  .trial-modal-panel-lg,
+  .trial-modal-panel-xl,
+  .so-material-modal-panel {
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(100dvh - 16px);
+  }
+
+  .trial-modal-actions {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 360px) {
+  .new-orders-header-actions,
+  .trial-modal-actions {
+    width: 100%;
+  }
+
+  .new-orders-header-actions > *,
+  .trial-modal-actions > * {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
 }
 

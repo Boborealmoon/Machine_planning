@@ -125,6 +125,52 @@
   }
   .mlc-sets-meta { color: var(--text2); font-size: 12px; margin-left: auto; }
   .mlc-table .mlc-pieces { color: var(--text2); font-size: 11px; font-weight: 500; }
+  @media (max-width: 1024px) {
+    .mlc-page { max-width: 100%; }
+    .mlc-lanes,
+    .mlc-lane { min-width: 0; }
+    .mlc-table-wrap { -webkit-overflow-scrolling: touch; }
+    .mlc-table th:first-child,
+    .mlc-table td:first-child {
+      position: sticky;
+      left: 0;
+      z-index: 2;
+      background: #fff;
+      box-shadow: 1px 0 0 var(--border);
+    }
+    .mlc-table thead th:first-child { z-index: 4; background: #f8fafc; }
+    .mlc-row--zero td:first-child { background: #fff7f7; }
+    .mlc-lane-track { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .mlc-bar-stack { min-width: 720px; }
+  }
+  @media (max-width: 768px) {
+    .new-orders-header { align-items: stretch; }
+    .mlc-actions, .mlc-actions .btn { width: 100%; }
+    .mlc-actions .btn { flex: 1 1 160px; justify-content: center; min-height: 42px; }
+    .mlc-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .mlc-sets-row { align-items: stretch; }
+    .mlc-sets-label { width: 100%; }
+    .mlc-sets-chips { flex: 1 1 100%; }
+    .mlc-set-chip { min-height: 42px; min-width: 46px; }
+    .mlc-sets-meta { width: 100%; margin-left: 0; }
+    .mlc-lane-head { align-items: flex-start; }
+    .mlc-lane-stats { max-width: 65%; }
+    .new-orders-toolbar .new-orders-filter,
+    .planner-page-search-wrap { width: 100%; }
+    .planner-page-search-input { min-height: 42px; }
+    .mlc-table input[type="number"], .mlc-table select { min-height: 40px; }
+  }
+  @media (max-width: 520px) {
+    .mlc-totals { gap: 8px; }
+    .mlc-total-card { padding: 10px; }
+    .mlc-total-card strong { font-size: 18px; }
+    .mlc-sets-chips { display: grid; grid-template-columns: repeat(3, 1fr); }
+    .mlc-set-chip { padding-inline: 8px; }
+    .mlc-lane { padding: 10px; }
+    .mlc-lane-head { flex-direction: column; }
+    .mlc-lane-stats { max-width: none; text-align: left; }
+    .mlc-table { min-width: 1080px; }
+  }
 </style>
 <div class="mlc-page new-orders-page">
   <div class="new-orders-header">

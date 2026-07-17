@@ -469,3 +469,79 @@ body.driver-view .app-main--driver-view {
     padding: 8px 10px;
   }
 }
+
+body.driver-view {
+  overflow-x: hidden;
+}
+
+.dv-table-scroll,
+.dv-nav-group {
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-inline: contain;
+}
+
+@media (max-width: 1024px) {
+  .dv-table {
+    min-width: 1040px;
+  }
+}
+
+@media (max-width: 768px) {
+  .dv-header,
+  .dv-nav {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .dv-header-actions {
+    width: 100%;
+  }
+
+  .dv-btn {
+    min-height: 44px;
+  }
+
+  .dv-nav-group {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+
+  .dv-week-chip {
+    flex: 0 0 auto;
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 520px) {
+  .dv-header {
+    margin-bottom: 14px;
+  }
+
+  .dv-header-actions,
+  .dv-header-actions .dv-btn {
+    width: 100%;
+  }
+
+  .dv-table {
+    min-width: 920px;
+  }
+
+  .dv-col-desc {
+    min-width: 150px;
+  }
+
+  .dv-col-status {
+    min-width: 120px;
+  }
+
+  .dv-col-remarks {
+    min-width: 140px;
+  }
+
+  .dv-flag-toggle {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

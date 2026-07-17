@@ -4,7 +4,7 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 52px);
+  height: calc(100dvh - 52px);
   overflow: hidden;
 }
 
@@ -493,6 +493,20 @@
 }
 
 @media (max-width: 640px) {
+  .pf-header,
+  .pf-part-header,
+  .flow-header-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pf-fetch-btn,
+  .flow-header-right,
+  .flow-header-right > * {
+    width: 100%;
+    max-width: 100%;
+  }
+
   .pf-part-header,
   .bom-tabs-bar,
   .steps-section {
@@ -501,5 +515,56 @@
 
   .bom-tabs-bar {
     align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .bom-tabs {
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .bom-tab {
+    flex: 0 0 auto;
+  }
+
+  .flow-form,
+  .steps-section {
+    padding-inline: 14px;
+  }
+
+  .steps-table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .steps-table {
+    min-width: 640px;
+  }
+
+  .btn-add-step {
+    max-width: 100%;
+    white-space: normal;
+  }
+}
+
+@media (max-width: 360px) {
+  .pf-header {
+    padding-inline: 10px;
+  }
+
+  .pf-part-header,
+  .bom-tabs-bar,
+  .flow-header-row,
+  .flow-form,
+  .steps-section {
+    padding-inline: 10px;
   }
 }

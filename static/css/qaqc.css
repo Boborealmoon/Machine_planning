@@ -263,6 +263,7 @@ body.qaqc-view {
 .fq-table-scroll {
   overflow: auto;
   max-height: calc(100dvh - 220px);
+  overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -1008,8 +1009,15 @@ body.qaqc-view {
 
   .fq-col-sticky--job,
   .fq-table thead th.fq-col-sticky--job {
-    min-width: 7.5rem;
-    max-width: 9rem;
+    left: 2.75rem;
+    min-width: 7rem;
+    max-width: 8rem;
+  }
+
+  .fq-col-actions {
+    width: 2.75rem;
+    min-width: 2.75rem;
+    max-width: 2.75rem;
   }
 }
 
@@ -1173,4 +1181,90 @@ body.qaqc-view {
 
 .fq-table--qc-queue tbody tr.fq-row--qcq:hover td {
   background: rgba(15, 23, 42, 0.04);
+}
+
+@media (max-width: 640px) {
+  .fq-header {
+    align-items: stretch;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .fq-header-actions {
+    width: 100%;
+  }
+
+  .fq-nav-row {
+    align-items: stretch;
+  }
+
+  .fq-nav-label {
+    flex: 1 1 100%;
+  }
+
+  .fq-nav-group,
+  .fq-nav-group--ps-types,
+  .fq-nav-group--assignees,
+  .fq-nav-group--stages {
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .fq-nav-group .fq-chip {
+    flex: 0 0 auto;
+  }
+
+  .fq-mi-search {
+    flex-basis: 100%;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .fq-assignee-board {
+    overscroll-behavior-x: contain;
+  }
+
+  .fq-table-scroll {
+    max-height: calc(100dvh - 200px);
+  }
+
+  .fq-col-sticky--mi,
+  .fq-table thead th.fq-col-sticky--mi {
+    min-width: 7rem;
+    max-width: 8rem;
+  }
+
+  .fq-modal-backdrop {
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  }
+
+  .fq-modal-box {
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(100dvh - 16px);
+  }
+}
+
+@media (max-width: 360px) {
+  .fq-header-actions > *,
+  .fq-detail-edit-grid > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .fq-header-actions .fq-btn {
+    flex: 1 1 auto;
+  }
+
+  .fq-detail-edit {
+    padding-inline: 10px;
+  }
 }

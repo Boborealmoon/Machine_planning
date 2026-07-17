@@ -49,7 +49,7 @@
 
       {# Sales / production workflow #}
       <div class="nav-dropdown {% if nav_path in ('/new-orders', '/sales-orders', '/delivery', '/queue-delays', '/delivery-schedule') or active in ('new_orders', 'sales_orders', 'delivery', 'queue_delays', 'delivery_schedule') %}nav-dropdown--active{% endif %}">
-        <button type="button" class="nav-dropdown-trigger" data-dropdown="sales-prod">
+        <button type="button" class="nav-dropdown-trigger" data-dropdown="sales-prod" aria-expanded="false" aria-controls="dd-sales-prod">
           SALES / PROD <span class="nav-caret">▾</span>
         </button>
         <div class="nav-dropdown-menu" id="dd-sales-prod">
@@ -71,7 +71,7 @@
 
       {# Reports & analytics #}
       <div class="nav-dropdown {% if nav_path in ('/sales-report', '/job-ratio', '/production-capacity', '/repeat-orders', '/planning-data/repeat-orders') or active in ('sales_report', 'job_ratio', 'production_capacity', 'repeat_orders') %}nav-dropdown--active{% endif %}">
-        <button type="button" class="nav-dropdown-trigger" data-dropdown="reports">
+        <button type="button" class="nav-dropdown-trigger" data-dropdown="reports" aria-expanded="false" aria-controls="dd-reports">
           REPORTS / ANALYTICS <span class="nav-caret">▾</span>
         </button>
         <div class="nav-dropdown-menu" id="dd-reports">
@@ -100,7 +100,7 @@
 
       {# ERP queries & master data #}
       <div class="nav-dropdown {% if nav_path in ('/bom-variation', '/system', '/planning-data/program-tool-tracker') or nav_path.startswith('/planning-data') and nav_path not in ('/planning-data/repeat-orders', '/planning-data/aker-inventory') or active in ('planning_data', 'bom_variation', 'system', 'program_tool_tracker') %}nav-dropdown--active{% endif %}">
-        <button type="button" class="nav-dropdown-trigger" data-dropdown="queries-data">
+        <button type="button" class="nav-dropdown-trigger" data-dropdown="queries-data" aria-expanded="false" aria-controls="dd-queries-data">
           QUERIES &amp; MASTER DATA <span class="nav-caret">▾</span>
         </button>
         <div class="nav-dropdown-menu" id="dd-queries-data">
@@ -144,7 +144,7 @@
 
       {# Shop-floor & operational views #}
       <div class="nav-dropdown {% if nav_path in (machinist_board_path, finishing_queue_path, driver_view_path, '/assembly-boms') or active in ('machinist_board', 'finishing_queue', 'driver_view', 'assembly_boms') %}nav-dropdown--active{% endif %}">
-        <button type="button" class="nav-dropdown-trigger" data-dropdown="views">
+        <button type="button" class="nav-dropdown-trigger" data-dropdown="views" aria-expanded="false" aria-controls="dd-views">
           VIEWS <span class="nav-caret">▾</span>
         </button>
         <div class="nav-dropdown-menu" id="dd-views">
@@ -169,7 +169,7 @@
 
       {# Archive — historical / reference views #}
       <div class="nav-dropdown {% if nav_path in ('/daily-output', '/actual-production', '/material-inspection/no-shipment', '/auk-oee', '/planning-data/aker-inventory', '/preferred-machines', '/kobelco-mps-archive', '/archive/machine-lane-calc', '/pending-pp', '/pr-status-enquiry') or active in ('daily_output', 'actual_production', 'material_inspection_no_shipment', 'auk_oee', 'aker_inventory', 'preferred_machines', 'kobelco_mps_archive', 'machine_lane_calc', 'pending_pp', 'pr_status_enquiry') %}nav-dropdown--active{% endif %}">
-        <button type="button" class="nav-dropdown-trigger" data-dropdown="archive">
+        <button type="button" class="nav-dropdown-trigger" data-dropdown="archive" aria-expanded="false" aria-controls="dd-archive">
           ARCHIVE <span class="nav-caret">▾</span>
         </button>
         <div class="nav-dropdown-menu" id="dd-archive">

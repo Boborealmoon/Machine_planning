@@ -48,6 +48,59 @@
     color: #047857;
     border: 1px solid rgba(16, 185, 129, 0.25);
   }
+  @media (max-width: 1024px) {
+    #pm-table-wrap,
+    .pm-detail-table-wrap,
+    .pm-detail-summary { -webkit-overflow-scrolling: touch; }
+    .pm-table { min-width: 1100px; }
+    .pm-table th:first-child,
+    .pm-table td:first-child {
+      position: sticky;
+      left: 0;
+      z-index: 2;
+      background: #fff;
+      box-shadow: 1px 0 0 var(--border);
+    }
+    .pm-table thead th:first-child { z-index: 4; background: #f8fafc; }
+    .pm-row.is-selected td:first-child { background: #eff6ff; }
+    .new-orders-detail-panel {
+      width: min(760px, 100vw);
+      max-width: 100vw;
+      height: 100dvh;
+      max-height: 100dvh;
+    }
+    .pm-detail-table { min-width: 860px; }
+  }
+  @media (max-width: 768px) {
+    .new-orders-header { align-items: stretch; }
+    .new-orders-header-actions,
+    .new-orders-header-actions .btn { width: 100%; }
+    .new-orders-header-actions .btn { flex: 1 1 0; justify-content: center; min-height: 42px; }
+    .new-orders-toolbar {
+      flex-direction: column;
+      align-items: stretch;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .new-orders-toolbar > * { min-width: 0; max-width: 100%; }
+    .new-orders-toolbar .new-orders-filter { width: 100%; flex-basis: 100%; }
+    .mi-view-toggle { width: 100%; overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+    .mi-view-btn { flex: 0 0 auto; min-height: 42px; }
+    .planner-page-search-wrap { width: 100%; }
+    .planner-page-search-input { min-height: 42px; }
+    .new-orders-detail-head { padding: 14px; gap: 8px; }
+    .new-orders-detail-head .btn { min-height: 42px; }
+    .new-orders-detail-body { padding: 12px 14px; overflow-y: auto; }
+  }
+  @media (max-width: 520px) {
+    .new-orders-header-actions { display: grid; grid-template-columns: 1fr 1fr; }
+    .pm-table { min-width: 980px; }
+    .pm-pill { font-size: 10px; padding-inline: 6px; }
+    .new-orders-detail-panel { width: 100vw; }
+    .new-orders-detail-title { font-size: 1rem; overflow-wrap: anywhere; }
+    .new-orders-detail-foot { padding: 10px 12px; }
+    .pm-detail-summary { max-width: calc(100vw - 28px); }
+  }
 </style>
 <div class="pm-page new-orders-page">
   <div class="new-orders-header">

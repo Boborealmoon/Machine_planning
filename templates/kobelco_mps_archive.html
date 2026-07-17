@@ -5,10 +5,28 @@
 {% block content %}
 <style>
   .kma-page { max-width: 100%; }
-  .kma-table-wrap { overflow-x: auto; }
+  .kma-table-wrap {
+    overflow: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
   .kma-table { min-width: 2200px; }
   .kma-table .kma-desc { min-width: 180px; max-width: 280px; }
   .kma-table .kma-line-desc { min-width: 160px; max-width: 240px; }
+  @media (max-width: 768px) {
+    .kma-table th:first-child,
+    .kma-table td:first-child {
+      position: sticky;
+      left: 0;
+      background: var(--surface, #fff);
+      box-shadow: 1px 0 0 var(--border, #e2e8f0);
+    }
+    .kma-table th:first-child {
+      z-index: 4;
+      background: var(--surface2, #f1f5f9);
+    }
+    .kma-table td:first-child { z-index: 1; }
+  }
 </style>
 <div class="kma-page new-orders-page">
   <div class="new-orders-header">

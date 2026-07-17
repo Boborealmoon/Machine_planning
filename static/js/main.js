@@ -7,22 +7,32 @@
   if (!nav || !btn || !panel) return;
 
   const mq = window.matchMedia("(max-width: 1024px)");
+  const focusableSelector =
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  let restoreFocus = null;
 
-  const closeMenu = () => {
+  const closeMenu = ({ restore = true } = {}) => {
+    const wasOpen = nav.classList.contains("is-menu-open");
     nav.classList.remove("is-menu-open");
     btn.setAttribute("aria-expanded", "false");
     btn.setAttribute("aria-label", "Open navigation menu");
     document.body.classList.remove("navbar-menu-open");
     if (backdrop) backdrop.hidden = true;
+    if (wasOpen && restore && restoreFocus?.isConnected) restoreFocus.focus();
+    restoreFocus = null;
   };
 
   const openMenu = () => {
     if (!mq.matches) return;
+    restoreFocus = document.activeElement;
     nav.classList.add("is-menu-open");
     btn.setAttribute("aria-expanded", "true");
     btn.setAttribute("aria-label", "Close navigation menu");
     document.body.classList.add("navbar-menu-open");
     if (backdrop) backdrop.hidden = false;
+    window.requestAnimationFrame(() => {
+      panel.querySelector(focusableSelector)?.focus();
+    });
   };
 
   btn.addEventListener("click", () => {
@@ -37,11 +47,33 @@
   });
 
   mq.addEventListener("change", (e) => {
-    if (!e.matches) closeMenu();
+    if (!e.matches) closeMenu({ restore: false });
   });
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeMenu();
+    if (!nav.classList.contains("is-menu-open")) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeMenu();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const focusable = [...panel.querySelectorAll(focusableSelector)].filter(
+      (el) => el.offsetParent !== null
+    );
+    if (!focusable.length) {
+      e.preventDefault();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
   });
 })();
 
@@ -54,18 +86,23 @@ document.querySelectorAll(".nav-dropdown-trigger").forEach((trigger) => {
     const isOpen = menu.classList.contains("open");
 
     // Close all
-    document.querySelectorAll(".nav-dropdown-menu").forEach((m) =>
-      m.classList.remove("open")
-    );
+    document.querySelectorAll(".nav-dropdown-menu").forEach((m) => {
+      m.classList.remove("open");
+      document.querySelector(`[aria-controls="${m.id}"]`)?.setAttribute("aria-expanded", "false");
+    });
 
-    if (!isOpen) menu.classList.add("open");
+    if (!isOpen) {
+      menu.classList.add("open");
+      trigger.setAttribute("aria-expanded", "true");
+    }
   });
 });
 
 document.addEventListener("click", () => {
-  document.querySelectorAll(".nav-dropdown-menu").forEach((m) =>
-    m.classList.remove("open")
-  );
+  document.querySelectorAll(".nav-dropdown-menu").forEach((m) => {
+    m.classList.remove("open");
+    document.querySelector(`[aria-controls="${m.id}"]`)?.setAttribute("aria-expanded", "false");
+  });
 });
 
 /** Fetch helper for REPORTS / ANALYTICS APIs — redirects to passcode gate on 401. */

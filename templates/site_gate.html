@@ -91,6 +91,29 @@
       font-size: 13px;
       font-weight: 600;
     }
+    @media (max-width: 1024px) {
+      body {
+        min-height: 100dvh;
+        padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right))
+          max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+      }
+      input[type="password"], button { min-height: 44px; }
+    }
+    @media (max-width: 768px) {
+      body { align-items: flex-start; padding-top: max(10vh, env(safe-area-inset-top)); }
+      .gate-card { width: min(100%, 420px); }
+    }
+    @media (max-width: 520px) {
+      body {
+        padding: max(16px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+          max(16px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+      }
+      .gate-card { padding: 24px 18px 20px; border-radius: 12px; }
+      h1 { font-size: 20px; }
+      p { font-size: 14px; }
+      input[type="password"] { min-height: 48px; font-size: 16px; }
+      button { min-height: 48px; }
+    }
   </style>
 </head>
 <body>

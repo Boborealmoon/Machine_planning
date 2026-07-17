@@ -18,11 +18,56 @@ body {
   background: #f0f0f0;
   color: #1a1a1a;
   -webkit-font-smoothing: antialiased;
+  min-width: 0;
+  overflow-wrap: break-word;
 }
 
 a { text-decoration: none; color: inherit; }
 button { cursor: pointer; font-family: inherit; }
 input, select { font-family: inherit; }
+img, svg, video { max-width: 100%; }
+input, select, textarea, button { max-width: 100%; }
+
+/* Shared responsive building blocks used by data-heavy views. */
+.responsive-scroll,
+.table-scroll,
+.table-responsive {
+  max-width: 100%;
+  overflow: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+}
+
+.responsive-scroll > table,
+.table-scroll > table,
+.table-responsive > table {
+  width: max-content;
+  min-width: 100%;
+}
+
+.responsive-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 12px;
+}
+
+.responsive-actions,
+.scrollable-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.responsive-actions { flex-wrap: wrap; }
+.scrollable-tabs {
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+.scrollable-tabs > * { flex: 0 0 auto; }
 
 /* ── Navbar ───────────────────────────────────────────────────────────── */
 .navbar {
@@ -628,6 +673,7 @@ input, select { font-family: inherit; }
 .app-main--standalone {
   max-width: none;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .page { display: flex; flex-direction: column; gap: 20px; }
@@ -2490,6 +2536,9 @@ input, select { font-family: inherit; }
 @media (max-width: 1024px) {
   .navbar-menu-btn {
     display: inline-flex;
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
   }
 
   .navbar-nav-panel {
@@ -2591,15 +2640,26 @@ input, select { font-family: inherit; }
     width: 100%;
     text-align: center;
     padding: 10px 14px;
+    min-height: 44px;
   }
 
   .nav-notif {
-    align-self: flex-start;
+    align-self: stretch;
+  }
+
+  .nav-notif-btn {
+    width: 44px;
+    height: 44px;
   }
 
   .nav-notif-panel {
-    right: auto;
-    left: 0;
+    position: fixed;
+    inset: auto max(10px, env(safe-area-inset-right, 0px))
+      max(10px, env(safe-area-inset-bottom, 0px))
+      max(10px, env(safe-area-inset-left, 0px));
+    width: auto;
+    max-width: none;
+    max-height: min(72dvh, 620px);
   }
 
   .app-main {
@@ -2628,6 +2688,15 @@ input, select { font-family: inherit; }
     gap: 8px;
   }
 
+  .filter-select,
+  .search-input,
+  .filter-dropdown-btn,
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    min-height: 44px;
+  }
+
   .machines-table-wrap,
   .ct-table-outer,
   .ptl-wrap,
@@ -2648,6 +2717,46 @@ input, select { font-family: inherit; }
 }
 
 @media (max-width: 768px) {
+  .app-main,
+  .app-main--standalone {
+    width: 100%;
+    padding: 16px clamp(10px, 3.5vw, 20px) 28px;
+  }
+
+  .page,
+  .section,
+  .card,
+  .page-header,
+  .card-bar,
+  .filters-row {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .card {
+    padding: 14px;
+  }
+
+  .card--flush { padding: 0; }
+
+  .filters-row > *,
+  .responsive-actions > * {
+    min-width: 0;
+  }
+
+  .filters-row > input,
+  .filters-row > select,
+  .filters-row > .filter-select,
+  .filters-row > .filter-dropdown,
+  .filters-row > .btn {
+    flex: 1 1 min(100%, 180px);
+  }
+
+  .scrollable-tabs {
+    flex-wrap: nowrap !important;
+    padding-bottom: 4px;
+  }
+
   .status-cards {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -2672,12 +2781,62 @@ input, select { font-family: inherit; }
 }
 
 @media (max-width: 520px) {
+  .ps-bulk-lookup-wrap {
+    flex-basis: 100%;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .ps-bulk-lookup-row .btn {
+    flex: 1 1 100%;
+  }
+
   .status-cards {
     grid-template-columns: 1fr;
   }
 
   .navbar-menu-label {
     display: none;
+  }
+
+  .navbar-inner {
+    height: 52px;
+    gap: 8px;
+    padding-inline: 8px;
+  }
+
+  .navbar-nav-panel {
+    width: min(100%, 360px);
+  }
+
+  .page-title {
+    font-size: clamp(20px, 7vw, 24px);
+    line-height: 1.15;
+  }
+
+  .page-actions,
+  .responsive-actions {
+    align-items: stretch;
+  }
+
+  .page-actions > *,
+  .responsive-actions > * {
+    flex: 1 1 100%;
+  }
+
+  .btn {
+    min-height: 44px;
+    padding: 10px 14px;
+  }
+
+  .nav-notif-head {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .nav-notif-head-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .logo-top,

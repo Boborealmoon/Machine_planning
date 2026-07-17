@@ -204,6 +204,63 @@
     color: #64748b;
     max-width: 72rem;
   }
+  @media (max-width: 1024px) {
+    .pse-table-wrap,
+    .pse-drill-body .new-orders-table-wrap {
+      -webkit-overflow-scrolling: touch;
+    }
+    .pse-table th:first-child,
+    .pse-table td:first-child,
+    .pse-drill-table th:first-child,
+    .pse-drill-table td:first-child {
+      position: sticky;
+      left: 0;
+      z-index: 2;
+      background: #fff;
+      box-shadow: 1px 0 0 #e2e8f0;
+    }
+    .pse-table thead th:first-child,
+    .pse-drill-table thead th:first-child { z-index: 4; background: #f8fafc; }
+    .pse-drill-panel { max-width: 100vw; max-height: 100dvh; }
+  }
+  @media (max-width: 768px) {
+    .new-orders-header { align-items: stretch; }
+    .new-orders-header-actions,
+    .new-orders-header-actions .btn { width: 100%; }
+    .new-orders-header-actions .btn { justify-content: center; min-height: 42px; }
+    .pse-kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .new-orders-toolbar {
+      flex-direction: column;
+      align-items: stretch;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .new-orders-toolbar > * { min-width: 0; max-width: 100%; }
+    .new-orders-toolbar .new-orders-filter { flex: 1 1 calc(50% - 0.5rem); min-width: 0; }
+    .new-orders-toolbar .new-orders-filter--grow { flex-basis: 100%; }
+    .filter-dropdown-btn, .pse-prefix-btn, .planner-page-search-input { min-height: 42px; }
+    .pse-prefix-filters { max-width: 100%; }
+    .pse-drill-head { padding: 0.85rem; }
+    .pse-drill-head .btn { min-width: 56px; min-height: 42px; }
+    .pse-drill-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0.75rem 0.85rem; }
+    .pse-drill-body { padding: 0.65rem 0.85rem 1rem; }
+  }
+  @media (max-width: 520px) {
+    .pse-kpi-row { gap: 0.5rem; }
+    .pse-kpi { padding: 0.65rem; }
+    .pse-kpi-value { font-size: 1.15rem; }
+    .new-orders-toolbar .new-orders-filter { flex-basis: 100%; width: 100%; }
+    .new-orders-toolbar .filter-dropdown,
+    .new-orders-toolbar .filter-dropdown-btn,
+    .planner-page-search-wrap { width: 100%; }
+    .pse-prefix-filters { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
+    .pse-prefix-btn { flex: 0 0 auto; }
+    .pse-table { min-width: 1280px; }
+    .pse-drill-head { gap: 0.5rem; }
+    .pse-drill-title { font-size: 1rem; overflow-wrap: anywhere; }
+    .pse-drill-metrics { grid-template-columns: 1fr 1fr; }
+    .pse-drill-body { padding-inline: 0.5rem; }
+  }
 </style>
 <div class="new-orders-page">
   <div class="new-orders-header">

@@ -1692,11 +1692,51 @@ body.machinist-board.machinist-board--focus .trial-empty {
 }
 
 @media (max-width: 480px) {
+  .machinist-board-head-row {
+    align-items: stretch;
+  }
+
+  .machinist-lang-toggle {
+    flex: 0 0 auto;
+  }
+
+  .trial-main--machinist #trial-machine-filter-shell {
+    padding-inline: 6px;
+  }
+
+  .machinist-board-filters .trial-filter-section-type,
+  .machinist-board-filters .trial-machine-filter {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .machinist-board-filters .trial-machine-filter-btn {
+    flex: 0 0 auto;
+  }
+
+  .machinist-job-search-results {
+    right: auto;
+    width: 100%;
+    max-width: calc(100vw - 12px);
+    max-height: min(45dvh, 240px);
+  }
+
   body.machinist-board .trial-machine {
     flex: 0 0 156px;
     width: 156px;
     max-width: 156px;
     min-width: 156px;
+  }
+
+  body.machinist-board .trial-machine.trial-machine--mpp {
+    flex-basis: min(260px, calc(100vw - 16px));
+    width: min(260px, calc(100vw - 16px));
+    min-width: min(260px, calc(100vw - 16px));
+    max-width: min(260px, calc(100vw - 16px));
   }
 
   body.machinist-board .trial-block-card--compact .trial-block-title {
@@ -1705,6 +1745,20 @@ body.machinist-board.machinist-board--focus .trial-empty {
 
   body.machinist-board .trial-block-card--compact .trial-block-op {
     font-size: 10px;
+  }
+}
+
+@media (max-width: 360px) {
+  .machinist-focus-toggle,
+  .machinist-stock-colors-toggle {
+    flex: 1 1 auto;
+  }
+
+  .machinist-board-filters .trial-filter-section-machines,
+  .machinist-board-filters .trial-board-machine-filter-dropdown,
+  .machinist-board-filters .trial-board-machine-filter-dropdown .filter-dropdown-btn {
+    width: 100%;
+    max-width: 100%;
   }
 }
 

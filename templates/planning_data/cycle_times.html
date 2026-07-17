@@ -366,6 +366,66 @@ tr.ct-row-dirty td { background: #fffbeb !important; }
 .harvest-jobs-sub { font-size: 10px; color: var(--text3); margin-top: 2px; }
 .harvest-ideal-ref { color: var(--text3); }
 .harvest-bom-fallback { color: #b45309; font-style: italic; }
+
+@media (max-width: 1024px) {
+  .ct-page { padding: 22px 20px 36px; }
+  .ct-header > div:first-child { flex: 1 1 100%; }
+  .ct-actions { width: 100%; }
+  .ct-table-outer { max-height: calc(100dvh - 260px); -webkit-overflow-scrolling: touch; }
+  .harvest-modal .modal-box { width: calc(100vw - 32px); max-width: none; padding: 20px; }
+  .harvest-table th:nth-child(3),
+  .harvest-table td:nth-child(3) {
+    position: sticky;
+    left: 76px;
+    z-index: 1;
+    background: #fff;
+    box-shadow: 1px 0 0 var(--border);
+  }
+  .harvest-table th:nth-child(1), .harvest-table td:nth-child(1) { position: sticky; left: 0; z-index: 2; background: #fff; }
+  .harvest-table th:nth-child(2), .harvest-table td:nth-child(2) { position: sticky; left: 40px; z-index: 2; background: #fff; }
+  .harvest-table thead th:nth-child(-n+3) { z-index: 4; background: #f8fafc; }
+}
+@media (max-width: 768px) {
+  .ct-page { padding: 18px 14px 30px; }
+  .ct-actions .btn { flex: 1 1 150px; justify-content: center; min-height: 40px; }
+  .ct-toolbar { align-items: stretch; }
+  .ct-search { flex-basis: 100%; max-width: none; min-width: 0; min-height: 42px; }
+  .ct-filters { flex: 1 1 100%; }
+  .ct-chip-btn, .ct-pager button { min-height: 40px; }
+  .ct-pager { margin-left: 0; width: 100%; justify-content: space-between; }
+  .edit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .edit-span2 { grid-column: span 2; }
+  .edit-actions { grid-column: 1 / -1; }
+  .modal-backdrop { padding: 16px; align-items: flex-start; overflow-y: auto; }
+  .modal-box { width: 100%; max-height: calc(100dvh - 32px); padding: 22px 20px; margin: auto; }
+  .harvest-modal .modal-box { width: 100%; max-height: calc(100dvh - 32px); }
+  .harvest-steps { display: grid; gap: 8px; padding: 10px 12px; }
+  .harvest-step { flex-basis: auto; }
+  .harvest-toolbar > * { min-height: 40px; }
+  .harvest-table-wrap { min-height: 220px; max-height: none; }
+  .btn, .modal-field input, .harvest-publish-input { min-height: 40px; }
+}
+@media (max-width: 520px) {
+  .ct-page { padding: 14px 10px 24px; }
+  .ct-title { font-size: 20px; }
+  .ct-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .ct-actions .btn { min-width: 0; white-space: normal; }
+  .ct-stats { display: grid; grid-template-columns: 1fr 1fr; }
+  .ct-chip { text-align: center; }
+  .ct-filters { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
+  .ct-filter-label, .ct-chip-btn { flex: 0 0 auto; }
+  .ct-table-outer { max-height: none; }
+  .edit-grid { grid-template-columns: 1fr; }
+  .edit-span2 { grid-column: auto; }
+  .modal-box, .harvest-modal .modal-box { padding: 18px 14px; }
+  .modal-actions { flex-direction: column-reverse; }
+  .modal-actions .btn { width: 100%; justify-content: center; }
+  .harvest-toolbar { align-items: stretch; }
+  .harvest-toolbar label { width: 100%; justify-content: space-between; }
+  .harvest-toolbar select { min-width: 0; max-width: 65%; }
+  .harvest-ps-search { min-width: 0; max-width: none; flex-basis: 100%; }
+  #toast { left: 10px; right: 10px; bottom: 10px; max-width: none; text-align: center; }
+}
 </style>
 
 <div class="ct-page">

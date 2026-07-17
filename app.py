@@ -72,6 +72,7 @@ from planning.frame_agreement_route import frame_agreement_bp
 from planning.email_route import email_bp
 from planning.mro_route import MRO_PATH, mro_bp
 from planning.accounts_route import ACCOUNTS_PATH, accounts_bp
+from planning.notes_route import notes_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
@@ -122,6 +123,7 @@ app.register_blueprint(frame_agreement_bp)
 app.register_blueprint(email_bp)
 app.register_blueprint(mro_bp)
 app.register_blueprint(accounts_bp)
+app.register_blueprint(notes_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 
