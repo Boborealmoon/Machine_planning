@@ -1449,10 +1449,24 @@
     return scheduled_end_display;
   }
 
-  function renderBulkLookupTable(items) {
+  function bulkIncludePricing() {
+    return Boolean(els.bulkIncludePricing?.checked);
+  }
+
+  function fmtBulkPricingCell(value) {
+    if (value === '' || value == null) return '—';
+    const num = Number(value);
+    if (!Number.isFinite(num)) return '—';
+    return num.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  }
+
+  function renderBulkLookupTable(items, includePricing = false) {
     if (!items.length) {
       return '<div class="ps-details-empty">No process sheets matched your search terms.</div>';
     }
+    const pricingHeaders = includePricing
+      ? '<th>Unit value</th><th>Exchange rate</th><th>Total value</th>'
+      : '';
     return `
       <div class="ps-bulk-lookup-table">
         <div class="ps-table-wrap">
@@ -1465,6 +1479,7 @@
                 <th>Description</th>
                 <th>Material</th>
                 <th>Qty</th>
+                ${pricingHeaders}
                 <th>PO due</th>
                 <th>Coway EDD</th>
                 <th>Coway week</th>
@@ -1496,6 +1511,12 @@
                 const machines = queuedMachines(item);
                 const plannedQty = isQueued(item) ? fmtQty(item.planned_qty || 0) : '—';
                 const finishedQty = isQueued(item) ? fmtQty(item.finished_qty || 0) : '—';
+                const pricing = includePricing ? bulkLookupPricingExportFields(item) : null;
+                const pricingCells = includePricing
+                  ? `<td>${escapeHtml(fmtBulkPricingCell(pricing.unit_cost))}</td>
+                    <td>${escapeHtml(fmtBulkPricingCell(pricing.exchange_rate))}</td>
+                    <td>${escapeHtml(fmtBulkPricingCell(pricing.final_amount))}</td>`
+                  : '';
                 return `
                   <tr data-action="bulk-lookup-open" data-ps-id="${escapeHtml(psId)}" title="Click to open in queue">
                     <td>${tempBadge}<button type="button" class="ps-bulk-lookup-row-btn" data-action="bulk-lookup-open" data-ps-id="${escapeHtml(psId)}">${escapeHtml(displayId)}</button></td>
@@ -1504,6 +1525,7 @@
                     <td>${escapeHtml(item.part_desc || '—')}</td>
                     <td>${escapeHtml(materialInventoryLabel(item) || '—')}</td>
                     <td>${escapeHtml(qty)}</td>
+                    ${pricingCells}
                     <td class="${due !== '-' && isOverdue(item) ? 'is-overdue' : ''}">${escapeHtml(due)}</td>
                     <td>${escapeHtml(coway)}</td>
                     <td>${escapeHtml(cowayWeek)}</td>
@@ -1541,6 +1563,7 @@
     missedTerms: [],
     terms: [],
     boardItems: [],
+    includePricing: false,
   };
 
   function sortBulkLookupItemsByInputOrder(items, parsedTerms) {
@@ -1606,7 +1629,8 @@
     };
   }
 
-  async function fetchBulkLookupResults(raw) {
+  async function fetchBulkLookupResults(raw, options = {}) {
+    const includePricing = Boolean(options.includePricing);
     const terms = parseBulkLookupTerms(raw);
     const parsedTerms = terms.map(parseBulkLookupPsTerm).filter(Boolean);
     if (!parsedTerms.length) {
@@ -1632,10 +1656,16 @@
         .map(item => enrichBulkLookupPlannerFields(item, plannerByKey)),
       parsedTerms,
     );
-    const pricedItems = await enrichBulkLookupPricing(items);
+    const pricedItems = includePricing ? await enrichBulkLookupPricing(items) : items;
     const missedTerms = unmatchedBulkLookupTerms(parsedTerms, items);
-    return { terms, parsedTerms, items: pricedItems, missedTerms };
+    return { terms, parsedTerms, items: pricedItems, missedTerms, includePricing };
   }
+
+  const PS_EXPORT_PRICING_COLUMNS = [
+    { key: 'unit_cost', header: 'Unit value', width: 12 },
+    { key: 'exchange_rate', header: 'Exchange rate', width: 12 },
+    { key: 'final_amount', header: 'Total value', width: 14 },
+  ];
 
   const PS_EXPORT_COLUMNS = [
     { key: 'process_sheet', header: 'Process sheet', width: 16 },
@@ -1644,9 +1674,6 @@
     { key: 'description', header: 'Description', width: 28 },
     { key: 'material', header: 'Material', width: 18 },
     { key: 'qty', header: 'Qty', width: 10 },
-    { key: 'unit_cost', header: 'Unit cost', width: 12 },
-    { key: 'exchange_rate', header: 'Exchange rate', width: 12 },
-    { key: 'final_amount', header: 'Final amount', width: 14 },
     { key: 'po_due', header: 'PO due', width: 12 },
     { key: 'coway_edd', header: 'Coway EDD', width: 12 },
     { key: 'coway_week', header: 'Coway week', width: 12 },
@@ -1668,22 +1695,30 @@
     { key: 'erp_status', header: 'ERP status', width: 12 },
   ];
 
-  function bulkLookupExportRow(item) {
+  function psExportColumns(includePricing = false) {
+    if (!includePricing) return PS_EXPORT_COLUMNS;
+    const qtyIndex = PS_EXPORT_COLUMNS.findIndex(col => col.key === 'qty');
+    const insertAt = qtyIndex >= 0 ? qtyIndex + 1 : 6;
+    return [
+      ...PS_EXPORT_COLUMNS.slice(0, insertAt),
+      ...PS_EXPORT_PRICING_COLUMNS,
+      ...PS_EXPORT_COLUMNS.slice(insertAt),
+    ];
+  }
+
+  function bulkLookupExportRow(item, includePricing = false) {
     const stage = resolveCurrentStage(item);
     const stageStatus = stage?.status ? displayExecutionStatus(stage.status) : '';
     const machines = queuedMachines(item);
     const schedule = bulkLookupScheduleFields(item);
-    const pricing = bulkLookupPricingExportFields(item);
-    return {
+    const pricing = includePricing ? bulkLookupPricingExportFields(item) : null;
+    const row = {
       process_sheet: tempPsDisplayId(item) || item.display_ps_id || item.ps_id || '',
       partial: partialLabel(item),
       part_no: item.part_no || item.part_name || item.inventory_code || '',
       description: item.part_desc || '',
       material: materialInventoryLabel(item),
       qty: firstQuantity(item.display_qty, item.partial_qty, item.wo_req_qty, item.total_qty, 0),
-      unit_cost: pricing.unit_cost,
-      exchange_rate: pricing.exchange_rate,
-      final_amount: pricing.final_amount,
       po_due: fmtDate(item.due_date) === '-' ? '' : fmtDate(item.due_date),
       coway_edd: fmtDate(item.coway_proposed_edd) === '-' ? '' : fmtDate(item.coway_proposed_edd),
       coway_week: isoCalendarWeek(item.coway_proposed_edd),
@@ -1704,6 +1739,12 @@
       remarks: item.remarks || '',
       erp_status: item.status || item.execution_status || '',
     };
+    if (pricing) {
+      row.unit_cost = pricing.unit_cost;
+      row.exchange_rate = pricing.exchange_rate;
+      row.final_amount = pricing.final_amount;
+    }
+    return row;
   }
 
   async function ensureExcelJs() {
@@ -1724,7 +1765,7 @@
     return `process-sheets-export-${stamp}.xlsx`;
   }
 
-  async function exportBulkLookupToExcel(items, missedTerms, terms) {
+  async function exportBulkLookupToExcel(items, missedTerms, terms, includePricing = false) {
     if (!items.length && !missedTerms.length) {
       throw new Error('No process sheets matched your list.');
     }
@@ -1733,19 +1774,20 @@
     workbook.creator = 'Production Planner';
     workbook.created = new Date();
 
+    const columns = psExportColumns(includePricing);
     const sheet = workbook.addWorksheet('Process sheets');
-    const headers = PS_EXPORT_COLUMNS.map(col => col.header);
+    const headers = columns.map(col => col.header);
     const headerRow = sheet.addRow(headers);
     headerRow.font = { bold: true, size: 11 };
     headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
     headerRow.alignment = { vertical: 'middle' };
 
     items.forEach(item => {
-      const row = bulkLookupExportRow(item);
-      sheet.addRow(PS_EXPORT_COLUMNS.map(col => row[col.key] ?? ''));
+      const row = bulkLookupExportRow(item, includePricing);
+      sheet.addRow(columns.map(col => row[col.key] ?? ''));
     });
 
-    PS_EXPORT_COLUMNS.forEach((col, index) => {
+    columns.forEach((col, index) => {
       sheet.getColumn(index + 1).width = col.width;
     });
     sheet.views = [{ state: 'frozen', ySplit: 1, xSplit: 0, activeCell: 'A2' }];
@@ -1776,25 +1818,31 @@
     URL.revokeObjectURL(url);
 
     const summaryParts = [`Exported ${items.length} process sheet${items.length === 1 ? '' : 's'}`];
+    if (includePricing) summaryParts.push('with unit / total value');
     if (missedTerms.length) summaryParts.push(`${missedTerms.length} not found`);
     if (typeof toast === 'function') toast(summaryParts.join(' · '), missedTerms.length ? 'info' : 'success');
   }
 
-  function openBulkLookupModalResults(terms, items, missedTerms) {
+  function openBulkLookupModalResults(terms, items, missedTerms, includePricing = false) {
     if (typeof openModal !== 'function') return;
     bulkLookupExportState.items = items;
     bulkLookupExportState.missedTerms = missedTerms;
     bulkLookupExportState.terms = terms;
+    bulkLookupExportState.includePricing = includePricing;
     const missedHtml = missedTerms.length
       ? `<div class="ps-bulk-lookup-missed"><strong>No matches</strong>${escapeHtml(missedTerms.join(', '))}</div>`
+      : '';
+    const pricingNote = includePricing
+      ? '<span>Includes unit value, exchange rate, and total value</span>'
       : '';
     openModal('Bulk lookup results', `
       <div class="ps-bulk-lookup-summary">
         <span><strong>${escapeHtml(items.length)}</strong> process sheet${items.length === 1 ? '' : 's'} found</span>
         <span>Searched: ${escapeHtml(terms.join(', '))}</span>
+        ${pricingNote}
         <button type="button" class="btn btn-dark btn-sm" data-action="bulk-lookup-export">Export Excel</button>
       </div>
-      ${renderBulkLookupTable(items)}
+      ${renderBulkLookupTable(items, includePricing)}
       ${missedHtml}
     `, 'xl');
     bindBulkLookupModalActions();
@@ -1816,6 +1864,7 @@
         items: bulkLookupExportState.items,
         missedTerms: bulkLookupExportState.missedTerms,
         terms: bulkLookupExportState.terms,
+        includePricing: bulkLookupExportState.includePricing,
       });
     });
   }
@@ -1853,10 +1902,11 @@
       els.bulkLookupInput?.focus();
       return;
     }
+    const includePricing = bulkIncludePricing();
     openBulkLookupModalLoading(parseBulkLookupTerms(raw));
     try {
-      const { terms, items, missedTerms } = await fetchBulkLookupResults(raw);
-      openBulkLookupModalResults(terms, items, missedTerms);
+      const { terms, items, missedTerms } = await fetchBulkLookupResults(raw, { includePricing });
+      openBulkLookupModalResults(terms, items, missedTerms, includePricing);
     } catch (err) {
       if (typeof openModal === 'function') {
         openModal('Bulk lookup failed', `
@@ -1881,8 +1931,25 @@
       btn.textContent = 'Exporting…';
     }
     try {
-      const result = prefetched || await fetchBulkLookupResults(raw);
-      await exportBulkLookupToExcel(result.items, result.missedTerms, result.terms);
+      const includePricing = prefetched
+        ? Boolean(prefetched.includePricing)
+        : bulkIncludePricing();
+      let result = prefetched;
+      if (!result) {
+        result = await fetchBulkLookupResults(raw, { includePricing });
+      } else if (includePricing && !(result.items || []).some(item => item.unit_cost != null || item.exch_rate != null)) {
+        result = {
+          ...result,
+          items: await enrichBulkLookupPricing(result.items || []),
+          includePricing: true,
+        };
+      }
+      await exportBulkLookupToExcel(
+        result.items,
+        result.missedTerms,
+        result.terms,
+        includePricing,
+      );
     } catch (err) {
       if (typeof toast === 'function') {
         toast(err.message || 'Export failed.', 'error');
@@ -3254,6 +3321,7 @@
     els.bulkLookupInput = $('ps-bulk-lookup-input');
     els.bulkLookupBtn = $('ps-bulk-lookup-btn');
     els.bulkExportBtn = $('ps-bulk-export-btn');
+    els.bulkIncludePricing = $('ps-bulk-include-pricing');
 
     document.querySelectorAll('.ps-view-tab').forEach(tab => {
       tab.addEventListener('click', () => setPsView(tab.dataset.psView || 'queue'));

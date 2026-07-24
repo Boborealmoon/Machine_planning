@@ -163,6 +163,7 @@
 
 .fa-table td.fa-part-cell,
 .fa-table td.fa-qty-cell,
+.fa-table td.fa-fg-day-cell,
 .fa-table td.fa-mpp-num-cell,
 .fa-table td.fa-updated,
 .fa-table td.fa-col-actions,
@@ -228,6 +229,13 @@
 .fa-qty-cell {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.fa-fg-day-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text2);
+  min-width: 88px;
 }
 
 .fa-bom-detail-btns {
@@ -720,7 +728,7 @@
   }
 
   .fa-table {
-    min-width: 920px;
+    min-width: 1080px;
   }
 
   .fa-table thead th,

@@ -2337,6 +2337,12 @@ input, select, textarea, button { max-width: 100%; }
   min-width: 280px;
 }
 
+.ps-bulk-lookup-pricing {
+  white-space: nowrap;
+  font-size: 12px;
+  color: #4b5563;
+}
+
 .ps-bulk-lookup-summary {
   display: flex;
   flex-wrap: wrap;

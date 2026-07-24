@@ -126,9 +126,21 @@ def planner_db():
     wrapped = PlannerCon(conn)
     try:
         yield wrapped
-        conn.commit()
+        try:
+            conn.commit()
+        except Exception:
+            try:
+                if not getattr(conn, "closed", 1):
+                    conn.rollback()
+            except Exception:
+                pass
+            raise
     except Exception:
-        conn.rollback()
+        try:
+            if not getattr(conn, "closed", 1):
+                conn.rollback()
+        except Exception:
+            pass
         raise
     finally:
         planner_release_conn(conn)

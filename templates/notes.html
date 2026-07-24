@@ -3,7 +3,7 @@
 {% block title %}Admin Hub{% endblock %}
 {% block body_class %}notes-body{% endblock %}
 {% block main_class %}notes-main{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/notes.css') }}?v=20260717b">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/notes.css') }}?v=20260720b">{% endblock %}
 
 {% block content %}
 {% macro launch_link(label, href, description="") -%}
@@ -60,10 +60,10 @@
           <div><h3>Views</h3><p>Operational display screens</p></div>
         </div>
         <div class="admin-launch-links">
-          {{ launch_link("Machinist Board", url_for("machinist_board"), "Live machine queue") }}
+          {{ launch_link("Machine Queue Overview", url_for("machinist_board"), "Live machine queue") }}
           {{ launch_link("QAQC View", url_for("finishing_queue.finishing_queue_page"), "Finishing and inspection queue") }}
           {{ launch_link("Assembly BOMs", url_for("assembly_bom.assembly_bom_page"), "Assembly structure view") }}
-          {{ launch_link("Delivery Schedule", url_for("driver_view.driver_view_page"), "Driver and delivery view") }}
+          {{ launch_link("Delivery Schedule View", url_for("driver_view.driver_view_page"), "Driver and delivery view") }}
         </div>
       </section>
 
@@ -79,34 +79,39 @@
             {{ launch_link("Production Planner", url_for("planner")) }}
             {{ launch_link("MPP Planner", "/mpp-planner") }}
             {{ launch_link("Process Sheets", url_for("process_sheets")) }}
-            {{ launch_link("New Orders", url_for("new_orders.new_orders_page")) }}
-            {{ launch_link("Sales Orders", url_for("sales_orders.sales_orders_page")) }}
-            {{ launch_link("Delivery", url_for("delivery")) }}
-            {{ launch_link("Material Inspection", url_for("material_inspection.material_inspection_page")) }}
           </div>
         </div>
 
         <div class="admin-planner-section">
-          <h4>Reports and queries</h4>
+          <h4>Sales / Prod</h4>
+          <div class="admin-launch-links">
+            {{ launch_link("New Orders", url_for("new_orders.new_orders_page")) }}
+            {{ launch_link("S/O Management", url_for("sales_orders.sales_orders_page")) }}
+            {{ launch_link("Delivery Schedule", url_for("delivery")) }}
+            {{ launch_link("Mtl Stock-In/Out", url_for("materials")) }}
+          </div>
+        </div>
+
+        <div class="admin-planner-section">
+          <h4>Reports / Analytics</h4>
           <div class="admin-launch-links">
             {{ launch_link("Sales Report", url_for("sales_report.sales_report_page")) }}
-            {{ launch_link("Job Ratio", url_for("job_ratio.job_ratio_page")) }}
-            {{ launch_link("Production Capacity", url_for("capacity_monthly.production_capacity_page")) }}
+            {{ launch_link("Job Ratio Report", url_for("job_ratio.job_ratio_page")) }}
+            {{ launch_link("Machine Capacity", url_for("capacity_monthly.production_capacity_page")) }}
             {{ launch_link("Repeat Orders", url_for("repeat_orders.repeat_orders_page")) }}
+            {{ launch_link("Tooling PR Analytics", url_for("pr_status_enquiry.pr_status_enquiry_page")) }}
+          </div>
+        </div>
+
+        <div class="admin-planner-section">
+          <h4>Queries &amp; Master Data</h4>
+          <div class="admin-launch-links">
             {{ launch_link("Inventory Enquiry", url_for("inventory_enquiry.inventory_enquiry_page")) }}
             {{ launch_link("Inventory BOM", url_for("inventory_bom")) }}
             {{ launch_link("BOM Variation", url_for("bom_variation.bom_variation_page")) }}
-          </div>
-        </div>
-
-        <div class="admin-planner-section">
-          <h4>Master data and system</h4>
-          <div class="admin-launch-links">
-            {{ launch_link("Machines", url_for("machines_page")) }}
-            {{ launch_link("Materials", url_for("materials")) }}
-            {{ launch_link("Cycle Times", url_for("cycle_times_page")) }}
-            {{ launch_link("Program Tool Tracker", url_for("program_tool_tracker.program_tool_tracker_page")) }}
-            {{ launch_link("Program Tool Catalogue", url_for("program_tool_tracker.program_tool_tracker_page", view="catalogue")) }}
+            {{ launch_link("Machine List / Config", url_for("machines_page")) }}
+            {{ launch_link("Master Cycle Times", url_for("cycle_times_page")) }}
+            {{ launch_link("Program / Tool Tracker", url_for("program_tool_tracker.program_tool_tracker_page")) }}
             {{ launch_link("Frame Agreement Parts", url_for("frame_agreement.frame_agreement_parts_page")) }}
             {{ launch_link("Email Settings", url_for("email.system_page")) }}
           </div>
@@ -117,14 +122,8 @@
           <div class="admin-launch-links">
             {{ launch_link("Daily Output", url_for("daily_output_view")) }}
             {{ launch_link("Actual Production", url_for("actual_production")) }}
-            {{ launch_link("No-shipment Inspection", url_for("material_inspection.material_inspection_no_shipment_page")) }}
-            {{ launch_link("AUK OEE", url_for("auk_oee.auk_oee_page")) }}
-            {{ launch_link("Aker Inventory", url_for("excel_local.aker_inventory_page")) }}
+            {{ launch_link("AUK OEE Dashboard", url_for("auk_oee.auk_oee_page")) }}
             {{ launch_link("Preferred Machines", url_for("preferred_machines.preferred_machines_page")) }}
-            {{ launch_link("Kobelco MPS Archive", url_for("kobelco_mps_archive.kobelco_mps_archive_page")) }}
-            {{ launch_link("Machine Lane Calculator", url_for("machine_lane_calc.machine_lane_calc_page")) }}
-            {{ launch_link("Pending PP", url_for("pending_pp.pending_pp_page")) }}
-            {{ launch_link("PR Status Enquiry", url_for("pr_status_enquiry.pr_status_enquiry_page")) }}
           </div>
         </div>
       </section>
@@ -156,7 +155,10 @@
 
       <div class="notes-form-footer">
         <p class="notes-form-message" id="note-form-message" role="status"></p>
-        <button class="notes-save" id="note-save" type="submit">Add note</button>
+        <div class="notes-form-actions">
+          <button class="notes-cancel" id="note-cancel" type="button" hidden>Cancel</button>
+          <button class="notes-save" id="note-save" type="submit">Add note</button>
+        </div>
       </div>
     </form>
   </section>
@@ -173,4 +175,7 @@
 </div>
 {% endblock %}
 
-{% block scripts %}<script src="{{ url_for('static', filename='js/notes.js') }}?v=20260717a"></script>{% endblock %}
+{% block scripts %}
+<script>window.__ADMIN_GATE_TOKEN__ = {{ (admin_token or "") | tojson }};</script>
+<script src="{{ url_for('static', filename='js/notes.js') }}?v=20260724a"></script>
+{% endblock %}

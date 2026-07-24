@@ -119,45 +119,59 @@ body.mro-app .app-main--mro {
 .mro-primary-nav {
   display: flex;
   align-items: stretch;
-  gap: 28px;
+  gap: 8px;
   margin: 0 -20px 14px;
-  padding: 0 20px;
-  background: rgba(255, 255, 255, 0.82);
-  border-top: 1px solid #e2e8f0;
+  padding: 10px 20px 0;
+  background: #e8eef5;
+  border-top: 1px solid #d7e0eb;
   border-bottom: 1px solid #cbd5e1;
 }
 
 .mro-primary-nav-link {
   position: relative;
-  display: inline-block;
-  padding: 13px 2px 12px;
-  border: 0;
-  background: transparent;
-  color: #64748b;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 7.5rem;
+  padding: 11px 20px 12px;
+  border: 1px solid #c5d0de;
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
+  background: #dce5f0;
+  color: #475569;
   font: inherit;
   font-size: 0.9rem;
   font-weight: 700;
+  letter-spacing: 0.01em;
   text-decoration: none;
   cursor: pointer;
+  box-shadow: inset 0 -1px 0 transparent;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 
 .mro-primary-nav-link:hover {
+  background: #edf2f8;
   color: #0f172a;
+  border-color: #94a3b8;
 }
 
 .mro-primary-nav-link.is-active {
+  z-index: 1;
+  background: #fff;
   color: #0f766e;
+  border-color: #0f766e;
+  border-bottom-color: #fff;
+  box-shadow:
+    0 -1px 0 #0f766e,
+    inset 0 2px 0 #0f766e;
+  margin-bottom: -1px;
+  padding-bottom: 13px;
 }
 
-.mro-primary-nav-link.is-active::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: -1px;
-  left: 0;
-  height: 3px;
-  border-radius: 3px 3px 0 0;
-  background: #0f766e;
+.mro-primary-nav-link.is-active:hover {
+  background: #fff;
+  color: #0f766e;
+  border-color: #0f766e;
 }
 
 .mro-nav {
@@ -2242,8 +2256,8 @@ body.mro-modal-open {
   .mro-primary-nav {
     margin-right: -12px;
     margin-left: -12px;
-    padding: 0 12px;
-    gap: 20px;
+    padding: 10px 12px 0;
+    gap: 6px;
     overflow-x: auto;
     overflow-y: hidden;
     overscroll-behavior-x: contain;
@@ -2253,6 +2267,9 @@ body.mro-modal-open {
 
   .mro-primary-nav-link {
     flex: 0 0 auto;
+    min-width: 0;
+    padding-right: 16px;
+    padding-left: 16px;
     white-space: nowrap;
   }
 

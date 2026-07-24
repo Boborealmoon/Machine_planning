@@ -14,7 +14,7 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 log = logging.getLogger(__name__)
 
 _APP_ROOT = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(_APP_ROOT, ".env"))
+load_dotenv(os.path.join(_APP_ROOT, ".env"), encoding="utf-8-sig")
 
 app = Flask(__name__)
 _dev_mode = os.getenv("FLASK_ENV", "").strip().lower() == "development"
@@ -27,6 +27,7 @@ from planning.summary import trial_summary_bp
 from planning.flows import flows_bp, trial_prefixed_flows_bp
 from planning.gantt_route import trial_gantt_bp
 from planning.materials_route import materials_route_bp
+from planning.material_bar_calc_route import material_bar_calc_bp
 from planning.planner_routes import trial_bp
 from planning.program_tool_list_route import program_tool_list_bp
 from planning.new_orders_route import new_orders_bp
@@ -52,6 +53,7 @@ from planning.daily_output_route import (
 )
 from planning.bom_variation_route import bom_variation_bp
 from planning.assembly_bom_route import assembly_bom_bp
+from planning.assembly_parts_route import assembly_parts_bp
 from planning.finishing_queue_route import (
     FINISHING_QUEUE_PATH,
     LEGACY_FINISHING_QUEUE_PATHS,
@@ -64,6 +66,7 @@ from planning.driver_view_route import (
 )
 from planning.capacity_monthly_route import capacity_monthly_bp
 from planning.preferred_machines_route import preferred_machines_bp
+from planning.floor_plan_route import floor_plan_bp
 from planning.queue_exit_history_route import queue_exit_history_bp
 from planning.mpp_planner_route import mpp_planner_bp
 from planning.inventory_enquiry_route import inventory_enquiry_bp
@@ -81,6 +84,7 @@ app.register_blueprint(flows_bp)
 app.register_blueprint(trial_prefixed_flows_bp)
 app.register_blueprint(trial_gantt_bp)
 app.register_blueprint(materials_route_bp)
+app.register_blueprint(material_bar_calc_bp)
 app.register_blueprint(trial_bp)
 app.register_blueprint(program_tool_list_bp)
 app.register_blueprint(new_orders_bp)
@@ -98,6 +102,7 @@ app.register_blueprint(repeat_orders_bp)
 app.register_blueprint(auk_oee_bp)
 app.register_blueprint(bom_variation_bp)
 app.register_blueprint(assembly_bom_bp)
+app.register_blueprint(assembly_parts_bp)
 app.register_blueprint(finishing_queue_bp)
 app.register_blueprint(driver_view_bp)
 
@@ -115,6 +120,7 @@ for _legacy_fq_path in LEGACY_FINISHING_QUEUE_PATHS:
     )
 app.register_blueprint(capacity_monthly_bp)
 app.register_blueprint(preferred_machines_bp)
+app.register_blueprint(floor_plan_bp)
 app.register_blueprint(queue_exit_history_bp)
 app.register_blueprint(mpp_planner_bp)
 app.register_blueprint(inventory_enquiry_bp)
@@ -242,6 +248,7 @@ def _is_gate_public_path(path: str) -> bool:
         REPORTS_GATE_PATH.lower(),
         FINANCE_GATE_PATH.lower(),
         MRO_GATE_PATH.lower(),
+        ADMIN_GATE_PATH.lower(),
         "/favicon.ico",
     ):
         return True
@@ -252,6 +259,9 @@ def _is_gate_public_path(path: str) -> bool:
     if normalized in _MRO_PUBLIC_PATHS:
         return True
     if normalized in _ACCOUNTS_PUBLIC_PATHS:
+        return True
+    # Admin Hub uses ADMIN_PASSCODE when set; otherwise stays under the planner gate.
+    if _admin_gate_enabled() and normalized in _ADMIN_PUBLIC_PATHS:
         return True
     return normalized.startswith("/static/") or normalized.startswith("/api/")
 
@@ -346,6 +356,14 @@ MRO_TOKEN_MAX_AGE = 8 * 3600
 _MRO_PAGE_PREFIXES = (MRO_PATH,)
 _MRO_API_PREFIXES = ("/api/mro",)
 
+ADMIN_GATE_PATH = "/admin-gate"
+ADMIN_TOKEN_SALT = "admin-hub-gate"
+ADMIN_TOKEN_MAX_AGE = 8 * 3600
+ADMIN_PATH = "/admin"
+_ADMIN_PUBLIC_PATHS = frozenset({ADMIN_PATH.lower(), "/notes"})
+_ADMIN_PAGE_PREFIXES = (ADMIN_PATH, "/notes")
+_ADMIN_API_PREFIXES = ("/api/notes",)
+
 
 def _finance_passcode() -> str:
     return (os.getenv("FINANCE_PASSCODE") or "").strip()
@@ -361,6 +379,14 @@ def _mro_passcode() -> str:
 
 def _mro_gate_enabled() -> bool:
     return bool(_mro_passcode())
+
+
+def _admin_passcode() -> str:
+    return (os.getenv("ADMIN_PASSCODE") or "").strip()
+
+
+def _admin_gate_enabled() -> bool:
+    return bool(_admin_passcode())
 
 
 def _finance_token_serializer() -> URLSafeTimedSerializer:
@@ -379,6 +405,15 @@ def _mro_token_serializer() -> URLSafeTimedSerializer:
 
 def _issue_mro_token() -> str:
     return _mro_token_serializer().dumps({"v": 1})
+
+
+def _admin_token_serializer() -> URLSafeTimedSerializer:
+    secret = _admin_passcode() or app.secret_key
+    return URLSafeTimedSerializer(secret, salt=ADMIN_TOKEN_SALT)
+
+
+def _issue_admin_token() -> str:
+    return _admin_token_serializer().dumps({"v": 1})
 
 
 def _finance_token_valid(token: str) -> bool:
@@ -401,12 +436,26 @@ def _mro_token_valid(token: str) -> bool:
         return False
 
 
+def _admin_token_valid(token: str) -> bool:
+    if not token:
+        return False
+    try:
+        payload = _admin_token_serializer().loads(token, max_age=ADMIN_TOKEN_MAX_AGE)
+        return isinstance(payload, dict) and payload.get("v") == 1
+    except (BadSignature, SignatureExpired):
+        return False
+
+
 def _finance_request_token() -> str:
     return (request.args.get("ft") or request.headers.get("X-Finance-Token") or "").strip()
 
 
 def _mro_request_token() -> str:
     return (request.args.get("mt") or request.headers.get("X-MRO-Token") or "").strip()
+
+
+def _admin_request_token() -> str:
+    return (request.args.get("at") or request.headers.get("X-Admin-Token") or "").strip()
 
 
 def _is_finance_page_path(path: str) -> bool:
@@ -425,6 +474,14 @@ def _is_mro_api_path(path: str) -> bool:
     return _path_has_prefix(path, _MRO_API_PREFIXES)
 
 
+def _is_admin_page_path(path: str) -> bool:
+    return _path_has_prefix(path, _ADMIN_PAGE_PREFIXES)
+
+
+def _is_admin_api_path(path: str) -> bool:
+    return _path_has_prefix(path, _ADMIN_API_PREFIXES)
+
+
 @app.before_request
 def _require_planner_passcode():
     if not _planner_gate_enabled():
@@ -440,6 +497,9 @@ def _require_planner_passcode():
         return None
     # MRO pages use MRO_PASSCODE only — not the planner passcode.
     if _is_mro_page_path(path) or _is_mro_api_path(path):
+        return None
+    # Admin Hub uses ADMIN_PASSCODE only when that gate is enabled.
+    if _admin_gate_enabled() and (_is_admin_page_path(path) or _is_admin_api_path(path)):
         return None
     if _planner_authenticated():
         return None
@@ -608,6 +668,68 @@ def mro_gate():
     return _render_mro_gate(next_path=next_path)
 
 
+def _safe_admin_next(raw: str) -> str:
+    target = (raw or "").strip()
+    if _is_admin_page_path(target):
+        return target
+    return ADMIN_PATH
+
+
+def _render_admin_gate(error=None, next_path=ADMIN_PATH, status=200, disabled=False):
+    html = render_template(
+        "site_gate.html",
+        error=error,
+        next_path=next_path,
+        gate_action=url_for("admin_gate"),
+        gate_disabled=disabled,
+        gate_title="Admin locked",
+        gate_message="Enter the passcode to open the Admin Hub.",
+        gate_env_var="ADMIN_PASSCODE",
+    )
+    return (html, status) if status != 200 else html
+
+
+@app.before_request
+def _require_admin_passcode():
+    path = request.path or "/"
+    if not _is_admin_page_path(path) and not _is_admin_api_path(path):
+        return None
+    if _admin_gate_enabled():
+        if _admin_token_valid(_admin_request_token()):
+            return None
+        if _is_admin_api_path(path):
+            return jsonify({"error": "Admin access locked."}), 401
+        return redirect(url_for("admin_gate", next=path))
+    # Gate off: /api/notes is exempt from the planner page gate, so require a
+    # planner session here whenever PLANNER_PASSCODE is set.
+    if (
+        _is_admin_api_path(path)
+        and _planner_gate_enabled()
+        and not _planner_authenticated()
+    ):
+        return jsonify({"error": "Planner access locked."}), 401
+    return None
+
+
+@app.route(ADMIN_GATE_PATH, methods=["GET", "POST"], endpoint="admin_gate")
+def admin_gate():
+    next_path = _safe_admin_next(request.values.get("next"))
+
+    if not _admin_gate_enabled():
+        return _render_admin_gate(next_path=next_path, disabled=True)
+
+    if request.method == "POST":
+        entered = (request.form.get("passcode") or "").strip()
+        passcode = _admin_passcode()
+        if passcode and secrets.compare_digest(entered, passcode):
+            token = _issue_admin_token()
+            next_path = _safe_admin_next(request.form.get("next"))
+            return redirect(f"{next_path}?at={quote(token, safe='')}")
+        return _render_admin_gate(error="Invalid passcode.", next_path=next_path, status=401)
+
+    return _render_admin_gate(next_path=next_path)
+
+
 def _scheduler_asset_version() -> str:
     """Cache-bust token for planner JS — changes when scheduler scripts change."""
     override = (os.getenv("SCHEDULER_ASSET_VERSION") or "").strip()
@@ -651,6 +773,7 @@ def _inject_board_paths():
         "reports_gate_enabled": _reports_gate_enabled(),
         "finance_gate_enabled": _finance_gate_enabled(),
         "mro_gate_enabled": _mro_gate_enabled(),
+        "admin_gate_enabled": _admin_gate_enabled(),
         "scheduler_asset_version": SCHEDULER_ASSET_VERSION,
     }
 
@@ -745,6 +868,8 @@ def site_root_gate():
         return redirect(url_for("finance_gate", next=next_path))
     if _is_mro_page_path(next_path):
         return redirect(url_for("mro_gate", next=next_path))
+    if _admin_gate_enabled() and _is_admin_page_path(next_path):
+        return redirect(url_for("admin_gate", next=next_path))
 
     if not _planner_gate_enabled():
         return render_template(
@@ -936,7 +1061,7 @@ def machines_page():
 
 @app.get("/planning-data/materials")
 def materials():
-    return render_template("planning_data/materials.html", active="planning_data")
+    return render_template("planning_data/materials.html", active="materials")
 
 
 @app.get("/planning-data/cycle-times")

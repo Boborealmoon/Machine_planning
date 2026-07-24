@@ -275,14 +275,57 @@
     if (!text) return "";
     const mode = String(meta?.match_mode || "");
     const cls =
-      mode === "not_found"
+      mode === "not_found" || mode === "route_no_materials"
         ? " so-material-modal-notice--warn"
         : " so-material-modal-notice--info";
     return `<div class="so-material-modal-notice${cls}">${escapeHtml(text)}</div>`;
   }
 
+  function renderMatchedBomStages(meta) {
+    const stages = Array.isArray(meta?.matched_stages) ? meta.matched_stages : [];
+    if (!stages.length) return "";
+    const route = String(meta?.matched_bom_code || meta?.resolved_bom_code || "").trim();
+    const desc = String(meta?.matched_bom_desc || "").trim();
+    const title = route
+      ? `Matched BOM op stages · ${route}${desc ? ` · ${desc}` : ""}`
+      : "Matched BOM op stages";
+    const body = stages
+      .map((stage) => {
+        const no =
+          stage?.stage_no != null && stage.stage_no !== "" ? String(stage.stage_no) : "—";
+        const stageDesc = String(stage?.stage_desc || "—");
+        return `
+      <tr>
+        <td class="new-orders-num">${escapeHtml(no)}</td>
+        <td>${escapeHtml(stageDesc)}</td>
+      </tr>
+    `;
+      })
+      .join("");
+    return `
+      <section class="so-material-modal-section">
+        <h3 class="so-material-modal-section-title">${escapeHtml(title)}</h3>
+        <div class="so-material-modal-table-wrap">
+          <table class="so-material-modal-table">
+            <thead>
+              <tr>
+                <th>Stage</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }
+
   function renderBomTable(rows, meta = null) {
     if (!Array.isArray(rows) || !rows.length) {
+      const stagesHtml = renderMatchedBomStages(meta);
+      if (stagesHtml) {
+        return `${stagesHtml}<p class="so-material-modal-empty">No raw-material lines on this BOM route.</p>`;
+      }
       return '<p class="so-material-modal-empty">No BOM materials found for this part and route.</p>';
     }
     const showRoute = shouldShowBomRouteColumn(rows, meta);
@@ -339,6 +382,10 @@
           match_mode: data.match_mode || "",
           alternate_bom_codes: data.alternate_bom_codes || [],
           notice: data.notice || "",
+          matched_bom_code: data.matched_bom_code || data.resolved_bom_code || "",
+          matched_bom_desc: data.matched_bom_desc || "",
+          matched_stages: Array.isArray(data.matched_stages) ? data.matched_stages : [],
+          route_matched: Boolean(data.route_matched),
         },
       };
     }

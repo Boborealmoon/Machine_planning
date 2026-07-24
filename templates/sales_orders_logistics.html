@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Material Tracking{% endblock %}
+{% block body_class %}sol-view{% endblock %}
+{% block main_class %}app-main--sales-logistics{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260720d">
+{% endblock %}
+{% block content %}
+<div class="sol-page">
+  <header class="sol-header">
+    <div class="sol-header-text">
+      <h1 class="sol-title">Material Tracking</h1>
+      <p class="sol-subtitle" id="sol-subtitle" aria-live="polite">Loading process sheets...</p>
+    </div>
+    <div class="sol-header-actions">
+      <button type="button" class="sol-btn sol-btn--primary" id="sol-refresh">Refresh</button>
+    </div>
+  </header>
+
+  <nav class="sol-nav" aria-label="Filters">
+    <div class="sol-nav-group" role="tablist" aria-label="View">
+      <button type="button" class="sol-chip is-active" data-sol-view="active" role="tab" aria-selected="true">
+        Active <span class="sol-chip-count" id="sol-active-count" hidden>0</span>
+      </button>
+      <button type="button" class="sol-chip" data-sol-view="no-wo" role="tab" aria-selected="false"
+              title="Process sheets with PP raised but no work order yet">
+        No WO <span class="sol-chip-count" id="sol-no-wo-count" hidden>0</span>
+      </button>
+    </div>
+    <select id="sol-material-filter" class="sol-select" aria-label="Filter by material status">
+      <option value="all">All material status</option>
+      <option value="empty">No date / not arrived</option>
+      <option value="expected">Expected date set</option>
+      <option value="arrived">Arrived</option>
+    </select>
+    <div class="filter-dropdown" id="sol-ps-type-dropdown">
+      <button class="filter-dropdown-btn sol-prefix-btn" type="button" id="sol-ps-type-btn">APS, NPS</button>
+      <div class="filter-dropdown-panel" id="sol-ps-type-panel" hidden>
+        <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
+        <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
+        <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
+        <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
+        <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
+        <label class="filter-dropdown-item"><input type="checkbox" value="SR" /> [SR]</label>
+      </div>
+    </div>
+    <label class="sol-search-wrap">
+      <input id="sol-search" class="sol-search-input" type="search" placeholder="Search SO, PP, part, customer..." autocomplete="off">
+    </label>
+  </nav>
+
+  <div id="sol-loading" class="sol-loading">
+    <div class="sol-spinner" aria-hidden="true"></div>
+    Loading process sheets...
+  </div>
+
+  <div id="sol-table-host" class="sol-table-card" hidden>
+    <div class="sol-table-scroll">
+      <table class="sol-table">
+        <thead>
+          <tr>
+            <th>S/O</th>
+            <th>Customer</th>
+            <th>Process sheet</th>
+            <th class="sol-col-partial">Ptl</th>
+            <th class="sol-col-qty">SO qty</th>
+            <th class="sol-col-qty">Partial qty</th>
+            <th>Stage</th>
+            <th>Part</th>
+            <th>Description</th>
+            <th class="sol-col-due">Due</th>
+            <th class="sol-col-bom">BOM</th>
+            <th class="sol-col-material">Material in</th>
+            <th class="sol-col-notes">Mtl / Part Order</th>
+          </tr>
+        </thead>
+        <tbody id="sol-table-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <p id="sol-empty" class="sol-empty" hidden>No rows match your filters.</p>
+
+  <footer class="sol-foot">
+    <p class="sol-legend">
+      <span class="sol-legend-item sol-legend-item--no-wo">Amber row</span> awaiting WO &middot;
+      <span class="sol-legend-item sol-legend-item--date">Blue cell</span> expected date &middot;
+      <span class="sol-legend-item sol-legend-item--arrived">Green cell</span> material arrived &middot;
+      Click <strong>Materials</strong> for BOM + inventory enquiry
+    </p>
+    <p class="sol-meta" id="sol-meta" hidden></p>
+  </footer>
+</div>
+
+<div id="so-material-modal" class="so-material-modal" hidden>
+  <div class="so-material-modal-backdrop" data-action="close-material-modal" aria-hidden="true"></div>
+  <div class="so-material-modal-panel" role="dialog" aria-modal="true" aria-labelledby="so-material-modal-title">
+    <div class="so-material-modal-head">
+      <div>
+        <p class="so-material-modal-kicker">BOM materials</p>
+        <div class="so-material-modal-identifiers" id="so-material-modal-title"></div>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="so-material-modal-close" aria-label="Close">Close</button>
+    </div>
+    <div class="so-material-modal-body" id="so-material-modal-body"></div>
+    <p class="so-material-modal-foot">BOM: <code>inventory_bom_listing</code> &middot; Inventory: <code>ic_inventory_enquiry_summary_view</code></p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
+<script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260720d"></script>
+{% endblock %}

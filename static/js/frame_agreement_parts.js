@@ -195,6 +195,57 @@
     return count > 0 ? `MPP config (${count})` : 'MPP config';
   }
 
+  const FA_NORMAL_DAY_MINUTES = 630; // 10.5h weekday shift 08:30–20:00
+  const FA_MPP_DAY_MINUTES = 1440; // 24h MPP coverage
+
+  function faOpCycleTotals(row, bomCode) {
+    const bom = String(bomCode || '').trim();
+    const configs = row?.op_configs?.[bom];
+    let totalCycle = 0;
+    let totalSetup = 0;
+    if (!configs || typeof configs !== 'object') {
+      return { totalCycle, totalSetup };
+    }
+    for (const cfg of Object.values(configs)) {
+      if (!cfg || typeof cfg !== 'object') continue;
+      const cycle = Number(cfg.cycle_min_per_piece || 0);
+      if (!Number.isFinite(cycle) || cycle <= 0) continue;
+      totalCycle += cycle;
+      const setup = Number(cfg.setup_minutes || cfg.mpp_setup_minutes || 0);
+      if (Number.isFinite(setup) && setup > 0) totalSetup += setup;
+    }
+    return { totalCycle, totalSetup };
+  }
+
+  function faFgPerDay(availableMin, totalCycle, totalSetup) {
+    const cycle = Number(totalCycle);
+    if (!Number.isFinite(cycle) || cycle <= 0) return null;
+    const available = Number(availableMin);
+    const setup = Number(totalSetup) || 0;
+    if (!Number.isFinite(available)) return null;
+    return Math.max(0, (available - setup) / cycle);
+  }
+
+  function faFormatFgPerDay(value) {
+    if (value == null || !Number.isFinite(value)) return '—';
+    return value.toFixed(2);
+  }
+
+  function faFgPerDayCells(row, bomCode) {
+    const { totalCycle, totalSetup } = faOpCycleTotals(row, bomCode);
+    const normal = faFgPerDay(FA_NORMAL_DAY_MINUTES, totalCycle, totalSetup);
+    const mpp = faFgPerDay(FA_MPP_DAY_MINUTES, totalCycle, totalSetup);
+    const normalLabel = faFormatFgPerDay(normal);
+    const mppLabel = faFormatFgPerDay(mpp);
+    const tip = totalCycle > 0
+      ? `Cycle ${totalCycle} min/pc · setup ${totalSetup} min/day`
+      : 'Configure cycle times in MPP config';
+    return `
+      <td class="new-orders-num fa-qty-cell fa-fg-day-cell" title="${escapeHtml(`Normal 10.5h − setup · ${tip}`)}">${escapeHtml(normalLabel)}</td>
+      <td class="new-orders-num fa-qty-cell fa-fg-day-cell" title="${escapeHtml(`MPP 24h − setup · ${tip}`)}">${escapeHtml(mppLabel)}</td>
+    `;
+  }
+
   function faFindStateRow(partNo) {
     const want = String(partNo || '').trim();
     if (!want) return null;
@@ -770,6 +821,7 @@
           <td class="fa-bom-cell">${faRenderBomToggle({ partNo, bomCodes, selectedBom, context: 'table', row })}</td>
           <td class="new-orders-mono fa-material-cell" title="${escapeHtml(fields.materialDesc)}">${escapeHtml(fields.material)}</td>
           <td class="new-orders-num fa-qty-cell">${escapeHtml(fields.qtyFg)}</td>
+          ${faFgPerDayCells(row, selectedBom)}
           <td class="fa-materials-cell">${renderBomDetailBtns(partNo, selectedBom)}</td>
           <td class="fa-mpp-config-cell">${renderMppConfigBtn(partNo, selectedBom, row)}</td>
           <td class="fa-mpp-machine-cell">

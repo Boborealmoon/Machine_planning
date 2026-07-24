@@ -33,7 +33,7 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 17
+_SCHEMA_VERSION = 19
 
 _NOTE_FIELDS = (
     "material_subcon",
@@ -113,14 +113,18 @@ ORDER BY pp.source_voucher_no, pp.pp_voucher_no
 
 _MFG_PP_PARTIAL_SQL = """
 SELECT
-    pp_voucher_no,
-    pp_partial_no,
-    inventory_code,
-    customer_code,
-    party_name,
-    customer_po_no
-FROM public.mfg_pp_partial_view
-ORDER BY pp_voucher_no, pp_partial_no
+    v.pp_voucher_no,
+    v.pp_partial_no,
+    v.inventory_code,
+    v.customer_code,
+    v.party_name,
+    v.customer_po_no,
+    p.partial_qty
+FROM public.mfg_pp_partial_view v
+LEFT JOIN public.mfg_pp_partial p
+       ON p.pp_voucher_no = v.pp_voucher_no
+      AND p.pp_partial_no = v.pp_partial_no
+ORDER BY v.pp_voucher_no, v.pp_partial_no
 """
 
 _SO_ORDER_HEADER_SQL = """
@@ -742,21 +746,42 @@ wo AS (
     WHERE t2.source_pp_no = ANY(%s)
       AND t2.stage_no IS NOT NULL
 ),
-agg AS (
+-- Per stage_no: PP + rework rows share one bucket (e.g. 49/50 + RW 1 → 50).
+stage_done AS (
     SELECT
         ps_base,
         pp_partial_no,
-        COUNT(*)::int AS erp_wo_stage_count,
+        stage_no,
         BOOL_AND(
             UPPER(COALESCE(execution_status, '')) IN ('C', 'COMPLETED')
-            AND (
-                COALESCE(wo_qty_required, 0) <= 0.0001
-                OR COALESCE(total_acc_qty_produced, 0)
-                   >= COALESCE(wo_qty_required, 0) - 0.0001
-            )
-        ) AS erp_all_wo_complete
+        ) AS all_status_complete,
+        SUM(COALESCE(total_acc_qty_produced, 0)) AS produced_sum,
+        MAX(COALESCE(wo_qty_required, 0)) AS required_max
     FROM wo
-    GROUP BY ps_base, pp_partial_no
+    GROUP BY ps_base, pp_partial_no, stage_no
+),
+agg AS (
+    SELECT
+        w.ps_base,
+        w.pp_partial_no,
+        COUNT(*)::int AS erp_wo_stage_count,
+        COALESCE(
+            (
+                SELECT BOOL_AND(
+                    sd.all_status_complete
+                    AND (
+                        sd.required_max <= 0.0001
+                        OR sd.produced_sum >= sd.required_max - 0.0001
+                    )
+                )
+                FROM stage_done sd
+                WHERE sd.ps_base = w.ps_base
+                  AND sd.pp_partial_no = w.pp_partial_no
+            ),
+            FALSE
+        ) AS erp_all_wo_complete
+    FROM wo w
+    GROUP BY w.ps_base, w.pp_partial_no
 ),
 open_stage AS (
     SELECT DISTINCT ON (ps_base, pp_partial_no)
@@ -803,6 +828,9 @@ SELECT
     CASE
         WHEN o.current_stage_no IS NOT NULL THEN 'open'
         WHEN a.erp_all_wo_complete THEN 'completed'
+        -- WO history exists and ERP closed every stage (qty quirks / rework split)
+        -- → never treat as "No WO".
+        WHEN a.erp_wo_stage_count > 0 THEN 'completed'
         ELSE 'unassigned'
     END AS erp_stage_mode
 FROM agg a
@@ -832,18 +860,23 @@ def _stage_overlay_from_row(row: dict[str, Any]) -> dict[str, Any]:
     stage_status = compact_text(row.get("current_stage_status"))
     stage_no = row.get("current_stage_no")
     last_no = row.get("erp_last_stage_no")
+    wo_count = int(row.get("erp_wo_stage_count") or 0)
     mode = compact_text(row.get("erp_stage_mode")) or "unassigned"
     if stage_desc or stage_status:
         mode = "open"
-    elif int(row.get("erp_wo_stage_count") or 0) <= 0:
+    elif wo_count <= 0:
         mode = "unassigned"
+    elif mode == "unassigned":
+        # Closed WO history with qty/rework edge cases must not show as No WO.
+        mode = "completed"
+    all_complete = bool(row.get("erp_all_wo_complete")) or mode == "completed"
     return {
         "current_stage_no": int(stage_no) if stage_no is not None else None,
         "current_stage_desc": stage_desc,
         "current_stage_status": stage_status,
         "erp_stage_mode": mode,
-        "erp_wo_stage_count": int(row.get("erp_wo_stage_count") or 0),
-        "erp_all_wo_complete": bool(row.get("erp_all_wo_complete")),
+        "erp_wo_stage_count": wo_count,
+        "erp_all_wo_complete": all_complete,
         "erp_last_stage_no": int(last_no) if last_no is not None else None,
         "erp_last_stage_desc": compact_text(row.get("erp_last_stage_desc")),
         "erp_last_stage_status": compact_text(row.get("erp_last_stage_status")),
@@ -1371,6 +1404,11 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
 @sales_orders_bp.get("/sales-orders")
 def sales_orders_page():
     return render_template("sales_orders.html", active="sales_orders")
+
+
+@sales_orders_bp.get("/sales-orders/logistics")
+def sales_orders_logistics_page():
+    return render_template("sales_orders_logistics.html", active="sales_orders_logistics")
 
 
 @sales_orders_bp.get("/api/sales-orders")

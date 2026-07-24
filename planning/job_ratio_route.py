@@ -32,6 +32,12 @@ from .job_ratio import (
 
     aggregate_ranked_parts,
 
+    attach_bom_cycle_groups,
+
+    bom_stages_for_part,
+
+    bom_cycle_groups,
+
     bucket_label,
 
     build_job_rows_from_pp_vouchers,
@@ -43,6 +49,8 @@ from .job_ratio import (
     enrich_booked_row,
 
     filter_detail_rows,
+
+    filter_part_detail_rows,
 
     filter_rows_by_pp_types,
 
@@ -588,6 +596,17 @@ def api_job_ratio_parts():
         sort=sort,
         score_mode=score_mode,
     )
+    try:
+        from planning.helpers import planner_db
+
+        with planner_db() as con:
+            attach_bom_cycle_groups(con, rows)
+    except Exception as exc:
+        logger.warning("job ratio parts BOM cycle lookup failed: %s", exc)
+        for row in rows:
+            row.setdefault("bom_code", None)
+            row.setdefault("bom_cycle_groups", [])
+
     total_qty = sum(float(row.get("total_qty") or 0) for row in rows)
     total_value = sum(float(row.get("total_value") or 0) for row in rows)
     customer_options = [
@@ -619,6 +638,80 @@ def api_job_ratio_parts():
             "total_qty": round(total_qty, 2),
             "total_value": round(total_value, 2),
             "customer_options": customer_options,
+            "rows": rows,
+        }
+    )
+
+
+@job_ratio_bp.get("/api/job-ratio/parts/detail")
+def api_job_ratio_parts_detail():
+    refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
+    month_raw = compact_text(request.args.get("month"))
+    customer_code = compact_text(request.args.get("customer_code")) or None
+    part_no = compact_text(request.args.get("part_no")) or None
+    sort = compact_text(request.args.get("sort")).lower() or "volume"
+    if sort not in {"volume", "value", "date"}:
+        return jsonify({"error": "sort must be volume, value, or date"}), 400
+    if not customer_code or not part_no:
+        return jsonify({"error": "customer_code and part_no are required"}), 400
+
+    month: int | None = None
+    if month_raw:
+        try:
+            month = int(month_raw)
+        except ValueError:
+            return jsonify({"error": "month must be an integer"}), 400
+        if month < 1 or month > 12:
+            return jsonify({"error": "month must be between 1 and 12"}), 400
+
+    try:
+        year = _parse_year_arg()
+        pp_types, all_selected = _parse_pp_types_arg()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    try:
+        data = _fetch_report(year, pp_types, all_selected=all_selected, refresh=refresh)
+    except Exception as exc:
+        logger.exception("job ratio parts detail query failed")
+        return jsonify({"error": f"Job ratio query failed: {exc}"}), 502
+
+    rows = filter_part_detail_rows(
+        data.get("booked_lines") or [],
+        year=year,
+        customer_code=customer_code,
+        part_no=part_no,
+        month=month,
+        sort=sort,
+    )
+    total_value = sum(float(row.get("line_amount") or 0) for row in rows)
+    bom_code = None
+    bom_stages: list[dict[str, Any]] = []
+    try:
+        from planning.helpers import planner_db
+
+        with planner_db() as con:
+            bom_code, bom_stages = bom_stages_for_part(con, part_no)
+    except Exception as exc:
+        logger.warning("job ratio BOM stages lookup failed for %s: %s", part_no, exc)
+
+    total_qty = sum(float(row.get("qty") or 0) for row in rows)
+    cycle_groups = bom_cycle_groups(bom_stages, total_qty)
+
+    return jsonify(
+        {
+            "ok": True,
+            "year": year,
+            "month": month,
+            "customer_code": customer_code,
+            "part_no": part_no,
+            "sort": sort,
+            "count": len(rows),
+            "total_qty": round(total_qty, 2),
+            "total_value": round(total_value, 2),
+            "bom_code": bom_code,
+            "bom_stages": bom_stages,
+            "bom_cycle_groups": cycle_groups,
             "rows": rows,
         }
     )

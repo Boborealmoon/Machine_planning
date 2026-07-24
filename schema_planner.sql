@@ -671,7 +671,8 @@ VALUES
     ('CNC 36', 'MPP',      '24HR',     TRUE),
     ('CNC 38', 'TURNMILL', 'STANDARD', TRUE),
     ('CNC 39', 'TURNMILL', 'STANDARD', TRUE),
-    ('CNC 40', 'TURNMILL', 'STANDARD', TRUE)
+    ('CNC 40', 'TURNMILL', 'STANDARD', TRUE),
+    ('CNC 41', 'MPP',      'STANDARD', TRUE)
 ON CONFLICT (machine_no) DO NOTHING;
 
 
@@ -811,4 +812,106 @@ CREATE TABLE IF NOT EXISTS public.planner_so_pp_notes (
     sales_notes         TEXT         NOT NULL DEFAULT '',
     updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+
+-- =============================================================================
+-- GROUP: Bar-stock material calculator (per-PS target tags + jaw/stock presets)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS public.planner_material_bar_preset (
+    preset_id              BIGSERIAL    PRIMARY KEY,
+    name                   TEXT         NOT NULL,
+    material_type_grade    TEXT         NOT NULL DEFAULT '',
+    stock_od_mm            NUMERIC      NOT NULL DEFAULT 0,
+    standard_bar_length_mm NUMERIC      NOT NULL DEFAULT 0,
+    density_g_cm3          NUMERIC      NOT NULL DEFAULT 7.85,
+    jaw_length_mm          NUMERIC      NOT NULL DEFAULT 0,
+    facing_allowance_mm    NUMERIC      NOT NULL DEFAULT 0,
+    cutoff_kerf_mm         NUMERIC      NOT NULL DEFAULT 0,
+    chamfer_allowance_mm   NUMERIC      NOT NULL DEFAULT 0,
+    clamp_length_op1_mm    NUMERIC      NOT NULL DEFAULT 0,
+    remarks                TEXT         NOT NULL DEFAULT '',
+    created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (name)
+);
+
+CREATE TABLE IF NOT EXISTS public.planner_ps_material_calc (
+    calc_id                BIGSERIAL    PRIMARY KEY,
+    planner_ps_id          TEXT         NOT NULL,
+    part_no                TEXT         NOT NULL DEFAULT '',
+    revision               TEXT         NOT NULL DEFAULT '',
+    material_type_grade    TEXT         NOT NULL DEFAULT '',
+    stock_od_mm            NUMERIC      NOT NULL DEFAULT 0,
+    standard_bar_length_mm NUMERIC      NOT NULL DEFAULT 0,
+    density_g_cm3          NUMERIC      NOT NULL DEFAULT 7.85,
+    finished_part_length_mm NUMERIC     NOT NULL DEFAULT 0,
+    clamp_length_op1_mm    NUMERIC      NOT NULL DEFAULT 0,
+    clamp_length_op2_mm    NUMERIC      NOT NULL DEFAULT 0,
+    jaw_length_op1_mm      NUMERIC      NOT NULL DEFAULT 0,
+    jaw_length_op2_mm      NUMERIC      NOT NULL DEFAULT 0,
+    facing_allowance_mm    NUMERIC      NOT NULL DEFAULT 0,
+    cutoff_kerf_mm         NUMERIC      NOT NULL DEFAULT 0,
+    chamfer_allowance_mm   NUMERIC      NOT NULL DEFAULT 0,
+    material_per_unit_mm   NUMERIC      NOT NULL DEFAULT 0,
+    buffer_length_mm       NUMERIC      NOT NULL DEFAULT 0,
+    order_qty              NUMERIC      NOT NULL DEFAULT 0,
+    setup_pieces           NUMERIC      NOT NULL DEFAULT 0,
+    scrap_allowance_pct    NUMERIC      NOT NULL DEFAULT 0,
+    issued_length_mm       NUMERIC      NOT NULL DEFAULT 0,
+    issued_bars            NUMERIC      NOT NULL DEFAULT 0,
+    length_per_piece_mm    NUMERIC      NOT NULL DEFAULT 0,
+    parts_per_bar          INTEGER      NOT NULL DEFAULT 0,
+    remnant_length_mm      NUMERIC      NOT NULL DEFAULT 0,
+    pieces_needed          NUMERIC      NOT NULL DEFAULT 0,
+    bars_needed            NUMERIC      NOT NULL DEFAULT 0,
+    target_total_mm        NUMERIC      NOT NULL DEFAULT 0,
+    target_total_kg        NUMERIC      NOT NULL DEFAULT 0,
+    returnable_mm          NUMERIC      NOT NULL DEFAULT 0,
+    actual_total_mm        NUMERIC,
+    actual_total_kg        NUMERIC,
+    remarks                TEXT         NOT NULL DEFAULT '',
+    created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- One calc row per PS + material (multiple materials allowed on the same PS).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_planner_ps_material_calc_ps_material
+    ON public.planner_ps_material_calc (
+        planner_ps_id,
+        lower(btrim(material_type_grade))
+    );
+
+CREATE TABLE IF NOT EXISTS public.planner_ps_material_issued (
+    issued_id     BIGSERIAL    PRIMARY KEY,
+    calc_id       BIGINT       NOT NULL
+        REFERENCES public.planner_ps_material_calc(calc_id) ON DELETE CASCADE,
+    batch_no      TEXT         NOT NULL DEFAULT '',
+    length_mm     NUMERIC      NOT NULL DEFAULT 0,
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_planner_ps_material_calc_part
+    ON public.planner_ps_material_calc (part_no);
+
+CREATE INDEX IF NOT EXISTS idx_planner_ps_material_calc_updated
+    ON public.planner_ps_material_calc (updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_planner_ps_material_issued_calc
+    ON public.planner_ps_material_issued (calc_id);
+
+ALTER TABLE public.planner_ps_material_calc
+    ADD COLUMN IF NOT EXISTS cnc_machines TEXT[] NOT NULL DEFAULT '{}';
+
+ALTER TABLE public.planner_ps_material_calc
+    ADD COLUMN IF NOT EXISTS stock_in_operator TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE public.planner_ps_material_calc
+    ADD COLUMN IF NOT EXISTS stock_out_operator TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE public.planner_ps_material_calc
+    ADD COLUMN IF NOT EXISTS material_uom TEXT NOT NULL DEFAULT 'mm';
+
+ALTER TABLE public.planner_ps_material_calc
+    ADD COLUMN IF NOT EXISTS op_assignments JSONB NOT NULL DEFAULT '[]'::jsonb;
 

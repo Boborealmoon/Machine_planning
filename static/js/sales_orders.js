@@ -94,6 +94,7 @@ const SO_COLUMNS = [
   { id: 'customer_po_no', label: 'P/O No.', sortable: true, filterable: true },
   { id: 'due_date', label: 'Due date', sortable: true, filterable: true },
   { id: 'proposed_edd', label: 'Prop. EDD', sortable: true, filterable: true },
+  { id: 'week', label: 'Week', sortable: true, filterable: true },
   { id: 'delivery_date', label: 'Delivered', sortable: true, filterable: true },
   { id: 'unit_selling_price', label: 'U/Price', sortable: true, filterable: true },
   { id: 'amount', label: 'Amount', sortable: true, filterable: true },
@@ -234,6 +235,64 @@ function soFormatDate(value) {
 
 function soProposedEddDisplay(pp, partial) {
   return String(partial?.coway_proposed_edd || pp?.coway_proposed_edd || '').trim();
+}
+
+const SO_WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function soDateInputValue(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return text.slice(0, 10);
+}
+
+function soParseDateOnly(value) {
+  const text = soDateInputValue(value);
+  if (!text) return null;
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year
+    || date.getUTCMonth() !== month - 1
+    || date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
+/** Prop. EDD if set, else PO due date — same commitment rule as Delivery Schedule. */
+function soCommitmentDate(pp, partial) {
+  return soDateInputValue(soProposedEddDisplay(pp, partial))
+    || soDateInputValue(pp?.due_date);
+}
+
+function soIsoWeekNo(value) {
+  const date = soParseDateOnly(value);
+  if (!date) return null;
+  const dayNum = date.getUTCDay() || 7;
+  const thursday = new Date(date);
+  thursday.setUTCDate(thursday.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 1));
+  return Math.ceil((((thursday - yearStart) / 86400000) + 1) / 7);
+}
+
+function soWeekdayName(value) {
+  const date = soParseDateOnly(value);
+  if (!date) return '';
+  return SO_WEEKDAY_NAMES[date.getUTCDay()] || '';
+}
+
+function soWeekLabel(pp, partial) {
+  const commitment = soCommitmentDate(pp, partial);
+  const weekNo = soIsoWeekNo(commitment);
+  if (!weekNo) return '—';
+  const weekday = soWeekdayName(commitment);
+  if (!weekday) return `Week ${weekNo}`;
+  return `Week ${weekNo} - ${weekday}`;
 }
 
 function soFormatMoney(value) {
@@ -550,6 +609,7 @@ function soRenderJobDetailFields(order, pp, partial) {
     soDetailField('SO line', pp?.source_line_item_no),
     soDetailField('Due date', soFormatDate(pp?.due_date)),
     ...(soProposedEddDisplay(pp, partial) ? [soDetailField('Prop. EDD', soFormatDate(soProposedEddDisplay(pp, partial)))] : []),
+    soDetailField('Week', soWeekLabel(pp, partial)),
     ...(pp?.delivery_date ? [soDetailField('Delivered', soFormatDate(pp?.delivery_date))] : []),
     soDetailField('Qty', pp?.pp_qty),
     soDetailField('U/Price', soFormatMoney(pp?.unit_selling_price)),
@@ -760,6 +820,43 @@ function soBindDetailPanel() {
 
 function soTableHost() {
   return document.getElementById('so-table-host');
+}
+
+function soSetLoading(loading, { overlay = false, message = '' } = {}) {
+  const initial = document.getElementById('so-loading');
+  const overlayEl = document.getElementById('so-loading-overlay');
+  const host = soTableHost();
+  const empty = document.getElementById('so-empty');
+  const refreshBtn = document.getElementById('so-refresh');
+  const loadingText = document.getElementById('so-loading-text');
+
+  if (refreshBtn) refreshBtn.disabled = loading;
+
+  if (loading) {
+    const hasVisibleTable = host && !host.hidden;
+    if (overlay && hasVisibleTable) {
+      if (initial) initial.hidden = true;
+      if (empty) empty.hidden = true;
+      if (overlayEl) overlayEl.hidden = false;
+      if (host) host.classList.add('is-loading');
+    } else {
+      if (initial) {
+        initial.hidden = false;
+        if (message && loadingText) loadingText.textContent = message;
+      }
+      if (host) {
+        host.hidden = true;
+        host.classList.remove('is-loading');
+      }
+      if (empty) empty.hidden = true;
+      if (overlayEl) overlayEl.hidden = true;
+    }
+    return;
+  }
+
+  if (initial) initial.hidden = true;
+  if (overlayEl) overlayEl.hidden = true;
+  if (host) host.classList.remove('is-loading');
 }
 
 let soTableScrollResizeObserver = null;
@@ -1044,6 +1141,7 @@ function soLeafColumnValue(leaf, colId) {
     case 'customer_po_no': return pp?.customer_po_no;
     case 'due_date': return pp?.due_date;
     case 'proposed_edd': return soProposedEddDisplay(pp, partial);
+    case 'week': return soWeekLabel(pp, partial);
     case 'delivery_date': return pp?.delivery_date;
     case 'unit_selling_price': return pp?.unit_selling_price;
     case 'amount': return pp?.amount;
@@ -1109,6 +1207,8 @@ function soLeafColumnIsEmpty(leaf, colId) {
       return !String(pp?.due_date || '').trim();
     case 'proposed_edd':
       return !soProposedEddDisplay(pp, partial);
+    case 'week':
+      return soWeekLabel(pp, partial) === '—';
     case 'delivery_date':
       return !String(pp?.delivery_date || '').trim();
     case 'unit_selling_price':
@@ -1156,6 +1256,7 @@ function soLeafPassesFilters(leaf) {
 function soLeafSortValue(leaf, colId) {
   if (colId === 'erp_stage') return soStageSortValue(leaf.partial);
   if (colId === 'material_subcon') return soMaterialSubconSortValue(leaf.pp?.material_subcon);
+  if (colId === 'week') return soCommitmentDate(leaf.pp, leaf.partial) || '9999-12-31';
   return soLeafColumnValue(leaf, colId);
 }
 
@@ -1863,14 +1964,54 @@ function soRenderMaterialModalNotice(meta) {
   const text = String(meta?.notice || '').trim();
   if (!text) return '';
   const mode = String(meta?.match_mode || '');
-  const cls = mode === 'not_found'
+  const cls = (mode === 'not_found' || mode === 'route_no_materials')
     ? ' so-material-modal-notice--warn'
     : ' so-material-modal-notice--info';
   return `<div class="so-material-modal-notice${cls}">${escapeHtml(text)}</div>`;
 }
 
+function soRenderMatchedBomStages(meta) {
+  const stages = Array.isArray(meta?.matched_stages) ? meta.matched_stages : [];
+  if (!stages.length) return '';
+  const route = String(meta?.matched_bom_code || meta?.resolved_bom_code || '').trim();
+  const desc = String(meta?.matched_bom_desc || '').trim();
+  const title = route
+    ? `Matched BOM op stages · ${route}${desc ? ` · ${desc}` : ''}`
+    : 'Matched BOM op stages';
+  const body = stages.map(stage => {
+    const no = stage?.stage_no != null && stage.stage_no !== '' ? String(stage.stage_no) : '—';
+    const stageDesc = String(stage?.stage_desc || '—');
+    return `
+      <tr>
+        <td class="new-orders-num">${escapeHtml(no)}</td>
+        <td>${escapeHtml(stageDesc)}</td>
+      </tr>
+    `;
+  }).join('');
+  return `
+    <section class="so-material-modal-section">
+      <h3 class="so-material-modal-section-title">${escapeHtml(title)}</h3>
+      <div class="so-material-modal-table-wrap">
+        <table class="so-material-modal-table">
+          <thead>
+            <tr>
+              <th>Stage</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
 function soRenderMaterialModalBomTable(rows, meta = null) {
   if (!Array.isArray(rows) || !rows.length) {
+    const stagesHtml = soRenderMatchedBomStages(meta);
+    if (stagesHtml) {
+      return `${stagesHtml}<p class="so-material-modal-empty">No raw-material lines on this BOM route.</p>`;
+    }
     return '<p class="so-material-modal-empty">No BOM materials found for this part and route.</p>';
   }
   const showRoute = soShouldShowBomRouteColumn(rows, meta);
@@ -1929,6 +2070,10 @@ function soParseBomMaterialsResponse(data) {
         match_mode: data.match_mode || '',
         alternate_bom_codes: data.alternate_bom_codes || [],
         notice: data.notice || '',
+        matched_bom_code: data.matched_bom_code || data.resolved_bom_code || '',
+        matched_bom_desc: data.matched_bom_desc || '',
+        matched_stages: Array.isArray(data.matched_stages) ? data.matched_stages : [],
+        route_matched: Boolean(data.route_matched),
       },
     };
   }
@@ -2017,12 +2162,17 @@ function soRenderQtyCell(pp) {
   return `<td class="new-orders-num so-qty-cell">${escapeHtml(String(pp?.pp_qty ?? '—'))}</td>`;
 }
 
+function soRenderWeekCell(pp, partial) {
+  return `<td class="new-orders-date so-week-cell">${escapeHtml(soWeekLabel(pp, partial))}</td>`;
+}
+
 function soRenderPpCells(pp, partial) {
   return `
     <td class="new-orders-desc" title="${escapeHtml(String(pp.description || ''))}">${escapeHtml(String(pp.description || '—'))}</td>
     <td class="new-orders-mono">${escapeHtml(String(pp.customer_po_no || '—'))}</td>
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.due_date))}</td>
     ${soRenderProposedEddCell(pp, partial)}
+    ${soRenderWeekCell(pp, partial)}
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.delivery_date))}</td>
     <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.unit_selling_price))}</td>
     <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.amount))}</td>
@@ -2367,6 +2517,13 @@ async function soSaveProposedEdd(input) {
     input.value = saved;
     input.dataset.lastSaved = saved;
     soUpdateProposedEddModel(ppNo, partialNo, saved);
+    const found = soFindPp(ppNo);
+    const weekCell = input.closest('tr')?.querySelector('.so-week-cell');
+    if (weekCell && found.pp) {
+      const partial = (Array.isArray(found.pp.partials) ? found.pp.partials : [])
+        .find(row => soPartialNo(row) === partialNo) || null;
+      weekCell.textContent = soWeekLabel(found.pp, partial);
+    }
     soSetSaveStatus(input, 'saved', 'Saved');
     window.setTimeout(() => {
       if (input.dataset.lastSaved === saved) soSetSaveStatus(input, '', '');
@@ -2659,10 +2816,7 @@ function soRender() {
   const wrap = document.getElementById('so-table-wrap');
   const empty = document.getElementById('so-empty');
   const emptyText = document.getElementById('so-empty-text');
-  const loading = document.getElementById('so-loading');
   const meta = document.getElementById('so-meta');
-
-  if (loading) loading.hidden = true;
 
   const hasData = (soState.active?.length || 0) + (soState.complete?.length || 0) > 0;
 
@@ -2726,10 +2880,11 @@ function soRender() {
 }
 
 async function soLoad({ refresh = false, bustCache = false } = {}) {
-  const loading = document.getElementById('so-loading');
-  const host = soTableHost();
-  if (loading) loading.hidden = false;
-  if (host) host.hidden = true;
+  const hasData = (soState.active?.length || 0) + (soState.complete?.length || 0) > 0;
+  soSetLoading(true, {
+    overlay: refresh && hasData,
+    message: refresh ? 'Refreshing S/O data from ERP…' : 'Loading S/O data from ERP…',
+  });
   soCloseDetail();
   soCloseMaterialModal();
 
@@ -2753,7 +2908,7 @@ async function soLoad({ refresh = false, bustCache = false } = {}) {
     if (!ordersRes.ok) throw new Error(payload?.error || `HTTP ${ordersRes.status}`);
     soState.repeatGroups = [];
   } catch (err) {
-    if (loading) loading.hidden = true;
+    soSetLoading(false);
     const empty = document.getElementById('so-empty');
     const emptyText = document.getElementById('so-empty-text');
     if (empty) empty.hidden = false;
@@ -2783,10 +2938,11 @@ async function soLoad({ refresh = false, bustCache = false } = {}) {
     if (emptyText) {
       emptyText.textContent = 'Sales orders loaded but PP voucher data is missing — restart Flask, click Refresh, then hard-reload the page (Ctrl+Shift+R).';
     }
-    if (loading) loading.hidden = true;
+    soSetLoading(false);
     return;
   }
 
+  soSetLoading(false);
   soRender();
 }
 

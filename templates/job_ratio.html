@@ -4,7 +4,7 @@
 
 {% block main_class %}app-main--new-orders app-main--job-ratio{% endblock %}
 
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=job-ratio-ui-20260717b">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=job-ratio-ui-20260721a">{% endblock %}
 
 {% block content %}
 
@@ -39,6 +39,7 @@
           <button type="button" class="mi-view-btn" data-jr-view="jobs" role="tab" aria-selected="false">Jobs</button>
           <button type="button" class="mi-view-btn" data-jr-view="customers" role="tab" aria-selected="false">By customer</button>
           <button type="button" class="mi-view-btn" data-jr-view="parts" role="tab" aria-selected="false">Parts analysis</button>
+          <button type="button" class="mi-view-btn" data-jr-view="parts-detail" role="tab" aria-selected="false">Parts detail</button>
         </div>
       </div>
     </div>
@@ -214,6 +215,32 @@
     </div>
   </section>
 
+  <section id="job-ratio-parts-detail-wrap" class="card job-ratio-panel job-ratio-parts-detail-wrap" hidden>
+    <div class="job-ratio-parts-detail-body">
+      <div class="sales-report-section-head">
+        <div>
+          <h2 class="sales-report-section-title">Parts detail — sales orders &amp; BOM cycle times</h2>
+          <p class="sales-report-section-sub" id="job-ratio-parts-detail-note">
+            Same ranked parts as Parts analysis. Click a row to expand sales order line items; toggle BOM stages to see cycle time by route step.
+          </p>
+        </div>
+        <div class="job-ratio-parts-detail-toolbar">
+          <label class="job-ratio-bom-toggle">
+            <input type="checkbox" id="job-ratio-parts-show-bom">
+            <span>Show BOM cycle times</span>
+          </label>
+        </div>
+      </div>
+      <div class="job-ratio-score-legend" aria-label="Parts detail legend">
+        <strong>Drill-down</strong>
+        <span>Each row is one customer + part. Expand to see process-sheet jobs grouped by sales order.</span>
+        <span>BOM pills in the Machine cycle column show summed cycle time per machine group from the part route.</span>
+        <span>With BOM stages on, each route step lists order lines with per-unit cycle time and run minutes (qty × cycle).</span>
+      </div>
+      <div id="job-ratio-parts-detail-content"></div>
+    </div>
+  </section>
+
   <div id="job-ratio-empty" class="new-orders-empty card" hidden>
     <p id="job-ratio-empty-text">No rows match your filters.</p>
   </div>
@@ -225,5 +252,5 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=job-ratio-ui-20260717b"></script>
-<script src="{{ url_for('static', filename='js/job_ratio.js') }}?v=job-ratio-ui-20260717b"></script>
+<script src="{{ url_for('static', filename='js/job_ratio.js') }}?v=job-ratio-ui-20260721b"></script>
 {% endblock %}

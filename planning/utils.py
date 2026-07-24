@@ -29,6 +29,15 @@ PLANNER_TZ = _planner_timezone()
 _DATETIME_TZ_SUFFIX_RE = re.compile(r"(?:[+-]\d{2}:?\d{2}|Z)$", re.IGNORECASE)
 
 
+def bom_code_match_key(code) -> str:
+    """Normalize BOM aliases so hyphen/underscore/spacing variants compare equal.
+
+    Examples: SMP-MAT-01-REV00, SMP-MAT-01_REV00, and SMP-MAT01-REV00 → SMPMAT01REV00.
+    """
+    text = compact_text(code).upper()
+    return re.sub(r"[^A-Z0-9]+", "", text) if text else ""
+
+
 def planner_wall_datetime_to_api(value):
     """Format DB/API datetimes as naive wall-clock strings (Asia/Singapore)."""
     if value is None or value == "":
@@ -261,17 +270,28 @@ def op_production_complete(op, *, tol=None):
 
 
 def pending_delivery_order(entry):
-    """All ERP stages done but SO qty not fully shipped (qty_shipped < so_det_qty)."""
+    """Production complete but delivery qty not fully shipped yet."""
     so_qty = entry.get("so_det_qty")
-    if so_qty is None:
-        return False
-    try:
-        if float(so_qty) <= 0:
+    if so_qty is not None:
+        try:
+            if float(so_qty) <= 0:
+                return False
+        except (TypeError, ValueError):
             return False
-    except (TypeError, ValueError):
-        return False
-    if shipped_quantity_completed(so_qty, entry.get("qty_shipped")):
-        return False
+        if shipped_quantity_completed(so_qty, entry.get("qty_shipped")):
+            return False
+    else:
+        partial_qty = parse_number(
+            entry.get("partial_qty")
+            or entry.get("display_qty")
+            or entry.get("pp_partial_qty")
+            or entry.get("total_qty"),
+            0,
+        )
+        if partial_qty <= SHIPPED_QTY_TOLERANCE:
+            return False
+        if shipped_quantity_completed(partial_qty, entry.get("qty_shipped")):
+            return False
 
     if bool(entry.get("erp_all_wo_complete")):
         return True

@@ -509,8 +509,18 @@ def _enrich_entry_ops(con, entry: dict[str, Any], ctx: MppIntakeContext) -> dict
     return entry
 
 
-def _load_mpp_planner_process_sheet_rows(con, fa_keys: set[str]) -> list[dict[str, Any]]:
-    """Open frame-agreement process sheets from planner_process_sheet (FA master list only)."""
+def _load_mpp_planner_process_sheet_rows(
+    con,
+    fa_keys: set[str],
+    *,
+    fa_only: bool = True,
+) -> list[dict[str, Any]]:
+    """Open process sheets with schedulable MPP qty from planner_process_sheet.
+
+    When ``fa_only`` is True (default), only Frame Agreement master-list parts
+    are included. When False, all open PS with MPP-ready qty are included and
+    ``isFrameAgreement`` marks FA membership.
+    """
     raw = rows(
         con.execute(
             """
@@ -543,7 +553,8 @@ def _load_mpp_planner_process_sheet_rows(con, fa_keys: set[str]) -> list[dict[st
     seen_partials: set[tuple[str, int]] = set()
     for row in raw:
         inventory_code = compact_text(row.get("inventory_code"))
-        if not fa_keys or not is_frame_agreement_part(inventory_code, fa_keys):
+        is_fa = bool(fa_keys) and is_frame_agreement_part(inventory_code, fa_keys)
+        if fa_only and not is_fa:
             continue
         source_ps_id = compact_text(row.get("source_ps_id"))
         pp_partial_no = int(row.get("pp_partial_no") or 1)
@@ -587,7 +598,7 @@ def _load_mpp_planner_process_sheet_rows(con, fa_keys: set[str]) -> list[dict[st
                 "status": compact_text(row.get("status") or row.get("planner_status")),
                 "planner_status": compact_text(row.get("planner_status")),
                 "planner_ps_ids": [planner_ps_id],
-                "isFrameAgreement": True,
+                "isFrameAgreement": is_fa,
                 "ops": [],
                 "all_ops": [],
                 "op_cards": [],
@@ -620,10 +631,16 @@ def _emit_jobs_from_item(
         jobs.append(job)
 
 
-def _mpp_jobs_from_process_sheets(con, fa_keys: set[str], mpp_codes: set[str]) -> list[dict[str, Any]]:
+def _mpp_jobs_from_process_sheets(
+    con,
+    fa_keys: set[str],
+    mpp_codes: set[str],
+    *,
+    fa_only: bool = True,
+) -> list[dict[str, Any]]:
     from .process_sheets import material_in_map_for_planner_ps_ids
 
-    sheet_rows = _load_mpp_planner_process_sheet_rows(con, fa_keys)
+    sheet_rows = _load_mpp_planner_process_sheet_rows(con, fa_keys, fa_only=fa_only)
     if not sheet_rows:
         return []
     planner_ids = [compact_text(row.get("ps_id")) for row in sheet_rows if compact_text(row.get("ps_id"))]
@@ -641,22 +658,25 @@ def _mpp_jobs_from_process_sheets(con, fa_keys: set[str], mpp_codes: set[str]) -
     return jobs
 
 
-def fetch_mpp_planner_jobs(con) -> list[dict[str, Any]]:
+def fetch_mpp_planner_jobs(con, *, fa_only: bool = True) -> list[dict[str, Any]]:
     """
-    Outstanding frame-agreement process sheets with schedulable MPP ops.
+    Outstanding process sheets with schedulable MPP ops.
 
-    Only parts on the Frame Agreement Parts master list are included.
+    When ``fa_only`` is True (default), only parts on the Frame Agreement Parts
+    master list are included. When False, all open MPP-ready process sheets are
+    included (FA parts still flagged via ``isFrameAgreement``).
     """
     ensure_frame_agreement_schema(con)
     fa_keys = load_frame_agreement_part_keys(con)
-    if not fa_keys:
+    if fa_only and not fa_keys:
         return []
 
     mpp_codes = mpp_machine_code_set(con)
     fa_mpp_lookup = load_frame_agreement_mpp_lookup(con)
-    jobs = _mpp_jobs_from_process_sheets(con, fa_keys, mpp_codes)
+    jobs = _mpp_jobs_from_process_sheets(con, fa_keys, mpp_codes, fa_only=fa_only)
     seen = {job["jobId"] for job in jobs}
 
+    # ERP fallback is FA-scoped (INNER JOIN master list); always merge for FA gaps.
     for row in _fetch_erp_mpp_job_candidates(con, mpp_machine_codes=mpp_codes):
         job_id = compact_text(row.get("jobId"))
         if not job_id or job_id in seen:
@@ -664,6 +684,7 @@ def fetch_mpp_planner_jobs(con) -> list[dict[str, Any]]:
         seen.add(job_id)
         merged = dict(row)
         merged["source"] = "erp"
+        merged["isFrameAgreement"] = True
         part_key = normalize_part_key(merged.get("partNo") or merged.get("inventoryCode") or "")
         bom_code = compact_text(merged.get("bomCode") or "")
         op_no = compact_text(merged.get("opNo") or "")

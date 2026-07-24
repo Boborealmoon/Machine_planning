@@ -67,6 +67,10 @@
   color: #047857;
 }
 
+.mpp-queue-sync--warn {
+  color: #b45309;
+}
+
 .mpp-queue-sync--error {
   color: #b91c1c;
   font-weight: 600;
@@ -97,11 +101,18 @@
   margin: 0 0 8px;
 }
 
+.mpp-ops-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 0 0 10px;
+}
+
 .mpp-show-completed {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 0 10px;
+  margin: 0;
   font-size: 12px;
   color: var(--text2);
   cursor: pointer;

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from flask import Flask
 
@@ -13,6 +13,7 @@ from planning.job_ratio import (
     aggregate_month_bucket,
     aggregate_ranked_parts,
     attach_pp_metadata,
+    bom_cycle_groups,
     build_job_rows_from_pp_vouchers,
     build_portion_summary,
     classify_volume_bucket,
@@ -20,6 +21,7 @@ from planning.job_ratio import (
     dedupe_pp_vouchers_by_ps,
     enrich_booked_row,
     filter_detail_rows,
+    filter_part_detail_rows,
     filter_rows_by_pp_types,
     month_anchor_date,
     row_has_positive_qty,
@@ -566,6 +568,115 @@ class JobRatioPartsRouteTests(unittest.TestCase):
         ):
             response = self.client.get(f"/api/job-ratio/parts?year=2026&{query}")
             self.assertEqual(response.status_code, 400, query)
+
+
+class JobRatioPartDetailTests(unittest.TestCase):
+    def test_filter_part_detail_rows(self):
+        rows = [
+            {
+                "report_year": 2026,
+                "report_month": 2,
+                "customer_code": "C1",
+                "inventory_code": "P1",
+                "qty": 10,
+                "line_amount": 100,
+                "sales_order_no": "SO/1",
+            },
+            {
+                "report_year": 2026,
+                "report_month": 2,
+                "customer_code": "C1",
+                "inventory_code": "P2",
+                "qty": 5,
+                "line_amount": 50,
+                "sales_order_no": "SO/2",
+            },
+            {
+                "report_year": 2026,
+                "report_month": 3,
+                "customer_code": "C2",
+                "inventory_code": "P1",
+                "qty": 8,
+                "line_amount": 80,
+                "sales_order_no": "SO/3",
+            },
+        ]
+        matched = filter_part_detail_rows(rows, year=2026, customer_code="C1", part_no="P1")
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["sales_order_no"], "SO/1")
+
+        month_filtered = filter_part_detail_rows(
+            rows, year=2026, customer_code="C1", part_no="P1", month=3
+        )
+        self.assertEqual(month_filtered, [])
+
+    def test_bom_cycle_groups_sums_turning_and_milling(self):
+        stages = [
+            {"stage_desc": "Turning 20", "cycle_time": 20, "setup_time": 180},
+            {"stage_desc": "Turning 30", "cycle_time": 20, "setup_time": 180},
+            {"stage_desc": "Milling 40", "cycle_time": 20, "setup_time": 180},
+        ]
+        groups = bom_cycle_groups(stages, 4200)
+        by_key = {g["group"]: g for g in groups}
+        self.assertEqual(by_key["turning"]["run_minutes"], 168000.0)
+        self.assertEqual(by_key["turning"]["setup_minutes"], 360.0)
+        self.assertEqual(by_key["turning"]["cycle_per_unit"], 40.0)
+        self.assertEqual(by_key["milling"]["run_minutes"], 84000.0)
+        self.assertEqual(by_key["milling"]["cycle_per_unit"], 20.0)
+
+
+class JobRatioPartsDetailRouteTests(unittest.TestCase):
+    def setUp(self):
+        app = Flask(__name__)
+        app.register_blueprint(job_ratio_bp)
+        app.testing = True
+        self.client = app.test_client()
+        self.report = {
+            "pp_types": ["NPS"],
+            "booked_lines": [
+                {
+                    "report_year": 2026,
+                    "report_month": 2,
+                    "customer_code": "C1",
+                    "customer_name": "Customer One",
+                    "inventory_code": "P1",
+                    "description": "Part One",
+                    "qty": 25,
+                    "line_amount": 500,
+                    "process_sheet_no": "NPS-1",
+                    "sales_order_no": "SO/1",
+                    "line_item_no": "1",
+                }
+            ],
+        }
+
+    @patch("planning.job_ratio_route.bom_stages_for_part")
+    @patch("planning.helpers.planner_db")
+    @patch("planning.job_ratio_route._fetch_report")
+    def test_parts_detail_endpoint_returns_lines_and_bom(self, fetch_report, planner_db, bom_stages):
+        fetch_report.return_value = self.report
+        planner_db.return_value.__enter__ = MagicMock(return_value=object())
+        planner_db.return_value.__exit__ = MagicMock(return_value=False)
+        bom_stages.return_value = (
+            "BOM1",
+            [{"stage_no": 1, "stage_desc": "TURNING 10", "op_no": "10", "cycle_time": 5.0, "setup_time": 30.0}],
+        )
+        response = self.client.get(
+            "/api/job-ratio/parts/detail?year=2026&customer_code=C1&part_no=P1"
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["rows"][0]["sales_order_no"], "SO/1")
+        self.assertEqual(payload["bom_code"], "BOM1")
+        self.assertEqual(len(payload["bom_stages"]), 1)
+        self.assertEqual(len(payload["bom_cycle_groups"]), 1)
+        self.assertEqual(payload["bom_cycle_groups"][0]["group"], "turning")
+
+    def test_parts_detail_requires_customer_and_part(self):
+        response = self.client.get("/api/job-ratio/parts/detail?year=2026")
+        self.assertEqual(response.status_code, 400)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Factory Floor Plan{% endblock %}
+{% block main_class %}app-main--floor-plan{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/floor_plan.css') }}?v=floor-plan-20260720f">{% endblock %}
+{% block content %}
+<div class="fp-page">
+  <header class="fp-header">
+    <div>
+      <h1 class="fp-title">Factory Floor Plan</h1>
+      <p class="fp-subtitle">
+        Shop layout with effective machine capacity utilization and exclusive part-number tags per machine.
+      </p>
+    </div>
+    <div class="fp-header-actions">
+      <button type="button" class="btn btn-secondary" id="fp-refresh-btn">Refresh</button>
+    </div>
+  </header>
+
+  <section class="fp-toolbar">
+    <label class="fp-field">
+      <span>Capacity basis</span>
+      <select id="fp-basis-select">
+        <option value="rest_of_month">Rest of month</option>
+        <option value="calendar_month">Calendar month</option>
+        <option value="rolling_period">Rolling period (23rd to 22nd)</option>
+      </select>
+    </label>
+    <label class="fp-field">
+      <span>Month</span>
+      <input type="month" id="fp-month-input">
+    </label>
+    <label class="fp-field">
+      <span>As of</span>
+      <input type="date" id="fp-as-of-input">
+    </label>
+    <div class="fp-window" id="fp-window-label">Loading capacity window...</div>
+  </section>
+
+  <div id="fp-loading" class="fp-loading">
+    <div class="spinner"></div>
+    Loading floor plan...
+  </div>
+  <div id="fp-error" class="fp-error" hidden></div>
+
+  <div id="fp-content" class="fp-content" hidden>
+    <section class="fp-summary" id="fp-group-summary"></section>
+
+    <div class="fp-main">
+      <section class="fp-map-panel">
+        <div class="fp-legend" id="fp-legend"></div>
+        <div class="fp-map-wrap">
+          <div class="fp-map-stage">
+            <div id="fp-map" class="fp-map-canvas" aria-label="Factory floor plan showing machine positions and utilization"></div>
+          </div>
+        </div>
+        <p class="fp-map-hint">Click a machine to view details and manage part-number tags.</p>
+      </section>
+
+      <aside class="fp-detail" id="fp-detail">
+        <div class="fp-detail-empty" id="fp-detail-empty">
+          <h2>Select a machine</h2>
+          <p>Choose a machine on the floor plan to see utilization and assign exclusive part numbers.</p>
+        </div>
+        <div class="fp-detail-body" id="fp-detail-body" hidden>
+          <div class="fp-detail-head">
+            <div>
+              <h2 id="fp-detail-title">CNC -</h2>
+              <p id="fp-detail-meta" class="fp-detail-meta"></p>
+            </div>
+            <span id="fp-detail-util" class="fp-util-badge">-</span>
+          </div>
+
+          <div class="fp-detail-section">
+            <h3>Exclusive part numbers</h3>
+            <p class="fp-detail-help">Tag parts this machine is dedicated to (e.g. CNC 25 runs only part XXX).</p>
+            <ul id="fp-tag-list" class="fp-tag-list"></ul>
+            <p id="fp-tag-empty" class="fp-tag-empty">No part tags yet.</p>
+          </div>
+
+          <form id="fp-tag-form" class="fp-tag-form">
+            <h3>Add / update tag</h3>
+
+            <div class="fp-ps-search">
+              <label class="fp-field fp-field--full" for="fp-ps-search">
+                <span>Search process sheet</span>
+                <div class="fp-ps-search-wrap">
+                  <input
+                    type="search"
+                    id="fp-ps-search"
+                    placeholder="PS number, part number, or description"
+                    autocomplete="off"
+                    aria-autocomplete="list"
+                    aria-controls="fp-ps-results"
+                  >
+                  <div id="fp-ps-results" class="fp-ps-results" role="listbox" hidden></div>
+                </div>
+              </label>
+              <p class="fp-ps-search-status" id="fp-ps-search-status">
+                Pick a process sheet to fill in the part number and details.
+              </p>
+              <div id="fp-ps-picked" class="fp-ps-picked" hidden></div>
+            </div>
+
+            <label class="fp-field fp-field--full">
+              <span>Part number</span>
+              <input type="text" id="fp-part-no" placeholder="e.g. ABC-12345" autocomplete="off" required>
+            </label>
+            <label class="fp-field fp-field--full">
+              <span>Tag label (optional)</span>
+              <input type="text" id="fp-tag-label" placeholder="Short label shown on the map" autocomplete="off">
+            </label>
+            <label class="fp-field fp-field--full">
+              <span>Notes (optional)</span>
+              <textarea id="fp-tag-notes" rows="2" placeholder="Why this machine is dedicated to this part"></textarea>
+            </label>
+            <button type="submit" class="btn btn-primary">Save tag</button>
+          </form>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=floor-plan-20260720f"></script>
+<script src="{{ url_for('static', filename='js/floor_plan.js') }}?v=floor-plan-20260720f"></script>
+{% endblock %}

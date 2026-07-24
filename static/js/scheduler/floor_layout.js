@@ -26,13 +26,13 @@ const TRIAL_FLOOR_LAYOUT_MACHINES = [
   { x: 6.5, y: 4, w: 0.6, h: 1, label: '15', color: 'turning', rotation: 90 },
   { x: 6.5, y: 2.5, w: 0.6, h: 1, label: '21', color: 'turning', rotation: 90 },
   { x: 6, y: 1, w: 1, h: 0.8, label: '24', color: 'turning' },
-  // Milling (right column)
-  { x: 8.5, y: 6, w: 0.8, h: 1, label: '29', color: 'milling', rotation: 90 },
-  { x: 8.5, y: 4.5, w: 0.8, h: 1, label: '20', color: 'milling', rotation: 90 },
-  { x: 8.5, y: 3, w: 0.8, h: 1, label: '26', color: 'milling', rotation: 90 },
-  { x: 8.5, y: 1.5, w: 0.8, h: 1, label: '25', color: 'milling', rotation: 90 },
-  // Machine 27 (turning, bottom right)
-  { x: 8.5, y: 0.5, w: 0.8, h: 1, label: '27', color: 'turning', rotation: 90 },
+  // Right column (bottom to top: 41, 27, 25, 26, 20, 29)
+  { x: 8.5, y: 5.7, w: 0.8, h: 1, label: '29', color: 'milling', rotation: 90 },
+  { x: 8.5, y: 4.55, w: 0.8, h: 1, label: '20', color: 'milling', rotation: 90 },
+  { x: 8.5, y: 3.4, w: 0.8, h: 1, label: '26', color: 'milling', rotation: 90 },
+  { x: 8.5, y: 2.25, w: 0.8, h: 1, label: '25', color: 'milling', rotation: 90 },
+  { x: 8.5, y: 1.2, w: 0.8, h: 0.9, label: '27', color: 'turning', rotation: 90 },
+  { x: 8.5, y: 0.15, w: 0.8, h: 0.9, label: '41', color: 'mpp', rotation: 90 },
 ];
 
 function trialFloorLayoutMatplotlibToSvg(machine) {

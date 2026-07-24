@@ -8,7 +8,7 @@ from flask import Blueprint, jsonify, request
 from .helpers import one, rows, planner_db
 from .materials import sync_material_requirements_for_ps
 from .process_sheets import ensure_planner_process_sheet, format_planner_ps_id
-from .utils import compact_text, parse_number
+from .utils import bom_code_match_key, compact_text, parse_number
 
 flows_bp = Blueprint("planner_flows", __name__)
 trial_prefixed_flows_bp = Blueprint("trial_planner_flows", __name__)
@@ -566,7 +566,7 @@ def _flow_payload(con, flow):
 
 
 def _bom_code_key(code):
-    return compact_text(code).upper()
+    return bom_code_match_key(code)
 
 
 def _op_type_from_stage_desc(stage_desc):
@@ -702,7 +702,27 @@ def _resolve_bom_op_stage_code(con, inventory_code, bom_code):
             (inventory_code, bom_code),
         )
     )
-    return compact_text(row.get("bom_code")) if row else ""
+    if row:
+        return compact_text(row.get("bom_code"))
+    requested_key = bom_code_match_key(bom_code)
+    if not requested_key:
+        return ""
+    for candidate in rows(
+        con.execute(
+            """
+            SELECT DISTINCT bom_code
+            FROM bom_op_stage
+            WHERE inventory_code = %s
+              AND COALESCE(bom_code, '') <> ''
+            ORDER BY bom_code
+            """,
+            (inventory_code,),
+        )
+    ):
+        code = compact_text(candidate.get("bom_code"))
+        if bom_code_match_key(code) == requested_key:
+            return code
+    return ""
 
 
 def _bom_op_stage_steps(con, inventory_code, bom_code):

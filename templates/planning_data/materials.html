@@ -1,12 +1,145 @@
 {% extends "base.html" %}
-{% block title %}Materials{% endblock %}
+{% block title %}Mtl Stock-In/Out{% endblock %}
+{% block main_class %}app-main--planner{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=mbc-simple-20260720">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/material_bar_calc.css') }}?v=20260721-multi-mat">
+{% endblock %}
 {% block content %}
-<div class="page">
-  <div class="page-header">
-    <h1 class="page-title">Materials</h1>
+
+<div class="page mbc-page">
+  <div class="page-header mbc-page-header">
+    <div>
+      <h1 class="page-title">Mtl Stock-In/Out</h1>
+      <p class="mbc-sub">Track material issue &amp; return by process sheet.</p>
+    </div>
+    <div class="page-actions">
+      <button class="btn btn-dark" type="button" id="mbc-new-btn">New entry</button>
+    </div>
   </div>
-  <div class="card empty-state">
-    <p>Materials content coming soon.</p>
+
+  <section class="card mbc-card mbc-edit-card" id="mbc-edit-panel" hidden>
+    <div class="mbc-edit-head">
+      <div>
+        <h2 id="mbc-edit-title">Edit entry</h2>
+        <p class="mbc-edit-sub" id="mbc-edit-sub"></p>
+      </div>
+      <div class="mbc-edit-actions">
+        <button class="btn btn-light" type="button" id="mbc-edit-cancel-btn">Cancel</button>
+        <button class="btn btn-dark" type="button" id="mbc-save-btn">Save</button>
+      </div>
+    </div>
+    <div id="mbc-edit-form-slot"></div>
+    <p class="mbc-status" id="mbc-edit-status" aria-live="polite"></p>
+  </section>
+
+  <section class="card mbc-card mbc-list-card">
+    <div class="mbc-track-head">
+      <h2>Submitted entries</h2>
+      <input type="text" id="mbc-track-search" class="mbc-input mbc-filter" placeholder="Filter PS, part, batch…" />
+    </div>
+    <div class="mbc-entry-list" id="mbc-table-wrap"><div class="mbc-empty">Loading…</div></div>
+    <p class="mbc-status" id="mbc-page-status" aria-live="polite"></p>
+  </section>
+</div>
+
+<!-- Shared form body (moved between create modal and edit panel) -->
+<div id="mbc-form-body" hidden>
+  <div class="mbc-section mbc-section--search">
+    <div class="mbc-search-date-row">
+      <div class="mbc-field mbc-field--search">
+        <label for="mbc-ps-search">Process sheet</label>
+        <div class="mbc-search-wrap">
+          <input type="text" id="mbc-ps-search" class="mbc-input" placeholder="Search PS or part…" autocomplete="off" />
+          <div class="mbc-search-hits" id="mbc-ps-hits" hidden></div>
+        </div>
+      </div>
+      <div class="mbc-field mbc-field--date">
+        <label for="mbc-slip-date">Slip date</label>
+        <input type="date" id="mbc-slip-date" class="mbc-input" />
+      </div>
+    </div>
+  </div>
+
+  <input type="hidden" id="mbc-calc-id" value="" />
+  <input type="hidden" id="mbc-ps-id" value="" />
+  <input type="hidden" id="mbc-part-no" value="" />
+  <input type="hidden" id="mbc-material" value="" />
+
+  <div class="mbc-section" id="mbc-summary" hidden>
+    <div class="mbc-section-label">BOM details</div>
+    <div class="mbc-summary-grid">
+      <div><span>PS</span><strong id="mbc-sum-ps">—</strong></div>
+      <div><span>Part</span><strong id="mbc-sum-part">—</strong></div>
+      <div class="mbc-summary-wide"><span>Material</span><strong id="mbc-sum-mat">—</strong></div>
+      <div><span>Qty / FG</span><strong id="mbc-sum-qtyfg">—</strong></div>
+      <div><span>BOM</span><strong id="mbc-sum-bom">—</strong></div>
+    </div>
+  </div>
+
+  <div class="mbc-section" id="mbc-inputs" hidden>
+    <div class="mbc-section-label">Quantities</div>
+    <div class="mbc-inputs-grid mbc-inputs-grid--order">
+      <div class="mbc-field">
+        <label for="mbc-order-qty">Order qty</label>
+        <input type="number" step="any" min="0" id="mbc-order-qty" class="mbc-input mbc-num" />
+      </div>
+      <p class="mbc-order-hint">Shared across all BOM materials below. Per-unit and buffer are set per material.</p>
+    </div>
+  </div>
+
+  <div class="mbc-section" id="mbc-issued" hidden>
+    <div class="mbc-issued-head">
+      <div class="mbc-section-label mbc-section-label--inline">Issued material</div>
+    </div>
+    <p class="mbc-ops-hint" id="mbc-issued-hint">Materials are loaded automatically from the BOM.</p>
+    <div class="mbc-mat-list" id="mbc-mat-list"></div>
+  </div>
+
+  <div class="mbc-section" id="mbc-ops" hidden>
+    <div class="mbc-section-label">Production</div>
+    <p class="mbc-ops-hint">Optional — leave blank to print empty CNC / operator lines on the slip.</p>
+    <div class="mbc-op-assign-list" id="mbc-op-assign-list">
+      <div class="mbc-empty mbc-empty--inline">Select a process sheet to load operations.</div>
+    </div>
+    <div class="mbc-ops-warehouse">
+      <div class="mbc-section-label mbc-section-label--sub">Warehouse</div>
+      <div class="mbc-ops-row">
+        <div class="mbc-field">
+          <label for="mbc-stock-in">Stock-in operator</label>
+          <input type="text" id="mbc-stock-in" class="mbc-input" placeholder="Name…" autocomplete="off" />
+        </div>
+        <div class="mbc-field">
+          <label for="mbc-stock-out">Stock-out operator</label>
+          <input type="text" id="mbc-stock-out" class="mbc-input" placeholder="Name…" autocomplete="off" />
+        </div>
+      </div>
+    </div>
   </div>
 </div>
+
+<!-- Create modal -->
+<div class="mbc-modal-backdrop" id="mbc-create-modal" hidden>
+  <div class="mbc-modal" role="dialog" aria-modal="true" aria-labelledby="mbc-modal-title">
+    <div class="mbc-modal-header">
+      <div>
+        <h2 class="mbc-modal-title" id="mbc-modal-title">New material entry</h2>
+        <p class="mbc-modal-sub">Search a PS, fill quantities, then submit.</p>
+      </div>
+      <button type="button" class="mbc-modal-close" id="mbc-modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="mbc-modal-body" id="mbc-modal-form-slot"></div>
+    <div class="mbc-modal-footer">
+      <p class="mbc-status mbc-status--inline" id="mbc-modal-status" aria-live="polite"></p>
+      <div class="mbc-modal-footer-actions">
+        <button class="btn btn-light" type="button" id="mbc-modal-cancel-btn">Cancel</button>
+        <button class="btn btn-dark" type="button" id="mbc-submit-btn">Submit</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="mbc-form-park" hidden></div>
+
+<script src="{{ url_for('static', filename='js/material_bar_calc.js') }}?v=20260721-multi-mat"></script>
 {% endblock %}

@@ -26,6 +26,12 @@ const jobRatioState = {
   partsSort: 'score',
   partsData: null,
   partsLoading: false,
+  partsShowBomStages: false,
+  expandedParts: new Set(),
+  partDetails: new Map(),
+  partDetailsLoading: new Set(),
+  expandedPartSoGroups: new Set(),
+  expandedPartStages: new Set(),
   expandedJobGroups: new Set(),
   expandedCustomers: new Set(),
   customerLines: new Map(),
@@ -163,7 +169,7 @@ function jobRatioSetLoading(on) {
 }
 
 function jobRatioHideSections() {
-  ['job-ratio-matrix-wrap', 'job-ratio-jobs-wrap', 'job-ratio-customers-wrap', 'job-ratio-parts-wrap', 'job-ratio-empty'].forEach(id => {
+  ['job-ratio-matrix-wrap', 'job-ratio-jobs-wrap', 'job-ratio-customers-wrap', 'job-ratio-parts-wrap', 'job-ratio-parts-detail-wrap', 'job-ratio-empty'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.hidden = true;
   });
@@ -300,7 +306,7 @@ function jobRatioSyncPartsFilters() {
     if (el) el.value = value;
   });
   const wrap = document.getElementById('job-ratio-parts-filters');
-  if (wrap) wrap.hidden = jobRatioState.view !== 'parts';
+  if (wrap) wrap.hidden = jobRatioState.view !== 'parts' && jobRatioState.view !== 'parts-detail';
 }
 
 function jobRatioJobGroupKey(type, id) {
@@ -720,6 +726,7 @@ function jobRatioRenderCompactLinesTable(lines) {
   const rows = lines.map(row => {
     const desc = String(row.description || '—').trim();
     const bucketShort = (jobRatioBucketLabel(row.volume_bucket) || '—').replace(/\s*\(.*/, '');
+    const posted = row.first_posted_date || row.first_posted_datetime || row.so_posted_date;
     return `<tr class="job-ratio-line-row">
       <td class="new-orders-mono">${escapeHtml(row.line_item_no || '—')}</td>
       <td class="new-orders-mono job-ratio-line-part" title="${escapeHtml(row.inventory_code || '')}">${escapeHtml(row.inventory_code || '—')}</td>
@@ -727,7 +734,7 @@ function jobRatioRenderCompactLinesTable(lines) {
       <td class="job-ratio-line-bucket" title="${escapeHtml(jobRatioBucketLabel(row.volume_bucket) || '')}">${escapeHtml(bucketShort)}</td>
       <td class="job-ratio-num">${jobRatioFormatMoneyFull(row.line_amount)}</td>
       <td class="job-ratio-line-desc" title="${escapeHtml(desc)}">${escapeHtml(jobRatioTruncate(desc, 64))}</td>
-      <td>${jobRatioFormatPpTypes(row)}</td>
+      <td class="new-orders-mono">${jobRatioFormatDate(posted)}</td>
       <td class="job-ratio-ps-cell">${jobRatioFormatProcessSheets(row)}</td>
     </tr>`;
   }).join('');
@@ -741,7 +748,7 @@ function jobRatioRenderCompactLinesTable(lines) {
         <th>Category</th>
         <th>Amount</th>
         <th>Description</th>
-        <th>PP</th>
+        <th>Posted</th>
         <th>Process sheet</th>
       </tr>
     </thead>
@@ -1045,6 +1052,300 @@ function jobRatioRenderParts() {
   wrap.hidden = false;
 }
 
+function jobRatioPartKey(customerCode, partNo) {
+  return `${customerCode}|${partNo}`;
+}
+
+function jobRatioPartDetailCacheKey(customerCode, partNo) {
+  return `${customerCode}|${partNo}|${jobRatioState.partsMonth || ''}|${jobRatioState.partsCustomer || ''}`;
+}
+
+function jobRatioPartSoGroupKey(partKey, so) {
+  return `${partKey}|so|${so}`;
+}
+
+function jobRatioPartStageKey(partKey, stageId) {
+  return `${partKey}|stage|${stageId}`;
+}
+
+function jobRatioFormatCycleMinutes(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '—';
+  if (num === 0) return '0';
+  return num.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function jobRatioPartBomCycleGroups(detail) {
+  if (Array.isArray(detail?.bom_cycle_groups) && detail.bom_cycle_groups.length) {
+    return detail.bom_cycle_groups;
+  }
+  const stages = detail?.bom_stages || [];
+  const totalQty = (detail?.rows || []).reduce((sum, row) => sum + (Number(row.qty) || 0), 0);
+  const grouped = new Map();
+  stages.forEach(stage => {
+    const desc = String(stage.stage_desc || '').toUpperCase();
+    let key = 'other';
+    let label = String(stage.stage_desc || 'Other');
+    if (desc.startsWith('TURNING')) {
+      key = 'turning';
+      label = 'Turning';
+    } else if (desc.startsWith('MILLING')) {
+      key = 'milling';
+      label = 'Milling';
+    } else if (desc.startsWith('TURNMILL')) {
+      key = 'turnmill';
+      label = 'Turnmill';
+    }
+    const entry = grouped.get(key) || {
+      group: key,
+      label,
+      run_minutes: 0,
+      setup_minutes: 0,
+      cycle_per_unit: 0,
+      stage_count: 0,
+    };
+    const cycle = Number(stage.cycle_time) || 0;
+    const setup = Number(stage.setup_time) || 0;
+    entry.run_minutes += totalQty * cycle;
+    entry.setup_minutes += setup;
+    entry.cycle_per_unit += cycle;
+    entry.stage_count += 1;
+    grouped.set(key, entry);
+  });
+  const order = ['turning', 'milling', 'turnmill', 'other'];
+  return order.filter(key => grouped.has(key)).map(key => grouped.get(key));
+}
+
+function jobRatioRenderPartBomPillsFromGroups(groups) {
+  if (!Array.isArray(groups) || !groups.length) {
+    return '<span class="job-ratio-parts-muted">—</span>';
+  }
+  const pills = groups.map(group => {
+    const cls = `job-ratio-bom-pill job-ratio-bom-pill--${escapeHtml(group.group || 'other')}`;
+    const cycleUnit = jobRatioFormatCycleMinutes(group.cycle_per_unit);
+    const stageNote = group.stage_count > 1 ? ` (${group.stage_count} stages)` : '';
+    return `<span class="${cls}" title="${escapeHtml(group.label)} — ${cycleUnit} min/pc${stageNote}">
+      <span class="job-ratio-bom-pill-label">${escapeHtml(group.label)}</span>
+      <span class="job-ratio-bom-pill-value">${cycleUnit} min/pc</span>
+    </span>`;
+  }).join('');
+  return `<div class="job-ratio-bom-pills job-ratio-bom-pills--cell">${pills}</div>`;
+}
+
+function jobRatioRenderPartBomPills(source) {
+  const groups = jobRatioPartBomCycleGroups(source);
+  if (!groups.length) return '';
+  return jobRatioRenderPartBomPillsFromGroups(groups).replace(' job-ratio-bom-pills--cell', '');
+}
+
+function jobRatioRenderPartStageLinesTable(lines, stage) {
+  const cycle = Number(stage.cycle_time) || 0;
+  const setup = Number(stage.setup_time) || 0;
+  const rows = lines.map(row => {
+    const qty = Number(row.qty) || 0;
+    const runMin = qty * cycle;
+    const desc = String(row.description || '—').trim();
+    return `<tr class="job-ratio-line-row">
+      <td class="new-orders-mono">${escapeHtml(row.sales_order_no || '—')}</td>
+      <td class="new-orders-mono">${escapeHtml(row.line_item_no || '—')}</td>
+      <td class="job-ratio-ps-cell">${jobRatioFormatProcessSheets(row)}</td>
+      <td class="job-ratio-num">${jobRatioFormatQty(row.qty)}</td>
+      <td class="job-ratio-num">${jobRatioFormatCycleMinutes(cycle)}</td>
+      <td class="job-ratio-num">${jobRatioFormatCycleMinutes(setup)}</td>
+      <td class="job-ratio-num">${jobRatioFormatCycleMinutes(runMin)}</td>
+      <td class="job-ratio-line-desc" title="${escapeHtml(desc)}">${escapeHtml(jobRatioTruncate(desc, 48))}</td>
+    </tr>`;
+  }).join('');
+
+  return `<table class="job-ratio-cust-lines-table job-ratio-part-stage-lines">
+    <thead>
+      <tr>
+        <th>SO</th>
+        <th>Line</th>
+        <th>Process sheet</th>
+        <th>Qty</th>
+        <th>Cycle (min)</th>
+        <th>Setup (min)</th>
+        <th>Run (min)</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function jobRatioRenderPartLinesBySo(partKey, lines) {
+  const bySo = new Map();
+  lines.forEach(line => {
+    const so = line.sales_order_no || '—';
+    if (!bySo.has(so)) bySo.set(so, []);
+    bySo.get(so).push(line);
+  });
+  return [...bySo.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([so, soLines]) => {
+    const groupKey = jobRatioPartSoGroupKey(partKey, so);
+    const open = jobRatioState.expandedPartSoGroups.has(groupKey);
+    return `<div class="job-ratio-line-group">
+      <button type="button" class="job-ratio-line-group-head" data-jr-part-so="${escapeHtml(partKey)}" data-so="${escapeHtml(so)}" aria-expanded="${open ? 'true' : 'false'}">
+        <span class="job-ratio-line-group-chevron" aria-hidden="true">${open ? '▼' : '▶'}</span>
+        <span class="new-orders-mono job-ratio-line-group-title">${escapeHtml(so)}</span>
+        <span class="job-ratio-line-group-meta">${jobRatioLineGroupMeta(soLines)}</span>
+      </button>
+      <div class="job-ratio-line-group-body" ${open ? '' : 'hidden'}>
+        ${jobRatioRenderCompactLinesTable(soLines)}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function jobRatioRenderPartBomStages(partKey, detail) {
+  const stages = detail?.bom_stages || [];
+  if (!stages.length) {
+    const bomCode = detail?.bom_code;
+    return `<p class="job-ratio-cust-empty">${bomCode ? `No BOM stages synced for route ${escapeHtml(bomCode)}.` : 'No BOM route found for this part.'}</p>`;
+  }
+  const lines = detail?.rows || [];
+  const bomLabel = detail?.bom_code ? `Route ${escapeHtml(detail.bom_code)}` : 'BOM route';
+
+  return `<div class="job-ratio-part-bom-stages">
+    <p class="job-ratio-part-bom-route">${bomLabel} · ${jobRatioFormatQty(stages.length)} stages</p>
+    ${stages.map((stage, idx) => {
+      const stageId = String(stage.stage_no ?? stage.op_no ?? idx);
+      const stageKey = jobRatioPartStageKey(partKey, stageId);
+      const open = jobRatioState.expandedPartStages.has(stageKey);
+      const label = [stage.op_no, stage.stage_desc].filter(Boolean).join(' · ') || `Stage ${stageId}`;
+      const cycle = Number(stage.cycle_time) || 0;
+      const setup = Number(stage.setup_time) || 0;
+      const totalRun = lines.reduce((sum, row) => sum + (Number(row.qty) || 0) * cycle, 0);
+      return `<div class="job-ratio-part-stage${open ? ' is-open' : ''}">
+        <button type="button" class="job-ratio-part-stage-head" data-jr-part-stage="${escapeHtml(partKey)}" data-stage="${escapeHtml(stageId)}" aria-expanded="${open ? 'true' : 'false'}">
+          <span class="job-ratio-line-group-chevron" aria-hidden="true">${open ? '▼' : '▶'}</span>
+          <span class="job-ratio-part-stage-label">${escapeHtml(label)}</span>
+          <span class="job-ratio-part-stage-meta">
+            Cycle ${jobRatioFormatCycleMinutes(cycle)} min · Setup ${jobRatioFormatCycleMinutes(setup)} min · Run ${jobRatioFormatCycleMinutes(totalRun)} min
+          </span>
+        </button>
+        <div class="job-ratio-part-stage-body" ${open ? '' : 'hidden'}>
+          ${jobRatioRenderPartStageLinesTable(lines, stage)}
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function jobRatioRenderPartExpanded(customerCode, partNo) {
+  const partKey = jobRatioPartKey(customerCode, partNo);
+  const cacheKey = jobRatioPartDetailCacheKey(customerCode, partNo);
+  if (jobRatioState.partDetailsLoading.has(partKey)) {
+    return '<p class="job-ratio-cust-loading">Loading order lines and BOM route…</p>';
+  }
+  const detail = jobRatioState.partDetails.get(cacheKey);
+  if (!detail) {
+    return '<p class="job-ratio-cust-empty">No detail loaded.</p>';
+  }
+
+  let lines = detail.rows || [];
+  const q = String(jobRatioState.search || '').trim().toLowerCase();
+  if (q) {
+    lines = lines.filter(row =>
+      [
+        row.sales_order_no, row.line_item_no, row.inventory_code, row.description,
+        row.process_sheet_no,
+      ].map(v => String(v || '').toLowerCase()).join(' ').includes(q)
+    );
+  }
+
+  const linesSection = !lines.length
+    ? '<p class="job-ratio-cust-empty">No order lines match the current filters.</p>'
+    : `<div class="job-ratio-cust-lines-scroll job-ratio-cust-lines-scroll--grouped">
+        ${jobRatioRenderPartLinesBySo(partKey, lines)}
+      </div>`;
+
+  const bomSection = jobRatioState.partsShowBomStages
+    ? `<div class="job-ratio-cust-expanded-section">
+        <h4 class="job-ratio-cust-expanded-title">BOM stages — cycle times</h4>
+        <p class="job-ratio-cust-expanded-hint">Expand a stage to see order lines with per-unit cycle time and total run minutes for that operation.</p>
+        ${jobRatioRenderPartBomStages(partKey, detail)}
+      </div>`
+    : '';
+
+  return `<div class="job-ratio-part-expanded">
+    <div class="job-ratio-cust-expanded-section">
+      <h4 class="job-ratio-cust-expanded-title">Sales order lines</h4>
+      <p class="job-ratio-cust-expanded-hint">${jobRatioFormatQty(lines.length)} process-sheet jobs · $${jobRatioFormatMoneyFull(detail.total_value)} booked value. Expand a sales order to see line details.</p>
+      ${linesSection}
+    </div>
+    ${bomSection}
+  </div>`;
+}
+
+function jobRatioRenderPartsDetail() {
+  const wrap = document.getElementById('job-ratio-parts-detail-wrap');
+  const content = document.getElementById('job-ratio-parts-detail-content');
+  const note = document.getElementById('job-ratio-parts-detail-note');
+  const bomToggle = document.getElementById('job-ratio-parts-show-bom');
+  if (bomToggle) bomToggle.checked = jobRatioState.partsShowBomStages;
+  if (!wrap || !content) return;
+
+  if (jobRatioState.partsLoading) {
+    content.innerHTML = '<p class="job-ratio-cust-loading">Loading ranked parts…</p>';
+    wrap.hidden = false;
+    return;
+  }
+  if (!jobRatioState.partsData) {
+    content.innerHTML = '<p class="job-ratio-cust-empty">No parts detail loaded.</p>';
+    wrap.hidden = false;
+    return;
+  }
+
+  const rows = jobRatioFilteredParts();
+  if (note) {
+    const data = jobRatioState.partsData;
+    note.textContent = `${jobRatioFormatQty(rows.length)} customer-part combinations · ${jobRatioFormatQty(data.total_qty)} total qty · $${jobRatioFormatMoneyFull(data.total_value)} booked value. Click a row to drill into sales orders${jobRatioState.partsShowBomStages ? ' and BOM cycle times' : ''}.`;
+  }
+  if (!rows.length) {
+    content.innerHTML = '<p class="job-ratio-cust-empty">No parts match the current filters.</p>';
+    wrap.hidden = false;
+    return;
+  }
+
+  const body = rows.map(row => {
+    const partKey = jobRatioPartKey(row.customer_code, row.part_no);
+    const expanded = jobRatioState.expandedParts.has(partKey);
+    const chevron = expanded ? '▼' : '▶';
+    return `<tr class="job-ratio-part-row${expanded ? ' is-expanded' : ''}" data-part-customer="${escapeHtml(row.customer_code)}" data-part-no="${escapeHtml(row.part_no)}">
+      <td class="job-ratio-part-expand"><span aria-hidden="true">${chevron}</span></td>
+      <td class="job-ratio-num job-ratio-parts-rank">${jobRatioFormatQty(row.rank)}</td>
+      <td class="job-ratio-num"><strong>${jobRatioFormatQty(row.score)}</strong></td>
+      <td>${escapeHtml(row.customer_name || '—')}<br><span class="new-orders-mono job-ratio-parts-muted">${escapeHtml(row.customer_code || '—')}</span></td>
+      <td class="new-orders-mono">${escapeHtml(row.part_no || '—')}</td>
+      <td class="job-ratio-part-cycle-cell">${jobRatioRenderPartBomPillsFromGroups(row.bom_cycle_groups)}</td>
+      <td class="job-ratio-line-desc" title="${escapeHtml(row.description || '')}">${escapeHtml(jobRatioTruncate(row.description || '—', 64))}</td>
+      <td class="job-ratio-num">${jobRatioFormatQty(row.total_qty)}</td>
+      <td class="job-ratio-num">$${jobRatioFormatMoneyFull(row.total_value)}</td>
+      <td class="job-ratio-num">$${jobRatioFormatMoneyFull(row.average_unit_value)}</td>
+      <td class="job-ratio-num">${jobRatioFormatQty(row.process_sheet_count)}</td>
+      <td class="job-ratio-num">${jobRatioFormatQty(row.order_count)}</td>
+    </tr>
+    ${expanded ? `<tr class="job-ratio-part-detail-row"><td colspan="12">${jobRatioRenderPartExpanded(row.customer_code, row.part_no)}</td></tr>` : ''}`;
+  }).join('');
+
+  content.innerHTML = `<div class="job-ratio-parts-scroll">
+    <table class="job-ratio-parts-table job-ratio-parts-detail-table">
+      <thead><tr>
+        <th class="job-ratio-part-expand-col" aria-label="Expand"></th>
+        <th>Rank</th><th><button type="button" data-jr-parts-sort="score">Score</button></th>
+        <th>Customer</th><th><button type="button" data-jr-parts-sort="part">Part</button></th>
+        <th>Machine cycle</th><th>Description</th>
+        <th><button type="button" data-jr-parts-sort="volume">Qty</button></th>
+        <th><button type="button" data-jr-parts-sort="value">Booked value</button></th>
+        <th>Avg unit value</th><th>PS</th><th><button type="button" data-jr-parts-sort="orders">Orders</button></th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  </div>`;
+  wrap.hidden = false;
+}
+
 function jobRatioShowEmpty(text) {
   const empty = document.getElementById('job-ratio-empty');
   const textEl = document.getElementById('job-ratio-empty-text');
@@ -1081,6 +1382,13 @@ function jobRatioRenderStats() {
     pills.push(`<span class="sales-report-stat-pill">${jobRatioFormatQty(jobRatioState.partsData.count)} ranked parts</span>`);
     pills.push(`<span class="sales-report-stat-pill">${jobRatioFormatQty(jobRatioState.partsData.total_qty)} qty</span>`);
     pills.push(`<span class="sales-report-stat-pill">$${jobRatioFormatMoneyFull(jobRatioState.partsData.total_value)} booked value</span>`);
+  }
+  if (jobRatioState.view === 'parts-detail' && jobRatioState.partsData) {
+    pills.push(`<span class="sales-report-stat-pill">${jobRatioFormatQty(jobRatioState.partsData.count)} parts</span>`);
+    pills.push(`<span class="sales-report-stat-pill">${jobRatioFormatQty(jobRatioState.expandedParts.size)} expanded</span>`);
+    if (jobRatioState.partsShowBomStages) {
+      pills.push('<span class="sales-report-stat-pill">BOM stages on</span>');
+    }
   }
   if (Number(report?.unclassified_count) > 0) {
     pills.push(`<span class="sales-report-stat-pill job-ratio-stat-warn">${jobRatioFormatQty(report.unclassified_count)} unclassified (qty ≤ 0)</span>`);
@@ -1134,6 +1442,8 @@ function jobRatioRender() {
     jobRatioRenderJobs();
   } else if (jobRatioState.view === 'parts') {
     jobRatioRenderParts();
+  } else if (jobRatioState.view === 'parts-detail') {
+    jobRatioRenderPartsDetail();
   } else {
     jobRatioRenderCustomers();
   }
@@ -1215,6 +1525,7 @@ async function jobRatioLoadParts(refresh = false) {
   if (jobRatioNoPsTypesSelected()) return;
   jobRatioState.partsLoading = true;
   if (jobRatioState.view === 'parts') jobRatioRenderParts();
+  else if (jobRatioState.view === 'parts-detail') jobRatioRenderPartsDetail();
 
   const params = new URLSearchParams({
     year: String(jobRatioState.year),
@@ -1239,8 +1550,62 @@ async function jobRatioLoadParts(refresh = false) {
     console.error(err);
   } finally {
     jobRatioState.partsLoading = false;
-    if (jobRatioState.view === 'parts') jobRatioRender();
+    if (jobRatioState.view === 'parts' || jobRatioState.view === 'parts-detail') jobRatioRender();
   }
+}
+
+async function jobRatioLoadPartDetail(customerCode, partNo) {
+  const partKey = jobRatioPartKey(customerCode, partNo);
+  const cacheKey = jobRatioPartDetailCacheKey(customerCode, partNo);
+  if (jobRatioState.partDetails.has(cacheKey)) return;
+
+  jobRatioState.partDetailsLoading.add(partKey);
+  if (jobRatioState.view === 'parts-detail') jobRatioRenderPartsDetail();
+
+  const params = new URLSearchParams({
+    year: String(jobRatioState.year),
+    pp_types: jobRatioPpTypesQuery(),
+    customer_code: customerCode,
+    part_no: partNo,
+  });
+  if (jobRatioState.partsMonth) params.set('month', String(jobRatioState.partsMonth));
+
+  try {
+    const payload = await jobRatioFetchJson(`/api/job-ratio/parts/detail?${params}`);
+    jobRatioState.partDetails.set(cacheKey, payload);
+  } catch (err) {
+    jobRatioState.partDetails.set(cacheKey, { rows: [], bom_stages: [], total_value: 0 });
+    console.error(err);
+  } finally {
+    jobRatioState.partDetailsLoading.delete(partKey);
+    if (jobRatioState.view === 'parts-detail') jobRatioRenderPartsDetail();
+  }
+}
+
+async function jobRatioTogglePart(customerCode, partNo) {
+  const partKey = jobRatioPartKey(customerCode, partNo);
+  if (jobRatioState.expandedParts.has(partKey)) {
+    jobRatioState.expandedParts.delete(partKey);
+    jobRatioRenderPartsDetail();
+    return;
+  }
+  jobRatioState.expandedParts.add(partKey);
+  jobRatioRenderPartsDetail();
+  await jobRatioLoadPartDetail(customerCode, partNo);
+}
+
+function jobRatioTogglePartSoGroup(partKey, so) {
+  const key = jobRatioPartSoGroupKey(partKey, so);
+  if (jobRatioState.expandedPartSoGroups.has(key)) jobRatioState.expandedPartSoGroups.delete(key);
+  else jobRatioState.expandedPartSoGroups.add(key);
+  jobRatioRenderPartsDetail();
+}
+
+function jobRatioTogglePartStage(partKey, stageId) {
+  const key = jobRatioPartStageKey(partKey, stageId);
+  if (jobRatioState.expandedPartStages.has(key)) jobRatioState.expandedPartStages.delete(key);
+  else jobRatioState.expandedPartStages.add(key);
+  jobRatioRenderPartsDetail();
 }
 
 async function jobRatioLoadCustomerLines(customerCode) {
@@ -1305,6 +1670,10 @@ async function jobRatioLoad(refresh = false) {
     jobRatioState.jobsTotalValue = null;
     jobRatioState.partsData = null;
     jobRatioState.expandedJobGroups.clear();
+    jobRatioState.expandedParts.clear();
+    jobRatioState.partDetails.clear();
+    jobRatioState.expandedPartSoGroups.clear();
+    jobRatioState.expandedPartStages.clear();
     jobRatioState.error = '';
     jobRatioPopulateFilterOptions();
   } catch (err) {
@@ -1318,6 +1687,9 @@ async function jobRatioLoad(refresh = false) {
   if (jobRatioState.view === 'parts' && jobRatioState.data) {
     await jobRatioLoadParts(false);
   }
+  if (jobRatioState.view === 'parts-detail' && jobRatioState.data && jobRatioState.partsData === null) {
+    await jobRatioLoadParts(false);
+  }
 }
 
 function jobRatioSetView(view) {
@@ -1329,7 +1701,7 @@ function jobRatioSetView(view) {
   });
   if (view === 'jobs' && jobRatioState.jobsRows === null) {
     jobRatioLoadJobs();
-  } else if (view === 'parts' && jobRatioState.partsData === null) {
+  } else if ((view === 'parts' || view === 'parts-detail') && jobRatioState.partsData === null) {
     jobRatioLoadParts();
   } else {
     jobRatioRender();
@@ -1344,8 +1716,12 @@ function jobRatioApplyPartsFilters(options = {}) {
   if (options.scoreMode !== undefined) jobRatioState.partsScoreMode = options.scoreMode;
   if (options.sort !== undefined) jobRatioState.partsSort = options.sort;
   jobRatioState.partsData = null;
+  jobRatioState.expandedParts.clear();
+  jobRatioState.partDetails.clear();
+  jobRatioState.expandedPartSoGroups.clear();
+  jobRatioState.expandedPartStages.clear();
   jobRatioSyncPartsFilters();
-  if (jobRatioState.view === 'parts') jobRatioLoadParts();
+  if (jobRatioState.view === 'parts' || jobRatioState.view === 'parts-detail') jobRatioLoadParts();
   else jobRatioRender();
 }
 
@@ -1699,6 +2075,34 @@ function jobRatioInit() {
   document.getElementById('job-ratio-parts-content')?.addEventListener('click', (ev) => {
     const sortButton = ev.target.closest('[data-jr-parts-sort]');
     if (sortButton) jobRatioApplyPartsFilters({ sort: sortButton.dataset.jrPartsSort });
+  });
+
+  document.getElementById('job-ratio-parts-show-bom')?.addEventListener('change', (ev) => {
+    jobRatioState.partsShowBomStages = Boolean(ev.target.checked);
+    jobRatioRenderPartsDetail();
+  });
+
+  document.getElementById('job-ratio-parts-detail-content')?.addEventListener('click', (ev) => {
+    const sortButton = ev.target.closest('[data-jr-parts-sort]');
+    if (sortButton) {
+      jobRatioApplyPartsFilters({ sort: sortButton.dataset.jrPartsSort });
+      return;
+    }
+    const soBtn = ev.target.closest('[data-jr-part-so]');
+    if (soBtn) {
+      ev.preventDefault();
+      jobRatioTogglePartSoGroup(soBtn.dataset.jrPartSo, soBtn.dataset.so);
+      return;
+    }
+    const stageBtn = ev.target.closest('[data-jr-part-stage]');
+    if (stageBtn) {
+      ev.preventDefault();
+      jobRatioTogglePartStage(stageBtn.dataset.jrPartStage, stageBtn.dataset.stage);
+      return;
+    }
+    const partRow = ev.target.closest('.job-ratio-part-row');
+    if (!partRow) return;
+    jobRatioTogglePart(partRow.dataset.partCustomer, partRow.dataset.partNo);
   });
 
   document.getElementById('job-ratio-matrix-wrap')?.addEventListener('click', (ev) => {

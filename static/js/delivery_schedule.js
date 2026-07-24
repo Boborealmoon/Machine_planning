@@ -30,6 +30,7 @@ const deliveryScheduleState = {
   sortDir: 'asc',
   search: '',
   ppTypes: new Set(DELIVERY_PS_TYPES_DEFAULT),
+  srAnOnly: false,
   weekKeys: new Set(),
   weekGroups: [],
   selected: new Set(),
@@ -568,6 +569,12 @@ function deliverySchedulePsType(item) {
   return DELIVERY_PS_TYPES.includes(prefix) ? prefix : prefix;
 }
 
+function deliveryScheduleSrPrefix(item) {
+  const raw = String(item?.ps_display || item?.ps_id || '').split('::')[0].trim().toUpperCase();
+  const match = raw.match(/^([A-Z])/);
+  return match ? match[1] : '';
+}
+
 function deliverySchedulePsTypeLabel() {
   const panel = document.getElementById('delivery-ps-type-panel');
   if (!panel) return 'PP type';
@@ -836,10 +843,13 @@ function deliveryScheduleMatchesWeek(item) {
 
 function deliveryScheduleMatchesPsType(item) {
   if (!deliveryScheduleState.ppTypes.size) return false;
-  if (deliveryScheduleState.ppTypes.size >= DELIVERY_PS_TYPES.length) return true;
   const psType = deliverySchedulePsType(item);
-  if (!psType) return true;
-  return deliveryScheduleState.ppTypes.has(psType);
+  if (psType && !deliveryScheduleState.ppTypes.has(psType)) return false;
+  if (deliveryScheduleState.srAnOnly && psType === 'SR') {
+    const srPrefix = deliveryScheduleSrPrefix(item);
+    return srPrefix === 'A' || srPrefix === 'N';
+  }
+  return true;
 }
 function deliveryScheduleSortIcon(colId) {
   if (deliveryScheduleState.sortBy !== colId) return '↕';
@@ -1569,6 +1579,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('delivery-schedule-hide-dismissed')?.addEventListener('change', (event) => {
     deliveryScheduleState.hideDismissed = Boolean(event.target.checked);
+    renderDeliveryScheduleBody();
+  });
+
+  document.getElementById('delivery-schedule-sr-an-only')?.addEventListener('change', (event) => {
+    deliveryScheduleState.srAnOnly = Boolean(event.target.checked);
+    deliveryScheduleRebuildWeekDropdown();
     renderDeliveryScheduleBody();
   });
 

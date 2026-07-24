@@ -37,7 +37,7 @@ from .process_sheets import (
     _repair_temp_ps_bom_if_missing,
     _repair_erp_ps_planner_bom_if_missing,
 )
-from .utils import compact_text, parse_number, planner_wall_datetime_to_api, shipped_quantity_completed, trial_catalog_op_key
+from .utils import bom_code_match_key, compact_text, parse_number, planner_wall_datetime_to_api, shipped_quantity_completed, trial_catalog_op_key
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +151,7 @@ def _sanitize_temp_ps_catalog_item(item):
 
 def _bom_op_stage_keys(con):
     return {
-        (compact_text(row["inventory_code"]), compact_text(row["bom_code"]))
+        (compact_text(row["inventory_code"]), bom_code_match_key(row["bom_code"]))
         for row in rows(
             con.execute(
                 """
@@ -162,6 +162,7 @@ def _bom_op_stage_keys(con):
                 """
             )
         )
+        if bom_code_match_key(row["bom_code"])
     }
 
 
@@ -171,10 +172,10 @@ def _bom_stage_check(inventory_code, erp_bom_code, selected_bom_code, bom_stage_
     selected = compact_text(selected_bom_code)
     if not erp:
         return {"erp_bom_code": "", "bom_stage_ok": False, "bom_stage_status": "missing_erp"}
-    in_stage = (inv, erp) in bom_stage_keys
+    in_stage = (inv, bom_code_match_key(erp)) in bom_stage_keys
     if not in_stage:
         return {"erp_bom_code": erp, "bom_stage_ok": False, "bom_stage_status": "not_in_stage"}
-    if selected and selected.upper() != erp.upper():
+    if selected and bom_code_match_key(selected) != bom_code_match_key(erp):
         return {"erp_bom_code": erp, "bom_stage_ok": True, "bom_stage_status": "planner_mismatch"}
     return {"erp_bom_code": erp, "bom_stage_ok": True, "bom_stage_status": "ok"}
 

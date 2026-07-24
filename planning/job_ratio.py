@@ -479,7 +479,9 @@ def enrich_booked_row(row: dict[str, Any], year: int, *, lens: str = MONTH_LENS_
     po_due = parse_date_value(row.get("po_due_date")) or parse_date_value(row.get("pp_due_date"))
     so_due = parse_date_value(row.get("so_due_date")) or parse_date_value(row.get("due_date"))
     ps_order = parse_date_value(row.get("ps_order_date"))
-    posted = parse_date_value(row.get("first_posted_datetime"))
+    posted = parse_date_value(row.get("first_posted_datetime")) or parse_date_value(
+        row.get("so_posted_date")
+    )
     report_dt = month_anchor_date(row, lens)
     qty = row.get("qty")
     try:
@@ -955,3 +957,167 @@ def filter_detail_rows(
                 continue
         out.append(row)
     return sort_detail_rows(out, sort=sort)
+
+
+def filter_part_detail_rows(
+    rows: list[dict[str, Any]],
+    *,
+    year: int,
+    customer_code: str,
+    part_no: str,
+    month: int | None = None,
+    sort: str = "volume",
+) -> list[dict[str, Any]]:
+    """Booked job rows for one customer + part (same grain as parts analysis)."""
+    customer_key = compact_text(customer_code)
+    part_key = compact_text(part_no)
+    if not customer_key or not part_key:
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if row_report_year(row) != year:
+            continue
+        if not row_has_positive_qty(row):
+            continue
+        if month is not None and row_report_month(row) != month:
+            continue
+        code = compact_text(row.get("customer_code")) or "—"
+        inv = compact_text(row.get("inventory_code")) or "—"
+        if code != customer_key or inv != part_key:
+            continue
+        out.append(row)
+    return sort_detail_rows(out, sort=sort)
+
+
+def bom_stages_for_part(con, part_no: str) -> tuple[str | None, list[dict[str, Any]]]:
+    """Default ERP BOM route stages with cycle/setup times for a part."""
+    from planning.flows import _inventory_bom_route_steps, erp_bom_codes_by_inventory
+
+    inventory_code = compact_text(part_no)
+    if not inventory_code:
+        return None, []
+    bom_codes = (erp_bom_codes_by_inventory(con, [inventory_code]) or {}).get(inventory_code) or []
+    bom_code = compact_text(bom_codes[0]) if bom_codes else ""
+    if not bom_code:
+        return None, []
+    steps = _inventory_bom_route_steps(con, inventory_code, bom_code)
+    stages: list[dict[str, Any]] = []
+    for step in steps:
+        stages.append(
+            {
+                "stage_no": step.get("source_stage_no"),
+                "stage_desc": compact_text(step.get("op_type")) or compact_text(step.get("machine_category")),
+                "op_no": compact_text(step.get("op_no")),
+                "machine_no": compact_text(step.get("preferred_machine")),
+                "cycle_time": round(float(step.get("cycle_time") or 0), 4),
+                "setup_time": round(float(step.get("setup_time") or 0), 4),
+            }
+        )
+    return bom_code, stages
+
+
+def _bom_stage_group_key(stage_desc: str) -> tuple[str, str]:
+    """Map stage description to a cycle-time group (turning / milling / turnmill / other)."""
+    upper = compact_text(stage_desc).upper()
+    if upper.startswith("TURNING"):
+        return "turning", "Turning"
+    if upper.startswith("MILLING"):
+        return "milling", "Milling"
+    if upper.startswith("TURNMILL"):
+        return "turnmill", "Turnmill"
+    label = compact_text(stage_desc) or "Other"
+    return "other", label
+
+
+def bom_cycle_groups(
+    stages: list[dict[str, Any]],
+    total_qty: float,
+) -> list[dict[str, Any]]:
+    """Sum run and setup minutes by turning / milling (etc.) for a part's BOM route."""
+    grouped: dict[str, dict[str, Any]] = {}
+    qty = max(float(total_qty or 0), 0.0)
+    for stage in stages:
+        key, label = _bom_stage_group_key(str(stage.get("stage_desc") or ""))
+        entry = grouped.setdefault(
+            key,
+            {
+                "group": key,
+                "label": label,
+                "run_minutes": 0.0,
+                "setup_minutes": 0.0,
+                "cycle_per_unit": 0.0,
+                "stage_count": 0,
+            },
+        )
+        cycle = float(stage.get("cycle_time") or 0)
+        setup = float(stage.get("setup_time") or 0)
+        entry["run_minutes"] += qty * cycle
+        entry["setup_minutes"] += setup
+        entry["cycle_per_unit"] += cycle
+        entry["stage_count"] += 1
+
+    order = ("turning", "milling", "turnmill", "other")
+    out: list[dict[str, Any]] = []
+    for key in order:
+        if key not in grouped:
+            continue
+        entry = grouped[key]
+        out.append(
+            {
+                **entry,
+                "run_minutes": round(entry["run_minutes"], 2),
+                "setup_minutes": round(entry["setup_minutes"], 2),
+                "cycle_per_unit": round(entry["cycle_per_unit"], 4),
+            }
+        )
+    for key, entry in grouped.items():
+        if key in order:
+            continue
+        out.append(
+            {
+                **entry,
+                "run_minutes": round(entry["run_minutes"], 2),
+                "setup_minutes": round(entry["setup_minutes"], 2),
+                "cycle_per_unit": round(entry["cycle_per_unit"], 4),
+            }
+        )
+    return out
+
+
+def attach_bom_cycle_groups(con, rows: list[dict[str, Any]]) -> None:
+    """Attach bom_code and bom_cycle_groups to each ranked part row (in place)."""
+    from planning.flows import _inventory_bom_route_steps, erp_bom_codes_by_inventory
+
+    part_nos = sorted({compact_text(row.get("part_no")) for row in rows if compact_text(row.get("part_no"))})
+    if not part_nos:
+        return
+
+    bom_codes_map = erp_bom_codes_by_inventory(con, part_nos)
+    stages_by_part: dict[str, list[dict[str, Any]]] = {}
+    bom_code_by_part: dict[str, str | None] = {}
+
+    for part_no in part_nos:
+        bom_codes = bom_codes_map.get(part_no) or []
+        bom_code = compact_text(bom_codes[0]) if bom_codes else ""
+        bom_code_by_part[part_no] = bom_code or None
+        if not bom_code:
+            stages_by_part[part_no] = []
+            continue
+        steps = _inventory_bom_route_steps(con, part_no, bom_code)
+        stages_by_part[part_no] = [
+            {
+                "stage_no": step.get("source_stage_no"),
+                "stage_desc": compact_text(step.get("op_type")) or compact_text(step.get("machine_category")),
+                "op_no": compact_text(step.get("op_no")),
+                "machine_no": compact_text(step.get("preferred_machine")),
+                "cycle_time": round(float(step.get("cycle_time") or 0), 4),
+                "setup_time": round(float(step.get("setup_time") or 0), 4),
+            }
+            for step in steps
+        ]
+
+    for row in rows:
+        part_no = compact_text(row.get("part_no"))
+        stages = stages_by_part.get(part_no) or []
+        row["bom_code"] = bom_code_by_part.get(part_no)
+        row["bom_cycle_groups"] = bom_cycle_groups(stages, float(row.get("total_qty") or 0))

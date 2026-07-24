@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Assembly Parts{% endblock %}
+{% block main_class %}app-main--assembly-parts{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/assembly_boms.css', v='20260717d') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/assembly_parts.css', v='20260723a') }}">
+{% endblock %}
+{% block content %}
+<div class="ap-page ab-page">
+  <header class="ab-header">
+    <div>
+      <div class="ab-eyebrow">Production structure</div>
+      <h1>Assembly Parts Tracker</h1>
+      <p id="ap-summary" class="ab-subtitle" aria-live="polite">Loading assembly component readiness...</p>
+    </div>
+    <button type="button" class="btn btn-primary" id="ap-refresh">Refresh</button>
+  </header>
+
+  <div class="ap-views" role="tablist" aria-label="Assembly parts view">
+    <button type="button" class="ap-view is-active" data-ap-view="active" role="tab" aria-selected="true">Active</button>
+    <button type="button" class="ap-view" data-ap-view="complete" role="tab" aria-selected="false">Complete</button>
+  </div>
+
+  <section class="ab-toolbar card" aria-label="Assembly parts filters">
+    <label class="ab-search">
+      <span>Search</span>
+      <input id="ap-search" type="search" placeholder="Parent PS, child PS, part, sales order..." autocomplete="off">
+    </label>
+    <div class="ab-filter-group" role="group" aria-label="Process sheet type">
+      <button type="button" class="ab-filter is-active" data-ap-type="APS" aria-pressed="true">APS</button>
+      <button type="button" class="ab-filter is-active" data-ap-type="NPS" aria-pressed="true">NPS</button>
+    </div>
+    <label class="ab-check">
+      <input type="checkbox" id="ap-issues-only">
+      <span>Issues only</span>
+    </label>
+    <label class="ab-select-label">
+      <span>Flag</span>
+      <select id="ap-flag-filter">
+        <option value="">All flags</option>
+        <option value="leaf_component">Leaf component</option>
+        <option value="deep_nested">Nested BOM</option>
+        <option value="repeated_component">Repeated component</option>
+        <option value="multiple_boms">Multiple BOM routes</option>
+        <option value="missing_bom">Missing child BOM</option>
+        <option value="unresolved_bom">Unresolved child BOM</option>
+        <option value="bom_alias">BOM alias</option>
+        <option value="qty_mismatch">Qty mismatch</option>
+        <option value="orphan_comp">Orphan component</option>
+        <option value="missing_comp_sheet">Missing COMP sheet</option>
+        <option value="stalled_child">Stalled child</option>
+      </select>
+    </label>
+  </section>
+
+  <div id="ap-loading" class="ab-state card">Loading assembly parts...</div>
+  <div id="ap-error" class="ab-state ab-state--error card" hidden></div>
+  <div id="ap-empty" class="ab-state card" hidden>
+    <strong>No matching assembly parts found.</strong>
+    <span>Parents appear when an APS/NPS has COMP child process sheets.</span>
+  </div>
+
+  <div class="ap-table-wrap card" id="ap-table-wrap" hidden>
+    <table class="ap-table" id="ap-table">
+      <thead>
+        <tr>
+          <th class="ap-col-parent">Parent</th>
+          <th>Child PS</th>
+          <th>Part</th>
+          <th class="ap-num">Qty</th>
+          <th>In-house</th>
+          <th>Stage</th>
+          <th>Material</th>
+          <th>Queue</th>
+          <th>BOM</th>
+          <th>Issues</th>
+          <th class="ap-col-expand"></th>
+        </tr>
+      </thead>
+      <tbody id="ap-tbody"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/assembly_parts.js', v='20260723a') }}"></script>
+{% endblock %}

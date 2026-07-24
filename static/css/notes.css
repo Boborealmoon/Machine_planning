@@ -63,7 +63,8 @@ body.notes-body {
 }
 
 .notes-refresh,
-.notes-save {
+.notes-save,
+.notes-cancel {
   border: 0;
   border-radius: 10px;
   font-weight: 700;
@@ -391,9 +392,27 @@ body.notes-body {
   margin-top: 24px;
 }
 
+.notes-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .notes-form-message {
   color: var(--notes-muted);
   font-size: 13px;
+}
+
+.notes-cancel {
+  padding: 11px 16px;
+  background: rgba(255, 255, 255, .9);
+  border: 1px solid var(--notes-line);
+  color: var(--notes-ink);
+}
+
+.notes-cancel:disabled {
+  cursor: wait;
+  opacity: .6;
 }
 
 .notes-save {
@@ -428,19 +447,76 @@ body.notes-body {
 }
 
 .note-card {
-  padding: 20px;
+  padding: 18px 20px;
   border-radius: 14px;
 }
 
+.note-card.is-editing {
+  border-color: var(--notes-accent);
+  box-shadow: 0 0 0 3px rgba(18, 102, 79, .12), 0 14px 35px rgba(31, 53, 44, .06);
+}
+
 .note-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 10px;
+}
+
+.note-card-stamps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
+  min-width: 0;
+  color: var(--notes-muted);
   font-size: 11px;
   font-weight: 650;
   letter-spacing: .03em;
   text-transform: uppercase;
 }
 
+.note-card-edited {
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-transform: none;
+}
+
+.note-card-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+}
+
+.note-card-action {
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--notes-muted);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.note-card-action:hover,
+.note-card-action:focus-visible {
+  background: var(--notes-accent-soft);
+  color: var(--notes-accent);
+  outline: 0;
+}
+
+.note-card-action--danger:hover,
+.note-card-action--danger:focus-visible {
+  background: #f8eaea;
+  color: #a33f36;
+}
+
 .note-card-body {
+  margin: 0;
   white-space: pre-wrap;
   line-height: 1.6;
 }

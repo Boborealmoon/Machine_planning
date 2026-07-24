@@ -3,7 +3,7 @@
 {% block main_class %}app-main--frame-agreement{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=frame-agreement-20260624h">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/frame_agreement_parts.css') }}?v=frame-agreement-20260706g">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/frame_agreement_parts.css') }}?v=frame-agreement-20260724a">
 {% endblock %}
 {% block content %}
 <div class="fa-page new-orders-page">
@@ -50,6 +50,8 @@
             <th>BOM</th>
             <th>Material</th>
             <th class="fa-col-qty">Qty / FG</th>
+            <th class="fa-col-qty" title="Finished pieces / day at 10.5h (630 min) minus setup">FG / day (normal)</th>
+            <th class="fa-col-qty" title="Finished pieces / day at 24h (1440 min) minus setup">FG / day (MPP)</th>
             <th>BOM detail</th>
             <th>MPP config</th>
             <th class="fa-col-mpp">MPP machine</th>
@@ -171,5 +173,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/frame_agreement_parts.js') }}?v=frame-agreement-20260706g"></script>
+<script src="{{ url_for('static', filename='js/frame_agreement_parts.js') }}?v=frame-agreement-20260724a"></script>
 {% endblock %}

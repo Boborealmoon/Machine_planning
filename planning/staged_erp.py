@@ -243,7 +243,8 @@ SELECT
     inventory_code,
     customer_code,
     party_name,
-    customer_po_no
+    customer_po_no,
+    partial_qty
 FROM public.pp_partial_detail
 ORDER BY pp_voucher_no, pp_partial_no
 """

@@ -6852,12 +6852,82 @@
     font-style: italic;
     background: #f8fafc;
   }
+  .new-orders-page--sales-orders #so-loading[hidden],
+  .new-orders-page--sales-orders #so-table-host[hidden],
+  .new-orders-page--sales-orders #so-empty[hidden] {
+    display: none !important;
+  }
+  .so-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 320px;
+    padding: 48px 24px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  }
+  .so-loading[hidden] {
+    display: none !important;
+  }
+  .so-loading-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    width: min(100%, 320px);
+    text-align: center;
+  }
+  .so-loading-spinner {
+    width: 42px;
+    height: 42px;
+    border: 3px solid rgba(37, 99, 235, 0.16);
+    border-top-color: #2563eb;
+    border-radius: 50%;
+    animation: so-loading-spin 0.75s linear infinite;
+    flex: 0 0 auto;
+  }
+  @keyframes so-loading-spin {
+    to { transform: rotate(360deg); }
+  }
+  .so-loading-text {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: #64748b;
+    line-height: 1.4;
+  }
+  .so-loading-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 24;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 24px;
+    background: rgba(255, 255, 255, 0.9);
+    backdrop-filter: blur(2px);
+    border-radius: inherit;
+  }
+  .so-loading-overlay[hidden] {
+    display: none !important;
+  }
   .new-orders-page--sales-orders .so-table-scroll-host {
     display: flex;
     flex-direction: column;
     min-width: 0;
     padding: 0;
     overflow: hidden;
+    position: relative;
+  }
+  .new-orders-page--sales-orders .so-table-scroll-host.is-loading .so-table-scroll-top-wrap,
+  .new-orders-page--sales-orders .so-table-scroll-host.is-loading .new-orders-table-wrap {
+    opacity: 0.42;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
   }
   .new-orders-page--sales-orders .so-table-scroll-top-wrap {
     flex: 0 0 auto;
@@ -8803,6 +8873,11 @@
   .so-editable-status.is-saved { color: #15803d; }
   .so-editable-status.is-error { color: #dc2626; }
 
+  .so-week-cell {
+    font-weight: 700;
+    color: var(--text2, #64748b);
+    white-space: nowrap;
+  }
   .so-coway-edd-cell {
     min-width: 128px;
   }
@@ -10421,6 +10496,10 @@
     padding: 20px 24px 40px;
     box-sizing: border-box;
   }
+  /* Parts detail has many columns — use full viewport so the table fits without side-scroll */
+  .app-main--job-ratio:has(#job-ratio-parts-detail-wrap:not([hidden])) {
+    max-width: none;
+  }
   .job-ratio-page {
     display: flex;
     flex-direction: column;
@@ -10490,7 +10569,8 @@
   .job-ratio-matrix-wrap,
   .job-ratio-jobs-wrap,
   .job-ratio-customers-wrap,
-  .job-ratio-parts-wrap {
+  .job-ratio-parts-wrap,
+  .job-ratio-parts-detail-wrap {
     padding: 0 0 12px;
     overflow: hidden;
   }
@@ -10546,6 +10626,28 @@
     border-collapse: collapse;
     font-size: 12px;
   }
+  .job-ratio-parts-detail-table {
+    min-width: 100%;
+    width: 100%;
+    table-layout: auto;
+  }
+  .job-ratio-parts-detail-table th,
+  .job-ratio-parts-detail-table td {
+    white-space: normal;
+  }
+  .job-ratio-parts-detail-table .new-orders-mono,
+  .job-ratio-parts-detail-table .job-ratio-num {
+    white-space: nowrap;
+  }
+  .job-ratio-parts-detail-table .job-ratio-line-desc {
+    max-width: none;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+  .job-ratio-parts-detail-wrap .job-ratio-bom-pills--cell {
+    max-width: none;
+  }
   .job-ratio-parts-table th,
   .job-ratio-parts-table td {
     padding: 9px 10px;
@@ -10586,6 +10688,190 @@
   .job-ratio-parts-muted {
     color: var(--text3);
     font-size: 11px;
+  }
+  .job-ratio-parts-detail-wrap .sales-report-section-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 20px;
+    align-items: flex-start;
+    justify-content: space-between;
+  }
+  .job-ratio-parts-detail-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  .job-ratio-bom-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text2);
+    cursor: pointer;
+    user-select: none;
+  }
+  .job-ratio-bom-toggle input {
+    width: 15px;
+    height: 15px;
+    accent-color: var(--primary);
+  }
+  .job-ratio-parts-detail-table .job-ratio-part-row {
+    cursor: pointer;
+  }
+  .job-ratio-parts-detail-table .job-ratio-part-row:hover td {
+    background: rgba(29, 78, 216, 0.04);
+  }
+  .job-ratio-parts-detail-table .job-ratio-part-row.is-expanded td {
+    background: rgba(29, 78, 216, 0.06);
+    border-bottom-color: transparent;
+  }
+  .job-ratio-part-expand {
+    width: 28px;
+    text-align: center;
+    color: var(--text3);
+    font-size: 10px;
+  }
+  .job-ratio-part-expand-col {
+    width: 28px;
+  }
+  .job-ratio-part-detail-row td {
+    padding: 0 10px 12px !important;
+    background: #f8fafc;
+    border-bottom: 1px solid var(--border);
+    white-space: normal;
+  }
+  .job-ratio-part-expanded {
+    padding: 12px 4px 4px;
+  }
+  .job-ratio-part-expanded .job-ratio-cust-expanded-section + .job-ratio-cust-expanded-section {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--border);
+  }
+  .job-ratio-part-bom-route {
+    margin: 0 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .job-ratio-part-bom-stages {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .job-ratio-part-stage {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #fff;
+    overflow: hidden;
+  }
+  .job-ratio-part-stage.is-open {
+    border-color: rgba(29, 78, 216, 0.25);
+  }
+  .job-ratio-part-stage-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    width: 100%;
+    padding: 10px 12px;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+  }
+  .job-ratio-part-stage-head:hover {
+    background: rgba(29, 78, 216, 0.04);
+  }
+  .job-ratio-part-stage-label {
+    font-weight: 600;
+    font-size: 12px;
+  }
+  .job-ratio-part-stage-meta {
+    font-size: 11px;
+    color: var(--text3);
+  }
+  .job-ratio-part-stage-body {
+    padding: 0 8px 8px;
+    overflow: auto;
+  }
+  .job-ratio-part-stage-lines {
+    font-size: 11px;
+  }
+  .job-ratio-bom-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 12px;
+  }
+  .job-ratio-bom-pills--cell {
+    margin: 0;
+    gap: 4px;
+    max-width: 220px;
+    white-space: normal;
+  }
+  .job-ratio-bom-pills--cell .job-ratio-bom-pill {
+    padding: 3px 8px;
+    font-size: 10px;
+  }
+  .job-ratio-part-cycle-cell {
+    white-space: normal;
+    vertical-align: middle;
+    min-width: 120px;
+  }
+  .job-ratio-part-bom-summary {
+    padding: 0 4px 4px;
+  }
+  .job-ratio-bom-pill {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.3;
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text2);
+  }
+  .job-ratio-bom-pill-label {
+    color: var(--text1);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-size: 10px;
+  }
+  .job-ratio-bom-pill--turning {
+    border-color: rgba(29, 78, 216, 0.25);
+    background: rgba(29, 78, 216, 0.07);
+  }
+  .job-ratio-bom-pill--turning .job-ratio-bom-pill-label {
+    color: #1d4ed8;
+  }
+  .job-ratio-bom-pill--milling {
+    border-color: rgba(180, 83, 9, 0.25);
+    background: rgba(180, 83, 9, 0.08);
+  }
+  .job-ratio-bom-pill--milling .job-ratio-bom-pill-label {
+    color: #b45309;
+  }
+  .job-ratio-bom-pill--turnmill {
+    border-color: rgba(109, 40, 217, 0.25);
+    background: rgba(109, 40, 217, 0.07);
+  }
+  .job-ratio-bom-pill-value {
+    font-variant-numeric: tabular-nums;
+  }
+  .job-ratio-part-no-cell {
+    white-space: normal;
+    min-width: 140px;
   }
   .job-ratio-scroll-hint {
     margin: 6px 0 0;

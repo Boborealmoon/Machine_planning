@@ -49,16 +49,24 @@ def api_mpp_planner_machines():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+def _request_fa_only() -> bool:
+    """Parse ?fa_only= query flag; default True (FA parts only)."""
+    raw = (request.args.get("fa_only") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 @mpp_planner_bp.get("/api/mpp-planner/jobs")
 def api_mpp_planner_jobs():
     try:
+        fa_only = _request_fa_only()
         with planner_db() as con:
-            jobs = fetch_mpp_planner_jobs(con)
+            jobs = fetch_mpp_planner_jobs(con, fa_only=fa_only)
             meta = fetch_mpp_planner_intake_meta(con)
         return jsonify({
             "ok": True,
             "count": len(jobs),
-            "source": "frame_agreement",
+            "source": "frame_agreement" if fa_only else "process_sheets",
+            "fa_only": fa_only,
             "fetched_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
             "frame_agreement_part_count": meta.get("frameAgreementPartCount", 0),
             "jobs": jobs,

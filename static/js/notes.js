@@ -1,6 +1,9 @@
 (() => {
   'use strict';
 
+  const ADMIN_GATE_TOKEN = String(globalThis.__ADMIN_GATE_TOKEN__ || '').trim();
+  const notesNativeFetch = globalThis.fetch.bind(globalThis);
+
   const state = {
     selected: [],
     results: [],
@@ -8,6 +11,7 @@
     timer: 0,
     sequence: 0,
     details: new Map(),
+    editingId: null,
   };
   const get = id => document.getElementById(id);
 
@@ -18,8 +22,21 @@
     return node;
   }
 
+  function notesFetch(input, init) {
+    const nextInit = { ...(init || {}) };
+    const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+    const isNotesApi = typeof url === 'string' && url.startsWith('/api/notes');
+    if (ADMIN_GATE_TOKEN && isNotesApi) {
+      nextInit.headers = {
+        ...(nextInit.headers || {}),
+        'X-Admin-Token': ADMIN_GATE_TOKEN,
+      };
+    }
+    return notesNativeFetch(input, nextInit);
+  }
+
   async function json(url, options) {
-    const response = await fetch(url, options);
+    const response = await notesFetch(url, options);
     let data = {};
     try { data = await response.json(); } catch (_) { /* no JSON body */ }
     if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);
@@ -30,6 +47,57 @@
     const partial = Number(item.pp_partial_no || 1);
     const base = String(item.source_ps_id || item.ps_id || item.planner_ps_id || '').trim();
     return partial > 1 && !base.includes('::') ? `${base} - Partial ${partial}` : base;
+  }
+
+  function setComposerMode(editing) {
+    const title = get('new-note-title');
+    const save = get('note-save');
+    const cancel = get('note-cancel');
+    if (editing) {
+      title.textContent = 'Edit note';
+      save.textContent = 'Save changes';
+      cancel.hidden = false;
+    } else {
+      title.textContent = 'New note';
+      save.textContent = 'Add note';
+      cancel.hidden = true;
+    }
+  }
+
+  function clearComposer(message) {
+    state.editingId = null;
+    get('note-body').value = '';
+    state.selected = [];
+    renderSelected();
+    get('process-sheet-search').value = '';
+    closeResults();
+    get('process-sheet-search-status').textContent =
+      'Select a result to attach it to this note.';
+    get('note-form-message').textContent = message || '';
+    setComposerMode(false);
+  }
+
+  function beginEdit(note) {
+    state.editingId = note.note_id;
+    get('note-body').value = note.body || '';
+    state.selected = (Array.isArray(note.process_sheets) ? note.process_sheets : []).map(tag => ({
+      planner_ps_id: tag.planner_ps_id,
+      source_ps_id: tag.source_ps_id,
+      ps_id: tag.source_ps_id,
+      pp_partial_no: tag.pp_partial_no,
+      part_no: tag.part_no,
+      part_desc: tag.part_desc,
+    }));
+    renderSelected();
+    closeResults();
+    get('process-sheet-search').value = '';
+    get('process-sheet-search-status').textContent = state.selected.length
+      ? `${state.selected.length} process sheet${state.selected.length === 1 ? '' : 's'} attached.`
+      : 'Select a result to attach it to this note.';
+    get('note-form-message').textContent = 'Editing note - save when ready.';
+    setComposerMode(true);
+    get('note-body').focus();
+    get('note-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   function renderSelected() {
@@ -222,6 +290,24 @@
     }
   }
 
+  async function deleteNote(note) {
+    const preview = String(note.body || '').trim().slice(0, 80);
+    const ok = window.confirm(
+      preview
+        ? `Delete this note?\n\n${preview}${String(note.body || '').trim().length > 80 ? '…' : ''}`
+        : 'Delete this note?'
+    );
+    if (!ok) return;
+    try {
+      await json(`/api/notes/${encodeURIComponent(note.note_id)}`, { method: 'DELETE' });
+      if (state.editingId === note.note_id) clearComposer('Note deleted.');
+      else get('note-form-message').textContent = 'Note deleted.';
+      await loadNotes();
+    } catch (error) {
+      get('note-form-message').textContent = error.message || 'Could not delete note.';
+    }
+  }
+
   function renderNotes(notes) {
     const host = get('notes-list');
     host.replaceChildren();
@@ -232,8 +318,25 @@
     }
     notes.forEach(note => {
       const card = el('article', 'note-card');
+      if (state.editingId === note.note_id) card.classList.add('is-editing');
+
       const meta = el('div', 'note-card-meta');
-      meta.append(el('time', '', formatDate(note.created_at)));
+      const stamps = el('div', 'note-card-stamps');
+      stamps.append(el('time', '', formatDate(note.created_at)));
+      if (note.updated_at && note.updated_at !== note.created_at) {
+        stamps.append(el('span', 'note-card-edited', `Edited ${formatDate(note.updated_at)}`));
+      }
+      meta.append(stamps);
+
+      const actions = el('div', 'note-card-actions');
+      const editBtn = el('button', 'note-card-action', 'Edit');
+      editBtn.type = 'button';
+      editBtn.addEventListener('click', () => beginEdit(note));
+      const deleteBtn = el('button', 'note-card-action note-card-action--danger', 'Delete');
+      deleteBtn.type = 'button';
+      deleteBtn.addEventListener('click', () => deleteNote(note));
+      actions.append(editBtn, deleteBtn);
+      meta.append(actions);
       card.append(meta, el('p', 'note-card-body', note.body));
 
       const tags = Array.isArray(note.process_sheets) ? note.process_sheets : [];
@@ -280,34 +383,48 @@
     const body = get('note-body').value.trim();
     if (!body) return;
     const save = get('note-save');
+    const cancel = get('note-cancel');
     const message = get('note-form-message');
+    const editingId = state.editingId;
     save.disabled = true;
-    message.textContent = 'Saving...';
+    cancel.disabled = true;
+    message.textContent = editingId ? 'Saving changes...' : 'Saving...';
     try {
-      await json('/api/notes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          body,
-          process_sheets: state.selected.map(item => ({
-            planner_ps_id: item.planner_ps_id,
-          })),
-        }),
-      });
-      get('note-body').value = '';
-      state.selected = [];
-      renderSelected();
-      message.textContent = 'Note added.';
+      const payload = {
+        body,
+        process_sheets: state.selected.map(item => ({
+          planner_ps_id: item.planner_ps_id,
+        })),
+      };
+      if (editingId) {
+        await json(`/api/notes/${encodeURIComponent(editingId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        clearComposer('Note updated.');
+      } else {
+        await json('/api/notes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        clearComposer('Note added.');
+      }
       await loadNotes();
     } catch (error) {
-      message.textContent = error.message || 'Could not save note.';
+      message.textContent = error.message || (
+        editingId ? 'Could not update note.' : 'Could not save note.'
+      );
     } finally {
       save.disabled = false;
+      cancel.disabled = false;
     }
   }
 
   document.addEventListener('DOMContentLoaded', () => {
     get('note-form').addEventListener('submit', saveNote);
+    get('note-cancel').addEventListener('click', () => clearComposer());
     get('notes-refresh').addEventListener('click', loadNotes);
     get('process-sheet-search').addEventListener('input', event => {
       clearTimeout(state.timer);

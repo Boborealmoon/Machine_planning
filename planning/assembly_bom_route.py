@@ -2,18 +2,29 @@
 from __future__ import annotations
 
 import logging
-import re
 import time
-from collections import Counter, defaultdict
 from datetime import datetime
 from typing import Any
 
 from flask import Blueprint, jsonify, render_template, request
 
 from db import planner_db_connect_error
+from .assembly_classify import (
+    as_float,
+    as_int,
+    build_assembly_jobs,
+    classify_assembly_family,
+    is_open_root,
+    resolve_child_bom,
+    selected_root_row,
+)
 from .helpers import planner_db, rows
 from .staged_erp import live_query
-from .utils import SHIPPED_QTY_TOLERANCE, compact_text, shipped_quantity_completed
+from .utils import (
+    SHIPPED_QTY_TOLERANCE,
+    bom_code_match_key,
+    compact_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +33,16 @@ assembly_bom_bp = Blueprint("assembly_bom", __name__)
 ASSEMBLY_BOM_PATH = "/assembly-boms"
 _CACHE_TTL_SEC = 300
 _cache: dict[bool, tuple[float, list[dict[str, Any]]]] = {}
+
+# Re-exports for tests / callers that import from this module.
+__all__ = [
+    "assembly_bom_bp",
+    "bom_code_match_key",
+    "build_assembly_jobs",
+    "classify_assembly_job",
+    "fetch_assembly_jobs",
+    "is_open_root",
+]
 
 _OPEN_ROOT_SQL = f"""
 SELECT DISTINCT ON (c.ps_id, c.pp_partial_no)
@@ -185,36 +206,18 @@ ORDER BY source_inventory_code, bom_code, level, root
 """
 
 
-def bom_code_match_key(code: Any) -> str:
-    """Compare ERP BOM aliases while retaining the original code for display."""
-    text = compact_text(code).upper()
-    return re.sub(r"[^A-Z0-9]+", "", text) if text else ""
-
-
 def _as_int(value: Any) -> int:
-    try:
-        return int(float(value or 0))
-    except (TypeError, ValueError):
-        return 0
+    return as_int(value)
 
 
 def _as_float(value: Any) -> float:
-    try:
-        return float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def is_open_root(row: dict[str, Any]) -> bool:
-    status = compact_text(row.get("status")).lower()
-    if status in {"history", "completed", "complete", "cancelled", "canceled", "void"}:
-        return False
-    so_qty = row.get("so_det_qty")
-    return so_qty is None or not shipped_quantity_completed(so_qty, row.get("qty_shipped"))
+    return as_float(value)
 
 
 def _codes(rows_: list[dict[str, Any]]) -> list[str]:
-    return sorted({compact_text(row.get("bom_code")) for row in rows_ if compact_text(row.get("bom_code"))})
+    from .assembly_classify import bom_codes
+
+    return bom_codes(rows_)
 
 
 def _selected_root_row(
@@ -222,37 +225,14 @@ def _selected_root_row(
     child_part: str,
     parent_bom: str,
 ) -> dict[str, Any]:
-    candidates = [
-        row
-        for row in root_rows
-        if _as_int(row.get("level")) == 1
-        and compact_text(row.get("material_inventory_code")).upper() == child_part.upper()
-    ]
-    if not candidates:
-        return {}
-    parent_key = bom_code_match_key(parent_bom)
-    if parent_key:
-        matched = [row for row in candidates if bom_code_match_key(row.get("bom_code")) == parent_key]
-        if matched:
-            return matched[0]
-    return candidates[0]
+    return selected_root_row(root_rows, child_part, parent_bom)
 
 
 def _resolve_child_bom(
     selected_bom: str,
     available_boms: list[str],
 ) -> tuple[str, str]:
-    """Return display route and one of ok/alias/missing/unresolved."""
-    selected = compact_text(selected_bom)
-    if not selected:
-        return "", "missing"
-    if selected in available_boms:
-        return selected, "ok"
-    selected_key = bom_code_match_key(selected)
-    alias = next((code for code in available_boms if bom_code_match_key(code) == selected_key), "")
-    if alias:
-        return alias, "alias"
-    return selected, "unresolved"
+    return resolve_child_bom(selected_bom, available_boms)
 
 
 def classify_assembly_job(
@@ -260,157 +240,13 @@ def classify_assembly_job(
     hierarchy_rows: list[dict[str, Any]],
     listing_by_source: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any] | None:
-    """Build one parent job and its component/BOM diagnostics."""
-    ps_id = compact_text(root.get("ps_id"))
-    parent_part = compact_text(root.get("part_no"))
-    parent_bom = compact_text(root.get("bom_code"))
-    fg_row = next(
-        (
-            row
-            for row in hierarchy_rows
-            if compact_text(row.get("type")).upper() == "FG"
-            and compact_text(row.get("inventory_code")).upper() == parent_part.upper()
-        ),
-        {},
+    """Build one parent job (Monitor: subassembly children only)."""
+    return classify_assembly_family(
+        root,
+        hierarchy_rows,
+        listing_by_source,
+        require_subassembly_children=True,
     )
-    component_rows = [
-        row
-        for row in hierarchy_rows
-        if compact_text(row.get("type")).upper() == "COMP"
-        and (
-            not compact_text(row.get("parent_inventory_code"))
-            or compact_text(row.get("parent_inventory_code")).upper() == parent_part.upper()
-        )
-    ]
-    if not component_rows:
-        return None
-
-    root_rows = listing_by_source.get(parent_part.upper(), [])
-    instance_counts = Counter(compact_text(row.get("inventory_code")).upper() for row in component_rows)
-    children: list[dict[str, Any]] = []
-    flag_set = {"nested_assembly"}
-
-    for component in component_rows:
-        child_part = compact_text(component.get("inventory_code"))
-        root_listing = _selected_root_row(root_rows, child_part, parent_bom)
-        in_house = compact_text(root_listing.get("in_house_production")).upper() == "Y"
-        child_rows = listing_by_source.get(child_part.upper(), [])
-        # A component is a subassembly when it is itself a BOM parent. The
-        # in-house marker is useful context, but is not reliable enough to be
-        # a detection requirement (outsourced and incompletely tagged parts).
-        if not child_rows:
-            continue
-        available_boms = _codes(child_rows)
-        selected_bom = compact_text(root_listing.get("selected_bom_code"))
-        resolved_bom, route_status = _resolve_child_bom(selected_bom, available_boms)
-        if len(available_boms) > 1:
-            flag_set.add("multiple_boms")
-        if route_status == "missing":
-            flag_set.add("missing_bom")
-        elif route_status == "unresolved":
-            flag_set.add("unresolved_bom")
-        elif route_status == "alias":
-            flag_set.add("bom_alias")
-        if instance_counts[child_part.upper()] > 1:
-            flag_set.add("repeated_component")
-
-        route_key = bom_code_match_key(resolved_bom or selected_bom)
-        route_rows = [
-            row for row in child_rows if not route_key or bom_code_match_key(row.get("bom_code")) == route_key
-        ]
-        leaf_materials = sorted(
-            {
-                compact_text(row.get("material_inventory_code"))
-                for row in route_rows
-                if compact_text(row.get("material_inventory_code"))
-            }
-        )
-        children.append(
-            {
-                "process_sheet_no": compact_text(component.get("process_sheet_no")),
-                "component_seq_no": _as_int(component.get("component_seq_no")),
-                "component_link_no": compact_text(component.get("component_link_no")),
-                "component_line_item_no": compact_text(component.get("component_line_item_no")),
-                "path": compact_text(component.get("path")),
-                "part_no": child_part,
-                "description": compact_text(root_listing.get("description")),
-                "qty": _as_float(component.get("total_qty")),
-                "in_house": in_house,
-                "selected_bom_code": selected_bom,
-                "resolved_bom_code": resolved_bom,
-                "available_bom_codes": available_boms,
-                "route_status": route_status,
-                "leaf_materials": leaf_materials,
-                "repeated": instance_counts[child_part.upper()] > 1,
-            }
-        )
-
-    if not children:
-        return None
-
-    max_depth = max((_as_int(row.get("level")) for row in root_rows), default=1)
-    if max_depth >= 2:
-        flag_set.add("deep_nested")
-    child_part_counts = Counter(child["part_no"].upper() for child in children)
-    warning_flags = sorted(flag_set - {"nested_assembly", "deep_nested", "repeated_component"})
-    display_qty = _as_float(root.get("partial_qty") or root.get("total_qty"))
-    return {
-        "ps_id": ps_id,
-        "pp_partial_no": _as_int(root.get("pp_partial_no")) or 1,
-        "part_no": parent_part,
-        "part_desc": compact_text(root.get("part_desc") or fg_row.get("inventory_main_desc")),
-        "bom_code": parent_bom,
-        "status": compact_text(root.get("status")),
-        "due_date": compact_text(root.get("due_date")),
-        "qty": display_qty,
-        "qty_shipped": _as_float(root.get("qty_shipped")),
-        "sales_order_no": compact_text(root.get("sales_order_no") or fg_row.get("sales_order_no")),
-        "sales_order_line": compact_text(root.get("sales_order_line") or fg_row.get("line_item_no")),
-        "customer_code": compact_text(fg_row.get("customer_code")),
-        "customer_po_no": compact_text(fg_row.get("customer_po_no")),
-        "current_stage_desc": compact_text(root.get("current_stage_desc")),
-        "current_stage_status": compact_text(root.get("current_stage_status")),
-        "component_count": len(children),
-        "distinct_child_count": len(child_part_counts),
-        "max_depth": max_depth,
-        "flags": sorted(flag_set),
-        "warning_flags": warning_flags,
-        "has_anomaly": bool(warning_flags),
-        "children": sorted(
-            children,
-            key=lambda child: (
-                child.get("component_seq_no") or 999999,
-                child.get("process_sheet_no") or "",
-            ),
-        ),
-    }
-
-
-def build_assembly_jobs(
-    roots: list[dict[str, Any]],
-    hierarchy_rows: list[dict[str, Any]],
-    bom_rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    hierarchy_by_ps: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in hierarchy_rows:
-        hierarchy_by_ps[compact_text(row.get("pp_voucher_no")).upper()].append(row)
-    listing_by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in bom_rows:
-        listing_by_source[compact_text(row.get("source_inventory_code")).upper()].append(row)
-
-    jobs = [
-        job
-        for root in roots
-        if (
-            job := classify_assembly_job(
-                root,
-                hierarchy_by_ps.get(compact_text(root.get("ps_id")).upper(), []),
-                listing_by_source,
-            )
-        )
-    ]
-    jobs.sort(key=lambda job: (job.get("due_date") or "9999-12-31", job.get("ps_id") or ""))
-    return jobs
 
 
 def _load_open_roots() -> list[dict[str, Any]]:
@@ -450,7 +286,7 @@ def _fetch_assembly_jobs_uncached() -> list[dict[str, Any]]:
         if compact_text(row.get("inventory_code"))
     )
     bom_rows = live_query(_BOM_LISTING_SQL, (sorted(all_parts),)) if all_parts else []
-    return build_assembly_jobs(roots, hierarchy_rows, bom_rows)
+    return build_assembly_jobs(roots, hierarchy_rows, bom_rows, require_subassembly_children=True)
 
 
 def _fetch_historical_assembly_jobs_uncached() -> list[dict[str, Any]]:
@@ -472,6 +308,7 @@ def _fetch_historical_assembly_jobs_uncached() -> list[dict[str, Any]]:
                     "description": "",
                     "qty": _as_float(child.get("qty")),
                     "in_house": None,
+                    "is_subassembly": True,
                     "selected_bom_code": "",
                     "resolved_bom_code": available[0] if len(available) == 1 else "",
                     "available_bom_codes": available,
@@ -484,6 +321,7 @@ def _fetch_historical_assembly_jobs_uncached() -> list[dict[str, Any]]:
                         }
                     ),
                     "repeated": bool(child.get("repeated")),
+                    "flags": [],
                 }
             )
         flags = {"nested_assembly", "deep_nested"}
@@ -491,7 +329,7 @@ def _fetch_historical_assembly_jobs_uncached() -> list[dict[str, Any]]:
             flags.add("multiple_boms")
         if _as_int(row.get("repeated_child_sheets")) > 0:
             flags.add("repeated_component")
-        warning_flags = sorted(flags - {"nested_assembly", "deep_nested", "repeated_component"})
+        warning_flags = sorted(flags - {"nested_assembly", "deep_nested", "repeated_component", "leaf_component"})
         jobs.append(
             {
                 "ps_id": compact_text(row.get("ps_id")),
@@ -517,6 +355,7 @@ def _fetch_historical_assembly_jobs_uncached() -> list[dict[str, Any]]:
                 "warning_flags": warning_flags,
                 "has_anomaly": bool(warning_flags),
                 "is_history": not is_open_root(row),
+                "is_open": is_open_root(row),
                 "children": children,
             }
         )

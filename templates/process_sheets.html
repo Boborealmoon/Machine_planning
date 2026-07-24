@@ -113,6 +113,13 @@
             autocomplete="off"
           />
         </div>
+        <label
+          class="checkbox-label ps-bulk-lookup-pricing"
+          title="Also pull SO unit cost, exchange rate, and total value (unit × qty × rate) into lookup/export"
+        >
+          <input type="checkbox" id="ps-bulk-include-pricing" />
+          Include unit / total value
+        </label>
         <button type="button" class="btn btn-light btn-sm" id="ps-bulk-lookup-btn">Lookup table</button>
         <button type="button" class="btn btn-dark btn-sm" id="ps-bulk-export-btn" title="Pull matching process sheets and download as Excel">Export Excel</button>
       </div>
@@ -177,5 +184,5 @@
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=temp-ps-ps-page-20260604"></script>
 <script src="{{ url_for('static', filename='js/scheduler/modals.js') }}?v=temp-ps-fix-20260604"></script>
 <script src="{{ url_for('static', filename='js/scheduler/temp_ps.js') }}?v=temp-ps-source-edit-20260611"></script>
-<script src="{{ url_for('static', filename='js/process_sheets.js', v='ps-rejected-temp-tabs-20260616') }}"></script>
+<script src="{{ url_for('static', filename='js/process_sheets.js', v='ps-bulk-pricing-opt-in-20260723') }}"></script>
 {% endblock %}

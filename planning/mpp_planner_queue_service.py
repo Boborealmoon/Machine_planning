@@ -1172,18 +1172,33 @@ def reset_mpp_planner_lanes(
     return {"reset": sorted(slug_set), "machine_ids": reset_mids, "saved": saved}
 
 
+def _save_scope_slugs(payload: dict[str, Any]) -> set[str] | None:
+    """Which machine lanes to persist.
+
+    None  → legacy full save (no dirtyMachines key; scripts / reset tools).
+    set() → client said nothing is dirty; no-op.
+    {..}  → partial save for those slugs only.
+    """
+    if "dirtyMachines" not in payload and "dirtyMachineSlugs" not in payload:
+        return None
+    raw = payload.get("dirtyMachines")
+    if raw is None:
+        raw = payload.get("dirtyMachineSlugs") or []
+    return {compact_text(s).lower() for s in (raw or []) if compact_text(s)}
+
+
 def _recalc_machine_ids_from_payload(
     con,
     payload: dict[str, Any],
     touched_machine_ids: list[int] | None = None,
 ) -> list[int]:
     """Machine ids to rebuild — explicit dirtyMachines from client, else all touched lanes."""
-    if "dirtyMachines" in payload or "dirtyMachineSlugs" in payload:
+    scope = _save_scope_slugs(payload)
+    if scope is not None:
         slug_map = _machine_slug_map(con)
-        dirty_slugs = payload.get("dirtyMachines") or payload.get("dirtyMachineSlugs") or []
         ids: list[int] = []
-        for slug in dirty_slugs:
-            machine_id = _machine_id_by_slug(con, compact_text(slug), slug_map)
+        for slug in scope:
+            machine_id = _machine_id_by_slug(con, slug, slug_map)
             if machine_id > 0:
                 ids.append(machine_id)
         return sorted(set(ids))
@@ -1227,111 +1242,132 @@ def recalculate_mpp_planner_machines(
     }
 
 
-def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
-    """Persist queue state and sync planner_run_block groups for MPP machines."""
-    _configure_mpp_save_session(con)
-    ensure_mpp_queue_schema(con)
-    recalculate = _parse_recalculate_flag(payload)
-    machines_payload = payload.get("machines") or {}
-    job_overrides = payload.get("jobs") or payload.get("jobOverrides") or {}
+def _save_one_mpp_machine_lane(
+    con,
+    *,
+    slug: str,
+    lane: dict[str, Any],
+    machine_id: int,
+    job_overrides: dict[str, dict[str, Any]],
+    machine_keep_blocks: set[int],
+    primary_blocks_by_machine: dict[int, list[int]],
+    save_warnings: list[str],
+) -> None:
+    """Rewrite one MPP machine lane (cycles + blocks). Caller commits."""
+    _ = slug  # kept for call-site clarity / future logging
+    lane_anchor = _parse_anchor_text(lane.get("laneAnchor"))
+    con.execute(
+        """
+        INSERT INTO planner_mpp_lane (machine_id, lane_anchor, updated_at)
+        VALUES (%s, %s, NOW())
+        ON CONFLICT (machine_id) DO UPDATE SET
+          lane_anchor = EXCLUDED.lane_anchor,
+          updated_at = NOW()
+        """,
+        (machine_id, lane_anchor),
+    )
 
-    slug_map = _machine_slug_map(con)
-    touched_machine_ids: list[int] = []
-    keep_block_ids: set[int] = set()
-    primary_blocks_by_machine: dict[int, list[int]] = {}
-    save_warnings: list[str] = []
-    save_warnings.extend(_mpp_queue_overrun_warnings(machines_payload, job_overrides))
-
-    for slug, lane in machines_payload.items():
-        machine_id = _machine_id_by_slug(con, slug, slug_map)
-        if machine_id <= 0:
-            continue
-        touched_machine_ids.append(machine_id)
-        lane_anchor = _parse_anchor_text(lane.get("laneAnchor"))
-        con.execute(
-            """
-            INSERT INTO planner_mpp_lane (machine_id, lane_anchor, updated_at)
-            VALUES (%s, %s, NOW())
-            ON CONFLICT (machine_id) DO UPDATE SET
-              lane_anchor = EXCLUDED.lane_anchor,
-              updated_at = NOW()
-            """,
-            (machine_id, lane_anchor),
-        )
-
-        existing_cycles = {
-            compact_text(row["client_cycle_id"]): int(row["cycle_id"])
-            for row in rows(
-                con.execute(
-                    "SELECT cycle_id, client_cycle_id FROM planner_mpp_cycle WHERE machine_id = %s",
-                    (machine_id,),
-                )
-            )
-        }
-        seen_cycle_ids: set[int] = set()
-        primary_blocks: list[int] = []
-
-        machine = one(
+    existing_cycles = {
+        compact_text(row["client_cycle_id"]): int(row["cycle_id"])
+        for row in rows(
             con.execute(
-                "SELECT machine_category FROM planner_machines WHERE machine_id = %s",
+                "SELECT cycle_id, client_cycle_id FROM planner_mpp_cycle WHERE machine_id = %s",
                 (machine_id,),
             )
-        ) or {}
-        machine_category = compact_text(machine.get("machine_category")) or "MPP"
-        prev_cycle_fingerprint: str | None = None
+        )
+    }
+    seen_cycle_ids: set[int] = set()
+    primary_blocks: list[int] = []
 
-        for queue_index, cycle in enumerate(lane.get("cycles") or []):
-            client_cycle_id = compact_text(cycle.get("cycleId"))
-            if not client_cycle_id:
-                continue
-            shift = _normalize_shift(cycle.get("shift"))
-            anchor_dt = _parse_anchor_text(cycle.get("anchor"))
-            cycle_label = compact_text(cycle.get("label"))
-            cycle_fp = _cycle_fingerprint(cycle)
-            is_sprint_start = cycle_fp != prev_cycle_fingerprint
-            prev_cycle_fingerprint = cycle_fp
+    machine = one(
+        con.execute(
+            "SELECT machine_category FROM planner_machines WHERE machine_id = %s",
+            (machine_id,),
+        )
+    ) or {}
+    machine_category = compact_text(machine.get("machine_category")) or "MPP"
+    prev_cycle_fingerprint: str | None = None
 
-            cycle_timing = _cycle_timing_from_payload(cycle)
-            cycle_ops = [op for op in (cycle.get("ops") or []) if compact_text(op.get("jobId"))]
-            op_count = len(cycle_ops)
-            sprint_setup_total = _sprint_setup_minutes(cycle_timing, cycle_ops, job_overrides)
+    for queue_index, cycle in enumerate(lane.get("cycles") or []):
+        client_cycle_id = compact_text(cycle.get("cycleId"))
+        if not client_cycle_id:
+            continue
+        shift = _normalize_shift(cycle.get("shift"))
+        anchor_dt = _parse_anchor_text(cycle.get("anchor"))
+        cycle_label = compact_text(cycle.get("label"))
+        cycle_fp = _cycle_fingerprint(cycle)
+        is_sprint_start = cycle_fp != prev_cycle_fingerprint
+        prev_cycle_fingerprint = cycle_fp
 
-            cycle_id = existing_cycles.get(client_cycle_id)
-            if not cycle_id:
-                global_cycle = one(
-                    con.execute(
-                        """
-                        SELECT cycle_id, machine_id
-                        FROM planner_mpp_cycle
-                        WHERE client_cycle_id = %s
-                        """,
-                        (client_cycle_id,),
-                    )
-                )
-                if global_cycle:
-                    cycle_id = int(global_cycle["cycle_id"])
-                    if int(global_cycle.get("machine_id") or 0) != machine_id:
-                        con.execute(
-                            """
-                            UPDATE planner_mpp_cycle
-                            SET machine_id = %s, updated_at = NOW()
-                            WHERE cycle_id = %s
-                            """,
-                            (machine_id, cycle_id),
-                        )
-            if cycle_id:
+        cycle_timing = _cycle_timing_from_payload(cycle)
+        cycle_ops = [op for op in (cycle.get("ops") or []) if compact_text(op.get("jobId"))]
+        op_count = len(cycle_ops)
+        sprint_setup_total = _sprint_setup_minutes(cycle_timing, cycle_ops, job_overrides)
+
+        cycle_id = existing_cycles.get(client_cycle_id)
+        if not cycle_id:
+            global_cycle = one(
                 con.execute(
                     """
-                    UPDATE planner_mpp_cycle
-                    SET queue_index = %s, shift = %s, anchor_datetime = %s,
-                        cycle_label = %s, setup_minutes = %s,
-                        load_min_per_cycle = %s, unload_min_per_cycle = %s,
-                        sequential_ops = %s, setup_per_op = %s,
-                        machine_id = %s,
-                        updated_at = NOW()
-                    WHERE cycle_id = %s
+                    SELECT cycle_id, machine_id
+                    FROM planner_mpp_cycle
+                    WHERE client_cycle_id = %s
+                    """,
+                    (client_cycle_id,),
+                )
+            )
+            if global_cycle:
+                cycle_id = int(global_cycle["cycle_id"])
+                if int(global_cycle.get("machine_id") or 0) != machine_id:
+                    con.execute(
+                        """
+                        UPDATE planner_mpp_cycle
+                        SET machine_id = %s, updated_at = NOW()
+                        WHERE cycle_id = %s
+                        """,
+                        (machine_id, cycle_id),
+                    )
+        if cycle_id:
+            con.execute(
+                """
+                UPDATE planner_mpp_cycle
+                SET queue_index = %s, shift = %s, anchor_datetime = %s,
+                    cycle_label = %s, setup_minutes = %s,
+                    load_min_per_cycle = %s, unload_min_per_cycle = %s,
+                    sequential_ops = %s, setup_per_op = %s,
+                    machine_id = %s,
+                    updated_at = NOW()
+                WHERE cycle_id = %s
+                """,
+                (
+                    queue_index,
+                    shift,
+                    anchor_dt,
+                    cycle_label,
+                    cycle_timing["setup_minutes"],
+                    cycle_timing["load_min"],
+                    cycle_timing["unload_min"],
+                    cycle_timing["sequential"],
+                    cycle_timing["setup_per_op"],
+                    machine_id,
+                    cycle_id,
+                ),
+            )
+        else:
+            row = one(
+                con.execute(
+                    """
+                    INSERT INTO planner_mpp_cycle (
+                      client_cycle_id, machine_id, queue_index, shift,
+                      anchor_datetime, cycle_label,
+                      setup_minutes, load_min_per_cycle, unload_min_per_cycle,
+                      sequential_ops, setup_per_op, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    RETURNING cycle_id
                     """,
                     (
+                        client_cycle_id,
+                        machine_id,
                         queue_index,
                         shift,
                         anchor_dt,
@@ -1341,153 +1377,152 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
                         cycle_timing["unload_min"],
                         cycle_timing["sequential"],
                         cycle_timing["setup_per_op"],
-                        machine_id,
-                        cycle_id,
                     ),
                 )
+            )
+            cycle_id = int(row["cycle_id"])
+
+        seen_cycle_ids.add(cycle_id)
+        cycle_row = one(
+            con.execute("SELECT group_id FROM planner_mpp_cycle WHERE cycle_id = %s", (cycle_id,))
+        ) or {}
+        group_id = int(cycle_row.get("group_id") or 0)
+        if group_id <= 0:
+            group_label = cycle_label or f"MPP cycle {queue_index + 1}"
+            group_row = one(
+                con.execute(
+                    """
+                    INSERT INTO planner_run_block_group (group_label, group_type)
+                    VALUES (%s, 'MPP_CYCLE')
+                    RETURNING group_id
+                    """,
+                    (group_label,),
+                )
+            )
+            group_id = int(group_row["group_id"])
+            con.execute(
+                "UPDATE planner_mpp_cycle SET group_id = %s WHERE cycle_id = %s",
+                (group_id, cycle_id),
+            )
+        elif cycle_label:
+            con.execute(
+                "UPDATE planner_run_block_group SET group_label = %s WHERE group_id = %s",
+                (cycle_label, group_id),
+            )
+
+        existing_ops = {
+            compact_text(row["client_op_id"]): dict(row)
+            for row in rows(
+                con.execute(
+                    "SELECT * FROM planner_mpp_cycle_op WHERE cycle_id = %s",
+                    (cycle_id,),
+                )
+            )
+        }
+        seen_op_ids: set[int] = set()
+        queue_position = float(queue_index + 1)
+        first_block_id = 0
+
+        for op_index, op in enumerate(cycle.get("ops") or []):
+            client_op_id = compact_text(op.get("opId"))
+            job_id = compact_text(op.get("jobId"))
+            if not client_op_id or not job_id:
+                continue
+            pallet_count = max(1, int(op.get("palletCount") or 1))
+            job_row = job_overrides.get(job_id) or {}
+            prior = existing_ops.get(client_op_id) or {}
+            ctx = _mpp_job_context(job_id, job_row)
+            source_ps_id = ctx["source_ps_id"]
+            pp_partial_no = ctx["pp_partial_no"]
+            source_op_no = ctx["source_op_no"]
+            source_op_seq_id = ctx["source_op_seq_id"]
+            planner_ps_id = _canonical_planner_ps_id(con, source_ps_id, pp_partial_no)
+            min_per_pallet = max(0.1, float(job_row.get("minPerPallet") or op.get("minPerPallet") or 90))
+            pcs_per_pallet = _resolve_cycle_op_pcs_per_pallet(op, job_row, prior)
+            scheduled_qty = float(pallet_count) * pcs_per_pallet
+
+            step = _resolve_bom_step(con, planner_ps_id, source_op_seq_id, source_op_no)
+            if not step:
+                msg = f"Could not resolve BOM step for {job_id} ({planner_ps_id})"
+                logger.warning("MPP queue: %s", msg)
+                save_warnings.append(msg)
+                continue
+            source_op_seq_id = int(step.get("op_seq_id") or 0)
+            source_op_no = compact_text(step.get("op_no"))
+
+            operation_id = _ensure_operation_for_op(
+                con,
+                planner_ps_id=planner_ps_id,
+                step=step,
+                scheduled_qty=scheduled_qty,
+                min_per_pallet=min_per_pallet,
+                pcs_per_pallet=pcs_per_pallet,
+                machine_category=machine_category,
+                job_row=job_row,
+                pallet_count=pallet_count,
+                cycle_timing=cycle_timing,
+                op_index=op_index,
+                op_count=op_count,
+                sprint_setup_total=sprint_setup_total if is_sprint_start else 0.0,
+            )
+
+            block_id = int(prior.get("block_id") or op.get("blockId") or 0)
+            anchor_for_block = anchor_dt if op_index == 0 else None
+            include_setup = is_sprint_start and op_index == 0
+            block_id = _upsert_block_for_op(
+                con,
+                operation_id=operation_id,
+                machine_id=machine_id,
+                group_id=group_id,
+                queue_position=queue_position,
+                scheduled_qty=scheduled_qty,
+                anchor_dt=anchor_for_block,
+                block_id=block_id,
+                include_setup=include_setup,
+            )
+            machine_keep_blocks.add(block_id)
+            if op_index == 0:
+                first_block_id = block_id
+
+            prior_cycle_op_id = int(prior.get("cycle_op_id") or 0)
+            if prior_cycle_op_id > 0:
+                con.execute(
+                    """
+                    UPDATE planner_mpp_cycle_op
+                    SET block_id = %s, job_id = %s, source_ps_id = %s,
+                        source_op_seq_id = %s, source_op_no = %s, pp_partial_no = %s,
+                        pallet_count = %s, min_per_pallet = %s, pcs_per_pallet = %s,
+                        updated_at = NOW()
+                    WHERE cycle_op_id = %s
+                    """,
+                    (
+                        block_id,
+                        job_id,
+                        source_ps_id,
+                        source_op_seq_id,
+                        source_op_no,
+                        pp_partial_no,
+                        pallet_count,
+                        min_per_pallet,
+                        pcs_per_pallet,
+                        prior_cycle_op_id,
+                    ),
+                )
+                seen_op_ids.add(prior_cycle_op_id)
             else:
                 row = one(
                     con.execute(
                         """
-                        INSERT INTO planner_mpp_cycle (
-                          client_cycle_id, machine_id, queue_index, shift,
-                          anchor_datetime, cycle_label,
-                          setup_minutes, load_min_per_cycle, unload_min_per_cycle,
-                          sequential_ops, setup_per_op, updated_at
+                        INSERT INTO planner_mpp_cycle_op (
+                          client_op_id, cycle_id, block_id, job_id, source_ps_id,
+                          source_op_seq_id, source_op_no, pp_partial_no,
+                          pallet_count, min_per_pallet, pcs_per_pallet, updated_at
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                        RETURNING cycle_id
+                        RETURNING cycle_op_id
                         """,
                         (
-                            client_cycle_id,
-                            machine_id,
-                            queue_index,
-                            shift,
-                            anchor_dt,
-                            cycle_label,
-                            cycle_timing["setup_minutes"],
-                            cycle_timing["load_min"],
-                            cycle_timing["unload_min"],
-                            cycle_timing["sequential"],
-                            cycle_timing["setup_per_op"],
-                        ),
-                    )
-                )
-                cycle_id = int(row["cycle_id"])
-
-            seen_cycle_ids.add(cycle_id)
-            cycle_row = one(
-                con.execute("SELECT group_id FROM planner_mpp_cycle WHERE cycle_id = %s", (cycle_id,))
-            ) or {}
-            group_id = int(cycle_row.get("group_id") or 0)
-            if group_id <= 0:
-                group_label = cycle_label or f"MPP cycle {queue_index + 1}"
-                group_row = one(
-                    con.execute(
-                        """
-                        INSERT INTO planner_run_block_group (group_label, group_type)
-                        VALUES (%s, 'MPP_CYCLE')
-                        RETURNING group_id
-                        """,
-                        (group_label,),
-                    )
-                )
-                group_id = int(group_row["group_id"])
-                con.execute(
-                    "UPDATE planner_mpp_cycle SET group_id = %s WHERE cycle_id = %s",
-                    (group_id, cycle_id),
-                )
-            elif cycle_label:
-                con.execute(
-                    "UPDATE planner_run_block_group SET group_label = %s WHERE group_id = %s",
-                    (cycle_label, group_id),
-                )
-
-            existing_ops = {
-                compact_text(row["client_op_id"]): dict(row)
-                for row in rows(
-                    con.execute(
-                        "SELECT * FROM planner_mpp_cycle_op WHERE cycle_id = %s",
-                        (cycle_id,),
-                    )
-                )
-            }
-            seen_op_ids: set[int] = set()
-            queue_position = float(queue_index + 1)
-            first_block_id = 0
-
-            for op_index, op in enumerate(cycle.get("ops") or []):
-                client_op_id = compact_text(op.get("opId"))
-                job_id = compact_text(op.get("jobId"))
-                if not client_op_id or not job_id:
-                    continue
-                pallet_count = max(1, int(op.get("palletCount") or 1))
-                job_row = job_overrides.get(job_id) or {}
-                prior = existing_ops.get(client_op_id) or {}
-                ctx = _mpp_job_context(job_id, job_row)
-                source_ps_id = ctx["source_ps_id"]
-                pp_partial_no = ctx["pp_partial_no"]
-                source_op_no = ctx["source_op_no"]
-                source_op_seq_id = ctx["source_op_seq_id"]
-                planner_ps_id = _canonical_planner_ps_id(con, source_ps_id, pp_partial_no)
-                min_per_pallet = max(0.1, float(job_row.get("minPerPallet") or op.get("minPerPallet") or 90))
-                pcs_per_pallet = _resolve_cycle_op_pcs_per_pallet(op, job_row, prior)
-                scheduled_qty = float(pallet_count) * pcs_per_pallet
-
-                step = _resolve_bom_step(con, planner_ps_id, source_op_seq_id, source_op_no)
-                if not step:
-                    msg = f"Could not resolve BOM step for {job_id} ({planner_ps_id})"
-                    logger.warning("MPP queue: %s", msg)
-                    save_warnings.append(msg)
-                    continue
-                source_op_seq_id = int(step.get("op_seq_id") or 0)
-                source_op_no = compact_text(step.get("op_no"))
-
-                operation_id = _ensure_operation_for_op(
-                    con,
-                    planner_ps_id=planner_ps_id,
-                    step=step,
-                    scheduled_qty=scheduled_qty,
-                    min_per_pallet=min_per_pallet,
-                    pcs_per_pallet=pcs_per_pallet,
-                    machine_category=machine_category,
-                    job_row=job_row,
-                    pallet_count=pallet_count,
-                    cycle_timing=cycle_timing,
-                    op_index=op_index,
-                    op_count=op_count,
-                    sprint_setup_total=sprint_setup_total if is_sprint_start else 0.0,
-                )
-
-                block_id = int(prior.get("block_id") or op.get("blockId") or 0)
-                anchor_for_block = anchor_dt if op_index == 0 else None
-                include_setup = is_sprint_start and op_index == 0
-                block_id = _upsert_block_for_op(
-                    con,
-                    operation_id=operation_id,
-                    machine_id=machine_id,
-                    group_id=group_id,
-                    queue_position=queue_position,
-                    scheduled_qty=scheduled_qty,
-                    anchor_dt=anchor_for_block,
-                    block_id=block_id,
-                    include_setup=include_setup,
-                )
-                keep_block_ids.add(block_id)
-                if op_index == 0:
-                    first_block_id = block_id
-
-                prior_cycle_op_id = int(prior.get("cycle_op_id") or 0)
-                if prior_cycle_op_id > 0:
-                    con.execute(
-                        """
-                        UPDATE planner_mpp_cycle_op
-                        SET block_id = %s, job_id = %s, source_ps_id = %s,
-                            source_op_seq_id = %s, source_op_no = %s, pp_partial_no = %s,
-                            pallet_count = %s, min_per_pallet = %s, pcs_per_pallet = %s,
-                            updated_at = NOW()
-                        WHERE cycle_op_id = %s
-                        """,
-                        (
+                            client_op_id,
+                            cycle_id,
                             block_id,
                             job_id,
                             source_ps_id,
@@ -1497,92 +1532,140 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
                             pallet_count,
                             min_per_pallet,
                             pcs_per_pallet,
-                            prior_cycle_op_id,
                         ),
                     )
-                    seen_op_ids.add(prior_cycle_op_id)
-                else:
-                    row = one(
-                        con.execute(
-                            """
-                            INSERT INTO planner_mpp_cycle_op (
-                              client_op_id, cycle_id, block_id, job_id, source_ps_id,
-                              source_op_seq_id, source_op_no, pp_partial_no,
-                              pallet_count, min_per_pallet, pcs_per_pallet, updated_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                            RETURNING cycle_op_id
-                            """,
-                            (
-                                client_op_id,
-                                cycle_id,
-                                block_id,
-                                job_id,
-                                source_ps_id,
-                                source_op_seq_id,
-                                source_op_no,
-                                pp_partial_no,
-                                pallet_count,
-                                min_per_pallet,
-                                pcs_per_pallet,
-                            ),
-                        )
-                    )
-                    seen_op_ids.add(int(row["cycle_op_id"]))
-
-            if first_block_id > 0:
-                primary_blocks.append(first_block_id)
-
-            stale_ops = [
-                int(row["cycle_op_id"])
-                for row in rows(
-                    con.execute("SELECT cycle_op_id FROM planner_mpp_cycle_op WHERE cycle_id = %s", (cycle_id,))
                 )
-                if int(row["cycle_op_id"]) not in seen_op_ids
-            ]
-            for cycle_op_id in stale_ops:
-                op_row = one(
-                    con.execute(
-                        "SELECT block_id FROM planner_mpp_cycle_op WHERE cycle_op_id = %s",
-                        (cycle_op_id,),
-                    )
-                )
-                if op_row and int(op_row.get("block_id") or 0) > 0:
-                    con.execute(
-                        "DELETE FROM planner_run_block WHERE block_id = %s",
-                        (int(op_row["block_id"]),),
-                    )
-                con.execute("DELETE FROM planner_mpp_cycle_op WHERE cycle_op_id = %s", (cycle_op_id,))
+                seen_op_ids.add(int(row["cycle_op_id"]))
 
-        stale_cycle_ids = [cid for cid in existing_cycles.values() if cid not in seen_cycle_ids]
-        for cycle_id in stale_cycle_ids:
-            for op_row in rows(
-                con.execute(
-                    "SELECT block_id FROM planner_mpp_cycle_op WHERE cycle_id = %s",
-                    (cycle_id,),
-                )
-            ):
-                if int(op_row.get("block_id") or 0) > 0:
-                    con.execute(
-                        "DELETE FROM planner_run_block WHERE block_id = %s",
-                        (int(op_row["block_id"]),),
-                    )
-            cycle_row = one(
-                con.execute("SELECT group_id FROM planner_mpp_cycle WHERE cycle_id = %s", (cycle_id,))
+        if first_block_id > 0:
+            primary_blocks.append(first_block_id)
+
+        stale_ops = [
+            int(row["cycle_op_id"])
+            for row in rows(
+                con.execute("SELECT cycle_op_id FROM planner_mpp_cycle_op WHERE cycle_id = %s", (cycle_id,))
             )
-            if cycle_row and int(cycle_row.get("group_id") or 0) > 0:
+            if int(row["cycle_op_id"]) not in seen_op_ids
+        ]
+        for cycle_op_id in stale_ops:
+            op_row = one(
                 con.execute(
-                    "DELETE FROM planner_run_block_group WHERE group_id = %s",
-                    (int(cycle_row["group_id"]),),
+                    "SELECT block_id FROM planner_mpp_cycle_op WHERE cycle_op_id = %s",
+                    (cycle_op_id,),
                 )
-            con.execute("DELETE FROM planner_mpp_cycle_op WHERE cycle_id = %s", (cycle_id,))
-            con.execute("DELETE FROM planner_mpp_cycle WHERE cycle_id = %s", (cycle_id,))
+            )
+            if op_row and int(op_row.get("block_id") or 0) > 0:
+                con.execute(
+                    "DELETE FROM planner_run_block WHERE block_id = %s",
+                    (int(op_row["block_id"]),),
+                )
+            con.execute("DELETE FROM planner_mpp_cycle_op WHERE cycle_op_id = %s", (cycle_op_id,))
 
-        _delete_orphan_mpp_blocks(con, machine_id, keep_block_ids)
-        primary_blocks_by_machine[machine_id] = primary_blocks
+    stale_cycle_ids = [cid for cid in existing_cycles.values() if cid not in seen_cycle_ids]
+    for cycle_id in stale_cycle_ids:
+        for op_row in rows(
+            con.execute(
+                "SELECT block_id FROM planner_mpp_cycle_op WHERE cycle_id = %s",
+                (cycle_id,),
+            )
+        ):
+            if int(op_row.get("block_id") or 0) > 0:
+                con.execute(
+                    "DELETE FROM planner_run_block WHERE block_id = %s",
+                    (int(op_row["block_id"]),),
+                )
+        cycle_row = one(
+            con.execute("SELECT group_id FROM planner_mpp_cycle WHERE cycle_id = %s", (cycle_id,))
+        )
+        if cycle_row and int(cycle_row.get("group_id") or 0) > 0:
+            con.execute(
+                "DELETE FROM planner_run_block_group WHERE group_id = %s",
+                (int(cycle_row["group_id"]),),
+            )
+        con.execute("DELETE FROM planner_mpp_cycle_op WHERE cycle_id = %s", (cycle_id,))
+        con.execute("DELETE FROM planner_mpp_cycle WHERE cycle_id = %s", (cycle_id,))
+
+    _delete_orphan_mpp_blocks(con, machine_id, machine_keep_blocks)
+    primary_blocks_by_machine[machine_id] = primary_blocks
+
+
+
+def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist queue state and sync planner_run_block groups for MPP machines.
+
+    When the client sends dirtyMachines, only those lanes are rewritten and each
+    machine is committed independently so one failure cannot block the others.
+    """
+    _configure_mpp_save_session(con)
+    ensure_mpp_queue_schema(con)
+    recalculate = _parse_recalculate_flag(payload)
+    scope = _save_scope_slugs(payload)
+    all_machines_payload = payload.get("machines") or {}
+    job_overrides = payload.get("jobs") or payload.get("jobOverrides") or {}
+
+    if scope is not None and not scope:
+        return {
+            "savedAt": datetime.now().isoformat(sep=" ", timespec="seconds"),
+            "machinesTouched": 0,
+            "blocksSynced": 0,
+            "touchedMachineIds": [],
+            "recalculated": False,
+            "recalculatedMachines": 0,
+            "warnings": [],
+            "partial": True,
+        }
+
+    if scope is not None:
+        machines_payload = {
+            slug: lane
+            for slug, lane in all_machines_payload.items()
+            if compact_text(slug).lower() in scope
+        }
+    else:
+        machines_payload = all_machines_payload
+
+    slug_map = _machine_slug_map(con)
+    touched_machine_ids: list[int] = []
+    keep_block_ids: set[int] = set()
+    primary_blocks_by_machine: dict[int, list[int]] = {}
+    save_warnings: list[str] = []
+    # Advisory only — never blocks persistence (UI shows as soft notice).
+    save_warnings.extend(
+        _mpp_queue_overrun_warnings(all_machines_payload or machines_payload, job_overrides)
+    )
+
+    for slug, lane in machines_payload.items():
+        machine_id = _machine_id_by_slug(con, slug, slug_map)
+        if machine_id <= 0:
+            continue
+        machine_keep_blocks: set[int] = set()
+        try:
+            _save_one_mpp_machine_lane(
+                con,
+                slug=slug,
+                lane=lane or {},
+                machine_id=machine_id,
+                job_overrides=job_overrides,
+                machine_keep_blocks=machine_keep_blocks,
+                primary_blocks_by_machine=primary_blocks_by_machine,
+                save_warnings=save_warnings,
+            )
+            _sync_machine_queue(
+                con, machine_id, primary_blocks_by_machine.get(machine_id, [])
+            )
+            con.commit()
+            touched_machine_ids.append(machine_id)
+            keep_block_ids.update(machine_keep_blocks)
+        except Exception as exc:
+            logger.exception("MPP queue save failed for %s", slug)
+            save_warnings.append(f"Save failed for {slug}: {exc}")
+            _recover_db_transaction(con)
 
     probation_payload = payload.get("probation")
     if probation_payload is not None:
         for slug, entries in probation_payload.items():
+            if scope is not None and compact_text(slug).lower() not in scope:
+                continue
             machine_id = _machine_id_by_slug(con, slug, slug_map)
             if machine_id <= 0:
                 continue
@@ -1696,11 +1779,7 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
             ),
         )
 
-    for machine_id in touched_machine_ids:
-        _sync_machine_queue(con, machine_id, primary_blocks_by_machine.get(machine_id, []))
-
-    # Commit queue + block rows before segment rebuild so autosaves don't pile up waiting
-    # on planner_mpp_lane row locks held through recalculate_machine.
+    # Probation + job overrides are light; commit once after them.
     con.commit()
 
     recalc_machine_ids = _recalc_machine_ids_from_payload(con, payload, touched_machine_ids)
@@ -1721,6 +1800,7 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
         "recalculated": bool(recalculate and int(recalc_result.get("recalculated") or 0) > 0),
         "recalculatedMachines": int(recalc_result.get("recalculated") or 0),
         "warnings": save_warnings,
+        "partial": scope is not None,
     }
 
 

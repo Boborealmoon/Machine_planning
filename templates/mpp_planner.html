@@ -3,7 +3,7 @@
 {% block main_class %}app-main--mpp-planner{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css', v='mpp-planner-20260624') }}" />
-<link rel="stylesheet" href="{{ url_for('static', filename='css/mpp_planner.css', v='mpp-planner-20260625probation') }}" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/mpp_planner.css', v='mpp-planner-20260724-fa') }}" />
 {% endblock %}
 {% block content %}
 <div class="mpp-page">
@@ -24,10 +24,16 @@
     <p class="mpp-ops-hint">Find ops here, then drag to <strong>Probation</strong> (capacity reserve) or onto a cycle. Toggle <strong>Day</strong> / <strong>Night</strong> on each cycle.</p>
     <input id="mpp-ops-search" class="trial-catalog-search mpp-ops-search" type="search"
       placeholder="Search PS, part, op…" autocomplete="off" aria-label="Search op cards">
-    <label class="mpp-show-completed">
-      <input type="checkbox" id="mpp-show-completed" aria-describedby="mpp-show-completed-label">
-      <span id="mpp-show-completed-label">Show accounted</span>
-    </label>
+    <div class="mpp-ops-filters">
+      <label class="mpp-show-completed">
+        <input type="checkbox" id="mpp-fa-only" aria-describedby="mpp-fa-only-label" checked>
+        <span id="mpp-fa-only-label">FA parts only</span>
+      </label>
+      <label class="mpp-show-completed">
+        <input type="checkbox" id="mpp-show-completed" aria-describedby="mpp-show-completed-label">
+        <span id="mpp-show-completed-label">Show accounted</span>
+      </label>
+    </div>
     <p class="mpp-ops-status" id="mpp-ops-status" hidden></p>
     <div class="mpp-ops-list trial-catalog" id="mpp-ops-list"></div>
   </aside>
@@ -192,5 +198,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/mpp_planner.js', v='mpp-planner-20260706-autosave') }}"></script>
+<script src="{{ url_for('static', filename='js/mpp_planner.js', v='mpp-planner-20260724-fa') }}"></script>
 {% endblock %}

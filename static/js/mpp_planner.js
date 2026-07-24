@@ -14,6 +14,7 @@
 
   const MACHINE_FILTER_STORAGE_KEY = 'mpp-planner-hidden-machines';
   const MPP_SHOW_COMPLETED_KEY = 'mpp-planner-show-completed';
+  const MPP_FA_ONLY_KEY = 'mpp-planner-fa-only';
   const MPP_SIDEBAR_COLLAPSED_KEY = 'mpp-planner-sidebar-collapsed';
   const DEFAULT_HIDDEN_MACHINE_IDS = ['cnc41'];
 
@@ -58,6 +59,19 @@
   }
 
   let mppShowCompleted = loadMppShowCompleted();
+
+  function loadMppFaOnly() {
+    try {
+      const raw = localStorage.getItem(MPP_FA_ONLY_KEY);
+      // Default on: FA-only pool (legacy behaviour).
+      if (raw === null) return true;
+      return raw === '1';
+    } catch {
+      return true;
+    }
+  }
+
+  let mppFaOnly = loadMppFaOnly();
 
   function loadSidebarCollapsed() {
     try {
@@ -113,6 +127,8 @@
   }
 
   let JOB_TEMPLATES = [];
+  /** True once the in-memory pool includes non-FA jobs (full fetch). */
+  let jobsPoolIncludesNonFa = false;
   let jobsSource = 'loading';
   let jobsLoadError = '';
   let frameAgreementPartCount = 0;
@@ -544,8 +560,22 @@
     if (!el) return;
     el.checked = mppShowCompleted;
     if (!label) return;
-    const accounted = groupPoolJobs(JOB_TEMPLATES).filter(psGroupIsAccounted).length;
+    const accounted = groupPoolJobs(poolJobTemplates()).filter(psGroupIsAccounted).length;
     label.textContent = accounted ? `Show accounted (${accounted})` : 'Show accounted';
+  }
+
+  function syncFaOnlyToggle() {
+    const el = document.getElementById('mpp-fa-only');
+    const label = document.getElementById('mpp-fa-only-label');
+    if (el) el.checked = mppFaOnly;
+    if (!label) return;
+    const faCount = JOB_TEMPLATES.filter((j) => j.isFrameAgreement).length;
+    const otherCount = JOB_TEMPLATES.length - faCount;
+    if (mppFaOnly && otherCount > 0) {
+      label.textContent = `FA parts only (${otherCount} other hidden)`;
+    } else {
+      label.textContent = 'FA parts only';
+    }
   }
 
   function renderPsGroupSummary(group) {
@@ -1004,26 +1034,45 @@
         (sum, lane) => sum + (lane?.cycles?.length || 0),
         0,
       );
-      syncEl.textContent = cycleCount
+      const base = cycleCount
         ? `Queue synced ${queueSavedAt} · ${cycleCount} cycle${cycleCount === 1 ? '' : 's'}`
         : `Queue empty · synced ${queueSavedAt}`;
-      syncEl.className = cycleCount ? 'mpp-queue-sync mpp-queue-sync--saved' : 'mpp-queue-sync';
+      if (queueSoftWarning) {
+        syncEl.textContent = `${base} · ${queueSoftWarning}`;
+        syncEl.className = 'mpp-queue-sync mpp-queue-sync--warn';
+        syncEl.title = queueSoftWarning;
+      } else {
+        syncEl.textContent = base;
+        syncEl.className = cycleCount ? 'mpp-queue-sync mpp-queue-sync--saved' : 'mpp-queue-sync';
+        syncEl.title = '';
+      }
     } else {
       syncEl.textContent = 'Queue empty';
       syncEl.className = 'mpp-queue-sync';
+      syncEl.title = '';
     }
   }
 
   function buildQueueSavePayload({ recalculate = false } = {}) {
+    const dirty = [...dirtyMachineSlugs];
+    // Partial save: only lanes that changed. Full-fleet rewrite was too slow with 100+ cycles.
+    const machines = {};
+    dirty.forEach((slug) => {
+      if (state.machines[slug]) machines[slug] = state.machines[slug];
+    });
+    const probation = {};
+    dirty.forEach((slug) => {
+      probation[slug] = (state.probation && state.probation[slug]) || [];
+    });
     const jobIds = new Set();
-    Object.values(state.machines).forEach((lane) => {
+    Object.values(machines).forEach((lane) => {
       (lane.cycles || []).forEach((cycle) => {
         (cycle.ops || []).forEach((row) => {
           if (row.jobId) jobIds.add(row.jobId);
         });
       });
     });
-    Object.values(state.probation || {}).forEach((entries) => {
+    Object.values(probation).forEach((entries) => {
       (entries || []).forEach((entry) => {
         if (entry.jobId) jobIds.add(entry.jobId);
       });
@@ -1034,10 +1083,10 @@
       if (job) jobs[jobId] = job;
     });
     return {
-      machines: state.machines,
+      machines,
       jobs,
-      probation: state.probation || buildProbationState(),
-      dirtyMachines: [...dirtyMachineSlugs],
+      probation,
+      dirtyMachines: dirty,
       recalculate: recalculate === true,
     };
   }
@@ -1163,6 +1212,7 @@
 
   async function flushQueueSave({ recalculate = false } = {}) {
     if (suppressQueueSave || !queueHydrated) return;
+    if (!dirtyMachineSlugs.size && !recalculate) return;
     if (queueSaveInFlight) {
       queueSavePending = true;
       queueSavePendingRecalculate = queueSavePendingRecalculate || recalculate === true;
@@ -1193,10 +1243,9 @@
       queueSaveError = '';
       queueSavedAt = compactText(payload.savedAt);
       const warnings = Array.isArray(payload.warnings) ? payload.warnings.filter(Boolean) : [];
-      if (warnings.length) {
-        queueSyncStatus = 'error';
-        queueSaveError = warnings[0];
-      } else if (!recalculate && !payload.recalculated) {
+      // Qty overrun / per-lane issues are advisory — save already committed.
+      queueSoftWarning = warnings[0] || '';
+      if (!recalculate && !payload.recalculated) {
         mergeTouchedMachineIds(payload);
         if (queueRecalcMachineIds.size > 0) {
           queueRecalcPending = true;
@@ -1215,6 +1264,7 @@
     } catch (err) {
       queueSyncStatus = 'error';
       queueSaveError = err?.message || 'save failed';
+      queueSoftWarning = '';
       scheduleQueueSaveRetry();
     } finally {
       queueSaveInFlight = false;
@@ -1256,10 +1306,12 @@
         throw new Error(compactApiError(payload?.error) || `HTTP ${res.status}`);
       }
       const warnings = Array.isArray(payload.warnings) ? payload.warnings.filter(Boolean) : [];
+      const okIds = Array.isArray(payload.machineIds) ? payload.machineIds : recalcIds;
+      okIds.forEach((id) => queueRecalcMachineIds.delete(Number(id)));
       if (warnings.length) {
-        throw new Error(warnings[0]);
+        // Segment rebuild issues (lock timeout, etc.) must not look like a failed queue save.
+        queueSoftWarning = warnings[0];
       }
-      recalcIds.forEach((id) => queueRecalcMachineIds.delete(id));
       if (!queueRecalcMachineIds.size) {
         queueRecalcPending = false;
         queueRecalcStatus = 'idle';
@@ -1382,14 +1434,21 @@
     queueSaveRetryTimer = null;
     queueSaveTimer = window.setTimeout(() => {
       queueSaveTimer = null;
+      // Avoid stacking save + recalc connections when the pool is tight.
+      if (queueRecalcInFlight) {
+        scheduleQueueSave({ recalculate });
+        return;
+      }
       flushQueueSave({ recalculate });
     }, QUEUE_SAVE_DEBOUNCE_MS);
   }
 
-  async function loadFrameAgreementJobs() {
+  async function loadFrameAgreementJobs(opts = {}) {
     jobsLoadError = '';
+    // Keep the full pool once loaded so FA-only can stay a client filter.
+    const wantAll = opts.all === true || !mppFaOnly || jobsPoolIncludesNonFa;
     try {
-      const res = await fetch('/api/mpp-planner/jobs');
+      const res = await fetch(`/api/mpp-planner/jobs?fa_only=${wantAll ? '0' : '1'}`);
       const payload = await res.json();
       if (!res.ok || !payload.ok) {
         jobsLoadError = compactApiError(payload?.error) || `HTTP ${res.status}`;
@@ -1400,13 +1459,19 @@
       jobsFetchedAt = compactText(payload.fetched_at);
       const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
       JOB_TEMPLATES = jobs.map(mapApiJob);
-      jobsSource = 'frame_agreement';
+      jobsPoolIncludesNonFa = wantAll;
+      jobsSource = wantAll ? 'process_sheets' : 'frame_agreement';
       return true;
     } catch (err) {
       jobsLoadError = err?.message || 'network error';
       jobsSource = 'error';
       return false;
     }
+  }
+
+  function poolJobTemplates() {
+    if (!mppFaOnly) return JOB_TEMPLATES;
+    return JOB_TEMPLATES.filter((job) => job.isFrameAgreement);
   }
 
   function compactText(value) {
@@ -1574,6 +1639,7 @@
   let queueRecalcStatus = 'idle';
   let queueSaveError = '';
   let queueRecalcError = '';
+  let queueSoftWarning = '';
   let queueSavedAt = '';
   let queueLoadError = '';
   let suppressQueueSave = false;
@@ -1813,20 +1879,28 @@
   function renderOpsList() {
     const list = document.getElementById('mpp-ops-list');
     if (!list) return;
-    const pool = JOB_TEMPLATES;
+    const pool = poolJobTemplates();
     const rawQuery = compactText(mppOpsSearch || document.getElementById('mpp-ops-search')?.value);
     if (!pool.length) {
       if ((jobsSource === 'frame_agreement' || jobsSource === 'process_sheets') && !jobsLoadError) {
-        if (!frameAgreementPartCount) {
+        if (mppFaOnly && JOB_TEMPLATES.length && !frameAgreementPartCount) {
+          list.innerHTML = '<p class="mpp-ops-empty">No frame agreement parts in master list. Turn off <strong>FA parts only</strong> to see other PS.</p>';
+        } else if (mppFaOnly && JOB_TEMPLATES.length) {
+          list.innerHTML = `<p class="mpp-ops-empty">No FA ops in the pool — ${JOB_TEMPLATES.length} other PS hidden. Turn off <strong>FA parts only</strong>.</p>`;
+        } else if (mppFaOnly && !frameAgreementPartCount) {
           list.innerHTML = '<p class="mpp-ops-empty">No frame agreement parts in master list.</p>';
-        } else {
+        } else if (mppFaOnly) {
           list.innerHTML = '<p class="mpp-ops-empty">No FA process sheets with MPP ops right now.</p>';
+        } else {
+          list.innerHTML = '<p class="mpp-ops-empty">No process sheets with MPP ops right now.</p>';
         }
       } else if (jobsLoadError) {
         list.innerHTML = `<p class="mpp-ops-empty">${escapeHtml(jobsLoadError)}</p>`;
       } else {
         list.innerHTML = '<p class="mpp-ops-empty">Loading process sheets…</p>';
       }
+      syncShowCompletedToggle();
+      syncFaOnlyToggle();
       return;
     }
     const allMatching = groupPoolJobs(pool).filter((group) => mppQueryMatchesBlob(mppGroupSearchBlob(group), rawQuery));
@@ -1839,6 +1913,7 @@
         list.innerHTML = '<p class="mpp-ops-empty">No process sheets or ops match this search.</p>';
       }
       syncShowCompletedToggle();
+      syncFaOnlyToggle();
       return;
     }
     syncMppPsExpandedFromDom(list);
@@ -1846,6 +1921,7 @@
     list.innerHTML = groups.map((group) => renderPsGroup(group, { forceOpen })).join('');
     if (rawQuery) applyMppOpsSearchFilter(rawQuery);
     syncShowCompletedToggle();
+    syncFaOnlyToggle();
   }
 
   function renderShiftToggle(cycleId, shift, machine) {
@@ -2057,7 +2133,7 @@
 
   function schedulablePoolJobs(query = '') {
     const q = compactText(query).toLowerCase();
-    return JOB_TEMPLATES.filter((job) => {
+    return poolJobTemplates().filter((job) => {
       if (!jobIsSchedulable(job)) return false;
       if (jobRemaining(job.jobId) < (job.pcsPerPallet || 1)) return false;
       if (!q) return true;
@@ -3080,6 +3156,22 @@
   document.getElementById('mpp-refresh-jobs')?.addEventListener('click', () => { refreshLiveJobs(); });
   document.getElementById('mpp-toggle-ops-pool')?.addEventListener('click', toggleSidebarCollapsed);
   document.getElementById('mpp-ops-search')?.addEventListener('input', scheduleMppOpsSearchRender);
+  document.getElementById('mpp-fa-only')?.addEventListener('change', async (e) => {
+    const next = Boolean(e.target.checked);
+    mppFaOnly = next;
+    try {
+      localStorage.setItem(MPP_FA_ONLY_KEY, mppFaOnly ? '1' : '0');
+    } catch { /* ignore */ }
+    // Turning FA-only off needs the full pool once; turning it on is instant filter.
+    if (!mppFaOnly && !jobsPoolIncludesNonFa) {
+      const el = e.target;
+      if (el) el.disabled = true;
+      await refreshLiveJobs({ all: true });
+      if (el) el.disabled = false;
+      return;
+    }
+    renderOpsList();
+  });
   document.getElementById('mpp-show-completed')?.addEventListener('change', (e) => {
     mppShowCompleted = Boolean(e.target.checked);
     try {
@@ -3344,14 +3436,18 @@
     }
   });
 
-  async function refreshLiveJobs() {
+  async function refreshLiveJobs(opts = {}) {
     const btn = document.getElementById('mpp-refresh-jobs');
     if (btn) btn.disabled = true;
-    const liveOk = await loadFrameAgreementJobs();
+    const liveOk = await loadFrameAgreementJobs(opts);
     if (liveOk) {
-      const jobs = {};
-      JOB_TEMPLATES.forEach((t) => { jobs[t.jobId] = { ...t }; });
-      state.jobs = jobs;
+      // Merge templates into existing jobs so queued / edited rows keep local fields.
+      const next = { ...state.jobs };
+      JOB_TEMPLATES.forEach((t) => {
+        const prev = next[t.jobId];
+        next[t.jobId] = prev ? { ...prev, ...t } : { ...t };
+      });
+      state.jobs = next;
     }
     updateJobsSourceBadge();
     updateJobsStatusLine();

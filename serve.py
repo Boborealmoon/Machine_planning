@@ -23,7 +23,8 @@ if _APP_ROOT not in sys.path:
 
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(_APP_ROOT, ".env"))
+# utf-8-sig strips a leading BOM so keys like DB_HOST are not read as \ufeffDB_HOST
+load_dotenv(os.path.join(_APP_ROOT, ".env"), encoding="utf-8-sig")
 
 _log_format = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 logging.basicConfig(level=logging.INFO, format=_log_format)
