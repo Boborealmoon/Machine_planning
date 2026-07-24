@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow, noarchive" />
+  <meta name="referrer" content="no-referrer" />
+  <title>MRO Sign in</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-mro.svg') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/mro_auth.css') }}" />
+</head>
+<body class="mro-auth-body">
+  <main class="mro-auth-card">
+    <div class="mro-auth-brand">
+      <span class="mro-auth-logo" aria-hidden="true">MRO</span>
+      <div>
+        <h1>Sign in</h1>
+        <p>Maintenance, Repair &amp; Overhaul</p>
+      </div>
+    </div>
+    {% with messages = get_flashed_messages(category_filter=["mro_auth"]) %}
+      {% if messages %}
+        {% for msg in messages %}
+        <div class="mro-auth-ok" role="status">{{ msg }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    {% if error %}
+    <div class="mro-auth-error" role="alert">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="{{ url_for('mro_auth.mro_login') }}">
+      {% if next_path %}
+      <input type="hidden" name="next" value="{{ next_path }}" />
+      {% endif %}
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" required autofocus />
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required />
+      <button type="submit">Sign in</button>
+    </form>
+    <nav class="mro-auth-links">
+      <a href="{{ url_for('mro_auth.mro_register') }}">Create account</a>
+      <a href="{{ url_for('mro_auth.mro_forgot') }}">Forgot password?</a>
+    </nav>
+  </main>
+</body>
+</html>

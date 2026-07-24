@@ -480,7 +480,6 @@
 
 {% block scripts %}
 <script>
-window.__MRO_GATE_TOKEN__ = {{ (mro_token or "") | tojson }};
 window.__MRO_PAGE__ = "arc";
 </script>
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v={{ mro_asset_version }}"></script>

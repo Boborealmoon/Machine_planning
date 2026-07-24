@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Material Tracking{% endblock %}
+{% block favicon %}
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-material-tracking.svg') }}" />
+{% endblock %}
 {% block body_class %}sol-view{% endblock %}
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}

@@ -27,26 +27,16 @@ const mroState = {
   arcItemRows: [],
 };
 
-const MRO_GATE_TOKEN = String(globalThis.__MRO_GATE_TOKEN__ || '').trim();
 const mroNativeFetch = globalThis.fetch.bind(globalThis);
 
-function mroAuthorizedUrl(input) {
-  if (!MRO_GATE_TOKEN || typeof input !== 'string') return input;
-  if (!input.startsWith('/api/mro')) return input;
-  const joiner = input.includes('?') ? '&' : '?';
-  return `${input}${joiner}mt=${encodeURIComponent(MRO_GATE_TOKEN)}`;
-}
-
 function mroFetch(input, init) {
-  const nextInput = mroAuthorizedUrl(input);
-  const nextInit = { ...(init || {}) };
-  if (MRO_GATE_TOKEN) {
-    nextInit.headers = {
-      ...(nextInit.headers || {}),
-      'X-MRO-Token': MRO_GATE_TOKEN,
-    };
-  }
-  return mroNativeFetch(nextInput, nextInit);
+  return mroNativeFetch(input, init).then((res) => {
+    if (res.status === 401) {
+      const next = encodeURIComponent(window.location.pathname + window.location.search);
+      window.location.href = `/mro-login?next=${next}`;
+    }
+    return res;
+  });
 }
 
 const MRO_ARC_VARIANTS = {

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow, noarchive" />
+  <meta name="referrer" content="no-referrer" />
+  <title>MRO Forgot password</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-mro.svg') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/mro_auth.css') }}" />
+</head>
+<body class="mro-auth-body">
+  <main class="mro-auth-card">
+    <div class="mro-auth-brand">
+      <span class="mro-auth-logo" aria-hidden="true">MRO</span>
+      <div>
+        <h1>Forgot password</h1>
+        <p>Submit a reset request. An administrator will set a new password for you.</p>
+      </div>
+    </div>
+    {% if error %}
+    <div class="mro-auth-error" role="alert">{{ error }}</div>
+    {% endif %}
+    {% if message %}
+    <div class="mro-auth-ok" role="status">{{ message }}</div>
+    {% endif %}
+    <form method="post" action="{{ url_for('mro_auth.mro_forgot') }}">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" value="{{ username or '' }}" required autofocus />
+      <label for="email">Email <span style="text-transform:none;letter-spacing:normal;font-weight:500;color:#94a3b8">(optional, helps identify you)</span></label>
+      <input id="email" name="email" type="email" autocomplete="email" value="{{ email or '' }}" />
+      <button type="submit">Submit reset request</button>
+    </form>
+    <nav class="mro-auth-links">
+      <a href="{{ url_for('mro_auth.mro_login') }}">Back to sign in</a>
+    </nav>
+  </main>
+</body>
+</html>

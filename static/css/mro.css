@@ -116,6 +116,23 @@ body.mro-app .app-main--mro {
   display: none !important;
 }
 
+.mro-user-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: #ecfdf5;
+  border: 1px solid #99f6e4;
+  color: #0f766e;
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.mro-logout-form {
+  display: inline;
+  margin: 0;
+}
+
 .mro-primary-nav {
   display: flex;
   align-items: stretch;

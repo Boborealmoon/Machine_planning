@@ -1,0 +1,166 @@
+/* MRO auth pages — login / register / forgot / reset */
+
+.mro-auth-body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: linear-gradient(165deg, #f4f6f9 0%, #e9edf4 45%, #f7f8fb 100%);
+  color: #1e293b;
+}
+
+.mro-auth-card {
+  width: min(100%, 400px);
+  padding: 28px 24px 24px;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+}
+
+.mro-auth-brand {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.mro-auth-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #0f766e 0%, #115e59 100%);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(15, 118, 110, 0.28);
+}
+
+.mro-auth-brand h1 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+}
+
+.mro-auth-brand p {
+  margin: 4px 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: #64748b;
+}
+
+.mro-auth-card label {
+  display: block;
+  margin: 12px 0 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.mro-auth-card input[type="text"],
+.mro-auth-card input[type="email"],
+.mro-auth-card input[type="password"] {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  font-size: 0.95rem;
+  outline: none;
+  background: #fff;
+  box-sizing: border-box;
+}
+
+.mro-auth-card input:focus {
+  border-color: #0f766e;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.15);
+}
+
+.mro-auth-card button[type="submit"] {
+  width: 100%;
+  margin-top: 16px;
+  padding: 11px 14px;
+  border: none;
+  border-radius: 10px;
+  background: #0f766e;
+  color: #fff;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mro-auth-card button[type="submit"]:hover {
+  background: #115e59;
+}
+
+.mro-auth-error,
+.mro-auth-ok {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.mro-auth-error {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.18);
+  color: #b91c1c;
+}
+
+.mro-auth-ok {
+  background: rgba(15, 118, 110, 0.08);
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  color: #0f766e;
+}
+
+.mro-auth-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  margin-top: 16px;
+  justify-content: space-between;
+}
+
+.mro-auth-links a {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #0f766e;
+  text-decoration: none;
+}
+
+.mro-auth-links a:hover {
+  text-decoration: underline;
+}
+
+.mro-auth-hint {
+  margin: 14px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: #94a3b8;
+}
+
+@media (max-width: 520px) {
+  .mro-auth-body {
+    align-items: flex-start;
+    padding-top: max(10vh, env(safe-area-inset-top));
+  }
+
+  .mro-auth-card input,
+  .mro-auth-card button {
+    min-height: 48px;
+    font-size: 16px;
+  }
+}

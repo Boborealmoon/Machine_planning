@@ -1,0 +1,130 @@
+{% extends "base_standalone.html" %}
+
+{% block title %}MRO Users & Approvals{% endblock %}
+{% block body_class %}notes-body mro-admin-users-body{% endblock %}
+{% block main_class %}notes-main{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/notes.css') }}?v=20260720b">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/mro_admin_users.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="notes-page mro-admin-users-page">
+  <header class="notes-header">
+    <div>
+      <p class="notes-kicker">Admin</p>
+      <h1>MRO Users &amp; Approvals</h1>
+      <p>Approve accounts, handle password-reset requests, and change credentials.</p>
+    </div>
+    <div class="mro-admin-header-actions">
+      <a class="notes-refresh" href="{{ url_for('planner_notes.notes_page', at=admin_token) if admin_token else url_for('planner_notes.notes_page') }}">Back to Admin</a>
+      <button class="notes-refresh" id="mro-users-refresh" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <section class="mro-admin-resets" aria-labelledby="mro-resets-title">
+    <div class="mro-admin-list-heading">
+      <div>
+        <h2 id="mro-resets-title">Password reset requests <span id="mro-reset-badge" class="mro-admin-badge" hidden>0</span></h2>
+        <p class="mro-admin-section-help">Users who forgot their password. Set a new password to complete, or dismiss.</p>
+      </div>
+    </div>
+    <p id="mro-resets-empty" class="mro-admin-empty">No pending password-reset requests.</p>
+    <div class="mro-admin-table-wrap">
+      <table class="mro-admin-table" id="mro-resets-table" hidden>
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Email</th>
+            <th>Requested</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="mro-resets-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="mro-admin-create card-like" aria-labelledby="mro-create-title">
+    <h2 id="mro-create-title">Create approved user</h2>
+    <p>Bootstrap accounts without waiting for self-registration.</p>
+    <form id="mro-create-form" class="mro-admin-form">
+      <label>
+        <span>Username</span>
+        <input name="username" type="text" autocomplete="off" required minlength="3" maxlength="64" />
+      </label>
+      <label>
+        <span>Email</span>
+        <input name="email" type="email" autocomplete="off" required />
+      </label>
+      <label>
+        <span>Password</span>
+        <input name="password" type="password" autocomplete="new-password" required minlength="8" />
+      </label>
+      <button type="submit" class="notes-save">Create &amp; approve</button>
+    </form>
+    <p id="mro-create-status" class="mro-admin-status" hidden></p>
+  </section>
+
+  <section class="mro-admin-list" aria-labelledby="mro-list-title">
+    <div class="mro-admin-list-heading">
+      <h2 id="mro-list-title">Accounts <span id="mro-pending-badge" class="mro-admin-badge" hidden>0</span></h2>
+      <label class="mro-admin-filter">
+        <span>Status</span>
+        <select id="mro-users-filter">
+          <option value="">All</option>
+          <option value="pending" selected>Pending</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+          <option value="disabled">Disabled</option>
+        </select>
+      </label>
+    </div>
+    <p id="mro-users-empty" class="mro-admin-empty" hidden>No users match this filter.</p>
+    <div class="mro-admin-table-wrap">
+      <table class="mro-admin-table" id="mro-users-table">
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Email</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Last login</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="mro-users-body"></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<dialog id="mro-edit-dialog" class="mro-admin-dialog">
+  <form method="dialog" id="mro-edit-form">
+    <h3 id="mro-edit-title">Edit credentials</h3>
+    <p id="mro-edit-subtitle" class="mro-admin-dialog-sub"></p>
+    <input type="hidden" name="user_id" id="mro-edit-user-id" />
+    <input type="hidden" name="request_id" id="mro-edit-request-id" />
+    <label id="mro-edit-username-wrap">
+      <span>Username</span>
+      <input name="username" id="mro-edit-username" type="text" required minlength="3" maxlength="64" />
+    </label>
+    <label id="mro-edit-email-wrap">
+      <span>Email</span>
+      <input name="email" id="mro-edit-email" type="email" required />
+    </label>
+    <label>
+      <span id="mro-edit-password-label">New password <em>(leave blank to keep)</em></span>
+      <input name="password" id="mro-edit-password" type="password" autocomplete="new-password" minlength="8" />
+    </label>
+    <p id="mro-edit-status" class="mro-admin-status" hidden></p>
+    <div class="mro-admin-dialog-actions">
+      <button type="submit" value="cancel" class="notes-cancel">Cancel</button>
+      <button type="submit" value="save" class="notes-save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script>window.__ADMIN_GATE_TOKEN__ = {{ (admin_token or "") | tojson }};</script>
+<script src="{{ url_for('static', filename='js/mro_admin_users.js') }}"></script>
+{% endblock %}

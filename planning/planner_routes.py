@@ -1629,10 +1629,14 @@ def _apply_delivery_row_flags(con, items: list) -> None:
 def api_trial_delivery_schedule():
     search = compact_text(request.args.get("search"))
     full = compact_text(request.args.get("full")).lower() in {"1", "true", "yes", "on"}
+    refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes", "on"}
     cache_key = _delivery_schedule_cache_key(search, full)
-    cached = _delivery_schedule_cache_get(cache_key)
-    if cached is not None:
-        return jsonify(cached)
+    if refresh:
+        clear_delivery_schedule_cache()
+    else:
+        cached = _delivery_schedule_cache_get(cache_key)
+        if cached is not None:
+            return jsonify(cached)
 
     with planner_db() as con:
         board_items = list_delivery_schedule_board_items(con, search=search, full=full)

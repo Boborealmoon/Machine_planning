@@ -6,12 +6,18 @@
       <p class="mro-appbar-subtitle" id="mro-stats" aria-live="polite">{{ mro_subtitle }}</p>
     </div>
   </div>
-  {% if mro_active_page == "arc" %}
   <div class="mro-appbar-actions">
+    {% if mro_username %}
+    <span class="mro-user-chip" title="Signed in">{{ mro_username }}</span>
+    <form method="post" action="{{ mro_logout_url }}" class="mro-logout-form">
+      <button type="submit" class="mro-btn" title="Sign out of MRO">Logout</button>
+    </form>
+    {% endif %}
+    {% if mro_active_page == "arc" %}
     <button type="button" class="mro-btn" id="mro-manage-staff" title="Add or remove certifying staff names">Manage Certifying Staff</button>
     <button type="button" class="mro-btn mro-btn--primary" id="mro-refresh" title="Reload from ERP">Refresh</button>
+    {% endif %}
   </div>
-  {% endif %}
 </header>
 
 <nav class="mro-primary-nav" aria-label="MRO navigation">

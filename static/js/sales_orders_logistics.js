@@ -683,7 +683,9 @@
     if (refresh) params.set('refresh', '1');
 
     try {
-      const res = await fetch(`/api/sales-orders?${params}`);
+      const res = await fetch(`/api/sales-orders?${params}`, {
+        cache: refresh ? 'no-store' : 'default',
+      });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
       state.active = Array.isArray(payload.active) ? payload.active : [];
@@ -720,7 +722,8 @@
 
     bindMaterialButtons();
     bindPsTypeDropdown();
-    load({ refresh: false });
+    // Bust server cache on every page load / browser refresh (same as Refresh button).
+    load({ refresh: true });
   }
 
   document.addEventListener('DOMContentLoaded', init);

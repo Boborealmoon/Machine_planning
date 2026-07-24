@@ -1,0 +1,241 @@
+/* MRO admin users page (Admin Hub) */
+
+.mro-admin-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.mro-admin-header-actions a.notes-refresh {
+  text-decoration: none;
+}
+
+.mro-admin-create,
+.mro-admin-list,
+.mro-admin-resets {
+  margin-top: 20px;
+  padding: 18px 18px 16px;
+  border: 1px solid var(--notes-line, #dce5e0);
+  border-radius: 14px;
+  background: var(--notes-paper, #fffef9);
+}
+
+.mro-admin-section-help {
+  margin: 4px 0 0;
+  color: var(--notes-muted, #62706a);
+  font-size: 0.875rem;
+}
+
+.mro-admin-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.4rem;
+  padding: 2px 7px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: #fff7ed;
+  color: #c2410c;
+  font-size: 0.75rem;
+  font-weight: 800;
+  vertical-align: middle;
+}
+
+.mro-admin-create h2,
+.mro-admin-list-heading h2 {
+  margin: 0 0 4px;
+  font-size: 1.05rem;
+}
+
+.mro-admin-create > p {
+  margin: 0 0 14px;
+  color: var(--notes-muted, #62706a);
+  font-size: 0.875rem;
+}
+
+.mro-admin-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.mro-admin-form label,
+.mro-admin-dialog label,
+.mro-admin-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--notes-muted, #62706a);
+}
+
+.mro-admin-form input,
+.mro-admin-dialog input,
+.mro-admin-filter select {
+  padding: 10px 12px;
+  border: 1px solid var(--notes-line, #dce5e0);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 0.9rem;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 500;
+  color: var(--notes-ink, #17201d);
+  background: #fff;
+}
+
+.mro-admin-list-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.mro-admin-table-wrap {
+  overflow-x: auto;
+}
+
+.mro-admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.mro-admin-table th,
+.mro-admin-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--notes-line, #dce5e0);
+  vertical-align: middle;
+}
+
+.mro-admin-table th {
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--notes-muted, #62706a);
+}
+
+.mro-admin-status-pill {
+  display: inline-flex;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.mro-admin-status-pill.is-pending {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.mro-admin-status-pill.is-approved {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.mro-admin-status-pill.is-rejected,
+.mro-admin-status-pill.is-disabled {
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.mro-admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mro-admin-actions button {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--notes-line, #dce5e0);
+  background: #fff;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--notes-ink, #17201d);
+}
+
+.mro-admin-actions button.mro-admin-approve {
+  background: var(--notes-accent-soft, #e8f4ef);
+  border-color: #99d6c2;
+  color: var(--notes-accent, #12664f);
+}
+
+.mro-admin-actions button:hover {
+  border-color: #94a3b8;
+}
+
+.mro-admin-empty {
+  margin: 8px 0;
+  color: var(--notes-muted, #62706a);
+}
+
+.mro-admin-status {
+  margin: 10px 0 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.mro-admin-status.is-ok {
+  color: var(--notes-accent, #12664f);
+}
+
+.mro-admin-status.is-err {
+  color: #b91c1c;
+}
+
+.mro-admin-dialog {
+  border: 1px solid var(--notes-line, #dce5e0);
+  border-radius: 14px;
+  padding: 0;
+  max-width: 420px;
+  width: calc(100% - 32px);
+  background: #fff;
+}
+
+.mro-admin-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.mro-admin-dialog form {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mro-admin-dialog h3 {
+  margin: 0;
+}
+
+.mro-admin-dialog-sub {
+  margin: 0;
+  color: var(--notes-muted, #62706a);
+  font-size: 0.875rem;
+}
+
+.mro-admin-dialog label em {
+  font-style: normal;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  color: #94a3b8;
+}
+
+.mro-admin-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}

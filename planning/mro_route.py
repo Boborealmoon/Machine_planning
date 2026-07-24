@@ -1545,37 +1545,35 @@ def _mro_shipped_completed(row: dict[str, Any]) -> bool:
 
 @mro_bp.get(MRO_PATH)
 def mro_page():
-    token = (request.args.get("mt") or "").strip()
+    from .mro_auth import current_mro_username
+
     return render_template(
         "mro.html",
         mro_path=MRO_PATH,
         mro_asset_version=mro_asset_version(),
-        mro_token=token,
         mro_active_page="arc",
         mro_subtitle="Loading ARC data…",
-        mro_arc_url=url_for("mro.mro_page", **({"mt": token} if token else {})),
-        mro_tracking_url=url_for(
-            "mro.mro_tracking_page",
-            **({"mt": token} if token else {}),
-        ),
+        mro_username=current_mro_username(),
+        mro_arc_url=url_for("mro.mro_page"),
+        mro_tracking_url=url_for("mro.mro_tracking_page"),
+        mro_logout_url=url_for("mro_auth.mro_logout"),
     )
 
 
 @mro_bp.get(f"{MRO_PATH}/ps-tracking")
 def mro_tracking_page():
-    token = (request.args.get("mt") or "").strip()
+    from .mro_auth import current_mro_username
+
     return render_template(
         "mro_tracking.html",
         mro_path=MRO_PATH,
         mro_asset_version=mro_asset_version(),
-        mro_token=token,
         mro_active_page="tracking",
         mro_subtitle="Loading MPS tracking…",
-        mro_arc_url=url_for("mro.mro_page", **({"mt": token} if token else {})),
-        mro_tracking_url=url_for(
-            "mro.mro_tracking_page",
-            **({"mt": token} if token else {}),
-        ),
+        mro_username=current_mro_username(),
+        mro_arc_url=url_for("mro.mro_page"),
+        mro_tracking_url=url_for("mro.mro_tracking_page"),
+        mro_logout_url=url_for("mro_auth.mro_logout"),
     )
 
 
@@ -2203,6 +2201,8 @@ def api_mro_arc_history_delete(history_id: int):
 @mro_bp.post("/api/mro/create-arc")
 def api_mro_create_arc():
     """Create ARC history with unique dummy serials, then return a single PDF."""
+    from .mro_auth import current_mro_username
+
     data = request.get_json(force=True, silent=True) or {}
     variants = data.get("variants") or []
     if isinstance(variants, str):
@@ -2214,6 +2214,10 @@ def api_mro_create_arc():
 
     try:
         data = _normalize_arc_payload_quantity(data)
+        # Prefer the signed-in MRO username for audit trail.
+        session_user = current_mro_username()
+        if session_user and not compact_text(data.get("created_by")):
+            data["created_by"] = session_user
         items = data.get("items") if isinstance(data.get("items"), list) else []
         if not items:
             return jsonify({"ok": False, "error": "Select at least one item line for the ARC"}), 400

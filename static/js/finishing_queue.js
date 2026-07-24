@@ -2378,10 +2378,10 @@ function fqSetScreen(screen) {
     void fqReloadMaterialIssueItems();
   }
   if (fqState.screen === 'material_inspection' && !fqState.mi.loaded && !fqState.mi.loading) {
-    void fqLoadMaterialInspection();
+    void fqLoadMaterialInspection({ refresh: true });
   }
   if (fqState.screen === 'qc_queue' && !fqState.qcq.loaded && !fqState.qcq.loading) {
-    void fqLoadQcQueue();
+    void fqLoadQcQueue({ refresh: true });
   }
 }
 
@@ -2404,13 +2404,26 @@ async function fqReloadMaterialIssueItems() {
 function fqInitScreenFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const tab = params.get('tab');
-  if (tab === 'material_issue') {
-    fqSetScreen('material_issue');
-  } else if (tab === 'material_inspection') {
-    fqSetScreen('material_inspection');
-  } else if (tab === 'qc_queue') {
-    fqSetScreen('qc_queue');
+  let screen = null;
+  if (tab === 'material_issue') screen = 'material_issue';
+  else if (tab === 'material_inspection') screen = 'material_inspection';
+  else if (tab === 'qc_queue') screen = 'qc_queue';
+  if (!screen) return;
+  // Apply tab chrome only — page init owns the cache-busting fetch so we don't
+  // double-start loads (and so refreshCurrent always returns a real Promise).
+  fqState.screen = screen;
+  if (screen === 'assignments') {
+    if (!fqState.assignee) fqState.assignee = 'all';
+  } else {
+    fqState.assignee = 'all';
+    if (fqState.sortCol === 'inspector_name') {
+      fqState.sortCol = '';
+      fqState.sortDir = 'asc';
+    }
   }
+  fqCloseDetail();
+  fqRenderTable();
+  fqUpdateNavCounts();
 }
 
 window.fqSetScreen = fqSetScreen;
@@ -2711,28 +2724,36 @@ function fqInit() {
     if (boot && (Array.isArray(boot.items) || Array.isArray(boot.material_issue_items))) {
       try {
         fqApplyPayload(boot);
-        fqInitScreenFromUrl();
         fqHideLoading();
         window.__fqInteractive = true;
         document.body.classList.add('fq-interactive-ready');
-        if (!fqState.mi.loaded && !fqState.mi.loading) {
-          void fqLoadMaterialInspection();
-        }
       } catch (renderErr) {
         console.error('finishing queue render failed:', renderErr);
         fqShowLoadError(`Failed to render queue: ${renderErr.message || renderErr}`);
+        window.__fqBootDone = true;
+        return;
       }
-      window.__fqBootDone = true;
-      return;
     }
 
+    // Resolve tab from URL after bootstrap paint so the active screen gets a fresh fetch.
+    fqInitScreenFromUrl();
+
+    // Always reload-fetch on page load / browser refresh (same as Refresh button),
+    // so server TTL caches are not re-served until the user clicks Refresh.
     if (!window.__fqLoadStarted) {
       window.__fqLoadStarted = true;
-      fqLoad().finally(() => {
-        fqInitScreenFromUrl();
+      const refreshCurrent = () => {
+        if (fqIsMaterialInspectionScreen()) return fqLoadMaterialInspection({ refresh: true });
+        if (fqIsQcQueueScreen()) return fqLoadQcQueue({ refresh: true });
+        return fqLoad({ refresh: true });
+      };
+      refreshCurrent().finally(() => {
         window.__fqBootDone = true;
         window.__fqInteractive = true;
         document.body.classList.add('fq-interactive-ready');
+        if (!fqIsMaterialInspectionScreen() && !fqState.mi.loaded && !fqState.mi.loading) {
+          void fqLoadMaterialInspection({ refresh: true });
+        }
       });
     }
   } catch (err) {

@@ -41,6 +41,11 @@
         <div class="admin-launch-links">
           {{ launch_link("ARC Certificate", url_for("mro.mro_page"), "Create and review certificates") }}
           {{ launch_link("Process Sheet Tracking", url_for("mro.mro_tracking_page"), "Track MRO process sheets") }}
+          {{ launch_link(
+            "MRO Users & Approvals",
+            url_for("mro_auth.mro_admin_users_page", **({"at": admin_token} if admin_token else {})),
+            "Approve accounts and manage credentials"
+          ) }}
         </div>
       </section>
 

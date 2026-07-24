@@ -449,7 +449,10 @@
     if (els.empty) els.empty.hidden = true;
 
     try {
-      const response = await fetch('/api/trial/delivery-schedule?full=1');
+      // refresh=1 + no-store: always rebuild on page load / Refresh (never reuse HTTP/memory cache).
+      const response = await fetch('/api/trial/delivery-schedule?full=1&refresh=1', {
+        cache: 'no-store',
+      });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       state.items = Array.isArray(data.items) ? data.items : [];
