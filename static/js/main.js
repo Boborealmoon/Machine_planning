@@ -108,6 +108,7 @@ document.addEventListener("click", () => {
 /** Fetch helper for REPORTS / ANALYTICS APIs — redirects to passcode gate on 401. */
 const REPORTS_API_MARKERS = [
   "/api/sales-report",
+  "/api/so-outstanding-balance",
   "/api/job-ratio",
   "/api/production-capacity",
   "/api/planning-data/repeat-orders",
@@ -118,14 +119,19 @@ function isReportsApiUrl(url) {
 }
 
 async function reportsApiFetch(url, options = {}) {
-  const token = window.__reportsAuthToken || "";
+  const token = window.__reportsAuthToken
+    || (typeof sessionStorage !== "undefined" ? sessionStorage.getItem("reportsAuthToken") : "")
+    || "";
+  if (token) window.__reportsAuthToken = token;
   const headers = new Headers(options.headers || {});
   if (token && !headers.has("X-Reports-Token")) {
     headers.set("X-Reports-Token", token);
   }
   const res = await fetch(url, { ...options, headers });
   if (res.status === 401 && isReportsApiUrl(url)) {
-    const next = encodeURIComponent(window.location.pathname + window.location.search);
+    try { sessionStorage.removeItem("reportsAuthToken"); } catch (_) {}
+    window.__reportsAuthToken = "";
+    const next = encodeURIComponent(window.location.pathname || "/sales-report");
     window.location.href = `/reports-gate?next=${next}`;
     return new Promise(() => {});
   }

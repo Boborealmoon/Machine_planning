@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}S/O Management{% endblock %}
 {% block main_class %}app-main--new-orders app-main--sales-orders-wide{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-loading-simple-20260721">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-export-excel-20260728">{% endblock %}
 {% block content %}
 <div class="new-orders-page new-orders-page--sales-orders">
   <div class="new-orders-header">
@@ -28,6 +28,7 @@
     <div class="new-orders-header-actions">
       <div class="so-header-pills" id="so-stats-chips" aria-label="Summary counts"></div>
       <button type="button" class="btn btn-ghost btn-sm" id="so-copy-no-wo-ps" title="Copy process sheet numbers from visible No WO rows (no WO voucher raised yet)">Copy No WO PS</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="so-export" title="Export Active or No WO rows to Excel">Export</button>
       <button type="button" class="btn btn-ghost btn-sm" id="so-refresh">Refresh</button>
     </div>
   </div>
@@ -139,9 +140,38 @@
     <p class="so-material-modal-foot">BOM: <code>inventory_bom_listing</code> · Inventory: <code>ic_inventory_enquiry_summary_view</code></p>
   </div>
 </div>
+
+<div id="so-export-modal" class="so-export-modal" hidden>
+  <div class="so-export-modal-backdrop" data-action="close-export-modal" aria-hidden="true"></div>
+  <div class="so-export-modal-panel" role="dialog" aria-modal="true" aria-labelledby="so-export-modal-title">
+    <div class="so-export-modal-head">
+      <div>
+        <p class="so-export-modal-kicker">S/O Management</p>
+        <h2 class="so-export-modal-title" id="so-export-modal-title">Export Excel</h2>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="so-export-modal-close" aria-label="Close">Close</button>
+    </div>
+    <div class="so-export-modal-body">
+      <p class="so-export-modal-hint">Choose which sheet to export. Current PP prefix, search, and column filters still apply.</p>
+      <div class="so-export-view-toggle" role="radiogroup" aria-label="Export view">
+        <button type="button" class="so-export-view-btn is-active" data-so-export-view="active" role="radio" aria-checked="true">
+          Active
+        </button>
+        <button type="button" class="so-export-view-btn" data-so-export-view="no-wo" role="radio" aria-checked="false">
+          No WO
+        </button>
+      </div>
+      <p class="so-export-modal-count" id="so-export-modal-count" aria-live="polite"></p>
+    </div>
+    <div class="so-export-modal-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-action="close-export-modal">Cancel</button>
+      <button type="button" class="btn btn-dark btn-sm" id="so-export-confirm">Export Excel</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-orders-pp-20260608"></script>
 <script src="{{ url_for('static', filename='js/repeat_order_tags.js') }}?v=repeat-tags-detail-20260612"></script>
-<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=so-loading-simple-20260721"></script>
+<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=so-export-excel-20260728"></script>
 {% endblock %}

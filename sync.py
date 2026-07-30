@@ -396,7 +396,7 @@ def schedule_rebuild_stg_cycle_time_comparison() -> dict:
 _PP_VOUCHERS_COLS = [
     "ps_id", "pp_partial_no", "part_no", "description",
     "total_qty", "partial_qty", "due_date", "order_date",
-    "bom_code", "source_voucher_no", "source_line_item_no",
+    "bom_code", "source_voucher_no", "source_line_item_no", "customer_po_no",
     "qty_shipped", "so_det_qty", "status", "execution_status",
     "wo_qty_required", "wo_qty_produced", "wo_qty_rejected",
     "stage_no", "stage_desc", "op_no",

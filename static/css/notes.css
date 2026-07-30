@@ -146,6 +146,11 @@ body.notes-body {
   color: #4354a5;
 }
 
+.admin-launch-group--pps .admin-launch-icon {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
 .admin-launch-group--accounts .admin-launch-icon {
   background: #fff2dd;
   color: #9a6113;

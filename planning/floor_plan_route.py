@@ -1,4 +1,4 @@
-"""Factory floor plan - interactive shop layout with utilization and part tags."""
+"""Factory floor plan - interactive shop layout with utilization and capacity bookings."""
 
 from __future__ import annotations
 
@@ -8,7 +8,13 @@ from datetime import date
 from flask import Blueprint, jsonify, render_template, request
 
 from .capacity_group_service import default_planning_month
-from .floor_plan_service import add_machine_part_tag, delete_machine_part_tag, fetch_floor_plan
+from .floor_plan_service import (
+    add_machine_part_tag,
+    delete_machine_capacity_booking,
+    delete_machine_part_tag,
+    fetch_floor_plan,
+    upsert_machine_capacity_booking,
+)
 from .helpers import planner_db
 from .process_sheets import format_planner_ps_id, normalize_standard_ps_id, search_process_sheet_sources
 from .utils import compact_text
@@ -67,6 +73,52 @@ def api_floor_plan():
         return jsonify(payload)
     except Exception as exc:
         logger.exception("floor plan query failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@floor_plan_bp.post("/api/floor-plan/bookings")
+def api_floor_plan_upsert_booking():
+    data = request.get_json(silent=True) or {}
+    try:
+        machine_id = int(data.get("machine_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "machine_id is required."}), 400
+
+    year = data.get("planning_year", data.get("year"))
+    month = data.get("planning_month", data.get("month"))
+    as_of = _parse_as_of(data.get("as_of"))
+
+    try:
+        with planner_db() as con:
+            booking = upsert_machine_capacity_booking(
+                con,
+                machine_id=machine_id,
+                planning_year=year,
+                planning_month=month,
+                part_no=data.get("part_no"),
+                reserved_hours=data.get("reserved_hours"),
+                tag_label=data.get("tag_label") or "",
+                notes=data.get("notes") or "",
+                as_of=as_of,
+            )
+        return jsonify({"ok": True, "booking": booking, "warning": booking.get("warning")})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("floor plan upsert booking failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@floor_plan_bp.delete("/api/floor-plan/bookings/<int:booking_id>")
+def api_floor_plan_delete_booking(booking_id: int):
+    try:
+        with planner_db() as con:
+            deleted = delete_machine_capacity_booking(con, booking_id)
+        if not deleted:
+            return jsonify({"ok": False, "error": "Booking not found."}), 404
+        return jsonify({"ok": True})
+    except Exception as exc:
+        logger.exception("floor plan delete booking failed")
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 

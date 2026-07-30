@@ -234,6 +234,17 @@
   text-overflow: ellipsis;
 }
 
+.fp-tile-reserved {
+  display: inline-block;
+  padding: 0 4px;
+  font-size: clamp(8px, 0.75vw, 10px);
+  font-weight: 700;
+  color: #1e3a5f;
+  background: rgba(255, 255, 255, 0.72);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
 .fp-tile--mpp {
   border-color: rgba(146, 88, 0, 0.9);
 }
@@ -256,6 +267,12 @@
   pointer-events: none;
 }
 
+.fp-tile-bar--reserved {
+  bottom: 3px;
+  height: 2px;
+  background: rgba(30, 58, 95, 0.7);
+}
+
 .fp-tile--narrow {
   padding: 3px 2px 5px;
 }
@@ -269,7 +286,8 @@
   padding: 1px 4px;
 }
 
-.fp-tile--small .fp-tile-tag {
+.fp-tile--small .fp-tile-tag,
+.fp-tile--small .fp-tile-reserved {
   display: none;
 }
 
@@ -314,22 +332,53 @@
   margin-bottom: 16px;
 }
 
-.fp-util-badge {
+.fp-detail-badges {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.fp-util-badge,
+.fp-reserved-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: 64px;
   padding: 6px 10px;
   border-radius: 999px;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   border: 1px solid var(--border);
   background: #f8fafc;
+  white-space: nowrap;
 }
 
 .fp-util-badge--low { color: #047857; background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.25); }
 .fp-util-badge--mid { color: #92400e; background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.25); }
 .fp-util-badge--high { color: #b91c1c; background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.25); }
+
+.fp-reserved-summary {
+  margin-top: 8px;
+}
+
+.fp-reserved-summary-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f1f5f9;
+  font-size: 13px;
+}
+
+.fp-reserved-summary-row.is-over {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.08);
+  color: #991b1b;
+}
 
 .fp-detail-section {
   margin-bottom: 18px;

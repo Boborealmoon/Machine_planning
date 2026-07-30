@@ -9,6 +9,7 @@ import psycopg2.extras
 
 from .bom_materials import _list_bom_codes_with_counts, resolve_bom_materials
 from .bom_operations import fetch_machining_operations, machining_op_counts_by_bom as erp_machining_op_counts
+from .cycle_time_service import MasterTimeCache, resolve_step_times
 from .helpers import one, rows
 from .utils import compact_text
 
@@ -18,6 +19,8 @@ _SCHEMA_READY = False
 _PART_KEY_RE = re.compile(r"\s+")
 _FA_MPP_MACHINE_CODES = frozenset({"CNC 35", "CNC 36", "CNC 41"})
 _MPP_MACHINE_NOTE_RE = re.compile(r"\bCNC\s*3[561]\b", re.IGNORECASE)
+FA_NORMAL_DAY_MINUTES = 630.0  # 10.5h weekday shift 08:30–20:00
+FA_MPP_DAY_MINUTES = 1440.0  # 24h MPP coverage
 
 
 def normalize_mpp_machine_no(value: Any) -> str:
@@ -557,6 +560,98 @@ def normalize_part_key(part_no: str) -> str:
     return _PART_KEY_RE.sub(" ", compact_text(part_no)).upper()
 
 
+def compute_fg_per_day(available_min: float, total_cycle: float, total_setup: float) -> float | None:
+    """Finished pieces / day = (available − setup) / cycle when cycle > 0."""
+    cycle = float(total_cycle or 0)
+    if cycle <= 0:
+        return None
+    available = float(available_min or 0)
+    setup = max(0.0, float(total_setup or 0))
+    return max(0.0, (available - setup) / cycle)
+
+
+def build_normal_master_ops_for_bom(
+    db_query: Callable,
+    con,
+    part_no: str,
+    bom_code: str,
+    *,
+    master_cache: MasterTimeCache | None = None,
+) -> dict[str, Any]:
+    """Resolve machining ops against planner_cycle_time_master for Normal FA FG/day."""
+    part_no = compact_text(part_no)
+    bom_code = compact_text(bom_code)
+    empty = {
+        "bom_code": bom_code,
+        "ops": [],
+        "total_cycle": 0.0,
+        "total_setup": 0.0,
+        "fg_per_day": None,
+        "master_hit_count": 0,
+    }
+    if not part_no or not bom_code:
+        return empty
+
+    cache = master_cache or MasterTimeCache.load(con)
+    ops = fetch_bom_machining_operations(db_query, part_no, bom_code)
+    master_ops: list[dict[str, Any]] = []
+    total_cycle = 0.0
+    total_setup = 0.0
+    master_hit_count = 0
+
+    for op in ops:
+        op_no = normalize_op_no(op.get("op_no"))
+        if not op_no:
+            continue
+        step = {
+            "op_no": op_no,
+            "op_type": compact_text(op.get("op_type")),
+            "stage_no": op.get("stage_no"),
+            "source_stage_no": op.get("stage_no"),
+            "cycle_time": op.get("cycle_time") or 0,
+            "setup_time": op.get("setup_time") or 0,
+        }
+        resolved = resolve_step_times(
+            con,
+            part_no=part_no,
+            bom_code=bom_code,
+            step=step,
+            master_cache=cache,
+        )
+        cycle = float(resolved.get("cycle_time") or 0)
+        setup = float(resolved.get("set_up_time") or 0)
+        source = compact_text(resolved.get("source")) or "bom_step"
+        master_id = resolved.get("master_id")
+        if source == "master" and master_id:
+            master_hit_count += 1
+        if cycle > 0:
+            total_cycle += cycle
+        if setup > 0:
+            total_setup += setup
+        master_ops.append(
+            {
+                "op_no": op_no,
+                "stage_no": op.get("stage_no"),
+                "stage_desc": compact_text(op.get("stage_desc")),
+                "op_type": compact_text(op.get("op_type")),
+                "cycle_time": cycle,
+                "set_up_time": setup,
+                "ideal_cycle_time": float(resolved.get("ideal_cycle_time") or 0),
+                "source": source,
+                "master_id": master_id,
+            }
+        )
+
+    return {
+        "bom_code": bom_code,
+        "ops": master_ops,
+        "total_cycle": total_cycle,
+        "total_setup": total_setup,
+        "fg_per_day": compute_fg_per_day(FA_NORMAL_DAY_MINUTES, total_cycle, total_setup),
+        "master_hit_count": master_hit_count,
+    }
+
+
 def ensure_frame_agreement_schema(con) -> None:
     global _SCHEMA_READY
     if _SCHEMA_READY:
@@ -593,6 +688,12 @@ def ensure_frame_agreement_schema(con) -> None:
         """
         ALTER TABLE planner_frame_agreement_part
             ADD COLUMN IF NOT EXISTS mpp_setup_minutes NUMERIC NOT NULL DEFAULT 0
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_frame_agreement_part
+            ADD COLUMN IF NOT EXISTS deburring_cycle_min_per_piece NUMERIC NOT NULL DEFAULT 0
         """
     )
     con.execute(
@@ -654,6 +755,28 @@ def ensure_frame_agreement_schema(con) -> None:
         "ALTER TABLE planner_frame_agreement_op_config ADD COLUMN IF NOT EXISTS mpp_machine_no TEXT NOT NULL DEFAULT ''",
     ):
         con.execute(stmt)
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS planner_frame_agreement_normal_part (
+            part_no     TEXT         PRIMARY KEY,
+            notes       TEXT         NOT NULL DEFAULT '',
+            created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_planner_frame_agreement_normal_part_updated
+            ON planner_frame_agreement_normal_part (updated_at DESC)
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_frame_agreement_normal_part
+            ADD COLUMN IF NOT EXISTS deburring_cycle_min_per_piece NUMERIC NOT NULL DEFAULT 0
+        """
+    )
     _SCHEMA_READY = True
 
 
@@ -904,6 +1027,9 @@ def serialize_part_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
         "mpp_setup_minutes": max(0.0, float(row.get("mpp_setup_minutes") or 0)),
         "mpp_pcs_per_pallet": max(0.0, float(row.get("mpp_pcs_per_pallet") or 0)),
         "mpp_pallets_per_cycle": max(0.0, float(row.get("mpp_pallets_per_cycle") or 0)),
+        "deburring_cycle_min_per_piece": max(
+            0.0, float(row.get("deburring_cycle_min_per_piece") or 0)
+        ),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
@@ -935,7 +1061,7 @@ def list_frame_agreement_parts(con, *, search: str = "") -> list[dict[str, Any]]
             con.execute(
                 """
                 SELECT part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
-                       created_at, updated_at
+                       deburring_cycle_min_per_piece, created_at, updated_at
                 FROM planner_frame_agreement_part
                 WHERE LOWER(part_no) LIKE %s OR LOWER(notes) LIKE %s
                 ORDER BY part_no
@@ -948,7 +1074,7 @@ def list_frame_agreement_parts(con, *, search: str = "") -> list[dict[str, Any]]
             con.execute(
                 """
                 SELECT part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
-                       created_at, updated_at
+                       deburring_cycle_min_per_piece, created_at, updated_at
                 FROM planner_frame_agreement_part
                 ORDER BY part_no
                 """
@@ -965,7 +1091,8 @@ def list_frame_agreement_parts(con, *, search: str = "") -> list[dict[str, Any]]
     return out
 
 
-def load_frame_agreement_part_keys(con) -> set[str]:
+def load_frame_agreement_mpp_part_keys(con) -> set[str]:
+    """Keys for MPP FA master list only (MPP planner intake)."""
     ensure_frame_agreement_schema(con)
     keys: set[str] = set()
     for row in rows(con.execute("SELECT part_no FROM planner_frame_agreement_part")):
@@ -975,11 +1102,274 @@ def load_frame_agreement_part_keys(con) -> set[str]:
     return keys
 
 
+def load_frame_agreement_normal_part_keys(con) -> set[str]:
+    """Keys for Normal (non-MPP) FA master list only."""
+    ensure_frame_agreement_schema(con)
+    keys: set[str] = set()
+    for row in rows(con.execute("SELECT part_no FROM planner_frame_agreement_normal_part")):
+        key = normalize_part_key(row.get("part_no"))
+        if key:
+            keys.add(key)
+    return keys
+
+
+def load_frame_agreement_part_keys(con) -> set[str]:
+    """Union of MPP + Normal FA part keys — used for S/O and pending-PP FA badges."""
+    return load_frame_agreement_mpp_part_keys(con) | load_frame_agreement_normal_part_keys(con)
+
+
 def is_frame_agreement_part(part_no: str, keys: set[str] | None = None) -> bool:
     key = normalize_part_key(part_no)
     if not key or not keys:
         return False
     return key in keys
+
+
+def serialize_normal_part_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    part_no = compact_text(row.get("part_no"))
+    if not part_no:
+        return None
+    out = {
+        "part_no": part_no,
+        "notes": compact_text(row.get("notes")),
+        "deburring_cycle_min_per_piece": max(
+            0.0, float(row.get("deburring_cycle_min_per_piece") or 0)
+        ),
+        "lane": "normal",
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+    for key in (
+        "description",
+        "bom_code",
+        "bom_codes",
+        "bom_variants",
+        "primary_material",
+        "primary_material_desc",
+        "qty_per_fg",
+        "material_count",
+        "inventory_class",
+        "master_ops_by_bom",
+        "master_ops",
+        "total_cycle",
+        "total_setup",
+        "fg_per_day",
+        "master_hit_count",
+        "fg_totals_by_bom",
+        "enrich_error",
+    ):
+        if key in row:
+            out[key] = row.get(key)
+    return out
+
+
+def list_frame_agreement_normal_parts(con, *, search: str = "") -> list[dict[str, Any]]:
+    ensure_frame_agreement_schema(con)
+    q = compact_text(search).lower()
+    if q:
+        like = f"%{q}%"
+        raw = rows(
+            con.execute(
+                """
+                SELECT part_no, notes, deburring_cycle_min_per_piece, created_at, updated_at
+                FROM planner_frame_agreement_normal_part
+                WHERE LOWER(part_no) LIKE %s OR LOWER(notes) LIKE %s
+                ORDER BY part_no
+                """,
+                (like, like),
+            )
+        )
+    else:
+        raw = rows(
+            con.execute(
+                """
+                SELECT part_no, notes, deburring_cycle_min_per_piece, created_at, updated_at
+                FROM planner_frame_agreement_normal_part
+                ORDER BY part_no
+                """
+            )
+        )
+    out = []
+    for row in raw:
+        serialized = serialize_normal_part_row(dict(row))
+        if serialized:
+            out.append(serialized)
+    return out
+
+
+def _lookup_frame_agreement_normal_part_row(con, part_no: str) -> dict[str, Any] | None:
+    part_no = compact_text(part_no)
+    if not part_no:
+        return None
+    row = one(
+        con.execute(
+            """
+            SELECT part_no, notes, deburring_cycle_min_per_piece, created_at, updated_at
+            FROM planner_frame_agreement_normal_part
+            WHERE part_no = %s
+            """,
+            (part_no,),
+        )
+    )
+    if row:
+        return dict(row)
+    return one(
+        con.execute(
+            """
+            SELECT part_no, notes, deburring_cycle_min_per_piece, created_at, updated_at
+            FROM planner_frame_agreement_normal_part
+            WHERE UPPER(TRIM(part_no)) = UPPER(TRIM(%s))
+            """,
+            (part_no,),
+        )
+    )
+
+
+def add_frame_agreement_normal_part(
+    con,
+    part_no: str,
+    *,
+    notes: str = "",
+    deburring_cycle_min_per_piece: float = 0,
+) -> dict[str, Any]:
+    ensure_frame_agreement_schema(con)
+    part_no = compact_text(part_no)
+    if not part_no:
+        raise ValueError("part_no is required")
+    notes = compact_text(notes)
+    deburr = max(0.0, float(deburring_cycle_min_per_piece or 0))
+    row = one(
+        con.execute(
+            """
+            INSERT INTO planner_frame_agreement_normal_part (
+                part_no, notes, deburring_cycle_min_per_piece, updated_at
+            )
+            VALUES (%s, %s, %s, NOW())
+            ON CONFLICT (part_no) DO UPDATE SET
+                notes = EXCLUDED.notes,
+                deburring_cycle_min_per_piece = EXCLUDED.deburring_cycle_min_per_piece,
+                updated_at = NOW()
+            RETURNING part_no, notes, deburring_cycle_min_per_piece, created_at, updated_at
+            """,
+            (part_no, notes, deburr),
+        )
+    )
+    return serialize_normal_part_row(row) or {
+        "part_no": part_no,
+        "notes": notes,
+        "deburring_cycle_min_per_piece": deburr,
+        "lane": "normal",
+    }
+
+
+def update_frame_agreement_normal_part(
+    con,
+    part_no: str,
+    *,
+    notes: str | None = None,
+    deburring_cycle_min_per_piece: float | None = None,
+) -> dict[str, Any] | None:
+    ensure_frame_agreement_schema(con)
+    part_no = compact_text(part_no)
+    if not part_no:
+        raise ValueError("part_no is required")
+    existing = _lookup_frame_agreement_normal_part_row(con, part_no)
+    if not existing:
+        raise ValueError("Part not found")
+    part_no = compact_text(existing.get("part_no")) or part_no
+    updates: list[str] = []
+    params: list[Any] = []
+    if notes is not None:
+        updates.append("notes = %s")
+        params.append(compact_text(notes))
+    if deburring_cycle_min_per_piece is not None:
+        updates.append("deburring_cycle_min_per_piece = %s")
+        params.append(max(0.0, float(deburring_cycle_min_per_piece)))
+    if not updates:
+        return serialize_normal_part_row(existing)
+    updates.append("updated_at = NOW()")
+    params.append(part_no)
+    row = one(
+        con.execute(
+            f"""
+            UPDATE planner_frame_agreement_normal_part
+            SET {", ".join(updates)}
+            WHERE part_no = %s
+            RETURNING part_no, notes, deburring_cycle_min_per_piece, created_at, updated_at
+            """,
+            tuple(params),
+        )
+    )
+    return serialize_normal_part_row(row)
+
+
+def delete_frame_agreement_normal_part(con, part_no: str) -> bool:
+    ensure_frame_agreement_schema(con)
+    part_no = compact_text(part_no)
+    if not part_no:
+        return False
+    cur = con.execute(
+        "DELETE FROM planner_frame_agreement_normal_part WHERE part_no = %s",
+        (part_no,),
+    )
+    return bool(getattr(cur, "rowcount", 0))
+
+
+def enrich_frame_agreement_normal_part(
+    db_query: Callable,
+    con,
+    row: dict[str, Any],
+    *,
+    master_cache: MasterTimeCache | None = None,
+) -> dict[str, Any]:
+    """ERP enrich + master cycle resolve for Normal FA rows."""
+    base = enrich_frame_agreement_part(db_query, row)
+    part_no = compact_text(base.get("part_no"))
+    if not part_no:
+        return serialize_normal_part_row(base) or base
+
+    bom_codes = [compact_text(c) for c in (base.get("bom_codes") or []) if compact_text(c)]
+    if not bom_codes:
+        primary = compact_text(base.get("bom_code"))
+        if primary:
+            bom_codes = [primary]
+
+    cache = master_cache or MasterTimeCache.load(con)
+    master_ops_by_bom: dict[str, list[dict[str, Any]]] = {}
+    totals_by_bom: dict[str, dict[str, Any]] = {}
+    for bom in bom_codes:
+        resolved = build_normal_master_ops_for_bom(
+            db_query, con, part_no, bom, master_cache=cache
+        )
+        master_ops_by_bom[bom] = resolved["ops"]
+        totals_by_bom[bom] = {
+            "total_cycle": resolved["total_cycle"],
+            "total_setup": resolved["total_setup"],
+            "fg_per_day": resolved["fg_per_day"],
+            "master_hit_count": resolved["master_hit_count"],
+        }
+
+    selected_bom = compact_text(base.get("bom_code")) or (bom_codes[0] if bom_codes else "")
+    selected = totals_by_bom.get(selected_bom) or {
+        "total_cycle": 0.0,
+        "total_setup": 0.0,
+        "fg_per_day": None,
+        "master_hit_count": 0,
+    }
+    enriched = {
+        **base,
+        "lane": "normal",
+        "master_ops_by_bom": master_ops_by_bom,
+        "master_ops": master_ops_by_bom.get(selected_bom) or [],
+        "total_cycle": selected["total_cycle"],
+        "total_setup": selected["total_setup"],
+        "fg_per_day": selected["fg_per_day"],
+        "master_hit_count": selected["master_hit_count"],
+        "fg_totals_by_bom": totals_by_bom,
+    }
+    return serialize_normal_part_row(enriched) or enriched
 
 
 def add_frame_agreement_part(
@@ -990,6 +1380,7 @@ def add_frame_agreement_part(
     mpp_machine_no: str = "",
     mpp_run_min_per_pallet: float = 0,
     mpp_setup_minutes: float = 0,
+    deburring_cycle_min_per_piece: float = 0,
     description: str = "",
 ) -> dict[str, Any]:
     ensure_frame_agreement_schema(con)
@@ -1000,23 +1391,26 @@ def add_frame_agreement_part(
     machine = normalize_mpp_machine_no(mpp_machine_no) or infer_fa_mpp_machine(description, notes)
     run_min = max(0.0, float(mpp_run_min_per_pallet or 0))
     setup_min = max(0.0, float(mpp_setup_minutes or 0))
+    deburr = max(0.0, float(deburring_cycle_min_per_piece or 0))
     row = one(
         con.execute(
             """
             INSERT INTO planner_frame_agreement_part (
-                part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes, updated_at
+                part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
+                deburring_cycle_min_per_piece, updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, NOW())
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (part_no) DO UPDATE SET
                 notes = EXCLUDED.notes,
                 mpp_machine_no = EXCLUDED.mpp_machine_no,
                 mpp_run_min_per_pallet = EXCLUDED.mpp_run_min_per_pallet,
                 mpp_setup_minutes = EXCLUDED.mpp_setup_minutes,
+                deburring_cycle_min_per_piece = EXCLUDED.deburring_cycle_min_per_piece,
                 updated_at = NOW()
             RETURNING part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
-                      created_at, updated_at
+                      deburring_cycle_min_per_piece, created_at, updated_at
             """,
-            (part_no, notes, machine, run_min, setup_min),
+            (part_no, notes, machine, run_min, setup_min, deburr),
         )
     )
     return serialize_part_row(row) or {
@@ -1025,6 +1419,7 @@ def add_frame_agreement_part(
         "mpp_machine_no": machine,
         "mpp_run_min_per_pallet": run_min,
         "mpp_setup_minutes": setup_min,
+        "deburring_cycle_min_per_piece": deburr,
     }
 
 
@@ -1036,7 +1431,7 @@ def _lookup_frame_agreement_part_row(con, part_no: str) -> dict[str, Any] | None
         con.execute(
             """
             SELECT part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
-                   created_at, updated_at
+                   deburring_cycle_min_per_piece, created_at, updated_at
             FROM planner_frame_agreement_part
             WHERE part_no = %s
             """,
@@ -1049,7 +1444,7 @@ def _lookup_frame_agreement_part_row(con, part_no: str) -> dict[str, Any] | None
         con.execute(
             """
             SELECT part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
-                   created_at, updated_at
+                   deburring_cycle_min_per_piece, created_at, updated_at
             FROM planner_frame_agreement_part
             WHERE UPPER(TRIM(part_no)) = UPPER(TRIM(%s))
             """,
@@ -1077,6 +1472,7 @@ def update_frame_agreement_part(
     mpp_setup_minutes: float | None = None,
     mpp_pcs_per_pallet: float | None = None,
     mpp_pallets_per_cycle: float | None = None,
+    deburring_cycle_min_per_piece: float | None = None,
 ) -> dict[str, Any] | None:
     ensure_frame_agreement_schema(con)
     part_no = compact_text(part_no)
@@ -1121,6 +1517,9 @@ def update_frame_agreement_part(
     if mpp_setup_minutes is not None:
         updates.append("mpp_setup_minutes = %s")
         params.append(max(0.0, float(mpp_setup_minutes)))
+    if deburring_cycle_min_per_piece is not None:
+        updates.append("deburring_cycle_min_per_piece = %s")
+        params.append(max(0.0, float(deburring_cycle_min_per_piece)))
     if not updates and op_config_saved is None:
         raise ValueError("No fields to update")
     row = None
@@ -1134,7 +1533,7 @@ def update_frame_agreement_part(
                 SET {", ".join(updates)}
                 WHERE part_no = %s
                 RETURNING part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
-                          created_at, updated_at
+                          deburring_cycle_min_per_piece, created_at, updated_at
                 """,
                 tuple(params),
             )

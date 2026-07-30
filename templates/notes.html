@@ -49,6 +49,16 @@
         </div>
       </section>
 
+      <section class="admin-launch-group admin-launch-group--pps">
+        <div class="admin-launch-group-heading">
+          <span class="admin-launch-icon" aria-hidden="true">P</span>
+          <div><h3>PPS</h3><p>PPS process sheet tracking</p></div>
+        </div>
+        <div class="admin-launch-links">
+          {{ launch_link("PPS Process Sheet Tracking", url_for("pps.pps_page"), "Track PPS-tagged process sheets only") }}
+        </div>
+      </section>
+
       <section class="admin-launch-group admin-launch-group--accounts">
         <div class="admin-launch-group-heading">
           <span class="admin-launch-icon" aria-hidden="true">A</span>
@@ -125,6 +135,7 @@
         <div class="admin-planner-section">
           <h4>Archive</h4>
           <div class="admin-launch-links">
+            {{ launch_link("SO Line Archive", url_for("so_archive.so_archive_page")) }}
             {{ launch_link("Daily Output", url_for("daily_output_view")) }}
             {{ launch_link("Actual Production", url_for("actual_production")) }}
             {{ launch_link("AUK OEE Dashboard", url_for("auk_oee.auk_oee_page")) }}

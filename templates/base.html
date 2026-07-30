@@ -12,6 +12,24 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='ps-rejected-qty-tab-20260616') }}" />
   {% block extra_css %}{% endblock %}
+  <script>
+    (function () {
+      var params = new URLSearchParams(window.location.search);
+      var rt = params.get("rt");
+      if (rt) {
+        window.__reportsAuthToken = rt;
+        try { sessionStorage.setItem("reportsAuthToken", rt); } catch (e) {}
+        params.delete("rt");
+        var qs = params.toString();
+        history.replaceState({}, "", window.location.pathname + (qs ? "?" + qs : ""));
+      } else {
+        try {
+          var saved = sessionStorage.getItem("reportsAuthToken");
+          if (saved) window.__reportsAuthToken = saved;
+        } catch (e) {}
+      }
+    })();
+  </script>
 </head>
 <body class="{% block body_class %}{% endblock %}">
 
@@ -75,7 +93,7 @@
       </div>
 
       {# Reports & analytics #}
-      <div class="nav-dropdown {% if nav_path in ('/sales-report', '/job-ratio', '/production-capacity', '/repeat-orders', '/planning-data/repeat-orders', '/pr-status-enquiry') or active in ('sales_report', 'job_ratio', 'production_capacity', 'repeat_orders', 'pr_status_enquiry') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/sales-report', '/so-outstanding-balance', '/job-ratio', '/production-capacity', '/repeat-orders', '/planning-data/repeat-orders', '/pr-status-enquiry') or active in ('sales_report', 'so_outstanding_balance', 'job_ratio', 'production_capacity', 'repeat_orders', 'pr_status_enquiry') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="reports" aria-expanded="false" aria-controls="dd-reports">
           REPORTS / ANALYTICS <span class="nav-caret">▾</span>
         </button>
@@ -84,6 +102,10 @@
              class="nav-dropdown-item {% if nav_path == '/sales-report' or active == 'sales_report' %}nav-dropdown-item--active{% endif %}"
              target="_blank" rel="noopener noreferrer">
             Sales report
+          </a>
+          <a href="/so-outstanding-balance"
+             class="nav-dropdown-item {% if nav_path == '/so-outstanding-balance' or active == 'so_outstanding_balance' %}nav-dropdown-item--active{% endif %}">
+            SO outstanding balance
           </a>
           <a href="/job-ratio"
              class="nav-dropdown-item {% if nav_path == '/job-ratio' or active == 'job_ratio' %}nav-dropdown-item--active{% endif %}"
@@ -186,11 +208,15 @@
       </div>
 
       {# Archive — historical / reference views #}
-      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/actual-production', '/auk-oee', '/preferred-machines', '/floor-plan') or active in ('daily_output', 'actual_production', 'auk_oee', 'preferred_machines', 'floor_plan') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/actual-production', '/auk-oee', '/preferred-machines', '/floor-plan', '/monthly-delivery-plan', '/archive/so-lines') or active in ('daily_output', 'actual_production', 'auk_oee', 'preferred_machines', 'floor_plan', 'monthly_delivery_plan', 'so_archive') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="archive" aria-expanded="false" aria-controls="dd-archive">
           ARCHIVE <span class="nav-caret">▾</span>
         </button>
         <div class="nav-dropdown-menu" id="dd-archive">
+          <a href="/archive/so-lines"
+             class="nav-dropdown-item {% if nav_path == '/archive/so-lines' or active == 'so_archive' %}nav-dropdown-item--active{% endif %}">
+            SO line archive
+          </a>
           <a href="/daily-output"
              class="nav-dropdown-item {% if nav_path == '/daily-output' or active == 'daily_output' %}nav-dropdown-item--active{% endif %}">
             Daily output
@@ -210,6 +236,10 @@
           <a href="/floor-plan"
              class="nav-dropdown-item {% if nav_path == '/floor-plan' or active == 'floor_plan' %}nav-dropdown-item--active{% endif %}">
             Factory floor plan
+          </a>
+          <a href="/monthly-delivery-plan"
+             class="nav-dropdown-item {% if nav_path == '/monthly-delivery-plan' or active == 'monthly_delivery_plan' %}nav-dropdown-item--active{% endif %}">
+            Monthly delivery plan
           </a>
         </div>
       </div>
@@ -280,7 +310,7 @@
   {% block content %}{% endblock %}
 </main>
 
-<script src="{{ url_for('static', filename='js/main.js') }}?v=reports-standalone-20260709"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}?v=reports-token-20260729b"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

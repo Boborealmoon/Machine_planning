@@ -217,6 +217,7 @@ CREATE TABLE IF NOT EXISTS public.pp_vouchers_cache (
     bom_code            TEXT,
     source_voucher_no   TEXT,
     source_line_item_no TEXT,
+    customer_po_no      TEXT,
     qty_shipped         NUMERIC,
     so_det_qty          NUMERIC,
     status              TEXT,
@@ -349,9 +350,18 @@ with_partial AS (
     SELECT
         ww.*,
         COALESCE(p.pp_partial_no, 1)    AS pp_partial_no,
-        p.partial_qty                   AS partial_qty_raw
+        p.partial_qty                   AS partial_qty_raw,
+        COALESCE(
+            NULLIF(TRIM(ppd.customer_po_no), ''),
+            NULLIF(TRIM(hdr.customer_po_no), '')
+        ) AS customer_po_no
     FROM with_so_detail ww
     LEFT JOIN public.pp_partial p ON ww.pp_voucher_no = p.pp_voucher_no
+    LEFT JOIN public.pp_partial_detail ppd
+           ON ppd.pp_voucher_no = ww.pp_voucher_no
+          AND ppd.pp_partial_no = COALESCE(p.pp_partial_no, 1)
+    LEFT JOIN public.so_order_header hdr
+           ON hdr.sales_order_no = ww.source_voucher_no
 ),
 with_desc AS (
     SELECT
@@ -442,6 +452,7 @@ computed AS (
         bom_code,
         source_voucher_no,
         source_line_item_no,
+        customer_po_no,
         qty_shipped,
         CASE
             WHEN status = 'H'          THEN 'History'

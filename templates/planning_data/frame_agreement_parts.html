@@ -3,15 +3,20 @@
 {% block main_class %}app-main--frame-agreement{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=frame-agreement-20260624h">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/frame_agreement_parts.css') }}?v=frame-agreement-20260724a">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/frame_agreement_parts.css') }}?v=frame-agreement-20260730a">
 {% endblock %}
 {% block content %}
 <div class="fa-page new-orders-page">
   <div class="new-orders-header fa-header">
     <div>
       <h1 class="new-orders-title">Frame Agreement Parts</h1>
-      <p class="new-orders-subtitle fa-header-sub">OSS frame-agreement inventory codes — flagged as <strong>FA</strong> in S/O management.</p>
+      <p class="new-orders-subtitle fa-header-sub">OSS frame-agreement inventory codes — flagged as <strong>FA</strong> in S/O management. Use tabs for MPP vs normal-machine parts.</p>
     </div>
+  </div>
+
+  <div class="fa-lane-tabs" role="tablist" aria-label="Frame agreement lane">
+    <button type="button" class="fa-lane-tab is-active" role="tab" id="fa-tab-mpp" data-lane="mpp" aria-selected="true">MPP</button>
+    <button type="button" class="fa-lane-tab" role="tab" id="fa-tab-normal" data-lane="normal" aria-selected="false">Normal machines</button>
   </div>
 
   <div class="fa-toolbar card">
@@ -43,18 +48,32 @@
     <div class="fa-loading" id="fa-loading">Loading…</div>
     <div class="fa-table-scroll">
       <table class="fa-table" id="fa-table" hidden>
-        <thead>
-          <tr>
+        <thead id="fa-thead">
+          <tr id="fa-thead-mpp">
             <th>Part no.</th>
             <th>Description</th>
             <th>BOM</th>
             <th>Material</th>
             <th class="fa-col-qty">Qty / FG</th>
-            <th class="fa-col-qty" title="Finished pieces / day at 10.5h (630 min) minus setup">FG / day (normal)</th>
             <th class="fa-col-qty" title="Finished pieces / day at 24h (1440 min) minus setup">FG / day (MPP)</th>
             <th>BOM detail</th>
             <th>MPP config</th>
             <th class="fa-col-mpp">MPP machine</th>
+            <th class="fa-col-qty" title="Deburring cycle time in minutes per piece">Deburr min / pc</th>
+            <th>Notes</th>
+            <th>Updated</th>
+            <th class="fa-col-actions">Actions</th>
+          </tr>
+          <tr id="fa-thead-normal" hidden>
+            <th>Part no.</th>
+            <th>Description</th>
+            <th>BOM</th>
+            <th>Material</th>
+            <th class="fa-col-qty">Qty / FG</th>
+            <th class="fa-col-qty" title="Finished pieces / day at 10.5h (630 min) from master cycle times">FG / day (normal)</th>
+            <th>BOM detail</th>
+            <th>Master times</th>
+            <th class="fa-col-qty" title="Deburring cycle time in minutes per piece">Deburr min / pc</th>
             <th>Notes</th>
             <th>Updated</th>
             <th class="fa-col-actions">Actions</th>
@@ -64,8 +83,8 @@
       </table>
     </div>
     <div class="fa-empty" id="fa-empty" hidden>
-      <p>No frame agreement parts yet.</p>
-      <p class="fa-empty-hint">Search for a part above to add one.</p>
+      <p id="fa-empty-title">No frame agreement parts yet.</p>
+      <p class="fa-empty-hint" id="fa-empty-hint">Search for a part above to add one.</p>
     </div>
   </div>
 </div>
@@ -75,7 +94,7 @@
   <div class="so-material-modal-panel fa-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="fa-confirm-modal-title">
     <div class="so-material-modal-head">
       <div>
-        <p class="so-material-modal-kicker">Confirm frame agreement part</p>
+        <p class="so-material-modal-kicker" id="fa-confirm-modal-kicker">Confirm frame agreement part</p>
         <div class="so-material-modal-identifiers" id="fa-confirm-modal-title"></div>
       </div>
       <button type="button" class="btn btn-ghost btn-sm" id="fa-confirm-modal-close" aria-label="Close">Close</button>
@@ -84,7 +103,7 @@
     <div class="so-material-modal-body" id="fa-confirm-modal-body">
       <div class="so-material-modal-loading"><div class="spinner"></div> Loading part details…</div>
     </div>
-    <div class="fa-confirm-mpp-wrap">
+    <div class="fa-confirm-mpp-wrap" id="fa-confirm-mpp-wrap">
       <div class="fa-confirm-mpp-grid">
         <div class="fa-field">
           <label class="fa-field-label" for="fa-confirm-mpp-machine">MPP machine</label>
@@ -114,6 +133,13 @@
       </div>
       <p class="fa-confirm-mpp-hint">Default machine and pallet settings for this part. After adding, use <strong>MPP config</strong> on the row to set pcs/pallet, pallets/cycle, cycle time, and setup per operation.</p>
     </div>
+    <p class="fa-confirm-normal-hint" id="fa-confirm-normal-hint" hidden>
+      Cycle times come from <strong>Master cycle times</strong> — no pallet/MPP config on this lane. After adding, use <strong>Master times</strong> on the row to review resolved times.
+    </p>
+    <div class="fa-confirm-notes-wrap">
+      <label class="fa-field-label" for="fa-confirm-deburr-input">Deburr min / pc <span class="fa-optional">(optional)</span></label>
+      <input type="number" id="fa-confirm-deburr-input" class="fa-input fa-mpp-num-input" min="0" step="0.01" placeholder="Deburring cycle" />
+    </div>
     <div class="fa-confirm-notes-wrap">
       <label class="fa-field-label" for="fa-confirm-notes-input">Notes <span class="fa-optional">(optional)</span></label>
       <input type="text" id="fa-confirm-notes-input" class="fa-input" placeholder="Customer / program / remarks" autocomplete="off" />
@@ -137,6 +163,22 @@
     </div>
     <div class="fa-bom-tabs-host" id="fa-mpp-modal-bom-tabs" hidden></div>
     <div class="so-material-modal-body" id="fa-mpp-modal-body"></div>
+  </div>
+</div>
+
+<div id="fa-master-modal" class="so-material-modal" hidden>
+  <div class="so-material-modal-backdrop" data-action="close-master-modal" aria-hidden="true"></div>
+  <div class="so-material-modal-panel fa-master-panel" role="dialog" aria-modal="true" aria-labelledby="fa-master-modal-title">
+    <div class="so-material-modal-head">
+      <div>
+        <p class="so-material-modal-kicker">Master cycle times — read-only</p>
+        <div class="so-material-modal-identifiers" id="fa-master-modal-title"></div>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="fa-master-modal-close" aria-label="Close">Close</button>
+    </div>
+    <div class="fa-bom-tabs-host" id="fa-master-modal-bom-tabs" hidden></div>
+    <div class="so-material-modal-body" id="fa-master-modal-body"></div>
+    <p class="so-material-modal-foot">Source: <code>planner_cycle_time_master</code> via resolve. Edit on Master cycle times.</p>
   </div>
 </div>
 
@@ -173,5 +215,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/frame_agreement_parts.js') }}?v=frame-agreement-20260724a"></script>
+<script src="{{ url_for('static', filename='js/frame_agreement_parts.js') }}?v=frame-agreement-20260730a"></script>
 {% endblock %}

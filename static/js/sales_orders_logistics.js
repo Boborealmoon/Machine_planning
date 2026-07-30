@@ -1,4 +1,4 @@
-// Material Tracking - logistics view for material-in dates and part-order notes.
+// Material Tracking - logistics view for material-in dates, PR enquiry, and POs.
 
 (function () {
   'use strict';
@@ -6,10 +6,53 @@
   const MATERIAL_ARRIVED = 'ARRIVED';
   const PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
   const EM_DASH = '-';
+  const PS_VIEWS = new Set(['active', 'no-wo']);
+  const PR_PO_VIEWS = new Set(['pr-enquiry', 'purchase-order']);
+  const BUCKET_LABELS = { ost: 'Outstanding', new: 'New', hst: 'History' };
+  const PS_TABLE_HEAD = `
+    <tr>
+      <th class="sol-col-delay" title="Material arrival delay">Flag</th>
+      <th>S/O</th>
+      <th>Customer</th>
+      <th>Process sheet</th>
+      <th class="sol-col-partial">Ptl</th>
+      <th class="sol-col-qty">SO qty</th>
+      <th class="sol-col-qty">Partial qty</th>
+      <th>Stage</th>
+      <th>Part</th>
+      <th>Description</th>
+      <th class="sol-col-due">Due</th>
+      <th class="sol-col-bom">BOM</th>
+      <th class="sol-col-material">Material in</th>
+      <th class="sol-col-notes">Mtl / Part Order</th>
+    </tr>`;
+  const PR_PO_TABLE_HEAD = `
+    <tr>
+      <th>Status</th>
+      <th>PR No</th>
+      <th>PR Date</th>
+      <th>Item</th>
+      <th>Description</th>
+      <th class="sol-col-qty">Qty</th>
+      <th>Required arrival</th>
+      <th>PO No</th>
+      <th>PO Date</th>
+      <th>Est. arrival</th>
+      <th>Supplier</th>
+      <th>Project</th>
+      <th>SBU</th>
+      <th>Created by</th>
+      <th>GRN</th>
+      <th>Actual arrival</th>
+    </tr>`;
 
   const state = {
     active: [],
+    prPoRows: [],
+    prPoCounts: { pr: {}, po: {} },
+    prPoSource: '',
     view: 'active',
+    prPoBucket: 'ost',
     search: '',
     materialFilter: 'all',
     ppTypes: new Set(['APS', 'NPS']),
@@ -17,7 +60,16 @@
     cachedAt: '',
     ppCount: 0,
     partialCount: 0,
+    salesOrdersLoaded: false,
   };
+
+  function isPrPoView(view) {
+    return PR_PO_VIEWS.has(view || state.view);
+  }
+
+  function scopeForView(view) {
+    return (view || state.view) === 'purchase-order' ? 'po' : 'pr';
+  }
 
   function formatDate(value) {
     return typeof trialFormatDate === 'function' ? trialFormatDate(value) : String(value || EM_DASH);
@@ -29,6 +81,11 @@
     return Number.isInteger(num)
       ? String(num)
       : num.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  }
+
+  function cellText(value) {
+    const text = String(value == null ? '' : value).trim();
+    return text || EM_DASH;
   }
 
   function soQtyDisplay(pp) {
@@ -139,6 +196,18 @@
     return `<span class="${cls}" title="${escapeHtml(executionLabel(c))}">${escapeHtml(c)}</span>`;
   }
 
+  function prPoStatusPill(status) {
+    const text = String(status || '').trim();
+    if (!text) return `<span class="sol-dash">${EM_DASH}</span>`;
+    let cls = 'sol-status-pill';
+    const lower = text.toLowerCase();
+    if (lower.includes('outstanding') || lower.includes('pending')) cls += ' sol-status-pill--ost';
+    else if (lower.includes('approval') || lower.includes('new')) cls += ' sol-status-pill--new';
+    else if (lower.includes('complete') || lower.includes('grn')) cls += ' sol-status-pill--ok';
+    else if (lower.includes('cancel') || lower.includes('history')) cls += ' sol-status-pill--hst';
+    return `<span class="${cls}">${escapeHtml(text)}</span>`;
+  }
+
   function ppPendingWoQty(pp) {
     const pending = Number(pp?.erp_pending_wo_qty);
     if (Number.isFinite(pending) && pending > 0.0001) return pending;
@@ -207,6 +276,25 @@
     return parts.map(v => String(v == null ? '' : v).toLowerCase()).join(' ');
   }
 
+  function prPoSearchText(row) {
+    const parts = [
+      row.status,
+      row.purchase_requisition_no,
+      row.item_code,
+      row.item_description,
+      row.line_item_description,
+      row.purchase_order_no,
+      row.supplier_code,
+      row.supplier_name,
+      row.project_no,
+      row.sbu_code,
+      row.created_by,
+      row.grn_no,
+      row.shipment_voucher_no,
+    ];
+    return parts.map(v => String(v == null ? '' : v).toLowerCase()).join(' ');
+  }
+
   function passesPrefixFilter(pp) {
     if (!state.ppTypes.size || state.ppTypes.size === PS_TYPES.length) return true;
     const psType = getPsType(pp);
@@ -255,6 +343,12 @@
     return rows;
   }
 
+  function visiblePrPoRows() {
+    const q = String(state.search || '').trim().toLowerCase();
+    if (!q) return state.prPoRows.slice();
+    return state.prPoRows.filter(row => prPoSearchText(row).includes(q));
+  }
+
   function findPp(ppVoucherNo) {
     const target = String(ppVoucherNo || '').trim();
     for (const order of state.active) {
@@ -282,7 +376,7 @@
     } else if (stage.mode === 'completed') {
       stageHtml = '<span class="so-stage-mode so-stage-mode--completed" title="All stages complete">All complete</span>';
     } else {
-      stageHtml = `<span class="so-dash">${EM_DASH}</span>`;
+      stageHtml = `<span class="sol-dash">${EM_DASH}</span>`;
     }
     const pendingWo = ppPendingWoQty(pp);
     const pendingHtml = pendingWo > 0.0001
@@ -296,9 +390,7 @@
     if (!partNo) return `<td class="sol-col-bom">${EM_DASH}</td>`;
     const bomCode = String(pp?.bom_code || '').trim();
     const processSheetNo = psDisplayForPartial(pp, partial);
-    const title = bomCode
-      ? `BOM materials and inventory for ${partNo}`
-      : `BOM materials and inventory for ${partNo}`;
+    const title = `BOM materials and inventory for ${partNo}`;
     return `
       <td class="sol-col-bom">
         <button type="button" class="sol-materials-btn"
@@ -369,14 +461,106 @@
     `;
   }
 
+  function renderDelayCell(pp) {
+    const ppNo = String(pp.pp_voucher_no || '').trim();
+    const flagged = Boolean(pp.material_delay);
+    return `
+      <td class="sol-delay-cell">
+        <label class="sol-delay-flag${flagged ? ' is-active' : ''}"
+          title="${flagged ? 'Material delay flagged — click to clear' : 'Flag material arrival delay'}"
+          aria-pressed="${flagged ? 'true' : 'false'}"
+          aria-label="${flagged ? 'Material delay flagged' : 'Flag material arrival delay'}">
+          <input type="checkbox"
+            class="sol-delay-input"
+            data-pp-voucher-no="${escapeHtml(ppNo)}"
+            ${flagged ? 'checked' : ''}
+            tabindex="-1"
+            aria-hidden="true">
+          <span class="sol-delay-mark" aria-hidden="true">⚑</span>
+        </label>
+        <span class="sol-delay-status" aria-live="polite"></span>
+      </td>
+    `;
+  }
+
+  function syncDelayRows(ppNo, flagged) {
+    const body = document.getElementById('sol-table-body');
+    if (!body || !ppNo) return;
+    body.querySelectorAll('.sol-delay-input').forEach(input => {
+      if (String(input.dataset.ppVoucherNo || '') !== ppNo) return;
+      const row = input.closest('tr');
+      const label = input.closest('.sol-delay-flag');
+      input.checked = Boolean(flagged);
+      if (row) row.classList.toggle('is-material-delay', Boolean(flagged));
+      if (label) {
+        label.classList.toggle('is-active', Boolean(flagged));
+        label.setAttribute('aria-pressed', flagged ? 'true' : 'false');
+        label.title = flagged
+          ? 'Material delay flagged — click to clear'
+          : 'Flag material arrival delay';
+      }
+    });
+  }
+
+  function setDelayStatus(control, status, message) {
+    const el = control?.closest('.sol-delay-cell')?.querySelector('.sol-delay-status');
+    if (!el) return;
+    el.className = `sol-delay-status${status ? ` is-${status}` : ''}`;
+    el.textContent = message || '';
+  }
+
+  async function saveDelayFlag(input) {
+    const ppNo = String(input?.dataset?.ppVoucherNo || '').trim();
+    if (!ppNo || input.disabled) return;
+
+    const flagged = Boolean(input.checked);
+    const label = input.closest('.sol-delay-flag');
+    const found = findPp(ppNo);
+    const previous = Boolean(found?.pp?.material_delay);
+    const key = `${ppNo}::material_delay`;
+    if (state.saveInFlight.has(key)) {
+      input.checked = previous;
+      return;
+    }
+
+    if (found?.pp) found.pp.material_delay = flagged;
+    syncDelayRows(ppNo, flagged);
+    state.saveInFlight.add(key);
+    input.disabled = true;
+    if (label) label.classList.add('is-saving');
+    setDelayStatus(input, 'saving', 'Saving...');
+    try {
+      const data = await postJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
+        material_delay: flagged,
+      });
+      const saved = Boolean(data.material_delay);
+      if (found?.pp) found.pp.material_delay = saved;
+      syncDelayRows(ppNo, saved);
+      setDelayStatus(input, 'saved', saved ? 'Flagged' : 'Cleared');
+      window.setTimeout(() => setDelayStatus(input, '', ''), 1500);
+    } catch (err) {
+      if (found?.pp) found.pp.material_delay = previous;
+      syncDelayRows(ppNo, previous);
+      setDelayStatus(input, 'error', err.message || 'Save failed');
+    } finally {
+      input.disabled = false;
+      if (label) label.classList.remove('is-saving');
+      state.saveInFlight.delete(key);
+    }
+  }
+
   function renderRow(leaf) {
     const { order, pp, partial } = leaf;
     const customer = order.customer_name || order.customer_short_name || order.customer_code || EM_DASH;
     const part = partNoForRow(pp, partial) || EM_DASH;
     const psType = getPsType(pp);
-    const rowCls = ppIsNoWo(pp) ? 'is-no-wo' : '';
+    const classes = [];
+    if (ppIsNoWo(pp)) classes.push('is-no-wo');
+    if (pp.material_delay) classes.push('is-material-delay');
+    const rowCls = classes.join(' ');
     return `
       <tr class="${rowCls}">
+        ${renderDelayCell(pp)}
         <td class="sol-mono">${escapeHtml(String(order.sales_order_no || EM_DASH))}</td>
         <td title="${escapeHtml(customer)}">${escapeHtml(customer)}</td>
         <td class="sol-mono">
@@ -392,6 +576,31 @@
         ${renderMaterialsCell(pp, partial)}
         ${renderMaterialCell(pp)}
         ${renderNotesCell(pp)}
+      </tr>
+    `;
+  }
+
+  function renderPrPoRow(row) {
+    const desc = String(row.line_item_description || row.item_description || '').trim();
+    const supplier = String(row.supplier_name || row.supplier_code || '').trim() || EM_DASH;
+    return `
+      <tr>
+        <td>${prPoStatusPill(row.status)}</td>
+        <td class="sol-mono">${escapeHtml(cellText(row.purchase_requisition_no))}</td>
+        <td class="sol-date">${escapeHtml(formatDate(row.pr_date))}</td>
+        <td class="sol-mono">${escapeHtml(cellText(row.item_code))}</td>
+        <td class="sol-desc" title="${escapeHtml(desc)}">${escapeHtml(desc || EM_DASH)}</td>
+        <td class="sol-col-qty">${escapeHtml(formatQty(row.qty))}</td>
+        <td class="sol-date">${escapeHtml(formatDate(row.required_arrival_date))}</td>
+        <td class="sol-mono">${escapeHtml(cellText(row.purchase_order_no))}</td>
+        <td class="sol-date">${escapeHtml(formatDate(row.po_date))}</td>
+        <td class="sol-date">${escapeHtml(formatDate(row.estimated_arrival_date))}</td>
+        <td title="${escapeHtml(supplier)}">${escapeHtml(supplier)}</td>
+        <td class="sol-mono">${escapeHtml(cellText(row.project_no))}</td>
+        <td>${escapeHtml(cellText(row.sbu_code))}</td>
+        <td>${escapeHtml(cellText(row.created_by))}</td>
+        <td class="sol-mono">${escapeHtml(cellText(row.grn_no))}</td>
+        <td class="sol-date">${escapeHtml(formatDate(row.actual_arrival_date))}</td>
       </tr>
     `;
   }
@@ -439,7 +648,13 @@
       const saved = String(data.material_subcon || '').trim();
       syncMaterialCell(cell, saved);
       const found = findPp(ppNo);
-      if (found.pp) found.pp.material_subcon = saved;
+      if (found.pp) {
+        found.pp.material_subcon = saved;
+        if (Object.prototype.hasOwnProperty.call(data, 'material_delay')) {
+          found.pp.material_delay = Boolean(data.material_delay);
+          syncDelayRows(ppNo, found.pp.material_delay);
+        }
+      }
       setSaveStatus(cell, 'saved', 'Saved');
       window.setTimeout(() => {
         if (String(cell.dataset.lastSaved || '').trim() === saved) setSaveStatus(cell, '', '');
@@ -513,28 +728,97 @@
     return count;
   }
 
-  function updateStats(rows) {
+  function setChipCount(id, value) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const n = Number(value) || 0;
+    el.textContent = String(n);
+    el.hidden = n === 0;
+  }
+
+  function updatePrPoChipCounts() {
+    const pr = state.prPoCounts.pr || {};
+    const po = state.prPoCounts.po || {};
+    const prOst = Number(pr.ost) || 0;
+    const poOst = Number(po.ost) || 0;
+    setChipCount('sol-pr-count', prOst);
+    setChipCount('sol-po-count', poOst);
+
+    const scopeCounts = state.view === 'purchase-order' ? po : pr;
+    setChipCount('sol-bucket-ost-count', scopeCounts.ost);
+    setChipCount('sol-bucket-new-count', scopeCounts.new);
+    setChipCount('sol-bucket-hst-count', scopeCounts.hst);
+  }
+
+  function updatePsStats(rows) {
     const subtitle = document.getElementById('sol-subtitle');
-    const activeCountEl = document.getElementById('sol-active-count');
-    const noWoCountEl = document.getElementById('sol-no-wo-count');
     const activeJobs = countActiveJobs();
     const noWoJobs = countNoWoJobs();
     const viewLabel = state.view === 'no-wo' ? 'No WO' : 'Active';
 
-    if (activeCountEl) {
-      activeCountEl.textContent = String(activeJobs);
-      activeCountEl.hidden = activeJobs === 0;
-    }
-    if (noWoCountEl) {
-      noWoCountEl.textContent = String(noWoJobs);
-      noWoCountEl.hidden = noWoJobs === 0;
-    }
+    setChipCount('sol-active-count', activeJobs);
+    setChipCount('sol-no-wo-count', noWoJobs);
+    updatePrPoChipCounts();
+
     if (subtitle) {
       subtitle.textContent = `${rows.length} ${viewLabel} rows shown | ${activeJobs} active PP | ${noWoJobs} awaiting WO`;
     }
   }
 
-  function render() {
+  function updatePrPoStats(rows) {
+    const subtitle = document.getElementById('sol-subtitle');
+    const scopeLabel = state.view === 'purchase-order' ? 'Purchase Order' : 'PR Enquiry';
+    const bucketLabel = BUCKET_LABELS[state.prPoBucket] || state.prPoBucket;
+    updatePrPoChipCounts();
+    if (subtitle) {
+      subtitle.textContent = `${rows.length} ${scopeLabel} · ${bucketLabel} rows shown`;
+    }
+  }
+
+  function syncNavUi() {
+    const prPo = isPrPoView();
+    const bucketGroup = document.getElementById('sol-bucket-group');
+    const newBucketBtn = document.querySelector('[data-sol-bucket="new"]');
+    const search = document.getElementById('sol-search');
+    const legend = document.getElementById('sol-legend');
+
+    document.querySelectorAll('.sol-ps-only').forEach(el => {
+      el.hidden = prPo;
+    });
+
+    if (bucketGroup) bucketGroup.hidden = !prPo;
+    if (newBucketBtn) newBucketBtn.hidden = state.view !== 'purchase-order';
+
+    document.querySelectorAll('[data-sol-view]').forEach(btn => {
+      const active = btn.getAttribute('data-sol-view') === state.view;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+
+    document.querySelectorAll('[data-sol-bucket]').forEach(btn => {
+      const active = btn.getAttribute('data-sol-bucket') === state.prPoBucket;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+
+    if (search) {
+      search.placeholder = prPo
+        ? 'Search PR, PO, item, supplier...'
+        : 'Search SO, PP, part, customer...';
+    }
+    if (legend) legend.hidden = prPo;
+  }
+
+  function ensureTableHead() {
+    const head = document.getElementById('sol-table-head');
+    if (!head) return;
+    const mode = isPrPoView() ? 'prpo' : 'ps';
+    if (head.dataset.mode === mode) return;
+    head.dataset.mode = mode;
+    head.innerHTML = mode === 'prpo' ? PR_PO_TABLE_HEAD : PS_TABLE_HEAD;
+  }
+
+  function renderPs() {
     const rows = visibleLeaves();
     const body = document.getElementById('sol-table-body');
     const host = document.getElementById('sol-table-host');
@@ -543,8 +827,8 @@
     const meta = document.getElementById('sol-meta');
 
     if (loading) loading.hidden = true;
-
-    updateStats(rows);
+    ensureTableHead();
+    updatePsStats(rows);
 
     if (!rows.length) {
       let msg = 'No rows match your filters.';
@@ -573,14 +857,83 @@
     }
   }
 
+  function renderPrPo() {
+    const rows = visiblePrPoRows();
+    const body = document.getElementById('sol-table-body');
+    const host = document.getElementById('sol-table-host');
+    const empty = document.getElementById('sol-empty');
+    const loading = document.getElementById('sol-loading');
+    const meta = document.getElementById('sol-meta');
+    const bucketLabel = BUCKET_LABELS[state.prPoBucket] || state.prPoBucket;
+
+    if (loading) loading.hidden = true;
+    ensureTableHead();
+    updatePrPoStats(rows);
+
+    if (!rows.length) {
+      let msg = 'No rows match your filters.';
+      if (!state.prPoRows.length) msg = `No ${bucketLabel.toLowerCase()} rows in ERP.`;
+      if (body) body.innerHTML = '';
+      if (host) host.hidden = true;
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = msg;
+      }
+    } else {
+      if (host) host.hidden = false;
+      if (empty) empty.hidden = true;
+      if (body) {
+        body.innerHTML = rows.map(renderPrPoRow).join('');
+        delete body.dataset.bound;
+      }
+    }
+
+    if (meta) {
+      meta.hidden = !state.prPoRows.length && !state.prPoSource;
+      meta.textContent = `${state.prPoSource || 'PR/PO'} | ${state.prPoRows.length} rows | cached ${state.cachedAt || EM_DASH}`;
+    }
+  }
+
+  function render() {
+    syncNavUi();
+    if (isPrPoView()) renderPrPo();
+    else renderPs();
+  }
+
+  function normalizeBucketForView(view, bucket) {
+    if (view === 'purchase-order') {
+      return bucket === 'hst' || bucket === 'new' ? bucket : 'ost';
+    }
+    return bucket === 'hst' ? 'hst' : 'ost';
+  }
+
   function setView(view) {
-    state.view = view === 'no-wo' ? 'no-wo' : 'active';
-    document.querySelectorAll('[data-sol-view]').forEach(btn => {
-      const active = btn.getAttribute('data-sol-view') === state.view;
-      btn.classList.toggle('is-active', active);
-      btn.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
+    const next = PR_PO_VIEWS.has(view) || PS_VIEWS.has(view) ? view : 'active';
+    const nextIsPrPo = isPrPoView(next);
+    state.view = next;
+    if (nextIsPrPo) {
+      state.prPoBucket = normalizeBucketForView(next, state.prPoBucket);
+    }
+    syncNavUi();
+
+    if (nextIsPrPo) {
+      loadPrPo({ refresh: false });
+      return;
+    }
+    if (!state.salesOrdersLoaded) {
+      loadSalesOrders({ refresh: false });
+      return;
+    }
     render();
+  }
+
+  function setBucket(bucket) {
+    if (!isPrPoView()) return;
+    const next = normalizeBucketForView(state.view, bucket);
+    if (next === state.prPoBucket) return;
+    state.prPoBucket = next;
+    syncNavUi();
+    loadPrPo({ refresh: false });
   }
 
   function psTypeLabel() {
@@ -656,6 +1009,12 @@
     });
 
     body.addEventListener('change', e => {
+      const delayInput = e.target.closest('.sol-delay-input');
+      if (delayInput) {
+        e.stopPropagation();
+        saveDelayFlag(delayInput);
+        return;
+      }
       const dateInput = e.target.closest('.so-material-subcon-date');
       if (!dateInput || dateInput.disabled) return;
       e.stopPropagation();
@@ -666,6 +1025,12 @@
       saveMaterialCell(cell, serializeMaterialSubcon({ arrived: false, date }));
     });
 
+    body.addEventListener('click', e => {
+      const flag = e.target.closest('.sol-delay-flag');
+      if (!flag) return;
+      e.stopPropagation();
+    });
+
     body.addEventListener('blur', e => {
       const textarea = e.target.closest('.so-editable-input');
       if (!textarea) return;
@@ -673,13 +1038,33 @@
     }, true);
   }
 
-  async function load({ refresh = false } = {}) {
+  function showLoadError(err) {
+    const loading = document.getElementById('sol-loading');
+    const subtitle = document.getElementById('sol-subtitle');
+    const empty = document.getElementById('sol-empty');
+    const host = document.getElementById('sol-table-host');
+    if (loading) loading.hidden = true;
+    if (host) host.hidden = true;
+    if (subtitle) subtitle.textContent = 'Failed to load';
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = `Failed to load: ${err.message}`;
+    }
+  }
+
+  async function loadSalesOrders({ refresh = false } = {}) {
     const loading = document.getElementById('sol-loading');
     const host = document.getElementById('sol-table-host');
+    const subtitle = document.getElementById('sol-subtitle');
     if (loading) loading.hidden = false;
     if (host) host.hidden = true;
+    if (subtitle) {
+      subtitle.textContent = refresh
+        ? 'Refreshing from ERP (may take a minute)...'
+        : 'Loading process sheets...';
+    }
 
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ active_only: '1' });
     if (refresh) params.set('refresh', '1');
 
     try {
@@ -690,22 +1075,65 @@
       if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
       state.active = Array.isArray(payload.active) ? payload.active : [];
       state.cachedAt = payload.cached_at || '';
-      state.ppCount = Number(payload.pp_count) || 0;
+      state.ppCount = Number(payload.active_job_count || payload.pp_count) || 0;
       state.partialCount = Number(payload.partial_count) || 0;
-      render();
+      state.salesOrdersLoaded = true;
+      if (!isPrPoView()) render();
     } catch (err) {
-      if (loading) loading.hidden = true;
-      const empty = document.getElementById('sol-empty');
-      if (empty) {
-        empty.hidden = false;
-        empty.textContent = `Failed to load: ${err.message}`;
-      }
+      showLoadError(err);
     }
+  }
+
+  async function loadPrPo({ refresh = false } = {}) {
+    const loading = document.getElementById('sol-loading');
+    const host = document.getElementById('sol-table-host');
+    const subtitle = document.getElementById('sol-subtitle');
+    const scope = scopeForView();
+    const bucket = state.prPoBucket;
+    const bucketLabel = BUCKET_LABELS[bucket] || bucket;
+
+    if (loading) loading.hidden = false;
+    if (host) host.hidden = true;
+    if (subtitle) {
+      subtitle.textContent = refresh
+        ? `Refreshing ${bucketLabel} from ERP...`
+        : `Loading ${bucketLabel}...`;
+    }
+
+    const params = new URLSearchParams({ scope, bucket });
+    if (refresh) params.set('refresh', '1');
+
+    try {
+      const res = await fetch(`/api/material-tracking/pr-po?${params}`, {
+        cache: refresh ? 'no-store' : 'default',
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+      state.prPoRows = Array.isArray(payload.rows) ? payload.rows : [];
+      state.prPoCounts = payload.counts || { pr: {}, po: {} };
+      state.prPoSource = payload.source || '';
+      state.cachedAt = payload.cached_at || '';
+      if (isPrPoView()) render();
+    } catch (err) {
+      showLoadError(err);
+    }
+  }
+
+  async function load({ refresh = false } = {}) {
+    if (isPrPoView()) {
+      await loadPrPo({ refresh });
+      return;
+    }
+    await loadSalesOrders({ refresh });
   }
 
   function init() {
     document.querySelectorAll('[data-sol-view]').forEach(btn => {
       btn.addEventListener('click', () => setView(btn.getAttribute('data-sol-view')));
+    });
+
+    document.querySelectorAll('[data-sol-bucket]').forEach(btn => {
+      btn.addEventListener('click', () => setBucket(btn.getAttribute('data-sol-bucket')));
     });
 
     document.getElementById('sol-search')?.addEventListener('input', e => {
@@ -722,8 +1150,9 @@
 
     bindMaterialButtons();
     bindPsTypeDropdown();
-    // Bust server cache on every page load / browser refresh (same as Refresh button).
-    load({ refresh: true });
+    syncNavUi();
+    // Cache-first (same as Sales Orders). Use Refresh for a live ERP reload.
+    load({ refresh: false });
   }
 
   document.addEventListener('DOMContentLoaded', init);

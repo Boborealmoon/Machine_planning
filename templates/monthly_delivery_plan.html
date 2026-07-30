@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Monthly Delivery Plan{% endblock %}
+{% block main_class %}app-main--mdp{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monthly_delivery_plan.css') }}?v=mdp-20260727a">
+{% endblock %}
+{% block content %}
+<div class="mdp-page">
+  <header class="mdp-header">
+    <div>
+      <h1 class="mdp-title">Monthly Delivery Plan</h1>
+      <p class="mdp-subtitle" id="mdp-subtitle">
+        Target revenue by delivery month � counted when Coway EDD (or PO due date) falls in that month.
+      </p>
+    </div>
+    <div class="mdp-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="mdp-export" hidden>Export CSV</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="mdp-refresh">Refresh</button>
+    </div>
+  </header>
+
+  <section class="mdp-toolbar card">
+    <label class="mdp-field">
+      <span>Year</span>
+      <input type="number" id="mdp-year" min="2000" max="2100" step="1">
+    </label>
+    <nav class="mdp-month-nav" id="mdp-month-nav" aria-label="Select month">
+      <button type="button" class="mdp-month-chip is-active" data-month="">Overview</button>
+      <button type="button" class="mdp-month-chip" data-month="1">Jan</button>
+      <button type="button" class="mdp-month-chip" data-month="2">Feb</button>
+      <button type="button" class="mdp-month-chip" data-month="3">Mar</button>
+      <button type="button" class="mdp-month-chip" data-month="4">Apr</button>
+      <button type="button" class="mdp-month-chip" data-month="5">May</button>
+      <button type="button" class="mdp-month-chip" data-month="6">Jun</button>
+      <button type="button" class="mdp-month-chip" data-month="7">Jul</button>
+      <button type="button" class="mdp-month-chip" data-month="8">Aug</button>
+      <button type="button" class="mdp-month-chip" data-month="9">Sep</button>
+      <button type="button" class="mdp-month-chip" data-month="10">Oct</button>
+      <button type="button" class="mdp-month-chip" data-month="11">Nov</button>
+      <button type="button" class="mdp-month-chip" data-month="12">Dec</button>
+    </nav>
+    <div class="mdp-meta" id="mdp-meta">Loading�</div>
+  </section>
+
+  <div id="mdp-loading" class="mdp-loading" hidden>
+    <div class="spinner"></div>
+    <span>Loading monthly delivery plan�</span>
+  </div>
+  <div id="mdp-alert" class="mdp-alert" hidden></div>
+
+  <section id="mdp-kpi" class="mdp-kpi-grid" hidden></section>
+
+  <section id="mdp-overview" class="mdp-overview card" hidden>
+    <div class="mdp-section-head">
+      <h2 class="mdp-section-title">Year overview</h2>
+      <p class="mdp-section-sub">Click a month to see the delivery schedule and target revenue for that month.</p>
+    </div>
+    <div class="mdp-overview-grid" id="mdp-overview-grid"></div>
+  </section>
+
+  <section id="mdp-month-panel" class="mdp-month-panel card" hidden>
+    <div class="mdp-section-head">
+      <div>
+        <h2 class="mdp-section-title" id="mdp-month-title">Month</h2>
+        <p class="mdp-section-sub" id="mdp-month-sub"></p>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="mdp-back-overview">? Overview</button>
+    </div>
+    <div class="mdp-table-wrap">
+      <table class="mdp-table">
+        <thead>
+          <tr>
+            <th>S/O</th>
+            <th>Customer</th>
+            <th>PS</th>
+            <th>Part</th>
+            <th class="mdp-num">Qty</th>
+            <th class="mdp-num">U/Price</th>
+            <th class="mdp-num">Amount</th>
+            <th>PO due</th>
+            <th>Coway EDD</th>
+            <th>Commitment</th>
+            <th>Stage</th>
+          </tr>
+        </thead>
+        <tbody id="mdp-month-body"></tbody>
+      </table>
+    </div>
+    <div id="mdp-month-empty" class="mdp-empty" hidden>No deliveries committed to this month.</div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/monthly_delivery_plan.js') }}?v=mdp-20260727a"></script>
+{% endblock %}

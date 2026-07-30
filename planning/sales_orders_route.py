@@ -33,7 +33,7 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 19
+_SCHEMA_VERSION = 21
 
 _NOTE_FIELDS = (
     "material_subcon",
@@ -242,6 +242,7 @@ def _empty_notes() -> dict[str, Any]:
     out = {field: "" for field in _NOTE_FIELDS}
     out["ps_highlighted"] = False
     out["highlighted_partials"] = []
+    out["material_delay"] = False
     return out
 
 
@@ -272,6 +273,7 @@ def _notes_from_row(row: dict[str, Any] | None) -> dict[str, Any]:
     )
     out["highlighted_partials"] = highlighted
     out["ps_highlighted"] = bool(highlighted)
+    out["material_delay"] = bool(row.get("material_delay"))
     return out
 
 
@@ -300,6 +302,12 @@ def _ensure_notes_table(con) -> None:
         """
         ALTER TABLE planner_so_pp_notes
         ADD COLUMN IF NOT EXISTS highlighted_partials TEXT NOT NULL DEFAULT ''
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_so_pp_notes
+        ADD COLUMN IF NOT EXISTS material_delay BOOLEAN NOT NULL DEFAULT FALSE
         """
     )
 
@@ -1003,6 +1011,13 @@ def _apply_wo_qty_overlay(
         for pp in order.get("pp_vouchers") or []:
             pp_no = compact_text(pp.get("pp_voucher_no"))
             so_no = compact_text(pp.get("source_voucher_no"))
+            if pp.get("shipped_completed"):
+                pp_qty = float(pp.get("pp_qty") or 0)
+                pp["erp_has_wo"] = True
+                pp["erp_wo_issued_qty"] = pp_qty
+                pp["erp_pending_wo_qty"] = 0.0
+                pp["erp_pending_no_wo"] = False
+                continue
             data = overlay.get(pp_no, {})
             has_wo = bool(data.get("erp_has_wo"))
             issued = float(data.get("erp_wo_issued_qty") or 0)
@@ -1023,19 +1038,25 @@ def _apply_stage_overlay(
     overlay: dict[tuple[str, int], dict[str, Any]],
 ) -> None:
     default = _default_stage_overlay()
+    shipped_default = {
+        **default,
+        "erp_stage_mode": "completed",
+        "erp_all_wo_complete": True,
+    }
     for order in orders:
         for pp in order.get("pp_vouchers") or []:
             base = _pp_ps_base(pp)
+            fallback = shipped_default if pp.get("shipped_completed") else default
             partial_rows = pp.get("partials") or []
             if not partial_rows:
-                pp.update(overlay.get((base, 1), default))
+                pp.update(overlay.get((base, 1), fallback))
                 continue
             for partial in partial_rows:
                 try:
                     partial_no = max(1, int(partial.get("pp_partial_no") or 1))
                 except (TypeError, ValueError):
                     partial_no = 1
-                partial.update(overlay.get((base, partial_no), default))
+                partial.update(overlay.get((base, partial_no), fallback))
 
 
 def _apply_queued_machines_overlay(
@@ -1104,9 +1125,17 @@ def _strip_completed_highlights(orders: list[dict[str, Any]]) -> list[str]:
     to_clear: list[str] = []
     for order in orders:
         for pp in order.get("pp_vouchers") or []:
-            if pp.get("shipped_completed") and pp.get("highlighted_partials"):
+            if not pp.get("shipped_completed"):
+                continue
+            cleared = False
+            if pp.get("highlighted_partials"):
                 pp["highlighted_partials"] = []
                 pp["ps_highlighted"] = False
+                cleared = True
+            if pp.get("material_delay"):
+                pp["material_delay"] = False
+                cleared = True
+            if cleared:
                 pp_no = compact_text(pp.get("pp_voucher_no"))
                 if pp_no:
                     to_clear.append(pp_no)
@@ -1125,9 +1154,14 @@ def _batch_clear_ps_highlights(pp_voucher_nos: list[str]) -> None:
                 UPDATE planner_so_pp_notes
                 SET ps_highlighted = FALSE,
                     highlighted_partials = '',
+                    material_delay = FALSE,
                     updated_at = NOW()
                 WHERE pp_voucher_no = ANY(%s)
-                  AND (ps_highlighted = TRUE OR highlighted_partials <> '')
+                  AND (
+                    ps_highlighted = TRUE
+                    OR highlighted_partials <> ''
+                    OR material_delay = TRUE
+                  )
                 """,
                 (ids,),
             )
@@ -1147,7 +1181,7 @@ def _load_notes_map(pp_voucher_nos: list[str]) -> dict[str, dict[str, str]]:
                     """
                     SELECT pp_voucher_no, material_subcon, mtl_part_order,
                            quality_doc, ops_notes, sales_notes, ps_highlighted,
-                           highlighted_partials
+                           highlighted_partials, material_delay
                     FROM planner_so_pp_notes
                     WHERE pp_voucher_no = ANY(%s)
                     """,
@@ -1286,17 +1320,24 @@ def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, An
             for pp in (order.get("pp_vouchers") or [])
             if pp.get("process_sheet_no")
         ]
+        # Live COMAIN stage/WO overlays are expensive — only needed for open (unshipped) jobs.
+        active_process_sheets = [
+            pp.get("process_sheet_no")
+            for order in orders
+            for pp in (order.get("pp_vouchers") or [])
+            if pp.get("process_sheet_no") and not pp.get("shipped_completed")
+        ]
         _apply_material_in_overlay(orders, _load_material_in_overlay(process_sheets))
         _apply_coway_edd_overlay(orders, _load_coway_edd_overlay(process_sheets))
         _reconcile_subcon_material_in(orders)
-        _apply_stage_overlay(orders, _load_stage_overlay(process_sheets))
-        pp_voucher_nos = [
+        _apply_stage_overlay(orders, _load_stage_overlay(active_process_sheets))
+        active_pp_voucher_nos = [
             compact_text(pp.get("pp_voucher_no"))
             for order in orders
             for pp in (order.get("pp_vouchers") or [])
-            if compact_text(pp.get("pp_voucher_no"))
+            if compact_text(pp.get("pp_voucher_no")) and not pp.get("shipped_completed")
         ]
-        _apply_wo_qty_overlay(orders, _load_wo_qty_overlay(pp_voucher_nos))
+        _apply_wo_qty_overlay(orders, _load_wo_qty_overlay(active_pp_voucher_nos))
         _apply_queued_machines_overlay(orders, _load_queued_machines_by_canonical_ps())
         to_clear = _strip_completed_highlights(orders)
         if to_clear:
@@ -1325,7 +1366,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 """
                 SELECT pp_voucher_no, material_subcon, mtl_part_order,
                        quality_doc, ops_notes, sales_notes, ps_highlighted,
-                       highlighted_partials
+                       highlighted_partials, material_delay
                 FROM planner_so_pp_notes
                 WHERE pp_voucher_no = %s
                 """,
@@ -1359,17 +1400,22 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 highlighted_set.discard(partial_no)
             current["highlighted_partials"] = sorted(highlighted_set)
             current["ps_highlighted"] = bool(highlighted_set)
+        if "material_delay" in patch:
+            current["material_delay"] = bool(patch.pop("material_delay"))
         for key, value in patch.items():
             if key in _NOTE_FIELDS:
                 current[key] = compact_text(value)
+        # Material arrived resolves the purchaser delay flag.
+        if "material_subcon" in patch and _material_subcon_arrived(current.get("material_subcon")):
+            current["material_delay"] = False
         highlighted_text = _format_highlighted_partials(current.get("highlighted_partials") or [])
         con.execute(
             """
             INSERT INTO planner_so_pp_notes (
                 pp_voucher_no, material_subcon, mtl_part_order,
                 quality_doc, ops_notes, sales_notes, ps_highlighted,
-                highlighted_partials, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                highlighted_partials, material_delay, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (pp_voucher_no) DO UPDATE SET
                 material_subcon = EXCLUDED.material_subcon,
                 mtl_part_order = EXCLUDED.mtl_part_order,
@@ -1378,6 +1424,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 sales_notes = EXCLUDED.sales_notes,
                 ps_highlighted = EXCLUDED.ps_highlighted,
                 highlighted_partials = EXCLUDED.highlighted_partials,
+                material_delay = EXCLUDED.material_delay,
                 updated_at = NOW()
             """,
             (
@@ -1389,6 +1436,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 current["sales_notes"],
                 current["ps_highlighted"],
                 highlighted_text,
+                current["material_delay"],
             ),
         )
         current["highlighted_partials"] = _parse_highlighted_partials(highlighted_text)
@@ -1414,6 +1462,7 @@ def sales_orders_logistics_page():
 @sales_orders_bp.get("/api/sales-orders")
 def api_sales_orders():
     refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
+    active_only = compact_text(request.args.get("active_only")).lower() in {"1", "true", "yes"}
 
     try:
         data = _fetch_sales_orders(refresh=refresh)
@@ -1422,13 +1471,21 @@ def api_sales_orders():
         return jsonify({"error": f"ERP query failed: {exc}"}), 502
 
     active = data.get("active") or []
-    complete = data.get("complete") or []
+    complete = [] if active_only else (data.get("complete") or [])
+    complete_count = len(data.get("complete") or [])
     cached_at = _cache[0] if _cache else time.time()
     active_jobs = _job_count(active)
-    complete_jobs = _job_count(complete)
+    complete_jobs = _job_count(data.get("complete") or [])
     pp_count = active_jobs + complete_jobs
-    partial_count = sum(int(row.get("partial_count") or 0) for row in active + complete)
-    missing_header = sum(1 for row in active + complete if not row.get("has_header"))
+    # Material Tracking only needs active rows; keep counts from the full cache.
+    partial_count = (
+        sum(int(row.get("partial_count") or 0) for row in active)
+        if active_only
+        else sum(int(row.get("partial_count") or 0) for row in active + complete)
+    )
+    missing_header = sum(
+        1 for row in (active if active_only else active + complete) if not row.get("has_header")
+    )
 
     frame_agreement_parts = data.get("frame_agreement_parts") or []
 
@@ -1438,7 +1495,7 @@ def api_sales_orders():
             "schema_version": _SCHEMA_VERSION,
             "source": "mfg_pp_vch",
             "active_count": len(active),
-            "complete_count": len(complete),
+            "complete_count": complete_count,
             "active_job_count": active_jobs,
             "complete_job_count": complete_jobs,
             "pp_count": pp_count,
@@ -1446,9 +1503,10 @@ def api_sales_orders():
             "missing_header_count": missing_header,
             "frame_agreement_count": len(frame_agreement_parts),
             "frame_agreement_parts": frame_agreement_parts,
-            "count": len(active) + len(complete),
+            "count": len(active) + complete_count,
             "cached_at": datetime.fromtimestamp(cached_at, tz=None).isoformat(sep=" ", timespec="seconds"),
             "cache_ttl_sec": _CACHE_TTL_SEC,
+            "active_only": active_only,
             "active": active,
             "complete": complete,
         }
@@ -1473,6 +1531,8 @@ def api_sales_order_notes(pp_voucher_no):
         patch["ps_highlighted"] = bool(data.get("ps_highlighted"))
         if "pp_partial_no" in data:
             patch["pp_partial_no"] = data.get("pp_partial_no")
+    if "material_delay" in data:
+        patch["material_delay"] = bool(data.get("material_delay"))
 
     if not patch:
         return jsonify({"error": "No editable fields supplied"}), 400

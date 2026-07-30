@@ -364,7 +364,15 @@ def filter_completed_lane_blocks(con, blocks):
 
 
 
-    op_cards_by_partial, due_by_partial = catalog_lane_context_for_blocks(con, blocks)
+    try:
+        op_cards_by_partial, due_by_partial = catalog_lane_context_for_blocks(con, blocks)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "catalog_lane_context_for_blocks failed; falling back to fast lane filter"
+        )
+        return filter_completed_lane_blocks_fast(blocks)
 
     apply_lane_due_dates_from_catalog(blocks, due_by_partial)
 

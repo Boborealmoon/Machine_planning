@@ -54,6 +54,9 @@ ALTER TABLE public.pp_vouchers_cache
 ALTER TABLE public.pp_vouchers_cache
     ADD COLUMN IF NOT EXISTS current_stage_status TEXT;
 
+ALTER TABLE public.pp_vouchers_cache
+    ADD COLUMN IF NOT EXISTS customer_po_no TEXT;
+
 CREATE TABLE IF NOT EXISTS public.so_detail (
     sales_order_no  TEXT        NOT NULL,
     line_item_no    TEXT        NOT NULL,

@@ -1336,6 +1336,9 @@
       if (!key) return;
       const existing = byKey.get(key);
       if (!existing || prefer || (existing.source === 'erp' && normalized.source !== 'erp')) {
+        if (existing && prefer && normalized.source !== 'erp' && !normalized.customer_po_no) {
+          normalized.customer_po_no = existing.customer_po_no || '';
+        }
         byKey.set(key, normalized);
       }
     };
@@ -1491,6 +1494,7 @@
                 <th>Planned qty</th>
                 <th>Finished qty</th>
                 <th>SO / PO</th>
+                <th>Customer PO no</th>
                 <th>Shipped</th>
               </tr>
             </thead>
@@ -1504,6 +1508,7 @@
                 const coway = fmtDate(item.coway_proposed_edd);
                 const cowayWeek = isoCalendarWeek(item.coway_proposed_edd) || '—';
                 const so = item.source_voucher_no || '—';
+                const customerPo = item.customer_po_no || '—';
                 const shipped = fmtQty(item.qty_shipped || 0);
                 const soQty = fmtSoQty(item);
                 const queueClass = isQueued(item) ? 'ps-badge--queued' : 'ps-badge--needs-scheduling';
@@ -1537,6 +1542,7 @@
                     <td>${escapeHtml(plannedQty)}</td>
                     <td>${escapeHtml(finishedQty)}</td>
                     <td>${escapeHtml(so)}</td>
+                    <td>${escapeHtml(customerPo)}</td>
                     <td>${escapeHtml(shipped)}${soQty !== '—' ? ` / ${escapeHtml(soQty)}` : ''}</td>
                   </tr>
                 `;
@@ -1688,6 +1694,7 @@
     { key: 'remaining_qty', header: 'Remaining qty', width: 12 },
     { key: 'order_posted', header: 'Order posted', width: 12 },
     { key: 'so_po', header: 'SO / PO', width: 16 },
+    { key: 'customer_po_no', header: 'Customer PO no', width: 16 },
     { key: 'shipped_qty', header: 'Shipped qty', width: 12 },
     { key: 'so_qty', header: 'SO qty', width: 10 },
     { key: 'bom_route', header: 'BOM / route', width: 16 },
@@ -1733,6 +1740,7 @@
       remaining_qty: numberValue(item.remaining_qty),
       order_posted: fmtDate(item.order_date) === '-' ? '' : fmtDate(item.order_date),
       so_po: item.source_voucher_no || '',
+      customer_po_no: item.customer_po_no || '',
       shipped_qty: numberValue(item.qty_shipped),
       so_qty: item.so_det_qty != null ? numberValue(item.so_det_qty) : '',
       bom_route: item.selected_flow_code || item.route_label || item.erp_bom_code || '',
@@ -2031,6 +2039,7 @@
       warnings: item.warnings || [],
       source_voucher_no: item.source_voucher_no || '',
       source_line_item_no: item.source_line_item_no || '',
+      customer_po_no: item.customer_po_no || '',
       qty_shipped: item.qty_shipped || 0,
       so_det_qty: item.so_det_qty,
       current_stage_no: item.current_stage_no,

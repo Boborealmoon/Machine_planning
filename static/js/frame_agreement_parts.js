@@ -2,6 +2,7 @@
   'use strict';
 
   const state = {
+    lane: 'mpp', // 'mpp' | 'normal'
     rows: [],
     search: '',
     loading: false,
@@ -23,6 +24,7 @@
     stepsModal: { partNo: '', bomCodes: [], selectedBom: '' },
     mppModal: { partNo: '', bomCodes: [], selectedBom: '' },
     mppModalStatus: { message: '', kind: '' },
+    masterModal: { partNo: '', bomCodes: [], selectedBom: '', payload: null },
   };
 
   const FA_MPP_MACHINES = ['CNC 35', 'CNC 36', 'CNC 41'];
@@ -231,18 +233,72 @@
     return value.toFixed(2);
   }
 
-  function faFgPerDayCells(row, bomCode) {
+  function faIsNormalLane() {
+    return state.lane === 'normal';
+  }
+
+  function faListApiUrl(enrich) {
+    const base = faIsNormalLane()
+      ? '/api/planning-data/frame-agreement-normal-parts'
+      : '/api/planning-data/frame-agreement-parts';
+    return enrich ? `${base}?enrich=1` : base;
+  }
+
+  function faNormalFgTotals(row, bomCode) {
+    const bom = String(bomCode || '').trim();
+    const byBom = row?.fg_totals_by_bom?.[bom];
+    if (byBom && typeof byBom === 'object') {
+      return {
+        totalCycle: Number(byBom.total_cycle || 0),
+        totalSetup: Number(byBom.total_setup || 0),
+        fgPerDay: byBom.fg_per_day == null ? null : Number(byBom.fg_per_day),
+        masterHits: Number(byBom.master_hit_count || 0),
+      };
+    }
+    if (bom && Array.isArray(row?.master_ops_by_bom?.[bom])) {
+      let totalCycle = 0;
+      let totalSetup = 0;
+      let masterHits = 0;
+      for (const op of row.master_ops_by_bom[bom]) {
+        const cycle = Number(op?.cycle_time || 0);
+        if (Number.isFinite(cycle) && cycle > 0) totalCycle += cycle;
+        const setup = Number(op?.set_up_time || 0);
+        if (Number.isFinite(setup) && setup > 0) totalSetup += setup;
+        if (String(op?.source || '') === 'master' && op?.master_id) masterHits += 1;
+      }
+      return {
+        totalCycle,
+        totalSetup,
+        fgPerDay: faFgPerDay(FA_NORMAL_DAY_MINUTES, totalCycle, totalSetup),
+        masterHits,
+      };
+    }
+    return {
+      totalCycle: Number(row?.total_cycle || 0),
+      totalSetup: Number(row?.total_setup || 0),
+      fgPerDay: row?.fg_per_day == null ? null : Number(row.fg_per_day),
+      masterHits: Number(row?.master_hit_count || 0),
+    };
+  }
+
+  function faMppFgPerDayCell(row, bomCode) {
     const { totalCycle, totalSetup } = faOpCycleTotals(row, bomCode);
-    const normal = faFgPerDay(FA_NORMAL_DAY_MINUTES, totalCycle, totalSetup);
     const mpp = faFgPerDay(FA_MPP_DAY_MINUTES, totalCycle, totalSetup);
-    const normalLabel = faFormatFgPerDay(normal);
-    const mppLabel = faFormatFgPerDay(mpp);
     const tip = totalCycle > 0
       ? `Cycle ${totalCycle} min/pc · setup ${totalSetup} min/day`
       : 'Configure cycle times in MPP config';
     return `
-      <td class="new-orders-num fa-qty-cell fa-fg-day-cell" title="${escapeHtml(`Normal 10.5h − setup · ${tip}`)}">${escapeHtml(normalLabel)}</td>
-      <td class="new-orders-num fa-qty-cell fa-fg-day-cell" title="${escapeHtml(`MPP 24h − setup · ${tip}`)}">${escapeHtml(mppLabel)}</td>
+      <td class="new-orders-num fa-qty-cell fa-fg-day-cell" title="${escapeHtml(`MPP 24h − setup · ${tip}`)}">${escapeHtml(faFormatFgPerDay(mpp))}</td>
+    `;
+  }
+
+  function faNormalFgPerDayCell(row, bomCode) {
+    const { totalCycle, totalSetup, fgPerDay, masterHits } = faNormalFgTotals(row, bomCode);
+    const tip = totalCycle > 0
+      ? `Master cycle ${totalCycle} min/pc · setup ${totalSetup} min · ${masterHits} master hit(s)`
+      : 'No master cycle times — add/edit on Master cycle times';
+    return `
+      <td class="new-orders-num fa-qty-cell fa-fg-day-cell" title="${escapeHtml(`Normal 10.5h − setup · ${tip}`)}">${escapeHtml(faFormatFgPerDay(fgPerDay))}</td>
     `;
   }
 
@@ -352,6 +408,25 @@
     const notes = tr?.querySelector('.fa-notes-input')
       || document.querySelector(`.fa-notes-input[data-part-no="${faAttrEq(partNo)}"]`);
     return String(notes?.value || '').trim();
+  }
+
+  function readFaPartDeburrCycle(partNo) {
+    const tr = faFindPartRow(partNo);
+    const input = tr?.querySelector('.fa-deburr-cycle-input')
+      || document.querySelector(`.fa-deburr-cycle-input[data-part-no="${faAttrEq(partNo)}"]`);
+    const val = Number(input?.value || 0);
+    return Number.isFinite(val) && val > 0 ? val : 0;
+  }
+
+  function faDeburrCycleCell(partNo, row, saving) {
+    const val = Number(row?.deburring_cycle_min_per_piece || 0);
+    return `
+      <td class="fa-deburr-cell">
+        <input type="number" class="fa-mpp-num-input fa-deburr-cycle-input" data-part-no="${escapeHtml(partNo)}"
+          min="0" step="0.01" value="${escapeHtml(faMppNumValue(val))}" placeholder="—"
+          title="Deburring cycle minutes per piece" ${saving ? 'disabled' : ''} />
+      </td>
+    `;
   }
 
   function escapeHtml(raw) {
@@ -708,9 +783,167 @@
     const confirmShell = document.getElementById('fa-confirm-modal');
     const materialShell = document.getElementById('fa-material-modal');
     const stepsShell = document.getElementById('fa-steps-modal');
+    const masterShell = document.getElementById('fa-master-modal');
     if ((!confirmShell || confirmShell.hidden)
       && (!materialShell || materialShell.hidden)
-      && (!stepsShell || stepsShell.hidden)) {
+      && (!stepsShell || stepsShell.hidden)
+      && (!masterShell || masterShell.hidden)) {
+      document.body.classList.remove('so-material-modal-open');
+    }
+  }
+
+  function faRenderMasterModalBody(payload) {
+    const bodyEl = document.getElementById('fa-master-modal-body');
+    if (!bodyEl) return;
+    const ops = Array.isArray(payload?.ops) ? payload.ops : [];
+    const totalCycle = Number(payload?.total_cycle || 0);
+    const totalSetup = Number(payload?.total_setup || 0);
+    const fg = payload?.fg_per_day == null ? null : Number(payload.fg_per_day);
+    const partNo = String(state.masterModal.partNo || '').trim();
+    const cycleLink = `/planning-data/cycle-times?q=${encodeURIComponent(partNo)}`;
+    if (!ops.length) {
+      bodyEl.innerHTML = `
+        <p class="fa-master-modal-hint">No machining operations found for this BOM, or no times could be resolved.</p>
+        <p><a class="btn btn-ghost btn-sm" href="${escapeHtml(cycleLink)}" target="_blank" rel="noopener">Open Master cycle times</a></p>
+      `;
+      return;
+    }
+    const rowsHtml = ops.map((op) => {
+      const source = String(op.source || 'bom_step');
+      const sourceClass = source === 'master' ? 'is-master' : 'is-bom';
+      const sourceLabel = source === 'master' ? 'master' : 'BOM / ERP';
+      return `
+        <tr>
+          <td class="new-orders-mono">${escapeHtml(String(op.op_no ?? '—'))}</td>
+          <td>${escapeHtml(String(op.stage_desc || op.op_type || '—'))}</td>
+          <td class="new-orders-num">${escapeHtml(Number(op.cycle_time || 0) > 0 ? String(Number(op.cycle_time || 0)) : '—')}</td>
+          <td class="new-orders-num">${escapeHtml(Number(op.set_up_time || 0) > 0 ? String(Number(op.set_up_time || 0)) : '—')}</td>
+          <td><span class="fa-master-source ${sourceClass}">${escapeHtml(sourceLabel)}</span></td>
+          <td class="new-orders-mono">${escapeHtml(op.master_id ? String(op.master_id) : '—')}</td>
+        </tr>
+      `;
+    }).join('');
+    bodyEl.innerHTML = `
+      <p class="fa-master-modal-hint">
+        FG / day (normal 10.5h): <strong>${escapeHtml(faFormatFgPerDay(fg))}</strong>
+        · Σ cycle ${escapeHtml(String(totalCycle || 0))} min/pc
+        · Σ setup ${escapeHtml(String(totalSetup || 0))} min
+        · <a href="${escapeHtml(cycleLink)}" target="_blank" rel="noopener">Edit on Master cycle times</a>
+      </p>
+      <div class="fa-master-modal-table-wrap">
+        <table class="fa-master-modal-table">
+          <thead>
+            <tr>
+              <th>Op</th>
+              <th>Description</th>
+              <th>Cycle min/pc</th>
+              <th>Setup min</th>
+              <th>Source</th>
+              <th>Master id</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  async function faLoadMasterModalContent(partNo, bomCode, bomCodes) {
+    const titleEl = document.getElementById('fa-master-modal-title');
+    const bodyEl = document.getElementById('fa-master-modal-body');
+    if (!titleEl || !bodyEl) return;
+    const part = String(partNo || '').trim();
+    const bom = String(bomCode || '').trim();
+    if (!part || !bom) return;
+
+    titleEl.innerHTML = `
+      <span class="so-material-modal-id-value so-material-modal-id-value--mono">${escapeHtml(part)}</span>
+      <span class="so-material-modal-id-sep">·</span>
+      <span class="so-material-modal-id-value">${escapeHtml(bom)}</span>
+    `;
+    bodyEl.innerHTML = '<div class="so-material-modal-loading"><div class="spinner"></div> Resolving master cycle times…</div>';
+    faRenderBomTabsBar('fa-master-modal-bom-tabs', {
+      partNo: part,
+      bomCodes: bomCodes || [],
+      selectedBom: bom,
+      context: 'master',
+    });
+
+    try {
+      const row = state.rows.find((r) => String(r.part_no || '').trim() === part);
+      const cachedOps = row?.master_ops_by_bom?.[bom];
+      const cachedTotals = row?.fg_totals_by_bom?.[bom];
+      if (Array.isArray(cachedOps) && cachedTotals) {
+        const payload = {
+          ops: cachedOps,
+          total_cycle: cachedTotals.total_cycle,
+          total_setup: cachedTotals.total_setup,
+          fg_per_day: cachedTotals.fg_per_day,
+          master_hit_count: cachedTotals.master_hit_count,
+        };
+        state.masterModal.payload = payload;
+        faRenderMasterModalBody(payload);
+        return;
+      }
+      const params = new URLSearchParams({ action: 'master-ops', part_no: part, bom });
+      const res = await fetch(`/api/planning-data/frame-agreement-normal-parts?${params}`);
+      const data = await parseJsonResponse(res);
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      state.masterModal.payload = data;
+      if (row) {
+        row.master_ops_by_bom = row.master_ops_by_bom || {};
+        row.master_ops_by_bom[bom] = data.ops || [];
+        row.fg_totals_by_bom = row.fg_totals_by_bom || {};
+        row.fg_totals_by_bom[bom] = {
+          total_cycle: data.total_cycle,
+          total_setup: data.total_setup,
+          fg_per_day: data.fg_per_day,
+          master_hit_count: data.master_hit_count,
+        };
+      }
+      faRenderMasterModalBody(data);
+    } catch (err) {
+      bodyEl.innerHTML = `<p class="so-material-modal-error">Could not load master times: ${escapeHtml(err.message || 'Unknown error')}</p>`;
+    }
+  }
+
+  function faOpenMasterModal({ partNo, bomCode, bomCodes } = {}) {
+    const shell = document.getElementById('fa-master-modal');
+    if (!shell) return;
+    const part = String(partNo || '').trim();
+    const bom = String(bomCode || '').trim();
+    if (!part || !bom) return;
+    const row = state.rows.find((r) => r.part_no === part);
+    const codes = (bomCodes && bomCodes.length)
+      ? bomCodes
+      : (row ? faBomCodesForRow(row) : []);
+    const selectedBom = bom || (row ? faSelectedBom(part, row) : codes[0] || '');
+    if (!selectedBom) return;
+    state.masterModal = { partNo: part, bomCodes: codes, selectedBom, payload: null };
+    shell.hidden = false;
+    document.body.classList.add('so-material-modal-open');
+    faLoadMasterModalContent(part, selectedBom, codes);
+  }
+
+  function faCloseMasterModal() {
+    const shell = document.getElementById('fa-master-modal');
+    if (!shell) return;
+    shell.hidden = true;
+    const bodyEl = document.getElementById('fa-master-modal-body');
+    const titleEl = document.getElementById('fa-master-modal-title');
+    const tabsEl = document.getElementById('fa-master-modal-bom-tabs');
+    if (bodyEl) bodyEl.innerHTML = '';
+    if (titleEl) titleEl.innerHTML = '';
+    if (tabsEl) { tabsEl.innerHTML = ''; tabsEl.hidden = true; }
+    state.masterModal = { partNo: '', bomCodes: [], selectedBom: '', payload: null };
+    const confirmShell = document.getElementById('fa-confirm-modal');
+    const materialShell = document.getElementById('fa-material-modal');
+    const stepsShell = document.getElementById('fa-steps-modal');
+    const mppShell = document.getElementById('fa-mpp-modal');
+    if ((!confirmShell || confirmShell.hidden)
+      && (!materialShell || materialShell.hidden)
+      && (!stepsShell || stepsShell.hidden)
+      && (!mppShell || mppShell.hidden)) {
       document.body.classList.remove('so-material-modal-open');
     }
   }
@@ -770,20 +1003,74 @@
     `;
   }
 
+  function renderMasterTimesBtn(partNo, bomCode, row) {
+    const part = String(partNo || '').trim();
+    const bom = String(bomCode || '').trim();
+    if (!part) return '<span class="fa-dash">—</span>';
+    if (!bom) {
+      return '<button type="button" class="btn btn-ghost btn-sm" disabled title="Select a BOM route first">Master times</button>';
+    }
+    const totals = faNormalFgTotals(row, bom);
+    const label = totals.masterHits > 0
+      ? `Master times (${totals.masterHits})`
+      : 'Master times';
+    return `
+      <button type="button" class="btn btn-ghost btn-sm"
+        data-action="open-master-times"
+        data-part-no="${escapeHtml(part)}"
+        data-bom-code="${escapeHtml(bom)}"
+        title="View resolved master cycle times for ${escapeHtml(part)} · ${escapeHtml(bom)}">${escapeHtml(label)}</button>
+    `;
+  }
+
+  function syncLaneChrome() {
+    const isNormal = faIsNormalLane();
+    document.querySelectorAll('.fa-lane-tab').forEach((btn) => {
+      const active = btn.getAttribute('data-lane') === state.lane;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    const theadMpp = document.getElementById('fa-thead-mpp');
+    const theadNormal = document.getElementById('fa-thead-normal');
+    if (theadMpp) theadMpp.hidden = isNormal;
+    if (theadNormal) theadNormal.hidden = !isNormal;
+    const emptyTitle = document.getElementById('fa-empty-title');
+    const emptyHint = document.getElementById('fa-empty-hint');
+    if (emptyTitle) {
+      emptyTitle.textContent = isNormal
+        ? 'No normal-machine frame agreement parts yet.'
+        : 'No MPP frame agreement parts yet.';
+    }
+    if (emptyHint) {
+      emptyHint.textContent = isNormal
+        ? 'Search above to add a part that runs on normal machines (times come from Master cycle times).'
+        : 'Search for a part above to add one for MPP.';
+    }
+    const partInput = document.getElementById('fa-part-input');
+    if (partInput) {
+      partInput.placeholder = isNormal
+        ? 'Add normal-machine part — search inventory code…'
+        : 'Add MPP part — search inventory code…';
+    }
+  }
+
   function render() {
+    syncLaneChrome();
     const tbody = document.getElementById('fa-tbody');
     const table = document.getElementById('fa-table');
     const empty = document.getElementById('fa-empty');
     const loading = document.getElementById('fa-loading');
     const countEl = document.getElementById('fa-count');
     const rows = filteredRows();
+    const isNormal = faIsNormalLane();
 
     if (loading) loading.hidden = !state.loading;
     if (countEl) {
       const total = state.rows.length;
+      const label = isNormal ? 'normal' : 'MPP';
       countEl.textContent = rows.length === total
-        ? `${total} part${total === 1 ? '' : 's'}`
-        : `${rows.length} of ${total} parts`;
+        ? `${total} ${label} part${total === 1 ? '' : 's'}`
+        : `${rows.length} of ${total} ${label} parts`;
     }
 
     if (state.loading) {
@@ -810,9 +1097,9 @@
       const bomCodes = faBomCodesForRow(row);
       const selectedBom = faSelectedBom(partNo, row);
       const fields = faRowMaterialFields(row, selectedBom);
-      const partMachine = faPartMachine(row);
-      return `
-        <tr data-part-no="${escapeHtml(partNo)}">
+      if (isNormal) {
+        return `
+        <tr data-part-no="${escapeHtml(partNo)}" data-lane="normal">
           <td class="fa-part-cell">
             <span class="fa-part-no">${escapeHtml(partNo)}</span>
             <span class="fa-badge-demo" title="Shows as FA in S/O management">FA</span>
@@ -821,7 +1108,35 @@
           <td class="fa-bom-cell">${faRenderBomToggle({ partNo, bomCodes, selectedBom, context: 'table', row })}</td>
           <td class="new-orders-mono fa-material-cell" title="${escapeHtml(fields.materialDesc)}">${escapeHtml(fields.material)}</td>
           <td class="new-orders-num fa-qty-cell">${escapeHtml(fields.qtyFg)}</td>
-          ${faFgPerDayCells(row, selectedBom)}
+          ${faNormalFgPerDayCell(row, selectedBom)}
+          <td class="fa-materials-cell">${renderBomDetailBtns(partNo, selectedBom)}</td>
+          <td class="fa-master-config-cell">${renderMasterTimesBtn(partNo, selectedBom, row)}</td>
+          ${faDeburrCycleCell(partNo, row, saving)}
+          <td class="fa-notes-cell">
+            <input type="text" class="fa-notes-input" data-part-no="${escapeHtml(partNo)}" value="${escapeHtml(row.notes || '')}" placeholder="Remarks…" ${saving ? 'disabled' : ''} />
+          </td>
+          <td class="fa-updated">${escapeHtml(formatUpdated(row.updated_at))}</td>
+          <td class="fa-col-actions">
+            <div class="fa-actions">
+              <button type="button" class="btn btn-ghost btn-sm fa-save-part-btn" data-part-no="${escapeHtml(partNo)}" ${saving ? 'disabled' : ''}>Save</button>
+              <button type="button" class="btn btn-ghost btn-sm fa-delete-btn" data-part-no="${escapeHtml(partNo)}" ${saving ? 'disabled' : ''}>Remove</button>
+            </div>
+          </td>
+        </tr>
+        `;
+      }
+      const partMachine = faPartMachine(row);
+      return `
+        <tr data-part-no="${escapeHtml(partNo)}" data-lane="mpp">
+          <td class="fa-part-cell">
+            <span class="fa-part-no">${escapeHtml(partNo)}</span>
+            <span class="fa-badge-demo" title="Shows as FA in S/O management">FA</span>
+          </td>
+          <td class="fa-desc-cell" title="${escapeHtml(desc)}">${escapeHtml(desc)}</td>
+          <td class="fa-bom-cell">${faRenderBomToggle({ partNo, bomCodes, selectedBom, context: 'table', row })}</td>
+          <td class="new-orders-mono fa-material-cell" title="${escapeHtml(fields.materialDesc)}">${escapeHtml(fields.material)}</td>
+          <td class="new-orders-num fa-qty-cell">${escapeHtml(fields.qtyFg)}</td>
+          ${faMppFgPerDayCell(row, selectedBom)}
           <td class="fa-materials-cell">${renderBomDetailBtns(partNo, selectedBom)}</td>
           <td class="fa-mpp-config-cell">${renderMppConfigBtn(partNo, selectedBom, row)}</td>
           <td class="fa-mpp-machine-cell">
@@ -829,6 +1144,7 @@
               ${faMppMachineOptions(partMachine)}
             </select>
           </td>
+          ${faDeburrCycleCell(partNo, row, saving)}
           <td class="fa-notes-cell">
             <input type="text" class="fa-notes-input" data-part-no="${escapeHtml(partNo)}" value="${escapeHtml(row.notes || '')}" placeholder="Remarks…" ${saving ? 'disabled' : ''} />
           </td>
@@ -848,7 +1164,7 @@
     state.loading = true;
     render();
     try {
-      const res = await fetch('/api/planning-data/frame-agreement-parts?enrich=1');
+      const res = await fetch(faListApiUrl(true));
       const payload = await parseJsonResponse(res);
       if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${res.status}`);
       state.rows = Array.isArray(payload.rows) ? payload.rows : [];
@@ -877,6 +1193,19 @@
     }
   }
 
+  async function setLane(lane) {
+    const next = lane === 'normal' ? 'normal' : 'mpp';
+    if (state.lane === next) {
+      syncLaneChrome();
+      return;
+    }
+    state.lane = next;
+    state.search = '';
+    const searchEl = document.getElementById('fa-search');
+    if (searchEl) searchEl.value = '';
+    await loadRows();
+  }
+
   function faSetMppModalStatus(message, kind) {
     state.mppModalStatus = { message: message || '', kind: kind || '' };
     faApplyMppModalStatus();
@@ -886,6 +1215,16 @@
     const headers = { 'Content-Type': 'application/json' };
     const payload = JSON.stringify(body);
     const encoded = encodeURIComponent(String(body.part_no || '').trim());
+    if (faIsNormalLane()) {
+      const res = await fetch('/api/planning-data/frame-agreement-normal-parts/save-part', {
+        method: 'POST',
+        headers,
+        body: payload,
+      });
+      const data = await parseJsonResponse(res);
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data.row;
+    }
     const urls = partLevel
       ? [
           { method: 'POST', url: '/api/planning-data/frame-agreement-parts/save-part' },
@@ -932,10 +1271,16 @@
   }
 
   async function addPart(partNo, payload) {
-    const res = await fetch('/api/planning-data/frame-agreement-parts', {
+    const url = faIsNormalLane()
+      ? '/api/planning-data/frame-agreement-normal-parts'
+      : '/api/planning-data/frame-agreement-parts';
+    const body = faIsNormalLane()
+      ? { part_no: partNo, notes: payload?.notes || '', deburring_cycle_min_per_piece: Number(payload?.deburring_cycle_min_per_piece || 0) }
+      : { part_no: partNo, ...payload };
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ part_no: partNo, ...payload }),
+      body: JSON.stringify(body),
     });
     const data = await parseJsonResponse(res);
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -947,9 +1292,10 @@
   }
 
   async function removePart(partNo) {
-    const res = await fetch(`/api/planning-data/frame-agreement-parts/${encodeURIComponent(partNo)}`, {
-      method: 'DELETE',
-    });
+    const url = faIsNormalLane()
+      ? `/api/planning-data/frame-agreement-normal-parts/${encodeURIComponent(partNo)}`
+      : `/api/planning-data/frame-agreement-parts/${encodeURIComponent(partNo)}`;
+    const res = await fetch(url, { method: 'DELETE' });
     const payload = await parseJsonResponse(res);
     if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${res.status}`);
   }
@@ -1206,19 +1552,32 @@
     const addBtn = document.getElementById('fa-confirm-add-btn');
     if (!shell || !titleEl || !bodyEl || !addBtn) return;
 
+    const isNormal = faIsNormalLane();
     state.confirmModal = { partNo, selectedBom: String(bomCode || '').trim() };
     const confirmNotes = document.getElementById('fa-confirm-notes-input');
+    const confirmDeburr = document.getElementById('fa-confirm-deburr-input');
     const machineEl = document.getElementById('fa-confirm-mpp-machine');
     const runEl = document.getElementById('fa-confirm-mpp-run');
     const setupEl = document.getElementById('fa-confirm-mpp-setup');
     const pcsEl = document.getElementById('fa-confirm-mpp-pcs');
     const palletsEl = document.getElementById('fa-confirm-mpp-pallets');
+    const mppWrap = document.getElementById('fa-confirm-mpp-wrap');
+    const normalHint = document.getElementById('fa-confirm-normal-hint');
+    const kicker = document.getElementById('fa-confirm-modal-kicker');
     if (confirmNotes) confirmNotes.value = '';
+    if (confirmDeburr) confirmDeburr.value = '';
     if (machineEl) machineEl.value = '';
     if (runEl) runEl.value = '';
     if (setupEl) setupEl.value = '';
     if (pcsEl) pcsEl.value = '';
     if (palletsEl) palletsEl.value = '';
+    if (mppWrap) mppWrap.hidden = isNormal;
+    if (normalHint) normalHint.hidden = !isNormal;
+    if (kicker) {
+      kicker.textContent = isNormal
+        ? 'Confirm normal-machine frame agreement part'
+        : 'Confirm MPP frame agreement part';
+    }
     titleEl.innerHTML = `<span class="so-material-modal-id-value so-material-modal-id-value--mono">${escapeHtml(partNo)}</span>`;
     bodyEl.innerHTML = '<div class="so-material-modal-loading"><div class="spinner"></div> Loading part details…</div>';
     faRenderBomTabsBar('fa-confirm-modal-bom-tabs', { partNo, bomCodes: [], selectedBom: '', context: 'confirm' });
@@ -1254,29 +1613,35 @@
     const partNo = state.pendingPart;
     if (!partNo) return;
     const notesInput = document.getElementById('fa-confirm-notes-input');
+    const deburrInput = document.getElementById('fa-confirm-deburr-input');
     const machineEl = document.getElementById('fa-confirm-mpp-machine');
     const runEl = document.getElementById('fa-confirm-mpp-run');
     const setupEl = document.getElementById('fa-confirm-mpp-setup');
     const pcsEl = document.getElementById('fa-confirm-mpp-pcs');
     const palletsEl = document.getElementById('fa-confirm-mpp-pallets');
     const notes = String(notesInput?.value || '').trim();
+    const deburr = Number(deburrInput?.value || 0);
     const description = String(state.pendingPreview?.description || '');
-    const selectedBom = String(state.confirmModal.selectedBom || state.pendingPreview?.bom_code || '').trim();
     const addBtn = document.getElementById('fa-confirm-add-btn');
     if (addBtn) addBtn.disabled = true;
     setAddStatus('Saving…', '');
     try {
-      await addPart(partNo, {
-        notes,
-        description,
-        mpp_machine_no: String(machineEl?.value || '').trim(),
-        mpp_run_min_per_pallet: Number(runEl?.value || 0),
-        mpp_setup_minutes: Number(setupEl?.value || 0),
-      });
+      const payload = faIsNormalLane()
+        ? { notes, deburring_cycle_min_per_piece: Number.isFinite(deburr) ? deburr : 0 }
+        : {
+            notes,
+            description,
+            mpp_machine_no: String(machineEl?.value || '').trim(),
+            mpp_run_min_per_pallet: Number(runEl?.value || 0),
+            mpp_setup_minutes: Number(setupEl?.value || 0),
+            deburring_cycle_min_per_piece: Number.isFinite(deburr) ? deburr : 0,
+          };
+      await addPart(partNo, payload);
       closeConfirmModal();
       state.pendingPart = null;
       state.pendingPreview = null;
       if (notesInput) notesInput.value = '';
+      if (deburrInput) deburrInput.value = '';
       if (machineEl) machineEl.value = '';
       if (runEl) runEl.value = '';
       if (setupEl) setupEl.value = '';
@@ -1727,6 +2092,15 @@
         selectedBom: bomCode,
       };
       await faLoadStepsModalContent(partNo, bomCode, state.stepsModal.bomCodes);
+      return;
+    }
+    if (context === 'master') {
+      state.masterModal = {
+        ...state.masterModal,
+        partNo,
+        selectedBom: bomCode,
+      };
+      await faLoadMasterModalContent(partNo, bomCode, state.masterModal.bomCodes);
     }
   }
 
@@ -1858,23 +2232,49 @@
         return;
       }
 
+      const masterBtn = e.target.closest('[data-action="open-master-times"]');
+      if (masterBtn) {
+        e.stopPropagation();
+        const partNo = masterBtn.getAttribute('data-part-no');
+        const row = state.rows.find((r) => r.part_no === partNo);
+        faOpenMasterModal({
+          partNo,
+          bomCode: masterBtn.getAttribute('data-bom-code'),
+          bomCodes: row ? faBomCodesForRow(row) : [],
+        });
+        return;
+      }
+
       const savePartBtn = e.target.closest('.fa-save-part-btn');
       const deleteBtn = e.target.closest('.fa-delete-btn');
       if (savePartBtn) {
         const partNo = savePartBtn.getAttribute('data-part-no');
         if (!partNo) return;
         const notes = readFaPartNotes(partNo);
-        const mppMachine = readFaPartMachine(partNo);
+        const deburr = readFaPartDeburrCycle(partNo);
         state.saving.add(partNo);
         render();
         try {
-          const row = await faFrameAgreementSave(
-            { part_no: partNo, notes, mpp_machine_no: mppMachine },
-            { partLevel: true },
-          );
+          const saveBody = faIsNormalLane()
+            ? { part_no: partNo, notes, deburring_cycle_min_per_piece: deburr }
+            : {
+                part_no: partNo,
+                notes,
+                mpp_machine_no: readFaPartMachine(partNo),
+                deburring_cycle_min_per_piece: deburr,
+              };
+          const row = await faFrameAgreementSave(saveBody, { partLevel: true });
           const idx = state.rows.findIndex((r) => String(r.part_no || '').trim() === String(partNo || '').trim());
           if (idx >= 0 && row) {
-            state.rows[idx] = { ...state.rows[idx], ...row, notes, mpp_machine_no: mppMachine };
+            state.rows[idx] = {
+              ...state.rows[idx],
+              ...row,
+              notes,
+              deburring_cycle_min_per_piece: deburr,
+            };
+            if (!faIsNormalLane()) {
+              state.rows[idx].mpp_machine_no = saveBody.mpp_machine_no;
+            }
           }
           setAddStatus(`Saved ${partNo}.`, 'success');
         } catch (err) {
@@ -1888,12 +2288,12 @@
       if (deleteBtn) {
         const partNo = deleteBtn.getAttribute('data-part-no');
         if (!partNo) return;
-        if (!window.confirm(`Remove ${partNo} from frame agreement parts?`)) return;
+        if (!window.confirm(`Remove ${partNo} from this frame agreement list?`)) return;
         state.saving.add(partNo);
         render();
         try {
           await removePart(partNo);
-          state.rows = state.rows.filter((r) => r.part_no !== partNo);
+          state.rows = state.rows.filter((r) => String(r.part_no || '').trim() !== String(partNo || '').trim());
           setAddStatus(`Removed ${partNo}.`, 'success');
         } catch (err) {
           setAddStatus(err.message, 'error');
@@ -1902,6 +2302,13 @@
           render();
         }
       }
+    });
+
+    document.querySelectorAll('.fa-lane-tab').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const lane = btn.getAttribute('data-lane');
+        if (lane) setLane(lane);
+      });
     });
 
     const confirmModal = document.getElementById('fa-confirm-modal');
@@ -1922,6 +2329,17 @@
     materialModal?.querySelector('[data-action="close-material-modal"]')?.addEventListener('click', faCloseMaterialModal);
     document.getElementById('fa-material-modal-close')?.addEventListener('click', faCloseMaterialModal);
     materialModal?.addEventListener('click', async (e) => {
+      const bomBtn = e.target.closest('[data-action="select-bom"]');
+      if (bomBtn) {
+        e.stopPropagation();
+        await faHandleBomSelect(bomBtn);
+      }
+    });
+
+    const masterModal = document.getElementById('fa-master-modal');
+    masterModal?.querySelector('[data-action="close-master-modal"]')?.addEventListener('click', faCloseMasterModal);
+    document.getElementById('fa-master-modal-close')?.addEventListener('click', faCloseMasterModal);
+    masterModal?.addEventListener('click', async (e) => {
       const bomBtn = e.target.closest('[data-action="select-bom"]');
       if (bomBtn) {
         e.stopPropagation();
@@ -2015,6 +2433,7 @@
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
       if (!document.getElementById('fa-mpp-modal')?.hidden) faCloseMppModal();
+      else if (!document.getElementById('fa-master-modal')?.hidden) faCloseMasterModal();
       else if (!document.getElementById('fa-steps-modal')?.hidden) faCloseStepsModal();
       else if (!document.getElementById('fa-material-modal')?.hidden) faCloseMaterialModal();
       else if (!document.getElementById('fa-confirm-modal')?.hidden) closeConfirmModal();

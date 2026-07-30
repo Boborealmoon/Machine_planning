@@ -11,7 +11,7 @@ from .frame_agreement_service import (
     fetch_mpp_job_candidates as _fetch_erp_mpp_job_candidates,
     is_frame_agreement_part,
     load_frame_agreement_mpp_lookup,
-    load_frame_agreement_part_keys,
+    load_frame_agreement_mpp_part_keys,
     normalize_part_key,
     resolve_fa_mpp_settings,
 )
@@ -667,7 +667,7 @@ def fetch_mpp_planner_jobs(con, *, fa_only: bool = True) -> list[dict[str, Any]]
     included (FA parts still flagged via ``isFrameAgreement``).
     """
     ensure_frame_agreement_schema(con)
-    fa_keys = load_frame_agreement_part_keys(con)
+    fa_keys = load_frame_agreement_mpp_part_keys(con)
     if fa_only and not fa_keys:
         return []
 
@@ -701,5 +701,5 @@ def fetch_mpp_planner_jobs(con, *, fa_only: bool = True) -> list[dict[str, Any]]
 
 def fetch_mpp_planner_intake_meta(con) -> dict[str, Any]:
     ensure_frame_agreement_schema(con)
-    fa_keys = load_frame_agreement_part_keys(con)
+    fa_keys = load_frame_agreement_mpp_part_keys(con)
     return {"frameAgreementPartCount": len(fa_keys)}

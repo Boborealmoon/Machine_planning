@@ -582,6 +582,244 @@ function soCopyNoWoProcessSheets() {
   });
 }
 
+const SO_EXPORT_COLUMNS = [
+  { id: '_so', label: 'SO', width: 16 },
+  { id: '_customer', label: 'Customer', width: 22 },
+  { id: 'process_sheet_no', label: 'Process sheet', width: 18 },
+  { id: 'partial', label: 'Partial', width: 10 },
+  { id: 'exception', label: 'Exception', width: 12 },
+  { id: 'queued_cnc', label: 'Queued CNC', width: 16 },
+  { id: 'erp_stage', label: 'Stage', width: 18 },
+  { id: 'qty', label: 'Qty', width: 8 },
+  { id: 'order_date', label: 'Date', width: 12 },
+  { id: 'part', label: 'Part', width: 22 },
+  { id: 'description', label: 'Description', width: 32 },
+  { id: 'customer_po_no', label: 'P/O No.', width: 16 },
+  { id: 'due_date', label: 'Due date', width: 12 },
+  { id: 'proposed_edd', label: 'Prop. EDD', width: 12 },
+  { id: 'week', label: 'Week', width: 18 },
+  { id: 'delivery_date', label: 'Delivered', width: 12 },
+  { id: 'unit_selling_price', label: 'U/Price', width: 12 },
+  { id: 'amount', label: 'Amount', width: 12 },
+  { id: 'material_subcon', label: 'Material in / Sub-con', width: 18 },
+  { id: 'mtl_part_order', label: 'Mtl / Part Order', width: 16 },
+  { id: 'quality_doc', label: 'Quality Doc', width: 14 },
+  { id: 'ops_notes', label: 'Ops', width: 16 },
+  { id: 'sales_notes', label: 'Sales', width: 16 },
+];
+
+let soExportView = 'active';
+
+function soExportOrderCustomer(order) {
+  return order?.customer_name || order?.customer_short_name || order?.customer_code || '';
+}
+
+function soExportBlankDash(value) {
+  const text = String(value ?? '').trim();
+  return !text || text === '—' ? '' : text;
+}
+
+function soExportDateValue(value) {
+  const formatted = soFormatDate(value);
+  return soExportBlankDash(formatted);
+}
+
+function soExportCellValue(leaf, colId) {
+  const { order, pp, partial } = leaf;
+  switch (colId) {
+    case '_so':
+      return soExportBlankDash(order?.sales_order_no);
+    case '_customer':
+      return soExportBlankDash(soExportOrderCustomer(order));
+    case 'process_sheet_no':
+      return soExportBlankDash(soPsDisplayForPartial(pp, partial));
+    case 'exception':
+      return soIsPartialException(pp, partial) ? 'Yes' : '';
+    case 'order_date':
+    case 'due_date':
+    case 'proposed_edd':
+    case 'delivery_date': {
+      const raw = colId === 'proposed_edd'
+        ? soProposedEddDisplay(pp, partial)
+        : pp?.[colId];
+      return soExportDateValue(raw);
+    }
+    case 'week':
+      return soExportBlankDash(soWeekLabel(pp, partial));
+    case 'qty': {
+      const num = Number(pp?.pp_qty);
+      return Number.isFinite(num) ? num : soExportBlankDash(pp?.pp_qty);
+    }
+    case 'unit_selling_price':
+    case 'amount': {
+      const num = Number(pp?.[colId]);
+      return Number.isFinite(num) ? num : '';
+    }
+    case 'part':
+      return soExportBlankDash(partial?.inventory_code || pp?.inventory_code);
+    case 'customer_po_no':
+      return soExportBlankDash(partial?.customer_po_no || pp?.customer_po_no || order?.customer_po_no);
+    default: {
+      const value = soLeafColumnValue(leaf, colId);
+      return soExportBlankDash(value);
+    }
+  }
+}
+
+function soCollectExportLeaves(view) {
+  const next = view === 'no-wo' ? 'no-wo' : 'active';
+  const prevView = soState.view;
+  soState.view = next;
+  try {
+    const leaves = [];
+    soVisibleOrders(soActiveOrders()).forEach(order => {
+      soVisibleLeaves(order).forEach(leaf => leaves.push(leaf));
+    });
+    return leaves;
+  } finally {
+    soState.view = prevView;
+  }
+}
+
+function soExportFilename(view) {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const label = view === 'no-wo' ? 'no-wo' : 'active';
+  return `so-management-${label}-${stamp}.xlsx`;
+}
+
+async function soEnsureExcelJs() {
+  if (window.ExcelJS) return window.ExcelJS;
+  await new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error('Could not load Excel export library'));
+    document.head.appendChild(script);
+  });
+  return window.ExcelJS;
+}
+
+async function soExportToExcel(view) {
+  const exportView = view === 'no-wo' ? 'no-wo' : 'active';
+  const leaves = soCollectExportLeaves(exportView);
+  if (!leaves.length) {
+    window.alert(`No ${exportView === 'no-wo' ? 'No WO' : 'Active'} rows to export with the current filters.`);
+    return;
+  }
+
+  const ExcelJS = await soEnsureExcelJs();
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Production Planner';
+  workbook.created = new Date();
+  const sheetName = exportView === 'no-wo' ? 'No WO' : 'Active';
+  const sheet = workbook.addWorksheet(sheetName);
+
+  const headers = SO_EXPORT_COLUMNS.map(col => col.label);
+  const headerRow = sheet.addRow(headers);
+  headerRow.font = { bold: true, size: 11 };
+  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+  headerRow.alignment = { vertical: 'middle' };
+
+  leaves.forEach(leaf => {
+    sheet.addRow(SO_EXPORT_COLUMNS.map(col => soExportCellValue(leaf, col.id)));
+  });
+
+  SO_EXPORT_COLUMNS.forEach((col, index) => {
+    sheet.getColumn(index + 1).width = col.width;
+  });
+  sheet.views = [{ state: 'frozen', ySplit: 1, xSplit: 0, activeCell: 'A2' }];
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = soExportFilename(exportView);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function soUpdateExportModalCount() {
+  const el = document.getElementById('so-export-modal-count');
+  if (!el) return;
+  const count = soCollectExportLeaves(soExportView).length;
+  const label = soExportView === 'no-wo' ? 'No WO' : 'Active';
+  el.textContent = `${count} ${label} row${count === 1 ? '' : 's'} will be exported.`;
+}
+
+function soSetExportView(view) {
+  soExportView = view === 'no-wo' ? 'no-wo' : 'active';
+  document.querySelectorAll('[data-so-export-view]').forEach(btn => {
+    const active = btn.getAttribute('data-so-export-view') === soExportView;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-checked', active ? 'true' : 'false');
+  });
+  soUpdateExportModalCount();
+}
+
+function soCloseExportModal() {
+  const modal = document.getElementById('so-export-modal');
+  if (modal) modal.hidden = true;
+  document.body.classList.remove('so-export-modal-open');
+}
+
+function soOpenExportModal() {
+  const hasData = (soState.active?.length || 0) + (soState.complete?.length || 0) > 0;
+  if (!hasData) {
+    window.alert('Load S/O data first, then export.');
+    return;
+  }
+  const modal = document.getElementById('so-export-modal');
+  if (!modal) return;
+  soSetExportView(soState.view === 'no-wo' ? 'no-wo' : 'active');
+  modal.hidden = false;
+  document.body.classList.add('so-export-modal-open');
+}
+
+async function soConfirmExportExcel() {
+  const btn = document.getElementById('so-export-confirm');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Exporting…';
+  }
+  try {
+    await soExportToExcel(soExportView);
+    soCloseExportModal();
+  } catch (err) {
+    console.error(err);
+    window.alert(`Export failed: ${err.message || err}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Export Excel';
+    }
+  }
+}
+
+function soBindExportModal() {
+  document.getElementById('so-export')?.addEventListener('click', soOpenExportModal);
+  document.getElementById('so-export-modal-close')?.addEventListener('click', soCloseExportModal);
+  document.getElementById('so-export-confirm')?.addEventListener('click', () => {
+    soConfirmExportExcel();
+  });
+  document.querySelectorAll('[data-action="close-export-modal"]').forEach(node => {
+    node.addEventListener('click', soCloseExportModal);
+  });
+  document.querySelectorAll('[data-so-export-view]').forEach(btn => {
+    btn.addEventListener('click', () => soSetExportView(btn.getAttribute('data-so-export-view')));
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    const modal = document.getElementById('so-export-modal');
+    if (modal && !modal.hidden) soCloseExportModal();
+  });
+}
+
 function soPsDisplayForPartial(pp, partial) {
   const base = soPsDisplayId(pp);
   const partialCount = Math.max(1, (pp?.partials || []).length);
@@ -2959,6 +3197,7 @@ function soInit() {
 
   document.getElementById('so-copy-no-wo-ps')?.addEventListener('click', soCopyNoWoProcessSheets);
   document.getElementById('so-refresh')?.addEventListener('click', () => soLoad({ refresh: true, bustCache: true }));
+  soBindExportModal();
   soBindDetailPanel();
   soBindMaterialModal();
   soBindTableClicks();

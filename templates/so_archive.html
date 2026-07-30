@@ -1,0 +1,93 @@
+{% extends "base_standalone.html" %}
+{% block title %}SO Line Archive{% endblock %}
+{% block body_class %}soa-page{% endblock %}
+{% block main_class %}app-main--soa{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/so_archive.css') }}?v=soa-20260730c">
+{% endblock %}
+{% block content %}
+<div class="soa-shell">
+  <header class="soa-header">
+    <div class="soa-header-main">
+      <p class="soa-kicker">Archive</p>
+      <h1 class="soa-title">SO Line Archive</h1>
+      <p class="soa-subtitle">
+        Sales order / process sheet / shipment lines - APS, NPS, and other PS.
+        Columns match the Power Query export order.
+      </p>
+    </div>
+    <div class="soa-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="soa-export" hidden>Export CSV</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="soa-refresh">Refresh</button>
+    </div>
+  </header>
+
+  <div class="soa-layout">
+    <div class="soa-main">
+      <section class="soa-toolbar">
+        <div class="soa-field soa-field--buckets">
+          <span>PS filter</span>
+          <div class="soa-bucket-chips" id="soa-bucket-chips" role="group" aria-label="Process sheet bucket">
+            <button type="button" class="soa-bucket-chip is-active" data-bucket="APS" aria-pressed="true">APS</button>
+            <button type="button" class="soa-bucket-chip is-active" data-bucket="NPS" aria-pressed="true">NPS</button>
+            <button type="button" class="soa-bucket-chip" data-bucket="OTHER" aria-pressed="false">Other PS</button>
+          </div>
+        </div>
+        <label class="soa-field">
+          <span>Lookback</span>
+          <select id="soa-lookback">
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="60" selected>Last 60 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="custom">Custom range</option>
+          </select>
+        </label>
+        <label class="soa-field soa-field--custom" id="soa-from-wrap" hidden>
+          <span>From</span>
+          <input type="date" id="soa-from">
+        </label>
+        <label class="soa-field soa-field--custom" id="soa-to-wrap" hidden>
+          <span>To</span>
+          <input type="date" id="soa-to">
+        </label>
+        <label class="soa-field soa-field--search">
+          <span>Search</span>
+          <input type="search" id="soa-search" placeholder="SO, PS, part, customer PO..." autocomplete="off">
+        </label>
+        <div class="soa-meta" id="soa-meta">Loading...</div>
+      </section>
+
+      <div id="soa-loading" class="soa-loading">
+        <div class="spinner"></div>
+        <span>Loading SO line archive...</span>
+      </div>
+      <div id="soa-alert" class="soa-alert" hidden></div>
+
+      <section class="soa-kpi" id="soa-kpi" hidden></section>
+
+      <section class="soa-groups" id="soa-groups" hidden></section>
+      <div id="soa-empty" class="soa-empty" hidden>No sales order lines match this filter.</div>
+    </div>
+
+    <aside class="soa-notify" aria-label="Recent new sales orders">
+      <div class="soa-notify-head">
+        <div>
+          <p class="soa-notify-kicker">Incoming</p>
+          <h2 class="soa-notify-title">New sales orders</h2>
+        </div>
+        <span class="soa-notify-badge" id="soa-notify-badge">0</span>
+      </div>
+      <p class="soa-notify-sub" id="soa-notify-sub">
+        Last 10 for APS + NPS.
+      </p>
+      <div class="soa-notify-list" id="soa-notify-list">
+        <div class="soa-notify-empty">Waiting for data...</div>
+      </div>
+    </aside>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/so_archive.js') }}?v=soa-20260730c"></script>
+{% endblock %}

@@ -40,6 +40,7 @@ from planning.qc_quality_queue_route import qc_quality_queue_bp
 from planning.kobelco_mps_archive_route import kobelco_mps_archive_bp
 from planning.machine_lane_calc_route import machine_lane_calc_bp
 from planning.pr_status_enquiry_route import pr_status_enquiry_bp
+from planning.material_tracking_pr_po_route import material_tracking_pr_po_bp
 from planning.program_tool_tracker_route import program_tool_tracker_bp
 from planning.repeat_orders_route import repeat_orders_bp
 from planning.auk_oee_route import auk_oee_bp
@@ -67,6 +68,9 @@ from planning.driver_view_route import (
 from planning.capacity_monthly_route import capacity_monthly_bp
 from planning.preferred_machines_route import preferred_machines_bp
 from planning.floor_plan_route import floor_plan_bp
+from planning.monthly_delivery_plan_route import monthly_delivery_plan_bp
+from planning.so_outstanding_balance_route import so_outstanding_balance_bp
+from planning.so_archive_route import so_archive_bp
 from planning.queue_exit_history_route import queue_exit_history_bp
 from planning.mpp_planner_route import mpp_planner_bp
 from planning.inventory_enquiry_route import inventory_enquiry_bp
@@ -79,6 +83,7 @@ from planning.mro_auth import (
     mro_auth_bp,
     mro_user_authenticated,
 )
+from planning.pps_route import PPS_PATH, pps_bp
 from planning.accounts_route import ACCOUNTS_PATH, accounts_bp
 from planning.notes_route import notes_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
@@ -96,12 +101,15 @@ app.register_blueprint(new_orders_bp)
 app.register_blueprint(sales_orders_bp)
 app.register_blueprint(pending_pp_bp)
 app.register_blueprint(sales_report_bp)
+app.register_blueprint(so_outstanding_balance_bp)
+app.register_blueprint(so_archive_bp)
 app.register_blueprint(job_ratio_bp)
 app.register_blueprint(material_inspection_bp)
 app.register_blueprint(qc_quality_queue_bp)
 app.register_blueprint(kobelco_mps_archive_bp)
 app.register_blueprint(machine_lane_calc_bp)
 app.register_blueprint(pr_status_enquiry_bp)
+app.register_blueprint(material_tracking_pr_po_bp)
 app.register_blueprint(program_tool_tracker_bp)
 app.register_blueprint(repeat_orders_bp)
 app.register_blueprint(auk_oee_bp)
@@ -126,6 +134,7 @@ for _legacy_fq_path in LEGACY_FINISHING_QUEUE_PATHS:
 app.register_blueprint(capacity_monthly_bp)
 app.register_blueprint(preferred_machines_bp)
 app.register_blueprint(floor_plan_bp)
+app.register_blueprint(monthly_delivery_plan_bp)
 app.register_blueprint(queue_exit_history_bp)
 app.register_blueprint(mpp_planner_bp)
 app.register_blueprint(inventory_enquiry_bp)
@@ -134,6 +143,7 @@ app.register_blueprint(frame_agreement_bp)
 app.register_blueprint(email_bp)
 app.register_blueprint(mro_bp)
 app.register_blueprint(mro_auth_bp)
+app.register_blueprint(pps_bp)
 app.register_blueprint(accounts_bp)
 app.register_blueprint(notes_bp)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
@@ -242,6 +252,7 @@ _DRIVER_VIEW_PUBLIC_PATHS = frozenset(
     {DRIVER_VIEW_PATH.lower(), _LEGACY_DRIVER_VIEW_PATH.lower()}
 )
 _MRO_PUBLIC_PATHS = frozenset({MRO_PATH.lower(), "/mro"})
+_PPS_PUBLIC_PATHS = frozenset({PPS_PATH.lower(), "/pps"})
 _ACCOUNTS_PUBLIC_PATHS = frozenset({ACCOUNTS_PATH.lower(), "/accounts"})
 
 
@@ -264,6 +275,8 @@ def _is_gate_public_path(path: str) -> bool:
     if normalized in _DRIVER_VIEW_PUBLIC_PATHS:
         return True
     if normalized in _MRO_PUBLIC_PATHS:
+        return True
+    if normalized in _PPS_PUBLIC_PATHS:
         return True
     if normalized in _ACCOUNTS_PUBLIC_PATHS:
         return True
@@ -292,6 +305,7 @@ REPORTS_TOKEN_MAX_AGE = 8 * 3600
 # Page URLs behind the reports lock (must match the REPORTS / ANALYTICS dropdown).
 _REPORTS_PAGE_PREFIXES = (
     "/sales-report",
+    "/so-outstanding-balance",
     "/job-ratio",
     "/production-capacity",
     "/repeat-orders",
@@ -300,6 +314,7 @@ _REPORTS_PAGE_PREFIXES = (
 # API URLs that feed those pages — locked too so the data can't be fetched directly.
 _REPORTS_API_PREFIXES = (
     "/api/sales-report",
+    "/api/so-outstanding-balance",
     "/api/job-ratio",
     "/api/production-capacity",
     "/api/planning-data/repeat-orders",
@@ -334,7 +349,29 @@ def _reports_token_valid(token: str) -> bool:
 
 
 def _reports_request_token() -> str:
-    return (request.args.get("rt") or request.headers.get("X-Reports-Token") or "").strip()
+    return (
+        (request.args.get("rt") or "")
+        or (request.headers.get("X-Reports-Token") or "")
+        or (request.cookies.get("reports_rt") or "")
+    ).strip()
+
+
+def _set_reports_token_cookie(response, token: str):
+    response.set_cookie(
+        "reports_rt",
+        token,
+        max_age=REPORTS_TOKEN_MAX_AGE,
+        httponly=True,
+        samesite="Lax",
+        secure=bool(request.is_secure),
+        path="/",
+    )
+    return response
+
+
+def _clear_reports_token_cookie(response):
+    response.delete_cookie("reports_rt", path="/")
+    return response
 
 
 def _path_has_prefix(path: str, prefixes) -> bool:
@@ -360,6 +397,8 @@ _FINANCE_API_PREFIXES = ("/api/accounts",)
 MRO_LOGIN_PATH = "/mro-login"
 _MRO_PAGE_PREFIXES = (MRO_PATH,)
 _MRO_API_PREFIXES = ("/api/mro",)
+_PPS_PAGE_PREFIXES = (PPS_PATH,)
+_PPS_API_PREFIXES = ("/api/pps",)
 
 ADMIN_GATE_PATH = "/admin-gate"
 ADMIN_TOKEN_SALT = "admin-hub-gate"
@@ -448,6 +487,14 @@ def _is_mro_api_path(path: str) -> bool:
     return _path_has_prefix(path, _MRO_API_PREFIXES)
 
 
+def _is_pps_page_path(path: str) -> bool:
+    return _path_has_prefix(path, _PPS_PAGE_PREFIXES)
+
+
+def _is_pps_api_path(path: str) -> bool:
+    return _path_has_prefix(path, _PPS_API_PREFIXES)
+
+
 def _is_admin_page_path(path: str) -> bool:
     return _path_has_prefix(path, _ADMIN_PAGE_PREFIXES)
 
@@ -472,6 +519,9 @@ def _require_planner_passcode():
     # MRO pages use per-user MRO login — not the planner passcode.
     if _is_mro_page_path(path) or _is_mro_api_path(path):
         return None
+    # PPS is a standalone tracking app (public like QAQC / driver view).
+    if _is_pps_page_path(path) or _is_pps_api_path(path):
+        return None
     if is_mro_auth_public_path(path):
         return None
     # Admin Hub uses ADMIN_PASSCODE only when that gate is enabled.
@@ -483,9 +533,15 @@ def _require_planner_passcode():
 
 
 def _safe_reports_next(raw: str) -> str:
-    target = (raw or "").strip()
-    if _is_reports_page_path(target):
-        return target
+    """Keep only a known reports page path; strip query/fragment so ?rt= cannot poison next."""
+    from urllib.parse import unquote, urlparse
+
+    target = unquote((raw or "").strip())
+    if not target.startswith("/"):
+        return "/sales-report"
+    path = (urlparse(target).path or "/").split("?", 1)[0]
+    if _is_reports_page_path(path):
+        return path.rstrip("/") or "/"
     return "/sales-report"
 
 
@@ -510,11 +566,15 @@ def _require_reports_passcode():
     path = request.path or "/"
     if not _is_reports_page_path(path) and not _is_reports_api_path(path):
         return None
-    if _reports_token_valid(_reports_request_token()):
+    token = _reports_request_token()
+    if _reports_token_valid(token):
         return None
     if _is_reports_api_path(path):
-        return jsonify({"error": "Reports access locked."}), 401
-    return redirect(url_for("reports_gate", next=path))
+        resp = jsonify({"error": "Reports access locked."})
+        resp.status_code = 401
+        return _clear_reports_token_cookie(resp)
+    resp = redirect(url_for("reports_gate", next=path))
+    return _clear_reports_token_cookie(resp)
 
 
 @app.route(REPORTS_GATE_PATH, methods=["GET", "POST"], endpoint="reports_gate")
@@ -530,7 +590,8 @@ def reports_gate():
         if passcode and secrets.compare_digest(entered, passcode):
             token = _issue_reports_token()
             next_path = _safe_reports_next(request.form.get("next"))
-            return redirect(f"{next_path}?rt={quote(token, safe='')}")
+            resp = redirect(f"{next_path}?rt={quote(token, safe='')}")
+            return _set_reports_token_cookie(resp, token)
         return _render_reports_gate(error="Invalid passcode.", next_path=next_path, status=401)
 
     return _render_reports_gate(next_path=next_path)
@@ -1021,7 +1082,7 @@ def operations():
 _PP_VOUCHERS_COLS = [
     "ps_id", "pp_partial_no", "part_no", "description",
     "total_qty", "partial_qty", "due_date", "order_date",
-    "bom_code", "source_voucher_no", "source_line_item_no",
+    "bom_code", "source_voucher_no", "source_line_item_no", "customer_po_no",
     "qty_shipped", "so_det_qty", "status", "execution_status",
     "wo_qty_required", "wo_qty_produced", "wo_qty_rejected",
     "stage_no", "stage_desc", "op_no",
@@ -1688,6 +1749,7 @@ def _pp_vouchers_with_ops_payload(cache_rows):
                 "inventory_code": part_no,
                 "source_voucher_no": row.get("source_voucher_no") or "",
                 "source_line_item_no": row.get("source_line_item_no") or "",
+                "customer_po_no": row.get("customer_po_no") or "",
                 "qty_shipped": float(row.get("qty_shipped") or 0),
                 "so_det_qty": float(row["so_det_qty"]) if row.get("so_det_qty") is not None else None,
                 "total_qty": source_total_qty,
@@ -3542,6 +3604,7 @@ if __name__ == "__main__":
     log.info("QAQC view: http://127.0.0.1:%s%s", port, FINISHING_QUEUE_PATH)
     log.info("driver view: http://127.0.0.1:%s%s", port, DRIVER_VIEW_PATH)
     log.info("MRO app: http://127.0.0.1:%s%s", port, MRO_PATH)
+    log.info("PPS app: http://127.0.0.1:%s%s", port, PPS_PATH)
     log.info("accounts receivable: http://127.0.0.1:%s%s", port, ACCOUNTS_PATH)
     if _planner_gate_enabled():
         log.info("planner passcode gate: enabled (POST / then session unlock)")

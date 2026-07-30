@@ -96,27 +96,27 @@ def _machine_code(machine: dict) -> str:
 
 def default_planning_month(as_of: date | None = None) -> tuple[int, int]:
     today = as_of or planner_today()
-    if today.day >= 23:
-        if today.month == 12:
-            return today.year + 1, 1
-        return today.year, today.month + 1
     return today.year, today.month
 
 
-def planning_period(year: int, month: int) -> tuple[date, date]:
-    year = int(year)
-    month = int(month)
-    if month == 1:
-        start = date(year - 1, 12, 23)
-    else:
-        start = date(year, month - 1, 23)
-    end = date(year, month, 22)
+def add_calendar_months(day: date, months: int) -> date:
+    """Advance (or rewind) by calendar months, clamping the day into the target month."""
+    month_index = day.month - 1 + int(months)
+    year = day.year + month_index // 12
+    month = month_index % 12 + 1
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, min(day.day, last_day))
+
+
+def planning_period(as_of: date) -> tuple[date, date]:
+    """Rolling window: as-of date through the same calendar day next month (inclusive)."""
+    start = as_of
+    end = add_calendar_months(as_of, 1)
     return start, end
 
 
 def planning_month_label(year: int, month: int) -> str:
-    end = date(int(year), int(month), 22)
-    return end.strftime("%b-%y")
+    return date(int(year), int(month), 1).strftime("%b-%y")
 
 
 def calendar_month_label(year: int, month: int) -> str:
@@ -146,7 +146,7 @@ def capacity_basis_label(basis: str) -> str:
     return {
         "rest_of_month": "Rest of this month (from today)",
         "calendar_month": "Calendar month (1st → last day)",
-        "rolling_period": "Rolling period (23rd → 22nd)",
+        "rolling_period": "Rolling period (today → same date next month)",
     }.get(basis, basis)
 
 
@@ -155,7 +155,7 @@ def resolve_capacity_basis_window(basis: str, year: int, month: int, as_of: date
     Three capacity views:
     - rest_of_month: today → end of selected calendar month (only when that month is "now")
     - calendar_month: 1st → last day of selected calendar month
-    - rolling_period: 23rd of prior month → 22nd of selected month
+    - rolling_period: as-of date → same calendar day next month
     """
     basis = parse_capacity_basis(basis)
     year = int(year)
@@ -163,7 +163,7 @@ def resolve_capacity_basis_window(basis: str, year: int, month: int, as_of: date
     warning = ""
 
     if basis == "rolling_period":
-        start, end = planning_period(year, month)
+        start, end = planning_period(as_of)
         return {
             "basis": basis,
             "basis_label": capacity_basis_label(basis),
@@ -171,7 +171,7 @@ def resolve_capacity_basis_window(basis: str, year: int, month: int, as_of: date
             "capacity_end": end,
             "segment_start": start,
             "segment_end": end,
-            "display_label": planning_month_label(year, month),
+            "display_label": f"{start.strftime('%d %b')} → {end.strftime('%d %b %Y')}",
             "warning": warning,
         }
 
@@ -244,7 +244,7 @@ def _capacity_basis_notes(basis: str, window: dict, as_of: date, *, saturday_ot_
         ]
     else:
         notes = [
-            f"Rolling period: {start} → {end} (23rd of prior month through 22nd of selected month).",
+            f"Rolling period: {start} → {end} (from as-of date through the same calendar day next month).",
             "Plan usage is the open queue scheduled anywhere in this rolling month.",
         ]
     if window.get("warning"):
@@ -443,7 +443,7 @@ def build_group_capacity_report(
     basis = parse_capacity_basis(schedule_mode or capacity_basis)
     as_of_date = as_of or planner_today()
     window = resolve_capacity_basis_window(basis, year, month, as_of_date)
-    period_start, period_end = planning_period(year, month)
+    period_start, period_end = planning_period(as_of_date)
     cal_start, cal_end = calendar_month_bounds(year, month)
     if basis == "rolling_period":
         full_start, full_end = period_start, period_end

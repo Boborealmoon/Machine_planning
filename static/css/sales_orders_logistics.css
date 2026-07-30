@@ -139,6 +139,48 @@ body.sol-view .app-main--sales-logistics {
   color: #fff;
 }
 
+.sol-bucket-group[hidden],
+.sol-chip--bucket[hidden],
+.sol-ps-only[hidden] {
+  display: none !important;
+}
+
+.sol-chip--bucket {
+  padding: 6px 10px;
+  font-size: 0.75rem;
+}
+
+.sol-status-pill {
+  display: inline-block;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.sol-status-pill--ost {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.sol-status-pill--new {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.sol-status-pill--hst {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.sol-status-pill--ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
 .sol-select {
   min-width: 10rem;
   padding: 8px 10px;
@@ -269,6 +311,96 @@ body.sol-view .app-main--sales-logistics {
 .sol-table tbody tr.is-no-wo:hover td {
   background: #fef3c7;
 }
+
+/* Purchaser material-arrival delay flag */
+.sol-table tbody tr.is-material-delay td {
+  background: #fdf2f8;
+}
+
+.sol-table tbody tr.is-material-delay:hover td {
+  background: #fce7f3;
+}
+
+.sol-table tbody tr.is-material-delay.is-no-wo td {
+  background: linear-gradient(90deg, #fdf2f8 0%, #fffbeb 100%);
+}
+
+.sol-table tbody tr.is-material-delay.is-no-wo:hover td {
+  background: linear-gradient(90deg, #fce7f3 0%, #fef3c7 100%);
+}
+
+.sol-col-delay {
+  width: 52px;
+  min-width: 52px;
+  max-width: 60px;
+  text-align: center;
+}
+
+.sol-delay-cell {
+  text-align: center;
+  padding: 2px 4px !important;
+  vertical-align: middle;
+}
+
+.sol-delay-flag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1.5px solid #d6d3d1;
+  background: #fff;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.sol-delay-flag:hover {
+  border-color: #f472b6;
+  background: #fdf2f8;
+}
+
+.sol-delay-flag.is-active {
+  border-color: #db2777;
+  background: #fce7f3;
+  color: #9d174d;
+}
+
+.sol-delay-flag.is-saving {
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+.sol-delay-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.sol-delay-mark {
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.35;
+}
+
+.sol-delay-flag.is-active .sol-delay-mark {
+  opacity: 1;
+}
+
+.sol-delay-status {
+  display: block;
+  margin-top: 2px;
+  min-height: 12px;
+  font-size: 9px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.sol-delay-status.is-saving { color: #2563eb; }
+.sol-delay-status.is-saved { color: #15803d; }
+.sol-delay-status.is-error { color: #dc2626; }
 
 .sol-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -443,6 +575,11 @@ body.sol-view .so-editable-status {
   padding: 1px 6px;
   border-radius: 4px;
   font-weight: 600;
+}
+
+.sol-legend-item--delay {
+  background: #fce7f3;
+  color: #9d174d;
 }
 
 .sol-legend-item--no-wo {

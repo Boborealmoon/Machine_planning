@@ -1,4 +1,4 @@
-// Factory floor plan - HTML tiles with capacity utilization and part tags.
+// Factory floor plan - HTML tiles with utilization and monthly capacity bookings.
 
 (function () {
   const LAYOUT_WIDTH = 10;
@@ -34,10 +34,14 @@
     detailTitle: document.getElementById('fp-detail-title'),
     detailMeta: document.getElementById('fp-detail-meta'),
     detailUtil: document.getElementById('fp-detail-util'),
-    tagList: document.getElementById('fp-tag-list'),
-    tagEmpty: document.getElementById('fp-tag-empty'),
-    tagForm: document.getElementById('fp-tag-form'),
+    detailReserved: document.getElementById('fp-detail-reserved'),
+    bookingHelp: document.getElementById('fp-booking-help'),
+    reservedSummary: document.getElementById('fp-reserved-summary'),
+    bookingList: document.getElementById('fp-booking-list'),
+    bookingEmpty: document.getElementById('fp-booking-empty'),
+    bookingForm: document.getElementById('fp-booking-form'),
     partNo: document.getElementById('fp-part-no'),
+    reservedHours: document.getElementById('fp-reserved-hours'),
     tagLabel: document.getElementById('fp-tag-label'),
     tagNotes: document.getElementById('fp-tag-notes'),
     refreshBtn: document.getElementById('fp-refresh-btn'),
@@ -65,6 +69,18 @@
   function formatPct(value) {
     const num = Number(value) || 0;
     return `${num.toFixed(1)}%`;
+  }
+
+  function formatHours(value) {
+    const num = Number(value) || 0;
+    return `${num.toFixed(num % 1 === 0 ? 0 : 1)}h`;
+  }
+
+  function selectedMonthLabel() {
+    const monthValue = els.month.value || currentMonthValue();
+    const [year, month] = monthValue.split('-');
+    const date = new Date(Number(year), Number(month) - 1, 1);
+    return date.toLocaleString(undefined, { month: 'long', year: 'numeric' });
   }
 
   function layoutMetrics() {
@@ -134,6 +150,12 @@
     return state.payload.machines.find((m) => m.machine_no === state.selectedMachineNo) || null;
   }
 
+  function planningMonthParts() {
+    const monthValue = els.month.value || currentMonthValue();
+    const [year, month] = monthValue.split('-');
+    return { planning_year: Number(year), planning_month: Number(month) };
+  }
+
   function psDisplayLabel(item) {
     return item.display_ps_id
       || item.planner_ps_id
@@ -158,8 +180,9 @@
     }
   }
 
-  function resetTagFormFields() {
+  function resetBookingFormFields() {
     els.partNo.value = '';
+    els.reservedHours.value = '';
     els.tagLabel.value = '';
     els.tagNotes.value = '';
     if (els.psSearch) els.psSearch.value = '';
@@ -170,7 +193,7 @@
     }
   }
 
-  function buildTagNotesFromPs(item) {
+  function buildBookingNotesFromPs(item) {
     const lines = [];
     const psLabel = psDisplayLabel(item);
     if (psLabel) lines.push(`Process sheet: ${psLabel}`);
@@ -186,7 +209,7 @@
     const partNo = compactPartNo(item.part_no);
     if (partNo) els.partNo.value = partNo;
     els.tagLabel.value = psDisplayLabel(item);
-    els.tagNotes.value = buildTagNotesFromPs(item);
+    els.tagNotes.value = buildBookingNotesFromPs(item);
 
     if (els.psPicked) {
       els.psPicked.hidden = false;
@@ -196,11 +219,11 @@
       `;
     }
     if (els.psSearchStatus) {
-      els.psSearchStatus.textContent = 'Details filled from process sheet. Review and save the tag.';
+      els.psSearchStatus.textContent = 'Details filled from process sheet. Enter reserved hours and save.';
     }
     if (els.psSearch) els.psSearch.value = '';
     closePsResults();
-    els.partNo.focus();
+    els.reservedHours.focus();
   }
 
   function compactPartNo(raw) {
@@ -314,15 +337,28 @@
     els.map.innerHTML = machines.map((machine) => {
       const fill = colors[machine.color] || '#ccc';
       const utilPct = Number(machine.effective_utilization_pct) || 0;
+      const reservedHours = Number(machine.reserved_hours) || 0;
+      const reservedPct = Number(machine.reserved_pct) || 0;
       const utilText = formatPct(utilPct);
       const selected = machine.machine_no === state.selectedMachineNo ? ' is-selected' : '';
       const sizeClass = tileSizeClass(machine);
       const mppClass = machine.color === 'mpp' ? ' fp-tile--mpp' : '';
-      const tags = machine.tags || [];
-      const firstTag = tags[0];
-      const tagLabel = firstTag ? (firstTag.tag_label || firstTag.part_no) : '';
-      const tagExtra = tags.length > 1 ? ` +${tags.length - 1}` : '';
+      const bookings = machine.bookings || [];
+      const firstBooking = bookings[0];
+      const bookingLabel = firstBooking
+        ? (firstBooking.tag_label || firstBooking.part_no)
+        : '';
+      const bookingExtra = bookings.length > 1 ? ` +${bookings.length - 1}` : '';
       const subtitle = machine.subtitle ? `<span class="fp-tile-sub">${escapeHtml(machine.subtitle)}</span>` : '';
+      const reservedLine = reservedHours > 0
+        ? `<span class="fp-tile-reserved">${escapeHtml(formatHours(reservedHours))}</span>`
+        : '';
+      const titleBits = [
+        machine.machine_no,
+        machine.subtitle ? `(${machine.subtitle})` : '',
+        `plan ${utilText}`,
+        reservedHours > 0 ? `reserved ${formatHours(reservedHours)} (${formatPct(reservedPct)})` : '',
+      ].filter(Boolean).join(' - ');
 
       return `
         <button
@@ -330,16 +366,18 @@
           class="fp-tile ${sizeClass}${mppClass}${selected}"
           style="${machineTileStyle(machine)};background:${escapeHtml(fill)}"
           data-machine-no="${escapeHtml(machine.machine_no)}"
-          title="${escapeHtml(machine.machine_no)}${machine.subtitle ? ` (${escapeHtml(machine.subtitle)})` : ''} - ${escapeHtml(utilText)}"
-          aria-label="${escapeHtml(machine.machine_no)}, ${escapeHtml(utilText)} utilized"
+          title="${escapeHtml(titleBits)}"
+          aria-label="${escapeHtml(machine.machine_no)}, ${escapeHtml(utilText)} plan util, ${escapeHtml(formatHours(reservedHours))} reserved"
         >
           <span class="fp-tile-no">${escapeHtml(machine.label)}</span>
           ${subtitle}
           <span class="fp-tile-util ${utilClass(utilPct)}">${escapeHtml(utilText)}</span>
-          ${tagLabel && !sizeClass.includes('fp-tile--small') ? `
-            <span class="fp-tile-tag">${escapeHtml(tagLabel)}${escapeHtml(tagExtra)}</span>
+          ${reservedLine}
+          ${bookingLabel && !sizeClass.includes('fp-tile--small') ? `
+            <span class="fp-tile-tag">${escapeHtml(bookingLabel)}${escapeHtml(bookingExtra)}</span>
           ` : ''}
           <span class="fp-tile-bar" style="width:${Math.min(100, utilPct)}%"></span>
+          ${reservedHours > 0 ? `<span class="fp-tile-bar fp-tile-bar--reserved" style="width:${Math.min(100, reservedPct)}%"></span>` : ''}
         </button>
       `;
     }).join('');
@@ -365,31 +403,53 @@
       machine.machine_category || 'Unknown category',
       machine.shift_profile || 'STANDARD',
     ].join(' | ');
-    els.detailUtil.textContent = formatPct(machine.effective_utilization_pct);
+    els.detailUtil.textContent = `Plan ${formatPct(machine.effective_utilization_pct)}`;
     els.detailUtil.className = `fp-util-badge ${utilClass(machine.effective_utilization_pct)}`;
 
-    const tags = machine.tags || [];
-    els.tagEmpty.hidden = tags.length > 0;
-    els.tagList.innerHTML = tags.map((tag) => `
+    const reservedHours = Number(machine.reserved_hours) || 0;
+    const reservedPct = Number(machine.reserved_pct) || 0;
+    const capacityHours = Number(machine.effective_capacity_hours) || 0;
+    els.detailReserved.textContent = `Reserved ${formatPct(reservedPct)}`;
+    els.detailReserved.className = `fp-reserved-badge ${utilClass(reservedPct)}`;
+
+    if (els.bookingHelp) {
+      els.bookingHelp.textContent =
+        `Reserve hours on this machine for ${selectedMonthLabel()}. Multiple parts are allowed; hours sum toward calendar-month capacity.`;
+    }
+
+    if (els.reservedSummary) {
+      const over = capacityHours > 0 && reservedHours > capacityHours;
+      els.reservedSummary.innerHTML = `
+        <div class="fp-reserved-summary-row${over ? ' is-over' : ''}">
+          <span>Reserved ${escapeHtml(formatHours(reservedHours))} / ${escapeHtml(formatHours(capacityHours))} capacity</span>
+          <strong>${escapeHtml(formatPct(reservedPct))}</strong>
+        </div>
+      `;
+    }
+
+    const bookings = machine.bookings || [];
+    els.bookingEmpty.hidden = bookings.length > 0;
+    els.bookingList.innerHTML = bookings.map((booking) => `
       <li class="fp-tag-item">
         <div class="fp-tag-item-main">
-          <strong>${escapeHtml(tag.part_no)}</strong>
-          ${tag.tag_label ? `<small>${escapeHtml(tag.tag_label)}</small>` : ''}
-          ${tag.notes ? `<small>${escapeHtml(tag.notes)}</small>` : ''}
+          <strong>${escapeHtml(booking.part_no)}</strong>
+          <small>${escapeHtml(formatHours(booking.reserved_hours))} reserved</small>
+          ${booking.tag_label ? `<small>${escapeHtml(booking.tag_label)}</small>` : ''}
+          ${booking.notes ? `<small>${escapeHtml(booking.notes)}</small>` : ''}
         </div>
-        <button type="button" class="btn btn-secondary btn-sm" data-delete-tag="${tag.tag_id}">Remove</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-delete-booking="${booking.booking_id}">Remove</button>
       </li>
     `).join('');
 
-    els.tagList.querySelectorAll('[data-delete-tag]').forEach((btn) => {
+    els.bookingList.querySelectorAll('[data-delete-booking]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        const tagId = btn.getAttribute('data-delete-tag');
+        const bookingId = btn.getAttribute('data-delete-booking');
         btn.disabled = true;
         try {
-          await deleteTag(tagId);
+          await deleteBooking(bookingId);
           await loadFloorPlan({ keepSelection: true });
         } catch (err) {
-          alert(err.message || 'Failed to remove tag.');
+          alert(err.message || 'Failed to remove booking.');
           btn.disabled = false;
         }
       });
@@ -414,7 +474,7 @@
 
   function selectMachine(machineNo) {
     state.selectedMachineNo = machineNo;
-    resetTagFormFields();
+    resetBookingFormFields();
     renderMap();
     renderDetail();
   }
@@ -459,7 +519,7 @@
     }
   }
 
-  async function saveTag(event) {
+  async function saveBooking(event) {
     event.preventDefault();
     const machine = selectedMachine();
     if (!machine?.machine_id) {
@@ -467,14 +527,19 @@
       return;
     }
 
+    const monthParts = planningMonthParts();
     const body = {
       machine_id: machine.machine_id,
+      planning_year: monthParts.planning_year,
+      planning_month: monthParts.planning_month,
       part_no: els.partNo.value.trim(),
+      reserved_hours: els.reservedHours.value,
       tag_label: els.tagLabel.value.trim(),
       notes: els.tagNotes.value.trim(),
+      as_of: els.asOf.value || todayIso(),
     };
 
-    const res = await fetch('/api/floor-plan/tags', {
+    const res = await fetch('/api/floor-plan/bookings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -484,12 +549,16 @@
       throw new Error(payload.error || `Save failed (${res.status})`);
     }
 
-    resetTagFormFields();
+    if (payload.warning) {
+      alert(payload.warning);
+    }
+
+    resetBookingFormFields();
     await loadFloorPlan({ keepSelection: true });
   }
 
-  async function deleteTag(tagId) {
-    const res = await fetch(`/api/floor-plan/tags/${encodeURIComponent(tagId)}`, {
+  async function deleteBooking(bookingId) {
+    const res = await fetch(`/api/floor-plan/bookings/${encodeURIComponent(bookingId)}`, {
       method: 'DELETE',
     });
     const payload = await res.json();
@@ -508,11 +577,11 @@
         sizeMapCanvas();
       }
     });
-    els.tagForm.addEventListener('submit', async (event) => {
+    els.bookingForm.addEventListener('submit', async (event) => {
       try {
-        await saveTag(event);
+        await saveBooking(event);
       } catch (err) {
-        alert(err.message || 'Failed to save tag.');
+        alert(err.message || 'Failed to save booking.');
       }
     });
 

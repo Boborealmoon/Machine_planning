@@ -18,9 +18,15 @@
       var rt = params.get("rt");
       if (rt) {
         window.__reportsAuthToken = rt;
+        try { sessionStorage.setItem("reportsAuthToken", rt); } catch (e) {}
         params.delete("rt");
         var qs = params.toString();
         history.replaceState({}, "", window.location.pathname + (qs ? "?" + qs : ""));
+      } else {
+        try {
+          var saved = sessionStorage.getItem("reportsAuthToken");
+          if (saved) window.__reportsAuthToken = saved;
+        } catch (e) {}
       }
     })();
   </script>
@@ -31,7 +37,7 @@
   {% block content %}{% endblock %}
 </main>
 
-<script src="{{ url_for('static', filename='js/main.js') }}?v=reports-standalone-20260709"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}?v=reports-token-20260729b"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

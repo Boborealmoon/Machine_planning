@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}PPS Tracking{% endblock %}
+
+{% block favicon %}
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-pps.svg') }}" />
+{% endblock %}
+
+{% block body_class %}pps-app{% endblock %}
+{% block main_class %}app-main--pps{% endblock %}
+
+{% block extra_css %}
+<meta name="referrer" content="no-referrer" />
+<meta name="robots" content="noindex, nofollow, noarchive" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/pps.css') }}?v={{ pps_asset_version }}">
+{% endblock %}
+
+{% block content %}
+<div class="pps-shell">
+  <header class="pps-top">
+    <div class="pps-brand">
+      <span class="pps-mark" aria-hidden="true">PPS</span>
+      <div>
+        <h1 class="pps-title">Process sheets</h1>
+        <p class="pps-count" id="pps-stats" aria-live="polite">{{ pps_subtitle }}</p>
+      </div>
+    </div>
+    <div class="pps-top-actions">
+      <div class="pps-view-toggle" role="group" aria-label="View style">
+        <button type="button" class="pps-view-btn is-active" data-view="columns" aria-pressed="true">Columns</button>
+        <button type="button" class="pps-view-btn" data-view="cards" aria-pressed="false">Cards</button>
+      </div>
+      <label class="pps-search">
+        <span class="pps-sr">Search</span>
+        <input id="pps-tracking-search" type="search" placeholder="Search PS, part, SO..." autocomplete="off">
+      </label>
+      <button type="button" class="pps-btn" id="pps-tracking-refresh" title="Reload">Refresh</button>
+    </div>
+  </header>
+
+  <div class="pps-controls" aria-label="Filters">
+    <div class="pps-status-tabs" role="tablist" aria-label="Job status">
+      <button type="button" class="pps-status-tab is-active" role="tab" aria-selected="true" data-status="active">
+        Active <span class="pps-tab-count" data-count="active">0</span>
+      </button>
+      <button type="button" class="pps-status-tab" role="tab" aria-selected="false" data-status="not-started">
+        Waiting <span class="pps-tab-count" data-count="not-started">0</span>
+      </button>
+      <button type="button" class="pps-status-tab" role="tab" aria-selected="false" data-status="completed">
+        Done <span class="pps-tab-count" data-count="completed">0</span>
+      </button>
+      <button type="button" class="pps-status-tab" role="tab" aria-selected="false" data-status="all">
+        All <span class="pps-tab-count" data-count="all">0</span>
+      </button>
+    </div>
+    <label class="pps-quiet-check">
+      <input id="pps-tracking-hide-zero-value" type="checkbox" checked>
+      Hide $0 SO
+    </label>
+  </div>
+
+  <div id="pps-tracking-loading" class="pps-loading" hidden>
+    <div class="pps-spinner" aria-hidden="true"></div>
+    Loading...
+  </div>
+
+  <div id="pps-board" class="pps-board pps-board--columns" hidden></div>
+  <p id="pps-tracking-empty" class="pps-empty" hidden>No jobs match.</p>
+</div>
+
+<div id="pps-stage-modal" class="pps-modal" hidden>
+  <div class="pps-modal-card" role="dialog" aria-modal="true" aria-labelledby="pps-stage-modal-title">
+    <header class="pps-modal-head">
+      <div>
+        <h2 id="pps-stage-modal-title">Process sheet</h2>
+        <p id="pps-stage-modal-sub" class="pps-modal-sub"></p>
+      </div>
+      <button type="button" class="pps-btn" data-pps-modal-close>Close</button>
+    </header>
+    <div id="pps-stage-modal-summary" class="pps-modal-summary"></div>
+    <section class="pps-panel pps-modal-stages">
+      <h3>Route stages</h3>
+      <ul id="pps-stage-modal-list" class="pps-stages"></ul>
+    </section>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/pps.js') }}?v={{ pps_asset_version }}"></script>
+{% endblock %}

@@ -2640,6 +2640,32 @@
     render();
   }
 
+  /**
+   * Full-pallet Schedule-to-MPP plan. Never rounds a leftover rem into an extra pallet
+   * (e.g. 10 pc rem @ 3 pc/pal → 3 cycles / 9 pc, not 4 / 12).
+   */
+  function planBulkScheduleCycles(qty, rem, palletsPerCycle, pcsPerPallet) {
+    const effectivePcs = Math.max(1, Number(pcsPerPallet) || 1);
+    const palPerCycle = Math.max(1, Math.floor(Number(palletsPerCycle) || 1));
+    let left = Math.min(Math.max(0, Number(qty) || 0), Math.max(0, Number(rem) || 0));
+    const maxPerCycle = palPerCycle * effectivePcs;
+    const palletCounts = [];
+    while (left >= effectivePcs) {
+      const cyclePcs = Math.min(left, maxPerCycle);
+      const pallets = Math.min(palPerCycle, Math.floor(cyclePcs / effectivePcs));
+      if (pallets < 1) break;
+      palletCounts.push(pallets);
+      left -= pallets * effectivePcs;
+    }
+    return {
+      palletCounts,
+      scheduledPcs: palletCounts.reduce((sum, pallets) => sum + pallets * effectivePcs, 0),
+      leftoverPcs: left,
+      effectivePcs,
+      palPerCycle,
+    };
+  }
+
   function bulkScheduleJob(machineId, jobId, { palletsPerCycle, minPerPallet, pcsPerPallet, qty, shift }) {
     const job = getJob(jobId);
     const lane = state.machines[machineId];
@@ -2650,11 +2676,8 @@
     job.pcsPerPallet = effectivePcs;
     state.jobs[jobId] = job;
     const cycleShift = normalizeShift(shift || defaultShiftForMachine(machine), machine);
-    let left = Math.min(qty, jobRemaining(jobId));
-    const maxPerCycle = palletsPerCycle * effectivePcs;
-    while (left > 0) {
-      const cyclePcs = Math.min(left, maxPerCycle);
-      const pallets = Math.min(palletsPerCycle, Math.ceil(cyclePcs / effectivePcs));
+    const plan = planBulkScheduleCycles(qty, jobRemaining(jobId), palletsPerCycle, effectivePcs);
+    plan.palletCounts.forEach((pallets) => {
       const cycle = normalizeCycle({
         cycleId: newId('c'),
         anchor: null,
@@ -2667,8 +2690,7 @@
         ops: [newCycleOp(jobId, pallets, job)],
       });
       lane.cycles = [...(lane.cycles || []), cycle];
-      left -= pallets * effectivePcs;
-    }
+    });
     markMachineDirty(machineId);
     render();
   }
@@ -3072,13 +3094,17 @@
       const m = Number(document.getElementById('mpp-s-min')?.value || 1);
       const p = Number(document.getElementById('mpp-s-pcs')?.value || 1);
       const q = Number(document.getElementById('mpp-s-qty')?.value || 0);
+      const plan = planBulkScheduleCycles(q, rem, pal, p);
+      const n = plan.palletCounts.length;
       const perCycle = pal * p;
-      const n = perCycle > 0 ? Math.ceil(q / perCycle) : 0;
       const shift = document.querySelector('input[name="mpp-s-shift"]:checked')?.value || 'day';
       const shiftLabel = MPP_SHIFT_META[shift]?.label || shift;
       const el = document.getElementById('mpp-schedule-preview');
       if (el) {
-        el.innerHTML = `<strong>${n}</strong> ${shiftLabel.toLowerCase()} cycle box${n === 1 ? '' : 'es'} · ${fmtMinutes(pal * m)} each · ${perCycle} pc/cycle at full pallets`;
+        const leftoverNote = plan.leftoverPcs > 0
+          ? ` · <span class="mpp-schedule-leftover">${plan.leftoverPcs} pc left (below full pallet)</span>`
+          : '';
+        el.innerHTML = `<strong>${n}</strong> ${shiftLabel.toLowerCase()} cycle box${n === 1 ? '' : 'es'} · ${fmtMinutes(pal * m)} each · up to ${perCycle} pc/cycle · <strong>${plan.scheduledPcs}</strong> pc queued${leftoverNote}`;
       }
     };
     const syncShiftForMachine = () => {
@@ -3113,14 +3139,26 @@
     if (state.modal?.type !== 'schedule') return;
     const machineId = document.getElementById('mpp-s-machine')?.value || defaultMachineId();
     const shift = document.querySelector('input[name="mpp-s-shift"]:checked')?.value || defaultShiftForMachine(machineById(machineId));
+    const pcsPerPallet = Math.max(1, Number(document.getElementById('mpp-s-pcs')?.value || 1));
+    const palletsPerCycle = Math.max(1, Number(document.getElementById('mpp-s-pallets')?.value || 1));
+    const qty = Number(document.getElementById('mpp-s-qty')?.value || 0);
+    const plan = planBulkScheduleCycles(qty, jobRemaining(state.modal.jobId), palletsPerCycle, pcsPerPallet);
+    if (!plan.palletCounts.length) {
+      window.alert(
+        pcsPerPallet > 1
+          ? `Need at least ${pcsPerPallet} pc remaining for one full pallet (pcs/pallet).`
+          : 'Nothing left to schedule.'
+      );
+      return;
+    }
     bulkScheduleJob(
       machineId,
       state.modal.jobId,
       {
-        palletsPerCycle: Math.max(1, Number(document.getElementById('mpp-s-pallets')?.value || 1)),
+        palletsPerCycle,
         minPerPallet: Math.max(0.1, Number(document.getElementById('mpp-s-min')?.value || 1)),
-        pcsPerPallet: Math.max(1, Number(document.getElementById('mpp-s-pcs')?.value || 1)),
-        qty: Number(document.getElementById('mpp-s-qty')?.value || 0),
+        pcsPerPallet,
+        qty,
         shift,
       },
     );

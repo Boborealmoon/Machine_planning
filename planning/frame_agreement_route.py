@@ -7,14 +7,21 @@ from typing import Any
 from flask import Blueprint, jsonify, render_template, request
 
 from db import planner_db_connect_error
+from .cycle_time_service import MasterTimeCache
 from .frame_agreement_service import (
+    add_frame_agreement_normal_part,
     add_frame_agreement_part,
     build_fa_operation_line_items,
+    build_normal_master_ops_for_bom,
+    delete_frame_agreement_normal_part,
     delete_frame_agreement_part,
+    enrich_frame_agreement_normal_part,
     enrich_frame_agreement_part,
     fetch_frame_agreement_part_preview,
+    list_frame_agreement_normal_parts,
     list_frame_agreement_parts,
     search_frame_agreement_parts,
+    update_frame_agreement_normal_part,
     update_frame_agreement_part,
 )
 from .helpers import one, planner_db
@@ -85,7 +92,7 @@ def api_list_frame_agreement_parts():
                     con.execute(
                         """
                         SELECT part_no, notes, mpp_machine_no, mpp_run_min_per_pallet, mpp_setup_minutes,
-                               created_at, updated_at
+                               deburring_cycle_min_per_piece, created_at, updated_at
                         FROM planner_frame_agreement_part
                         WHERE part_no = %s
                         """,
@@ -165,6 +172,7 @@ def api_add_frame_agreement_part():
                 mpp_machine_no=compact_text(data.get("mpp_machine_no")),
                 mpp_run_min_per_pallet=float(data.get("mpp_run_min_per_pallet") or 0),
                 mpp_setup_minutes=float(data.get("mpp_setup_minutes") or 0),
+                deburring_cycle_min_per_piece=float(data.get("deburring_cycle_min_per_piece") or 0),
                 description=compact_text(data.get("description")),
             )
         invalidate_sales_orders_cache()
@@ -235,7 +243,7 @@ def api_save_frame_agreement_part():
     if not part_no:
         return jsonify({"ok": False, "error": "part_no is required"}), 400
     updates: dict[str, Any] = {}
-    for key in ("notes", "mpp_machine_no", "mpp_run_min_per_pallet", "mpp_setup_minutes"):
+    for key in ("notes", "mpp_machine_no", "mpp_run_min_per_pallet", "mpp_setup_minutes", "deburring_cycle_min_per_piece"):
         if key in data:
             updates[key] = data.get(key)
     if not updates:
@@ -281,6 +289,7 @@ def api_update_frame_agreement_part(part_no: str):
         "mpp_setup_minutes",
         "mpp_pcs_per_pallet",
         "mpp_pallets_per_cycle",
+        "deburring_cycle_min_per_piece",
     ):
         if key in data:
             updates[key] = data.get(key)
@@ -317,4 +326,123 @@ def api_delete_frame_agreement_part(part_no: str):
         if friendly:
             return jsonify({"ok": False, "error": friendly}), 503
         logger.exception("frame agreement part delete failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ── Normal machines lane (non-MPP) ──────────────────────────────────────────
+
+
+@frame_agreement_bp.get("/api/planning-data/frame-agreement-normal-parts")
+def api_list_frame_agreement_normal_parts():
+    action = compact_text(request.args.get("action")).lower()
+    if action == "master-ops":
+        part_no = compact_text(request.args.get("part_no"))
+        bom_code = compact_text(request.args.get("bom"))
+        if not part_no or not bom_code:
+            return jsonify({"ok": False, "error": "part_no and bom are required"}), 400
+        try:
+            with planner_db() as con:
+                resolved = build_normal_master_ops_for_bom(
+                    _erp_db_query, con, part_no, bom_code
+                )
+            return jsonify({"ok": True, **resolved})
+        except Exception as exc:
+            friendly = planner_db_connect_error(exc)
+            if friendly:
+                return jsonify({"ok": False, "error": friendly}), 503
+            logger.exception("frame agreement normal master ops failed")
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    search = compact_text(request.args.get("q"))
+    enrich = compact_text(request.args.get("enrich")).lower() in {"1", "true", "yes"}
+    try:
+        with planner_db() as con:
+            rows_out = list_frame_agreement_normal_parts(con, search=search)
+            if enrich and rows_out:
+                cache = MasterTimeCache.load(con)
+                rows_out = [
+                    enrich_frame_agreement_normal_part(
+                        _erp_db_query, con, row, master_cache=cache
+                    )
+                    for row in rows_out
+                ]
+        return jsonify({"ok": True, "count": len(rows_out), "rows": rows_out})
+    except Exception as exc:
+        friendly = planner_db_connect_error(exc)
+        if friendly:
+            return jsonify({"ok": False, "error": friendly}), 503
+        logger.exception("frame agreement normal parts list failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@frame_agreement_bp.post("/api/planning-data/frame-agreement-normal-parts")
+def api_add_frame_agreement_normal_part():
+    data = request.get_json(force=True, silent=True) or {}
+    part_no = compact_text(data.get("part_no"))
+    notes = compact_text(data.get("notes"))
+    if not part_no:
+        return jsonify({"ok": False, "error": "part_no is required"}), 400
+    try:
+        with planner_db() as con:
+            row = add_frame_agreement_normal_part(
+                con,
+                part_no,
+                notes=notes,
+                deburring_cycle_min_per_piece=float(data.get("deburring_cycle_min_per_piece") or 0),
+            )
+        invalidate_sales_orders_cache()
+        return jsonify({"ok": True, "row": row})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        friendly = planner_db_connect_error(exc)
+        if friendly:
+            return jsonify({"ok": False, "error": friendly}), 503
+        logger.exception("frame agreement normal part add failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@frame_agreement_bp.post("/api/planning-data/frame-agreement-normal-parts/save-part")
+def api_save_frame_agreement_normal_part():
+    data = request.get_json(force=True, silent=True) or {}
+    part_no = compact_text(data.get("part_no"))
+    if not part_no:
+        return jsonify({"ok": False, "error": "part_no is required"}), 400
+    updates: dict[str, Any] = {}
+    for key in ("notes", "deburring_cycle_min_per_piece"):
+        if key in data:
+            updates[key] = data.get(key)
+    if not updates:
+        return jsonify({"ok": False, "error": "No fields to update"}), 400
+    try:
+        with planner_db() as con:
+            row = update_frame_agreement_normal_part(con, part_no, **updates)
+        if not row:
+            return jsonify({"ok": False, "error": "Part not found"}), 404
+        invalidate_sales_orders_cache()
+        return jsonify({"ok": True, "row": row})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        friendly = planner_db_connect_error(exc)
+        if friendly:
+            return jsonify({"ok": False, "error": friendly}), 503
+        logger.exception("frame agreement normal part save failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@frame_agreement_bp.delete("/api/planning-data/frame-agreement-normal-parts/<path:part_no>")
+def api_delete_frame_agreement_normal_part(part_no: str):
+    try:
+        with planner_db() as con:
+            deleted = delete_frame_agreement_normal_part(con, part_no)
+        if not deleted:
+            return jsonify({"ok": False, "error": "Part not found"}), 404
+        invalidate_sales_orders_cache()
+        return jsonify({"ok": True, "part_no": compact_text(part_no)})
+    except Exception as exc:
+        friendly = planner_db_connect_error(exc)
+        if friendly:
+            return jsonify({"ok": False, "error": friendly}), 503
+        logger.exception("frame agreement normal part delete failed")
         return jsonify({"ok": False, "error": str(exc)}), 500

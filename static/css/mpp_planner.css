@@ -1138,6 +1138,11 @@
   line-height: 1.55;
 }
 
+.mpp-schedule-leftover {
+  color: #b45309;
+  font-weight: 600;
+}
+
 .mpp-form-formula {
   color: var(--text2);
   font-weight: 500;

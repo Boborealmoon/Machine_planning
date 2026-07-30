@@ -1732,6 +1732,15 @@ document.getElementById('harvest-modal').addEventListener('click', e => {
   if (e.target === e.currentTarget) closeHarvestModal();
 });
 
-document.addEventListener('DOMContentLoaded', loadRows);
+document.addEventListener('DOMContentLoaded', () => {
+  const params = new URLSearchParams(window.location.search || '');
+  const q = (params.get('q') || '').trim();
+  if (q) {
+    filterTerm = q.toLowerCase();
+    const filterEl = document.getElementById('ct-filter');
+    if (filterEl) filterEl.value = q;
+  }
+  loadRows();
+});
 </script>
 {% endblock %}

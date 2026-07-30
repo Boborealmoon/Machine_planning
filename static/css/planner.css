@@ -9527,6 +9527,110 @@
     font-weight: 700;
   }
 
+  body.so-export-modal-open {
+    overflow: hidden;
+  }
+  .so-export-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1260;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+  }
+  .so-export-modal[hidden] {
+    display: none !important;
+  }
+  .so-export-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.42);
+    backdrop-filter: blur(2px);
+  }
+  .so-export-modal-panel {
+    position: relative;
+    z-index: 1;
+    width: min(420px, 96vw);
+    display: grid;
+    gap: 0;
+    background: var(--surface1, #fff);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    box-shadow: 0 24px 64px rgba(15, 23, 42, 0.22);
+    overflow: hidden;
+  }
+  .so-export-modal-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 18px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .so-export-modal-kicker {
+    margin: 0 0 4px;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text3);
+  }
+  .so-export-modal-title {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+  .so-export-modal-body {
+    display: grid;
+    gap: 14px;
+    padding: 16px 18px;
+  }
+  .so-export-modal-hint {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--text2);
+  }
+  .so-export-view-toggle {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .so-export-view-btn {
+    appearance: none;
+    border: 1px solid var(--line);
+    background: var(--surface2, #f8fafc);
+    color: var(--text1);
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  }
+  .so-export-view-btn:hover {
+    border-color: color-mix(in oklab, var(--accent, #2563eb) 45%, var(--line));
+  }
+  .so-export-view-btn.is-active {
+    border-color: var(--accent, #2563eb);
+    background: color-mix(in oklab, var(--accent, #2563eb) 12%, transparent);
+    color: var(--accent, #2563eb);
+  }
+  .so-export-modal-count {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text3);
+  }
+  .so-export-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 12px 18px 16px;
+    border-top: 1px solid var(--line);
+  }
+
   /* ── Sales Orders page ──────────────────────────────────────────────── */
   .app-main--sales-orders {
     max-width: 1600px;

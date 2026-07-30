@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}SO Outstanding Balance{% endblock %}
+{% block main_class %}app-main--sob{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/so_outstanding_balance.css') }}?v=sob-20260729g">
+{% endblock %}
+{% block content %}
+<div class="sob-page">
+  <header class="sob-header">
+    <div>
+      <h1 class="sob-title">SO Outstanding Balance</h1>
+      <p class="sob-subtitle">
+        Open PP / partials. <strong>SO value</strong> = unit x SO qty x exch.
+        <strong>Outstanding</strong> = unit x open qty x exch. Week from Coway EDD, else PO due.
+      </p>
+    </div>
+    <div class="sob-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="sob-export-selected" disabled>Export selected</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="sob-export">Export all</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="sob-refresh">Refresh</button>
+    </div>
+  </header>
+
+  <section class="sob-toolbar card">
+    <label class="sob-field sob-field--search">
+      <span>Search</span>
+      <input type="search" id="sob-search" placeholder="S/O, customer, PS, part, description..." autocomplete="off">
+    </label>
+    <div class="sob-field">
+      <span>PS type</span>
+      <div class="sob-type-chips" id="sob-type-chips" role="group" aria-label="Process sheet type filter"></div>
+    </div>
+    <div class="sob-toolbar-aside">
+      <div class="sob-meta" id="sob-meta">Loading...</div>
+      <button type="button" class="btn btn-ghost btn-sm" id="sob-clear-filters" hidden>Clear filters</button>
+    </div>
+  </section>
+
+  <div id="sob-filter-chips" class="sob-filter-chips" hidden></div>
+
+  <div id="sob-loading" class="sob-loading" hidden>
+    <div class="spinner"></div>
+    <span>Loading outstanding balance...</span>
+  </div>
+  <div id="sob-alert" class="sob-alert" hidden></div>
+
+  <section id="sob-kpi" class="sob-kpi-grid" hidden></section>
+
+  <section class="sob-customer-panel card" id="sob-customer-panel" hidden>
+    <div class="sob-section-head">
+      <div>
+        <h2 class="sob-section-title">By customer</h2>
+        <p class="sob-section-sub">Click a customer to focus the line list.</p>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="sob-clear-customer" hidden>Clear focus</button>
+    </div>
+    <div class="sob-table-wrap sob-table-wrap--customer">
+      <table class="sob-table sob-table--customer">
+        <thead>
+          <tr>
+            <th data-cust-sort="customer_name">Customer</th>
+            <th class="sob-num" data-cust-sort="line_count">Lines</th>
+            <th class="sob-num" data-cust-sort="pp_qty">PP qty</th>
+            <th class="sob-num" data-cust-sort="remaining_qty">Open qty</th>
+            <th class="sob-num" data-cust-sort="line_value_home">SO value</th>
+            <th class="sob-num" data-cust-sort="outstanding_balance_home">Outstanding</th>
+          </tr>
+        </thead>
+        <tbody id="sob-customer-body"></tbody>
+      </table>
+    </div>
+    <div id="sob-customer-empty" class="sob-empty" hidden>No customers matched.</div>
+  </section>
+
+  <section class="sob-table-panel card" id="sob-table-panel" hidden>
+    <div class="sob-section-head sob-section-head--inline">
+      <div>
+        <h2 class="sob-section-title">Line items</h2>
+        <p class="sob-section-sub" id="sob-lines-sub">Select rows to export a subset.</p>
+      </div>
+      <div class="sob-selection-pill" id="sob-selection-meta" hidden></div>
+    </div>
+    <div class="sob-table-wrap">
+      <table class="sob-table sob-table--lines" id="sob-table">
+        <thead>
+          <tr>
+            <th class="sob-check-col" title="Select all visible">
+              <input type="checkbox" id="sob-select-all" aria-label="Select all visible lines">
+            </th>
+            <th data-sort="sales_order_no">S/O</th>
+            <th data-sort="customer_name" class="sob-th-filterable" data-filter-col="customer_name">
+              <span class="sob-th-inner">
+                <span class="sob-th-label">Customer</span>
+                <button type="button" class="sob-col-filter-btn" data-sob-filter="customer_name" title="Filter customers" aria-label="Filter customers">
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-4.5 5.2V13l-4 2V7.7L1.5 2.5z"/></svg>
+                  <span class="sob-filter-badge" hidden></span>
+                </button>
+              </span>
+            </th>
+            <th data-sort="process_sheet_no">PS</th>
+            <th data-sort="part_no">Part</th>
+            <th data-sort="part_desc">Description</th>
+            <th class="sob-num" data-sort="unit_selling_price">U/Price</th>
+            <th class="sob-num" data-sort="exch_rate">Exch</th>
+            <th class="sob-num" data-sort="pp_qty">PP qty</th>
+            <th class="sob-num" data-sort="so_qty">SO qty</th>
+            <th class="sob-num" data-sort="line_value_home" title="Unit x SO qty x exchange rate">SO value</th>
+            <th class="sob-num" data-sort="outstanding_balance_home" title="Unit x open qty x exchange rate">Outstanding</th>
+            <th data-sort="status" class="sob-th-filterable" data-filter-col="status">
+              <span class="sob-th-inner">
+                <span class="sob-th-label">Status</span>
+                <button type="button" class="sob-col-filter-btn" data-sob-filter="status" title="Filter status" aria-label="Filter status">
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-4.5 5.2V13l-4 2V7.7L1.5 2.5z"/></svg>
+                  <span class="sob-filter-badge" hidden></span>
+                </button>
+              </span>
+            </th>
+            <th data-sort="due_date">PO due</th>
+            <th data-sort="coway_edd">Coway</th>
+            <th data-sort="week">Week</th>
+          </tr>
+        </thead>
+        <tbody id="sob-body"></tbody>
+      </table>
+    </div>
+    <div id="sob-empty" class="sob-empty" hidden>No outstanding S/O lines matched.</div>
+  </section>
+</div>
+<div id="sob-col-filter-popover" class="sob-col-filter-popover" hidden></div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/so_outstanding_balance.js') }}?v=sob-20260729g"></script>
+{% endblock %}

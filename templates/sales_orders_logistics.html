@@ -7,7 +7,7 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260720d">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260728-delay">
 {% endblock %}
 {% block content %}
 <div class="sol-page">
@@ -30,14 +30,33 @@
               title="Process sheets with PP raised but no work order yet">
         No WO <span class="sol-chip-count" id="sol-no-wo-count" hidden>0</span>
       </button>
+      <button type="button" class="sol-chip" data-sol-view="pr-enquiry" role="tab" aria-selected="false"
+              title="Purchase request status enquiry">
+        PR Enquiry <span class="sol-chip-count" id="sol-pr-count" hidden>0</span>
+      </button>
+      <button type="button" class="sol-chip" data-sol-view="purchase-order" role="tab" aria-selected="false"
+              title="Purchase order status">
+        Purchase Order <span class="sol-chip-count" id="sol-po-count" hidden>0</span>
+      </button>
     </div>
-    <select id="sol-material-filter" class="sol-select" aria-label="Filter by material status">
+    <div class="sol-nav-group sol-bucket-group" id="sol-bucket-group" role="tablist" aria-label="PR / PO bucket" hidden>
+      <button type="button" class="sol-chip sol-chip--bucket is-active" data-sol-bucket="ost" role="tab" aria-selected="true">
+        Outstanding <span class="sol-chip-count" id="sol-bucket-ost-count" hidden>0</span>
+      </button>
+      <button type="button" class="sol-chip sol-chip--bucket" data-sol-bucket="new" role="tab" aria-selected="false" hidden>
+        New <span class="sol-chip-count" id="sol-bucket-new-count" hidden>0</span>
+      </button>
+      <button type="button" class="sol-chip sol-chip--bucket" data-sol-bucket="hst" role="tab" aria-selected="false">
+        History <span class="sol-chip-count" id="sol-bucket-hst-count" hidden>0</span>
+      </button>
+    </div>
+    <select id="sol-material-filter" class="sol-select sol-ps-only" aria-label="Filter by material status">
       <option value="all">All material status</option>
       <option value="empty">No date / not arrived</option>
       <option value="expected">Expected date set</option>
       <option value="arrived">Arrived</option>
     </select>
-    <div class="filter-dropdown" id="sol-ps-type-dropdown">
+    <div class="filter-dropdown sol-ps-only" id="sol-ps-type-dropdown">
       <button class="filter-dropdown-btn sol-prefix-btn" type="button" id="sol-ps-type-btn">APS, NPS</button>
       <div class="filter-dropdown-panel" id="sol-ps-type-panel" hidden>
         <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
@@ -60,9 +79,10 @@
 
   <div id="sol-table-host" class="sol-table-card" hidden>
     <div class="sol-table-scroll">
-      <table class="sol-table">
-        <thead>
+      <table class="sol-table" id="sol-table">
+        <thead id="sol-table-head">
           <tr>
+            <th class="sol-col-delay" title="Material arrival delay">Flag</th>
             <th>S/O</th>
             <th>Customer</th>
             <th>Process sheet</th>
@@ -86,10 +106,12 @@
   <p id="sol-empty" class="sol-empty" hidden>No rows match your filters.</p>
 
   <footer class="sol-foot">
-    <p class="sol-legend">
+    <p class="sol-legend" id="sol-legend">
+      <span class="sol-legend-item sol-legend-item--delay">Rose row</span> material delay &middot;
       <span class="sol-legend-item sol-legend-item--no-wo">Amber row</span> awaiting WO &middot;
       <span class="sol-legend-item sol-legend-item--date">Blue cell</span> expected date &middot;
       <span class="sol-legend-item sol-legend-item--arrived">Green cell</span> material arrived &middot;
+      Click <strong>Flag</strong> for material arrival delay &middot;
       Click <strong>Materials</strong> for BOM + inventory enquiry
     </p>
     <p class="sol-meta" id="sol-meta" hidden></p>
@@ -114,5 +136,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260720d"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260728-delay"></script>
 {% endblock %}

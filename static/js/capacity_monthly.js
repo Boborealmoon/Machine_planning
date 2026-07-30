@@ -136,12 +136,7 @@
   }
 
   function defaultPlanningMonth() {
-    const today = new Date();
-    if (today.getDate() >= 23) {
-      if (today.getMonth() === 11) return { year: today.getFullYear() + 1, month: 1 };
-      return { year: today.getFullYear(), month: today.getMonth() + 2 };
-    }
-    return { year: today.getFullYear(), month: today.getMonth() + 1 };
+    return currentCalendarMonth();
   }
 
   function populateSheetMonthSelect() {
@@ -164,7 +159,7 @@
     const subtitle = $('pc-subtitle');
     if (subtitle) {
       subtitle.textContent = page === 'sheet'
-        ? 'Machine capacity by group — pick a capacity basis (rest of month, calendar month, or rolling 23rd→22nd period).'
+        ? 'Machine capacity by group — pick a capacity basis (rest of month, calendar month, or rolling today→same date next month).'
         : 'Compare scheduled machine time (from planner segments) against available machine capacity by calendar month.';
     }
     if (page === 'monthly' && !state.monthlyData) loadMonthlyData();
