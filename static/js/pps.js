@@ -215,7 +215,7 @@ function ppsStageCellHtml(row) {
   const kind = ppsStageKind(row);
   const key = ppsRowKey(row);
   return `
-    <button type="button" class="pps-stage-btn" data-stage-popup="${ppsEscapeHtml(key)}" title="View full route stages">
+    <button type="button" class="pps-stage-btn pps-stage-btn--${kind}" data-stage-popup="${ppsEscapeHtml(key)}" title="View full route stages">
       <span class="pps-dot pps-dot--${kind}" aria-hidden="true"></span>
       <span class="pps-stage-btn-text">
         <span class="pps-stage-name">${ppsEscapeHtml(ppsStageLabel(row))}</span>
@@ -223,6 +223,20 @@ function ppsStageCellHtml(row) {
       </span>
     </button>
   `;
+}
+
+function ppsDueCellHtml(row) {
+  const overdue = ppsIsOverdue(row);
+  return `
+    <div class="pps-due-cell${overdue ? ' is-overdue' : ''}">
+      <span class="pps-due-date">${ppsEscapeHtml(ppsFormatDate(row.due_date))}</span>
+      ${overdue ? '<span class="pps-due-badge">Overdue</span>' : ''}
+    </div>
+  `;
+}
+
+function ppsInputClass(value) {
+  return value == null || String(value).trim() === '' ? ' pps-input--empty' : ' pps-input--filled';
 }
 
 function ppsControlsHtml(row, compact = false) {
@@ -341,7 +355,7 @@ function ppsRenderColumns(rows) {
           <col class="pps-w-part">
           <col class="pps-w-stage">
           <col class="pps-w-due">
-          <col class="pps-w-so">
+          <col class="pps-w-qty">
           <col class="pps-w-flag">
           <col class="pps-w-remarks">
           <col class="pps-w-date">
@@ -349,11 +363,11 @@ function ppsRenderColumns(rows) {
         </colgroup>
         <thead>
           <tr>
-            <th>PS</th>
+            <th>Job</th>
             <th>Part</th>
             <th>Stage</th>
             <th>Due</th>
-            <th>SO</th>
+            <th class="pps-th-right" title="Remaining qty">Qty</th>
             <th class="pps-th-center">Flag</th>
             <th>Remarks</th>
             <th>Material</th>
@@ -367,10 +381,21 @@ function ppsRenderColumns(rows) {
             const overdue = ppsIsOverdue(row);
             const flagged = !!row.pps_flagged;
             const ps = row.display_ps_id || row.source_ps_id || row.ps_id;
+            const so = row.source_voucher_no;
+            const remaining = ppsIsShippedComplete(row) ? 0 : row.remaining_qty;
+            const remarks = row.pps_remarks || '';
+            const material = row.pps_material_date || '';
+            const delivery = ppsAsDateInput(row.pps_delivery_week);
+            const rowCls = [
+              flagged ? 'is-flagged' : '',
+              overdue ? 'is-overdue-row' : '',
+              `is-${kind}`,
+            ].filter(Boolean).join(' ');
             return `
-              <tr class="${flagged ? 'is-flagged' : ''}" data-key="${ppsEscapeHtml(key)}" data-ps-controls>
+              <tr class="${rowCls}" data-key="${ppsEscapeHtml(key)}" data-ps-controls>
                 <td class="pps-col-ps">
                   <strong>${ppsEscapeHtml(ppsDisplay(ps))}</strong>
+                  <span class="pps-ps-so-line">${so ? ppsEscapeHtml(so) : 'No SO'}</span>
                 </td>
                 <td class="pps-col-part" title="${ppsEscapeHtml(ppsDisplay(row.part_desc))}">
                   <div class="pps-part-no">${ppsEscapeHtml(ppsDisplay(row.part_no || row.inventory_code))}</div>
@@ -379,21 +404,20 @@ function ppsRenderColumns(rows) {
                 <td class="pps-col-stage">
                   ${ppsStageCellHtml(row)}
                 </td>
-                <td class="pps-col-due${overdue ? ' is-overdue' : ''}">
-                  <span>${ppsEscapeHtml(ppsFormatDate(row.due_date))}</span>
-                  ${overdue ? '<small>Overdue</small>' : ''}
+                <td class="pps-col-due">
+                  ${ppsDueCellHtml(row)}
                 </td>
-                <td class="pps-col-so">${ppsEscapeHtml(ppsDisplay(row.source_voucher_no))}</td>
+                <td class="pps-col-qty">${ppsEscapeHtml(ppsFormatQty(remaining))}</td>
                 <td class="pps-col-flag">${ppsFlagButtonHtml(flagged)}</td>
                 <td class="pps-col-remarks">
-                  <input data-field="remarks" type="text" value="${ppsEscapeHtml(row.pps_remarks || '')}" placeholder="Notes...">
+                  <input data-field="remarks" type="text" class="${ppsInputClass(remarks).trim()}" value="${ppsEscapeHtml(remarks)}" placeholder="Add note">
                   <span class="pps-op-save" data-save-status aria-live="polite"></span>
                 </td>
                 <td class="pps-col-date">
-                  <input data-field="material_date" type="date" value="${ppsEscapeHtml(row.pps_material_date || '')}">
+                  <input data-field="material_date" type="date" class="${ppsInputClass(material).trim()}" value="${ppsEscapeHtml(material)}" title="Material date">
                 </td>
                 <td class="pps-col-week">
-                  <input data-field="delivery_week" type="date" value="${ppsEscapeHtml(ppsAsDateInput(row.pps_delivery_week))}">
+                  <input data-field="delivery_week" type="date" class="${ppsInputClass(delivery).trim()}" value="${ppsEscapeHtml(delivery)}" title="Delivery date">
                 </td>
               </tr>
             `;
@@ -742,7 +766,13 @@ document.getElementById('pps-board')?.addEventListener('click', (event) => {
 
 document.getElementById('pps-board')?.addEventListener('input', (event) => {
   const field = event.target.closest('[data-field]');
-  if (!field || field.dataset.field !== 'remarks') return;
+  if (!field) return;
+  if (field.matches('input, textarea')) {
+    const empty = !String(field.value || '').trim();
+    field.classList.toggle('pps-input--empty', empty);
+    field.classList.toggle('pps-input--filled', !empty);
+  }
+  if (field.dataset.field !== 'remarks') return;
   const key = ppsControlKeyFromEvent(field);
   if (!key) return;
   const existing = ppsRemarkTimers.get(key);
@@ -757,6 +787,11 @@ document.getElementById('pps-board')?.addEventListener('change', (event) => {
   if (!field) return;
   const key = ppsControlKeyFromEvent(field);
   if (!key) return;
+  if (field.matches('input, textarea')) {
+    const empty = !String(field.value || '').trim();
+    field.classList.toggle('pps-input--empty', empty);
+    field.classList.toggle('pps-input--filled', !empty);
+  }
   const name = field.dataset.field;
   if (name === 'material_date') ppsSaveSheetOverlay(key, { material_date: field.value || '' });
   if (name === 'delivery_week') ppsSaveSheetOverlay(key, { delivery_week: field.value || '' });

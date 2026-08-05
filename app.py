@@ -4,6 +4,7 @@ import os
 import secrets
 import threading
 import time
+from datetime import timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -20,6 +21,16 @@ app = Flask(__name__)
 _dev_mode = os.getenv("FLASK_ENV", "").strip().lower() == "development"
 app.config["TEMPLATES_AUTO_RELOAD"] = _dev_mode
 app.jinja_env.auto_reload = _dev_mode
+# Planner unlock uses a permanent session cookie; keep it short (reports gate uses 8h).
+# Override with PLANNER_SESSION_HOURS in .env (e.g. 8). Set 0 to expire when the browser closes.
+try:
+    _planner_session_hours = float((os.getenv("PLANNER_SESSION_HOURS") or "8").strip())
+except ValueError:
+    _planner_session_hours = 8.0
+if _planner_session_hours > 0:
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=_planner_session_hours)
+else:
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(minutes=0)
 
 # ── Planning blueprints ────────────────────────────────────────────────────
 from planning.process_sheets import process_sheets_bp
@@ -70,6 +81,7 @@ from planning.preferred_machines_route import preferred_machines_bp
 from planning.floor_plan_route import floor_plan_bp
 from planning.monthly_delivery_plan_route import monthly_delivery_plan_bp
 from planning.so_outstanding_balance_route import so_outstanding_balance_bp
+from planning.sales_coordination_route import sales_coordination_bp
 from planning.so_archive_route import so_archive_bp
 from planning.queue_exit_history_route import queue_exit_history_bp
 from planning.mpp_planner_route import mpp_planner_bp
@@ -102,6 +114,7 @@ app.register_blueprint(sales_orders_bp)
 app.register_blueprint(pending_pp_bp)
 app.register_blueprint(sales_report_bp)
 app.register_blueprint(so_outstanding_balance_bp)
+app.register_blueprint(sales_coordination_bp)
 app.register_blueprint(so_archive_bp)
 app.register_blueprint(job_ratio_bp)
 app.register_blueprint(material_inspection_bp)
@@ -226,6 +239,7 @@ def _planner_path() -> str:
 PLANNER_PATH = _planner_path()
 
 PLANNER_SESSION_KEY = "planner_access_ok"
+PLANNER_SESSION_AT_KEY = "planner_access_at"
 LOCK_PLANNER_PATH = "/lock-planner"
 
 
@@ -237,8 +251,32 @@ def _planner_gate_enabled() -> bool:
     return bool(_planner_passcode())
 
 
+def _planner_session_max_age_seconds() -> float | None:
+    """None = browser-session cookie only (no server-side max age)."""
+    if _planner_session_hours <= 0:
+        return None
+    return _planner_session_hours * 3600
+
+
 def _planner_authenticated() -> bool:
-    return session.get(PLANNER_SESSION_KEY) is True
+    if session.get(PLANNER_SESSION_KEY) is not True:
+        return False
+    max_age = _planner_session_max_age_seconds()
+    if max_age is None:
+        return True
+    unlocked_at = session.get(PLANNER_SESSION_AT_KEY)
+    try:
+        unlocked_at_f = float(unlocked_at)
+    except (TypeError, ValueError):
+        # Legacy unlocks without a timestamp: force re-auth (was up to 31 days).
+        session.pop(PLANNER_SESSION_KEY, None)
+        session.pop(PLANNER_SESSION_AT_KEY, None)
+        return False
+    if (time.time() - unlocked_at_f) > max_age:
+        session.pop(PLANNER_SESSION_KEY, None)
+        session.pop(PLANNER_SESSION_AT_KEY, None)
+        return False
+    return True
 
 
 def _normalize_gate_path(path: str) -> str:
@@ -888,7 +926,9 @@ def site_root_gate():
         passcode = _planner_passcode()
         if passcode and secrets.compare_digest(entered, passcode):
             session[PLANNER_SESSION_KEY] = True
-            session.permanent = True
+            session[PLANNER_SESSION_AT_KEY] = time.time()
+            # Permanent cookie only when a positive lifetime is configured.
+            session.permanent = _planner_session_hours > 0
             return redirect(_safe_next_path(request.form.get("next") or PLANNER_PATH))
         return (
             render_template(
@@ -914,6 +954,9 @@ def site_root_gate():
 @app.post(LOCK_PLANNER_PATH, endpoint="lock_planner")
 def lock_planner():
     session.pop(PLANNER_SESSION_KEY, None)
+    session.pop(PLANNER_SESSION_AT_KEY, None)
+    # Match USER_GUIDE: locking also clears the daily-output past-date edit unlock.
+    session.pop("daily_output_edit_ok", None)
     return redirect(url_for("site_root_gate"))
 
 
@@ -1408,13 +1451,24 @@ def _pp_vouchers_board_cache_lookup(scope: str, *, allow_stale: bool):
     with _PP_VOUCHERS_WITH_OPS_CACHE_LOCK:
         bucket = _PP_VOUCHERS_BOARD_ERP_CACHE.get(scope) or {}
         data = bucket.get("data")
-        if data is None:
-            return None
-        if now < float(bucket.get("expires_at") or 0):
-            return data
-        if allow_stale and now < float(bucket.get("stale_expires_at") or 0):
-            return data
-    return None
+        if data is not None:
+            if now < float(bucket.get("expires_at") or 0):
+                return data
+            if allow_stale and now < float(bucket.get("stale_expires_at") or 0):
+                return data
+
+    # After waitress restart, board memory is empty but with-ops disk/memory may
+    # still be warm — prefer that over hitting a contended pp_vouchers_cache.
+    with_ops = _pp_vouchers_memory_cache_lookup(scope, allow_stale=allow_stale)
+    if with_ops is None and allow_stale:
+        with_ops = _pp_vouchers_disk_cache_load(scope)
+        if with_ops is not None:
+            _store_pp_vouchers_with_ops_cache(scope, with_ops)
+    if with_ops is None:
+        return None
+    erp_data = list(with_ops)
+    _store_pp_vouchers_board_erp_cache(scope, erp_data)
+    return erp_data
 
 
 def _store_pp_vouchers_board_erp_cache(scope: str, data: list) -> None:

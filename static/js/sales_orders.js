@@ -115,6 +115,7 @@ const SO_REPEAT_KEYS = {
 const soState = {
   active: [],
   complete: [],
+  completeLoaded: false,
   repeatGroups: [],
   view: 'active',
   search: '',
@@ -123,6 +124,8 @@ const soState = {
   ppCount: 0,
   partialCount: 0,
   missingHeaderCount: 0,
+  activeJobCount: 0,
+  completeJobCount: 0,
   collapsedGroups: new Set(),
   selectedKey: '',
   saveInFlight: new Set(),
@@ -196,11 +199,14 @@ function soSimilarPsForPp(order, pp) {
 }
 
 function soRenderRepeatPill(order, pp) {
-  return repeatOrderRenderPill(soSimilarPsForPp(order, pp));
+  return repeatOrderRenderPill(soSimilarPsForPp(order, pp), {
+    totalCount: pp?.similar_ps_count,
+  });
 }
 
 function soIsNewPart(order, pp) {
   if (typeof pp?.is_new_part === 'boolean') return pp.is_new_part;
+  if (Number(pp?.similar_ps_count) > 0) return false;
   const partNo = String(pp?.inventory_code || '').trim();
   if (!partNo) return false;
   return soSimilarPsForPp(order, pp).length === 0;
@@ -2989,7 +2995,9 @@ function soUpdateTabCounts() {
   const completeEl = document.getElementById('so-complete-tab-count');
   const noWoEl = document.getElementById('so-no-wo-tab-count');
   const activeJobs = soFilteredJobCount(soState.active);
-  const completeJobs = soFilteredJobCount(soState.complete);
+  const completeJobs = soState.completeLoaded
+    ? soFilteredJobCount(soState.complete)
+    : (Number(soState.completeJobCount) || 0);
   const noWoJobs = soFilteredNoWoJobCount(soState.active);
   if (activeEl) {
     activeEl.textContent = String(activeJobs);
@@ -3015,6 +3023,10 @@ function soSetView(view) {
     btn.classList.toggle('is-active', active);
     btn.setAttribute('aria-selected', active ? 'true' : 'false');
   });
+  if (next === 'complete' && !soState.completeLoaded) {
+    soLoad({ refresh: false, includeComplete: true });
+    return;
+  }
   soRender();
 }
 
@@ -3117,11 +3129,16 @@ function soRender() {
   soSyncTableScrollWidth();
 }
 
-async function soLoad({ refresh = false, bustCache = false } = {}) {
-  const hasData = (soState.active?.length || 0) + (soState.complete?.length || 0) > 0;
+async function soLoad({ refresh = false, bustCache = false, includeComplete = false } = {}) {
+  const wantsComplete = includeComplete || soState.view === 'complete';
+  const hasData = wantsComplete
+    ? ((soState.active?.length || 0) + (soState.complete?.length || 0) > 0)
+    : ((soState.active?.length || 0) > 0);
   soSetLoading(true, {
     overlay: refresh && hasData,
-    message: refresh ? 'Refreshing S/O data from ERP…' : 'Loading S/O data from ERP…',
+    message: wantsComplete
+      ? (refresh ? 'Refreshing complete S/O data…' : 'Loading complete S/O data…')
+      : (refresh ? 'Refreshing S/O data from ERP…' : 'Loading S/O data from ERP…'),
   });
   soCloseDetail();
   soCloseMaterialModal();
@@ -3129,6 +3146,8 @@ async function soLoad({ refresh = false, bustCache = false } = {}) {
   const params = new URLSearchParams();
   if (refresh) params.set('refresh', '1');
   if (bustCache) params.set('_ts', String(Date.now()));
+  // Active / No WO only need open jobs (~1MB). Complete is deferred until that tab opens.
+  if (!wantsComplete) params.set('active_only', '1');
 
   let payload;
   try {
@@ -3155,19 +3174,28 @@ async function soLoad({ refresh = false, bustCache = false } = {}) {
   }
 
   soState.active = Array.isArray(payload.active) ? payload.active : [];
-  soState.complete = Array.isArray(payload.complete) ? payload.complete : [];
+  if (wantsComplete) {
+    soState.complete = Array.isArray(payload.complete) ? payload.complete : [];
+    soState.completeLoaded = true;
+  } else if (refresh) {
+    // Active refresh should not keep stale complete rows.
+    soState.complete = [];
+    soState.completeLoaded = false;
+  }
   soState.cachedAt = payload.cached_at || '';
   soState.cacheTtlSec = Number(payload.cache_ttl_sec) || 300;
   soState.activeJobCount = Number(payload.active_job_count) || soBucketJobCount(soState.active);
-  soState.completeJobCount = Number(payload.complete_job_count) || soBucketJobCount(soState.complete);
+  soState.completeJobCount = Number(payload.complete_job_count) || (
+    soState.completeLoaded ? soBucketJobCount(soState.complete) : soState.completeJobCount
+  );
   soState.ppCount = Number(payload.pp_count) || (soState.activeJobCount + soState.completeJobCount);
   soState.partialCount = Number(payload.partial_count) || 0;
   soState.missingHeaderCount = Number(payload.missing_header_count) || 0;
   const faParts = Array.isArray(payload.frame_agreement_parts) ? payload.frame_agreement_parts : [];
   soState.frameAgreementParts = new Set(faParts.map(soNormalizePartKey).filter(Boolean));
 
-  const orderTotal = soState.active.length + soState.complete.length;
-  const nestedPp = soState.active.concat(soState.complete)
+  const orderTotal = soState.active.length + (soState.completeLoaded ? soState.complete.length : 0);
+  const nestedPp = soState.active.concat(soState.completeLoaded ? soState.complete : [])
     .reduce((sum, order) => sum + (Array.isArray(order.pp_vouchers) ? order.pp_vouchers.length : 0), 0);
   if (orderTotal > 0 && (soState.ppCount === 0 || nestedPp === 0)) {
     const empty = document.getElementById('so-empty');
@@ -3196,7 +3224,11 @@ function soInit() {
   });
 
   document.getElementById('so-copy-no-wo-ps')?.addEventListener('click', soCopyNoWoProcessSheets);
-  document.getElementById('so-refresh')?.addEventListener('click', () => soLoad({ refresh: true, bustCache: true }));
+  document.getElementById('so-refresh')?.addEventListener('click', () => soLoad({
+    refresh: true,
+    bustCache: true,
+    includeComplete: soState.view === 'complete' || soState.completeLoaded,
+  }));
   soBindExportModal();
   soBindDetailPanel();
   soBindMaterialModal();
@@ -3210,7 +3242,11 @@ function soInit() {
   soRenderTableHead();
 
   window.addEventListener('pp-vouchers-synced', () => {
-    soLoad({ refresh: true, bustCache: true });
+    soLoad({
+      refresh: true,
+      bustCache: true,
+      includeComplete: soState.view === 'complete' || soState.completeLoaded,
+    });
   });
 
   soLoad({ refresh: false });

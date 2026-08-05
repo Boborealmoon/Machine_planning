@@ -63,44 +63,90 @@ def test_overrun_warning_multi_pc_per_pallet_cnc35_case():
     assert "remove 2 pc" in warnings[0]
 
 
+def test_overrun_warning_when_erp_qty_already_met():
+    """Queued pcs with open WO qty 0 (qty == out) must warn, not be silently skipped."""
+    warnings = _mpp_queue_overrun_warnings(
+        {
+            "cnc41": {
+                "cycles": [
+                    {
+                        "ops": [
+                            {"jobId": "nps26-0341::p1::op20", "palletCount": 1, "pcsPerPallet": 1},
+                        ]
+                    }
+                ]
+            }
+        },
+        {
+            "nps26-0341::p1::op20": {"psId": "NPS26-0341", "qty": 5, "out": 5},
+        },
+    )
+    assert len(warnings) == 1
+    assert "NPS26-0341" in warnings[0]
+    assert "already met" in warnings[0].lower()
+
+
 def plan_bulk_schedule_cycles(qty, rem, pallets_per_cycle, pcs_per_pallet):
-    """Mirror of static/js/mpp_planner.js planBulkScheduleCycles (full pallets only)."""
+    """Mirror of static/js/mpp_planner.js planBulkScheduleCycles (full + leftover partial)."""
     effective_pcs = max(1, int(pcs_per_pallet or 1))
     pal_per_cycle = max(1, int(pallets_per_cycle or 1))
     left = min(max(0, int(qty or 0)), max(0, int(rem or 0)))
     max_per_cycle = pal_per_cycle * effective_pcs
-    pallet_counts: list[int] = []
+    cycles: list[dict[str, int]] = []
     while left >= effective_pcs:
         cycle_pcs = min(left, max_per_cycle)
         pallets = min(pal_per_cycle, cycle_pcs // effective_pcs)
         if pallets < 1:
             break
-        pallet_counts.append(pallets)
+        cycles.append({"palletCount": pallets, "pcsPerPallet": effective_pcs})
         left -= pallets * effective_pcs
+    partial_pcs = 0
+    if left > 0:
+        partial_pcs = left
+        cycles.append({"palletCount": 1, "pcsPerPallet": left})
+        left = 0
     return {
-        "palletCounts": pallet_counts,
-        "scheduledPcs": sum(p * effective_pcs for p in pallet_counts),
-        "leftoverPcs": left,
+        "cycles": cycles,
+        "palletCounts": [c["palletCount"] for c in cycles],
+        "scheduledPcs": sum(c["palletCount"] * c["pcsPerPallet"] for c in cycles),
+        "leftoverPcs": 0,
+        "partialPcs": partial_pcs,
         "effectivePcs": effective_pcs,
     }
 
 
-def test_bulk_schedule_plan_does_not_overshoot_wo_qty():
+def test_bulk_schedule_plan_includes_leftover_partial_pallet():
     plan = plan_bulk_schedule_cycles(qty=10, rem=10, pallets_per_cycle=1, pcs_per_pallet=3)
-    assert plan["palletCounts"] == [1, 1, 1]
-    assert plan["scheduledPcs"] == 9
-    assert plan["leftoverPcs"] == 1
+    assert plan["palletCounts"] == [1, 1, 1, 1]
+    assert plan["cycles"][-1] == {"palletCount": 1, "pcsPerPallet": 1}
+    assert plan["scheduledPcs"] == 10
+    assert plan["leftoverPcs"] == 0
+    assert plan["partialPcs"] == 1
 
 
-def test_bulk_schedule_plan_variable_last_cycle_pallets():
+def test_bulk_schedule_plan_variable_last_cycle_with_partial():
     plan = plan_bulk_schedule_cycles(qty=10, rem=10, pallets_per_cycle=2, pcs_per_pallet=3)
-    assert plan["palletCounts"] == [2, 1]
-    assert plan["scheduledPcs"] == 9
-    assert plan["leftoverPcs"] == 1
+    assert plan["palletCounts"] == [2, 1, 1]
+    assert plan["cycles"] == [
+        {"palletCount": 2, "pcsPerPallet": 3},
+        {"palletCount": 1, "pcsPerPallet": 3},
+        {"palletCount": 1, "pcsPerPallet": 1},
+    ]
+    assert plan["scheduledPcs"] == 10
+    assert plan["partialPcs"] == 1
 
 
 def test_bulk_schedule_plan_exact_fill():
     plan = plan_bulk_schedule_cycles(qty=9, rem=9, pallets_per_cycle=1, pcs_per_pallet=3)
     assert plan["palletCounts"] == [1, 1, 1]
     assert plan["scheduledPcs"] == 9
+    assert plan["leftoverPcs"] == 0
+    assert plan["partialPcs"] == 0
+
+
+def test_bulk_schedule_plan_only_partial_leftover():
+    plan = plan_bulk_schedule_cycles(qty=2, rem=2, pallets_per_cycle=1, pcs_per_pallet=3)
+    assert plan["cycles"] == [{"palletCount": 1, "pcsPerPallet": 2}]
+    assert plan["scheduledPcs"] == 2
+    assert plan["partialPcs"] == 2
     assert plan["leftoverPcs"] == 0

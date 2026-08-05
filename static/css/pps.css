@@ -1,33 +1,34 @@
-/* PPS tracking - calm shop-floor board */
+/* PPS tracking - shop-floor board with clearer hierarchy */
 
 :root {
-  --pps-ink: #1a2328;
-  --pps-muted: #617178;
-  --pps-line: #d8e0e4;
+  --pps-ink: #1c2a30;
+  --pps-muted: #5f7179;
+  --pps-line: #d3dde2;
   --pps-surface: #ffffff;
-  --pps-soft: #f3f6f7;
-  --pps-bg-a: #e9eef1;
-  --pps-bg-b: #f5f7f8;
-  --pps-accent: #3f6f78;
-  --pps-accent-soft: #e4eef0;
-  --pps-active: #2f6f5b;
-  --pps-active-soft: #e5f3ed;
-  --pps-wait: #9a6b1f;
-  --pps-wait-soft: #f7efdd;
+  --pps-soft: #eef3f5;
+  --pps-bg-a: #dfe8ec;
+  --pps-bg-b: #f0f4f6;
+  --pps-accent: #1f6f78;
+  --pps-accent-soft: #d9eef0;
+  --pps-active: #1f7a5c;
+  --pps-active-soft: #def3ea;
+  --pps-wait: #9a6a14;
+  --pps-wait-soft: #f6ecd6;
   --pps-done: #66757c;
   --pps-done-soft: #eef1f2;
-  --pps-overdue: #a63d36;
-  --pps-overdue-soft: #f8e8e6;
+  --pps-overdue: #b42318;
+  --pps-overdue-soft: #fdeceb;
+  --pps-note: #f7faf8;
   --pps-radius: 14px;
-  --pps-shadow: 0 1px 2px rgba(26, 35, 40, 0.04), 0 8px 24px rgba(26, 35, 40, 0.04);
+  --pps-shadow: 0 1px 2px rgba(28, 42, 48, 0.05), 0 10px 28px rgba(28, 42, 48, 0.06);
 }
 
 body.pps-app {
   color: var(--pps-ink);
   background:
-    radial-gradient(ellipse 80% 50% at 0% -10%, rgba(63, 111, 120, 0.12), transparent 55%),
-    radial-gradient(ellipse 60% 40% at 100% 0%, rgba(47, 111, 91, 0.08), transparent 50%),
-    linear-gradient(180deg, var(--pps-bg-a), var(--pps-bg-b));
+    radial-gradient(ellipse 70% 45% at 8% -8%, rgba(31, 111, 120, 0.16), transparent 55%),
+    radial-gradient(ellipse 55% 35% at 96% 0%, rgba(31, 122, 92, 0.1), transparent 48%),
+    linear-gradient(180deg, var(--pps-bg-a), var(--pps-bg-b) 42%, #e8eef1);
   font-family: "Segoe UI", "IBM Plex Sans", "Helvetica Neue", sans-serif;
 }
 
@@ -67,7 +68,7 @@ body.pps-app .app-main--pps {
   justify-content: space-between;
   gap: 20px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .pps-brand {
@@ -80,21 +81,22 @@ body.pps-app .app-main--pps {
 .pps-mark {
   display: grid;
   place-items: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 12px;
-  background: var(--pps-accent);
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: linear-gradient(145deg, #268089, #1a5f66);
   color: #fff;
   font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.06em;
   flex-shrink: 0;
+  box-shadow: 0 6px 16px rgba(31, 111, 120, 0.28);
 }
 
 .pps-title {
   margin: 0;
-  font-size: 1.45rem;
-  font-weight: 700;
+  font-size: 1.5rem;
+  font-weight: 750;
   letter-spacing: -0.03em;
   color: var(--pps-ink);
 }
@@ -118,7 +120,7 @@ body.pps-app .app-main--pps {
   padding: 3px;
   border-radius: 999px;
   border: 1px solid var(--pps-line);
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.82);
   gap: 2px;
 }
 
@@ -145,12 +147,11 @@ body.pps-app .app-main--pps {
   width: 100%;
 }
 
-
 .pps-table-wrap {
   overflow: auto;
   max-height: calc(100dvh - 170px);
-  border: 1px solid var(--pps-line);
-  border-radius: 12px;
+  border: 1px solid rgba(211, 221, 226, 0.95);
+  border-radius: 16px;
   background: var(--pps-surface);
   box-shadow: var(--pps-shadow);
 }
@@ -160,43 +161,43 @@ body.pps-app .app-main--pps {
   table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
-  min-width: 1180px;
+  min-width: 1080px;
 }
 
-.pps-w-ps { width: 118px; }
-.pps-w-part { width: 190px; }
-.pps-w-stage { width: 200px; }
-.pps-w-due { width: 108px; }
-.pps-w-so { width: 112px; }
-.pps-w-flag { width: 52px; }
-.pps-w-remarks { width: auto; }
-.pps-w-date { width: 132px; }
-.pps-w-week { width: 132px; }
+.pps-w-ps { width: 132px; }
+.pps-w-part { width: 26%; }
+.pps-w-stage { width: 190px; }
+.pps-w-due { width: 104px; }
+.pps-w-qty { width: 68px; }
+.pps-w-flag { width: 48px; }
+.pps-w-remarks { width: 200px; }
+.pps-w-date { width: 118px; }
+.pps-w-week { width: 118px; }
 
 .pps-grid th,
 .pps-grid td {
-  padding: 7px 8px;
-  border-bottom: 1px solid #e6ecef;
+  padding: 10px 10px;
+  border-bottom: 1px solid #e8eef1;
   vertical-align: middle;
   text-align: left;
-  font-size: 0.84rem;
-  line-height: 1.25;
+  font-size: 0.86rem;
+  line-height: 1.3;
 }
 
 .pps-grid th {
   position: sticky;
   top: 0;
   z-index: 2;
-  height: 34px;
-  padding: 0 8px;
-  background: #eef3f5;
-  color: #5d6d74;
+  height: 38px;
+  padding: 0 10px;
+  background: linear-gradient(180deg, #f4f8f9, #ebf1f3);
+  color: #4d6068;
   font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
+  font-weight: 750;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   white-space: nowrap;
-  border-bottom: 1px solid #d5dee3;
+  border-bottom: 1px solid #d0dbe0;
 }
 
 .pps-th-center,
@@ -204,47 +205,90 @@ body.pps-app .app-main--pps {
   text-align: center;
 }
 
+.pps-th-right,
+.pps-col-qty {
+  text-align: right;
+}
+
+.pps-grid tbody tr {
+  transition: background 0.12s ease;
+}
+
+.pps-grid tbody tr td:first-child {
+  box-shadow: inset 3px 0 0 transparent;
+}
+
+.pps-grid tbody tr.is-active td:first-child {
+  box-shadow: inset 3px 0 0 var(--pps-active);
+}
+
+.pps-grid tbody tr.is-not-started td:first-child {
+  box-shadow: inset 3px 0 0 var(--pps-wait);
+}
+
+.pps-grid tbody tr.is-completed td:first-child {
+  box-shadow: inset 3px 0 0 #9aa7ad;
+}
+
+.pps-grid tbody tr.is-overdue-row td:first-child {
+  box-shadow: inset 3px 0 0 var(--pps-overdue);
+}
+
 .pps-grid tbody tr:nth-child(even) td {
   background: #fafcfc;
 }
 
 .pps-grid tbody tr:hover td {
-  background: #f2f7f8;
+  background: #f1f7f8;
 }
 
 .pps-grid tr.is-flagged td {
-  background: #fdf0ee !important;
+  background: #fdf3f1 !important;
 }
 
 .pps-grid tr.is-flagged:hover td {
-  background: #fae6e3 !important;
+  background: #faeae7 !important;
 }
 
 .pps-col-ps strong {
   display: block;
-  font-weight: 700;
-  font-size: 0.84rem;
-  letter-spacing: -0.01em;
+  font-weight: 750;
+  font-size: 0.88rem;
+  letter-spacing: -0.015em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.pps-ps-so-line {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.72rem;
+  color: var(--pps-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
 .pps-col-part .pps-part-no {
-  font-weight: 650;
-  font-size: 0.82rem;
+  font-weight: 700;
+  font-size: 0.86rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .pps-col-part .pps-part-desc {
-  margin-top: 1px;
-  font-size: 0.72rem;
+  margin-top: 2px;
+  font-size: 0.74rem;
   color: var(--pps-muted);
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  line-height: 1.35;
 }
 
 .pps-col-stage-inner {
@@ -271,19 +315,35 @@ body.pps-app .app-main--pps {
   width: 100%;
   min-width: 0;
   margin: 0;
-  padding: 4px 6px;
+  padding: 6px 8px;
   border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
+  border-radius: 10px;
+  background: var(--pps-soft);
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.pps-stage-btn--active {
+  background: var(--pps-active-soft);
+  border-color: #c5e4d6;
+}
+
+.pps-stage-btn--not-started {
+  background: var(--pps-wait-soft);
+  border-color: #ead7ae;
+}
+
+.pps-stage-btn--completed {
+  background: var(--pps-done-soft);
+  border-color: #d7dee2;
 }
 
 .pps-stage-btn:hover {
-  background: #eef5f6;
-  border-color: #d5dee3;
+  border-color: #b7c8cf;
+  filter: brightness(0.98);
 }
 
 .pps-stage-btn-text {
@@ -296,7 +356,7 @@ body.pps-app .app-main--pps {
 .pps-col-stage .pps-stage-name,
 .pps-stage-btn .pps-stage-name {
   min-width: 0;
-  font-weight: 600;
+  font-weight: 650;
   font-size: 0.82rem;
   white-space: nowrap;
   overflow: hidden;
@@ -304,8 +364,8 @@ body.pps-app .app-main--pps {
 }
 
 .pps-stage-btn .pps-stage-kind {
-  font-size: 0.68rem;
-  font-weight: 700;
+  font-size: 0.66rem;
+  font-weight: 750;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--pps-muted);
@@ -315,32 +375,40 @@ body.pps-app .app-main--pps {
 .pps-stage-kind--not-started { color: var(--pps-wait); }
 .pps-stage-kind--completed { color: var(--pps-done); }
 
-.pps-col-due {
-  white-space: nowrap;
+.pps-due-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font-weight: 650;
 }
 
-.pps-col-due.is-overdue {
+.pps-due-date {
+  color: var(--pps-ink);
+}
+
+.pps-due-cell.is-overdue .pps-due-date {
   color: var(--pps-overdue);
 }
 
-.pps-col-due small {
-  display: block;
-  margin-top: 1px;
+.pps-due-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--pps-overdue-soft);
+  color: var(--pps-overdue);
   font-size: 0.62rem;
-  font-weight: 700;
+  font-weight: 750;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
-.pps-col-so {
-  font-size: 0.8rem;
-  color: #42545c;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.pps-col-qty {
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
+  color: #33464e;
 }
 
 .pps-grid input[type='text'],
@@ -348,19 +416,34 @@ body.pps-app .app-main--pps {
 .pps-grid textarea {
   width: 100%;
   box-sizing: border-box;
-  height: 30px;
-  border: 1px solid #d5dee3;
-  border-radius: 6px;
-  background: #fff;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
   color: var(--pps-ink);
   font: inherit;
   font-size: 0.8rem;
-  padding: 0 7px;
+  padding: 0 8px;
   outline: none;
+  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
 }
 
-.pps-grid input:focus,
-.pps-grid textarea:focus {
+.pps-grid input.pps-input--empty {
+  color: var(--pps-muted);
+}
+
+.pps-grid input.pps-input--filled {
+  background: var(--pps-note);
+  border-color: #d5e3dc;
+}
+
+.pps-grid tr:hover input.pps-input--empty,
+.pps-grid input:focus {
+  border-color: #c9d6db;
+  background: #fff;
+}
+
+.pps-grid input:focus {
   border-color: var(--pps-accent);
   box-shadow: 0 0 0 2px var(--pps-accent-soft);
 }
@@ -476,14 +559,14 @@ body.pps-app .app-main--pps {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .pps-status-tabs {
   display: inline-flex;
   padding: 4px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.78);
   border: 1px solid var(--pps-line);
   gap: 2px;
 }
@@ -929,16 +1012,23 @@ body.pps-app .app-main--pps {
   width: 30px;
   height: 30px;
   padding: 0;
-  border: 1px solid #d5dee3;
-  border-radius: 7px;
-  background: #fff;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
   color: #8a9aa2;
   cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 
 .pps-flag-btn svg {
   width: 14px;
   height: 14px;
+}
+
+.pps-grid tr:hover .pps-flag-btn,
+.pps-flag-btn:hover {
+  border-color: #d5dee3;
+  background: #fff;
 }
 
 .pps-flag-btn:hover {

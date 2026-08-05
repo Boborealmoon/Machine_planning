@@ -641,6 +641,7 @@ function sobRenderTable() {
         <td class="sob-num">${sobEscape(sobFormatRate(row.exch_rate))}</td>
         <td class="sob-num">${sobEscape(sobFormatQty(row.pp_qty))}</td>
         <td class="sob-num">${sobEscape(sobFormatQty(row.so_qty))}</td>
+        <td class="sob-num">${sobEscape(sobFormatQty(row.remaining_qty))}</td>
         <td class="sob-num">${sobEscape(sobFormatMoney(row.line_value_home))}</td>
         <td class="sob-num sob-money-strong">${sobEscape(sobFormatMoney(row.outstanding_balance_home))}</td>
         <td class="sob-status-cell">${sobStatusBadge(row.status)}</td>

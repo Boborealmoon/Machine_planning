@@ -131,7 +131,7 @@
       </div>
 
       {# ERP queries & master data #}
-      <div class="nav-dropdown {% if nav_path in ('/bom-variation', '/system', '/planning-data/program-tool-tracker') or nav_path.startswith('/planning-data') and nav_path not in ('/planning-data/repeat-orders', '/planning-data/aker-inventory', '/planning-data/materials') or active in ('planning_data', 'bom_variation', 'system', 'program_tool_tracker') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/bom-variation', '/assembly-boms', '/system', '/planning-data/program-tool-tracker') or nav_path.startswith('/planning-data') and nav_path not in ('/planning-data/repeat-orders', '/planning-data/aker-inventory', '/planning-data/materials') or active in ('planning_data', 'bom_variation', 'assembly_boms', 'system', 'program_tool_tracker') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="queries-data" aria-expanded="false" aria-controls="dd-queries-data">
           QUERIES &amp; MASTER DATA <span class="nav-caret">▾</span>
         </button>
@@ -148,6 +148,10 @@
           <a href="/bom-variation"
              class="nav-dropdown-item {% if nav_path == '/bom-variation' or active == 'bom_variation' %}nav-dropdown-item--active{% endif %}">
             BOM variation
+          </a>
+          <a href="/assembly-boms"
+             class="nav-dropdown-item {% if nav_path == '/assembly-boms' or active == 'assembly_boms' %}nav-dropdown-item--active{% endif %}">
+            Assembly BOMs
           </a>
           <span class="nav-dropdown-section">MASTER DATA</span>
           <a href="/planning-data/machines"
@@ -175,7 +179,7 @@
       </div>
 
       {# Shop-floor & operational views #}
-      <div class="nav-dropdown {% if nav_path in (machinist_board_path, finishing_queue_path, driver_view_path, '/assembly-boms', '/assembly-parts', '/sales-orders/logistics') or active in ('machinist_board', 'finishing_queue', 'driver_view', 'assembly_boms', 'assembly_parts', 'sales_orders_logistics') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in (machinist_board_path, finishing_queue_path, driver_view_path, '/assembly-parts', '/sales-orders/logistics', '/sales-coordination') or active in ('machinist_board', 'finishing_queue', 'driver_view', 'assembly_parts', 'sales_orders_logistics', 'sales_coordination') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="views" aria-expanded="false" aria-controls="dd-views">
           VIEWS <span class="nav-caret">▾</span>
         </button>
@@ -188,10 +192,6 @@
              class="nav-dropdown-item {% if nav_path == finishing_queue_path or active == 'finishing_queue' %}nav-dropdown-item--active{% endif %}">
             QAQC View
           </a>
-          <a href="/assembly-boms"
-             class="nav-dropdown-item {% if nav_path == '/assembly-boms' or active == 'assembly_boms' %}nav-dropdown-item--active{% endif %}">
-            Assembly BOMs
-          </a>
           <a href="/assembly-parts"
              class="nav-dropdown-item {% if nav_path == '/assembly-parts' or active == 'assembly_parts' %}nav-dropdown-item--active{% endif %}">
             Assembly Parts
@@ -203,6 +203,10 @@
           <a href="/sales-orders/logistics"
              class="nav-dropdown-item {% if nav_path == '/sales-orders/logistics' or active == 'sales_orders_logistics' %}nav-dropdown-item--active{% endif %}">
             Material Tracking
+          </a>
+          <a href="/sales-coordination"
+             class="nav-dropdown-item {% if nav_path == '/sales-coordination' or active == 'sales_coordination' %}nav-dropdown-item--active{% endif %}">
+            Sales Coordination
           </a>
         </div>
       </div>

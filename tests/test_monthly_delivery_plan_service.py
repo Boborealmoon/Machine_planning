@@ -8,6 +8,7 @@ from planning.monthly_delivery_plan_service import (
     commitment_date,
     expand_delivery_lines,
 )
+from planning.process_sheets import _so_line_pricing_key
 
 
 class MonthlyDeliveryPlanTests(unittest.TestCase):
@@ -71,6 +72,78 @@ class MonthlyDeliveryPlanTests(unittest.TestCase):
         self.assertEqual(aug["target_revenue"], 600.0)
 
         self.assertEqual(plan["year_summary"]["target_revenue"], 1000.0)
+
+    def test_amount_uses_unit_cost_times_exch_rate(self):
+        orders = [
+            {
+                "sales_order_no": "SO/200",
+                "customer_name": "Beta",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "NPS26-9",
+                        "process_sheet_no": "NPS26-9",
+                        "source_line_item_no": "10",
+                        "due_date": "2026-08-01",
+                        "pp_qty": 5,
+                        "so_det_qty": 5,
+                        "unit_selling_price": 10,
+                        "shipped_completed": False,
+                        "partials": [
+                            {
+                                "pp_partial_no": 1,
+                                "partial_qty": 5,
+                                "coway_proposed_edd": "2026-08-05",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+        key = _so_line_pricing_key("SO/200", "10")
+        pricing = {key: {"unit_cost": 20.0, "exch_rate": 1.5}}
+        plan = build_monthly_delivery_plan(orders, year=2026, pricing_by_key=pricing)
+        aug = plan["months"][7]
+        # 5 x 20 x 1.5 = 150
+        self.assertEqual(aug["target_revenue"], 150.0)
+        line = aug["lines"][0]
+        self.assertEqual(line["unit_cost"], 20.0)
+        self.assertEqual(line["exch_rate"], 1.5)
+        self.assertEqual(line["amount"], 150.0)
+        self.assertEqual(line["qty"], 5)
+
+    def test_week_only_when_coway_edd_set(self):
+        orders = [
+            {
+                "sales_order_no": "SO/300",
+                "customer_name": "Gamma",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "APS26-2",
+                        "process_sheet_no": "APS26-2",
+                        "due_date": "2026-08-14",
+                        "pp_qty": 1,
+                        "unit_selling_price": 10,
+                        "shipped_completed": False,
+                        "partials": [],
+                    },
+                    {
+                        "pp_voucher_no": "APS26-3",
+                        "process_sheet_no": "APS26-3",
+                        "due_date": "2026-08-14",
+                        "coway_proposed_edd": "2026-08-03",
+                        "pp_qty": 1,
+                        "unit_selling_price": 10,
+                        "shipped_completed": False,
+                        "partials": [],
+                    },
+                ],
+            }
+        ]
+        lines = expand_delivery_lines(orders)
+        by_ps = {row["process_sheet_no"]: row for row in lines}
+        self.assertIsNone(by_ps["APS26-2"]["week"])
+        self.assertIsNotNone(by_ps["APS26-3"]["week"])
+        self.assertTrue(by_ps["APS26-3"]["week"].startswith("Week "))
 
     def test_skips_shipped_completed_and_collects_undated(self):
         orders = [

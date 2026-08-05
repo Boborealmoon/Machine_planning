@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Sales Coordination{% endblock %}
+{% block main_class %}app-main--sc{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_coordination.css') }}?v=sc-20260805a">
+{% endblock %}
+{% block content %}
+<div class="sc-page">
+  <header class="sc-header">
+    <div>
+      <h1 class="sc-title">Sales Coordination</h1>
+      <p class="sc-subtitle">
+        View and search process sheets for delivery commitment.
+        <strong>Prop. EDD</strong> is the proposed delivery date; <strong>Week</strong> follows Prop. EDD when set, otherwise the due date.
+        Read-only - edit Prop. EDD in S/O Management.
+      </p>
+    </div>
+    <div class="sc-header-actions">
+      <button type="button" class="btn btn-secondary btn-sm" id="sc-refresh">Refresh</button>
+    </div>
+  </header>
+
+  <section class="sc-toolbar card">
+    <label class="sc-field sc-field--search">
+      <span>Search</span>
+      <input type="search" id="sc-search" placeholder="Process sheet, SO, part, description, P/O..." autocomplete="off">
+    </label>
+    <div class="sc-field">
+      <span>PS type</span>
+      <div class="sc-type-chips" id="sc-type-chips" role="group" aria-label="Process sheet type filter"></div>
+    </div>
+    <div class="sc-toolbar-aside">
+      <div class="sc-meta" id="sc-meta">Loading...</div>
+      <button type="button" class="btn btn-ghost btn-sm" id="sc-clear-filters" hidden>Clear filters</button>
+    </div>
+  </section>
+
+  <div id="sc-loading" class="sc-loading" hidden>
+    <div class="spinner"></div>
+    <span>Loading process sheets...</span>
+  </div>
+  <div id="sc-alert" class="sc-alert" hidden></div>
+
+  <section class="sc-table-panel card" id="sc-table-panel" hidden>
+    <div class="sc-table-wrap">
+      <table class="sc-table" id="sc-table">
+        <thead>
+          <tr>
+            <th data-sort="process_sheet_no">Process sheet</th>
+            <th data-sort="sales_order_no">SO no.</th>
+            <th data-sort="part_no">Part</th>
+            <th data-sort="part_desc">Description</th>
+            <th data-sort="customer_po_no">P/O No.</th>
+            <th data-sort="due_date">Due date</th>
+            <th data-sort="proposed_edd">Prop. EDD</th>
+            <th data-sort="week">Week</th>
+          </tr>
+        </thead>
+        <tbody id="sc-body"></tbody>
+      </table>
+    </div>
+    <div id="sc-empty" class="sc-empty" hidden>No process sheets matched.</div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/sales_coordination.js') }}?v=sc-20260805a"></script>
+{% endblock %}

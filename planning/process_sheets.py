@@ -17,6 +17,7 @@ Key SQL adaptations from Vanessa's SQLite version:
 """
 from __future__ import annotations
 
+import os
 import re
 from datetime import date
 
@@ -3114,8 +3115,25 @@ def _apply_partial_shipped_rollup(rows):
     _reconcile_partial_shipped_status(rows)
 
 
-def _ps_select_sql(con=None):
+def _ps_select_merge_wo_enabled() -> bool:
+    """Live mfg_wo_status join in list SQL. Off by default — cache already has WO fields."""
+    return os.getenv("PS_SELECT_MERGE_WO", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ps_select_sql(con=None, *, merge_wo: bool | None = None):
+    """Planner process-sheet list SQL.
+
+    Aggregates ``pp_vouchers_cache`` only for planner-linked PS ids (index-friendly)
+    instead of grouping the whole cache. Live ``mfg_wo_status`` join is off by
+    default — that scan of ~50k+ WO rows routinely exceeds Supabase's 2‑minute
+    statement timeout under load and freezes Process Sheets. Board/detail paths
+    still merge WO stages via ``mfg_wo_stages_batch``. Set ``PS_SELECT_MERGE_WO=1``
+    to force the old live join.
+    """
     from planning.erp_wo_merge import ERP_STAGE_OUTPUTS_CTE
+
+    if merge_wo is None:
+        merge_wo = _ps_select_merge_wo_enabled()
 
     flags = _overlay_column_flags(con) if con is not None else (_OVERLAY_COLUMN_CACHE or {"coway": True, "remarks": True})
     coway_expr = (
@@ -3129,8 +3147,21 @@ def _ps_select_sql(con=None):
         else "'' AS remarks,"
     )
 
-    return f"""
+    planner_keys_cte = """
+    planner_keys AS (
+        SELECT DISTINCT
+            ps.source_ps_id AS ps_id,
+            COALESCE(tps.source_pp_partial_no, ps.pp_partial_no, 1) AS pp_partial_no
+        FROM planner_process_sheet ps
+        LEFT JOIN planner_temp_process_sheet tps ON tps.planner_ps_id = ps.planner_ps_id
+        WHERE NULLIF(TRIM(COALESCE(ps.source_ps_id, '')), '') IS NOT NULL
+    )
+"""
+
+    if merge_wo:
+        voucher_partials_cte = f"""
     WITH {ERP_STAGE_OUTPUTS_CTE},
+    {planner_keys_cte},
     voucher_partials AS (
         SELECT
             c.ps_id,
@@ -3163,12 +3194,60 @@ def _ps_select_sql(con=None):
                 FALSE
             ) AS execution_completed
         FROM pp_vouchers_cache c
+        JOIN planner_keys k
+          ON k.ps_id = c.ps_id
+         AND k.pp_partial_no = COALESCE(c.pp_partial_no, 1)
         LEFT JOIN erp_stage_outputs e
                ON e.ps_id = c.ps_id
               AND e.pp_partial_no = c.pp_partial_no
               AND e.stage_no = c.stage_no
         GROUP BY c.ps_id, c.pp_partial_no
     )
+"""
+    else:
+        voucher_partials_cte = f"""
+    WITH {planner_keys_cte},
+    voucher_partials AS (
+        SELECT
+            c.ps_id,
+            c.pp_partial_no,
+            MAX(c.part_no) AS part_no,
+            MAX(c.description) AS description,
+            MIN(c.due_date) AS due_date,
+            MIN(c.order_date) AS order_date,
+            MAX(c.bom_code) AS bom_code,
+            MAX(c.status) AS status,
+            MAX(c.execution_status) AS execution_status,
+            MAX(c.total_qty) AS total_qty,
+            MAX(c.partial_qty) AS partial_qty,
+            MAX(c.wo_qty_required) AS wo_qty_required,
+            MAX(c.wo_qty_produced) AS wo_qty_produced,
+            MAX(c.wo_qty_rejected) AS wo_qty_rejected,
+            MAX(c.source_voucher_no) AS source_voucher_no,
+            MAX(c.qty_shipped) AS qty_shipped,
+            MAX(c.so_det_qty) AS so_det_qty,
+            MAX(c.current_stage_no) AS current_stage_no,
+            MAX(c.current_stage_desc) AS current_stage_desc,
+            MAX(c.current_stage_status) AS current_stage_status,
+            COALESCE(
+                BOOL_AND(
+                    CASE
+                        WHEN NULLIF(TRIM(COALESCE(c.execution_status, '')), '') IS NULL THEN NULL
+                        ELSE UPPER(REPLACE(REPLACE(COALESCE(c.execution_status, ''), '-', '_'), ' ', '_')) IN ('C', 'COMPLETED')
+                    END
+                ),
+                FALSE
+            ) AS execution_completed
+        FROM pp_vouchers_cache c
+        JOIN planner_keys k
+          ON k.ps_id = c.ps_id
+         AND k.pp_partial_no = COALESCE(c.pp_partial_no, 1)
+        GROUP BY c.ps_id, c.pp_partial_no
+    )
+"""
+
+    return f"""
+    {voucher_partials_cte}
     SELECT
         ps.planner_ps_id AS ps_id,
         ps.source_ps_id,

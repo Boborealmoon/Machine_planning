@@ -343,8 +343,9 @@ def build_outstanding_balance(
         "ok": True,
         "commitment_rule": "coway_edd_or_po_due",
         "currency_note": (
+            "Open qty = actual remaining balance; "
             "SO value = unit x SO qty x exch; "
-            "Outstanding = unit x open PP qty x exch"
+            "Outstanding $ = unit x open qty x exch"
         ),
         "default_ps_types": ["APS", "NPS", "PPS"],
         "summary": {

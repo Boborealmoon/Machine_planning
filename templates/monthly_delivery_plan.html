@@ -2,7 +2,7 @@
 {% block title %}Monthly Delivery Plan{% endblock %}
 {% block main_class %}app-main--mdp{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/monthly_delivery_plan.css') }}?v=mdp-20260727a">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monthly_delivery_plan.css') }}?v=mdp-20260731a">
 {% endblock %}
 {% block content %}
 <div class="mdp-page">
@@ -10,7 +10,8 @@
     <div>
       <h1 class="mdp-title">Monthly Delivery Plan</h1>
       <p class="mdp-subtitle" id="mdp-subtitle">
-        Target revenue by delivery month � counted when Coway EDD (or PO due date) falls in that month.
+        Target revenue by delivery month — counted when Coway EDD (or PO due date) falls in that month.
+        Amount = qty × unit cost × exchange rate (home $).
       </p>
     </div>
     <div class="mdp-header-actions">
@@ -24,6 +25,17 @@
       <span>Year</span>
       <input type="number" id="mdp-year" min="2000" max="2100" step="1">
     </label>
+    <div class="mdp-field">
+      <span>PS type</span>
+      <div class="filter-dropdown" id="mdp-ps-type-dropdown">
+        <button class="filter-dropdown-btn" type="button" id="mdp-ps-type-btn">APS, NPS ▾</button>
+        <div class="filter-dropdown-panel" id="mdp-ps-type-panel" hidden>
+          <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
+        </div>
+      </div>
+    </div>
     <nav class="mdp-month-nav" id="mdp-month-nav" aria-label="Select month">
       <button type="button" class="mdp-month-chip is-active" data-month="">Overview</button>
       <button type="button" class="mdp-month-chip" data-month="1">Jan</button>
@@ -39,12 +51,12 @@
       <button type="button" class="mdp-month-chip" data-month="11">Nov</button>
       <button type="button" class="mdp-month-chip" data-month="12">Dec</button>
     </nav>
-    <div class="mdp-meta" id="mdp-meta">Loading�</div>
+    <div class="mdp-meta" id="mdp-meta">Loading…</div>
   </section>
 
   <div id="mdp-loading" class="mdp-loading" hidden>
     <div class="spinner"></div>
-    <span>Loading monthly delivery plan�</span>
+    <span>Loading monthly delivery plan…</span>
   </div>
   <div id="mdp-alert" class="mdp-alert" hidden></div>
 
@@ -53,9 +65,40 @@
   <section id="mdp-overview" class="mdp-overview card" hidden>
     <div class="mdp-section-head">
       <h2 class="mdp-section-title">Year overview</h2>
-      <p class="mdp-section-sub">Click a month to see the delivery schedule and target revenue for that month.</p>
+      <p class="mdp-section-sub">Click a month to focus it, or select lines below to set target revenue.</p>
     </div>
     <div class="mdp-overview-grid" id="mdp-overview-grid"></div>
+    <div class="mdp-section-head mdp-lines-head">
+      <div>
+        <h2 class="mdp-section-title">All line items</h2>
+        <p class="mdp-section-sub" id="mdp-overview-sub"></p>
+      </div>
+    </div>
+    <div class="mdp-table-wrap">
+      <table class="mdp-table">
+        <thead>
+          <tr>
+            <th class="mdp-check-col">
+              <input type="checkbox" id="mdp-overview-select-all" title="Select all visible" aria-label="Select all visible">
+            </th>
+            <th>Month</th>
+            <th>S/O</th>
+            <th>Customer</th>
+            <th>PS</th>
+            <th>Part</th>
+            <th class="mdp-num">Qty</th>
+            <th class="mdp-num">U/Cost</th>
+            <th class="mdp-num">Amount</th>
+            <th>Stage</th>
+            <th>PO due</th>
+            <th>Coway EDD</th>
+            <th>Week</th>
+          </tr>
+        </thead>
+        <tbody id="mdp-overview-body"></tbody>
+      </table>
+    </div>
+    <div id="mdp-overview-empty" class="mdp-empty" hidden>No deliveries for the selected PS types this year.</div>
   </section>
 
   <section id="mdp-month-panel" class="mdp-month-panel card" hidden>
@@ -64,23 +107,26 @@
         <h2 class="mdp-section-title" id="mdp-month-title">Month</h2>
         <p class="mdp-section-sub" id="mdp-month-sub"></p>
       </div>
-      <button type="button" class="btn btn-ghost btn-sm" id="mdp-back-overview">? Overview</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="mdp-back-overview">← Overview</button>
     </div>
     <div class="mdp-table-wrap">
       <table class="mdp-table">
         <thead>
           <tr>
+            <th class="mdp-check-col">
+              <input type="checkbox" id="mdp-select-all" title="Select all visible" aria-label="Select all visible">
+            </th>
             <th>S/O</th>
             <th>Customer</th>
             <th>PS</th>
             <th>Part</th>
             <th class="mdp-num">Qty</th>
-            <th class="mdp-num">U/Price</th>
+            <th class="mdp-num">U/Cost</th>
             <th class="mdp-num">Amount</th>
+            <th>Stage</th>
             <th>PO due</th>
             <th>Coway EDD</th>
-            <th>Commitment</th>
-            <th>Stage</th>
+            <th>Week</th>
           </tr>
         </thead>
         <tbody id="mdp-month-body"></tbody>
@@ -91,5 +137,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/monthly_delivery_plan.js') }}?v=mdp-20260727a"></script>
+<script src="{{ url_for('static', filename='js/monthly_delivery_plan.js') }}?v=mdp-20260731a"></script>
 {% endblock %}

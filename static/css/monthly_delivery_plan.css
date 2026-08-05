@@ -100,10 +100,32 @@
   color: #1d4ed8;
 }
 
+.mdp-toolbar .filter-dropdown-btn {
+  min-width: 7.5rem;
+  text-align: left;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.mdp-toolbar .mdp-field .filter-dropdown {
+  margin-top: 0;
+}
+
 .mdp-meta {
   font-size: 0.85rem;
   color: var(--muted, #64748b);
   margin-left: auto;
+}
+
+.mdp-check-col {
+  width: 2.25rem;
+  text-align: center !important;
+  vertical-align: middle !important;
+}
+
+.mdp-check-col input[type="checkbox"] {
+  cursor: pointer;
 }
 
 .mdp-loading {
@@ -189,6 +211,12 @@
 .mdp-overview,
 .mdp-month-panel {
   padding: 1rem;
+}
+
+.mdp-lines-head {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border, #eef2f6);
 }
 
 .mdp-overview-grid {

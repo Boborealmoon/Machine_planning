@@ -221,7 +221,11 @@
   function cycleFingerprint(cycle) {
     const shift = compactText(cycle.shift).toLowerCase() === 'day' ? 'day' : 'night';
     const ops = (cycle.ops || [])
-      .map((row) => `${row.jobId}:${row.palletCount || 1}`)
+      .map((row) => {
+        const job = getJob(row.jobId);
+        const pcs = opPcsPerPallet(row, job);
+        return `${row.jobId}:${row.palletCount || 1}x${pcs}`;
+      })
       .sort()
       .join('|');
     return `${shift}::${ops}`;
@@ -918,13 +922,41 @@
     return Math.max(1, Number(job?.pcsPerPallet) || 1);
   }
 
-  function newCycleOp(jobId, palletCount, job = null) {
+  function jobFullPcsPerPallet(job) {
+    return Math.max(1, Number(job?.pcsPerPallet) || 1);
+  }
+
+  /** Pieces for the next +1 pallet drop: full pcs/pal, or leftover rem when below a full pallet. */
+  function nextPalletPcs(jobId) {
+    const job = getJob(jobId);
+    if (!job) return 0;
+    const rem = jobRemaining(jobId);
+    if (rem <= 0) return 0;
+    return Math.min(rem, jobFullPcsPerPallet(job));
+  }
+
+  function canQueueAnyPcs(jobId) {
+    return nextPalletPcs(jobId) >= 1;
+  }
+
+  function isPartialNextPallet(jobId) {
+    const job = getJob(jobId);
+    if (!job) return false;
+    const rem = jobRemaining(jobId);
+    const full = jobFullPcsPerPallet(job);
+    return rem > 0 && rem < full;
+  }
+
+  function newCycleOp(jobId, palletCount, job = null, pcsOverride = null) {
     const resolved = job || getJob(jobId);
+    const override = Number(pcsOverride);
     return {
       opId: newId('op'),
       jobId,
       palletCount: Math.max(1, Number(palletCount) || 1),
-      pcsPerPallet: opPcsPerPallet(null, resolved),
+      pcsPerPallet: Number.isFinite(override) && override > 0
+        ? override
+        : opPcsPerPallet(null, resolved),
     };
   }
 
@@ -1595,7 +1627,7 @@
     const job = getJob(entry.jobId);
     if (!job) return false;
     let palletsLeft = Math.max(1, Number(entry.palletCount) || 1);
-    while (palletsLeft > 0 && jobRemaining(entry.jobId) >= (job.pcsPerPallet || 1)) {
+    while (palletsLeft > 0 && canQueueAnyPcs(entry.jobId)) {
       if (!addPalletToCycle(cycleId, entry.jobId, { renderAfter: false })) break;
       palletsLeft -= 1;
     }
@@ -1740,8 +1772,17 @@
     return null;
   }
 
+  /** Prefer laneAnchor, but never schedule the display queue from a past cursor. */
+  function clampScheduleCursor(iso) {
+    const now = new Date();
+    const nowIso = formatDateObj(now);
+    const dt = parseIsoLocal(iso);
+    if (!dt || dt < now) return nowIso;
+    return formatDateObj(dt);
+  }
+
   function scheduleLane(lane, machine) {
-    let cursor = lane.laneAnchor || formatDateObj(new Date());
+    let cursor = clampScheduleCursor(lane.laneAnchor || formatDateObj(new Date()));
     return (lane.cycles || []).map((cycle, idx) => {
       const metrics = cycleMetrics(cycle);
       const sprintStart = isCycleSprintStart(lane, idx);
@@ -1749,14 +1790,16 @@
       const shift = normalizeShift(cycle.shift, machine);
       let startHint = cursor;
       if (idx === 0 && cycle.anchor) {
-        const anchorDt = parseIsoLocal(cycle.anchor);
+        const clampedAnchor = clampScheduleCursor(cycle.anchor);
+        const anchorDt = parseIsoLocal(clampedAnchor);
         const cursorDt = parseIsoLocal(cursor);
-        if (anchorDt && cursorDt && anchorDt > cursorDt) startHint = cycle.anchor;
+        if (anchorDt && cursorDt && anchorDt > cursorDt) startHint = clampedAnchor;
       }
       const placed = placeCycleInShift(startHint, durationMin, shift, machine);
       if (idx === 0 && cycle.anchor) {
-        const anchorAligned = nextShiftStart(cycle.anchor, shift, machine);
-        const anchorDt = parseIsoLocal(anchorAligned);
+        const clampedAnchor = clampScheduleCursor(cycle.anchor);
+        const anchorAligned = nextShiftStart(clampedAnchor, shift, machine);
+        const anchorDt = parseIsoLocal(clampScheduleCursor(anchorAligned));
         const placedStart = parseIsoLocal(placed.start);
         if (anchorDt && placedStart && anchorDt > placedStart) {
           const realigned = placeCycleInShift(anchorAligned, durationMin, shift, machine);
@@ -1815,6 +1858,10 @@
     const pcs = opOutput(job, row.palletCount, row);
     const runMins = jobRunMinutes(job, row.palletCount);
     const palletLabel = row.palletCount === 1 ? '1 pallet' : `${row.palletCount} pallets`;
+    const rowPcs = opPcsPerPallet(row, job);
+    const partialNote = rowPcs < jobFullPcsPerPallet(job)
+      ? ` · ${rowPcs} pc/pal (partial)`
+      : ` · ${rowPcs} pc/pal`;
     return `
       <div class="mpp-op-card mpp-op-card--in-cycle" draggable="true" data-drag-kind="op" data-op-id="${escapeHtml(row.opId)}">
         <div class="mpp-op-card-top">
@@ -1826,7 +1873,7 @@
         </div>
         <div class="mpp-op-label">${escapeHtml(job.opLabel)}</div>
         <div class="mpp-pallet-strip">${Array.from({ length: row.palletCount }, (_, i) => `<span class="mpp-pallet-chip" title="Pallet ${i + 1}">P${i + 1}</span>`).join('')}</div>
-        <div class="mpp-op-meta">${palletLabel} · ${fmtMinutes(job.minPerPallet)} run/pal · ${fmtMinutes(runMins)} run total</div>
+        <div class="mpp-op-meta">${palletLabel}${partialNote} · ${fmtMinutes(job.minPerPallet)} run/pal · ${fmtMinutes(runMins)} run total</div>
         <div class="mpp-op-pcs"><strong>${pcs} pc</strong> this cycle</div>
       </div>
     `;
@@ -1846,6 +1893,9 @@
       ? `<div class="mpp-op-pref">Pref ${escapeHtml(job.preferredMachine)}</div>`
       : '';
     const qtyLine = mppOpQtyLine(job, { schedulable, rem, queued });
+    const partialHint = schedulable && isPartialNextPallet(job.jobId)
+      ? ` · partial ${nextPalletPcs(job.jobId)} pc ok`
+      : '';
     const actionHtml = schedulable
       ? `<div class="mpp-op-actions-row">
           <button type="button" class="btn btn-ghost btn-sm mpp-schedule-btn" data-action="schedule-job"
@@ -1866,12 +1916,12 @@
           ${schedulable ? `<button type="button" class="mpp-op-edit" data-action="edit-op-run" data-job-id="${escapeHtml(job.jobId)}" title="Edit run time / pcs / qty">✎</button>` : ''}
         </div>
         ${partLine}
-        <div class="mpp-op-meta">${fmtMinutes(job.minPerPallet)} run/pal · ${job.pcsPerPallet} pc/pal</div>
+        <div class="mpp-op-meta">${fmtMinutes(job.minPerPallet)} run/pal · ${job.pcsPerPallet} pc/pal${partialHint}</div>
         <div class="mpp-op-pcs" title="Rem = Qty − ERP acc − Queued on MPP lanes">${qtyLine}</div>
         ${pref}
         ${!compact && job.due ? `<div class="mpp-op-due">Due ${escapeHtml(job.due)}</div>` : ''}
         ${actionHtml}
-        ${compact || !schedulable ? '' : '<p class="mpp-op-drag-hint">Drag onto a cycle (even collapsed) — each drop = +1 pallet</p>'}
+        ${compact || !schedulable ? '' : `<p class="mpp-op-drag-hint">${isPartialNextPallet(job.jobId) ? `Drag leftover ${nextPalletPcs(job.jobId)} pc as a partial pallet` : 'Drag onto a cycle (even collapsed) — each drop = +1 pallet'}</p>`}
       </div>
     `;
   }
@@ -2135,7 +2185,7 @@
     const q = compactText(query).toLowerCase();
     return poolJobTemplates().filter((job) => {
       if (!jobIsSchedulable(job)) return false;
-      if (jobRemaining(job.jobId) < (job.pcsPerPallet || 1)) return false;
+      if (!canQueueAnyPcs(job.jobId)) return false;
       if (!q) return true;
       const blob = [job.psId, job.partNo, job.partDesc, job.opLabel].filter(Boolean).join(' ').toLowerCase();
       return blob.includes(q);
@@ -2169,23 +2219,30 @@
       return;
     }
     const machine = machineById(found.machineId);
-    sub.textContent = `Add ops to ${machine.code} cycle — each click adds 1 pallet.`;
+    sub.textContent = `Add ops to ${machine.code} cycle — each click adds 1 pallet (partial leftover ok).`;
     const jobs = schedulablePoolJobs(cycleAddOpSearch);
     if (!jobs.length) {
       list.innerHTML = '<p class="mpp-cycle-add-empty">No schedulable ops match. Try another search, or check the op pool on the left.</p>';
       return;
     }
-    list.innerHTML = jobs.map((job) => `
+    list.innerHTML = jobs.map((job) => {
+      const rem = jobRemaining(job.jobId);
+      const nextPcs = nextPalletPcs(job.jobId);
+      const btnLabel = isPartialNextPallet(job.jobId)
+        ? `+1 partial (${nextPcs} pc)`
+        : '+1 pallet';
+      return `
       <div class="mpp-cycle-add-row">
         <div class="mpp-cycle-add-row-main">
           <div><strong>${escapeHtml(job.psId)}</strong> · ${escapeHtml(job.opLabel)}</div>
           ${job.partNo ? `<div class="mpp-cycle-add-part">${escapeHtml(job.partNo)}</div>` : ''}
-          <div class="mpp-cycle-add-rem">Rem ${jobRemaining(job.jobId)} pc</div>
+          <div class="mpp-cycle-add-rem">Rem ${rem} pc</div>
         </div>
         <button type="button" class="btn btn-primary btn-sm" data-action="pick-op-pallet"
-          data-job-id="${escapeHtml(job.jobId)}" data-cycle-id="${escapeHtml(cycleAddOpModalCycleId)}">+1 pallet</button>
+          data-job-id="${escapeHtml(job.jobId)}" data-cycle-id="${escapeHtml(cycleAddOpModalCycleId)}">${btnLabel}</button>
       </div>
-    `).join('');
+    `;
+    }).join('');
   }
 
   function closeCycleDetailModal() {
@@ -2557,8 +2614,14 @@
     scheduleQueueSave();
   }
 
-  function findOpInCycle(cycle, jobId) {
-    return (cycle.ops || []).find((o) => o.jobId === jobId);
+  function findOpInCycle(cycle, jobId, pcsPerPallet = null) {
+    const ops = cycle.ops || [];
+    if (pcsPerPallet == null) return ops.find((o) => o.jobId === jobId);
+    const target = Number(pcsPerPallet);
+    return ops.find((o) => {
+      if (o.jobId !== jobId) return false;
+      return opPcsPerPallet(o, getJob(jobId)) === target;
+    });
   }
 
   function pruneEmptyCycles(lane) {
@@ -2596,12 +2659,13 @@
     const job = getJob(jobId);
     const found = findCycle(cycleId);
     if (!job || !found) return false;
-    if (jobRemaining(jobId) < job.pcsPerPallet) return false;
-    const existing = findOpInCycle(found.cycle, jobId);
+    const pcs = nextPalletPcs(jobId);
+    if (pcs < 1) return false;
+    const existing = findOpInCycle(found.cycle, jobId, pcs);
     if (existing) {
       existing.palletCount += 1;
     } else {
-      found.cycle.ops = [...(found.cycle.ops || []), newCycleOp(jobId, 1, job)];
+      found.cycle.ops = [...(found.cycle.ops || []), newCycleOp(jobId, 1, job, pcs)];
       seedCycleTimingFromJob(found.cycle, job);
     }
     syncCycleSequentialFlag(found.cycle);
@@ -2629,9 +2693,10 @@
   function addPalletAsNewCycle(machineId, jobId, shift) {
     const job = getJob(jobId);
     const lane = state.machines[machineId];
-    if (!job || !lane || jobRemaining(jobId) < job.pcsPerPallet) return;
+    const pcs = nextPalletPcs(jobId);
+    if (!job || !lane || pcs < 1) return;
     const cycle = newCyclePayload(machineId, shift);
-    cycle.ops = [newCycleOp(jobId, 1, job)];
+    cycle.ops = [newCycleOp(jobId, 1, job, pcs)];
     seedCycleTimingFromJob(cycle, job);
     syncCycleSequentialFlag(cycle);
     lane.cycles = [...(lane.cycles || []), cycle];
@@ -2641,26 +2706,34 @@
   }
 
   /**
-   * Full-pallet Schedule-to-MPP plan. Never rounds a leftover rem into an extra pallet
-   * (e.g. 10 pc rem @ 3 pc/pal → 3 cycles / 9 pc, not 4 / 12).
+   * Schedule-to-MPP plan: full pallets first, then one final partial pallet for leftover rem
+   * (e.g. 10 pc rem @ 3 pc/pal → 3×1-pal @ 3 pc + 1×1-pal @ 2 pc).
    */
   function planBulkScheduleCycles(qty, rem, palletsPerCycle, pcsPerPallet) {
     const effectivePcs = Math.max(1, Number(pcsPerPallet) || 1);
     const palPerCycle = Math.max(1, Math.floor(Number(palletsPerCycle) || 1));
     let left = Math.min(Math.max(0, Number(qty) || 0), Math.max(0, Number(rem) || 0));
     const maxPerCycle = palPerCycle * effectivePcs;
-    const palletCounts = [];
+    const cycles = [];
     while (left >= effectivePcs) {
       const cyclePcs = Math.min(left, maxPerCycle);
       const pallets = Math.min(palPerCycle, Math.floor(cyclePcs / effectivePcs));
       if (pallets < 1) break;
-      palletCounts.push(pallets);
+      cycles.push({ palletCount: pallets, pcsPerPallet: effectivePcs });
       left -= pallets * effectivePcs;
     }
+    let partialPcs = 0;
+    if (left > 0) {
+      partialPcs = left;
+      cycles.push({ palletCount: 1, pcsPerPallet: left });
+      left = 0;
+    }
     return {
-      palletCounts,
-      scheduledPcs: palletCounts.reduce((sum, pallets) => sum + pallets * effectivePcs, 0),
-      leftoverPcs: left,
+      cycles,
+      palletCounts: cycles.map((c) => c.palletCount),
+      scheduledPcs: cycles.reduce((sum, c) => sum + c.palletCount * c.pcsPerPallet, 0),
+      leftoverPcs: 0,
+      partialPcs,
       effectivePcs,
       palPerCycle,
     };
@@ -2677,7 +2750,7 @@
     state.jobs[jobId] = job;
     const cycleShift = normalizeShift(shift || defaultShiftForMachine(machine), machine);
     const plan = planBulkScheduleCycles(qty, jobRemaining(jobId), palletsPerCycle, effectivePcs);
-    plan.palletCounts.forEach((pallets) => {
+    plan.cycles.forEach((spec) => {
       const cycle = normalizeCycle({
         cycleId: newId('c'),
         anchor: null,
@@ -2687,7 +2760,7 @@
         unloadMinPerCycle: MPP_DEFAULT_UNLOAD_MIN_PER_CYCLE,
         sequential: false,
         setupPerOp: false,
-        ops: [newCycleOp(jobId, pallets, job)],
+        ops: [newCycleOp(jobId, spec.palletCount, job, spec.pcsPerPallet)],
       });
       lane.cycles = [...(lane.cycles || []), cycle];
     });
@@ -3095,16 +3168,16 @@
       const p = Number(document.getElementById('mpp-s-pcs')?.value || 1);
       const q = Number(document.getElementById('mpp-s-qty')?.value || 0);
       const plan = planBulkScheduleCycles(q, rem, pal, p);
-      const n = plan.palletCounts.length;
+      const n = plan.cycles.length;
       const perCycle = pal * p;
       const shift = document.querySelector('input[name="mpp-s-shift"]:checked')?.value || 'day';
       const shiftLabel = MPP_SHIFT_META[shift]?.label || shift;
       const el = document.getElementById('mpp-schedule-preview');
       if (el) {
-        const leftoverNote = plan.leftoverPcs > 0
-          ? ` · <span class="mpp-schedule-leftover">${plan.leftoverPcs} pc left (below full pallet)</span>`
+        const partialNote = plan.partialPcs > 0
+          ? ` · <span class="mpp-schedule-leftover">+ 1 partial pallet (${plan.partialPcs} pc)</span>`
           : '';
-        el.innerHTML = `<strong>${n}</strong> ${shiftLabel.toLowerCase()} cycle box${n === 1 ? '' : 'es'} · ${fmtMinutes(pal * m)} each · up to ${perCycle} pc/cycle · <strong>${plan.scheduledPcs}</strong> pc queued${leftoverNote}`;
+        el.innerHTML = `<strong>${n}</strong> ${shiftLabel.toLowerCase()} cycle box${n === 1 ? '' : 'es'} · ${fmtMinutes(pal * m)} each · up to ${perCycle} pc/cycle · <strong>${plan.scheduledPcs}</strong> pc queued${partialNote}`;
       }
     };
     const syncShiftForMachine = () => {
@@ -3143,12 +3216,8 @@
     const palletsPerCycle = Math.max(1, Number(document.getElementById('mpp-s-pallets')?.value || 1));
     const qty = Number(document.getElementById('mpp-s-qty')?.value || 0);
     const plan = planBulkScheduleCycles(qty, jobRemaining(state.modal.jobId), palletsPerCycle, pcsPerPallet);
-    if (!plan.palletCounts.length) {
-      window.alert(
-        pcsPerPallet > 1
-          ? `Need at least ${pcsPerPallet} pc remaining for one full pallet (pcs/pallet).`
-          : 'Nothing left to schedule.'
-      );
+    if (!plan.cycles.length) {
+      window.alert('Nothing left to schedule.');
       return;
     }
     bulkScheduleJob(

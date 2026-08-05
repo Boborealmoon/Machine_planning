@@ -2,8 +2,9 @@
 {% block title %}Assembly Parts{% endblock %}
 {% block main_class %}app-main--assembly-parts{% endblock %}
 {% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=ap-material-modal-20260804">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/assembly_boms.css', v='20260717d') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/assembly_parts.css', v='20260723a') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/assembly_parts.css', v='20260804c') }}">
 {% endblock %}
 {% block content %}
 <div class="ap-page ab-page">
@@ -71,6 +72,8 @@
           <th>In-house</th>
           <th>Stage</th>
           <th>Material</th>
+          <th class="ap-col-arrival">Arrival date</th>
+          <th class="ap-col-remark">Remark</th>
           <th>Queue</th>
           <th>BOM</th>
           <th>Issues</th>
@@ -81,7 +84,23 @@
     </table>
   </div>
 </div>
+
+<div id="so-material-modal" class="so-material-modal" hidden>
+  <div class="so-material-modal-backdrop" data-action="close-material-modal" aria-hidden="true"></div>
+  <div class="so-material-modal-panel" role="dialog" aria-modal="true" aria-labelledby="so-material-modal-title">
+    <div class="so-material-modal-head">
+      <div>
+        <p class="so-material-modal-kicker">BOM materials</p>
+        <div class="so-material-modal-identifiers" id="so-material-modal-title"></div>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="so-material-modal-close" aria-label="Close">Close</button>
+    </div>
+    <div class="so-material-modal-body" id="so-material-modal-body"></div>
+    <p class="so-material-modal-foot">BOM: <code>inventory_bom_listing</code> · Inventory: <code>ic_inventory_enquiry_summary_view</code></p>
+  </div>
+</div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/assembly_parts.js', v='20260723a') }}"></script>
+<script src="{{ url_for('static', filename='js/material_modal.js') }}?v=ap-material-modal-20260804"></script>
+<script src="{{ url_for('static', filename='js/assembly_parts.js', v='20260804c') }}"></script>
 {% endblock %}

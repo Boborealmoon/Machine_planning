@@ -90,9 +90,10 @@ function repeatOrderSlotWithList(options = {}) {
   return out;
 }
 
-function repeatOrderFormatPsList(list, max = 3) {
+function repeatOrderFormatPsList(list, max = 3, totalCount = null) {
   const items = (Array.isArray(list) ? list : []).slice(0, max);
-  const overflow = (Array.isArray(list) ? list : []).length > max ? ` +${list.length - max} more` : '';
+  const total = Number.isFinite(Number(totalCount)) ? Number(totalCount) : (Array.isArray(list) ? list.length : 0);
+  const overflow = total > max ? ` +${total - max} more` : '';
   return { preview: items.join(', '), overflow };
 }
 
@@ -100,6 +101,7 @@ function repeatOrderRenderPill(similar, options = {}) {
   const hasHistory = Array.isArray(similar) && similar.length > 0;
   const slotWith = repeatOrderSlotWithList(options);
   const requireQueued = Boolean(options.requireQueued);
+  const totalCount = options.totalCount;
 
   if (requireQueued) {
     if (!hasHistory || !slotWith.length) return '';
@@ -113,13 +115,17 @@ function repeatOrderRenderPill(similar, options = {}) {
     `;
   }
 
-  if (!hasHistory) return '';
-  const { preview, overflow } = repeatOrderFormatPsList(similar);
-  const title = `Repeat order — previous PS: ${similar.join(', ')}`;
+  if (!hasHistory && !(Number(totalCount) > 0)) return '';
+  const list = hasHistory ? similar : [];
+  const { preview, overflow } = repeatOrderFormatPsList(list, 3, totalCount);
+  const titleCount = Number.isFinite(Number(totalCount)) ? Number(totalCount) : list.length;
+  const title = titleCount
+    ? `Repeat order — ${titleCount} previous PS${list.length ? `: ${list.join(', ')}` : ''}`
+    : 'Repeat order';
   return `
     <div class="new-orders-repeat-wrap" title="${escapeHtml(title)}">
       <span class="new-orders-repeat-badge">Repeat</span>
-      <span class="new-orders-repeat-ref">Similar to ${escapeHtml(preview)}${escapeHtml(overflow)}</span>
+      <span class="new-orders-repeat-ref">Similar to ${escapeHtml(preview || `${titleCount} prior`)}${escapeHtml(overflow)}</span>
     </div>
   `;
 }

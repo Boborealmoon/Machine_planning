@@ -251,11 +251,198 @@
   color: #5c675f;
 }
 
+.ap-material-cell {
+  white-space: nowrap;
+}
+
+.ap-material-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.ap-material-btn:hover .ap-pill {
+  box-shadow: 0 0 0 1px currentColor;
+}
+
+.ap-material-btn:focus-visible {
+  outline: 2px solid #16823d;
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.ap-material-btn-label {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #126b33;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ap-material-btn:hover .ap-material-btn-label {
+  color: #0d5227;
+}
+
+.ap-detail-material-btn {
+  appearance: none;
+  border: 1px solid #b7d4c0;
+  border-radius: 6px;
+  background: #eaf8ee;
+  color: #126b33;
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.ap-detail-material-btn:hover {
+  background: #d9f0e0;
+  border-color: #8fbf9d;
+}
+
 .ap-issues {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
   max-width: 160px;
+}
+
+.ap-col-arrival {
+  min-width: 128px;
+}
+
+.ap-col-remark {
+  min-width: 160px;
+}
+
+.ap-arrival-cell,
+.ap-remark-cell {
+  position: relative;
+}
+
+.ap-arrival-cell.has-date {
+  background: #eef6ff;
+}
+
+.ap-arrival-cell.has-arrived {
+  background: #e8f7ee;
+}
+
+.ap-arrival-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 118px;
+}
+
+.ap-arrival-date {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid #ccd7cf;
+  border-radius: 6px;
+  background: #fff;
+  color: #1d2921;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.ap-arrival-date:disabled {
+  opacity: 0.55;
+  background: #f3f5f3;
+}
+
+.ap-arrival-date.is-hidden {
+  display: none;
+}
+
+.ap-arrived-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #ccd7cf;
+  border-radius: 999px;
+  background: #fff;
+  color: #5c675f;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  width: fit-content;
+}
+
+.ap-arrived-btn.is-active {
+  border-color: #16823d;
+  background: #eaf8ee;
+  color: #126b33;
+}
+
+.ap-arrived-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.ap-arrived-btn.is-active .ap-arrived-dot {
+  opacity: 1;
+}
+
+.ap-arrival-legacy {
+  display: block;
+  color: #6a756d;
+  font-size: 0.72rem;
+  line-height: 1.3;
+  max-width: 140px;
+  overflow-wrap: anywhere;
+}
+
+.ap-remark-input {
+  width: 100%;
+  min-width: 140px;
+  max-width: 220px;
+  min-height: 52px;
+  padding: 6px 8px;
+  border: 1px solid #ccd7cf;
+  border-radius: 6px;
+  background: #fff;
+  color: #1d2921;
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  resize: vertical;
+}
+
+.ap-field-status {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #5c675f;
+}
+
+.ap-arrival-cell.is-saving .ap-field-status,
+.ap-remark-cell.is-saving .ap-field-status {
+  color: #9a6700;
+}
+
+.ap-arrival-cell.is-saved .ap-field-status,
+.ap-remark-cell.is-saved .ap-field-status {
+  color: #147a38;
+}
+
+.ap-arrival-cell.is-error .ap-field-status,
+.ap-remark-cell.is-error .ap-field-status {
+  color: #b42318;
 }
 
 @media (max-width: 1100px) {

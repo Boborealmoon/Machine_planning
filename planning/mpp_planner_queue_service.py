@@ -297,16 +297,23 @@ def _mpp_queue_overrun_warnings(
 
     warnings: list[str] = []
     for job_id, planned in planned_by_job.items():
+        if planned <= 0.0001:
+            continue
         job_row = job_overrides.get(job_id) or {}
-        wo_qty = max(
+        wo_open = max(
             0.0,
             parse_number(job_row.get("qty"), 0) - parse_number(job_row.get("out") or job_row.get("outQty"), 0),
         )
-        if wo_qty > 0 and planned > wo_qty + 0.0001:
-            ps_id = compact_text(job_row.get("psId") or job_id)
+        ps_id = compact_text(job_row.get("psId") or job_id)
+        if wo_open <= 0.0001:
             warnings.append(
-                f"{ps_id} is queued for {planned:.0f} pc but WO qty is {wo_qty:.0f} — "
-                f"remove {planned - wo_qty:.0f} pc from the MPP queue."
+                f"{ps_id} is queued for {planned:.0f} pc but ERP qty is already met — "
+                f"remove from the MPP queue."
+            )
+        elif planned > wo_open + 0.0001:
+            warnings.append(
+                f"{ps_id} is queued for {planned:.0f} pc but WO qty is {wo_open:.0f} — "
+                f"remove {planned - wo_open:.0f} pc from the MPP queue."
             )
     return warnings
 
@@ -1916,6 +1923,66 @@ def _mpp_block_done_for_dequeue(block) -> bool:
     return actual_good >= scheduled - 0.0001
 
 
+def _mpp_erp_qty_met_for_block(con, block) -> bool:
+    """True when merged ERP (pp_vouchers_cache + mfg_wo_status) shows this op qty is met.
+
+    MPP job intake uses the same merge; plain pp_vouchers_cache can lag behind mfg_wo_status
+    and leave finished ops stranded on the lane.
+    """
+    from .erp_wo_merge import (
+        ERP_CACHE_STEPS_SELECT,
+        ERP_CACHE_STEPS_WHERE_SINGLE,
+        _execution_status_completed,
+        normalize_op_no_key,
+    )
+    from .process_sheets import parse_planner_ps_id
+
+    ps_raw = compact_text(block.get("source_ps_id") or block.get("job_no"))
+    if not ps_raw:
+        return False
+    source_ps_id, partial = parse_planner_ps_id(ps_raw)
+    source_ps_id = source_ps_id or ps_raw
+    try:
+        pp_partial_no = int(partial or 1)
+    except (TypeError, ValueError):
+        pp_partial_no = 1
+
+    op_no = compact_text(block.get("source_op_no"))
+    op_keys = {op_no, normalize_op_no_key(op_no)} - {""}
+    if not op_keys:
+        return False
+
+    scheduled = float(block.get("scheduled_qty") or 0)
+    if scheduled <= 0.0001:
+        return False
+
+    for row in rows(
+        con.execute(
+            ERP_CACHE_STEPS_SELECT + ERP_CACHE_STEPS_WHERE_SINGLE,
+            (source_ps_id, pp_partial_no),
+        )
+    ):
+        row_op = compact_text(row.get("op_no")) or (
+            str(int(row.get("stage_no") or 0)) if int(row.get("stage_no") or 0) else ""
+        )
+        row_keys = {row_op, normalize_op_no_key(row_op)} - {""}
+        if not (op_keys & row_keys):
+            continue
+        if not _execution_status_completed(row.get("execution_status")):
+            continue
+        produced = max(
+            0.0,
+            float(row.get("wo_qty_produced") or 0) - float(row.get("wo_qty_rejected") or 0),
+        )
+        required = float(row.get("wo_qty_required") or 0)
+        # Match job-intake "MPP qty met (ERP)": finished covers WO required, or at least this block.
+        if produced + 0.0001 >= scheduled:
+            return True
+        if required > 0 and produced + 0.0001 >= required:
+            return True
+    return False
+
+
 def block_ready_for_mpp_auto_dequeue(con, block_id: int) -> bool:
     """True when a single MPP cycle-op block is done and should leave the queue."""
     from .auto_unschedule import _erp_marks_row_done
@@ -1948,7 +2015,9 @@ def block_ready_for_mpp_auto_dequeue(con, block_id: int) -> bool:
         return False
     if _mpp_block_done_for_dequeue(block):
         return True
-    return _erp_marks_row_done(con, block)
+    if _erp_marks_row_done(con, block):
+        return True
+    return _mpp_erp_qty_met_for_block(con, block)
 
 
 def dequeue_done_mpp_block(

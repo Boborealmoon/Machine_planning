@@ -93,6 +93,15 @@ def _ps_base_id(ps_id: str) -> str:
     return compact_text(ps_id).split("::")[0]
 
 
+def _serialize_overlay_date(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat(sep=" ", timespec="seconds")
+    text = compact_text(value)
+    return text or None
+
+
 def _load_material_in(process_sheet_nos: list[str]) -> dict[str, dict[str, Any]]:
     bases: list[str] = []
     seen: set[str] = set()
@@ -132,11 +141,7 @@ def _load_material_in(process_sheet_nos: list[str]) -> dict[str, dict[str, Any]]
     for row in fetched:
         payload = {
             "material_in": bool(row.get("material_in")),
-            "material_in_date": (
-                row.get("material_in_date").isoformat(sep=" ", timespec="seconds")
-                if hasattr(row.get("material_in_date"), "isoformat")
-                else row.get("material_in_date")
-            ),
+            "material_in_date": _serialize_overlay_date(row.get("material_in_date")),
         }
         for key in (
             compact_text(row.get("planner_ps_id")),
@@ -145,6 +150,50 @@ def _load_material_in(process_sheet_nos: list[str]) -> dict[str, dict[str, Any]]
             base = _ps_base_id(key)
             if base in out:
                 out[base] = payload
+    return out
+
+
+def _load_logistics_notes(process_sheet_nos: list[str]) -> dict[str, dict[str, Any]]:
+    """Material arrival date + remark notes from Material Tracking overlays."""
+    bases: list[str] = []
+    seen: set[str] = set()
+    for raw in process_sheet_nos:
+        base = _ps_base_id(raw)
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        bases.append(base)
+    if not bases:
+        return {}
+    default = {"material_subcon": "", "mtl_part_order": ""}
+    try:
+        from .sales_orders_route import _ensure_notes_table
+
+        with planner_db() as con:
+            _ensure_notes_table(con)
+            fetched = rows(
+                con.execute(
+                    """
+                    SELECT pp_voucher_no, material_subcon, mtl_part_order
+                    FROM planner_so_pp_notes
+                    WHERE pp_voucher_no = ANY(%s)
+                    """,
+                    (bases,),
+                )
+            )
+    except Exception as exc:
+        logger.warning("assembly parts logistics notes overlay skipped: %s", exc)
+        return {base: dict(default) for base in bases}
+
+    out = {base: dict(default) for base in bases}
+    for row in fetched:
+        key = _ps_base_id(compact_text(row.get("pp_voucher_no")))
+        if key not in out:
+            continue
+        out[key] = {
+            "material_subcon": compact_text(row.get("material_subcon")),
+            "mtl_part_order": compact_text(row.get("mtl_part_order")),
+        }
     return out
 
 
@@ -231,6 +280,7 @@ def _enrich_families(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             logger.warning("assembly parts child cache load skipped: %s", exc)
 
     material_in = _load_material_in(child_ids)
+    logistics_notes = _load_logistics_notes(child_ids)
     queued = _load_queued_machines()
 
     for job in jobs:
@@ -250,6 +300,9 @@ def _enrich_families(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 )
                 if not child.get("description"):
                     child["description"] = compact_text(cache.get("part_desc"))
+                ps_bom = compact_text(cache.get("bom_code"))
+                if ps_bom:
+                    child["ps_bom_code"] = ps_bom
             else:
                 child.setdefault("status", "")
                 child.setdefault("due_date", compact_text(job.get("due_date")))
@@ -259,8 +312,14 @@ def _enrich_families(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
             base = _ps_base_id(ps_no)
             mi = material_in.get(base, {"material_in": False, "material_in_date": None})
+            notes = logistics_notes.get(
+                base,
+                {"material_subcon": "", "mtl_part_order": ""},
+            )
             child["material_in"] = bool(mi.get("material_in"))
             child["material_in_date"] = mi.get("material_in_date")
+            child["material_subcon"] = compact_text(notes.get("material_subcon"))
+            child["remark"] = compact_text(notes.get("mtl_part_order"))
             machines = _machines_for_ps(queued, ps_no) if ps_no else []
             child["queued_machines"] = machines
             child["needs_scheduling"] = bool(
@@ -344,13 +403,42 @@ def _fetch_assembly_parts_uncached(*, view: str) -> list[dict[str, Any]]:
     return _enrich_families(jobs)
 
 
+def _overlay_editable_fields(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Refresh material arrival / remark fields without rebuilding the assembly tree."""
+    child_ids = sorted(
+        {
+            compact_text(child.get("process_sheet_no"))
+            for job in jobs
+            for child in (job.get("children") or [])
+            if compact_text(child.get("process_sheet_no"))
+        }
+    )
+    material_in = _load_material_in(child_ids)
+    logistics_notes = _load_logistics_notes(child_ids)
+    for job in jobs:
+        for child in job.get("children") or []:
+            ps_no = compact_text(child.get("process_sheet_no"))
+            base = _ps_base_id(ps_no)
+            mi = material_in.get(base, {"material_in": False, "material_in_date": None})
+            notes = logistics_notes.get(
+                base,
+                {"material_subcon": "", "mtl_part_order": ""},
+            )
+            child["material_in"] = bool(mi.get("material_in"))
+            child["material_in_date"] = mi.get("material_in_date")
+            child["material_subcon"] = compact_text(notes.get("material_subcon"))
+            child["remark"] = compact_text(notes.get("mtl_part_order"))
+    return jobs
+
+
 def fetch_assembly_parts(*, refresh: bool = False, view: str = "active") -> list[dict[str, Any]]:
     global _cache
     view_key = "complete" if view == "complete" else "active"
     now = time.time()
     cached = _cache.get(view_key)
     if not refresh and cached and now - cached[0] < _CACHE_TTL_SEC:
-        return cached[1]
+        # Structure is cached; always re-read editable logistics notes.
+        return _overlay_editable_fields(cached[1])
     jobs = _fetch_assembly_parts_uncached(view=view_key)
     _cache[view_key] = (now, jobs)
     return jobs

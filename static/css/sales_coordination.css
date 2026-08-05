@@ -1,0 +1,265 @@
+/* Sales Coordination - read-only delivery commitment view */
+
+.sc-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.15rem 0 1.75rem;
+}
+
+.sc-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem;
+}
+
+.sc-title {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+}
+
+.sc-subtitle {
+  margin: 0.25rem 0 0;
+  color: #64748b;
+  max-width: 44rem;
+  line-height: 1.4;
+  font-size: 0.875rem;
+}
+
+.sc-header-actions {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.sc-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.7rem 1rem;
+  padding: 0.7rem 0.9rem;
+}
+
+.sc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+}
+
+.sc-field--search {
+  flex: 1;
+  min-width: 16rem;
+}
+
+.sc-field input {
+  padding: 0.42rem 0.6rem;
+  border: 1px solid #dbe2ea;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  color: inherit;
+  width: 100%;
+  background: #fff;
+}
+
+.sc-field input:focus {
+  outline: none;
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.sc-type-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.sc-type-chip {
+  border: 1px solid #dbe2ea;
+  background: #fff;
+  color: #334155;
+  border-radius: 999px;
+  padding: 0.32rem 0.7rem;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+
+.sc-type-chip.is-active {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+
+.sc-toolbar-aside {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.sc-meta {
+  font-size: 0.8rem;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.sc-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 1.5rem 0.5rem;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.sc-alert {
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  font-size: 0.875rem;
+}
+
+.sc-table-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.sc-table-wrap {
+  overflow: auto;
+  max-height: calc(100vh - 14rem);
+}
+
+.sc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  color: #1e293b;
+}
+
+.sc-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #e8f0fe;
+  color: #334155;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  text-align: left;
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid #d0d7e2;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.sc-table thead th::after {
+  content: " ?";
+  opacity: 0.35;
+  font-size: 0.65rem;
+}
+
+.sc-table thead th.is-sorted-asc::after {
+  content: " ?";
+  opacity: 0.9;
+}
+
+.sc-table thead th.is-sorted-desc::after {
+  content: " ?";
+  opacity: 0.9;
+}
+
+.sc-table tbody td {
+  padding: 0.45rem 0.7rem;
+  border-bottom: 1px solid #eef2f7;
+  vertical-align: middle;
+}
+
+.sc-table tbody tr:hover td {
+  background: #f8fafc;
+}
+
+.sc-mono {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+}
+
+.sc-date {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.sc-date--prop {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.sc-date--prop.is-empty {
+  font-weight: 400;
+  color: #94a3b8;
+}
+
+.sc-part-cell {
+  white-space: nowrap;
+}
+
+.sc-part-text {
+  margin-right: 6px;
+}
+
+.sc-fa-badge,
+.sc-new-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  vertical-align: middle;
+}
+
+.sc-fa-badge {
+  background: rgba(126, 34, 206, 0.12);
+  color: #7e22ce;
+  border: 1px solid rgba(126, 34, 206, 0.25);
+}
+
+.sc-new-badge {
+  margin-left: 4px;
+  background: rgba(2, 132, 199, 0.12);
+  color: #0369a1;
+  border: 1px solid rgba(2, 132, 199, 0.3);
+}
+
+.sc-empty {
+  padding: 1.5rem 1rem;
+  text-align: center;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.app-main--sc {
+  max-width: none;
+}

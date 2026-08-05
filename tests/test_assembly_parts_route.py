@@ -214,6 +214,9 @@ def test_api_assembly_parts_serializes(monkeypatch):
         job["has_issues"] = bool(job.get("warning_flags"))
         for child in job["children"]:
             child["material_in"] = False
+            child["material_in_date"] = None
+            child["material_subcon"] = ""
+            child["remark"] = ""
             child["queued_machines"] = []
             child["needs_scheduling"] = True
             child["ready"] = False

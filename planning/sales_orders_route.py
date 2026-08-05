@@ -33,7 +33,8 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 21
+_SCHEMA_VERSION = 22
+_SIMILAR_PS_PREVIEW = 8
 
 _NOTE_FIELDS = (
     "material_subcon",
@@ -1117,8 +1118,14 @@ def _apply_new_part_overlay(orders: list[dict[str, Any]]) -> None:
                 "process_sheet_no": pp.get("process_sheet_no") or pp.get("pp_voucher_no"),
             }
             similar = _similar_ps_for_row(row, groups, exclude_ps=exclude) if groups else []
-            pp["similar_ps"] = similar
             pp["is_new_part"] = not similar
+            pp["similar_ps_count"] = len(similar)
+            # Full similar_ps lists balloon the S/O payload (~18MB). Keep a short
+            # preview for active lines; omit lists on shipped/complete lines.
+            if pp.get("shipped_completed"):
+                pp["similar_ps"] = []
+            else:
+                pp["similar_ps"] = similar[:_SIMILAR_PS_PREVIEW]
 
 
 def _strip_completed_highlights(orders: list[dict[str, Any]]) -> list[str]:

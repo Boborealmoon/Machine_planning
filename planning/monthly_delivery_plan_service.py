@@ -2,11 +2,15 @@
 
 Commitment date = Coway proposed EDD if set, else PO due date
 (same rule as Delivery Schedule / S/O Management).
+
+Target amount (home $) = partial_qty x unit_cost x exch_rate.
 """
 from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Any
+
+from .so_outstanding_balance_service import pricing_keys_from_orders, week_label
 
 
 def _compact(value: Any) -> str:
@@ -45,6 +49,13 @@ def commitment_date(pp: dict[str, Any], partial: dict[str, Any] | None = None) -
     return _parse_date(coway) or _parse_date(pp.get("due_date"))
 
 
+def _coway_edd_raw(pp: dict[str, Any], partial: dict[str, Any] | None) -> str:
+    return (
+        _compact((partial or {}).get("coway_proposed_edd"))
+        or _compact(pp.get("coway_proposed_edd"))
+    )
+
+
 def _ps_type(process_sheet_no: Any) -> str:
     text = _compact(process_sheet_no).upper()
     if text.startswith("[SR]") or text.startswith("SR"):
@@ -66,15 +77,21 @@ def _line_qty(pp: dict[str, Any], partial: dict[str, Any] | None) -> float:
     return _to_float(pp.get("so_det_qty")) or 0.0
 
 
-def _line_amount(pp: dict[str, Any], qty: float) -> float:
-    unit = _to_float(pp.get("unit_selling_price"))
+def _money(unit: float | None, qty: float, exch: float | None) -> float:
     if unit is None:
         return 0.0
-    return round(unit * qty, 2)
+    rate = exch if exch is not None and exch > 0 else 1.0
+    return round(float(unit) * float(qty) * float(rate), 2)
 
 
-def expand_delivery_lines(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def expand_delivery_lines(
+    orders: list[dict[str, Any]],
+    pricing_by_key: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """One row per open PP partial (or PP when it has no partials)."""
+    from planning.process_sheets import _so_line_pricing_key
+
+    pricing = pricing_by_key or {}
     lines: list[dict[str, Any]] = []
     for order in orders:
         customer = _compact(order.get("customer_name"))
@@ -82,13 +99,22 @@ def expand_delivery_lines(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for pp in order.get("pp_vouchers") or []:
             if pp.get("shipped_completed"):
                 continue
+            line_no = _compact(pp.get("source_line_item_no"))
+            price_key = _so_line_pricing_key(so_no, line_no)
+            price_row = pricing.get(price_key) or {}
+            unit = _to_float(price_row.get("unit_cost"))
+            if unit is None:
+                unit = _to_float(pp.get("unit_selling_price"))
+            exch = _to_float(price_row.get("exch_rate"))
+
             partials = list(pp.get("partials") or [])
             slots: list[dict[str, Any] | None] = partials if partials else [None]
             for partial in slots:
                 qty = _line_qty(pp, partial)
                 commit = commitment_date(pp, partial)
-                unit = _to_float(pp.get("unit_selling_price"))
-                amount = _line_amount(pp, qty)
+                coway_raw = _coway_edd_raw(pp, partial)
+                coway_date = _parse_date(coway_raw)
+                amount = _money(unit, qty, exch)
                 partial_no = None
                 if partial is not None:
                     try:
@@ -107,14 +133,13 @@ def expand_delivery_lines(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         "part_desc": _compact(pp.get("description") or pp.get("part_desc")),
                         "so_qty": _to_float(pp.get("so_det_qty")),
                         "qty": qty,
-                        "unit_selling_price": unit,
+                        "unit_cost": unit,
+                        "exch_rate": exch if exch is not None else 1.0,
+                        "unit_selling_price": _to_float(pp.get("unit_selling_price")),
                         "amount": amount,
                         "due_date": _compact(pp.get("due_date"))[:10] or None,
-                        "coway_edd": (
-                            _compact((partial or {}).get("coway_proposed_edd"))
-                            or _compact(pp.get("coway_proposed_edd"))
-                        )[:10]
-                        or None,
+                        "coway_edd": coway_raw[:10] or None,
+                        "week": week_label(coway_date) if coway_date else None,
                         "commitment_date": commit.isoformat() if commit else None,
                         "commitment_month": f"{commit.year:04d}-{commit.month:02d}" if commit else None,
                         "current_stage_desc": _compact(
@@ -150,10 +175,11 @@ def build_monthly_delivery_plan(
     orders: list[dict[str, Any]],
     *,
     year: int,
+    pricing_by_key: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Bucket open delivery lines by commitment month for one calendar year."""
     year = max(2000, min(2100, int(year)))
-    lines = expand_delivery_lines(orders)
+    lines = expand_delivery_lines(orders, pricing_by_key)
     months = [_empty_month(year, m) for m in range(1, 13)]
     by_key = {m["key"]: m for m in months}
     undated: list[dict[str, Any]] = []
@@ -184,7 +210,8 @@ def build_monthly_delivery_plan(
         "ok": True,
         "year": year,
         "commitment_rule": "coway_edd_or_po_due",
-        "currency_note": "SO line unit selling price - delivery qty (order currency)",
+        "currency_note": "partial qty x unit cost x exchange rate (home currency)",
+        "default_ps_types": ["APS", "NPS"],
         "year_summary": {
             "line_count": year_lines,
             "qty": year_qty,
@@ -196,3 +223,13 @@ def build_monthly_delivery_plan(
         "undated": undated,
         "other_years": other_years,
     }
+
+
+# Re-export for route convenience
+__all__ = [
+    "build_monthly_delivery_plan",
+    "commitment_date",
+    "expand_delivery_lines",
+    "pricing_keys_from_orders",
+    "week_label",
+]
