@@ -1,0 +1,168 @@
+/* Shift Management users admin - layout polish on top of mro_admin_users.css */
+
+.sm-admin-users-page .notes-header {
+  align-items: flex-start;
+}
+
+.sm-admin-users-page .mro-admin-header-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .sm-admin-users-page .mro-admin-header-actions {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .sm-admin-users-page .mro-admin-header-actions .notes-refresh {
+    flex: 1 1 auto;
+    text-align: center;
+  }
+}
+
+.sm-admin-users-page .mro-admin-header-actions .notes-refresh {
+  white-space: nowrap;
+  margin: 0;
+}
+
+.sm-admin-form--sm {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px 14px;
+  align-items: end;
+}
+
+@media (max-width: 1100px) {
+  .sm-admin-form--sm {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .sm-admin-form--sm {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .sm-admin-form--sm {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sm-admin-form--sm label {
+  min-width: 0;
+}
+
+.sm-admin-form--sm input,
+.sm-admin-form--sm select {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid var(--notes-line, #dce5e0);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--notes-ink, #17201d);
+  background: #fff;
+  box-sizing: border-box;
+}
+
+.sm-admin-form--sm .sm-admin-form-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.sm-admin-form--sm .sm-admin-form-actions .notes-save {
+  margin: 0;
+  min-height: 42px;
+  padding: 0 18px;
+}
+
+.sm-admin-users-page .mro-admin-list-heading {
+  align-items: center;
+}
+
+.sm-admin-users-page .mro-admin-list-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.sm-admin-users-page .mro-admin-badge {
+  margin-left: 0;
+  line-height: 1;
+}
+
+.sm-admin-users-page .mro-admin-filter select {
+  min-width: 140px;
+  min-height: 42px;
+}
+
+.sm-admin-users-page .mro-admin-empty {
+  padding: 28px 12px;
+  text-align: center;
+  border: 1px dashed var(--notes-line, #dce5e0);
+  border-radius: 12px;
+  background: #fafbfa;
+}
+
+/* Dialog lives outside .sm-admin-users-page � target by id */
+#sm-edit-dialog.mro-admin-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  height: fit-content;
+  max-height: calc(100vh - 32px);
+}
+
+#sm-edit-dialog .mro-admin-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+#sm-edit-dialog .mro-admin-dialog-actions .notes-save,
+#sm-edit-dialog #sm-edit-cancel {
+  margin: 0;
+  min-height: 42px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#sm-edit-dialog #sm-edit-cancel {
+  border: 1px solid var(--notes-line, #dce5e0);
+  background: #fff;
+  color: var(--notes-ink, #17201d);
+}
+
+#sm-edit-dialog .mro-admin-dialog-actions .notes-save {
+  border: 0;
+  background: var(--notes-accent, #12664f);
+  color: #fff;
+}
+
+#sm-edit-dialog select {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid var(--notes-line, #dce5e0);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 0.9rem;
+  background: #fff;
+}

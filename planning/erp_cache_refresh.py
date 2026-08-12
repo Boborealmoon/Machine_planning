@@ -103,6 +103,12 @@ def refresh_after_erp_sync(*, warm: bool = True, background: bool = True) -> dic
 
         with planner_db() as con:
             try:
+                from planning.erp_scanned_output_service import bootstrap_erp_qty_jump_schema
+
+                bootstrap_erp_qty_jump_schema(con)
+            except Exception as exc:
+                logger.warning("erp qty jump schema bootstrap failed: %s", exc, exc_info=True)
+            try:
                 snapshot_count = record_erp_wo_qty_snapshots_from_staging(con)
             except Exception as exc:
                 logger.warning("erp wo qty snapshot (post-sync) failed: %s", exc, exc_info=True)

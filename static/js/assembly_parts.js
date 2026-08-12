@@ -570,7 +570,15 @@
     if (refresh) params.set('refresh', '1');
     try {
       const res = await fetch(`/api/assembly-parts?${params.toString()}`);
-      const payload = await res.json();
+      const text = await res.text();
+      let payload;
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `API returned non-JSON (HTTP ${res.status}). Check /api/assembly-parts.`
+        );
+      }
       if (!res.ok || !payload.ok) {
         throw new Error(payload.error || `HTTP ${res.status}`);
       }

@@ -1,5 +1,6 @@
 // PPS tracking - PS-level controls + columns/cards views.
 const PPS_VIEW_KEY = 'pps.viewStyle';
+const PPS_FLAGGED_FIRST_KEY = 'pps.flaggedFirst';
 
 const ppsState = {
   trackingRows: [],
@@ -10,6 +11,7 @@ const ppsState = {
   trackingModalKey: '',
   openKey: '',
   view: localStorage.getItem(PPS_VIEW_KEY) === 'cards' ? 'cards' : 'columns',
+  flaggedFirst: localStorage.getItem(PPS_FLAGGED_FIRST_KEY) === '1',
 };
 
 const ppsRemarkTimers = new Map();
@@ -122,7 +124,7 @@ function ppsHaystack(row) {
 
 function ppsFilteredRows() {
   const search = ppsState.trackingSearch.trim().toLowerCase();
-  return ppsState.trackingRows.filter((row) => {
+  const rows = ppsState.trackingRows.filter((row) => {
     const kind = ppsStageKind(row);
     const hasSalesOrderValue = row.sales_order_value != null
       && String(row.sales_order_value).trim() !== '';
@@ -140,6 +142,8 @@ function ppsFilteredRows() {
     }
     return !search || ppsHaystack(row).includes(search);
   });
+  if (!ppsState.flaggedFirst) return rows;
+  return rows.slice().sort((a, b) => Number(!!b.pps_flagged) - Number(!!a.pps_flagged));
 }
 
 function ppsUpdateTabCounts() {
@@ -173,6 +177,24 @@ function ppsApplyViewChrome() {
     btn.classList.toggle('is-active', active);
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
   });
+  ppsApplyFlaggedFirstChrome();
+}
+
+function ppsApplyFlaggedFirstChrome() {
+  const btn = document.getElementById('pps-flagged-first');
+  if (!btn) return;
+  btn.classList.toggle('is-active', ppsState.flaggedFirst);
+  btn.setAttribute('aria-pressed', ppsState.flaggedFirst ? 'true' : 'false');
+  btn.title = ppsState.flaggedFirst
+    ? 'Flagged jobs stay at the top (click to turn off)'
+    : 'Keep flagged jobs at the top';
+}
+
+function ppsSetFlaggedFirst(enabled) {
+  ppsState.flaggedFirst = !!enabled;
+  localStorage.setItem(PPS_FLAGGED_FIRST_KEY, ppsState.flaggedFirst ? '1' : '0');
+  ppsApplyFlaggedFirstChrome();
+  ppsRender();
 }
 
 function ppsSetView(view) {
@@ -314,7 +336,11 @@ async function ppsSaveSheetOverlay(key, patch) {
       statusEl.className = 'pps-op-save is-ok';
       statusEl.textContent = 'Saved';
     }
-    ppsSyncFlagUi(key, !!overlay.flagged);
+    if (ppsState.flaggedFirst && Object.prototype.hasOwnProperty.call(patch, 'flagged')) {
+      ppsRender();
+    } else {
+      ppsSyncFlagUi(key, !!overlay.flagged);
+    }
   } catch (err) {
     if (statusEl) {
       statusEl.className = 'pps-op-save is-err';
@@ -713,6 +739,10 @@ document.querySelector('.pps-view-toggle')?.addEventListener('click', (event) =>
   const btn = event.target.closest('.pps-view-btn');
   if (!btn) return;
   ppsSetView(btn.getAttribute('data-view') || 'columns');
+});
+
+document.getElementById('pps-flagged-first')?.addEventListener('click', () => {
+  ppsSetFlaggedFirst(!ppsState.flaggedFirst);
 });
 
 document.getElementById('pps-tracking-search')?.addEventListener('input', (event) => {

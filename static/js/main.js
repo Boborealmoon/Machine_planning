@@ -375,6 +375,8 @@ document.getElementById("nav-erp-sync-btn")?.addEventListener("click", () => {
   const LAST_SEEN_KEY = "notif-last-seen-exit-id";
   const LAST_SEEN_SO_KEY = "notif-last-seen-so-time";
   const POLL_MS = 60000;
+  const INITIAL_DELAY_MS = 2000; // let the page paint before nabbing Waitress threads
+  const MIN_REFRESH_GAP_MS = 20000; // collapse focus/tab thrashing across open pages
   const FETCH_LIMIT = 50;
   const SO_PARTS_MAX = 4; // parts listed per new-order card before "+N more"
 
@@ -517,7 +519,24 @@ document.getElementById("nav-erp-sync-btn")?.addEventListener("click", () => {
       g.seen.add(key);
       g.parts.push({ ps, part, desc, type: psTypeOf(ps) });
     }
-    newOrders = Array.from(bySo.values());
+    applyNewOrders(Array.from(bySo.values()));
+  };
+
+  const applyNewOrders = (orders) => {
+    newOrders = (orders || []).map((g) => ({
+      so: String(g.so || "").trim(),
+      customer: String(g.customer || "").trim(),
+      postedAt: g.postedAt || null,
+      parts: (g.parts || []).map((p) => {
+        const ps = String(p.ps || "").trim();
+        return {
+          ps,
+          part: String(p.part || "").trim(),
+          desc: String(p.desc || "").trim(),
+          type: p.type || psTypeOf(ps),
+        };
+      }),
+    }));
     maxSoTime = newOrders.reduce((m, g) => Math.max(m, toMs(g.postedAt)), 0);
   };
 
@@ -635,22 +654,39 @@ document.getElementById("nav-erp-sync-btn")?.addEventListener("click", () => {
 
   const fetchNewOrders = async () => {
     try {
-      const res = await fetch("/api/new-orders?week=this_week", {
+      const res = await fetch("/api/new-orders/notifications", {
         headers: { Accept: "application/json" },
       });
       if (!res.ok) return;
       const data = await res.json();
-      if (!data || data.ok === false || !Array.isArray(data.rows)) return;
-      groupNewOrders(data.rows);
-      render();
+      if (!data || data.ok === false) return;
+      if (Array.isArray(data.orders)) {
+        applyNewOrders(data.orders);
+        render();
+        return;
+      }
+      // Legacy fallback if an older server still returns line rows.
+      if (Array.isArray(data.rows)) {
+        groupNewOrders(data.rows);
+        render();
+      }
     } catch {
       /* silent — bell just won't update */
     }
   };
 
-  const refresh = () => {
-    fetchEvents();
-    fetchNewOrders();
+  let refreshInFlight = null;
+  let lastRefreshAt = 0;
+
+  const refresh = ({ force = false } = {}) => {
+    const now = Date.now();
+    if (!force && refreshInFlight) return refreshInFlight;
+    if (!force && now - lastRefreshAt < MIN_REFRESH_GAP_MS) return refreshInFlight;
+    lastRefreshAt = now;
+    refreshInFlight = Promise.all([fetchEvents(), fetchNewOrders()]).finally(() => {
+      refreshInFlight = null;
+    });
+    return refreshInFlight;
   };
 
   const markAllRead = () => {
@@ -662,7 +698,7 @@ document.getElementById("nav-erp-sync-btn")?.addEventListener("click", () => {
   const openPanel = () => {
     panel.hidden = false;
     btn.setAttribute("aria-expanded", "true");
-    refresh();
+    refresh({ force: true });
   };
   const closeFilter = () => {
     if (!filterPanel) return;
@@ -732,10 +768,13 @@ document.getElementById("nav-erp-sync-btn")?.addEventListener("click", () => {
 
   buildFilter();
 
-  refresh();
+  // Defer the first poll so HTML/CSS/JS for the real page win Waitress threads.
+  window.setTimeout(() => refresh(), INITIAL_DELAY_MS);
   window.setInterval(() => {
     if (document.visibilityState === "visible") refresh();
   }, POLL_MS);
+  // Focus used to refresh on every alt-tab; with several planner tabs that
+  // stampeded the DB pool and made the whole app feel frozen.
   window.addEventListener("focus", () => refresh());
   // Refetch right after an ERP sync so brand-new orders show without waiting for the poll.
   window.addEventListener("pp-vouchers-synced", () => fetchNewOrders());

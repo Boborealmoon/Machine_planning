@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from .blocks import _row_planner_ps_identity
@@ -11,6 +12,47 @@ from .utils import compact_text
 logger = logging.getLogger(__name__)
 
 _SCHEMA_READY = False
+_EVENTS_CACHE_TTL_SEC = 30
+_events_cache: dict[str, tuple[float, list]] = {}
+
+
+def invalidate_queue_exit_history_cache() -> None:
+    _events_cache.clear()
+
+
+def get_cached_queue_exit_history(**kwargs) -> list | None:
+    """Return cached rows without touching the planner DB, or None on miss."""
+    cached = _events_cache.get(_events_cache_key(**kwargs))
+    if not cached:
+        return None
+    if time.time() - cached[0] >= _EVENTS_CACHE_TTL_SEC:
+        return None
+    return cached[1]
+
+
+def _events_cache_key(
+    *,
+    part_no: str = "",
+    bom_code: str = "",
+    machine_no: str = "",
+    stage_no: int = 0,
+    source_ps_id: str = "",
+    from_date: str = "",
+    to_date: str = "",
+    limit: int = 500,
+) -> str:
+    return "|".join(
+        [
+            compact_text(part_no),
+            compact_text(bom_code),
+            compact_text(machine_no),
+            str(int(stage_no or 0)),
+            compact_text(source_ps_id),
+            compact_text(from_date),
+            compact_text(to_date),
+            str(int(limit or 500)),
+        ]
+    )
 
 _BLOCK_EXIT_SQL = """
 SELECT
@@ -54,6 +96,16 @@ WHERE b.block_id = %s
 def ensure_queue_exit_history_schema(con) -> None:
     global _SCHEMA_READY
     if _SCHEMA_READY:
+        return
+    # Cheap existence check — avoid 4 remote DDL round-trips on every process boot
+    # (nav bell polls this API on every page and would otherwise stall Waitress threads).
+    existing = one(
+        con.execute(
+            "SELECT to_regclass('public.planner_queue_exit_history') AS reg"
+        )
+    )
+    if existing and existing.get("reg"):
+        _SCHEMA_READY = True
         return
     con.execute(
         """
@@ -196,6 +248,10 @@ def record_queue_exit_for_block(
             int(ctx.get("cycle_id") or 0) or None,
         ),
     )
+    try:
+        invalidate_queue_exit_history_cache()
+    except Exception:
+        pass
     logger.debug(
         "queue exit recorded block=%s part=%s stage=%s machine=%s qty=%s reason=%s",
         block_id,
@@ -219,7 +275,25 @@ def fetch_queue_exit_history(
     from_date: str = "",
     to_date: str = "",
     limit: int = 500,
+    use_cache: bool = True,
+    refresh: bool = False,
 ) -> list[dict[str, Any]]:
+    cache_key = _events_cache_key(
+        part_no=part_no,
+        bom_code=bom_code,
+        machine_no=machine_no,
+        stage_no=stage_no,
+        source_ps_id=source_ps_id,
+        from_date=from_date,
+        to_date=to_date,
+        limit=limit,
+    )
+    now = time.time()
+    if use_cache and not refresh:
+        cached = _events_cache.get(cache_key)
+        if cached and now - cached[0] < _EVENTS_CACHE_TTL_SEC:
+            return cached[1]
+
     ensure_queue_exit_history_schema(con)
     clauses = ["1=1"]
     params: list[Any] = []
@@ -255,7 +329,7 @@ def fetch_queue_exit_history(
     limit = max(1, min(int(limit or 500), 5000))
     params.append(limit)
 
-    return rows(
+    result = rows(
         con.execute(
             f"""
             SELECT
@@ -272,6 +346,9 @@ def fetch_queue_exit_history(
             tuple(params),
         )
     )
+    if use_cache:
+        _events_cache[cache_key] = (now, result)
+    return result
 
 
 def fetch_queue_exit_summary(

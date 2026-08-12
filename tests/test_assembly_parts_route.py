@@ -200,6 +200,18 @@ def test_stalled_child_when_overdue_and_not_queued():
     assert "stalled_child" in job["warning_flags"]
 
 
+def test_serialize_overlay_date_accepts_date_and_datetime():
+    from datetime import date, datetime
+
+    assert parts._serialize_overlay_date(None) is None
+    assert parts._serialize_overlay_date(date(2026, 8, 6)) == "2026-08-06"
+    assert (
+        parts._serialize_overlay_date(datetime(2026, 8, 6, 13, 14, 15))
+        == "2026-08-06 13:14:15"
+    )
+    assert parts._serialize_overlay_date("2026-08-06") == "2026-08-06"
+
+
 def test_api_assembly_parts_serializes(monkeypatch):
     sample = build_assembly_jobs(
         [_root()],

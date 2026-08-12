@@ -179,7 +179,7 @@
       </div>
 
       {# Shop-floor & operational views #}
-      <div class="nav-dropdown {% if nav_path in (machinist_board_path, finishing_queue_path, driver_view_path, '/assembly-parts', '/sales-orders/logistics', '/sales-coordination') or active in ('machinist_board', 'finishing_queue', 'driver_view', 'assembly_parts', 'sales_orders_logistics', 'sales_coordination') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in (machinist_board_path, finishing_queue_path, driver_view_path, '/assembly-parts', '/sales-orders/logistics', '/sales-coordination', '/Shift-management', '/erp-scanned-output') or active in ('machinist_board', 'finishing_queue', 'driver_view', 'assembly_parts', 'sales_orders_logistics', 'sales_coordination', 'shift_management', 'erp_scanned_output') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="views" aria-expanded="false" aria-controls="dd-views">
           VIEWS <span class="nav-caret">▾</span>
         </button>
@@ -208,11 +208,19 @@
              class="nav-dropdown-item {% if nav_path == '/sales-coordination' or active == 'sales_coordination' %}nav-dropdown-item--active{% endif %}">
             Sales Coordination
           </a>
+          <a href="/Shift-management"
+             class="nav-dropdown-item {% if nav_path.startswith('/Shift-management') or active == 'shift_management' %}nav-dropdown-item--active{% endif %}">
+            Shift Management
+          </a>
+          <a href="/erp-scanned-output"
+             class="nav-dropdown-item {% if nav_path == '/erp-scanned-output' or active == 'erp_scanned_output' %}nav-dropdown-item--active{% endif %}">
+            ERP scanned output
+          </a>
         </div>
       </div>
 
       {# Archive — historical / reference views #}
-      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/actual-production', '/auk-oee', '/preferred-machines', '/floor-plan', '/monthly-delivery-plan', '/archive/so-lines') or active in ('daily_output', 'actual_production', 'auk_oee', 'preferred_machines', 'floor_plan', 'monthly_delivery_plan', 'so_archive') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/erp-scanned-output', '/actual-production', '/auk-oee', '/preferred-machines', '/floor-plan', '/monthly-delivery-plan', '/archive/so-lines') or active in ('daily_output', 'erp_scanned_output', 'actual_production', 'auk_oee', 'preferred_machines', 'floor_plan', 'monthly_delivery_plan', 'so_archive') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="archive" aria-expanded="false" aria-controls="dd-archive">
           ARCHIVE <span class="nav-caret">▾</span>
         </button>
@@ -224,6 +232,10 @@
           <a href="/daily-output"
              class="nav-dropdown-item {% if nav_path == '/daily-output' or active == 'daily_output' %}nav-dropdown-item--active{% endif %}">
             Daily output
+          </a>
+          <a href="/erp-scanned-output"
+             class="nav-dropdown-item {% if nav_path == '/erp-scanned-output' or active == 'erp_scanned_output' %}nav-dropdown-item--active{% endif %}">
+            ERP scanned output
           </a>
           <a href="/actual-production"
              class="nav-dropdown-item {% if nav_path == '/actual-production' or active == 'actual_production' %}nav-dropdown-item--active{% endif %}">
@@ -314,7 +326,7 @@
   {% block content %}{% endblock %}
 </main>
 
-<script src="{{ url_for('static', filename='js/main.js') }}?v=reports-token-20260729b"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}?v=notif-defer-20260806"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

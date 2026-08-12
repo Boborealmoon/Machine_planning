@@ -1372,7 +1372,7 @@ async function fqLoadMaterialInspection({ refresh = false } = {}) {
     if (refresh) params.set('refresh', '1');
     const qs = params.toString();
     const url = qs ? `${fqMiApiUrl()}?${qs}` : fqMiApiUrl();
-    const payload = await fqFetchJson(url);
+    const payload = await fqFetchJson(url, { timeoutMs: 120000 });
     fqMiApplyRows(payload);
     fqState.mi.loaded = true;
   } catch (err) {
@@ -2319,25 +2319,40 @@ function fqApplyPayload(payload) {
 window.fqApplyPayload = fqApplyPayload;
 
 async function fqSyncWoStatus() {
-  const res = await fetch(fqApiUrl('woStatusSync'), {
-    method: 'POST',
-    credentials: 'same-origin',
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  if (data.skipped) {
-    throw new Error(data.reason || 'WO status sync was skipped');
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 90000);
+  try {
+    const res = await fetch(fqApiUrl('woStatusSync'), {
+      method: 'POST',
+      credentials: 'same-origin',
+      signal: controller.signal,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (data.skipped) {
+      throw new Error(data.reason || 'WO status sync was skipped');
+    }
+    return data;
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      throw new Error('WO status sync timed out — showing last synced data');
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timer);
   }
-  return data;
 }
 
-async function fqLoad({ refresh = false } = {}) {
+async function fqLoad({ refresh = false, syncErp = null } = {}) {
   const loading = document.getElementById('fq-loading');
   if (loading) loading.hidden = false;
   const empty = document.getElementById('fq-empty');
   if (empty) empty.hidden = true;
+  // ERP WO sync only when explicitly requested (Refresh button). Page load must not
+  // wait on COMAIN — that alone often exceeds the old 20s client timeout.
+  const doSync = syncErp == null ? !!refresh : !!syncErp;
   try {
-    if (refresh) {
+    if (doSync) {
       fqToast((typeof fqT === 'function') ? fqT('toast_syncing') : 'Syncing WO status from ERP…', 'info');
       try {
         await fqSyncWoStatus();
@@ -2349,7 +2364,7 @@ async function fqLoad({ refresh = false } = {}) {
     if (refresh) params.set('refresh', '1');
     const qs = params.toString();
     const url = qs ? `${fqApiUrl('queue')}?${qs}` : fqApiUrl('queue');
-    const payload = await fqFetchJson(url);
+    const payload = await fqFetchJson(url, { timeoutMs: 120000 });
     fqApplyPayload(payload);
   } catch (err) {
     fqShowLoadError(`Failed to load: ${err.message || err}`);
@@ -2387,7 +2402,7 @@ function fqSetScreen(screen) {
 
 async function fqReloadMaterialIssueItems() {
   try {
-    const payload = await fqFetchJson(fqApiUrl('queue'));
+    const payload = await fqFetchJson(fqApiUrl('queue'), { timeoutMs: 120000 });
     fqState.materialIssueItems = payload.material_issue_items || [];
     fqState.materialIssueHint = (!fqState.materialIssueItems.length && payload.material_issue_hint)
       ? payload.material_issue_hint
@@ -2738,14 +2753,19 @@ function fqInit() {
     // Resolve tab from URL after bootstrap paint so the active screen gets a fresh fetch.
     fqInitScreenFromUrl();
 
-    // Always reload-fetch on page load / browser refresh (same as Refresh button),
-    // so server TTL caches are not re-served until the user clicks Refresh.
+    // Page load: prefer staging cache (no ERP sync). Full WO sync is Refresh only —
+    // sync can hold locks for minutes and used to trip the 20s client abort.
     if (!window.__fqLoadStarted) {
       window.__fqLoadStarted = true;
+      const hasBootItems = !!(boot && (
+        (Array.isArray(boot.items) && boot.items.length)
+        || (Array.isArray(boot.material_issue_items) && boot.material_issue_items.length)
+      ));
       const refreshCurrent = () => {
-        if (fqIsMaterialInspectionScreen()) return fqLoadMaterialInspection({ refresh: true });
+        if (fqIsMaterialInspectionScreen()) return fqLoadMaterialInspection({ refresh: !hasBootItems });
         if (fqIsQcQueueScreen()) return fqLoadQcQueue({ refresh: true });
-        return fqLoad({ refresh: true });
+        // Warm bootstrap → cheap cache hit. Cold start → rebuild from DB without ERP.
+        return fqLoad({ refresh: !hasBootItems, syncErp: false });
       };
       refreshCurrent().finally(() => {
         window.__fqBootDone = true;

@@ -3,7 +3,7 @@
 {% block main_class %}app-main--mpp-planner{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css', v='mpp-planner-20260624') }}" />
-<link rel="stylesheet" href="{{ url_for('static', filename='css/mpp_planner.css', v='mpp-planner-20260724-fa') }}" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/mpp_planner.css', v='mpp-planner-20260806-extra') }}" />
 {% endblock %}
 {% block content %}
 <div class="mpp-page">
@@ -15,6 +15,8 @@
     <div class="mpp-header-actions">
       <button type="button" class="btn btn-ghost btn-sm" id="mpp-toggle-ops-pool" aria-pressed="false"
         title="Show or hide the op card pool">Op pool</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="mpp-toggle-extra" aria-pressed="false"
+        title="Show or hide the Extra cycle-output calculator">Extra</button>
       <button type="button" class="btn btn-ghost btn-sm" id="mpp-refresh-jobs">Refresh jobs</button>
     </div>
   </header>
@@ -57,6 +59,19 @@
       <div class="mpp-probation-grid" id="mpp-probation-grid"></div>
     </section>
   </section>
+
+  <aside class="mpp-extra card" id="mpp-extra-panel" aria-label="Extra cycle output calculator" hidden>
+    <header class="mpp-extra-head">
+      <div>
+        <h2 class="mpp-extra-title">Extra</h2>
+        <p class="mpp-extra-hint">Expected output for <strong>1 cycle</strong>. Select a PS or op from the pool, tweak values, then schedule if ready.</p>
+      </div>
+      <button type="button" class="mpp-queue-modal-close" id="mpp-extra-close" aria-label="Close Extra panel">&times;</button>
+    </header>
+    <div class="mpp-extra-body" id="mpp-extra-body">
+      <p class="mpp-extra-empty">Select a PS or op to preview 1-cycle output.</p>
+    </div>
+  </aside>
 
 </div>
 
@@ -198,5 +213,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/mpp_planner.js', v='mpp-planner-20260724-fa') }}"></script>
+<script src="{{ url_for('static', filename='js/mpp_planner.js', v='mpp-planner-20260806-extra') }}"></script>
 {% endblock %}

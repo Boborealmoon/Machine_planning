@@ -217,6 +217,13 @@ def record_erp_wo_qty_snapshots(con, mfg_rows, synced_at=None, columns=None) -> 
     if not batch:
         return 0
 
+    try:
+        from .erp_scanned_output_service import record_erp_qty_jumps
+
+        record_erp_qty_jumps(con, mfg_rows, synced_at=when, columns=columns)
+    except Exception:
+        logger.exception("ERP accepted-qty jump capture failed")
+
     execute_values(
         con,
         """
@@ -243,6 +250,8 @@ def record_erp_wo_qty_snapshots_from_staging(con, synced_at=None) -> int:
             SELECT source_mps_no,
                    pp_partial_no,
                    stage_no,
+                   stage_desc,
+                   so_no,
                    total_acc_qty_produced,
                    total_rej_qty_produced
             FROM mfg_wo_status

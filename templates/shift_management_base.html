@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>{% block title %}Shift Management{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shift_management.css', v='sm-3') }}" />
+  {% block head %}{% endblock %}
+</head>
+<body class="sm-body" data-app-path="{{ app_path }}" data-page="{{ page|default('') }}">
+  <header class="sm-topbar">
+    <div class="sm-topbar-left">
+      {% block top_left %}
+      <a class="sm-brand" href="{{ app_path }}">Day/Night HOTO</a>
+      {% endblock %}
+    </div>
+    <div class="sm-topbar-right">
+      {% if user_display %}
+      <span class="sm-user-pill" title="{{ user_role }}">{{ user_display }}</span>
+      <a class="sm-link-btn" href="{{ url_for('shift_mgmt_auth.shift_mgmt_logout_get') }}">Out</a>
+      {% endif %}
+    </div>
+  </header>
+
+  <main class="sm-main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <nav class="sm-tabbar" aria-label="App navigation">
+    <a href="{{ app_path }}/ops" class="sm-tab {% if page == 'ops' %}is-active{% endif %}">Ops</a>
+    <a href="{{ app_path }}" class="sm-tab {% if page == 'home' %}is-active{% endif %}">Machines</a>
+    <a href="{{ app_path }}/dashboard" class="sm-tab {% if page == 'dashboard' %}is-active{% endif %}">Board</a>
+    <a href="{{ app_path }}/history" class="sm-tab {% if page == 'history' %}is-active{% endif %}">History</a>
+  </nav>
+
+  <div id="sm-toast" class="sm-toast" hidden></div>
+  <script>
+    window.SM = window.SM || {};
+    SM.appPath = {{ app_path|tojson }};
+    SM.defaultShift = {{ default_shift|tojson }};
+    SM.userDisplay = {{ user_display|tojson }};
+    SM.userRole = {{ user_role|tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='js/shift_management.js', v='sm-3') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

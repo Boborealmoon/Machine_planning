@@ -268,10 +268,30 @@ TEMP_PARTIAL_MIN = 900001
 _TEMP_TABLE_READY = False
 
 
-def _ensure_planner_temp_process_sheet_table(con):
-    """Persistent registry for [Temp] reject/rework PS (PostgreSQL / SUPA_DB_URL)."""
+def _planner_temp_process_sheet_table_ready(con):
+    """Fast probe — no DDL. Safe on read paths (Process Sheets board list)."""
     global _TEMP_TABLE_READY
     if _TEMP_TABLE_READY:
+        return True
+    try:
+        one(con.execute("SELECT 1 AS ok FROM public.planner_temp_process_sheet LIMIT 1"))
+        _TEMP_TABLE_READY = True
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_planner_temp_process_sheet_table(con):
+    """Persistent registry for [Temp] reject/rework PS (PostgreSQL / SUPA_DB_URL).
+
+    DDL runs only when the table is missing. When migration already created it,
+    return immediately so concurrent app workers do not pile up CREATE/ALTER on
+  planner_process_sheet and freeze the Process Sheets board.
+    """
+    global _TEMP_TABLE_READY
+    if _TEMP_TABLE_READY:
+        return
+    if _planner_temp_process_sheet_table_ready(con):
         return
     con.execute(
         """
@@ -507,7 +527,8 @@ def _persist_temp_process_sheet_record(
 
 
 def list_temp_process_sheets(con, limit=500):
-    _ensure_planner_temp_process_sheet_table(con)
+    if not _planner_temp_process_sheet_table_ready(con):
+        return []
     limit = max(1, min(int(limit or 500), 2000))
     for row in rows(
         con.execute(
@@ -3528,7 +3549,6 @@ def list_process_sheets_payload(
     show_completed=None,
     overdue_only=None,
 ):
-    _ensure_planner_temp_process_sheet_table(con)
     _overlay_column_flags(con)
     search = _payload_filter_arg("search", search).lower()
     status_filter = _payload_filter_arg("status", status_filter).upper()
@@ -3595,22 +3615,6 @@ def list_process_sheets_payload(
     today = date.today().isoformat()
     for ps in ps_rows:
         ps_id = compact_text(ps["ps_id"])
-        if not is_temp_planner_ps_id(ps_id):
-            try:
-                repaired_bom_id = _repair_erp_ps_planner_bom_if_missing(con, ps_id)
-                if repaired_bom_id and repaired_bom_id != int(ps.get("selected_bom_id") or 0):
-                    ps["selected_bom_id"] = repaired_bom_id
-                    steps_by_ps[ps_id] = _flow_steps_for_ps_ids(con, [ps_id]).get(ps_id, [])
-                    flow = one(
-                        con.execute(
-                            "SELECT bom_code FROM planner_bom_variation WHERE bom_id = %s",
-                            (repaired_bom_id,),
-                        )
-                    )
-                    if flow:
-                        ps["selected_flow_code"] = compact_text(flow.get("bom_code"))
-            except Exception:
-                pass
         steps, wo_stages = _prepare_process_sheet_steps(
             con,
             ps,

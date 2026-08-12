@@ -27,8 +27,13 @@ logger = logging.getLogger(__name__)
 new_orders_bp = Blueprint("new_orders", __name__)
 
 _CACHE_TTL_SEC = 300
+_NOTIF_CACHE_TTL_SEC = 60
+_ENRICH_LOOKUP_TTL_SEC = 60
 _ROWS_SCHEMA_VERSION = 3
 _cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_notif_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_queued_lookup_cache: tuple[float, set[str], dict[str, list[str]]] | None = None
+_repeat_lookup_cache: tuple[float, dict[str, list[tuple[str, Any]]]] | None = None
 
 _GENERIC_SO_LINE_DESC_RE = re.compile(
     r"^\s*(?:PR\s*NO|BATCH\s*#|SERIAL\s*#|SO\s*/\s*MO\s*NO)\b",
@@ -259,6 +264,12 @@ WHERE COALESCE(ps.process_sheet_no, pp.pp_voucher_no) = ANY(%s)
 
 
 def _fetch_repeat_groups_by_part() -> dict[str, list[tuple[str, Any]]]:
+    global _repeat_lookup_cache
+    now = time.time()
+    cached = _repeat_lookup_cache
+    if cached and now - cached[0] < _ENRICH_LOOKUP_TTL_SEC:
+        return cached[1]
+
     groups: dict[str, list[tuple[str, Any]]] = {}
     for row in live_query(_REPEAT_LOOKUP_LIVE_SQL):
         part_no = compact_text(row.get("part_no"))
@@ -266,11 +277,18 @@ def _fetch_repeat_groups_by_part() -> dict[str, list[tuple[str, Any]]]:
         if not part_no or not ps_base:
             continue
         groups.setdefault(part_no, []).append((ps_base, row.get("order_date")))
+    _repeat_lookup_cache = (now, groups)
     return groups
 
 
 def _fetch_planner_queued_by_part() -> tuple[set[str], dict[str, list[str]]]:
     """Return queued PS bases and part_no -> queued PS bases (active machine blocks)."""
+    global _queued_lookup_cache
+    now = time.time()
+    cached = _queued_lookup_cache
+    if cached and now - cached[0] < _ENRICH_LOOKUP_TTL_SEC:
+        return cached[1], cached[2]
+
     from .helpers import planner_db, rows as db_rows
 
     queued_bases: set[str] = set()
@@ -308,6 +326,7 @@ def _fetch_planner_queued_by_part() -> tuple[set[str], dict[str, list[str]]]:
             if ps_base not in siblings:
                 siblings.append(ps_base)
 
+    _queued_lookup_cache = (now, queued_bases, by_part)
     return queued_bases, by_part
 
 
@@ -447,11 +466,76 @@ def _enrich_new_orders_repeat_info(rows: list[dict[str, Any]]) -> tuple[list[dic
 
 
 def invalidate_new_orders_cache() -> None:
-    global _cache
+    global _cache, _notif_cache, _queued_lookup_cache, _repeat_lookup_cache
     _cache.clear()
+    _notif_cache.clear()
+    _queued_lookup_cache = None
+    _repeat_lookup_cache = None
     from .erp_route_cache import invalidate_prefix
 
     invalidate_prefix("new_orders:")
+
+
+def _serialize_notif_posted_at(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    text = compact_text(value)
+    return text or None
+
+
+def _build_notif_orders(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compact SO cards for the navbar bell — no planner/repeat enrichment."""
+    by_so: dict[str, dict[str, Any]] = {}
+    seen_parts: dict[str, set[str]] = {}
+    for row in rows:
+        so = compact_text(row.get("source_voucher_no"))
+        if not so:
+            continue
+        group = by_so.get(so)
+        if group is None:
+            group = {
+                "so": so,
+                "customer": compact_text(row.get("customer_code")),
+                "postedAt": _serialize_notif_posted_at(row.get("first_posted_datetime")),
+                "parts": [],
+            }
+            by_so[so] = group
+            seen_parts[so] = set()
+        elif not group.get("postedAt") and row.get("first_posted_datetime"):
+            group["postedAt"] = _serialize_notif_posted_at(row.get("first_posted_datetime"))
+
+        ps = compact_text(row.get("process_sheet_no"))
+        part = compact_text(row.get("inventory_code"))
+        desc = compact_text(row.get("part_desc") or row.get("main_desc"))
+        if not ps and not part:
+            continue
+        key = f"{ps}|{part}"
+        if key in seen_parts[so]:
+            continue
+        seen_parts[so].add(key)
+        group["parts"].append({"ps": ps, "part": part, "desc": desc})
+
+    orders = list(by_so.values())
+    orders.sort(key=lambda item: str(item.get("postedAt") or ""), reverse=True)
+    return orders
+
+
+def _notif_orders_for_week(*, refresh: bool = False) -> tuple[list[dict[str, Any]], date, date, float]:
+    from_d, to_d = working_week_range()
+    key = f"notif:{from_d.isoformat()}:{to_d.isoformat()}"
+    now = time.time()
+    if not refresh:
+        cached = _notif_cache.get(key)
+        if cached and now - cached[0] < _NOTIF_CACHE_TTL_SEC:
+            return cached[1], from_d, to_d, cached[0]
+
+    orders = _build_notif_orders(_fetch_new_orders(from_d, to_d, refresh=refresh))
+    _notif_cache[key] = (now, orders)
+    return orders, from_d, to_d, now
 
 
 def _coerce_date(value: Any) -> date | None:
@@ -637,6 +721,32 @@ def _parse_iso_date(raw: str | None, field: str) -> date | None:
 @new_orders_bp.get("/new-orders")
 def new_orders_page():
     return render_template("new_orders.html", active="new_orders")
+
+
+@new_orders_bp.get("/api/new-orders/notifications")
+def api_new_orders_notifications():
+    """Lightweight this-week SO feed for the navbar bell (skips repeat/queue enrich)."""
+    refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
+    try:
+        orders, from_d, to_d, cached_at = _notif_orders_for_week(refresh=refresh)
+    except Exception as exc:
+        logger.exception("new orders notification feed failed")
+        return jsonify({"ok": False, "error": f"ERP query failed: {exc}"}), 502
+
+    return jsonify(
+        {
+            "ok": True,
+            "from": from_d.isoformat(),
+            "to": to_d.isoformat(),
+            "week": "this_week",
+            "count": len(orders),
+            "cached_at": datetime.fromtimestamp(cached_at, tz=None).isoformat(
+                sep=" ", timespec="seconds"
+            ),
+            "cache_ttl_sec": _NOTIF_CACHE_TTL_SEC,
+            "orders": orders,
+        }
+    )
 
 
 @new_orders_bp.get("/api/new-orders")

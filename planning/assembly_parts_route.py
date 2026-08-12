@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from flask import Blueprint, jsonify, render_template, request
@@ -96,8 +96,11 @@ def _ps_base_id(ps_id: str) -> str:
 def _serialize_overlay_date(value: Any) -> str | None:
     if value is None:
         return None
-    if hasattr(value, "isoformat"):
+    # datetime is a date subclass; only datetime accepts sep/timespec.
+    if isinstance(value, datetime):
         return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
     text = compact_text(value)
     return text or None
 

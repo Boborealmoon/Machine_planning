@@ -32,7 +32,7 @@ const TRIAL_FLOOR_LAYOUT_MACHINES = [
   { x: 8.5, y: 3.4, w: 0.8, h: 1, label: '26', color: 'milling', rotation: 90 },
   { x: 8.5, y: 2.25, w: 0.8, h: 1, label: '25', color: 'milling', rotation: 90 },
   { x: 8.5, y: 1.2, w: 0.8, h: 0.9, label: '27', color: 'turning', rotation: 90 },
-  { x: 8.5, y: 0.15, w: 0.8, h: 0.9, label: '41', color: 'mpp', rotation: 90 },
+  { x: 7.0, y: 0.1, w: 2.3, h: 1.0, label: '41', color: 'mpp' },
 ];
 
 function trialFloorLayoutMatplotlibToSvg(machine) {

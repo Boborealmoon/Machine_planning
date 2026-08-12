@@ -1,0 +1,22 @@
+{% extends "shift_management_base.html" %}
+{% block title %}Board — Day/Night HOTO{% endblock %}
+{% block content %}
+<section class="sm-toolbar sm-toolbar-wrap">
+  <label class="sm-field-inline">
+    <span>Date</span>
+    <input type="date" id="sm-dash-date" />
+  </label>
+  <div class="sm-chip-row" id="sm-dash-shift-chips" role="group" aria-label="Shift">
+    <button type="button" class="sm-chip" data-shift="">All</button>
+    <button type="button" class="sm-chip" data-shift="Day">Day</button>
+    <button type="button" class="sm-chip" data-shift="Night">Night</button>
+  </div>
+  <button type="button" class="sm-btn sm-btn-primary" id="sm-dash-report">Download PDF report</button>
+</section>
+<div id="sm-kpi-grid" class="sm-kpi-grid"></div>
+<h2 class="sm-section-title">Handovers</h2>
+<div id="sm-dash-list" class="sm-list"></div>
+{% endblock %}
+{% block scripts %}
+<script>SM.page = "dashboard";</script>
+{% endblock %}

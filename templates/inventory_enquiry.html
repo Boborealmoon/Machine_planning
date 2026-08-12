@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Inventory Enquiry{% endblock %}
 {% block main_class %}app-main--inventory-enquiry{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=inventory-enquiry-summary-20260612">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=inventory-enquiry-lot-split-20260812">{% endblock %}
 {% block content %}
 <div class="mi-page inv-enq-page">
   <div class="mi-header">
     <div>
       <h1 class="mi-title">Inventory Enquiry</h1>
-      <p class="mi-subtitle">Live <code>ic_inventory_enquiry_summary_view</code> — part master with on-hand, on-order, allocation and balance qty. Filter by class or stock position, search, then click a row for grouped detail.</p>
+      <p class="mi-subtitle">Live <code>ic_inventory_enquiry_summary_view</code> with lot breakdown from <code>ic_inventory_ost_lot</code>. Filter by class or stock, search by part or lot reference, then switch to <strong>By lot</strong> to split stock by lot reference no.</p>
     </div>
     <div class="mi-header-actions">
       <button type="button" class="btn btn-ghost btn-sm" id="inv-refresh">Refresh</button>
@@ -15,6 +15,13 @@
   </div>
 
   <div class="mi-toolbar card">
+    <div class="mi-filter mi-filter--view">
+      <span>View</span>
+      <div class="mi-view-toggle inv-enq-view-toggle" role="tablist" aria-label="Inventory table view">
+        <button type="button" class="mi-view-btn is-active" data-inv-table-view="summary" role="tab" aria-selected="true">Part summary</button>
+        <button type="button" class="mi-view-btn" data-inv-table-view="lot" role="tab" aria-selected="false">By lot</button>
+      </div>
+    </div>
     <div class="mi-filter mi-filter--view">
       <span>Class</span>
       <div class="mi-view-toggle inv-enq-class-toggle" role="tablist" aria-label="Inventory class">
@@ -51,6 +58,13 @@
         <option value="back_order">Back order &gt; 0</option>
       </select>
     </label>
+    <label class="mi-filter">
+      <span>Search by</span>
+      <select id="inv-search-mode" class="inv-enq-status-select">
+        <option value="part" selected>Part / description</option>
+        <option value="lot_ref">Lot reference no</option>
+      </select>
+    </label>
     <label class="mi-filter mi-filter--grow">
       <span>Search</span>
       <span class="planner-page-search-wrap">
@@ -73,7 +87,7 @@
     </div>
     <div class="mi-table-wrap">
       <table class="mi-table inv-enq-table">
-        <thead>
+        <thead id="inv-table-head">
           <tr>
             <th>Part no</th>
             <th>Description</th>
@@ -112,11 +126,11 @@
       <button type="button" class="btn btn-ghost btn-sm" id="inv-detail-close" aria-label="Close">Close</button>
     </div>
     <div class="mi-detail-body" id="inv-detail-body"></div>
-    <p class="mi-detail-foot">Source: live COMAIN ERP · <code>ic_inventory_enquiry_summary_view</code> · short-lived server cache</p>
+    <p class="mi-detail-foot">Source: live COMAIN ERP · summary <code>ic_inventory_enquiry_summary_view</code> · lots <code>ic_inventory_ost_lot</code></p>
   </aside>
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=inventory-enquiry-summary-20260612"></script>
-<script src="{{ url_for('static', filename='js/inventory_enquiry.js') }}?v=inventory-enquiry-summary-20260612"></script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=inventory-enquiry-lot-split-20260812"></script>
+<script src="{{ url_for('static', filename='js/inventory_enquiry.js') }}?v=inventory-enquiry-lot-split-20260812"></script>
 {% endblock %}

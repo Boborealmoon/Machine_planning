@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}ERP Scanned Output{% endblock %}
+{% block main_class %}app-main--eso{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/erp_scanned_output.css') }}?v={{ asset_version }}">
+{% endblock %}
+{% block content %}
+<div class="eso-page">
+  <header class="eso-header">
+    <div>
+      <p class="eso-kicker">Output tracking</p>
+      <h1 class="eso-title">ERP Scanned Output</h1>
+      <p class="eso-subtitle">
+        Each time accepted qty produced jumps in ERP, the change in quantum and the scan date are captured and grouped by machine.
+      </p>
+    </div>
+    <div class="eso-header-actions">
+      <button type="button" class="eso-btn eso-btn--ghost" id="eso-export">Export CSV</button>
+      <button type="button" class="eso-btn eso-btn--primary" id="eso-refresh">Refresh</button>
+    </div>
+  </header>
+
+  <section class="eso-toolbar card">
+    <label class="eso-field">
+      <span>From</span>
+      <input type="date" id="eso-from">
+    </label>
+    <label class="eso-field">
+      <span>To</span>
+      <input type="date" id="eso-to">
+    </label>
+    <label class="eso-field">
+      <span>Machine</span>
+      <select id="eso-machine">
+        <option value="">All machines</option>
+      </select>
+    </label>
+    <label class="eso-field eso-field--search">
+      <span>Search</span>
+      <input type="search" id="eso-search" placeholder="PS, part, stage, S/O..." autocomplete="off">
+    </label>
+    <div class="eso-view-toggle" role="tablist" aria-label="Output view">
+      <button type="button" class="eso-view-btn is-active" data-eso-view="machine" aria-selected="true">By machine</button>
+      <button type="button" class="eso-view-btn" data-eso-view="events" aria-selected="false">All jumps</button>
+    </div>
+    <div class="eso-meta" id="eso-meta">Loading...</div>
+  </section>
+
+  <section class="eso-kpi" id="eso-kpi" hidden></section>
+
+  <div id="eso-alert" class="eso-alert" hidden style="display:none"></div>
+  <div id="eso-loading" class="eso-loading" hidden style="display:none">
+    <div class="spinner"></div>
+    <span>Loading scanned output...</span>
+  </div>
+
+  <div id="eso-machine-view" hidden style="display:none"></div>
+  <div id="eso-event-view" hidden style="display:none"></div>
+  <div id="eso-empty" class="eso-empty card" hidden style="display:none">
+    No accepted-qty jumps in this range. Sync ERP after production is scanned, or widen the dates.
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/erp_scanned_output.js') }}?v={{ asset_version }}"></script>
+{% endblock %}

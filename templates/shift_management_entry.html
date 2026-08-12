@@ -1,0 +1,153 @@
+{% extends "shift_management_base.html" %}
+{% block title %}Handover entry â€” Day/Night HOTO{% endblock %}
+{% block top_left %}
+<a class="sm-back" href="{{ app_path }}">? Back</a>
+{% endblock %}
+{% block content %}
+<div id="sm-entry-root" data-machine-id="{{ machine_id }}">
+  <div class="sm-steps" id="sm-steps">
+    <button type="button" class="sm-step is-active" data-step="1">1 Status</button>
+    <button type="button" class="sm-step" data-step="2">2 Issues</button>
+    <button type="button" class="sm-step" data-step="3">3 Hand off</button>
+  </div>
+  <p class="sm-machine-heading" id="sm-entry-machine">Machine…</p>
+  <p class="sm-save-status" id="sm-save-status">Ready</p>
+
+  <section class="sm-panel is-active" data-panel="1">
+    <label class="sm-label">Machine status</label>
+    <div class="sm-chip-row sm-chip-wrap" id="sm-machine-status"></div>
+
+    <label class="sm-label">Active job (from queue)</label>
+    <select class="sm-input" id="sm-queue-job"></select>
+
+    <label class="sm-label" for="sm-job-no">Process sheet / Job No</label>
+    <input class="sm-input" id="sm-job-no" type="text" autocomplete="off" />
+
+    <label class="sm-label">Remaining qty</label>
+    <div class="sm-stepper" data-field="remaining_qty">
+      <button type="button" data-delta="-1">?</button>
+      <input type="number" id="sm-remaining-qty" inputmode="numeric" />
+      <button type="button" data-delta="1">+</button>
+    </div>
+
+    <label class="sm-label">First piece</label>
+    <div class="sm-chip-row sm-chip-wrap" id="sm-first-piece"></div>
+
+    <label class="sm-label">Tool life (% remaining)</label>
+    <div class="sm-stepper" data-field="tool_life_pct">
+      <button type="button" data-delta="-5">?</button>
+      <input type="number" id="sm-tool-life" inputmode="decimal" step="1" min="0" max="100" />
+      <button type="button" data-delta="5">+</button>
+    </div>
+
+    <label class="sm-label">Material balance</label>
+    <div class="sm-material-row">
+      <div class="sm-stepper" data-field="material_qty">
+        <button type="button" data-delta="-1">?</button>
+        <input type="number" id="sm-material-qty" inputmode="decimal" step="1" />
+        <button type="button" data-delta="1">+</button>
+      </div>
+      <div class="sm-chip-row" id="sm-material-unit"></div>
+    </div>
+  </section>
+
+  <section class="sm-panel" data-panel="2" hidden>
+    <div class="sm-issue" data-flag="quality_issue_flag" data-text="quality_issue_text">
+      <div class="sm-issue-head">
+        <span>Quality issues</span>
+        <div class="sm-chip-row">
+          <button type="button" class="sm-chip is-nil" data-val="false">Nil</button>
+          <button type="button" class="sm-chip is-issue" data-val="true">Issue</button>
+        </div>
+      </div>
+      <textarea class="sm-textarea" hidden placeholder="Describe quality issue…"></textarea>
+    </div>
+
+    <div class="sm-issue" data-flag="alarm_flag" data-text="alarm_text">
+      <div class="sm-issue-head">
+        <span>Machine alarms</span>
+        <div class="sm-chip-row">
+          <button type="button" class="sm-chip is-nil" data-val="false">Nil</button>
+          <button type="button" class="sm-chip is-issue" data-val="true">Issue</button>
+        </div>
+      </div>
+      <textarea class="sm-textarea" hidden placeholder="Describe alarm…"></textarea>
+    </div>
+
+    <div class="sm-issue" data-flag="maintenance_flag" data-text="maintenance_text">
+      <div class="sm-issue-head">
+        <span>Pending maintenance</span>
+        <div class="sm-chip-row">
+          <button type="button" class="sm-chip is-nil" data-val="false">Nil</button>
+          <button type="button" class="sm-chip is-issue" data-val="true">Issue</button>
+        </div>
+      </div>
+      <textarea class="sm-textarea" hidden placeholder="Describe maintenance…"></textarea>
+    </div>
+
+    <label class="sm-label">NCR status</label>
+    <div class="sm-chip-row sm-chip-wrap" id="sm-ncr-status"></div>
+    <input class="sm-input" id="sm-ncr-ref" type="text" placeholder="NCR ref" hidden />
+
+    <label class="sm-label">Priority for next shift</label>
+    <div class="sm-chip-row sm-chip-wrap" id="sm-priority"></div>
+    <input class="sm-input" id="sm-priority-note" type="text" placeholder="Why High/Urgent?" hidden />
+
+    <div class="sm-tickets-box">
+      <div class="sm-tickets-head">
+        <h3 class="sm-section-title" style="margin:0">Open tickets</h3>
+        <button type="button" class="sm-btn sm-btn-ghost" id="sm-entry-raise-ticket">Raise ticket</button>
+      </div>
+      <div id="sm-entry-tickets" class="sm-list"></div>
+    </div>
+  </section>
+
+  <section class="sm-panel" data-panel="3" hidden>
+    <label class="sm-label" for="sm-remarks">Remarks (optional)</label>
+    <textarea class="sm-textarea" id="sm-remarks" rows="3" placeholder="Anything else…"></textarea>
+
+    <div class="sm-comments-box">
+      <label class="sm-label">Shift comments</label>
+      <div id="sm-entry-comments" class="sm-comment-list"></div>
+      <div class="sm-comment-compose">
+        <textarea class="sm-textarea" id="sm-comment-body" rows="2" placeholder="Add a comment for the next shift…"></textarea>
+        <button type="button" class="sm-btn sm-btn-ghost" id="sm-comment-add">Add comment</button>
+      </div>
+    </div>
+
+    <div class="sm-review" id="sm-review"></div>
+
+    <button type="button" class="sm-btn sm-btn-primary sm-btn-block" id="sm-submit-btn">
+      Confirm &amp; Hand Over
+    </button>
+  </section>
+
+  <div class="sm-nav-steps">
+    <button type="button" class="sm-btn sm-btn-ghost" id="sm-prev-btn" hidden>Back</button>
+    <button type="button" class="sm-btn sm-btn-primary" id="sm-next-btn">Next</button>
+  </div>
+</div>
+
+<dialog id="sm-entry-ticket-dialog" class="sm-dialog">
+  <form method="dialog" id="sm-entry-ticket-form" onsubmit="return false;">
+    <h3>Raise ticket</h3>
+    <label class="sm-label">Category</label>
+    <select class="sm-input" id="sm-etk-category"></select>
+    <label class="sm-label">Priority</label>
+    <select class="sm-input" id="sm-etk-priority">
+      <option>Normal</option><option>High</option><option>Urgent</option>
+    </select>
+    <label class="sm-label" for="sm-etk-title">Title</label>
+    <input class="sm-input" id="sm-etk-title" type="text" required maxlength="200" />
+    <label class="sm-label" for="sm-etk-desc">Details</label>
+    <textarea class="sm-textarea" id="sm-etk-desc" rows="3"></textarea>
+    <div class="sm-dialog-actions">
+      <button type="button" class="sm-btn sm-btn-ghost" id="sm-etk-cancel">Cancel</button>
+      <button type="submit" class="sm-btn sm-btn-primary">Create</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}
+<script>SM.page = "entry"; SM.machineId = {{ machine_id|tojson }};</script>
+{% endblock %}

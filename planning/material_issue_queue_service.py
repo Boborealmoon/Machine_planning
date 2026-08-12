@@ -56,73 +56,42 @@ def _is_open_for_material_issue_list(item: dict[str, Any]) -> bool:
 
 
 def _build_material_issue_list_sql() -> tuple[str, tuple]:
+    """Open assembly-stage partials — start from mfg_wo_status (not full voucher scan)."""
     assembly = material_issue_assembly_stage_sql_match
-    prefix_sql = _queue_ps_prefix_sql("c.ps_id")
-    open_wo = "COALESCE(ws0.execution_status, '') NOT IN ('C', 'Completed')"
+    prefix_sql = _queue_ps_prefix_sql("ws.source_mps_no")
     sql = f"""
-WITH tagged_partials AS (
+WITH assembly_open AS (
+    SELECT DISTINCT ON (ws.source_mps_no, ws.pp_partial_no)
+        ws.source_mps_no AS ps_id,
+        ws.pp_partial_no,
+        ws.stage_no AS current_stage_no,
+        TRIM(COALESCE(ws.stage_desc, '')) AS current_stage_desc,
+        ws.execution_status AS current_stage_status,
+        ws.wo_qty_required AS stage_qty_required,
+        ws.total_acc_qty_produced AS stage_qty_produced,
+        ws.total_rej_qty_produced AS stage_qty_rejected
+    FROM mfg_wo_status ws
+    WHERE COALESCE(ws.execution_status, '') NOT IN ('C', 'Completed', '')
+      AND ws.stage_no IS NOT NULL
+      AND NULLIF(TRIM(COALESCE(ws.stage_desc, '')), '') IS NOT NULL
+      AND {assembly("ws.stage_desc")}
+      AND {prefix_sql}
+    ORDER BY
+        ws.source_mps_no,
+        ws.pp_partial_no,
+        CASE ws.execution_status
+            WHEN 'I' THEN 0
+            WHEN 'R' THEN 1
+            WHEN 'P' THEN 2
+            ELSE 3
+        END,
+        COALESCE(ws.total_acc_qty_produced, 0) DESC,
+        ws.stage_no ASC
+),
+partial_meta AS (
     SELECT DISTINCT ON (c.ps_id, c.pp_partial_no)
         c.ps_id,
         c.pp_partial_no,
-        COALESCE(
-            CASE WHEN {assembly("c.current_stage_desc")} THEN c.current_stage_no END,
-            (
-                SELECT ws0.stage_no
-                FROM mfg_wo_status ws0
-                WHERE ws0.source_mps_no = c.ps_id
-                  AND ws0.pp_partial_no = c.pp_partial_no
-                  AND {assembly("ws0.stage_desc")}
-                  AND {open_wo}
-                ORDER BY
-                    CASE ws0.execution_status
-                        WHEN 'I' THEN 0 WHEN 'R' THEN 1 WHEN 'P' THEN 2 ELSE 3
-                    END,
-                    ws0.stage_no
-                LIMIT 1
-            )
-        ) AS current_stage_no,
-        COALESCE(
-            NULLIF(
-                CASE WHEN {assembly("c.current_stage_desc")}
-                     THEN TRIM(COALESCE(c.current_stage_desc, '')) END,
-                ''
-            ),
-            (
-                SELECT TRIM(COALESCE(ws0.stage_desc, ''))
-                FROM mfg_wo_status ws0
-                WHERE ws0.source_mps_no = c.ps_id
-                  AND ws0.pp_partial_no = c.pp_partial_no
-                  AND {assembly("ws0.stage_desc")}
-                  AND {open_wo}
-                ORDER BY
-                    CASE ws0.execution_status
-                        WHEN 'I' THEN 0 WHEN 'R' THEN 1 WHEN 'P' THEN 2 ELSE 3
-                    END,
-                    ws0.stage_no
-                LIMIT 1
-            )
-        ) AS current_stage_desc,
-        COALESCE(
-            NULLIF(
-                CASE WHEN {assembly("c.current_stage_desc")}
-                     THEN c.current_stage_status END,
-                ''
-            ),
-            (
-                SELECT ws0.execution_status
-                FROM mfg_wo_status ws0
-                WHERE ws0.source_mps_no = c.ps_id
-                  AND ws0.pp_partial_no = c.pp_partial_no
-                  AND {assembly("ws0.stage_desc")}
-                  AND {open_wo}
-                ORDER BY
-                    CASE ws0.execution_status
-                        WHEN 'I' THEN 0 WHEN 'R' THEN 1 WHEN 'P' THEN 2 ELSE 3
-                    END,
-                    ws0.stage_no
-                LIMIT 1
-            )
-        ) AS current_stage_status,
         c.part_no,
         c.description AS part_desc,
         c.bom_code,
@@ -134,64 +103,52 @@ WITH tagged_partials AS (
         c.so_det_qty,
         c.status AS pp_status
     FROM pp_vouchers_cache c
-    WHERE {prefix_sql}
-      AND (
-          c.so_det_qty IS NULL
-          OR COALESCE(c.qty_shipped, 0) < (c.so_det_qty - {SHIPPED_QTY_TOLERANCE})
-      )
-      AND (
-          {assembly("c.current_stage_desc")}
-          OR EXISTS (
-              SELECT 1
-              FROM mfg_wo_status ws0
-              WHERE ws0.source_mps_no = c.ps_id
-                AND ws0.pp_partial_no = c.pp_partial_no
-                AND {assembly("ws0.stage_desc")}
-                AND {open_wo}
-          )
-      )
+    INNER JOIN assembly_open ao
+            ON ao.ps_id = c.ps_id
+           AND ao.pp_partial_no = c.pp_partial_no
     ORDER BY c.ps_id, c.pp_partial_no, c.stage_no
 )
 SELECT
-    tp.ps_id,
-    tp.pp_partial_no,
-    tp.current_stage_no,
-    tp.current_stage_desc,
-    tp.current_stage_status,
-    ws.wo_qty_required AS stage_qty_required,
-    ws.total_acc_qty_produced AS stage_qty_produced,
-    ws.total_rej_qty_produced AS stage_qty_rejected,
-    tp.part_no,
-    tp.part_desc,
-    tp.bom_code,
-    tp.sales_order_no,
-    tp.sales_order_line,
-    tp.due_date,
-    tp.qty,
-    tp.qty_shipped,
-    tp.so_det_qty,
-    tp.pp_status,
+    ao.ps_id,
+    ao.pp_partial_no,
+    ao.current_stage_no,
+    ao.current_stage_desc,
+    ao.current_stage_status,
+    ao.stage_qty_required,
+    ao.stage_qty_produced,
+    ao.stage_qty_rejected,
+    m.part_no,
+    m.part_desc,
+    m.bom_code,
+    m.sales_order_no,
+    m.sales_order_line,
+    m.due_date,
+    m.qty,
+    m.qty_shipped,
+    m.so_det_qty,
+    m.pp_status,
     p.coway_proposed_edd,
     p.material_in,
     p.remarks
-FROM tagged_partials tp
-LEFT JOIN mfg_wo_status ws
-       ON ws.source_mps_no = tp.ps_id
-      AND ws.pp_partial_no = tp.pp_partial_no
-      AND ws.stage_no = tp.current_stage_no
+FROM assembly_open ao
+LEFT JOIN partial_meta m
+       ON m.ps_id = ao.ps_id
+      AND m.pp_partial_no = ao.pp_partial_no
 LEFT JOIN planner_process_sheet p
-       ON p.source_ps_id = tp.ps_id
-      AND p.pp_partial_no = tp.pp_partial_no
+       ON p.source_ps_id = ao.ps_id
+      AND p.pp_partial_no = ao.pp_partial_no
+WHERE m.so_det_qty IS NULL
+   OR COALESCE(m.qty_shipped, 0) < (m.so_det_qty - {SHIPPED_QTY_TOLERANCE})
 ORDER BY
-    CASE tp.current_stage_status
+    CASE ao.current_stage_status
         WHEN 'I' THEN 0
         WHEN 'R' THEN 1
         WHEN 'P' THEN 2
         ELSE 3
     END,
-    tp.due_date NULLS LAST,
-    tp.ps_id,
-    tp.pp_partial_no
+    m.due_date NULLS LAST,
+    ao.ps_id,
+    ao.pp_partial_no
 """
     return sql, _queue_ps_prefix_params()
 

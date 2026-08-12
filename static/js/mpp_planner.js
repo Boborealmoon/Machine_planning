@@ -16,6 +16,7 @@
   const MPP_SHOW_COMPLETED_KEY = 'mpp-planner-show-completed';
   const MPP_FA_ONLY_KEY = 'mpp-planner-fa-only';
   const MPP_SIDEBAR_COLLAPSED_KEY = 'mpp-planner-sidebar-collapsed';
+  const MPP_EXTRA_COLLAPSED_KEY = 'mpp-planner-extra-collapsed';
   const DEFAULT_HIDDEN_MACHINE_IDS = ['cnc41'];
 
   /** Match planning/machines.py — day 08:30–20:00, night 20:00–08:30 next day.
@@ -85,6 +86,22 @@
 
   let mppSidebarCollapsed = loadSidebarCollapsed();
 
+  function loadExtraCollapsed() {
+    try {
+      const raw = localStorage.getItem(MPP_EXTRA_COLLAPSED_KEY);
+      // Default collapsed until the user opens Extra or picks a PS/op.
+      if (raw === null) return true;
+      return raw === '1';
+    } catch {
+      return true;
+    }
+  }
+
+  let mppExtraCollapsed = loadExtraCollapsed();
+  let extraPsId = '';
+  let extraJobId = '';
+  let extraDraft = null;
+
   function syncSidebarCollapsedUi() {
     const page = document.querySelector('.mpp-page');
     const panel = document.getElementById('mpp-ops-panel');
@@ -95,6 +112,31 @@
       btn.setAttribute('aria-pressed', mppSidebarCollapsed ? 'false' : 'true');
       btn.textContent = mppSidebarCollapsed ? 'Show op pool' : 'Hide op pool';
     }
+  }
+
+  function syncExtraCollapsedUi() {
+    const page = document.querySelector('.mpp-page');
+    const panel = document.getElementById('mpp-extra-panel');
+    const btn = document.getElementById('mpp-toggle-extra');
+    if (page) page.classList.toggle('mpp-page--extra-open', !mppExtraCollapsed);
+    if (panel) panel.hidden = mppExtraCollapsed;
+    if (btn) {
+      btn.setAttribute('aria-pressed', mppExtraCollapsed ? 'false' : 'true');
+      btn.textContent = mppExtraCollapsed ? 'Extra' : 'Hide Extra';
+    }
+  }
+
+  function setExtraCollapsed(collapsed) {
+    mppExtraCollapsed = Boolean(collapsed);
+    try {
+      localStorage.setItem(MPP_EXTRA_COLLAPSED_KEY, mppExtraCollapsed ? '1' : '0');
+    } catch { /* ignore */ }
+    syncExtraCollapsedUi();
+  }
+
+  function toggleExtraCollapsed() {
+    setExtraCollapsed(!mppExtraCollapsed);
+    if (!mppExtraCollapsed) renderExtraPanel();
   }
 
   function toggleSidebarCollapsed() {
@@ -210,6 +252,24 @@
 
   function saveMppExpandedRuns() {
     localStorage.setItem(MPP_CYCLE_RUN_EXPANDED_KEY, JSON.stringify([...mppExpandedRunSet()]));
+  }
+
+  function runExpandKey(machineId, fingerprint, runKey) {
+    return `${compactText(machineId)}::${compactText(fingerprint)}::${compactText(runKey)}`;
+  }
+
+  function isRunExpanded(machineId, fingerprint, runKey) {
+    return mppExpandedRunSet().has(runExpandKey(machineId, fingerprint, runKey));
+  }
+
+  function toggleCycleRunExpanded(machineId, fingerprint, runKey) {
+    if (!machineId || !fingerprint || !runKey) return;
+    const key = runExpandKey(machineId, fingerprint, runKey);
+    const set = mppExpandedRunSet();
+    if (set.has(key)) set.delete(key);
+    else set.add(key);
+    saveMppExpandedRuns();
+    renderLanes();
   }
 
   function isCycleExpanded(cycleId, idx) {
@@ -504,6 +564,174 @@
     if (modal) modal.hidden = true;
   }
 
+  function extraDraftFromJob(job) {
+    return {
+      palletsPerCycle: Math.max(1, Number(job?.defaultPalletsPerCycle) || 3),
+      pcsPerPallet: Math.max(1, Number(job?.pcsPerPallet) || 1),
+      minPerPallet: Math.max(0.1, Number(job?.minPerPallet) || 1),
+      loadMinPerCycle: Math.max(0, Number(job?.loadMinPerCycle ?? job?.loadMinPerPallet) || MPP_DEFAULT_LOAD_MIN_PER_CYCLE),
+      unloadMinPerCycle: Math.max(0, Number(job?.unloadMinPerCycle ?? job?.unloadMinPerPallet) || MPP_DEFAULT_UNLOAD_MIN_PER_CYCLE),
+    };
+  }
+
+  function readExtraDraftFromDom() {
+    if (!extraDraft) return null;
+    const pal = Number(document.getElementById('mpp-extra-pallets')?.value);
+    const pcs = Number(document.getElementById('mpp-extra-pcs')?.value);
+    const min = Number(document.getElementById('mpp-extra-min')?.value);
+    const load = Number(document.getElementById('mpp-extra-load')?.value);
+    const unload = Number(document.getElementById('mpp-extra-unload')?.value);
+    return {
+      palletsPerCycle: Number.isFinite(pal) && pal > 0 ? pal : extraDraft.palletsPerCycle,
+      pcsPerPallet: Number.isFinite(pcs) && pcs > 0 ? pcs : extraDraft.pcsPerPallet,
+      minPerPallet: Number.isFinite(min) && min > 0 ? min : extraDraft.minPerPallet,
+      loadMinPerCycle: Number.isFinite(load) && load >= 0 ? load : extraDraft.loadMinPerCycle,
+      unloadMinPerCycle: Number.isFinite(unload) && unload >= 0 ? unload : extraDraft.unloadMinPerCycle,
+    };
+  }
+
+  function pickDefaultExtraJobId(group) {
+    if (!group?.jobs?.length) return '';
+    const schedulable = group.jobs.find((j) => jobIsSchedulable(getJob(j.jobId)));
+    return (schedulable || group.jobs[0]).jobId;
+  }
+
+  function openExtraForPs(psId, preferredJobId = '') {
+    const group = mppPsGroupById(psId);
+    if (!group) return;
+    extraPsId = group.psId;
+    const jobId = preferredJobId && group.jobs.some((j) => j.jobId === preferredJobId)
+      ? preferredJobId
+      : pickDefaultExtraJobId(group);
+    const job = getJob(jobId);
+    if (!job) return;
+    extraJobId = job.jobId;
+    extraDraft = extraDraftFromJob(job);
+    setExtraCollapsed(false);
+    renderExtraPanel();
+    renderOpsList();
+  }
+
+  function openExtraForJob(jobId) {
+    const job = getJob(jobId);
+    if (!job) return;
+    openExtraForPs(job.psId, job.jobId);
+  }
+
+  function clearExtraSelection() {
+    extraPsId = '';
+    extraJobId = '';
+    extraDraft = null;
+    renderExtraPanel();
+    renderOpsList();
+  }
+
+  function updateExtraPreview() {
+    const job = getJob(extraJobId);
+    const results = document.getElementById('mpp-extra-results');
+    if (!job || !results || !extraDraft) return;
+    extraDraft = readExtraDraftFromDom() || extraDraft;
+    const rem = jobRemaining(job.jobId);
+    const pal = Math.max(1, Number(extraDraft.palletsPerCycle) || 1);
+    const pcs = Math.max(1, Number(extraDraft.pcsPerPallet) || 1);
+    const minPal = Math.max(0.1, Number(extraDraft.minPerPallet) || 1);
+    const load = Math.max(0, Number(extraDraft.loadMinPerCycle) || 0);
+    const unload = Math.max(0, Number(extraDraft.unloadMinPerCycle) || 0);
+    const output = pal * pcs;
+    const runMin = pal * minPal;
+    const cycleMin = load + runMin + unload;
+    const plan = planBulkScheduleCycles(rem, rem, pal, pcs);
+    const cycleCount = plan.cycles.length;
+    const partialNote = plan.partialPcs > 0
+      ? ` · includes 1 partial pallet (${plan.partialPcs} pc)`
+      : '';
+    results.innerHTML = `
+      <div class="mpp-extra-kpi">
+        <span class="mpp-extra-kpi-label">Expected output / cycle</span>
+        <span class="mpp-extra-kpi-value">${output} pc</span>
+      </div>
+      <div class="mpp-extra-kpi">
+        <span class="mpp-extra-kpi-label">Expected cycle time</span>
+        <span class="mpp-extra-kpi-value">${fmtMinutes(cycleMin)}</span>
+      </div>
+      <div class="mpp-extra-kpi">
+        <span class="mpp-extra-kpi-label">Run only (excl. load/unload)</span>
+        <span class="mpp-extra-kpi-value">${fmtMinutes(runMin)}</span>
+      </div>
+      <div class="mpp-extra-meta">
+        ${cycleCount
+    ? `<strong>${cycleCount}</strong> cycle box${cycleCount === 1 ? '' : 'es'} to clear rem · <strong>${plan.scheduledPcs}</strong> pc queued${partialNote}`
+    : 'Nothing left to schedule for this rem.'}
+      </div>
+    `;
+  }
+
+  function renderExtraPanel() {
+    const body = document.getElementById('mpp-extra-body');
+    if (!body) return;
+    syncExtraCollapsedUi();
+    if (!extraJobId || !extraDraft) {
+      body.innerHTML = '<p class="mpp-extra-empty">Select a PS or op to preview 1-cycle output.</p>';
+      return;
+    }
+    const job = getJob(extraJobId);
+    const group = mppPsGroupById(extraPsId) || mppPsGroupById(job?.psId);
+    if (!job || !group) {
+      body.innerHTML = '<p class="mpp-extra-empty">Selected job is no longer in the pool. Pick another PS or op.</p>';
+      return;
+    }
+    const rem = jobRemaining(job.jobId);
+    const opOpts = group.jobs.map((row) => {
+      const live = getJob(row.jobId) || row;
+      const selected = live.jobId === job.jobId ? ' selected' : '';
+      const tag = jobIsSchedulable(live) ? '' : ' (blocked)';
+      return `<option value="${escapeHtml(live.jobId)}"${selected}>${escapeHtml(live.opLabel)}${tag}</option>`;
+    }).join('');
+    const partLine = [job.partNo, job.partDesc].filter(Boolean).join(' · ');
+    body.innerHTML = `
+      <div class="mpp-extra-summary">
+        <div><strong>${escapeHtml(job.psId)}</strong></div>
+        ${partLine ? `<div class="mpp-extra-meta">${escapeHtml(partLine)}</div>` : ''}
+        <div class="mpp-extra-meta">Rem <strong>${rem}</strong> pc · ${fmtMinutes(job.minPerPallet)} run/pal · ${job.pcsPerPallet} pc/pal default</div>
+      </div>
+      <label class="mpp-form-full">MPP operation
+        <select id="mpp-extra-op">${opOpts}</select>
+      </label>
+      <div class="mpp-form-grid">
+        <label>Pallets / cycle<input id="mpp-extra-pallets" type="number" min="1" step="1" value="${extraDraft.palletsPerCycle}"></label>
+        <label>Pcs / pallet<input id="mpp-extra-pcs" type="number" min="1" step="1" value="${extraDraft.pcsPerPallet}"></label>
+        <label>Run min / pallet<input id="mpp-extra-min" type="number" min="0.1" step="1" value="${extraDraft.minPerPallet}"></label>
+        <label>Load min<input id="mpp-extra-load" type="number" min="0" step="1" value="${extraDraft.loadMinPerCycle}"></label>
+        <label>Unload min<input id="mpp-extra-unload" type="number" min="0" step="1" value="${extraDraft.unloadMinPerCycle}"></label>
+      </div>
+      <div class="mpp-extra-results" id="mpp-extra-results" aria-live="polite"></div>
+      <div class="mpp-extra-actions">
+        <button type="button" class="btn btn-primary btn-sm" id="mpp-extra-schedule"
+          ${jobIsSchedulable(job) && rem > 0 ? '' : ' disabled'}
+          title="${jobIsSchedulable(job) ? 'Open Schedule to MPP with these values' : 'Job is not schedulable'}">Schedule…</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="mpp-extra-clear">Clear</button>
+      </div>
+    `;
+    body.querySelector('#mpp-extra-op')?.addEventListener('change', (e) => {
+      const nextId = e.target.value;
+      const nextJob = getJob(nextId);
+      if (!nextJob) return;
+      extraJobId = nextJob.jobId;
+      extraDraft = extraDraftFromJob(nextJob);
+      renderExtraPanel();
+      renderOpsList();
+    });
+    body.querySelectorAll('input').forEach((input) => {
+      input.addEventListener('input', updateExtraPreview);
+    });
+    body.querySelector('#mpp-extra-schedule')?.addEventListener('click', () => {
+      extraDraft = readExtraDraftFromDom() || extraDraft;
+      openScheduleModal(extraJobId, defaultMachineId(), extraDraft);
+    });
+    body.querySelector('#mpp-extra-clear')?.addEventListener('click', clearExtraSelection);
+    updateExtraPreview();
+  }
+
   function psStageIsOpen(job) {
     const st = compactText(job?.currentStageStatus).toUpperCase();
     if (!st) return true;
@@ -594,10 +822,14 @@
     const infoBtn = `<button type="button" class="trial-catalog-info-btn mpp-ps-info-btn"
       data-action="ps-detail" data-ps-id="${escapeHtml(group.psId)}"
       aria-label="View process sheet details" title="PS details — material, BOM, stage"></button>`;
+    const calcBtn = `<button type="button" class="mpp-ps-calc-btn"
+      data-action="extra-calc" data-ps-id="${escapeHtml(group.psId)}"
+      aria-label="Open Extra cycle calculator" title="1-cycle output for this PS">Calc</button>`;
     return `
       <div class="trial-catalog-ps-main">
         <div class="mpp-ps-id-row">
           <div class="trial-catalog-ps-id">${escapeHtml(group.psId)}</div>
+          ${calcBtn}
           ${infoBtn}
         </div>
         ${partLine}
@@ -616,9 +848,10 @@
     const completedClass = psGroupVisualCompleted(group) ? ' mpp-ps-group--completed' : '';
     const searchBlob = mppGroupSearchBlob(group);
     const isOpen = forceOpen || mppPsExpandedSet().has(group.psId);
+    const selectedClass = group.psId === extraPsId ? ' is-extra-selected' : '';
     const opCards = group.jobs.map((job) => renderOpPool(getJob(job.jobId), { compact: true })).join('');
     return `
-      <details class="trial-catalog-ps mpp-ps-group${accountedClass}${completedClass} ${dueClass}" data-ps-id="${escapeHtml(group.psId)}"
+      <details class="trial-catalog-ps mpp-ps-group${accountedClass}${completedClass}${selectedClass} ${dueClass}" data-ps-id="${escapeHtml(group.psId)}"
         data-search="${escapeHtml(searchBlob)}"${isOpen ? ' open' : ''}>
         <summary>${renderPsGroupSummary(group)}</summary>
         <div class="trial-catalog-oplist">${opCards}</div>
@@ -1900,16 +2133,23 @@
       ? `<div class="mpp-op-actions-row">
           <button type="button" class="btn btn-ghost btn-sm mpp-schedule-btn" data-action="schedule-job"
             data-job-id="${escapeHtml(job.jobId)}">Schedule to MPP…</button>
+          <button type="button" class="btn btn-ghost btn-sm mpp-op-calc-btn" data-action="extra-calc"
+            data-job-id="${escapeHtml(job.jobId)}" data-ps-id="${escapeHtml(job.psId)}"
+            title="1-cycle expected output">Calc</button>
           <button type="button" class="btn btn-ghost btn-sm mpp-probation-btn" data-action="add-probation"
             data-job-id="${escapeHtml(job.jobId)}" title="Reserve capacity without scheduling a cycle">Probation</button>
         </div>`
       : `<div class="mpp-op-actions-row">
           <p class="mpp-op-blocked-reason">${escapeHtml(job.blockedReason || 'Not schedulable')}</p>
+          <button type="button" class="btn btn-ghost btn-sm mpp-op-calc-btn" data-action="extra-calc"
+            data-job-id="${escapeHtml(job.jobId)}" data-ps-id="${escapeHtml(job.psId)}"
+            title="1-cycle expected output">Calc</button>
           <button type="button" class="btn btn-ghost btn-sm mpp-probation-btn" data-action="add-probation"
             data-job-id="${escapeHtml(job.jobId)}" title="Still reserve machine time while waiting">Probation</button>
         </div>`;
+    const selectedClass = job.jobId === extraJobId ? ' is-extra-selected' : '';
     return `
-      <div class="mpp-op-card${job.isFrameAgreement ? ' mpp-op-card--fa' : ''}${compact ? ' mpp-op-card--compact' : ''}${schedulable ? '' : ' mpp-op-card--blocked'}"${schedulable ? ' draggable="true"' : ''} data-drag-kind="pool" data-job-id="${escapeHtml(job.jobId)}">
+      <div class="mpp-op-card${job.isFrameAgreement ? ' mpp-op-card--fa' : ''}${compact ? ' mpp-op-card--compact' : ''}${schedulable ? '' : ' mpp-op-card--blocked'}${selectedClass}"${schedulable ? ' draggable="true"' : ''} data-drag-kind="pool" data-job-id="${escapeHtml(job.jobId)}">
         <div class="mpp-op-card-top">
           ${psLine}
           <div class="mpp-op-label">${escapeHtml(job.opLabel)}</div>
@@ -2027,7 +2267,7 @@
     `;
   }
 
-  function renderCycleBox(machineId, item) {
+  function renderCycleBox(machineId, item, { inRun = false, inRunAlt = false } = {}) {
     const machine = machineById(machineId);
     const { cycle, idx, metrics, shift } = item;
     const isCurrent = idx === 0;
@@ -2035,8 +2275,11 @@
     const queueLabel = isCurrent ? 'Now' : `#${idx + 1}`;
     const title = cycle.label || (metrics.opCount > 1 ? `${metrics.opCount} ops` : 'MPP cycle');
     const opsPills = cycleOpsPillsHtml(cycle);
+    const inRunCls = inRun
+      ? ` mpp-schedule-box--in-run${inRunAlt ? ' mpp-schedule-box--in-run-alt' : ''}`
+      : '';
     return `
-      <article class="mpp-schedule-box mpp-schedule-box--${escapeHtml(shift)} mpp-schedule-box--lane${isCurrent ? ' is-current' : ''} is-collapsed${isActive ? ' is-selected' : ''}"
+      <article class="mpp-schedule-box mpp-schedule-box--${escapeHtml(shift)} mpp-schedule-box--lane${isCurrent ? ' is-current' : ''} is-collapsed${isActive ? ' is-selected' : ''}${inRunCls}"
         data-cycle-id="${escapeHtml(cycle.cycleId)}" data-machine-id="${escapeHtml(machineId)}">
         <header class="mpp-schedule-head" draggable="true" data-drag-kind="box" title="Drag to reorder queue">
           <span class="mpp-schedule-grip">⠿</span>
@@ -2063,6 +2306,7 @@
     const first = items[0];
     const last = items[items.length - 1];
     const runKey = first.cycle.cycleId;
+    const fingerprint = run.fingerprint;
     const count = items.length;
     const startIdx = first.idx;
     const endIdx = last.idx;
@@ -2074,21 +2318,21 @@
     const bandClass = runIdx % 2 ? 'mpp-cycle-run-band--b' : 'mpp-cycle-run-band--a';
     return `
       <article class="mpp-schedule-box mpp-schedule-box--${escapeHtml(shift)} mpp-schedule-run-stack is-collapsed-run mpp-cycle-run-band ${bandClass}"
-        data-run-key="${escapeHtml(runKey)}" data-machine-id="${escapeHtml(machineId)}">
+        data-run-key="${escapeHtml(runKey)}" data-run-fp="${escapeHtml(fingerprint)}" data-machine-id="${escapeHtml(machineId)}">
         <header class="mpp-schedule-head">
-          <button type="button" class="mpp-cycle-expand" data-action="open-cycle-run"
-            data-machine-id="${escapeHtml(machineId)}" data-run-key="${escapeHtml(runKey)}"
-            aria-label="View all cycles" title="View all ${count} cycles">▸</button>
+          <button type="button" class="mpp-cycle-expand" data-action="toggle-cycle-run"
+            data-machine-id="${escapeHtml(machineId)}" data-run-key="${escapeHtml(runKey)}" data-run-fp="${escapeHtml(fingerprint)}"
+            aria-label="Expand ${count} cycles" title="Show all ${count} cycles in this lane">▸</button>
           <span class="mpp-schedule-seq">${escapeHtml(queueLabel)}</span>
           <span class="mpp-run-count">${count}×</span>
           <span class="mpp-shift-badge mpp-shift-badge--${escapeHtml(shift)}">${escapeHtml(MPP_SHIFT_META[shift]?.label || shift)}</span>
           <span class="mpp-schedule-stats">${fmtMinutes(metrics.cycleMinutes)}/cycle</span>
-          <button type="button" class="btn btn-ghost btn-sm mpp-run-expand-btn" data-action="open-cycle-run"
-            data-machine-id="${escapeHtml(machineId)}" data-run-key="${escapeHtml(runKey)}">View all…</button>
+          <button type="button" class="btn btn-ghost btn-sm mpp-run-expand-btn" data-action="toggle-cycle-run"
+            data-machine-id="${escapeHtml(machineId)}" data-run-key="${escapeHtml(runKey)}" data-run-fp="${escapeHtml(fingerprint)}">Show all…</button>
         </header>
-        <div class="mpp-schedule-collapsed-strip is-visible" data-action="open-cycle-run"
-          data-machine-id="${escapeHtml(machineId)}" data-run-key="${escapeHtml(runKey)}"
-          title="View all ${count} cycles">
+        <div class="mpp-schedule-collapsed-strip is-visible" data-action="toggle-cycle-run"
+          data-machine-id="${escapeHtml(machineId)}" data-run-key="${escapeHtml(runKey)}" data-run-fp="${escapeHtml(fingerprint)}"
+          title="Show all ${count} cycles in this lane">
           <div class="mpp-collapsed-ops">${opsPills}</div>
           <span class="mpp-collapsed-timing">${escapeHtml(formatDt(first.start))} → ${escapeHtml(last.end)}</span>
         </div>
@@ -2096,9 +2340,47 @@
     `;
   }
 
+  function renderExpandedCycleRun(machineId, run, runIdx = 0) {
+    const items = run.items;
+    const first = items[0];
+    const last = items[items.length - 1];
+    const runKey = first.cycle.cycleId;
+    const fingerprint = run.fingerprint;
+    const count = items.length;
+    const queueLabel = `#${first.idx + 1}–#${last.idx + 1}`;
+    const { metrics, shift } = first;
+    const bandClass = runIdx % 2 ? 'mpp-cycle-run-band--b' : 'mpp-cycle-run-band--a';
+    const boxes = items
+      .map((item, i) => renderCycleBox(machineId, item, { inRun: true, inRunAlt: i % 2 === 1 }))
+      .join('');
+    return `
+      <div class="mpp-cycle-run-expanded mpp-cycle-run-band ${bandClass}"
+        data-run-key="${escapeHtml(runKey)}" data-run-fp="${escapeHtml(fingerprint)}" data-machine-id="${escapeHtml(machineId)}">
+        <div class="mpp-cycle-run-expanded-head">
+          <div class="mpp-cycle-run-expanded-meta">
+            <button type="button" class="mpp-cycle-expand" data-action="toggle-cycle-run"
+              data-machine-id="${escapeHtml(machineId)}" data-run-key="${escapeHtml(runKey)}" data-run-fp="${escapeHtml(fingerprint)}"
+              aria-label="Collapse cycle group" title="Collapse identical cycles">▾</button>
+            <span class="mpp-schedule-seq">${escapeHtml(queueLabel)}</span>
+            <span class="mpp-run-count-badge">${count}× identical</span>
+            <span class="mpp-shift-badge mpp-shift-badge--${escapeHtml(shift)}">${escapeHtml(MPP_SHIFT_META[shift]?.label || shift)}</span>
+            <span class="mpp-schedule-stats">${fmtMinutes(metrics.cycleMinutes)}/cycle</span>
+            <span class="mpp-run-range-timing">${escapeHtml(formatDt(first.start))} → ${escapeHtml(last.end)}</span>
+          </div>
+          <button type="button" class="btn btn-ghost btn-sm mpp-run-expand-btn" data-action="toggle-cycle-run"
+            data-machine-id="${escapeHtml(machineId)}" data-run-key="${escapeHtml(runKey)}" data-run-fp="${escapeHtml(fingerprint)}">Collapse</button>
+        </div>
+        <div class="mpp-cycle-run-expanded-body">${boxes}</div>
+      </div>
+    `;
+  }
+
   function renderCycleRun(machineId, run, runIdx = 0) {
     if (run.items.length === 1) {
       return renderCycleBox(machineId, run.items[0]);
+    }
+    if (isRunExpanded(machineId, run.fingerprint, run.items[0]?.cycle?.cycleId)) {
+      return renderExpandedCycleRun(machineId, run, runIdx);
     }
     return renderCollapsedCycleRun(machineId, run, runIdx);
   }
@@ -2608,6 +2890,16 @@
     renderLanes();
     renderProbationBracket();
     syncSidebarCollapsedUi();
+    if (!mppExtraCollapsed && extraJobId && document.activeElement?.closest?.('#mpp-extra-body')) {
+      extraDraft = readExtraDraftFromDom() || extraDraft;
+      updateExtraPreview();
+      syncExtraCollapsedUi();
+    } else {
+      if (!mppExtraCollapsed && extraJobId && document.getElementById('mpp-extra-pallets')) {
+        extraDraft = readExtraDraftFromDom() || extraDraft;
+      }
+      renderExtraPanel();
+    }
     updateJobsStatusLine();
     refreshOpenModals();
     if (reviewModalCycleId) renderReviewPanel(reviewModalCycleId);
@@ -3124,7 +3416,7 @@
     }
   }
 
-  function openScheduleModal(jobId, machineId = defaultMachineId()) {
+  function openScheduleModal(jobId, machineId = defaultMachineId(), seed = null) {
     const job = getJob(jobId);
     const form = document.getElementById('mpp-schedule-modal-form');
     const sub = document.getElementById('mpp-schedule-modal-sub');
@@ -3134,6 +3426,9 @@
     const machine = machineById(machineId);
     const defaultShift = defaultShiftForMachine(machine);
     const nightAvail = machineSupportsShift(machine, 'night');
+    const seedPallets = Math.max(1, Number(seed?.palletsPerCycle) || Number(job.defaultPalletsPerCycle) || 3);
+    const seedMin = Math.max(0.1, Number(seed?.minPerPallet) || Number(job.minPerPallet) || 1);
+    const seedPcs = Math.max(1, Number(seed?.pcsPerPallet) || Number(job.pcsPerPallet) || 1);
     sub.textContent = 'Queue one or more full cycles. Each cycle box = one unattended run on the machine.';
     const machineOpts = MACHINES.map((m) => `<option value="${m.id}" ${m.id === machineId ? 'selected' : ''}>${m.code}</option>`).join('');
     const shiftOpts = `
@@ -3155,9 +3450,9 @@
         <div class="mpp-replicate-mode">${shiftOpts}</div>
       </fieldset>
       <div class="mpp-form-grid">
-        <label>Pallets per cycle<input id="mpp-s-pallets" type="number" min="1" step="1" value="${job.defaultPalletsPerCycle || 3}"></label>
-        <label>Minutes per pallet<input id="mpp-s-min" type="number" min="0.1" step="1" value="${job.minPerPallet}"></label>
-        <label>Pieces per pallet<input id="mpp-s-pcs" type="number" min="1" step="1" value="${job.pcsPerPallet}"></label>
+        <label>Pallets per cycle<input id="mpp-s-pallets" type="number" min="1" step="1" value="${seedPallets}"></label>
+        <label>Minutes per pallet<input id="mpp-s-min" type="number" min="0.1" step="1" value="${seedMin}"></label>
+        <label>Pieces per pallet<input id="mpp-s-pcs" type="number" min="1" step="1" value="${seedPcs}"></label>
         <label>Pieces to schedule<input id="mpp-s-qty" type="number" min="1" max="${rem}" step="1" value="${rem}"></label>
       </div>
       <div class="mpp-form-derived" id="mpp-schedule-preview"></div>
@@ -3262,6 +3557,8 @@
   });
   document.getElementById('mpp-refresh-jobs')?.addEventListener('click', () => { refreshLiveJobs(); });
   document.getElementById('mpp-toggle-ops-pool')?.addEventListener('click', toggleSidebarCollapsed);
+  document.getElementById('mpp-toggle-extra')?.addEventListener('click', toggleExtraCollapsed);
+  document.getElementById('mpp-extra-close')?.addEventListener('click', () => setExtraCollapsed(true));
   document.getElementById('mpp-ops-search')?.addEventListener('input', scheduleMppOpsSearchRender);
   document.getElementById('mpp-fa-only')?.addEventListener('change', async (e) => {
     const next = Boolean(e.target.checked);
@@ -3292,6 +3589,14 @@
     if (e.target.id === 'mpp-ps-detail-modal') closeMppPsDetailModal();
   });
   document.getElementById('mpp-ops-list')?.addEventListener('click', (e) => {
+    const calcBtn = e.target.closest?.('[data-action="extra-calc"]');
+    if (calcBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (calcBtn.dataset.jobId) openExtraForJob(calcBtn.dataset.jobId);
+      else openExtraForPs(calcBtn.dataset.psId);
+      return;
+    }
     const btn = e.target.closest?.('[data-action="ps-detail"]');
     if (!btn) return;
     e.preventDefault();
@@ -3361,6 +3666,10 @@
     e.stopPropagation();
     const action = btn.dataset.action;
     if (action === 'ps-detail') openMppPsDetailModal(btn.dataset.psId);
+    if (action === 'extra-calc') {
+      if (btn.dataset.jobId) openExtraForJob(btn.dataset.jobId);
+      else openExtraForPs(btn.dataset.psId);
+    }
     if (action === 'remove-op') removeOp(btn.dataset.opId);
     if (action === 'remove-cycle') removeCycle(btn.dataset.cycleId);
     if (action === 'edit-cycle-timing') openCycleTimingModal(btn.dataset.cycleId);
@@ -3382,6 +3691,9 @@
       addPalletToCycle(btn.dataset.cycleId, btn.dataset.jobId);
       renderCycleAddOpModal();
       refreshOpenModals();
+    }
+    if (action === 'toggle-cycle-run') {
+      toggleCycleRunExpanded(btn.dataset.machineId, btn.dataset.runFp, btn.dataset.runKey);
     }
     if (action === 'open-cycle-run') openCycleRunModal(btn.dataset.machineId, btn.dataset.runKey);
     if (action === 'queue-move-up') moveCycleInQueue(btn.dataset.cycleId, 'up');

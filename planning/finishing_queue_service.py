@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -29,18 +30,37 @@ def _finishing_ps_prefix_params() -> tuple:
 
 
 _tables_initialized = False
+_tables_lock = threading.Lock()
+_mi_overlay_initialized = False
+_mi_overlay_lock = threading.Lock()
 
 
 def _ensure_tables_once(con) -> None:
     global _tables_initialized
     if _tables_initialized:
         return
-    ensure_finishing_queue_tables(con)
-    try:
-        dedupe_active_inspectors(con)
-    except Exception:
-        pass
-    _tables_initialized = True
+    with _tables_lock:
+        if _tables_initialized:
+            return
+        ensure_finishing_queue_tables(con)
+        try:
+            dedupe_active_inspectors(con)
+        except Exception:
+            pass
+        _tables_initialized = True
+
+
+def _ensure_mi_overlay_once(con) -> None:
+    global _mi_overlay_initialized
+    if _mi_overlay_initialized:
+        return
+    with _mi_overlay_lock:
+        if _mi_overlay_initialized:
+            return
+        # Inspector FK target must exist before MI overlay DDL.
+        _ensure_tables_once(con)
+        ensure_material_inspection_overlay_table(con)
+        _mi_overlay_initialized = True
 
 
 def _serialize_value(value: Any) -> Any:
@@ -333,7 +353,7 @@ def load_mi_overlay_map(con, voucher_nos: list[str]) -> dict[str, dict[str, Any]
     if not clean:
         return {}
     try:
-        ensure_material_inspection_overlay_table(con)
+        _ensure_mi_overlay_once(con)
         overlay_rows = rows(
             con.execute(
                 """
@@ -368,7 +388,7 @@ def upsert_mi_overlay(
     done: bool | None = None,
     clear_inspector: bool = False,
 ) -> dict[str, Any]:
-    ensure_material_inspection_overlay_table(con)
+    _ensure_mi_overlay_once(con)
     voucher = compact_text(inspection_voucher_no)
     if not voucher:
         raise ValueError("inspection_voucher_no is required")
@@ -639,7 +659,7 @@ def fetch_finishing_queue_rows(con, **_kwargs) -> list[dict[str, Any]]:
 
 def fetch_finishing_queue_bundle(con, **_kwargs) -> dict[str, Any]:
     """Queue rows + inspectors in one planner connection."""
-    ensure_finishing_queue_tables(con)
+    _ensure_tables_once(con)
     raw_rows = fetch_finishing_queue_rows(con)
     items = enrich_finishing_items(con, raw_rows)
     inspectors = load_inspectors(con)

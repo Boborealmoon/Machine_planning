@@ -45,17 +45,16 @@ FLOOR_LAYOUT_MACHINES: tuple[dict[str, Any], ...] = (
     {"machine_no": "CNC 26", "label": "26", "x": 8.5, "y": 3.4, "w": 0.8, "h": 1, "color": "milling", "rotation": 90},
     {"machine_no": "CNC 25", "label": "25", "x": 8.5, "y": 2.25, "w": 0.8, "h": 1, "color": "milling", "rotation": 90},
     {"machine_no": "CNC 27", "label": "27", "x": 8.5, "y": 1.2, "w": 0.8, "h": 0.9, "color": "turning", "rotation": 90},
-    # CNC 41 - I-800 MPP lane, aligned below right column inside the floor bounds
+    # CNC 41 - I-800 MPP lane: large horizontal rectangle under the right column
     {
         "machine_no": "CNC 41",
         "label": "41",
         "subtitle": "I-800",
-        "x": 8.5,
-        "y": 0.15,
-        "w": 0.8,
-        "h": 0.9,
+        "x": 7.0,
+        "y": 0.1,
+        "w": 2.3,
+        "h": 1.0,
         "color": "mpp",
-        "rotation": 90,
     },
 )
 

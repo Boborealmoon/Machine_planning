@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 inventory_enquiry_bp = Blueprint("inventory_enquiry", __name__)
 
 _CACHE_TTL_SEC = 300
-_CACHE_VERSION = 2
+_CACHE_VERSION = 4
 _cache: tuple[float, int, list[dict[str, Any]]] | None = None
+_lot_cache: tuple[float, int, list[dict[str, Any]]] | None = None
 
 _CLASS_KEY_BY_CODE = {
     "RAW MATERIAL": "raw_material",
@@ -38,6 +39,46 @@ ORDER BY
     inventory_code
 """
 
+_LOT_REF_SQL = """
+SELECT DISTINCT inventory_code, reference_no
+FROM public.ic_inventory_ost_lot
+WHERE inventory_code IS NOT NULL
+  AND BTRIM(inventory_code) <> ''
+  AND reference_no IS NOT NULL
+  AND BTRIM(reference_no) <> ''
+  AND (COALESCE(remaining_qty, 0) > 0 OR COALESCE(allocation_qty, 0) > 0)
+ORDER BY inventory_code, reference_no
+"""
+
+_LOT_DETAIL_SQL = """
+SELECT
+    o.inventory_code,
+    o.lot_no,
+    o.reference_no,
+    o.source_location_code AS location_code,
+    l.location_name,
+    o.original_qty,
+    o.remaining_qty,
+    o.available_qty,
+    o.allocation_qty,
+    o.expiry_date,
+    o.lot_creation_date,
+    o.created_datetime
+FROM public.ic_inventory_ost_lot o
+LEFT JOIN public.mt_location l
+    ON l.location_code = o.source_location_code
+WHERE o.inventory_code IS NOT NULL
+  AND BTRIM(o.inventory_code) <> ''
+  AND o.reference_no IS NOT NULL
+  AND BTRIM(o.reference_no) <> ''
+  AND (COALESCE(o.remaining_qty, 0) > 0 OR COALESCE(o.allocation_qty, 0) > 0)
+ORDER BY
+    o.inventory_code,
+    o.reference_no,
+    o.source_location_code,
+    o.lot_no
+"""
+
 
 def _class_key(row: dict[str, Any]) -> str:
     code = compact_text(row.get("inventory_class_code")).upper()
@@ -48,9 +89,40 @@ from .helpers import planner_db, rows as db_rows
 from .staged_erp import live_query, serialize_row, use_staging_reads
 
 
-def _enrich_inventory_row(row: dict[str, Any]) -> dict[str, Any]:
+def _enrich_inventory_row(
+    row: dict[str, Any],
+    *,
+    lot_reference_nos: list[str] | None = None,
+) -> dict[str, Any]:
     out = serialize_row(row)
     out["class_key"] = _class_key(out)
+    if lot_reference_nos is not None:
+        out["lot_reference_nos"] = lot_reference_nos
+    return out
+
+
+def _fetch_lot_reference_map() -> dict[str, list[str]]:
+    refs_by_code: dict[str, list[str]] = {}
+    for row in live_query(_LOT_REF_SQL):
+        code = compact_text(row.get("inventory_code"))
+        ref = compact_text(row.get("reference_no"))
+        if not code or not ref:
+            continue
+        refs_by_code.setdefault(code, []).append(ref)
+    return refs_by_code
+
+
+def _attach_lot_references(
+    rows: list[dict[str, Any]],
+    refs_by_code: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        code = compact_text(row.get("inventory_code"))
+        refs = refs_by_code.get(code, [])
+        enriched = dict(row)
+        enriched["lot_reference_nos"] = refs
+        out.append(enriched)
     return out
 
 
@@ -73,11 +145,12 @@ def _fetch_inventory_staged() -> list[dict[str, Any]]:
 
             payload = json.loads(payload)
         rows_out.append(_enrich_inventory_row(dict(payload)))
-    return rows_out
+    return _attach_lot_references(rows_out, _fetch_lot_reference_map())
 
 
 def _fetch_inventory_live() -> list[dict[str, Any]]:
-    return [_enrich_inventory_row(row) for row in live_query(_INVENTORY_SQL)]
+    rows_out = [_enrich_inventory_row(row) for row in live_query(_INVENTORY_SQL)]
+    return _attach_lot_references(rows_out, _fetch_lot_reference_map())
 
 
 def _class_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -120,8 +193,9 @@ def _stock_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def invalidate_inventory_enquiry_cache() -> None:
-    global _cache
+    global _cache, _lot_cache
     _cache = None
+    _lot_cache = None
     from .erp_route_cache import invalidate_prefix
 
     invalidate_prefix("inventory_enquiry:")
@@ -144,6 +218,49 @@ def _fetch_inventory(*, refresh: bool = False) -> list[dict[str, Any]]:
         rows_out = _fetch_inventory_live()
     _cache = (now, _CACHE_VERSION, rows_out)
     return rows_out
+
+
+def _serialize_lot_row(row: dict[str, Any]) -> dict[str, Any]:
+    out = serialize_row(row)
+    out["lot_key"] = "|".join(
+        [
+            compact_text(out.get("inventory_code")),
+            compact_text(out.get("reference_no")),
+            compact_text(out.get("location_code")),
+            str(out.get("lot_no") or ""),
+        ]
+    )
+    return out
+
+
+def _fetch_lot_details(*, refresh: bool = False) -> list[dict[str, Any]]:
+    global _lot_cache
+    now = time.time()
+    if (
+        not refresh
+        and _lot_cache
+        and _lot_cache[1] == _CACHE_VERSION
+        and now - _lot_cache[0] < _CACHE_TTL_SEC
+    ):
+        return _lot_cache[2]
+
+    rows_out = [_serialize_lot_row(row) for row in live_query(_LOT_DETAIL_SQL)]
+    _lot_cache = (now, _CACHE_VERSION, rows_out)
+    return rows_out
+
+
+def _filter_lots_by_codes(
+    lots: list[dict[str, Any]],
+    codes: list[str],
+) -> list[dict[str, Any]]:
+    if not codes:
+        return lots
+    code_set = set(codes)
+    return [
+        lot
+        for lot in lots
+        if compact_text(lot.get("inventory_code")) in code_set
+    ]
 
 
 @inventory_enquiry_bp.get("/planning-data/inventory-enquiry")
@@ -247,5 +364,32 @@ def api_inventory_enquiry():
             "rows": rows,
             "filtered_codes": codes or None,
             "loose_match": loose if codes else False,
+        }
+    )
+
+
+@inventory_enquiry_bp.get("/api/inventory-enquiry/lots")
+def api_inventory_enquiry_lots():
+    refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
+    codes = _parse_codes_filter()
+
+    try:
+        lots = _fetch_lot_details(refresh=refresh)
+    except Exception as exc:
+        logger.exception("inventory enquiry lot query failed")
+        return jsonify({"error": f"ERP lot query failed: {exc}"}), 502
+
+    if codes:
+        lots = _filter_lots_by_codes(lots, codes)
+
+    cached_at = _lot_cache[0] if _lot_cache else time.time()
+    return jsonify(
+        {
+            "ok": True,
+            "count": len(lots),
+            "cached_at": datetime.fromtimestamp(cached_at, tz=None).isoformat(sep=" ", timespec="seconds"),
+            "cache_ttl_sec": _CACHE_TTL_SEC,
+            "rows": lots,
+            "filtered_codes": codes or None,
         }
     )

@@ -143,6 +143,26 @@ body.pps-app .app-main--pps {
   box-shadow: 0 1px 3px rgba(26, 35, 40, 0.08);
 }
 
+.pps-flagged-first-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 40px;
+  padding: 0 14px;
+}
+
+.pps-flagged-first-btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.pps-flagged-first-btn.is-active {
+  background: #fff7f6;
+  border-color: #c5b0ad;
+  color: var(--pps-overdue);
+}
+
 .pps-board {
   width: 100%;
 }

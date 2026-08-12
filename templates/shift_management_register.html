@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Shift Management - Register</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shift_management.css', v='sm-2') }}" />
+</head>
+<body class="sm-auth-body">
+  <main class="sm-auth-card">
+    <div class="sm-auth-brand">
+      <span class="sm-auth-logo">SM</span>
+      <div>
+        <h1>Create account</h1>
+        <p>Pending approval after signup</p>
+      </div>
+    </div>
+    {% if error %}
+    <div class="sm-auth-error" role="alert">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="{{ url_for('shift_mgmt_auth.shift_mgmt_register') }}">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" required autofocus />
+      <label for="display_name">Display name</label>
+      <input id="display_name" name="display_name" type="text" />
+      <label for="password">Password / PIN (min 4)</label>
+      <input id="password" name="password" type="password" required />
+      <label for="password_confirm">Confirm</label>
+      <input id="password_confirm" name="password_confirm" type="password" required />
+      <button type="submit" class="sm-btn sm-btn-primary sm-btn-block">Register</button>
+    </form>
+    <nav class="sm-auth-links">
+      <a href="{{ url_for('shift_mgmt_auth.shift_mgmt_login') }}">Back to sign in</a>
+    </nav>
+  </main>
+</body>
+</html>

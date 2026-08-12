@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Shift Management - Sign in</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shift_management.css', v='sm-2') }}" />
+</head>
+<body class="sm-auth-body">
+  <main class="sm-auth-card">
+    <div class="sm-auth-brand">
+      <span class="sm-auth-logo">SM</span>
+      <div>
+        <h1>Shift Management</h1>
+        <p>Daily handover and takeover</p>
+      </div>
+    </div>
+    {% with messages = get_flashed_messages(category_filter=["shift_mgmt_auth"]) %}
+      {% if messages %}
+        {% for msg in messages %}
+        <div class="sm-auth-ok" role="status">{{ msg }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    {% if error %}
+    <div class="sm-auth-error" role="alert">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="{{ url_for('shift_mgmt_auth.shift_mgmt_login') }}">
+      {% if next_path %}
+      <input type="hidden" name="next" value="{{ next_path }}" />
+      {% endif %}
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" required autofocus />
+      <label for="password">Password / PIN</label>
+      <input id="password" name="password" type="password" inputmode="numeric" autocomplete="current-password" required />
+      <button type="submit" class="sm-btn sm-btn-primary sm-btn-block">Sign in</button>
+    </form>
+    <p class="sm-auth-hint">Demo: <strong>op1</strong> / <strong>1234</strong> (or op2, sup1)</p>
+    <nav class="sm-auth-links">
+      <a href="{{ url_for('shift_mgmt_auth.shift_mgmt_register') }}">Create account</a>
+    </nav>
+  </main>
+</body>
+</html>

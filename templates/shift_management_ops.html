@@ -1,0 +1,41 @@
+{% extends "shift_management_base.html" %}
+{% block title %}Ops Board — Day/Night HOTO{% endblock %}
+{% block content %}
+<section class="sm-toolbar sm-toolbar-wrap">
+  <h2 class="sm-section-title" style="margin:0">Active queue</h2>
+  <button type="button" class="sm-btn sm-btn-ghost" id="sm-ops-refresh">Refresh</button>
+</section>
+<p class="sm-muted">Process sheets on the machining queue. Raise tickets or jump into handover.</p>
+<div id="sm-ops-list" class="sm-ops-list">
+  <p class="sm-muted">Loading…</p>
+</div>
+
+<dialog id="sm-ticket-dialog" class="sm-dialog">
+  <form method="dialog" id="sm-ticket-form" onsubmit="return false;">
+    <h3>Raise ticket</h3>
+    <p id="sm-ticket-context" class="sm-muted"></p>
+    <input type="hidden" id="sm-tk-machine-id" />
+    <input type="hidden" id="sm-tk-block-id" />
+    <input type="hidden" id="sm-tk-ps" />
+    <input type="hidden" id="sm-tk-job" />
+    <label class="sm-label">Category</label>
+    <select class="sm-input" id="sm-tk-category"></select>
+    <label class="sm-label">Priority</label>
+    <select class="sm-input" id="sm-tk-priority">
+      <option>Normal</option><option>High</option><option>Urgent</option>
+    </select>
+    <label class="sm-label" for="sm-tk-title">Title</label>
+    <input class="sm-input" id="sm-tk-title" type="text" required maxlength="200" />
+    <label class="sm-label" for="sm-tk-desc">Details</label>
+    <textarea class="sm-textarea" id="sm-tk-desc" rows="3" placeholder="What needs attention?"></textarea>
+    <p id="sm-tk-status" class="sm-muted" hidden></p>
+    <div class="sm-dialog-actions">
+      <button type="button" class="sm-btn sm-btn-ghost" id="sm-tk-cancel">Cancel</button>
+      <button type="submit" class="sm-btn sm-btn-primary" id="sm-tk-save">Create ticket</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}
+<script>SM.page = "ops";</script>
+{% endblock %}

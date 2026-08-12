@@ -1,0 +1,42 @@
+{% extends "shift_management_base.html" %}
+{% block title %}History — Day/Night HOTO{% endblock %}
+{% block content %}
+<section class="sm-filters">
+  <label class="sm-field-inline"><span>From</span><input type="date" id="sm-hist-from" /></label>
+  <label class="sm-field-inline"><span>To</span><input type="date" id="sm-hist-to" /></label>
+  <label class="sm-field-inline">
+    <span>Shift</span>
+    <select id="sm-hist-shift">
+      <option value="">All</option>
+      <option value="Day">Day</option>
+      <option value="Night">Night</option>
+    </select>
+  </label>
+  <label class="sm-field-inline">
+    <span>Status</span>
+    <select id="sm-hist-status">
+      <option value="">All</option>
+      <option value="draft">draft</option>
+      <option value="pending_ack">pending_ack</option>
+      <option value="acknowledged">acknowledged</option>
+      <option value="disputed">disputed</option>
+    </select>
+  </label>
+  <button type="button" class="sm-btn sm-btn-primary" id="sm-hist-apply">Apply</button>
+  <button type="button" class="sm-btn sm-btn-ghost" id="sm-hist-report">PDF report</button>
+</section>
+<div class="sm-table-wrap">
+  <table class="sm-table" id="sm-hist-table">
+    <thead>
+      <tr>
+        <th>Date</th><th>Machine</th><th>Shift</th><th>Status</th>
+        <th>Priority</th><th>Job</th><th>Out</th><th>In</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>SM.page = "history";</script>
+{% endblock %}

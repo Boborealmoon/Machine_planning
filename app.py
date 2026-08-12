@@ -84,6 +84,7 @@ from planning.so_outstanding_balance_route import so_outstanding_balance_bp
 from planning.sales_coordination_route import sales_coordination_bp
 from planning.so_archive_route import so_archive_bp
 from planning.queue_exit_history_route import queue_exit_history_bp
+from planning.erp_scanned_output_route import erp_scanned_output_bp
 from planning.mpp_planner_route import mpp_planner_bp
 from planning.inventory_enquiry_route import inventory_enquiry_bp
 from planning.excel_local_route import excel_local_bp
@@ -94,6 +95,13 @@ from planning.mro_auth import (
     is_mro_auth_public_path,
     mro_auth_bp,
     mro_user_authenticated,
+)
+from planning.shift_management_route import SHIFT_MGMT_PATH, shift_mgmt_bp
+from planning.shift_management_auth import (
+    SHIFT_MGMT_LOGIN_PATH,
+    is_shift_mgmt_auth_public_path,
+    shift_mgmt_auth_bp,
+    shift_mgmt_user_authenticated,
 )
 from planning.pps_route import PPS_PATH, pps_bp
 from planning.accounts_route import ACCOUNTS_PATH, accounts_bp
@@ -149,6 +157,7 @@ app.register_blueprint(preferred_machines_bp)
 app.register_blueprint(floor_plan_bp)
 app.register_blueprint(monthly_delivery_plan_bp)
 app.register_blueprint(queue_exit_history_bp)
+app.register_blueprint(erp_scanned_output_bp)
 app.register_blueprint(mpp_planner_bp)
 app.register_blueprint(inventory_enquiry_bp)
 app.register_blueprint(excel_local_bp)
@@ -156,6 +165,8 @@ app.register_blueprint(frame_agreement_bp)
 app.register_blueprint(email_bp)
 app.register_blueprint(mro_bp)
 app.register_blueprint(mro_auth_bp)
+app.register_blueprint(shift_mgmt_bp)
+app.register_blueprint(shift_mgmt_auth_bp)
 app.register_blueprint(pps_bp)
 app.register_blueprint(accounts_bp)
 app.register_blueprint(notes_bp)
@@ -290,6 +301,9 @@ _DRIVER_VIEW_PUBLIC_PATHS = frozenset(
     {DRIVER_VIEW_PATH.lower(), _LEGACY_DRIVER_VIEW_PATH.lower()}
 )
 _MRO_PUBLIC_PATHS = frozenset({MRO_PATH.lower(), "/mro"})
+_SHIFT_MGMT_PUBLIC_PATHS = frozenset(
+    {SHIFT_MGMT_PATH.lower(), "/shift-management"}
+)
 _PPS_PUBLIC_PATHS = frozenset({PPS_PATH.lower(), "/pps"})
 _ACCOUNTS_PUBLIC_PATHS = frozenset({ACCOUNTS_PATH.lower(), "/accounts"})
 
@@ -308,11 +322,17 @@ def _is_gate_public_path(path: str) -> bool:
         return True
     if is_mro_auth_public_path(path):
         return True
+    if is_shift_mgmt_auth_public_path(path):
+        return True
     if normalized in _FINISHING_QUEUE_PUBLIC_PATHS:
         return True
     if normalized in _DRIVER_VIEW_PUBLIC_PATHS:
         return True
     if normalized in _MRO_PUBLIC_PATHS:
+        return True
+    if normalized in _SHIFT_MGMT_PUBLIC_PATHS or normalized.startswith(
+        SHIFT_MGMT_PATH.lower() + "/"
+    ):
         return True
     if normalized in _PPS_PUBLIC_PATHS:
         return True
@@ -435,6 +455,8 @@ _FINANCE_API_PREFIXES = ("/api/accounts",)
 MRO_LOGIN_PATH = "/mro-login"
 _MRO_PAGE_PREFIXES = (MRO_PATH,)
 _MRO_API_PREFIXES = ("/api/mro",)
+_SHIFT_MGMT_PAGE_PREFIXES = (SHIFT_MGMT_PATH, "/Shift-management")
+_SHIFT_MGMT_API_PREFIXES = ("/api/shift-management",)
 _PPS_PAGE_PREFIXES = (PPS_PATH,)
 _PPS_API_PREFIXES = ("/api/pps",)
 
@@ -444,7 +466,7 @@ ADMIN_TOKEN_MAX_AGE = 8 * 3600
 ADMIN_PATH = "/admin"
 _ADMIN_PUBLIC_PATHS = frozenset({ADMIN_PATH.lower(), "/notes"})
 _ADMIN_PAGE_PREFIXES = (ADMIN_PATH, "/notes")
-_ADMIN_API_PREFIXES = ("/api/notes", "/api/admin/mro-users")
+_ADMIN_API_PREFIXES = ("/api/notes", "/api/admin/mro-users", "/api/admin/shift-management-users")
 
 
 def _finance_passcode() -> str:
@@ -523,6 +545,14 @@ def _is_mro_page_path(path: str) -> bool:
 
 def _is_mro_api_path(path: str) -> bool:
     return _path_has_prefix(path, _MRO_API_PREFIXES)
+
+
+def _is_shift_mgmt_page_path(path: str) -> bool:
+    return _path_has_prefix(path, _SHIFT_MGMT_PAGE_PREFIXES)
+
+
+def _is_shift_mgmt_api_path(path: str) -> bool:
+    return _path_has_prefix(path, _SHIFT_MGMT_API_PREFIXES)
 
 
 def _is_pps_page_path(path: str) -> bool:
@@ -708,6 +738,22 @@ def _require_mro_login():
     if _is_mro_api_path(path):
         return jsonify({"error": "MRO login required.", "login": MRO_LOGIN_PATH}), 401
     return redirect(url_for("mro_auth.mro_login", next=path))
+
+
+@app.before_request
+def _require_shift_mgmt_login():
+    path = request.path or "/"
+    if is_shift_mgmt_auth_public_path(path):
+        return None
+    if not _is_shift_mgmt_page_path(path) and not _is_shift_mgmt_api_path(path):
+        return None
+    if shift_mgmt_user_authenticated():
+        return None
+    if _is_shift_mgmt_api_path(path):
+        return jsonify(
+            {"error": "Shift Management login required.", "login": SHIFT_MGMT_LOGIN_PATH}
+        ), 401
+    return redirect(url_for("shift_mgmt_auth.shift_mgmt_login", next=path))
 
 
 def _safe_admin_next(raw: str) -> str:
@@ -3095,9 +3141,10 @@ def api_planner_machines_delete(machine_id):
 # ── API: Planner — Master cycle times (Supabase) ─────────────────────────────
 
 _CT_MASTER_SELECT = (
-    "id,bom_code,part_no,part_description,stage_no,stage_name,op_no,op_type,"
-    "program_no,program_file,tool_list_file,ideal_cycle_time,cycle_time,set_up_time,updated_at"
+    "id, bom_code, part_no, part_description, stage_no, stage_name, op_no, op_type, "
+    "program_no, program_file, tool_list_file, ideal_cycle_time, cycle_time, set_up_time, updated_at"
 )
+_CT_MASTER_SELECT_REST = _CT_MASTER_SELECT.replace(" ", "")
 
 
 def _non_negative_number(value, default=0.0):
@@ -3105,6 +3152,24 @@ def _non_negative_number(value, default=0.0):
         return max(0.0, float(value))
     except (TypeError, ValueError):
         return float(default)
+
+
+def _ct_master_json_row(row):
+    """Serialize a planner_cycle_time_master row for JSON responses."""
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    out = {}
+    for key, value in dict(row or {}).items():
+        if isinstance(value, datetime):
+            out[key] = value.isoformat(sep=" ", timespec="seconds")
+        elif isinstance(value, date):
+            out[key] = value.isoformat()
+        elif isinstance(value, Decimal):
+            out[key] = float(value)
+        else:
+            out[key] = value
+    return out
 
 
 def _api_planner_cycle_times_harvest_preview_impl():
@@ -3120,17 +3185,34 @@ def _api_planner_cycle_times_harvest_preview_impl():
 
 @app.get("/api/planner/cycle-times")
 def api_planner_cycle_times_list():
-    """List master cycle times. Uses service role (RLS on this table blocks anon reads)."""
+    """List master cycle times via direct Postgres (REST falls back if needed)."""
     if request.args.get("harvest") == "preview":
         try:
             return _api_planner_cycle_times_harvest_preview_impl()
         except Exception as e:
             return jsonify({"error": str(e)}), 500
     try:
+        from planning.cycle_time_service import planner_db_available
+        from planning.helpers import planner_db, rows as pg_rows
+
+        if planner_db_available():
+            with planner_db() as con:
+                raw = pg_rows(
+                    con.execute(
+                        f"""
+                        SELECT {_CT_MASTER_SELECT}
+                        FROM public.planner_cycle_time_master
+                        ORDER BY id
+                        """
+                    )
+                )
+            rows_out = [_ct_master_json_row(r) for r in raw]
+            return jsonify({"rows": rows_out, "count": len(rows_out)})
+
         rows = _supa_fetch_all(
             "planner_cycle_time_master",
             {
-                "select": _CT_MASTER_SELECT,
+                "select": _CT_MASTER_SELECT_REST,
                 "order": "id",
             },
             service=True,
@@ -3192,6 +3274,30 @@ def api_planner_cycle_times_create():
     }
 
     try:
+        from planning.cycle_time_service import planner_db_available
+        from planning.helpers import one, planner_db
+
+        if planner_db_available():
+            with planner_db() as con:
+                inserted = one(
+                    con.execute(
+                        f"""
+                        INSERT INTO public.planner_cycle_time_master (
+                            bom_code, part_no, part_description, stage_no, stage_name,
+                            op_no, op_type, program_no, program_file, tool_list_file,
+                            ideal_cycle_time, cycle_time, set_up_time
+                        ) VALUES (
+                            %(bom_code)s, %(part_no)s, %(part_description)s, %(stage_no)s, %(stage_name)s,
+                            %(op_no)s, %(op_type)s, %(program_no)s, %(program_file)s, %(tool_list_file)s,
+                            %(ideal_cycle_time)s, %(cycle_time)s, %(set_up_time)s
+                        )
+                        RETURNING {_CT_MASTER_SELECT}
+                        """,
+                        payload,
+                    )
+                )
+            return jsonify(_ct_master_json_row(inserted)), 201
+
         result = _supa_post("planner_cycle_time_master", payload)
         return jsonify(result[0] if isinstance(result, list) else result), 201
     except Exception as e:
@@ -3246,13 +3352,35 @@ def api_planner_cycle_times_update(row_id):
     if not payload:
         return jsonify({"error": "No fields to update"}), 400
 
-    payload["updated_at"] = "now()"
-
     try:
+        from planning.cycle_time_service import planner_db_available
+        from planning.helpers import one, planner_db
+
+        if planner_db_available():
+            sets = [f"{col} = %s" for col in payload]
+            sets.append("updated_at = NOW()")
+            values = list(payload.values()) + [row_id]
+            with planner_db() as con:
+                updated = one(
+                    con.execute(
+                        f"""
+                        UPDATE public.planner_cycle_time_master
+                        SET {", ".join(sets)}
+                        WHERE id = %s
+                        RETURNING {_CT_MASTER_SELECT}
+                        """,
+                        values,
+                    )
+                )
+            if not updated:
+                return jsonify({"error": "Row not found"}), 404
+            return jsonify(_ct_master_json_row(updated))
+
+        rest_payload = {**payload, "updated_at": "now()"}
         result = _supa_patch(
             "planner_cycle_time_master",
             {"id": f"eq.{row_id}"},
-            payload,
+            rest_payload,
         )
         return jsonify(result[0] if isinstance(result, list) else result)
     except Exception as e:
@@ -3262,6 +3390,19 @@ def api_planner_cycle_times_update(row_id):
 @app.delete("/api/planner/cycle-times/<int:row_id>")
 def api_planner_cycle_times_delete(row_id):
     try:
+        from planning.cycle_time_service import planner_db_available
+        from planning.helpers import planner_db
+
+        if planner_db_available():
+            with planner_db() as con:
+                cur = con.execute(
+                    "DELETE FROM public.planner_cycle_time_master WHERE id = %s",
+                    (row_id,),
+                )
+                if getattr(cur, "rowcount", None) == 0:
+                    return jsonify({"error": "Row not found"}), 404
+            return jsonify({"ok": True})
+
         _supa_delete("planner_cycle_time_master", {"id": f"eq.{row_id}"})
         return jsonify({"ok": True})
     except Exception as e:
@@ -3658,6 +3799,7 @@ if __name__ == "__main__":
     log.info("QAQC view: http://127.0.0.1:%s%s", port, FINISHING_QUEUE_PATH)
     log.info("driver view: http://127.0.0.1:%s%s", port, DRIVER_VIEW_PATH)
     log.info("MRO app: http://127.0.0.1:%s%s", port, MRO_PATH)
+    log.info("Shift Management: http://127.0.0.1:%s%s", port, SHIFT_MGMT_PATH)
     log.info("PPS app: http://127.0.0.1:%s%s", port, PPS_PATH)
     log.info("accounts receivable: http://127.0.0.1:%s%s", port, ACCOUNTS_PATH)
     if _planner_gate_enabled():

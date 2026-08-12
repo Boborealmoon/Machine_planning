@@ -160,10 +160,21 @@ def _fetch_finishing_queue(*, refresh: bool = False) -> tuple[list[dict[str, Any
 
     t0 = time.perf_counter()
     with planner_db() as con:
+        # Bound slow DISTINCT ON scans / lock waits so Waitress threads and the
+        # connection pool are not held open indefinitely.
+        try:
+            con.execute("SET LOCAL statement_timeout = '45s'")
+            con.execute("SET LOCAL lock_timeout = '8s'")
+        except Exception:
+            pass
         bundle = fetch_finishing_queue_bundle(con)
         items = bundle["items"]
         inspectors = bundle["inspectors"]
-        material_issue_items = fetch_material_issue_queue(con)
+        try:
+            material_issue_items = fetch_material_issue_queue(con)
+        except Exception:
+            logger.exception("material-issue queue query failed; returning finishing rows only")
+            material_issue_items = []
     source = "staging"
     logger.info(
         "finishing queue loaded (%s): %d rows, %d material-issue rows in %dms",
@@ -281,14 +292,22 @@ def _finishing_queue_client_config() -> dict[str, str]:
 def finishing_queue_page():
     fq_bootstrap = None
     fq_bootstrap_error = None
+    # Never block HTML on a cold mfg_wo_status scan — that query can take tens of
+    # seconds and used to make the whole page look hung. Warm process cache only.
     try:
-        items, source, inspectors, material_issue_items = _fetch_finishing_queue(refresh=False)
-        fq_bootstrap = _build_queue_payload(
-            items=items,
-            source=source,
-            inspectors=inspectors,
-            material_issue_items=material_issue_items,
-        )
+        now = time.time()
+        if (
+            _cache
+            and _cache[1] == _CACHE_VERSION
+            and now - _cache[0] < _CACHE_TTL_SEC
+        ):
+            items, source, inspectors, material_issue_items = _fetch_finishing_queue(refresh=False)
+            fq_bootstrap = _build_queue_payload(
+                items=items,
+                source=source,
+                inspectors=inspectors,
+                material_issue_items=material_issue_items,
+            )
     except Exception as exc:
         logger.exception("post-machining queue page bootstrap failed")
         fq_bootstrap_error = str(exc)

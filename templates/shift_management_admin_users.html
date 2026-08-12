@@ -1,0 +1,142 @@
+{% extends "base_standalone.html" %}
+
+{% block title %}Shift Management Users{% endblock %}
+{% block body_class %}notes-body mro-admin-users-body{% endblock %}
+{% block main_class %}notes-main{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/notes.css') }}?v=20260720b">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/mro_admin_users.css', v='sm-dialog-1') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/shift_management_admin_users.css', v='sm-4') }}">
+{% endblock %}
+
+{% block content %}
+<div class="notes-page mro-admin-users-page sm-admin-users-page">
+  <header class="notes-header">
+    <div>
+      <p class="notes-kicker">Admin</p>
+      <h1>Shift Management Users</h1>
+      <p>Approve operator accounts and reset PINs.</p>
+    </div>
+    <div class="mro-admin-header-actions">
+      <a class="notes-refresh" href="{{ url_for('planner_notes.notes_page', at=admin_token) if admin_token else url_for('planner_notes.notes_page') }}">Back to Admin</a>
+      <a class="notes-refresh" href="/Shift-management">Open app</a>
+      <button class="notes-refresh" id="sm-users-refresh" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <section class="mro-admin-create" aria-labelledby="sm-create-title">
+    <h2 id="sm-create-title">Create approved user</h2>
+    <p>Bootstrap operators without waiting for self-registration.</p>
+    <form id="sm-create-form" class="mro-admin-form sm-admin-form--sm">
+      <label>
+        <span>Username</span>
+        <input name="username" type="text" autocomplete="off" required minlength="2" maxlength="64" />
+      </label>
+      <label>
+        <span>Display name</span>
+        <input name="display_name" type="text" autocomplete="off" />
+      </label>
+      <label>
+        <span>Role</span>
+        <select name="role">
+          <option value="operator" selected>operator</option>
+          <option value="supervisor">supervisor</option>
+          <option value="quality">quality</option>
+          <option value="admin">admin</option>
+        </select>
+      </label>
+      <label>
+        <span>Default shift</span>
+        <select name="default_shift">
+          <option value="">-</option>
+          <option value="Day">Day</option>
+          <option value="Night">Night</option>
+        </select>
+      </label>
+      <label>
+        <span>Password / PIN</span>
+        <input name="password" type="password" autocomplete="new-password" required minlength="4" />
+      </label>
+      <div class="sm-admin-form-actions">
+        <button type="submit" class="notes-save">Create and approve</button>
+        <p id="sm-create-status" class="mro-admin-status" hidden></p>
+      </div>
+    </form>
+  </section>
+
+  <section class="mro-admin-list" aria-labelledby="sm-list-title">
+    <div class="mro-admin-list-heading">
+      <h2 id="sm-list-title">Accounts <span id="sm-pending-badge" class="mro-admin-badge" hidden>0</span></h2>
+      <label class="mro-admin-filter">
+        <span>Status</span>
+        <select id="sm-users-filter">
+          <option value="" selected>All</option>
+          <option value="pending">Pending</option>
+          <option value="approved">Approved</option>
+          <option value="disabled">Disabled</option>
+        </select>
+      </label>
+    </div>
+    <p id="sm-users-empty" class="mro-admin-empty" hidden>No users match this filter.</p>
+    <div class="mro-admin-table-wrap">
+      <table class="mro-admin-table" id="sm-users-table">
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Display</th>
+            <th>Role</th>
+            <th>Shift</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Last login</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="sm-users-body"></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<dialog id="sm-edit-dialog" class="mro-admin-dialog">
+  <form method="dialog" id="sm-edit-form" onsubmit="return false;">
+    <h3>Edit user</h3>
+    <p id="sm-edit-subtitle" class="mro-admin-dialog-sub"></p>
+    <input type="hidden" name="user_id" id="sm-edit-user-id" />
+    <label>
+      <span>Display name</span>
+      <input name="display_name" id="sm-edit-display" type="text" />
+    </label>
+    <label>
+      <span>Role</span>
+      <select name="role" id="sm-edit-role">
+        <option value="operator">operator</option>
+        <option value="supervisor">supervisor</option>
+        <option value="quality">quality</option>
+        <option value="admin">admin</option>
+      </select>
+    </label>
+    <label>
+      <span>Default shift</span>
+      <select name="default_shift" id="sm-edit-shift">
+        <option value="">-</option>
+        <option value="Day">Day</option>
+        <option value="Night">Night</option>
+      </select>
+    </label>
+    <label>
+      <span>New password / PIN <em>(leave blank to keep)</em></span>
+      <input name="password" id="sm-edit-password" type="password" autocomplete="new-password" />
+    </label>
+    <p id="sm-edit-status" class="mro-admin-status" hidden></p>
+    <div class="mro-admin-dialog-actions">
+      <button type="button" id="sm-edit-cancel">Cancel</button>
+      <button type="button" class="notes-save" id="sm-edit-save">Save</button>
+      <button type="button" class="notes-save" id="sm-edit-save-approve">Save &amp; Approve</button>
+    </div>
+  </form>
+</dialog>
+
+<script>window.__ADMIN_GATE_TOKEN__ = {{ (admin_token or "") | tojson }};</script>
+<script src="{{ url_for('static', filename='js/shift_management_admin_users.js', v='sm-3') }}"></script>
+{% endblock %}
