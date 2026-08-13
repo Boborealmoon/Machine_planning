@@ -226,6 +226,8 @@ def main() -> int:
     deferred = deferred_res.get_json() or {}
     if deferred.get("recalculated") is not False:
         return fail("deferred reorder should set recalculated=false in response")
+    if deferred.get("tail_recalculated"):
+        return fail("deferred reorder should not run tail schedule recalc")
     pass_msg("deferred reorder (recalculate=false) accepted")
 
     recalc_res = client.post(

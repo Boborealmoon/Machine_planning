@@ -715,25 +715,23 @@ function initTrialQueuePanelSortable() {
       trialDragPayload = null;
       if (trialPlannerBusyLock > 0) return false;
     },
-    onEnd: async evt => {
+    onEnd: evt => {
       if (trialPlannerBusyLock > 0) return;
       if (evt.oldIndex === evt.newIndex) return;
-      const machineId = Number(list.dataset.machineId || 0);
-      try {
-        await trialRunWithPlannerBusy(async () => {
-          const lane = list;
-          const order = trialLaneOrderFromElement(lane);
-          if (!order) return;
-          const result = await postTrialQueueReorder([order], { recalculate: false });
-          await refreshMachines([machineId].filter(Boolean), { response: result });
-          trialAfterQueueMutation([machineId], result, {
-            queueOrders: { [machineId]: order.ordered_ids },
-          });
-        }, 'Saving order…', '');
-      } catch (e) {
+      const order = typeof trialLaneOrderFromElement === 'function'
+        ? trialLaneOrderFromElement(list)
+        : null;
+      if (!order) return;
+      if (typeof trialCommitLocalQueueReorder === 'function') {
+        trialCommitLocalQueueReorder([order], { render: false });
+      }
+      const persist = typeof trialPersistQueueReorder === 'function'
+        ? trialPersistQueueReorder([order])
+        : Promise.resolve();
+      persist.catch(async e => {
         toast('Reorder failed: ' + e.message, 'error');
         await loadTrial();
-      }
+      });
     },
   });
 }
@@ -782,27 +780,27 @@ function initTrialMachineSortables(machineIds = null) {
         const _toMachineId = Number(toLane.dataset.machineId || 0);
         const crossMachine = fromLane !== toLane;
         try {
-          await trialRunWithPlannerBusy(async () => {
-            const lanes = [];
-            if (crossMachine) {
-              const fromOrder = trialLaneOrderFromElement(fromLane);
-              if (fromOrder) lanes.push(fromOrder);
-            }
-            const toOrder = trialLaneOrderFromElement(toLane);
-            if (toOrder) lanes.push(toOrder);
-            if (!lanes.length) return;
-            const affected = [...new Set(lanes.map(lane => lane.machine_id).filter(Boolean))];
-            const result = await postTrialQueueReorder(lanes, { recalculate: false });
-            const queueOrders = {};
-            lanes.forEach(lane => {
-              queueOrders[Number(lane.machine_id)] = lane.ordered_ids;
-            });
-            await refreshMachines(affected, { response: result });
-            trialAfterQueueMutation(affected, result, { queueOrders });
-          }, 'Updating queue…', '');
+          const lanes = [];
+          if (crossMachine) {
+            const fromOrder = trialLaneOrderFromElement(fromLane);
+            if (fromOrder) lanes.push(fromOrder);
+          }
+          const toOrder = trialLaneOrderFromElement(toLane);
+          if (toOrder) lanes.push(toOrder);
+          if (!lanes.length) return;
+          if (typeof trialCommitLocalQueueReorder === 'function') {
+            trialCommitLocalQueueReorder(lanes);
+          }
+          const persist = typeof trialPersistQueueReorder === 'function'
+            ? trialPersistQueueReorder(lanes)
+            : Promise.resolve();
+          persist.catch(async e => {
+            toast('Reorder failed: ' + e.message, 'error');
+            await loadTrial();
+          });
         } catch (e) {
           toast('Reorder failed: ' + e.message, 'error');
-          await loadTrial();
+          loadTrial();
         }
       },
     });

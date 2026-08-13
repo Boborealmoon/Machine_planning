@@ -95,8 +95,14 @@ def compact_main_planner_lane_queue(con, machine_id, *, recalculate=False):
     return apply_machine_queue_order(con, int(machine_id), ordered_ids, recalculate=recalculate)
 
 
+_PLANNING_CARD_SCHEDULE_COLUMNS = None
+
+
 def _planning_card_schedule_columns(con):
     """Return optional schedule mirror columns present on planner_planning_card."""
+    global _PLANNING_CARD_SCHEDULE_COLUMNS
+    if _PLANNING_CARD_SCHEDULE_COLUMNS is not None:
+        return _PLANNING_CARD_SCHEDULE_COLUMNS
     found = rows(
         con.execute(
             """
@@ -109,7 +115,8 @@ def _planning_card_schedule_columns(con):
             (["operation_sequence_id", "machine_queue_index"],),
         )
     )
-    return {row["column_name"] for row in found}
+    _PLANNING_CARD_SCHEDULE_COLUMNS = {row["column_name"] for row in found}
+    return _PLANNING_CARD_SCHEDULE_COLUMNS
 
 
 def sync_machine_operation_sequence(con, machine_id):
@@ -470,6 +477,9 @@ def apply_machine_queue_order(con, machine_id, ordered_ids, *, recalculate=True,
     """
     Set queue_position (and machine) for ordered block ids on a lane, sync operation
     sequences, optionally recalculate affected machines.
+
+    recalculate=False persists lane order only. Schedule times stay stale until the
+    caller posts /api/trial/queue/recalculate (or passes recalculate=True).
     """
     machine_id = int(machine_id)
     ordered_ids = [int(value) for value in ordered_ids if int(value or 0) > 0]
@@ -488,27 +498,36 @@ def apply_machine_queue_order(con, machine_id, ordered_ids, *, recalculate=True,
     )
     affected_machine_ids = {machine_id}
     affected_machine_ids.update(int(row["machine_id"]) for row in existing_blocks)
+    moved_block_ids = [
+        int(row["block_id"])
+        for row in existing_blocks
+        if int(row["machine_id"] or 0) != machine_id
+    ]
 
-    for idx, block_id in enumerate(ordered_ids, 1):
-        con.execute(
-            """
-            UPDATE planner_run_block
-            SET machine_id = %s, queue_position = %s, updated_at = NOW()
-            WHERE block_id = %s
-            """,
-            (machine_id, float(idx), block_id),
-        )
-        update_planning_card_machine_for_block(con, block_id, machine_id)
+    con.execute(
+        """
+        UPDATE planner_run_block AS b
+        SET machine_id = %s,
+            queue_position = v.pos,
+            updated_at = NOW()
+        FROM unnest(%s::int[], %s::float8[]) AS v(block_id, pos)
+        WHERE b.block_id = v.block_id
+        """,
+        (machine_id, ordered_ids, [float(idx) for idx in range(1, len(ordered_ids) + 1)]),
+    )
 
-    from .preferred_machines_service import sync_preferred_machines_for_blocks
+    if moved_block_ids:
+        for block_id in moved_block_ids:
+            update_planning_card_machine_for_block(con, block_id, machine_id)
+        from .preferred_machines_service import sync_preferred_machines_for_blocks
 
-    sync_preferred_machines_for_blocks(con, ordered_ids, source="QUEUE_REORDER")
-    try:
-        from .preferred_machines_route import invalidate_preferred_machines_cache
+        sync_preferred_machines_for_blocks(con, moved_block_ids, source="QUEUE_REORDER")
+        try:
+            from .preferred_machines_route import invalidate_preferred_machines_cache
 
-        invalidate_preferred_machines_cache()
-    except Exception:
-        pass
+            invalidate_preferred_machines_cache()
+        except Exception:
+            pass
 
     sequence_map = sync_operation_sequences_for_machines(con, affected_machine_ids)
     sync_planning_cards_for_machines(con, affected_machine_ids)
@@ -528,21 +547,12 @@ def apply_machine_queue_order(con, machine_id, ordered_ids, *, recalculate=True,
             for affected_id in sorted(affected_machine_ids):
                 sync_machine_operation_sequence(con, int(affected_id))
                 refresh_states_for_machine(con, int(affected_id))
-    elif tail_from_block_id and tail_start_index < len(ordered_ids):
-        from .blocks import recalculate_machine
-
-        recalculate_machine(
-            con,
-            int(machine_id),
-            tail_from_block_id=int(tail_from_block_id),
-            reason="QUEUE_TAIL_SYNC",
-        )
-        tail_recalculated = True
 
     return {
         "affected_machine_ids": sorted(affected_machine_ids),
-        "recalculated": bool(recalculate or tail_recalculated),
+        "recalculated": bool(recalculate),
         "tail_recalculated": tail_recalculated,
+        "tail_from_block_id": int(tail_from_block_id) if tail_from_block_id else None,
         "sequences": {
             str(block_id): {
                 "operation_sequence_id": int(row["operation_sequence_id"]),
@@ -576,12 +586,17 @@ def apply_machine_queue_orders(con, lane_orders, *, recalculate=True):
         all_affected.update(result.get("affected_machine_ids") or [])
         merged_sequences.update(result.get("sequences") or {})
 
+    tail_recalculated = False
     if recalculate and all_affected:
         from .blocks import recalculate_machines
 
         recalculate_machines(con, sorted(all_affected), tail_by_machine=tail_by_machine)
+        tail_recalculated = True
 
     return {
         "affected_machine_ids": sorted(all_affected),
         "sequences": merged_sequences,
+        "recalculated": bool(recalculate),
+        "tail_recalculated": tail_recalculated,
+        "tail_by_machine": {str(key): int(value) for key, value in tail_by_machine.items()},
     }

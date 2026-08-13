@@ -3949,7 +3949,7 @@ function renderTrial(options = {}) {
   }
   if (typeof trialSyncStaleMachineBadges === 'function') trialSyncStaleMachineBadges();
   const reopenQueueId = trialOpenQueueMachineId;
-  if (reopenQueueId && typeof openTrialMachineQueue === 'function') {
+  if (!options.skipQueueReopen && reopenQueueId && typeof openTrialMachineQueue === 'function') {
     window.requestAnimationFrame(() => openTrialMachineQueue(reopenQueueId));
   }
   if (typeof trialPerfEnd === 'function') {
@@ -4004,7 +4004,7 @@ function renderTrialMachines(machineIds, options = {}) {
   }
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'render-catalog');
   const reopenQueueId = trialOpenQueueMachineId;
-  if (reopenQueueId && ids.includes(reopenQueueId) && typeof openTrialMachineQueue === 'function') {
+  if (!options.skipQueueReopen && reopenQueueId && ids.includes(reopenQueueId) && typeof openTrialMachineQueue === 'function') {
     window.requestAnimationFrame(() => openTrialMachineQueue(reopenQueueId));
   }
   trialSyncMachineGridScrollWidth();

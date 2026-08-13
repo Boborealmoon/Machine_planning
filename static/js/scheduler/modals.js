@@ -6,11 +6,20 @@ function trialModalShell(html) {
 }
 
 function closeModal() {
+  const closedQueueId = Number(trialOpenQueueMachineId || 0);
   trialOpenQueueMachineId = 0;
   if (typeof destroyTrialQueueSortable === 'function') destroyTrialQueueSortable();
   document.querySelector('.trial-modal-panel')?.classList.remove('trial-modal-panel--temp-ps');
   trialModalShell('');
   document.body.classList.remove('trial-modal-open');
+  if (
+    closedQueueId
+    && typeof trialDirtyMachineIds !== 'undefined'
+    && trialDirtyMachineIds.has(closedQueueId)
+    && typeof renderTrialMachines === 'function'
+  ) {
+    renderTrialMachines([closedQueueId], { skipQueueReopen: true, skipCatalog: true });
+  }
 }
 
 function trialSetPlannerBusy(title, detail = '') {
@@ -1038,14 +1047,15 @@ async function saveTrialOrder(lane, reload = true) {
   const order = trialLaneOrderFromElement(lane);
   if (!order) return;
   try {
-    const result = await postTrialQueueReorder([order], { recalculate: false });
-    if (reload) {
-      await refreshMachines([order.machine_id], { response: result });
-      trialMarkDirtyMachines([order.machine_id], {
-        queueOrders: { [order.machine_id]: order.ordered_ids },
-      });
-      toast('Queue order saved — recalculate schedules when ready', 'success');
+    if (typeof trialCommitLocalQueueReorder === 'function') {
+      trialCommitLocalQueueReorder([order], { render: reload });
     }
+    if (typeof trialPersistQueueReorder === 'function') {
+      await trialPersistQueueReorder([order]);
+    } else {
+      await postTrialQueueReorder([order], { recalculate: false });
+    }
+    if (reload) toast('Queue order saved — recalculate schedules when ready', 'success');
   } catch (e) {
     toast('Reorder failed: ' + e.message, 'error');
   }

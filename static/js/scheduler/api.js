@@ -172,6 +172,83 @@ function trialAfterQueueMutation(machineIds, result, options = {}) {
   trialMarkDirtyMachines(ids, options);
 }
 
+function trialApplyLocalLaneOrders(lanes) {
+  (lanes || []).forEach(lane => {
+    const machineId = Number(lane.machine_id || 0);
+    const orderedIds = (lane.ordered_ids || []).map(Number).filter(Boolean);
+    if (!machineId || !orderedIds.length) return;
+    const posById = new Map(orderedIds.map((id, idx) => [id, idx + 1]));
+    (trialState.blocks || []).forEach(block => {
+      const pos = posById.get(Number(block.block_id || 0));
+      if (pos == null) return;
+      block.queue_position = pos;
+      block.machine_id = machineId;
+    });
+  });
+}
+
+function trialRenumberOpenQueuePanel() {
+  const list = document.querySelector('.trial-queue-panel-list');
+  if (!list) return;
+  list.querySelectorAll(':scope > .trial-queue-row .trial-queue-seq').forEach((el, idx) => {
+    el.textContent = `#${idx + 1}`;
+  });
+}
+
+let trialQueueReorderChain = Promise.resolve();
+let trialQueueReorderPendingLanes = null;
+
+function trialCommitLocalQueueReorder(lanes, options = {}) {
+  const normalized = (lanes || [])
+    .map(lane => ({
+      machine_id: Number(lane.machine_id || 0),
+      ordered_ids: (lane.ordered_ids || []).map(Number).filter(Boolean),
+    }))
+    .filter(lane => lane.machine_id && lane.ordered_ids.length);
+  if (!normalized.length) return [];
+  trialApplyLocalLaneOrders(normalized);
+  trialRenumberOpenQueuePanel();
+  const affected = [...new Set(normalized.map(lane => lane.machine_id))];
+  const queueOrders = {};
+  normalized.forEach(lane => {
+    queueOrders[lane.machine_id] = lane.ordered_ids;
+  });
+  trialMarkDirtyMachines(affected, { queueOrders });
+  if (options.render !== false && typeof renderTrialMachines === 'function') {
+    renderTrialMachines(affected, {
+      skipQueueReopen: true,
+      skipCatalog: true,
+      deferCatalog: true,
+    });
+  }
+  return normalized;
+}
+
+function trialPersistQueueReorder(lanes) {
+  trialQueueReorderPendingLanes = lanes;
+  const run = async () => {
+    while (trialQueueReorderPendingLanes) {
+      const current = trialQueueReorderPendingLanes;
+      trialQueueReorderPendingLanes = null;
+      try {
+        const result = await postTrialQueueReorder(current, { recalculate: false });
+        const affected = [...new Set(current.map(lane => Number(lane.machine_id)).filter(Boolean))];
+        const queueOrders = {};
+        current.forEach(lane => {
+          queueOrders[Number(lane.machine_id)] = lane.ordered_ids;
+        });
+        trialAfterQueueMutation(affected, result, { queueOrders });
+      } catch (err) {
+        trialQueueReorderPendingLanes = null;
+        throw err;
+      }
+    }
+  };
+  const job = trialQueueReorderChain.then(run, run);
+  trialQueueReorderChain = job.catch(() => {});
+  return job;
+}
+
 function trialMarkDirtyMachines(machineIds, options = {}) {
   const queueOrders = options.queueOrders || {};
   (machineIds || []).forEach(id => {
@@ -601,7 +678,7 @@ function trialApplyMachineRefreshPayload(machineIds, payload) {
   return true;
 }
 
-function trialApplyMachineRefreshFromResponse(machineIds, response) {
+function trialApplyMachineRefreshFromResponse(machineIds, response, options = {}) {
   if (response?.block) {
     if (typeof trialPinBlock === 'function') trialPinBlock(response.block);
     trialMergeBlockFromApi(response.block);
@@ -609,7 +686,10 @@ function trialApplyMachineRefreshFromResponse(machineIds, response) {
   const applied = trialApplyMachineRefreshPayload(machineIds, response?.machine_refresh)
     || Boolean(response?.block);
   if (!applied) return false;
-  trialScheduleRender(machineIds, { deferCatalog: true });
+  trialScheduleRender(machineIds, {
+    deferCatalog: true,
+    skipQueueReopen: Boolean(options.skipQueueReopen),
+  });
   return true;
 }
 
@@ -1203,7 +1283,7 @@ async function refreshMachinesImpl(machineIds, options = {}) {
   const ids = [...new Set((machineIds || []).map(Number).filter(Boolean))];
   if (!ids.length) { trialScheduleRender(); return; }
 
-  if (options.response && trialApplyMachineRefreshFromResponse(ids, options.response)) {
+  if (options.response && trialApplyMachineRefreshFromResponse(ids, options.response, options)) {
     if (typeof trialPerfEnd === 'function') {
       trialPerfEnd(perf, { source: 'mutation-payload' });
     }
