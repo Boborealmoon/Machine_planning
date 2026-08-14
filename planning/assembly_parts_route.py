@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 from flask import Blueprint, jsonify, render_template, request
@@ -20,7 +21,7 @@ from .assembly_classify import (
     is_open_root,
 )
 from .helpers import planner_db, rows
-from .staged_erp import live_query
+from .staged_erp import serialize_row
 from .utils import compact_text
 
 logger = logging.getLogger(__name__)
@@ -29,8 +30,11 @@ assembly_parts_bp = Blueprint("assembly_parts", __name__)
 
 ASSEMBLY_PARTS_PATH = "/assembly-parts"
 _CACHE_TTL_SEC = 300
+_LIVE_STATEMENT_TIMEOUT_MS = 45000
 _cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
+# Complete view can include every historical APS/NPS. Hitting live COMAIN
+# views with that set hangs long enough for proxies to return HTML 502.
 _CHILD_CACHE_SQL = """
 SELECT DISTINCT ON (c.ps_id)
        c.ps_id,
@@ -52,7 +56,20 @@ WHERE c.ps_id = ANY(%s)
 ORDER BY c.ps_id, c.stage_no NULLS FIRST
 """
 
-_ALL_ROOTS_SQL = """
+_COMPLETE_CHILD_CACHE_SQL = """
+SELECT DISTINCT ON (c.ps_id)
+       regexp_replace(c.ps_id, '-[0-9]+$', '') AS pp_voucher_no,
+       c.ps_id AS process_sheet_no,
+       c.part_no AS inventory_code,
+       COALESCE(c.partial_qty, c.total_qty) AS total_qty,
+       'COMP' AS type
+FROM pp_vouchers_cache c
+WHERE (c.ps_id LIKE 'APS%%' OR c.ps_id LIKE 'NPS%%')
+  AND c.ps_id LIKE '%%-%%-%%'
+ORDER BY c.ps_id, c.stage_no NULLS FIRST
+"""
+
+_ROOTS_BY_IDS_SQL = """
 SELECT DISTINCT ON (c.ps_id, c.pp_partial_no)
        c.ps_id,
        c.pp_partial_no,
@@ -70,7 +87,7 @@ SELECT DISTINCT ON (c.ps_id, c.pp_partial_no)
        c.current_stage_desc,
        c.current_stage_status
 FROM pp_vouchers_cache c
-WHERE (c.ps_id LIKE 'APS%%' OR c.ps_id LIKE 'NPS%%')
+WHERE c.ps_id = ANY(%s)
 ORDER BY c.ps_id, c.pp_partial_no, c.stage_no NULLS FIRST
 """
 
@@ -358,34 +375,132 @@ def _enrich_families(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return jobs
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _json_safe(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def _timed_live_query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
+    """Live COMAIN read with a statement timeout so the API cannot hang past proxy limits."""
+    import psycopg2.extras
+    from db import get_conn, release_conn
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(f"SET LOCAL statement_timeout = '{_LIVE_STATEMENT_TIMEOUT_MS}'")
+            cur.execute(sql, params)
+            fetched = [serialize_row(dict(row)) for row in cur.fetchall()]
+        conn.commit()
+        return fetched
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        release_conn(conn)
+
+
+def _load_hierarchy(ps_ids: list[str], *, view: str) -> list[dict[str, Any]]:
+    if not ps_ids:
+        return []
+    return _timed_live_query(_PROCESS_SHEET_HIERARCHY_SQL, (ps_ids,))
+
+
+def _load_bom(part_nos: list[str], *, view: str) -> list[dict[str, Any]]:
+    if not part_nos or view == "complete":
+        return []
+    return _timed_live_query(_BOM_LISTING_SQL, (sorted(part_nos),))
+
+
+def _query_failed_timeout(exc: Exception) -> str | None:
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    if "querycanceled" in name or "statement timeout" in msg or "canceling statement" in msg:
+        return (
+            "Assembly parts query timed out while reading ERP. "
+            "Retry Active, or open Complete (planner copy) if the live query keeps stalling."
+        )
+    return None
+
+
 def _load_roots(*, view: str) -> list[dict[str, Any]]:
-    """Active = open roots; complete = non-open APS/NPS from cache (still need COMP hierarchy)."""
+    """Active = currently open APS/NPS roots."""
     with planner_db() as con:
-        if view == "complete":
-            all_roots = rows(con.execute(_ALL_ROOTS_SQL))
-            return [row for row in all_roots if not is_open_root(row)]
         return [row for row in rows(con.execute(_OPEN_ROOT_SQL)) if is_open_root(row)]
 
 
+def _load_complete_from_cache() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Historical APS/NPS families from planner cache — never live COMAIN."""
+    with planner_db() as con:
+        con.execute("SET LOCAL statement_timeout = '20000'")
+        child_rows = [serialize_row(dict(row)) for row in rows(con.execute(_COMPLETE_CHILD_CACHE_SQL))]
+        parent_ids = sorted(
+            {
+                compact_text(row.get("pp_voucher_no"))
+                for row in child_rows
+                if compact_text(row.get("pp_voucher_no"))
+            }
+        )
+        if not parent_ids:
+            return [], []
+        fetched = rows(con.execute(_ROOTS_BY_IDS_SQL, (parent_ids,)))
+    roots = [row for row in fetched if not is_open_root(row)]
+    keep = {compact_text(row.get("ps_id")).upper() for row in roots}
+    children = [
+        row
+        for row in child_rows
+        if compact_text(row.get("pp_voucher_no")).upper() in keep
+    ]
+    fg_rows = [
+        {
+            "type": "FG",
+            "pp_voucher_no": compact_text(root.get("ps_id")),
+            "process_sheet_no": compact_text(root.get("ps_id")),
+            "inventory_code": compact_text(root.get("part_no")),
+            "total_qty": root.get("partial_qty") or root.get("total_qty"),
+        }
+        for root in roots
+        if compact_text(root.get("ps_id"))
+    ]
+    return roots, fg_rows + children
+
+
 def _fetch_assembly_parts_uncached(*, view: str) -> list[dict[str, Any]]:
-    roots = _load_roots(view=view)
-    ps_ids = sorted({compact_text(row.get("ps_id")) for row in roots if compact_text(row.get("ps_id"))})
-    if not ps_ids:
-        return []
-    hierarchy_rows = live_query(_PROCESS_SHEET_HIERARCHY_SQL, (ps_ids,))
-    component_ps_ids = {
-        compact_text(row.get("pp_voucher_no")).upper()
-        for row in hierarchy_rows
-        if compact_text(row.get("type")).upper() == "COMP"
-    }
-    roots = [row for row in roots if compact_text(row.get("ps_id")).upper() in component_ps_ids]
+    t0 = time.monotonic()
+    if view == "complete":
+        roots, hierarchy_rows = _load_complete_from_cache()
+        ps_ids = sorted({compact_text(row.get("ps_id")) for row in roots if compact_text(row.get("ps_id"))})
+    else:
+        roots = _load_roots(view=view)
+        ps_ids = sorted({compact_text(row.get("ps_id")) for row in roots if compact_text(row.get("ps_id"))})
+        if not ps_ids:
+            return []
+        hierarchy_rows = _load_hierarchy(ps_ids, view=view)
+        component_ps_ids = {
+            compact_text(row.get("pp_voucher_no")).upper()
+            for row in hierarchy_rows
+            if compact_text(row.get("type")).upper() == "COMP"
+        }
+        roots = [row for row in roots if compact_text(row.get("ps_id")).upper() in component_ps_ids]
+        hierarchy_rows = [
+            row
+            for row in hierarchy_rows
+            if compact_text(row.get("pp_voucher_no")).upper() in component_ps_ids
+        ]
     if not roots:
         return []
-    hierarchy_rows = [
-        row
-        for row in hierarchy_rows
-        if compact_text(row.get("pp_voucher_no")).upper() in component_ps_ids
-    ]
     all_parts = {
         compact_text(row.get("part_no"))
         for row in roots
@@ -396,14 +511,23 @@ def _fetch_assembly_parts_uncached(*, view: str) -> list[dict[str, Any]]:
         for row in hierarchy_rows
         if compact_text(row.get("inventory_code"))
     )
-    bom_rows = live_query(_BOM_LISTING_SQL, (sorted(all_parts),)) if all_parts else []
+    bom_rows = _load_bom(sorted(all_parts), view=view)
     jobs = build_assembly_jobs(
         roots,
         hierarchy_rows,
         bom_rows,
         require_subassembly_children=False,
     )
-    return _enrich_families(jobs)
+    jobs = _enrich_families(jobs)
+    logger.info(
+        "assembly parts %s loaded roots=%s jobs=%s children=%s in %dms",
+        view,
+        len(ps_ids),
+        len(jobs),
+        sum(len(job.get("children") or []) for job in jobs),
+        int((time.monotonic() - t0) * 1000),
+    )
+    return jobs
 
 
 def _overlay_editable_fields(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -462,20 +586,26 @@ def api_assembly_parts():
         jobs = fetch_assembly_parts(refresh=refresh, view=view)
         child_count = sum(len(job.get("children") or []) for job in jobs)
         return jsonify(
-            {
-                "ok": True,
-                "view": view,
-                "count": len(jobs),
-                "child_count": child_count,
-                "issue_count": sum(1 for job in jobs if job.get("has_issues")),
-                "items": jobs,
-                "fetched_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
-                "cache_ttl_sec": _CACHE_TTL_SEC,
-            }
+            _json_safe(
+                {
+                    "ok": True,
+                    "view": view,
+                    "count": len(jobs),
+                    "child_count": child_count,
+                    "issue_count": sum(1 for job in jobs if job.get("has_issues")),
+                    "items": jobs,
+                    "fetched_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+                    "cache_ttl_sec": _CACHE_TTL_SEC,
+                }
+            )
         )
     except Exception as exc:
-        friendly = planner_db_connect_error(exc)
-        if friendly:
-            return jsonify({"ok": False, "error": friendly}), 503
+        db_err = planner_db_connect_error(exc)
+        if db_err:
+            return jsonify({"ok": False, "error": db_err}), 503
+        timeout_err = _query_failed_timeout(exc)
+        if timeout_err:
+            logger.warning("assembly parts query timed out: %s", exc)
+            return jsonify({"ok": False, "error": timeout_err}), 502
         logger.exception("assembly parts query failed")
         return jsonify({"ok": False, "error": str(exc)}), 502

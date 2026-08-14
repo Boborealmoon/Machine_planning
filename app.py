@@ -2084,6 +2084,8 @@ def _append_temp_ps_catalog_entries(entries, con, include_completed=False):
         con,
         include_completed=include_completed,
         planner_ps_ids=temp_ids,
+        skip_erp_cache=True,
+        repair_boms=False,
     )
     for bucket in ("available", "planned"):
         for item in catalog.get(bucket) or []:

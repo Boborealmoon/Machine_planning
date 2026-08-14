@@ -561,6 +561,36 @@ def _trial_machine_refresh_payload(con, machine_ids, *, lite=True):
     """
     Lane refresh after queue mutations.
 
+    Isolated in a savepoint so a slow/failed snapshot cannot roll back the
+    queue insert. lite=True skips ERP/catalog completed-op enrichment.
+    """
+    import logging
+
+    def _build():
+        if lite:
+            con.execute("SET LOCAL statement_timeout = '10s'")
+        return _trial_machine_refresh_payload_inner(con, machine_ids, lite=lite)
+
+    try:
+        con.execute("SAVEPOINT trial_machine_refresh")
+        payload = _build()
+        con.execute("RELEASE SAVEPOINT trial_machine_refresh")
+        return payload
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "trial machine refresh payload failed; keeping queue mutation"
+        )
+        try:
+            con.execute("ROLLBACK TO SAVEPOINT trial_machine_refresh")
+        except Exception:
+            pass
+        return None
+
+
+def _trial_machine_refresh_payload_inner(con, machine_ids, *, lite=True):
+    """
+    Lane refresh after queue mutations.
+
     lite=True (default): read persisted times from planner_run_block +
     planner_machine_queue_state — no ERP enrichment or heavy group summaries.
     lite=False: full enrichment for editor/detail views.
@@ -691,9 +721,9 @@ def _trial_machine_refresh_payload(con, machine_ids, *, lite=True):
 
     attach_block_ps_identity(con, blocks)
 
-    from .queue_visibility import filter_completed_lane_blocks
+    from .queue_visibility import filter_completed_lane_blocks_for_load
 
-    blocks = filter_completed_lane_blocks(con, blocks)
+    blocks = filter_completed_lane_blocks_for_load(con, blocks, lite=lite)
     visible_group_ids = {
         int(row.get("group_id") or 0)
         for row in blocks
@@ -740,9 +770,9 @@ def _api_trial_schedule_db():
     # Initial board load: skip heavy joins/enrichment; fetch on demand (Actual modal, Shop Calendar).
     board_lite = lite and not is_machine_scoped
     fast_lane_load = board_lite or (lite and is_machine_scoped)
-    include_capacities = "capacities" in include_parts or not board_lite
-    include_segments = ("segments" in include_parts) or (not board_lite and not is_machine_scoped)
-    include_segment_visual = (not board_lite) or ("visual" in include_parts)
+    include_capacities = "capacities" in include_parts or not lite
+    include_segments = ("segments" in include_parts) or (not lite and not is_machine_scoped)
+    include_segment_visual = (not lite) or ("visual" in include_parts)
     include_actuals = (not board_lite) or ("actuals" in include_parts)
     include_actual_daily = "actual_daily" in include_parts
     include_holidays = "holidays" in include_parts
@@ -1038,14 +1068,9 @@ def _api_trial_schedule_db():
 
         visible_block_ids = {int(b["block_id"]) for b in blocks if b.get("block_id")}
         if not include_completed:
-            if board_lite:
-                from .queue_visibility import filter_completed_lane_blocks_fast
+            from .queue_visibility import filter_completed_lane_blocks_for_load
 
-                blocks = filter_completed_lane_blocks_fast(blocks)
-            else:
-                from .queue_visibility import filter_completed_lane_blocks
-
-                blocks = filter_completed_lane_blocks(con, blocks)
+            blocks = filter_completed_lane_blocks_for_load(con, blocks, lite=fast_lane_load)
             visible_block_ids = {int(b["block_id"]) for b in blocks if b.get("block_id")}
             if visible_block_ids != {int(x) for x in _active_block_ids}:
                 segments = [
@@ -1237,7 +1262,7 @@ def _api_trial_schedule_db():
 
         calendar_windows = (
             []
-            if board_lite
+            if lite
             else [_calendar_window_payload(row) for row in _calendar_window_rows(con, start_iso, end_iso)]
         )
 

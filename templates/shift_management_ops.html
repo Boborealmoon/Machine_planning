@@ -5,7 +5,23 @@
   <h2 class="sm-section-title" style="margin:0">Active queue</h2>
   <button type="button" class="sm-btn sm-btn-ghost" id="sm-ops-refresh">Refresh</button>
 </section>
-<p class="sm-muted">Process sheets on the machining queue. Raise tickets or jump into handover.</p>
+<p class="sm-muted">Jobs on the machining queue for this shift. Raise a ticket or start handover.</p>
+
+<section class="sm-toolbar">
+  <label class="sm-field-inline">
+    <span>Date</span>
+    <input type="date" id="sm-ops-date" />
+  </label>
+  <div class="sm-chip-row" id="sm-ops-shift-chips" role="group" aria-label="Shift">
+    <button type="button" class="sm-chip" data-shift="Day">Day</button>
+    <button type="button" class="sm-chip" data-shift="Night">Night</button>
+  </div>
+  <label class="sm-field-inline sm-ops-search-field">
+    <span>Find</span>
+    <input type="search" id="sm-ops-search" placeholder="Machine or PS no." autocomplete="off" />
+  </label>
+</section>
+
 <div id="sm-ops-list" class="sm-ops-list">
   <p class="sm-muted">Loading…</p>
 </div>

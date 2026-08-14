@@ -1264,7 +1264,10 @@ function openTrialMachineQueue(machineId) {
     ? groups.map((group, idx) => trialRenderQueueDetailRow(group, idx + 1)).join('')
     : `<div class="trial-empty">${escapeHtml(trialMachineLaneEmptyMessage(allGroups.length, groups.length))}</div>`;
   const listHtml = groups.length
-    ? `<div class="trial-queue-panel-list trial-lane" id="trial-queue-list-${id}" data-machine-id="${id}">${trialRenderQueueListHeader()}${rowsHtml}</div>`
+    ? `<div class="trial-queue-panel-scroller">
+        ${trialRenderQueueListHeader()}
+        <div class="trial-queue-panel-list trial-lane" id="trial-queue-list-${id}" data-machine-id="${id}">${rowsHtml}</div>
+      </div>`
     : rowsHtml;
   openModal(
     `${machine.machine_code} — Queue`,

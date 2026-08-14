@@ -33,7 +33,17 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 
 _CACHE_TTL_SEC = 300
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 22
+_SCHEMA_VERSION = 23
+_ACTIVE_PP_AND = """
+  AND (
+    det.qty IS NULL
+    OR COALESCE(sq.qty_shipped, 0) < det.qty - 0.0001
+  )
+"""
+_COMPLETE_PP_AND = """
+  AND det.qty IS NOT NULL
+  AND COALESCE(sq.qty_shipped, 0) >= det.qty - 0.0001
+"""
 _SIMILAR_PS_PREVIEW = 8
 
 _NOTE_FIELDS = (
@@ -206,6 +216,61 @@ def _order_sort_key(order: dict[str, Any]) -> tuple[str, str, str]:
 
 def _erp_query(sql: str, params: tuple = (), *, live_sql: str | None = None) -> list[dict[str, Any]]:
     return fetch_rows(sql, params, live_sql=live_sql or sql, domain="sales_orders")
+
+
+def _restrict_sql(sql: str, clause: str) -> str:
+    extra = (clause or "").strip()
+    if not extra:
+        return sql
+    match = re.search(r"\nORDER BY\b", sql, re.I)
+    if match:
+        return sql[: match.start()] + "\n" + extra + sql[match.start() :]
+    return sql.rstrip() + "\n" + extra + "\n"
+
+
+def _unique_texts(values) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        text = compact_text(raw)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _sales_orders_cache_key(scope: str) -> str:
+    return f"sales_orders:v{_SCHEMA_VERSION}:{scope}"
+
+
+def _scoped_pp_sql(scope: str) -> tuple[str, str]:
+    clause = ""
+    if scope == "active":
+        clause = _ACTIVE_PP_AND
+    elif scope == "complete":
+        clause = _COMPLETE_PP_AND
+    return (
+        _restrict_sql(STAGED_MFG_PP_VCH_SQL, clause),
+        _restrict_sql(_MFG_PP_VCH_SQL, clause),
+    )
+
+
+def _erp_query_for_ids(
+    staged_sql: str,
+    live_sql: str,
+    ids: list[str],
+    *,
+    staged_where: str,
+    live_where: str,
+) -> list[dict[str, Any]]:
+    if not ids:
+        return []
+    return _erp_query(
+        _restrict_sql(staged_sql, staged_where),
+        (ids,),
+        live_sql=_restrict_sql(live_sql, live_where),
+    )
 
 
 def _headers_by_sales_order(headers: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -1182,7 +1247,6 @@ def _load_notes_map(pp_voucher_nos: list[str]) -> dict[str, dict[str, str]]:
         return {}
     try:
         with planner_db() as con:
-            _ensure_notes_table(con)
             fetched = rows(
                 con.execute(
                     """
@@ -1295,74 +1359,123 @@ def invalidate_sales_orders_cache() -> None:
     invalidate_prefix("sales_orders:")
 
 
-def _fetch_sales_orders(*, refresh: bool = False) -> dict[str, list[dict[str, Any]]]:
-    from .erp_route_cache import cached_fetch
-
-    def _load() -> dict[str, list[dict[str, Any]]]:
-        pp_rows = _erp_query(STAGED_MFG_PP_VCH_SQL, live_sql=_MFG_PP_VCH_SQL)
-        notes_map = _load_notes_map([str(row.get("pp_voucher_no") or "") for row in pp_rows])
-        partials = _erp_query(STAGED_MFG_PP_PARTIAL_SQL, live_sql=_MFG_PP_PARTIAL_SQL)
-        headers = _erp_query(STAGED_SO_ORDER_HEADER_SQL, live_sql=_SO_ORDER_HEADER_SQL)
-        posted_dates = _erp_query(STAGED_SO_POSTED_DATES_SQL, live_sql=_SO_POSTED_DATES_SQL)
-        orders = _build_orders_from_pp_vouchers(
-            pp_rows,
-            _partials_by_pp_voucher(partials),
-            _headers_by_sales_order(headers),
-            _posted_dates_by_sales_order(posted_dates),
-            notes_map,
-        )
-        pp_nos = [str(row.get("pp_voucher_no") or "") for row in pp_rows]
-        ps_overlay = _load_process_sheet_overlay(pp_nos)
-        inv_codes = sorted(
-            {
-                compact_text(v.get("inventory_code"))
-                for v in ps_overlay.values()
-                if compact_text(v.get("inventory_code"))
-            }
-        )
-        _apply_process_sheet_overlay(orders, ps_overlay, _load_part_desc_map(inv_codes))
-        process_sheets = [
-            pp.get("process_sheet_no")
-            for order in orders
-            for pp in (order.get("pp_vouchers") or [])
-            if pp.get("process_sheet_no")
-        ]
-        # Live COMAIN stage/WO overlays are expensive — only needed for open (unshipped) jobs.
-        active_process_sheets = [
-            pp.get("process_sheet_no")
-            for order in orders
-            for pp in (order.get("pp_vouchers") or [])
-            if pp.get("process_sheet_no") and not pp.get("shipped_completed")
-        ]
-        _apply_material_in_overlay(orders, _load_material_in_overlay(process_sheets))
-        _apply_coway_edd_overlay(orders, _load_coway_edd_overlay(process_sheets))
+def _build_sales_orders(*, scope: str) -> dict[str, Any]:
+    started = time.perf_counter()
+    staged_sql, live_sql = _scoped_pp_sql(scope)
+    pp_rows = _erp_query(staged_sql, live_sql=live_sql)
+    pp_nos = _unique_texts(row.get("pp_voucher_no") for row in pp_rows)
+    so_nos = _unique_texts(row.get("source_voucher_no") for row in pp_rows)
+    notes_map = _load_notes_map(pp_nos)
+    partials = _erp_query_for_ids(
+        STAGED_MFG_PP_PARTIAL_SQL,
+        _MFG_PP_PARTIAL_SQL,
+        pp_nos,
+        staged_where="WHERE pp_voucher_no = ANY(%s)",
+        live_where="WHERE v.pp_voucher_no = ANY(%s)",
+    )
+    headers = _erp_query_for_ids(
+        STAGED_SO_ORDER_HEADER_SQL,
+        _SO_ORDER_HEADER_SQL,
+        so_nos,
+        staged_where="WHERE sales_order_no = ANY(%s)",
+        live_where="WHERE sales_order_no = ANY(%s)",
+    )
+    posted_dates = _erp_query_for_ids(
+        STAGED_SO_POSTED_DATES_SQL,
+        _SO_POSTED_DATES_SQL,
+        so_nos,
+        staged_where="WHERE sales_order_no = ANY(%s)",
+        live_where="WHERE h.sales_order_no = ANY(%s)",
+    )
+    orders = _build_orders_from_pp_vouchers(
+        pp_rows,
+        _partials_by_pp_voucher(partials),
+        _headers_by_sales_order(headers),
+        _posted_dates_by_sales_order(posted_dates),
+        notes_map,
+    )
+    ps_overlay = _load_process_sheet_overlay(pp_nos)
+    inv_codes = sorted(
+        {
+            compact_text(v.get("inventory_code"))
+            for v in ps_overlay.values()
+            if compact_text(v.get("inventory_code"))
+        }
+    )
+    _apply_process_sheet_overlay(orders, ps_overlay, _load_part_desc_map(inv_codes))
+    process_sheets = [
+        pp.get("process_sheet_no")
+        for order in orders
+        for pp in (order.get("pp_vouchers") or [])
+        if pp.get("process_sheet_no")
+    ]
+    _apply_material_in_overlay(orders, _load_material_in_overlay(process_sheets))
+    _apply_coway_edd_overlay(orders, _load_coway_edd_overlay(process_sheets))
+    if scope != "complete":
+        # Live COMAIN stage/WO overlays are expensive — only needed for open jobs.
         _reconcile_subcon_material_in(orders)
-        _apply_stage_overlay(orders, _load_stage_overlay(active_process_sheets))
-        active_pp_voucher_nos = [
-            compact_text(pp.get("pp_voucher_no"))
-            for order in orders
-            for pp in (order.get("pp_vouchers") or [])
-            if compact_text(pp.get("pp_voucher_no")) and not pp.get("shipped_completed")
-        ]
-        _apply_wo_qty_overlay(orders, _load_wo_qty_overlay(active_pp_voucher_nos))
+        _apply_stage_overlay(orders, _load_stage_overlay(process_sheets))
+        _apply_wo_qty_overlay(orders, _load_wo_qty_overlay(pp_nos))
         _apply_queued_machines_overlay(orders, _load_queued_machines_by_canonical_ps())
+        _apply_new_part_overlay(orders)
+    else:
         to_clear = _strip_completed_highlights(orders)
         if to_clear:
             _batch_clear_ps_highlights(to_clear)
-        frame_agreement_keys: set[str] = set()
-        try:
-            with planner_db() as con:
-                frame_agreement_keys = load_frame_agreement_part_keys(con)
-            apply_frame_agreement_flags(orders, frame_agreement_keys)
-        except Exception as exc:
-            logger.warning("frame agreement overlay skipped: %s", exc)
-        _apply_new_part_overlay(orders)
-        payload = _split_by_shipped_completion(orders)
-        payload["frame_agreement_parts"] = sorted(frame_agreement_keys)
+    frame_agreement_keys: set[str] = set()
+    try:
+        with planner_db() as con:
+            frame_agreement_keys = load_frame_agreement_part_keys(con)
+        apply_frame_agreement_flags(orders, frame_agreement_keys)
+    except Exception as exc:
+        logger.warning("frame agreement overlay skipped: %s", exc)
+    payload = _split_by_shipped_completion(orders)
+    if scope == "active":
+        payload["complete"] = []
+    elif scope == "complete":
+        payload["active"] = []
+    payload["frame_agreement_parts"] = sorted(frame_agreement_keys)
+    logger.info(
+        "sales_orders built scope=%s pp=%s in %.1fs",
+        scope,
+        len(pp_rows),
+        time.perf_counter() - started,
+    )
+    return payload
+
+
+def _fetch_sales_orders(*, refresh: bool = False, active_only: bool = False) -> dict[str, Any]:
+    from .erp_route_cache import cached_fetch, get as cache_get
+
+    active = cached_fetch(
+        _sales_orders_cache_key("active"),
+        lambda: _build_sales_orders(scope="active"),
+        ttl_sec=_CACHE_TTL_SEC,
+        refresh=refresh,
+    )
+    payload = dict(active)
+    payload["complete"] = []
+    if active_only:
+        if not refresh:
+            complete_cached = cache_get(
+                _sales_orders_cache_key("complete"),
+                ttl_sec=_CACHE_TTL_SEC,
+            )
+            if complete_cached:
+                payload["complete_job_count"] = _job_count(complete_cached.get("complete") or [])
         return payload
 
-    cache_key = f"sales_orders:v{_SCHEMA_VERSION}"
-    return cached_fetch(cache_key, _load, ttl_sec=_CACHE_TTL_SEC, refresh=refresh)
+    complete = cached_fetch(
+        _sales_orders_cache_key("complete"),
+        lambda: _build_sales_orders(scope="complete"),
+        ttl_sec=_CACHE_TTL_SEC,
+        refresh=refresh,
+    )
+    payload["complete"] = complete.get("complete") or []
+    payload["complete_job_count"] = _job_count(payload["complete"])
+    if not payload.get("frame_agreement_parts"):
+        payload["frame_agreement_parts"] = complete.get("frame_agreement_parts") or []
+    return payload
 
 
 def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
@@ -1472,7 +1585,7 @@ def api_sales_orders():
     active_only = compact_text(request.args.get("active_only")).lower() in {"1", "true", "yes"}
 
     try:
-        data = _fetch_sales_orders(refresh=refresh)
+        data = _fetch_sales_orders(refresh=refresh, active_only=active_only)
     except Exception as exc:
         logger.exception("sales orders ERP query failed")
         return jsonify({"error": f"ERP query failed: {exc}"}), 502
@@ -1482,7 +1595,9 @@ def api_sales_orders():
     complete_count = len(data.get("complete") or [])
     cached_at = _cache[0] if _cache else time.time()
     active_jobs = _job_count(active)
-    complete_jobs = _job_count(data.get("complete") or [])
+    complete_jobs = data.get("complete_job_count")
+    if complete_jobs is None:
+        complete_jobs = _job_count(data.get("complete") or [])
     pp_count = active_jobs + complete_jobs
     # Material Tracking only needs active rows; keep counts from the full cache.
     partial_count = (

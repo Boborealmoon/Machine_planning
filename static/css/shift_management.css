@@ -1,4 +1,4 @@
-/* Shift Management � mobile-first shop-floor UI */
+/* Shift Management - mobile-first shop-floor UI */
 
 :root {
   --sm-bg: #0b1220;
@@ -84,9 +84,9 @@
   bottom: 0;
   z-index: 30;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
-  padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
   background: rgba(15, 23, 42, 0.96);
   border-top: 1px solid var(--sm-border);
 }
@@ -99,7 +99,12 @@
   color: var(--sm-muted);
   text-decoration: none;
   font-weight: 600;
+  font-size: 0.82rem;
   border-radius: 12px;
+  padding: 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sm-tab.is-active {
@@ -676,10 +681,78 @@
   align-items: center;
 }
 
+.sm-ops-search-field { flex: 1; min-width: 160px; }
+
 .sm-ops-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+}
+
+.sm-ops-machine {
+  padding: 14px;
+  border-radius: var(--sm-radius);
+  background: var(--sm-surface);
+  border: 1px solid var(--sm-border);
+}
+
+.sm-ops-machine.is-idle { opacity: 0.82; }
+
+.sm-ops-machine-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.sm-ops-machine-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.sm-ops-machine-title strong { font-size: 1.05rem; }
+
+.sm-ops-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.sm-ops-job {
+  padding: 10px 0 0;
+  border-top: 1px solid var(--sm-border);
+  margin-top: 10px;
+}
+
+.sm-ops-job:first-of-type { margin-top: 4px; }
+
+.sm-ops-job-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.sm-ops-ps {
+  font-size: 1.05rem;
+  font-weight: 800;
+  margin: 2px 0 4px;
+  color: var(--sm-accent);
+}
+
+.sm-ops-more {
+  margin: 8px 0 0;
+  font-size: 0.8rem;
+}
+
+.sm-ops-empty {
+  padding: 28px 16px;
+  text-align: center;
 }
 
 .sm-ops-card {
@@ -692,19 +765,6 @@
   border-radius: var(--sm-radius);
   background: var(--sm-surface);
   border: 1px solid var(--sm-border);
-}
-
-.sm-ops-ps {
-  font-size: 1.05rem;
-  font-weight: 800;
-  margin: 4px 0;
-  color: var(--sm-accent);
-}
-
-.sm-ops-actions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
 }
 
 .sm-machine-cards {

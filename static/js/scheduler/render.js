@@ -1006,8 +1006,25 @@ function trialCatalogFindPsRow(psId, partialNo = '') {
   const needle = String(psId || '').trim();
   if (!needle) return null;
   const { catalog, planned } = trialCatalogPsPools();
-  const direct = [...catalog, ...planned].find(row => String(row?.ps_id || '') === needle);
+  const pool = [...catalog, ...planned];
+  const direct = pool.find(row => String(row?.ps_id || '') === needle);
   if (direct) return direct;
+  const needleTempKey = typeof trialNormalizeTempPsKey === 'function'
+    ? trialNormalizeTempPsKey(needle)
+    : needle.replace(/^\[Temp\]\s*/i, '').trim();
+  if (/^\[Temp\]/i.test(needle) && needleTempKey) {
+    const tempDirect = pool.find(row => {
+      const rowId = String(row?.ps_id || '').trim();
+      if (!/^\[Temp\]/i.test(rowId) && !(typeof trialIsTempCatalogPs === 'function' && trialIsTempCatalogPs(row))) {
+        return false;
+      }
+      const rowKey = typeof trialNormalizeTempPsKey === 'function'
+        ? trialNormalizeTempPsKey(rowId)
+        : rowId.replace(/^\[Temp\]\s*/i, '').trim();
+      return rowKey === needleTempKey;
+    });
+    if (tempDirect) return tempDirect;
+  }
   const parts = typeof trialSplitPsId === 'function'
     ? trialSplitPsId(needle)
     : { base: needle, partial: '' };
@@ -4333,9 +4350,21 @@ function trialEnsureCatalogSearchIndex() {
   if (trialCatalogSearchIndex) return trialCatalogSearchIndex;
   const catalog = new Map();
   const planned = new Map();
-  (trialState.catalog || []).forEach(ps => {
+  const catalogRows = typeof trialMergedCatalogRows === 'function'
+    ? trialMergedCatalogRows()
+    : (trialState.catalog || []);
+  catalogRows.forEach(ps => {
     const id = String(ps.ps_id || '');
-    if (id) catalog.set(id, trialCatalogSearchTokens(ps, false));
+    if (!id) return;
+    const tokens = trialCatalogSearchTokens(ps, false);
+    catalog.set(id, tokens);
+    if (typeof trialNormalizeTempPsKey === 'function' && /^\[Temp\]/i.test(id)) {
+      const body = trialNormalizeTempPsKey(id);
+      if (body) {
+        catalog.set(`[Temp] ${body}`, tokens);
+        catalog.set(`[Temp]${body}`, tokens);
+      }
+    }
   });
   (trialState.planned || []).forEach(ps => {
     const id = String(ps.ps_id || '');
@@ -4356,13 +4385,19 @@ function trialCatalogSearchTokensForPsId(psId, planned = false) {
   const searchIndex = trialEnsureCatalogSearchIndex();
   const map = planned ? searchIndex.planned : searchIndex.catalog;
   if (map.has(id)) return map.get(id);
+  if (typeof trialNormalizeTempPsKey === 'function' && /^\[Temp\]/i.test(id)) {
+    const needle = trialNormalizeTempPsKey(id);
+    for (const [key, tokens] of map.entries()) {
+      if (/^\[Temp\]/i.test(key) && trialNormalizeTempPsKey(key) === needle) return tokens;
+    }
+  }
   const ps = typeof trialCatalogFindPsRow === 'function' ? trialCatalogFindPsRow(id) : null;
   if (!ps) return [];
   return trialCatalogSearchTokens(ps, planned);
 }
 
 function trialCatalogSearchHasVisibleMatches(root = document.getElementById('trial-catalog')) {
-  return trialCatalogSearchRowEls(root).some(el => !el.hidden);
+  return trialCatalogSearchRowEls(root).some(el => !el.hidden && !el.classList.contains('is-catalog-search-hidden'));
 }
 
 function trialSyncCatalogSearchEmptyState(root, rawQuery, anyVisible) {
@@ -4381,6 +4416,19 @@ function trialSyncCatalogSearchEmptyState(root, rawQuery, anyVisible) {
   emptyEl.textContent = rawQuery ? 'Searching…' : 'No available PS / ops match this search.';
 }
 
+function trialSetCatalogSearchRowHidden(el, hidden) {
+  if (!el) return;
+  el.hidden = Boolean(hidden);
+  el.classList.toggle('is-catalog-search-hidden', Boolean(hidden));
+}
+
+function trialClearCatalogSearchFilter() {
+  const root = document.getElementById('trial-catalog');
+  if (!root) return;
+  trialCatalogSearchRowEls(root).forEach(el => trialSetCatalogSearchRowHidden(el, false));
+  root.querySelector('.trial-catalog-search-empty')?.remove();
+}
+
 /** Fast in-place sidebar filter — avoids rebuilding hundreds of op cards on each keystroke. */
 function trialApplyCatalogSearchFilter(rawQuery) {
   const root = document.getElementById('trial-catalog');
@@ -4392,16 +4440,12 @@ function trialApplyCatalogSearchFilter(rawQuery) {
 
   const matchedBases = new Set();
   psEls.forEach(el => {
-    const psId = String(el.dataset.psId || '').trim();
+    const psId = String(el.dataset.psId || el.getAttribute('data-ps-id') || '').trim();
     const planned = el.classList.contains('trial-catalog-planned-ps');
     const ps = typeof trialCatalogFindPsRow === 'function' ? trialCatalogFindPsRow(psId) : null;
-    if (!trialCatalogPsMatchesTypeFilter(ps)) {
-      el.hidden = true;
-      return;
-    }
     const tokens = trialCatalogSearchTokensForPsId(psId, planned);
     const match = trialQueryMatchesSearchTokens(tokens, rawLower);
-    el.hidden = !match;
+    trialSetCatalogSearchRowHidden(el, !match);
     if (match) {
       if (el.tagName === 'DETAILS') el.open = true;
       if (ps) trialCatalogSearchBaseKeys(ps).forEach(key => matchedBases.add(key));
@@ -4409,18 +4453,18 @@ function trialApplyCatalogSearchFilter(rawQuery) {
   });
 
   psEls.forEach(el => {
-    if (!el.hidden) return;
-    const psId = String(el.dataset.psId || '').trim();
+    if (!el.hidden && !el.classList.contains('is-catalog-search-hidden')) return;
+    const psId = String(el.dataset.psId || el.getAttribute('data-ps-id') || '').trim();
     const ps = typeof trialCatalogFindPsRow === 'function' ? trialCatalogFindPsRow(psId) : null;
-    if (!ps || !trialCatalogPsMatchesTypeFilter(ps)) return;
+    if (!ps) return;
     const keys = trialCatalogSearchBaseKeys(ps);
     if ([...keys].some(key => matchedBases.has(key))) {
-      el.hidden = false;
+      trialSetCatalogSearchRowHidden(el, false);
       if (el.tagName === 'DETAILS') el.open = true;
     }
   });
 
-  const anyVisible = psEls.some(el => !el.hidden);
+  const anyVisible = psEls.some(el => !el.hidden && !el.classList.contains('is-catalog-search-hidden'));
   trialSyncCatalogSearchEmptyState(root, rawQuery, anyVisible);
   return true;
 }
@@ -4432,11 +4476,17 @@ function scheduleTrialCatalogSearchRender() {
   trialCatalogSearch = rawQuery.toLowerCase();
 
   // Instant in-place filter while typing; full render remains authoritative.
+  let delay = rawQuery ? 320 : 100;
   if (rawQuery) {
-    trialApplyCatalogSearchFilter(rawQuery);
+    const applied = trialApplyCatalogSearchFilter(rawQuery);
+    if (!applied || !trialCatalogSearchHasVisibleMatches()) {
+      // Target is not in the current DOM (type/queue/completed filters). Search the full catalog now.
+      delay = 0;
+    }
+  } else {
+    trialClearCatalogSearchFilter();
   }
 
-  const delay = rawQuery ? 320 : 100;
   trialCatalogSearchTimer = window.setTimeout(() => {
     trialCatalogSearchTimer = null;
     renderTrialCatalog();
@@ -4554,7 +4604,8 @@ function trialCatalogPsQueuedWithUnqueuedOp40(ps, isOpAllocated) {
 
 function trialCatalogOpVisibleInList(card, isOpAllocated, ps) {
   if (!trialCatalogOpIsRelevant(card)) return false;
-  if (trialCatalogUnqueuedFilterActive()) {
+  const searching = Boolean(String(trialCatalogSearch || '').trim());
+  if (!searching && trialCatalogUnqueuedFilterActive()) {
     return trialCatalogOpMatchesUnqueuedFilter(card, isOpAllocated, ps);
   }
   return trialCatalogOpShouldShow(card, isOpAllocated, ps);
@@ -4611,18 +4662,32 @@ function trialSearchableTokens(values) {
   return [...raw, ...normalized];
 }
 
-const _PS_SERIAL_SEARCH_RE = /^(?:APS|NPS|PPS|CPS|MPS|SR)(\d{2})-(\d+)/i;
+const _PS_SERIAL_SEARCH_RE = /^(APS|NPS|PPS|CPS|MPS|SR)(\d{2})-(\d+)/i;
 
-/** Extra tokens so "0234" matches NPS26-0234 (and unpadded serials). */
+/** Extra tokens so "321" / "NPS26-321" match NPS26-0321-13 (and unpadded serials). */
 function trialPsSerialSearchTokens(value) {
   const raw = String(value || '').trim();
   if (!raw) return [];
   const extras = [];
-  const body = raw.replace(/^\[Temp\]\s*/i, '').trim();
+  const body = raw.replace(/^\[(?:Temp|SR)\]\s*/ig, '').trim();
   const m = body.match(_PS_SERIAL_SEARCH_RE);
   if (m) {
-    const serial = m[2];
-    extras.push(serial, `${m[1]}-${serial}`, `${m[1]}${serial}`);
+    const prefix = m[1].toUpperCase();
+    const year = m[2];
+    const serial = m[3];
+    const unpadded = serial.replace(/^0+/, '') || '0';
+    extras.push(
+      serial,
+      unpadded,
+      `${year}-${serial}`,
+      `${year}-${unpadded}`,
+      `${year}${serial}`,
+      `${year}${unpadded}`,
+      `${prefix}${year}-${serial}`,
+      `${prefix}${year}-${unpadded}`,
+      `${prefix}${year}${serial}`,
+      `${prefix}${year}${unpadded}`,
+    );
     if (serial.length < 4) extras.push(serial.padStart(4, '0'));
   }
   if (body !== raw) extras.push(...trialPsSerialSearchTokens(body));
@@ -4833,8 +4898,9 @@ function renderTrialCatalog() {
   const catalogMatchesSearch = ps => trialQueryMatchesSearchTokens(cachedCatalogHaystack(ps), rawQuery);
 
   const catalog = catalogSource.filter(ps => {
-    if (!trialCatalogPsMatchesTypeFilter(ps)) return false;
-    if (!trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
+    // Active search must find the PS even if type / completed / queue filters are on.
+    if (!rawQuery && !trialCatalogPsMatchesTypeFilter(ps)) return false;
+    if (!rawQuery && !trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
     if (!rawQuery && trialCatalogSupersededByTempSibling(ps, catalogSource)) return false;
     if (!rawQuery && !trialCatalogMatchesQueueFilter(ps)) return false;
     return catalogMatchesSearch(ps);
@@ -4852,10 +4918,6 @@ function renderTrialCatalog() {
       if (seen.has(psId)) continue;
       const keys = trialCatalogSearchBaseKeys(ps);
       if (!keys.size || ![...keys].some(key => matchedBases.has(key))) continue;
-      if (!rawQuery && trialCatalogSupersededByTempSibling(ps, catalogSource)) continue;
-      if (!trialCatalogPsMatchesTypeFilter(ps)) continue;
-      if (!trialShowCompleted && trialPsCatalogCompleted(ps)) continue;
-      if (!rawQuery && !trialCatalogMatchesQueueFilter(ps)) continue;
       catalog.push(ps);
       seen.add(psId);
     }
@@ -4864,8 +4926,8 @@ function renderTrialCatalog() {
   catalog.sort(trialCompareCatalogPs);
 
   const plannedCatalog = (trialState.planned || []).filter(ps => {
-    if (!trialCatalogPsMatchesTypeFilter(ps)) return false;
-    if (!trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
+    if (!rawQuery && !trialCatalogPsMatchesTypeFilter(ps)) return false;
+    if (!rawQuery && !trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
     if (!rawQuery && trialCatalogSupersededByTempSibling(ps, catalogSource)) return false;
     if (!rawQuery && !trialCatalogMatchesQueueFilter(ps)) return false;
     return trialQueryMatchesSearchTokens(cachedPlannedHaystack(ps), rawQuery);

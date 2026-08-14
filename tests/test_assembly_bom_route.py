@@ -182,6 +182,73 @@ def test_component_without_its_own_bom_is_not_a_subassembly():
     assert build_assembly_jobs([_root()], _hierarchy(), rows) == []
 
 
+def test_include_history_merges_live_open_job_missing_from_staged_bom(monkeypatch):
+    assembly._cache.clear()
+    live_job = {"ps_id": "NPS26-0321", "due_date": "2027-01-18", "has_anomaly": True}
+    hist_job = {"ps_id": "APS26-0053", "due_date": "2025-03-21", "has_anomaly": False}
+    monkeypatch.setattr(assembly, "_fetch_assembly_jobs_uncached", lambda: [live_job])
+    monkeypatch.setattr(
+        assembly,
+        "_fetch_historical_assembly_jobs_uncached",
+        lambda: [hist_job],
+    )
+
+    jobs = assembly.fetch_assembly_jobs(refresh=True, include_history=True)
+
+    assert [job["ps_id"] for job in jobs] == ["APS26-0053", "NPS26-0321"]
+
+
+def test_include_history_prefers_live_open_over_duplicate_history(monkeypatch):
+    assembly._cache.clear()
+    live_job = {"ps_id": "APS26-0053", "due_date": "2025-03-21", "source": "live"}
+    hist_job = {"ps_id": "APS26-0053", "due_date": "2025-03-21", "source": "history"}
+    monkeypatch.setattr(assembly, "_fetch_assembly_jobs_uncached", lambda: [live_job])
+    monkeypatch.setattr(
+        assembly,
+        "_fetch_historical_assembly_jobs_uncached",
+        lambda: [hist_job],
+    )
+
+    jobs = assembly.fetch_assembly_jobs(refresh=True, include_history=True)
+
+    assert len(jobs) == 1
+    assert jobs[0]["source"] == "live"
+
+
+def test_include_history_false_is_live_open_only(monkeypatch):
+    assembly._cache.clear()
+    live_job = {"ps_id": "NPS26-0321", "due_date": "2027-01-18"}
+    monkeypatch.setattr(assembly, "_fetch_assembly_jobs_uncached", lambda: [live_job])
+    monkeypatch.setattr(
+        assembly,
+        "_fetch_historical_assembly_jobs_uncached",
+        lambda: (_ for _ in ()).throw(AssertionError("history should not run")),
+    )
+
+    jobs = assembly.fetch_assembly_jobs(refresh=True, include_history=False)
+
+    assert [job["ps_id"] for job in jobs] == ["NPS26-0321"]
+
+
+def test_include_history_keeps_staged_when_live_open_fails(monkeypatch):
+    assembly._cache.clear()
+    hist_job = {"ps_id": "APS26-0053", "due_date": "2025-03-21"}
+
+    def _boom():
+        raise RuntimeError("COMAIN down")
+
+    monkeypatch.setattr(assembly, "_fetch_assembly_jobs_uncached", _boom)
+    monkeypatch.setattr(
+        assembly,
+        "_fetch_historical_assembly_jobs_uncached",
+        lambda: [hist_job],
+    )
+
+    jobs = assembly.fetch_assembly_jobs(refresh=True, include_history=True)
+
+    assert [job["ps_id"] for job in jobs] == ["APS26-0053"]
+
+
 def test_api_serializes_assembly_items(monkeypatch):
     sample = build_assembly_jobs([_root()], _hierarchy(), _bom_rows())
     monkeypatch.setattr(

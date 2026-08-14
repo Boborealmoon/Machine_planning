@@ -575,8 +575,11 @@
       try {
         payload = JSON.parse(text);
       } catch {
+        const snippet = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 120);
         throw new Error(
-          `API returned non-JSON (HTTP ${res.status}). Check /api/assembly-parts.`
+          snippet
+            ? `API returned non-JSON (HTTP ${res.status}): ${snippet}`
+            : `API returned no JSON (HTTP ${res.status}). The query likely timed out — retry or stay on Active.`
         );
       }
       if (!res.ok || !payload.ok) {

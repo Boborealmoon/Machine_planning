@@ -708,9 +708,12 @@ function initTrialQueuePanelSortable() {
     ghostClass: 'trial-drag-ghost',
     chosenClass: 'trial-drag-chosen',
     dragClass: 'trial-drag-active',
-    fallbackOnBody: true,
-    swapThreshold: 0.65,
-    invertSwap: true,
+    direction: 'vertical',
+    filter: '.trial-queue-list-head',
+    preventOnFilter: false,
+    fallbackOnBody: false,
+    swapThreshold: 0.5,
+    invertSwap: false,
     onStart: () => {
       trialDragPayload = null;
       if (trialPlannerBusyLock > 0) return false;
@@ -723,7 +726,7 @@ function initTrialQueuePanelSortable() {
         : null;
       if (!order) return;
       if (typeof trialCommitLocalQueueReorder === 'function') {
-        trialCommitLocalQueueReorder([order], { render: false });
+        trialCommitLocalQueueReorder([order]);
       }
       const persist = typeof trialPersistQueueReorder === 'function'
         ? trialPersistQueueReorder([order])
@@ -762,8 +765,9 @@ function initTrialMachineSortables(machineIds = null) {
       chosenClass: 'trial-drag-chosen',
       dragClass: 'trial-drag-active',
       fallbackOnBody: true,
-      swapThreshold: 0.65,
-      invertSwap: true,
+      direction: 'vertical',
+      swapThreshold: 0.5,
+      invertSwap: false,
       emptyInsertThreshold: 8,
       onStart: () => {
         trialDragPayload = null;

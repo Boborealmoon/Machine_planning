@@ -15,7 +15,9 @@ const invState = {
   cacheTtlSec: 300,
   selectedCode: '',
   selectedLotKey: '',
+  selectedLotRef: '',
   stockCounts: {},
+  partLotStatus: {},
 };
 
 const INV_CLASS_LABELS = {
@@ -86,8 +88,8 @@ const INV_DETAIL_SECTIONS = [
   },
 ];
 
-const INV_TABLE_COL_COUNT = 12;
-const INV_LOT_TABLE_COL_COUNT = 8;
+const INV_TABLE_COL_COUNT = 13;
+const INV_LOT_CHIP_LIMIT = 3;
 
 const INV_TABLE_VIEW_LABELS = {
   summary: 'Part summary',
@@ -116,16 +118,77 @@ function invLocationLabel(lot) {
   return code || name || '—';
 }
 
+function invNormCode(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
 function invPartMeta(code) {
-  const target = String(code || '').trim();
+  const target = invNormCode(code);
   if (!target) return null;
-  return invState.rows.find((row) => String(row.inventory_code || '').trim() === target) || null;
+  return invState.rows.find((row) => invNormCode(row.inventory_code) === target) || null;
 }
 
 function invLotsForPart(code) {
-  const target = String(code || '').trim();
+  const target = invNormCode(code);
   if (!target) return [];
-  return invState.lotRows.filter((lot) => String(lot.inventory_code || '').trim() === target);
+  return invState.lotRows.filter((lot) => invNormCode(lot.inventory_code) === target);
+}
+
+function invLotSummaries(row) {
+  const fromLots = invGroupLotsByRef(invLotsForPart(row?.inventory_code));
+  if (fromLots.length) {
+    return fromLots.map((group) => ({
+      reference_no: group.reference_no,
+      remaining_qty: group.remaining_qty,
+      original_qty: group.original_qty,
+      allocation_qty: group.allocation_qty,
+      available_qty: group.available_qty,
+      batch_count: group.lots.length,
+    }));
+  }
+  if (Array.isArray(row?.lot_summaries) && row.lot_summaries.length) {
+    return row.lot_summaries;
+  }
+  return (row?.lot_reference_nos || []).map((reference_no) => ({
+    reference_no,
+    remaining_qty: null,
+    original_qty: null,
+    allocation_qty: null,
+    available_qty: null,
+    batch_count: 0,
+  }));
+}
+
+function invBatchNo(lot) {
+  const batch = String(lot?.batch_no || lot?.lot_no || '').trim();
+  return batch || '—';
+}
+
+function invGroupLotsByRef(lots) {
+  const groups = [];
+  const index = new Map();
+  for (const lot of lots || []) {
+    const ref = String(lot.reference_no || '').trim() || '—';
+    if (!index.has(ref)) {
+      const group = {
+        reference_no: ref,
+        lots: [],
+        remaining_qty: 0,
+        original_qty: 0,
+        allocation_qty: 0,
+        available_qty: 0,
+      };
+      index.set(ref, group);
+      groups.push(group);
+    }
+    const group = index.get(ref);
+    group.lots.push(lot);
+    group.remaining_qty += invQty(lot, 'remaining_qty');
+    group.original_qty += invQty(lot, 'original_qty');
+    group.allocation_qty += invQty(lot, 'allocation_qty');
+    group.available_qty += invQty(lot, 'available_qty');
+  }
+  return groups;
 }
 
 function invQty(row, key) {
@@ -187,6 +250,8 @@ function invMatchesSearch(row) {
 function invLotSearchText(lot, part) {
   const parts = [
     lot.reference_no,
+    lot.batch_no,
+    lot.lot_no,
     lot.inventory_code,
     lot.location_code,
     lot.location_name,
@@ -251,56 +316,110 @@ function invFilterLotRows(rows) {
   });
 }
 
-function invRenderLotCard(lot, { active = false, compact = false } = {}) {
-  const part = invPartMeta(lot.inventory_code);
-  const uom = String(part?.uom_code || '').trim();
-  const ref = String(lot.reference_no || '—');
-  const cls = [
-    'inv-lot-card',
-    active ? 'is-active' : '',
-    compact ? 'inv-lot-card--compact' : '',
-  ].filter(Boolean).join(' ');
+function invRenderLotQtyTable(lots, { selectedLotKey = '' } = {}) {
+  if (!lots.length) return '';
+  const body = lots.map((lot) => {
+    const active = lot.lot_key === selectedLotKey;
+    return `
+      <tr class="is-clickable${active ? ' is-selected' : ''}" data-lot-key="${escapeHtml(lot.lot_key || '')}">
+        <td class="mi-cell--mono">${escapeHtml(invBatchNo(lot))}</td>
+        <td>${escapeHtml(invLocationLabel(lot))}</td>
+        <td class="mi-cell--num">${escapeHtml(invFormatNum(lot.remaining_qty))}</td>
+        <td class="mi-cell--num">${escapeHtml(invFormatNum(lot.original_qty))}</td>
+        <td class="mi-cell--num">${escapeHtml(invFormatNum(lot.allocation_qty))}</td>
+        <td class="mi-cell--num">${escapeHtml(invFormatNum(lot.available_qty))}</td>
+        <td>${escapeHtml(invFormatDate(lot.lot_creation_date || lot.created_datetime))}</td>
+        <td>${escapeHtml(invFormatDate(lot.expiry_date))}</td>
+      </tr>
+    `;
+  }).join('');
   return `
-    <article class="${cls}" data-lot-key="${escapeHtml(lot.lot_key || '')}">
-      <div class="inv-lot-card-head">
+    <div class="inv-lot-qty-wrap">
+      <table class="inv-lot-qty-table">
+        <thead>
+          <tr>
+            <th>Batch no</th>
+            <th>Location</th>
+            <th>Remaining</th>
+            <th>Original</th>
+            <th>Allocated</th>
+            <th>Available</th>
+            <th>Receipt</th>
+            <th>Expiry</th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function invRenderLotGroup(group, { selectedLotKey = '', selectedLotRef = '' } = {}) {
+  const part = invPartMeta(group.lots[0]?.inventory_code);
+  const uom = String(part?.uom_code || '').trim();
+  const active = selectedLotRef && group.reference_no === selectedLotRef;
+  const batchLabel = group.lots.length === 1 ? '1 batch' : `${group.lots.length} batches`;
+  return `
+    <article class="inv-lot-group${active ? ' is-active' : ''}" data-lot-ref="${escapeHtml(group.reference_no)}">
+      <header class="inv-lot-group-head">
         <div>
           <p class="inv-lot-card-label">Lot reference</p>
-          <h4 class="inv-lot-card-ref">${escapeHtml(ref)}</h4>
+          <h4 class="inv-lot-card-ref">${escapeHtml(group.reference_no)}</h4>
+          <p class="inv-lot-group-sub">${escapeHtml(batchLabel)}${uom ? ` · ${escapeHtml(uom)}` : ''}</p>
         </div>
-        <span class="inv-lot-card-loc">${escapeHtml(invLocationLabel(lot))}</span>
-      </div>
-      <div class="inv-lot-card-metrics">
-        <div class="inv-lot-metric">
-          <span>Remaining</span>
-          <strong class="inv-lot-metric-value inv-lot-metric-value--primary">${escapeHtml(invFormatNum(lot.remaining_qty))}${uom ? ` <em>${escapeHtml(uom)}</em>` : ''}</strong>
+        <div class="inv-lot-group-totals">
+          <div><span>Remaining</span><strong>${escapeHtml(invFormatNum(group.remaining_qty))}</strong></div>
+          <div><span>Original</span><strong>${escapeHtml(invFormatNum(group.original_qty))}</strong></div>
+          <div><span>Allocated</span><strong>${escapeHtml(invFormatNum(group.allocation_qty))}</strong></div>
+          <div><span>Available</span><strong>${escapeHtml(invFormatNum(group.available_qty))}</strong></div>
         </div>
-        <div class="inv-lot-metric">
-          <span>Original</span>
-          <strong class="inv-lot-metric-value">${escapeHtml(invFormatNum(lot.original_qty))}</strong>
-        </div>
-        <div class="inv-lot-metric">
-          <span>Allocated</span>
-          <strong class="inv-lot-metric-value">${escapeHtml(invFormatNum(lot.allocation_qty))}</strong>
-        </div>
-        <div class="inv-lot-metric">
-          <span>Available</span>
-          <strong class="inv-lot-metric-value">${escapeHtml(invFormatNum(lot.available_qty))}</strong>
-        </div>
-      </div>
-      <dl class="inv-lot-card-meta">
-        <div><dt>Lot no</dt><dd>${escapeHtml(String(lot.lot_no ?? '—'))}</dd></div>
-        <div><dt>Receipt</dt><dd>${escapeHtml(invFormatDate(lot.lot_creation_date || lot.created_datetime))}</dd></div>
-        <div><dt>Expiry</dt><dd>${escapeHtml(invFormatDate(lot.expiry_date))}</dd></div>
-      </dl>
+      </header>
+      ${invRenderLotQtyTable(group.lots, { selectedLotKey })}
     </article>
   `;
 }
 
-function invRenderLotCards(lots, selectedLotKey = '') {
+function invRenderLotCards(lots, selectedLotKey = '', selectedLotRef = '') {
   if (!lots.length) {
     return '<p class="inv-lot-empty">No active lots with reference numbers for this part.</p>';
   }
-  return `<div class="inv-lot-card-grid">${lots.map((lot) => invRenderLotCard(lot, { active: lot.lot_key === selectedLotKey })).join('')}</div>`;
+  let groups = invGroupLotsByRef(lots);
+  if (selectedLotRef) {
+    const focused = groups.filter((group) => group.reference_no === selectedLotRef);
+    if (focused.length) groups = focused;
+  }
+  return `<div class="inv-lot-group-list">${groups.map((group) => invRenderLotGroup(group, { selectedLotKey, selectedLotRef })).join('')}</div>`;
+}
+
+function invRenderLotSummaryFallback(summaries) {
+  if (!summaries.length) return '';
+  const rows = summaries.map((item) => `
+    <tr>
+      <td class="mi-cell--mono">${escapeHtml(String(item.reference_no || '—'))}</td>
+      <td class="mi-cell--num">${escapeHtml(invFormatNum(item.remaining_qty))}</td>
+      <td class="mi-cell--num">${escapeHtml(invFormatNum(item.original_qty))}</td>
+      <td class="mi-cell--num">${escapeHtml(invFormatNum(item.allocation_qty))}</td>
+      <td class="mi-cell--num">${escapeHtml(invFormatNum(item.available_qty))}</td>
+      <td>${escapeHtml(String(item.batch_count || '—'))}</td>
+    </tr>
+  `).join('');
+  return `
+    <div class="inv-lot-qty-wrap">
+      <table class="inv-lot-qty-table">
+        <thead>
+          <tr>
+            <th>Lot ref. no.</th>
+            <th>Remaining</th>
+            <th>Original</th>
+            <th>Allocated</th>
+            <th>Available</th>
+            <th>Batches</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 function invDetailField(label, value, { mono, fullWidth, numeric } = {}) {
@@ -327,7 +446,7 @@ function invDetailSection(title, html) {
   `;
 }
 
-function invRenderDetail(row, { selectedLotKey = '' } = {}) {
+function invRenderDetail(row, { selectedLotKey = '', selectedLotRef = '' } = {}) {
   const sections = INV_DETAIL_SECTIONS.map((section) => {
     const html = section.fields
       .map(([label, key, opts]) => invDetailField(
@@ -339,32 +458,48 @@ function invRenderDetail(row, { selectedLotKey = '' } = {}) {
     return invDetailSection(section.title, html);
   }).join('');
 
-  const lots = invLotsForPart(row.inventory_code);
-  if (!lots.length && !(row?.lot_reference_nos || []).length) return sections;
+  const allLots = invLotsForPart(row.inventory_code);
+  const lots = selectedLotRef
+    ? allLots.filter((lot) => String(lot.reference_no || '').trim() === selectedLotRef)
+    : allLots;
+  const summaries = selectedLotRef
+    ? invLotSummaries(row).filter((item) => String(item.reference_no || '').trim() === selectedLotRef)
+    : invLotSummaries(row);
+  if (!allLots.length && !invLotSummaries(row).length) return sections;
 
-  const lotSection = lots.length
-    ? `
+  const lotCount = lots.length || summaries.reduce((sum, item) => sum + Number(item.batch_count || 1), 0);
+  const refCount = lots.length ? invGroupLotsByRef(lots).length : summaries.length;
+  const partKey = invNormCode(row.inventory_code);
+  const waiting = !lots.length && invState.partLotStatus[partKey] !== 'done';
+  let lotBody = '';
+  if (lots.length) {
+    lotBody = invRenderLotCards(lots, selectedLotKey, selectedLotRef);
+  } else if (waiting) {
+    lotBody = '<p class="inv-lot-empty">Loading quantity per batch…</p>';
+  } else if (summaries.some((item) => item.remaining_qty != null && item.remaining_qty !== '')) {
+    lotBody = invRenderLotSummaryFallback(summaries);
+  } else if (summaries.length) {
+    lotBody = '<p class="inv-lot-empty">Lot references found, but no remaining / allocated quantity was returned for these batches.</p>';
+  } else {
+    lotBody = '<p class="inv-lot-empty">No active lots with reference numbers for this part.</p>';
+  }
+
+  const lotSection = `
       <section class="mi-detail-section inv-lot-detail-section">
         <div class="inv-lot-section-head">
-          <h3 class="mi-detail-section-title">Lot breakdown</h3>
-          <span class="inv-lot-section-count">${lots.length} lot${lots.length === 1 ? '' : 's'}</span>
+          <h3 class="mi-detail-section-title">Quantity per batch</h3>
+          <span class="inv-lot-section-count">${lotCount} batch${lotCount === 1 ? '' : 'es'} · ${refCount} lot ref${refCount === 1 ? '' : 's'}</span>
         </div>
-        ${invRenderLotCards(lots, selectedLotKey)}
+        ${lotBody}
       </section>
-    `
-    : invDetailSection(
-      'Lot references',
-      (row.lot_reference_nos || [])
-        .map((ref) => invDetailField('Reference no', ref, { mono: true }))
-        .join(''),
-    );
+    `;
   return `${sections}${lotSection}`;
 }
 
 function invFindRow(code) {
-  const target = String(code || '').trim();
+  const target = invNormCode(code);
   if (!target) return null;
-  return invState.rows.find((row) => String(row.inventory_code || '').trim() === target) || null;
+  return invState.rows.find((row) => invNormCode(row.inventory_code) === target) || null;
 }
 
 function invOpenDetail({ title, bodyHtml }) {
@@ -372,6 +507,9 @@ function invOpenDetail({ title, bodyHtml }) {
   const titleEl = document.getElementById('inv-detail-title');
   const bodyEl = document.getElementById('inv-detail-body');
   if (!shell || !titleEl || !bodyEl) return;
+  if (shell.parentElement !== document.body) {
+    document.body.appendChild(shell);
+  }
   titleEl.textContent = title || 'Inventory detail';
   bodyEl.innerHTML = bodyHtml || '';
   shell.hidden = false;
@@ -385,39 +523,124 @@ function invCloseDetail() {
   document.body.classList.remove('mi-detail-open');
   invState.selectedCode = '';
   invState.selectedLotKey = '';
-  document.querySelectorAll('#inv-table-body tr.is-selected').forEach((tr) => {
-    tr.classList.remove('is-selected');
+  invState.selectedLotRef = '';
+  document.querySelectorAll('#inv-table-body tr.is-selected, #inv-table-body .inv-lot-chip.is-selected').forEach((el) => {
+    el.classList.remove('is-selected');
   });
 }
 
+let _invLotsPromise = null;
+
 async function invEnsureLotsLoaded() {
-  if (invState.lotsLoaded || invState.lotsLoading) return;
+  if (invState.lotsLoaded) return;
   await invLoadLots();
 }
 
-async function invOpenRowDetail(row, { lotKey = '' } = {}) {
+async function invLoadLots({ refresh = false } = {}) {
+  if (!refresh && _invLotsPromise) return _invLotsPromise;
+  _invLotsPromise = (async () => {
+    invState.lotsLoading = true;
+    if (invState.tableView === 'lot') invRender();
+    try {
+      const url = '/api/inventory-enquiry/lots' + (refresh ? '?refresh=1' : '');
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      invState.lotRows = data.rows || [];
+      invState.lotCachedAt = data.cached_at || '';
+      invState.lotsLoaded = true;
+      invRender();
+    } catch (err) {
+      invState.lotsLoaded = false;
+      invState.lotRows = [];
+      _invLotsPromise = null;
+      const emptyEl = document.getElementById('inv-table-empty');
+      if (emptyEl && invState.tableView === 'lot') {
+        emptyEl.hidden = false;
+        emptyEl.textContent = `Failed to load lot breakdown: ${err.message}`;
+      }
+      invRender();
+    } finally {
+      invState.lotsLoading = false;
+      const loading = document.getElementById('inv-loading');
+      if (loading && invState.tableView === 'lot') loading.hidden = true;
+    }
+  })();
+  return _invLotsPromise;
+}
+
+async function invLoadLotsForPart(code) {
+  const target = String(code || '').trim();
+  const key = invNormCode(target);
+  if (!target || !key) return;
+  if (invLotsForPart(target).length) {
+    invState.partLotStatus[key] = 'done';
+    return;
+  }
+  invState.partLotStatus[key] = 'loading';
+  try {
+    const params = new URLSearchParams({ codes: target });
+    const res = await fetch('/api/inventory-enquiry/lots?' + params.toString());
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    const rows = Array.isArray(data.rows) ? data.rows : [];
+    const keep = invState.lotRows.filter((lot) => invNormCode(lot.inventory_code) !== key);
+    invState.lotRows = keep.concat(rows);
+  } catch (err) {
+    console.warn('Failed to load lot quantities for', target, err);
+  } finally {
+    invState.partLotStatus[key] = 'done';
+  }
+}
+
+async function invOpenRowDetail(row, { lotKey = '', lotRef = '' } = {}) {
   if (!row) return;
-  await invEnsureLotsLoaded();
   const code = String(row.inventory_code || '').trim();
   invState.selectedCode = code;
   invState.selectedLotKey = lotKey || '';
-  const desc = String(row.main_desc || '').trim();
   const lot = lotKey
     ? invState.lotRows.find((item) => item.lot_key === lotKey)
     : null;
-  const title = lot
-    ? String(lot.reference_no || code)
-    : (desc ? `${code} — ${desc}` : code);
-  invOpenDetail({
-    title,
-    bodyHtml: invRenderDetail(row, { selectedLotKey: invState.selectedLotKey }),
-  });
-  document.querySelectorAll('#inv-table-body tr[data-inv-code], #inv-table-body tr[data-lot-key]').forEach((tr) => {
-    const selected = lotKey
-      ? tr.dataset.lotKey === lotKey
-      : tr.dataset.invCode === code;
-    tr.classList.toggle('is-selected', selected);
-  });
+  invState.selectedLotRef = lotRef || String(lot?.reference_no || '').trim();
+  const desc = String(row.main_desc || '').trim();
+  const titleFor = () => (
+    invState.selectedLotRef
+      ? invState.selectedLotRef
+      : (desc ? `${code} — ${desc}` : code)
+  );
+
+  const paint = () => {
+    invOpenDetail({
+      title: titleFor(),
+      bodyHtml: invRenderDetail(row, {
+        selectedLotKey: invState.selectedLotKey,
+        selectedLotRef: invState.selectedLotRef,
+      }),
+    });
+    document.querySelectorAll('#inv-table-body tr[data-inv-code], #inv-table-body tr[data-lot-key]').forEach((tr) => {
+      const selected = lotKey
+        ? tr.dataset.lotKey === lotKey
+        : (!invState.selectedLotRef && tr.dataset.invCode === code && !tr.dataset.lotKey);
+      tr.classList.toggle('is-selected', selected);
+    });
+    document.querySelectorAll('#inv-table-body .inv-lot-chip').forEach((chip) => {
+      const selected = Boolean(invState.selectedLotRef)
+        && chip.dataset.invCode === code
+        && chip.dataset.lotRef === invState.selectedLotRef;
+      chip.classList.toggle('is-selected', selected);
+    });
+  };
+
+  paint();
+  await invLoadLotsForPart(code);
+  if (invState.selectedCode !== code) return;
+  const loadedLot = invState.selectedLotKey
+    ? invState.lotRows.find((item) => item.lot_key === invState.selectedLotKey)
+    : null;
+  if (loadedLot && !invState.selectedLotRef) {
+    invState.selectedLotRef = String(loadedLot.reference_no || '').trim();
+  }
+  paint();
 }
 
 async function invOpenLotDetail(lot) {
@@ -447,18 +670,60 @@ function invQtyCell(value) {
   return `<td class="mi-cell--num${cls}">${escapeHtml(invFormatNum(value))}</td>`;
 }
 
+function invRenderLotRefCell(row) {
+  const code = String(row.inventory_code || '').trim();
+  const summaries = invLotSummaries(row);
+  if (!summaries.length) {
+    return '<td class="inv-lot-ref-summary-cell"><span class="inv-lot-chip-empty">—</span></td>';
+  }
+  const q = invState.searchMode === 'lot_ref'
+    ? String(invState.search || '').trim().toLowerCase()
+    : '';
+  const sorted = [...summaries].sort((a, b) => {
+    if (q) {
+      const aMatch = String(a.reference_no || '').toLowerCase().includes(q) ? 0 : 1;
+      const bMatch = String(b.reference_no || '').toLowerCase().includes(q) ? 0 : 1;
+      if (aMatch !== bMatch) return aMatch - bMatch;
+    }
+    return String(a.reference_no || '').localeCompare(String(b.reference_no || ''), undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    });
+  });
+  const visible = sorted.slice(0, INV_LOT_CHIP_LIMIT);
+  const extra = sorted.length - visible.length;
+  const chips = visible.map((item) => {
+    const ref = String(item.reference_no || '').trim();
+    const match = Boolean(q) && ref.toLowerCase().includes(q);
+    const selected = invState.selectedLotRef === ref && invState.selectedCode === code;
+    const batches = Number(item.batch_count || 0);
+    const qtyText = item.remaining_qty == null || item.remaining_qty === ''
+      ? ''
+      : invFormatNum(item.remaining_qty);
+    const meta = batches > 1 ? `${batches} batches` : '';
+    return `
+      <button type="button" class="inv-lot-chip${match ? ' is-match' : ''}${selected ? ' is-selected' : ''}" data-inv-code="${escapeHtml(code)}" data-lot-ref="${escapeHtml(ref)}" title="View quantity per batch for ${escapeHtml(ref)}">
+        <span class="inv-lot-chip-ref">${escapeHtml(ref || '—')}</span>
+        ${qtyText ? `<span class="inv-lot-chip-qty">${escapeHtml(qtyText)}</span>` : ''}
+        ${meta ? `<span class="inv-lot-chip-meta">${escapeHtml(meta)}</span>` : ''}
+      </button>
+    `;
+  }).join('');
+  const more = extra > 0
+    ? `<button type="button" class="inv-lot-chip inv-lot-chip--more" data-inv-code="${escapeHtml(code)}" data-lot-ref="" title="View all lot references">+${extra}</button>`
+    : '';
+  return `<td class="inv-lot-ref-summary-cell"><div class="inv-lot-chip-list">${chips}${more}</div></td>`;
+}
+
 function invRenderRow(row) {
   const code = String(row.inventory_code || '').trim();
-  const selected = code === invState.selectedCode && !invState.selectedLotKey;
+  const selected = code === invState.selectedCode && !invState.selectedLotKey && !invState.selectedLotRef;
   const desc = String(row.main_desc || '').trim();
-  const lotCount = invLotsForPart(code).length;
-  const lotBadge = lotCount > 0
-    ? `<span class="inv-lot-count-badge" title="${lotCount} active lot${lotCount === 1 ? '' : 's'}">${lotCount}</span>`
-    : '';
   return `
     <tr class="is-clickable${selected ? ' is-selected' : ''}" data-inv-code="${escapeHtml(code)}" tabindex="0" role="button" aria-label="View inventory detail">
-      <td class="mi-cell--mono">${escapeHtml(code || '—')}${lotBadge}</td>
+      <td class="mi-cell--mono">${escapeHtml(code || '—')}</td>
       <td class="mi-cell--desc" title="${escapeHtml(desc)}">${escapeHtml(desc || '—')}</td>
+      ${invRenderLotRefCell(row)}
       <td>${escapeHtml(String(row.inventory_class_code || '—'))}</td>
       <td>${escapeHtml(String(row.inventory_category_code || '—'))}</td>
       <td>${escapeHtml(String(row.uom_code || '—'))}</td>
@@ -482,6 +747,7 @@ function invRenderLotRow(lot) {
   return `
     <tr class="is-clickable inv-lot-row${selected ? ' is-selected' : ''}" data-lot-key="${escapeHtml(lot.lot_key || '')}" data-inv-code="${escapeHtml(code)}" tabindex="0" role="button" aria-label="View lot detail">
       <td class="mi-cell--mono inv-lot-ref-cell">${escapeHtml(String(lot.reference_no || '—'))}</td>
+      <td class="mi-cell--mono">${escapeHtml(invBatchNo(lot))}</td>
       <td class="mi-cell--mono">${escapeHtml(code || '—')}</td>
       <td class="mi-cell--desc" title="${escapeHtml(desc)}">${escapeHtml(desc || '—')}</td>
       <td class="inv-lot-loc-cell">${escapeHtml(invLocationLabel(lot))}</td>
@@ -542,6 +808,7 @@ function invUpdateTableHead() {
     head.innerHTML = `
       <tr>
         <th>Lot reference</th>
+        <th>Batch no</th>
         <th>Part no</th>
         <th>Description</th>
         <th>Location</th>
@@ -558,6 +825,7 @@ function invUpdateTableHead() {
     <tr>
       <th>Part no</th>
       <th>Description</th>
+      <th>Lot ref. no.</th>
       <th>Class</th>
       <th>Cat</th>
       <th>UOM</th>
@@ -576,6 +844,7 @@ function invBindTableRowKeys(body) {
   if (!body) return;
   body.querySelectorAll('tr[data-inv-code], tr[data-lot-key]').forEach((tr) => {
     tr.addEventListener('keydown', async (e) => {
+      if (e.target.closest('button')) return;
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         if (tr.dataset.lotKey) {
@@ -706,7 +975,11 @@ function invRender() {
   const globalEmpty = document.getElementById('inv-global-empty');
   const loading = document.getElementById('inv-loading');
 
-  if (loading) loading.hidden = !invState.lotsLoading;
+  if (loading) {
+    if (invState.tableView === 'lot') {
+      loading.hidden = !invState.lotsLoading;
+    }
+  }
   invUpdateTableHead();
 
   const hasSummaryData = (invState.rows?.length || 0) > 0;
@@ -758,7 +1031,7 @@ function invRender() {
         isLotView && invState.lotCachedAt ? `lots ${invState.lotCachedAt}` : '',
         `TTL ${invState.cacheTtlSec}s`,
       ].filter(Boolean).join(' · ');
-      meta.textContent = `Click a row for detail · ${viewHint} · ${cacheBits}`;
+      meta.textContent = `Click a lot ref. no. for quantity per batch · ${viewHint} · ${cacheBits}`;
     } else {
       meta.hidden = true;
     }
@@ -766,35 +1039,6 @@ function invRender() {
 
   invUpdateTabCounts();
   invUpdateStats();
-}
-
-async function invLoadLots({ refresh = false } = {}) {
-  if (invState.lotsLoading) return;
-  invState.lotsLoading = true;
-  invRender();
-  try {
-    const url = '/api/inventory-enquiry/lots' + (refresh ? '?refresh=1' : '');
-    const res = await fetch(url);
-    const data = await res.json();
-    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-    invState.lotRows = data.rows || [];
-    invState.lotCachedAt = data.cached_at || '';
-    invState.lotsLoaded = true;
-    invRender();
-  } catch (err) {
-    invState.lotsLoaded = true;
-    invState.lotRows = [];
-    const emptyEl = document.getElementById('inv-table-empty');
-    if (emptyEl) {
-      emptyEl.hidden = false;
-      emptyEl.textContent = `Failed to load lot breakdown: ${err.message}`;
-    }
-    invRender();
-  } finally {
-    invState.lotsLoading = false;
-    const loading = document.getElementById('inv-loading');
-    if (loading) loading.hidden = true;
-  }
 }
 
 async function invLoad({ refresh = false } = {}) {
@@ -812,11 +1056,14 @@ async function invLoad({ refresh = false } = {}) {
     if (refresh) {
       invState.lotsLoaded = false;
       invState.lotRows = [];
+      invState.partLotStatus = {};
+      _invLotsPromise = null;
     }
     if (invState.tableView === 'lot') {
       await invLoadLots({ refresh });
       return;
     }
+    if (loading) loading.hidden = true;
     invRender();
   } catch (err) {
     if (loading) loading.hidden = true;
@@ -869,6 +1116,14 @@ function invBindEvents() {
 
   const wrap = document.querySelector('.inv-enq-table')?.closest('.mi-table-wrap');
   wrap?.addEventListener('click', async (e) => {
+    const chip = e.target.closest('button[data-lot-ref]');
+    if (chip) {
+      e.preventDefault();
+      const row = invFindRow(chip.dataset.invCode);
+      const lotRef = String(chip.dataset.lotRef || '').trim();
+      if (row) await invOpenRowDetail(row, { lotRef });
+      return;
+    }
     const tr = e.target.closest('tr[data-lot-key], tr[data-inv-code]');
     if (!tr) return;
     if (tr.dataset.lotKey) {
@@ -878,6 +1133,14 @@ function invBindEvents() {
     }
     const row = invFindRow(tr.dataset.invCode);
     if (row) await invOpenRowDetail(row);
+  });
+
+  const detailBody = document.getElementById('inv-detail-body');
+  detailBody?.addEventListener('click', async (e) => {
+    const tr = e.target.closest('tr[data-lot-key]');
+    if (!tr || !detailBody.contains(tr)) return;
+    const lot = invFindLot(tr.dataset.lotKey);
+    if (lot) await invOpenLotDetail(lot);
   });
 }
 

@@ -1,7 +1,7 @@
 {% extends "shift_management_base.html" %}
-{% block title %}Handover entry â€” Day/Night HOTO{% endblock %}
+{% block title %}Handover entry — Day/Night HOTO{% endblock %}
 {% block top_left %}
-<a class="sm-back" href="{{ app_path }}">? Back</a>
+<a class="sm-back" href="{{ app_path }}">← Back</a>
 {% endblock %}
 {% block content %}
 <div id="sm-entry-root" data-machine-id="{{ machine_id }}">
@@ -25,7 +25,7 @@
 
     <label class="sm-label">Remaining qty</label>
     <div class="sm-stepper" data-field="remaining_qty">
-      <button type="button" data-delta="-1">?</button>
+      <button type="button" data-delta="-1">−</button>
       <input type="number" id="sm-remaining-qty" inputmode="numeric" />
       <button type="button" data-delta="1">+</button>
     </div>
@@ -35,7 +35,7 @@
 
     <label class="sm-label">Tool life (% remaining)</label>
     <div class="sm-stepper" data-field="tool_life_pct">
-      <button type="button" data-delta="-5">?</button>
+      <button type="button" data-delta="-5">−</button>
       <input type="number" id="sm-tool-life" inputmode="decimal" step="1" min="0" max="100" />
       <button type="button" data-delta="5">+</button>
     </div>
@@ -43,7 +43,7 @@
     <label class="sm-label">Material balance</label>
     <div class="sm-material-row">
       <div class="sm-stepper" data-field="material_qty">
-        <button type="button" data-delta="-1">?</button>
+        <button type="button" data-delta="-1">−</button>
         <input type="number" id="sm-material-qty" inputmode="decimal" step="1" />
         <button type="button" data-delta="1">+</button>
       </div>

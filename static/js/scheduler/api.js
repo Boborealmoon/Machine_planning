@@ -71,14 +71,60 @@ async function DEL(url) {
   return res.json();
 }
 
+function trialCardOrderedBlockIds(card) {
+  const grouped = String(card?.dataset?.blockIds || '')
+    .split(/[\s,]+/)
+    .map(Number)
+    .filter(Boolean);
+  if (grouped.length) return grouped;
+  const one = Number(card?.dataset?.blockId || 0);
+  return one ? [one] : [];
+}
+
+function trialMergeLaneOrder(existingIds, visibleOrderedIds) {
+  const visible = (visibleOrderedIds || []).map(Number).filter(Boolean);
+  const existing = (existingIds || []).map(Number).filter(Boolean);
+  if (!visible.length) return existing;
+  if (!existing.length) return visible;
+  const visibleSet = new Set(visible);
+  const merged = [];
+  let next = 0;
+  existing.forEach(id => {
+    if (visibleSet.has(id)) {
+      if (next < visible.length) merged.push(visible[next++]);
+      return;
+    }
+    merged.push(id);
+  });
+  while (next < visible.length) merged.push(visible[next++]);
+  const seen = new Set();
+  return merged.filter(id => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 function trialLaneOrderFromElement(laneEl) {
   if (!laneEl) return null;
   const machineId = Number(laneEl.dataset.machineId || 0);
-  const orderedIds = Array.from(
+  const visibleIds = [];
+  Array.from(
     laneEl.querySelectorAll(':scope > .trial-block-card[data-block-id], :scope > .trial-queue-row[data-block-id]')
-  ).map(card => Number(card.dataset.blockId)).filter(Boolean);
-  if (!machineId || !orderedIds.length) return null;
-  return { machine_id: machineId, ordered_ids: orderedIds };
+  ).forEach(card => {
+    if (card.classList.contains('trial-drag-ghost')) return;
+    trialCardOrderedBlockIds(card).forEach(id => {
+      if (!visibleIds.includes(id)) visibleIds.push(id);
+    });
+  });
+  if (!machineId || !visibleIds.length) return null;
+  const existing = typeof trialMachineBlockOrder === 'function'
+    ? trialMachineBlockOrder(machineId)
+    : [];
+  return {
+    machine_id: machineId,
+    ordered_ids: trialMergeLaneOrder(existing, visibleIds),
+  };
 }
 
 function trialRecalcStartIndex(existingIds, orderedIds) {
@@ -185,6 +231,7 @@ function trialApplyLocalLaneOrders(lanes) {
       block.machine_id = machineId;
     });
   });
+  if (typeof trialResetDataIndexes === 'function') trialResetDataIndexes();
 }
 
 function trialRenumberOpenQueuePanel() {
@@ -207,20 +254,24 @@ function trialCommitLocalQueueReorder(lanes, options = {}) {
     .filter(lane => lane.machine_id && lane.ordered_ids.length);
   if (!normalized.length) return [];
   trialApplyLocalLaneOrders(normalized);
-  trialRenumberOpenQueuePanel();
   const affected = [...new Set(normalized.map(lane => lane.machine_id))];
   const queueOrders = {};
   normalized.forEach(lane => {
     queueOrders[lane.machine_id] = lane.ordered_ids;
   });
-  trialMarkDirtyMachines(affected, { queueOrders });
-  if (options.render !== false && typeof renderTrialMachines === 'function') {
-    renderTrialMachines(affected, {
-      skipQueueReopen: true,
-      skipCatalog: true,
-      deferCatalog: true,
-    });
-  }
+  const paint = () => {
+    trialRenumberOpenQueuePanel();
+    trialMarkDirtyMachines(affected, { queueOrders });
+    if (options.render === true && typeof renderTrialMachines === 'function') {
+      renderTrialMachines(affected, {
+        skipQueueReopen: true,
+        skipCatalog: true,
+        deferCatalog: true,
+      });
+    }
+  };
+  if (options.immediate) paint();
+  else window.setTimeout(paint, 180);
   return normalized;
 }
 
@@ -652,7 +703,7 @@ function trialPinBlock(block, ttlMs = 30000) {
 }
 
 function trialApplyMachineRefreshPayload(machineIds, payload) {
-  if (!payload || !Array.isArray(payload.blocks)) return false;
+  if (!payload || payload.error || !Array.isArray(payload.blocks)) return false;
   const machineSet = new Set((machineIds || []).map(id => String(Number(id))).filter(id => id !== '0'));
   if (!machineSet.size) return false;
 

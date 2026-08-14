@@ -26,7 +26,7 @@ def api_sales_coordination():
     try:
         from .sales_orders_route import _fetch_sales_orders, _job_count
 
-        payload = _fetch_sales_orders(refresh=refresh)
+        payload = _fetch_sales_orders(refresh=refresh, active_only=True)
         orders = list(payload.get("active") or [])
         result = build_sales_coordination(orders)
         result["active_job_count"] = _job_count(orders)

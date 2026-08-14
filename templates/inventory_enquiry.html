@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Inventory Enquiry{% endblock %}
 {% block main_class %}app-main--inventory-enquiry{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=inventory-enquiry-lot-split-20260812">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=inventory-enquiry-detail-w-20260814">{% endblock %}
 {% block content %}
 <div class="mi-page inv-enq-page">
   <div class="mi-header">
     <div>
       <h1 class="mi-title">Inventory Enquiry</h1>
-      <p class="mi-subtitle">Live <code>ic_inventory_enquiry_summary_view</code> with lot breakdown from <code>ic_inventory_ost_lot</code>. Filter by class or stock, search by part or lot reference, then switch to <strong>By lot</strong> to split stock by lot reference no.</p>
+      <p class="mi-subtitle">Live <code>ic_inventory_enquiry_summary_view</code> with lot breakdown from <code>ic_inventory_ost_lot</code>. Filter by class or stock, search by part or lot reference, then click a <strong>lot ref. no.</strong> to see quantity per batch. Switch to <strong>By lot</strong> for the full split.</p>
     </div>
     <div class="mi-header-actions">
       <button type="button" class="btn btn-ghost btn-sm" id="inv-refresh">Refresh</button>
@@ -91,6 +91,7 @@
           <tr>
             <th>Part no</th>
             <th>Description</th>
+            <th>Lot ref. no.</th>
             <th>Class</th>
             <th>Cat</th>
             <th>UOM</th>
@@ -115,12 +116,12 @@
   <p class="mi-meta" id="inv-meta" hidden></p>
 </div>
 
-<div id="inv-detail" class="mi-detail" hidden>
+<div id="inv-detail" class="mi-detail inv-enq-detail" hidden>
   <div class="mi-detail-backdrop" data-action="close-detail" aria-hidden="true"></div>
   <aside class="mi-detail-panel" role="dialog" aria-modal="true" aria-labelledby="inv-detail-title">
     <div class="mi-detail-head">
       <div>
-        <p class="mi-detail-kicker">Inventory detail</p>
+        <p class="mi-detail-kicker">Inventory · lot / batch detail</p>
         <h2 class="mi-detail-title" id="inv-detail-title"></h2>
       </div>
       <button type="button" class="btn btn-ghost btn-sm" id="inv-detail-close" aria-label="Close">Close</button>
@@ -131,6 +132,6 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=inventory-enquiry-lot-split-20260812"></script>
-<script src="{{ url_for('static', filename='js/inventory_enquiry.js') }}?v=inventory-enquiry-lot-split-20260812"></script>
+<script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=inventory-enquiry-lot-fix-20260813"></script>
+<script src="{{ url_for('static', filename='js/inventory_enquiry.js') }}?v=inventory-enquiry-lot-fix-20260813"></script>
 {% endblock %}

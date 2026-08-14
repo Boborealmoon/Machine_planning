@@ -37,7 +37,7 @@ def set(key: str, data: Any) -> None:
     path = _cache_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".{os.getpid()}.tmp")
-    body = json.dumps({"cached_at": time.time(), "data": data}, default=str)
+    body = json.dumps({"cached_at": time.time(), "key": key, "data": data}, default=str)
     tmp.write_text(body, encoding="utf-8")
     tmp.replace(path)
 

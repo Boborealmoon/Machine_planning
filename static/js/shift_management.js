@@ -19,10 +19,29 @@
   }
 
   async function api(path, opts) {
-    const res = await fetch(path, Object.assign({
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-    }, opts || {}));
+    const ctrl = new AbortController();
+    const timeoutMs = (opts && opts.timeoutMs) || 20000;
+    const timer = setTimeout(function () {
+      ctrl.abort();
+    }, timeoutMs);
+    const fetchOpts = Object.assign(
+      {
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        signal: ctrl.signal,
+      },
+      opts || {}
+    );
+    delete fetchOpts.timeoutMs;
+    let res;
+    try {
+      res = await fetch(path, fetchOpts);
+    } catch (err) {
+      if (err && err.name === "AbortError") throw new Error("Request timed out. Try Refresh.");
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
     let data = null;
     try {
       data = await res.json();
@@ -279,7 +298,7 @@
           "</div>" +
           '<div class="sm-muted">PS ' +
           escapeHtml(ps) +
-          (m.queue_remaining_qty != null ? " � qty " + escapeHtml(m.queue_remaining_qty) : "") +
+          (m.queue_remaining_qty != null ? " · qty " + escapeHtml(m.queue_remaining_qty) : "") +
           "</div>" +
           (tickets
             ? '<span class="sm-badge urgent">' + tickets + " ticket" + (tickets === 1 ? "" : "s") + "</span>"
@@ -419,20 +438,31 @@
   async function initOps() {
     const list = document.getElementById("sm-ops-list");
     if (!list) return;
+    const dateEl = document.getElementById("sm-ops-date");
+    const searchEl = document.getElementById("sm-ops-search");
     let meta = null;
-    let ticketCtx = null;
+    let machines = [];
+    let shift = rememberedShift();
 
     const dialog = document.getElementById("sm-ticket-dialog");
     const form = document.getElementById("sm-ticket-form");
 
-    function openTicketDialog(item) {
-      ticketCtx = item;
+    if (dateEl) dateEl.value = rememberedDate();
+
+    function paintShiftChips() {
+      document.querySelectorAll("#sm-ops-shift-chips .sm-chip").forEach(function (btn) {
+        btn.classList.toggle("is-active", btn.dataset.shift === shift);
+      });
+    }
+
+    function openTicketDialog(machine, job) {
+      const item = Object.assign({ machine_id: machine.machine_id, machine_no: machine.machine_no }, job || {});
       document.getElementById("sm-tk-machine-id").value = item.machine_id;
       document.getElementById("sm-tk-block-id").value = item.block_id || "";
       document.getElementById("sm-tk-ps").value = item.process_sheet_no || item.source_ps_id || "";
       document.getElementById("sm-tk-job").value = item.job_no || item.process_sheet_no || "";
       document.getElementById("sm-ticket-context").textContent =
-        (item.machine_no || "") + " � PS " + (item.process_sheet_no || item.job_no || "-");
+        (item.machine_no || "") + " · PS " + (item.process_sheet_no || item.job_no || "-");
       fillSelect(
         document.getElementById("sm-tk-category"),
         (meta && meta.ticket_categories) || ["Other"],
@@ -444,82 +474,202 @@
       if (dialog && dialog.showModal) dialog.showModal();
     }
 
-    async function load() {
-      list.innerHTML = '<p class="sm-muted">Loading...</p>';
-      try {
-        const data = await api("/api/shift-management/ops-queue");
-        meta = data.meta || meta;
-        const items = data.items || [];
-        if (!items.length) {
-          list.innerHTML = '<p class="sm-muted">No active queue jobs for your machines.</p>';
-          return;
-        }
-        list.innerHTML = items
-          .map(function (item) {
-            const tickets = Number(item.open_ticket_count || 0);
-            return (
-              '<article class="sm-ops-card" data-block="' +
-              escapeHtml(item.block_id) +
-              '">' +
-              '<div class="sm-ops-card-main">' +
-              "<div><strong>" +
-              escapeHtml(item.machine_no) +
-              "</strong> � Q" +
-              escapeHtml(item.queue_position) +
-              "</div>" +
-              '<div class="sm-ops-ps">PS ' +
-              escapeHtml(item.process_sheet_no || item.job_no || "-") +
-              "</div>" +
-              '<div class="sm-muted">' +
-              escapeHtml(item.operation_name || "Operation") +
-              (item.source_op_no ? " � Op " + escapeHtml(item.source_op_no) : "") +
-              "</div>" +
-              '<div class="sm-muted">Remaining ' +
-              escapeHtml(item.remaining_qty != null ? item.remaining_qty : "-") +
-              " / planned " +
-              escapeHtml(item.scheduled_qty != null ? item.scheduled_qty : "-") +
-              " � " +
-              escapeHtml(item.execution_status || item.block_status || "") +
-              "</div>" +
-              (tickets
-                ? '<span class="sm-badge urgent">' + tickets + " open ticket(s)</span>"
-                : "") +
-              "</div>" +
-              '<div class="sm-ops-actions">' +
-              '<button type="button" class="sm-btn sm-btn-ghost sm-ops-ticket">Ticket</button>' +
-              '<a class="sm-btn sm-btn-primary" href="' +
-              SM.appPath +
-              "/entry/" +
-              item.machine_id +
-              "?ps=" +
-              encodeURIComponent(item.process_sheet_no || item.job_no || "") +
-              '">Handover</a>' +
-              "</div></article>"
-            );
+    function matchesSearch(machine, q) {
+      if (!q) return true;
+      const hay = [
+        machine.machine_no,
+        machine.machine_category,
+        (machine.jobs || [])
+          .map(function (j) {
+            return [j.process_sheet_no, j.job_no, j.operation_name].join(" ");
           })
-          .join("");
+          .join(" "),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return hay.indexOf(q) >= 0;
+    }
 
-        list.querySelectorAll(".sm-ops-card").forEach(function (card, idx) {
-          const item = items[idx];
-          card.querySelector(".sm-ops-ticket").addEventListener("click", function () {
-            openTicketDialog(item);
-          });
+    function render() {
+      const q = ((searchEl && searchEl.value) || "").trim().toLowerCase();
+      const shown = machines.filter(function (m) {
+        return matchesSearch(m, q);
+      });
+      if (!shown.length) {
+        list.innerHTML =
+          '<div class="sm-ops-empty"><p class="sm-muted">' +
+          (machines.length
+            ? "No machines match that search."
+            : "No machines assigned. Ask a planner to map machines to your login.") +
+          "</p></div>";
+        return;
+      }
+
+      function cardHtml(m, idx) {
+          const jobs = m.jobs || [];
+          const head = jobs[0];
+          const tickets = Number(m.open_ticket_count || 0);
+          const ho = m.handover;
+          const ps = head ? encodeURIComponent(head.process_sheet_no || head.job_no || "") : "";
+          const jobHtml = jobs
+            .map(function (job, jIdx) {
+              const jTickets = Number(job.open_ticket_count || 0);
+              return (
+                '<div class="sm-ops-job" data-machine="' +
+                idx +
+                '" data-job="' +
+                jIdx +
+                '">' +
+                '<div class="sm-ops-job-row">' +
+                "<div>" +
+                '<div class="sm-ops-ps">Q' +
+                escapeHtml(job.queue_position) +
+                " · PS " +
+                escapeHtml(job.process_sheet_no || job.job_no || "-") +
+                "</div>" +
+                '<div class="sm-muted">' +
+                escapeHtml(job.operation_name || "Operation") +
+                (job.source_op_no ? " · Op " + escapeHtml(job.source_op_no) : "") +
+                "</div>" +
+                '<div class="sm-muted">Remaining ' +
+                escapeHtml(job.remaining_qty != null ? job.remaining_qty : "-") +
+                " / planned " +
+                escapeHtml(job.scheduled_qty != null ? job.scheduled_qty : "-") +
+                (job.execution_status || job.block_status
+                  ? " · " + escapeHtml(job.execution_status || job.block_status)
+                  : "") +
+                "</div>" +
+                (jTickets
+                  ? '<span class="sm-badge urgent">' + jTickets + " ticket" + (jTickets === 1 ? "" : "s") + "</span>"
+                  : "") +
+                "</div>" +
+                '<button type="button" class="sm-btn sm-btn-ghost sm-ops-ticket">Ticket</button>' +
+                "</div></div>"
+              );
+            })
+            .join("");
+
+          return (
+            '<article class="sm-ops-machine' +
+            (jobs.length ? "" : " is-idle") +
+            '" data-machine="' +
+            idx +
+            '">' +
+            '<div class="sm-ops-machine-head">' +
+            '<div class="sm-ops-machine-title">' +
+            "<strong>" +
+            escapeHtml(m.machine_no) +
+            "</strong>" +
+            badgeForHandover(ho) +
+            (tickets
+              ? '<span class="sm-badge urgent">' + tickets + " ticket" + (tickets === 1 ? "" : "s") + "</span>"
+              : "") +
+            "</div>" +
+            '<div class="sm-ops-actions">' +
+            '<a class="sm-btn sm-btn-primary" href="' +
+            SM.appPath +
+            "/entry/" +
+            m.machine_id +
+            (ps ? "?ps=" + ps : "") +
+            '">Handover</a>' +
+            "</div></div>" +
+            (jobs.length
+              ? jobHtml +
+                (m.queue_count > jobs.length
+                  ? '<p class="sm-muted sm-ops-more">+' +
+                    (m.queue_count - jobs.length) +
+                    " more on queue</p>"
+                  : "")
+              : '<p class="sm-muted">No active queue job. Still hand over machine status.</p>') +
+            "</article>"
+          );
+      }
+
+      const busy = [];
+      const idle = [];
+      shown.forEach(function (m, idx) {
+        if ((m.jobs || []).length) busy.push({ m: m, idx: idx });
+        else idle.push({ m: m, idx: idx });
+      });
+      list.innerHTML =
+        busy.map(function (row) { return cardHtml(row.m, row.idx); }).join("") +
+        (idle.length
+          ? '<button type="button" class="sm-btn sm-btn-ghost sm-btn-block" id="sm-ops-idle-toggle">Show ' +
+            idle.length +
+            " idle machine" +
+            (idle.length === 1 ? "" : "s") +
+            "</button>" +
+            '<div id="sm-ops-idle" hidden>' +
+            idle.map(function (row) { return cardHtml(row.m, row.idx); }).join("") +
+            "</div>"
+          : "");
+
+      const idleToggle = document.getElementById("sm-ops-idle-toggle");
+      const idleBox = document.getElementById("sm-ops-idle");
+      if (idleToggle && idleBox) {
+        idleToggle.addEventListener("click", function () {
+          idleBox.hidden = !idleBox.hidden;
+          idleToggle.textContent = idleBox.hidden
+            ? "Show " + idle.length + " idle machine" + (idle.length === 1 ? "" : "s")
+            : "Hide idle machines";
         });
+      }
+
+      list.querySelectorAll(".sm-ops-ticket").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          const jobEl = btn.closest(".sm-ops-job");
+          const card = btn.closest(".sm-ops-machine");
+          const mIdx = Number((jobEl || card).dataset.machine);
+          const machine = shown[mIdx];
+          const job = jobEl ? machine.jobs[Number(jobEl.dataset.job)] : (machine.jobs || [])[0];
+          openTicketDialog(machine, job);
+        });
+      });
+    }
+
+    async function load() {
+      list.innerHTML = '<p class="sm-muted">Loading…</p>';
+      if (dateEl) rememberContext(dateEl.value, shift);
+      try {
+        const q = new URLSearchParams({
+          date: (dateEl && dateEl.value) || rememberedDate(),
+          shift: shift,
+        });
+        const data = await api("/api/shift-management/ops-queue?" + q.toString());
+        meta = data.meta || meta;
+        shift = normalizeShiftClient(data.shift_out || shift);
+        paintShiftChips();
+        machines = data.machines || [];
+        render();
       } catch (err) {
-        list.innerHTML = '<p class="sm-muted">' + escapeHtml(err.message) + "</p>";
+        list.innerHTML =
+          '<div class="sm-ops-empty"><p class="sm-muted">' +
+          escapeHtml(err.message) +
+          '</p><button type="button" class="sm-btn sm-btn-ghost" id="sm-ops-retry">Retry</button></div>';
+        const retry = document.getElementById("sm-ops-retry");
+        if (retry) retry.addEventListener("click", load);
       }
     }
 
     document.getElementById("sm-ops-refresh").addEventListener("click", load);
+    document.querySelectorAll("#sm-ops-shift-chips .sm-chip").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        shift = btn.dataset.shift;
+        paintShiftChips();
+        load();
+      });
+    });
+    if (dateEl) dateEl.addEventListener("change", load);
+    if (searchEl) searchEl.addEventListener("input", render);
     document.getElementById("sm-tk-cancel").addEventListener("click", function () {
       if (dialog) dialog.close();
     });
-    form.addEventListener("submit", async function (e) {
+    if (form) form.addEventListener("submit", async function (e) {
       e.preventDefault();
       const status = document.getElementById("sm-tk-status");
       try {
         status.hidden = false;
-        status.textContent = "Creating�";
+        status.textContent = "Creating…";
         await api("/api/shift-management/tickets", {
           method: "POST",
           body: JSON.stringify({
@@ -531,8 +681,8 @@
             priority: document.getElementById("sm-tk-priority").value,
             title: document.getElementById("sm-tk-title").value,
             description: document.getElementById("sm-tk-desc").value,
-            work_date: rememberedDate(),
-            shift_out: rememberedShift(),
+            work_date: (dateEl && dateEl.value) || rememberedDate(),
+            shift_out: shift,
           }),
         });
         toast("Ticket created");
@@ -544,9 +694,7 @@
       }
     });
 
-    try {
-      meta = await api("/api/shift-management/meta");
-    } catch (_) {}
+    paintShiftChips();
     load();
   }
 
@@ -665,9 +813,9 @@
           .map(function (j) {
             const label =
               (j.process_sheet_no || j.job_no || "Job") +
-              " � Q" +
+              " · Q" +
               j.queue_position +
-              " � rem " +
+              " · rem " +
               (j.remaining_qty != null ? j.remaining_qty : "-");
             const val = j.process_sheet_no || j.job_no || "";
             const selected = handover.job_no && handover.job_no === val;
@@ -706,9 +854,9 @@
             escapeHtml(t.title) +
             '<br><span class="sm-muted">' +
             escapeHtml(t.status) +
-            " � " +
+            " · " +
             escapeHtml(t.priority) +
-            " � PS " +
+            " · PS " +
             escapeHtml(t.process_sheet_no || t.job_no || "-") +
             "</span></span>" +
             '<button type="button" class="sm-btn sm-btn-ghost sm-close-ticket" data-id="' +
@@ -747,7 +895,7 @@
                 '<div class="sm-comment">' +
                 '<div class="sm-muted">' +
                 escapeHtml(c.display_name || c.username || "User") +
-                " � " +
+                " · " +
                 escapeHtml(c.created_at || "") +
                 "</div>" +
                 "<div>" +
@@ -773,7 +921,7 @@
         escapeHtml(handover.work_date) +
         " | " +
         escapeHtml(handover.shift_out) +
-        " ? " +
+        " → " +
         escapeHtml(handover.shift_in || "") +
         "</div>" +
         "<div>Status: <strong>" +
@@ -816,7 +964,7 @@
     function syncForm() {
       document.getElementById("sm-entry-machine").textContent =
         (handover.machine_no || "Machine") +
-        " � " +
+        " · " +
         (handover.shift_out || "") +
         (handover.status !== "draft" ? " | " + handover.status : "");
       document.getElementById("sm-job-no").value = handover.job_no || "";
@@ -1095,7 +1243,7 @@
         escapeHtml(ho.work_date) +
         " | " +
         escapeHtml(ho.shift_out) +
-        " ? " +
+        " → " +
         escapeHtml(ho.shift_in || "") +
         " | " +
         escapeHtml(ho.status) +
@@ -1317,7 +1465,7 @@
                   "</td>" +
                   "<td>" +
                   escapeHtml(h.shift_out) +
-                  (h.shift_in ? "?" + escapeHtml(h.shift_in) : "") +
+                  (h.shift_in ? " → " + escapeHtml(h.shift_in) : "") +
                   "</td>" +
                   "<td>" +
                   escapeHtml(h.status) +
@@ -1351,12 +1499,23 @@
     load();
   }
 
-  document.addEventListener("DOMContentLoaded", function () {
-    if (SM.page === "home") initHome();
-    else if (SM.page === "ops") initOps();
-    else if (SM.page === "entry") initEntry();
-    else if (SM.page === "ack") initAck();
-    else if (SM.page === "dashboard") initDashboard();
-    else if (SM.page === "history") initHistory();
-  });
+  function currentPage() {
+    return SM.page || (document.body && document.body.getAttribute("data-page")) || "";
+  }
+
+  function boot() {
+    const page = currentPage();
+    if (page === "home") initHome();
+    else if (page === "ops") initOps();
+    else if (page === "entry") initEntry();
+    else if (page === "ack") initAck();
+    else if (page === "dashboard") initDashboard();
+    else if (page === "history") initHistory();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
 })();

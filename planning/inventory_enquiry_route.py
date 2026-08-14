@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 inventory_enquiry_bp = Blueprint("inventory_enquiry", __name__)
 
 _CACHE_TTL_SEC = 300
-_CACHE_VERSION = 4
+_CACHE_VERSION = 5
 _cache: tuple[float, int, list[dict[str, Any]]] | None = None
 _lot_cache: tuple[float, int, list[dict[str, Any]]] | None = None
 
@@ -40,17 +40,26 @@ ORDER BY
 """
 
 _LOT_REF_SQL = """
-SELECT DISTINCT inventory_code, reference_no
+SELECT
+    inventory_code,
+    reference_no,
+    COUNT(*) AS lot_line_count,
+    COUNT(DISTINCT lot_no) AS batch_count,
+    SUM(COALESCE(remaining_qty, 0)) AS remaining_qty,
+    SUM(COALESCE(original_qty, 0)) AS original_qty,
+    SUM(COALESCE(allocation_qty, 0)) AS allocation_qty,
+    SUM(COALESCE(available_qty, 0)) AS available_qty
 FROM public.ic_inventory_ost_lot
 WHERE inventory_code IS NOT NULL
   AND BTRIM(inventory_code) <> ''
   AND reference_no IS NOT NULL
   AND BTRIM(reference_no) <> ''
   AND (COALESCE(remaining_qty, 0) > 0 OR COALESCE(allocation_qty, 0) > 0)
+GROUP BY inventory_code, reference_no
 ORDER BY inventory_code, reference_no
 """
 
-_LOT_DETAIL_SQL = """
+_LOT_DETAIL_SELECT = """
 SELECT
     o.inventory_code,
     o.lot_no,
@@ -67,6 +76,9 @@ SELECT
 FROM public.ic_inventory_ost_lot o
 LEFT JOIN public.mt_location l
     ON l.location_code = o.source_location_code
+"""
+
+_LOT_DETAIL_SQL = _LOT_DETAIL_SELECT + """
 WHERE o.inventory_code IS NOT NULL
   AND BTRIM(o.inventory_code) <> ''
   AND o.reference_no IS NOT NULL
@@ -93,35 +105,63 @@ def _enrich_inventory_row(
     row: dict[str, Any],
     *,
     lot_reference_nos: list[str] | None = None,
+    lot_summaries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     out = serialize_row(row)
     out["class_key"] = _class_key(out)
-    if lot_reference_nos is not None:
+    if lot_summaries is not None:
+        out["lot_summaries"] = lot_summaries
+        out["lot_reference_nos"] = [
+            compact_text(item.get("reference_no"))
+            for item in lot_summaries
+            if compact_text(item.get("reference_no"))
+        ]
+    elif lot_reference_nos is not None:
         out["lot_reference_nos"] = lot_reference_nos
     return out
 
 
-def _fetch_lot_reference_map() -> dict[str, list[str]]:
-    refs_by_code: dict[str, list[str]] = {}
+def _lot_summary_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    ref = compact_text(row.get("reference_no"))
+    if not ref:
+        return None
+    return {
+        "reference_no": ref,
+        "batch_count": int(row.get("batch_count") or 0),
+        "lot_line_count": int(row.get("lot_line_count") or 0),
+        "remaining_qty": row.get("remaining_qty") or 0,
+        "original_qty": row.get("original_qty") or 0,
+        "allocation_qty": row.get("allocation_qty") or 0,
+        "available_qty": row.get("available_qty") or 0,
+    }
+
+
+def _fetch_lot_reference_map() -> dict[str, list[dict[str, Any]]]:
+    refs_by_code: dict[str, list[dict[str, Any]]] = {}
     for row in live_query(_LOT_REF_SQL):
-        code = compact_text(row.get("inventory_code"))
-        ref = compact_text(row.get("reference_no"))
-        if not code or not ref:
+        code = compact_text(row.get("inventory_code")).upper()
+        summary = _lot_summary_from_row(row)
+        if not code or not summary:
             continue
-        refs_by_code.setdefault(code, []).append(ref)
+        refs_by_code.setdefault(code, []).append(summary)
     return refs_by_code
 
 
 def _attach_lot_references(
     rows: list[dict[str, Any]],
-    refs_by_code: dict[str, list[str]],
+    refs_by_code: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in rows:
-        code = compact_text(row.get("inventory_code"))
-        refs = refs_by_code.get(code, [])
+        code = compact_text(row.get("inventory_code")).upper()
+        summaries = list(refs_by_code.get(code, []))
         enriched = dict(row)
-        enriched["lot_reference_nos"] = refs
+        enriched["lot_summaries"] = summaries
+        enriched["lot_reference_nos"] = [
+            compact_text(item.get("reference_no"))
+            for item in summaries
+            if compact_text(item.get("reference_no"))
+        ]
         out.append(enriched)
     return out
 
@@ -222,6 +262,7 @@ def _fetch_inventory(*, refresh: bool = False) -> list[dict[str, Any]]:
 
 def _serialize_lot_row(row: dict[str, Any]) -> dict[str, Any]:
     out = serialize_row(row)
+    out["batch_no"] = compact_text(out.get("lot_no"))
     out["lot_key"] = "|".join(
         [
             compact_text(out.get("inventory_code")),
@@ -255,12 +296,35 @@ def _filter_lots_by_codes(
 ) -> list[dict[str, Any]]:
     if not codes:
         return lots
-    code_set = set(codes)
+    code_set = {compact_text(code).upper() for code in codes if compact_text(code)}
     return [
         lot
         for lot in lots
-        if compact_text(lot.get("inventory_code")) in code_set
+        if compact_text(lot.get("inventory_code")).upper() in code_set
     ]
+
+
+def _fetch_lot_details_for_codes(codes: list[str]) -> list[dict[str, Any]]:
+    normalized = [compact_text(code).upper() for code in codes if compact_text(code)]
+    if not normalized:
+        return []
+    placeholders = ",".join(["%s"] * len(normalized))
+    sql = (
+        _LOT_DETAIL_SELECT
+        + f"""
+WHERE o.inventory_code IS NOT NULL
+  AND BTRIM(o.inventory_code) <> ''
+  AND UPPER(BTRIM(o.inventory_code)) IN ({placeholders})
+  AND o.reference_no IS NOT NULL
+  AND BTRIM(o.reference_no) <> ''
+ORDER BY
+    o.inventory_code,
+    o.reference_no,
+    o.source_location_code,
+    o.lot_no
+"""
+    )
+    return [_serialize_lot_row(row) for row in live_query(sql, tuple(normalized))]
 
 
 @inventory_enquiry_bp.get("/planning-data/inventory-enquiry")
@@ -374,13 +438,13 @@ def api_inventory_enquiry_lots():
     codes = _parse_codes_filter()
 
     try:
-        lots = _fetch_lot_details(refresh=refresh)
+        if codes:
+            lots = _fetch_lot_details_for_codes(codes)
+        else:
+            lots = _fetch_lot_details(refresh=refresh)
     except Exception as exc:
         logger.exception("inventory enquiry lot query failed")
         return jsonify({"error": f"ERP lot query failed: {exc}"}), 502
-
-    if codes:
-        lots = _filter_lots_by_codes(lots, codes)
 
     cached_at = _lot_cache[0] if _lot_cache else time.time()
     return jsonify(

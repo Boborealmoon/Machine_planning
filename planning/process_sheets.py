@@ -4381,7 +4381,9 @@ _TOOLING_DEFAULTS_APPLIED = False
 
 
 def _apply_tooling_assumed_ready_defaults(con):
-    """One-time idempotent fix: assume tooling unless explicitly flagged (tooling_ready_date set)."""
+    """One-time data fix. Do not call from board/catalog read paths — ALTER TABLE
+    takes an exclusive lock on planner_operation and can stall planner load ~30s.
+    """
     global _TOOLING_DEFAULTS_APPLIED, _TOOLING_COLUMN_CACHE
     if _TOOLING_DEFAULTS_APPLIED:
         return
@@ -4468,7 +4470,6 @@ def _ensure_tooling_columns(con):
 
 def tooling_map_for_operation_ids(con, operation_ids):
     """Return {operation_id: bool}; defaults True — False only for flagged exceptions."""
-    _apply_tooling_assumed_ready_defaults(con)
     flags = _tooling_column_flags(con)
     ids = sorted({int(i) for i in (operation_ids or []) if int(i or 0) > 0})
     if not ids:
@@ -4494,7 +4495,6 @@ def tooling_map_for_operation_ids(con, operation_ids):
 
 def tooling_map_for_ps_op_keys(con, keys):
     """Return {(planner_ps_id, source_op_seq_id): bool}; defaults True — False only for exceptions."""
-    _apply_tooling_assumed_ready_defaults(con)
     flags = _tooling_column_flags(con)
     normalized = []
     seen = set()

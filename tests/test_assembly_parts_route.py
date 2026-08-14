@@ -212,6 +212,66 @@ def test_serialize_overlay_date_accepts_date_and_datetime():
     assert parts._serialize_overlay_date("2026-08-06") == "2026-08-06"
 
 
+def test_json_safe_decimal_and_date():
+    from datetime import date
+    from decimal import Decimal
+
+    payload = parts._json_safe(
+        {
+            "so_det_qty": Decimal("12.5"),
+            "due": date(2026, 8, 14),
+            "children": [{"qty_shipped": Decimal("1")}],
+        }
+    )
+    assert payload["so_det_qty"] == 12.5
+    assert payload["due"] == "2026-08-14"
+    assert payload["children"][0]["qty_shipped"] == 1.0
+
+
+def test_complete_view_uses_planner_cache_not_live(monkeypatch):
+    hierarchy = [
+        {
+            "type": "FG",
+            "pp_voucher_no": "APS26-0053",
+            "process_sheet_no": "APS26-0053",
+            "inventory_code": "KIT-001",
+            "total_qty": 5,
+        },
+        {
+            "type": "COMP",
+            "pp_voucher_no": "APS26-0053",
+            "process_sheet_no": "APS26-0053-1",
+            "inventory_code": "CHILD-A",
+            "total_qty": 5,
+        },
+    ]
+
+    monkeypatch.setattr(
+        parts,
+        "_load_complete_from_cache",
+        lambda: ([_root(status="History")], hierarchy),
+    )
+    monkeypatch.setattr(parts, "_load_bom", lambda part_nos, view: [])
+    monkeypatch.setattr(
+        parts,
+        "_timed_live_query",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("live ERP should not run")),
+    )
+    monkeypatch.setattr(parts, "_enrich_families", lambda jobs: jobs)
+
+    jobs = parts._fetch_assembly_parts_uncached(view="complete")
+    assert len(jobs) == 1
+    assert jobs[0]["children"][0]["process_sheet_no"] == "APS26-0053-1"
+
+
+def test_query_failed_timeout_message():
+    class QueryCanceled(Exception):
+        pass
+
+    assert parts._query_failed_timeout(QueryCanceled("canceling statement due to statement timeout"))
+    assert parts._query_failed_timeout(RuntimeError("other")) is None
+
+
 def test_api_assembly_parts_serializes(monkeypatch):
     sample = build_assembly_jobs(
         [_root()],

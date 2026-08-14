@@ -28,7 +28,7 @@ def api_so_outstanding_balance():
         from .process_sheets import fetch_so_line_pricing_map
         from .sales_orders_route import _fetch_sales_orders, _job_count
 
-        payload = _fetch_sales_orders(refresh=refresh)
+        payload = _fetch_sales_orders(refresh=refresh, active_only=True)
         orders = list(payload.get("active") or [])
         pricing = fetch_so_line_pricing_map(pricing_keys_from_orders(orders))
         result = build_outstanding_balance(orders, pricing)

@@ -76,10 +76,10 @@ def warm_erp_read_caches() -> dict:
     try:
         from planning.sales_orders_route import _fetch_sales_orders
 
-        data = _fetch_sales_orders(refresh=True)
+        data = _fetch_sales_orders(refresh=True, active_only=True)
         warmed["sales_orders"] = {
             "active": len(data.get("active") or []),
-            "complete": len(data.get("complete") or []),
+            "complete": int(data.get("complete_job_count") or 0),
         }
     except Exception as exc:
         logger.warning("sales orders cache warm failed: %s", exc, exc_info=True)

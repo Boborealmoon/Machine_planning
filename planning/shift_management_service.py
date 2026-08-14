@@ -552,16 +552,25 @@ def list_active_machines(con, machine_ids: list[int] | None = None) -> list[dict
     )
 
 
-def queue_blocks_for_machines(con, machine_ids: list[int] | None = None) -> list[dict]:
+OPS_QUEUE_DEPTH = 6
+
+
+def queue_blocks_for_machines(
+    con,
+    machine_ids: list[int] | None = None,
+    *,
+    per_machine_limit: int | None = None,
+) -> list[dict]:
     """Active machining-queue blocks with process sheet / remaining qty."""
     clauses = ["b.active IS TRUE"]
     params: list[Any] = []
     if machine_ids is not None:
+        if not machine_ids:
+            return []
         clauses.append("b.machine_id = ANY(%s)")
         params.append(machine_ids)
-    data = rows(
-        con.execute(
-            f"""
+    limit_n = int(per_machine_limit) if per_machine_limit else 0
+    inner_sql = f"""
             SELECT
                 b.block_id,
                 b.machine_id,
@@ -583,16 +592,19 @@ def queue_blocks_for_machines(con, machine_ids: list[int] | None = None) -> list
                 qs.reject_qty AS qs_reject_qty,
                 qs.schedule_status AS qs_schedule_status,
                 qs.execution_status AS qs_execution_status
+                {", ROW_NUMBER() OVER (PARTITION BY b.machine_id ORDER BY b.queue_position, b.block_id) AS rn" if limit_n else ""}
             FROM public.planner_run_block b
             JOIN public.planner_machines m ON m.machine_id = b.machine_id
             JOIN public.planner_operation o ON o.operation_id = b.operation_id
             LEFT JOIN public.planner_machine_queue_state qs ON qs.block_id = b.block_id
             WHERE {" AND ".join(clauses)}
-            ORDER BY m.machine_no, b.queue_position, b.block_id
-            """,
-            tuple(params),
-        )
-    )
+    """
+    if limit_n > 0:
+        params.append(limit_n)
+        sql = f"SELECT * FROM ({inner_sql}) q WHERE q.rn <= %s ORDER BY q.machine_no, q.queue_position, q.block_id"
+    else:
+        sql = inner_sql + " ORDER BY m.machine_no, b.queue_position, b.block_id"
+    data = rows(con.execute(sql, tuple(params)))
     out = []
     for r in data:
         ps = display_ps_id(r.get("source_ps_id"), r.get("job_no"))
@@ -632,6 +644,8 @@ def open_ticket_counts(con, machine_ids: list[int] | None = None) -> dict[tuple[
     clauses = ["status IN ('open', 'in_progress')"]
     params: list[Any] = []
     if machine_ids is not None:
+        if not machine_ids:
+            return {}
         clauses.append("machine_id = ANY(%s)")
         params.append(machine_ids)
     data = rows(
@@ -657,6 +671,8 @@ def open_ticket_count_by_machine(con, machine_ids: list[int] | None = None) -> d
     clauses = ["status IN ('open', 'in_progress')"]
     params: list[Any] = []
     if machine_ids is not None:
+        if not machine_ids:
+            return {}
         clauses.append("machine_id = ANY(%s)")
         params.append(machine_ids)
     data = rows(
@@ -678,14 +694,88 @@ def queue_head_for_machine(con, machine_id: int) -> dict[str, Any] | None:
     return blocks[0] if blocks else None
 
 
-def ops_queue_payload(con, user: dict[str, Any]) -> dict[str, Any]:
+def group_ops_machines(
+    machines: list[dict],
+    blocks: list[dict],
+    handovers_by_machine: dict[int, dict | None],
+    ticket_counts: dict[tuple[int, str], int],
+    machine_ticket_counts: dict[int, int],
+) -> list[dict]:
+    """Group queue jobs under machines and attach handover / ticket counts."""
+    jobs_by_machine: dict[int, list[dict]] = {}
+    for raw in blocks:
+        item = dict(raw)
+        mid = int(item["machine_id"])
+        ps = compact_text(item.get("process_sheet_no"))
+        item["open_ticket_count"] = ticket_counts.get((mid, ps), 0)
+        jobs_by_machine.setdefault(mid, []).append(item)
+
+    grouped: list[dict] = []
+    for m in machines:
+        mid = int(m["machine_id"])
+        jobs = jobs_by_machine.get(mid) or []
+        grouped.append(
+            {
+                "machine_id": mid,
+                "machine_no": m.get("machine_no"),
+                "machine_category": m.get("machine_category"),
+                "handover": handovers_by_machine.get(mid),
+                "open_ticket_count": machine_ticket_counts.get(mid, 0),
+                "queue_count": len(jobs),
+                "jobs": jobs,
+            }
+        )
+    grouped.sort(key=lambda row: (0 if row["jobs"] else 1, str(row.get("machine_no") or "")))
+    return grouped
+
+
+def _handovers_for_shift(
+    con, work_date: date, shift_out: str, machine_ids: list[int]
+) -> dict[int, dict]:
+    if not machine_ids:
+        return {}
+    data = rows(
+        con.execute(
+            """
+            SELECT handover_id, machine_id, status, priority, job_no, machine_status,
+                   remaining_qty, quality_issue_flag, alarm_flag, maintenance_flag
+            FROM public.shift_mgmt_handovers
+            WHERE work_date = %s AND shift_out = %s AND machine_id = ANY(%s)
+            """,
+            (work_date, shift_out, machine_ids),
+        )
+    )
+    return {int(r["machine_id"]): serialize_handover(r) for r in data}
+
+
+def ops_queue_payload(
+    con,
+    user: dict[str, Any],
+    *,
+    work_date: date | None = None,
+    shift_out: str | None = None,
+) -> dict[str, Any]:
+    work_date = work_date or date.today()
+    shift_out = normalize_shift(shift_out)
     ids = machine_ids_for_user(con, user)
-    blocks = queue_blocks_for_machines(con, ids)
-    counts = open_ticket_counts(con, ids)
-    for b in blocks:
-        ps = compact_text(b.get("process_sheet_no"))
-        b["open_ticket_count"] = counts.get((int(b["machine_id"]), ps), 0)
-    return {"items": blocks, "meta": meta_constants()}
+    machines = list_active_machines(con, ids)
+    mids = [int(m["machine_id"]) for m in machines]
+    blocks = queue_blocks_for_machines(con, mids, per_machine_limit=OPS_QUEUE_DEPTH)
+    counts = open_ticket_counts(con, mids)
+    machine_ticket_counts = open_ticket_count_by_machine(con, mids)
+    handovers = _handovers_for_shift(con, work_date, shift_out, mids)
+    grouped = group_ops_machines(machines, blocks, handovers, counts, machine_ticket_counts)
+    items = []
+    for row in grouped:
+        for job in row["jobs"]:
+            items.append(job)
+    return {
+        "work_date": work_date.isoformat(),
+        "shift_out": shift_out,
+        "machines": grouped,
+        "items": items,
+        "meta": meta_constants(),
+    }
 
 
 def list_machines_for_user(con, user: dict[str, Any], work_date: date, shift_out: str) -> list[dict]:

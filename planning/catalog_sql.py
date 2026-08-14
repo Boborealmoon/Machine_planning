@@ -94,13 +94,81 @@ CATALOG_PLANNER_SOURCE_TOTALS_CTE = """
             )"""
 
 
-def catalog_erp_cache_with_clause(*, assigned: bool) -> str:
-    """WITH clause prefix for trial_catalog_items ERP rollups."""
-    parts = [
-        catalog_voucher_partials_cte(include_current_stage=assigned),
-    ]
-    if assigned:
-        parts.extend([CATALOG_VOUCHER_STAGE_OUTPUTS_CTE, CATALOG_VOUCHER_OP_OUTPUTS_CTE])
+def _empty_voucher_partials_cte(*, include_current_stage: bool) -> str:
+    stage_cols = (
+        """
+                NULL::integer AS current_stage_no,
+                NULL::text AS current_stage_desc,
+                NULL::text AS current_stage_status,"""
+        if include_current_stage
+        else ""
+    )
+    return f"""
+            voucher_partials AS (
+                SELECT
+                    NULL::text AS ps_id,
+                    NULL::integer AS pp_partial_no,
+                    NULL::text AS part_no,
+                    NULL::text AS description,
+                    NULL::date AS due_date,
+                    NULL::text AS erp_status,
+                    NULL::text AS execution_status,{stage_cols}
+                    NULL::numeric AS total_qty,
+                    NULL::numeric AS partial_qty,
+                    NULL::text AS source_line_item_no,
+                    NULL::numeric AS wo_qty_produced,
+                    NULL::numeric AS wo_qty_rejected,
+                    NULL::numeric AS qty_shipped,
+                    NULL::text AS erp_bom_code
+                WHERE FALSE
+            )"""
+
+
+CATALOG_EMPTY_VOUCHER_STAGE_OUTPUTS_CTE = """
+            voucher_stage_outputs AS (
+                SELECT
+                    NULL::text AS ps_id,
+                    NULL::integer AS pp_partial_no,
+                    NULL::integer AS stage_no,
+                    NULL::text AS stage_desc,
+                    NULL::numeric AS wo_qty_required,
+                    NULL::numeric AS wo_qty_produced,
+                    NULL::numeric AS wo_qty_rejected,
+                    NULL::text AS execution_status
+                WHERE FALSE
+            )"""
+
+
+CATALOG_EMPTY_VOUCHER_OP_OUTPUTS_CTE = """
+            voucher_op_outputs AS (
+                SELECT
+                    NULL::text AS ps_id,
+                    NULL::integer AS pp_partial_no,
+                    NULL::text AS op_no_text,
+                    NULL::numeric AS wo_qty_produced,
+                    NULL::numeric AS wo_qty_rejected,
+                    NULL::text AS execution_status
+                WHERE FALSE
+            )"""
+
+
+def catalog_erp_cache_with_clause(*, assigned: bool, empty: bool = False) -> str:
+    """WITH clause prefix for trial_catalog_items ERP rollups.
+
+    empty=True skips pp_vouchers_cache scans (temp-PS catalog merge on page load).
+    """
+    if empty:
+        parts = [_empty_voucher_partials_cte(include_current_stage=assigned)]
+        if assigned:
+            parts.extend(
+                [CATALOG_EMPTY_VOUCHER_STAGE_OUTPUTS_CTE, CATALOG_EMPTY_VOUCHER_OP_OUTPUTS_CTE]
+            )
+    else:
+        parts = [
+            catalog_voucher_partials_cte(include_current_stage=assigned),
+        ]
+        if assigned:
+            parts.extend([CATALOG_VOUCHER_STAGE_OUTPUTS_CTE, CATALOG_VOUCHER_OP_OUTPUTS_CTE])
     parts.extend(
         [
             catalog_source_totals_cte(include_current_stage=assigned),

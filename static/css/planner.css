@@ -630,6 +630,13 @@
     content-visibility: auto;
     contain-intrinsic-size: auto 120px;
   }
+  /* Author `display: grid` otherwise overrides the hidden attribute. */
+  .trial-catalog-ps.is-catalog-search-hidden,
+  .trial-catalog-planned-ps.is-catalog-search-hidden,
+  .trial-catalog-ps[hidden],
+  .trial-catalog-planned-ps[hidden] {
+    display: none !important;
+  }
   .trial-catalog-ps.overdue {
     border-color: rgba(239,68,68,0.18);
     border-left: 5px solid rgba(239,68,68,0.85);
@@ -3796,10 +3803,9 @@
     line-height: 1.35;
     flex-shrink: 0;
   }
-  .trial-queue-panel-list {
+  .trial-queue-panel-scroller {
     display: flex;
     flex-direction: column;
-    gap: 3px;
     flex: 1;
     min-height: 0;
     overflow-x: auto;
@@ -3808,6 +3814,12 @@
     padding-bottom: 8px;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
+  }
+  .trial-queue-panel-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-height: 0;
   }
   .trial-queue-list-head,
   .trial-queue-row {
@@ -10545,7 +10557,241 @@
   }
 
   .inv-enq-table .mi-cell--desc {
-    max-width: 280px;
+    max-width: 240px;
+  }
+
+  .inv-enq-detail.mi-detail {
+    --inv-detail-w: 72rem;
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100dvh;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    z-index: 4000;
+    display: grid;
+    grid-template-columns: minmax(2.5rem, 1fr) var(--inv-detail-w);
+  }
+
+  .inv-enq-detail .mi-detail-panel {
+    width: var(--inv-detail-w);
+    max-width: var(--inv-detail-w);
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .inv-enq-detail .mi-detail-head {
+    min-width: 0;
+    gap: 10px;
+    padding: 16px 16px 12px;
+  }
+
+  .inv-enq-detail .mi-detail-head > div:first-child {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .inv-enq-detail .mi-detail-title {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .inv-enq-detail .mi-detail-head .btn {
+    flex: 0 0 auto;
+  }
+
+  .inv-enq-detail .inv-lot-section-head {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .inv-lot-ref-summary-cell {
+    min-width: 220px;
+    max-width: 340px;
+    vertical-align: top;
+  }
+
+  .inv-lot-chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .inv-lot-chip {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    max-width: 100%;
+    padding: 4px 8px;
+    border: 1px solid #c7d7ea;
+    border-radius: 999px;
+    background: #f4f8fc;
+    color: #0f4c81;
+    font-size: 11px;
+    line-height: 1.25;
+    cursor: pointer;
+  }
+
+  .inv-lot-chip:hover,
+  .inv-lot-chip:focus-visible {
+    border-color: #2563eb;
+    background: #eff6ff;
+    outline: none;
+  }
+
+  .inv-lot-chip.is-match,
+  .inv-lot-chip.is-selected {
+    border-color: #2563eb;
+    background: #dbeafe;
+    box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.18);
+  }
+
+  .inv-lot-chip-ref {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-weight: 800;
+  }
+
+  .inv-lot-chip-qty {
+    font-weight: 800;
+    color: #0f766e;
+  }
+
+  .inv-lot-chip-meta {
+    font-weight: 700;
+    color: #64748b;
+  }
+
+  .inv-lot-chip--more {
+    font-weight: 800;
+    color: #334155;
+    background: #eef2f7;
+  }
+
+  .inv-lot-chip-empty {
+    color: #94a3b8;
+    font-weight: 600;
+  }
+
+  .inv-lot-group-list {
+    display: grid;
+    gap: 12px;
+  }
+
+  .inv-lot-group {
+    border: 1px solid #dbe4f0;
+    border-radius: 14px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    overflow: hidden;
+  }
+
+  .inv-lot-group.is-active {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.18), 0 10px 24px rgba(37, 99, 235, 0.08);
+  }
+
+  .inv-lot-group-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px 10px;
+  }
+
+  .inv-lot-group-sub {
+    margin: 4px 0 0;
+    font-size: 11px;
+    font-weight: 700;
+    color: #64748b;
+  }
+
+  .inv-lot-group-totals {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    min-width: 0;
+    flex: 1 1 58%;
+  }
+
+  .inv-lot-group-totals div {
+    min-width: 0;
+    padding: 6px 8px;
+    border-radius: 10px;
+    background: rgba(15, 23, 42, 0.04);
+  }
+
+  .inv-lot-group-totals span {
+    display: block;
+    margin-bottom: 2px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #94a3b8;
+  }
+
+  .inv-lot-group-totals strong {
+    font-size: 13px;
+    font-weight: 800;
+    color: #0f172a;
+  }
+
+  .inv-lot-group-totals div:first-child strong {
+    color: #0f766e;
+  }
+
+  .inv-lot-qty-wrap {
+    overflow-x: auto;
+  }
+
+  .inv-lot-qty-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+
+  .inv-lot-qty-table th,
+  .inv-lot-qty-table td {
+    padding: 7px 10px;
+    border-top: 1px solid #e2e8f0;
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  .inv-lot-qty-table td:nth-child(2) {
+    white-space: normal;
+    min-width: 12rem;
+    max-width: 22rem;
+    line-height: 1.35;
+  }
+
+  .inv-lot-qty-table th {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #64748b;
+    background: #f8fafc;
+  }
+
+  .inv-lot-qty-table .mi-cell--num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+  }
+
+  .inv-lot-qty-table tr.is-clickable {
+    cursor: pointer;
+  }
+
+  .inv-lot-qty-table tr.is-clickable:hover td {
+    background: #eff6ff;
+  }
+
+  .inv-lot-qty-table tr.is-selected td {
+    background: #dbeafe;
   }
 
   .inv-enq-qty--pos {
@@ -10728,18 +10974,31 @@
     font-size: 13px;
   }
 
+  @media (max-width: 76rem) {
+    .inv-enq-detail.mi-detail {
+      --inv-detail-w: calc(100vw - 2.5rem);
+    }
+  }
+
   @media (max-width: 720px) {
     .inv-lot-card-metrics,
-    .inv-lot-card-meta {
+    .inv-lot-card-meta,
+    .inv-lot-group-totals {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .inv-lot-card-head {
+    .inv-lot-card-head,
+    .inv-lot-group-head {
       flex-direction: column;
     }
 
     .inv-lot-card-loc {
       text-align: left;
+    }
+
+    .inv-enq-detail.mi-detail {
+      --inv-detail-w: 100%;
+      grid-template-columns: 1fr;
     }
   }
 

@@ -793,200 +793,292 @@ def build_catalog_flow_patch(con, planner_ps_id, bom_id, bom_code):
     }
 
 
-def trial_catalog_items(con, include_completed=False, planner_ps_ids=None):
+def _trial_catalog_temp_assigned_sql(ps_filter_clause: str) -> str:
+    """Temp-PS sidebar rows with no pp_vouchers_cache / ERP CTEs."""
+    qty = "COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)"
+    return f"""
+            SELECT ps.planner_ps_id AS planner_ps_id,
+                   ps.source_ps_id AS ps_id,
+                   ps.pp_partial_no,
+                   tps.source_pp_partial_no,
+                   tps.reject_qty,
+                   ps.inventory_code,
+                   ps.selected_bom_id, ps.planner_status, ps.status,
+                   ps.planned_qty,
+                   {qty} AS total_qty,
+                   {qty} AS partial_qty,
+                   COALESCE(sf.bom_code, '') AS selected_bom_code,
+                   '' AS erp_bom_code,
+                   COALESCE(ps.inventory_code, '') AS part_no,
+                   COALESCE(ps.inventory_code, '') AS part_desc,
+                   COALESCE(ps.inventory_code, '') AS part_name,
+                   tps.due_date::text AS due_date,
+                   NULL AS erp_status,
+                   NULL AS execution_status,
+                   NULL AS current_stage_no,
+                   '' AS current_stage_desc,
+                   '' AS current_stage_status,
+                   NULL AS qty_shipped,
+                   NULL AS source_line_item_no,
+                   pfs.op_seq_id AS op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
+                   pfs.machine_category, pfs.preferred_machine,
+                   pfs.cycle_time, pfs.setup_time, pfs.is_last_op,
+                   pfs.source_kind, pfs.source_stage_no,
+                   0 AS erp_required_qty,
+                   0 AS erp_finished_qty,
+                   0 AS erp_reject_qty,
+                   '' AS op_execution_status
+            FROM planner_process_sheet ps
+            LEFT JOIN planner_temp_process_sheet tps ON tps.planner_ps_id = ps.planner_ps_id
+            LEFT JOIN planner_bom_variation sf ON sf.bom_id = ps.selected_bom_id
+            LEFT JOIN planner_operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
+            WHERE COALESCE(ps.selected_bom_id, 0) > 0
+              AND (%s = 1 OR (
+                COALESCE(ps.planner_status, '') <> 'COMPLETED'
+                AND COALESCE(ps.status, '') <> 'COMPLETED'
+              )){ps_filter_clause}
+            ORDER BY tps.due_date, ps.source_ps_id, pfs.seq_no, pfs.op_seq_id
+    """
+
+
+def _trial_catalog_temp_unassigned_sql(ps_filter_clause: str) -> str:
+    qty = "COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)"
+    return f"""
+            SELECT ps.planner_ps_id AS planner_ps_id,
+                   ps.source_ps_id AS ps_id,
+                   ps.pp_partial_no,
+                   tps.source_pp_partial_no,
+                   tps.reject_qty,
+                   ps.inventory_code,
+                   ps.selected_bom_id, ps.planner_status, ps.status,
+                   ps.planned_qty,
+                   {qty} AS total_qty,
+                   {qty} AS partial_qty,
+                   '' AS selected_bom_code,
+                   '' AS erp_bom_code,
+                   COALESCE(ps.inventory_code, '') AS part_no,
+                   COALESCE(ps.inventory_code, '') AS part_desc,
+                   COALESCE(ps.inventory_code, '') AS part_name,
+                   tps.due_date::text AS due_date,
+                   NULL AS erp_status,
+                   NULL AS execution_status,
+                   NULL AS qty_shipped,
+                   NULL AS source_line_item_no
+            FROM planner_process_sheet ps
+            LEFT JOIN planner_temp_process_sheet tps ON tps.planner_ps_id = ps.planner_ps_id
+            WHERE COALESCE(ps.selected_bom_id, 0) = 0
+              AND (%s = 1 OR (
+                COALESCE(ps.planner_status, '') <> 'COMPLETED'
+                AND COALESCE(ps.status, '') <> 'COMPLETED'
+              )){ps_filter_clause}
+            ORDER BY tps.due_date, ps.source_ps_id
+    """
+
+
+def trial_catalog_items(con, include_completed=False, planner_ps_ids=None, *, skip_erp_cache=False, repair_boms=True):
     ps_filter_clause = ""
     ps_filter_params = []
     wanted_ps_ids = [compact_text(pid) for pid in (planner_ps_ids or []) if compact_text(pid)]
     if wanted_ps_ids:
         ps_filter_clause = " AND ps.planner_ps_id = ANY(%s)"
         ps_filter_params = [wanted_ps_ids]
-    for row in rows(
-        con.execute(
+    if repair_boms:
+        temp_repair_sql = """
+                SELECT planner_ps_id
+                FROM planner_process_sheet
+                WHERE planner_ps_id LIKE %s
+                  AND COALESCE(selected_bom_id, 0) = 0
             """
-            SELECT planner_ps_id
-            FROM planner_process_sheet
-            WHERE planner_ps_id LIKE %s
-              AND COALESCE(selected_bom_id, 0) = 0
-            """,
-            ("[Temp]%",),
-        )
-    ):
-        try:
-            _repair_temp_ps_bom_if_missing(con, row.get("planner_ps_id"))
-        except Exception:
-            pass
-    erp_bom_repair_clause = ""
-    erp_bom_repair_params = []
-    if wanted_ps_ids:
-        erp_bom_repair_clause = " AND ps.planner_ps_id = ANY(%s)"
-        erp_bom_repair_params = [wanted_ps_ids]
-    for row in rows(
-        con.execute(
-            f"""
-            SELECT ps.planner_ps_id
-            FROM planner_process_sheet ps
-            JOIN planner_bom_variation bv ON bv.bom_id = ps.selected_bom_id
-            WHERE ps.planner_ps_id NOT LIKE %s
-              AND COALESCE(ps.selected_bom_id, 0) > 0
-              {erp_bom_repair_clause}
-              AND (
-                UPPER(TRIM(COALESCE(bv.bom_code, ''))) = 'PLACEHOLDER'
-                OR UPPER(COALESCE(bv.bom_code, '')) LIKE %s
-                OR EXISTS (
-                  SELECT 1
-                  FROM planner_operation_seq s
-                  WHERE s.bom_id = ps.selected_bom_id
-                    AND UPPER(TRIM(COALESCE(s.op_type, ''))) = 'PLACEHOLDER'
-                )
-              )
-            """,
-            ("[Temp]%", *erp_bom_repair_params, "%TEMP-REWORK%"),
-        )
-    ):
-        try:
-            _repair_erp_ps_planner_bom_if_missing(con, row.get("planner_ps_id"))
-        except Exception:
-            pass
-    bom_stage_keys = _bom_op_stage_keys(con)
+        temp_repair_params = ["[Temp]%"]
+        if wanted_ps_ids:
+            temp_repair_sql += " AND planner_ps_id = ANY(%s)"
+            temp_repair_params.append(wanted_ps_ids)
+        for row in rows(con.execute(temp_repair_sql, tuple(temp_repair_params))):
+            try:
+                _repair_temp_ps_bom_if_missing(con, row.get("planner_ps_id"))
+            except Exception:
+                pass
+        erp_bom_repair_clause = ""
+        erp_bom_repair_params = []
+        if wanted_ps_ids:
+            erp_bom_repair_clause = " AND ps.planner_ps_id = ANY(%s)"
+            erp_bom_repair_params = [wanted_ps_ids]
+        for row in rows(
+            con.execute(
+                f"""
+                SELECT ps.planner_ps_id
+                FROM planner_process_sheet ps
+                JOIN planner_bom_variation bv ON bv.bom_id = ps.selected_bom_id
+                WHERE ps.planner_ps_id NOT LIKE %s
+                  AND COALESCE(ps.selected_bom_id, 0) > 0
+                  {erp_bom_repair_clause}
+                  AND (
+                    UPPER(TRIM(COALESCE(bv.bom_code, ''))) = 'PLACEHOLDER'
+                    OR UPPER(COALESCE(bv.bom_code, '')) LIKE %s
+                    OR EXISTS (
+                      SELECT 1
+                      FROM planner_operation_seq s
+                      WHERE s.bom_id = ps.selected_bom_id
+                        AND UPPER(TRIM(COALESCE(s.op_type, ''))) = 'PLACEHOLDER'
+                    )
+                  )
+                """,
+                ("[Temp]%", *erp_bom_repair_params, "%TEMP-REWORK%"),
+            )
+        ):
+            try:
+                _repair_erp_ps_planner_bom_if_missing(con, row.get("planner_ps_id"))
+            except Exception:
+                pass
+    bom_stage_keys = set() if skip_erp_cache else _bom_op_stage_keys(con)
     planned_qty_by_op, queued_machines_by_op = _catalog_lane_qty_maps(con)
     from .cycle_time_service import MasterTimeCache
 
-    master_cache = MasterTimeCache.load(con)
+    master_cache = MasterTimeCache() if skip_erp_cache else MasterTimeCache.load(con)
+    catalog_params = tuple([1 if include_completed else 0, *ps_filter_params])
 
-    # Process sheets that have a selected BOM (have ops to schedule). ERP cache
-    # has one row per partial/stage, so aggregate it before joining to planner
-    # steps; otherwise partial quantities and operation rows get multiplied.
-    records = rows(
-        con.execute(
-            """
-            {erp_cache_ctes}
-            SELECT ps.planner_ps_id AS planner_ps_id,
-                   ps.source_ps_id AS ps_id,
-                   ps.pp_partial_no,
-                   tps.source_pp_partial_no,
-                   tps.reject_qty,
-                   ps.inventory_code,
-                   ps.selected_bom_id, ps.planner_status, ps.status,
-                   ps.planned_qty,
-                   CASE WHEN ps.planner_ps_id LIKE '[Temp]%%'
-                        THEN COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)
-                        ELSE COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0)
-                   END AS total_qty,
-                   CASE WHEN ps.planner_ps_id LIKE '[Temp]%%'
-                        THEN COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)
-                        ELSE COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0)
-                   END AS partial_qty,
-                   sf.bom_code AS selected_bom_code,
-                   COALESCE(vp.erp_bom_code, '') AS erp_bom_code,
-                   COALESCE(st.part_no, vp.part_no) AS part_no,
-                   COALESCE(st.description, vp.description) AS part_desc,
-                   COALESCE(st.part_no, vp.part_no) AS part_name,
-                   COALESCE(tps.due_date, st.due_date, vp.due_date)::text AS due_date,
-                   COALESCE(st.erp_status, vp.erp_status) AS erp_status,
-                   COALESCE(st.execution_status, vp.execution_status) AS execution_status,
-                   COALESCE(st.current_stage_no, vp.current_stage_no) AS current_stage_no,
-                   COALESCE(st.current_stage_desc, vp.current_stage_desc) AS current_stage_desc,
-                   COALESCE(st.current_stage_status, vp.current_stage_status) AS current_stage_status,
-                   st.qty_shipped,
-                   st.source_line_item_no,
-                   pfs.op_seq_id AS op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
-                   pfs.machine_category, pfs.preferred_machine,
-                   pfs.cycle_time, pfs.setup_time, pfs.is_last_op,
-                   pfs.source_kind, pfs.source_stage_no,
-                   COALESCE(vso.wo_qty_required, 0) AS erp_required_qty,
-                   COALESCE(vso.wo_qty_produced, vop.wo_qty_produced, 0) AS erp_finished_qty,
-                   COALESCE(vso.wo_qty_rejected, vop.wo_qty_rejected, 0) AS erp_reject_qty,
-                   COALESCE(vso.execution_status, vop.execution_status, '') AS op_execution_status
-            FROM planner_process_sheet ps
-            LEFT JOIN planner_temp_process_sheet tps ON tps.planner_ps_id = ps.planner_ps_id
-            LEFT JOIN voucher_partials vp
-                   ON vp.ps_id = ps.source_ps_id
-                  AND vp.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
-            LEFT JOIN source_totals st ON st.ps_id = ps.source_ps_id
-            LEFT JOIN planner_source_totals pst ON pst.source_ps_id = ps.source_ps_id
-            LEFT JOIN planner_bom_variation sf ON sf.bom_id = ps.selected_bom_id
-            LEFT JOIN planner_operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
-            LEFT JOIN voucher_stage_outputs vso
-                   ON vso.ps_id = ps.source_ps_id
-                  AND vso.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
-                  AND COALESCE(pfs.source_stage_no, 0) > 0
-                  AND vso.stage_no = pfs.source_stage_no
-            LEFT JOIN voucher_op_outputs vop
-                   ON vop.ps_id = ps.source_ps_id
-                  AND vop.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
-                  AND vop.op_no_text = TRIM(COALESCE(pfs.op_no::text, ''))
-            WHERE COALESCE(ps.selected_bom_id, 0) > 0
-              AND (%s = 1 OR (
-                COALESCE(ps.planner_status, '') <> 'COMPLETED'
-                AND COALESCE(ps.status, '') <> 'COMPLETED'
-                AND (
-                  ps.planner_ps_id LIKE '[Temp]%%'
-                  OR UPPER(COALESCE(st.erp_status, vp.erp_status, '')) <> 'HISTORY'
-                )
-              )){ps_filter_clause}
-            ORDER BY COALESCE(tps.due_date, st.due_date, vp.due_date), ps.source_ps_id, pfs.seq_no, pfs.op_seq_id
-            """.format(
-                erp_cache_ctes=catalog_erp_cache_with_clause(assigned=True),
-                ps_filter_clause=ps_filter_clause,
-            ),
-            tuple([1 if include_completed else 0, *ps_filter_params]),
+    if skip_erp_cache:
+        records = rows(
+            con.execute(_trial_catalog_temp_assigned_sql(ps_filter_clause), catalog_params)
         )
-    )
-    # Process sheets without a BOM yet
-    unassigned_records = rows(
-        con.execute(
-            """
-            {erp_cache_ctes}
-            SELECT ps.planner_ps_id AS planner_ps_id,
-                   ps.source_ps_id AS ps_id,
-                   ps.pp_partial_no,
-                   tps.source_pp_partial_no,
-                   tps.reject_qty,
-                   ps.inventory_code,
-                   ps.selected_bom_id, ps.planner_status, ps.status,
-                   ps.planned_qty,
-                   CASE WHEN ps.planner_ps_id LIKE '[Temp]%%'
-                        THEN COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)
-                        ELSE COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0)
-                   END AS total_qty,
-                   CASE WHEN ps.planner_ps_id LIKE '[Temp]%%'
-                        THEN COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)
-                        ELSE COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0)
-                   END AS partial_qty,
-                   '' AS selected_bom_code,
-                   COALESCE(vp.erp_bom_code, '') AS erp_bom_code,
-                   COALESCE(st.part_no, vp.part_no) AS part_no,
-                   COALESCE(st.description, vp.description) AS part_desc,
-                   COALESCE(st.part_no, vp.part_no) AS part_name,
-                   COALESCE(tps.due_date, st.due_date, vp.due_date)::text AS due_date,
-                   COALESCE(st.erp_status, vp.erp_status) AS erp_status,
-                   COALESCE(st.execution_status, vp.execution_status) AS execution_status,
-                   st.qty_shipped,
-                   st.source_line_item_no
-            FROM planner_process_sheet ps
-            LEFT JOIN planner_temp_process_sheet tps ON tps.planner_ps_id = ps.planner_ps_id
-            LEFT JOIN voucher_partials vp
-                   ON vp.ps_id = ps.source_ps_id
-                  AND vp.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
-            LEFT JOIN source_totals st ON st.ps_id = ps.source_ps_id
-            LEFT JOIN planner_source_totals pst ON pst.source_ps_id = ps.source_ps_id
-            WHERE COALESCE(ps.selected_bom_id, 0) = 0
-              AND (%s = 1 OR (
-                COALESCE(ps.planner_status, '') <> 'COMPLETED'
-                AND COALESCE(ps.status, '') <> 'COMPLETED'
-                AND (
-                  ps.planner_ps_id LIKE '[Temp]%%'
-                  OR UPPER(COALESCE(st.erp_status, vp.erp_status, '')) <> 'HISTORY'
-                )
-              )){ps_filter_clause}
-            ORDER BY COALESCE(tps.due_date, st.due_date, vp.due_date), ps.source_ps_id
-            """.format(
-                erp_cache_ctes=catalog_erp_cache_with_clause(assigned=False),
-                ps_filter_clause=ps_filter_clause,
-            ),
-            tuple([1 if include_completed else 0, *ps_filter_params]),
+        unassigned_records = rows(
+            con.execute(_trial_catalog_temp_unassigned_sql(ps_filter_clause), catalog_params)
         )
-    )
+    else:
+        # Process sheets that have a selected BOM (have ops to schedule). ERP cache
+        # has one row per partial/stage, so aggregate it before joining to planner
+        # steps; otherwise partial quantities and operation rows get multiplied.
+        records = rows(
+            con.execute(
+                """
+                {erp_cache_ctes}
+                SELECT ps.planner_ps_id AS planner_ps_id,
+                       ps.source_ps_id AS ps_id,
+                       ps.pp_partial_no,
+                       tps.source_pp_partial_no,
+                       tps.reject_qty,
+                       ps.inventory_code,
+                       ps.selected_bom_id, ps.planner_status, ps.status,
+                       ps.planned_qty,
+                       CASE WHEN ps.planner_ps_id LIKE '[Temp]%%'
+                            THEN COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)
+                            ELSE COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0)
+                       END AS total_qty,
+                       CASE WHEN ps.planner_ps_id LIKE '[Temp]%%'
+                            THEN COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)
+                            ELSE COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0)
+                       END AS partial_qty,
+                       sf.bom_code AS selected_bom_code,
+                       COALESCE(vp.erp_bom_code, '') AS erp_bom_code,
+                       COALESCE(st.part_no, vp.part_no) AS part_no,
+                       COALESCE(st.description, vp.description) AS part_desc,
+                       COALESCE(st.part_no, vp.part_no) AS part_name,
+                       COALESCE(tps.due_date, st.due_date, vp.due_date)::text AS due_date,
+                       COALESCE(st.erp_status, vp.erp_status) AS erp_status,
+                       COALESCE(st.execution_status, vp.execution_status) AS execution_status,
+                       COALESCE(st.current_stage_no, vp.current_stage_no) AS current_stage_no,
+                       COALESCE(st.current_stage_desc, vp.current_stage_desc) AS current_stage_desc,
+                       COALESCE(st.current_stage_status, vp.current_stage_status) AS current_stage_status,
+                       st.qty_shipped,
+                       st.source_line_item_no,
+                       pfs.op_seq_id AS op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
+                       pfs.machine_category, pfs.preferred_machine,
+                       pfs.cycle_time, pfs.setup_time, pfs.is_last_op,
+                       pfs.source_kind, pfs.source_stage_no,
+                       COALESCE(vso.wo_qty_required, 0) AS erp_required_qty,
+                       COALESCE(vso.wo_qty_produced, vop.wo_qty_produced, 0) AS erp_finished_qty,
+                       COALESCE(vso.wo_qty_rejected, vop.wo_qty_rejected, 0) AS erp_reject_qty,
+                       COALESCE(vso.execution_status, vop.execution_status, '') AS op_execution_status
+                FROM planner_process_sheet ps
+                LEFT JOIN planner_temp_process_sheet tps ON tps.planner_ps_id = ps.planner_ps_id
+                LEFT JOIN voucher_partials vp
+                       ON vp.ps_id = ps.source_ps_id
+                      AND vp.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
+                LEFT JOIN source_totals st ON st.ps_id = ps.source_ps_id
+                LEFT JOIN planner_source_totals pst ON pst.source_ps_id = ps.source_ps_id
+                LEFT JOIN planner_bom_variation sf ON sf.bom_id = ps.selected_bom_id
+                LEFT JOIN planner_operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
+                LEFT JOIN voucher_stage_outputs vso
+                       ON vso.ps_id = ps.source_ps_id
+                      AND vso.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
+                      AND COALESCE(pfs.source_stage_no, 0) > 0
+                      AND vso.stage_no = pfs.source_stage_no
+                LEFT JOIN voucher_op_outputs vop
+                       ON vop.ps_id = ps.source_ps_id
+                      AND vop.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
+                      AND vop.op_no_text = TRIM(COALESCE(pfs.op_no::text, ''))
+                WHERE COALESCE(ps.selected_bom_id, 0) > 0
+                  AND (%s = 1 OR (
+                    COALESCE(ps.planner_status, '') <> 'COMPLETED'
+                    AND COALESCE(ps.status, '') <> 'COMPLETED'
+                    AND (
+                      ps.planner_ps_id LIKE '[Temp]%%'
+                      OR UPPER(COALESCE(st.erp_status, vp.erp_status, '')) <> 'HISTORY'
+                    )
+                  )){ps_filter_clause}
+                ORDER BY COALESCE(tps.due_date, st.due_date, vp.due_date), ps.source_ps_id, pfs.seq_no, pfs.op_seq_id
+                """.format(
+                    erp_cache_ctes=catalog_erp_cache_with_clause(assigned=True),
+                    ps_filter_clause=ps_filter_clause,
+                ),
+                catalog_params,
+            )
+        )
+        # Process sheets without a BOM yet
+        unassigned_records = rows(
+            con.execute(
+                """
+                {erp_cache_ctes}
+                SELECT ps.planner_ps_id AS planner_ps_id,
+                       ps.source_ps_id AS ps_id,
+                       ps.pp_partial_no,
+                       tps.source_pp_partial_no,
+                       tps.reject_qty,
+                       ps.inventory_code,
+                       ps.selected_bom_id, ps.planner_status, ps.status,
+                       ps.planned_qty,
+                       CASE WHEN ps.planner_ps_id LIKE '[Temp]%%'
+                            THEN COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)
+                            ELSE COALESCE(st.rolled_total_qty, pst.planned_qty, ps.planned_qty, 0)
+                       END AS total_qty,
+                       CASE WHEN ps.planner_ps_id LIKE '[Temp]%%'
+                            THEN COALESCE(NULLIF(ps.planned_qty, 0), NULLIF(tps.reject_qty, 0), 0)
+                            ELSE COALESCE(vp.partial_qty, ps.planned_qty, vp.total_qty, 0)
+                       END AS partial_qty,
+                       '' AS selected_bom_code,
+                       COALESCE(vp.erp_bom_code, '') AS erp_bom_code,
+                       COALESCE(st.part_no, vp.part_no) AS part_no,
+                       COALESCE(st.description, vp.description) AS part_desc,
+                       COALESCE(st.part_no, vp.part_no) AS part_name,
+                       COALESCE(tps.due_date, st.due_date, vp.due_date)::text AS due_date,
+                       COALESCE(st.erp_status, vp.erp_status) AS erp_status,
+                       COALESCE(st.execution_status, vp.execution_status) AS execution_status,
+                       st.qty_shipped,
+                       st.source_line_item_no
+                FROM planner_process_sheet ps
+                LEFT JOIN planner_temp_process_sheet tps ON tps.planner_ps_id = ps.planner_ps_id
+                LEFT JOIN voucher_partials vp
+                       ON vp.ps_id = ps.source_ps_id
+                      AND vp.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
+                LEFT JOIN source_totals st ON st.ps_id = ps.source_ps_id
+                LEFT JOIN planner_source_totals pst ON pst.source_ps_id = ps.source_ps_id
+                WHERE COALESCE(ps.selected_bom_id, 0) = 0
+                  AND (%s = 1 OR (
+                    COALESCE(ps.planner_status, '') <> 'COMPLETED'
+                    AND COALESCE(ps.status, '') <> 'COMPLETED'
+                    AND (
+                      ps.planner_ps_id LIKE '[Temp]%%'
+                      OR UPPER(COALESCE(st.erp_status, vp.erp_status, '')) <> 'HISTORY'
+                    )
+                  )){ps_filter_clause}
+                ORDER BY COALESCE(tps.due_date, st.due_date, vp.due_date), ps.source_ps_id
+                """.format(
+                    erp_cache_ctes=catalog_erp_cache_with_clause(assigned=False),
+                    ps_filter_clause=ps_filter_clause,
+                ),
+                catalog_params,
+            )
+        )
 
     grouped = {}
 

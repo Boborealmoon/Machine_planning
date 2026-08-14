@@ -335,6 +335,13 @@ def _group_completed_fast(member_blocks) -> bool:
     return all(_row_done_fast_for_lane(block) for block in member_blocks)
 
 
+def filter_completed_lane_blocks_for_load(con, blocks, *, lite: bool):
+    """Hide finished lane cards. lite=True skips ERP/catalog enrichment (mutation + board load)."""
+    if lite:
+        return filter_completed_lane_blocks_fast(blocks)
+    return filter_completed_lane_blocks(con, blocks)
+
+
 def filter_completed_lane_blocks_fast(blocks):
     """Lite board load: drop clearly finished lane cards without catalog enrichment."""
     if not blocks:

@@ -363,6 +363,28 @@ def _fetch_historical_assembly_jobs_uncached() -> list[dict[str, Any]]:
     return jobs
 
 
+def _merge_open_and_historical_jobs(
+    open_jobs: list[dict[str, Any]],
+    historical_jobs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep live open nested assemblies, then add historical jobs not already present.
+
+    Staged material_per_bom can lag live ERP, so an open job may be missing from
+    history even though its children already have BOM routes. Live rows win on
+    duplicate ps_id because they carry current route diagnostics.
+    """
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for job in (*open_jobs, *historical_jobs):
+        key = compact_text(job.get("ps_id")).upper()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(job)
+    merged.sort(key=lambda job: (compact_text(job.get("due_date")) or "9999-12-31", job.get("ps_id") or ""))
+    return merged
+
+
 def fetch_assembly_jobs(
     *,
     refresh: bool = False,
@@ -373,11 +395,20 @@ def fetch_assembly_jobs(
     cached = _cache.get(include_history)
     if not refresh and cached and now - cached[0] < _CACHE_TTL_SEC:
         return cached[1]
-    jobs = (
-        _fetch_historical_assembly_jobs_uncached()
-        if include_history
-        else _fetch_assembly_jobs_uncached()
-    )
+    open_jobs: list[dict[str, Any]] = []
+    try:
+        open_jobs = _fetch_assembly_jobs_uncached()
+    except Exception:
+        if not include_history:
+            raise
+        logger.exception("assembly BOM live open query failed; falling back to staged history")
+    if include_history:
+        jobs = _merge_open_and_historical_jobs(
+            open_jobs,
+            _fetch_historical_assembly_jobs_uncached(),
+        )
+    else:
+        jobs = open_jobs
     _cache[include_history] = (now, jobs)
     return jobs
 

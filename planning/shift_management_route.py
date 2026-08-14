@@ -179,10 +179,14 @@ def api_ops_queue():
     user = _require_user()
     if not user:
         return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    work_date = _parse_date(request.args.get("date"))
+    shift_out = normalize_shift(
+        request.args.get("shift") or user.get("default_shift") or meta_constants()["guess_shift"]
+    )
     try:
         with planner_db() as con:
             ensure_shift_mgmt_schema(con)
-            payload = ops_queue_payload(con, user)
+            payload = ops_queue_payload(con, user, work_date=work_date, shift_out=shift_out)
     except Exception as exc:
         logger.exception("ops queue failed")
         return jsonify({"error": str(exc)}), 500
