@@ -289,7 +289,7 @@ async function esoLoad() {
   if (esoEl("eso-meta")) esoEl("eso-meta").textContent = "Loading...";
 
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 30000);
+  const timer = window.setTimeout(() => controller.abort(), 45000);
   try {
     const res = await fetch(`/api/erp-scanned-output?${esoQuery()}`, {
       headers: { Accept: "application/json" },

@@ -14,3 +14,6 @@ CREATE TABLE IF NOT EXISTS public.planner_erp_wo_qty_snapshot (
 
 CREATE INDEX IF NOT EXISTS idx_planner_erp_wo_qty_snapshot_lookup
     ON public.planner_erp_wo_qty_snapshot (source_mps_no, pp_partial_no, stage_no, snapshot_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_planner_erp_wo_qty_snapshot_date
+    ON public.planner_erp_wo_qty_snapshot (snapshot_date DESC);

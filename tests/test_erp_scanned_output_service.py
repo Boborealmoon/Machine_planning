@@ -1,11 +1,14 @@
 """Unit tests for ERP accepted-qty jump detection and machine grouping."""
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest import TestCase
+from unittest.mock import MagicMock
 
 from planning.erp_scanned_output_service import (
     UNASSIGNED_MACHINE,
+    _SNAPSHOT_LOOKBACK_DAYS,
+    _fetch_snapshot_jump_rows,
     compute_qty_jumps,
     group_jumps_by_machine,
     jumps_from_snapshot_series,
@@ -122,3 +125,22 @@ class ErpScannedOutputServiceTests(TestCase):
         names = ["CNC 30", "CNC 10", UNASSIGNED_MACHINE, "CNC 2"]
         ordered = sorted(names, key=machine_sort_key)
         self.assertEqual(ordered, ["CNC 2", "CNC 10", "CNC 30", UNASSIGNED_MACHINE])
+
+    def test_snapshot_jump_query_scopes_to_date_window(self):
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        con = MagicMock()
+        con.execute.return_value = cur
+        start = date(2026, 8, 4)
+        end = date(2026, 8, 17)
+        rows = _fetch_snapshot_jump_rows(con, start, end, limit=2000)
+        self.assertEqual(rows, [])
+        sql, params = con.execute.call_args.args
+        self.assertIn("WITH scoped AS", sql)
+        self.assertIn("FROM planner_erp_wo_qty_snapshot", sql)
+        self.assertIn("WHERE snapshot_date >= %s", sql)
+        self.assertLess(sql.index("WHERE snapshot_date >= %s"), sql.index("LAG(acc_qty_produced)"))
+        self.assertEqual(
+            params,
+            (start - timedelta(days=_SNAPSHOT_LOOKBACK_DAYS), end, start, end, 2000),
+        )

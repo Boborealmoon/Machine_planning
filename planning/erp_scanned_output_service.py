@@ -17,6 +17,7 @@ UNASSIGNED_MACHINE = "Unassigned"
 _QTY_EPS = 1e-9
 _MACHINE_NO_RE = re.compile(r"(\d+)")
 _SCHEMA_READY = False
+_SNAPSHOT_LOOKBACK_DAYS = 7
 _MIGRATION_PATH = Path(__file__).resolve().parents[1] / "migrations" / "add_erp_qty_jump.sql"
 
 
@@ -227,16 +228,33 @@ def ensure_erp_qty_jump_table(con) -> None:
     _SCHEMA_READY = bool(existing and existing.get("reg"))
 
 
+def _ensure_snapshot_date_index(con) -> None:
+    """Date lookup for scanned-output fallback; skip if the snapshot table is missing."""
+    planner_try_savepoint(
+        con,
+        "erp_snapshot_date_idx",
+        lambda: con.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_planner_erp_wo_qty_snapshot_date
+                ON public.planner_erp_wo_qty_snapshot (snapshot_date DESC)
+            """
+        ),
+        default=None,
+    )
+
+
 def bootstrap_erp_qty_jump_schema(con) -> bool:
     """Create jump table if missing (call from ERP sync, not page load)."""
     global _SCHEMA_READY
     existing = one(con.execute("SELECT to_regclass('public.planner_erp_qty_jump') AS reg"))
     if existing and existing.get("reg"):
         _SCHEMA_READY = True
+        _ensure_snapshot_date_index(con)
         return True
     apply_migration(con)
     existing = one(con.execute("SELECT to_regclass('public.planner_erp_qty_jump') AS reg"))
     _SCHEMA_READY = bool(existing and existing.get("reg"))
+    _ensure_snapshot_date_index(con)
     return _SCHEMA_READY
 
 
@@ -280,12 +298,18 @@ def _fetch_snapshot_jump_rows(
     *,
     limit: int = 5000,
 ) -> list[dict]:
-    """Read-only day-over-day deltas from WO snapshots (no jump-table backfill)."""
+    """Read-only day-over-day deltas from WO snapshots (no jump-table backfill).
+
+    Window LAG over the whole snapshot table times out on page load. Scope the
+    CTE to the requested dates plus a short lookback so the previous snapshot
+    is still available when a WO was not snapshotted on `start`.
+    """
     cap = max(1, min(_int(limit, 5000), 10000))
+    lookback = start - timedelta(days=_SNAPSHOT_LOOKBACK_DAYS)
     return rows(
         con.execute(
             """
-            WITH ordered AS (
+            WITH scoped AS (
                 SELECT
                     source_mps_no,
                     pp_partial_no,
@@ -293,13 +317,26 @@ def _fetch_snapshot_jump_rows(
                     snapshot_date::date AS scanned_date,
                     snapshot_at AS scanned_at,
                     acc_qty_produced,
+                    acc_rej_qty_produced
+                FROM planner_erp_wo_qty_snapshot
+                WHERE snapshot_date >= %s
+                  AND snapshot_date <= %s
+            ),
+            ordered AS (
+                SELECT
+                    source_mps_no,
+                    pp_partial_no,
+                    stage_no,
+                    scanned_date,
+                    scanned_at,
+                    acc_qty_produced,
                     acc_rej_qty_produced,
                     LAG(acc_qty_produced) OVER w AS prev_acc_qty,
                     LAG(acc_rej_qty_produced) OVER w AS prev_rej_qty
-                FROM planner_erp_wo_qty_snapshot
+                FROM scoped
                 WINDOW w AS (
                     PARTITION BY source_mps_no, pp_partial_no, stage_no
-                    ORDER BY snapshot_date, snapshot_at
+                    ORDER BY scanned_date, scanned_at
                 )
             )
             SELECT
@@ -322,7 +359,7 @@ def _fetch_snapshot_jump_rows(
             ORDER BY scanned_at DESC
             LIMIT %s
             """,
-            (start, end, cap),
+            (lookback, end, start, end, cap),
         )
     )
 
@@ -795,7 +832,8 @@ def fetch_scanned_output(
     search: str = "",
     limit: int = 2000,
 ) -> dict[str, Any]:
-    con.execute("SET LOCAL statement_timeout = '30s'")
+    con.execute("SET LOCAL statement_timeout = '20s'")
+    con.execute("SET LOCAL lock_timeout = '5s'")
     ensure_erp_qty_jump_table(con)
 
     today = scanned_wall_date()
@@ -808,14 +846,19 @@ def fetch_scanned_output(
     jump_rows: list[dict] = []
 
     if _SCHEMA_READY:
-        jump_rows = _load_jump_rows_from_table(
+        jump_rows = planner_try_savepoint(
             con,
-            start,
-            end,
-            machine_no=machine_no,
-            search=search,
-            limit=limit,
-        )
+            "erp_jump_table",
+            lambda: _load_jump_rows_from_table(
+                con,
+                start,
+                end,
+                machine_no=machine_no,
+                search=search,
+                limit=limit,
+            ),
+            default=[],
+        ) or []
         if jump_rows:
             data_source = "jumps"
 
@@ -846,18 +889,23 @@ def fetch_scanned_output(
     )
 
     if _SCHEMA_READY:
-        machine_options = rows(
-            con.execute(
-                """
-                SELECT machine_no, COUNT(*) AS jump_count, COALESCE(SUM(qty_jump), 0) AS qty_jump
-                FROM planner_erp_qty_jump
-                WHERE scanned_date >= %s AND scanned_date <= %s
-                GROUP BY machine_no
-                ORDER BY machine_no
-                """,
-                (start, end),
-            )
-        )
+        machine_options = planner_try_savepoint(
+            con,
+            "erp_jump_machine_opts",
+            lambda: rows(
+                con.execute(
+                    """
+                    SELECT machine_no, COUNT(*) AS jump_count, COALESCE(SUM(qty_jump), 0) AS qty_jump
+                    FROM planner_erp_qty_jump
+                    WHERE scanned_date >= %s AND scanned_date <= %s
+                    GROUP BY machine_no
+                    ORDER BY machine_no
+                    """,
+                    (start, end),
+                )
+            ),
+            default=[],
+        ) or []
     else:
         machine_options = []
 

@@ -99,13 +99,23 @@ def refresh_after_erp_sync(*, warm: bool = True, background: bool = True) -> dic
             reconcile_queue_states_after_erp_sync,
             record_erp_wo_qty_snapshots_from_staging,
         )
-        from planning.helpers import planner_db
+        from planning.helpers import planner_db, planner_try_savepoint
 
         with planner_db() as con:
             try:
-                from planning.erp_scanned_output_service import bootstrap_erp_qty_jump_schema
+                from planning.erp_scanned_output_service import (
+                    backfill_jumps_from_snapshots,
+                    bootstrap_erp_qty_jump_schema,
+                )
 
+                con.execute("SET LOCAL statement_timeout = '120s'")
                 bootstrap_erp_qty_jump_schema(con)
+                planner_try_savepoint(
+                    con,
+                    "erp_jump_backfill",
+                    lambda: backfill_jumps_from_snapshots(con),
+                    default=0,
+                )
             except Exception as exc:
                 logger.warning("erp qty jump schema bootstrap failed: %s", exc, exc_info=True)
             try:
