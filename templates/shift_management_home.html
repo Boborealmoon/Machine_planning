@@ -20,10 +20,49 @@
   <div id="sm-machine-grid" class="sm-floor-wrap">
     <p class="sm-muted">Loading…</p>
   </div>
+  <p class="sm-muted sm-floor-hint">Tap a machine to see its queue. Raise a ticket or start handover from the cards.</p>
+  <div class="sm-queue-head">
+    <h3 class="sm-section-title" id="sm-queue-heading">Ticket queue</h3>
+    <button type="button" class="sm-btn sm-btn-ghost" id="sm-queue-all" hidden>All machines</button>
+  </div>
   <div id="sm-machine-cards" class="sm-machine-cards"></div>
-  <p class="sm-muted sm-floor-hint">Tap a machine on the floor or card to open handover entry.</p>
 </section>
+
+<dialog id="sm-ticket-dialog" class="sm-dialog">
+  <form method="dialog" id="sm-ticket-form" onsubmit="return false;">
+    <h3>Raise ticket</h3>
+    <p id="sm-ticket-context" class="sm-muted"></p>
+    <input type="hidden" id="sm-tk-machine-id" />
+    <input type="hidden" id="sm-tk-block-id" />
+    <input type="hidden" id="sm-tk-ps" />
+    <input type="hidden" id="sm-tk-job" />
+    <label class="sm-label" for="sm-tk-ps-search">Process sheet</label>
+    <div class="sm-ps-search">
+      <input class="sm-input" id="sm-tk-ps-search" type="search" autocomplete="off" placeholder="Search PS no. or part" aria-autocomplete="list" aria-controls="sm-tk-ps-results" />
+      <div id="sm-tk-ps-results" class="sm-ps-results" role="listbox" hidden></div>
+    </div>
+    <p id="sm-tk-ps-hint" class="sm-muted">Search to attach a process sheet, or keep the queue job.</p>
+    <label class="sm-label">Category</label>
+    <select class="sm-input" id="sm-tk-category"></select>
+    <label class="sm-label">Priority</label>
+    <select class="sm-input" id="sm-tk-priority">
+      <option>Normal</option><option>High</option><option>Urgent</option>
+    </select>
+    <label class="sm-label" for="sm-tk-title">Title</label>
+    <input class="sm-input" id="sm-tk-title" type="text" maxlength="200" placeholder="Filled from category" />
+    <label class="sm-label" for="sm-tk-desc">Details</label>
+    <textarea class="sm-textarea" id="sm-tk-desc" rows="3" placeholder="Optional — what needs attention?"></textarea>
+    <p id="sm-tk-status" class="sm-muted" hidden></p>
+    <div class="sm-dialog-actions">
+      <button type="button" class="sm-btn sm-btn-ghost" id="sm-tk-cancel">Cancel</button>
+      <button type="submit" class="sm-btn sm-btn-primary" id="sm-tk-save">Create ticket</button>
+    </div>
+  </form>
+</dialog>
 {% endblock %}
 {% block scripts %}
-<script>SM.page = "home";</script>
+<script>
+SM.page = "home";
+SM.floorLayout = {{ (floor_layout or {})|tojson }};
+</script>
 {% endblock %}

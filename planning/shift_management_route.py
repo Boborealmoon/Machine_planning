@@ -35,8 +35,8 @@ from .shift_management_service import (
     ops_queue_payload,
     patch_handover,
     patch_ticket,
-    pending_ack_count,
     report_payload,
+    search_shift_process_sheets,
     submit_handover,
 )
 from .utils import compact_text
@@ -92,7 +92,10 @@ def _page_ctx(**extra):
 
 @shift_mgmt_bp.get(SHIFT_MGMT_PATH)
 def shift_mgmt_home():
-    return render_template("shift_management_home.html", **_page_ctx(page="home"))
+    return render_template(
+        "shift_management_home.html",
+        **_page_ctx(page="home", floor_layout=floor_layout_payload()),
+    )
 
 
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/ops")
@@ -157,7 +160,6 @@ def api_machines():
             ensure_shift_mgmt_schema(con)
             machines = list_machines_for_user(con, user, work_date, shift_out)
             pending = list_pending_ack(con, work_date)
-            count = pending_ack_count(con, work_date)
     except Exception as exc:
         logger.exception("shift mgmt machines failed")
         return jsonify({"error": str(exc)}), 500
@@ -168,7 +170,7 @@ def api_machines():
             "machines": machines,
             "floor_layout": floor_layout_payload(),
             "pending_ack": pending,
-            "pending_ack_count": count,
+            "pending_ack_count": len(pending),
             "meta": meta_constants(),
         }
     )
@@ -346,6 +348,32 @@ def api_dispute_handover(handover_id: int):
         logger.exception("dispute handover failed")
         return jsonify({"error": str(exc)}), 500
     return jsonify({"handover": ho})
+
+
+@shift_mgmt_bp.get("/api/shift-management/process-sheets/search")
+def api_search_process_sheets():
+    if not shift_mgmt_user_authenticated():
+        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    query = compact_text(request.args.get("q") or request.args.get("search"))
+    if not query:
+        return jsonify({"items": []})
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 20), 30))
+    except (TypeError, ValueError):
+        limit = 20
+    machine_id = request.args.get("machine_id")
+    try:
+        mid = int(machine_id) if machine_id not in (None, "") else None
+    except (TypeError, ValueError):
+        mid = None
+    try:
+        with planner_db() as con:
+            ensure_shift_mgmt_schema(con)
+            items = search_shift_process_sheets(con, query, machine_id=mid, limit=limit)
+    except Exception as exc:
+        logger.exception("shift mgmt process sheet search failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"items": items})
 
 
 @shift_mgmt_bp.get("/api/shift-management/tickets")

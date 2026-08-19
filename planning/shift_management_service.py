@@ -592,7 +592,7 @@ def queue_blocks_for_machines(
                 qs.reject_qty AS qs_reject_qty,
                 qs.schedule_status AS qs_schedule_status,
                 qs.execution_status AS qs_execution_status
-                {", ROW_NUMBER() OVER (PARTITION BY b.machine_id ORDER BY b.queue_position, b.block_id) AS rn" if limit_n else ""}
+                {", ROW_NUMBER() OVER (PARTITION BY b.machine_id ORDER BY b.queue_position, b.block_id) AS rn, COUNT(*) OVER (PARTITION BY b.machine_id) AS queue_total" if limit_n else ""}
             FROM public.planner_run_block b
             JOIN public.planner_machines m ON m.machine_id = b.machine_id
             JOIN public.planner_operation o ON o.operation_id = b.operation_id
@@ -635,6 +635,7 @@ def queue_blocks_for_machines(
                 "source_ps_id": compact_text(r.get("source_ps_id")),
                 "process_sheet_no": ps,
                 "total_qty": _jsonable(r.get("total_qty")),
+                "queue_total": int(r["queue_total"]) if r.get("queue_total") is not None else None,
             }
         )
     return out
@@ -694,6 +695,13 @@ def queue_head_for_machine(con, machine_id: int) -> dict[str, Any] | None:
     return blocks[0] if blocks else None
 
 
+def machine_ticket_totals(ticket_counts: dict[tuple[int, str], int]) -> dict[int, int]:
+    totals: dict[int, int] = {}
+    for (mid, _ps), n in ticket_counts.items():
+        totals[int(mid)] = totals.get(int(mid), 0) + int(n or 0)
+    return totals
+
+
 def group_ops_machines(
     machines: list[dict],
     blocks: list[dict],
@@ -714,6 +722,8 @@ def group_ops_machines(
     for m in machines:
         mid = int(m["machine_id"])
         jobs = jobs_by_machine.get(mid) or []
+        head = jobs[0] if jobs else None
+        queue_count = int((head or {}).get("queue_total") or len(jobs))
         grouped.append(
             {
                 "machine_id": mid,
@@ -721,11 +731,20 @@ def group_ops_machines(
                 "machine_category": m.get("machine_category"),
                 "handover": handovers_by_machine.get(mid),
                 "open_ticket_count": machine_ticket_counts.get(mid, 0),
-                "queue_count": len(jobs),
+                "queue_count": queue_count,
                 "jobs": jobs,
+                "active_process_sheet": (head or {}).get("process_sheet_no") or "",
+                "active_job_no": (head or {}).get("job_no") or "",
+                "queue_remaining_qty": (head or {}).get("remaining_qty"),
             }
         )
-    grouped.sort(key=lambda row: (0 if row["jobs"] else 1, str(row.get("machine_no") or "")))
+    grouped.sort(
+        key=lambda row: (
+            0 if row["open_ticket_count"] else 1,
+            0 if row["jobs"] else 1,
+            str(row.get("machine_no") or ""),
+        )
+    )
     return grouped
 
 
@@ -762,7 +781,7 @@ def ops_queue_payload(
     mids = [int(m["machine_id"]) for m in machines]
     blocks = queue_blocks_for_machines(con, mids, per_machine_limit=OPS_QUEUE_DEPTH)
     counts = open_ticket_counts(con, mids)
-    machine_ticket_counts = open_ticket_count_by_machine(con, mids)
+    machine_ticket_counts = machine_ticket_totals(counts)
     handovers = _handovers_for_shift(con, work_date, shift_out, mids)
     grouped = group_ops_machines(machines, blocks, handovers, counts, machine_ticket_counts)
     items = []
@@ -782,41 +801,11 @@ def list_machines_for_user(con, user: dict[str, Any], work_date: date, shift_out
     shift_out = normalize_shift(shift_out)
     ids = machine_ids_for_user(con, user)
     machines = list_active_machines(con, ids)
-    ticket_counts = open_ticket_count_by_machine(con, ids)
-    queue_by_machine: dict[int, list[dict]] = {}
-    for b in queue_blocks_for_machines(con, ids):
-        queue_by_machine.setdefault(int(b["machine_id"]), []).append(b)
-
-    result = []
-    for m in machines:
-        mid = int(m["machine_id"])
-        ho = one(
-            con.execute(
-                """
-                SELECT handover_id, status, machine_status, priority, job_no,
-                       quality_issue_flag, alarm_flag, maintenance_flag, remaining_qty
-                FROM public.shift_mgmt_handovers
-                WHERE work_date = %s AND shift_out = %s AND machine_id = %s
-                """,
-                (work_date, shift_out, mid),
-            )
-        )
-        qblocks = queue_by_machine.get(mid) or []
-        head = qblocks[0] if qblocks else None
-        result.append(
-            {
-                "machine_id": mid,
-                "machine_no": m.get("machine_no"),
-                "machine_category": m.get("machine_category"),
-                "handover": serialize_handover(ho),
-                "active_process_sheet": (head or {}).get("process_sheet_no") or "",
-                "active_job_no": (head or {}).get("job_no") or "",
-                "queue_remaining_qty": (head or {}).get("remaining_qty"),
-                "queue_count": len(qblocks),
-                "open_ticket_count": ticket_counts.get(mid, 0),
-            }
-        )
-    return result
+    mids = [int(m["machine_id"]) for m in machines]
+    counts = open_ticket_counts(con, mids)
+    blocks = queue_blocks_for_machines(con, mids, per_machine_limit=OPS_QUEUE_DEPTH)
+    handovers = _handovers_for_shift(con, work_date, shift_out, mids)
+    return group_ops_machines(machines, blocks, handovers, counts, machine_ticket_totals(counts))
 
 
 def last_job_for_machine(con, machine_id: int) -> str:
@@ -833,6 +822,148 @@ def last_job_for_machine(con, machine_id: int) -> str:
         )
     )
     return compact_text(row.get("job_no")) if row else ""
+
+
+def process_sheet_match_keys(*values: Any) -> set[str]:
+    """Case-insensitive identity keys for matching PS / job numbers."""
+    keys: set[str] = set()
+    for raw in values:
+        text = compact_text(raw)
+        if not text:
+            continue
+        keys.add(text.lower())
+        keys.add(display_ps_id(text).lower())
+    return {key for key in keys if key}
+
+
+def match_queue_job(jobs: list[dict[str, Any]] | None, *values: Any) -> dict[str, Any] | None:
+    needles = process_sheet_match_keys(*values)
+    if not needles:
+        return None
+    for job in jobs or []:
+        hay = process_sheet_match_keys(
+            job.get("process_sheet_no"),
+            job.get("job_no"),
+            job.get("source_ps_id"),
+            job.get("planner_ps_id"),
+        )
+        if needles & hay:
+            return job
+    return None
+
+
+def _qty_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def process_sheet_autofill(
+    item: dict[str, Any],
+    queue_job: dict[str, Any] | None = None,
+    last_handover: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Fill remaining qty (queue → last handover → sheet qty) and last-shift fields."""
+    remaining = _qty_int((queue_job or {}).get("remaining_qty"))
+    if remaining is None:
+        remaining = _qty_int((last_handover or {}).get("remaining_qty"))
+    if remaining is None:
+        remaining = _qty_int(item.get("display_qty") or item.get("remaining_qty"))
+    out = dict(item)
+    out["remaining_qty"] = remaining
+    out["on_queue"] = bool(queue_job)
+    if queue_job:
+        out["block_id"] = queue_job.get("block_id")
+        out["operation_name"] = compact_text(queue_job.get("operation_name"))
+    if last_handover:
+        out["tool_life_pct"] = _jsonable(last_handover.get("tool_life_pct"))
+        out["material_qty"] = _jsonable(last_handover.get("material_qty"))
+        out["material_unit"] = compact_text(last_handover.get("material_unit"))
+        out["first_piece_status"] = compact_text(last_handover.get("first_piece_status"))
+    return out
+
+
+def _recent_handovers_for_machine(con, machine_id: int) -> list[dict[str, Any]]:
+    data = rows(
+        con.execute(
+            """
+            SELECT job_no, remaining_qty, tool_life_pct, material_qty, material_unit,
+                   first_piece_status
+            FROM public.shift_mgmt_handovers
+            WHERE machine_id = %s AND NULLIF(TRIM(job_no), '') IS NOT NULL
+            ORDER BY work_date DESC, updated_at DESC
+            LIMIT 50
+            """,
+            (machine_id,),
+        )
+    )
+    return [serialize_row(r) or {} for r in data]
+
+
+def search_shift_process_sheets(
+    con,
+    query: str,
+    *,
+    machine_id: int | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Search ERP process sheets and attach queue / last-handover auto-fill values."""
+    needle = compact_text(query)
+    if not needle:
+        return []
+    from .process_sheets import (
+        format_planner_ps_id,
+        normalize_standard_ps_id,
+        search_process_sheet_sources,
+    )
+
+    limit_n = max(1, min(int(limit or 20), 30))
+    raw_items = search_process_sheet_sources(con, needle, limit=limit_n)
+    queue_jobs: list[dict[str, Any]] = []
+    last_rows: list[dict[str, Any]] = []
+    mid: int | None = None
+    if machine_id not in (None, ""):
+        try:
+            mid = int(machine_id)
+        except (TypeError, ValueError):
+            mid = None
+        if mid:
+            queue_jobs = queue_blocks_for_machines(con, [mid])
+            last_rows = _recent_handovers_for_machine(con, mid)
+
+    out: list[dict[str, Any]] = []
+    for item in raw_items:
+        source_ps_id = normalize_standard_ps_id(item.get("ps_id"))
+        try:
+            partial_no = max(1, int(item.get("pp_partial_no") or 1))
+        except (TypeError, ValueError):
+            partial_no = 1
+        planner_ps_id = format_planner_ps_id(source_ps_id, partial_no)
+        display = f"{source_ps_id} · Partial {partial_no}" if partial_no > 1 else source_ps_id
+        queue_job = match_queue_job(queue_jobs, planner_ps_id, source_ps_id)
+        last_ho = match_queue_job(last_rows, planner_ps_id, source_ps_id)
+        filled = process_sheet_autofill(
+            {
+                "ps_id": source_ps_id,
+                "pp_partial_no": partial_no,
+                "planner_ps_id": planner_ps_id,
+                "display_ps_id": display,
+                "process_sheet_no": display_ps_id(planner_ps_id) or source_ps_id,
+                "job_no": planner_ps_id or source_ps_id,
+                "part_no": compact_text(item.get("part_no")),
+                "description": compact_text(item.get("description")),
+                "due_date": _jsonable(item.get("due_date")),
+                "display_qty": _jsonable(item.get("display_qty")),
+                "match_source": compact_text(item.get("match_source")),
+            },
+            queue_job,
+            last_ho,
+        )
+        out.append(filled)
+    return out
 
 
 def get_or_create_draft(
@@ -1361,16 +1492,16 @@ def create_ticket(con, user: dict[str, Any], data: dict[str, Any]) -> dict[str, 
         machine_id = int(data.get("machine_id"))
     except (TypeError, ValueError) as exc:
         raise ValueError("machine_id required") from exc
-    title = compact_text(data.get("title"))
-    if not title:
-        raise ValueError("title required")
     category = compact_text(data.get("category")) or "Other"
     if category not in TICKET_CATEGORIES:
         raise ValueError("Invalid category")
+    planner_ps_id = compact_text(data.get("planner_ps_id") or data.get("process_sheet_no")) or ""
+    title = compact_text(data.get("title"))
+    if not title:
+        title = f"{category} · PS {planner_ps_id}" if planner_ps_id else category
     priority = compact_text(data.get("priority")) or "Normal"
     if priority not in PRIORITIES:
         raise ValueError("Invalid priority")
-    planner_ps_id = compact_text(data.get("planner_ps_id") or data.get("process_sheet_no")) or ""
     job_no = compact_text(data.get("job_no")) or planner_ps_id
     block_id = data.get("block_id")
     try:
@@ -1565,6 +1696,63 @@ def add_ticket_comment(
     return serialize_row(row)  # type: ignore[return-value]
 
 
+def handover_issue_labels(ho: dict[str, Any] | None) -> list[str]:
+    """Reasons a handover belongs on the Board attention list (not History)."""
+    if not ho:
+        return []
+    labels: list[str] = []
+    if compact_text(ho.get("machine_status")) == "Breakdown":
+        labels.append("Breakdown")
+    if compact_text(ho.get("first_piece_status")) == "Not OK":
+        labels.append("1st piece NOK")
+    if compact_text(ho.get("ncr_status")) == "Open":
+        labels.append("Open NCR")
+    if ho.get("quality_issue_flag"):
+        labels.append("Quality")
+    if ho.get("alarm_flag"):
+        labels.append("Alarm")
+    if ho.get("maintenance_flag"):
+        labels.append("Maintenance")
+    priority = compact_text(ho.get("priority"))
+    if priority in ("High", "Urgent"):
+        labels.append(priority)
+    return labels
+
+
+def classify_board_attention(
+    handovers: list[dict[str, Any]],
+    tickets: list[dict[str, Any]] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Board shows only items that need action this shift.
+
+    Drafts with no issues stay on Machines/Ops. Clean acknowledged rows stay in History.
+    """
+    pending: list[dict[str, Any]] = []
+    disputed: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    for ho in handovers:
+        item = dict(ho)
+        item["issue_labels"] = handover_issue_labels(item)
+        status = compact_text(item.get("status"))
+        if status == "pending_ack":
+            pending.append(item)
+        elif status == "disputed":
+            disputed.append(item)
+        elif item["issue_labels"]:
+            issues.append(item)
+    open_tickets = [
+        t
+        for t in (tickets or [])
+        if compact_text(t.get("status")) in ("open", "in_progress")
+    ]
+    return {
+        "pending_ack": pending,
+        "disputed": disputed,
+        "issues": issues,
+        "tickets": open_tickets,
+    }
+
+
 def dashboard_payload(con, work_date: date, shift_out: str | None = None) -> dict[str, Any]:
     clauses = ["work_date = %s"]
     params: list[Any] = [work_date]
@@ -1589,22 +1777,14 @@ def dashboard_payload(con, work_date: date, shift_out: str | None = None) -> dic
         )
     ) or {}
 
-    ticket_clauses = ["work_date = %s", "status IN ('open', 'in_progress')"]
-    ticket_params: list[Any] = [work_date]
-    if shift_out:
-        ticket_clauses.append("shift_out = %s")
-        ticket_params.append(normalize_shift(shift_out))
-    open_tickets_row = one(
-        con.execute(
-            f"""
-            SELECT COUNT(*)::int AS n
-            FROM public.shift_mgmt_tickets
-            WHERE {" AND ".join(ticket_clauses)}
-            """,
-            tuple(ticket_params),
-        )
+    tickets = list_tickets(
+        con,
+        work_date=work_date,
+        shift_out=normalize_shift(shift_out) if shift_out else None,
+        status="open,in_progress",
+        limit=200,
     )
-    kpis = {**kpis, "open_tickets": int((open_tickets_row or {}).get("n") or 0)}
+    kpis = {**kpis, "open_tickets": len(tickets)}
 
     ho_clauses = ["h.work_date = %s"]
     ho_params: list[Any] = [work_date]
@@ -1616,7 +1796,7 @@ def dashboard_payload(con, work_date: date, shift_out: str | None = None) -> dic
             f"""
             SELECT h.handover_id, h.shift_out, h.machine_status, h.priority, h.status,
                    h.job_no, h.quality_issue_flag, h.alarm_flag, h.maintenance_flag,
-                   h.ncr_status, m.machine_id, m.machine_no
+                   h.ncr_status, h.first_piece_status, m.machine_id, m.machine_no
             FROM public.shift_mgmt_handovers h
             JOIN public.planner_machines m ON m.machine_id = h.machine_id
             WHERE {" AND ".join(ho_clauses)}
@@ -1625,11 +1805,13 @@ def dashboard_payload(con, work_date: date, shift_out: str | None = None) -> dic
             tuple(ho_params),
         )
     )
+    handovers = [serialize_handover(r) for r in machines if serialize_handover(r)]
+    attention = classify_board_attention(handovers, tickets)
     return {
         "work_date": work_date.isoformat(),
         "shift_out": normalize_shift(shift_out) if shift_out else None,
         "kpis": {k: int(v or 0) for k, v in kpis.items()},
-        "handovers": [serialize_handover(r) for r in machines],
+        "attention": attention,
     }
 
 

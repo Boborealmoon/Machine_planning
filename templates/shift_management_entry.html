@@ -21,7 +21,11 @@
     <select class="sm-input" id="sm-queue-job"></select>
 
     <label class="sm-label" for="sm-job-no">Process sheet / Job No</label>
-    <input class="sm-input" id="sm-job-no" type="text" autocomplete="off" />
+    <div class="sm-ps-search">
+      <input class="sm-input" id="sm-job-no" type="search" autocomplete="off" placeholder="Type PS no. or part to search" aria-autocomplete="list" aria-controls="sm-job-results" />
+      <div id="sm-job-results" class="sm-ps-results" role="listbox" hidden></div>
+    </div>
+    <p id="sm-job-search-status" class="sm-muted">Search process sheets to auto-fill remaining qty and last-shift values.</p>
 
     <label class="sm-label">Remaining qty</label>
     <div class="sm-stepper" data-field="remaining_qty">
@@ -131,6 +135,12 @@
 <dialog id="sm-entry-ticket-dialog" class="sm-dialog">
   <form method="dialog" id="sm-entry-ticket-form" onsubmit="return false;">
     <h3>Raise ticket</h3>
+    <label class="sm-label" for="sm-etk-ps-search">Process sheet</label>
+    <div class="sm-ps-search">
+      <input class="sm-input" id="sm-etk-ps-search" type="search" autocomplete="off" placeholder="Search PS no. or part" aria-autocomplete="list" aria-controls="sm-etk-ps-results" />
+      <div id="sm-etk-ps-results" class="sm-ps-results" role="listbox" hidden></div>
+    </div>
+    <p id="sm-etk-ps-status" class="sm-muted">Defaults to the active job. Search to change it.</p>
     <label class="sm-label">Category</label>
     <select class="sm-input" id="sm-etk-category"></select>
     <label class="sm-label">Priority</label>
@@ -138,7 +148,7 @@
       <option>Normal</option><option>High</option><option>Urgent</option>
     </select>
     <label class="sm-label" for="sm-etk-title">Title</label>
-    <input class="sm-input" id="sm-etk-title" type="text" required maxlength="200" />
+    <input class="sm-input" id="sm-etk-title" type="text" maxlength="200" placeholder="Filled from category" />
     <label class="sm-label" for="sm-etk-desc">Details</label>
     <textarea class="sm-textarea" id="sm-etk-desc" rows="3"></textarea>
     <div class="sm-dialog-actions">
