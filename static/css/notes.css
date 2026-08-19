@@ -77,6 +77,32 @@ body.notes-body {
   color: var(--notes-ink);
 }
 
+.notes-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.notes-sync-erp {
+  padding: 10px 14px;
+  background: var(--notes-ink);
+  border: 1px solid var(--notes-ink);
+  color: #fff;
+  border-radius: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.notes-sync-erp:hover:not(:disabled) {
+  background: #0f1816;
+}
+
+.notes-sync-erp:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
 .admin-launcher {
   margin-bottom: 28px;
 }
@@ -637,6 +663,11 @@ body.notes-body {
 
   .notes-header {
     align-items: flex-end;
+  }
+
+  .notes-header-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .notes-header > div > p:last-child {

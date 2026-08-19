@@ -45,6 +45,9 @@
         <button type="button" class="fq-chip" data-fq-screen="material_issue" role="tab" aria-selected="false">
           <span data-fq-i18n="screen_material_issue">Mat issue &amp; assy</span> <span class="fq-chip-count" id="fq-count-material_issue" hidden>0</span>
         </button>
+        <button type="button" class="fq-chip" data-fq-screen="anticipated_material" role="tab" aria-selected="false">
+          <span data-fq-i18n="screen_anticipated_material">Anticipated material</span> <span class="fq-chip-count" id="fq-count-anticipated_material" hidden>0</span>
+        </button>
         <button type="button" class="fq-chip" data-fq-screen="material_inspection" role="tab" aria-selected="false">
           <span data-fq-i18n="screen_material_inspection">Material inspection</span> <span class="fq-chip-count" id="fq-count-material_inspection" hidden>0</span>
         </button>
@@ -80,6 +83,17 @@
           <span data-fq-i18n="stage_engraving_packing">Pack &amp; engrave</span> <span class="fq-chip-count" id="fq-count-engraving_packing" hidden>0</span>
         </button>
       </div>
+    </div>
+    <div class="fq-nav-row fq-nav-row--material-inspection" id="fq-am-toolbar" hidden>
+      <label class="fq-mi-search">
+        <span class="planner-page-search-wrap">
+          <svg class="planner-page-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input id="fq-am-search" class="planner-page-search-input" type="search" placeholder="SO, process sheet, part, customer..." data-fq-i18n-placeholder="am_search_placeholder" autocomplete="off">
+        </span>
+      </label>
     </div>
     <div class="fq-nav-row fq-nav-row--material-inspection" id="fq-mi-toolbar" hidden>
       <div class="fq-nav-group" role="tablist" aria-label="Material inspection status" data-fq-i18n-aria="mi_status_aria">
@@ -201,6 +215,28 @@
           </tr>
         </thead>
         <tbody id="fq-mia-table-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="fq-am-table-wrap" class="fq-table-card fq-table-card--anticipated-material" hidden>
+    <div class="fq-table-scroll">
+      <table class="fq-table fq-table--anticipated-material">
+        <thead>
+          <tr>
+            <th class="fq-col-sticky fq-col-sticky--job" data-fq-i18n="am_col_job">Job</th>
+            <th data-fq-i18n="am_col_so">SO</th>
+            <th data-fq-i18n="am_col_part">Part</th>
+            <th data-fq-i18n="am_col_description">Description</th>
+            <th data-fq-i18n="am_col_qty">Qty</th>
+            <th data-fq-i18n="am_col_arrival">Material in</th>
+            <th data-fq-i18n="am_col_week">Week</th>
+            <th data-fq-i18n="am_col_po_due">PO due</th>
+            <th data-fq-i18n="am_col_customer">Customer</th>
+            <th data-fq-i18n="am_col_notes">Notes</th>
+          </tr>
+        </thead>
+        <tbody id="fq-am-table-body"></tbody>
       </table>
     </div>
   </div>

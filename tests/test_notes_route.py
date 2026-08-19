@@ -25,6 +25,8 @@ class NotesRouteTests(unittest.TestCase):
         self.assertNotIn('class="navbar"', html)
         self.assertIn("Screen directory", html)
         self.assertIn('id="note-cancel"', html)
+        self.assertIn('id="nav-erp-sync-btn"', html)
+        self.assertIn("Sync ERP", html)
 
     def test_legacy_notes_path_redirects_to_admin(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):

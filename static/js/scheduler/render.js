@@ -192,8 +192,43 @@ function trialBlockToolingCheckboxHtml(leader) {
   `;
 }
 
+function trialPsForMaterialToggle(leader, extraIds = []) {
+  const payload = leader || {};
+  const extra = Array.isArray(extraIds) ? extraIds : [extraIds];
+  const fromPayload = typeof trialCatalogPsFromPayload === 'function'
+    ? trialCatalogPsFromPayload(payload)
+    : null;
+  if (fromPayload) return fromPayload;
+
+  const candidates = [
+    payload.planner_ps_id,
+    payload.ps_id,
+    payload.source_ps_id,
+    payload.job_no,
+    ...extra,
+  ].map(v => String(v || '').trim()).filter(Boolean);
+
+  for (const id of candidates) {
+    const row = typeof trialCatalogFindPsRow === 'function'
+      ? trialCatalogFindPsRow(id, payload.pp_partial_no || '')
+      : trialCatalogPsRecord(id);
+    if (row) return row;
+  }
+
+  const resolved = typeof trialResolvePlannerPsId === 'function'
+    ? String(trialResolvePlannerPsId(payload) || '').trim()
+    : '';
+  const psId = String(payload.planner_ps_id || '').trim()
+    || resolved
+    || candidates.find(v => v.includes('::'))
+    || candidates[0]
+    || '';
+  return psId ? { ps_id: psId } : null;
+}
+
 function trialOpReadinessTogglesHtml(ps, leader) {
-  const materialHtml = ps ? trialCatalogMaterialInCheckboxHtml(ps) : '';
+  const psForMaterial = ps || trialPsForMaterialToggle(leader);
+  const materialHtml = psForMaterial ? trialCatalogMaterialInCheckboxHtml(psForMaterial) : '';
   const toolingHtml = leader ? trialBlockToolingCheckboxHtml(leader) : '';
   if (!materialHtml && !toolingHtml) return '';
   return `
@@ -2531,7 +2566,7 @@ function trialRenderRunBlockDetailBody(group, block, machine) {
         ${trialRenderCatalogOpDetailRow('Setup', leader?.include_setup ? 'Included' : 'Excluded')}
       </dl>
       ${trialOpReadinessTogglesHtml(
-        trialCatalogPsRecord(leader?.planner_ps_id || leader?.source_ps_id || leader?.job_no || vm.psDisplay.base || ''),
+        trialPsForMaterialToggle(leader || block, [vm.psDisplay.base, vm.psDueKey]),
         leader || block,
       )}
       ${ptlCard ? `

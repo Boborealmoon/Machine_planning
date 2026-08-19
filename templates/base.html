@@ -131,7 +131,7 @@
       </div>
 
       {# ERP queries & master data #}
-      <div class="nav-dropdown {% if nav_path in ('/bom-variation', '/assembly-boms', '/system', '/planning-data/program-tool-tracker') or nav_path.startswith('/planning-data') and nav_path not in ('/planning-data/repeat-orders', '/planning-data/aker-inventory', '/planning-data/materials') or active in ('planning_data', 'bom_variation', 'assembly_boms', 'system', 'program_tool_tracker') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/bom-variation', '/assembly-boms', '/planning-data/program-tool-tracker') or nav_path.startswith('/planning-data') and nav_path not in ('/planning-data/repeat-orders', '/planning-data/aker-inventory', '/planning-data/materials') or active in ('planning_data', 'bom_variation', 'assembly_boms', 'program_tool_tracker') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="queries-data" aria-expanded="false" aria-controls="dd-queries-data">
           QUERIES &amp; MASTER DATA <span class="nav-caret">▾</span>
         </button>
@@ -169,11 +169,6 @@
           <a href="/planning-data/frame-agreement-parts"
              class="nav-dropdown-item {% if nav_path == '/planning-data/frame-agreement-parts' %}nav-dropdown-item--active{% endif %}">
             Frame agreement parts
-          </a>
-          <span class="nav-dropdown-section">SYSTEM</span>
-          <a href="/system"
-             class="nav-dropdown-item {% if nav_path == '/system' or active == 'system' %}nav-dropdown-item--active{% endif %}">
-            Email settings
           </a>
         </div>
       </div>
@@ -220,7 +215,7 @@
       </div>
 
       {# Archive — historical / reference views #}
-      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/erp-scanned-output', '/actual-production', '/auk-oee', '/preferred-machines', '/floor-plan', '/monthly-delivery-plan', '/archive/so-lines') or active in ('daily_output', 'erp_scanned_output', 'actual_production', 'auk_oee', 'preferred_machines', 'floor_plan', 'monthly_delivery_plan', 'so_archive') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/erp-scanned-output', '/auk-oee', '/preferred-machines', '/floor-plan', '/monthly-delivery-plan', '/archive/so-lines', '/archive/first-article') or active in ('daily_output', 'erp_scanned_output', 'auk_oee', 'preferred_machines', 'floor_plan', 'monthly_delivery_plan', 'so_archive', 'first_article') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="archive" aria-expanded="false" aria-controls="dd-archive">
           ARCHIVE <span class="nav-caret">▾</span>
         </button>
@@ -229,6 +224,10 @@
              class="nav-dropdown-item {% if nav_path == '/archive/so-lines' or active == 'so_archive' %}nav-dropdown-item--active{% endif %}">
             SO line archive
           </a>
+          <a href="/archive/first-article"
+             class="nav-dropdown-item {% if nav_path == '/archive/first-article' or active == 'first_article' %}nav-dropdown-item--active{% endif %}">
+            First article tracker
+          </a>
           <a href="/daily-output"
              class="nav-dropdown-item {% if nav_path == '/daily-output' or active == 'daily_output' %}nav-dropdown-item--active{% endif %}">
             Daily output
@@ -236,10 +235,6 @@
           <a href="/erp-scanned-output"
              class="nav-dropdown-item {% if nav_path == '/erp-scanned-output' or active == 'erp_scanned_output' %}nav-dropdown-item--active{% endif %}">
             ERP scanned output
-          </a>
-          <a href="/actual-production"
-             class="nav-dropdown-item {% if nav_path == '/actual-production' or active == 'actual_production' %}nav-dropdown-item--active{% endif %}">
-            Actual production
           </a>
           <a href="/auk-oee"
              class="nav-dropdown-item {% if nav_path == '/auk-oee' or active == 'auk_oee' %}nav-dropdown-item--active{% endif %}">
@@ -313,9 +308,6 @@
           </div>
         </div>
       </div>
-      <button type="button" class="nav-sync-btn" id="nav-erp-sync-btn" data-default-label="Sync ERP">
-        Sync ERP
-      </button>
     </div>
     </div>
   </div>
@@ -326,7 +318,7 @@
   {% block content %}{% endblock %}
 </main>
 
-<script src="{{ url_for('static', filename='js/main.js') }}?v=notif-defer-20260806"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}?v=api-json-20260818"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

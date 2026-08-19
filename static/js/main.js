@@ -1,3 +1,30 @@
+async function parseApiJson(res) {
+  const text = await res.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    const snippet = String(text).replace(/\s+/g, " ").trim().slice(0, 80);
+    const html = /^<!doctype|^<html/i.test(snippet);
+    const status = res.status || 0;
+    if (html && (status === 502 || status === 503 || status === 504)) {
+      throw new Error(
+        `Proxy/timeout (HTTP ${status}) — the API took too long or the server is restarting.`
+      );
+    }
+    if (html && status === 404) {
+      throw new Error("API route not found — restart the app so new routes are loaded.");
+    }
+    if (html && (status === 301 || status === 302 || status === 401)) {
+      throw new Error("Login page returned instead of JSON — unlock the page and retry.");
+    }
+    if (html) {
+      throw new Error(`Server returned an HTML page (HTTP ${status || "ok"}) instead of JSON.`);
+    }
+    throw new Error(snippet || `Invalid server response (HTTP ${status})`);
+  }
+}
+
 // Mobile navigation drawer
 (function initMobileNav() {
   const nav = document.getElementById("site-navbar");

@@ -77,6 +77,22 @@ def manual_qty_by_ps_ids(con, ps_ids):
     return _manual_qty_by_ps_ids(con, ps_ids)
 
 
+def _temp_registry_by_ps_ids(con, ps_ids):
+    temp_ids = [compact_text(ps_id) for ps_id in ps_ids if is_temp_planner_ps_id(ps_id)]
+    if not temp_ids:
+        return {}
+    return {
+        compact_text(row.get("planner_ps_id")): dict(row)
+        for row in rows(
+            con.execute(
+                "SELECT * FROM planner_temp_process_sheet WHERE planner_ps_id = ANY(%s)",
+                (temp_ids,),
+            )
+        )
+        if compact_text(row.get("planner_ps_id"))
+    }
+
+
 def _manual_qty_by_ps_ids(con, ps_ids):
     ps_ids = [compact_text(x) for x in ps_ids if compact_text(x)]
     if not ps_ids:
@@ -238,6 +254,12 @@ def normalize_standard_ps_id(value):
     if is_ps_base_id(raw):
         return raw.upper()
     return raw
+
+
+def split_process_sheet_search_terms(search):
+    """Split comma / semicolon / whitespace search text into lookup tokens."""
+    raw = compact_text(search).replace(";", " ").replace(",", " ")
+    return [part.lower() for part in raw.split() if part]
 
 
 def parse_bulk_lookup_ps_term(term):
@@ -2277,17 +2299,44 @@ def ensure_planner_process_sheet(con, planner_ps_id):
     )
 
 
-def _flow_steps_for_ps_ids(con, ps_ids):
-    from planning.erp_wo_merge import ERP_STAGE_OUTPUTS_CTE
+def _set_process_sheet_read_timeouts(con):
+    """Fail fast on Process Sheets list reads instead of waiting out a sync lock."""
+    timeout_ms = int(os.getenv("PS_BOARD_STATEMENT_TIMEOUT_MS", "45000"))
+    lock_ms = int(os.getenv("PS_BOARD_LOCK_TIMEOUT_MS", "8000"))
+    try:
+        con.execute(f"SET LOCAL statement_timeout = '{timeout_ms}'")
+        con.execute(f"SET LOCAL lock_timeout = '{lock_ms}'")
+    except Exception:
+        pass
 
-    ps_ids = [compact_text(x) for x in ps_ids if compact_text(x)]
-    if not ps_ids:
-        return {}
-    result = {}
-    for row in rows(
-        con.execute(
-            f"""
-            WITH {ERP_STAGE_OUTPUTS_CTE}
+
+def _flow_steps_sql(*, merge_wo: bool | None = None) -> str:
+    """BOM flow steps for specific planner_ps_ids.
+
+    Default list SQL does not join ``pp_vouchers_cache`` per operation — ERP qty
+    is overlaid in Python from ``_erp_cache_steps_batch``. Do not use the unscoped
+    ``ERP_STAGE_OUTPUTS_CTE`` here. Set ``PS_SELECT_MERGE_WO=1`` to restore the
+    per-step LATERAL join (also keyed to the current PS, not a full WO scan).
+    """
+    if merge_wo is None:
+        merge_wo = _ps_select_merge_wo_enabled()
+    if not merge_wo:
+        return """
+            SELECT ps.planner_ps_id AS ps_id,
+                   pfs.op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
+                   pfs.machine_category, pfs.preferred_machine,
+                   pfs.cycle_time, pfs.setup_time, pfs.is_last_op,
+                   pfs.source_kind, pfs.source_stage_no,
+                   0 AS erp_required_qty,
+                   0 AS erp_finished_qty,
+                   0 AS erp_reject_qty,
+                   '' AS erp_execution_status
+            FROM planner_process_sheet ps
+            JOIN planner_operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
+            WHERE ps.planner_ps_id = ANY(%s)
+            ORDER BY ps.planner_ps_id, pfs.seq_no, pfs.op_seq_id
+        """
+    return """
             SELECT ps.planner_ps_id AS ps_id,
                    pfs.op_seq_id, pfs.seq_no, pfs.op_no, pfs.op_type,
                    pfs.machine_category, pfs.preferred_machine,
@@ -2304,13 +2353,36 @@ def _flow_steps_for_ps_ids(con, ps_ids):
             FROM planner_process_sheet ps
             JOIN planner_operation_seq pfs ON pfs.bom_id = ps.selected_bom_id
             LEFT JOIN planner_temp_process_sheet tps ON tps.planner_ps_id = ps.planner_ps_id
-            LEFT JOIN erp_stage_outputs so
-                   ON so.ps_id = ps.source_ps_id
-                  AND so.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
-                  AND so.stage_no = pfs.source_stage_no
+            LEFT JOIN LATERAL (
+                SELECT
+                    MAX(COALESCE(ws.wo_qty_required, c.wo_qty_required)) AS wo_qty_required,
+                    MAX(COALESCE(ws.total_acc_qty_produced, c.wo_qty_produced)) AS wo_qty_produced,
+                    MAX(COALESCE(ws.total_rej_qty_produced, c.wo_qty_rejected)) AS wo_qty_rejected,
+                    MAX(COALESCE(NULLIF(TRIM(ws.execution_status), ''), c.execution_status)) AS execution_status
+                FROM pp_vouchers_cache c
+                LEFT JOIN mfg_wo_status ws
+                       ON ws.source_mps_no = c.ps_id
+                      AND ws.pp_partial_no = c.pp_partial_no
+                      AND ws.stage_no = c.stage_no
+                      AND TRIM(COALESCE(ws.stage_desc, '')) = TRIM(COALESCE(c.stage_desc, ''))
+                WHERE c.ps_id = ps.source_ps_id
+                  AND c.pp_partial_no = COALESCE(tps.source_pp_partial_no, ps.pp_partial_no)
+                  AND c.stage_no = pfs.source_stage_no
+                  AND c.stage_no IS NOT NULL
+            ) so ON TRUE
             WHERE ps.planner_ps_id = ANY(%s)
             ORDER BY ps.planner_ps_id, pfs.seq_no, pfs.op_seq_id
-            """,
+    """
+
+
+def _flow_steps_for_ps_ids(con, ps_ids):
+    ps_ids = [compact_text(x) for x in ps_ids if compact_text(x)]
+    if not ps_ids:
+        return {}
+    result = {}
+    for row in rows(
+        con.execute(
+            _flow_steps_sql(),
             (ps_ids,),
         )
     ):
@@ -2508,8 +2580,8 @@ def _erp_cache_steps_for_partial(con, ps, erp_steps_cache=None):
     except (TypeError, ValueError):
         partial_int = 1
     cache_key = (compact_text(source_ps_id), partial_int)
-    if erp_steps_cache is not None and cache_key in erp_steps_cache:
-        return erp_steps_cache[cache_key]
+    if erp_steps_cache is not None:
+        return list(erp_steps_cache.get(cache_key) or [])
     return _erp_cache_steps_for_ps(con, source_ps_id, pp_partial_no)
 
 
@@ -2600,6 +2672,7 @@ def _block_metrics_for_ps_ids(con, ps_ids):
         source_ps_id, _, _ = _planner_ps_identity(ps_id)
         source_ids.add(source_ps_id)
         source_ids.add(ps_id)
+    source_id_list = list(source_ids)
     metrics = {ps_id: {"by_op": {}, "machines": set(), "queued_machine_map": {},
                        "planned_qty_total": 0.0, "finished_qty_total": 0.0,
                        "reject_qty_total": 0.0, "expected_start": "", "expected_end": ""}
@@ -2608,24 +2681,34 @@ def _block_metrics_for_ps_ids(con, ps_ids):
     for row in rows(
         con.execute(
             """
-            WITH actual_by_block AS (
+            WITH matching_blocks AS (
+                SELECT b.block_id
+                FROM planner_operation o
+                JOIN planner_run_block b ON b.operation_id = o.operation_id
+                WHERE o.source_ps_id = ANY(%s)
+                  AND b.active = TRUE
+                  AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
+            ),
+            actual_by_block AS (
                 SELECT
-                    block_id,
-                    COALESCE(SUM(COALESCE(output_qty, 0)), 0) AS output_qty,
-                    COALESCE(SUM(COALESCE(reject_qty, 0)), 0) AS reject_qty,
-                    COALESCE(SUM(COALESCE(output_qty, 0) - COALESCE(reject_qty, 0)), 0) AS good_qty,
-                    COUNT(actual_id) AS actual_report_count
-                FROM planner_production_actual
-                WHERE COALESCE(status, 'ACTIVE') = 'ACTIVE'
-                GROUP BY block_id
+                    a.block_id,
+                    COALESCE(SUM(COALESCE(a.output_qty, 0)), 0) AS output_qty,
+                    COALESCE(SUM(COALESCE(a.reject_qty, 0)), 0) AS reject_qty,
+                    COALESCE(SUM(COALESCE(a.output_qty, 0) - COALESCE(a.reject_qty, 0)), 0) AS good_qty,
+                    COUNT(a.actual_id) AS actual_report_count
+                FROM planner_production_actual a
+                JOIN matching_blocks mb ON mb.block_id = a.block_id
+                WHERE COALESCE(a.status, 'ACTIVE') = 'ACTIVE'
+                GROUP BY a.block_id
             ),
             segment_bounds AS (
                 SELECT
-                    block_id,
-                    MIN(CASE WHEN segment_type = 'production' THEN start_datetime END) AS expected_start,
-                    MAX(CASE WHEN segment_type = 'production' THEN end_datetime END) AS expected_end
-                FROM planner_run_block_segment
-                GROUP BY block_id
+                    s.block_id,
+                    MIN(CASE WHEN s.segment_type = 'production' THEN s.start_datetime END) AS expected_start,
+                    MAX(CASE WHEN s.segment_type = 'production' THEN s.end_datetime END) AS expected_end
+                FROM planner_run_block_segment s
+                JOIN matching_blocks mb ON mb.block_id = s.block_id
+                GROUP BY s.block_id
             )
             SELECT o.source_ps_id, o.job_no, o.source_op_seq_id, o.source_op_no,
                    b.block_id, b.operation_id, b.machine_id, b.queue_position,
@@ -2651,7 +2734,7 @@ def _block_metrics_for_ps_ids(con, ps_ids):
             ORDER BY o.source_ps_id, o.source_op_seq_id, o.source_op_no,
                      b.queue_position, b.block_id
             """,
-            (list(source_ids),),
+            (source_id_list, source_id_list),
         )
     ):
         matched_ps_id = ""
@@ -3319,32 +3402,66 @@ def _ps_select(con):
 
 
 def _ps_select_search_clause(search):
-    """Narrow planner_process_sheet rows when delivery / board search is active."""
-    needle = compact_text(search).lower()
-    if not needle:
+    """Narrow planner_process_sheet rows for board / bulk-lookup search.
+
+    Comma-separated process sheet numbers use ``= ANY`` instead of one LIKE of
+    the whole pasted list (which matched nothing and forced a full-board scan).
+    """
+    terms = split_process_sheet_search_terms(search)
+    if not terms:
         return "", []
-    base_term, partial_no = parse_bulk_lookup_ps_term(needle)
-    if partial_no is not None and is_ps_base_id(base_term):
-        return (
-            """
-            WHERE UPPER(COALESCE(ps.source_ps_id, '')) = UPPER(%s)
-              AND COALESCE(ps.pp_partial_no, 1) = %s
-            """,
-            [base_term, partial_no],
+
+    exact_bases = []
+    exact_partials = []
+    like_terms = []
+    seen_bases = set()
+    seen_partials = set()
+    for term in terms:
+        base_term, partial_no = parse_bulk_lookup_ps_term(term)
+        if not base_term:
+            continue
+        if is_ps_base_id(base_term) and partial_no is not None:
+            key = (base_term.upper(), int(partial_no))
+            if key not in seen_partials:
+                seen_partials.add(key)
+                exact_partials.append(key)
+        elif is_ps_base_id(base_term):
+            key = base_term.upper()
+            if key not in seen_bases:
+                seen_bases.add(key)
+                exact_bases.append(key)
+        else:
+            like_terms.append(term)
+
+    clauses = []
+    params = []
+    if exact_bases:
+        clauses.append("UPPER(COALESCE(ps.source_ps_id, '')) = ANY(%s)")
+        params.append(exact_bases)
+        clauses.append("UPPER(COALESCE(ps.planner_ps_id, '')) = ANY(%s)")
+        params.append(exact_bases)
+    if exact_partials:
+        values_sql = ", ".join(["(UPPER(%s), %s)"] * len(exact_partials))
+        clauses.append(
+            f"(UPPER(COALESCE(ps.source_ps_id, '')), COALESCE(ps.pp_partial_no, 1)) IN ({values_sql})"
         )
-    pattern = f"%{needle}%"
-    return (
-        """
-        WHERE (
-            UPPER(COALESCE(ps.source_ps_id, '')) LIKE UPPER(%s)
-            OR UPPER(COALESCE(ps.planner_ps_id, '')) LIKE UPPER(%s)
-            OR UPPER(COALESCE(v.part_no, '')) LIKE UPPER(%s)
-            OR UPPER(COALESCE(v.description, '')) LIKE UPPER(%s)
-            OR CAST(COALESCE(ps.pp_partial_no, 1) AS TEXT) LIKE %s
+        for base, partial in exact_partials:
+            params.extend([base, partial])
+    for term in like_terms:
+        pattern = f"%{term}%"
+        clauses.append(
+            """(
+                UPPER(COALESCE(ps.source_ps_id, '')) LIKE UPPER(%s)
+                OR UPPER(COALESCE(ps.planner_ps_id, '')) LIKE UPPER(%s)
+                OR UPPER(COALESCE(v.part_no, '')) LIKE UPPER(%s)
+                OR UPPER(COALESCE(v.description, '')) LIKE UPPER(%s)
+                OR CAST(COALESCE(ps.pp_partial_no, 1) AS TEXT) LIKE %s
+            )"""
         )
-        """,
-        [pattern, pattern, pattern, pattern, pattern],
-    )
+        params.extend([pattern, pattern, pattern, pattern, pattern])
+    if not clauses:
+        return "", []
+    return " WHERE (" + " OR ".join(clauses) + ")", params
 
 
 def _board_item_search_haystack(item):
@@ -3549,12 +3666,14 @@ def list_process_sheets_payload(
     show_completed=None,
     overdue_only=None,
 ):
+    _set_process_sheet_read_timeouts(con)
     _overlay_column_flags(con)
     search = _payload_filter_arg("search", search).lower()
     status_filter = _payload_filter_arg("status", status_filter).upper()
     planner_filter = _payload_filter_arg("planner_status", planner_filter).upper()
     show_completed = _payload_filter_arg("show_completed", show_completed, bool_values=True)
     overdue_only = _payload_filter_arg("overdue_only", overdue_only, bool_values=True)
+    search_terms = split_process_sheet_search_terms(search)
 
     search_clause, search_params = _ps_select_search_clause(search)
     ps_rows = [
@@ -3577,25 +3696,24 @@ def list_process_sheets_payload(
         ps_ids,
         {ps_id: metrics_by_ps.get(ps_id, {}).get("expected_start", "") for ps_id in ps_ids},
     )
-    wo_complete_by_partial = _erp_wo_completion_map(
-        con,
-        {compact_text(row.get("source_ps_id")) for row in ps_rows if compact_text(row.get("source_ps_id"))},
-    )
+    temp_registry_by_ps = _temp_registry_by_ps_ids(con, ps_ids)
 
     erp_step_keys = []
+    erp_step_seen = set()
     for ps in ps_rows:
-        ps_id = compact_text(ps["ps_id"])
-        if steps_by_ps.get(ps_id):
+        if is_temp_planner_ps_id(compact_text(ps.get("ps_id"))):
             continue
         source_ps_id, pp_partial_no = _display_ids(ps)
         try:
             partial_int = int(pp_partial_no or 1)
         except (TypeError, ValueError):
             partial_int = 1
-        if compact_text(source_ps_id):
-            erp_step_keys.append((compact_text(source_ps_id), partial_int))
+        key = (compact_text(source_ps_id), partial_int)
+        if key[0] and key not in erp_step_seen:
+            erp_step_keys.append(key)
+            erp_step_seen.add(key)
     erp_steps_cache = _erp_cache_steps_batch(con, erp_step_keys)
-    from planning.erp_wo_merge import mfg_wo_stages_batch
+    from planning.erp_wo_merge import mfg_wo_stages_batch, wo_stages_all_complete
 
     wo_stage_keys = []
     wo_stage_seen = set()
@@ -3610,6 +3728,9 @@ def list_process_sheets_payload(
             wo_stage_keys.append(key)
             wo_stage_seen.add(key)
     wo_stages_cache = mfg_wo_stages_batch(con, wo_stage_keys)
+    wo_complete_by_partial = {
+        key: wo_stages_all_complete(stages) for key, stages in wo_stages_cache.items()
+    }
 
     candidates = []
     today = date.today().isoformat()
@@ -3653,12 +3774,7 @@ def list_process_sheets_payload(
                         )
                 except Exception:
                     pass
-            temp_reg = one(
-                con.execute(
-                    "SELECT * FROM planner_temp_process_sheet WHERE planner_ps_id = %s",
-                    (ps_id,),
-                )
-            )
+            temp_reg = temp_registry_by_ps.get(ps_id)
             if temp_reg:
                 payload["temp_source_ps_id"] = compact_text(temp_reg.get("source_ps_id"))
                 payload["temp_source_label"] = format_planner_ps_id(
@@ -3700,42 +3816,13 @@ def list_process_sheets_payload(
         wo_key = (compact_text(ps.get("source_ps_id")), int(ps.get("pp_partial_no") or 1))
         if not is_temp_planner_ps_id(ps_id) and wo_complete_by_partial.get(wo_key):
             payload["erp_all_wo_complete"] = True
-        haystack = " ".join(
-            compact_text(payload.get(k)).lower()
-            for k in (
-                "ps_id",
-                "source_ps_id",
-                "display_ps_id",
-                "pp_partial_no",
-                "part_name",
-                "part_no",
-                "part_desc",
-                "selected_flow_code",
-                "status",
-                "planner_status",
-                "inventory_code",
-                "temp_source_ps_id",
-                "temp_source_label",
-                "is_temp_ps",
-                "material_inventory_code",
-            )
-        )
-        if payload.get("material_inventory_codes"):
-            haystack += " " + " ".join(
-                compact_text(code).lower()
-                for code in payload.get("material_inventory_codes") or []
-            )
-        if payload.get("is_temp_ps"):
-            haystack += " temp reject rework"
-        payload["_search_haystack"] = haystack
         candidates.append(payload)
 
     _reconcile_partial_shipped_status(candidates)
 
     result = []
     for payload in candidates:
-        haystack = payload.pop("_search_haystack", "")
-        if search and search not in haystack:
+        if search_terms and not any(board_item_matches_search(payload, term) for term in search_terms):
             continue
         if status_filter and compact_text(payload["status"]).upper() != status_filter:
             continue

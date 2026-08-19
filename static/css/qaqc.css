@@ -1030,6 +1030,59 @@ body.qaqc-view {
   margin-top: 0;
 }
 
+.fq-table-card--anticipated-material {
+  margin-top: 0;
+}
+
+.fq-am-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.fq-am-badge--this {
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.fq-am-badge--overdue {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.fq-group-row--overdue .fq-group-row-avatar {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.fq-am-date--overdue {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.fq-am-date--this {
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.fq-am-delay {
+  color: #b45309;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.fq-row--anticipated-material.is-delay td {
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.fq-row--anticipated-material.is-overdue td {
+  background: rgba(239, 68, 68, 0.04);
+}
+
 .fq-stage-badge--material_issue {
   background: rgba(139, 92, 246, 0.12);
   border-color: rgba(139, 92, 246, 0.28);

@@ -285,3 +285,21 @@ CREATE TABLE IF NOT EXISTS public.stg_kobelco_mps_archive (
     segment_1_code          TEXT,
     _loaded_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Finishing / material-issue queues: avoid DISTINCT ON over every open WO row.
+CREATE INDEX IF NOT EXISTS idx_mfg_wo_status_open_stage_desc
+    ON public.mfg_wo_status (stage_desc)
+    WHERE execution_status IS NOT NULL
+      AND execution_status <> ''
+      AND execution_status NOT IN ('C', 'Completed')
+      AND stage_no IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_mfg_wo_status_open_partial
+    ON public.mfg_wo_status (source_mps_no, pp_partial_no, stage_no)
+    WHERE execution_status IS NOT NULL
+      AND execution_status <> ''
+      AND execution_status NOT IN ('C', 'Completed')
+      AND stage_no IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_pp_vouchers_cache_ps_partial
+    ON public.pp_vouchers_cache (ps_id, pp_partial_no, stage_no);

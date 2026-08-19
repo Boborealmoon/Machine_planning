@@ -29,6 +29,24 @@ def _finishing_ps_prefix_params() -> tuple:
     return _pp_ps_id_prefix_params() + (_TEMP_PS_PREFIX_LIKE,)
 
 
+def _open_execution_status_sql(column: str) -> str:
+    """Open WO rows without wrapping the column in COALESCE (keeps partial indexes usable)."""
+    return (
+        f"{column} IS NOT NULL "
+        f"AND {column} <> '' "
+        f"AND {column} NOT IN ('C', 'Completed')"
+    )
+
+
+def _finishing_stage_eq_sql(column: str) -> str:
+    """Index-friendly finishing predicate (mfg_wo_status.stage_desc is stored trimmed)."""
+    return f"""(
+        {column} = ANY(%s)
+        OR {column} ILIKE 'Engraving%%Packing%%'
+        OR {column} ILIKE 'Packing%%Engraving%%'
+    )"""
+
+
 _tables_initialized = False
 _tables_lock = threading.Lock()
 _mi_overlay_initialized = False
@@ -80,34 +98,52 @@ def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_finishing_queue_staging_sql() -> tuple[str, tuple]:
-    """One row per PP partial at its current open finishing stage (synced mfg_wo_status)."""
-    finishing_match = finishing_stage_sql_match("ces.stage_desc")
-    prefix_sql = _finishing_ps_prefix_sql("ces.source_mps_no")
+    """One row per PP partial at its current open finishing stage (synced mfg_wo_status).
+
+    Candidates are partials that already have an open finishing-stage WO. Current
+    stage is then resolved only for those keys so the API does not DISTINCT ON
+    the whole open WO table (that scan hits statement_timeout under load).
+    """
+    finishing_match_ws = _finishing_stage_eq_sql("ws.stage_desc")
+    finishing_match_ces = finishing_stage_sql_match("ces.stage_desc")
+    prefix_sql = _finishing_ps_prefix_sql("ws.source_mps_no")
+    open_sql = _open_execution_status_sql("ws.execution_status")
     sql = f"""
-WITH current_execution_stage AS (
-    SELECT DISTINCT ON (source_mps_no, pp_partial_no)
-        source_mps_no,
-        pp_partial_no,
-        stage_no,
-        TRIM(COALESCE(stage_desc, '')) AS stage_desc,
-        execution_status,
-        wo_qty_required,
-        total_acc_qty_produced,
-        total_rej_qty_produced
-    FROM mfg_wo_status
-    WHERE COALESCE(execution_status, '') NOT IN ('C', 'Completed', '')
-      AND stage_no IS NOT NULL
+WITH finishing_candidates AS (
+    SELECT DISTINCT ws.source_mps_no, ws.pp_partial_no
+    FROM mfg_wo_status ws
+    WHERE {open_sql}
+      AND ws.stage_no IS NOT NULL
+      AND {finishing_match_ws}
+      AND {prefix_sql}
+),
+current_execution_stage AS (
+    SELECT DISTINCT ON (ws.source_mps_no, ws.pp_partial_no)
+        ws.source_mps_no,
+        ws.pp_partial_no,
+        ws.stage_no,
+        TRIM(COALESCE(ws.stage_desc, '')) AS stage_desc,
+        ws.execution_status,
+        ws.wo_qty_required,
+        ws.total_acc_qty_produced,
+        ws.total_rej_qty_produced
+    FROM mfg_wo_status ws
+    INNER JOIN finishing_candidates cand
+            ON cand.source_mps_no = ws.source_mps_no
+           AND cand.pp_partial_no = ws.pp_partial_no
+    WHERE {open_sql}
+      AND ws.stage_no IS NOT NULL
     ORDER BY
-        source_mps_no,
-        pp_partial_no,
-        CASE execution_status
+        ws.source_mps_no,
+        ws.pp_partial_no,
+        CASE ws.execution_status
             WHEN 'I' THEN 0
             WHEN 'R' THEN 1
             WHEN 'P' THEN 2
             ELSE 3
         END,
-        COALESCE(total_acc_qty_produced, 0) DESC,
-        stage_no ASC
+        COALESCE(ws.total_acc_qty_produced, 0) DESC,
+        ws.stage_no ASC
 ),
 finishing_current AS (
     SELECT
@@ -121,28 +157,7 @@ finishing_current AS (
         ces.total_rej_qty_produced AS stage_qty_rejected
     FROM current_execution_stage ces
     WHERE NULLIF(ces.stage_desc, '') IS NOT NULL
-      AND {finishing_match}
-      AND {prefix_sql}
-),
-partial_meta AS (
-    SELECT DISTINCT ON (c.ps_id, c.pp_partial_no)
-        c.ps_id,
-        c.pp_partial_no,
-        c.part_no,
-        c.description AS part_desc,
-        c.bom_code,
-        c.source_voucher_no AS sales_order_no,
-        c.source_line_item_no AS sales_order_line,
-        c.due_date,
-        COALESCE(NULLIF(c.partial_qty, 0), c.total_qty) AS qty,
-        c.qty_shipped,
-        c.so_det_qty,
-        c.status AS pp_status
-    FROM pp_vouchers_cache c
-    INNER JOIN finishing_current fc
-            ON fc.ps_id = c.ps_id
-           AND fc.pp_partial_no = c.pp_partial_no
-    ORDER BY c.ps_id, c.pp_partial_no, c.stage_no
+      AND {finishing_match_ces}
 )
 SELECT
     fc.ps_id,
@@ -164,9 +179,23 @@ SELECT
     m.so_det_qty,
     m.pp_status
 FROM finishing_current fc
-LEFT JOIN partial_meta m
-       ON m.ps_id = fc.ps_id
-      AND m.pp_partial_no = fc.pp_partial_no
+LEFT JOIN LATERAL (
+    SELECT DISTINCT ON (c.ps_id, c.pp_partial_no)
+        c.part_no,
+        c.description AS part_desc,
+        c.bom_code,
+        c.source_voucher_no AS sales_order_no,
+        c.source_line_item_no AS sales_order_line,
+        c.due_date,
+        COALESCE(NULLIF(c.partial_qty, 0), c.total_qty) AS qty,
+        c.qty_shipped,
+        c.so_det_qty,
+        c.status AS pp_status
+    FROM pp_vouchers_cache c
+    WHERE c.ps_id = fc.ps_id
+      AND c.pp_partial_no = fc.pp_partial_no
+    ORDER BY c.ps_id, c.pp_partial_no, c.stage_no
+) m ON TRUE
 ORDER BY
     CASE
         WHEN fc.current_stage_desc = 'Deburring' THEN 1
@@ -186,7 +215,8 @@ ORDER BY
     fc.ps_id,
     fc.pp_partial_no
 """
-    return sql, (list(FINISHING_STAGE_DESCS),) + _finishing_ps_prefix_params()
+    stage_params = (list(FINISHING_STAGE_DESCS),)
+    return sql, stage_params + _finishing_ps_prefix_params() + stage_params
 
 
 def _build_recently_packed_staging_sql() -> tuple[str, tuple]:

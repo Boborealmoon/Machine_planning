@@ -79,6 +79,23 @@ def main() -> None:
 
     threading.Thread(target=_warm_catalog, daemon=True, name="pp-vouchers-warm").start()
 
+    def _warm_sales_orders_lite():
+        time.sleep(3)
+        try:
+            from planning.sales_orders_route import _fetch_sales_orders
+
+            payload = _fetch_sales_orders(active_only=True, lite=True)
+            log.info(
+                "sales-orders lite cache ready (%s active)",
+                len(payload.get("active") or []),
+            )
+        except Exception as exc:
+            log.warning("sales-orders lite warm-up failed: %s", exc)
+
+    threading.Thread(
+        target=_warm_sales_orders_lite, daemon=True, name="so-lite-warm"
+    ).start()
+
     serve(
         app,
         host=host,

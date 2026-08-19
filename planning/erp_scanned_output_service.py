@@ -219,17 +219,24 @@ def apply_migration(con) -> None:
             statement = []
 
 
-def ensure_erp_qty_jump_table(con) -> None:
-    """Hot-path check only; DDL runs from post-sync bootstrap."""
+def ensure_erp_qty_jump_table(con, *, create: bool = False) -> None:
+    """Check (and optionally create) the jump table. Snapshot indexes stay off this path."""
     global _SCHEMA_READY
     if _SCHEMA_READY:
         return
+    existing = one(con.execute("SELECT to_regclass('public.planner_erp_qty_jump') AS reg"))
+    if existing and existing.get("reg"):
+        _SCHEMA_READY = True
+        return
+    if not create:
+        return
+    planner_try_savepoint(con, "erp_jump_ddl", lambda: apply_migration(con) or True, default=None)
     existing = one(con.execute("SELECT to_regclass('public.planner_erp_qty_jump') AS reg"))
     _SCHEMA_READY = bool(existing and existing.get("reg"))
 
 
 def _ensure_snapshot_date_index(con) -> None:
-    """Date lookup for scanned-output fallback; skip if the snapshot table is missing."""
+    """Date lookup for snapshot backfill; skip if the snapshot table is missing."""
     planner_try_savepoint(
         con,
         "erp_snapshot_date_idx",
@@ -832,9 +839,9 @@ def fetch_scanned_output(
     search: str = "",
     limit: int = 2000,
 ) -> dict[str, Any]:
-    con.execute("SET LOCAL statement_timeout = '20s'")
-    con.execute("SET LOCAL lock_timeout = '5s'")
-    ensure_erp_qty_jump_table(con)
+    con.execute("SET LOCAL statement_timeout = '8s'")
+    con.execute("SET LOCAL lock_timeout = '3s'")
+    ensure_erp_qty_jump_table(con, create=True)
 
     today = scanned_wall_date()
     end = _parse_iso_date(to_date, today)
@@ -861,24 +868,6 @@ def fetch_scanned_output(
         ) or []
         if jump_rows:
             data_source = "jumps"
-
-    if not jump_rows:
-        snapshot_rows = planner_try_savepoint(
-            con,
-            "erp_jump_snapshots",
-            lambda: _fetch_snapshot_jump_rows(con, start, end, limit=max(limit * 2, 5000)),
-            default=[],
-        ) or []
-        if snapshot_rows:
-            # Keep page load fast: skip full machine enrichment here. Sync-time
-            # jump rows already store machine_no; snapshot fallback still shows qty/date.
-            jump_rows = _apply_jump_filters(
-                [dict(row) for row in snapshot_rows],
-                machine_no=machine_no,
-                search=search,
-                limit=limit,
-            )
-            data_source = "snapshots"
 
     jumps = [_serialize_jump(row) for row in jump_rows]
     machines = group_jumps_by_machine(jumps)
@@ -935,6 +924,7 @@ def fetch_scanned_output(
         "to_date": end.isoformat(),
         "today": today.isoformat(),
         "data_source": data_source,
+        "schema_ready": _SCHEMA_READY,
         "jumps": jumps,
         "machines": machines,
         "machine_options": options,

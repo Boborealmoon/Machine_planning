@@ -52,6 +52,7 @@ from planning.kobelco_mps_archive_route import kobelco_mps_archive_bp
 from planning.machine_lane_calc_route import machine_lane_calc_bp
 from planning.pr_status_enquiry_route import pr_status_enquiry_bp
 from planning.material_tracking_pr_po_route import material_tracking_pr_po_bp
+from planning.material_tracking_requests_route import material_tracking_requests_bp
 from planning.program_tool_tracker_route import program_tool_tracker_bp
 from planning.repeat_orders_route import repeat_orders_bp
 from planning.auk_oee_route import auk_oee_bp
@@ -83,13 +84,13 @@ from planning.monthly_delivery_plan_route import monthly_delivery_plan_bp
 from planning.so_outstanding_balance_route import so_outstanding_balance_bp
 from planning.sales_coordination_route import sales_coordination_bp
 from planning.so_archive_route import so_archive_bp
+from planning.first_article_route import first_article_bp
 from planning.queue_exit_history_route import queue_exit_history_bp
 from planning.erp_scanned_output_route import erp_scanned_output_bp
 from planning.mpp_planner_route import mpp_planner_bp
 from planning.inventory_enquiry_route import inventory_enquiry_bp
 from planning.excel_local_route import excel_local_bp
 from planning.frame_agreement_route import frame_agreement_bp
-from planning.email_route import email_bp
 from planning.mro_route import MRO_PATH, mro_bp
 from planning.mro_auth import (
     is_mro_auth_public_path,
@@ -124,6 +125,7 @@ app.register_blueprint(sales_report_bp)
 app.register_blueprint(so_outstanding_balance_bp)
 app.register_blueprint(sales_coordination_bp)
 app.register_blueprint(so_archive_bp)
+app.register_blueprint(first_article_bp)
 app.register_blueprint(job_ratio_bp)
 app.register_blueprint(material_inspection_bp)
 app.register_blueprint(qc_quality_queue_bp)
@@ -131,6 +133,7 @@ app.register_blueprint(kobelco_mps_archive_bp)
 app.register_blueprint(machine_lane_calc_bp)
 app.register_blueprint(pr_status_enquiry_bp)
 app.register_blueprint(material_tracking_pr_po_bp)
+app.register_blueprint(material_tracking_requests_bp)
 app.register_blueprint(program_tool_tracker_bp)
 app.register_blueprint(repeat_orders_bp)
 app.register_blueprint(auk_oee_bp)
@@ -162,7 +165,6 @@ app.register_blueprint(mpp_planner_bp)
 app.register_blueprint(inventory_enquiry_bp)
 app.register_blueprint(excel_local_bp)
 app.register_blueprint(frame_agreement_bp)
-app.register_blueprint(email_bp)
 app.register_blueprint(mro_bp)
 app.register_blueprint(mro_auth_bp)
 app.register_blueprint(shift_mgmt_bp)
@@ -170,6 +172,9 @@ app.register_blueprint(shift_mgmt_auth_bp)
 app.register_blueprint(pps_bp)
 app.register_blueprint(accounts_bp)
 app.register_blueprint(notes_bp)
+from planning.api_json_errors import register_api_json_error_handlers
+
+register_api_json_error_handlers(app)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 
 
@@ -869,6 +874,11 @@ def _inject_board_paths():
 def _planner_cache_headers(response):
     """Prevent Cloudflare tunnel / browser from serving stale planner HTML or JS."""
     path = (request.path or "").lower()
+    if path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["CDN-Cache-Control"] = "no-store"
+        return response
     if path in (MACHINIST_BOARD_PATH.lower(), FINISHING_QUEUE_PATH.lower(), DRIVER_VIEW_PATH.lower()):
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
@@ -1110,11 +1120,6 @@ def api_get_daily_output_snapshot(snapshot_id: int):
     return api_daily_output_snapshot_detail(snapshot_id)
 
 
-@app.get("/actual-production")
-def actual_production():
-    return render_template("actual_production.html", active="actual_production")
-
-
 @app.get("/process-sheets")
 def process_sheets():
     return render_template("process_sheets.html", active="process_sheets")
@@ -1165,8 +1170,6 @@ def cycle_times_page():
 def operations():
     return redirect(url_for("planner"))
 
-
-# /system — email settings UI (planning.email_route)
 
 _PP_VOUCHERS_COLS = [
     "ps_id", "pp_partial_no", "part_no", "description",
@@ -1594,9 +1597,17 @@ def _entry_matches_search_term(entry: dict, term: str) -> bool:
         return True
     base_term, partial_no = parse_bulk_lookup_ps_term(term)
     source, entry_partial = _entry_ps_base_and_partial(entry)
-    if partial_no is not None and is_ps_base_id(base_term):
-        return source == base_term and entry_partial == partial_no
-
+    if is_ps_base_id(base_term):
+        if partial_no is not None:
+            return source == base_term and entry_partial == partial_no
+        if source == base_term:
+            return True
+        ps_ids = [
+            str(entry.get(key) or "").lower()
+            for key in ("ps_id", "source_ps_id", "display_ps_id")
+            if entry.get(key)
+        ]
+        return any(base_term in ps_id for ps_id in ps_ids)
     ps_ids = [
         str(entry.get(key) or "").lower()
         for key in ("ps_id", "source_ps_id", "display_ps_id")
@@ -1604,34 +1615,43 @@ def _entry_matches_search_term(entry: dict, term: str) -> bool:
     ]
     if ps_ids and any(base_term in ps_id for ps_id in ps_ids):
         return True
-    if is_ps_base_id(base_term) and source == base_term:
-        return True
     return base_term in _pp_voucher_search_haystack(entry)
 
 
 def _filter_pp_vouchers_by_search(data: list, raw_search: str) -> list:
-    from planning.process_sheets import is_ps_base_id, parse_bulk_lookup_ps_term
+    from planning.process_sheets import is_ps_base_id, parse_bulk_lookup_ps_term, split_process_sheet_search_terms
 
-    normalized = str(raw_search or "").replace(";", " ").replace(",", " ")
-    terms = [term.strip().lower() for term in normalized.split() if term.strip()]
+    terms = split_process_sheet_search_terms(raw_search)
     if not terms:
         return data
     parsed_terms = [parse_bulk_lookup_ps_term(term) for term in terms]
-    matched = [
-        entry
-        for entry in data
-        if any(_entry_matches_search_term(entry, term) for term in terms)
-    ]
-    explicit_partial_bases = {
-        base_term
-        for base_term, partial_no in parsed_terms
-        if partial_no is not None and is_ps_base_id(base_term)
-    }
-    bases_to_expand = {
+    exact_bases = {
         base_term
         for base_term, partial_no in parsed_terms
         if partial_no is None and is_ps_base_id(base_term)
     }
+    exact_partials = {
+        (base_term, partial_no)
+        for base_term, partial_no in parsed_terms
+        if partial_no is not None and is_ps_base_id(base_term)
+    }
+    free_terms = [
+        term
+        for term, (base_term, _partial_no) in zip(terms, parsed_terms)
+        if not is_ps_base_id(base_term)
+    ]
+
+    def matches(entry):
+        source, entry_partial = _entry_ps_base_and_partial(entry)
+        if source in exact_bases:
+            return True
+        if (source, entry_partial) in exact_partials:
+            return True
+        return bool(free_terms) and any(_entry_matches_search_term(entry, term) for term in free_terms)
+
+    matched = [entry for entry in data if matches(entry)]
+    explicit_partial_bases = {base_term for base_term, _partial_no in exact_partials}
+    bases_to_expand = set(exact_bases)
     bases_to_expand.update(
         str(entry.get("source_ps_id") or "").split("::")[0].strip().lower()
         for entry in matched
@@ -2353,7 +2373,10 @@ def api_process_sheets_board():
 
         @copy_current_request_context
         def _load_planner_board_rows():
+            from planning.process_sheets import _set_process_sheet_read_timeouts
+
             with planner_db() as con:
+                _set_process_sheet_read_timeouts(con)
                 planner_items = list_process_sheets_payload(con)
                 enrich_board_planner_fields(con, planner_items)
                 return planner_items
@@ -2361,8 +2384,22 @@ def api_process_sheets_board():
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             erp_future = pool.submit(_load_erp_board_rows)
             planner_future = pool.submit(_load_planner_board_rows)
-            erp_data = erp_future.result()
-            planner_items = planner_future.result()
+            erp_err = planner_err = None
+            try:
+                erp_data = erp_future.result()
+            except Exception as exc:
+                erp_err = exc
+                log.warning("process sheet board ERP load failed: %s", exc)
+                erp_data = []
+            try:
+                planner_items = planner_future.result()
+            except Exception as exc:
+                planner_err = exc
+                log.warning("process sheet board planner load failed: %s", exc)
+                planner_items = []
+
+        if not planner_items and not erp_data:
+            raise planner_err or erp_err or RuntimeError("Process sheet board returned no rows")
 
         planner_keys = {process_sheet_board_identity_key(item) for item in planner_items}
         erp_only = [
@@ -2371,11 +2408,17 @@ def api_process_sheets_board():
             if compact_text(entry.get("ps_id"))
             and process_sheet_board_identity_key(entry) not in planner_keys
         ]
-        with planner_db() as con:
-            enrich_board_planner_fields(con, erp_only)
-            from planning.materials import enrich_items_material_inventory_codes
+        try:
+            from planning.process_sheets import _set_process_sheet_read_timeouts
 
-            enrich_items_material_inventory_codes(con, erp_only)
+            with planner_db() as con:
+                _set_process_sheet_read_timeouts(con)
+                enrich_board_planner_fields(con, erp_only)
+                from planning.materials import enrich_items_material_inventory_codes
+
+                enrich_items_material_inventory_codes(con, erp_only)
+        except Exception as exc:
+            log.warning("process sheet board overlay enrich failed: %s", exc)
         return jsonify({"planner": planner_items, "erp_only": erp_only})
     except Exception as e:
         from db import planner_db_connect_error

@@ -115,15 +115,26 @@ def staged_query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     return [serialize_row(dict(row)) for row in fetched]
 
 
-def live_query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
+def live_query(sql: str, params: tuple = (), *, timeout_ms: int | None = None) -> list[dict[str, Any]]:
     import psycopg2.extras
     from db import get_conn, release_conn
 
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if timeout_ms:
+                cur.execute(f"SET LOCAL statement_timeout = '{int(timeout_ms)}'")
             cur.execute(sql, params)
-            return [serialize_row(dict(row)) for row in cur.fetchall()]
+            fetched = cur.fetchall()
+        if timeout_ms:
+            conn.rollback()
+        return [serialize_row(dict(row)) for row in fetched]
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         release_conn(conn)
 

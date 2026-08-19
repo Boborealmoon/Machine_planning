@@ -1642,16 +1642,20 @@
     if (!parsedTerms.length) {
       throw new Error('Enter one or more process sheet numbers separated by commas, spaces, or newlines.');
     }
-    const apiBases = [...new Set(parsedTerms.map(parsed => parsed.base).filter(Boolean))];
-    const searchParam = encodeURIComponent(apiBases.join(','));
-    const [apiRows, boardPayload] = await Promise.all([
+    const searchParam = encodeURIComponent(terms.join(','));
+    const [apiRows, plannerRows] = await Promise.all([
       getJson(
         `/api/pp-vouchers/with-ops?search=${searchParam}&show_completed=1`,
-        { timeoutMs: 120000 },
+        { timeoutMs: 45000 },
       ).catch(() => []),
-      getJson('/api/process-sheets/board?show_completed=1', { timeoutMs: 120000 }).catch(() => null),
+      getJson(
+        `/api/process-sheets?search=${searchParam}&show_completed=1`,
+        { timeoutMs: 45000 },
+      ).catch(() => []),
     ]);
-    bulkLookupExportState.boardItems = boardPayload ? mergeBoardItems(boardPayload) : [];
+    bulkLookupExportState.boardItems = Array.isArray(plannerRows)
+      ? plannerRows.map(normalizePlannerItem)
+      : [];
     const plannerByKey = buildPlannerScheduleMap(bulkLookupPlannerPoolItems());
     const plannerMatches = bulkLookupPlannerPoolItems().filter(item =>
       parsedTerms.some(parsed => itemMatchesBulkLookupTerm(item, parsed)),
@@ -2130,7 +2134,7 @@
   }
 
   async function fetchBoardPayload(refresh = false) {
-    return getJson(boardRequestUrl(refresh), { timeoutMs: 90000 });
+    return getJson(boardRequestUrl(refresh), { timeoutMs: 55000 });
   }
 
   async function fetchPlannerOnlyPayload(refresh = false) {
@@ -2327,7 +2331,7 @@
         els.queue.innerHTML = [
           '<div class="queue-empty">',
           '<p><strong>Loading process sheets…</strong></p>',
-          '<p class="queue-empty-meta">If this takes more than a minute, ERP sync may be holding the database lock — wait for sync to finish, then click retry.</p>',
+          '<p class="queue-empty-meta">If this stays stuck, wait for any ERP sync to finish, then click retry. Sync ERP lives on the Admin page.</p>',
           '<button class="btn btn-light btn-sm" type="button" data-action="retry-load">Retry load</button>',
           '</div>',
         ].join('');
@@ -2346,7 +2350,7 @@
         els.queue.innerHTML = [
           '<div class="queue-empty">',
           '<p><strong>No results.</strong></p>',
-          '<p class="queue-empty-meta">Run <strong>Sync ERP</strong>, then refresh.</p>',
+          '<p class="queue-empty-meta">Ask an admin to run <strong>Sync ERP</strong> from the Admin page, then refresh.</p>',
           '</div>',
         ].join('');
       }

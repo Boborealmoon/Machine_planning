@@ -1714,7 +1714,7 @@
     const wantAll = opts.all === true || !mppFaOnly || jobsPoolIncludesNonFa;
     try {
       const res = await fetch(`/api/mpp-planner/jobs?fa_only=${wantAll ? '0' : '1'}`);
-      const payload = await res.json();
+      const payload = await parseJsonResponse(res);
       if (!res.ok || !payload.ok) {
         jobsLoadError = compactApiError(payload?.error) || `HTTP ${res.status}`;
         jobsSource = 'error';
@@ -1961,17 +1961,13 @@
   }
 
   async function parseJsonResponse(res) {
+    if (typeof parseApiJson === 'function') return parseApiJson(res);
     const text = await res.text();
     if (!text) return {};
     try {
       return JSON.parse(text);
     } catch {
-      const snippet = text.replace(/\s+/g, ' ').slice(0, 80);
-      throw new Error(
-        res.ok
-          ? 'Server returned non-JSON response'
-          : `Server error (${res.status}) — ${snippet.startsWith('<!') ? 'restart app or check /api/mpp-planner/queue is deployed' : snippet}`,
-      );
+      throw new Error(`Server returned an HTML page (HTTP ${res.status || 'ok'}) instead of JSON.`);
     }
   }
 
@@ -3399,7 +3395,7 @@
   async function loadMppMachines() {
     try {
       const res = await fetch('/api/mpp-planner/machines');
-      const payload = await res.json();
+      const payload = await parseJsonResponse(res);
       if (!res.ok || !payload.ok) return false;
       const machines = Array.isArray(payload.machines) ? payload.machines : [];
       if (!machines.length) return false;

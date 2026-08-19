@@ -11,6 +11,10 @@ from typing import Any
 from flask import Blueprint, jsonify, redirect, render_template, request, url_for
 
 from .erp_wo_merge import finishing_stage_bucket
+from .anticipated_material_service import (
+    anticipated_material_payload,
+    fetch_anticipated_material,
+)
 from .finishing_queue_service import (
     add_inspector,
     delete_inspector,
@@ -160,7 +164,7 @@ def _fetch_finishing_queue(*, refresh: bool = False) -> tuple[list[dict[str, Any
 
     t0 = time.perf_counter()
     with planner_db() as con:
-        # Bound slow DISTINCT ON scans / lock waits so Waitress threads and the
+        # Bound slow scans / lock waits so Waitress threads and the
         # connection pool are not held open indefinitely.
         try:
             con.execute("SET LOCAL statement_timeout = '45s'")
@@ -285,6 +289,7 @@ def _finishing_queue_client_config() -> dict[str, str]:
         "apiMaterialInspection": url_for("material_inspection.api_material_inspection"),
         "apiMaterialInspectionOverlay": url_for("material_inspection.api_material_inspection_overlay"),
         "apiQcQualityQueue": url_for("qc_quality_queue.api_qc_quality_queue"),
+        "apiAnticipatedMaterial": url_for("finishing_queue.api_anticipated_material"),
     }
 
 
@@ -324,6 +329,17 @@ def finishing_queue_page():
 @finishing_queue_bp.get("/material-issue-assembly")
 def material_issue_queue_legacy_redirect():
     return redirect(f"{FINISHING_QUEUE_PATH}?tab=material_issue")
+
+
+@finishing_queue_bp.get("/api/finishing-queue/anticipated-material")
+def api_anticipated_material():
+    try:
+        with planner_db() as con:
+            items = fetch_anticipated_material(con)
+    except Exception as exc:
+        logger.exception("anticipated material query failed")
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    return jsonify(anticipated_material_payload(items))
 
 
 @finishing_queue_bp.get("/api/finishing-queue")

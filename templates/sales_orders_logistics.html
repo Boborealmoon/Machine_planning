@@ -7,7 +7,7 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260728-delay">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260817-requests">
 {% endblock %}
 {% block content %}
 <div class="sol-page">
@@ -38,6 +38,10 @@
               title="Purchase order status">
         Purchase Order <span class="sol-chip-count" id="sol-po-count" hidden>0</span>
       </button>
+      <button type="button" class="sol-chip" data-sol-view="part-requests" role="tab" aria-selected="false"
+              title="Track part / inventory material without a process sheet">
+        Part requests <span class="sol-chip-count" id="sol-req-count" hidden>0</span>
+      </button>
     </div>
     <div class="sol-nav-group sol-bucket-group" id="sol-bucket-group" role="tablist" aria-label="PR / PO bucket" hidden>
       <button type="button" class="sol-chip sol-chip--bucket is-active" data-sol-bucket="ost" role="tab" aria-selected="true">
@@ -50,7 +54,7 @@
         History <span class="sol-chip-count" id="sol-bucket-hst-count" hidden>0</span>
       </button>
     </div>
-    <select id="sol-material-filter" class="sol-select sol-ps-only" aria-label="Filter by material status">
+    <select id="sol-material-filter" class="sol-select sol-edd-filter" aria-label="Filter by material status">
       <option value="all">All material status</option>
       <option value="empty">No date / not arrived</option>
       <option value="expected">Expected date set</option>
@@ -71,6 +75,29 @@
       <input id="sol-search" class="sol-search-input" type="search" placeholder="Search SO, PP, part, customer..." autocomplete="off">
     </label>
   </nav>
+
+  <div class="sol-add-bar sol-req-only" id="sol-add-bar" hidden>
+    <div class="sol-typeahead" data-sol-field="part_no">
+      <label class="sol-add-label" for="sol-req-part">Part no</label>
+      <input id="sol-req-part" class="sol-search-input" type="search"
+             placeholder="Search part no..." autocomplete="off"
+             aria-autocomplete="list" aria-expanded="false" aria-controls="sol-req-part-results">
+      <div id="sol-req-part-results" class="sol-typeahead-results" role="listbox" hidden></div>
+    </div>
+    <div class="sol-typeahead" data-sol-field="inventory_code">
+      <label class="sol-add-label" for="sol-req-inv">Inventory code</label>
+      <input id="sol-req-inv" class="sol-search-input" type="search"
+             placeholder="Search inventory code..." autocomplete="off"
+             aria-autocomplete="list" aria-expanded="false" aria-controls="sol-req-inv-results">
+      <div id="sol-req-inv-results" class="sol-typeahead-results" role="listbox" hidden></div>
+    </div>
+    <label class="sol-add-qty">
+      <span class="sol-add-label">Qty</span>
+      <input id="sol-req-qty" class="sol-search-input sol-qty-input" type="number" min="0" step="any" placeholder="Qty">
+    </label>
+    <button type="button" class="sol-btn sol-btn--primary" id="sol-req-add">Add request</button>
+    <p class="sol-add-status" id="sol-add-status" aria-live="polite"></p>
+  </div>
 
   <div id="sol-loading" class="sol-loading">
     <div class="sol-spinner" aria-hidden="true"></div>
@@ -136,5 +163,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260728-delay"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260818-staged"></script>
 {% endblock %}

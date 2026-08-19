@@ -3,7 +3,7 @@
 {% block title %}Admin Hub{% endblock %}
 {% block body_class %}notes-body{% endblock %}
 {% block main_class %}notes-main{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/notes.css') }}?v=20260720b">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/notes.css') }}?v=20260818-sync-erp">{% endblock %}
 
 {% block content %}
 {% macro launch_link(label, href, description="") -%}
@@ -21,7 +21,12 @@
       <h1>Admin</h1>
       <p>Open any workspace or capture a process-sheet note.</p>
     </div>
-    <button class="notes-refresh" id="notes-refresh" type="button">Refresh</button>
+    <div class="notes-header-actions">
+      <button class="notes-refresh" id="notes-refresh" type="button">Refresh</button>
+      <button type="button" class="notes-sync-erp" id="nav-erp-sync-btn" data-default-label="Sync ERP">
+        Sync ERP
+      </button>
+    </div>
   </header>
 
   <section class="admin-launcher" aria-labelledby="admin-launcher-title">
@@ -144,7 +149,6 @@
             {{ launch_link("Master Cycle Times", url_for("cycle_times_page")) }}
             {{ launch_link("Program / Tool Tracker", url_for("program_tool_tracker.program_tool_tracker_page")) }}
             {{ launch_link("Frame Agreement Parts", url_for("frame_agreement.frame_agreement_parts_page")) }}
-            {{ launch_link("Email Settings", url_for("email.system_page")) }}
           </div>
         </div>
 
@@ -154,7 +158,6 @@
             {{ launch_link("SO Line Archive", url_for("so_archive.so_archive_page")) }}
             {{ launch_link("Daily Output", url_for("daily_output_view")) }}
             {{ launch_link("ERP Scanned Output", url_for("erp_scanned_output.erp_scanned_output_page")) }}
-            {{ launch_link("Actual Production", url_for("actual_production")) }}
             {{ launch_link("AUK OEE Dashboard", url_for("auk_oee.auk_oee_page")) }}
             {{ launch_link("Preferred Machines", url_for("preferred_machines.preferred_machines_page")) }}
           </div>

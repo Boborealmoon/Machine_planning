@@ -101,21 +101,6 @@ def load_email_config(*, force_reload: bool = False) -> EmailConfig:
         return _config_cache
 
 
-def load_email_config_with_overrides(overrides: dict | None = None, *, force_reload: bool = False) -> EmailConfig:
-    """Load config from DB, optionally overlay unsaved form values."""
-    from .email_settings_store import _normalize_row, get_email_settings_row
-
-    if not overrides:
-        return load_email_config(force_reload=force_reload)
-    row = get_email_settings_row()
-    merged = dict(row)
-    for key, value in overrides.items():
-        if key == "smtp_password" and not str(value or "").strip():
-            continue
-        merged[key] = value
-    return _build_config(_normalize_row(merged))
-
-
 def smtp_ready(cfg: EmailConfig) -> bool:
     smtp = cfg.smtp
     return bool(smtp.enabled and smtp.host and smtp.from_address)
@@ -125,7 +110,7 @@ def smtp_config_issues(cfg: EmailConfig) -> list[str]:
     issues: list[str] = []
     smtp = cfg.smtp
     if not smtp.enabled:
-        issues.append("Enable SMTP (checkbox at top)")
+        issues.append("SMTP is disabled")
     if not smtp.host:
         issues.append("Set SMTP host")
     if not smtp.from_address:
@@ -146,43 +131,3 @@ def new_so_config_issues(cfg: EmailConfig) -> list[str]:
 
 def trigger_ready(cfg: EmailConfig, trigger: EmailTriggerConfig) -> bool:
     return bool(trigger.enabled and trigger.recipients and smtp_ready(cfg))
-
-
-def public_config_dict(cfg: EmailConfig, *, row: dict | None = None) -> dict:
-    row = row or get_email_settings_row()
-    smtp = cfg.smtp
-    new_so = cfg.new_sales_order
-    return {
-        "smtp": {
-            "enabled": smtp.enabled,
-            "host": smtp.host,
-            "port": smtp.port,
-            "user": smtp.user,
-            "from_address": smtp.from_address,
-            "use_tls": smtp.use_tls,
-            "timeout_sec": smtp.timeout_sec,
-            "password_set": bool(str(row.get("smtp_password") or "").strip()),
-            "configured": smtp_ready(cfg),
-            "issues": smtp_config_issues(cfg),
-        },
-        "triggers": {
-            "new_sales_order": {
-                "enabled": new_so.enabled,
-                "recipients": list(new_so.recipients),
-                "recipients_text": str(row.get("new_so_recipients") or ""),
-                "cc": list(new_so.cc),
-                "cc_text": str(row.get("new_so_cc") or ""),
-                "bcc": list(new_so.bcc),
-                "bcc_text": str(row.get("new_so_bcc") or ""),
-                "subject_template": new_so.subject_template,
-                "lookback_days": new_so.lookback_days,
-                "ps_enabled": new_so.ps_enabled,
-                "ps_heading": new_so.ps_heading,
-                "ps_line_template": new_so.ps_line_template,
-                "configured": trigger_ready(cfg, new_so),
-                "issues": new_so_config_issues(cfg),
-            },
-        },
-        "updated_at": row.get("updated_at"),
-        "api_secret_required": bool(cfg.api_secret),
-    }

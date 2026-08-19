@@ -51,7 +51,6 @@ The top navigation bar is always visible and provides access to all sections.
 | | Repeat Orders | Recurring purchase orders |
 | **PRODUCTION** | Daily Output | Shift production board |
 | | Finishing Queue | Parts at Deburring / Final Inspection / Packing |
-| | Actual Production | Job queue and execution history |
 | | Material Inspection | QC inspection status of incoming materials |
 | | Auk OEE | Machine efficiency dashboard |
 | | Queue Delays | Late / at-risk scheduled jobs |
@@ -388,31 +387,6 @@ Count badges on each button show how many parts are at that stage.
 
 ---
 
-### 6.3 Actual Production
-
-**URL:** `/actual-production`
-
-Shows the real-time execution state of all scheduled jobs.
-
-**View toggle:**
-
-| View | Contents |
-|------|----------|
-| **Queue** | Jobs currently scheduled or assigned to a machine |
-| **History** | Jobs that have been archived / completed |
-
-**Filters:**
-
-| Filter | Options | Effect |
-|--------|---------|--------|
-| **Category** | Dropdown of machine categories | Show only machines in selected category |
-| **Machine** | Dropdown of individual machines | Filter to a single machine |
-| **Search** | Free text | Match PS number, part, operation, or machine code |
-
-A badge shows the total job count matching current filters.
-
----
-
 ### 6.4 Queue Delays
 
 **URL:** `/queue-delays`
@@ -604,16 +578,7 @@ Progress is shown in the button label (e.g., "3/9 Work order status…"). When c
 | Direction | Ascending / Descending | Sort direction |
 | Search | Text | PS, operation, machine |
 
-### 9.6 Actual Production Filters
-
-| Filter | Values | Effect |
-|--------|--------|--------|
-| Category | Dropdown | Machine category |
-| Machine | Dropdown | Specific machine |
-| Search | Text | PS, part, op, machine |
-| View | Queue / History | Active vs archived jobs |
-
-### 9.7 Material Requirements Filters
+### 9.6 Material Requirements Filters
 
 | Filter | Values | Effect |
 |--------|--------|--------|

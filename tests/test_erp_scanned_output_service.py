@@ -10,11 +10,13 @@ from planning.erp_scanned_output_service import (
     _SNAPSHOT_LOOKBACK_DAYS,
     _fetch_snapshot_jump_rows,
     compute_qty_jumps,
+    fetch_scanned_output,
     group_jumps_by_machine,
     jumps_from_snapshot_series,
     machine_sort_key,
     wo_stage_key,
 )
+import planning.erp_scanned_output_service as erp_scanned_output_service
 
 
 class ErpScannedOutputServiceTests(TestCase):
@@ -144,3 +146,25 @@ class ErpScannedOutputServiceTests(TestCase):
             params,
             (start - timedelta(days=_SNAPSHOT_LOOKBACK_DAYS), end, start, end, 2000),
         )
+
+    def test_fetch_scanned_output_does_not_scan_snapshots_when_jump_table_empty(self):
+        previous = erp_scanned_output_service._SCHEMA_READY
+        erp_scanned_output_service._SCHEMA_READY = True
+        executed = []
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        con = MagicMock()
+
+        def execute(sql, params=None):
+            executed.append(sql)
+            return cur
+
+        con.execute.side_effect = execute
+        try:
+            payload = fetch_scanned_output(con, from_date="2026-08-05", to_date="2026-08-18")
+        finally:
+            erp_scanned_output_service._SCHEMA_READY = previous
+        self.assertEqual(payload["data_source"], "none")
+        self.assertEqual(payload["jumps"], [])
+        self.assertTrue(payload["schema_ready"])
+        self.assertFalse(any("planner_erp_wo_qty_snapshot" in sql for sql in executed))

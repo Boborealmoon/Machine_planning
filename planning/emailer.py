@@ -48,7 +48,7 @@ def send_email(
     cfg = cfg or load_email_config(force_reload=True)
     if not smtp_ready(cfg):
         issues = smtp_config_issues(cfg)
-        detail = "; ".join(issues) if issues else "Check SMTP settings on the System page"
+        detail = "; ".join(issues) if issues else "SMTP is not configured"
         return {"ok": False, "error": f"SMTP is not ready — {detail}", "issues": issues}
 
     recipients = _normalize_addresses(to)
@@ -84,40 +84,3 @@ def send_email(
     except Exception as exc:
         logger.warning("email send failed: %s", exc, exc_info=True)
         return {"ok": False, "error": str(exc)}
-
-
-def send_test_email(cfg: EmailConfig | None = None) -> dict:
-    cfg = cfg or load_email_config(force_reload=True)
-    issues = smtp_config_issues(cfg)
-    if not smtp_ready(cfg):
-        return {"test": True, "ok": False, "error": f"SMTP is not ready — {'; '.join(issues)}", "issues": issues}
-    trigger = cfg.new_sales_order
-    recipients = list(trigger.recipients) or list(_normalize_addresses(cfg.smtp.from_address))
-    sample_ps = [
-        {"process_sheet_no": "NPS26-TEST-001", "part_no": "PART-123", "line_item_no": "1", "qty": 10, "bom_code": "BOM-A", "po_due_date": "2026-07-15", "description": "Sample NPS part"},
-        {"process_sheet_no": "NPS26-TEST-002", "part_no": "PART-456", "line_item_no": "2", "qty": 5, "bom_code": "BOM-B", "po_due_date": "2026-07-20", "description": "Another NPS part"},
-    ]
-    from .new_so_email import _render_process_sheet_lines
-
-    ps_text, _, ps_numbers = _render_process_sheet_lines(trigger, sample_ps)
-    subject = render_template(
-        trigger.subject_template,
-        sales_order_no="SO/TEST/0001",
-        process_sheets=", ".join(ps_numbers),
-    )
-    body = (
-        "This is a test email from Machine Planning.\n\n"
-        f"SMTP host: {cfg.smtp.host}\n"
-        f"Trigger: new_sales_order\n"
-        f"Recipients: {', '.join(recipients)}\n\n"
-        f"{ps_text}\n"
-    )
-    result = send_email(
-        to=recipients,
-        cc=trigger.cc,
-        bcc=trigger.bcc,
-        subject=f"[TEST] {subject}",
-        body_text=body,
-        cfg=cfg,
-    )
-    return {"test": True, "sample_process_sheets": ps_numbers, **result}

@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}First Article Tracker{% endblock %}
+{% block body_class %}fa-view{% endblock %}
+{% block main_class %}app-main--first-article{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260818">
+{% endblock %}
+{% block content %}
+<div class="fa-page">
+  <header class="fa-header">
+    <div class="fa-header-text">
+      <p class="fa-kicker">Archive</p>
+      <h1 class="fa-title">First Article Tracker</h1>
+      <p class="fa-subtitle" id="fa-subtitle" aria-live="polite">Flag a process sheet, then track tooling, fixture, gauges, and PIC.</p>
+    </div>
+    <div class="fa-header-actions">
+      <button type="button" class="fa-btn fa-btn--ghost" id="fa-manage-pics" title="Add or remove PIC names">Manage PIC</button>
+      <button type="button" class="fa-btn fa-btn--primary" id="fa-refresh">Refresh</button>
+    </div>
+  </header>
+
+  <section class="fa-flag-bar" aria-label="Flag process sheet">
+    <div class="fa-typeahead">
+      <label class="fa-add-label" for="fa-ps-search">Flag process sheet</label>
+      <input id="fa-ps-search" class="fa-search-input" type="search"
+             placeholder="Search PS no, part no, description..."
+             autocomplete="off" aria-autocomplete="list" aria-expanded="false"
+             aria-controls="fa-ps-results">
+      <div id="fa-ps-results" class="fa-typeahead-results" role="listbox" hidden></div>
+    </div>
+    <p class="fa-add-status" id="fa-add-status" aria-live="polite"></p>
+  </section>
+
+  <label class="fa-filter-wrap">
+    <span class="fa-add-label">Filter tracker</span>
+    <input id="fa-filter" class="fa-search-input" type="search"
+           placeholder="Filter flagged jobs..." autocomplete="off">
+  </label>
+
+  <div id="fa-loading" class="fa-loading">
+    <div class="fa-spinner" aria-hidden="true"></div>
+    Loading first article tracker...
+  </div>
+  <div id="fa-alert" class="fa-alert" hidden></div>
+
+  <div id="fa-table-host" class="fa-table-card" hidden>
+    <div class="fa-table-scroll">
+      <table class="fa-table" id="fa-table">
+        <thead>
+          <tr>
+            <th class="fa-col-ps">PS no.</th>
+            <th>Part No.</th>
+            <th>Part Description</th>
+            <th class="fa-col-qty">Total Qty</th>
+            <th class="fa-col-date">PO Due Date</th>
+            <th class="fa-col-machine">Machine (CNC)</th>
+            <th class="fa-col-edd" title="Read-only from S/O management">Stipulated Coway EDD</th>
+            <th class="fa-col-pic">PIC</th>
+            <th class="fa-col-check">Tooling</th>
+            <th class="fa-col-check">Fixture/Jig</th>
+            <th class="fa-col-check">Gauges/CMM</th>
+            <th class="fa-col-remarks">Remark</th>
+            <th class="fa-col-actions"></th>
+          </tr>
+        </thead>
+        <tbody id="fa-table-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <p id="fa-empty" class="fa-empty" hidden>No process sheets flagged yet. Search a PS number above to add it.</p>
+</div>
+
+<div id="fa-pic-modal" class="fa-modal-backdrop" hidden>
+  <div class="fa-modal-box" role="dialog" aria-modal="true" aria-labelledby="fa-pic-modal-title">
+    <div class="fa-modal-head">
+      <h2 class="fa-modal-title" id="fa-pic-modal-title">PIC list</h2>
+      <button type="button" class="fa-btn fa-btn--ghost" id="fa-pic-modal-close">Close</button>
+    </div>
+    <p class="fa-modal-hint">Add or remove people. They appear in the PIC column so you can assign them to a job.</p>
+    <p id="fa-pic-status" class="fa-pic-status" hidden></p>
+    <form id="fa-pic-form" class="fa-pic-form">
+      <input type="text" id="fa-pic-name" class="fa-search-input" placeholder="PIC name" autocomplete="off" required>
+      <button type="submit" class="fa-btn fa-btn--primary">Add PIC</button>
+    </form>
+    <ul id="fa-pic-list" class="fa-pic-list"></ul>
+    <p id="fa-pic-empty" class="fa-empty" hidden>No PIC names yet.</p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260818"></script>
+{% endblock %}

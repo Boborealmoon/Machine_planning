@@ -35,6 +35,10 @@ function fqShowLoadError(message) {
   if (wrap) wrap.hidden = true;
   if (empty) empty.hidden = false;
   if (emptyText) emptyText.textContent = message;
+  document.getElementById('fq-am-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-mia-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-mi-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-qcq-table-wrap')?.setAttribute('hidden', '');
 }
 
 const FQ_TABLE_COL_COUNT = 10;
@@ -86,6 +90,16 @@ const fqState = {
     error: '',
     cachedAt: '',
     totalCount: 0,
+  },
+  am: {
+    items: [],
+    search: '',
+    loaded: false,
+    loading: false,
+    error: '',
+    cachedAt: '',
+    overdueCount: 0,
+    thisWeekCount: 0,
   },
 };
 
@@ -274,6 +288,10 @@ function fqIsQcQueueScreen() {
   return fqState.screen === 'qc_queue';
 }
 
+function fqIsAnticipatedMaterialScreen() {
+  return fqState.screen === 'anticipated_material';
+}
+
 function fqIsQueueTableVisible() {
   return fqState.screen === 'queue' || fqState.screen === 'assignments';
 }
@@ -427,9 +445,21 @@ function fqMaterialIssueItemsMatchingPsTypes() {
   return (fqState.materialIssueItems || []).filter(fqMatchesPsType);
 }
 
+function fqAnticipatedItemsMatchingPsTypes() {
+  return (fqState.am.items || []).filter((item) => {
+    if (item?.source === 'request') return true;
+    const psType = fqGetPsType({ ps_id: item?.process_sheet_no || item?.ps_id || '' });
+    if (!psType || !FQ_PS_TYPE_ORDER.includes(psType)) return true;
+    return fqState.psTypes.has(psType);
+  });
+}
+
 function fqItemsMatchingPsTypes() {
   if (fqState.screen === 'material_issue') {
     return fqMaterialIssueItemsMatchingPsTypes();
+  }
+  if (fqState.screen === 'anticipated_material') {
+    return fqAnticipatedItemsMatchingPsTypes();
   }
   return fqQueueItemsMatchingPsTypes();
 }
@@ -939,6 +969,7 @@ function fqUpdateNavCounts() {
   fqSetNavCount('fq-count-packing', stageCounts.packing);
   fqSetNavCount('fq-count-engraving_packing', stageCounts.engraving_packing);
   fqSetNavCount('fq-count-material_issue', fqMaterialIssueItemsMatchingPsTypes().length);
+  fqSetNavCount('fq-count-anticipated_material', fqAnticipatedItemsMatchingPsTypes().length);
 
   const miOutstanding = (fqState.mi.outstanding || []).length;
   const miReady = (fqState.mi.ready || []).length;
@@ -1125,10 +1156,260 @@ function fqRenderMaterialIssueTable() {
   if (stats) {
     stats.textContent = typeof fqPlural === 'function'
       ? fqPlural('stats_mia', filtered.length)
-      : `${filtered.length} job${filtered.length === 1 ? '' : 's'} with assembly stage`;
+      : `${filtered.length} material issue job${filtered.length === 1 ? '' : 's'}`;
   }
   if (meta) meta.hidden = true;
   fqUpdateNavCounts();
+}
+
+/* ── Anticipated material (S/O Management Material in / Sub-Con dates) ── */
+
+function fqAmApiUrl() {
+  const cfg = window.__FQ_CONFIG__ || {};
+  return cfg.apiAnticipatedMaterial || '/api/finishing-queue/anticipated-material';
+}
+
+function fqAmSearchText(item) {
+  return [
+    item.process_sheet_no, item.ps_id, item.sales_order_no, item.part_no,
+    item.description, item.customer_name, item.customer_po_no, item.notes,
+    item.arrival_date, item.week_day_label, item.week_range_label,
+  ].map((v) => String(v == null ? '' : v).toLowerCase()).join(' ');
+}
+
+function fqAmVisibleItems() {
+  const rows = fqAnticipatedItemsMatchingPsTypes();
+  const q = String(fqState.am.search || '').trim().toLowerCase();
+  if (!q) return rows;
+  return rows.filter((item) => fqAmSearchText(item).includes(q));
+}
+
+function fqAmWeekBadge(item) {
+  if (item?.this_week) {
+    return `<span class="fq-am-badge fq-am-badge--this">${escapeHtml((typeof fqT === 'function') ? fqT('am_this_week') : 'This week')}</span>`;
+  }
+  if (item?.overdue) {
+    return `<span class="fq-am-badge fq-am-badge--overdue">${escapeHtml((typeof fqT === 'function') ? fqT('am_overdue') : 'Overdue')}</span>`;
+  }
+  return '';
+}
+
+function fqAmGroupRow(item, count) {
+  const weekNo = item?.iso_week || '';
+  const range = item?.week_range_label || '';
+  const label = (typeof fqT === 'function')
+    ? fqT('am_week_group', { n: weekNo, range })
+    : `Week ${weekNo} · ${range}`;
+  const badges = fqAmWeekBadge(item);
+  const meta = typeof fqPlural === 'function'
+    ? fqPlural('jobs_count', count)
+    : `${count} job${count === 1 ? '' : 's'}`;
+  const overdueCls = item?.overdue && !item?.this_week ? ' fq-group-row--overdue' : '';
+  return `
+    <tr class="fq-group-row${overdueCls}">
+      <td colspan="10">
+        <div class="fq-group-row-inner">
+          <span class="fq-group-row-avatar" aria-hidden="true">W${escapeHtml(String(weekNo))}</span>
+          <span class="fq-group-row-name">${escapeHtml(label)}</span>
+          ${badges}
+          <span class="fq-group-row-meta">${escapeHtml(meta)}</span>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function fqRenderAnticipatedMaterialRow(item) {
+  const psId = String(item?.process_sheet_no || item?.ps_id || '').trim();
+  const jobLabel = psId || (item?.source === 'request'
+    ? ((typeof fqT === 'function') ? fqT('am_request') : 'Request')
+    : '—');
+  const delay = item?.material_delay
+    ? `<span class="fq-am-delay" title="${escapeHtml((typeof fqT === 'function') ? fqT('am_delay') : 'Material delay flagged')}">⚑</span>`
+    : '';
+  const arrivalCls = item?.overdue ? ' fq-am-date--overdue' : (item?.this_week ? ' fq-am-date--this' : '');
+  return `
+    <tr class="fq-row fq-row--anticipated-material${item?.overdue ? ' is-overdue' : ''}${item?.material_delay ? ' is-delay' : ''}">
+      <td class="fq-col-sticky fq-col-sticky--job">
+        <div class="fq-job-cell">
+          <span class="fq-job-ps">${escapeHtml(jobLabel)}</span>
+          ${delay}
+        </div>
+      </td>
+      <td class="fq-col-mono">${escapeHtml(item?.sales_order_no || '—')}</td>
+      <td class="fq-col-mono">${escapeHtml(item?.part_no || '—')}</td>
+      <td>${escapeHtml(item?.description || '—')}</td>
+      <td class="fq-col-num">${escapeHtml(fqFormatQty(item?.qty))}</td>
+      <td class="fq-col-date${arrivalCls}">${escapeHtml(fqFormatDate(item?.arrival_date))}</td>
+      <td>${escapeHtml(item?.week_day_label || '—')}</td>
+      <td class="fq-col-date">${escapeHtml(fqFormatDate(item?.due_date))}</td>
+      <td>${escapeHtml(item?.customer_name || '—')}</td>
+      <td class="fq-col-remarks">${escapeHtml(item?.notes || '—')}</td>
+    </tr>
+  `;
+}
+
+function fqRenderAnticipatedMaterialBody(items) {
+  const parts = [];
+  let lastKey = '';
+  let group = [];
+  const flush = () => {
+    if (!group.length) return;
+    parts.push(fqAmGroupRow(group[0], group.length));
+    parts.push(group.map((item) => fqRenderAnticipatedMaterialRow(item)).join(''));
+    group = [];
+  };
+  for (const item of items) {
+    const key = String(item?.week_key || '');
+    if (key !== lastKey) {
+      flush();
+      lastKey = key;
+    }
+    group.push(item);
+  }
+  flush();
+  return parts.join('');
+}
+
+function fqRenderAnticipatedMaterialTable() {
+  fqUpdateScreenChrome();
+
+  const wrap = document.getElementById('fq-am-table-wrap');
+  const tbody = document.getElementById('fq-am-table-body');
+  const empty = document.getElementById('fq-empty');
+  const emptyText = document.getElementById('fq-empty-text');
+  const stats = document.getElementById('fq-stats');
+  const meta = document.getElementById('fq-meta');
+
+  document.getElementById('fq-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-mia-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-mi-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-qcq-table-wrap')?.setAttribute('hidden', '');
+  fqHideLoading();
+
+  if (!wrap || !tbody || !empty) {
+    fqShowLoadError('Anticipated material table markup is missing — hard refresh the page.');
+    return;
+  }
+
+  if (fqState.am.loading && !fqState.am.loaded) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) emptyText.textContent = (typeof fqT === 'function') ? fqT('loading_am') : 'Loading anticipated material…';
+    if (stats) stats.textContent = (typeof fqT === 'function') ? fqT('loading_short') : 'Loading…';
+    if (meta) meta.hidden = true;
+    fqUpdateNavCounts();
+    return;
+  }
+
+  if (fqState.am.error) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) emptyText.textContent = fqState.am.error;
+    if (stats) stats.textContent = '';
+    if (meta) meta.hidden = true;
+    fqUpdateNavCounts();
+    return;
+  }
+
+  const matching = fqAnticipatedItemsMatchingPsTypes();
+  const filtered = fqAmVisibleItems();
+
+  if (!(fqState.am.items || []).length) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) emptyText.textContent = (typeof fqT === 'function')
+      ? fqT('empty_am')
+      : 'No Material in / Sub-Con dates in S/O Management yet.';
+    if (stats) stats.textContent = '';
+    if (meta) {
+      meta.hidden = !fqState.am.cachedAt;
+      meta.textContent = fqState.am.cachedAt
+        ? ((typeof fqT === 'function')
+          ? fqT('meta_am', { at: fqState.am.cachedAt })
+          : `Anticipated material · S/O Management Material in / Sub-Con dates · ${fqState.am.cachedAt}`)
+        : '';
+    }
+    fqUpdateNavCounts();
+    return;
+  }
+
+  if (!matching.length) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) emptyText.textContent = (typeof fqT === 'function') ? fqT('empty_ps_types') : 'No jobs match the selected PS types.';
+    if (stats) stats.textContent = '';
+    fqUpdateNavCounts();
+    return;
+  }
+
+  if (!filtered.length) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    if (emptyText) emptyText.textContent = (typeof fqT === 'function')
+      ? fqT('empty_am_search')
+      : 'No anticipated material matches your search.';
+  } else {
+    wrap.hidden = false;
+    empty.hidden = true;
+    tbody.innerHTML = fqRenderAnticipatedMaterialBody(filtered);
+  }
+
+  if (stats) {
+    const overdue = filtered.filter((item) => item.overdue).length;
+    const thisWeek = filtered.filter((item) => item.this_week).length;
+    stats.textContent = (typeof fqT === 'function')
+      ? fqT('stats_am', { n: filtered.length, overdue, this_week: thisWeek })
+      : `${filtered.length} anticipated · ${overdue} overdue · ${thisWeek} this week`;
+  }
+  if (meta) {
+    meta.hidden = !fqState.am.cachedAt;
+    meta.textContent = fqState.am.cachedAt
+      ? ((typeof fqT === 'function')
+        ? fqT('meta_am', { at: fqState.am.cachedAt })
+        : `Anticipated material · S/O Management Material in / Sub-Con dates · ${fqState.am.cachedAt}`)
+      : '';
+  }
+  fqUpdateNavCounts();
+}
+
+function fqApplyAnticipatedMaterialPayload(payload) {
+  fqState.am.items = Array.isArray(payload?.items) ? payload.items : [];
+  fqState.am.cachedAt = payload?.cached_at || '';
+  fqState.am.overdueCount = Number(payload?.overdue_count) || 0;
+  fqState.am.thisWeekCount = Number(payload?.this_week_count) || 0;
+  fqState.am.loaded = true;
+  fqState.am.error = '';
+}
+
+async function fqLoadAnticipatedMaterial({ refresh = false } = {}) {
+  if (fqState.am.loading) return;
+  fqState.am.loading = true;
+  fqState.am.error = '';
+  if (fqIsAnticipatedMaterialScreen()) fqRenderAnticipatedMaterialTable();
+  try {
+    const url = refresh ? `${fqAmApiUrl()}?refresh=1` : fqAmApiUrl();
+    const payload = await fqFetchJson(url, { timeoutMs: 30000 });
+    fqApplyAnticipatedMaterialPayload(payload);
+  } catch (err) {
+    fqState.am.error = `Failed to load anticipated material: ${err.message || err}`;
+  } finally {
+    fqState.am.loading = false;
+    if (fqIsAnticipatedMaterialScreen()) fqRenderAnticipatedMaterialTable();
+    else fqUpdateNavCounts();
+  }
+}
+
+function fqBindAnticipatedMaterial() {
+  if (window.__fqAmBound) return;
+  window.__fqAmBound = true;
+  const search = document.getElementById('fq-am-search');
+  if (search) {
+    search.addEventListener('input', () => {
+      fqState.am.search = search.value;
+      if (fqIsAnticipatedMaterialScreen()) fqRenderAnticipatedMaterialTable();
+    });
+  }
 }
 
 /* ── Material inspection screen (ERP QC inspections + QC-team assignment) ── */
@@ -1276,6 +1557,7 @@ function fqRenderMaterialInspectionTable() {
 
   document.getElementById('fq-table-wrap')?.setAttribute('hidden', '');
   document.getElementById('fq-mia-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-am-table-wrap')?.setAttribute('hidden', '');
   fqHideLoading();
 
   if (!wrap || !tbody || !empty) {
@@ -1705,6 +1987,7 @@ function fqRenderQcQueueTable() {
   document.getElementById('fq-table-wrap')?.setAttribute('hidden', '');
   document.getElementById('fq-mia-table-wrap')?.setAttribute('hidden', '');
   document.getElementById('fq-mi-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-am-table-wrap')?.setAttribute('hidden', '');
 
   fqHideLoading();
 
@@ -2110,21 +2393,27 @@ function fqUpdateScreenChrome() {
   const miaMode = screen === 'material_issue';
   const miMode = screen === 'material_inspection';
   const qcqMode = screen === 'qc_queue';
+  const amMode = screen === 'anticipated_material';
 
   document.getElementById('fq-stage-filter-wrap')?.classList.toggle('is-hidden', !queueMode);
   document.querySelector('.fq-nav-group--ps-types')?.classList.toggle('is-hidden', miaMode || miMode || qcqMode);
-  document.getElementById('fq-hide-done')?.classList.toggle('is-hidden', miaMode || miMode || qcqMode);
+  document.getElementById('fq-hide-done')?.classList.toggle('is-hidden', miaMode || miMode || qcqMode || amMode);
   // QC team is shared with material inspection assignment, so keep it available there.
-  document.getElementById('fq-manage-inspectors')?.classList.toggle('is-hidden', miaMode || qcqMode);
+  document.getElementById('fq-manage-inspectors')?.classList.toggle('is-hidden', miaMode || qcqMode || amMode);
   const miToolbar = document.getElementById('fq-mi-toolbar');
   if (miToolbar) miToolbar.hidden = !miMode;
   const qcqToolbar = document.getElementById('fq-qcq-toolbar');
   if (qcqToolbar) qcqToolbar.hidden = !qcqMode;
+  const amToolbar = document.getElementById('fq-am-toolbar');
+  if (amToolbar) amToolbar.hidden = !amMode;
   if (!miMode) {
     document.getElementById('fq-mi-table-wrap')?.setAttribute('hidden', '');
   }
   if (!qcqMode) {
     document.getElementById('fq-qcq-table-wrap')?.setAttribute('hidden', '');
+  }
+  if (!amMode) {
+    document.getElementById('fq-am-table-wrap')?.setAttribute('hidden', '');
   }
 
   document.querySelectorAll('[data-fq-stage]').forEach((btn) => {
@@ -2143,7 +2432,7 @@ function fqUpdateScreenChrome() {
   tableWrap?.classList.toggle('fq-table-card--assignments', assignMode);
   tableWrap?.classList.toggle('fq-table-card--queue', queueMode);
   tableWrap?.classList.toggle('fq-table-card--assignee-filtered', assignMode && fqState.assignee !== 'all');
-  if ((miaMode || miMode || qcqMode) && tableWrap) tableWrap.hidden = true;
+  if ((miaMode || miMode || qcqMode || amMode) && tableWrap) tableWrap.hidden = true;
 
   const miaWrap = document.getElementById('fq-mia-table-wrap');
   if (miaWrap && !miaMode) miaWrap.hidden = true;
@@ -2160,6 +2449,10 @@ function fqUpdateScreenChrome() {
 }
 
 function fqRenderTable() {
+  if (fqIsAnticipatedMaterialScreen()) {
+    fqRenderAnticipatedMaterialTable();
+    return;
+  }
   if (fqIsMaterialInspectionScreen()) {
     fqRenderMaterialInspectionTable();
     return;
@@ -2392,6 +2685,9 @@ function fqSetScreen(screen) {
   if (fqState.screen === 'material_issue' && !(fqState.materialIssueItems || []).length) {
     void fqReloadMaterialIssueItems();
   }
+  if (fqState.screen === 'anticipated_material' && !fqState.am.loaded && !fqState.am.loading) {
+    void fqLoadAnticipatedMaterial({ refresh: true });
+  }
   if (fqState.screen === 'material_inspection' && !fqState.mi.loaded && !fqState.mi.loading) {
     void fqLoadMaterialInspection({ refresh: true });
   }
@@ -2421,6 +2717,7 @@ function fqInitScreenFromUrl() {
   const tab = params.get('tab');
   let screen = null;
   if (tab === 'material_issue') screen = 'material_issue';
+  else if (tab === 'anticipated_material') screen = 'anticipated_material';
   else if (tab === 'material_inspection') screen = 'material_inspection';
   else if (tab === 'qc_queue') screen = 'qc_queue';
   if (!screen) return;
@@ -2597,6 +2894,11 @@ function fqBindEvents() {
 
   document.getElementById('fq-refresh')?.addEventListener('click', async () => {
     try {
+      if (fqIsAnticipatedMaterialScreen()) {
+        await fqLoadAnticipatedMaterial({ refresh: true });
+        fqToast((typeof fqT === 'function') ? fqT('toast_am_refreshed') : 'Anticipated material refreshed', 'success');
+        return;
+      }
       if (fqIsMaterialInspectionScreen()) {
         await fqLoadMaterialInspection({ refresh: true });
         fqToast((typeof fqT === 'function') ? fqT('toast_mi_refreshed') : 'Material inspection refreshed from ERP', 'success');
@@ -2715,6 +3017,7 @@ function fqBindEvents() {
   fqBindAssigneeBoard();
   fqBindMaterialInspection();
   fqBindQcQueue();
+  fqBindAnticipatedMaterial();
 }
 
 function fqInit() {
@@ -2762,6 +3065,7 @@ function fqInit() {
         || (Array.isArray(boot.material_issue_items) && boot.material_issue_items.length)
       ));
       const refreshCurrent = () => {
+        if (fqIsAnticipatedMaterialScreen()) return fqLoadAnticipatedMaterial({ refresh: true });
         if (fqIsMaterialInspectionScreen()) return fqLoadMaterialInspection({ refresh: !hasBootItems });
         if (fqIsQcQueueScreen()) return fqLoadQcQueue({ refresh: true });
         // Warm bootstrap → cheap cache hit. Cold start → rebuild from DB without ERP.
@@ -2773,6 +3077,9 @@ function fqInit() {
         document.body.classList.add('fq-interactive-ready');
         if (!fqIsMaterialInspectionScreen() && !fqState.mi.loaded && !fqState.mi.loading) {
           void fqLoadMaterialInspection({ refresh: true });
+        }
+        if (!fqIsAnticipatedMaterialScreen() && !fqState.am.loaded && !fqState.am.loading) {
+          void fqLoadAnticipatedMaterial({ refresh: true });
         }
       });
     }
