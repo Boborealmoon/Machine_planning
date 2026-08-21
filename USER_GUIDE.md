@@ -522,7 +522,9 @@ The **Sync ERP** button (top-right of the nav bar) pulls the latest data from th
 
 Progress is shown in the button label (e.g., "3/9 Work order status…"). When complete it shows "Synced (N rows) ✓".
 
-> **When to sync:** A full ERP sync runs automatically once per day at **08:00** (Windows Task Scheduler). Use **Sync ERP** manually when you need fresher data during the day. Sync takes approximately 20–40 seconds.
+> **When to sync:** A full ERP sync runs automatically on weekdays at **08:00** and **13:00** (Windows Task Scheduler). Use **Sync ERP** manually when you need fresher catalog/queue data during the day. Sync takes approximately 20–40 seconds.
+
+The **ERP Scanned Output** board (`/erp-scanned-output`) does not wait for that full sync. A separate WO qty tracer polls COMAIN accepted quantity every **5 minutes** during shop hours (Mon–Fri 08:00–20:30) and records increases only. Install it once with `SETUP_erp_qty_tracer.bat`. It is **not** a full ERP sync: no staging truncate, no catalog rebuild, no queue reconcile. `scanned_at` is when the tracer noticed the increase (within about 5 minutes), not the shop-floor scan time. Reload the board to see new jumps.
 
 ---
 

@@ -979,18 +979,32 @@ _MFG_WO_STATUS_WO_ROWS_CORE = """
 """
 
 
-def _domain_set_timeout(cur) -> None:
-    cur.execute(f"SET LOCAL statement_timeout = '{DOMAIN_STATEMENT_TIMEOUT_MS}'")
+WO_QTY_TRACER_TIMEOUT_MS = int(os.getenv("WO_QTY_TRACER_TIMEOUT_MS", "240000"))
+_WO_QTY_TRACER_COLS = [
+    "source_mps_no",
+    "pp_partial_no",
+    "stage_no",
+    "stage_desc",
+    "total_acc_qty_produced",
+    "total_rej_qty_produced",
+]
 
 
-def _domain_fetch_rows(sql: str, params: tuple | None = None) -> list:
+def _domain_set_timeout(cur, timeout_ms: int | None = None) -> None:
+    timeout = DOMAIN_STATEMENT_TIMEOUT_MS if timeout_ms is None else int(timeout_ms)
+    cur.execute(f"SET LOCAL statement_timeout = '{timeout}'")
+
+
+def _domain_fetch_rows(
+    sql: str, params: tuple | None = None, timeout_ms: int | None = None
+) -> list:
     """Run a COMAIN read with statement timeout; always releases the pool connection."""
     from db import get_conn, release_conn
 
     src = get_conn()
     try:
         with src.cursor() as scur:
-            _domain_set_timeout(scur)
+            _domain_set_timeout(scur, timeout_ms=timeout_ms)
             if params:
                 scur.execute(sql, params)
             else:
@@ -1045,6 +1059,35 @@ class _ErpSyncAdvisoryLock:
             log.warning("ERP advisory lock release skipped: %s", exc)
         finally:
             planner_release_conn(conn)
+
+
+def erp_sync_advisory_lock_is_held(con) -> bool:
+    """True if the full ERP sync advisory lock is granted. Does not acquire it."""
+    key = int(_ERP_SYNC_ADVISORY_LOCK_KEY)
+    classid = key >> 32
+    objid = key & 0xFFFFFFFF
+    if objid >= 0x80000000:
+        objid -= 0x100000000
+    cur = con.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND granted
+              AND objsubid = 1
+              AND classid = %s
+              AND objid = %s
+        ) AS held
+        """,
+        (classid, objid),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return False
+    if isinstance(row, dict):
+        return bool(row.get("held"))
+    return bool(row[0])
 
 
 def _mfg_wo_status_unscoped() -> bool:
@@ -1187,6 +1230,88 @@ def run_mfg_wo_status_sync(force: bool = False) -> dict:
 
     finally:
         _wo_status_sync_lock.release()
+
+
+def _wo_qty_tracer_wo_rows_sql(*, extra_and: str) -> str:
+    prefix_sql = _pp_ps_id_prefix_sql("t2.source_pp_no")
+    return f"""
+    SELECT
+        t2.source_pp_no AS source_mps_no,
+        COALESCE(NULLIF(t2.source_pp_partial_no, 0), 1) AS pp_partial_no,
+        NULLIF(t2.stage_no::TEXT, '')::INTEGER AS stage_no,
+        TRIM(COALESCE(t3.stage_desc, '')) AS stage_desc,
+        t3.execution_status,
+        t3.wo_qty_required,
+        t3.total_acc_qty_produced,
+        t3.total_rej_qty_produced
+    FROM mfg_mps_vch t2
+    JOIN mfg_wo_vch t3
+      ON t2.wo_voucher_no = t3.voucher_no
+     AND t2.stage_no = t3.stage_no
+    WHERE t2.source_pp_no IS NOT NULL
+      AND t2.stage_no IS NOT NULL
+      AND {prefix_sql}
+      AND {extra_and}
+"""
+
+
+def _build_mfg_wo_qty_tracer_sql(watch_ps_nos: list[str] | None = None) -> tuple[str, tuple]:
+    """Slim COMAIN quantum extract: mps ⋈ wo only, I/R plus optional watch-list sheets."""
+    watch = [str(item) for item in (watch_ps_nos or []) if str(item).strip()]
+    ir_sql = _wo_qty_tracer_wo_rows_sql(extra_and="t3.execution_status IN ('I', 'R')")
+    prefix_params = _pp_ps_id_prefix_params()
+    if watch:
+        watch_sql = _wo_qty_tracer_wo_rows_sql(extra_and="t2.source_pp_no = ANY(%s)")
+        wo_rows_sql = f"{ir_sql}\n    UNION ALL\n{watch_sql}"
+        params: tuple = prefix_params + prefix_params + (watch,)
+    else:
+        wo_rows_sql = ir_sql
+        params = prefix_params
+    sql = f"""
+WITH wo_rows AS (
+{wo_rows_sql}
+),
+primary_wo AS (
+    SELECT DISTINCT ON (source_mps_no, pp_partial_no, stage_no, stage_desc)
+        source_mps_no,
+        pp_partial_no,
+        stage_no,
+        stage_desc,
+        total_acc_qty_produced,
+        total_rej_qty_produced
+    FROM wo_rows
+    ORDER BY
+        source_mps_no,
+        pp_partial_no,
+        stage_no,
+        stage_desc,
+        wo_qty_required DESC NULLS LAST
+)
+SELECT
+    source_mps_no,
+    pp_partial_no,
+    stage_no,
+    stage_desc,
+    SUM(total_acc_qty_produced) AS total_acc_qty_produced,
+    SUM(total_rej_qty_produced) AS total_rej_qty_produced
+FROM primary_wo
+GROUP BY source_mps_no, pp_partial_no, stage_no, stage_desc
+"""
+    return sql, params
+
+
+def fetch_mfg_wo_qty_tracer_rows(watch_ps_nos: list[str] | None = None) -> list[dict]:
+    """Read current WO accepted qty from COMAIN. Does not write staging tables."""
+    sql, params = _build_mfg_wo_qty_tracer_sql(watch_ps_nos)
+    raw = _domain_fetch_rows(sql, params or None, timeout_ms=WO_QTY_TRACER_TIMEOUT_MS)
+    rows_out: list[dict] = []
+    for tup in raw or []:
+        if isinstance(tup, dict):
+            row = dict(tup)
+        else:
+            row = dict(zip(_WO_QTY_TRACER_COLS, tup))
+        rows_out.append(row)
+    return rows_out
 
 
 # ── PP staging orchestrator ──────────────────────────────────────────────────

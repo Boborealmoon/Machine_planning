@@ -11,6 +11,7 @@ from .utils import compact_text
 logger = logging.getLogger(__name__)
 
 _erp_snapshot_schema_ready = False
+_QTY_EPS = 1e-9
 
 
 def ensure_erp_snapshot_table(con) -> None:
@@ -172,8 +173,37 @@ def erp_wo_key_for_block(con, block_row):
     }
 
 
-def record_erp_wo_qty_snapshots(con, mfg_rows, synced_at=None, columns=None) -> int:
-    """Upsert one snapshot row per WO stage for the sync calendar day."""
+def _filter_changed_snapshot_batch(batch: list[tuple], previous_by_key: dict) -> list[tuple]:
+    """Keep first-seen keys and rows whose accepted/reject qty actually moved."""
+    changed: list[tuple] = []
+    for item in batch:
+        source_mps_no, pp_partial_no, stage_no, _date, _when, acc, rej = item
+        prev = previous_by_key.get((source_mps_no, int(pp_partial_no), int(stage_no)))
+        if prev is None:
+            changed.append(item)
+            continue
+        prev_acc = _float(prev.get("acc_qty_produced"))
+        prev_rej = _float(prev.get("acc_rej_qty_produced"))
+        if abs(acc - prev_acc) > _QTY_EPS or abs(rej - prev_rej) > _QTY_EPS:
+            changed.append(item)
+    return changed
+
+
+def record_erp_wo_qty_snapshots(
+    con,
+    mfg_rows,
+    synced_at=None,
+    columns=None,
+    only_if_changed=False,
+    capture_jumps=True,
+    counts=None,
+) -> int:
+    """Upsert one snapshot row per WO stage for the sync calendar day.
+
+    Full ERP sync leaves defaults (rewrite every in-scope row, capture jumps).
+    The 5-minute qty tracer passes only_if_changed=True so last-known is
+    captured before jumps are inserted, then only changed rows are upserted.
+    """
     if not mfg_rows:
         return 0
 
@@ -215,14 +245,34 @@ def record_erp_wo_qty_snapshots(con, mfg_rows, synced_at=None, columns=None) -> 
         )
 
     if not batch:
+        if isinstance(counts, dict):
+            counts["jumps"] = 0
+            counts["snapshots"] = 0
         return 0
 
-    try:
-        from .erp_scanned_output_service import record_erp_qty_jumps
+    previous = None
+    if only_if_changed:
+        from .erp_scanned_output_service import _previous_qty_by_key, wo_stage_key
 
-        record_erp_qty_jumps(con, mfg_rows, synced_at=when, columns=columns)
-    except Exception:
-        logger.exception("ERP accepted-qty jump capture failed")
+        keys = [wo_stage_key(item[0], item[1], item[2]) for item in batch]
+        previous = _previous_qty_by_key(con, keys)
+
+    jump_count = 0
+    if capture_jumps:
+        try:
+            from .erp_scanned_output_service import record_erp_qty_jumps
+
+            jump_count = record_erp_qty_jumps(con, mfg_rows, synced_at=when, columns=columns) or 0
+        except Exception:
+            logger.exception("ERP accepted-qty jump capture failed")
+
+    if only_if_changed:
+        batch = _filter_changed_snapshot_batch(batch, previous or {})
+        if not batch:
+            if isinstance(counts, dict):
+                counts["jumps"] = int(jump_count or 0)
+                counts["snapshots"] = 0
+            return 0
 
     execute_values(
         con,
@@ -239,6 +289,9 @@ def record_erp_wo_qty_snapshots(con, mfg_rows, synced_at=None, columns=None) -> 
         batch,
         page_size=1000,
     )
+    if isinstance(counts, dict):
+        counts["jumps"] = int(jump_count or 0)
+        counts["snapshots"] = len(batch)
     return len(batch)
 
 

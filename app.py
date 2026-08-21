@@ -3825,6 +3825,44 @@ elif _disable_auto_unschedule:
     log.info("background auto-unschedule disabled (DISABLE_AUTO_UNSCHEDULE_DONE_OPS)")
 
 
+# ── Optional in-app WO qty tracer (default OFF — use Windows Task Scheduler) ──
+# Hits COMAIN. Do not enable this thread if MachinePlanning-WoQtyTracer is installed.
+# ENABLE_ERP_QTY_TRACER=1  ERP_QTY_TRACER_INTERVAL=300
+
+ERP_QTY_TRACER_INTERVAL = int(os.getenv("ERP_QTY_TRACER_INTERVAL", "300"))
+
+
+def _erp_qty_tracer_loop():
+    from planning.erp_wo_qty_tracer import erp_qty_tracer_thread_enabled, run_erp_wo_qty_tracer
+
+    log.info("WO qty tracer thread started, interval=%ds", ERP_QTY_TRACER_INTERVAL)
+    while True:
+        try:
+            if erp_qty_tracer_thread_enabled():
+                summary = run_erp_wo_qty_tracer(force=False)
+                if summary.get("skipped"):
+                    log.debug("WO qty tracer skipped: %s", summary.get("reason"))
+                elif int(summary.get("jumps") or 0):
+                    log.info(
+                        "WO qty tracer: %s jump(s) from %s COMAIN row(s)",
+                        summary.get("jumps"),
+                        summary.get("comain_rows"),
+                    )
+        except Exception as e:
+            log.error("WO qty tracer error: %s", e)
+        time.sleep(ERP_QTY_TRACER_INTERVAL)
+
+
+_enable_erp_qty_tracer = os.getenv("ENABLE_ERP_QTY_TRACER", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+if os.environ.get("WERKZEUG_RUN_MAIN") != "false" and _enable_erp_qty_tracer:
+    _qty_tracer_t = threading.Thread(target=_erp_qty_tracer_loop, daemon=True, name="erp-qty-tracer")
+    _qty_tracer_t.start()
+elif _enable_erp_qty_tracer:
+    log.info("WO qty tracer thread skipped (WERKZEUG_RUN_MAIN=false)")
+
+
 if __name__ == "__main__":
     port = int(os.getenv("FLASK_PORT", 5001))
     debug = os.getenv("FLASK_ENV") == "development"
