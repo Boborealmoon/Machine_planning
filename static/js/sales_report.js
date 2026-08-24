@@ -1,9 +1,20 @@
-// Monthly sales report — due-date backlog logic + YTD grid.
+// Monthly sales report — due-date / posted-date backlog logic + YTD grid.
 
 const SALES_REPORT_PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
 const SALES_REPORT_YTD_TYPES = SALES_REPORT_PS_TYPES;
+const SALES_REPORT_BASIS_KEY = 'sales-report-date-basis';
 
 const SALES_REPORT_TABLE_PEEK = 3;
+
+function salesReportReadStoredBasis() {
+  try {
+    const raw = String(localStorage.getItem(SALES_REPORT_BASIS_KEY) || '').trim();
+    if (raw === 'posted' || raw === 'po_due') return raw;
+  } catch (err) {
+    /* ignore */
+  }
+  return 'po_due';
+}
 
 const salesReportState = {
   year: new Date().getFullYear(),
@@ -12,12 +23,34 @@ const salesReportState = {
   ytdData: null,
   search: '',
   month: '',
+  dateBasis: salesReportReadStoredBasis(),
   ppTypes: new Set(['APS', 'NPS']),
   loading: false,
   ytdCellSelection: new Set(),
   /** Section ids currently showing full tables (default = peek of SALES_REPORT_TABLE_PEEK). */
   expandedSections: new Set(),
 };
+
+function salesReportIsPostedBasis() {
+  return salesReportState.dateBasis === 'posted';
+}
+
+function salesReportBasisPhrase() {
+  return salesReportIsPostedBasis() ? 'SO posted date' : 'PO due date';
+}
+
+function salesReportBasisShort() {
+  return salesReportIsPostedBasis() ? 'SO posted' : 'PO due';
+}
+
+function salesReportStoreBasis(basis) {
+  salesReportState.dateBasis = basis === 'posted' ? 'posted' : 'po_due';
+  try {
+    localStorage.setItem(SALES_REPORT_BASIS_KEY, salesReportState.dateBasis);
+  } catch (err) {
+    /* ignore */
+  }
+}
 
 function salesReportMonthValue(year, month) {
   return `${year}-${String(month).padStart(2, '0')}`;
@@ -56,6 +89,7 @@ function salesReportSyncPeriodUI() {
 
   const yearInput = document.getElementById('sales-report-year');
   if (yearInput) yearInput.value = String(salesReportState.year);
+  salesReportSyncBasisButtons();
 }
 
 function salesReportRenderContext() {
@@ -63,10 +97,10 @@ function salesReportRenderContext() {
   if (!el) return;
   const segment = salesReportPsTypeLabel();
   if (salesReportState.focusMonth) {
-    el.textContent = `${salesReportFocusMonthLabel()} · ${segment}`;
+    el.textContent = `${salesReportFocusMonthLabel()} · ${segment} · ${salesReportBasisPhrase()}`;
     return;
   }
-  el.textContent = `${salesReportState.year} full year · ${segment}`;
+  el.textContent = `${salesReportState.year} full year · ${segment} · ${salesReportBasisPhrase()}`;
 }
 
 function salesReportSetFocusMonth(month, options = {}) {
@@ -248,6 +282,30 @@ function salesReportFilteredSection(rows) {
   return salesReportFilterBySearch((rows || []).filter(salesReportPassesPsFilter));
 }
 
+function salesReportOpenRemainingTotal(rows) {
+  return (rows || []).reduce((sum, row) => sum + salesReportOpenValue(row), 0);
+}
+
+function salesReportFilteredIntegrity(data) {
+  const integrity = data?.integrity;
+  if (!integrity) return null;
+  const searchOn = Boolean(String(salesReportState.search || '').trim());
+  if (salesReportPpTypesAllSelected() && !searchOn) return integrity;
+
+  const openLines = salesReportFilteredSection(data.allocated_open_lines || data.open_lines || []);
+  const shipments = salesReportFilteredSection(data.shipments_attributed || data.shipments || data.shipped || []);
+  const remaining = salesReportOpenRemainingTotal(openLines);
+  return {
+    ...integrity,
+    so_line_remaining_total: remaining,
+    pp_allocated_remaining_total: remaining,
+    remaining_allocation_gap: 0,
+    shipment_amt_deduped: salesReportSumField(shipments, 'total_home_amt'),
+    shipment_rows_deduped: shipments.length,
+    ok: true,
+  };
+}
+
 function salesReportSearchHaystack(row) {
   return [
     row.sales_order_no, row.line_item_no, row.process_sheet_no, row.inventory_code,
@@ -260,26 +318,36 @@ function salesReportNoPsTypesSelected() {
   return !salesReportPpTypesAllSelected() && salesReportState.ppTypes.size === 0;
 }
 
+function salesReportAnchorDate(row, options = {}) {
+  if (salesReportIsPostedBasis()) {
+    return salesReportParseDate(row?.first_posted_datetime || row?.so_posted_date);
+  }
+  if (options.shipment) {
+    return salesReportParseDate(row?.so_due_date) || salesReportParseDate(row?.due_date);
+  }
+  return salesReportParseDate(row?.due_date);
+}
+
 function salesReportDueInMonth(row, start, end) {
-  const due = salesReportParseDate(row?.due_date);
+  const due = salesReportAnchorDate(row);
   if (!due) return false;
   return due >= start && due <= end;
 }
 
 function salesReportDueBeforeMonth(row, start) {
-  const due = salesReportParseDate(row?.due_date);
+  const due = salesReportAnchorDate(row);
   if (!due) return false;
   return due < start;
 }
 
 function salesReportDueAfterMonth(row, end) {
-  const due = salesReportParseDate(row?.due_date);
+  const due = salesReportAnchorDate(row);
   if (!due) return false;
   return due > end;
 }
 
 function salesReportShipmentBucketDue(row) {
-  return salesReportParseDate(row?.so_due_date) || salesReportParseDate(row?.due_date);
+  return salesReportAnchorDate(row, { shipment: true });
 }
 
 function salesReportShipmentDueInMonth(row, start, end) {
@@ -301,7 +369,7 @@ function salesReportShipmentDueAfterMonth(row, end) {
 }
 
 function salesReportOutstandingRest(row, start, end) {
-  const due = salesReportParseDate(row?.due_date);
+  const due = salesReportAnchorDate(row);
   if (!due) return true;
   return due > end;
 }
@@ -698,13 +766,16 @@ function salesReportFilteredPayload() {
   let backlogRows = [];
   let onHandRows = [];
   let earlyRows = [];
+  const { start, end } = salesReportMonthBounds(data.year, data.month);
   if (mode === 'past') {
-    backlogRows = salesReportFilteredSection(summary.backlog_delivered_lines || []);
-    onHandRows = salesReportFilteredSection(summary.delivered_lines || []);
-    earlyRows = salesReportFilteredSection(summary.early_delivered_lines || data.early_delivered || []);
+    const past = salesReportBuildPastMonthSummary(shipped, start, end);
+    backlogRows = past.backlog_delivered_lines || [];
+    onHandRows = past.delivered_lines || [];
+    earlyRows = past.early_delivered_lines || [];
   } else {
-    backlogRows = salesReportFilteredSection(summary.backlog_lines || data.backlog || []);
-    onHandRows = salesReportFilteredSection(summary.on_hand_lines || data.on_hand || []);
+    const open = salesReportBuildOpenMonthSummary(openLines, start, end);
+    backlogRows = open.backlog_lines || [];
+    onHandRows = open.on_hand_lines || [];
   }
 
   const breakdown = salesReportActivePpTypes().map(type => ({
@@ -788,6 +859,7 @@ function salesReportFilteredPayload() {
     early_delivered: earlyRows,
     shipped,
     booked,
+    integrity: salesReportFilteredIntegrity(data),
   };
 }
 
@@ -815,6 +887,7 @@ function salesReportRenderIntegrity(integrity) {
     </div>
     <p class="sales-report-integrity-body">
       Open $ uses one SO-line total split across process sheets by quantity — never duplicated per PS.
+      Figures below are for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong>.
       Shipped $ uses deduped DO/invoice lines (${dedupRows} rows${rawRows !== dedupRows ? `, ${rawRows - dedupRows} join duplicates removed` : ''}).
       All grid and breakdown amounts are <strong>home currency</strong> (foreign unit × exch rate, or ERP pre_tax_extended_home_amt).
       ${!ok ? `Allocation gap ${salesReportFormatMoney(gap)} · shipment dedup delta ${salesReportFormatMoney(dedupSavings)}.` : ''}
@@ -911,15 +984,15 @@ function salesReportRenderSummary(summary) {
 
   const cards = summary.mode === 'past'
     ? [
-      { title: 'Delivered (on time)', tone: 'shipped', value: summary.delivered?.total_home_amt, sub: `${summary.delivered?.line_count || 0} shipment lines`, hint: 'Shipped in month · original PO due date also in this month' },
-      { title: 'Backlog delivered', tone: 'cleared', value: summary.backlog_delivered?.total_home_amt, sub: `${summary.backlog_delivered?.line_count || 0} shipment lines`, hint: 'Shipped in month · original PO due was before month start' },
-      { title: 'Early delivered', tone: 'early', value: summary.early_delivered?.total_home_amt, sub: `${summary.early_delivered?.line_count || 0} shipment lines`, hint: 'Shipped in month · original PO due after month end' },
+      { title: 'Delivered (on time)', tone: 'shipped', value: summary.delivered?.total_home_amt, sub: `${summary.delivered?.line_count || 0} shipment lines`, hint: salesReportIsPostedBasis() ? 'Shipped in month · SO first posted in this month' : 'Shipped in month · original PO due date also in this month' },
+      { title: 'Backlog delivered', tone: 'cleared', value: summary.backlog_delivered?.total_home_amt, sub: `${summary.backlog_delivered?.line_count || 0} shipment lines`, hint: salesReportIsPostedBasis() ? 'Shipped in month · SO first posted before month start' : 'Shipped in month · original PO due was before month start' },
+      { title: 'Early delivered', tone: 'early', value: summary.early_delivered?.total_home_amt, sub: `${summary.early_delivered?.line_count || 0} shipment lines`, hint: salesReportIsPostedBasis() ? 'Shipped in month · SO first posted after month end' : 'Shipped in month · original PO due after month end' },
       { title: 'All shipments', tone: 'booked', value: summary.shipped?.total_home_amt, sub: `${summary.shipped?.line_count || 0} lines`, hint: 'On-time + backlog + early (every DO dated in month)' },
     ]
     : (() => {
       const openCards = [
-        { title: 'Backlog', tone: 'cleared', value: summary.backlog?.remaining_value, sub: `${salesReportFormatQty(summary.backlog?.remaining_qty)} pcs · ${summary.backlog?.line_count || 0} lines`, hint: 'Still open · PO due before this month' },
-        { title: 'Onhand', tone: 'on-hand', value: summary.on_hand?.remaining_value, sub: `${salesReportFormatQty(summary.on_hand?.remaining_qty)} pcs · ${summary.on_hand?.line_count || 0} lines`, hint: 'Unfinished open $ · PO due this month' },
+        { title: 'Backlog', tone: 'cleared', value: summary.backlog?.remaining_value, sub: `${salesReportFormatQty(summary.backlog?.remaining_qty)} pcs · ${summary.backlog?.line_count || 0} lines`, hint: salesReportIsPostedBasis() ? 'Still open · SO posted before this month' : 'Still open · PO due before this month' },
+        { title: 'Onhand', tone: 'on-hand', value: summary.on_hand?.remaining_value, sub: `${salesReportFormatQty(summary.on_hand?.remaining_qty)} pcs · ${summary.on_hand?.line_count || 0} lines`, hint: salesReportIsPostedBasis() ? 'Unfinished open $ · SO posted this month' : 'Unfinished open $ · PO due this month' },
       ];
       openCards.push(
         { title: 'Shipped this month', tone: 'shipped', value: summary.shipped?.total_home_amt, sub: `${summary.shipped?.line_count || 0} lines`, hint: 'DO/shipment dated in month' },
@@ -976,7 +1049,7 @@ function salesReportRenderBreakdown(breakdown, summary) {
   el.innerHTML = `
     <div class="sales-report-breakdown-head">
       <h2 class="sales-report-breakdown-title">Breakdown by PP type</h2>
-      <p class="sales-report-breakdown-sub">${mode === 'past' ? 'Past month — shipment outcomes' : 'Open month — backlog + onhand by PO due date'} for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong></p>
+      <p class="sales-report-breakdown-sub">${mode === 'past' ? 'Past month — shipment outcomes' : `Open month — backlog + onhand by ${salesReportBasisPhrase()}`} for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong></p>
     </div>
     <div class="sales-report-breakdown-scroll">
       <table class="sales-report-breakdown-table">
@@ -1053,22 +1126,23 @@ function salesReportRenderYtdSummary(grid) {
     }
   });
 
-  const openRemaining = salesReportState.ytdData?.integrity?.pp_allocated_remaining_total;
+  const openLines = salesReportFilteredSection(
+    salesReportState.ytdData?.allocated_open_lines || salesReportState.ytdData?.open_lines || [],
+  );
+  const openRemaining = salesReportOpenRemainingTotal(openLines);
 
   const cards = [
-    { title: 'YTD shipped', tone: 'shipped', value: ytdShipped, sub: `Includes ${salesReportFormatMoney(ytdBacklogDel)} backlog cleared`, hint: 'All DO lines in past months' },
-    { title: 'Backlog now', tone: 'cleared', value: backlogNow, sub: 'Still open · PO due before this month', hint: 'Backlog column in current month' },
-    { title: 'Onhand now', tone: 'on-hand', value: onHandNow, sub: 'Unfinished · PO due in current month', hint: 'Onhand column in current month' },
-    { title: 'Forward onhand', tone: 'early', value: forwardDue, sub: 'Unfinished · PO due in future months', hint: 'Sum of onhand $ in future month columns' },
+    { title: 'YTD shipped', tone: 'shipped', value: ytdShipped, sub: `Includes ${salesReportFormatMoney(ytdBacklogDel)} backlog cleared`, hint: salesReportIsPostedBasis() ? 'All DO lines in past months, classified vs SO posted date' : 'All DO lines in past months' },
+    { title: 'Backlog now', tone: 'cleared', value: backlogNow, sub: salesReportIsPostedBasis() ? 'Still open · SO posted before this month' : 'Still open · PO due before this month', hint: 'Backlog column in current month' },
+    { title: 'Onhand now', tone: 'on-hand', value: onHandNow, sub: salesReportIsPostedBasis() ? 'Unfinished · SO posted in current month' : 'Unfinished · PO due in current month', hint: 'Onhand column in current month' },
+    { title: 'Forward onhand', tone: 'early', value: forwardDue, sub: salesReportIsPostedBasis() ? 'Unfinished · SO posted in future months' : 'Unfinished · PO due in future months', hint: 'Sum of onhand $ in future month columns' },
+    { title: 'Total open remaining', tone: 'booked', value: openRemaining, sub: `All unfinished open $ · ${salesReportPsTypeLabel()}`, hint: 'PP-allocated remaining for the selected types (any due year)' },
   ];
-  if (openRemaining != null) {
-    cards.push({ title: 'Total open remaining', tone: 'booked', value: openRemaining, sub: 'All unfinished open $ (filtered)', hint: 'Authoritative PP-allocated remaining' });
-  }
 
   el.innerHTML = `
     <div class="sales-report-ytd-summary-head">
       <h3 class="sales-report-ytd-summary-title">Year at a glance</h3>
-      <p class="sales-report-ytd-summary-sub">Summary for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong> — use <strong>View breakdown</strong> on a month header for line detail.</p>
+      <p class="sales-report-ytd-summary-sub">Summary for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong> · <strong>${escapeHtml(salesReportBasisPhrase())}</strong> — use <strong>View breakdown</strong> on a month header for line detail.</p>
     </div>
     <div class="sales-report-kpi-grid sales-report-kpi-grid--ytd card">
       ${cards.map(card => `
@@ -1104,7 +1178,7 @@ function salesReportRenderYtd() {
       ? `Shipments in ${meta.label}`
       : meta.is_current
         ? `Backlog + onhand in ${meta.label}`
-        : `Onhand with PO due in ${meta.label}`;
+        : `Onhand with ${salesReportBasisShort()} in ${meta.label}`;
     return `<th colspan="${colspan}" class="${cls}">
       <button type="button" class="${btnCls}" data-ytd-month="${meta.month}" title="${escapeHtml(title)} — view breakdown">
         <span class="sales-report-ytd-month-label">${escapeHtml(meta.label)}</span>
@@ -1165,7 +1239,7 @@ function salesReportRenderYtd() {
   if (sub) {
     sub.textContent = salesReportState.focusMonth
       ? 'Line detail for the month you opened from the grid. Use Overview to return.'
-      : 'Past = shipped · current = backlog + onhand · future = onhand by PO due month.';
+      : `Past = shipped · current = backlog + onhand · future = onhand by ${salesReportBasisPhrase()}.`;
   }
   overview.hidden = false;
 }
@@ -1190,6 +1264,7 @@ function salesReportOpenLineColumns() {
     { id: 'description', label: 'Description' },
     { id: 'customer_name', label: 'Customer' },
     { id: 'due_date', label: 'Due', fmt: salesReportFormatDate },
+    { id: 'first_posted_datetime', label: 'First post', fmt: salesReportFormatDt },
     { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency },
     { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney },
     { id: 'exch_rate', label: 'Exch', fmt: salesReportFormatExchRate },
@@ -1206,6 +1281,7 @@ function salesReportShippedLineColumns() {
     { id: 'process_sheet_no', label: 'PS' },
     { id: 'pp_partial_no', label: 'Partial' },
     { id: 'due_date', label: 'Due', fmt: salesReportFormatDate },
+    { id: 'first_posted_datetime', label: 'First post', fmt: salesReportFormatDt },
     { id: 'shipment_datetime', label: 'Shipped', fmt: salesReportFormatDt },
     { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency },
     { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney },
@@ -1258,15 +1334,15 @@ function salesReportDetailSectionDefs(data) {
   const past = data.summary?.mode === 'past';
   if (past) {
     return [
-      { id: 'on_hand', title: 'On-time delivered', hint: 'Shipped this month · original PO due in same month', rows: data.on_hand || [] },
-      { id: 'backlog', title: 'Backlog delivered', hint: 'Shipped this month · original PO due before month start', rows: data.backlog || [] },
-      { id: 'early_delivered', title: 'Early delivered', hint: 'Shipped this month · original PO due after month end', rows: data.early_delivered || [] },
+      { id: 'on_hand', title: 'On-time delivered', hint: salesReportIsPostedBasis() ? 'Shipped this month · SO first posted in same month' : 'Shipped this month · original PO due in same month', rows: data.on_hand || [] },
+      { id: 'backlog', title: 'Backlog delivered', hint: salesReportIsPostedBasis() ? 'Shipped this month · SO first posted before month start' : 'Shipped this month · original PO due before month start', rows: data.backlog || [] },
+      { id: 'early_delivered', title: 'Early delivered', hint: salesReportIsPostedBasis() ? 'Shipped this month · SO first posted after month end' : 'Shipped this month · original PO due after month end', rows: data.early_delivered || [] },
       { id: 'shipped', title: 'All shipments', hint: 'Every DO/shipment dated this month', rows: data.shipped || [] },
     ];
   }
   return [
-    { id: 'backlog', title: 'Backlog', hint: 'Still open · PO due before this month', rows: data.backlog || [] },
-    { id: 'on_hand', title: 'Onhand', hint: 'Unfinished open $ · PO due in this month', rows: data.on_hand || [] },
+    { id: 'backlog', title: 'Backlog', hint: salesReportIsPostedBasis() ? 'Still open · SO posted before this month' : 'Still open · PO due before this month', rows: data.backlog || [] },
+    { id: 'on_hand', title: 'Onhand', hint: salesReportIsPostedBasis() ? 'Unfinished open $ · SO posted in this month' : 'Unfinished open $ · PO due in this month', rows: data.on_hand || [] },
     { id: 'shipped', title: 'Shipped this month', hint: 'DO/shipment dated this month', rows: data.shipped || [] },
     { id: 'booked', title: 'Booked this month', hint: 'SO lines first-posted this month', rows: data.booked || [] },
   ];
@@ -1361,8 +1437,10 @@ function salesReportRenderMonthPanel() {
   if (title) title.textContent = salesReportFocusMonthLabel();
   if (sub) {
     sub.textContent = data.summary?.mode === 'past'
-      ? 'How shipments in this month relate to their original due dates.'
-      : 'Unfinished open value by PO due date.';
+      ? (salesReportIsPostedBasis()
+        ? 'How shipments in this month relate to their SO posted dates.'
+        : 'How shipments in this month relate to their original due dates.')
+      : `Unfinished open value by ${salesReportBasisPhrase()}.`;
   }
 
   salesReportRenderIntegrity(data.integrity);
@@ -1386,6 +1464,7 @@ function salesReportRenderMeta() {
     if (salesReportState.ytdData?.cached_at) parts.push(`Cached ${salesReportState.ytdData.cached_at}`);
   }
   parts.push(`PP: ${salesReportPsTypeLabel()}`);
+  parts.push(salesReportBasisPhrase());
   el.textContent = parts.join(' · ');
   el.hidden = false;
 }
@@ -1418,7 +1497,7 @@ function salesReportRender() {
 
   if (salesReportState.ytdData) {
     if (!salesReportState.focusMonth) {
-      salesReportRenderIntegrity(salesReportState.ytdData.integrity);
+      salesReportRenderIntegrity(salesReportFilteredIntegrity(salesReportState.ytdData));
     }
     salesReportRenderYtd();
   }
@@ -1553,6 +1632,29 @@ function salesReportBindPsTypeDropdown() {
   salesReportSyncPresetButtons();
 }
 
+function salesReportSyncBasisButtons() {
+  document.querySelectorAll('[data-date-basis]').forEach(btn => {
+    const active = btn.dataset.dateBasis === salesReportState.dateBasis;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+}
+
+function salesReportSetDateBasis(basis) {
+  const next = basis === 'posted' ? 'posted' : 'po_due';
+  if (salesReportState.dateBasis === next) return;
+  salesReportStoreBasis(next);
+  salesReportSyncBasisButtons();
+  salesReportRender();
+}
+
+function salesReportBindDateBasis() {
+  document.querySelectorAll('[data-date-basis]').forEach(btn => {
+    btn.addEventListener('click', () => salesReportSetDateBasis(btn.dataset.dateBasis));
+  });
+  salesReportSyncBasisButtons();
+}
+
 function salesReportBindControls() {
   const yearInput = document.getElementById('sales-report-year');
   salesReportState.year = salesReportCurrentYear();
@@ -1659,5 +1761,6 @@ document.addEventListener('DOMContentLoaded', () => {
   salesReportBindControls();
   salesReportBindPresets();
   salesReportBindPsTypeDropdown();
+  salesReportBindDateBasis();
   salesReportLoadYtd();
 });

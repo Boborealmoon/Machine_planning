@@ -42,6 +42,9 @@ _ytd_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _PP_TYPES = ("MPS", "APS", "NPS", "PPS", "CPS", "SR")
 _YTD_ROW_TYPES = _PP_TYPES
 
+DATE_BASIS_PO_DUE = "po_due"
+DATE_BASIS_POSTED = "posted"
+
 # Home-currency $ — matches ERP pre_tax_extended_home_amt and shipment total_home_amt.
 _UNIT_FC_SQL = "COALESCE(NULLIF(det.display_unit_price, 0), det.base_unit_selling_price)"
 _EXCH_OST_SQL = "COALESCE(ost.exch_rate, 1)"
@@ -337,47 +340,112 @@ def _month_mode(year: int, month: int, *, today: date | None = None) -> str:
     return "past" if _is_past_month(year, month, today=today) else "open"
 
 
-def _due_in_month(row: dict[str, Any], start_d: date, end_d: date) -> bool:
-    due = _parse_date_value(row.get("due_date"))
-    return due is not None and start_d <= due <= end_d
+def _parse_date_basis(raw: Any = None) -> str:
+    text = compact_text(raw).lower().replace("-", "_")
+    if text in {"posted", "so_posted", "first_posted", "so"}:
+        return DATE_BASIS_POSTED
+    return DATE_BASIS_PO_DUE
 
 
-def _due_before_month(row: dict[str, Any], start_d: date) -> bool:
-    due = _parse_date_value(row.get("due_date"))
-    return due is not None and due < start_d
-
-
-def _due_after_month(row: dict[str, Any], end_d: date) -> bool:
-    due = _parse_date_value(row.get("due_date"))
-    return due is not None and due > end_d
-
-
-def _shipment_bucket_due(row: dict[str, Any]) -> date | None:
-    """Original PO due date for backlog/on-time/early — not partial schedule overrides."""
-    due = _parse_date_value(row.get("so_due_date"))
-    if due is not None:
-        return due
+def _row_anchor_date(
+    row: dict[str, Any],
+    *,
+    basis: str = DATE_BASIS_PO_DUE,
+    for_shipment: bool = False,
+) -> date | None:
+    """Date that owns the month bucket — PO due (default) or SO first-posted."""
+    if basis == DATE_BASIS_POSTED:
+        return (
+            _parse_date_value(row.get("first_posted_datetime"))
+            or _parse_date_value(row.get("so_posted_date"))
+        )
+    if for_shipment:
+        due = _parse_date_value(row.get("so_due_date"))
+        if due is not None:
+            return due
     return _parse_date_value(row.get("due_date"))
 
 
-def _shipment_due_in_month(row: dict[str, Any], start_d: date, end_d: date) -> bool:
-    due = _shipment_bucket_due(row)
+def _due_in_month(
+    row: dict[str, Any],
+    start_d: date,
+    end_d: date,
+    *,
+    basis: str = DATE_BASIS_PO_DUE,
+) -> bool:
+    due = _row_anchor_date(row, basis=basis)
     return due is not None and start_d <= due <= end_d
 
 
-def _shipment_due_before_month(row: dict[str, Any], start_d: date) -> bool:
-    due = _shipment_bucket_due(row)
+def _due_before_month(
+    row: dict[str, Any],
+    start_d: date,
+    *,
+    basis: str = DATE_BASIS_PO_DUE,
+) -> bool:
+    due = _row_anchor_date(row, basis=basis)
     return due is not None and due < start_d
 
 
-def _shipment_due_after_month(row: dict[str, Any], end_d: date) -> bool:
-    due = _shipment_bucket_due(row)
+def _due_after_month(
+    row: dict[str, Any],
+    end_d: date,
+    *,
+    basis: str = DATE_BASIS_PO_DUE,
+) -> bool:
+    due = _row_anchor_date(row, basis=basis)
     return due is not None and due > end_d
 
 
-def _outstanding_rest(row: dict[str, Any], start_d: date, end_d: date) -> bool:
-    """Open lines not overdue and not due in the current month (future due or unscheduled)."""
-    due = _parse_date_value(row.get("due_date"))
+def _shipment_bucket_due(
+    row: dict[str, Any],
+    *,
+    basis: str = DATE_BASIS_PO_DUE,
+) -> date | None:
+    """Month-class date for backlog/on-time/early — PO due, or SO posted when flipped."""
+    return _row_anchor_date(row, basis=basis, for_shipment=True)
+
+
+def _shipment_due_in_month(
+    row: dict[str, Any],
+    start_d: date,
+    end_d: date,
+    *,
+    basis: str = DATE_BASIS_PO_DUE,
+) -> bool:
+    due = _shipment_bucket_due(row, basis=basis)
+    return due is not None and start_d <= due <= end_d
+
+
+def _shipment_due_before_month(
+    row: dict[str, Any],
+    start_d: date,
+    *,
+    basis: str = DATE_BASIS_PO_DUE,
+) -> bool:
+    due = _shipment_bucket_due(row, basis=basis)
+    return due is not None and due < start_d
+
+
+def _shipment_due_after_month(
+    row: dict[str, Any],
+    end_d: date,
+    *,
+    basis: str = DATE_BASIS_PO_DUE,
+) -> bool:
+    due = _shipment_bucket_due(row, basis=basis)
+    return due is not None and due > end_d
+
+
+def _outstanding_rest(
+    row: dict[str, Any],
+    start_d: date,
+    end_d: date,
+    *,
+    basis: str = DATE_BASIS_PO_DUE,
+) -> bool:
+    """Open lines not in backlog and not in this month (future anchor or unscheduled)."""
+    due = _row_anchor_date(row, basis=basis)
     if due is None:
         return True
     return due > end_d
@@ -392,10 +460,12 @@ def _build_open_month_summary(
     open_lines: list[dict[str, Any]],
     start_d: date,
     end_d: date,
+    *,
+    basis: str = DATE_BASIS_PO_DUE,
 ) -> dict[str, Any]:
-    due_lines = [row for row in open_lines if _due_in_month(row, start_d, end_d)]
-    overdue_lines = [row for row in open_lines if _due_before_month(row, start_d)]
-    rest_lines = [row for row in open_lines if _outstanding_rest(row, start_d, end_d)]
+    due_lines = [row for row in open_lines if _due_in_month(row, start_d, end_d, basis=basis)]
+    overdue_lines = [row for row in open_lines if _due_before_month(row, start_d, basis=basis)]
+    rest_lines = [row for row in open_lines if _outstanding_rest(row, start_d, end_d, basis=basis)]
     return {
         "mode": "open",
         "due_this_month": {
@@ -434,19 +504,21 @@ def _build_past_month_summary(
     shipments: list[dict[str, Any]],
     start_d: date,
     end_d: date,
+    *,
+    basis: str = DATE_BASIS_PO_DUE,
 ) -> dict[str, Any]:
     month_shipments = [row for row in shipments if _shipment_in_month(row, start_d, end_d)]
     delivered = [
         row for row in month_shipments
-        if _shipment_due_in_month(row, start_d, end_d)
+        if _shipment_due_in_month(row, start_d, end_d, basis=basis)
     ]
     backlog_delivered = [
         row for row in month_shipments
-        if _shipment_due_before_month(row, start_d)
+        if _shipment_due_before_month(row, start_d, basis=basis)
     ]
     early_delivered = [
         row for row in month_shipments
-        if _shipment_due_after_month(row, end_d)
+        if _shipment_due_after_month(row, end_d, basis=basis)
     ]
     return {
         "mode": "past",
@@ -486,6 +558,7 @@ def _build_ytd_grid(
     year: int,
     *,
     today: date | None = None,
+    basis: str = DATE_BASIS_PO_DUE,
 ) -> dict[str, Any]:
     anchor = today or date.today()
     current_month = anchor.month if year == anchor.year else (12 if year < anchor.year else 1)
@@ -524,7 +597,7 @@ def _build_ytd_grid(
             month = int(meta["month"])
             start_d, end_d = _month_bounds(year, month)
             if meta["mode"] == "past":
-                past = _build_past_month_summary(type_shipments, start_d, end_d)
+                past = _build_past_month_summary(type_shipments, start_d, end_d, basis=basis)
                 cells.append(
                     {
                         "month": month,
@@ -535,7 +608,7 @@ def _build_ytd_grid(
                     }
                 )
             else:
-                open_summary = _build_open_month_summary(type_open, start_d, end_d)
+                open_summary = _build_open_month_summary(type_open, start_d, end_d, basis=basis)
                 due_val = open_summary["due_this_month"]["remaining_value"]
                 if meta.get("open_kind") == "current":
                     cells.append(
@@ -604,6 +677,7 @@ def _build_ytd_grid(
         "year": year,
         "current_month": current_month,
         "today": anchor.isoformat(),
+        "date_basis": basis,
         "months": months_meta,
         "rows": rows,
     }
@@ -780,6 +854,52 @@ def _fetch_ytd_report(year: int, *, refresh: bool = False) -> dict[str, Any]:
     return payload
 
 
+def _apply_month_basis(
+    data: dict[str, Any],
+    year: int,
+    month: int,
+    start_d: date,
+    end_d: date,
+    basis: str,
+) -> dict[str, Any]:
+    """Rebuild month buckets from cached lines without mutating the ERP cache."""
+    open_lines = data.get("allocated_open_lines") or data.get("open_lines") or []
+    shipments = data.get("shipments_attributed") or data.get("shipped") or []
+    booked = data.get("booked") or []
+    if _is_past_month(year, month):
+        period_summary = _build_past_month_summary(shipments, start_d, end_d, basis=basis)
+        detail_backlog = period_summary["backlog_delivered_lines"]
+        detail_on_hand = period_summary["delivered_lines"]
+        detail_early = period_summary["early_delivered_lines"]
+        detail_outstanding_rest: list[dict[str, Any]] = []
+    else:
+        period_summary = _build_open_month_summary(open_lines, start_d, end_d, basis=basis)
+        detail_backlog = period_summary["backlog_lines"]
+        detail_on_hand = period_summary["on_hand_lines"]
+        detail_early = []
+        detail_outstanding_rest = period_summary.get("outstanding_rest_lines") or []
+    view = dict(data)
+    view["date_basis"] = basis
+    view["summary"] = {
+        **period_summary,
+        "booked": _build_booked_summary(booked),
+    }
+    view["backlog"] = detail_backlog
+    view["on_hand"] = detail_on_hand
+    view["early_delivered"] = detail_early
+    view["outstanding_rest"] = detail_outstanding_rest
+    return view
+
+
+def _apply_ytd_basis(data: dict[str, Any], year: int, basis: str) -> dict[str, Any]:
+    open_lines = data.get("allocated_open_lines") or data.get("open_lines") or []
+    shipments = data.get("shipments_attributed") or data.get("shipments") or []
+    view = dict(data)
+    view["date_basis"] = basis
+    view["grid"] = _build_ytd_grid(open_lines, shipments, year, basis=basis)
+    return view
+
+
 def invalidate_sales_report_cache() -> None:
     global _monthly_cache, _ytd_cache
     _monthly_cache = {}
@@ -797,6 +917,7 @@ def sales_report_page():
 @sales_report_bp.get("/api/sales-report/monthly")
 def api_sales_report_monthly():
     refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
+    basis = _parse_date_basis(request.args.get("basis") or request.args.get("date_basis"))
 
     try:
         year, month, start_d, end_d = _parse_month_args()
@@ -805,6 +926,7 @@ def api_sales_report_monthly():
 
     try:
         data = _fetch_monthly_report(year, month, start_d, end_d, refresh=refresh)
+        data = _apply_month_basis(data, year, month, start_d, end_d, basis)
     except Exception as exc:
         logger.exception("monthly sales report ERP query failed")
         return jsonify({"error": f"ERP query failed: {exc}"}), 502
@@ -819,6 +941,7 @@ def api_sales_report_monthly():
             "month": month,
             "from": start_d.isoformat(),
             "to": end_d.isoformat(),
+            "date_basis": basis,
             "cached_at": datetime.fromtimestamp(cached_at, tz=None).isoformat(sep=" ", timespec="seconds"),
             "cache_ttl_sec": _CACHE_TTL_SEC,
             **data,
@@ -829,6 +952,7 @@ def api_sales_report_monthly():
 @sales_report_bp.get("/api/sales-report/ytd")
 def api_sales_report_ytd():
     refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
+    basis = _parse_date_basis(request.args.get("basis") or request.args.get("date_basis"))
 
     try:
         year = _parse_year_arg()
@@ -837,6 +961,7 @@ def api_sales_report_ytd():
 
     try:
         data = _fetch_ytd_report(year, refresh=refresh)
+        data = _apply_ytd_basis(data, year, basis)
     except Exception as exc:
         logger.exception("YTD sales report ERP query failed")
         return jsonify({"error": f"ERP query failed: {exc}"}), 502
@@ -847,6 +972,7 @@ def api_sales_report_ytd():
     return jsonify(
         {
             "ok": True,
+            "date_basis": basis,
             "cached_at": datetime.fromtimestamp(cached_at, tz=None).isoformat(sep=" ", timespec="seconds"),
             "cache_ttl_sec": _CACHE_TTL_SEC,
             **data,

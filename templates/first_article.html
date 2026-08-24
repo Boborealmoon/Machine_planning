@@ -3,7 +3,7 @@
 {% block body_class %}fa-view{% endblock %}
 {% block main_class %}app-main--first-article{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260818">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260820-2">
 {% endblock %}
 {% block content %}
 <div class="fa-page">
@@ -28,6 +28,8 @@
              aria-controls="fa-ps-results">
       <div id="fa-ps-results" class="fa-typeahead-results" role="listbox" hidden></div>
     </div>
+    <button type="button" class="fa-btn fa-btn--ghost fa-bulk-btn" id="fa-bulk-flag"
+            title="Select multiple active process sheets">Bulk flag</button>
     <p class="fa-add-status" id="fa-add-status" aria-live="polite"></p>
   </section>
 
@@ -68,7 +70,55 @@
     </div>
   </div>
 
-  <p id="fa-empty" class="fa-empty" hidden>No process sheets flagged yet. Search a PS number above to add it.</p>
+  <p id="fa-empty" class="fa-empty" hidden>No process sheets flagged yet. Search a PS number or use Bulk flag to add jobs.</p>
+</div>
+
+<div id="fa-bulk-modal" class="fa-modal-backdrop" hidden>
+  <div class="fa-modal-box fa-modal-box--wide" role="dialog" aria-modal="true" aria-labelledby="fa-bulk-modal-title">
+    <div class="fa-modal-head">
+      <h2 class="fa-modal-title" id="fa-bulk-modal-title">Bulk flag process sheets</h2>
+      <button type="button" class="fa-btn fa-btn--ghost" id="fa-bulk-modal-close">Close</button>
+    </div>
+    <p class="fa-modal-hint">Select active jobs, then Apply. Already flagged rows stay on the list but cannot be selected again.</p>
+    <div class="fa-bulk-toolbar">
+      <label class="fa-bulk-search-wrap">
+        <span class="fa-add-label">Search</span>
+        <input id="fa-bulk-search" class="fa-search-input" type="search"
+               placeholder="Search PS no, part no, description..." autocomplete="off">
+      </label>
+      <div class="fa-bulk-types" id="fa-bulk-types" role="group" aria-label="Filter by PS type"></div>
+    </div>
+    <p id="fa-bulk-status" class="fa-pic-status" hidden></p>
+    <div id="fa-bulk-loading" class="fa-loading" hidden>
+      <div class="fa-spinner" aria-hidden="true"></div>
+      Loading active process sheets...
+    </div>
+    <div class="fa-bulk-table-wrap" id="fa-bulk-table-wrap" hidden>
+      <table class="fa-bulk-table">
+        <thead>
+          <tr>
+            <th class="fa-bulk-check">
+              <input type="checkbox" id="fa-bulk-check-all" aria-label="Select visible process sheets">
+            </th>
+            <th>PS no.</th>
+            <th>Type</th>
+            <th>Part No.</th>
+            <th>Description</th>
+            <th class="fa-col-qty">Qty</th>
+          </tr>
+        </thead>
+        <tbody id="fa-bulk-body"></tbody>
+      </table>
+    </div>
+    <p id="fa-bulk-empty" class="fa-empty" hidden>No matching active process sheets.</p>
+    <div class="fa-bulk-foot">
+      <p class="fa-bulk-count" id="fa-bulk-count">0 selected</p>
+      <div class="fa-bulk-foot-actions">
+        <button type="button" class="fa-btn fa-btn--ghost" id="fa-bulk-clear">Clear</button>
+        <button type="button" class="fa-btn fa-btn--primary" id="fa-bulk-apply">Apply</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div id="fa-pic-modal" class="fa-modal-backdrop" hidden>
@@ -89,5 +139,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260818"></script>
+<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260820-2"></script>
 {% endblock %}

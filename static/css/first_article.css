@@ -254,6 +254,16 @@ body.fa-view .app-main--first-article {
   font-size: 0.9rem;
 }
 
+.fa-loading[hidden],
+.fa-empty[hidden],
+.fa-alert[hidden],
+.fa-table-card[hidden],
+.fa-pic-status[hidden],
+.fa-bulk-table-wrap[hidden],
+.fa-add-status[hidden] {
+  display: none !important;
+}
+
 .fa-spinner {
   width: 16px;
   height: 16px;
@@ -494,6 +504,121 @@ body.fa-view .app-main--first-article {
 .fa-pic-status.is-error { color: #dc2626; }
 .fa-pic-status.is-saved { color: #15803d; }
 
-@media (max-width: 720px) {
-  .fa-table-scroll { max-height: none; }
+.fa-bulk-btn {
+  flex: 0 0 auto;
+  margin-bottom: 6px;
+}
+
+.fa-modal-box--wide {
+  width: min(880px, 100%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.fa-bulk-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 4px 0 10px;
+}
+
+.fa-bulk-search-wrap {
+  flex: 1 1 260px;
+  min-width: 200px;
+}
+
+.fa-bulk-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.fa-bulk-chip {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.fa-bulk-chip.is-active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.fa-bulk-table-wrap {
+  overflow: auto;
+  min-height: 180px;
+  max-height: min(48vh, 420px);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.fa-bulk-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.8125rem;
+}
+
+.fa-bulk-table th,
+.fa-bulk-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: left;
+  vertical-align: top;
+}
+
+.fa-bulk-table th {
+  position: sticky;
+  top: 0;
+  background: #f8fafc;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #475569;
+}
+
+.fa-bulk-check { width: 36px; }
+.fa-bulk-table tbody tr.is-flagged { opacity: 0.62; }
+.fa-bulk-table tbody tr.is-selected { background: #eff6ff; }
+
+.fa-ps-type {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #e0e7ff;
+  color: #3730a3;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.fa-bulk-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.fa-bulk-count {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.fa-bulk-foot-actions {
+  display: flex;
+  gap: 8px;
 }

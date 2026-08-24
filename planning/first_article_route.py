@@ -9,7 +9,9 @@ from .first_article_service import (
     add_pic,
     delete_pic,
     flag_process_sheet,
+    flag_process_sheets,
     json_error,
+    list_flag_candidates,
     list_tracker_rows,
     load_pics,
     search_flag_candidates,
@@ -72,6 +74,23 @@ def api_search_first_article():
     return jsonify({"ok": True, "count": len(hits), "rows": hits})
 
 
+@first_article_bp.get("/api/first-article/candidates")
+def api_list_first_article_candidates():
+    query = compact_text(request.args.get("q"))
+    ps_type_filter = compact_text(request.args.get("ps_type"))
+    try:
+        limit = int(request.args.get("limit") or 1500)
+    except (TypeError, ValueError):
+        limit = 1500
+    try:
+        payload = list_flag_candidates(query=query, ps_type_filter=ps_type_filter, limit=limit)
+    except Exception as exc:
+        logger.exception("first article candidates failed")
+        body, status = json_error(exc, fallback_status=502)
+        return jsonify(body), status
+    return jsonify({"ok": True, **payload})
+
+
 @first_article_bp.post("/api/first-article")
 def api_flag_first_article():
     data = request.get_json(force=True, silent=True) or {}
@@ -86,6 +105,30 @@ def api_flag_first_article():
         payload, status = json_error(exc)
         return jsonify(payload), status
     return jsonify({"ok": True, "created": created, "row": row}), (201 if created else 200)
+
+
+@first_article_bp.post("/api/first-article/bulk")
+def api_bulk_flag_first_article():
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "A JSON object is required"}), 400
+    items = data.get("items")
+    if items is None:
+        items = data.get("process_sheet_nos")
+    if items is None and compact_text(data.get("process_sheet_no")):
+        items = [data]
+    if not isinstance(items, list):
+        return jsonify({"error": "items must be a list of process sheets"}), 400
+    try:
+        result = flag_process_sheets(items)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("first article bulk flag failed")
+        payload, status = json_error(exc)
+        return jsonify(payload), status
+    status = 201 if result.get("created_count") else 200
+    return jsonify({"ok": True, **result}), status
 
 
 @first_article_bp.patch("/api/first-article/<int:first_article_id>")

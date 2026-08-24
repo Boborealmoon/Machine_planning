@@ -4,7 +4,7 @@
 
 {% block main_class %}app-main--new-orders app-main--sales-report{% endblock %}
 
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=sales-report-table-peek-20260708">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=sales-report-posted-basis-20260820">{% endblock %}
 
 {% block content %}
 
@@ -78,6 +78,8 @@
 
     <div class="sales-report-period-row sales-report-period-row--filters">
 
+      <div class="sales-report-filters-main">
+
       <div class="sales-report-segment">
 
         <span class="sales-report-segment-label">Segment</span>
@@ -119,6 +121,22 @@
           </div>
 
         </div>
+
+      </div>
+
+      <div class="sales-report-segment sales-report-basis">
+
+        <span class="sales-report-segment-label">Date basis</span>
+
+        <div class="mi-view-toggle sales-report-view-toggle" role="tablist" aria-label="Date basis for month buckets">
+
+          <button type="button" class="mi-view-btn is-active" data-date-basis="po_due" role="tab" aria-selected="true">PO due date</button>
+
+          <button type="button" class="mi-view-btn" data-date-basis="posted" role="tab" aria-selected="false">SO posted date</button>
+
+        </div>
+
+      </div>
 
       </div>
 
@@ -270,6 +288,6 @@
 
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-report-breakdown-20260622"></script>
 
-<script src="{{ url_for('static', filename='js/sales_report.js') }}?v=sales-report-table-peek-20260708"></script>
+<script src="{{ url_for('static', filename='js/sales_report.js') }}?v=sales-report-posted-basis-20260820"></script>
 
 {% endblock %}

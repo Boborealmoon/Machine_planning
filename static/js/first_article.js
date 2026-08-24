@@ -2,6 +2,8 @@
   const API = {
     list: '/api/first-article',
     search: '/api/first-article/search',
+    candidates: '/api/first-article/candidates',
+    bulk: '/api/first-article/bulk',
     pics: '/api/first-article/pics',
   };
   const CHECK_FIELDS = [
@@ -18,6 +20,15 @@
     searchTimer: 0,
     saveTimers: {},
     busy: false,
+    bulk: {
+      jobs: [],
+      types: [],
+      query: '',
+      psType: '',
+      selected: new Set(),
+      truncated: false,
+      total: 0,
+    },
   };
 
   function $(id) {
@@ -39,16 +50,35 @@
   }
 
   async function api(url, options) {
-    const res = await fetch(url, options);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    return data;
+    const opts = { ...(options || {}) };
+    const timeoutMs = Number(opts.timeoutMs) || 0;
+    delete opts.timeoutMs;
+    let timer = 0;
+    if (timeoutMs > 0) {
+      const ctrl = new AbortController();
+      opts.signal = ctrl.signal;
+      timer = window.setTimeout(() => ctrl.abort(), timeoutMs);
+    }
+    try {
+      const res = await fetch(url, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        throw new Error('Timed out loading first article tracker');
+      }
+      throw err;
+    } finally {
+      if (timer) window.clearTimeout(timer);
+    }
   }
 
   function setStatus(id, message, kind) {
     const el = $(id);
     if (!el) return;
     el.textContent = message || '';
+    el.hidden = !message;
     el.classList.toggle('is-error', kind === 'error');
     el.classList.toggle('is-saved', kind === 'saved');
   }
@@ -139,7 +169,7 @@
       if (host) host.hidden = true;
       if (empty) {
         empty.hidden = false;
-        empty.textContent = 'No process sheets flagged yet. Search a PS number above to add it.';
+        empty.textContent = 'No process sheets flagged yet. Search a PS number or use Bulk flag to add jobs.';
       }
       $('fa-subtitle').textContent = 'Flag a process sheet, then track tooling, fixture, gauges, and PIC.';
       return;
@@ -198,6 +228,10 @@
     )).join('');
   }
 
+  function jobKey(job) {
+    return String(job?.process_sheet_no || job?.pp_voucher_no || '').trim().toUpperCase();
+  }
+
   function applyRow(updated) {
     if (!updated || !updated.first_article_id) return;
     const index = state.rows.findIndex((row) => Number(row.first_article_id) === Number(updated.first_article_id));
@@ -207,17 +241,25 @@
   }
 
   async function loadTracker() {
-    $('fa-loading').hidden = false;
+    const loading = $('fa-loading');
+    const empty = $('fa-empty');
+    if (loading) loading.hidden = false;
+    if (empty) empty.hidden = true;
     showAlert('');
     try {
-      const data = await api(API.list);
+      const data = await api(API.list, { timeoutMs: 30000 });
       state.rows = data.rows || [];
       state.pics = data.pics || [];
       renderPicList();
       renderTable();
     } catch (err) {
       showAlert(err.message || 'Could not load first article tracker');
-      $('fa-loading').hidden = true;
+      if (!state.rows.length && empty) {
+        empty.hidden = false;
+        empty.textContent = 'Could not load the tracker. Try Refresh.';
+      }
+    } finally {
+      if (loading) loading.hidden = true;
     }
   }
 
@@ -342,12 +384,235 @@
     modal.hidden = true;
   }
 
+  function filteredBulkJobs() {
+    const needle = state.bulk.query.trim().toUpperCase();
+    const wanted = String(state.bulk.psType || '').toUpperCase();
+    return (state.bulk.jobs || []).filter((job) => {
+      const kind = String(job.ps_type || 'OTHER').toUpperCase();
+      if (wanted && kind !== wanted) return false;
+      if (!needle) return true;
+      const blob = [
+        job.process_sheet_no,
+        job.pp_voucher_no,
+        job.part_no,
+        job.part_description,
+        job.sales_order_no,
+        job.ps_type,
+      ].join(' ').toUpperCase();
+      return blob.includes(needle);
+    });
+  }
+
+  function renderBulkTypes() {
+    const host = $('fa-bulk-types');
+    if (!host) return;
+    const chips = [{ ps_type: '', count: state.bulk.total || state.bulk.jobs.length, label: 'All' }]
+      .concat((state.bulk.types || []).map((item) => ({
+        ps_type: item.ps_type,
+        count: item.count,
+        label: item.ps_type,
+      })));
+    host.innerHTML = chips.map((chip) => {
+      const active = String(state.bulk.psType || '') === String(chip.ps_type || '');
+      return `<button type="button" class="fa-bulk-chip${active ? ' is-active' : ''}" data-fa-ps-type="${escapeHtml(chip.ps_type)}">${escapeHtml(chip.label)} (${chip.count})</button>`;
+    }).join('');
+  }
+
+  function renderBulkList() {
+    const body = $('fa-bulk-body');
+    const wrap = $('fa-bulk-table-wrap');
+    const empty = $('fa-bulk-empty');
+    const loading = $('fa-bulk-loading');
+    const checkAll = $('fa-bulk-check-all');
+    if (loading) loading.hidden = true;
+    const rows = filteredBulkJobs();
+    const selectable = rows.filter((job) => !job.already_flagged);
+    if (!rows.length) {
+      if (wrap) wrap.hidden = true;
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = state.bulk.jobs.length
+          ? 'No matching active process sheets.'
+          : 'No active process sheets found.';
+      }
+    } else {
+      if (wrap) wrap.hidden = false;
+      if (empty) empty.hidden = true;
+      body.innerHTML = rows.map((job) => {
+        const key = jobKey(job);
+        const flagged = !!job.already_flagged;
+        const checked = !flagged && state.bulk.selected.has(key);
+        const desc = job.part_description || '';
+        return `
+          <tr class="${flagged ? 'is-flagged' : ''}${checked ? ' is-selected' : ''}" data-key="${escapeHtml(key)}">
+            <td class="fa-bulk-check">
+              <input type="checkbox" data-fa-bulk-key="${escapeHtml(key)}" ${flagged ? 'disabled' : ''} ${checked ? 'checked' : ''} aria-label="Select ${escapeHtml(job.process_sheet_no || key)}">
+            </td>
+            <td class="fa-mono">${escapeHtml(dash(job.process_sheet_no))}</td>
+            <td><span class="fa-ps-type">${escapeHtml(job.ps_type || 'OTHER')}</span></td>
+            <td class="fa-readonly">${escapeHtml(dash(job.part_no))}</td>
+            <td>${escapeHtml(dash(desc))}</td>
+            <td class="fa-col-qty">${escapeHtml(dash(job.total_qty))}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+    const selectedCount = state.bulk.selected.size;
+    const countEl = $('fa-bulk-count');
+    if (countEl) {
+      const extra = state.bulk.truncated ? ` Showing first ${state.bulk.jobs.length} of ${state.bulk.total}.` : '';
+      countEl.textContent = `${selectedCount} selected.${extra}`;
+    }
+    if (checkAll) {
+      const selectedVisible = selectable.filter((job) => state.bulk.selected.has(jobKey(job))).length;
+      checkAll.disabled = !selectable.length;
+      checkAll.checked = selectable.length > 0 && selectedVisible === selectable.length;
+      checkAll.indeterminate = selectedVisible > 0 && selectedVisible < selectable.length;
+    }
+    const apply = $('fa-bulk-apply');
+    if (apply) apply.disabled = selectedCount === 0 || state.busy;
+  }
+
+  async function loadBulkCandidates() {
+    const loading = $('fa-bulk-loading');
+    const empty = $('fa-bulk-empty');
+    const wrap = $('fa-bulk-table-wrap');
+    if (loading) loading.hidden = false;
+    if (empty) empty.hidden = true;
+    if (wrap) wrap.hidden = true;
+    setStatus('fa-bulk-status', '');
+    try {
+      const data = await api(`${API.candidates}?limit=2500`, { timeoutMs: 45000 });
+      state.bulk.jobs = data.rows || [];
+      state.bulk.types = data.types || [];
+      state.bulk.total = Number(data.total || state.bulk.jobs.length);
+      state.bulk.truncated = !!data.truncated;
+      const known = new Set(state.bulk.jobs.map(jobKey));
+      state.bulk.selected = new Set([...state.bulk.selected].filter((key) => known.has(key)));
+      renderBulkTypes();
+      renderBulkList();
+    } catch (err) {
+      state.bulk.jobs = [];
+      state.bulk.types = [];
+      renderBulkTypes();
+      renderBulkList();
+      setStatus('fa-bulk-status', err.message || 'Could not load active process sheets', 'error');
+    } finally {
+      if (loading) loading.hidden = true;
+    }
+  }
+
+  function openBulkModal() {
+    const modal = $('fa-bulk-modal');
+    if (!modal) return;
+    state.bulk.query = '';
+    state.bulk.psType = '';
+    state.bulk.selected = new Set();
+    if ($('fa-bulk-search')) $('fa-bulk-search').value = '';
+    modal.hidden = false;
+    renderBulkTypes();
+    renderBulkList();
+    loadBulkCandidates();
+    $('fa-bulk-search')?.focus();
+  }
+
+  function closeBulkModal() {
+    const modal = $('fa-bulk-modal');
+    if (!modal) return;
+    modal.hidden = true;
+  }
+
+  async function applyBulkFlag() {
+    const keys = [...state.bulk.selected];
+    if (!keys.length) return;
+    const byKey = new Map(state.bulk.jobs.map((job) => [jobKey(job), job]));
+    const items = keys.map((key) => {
+      const job = byKey.get(key);
+      return {
+        process_sheet_no: job?.process_sheet_no || key,
+        pp_voucher_no: job?.pp_voucher_no || '',
+      };
+    });
+    state.busy = true;
+    renderBulkList();
+    setStatus('fa-bulk-status', `Flagging ${items.length} process sheet${items.length === 1 ? '' : 's'}...`);
+    try {
+      const data = await api(API.bulk, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items }),
+        timeoutMs: 60000,
+      });
+      (data.created || []).forEach(applyRow);
+      (data.already_flagged || []).forEach(applyRow);
+      const created = Number(data.created_count || 0);
+      const skipped = Number(data.already_flagged_count || 0);
+      const parts = [];
+      if (created) parts.push(`Flagged ${created}`);
+      if (skipped) parts.push(`${skipped} already flagged`);
+      setStatus('fa-add-status', parts.join('. ') || 'No new process sheets flagged', 'saved');
+      closeBulkModal();
+    } catch (err) {
+      setStatus('fa-bulk-status', err.message || 'Could not bulk flag process sheets', 'error');
+    } finally {
+      state.busy = false;
+      renderBulkList();
+    }
+  }
+
   function bind() {
     $('fa-refresh')?.addEventListener('click', () => loadTracker());
     $('fa-manage-pics')?.addEventListener('click', openPicModal);
     $('fa-pic-modal-close')?.addEventListener('click', closePicModal);
     $('fa-pic-modal')?.addEventListener('click', (e) => {
       if (e.target && e.target.id === 'fa-pic-modal') closePicModal();
+    });
+    $('fa-bulk-flag')?.addEventListener('click', openBulkModal);
+    $('fa-bulk-modal-close')?.addEventListener('click', closeBulkModal);
+    $('fa-bulk-modal')?.addEventListener('click', (e) => {
+      if (e.target && e.target.id === 'fa-bulk-modal') closeBulkModal();
+    });
+    $('fa-bulk-search')?.addEventListener('input', (e) => {
+      state.bulk.query = e.target.value || '';
+      renderBulkList();
+    });
+    $('fa-bulk-types')?.addEventListener('click', (e) => {
+      const chip = e.target.closest('[data-fa-ps-type]');
+      if (!chip) return;
+      state.bulk.psType = chip.getAttribute('data-fa-ps-type') || '';
+      renderBulkTypes();
+      renderBulkList();
+    });
+    $('fa-bulk-body')?.addEventListener('change', (e) => {
+      const box = e.target.closest('[data-fa-bulk-key]');
+      if (!box) return;
+      const key = box.getAttribute('data-fa-bulk-key');
+      if (box.checked) state.bulk.selected.add(key);
+      else state.bulk.selected.delete(key);
+      renderBulkList();
+    });
+    $('fa-bulk-check-all')?.addEventListener('change', (e) => {
+      const on = !!e.target.checked;
+      filteredBulkJobs().forEach((job) => {
+        if (job.already_flagged) return;
+        const key = jobKey(job);
+        if (on) state.bulk.selected.add(key);
+        else state.bulk.selected.delete(key);
+      });
+      renderBulkList();
+    });
+    $('fa-bulk-clear')?.addEventListener('click', () => {
+      state.bulk.selected = new Set();
+      renderBulkList();
+    });
+    $('fa-bulk-apply')?.addEventListener('click', () => applyBulkFlag());
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (!$('fa-bulk-modal')?.hidden) {
+        closeBulkModal();
+        return;
+      }
+      if (!$('fa-pic-modal')?.hidden) closePicModal();
     });
 
     $('fa-filter')?.addEventListener('input', (e) => {

@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 CHECK_TEXT_MODES = ("tick", "text")
 CHECK_TEXT_FIELDS = ("tooling", "fixture", "gauges")
 _SEARCH_LIMIT = 25
+_CANDIDATE_LIMIT = 1500
+_BULK_FLAG_LIMIT = 200
+_PS_TYPE_ORDER = ("APS", "NPS", "MPS", "PPS", "CPS", "SR", "OTHER")
 _ROW_SELECT = """
     first_article_id, process_sheet_no, pp_voucher_no, pic_ids,
     tooling_mode, tooling_tick, tooling_text,
@@ -90,6 +93,29 @@ def _ps_base(value: Any) -> str:
 
 def _ps_key(value: Any) -> str:
     return _ps_base(value).upper()
+
+
+def _job_ps_type(job: dict[str, Any] | None) -> str:
+    from .so_outstanding_balance_service import ps_type
+
+    if not job:
+        return ""
+    return ps_type(job.get("process_sheet_no") or job.get("pp_voucher_no"))
+
+
+def _job_search_blob(job: dict[str, Any]) -> str:
+    return " ".join(
+        compact_text(job.get(field)).upper()
+        for field in (
+            "process_sheet_no",
+            "pp_voucher_no",
+            "part_no",
+            "part_description",
+            "sales_order_no",
+            "customer_name",
+            "ps_type",
+        )
+    )
 
 
 def _date_text(value: Any) -> str:
@@ -210,26 +236,68 @@ def search_jobs(
     cap = max(1, min(int(limit or _SEARCH_LIMIT), 50))
     hits: list[dict[str, Any]] = []
     for job in jobs:
-        blob = " ".join(
-            compact_text(job.get(field)).upper()
-            for field in (
-                "process_sheet_no",
-                "pp_voucher_no",
-                "part_no",
-                "part_description",
-                "sales_order_no",
-                "customer_name",
-            )
-        )
-        if needle not in blob:
+        if needle not in _job_search_blob(job):
             continue
-        key = _ps_key(job.get("process_sheet_no") or job.get("pp_voucher_no"))
-        out = dict(job)
-        out["already_flagged"] = key in flagged
-        hits.append(out)
+        hits.append(_decorate_candidate(job, flagged))
         if len(hits) >= cap:
             break
     return hits
+
+
+def _decorate_candidate(job: dict[str, Any], flagged_keys: set[str]) -> dict[str, Any]:
+    out = dict(job)
+    key = _ps_key(job.get("process_sheet_no") or job.get("pp_voucher_no"))
+    out["already_flagged"] = key in flagged_keys
+    out["ps_type"] = compact_text(out.get("ps_type")) or _job_ps_type(out)
+    return out
+
+
+def list_flag_candidates(
+    *,
+    query: str = "",
+    ps_type_filter: str = "",
+    limit: int = _CANDIDATE_LIMIT,
+) -> dict[str, Any]:
+    jobs = _sales_order_jobs(allow_rebuild=True)
+    with planner_db() as con:
+        _ensure_tables(con)
+        flagged = _flagged_keys(con)
+    decorated = [_decorate_candidate(job, flagged) for job in jobs]
+    type_counts: dict[str, int] = {}
+    for job in decorated:
+        label = compact_text(job.get("ps_type")) or "OTHER"
+        type_counts[label] = type_counts.get(label, 0) + 1
+
+    needle = compact_text(query).upper()
+    wanted = compact_text(ps_type_filter).upper()
+    cap = max(1, min(int(limit or _CANDIDATE_LIMIT), 2500))
+    hits: list[dict[str, Any]] = []
+    truncated = False
+    for job in decorated:
+        kind = compact_text(job.get("ps_type")) or "OTHER"
+        if wanted and wanted != kind:
+            continue
+        if needle and needle not in _job_search_blob(job):
+            continue
+        hits.append(job)
+        if len(hits) >= cap:
+            truncated = True
+            break
+
+    types = sorted(
+        type_counts,
+        key=lambda label: (
+            _PS_TYPE_ORDER.index(label) if label in _PS_TYPE_ORDER else 99,
+            label,
+        ),
+    )
+    return {
+        "rows": hits,
+        "types": [{"ps_type": label, "count": type_counts[label]} for label in types],
+        "total": len(decorated),
+        "matched": len(hits),
+        "truncated": truncated,
+    }
 
 
 def _parse_pic_ids(raw: Any) -> list[int]:
@@ -472,11 +540,45 @@ def _validate_pic_ids(con, pic_ids: list[int]) -> list[int]:
     return pic_ids
 
 
-def _live_job_map() -> dict[str, dict[str, Any]]:
-    from .sales_orders_route import _fetch_sales_orders
+def _peek_cached_sales_orders() -> dict[str, Any]:
+    """Read S/O cache only. Never trigger a live ERP rebuild."""
+    try:
+        from .erp_route_cache import get as cache_get
+        from .sales_orders_route import _sales_orders_cache_key
+    except Exception:
+        logger.exception("first article sales-order cache import failed")
+        return {}
 
-    payload = _fetch_sales_orders(refresh=False, active_only=True)
-    return index_jobs_by_ps(flatten_sales_order_jobs(list(payload.get("active") or [])))
+    for lite in (False, True):
+        try:
+            payload = cache_get(_sales_orders_cache_key("active", lite=lite), ttl_sec=0)
+        except Exception:
+            logger.exception("first article sales-order cache read failed")
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _sales_order_jobs(*, allow_rebuild: bool = False) -> list[dict[str, Any]]:
+    payload = _peek_cached_sales_orders()
+    if not payload and allow_rebuild:
+        try:
+            from .sales_orders_route import _fetch_sales_orders
+
+            # Staged/lite rebuild only. Full live S/O build can stall the tracker
+            # for minutes while COMAIN is busy or another worker holds the cache lock.
+            payload = _fetch_sales_orders(refresh=False, active_only=True, lite=True) or {}
+        except Exception:
+            logger.exception("first article sales-order lookup failed")
+            payload = {}
+    if not payload:
+        return []
+    return flatten_sales_order_jobs(list(payload.get("active") or []))
+
+
+def _live_job_map(*, allow_rebuild: bool = False) -> dict[str, dict[str, Any]]:
+    return index_jobs_by_ps(_sales_order_jobs(allow_rebuild=allow_rebuild))
 
 
 def _flagged_keys(con) -> set[str]:
@@ -498,7 +600,14 @@ def _flagged_keys(con) -> set[str]:
 
 
 def list_tracker_rows(*, live_by_ps: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    live_map = live_by_ps if live_by_ps is not None else _live_job_map()
+    if live_by_ps is not None:
+        live_map = live_by_ps
+    else:
+        try:
+            live_map = _live_job_map()
+        except Exception:
+            logger.exception("first article live map failed")
+            live_map = {}
     with planner_db() as con:
         _ensure_tables(con)
         pics = _pics_by_id(con)
@@ -521,7 +630,7 @@ def list_tracker_rows(*, live_by_ps: dict[str, dict[str, Any]] | None = None) ->
 
 
 def lookup_sales_order_job(process_sheet_no: str, pp_voucher_no: str = "") -> dict[str, Any] | None:
-    live_map = _live_job_map()
+    live_map = _live_job_map(allow_rebuild=True)
     for raw in (process_sheet_no, pp_voucher_no):
         job = live_map.get(_ps_key(raw))
         if job:
@@ -532,21 +641,72 @@ def lookup_sales_order_job(process_sheet_no: str, pp_voucher_no: str = "") -> di
 def search_flag_candidates(query: str, *, limit: int = _SEARCH_LIMIT) -> list[dict[str, Any]]:
     if not compact_text(query):
         return []
-    from .sales_orders_route import _fetch_sales_orders
-
-    payload = _fetch_sales_orders(refresh=False, active_only=True)
-    jobs = flatten_sales_order_jobs(list(payload.get("active") or []))
+    jobs = _sales_order_jobs(allow_rebuild=True)
     with planner_db() as con:
         _ensure_tables(con)
         flagged = _flagged_keys(con)
     return search_jobs(jobs, query, flagged_keys=flagged, limit=limit)
 
 
-def flag_process_sheet(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    process_sheet_no = _ps_base(data.get("process_sheet_no") or data.get("pp_voucher_no"))
-    pp_voucher_no = compact_text(data.get("pp_voucher_no"))
+def _upsert_flagged_row(con, process_sheet_no: str, pp_voucher_no: str) -> tuple[Any, bool]:
+    existing = one(
+        con.execute(
+            f"""
+            SELECT {_ROW_SELECT}
+            FROM planner_first_article
+            WHERE LOWER(TRIM(process_sheet_no)) = LOWER(TRIM(%s))
+            LIMIT 1
+            """,
+            (process_sheet_no,),
+        )
+    )
+    if existing:
+        row = existing
+        if pp_voucher_no and compact_text(row.get("pp_voucher_no")) != pp_voucher_no:
+            row = one(
+                con.execute(
+                    f"""
+                    UPDATE planner_first_article
+                    SET pp_voucher_no = %s, updated_at = NOW()
+                    WHERE first_article_id = %s
+                    RETURNING {_ROW_SELECT}
+                    """,
+                    (pp_voucher_no, int(row["first_article_id"])),
+                )
+            ) or existing
+        return row, False
+    row = one(
+        con.execute(
+            f"""
+            INSERT INTO planner_first_article (process_sheet_no, pp_voucher_no, updated_at)
+            VALUES (%s, %s, NOW())
+            RETURNING {_ROW_SELECT}
+            """,
+            (process_sheet_no, pp_voucher_no),
+        )
+    )
+    return row, True
+
+
+def _normalize_flag_item(raw: Any) -> tuple[str, str] | None:
+    if isinstance(raw, str):
+        process_sheet_no = _ps_base(raw)
+        pp_voucher_no = ""
+    elif isinstance(raw, dict):
+        process_sheet_no = _ps_base(raw.get("process_sheet_no") or raw.get("pp_voucher_no"))
+        pp_voucher_no = compact_text(raw.get("pp_voucher_no"))
+    else:
+        return None
     if not process_sheet_no:
+        return None
+    return process_sheet_no, pp_voucher_no
+
+
+def flag_process_sheet(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    parsed = _normalize_flag_item(data if isinstance(data, dict) else {})
+    if not parsed:
         raise ValueError("process_sheet_no is required")
+    process_sheet_no, pp_voucher_no = parsed
     live = lookup_sales_order_job(process_sheet_no, pp_voucher_no)
     if live:
         process_sheet_no = compact_text(live.get("process_sheet_no")) or process_sheet_no
@@ -554,49 +714,61 @@ def flag_process_sheet(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
 
     with planner_db() as con:
         _ensure_tables(con)
-        existing = one(
-            con.execute(
-                f"""
-                SELECT {_ROW_SELECT}
-                FROM planner_first_article
-                WHERE LOWER(TRIM(process_sheet_no)) = LOWER(TRIM(%s))
-                LIMIT 1
-                """,
-                (process_sheet_no,),
-            )
-        )
-        created = False
-        if existing:
-            row = existing
-            if pp_voucher_no and compact_text(row.get("pp_voucher_no")) != pp_voucher_no:
-                row = one(
-                    con.execute(
-                        f"""
-                        UPDATE planner_first_article
-                        SET pp_voucher_no = %s, updated_at = NOW()
-                        WHERE first_article_id = %s
-                        RETURNING {_ROW_SELECT}
-                        """,
-                        (pp_voucher_no, int(row["first_article_id"])),
-                    )
-                ) or existing
-        else:
-            row = one(
-                con.execute(
-                    f"""
-                    INSERT INTO planner_first_article (process_sheet_no, pp_voucher_no, updated_at)
-                    VALUES (%s, %s, NOW())
-                    RETURNING {_ROW_SELECT}
-                    """,
-                    (process_sheet_no, pp_voucher_no),
-                )
-            )
-            created = True
+        row, created = _upsert_flagged_row(con, process_sheet_no, pp_voucher_no)
         pics = _pics_by_id(con)
     serialized = _serialize_tracker_row(row, live=live or {}, pics_by_id=pics)
     if not serialized:
         raise RuntimeError("Failed to flag process sheet")
     return serialized, created
+
+
+def flag_process_sheets(items: list[Any] | None) -> dict[str, Any]:
+    parsed: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw in items or []:
+        item = _normalize_flag_item(raw)
+        if not item:
+            continue
+        key = _ps_key(item[0])
+        if key in seen:
+            continue
+        seen.add(key)
+        parsed.append(item)
+    if not parsed:
+        raise ValueError("Select at least one process sheet")
+    if len(parsed) > _BULK_FLAG_LIMIT:
+        raise ValueError(f"Select at most {_BULK_FLAG_LIMIT} process sheets")
+
+    live_map = _live_job_map(allow_rebuild=True)
+    created_rows: list[dict[str, Any]] = []
+    already: list[dict[str, Any]] = []
+    with planner_db() as con:
+        _ensure_tables(con)
+        pics = _pics_by_id(con)
+        for process_sheet_no, pp_voucher_no in parsed:
+            live = (
+                live_map.get(_ps_key(process_sheet_no))
+                or live_map.get(_ps_key(pp_voucher_no))
+                or {}
+            )
+            if live:
+                process_sheet_no = compact_text(live.get("process_sheet_no")) or process_sheet_no
+                pp_voucher_no = compact_text(live.get("pp_voucher_no")) or pp_voucher_no
+            row, created = _upsert_flagged_row(con, process_sheet_no, pp_voucher_no)
+            serialized = _serialize_tracker_row(row, live=live or {}, pics_by_id=pics)
+            if not serialized:
+                continue
+            if created:
+                created_rows.append(serialized)
+            else:
+                already.append(serialized)
+    return {
+        "created": created_rows,
+        "already_flagged": already,
+        "created_count": len(created_rows),
+        "already_flagged_count": len(already),
+        "count": len(created_rows) + len(already),
+    }
 
 
 def update_tracker_row(first_article_id: int, data: dict[str, Any]) -> dict[str, Any] | None:
