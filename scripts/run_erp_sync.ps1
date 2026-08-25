@@ -26,7 +26,7 @@ $JsonLog = Join-Path $RunDir "erp-sync-$RunStamp.json"
 $mutex = New-Object System.Threading.Mutex($false, "Global\MachinePlanning-ErpSync")
 $acquired = $false
 try {
-    $acquired = $mutex.WaitOne(0, $false)
+    $acquired = $mutex.WaitOne(30000, $false)
 } catch {
     $acquired = $true
 }

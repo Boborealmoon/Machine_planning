@@ -758,6 +758,364 @@ def record_erp_qty_jumps(con, mfg_rows, synced_at=None, columns=None) -> int:
     return _insert_jumps(con, enriched)
 
 
+def _mfg_rows_as_dicts(mfg_rows, columns=None) -> list[dict]:
+    current: list[dict] = []
+    for raw in mfg_rows or []:
+        if isinstance(raw, dict):
+            current.append(raw)
+        elif columns and isinstance(raw, (list, tuple)):
+            current.append(dict(zip(columns, raw)))
+    return current
+
+
+def poll_qty_changes(
+    current_rows: list[dict],
+    previous_by_key: dict[tuple[str, int, int], dict],
+    *,
+    scanned_at: datetime,
+    scanned_date: date,
+) -> tuple[list[dict], list[dict]]:
+    """Return (jumps, latest-upserts). Upserts are jumped keys plus first-seen baselines."""
+    jumps = compute_qty_jumps(
+        current_rows,
+        previous_by_key,
+        scanned_at=scanned_at,
+        scanned_date=scanned_date,
+    )
+    jump_keys = {
+        wo_stage_key(item.get("source_mps_no"), item.get("pp_partial_no"), item.get("stage_no"))
+        for item in jumps
+    }
+    upserts: list[dict] = []
+    seen: set[tuple[str, int, int]] = set()
+    for raw in current_rows or []:
+        if not isinstance(raw, dict):
+            continue
+        source_mps_no = compact_text(raw.get("source_mps_no"))
+        stage_no = raw.get("stage_no")
+        if not source_mps_no or stage_no is None:
+            continue
+        try:
+            pp_partial_no = max(1, int(raw.get("pp_partial_no") or 1))
+            stage_no = int(stage_no)
+        except (TypeError, ValueError):
+            continue
+        key = wo_stage_key(source_mps_no, pp_partial_no, stage_no)
+        if key in seen:
+            continue
+        seen.add(key)
+        prev = previous_by_key.get(key)
+        if prev is not None and key not in jump_keys:
+            continue
+        upserts.append(
+            {
+                "source_mps_no": source_mps_no,
+                "pp_partial_no": pp_partial_no,
+                "stage_no": stage_no,
+                "acc_qty_produced": _float(
+                    raw.get("total_acc_qty_produced") or raw.get("acc_qty_produced")
+                ),
+                "acc_rej_qty_produced": _float(
+                    raw.get("total_rej_qty_produced") or raw.get("acc_rej_qty_produced")
+                ),
+                "seen_at": scanned_at,
+            }
+        )
+    return jumps, upserts
+
+
+def ensure_erp_wo_qty_latest_table(con) -> None:
+    planner_try_savepoint(
+        con,
+        "erp_wo_qty_latest_ddl",
+        lambda: con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS public.planner_erp_wo_qty_latest (
+                source_mps_no        TEXT         NOT NULL,
+                pp_partial_no        INTEGER      NOT NULL DEFAULT 1,
+                stage_no             INTEGER      NOT NULL,
+                acc_qty_produced     NUMERIC      NOT NULL DEFAULT 0,
+                acc_rej_qty_produced NUMERIC      NOT NULL DEFAULT 0,
+                seen_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (source_mps_no, pp_partial_no, stage_no)
+            )
+            """
+        ) or True,
+        default=None,
+    )
+
+
+def _latest_row_count(con) -> int:
+    existing = one(con.execute("SELECT COUNT(*) AS n FROM planner_erp_wo_qty_latest")) or {}
+    return _int(existing.get("n"), 0)
+
+
+def _seed_latest_if_empty(con) -> int:
+    """One-time baseline from snapshots/jumps/staging. No-op once the compact table has rows."""
+    if _latest_row_count(con) > 0:
+        return 0
+    logger.info("WO qty poll latest table empty; seeding from snapshots")
+    planner_try_savepoint(
+        con,
+        "erp_latest_from_snapshots",
+        lambda: con.execute(
+            """
+            INSERT INTO planner_erp_wo_qty_latest (
+                source_mps_no, pp_partial_no, stage_no,
+                acc_qty_produced, acc_rej_qty_produced, seen_at
+            )
+            SELECT DISTINCT ON (source_mps_no, pp_partial_no, stage_no)
+                   source_mps_no, pp_partial_no, stage_no,
+                   acc_qty_produced, acc_rej_qty_produced, snapshot_at
+            FROM planner_erp_wo_qty_snapshot
+            WHERE snapshot_date = (
+                SELECT MAX(snapshot_date) FROM planner_erp_wo_qty_snapshot
+            )
+            ORDER BY source_mps_no, pp_partial_no, stage_no, snapshot_at DESC
+            ON CONFLICT DO NOTHING
+            """
+        ) or True,
+        default=None,
+    )
+    planner_try_savepoint(
+        con,
+        "erp_latest_from_jumps",
+        lambda: con.execute(
+            """
+            INSERT INTO planner_erp_wo_qty_latest (
+                source_mps_no, pp_partial_no, stage_no,
+                acc_qty_produced, acc_rej_qty_produced, seen_at
+            )
+            SELECT DISTINCT ON (source_mps_no, pp_partial_no, stage_no)
+                   source_mps_no, pp_partial_no, stage_no,
+                   new_acc_qty, new_rej_qty, scanned_at
+            FROM planner_erp_qty_jump
+            ORDER BY source_mps_no, pp_partial_no, stage_no, scanned_at DESC
+            ON CONFLICT (source_mps_no, pp_partial_no, stage_no) DO UPDATE SET
+                acc_qty_produced = EXCLUDED.acc_qty_produced,
+                acc_rej_qty_produced = EXCLUDED.acc_rej_qty_produced,
+                seen_at = EXCLUDED.seen_at
+            WHERE planner_erp_wo_qty_latest.seen_at < EXCLUDED.seen_at
+            """
+        ) or True,
+        default=None,
+    )
+    if _latest_row_count(con) > 0:
+        return _latest_row_count(con)
+    planner_try_savepoint(
+        con,
+        "erp_latest_from_staging",
+        lambda: con.execute(
+            """
+            INSERT INTO planner_erp_wo_qty_latest (
+                source_mps_no, pp_partial_no, stage_no,
+                acc_qty_produced, acc_rej_qty_produced, seen_at
+            )
+            SELECT source_mps_no,
+                   COALESCE(pp_partial_no, 1),
+                   stage_no,
+                   COALESCE(total_acc_qty_produced, 0),
+                   COALESCE(total_rej_qty_produced, 0),
+                   NOW()
+            FROM mfg_wo_status
+            WHERE source_mps_no IS NOT NULL
+              AND stage_no IS NOT NULL
+            ON CONFLICT DO NOTHING
+            """
+        ) or True,
+        default=None,
+    )
+    return _latest_row_count(con)
+
+
+def _load_latest_qty_map(con) -> dict[tuple[str, int, int], dict]:
+    latest_rows = rows(
+        con.execute(
+            """
+            SELECT source_mps_no, pp_partial_no, stage_no,
+                   acc_qty_produced, acc_rej_qty_produced, seen_at
+            FROM planner_erp_wo_qty_latest
+            """
+        )
+    )
+    previous: dict[tuple[str, int, int], dict] = {}
+    for row in latest_rows:
+        key = wo_stage_key(row.get("source_mps_no"), row.get("pp_partial_no"), row.get("stage_no"))
+        previous[key] = {
+            "acc_qty_produced": _float(row.get("acc_qty_produced")),
+            "acc_rej_qty_produced": _float(row.get("acc_rej_qty_produced")),
+            "snapshot_at": compact_text(row.get("seen_at")),
+        }
+    return previous
+
+
+def _upsert_latest_qty(con, items: list[dict]) -> int:
+    if not items:
+        return 0
+    payload = [
+        (
+            compact_text(item.get("source_mps_no")),
+            int(item["pp_partial_no"]),
+            int(item["stage_no"]),
+            _float(item.get("acc_qty_produced")),
+            _float(item.get("acc_rej_qty_produced")),
+            item.get("seen_at"),
+        )
+        for item in items
+        if compact_text(item.get("source_mps_no"))
+    ]
+    if not payload:
+        return 0
+    from psycopg2.extras import execute_values
+
+    cur = con._conn.cursor()
+    execute_values(
+        cur,
+        """
+        INSERT INTO planner_erp_wo_qty_latest (
+            source_mps_no, pp_partial_no, stage_no,
+            acc_qty_produced, acc_rej_qty_produced, seen_at
+        ) VALUES %s
+        ON CONFLICT (source_mps_no, pp_partial_no, stage_no) DO UPDATE SET
+            acc_qty_produced = EXCLUDED.acc_qty_produced,
+            acc_rej_qty_produced = EXCLUDED.acc_rej_qty_produced,
+            seen_at = EXCLUDED.seen_at
+        """,
+        payload,
+        page_size=500,
+    )
+    return len(payload)
+
+
+def refresh_wo_qty_latest_from_snapshots(con, snapshot_date) -> None:
+    """Keep the compact latest table aligned after the twice-daily full snapshot."""
+    ensure_erp_wo_qty_latest_table(con)
+    con.execute(
+        """
+        INSERT INTO planner_erp_wo_qty_latest (
+            source_mps_no, pp_partial_no, stage_no,
+            acc_qty_produced, acc_rej_qty_produced, seen_at
+        )
+        SELECT source_mps_no, pp_partial_no, stage_no,
+               acc_qty_produced, acc_rej_qty_produced, snapshot_at
+        FROM planner_erp_wo_qty_snapshot
+        WHERE snapshot_date = %s
+        ON CONFLICT (source_mps_no, pp_partial_no, stage_no) DO UPDATE SET
+            acc_qty_produced = EXCLUDED.acc_qty_produced,
+            acc_rej_qty_produced = EXCLUDED.acc_rej_qty_produced,
+            seen_at = EXCLUDED.seen_at
+        """,
+        (snapshot_date,),
+    )
+
+
+def poll_erp_qty_jumps(con, mfg_rows, scanned_at=None, columns=None) -> dict:
+    """Compare COMAIN WO qty to the compact latest table and insert only new jumps."""
+    ensure_erp_qty_jump_table(con, create=True)
+    ensure_erp_wo_qty_latest_table(con)
+    logger.info("WO qty poll seeding latest-qty baseline if empty")
+    seeded = _seed_latest_if_empty(con)
+    current = _mfg_rows_as_dicts(mfg_rows, columns=columns)
+    when = scanned_at or datetime.now(timezone.utc)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    previous = _load_latest_qty_map(con)
+    logger.info(
+        "WO qty poll latest map size=%s source=%s seeded=%s",
+        len(previous),
+        len(current),
+        seeded,
+    )
+    if not previous:
+        _, upserts = poll_qty_changes(
+            current,
+            {},
+            scanned_at=when,
+            scanned_date=scanned_wall_date(when),
+        )
+        updated = _upsert_latest_qty(con, upserts)
+        logger.info(
+            "WO qty poll wrote first baseline (%s rows); next poll will detect jumps",
+            updated,
+        )
+        return {
+            "jump_count": 0,
+            "latest_upserts": updated,
+            "seeded_rows": seeded,
+            "source_rows": len(current),
+            "baseline_only": True,
+        }
+    jumps, upserts = poll_qty_changes(
+        current,
+        previous,
+        scanned_at=when,
+        scanned_date=scanned_wall_date(when),
+    )
+    inserted = 0
+    if jumps:
+        enriched = _enrich_jumps(con, jumps)
+        inserted = _insert_jumps(con, enriched)
+    updated = _upsert_latest_qty(con, upserts)
+    return {
+        "jump_count": inserted,
+        "latest_upserts": updated,
+        "seeded_rows": seeded,
+        "source_rows": len(current),
+    }
+
+
+def run_wo_qty_poll(*, force: bool = False) -> dict:
+    """COMAIN read + planner jump/latest writes. No staging reload, no cache warm."""
+    from db import domain_sync_unreachable
+    from sync import (
+        _ErpSyncAdvisoryLock,
+        _MFG_WO_STATUS_COLS,
+        fetch_mfg_wo_status_rows,
+    )
+
+    if not force:
+        now = datetime.now()
+        if now.weekday() >= 5 or not (7 <= now.hour < 19):
+            return {
+                "skipped": True,
+                "reason": "outside shop hours (weekdays 07:00-19:00)",
+            }
+
+    if domain_sync_unreachable():
+        return {"skipped": True, "reason": "COMAIN unreachable"}
+
+    erp_lock = _ErpSyncAdvisoryLock()
+    if not erp_lock.acquire(wait_seconds=0):
+        return {"skipped": True, "reason": "ERP sync in progress"}
+
+    started = datetime.now(timezone.utc)
+    try:
+        raw_rows, query_ms = fetch_mfg_wo_status_rows()
+        from .helpers import planner_db
+
+        logger.info("WO qty poll connecting to planner DB (%s COMAIN rows)", len(raw_rows))
+        with planner_db() as con:
+            con.execute("SET LOCAL statement_timeout = '45s'")
+            result = poll_erp_qty_jumps(
+                con,
+                raw_rows,
+                scanned_at=started,
+                columns=_MFG_WO_STATUS_COLS,
+            )
+        result["query_ms"] = query_ms
+        result["skipped"] = False
+        logger.info(
+            "WO qty poll complete - source=%s jumps=%s latest_upserts=%s query=%sms",
+            result.get("source_rows"),
+            result.get("jump_count"),
+            result.get("latest_upserts"),
+            query_ms,
+        )
+        return result
+    finally:
+        erp_lock.release()
+
+
 def backfill_jumps_from_snapshots(con) -> int:
     """Seed jump history from existing daily snapshots when the jump table is empty."""
     ensure_erp_qty_jump_table(con)

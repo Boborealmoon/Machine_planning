@@ -60,6 +60,17 @@ WHERE inventory_code = %s
 ORDER BY bom_code, stage_no
 """
 
+_PARTS_WITH_LEAF_MATERIALS_SQL = """
+SELECT DISTINCT main.source_inventory_code
+FROM public.inventory_bom_listing AS main
+WHERE main.source_inventory_code = ANY(%s)
+  AND NOT EXISTS (
+      SELECT 1
+      FROM public.inventory_bom_listing AS sub
+      WHERE sub.source_inventory_code = main.material_inventory_code
+  )
+"""
+
 
 def _serialize_row(row: tuple) -> dict[str, Any]:
     payload = {
@@ -73,6 +84,60 @@ def _serialize_row(row: tuple) -> dict[str, Any]:
     }
     payload["qty_per_fg"] = _bom_qty_per_fg(payload)
     return payload
+
+
+def _source_codes(values: list[Any] | tuple[Any, ...] | None) -> list[str]:
+    codes: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        code = compact_text(value)
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        codes.append(code)
+    return codes
+
+
+def _codes_from_rows(fetched: list[Any] | None) -> set[str]:
+    out: set[str] = set()
+    for row in fetched or []:
+        if isinstance(row, dict):
+            code = compact_text(row.get("source_inventory_code"))
+        else:
+            code = compact_text(row[0] if row else "")
+        if code:
+            out.add(code)
+    return out
+
+
+def parts_with_leaf_bom_materials(db_query, sources: list[str] | tuple[str, ...] | None) -> set[str]:
+    """Part numbers that have leaf material lines in inventory_bom_listing."""
+    codes = _source_codes(list(sources or []))
+    if not codes:
+        return set()
+    rows = db_query(_PARTS_WITH_LEAF_MATERIALS_SQL, (codes,), fetchall=True)
+    return _codes_from_rows(rows)
+
+
+def parts_with_leaf_bom_materials_planner(con, sources: list[str] | tuple[str, ...] | None) -> set[str]:
+    """Part numbers that have leaf material lines in synced material_per_bom."""
+    from .helpers import rows
+
+    codes = _source_codes(list(sources or []))
+    if not codes:
+        return set()
+    fetched = rows(
+        con.execute(
+            """
+            SELECT DISTINCT source_inventory_code
+            FROM material_per_bom
+            WHERE source_inventory_code = ANY(%s)
+              AND COALESCE(BTRIM(material_inventory_code), '') <> ''
+            """,
+            (codes,),
+        )
+    )
+    return _codes_from_rows(fetched)
 
 
 def fetch_bom_material_rows(db_query, source: str, bom: str | None = None) -> list[dict[str, Any]]:

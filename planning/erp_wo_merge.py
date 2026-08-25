@@ -17,21 +17,34 @@ FINISHING_STAGE_DESCS = frozenset({
 
 MATERIAL_ISSUE_ASSEMBLY_STAGE_DESC = "Material Issue & Assembly"
 
+# ERP sometimes stores the abbreviated "Final Insp" (and a "Final Ispection" typo).
+_FINAL_INSPECTION_RE = re.compile(r"^final\s+(?:insp|ispection)", re.IGNORECASE)
+
 _FINISHING_STAGE_PATTERNS = (
     re.compile(r"^deburring$", re.IGNORECASE),
-    re.compile(r"^final\s+inspection$", re.IGNORECASE),
+    _FINAL_INSPECTION_RE,
     re.compile(r"^packing$", re.IGNORECASE),
     re.compile(r"engraving.*packing|packing.*engraving", re.IGNORECASE),
 )
 
 
+def finishing_final_inspection_sql_match(column: str) -> str:
+    """SQL: Final Inspection plus ERP abbreviations/typos (Final Insp, Final Ispection)."""
+    return (
+        f"{column} ILIKE 'Final Insp%%' "
+        f"OR {column} ILIKE 'Final Ispection%%'"
+    )
+
+
 def finishing_stage_sql_match(column: str) -> str:
     """SQL predicate: deburr / inspect / pack / combined pack+engrave (either word order)."""
+    final_insp = finishing_final_inspection_sql_match(f"TRIM(COALESCE({column}, ''))")
     return f"""(
            TRIM(COALESCE({column}, '')) = ANY(%s)
         OR TRIM(COALESCE({column}, '')) = 'Deburring'
         OR TRIM(COALESCE({column}, '')) = 'Final Inspection'
         OR TRIM(COALESCE({column}, '')) = 'Packing'
+        OR {final_insp}
         OR {column} ILIKE 'Engraving%%Packing%%'
         OR {column} ILIKE 'Packing%%Engraving%%'
     )"""
@@ -60,6 +73,12 @@ def is_material_issue_assembly_stage_desc(stage_desc: str) -> bool:
     if not text:
         return False
     return bool(_ASSEMBLY_STAGE_WORD.search(text))
+
+
+def is_final_inspection_stage_desc(stage_desc: str) -> bool:
+    """True for Final Inspection and ERP aliases such as 'Final Insp'."""
+    text = compact_text(stage_desc)
+    return bool(text) and bool(_FINAL_INSPECTION_RE.search(text))
 
 
 def is_finishing_stage_desc(stage_desc: str) -> bool:
@@ -104,7 +123,7 @@ def finishing_stage_bucket(stage_desc: str) -> str:
     lowered = text.casefold()
     if lowered == "deburring":
         return "deburring"
-    if lowered == "final inspection":
+    if is_final_inspection_stage_desc(text):
         return "final_inspection"
     if "engraving" in lowered and "packing" in lowered:
         return "engraving_packing"

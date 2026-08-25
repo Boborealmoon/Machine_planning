@@ -1,16 +1,16 @@
 {% extends "base.html" %}
-{% block title %}First Article Tracker{% endblock %}
+{% block title %}NPI/FA Management{% endblock %}
 {% block body_class %}fa-view{% endblock %}
 {% block main_class %}app-main--first-article{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260820-2">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260825-2">
 {% endblock %}
 {% block content %}
 <div class="fa-page">
   <header class="fa-header">
     <div class="fa-header-text">
-      <p class="fa-kicker">Archive</p>
-      <h1 class="fa-title">First Article Tracker</h1>
+      <p class="fa-kicker">Ops</p>
+      <h1 class="fa-title">NPI/FA Management</h1>
       <p class="fa-subtitle" id="fa-subtitle" aria-live="polite">Flag a process sheet, then track tooling, fixture, gauges, and PIC.</p>
     </div>
     <div class="fa-header-actions">
@@ -19,17 +19,35 @@
     </div>
   </header>
 
+  <div class="fa-tabs" role="tablist" aria-label="NPI/FA views">
+    <button type="button" class="fa-tab is-active" id="fa-tab-flagged" data-fa-tab="flagged"
+            role="tab" aria-selected="true" aria-controls="fa-panel-flagged">NPI Tracker</button>
+    <button type="button" class="fa-tab" id="fa-tab-new" data-fa-tab="new"
+            role="tab" aria-selected="false" aria-controls="fa-panel-new">
+      New parts <span class="fa-tab-count" id="fa-new-count" hidden>0</span>
+    </button>
+  </div>
+
+  <div id="fa-loading" class="fa-loading">
+    <div class="fa-spinner" aria-hidden="true"></div>
+    Loading first article tracker...
+  </div>
+  <div id="fa-alert" class="fa-alert" hidden></div>
+
+  <div id="fa-panel-flagged" class="fa-panel" role="tabpanel" aria-labelledby="fa-tab-flagged">
   <section class="fa-flag-bar" aria-label="Flag process sheet">
     <div class="fa-typeahead">
       <label class="fa-add-label" for="fa-ps-search">Flag process sheet</label>
       <input id="fa-ps-search" class="fa-search-input" type="search"
-             placeholder="Search PS no, part no, description..."
+             placeholder="Search active or historical PS no, part no..."
              autocomplete="off" aria-autocomplete="list" aria-expanded="false"
              aria-controls="fa-ps-results">
       <div id="fa-ps-results" class="fa-typeahead-results" role="listbox" hidden></div>
     </div>
+    <button type="button" class="fa-btn fa-btn--primary" id="fa-flag-one"
+            title="Flag the process sheet typed in the search box">Flag</button>
     <button type="button" class="fa-btn fa-btn--ghost fa-bulk-btn" id="fa-bulk-flag"
-            title="Select multiple active process sheets">Bulk flag</button>
+            title="Select multiple active or historical process sheets">Bulk flag</button>
     <p class="fa-add-status" id="fa-add-status" aria-live="polite"></p>
   </section>
 
@@ -38,12 +56,6 @@
     <input id="fa-filter" class="fa-search-input" type="search"
            placeholder="Filter flagged jobs..." autocomplete="off">
   </label>
-
-  <div id="fa-loading" class="fa-loading">
-    <div class="fa-spinner" aria-hidden="true"></div>
-    Loading first article tracker...
-  </div>
-  <div id="fa-alert" class="fa-alert" hidden></div>
 
   <div id="fa-table-host" class="fa-table-card" hidden>
     <div class="fa-table-scroll">
@@ -55,6 +67,7 @@
             <th>Part Description</th>
             <th class="fa-col-qty">Total Qty</th>
             <th class="fa-col-date">PO Due Date</th>
+            <th class="fa-col-stage" title="Current work-order stage from ERP">ERP stage</th>
             <th class="fa-col-machine">Machine (CNC)</th>
             <th class="fa-col-edd" title="Read-only from S/O management">Stipulated Coway EDD</th>
             <th class="fa-col-pic">PIC</th>
@@ -69,8 +82,45 @@
       </table>
     </div>
   </div>
-
   <p id="fa-empty" class="fa-empty" hidden>No process sheets flagged yet. Search a PS number or use Bulk flag to add jobs.</p>
+  </div>
+
+  <div id="fa-panel-new" class="fa-panel" role="tabpanel" aria-labelledby="fa-tab-new" hidden>
+    <div class="fa-new-toolbar">
+      <label class="fa-filter-wrap">
+        <span class="fa-add-label">Filter new parts</span>
+        <input id="fa-new-filter" class="fa-search-input" type="search"
+               placeholder="Filter NEW process sheets..." autocomplete="off">
+      </label>
+      <div>
+        <span class="fa-add-label">Process sheet type</span>
+        <div class="fa-new-types" id="fa-new-types" role="group" aria-label="Filter by process sheet type"></div>
+      </div>
+    </div>
+    <div id="fa-new-table-host" class="fa-table-card" hidden>
+      <div class="fa-table-scroll">
+        <table class="fa-table fa-table--new" id="fa-new-table">
+          <thead>
+            <tr>
+              <th class="fa-col-ps">Process sheet</th>
+              <th>Part No.</th>
+              <th>Description</th>
+              <th class="fa-col-date">Posted</th>
+              <th class="fa-col-date">PO Due Date</th>
+              <th class="fa-col-qty">Qty</th>
+              <th class="fa-col-bom" title="Opens BOM materials. Green = part has ERP material lines, amber = none.">BOM</th>
+              <th class="fa-col-material">Material</th>
+              <th class="fa-col-pic">Programme PIC</th>
+              <th class="fa-col-remarks">Remarks</th>
+              <th class="fa-col-finish">Programme estimated finish</th>
+            </tr>
+          </thead>
+          <tbody id="fa-new-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <p id="fa-new-empty" class="fa-empty" hidden>No NEW parts in active S/O management.</p>
+  </div>
 </div>
 
 <div id="fa-bulk-modal" class="fa-modal-backdrop" hidden>
@@ -79,19 +129,23 @@
       <h2 class="fa-modal-title" id="fa-bulk-modal-title">Bulk flag process sheets</h2>
       <button type="button" class="fa-btn fa-btn--ghost" id="fa-bulk-modal-close">Close</button>
     </div>
-    <p class="fa-modal-hint">Select active jobs, then Apply. Already flagged rows stay on the list but cannot be selected again.</p>
+    <p class="fa-modal-hint">Select active or historical jobs, then Apply. Already flagged rows stay on the list but cannot be selected again. Type a PS number on the tracker to flag one that is not listed here.</p>
     <div class="fa-bulk-toolbar">
       <label class="fa-bulk-search-wrap">
         <span class="fa-add-label">Search</span>
         <input id="fa-bulk-search" class="fa-search-input" type="search"
                placeholder="Search PS no, part no, description..." autocomplete="off">
       </label>
+      <div>
+        <span class="fa-add-label">Source</span>
+        <div class="fa-bulk-types" id="fa-bulk-scopes" role="group" aria-label="Filter by active or historical"></div>
+      </div>
       <div class="fa-bulk-types" id="fa-bulk-types" role="group" aria-label="Filter by PS type"></div>
     </div>
     <p id="fa-bulk-status" class="fa-pic-status" hidden></p>
     <div id="fa-bulk-loading" class="fa-loading" hidden>
       <div class="fa-spinner" aria-hidden="true"></div>
-      Loading active process sheets...
+      Loading process sheets...
     </div>
     <div class="fa-bulk-table-wrap" id="fa-bulk-table-wrap" hidden>
       <table class="fa-bulk-table">
@@ -110,7 +164,7 @@
         <tbody id="fa-bulk-body"></tbody>
       </table>
     </div>
-    <p id="fa-bulk-empty" class="fa-empty" hidden>No matching active process sheets.</p>
+    <p id="fa-bulk-empty" class="fa-empty" hidden>No matching process sheets.</p>
     <div class="fa-bulk-foot">
       <p class="fa-bulk-count" id="fa-bulk-count">0 selected</p>
       <div class="fa-bulk-foot-actions">
@@ -137,7 +191,23 @@
     <p id="fa-pic-empty" class="fa-empty" hidden>No PIC names yet.</p>
   </div>
 </div>
+
+<div id="so-material-modal" class="so-material-modal" hidden>
+  <div class="so-material-modal-backdrop" data-action="close-material-modal" aria-hidden="true"></div>
+  <div class="so-material-modal-panel" role="dialog" aria-modal="true" aria-labelledby="so-material-modal-title">
+    <div class="so-material-modal-head">
+      <div>
+        <p class="so-material-modal-kicker">BOM materials</p>
+        <div class="so-material-modal-identifiers" id="so-material-modal-title"></div>
+      </div>
+      <button type="button" class="fa-btn fa-btn--ghost" id="so-material-modal-close" aria-label="Close">Close</button>
+    </div>
+    <div class="so-material-modal-body" id="so-material-modal-body"></div>
+    <p class="so-material-modal-foot">BOM: <code>inventory_bom_listing</code> · Inventory: <code>ic_inventory_enquiry_summary_view</code></p>
+  </div>
+</div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260820-2"></script>
+<script src="{{ url_for('static', filename='js/material_modal.js') }}?v=fa-20260825-2"></script>
+<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260825-2"></script>
 {% endblock %}

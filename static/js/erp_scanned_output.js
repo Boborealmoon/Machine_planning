@@ -107,7 +107,7 @@ function esoJumpCells(row) {
   return `
     <td>
       ${esoEscape(esoFormatWhen(row))}
-      <span class="eso-sub">Detected on ERP sync</span>
+      <span class="eso-sub">Detected within 5 min of scan</span>
     </td>
     <td>
       ${esoEscape(esoBlank(row.source_mps_no))}

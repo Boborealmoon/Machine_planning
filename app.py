@@ -52,6 +52,7 @@ from planning.kobelco_mps_archive_route import kobelco_mps_archive_bp
 from planning.machine_lane_calc_route import machine_lane_calc_bp
 from planning.pr_status_enquiry_route import pr_status_enquiry_bp
 from planning.material_tracking_pr_po_route import material_tracking_pr_po_bp
+from planning.material_tracking_inspection_route import material_tracking_inspection_bp
 from planning.material_tracking_requests_route import material_tracking_requests_bp
 from planning.program_tool_tracker_route import program_tool_tracker_bp
 from planning.repeat_orders_route import repeat_orders_bp
@@ -85,6 +86,7 @@ from planning.so_outstanding_balance_route import so_outstanding_balance_bp
 from planning.sales_coordination_route import sales_coordination_bp
 from planning.so_archive_route import so_archive_bp
 from planning.first_article_route import first_article_bp
+from planning.rfq_checker_route import rfq_checker_bp
 from planning.queue_exit_history_route import queue_exit_history_bp
 from planning.erp_scanned_output_route import erp_scanned_output_bp
 from planning.mpp_planner_route import mpp_planner_bp
@@ -126,6 +128,7 @@ app.register_blueprint(so_outstanding_balance_bp)
 app.register_blueprint(sales_coordination_bp)
 app.register_blueprint(so_archive_bp)
 app.register_blueprint(first_article_bp)
+app.register_blueprint(rfq_checker_bp)
 app.register_blueprint(job_ratio_bp)
 app.register_blueprint(material_inspection_bp)
 app.register_blueprint(qc_quality_queue_bp)
@@ -133,6 +136,7 @@ app.register_blueprint(kobelco_mps_archive_bp)
 app.register_blueprint(machine_lane_calc_bp)
 app.register_blueprint(pr_status_enquiry_bp)
 app.register_blueprint(material_tracking_pr_po_bp)
+app.register_blueprint(material_tracking_inspection_bp)
 app.register_blueprint(material_tracking_requests_bp)
 app.register_blueprint(program_tool_tracker_bp)
 app.register_blueprint(repeat_orders_bp)

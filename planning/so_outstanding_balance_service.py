@@ -6,6 +6,8 @@ from typing import Any
 
 
 _WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+OPEN_QTY_TOLERANCE = 0.0001
+NOPP_PS_TYPE = "NOPP"
 
 
 def _compact(value: Any) -> str:
@@ -116,6 +118,8 @@ def stage_label(pp: dict[str, Any], partial: dict[str, Any] | None = None) -> st
         if best["status"]:
             parts.append(_execution_label(best["status"]))
         return " - ".join(parts)
+    if best["mode"] == "no_pp":
+        return "No PP assigned"
     if best["mode"] == "unassigned":
         return "No WO assigned"
     if best["mode"] == "completed":
@@ -153,6 +157,132 @@ def _partial_no(partial: dict[str, Any] | None) -> int | None:
     return value or None
 
 
+def _so_line_pair(sales_order_no: Any, line_item_no: Any) -> tuple[str, str]:
+    from planning.sales_report_alloc import so_line_key
+
+    return so_line_key(sales_order_no, line_item_no)
+
+
+def _iso_date_text(value: Any) -> str | None:
+    text = _compact(value)
+    return text[:10] or None
+
+
+def _overlay_so_line_on_pp(pp: dict[str, Any], so_line: dict[str, Any]) -> dict[str, Any]:
+    """Copy ERP open-line qty/price onto a PP without mutating the sales-order cache."""
+    out = dict(pp)
+    so_qty = _to_float(so_line.get("so_det_qty"))
+    shipped = _to_float(so_line.get("qty_shipped"))
+    if so_qty is not None:
+        out["so_det_qty"] = so_qty
+    if shipped is not None:
+        out["qty_shipped"] = shipped
+    fc = _to_float(so_line.get("unit_selling_price_fc"))
+    if fc is not None:
+        out["unit_selling_price"] = fc
+    if not _compact(out.get("due_date")):
+        due = _iso_date_text(so_line.get("due_date"))
+        if due:
+            out["due_date"] = due
+    customer = _compact(so_line.get("customer_name"))
+    if customer and not _compact(out.get("customer_name")):
+        out["customer_name"] = customer
+    part_desc = _compact(so_line.get("description"))
+    if part_desc and not _compact(out.get("description") or out.get("part_desc")):
+        out["description"] = part_desc
+    out["shipped_completed"] = False
+    return out
+
+
+def _synthetic_nopp_order(so_line: dict[str, Any]) -> dict[str, Any]:
+    remaining = _to_float(so_line.get("remaining_qty")) or 0.0
+    so_qty = _to_float(so_line.get("so_det_qty"))
+    if so_qty is None:
+        so_qty = remaining
+    shipped = _to_float(so_line.get("qty_shipped")) or 0.0
+    return {
+        "sales_order_no": _compact(so_line.get("sales_order_no")),
+        "customer_name": _compact(so_line.get("customer_name")),
+        "pp_vouchers": [
+            {
+                "pp_voucher_no": "",
+                "process_sheet_no": "",
+                "source_line_item_no": _compact(so_line.get("line_item_no")),
+                "inventory_code": _compact(so_line.get("inventory_code") or so_line.get("part_no")),
+                "description": _compact(so_line.get("description") or so_line.get("part_desc")),
+                "so_det_qty": so_qty,
+                "pp_qty": remaining,
+                "qty_shipped": shipped,
+                "unit_selling_price": _to_float(so_line.get("unit_selling_price_fc")),
+                "shipped_completed": False,
+                "due_date": _iso_date_text(so_line.get("due_date")),
+                "erp_stage_mode": "no_pp",
+                "partials": [],
+            }
+        ],
+    }
+
+
+def index_open_so_lines(so_lines: list[dict[str, Any]] | None) -> dict[tuple[str, str], dict[str, Any]]:
+    indexed: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in so_lines or []:
+        remaining = _to_float(row.get("remaining_qty"))
+        if remaining is None:
+            so_qty = _to_float(row.get("so_det_qty")) or 0.0
+            shipped = _to_float(row.get("qty_shipped")) or 0.0
+            remaining = max(0.0, so_qty - shipped)
+        if remaining <= OPEN_QTY_TOLERANCE:
+            continue
+        key = _so_line_pair(
+            row.get("sales_order_no"),
+            row.get("line_item_no") or row.get("source_line_item_no"),
+        )
+        if not key[0] or not key[1]:
+            continue
+        indexed[key] = row
+    return indexed
+
+
+def restrict_orders_to_open_so_lines(
+    orders: list[dict[str, Any]],
+    open_so_lines: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Keep PPs whose S/O line is still open in ERP; add open lines that have no PP yet.
+
+    `open_so_lines is None` leaves the PP list unchanged (tests / fetch fallback).
+    """
+    if open_so_lines is None:
+        return orders
+
+    open_map = index_open_so_lines(open_so_lines)
+    matched: set[tuple[str, str]] = set()
+    restricted: list[dict[str, Any]] = []
+
+    for order in orders:
+        so_no = _compact(order.get("sales_order_no"))
+        kept: list[dict[str, Any]] = []
+        for pp in order.get("pp_vouchers") or []:
+            if pp.get("shipped_completed"):
+                continue
+            key = _so_line_pair(so_no, pp.get("source_line_item_no"))
+            so_line = open_map.get(key)
+            if so_line is None:
+                continue
+            matched.add(key)
+            kept.append(_overlay_so_line_on_pp(pp, so_line))
+        if not kept:
+            continue
+        out = dict(order)
+        out["pp_vouchers"] = kept
+        restricted.append(out)
+
+    for key, so_line in open_map.items():
+        if key in matched:
+            continue
+        restricted.append(_synthetic_nopp_order(so_line))
+    return restricted
+
+
 def expand_outstanding_lines(
     orders: list[dict[str, Any]],
     pricing_by_key: dict[str, dict[str, Any]] | None = None,
@@ -180,6 +310,8 @@ def expand_outstanding_lines(
                 so_qty = _to_float(pp.get("pp_qty")) or 0.0
             shipped = _to_float(pp.get("qty_shipped")) or 0.0
             remaining_pool = max(0.0, float(so_qty) - float(shipped))
+            if remaining_pool <= OPEN_QTY_TOLERANCE:
+                continue
 
             unit = _to_float(pp.get("unit_selling_price"))
             line_no = _compact(pp.get("source_line_item_no"))
@@ -194,6 +326,10 @@ def expand_outstanding_lines(
             due = _compact(pp.get("due_date"))[:10] or None
             part_no = _compact(pp.get("inventory_code") or pp.get("part_no"))
             part_desc = _compact(pp.get("description") or pp.get("part_desc"))
+            stage_mode = _compact(pp.get("erp_stage_mode")) or "unassigned"
+            ptype = ps_type(process_sheet_no)
+            if not ptype and stage_mode == "no_pp":
+                ptype = NOPP_PS_TYPE
 
             partials = list(pp.get("partials") or [])
             slots: list[dict[str, Any] | None] = partials if partials else [None]
@@ -202,6 +338,8 @@ def expand_outstanding_lines(
                 pp_qty = _partial_qty(pp, partial)
                 open_qty = min(float(pp_qty), remaining_pool)
                 remaining_pool = max(0.0, remaining_pool - open_qty)
+                if open_qty <= OPEN_QTY_TOLERANCE:
+                    continue
 
                 commit = commitment_date(pp, partial)
                 coway = (
@@ -209,17 +347,18 @@ def expand_outstanding_lines(
                     or _compact(pp.get("coway_proposed_edd"))
                 )[:10] or None
                 p_no = _partial_no(partial)
-                row_id = f"{_compact(pp.get('pp_voucher_no'))}|{p_no or 1}"
+                pp_no = _compact(pp.get("pp_voucher_no"))
+                row_id = f"{so_no}|{pp_no or process_sheet_no or NOPP_PS_TYPE}|{p_no or 1}|{line_no}"
 
                 lines.append(
                     {
                         "row_id": row_id,
                         "sales_order_no": so_no,
                         "customer_name": customer,
-                        "pp_voucher_no": _compact(pp.get("pp_voucher_no")),
+                        "pp_voucher_no": pp_no,
                         "process_sheet_no": process_sheet_no,
                         "pp_partial_no": p_no,
-                        "ps_type": ps_type(process_sheet_no),
+                        "ps_type": ptype,
                         "source_line_item_no": line_no or None,
                         "part_no": part_no,
                         "part_desc": part_desc,
@@ -259,7 +398,7 @@ def expand_outstanding_lines(
 def _so_line_key(row: dict[str, Any]) -> tuple[str, str]:
     so_no = _compact(row.get("sales_order_no"))
     line_no = _compact(row.get("source_line_item_no")) or _compact(row.get("pp_voucher_no"))
-    return (so_no, line_no)
+    return _so_line_pair(so_no, line_no)
 
 
 def sum_unique_so_line_values(lines: list[dict[str, Any]]) -> float:
@@ -326,8 +465,10 @@ def summarize_by_customer(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def build_outstanding_balance(
     orders: list[dict[str, Any]],
     pricing_by_key: dict[str, dict[str, Any]] | None = None,
+    open_so_lines: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    lines = expand_outstanding_lines(orders, pricing_by_key)
+    scoped = restrict_orders_to_open_so_lines(orders, open_so_lines)
+    lines = expand_outstanding_lines(scoped, pricing_by_key)
     line_count = len(lines)
     total_pp_qty = round(sum(float(row.get("pp_qty") or 0) for row in lines), 4)
     total_remaining_qty = round(sum(float(row.get("remaining_qty") or 0) for row in lines), 4)
@@ -347,7 +488,7 @@ def build_outstanding_balance(
             "SO value = unit x SO qty x exch; "
             "Outstanding $ = unit x open qty x exch"
         ),
-        "default_ps_types": ["APS", "NPS", "PPS"],
+        "default_ps_types": ["APS", "NPS", "PPS", "NOPP"],
         "summary": {
             "line_count": line_count,
             "pp_qty": total_pp_qty,

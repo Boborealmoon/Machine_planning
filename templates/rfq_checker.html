@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}RFQ Checker{% endblock %}
+{% block body_class %}rfq-view{% endblock %}
+{% block main_class %}app-main--rfq-checker{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/rfq_checker.css') }}?v=rfq-20260824-1">
+{% endblock %}
+{% block content %}
+<div class="rfq-page" data-rfq-page="library">
+  <header class="rfq-header">
+    <div class="rfq-header-text">
+      <p class="rfq-kicker">Archive</p>
+      <h1 class="rfq-title">RFQ Checker</h1>
+      <p class="rfq-subtitle">Search parts we have already fabricated, then compare them against a new RFQ workbook.</p>
+    </div>
+    <div class="rfq-header-actions">
+      <a class="rfq-btn rfq-btn--primary" href="/archive/rfq-checker/upload">Upload Excel</a>
+    </div>
+  </header>
+
+  <div class="rfq-tabs" role="tablist" aria-label="RFQ checker views">
+    <button type="button" class="rfq-tab is-active" data-rfq-tab="parts" aria-selected="true">Existing parts</button>
+    <button type="button" class="rfq-tab" data-rfq-tab="archive" aria-selected="false">Archive</button>
+  </div>
+
+  <div id="rfq-alert" class="rfq-alert" hidden></div>
+  <div id="rfq-loading" class="rfq-loading">
+    <span class="rfq-spinner" aria-hidden="true"></span>
+    Loading parts...
+  </div>
+
+  <section id="rfq-panel-parts" class="rfq-panel">
+    <label class="rfq-filter-wrap">
+      <span class="rfq-label">Search part no.</span>
+      <input id="rfq-parts-search" class="rfq-input" type="search" placeholder="BB18-KS0526-28" autocomplete="off">
+    </label>
+    <div class="rfq-table-card" id="rfq-parts-card" hidden>
+      <div class="rfq-table-scroll">
+        <table class="rfq-table" id="rfq-parts-table">
+          <thead>
+            <tr>
+              <th>Part No.</th>
+              <th>Description</th>
+              <th>Opns</th>
+              <th>Ops</th>
+              <th>Total C/T (mins)</th>
+              <th>Process sheets</th>
+              <th>Last order</th>
+            </tr>
+          </thead>
+          <tbody id="rfq-parts-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <p id="rfq-parts-empty" class="rfq-empty" hidden>No fabricated parts matched that search.</p>
+  </section>
+
+  <section id="rfq-panel-archive" class="rfq-panel" hidden>
+    <label class="rfq-filter-wrap">
+      <span class="rfq-label">Filter archive</span>
+      <input id="rfq-archive-search" class="rfq-input" type="search" placeholder="Part no, RFQ, customer, remark..." autocomplete="off">
+    </label>
+    <div class="rfq-table-card" id="rfq-archive-card" hidden>
+      <div class="rfq-table-scroll">
+        <table class="rfq-table rfq-table--wide" id="rfq-archive-table">
+          <thead id="rfq-archive-head"></thead>
+          <tbody id="rfq-archive-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <p id="rfq-archive-empty" class="rfq-empty" hidden>No archived RFQ lines yet. Upload a workbook to build the Archive tab.</p>
+  </section>
+</div>
+
+<aside id="rfq-drawer" class="rfq-drawer" hidden>
+  <div class="rfq-drawer-card">
+    <div class="rfq-drawer-head">
+      <h2 class="rfq-drawer-title" id="rfq-drawer-title">Part</h2>
+      <button type="button" class="rfq-btn rfq-btn--ghost" id="rfq-drawer-close">Close</button>
+    </div>
+    <div id="rfq-drawer-body" class="rfq-drawer-body"></div>
+  </div>
+</aside>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/rfq_checker.js') }}?v=rfq-20260824-1"></script>
+{% endblock %}

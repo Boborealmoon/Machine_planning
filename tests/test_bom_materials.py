@@ -80,3 +80,34 @@ def test_resolve_normalized_bom_alias_for_materials():
     assert result["resolved_bom_code"] == "SMP-MAT01-REV00"
     assert len(result["rows"]) == 1
     assert result["rows"][0]["material_inventory_code"] == "BAR-316"
+
+
+def test_parts_with_leaf_bom_materials_uses_listing_filter():
+    from planning.bom_materials import parts_with_leaf_bom_materials
+
+    seen = {}
+
+    def db_query(sql, params=(), fetchall=False):
+        seen["sql"] = " ".join(str(sql).lower().split())
+        seen["params"] = params
+        seen["fetchall"] = fetchall
+        return [("BB27-KS0040-54 REV 00",), ("",)]
+
+    found = parts_with_leaf_bom_materials(
+        db_query,
+        ["BB27-KS0040-54 REV 00", "AA-1", "BB27-KS0040-54 REV 00"],
+    )
+    assert found == {"BB27-KS0040-54 REV 00"}
+    assert seen["fetchall"] is True
+    assert seen["params"] == (["BB27-KS0040-54 REV 00", "AA-1"],)
+    assert "inventory_bom_listing" in seen["sql"]
+    assert "not exists" in seen["sql"]
+
+
+def test_parts_with_leaf_bom_materials_empty_sources():
+    from planning.bom_materials import parts_with_leaf_bom_materials
+
+    def db_query(*args, **kwargs):
+        raise AssertionError("should not query ERP for empty sources")
+
+    assert parts_with_leaf_bom_materials(db_query, ["", None]) == set()

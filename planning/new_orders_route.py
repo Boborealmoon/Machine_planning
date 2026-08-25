@@ -15,6 +15,7 @@ from .staged_erp import (
     STAGED_FIRST_POSTED_FOR_SOS_SQL,
     STAGED_NEW_ORDERS_LINES_SQL,
     STAGED_NEW_ORDERS_SHIPMENT_SQL,
+    STAGED_RECENT_SO_ACTIVITY_SQL,
     STAGED_RECENT_SO_HDR_SQL,
     fetch_rows,
     live_query,
@@ -30,6 +31,7 @@ _CACHE_TTL_SEC = 300
 _NOTIF_CACHE_TTL_SEC = 60
 _ENRICH_LOOKUP_TTL_SEC = 60
 _ROWS_SCHEMA_VERSION = 3
+_NOTIF_SCHEMA_VERSION = 3
 _cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _notif_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _queued_lookup_cache: tuple[float, set[str], dict[str, list[str]]] | None = None
@@ -41,7 +43,7 @@ _GENERIC_SO_LINE_DESC_RE = re.compile(
 )
 
 _RECENT_SO_HDR_SQL = """
-SELECT sales_order_no, posted_datetime, customer_code, reference_no
+SELECT sales_order_no, posted_datetime, customer_code, reference_no, created_datetime
 FROM public.so_order_ost_hdr
 WHERE sales_order_no LIKE 'SO/%%'
   AND posted_datetime::date >= %s
@@ -201,8 +203,9 @@ def _apply_part_descriptions(rows: list[dict[str, Any]]) -> None:
         row["main_desc"] = part_desc
 
 
-def _cache_key(from_d: date, to_d: date) -> str:
-    return f"v{_ROWS_SCHEMA_VERSION}:{from_d.isoformat()}:{to_d.isoformat()}"
+def _cache_key(from_d: date, to_d: date, *, include_reposts: bool = False) -> str:
+    suffix = ":reposts" if include_reposts else ""
+    return f"v{_ROWS_SCHEMA_VERSION}:{from_d.isoformat()}:{to_d.isoformat()}{suffix}"
 
 
 def _ps_base_id(ps_id: str) -> str:
@@ -487,7 +490,80 @@ def _serialize_notif_posted_at(value: Any) -> str | None:
     return text or None
 
 
-def _build_notif_orders(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _coerce_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt.replace(microsecond=0)
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    text = compact_text(value).replace("T", " ")
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1]
+    plus = text.rfind("+")
+    if plus > 10:
+        text = text[:plus]
+    text = text.strip()
+    for fmt, width in (("%Y-%m-%d %H:%M:%S", 19), ("%Y-%m-%d %H:%M", 16), ("%Y-%m-%d", 10)):
+        try:
+            return datetime.strptime(text[:width], fmt)
+        except ValueError:
+            continue
+    try:
+        parsed = datetime.fromisoformat(compact_text(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=None)
+    return parsed.replace(microsecond=0)
+
+
+def _so_event_kind(
+    first_posted: Any,
+    latest_posted: Any,
+    *,
+    week_from: date | None = None,
+    created_at: Any = None,
+) -> str:
+    """'updated' when the SO already existed or was posted again; otherwise 'new'."""
+    first_dt = _coerce_datetime(first_posted)
+    latest_dt = _coerce_datetime(latest_posted)
+    created_dt = _coerce_datetime(created_at)
+    if week_from is not None:
+        if first_dt is not None and first_dt.date() < week_from:
+            return "updated"
+        if created_dt is not None and created_dt.date() < week_from:
+            return "updated"
+    if first_dt is None or latest_dt is None:
+        return "new"
+    return "updated" if latest_dt > first_dt else "new"
+
+
+def _so_in_posted_window(
+    first_date: date | None,
+    latest_date: date | None,
+    from_d: date,
+    to_d: date,
+    *,
+    include_reposts: bool,
+) -> bool:
+    if first_date is not None and from_d <= first_date <= to_d:
+        return True
+    if not include_reposts:
+        return False
+    return latest_date is not None and from_d <= latest_date <= to_d
+
+
+def _build_notif_orders(
+    rows: list[dict[str, Any]],
+    *,
+    week_from: date | None = None,
+) -> list[dict[str, Any]]:
     """Compact SO cards for the navbar bell — no planner/repeat enrichment."""
     by_so: dict[str, dict[str, Any]] = {}
     seen_parts: dict[str, set[str]] = {}
@@ -495,18 +571,46 @@ def _build_notif_orders(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         so = compact_text(row.get("source_voucher_no"))
         if not so:
             continue
+        first_at = _serialize_notif_posted_at(row.get("first_posted_datetime"))
+        latest_at = _serialize_notif_posted_at(row.get("latest_posted_datetime")) or first_at
+        created_at = _serialize_notif_posted_at(row.get("created_datetime"))
+        kind = _so_event_kind(
+            row.get("first_posted_datetime"),
+            row.get("latest_posted_datetime"),
+            week_from=week_from,
+            created_at=row.get("created_datetime"),
+        )
+        event_at = latest_at if kind == "updated" else first_at
         group = by_so.get(so)
         if group is None:
             group = {
                 "so": so,
                 "customer": compact_text(row.get("customer_code")),
-                "postedAt": _serialize_notif_posted_at(row.get("first_posted_datetime")),
+                "kind": kind,
+                "postedAt": event_at,
+                "firstPostedAt": first_at,
+                "latestPostedAt": latest_at,
+                "createdAt": created_at,
                 "parts": [],
             }
             by_so[so] = group
             seen_parts[so] = set()
-        elif not group.get("postedAt") and row.get("first_posted_datetime"):
-            group["postedAt"] = _serialize_notif_posted_at(row.get("first_posted_datetime"))
+        else:
+            if not group.get("customer"):
+                group["customer"] = compact_text(row.get("customer_code"))
+            if kind == "updated":
+                group["kind"] = "updated"
+            if first_at and (
+                not group.get("firstPostedAt") or first_at < str(group.get("firstPostedAt") or "")
+            ):
+                group["firstPostedAt"] = first_at
+            if latest_at and latest_at > str(group.get("latestPostedAt") or ""):
+                group["latestPostedAt"] = latest_at
+            group["postedAt"] = (
+                group.get("latestPostedAt")
+                if group.get("kind") == "updated"
+                else group.get("firstPostedAt")
+            )
 
         ps = compact_text(row.get("process_sheet_no"))
         part = compact_text(row.get("inventory_code"))
@@ -526,37 +630,39 @@ def _build_notif_orders(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _notif_orders_for_week(*, refresh: bool = False) -> tuple[list[dict[str, Any]], date, date, float]:
     from_d, to_d = working_week_range()
-    key = f"notif:{from_d.isoformat()}:{to_d.isoformat()}"
+    key = f"notif:v{_NOTIF_SCHEMA_VERSION}:{from_d.isoformat()}:{to_d.isoformat()}"
     now = time.time()
     if not refresh:
         cached = _notif_cache.get(key)
         if cached and now - cached[0] < _NOTIF_CACHE_TTL_SEC:
             return cached[1], from_d, to_d, cached[0]
 
-    orders = _build_notif_orders(_fetch_new_orders(from_d, to_d, refresh=refresh))
+    orders = _build_notif_orders(
+        _fetch_new_orders(from_d, to_d, refresh=refresh, include_reposts=True),
+        week_from=from_d,
+    )
     _notif_cache[key] = (now, orders)
     return orders, from_d, to_d, now
 
 
 def _coerce_date(value: Any) -> date | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = compact_text(str(value))
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
-    except ValueError:
-        return None
+    dt = _coerce_datetime(value)
+    return dt.date() if dt is not None else None
 
 
-def _resolve_posted_in_range(from_d: date, to_d: date) -> dict[str, dict[str, Any]]:
-    """Return SO numbers whose first post date falls in [from_d, to_d]."""
-    headers = _erp_query(STAGED_RECENT_SO_HDR_SQL, (from_d,), live_sql=_RECENT_SO_HDR_SQL)
+def _resolve_posted_in_range(
+    from_d: date,
+    to_d: date,
+    *,
+    include_reposts: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Return SO numbers whose first post date falls in [from_d, to_d].
+
+    With include_reposts, also keep SOs first posted earlier whose latest
+    ERP post falls in the window (an update of an existing sales order).
+    """
+    staged_sql = STAGED_RECENT_SO_ACTIVITY_SQL if include_reposts else STAGED_RECENT_SO_HDR_SQL
+    headers = _erp_query(staged_sql, (from_d,), live_sql=_RECENT_SO_HDR_SQL)
     if not headers:
         return {}
 
@@ -584,13 +690,20 @@ def _resolve_posted_in_range(from_d: date, to_d: date) -> dict[str, dict[str, An
         so_no = compact_text(row.get("sales_order_no"))
         if not so_no:
             continue
-        first_posted = first_posted_by_so.get(so_no) or row.get("posted_datetime")
-        first_posted_date = _coerce_date(first_posted)
-        if first_posted_date is None or first_posted_date < from_d or first_posted_date > to_d:
+        latest_posted = row.get("posted_datetime")
+        first_posted = first_posted_by_so.get(so_no) or latest_posted
+        if not _so_in_posted_window(
+            _coerce_date(first_posted),
+            _coerce_date(latest_posted),
+            from_d,
+            to_d,
+            include_reposts=include_reposts,
+        ):
             continue
         posted[so_no] = {
             "first_posted_datetime": first_posted,
-            "latest_posted_datetime": row.get("posted_datetime"),
+            "latest_posted_datetime": latest_posted,
+            "created_datetime": row.get("created_datetime"),
             "customer_code": row.get("customer_code"),
             "reference_no": row.get("reference_no"),
         }
@@ -679,15 +792,21 @@ def _attach_posted_headers(
     return enriched
 
 
-def _fetch_new_orders(from_d: date, to_d: date, *, refresh: bool = False) -> list[dict[str, Any]]:
-    key = _cache_key(from_d, to_d)
+def _fetch_new_orders(
+    from_d: date,
+    to_d: date,
+    *,
+    refresh: bool = False,
+    include_reposts: bool = False,
+) -> list[dict[str, Any]]:
+    key = _cache_key(from_d, to_d, include_reposts=include_reposts)
     now = time.time()
     if not refresh:
         cached = _cache.get(key)
         if cached and now - cached[0] < _CACHE_TTL_SEC:
             return cached[1]
 
-    posted_by_so = _resolve_posted_in_range(from_d, to_d)
+    posted_by_so = _resolve_posted_in_range(from_d, to_d, include_reposts=include_reposts)
     if not posted_by_so:
         rows: list[dict[str, Any]] = []
     else:
@@ -725,7 +844,10 @@ def new_orders_page():
 
 @new_orders_bp.get("/api/new-orders/notifications")
 def api_new_orders_notifications():
-    """Lightweight this-week SO feed for the navbar bell (skips repeat/queue enrich)."""
+    """Lightweight this-week SO feed for the navbar bell (skips repeat/queue enrich).
+
+    Each card is tagged kind=new or kind=updated from first vs latest ERP post.
+    """
     refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
     try:
         orders, from_d, to_d, cached_at = _notif_orders_for_week(refresh=refresh)

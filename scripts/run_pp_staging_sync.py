@@ -91,7 +91,7 @@ def main():
             progress.emit("  schema: staging views/tables verified")
 
         erp_lock = _ErpSyncAdvisoryLock()
-        if not erp_lock.acquire():
+        if not erp_lock.acquire(wait_seconds=30):
             progress.emit("  skipped: ERP sync already running (UI or scheduled task)")
             progress.run_end(False)
             sys.exit(0)

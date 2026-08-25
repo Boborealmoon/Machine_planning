@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='ps-rejected-qty-tab-20260616') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='so-notif-updated-20260825') }}" />
   {% block extra_css %}{% endblock %}
   <script>
     (function () {
@@ -60,10 +60,22 @@
         MPP PLANNER
       </a>
 
-      <a href="/process-sheets"
-         class="nav-link {% if nav_path in ('/process-sheets', '/temp-process-sheets') or active in ('process_sheets', 'temp_process_sheets') %}nav-link--active{% endif %}">
-        PROCESS SHEETS
-      </a>
+      {# Ops — first article / shop-floor tracking #}
+      <div class="nav-dropdown {% if nav_path in ('/ops/first-article', '/archive/first-article', '/process-sheets', '/temp-process-sheets') or active in ('first_article', 'process_sheets', 'temp_process_sheets') %}nav-dropdown--active{% endif %}">
+        <button type="button" class="nav-dropdown-trigger" data-dropdown="ops" aria-expanded="false" aria-controls="dd-ops">
+          OPS <span class="nav-caret">▾</span>
+        </button>
+        <div class="nav-dropdown-menu" id="dd-ops">
+          <a href="/process-sheets"
+             class="nav-dropdown-item {% if nav_path in ('/process-sheets', '/temp-process-sheets') or active in ('process_sheets', 'temp_process_sheets') %}nav-dropdown-item--active{% endif %}">
+            Process sheets
+          </a>
+          <a href="/ops/first-article"
+             class="nav-dropdown-item {% if nav_path in ('/ops/first-article', '/archive/first-article') or active == 'first_article' %}nav-dropdown-item--active{% endif %}">
+            NPI/FA Management
+          </a>
+        </div>
+      </div>
 
       {# Sales / production workflow #}
       <div class="nav-dropdown {% if nav_path in ('/new-orders', '/sales-orders', '/delivery', '/queue-delays', '/delivery-schedule', '/planning-data/materials') or active in ('new_orders', 'sales_orders', 'delivery', 'queue_delays', 'delivery_schedule', 'materials') %}nav-dropdown--active{% endif %}">
@@ -215,18 +227,18 @@
       </div>
 
       {# Archive — historical / reference views #}
-      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/erp-scanned-output', '/auk-oee', '/preferred-machines', '/floor-plan', '/monthly-delivery-plan', '/archive/so-lines', '/archive/first-article') or active in ('daily_output', 'erp_scanned_output', 'auk_oee', 'preferred_machines', 'floor_plan', 'monthly_delivery_plan', 'so_archive', 'first_article') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/erp-scanned-output', '/auk-oee', '/preferred-machines', '/floor-plan', '/monthly-delivery-plan', '/archive/so-lines', '/archive/rfq-checker', '/archive/rfq-checker/upload') or active in ('daily_output', 'erp_scanned_output', 'auk_oee', 'preferred_machines', 'floor_plan', 'monthly_delivery_plan', 'so_archive', 'rfq_checker') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="archive" aria-expanded="false" aria-controls="dd-archive">
           ARCHIVE <span class="nav-caret">▾</span>
         </button>
         <div class="nav-dropdown-menu" id="dd-archive">
+          <a href="/archive/rfq-checker"
+             class="nav-dropdown-item {% if nav_path.startswith('/archive/rfq-checker') or active == 'rfq_checker' %}nav-dropdown-item--active{% endif %}">
+            RFQ checker
+          </a>
           <a href="/archive/so-lines"
              class="nav-dropdown-item {% if nav_path == '/archive/so-lines' or active == 'so_archive' %}nav-dropdown-item--active{% endif %}">
             SO line archive
-          </a>
-          <a href="/archive/first-article"
-             class="nav-dropdown-item {% if nav_path == '/archive/first-article' or active == 'first_article' %}nav-dropdown-item--active{% endif %}">
-            First article tracker
           </a>
           <a href="/daily-output"
              class="nav-dropdown-item {% if nav_path == '/daily-output' or active == 'daily_output' %}nav-dropdown-item--active{% endif %}">
@@ -299,7 +311,7 @@
               <button type="button" class="nav-notif-markread" id="nav-notif-markread">Mark all read</button>
             </div>
             <div class="nav-notif-filter-panel" id="nav-notif-filter-panel" hidden>
-              <div class="nav-notif-filter-title">Show new sales orders for</div>
+              <div class="nav-notif-filter-title">Show sales orders for</div>
               <div class="nav-notif-filter-opts" id="nav-notif-filter-opts"></div>
             </div>
           </div>
@@ -318,7 +330,7 @@
   {% block content %}{% endblock %}
 </main>
 
-<script src="{{ url_for('static', filename='js/main.js') }}?v=api-json-20260818"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}?v=so-notif-updated-20260825"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

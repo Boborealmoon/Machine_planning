@@ -70,7 +70,7 @@ def finishing_queue_asset_version() -> str:
 finishing_queue_bp = Blueprint("finishing_queue", __name__)
 
 _CACHE_TTL_SEC = 180
-_CACHE_VERSION = 16
+_CACHE_VERSION = 17
 _cache: tuple[float, int, list[dict[str, Any]], str, list[dict[str, Any]], list[dict[str, Any]]] | None = None
 _RECENTLY_PACKED_CACHE_TTL_SEC = 300
 _recently_packed_cache: tuple[float, int, list[dict[str, Any]]] | None = None

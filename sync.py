@@ -1006,23 +1006,30 @@ class _ErpSyncAdvisoryLock:
     def __init__(self) -> None:
         self._conn = None
 
-    def acquire(self) -> bool:
+    def acquire(self, wait_seconds: float = 0) -> bool:
         if not _planner_db_available():
             return True
         from db import planner_get_conn, planner_release_conn
 
         conn = planner_get_conn()
+        deadline = time.monotonic() + max(0.0, float(wait_seconds or 0))
         try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT pg_try_advisory_lock(%s) AS ok", (_ERP_SYNC_ADVISORY_LOCK_KEY,))
-                ok = bool(cur.fetchone()[0])
-            if ok:
-                conn.commit()
-                self._conn = conn
-                return True
-            conn.rollback()
-            planner_release_conn(conn)
-            return False
+            while True:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT pg_try_advisory_lock(%s) AS ok",
+                        (_ERP_SYNC_ADVISORY_LOCK_KEY,),
+                    )
+                    ok = bool(cur.fetchone()[0])
+                if ok:
+                    conn.commit()
+                    self._conn = conn
+                    return True
+                conn.rollback()
+                if time.monotonic() >= deadline:
+                    planner_release_conn(conn)
+                    return False
+                time.sleep(0.4)
         except Exception:
             conn.rollback()
             planner_release_conn(conn)
@@ -1139,6 +1146,22 @@ _MFG_WO_STATUS_COLS = [
     "po_due_date",
     "so_no",
 ]
+
+
+def fetch_mfg_wo_status_rows() -> tuple[list, int]:
+    """Read current WO qty from COMAIN only. Does not reload planner staging."""
+    scoped = not _mfg_wo_status_unscoped()
+    sql, params = _build_mfg_wo_status_sql(scoped)
+    t0 = time.monotonic()
+    rows = _domain_fetch_rows(sql, params or None)
+    query_ms = int((time.monotonic() - t0) * 1000)
+    log.info(
+        "mfg_wo_status COMAIN fetch - %d rows query=%dms scoped=%s",
+        len(rows),
+        query_ms,
+        scoped,
+    )
+    return rows, query_ms
 
 
 def run_mfg_wo_status_sync(force: bool = False) -> dict:

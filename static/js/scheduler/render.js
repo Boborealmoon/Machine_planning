@@ -2151,6 +2151,22 @@ function trialRenderCatalogOpDetailRow(label, valueHtml) {
   `;
 }
 
+function trialDetailQtyValue(...candidates) {
+  for (const value of candidates) {
+    if (value === null || value === undefined || value === '') continue;
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function trialDetailQtyText(value, fallbackText) {
+  if (value === null || value === undefined) {
+    return fallbackText || '—';
+  }
+  return escapeHtml(fmt(value, 0));
+}
+
 function trialRenderCatalogOpDetailBody(ps, card) {
   const cardKind = String(card.card_kind || 'single');
   const isGroup = cardKind === 'group';
@@ -2387,8 +2403,8 @@ function trialRenderCatalogPsDetailBody(ps) {
   const execHtml = trialOpStatusHtml(execStatus, { compact: true });
   const bomCode = trialPsBomDisplay(ps);
   const erpBom = trialPsErpBomCode(ps);
-  const partialQty = Number(ps.partial_qty ?? ps.display_qty ?? ps.wo_req_qty ?? 0);
-  const soQty = ps.so_det_qty;
+  const partialQty = trialDetailQtyValue(ps.pp_partial_qty, ps.partial_qty, ps.display_qty, ps.wo_req_qty);
+  const soQty = trialDetailQtyValue(ps.so_det_qty);
   const shipped = Number(ps.qty_shipped || 0);
   const stageDesc = String(ps.current_stage_desc || '').trim();
   const cards = trialResolvedOpCardsForPs(ps);
@@ -2397,9 +2413,9 @@ function trialRenderCatalogPsDetailBody(ps) {
     : '<div class="trial-ptl-muted">No operations on this partial.</div>';
   const partLine = [ps.part_name || ps.part_no, ps.part_desc].filter(Boolean).join(' · ');
   const copyText = [ps.part_name || ps.part_no || '', ps.part_desc || ''].filter(Boolean).join('\n');
-  const soLine = (soQty !== null && soQty !== undefined && soQty !== '')
-    ? `${fmt(shipped, 0)} / ${fmt(Number(soQty), 0)}`
-    : '';
+  const shippedText = soQty !== null
+    ? escapeHtml(fmt(shipped, 0))
+    : (shipped > 0.0001 ? escapeHtml(fmt(shipped, 0)) : '');
 
   return `
     <div class="trial-op-detail">
@@ -2415,8 +2431,9 @@ function trialRenderCatalogPsDetailBody(ps) {
       <dl class="trial-op-detail-grid">
         ${partLine ? trialRenderCatalogOpDetailRow('Part', escapeHtml(partLine)) : ''}
         ${ps.due_date ? trialRenderCatalogOpDetailRow('Due', escapeHtml(ps.due_date)) : ''}
-        ${partialQty > 0.0001 ? trialRenderCatalogOpDetailRow('Partial qty', escapeHtml(fmt(partialQty, 0))) : ''}
-        ${soLine ? trialRenderCatalogOpDetailRow('Shipped / SO', escapeHtml(soLine)) : ''}
+        ${trialRenderCatalogOpDetailRow('Sales Order qty', trialDetailQtyText(soQty))}
+        ${trialRenderCatalogOpDetailRow('PP partial qty', trialDetailQtyText(partialQty != null && partialQty > 0.0001 ? partialQty : null))}
+        ${shippedText ? trialRenderCatalogOpDetailRow('Shipped', shippedText) : ''}
         ${bomCode ? trialRenderCatalogOpDetailRow('Planner BOM', escapeHtml(bomCode)) : ''}
         ${erpBom && erpBom !== bomCode ? trialRenderCatalogOpDetailRow('ERP BOM', escapeHtml(erpBom)) : ''}
         ${ps.inventory_code ? trialRenderCatalogOpDetailRow('Inventory', escapeHtml(ps.inventory_code)) : ''}
@@ -2538,13 +2555,26 @@ function trialRenderRunBlockDetailBody(group, block, machine) {
   const dueEditBtn = isTempPs && typeof openTempPsPoDueModal === 'function'
     ? `<button type="button" class="btn btn-ghost btn-sm" onclick="openTempPsPoDueModal(${JSON.stringify(psIdForDue)}, ${JSON.stringify(dueDateText === '—' ? '' : dueDateText)})">Set PO due</button>`
     : '';
-  const psRow = typeof trialCatalogPsFromPayload === 'function'
+  const psRow = (typeof trialCatalogPsFromPayload === 'function'
     ? trialCatalogPsFromPayload(leader || block)
-    : trialCatalogPsRecord(leader?.planner_ps_id || leader?.source_ps_id || leader?.job_no || vm.psDueKey || '');
+    : null)
+    || trialCatalogPsRecord(leader?.planner_ps_id || vm.psDueKey || leader?.source_ps_id || leader?.job_no || '');
   const partNo = String(
     psRow?.part_no || psRow?.part_name || leader?.part_no || leader?.part_name || ptlCard?.part_no || '',
   ).trim();
   const partDesc = String(psRow?.part_desc || leader?.part_desc || '').trim();
+  const soQty = trialDetailQtyValue(psRow?.so_det_qty, leader?.so_det_qty);
+  const partialQty = trialDetailQtyValue(
+    psRow?.pp_partial_qty,
+    psRow?.partial_qty,
+    psRow?.display_qty,
+    psRow?.wo_req_qty,
+    leader?.partial_qty,
+  );
+  const partialQtyText = trialDetailQtyText(
+    partialQty != null && partialQty > 0.0001 ? partialQty : null,
+    vm.targetQty || '—',
+  );
 
   return `
     <div class="trial-op-detail">
@@ -2558,8 +2588,9 @@ function trialRenderRunBlockDetailBody(group, block, machine) {
         ${partDesc ? trialRenderCatalogOpDetailRow('Description', escapeHtml(partDesc)) : ''}
         ${trialRenderCatalogOpDetailRow('Machine', escapeHtml(machineLine))}
         ${vm.sequenceNo ? trialRenderCatalogOpDetailRow('Queue #', escapeHtml(String(vm.sequenceNo))) : ''}
-        ${trialRenderCatalogOpDetailRow('Target qty', vm.targetQty)}
-        ${trialRenderCatalogOpDetailRow('Output', vm.pairedOutput)}
+        ${trialRenderCatalogOpDetailRow('Sales Order qty', trialDetailQtyText(soQty))}
+        ${trialRenderCatalogOpDetailRow('PP partial qty', partialQtyText)}
+        ${trialRenderCatalogOpDetailRow('Produced qty (output)', vm.pairedOutput)}
         ${trialRenderCatalogOpDetailRow(dueRowLabel, escapeHtml(dueDateText))}
         ${trialRenderCatalogOpDetailRow('Queued', escapeHtml(vm.queuedText))}
         ${trialRenderCatalogOpDetailRow('End', escapeHtml(vm.outputText))}

@@ -9,7 +9,12 @@
   const PS_VIEWS = new Set(['active', 'no-wo']);
   const PR_PO_VIEWS = new Set(['pr-enquiry', 'purchase-order']);
   const REQUEST_VIEW = 'part-requests';
+  const QC_VIEW = 'qc-checklist';
   const BUCKET_LABELS = { ost: 'Outstanding', new: 'New', hst: 'History' };
+  const QC_BUCKET_LABELS = {
+    ready_qc: 'Ready for QC',
+    awaiting_grn: 'Awaiting GRN',
+  };
   const PS_TABLE_HEAD = `
     <tr>
       <th class="sol-col-delay" title="Material arrival delay">Flag</th>
@@ -58,6 +63,23 @@
       <th class="sol-col-bom">BOM</th>
       <th class="sol-col-actions"></th>
     </tr>`;
+  const QC_TABLE_HEAD = `
+    <tr>
+      <th>Status</th>
+      <th>Shipment</th>
+      <th>PO</th>
+      <th>Supplier</th>
+      <th>Item</th>
+      <th>Description</th>
+      <th class="sol-col-qty">Qty</th>
+      <th class="sol-col-qty">Received</th>
+      <th>UOM</th>
+      <th>GRN</th>
+      <th>GRN date</th>
+      <th>Supplier DO</th>
+      <th>QI</th>
+      <th>Location</th>
+    </tr>`;
 
   const state = {
     active: [],
@@ -80,6 +102,11 @@
       part_no: { hits: [], loading: false, open: false, activeIndex: -1, timer: 0 },
       inventory_code: { hits: [], loading: false, open: false, activeIndex: -1, timer: 0 },
     },
+    qcRows: [],
+    qcCounts: { ready_qc: 0, awaiting_grn: 0 },
+    qcSource: '',
+    qcBucket: 'ready_qc',
+    qcLoaded: false,
   };
 
   function isPrPoView(view) {
@@ -88,6 +115,10 @@
 
   function isRequestView(view) {
     return (view || state.view) === REQUEST_VIEW;
+  }
+
+  function isQcView(view) {
+    return (view || state.view) === QC_VIEW;
   }
 
   function isPsView(view) {
@@ -379,6 +410,30 @@
     const q = String(state.search || '').trim().toLowerCase();
     if (!q) return state.prPoRows.slice();
     return state.prPoRows.filter(row => prPoSearchText(row).includes(q));
+  }
+
+  function qcSearchText(row) {
+    const parts = [
+      row.shipment_voucher_no,
+      row.po_no,
+      row.supplier_code,
+      row.supplier_name,
+      row.item_code,
+      row.inventory_code,
+      row.service_code,
+      row.line_item_description,
+      row.grn_no,
+      row.supplier_do_no,
+      row.qi_voucher_no,
+      row.receiving_location_code,
+    ];
+    return parts.map(v => String(v == null ? '' : v).toLowerCase()).join(' ');
+  }
+
+  function visibleQcRows() {
+    const q = String(state.search || '').trim().toLowerCase();
+    if (!q) return state.qcRows.slice();
+    return state.qcRows.filter(row => qcSearchText(row).includes(q));
   }
 
   function findPp(ppVoucherNo) {
@@ -729,6 +784,37 @@
     `;
   }
 
+  function renderQcRow(row) {
+    const hasGrn = Boolean(String(row.grn_no || '').trim());
+    const desc = String(row.line_item_description || '').trim();
+    const supplier = String(row.supplier_name || row.supplier_code || '').trim() || EM_DASH;
+    const item = String(row.item_code || row.inventory_code || row.service_code || '').trim();
+    const qi = String(row.qi_voucher_no || '').trim();
+    const qiStatus = String(row.qi_status || '').trim().toUpperCase();
+    const doNo = String(row.supplier_do_no || '').trim();
+    const statusCls = hasGrn ? 'sol-qc-pill sol-qc-pill--ready' : 'sol-qc-pill sol-qc-pill--awaiting';
+    const statusLabel = hasGrn ? 'Ready for QC' : 'Awaiting GRN';
+    const rowCls = hasGrn ? 'is-qc-ready' : 'is-qc-awaiting';
+    return `
+      <tr class="${rowCls}">
+        <td><span class="${statusCls}">${escapeHtml(statusLabel)}</span></td>
+        <td class="sol-mono">${escapeHtml(cellText(row.shipment_voucher_no))}</td>
+        <td class="sol-mono">${escapeHtml(cellText(row.po_no))}</td>
+        <td title="${escapeHtml(supplier)}">${escapeHtml(supplier)}</td>
+        <td class="sol-mono">${escapeHtml(item || EM_DASH)}</td>
+        <td class="sol-desc" title="${escapeHtml(desc)}">${escapeHtml(desc || EM_DASH)}</td>
+        <td class="sol-col-qty">${escapeHtml(formatQty(row.qty))}</td>
+        <td class="sol-col-qty">${escapeHtml(formatQty(row.qty_received))}</td>
+        <td>${escapeHtml(cellText(row.uom_code))}</td>
+        <td class="sol-mono">${hasGrn ? `<span class="sol-qc-grn">${escapeHtml(row.grn_no)}</span>` : EM_DASH}</td>
+        <td class="sol-date">${escapeHtml(formatDate(row.goods_receipt_date))}</td>
+        <td class="sol-mono" title="${escapeHtml(doNo)}">${escapeHtml(doNo || EM_DASH)}</td>
+        <td class="sol-mono">${qi ? `${escapeHtml(qi)}${qiStatus ? ` · ${escapeHtml(qiStatus)}` : ''}` : EM_DASH}</td>
+        <td>${escapeHtml(cellText(row.receiving_location_code))}</td>
+      </tr>
+    `;
+  }
+
   function renderRequestDelayCell(row) {
     const id = Number(row.request_id) || 0;
     const flagged = Boolean(row.material_delay);
@@ -1048,6 +1134,26 @@
     setChipCount('sol-bucket-ost-count', scopeCounts.ost);
     setChipCount('sol-bucket-new-count', scopeCounts.new);
     setChipCount('sol-bucket-hst-count', scopeCounts.hst);
+    updateQcChipCounts();
+  }
+
+  function updateQcChipCounts() {
+    const ready = Number(state.qcCounts.ready_qc) || 0;
+    const awaiting = Number(state.qcCounts.awaiting_grn) || 0;
+    setChipCount('sol-qc-ready-count', ready);
+    setChipCount('sol-qc-awaiting-count', awaiting);
+    setChipCount('sol-qc-count', ready + awaiting);
+  }
+
+  function setStatPills(items) {
+    const host = document.getElementById('sol-stat-pills');
+    if (!host) return;
+    host.innerHTML = (items || []).map(item => `
+      <div class="sol-stat-pill">
+        <span class="sol-stat-pill-label">${escapeHtml(item.label)}</span>
+        <span class="sol-stat-pill-value">${escapeHtml(String(item.value))}</span>
+      </div>
+    `).join('');
   }
 
   function updatePsStats(rows) {
@@ -1059,6 +1165,11 @@
     setChipCount('sol-active-count', activeJobs);
     setChipCount('sol-no-wo-count', noWoJobs);
     updatePrPoChipCounts();
+    setStatPills([
+      { label: 'Shown', value: rows.length },
+      { label: 'Active PP', value: activeJobs },
+      { label: 'Awaiting WO', value: noWoJobs },
+    ]);
 
     if (subtitle) {
       subtitle.textContent = `${rows.length} ${viewLabel} rows shown | ${activeJobs} active PP | ${noWoJobs} awaiting WO`;
@@ -1069,16 +1180,40 @@
     const subtitle = document.getElementById('sol-subtitle');
     const scopeLabel = state.view === 'purchase-order' ? 'Purchase Order' : 'PR Enquiry';
     const bucketLabel = BUCKET_LABELS[state.prPoBucket] || state.prPoBucket;
+    const scopeCounts = state.view === 'purchase-order'
+      ? (state.prPoCounts.po || {})
+      : (state.prPoCounts.pr || {});
     updatePrPoChipCounts();
     if (subtitle) {
       subtitle.textContent = `${rows.length} ${scopeLabel} · ${bucketLabel} rows shown`;
     }
+    setStatPills([
+      { label: 'Shown', value: rows.length },
+      { label: 'Outstanding', value: Number(scopeCounts.ost) || 0 },
+      { label: 'History', value: Number(scopeCounts.hst) || 0 },
+    ]);
+  }
+
+  function updateQcStats(rows) {
+    const subtitle = document.getElementById('sol-subtitle');
+    const bucketLabel = QC_BUCKET_LABELS[state.qcBucket] || state.qcBucket;
+    updateQcChipCounts();
+    if (subtitle) {
+      subtitle.textContent = `${rows.length} ${bucketLabel} inbound lines shown`;
+    }
+    setStatPills([
+      { label: 'Shown', value: rows.length },
+      { label: 'Ready for QC', value: Number(state.qcCounts.ready_qc) || 0 },
+      { label: 'Awaiting GRN', value: Number(state.qcCounts.awaiting_grn) || 0 },
+    ]);
   }
 
   function syncNavUi() {
     const prPo = isPrPoView();
     const requests = isRequestView();
+    const qc = isQcView();
     const bucketGroup = document.getElementById('sol-bucket-group');
+    const qcBucketGroup = document.getElementById('sol-qc-bucket-group');
     const newBucketBtn = document.querySelector('[data-sol-bucket="new"]');
     const search = document.getElementById('sol-search');
     const legend = document.getElementById('sol-legend');
@@ -1090,10 +1225,11 @@
       el.hidden = !requests;
     });
     document.querySelectorAll('.sol-edd-filter').forEach(el => {
-      el.hidden = prPo;
+      el.hidden = prPo || qc;
     });
 
     if (bucketGroup) bucketGroup.hidden = !prPo;
+    if (qcBucketGroup) qcBucketGroup.hidden = !qc;
     if (newBucketBtn) newBucketBtn.hidden = state.view !== 'purchase-order';
 
     document.querySelectorAll('[data-sol-view]').forEach(btn => {
@@ -1108,16 +1244,30 @@
       btn.setAttribute('aria-selected', active ? 'true' : 'false');
     });
 
+    document.querySelectorAll('[data-sol-qc-bucket]').forEach(btn => {
+      const active = btn.getAttribute('data-sol-qc-bucket') === state.qcBucket;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+
     if (search) {
       search.placeholder = prPo
         ? 'Search PR, PO, item, supplier...'
         : requests
           ? 'Search part no, inventory code, remarks...'
-          : 'Search SO, PP, part, customer...';
+          : qc
+            ? 'Search shipment, PO, GRN, supplier, item...'
+            : 'Search SO, PP, part, customer...';
     }
     if (legend) {
       legend.hidden = prPo;
-      if (requests) {
+      if (qc) {
+        legend.innerHTML = `
+          <span class="sol-legend-item sol-legend-item--qc-ready">Green GRN</span> material ready for QC &middot;
+          <span class="sol-legend-item sol-legend-item--qc-awaiting">Amber row</span> received, GRN not generated in ERP &middot;
+          Source: outstanding inbound shipments (<code>lg_in_shm_ost</code>)
+        `;
+      } else if (requests) {
         legend.innerHTML = `
           <span class="sol-legend-item sol-legend-item--delay">Rose row</span> material delay &middot;
           <span class="sol-legend-item sol-legend-item--date">Blue cell</span> material EDD &middot;
@@ -1141,14 +1291,18 @@
   function ensureTableHead() {
     const head = document.getElementById('sol-table-head');
     if (!head) return;
-    const mode = isPrPoView() ? 'prpo' : (isRequestView() ? 'req' : 'ps');
+    const mode = isPrPoView()
+      ? 'prpo'
+      : (isRequestView() ? 'req' : (isQcView() ? 'qc' : 'ps'));
     if (head.dataset.mode === mode) return;
     head.dataset.mode = mode;
     head.innerHTML = mode === 'prpo'
       ? PR_PO_TABLE_HEAD
       : mode === 'req'
         ? REQUEST_TABLE_HEAD
-        : PS_TABLE_HEAD;
+        : mode === 'qc'
+          ? QC_TABLE_HEAD
+          : PS_TABLE_HEAD;
   }
 
   function renderPs() {
@@ -1233,6 +1387,10 @@
     if (subtitle) {
       subtitle.textContent = `${rows.length} part request${rows.length === 1 ? '' : 's'} shown | ${state.requests.length} saved`;
     }
+    setStatPills([
+      { label: 'Shown', value: rows.length },
+      { label: 'Saved', value: state.requests.length },
+    ]);
   }
 
   function renderRequests() {
@@ -1274,11 +1432,54 @@
     }
   }
 
+  function renderQc() {
+    const rows = visibleQcRows();
+    const body = document.getElementById('sol-table-body');
+    const host = document.getElementById('sol-table-host');
+    const empty = document.getElementById('sol-empty');
+    const loading = document.getElementById('sol-loading');
+    const meta = document.getElementById('sol-meta');
+    const bucketLabel = QC_BUCKET_LABELS[state.qcBucket] || state.qcBucket;
+
+    if (loading) loading.hidden = true;
+    ensureTableHead();
+    updateQcStats(rows);
+
+    if (!rows.length) {
+      let msg = 'No rows match your filters.';
+      if (!state.qcRows.length) {
+        msg = state.qcBucket === 'awaiting_grn'
+          ? 'No inbound lines are received without a GRN.'
+          : 'No inbound lines currently have a GRN ready for QC.';
+      }
+      if (body) body.innerHTML = '';
+      if (host) host.hidden = true;
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = msg;
+      }
+    } else {
+      if (host) host.hidden = false;
+      if (empty) empty.hidden = true;
+      if (body) {
+        body.innerHTML = rows.map(renderQcRow).join('');
+        delete body.dataset.bound;
+      }
+    }
+
+    if (meta) {
+      meta.hidden = !state.qcRows.length && !state.qcSource;
+      meta.textContent = `${state.qcSource || 'Inbound shipments'} | ${bucketLabel} | cached ${state.cachedAt || EM_DASH}`;
+    }
+  }
+
   function render() {
     syncNavUi();
     setChipCount('sol-req-count', state.requests.length);
+    updateQcChipCounts();
     if (isPrPoView()) renderPrPo();
     else if (isRequestView()) renderRequests();
+    else if (isQcView()) renderQc();
     else renderPs();
   }
 
@@ -1290,9 +1491,12 @@
   }
 
   function setView(view) {
-    const next = PR_PO_VIEWS.has(view) || PS_VIEWS.has(view) || view === REQUEST_VIEW ? view : 'active';
+    const next = PR_PO_VIEWS.has(view) || PS_VIEWS.has(view) || view === REQUEST_VIEW || view === QC_VIEW
+      ? view
+      : 'active';
     const nextIsPrPo = isPrPoView(next);
     const nextIsRequest = isRequestView(next);
+    const nextIsQc = isQcView(next);
     state.view = next;
     if (nextIsPrPo) {
       state.prPoBucket = normalizeBucketForView(next, state.prPoBucket);
@@ -1305,6 +1509,11 @@
     }
     if (nextIsRequest) {
       if (!state.requestsLoaded) loadRequests({ refresh: false });
+      else render();
+      return;
+    }
+    if (nextIsQc) {
+      if (!state.qcLoaded) loadQcChecklist({ refresh: false });
       else render();
       return;
     }
@@ -1322,6 +1531,15 @@
     state.prPoBucket = next;
     syncNavUi();
     loadPrPo({ refresh: false });
+  }
+
+  function setQcBucket(bucket) {
+    if (!isQcView()) return;
+    const next = bucket === 'awaiting_grn' ? 'awaiting_grn' : 'ready_qc';
+    if (next === state.qcBucket) return;
+    state.qcBucket = next;
+    syncNavUi();
+    loadQcChecklist({ refresh: false });
   }
 
   function psTypeLabel() {
@@ -1554,6 +1772,43 @@
     }
   }
 
+  async function loadQcChecklist({ refresh = false, silent = false } = {}) {
+    const loading = document.getElementById('sol-loading');
+    const host = document.getElementById('sol-table-host');
+    const subtitle = document.getElementById('sol-subtitle');
+    const showUi = isQcView() && !silent;
+    const bucketLabel = QC_BUCKET_LABELS[state.qcBucket] || state.qcBucket;
+    if (showUi) {
+      if (loading) loading.hidden = false;
+      if (host) host.hidden = true;
+      if (subtitle) {
+        subtitle.textContent = refresh
+          ? `Refreshing ${bucketLabel} from ERP...`
+          : `Loading ${bucketLabel}...`;
+      }
+    }
+
+    const params = new URLSearchParams({ bucket: state.qcBucket });
+    if (refresh) params.set('refresh', '1');
+
+    try {
+      const res = await fetch(`/api/material-tracking/qc-checklist?${params}`, {
+        cache: refresh ? 'no-store' : 'default',
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+      state.qcRows = Array.isArray(payload.rows) ? payload.rows : [];
+      state.qcCounts = payload.counts || { ready_qc: 0, awaiting_grn: 0 };
+      state.qcSource = payload.source || '';
+      state.cachedAt = payload.cached_at || state.cachedAt;
+      state.qcLoaded = true;
+      updateQcChipCounts();
+      if (isQcView()) render();
+    } catch (err) {
+      if (showUi) showLoadError(err);
+    }
+  }
+
   async function load({ refresh = false } = {}) {
     if (isPrPoView()) {
       await loadPrPo({ refresh });
@@ -1561,6 +1816,10 @@
     }
     if (isRequestView()) {
       await loadRequests({ refresh });
+      return;
+    }
+    if (isQcView()) {
+      await loadQcChecklist({ refresh });
       return;
     }
     await loadSalesOrders({ refresh });
@@ -1807,6 +2066,10 @@
       btn.addEventListener('click', () => setBucket(btn.getAttribute('data-sol-bucket')));
     });
 
+    document.querySelectorAll('[data-sol-qc-bucket]').forEach(btn => {
+      btn.addEventListener('click', () => setQcBucket(btn.getAttribute('data-sol-qc-bucket')));
+    });
+
     document.getElementById('sol-search')?.addEventListener('input', e => {
       state.search = e.target.value || '';
       render();
@@ -1826,6 +2089,7 @@
     // Cache-first (same as Sales Orders). Use Refresh for a live ERP reload.
     load({ refresh: false });
     loadRequests({ refresh: false, silent: true });
+    loadQcChecklist({ refresh: false, silent: true });
   }
 
   document.addEventListener('DOMContentLoaded', init);

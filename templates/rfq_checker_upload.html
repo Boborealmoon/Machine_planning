@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}RFQ Checker upload{% endblock %}
+{% block body_class %}rfq-view{% endblock %}
+{% block main_class %}app-main--rfq-checker{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/rfq_checker.css') }}?v=rfq-20260824-1">
+{% endblock %}
+{% block content %}
+<div class="rfq-page" data-rfq-page="upload">
+  <header class="rfq-header">
+    <div class="rfq-header-text">
+      <p class="rfq-kicker">Archive</p>
+      <h1 class="rfq-title">Upload RFQ Excel</h1>
+      <p class="rfq-subtitle" id="rfq-upload-subtitle">
+        Workbooks can use any column layout. The checker maps them onto the Archive columns, fills cycle-time hours, and matches part numbers we have fabricated before.
+      </p>
+    </div>
+    <div class="rfq-header-actions">
+      <a class="rfq-btn rfq-btn--ghost" href="/archive/rfq-checker">Existing parts</a>
+      <button type="button" class="rfq-btn rfq-btn--primary" id="rfq-save-archive" hidden>Save to Archive</button>
+    </div>
+  </header>
+
+  <div id="rfq-alert" class="rfq-alert" hidden></div>
+
+  <section class="rfq-upload-card" id="rfq-dropzone">
+    <input id="rfq-file" type="file" accept=".xlsx,.xlsm,.xls" hidden>
+    <p class="rfq-upload-title">Drop an Excel file here, or browse</p>
+    <p class="rfq-upload-hint" id="rfq-llm-hint">Column mapping uses header aliases if no LLM key is set.</p>
+    <div class="rfq-upload-actions">
+      <button type="button" class="rfq-btn rfq-btn--primary" id="rfq-browse">Choose file</button>
+      <label class="rfq-check">
+        <input type="checkbox" id="rfq-use-llm" checked>
+        Use LLM to map columns
+      </label>
+      <label class="rfq-inline">
+        <span class="rfq-label">Sheet</span>
+        <select id="rfq-sheet" class="rfq-select" disabled>
+          <option value="">Auto-detect</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <details class="rfq-mapping" id="rfq-mapping" hidden>
+    <summary>Column mapping</summary>
+    <p class="rfq-upload-hint" id="rfq-mapping-notes"></p>
+    <div class="rfq-mapping-grid" id="rfq-mapping-grid"></div>
+    <button type="button" class="rfq-btn rfq-btn--ghost" id="rfq-remap">Re-apply mapping</button>
+  </details>
+
+  <div id="rfq-loading" class="rfq-loading" hidden>
+    <span class="rfq-spinner" aria-hidden="true"></span>
+    <span id="rfq-loading-text">Reading workbook...</span>
+  </div>
+
+  <div class="rfq-table-card" id="rfq-lines-card" hidden>
+    <div class="rfq-table-scroll">
+      <table class="rfq-table rfq-table--wide rfq-table--edit" id="rfq-lines-table">
+        <thead id="rfq-lines-head"></thead>
+        <tbody id="rfq-lines-body"></tbody>
+      </table>
+    </div>
+  </div>
+  <p id="rfq-lines-empty" class="rfq-empty" hidden>No line items were extracted from that sheet.</p>
+</div>
+
+<aside id="rfq-drawer" class="rfq-drawer" hidden>
+  <div class="rfq-drawer-card">
+    <div class="rfq-drawer-head">
+      <h2 class="rfq-drawer-title" id="rfq-drawer-title">Part</h2>
+      <button type="button" class="rfq-btn rfq-btn--ghost" id="rfq-drawer-close">Close</button>
+    </div>
+    <div id="rfq-drawer-body" class="rfq-drawer-body"></div>
+  </div>
+</aside>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/rfq_checker.js') }}?v=rfq-20260824-1"></script>
+{% endblock %}

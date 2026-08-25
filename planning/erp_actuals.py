@@ -239,6 +239,12 @@ def record_erp_wo_qty_snapshots(con, mfg_rows, synced_at=None, columns=None) -> 
         batch,
         page_size=1000,
     )
+    try:
+        from .erp_scanned_output_service import refresh_wo_qty_latest_from_snapshots
+
+        refresh_wo_qty_latest_from_snapshots(con, snapshot_date)
+    except Exception:
+        logger.exception("ERP wo qty latest refresh failed")
     return len(batch)
 
 

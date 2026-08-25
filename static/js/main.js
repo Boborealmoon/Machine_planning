@@ -549,37 +549,62 @@ document.getElementById("nav-erp-sync-btn")?.addEventListener("click", () => {
     applyNewOrders(Array.from(bySo.values()));
   };
 
+  const soKindOf = (g) => {
+    if (String(g?.kind || "").toLowerCase() === "updated") return "updated";
+    const first = String(g?.firstPostedAt || "").trim();
+    const latest = String(g?.latestPostedAt || "").trim();
+    if (first && latest && toMs(latest) > toMs(first)) return "updated";
+    return "new";
+  };
+
   const applyNewOrders = (orders) => {
-    newOrders = (orders || []).map((g) => ({
-      so: String(g.so || "").trim(),
-      customer: String(g.customer || "").trim(),
-      postedAt: g.postedAt || null,
-      parts: (g.parts || []).map((p) => {
-        const ps = String(p.ps || "").trim();
-        return {
-          ps,
-          part: String(p.part || "").trim(),
-          desc: String(p.desc || "").trim(),
-          type: p.type || psTypeOf(ps),
-        };
-      }),
-    }));
+    newOrders = (orders || []).map((g) => {
+      const firstPostedAt = g.firstPostedAt || g.postedAt || null;
+      const latestPostedAt = g.latestPostedAt || firstPostedAt;
+      const createdAt = g.createdAt || null;
+      const kind = soKindOf({ ...g, firstPostedAt, latestPostedAt, createdAt });
+      return {
+        so: String(g.so || "").trim(),
+        customer: String(g.customer || "").trim(),
+        kind,
+        postedAt: (kind === "updated" ? latestPostedAt : firstPostedAt) || g.postedAt || null,
+        firstPostedAt,
+        latestPostedAt,
+        createdAt,
+        parts: (g.parts || []).map((p) => {
+          const ps = String(p.ps || "").trim();
+          return {
+            ps,
+            part: String(p.part || "").trim(),
+            desc: String(p.desc || "").trim(),
+            type: p.type || psTypeOf(ps),
+          };
+        }),
+      };
+    });
     maxSoTime = newOrders.reduce((m, g) => Math.max(m, toMs(g.postedAt)), 0);
   };
 
   const bySo_get = (map, so, row) => {
     let g = map.get(so);
+    const first = row.first_posted_datetime || null;
+    const latest = row.latest_posted_datetime || first;
     if (!g) {
       g = {
         so,
         customer: String(row.customer_code || "").trim(),
-        postedAt: row.first_posted_datetime || null,
+        firstPostedAt: first,
+        latestPostedAt: latest,
+        postedAt: first,
         parts: [],
         seen: new Set(),
       };
       map.set(so, g);
     }
-    if (!g.postedAt && row.first_posted_datetime) g.postedAt = row.first_posted_datetime;
+    if (!g.firstPostedAt && first) g.firstPostedAt = first;
+    if (latest && toMs(latest) > toMs(g.latestPostedAt)) g.latestPostedAt = latest;
+    g.kind = soKindOf(g);
+    g.postedAt = g.kind === "updated" ? g.latestPostedAt : g.firstPostedAt;
     return g;
   };
 
@@ -602,6 +627,7 @@ document.getElementById("nav-erp-sync-btn")?.addEventListener("click", () => {
   const soItemHtml = (g, parts, isUnread) => {
     const shown = parts.slice(0, SO_PARTS_MAX);
     const extra = parts.length - shown.length;
+    const isUpdated = soKindOf(g) === "updated";
     const partsHtml = shown
       .map((p) => {
         const detail = [p.part, p.desc].filter(Boolean).join(" · ");
@@ -614,8 +640,8 @@ document.getElementById("nav-erp-sync-btn")?.addEventListener("click", () => {
       .join("");
     const moreHtml = extra > 0 ? `<li class="nav-notif-part-more">+${extra} more</li>` : "";
     return `
-      <div class="nav-notif-item nav-notif-item--so${isUnread ? " is-unread" : ""}">
-        <div class="nav-notif-tag">New sales order</div>
+      <div class="nav-notif-item nav-notif-item--so${isUpdated ? " is-updated" : ""}${isUnread ? " is-unread" : ""}">
+        <div class="nav-notif-tag${isUpdated ? " nav-notif-tag--updated" : ""}">${isUpdated ? "Updated sales order" : "New sales order"}</div>
         <div class="nav-notif-ps">${esc(g.so)}</div>
         ${g.customer ? `<div class="nav-notif-action">from <strong>${esc(g.customer)}</strong></div>` : ""}
         <ul class="nav-notif-parts">${partsHtml}${moreHtml}</ul>

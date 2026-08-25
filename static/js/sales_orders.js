@@ -84,6 +84,7 @@ const SO_COLUMNS = [
   { id: '_so', label: 'SO', side: true, sortable: true, filterable: true },
   { id: 'process_sheet_no', label: 'Process sheet', sortable: true, filterable: true, filterType: 'prefix', stickyAfterSide: true },
   { id: 'partial', label: 'Partial', sortable: true, filterable: true },
+  { id: 'partial_qty', label: 'Partial qty', sortable: true, filterable: true },
   { id: 'exception', label: 'Exception', sortable: true, filterable: false },
   { id: 'queued_cnc', label: 'Queued CNC', sortable: true, filterable: true },
   { id: 'erp_stage', label: 'Stage', sortable: true, filterable: true },
@@ -305,6 +306,25 @@ function soFormatMoney(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return '—';
   return num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function soFormatQty(value) {
+  if (value == null || value === '') return '—';
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '—';
+  return Number.isInteger(num)
+    ? String(num)
+    : num.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+function soPartialQtyValue(pp, partial) {
+  const raw = partial?.partial_qty;
+  if (raw != null && raw !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n;
+  }
+  const fallback = Number(pp?.pp_qty);
+  return Number.isFinite(fallback) ? fallback : null;
 }
 
 function soFormatDt(value) {
@@ -593,6 +613,7 @@ const SO_EXPORT_COLUMNS = [
   { id: '_customer', label: 'Customer', width: 22 },
   { id: 'process_sheet_no', label: 'Process sheet', width: 18 },
   { id: 'partial', label: 'Partial', width: 10 },
+  { id: 'partial_qty', label: 'Partial qty', width: 12 },
   { id: 'exception', label: 'Exception', width: 12 },
   { id: 'queued_cnc', label: 'Queued CNC', width: 16 },
   { id: 'erp_stage', label: 'Stage', width: 18 },
@@ -655,6 +676,10 @@ function soExportCellValue(leaf, colId) {
     case 'qty': {
       const num = Number(pp?.pp_qty);
       return Number.isFinite(num) ? num : soExportBlankDash(pp?.pp_qty);
+    }
+    case 'partial_qty': {
+      const num = soPartialQtyValue(pp, partial);
+      return num == null ? '' : num;
     }
     case 'unit_selling_price':
     case 'amount': {
@@ -839,6 +864,7 @@ function soRenderJobDetailFields(order, pp, partial) {
   return [
     soDetailField('Sales order', order?.sales_order_no, { mono: true }),
     soDetailField('Partial', partial?.pp_partial_no ?? '—'),
+    soDetailField('Partial qty', soFormatQty(soPartialQtyValue(pp, partial))),
     soDetailField(soPsDisplayLabel(pp), soPsDisplayId(pp), { mono: true }),
     typeof repeatOrderDetailHtml === 'function' ? repeatOrderDetailHtml(similar) : '',
     soDetailField('Queued CNC', soQueuedMachinesLabel(pp, partial), { mono: true }),
@@ -888,7 +914,7 @@ function soRenderPpDetail(order, pp) {
     const queueHtml = soRenderQueuedMachinesHtml(soPartialQueuedMachines(pp, partial));
     return `
       <button type="button" class="new-orders-detail-line-pick" data-detail-key="${escapeHtml(key)}">
-        <span class="new-orders-detail-line-pick-no">Partial ${escapeHtml(String(partial.pp_partial_no ?? '—'))}</span>
+        <span class="new-orders-detail-line-pick-no">Partial ${escapeHtml(String(partial.pp_partial_no ?? '—'))} · qty ${escapeHtml(soFormatQty(soPartialQtyValue(pp, partial)))}</span>
         <span class="new-orders-detail-line-pick-part">${escapeHtml(String(partial.inventory_code || '—'))}</span>
         <span class="new-orders-detail-line-pick-desc">${escapeHtml(soQueuedMachinesLabel(pp, partial))}</span>
         <span class="new-orders-detail-line-pick-queue">${queueHtml}</span>
@@ -1238,6 +1264,7 @@ function soOrderSearchText(order) {
     (pp.partials || []).forEach(partial => {
       parts.push(
         partial.pp_partial_no,
+        partial.partial_qty,
         partial.inventory_code,
         partial.party_name,
         partial.customer_po_no,
@@ -1271,6 +1298,7 @@ function soLeafRows(order) {
         pp,
         partial: {
           pp_partial_no: pno,
+          partial_qty: pp.pp_qty,
           inventory_code: pp.inventory_code,
           queued_machines: Array.isArray(byPartial[String(pno)])
             ? byPartial[String(pno)]
@@ -1372,6 +1400,7 @@ function soLeafColumnValue(leaf, colId) {
   switch (colId) {
     case '_so': return order?.sales_order_no;
     case 'partial': return partial?.pp_partial_no ?? '';
+    case 'partial_qty': return soPartialQtyValue(pp, partial);
     case 'exception': return soIsPartialException(pp, partial) ? 'flagged' : '';
     case 'process_sheet_no': return soPsDisplayId(pp);
     case 'queued_cnc': return soQueuedMachinesLabel(pp, partial);
@@ -1433,6 +1462,8 @@ function soLeafColumnIsEmpty(leaf, colId) {
     }
     case 'partial':
       return partial?.pp_partial_no == null || partial?.pp_partial_no === '';
+    case 'partial_qty':
+      return soPartialQtyValue(pp, partial) == null;
     case 'queued_cnc':
       return soPartialQueuedMachines(pp, partial).length === 0;
     case 'erp_stage': {
@@ -2406,6 +2437,10 @@ function soRenderQtyCell(pp) {
   return `<td class="new-orders-num so-qty-cell">${escapeHtml(String(pp?.pp_qty ?? '—'))}</td>`;
 }
 
+function soRenderPartialQtyCell(pp, partial) {
+  return `<td class="new-orders-num so-partial-qty-cell">${escapeHtml(soFormatQty(soPartialQtyValue(pp, partial)))}</td>`;
+}
+
 function soRenderWeekCell(pp, partial) {
   return `<td class="new-orders-date so-week-cell">${escapeHtml(soWeekLabel(pp, partial))}</td>`;
 }
@@ -2597,6 +2632,7 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, shade
       ${sideRail}
       ${processSheetCell}
       ${soRenderPartialCell(partial)}
+      ${soRenderPartialQtyCell(pp, partial)}
       ${soRenderExceptionCell(pp, partial)}
       ${soRenderQueuedCncCell(pp, partial)}
       ${soRenderStageCell(pp, partial)}

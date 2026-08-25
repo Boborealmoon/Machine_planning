@@ -497,10 +497,32 @@ ORDER BY det.sales_order_no, det.line_item_no
 # ── New orders ───────────────────────────────────────────────────────────────
 
 STAGED_RECENT_SO_HDR_SQL = """
-SELECT sales_order_no, posted_datetime, customer_code, reference_no
-FROM public.so_order_posted
-WHERE sales_order_no LIKE 'SO/%%'
-  AND COALESCE(first_posted_datetime, posted_datetime)::date >= %s
+SELECT
+    p.sales_order_no,
+    p.posted_datetime,
+    p.customer_code,
+    p.reference_no,
+    h.created_datetime
+FROM public.so_order_posted p
+LEFT JOIN public.so_order_header h
+       ON h.sales_order_no = p.sales_order_no
+WHERE p.sales_order_no LIKE 'SO/%%'
+  AND COALESCE(p.first_posted_datetime, p.posted_datetime)::date >= %s
+"""
+
+# Latest post this week — includes existing SOs that were revised after first post.
+STAGED_RECENT_SO_ACTIVITY_SQL = """
+SELECT
+    p.sales_order_no,
+    p.posted_datetime,
+    p.customer_code,
+    p.reference_no,
+    h.created_datetime
+FROM public.so_order_posted p
+LEFT JOIN public.so_order_header h
+       ON h.sales_order_no = p.sales_order_no
+WHERE p.sales_order_no LIKE 'SO/%%'
+  AND COALESCE(p.latest_posted_datetime, p.first_posted_datetime, p.posted_datetime)::date >= %s
 """
 
 STAGED_FIRST_POSTED_FOR_SOS_SQL = """

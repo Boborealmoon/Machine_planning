@@ -11,7 +11,7 @@
       <p class="eso-kicker">Output tracking</p>
       <h1 class="eso-title">ERP Scanned Output</h1>
       <p class="eso-subtitle">
-        Each time accepted qty produced jumps in ERP, the change in quantum and the scan date are captured and grouped by machine.
+        Each time accepted qty produced jumps in ERP, the change in quantum and the scan time are captured (checked every 5 minutes) and grouped by machine.
       </p>
     </div>
     <div class="eso-header-actions">
@@ -57,7 +57,7 @@
   <div id="eso-machine-view" hidden style="display:none"></div>
   <div id="eso-event-view" hidden style="display:none"></div>
   <div id="eso-empty" class="eso-empty card" hidden style="display:none">
-    No accepted-qty jumps captured yet. Sync ERP after production is scanned, then refresh.
+    No accepted-qty jumps captured yet. Waiting for the next 5-minute WO qty poll after production is scanned.
   </div>
 </div>
 {% endblock %}

@@ -15,6 +15,8 @@ def test_finishing_queue_sql_scopes_distinct_on_to_finishing_candidates():
     # Must not sort every open WO before knowing it has a finishing stage.
     assert "coalesce(execution_status, '') not in" not in lowered
     assert sql.count("%s") == 2 + len(PP_VOUCHER_PS_ID_PREFIXES) + 1
+    assert "final insp%%" in lowered
+    assert "final ispection%%" in lowered
 
     stage_list = list(FINISHING_STAGE_DESCS)
     assert params[0] == stage_list

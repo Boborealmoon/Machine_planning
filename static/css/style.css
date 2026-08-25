@@ -399,9 +399,13 @@ input, select, textarea, button { max-width: 100%; }
   color: #94a3b8;
 }
 
-/* New sales order card */
+/* New / updated sales order card */
 .nav-notif-item--so {
   border-left: 3px solid #16a34a;
+}
+
+.nav-notif-item--so.is-updated {
+  border-left-color: #d97706;
 }
 
 .nav-notif-tag {
@@ -415,6 +419,11 @@ input, select, textarea, button { max-width: 100%; }
   color: #166534;
   background: #dcfce7;
   border-radius: 999px;
+}
+
+.nav-notif-tag--updated {
+  color: #92400e;
+  background: #fef3c7;
 }
 
 .nav-notif-parts {

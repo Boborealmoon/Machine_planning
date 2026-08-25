@@ -1,9 +1,9 @@
-"""First Article Tracker - ARCHIVE view for flagged process sheets."""
+"""First Article Tracker - OPS view for flagged process sheets and NEW parts."""
 from __future__ import annotations
 
 import logging
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, redirect, render_template, request
 
 from .first_article_service import (
     add_pic,
@@ -12,10 +12,13 @@ from .first_article_service import (
     flag_process_sheets,
     json_error,
     list_flag_candidates,
+    list_new_part_rows,
     list_tracker_rows,
+    load_machine_catalog,
     load_pics,
     search_flag_candidates,
     unflag_process_sheet,
+    update_new_part_row,
     update_tracker_row,
 )
 from .helpers import planner_db
@@ -25,8 +28,22 @@ logger = logging.getLogger(__name__)
 
 first_article_bp = Blueprint("first_article", __name__)
 
+FIRST_ARTICLE_PATH = "/ops/first-article"
+FIRST_ARTICLE_LEGACY_PATH = "/archive/first-article"
+
+
+@first_article_bp.get(FIRST_ARTICLE_PATH)
+def first_article_page():
+    return render_template("first_article.html", active="first_article")
+
+
+@first_article_bp.get(FIRST_ARTICLE_LEGACY_PATH)
+def first_article_page_legacy():
+    return redirect(FIRST_ARTICLE_PATH)
+
 _PATCH_FIELDS = (
     "pic_ids",
+    "machine_codes",
     "remarks",
     "tooling_mode",
     "tooling_tick",
@@ -39,10 +56,12 @@ _PATCH_FIELDS = (
     "gauges_text",
 )
 
-
-@first_article_bp.get("/archive/first-article")
-def first_article_page():
-    return render_template("first_article.html", active="first_article")
+_NEW_PART_PATCH_FIELDS = (
+    "bom_updated",
+    "remarks",
+    "program_finish_at",
+    "program_pic_ids",
+)
 
 
 @first_article_bp.get("/api/first-article")
@@ -51,11 +70,12 @@ def api_list_first_article():
         with planner_db() as con:
             pics = load_pics(con)
         rows = list_tracker_rows()
+        machines = load_machine_catalog()
     except Exception as exc:
         logger.exception("first article list failed")
         payload, status = json_error(exc)
         return jsonify(payload), status
-    return jsonify({"ok": True, "count": len(rows), "rows": rows, "pics": pics})
+    return jsonify({"ok": True, "count": len(rows), "rows": rows, "pics": pics, "machines": machines})
 
 
 @first_article_bp.get("/api/first-article/search")
@@ -78,12 +98,18 @@ def api_search_first_article():
 def api_list_first_article_candidates():
     query = compact_text(request.args.get("q"))
     ps_type_filter = compact_text(request.args.get("ps_type"))
+    scope_filter = compact_text(request.args.get("scope"))
     try:
         limit = int(request.args.get("limit") or 1500)
     except (TypeError, ValueError):
         limit = 1500
     try:
-        payload = list_flag_candidates(query=query, ps_type_filter=ps_type_filter, limit=limit)
+        payload = list_flag_candidates(
+            query=query,
+            ps_type_filter=ps_type_filter,
+            scope_filter=scope_filter,
+            limit=limit,
+        )
     except Exception as exc:
         logger.exception("first article candidates failed")
         body, status = json_error(exc, fallback_status=502)
@@ -163,6 +189,44 @@ def api_unflag_first_article(first_article_id: int):
     if not deleted:
         return jsonify({"error": "First article row not found"}), 404
     return jsonify({"ok": True, "first_article_id": first_article_id})
+
+
+@first_article_bp.get("/api/first-article/new-parts")
+def api_list_first_article_new_parts():
+    try:
+        with planner_db() as con:
+            pics = load_pics(con)
+        rows = list_new_part_rows()
+    except Exception as exc:
+        logger.exception("first article new-parts list failed")
+        payload, status = json_error(exc, fallback_status=502)
+        return jsonify(payload), status
+    return jsonify({"ok": True, "count": len(rows), "rows": rows, "pics": pics})
+
+
+@first_article_bp.patch("/api/first-article/new-parts")
+def api_update_first_article_new_part():
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "A JSON object is required"}), 400
+    patch = {key: data[key] for key in _NEW_PART_PATCH_FIELDS if key in data}
+    process_sheet_no = compact_text(data.get("process_sheet_no") or data.get("pp_voucher_no"))
+    if not process_sheet_no:
+        return jsonify({"error": "process_sheet_no is required"}), 400
+    if not patch:
+        return jsonify({"error": "No editable fields supplied"}), 400
+    patch["process_sheet_no"] = process_sheet_no
+    if compact_text(data.get("pp_voucher_no")):
+        patch["pp_voucher_no"] = compact_text(data.get("pp_voucher_no"))
+    try:
+        row = update_new_part_row(patch)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("first article new-part update failed")
+        payload, status = json_error(exc)
+        return jsonify(payload), status
+    return jsonify({"ok": True, "row": row})
 
 
 @first_article_bp.get("/api/first-article/pics")

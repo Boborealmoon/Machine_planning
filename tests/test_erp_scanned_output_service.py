@@ -14,6 +14,7 @@ from planning.erp_scanned_output_service import (
     group_jumps_by_machine,
     jumps_from_snapshot_series,
     machine_sort_key,
+    poll_qty_changes,
     wo_stage_key,
 )
 import planning.erp_scanned_output_service as erp_scanned_output_service
@@ -168,3 +169,81 @@ class ErpScannedOutputServiceTests(TestCase):
         self.assertEqual(payload["jumps"], [])
         self.assertTrue(payload["schema_ready"])
         self.assertFalse(any("planner_erp_wo_qty_snapshot" in sql for sql in executed))
+
+    def test_poll_qty_changes_first_seen_is_baseline_not_jump(self):
+        scanned_at = datetime(2026, 8, 24, 2, 0, tzinfo=timezone.utc)
+        current = [{
+            "source_mps_no": "NPS26-0280",
+            "pp_partial_no": 1,
+            "stage_no": 4,
+            "total_acc_qty_produced": 23,
+            "total_rej_qty_produced": 0,
+        }]
+        jumps, upserts = poll_qty_changes(
+            current,
+            {},
+            scanned_at=scanned_at,
+            scanned_date=date(2026, 8, 24),
+        )
+        self.assertEqual(jumps, [])
+        self.assertEqual(len(upserts), 1)
+        self.assertEqual(upserts[0]["acc_qty_produced"], 23)
+        self.assertEqual(upserts[0]["source_mps_no"], "NPS26-0280")
+
+    def test_poll_qty_changes_records_increase_and_skips_flat_qty(self):
+        scanned_at = datetime(2026, 8, 24, 2, 5, tzinfo=timezone.utc)
+        previous = {
+            ("NPS26-0280", 1, 4): {"acc_qty_produced": 23, "acc_rej_qty_produced": 0},
+            ("NPS26-0100", 1, 2): {"acc_qty_produced": 10, "acc_rej_qty_produced": 0},
+        }
+        current = [
+            {
+                "source_mps_no": "NPS26-0280",
+                "pp_partial_no": 1,
+                "stage_no": 4,
+                "total_acc_qty_produced": 53,
+                "total_rej_qty_produced": 0,
+            },
+            {
+                "source_mps_no": "NPS26-0100",
+                "pp_partial_no": 1,
+                "stage_no": 2,
+                "total_acc_qty_produced": 10,
+                "total_rej_qty_produced": 0,
+            },
+        ]
+        jumps, upserts = poll_qty_changes(
+            current,
+            previous,
+            scanned_at=scanned_at,
+            scanned_date=date(2026, 8, 24),
+        )
+        self.assertEqual(len(jumps), 1)
+        self.assertEqual(jumps[0]["qty_jump"], 30)
+        self.assertEqual(jumps[0]["prev_acc_qty"], 23)
+        self.assertEqual(jumps[0]["new_acc_qty"], 53)
+        self.assertEqual(len(upserts), 1)
+        self.assertEqual(upserts[0]["source_mps_no"], "NPS26-0280")
+        self.assertEqual(upserts[0]["acc_qty_produced"], 53)
+
+    def test_poll_qty_changes_merges_two_increases_in_one_window(self):
+        scanned_at = datetime(2026, 8, 24, 2, 10, tzinfo=timezone.utc)
+        previous = {
+            ("APS1", 1, 1): {"acc_qty_produced": 10, "acc_rej_qty_produced": 0},
+        }
+        current = [{
+            "source_mps_no": "APS1",
+            "pp_partial_no": 1,
+            "stage_no": 1,
+            "total_acc_qty_produced": 25,
+        }]
+        jumps, upserts = poll_qty_changes(
+            current,
+            previous,
+            scanned_at=scanned_at,
+            scanned_date=date(2026, 8, 24),
+        )
+        self.assertEqual(len(jumps), 1)
+        self.assertEqual(jumps[0]["qty_jump"], 15)
+        self.assertEqual(len(upserts), 1)
+        self.assertEqual(upserts[0]["acc_qty_produced"], 25)

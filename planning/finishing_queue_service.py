@@ -9,6 +9,7 @@ from typing import Any
 
 from planning.erp_wo_merge import (
     FINISHING_STAGE_DESCS,
+    finishing_final_inspection_sql_match,
     finishing_stage_bucket,
     finishing_stage_sql_match,
     is_finishing_stage_desc,
@@ -40,8 +41,10 @@ def _open_execution_status_sql(column: str) -> str:
 
 def _finishing_stage_eq_sql(column: str) -> str:
     """Index-friendly finishing predicate (mfg_wo_status.stage_desc is stored trimmed)."""
+    final_insp = finishing_final_inspection_sql_match(column)
     return f"""(
         {column} = ANY(%s)
+        OR {final_insp}
         OR {column} ILIKE 'Engraving%%Packing%%'
         OR {column} ILIKE 'Packing%%Engraving%%'
     )"""
@@ -199,7 +202,7 @@ LEFT JOIN LATERAL (
 ORDER BY
     CASE
         WHEN fc.current_stage_desc = 'Deburring' THEN 1
-        WHEN fc.current_stage_desc = 'Final Inspection' THEN 2
+        WHEN {finishing_final_inspection_sql_match("fc.current_stage_desc")} THEN 2
         WHEN fc.current_stage_desc = 'Packing' THEN 3
         WHEN fc.current_stage_desc ILIKE 'Engraving%%Packing%%'
           OR fc.current_stage_desc ILIKE 'Packing%%Engraving%%' THEN 4

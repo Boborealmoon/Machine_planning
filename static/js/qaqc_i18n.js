@@ -597,7 +597,11 @@ function fqStageDescI18n(desc) {
     'material issue and assembly': 'stage_desc_material_issue',
   };
   const key = map[norm];
-  return key ? fqT(key) : raw;
+  if (key) return fqT(key);
+  if (norm.startsWith('final insp') || norm.startsWith('final ispection')) {
+    return fqT('stage_desc_final_inspection');
+  }
+  return raw;
 }
 
 function fqMiViewLabelI18n(view) {

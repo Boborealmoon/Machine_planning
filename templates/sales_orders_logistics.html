@@ -7,73 +7,95 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260817-requests">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260824-qc-checklist-2">
 {% endblock %}
 {% block content %}
 <div class="sol-page">
   <header class="sol-header">
     <div class="sol-header-text">
+      <p class="sol-kicker">Logistics</p>
       <h1 class="sol-title">Material Tracking</h1>
       <p class="sol-subtitle" id="sol-subtitle" aria-live="polite">Loading process sheets...</p>
+      <div class="sol-stat-pills" id="sol-stat-pills" aria-live="polite"></div>
     </div>
     <div class="sol-header-actions">
       <button type="button" class="sol-btn sol-btn--primary" id="sol-refresh">Refresh</button>
     </div>
   </header>
 
-  <nav class="sol-nav" aria-label="Filters">
-    <div class="sol-nav-group" role="tablist" aria-label="View">
-      <button type="button" class="sol-chip is-active" data-sol-view="active" role="tab" aria-selected="true">
-        Active <span class="sol-chip-count" id="sol-active-count" hidden>0</span>
-      </button>
-      <button type="button" class="sol-chip" data-sol-view="no-wo" role="tab" aria-selected="false"
-              title="Process sheets with PP raised but no work order yet">
-        No WO <span class="sol-chip-count" id="sol-no-wo-count" hidden>0</span>
-      </button>
-      <button type="button" class="sol-chip" data-sol-view="pr-enquiry" role="tab" aria-selected="false"
-              title="Purchase request status enquiry">
-        PR Enquiry <span class="sol-chip-count" id="sol-pr-count" hidden>0</span>
-      </button>
-      <button type="button" class="sol-chip" data-sol-view="purchase-order" role="tab" aria-selected="false"
-              title="Purchase order status">
-        Purchase Order <span class="sol-chip-count" id="sol-po-count" hidden>0</span>
-      </button>
-      <button type="button" class="sol-chip" data-sol-view="part-requests" role="tab" aria-selected="false"
-              title="Track part / inventory material without a process sheet">
-        Part requests <span class="sol-chip-count" id="sol-req-count" hidden>0</span>
-      </button>
-    </div>
-    <div class="sol-nav-group sol-bucket-group" id="sol-bucket-group" role="tablist" aria-label="PR / PO bucket" hidden>
-      <button type="button" class="sol-chip sol-chip--bucket is-active" data-sol-bucket="ost" role="tab" aria-selected="true">
-        Outstanding <span class="sol-chip-count" id="sol-bucket-ost-count" hidden>0</span>
-      </button>
-      <button type="button" class="sol-chip sol-chip--bucket" data-sol-bucket="new" role="tab" aria-selected="false" hidden>
-        New <span class="sol-chip-count" id="sol-bucket-new-count" hidden>0</span>
-      </button>
-      <button type="button" class="sol-chip sol-chip--bucket" data-sol-bucket="hst" role="tab" aria-selected="false">
-        History <span class="sol-chip-count" id="sol-bucket-hst-count" hidden>0</span>
-      </button>
-    </div>
-    <select id="sol-material-filter" class="sol-select sol-edd-filter" aria-label="Filter by material status">
-      <option value="all">All material status</option>
-      <option value="empty">No date / not arrived</option>
-      <option value="expected">Expected date set</option>
-      <option value="arrived">Arrived</option>
-    </select>
-    <div class="filter-dropdown sol-ps-only" id="sol-ps-type-dropdown">
-      <button class="filter-dropdown-btn sol-prefix-btn" type="button" id="sol-ps-type-btn">APS, NPS</button>
-      <div class="filter-dropdown-panel" id="sol-ps-type-panel" hidden>
-        <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
-        <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
-        <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
-        <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
-        <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
-        <label class="filter-dropdown-item"><input type="checkbox" value="SR" /> [SR]</label>
+  <nav class="sol-toolbar" aria-label="Filters">
+    <div class="sol-nav">
+      <div class="sol-nav-group" role="tablist" aria-label="View">
+        <button type="button" class="sol-chip is-active" data-sol-view="active" role="tab" aria-selected="true">
+          Active <span class="sol-chip-count" id="sol-active-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-view="no-wo" role="tab" aria-selected="false"
+                title="Process sheets with PP raised but no work order yet">
+          No WO <span class="sol-chip-count" id="sol-no-wo-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-view="pr-enquiry" role="tab" aria-selected="false"
+                title="Purchase request status enquiry">
+          PR Enquiry <span class="sol-chip-count" id="sol-pr-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-view="purchase-order" role="tab" aria-selected="false"
+                title="Purchase order status">
+          Purchase Order <span class="sol-chip-count" id="sol-po-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-view="part-requests" role="tab" aria-selected="false"
+                title="Track part / inventory material without a process sheet">
+          Part requests <span class="sol-chip-count" id="sol-req-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-view="qc-checklist" role="tab" aria-selected="false"
+                title="Inbound shipments ready for QC, or received with no GRN yet">
+          QC checklist <span class="sol-chip-count" id="sol-qc-count" hidden>0</span>
+        </button>
       </div>
+      <div class="sol-nav-group sol-bucket-group" id="sol-bucket-group" role="tablist" aria-label="PR / PO bucket" hidden>
+        <button type="button" class="sol-chip sol-chip--bucket is-active" data-sol-bucket="ost" role="tab" aria-selected="true">
+          Outstanding <span class="sol-chip-count" id="sol-bucket-ost-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip sol-chip--bucket" data-sol-bucket="new" role="tab" aria-selected="false" hidden>
+          New <span class="sol-chip-count" id="sol-bucket-new-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip sol-chip--bucket" data-sol-bucket="hst" role="tab" aria-selected="false">
+          History <span class="sol-chip-count" id="sol-bucket-hst-count" hidden>0</span>
+        </button>
+      </div>
+      <div class="sol-nav-group sol-qc-bucket-group" id="sol-qc-bucket-group" role="tablist" aria-label="QC checklist bucket" hidden>
+        <button type="button" class="sol-chip sol-chip--bucket is-active" data-sol-qc-bucket="ready_qc" role="tab" aria-selected="true"
+                title="Inbound shipment has a GRN — ready for material inspection">
+          Ready for QC <span class="sol-chip-count" id="sol-qc-ready-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip sol-chip--bucket" data-sol-qc-bucket="awaiting_grn" role="tab" aria-selected="false"
+                title="Material received on the inbound shipment, but ERP has not generated a GRN">
+          Awaiting GRN <span class="sol-chip-count" id="sol-qc-awaiting-count" hidden>0</span>
+        </button>
+      </div>
+      <select id="sol-material-filter" class="sol-select sol-edd-filter" aria-label="Filter by material status">
+        <option value="all">All material status</option>
+        <option value="empty">No date / not arrived</option>
+        <option value="expected">Expected date set</option>
+        <option value="arrived">Arrived</option>
+      </select>
+      <div class="filter-dropdown sol-ps-only" id="sol-ps-type-dropdown">
+        <button class="filter-dropdown-btn sol-prefix-btn" type="button" id="sol-ps-type-btn">APS, NPS</button>
+        <div class="filter-dropdown-panel" id="sol-ps-type-panel" hidden>
+          <label class="filter-dropdown-item"><input type="checkbox" value="MPS" /> MPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="CPS" /> CPS</label>
+          <label class="filter-dropdown-item"><input type="checkbox" value="SR" /> [SR]</label>
+        </div>
+      </div>
+      <label class="sol-search-wrap">
+        <svg class="sol-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="sol-search" class="sol-search-input" type="search" placeholder="Search SO, PP, part, customer..." autocomplete="off">
+      </label>
     </div>
-    <label class="sol-search-wrap">
-      <input id="sol-search" class="sol-search-input" type="search" placeholder="Search SO, PP, part, customer..." autocomplete="off">
-    </label>
   </nav>
 
   <div class="sol-add-bar sol-req-only" id="sol-add-bar" hidden>
@@ -130,7 +152,10 @@
     </div>
   </div>
 
-  <p id="sol-empty" class="sol-empty" hidden>No rows match your filters.</p>
+  <p id="sol-empty" class="sol-empty" hidden>
+    <span class="sol-empty-title">No rows match your filters</span>
+    <span class="sol-empty-copy">Try another tab, clear search, or refresh from ERP.</span>
+  </p>
 
   <footer class="sol-foot">
     <p class="sol-legend" id="sol-legend">
@@ -163,5 +188,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260818-staged"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260824-qc-checklist"></script>
 {% endblock %}

@@ -422,7 +422,56 @@
     }
   }
 
+  const LAUNCH_STORAGE_KEY = 'adminLaunchOpen';
+
+  function initLaunchDirectory() {
+    const groups = Array.from(document.querySelectorAll('.admin-launch-group[data-group]'));
+    const toggleAll = get('admin-launch-toggle-all');
+    if (!groups.length || !toggleAll) return;
+
+    function loadOpen() {
+      try {
+        const raw = localStorage.getItem(LAUNCH_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed.map(String) : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function saveOpen() {
+      const open = groups.filter(group => group.open).map(group => group.dataset.group);
+      try { localStorage.setItem(LAUNCH_STORAGE_KEY, JSON.stringify(open)); } catch (_) { /* ignore */ }
+    }
+
+    function syncToggleLabel() {
+      const allOpen = groups.every(group => group.open);
+      toggleAll.textContent = allOpen ? 'Collapse all' : 'Expand all';
+    }
+
+    loadOpen().forEach(id => {
+      const group = groups.find(item => item.dataset.group === id);
+      if (group) group.open = true;
+    });
+    syncToggleLabel();
+
+    groups.forEach(group => {
+      group.addEventListener('toggle', () => {
+        saveOpen();
+        syncToggleLabel();
+      });
+    });
+
+    toggleAll.addEventListener('click', () => {
+      const allOpen = groups.every(group => group.open);
+      groups.forEach(group => { group.open = !allOpen; });
+      saveOpen();
+      syncToggleLabel();
+    });
+  }
+
   document.addEventListener('DOMContentLoaded', () => {
+    initLaunchDirectory();
     get('note-form').addEventListener('submit', saveNote);
     get('note-cancel').addEventListener('click', () => clearComposer());
     get('notes-refresh').addEventListener('click', loadNotes);

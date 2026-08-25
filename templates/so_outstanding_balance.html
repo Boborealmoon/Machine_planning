@@ -2,7 +2,7 @@
 {% block title %}SO Outstanding Balance{% endblock %}
 {% block main_class %}app-main--sob{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/so_outstanding_balance.css') }}?v=sob-20260803a">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/so_outstanding_balance.css') }}?v=sob-20260825a">
 {% endblock %}
 {% block content %}
 <div class="sob-page">
@@ -10,14 +10,18 @@
     <div>
       <h1 class="sob-title">SO Outstanding Balance</h1>
       <p class="sob-subtitle">
-        Open PP / partials. <strong>Open qty</strong> = actual remaining balance (SO qty − shipped, allocated to PP).
+        Open PP / partials that still have remaining S/O qty. Lines that are fully shipped,
+        voided, or already closed in ERP are excluded. Open S/O lines with no PP yet
+        appear as <strong>No PP</strong>.
+        <strong>Open qty</strong> = SO qty − shipped, allocated to PP.
         <strong>SO value</strong> = unit x SO qty x exch.
         <strong>Outstanding</strong> = unit x open qty x exch. Week from Coway EDD, else PO due.
+        <strong>Export all</strong> includes every currently open line, not just the filtered view.
       </p>
     </div>
     <div class="sob-header-actions">
       <button type="button" class="btn btn-ghost btn-sm" id="sob-export-selected" disabled>Export selected</button>
-      <button type="button" class="btn btn-ghost btn-sm" id="sob-export">Export all</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="sob-export" title="Export every currently open S/O line, including types hidden by the PS filter">Export all</button>
       <button type="button" class="btn btn-secondary btn-sm" id="sob-refresh">Refresh</button>
     </div>
   </header>
@@ -131,5 +135,5 @@
 <div id="sob-col-filter-popover" class="sob-col-filter-popover" hidden></div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/so_outstanding_balance.js') }}?v=sob-20260803a"></script>
+<script src="{{ url_for('static', filename='js/so_outstanding_balance.js') }}?v=sob-20260825a"></script>
 {% endblock %}

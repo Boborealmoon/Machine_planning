@@ -1,7 +1,8 @@
 /* SO outstanding balance - Reports */
 
-const SOB_PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
-const SOB_DEFAULT_PS_TYPES = ['APS', 'NPS', 'PPS'];
+const SOB_PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR', 'NOPP'];
+const SOB_DEFAULT_PS_TYPES = ['APS', 'NPS', 'PPS', 'NOPP'];
+const SOB_OPEN_QTY_TOLERANCE = 0.0001;
 
 const sobState = {
   data: null,
@@ -78,7 +79,12 @@ function sobRowId(row) {
   return `${ps}|${partial}`;
 }
 
+function sobPsTypeLabel(type) {
+  return type === 'NOPP' ? 'No PP' : type;
+}
+
 function sobPsDisplay(row) {
+  if (sobPsType(row) === 'NOPP') return 'No PP';
   const ps = String(row?.process_sheet_no || row?.pp_voucher_no || '').trim();
   const partial = Number(row?.pp_partial_no);
   if (ps && Number.isFinite(partial) && partial > 1) return `${ps}/${partial}`;
@@ -87,11 +93,13 @@ function sobPsDisplay(row) {
 
 function sobPsType(row) {
   const typed = String(row?.ps_type || '').trim().toUpperCase();
-  if (typed) return typed;
+  if (typed) return typed === 'NONE' ? 'NOPP' : typed;
+  const mode = String(row?.erp_stage_mode || '').trim().toLowerCase();
+  if (mode === 'no_pp') return 'NOPP';
   const ps = String(row?.process_sheet_no || row?.pp_voucher_no || '').trim().toUpperCase();
   if (ps.startsWith('[SR]') || ps.startsWith('SR')) return 'SR';
   for (const prefix of SOB_PS_TYPES) {
-    if (ps.startsWith(prefix)) return prefix;
+    if (prefix !== 'NOPP' && ps.startsWith(prefix)) return prefix;
   }
   return '';
 }
@@ -257,6 +265,7 @@ function sobCustomerRows() {
 function sobStatusKind(status) {
   const text = String(status || '').toLowerCase();
   if (!text || text === '(blank)' || text === '-') return 'blank';
+  if (text.includes('no pp')) return 'nowo';
   if (text.includes('no wo')) return 'nowo';
   if (text.includes('all stages complete')) return 'done';
   if (text.includes('in process')) return 'process';
@@ -276,7 +285,7 @@ function sobActiveFilterChips() {
   if (sobState.psTypes.size && sobState.psTypes.size < SOB_PS_TYPES.length) {
     chips.push({
       id: 'ps',
-      label: `PS: ${[...sobState.psTypes].join(', ')}`,
+      label: `PS: ${[...sobState.psTypes].map(sobPsTypeLabel).join(', ')}`,
       clear: 'ps',
     });
   }
@@ -467,7 +476,7 @@ function sobRenderTypeChips() {
   if (!el) return;
   el.innerHTML = SOB_PS_TYPES.map((type) => {
     const active = sobState.psTypes.has(type) ? ' is-active' : '';
-    return `<button type="button" class="sob-type-chip${active}" data-ps-type="${type}">${type}</button>`;
+    return `<button type="button" class="sob-type-chip${active}" data-ps-type="${type}">${sobPsTypeLabel(type)}</button>`;
   }).join('');
 }
 
@@ -506,8 +515,8 @@ function sobRenderMeta() {
   el.innerHTML = `<strong>${visible}</strong> shown <span class="sob-meta-sep">/</span> ${total} total`;
   if (sub) {
     sub.textContent = sobHasActiveFilters()
-      ? 'Filters active - KPIs and export follow the current view.'
-      : 'Select rows to export a subset.';
+      ? 'Filters apply to this table and KPIs. Export all includes every currently open S/O line.'
+      : 'Select rows to export a subset. Export all includes every currently open line.';
   }
 }
 
@@ -671,6 +680,13 @@ function sobCsvEscape(value) {
   return text;
 }
 
+function sobAllActiveLines() {
+  const lines = (sobState.data?.lines || []).filter(
+    (row) => (Number(row.remaining_qty) || 0) > SOB_OPEN_QTY_TOLERANCE,
+  );
+  return [...lines].sort((a, b) => sobCompare(a, b, sobState.sortCol, sobState.sortDir));
+}
+
 function sobExportLines(lines, filenameSuffix) {
   const headers = [
     'sales_order_no',
@@ -698,7 +714,7 @@ function sobExportLines(lines, filenameSuffix) {
   for (const line of lines) {
     rows.push(headers.map((key) => sobCsvEscape(line[key] ?? '')).join(','));
   }
-  const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const blob = new Blob(['\uFEFF' + rows.join('\n')], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -747,7 +763,7 @@ async function sobLoad(refresh = false) {
 function sobBind() {
   document.getElementById('sob-refresh')?.addEventListener('click', () => sobLoad(true));
   document.getElementById('sob-export')?.addEventListener('click', () => {
-    sobExportLines(sobVisibleLines(), 'all');
+    sobExportLines(sobAllActiveLines(), 'all');
   });
   document.getElementById('sob-export-selected')?.addEventListener('click', () => {
     const selected = sobVisibleLines().filter((row) => sobState.selected.has(sobRowId(row)));

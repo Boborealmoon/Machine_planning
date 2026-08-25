@@ -3,15 +3,11 @@
 {% block title %}Admin Hub{% endblock %}
 {% block body_class %}notes-body{% endblock %}
 {% block main_class %}notes-main{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/notes.css') }}?v=20260818-sync-erp">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/notes.css') }}?v=20260824-dir2">{% endblock %}
 
 {% block content %}
-{% macro launch_link(label, href, description="") -%}
-<a class="admin-launch-link" href="{{ href }}">
-  <span class="admin-launch-name">{{ label }}</span>
-  {% if description %}<span class="admin-launch-description">{{ description }}</span>{% endif %}
-  <span class="admin-launch-arrow" aria-hidden="true">&rarr;</span>
-</a>
+{% macro launch_link(label, href) -%}
+<a class="admin-launch-link" href="{{ href }}">{{ label }}</a>
 {%- endmacro %}
 
 <div class="notes-page">
@@ -33,136 +29,127 @@
     <div class="admin-launcher-heading">
       <div>
         <h2 id="admin-launcher-title">Screen directory</h2>
-        <p>Select a screen to open it directly.</p>
+        <p>Grouped to match the current tabs. Expand a section to open a screen.</p>
       </div>
+      <button type="button" class="admin-launch-toggle-all" id="admin-launch-toggle-all">Expand all</button>
     </div>
 
     <div class="admin-launch-groups">
-      <section class="admin-launch-group admin-launch-group--mro">
-        <div class="admin-launch-group-heading">
-          <span class="admin-launch-icon" aria-hidden="true">M</span>
-          <div><h3>MRO</h3><p>Repair and overhaul workflows</p></div>
-        </div>
-        <div class="admin-launch-links">
-          {{ launch_link("ARC Certificate", url_for("mro.mro_page"), "Create and review certificates") }}
-          {{ launch_link("Process Sheet Tracking", url_for("mro.mro_tracking_page"), "Track MRO process sheets") }}
-          {{ launch_link(
-            "MRO Users & Approvals",
-            url_for("mro_auth.mro_admin_users_page", **({"at": admin_token} if admin_token else {})),
-            "Approve accounts and manage credentials"
-          ) }}
-        </div>
-      </section>
-
-      <section class="admin-launch-group admin-launch-group--pps">
-        <div class="admin-launch-group-heading">
-          <span class="admin-launch-icon" aria-hidden="true">P</span>
-          <div><h3>PPS</h3><p>PPS process sheet tracking</p></div>
-        </div>
-        <div class="admin-launch-links">
-          {{ launch_link("PPS Process Sheet Tracking", url_for("pps.pps_page"), "Track PPS-tagged process sheets only") }}
-        </div>
-      </section>
-
-      <section class="admin-launch-group admin-launch-group--accounts">
-        <div class="admin-launch-group-heading">
+      <details class="admin-launch-group admin-launch-group--apps" data-group="apps">
+        <summary class="admin-launch-summary">
           <span class="admin-launch-icon" aria-hidden="true">A</span>
-          <div><h3>Accounts</h3><p>Finance and customer records</p></div>
-        </div>
+          <div><h3>Apps</h3><p>MRO, PPS, Accounts</p></div>
+        </summary>
         <div class="admin-launch-links">
-          {{ launch_link("Accounts Dashboard", url_for("accounts.accounts_page"), "Credit notes and statements") }}
+          {{ launch_link("ARC Certificate", url_for("mro.mro_page")) }}
+          {{ launch_link("MRO Process Sheet Tracking", url_for("mro.mro_tracking_page")) }}
+          {{ launch_link("MRO Users & Approvals", url_for("mro_auth.mro_admin_users_page", **({"at": admin_token} if admin_token else {}))) }}
+          {{ launch_link("PPS Process Sheet Tracking", url_for("pps.pps_page")) }}
+          {{ launch_link("Accounts Dashboard", url_for("accounts.accounts_page")) }}
+          {{ launch_link("Shift Management Users", url_for("shift_mgmt_auth.shift_mgmt_admin_users_page", **({"at": admin_token} if admin_token else {}))) }}
         </div>
-      </section>
+      </details>
 
-      <section class="admin-launch-group admin-launch-group--views">
-        <div class="admin-launch-group-heading">
-          <span class="admin-launch-icon" aria-hidden="true">V</span>
-          <div><h3>Views</h3><p>Operational display screens</p></div>
-        </div>
-        <div class="admin-launch-links">
-          {{ launch_link("Machine Queue Overview", url_for("machinist_board"), "Live machine queue") }}
-          {{ launch_link("QAQC View", url_for("finishing_queue.finishing_queue_page"), "Finishing and inspection queue") }}
-          {{ launch_link("Delivery Schedule View", url_for("driver_view.driver_view_page"), "Driver and delivery view") }}
-          {{ launch_link("ERP Scanned Output", url_for("erp_scanned_output.erp_scanned_output_page"), "Accepted qty jumps from ERP scans, grouped by machine") }}
-        </div>
-      </section>
-
-      <section class="admin-launch-group admin-launch-group--shift">
-        <div class="admin-launch-group-heading">
-          <span class="admin-launch-icon" aria-hidden="true">S</span>
-          <div><h3>Shift Management</h3><p>Daily handover and takeover</p></div>
-        </div>
-        <div class="admin-launch-links">
-          {{ launch_link("Shift Management App", "/Shift-management", "Operator handover / takeover") }}
-          {{ launch_link(
-            "Shift Management Users",
-            url_for("shift_mgmt_auth.shift_mgmt_admin_users_page", **({"at": admin_token} if admin_token else {})),
-            "Approve accounts and reset PINs"
-          ) }}
-        </div>
-      </section>
-
-      <section class="admin-launch-group admin-launch-group--planner">
-        <div class="admin-launch-group-heading">
+      <details class="admin-launch-group admin-launch-group--planner" data-group="planner">
+        <summary class="admin-launch-summary">
           <span class="admin-launch-icon" aria-hidden="true">P</span>
-          <div><h3>Planner</h3><p>Planning, reports, data, and archives</p></div>
+          <div><h3>Planner</h3><p>Production and MPP</p></div>
+        </summary>
+        <div class="admin-launch-links">
+          {{ launch_link("Production Planner", url_for("planner")) }}
+          {{ launch_link("MPP Planner", "/mpp-planner") }}
         </div>
+      </details>
 
-        <div class="admin-planner-section">
-          <h4>Planning</h4>
-          <div class="admin-launch-links">
-            {{ launch_link("Production Planner", url_for("planner")) }}
-            {{ launch_link("MPP Planner", "/mpp-planner") }}
-            {{ launch_link("Process Sheets", url_for("process_sheets")) }}
-          </div>
+      <details class="admin-launch-group admin-launch-group--ops" data-group="ops">
+        <summary class="admin-launch-summary">
+          <span class="admin-launch-icon" aria-hidden="true">O</span>
+          <div><h3>Ops</h3><p>Process sheets and first article</p></div>
+        </summary>
+        <div class="admin-launch-links">
+          {{ launch_link("Process sheets", url_for("process_sheets")) }}
+          {{ launch_link("NPI/FA Management", url_for("first_article.first_article_page")) }}
         </div>
+      </details>
 
-        <div class="admin-planner-section">
-          <h4>Sales / Prod</h4>
-          <div class="admin-launch-links">
-            {{ launch_link("New Orders", url_for("new_orders.new_orders_page")) }}
-            {{ launch_link("S/O Management", url_for("sales_orders.sales_orders_page")) }}
-            {{ launch_link("Delivery Schedule", url_for("delivery")) }}
-            {{ launch_link("Mtl Stock-In/Out", url_for("materials")) }}
-          </div>
+      <details class="admin-launch-group admin-launch-group--sales" data-group="sales">
+        <summary class="admin-launch-summary">
+          <span class="admin-launch-icon" aria-hidden="true">S</span>
+          <div><h3>Sales / Prod</h3><p>Orders, delivery, material</p></div>
+        </summary>
+        <div class="admin-launch-links">
+          {{ launch_link("New orders", url_for("new_orders.new_orders_page")) }}
+          {{ launch_link("S/O management", url_for("sales_orders.sales_orders_page")) }}
+          {{ launch_link("Delivery schedule", url_for("delivery")) }}
+          {{ launch_link("Mtl Stock-In/Out", url_for("materials")) }}
         </div>
+      </details>
 
-        <div class="admin-planner-section">
-          <h4>Reports / Analytics</h4>
-          <div class="admin-launch-links">
-            {{ launch_link("Sales Report", url_for("sales_report.sales_report_page")) }}
-            {{ launch_link("Job Ratio Report", url_for("job_ratio.job_ratio_page")) }}
-            {{ launch_link("Machine Capacity", url_for("capacity_monthly.production_capacity_page")) }}
-            {{ launch_link("Repeat Orders", url_for("repeat_orders.repeat_orders_page")) }}
-            {{ launch_link("Tooling PR Analytics", url_for("pr_status_enquiry.pr_status_enquiry_page")) }}
-          </div>
+      <details class="admin-launch-group admin-launch-group--reports" data-group="reports">
+        <summary class="admin-launch-summary">
+          <span class="admin-launch-icon" aria-hidden="true">R</span>
+          <div><h3>Reports / Analytics</h3><p>Sales, capacity, tooling</p></div>
+        </summary>
+        <div class="admin-launch-links">
+          {{ launch_link("Sales report", url_for("sales_report.sales_report_page")) }}
+          {{ launch_link("SO outstanding balance", url_for("so_outstanding_balance.so_outstanding_balance_page")) }}
+          {{ launch_link("Job ratio report", url_for("job_ratio.job_ratio_page")) }}
+          {{ launch_link("Machine capacity", url_for("capacity_monthly.production_capacity_page")) }}
+          {{ launch_link("Repeat orders", url_for("repeat_orders.repeat_orders_page")) }}
+          {{ launch_link("Tooling PR analytics", url_for("pr_status_enquiry.pr_status_enquiry_page")) }}
         </div>
+      </details>
 
-        <div class="admin-planner-section">
-          <h4>Queries &amp; Master Data</h4>
-          <div class="admin-launch-links">
-            {{ launch_link("Inventory Enquiry", url_for("inventory_enquiry.inventory_enquiry_page")) }}
-            {{ launch_link("Inventory BOM", url_for("inventory_bom")) }}
-            {{ launch_link("BOM Variation", url_for("bom_variation.bom_variation_page")) }}
-            {{ launch_link("Assembly BOMs", url_for("assembly_bom.assembly_bom_page"), "Assembly structure view") }}
-            {{ launch_link("Machine List / Config", url_for("machines_page")) }}
-            {{ launch_link("Master Cycle Times", url_for("cycle_times_page")) }}
-            {{ launch_link("Program / Tool Tracker", url_for("program_tool_tracker.program_tool_tracker_page")) }}
-            {{ launch_link("Frame Agreement Parts", url_for("frame_agreement.frame_agreement_parts_page")) }}
-          </div>
+      <details class="admin-launch-group admin-launch-group--queries" data-group="queries">
+        <summary class="admin-launch-summary">
+          <span class="admin-launch-icon" aria-hidden="true">Q</span>
+          <div><h3>Queries &amp; Master Data</h3><p>ERP query and master files</p></div>
+        </summary>
+        <div class="admin-launch-links">
+          {{ launch_link("Inventory enquiry", url_for("inventory_enquiry.inventory_enquiry_page")) }}
+          {{ launch_link("Inventory BOM", url_for("inventory_bom")) }}
+          {{ launch_link("BOM variation", url_for("bom_variation.bom_variation_page")) }}
+          {{ launch_link("Assembly BOMs", url_for("assembly_bom.assembly_bom_page")) }}
+          {{ launch_link("Machine list / config", url_for("machines_page")) }}
+          {{ launch_link("Master cycle times", url_for("cycle_times_page")) }}
+          {{ launch_link("Program / tool tracker", url_for("program_tool_tracker.program_tool_tracker_page")) }}
+          {{ launch_link("Frame agreement parts", url_for("frame_agreement.frame_agreement_parts_page")) }}
         </div>
+      </details>
 
-        <div class="admin-planner-section">
-          <h4>Archive</h4>
-          <div class="admin-launch-links">
-            {{ launch_link("SO Line Archive", url_for("so_archive.so_archive_page")) }}
-            {{ launch_link("Daily Output", url_for("daily_output_view")) }}
-            {{ launch_link("ERP Scanned Output", url_for("erp_scanned_output.erp_scanned_output_page")) }}
-            {{ launch_link("AUK OEE Dashboard", url_for("auk_oee.auk_oee_page")) }}
-            {{ launch_link("Preferred Machines", url_for("preferred_machines.preferred_machines_page")) }}
-          </div>
+      <details class="admin-launch-group admin-launch-group--views" data-group="views">
+        <summary class="admin-launch-summary">
+          <span class="admin-launch-icon" aria-hidden="true">V</span>
+          <div><h3>Views</h3><p>Shop-floor and operational screens</p></div>
+        </summary>
+        <div class="admin-launch-links">
+          {{ launch_link("Machine Queue Overview", url_for("machinist_board")) }}
+          {{ launch_link("QAQC View", url_for("finishing_queue.finishing_queue_page")) }}
+          {{ launch_link("Assembly Parts", url_for("assembly_parts.assembly_parts_page")) }}
+          {{ launch_link("Delivery Schedule View", url_for("driver_view.driver_view_page")) }}
+          {{ launch_link("Material Tracking", url_for("sales_orders.sales_orders_logistics_page")) }}
+          {{ launch_link("Sales Coordination", url_for("sales_coordination.sales_coordination_page")) }}
+          {{ launch_link("Shift Management", "/Shift-management") }}
+          {{ launch_link("ERP scanned output", url_for("erp_scanned_output.erp_scanned_output_page")) }}
         </div>
-      </section>
+      </details>
+
+      <details class="admin-launch-group admin-launch-group--archive" data-group="archive">
+        <summary class="admin-launch-summary">
+          <span class="admin-launch-icon" aria-hidden="true">H</span>
+          <div><h3>Archive</h3><p>History and reference views</p></div>
+        </summary>
+        <div class="admin-launch-links">
+          {{ launch_link("RFQ checker", url_for("rfq_checker.rfq_checker_page")) }}
+          {{ launch_link("SO line archive", url_for("so_archive.so_archive_page")) }}
+          {{ launch_link("Daily output", url_for("daily_output_view")) }}
+          {{ launch_link("ERP scanned output", url_for("erp_scanned_output.erp_scanned_output_page")) }}
+          {{ launch_link("AUK OEE dashboard", url_for("auk_oee.auk_oee_page")) }}
+          {{ launch_link("Preferred machines", url_for("preferred_machines.preferred_machines_page")) }}
+          {{ launch_link("Factory floor plan", url_for("floor_plan.floor_plan_page")) }}
+          {{ launch_link("Monthly delivery plan", url_for("monthly_delivery_plan.monthly_delivery_plan_page")) }}
+        </div>
+      </details>
     </div>
   </section>
 
@@ -213,5 +200,5 @@
 
 {% block scripts %}
 <script>window.__ADMIN_GATE_TOKEN__ = {{ (admin_token or "") | tojson }};</script>
-<script src="{{ url_for('static', filename='js/notes.js') }}?v=20260724a"></script>
+<script src="{{ url_for('static', filename='js/notes.js') }}?v=20260824-dir2"></script>
 {% endblock %}

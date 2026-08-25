@@ -187,6 +187,21 @@
   color: #64748b;
 }
 
+.sob-loading[hidden],
+.sob-alert[hidden],
+.sob-kpi-grid[hidden],
+.sob-customer-panel[hidden],
+.sob-table-panel[hidden],
+.sob-empty[hidden],
+.sob-filter-chips[hidden],
+.sob-selection-pill[hidden],
+#sob-clear-filters[hidden],
+#sob-clear-customer[hidden],
+.sob-col-filter-popover[hidden],
+.sob-filter-badge[hidden] {
+  display: none !important;
+}
+
 .sob-alert {
   padding: 0.7rem 0.9rem;
   border-radius: 8px;
