@@ -3,7 +3,7 @@
 {% block body_class %}fa-view{% endblock %}
 {% block main_class %}app-main--first-article{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260825-2">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260826-4">
 {% endblock %}
 {% block content %}
 <div class="fa-page">
@@ -25,6 +25,10 @@
     <button type="button" class="fa-tab" id="fa-tab-new" data-fa-tab="new"
             role="tab" aria-selected="false" aria-controls="fa-panel-new">
       New parts <span class="fa-tab-count" id="fa-new-count" hidden>0</span>
+    </button>
+    <button type="button" class="fa-tab" id="fa-tab-history" data-fa-tab="history"
+            role="tab" aria-selected="false" aria-controls="fa-panel-history">
+      History <span class="fa-tab-count" id="fa-history-count" hidden>0</span>
     </button>
   </div>
 
@@ -48,6 +52,8 @@
             title="Flag the process sheet typed in the search box">Flag</button>
     <button type="button" class="fa-btn fa-btn--ghost fa-bulk-btn" id="fa-bulk-flag"
             title="Select multiple active or historical process sheets">Bulk flag</button>
+    <button type="button" class="fa-btn fa-btn--ghost" id="fa-import-excel"
+            title="Import process sheets and tracker fields from Excel">Import Excel</button>
     <p class="fa-add-status" id="fa-add-status" aria-live="polite"></p>
   </section>
 
@@ -67,7 +73,7 @@
             <th>Part Description</th>
             <th class="fa-col-qty">Total Qty</th>
             <th class="fa-col-date">PO Due Date</th>
-            <th class="fa-col-stage" title="Current work-order stage from ERP">ERP stage</th>
+            <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
             <th class="fa-col-machine">Machine (CNC)</th>
             <th class="fa-col-edd" title="Read-only from S/O management">Stipulated Coway EDD</th>
             <th class="fa-col-pic">PIC</th>
@@ -82,10 +88,23 @@
       </table>
     </div>
   </div>
-  <p id="fa-empty" class="fa-empty" hidden>No process sheets flagged yet. Search a PS number or use Bulk flag to add jobs.</p>
+  <p id="fa-empty" class="fa-empty" hidden>No process sheets flagged yet. Search a PS number, use Bulk flag, or import an Excel sheet.</p>
   </div>
 
   <div id="fa-panel-new" class="fa-panel" role="tabpanel" aria-labelledby="fa-tab-new" hidden>
+    <section class="fa-flag-bar" aria-label="Add exception to NEW parts">
+      <div class="fa-typeahead">
+        <label class="fa-add-label" for="fa-new-exception-search">Add exception</label>
+        <input id="fa-new-exception-search" class="fa-search-input" type="search"
+               placeholder="Search PS no or part no to track as an exception..."
+               autocomplete="off" aria-autocomplete="list" aria-expanded="false"
+               aria-controls="fa-new-exception-results">
+        <div id="fa-new-exception-results" class="fa-typeahead-results" role="listbox" hidden></div>
+      </div>
+      <button type="button" class="fa-btn fa-btn--primary" id="fa-new-exception-add"
+              title="Add the process sheet typed in the search box">Add</button>
+      <p class="fa-add-status" id="fa-new-exception-status" aria-live="polite"></p>
+    </section>
     <div class="fa-new-toolbar">
       <label class="fa-filter-wrap">
         <span class="fa-add-label">Filter new parts</span>
@@ -108,18 +127,59 @@
               <th class="fa-col-date">Posted</th>
               <th class="fa-col-date">PO Due Date</th>
               <th class="fa-col-qty">Qty</th>
+              <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
               <th class="fa-col-bom" title="Opens BOM materials. Green = part has ERP material lines, amber = none.">BOM</th>
               <th class="fa-col-material">Material</th>
               <th class="fa-col-pic">Programme PIC</th>
               <th class="fa-col-remarks">Remarks</th>
               <th class="fa-col-finish">Programme estimated finish</th>
+              <th class="fa-col-actions"></th>
             </tr>
           </thead>
           <tbody id="fa-new-table-body"></tbody>
         </table>
       </div>
     </div>
-    <p id="fa-new-empty" class="fa-empty" hidden>No NEW parts in active S/O management.</p>
+    <p id="fa-new-empty" class="fa-empty" hidden>No NEW parts in active S/O management. Add an exception to track a process sheet that is not tagged NEW.</p>
+  </div>
+
+  <div id="fa-panel-history" class="fa-panel" role="tabpanel" aria-labelledby="fa-tab-history" hidden>
+    <div class="fa-new-toolbar">
+      <label class="fa-filter-wrap">
+        <span class="fa-add-label">Filter history</span>
+        <input id="fa-history-filter" class="fa-search-input" type="search"
+               placeholder="Filter completed process sheets..." autocomplete="off">
+      </label>
+      <div>
+        <span class="fa-add-label">Process sheet type</span>
+        <div class="fa-new-types" id="fa-history-types" role="group" aria-label="Filter history by process sheet type"></div>
+      </div>
+    </div>
+    <div id="fa-history-table-host" class="fa-table-card" hidden>
+      <div class="fa-table-scroll">
+        <table class="fa-table fa-table--new" id="fa-history-table">
+          <thead>
+            <tr>
+              <th class="fa-col-ps">Process sheet</th>
+              <th>Part No.</th>
+              <th>Description</th>
+              <th class="fa-col-date">Posted</th>
+              <th class="fa-col-date">PO Due Date</th>
+              <th class="fa-col-qty">Qty</th>
+              <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
+              <th class="fa-col-bom" title="Opens BOM materials. Green = part has ERP material lines, amber = none.">BOM</th>
+              <th class="fa-col-material">Material</th>
+              <th class="fa-col-pic">Programme PIC</th>
+              <th class="fa-col-remarks">Remarks</th>
+              <th class="fa-col-finish">Programme estimated finish</th>
+              <th class="fa-col-actions"></th>
+            </tr>
+          </thead>
+          <tbody id="fa-history-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <p id="fa-completed-empty" class="fa-empty" hidden>No completed NEW process sheets yet. When WO / S/O status is complete, the row moves here with PIC, remarks, and finish date kept.</p>
   </div>
 </div>
 
@@ -175,6 +235,25 @@
   </div>
 </div>
 
+<div id="fa-import-modal" class="fa-modal-backdrop" hidden>
+  <div class="fa-modal-box" role="dialog" aria-modal="true" aria-labelledby="fa-import-modal-title">
+    <div class="fa-modal-head">
+      <h2 class="fa-modal-title" id="fa-import-modal-title">Import from Excel</h2>
+      <button type="button" class="fa-btn fa-btn--ghost" id="fa-import-modal-close">Close</button>
+    </div>
+    <p class="fa-modal-hint">Use the template headers. <strong>Data Input</strong> is the process sheet number — part number, description, qty and PO due date autofill from ERP. PIC names can be slash-separated (Chang Peng/Anand). Tooling, fixture and gauges accept OK, NA, a date, or a note.</p>
+    <div class="fa-import-actions">
+      <a class="fa-btn fa-btn--ghost" id="fa-import-template" href="/api/first-article/import-template">Download template</a>
+      <button type="button" class="fa-btn fa-btn--primary" id="fa-import-browse">Choose Excel file</button>
+      <input id="fa-import-file" type="file" accept=".xlsx,.xlsm,.xls" hidden>
+    </div>
+    <label class="fa-import-drop" id="fa-import-drop" for="fa-import-file">
+      Drop an .xlsx file here, or browse
+    </label>
+    <p id="fa-import-status" class="fa-pic-status" hidden></p>
+  </div>
+</div>
+
 <div id="fa-pic-modal" class="fa-modal-backdrop" hidden>
   <div class="fa-modal-box" role="dialog" aria-modal="true" aria-labelledby="fa-pic-modal-title">
     <div class="fa-modal-head">
@@ -189,6 +268,25 @@
     </form>
     <ul id="fa-pic-list" class="fa-pic-list"></ul>
     <p id="fa-pic-empty" class="fa-empty" hidden>No PIC names yet.</p>
+  </div>
+</div>
+
+<div id="fa-history-modal" class="fa-modal-backdrop" hidden>
+  <div class="fa-modal-box fa-modal-box--history" role="dialog" aria-modal="true" aria-labelledby="fa-history-modal-title">
+    <div class="fa-modal-head">
+      <div>
+        <h2 class="fa-modal-title" id="fa-history-modal-title">Change history</h2>
+        <p class="fa-modal-hint" id="fa-history-modal-sub"></p>
+      </div>
+      <button type="button" class="fa-btn fa-btn--ghost" id="fa-history-modal-close">Close</button>
+    </div>
+    <p id="fa-history-status" class="fa-pic-status" hidden></p>
+    <div id="fa-history-loading" class="fa-loading" hidden>
+      <div class="fa-spinner" aria-hidden="true"></div>
+      Loading history...
+    </div>
+    <ol id="fa-history-list" class="fa-history-list"></ol>
+    <p id="fa-change-history-empty" class="fa-empty" hidden>No changes recorded yet. Edits to PIC, remarks, and estimated finish will appear here.</p>
   </div>
 </div>
 
@@ -209,5 +307,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=fa-20260825-2"></script>
-<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260825-2"></script>
+<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260826-4"></script>
 {% endblock %}

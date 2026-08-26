@@ -1230,59 +1230,71 @@ function soActiveOrders() {
   return soState.view === 'complete' ? soState.complete : soState.active;
 }
 
-function soOrderSearchText(order) {
-  const parts = [
-    order.sales_order_no,
-    order.status,
-    order.voucher_status,
-    order.customer_code,
-    order.customer_name,
-    order.customer_short_name,
-    order.customer_po_no,
-    order.reference_no,
-    order.sales_person_name,
-    order.sbu_code,
-    order.sbu_desc,
-  ];
-  (order.pp_vouchers || []).forEach(pp => {
-    parts.push(
-      pp.pp_voucher_no,
-      pp.process_sheet_no,
-      pp.inventory_code,
-      pp.bom_code,
-      pp.description,
-      pp.customer_po_no,
-      pp.status,
-      pp.source_line_item_no,
-      pp.segment_1_code,
-      ...(pp.queued_machines || []),
-      ...((pp.partials || []).flatMap(p => p.queued_machines || [])),
-      ...SO_NOTE_FIELDS.map(field => (
-        field === 'material_subcon' ? soMaterialSubconDisplay(pp[field]) : pp[field]
-      )),
-    );
-    (pp.partials || []).forEach(partial => {
-      parts.push(
-        partial.pp_partial_no,
-        partial.partial_qty,
-        partial.inventory_code,
-        partial.party_name,
-        partial.customer_po_no,
-        partial.customer_code,
-        partial.current_stage_desc,
-        partial.current_stage_status,
-        partial.erp_stage_mode,
-        partial.erp_last_stage_desc,
-      );
-    });
-  });
-  return parts.map(v => String(v == null ? '' : v).toLowerCase()).join(' ');
+function soStripSrTag(value) {
+  return String(value == null ? '' : value).replace(/\[sr\]/gi, '');
 }
 
-function soFilterOrders(orders) {
-  const q = String(soState.search || '').trim().toLowerCase();
-  if (!q) return orders || [];
-  return (orders || []).filter(order => soOrderSearchText(order).includes(q));
+/** Match haystack against query, treating `[SR]` as optional (N26-[SR]22 ≡ n26-22). */
+function soTextMatchesQuery(value, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  const raw = String(value == null ? '' : value).toLowerCase();
+  if (raw.includes(q)) return true;
+  const strippedQ = soStripSrTag(q).replace(/\s+/g, '');
+  if (!strippedQ) return false;
+  const strippedVal = soStripSrTag(raw).toLowerCase();
+  if (strippedVal.includes(strippedQ)) return true;
+  return strippedVal.replace(/\s+/g, '').includes(strippedQ);
+}
+
+function soLeafSearchText(leaf) {
+  const { order, pp, partial } = leaf;
+  const parts = [
+    order?.sales_order_no,
+    order?.status,
+    order?.voucher_status,
+    order?.customer_code,
+    order?.customer_name,
+    order?.customer_short_name,
+    order?.customer_po_no,
+    order?.reference_no,
+    order?.sales_person_name,
+    order?.sbu_code,
+    order?.sbu_desc,
+    pp?.pp_voucher_no,
+    pp?.process_sheet_no,
+    soPsDisplayId(pp),
+    soPsDisplayForPartial(pp, partial),
+    pp?.inventory_code,
+    pp?.bom_code,
+    pp?.description,
+    pp?.customer_po_no,
+    pp?.status,
+    pp?.source_line_item_no,
+    pp?.segment_1_code,
+    ...(pp?.queued_machines || []),
+    ...SO_NOTE_FIELDS.map(field => (
+      field === 'material_subcon' ? soMaterialSubconDisplay(pp?.[field]) : pp?.[field]
+    )),
+    partial?.pp_partial_no,
+    partial?.partial_qty,
+    partial?.inventory_code,
+    partial?.party_name,
+    partial?.customer_po_no,
+    partial?.customer_code,
+    partial?.current_stage_desc,
+    partial?.current_stage_status,
+    partial?.erp_stage_mode,
+    partial?.erp_last_stage_desc,
+    ...(soPartialQueuedMachines(pp, partial)),
+  ];
+  return parts.map(v => String(v == null ? '' : v)).join(' ');
+}
+
+function soLeafPassesSearch(leaf) {
+  const q = String(soState.search || '').trim();
+  if (!q) return true;
+  return soTextMatchesQuery(soLeafSearchText(leaf), q);
 }
 
 function soLeafRows(order) {
@@ -1323,8 +1335,10 @@ function soLeafRows(order) {
 }
 
 function soGetPsType(pp) {
-  const raw = String(pp?.process_sheet_no || pp?.pp_voucher_no || '').split('::')[0];
-  if (/\[sr\]/i.test(raw)) return 'SR';
+  const ps = String(pp?.process_sheet_no || '').split('::')[0];
+  const voucher = String(pp?.pp_voucher_no || '').split('::')[0];
+  if (/\[sr\]/i.test(ps) || /\[sr\]/i.test(voucher)) return 'SR';
+  const raw = ps || voucher;
   const match = raw.toUpperCase().match(/^([A-Z]+)/);
   if (!match) return null;
   const prefix = match[1];
@@ -1509,15 +1523,15 @@ function soLeafPassesColumnFilters(leaf) {
     if (soState.colEmptyFilters[colId]) continue;
     const q = String(text || '').trim().toLowerCase();
     if (!q) continue;
-    const val = String(soLeafColumnValue(leaf, colId) ?? '').toLowerCase();
-    if (!val.includes(q)) return false;
+    const val = String(soLeafColumnValue(leaf, colId) ?? '');
+    if (!soTextMatchesQuery(val, q)) return false;
   }
   for (const [colId, text] of Object.entries(soState.colExcludeFilters)) {
     if (soState.colEmptyFilters[colId]) continue;
-    const q = String(text || '').trim().toLowerCase();
+    const q = String(text || '').trim();
     if (!q) continue;
-    const val = String(soLeafColumnValue(leaf, colId) ?? '').toLowerCase();
-    if (val.includes(q)) return false;
+    const val = String(soLeafColumnValue(leaf, colId) ?? '');
+    if (soTextMatchesQuery(val, q)) return false;
   }
   return true;
 }
@@ -1525,6 +1539,7 @@ function soLeafPassesColumnFilters(leaf) {
 function soLeafPassesFilters(leaf) {
   if (soState.view === 'no-wo' && !soPpIsNoWo(leaf.pp)) return false;
   if (!soLeafPassesPrefixFilter(leaf.pp)) return false;
+  if (!soLeafPassesSearch(leaf)) return false;
   return soLeafPassesColumnFilters(leaf);
 }
 
@@ -1548,7 +1563,7 @@ function soVisibleLeaves(order) {
 }
 
 function soVisibleOrders(orders) {
-  let list = soFilterOrders(orders).filter(order => soVisibleLeaves(order).length > 0);
+  let list = (orders || []).filter(order => soVisibleLeaves(order).length > 0);
   if (soState.sortCol) {
     list = [...list].sort((a, b) => {
       const av = soState.sortCol === '_so'

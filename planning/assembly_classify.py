@@ -21,6 +21,22 @@ _QTY_ABS_TOL = 0.0001
 _QTY_REL_TOL = 0.02
 
 
+def assembly_ps_type(ps_id: Any) -> str:
+    """APS / NPS / SR (tagged ``A24-[SR]04``) / other voucher prefix."""
+    raw = compact_text(ps_id).split("::")[0]
+    if "[sr]" in raw.lower():
+        return "SR"
+    upper = raw.upper()
+    for prefix in ("APS", "NPS", "MPS", "PPS", "CPS", "SR"):
+        if upper.startswith(prefix):
+            return prefix
+    return upper[:3] if len(upper) >= 3 else upper
+
+
+def is_sr_process_sheet(ps_id: Any) -> bool:
+    return assembly_ps_type(ps_id) == "SR"
+
+
 def as_int(value: Any) -> int:
     try:
         return int(float(value or 0))
@@ -321,6 +337,8 @@ def classify_assembly_family(
         "warning_flags": warning_flags,
         "has_anomaly": bool(warning_flags),
         "is_open": is_open_root(root),
+        "is_history": not is_open_root(root),
+        "ps_type": assembly_ps_type(ps_id),
         "children": sorted(
             children,
             key=lambda child: (
@@ -330,6 +348,70 @@ def classify_assembly_family(
             ),
         ),
     }
+
+
+def hierarchy_from_bom_listing(
+    root: dict[str, Any],
+    listing_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Synthesize FG + COMP process-sheet rows from a parent BOM listing.
+
+    Service/repair vouchers (``A24-[SR]04``, ``N26-[SR]22``) are often missing
+    from ``mfg_process_sheet_info_v1_view``. When the parent BOM still has
+    child parts that are themselves BOM sources, those children are enough
+    for the Monitor to treat the job as a nested assembly.
+    """
+    ps_id = compact_text(root.get("ps_id"))
+    parent_part = compact_text(root.get("part_no"))
+    parent_bom = compact_text(root.get("bom_code"))
+    fg_qty = as_float(root.get("partial_qty") or root.get("total_qty"))
+    hierarchy: list[dict[str, Any]] = [
+        {
+            "pp_voucher_no": ps_id,
+            "process_sheet_no": ps_id,
+            "type": "FG",
+            "inventory_code": parent_part,
+            "total_qty": fg_qty,
+            "sales_order_no": compact_text(root.get("sales_order_no")),
+            "line_item_no": compact_text(root.get("sales_order_line")),
+            "inventory_main_desc": compact_text(root.get("part_desc")),
+        }
+    ]
+    level1 = [
+        row
+        for row in listing_rows
+        if as_int(row.get("level")) == 1 and compact_text(row.get("material_inventory_code"))
+    ]
+    parent_key = bom_code_match_key(parent_bom)
+    if parent_key:
+        matched = [row for row in level1 if bom_code_match_key(row.get("bom_code")) == parent_key]
+        if matched:
+            level1 = matched
+    seen: set[str] = set()
+    seq = 1
+    for row in level1:
+        child_part = compact_text(row.get("material_inventory_code"))
+        key = child_part.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        qty = as_float(row.get("qty_fg") or row.get("qty_parent"))
+        if qty <= 0:
+            qty = 1.0
+        hierarchy.append(
+            {
+                "pp_voucher_no": ps_id,
+                "process_sheet_no": "",
+                "type": "COMP",
+                "parent_inventory_code": parent_part,
+                "inventory_code": child_part,
+                "component_seq_no": seq,
+                "total_qty": qty * fg_qty if fg_qty > 0 else qty,
+                "inventory_main_desc": compact_text(row.get("description")),
+            }
+        )
+        seq += 1
+    return hierarchy
 
 
 def build_assembly_jobs(

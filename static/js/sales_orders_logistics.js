@@ -28,6 +28,7 @@
       <th>Part</th>
       <th>Description</th>
       <th class="sol-col-due">Due</th>
+      <th class="sol-col-due" title="Material need date">Material need</th>
       <th class="sol-col-bom">BOM</th>
       <th class="sol-col-material">Material in</th>
       <th class="sol-col-notes">Mtl / Part Order</th>
@@ -144,6 +145,11 @@
   function cellText(value) {
     const text = String(value == null ? '' : value).trim();
     return text || EM_DASH;
+  }
+
+  function renderDescCell(value) {
+    const text = cellText(value);
+    return `<td class="sol-desc" title="${escapeHtml(text)}"><span class="sol-desc-text">${escapeHtml(text)}</span></td>`;
   }
 
   function soQtyDisplay(pp) {
@@ -334,6 +340,8 @@
       partial?.inventory_code,
       pp.material_subcon,
       pp.mtl_part_order,
+      pp.material_need_date,
+      formatDate(pp.material_need_date),
       materialSubconDisplay(pp.material_subcon),
     ];
     return parts.map(v => String(v == null ? '' : v).toLowerCase()).join(' ');
@@ -565,6 +573,30 @@
     `;
   }
 
+  function isoDateValue(value) {
+    const text = String(value == null ? '' : value).trim();
+    return /^\d{4}-\d{2}-\d{2}/.test(text) ? text.slice(0, 10) : '';
+  }
+
+  function renderNeedDateCell(pp) {
+    const ppNo = String(pp.pp_voucher_no || '').trim();
+    const value = isoDateValue(pp.material_need_date);
+    const cellStateCls = value ? ' has-need-date' : '';
+    return `
+      <td class="sol-need-date-cell${cellStateCls}">
+        <input type="date"
+          class="sol-need-date-input"
+          data-pp-voucher-no="${escapeHtml(ppNo)}"
+          data-field="material_need_date"
+          data-last-saved="${escapeHtml(value)}"
+          value="${escapeHtml(value)}"
+          aria-label="Material need date"
+          title="Material need date">
+        <span class="so-editable-status" aria-live="polite"></span>
+      </td>
+    `;
+  }
+
   function renderNotesCell(pp) {
     const ppNo = String(pp.pp_voucher_no || '').trim();
     const value = String(pp.mtl_part_order || '');
@@ -612,6 +644,19 @@
     body.querySelectorAll('.sol-delay-input').forEach(input => {
       if (String(input.dataset.ppVoucherNo || '') !== ppNo) return;
       applyDelayUi(input, flagged);
+    });
+  }
+
+  function syncNeedDateRows(ppNo, value) {
+    const body = document.getElementById('sol-table-body');
+    if (!body || !ppNo) return;
+    const saved = isoDateValue(value);
+    body.querySelectorAll('.sol-need-date-input').forEach(input => {
+      if (String(input.dataset.ppVoucherNo || '') !== ppNo) return;
+      input.value = saved;
+      input.dataset.lastSaved = saved;
+      const cell = input.closest('.sol-need-date-cell');
+      if (cell) cell.classList.toggle('has-need-date', Boolean(saved));
     });
   }
 
@@ -750,8 +795,9 @@
         <td class="sol-col-qty">${escapeHtml(partialQtyDisplay(partial, pp))}</td>
         ${renderStageCell(pp, partial)}
         <td class="sol-mono">${escapeHtml(String(part))}</td>
-        <td class="sol-desc" title="${escapeHtml(String(pp.description || ''))}">${escapeHtml(String(pp.description || EM_DASH))}</td>
+        ${renderDescCell(pp.description)}
         <td class="sol-date sol-col-due">${escapeHtml(formatDate(pp.due_date))}</td>
+        ${renderNeedDateCell(pp)}
         ${renderMaterialsCell(pp, partial)}
         ${renderMaterialCell(pp)}
         ${renderNotesCell(pp)}
@@ -768,7 +814,7 @@
         <td class="sol-mono">${escapeHtml(cellText(row.purchase_requisition_no))}</td>
         <td class="sol-date">${escapeHtml(formatDate(row.pr_date))}</td>
         <td class="sol-mono">${escapeHtml(cellText(row.item_code))}</td>
-        <td class="sol-desc" title="${escapeHtml(desc)}">${escapeHtml(desc || EM_DASH)}</td>
+        ${renderDescCell(desc)}
         <td class="sol-col-qty">${escapeHtml(formatQty(row.qty))}</td>
         <td class="sol-date">${escapeHtml(formatDate(row.required_arrival_date))}</td>
         <td class="sol-mono">${escapeHtml(cellText(row.purchase_order_no))}</td>
@@ -802,7 +848,7 @@
         <td class="sol-mono">${escapeHtml(cellText(row.po_no))}</td>
         <td title="${escapeHtml(supplier)}">${escapeHtml(supplier)}</td>
         <td class="sol-mono">${escapeHtml(item || EM_DASH)}</td>
-        <td class="sol-desc" title="${escapeHtml(desc)}">${escapeHtml(desc || EM_DASH)}</td>
+        ${renderDescCell(desc)}
         <td class="sol-col-qty">${escapeHtml(formatQty(row.qty))}</td>
         <td class="sol-col-qty">${escapeHtml(formatQty(row.qty_received))}</td>
         <td>${escapeHtml(cellText(row.uom_code))}</td>
@@ -897,7 +943,7 @@
         ${renderRequestDelayCell(row)}
         <td class="sol-mono">${escapeHtml(part || EM_DASH)}</td>
         <td class="sol-mono">${escapeHtml(inv || EM_DASH)}</td>
-        <td class="sol-desc" title="${escapeHtml(String(row.description || ''))}">${escapeHtml(String(row.description || EM_DASH))}</td>
+        ${renderDescCell(row.description)}
         <td class="sol-col-qty">
           <input type="number" min="0" step="any"
             class="sol-qty-cell-input"
@@ -929,7 +975,7 @@
   }
 
   function setSaveStatus(control, status, message) {
-    const el = control?.closest('.so-editable-cell, .so-material-subcon-cell')?.querySelector('.so-editable-status');
+    const el = control?.closest('.so-editable-cell, .so-material-subcon-cell, .sol-need-date-cell')?.querySelector('.so-editable-status');
     if (!el) return;
     el.className = `so-editable-status${status ? ` is-${status}` : ''}`;
     el.textContent = message || '';
@@ -1056,24 +1102,31 @@
       return;
     }
     const ppNo = String(control.dataset.ppVoucherNo || '').trim();
-    if (!ppNo || field !== 'mtl_part_order') return;
+    const saveable = field === 'mtl_part_order' || field === 'material_need_date';
+    if (!ppNo || !saveable) return;
     const key = `${ppNo}::${field}`;
     if (state.saveInFlight.has(key)) return;
-    const nextValue = String(control.value || '').trim();
+    const nextValue = field === 'material_need_date'
+      ? isoDateValue(control.value)
+      : String(control.value || '').trim();
     const lastSaved = String(control.dataset.lastSaved || '');
     if (nextValue === lastSaved) return;
 
     state.saveInFlight.add(key);
     setSaveStatus(control, 'saving', 'Saving...');
     try {
-      const data = await postJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
-        [field]: nextValue,
-      });
-      const saved = String(data[field] || '').trim();
+      const payload = field === 'material_need_date'
+        ? { material_need_date: nextValue }
+        : { [field]: nextValue };
+      const data = await postJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, payload);
+      const saved = field === 'material_need_date'
+        ? isoDateValue(data.material_need_date)
+        : String(data[field] || '').trim();
       control.value = saved;
       control.dataset.lastSaved = saved;
       const found = findPp(ppNo);
       if (found.pp) found.pp[field] = saved;
+      if (field === 'material_need_date') syncNeedDateRows(ppNo, saved);
       setSaveStatus(control, 'saved', 'Saved');
       window.setTimeout(() => {
         if (control.dataset.lastSaved === saved) setSaveStatus(control, '', '');
@@ -1625,6 +1678,12 @@
       if (delayInput) {
         e.stopPropagation();
         saveDelayFlag(delayInput);
+        return;
+      }
+      const needDateInput = e.target.closest('.sol-need-date-input');
+      if (needDateInput) {
+        e.stopPropagation();
+        saveNotesField(needDateInput);
         return;
       }
       const dateInput = e.target.closest('.so-material-subcon-date');

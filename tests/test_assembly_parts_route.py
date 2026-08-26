@@ -313,3 +313,59 @@ def test_api_assembly_parts_serializes(monkeypatch):
     assert payload["child_count"] == 3
     assert payload["items"][0]["ps_id"] == "APS26-0053"
     assert payload["items"][0]["children"][0]["process_sheet_no"] == "APS26-0053-1"
+
+
+def test_sr_ids_are_roots_not_children():
+    assert parts._is_component_child_ps("N26-[SR]22") is False
+    assert parts._is_component_child_ps("NPS26-0321") is False
+    assert parts._is_component_child_ps("NPS26-0321-1") is True
+    assert parts._is_component_child_ps("N26-[SR]22-1") is True
+    assert parts._job_ps_type("N26-[SR]22") == "SR"
+    assert parts._job_ps_type("NPS26-0321") == "NPS"
+
+
+def test_related_process_sheets_surface_sr_sibling():
+    jobs = [
+        {
+            "ps_id": "NPS26-0321",
+            "part_no": "BB14-KS0188-05 REV 04",
+            "children": [{"process_sheet_no": "NPS26-0321-1"}],
+        }
+    ]
+    related_rows = [
+        {
+            "ps_id": "NPS26-0321",
+            "part_no": "BB14-KS0188-05 REV 04",
+            "status": "Outstanding",
+            "sales_order_no": "SO/2602442",
+        },
+        {
+            "ps_id": "N26-[SR]22",
+            "part_no": "BB14-KS0188-05 REV 04",
+            "status": "History",
+            "sales_order_no": "Direct PP",
+            "due_date": "2026-10-20",
+        },
+        {
+            "ps_id": "NPS26-0321-17",
+            "part_no": "BB14-KS0188-05 REV 04",
+            "status": "Outstanding",
+        },
+    ]
+    parts.attach_related_process_sheets(jobs, related_rows)
+    job = jobs[0]
+    assert job["ps_type"] == "NPS"
+    assert [item["ps_id"] for item in job["related_process_sheets"]] == ["N26-[SR]22"]
+    related = job["related_process_sheets"][0]
+    assert related["ps_type"] == "SR"
+    assert related["status"] == "History"
+    assert related["process_sheets_url"] == "/process-sheets?q=N26-[SR]22"
+
+
+def test_open_and_complete_sql_include_sr():
+    from planning.assembly_bom_route import _OPEN_ROOT_SQL, assembly_ps_id_sql
+
+    assert "[SR]" in assembly_ps_id_sql("c.ps_id")
+    assert "[SR]" in _OPEN_ROOT_SQL
+    assert "[SR]" in parts._COMPLETE_CHILD_CACHE_SQL
+    assert "UPPER(TRIM(c.part_no)) = ANY(%s)" in parts._RELATED_ROOTS_SQL

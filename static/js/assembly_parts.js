@@ -9,7 +9,7 @@
     issuesOnly: false,
     flag: '',
     view: 'active',
-    types: new Set(['APS', 'NPS']),
+    types: new Set(['APS', 'NPS', 'SR']),
     expanded: new Set(),
     saveInFlight: new Set(),
   };
@@ -37,6 +37,14 @@
     .replaceAll("'", '&#039;');
 
   const text = (value) => String(value ?? '').trim();
+
+  function jobType(job) {
+    const typed = text(job?.ps_type).toUpperCase();
+    if (typed) return typed;
+    const raw = text(job?.ps_id);
+    if (/\[sr\]/i.test(raw)) return 'SR';
+    return raw.slice(0, 3).toUpperCase();
+  }
 
   function fmtQty(value) {
     const number = Number(value);
@@ -269,6 +277,18 @@
       </td>`;
   }
 
+  function relatedHtml(job) {
+    const related = Array.isArray(job.related_process_sheets) ? job.related_process_sheets : [];
+    if (!related.length) return '';
+    const chips = related.map((item) => {
+      const href = text(item.process_sheets_url) || `/process-sheets?q=${encodeURIComponent(text(item.ps_id))}`;
+      const status = text(item.status);
+      const label = status ? `${text(item.ps_id)} · ${status}` : text(item.ps_id);
+      return `<a class="ap-chip ap-chip--related" href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+    }).join('');
+    return `<div class="ap-parent-related"><span class="ap-sub">Related</span>${chips}</div>`;
+  }
+
   function parentCell(job, rowspan) {
     const flags = (job.flags || [])
       .filter((f) => f !== 'nested_assembly')
@@ -288,6 +308,7 @@
             <span class="ap-chip ap-chip--muted">Due ${escapeHtml(fmtDate(job.due_date))}</span>
             <span class="ap-chip">${escapeHtml(job.readiness_label || '0/0')} ready</span>
           </div>
+          ${relatedHtml(job)}
           <div class="ap-parent-meta">${flags}</div>
         </div>
       </td>`;
@@ -382,7 +403,7 @@
   function visibleJobs() {
     const q = state.search.toLowerCase();
     return state.items.filter((job) => {
-      const type = text(job.ps_id).slice(0, 3).toUpperCase();
+      const type = jobType(job);
       if (!state.types.has(type)) return false;
       if (state.issuesOnly && !job.has_issues && !job.has_anomaly) return false;
       if (state.flag) {
@@ -397,6 +418,12 @@
         job.part_desc,
         job.sales_order_no,
         job.bom_code,
+        ...(job.related_process_sheets || []).flatMap((item) => [
+          item.ps_id,
+          item.ps_type,
+          item.status,
+          item.sales_order_no,
+        ]),
         ...(job.children || []).flatMap((c) => [
           c.process_sheet_no,
           c.part_no,

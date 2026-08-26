@@ -3,8 +3,8 @@
 {% block main_class %}app-main--assembly-parts{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=ap-material-modal-20260804">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/assembly_boms.css', v='20260717d') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/assembly_parts.css', v='20260814a') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/assembly_boms.css', v='20260825a') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/assembly_parts.css', v='20260825a') }}">
 {% endblock %}
 {% block content %}
 <div class="ap-page ab-page">
@@ -30,6 +30,8 @@
     <div class="ab-filter-group" role="group" aria-label="Process sheet type">
       <button type="button" class="ab-filter is-active" data-ap-type="APS" aria-pressed="true">APS</button>
       <button type="button" class="ab-filter is-active" data-ap-type="NPS" aria-pressed="true">NPS</button>
+      <button type="button" class="ab-filter is-active" data-ap-type="SR" aria-pressed="true">[SR]</button>
+      <button type="button" class="ab-filter is-active" data-ap-type="SR" aria-pressed="true">[SR]</button>
     </div>
     <label class="ab-check">
       <input type="checkbox" id="ap-issues-only">
@@ -58,7 +60,7 @@
   <div id="ap-error" class="ab-state ab-state--error card" hidden></div>
   <div id="ap-empty" class="ab-state card" hidden>
     <strong>No matching assembly parts found.</strong>
-    <span>Parents appear when an APS/NPS has COMP child process sheets.</span>
+    <span>Parents appear when an APS, NPS, or [SR] job has COMP child process sheets. Related [SR] sheets for the same part are shown on the parent.</span>
   </div>
 
   <div class="ap-table-wrap card" id="ap-table-wrap" hidden>
@@ -102,5 +104,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=ap-material-modal-20260804"></script>
-<script src="{{ url_for('static', filename='js/assembly_parts.js', v='20260814a') }}"></script>
+<script src="{{ url_for('static', filename='js/assembly_parts.js', v='20260825a') }}"></script>
 {% endblock %}

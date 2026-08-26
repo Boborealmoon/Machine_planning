@@ -138,6 +138,30 @@
   color: #b42318;
 }
 
+.ap-chip--related {
+  background: #eef2ff;
+  color: #3730a3;
+  text-decoration: none;
+}
+
+a.ap-chip--related:hover {
+  background: #e0e7ff;
+}
+
+.ap-parent-related {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.ap-parent-related .ap-sub {
+  display: inline;
+  margin-top: 0;
+  font-weight: 700;
+}
+
 .ap-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.84rem;

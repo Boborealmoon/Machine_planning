@@ -99,6 +99,7 @@ class MaterialTrackingPrPoRouteTests(unittest.TestCase):
         self.assertIn('data-sol-bucket="ost"', html)
         self.assertIn('data-sol-bucket="hst"', html)
         self.assertIn('data-sol-bucket="new"', html)
+        self.assertIn("Material need", html)
 
 
 if __name__ == "__main__":

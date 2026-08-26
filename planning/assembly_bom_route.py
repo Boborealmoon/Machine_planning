@@ -1,4 +1,4 @@
-"""Open APS/NPS jobs whose ERP structure contains child parts with their own BOM."""
+"""Open APS/NPS/[SR] jobs whose ERP structure contains child parts with their own BOM."""
 from __future__ import annotations
 
 import logging
@@ -12,9 +12,12 @@ from db import planner_db_connect_error
 from .assembly_classify import (
     as_float,
     as_int,
+    assembly_ps_type,
     build_assembly_jobs,
     classify_assembly_family,
+    hierarchy_from_bom_listing,
     is_open_root,
+    is_sr_process_sheet,
     resolve_child_bom,
     selected_root_row,
 )
@@ -37,12 +40,22 @@ _cache: dict[bool, tuple[float, list[dict[str, Any]]]] = {}
 # Re-exports for tests / callers that import from this module.
 __all__ = [
     "assembly_bom_bp",
+    "assembly_ps_id_sql",
     "bom_code_match_key",
     "build_assembly_jobs",
     "classify_assembly_job",
     "fetch_assembly_jobs",
     "is_open_root",
 ]
+
+
+def assembly_ps_id_sql(column: str) -> str:
+    """APS/NPS plus A/N-prefixed service-repair vouchers (``N26-[SR]22``)."""
+    return (
+        f"({column} LIKE 'APS%%' OR {column} LIKE 'NPS%%' "
+        f"OR ({column} LIKE '%%[SR]%%' AND ({column} LIKE 'A%%' OR {column} LIKE 'N%%')))"
+    )
+
 
 _OPEN_ROOT_SQL = f"""
 SELECT DISTINCT ON (c.ps_id, c.pp_partial_no)
@@ -62,7 +75,7 @@ SELECT DISTINCT ON (c.ps_id, c.pp_partial_no)
        c.current_stage_desc,
        c.current_stage_status
 FROM pp_vouchers_cache c
-WHERE (c.ps_id LIKE 'APS%%' OR c.ps_id LIKE 'NPS%%')
+WHERE {assembly_ps_id_sql("c.ps_id")}
   AND LOWER(TRIM(COALESCE(c.status, ''))) NOT IN
       ('history', 'completed', 'complete', 'cancelled', 'canceled', 'void')
   AND (
@@ -72,7 +85,30 @@ WHERE (c.ps_id LIKE 'APS%%' OR c.ps_id LIKE 'NPS%%')
 ORDER BY c.ps_id, c.pp_partial_no, c.stage_no NULLS FIRST
 """
 
-_HISTORICAL_ASSEMBLY_SQL = """
+_SR_ROOT_SQL = f"""
+SELECT DISTINCT ON (c.ps_id, c.pp_partial_no)
+       c.ps_id,
+       c.pp_partial_no,
+       c.part_no,
+       c.description AS part_desc,
+       c.bom_code,
+       c.status,
+       c.due_date,
+       c.partial_qty,
+       c.total_qty,
+       c.qty_shipped,
+       c.so_det_qty,
+       c.source_voucher_no AS sales_order_no,
+       c.source_line_item_no AS sales_order_line,
+       c.current_stage_desc,
+       c.current_stage_status
+FROM pp_vouchers_cache c
+WHERE c.ps_id LIKE '%%[SR]%%'
+  AND (c.ps_id LIKE 'A%%' OR c.ps_id LIKE 'N%%')
+ORDER BY c.ps_id, c.pp_partial_no, c.stage_no NULLS FIRST
+"""
+
+_HISTORICAL_ASSEMBLY_SQL = f"""
 WITH route_counts AS (
     SELECT source_inventory_code,
            ARRAY_AGG(DISTINCT bom_code ORDER BY bom_code)
@@ -93,7 +129,9 @@ WITH route_counts AS (
            ) AS part_instance_count
     FROM mfg_process_sheet_info m
     JOIN route_counts rc ON rc.source_inventory_code = m.inventory_code
-    WHERE (m.pp_voucher_no LIKE 'APS%%' OR m.pp_voucher_no LIKE 'NPS%%')
+    WHERE (m.pp_voucher_no LIKE 'APS%%' OR m.pp_voucher_no LIKE 'NPS%%'
+           OR (m.pp_voucher_no LIKE '%%[SR]%%'
+               AND (m.pp_voucher_no LIKE 'A%%' OR m.pp_voucher_no LIKE 'N%%')))
       AND m.process_sheet_no IS NOT NULL
       AND m.process_sheet_no <> m.pp_voucher_no
 ), assembly_summary AS (
@@ -254,9 +292,46 @@ def _load_open_roots() -> list[dict[str, Any]]:
         return [row for row in rows(con.execute(_OPEN_ROOT_SQL)) if is_open_root(row)]
 
 
+def _load_sr_roots() -> list[dict[str, Any]]:
+    with planner_db() as con:
+        return rows(con.execute(_SR_ROOT_SQL))
+
+
+def _jobs_from_bom_listings(roots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Classify nested assemblies from inventory BOM when child process sheets are missing."""
+    if not roots:
+        return []
+    parent_parts = sorted(
+        {compact_text(row.get("part_no")) for row in roots if compact_text(row.get("part_no"))}
+    )
+    parent_bom_rows = live_query(_BOM_LISTING_SQL, (parent_parts,)) if parent_parts else []
+    listing_by_parent: dict[str, list[dict[str, Any]]] = {}
+    for row in parent_bom_rows:
+        listing_by_parent.setdefault(
+            compact_text(row.get("source_inventory_code")).upper(), []
+        ).append(row)
+    hierarchy: list[dict[str, Any]] = []
+    for root in roots:
+        listing = listing_by_parent.get(compact_text(root.get("part_no")).upper(), [])
+        hierarchy.extend(hierarchy_from_bom_listing(root, listing))
+    all_parts = {
+        compact_text(row.get("part_no")) for row in roots if compact_text(row.get("part_no"))
+    }
+    all_parts.update(
+        compact_text(row.get("inventory_code"))
+        for row in hierarchy
+        if compact_text(row.get("inventory_code"))
+    )
+    child_only = sorted(all_parts - set(parent_parts))
+    bom_rows = list(parent_bom_rows)
+    if child_only:
+        bom_rows.extend(live_query(_BOM_LISTING_SQL, (child_only,)))
+    return build_assembly_jobs(roots, hierarchy, bom_rows, require_subassembly_children=True)
+
+
 def _fetch_assembly_jobs_uncached() -> list[dict[str, Any]]:
-    roots = _load_open_roots()
-    ps_ids = sorted({compact_text(row.get("ps_id")) for row in roots if compact_text(row.get("ps_id"))})
+    all_roots = _load_open_roots()
+    ps_ids = sorted({compact_text(row.get("ps_id")) for row in all_roots if compact_text(row.get("ps_id"))})
     if not ps_ids:
         return []
     hierarchy_rows = live_query(_PROCESS_SHEET_HIERARCHY_SQL, (ps_ids,))
@@ -266,27 +341,39 @@ def _fetch_assembly_jobs_uncached() -> list[dict[str, Any]]:
         if compact_text(row.get("type")).upper() == "COMP"
     }
     roots = [
-        row for row in roots if compact_text(row.get("ps_id")).upper() in component_ps_ids
+        row for row in all_roots if compact_text(row.get("ps_id")).upper() in component_ps_ids
     ]
-    if not roots:
-        return []
-    hierarchy_rows = [
+    leftover_srs = [
         row
-        for row in hierarchy_rows
-        if compact_text(row.get("pp_voucher_no")).upper() in component_ps_ids
+        for row in all_roots
+        if is_sr_process_sheet(row.get("ps_id"))
+        and compact_text(row.get("ps_id")).upper() not in component_ps_ids
     ]
-    all_parts = {
-        compact_text(row.get("part_no"))
-        for row in roots
-        if compact_text(row.get("part_no"))
-    }
-    all_parts.update(
-        compact_text(row.get("inventory_code"))
-        for row in hierarchy_rows
-        if compact_text(row.get("inventory_code"))
-    )
-    bom_rows = live_query(_BOM_LISTING_SQL, (sorted(all_parts),)) if all_parts else []
-    return build_assembly_jobs(roots, hierarchy_rows, bom_rows, require_subassembly_children=True)
+    jobs: list[dict[str, Any]] = []
+    if roots:
+        hierarchy_rows = [
+            row
+            for row in hierarchy_rows
+            if compact_text(row.get("pp_voucher_no")).upper() in component_ps_ids
+        ]
+        all_parts = {
+            compact_text(row.get("part_no"))
+            for row in roots
+            if compact_text(row.get("part_no"))
+        }
+        all_parts.update(
+            compact_text(row.get("inventory_code"))
+            for row in hierarchy_rows
+            if compact_text(row.get("inventory_code"))
+        )
+        bom_rows = live_query(_BOM_LISTING_SQL, (sorted(all_parts),)) if all_parts else []
+        jobs = build_assembly_jobs(roots, hierarchy_rows, bom_rows, require_subassembly_children=True)
+    if leftover_srs:
+        try:
+            jobs = _merge_open_and_historical_jobs(jobs, _jobs_from_bom_listings(leftover_srs))
+        except Exception:
+            logger.exception("assembly BOM open SR listing fallback failed")
+    return jobs
 
 
 def _fetch_historical_assembly_jobs_uncached() -> list[dict[str, Any]]:
@@ -356,6 +443,7 @@ def _fetch_historical_assembly_jobs_uncached() -> list[dict[str, Any]]:
                 "has_anomaly": bool(warning_flags),
                 "is_history": not is_open_root(row),
                 "is_open": is_open_root(row),
+                "ps_type": assembly_ps_type(row.get("ps_id")),
                 "children": children,
             }
         )
@@ -403,10 +491,13 @@ def fetch_assembly_jobs(
             raise
         logger.exception("assembly BOM live open query failed; falling back to staged history")
     if include_history:
-        jobs = _merge_open_and_historical_jobs(
-            open_jobs,
-            _fetch_historical_assembly_jobs_uncached(),
-        )
+        historical_jobs = _fetch_historical_assembly_jobs_uncached()
+        try:
+            sr_jobs = _jobs_from_bom_listings(_load_sr_roots())
+        except Exception:
+            logger.exception("assembly BOM SR listing fallback failed")
+            sr_jobs = []
+        jobs = _merge_open_and_historical_jobs(open_jobs, [*historical_jobs, *sr_jobs])
     else:
         jobs = open_jobs
     _cache[include_history] = (now, jobs)

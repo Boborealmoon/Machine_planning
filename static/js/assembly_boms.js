@@ -7,7 +7,7 @@
     anomaliesOnly: false,
     flag: '',
     includeHistory: true,
-    types: new Set(['APS', 'NPS']),
+    types: new Set(['APS', 'NPS', 'SR']),
   };
 
   const FLAG_META = {
@@ -85,14 +85,23 @@
       </tr>`;
   }
 
+  function jobType(job) {
+    const explicit = text(job.ps_type).toUpperCase();
+    if (explicit) return explicit;
+    const id = text(job.ps_id);
+    if (/\[sr\]/i.test(id)) return 'SR';
+    return id.slice(0, 3).toUpperCase();
+  }
+
   function jobCard(job) {
     const flags = (job.flags || []).map(flagBadge).join('');
     const partial = Number(job.pp_partial_no) > 1 ? `<span class="ab-partial">P${escapeHtml(job.pp_partial_no)}</span>` : '';
+    const srBadge = jobType(job) === 'SR' ? '<span class="ab-sr-badge">[SR]</span>' : '';
     return `
       <details class="ab-job card" data-ps-id="${escapeHtml(job.ps_id)}">
         <summary>
           <div class="ab-job-main">
-            <div class="ab-job-id">${escapeHtml(job.ps_id)} ${partial}</div>
+            <div class="ab-job-id">${escapeHtml(job.ps_id)} ${partial}${srBadge}</div>
             <div class="ab-job-part"><span class="ab-mono">${escapeHtml(job.part_no)}</span> / ${escapeHtml(job.part_desc || '-')}</div>
             <div class="ab-badges">${flags}</div>
           </div>
@@ -161,7 +170,7 @@
   function filteredItems() {
     const query = state.search.toLowerCase();
     return state.items.filter((job) => {
-      const type = text(job.ps_id).slice(0, 3).toUpperCase();
+      const type = jobType(job);
       if (!state.types.has(type)) return false;
       if (state.anomaliesOnly && !job.has_anomaly) return false;
       if (state.flag && !(job.flags || []).includes(state.flag)) return false;

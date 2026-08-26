@@ -17,7 +17,7 @@ from .frame_agreement_service import (
     load_frame_agreement_part_keys,
 )
 from .helpers import planner_db, rows
-from .utils import compact_text, shipped_quantity_completed
+from .utils import compact_text, parse_date_text, shipped_quantity_completed
 from .staged_erp import (
     STAGED_MFG_PP_PARTIAL_SQL,
     STAGED_MFG_PP_VCH_SQL,
@@ -348,11 +348,24 @@ def _partials_by_pp_voucher(partials: list[dict[str, Any]]) -> dict[str, list[di
     return grouped
 
 
+def _parse_material_need_date(value: Any) -> str:
+    text = parse_date_text(value)
+    if len(text) < 10:
+        return ""
+    candidate = text[:10]
+    try:
+        date.fromisoformat(candidate)
+    except ValueError:
+        return ""
+    return candidate
+
+
 def _empty_notes() -> dict[str, Any]:
     out = {field: "" for field in _NOTE_FIELDS}
     out["ps_highlighted"] = False
     out["highlighted_partials"] = []
     out["material_delay"] = False
+    out["material_need_date"] = ""
     return out
 
 
@@ -384,6 +397,7 @@ def _notes_from_row(row: dict[str, Any] | None) -> dict[str, Any]:
     out["highlighted_partials"] = highlighted
     out["ps_highlighted"] = bool(highlighted)
     out["material_delay"] = bool(row.get("material_delay"))
+    out["material_need_date"] = _parse_material_need_date(row.get("material_need_date"))
     return out
 
 
@@ -398,6 +412,7 @@ def _ensure_notes_table(con) -> None:
             ops_notes           TEXT         NOT NULL DEFAULT '',
             sales_notes         TEXT         NOT NULL DEFAULT '',
             ps_highlighted      BOOLEAN      NOT NULL DEFAULT FALSE,
+            material_need_date  DATE,
             updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         )
         """
@@ -418,6 +433,12 @@ def _ensure_notes_table(con) -> None:
         """
         ALTER TABLE planner_so_pp_notes
         ADD COLUMN IF NOT EXISTS material_delay BOOLEAN NOT NULL DEFAULT FALSE
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_so_pp_notes
+        ADD COLUMN IF NOT EXISTS material_need_date DATE
         """
     )
 
@@ -1498,12 +1519,13 @@ def _load_notes_map(pp_voucher_nos: list[str]) -> dict[str, dict[str, str]] | No
         return {}
     try:
         with planner_db() as con:
+            _ensure_notes_table(con)
             fetched = rows(
                 con.execute(
                     """
                     SELECT pp_voucher_no, material_subcon, mtl_part_order,
                            quality_doc, ops_notes, sales_notes, ps_highlighted,
-                           highlighted_partials, material_delay
+                           highlighted_partials, material_delay, material_need_date
                     FROM planner_so_pp_notes
                     WHERE pp_voucher_no = ANY(%s)
                     """,
@@ -1794,7 +1816,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 """
                 SELECT pp_voucher_no, material_subcon, mtl_part_order,
                        quality_doc, ops_notes, sales_notes, ps_highlighted,
-                       highlighted_partials, material_delay
+                       highlighted_partials, material_delay, material_need_date
                 FROM planner_so_pp_notes
                 WHERE pp_voucher_no = %s
                 """,
@@ -1830,6 +1852,8 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
             current["ps_highlighted"] = bool(highlighted_set)
         if "material_delay" in patch:
             current["material_delay"] = bool(patch.pop("material_delay"))
+        if "material_need_date" in patch:
+            current["material_need_date"] = _parse_material_need_date(patch.pop("material_need_date"))
         for key, value in patch.items():
             if key in _NOTE_FIELDS:
                 current[key] = compact_text(value)
@@ -1842,8 +1866,8 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
             INSERT INTO planner_so_pp_notes (
                 pp_voucher_no, material_subcon, mtl_part_order,
                 quality_doc, ops_notes, sales_notes, ps_highlighted,
-                highlighted_partials, material_delay, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                highlighted_partials, material_delay, material_need_date, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (pp_voucher_no) DO UPDATE SET
                 material_subcon = EXCLUDED.material_subcon,
                 mtl_part_order = EXCLUDED.mtl_part_order,
@@ -1853,6 +1877,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 ps_highlighted = EXCLUDED.ps_highlighted,
                 highlighted_partials = EXCLUDED.highlighted_partials,
                 material_delay = EXCLUDED.material_delay,
+                material_need_date = EXCLUDED.material_need_date,
                 updated_at = NOW()
             """,
             (
@@ -1865,6 +1890,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 current["ps_highlighted"],
                 highlighted_text,
                 current["material_delay"],
+                current["material_need_date"] or None,
             ),
         )
         current["highlighted_partials"] = _parse_highlighted_partials(highlighted_text)
@@ -1952,7 +1978,9 @@ def api_sales_order_notes(pp_voucher_no):
     if not pp_voucher_no:
         return jsonify({"error": "pp_voucher_no is required"}), 400
 
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict):
+        data = {}
     patch: dict[str, Any] = {}
     for field in _NOTE_FIELDS:
         if field in data:
@@ -1965,6 +1993,15 @@ def api_sales_order_notes(pp_voucher_no):
             patch["pp_partial_no"] = data.get("pp_partial_no")
     if "material_delay" in data:
         patch["material_delay"] = bool(data.get("material_delay"))
+    if "material_need_date" in data:
+        raw_need_date = data.get("material_need_date")
+        if raw_need_date in (None, ""):
+            patch["material_need_date"] = ""
+        else:
+            parsed_need_date = _parse_material_need_date(raw_need_date)
+            if not parsed_need_date:
+                return jsonify({"error": "material_need_date must be YYYY-MM-DD"}), 400
+            patch["material_need_date"] = parsed_need_date
 
     if not patch:
         return jsonify({"error": "No editable fields supplied"}), 400

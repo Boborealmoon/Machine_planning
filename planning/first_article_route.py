@@ -1,25 +1,33 @@
 """First Article Tracker - OPS view for flagged process sheets and NEW parts."""
 from __future__ import annotations
 
+import io
 import logging
 
-from flask import Blueprint, jsonify, redirect, render_template, request
+from flask import Blueprint, jsonify, redirect, render_template, request, send_file
 
 from .first_article_service import (
+    add_new_part_exception,
     add_pic,
+    build_import_template_bytes,
     delete_pic,
     flag_process_sheet,
     flag_process_sheets,
+    import_tracker_rows,
     json_error,
+    list_change_history,
     list_flag_candidates,
     list_new_part_rows,
     list_tracker_rows,
     load_machine_catalog,
     load_pics,
+    parse_npi_import_workbook,
+    remove_new_part_exception,
     search_flag_candidates,
     unflag_process_sheet,
     update_new_part_row,
     update_tracker_row,
+    _MAX_IMPORT_BYTES,
 )
 from .helpers import planner_db
 from .utils import compact_text
@@ -43,8 +51,12 @@ def first_article_page_legacy():
 
 _PATCH_FIELDS = (
     "pic_ids",
+    "pic_names",
     "machine_codes",
     "remarks",
+    "tooling",
+    "fixture",
+    "gauges",
     "tooling_mode",
     "tooling_tick",
     "tooling_text",
@@ -157,6 +169,49 @@ def api_bulk_flag_first_article():
     return jsonify({"ok": True, **result}), status
 
 
+@first_article_bp.get("/api/first-article/import-template")
+def api_first_article_import_template():
+    try:
+        payload = build_import_template_bytes()
+    except Exception as exc:
+        logger.exception("first article import template failed")
+        body, status = json_error(exc)
+        return jsonify(body), status
+    return send_file(
+        io.BytesIO(payload),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name="npi-tracker-import.xlsx",
+    )
+
+
+@first_article_bp.post("/api/first-article/import")
+def api_import_first_article():
+    upload = request.files.get("file") or request.files.get("excel")
+    if upload is None or not compact_text(getattr(upload, "filename", "")):
+        return jsonify({"error": "Choose an Excel file to upload"}), 400
+    filename = compact_text(upload.filename)
+    lower = filename.lower()
+    if not lower.endswith((".xlsx", ".xlsm", ".xls")):
+        return jsonify({"error": "Upload an .xlsx or .xls workbook"}), 400
+    payload = upload.read()
+    if not payload:
+        return jsonify({"error": "The Excel file is empty"}), 400
+    if len(payload) > _MAX_IMPORT_BYTES:
+        return jsonify({"error": "Excel file is larger than 12 MB"}), 400
+    try:
+        items = parse_npi_import_workbook(payload, filename)
+        result = import_tracker_rows(items)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("first article excel import failed")
+        body, status = json_error(exc)
+        return jsonify(body), status
+    status = 201 if result.get("created_count") else 200
+    return jsonify({"ok": True, **result}), status
+
+
 @first_article_bp.patch("/api/first-article/<int:first_article_id>")
 def api_update_first_article(first_article_id: int):
     data = request.get_json(force=True, silent=True) or {}
@@ -193,15 +248,63 @@ def api_unflag_first_article(first_article_id: int):
 
 @first_article_bp.get("/api/first-article/new-parts")
 def api_list_first_article_new_parts():
+    scope = compact_text(request.args.get("scope")).lower() or "active"
+    if scope not in {"active", "history"}:
+        scope = "active"
     try:
         with planner_db() as con:
             pics = load_pics(con)
-        rows = list_new_part_rows()
+        rows = list_new_part_rows(scope=scope)
     except Exception as exc:
         logger.exception("first article new-parts list failed")
         payload, status = json_error(exc, fallback_status=502)
         return jsonify(payload), status
-    return jsonify({"ok": True, "count": len(rows), "rows": rows, "pics": pics})
+    return jsonify({"ok": True, "scope": scope, "count": len(rows), "rows": rows, "pics": pics})
+
+
+@first_article_bp.post("/api/first-article/new-parts")
+def api_add_first_article_new_part_exception():
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "A JSON object is required"}), 400
+    try:
+        row, created = add_new_part_exception(data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("first article new-part exception add failed")
+        payload, status = json_error(exc)
+        return jsonify(payload), status
+    already = not created
+    message = (
+        f"Added {row.get('process_sheet_no')} as an exception"
+        if created
+        else f"{row.get('process_sheet_no')} is already on the NEW parts list"
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "created": created,
+            "already_on_list": already,
+            "row": row,
+            "message": message,
+        }
+    ), (201 if created else 200)
+
+
+@first_article_bp.delete("/api/first-article/new-parts/<path:process_sheet_no>")
+def api_remove_first_article_new_part_exception(process_sheet_no: str):
+    try:
+        result = remove_new_part_exception(process_sheet_no)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("first article new-part exception remove failed")
+        payload, status = json_error(exc)
+        return jsonify(payload), status
+    if not result:
+        return jsonify({"error": "Exception not found"}), 404
+    return jsonify({"ok": True, **result})
 
 
 @first_article_bp.patch("/api/first-article/new-parts")
@@ -227,6 +330,31 @@ def api_update_first_article_new_part():
         payload, status = json_error(exc)
         return jsonify(payload), status
     return jsonify({"ok": True, "row": row})
+
+
+@first_article_bp.get("/api/first-article/history")
+def api_list_first_article_history():
+    source = compact_text(request.args.get("source")).lower() or "new_part"
+    process_sheet_no = compact_text(request.args.get("process_sheet_no") or request.args.get("ps"))
+    try:
+        limit = int(request.args.get("limit") or 200)
+    except (TypeError, ValueError):
+        limit = 200
+    try:
+        rows = list_change_history(source=source, process_sheet_no=process_sheet_no, limit=limit)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("first article history list failed")
+        payload, status = json_error(exc)
+        return jsonify(payload), status
+    return jsonify({
+        "ok": True,
+        "source": source,
+        "process_sheet_no": process_sheet_no,
+        "count": len(rows),
+        "rows": rows,
+    })
 
 
 @first_article_bp.get("/api/first-article/pics")

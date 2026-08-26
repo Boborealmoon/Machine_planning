@@ -342,7 +342,13 @@ def test_fetch_restores_material_dates_from_notes(monkeypatch):
     monkeypatch.setattr("planning.erp_route_cache.get", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "planning.sales_orders_route._load_notes_map",
-        lambda _ids: {"PP/1": {"material_subcon": "2026-08-01", "mtl_part_order": "rush"}},
+        lambda _ids: {
+            "PP/1": {
+                "material_subcon": "2026-08-01",
+                "mtl_part_order": "rush",
+                "material_need_date": "2026-09-15",
+            }
+        },
     )
     monkeypatch.setattr("planning.sales_orders_route._load_material_in_overlay", lambda _ids: {})
 
@@ -350,6 +356,7 @@ def test_fetch_restores_material_dates_from_notes(monkeypatch):
     pp = payload["active"][0]["pp_vouchers"][0]
     assert pp["material_subcon"] == "2026-08-01"
     assert pp["mtl_part_order"] == "rush"
+    assert pp["material_need_date"] == "2026-09-15"
 
 
 def test_overlay_skips_wipe_when_notes_load_fails(monkeypatch):
@@ -364,6 +371,9 @@ def test_overlay_skips_wipe_when_notes_load_fails(monkeypatch):
 
     payload = _overlay_planner_edits(cached)
     assert payload["active"][0]["pp_vouchers"][0]["material_subcon"] == "2026-07-15"
+
+
+def test_patch_sales_orders_pp_notes_updates_file_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(erp_route_cache, "_CACHE_DIR", tmp_path)
     key = _sales_orders_cache_key("active", lite=True)
     erp_route_cache.set(key, _pp_payload("PP/1"))
@@ -385,3 +395,66 @@ def test_material_in_patch_updates_file_cache(monkeypatch, tmp_path):
     pp = cached["active"][0]["pp_vouchers"][0]
     assert pp["material_in"] is True
     assert pp["material_in_date"] == "2026-08-19"
+
+
+def test_parse_material_need_date_accepts_iso_and_dmy():
+    from datetime import date
+
+    from planning.sales_orders_route import _empty_notes, _notes_from_row, _parse_material_need_date
+
+    assert _parse_material_need_date("2026-09-15") == "2026-09-15"
+    assert _parse_material_need_date("15/09/2026") == "2026-09-15"
+    assert _parse_material_need_date(date(2026, 9, 15)) == "2026-09-15"
+    assert _parse_material_need_date("") == ""
+    assert _parse_material_need_date(None) == ""
+    assert _parse_material_need_date("not-a-date") == ""
+
+    empty = _empty_notes()
+    assert empty["material_need_date"] == ""
+    assert empty["material_delay"] is False
+
+    parsed = _notes_from_row({"material_need_date": date(2026, 9, 15), "material_delay": True})
+    assert parsed["material_need_date"] == "2026-09-15"
+    assert parsed["material_delay"] is True
+
+
+def test_notes_api_accepts_material_need_date(monkeypatch):
+    import os
+    from unittest.mock import patch
+
+    from app import app
+    from planning.sales_orders_route import _empty_notes
+
+    captured = []
+
+    def fake_upsert(pp_voucher_no, patch):
+        captured.append({"pp": pp_voucher_no, "patch": dict(patch)})
+        return {"pp_voucher_no": pp_voucher_no, **_empty_notes(), **patch}
+
+    monkeypatch.setattr("planning.sales_orders_route._upsert_notes", fake_upsert)
+    monkeypatch.setattr("planning.sales_orders_route._patch_sales_orders_pp_notes", lambda *_args, **_kwargs: None)
+
+    client = app.test_client()
+    with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+        ok = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"material_need_date": "15/09/2026"},
+        )
+        bad = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"material_need_date": "soon"},
+        )
+        cleared = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"material_need_date": ""},
+        )
+
+    assert ok.status_code == 200
+    assert ok.get_json()["material_need_date"] == "2026-09-15"
+    assert captured[0]["pp"] == "PP/1"
+    assert captured[0]["patch"]["material_need_date"] == "2026-09-15"
+    assert bad.status_code == 400
+    assert "YYYY-MM-DD" in bad.get_json()["error"]
+    assert cleared.status_code == 200
+    assert cleared.get_json()["material_need_date"] == ""
+    assert captured[1]["patch"]["material_need_date"] == ""

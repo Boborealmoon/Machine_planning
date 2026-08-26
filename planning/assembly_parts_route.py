@@ -1,4 +1,4 @@
-"""Assembly Parts Tracker - child COMP readiness under APS/NPS parents."""
+"""Assembly Parts Tracker - child COMP readiness under APS/NPS/[SR] parents."""
 from __future__ import annotations
 
 import logging
@@ -14,6 +14,7 @@ from .assembly_bom_route import (
     _BOM_LISTING_SQL,
     _OPEN_ROOT_SQL,
     _PROCESS_SHEET_HIERARCHY_SQL,
+    assembly_ps_id_sql,
 )
 from .assembly_classify import (
     apply_stalled_child_flags,
@@ -56,7 +57,7 @@ WHERE c.ps_id = ANY(%s)
 ORDER BY c.ps_id, c.stage_no NULLS FIRST
 """
 
-_COMPLETE_CHILD_CACHE_SQL = """
+_COMPLETE_CHILD_CACHE_SQL = f"""
 SELECT DISTINCT ON (c.ps_id)
        regexp_replace(c.ps_id, '-[0-9]+$', '') AS pp_voucher_no,
        c.ps_id AS process_sheet_no,
@@ -64,7 +65,7 @@ SELECT DISTINCT ON (c.ps_id)
        COALESCE(c.partial_qty, c.total_qty) AS total_qty,
        'COMP' AS type
 FROM pp_vouchers_cache c
-WHERE (c.ps_id LIKE 'APS%%' OR c.ps_id LIKE 'NPS%%')
+WHERE {assembly_ps_id_sql("c.ps_id")}
   AND c.ps_id LIKE '%%-%%-%%'
 ORDER BY c.ps_id, c.stage_no NULLS FIRST
 """
@@ -105,9 +106,93 @@ WHERE COALESCE(b.active, TRUE) = TRUE
 ORDER BY raw_ps_id, m.machine_no
 """
 
+_RELATED_ROOTS_SQL = """
+SELECT DISTINCT ON (c.ps_id)
+       c.ps_id,
+       c.part_no,
+       c.status,
+       c.due_date,
+       c.source_voucher_no AS sales_order_no,
+       c.description AS part_desc
+FROM pp_vouchers_cache c
+WHERE UPPER(TRIM(c.part_no)) = ANY(%s)
+  AND c.ps_id NOT LIKE '%%-%%-%%'
+ORDER BY c.ps_id, c.stage_no NULLS FIRST
+"""
+
 
 def _ps_base_id(ps_id: str) -> str:
     return compact_text(ps_id).split("::")[0]
+
+
+def _job_ps_type(ps_id: str) -> str:
+    from .assembly_classify import assembly_ps_type
+
+    return compact_text(assembly_ps_type(ps_id)).upper()
+
+
+def _is_component_child_ps(ps_id: str) -> bool:
+    """Child COMP sheets use an extra numeric suffix (NPS26-0321-1), unlike N26-[SR]22."""
+    return compact_text(ps_id).count("-") >= 2
+
+
+def attach_related_process_sheets(
+    jobs: list[dict[str, Any]],
+    related_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach other root PS for the same part (e.g. N26-[SR]22 next to NPS26-0321)."""
+    by_part: dict[str, list[dict[str, Any]]] = {}
+    for row in related_rows:
+        ps_id = compact_text(row.get("ps_id"))
+        part = compact_text(row.get("part_no")).upper()
+        if not ps_id or not part or _is_component_child_ps(ps_id):
+            continue
+        item = {
+            "ps_id": ps_id,
+            "ps_type": _job_ps_type(ps_id),
+            "status": compact_text(row.get("status")),
+            "due_date": _serialize_overlay_date(row.get("due_date")) or compact_text(row.get("due_date")),
+            "sales_order_no": compact_text(row.get("sales_order_no")),
+            "part_no": compact_text(row.get("part_no")),
+            "process_sheets_url": f"/process-sheets?q={ps_id}",
+        }
+        by_part.setdefault(part, []).append(item)
+    for bucket in by_part.values():
+        bucket.sort(
+            key=lambda item: (0 if item.get("ps_type") == "SR" else 1, item.get("ps_id") or "")
+        )
+
+    for job in jobs:
+        ps_id = compact_text(job.get("ps_id"))
+        job["ps_type"] = _job_ps_type(ps_id)
+        family = {ps_id.upper()} if ps_id else set()
+        family.update(
+            compact_text(child.get("process_sheet_no")).upper()
+            for child in (job.get("children") or [])
+            if compact_text(child.get("process_sheet_no"))
+        )
+        related = [
+            item
+            for item in by_part.get(compact_text(job.get("part_no")).upper(), [])
+            if compact_text(item.get("ps_id")).upper() not in family
+        ]
+        job["related_process_sheets"] = related
+    return jobs
+
+
+def _load_related_process_sheets(part_nos: list[str]) -> list[dict[str, Any]]:
+    parts = sorted({compact_text(part).upper() for part in part_nos if compact_text(part)})
+    if not parts:
+        return []
+    try:
+        with planner_db() as con:
+            return [
+                serialize_row(dict(row))
+                for row in rows(con.execute(_RELATED_ROOTS_SQL, (parts,)))
+            ]
+    except Exception as exc:
+        logger.warning("assembly parts related process sheets skipped: %s", exc)
+        return []
 
 
 def _serialize_overlay_date(value: Any) -> str | None:
@@ -372,6 +457,11 @@ def _enrich_families(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         job["process_sheets_url"] = f"/process-sheets?q={compact_text(job.get('ps_id'))}"
         so = compact_text(job.get("sales_order_no"))
         job["sales_orders_url"] = f"/sales-orders?q={so}" if so else "/sales-orders"
+
+    attach_related_process_sheets(
+        jobs,
+        _load_related_process_sheets([compact_text(job.get("part_no")) for job in jobs]),
+    )
     return jobs
 
 
@@ -436,13 +526,13 @@ def _query_failed_timeout(exc: Exception) -> str | None:
 
 
 def _load_roots(*, view: str) -> list[dict[str, Any]]:
-    """Active = currently open APS/NPS roots."""
+    """Active = currently open APS/NPS/[SR] roots."""
     with planner_db() as con:
         return [row for row in rows(con.execute(_OPEN_ROOT_SQL)) if is_open_root(row)]
 
 
 def _load_complete_from_cache() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Historical APS/NPS families from planner cache — never live COMAIN."""
+    """Historical APS/NPS/[SR] families from planner cache — never live COMAIN."""
     with planner_db() as con:
         con.execute("SET LOCAL statement_timeout = '20000'")
         child_rows = [serialize_row(dict(row)) for row in rows(con.execute(_COMPLETE_CHILD_CACHE_SQL))]

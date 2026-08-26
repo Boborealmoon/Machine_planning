@@ -3,9 +3,15 @@ from flask import Flask
 import planning.assembly_bom_route as assembly
 from planning.assembly_bom_route import (
     assembly_bom_bp,
+    assembly_ps_id_sql,
     bom_code_match_key,
     build_assembly_jobs,
     is_open_root,
+)
+from planning.assembly_classify import (
+    assembly_ps_type,
+    hierarchy_from_bom_listing,
+    is_sr_process_sheet,
 )
 
 
@@ -192,6 +198,8 @@ def test_include_history_merges_live_open_job_missing_from_staged_bom(monkeypatc
         "_fetch_historical_assembly_jobs_uncached",
         lambda: [hist_job],
     )
+    monkeypatch.setattr(assembly, "_load_sr_roots", lambda: [])
+    monkeypatch.setattr(assembly, "_jobs_from_bom_listings", lambda roots: [])
 
     jobs = assembly.fetch_assembly_jobs(refresh=True, include_history=True)
 
@@ -208,6 +216,8 @@ def test_include_history_prefers_live_open_over_duplicate_history(monkeypatch):
         "_fetch_historical_assembly_jobs_uncached",
         lambda: [hist_job],
     )
+    monkeypatch.setattr(assembly, "_load_sr_roots", lambda: [])
+    monkeypatch.setattr(assembly, "_jobs_from_bom_listings", lambda roots: [])
 
     jobs = assembly.fetch_assembly_jobs(refresh=True, include_history=True)
 
@@ -223,6 +233,11 @@ def test_include_history_false_is_live_open_only(monkeypatch):
         assembly,
         "_fetch_historical_assembly_jobs_uncached",
         lambda: (_ for _ in ()).throw(AssertionError("history should not run")),
+    )
+    monkeypatch.setattr(
+        assembly,
+        "_jobs_from_bom_listings",
+        lambda roots: (_ for _ in ()).throw(AssertionError("SR fallback should not run")),
     )
 
     jobs = assembly.fetch_assembly_jobs(refresh=True, include_history=False)
@@ -243,6 +258,8 @@ def test_include_history_keeps_staged_when_live_open_fails(monkeypatch):
         "_fetch_historical_assembly_jobs_uncached",
         lambda: [hist_job],
     )
+    monkeypatch.setattr(assembly, "_load_sr_roots", lambda: [])
+    monkeypatch.setattr(assembly, "_jobs_from_bom_listings", lambda roots: [])
 
     jobs = assembly.fetch_assembly_jobs(refresh=True, include_history=True)
 
@@ -268,3 +285,108 @@ def test_api_serializes_assembly_items(monkeypatch):
     assert payload["anomaly_count"] == 1
     assert payload["include_history"] is True
     assert payload["items"][0]["ps_id"] == "APS26-0053"
+
+
+def test_assembly_ps_type_treats_tagged_vouchers_as_sr():
+    assert assembly_ps_type("APS26-0053") == "APS"
+    assert assembly_ps_type("NPS26-0321") == "NPS"
+    assert assembly_ps_type("N26-[SR]22") == "SR"
+    assert assembly_ps_type("A24-[SR]04") == "SR"
+    assert is_sr_process_sheet("N26-[SR]22")
+    assert not is_sr_process_sheet("NPS26-0321")
+
+
+def test_assembly_ps_id_sql_includes_an_prefixed_service_repairs():
+    sql = assembly_ps_id_sql("c.ps_id")
+    assert "APS%%" in sql
+    assert "NPS%%" in sql
+    assert "[SR]" in sql
+    assert "c.ps_id LIKE 'A%%'" in sql
+    assert "c.ps_id LIKE 'N%%'" in sql
+
+
+def test_sr_without_child_process_sheets_is_tracked_from_assigned_assembly_bom():
+    root = _root(
+        ps_id="N26-[SR]22",
+        part_no="BB14-KS0188-05 REV 04",
+        part_desc="R.I.M.S LOCKDOWN MECHANISM",
+        bom_code="SMP-MAT01-REV00",
+        status="History",
+        partial_qty=1,
+        qty_shipped=0,
+        so_det_qty=None,
+    )
+    listing = [
+        {
+            "source_inventory_code": "BB14-KS0188-05 REV 04",
+            "bom_code": "SMP-MAT01-REV00",
+            "level": 1,
+            "inventory_code": "BB14-KS0188-05 REV 04",
+            "material_inventory_code": "BB18-KS1209-02 REV 06",
+            "description": "3 LEG LOCKING PROBE",
+            "selected_bom_code": "SMP-MAT-01_REV00",
+            "in_house_production": "Y",
+            "qty_parent": 1,
+            "qty_fg": 1,
+        },
+        {
+            "source_inventory_code": "BB14-KS0188-05 REV 04",
+            "bom_code": "SMP-MAT01-REV00",
+            "level": 2,
+            "inventory_code": "BB18-KS1209-02 REV 06",
+            "material_inventory_code": "RAW-PROBE",
+        },
+        {
+            "source_inventory_code": "BB18-KS1209-02 REV 06",
+            "bom_code": "SMP-MAT-01-REV00",
+            "level": 1,
+            "inventory_code": "BB18-KS1209-02 REV 06",
+            "material_inventory_code": "RAW-PROBE",
+        },
+    ]
+    hierarchy = hierarchy_from_bom_listing(root, listing)
+    jobs = build_assembly_jobs([root], hierarchy, listing)
+
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job["ps_id"] == "N26-[SR]22"
+    assert job["ps_type"] == "SR"
+    assert job["component_count"] == 1
+    assert job["children"][0]["part_no"] == "BB18-KS1209-02 REV 06"
+    assert job["children"][0]["is_subassembly"] is True
+    assert "nested_assembly" in job["flags"]
+
+
+def test_sr_leaf_only_bom_is_not_a_nested_assembly():
+    root = _root(ps_id="N26-[SR]15", part_no="FIXTURE-0024", bom_code="SMP-MAT01-REV00")
+    listing = [
+        {
+            "source_inventory_code": "FIXTURE-0024",
+            "bom_code": "SMP-MAT01-REV00",
+            "level": 1,
+            "material_inventory_code": "M3117/21",
+            "description": "SPECIAL STEEL",
+            "in_house_production": "N",
+        }
+    ]
+    hierarchy = hierarchy_from_bom_listing(root, listing)
+    assert build_assembly_jobs([root], hierarchy, listing) == []
+
+
+def test_include_history_merges_sr_jobs_from_bom_fallback(monkeypatch):
+    assembly._cache.clear()
+    live_job = {"ps_id": "NPS26-0321", "due_date": "2027-01-18"}
+    hist_job = {"ps_id": "APS26-0053", "due_date": "2025-03-21"}
+    sr_job = {"ps_id": "N26-[SR]22", "due_date": "2026-10-20", "ps_type": "SR"}
+    monkeypatch.setattr(assembly, "_fetch_assembly_jobs_uncached", lambda: [live_job])
+    monkeypatch.setattr(
+        assembly,
+        "_fetch_historical_assembly_jobs_uncached",
+        lambda: [hist_job],
+    )
+    monkeypatch.setattr(assembly, "_load_sr_roots", lambda: [{"ps_id": "N26-[SR]22"}])
+    monkeypatch.setattr(assembly, "_jobs_from_bom_listings", lambda roots: [sr_job])
+
+    jobs = assembly.fetch_assembly_jobs(refresh=True, include_history=True)
+
+    assert [job["ps_id"] for job in jobs] == ["APS26-0053", "N26-[SR]22", "NPS26-0321"]

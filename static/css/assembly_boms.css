@@ -219,6 +219,16 @@
   font-size: 0.67rem;
 }
 
+.ab-sr-badge {
+  margin-left: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(147, 51, 234, 0.12);
+  color: #6b21a8;
+  font-size: 0.67rem;
+  font-weight: 800;
+}
+
 .ab-badges {
   display: flex;
   flex-wrap: wrap;

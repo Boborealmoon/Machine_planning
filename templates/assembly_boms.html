@@ -2,7 +2,7 @@
 {% block title %}Assembly BOMs{% endblock %}
 {% block main_class %}app-main--assembly-boms{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/assembly_boms.css', v='20260717d') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/assembly_boms.css', v='20260825a') }}">
 {% endblock %}
 {% block content %}
 <div class="ab-page">
@@ -10,7 +10,7 @@
     <div>
       <div class="ab-eyebrow">Production structure</div>
       <h1>Assembly BOM Monitor</h1>
-      <p id="ab-summary" class="ab-subtitle" aria-live="polite">Loading APS/NPS assembly history...</p>
+      <p id="ab-summary" class="ab-subtitle" aria-live="polite">Loading APS/NPS/[SR] assembly history...</p>
     </div>
     <button type="button" class="btn btn-primary" id="ab-refresh">Refresh ERP</button>
   </header>
@@ -23,6 +23,7 @@
     <div class="ab-filter-group" role="group" aria-label="Process sheet type">
       <button type="button" class="ab-filter is-active" data-ab-type="APS" aria-pressed="true">APS</button>
       <button type="button" class="ab-filter is-active" data-ab-type="NPS" aria-pressed="true">NPS</button>
+      <button type="button" class="ab-filter is-active" data-ab-type="SR" aria-pressed="true">[SR]</button>
     </div>
     <label class="ab-check">
       <input type="checkbox" id="ab-anomalies-only">
@@ -56,5 +57,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/assembly_boms.js', v='20260717d') }}"></script>
+<script src="{{ url_for('static', filename='js/assembly_boms.js', v='20260825a') }}"></script>
 {% endblock %}

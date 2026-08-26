@@ -1,8 +1,11 @@
 """First Article Tracker - flagged process sheets, PIC roster, S/O live fields."""
 from __future__ import annotations
 
+import io
 import json
 import logging
+import re
+import threading
 from datetime import date, datetime
 from typing import Any
 
@@ -18,6 +21,51 @@ CHECK_TEXT_FIELDS = ("tooling", "fixture", "gauges")
 _SEARCH_LIMIT = 25
 _CANDIDATE_LIMIT = 1500
 _BULK_FLAG_LIMIT = 200
+_IMPORT_LIMIT = 500
+_MAX_IMPORT_BYTES = 12 * 1024 * 1024
+IMPORT_TEMPLATE_COLUMNS = (
+    "Data Input",
+    "Part No.",
+    "Part Description",
+    "Total Qty",
+    "PO Due Date",
+    "Machine (CNC)",
+    "PIC",
+    "Tooling",
+    "Fixture/Jig",
+    "Gauges/CMM",
+    "Remark",
+)
+_IMPORT_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
+    "process_sheet_no": (
+        "datainput", "datainputprocesssheetno", "datainputprocesssheet",
+        "processsheetno", "processsheet", "processsheetnumber",
+        "psno", "psnumber", "psn",
+    ),
+    "part_no": ("partno", "partnumber"),
+    "part_description": ("partdescription", "description", "partdesc"),
+    "total_qty": ("totalqty", "qty", "quantity"),
+    "po_due_date": ("poduedate", "duedate"),
+    "machine_codes": ("machinecnc", "machine", "machines", "cnc", "cncmachine"),
+    "pic_names": ("pic", "personincharge", "pics"),
+    "tooling": ("tooling", "tools", "tool"),
+    "fixture": ("fixturejig", "fixture", "jig"),
+    "gauges": ("gaugescmm", "gauges", "cmm", "gauge", "gaugecmm"),
+    "remarks": ("remark", "remarks", "notes", "note", "comment"),
+}
+_IMPORT_PATCH_FIELDS = ("machine_codes", "pic_names", "tooling", "fixture", "gauges", "remarks")
+_PIC_SPLIT_RE = re.compile(r"[/,;|]+")
+_MACHINE_NUM_RE = re.compile(r"(\d+)\s*$")
+_CHECK_READY_VALUES = frozenset({
+    "ok", "okay", "ready", "yes", "y", "done", "complete", "completed", "true", "tick",
+})
+_BLANK_CELL_VALUES = frozenset({"", "-", "—", "–", "none", "nil", "null"})
+_MONTH_NAME_TO_NUM = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9, "oct": 10,
+    "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
 _PS_TYPE_ORDER = ("APS", "NPS", "MPS", "PPS", "CPS", "SR", "OTHER")
 _ROW_SELECT = """
     first_article_id, process_sheet_no, pp_voucher_no, pic_ids, machine_codes,
@@ -34,12 +82,103 @@ _STAGE_STATUS_LABELS = {"I": "In process", "R": "Released", "P": "Pending", "C":
 
 _NEW_PART_ROW_SELECT = """
     process_sheet_no, pp_voucher_no, bom_updated, remarks, program_finish_at,
-    program_pic_ids, created_at, updated_at
+    program_pic_ids, is_exception, created_at, updated_at
 """
 _NEW_PART_PATCH_FIELDS = ("bom_updated", "remarks", "program_finish_at", "program_pic_ids")
+_HISTORY_SOURCES = ("new_part", "flagged")
+_HISTORY_FIELDS_NEW_PART = ("remarks", "program_finish_at", "program_pic_ids")
+_HISTORY_FIELDS_FLAGGED = ("remarks", "pic_ids")
+_HISTORY_FIELD_LABELS = {
+    "remarks": "Remarks",
+    "program_finish_at": "Programme estimated finish",
+    "program_pic_ids": "Programme PIC",
+    "pic_ids": "PIC",
+}
+_HISTORY_LIMIT = 200
+_SCHEMA_LOCK_KEY = 874512031
+_REQUIRED_COLUMNS = (
+    ("planner_first_article_pic", "pic_id"),
+    ("planner_first_article", "machine_codes"),
+    ("planner_first_article_new_part", "program_pic_ids"),
+    ("planner_first_article_new_part", "is_exception"),
+    ("planner_first_article_change_log", "change_id"),
+)
+_tables_ready = False
+_tables_lock = threading.Lock()
+
+
+def _schema_complete(con) -> bool:
+    fetched = rows(
+        con.execute(
+            """
+            SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND (
+                    (table_name = 'planner_first_article_pic' AND column_name = 'pic_id')
+                 OR (table_name = 'planner_first_article' AND column_name = 'machine_codes')
+                 OR (table_name = 'planner_first_article_new_part'
+                     AND column_name IN ('program_pic_ids', 'is_exception'))
+                 OR (table_name = 'planner_first_article_change_log' AND column_name = 'change_id')
+              )
+            """
+        )
+    )
+    have = {
+        (compact_text(item.get("table_name")), compact_text(item.get("column_name")))
+        for item in fetched
+    }
+    return all(pair in have for pair in _REQUIRED_COLUMNS)
+
+
+def _add_column_if_missing(con, table: str, column: str, ddl: str) -> None:
+    found = one(
+        con.execute(
+            """
+            SELECT 1 AS ok
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = %s
+              AND column_name = %s
+            """,
+            (table, column),
+        )
+    )
+    if found:
+        return
+    con.execute(ddl)
+
+
+def _try_commit(con) -> None:
+    commit = getattr(con, "commit", None)
+    if callable(commit):
+        commit()
 
 
 def _ensure_tables(con) -> None:
+    global _tables_ready
+    if _tables_ready:
+        return
+    with _tables_lock:
+        if _tables_ready:
+            return
+        if _schema_complete(con):
+            _tables_ready = True
+            return
+        cur = con.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_KEY,))
+        fetchone = getattr(cur, "fetchone", None)
+        if callable(fetchone):
+            fetchone()
+        if _schema_complete(con):
+            _tables_ready = True
+            return
+        _migrate_first_article_schema(con)
+        _try_commit(con)
+        _tables_ready = True
+
+
+def _migrate_first_article_schema(con) -> None:
+    con.execute("SET LOCAL lock_timeout = '5s'")
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS public.planner_first_article_pic (
@@ -107,6 +246,7 @@ def _ensure_tables(con) -> None:
             remarks            TEXT         NOT NULL DEFAULT '',
             program_finish_at  TEXT         NOT NULL DEFAULT '',
             program_pic_ids    BIGINT[]     NOT NULL DEFAULT '{}',
+            is_exception       BOOLEAN      NOT NULL DEFAULT FALSE,
             created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
             updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         )
@@ -118,16 +258,59 @@ def _ensure_tables(con) -> None:
             ON public.planner_first_article_new_part (updated_at DESC)
         """
     )
-    con.execute(
+    _add_column_if_missing(
+        con,
+        "planner_first_article_new_part",
+        "program_pic_ids",
         """
         ALTER TABLE public.planner_first_article_new_part
             ADD COLUMN IF NOT EXISTS program_pic_ids BIGINT[] NOT NULL DEFAULT '{}'
+        """,
+    )
+    _add_column_if_missing(
+        con,
+        "planner_first_article_new_part",
+        "is_exception",
+        """
+        ALTER TABLE public.planner_first_article_new_part
+            ADD COLUMN IF NOT EXISTS is_exception BOOLEAN NOT NULL DEFAULT FALSE
+        """,
+    )
+    _add_column_if_missing(
+        con,
+        "planner_first_article",
+        "machine_codes",
+        """
+        ALTER TABLE public.planner_first_article
+            ADD COLUMN IF NOT EXISTS machine_codes TEXT[]
+        """,
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS public.planner_first_article_change_log (
+            change_id          BIGSERIAL    PRIMARY KEY,
+            source             TEXT         NOT NULL,
+            process_sheet_no   TEXT         NOT NULL,
+            first_article_id   BIGINT,
+            field_name         TEXT         NOT NULL,
+            old_value          TEXT         NOT NULL DEFAULT '',
+            new_value          TEXT         NOT NULL DEFAULT '',
+            changed_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            CONSTRAINT planner_first_article_change_log_source_chk
+                CHECK (source IN ('new_part', 'flagged'))
+        )
         """
     )
     con.execute(
         """
-        ALTER TABLE public.planner_first_article
-            ADD COLUMN IF NOT EXISTS machine_codes TEXT[]
+        CREATE INDEX IF NOT EXISTS idx_fa_change_log_ps_at
+            ON public.planner_first_article_change_log (LOWER(TRIM(process_sheet_no)), changed_at DESC)
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_fa_change_log_source_ps
+            ON public.planner_first_article_change_log (source, LOWER(TRIM(process_sheet_no)), changed_at DESC)
         """
     )
 
@@ -190,24 +373,30 @@ def _parse_bool(value: Any, *, field: str) -> bool:
 
 
 def _parse_program_finish(value: Any) -> str:
-    text = compact_text(value).replace(" ", "T")
+    text = compact_text(value)
     if not text:
         return ""
-    if len(text) >= 16 and text[10] == "T":
-        candidate = text[:16]
+    iso_head = text.replace(" ", "T")
+    if len(iso_head) >= 10 and iso_head[4] == "-" and iso_head[7] == "-":
+        candidate = iso_head[:10]
         try:
-            datetime.strptime(candidate, "%Y-%m-%dT%H:%M")
+            return date.fromisoformat(candidate).isoformat()
         except ValueError as exc:
-            raise ValueError("program_finish_at must be YYYY-MM-DDTHH:MM") from exc
-        return candidate
-    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
-        candidate = text[:10]
+            raise ValueError("program_finish_at must be a valid date") from exc
+    token = text.split()[0].split("T")[0]
+    for sep in ("/", "-", "."):
+        parts = token.split(sep)
+        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+            continue
+        day_s, month_s, year_s = parts
+        year = int(year_s)
+        if year < 100:
+            year += 2000
         try:
-            date.fromisoformat(candidate)
+            return date(year, int(month_s), int(day_s)).isoformat()
         except ValueError as exc:
-            raise ValueError("program_finish_at must be YYYY-MM-DD or YYYY-MM-DDTHH:MM") from exc
-        return candidate
-    raise ValueError("program_finish_at must be YYYY-MM-DD or YYYY-MM-DDTHH:MM")
+            raise ValueError("program_finish_at must be a valid date") from exc
+    raise ValueError("program_finish_at must be YYYY-MM-DD or DD/MM/YYYY")
 
 
 def _parse_material_subcon(raw: Any) -> tuple[bool, str, str]:
@@ -306,6 +495,331 @@ def _parse_machine_codes(raw: Any) -> list[str]:
         seen.add(key)
         out.append(code)
     return out
+
+
+def _machine_number(code: str) -> str:
+    match = _MACHINE_NUM_RE.search(compact_text(code))
+    return match.group(1) if match else ""
+
+
+def _resolve_machine_codes(raw: Any, catalog: list[str] | None = None) -> list[str]:
+    parsed = _parse_machine_codes(raw)
+    catalog_list = [compact_text(item) for item in (catalog or []) if compact_text(item)]
+    by_upper = {item.upper(): item for item in catalog_list}
+    by_num: dict[str, str] = {}
+    for item in catalog_list:
+        number = _machine_number(item)
+        if number and number not in by_num:
+            by_num[number] = item
+    out: list[str] = []
+    seen: set[str] = set()
+    for code in parsed:
+        resolved = by_upper.get(code.upper())
+        if not resolved:
+            number = _machine_number(code)
+            if number and by_num.get(number):
+                resolved = by_num[number]
+            elif number and compact_text(code) == number:
+                resolved = f"CNC {number}"
+            else:
+                resolved = code
+        key = resolved.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(resolved)
+    return out
+
+
+def _norm_import_header(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", compact_text(value).lower())
+
+
+def _import_field_for_header(header: Any) -> str:
+    needle = _norm_import_header(header)
+    if not needle:
+        return ""
+    for field, aliases in _IMPORT_HEADER_ALIASES.items():
+        if needle == field.replace("_", "") or needle in aliases:
+            return field
+    return ""
+
+
+def _parse_pic_names(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        parts = [compact_text(item) for item in raw]
+    else:
+        text = compact_text(raw)
+        if not text:
+            return []
+        parts = [compact_text(part) for part in _PIC_SPLIT_RE.split(text)]
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in parts:
+        key = name.lower()
+        if not name or key in _BLANK_CELL_VALUES or key in {"na", "n/a"} or key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def _resolve_pic_names(con, names: list[str]) -> list[int]:
+    out: list[int] = []
+    seen: set[int] = set()
+    for name in names:
+        pic, _created = add_pic(con, name)
+        pic_id = int(pic.get("pic_id") or 0)
+        if pic_id <= 0 or pic_id in seen:
+            continue
+        seen.add(pic_id)
+        out.append(pic_id)
+    return out
+
+
+def _parse_month_name_date(text: str) -> str:
+    match = re.match(
+        r"^(\d{1,2})[ \-./]+([A-Za-z]{3,9})(?:[ \-./]+(\d{2,4}))?$",
+        compact_text(text),
+    )
+    if not match:
+        return ""
+    day = int(match.group(1))
+    month = _MONTH_NAME_TO_NUM.get(match.group(2).lower())
+    if not month or day < 1 or day > 31:
+        return ""
+    year_s = compact_text(match.group(3))
+    year = date.today().year if not year_s else int(year_s)
+    if year < 100:
+        year += 2000
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:
+        return ""
+
+
+def _parse_flexible_date(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = compact_text(value)
+    if not text:
+        return ""
+    iso_head = text.replace(" ", "T")
+    if len(iso_head) >= 10 and iso_head[4] == "-" and iso_head[7] == "-":
+        candidate = iso_head[:10]
+        try:
+            return date.fromisoformat(candidate).isoformat()
+        except ValueError:
+            return ""
+    named = _parse_month_name_date(text)
+    if named:
+        return named
+    token = text.split()[0].split("T")[0]
+    for sep in ("/", "-", "."):
+        parts = token.split(sep)
+        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+            continue
+        first, second, year_s = parts
+        year = int(year_s)
+        if year < 100:
+            year += 2000
+        day_n, month_n = int(first), int(second)
+        if month_n > 12 and day_n <= 12:
+            day_n, month_n = month_n, day_n
+        try:
+            return date(year, month_n, day_n).isoformat()
+        except ValueError:
+            return ""
+    return ""
+
+
+def _cell_is_blank(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and compact_text(value).lower() in _BLANK_CELL_VALUES:
+        return True
+    if isinstance(value, float) and value != value:
+        return True
+    return False
+
+
+def _parse_check_cell(raw: Any) -> dict[str, Any]:
+    if raw is None or _cell_is_blank(raw):
+        return {"tick": False, "mode": "tick", "text": ""}
+    if isinstance(raw, bool):
+        return {"tick": raw, "mode": "tick", "text": ""}
+    if isinstance(raw, (datetime, date)):
+        iso = _parse_flexible_date(raw)
+        return {"tick": False, "mode": "text", "text": iso}
+    text = compact_text(raw)
+    if text.lower() in _CHECK_READY_VALUES:
+        return {"tick": True, "mode": "tick", "text": ""}
+    iso = _parse_flexible_date(raw)
+    if iso:
+        return {"tick": False, "mode": "text", "text": iso}
+    return {"tick": False, "mode": "text" if text else "tick", "text": text}
+
+
+def _serialize_import_cell(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat() if value.time() == datetime.min.time() else value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, float) and value != value:
+        return None
+    if isinstance(value, float) and value == int(value):
+        return int(value)
+    return value
+
+
+def _map_import_headers(header_row: list[Any]) -> dict[int, str]:
+    mapping: dict[int, str] = {}
+    seen: set[str] = set()
+    for index, header in enumerate(header_row or []):
+        field = _import_field_for_header(header)
+        if not field or field in seen:
+            continue
+        seen.add(field)
+        mapping[index] = field
+    return mapping
+
+
+def _sheet_matrix_from_xlsx(payload: bytes) -> list[tuple[str, list[list[Any]]]]:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(io.BytesIO(payload), read_only=True, data_only=True)
+    sheets: list[tuple[str, list[list[Any]]]] = []
+    try:
+        for ws in workbook.worksheets:
+            matrix: list[list[Any]] = []
+            for row in ws.iter_rows(values_only=True):
+                matrix.append([_serialize_import_cell(cell) for cell in row])
+            sheets.append((compact_text(ws.title) or "Sheet", matrix))
+    finally:
+        workbook.close()
+    return sheets
+
+
+def _sheet_matrix_from_xls(payload: bytes) -> list[tuple[str, list[list[Any]]]]:
+    try:
+        import xlrd
+    except Exception as exc:
+        raise RuntimeError("xlrd is required to read .xls files.") from exc
+    book = xlrd.open_workbook(file_contents=payload)
+    sheets: list[tuple[str, list[list[Any]]]] = []
+    for sheet in book.sheets():
+        matrix: list[list[Any]] = []
+        for row_idx in range(sheet.nrows):
+            matrix.append(
+                [_serialize_import_cell(sheet.cell_value(row_idx, col_idx)) for col_idx in range(sheet.ncols)]
+            )
+        sheets.append((compact_text(sheet.name) or "Sheet", matrix))
+    return sheets
+
+
+def _items_from_sheet_matrix(matrix: list[list[Any]]) -> list[dict[str, Any]]:
+    header_index = -1
+    mapping: dict[int, str] = {}
+    for index, row in enumerate(matrix[:15]):
+        candidate = _map_import_headers(row)
+        if "process_sheet_no" in candidate.values() and len(candidate) >= 1:
+            header_index = index
+            mapping = candidate
+            break
+    if header_index < 0:
+        return []
+    items: list[dict[str, Any]] = []
+    for offset, row in enumerate(matrix[header_index + 1 :], start=header_index + 2):
+        parsed: dict[str, Any] = {}
+        for col, field in mapping.items():
+            if col >= len(row):
+                continue
+            parsed[field] = row[col]
+        process_sheet_no = _ps_base(parsed.get("process_sheet_no"))
+        if not process_sheet_no:
+            continue
+        patch: dict[str, Any] = {}
+        for field in _IMPORT_PATCH_FIELDS:
+            if field not in parsed or _cell_is_blank(parsed.get(field)):
+                continue
+            patch[field] = parsed.get(field)
+        items.append({
+            "process_sheet_no": process_sheet_no,
+            "patch": patch,
+            "source_row": offset,
+        })
+    return items
+
+
+def parse_npi_import_workbook(payload: bytes, filename: str = "") -> list[dict[str, Any]]:
+    if not payload:
+        raise ValueError("The Excel file is empty")
+    if len(payload) > _MAX_IMPORT_BYTES:
+        raise ValueError("Excel file is larger than 12 MB")
+    name = compact_text(filename).lower()
+    if name.endswith(".xls") and not name.endswith(".xlsx"):
+        sheets = _sheet_matrix_from_xls(payload)
+    else:
+        sheets = _sheet_matrix_from_xlsx(payload)
+    best: list[dict[str, Any]] = []
+    for _title, matrix in sheets:
+        items = _items_from_sheet_matrix(matrix)
+        if len(items) > len(best):
+            best = items
+        if items and any(item.get("patch") for item in items):
+            return items
+    if not best:
+        raise ValueError(
+            "Could not find a Data Input / process sheet column. "
+            "Use the NPI Tracker template headers."
+        )
+    return best
+
+
+def build_import_template_bytes() -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    from openpyxl.comments import Comment
+
+    workbook = Workbook()
+    ws = workbook.active
+    ws.title = "NPI Tracker"
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="334155")
+    lock_fill = PatternFill("solid", fgColor="E2E8F0")
+    for index, header in enumerate(IMPORT_TEMPLATE_COLUMNS, start=1):
+        cell = ws.cell(row=1, column=index, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", wrap_text=True)
+        ws.column_dimensions[get_column_letter(index)].width = 18 if index < 11 else 28
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(IMPORT_TEMPLATE_COLUMNS))}1"
+    ws.freeze_panes = "A2"
+    ws["A1"].comment = Comment(
+        "Process sheet number. Part details autofill from ERP on import.",
+        "NPI Tracker",
+    )
+    for col in range(2, 6):
+        ws.cell(row=2, column=col).fill = lock_fill
+    notes = workbook.create_sheet("Notes")
+    notes["A1"] = "How to import"
+    notes["A1"].font = Font(bold=True, size=14)
+    notes["A3"] = "1. Put the process sheet number in Data Input. Part No, Description, Qty and PO Due Date autofill from ERP."
+    notes["A4"] = "2. PIC: type names separated by / or comma (e.g. Chang Peng/Anand). Unknown names are added to the PIC list."
+    notes["A5"] = "3. Machine (CNC): comma-separated names or numbers (e.g. 22, 30 or CNC 10, CNC 20)."
+    notes["A6"] = "4. Tooling / Fixture/Jig / Gauges/CMM: OK (ready), NA, a date, or a note such as Est. Wk 31."
+    notes["A7"] = "5. Empty cells leave the current tracker value unchanged. Re-importing updates matching process sheets."
+    notes.column_dimensions["A"].width = 120
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
 
 
 def _stage_status_label(value: Any) -> str:
@@ -669,6 +1183,161 @@ def _pics_for_ids(pics_by_id: dict[int, dict[str, Any]], pic_ids: list[int]) -> 
     return out
 
 
+def _pic_display(pics_by_id: dict[int, dict[str, Any]] | None, pic_ids: Any) -> str:
+    names = [
+        compact_text(pic.get("name"))
+        for pic in _pics_for_ids(pics_by_id or {}, _parse_pic_ids(pic_ids))
+        if compact_text(pic.get("name"))
+    ]
+    return ", ".join(names)
+
+
+def history_field_label(field_name: str) -> str:
+    key = compact_text(field_name)
+    return _HISTORY_FIELD_LABELS.get(key, key.replace("_", " ").strip() or key)
+
+
+def history_text(field_name: str, value: Any, pics_by_id: dict[int, dict[str, Any]] | None = None) -> str:
+    field = compact_text(field_name)
+    if field in {"program_pic_ids", "pic_ids"}:
+        return _pic_display(pics_by_id, value)
+    if field == "program_finish_at":
+        try:
+            return _parse_program_finish(value)
+        except ValueError:
+            return compact_text(value)
+    return compact_text(value)
+
+
+def diff_tracked_fields(
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+    fields: tuple[str, ...] | list[str],
+    *,
+    pics_by_id: dict[int, dict[str, Any]] | None = None,
+) -> list[dict[str, str]]:
+    previous = before or {}
+    current = after or {}
+    out: list[dict[str, str]] = []
+    for field in fields:
+        old_value = history_text(field, previous.get(field), pics_by_id)
+        new_value = history_text(field, current.get(field), pics_by_id)
+        if old_value == new_value:
+            continue
+        out.append({
+            "field_name": compact_text(field),
+            "field_label": history_field_label(field),
+            "old_value": old_value,
+            "new_value": new_value,
+        })
+    return out
+
+
+def _insert_change_logs(
+    con,
+    *,
+    source: str,
+    process_sheet_no: str,
+    first_article_id: int | None,
+    changes: list[dict[str, str]],
+) -> None:
+    kind = compact_text(source).lower()
+    ps = _ps_base(process_sheet_no)
+    if kind not in _HISTORY_SOURCES or not ps or not changes:
+        return
+    for change in changes:
+        field_name = compact_text(change.get("field_name"))
+        if not field_name:
+            continue
+        con.execute(
+            """
+            INSERT INTO planner_first_article_change_log (
+                source, process_sheet_no, first_article_id, field_name, old_value, new_value
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                kind,
+                ps,
+                int(first_article_id) if first_article_id else None,
+                field_name,
+                compact_text(change.get("old_value")),
+                compact_text(change.get("new_value")),
+            ),
+        )
+
+
+def _history_count_map(con, source: str, keys: list[str] | None) -> dict[str, int]:
+    wanted = sorted({_ps_key(item) for item in (keys or []) if _ps_key(item)})
+    kind = compact_text(source).lower()
+    if not wanted or kind not in _HISTORY_SOURCES:
+        return {}
+    fetched = rows(
+        con.execute(
+            """
+            SELECT UPPER(TRIM(process_sheet_no)) AS ps_key, COUNT(*) AS n
+            FROM planner_first_article_change_log
+            WHERE source = %s
+              AND UPPER(TRIM(process_sheet_no)) = ANY(%s)
+            GROUP BY UPPER(TRIM(process_sheet_no))
+            """,
+            (kind, wanted),
+        )
+    )
+    return {_ps_key(row.get("ps_key")): int(row.get("n") or 0) for row in fetched or []}
+
+
+def _serialize_change_log(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    out = serialize_row(dict(row))
+    field_name = compact_text(out.get("field_name"))
+    return {
+        "change_id": int(out.get("change_id") or 0),
+        "source": compact_text(out.get("source")),
+        "process_sheet_no": _ps_base(out.get("process_sheet_no")),
+        "first_article_id": int(out.get("first_article_id") or 0) or None,
+        "field_name": field_name,
+        "field_label": history_field_label(field_name),
+        "old_value": compact_text(out.get("old_value")),
+        "new_value": compact_text(out.get("new_value")),
+        "changed_at": compact_text(out.get("changed_at")),
+    }
+
+
+def list_change_history(*, source: str, process_sheet_no: str, limit: int = _HISTORY_LIMIT) -> list[dict[str, Any]]:
+    kind = compact_text(source).lower()
+    ps = _ps_base(process_sheet_no)
+    if kind not in _HISTORY_SOURCES:
+        raise ValueError("source must be new_part or flagged")
+    if not ps:
+        raise ValueError("process_sheet_no is required")
+    cap = max(1, min(int(limit or _HISTORY_LIMIT), 500))
+    with planner_db() as con:
+        _ensure_tables(con)
+        fetched = rows(
+            con.execute(
+                """
+                SELECT change_id, source, process_sheet_no, first_article_id,
+                       field_name, old_value, new_value, changed_at
+                FROM planner_first_article_change_log
+                WHERE source = %s
+                  AND LOWER(TRIM(process_sheet_no)) = LOWER(TRIM(%s))
+                ORDER BY changed_at DESC, change_id DESC
+                LIMIT %s
+                """,
+                (kind, ps, cap),
+            )
+        )
+    return [item for item in (_serialize_change_log(row) for row in fetched) if item]
+
+
+def _decorate_stage_labels(row: dict[str, Any] | None) -> dict[str, Any]:
+    out = row or {}
+    out["current_stage_status_label"] = _stage_status_label(out.get("current_stage_status"))
+    return out
+
+
 def _serialize_tracker_row(
     row: dict[str, Any] | None,
     *,
@@ -720,6 +1389,7 @@ def _serialize_tracker_row(
     out["erp_last_stage_desc"] = stage["erp_last_stage_desc"]
     out["erp_wo_stage_count"] = stage["erp_wo_stage_count"]
     out["current_stage_status_label"] = _stage_status_label(stage["current_stage_status"])
+    out["history_count"] = int(out.get("history_count") or 0)
     return out
 
 
@@ -1283,11 +1953,15 @@ def list_tracker_rows(*, live_by_ps: dict[str, dict[str, Any]] | None = None) ->
                 """
             )
         )
-    all_keys = []
-    for row in fetched:
-        key = _ps_key(row.get("process_sheet_no") or row.get("pp_voucher_no"))
-        if key:
-            all_keys.append(key)
+        all_keys = [
+            key
+            for key in (
+                _ps_key(row.get("process_sheet_no") or row.get("pp_voucher_no"))
+                for row in fetched
+            )
+            if key
+        ]
+        history_counts = _history_count_map(con, "flagged", all_keys)
     cache_map = _lookup_jobs_from_pp_cache(all_keys)
     for key, job in cache_map.items():
         live_map[key] = _merge_live_job(live_map.get(key), job) or job
@@ -1296,6 +1970,7 @@ def list_tracker_rows(*, live_by_ps: dict[str, dict[str, Any]] | None = None) ->
         key = _ps_key(row.get("process_sheet_no") or row.get("pp_voucher_no"))
         serialized = _serialize_tracker_row(row, live=live_map.get(key), pics_by_id=pics)
         if serialized:
+            serialized["history_count"] = int(history_counts.get(key) or 0)
             out.append(serialized)
     _apply_stage_overlay_to_rows(out)
     return out
@@ -1504,6 +2179,190 @@ def flag_process_sheets(items: list[Any] | None) -> dict[str, Any]:
     }
 
 
+def _apply_tracker_patch(
+    con,
+    current: dict[str, Any],
+    data: dict[str, Any],
+    *,
+    catalog: list[str] | None = None,
+) -> dict[str, Any]:
+    if "pic_names" in data:
+        current["pic_ids"] = _resolve_pic_names(con, _parse_pic_names(data.get("pic_names")))
+    elif "pic_ids" in data:
+        current["pic_ids"] = _validate_pic_ids(con, _parse_pic_ids(data.get("pic_ids")))
+    if "machine_codes" in data:
+        current["machine_codes"] = _resolve_machine_codes(data.get("machine_codes"), catalog)
+    if "remarks" in data:
+        current["remarks"] = compact_text(data.get("remarks"))
+    for prefix in CHECK_TEXT_FIELDS:
+        if prefix in data:
+            parsed = _parse_check_cell(data.get(prefix))
+            current[f"{prefix}_mode"] = parsed["mode"]
+            current[f"{prefix}_tick"] = parsed["tick"]
+            current[f"{prefix}_text"] = parsed["text"]
+            continue
+        mode_key = f"{prefix}_mode"
+        tick_key = f"{prefix}_tick"
+        text_key = f"{prefix}_text"
+        if mode_key in data:
+            current[mode_key] = _parse_mode(data.get(mode_key), field=mode_key)
+        if tick_key in data:
+            current[tick_key] = bool(data.get(tick_key))
+        if text_key in data:
+            current[text_key] = compact_text(data.get(text_key))
+    return current
+
+
+def _write_tracker_row(con, first_article_id: int, current: dict[str, Any]):
+    return one(
+        con.execute(
+            f"""
+            UPDATE planner_first_article
+            SET pic_ids = %s,
+                machine_codes = %s,
+                tooling_mode = %s,
+                tooling_tick = %s,
+                tooling_text = %s,
+                fixture_mode = %s,
+                fixture_tick = %s,
+                fixture_text = %s,
+                gauges_mode = %s,
+                gauges_tick = %s,
+                gauges_text = %s,
+                remarks = %s,
+                updated_at = NOW()
+            WHERE first_article_id = %s
+            RETURNING {_ROW_SELECT}
+            """,
+            (
+                current.get("pic_ids") or [],
+                current.get("machine_codes"),
+                compact_text(current.get("tooling_mode")) or "tick",
+                bool(current.get("tooling_tick")),
+                compact_text(current.get("tooling_text")),
+                compact_text(current.get("fixture_mode")) or "tick",
+                bool(current.get("fixture_tick")),
+                compact_text(current.get("fixture_text")),
+                compact_text(current.get("gauges_mode")) or "tick",
+                bool(current.get("gauges_tick")),
+                compact_text(current.get("gauges_text")),
+                compact_text(current.get("remarks")),
+                int(first_article_id),
+            ),
+        )
+    )
+
+
+def import_tracker_rows(items: list[Any] | None) -> dict[str, Any]:
+    parsed: list[dict[str, Any]] = []
+    last_by_key: dict[str, dict[str, Any]] = {}
+    duplicate_count = 0
+    for raw in items or []:
+        if not isinstance(raw, dict):
+            continue
+        process_sheet_no = _ps_base(raw.get("process_sheet_no") or raw.get("pp_voucher_no"))
+        if not process_sheet_no:
+            continue
+        key = _ps_key(process_sheet_no)
+        item = {
+            "process_sheet_no": process_sheet_no,
+            "pp_voucher_no": compact_text(raw.get("pp_voucher_no")),
+            "patch": dict(raw.get("patch") or {}),
+            "source_row": raw.get("source_row"),
+        }
+        if key in last_by_key:
+            duplicate_count += 1
+        last_by_key[key] = item
+    parsed = list(last_by_key.values())
+    if not parsed:
+        raise ValueError("No process sheet numbers found in the Excel file")
+    if len(parsed) > _IMPORT_LIMIT:
+        raise ValueError(f"Import at most {_IMPORT_LIMIT} process sheets")
+
+    live_map = _live_job_map(allow_rebuild=True)
+    cache_map = _lookup_jobs_from_pp_cache([item["process_sheet_no"] for item in parsed])
+    for key, job in cache_map.items():
+        live_map[key] = _merge_live_job(live_map.get(key), job) or job
+    catalog = load_machine_catalog()
+
+    created_rows: list[dict[str, Any]] = []
+    updated_rows: list[dict[str, Any]] = []
+    missing_erp: list[str] = []
+    errors: list[dict[str, Any]] = []
+    with planner_db() as con:
+        _ensure_tables(con)
+        pics = _pics_by_id(con)
+        for item in parsed:
+            process_sheet_no = item["process_sheet_no"]
+            pp_voucher_no = item["pp_voucher_no"]
+            try:
+                live = live_map.get(_ps_key(process_sheet_no)) or live_map.get(_ps_key(pp_voucher_no)) or {}
+                if live:
+                    process_sheet_no = compact_text(live.get("process_sheet_no")) or process_sheet_no
+                    pp_voucher_no = compact_text(live.get("pp_voucher_no")) or pp_voucher_no
+                else:
+                    missing_erp.append(process_sheet_no)
+                patch = dict(item.get("patch") or {})
+                if "machine_codes" in patch:
+                    seed_machines = _resolve_machine_codes(patch.get("machine_codes"), catalog)
+                else:
+                    seed_machines = _parse_machine_codes(live.get("queued_machines") or live.get("machine_cnc"))
+                row, created = _upsert_flagged_row(
+                    con,
+                    process_sheet_no,
+                    pp_voucher_no,
+                    machine_codes=seed_machines or None,
+                )
+                current = dict(row or {})
+                if patch:
+                    before = dict(current)
+                    current = _apply_tracker_patch(con, current, patch, catalog=catalog)
+                    if "pic_names" in patch:
+                        pics = _pics_by_id(con)
+                    changes = diff_tracked_fields(
+                        before,
+                        current,
+                        _HISTORY_FIELDS_FLAGGED,
+                        pics_by_id=pics,
+                    )
+                    row = _write_tracker_row(con, int(current["first_article_id"]), current) or current
+                    _insert_change_logs(
+                        con,
+                        source="flagged",
+                        process_sheet_no=process_sheet_no,
+                        first_article_id=int(current["first_article_id"]),
+                        changes=changes,
+                    )
+                serialized = _serialize_tracker_row(row, live=live or {}, pics_by_id=pics)
+                if not serialized:
+                    continue
+                if created:
+                    created_rows.append(serialized)
+                else:
+                    updated_rows.append(serialized)
+            except Exception as exc:
+                logger.exception("first article import row failed")
+                errors.append({
+                    "process_sheet_no": process_sheet_no,
+                    "source_row": item.get("source_row"),
+                    "error": str(exc),
+                })
+        pics = _pics_by_id(con)
+    return {
+        "created": created_rows,
+        "updated": updated_rows,
+        "created_count": len(created_rows),
+        "updated_count": len(updated_rows),
+        "missing_erp": missing_erp,
+        "missing_erp_count": len(missing_erp),
+        "duplicate_count": duplicate_count,
+        "error_count": len(errors),
+        "errors": errors,
+        "count": len(created_rows) + len(updated_rows),
+        "pics": list(pics.values()),
+    }
+
+
 def update_tracker_row(first_article_id: int, data: dict[str, Any]) -> dict[str, Any] | None:
     with planner_db() as con:
         _ensure_tables(con)
@@ -1519,66 +2378,43 @@ def update_tracker_row(first_article_id: int, data: dict[str, Any]) -> dict[str,
         )
         if not existing:
             return None
-        current = dict(existing)
-        if "pic_ids" in data:
-            current["pic_ids"] = _validate_pic_ids(con, _parse_pic_ids(data.get("pic_ids")))
-        if "machine_codes" in data:
-            current["machine_codes"] = _parse_machine_codes(data.get("machine_codes"))
-        if "remarks" in data:
-            current["remarks"] = compact_text(data.get("remarks"))
-        for prefix in CHECK_TEXT_FIELDS:
-            mode_key = f"{prefix}_mode"
-            tick_key = f"{prefix}_tick"
-            text_key = f"{prefix}_text"
-            if mode_key in data:
-                current[mode_key] = _parse_mode(data.get(mode_key), field=mode_key)
-            if tick_key in data:
-                current[tick_key] = bool(data.get(tick_key))
-            if text_key in data:
-                current[text_key] = compact_text(data.get(text_key))
-        row = one(
-            con.execute(
-                f"""
-                UPDATE planner_first_article
-                SET pic_ids = %s,
-                    machine_codes = %s,
-                    tooling_mode = %s,
-                    tooling_tick = %s,
-                    tooling_text = %s,
-                    fixture_mode = %s,
-                    fixture_tick = %s,
-                    fixture_text = %s,
-                    gauges_mode = %s,
-                    gauges_tick = %s,
-                    gauges_text = %s,
-                    remarks = %s,
-                    updated_at = NOW()
-                WHERE first_article_id = %s
-                RETURNING {_ROW_SELECT}
-                """,
-                (
-                    current.get("pic_ids") or [],
-                    current.get("machine_codes"),
-                    compact_text(current.get("tooling_mode")) or "tick",
-                    bool(current.get("tooling_tick")),
-                    compact_text(current.get("tooling_text")),
-                    compact_text(current.get("fixture_mode")) or "tick",
-                    bool(current.get("fixture_tick")),
-                    compact_text(current.get("fixture_text")),
-                    compact_text(current.get("gauges_mode")) or "tick",
-                    bool(current.get("gauges_tick")),
-                    compact_text(current.get("gauges_text")),
-                    compact_text(current.get("remarks")),
-                    int(first_article_id),
-                ),
-            )
+        current = _apply_tracker_patch(
+            con,
+            dict(existing),
+            data,
+            catalog=load_machine_catalog() if "machine_codes" in data else None,
         )
         pics = _pics_by_id(con)
+        changes = diff_tracked_fields(
+            dict(existing),
+            current,
+            _HISTORY_FIELDS_FLAGGED,
+            pics_by_id=pics,
+        )
+        row = _write_tracker_row(con, int(first_article_id), current)
+        _insert_change_logs(
+            con,
+            source="flagged",
+            process_sheet_no=compact_text((row or current).get("process_sheet_no")),
+            first_article_id=int(first_article_id),
+            changes=changes,
+        )
+        history_count = int(
+            _history_count_map(
+                con,
+                "flagged",
+                [compact_text((row or current).get("process_sheet_no"))],
+            ).get(_ps_key((row or current).get("process_sheet_no"))) or 0
+        )
     live = lookup_sales_order_job(
         compact_text((row or {}).get("process_sheet_no")),
         compact_text((row or {}).get("pp_voucher_no")),
     )
-    return _serialize_tracker_row(row, live=live or {}, pics_by_id=pics)
+    serialized = _serialize_tracker_row(row, live=live or {}, pics_by_id=pics)
+    if serialized:
+        serialized["history_count"] = history_count
+        _apply_stage_overlay_to_rows([serialized])
+    return serialized
 
 
 def unflag_process_sheet(first_article_id: int) -> bool:
@@ -1609,6 +2445,7 @@ def _serialize_new_part_saved(
             "program_finish_at": "",
             "program_pic_ids": [],
             "program_pics": [],
+            "is_exception": False,
         }
     out = serialize_row(dict(row))
     pic_ids = _parse_pic_ids(out.get("program_pic_ids"))
@@ -1618,7 +2455,48 @@ def _serialize_new_part_saved(
         "program_finish_at": compact_text(out.get("program_finish_at")),
         "program_pic_ids": pic_ids,
         "program_pics": _pics_for_ids(pics_by_id or {}, pic_ids),
+        "is_exception": bool(out.get("is_exception")),
     }
+
+
+def _blank_new_part_job(process_sheet_no: str, pp_voucher_no: str = "") -> dict[str, Any]:
+    job = {
+        "process_sheet_no": process_sheet_no,
+        "pp_voucher_no": compact_text(pp_voucher_no),
+        "part_no": "",
+        "part_description": "",
+        "total_qty": None,
+        "po_due_date": "",
+        "posted_date": "",
+        "queued_machines": [],
+        "machine_cnc": "",
+        "coway_proposed_edd": "",
+        "sales_order_no": "",
+        "customer_name": "",
+        "is_new_part": False,
+        "bom_code": "",
+        "has_bom": False,
+        "material_subcon": "",
+        "material_arrived": False,
+        "material_date": "",
+        "material_legacy": "",
+        "material_display": "",
+        "so_scope": "",
+        "shipped_completed": False,
+        "from_erp_cache": False,
+        **_empty_stage(),
+    }
+    job["ps_type"] = _job_ps_type(job) or "OTHER"
+    return job
+
+
+def _is_complete_status(row: dict[str, Any] | None) -> bool:
+    item = row or {}
+    if bool(item.get("shipped_completed")):
+        return True
+    if compact_text(item.get("so_scope")).lower() == "complete":
+        return True
+    return compact_text(item.get("erp_stage_mode")).lower() == "completed"
 
 
 def _merge_new_part_row(
@@ -1630,7 +2508,17 @@ def _merge_new_part_row(
     out = dict(job)
     tracker = _serialize_new_part_saved(saved, pics_by_id=pics_by_id)
     out.update(tracker)
-    out["in_sales_orders"] = True
+    if job.get("is_new_part"):
+        out["in_sales_orders"] = True
+    elif job.get("from_erp_cache"):
+        out["in_sales_orders"] = False
+    else:
+        out["in_sales_orders"] = compact_text(job.get("so_scope")).lower() in {"active", "complete"}
+    if not compact_text(out.get("ps_type")):
+        out["ps_type"] = _job_ps_type(out) or "OTHER"
+    _decorate_stage_labels(out)
+    out["history_count"] = int(out.get("history_count") or 0)
+    out["list_scope"] = "history" if _is_complete_status(out) else "active"
     return out
 
 
@@ -1651,32 +2539,136 @@ def _new_part_tracker_map(con) -> dict[str, dict[str, Any]]:
     return out
 
 
-def list_new_part_rows(*, allow_rebuild: bool = True) -> list[dict[str, Any]]:
+def _live_jobs_for_new_parts(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    active_orders = list(payload.get("active") or [])
+    complete_orders = list(payload.get("complete") or [])
+    _ensure_new_part_flags(active_orders)
+    _ensure_new_part_flags(complete_orders)
+    active_jobs = flatten_sales_order_jobs(active_orders, so_scope="active")
+    live_map = index_jobs_by_ps(active_jobs)
+    complete_jobs = flatten_sales_order_jobs(complete_orders, so_scope="complete")
+    for job in complete_jobs:
+        key = _ps_key(job.get("process_sheet_no") or job.get("pp_voucher_no"))
+        if key and key not in live_map:
+            live_map[key] = job
+    new_active = [job for job in active_jobs if job and job.get("is_new_part")]
+    new_complete = [job for job in complete_jobs if job and job.get("is_new_part")]
+    return new_active, new_complete, live_map
+
+
+def _remember_new_part_keys(con, jobs: list[dict[str, Any]], *, already: set[str] | None = None) -> None:
+    known = already or set()
+    seen: set[str] = set()
+    for job in jobs or []:
+        process_sheet_no = _ps_base(job.get("process_sheet_no") or job.get("pp_voucher_no"))
+        key = _ps_key(process_sheet_no)
+        if not process_sheet_no or key in seen or key in known:
+            continue
+        seen.add(key)
+        con.execute(
+            """
+            INSERT INTO planner_first_article_new_part (process_sheet_no, pp_voucher_no)
+            VALUES (%s, %s)
+            ON CONFLICT (process_sheet_no) DO UPDATE
+            SET pp_voucher_no = CASE
+                    WHEN EXCLUDED.pp_voucher_no <> '' THEN EXCLUDED.pp_voucher_no
+                    ELSE planner_first_article_new_part.pp_voucher_no
+                END
+            """,
+            (process_sheet_no, compact_text(job.get("pp_voucher_no"))),
+        )
+
+
+def list_new_part_rows(*, allow_rebuild: bool = True, scope: str = "active") -> list[dict[str, Any]]:
+    wanted = compact_text(scope).lower() or "active"
+    if wanted not in {"active", "history"}:
+        wanted = "active"
     payload = _sales_order_payload(allow_rebuild=allow_rebuild)
-    orders = list(payload.get("active") or [])
-    _ensure_new_part_flags(orders)
-    jobs = [
-        job
-        for job in flatten_sales_order_jobs(orders)
-        if job and job.get("is_new_part")
-    ]
-    _apply_has_bom(jobs)
+    new_active, new_complete, live_map = _live_jobs_for_new_parts(payload)
     with planner_db() as con:
         _ensure_tables(con)
         pics = _pics_by_id(con)
         saved_map = _new_part_tracker_map(con)
-    out: list[dict[str, Any]] = []
-    for job in jobs:
+        count_keys = sorted({
+            key
+            for key in (
+                _ps_key(job.get("process_sheet_no") or job.get("pp_voucher_no"))
+                for job in (*new_active, *new_complete)
+            )
+            if key
+        } | set(saved_map.keys()))
+        history_counts = _history_count_map(con, "new_part", count_keys)
+
+    assembled: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
+    seen: set[str] = set()
+
+    def _add(job: dict[str, Any], saved: dict[str, Any] | None) -> None:
         key = _ps_key(job.get("process_sheet_no") or job.get("pp_voucher_no"))
-        out.append(_merge_new_part_row(job, saved_map.get(key), pics_by_id=pics))
-    out.sort(
+        if not key or key in seen:
+            return
+        seen.add(key)
+        assembled.append((job, saved))
+
+    for job in new_active:
+        _add(job, saved_map.get(_ps_key(job.get("process_sheet_no") or job.get("pp_voucher_no"))))
+    for job in new_complete:
+        _add(job, saved_map.get(_ps_key(job.get("process_sheet_no") or job.get("pp_voucher_no"))))
+
+    leftover = [key for key in saved_map if key and key not in seen]
+    cache_map = _lookup_jobs_from_pp_cache(leftover) if leftover else {}
+    for key in leftover:
+        saved = saved_map.get(key) or {}
+        job = (
+            live_map.get(key)
+            or cache_map.get(key)
+            or _blank_new_part_job(
+                compact_text(saved.get("process_sheet_no")) or key,
+                compact_text(saved.get("pp_voucher_no")),
+            )
+        )
+        _add(job, saved)
+
+    _apply_has_bom([job for job, _saved in assembled])
+    out = []
+    for job, saved in assembled:
+        merged = _merge_new_part_row(job, saved, pics_by_id=pics)
+        key = _ps_key(merged.get("process_sheet_no") or merged.get("pp_voucher_no"))
+        merged["history_count"] = int(history_counts.get(key) or 0)
+        out.append(merged)
+    _apply_stage_overlay_to_rows(out)
+    for row in out:
+        complete = _is_complete_status(row)
+        live_new = bool(row.get("is_new_part")) and compact_text(row.get("so_scope")).lower() != "complete"
+        if complete:
+            row["list_scope"] = "history"
+        elif live_new or row.get("is_exception"):
+            row["list_scope"] = "active"
+        else:
+            row["list_scope"] = "history"
+
+    remembered = [row for row in out if row.get("list_scope") == "history"]
+    missing = [
+        row
+        for row in remembered
+        if _ps_key(row.get("process_sheet_no") or row.get("pp_voucher_no")) not in saved_map
+    ]
+    if missing:
+        try:
+            with planner_db() as con:
+                _ensure_tables(con)
+                _remember_new_part_keys(con, missing, already=set(saved_map))
+        except Exception:
+            logger.exception("first article history remember failed")
+
+    scoped = [row for row in out if compact_text(row.get("list_scope")) == wanted]
+    scoped.sort(
         key=lambda row: (
             compact_text(row.get("posted_date")),
             compact_text(row.get("process_sheet_no")).upper(),
         ),
         reverse=True,
     )
-    return out
+    return scoped
 
 
 def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
@@ -1709,6 +2701,7 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
             "remarks": "",
             "program_finish_at": "",
             "program_pic_ids": [],
+            "is_exception": False,
         }
         if pp_voucher_no:
             current["pp_voucher_no"] = pp_voucher_no
@@ -1720,6 +2713,17 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
             current["program_finish_at"] = _parse_program_finish(data.get("program_finish_at"))
         if "program_pic_ids" in data:
             current["program_pic_ids"] = _validate_pic_ids(con, _parse_pic_ids(data.get("program_pic_ids")))
+        pics = _pics_by_id(con)
+        changes = diff_tracked_fields(
+            dict(existing) if existing else {
+                "remarks": "",
+                "program_finish_at": "",
+                "program_pic_ids": [],
+            },
+            current,
+            _HISTORY_FIELDS_NEW_PART,
+            pics_by_id=pics,
+        )
         row = one(
             con.execute(
                 f"""
@@ -1747,26 +2751,186 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
                 ),
             )
         )
-        pics = _pics_by_id(con)
-    job = live or {
-        "process_sheet_no": process_sheet_no,
-        "pp_voucher_no": compact_text(current.get("pp_voucher_no")),
-        "is_new_part": True,
-        "bom_code": "",
-        "has_bom": False,
-        "material_subcon": "",
-        "material_arrived": False,
-        "material_date": "",
-        "material_legacy": "",
-        "material_display": "",
-        "posted_date": "",
-    }
+        _insert_change_logs(
+            con,
+            source="new_part",
+            process_sheet_no=process_sheet_no,
+            first_article_id=None,
+            changes=changes,
+        )
+        history_count = int(
+            _history_count_map(con, "new_part", [process_sheet_no]).get(_ps_key(process_sheet_no)) or 0
+        )
+    job = live or _blank_new_part_job(process_sheet_no, compact_text(current.get("pp_voucher_no")))
+    if not live:
+        job["is_new_part"] = not bool(current.get("is_exception"))
     _apply_has_bom([job])
-    return _merge_new_part_row(job, dict(row) if row else current, pics_by_id=pics)
+    merged = _merge_new_part_row(job, dict(row) if row else current, pics_by_id=pics)
+    merged["history_count"] = history_count
+    _apply_stage_overlay_to_rows([merged])
+    complete = _is_complete_status(merged)
+    live_new = bool(merged.get("is_new_part")) and compact_text(merged.get("so_scope")).lower() != "complete"
+    if complete:
+        merged["list_scope"] = "history"
+    elif live_new or merged.get("is_exception"):
+        merged["list_scope"] = "active"
+    else:
+        merged["list_scope"] = "history"
+    return merged
+
+
+def _upsert_new_part_exception(
+    con,
+    process_sheet_no: str,
+    pp_voucher_no: str,
+) -> tuple[Any, bool]:
+    existing = one(
+        con.execute(
+            f"""
+            SELECT {_NEW_PART_ROW_SELECT}
+            FROM planner_first_article_new_part
+            WHERE LOWER(TRIM(process_sheet_no)) = LOWER(TRIM(%s))
+            LIMIT 1
+            """,
+            (process_sheet_no,),
+        )
+    )
+    if existing and existing.get("is_exception"):
+        row = existing
+        if pp_voucher_no and compact_text(row.get("pp_voucher_no")) != pp_voucher_no:
+            row = one(
+                con.execute(
+                    f"""
+                    UPDATE planner_first_article_new_part
+                    SET pp_voucher_no = %s, updated_at = NOW()
+                    WHERE LOWER(TRIM(process_sheet_no)) = LOWER(TRIM(%s))
+                    RETURNING {_NEW_PART_ROW_SELECT}
+                    """,
+                    (pp_voucher_no, process_sheet_no),
+                )
+            ) or existing
+        return row, False
+    row = one(
+        con.execute(
+            f"""
+            INSERT INTO planner_first_article_new_part (
+                process_sheet_no, pp_voucher_no, is_exception, updated_at
+            )
+            VALUES (%s, %s, TRUE, NOW())
+            ON CONFLICT (process_sheet_no) DO UPDATE
+            SET pp_voucher_no = CASE
+                    WHEN EXCLUDED.pp_voucher_no <> '' THEN EXCLUDED.pp_voucher_no
+                    ELSE planner_first_article_new_part.pp_voucher_no
+                END,
+                is_exception = TRUE,
+                updated_at = NOW()
+            RETURNING {_NEW_PART_ROW_SELECT}
+            """,
+            (process_sheet_no, pp_voucher_no),
+        )
+    )
+    return row, True
+
+
+def add_new_part_exception(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    parsed = _normalize_flag_item(data if isinstance(data, dict) else {})
+    if not parsed:
+        raise ValueError("process_sheet_no is required")
+    process_sheet_no, pp_voucher_no = parsed
+    live = lookup_sales_order_job(process_sheet_no, pp_voucher_no) or {}
+    if live:
+        process_sheet_no = compact_text(live.get("process_sheet_no")) or process_sheet_no
+        pp_voucher_no = compact_text(live.get("pp_voucher_no")) or pp_voucher_no
+
+    already_new = bool(
+        live.get("is_new_part")
+        and compact_text(live.get("so_scope")).lower() != "complete"
+    )
+    with planner_db() as con:
+        _ensure_tables(con)
+        pics = _pics_by_id(con)
+        if already_new:
+            saved = one(
+                con.execute(
+                    f"""
+                    SELECT {_NEW_PART_ROW_SELECT}
+                    FROM planner_first_article_new_part
+                    WHERE LOWER(TRIM(process_sheet_no)) = LOWER(TRIM(%s))
+                    LIMIT 1
+                    """,
+                    (process_sheet_no,),
+                )
+            )
+            job = live
+            _apply_has_bom([job])
+            serialized = _merge_new_part_row(job, dict(saved) if saved else None, pics_by_id=pics)
+            return serialized, False
+        row, created = _upsert_new_part_exception(con, process_sheet_no, pp_voucher_no)
+    job = live or _blank_new_part_job(process_sheet_no, pp_voucher_no)
+    _apply_has_bom([job])
+    serialized = _merge_new_part_row(job, dict(row) if row else None, pics_by_id=pics)
+    if not serialized:
+        raise RuntimeError("Failed to add new-part exception")
+    return serialized, created
+
+
+def remove_new_part_exception(process_sheet_no: str) -> dict[str, Any] | None:
+    key = _ps_base(process_sheet_no)
+    if not key:
+        raise ValueError("process_sheet_no is required")
+    with planner_db() as con:
+        _ensure_tables(con)
+        existing = one(
+            con.execute(
+                f"""
+                SELECT {_NEW_PART_ROW_SELECT}
+                FROM planner_first_article_new_part
+                WHERE LOWER(TRIM(process_sheet_no)) = LOWER(TRIM(%s))
+                LIMIT 1
+                """,
+                (key,),
+            )
+        )
+        if not existing or not existing.get("is_exception"):
+            return None
+        row = one(
+            con.execute(
+                f"""
+                UPDATE planner_first_article_new_part
+                SET is_exception = FALSE, updated_at = NOW()
+                WHERE LOWER(TRIM(process_sheet_no)) = LOWER(TRIM(%s))
+                RETURNING {_NEW_PART_ROW_SELECT}
+                """,
+                (key,),
+            )
+        )
+        pics = _pics_by_id(con)
+    live = lookup_sales_order_job(
+        compact_text((row or existing).get("process_sheet_no")),
+        compact_text((row or existing).get("pp_voucher_no")),
+    ) or {}
+    still_on_list = bool(live.get("is_new_part") and compact_text(live.get("so_scope")).lower() != "complete")
+    job = live or _blank_new_part_job(
+        compact_text((row or existing).get("process_sheet_no")) or key,
+        compact_text((row or existing).get("pp_voucher_no")),
+    )
+    if still_on_list:
+        _apply_has_bom([job])
+        merged = _merge_new_part_row(job, dict(row) if row else dict(existing), pics_by_id=pics)
+    else:
+        merged = None
+    return {
+        "process_sheet_no": compact_text((row or existing).get("process_sheet_no")) or key,
+        "still_on_list": still_on_list,
+        "row": merged,
+    }
 
 
 def json_error(exc: Exception, *, fallback_status: int = 500):
     friendly = planner_db_connect_error(exc)
     if friendly:
         return {"error": friendly}, 503
-    return {"error": str(exc)}, fallback_status
+    text = str(exc) or exc.__class__.__name__
+    if "deadlock detected" in text.lower():
+        return {"error": "The first article tracker is busy. Refresh and try again."}, 503
+    return {"error": text}, fallback_status
