@@ -535,6 +535,9 @@ function trialBoardOnlyTempCatalogEntries() {
     if (Object.prototype.hasOwnProperty.call(block, 'tooling_ready') && block.tooling_ready === false) {
       row.tooling_ready = false;
     }
+    if (Object.prototype.hasOwnProperty.call(block, 'program_ready') && block.program_ready === false) {
+      row.program_ready = false;
+    }
     row.partial_qty = Math.max(
       Number(row.partial_qty || 0),
       Number(block.scheduled_qty || 0),

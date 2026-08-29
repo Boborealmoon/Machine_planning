@@ -69,6 +69,7 @@ function trialMaterialInForBlockLeader(leader) {
 function trialMaterialInLaneClass(leader) {
   if (!leader?.block_id) return '';
   if (!trialToolingForBlockLeader(leader)) return 'tooling-no';
+  if (!trialProgramForBlockLeader(leader)) return 'program-no';
   return trialMaterialInForBlockLeader(leader) ? 'material-in-yes' : 'material-in-no';
 }
 
@@ -135,6 +136,110 @@ function trialToolingForCatalogCard(card) {
     tooling_ready: card?.tooling_ready,
   };
   return trialToolingForLeader(leader);
+}
+
+function trialProgramKey(operationId, psId, sourceOpSeqId) {
+  return trialToolingKey(operationId, psId, sourceOpSeqId);
+}
+
+function trialProgramFromScheduleBlocks(leader) {
+  const opId = Number(leader?.operation_id || 0);
+  if (opId > 0) {
+    const block = (Array.isArray(trialState.blocks) ? trialState.blocks : [])
+      .find(row => Number(row.operation_id) === opId);
+    if (block && Object.prototype.hasOwnProperty.call(block, 'program_ready')) {
+      return Boolean(block.program_ready);
+    }
+  }
+  const psKey = String(
+    leader?.planner_ps_id || leader?.source_ps_id || leader?.job_no || '',
+  ).trim();
+  const seqId = Number(leader?.source_op_seq_id || 0);
+  if (!psKey || seqId <= 0) return null;
+  for (const block of (Array.isArray(trialState.blocks) ? trialState.blocks : [])) {
+    if (!Object.prototype.hasOwnProperty.call(block, 'program_ready')) continue;
+    const blockPs = String(block.planner_ps_id || block.source_ps_id || block.job_no || '').trim();
+    if (blockPs === psKey && Number(block.source_op_seq_id || 0) === seqId) {
+      return Boolean(block.program_ready);
+    }
+  }
+  return null;
+}
+
+function trialProgramForLeader(leader) {
+  const key = trialProgramKey(
+    leader?.operation_id,
+    leader?.planner_ps_id || leader?.source_ps_id || leader?.job_no,
+    leader?.source_op_seq_id,
+  );
+  if (key && trialProgramOverrides.has(key)) {
+    return Boolean(trialProgramOverrides.get(key));
+  }
+  if (leader && Object.prototype.hasOwnProperty.call(leader, 'program_ready')) {
+    return Boolean(leader.program_ready);
+  }
+  const fromBlocks = trialProgramFromScheduleBlocks(leader);
+  if (fromBlocks !== null) return fromBlocks;
+  return true;
+}
+
+function trialProgramForBlockLeader(leader) {
+  return trialProgramForLeader(leader);
+}
+
+function trialProgramPillMeta(programReady) {
+  if (programReady) {
+    return {
+      stateClass: 'is-in',
+      label: 'Program OK',
+      title: 'Assumed ready — click to flag no program',
+    };
+  }
+  return {
+    stateClass: 'is-out',
+    label: 'No program',
+    title: 'Program exception flagged — click to clear',
+  };
+}
+
+function trialProgramPillSync(pill, programReady) {
+  if (!pill) return;
+  const meta = trialProgramPillMeta(programReady);
+  pill.classList.toggle('is-in', Boolean(programReady));
+  pill.classList.toggle('is-out', !programReady);
+  pill.setAttribute('aria-pressed', programReady ? 'true' : 'false');
+  pill.title = meta.title;
+  const textEl = pill.querySelector('.trial-program-text');
+  if (textEl) textEl.textContent = meta.label;
+}
+
+function trialBlockProgramCheckboxHtml(leader) {
+  const operationId = Number(leader?.operation_id || 0);
+  const psId = String(
+    leader?.planner_ps_id || leader?.source_ps_id || leader?.job_no || '',
+  ).trim();
+  const sourceOpSeqId = Number(leader?.source_op_seq_id || 0);
+  if (!operationId && (!psId || sourceOpSeqId <= 0)) return '';
+  const checked = trialProgramForLeader(leader);
+  const meta = trialProgramPillMeta(checked);
+  return `
+    <label class="trial-program-pill ${meta.stateClass}"
+      title="${escapeHtml(meta.title)}"
+      aria-pressed="${checked ? 'true' : 'false'}"
+      aria-label="${escapeHtml(meta.label)}"
+      onclick="event.stopPropagation()">
+      <input type="checkbox" class="trial-program-input"
+        data-operation-id="${operationId || ''}"
+        data-ps-id="${escapeHtml(psId)}"
+        data-source-op-seq-id="${sourceOpSeqId || ''}"
+        ${checked ? 'checked' : ''}
+        tabindex="-1"
+        aria-hidden="true"
+        onchange="trialSetProgram(event, this)">
+      <span class="trial-program-dot" aria-hidden="true"></span>
+      <span class="trial-program-text">${escapeHtml(meta.label)}</span>
+    </label>
+  `;
 }
 
 function trialToolingPillMeta(toolingReady) {
@@ -230,13 +335,15 @@ function trialOpReadinessTogglesHtml(ps, leader) {
   const psForMaterial = ps || trialPsForMaterialToggle(leader);
   const materialHtml = psForMaterial ? trialCatalogMaterialInCheckboxHtml(psForMaterial) : '';
   const toolingHtml = leader ? trialBlockToolingCheckboxHtml(leader) : '';
-  if (!materialHtml && !toolingHtml) return '';
+  const programHtml = leader ? trialBlockProgramCheckboxHtml(leader) : '';
+  if (!materialHtml && !toolingHtml && !programHtml) return '';
   return `
     <div class="trial-op-detail-section">
       <div class="trial-op-detail-section-title">Readiness</div>
       <div class="trial-readiness-toggles">
         ${materialHtml}
         ${toolingHtml}
+        ${programHtml}
       </div>
     </div>
   `;
@@ -312,6 +419,81 @@ function trialApplyToolingToBlocks({ operationId, psId, sourceOpSeqId, toolingRe
       const cardSeq = Number(card.source_op_seq_id || 0);
       if (psKey && seqId > 0 && cardPs === psKey && cardSeq === seqId) {
         card.tooling_ready = Boolean(toolingReady);
+      }
+    });
+  });
+}
+
+async function trialSetProgram(event, input) {
+  if (event) event.stopPropagation();
+  const operationId = Number(input?.dataset?.operationId || 0);
+  const psId = String(input?.dataset?.psId || '').trim();
+  const sourceOpSeqId = Number(input?.dataset?.sourceOpSeqId || 0);
+  const key = trialProgramKey(operationId, psId, sourceOpSeqId);
+  if (!key || input.disabled) return;
+  const leader = {
+    operation_id: operationId,
+    planner_ps_id: psId,
+    source_ps_id: psId,
+    source_op_seq_id: sourceOpSeqId,
+  };
+  const previous = trialProgramForLeader(leader);
+  const programReady = Boolean(input.checked);
+  const pill = input.closest('.trial-program-pill');
+  trialProgramOverrides.set(key, programReady);
+  trialApplyProgramToBlocks({ operationId, psId, sourceOpSeqId, programReady });
+  trialProgramPillSync(pill, programReady);
+  input.disabled = true;
+  if (pill) pill.classList.add('is-saving');
+  try {
+    await POST('/api/operations/program-flag', {
+      operation_id: operationId || undefined,
+      ps_id: psId || undefined,
+      source_op_seq_id: sourceOpSeqId || undefined,
+      program_ready: programReady,
+    });
+    if (typeof renderTrial === 'function') renderTrial();
+    if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
+  } catch (err) {
+    trialProgramOverrides.set(key, previous);
+    trialApplyProgramToBlocks({ operationId, psId, sourceOpSeqId, programReady: previous });
+    input.checked = previous;
+    trialProgramPillSync(pill, previous);
+    window.alert(err?.message || 'Could not save program flag');
+  } finally {
+    input.disabled = false;
+    if (pill) pill.classList.remove('is-saving');
+  }
+}
+
+function trialApplyProgramToBlocks({ operationId, psId, sourceOpSeqId, programReady }) {
+  const opId = Number(operationId || 0);
+  const psKey = String(psId || '').trim();
+  const seqId = Number(sourceOpSeqId || 0);
+  (Array.isArray(trialState.blocks) ? trialState.blocks : []).forEach(block => {
+    if (opId > 0 && Number(block.operation_id) === opId) {
+      block.program_ready = Boolean(programReady);
+      return;
+    }
+    const blockPs = String(block.planner_ps_id || block.source_ps_id || block.job_no || '').trim();
+    if (psKey && seqId > 0 && blockPs === psKey && Number(block.source_op_seq_id || 0) === seqId) {
+      block.program_ready = Boolean(programReady);
+    }
+  });
+  const pools = [
+    ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
+    ...(Array.isArray(trialState.planned) ? trialState.planned : []),
+  ];
+  pools.forEach(ps => {
+    (ps.op_cards || []).forEach(card => {
+      if (opId > 0 && Number(card.operation_id) === opId) {
+        card.program_ready = Boolean(programReady);
+        return;
+      }
+      const cardPs = String(card.ps_id || card.source_ps_id || '').trim();
+      const cardSeq = Number(card.source_op_seq_id || 0);
+      if (psKey && seqId > 0 && cardPs === psKey && cardSeq === seqId) {
+        card.program_ready = Boolean(programReady);
       }
     });
   });
@@ -2235,6 +2417,7 @@ function trialRenderCatalogOpDetailBody(ps, card) {
         source_ps_id: psId,
         source_op_seq_id: Number(card.source_op_seq_id || 0),
         tooling_ready: card.tooling_ready,
+        program_ready: card.program_ready,
       })}
       <div class="trial-op-detail-section">
         <div class="trial-op-detail-section-title">Program / tool list</div>

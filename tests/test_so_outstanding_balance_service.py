@@ -86,31 +86,27 @@ class SoOutstandingBalanceTests(unittest.TestCase):
             "SO/100|1": {"exch_rate": 1.5, "unit_cost": 100},
         }
         lines = expand_outstanding_lines(orders, pricing)
-        self.assertEqual(len(lines), 2)
-
-        first, second = lines
-        self.assertEqual(first["pp_qty"], 4)
-        self.assertEqual(first["remaining_qty"], 4)  # remaining pool 6, first takes 4
-        self.assertEqual(first["so_qty"], 10)
-        self.assertEqual(first["line_value_home"], 1500.0)  # SO value: 100 * 10 * 1.5
-        self.assertEqual(first["pp_value_home"], 600.0)  # 100 * 4 * 1.5
-        self.assertEqual(first["outstanding_balance_home"], 600.0)
-        self.assertEqual(first["part_desc"], "Widget housing")
-        self.assertEqual(first["status"], "CNC - In process")
-        self.assertEqual(first["week"], "Week 30 - Mon")
-
-        self.assertEqual(second["pp_qty"], 6)
-        self.assertEqual(second["remaining_qty"], 2)  # 6 remaining after first
-        self.assertEqual(second["line_value_home"], 1500.0)  # same SO line value
-        self.assertEqual(second["pp_value_home"], 900.0)  # 100 * 6 * 1.5
-        self.assertEqual(second["outstanding_balance_home"], 300.0)  # 100 * 2 * 1.5
+        # Shipped 4 consumes partial 1; leftover 6 sits on partial 2 only.
+        self.assertEqual(len(lines), 1)
+        row = lines[0]
+        self.assertEqual(row["pp_partial_no"], 2)
+        self.assertEqual(row["pp_qty"], 6)
+        self.assertEqual(row["qty_shipped"], 0)
+        self.assertEqual(row["remaining_qty"], 6)
+        self.assertEqual(row["so_qty"], 10)
+        self.assertEqual(row["line_value_home"], 1500.0)  # SO value: 100 * 10 * 1.5
+        self.assertEqual(row["pp_value_home"], 900.0)  # 100 * 6 * 1.5
+        self.assertEqual(row["outstanding_balance_home"], 900.0)
+        self.assertEqual(row["part_desc"], "Widget housing")
+        self.assertEqual(row["status"], "Pack - Released")
+        self.assertEqual(row["week"], "Week 31 - Sat")
 
         payload = build_outstanding_balance(orders, pricing)
-        self.assertEqual(payload["summary"]["line_count"], 2)
+        self.assertEqual(payload["summary"]["line_count"], 1)
         # SO value counted once per SO line even when split across partials
         self.assertEqual(payload["summary"]["line_value_home"], 1500.0)
         self.assertEqual(payload["summary"]["outstanding_balance_home"], 900.0)
-        self.assertEqual(payload["by_customer"][0]["pp_qty"], 10)
+        self.assertEqual(payload["by_customer"][0]["pp_qty"], 6)
         self.assertEqual(payload["by_customer"][0]["line_value_home"], 1500.0)
 
     def test_ps_type_and_customer_breakdown(self):
@@ -185,6 +181,168 @@ class SoOutstandingBalanceTests(unittest.TestCase):
         self.assertEqual(row["line_value_home"], 50.0)
         self.assertEqual(row["outstanding_balance_home"], 50.0)
 
+    def test_partial_pp_emits_nopp_for_unassigned_remainder(self):
+        orders = [
+            {
+                "sales_order_no": "SO/0219",
+                "customer_name": "Coway",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "PP-0219",
+                        "process_sheet_no": "NPS26-0219",
+                        "source_line_item_no": "39",
+                        "inventory_code": "BB15-081483-39 REV 08",
+                        "description": "VALVE BODY-O/SET PORT/PRESS.TX",
+                        "so_det_qty": 100,
+                        "pp_qty": 17,
+                        "qty_shipped": 0,
+                        "unit_selling_price": 175.68,
+                        "shipped_completed": False,
+                        "due_date": "2026-09-01",
+                        "partials": [],
+                    }
+                ],
+            }
+        ]
+        pricing = {"SO/0219|39": {"exch_rate": 1.27}}
+        lines = expand_outstanding_lines(orders, pricing)
+        self.assertEqual(len(lines), 2)
+        by_type = {row["ps_type"]: row for row in lines}
+        self.assertEqual(by_type["NPS"]["pp_qty"], 17)
+        self.assertEqual(by_type["NPS"]["remaining_qty"], 17)
+        self.assertEqual(by_type["NPS"]["so_qty"], 100)
+        self.assertEqual(by_type[NOPP_PS_TYPE]["remaining_qty"], 83)
+        self.assertEqual(by_type[NOPP_PS_TYPE]["pp_qty"], 83)
+        self.assertEqual(by_type[NOPP_PS_TYPE]["process_sheet_no"], "NPS26-0219")
+        self.assertEqual(by_type[NOPP_PS_TYPE]["related_process_sheet_no"], "NPS26-0219")
+        self.assertEqual(by_type[NOPP_PS_TYPE]["ps_type"], NOPP_PS_TYPE)
+        self.assertEqual(by_type[NOPP_PS_TYPE]["status"], "No PP assigned")
+        self.assertEqual(by_type[NOPP_PS_TYPE]["part_no"], "BB15-081483-39 REV 08")
+        self.assertNotEqual(by_type["NPS"]["row_id"], by_type[NOPP_PS_TYPE]["row_id"])
+
+        payload = build_outstanding_balance(orders, pricing)
+        self.assertEqual(payload["summary"]["remaining_qty"], 100)
+        self.assertEqual(
+            payload["summary"]["outstanding_balance_home"],
+            round(175.68 * 100 * 1.27, 2),
+        )
+
+    def test_remaining_shared_across_pps_then_nopp(self):
+        orders = [
+            {
+                "sales_order_no": "SO/SPLIT",
+                "customer_name": "Acme",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "PP-A",
+                        "process_sheet_no": "NPS-A",
+                        "source_line_item_no": "1",
+                        "so_det_qty": 100,
+                        "pp_qty": 17,
+                        "qty_shipped": 0,
+                        "unit_selling_price": 10,
+                        "shipped_completed": False,
+                        "partials": [],
+                    },
+                    {
+                        "pp_voucher_no": "PP-B",
+                        "process_sheet_no": "NPS-B",
+                        "source_line_item_no": "1",
+                        "so_det_qty": 100,
+                        "pp_qty": 50,
+                        "qty_shipped": 0,
+                        "unit_selling_price": 10,
+                        "shipped_completed": False,
+                        "partials": [],
+                    },
+                ],
+            }
+        ]
+        lines = expand_outstanding_lines(orders, {})
+        remaining = sorted(row["remaining_qty"] for row in lines)
+        self.assertEqual(remaining, [17, 33, 50])
+        self.assertEqual(sum(row["remaining_qty"] for row in lines), 100)
+        nopp = next(row for row in lines if row["ps_type"] == NOPP_PS_TYPE)
+        self.assertEqual(nopp["process_sheet_no"], "")
+        self.assertIn("NPS-A", nopp["related_process_sheet_no"])
+        self.assertIn("NPS-B", nopp["related_process_sheet_no"])
+
+    def test_partials_do_not_duplicate_so_remaining_balance(self):
+        """NPS26-0205: remaining $ is leftover of each partial, not the SO remainder on every row."""
+        orders = [
+            {
+                "sales_order_no": "SO/0205",
+                "customer_name": "Coway",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "NPS26-0205",
+                        "process_sheet_no": "NPS26-0205",
+                        "source_line_item_no": "1",
+                        "inventory_code": "BB18-KS0838-44 REV 04",
+                        "so_det_qty": 12,
+                        "pp_qty": 12,
+                        "qty_shipped": 4,
+                        "remaining_qty": 4,
+                        "unit_selling_price": 609,
+                        "shipped_completed": False,
+                        "partials": [
+                            {"pp_partial_no": 1, "partial_qty": 4},
+                            {"pp_partial_no": 2, "partial_qty": 8},
+                        ],
+                    }
+                ],
+            }
+        ]
+        pricing = {"SO/0205|1": {"exch_rate": 1.28}}
+        lines = expand_outstanding_lines(orders, pricing)
+        self.assertEqual(len(lines), 1)
+        row = lines[0]
+        self.assertEqual(row["pp_partial_no"], 2)
+        self.assertEqual(row["pp_qty"], 8)
+        self.assertEqual(row["qty_shipped"], 4)
+        self.assertEqual(row["remaining_qty"], 4)
+        self.assertEqual(row["outstanding_balance_home"], 3118.08)
+        self.assertEqual(sum(item["remaining_qty"] for item in lines), 4)
+        self.assertEqual(sum(item["outstanding_balance_home"] for item in lines), 3118.08)
+
+    def test_two_pps_same_line_do_not_double_outstanding(self):
+        orders = [
+            {
+                "sales_order_no": "SO/0205",
+                "customer_name": "Coway",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "PP-A",
+                        "process_sheet_no": "NPS26-0205",
+                        "source_line_item_no": "1",
+                        "so_det_qty": 12,
+                        "pp_qty": 4,
+                        "qty_shipped": 4,
+                        "remaining_qty": 4,
+                        "unit_selling_price": 609,
+                        "shipped_completed": False,
+                        "partials": [{"pp_partial_no": 1, "partial_qty": 4}],
+                    },
+                    {
+                        "pp_voucher_no": "PP-B",
+                        "process_sheet_no": "NPS26-0205",
+                        "source_line_item_no": "1",
+                        "so_det_qty": 12,
+                        "pp_qty": 8,
+                        "qty_shipped": 4,
+                        "remaining_qty": 4,
+                        "unit_selling_price": 609,
+                        "shipped_completed": False,
+                        "partials": [{"pp_partial_no": 2, "partial_qty": 8}],
+                    },
+                ],
+            }
+        ]
+        pricing = {"SO/0205|1": {"exch_rate": 1.28}}
+        lines = expand_outstanding_lines(orders, pricing)
+        self.assertEqual(sum(row["remaining_qty"] for row in lines), 4)
+        self.assertEqual(sum(row["outstanding_balance_home"] for row in lines), 3118.08)
+
     def test_skips_zero_remaining_partials(self):
         orders = [
             {
@@ -210,8 +368,9 @@ class SoOutstandingBalanceTests(unittest.TestCase):
         ]
         lines = expand_outstanding_lines(orders, {})
         self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0]["pp_partial_no"], 1)
+        self.assertEqual(lines[0]["pp_partial_no"], 2)
         self.assertEqual(lines[0]["remaining_qty"], 4)
+        self.assertEqual(lines[0]["qty_shipped"], 0)
 
     def test_stage_label_no_pp(self):
         self.assertEqual(
@@ -322,7 +481,7 @@ class SoOutstandingBalanceRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
         self.assertIn("includes every currently open line", html)
-        self.assertIn("so_outstanding_balance.js?v=sob-20260825a", html)
+        self.assertIn("so_outstanding_balance.js?v=sob-20260827c", html)
 
     def test_api_drops_closed_and_includes_nopp(self):
         from unittest.mock import patch

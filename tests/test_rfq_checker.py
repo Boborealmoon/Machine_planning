@@ -4,21 +4,30 @@ from __future__ import annotations
 import io
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from openpyxl import Workbook
 
 from app import app
 from planning.rfq_checker_service import (
+    GROQ_DEFAULT_BASE_URL,
+    GROQ_DEFAULT_MODEL,
     apply_column_map,
+    apply_defaults_to_mapped_lines,
     build_mapped_lines,
     calculate_times,
     format_lead_time,
+    headers_from_source_rows,
     heuristic_column_map,
     invert_field_map,
+    llm_status,
+    map_columns_with_llm,
     normalize_part_no,
+    normalize_sheet_tag,
     parse_workbook_bytes,
     parse_yn,
+    pick_default_sheet,
+    sheet_by_name,
 )
 
 
@@ -83,6 +92,68 @@ class RfqCheckerServiceTests(unittest.TestCase):
         self.assertEqual(invert_field_map({"part_no": "Item Code"}), {"Item Code": "part_no"})
         self.assertEqual(invert_field_map({"Item Code": "part_no"}), {"Item Code": "part_no"})
 
+    def test_groq_key_defaults_to_groq_endpoint(self):
+        env = {
+            "RFQ_LLM_API_KEY": "gsk_test_key",
+            "RFQ_LLM_BASE_URL": "",
+            "RFQ_LLM_MODEL": "",
+            "GROQ_API_KEY": "",
+            "OPENAI_API_KEY": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            status = llm_status()
+        self.assertTrue(status["configured"])
+        self.assertEqual(status["provider"], "groq")
+        self.assertEqual(status["base_url"], GROQ_DEFAULT_BASE_URL)
+        self.assertEqual(status["model"], GROQ_DEFAULT_MODEL)
+
+    def test_openai_key_keeps_openai_defaults(self):
+        env = {
+            "RFQ_LLM_API_KEY": "sk-test-key",
+            "RFQ_LLM_BASE_URL": "",
+            "RFQ_LLM_MODEL": "",
+            "GROQ_API_KEY": "",
+            "OPENAI_API_KEY": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            status = llm_status()
+        self.assertEqual(status["provider"], "openai")
+        self.assertIn("openai.com", status["base_url"])
+        self.assertEqual(status["model"], "gpt-4o-mini")
+
+    def test_map_columns_posts_to_groq_for_gsk_key(self):
+        fake = Mock()
+        fake.status_code = 200
+        fake.text = ""
+        fake.raise_for_status.return_value = None
+        fake.json.return_value = {
+            "choices": [{
+                "message": {
+                    "content": '{"column_map": {"Item Code": "part_no", "Qty pcs": "qty"}, "notes": "ok"}'
+                }
+            }]
+        }
+        env = {
+            "RFQ_LLM_API_KEY": "gsk_test_key",
+            "RFQ_LLM_BASE_URL": "",
+            "RFQ_LLM_MODEL": "",
+            "GROQ_API_KEY": "",
+            "OPENAI_API_KEY": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch("planning.rfq_checker_service.requests.post", return_value=fake) as post:
+                result = map_columns_with_llm(
+                    ["Item Code", "Qty pcs"],
+                    [{"Item Code": "A", "Qty pcs": 1}],
+                )
+        url = post.call_args.args[0]
+        self.assertTrue(url.startswith(GROQ_DEFAULT_BASE_URL))
+        self.assertIn("/chat/completions", url)
+        self.assertEqual(post.call_args.kwargs["json"]["model"], GROQ_DEFAULT_MODEL)
+        self.assertEqual(result["column_map"]["Item Code"], "part_no")
+        self.assertEqual(result["column_map"]["Qty pcs"], "qty")
+        self.assertEqual(result["model"], GROQ_DEFAULT_MODEL)
+
     def test_apply_map_calculates_and_fills_history(self):
         mapped = apply_column_map(
             {"Item Code": "BB18-KS0526-28", "Qty pcs": "104", "CT min": "180"},
@@ -120,6 +191,56 @@ class RfqCheckerServiceTests(unittest.TestCase):
         self.assertEqual(incoming["row_count"], 2)
         self.assertEqual(incoming["rows"][0]["Item Code"], "BB18-KS0526-28")
 
+    def test_pick_default_sheet_prefers_last_rfq_tab(self):
+        sheets = [
+            {"name": "Archive", "row_count": 400},
+            {"name": "RFQ 1", "row_count": 8},
+            {"name": "RFQ 3", "row_count": 22},
+        ]
+        self.assertEqual(pick_default_sheet(sheets), "RFQ 3")
+        self.assertEqual(sheet_by_name(sheets, "rfq-3")["name"], "RFQ 3")
+
+    def test_parse_two_column_sheet_is_not_dropped(self):
+        book = Workbook()
+        ws = book.active
+        ws.title = "RFQ 3"
+        ws.append(["Part No.", "QTY"])
+        ws.append(["8818-KS1712-02", 12])
+        notes = book.create_sheet("Notes")
+        notes.append(["Cover"])
+        buf = io.BytesIO()
+        book.save(buf)
+        sheets = parse_workbook_bytes(buf.getvalue(), "rfq.xlsx")
+        names = [sheet["name"] for sheet in sheets]
+        self.assertEqual(names, ["RFQ 3", "Notes"])
+        rfq = sheet_by_name(sheets, "RFQ 3")
+        self.assertEqual(rfq["row_count"], 1)
+        self.assertEqual(rfq["rows"][0]["Part No."], "8818-KS1712-02")
+
+    def test_headers_from_source_rows_keep_column_order(self):
+        headers = headers_from_source_rows(
+            [{"source_row": {"Part No.": "A", "QTY": 1, "Cust.": "OSS"}}]
+        )
+        self.assertEqual(headers, ["Part No.", "QTY", "Cust."])
+
+    def test_sheet_tag_and_overall_defaults(self):
+        self.assertEqual(normalize_sheet_tag("nps"), "NPS")
+        self.assertEqual(normalize_sheet_tag("APS26-01"), "APS")
+        self.assertEqual(normalize_sheet_tag("  "), "")
+        lines = apply_defaults_to_mapped_lines(
+            [
+                {"part_no": "A", "rfq": "old", "customer": "", "salesperson": "Daniel"},
+                {"part_no": "B", "rfq": "", "customer": "ACME", "salesperson": ""},
+            ],
+            {"sheet_tag": "pps", "rfq": "6001", "customer": "OSS"},
+        )
+        self.assertEqual(lines[0]["sheet_tag"], "PPS")
+        self.assertEqual(lines[0]["rfq"], "6001")
+        self.assertEqual(lines[0]["customer"], "OSS")
+        self.assertEqual(lines[0]["salesperson"], "Daniel")
+        self.assertEqual(lines[1]["customer"], "OSS")
+        self.assertEqual(lines[1]["salesperson"], "")
+
 
 class RfqCheckerRouteTests(unittest.TestCase):
     def setUp(self):
@@ -135,12 +256,33 @@ class RfqCheckerRouteTests(unittest.TestCase):
         self.assertIn("RFQ Checker", library.get_data(as_text=True))
         self.assertEqual(upload.status_code, 200)
         self.assertIn("Upload RFQ Excel", upload.get_data(as_text=True))
+        self.assertIn("Sheet defaults", upload.get_data(as_text=True))
+        self.assertIn("data-rfq-tag=\"APS\"", upload.get_data(as_text=True))
 
     def test_short_path_redirects(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": ""}):
             response = self.client.get("/rfq-checker")
         self.assertEqual(response.status_code, 302)
         self.assertTrue(response.headers["Location"].endswith("/archive/rfq-checker"))
+
+    def test_upload_passes_selected_sheet(self):
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": ""}):
+            with patch("planning.rfq_checker_route.create_batch_from_upload") as create:
+                create.return_value = {
+                    "batch_id": 9,
+                    "sheet_name": "RFQ 3",
+                    "lines": [],
+                    "sheets": [{"name": "RFQ 3", "row_count": 1}],
+                    "headers": ["Part No."],
+                }
+                response = self.client.post(
+                    "/api/rfq-checker/upload",
+                    data={"sheet": "RFQ 3", "use_llm": "0", "file": (io.BytesIO(_xlsx_bytes()), "rfq.xlsx")},
+                    content_type="multipart/form-data",
+                )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(create.call_args.kwargs["sheet_name"], "RFQ 3")
+        self.assertEqual(create.call_args.kwargs["use_llm"], False)
 
     def test_upload_requires_file(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": ""}):
@@ -149,13 +291,33 @@ class RfqCheckerRouteTests(unittest.TestCase):
         self.assertIn("Excel", response.get_json()["error"])
 
     def test_meta_reports_llm_status(self):
-        with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "RFQ_LLM_API_KEY": ""}):
+        with patch.dict(os.environ, {
+            "PLANNER_PASSCODE": "",
+            "RFQ_LLM_API_KEY": "",
+            "GROQ_API_KEY": "",
+            "OPENAI_API_KEY": "",
+        }):
             response = self.client.get("/api/rfq-checker/meta")
         self.assertEqual(response.status_code, 200)
         body = response.get_json()
         self.assertTrue(body["ok"])
         self.assertIn("part_no", body["field_labels"])
         self.assertEqual(body["hours_per_day"], 10)
+        self.assertIn("APS", body["sheet_tags"])
+        self.assertIn("NPS", body["sheet_tags"])
+        self.assertFalse(body["llm"]["configured"])
+
+    def test_defaults_route_requires_json(self):
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": ""}):
+            with patch("planning.rfq_checker_route.update_batch_defaults") as update:
+                update.return_value = {"batch_id": 3, "sheet_tag": "APS", "lines": []}
+                response = self.client.patch(
+                    "/api/rfq-checker/batches/3/defaults",
+                    json={"sheet_tag": "APS", "customer": "OSS"},
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(update.call_args.args[0], 3)
+        self.assertEqual(update.call_args.args[1]["customer"], "OSS")
 
 
 if __name__ == "__main__":

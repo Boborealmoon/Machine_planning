@@ -19,6 +19,7 @@ from .sales_report_alloc import (
     index_so_lines,
     integrity_check,
     ps_type_from_process_sheet,
+    so_line_key,
 )
 from .staged_erp import (
     STAGED_BOOKED_SQL,
@@ -101,6 +102,8 @@ SELECT
     GREATEST(0, det.qty - COALESCE(sq.qty_shipped, 0)) AS remaining_qty,
     {_UNIT_HOME_SQL.strip()} AS unit_selling_price,
     ({_REMAINING_HOME_SQL.strip()}) AS remaining_value,
+    ({_REMAINING_HOME_SQL.strip()}) AS outstanding_balance_home,
+    ({_LINE_HOME_SQL.strip()}) AS line_value_home,
     {_UNIT_FC_SQL} AS unit_selling_price_fc,
     {_EXCH_OST_SQL} AS exch_rate,
     ost.order_currency_code,
@@ -316,6 +319,70 @@ def _open_value(row: dict[str, Any]) -> float:
         return float(row.get("remaining_value") or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _so_line_identity(row: dict[str, Any]) -> tuple[str, str]:
+    return so_line_key(
+        row.get("sales_order_no"),
+        row.get("line_item_no") or row.get("source_line_item_no"),
+    )
+
+
+def _named_money(row: dict[str, Any], field: str) -> float | None:
+    if row.get(field) is None or row.get(field) == "":
+        return None
+    try:
+        return float(row[field])
+    except (TypeError, ValueError):
+        return None
+
+
+def _line_value_home(row: dict[str, Any]) -> float:
+    named = _named_money(row, "line_value_home")
+    if named is not None:
+        return named
+    try:
+        qty = float(row.get("so_det_qty") or 0)
+        unit = float(row.get("unit_selling_price") or 0)
+        return qty * unit
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _outstanding_balance_home(row: dict[str, Any]) -> float:
+    """Achievable remaining $ = remaining SO qty × home unit (cost)."""
+    named = _named_money(row, "outstanding_balance_home")
+    if named is not None:
+        return named
+    rem_qty = _named_money(row, "remaining_qty")
+    unit = _named_money(row, "unit_selling_price")
+    if rem_qty is not None and unit is not None:
+        return rem_qty * unit
+    named_remaining = _named_money(row, "remaining_value")
+    return named_remaining if named_remaining is not None else 0.0
+
+
+def summarize_open_so_value(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Unique-per-SO-line original value vs remaining SO qty × home unit."""
+    seen: set[tuple[str, str]] = set()
+    line_value = 0.0
+    outstanding = 0.0
+    for row in rows:
+        key = _so_line_identity(row)
+        if not key[0] or key in seen:
+            continue
+        seen.add(key)
+        line_value += _line_value_home(row)
+        outstanding += _outstanding_balance_home(row)
+    line_value = round(line_value, 2)
+    outstanding = round(outstanding, 2)
+    pct_left = round(100.0 * outstanding / line_value, 1) if line_value else 0.0
+    return {
+        "line_value_home": line_value,
+        "outstanding_balance_home": outstanding,
+        "pct_left": pct_left,
+        "so_line_count": len(seen),
+    }
 
 
 def _open_qty(row: dict[str, Any]) -> float:

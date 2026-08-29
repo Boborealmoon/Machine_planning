@@ -173,10 +173,13 @@ def _overlay_so_line_on_pp(pp: dict[str, Any], so_line: dict[str, Any]) -> dict[
     out = dict(pp)
     so_qty = _to_float(so_line.get("so_det_qty"))
     shipped = _to_float(so_line.get("qty_shipped"))
+    remaining = _to_float(so_line.get("remaining_qty"))
     if so_qty is not None:
         out["so_det_qty"] = so_qty
     if shipped is not None:
         out["qty_shipped"] = shipped
+    if remaining is not None:
+        out["remaining_qty"] = remaining
     fc = _to_float(so_line.get("unit_selling_price_fc"))
     if fc is not None:
         out["unit_selling_price"] = fc
@@ -213,6 +216,7 @@ def _synthetic_nopp_order(so_line: dict[str, Any]) -> dict[str, Any]:
                 "so_det_qty": so_qty,
                 "pp_qty": remaining,
                 "qty_shipped": shipped,
+                "remaining_qty": remaining,
                 "unit_selling_price": _to_float(so_line.get("unit_selling_price_fc")),
                 "shipped_completed": False,
                 "due_date": _iso_date_text(so_line.get("due_date")),
@@ -283,6 +287,184 @@ def restrict_orders_to_open_so_lines(
     return restricted
 
 
+def _pp_group_key(pp: dict[str, Any]) -> str:
+    line_no = _compact(pp.get("source_line_item_no"))
+    if line_no:
+        return line_no
+    return f"__voucher__{_compact(pp.get('pp_voucher_no') or pp.get('process_sheet_no'))}"
+
+
+def _so_qty_and_shipped(pp: dict[str, Any]) -> tuple[float, float]:
+    so_qty = _to_float(pp.get("so_det_qty"))
+    if so_qty is None:
+        so_qty = _to_float(pp.get("pp_qty")) or 0.0
+    shipped = _to_float(pp.get("qty_shipped")) or 0.0
+    return float(so_qty), float(shipped)
+
+
+def _remaining_pool(pp: dict[str, Any], so_qty: float, shipped: float) -> float:
+    """ERP remaining wins when present so stale PP shipped qty cannot inflate the pool."""
+    remaining = _to_float(pp.get("remaining_qty"))
+    if remaining is not None:
+        return max(0.0, remaining)
+    return max(0.0, float(so_qty) - float(shipped))
+
+
+def _iter_partial_slots(
+    pps: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
+    slots: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
+    for pp in pps:
+        partials = list(pp.get("partials") or [])
+        if partials:
+            for partial in partials:
+                slots.append((pp, partial))
+        else:
+            slots.append((pp, None))
+    slots.sort(
+        key=lambda item: (
+            _partial_no(item[1]) or 1,
+            _compact(item[0].get("process_sheet_no") or item[0].get("pp_voucher_no")),
+        )
+    )
+    return slots
+
+
+def _take_partial_remainder(
+    pp_qty: float,
+    shipped_left: float,
+    remaining_pool: float,
+) -> tuple[float, float, float, float]:
+    """Apply SO shipped FIFO to this partial; remaining is leftover of pp_qty.
+
+    Returns (open_qty, applied_shipped, shipped_left, remaining_pool).
+    """
+    qty = max(0.0, float(pp_qty))
+    applied = min(qty, max(0.0, float(shipped_left)))
+    leftover = max(0.0, qty - applied)
+    open_qty = min(leftover, max(0.0, float(remaining_pool)))
+    return (
+        open_qty,
+        applied,
+        max(0.0, float(shipped_left) - applied),
+        max(0.0, float(remaining_pool) - open_qty),
+    )
+
+
+def _outstanding_row(
+    *,
+    customer: str,
+    so_no: str,
+    pp: dict[str, Any],
+    partial: dict[str, Any] | None,
+    unit: float | None,
+    exch: float | None,
+    so_qty: float,
+    shipped: float,
+    so_line_value: float,
+    pp_qty: float,
+    open_qty: float,
+    line_no: str,
+) -> dict[str, Any]:
+    process_sheet_no = _compact(pp.get("process_sheet_no") or pp.get("pp_voucher_no"))
+    stage_mode = _compact(pp.get("erp_stage_mode")) or "unassigned"
+    ptype = NOPP_PS_TYPE if stage_mode == "no_pp" else ps_type(process_sheet_no)
+    commit = commitment_date(pp, partial)
+    coway = (
+        _compact((partial or {}).get("coway_proposed_edd"))
+        or _compact(pp.get("coway_proposed_edd"))
+    )[:10] or None
+    p_no = _partial_no(partial)
+    pp_no = _compact(pp.get("pp_voucher_no"))
+    id_token = NOPP_PS_TYPE if ptype == NOPP_PS_TYPE else (pp_no or process_sheet_no or NOPP_PS_TYPE)
+    return {
+        "row_id": f"{so_no}|{id_token}|{p_no or 1}|{line_no}",
+        "sales_order_no": so_no,
+        "customer_name": customer,
+        "pp_voucher_no": pp_no,
+        "process_sheet_no": process_sheet_no,
+        "related_process_sheet_no": process_sheet_no,
+        "pp_partial_no": p_no,
+        "ps_type": ptype,
+        "source_line_item_no": line_no or None,
+        "part_no": _compact(pp.get("inventory_code") or pp.get("part_no")),
+        "part_desc": _compact(pp.get("description") or pp.get("part_desc")),
+        "unit_selling_price": unit,
+        "exch_rate": exch,
+        "so_qty": so_qty,
+        "pp_qty": pp_qty,
+        "qty_shipped": shipped,
+        "remaining_qty": open_qty,
+        "line_value_home": so_line_value,
+        "pp_value_home": _money(unit, float(pp_qty), exch),
+        "outstanding_balance_home": _money(unit, open_qty, exch),
+        "status": stage_label(pp, partial),
+        "erp_stage_mode": _compact(
+            (partial or {}).get("erp_stage_mode") or pp.get("erp_stage_mode")
+        )
+        or "unassigned",
+        "due_date": _compact(pp.get("due_date"))[:10] or None,
+        "coway_edd": coway,
+        "commitment_date": commit.isoformat() if commit else None,
+        "week": week_label(commit),
+    }
+
+
+def _related_process_sheets(pps: list[dict[str, Any]]) -> list[str]:
+    related: list[str] = []
+    for pp in pps:
+        sheet = _compact(pp.get("process_sheet_no") or pp.get("pp_voucher_no"))
+        if sheet and sheet not in related:
+            related.append(sheet)
+    return related
+
+
+def _nopp_remainder_row(
+    *,
+    customer: str,
+    so_no: str,
+    template_pp: dict[str, Any],
+    unit: float | None,
+    exch: float | None,
+    so_qty: float,
+    shipped: float,
+    leftover: float,
+    so_line_value: float,
+    line_no: str,
+    related_process_sheets: list[str] | None = None,
+) -> dict[str, Any]:
+    """Unassigned SO qty left after PPs on this line have taken their share."""
+    related = [sheet for sheet in (related_process_sheets or []) if sheet]
+    # One covering PP: keep its sheet no so search/export still find NPS26-0219, etc.
+    source_sheet = related[0] if len(related) == 1 else ""
+    nopp_pp = {
+        **template_pp,
+        "pp_voucher_no": "",
+        "process_sheet_no": source_sheet,
+        "erp_stage_mode": "no_pp",
+        "current_stage_desc": "",
+        "current_stage_status": "",
+        "partials": [],
+    }
+    row = _outstanding_row(
+        customer=customer,
+        so_no=so_no,
+        pp=nopp_pp,
+        partial=None,
+        unit=unit,
+        exch=exch,
+        so_qty=so_qty,
+        shipped=0.0,
+        so_line_value=so_line_value,
+        pp_qty=leftover,
+        open_qty=leftover,
+        line_no=line_no,
+    )
+    row["ps_type"] = NOPP_PS_TYPE
+    row["related_process_sheet_no"] = " ".join(related)
+    return row
+
+
 def expand_outstanding_lines(
     orders: list[dict[str, Any]],
     pricing_by_key: dict[str, dict[str, Any]] | None = None,
@@ -290,8 +472,11 @@ def expand_outstanding_lines(
     """One row per open PP partial (or PP when it has no partials).
 
     SO value (line_value_home) = unit x SO qty x exchange rate.
-    Outstanding = unit x open qty x exchange rate, with SO remaining
-    allocated across partials in order.
+    Open qty is the leftover of that PP partial after SO shipped qty is
+    applied FIFO, capped so partials on the same SO line never sum past
+    the true remaining. Outstanding $ = unit x that leftover x exch.
+    Qty with no PP yet is a No PP row that keeps the related process
+    sheet number when a single PP covers only part of the S/O line.
     """
     from planning.process_sheets import _so_line_pricing_key
 
@@ -301,87 +486,86 @@ def expand_outstanding_lines(
     for order in orders:
         customer = _compact(order.get("customer_name") or order.get("customer_short_name"))
         so_no = _compact(order.get("sales_order_no"))
+        grouped: dict[str, list[dict[str, Any]]] = {}
         for pp in order.get("pp_vouchers") or []:
             if pp.get("shipped_completed"):
                 continue
+            grouped.setdefault(_pp_group_key(pp), []).append(pp)
 
-            so_qty = _to_float(pp.get("so_det_qty"))
-            if so_qty is None:
-                so_qty = _to_float(pp.get("pp_qty")) or 0.0
-            shipped = _to_float(pp.get("qty_shipped")) or 0.0
-            remaining_pool = max(0.0, float(so_qty) - float(shipped))
+        for pps in grouped.values():
+            first = pps[0]
+            so_qty, shipped = _so_qty_and_shipped(first)
+            remaining_pool = _remaining_pool(first, so_qty, shipped)
             if remaining_pool <= OPEN_QTY_TOLERANCE:
                 continue
 
-            unit = _to_float(pp.get("unit_selling_price"))
-            line_no = _compact(pp.get("source_line_item_no"))
+            line_no = _compact(first.get("source_line_item_no"))
             price_key = _so_line_pricing_key(so_no, line_no)
             price_row = pricing.get(price_key) or {}
+            unit = _to_float(first.get("unit_selling_price"))
             exch = _to_float(price_row.get("exch_rate"))
             if unit is None:
                 unit = _to_float(price_row.get("unit_cost"))
+            for pp in pps:
+                if unit is None:
+                    unit = _to_float(pp.get("unit_selling_price"))
+            so_line_value = _money(unit, so_qty, exch)
 
-            so_line_value = _money(unit, float(so_qty), exch)
-            process_sheet_no = _compact(pp.get("process_sheet_no") or pp.get("pp_voucher_no"))
-            due = _compact(pp.get("due_date"))[:10] or None
-            part_no = _compact(pp.get("inventory_code") or pp.get("part_no"))
-            part_desc = _compact(pp.get("description") or pp.get("part_desc"))
-            stage_mode = _compact(pp.get("erp_stage_mode")) or "unassigned"
-            ptype = ps_type(process_sheet_no)
-            if not ptype and stage_mode == "no_pp":
-                ptype = NOPP_PS_TYPE
-
-            partials = list(pp.get("partials") or [])
-            slots: list[dict[str, Any] | None] = partials if partials else [None]
-
-            for partial in slots:
+            implied_shipped = max(0.0, so_qty - remaining_pool)
+            shipped_left = max(float(shipped), implied_shipped)
+            for pp, partial in _iter_partial_slots(pps):
                 pp_qty = _partial_qty(pp, partial)
-                open_qty = min(float(pp_qty), remaining_pool)
-                remaining_pool = max(0.0, remaining_pool - open_qty)
+                if _compact(pp.get("erp_stage_mode")) == "no_pp":
+                    # pp_qty is already the unassigned leftover; don't apply shipped again.
+                    open_qty = min(float(pp_qty), remaining_pool)
+                    applied = 0.0
+                    remaining_pool = max(0.0, remaining_pool - open_qty)
+                else:
+                    open_qty, applied, shipped_left, remaining_pool = _take_partial_remainder(
+                        pp_qty, shipped_left, remaining_pool
+                    )
                 if open_qty <= OPEN_QTY_TOLERANCE:
                     continue
-
-                commit = commitment_date(pp, partial)
-                coway = (
-                    _compact((partial or {}).get("coway_proposed_edd"))
-                    or _compact(pp.get("coway_proposed_edd"))
-                )[:10] or None
-                p_no = _partial_no(partial)
-                pp_no = _compact(pp.get("pp_voucher_no"))
-                row_id = f"{so_no}|{pp_no or process_sheet_no or NOPP_PS_TYPE}|{p_no or 1}|{line_no}"
-
                 lines.append(
-                    {
-                        "row_id": row_id,
-                        "sales_order_no": so_no,
-                        "customer_name": customer,
-                        "pp_voucher_no": pp_no,
-                        "process_sheet_no": process_sheet_no,
-                        "pp_partial_no": p_no,
-                        "ps_type": ptype,
-                        "source_line_item_no": line_no or None,
-                        "part_no": part_no,
-                        "part_desc": part_desc,
-                        "unit_selling_price": unit,
-                        "exch_rate": exch,
-                        "so_qty": so_qty,
-                        "pp_qty": pp_qty,
-                        "qty_shipped": shipped,
-                        "remaining_qty": open_qty,
-                        "line_value_home": so_line_value,
-                        "pp_value_home": _money(unit, float(pp_qty), exch),
-                        "outstanding_balance_home": _money(unit, open_qty, exch),
-                        "status": stage_label(pp, partial),
-                        "erp_stage_mode": _compact(
-                            (partial or {}).get("erp_stage_mode") or pp.get("erp_stage_mode")
-                        )
-                        or "unassigned",
-                        "due_date": due,
-                        "coway_edd": coway,
-                        "commitment_date": commit.isoformat() if commit else None,
-                        "week": week_label(commit),
-                    }
+                    _outstanding_row(
+                        customer=customer,
+                        so_no=so_no,
+                        pp=pp,
+                        partial=partial,
+                        unit=unit,
+                        exch=exch,
+                        so_qty=so_qty,
+                        shipped=applied,
+                        so_line_value=so_line_value,
+                        pp_qty=pp_qty,
+                        open_qty=open_qty,
+                        line_no=line_no,
+                    )
                 )
+
+            if remaining_pool > OPEN_QTY_TOLERANCE:
+                # Don't emit a second No PP row when this group already is NOPP.
+                already_nopp = all(
+                    (not _compact(pp.get("process_sheet_no") or pp.get("pp_voucher_no")))
+                    or _compact(pp.get("erp_stage_mode")) == "no_pp"
+                    for pp in pps
+                )
+                if not already_nopp:
+                    lines.append(
+                        _nopp_remainder_row(
+                            customer=customer,
+                            so_no=so_no,
+                            template_pp=first,
+                            unit=unit,
+                            exch=exch,
+                            so_qty=so_qty,
+                            shipped=shipped,
+                            leftover=remaining_pool,
+                            so_line_value=so_line_value,
+                            line_no=line_no,
+                            related_process_sheets=_related_process_sheets(pps),
+                        )
+                    )
 
     lines.sort(
         key=lambda row: (
@@ -484,9 +668,11 @@ def build_outstanding_balance(
         "ok": True,
         "commitment_rule": "coway_edd_or_po_due",
         "currency_note": (
-            "Open qty = actual remaining balance; "
+            "Open qty = leftover of each PP partial after shipped qty is applied FIFO; "
+            "partials of the same S/O line never sum past the true remaining; "
+            "qty with no PP yet is a No PP row; "
             "SO value = unit x SO qty x exch; "
-            "Outstanding $ = unit x open qty x exch"
+            "Outstanding $ = unit x that leftover x exch"
         ),
         "default_ps_types": ["APS", "NPS", "PPS", "NOPP"],
         "summary": {

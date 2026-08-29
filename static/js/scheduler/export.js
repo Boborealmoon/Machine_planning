@@ -89,16 +89,18 @@ function trialExportJobCellLines(group, displaySequenceNo) {
   return lines;
 }
 
-// Blended on white to match planner.css material-in-yes / material-in-no / tooling-no tints.
+// Blended on white to match planner.css material-in-yes / material-in-no / tooling-no / program-no tints.
 const TRIAL_EXPORT_MATERIAL_IN_FILL = {
   yes: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE4F8EC' } },
   no: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDECEC' } },
   tooling: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEED9' } },
+  program: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF9C3' } },
 };
 const TRIAL_EXPORT_MATERIAL_IN_BORDER = {
   yes: 'FF85DFA6',
   no: 'FFF69898',
   tooling: 'FFFDBA74',
+  program: 'FFFDE047',
 };
 
 function trialExportMaterialCellStyle(leader) {
@@ -111,6 +113,17 @@ function trialExportMaterialCellStyle(leader) {
         left: { style: 'thin', color: { argb: TRIAL_EXPORT_MATERIAL_IN_BORDER.tooling } },
         bottom: { style: 'thin', color: { argb: TRIAL_EXPORT_MATERIAL_IN_BORDER.tooling } },
         right: { style: 'thin', color: { argb: TRIAL_EXPORT_MATERIAL_IN_BORDER.tooling } },
+      },
+    };
+  }
+  if (typeof trialProgramForBlockLeader === 'function' && !trialProgramForBlockLeader(leader)) {
+    return {
+      fill: TRIAL_EXPORT_MATERIAL_IN_FILL.program,
+      border: {
+        top: { style: 'thin', color: { argb: TRIAL_EXPORT_MATERIAL_IN_BORDER.program } },
+        left: { style: 'thin', color: { argb: TRIAL_EXPORT_MATERIAL_IN_BORDER.program } },
+        bottom: { style: 'thin', color: { argb: TRIAL_EXPORT_MATERIAL_IN_BORDER.program } },
+        right: { style: 'thin', color: { argb: TRIAL_EXPORT_MATERIAL_IN_BORDER.program } },
       },
     };
   }

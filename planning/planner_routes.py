@@ -80,6 +80,7 @@ from .process_sheets import (
     material_in_map_for_planner_ps_ids,
     parse_planner_ps_id,
     tooling_map_for_operation_ids,
+    program_map_for_operation_ids,
 )
 from .machines import (
     default_profile_for_weekday,
@@ -281,13 +282,9 @@ def _calendar_window_payload(row):
 
 
 def _attach_board_meta_to_blocks(con, blocks):
-    """Attach planner_ps_id, material_in, tooling_ready, and due_date for board / machinist lane cards."""
+    """Attach planner_ps_id, material_in, tooling_ready, program_ready, and due_date for board / machinist lane cards."""
     if not blocks:
         return
-    from .scheduler_state import refresh_stale_queue_state_fields
-
-    for row in blocks:
-        refresh_stale_queue_state_fields(con, row)
     board_ps_ids = list(dict.fromkeys(
         planner_ps_id_from_block_row(row)
         for row in blocks
@@ -303,6 +300,7 @@ def _attach_board_meta_to_blocks(con, blocks):
         if int(row.get("operation_id") or 0) > 0
     ]
     tooling_by_op = tooling_map_for_operation_ids(con, operation_ids)
+    program_by_op = program_map_for_operation_ids(con, operation_ids)
     for row in blocks:
         ps_id = planner_ps_id_from_block_row(row)
         if not ps_id:
@@ -312,13 +310,14 @@ def _attach_board_meta_to_blocks(con, blocks):
         op_id = int(row.get("operation_id") or 0)
         if op_id > 0:
             row["tooling_ready"] = bool(tooling_by_op.get(op_id, True))
+            row["program_ready"] = bool(program_by_op.get(op_id, True))
         due_text = compact_text(due_date_by_ps.get(ps_id))
         if due_text:
             row["due_date"] = due_text
 
 
 def _attach_board_meta_to_blocks_rest(blocks):
-    """REST fallback: attach material_in, tooling_ready (and planner_ps_id) without direct DB."""
+    """REST fallback: attach material_in, tooling_ready, program_ready (and planner_ps_id) without direct DB."""
     if not blocks:
         return
     import requests as req
@@ -338,6 +337,7 @@ def _attach_board_meta_to_blocks_rest(blocks):
         return
     material_in_by_ps = {pid: False for pid in board_ps_ids}
     tooling_by_op = {op_id: True for op_id in operation_ids}
+    program_by_op = {op_id: True for op_id in operation_ids}
     try:
         if board_ps_ids:
             quoted = ",".join(f'"{pid}"' for pid in board_ps_ids)
@@ -384,6 +384,29 @@ def _attach_board_meta_to_blocks_rest(blocks):
         logging.getLogger(__name__).exception(
             "REST board tooling enrichment failed; defaulting to awaiting tooling"
         )
+    try:
+        if operation_ids:
+            quoted_ops = ",".join(str(op_id) for op_id in operation_ids)
+            r = req.get(
+                f"{supa_url()}/planner_operation",
+                headers={**supa_headers(write=True), "Prefer": "return=representation"},
+                params={
+                    "select": "operation_id,program_ready",
+                    "operation_id": f"in.({quoted_ops})",
+                },
+                timeout=30,
+            )
+            r.raise_for_status()
+            for row in r.json() or []:
+                op_id = int(row.get("operation_id") or 0)
+                if op_id:
+                    program_by_op[op_id] = bool(row.get("program_ready", True))
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "REST board program enrichment failed; defaulting to program ready"
+        )
     for row in blocks:
         ps_id = planner_ps_id_from_block_row(row)
         if not ps_id:
@@ -393,6 +416,7 @@ def _attach_board_meta_to_blocks_rest(blocks):
         op_id = int(row.get("operation_id") or 0)
         if op_id > 0:
             row["tooling_ready"] = bool(tooling_by_op.get(op_id, True))
+            row["program_ready"] = bool(program_by_op.get(op_id, True))
 
 
 def _trial_schedule_via_rest():
@@ -469,6 +493,7 @@ def _trial_schedule_via_rest():
             "source_op_seq_id":         op.get("source_op_seq_id"),
             "source_op_no":             op.get("source_op_no"),
             "tooling_ready":            bool(op.get("tooling_ready", True)),
+            "program_ready":            bool(op.get("program_ready", True)),
             "machine_code":             machine.get("machine_no"),
             "machine_category":         machine.get("machine_category"),
             "shift_profile":            machine.get("shift_profile"),
@@ -803,9 +828,17 @@ def _api_trial_schedule_db():
                 "calendar_windows": [],
             })
 
-        # Keep MPP mirrors healthy on full and lite board loads (Machine Queue uses lite).
-        # Cheap no-op when cycle_op.block_id links are intact.
-        if not is_machine_scoped:
+        if board_lite:
+            try:
+                con.execute("SET LOCAL statement_timeout = '60000'")
+                con.execute("SET LOCAL lock_timeout = '8s'")
+            except Exception:
+                pass
+
+        # Full (non-lite) board loads may repair MPP mirrors. Lite Machine Queue
+        # load must not — rehydrate calls save_mpp_planner_queue when links are
+        # broken, which holds the request on "Loading machine queues...".
+        if not is_machine_scoped and not board_lite:
             from .mpp_planner_queue_service import ensure_mpp_planner_scheduler_lanes
 
             ensure_mpp_planner_scheduler_lanes(con)

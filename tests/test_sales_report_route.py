@@ -9,6 +9,7 @@ from planning.sales_report_route import (
     _build_open_month_summary,
     _build_past_month_summary,
     _build_ytd_grid,
+    summarize_open_so_value,
 )
 
 
@@ -177,6 +178,62 @@ class SalesReportPostedDateBasisTests(unittest.TestCase):
         self.assertAlmostEqual(float(august_posted.get("backlog") or 0), 800.0, places=2)
         self.assertAlmostEqual(float(august_posted.get("on_hand") or 0), 0.0, places=2)
         self.assertAlmostEqual(float(june_posted.get("backlog_delivered") or 0), 0.0, places=2)
+
+
+class SalesReportOpenSoValueTests(unittest.TestCase):
+    def test_unique_so_line_remaining_qty_times_home_unit(self):
+        rows = [
+            {
+                "sales_order_no": "SO/1",
+                "line_item_no": "1",
+                "so_det_qty": 10,
+                "remaining_qty": 4,
+                "unit_selling_price": 100,
+                "line_value_home": 1000,
+                "outstanding_balance_home": 400,
+                "allocated_remaining_value": 200,
+            },
+            {
+                "sales_order_no": "SO/1",
+                "line_item_no": "1",
+                "so_det_qty": 10,
+                "remaining_qty": 4,
+                "unit_selling_price": 100,
+                "line_value_home": 1000,
+                "outstanding_balance_home": 400,
+                "allocated_remaining_value": 200,
+            },
+            {
+                "sales_order_no": "SO/2",
+                "line_item_no": "3",
+                "so_det_qty": 5,
+                "remaining_qty": 5,
+                "unit_selling_price": 50,
+            },
+        ]
+
+        summary = summarize_open_so_value(rows)
+
+        self.assertEqual(summary["so_line_count"], 2)
+        self.assertAlmostEqual(summary["line_value_home"], 1250.0, places=2)
+        self.assertAlmostEqual(summary["outstanding_balance_home"], 650.0, places=2)
+        self.assertAlmostEqual(summary["pct_left"], 52.0, places=1)
+
+    def test_falls_back_to_qty_times_unit_when_named_fields_missing(self):
+        summary = summarize_open_so_value(
+            [
+                {
+                    "sales_order_no": "SO/9",
+                    "line_item_no": "2",
+                    "so_det_qty": 8,
+                    "remaining_qty": 2,
+                    "unit_selling_price": 12.5,
+                }
+            ]
+        )
+        self.assertAlmostEqual(summary["line_value_home"], 100.0, places=2)
+        self.assertAlmostEqual(summary["outstanding_balance_home"], 25.0, places=2)
+        self.assertAlmostEqual(summary["pct_left"], 25.0, places=1)
 
 
 if __name__ == "__main__":

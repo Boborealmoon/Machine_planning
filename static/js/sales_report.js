@@ -146,6 +146,17 @@ function salesReportFormatMoney(value) {
   return num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function salesReportFormatPct(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '—';
+  return `${num.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+}
+
+function salesReportKpiValueText(card) {
+  if (card?.format === 'pct') return salesReportFormatPct(card.value);
+  return salesReportFormatMoney(card.value);
+}
+
 function salesReportFormatQty(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return '—';
@@ -284,6 +295,53 @@ function salesReportFilteredSection(rows) {
 
 function salesReportOpenRemainingTotal(rows) {
   return (rows || []).reduce((sum, row) => sum + salesReportOpenValue(row), 0);
+}
+
+function salesReportSoLineKey(row) {
+  const so = String(row?.sales_order_no || '').trim();
+  const line = String(row?.line_item_no || row?.source_line_item_no || '').replace(/\.0+$/, '');
+  return `${so}|${line}`;
+}
+
+function salesReportNamedMoney(row, field) {
+  if (row == null || row[field] == null || row[field] === '') return null;
+  const num = Number(row[field]);
+  return Number.isFinite(num) ? num : null;
+}
+
+function salesReportLineValueHome(row) {
+  const named = salesReportNamedMoney(row, 'line_value_home');
+  if (named != null) return named;
+  const qty = Number(row?.so_det_qty);
+  const unit = Number(row?.unit_selling_price);
+  if (Number.isFinite(qty) && Number.isFinite(unit)) return qty * unit;
+  return 0;
+}
+
+function salesReportOutstandingHome(row) {
+  const named = salesReportNamedMoney(row, 'outstanding_balance_home');
+  if (named != null) return named;
+  const remQty = salesReportNamedMoney(row, 'remaining_qty');
+  const unit = salesReportNamedMoney(row, 'unit_selling_price');
+  if (remQty != null && unit != null) return remQty * unit;
+  const remaining = salesReportNamedMoney(row, 'remaining_value');
+  return remaining != null ? remaining : 0;
+}
+
+function salesReportSummarizeOpenSoValue(rows) {
+  const seen = new Set();
+  let lineValue = 0;
+  let outstanding = 0;
+  for (const row of rows || []) {
+    const so = String(row?.sales_order_no || '').trim();
+    const key = salesReportSoLineKey(row);
+    if (!so || seen.has(key)) continue;
+    seen.add(key);
+    lineValue += salesReportLineValueHome(row);
+    outstanding += salesReportOutstandingHome(row);
+  }
+  const pctLeft = lineValue > 0 ? (100 * outstanding) / lineValue : 0;
+  return { lineValue, outstanding, pctLeft, soLineCount: seen.size };
 }
 
 function salesReportFilteredIntegrity(data) {
@@ -1004,7 +1062,7 @@ function salesReportRenderSummary(summary) {
   el.innerHTML = cards.map(card => `
     <article class="sales-report-kpi sales-report-kpi--${card.tone}">
       <p class="sales-report-kpi-label">${escapeHtml(card.title)}</p>
-      <p class="sales-report-kpi-value">${salesReportFormatMoney(card.value)}</p>
+      <p class="sales-report-kpi-value">${salesReportKpiValueText(card)}</p>
       <p class="sales-report-kpi-sub">${escapeHtml(card.sub)}</p>
       <p class="sales-report-kpi-hint">${escapeHtml(card.hint)}</p>
     </article>
@@ -1130,6 +1188,7 @@ function salesReportRenderYtdSummary(grid) {
     salesReportState.ytdData?.allocated_open_lines || salesReportState.ytdData?.open_lines || [],
   );
   const openRemaining = salesReportOpenRemainingTotal(openLines);
+  const soValue = salesReportSummarizeOpenSoValue(openLines);
 
   const cards = [
     { title: 'YTD shipped', tone: 'shipped', value: ytdShipped, sub: `Includes ${salesReportFormatMoney(ytdBacklogDel)} backlog cleared`, hint: salesReportIsPostedBasis() ? 'All DO lines in past months, classified vs SO posted date' : 'All DO lines in past months' },
@@ -1137,6 +1196,14 @@ function salesReportRenderYtdSummary(grid) {
     { title: 'Onhand now', tone: 'on-hand', value: onHandNow, sub: salesReportIsPostedBasis() ? 'Unfinished · SO posted in current month' : 'Unfinished · PO due in current month', hint: 'Onhand column in current month' },
     { title: 'Forward onhand', tone: 'early', value: forwardDue, sub: salesReportIsPostedBasis() ? 'Unfinished · SO posted in future months' : 'Unfinished · PO due in future months', hint: 'Sum of onhand $ in future month columns' },
     { title: 'Total open remaining', tone: 'booked', value: openRemaining, sub: `All unfinished open $ · ${salesReportPsTypeLabel()}`, hint: 'PP-allocated remaining for the selected types (any due year)' },
+    {
+      title: 'Sales left to achieve',
+      tone: 'achieve',
+      value: soValue.pctLeft,
+      format: 'pct',
+      sub: `${salesReportFormatMoney(soValue.outstanding)} outstanding of ${salesReportFormatMoney(soValue.lineValue)} SO value`,
+      hint: `Remaining SO qty × home unit · ${soValue.soLineCount} unique open SO line${soValue.soLineCount === 1 ? '' : 's'}`,
+    },
   ];
 
   el.innerHTML = `
@@ -1148,7 +1215,7 @@ function salesReportRenderYtdSummary(grid) {
       ${cards.map(card => `
         <article class="sales-report-kpi sales-report-kpi--${card.tone}">
           <p class="sales-report-kpi-label">${escapeHtml(card.title)}</p>
-          <p class="sales-report-kpi-value">${salesReportFormatMoney(card.value)}</p>
+          <p class="sales-report-kpi-value">${salesReportKpiValueText(card)}</p>
           <p class="sales-report-kpi-sub">${escapeHtml(card.sub)}</p>
           <p class="sales-report-kpi-hint">${escapeHtml(card.hint)}</p>
         </article>

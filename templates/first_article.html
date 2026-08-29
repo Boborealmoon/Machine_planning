@@ -3,7 +3,7 @@
 {% block body_class %}fa-view{% endblock %}
 {% block main_class %}app-main--first-article{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260826-4">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260827-2">
 {% endblock %}
 {% block content %}
 <div class="fa-page">
@@ -11,7 +11,7 @@
     <div class="fa-header-text">
       <p class="fa-kicker">Ops</p>
       <h1 class="fa-title">NPI/FA Management</h1>
-      <p class="fa-subtitle" id="fa-subtitle" aria-live="polite">Flag a process sheet, then track tooling, fixture, gauges, and PIC.</p>
+      <p class="fa-subtitle" id="fa-subtitle" aria-live="polite">Import quotations for new parts. When the job posts as a PO, details carry to New parts.</p>
     </div>
     <div class="fa-header-actions">
       <button type="button" class="fa-btn fa-btn--ghost" id="fa-manage-pics" title="Add or remove PIC names">Manage PIC</button>
@@ -39,29 +39,32 @@
   <div id="fa-alert" class="fa-alert" hidden></div>
 
   <div id="fa-panel-flagged" class="fa-panel" role="tabpanel" aria-labelledby="fa-tab-flagged">
-  <section class="fa-flag-bar" aria-label="Flag process sheet">
-    <div class="fa-typeahead">
-      <label class="fa-add-label" for="fa-ps-search">Flag process sheet</label>
-      <input id="fa-ps-search" class="fa-search-input" type="search"
-             placeholder="Search active or historical PS no, part no..."
-             autocomplete="off" aria-autocomplete="list" aria-expanded="false"
-             aria-controls="fa-ps-results">
-      <div id="fa-ps-results" class="fa-typeahead-results" role="listbox" hidden></div>
+  <section class="fa-toolbar" aria-label="Flag process sheet">
+    <div class="fa-toolbar-group fa-toolbar-group--add">
+      <div class="fa-typeahead">
+        <label class="fa-add-label" for="fa-ps-search">Flag process sheet</label>
+        <input id="fa-ps-search" class="fa-search-input" type="search"
+               placeholder="PS no or part no..."
+               autocomplete="off" aria-autocomplete="list" aria-expanded="false"
+               aria-controls="fa-ps-results">
+        <div id="fa-ps-results" class="fa-typeahead-results" role="listbox" hidden></div>
+      </div>
+      <button type="button" class="fa-btn fa-btn--primary" id="fa-flag-one"
+              title="Flag the process sheet typed in the search box">Flag</button>
+      <button type="button" class="fa-btn fa-btn--ghost" id="fa-bulk-flag"
+              title="Select multiple active or historical process sheets">Bulk</button>
+      <button type="button" class="fa-btn fa-btn--ghost" id="fa-import-excel"
+              title="Import quotation rows from Excel. Details copy to New parts when the PO posts.">Import</button>
     </div>
-    <button type="button" class="fa-btn fa-btn--primary" id="fa-flag-one"
-            title="Flag the process sheet typed in the search box">Flag</button>
-    <button type="button" class="fa-btn fa-btn--ghost fa-bulk-btn" id="fa-bulk-flag"
-            title="Select multiple active or historical process sheets">Bulk flag</button>
-    <button type="button" class="fa-btn fa-btn--ghost" id="fa-import-excel"
-            title="Import process sheets and tracker fields from Excel">Import Excel</button>
+    <div class="fa-toolbar-group fa-toolbar-group--filter">
+      <label class="fa-filter-wrap">
+        <span class="fa-add-label">Filter</span>
+        <input id="fa-filter" class="fa-search-input" type="search"
+               placeholder="Search this list..." autocomplete="off">
+      </label>
+    </div>
     <p class="fa-add-status" id="fa-add-status" aria-live="polite"></p>
   </section>
-
-  <label class="fa-filter-wrap">
-    <span class="fa-add-label">Filter tracker</span>
-    <input id="fa-filter" class="fa-search-input" type="search"
-           placeholder="Filter flagged jobs..." autocomplete="off">
-  </label>
 
   <div id="fa-table-host" class="fa-table-card" hidden>
     <div class="fa-table-scroll">
@@ -73,6 +76,7 @@
             <th>Part Description</th>
             <th class="fa-col-qty">Total Qty</th>
             <th class="fa-col-date">PO Due Date</th>
+            <th class="fa-col-date" title="S/O posted date when the quotation becomes our PO">Posted</th>
             <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
             <th class="fa-col-machine">Machine (CNC)</th>
             <th class="fa-col-edd" title="Read-only from S/O management">Stipulated Coway EDD</th>
@@ -88,51 +92,51 @@
       </table>
     </div>
   </div>
-  <p id="fa-empty" class="fa-empty" hidden>No process sheets flagged yet. Search a PS number, use Bulk flag, or import an Excel sheet.</p>
+    <p id="fa-empty" class="fa-empty" hidden>No quotations flagged yet. Search a PS number, use Bulk flag, or import an Excel sheet.</p>
   </div>
 
   <div id="fa-panel-new" class="fa-panel" role="tabpanel" aria-labelledby="fa-tab-new" hidden>
-    <section class="fa-flag-bar" aria-label="Add exception to NEW parts">
-      <div class="fa-typeahead">
-        <label class="fa-add-label" for="fa-new-exception-search">Add exception</label>
-        <input id="fa-new-exception-search" class="fa-search-input" type="search"
-               placeholder="Search PS no or part no to track as an exception..."
-               autocomplete="off" aria-autocomplete="list" aria-expanded="false"
-               aria-controls="fa-new-exception-results">
-        <div id="fa-new-exception-results" class="fa-typeahead-results" role="listbox" hidden></div>
+    <section class="fa-toolbar" aria-label="Add exception and filter new parts">
+      <div class="fa-toolbar-group fa-toolbar-group--add">
+        <div class="fa-typeahead">
+          <label class="fa-add-label" for="fa-new-exception-search">Add exception</label>
+          <input id="fa-new-exception-search" class="fa-search-input" type="search"
+                 placeholder="PS no or part no..."
+                 autocomplete="off" aria-autocomplete="list" aria-expanded="false"
+                 aria-controls="fa-new-exception-results">
+          <div id="fa-new-exception-results" class="fa-typeahead-results" role="listbox" hidden></div>
+        </div>
+        <button type="button" class="fa-btn fa-btn--primary" id="fa-new-exception-add"
+                title="Add the process sheet typed in the search box">Add</button>
       </div>
-      <button type="button" class="fa-btn fa-btn--primary" id="fa-new-exception-add"
-              title="Add the process sheet typed in the search box">Add</button>
-      <p class="fa-add-status" id="fa-new-exception-status" aria-live="polite"></p>
-    </section>
-    <div class="fa-new-toolbar">
-      <label class="fa-filter-wrap">
-        <span class="fa-add-label">Filter new parts</span>
-        <input id="fa-new-filter" class="fa-search-input" type="search"
-               placeholder="Filter NEW process sheets..." autocomplete="off">
-      </label>
-      <div>
-        <span class="fa-add-label">Process sheet type</span>
+      <div class="fa-toolbar-group fa-toolbar-group--filter">
+        <label class="fa-filter-wrap">
+          <span class="fa-add-label">Filter</span>
+          <input id="fa-new-filter" class="fa-search-input" type="search"
+                 placeholder="Search this list..." autocomplete="off">
+        </label>
         <div class="fa-new-types" id="fa-new-types" role="group" aria-label="Filter by process sheet type"></div>
       </div>
-    </div>
+      <p class="fa-add-status" id="fa-new-exception-status" aria-live="polite"></p>
+    </section>
     <div id="fa-new-table-host" class="fa-table-card" hidden>
       <div class="fa-table-scroll">
         <table class="fa-table fa-table--new" id="fa-new-table">
           <thead>
             <tr>
-              <th class="fa-col-ps">Process sheet</th>
-              <th>Part No.</th>
-              <th>Description</th>
+              <th class="fa-col-ps">PS</th>
+              <th class="fa-col-part">Part</th>
+              <th class="fa-col-desc">Description</th>
               <th class="fa-col-date">Posted</th>
-              <th class="fa-col-date">PO Due Date</th>
+              <th class="fa-col-date" title="PO due date">Due</th>
               <th class="fa-col-qty">Qty</th>
               <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
-              <th class="fa-col-bom" title="Opens BOM materials. Green = part has ERP material lines, amber = none.">BOM</th>
+              <th class="fa-col-prep" title="From NPI Tracker: machine, tooling, fixture/jig, and gauges/CMM">Prep</th>
+              <th class="fa-col-bom" title="Opens BOM materials. Green = ERP material lines exist.">BOM</th>
               <th class="fa-col-material">Material</th>
-              <th class="fa-col-pic">Programme PIC</th>
+              <th class="fa-col-pic" title="Programme PIC">PIC</th>
               <th class="fa-col-remarks">Remarks</th>
-              <th class="fa-col-finish">Programme estimated finish</th>
+              <th class="fa-col-finish" title="Programme estimated finish">Finish</th>
               <th class="fa-col-actions"></th>
             </tr>
           </thead>
@@ -144,34 +148,34 @@
   </div>
 
   <div id="fa-panel-history" class="fa-panel" role="tabpanel" aria-labelledby="fa-tab-history" hidden>
-    <div class="fa-new-toolbar">
-      <label class="fa-filter-wrap">
-        <span class="fa-add-label">Filter history</span>
-        <input id="fa-history-filter" class="fa-search-input" type="search"
-               placeholder="Filter completed process sheets..." autocomplete="off">
-      </label>
-      <div>
-        <span class="fa-add-label">Process sheet type</span>
+    <section class="fa-toolbar" aria-label="Filter history">
+      <div class="fa-toolbar-group fa-toolbar-group--filter">
+        <label class="fa-filter-wrap">
+          <span class="fa-add-label">Filter</span>
+          <input id="fa-history-filter" class="fa-search-input" type="search"
+                 placeholder="Search completed sheets..." autocomplete="off">
+        </label>
         <div class="fa-new-types" id="fa-history-types" role="group" aria-label="Filter history by process sheet type"></div>
       </div>
-    </div>
+    </section>
     <div id="fa-history-table-host" class="fa-table-card" hidden>
       <div class="fa-table-scroll">
         <table class="fa-table fa-table--new" id="fa-history-table">
           <thead>
             <tr>
-              <th class="fa-col-ps">Process sheet</th>
-              <th>Part No.</th>
-              <th>Description</th>
+              <th class="fa-col-ps">PS</th>
+              <th class="fa-col-part">Part</th>
+              <th class="fa-col-desc">Description</th>
               <th class="fa-col-date">Posted</th>
-              <th class="fa-col-date">PO Due Date</th>
+              <th class="fa-col-date" title="PO due date">Due</th>
               <th class="fa-col-qty">Qty</th>
               <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
-              <th class="fa-col-bom" title="Opens BOM materials. Green = part has ERP material lines, amber = none.">BOM</th>
+              <th class="fa-col-prep" title="From NPI Tracker: machine, tooling, fixture/jig, and gauges/CMM">Prep</th>
+              <th class="fa-col-bom" title="Opens BOM materials. Green = ERP material lines exist.">BOM</th>
               <th class="fa-col-material">Material</th>
-              <th class="fa-col-pic">Programme PIC</th>
+              <th class="fa-col-pic" title="Programme PIC">PIC</th>
               <th class="fa-col-remarks">Remarks</th>
-              <th class="fa-col-finish">Programme estimated finish</th>
+              <th class="fa-col-finish" title="Programme estimated finish">Finish</th>
               <th class="fa-col-actions"></th>
             </tr>
           </thead>
@@ -241,7 +245,7 @@
       <h2 class="fa-modal-title" id="fa-import-modal-title">Import from Excel</h2>
       <button type="button" class="fa-btn fa-btn--ghost" id="fa-import-modal-close">Close</button>
     </div>
-    <p class="fa-modal-hint">Use the template headers. <strong>Data Input</strong> is the process sheet number — part number, description, qty and PO due date autofill from ERP. PIC names can be slash-separated (Chang Peng/Anand). Tooling, fixture and gauges accept OK, NA, a date, or a note.</p>
+    <p class="fa-modal-hint">Use the template headers. <strong>Data Input</strong> is the process sheet number. Fill Part No, Description, Qty and PO Due Date for quotations — they stay on the tracker until the job posts as a PO, then New parts picks up PIC, remarks, machines and tooling automatically. PIC names can be slash-separated (Chang Peng/Anand). Tooling, fixture and gauges accept OK, NA, a date, or a note.</p>
     <div class="fa-import-actions">
       <a class="fa-btn fa-btn--ghost" id="fa-import-template" href="/api/first-article/import-template">Download template</a>
       <button type="button" class="fa-btn fa-btn--primary" id="fa-import-browse">Choose Excel file</button>
@@ -307,5 +311,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=fa-20260825-2"></script>
-<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260826-4"></script>
+<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260827-2"></script>
 {% endblock %}

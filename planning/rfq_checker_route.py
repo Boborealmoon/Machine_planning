@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, redirect, render_template, request
 from .rfq_checker_service import (
     FIELD_LABELS,
     MAX_UPLOAD_BYTES,
+    SHEET_TAGS,
     create_batch_from_upload,
     get_batch,
     get_existing_part,
@@ -17,6 +18,7 @@ from .rfq_checker_service import (
     llm_status,
     remap_batch,
     set_batch_status,
+    update_batch_defaults,
     update_line,
 )
 from .utils import compact_text
@@ -46,7 +48,13 @@ def rfq_checker_short_path():
 
 @rfq_checker_bp.get("/api/rfq-checker/meta")
 def api_rfq_meta():
-    return jsonify({"ok": True, "field_labels": FIELD_LABELS, "llm": llm_status(), "hours_per_day": 10})
+    return jsonify({
+        "ok": True,
+        "field_labels": FIELD_LABELS,
+        "llm": llm_status(),
+        "hours_per_day": 10,
+        "sheet_tags": list(SHEET_TAGS),
+    })
 
 
 @rfq_checker_bp.get("/api/rfq-checker/parts")
@@ -113,6 +121,12 @@ def api_rfq_upload():
             payload=payload,
             sheet_name=sheet_name,
             use_llm=use_llm,
+            sheet_tag=compact_text(request.form.get("sheet_tag") or request.args.get("sheet_tag")),
+            default_rfq=compact_text(request.form.get("rfq") or request.form.get("default_rfq")),
+            default_customer=compact_text(request.form.get("customer") or request.form.get("default_customer")),
+            default_salesperson=compact_text(
+                request.form.get("salesperson") or request.form.get("default_salesperson")
+            ),
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -169,6 +183,22 @@ def api_rfq_update_line(line_id: int):
         body, status = json_error(exc)
         return jsonify(body), status
     return jsonify({"ok": True, "row": row})
+
+
+@rfq_checker_bp.patch("/api/rfq-checker/batches/<int:batch_id>/defaults")
+def api_rfq_batch_defaults(batch_id: int):
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "A JSON object is required"}), 400
+    try:
+        batch = update_batch_defaults(batch_id, data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("RFQ batch defaults failed")
+        body, status = json_error(exc)
+        return jsonify(body), status
+    return jsonify({"ok": True, "batch": batch})
 
 
 @rfq_checker_bp.post("/api/rfq-checker/batches/<int:batch_id>/archive")

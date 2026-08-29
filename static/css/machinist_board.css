@@ -807,9 +807,11 @@ body.machinist-board .trial-block-card--readonly {
 body.machinist-board:not(.machinist-board--stock-colors) .trial-block-card--compact.material-in-yes,
 body.machinist-board:not(.machinist-board--stock-colors) .trial-block-card--compact.material-in-no,
 body.machinist-board:not(.machinist-board--stock-colors) .trial-block-card--compact.tooling-no,
+body.machinist-board:not(.machinist-board--stock-colors) .trial-block-card--compact.program-no,
 body.machinist-board:not(.machinist-board--stock-colors) .trial-block-card--readonly.material-in-yes,
 body.machinist-board:not(.machinist-board--stock-colors) .trial-block-card--readonly.material-in-no,
-body.machinist-board:not(.machinist-board--stock-colors) .trial-block-card--readonly.tooling-no {
+body.machinist-board:not(.machinist-board--stock-colors) .trial-block-card--readonly.tooling-no,
+body.machinist-board:not(.machinist-board--stock-colors) .trial-block-card--readonly.program-no {
   border-color: rgba(26, 28, 29, 0.08) !important;
   background: rgba(255, 255, 255, 0.88) !important;
   box-shadow: 0 2px 6px rgba(26, 28, 29, 0.04) !important;
@@ -834,6 +836,13 @@ body.machinist-board.machinist-board--stock-colors .trial-block-card--readonly.t
   border-color: rgba(249, 115, 22, 0.55) !important;
   background: rgba(249, 115, 22, 0.12) !important;
   box-shadow: 0 4px 12px rgba(249, 115, 22, 0.14) !important;
+}
+
+body.machinist-board.machinist-board--stock-colors .trial-block-card--compact.program-no,
+body.machinist-board.machinist-board--stock-colors .trial-block-card--readonly.program-no {
+  border-color: rgba(234, 179, 8, 0.6) !important;
+  background: rgba(250, 204, 21, 0.22) !important;
+  box-shadow: 0 4px 12px rgba(234, 179, 8, 0.16) !important;
 }
 
 body.machinist-board .trial-block-compact-body {
@@ -1238,6 +1247,11 @@ body.machinist-board.machinist-board--stock-colors .trial-focus-card.tooling-no 
   background: rgba(249, 115, 22, 0.06);
 }
 
+body.machinist-board.machinist-board--stock-colors .trial-focus-card.program-no {
+  border-color: rgba(234, 179, 8, 0.5);
+  background: rgba(250, 204, 21, 0.12);
+}
+
 body.machinist-board.machinist-board--stock-colors .trial-focus-card.is-current.material-in-yes {
   border-left-color: rgba(34, 197, 94, 0.75);
 }
@@ -1248,6 +1262,10 @@ body.machinist-board.machinist-board--stock-colors .trial-focus-card.is-current.
 
 body.machinist-board.machinist-board--stock-colors .trial-focus-card.is-current.tooling-no {
   border-left-color: rgba(249, 115, 22, 0.8);
+}
+
+body.machinist-board.machinist-board--stock-colors .trial-focus-card.is-current.program-no {
+  border-left-color: rgba(234, 179, 8, 0.85);
 }
 
 .trial-focus-card-top {

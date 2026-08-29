@@ -31,6 +31,17 @@ def ensure_mpp_queue_schema(con) -> None:
     global _SCHEMA_READY
     if _SCHEMA_READY:
         return
+    from .helpers import planner_try_savepoint
+
+    def _probe_ready():
+        con.execute("SELECT 1 FROM planner_mpp_lane LIMIT 1")
+        con.execute("SELECT 1 FROM planner_mpp_cycle LIMIT 1")
+        con.execute("SELECT 1 FROM planner_mpp_cycle_op LIMIT 1")
+        return True
+
+    if planner_try_savepoint(con, "mpp_schema_probe", _probe_ready, default=False):
+        _SCHEMA_READY = True
+        return
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS planner_mpp_lane (

@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 material_tracking_pr_po_bp = Blueprint("material_tracking_pr_po", __name__)
 
 _CACHE_TTL_SEC = 300
+_QUERY_TIMEOUT_MS = 60000
 _rows_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _counts_cache: tuple[float, dict[str, dict[str, int]]] | None = None
 
@@ -136,23 +137,44 @@ def _fetch_rows(scope: str, bucket: str, *, refresh: bool = False) -> list[dict[
     if not refresh and cached and (now - cached[0]) < _CACHE_TTL_SEC:
         return cached[1]
 
-    fetched = live_query(_sql_for(scope, bucket))
+    fetched = live_query(_sql_for(scope, bucket), timeout_ms=_QUERY_TIMEOUT_MS)
     _rows_cache[key] = (now, fetched)
     return fetched
 
 
-def _fetch_counts(*, refresh: bool = False) -> dict[str, dict[str, int]]:
+def _empty_counts() -> dict[str, dict[str, int]]:
+    return {scope: {} for scope in _BUCKETS_BY_SCOPE}
+
+
+def _fetch_counts(
+    scope: str,
+    bucket: str,
+    row_count: int,
+    *,
+    refresh: bool = False,
+) -> dict[str, dict[str, int]]:
+    """Chip counts for the current tab, without scanning every PR/PO view.
+
+    Counting history (thousands of rows) on every Outstanding load was blocking
+    the page for 10+ seconds. Seed the active bucket from the rows we already
+    fetched; keep any cached counts for the other tabs.
+    """
     global _counts_cache
     now = time.time()
-    if not refresh and _counts_cache and (now - _counts_cache[0]) < _CACHE_TTL_SEC:
-        return _counts_cache[1]
+    counts = _empty_counts()
+    if _counts_cache and (now - _counts_cache[0]) < _CACHE_TTL_SEC:
+        cached = _counts_cache[1]
+        counts = {
+            key: dict(value or {}) for key, value in cached.items() if key in counts
+        }
+        for key in _BUCKETS_BY_SCOPE:
+            counts.setdefault(key, {})
 
-    counts: dict[str, dict[str, int]] = {scope: {} for scope in _BUCKETS_BY_SCOPE}
-    for (scope, bucket), view in _VIEW_BY_KEY.items():
-        rows = live_query(f"SELECT COUNT(*) AS c FROM public.{view}")
-        counts[scope][bucket] = int(rows[0]["c"]) if rows else 0
-
-    _counts_cache = (now, counts)
+    counts.setdefault(scope, {})[bucket] = int(row_count)
+    if refresh or not _counts_cache or (now - _counts_cache[0]) >= _CACHE_TTL_SEC:
+        _counts_cache = (now, counts)
+    else:
+        _counts_cache = (_counts_cache[0], counts)
     return counts
 
 
@@ -172,7 +194,7 @@ def api_material_tracking_pr_po():
 
     try:
         rows = _fetch_rows(scope, bucket, refresh=refresh)
-        counts = _fetch_counts(refresh=refresh)
+        counts = _fetch_counts(scope, bucket, len(rows), refresh=refresh)
     except Exception as exc:
         logger.exception("material tracking pr-po ERP query failed (%s/%s)", scope, bucket)
         return jsonify({"error": f"ERP query failed: {exc}"}), 502

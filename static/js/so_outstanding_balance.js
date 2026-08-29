@@ -84,8 +84,10 @@ function sobPsTypeLabel(type) {
 }
 
 function sobPsDisplay(row) {
-  if (sobPsType(row) === 'NOPP') return 'No PP';
   const ps = String(row?.process_sheet_no || row?.pp_voucher_no || '').trim();
+  if (sobPsType(row) === 'NOPP') {
+    return ps || 'No PP';
+  }
   const partial = Number(row?.pp_partial_no);
   if (ps && Number.isFinite(partial) && partial > 1) return `${ps}/${partial}`;
   return ps || '-';
@@ -197,6 +199,7 @@ function sobBaseFilteredLines(skipCatCol = '') {
       row.sales_order_no,
       row.customer_name,
       row.process_sheet_no,
+      row.related_process_sheet_no,
       row.pp_voucher_no,
       row.part_no,
       row.part_desc,
@@ -540,7 +543,7 @@ function sobRenderKpis() {
     <div class="sob-kpi sob-kpi--balance">
       <span class="sob-kpi-label">Outstanding</span>
       <div class="sob-kpi-value">$${sobEscape(sobFormatMoney(outstanding))}</div>
-      <div class="sob-kpi-sub">${filtered ? 'Filtered view' : 'Open qty x rate'}</div>
+      <div class="sob-kpi-sub">${filtered ? 'Filtered view' : 'Leftover of each partial x rate'}</div>
     </div>
     <div class="sob-kpi sob-kpi--line">
       <span class="sob-kpi-label">SO value</span>
@@ -692,6 +695,7 @@ function sobExportLines(lines, filenameSuffix) {
     'sales_order_no',
     'customer_name',
     'process_sheet_no',
+    'related_process_sheet_no',
     'pp_partial_no',
     'ps_type',
     'part_no',
@@ -711,8 +715,16 @@ function sobExportLines(lines, filenameSuffix) {
     'commitment_date',
   ];
   const rows = [headers.join(',')];
+  const seenSoLines = new Set();
   for (const line of lines) {
-    rows.push(headers.map((key) => sobCsvEscape(line[key] ?? '')).join(','));
+    const soKey = sobSoLineKey(line);
+    const so = String(line?.sales_order_no || '').trim();
+    const firstOfLine = Boolean(so) && !seenSoLines.has(soKey);
+    if (firstOfLine) seenSoLines.add(soKey);
+    rows.push(headers.map((key) => {
+      if (key === 'line_value_home' && !firstOfLine) return '';
+      return sobCsvEscape(line[key] ?? '');
+    }).join(','));
   }
   const blob = new Blob(['\uFEFF' + rows.join('\n')], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);

@@ -199,6 +199,14 @@ def api_operation_tooling_flag():
     return tooling_post_response()
 
 
+@app.post("/api/operations/program-flag")
+@app.post("/api/trial/operations/program-flag")
+def api_operation_program_flag():
+    from planning.process_sheets import program_post_response
+
+    return program_post_response()
+
+
 # Delivery OK / exception flags — registered on app (same reason as stock-in-flag).
 @app.post("/api/process-sheets/delivery-flags")
 @app.post("/api/trial/delivery-schedule/flags")

@@ -351,6 +351,7 @@ def test_fetch_restores_material_dates_from_notes(monkeypatch):
         },
     )
     monkeypatch.setattr("planning.sales_orders_route._load_material_in_overlay", lambda _ids: {})
+    monkeypatch.setattr("planning.sales_orders_route._apply_proposed_cnc_overlay", lambda _orders: None)
 
     payload = _fetch_sales_orders(active_only=True, lite=True)
     pp = payload["active"][0]["pp_vouchers"][0]
@@ -366,6 +367,7 @@ def test_overlay_skips_wipe_when_notes_load_fails(monkeypatch):
         lambda _ids: None,
     )
     monkeypatch.setattr("planning.sales_orders_route._load_material_in_overlay", lambda _ids: None)
+    monkeypatch.setattr("planning.sales_orders_route._apply_proposed_cnc_overlay", lambda _orders: None)
 
     from planning.sales_orders_route import _overlay_planner_edits
 
@@ -458,3 +460,53 @@ def test_notes_api_accepts_material_need_date(monkeypatch):
     assert cleared.status_code == 200
     assert cleared.get_json()["material_need_date"] == ""
     assert captured[1]["patch"]["material_need_date"] == ""
+
+
+def test_proposed_cnc_overlay_maps_by_part_number(monkeypatch):
+    from planning.sales_orders_route import _apply_proposed_cnc_overlay
+
+    orders = [
+        {
+            "sales_order_no": "SO/1",
+            "pp_vouchers": [
+                {
+                    "process_sheet_no": "NPS26-100",
+                    "pp_voucher_no": "PP/1",
+                    "inventory_code": "BB27-KS0040-13 REV 03",
+                    "partials": [
+                        {"pp_partial_no": 1, "inventory_code": "BB27-KS0040-13 REV 03"},
+                    ],
+                }
+            ],
+        },
+        {
+            "sales_order_no": "SO/2",
+            "pp_vouchers": [
+                {
+                    "process_sheet_no": "MPS26-999",
+                    "pp_voucher_no": "PP/2",
+                    "inventory_code": "BB27-KS0040-13 REV 03",
+                    "partials": [],
+                },
+                {
+                    "process_sheet_no": "APS26-111",
+                    "pp_voucher_no": "PP/3",
+                    "inventory_code": "OTHER-PART",
+                    "partials": [],
+                },
+            ],
+        },
+    ]
+    monkeypatch.setattr(
+        "planning.first_article_service.load_proposed_cnc_by_part",
+        lambda live_by_ps=None: {
+            "BB27-KS0040-13 REV 03": ["CNC 20", "CNC 22"],
+        },
+    )
+
+    _apply_proposed_cnc_overlay(orders)
+    first = orders[0]["pp_vouchers"][0]
+    assert first["proposed_cnc"] == ["CNC 20", "CNC 22"]
+    assert first["partials"][0]["proposed_cnc"] == ["CNC 20", "CNC 22"]
+    assert orders[1]["pp_vouchers"][0]["proposed_cnc"] == ["CNC 20", "CNC 22"]
+    assert orders[1]["pp_vouchers"][1]["proposed_cnc"] == []

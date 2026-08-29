@@ -133,10 +133,13 @@
         row.erp_last_stage_desc,
         row.so_scope,
         row.sales_order_no,
+        row.posted_date,
         row.remarks,
         row.tooling_text,
         row.fixture_text,
         row.gauges_text,
+        row.on_new_parts ? 'PO' : '',
+        row.from_quotation ? 'QUOTE' : '',
         ...(row.pics || []).map((pic) => pic.name),
       ].join(' ').toUpperCase();
       return blob.includes(needle);
@@ -175,7 +178,7 @@
   function picOptions(selectedIds, includeBlank) {
     const selected = new Set((selectedIds || []).map(Number));
     const unused = state.pics.filter((pic) => !selected.has(Number(pic.pic_id)));
-    const blank = includeBlank ? '<option value="">Add PIC...</option>' : '';
+    const blank = includeBlank ? '<option value="">PIC...</option>' : '';
     if (!unused.length) {
       return `${blank}<option value="__new">New PIC name...</option>`;
     }
@@ -275,6 +278,48 @@
     `;
   }
 
+  function npiStatusBadge(row) {
+    if (row?.on_new_parts || row?.is_new_part) {
+      return '<span class="fa-new-part-badge is-po" title="Posted as our PO — details are on New parts">PO</span>';
+    }
+    if (row?.from_quotation && !row?.in_sales_orders) {
+      return '<span class="fa-new-part-badge is-quote" title="Quotation — waiting for PO">QUOTE</span>';
+    }
+    return '';
+  }
+
+  function checkReadout(row, prefix) {
+    const parsed = parseCheckValue(row, prefix);
+    if (parsed.ready) return '<span class="fa-check-readout is-ready">OK</span>';
+    if (parsed.date) return `<span class="fa-check-readout has-date">${escapeHtml(formatDmy(parsed.date))}</span>`;
+    if (parsed.legacy) return `<span class="fa-check-readout">${escapeHtml(parsed.legacy)}</span>`;
+    return '<span class="fa-muted">—</span>';
+  }
+
+  function prepValueHtml(parsed) {
+    if (parsed.ready) return '<span class="fa-prep-val is-ready">OK</span>';
+    if (parsed.date) return `<span class="fa-prep-val has-date">${escapeHtml(formatDmy(parsed.date))}</span>`;
+    if (parsed.legacy) return `<span class="fa-prep-val" title="${escapeHtml(parsed.legacy)}">${escapeHtml(parsed.legacy)}</span>`;
+    return '<span class="fa-prep-val is-empty">—</span>';
+  }
+
+  function prepCell(row) {
+    const shorts = { tooling: 'T', fixture: 'F', gauges: 'G' };
+    const items = [];
+    const machine = String(row.machine_cnc || '').trim();
+    if (machine) {
+      items.push(`<span class="fa-prep-item" title="Machine (CNC)"><span class="fa-prep-k">CNC</span><span class="fa-prep-val">${escapeHtml(machine)}</span></span>`);
+    }
+    CHECK_FIELDS.forEach((field) => {
+      const parsed = parseCheckValue(row, field.prefix);
+      if (!parsed.ready && !parsed.date && !parsed.legacy) return;
+      const cls = parsed.ready ? ' is-ready' : (parsed.date ? ' has-date' : '');
+      items.push(`<span class="fa-prep-item${cls}" title="${escapeHtml(field.label)}"><span class="fa-prep-k">${shorts[field.prefix] || ''}</span>${prepValueHtml(parsed)}</span>`);
+    });
+    if (!items.length) return '<span class="fa-muted">\u2014</span>';
+    return `<div class="fa-prep">${items.join('')}</div>`;
+  }
+
   function psCell(row) {
     return `<span class="fa-mono">${escapeHtml(dash(row.process_sheet_no))}</span>`;
   }
@@ -339,9 +384,9 @@
       </span>`
     )).join('');
     return `
-      <div class="fa-pic-chips">${chips || '<span class="fa-muted">None</span>'}</div>
-      <div class="fa-pic-add">
-        <select data-fa-new-add-pic data-ps="${ps}" aria-label="Add programme PIC">
+      <div class="fa-pic-cell">
+        ${chips ? `<div class="fa-pic-chips">${chips}</div>` : ''}
+        <select class="fa-pic-select" data-fa-new-add-pic data-ps="${ps}" aria-label="Add programme PIC">
           ${picOptions(row.program_pic_ids, true)}
         </select>
       </div>
@@ -357,10 +402,10 @@
       if (host) host.hidden = true;
       if (empty) {
         empty.hidden = false;
-        empty.textContent = 'No process sheets flagged yet. Search a PS number, use Bulk flag, or import an Excel sheet.';
+        empty.textContent = 'No quotations flagged yet. Search a PS number, use Bulk flag, or import an Excel sheet.';
       }
       if (state.tab === 'flagged') {
-        $('fa-subtitle').textContent = 'Flag a process sheet, then track tooling, fixture, gauges, and PIC.';
+        $('fa-subtitle').textContent = 'Import quotations for new parts. When the job posts as a PO, details carry to New parts.';
       }
       return;
     }
@@ -382,6 +427,7 @@
         <th>Part Description</th>
         <th class="fa-col-qty">Total Qty</th>
         <th class="fa-col-date">PO Due Date</th>
+        <th class="fa-col-date" title="S/O posted date when the quotation becomes our PO">Posted</th>
         <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
         <th class="fa-col-machine">Machine (CNC)</th>
         <th class="fa-col-edd" title="Read-only from S/O management">Stipulated Coway EDD</th>
@@ -395,16 +441,20 @@
     }
     body.innerHTML = rows.map((row) => {
       const historical = isHistorical(row);
-      const missing = !row.in_sales_orders && !row.from_erp_cache && !historical;
-      const rowClass = [missing ? 'is-missing' : '', historical ? 'is-historical' : ''].filter(Boolean).join(' ');
-      const missingHint = missing ? ' title="Not found in S/O management or ERP cache"' : '';
+      const quotation = Boolean(row.from_quotation) && !row.in_sales_orders && !row.from_erp_cache;
+      const missing = !row.in_sales_orders && !row.from_erp_cache && !historical && !quotation;
+      const rowClass = [missing ? 'is-missing' : '', historical ? 'is-historical' : '', quotation ? 'is-quote' : ''].filter(Boolean).join(' ');
+      const missingHint = missing
+        ? ' title="Not found in S/O management or ERP cache"'
+        : (quotation ? ' title="Quotation — waiting for this job to post as a PO"' : '');
       return `
         <tr class="${rowClass}" data-id="${row.first_article_id}"${missingHint}>
           <td>${psCell(row)}</td>
-          <td class="fa-readonly">${escapeHtml(dash(row.part_no))}</td>
+          <td class="fa-readonly">${escapeHtml(dash(row.part_no))}${npiStatusBadge(row)}</td>
           <td>${escapeHtml(dash(row.part_description))}</td>
           <td class="fa-col-qty">${escapeHtml(dash(row.total_qty))}</td>
           <td class="fa-col-date">${escapeHtml(dash(row.po_due_date))}</td>
+          <td class="fa-col-date">${escapeHtml(dash(row.posted_date))}</td>
           <td class="fa-col-stage">${stageCell(row)}</td>
           <td class="fa-col-machine">${machineCell(row)}</td>
           <td class="fa-edd">${escapeHtml(dash(row.coway_proposed_edd))}</td>
@@ -424,7 +474,7 @@
       `;
     }).join('');
     if (state.tab === 'flagged') {
-      $('fa-subtitle').textContent = `${state.rows.length} flagged process sheet${state.rows.length === 1 ? '' : 's'}`;
+        $('fa-subtitle').textContent = `${state.rows.length} quotation${state.rows.length === 1 ? '' : 's'} on NPI Tracker`;
     }
     renderPicDatalist();
   }
@@ -489,7 +539,12 @@
         row.current_stage_status_label,
         row.erp_last_stage_desc,
         row.ps_type,
+        row.machine_cnc,
+        row.tooling_text,
+        row.fixture_text,
+        row.gauges_text,
         isExceptionRow(row) ? 'EXCEPTION' : '',
+        row.from_npi_tracker ? 'NPI' : '',
         ...(row.program_pics || []).map((pic) => pic.name),
       ].join(' ').toUpperCase();
       return blob.includes(needle);
@@ -502,10 +557,10 @@
     const counts = newTypeCounts();
     const present = PS_TYPE_ORDER.filter((label) => counts[label] || label === 'APS' || label === 'NPS');
     const allOn = present.length > 0 && present.every((label) => state.newTypes.has(label));
-    const chips = [`<button type="button" class="fa-bulk-chip${allOn ? ' is-active' : ''}" data-fa-new-type="__all">All (${state.newRows.length})</button>`]
+    const chips = [`<button type="button" class="fa-type-chip${allOn ? ' is-active' : ''}" data-fa-new-type="__all">All ${state.newRows.length}</button>`]
       .concat(present.map((label) => {
         const active = state.newTypes.has(label);
-        return `<button type="button" class="fa-bulk-chip${active ? ' is-active' : ''}" data-fa-new-type="${escapeHtml(label)}">${escapeHtml(label)} (${counts[label] || 0})</button>`;
+        return `<button type="button" class="fa-type-chip${active ? ' is-active' : ''}" data-fa-new-type="${escapeHtml(label)}">${escapeHtml(label)} ${counts[label] || 0}</button>`;
       }));
     host.innerHTML = chips.join('');
   }
@@ -539,7 +594,7 @@
 
   function materialCell(row) {
     if (row.material_arrived) {
-      return `<span class="fa-ready-toggle is-active fa-ready-toggle--static" title="From S/O Material in / Sub-con"><span class="fa-ready-dot" aria-hidden="true"></span> Arrived</span>`;
+      return `<span class="fa-mat-status is-ready" title="From S/O Material in / Sub-con">In</span>`;
     }
     if (row.material_date) {
       return `<span class="fa-material-date" title="From S/O Material in / Sub-con">${escapeHtml(row.material_date)}</span>`;
@@ -560,7 +615,7 @@
     const ps = String(row.process_sheet_no || row.pp_voucher_no || '').trim();
     const exists = hasBom(row);
     if (!partNo) return '<span class="fa-muted">\u2014</span>';
-    const label = exists ? 'Has BOM' : 'No BOM';
+    const label = exists ? 'Yes' : 'None';
     const title = exists
       ? `View BOM materials for ${partNo}${bomCode ? ` · ${bomCode}` : ''}`
       : `No ERP material lines for ${partNo} — click to confirm`;
@@ -700,7 +755,12 @@
         row.current_stage_status_label,
         row.erp_last_stage_desc,
         row.ps_type,
+        row.machine_cnc,
+        row.tooling_text,
+        row.fixture_text,
+        row.gauges_text,
         isExceptionRow(row) ? 'EXCEPTION' : '',
+        row.from_npi_tracker ? 'NPI' : '',
         'COMPLETE',
         ...(row.program_pics || []).map((pic) => pic.name),
       ].join(' ').toUpperCase();
@@ -715,10 +775,10 @@
     const counts = completedTypeCounts();
     const present = PS_TYPE_ORDER.filter((label) => counts[label]);
     const allOn = present.length > 0 && present.every((label) => state.completedTypes.has(label));
-    const chips = [`<button type="button" class="fa-bulk-chip${allOn ? ' is-active' : ''}" data-fa-history-type="__all">All (${state.completedRows.length})</button>`]
+    const chips = [`<button type="button" class="fa-type-chip${allOn ? ' is-active' : ''}" data-fa-history-type="__all">All ${state.completedRows.length}</button>`]
       .concat(present.map((label) => {
         const active = state.completedTypes.has(label);
-        return `<button type="button" class="fa-bulk-chip${active ? ' is-active' : ''}" data-fa-history-type="${escapeHtml(label)}">${escapeHtml(label)} (${counts[label] || 0})</button>`;
+        return `<button type="button" class="fa-type-chip${active ? ' is-active' : ''}" data-fa-history-type="${escapeHtml(label)}">${escapeHtml(label)} ${counts[label] || 0}</button>`;
       }));
     host.innerHTML = chips.join('');
   }
@@ -735,17 +795,27 @@
     count.textContent = String(visible);
   }
 
+  function newPartBadges(row) {
+    const bits = [];
+    if (isExceptionRow(row)) {
+      bits.push('<span class="fa-new-part-badge is-exception" title="Manually added exception — not tagged NEW in S/O management">Ex</span>');
+    } else if (isCompleteStatus(row)) {
+      bits.push('<span class="fa-new-part-badge is-complete" title="Process sheet is complete">Done</span>');
+    }
+    if (row.from_npi_tracker) {
+      bits.push('<span class="fa-new-part-badge is-quote" title="Copied from NPI Tracker quotation">NPI</span>');
+    }
+    return bits.join('');
+  }
+
   function newPartRowHtml(row, { allowRemove } = {}) {
     const ps = escapeHtml(row.process_sheet_no || row.pp_voucher_no || '');
     const exists = hasBom(row);
     const exception = isExceptionRow(row);
     const complete = isCompleteStatus(row);
     const missing = exception && !row.in_sales_orders && !row.from_erp_cache;
-    const badge = exception
-      ? '<span class="fa-new-part-badge is-exception" title="Manually added exception — not tagged NEW in S/O management">EXCEPTION</span>'
-      : (complete
-        ? '<span class="fa-new-part-badge is-complete" title="Process sheet is complete">COMPLETE</span>'
-        : '<span class="fa-new-part-badge" title="New part — no prior process sheet history">NEW</span>');
+    const badges = newPartBadges(row);
+    const desc = String(row.part_description || '').trim();
     const remove = allowRemove && exception
       ? `<button type="button" class="fa-btn fa-btn--danger" data-fa-remove-exception="${ps}">Remove</button>`
       : '';
@@ -753,21 +823,24 @@
     const missingHint = missing ? ' title="Not found in S/O management or ERP cache"' : '';
     return `
       <tr class="${rowClass}" data-ps="${escapeHtml(row.process_sheet_no || '')}" data-pp="${escapeHtml(row.pp_voucher_no || '')}"${missingHint}>
-        <td class="fa-mono">${escapeHtml(dash(row.process_sheet_no))}</td>
-        <td class="fa-readonly">
-          ${escapeHtml(dash(row.part_no))}
-          ${badge}
+        <td class="fa-col-ps">
+          <div class="fa-id-cell">
+            <span class="fa-mono">${escapeHtml(dash(row.process_sheet_no))}</span>
+            ${badges}
+          </div>
         </td>
-        <td>${escapeHtml(dash(row.part_description))}</td>
+        <td class="fa-col-part fa-readonly">${escapeHtml(dash(row.part_no))}</td>
+        <td class="fa-col-desc" title="${escapeHtml(desc)}">${escapeHtml(dash(row.part_description))}</td>
         <td class="fa-col-date">${escapeHtml(dash(row.posted_date))}</td>
         <td class="fa-col-date">${escapeHtml(dash(row.po_due_date))}</td>
         <td class="fa-col-qty">${escapeHtml(dash(row.total_qty))}</td>
         <td class="fa-col-stage">${stageCell(row)}</td>
-        <td class="fa-col-bom${exists ? ' has-bom' : ' no-bom'}">${bomCell(row)}</td>
+        <td class="fa-col-prep">${prepCell(row)}</td>
+        <td class="fa-col-bom${exists ? ' has-bom' : ''}">${bomCell(row)}</td>
         <td class="fa-col-material${row.material_arrived ? ' is-ready' : (row.material_date ? ' has-date' : '')}">${materialCell(row)}</td>
         <td class="fa-col-pic">${programPicCell(row)}</td>
         <td class="fa-col-remarks">
-          <textarea class="fa-remarks" data-fa-new-field="remarks" data-ps="${ps}" placeholder="Remarks">${escapeHtml(row.remarks || '')}</textarea>
+          <textarea class="fa-remarks" data-fa-new-field="remarks" data-ps="${ps}" rows="1" placeholder="Note">${escapeHtml(row.remarks || '')}</textarea>
         </td>
         <td class="fa-col-finish">
           <div class="fa-finish-field">
@@ -1661,7 +1734,7 @@
     if (created) parts.push(`Imported ${created} new`);
     if (updated) parts.push(`updated ${updated}`);
     if (!created && !updated) parts.push('No rows imported');
-    if (missing) parts.push(`${missing} not found in ERP (still added)`);
+    if (missing) parts.push(`${missing} not in ERP yet (kept as quotation)`);
     if (errors) parts.push(`${errors} failed`);
     return parts.join('. ');
   }
@@ -1686,6 +1759,8 @@
         renderPicList();
       }
       renderTable();
+      if (state.newLoaded) loadNewParts();
+      if (state.completedLoaded) loadCompletedParts();
       const message = importSummary(data);
       setStatus('fa-add-status', message, Number(data.error_count || 0) ? 'error' : 'saved');
       closeImportModal();

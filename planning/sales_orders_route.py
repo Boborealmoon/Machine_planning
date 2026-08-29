@@ -1424,6 +1424,49 @@ def _apply_queued_machines_overlay(
             pp["queued_machines_by_partial"] = by_partial
 
 
+def _jobs_by_ps_from_orders(orders: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    jobs: list[dict[str, Any]] = []
+    for order in orders:
+        for pp in order.get("pp_vouchers") or []:
+            part = compact_text(pp.get("inventory_code"))
+            if not part:
+                for partial in pp.get("partials") or []:
+                    part = compact_text(partial.get("inventory_code"))
+                    if part:
+                        break
+            jobs.append(
+                {
+                    "process_sheet_no": compact_text(pp.get("process_sheet_no") or pp.get("pp_voucher_no")),
+                    "pp_voucher_no": compact_text(pp.get("pp_voucher_no")),
+                    "part_no": part,
+                    "inventory_code": part,
+                    "queued_machines": list(pp.get("queued_machines") or []),
+                    "machine_cnc": compact_text(pp.get("machine_cnc")),
+                }
+            )
+    from .first_article_service import index_jobs_by_ps
+
+    return index_jobs_by_ps(jobs)
+
+
+def _apply_proposed_cnc_overlay(orders: list[dict[str, Any]]) -> None:
+    """Copy NPI/FA Machine (CNC) onto S/O rows that share the same part number."""
+    from .first_article_service import _part_key, load_proposed_cnc_by_part
+
+    try:
+        by_part = load_proposed_cnc_by_part(live_by_ps=_jobs_by_ps_from_orders(orders))
+    except Exception as exc:
+        logger.warning("proposed CNC overlay skipped: %s", exc)
+        return
+    for order in orders:
+        for pp in order.get("pp_vouchers") or []:
+            pp_part = compact_text(pp.get("inventory_code"))
+            pp["proposed_cnc"] = list(by_part.get(_part_key(pp_part), []))
+            for partial in pp.get("partials") or []:
+                part = compact_text(partial.get("inventory_code")) or pp_part
+                partial["proposed_cnc"] = list(by_part.get(_part_key(part), []))
+
+
 def _apply_new_part_overlay(orders: list[dict[str, Any]]) -> None:
     """Flag PP lines with no prior process-sheet history on other sales orders."""
     from .new_orders_route import _fetch_repeat_groups_by_part, _ps_base_id, _similar_ps_for_row
@@ -1736,10 +1779,11 @@ def _payload_orders(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _overlay_planner_edits(payload: dict[str, Any]) -> dict[str, Any]:
-    """Re-apply planner notes / material-in on top of the ERP cache.
+    """Re-apply planner notes / material-in / NPI Proposed CNC on the ERP cache.
 
-    Material dates live in planner_so_pp_notes. The ERP snapshot is cached, so
-    without this overlay a reload shows empty Material in cells until rebuild.
+    Material dates live in planner_so_pp_notes. NPI Machine (CNC) is keyed by
+    part number. The ERP snapshot is cached, so without this overlay a reload
+    shows empty Material in / Proposed CNC cells until rebuild.
     """
     if not isinstance(payload, dict):
         return payload
@@ -1762,6 +1806,7 @@ def _overlay_planner_edits(payload: dict[str, Any]) -> dict[str, Any]:
     material_in_overlay = _load_material_in_overlay(process_sheets)
     if material_in_overlay is not None:
         _apply_material_in_overlay(orders, material_in_overlay)
+    _apply_proposed_cnc_overlay(orders)
     return payload
 
 

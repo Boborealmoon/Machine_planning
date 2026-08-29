@@ -86,7 +86,18 @@ class MaterialTrackingPrPoRouteTests(unittest.TestCase):
         self.assertEqual(payload["counts"], sample_counts)
         self.assertIn("pr_status_enquiry_view_po_ost", payload["source"])
         fetch_rows.assert_called_once()
-        fetch_counts.assert_called_once()
+        fetch_counts.assert_called_once_with("po", "ost", 1, refresh=False)
+
+    def test_counts_use_row_length_without_scanning_other_views(self):
+        from planning.material_tracking_pr_po_route import _fetch_counts
+
+        invalidate_material_tracking_pr_po_cache()
+        with patch("planning.material_tracking_pr_po_route.live_query") as live:
+            counts = _fetch_counts("pr", "ost", 105)
+
+        live.assert_not_called()
+        self.assertEqual(counts["pr"]["ost"], 105)
+        self.assertEqual(counts["po"], {})
 
     def test_logistics_page_includes_new_tabs(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
@@ -99,6 +110,12 @@ class MaterialTrackingPrPoRouteTests(unittest.TestCase):
         self.assertIn('data-sol-bucket="ost"', html)
         self.assertIn('data-sol-bucket="hst"', html)
         self.assertIn('data-sol-bucket="new"', html)
+        self.assertIn('id="sol-prpo-toolbar"', html)
+        self.assertIn('sol-tab-box', html)
+        self.assertIn('id="sol-sbu-dropdown"', html)
+        self.assertIn('id="sol-supplier-dropdown"', html)
+        self.assertIn('id="sol-item-search"', html)
+        self.assertIn('id="sol-loading-label"', html)
         self.assertIn("Material need", html)
 
 

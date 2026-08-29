@@ -7,7 +7,7 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260826-need-date-2">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260827-notes-wider">
 {% endblock %}
 {% block content %}
 <div class="sol-page">
@@ -50,17 +50,6 @@
           QC checklist <span class="sol-chip-count" id="sol-qc-count" hidden>0</span>
         </button>
       </div>
-      <div class="sol-nav-group sol-bucket-group" id="sol-bucket-group" role="tablist" aria-label="PR / PO bucket" hidden>
-        <button type="button" class="sol-chip sol-chip--bucket is-active" data-sol-bucket="ost" role="tab" aria-selected="true">
-          Outstanding <span class="sol-chip-count" id="sol-bucket-ost-count" hidden>0</span>
-        </button>
-        <button type="button" class="sol-chip sol-chip--bucket" data-sol-bucket="new" role="tab" aria-selected="false" hidden>
-          New <span class="sol-chip-count" id="sol-bucket-new-count" hidden>0</span>
-        </button>
-        <button type="button" class="sol-chip sol-chip--bucket" data-sol-bucket="hst" role="tab" aria-selected="false">
-          History <span class="sol-chip-count" id="sol-bucket-hst-count" hidden>0</span>
-        </button>
-      </div>
       <div class="sol-nav-group sol-qc-bucket-group" id="sol-qc-bucket-group" role="tablist" aria-label="QC checklist bucket" hidden>
         <button type="button" class="sol-chip sol-chip--bucket is-active" data-sol-qc-bucket="ready_qc" role="tab" aria-selected="true"
                 title="Inbound shipment has a GRN — ready for material inspection">
@@ -98,6 +87,51 @@
     </div>
   </nav>
 
+  <div class="sol-prpo-toolbar" id="sol-prpo-toolbar" hidden>
+    <div class="sol-tab-box" id="sol-bucket-group" role="tablist" aria-label="PR / PO status">
+      <div class="sol-tab-box-head">
+        <span class="sol-tab-box-label">Status</span>
+        <span class="sol-tab-box-hint">Click a tab to switch</span>
+      </div>
+      <div class="sol-tab-box-tabs">
+        <button type="button" class="sol-chip sol-chip--bucket is-active" data-sol-bucket="ost" role="tab" aria-selected="true">
+          Outstanding <span class="sol-chip-count" id="sol-bucket-ost-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip sol-chip--bucket" data-sol-bucket="new" role="tab" aria-selected="false" hidden>
+          New <span class="sol-chip-count" id="sol-bucket-new-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip sol-chip--bucket" data-sol-bucket="hst" role="tab" aria-selected="false">
+          History <span class="sol-chip-count" id="sol-bucket-hst-count" hidden>0</span>
+        </button>
+      </div>
+    </div>
+    <div class="sol-filter-field" id="sol-sbu-field">
+      <span class="sol-filter-label">SBU</span>
+      <div class="filter-dropdown" id="sol-sbu-dropdown">
+        <button class="filter-dropdown-btn sol-prefix-btn" type="button" id="sol-sbu-btn" aria-haspopup="true" aria-expanded="false">MFG</button>
+        <div class="filter-dropdown-panel" id="sol-sbu-panel" hidden></div>
+      </div>
+    </div>
+    <div class="sol-filter-field" id="sol-supplier-field">
+      <span class="sol-filter-label">Supplier</span>
+      <div class="filter-dropdown" id="sol-supplier-dropdown">
+        <button class="filter-dropdown-btn sol-prefix-btn" type="button" id="sol-supplier-btn" aria-haspopup="true" aria-expanded="false">All suppliers</button>
+        <div class="filter-dropdown-panel sol-filter-panel--wide" id="sol-supplier-panel" hidden></div>
+      </div>
+    </div>
+    <label class="sol-filter-field sol-item-search-field">
+      <span class="sol-filter-label">Item</span>
+      <span class="sol-search-wrap">
+        <svg class="sol-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="sol-item-search" class="sol-search-input" type="search"
+               placeholder="Search item code..." autocomplete="off">
+      </span>
+    </label>
+  </div>
+
   <div class="sol-add-bar sol-req-only" id="sol-add-bar" hidden>
     <div class="sol-typeahead" data-sol-field="part_no">
       <label class="sol-add-label" for="sol-req-part">Part no</label>
@@ -123,29 +157,25 @@
 
   <div id="sol-loading" class="sol-loading">
     <div class="sol-spinner" aria-hidden="true"></div>
-    Loading process sheets...
+    <span id="sol-loading-label">Loading process sheets...</span>
   </div>
 
   <div id="sol-table-host" class="sol-table-card" hidden>
     <div class="sol-table-scroll">
-      <table class="sol-table" id="sol-table">
+      <table class="sol-table" id="sol-table" data-mode="ps">
         <thead id="sol-table-head">
           <tr>
             <th class="sol-col-delay" title="Material arrival delay">Flag</th>
-            <th>S/O</th>
-            <th>Customer</th>
-            <th>Process sheet</th>
-            <th class="sol-col-partial">Ptl</th>
-            <th class="sol-col-qty">SO qty</th>
-            <th class="sol-col-qty">Partial qty</th>
-            <th>Stage</th>
-            <th>Part</th>
-            <th>Description</th>
+            <th class="sol-col-order">S/O</th>
+            <th class="sol-col-ps">PS</th>
+            <th class="sol-col-qty" title="Partial · SO qty / Partial qty">Qty</th>
+            <th class="sol-col-stage">Stage</th>
+            <th class="sol-col-part">Part</th>
             <th class="sol-col-due">Due</th>
-            <th class="sol-col-due" title="Material need date">Material need</th>
+            <th class="sol-col-need" title="Material need date">Need</th>
             <th class="sol-col-bom">BOM</th>
-            <th class="sol-col-material">Material in</th>
-            <th class="sol-col-notes">Mtl / Part Order</th>
+            <th class="sol-col-material" title="Material in">In</th>
+            <th class="sol-col-notes" title="Mtl / Part Order">Notes</th>
           </tr>
         </thead>
         <tbody id="sol-table-body"></tbody>
@@ -165,7 +195,7 @@
       <span class="sol-legend-item sol-legend-item--date">Blue cell</span> expected date &middot;
       <span class="sol-legend-item sol-legend-item--arrived">Green cell</span> material arrived &middot;
       Click <strong>Flag</strong> for material arrival delay &middot;
-      Click <strong>Materials</strong> for BOM + inventory enquiry
+      Click <strong>BOM</strong> for materials + inventory enquiry
     </p>
     <p class="sol-meta" id="sol-meta" hidden></p>
   </footer>
@@ -189,5 +219,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260826-need-date-2"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260827-prpo-load"></script>
 {% endblock %}

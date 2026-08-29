@@ -338,6 +338,8 @@ SELECT
     GREATEST(0, det.qty - COALESCE(sq.qty_shipped, 0)) AS remaining_qty,
     {_UNIT_HOME_STAGED.strip()} AS unit_selling_price,
     ({_REMAINING_HOME_STAGED.strip()}) AS remaining_value,
+    ({_REMAINING_HOME_STAGED.strip()}) AS outstanding_balance_home,
+    ({_LINE_HOME_STAGED.strip()}) AS line_value_home,
     {_UNIT_FC_STAGED} AS unit_selling_price_fc,
     {_EXCH_STAGED} AS exch_rate,
     det.order_currency_code,

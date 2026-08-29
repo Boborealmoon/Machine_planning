@@ -4291,8 +4291,9 @@ def due_date_map_for_planner_ps_ids(con, planner_ps_ids):
     if not ids:
         return {}
     out = {pid: "" for pid in ids}
-    try:
-        query_rows = rows(
+
+    def _load_due_rows():
+        return rows(
             con.execute(
                 """
                 SELECT ps.planner_ps_id,
@@ -4308,12 +4309,9 @@ def due_date_map_for_planner_ps_ids(con, planner_ps_ids):
                 (ids,),
             )
         )
-    except Exception:
-        import logging
 
-        logging.getLogger(__name__).exception(
-            "due_date_map_for_planner_ps_ids failed; returning empty due dates"
-        )
+    query_rows = planner_try_savepoint(con, "due_date_map", _load_due_rows, default=None)
+    if query_rows is None:
         return out
     for row in query_rows:
         pid = compact_text(row.get("planner_ps_id"))
@@ -4731,6 +4729,220 @@ def tooling_post_response():
 @process_sheets_bp.post("/api/operations/tooling-flag")
 def api_operation_tooling_post():
     return tooling_post_response()
+
+
+_PROGRAM_COLUMN_CACHE = None
+
+
+def _program_column_flags(con):
+    """Detect planner_operation program columns without DDL on hot read paths."""
+    global _PROGRAM_COLUMN_CACHE
+    if _PROGRAM_COLUMN_CACHE is not None:
+        return _PROGRAM_COLUMN_CACHE
+    flags = {"program_ready": False, "program_ready_date": False}
+    try:
+        for row in rows(
+            con.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'planner_operation'
+                  AND column_name IN ('program_ready', 'program_ready_date')
+                """
+            )
+        ):
+            name = compact_text(row.get("column_name"))
+            if name == "program_ready":
+                flags["program_ready"] = True
+            elif name == "program_ready_date":
+                flags["program_ready_date"] = True
+    except Exception:
+        pass
+    _PROGRAM_COLUMN_CACHE = flags
+    return flags
+
+
+def _ensure_program_columns(con):
+    """Apply program DDL only when a write path needs missing columns."""
+    flags = _program_column_flags(con)
+    if flags["program_ready"] and flags["program_ready_date"]:
+        return flags
+    global _PROGRAM_COLUMN_CACHE
+    try:
+        if not flags["program_ready"]:
+            con.execute(
+                """
+                ALTER TABLE planner_operation
+                ADD COLUMN IF NOT EXISTS program_ready BOOLEAN NOT NULL DEFAULT TRUE
+                """
+            )
+            flags["program_ready"] = True
+        if not flags["program_ready_date"]:
+            con.execute(
+                """
+                ALTER TABLE planner_operation
+                ADD COLUMN IF NOT EXISTS program_ready_date DATE
+                """
+            )
+            flags["program_ready_date"] = True
+    except Exception:
+        pass
+    _PROGRAM_COLUMN_CACHE = dict(flags)
+    return _PROGRAM_COLUMN_CACHE
+
+
+def program_map_for_operation_ids(con, operation_ids):
+    """Return {operation_id: bool}; defaults True — False only for flagged exceptions."""
+    flags = _program_column_flags(con)
+    ids = sorted({int(i) for i in (operation_ids or []) if int(i or 0) > 0})
+    if not ids:
+        return {}
+    if not flags.get("program_ready"):
+        return {op_id: True for op_id in ids}
+    out = {op_id: True for op_id in ids}
+    for row in rows(
+        con.execute(
+            """
+            SELECT operation_id, COALESCE(program_ready, TRUE) AS program_ready
+            FROM planner_operation
+            WHERE operation_id = ANY(%s)
+            """,
+            (ids,),
+        )
+    ):
+        op_id = int(row.get("operation_id") or 0)
+        if op_id:
+            out[op_id] = bool(row.get("program_ready"))
+    return out
+
+
+def program_map_for_ps_op_keys(con, keys):
+    """Return {(planner_ps_id, source_op_seq_id): bool}; defaults True — False only for exceptions."""
+    flags = _program_column_flags(con)
+    normalized = []
+    seen = set()
+    for key in keys or []:
+        if not key or not isinstance(key, (tuple, list)) or len(key) < 2:
+            continue
+        ps_id = compact_text(key[0])
+        seq_id = int(key[1] or 0)
+        if not ps_id or seq_id <= 0:
+            continue
+        token = (ps_id, seq_id)
+        if token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    if not normalized:
+        return {}
+    if not flags.get("program_ready"):
+        return {token: True for token in normalized}
+    ps_ids = list(dict.fromkeys(ps for ps, _ in normalized))
+    out = {token: True for token in normalized}
+    for row in rows(
+        con.execute(
+            """
+            SELECT source_ps_id, source_op_seq_id,
+                   COALESCE(program_ready, TRUE) AS program_ready
+            FROM planner_operation
+            WHERE source_ps_id = ANY(%s)
+            """,
+            (ps_ids,),
+        )
+    ):
+        ps_id = compact_text(row.get("source_ps_id"))
+        seq_id = int(row.get("source_op_seq_id") or 0)
+        if not ps_id or seq_id <= 0:
+            continue
+        token = (ps_id, seq_id)
+        if token in out:
+            out[token] = bool(row.get("program_ready"))
+    return out
+
+
+def _update_program(con, program_ready, operation_id=None, ps_id=None, source_op_seq_id=None):
+    _ensure_program_columns(con)
+    op_id = _resolve_operation_id_for_tooling(
+        con,
+        operation_id=operation_id,
+        ps_id=ps_id,
+        source_op_seq_id=source_op_seq_id,
+    )
+    if op_id <= 0:
+        return None, "operation not found"
+    program_bool = bool(program_ready)
+    con.execute(
+        """
+        UPDATE planner_operation
+        SET program_ready = %s,
+            program_ready_date = CASE
+                WHEN NOT %s THEN COALESCE(program_ready_date, CURRENT_DATE)
+                ELSE NULL
+            END,
+            updated_at = NOW()
+        WHERE operation_id = %s
+        """,
+        (program_bool, program_bool, op_id),
+    )
+    row = one(
+        con.execute(
+            """
+            SELECT operation_id, source_ps_id, source_op_seq_id,
+                   program_ready, program_ready_date
+            FROM planner_operation
+            WHERE operation_id = %s
+            """,
+            (op_id,),
+        )
+    )
+    program_date = (row or {}).get("program_ready_date")
+    return {
+        "operation_id": op_id,
+        "ps_id": compact_text((row or {}).get("source_ps_id")),
+        "source_op_seq_id": int((row or {}).get("source_op_seq_id") or 0),
+        "program_ready": bool((row or {}).get("program_ready")),
+        "program_ready_date": program_date.isoformat() if program_date else None,
+    }, None
+
+
+def program_post_response():
+    """Shared handler for program exception flags (scheduler op card modal)."""
+    data = request.get_json(force=True, silent=True) or {}
+    if "program_ready" not in data:
+        return jsonify({"error": "program_ready is required"}), 400
+    try:
+        program_ready = _parse_material_in_field(data.get("program_ready"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    operation_id = int(data.get("operation_id") or 0)
+    ps_id = compact_text(data.get("ps_id"))
+    source_op_seq_id = int(data.get("source_op_seq_id") or 0)
+    if operation_id <= 0 and (not ps_id or source_op_seq_id <= 0):
+        return jsonify({"error": "operation_id or (ps_id + source_op_seq_id) is required"}), 400
+    try:
+        with planner_db() as con:
+            payload, err = _update_program(
+                con,
+                program_ready,
+                operation_id=operation_id,
+                ps_id=ps_id,
+                source_op_seq_id=source_op_seq_id,
+            )
+            if err:
+                return jsonify({"error": err}), 404
+            return jsonify(payload)
+    except Exception as e:
+        friendly = planner_db_connect_error(e)
+        if friendly:
+            return jsonify({"error": friendly}), 503
+        raise
+
+
+@process_sheets_bp.post("/api/trial/operations/program-flag")
+@process_sheets_bp.post("/api/operations/program-flag")
+def api_operation_program_post():
+    return program_post_response()
 
 
 @process_sheets_bp.post("/api/trial/process-sheets/coway-proposed-edd")

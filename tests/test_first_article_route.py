@@ -127,6 +127,30 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertEqual(_parse_machine_codes("CNC 10, cnc 10, CNC 20"), ["CNC 10", "CNC 20"])
         self.assertEqual(_parse_machine_codes(["CNC 38", "CNC 38", ""]), ["CNC 38"])
 
+    def test_map_proposed_cnc_tags_machines_by_part_no(self):
+        from planning.first_article_service import map_proposed_cnc_by_part
+
+        flagged = [
+            {"process_sheet_no": "NPS26-100", "machine_codes": ["CNC 20", "CNC 22"]},
+            {"process_sheet_no": "MPS26-200", "machine_codes": ["CNC 31"]},
+            {"process_sheet_no": "APS26-300", "machine_codes": ["CNC 10"]},
+            {"process_sheet_no": "NPS26-400", "machine_codes": []},
+            {"process_sheet_no": "NPS26-500", "machine_codes": None},
+        ]
+        live = {
+            "NPS26-100": {"part_no": "BB27-KS0040-13 REV 03"},
+            "MPS26-200": {"inventory_code": "bb27-ks0040-13 rev 03"},
+            "APS26-300": {"part_no": "FE1031887U"},
+            "NPS26-400": {"part_no": "SKIP-EMPTY"},
+            "NPS26-500": {"part_no": "FALLBACK-PART", "queued_machines": ["CNC 38"]},
+        }
+        by_part = map_proposed_cnc_by_part(flagged, live)
+        self.assertEqual(by_part["BB27-KS0040-13 REV 03"], ["CNC 20", "CNC 22", "CNC 31"])
+        self.assertEqual(by_part["FE1031887U"], ["CNC 10"])
+        self.assertEqual(by_part["FALLBACK-PART"], ["CNC 38"])
+        self.assertNotIn("SKIP-EMPTY", by_part)
+        self.assertNotIn("", by_part)
+
     def test_serialize_prefers_saved_machines_over_live_queue(self):
         row = {
             "first_article_id": 1,
@@ -808,6 +832,103 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertEqual(merged["current_stage_status_label"], "In process")
         self.assertEqual(merged["history_count"], 0)
 
+    def test_serialize_uses_quote_snapshot_when_live_blank(self):
+        row = {
+            "first_article_id": 2,
+            "process_sheet_no": "NPS-Q1",
+            "pp_voucher_no": "",
+            "pic_ids": [9],
+            "machine_codes": ["CNC 22"],
+            "tooling_mode": "tick",
+            "tooling_tick": True,
+            "tooling_text": "",
+            "fixture_mode": "tick",
+            "fixture_tick": False,
+            "fixture_text": "",
+            "gauges_mode": "tick",
+            "gauges_tick": False,
+            "gauges_text": "",
+            "remarks": "Quoted",
+            "quote_part_no": "BB18-KS0188",
+            "quote_part_description": "BRACKET",
+            "quote_qty": "30",
+            "quote_po_due_date": "2026-10-20",
+        }
+        pics = {9: {"pic_id": 9, "name": "Chang Peng"}}
+        quoted = _serialize_tracker_row(row, live={}, pics_by_id=pics)
+        self.assertEqual(quoted["part_no"], "BB18-KS0188")
+        self.assertEqual(quoted["part_description"], "BRACKET")
+        self.assertEqual(quoted["total_qty"], 30)
+        self.assertEqual(quoted["po_due_date"], "2026-10-20")
+        self.assertTrue(quoted["from_quotation"])
+        self.assertFalse(quoted["in_sales_orders"])
+        live = _serialize_tracker_row(
+            row,
+            live={"part_no": "BB18-KS0188 REV 04", "total_qty": 12, "po_due_date": "2026-11-01", "is_new_part": True},
+            pics_by_id=pics,
+        )
+        self.assertEqual(live["part_no"], "BB18-KS0188 REV 04")
+        self.assertEqual(live["total_qty"], 12)
+        self.assertEqual(live["po_due_date"], "2026-11-01")
+        self.assertTrue(live["on_new_parts"])
+
+    def test_merge_new_part_copies_npi_tracker_details(self):
+        job = job_from_sales_order_pp(
+            {"sales_order_no": "SO-9", "first_posted_datetime": "2026-08-12"},
+            _pp(is_new_part=True, inventory_code="BB18-KS", description="BRACKET"),
+        )
+        flagged = {
+            "first_article_id": 44,
+            "process_sheet_no": "APS-1001",
+            "pic_ids": [3],
+            "machine_codes": ["CNC 10", "CNC 20"],
+            "tooling_mode": "tick",
+            "tooling_tick": True,
+            "tooling_text": "",
+            "fixture_mode": "text",
+            "fixture_tick": False,
+            "fixture_text": "Est. Wk 32",
+            "gauges_mode": "tick",
+            "gauges_tick": False,
+            "gauges_text": "",
+            "remarks": "Quoted last week",
+            "quote_part_no": "BB18-KS",
+        }
+        pics = {3: {"pic_id": 3, "name": "Chang Peng"}}
+        merged = _merge_new_part_row(job, None, pics_by_id=pics, flagged=flagged)
+        self.assertTrue(merged["from_npi_tracker"])
+        self.assertEqual(merged["npi_first_article_id"], 44)
+        self.assertEqual(merged["remarks"], "Quoted last week")
+        self.assertTrue(merged["remarks_from_tracker"])
+        self.assertEqual(merged["program_pic_ids"], [3])
+        self.assertEqual(merged["program_pics"][0]["name"], "Chang Peng")
+        self.assertTrue(merged["program_pic_from_tracker"])
+        self.assertEqual(merged["machine_cnc"], "CNC 10, CNC 20")
+        self.assertTrue(merged["tooling_tick"])
+        self.assertEqual(merged["fixture_text"], "Est. Wk 32")
+        kept = _merge_new_part_row(
+            job,
+            {"remarks": "Planner note", "program_pic_ids": [8], "program_finish_at": "", "is_exception": False},
+            pics_by_id={3: pics[3], 8: {"pic_id": 8, "name": "Ananda"}},
+            flagged=flagged,
+        )
+        self.assertEqual(kept["remarks"], "Planner note")
+        self.assertFalse(kept["remarks_from_tracker"])
+        self.assertEqual(kept["program_pic_ids"], [8])
+        self.assertFalse(kept["program_pic_from_tracker"])
+        self.assertTrue(kept["from_npi_tracker"])
+        self.assertTrue(kept["tooling_tick"])
+
+    def test_match_flagged_npi_falls_back_to_unique_part(self):
+        from planning.first_article_service import _match_flagged_npi
+
+        flagged = {"first_article_id": 1, "process_sheet_no": "Q-1", "quote_part_no": "BB18-KS0188"}
+        job = {"process_sheet_no": "NPS26-0999", "part_no": "BB18-KS0188"}
+        hit = _match_flagged_npi(job, {}, {"BB18-KS0188": [flagged]})
+        self.assertEqual(hit["first_article_id"], 1)
+        ambiguous = _match_flagged_npi(job, {}, {"BB18-KS0188": [flagged, dict(flagged)]})
+        self.assertIsNone(ambiguous)
+
     def test_parse_npi_workbook_maps_template_headers(self):
         from openpyxl import Workbook
 
@@ -834,7 +955,10 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertEqual(patch["fixture"], "Est. Wk 32")
         self.assertEqual(patch["gauges"], "NA")
         self.assertEqual(patch["remarks"], "Material in")
-        self.assertNotIn("part_no", patch)
+        self.assertEqual(patch["part_no"], "BB18-KS")
+        self.assertEqual(patch["part_description"], "BRACKET")
+        self.assertEqual(patch["total_qty"], 30)
+        self.assertEqual(patch["po_due_date"], "20/8/2026")
 
     def test_import_template_has_expected_headers(self):
         from openpyxl import load_workbook
@@ -1282,6 +1406,9 @@ class FirstArticleRouteTests(unittest.TestCase):
         self.assertIn("id=\"fa-panel-history\"", html)
         self.assertIn("id=\"fa-history-table-body\"", html)
         self.assertIn("id=\"fa-history-modal\"", html)
+        self.assertIn("quotations for new parts", html)
+        self.assertIn("From NPI Tracker", html)
+        self.assertIn("fa-20260827-2", html)
         self.assertNotIn("First Article Tracker", html)
         self.assertNotIn("Flagged jobs", html)
 

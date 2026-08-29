@@ -2,7 +2,7 @@
 {% block title %}SO Outstanding Balance{% endblock %}
 {% block main_class %}app-main--sob{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/so_outstanding_balance.css') }}?v=sob-20260825a">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/so_outstanding_balance.css') }}?v=sob-20260827c">
 {% endblock %}
 {% block content %}
 <div class="sob-page">
@@ -11,11 +11,14 @@
       <h1 class="sob-title">SO Outstanding Balance</h1>
       <p class="sob-subtitle">
         Open PP / partials that still have remaining S/O qty. Lines that are fully shipped,
-        voided, or already closed in ERP are excluded. Open S/O lines with no PP yet
-        appear as <strong>No PP</strong>.
-        <strong>Open qty</strong> = SO qty − shipped, allocated to PP.
-        <strong>SO value</strong> = unit x SO qty x exch.
-        <strong>Outstanding</strong> = unit x open qty x exch. Week from Coway EDD, else PO due.
+        voided, or already closed in ERP are excluded. Open S/O qty with no PP yet
+        (including the remainder after a partial PP) appears as a second line for that
+        process sheet with status <strong>No PP assigned</strong>.
+        Searching the PS number finds both the pushed qty and the leftover.
+        <strong>Open qty</strong> = leftover of that PP partial after shipped qty (not the full S/O remaining on every partial).
+        <strong>SO value</strong> = unit x SO qty x exch (shown once per S/O line on export).
+        <strong>Outstanding</strong> = unit x that leftover x exch, so summing the column does not double-count split partials.
+        Week from Coway EDD, else PO due.
         <strong>Export all</strong> includes every currently open line, not just the filtered view.
       </p>
     </div>
@@ -109,9 +112,9 @@
             <th class="sob-num" data-sort="exch_rate">Exch</th>
             <th class="sob-num" data-sort="pp_qty">PP qty</th>
             <th class="sob-num" data-sort="so_qty">SO qty</th>
-            <th class="sob-num" data-sort="remaining_qty" title="Actual remaining balance (SO qty − shipped, allocated to this PP/partial)">Open qty</th>
+            <th class="sob-num" data-sort="remaining_qty" title="Leftover of this PP partial after shipped qty. Summing this column equals the S/O remaining once.">Open qty</th>
             <th class="sob-num" data-sort="line_value_home" title="Unit x SO qty x exchange rate">SO value</th>
-            <th class="sob-num" data-sort="outstanding_balance_home" title="Total $ for remaining balance: unit x open qty x exchange rate">Outstanding $</th>
+            <th class="sob-num" data-sort="outstanding_balance_home" title="Unit x leftover of this PP partial x exchange rate. Summing this column equals the true outstanding once.">Outstanding $</th>
             <th data-sort="status" class="sob-th-filterable" data-filter-col="status">
               <span class="sob-th-inner">
                 <span class="sob-th-label">Status</span>
@@ -135,5 +138,5 @@
 <div id="sob-col-filter-popover" class="sob-col-filter-popover" hidden></div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/so_outstanding_balance.js') }}?v=sob-20260825a"></script>
+<script src="{{ url_for('static', filename='js/so_outstanding_balance.js') }}?v=sob-20260827c"></script>
 {% endblock %}

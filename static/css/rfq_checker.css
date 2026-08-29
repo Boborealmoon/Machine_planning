@@ -176,7 +176,8 @@ body.rfq-view .app-main--rfq-checker {
 
 .rfq-table-card,
 .rfq-upload-card,
-.rfq-mapping {
+.rfq-mapping,
+.rfq-defaults {
   background: #fff;
   border: 1px solid #e2e8f0;
   border-radius: 14px;
@@ -212,7 +213,13 @@ body.rfq-view .app-main--rfq-checker {
   flex-wrap: wrap;
   gap: 12px;
   justify-content: center;
-  align-items: center;
+  align-items: flex-end;
+}
+
+.rfq-upload-actions .rfq-inline {
+  min-width: 240px;
+  max-width: 360px;
+  text-align: left;
 }
 
 .rfq-check {
@@ -239,6 +246,89 @@ body.rfq-view .app-main--rfq-checker {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 10px;
   margin: 12px 0;
+}
+
+.rfq-defaults {
+  padding: 14px 16px 16px;
+}
+
+.rfq-defaults-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.rfq-defaults-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.rfq-defaults-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.4fr) repeat(3, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+  align-items: end;
+}
+
+.rfq-defaults-tags {
+  max-width: none;
+}
+
+.rfq-tag-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rfq-tag-pill {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+
+.rfq-tag-pill:hover {
+  border-color: #94a3b8;
+}
+
+.rfq-tag-pill.is-active[data-rfq-tag="APS"],
+.rfq-sheet-tag--aps { background: #dbeafe; border-color: #93c5fd; color: #1d4ed8; }
+.rfq-tag-pill.is-active[data-rfq-tag="NPS"],
+.rfq-sheet-tag--nps { background: #d1fae5; border-color: #6ee7b7; color: #047857; }
+.rfq-tag-pill.is-active[data-rfq-tag="PPS"],
+.rfq-sheet-tag--pps { background: #fce7f3; border-color: #f9a8d4; color: #9d174d; }
+.rfq-tag-pill.is-active[data-rfq-tag="MPS"],
+.rfq-sheet-tag--mps { background: #ede9fe; border-color: #c4b5fd; color: #5b21b6; }
+.rfq-tag-pill.is-active[data-rfq-tag="CPS"],
+.rfq-sheet-tag--cps { background: #f3f4f6; border-color: #d1d5db; color: #374151; }
+.rfq-tag-pill.is-active[data-rfq-tag="SR"],
+.rfq-sheet-tag--sr { background: #fef3c7; border-color: #fcd34d; color: #b45309; }
+
+.rfq-sheet-tag {
+  display: inline-flex;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+@media (max-width: 900px) {
+  .rfq-defaults-row {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 .rfq-table-scroll {

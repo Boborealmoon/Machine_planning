@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Planner{% endblock %}
 {% block main_class %}app-main--planner{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v={{ scheduler_asset_version }}-qty-labels-20260824">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v={{ scheduler_asset_version }}-program-pill-20260827">{% endblock %}
 {% block content %}
 <div class="trial-shell">
   <div id="trial-loading" class="trial-load-panel" role="status" aria-live="polite" aria-busy="true">
@@ -26,6 +26,8 @@
             <span class="trial-legend-group-label">Queue</span>
             <span><span class="trial-legend-dot" style="background:rgba(34,197,94,0.85)"></span>In stock</span>
             <span><span class="trial-legend-dot" style="background:rgba(239,68,68,0.85)"></span>Awaiting stock</span>
+            <span><span class="trial-legend-dot" style="background:rgba(249,115,22,0.9)"></span>Missing tooling</span>
+            <span><span class="trial-legend-dot" style="background:rgba(234,179,8,0.95)"></span>No program</span>
           </div>
           <div class="trial-legend-group trial-board-zoom-controls" aria-label="Board zoom">
             <span class="trial-legend-group-label">Zoom</span>
@@ -134,7 +136,7 @@
 <script>window.trialFinishingQueueUrl = {{ finishing_queue_path|tojson }};</script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <script src="{{ url_for('static', filename='js/scheduler/board_mode.js') }}?v=board-zoom-20260619"></script>
-<script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v=material-in-20260605"></script>
+<script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v=program-ready-20260827"></script>
 <script>window.SCHEDULER_BUILD = {{ (scheduler_asset_version or 'partial-lane-dev')|tojson }};</script>
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v={{ scheduler_asset_version }}"></script>
@@ -148,7 +150,7 @@
 <script src="{{ url_for('static', filename='js/scheduler/modals.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/floor_layout.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/temp_ps.js') }}?v=temp-ps-ui-20260605"></script>
-<script src="{{ url_for('static', filename='js/scheduler/export.js') }}?v=20260615-material-colors"></script>
+<script src="{{ url_for('static', filename='js/scheduler/export.js') }}?v=program-ready-20260827"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const _trialScriptChecks = [

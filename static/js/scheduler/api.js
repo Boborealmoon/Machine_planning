@@ -1122,6 +1122,16 @@ function trialLoadingCompact() {
   panel.classList.add('trial-load-panel--compact');
 }
 
+function trialYieldForPaint() {
+  return new Promise(resolve => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+      return;
+    }
+    window.setTimeout(resolve, 0);
+  });
+}
+
 function trialLoadingHide() {
   const panel = trialLoadingEl();
   if (!panel) return;
@@ -1198,7 +1208,7 @@ async function loadTrialImpl(options = {}) {
   }
 
   const catalogCacheMs = trialCatalogClientCacheMs();
-  const catalogPromise = skipCatalog
+  const loadCatalog = () => skipCatalog
     ? Promise.resolve([])
     : (force
       ? GET(trialNoCacheUrl(trialCatalogUrl(true))).catch(() => [])
@@ -1249,6 +1259,7 @@ async function loadTrialImpl(options = {}) {
     });
   }
   if (showLoadUi) trialLoadingStage('renderBoard');
+  if (showLoadUi) await trialYieldForPaint();
   trialScheduleRender(null, {
     skipCatalog: true,
     dismissLoading: showLoadUi,
@@ -1283,7 +1294,7 @@ async function loadTrialImpl(options = {}) {
     }
   };
 
-  catalogPromise
+  loadCatalog()
     .then(applyCatalogWhenReady)
     .catch(err => {
       console.error('Failed to load process sheet catalog:', err);

@@ -3,7 +3,7 @@
 {% block body_class %}rfq-view{% endblock %}
 {% block main_class %}app-main--rfq-checker{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/rfq_checker.css') }}?v=rfq-20260824-1">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/rfq_checker.css') }}?v=rfq-20260827-defaults">
 {% endblock %}
 {% block content %}
 <div class="rfq-page" data-rfq-page="upload">
@@ -42,6 +42,42 @@
     </div>
   </section>
 
+  <section class="rfq-defaults" id="rfq-defaults" hidden>
+    <div class="rfq-defaults-head">
+      <div>
+        <h2 class="rfq-defaults-title">Sheet defaults</h2>
+        <p class="rfq-upload-hint">Tag this whole upload, then fill RFQ, customer, and salesperson once for every line.</p>
+      </div>
+      <button type="button" class="rfq-btn rfq-btn--ghost" id="rfq-apply-defaults">Apply to all lines</button>
+    </div>
+    <div class="rfq-defaults-row">
+      <div class="rfq-inline rfq-defaults-tags">
+        <span class="rfq-label">Tag</span>
+        <div class="rfq-tag-pills" id="rfq-tag-pills" role="group" aria-label="Process sheet tag">
+          <button type="button" class="rfq-tag-pill" data-rfq-tag="APS">APS</button>
+          <button type="button" class="rfq-tag-pill" data-rfq-tag="NPS">NPS</button>
+          <button type="button" class="rfq-tag-pill" data-rfq-tag="PPS">PPS</button>
+          <button type="button" class="rfq-tag-pill" data-rfq-tag="MPS">MPS</button>
+          <button type="button" class="rfq-tag-pill" data-rfq-tag="CPS">CPS</button>
+          <button type="button" class="rfq-tag-pill" data-rfq-tag="SR">SR</button>
+        </div>
+        <input id="rfq-sheet-tag" class="rfq-input" type="text" maxlength="16" placeholder="Other tag" autocomplete="off">
+      </div>
+      <label class="rfq-inline">
+        <span class="rfq-label">RFQ</span>
+        <input id="rfq-default-rfq" class="rfq-input" type="text" placeholder="Quote / RFQ no." autocomplete="off">
+      </label>
+      <label class="rfq-inline">
+        <span class="rfq-label">Cust.</span>
+        <input id="rfq-default-customer" class="rfq-input" type="text" placeholder="Customer" autocomplete="off">
+      </label>
+      <label class="rfq-inline">
+        <span class="rfq-label">Salesperson</span>
+        <input id="rfq-default-salesperson" class="rfq-input" type="text" placeholder="Salesperson" autocomplete="off">
+      </label>
+    </div>
+  </section>
+
   <details class="rfq-mapping" id="rfq-mapping" hidden>
     <summary>Column mapping</summary>
     <p class="rfq-upload-hint" id="rfq-mapping-notes"></p>
@@ -76,5 +112,5 @@
 </aside>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/rfq_checker.js') }}?v=rfq-20260824-1"></script>
+<script src="{{ url_for('static', filename='js/rfq_checker.js') }}?v=rfq-20260827-groq"></script>
 {% endblock %}

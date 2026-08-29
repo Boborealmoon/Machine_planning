@@ -60,3 +60,5 @@ let trialLoadCache = {
 let trialMaterialInOverrides = new Map();
 /** Optimistic tooling-ready overrides keyed by operation_id. */
 let trialToolingOverrides = new Map();
+/** Optimistic program-ready overrides keyed by operation_id. */
+let trialProgramOverrides = new Map();

@@ -9,6 +9,7 @@
     rfq: "RFQ",
     customer: "Cust.",
     salesperson: "Salesperson",
+    sheet_tag: "Tag",
     qty: "QTY",
     opns: "Opns",
     assignment: "Assignment",
@@ -24,11 +25,14 @@
   };
   const FILL_FIELDS = new Set(["assignment", "remark"]);
   const CALC_FIELDS = new Set(["qty", "total_ct_mins", "total_hours", "days"]);
+  const ARCHIVE_FIELDS = ["sheet_tag", ...FIELDS];
 
   const pageRoot = document.querySelector("[data-rfq-page]");
   const page = pageRoot ? pageRoot.getAttribute("data-rfq-page") : "";
   const saveTimers = {};
   let batch = null;
+  let lastFile = null;
+  let lastSheets = null;
   let fieldLabels = { ...LABELS };
 
   function $(id) {
@@ -45,7 +49,7 @@
 
   function dash(value) {
     const text = String(value == null ? "" : value).trim();
-    return text || "—";
+    return text || "-";
   }
 
   function showAlert(message, ok) {
@@ -68,8 +72,15 @@
     return data;
   }
 
-  function headerRow() {
-    return `<tr>${FIELDS.map((field) => `<th>${escapeHtml(fieldLabels[field] || LABELS[field] || field)}</th>`).join("")}</tr>`;
+  function headerRow(fields) {
+    return `<tr>${(fields || FIELDS).map((field) => `<th>${escapeHtml(fieldLabels[field] || LABELS[field] || field)}</th>`).join("")}</tr>`;
+  }
+
+  function tagBadge(tag) {
+    const text = String(tag || "").trim();
+    if (!text) return "-";
+    const key = text.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    return `<span class="rfq-sheet-tag rfq-sheet-tag--${escapeHtml(key)}">${escapeHtml(text)}</span>`;
   }
 
   function partButton(partNo, matchStatus) {
@@ -87,11 +98,14 @@
     return String(value);
   }
 
-  function renderReadRow(row, { clickablePart = true } = {}) {
+  function renderReadRow(row, { clickablePart = true, fields } = {}) {
     const match = row.match_status || "";
     const cls = match === "matched" ? "is-matched" : match === "new" ? "is-new" : "";
-    const cells = FIELDS.map((field) => {
+    const cells = (fields || FIELDS).map((field) => {
       const extra = FILL_FIELDS.has(field) ? ` class="rfq-td-${field}"` : "";
+      if (field === "sheet_tag") {
+        return `<td>${tagBadge(row.sheet_tag || "")}</td>`;
+      }
       if (field === "part_no" && clickablePart) {
         return `<td${extra}>${partButton(row.part_no || "", match)}</td>`;
       }
@@ -103,9 +117,12 @@
   function renderEditRow(row) {
     const match = row.match_status || "";
     const cls = match === "matched" ? "is-matched" : "is-new";
-    const cells = FIELDS.map((field) => {
+    const cells = ARCHIVE_FIELDS.map((field) => {
       const fillClass = FILL_FIELDS.has(field) ? ` rfq-cell--${field}` : "";
       const tdClass = FILL_FIELDS.has(field) ? ` class="rfq-td-${field}"` : "";
+      if (field === "sheet_tag") {
+        return `<td>${tagBadge(row.sheet_tag || "")}</td>`;
+      }
       if (field === "part_no") {
         return `<td${tdClass}>${partButton(row.part_no || "", match)}</td>`;
       }
@@ -143,7 +160,7 @@
         <div class="rfq-drawer-section">
           <h3>Summary</h3>
           <p><strong>${escapeHtml(dash(part.part_no))}</strong><br>${escapeHtml(dash(part.part_description))}</p>
-          <p>Opns ${escapeHtml(dash(part.opns))} · Total C/T ${escapeHtml(dash(part.total_ct_mins))} mins · Machines ${escapeHtml(dash(part.machines))}</p>
+          <p>Opns ${escapeHtml(dash(part.opns))} | Total C/T ${escapeHtml(dash(part.total_ct_mins))} mins | Machines ${escapeHtml(dash(part.machines))}</p>
         </div>
         <div class="rfq-drawer-section">
           <h3>Cycle time master</h3>
@@ -207,8 +224,8 @@
     try {
       const data = await api(`/api/rfq-checker/archive?q=${encodeURIComponent(q)}`);
       const rows = data.rows || [];
-      $("rfq-archive-head").innerHTML = headerRow();
-      $("rfq-archive-body").innerHTML = rows.map((row) => renderReadRow(row)).join("");
+      $("rfq-archive-head").innerHTML = headerRow(ARCHIVE_FIELDS);
+      $("rfq-archive-body").innerHTML = rows.map((row) => renderReadRow(row, { fields: ARCHIVE_FIELDS })).join("");
       card.hidden = rows.length === 0;
       empty.hidden = rows.length > 0;
       bindPartLinks($("rfq-archive-body"));
@@ -223,11 +240,15 @@
     const notes = $("rfq-mapping-notes");
     if (!wrap || !grid) return;
     const mapping = batchData.mapping || {};
-    const headers = batchData.headers || [];
+    let headers = batchData.headers || [];
+    if (!headers.length) {
+      const source = ((batchData.lines || [])[0] || {}).source_row || {};
+      if (source && typeof source === "object") headers = Object.keys(source);
+    }
     notes.textContent = batchData.mapping_notes || "";
     grid.innerHTML = FIELDS.map((field) => {
       const current = Object.keys(mapping).find((header) => mapping[header] === field) || "";
-      const options = ["<option value=''>—</option>"]
+      const options = ["<option value=''>Not mapped</option>"]
         .concat(headers.map((header) => `<option value="${escapeHtml(header)}"${header === current ? " selected" : ""}>${escapeHtml(header)}</option>`));
       return `<label class="rfq-inline"><span class="rfq-label">${escapeHtml(fieldLabels[field] || field)}</span><select class="rfq-select" data-map-field="${field}">${options.join("")}</select></label>`;
     }).join("");
@@ -235,38 +256,120 @@
     wrap.open = true;
   }
 
-  function mappingFromForm() {
-    const out = {};
-    document.querySelectorAll("[data-map-field]").forEach((select) => {
-      if (select.value) out[select.value] = select.getAttribute("data-map-field");
+  function majorityValue(lines, field) {
+    const counts = {};
+    (lines || []).forEach((row) => {
+      const value = String(row[field] || "").trim();
+      if (!value) return;
+      counts[value] = (counts[value] || 0) + 1;
     });
-    return out;
+    let top = "";
+    let best = 0;
+    Object.keys(counts).forEach((key) => {
+      if (counts[key] > best) {
+        top = key;
+        best = counts[key];
+      }
+    });
+    return best * 2 >= (lines || []).length && best > 0 ? top : "";
+  }
+
+  function defaultsFromForm() {
+    return {
+      sheet_tag: ($("rfq-sheet-tag") && $("rfq-sheet-tag").value) || "",
+      rfq: ($("rfq-default-rfq") && $("rfq-default-rfq").value) || "",
+      customer: ($("rfq-default-customer") && $("rfq-default-customer").value) || "",
+      salesperson: ($("rfq-default-salesperson") && $("rfq-default-salesperson").value) || "",
+    };
+  }
+
+  function renderTagPills(tag) {
+    const current = String(tag || "").trim().toUpperCase();
+    document.querySelectorAll("[data-rfq-tag]").forEach((btn) => {
+      btn.classList.toggle("is-active", btn.getAttribute("data-rfq-tag") === current);
+    });
+  }
+
+  function renderDefaults(batchData) {
+    const wrap = $("rfq-defaults");
+    if (!wrap) return;
+    const lines = (batchData && batchData.lines) || [];
+    wrap.hidden = !(batchData && batchData.batch_id);
+    const tag = batchData.sheet_tag || "";
+    const rfq = batchData.default_rfq || majorityValue(lines, "rfq");
+    const customer = batchData.default_customer || majorityValue(lines, "customer");
+    const salesperson = batchData.default_salesperson || majorityValue(lines, "salesperson");
+    if ($("rfq-sheet-tag")) $("rfq-sheet-tag").value = tag;
+    if ($("rfq-default-rfq")) $("rfq-default-rfq").value = rfq;
+    if ($("rfq-default-customer")) $("rfq-default-customer").value = customer;
+    if ($("rfq-default-salesperson")) $("rfq-default-salesperson").value = salesperson;
+    renderTagPills(tag);
+  }
+
+  async function saveDefaults(patch) {
+    if (!batch) return;
+    let payload = patch || defaultsFromForm();
+    if (!patch) {
+      payload = { ...payload };
+      ["rfq", "customer", "salesperson"].forEach((field) => {
+        if (!String(payload[field] || "").trim()) delete payload[field];
+      });
+      if (!payload.sheet_tag && !payload.rfq && !payload.customer && !payload.salesperson) {
+        showAlert("Enter a tag, RFQ, customer, or salesperson first.");
+        return;
+      }
+    }
+    try {
+      const data = await api(`/api/rfq-checker/batches/${batch.batch_id}/defaults`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      renderBatch(data.batch);
+      showAlert("Sheet defaults applied to every line.", true);
+    } catch (err) {
+      showAlert(err.message);
+    }
+  }
+
+  function renderSheetSelect(batchData) {
+    const select = $("rfq-sheet");
+    if (!select) return;
+    const sheets = batchData.sheets || lastSheets || [];
+    if (batchData.sheets) lastSheets = batchData.sheets;
+    if (!sheets.length) {
+      const current = batchData.sheet_name || "";
+      select.innerHTML = current
+        ? `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}</option>`
+        : `<option value="">Auto-detect</option>`;
+      select.disabled = !lastFile;
+      return;
+    }
+    const current = batchData.sheet_name || "";
+    select.innerHTML = sheets.map((sheet) => (
+      `<option value="${escapeHtml(sheet.name)}"${sheet.name === current ? " selected" : ""}>${escapeHtml(sheet.name)} (${sheet.row_count})</option>`
+    )).join("");
+    select.disabled = !lastFile;
   }
 
   function renderBatch(batchData) {
+    const keptSheets = (batch && batch.sheets) || lastSheets;
     batch = batchData;
+    if (!batch.sheets && keptSheets) batch.sheets = keptSheets;
     fieldLabels = batchData.field_labels || fieldLabels;
     const card = $("rfq-lines-card");
     const empty = $("rfq-lines-empty");
     const saveBtn = $("rfq-save-archive");
     const lines = batchData.lines || [];
-    $("rfq-lines-head").innerHTML = headerRow();
+    $("rfq-lines-head").innerHTML = headerRow(ARCHIVE_FIELDS);
     $("rfq-lines-body").innerHTML = lines.map((row) => renderEditRow(row)).join("");
     card.hidden = lines.length === 0;
     empty.hidden = lines.length > 0;
     if (saveBtn) saveBtn.hidden = lines.length === 0;
     bindPartLinks($("rfq-lines-body"));
     renderMapping(batchData);
-    if (batchData.sheets) {
-      const select = $("rfq-sheet");
-      if (select) {
-        const current = batchData.sheet_name || "";
-        select.innerHTML = batchData.sheets.map((sheet) => (
-          `<option value="${escapeHtml(sheet.name)}"${sheet.name === current ? " selected" : ""}>${escapeHtml(sheet.name)} (${sheet.row_count})</option>`
-        )).join("");
-        select.disabled = false;
-      }
-    }
+    renderDefaults(batch);
+    renderSheetSelect(batch);
   }
 
   async function saveLine(input) {
@@ -311,6 +414,11 @@
     body.append("file", file);
     body.append("use_llm", $("rfq-use-llm") && $("rfq-use-llm").checked ? "1" : "0");
     if (sheetName) body.append("sheet", sheetName);
+    const defaults = defaultsFromForm();
+    if (defaults.sheet_tag) body.append("sheet_tag", defaults.sheet_tag);
+    if (defaults.rfq) body.append("rfq", defaults.rfq);
+    if (defaults.customer) body.append("customer", defaults.customer);
+    if (defaults.salesperson) body.append("salesperson", defaults.salesperson);
     try {
       const data = await api("/api/rfq-checker/upload", { method: "POST", body });
       renderBatch(data.batch);
@@ -320,6 +428,8 @@
       showAlert(data.batch.mapping_notes || "Workbook mapped onto Archive columns.", true);
     } catch (err) {
       showAlert(err.message);
+      const select = $("rfq-sheet");
+      if (select && batch && batch.sheet_name) select.value = batch.sheet_name;
     } finally {
       if (loading) loading.hidden = true;
     }
@@ -352,8 +462,8 @@
     const dropzone = $("rfq-dropzone");
     $("rfq-browse") && $("rfq-browse").addEventListener("click", () => fileInput && fileInput.click());
     fileInput && fileInput.addEventListener("change", () => {
-      const file = fileInput.files && fileInput.files[0];
-      uploadFile(file, $("rfq-sheet") && $("rfq-sheet").value);
+      lastFile = fileInput.files && fileInput.files[0];
+      uploadFile(lastFile, "");
     });
     ["dragenter", "dragover"].forEach((eventName) => {
       dropzone && dropzone.addEventListener(eventName, (event) => {
@@ -369,7 +479,47 @@
     });
     dropzone && dropzone.addEventListener("drop", (event) => {
       const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
-      uploadFile(file);
+      lastFile = file || lastFile;
+      uploadFile(file, "");
+    });
+    const sheetSelect = $("rfq-sheet");
+    sheetSelect && sheetSelect.addEventListener("change", () => {
+      const wanted = sheetSelect.value;
+      if (batch && wanted === (batch.sheet_name || "")) return;
+      if (!lastFile) {
+        showAlert("Choose the Excel file again to read a different sheet.");
+        if (batch && batch.sheet_name) sheetSelect.value = batch.sheet_name;
+        return;
+      }
+      uploadFile(lastFile, wanted);
+    });
+    $("rfq-apply-defaults") && $("rfq-apply-defaults").addEventListener("click", () => saveDefaults());
+    document.querySelectorAll("[data-rfq-tag]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const tag = btn.getAttribute("data-rfq-tag") || "";
+        const current = ($("rfq-sheet-tag") && $("rfq-sheet-tag").value) || "";
+        const next = current === tag ? "" : tag;
+        if ($("rfq-sheet-tag")) $("rfq-sheet-tag").value = next;
+        renderTagPills(next);
+        saveDefaults({ sheet_tag: next });
+      });
+    });
+    ["rfq-sheet-tag", "rfq-default-rfq", "rfq-default-customer", "rfq-default-salesperson"].forEach((id) => {
+      const input = $(id);
+      if (!input) return;
+      input.addEventListener("input", () => {
+        if (id === "rfq-sheet-tag") renderTagPills(input.value);
+        const fieldById = {
+          "rfq-sheet-tag": "sheet_tag",
+          "rfq-default-rfq": "rfq",
+          "rfq-default-customer": "customer",
+          "rfq-default-salesperson": "salesperson",
+        };
+        window.clearTimeout(saveTimers.defaults);
+        saveTimers.defaults = window.setTimeout(() => {
+          saveDefaults({ [fieldById[id]]: input.value });
+        }, 450);
+      });
     });
     $("rfq-lines-body") && $("rfq-lines-body").addEventListener("input", (event) => {
       if (event.target && event.target.matches("[data-field]")) queueSave(event.target);
@@ -402,9 +552,11 @@
       const hint = $("rfq-llm-hint");
       if (!hint) return;
       if (data.llm && data.llm.configured) {
-        hint.textContent = `LLM mapping ready (${data.llm.model}). Hours = QTY × C/T ÷ 60; days use a ${data.hours_per_day}-hour day.`;
+        const labels = { groq: "Groq", openai: "OpenAI" };
+        const via = data.llm.provider ? ` via ${labels[data.llm.provider] || data.llm.provider}` : "";
+        hint.textContent = `LLM mapping ready (${data.llm.model}${via}). Hours = QTY x C/T / 60; days use a ${data.hours_per_day}-hour day.`;
       } else {
-        hint.textContent = "No LLM key set — columns are mapped by header aliases. Add RFQ_LLM_API_KEY to .env to map unusual workbooks. Hours = QTY × C/T ÷ 60; days use a 10-hour day.";
+        hint.textContent = "No LLM key set - columns are mapped by header aliases. Add RFQ_LLM_API_KEY to .env to map unusual workbooks. Hours = QTY x C/T / 60; days use a 10-hour day.";
       }
     }).catch(() => {});
     const params = new URLSearchParams(window.location.search);

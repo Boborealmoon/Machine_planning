@@ -25,6 +25,12 @@ HOURS_PER_DAY = 10.0
 DAYS_PER_WEEK = 5.0
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 SAMPLE_ROWS_FOR_LLM = 8
+SHEET_TAGS = ("APS", "NPS", "PPS", "MPS", "CPS", "SR")
+BATCH_DEFAULT_FIELDS = ("rfq", "customer", "salesperson")
+OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+GROQ_DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
+OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
+GROQ_DEFAULT_MODEL = "openai/gpt-oss-20b"
 
 FIXED_FIELDS = (
     "part_no",
@@ -104,23 +110,58 @@ def json_error(exc: Exception, *, fallback_status: int = 500):
 
 def llm_status() -> dict[str, Any]:
     key = _llm_api_key()
+    if not key:
+        return {"configured": False, "model": "", "base_url": "", "provider": ""}
     return {
-        "configured": bool(key),
-        "model": _llm_model() if key else "",
-        "base_url": _llm_base_url() if key else "",
+        "configured": True,
+        "model": _llm_model(),
+        "base_url": _llm_base_url(),
+        "provider": _llm_provider(),
     }
 
 
 def _llm_api_key() -> str:
-    return compact_text(os.getenv("RFQ_LLM_API_KEY") or os.getenv("OPENAI_API_KEY"))
+    return compact_text(
+        os.getenv("RFQ_LLM_API_KEY")
+        or os.getenv("GROQ_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+    )
+
+
+def _llm_uses_groq() -> bool:
+    base = compact_text(os.getenv("RFQ_LLM_BASE_URL")).lower()
+    if "groq.com" in base:
+        return True
+    if base:
+        return False
+    return _llm_api_key().startswith("gsk_")
+
+
+def _llm_provider() -> str:
+    if _llm_uses_groq():
+        return "groq"
+    base = _llm_base_url().lower()
+    if "openai.com" in base:
+        return "openai"
+    return "custom"
 
 
 def _llm_base_url() -> str:
-    return compact_text(os.getenv("RFQ_LLM_BASE_URL")) or "https://api.openai.com/v1"
+    explicit = compact_text(os.getenv("RFQ_LLM_BASE_URL")).rstrip("/")
+    if explicit:
+        return explicit
+    if _llm_uses_groq():
+        return GROQ_DEFAULT_BASE_URL
+    return OPENAI_DEFAULT_BASE_URL
 
 
 def _llm_model() -> str:
-    return compact_text(os.getenv("RFQ_LLM_MODEL")) or "gpt-4o-mini"
+    explicit = compact_text(os.getenv("RFQ_LLM_MODEL"))
+    if explicit:
+        return explicit
+    if _llm_uses_groq():
+        return GROQ_DEFAULT_MODEL
+    return OPENAI_DEFAULT_MODEL
 
 
 def normalize_part_no(value: Any) -> str:
@@ -134,6 +175,43 @@ def normalize_header(value: Any) -> str:
     text = compact_text(value).lower()
     text = re.sub(r"[^a-z0-9]+", "_", text)
     return text.strip("_")
+
+
+def normalize_sheet_tag(value: Any) -> str:
+    compact = re.sub(r"[^A-Z0-9]", "", compact_text(value).upper())
+    if not compact:
+        return ""
+    for tag in SHEET_TAGS:
+        if compact == tag or compact.startswith(tag):
+            return tag
+    return compact[:16]
+
+
+def apply_defaults_to_mapped_lines(
+    lines: list[dict[str, Any]],
+    defaults: dict[str, Any] | None,
+    *,
+    overwrite: bool = True,
+    fields: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    payload = defaults or {}
+    wanted = fields or ["sheet_tag", *BATCH_DEFAULT_FIELDS]
+    tag = normalize_sheet_tag(payload.get("sheet_tag"))
+    out: list[dict[str, Any]] = []
+    for line in lines:
+        row = dict(line)
+        if "sheet_tag" in wanted and ("sheet_tag" in payload or tag):
+            row["sheet_tag"] = tag
+        for field in BATCH_DEFAULT_FIELDS:
+            if field not in wanted:
+                continue
+            if field not in payload and f"default_{field}" not in payload:
+                continue
+            value = compact_text(payload.get(field) or payload.get(f"default_{field}"))
+            if overwrite or not compact_text(row.get(field)):
+                row[field] = value
+        out.append(row)
+    return out
 
 
 def parse_yn(value: Any) -> str:
@@ -327,16 +405,19 @@ def parse_workbook_bytes(payload: bytes, filename: str = "") -> list[dict[str, A
 def _parse_xlsx(payload: bytes) -> list[dict[str, Any]]:
     from openpyxl import load_workbook
 
-    workbook = load_workbook(io.BytesIO(payload), read_only=True, data_only=True)
+    # Avoid read_only: stale worksheet dimensions can hide every row on later tabs.
+    workbook = load_workbook(io.BytesIO(payload), data_only=True)
     sheets: list[dict[str, Any]] = []
     try:
         for ws in workbook.worksheets:
+            try:
+                ws.reset_dimensions()
+            except Exception:
+                pass
             matrix: list[list[Any]] = []
             for row in ws.iter_rows(values_only=True):
                 matrix.append([_serialize_cell(cell) for cell in row])
-            parsed = _sheet_from_matrix(ws.title, matrix)
-            if parsed:
-                sheets.append(parsed)
+            sheets.append(_sheet_from_matrix(ws.title, matrix))
     finally:
         workbook.close()
     return sheets
@@ -355,16 +436,20 @@ def _parse_xls(payload: bytes) -> list[dict[str, Any]]:
             matrix.append(
                 [_serialize_cell(sheet.cell_value(row_idx, col_idx)) for col_idx in range(sheet.ncols)]
             )
-        parsed = _sheet_from_matrix(sheet.name, matrix)
-        if parsed:
-            sheets.append(parsed)
+        sheets.append(_sheet_from_matrix(sheet.name, matrix))
     return sheets
 
 
-def _sheet_from_matrix(title: str, matrix: list[list[Any]]) -> dict[str, Any] | None:
+def _sheet_from_matrix(title: str, matrix: list[list[Any]]) -> dict[str, Any]:
+    name = compact_text(title) or "Sheet1"
     header_idx = _find_header_row(matrix)
     if header_idx is None:
-        return None
+        for idx, row in enumerate(matrix):
+            if any(compact_text(cell) for cell in (row or [])):
+                header_idx = idx
+                break
+    if header_idx is None:
+        return {"name": name, "headers": [], "rows": [], "row_count": 0}
     raw_headers = matrix[header_idx]
     headers: list[str] = []
     seen: dict[str, int] = {}
@@ -381,10 +466,8 @@ def _sheet_from_matrix(title: str, matrix: list[list[Any]]) -> dict[str, Any] | 
         for idx, header in enumerate(headers):
             record[header] = row[idx] if idx < len(row) else None
         records.append(record)
-    if not records:
-        return None
     return {
-        "name": compact_text(title) or "Sheet1",
+        "name": name,
         "headers": headers,
         "rows": records,
         "row_count": len(records),
@@ -398,7 +481,7 @@ def _find_header_row(matrix: list[list[Any]]) -> int | None:
     for idx in range(limit):
         row = matrix[idx] or []
         filled = [compact_text(cell) for cell in row if compact_text(cell)]
-        if len(filled) < 3:
+        if len(filled) < 2:
             continue
         score = len(filled)
         joined = " ".join(normalize_header(cell) for cell in filled)
@@ -412,32 +495,90 @@ def _find_header_row(matrix: list[list[Any]]) -> int | None:
     return best_idx
 
 
+def sheet_by_name(sheets: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
+    wanted = compact_text(name)
+    if not wanted:
+        return None
+    for item in sheets:
+        if compact_text(item.get("name")) == wanted:
+            return item
+    wanted_norm = normalize_header(wanted)
+    for item in sheets:
+        if normalize_header(item.get("name")) == wanted_norm:
+            return item
+    return None
+
+
 def pick_default_sheet(sheets: list[dict[str, Any]]) -> str:
     if not sheets:
         return ""
-    for sheet in sheets:
-        if normalize_header(sheet.get("name")) == "archive":
-            return sheet["name"]
-    return max(sheets, key=lambda item: int(item.get("row_count") or 0))["name"]
+    usable = [item for item in sheets if int(item.get("row_count") or 0) > 0] or list(sheets)
+
+    def is_archive(item: dict[str, Any]) -> bool:
+        return normalize_header(item.get("name")) == "archive"
+
+    rfq_named = [item for item in usable if "rfq" in normalize_header(item.get("name"))]
+    if rfq_named:
+        return rfq_named[-1]["name"]
+    non_archive = [item for item in usable if not is_archive(item)]
+    pool = non_archive or usable
+    return max(pool, key=lambda item: int(item.get("row_count") or 0))["name"]
+
+
+def headers_from_source_rows(lines: list[dict[str, Any]]) -> list[str]:
+    for line in lines or []:
+        source = line.get("source_row") or {}
+        if isinstance(source, str):
+            try:
+                source = json.loads(source)
+            except json.JSONDecodeError:
+                source = {}
+        if isinstance(source, dict) and source:
+            return [str(key) for key in source.keys()]
+    return []
+
+
+def _parse_llm_json(content: str) -> dict[str, Any]:
+    text = compact_text(content) or "{}"
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.S)
+        if not match:
+            raise
+        parsed = json.loads(match.group(0))
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def map_columns_with_llm(headers: list[str], sample_rows: list[dict[str, Any]]) -> dict[str, Any]:
     key = _llm_api_key()
     if not key:
-        raise RuntimeError("Set RFQ_LLM_API_KEY or OPENAI_API_KEY to use LLM mapping.")
+        raise RuntimeError("Set RFQ_LLM_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY to use LLM mapping.")
     payload = {
         "model": _llm_model(),
         "temperature": 0,
+        "max_tokens": 2000,
         "response_format": {"type": "json_object"},
         "messages": [
             {
                 "role": "system",
                 "content": (
                     "You map spreadsheet columns onto a fixed RFQ archive schema. "
-                    "Return JSON only with keys column_map and notes. "
-                    "column_map maps original header strings to one of: "
+                    "Return a JSON object with keys column_map and notes. "
+                    "column_map maps original Excel header strings to schema field keys. "
+                    "Match semantically, not only by exact name. Examples: "
+                    "Item Code or Part Number -> part_no; Qty pcs or Quantity -> qty; "
+                    "Quote No or RFQ No -> rfq; Cust. or Customer -> customer; "
+                    "CT min, Cycle Time, or Total C/T (mins) -> total_ct_mins; "
+                    "Notes or Remarks -> remark. "
+                    "Only omit a header if it clearly has no matching field. "
+                    "Do not map two headers to the same field. "
+                    "Schema field keys: "
                     + ", ".join(FIXED_FIELDS)
-                    + ". Omit or null headers that do not match."
+                    + "."
                 ),
             },
             {
@@ -459,10 +600,28 @@ def map_columns_with_llm(headers: list[str], sample_rows: list[dict[str, Any]]) 
     if response.status_code >= 400 and "response_format" in (response.text or ""):
         payload.pop("response_format", None)
         response = requests.post(url, json=payload, headers=http_headers, timeout=60)
+    if response.status_code == 401:
+        provider = _llm_provider()
+        hint = (
+            " Groq keys (gsk_...) need RFQ_LLM_BASE_URL=https://api.groq.com/openai/v1."
+            if provider != "groq" and key.startswith("gsk_")
+            else ""
+        )
+        raise RuntimeError(
+            f"LLM provider rejected the API key at {url}.{hint}"
+        )
+    if response.status_code >= 400:
+        detail = compact_text(response.text)[:400]
+        try:
+            err_body = response.json()
+            detail = compact_text((err_body.get("error") or {}).get("message") or response.text)[:400]
+        except Exception:
+            pass
+        raise RuntimeError(f"LLM mapping request failed ({response.status_code}) at {url}: {detail}")
     response.raise_for_status()
     body = response.json()
     content = ((body.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}"
-    parsed = json.loads(content)
+    parsed = _parse_llm_json(content)
     raw_map = parsed.get("column_map") or parsed.get("mapping") or parsed
     if not isinstance(raw_map, dict):
         raw_map = {}
@@ -519,16 +678,20 @@ def _ensure_tables(con) -> None:
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS public.planner_rfq_batch (
-            batch_id       BIGSERIAL    PRIMARY KEY,
-            filename       TEXT         NOT NULL DEFAULT '',
-            sheet_name     TEXT         NOT NULL DEFAULT '',
-            status         TEXT         NOT NULL DEFAULT 'draft',
-            llm_used       BOOLEAN      NOT NULL DEFAULT FALSE,
-            llm_model      TEXT         NOT NULL DEFAULT '',
-            mapping        JSONB        NOT NULL DEFAULT '{}'::jsonb,
-            mapping_notes  TEXT         NOT NULL DEFAULT '',
-            created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-            updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            batch_id              BIGSERIAL    PRIMARY KEY,
+            filename              TEXT         NOT NULL DEFAULT '',
+            sheet_name            TEXT         NOT NULL DEFAULT '',
+            status                TEXT         NOT NULL DEFAULT 'draft',
+            llm_used              BOOLEAN      NOT NULL DEFAULT FALSE,
+            llm_model             TEXT         NOT NULL DEFAULT '',
+            mapping               JSONB        NOT NULL DEFAULT '{}'::jsonb,
+            mapping_notes         TEXT         NOT NULL DEFAULT '',
+            sheet_tag             TEXT         NOT NULL DEFAULT '',
+            default_rfq           TEXT         NOT NULL DEFAULT '',
+            default_customer      TEXT         NOT NULL DEFAULT '',
+            default_salesperson   TEXT         NOT NULL DEFAULT '',
+            created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
             CONSTRAINT planner_rfq_batch_status_chk
                 CHECK (status IN ('draft', 'archived'))
         )
@@ -551,6 +714,7 @@ def _ensure_tables(con) -> None:
             rfq              TEXT         NOT NULL DEFAULT '',
             customer         TEXT         NOT NULL DEFAULT '',
             salesperson      TEXT         NOT NULL DEFAULT '',
+            sheet_tag        TEXT         NOT NULL DEFAULT '',
             qty              NUMERIC,
             opns             TEXT         NOT NULL DEFAULT '',
             assignment       TEXT         NOT NULL DEFAULT '',
@@ -583,6 +747,16 @@ def _ensure_tables(con) -> None:
             ON public.planner_rfq_line (UPPER(TRIM(part_no)))
         """
     )
+    for statement in (
+        "ALTER TABLE public.planner_rfq_batch ADD COLUMN IF NOT EXISTS sheet_tag TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE public.planner_rfq_batch ADD COLUMN IF NOT EXISTS default_rfq TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE public.planner_rfq_batch ADD COLUMN IF NOT EXISTS default_customer TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE public.planner_rfq_batch ADD COLUMN IF NOT EXISTS default_salesperson TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE public.planner_rfq_line ADD COLUMN IF NOT EXISTS sheet_tag TEXT NOT NULL DEFAULT ''",
+        "CREATE INDEX IF NOT EXISTS idx_rfq_batch_sheet_tag ON public.planner_rfq_batch (UPPER(TRIM(sheet_tag)))",
+        "CREATE INDEX IF NOT EXISTS idx_rfq_line_sheet_tag ON public.planner_rfq_line (UPPER(TRIM(sheet_tag)))",
+    ):
+        con.execute(statement)
 
 
 def _json_ready(value: Any) -> Any:
@@ -900,9 +1074,10 @@ def list_archive(query: str = "", *, limit: int = 300) -> dict[str, Any]:
                 AND (
                     l.part_no ILIKE %s OR l.rfq ILIKE %s OR l.customer ILIKE %s
                     OR l.salesperson ILIKE %s OR l.remark ILIKE %s
+                    OR l.sheet_tag ILIKE %s OR b.sheet_tag ILIKE %s
                 )
             """
-            params.extend([like, like, like, like, like])
+            params.extend([like, like, like, like, like, like, like])
         sql += " ORDER BY b.updated_at DESC, l.line_no LIMIT %s"
         params.append(limit)
         items = [serialize_line(item) for item in rows(con.execute(sql, tuple(params)))]
@@ -934,6 +1109,7 @@ def get_batch(batch_id: int) -> dict[str, Any] | None:
         batch["line_count"] = len(lines)
         batch["field_labels"] = FIELD_LABELS
         batch["hours_per_day"] = HOURS_PER_DAY
+        batch["headers"] = headers_from_source_rows(lines)
         return batch
 
 
@@ -942,13 +1118,13 @@ def _insert_lines(con, batch_id: int, lines: list[dict[str, Any]]) -> None:
         con.execute(
             """
             INSERT INTO public.planner_rfq_line (
-                batch_id, line_no, part_no, rfq, customer, salesperson, qty, opns,
+                batch_id, line_no, part_no, rfq, customer, salesperson, sheet_tag, qty, opns,
                 assignment, machines, total_ct_mins, machine_hours, total_hours, days,
                 lead_time, need_tooling, need_fixture, remark, match_status,
                 matched_part_no, source_row
             )
             VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s
@@ -961,6 +1137,7 @@ def _insert_lines(con, batch_id: int, lines: list[dict[str, Any]]) -> None:
                 compact_text(line.get("rfq")),
                 compact_text(line.get("customer")),
                 compact_text(line.get("salesperson")),
+                normalize_sheet_tag(line.get("sheet_tag")),
                 line.get("qty"),
                 compact_text(line.get("opns")),
                 compact_text(line.get("assignment")),
@@ -986,6 +1163,10 @@ def create_batch_from_upload(
     payload: bytes,
     sheet_name: str = "",
     use_llm: bool = True,
+    sheet_tag: str = "",
+    default_rfq: str = "",
+    default_customer: str = "",
+    default_salesperson: str = "",
 ) -> dict[str, Any]:
     if not payload:
         raise ValueError("The Excel file is empty.")
@@ -995,9 +1176,10 @@ def create_batch_from_upload(
     if not sheets:
         raise ValueError("No usable worksheet was found in that workbook.")
     chosen = compact_text(sheet_name) or pick_default_sheet(sheets)
-    sheet = next((item for item in sheets if item["name"] == chosen), None)
+    sheet = sheet_by_name(sheets, chosen)
     if not sheet:
-        raise ValueError(f"Sheet {chosen!r} was not found.")
+        available = ", ".join(item["name"] for item in sheets) or "none"
+        raise ValueError(f"Sheet {chosen!r} was not found. Available: {available}.")
     column_map = heuristic_column_map(sheet["headers"])
     mapping_notes = "Mapped with header aliases."
     llm_used = False
@@ -1021,13 +1203,22 @@ def create_batch_from_upload(
         _ensure_tables(con)
         existing = lookup_existing_parts(con, part_nos)
         lines = build_mapped_lines(sheet["rows"], column_map, existing)
+        defaults = {
+            "sheet_tag": normalize_sheet_tag(sheet_tag),
+            "rfq": compact_text(default_rfq),
+            "customer": compact_text(default_customer),
+            "salesperson": compact_text(default_salesperson),
+        }
+        if any(defaults.values()):
+            lines = apply_defaults_to_mapped_lines(lines, defaults, overwrite=True)
         inserted = one(
             con.execute(
                 """
                 INSERT INTO public.planner_rfq_batch (
-                    filename, sheet_name, status, llm_used, llm_model, mapping, mapping_notes
+                    filename, sheet_name, status, llm_used, llm_model, mapping, mapping_notes,
+                    sheet_tag, default_rfq, default_customer, default_salesperson
                 )
-                VALUES (%s, %s, 'draft', %s, %s, %s, %s)
+                VALUES (%s, %s, 'draft', %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING *
                 """,
                 (
@@ -1037,6 +1228,10 @@ def create_batch_from_upload(
                     llm_model,
                     Json(column_map),
                     mapping_notes,
+                    defaults["sheet_tag"],
+                    defaults["rfq"],
+                    defaults["customer"],
+                    defaults["salesperson"],
                 ),
             )
         )
@@ -1050,6 +1245,78 @@ def create_batch_from_upload(
     ]
     batch["headers"] = sheet["headers"]
     return batch
+
+
+def _defaults_from_batch_row(row: dict[str, Any] | None) -> dict[str, str]:
+    data = row or {}
+    return {
+        "sheet_tag": normalize_sheet_tag(data.get("sheet_tag")),
+        "rfq": compact_text(data.get("default_rfq") or data.get("rfq")),
+        "customer": compact_text(data.get("default_customer") or data.get("customer")),
+        "salesperson": compact_text(data.get("default_salesperson") or data.get("salesperson")),
+    }
+
+
+def _apply_defaults_sql(con, batch_id: int, defaults: dict[str, str], fields: list[str]) -> None:
+    assignments: list[str] = []
+    values: list[Any] = []
+    for field in fields:
+        if field == "sheet_tag":
+            assignments.append("sheet_tag = %s")
+            values.append(normalize_sheet_tag(defaults.get("sheet_tag")))
+        elif field in BATCH_DEFAULT_FIELDS:
+            assignments.append(f"{field} = %s")
+            values.append(compact_text(defaults.get(field)))
+    if not assignments:
+        return
+    assignments.append("updated_at = NOW()")
+    values.append(int(batch_id))
+    con.execute(
+        f"UPDATE public.planner_rfq_line SET {', '.join(assignments)} WHERE batch_id = %s",
+        tuple(values),
+    )
+
+
+def update_batch_defaults(batch_id: int, patch: dict[str, Any]) -> dict[str, Any]:
+    data = patch or {}
+    changed: list[str] = []
+    next_values: dict[str, str] = {}
+    if "sheet_tag" in data:
+        next_values["sheet_tag"] = normalize_sheet_tag(data.get("sheet_tag"))
+        changed.append("sheet_tag")
+    for field in BATCH_DEFAULT_FIELDS:
+        if field in data or f"default_{field}" in data:
+            next_values[field] = compact_text(data.get(field) or data.get(f"default_{field}"))
+            changed.append(field)
+    if not changed:
+        raise ValueError("No sheet defaults supplied.")
+    with planner_db() as con:
+        _ensure_tables(con)
+        current = one(con.execute("SELECT * FROM public.planner_rfq_batch WHERE batch_id = %s", (int(batch_id),)))
+        if not current:
+            raise ValueError("RFQ batch not found.")
+        merged = _defaults_from_batch_row(current)
+        merged.update(next_values)
+        con.execute(
+            """
+            UPDATE public.planner_rfq_batch
+            SET sheet_tag = %s, default_rfq = %s, default_customer = %s,
+                default_salesperson = %s, updated_at = NOW()
+            WHERE batch_id = %s
+            """,
+            (
+                merged["sheet_tag"],
+                merged["rfq"],
+                merged["customer"],
+                merged["salesperson"],
+                int(batch_id),
+            ),
+        )
+        _apply_defaults_sql(con, int(batch_id), merged, changed)
+    result = get_batch(int(batch_id))
+    if not result:
+        raise ValueError("RFQ batch not found.")
+    return result
 
 
 def remap_batch(batch_id: int, column_map: dict[str, str]) -> dict[str, Any]:
@@ -1074,6 +1341,9 @@ def remap_batch(batch_id: int, column_map: dict[str, str]) -> dict[str, Any]:
         part_nos = [compact_text(apply_column_map(row, cleaned).get("part_no")) for row in source_rows]
         existing = lookup_existing_parts(con, part_nos)
         lines = build_mapped_lines(source_rows, cleaned, existing)
+        defaults = _defaults_from_batch_row(batch)
+        if any(defaults.values()):
+            lines = apply_defaults_to_mapped_lines(lines, defaults, overwrite=True)
         con.execute("DELETE FROM public.planner_rfq_line WHERE batch_id = %s", (int(batch_id),))
         _insert_lines(con, int(batch_id), lines)
         con.execute(

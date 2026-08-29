@@ -3,7 +3,7 @@
 {% block body_class %}rfq-view{% endblock %}
 {% block main_class %}app-main--rfq-checker{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/rfq_checker.css') }}?v=rfq-20260824-1">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/rfq_checker.css') }}?v=rfq-20260827-defaults">
 {% endblock %}
 {% block content %}
 <div class="rfq-page" data-rfq-page="library">
@@ -58,7 +58,7 @@
   <section id="rfq-panel-archive" class="rfq-panel" hidden>
     <label class="rfq-filter-wrap">
       <span class="rfq-label">Filter archive</span>
-      <input id="rfq-archive-search" class="rfq-input" type="search" placeholder="Part no, RFQ, customer, remark..." autocomplete="off">
+      <input id="rfq-archive-search" class="rfq-input" type="search" placeholder="Part no, RFQ, customer, tag..." autocomplete="off">
     </label>
     <div class="rfq-table-card" id="rfq-archive-card" hidden>
       <div class="rfq-table-scroll">
@@ -83,5 +83,5 @@
 </aside>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/rfq_checker.js') }}?v=rfq-20260824-1"></script>
+<script src="{{ url_for('static', filename='js/rfq_checker.js') }}?v=rfq-20260827-groq"></script>
 {% endblock %}

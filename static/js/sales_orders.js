@@ -87,6 +87,7 @@ const SO_COLUMNS = [
   { id: 'partial_qty', label: 'Partial qty', sortable: true, filterable: true },
   { id: 'exception', label: 'Exception', sortable: true, filterable: false },
   { id: 'queued_cnc', label: 'Queued CNC', sortable: true, filterable: true },
+  { id: 'proposed_cnc', label: 'Proposed CNC', sortable: true, filterable: true },
   { id: 'erp_stage', label: 'Stage', sortable: true, filterable: true },
   { id: 'qty', label: 'Qty', sortable: true, filterable: true },
   { id: 'order_date', label: 'Date', sortable: true, filterable: true },
@@ -450,13 +451,41 @@ function soQueuedMachinesLabel(pp, partial) {
   return machines.length ? machines.join(', ') : '—';
 }
 
-function soRenderQueuedMachinesHtml(machines) {
+function soProposedCncMachines(pp, partial) {
+  if (partial && Array.isArray(partial.proposed_cnc)) {
+    return partial.proposed_cnc.filter(Boolean);
+  }
+  if (Array.isArray(pp?.proposed_cnc)) return pp.proposed_cnc.filter(Boolean);
+  return [];
+}
+
+function soProposedCncLabel(pp, partial) {
+  const machines = soProposedCncMachines(pp, partial);
+  return machines.length ? machines.join(', ') : '—';
+}
+
+function soRenderMachinePillsHtml(machines, { title, pillClass } = {}) {
   const list = Array.isArray(machines) ? machines.filter(Boolean) : [];
   if (!list.length) return '<span class="so-dash">—</span>';
+  const extraCls = pillClass ? ` ${pillClass}` : '';
   const pills = list.map(machine => (
-    `<span class="so-queue-machine-pill">${escapeHtml(String(machine))}</span>`
+    `<span class="so-queue-machine-pill${extraCls}">${escapeHtml(String(machine))}</span>`
   )).join('');
-  return `<span class="so-queue-machines" title="Queued on planner CNC lanes (this partial)">${pills}</span>`;
+  const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+  return `<span class="so-queue-machines"${titleAttr}>${pills}</span>`;
+}
+
+function soRenderQueuedMachinesHtml(machines) {
+  return soRenderMachinePillsHtml(machines, {
+    title: 'Queued on planner CNC lanes (this partial)',
+  });
+}
+
+function soRenderProposedCncHtml(machines) {
+  return soRenderMachinePillsHtml(machines, {
+    title: 'Proposed CNC from NPI/FA Management for this part number',
+    pillClass: 'so-proposed-cnc-pill',
+  });
 }
 
 function soIsPartialQueued(pp, partial) {
@@ -616,6 +645,7 @@ const SO_EXPORT_COLUMNS = [
   { id: 'partial_qty', label: 'Partial qty', width: 12 },
   { id: 'exception', label: 'Exception', width: 12 },
   { id: 'queued_cnc', label: 'Queued CNC', width: 16 },
+  { id: 'proposed_cnc', label: 'Proposed CNC', width: 16 },
   { id: 'erp_stage', label: 'Stage', width: 18 },
   { id: 'qty', label: 'Qty', width: 8 },
   { id: 'order_date', label: 'Date', width: 12 },
@@ -868,6 +898,7 @@ function soRenderJobDetailFields(order, pp, partial) {
     soDetailField(soPsDisplayLabel(pp), soPsDisplayId(pp), { mono: true }),
     typeof repeatOrderDetailHtml === 'function' ? repeatOrderDetailHtml(similar) : '',
     soDetailField('Queued CNC', soQueuedMachinesLabel(pp, partial), { mono: true }),
+    soDetailField('Proposed CNC', soProposedCncLabel(pp, partial), { mono: true }),
     ...(soPartialStage(partial).desc ? [soDetailField('Stage', soPartialStage(partial).desc)] : []),
     ...(soPartialStage(partial).status ? [soDetailField('Stage status', soExecutionLabel(soPartialStage(partial).status))] : []),
     ...(!soPartialStage(partial).desc && !soPartialStage(partial).status
@@ -924,6 +955,7 @@ function soRenderPpDetail(order, pp) {
   const lineHtml = [
     soDetailField(soPsDisplayLabel(pp), soPsDisplayId(pp), { mono: true }),
     soDetailField('Queued CNC (all)', soQueuedMachinesLabel(pp), { mono: true }),
+    soDetailField('Proposed CNC', soProposedCncLabel(pp), { mono: true }),
     soDetailField('Part', pp?.inventory_code, { mono: true }),
     soDetailField('BOM', pp?.bom_code, { mono: true }),
     soDetailField('Description', pp?.description, { fullWidth: true }),
@@ -1273,6 +1305,7 @@ function soLeafSearchText(leaf) {
     pp?.source_line_item_no,
     pp?.segment_1_code,
     ...(pp?.queued_machines || []),
+    ...(pp?.proposed_cnc || []),
     ...SO_NOTE_FIELDS.map(field => (
       field === 'material_subcon' ? soMaterialSubconDisplay(pp?.[field]) : pp?.[field]
     )),
@@ -1287,6 +1320,7 @@ function soLeafSearchText(leaf) {
     partial?.erp_stage_mode,
     partial?.erp_last_stage_desc,
     ...(soPartialQueuedMachines(pp, partial)),
+    ...(soProposedCncMachines(pp, partial)),
   ];
   return parts.map(v => String(v == null ? '' : v)).join(' ');
 }
@@ -1315,6 +1349,7 @@ function soLeafRows(order) {
           queued_machines: Array.isArray(byPartial[String(pno)])
             ? byPartial[String(pno)]
             : (pp.queued_machines || []),
+          proposed_cnc: Array.isArray(pp.proposed_cnc) ? pp.proposed_cnc : [],
           current_stage_no: pp.current_stage_no,
           current_stage_desc: pp.current_stage_desc,
           current_stage_status: pp.current_stage_status,
@@ -1418,6 +1453,7 @@ function soLeafColumnValue(leaf, colId) {
     case 'exception': return soIsPartialException(pp, partial) ? 'flagged' : '';
     case 'process_sheet_no': return soPsDisplayId(pp);
     case 'queued_cnc': return soQueuedMachinesLabel(pp, partial);
+    case 'proposed_cnc': return soProposedCncLabel(pp, partial);
     case 'erp_stage': return soStageFilterText(partial);
     case 'order_date': return pp?.order_date;
     case 'part': {
@@ -1480,6 +1516,8 @@ function soLeafColumnIsEmpty(leaf, colId) {
       return soPartialQtyValue(pp, partial) == null;
     case 'queued_cnc':
       return soPartialQueuedMachines(pp, partial).length === 0;
+    case 'proposed_cnc':
+      return soProposedCncMachines(pp, partial).length === 0;
     case 'erp_stage': {
       const stage = soPartialStage(partial);
       return !stage.desc && !stage.status && stage.mode !== 'unassigned' && stage.mode !== 'completed';
@@ -1951,6 +1989,14 @@ function soRenderQueuedCncCell(pp, partial) {
   return `
     <td class="so-queued-cnc-cell">
       ${soRenderQueuedMachinesHtml(soPartialQueuedMachines(pp, partial))}
+    </td>
+  `;
+}
+
+function soRenderProposedCncCell(pp, partial) {
+  return `
+    <td class="so-queued-cnc-cell so-proposed-cnc-cell">
+      ${soRenderProposedCncHtml(soProposedCncMachines(pp, partial))}
     </td>
   `;
 }
@@ -2650,6 +2696,7 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, shade
       ${soRenderPartialQtyCell(pp, partial)}
       ${soRenderExceptionCell(pp, partial)}
       ${soRenderQueuedCncCell(pp, partial)}
+      ${soRenderProposedCncCell(pp, partial)}
       ${soRenderStageCell(pp, partial)}
       ${soRenderQtyCell(pp)}
       ${orderDateCell}
