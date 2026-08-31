@@ -1069,7 +1069,8 @@
   .trial-sidebar .trial-catalog-ps-main .ps-op-status,
   .trial-sidebar .trial-catalog-ps-main .ps-stage-badge,
   .trial-sidebar .trial-catalog-ps-main .ps-pending-do-badge,
-  .trial-sidebar .trial-catalog-ps-main .trial-catalog-queue-pill {
+  .trial-sidebar .trial-catalog-ps-main .trial-catalog-queue-pill,
+  .trial-sidebar .trial-catalog-ps-main .trial-catalog-line-item-badge {
     margin-top: 2px;
     font-size: 9px;
     padding: 1px 5px;
@@ -1134,7 +1135,8 @@
   .trial-catalog-ps-main .ps-op-status,
   .trial-catalog-ps-main .ps-stage-badge,
   .trial-catalog-ps-main .ps-pending-do-badge,
-  .trial-catalog-ps-main .trial-catalog-queue-pill {
+  .trial-catalog-ps-main .trial-catalog-queue-pill,
+  .trial-catalog-ps-main .trial-catalog-line-item-badge {
     margin-top: 4px;
   }
   .ps-pending-do-badge {
@@ -1207,6 +1209,76 @@
     padding: 2px 7px;
     font-size: 10px;
     min-height: 0;
+  }
+  .trial-catalog-line-item-badge {
+    display: inline-flex;
+    align-items: center;
+    width: max-content;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1.2;
+    white-space: nowrap;
+    color: #0369a1;
+    background: rgba(14, 165, 233, 0.12);
+    border: 1px solid rgba(14, 165, 233, 0.28);
+  }
+  .trial-catalog-line-items {
+    display: grid;
+    gap: 2px;
+    margin: 0 0 4px;
+    padding: 4px 6px;
+    border-radius: 8px;
+    background: rgba(14, 165, 233, 0.06);
+    border: 1px solid rgba(14, 165, 233, 0.16);
+    max-height: 168px;
+    overflow: auto;
+  }
+  .trial-catalog-line-items-note {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--text3);
+    padding: 1px 2px 3px;
+  }
+  .trial-catalog-line-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.4fr) auto;
+    gap: 6px;
+    align-items: center;
+    width: 100%;
+    margin: 0;
+    padding: 3px 6px;
+    border: 0;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.55);
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+  }
+  .trial-catalog-line-item:hover {
+    background: rgba(14, 165, 233, 0.14);
+  }
+  .trial-catalog-line-item-ps,
+  .trial-catalog-line-item-part {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    font-weight: 800;
+  }
+  .trial-catalog-line-item-part {
+    font-weight: 700;
+    color: var(--text2);
+  }
+  .trial-catalog-line-item-line {
+    font-size: 9px;
+    font-weight: 800;
+    color: var(--text3);
+    white-space: nowrap;
   }
   .trial-catalog-bom-controls {
     display: grid;
@@ -3367,6 +3439,15 @@
   }
   .trial-block-compact-date.is-end.yellow {
     color: #8a5200;
+  }
+  .trial-block-compact-date.is-mtl-avail {
+    color: #157347;
+  }
+  .trial-block-compact-date.is-mtl-avail > span:last-child {
+    font-weight: 800;
+  }
+  .trial-block-compact-date.is-mtl-date {
+    color: #0369a1;
   }
   button.trial-block-compact-date {
     width: 100%;
@@ -8395,6 +8476,53 @@
   .sales-report-ytd-subcol.is-shipped-backlog { color: #047857; }
   .sales-report-ytd-subcol.is-shipped-ontime { color: #1d4ed8; }
   .sales-report-ytd-subcol.is-shipped-early { color: #0e7490; }
+  .sales-report-ytd-subcol.is-sales { color: #047857; }
+  .sales-report-ytd-num--sales {
+    color: #065f46;
+    font-weight: 700;
+  }
+  .sales-report-ytd-ref-head {
+    position: sticky;
+    right: 0;
+    z-index: 3;
+    min-width: 118px;
+    padding: 8px 10px;
+    vertical-align: middle;
+    text-align: center;
+    background: #eff6ff;
+    box-shadow: inset 1px 0 0 var(--border);
+  }
+  .sales-report-ytd-ref-label {
+    display: block;
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #1e3a8a;
+    line-height: 1.2;
+  }
+  .sales-report-ytd-ref-hint {
+    display: block;
+    margin-top: 4px;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #64748b;
+  }
+  .sales-report-ytd-num--ref {
+    position: sticky;
+    right: 0;
+    z-index: 2;
+    min-width: 118px;
+    background: #f8fafc;
+    font-weight: 800;
+    color: #1e3a8a;
+    box-shadow: inset 1px 0 0 var(--border);
+  }
+  .sales-report-ytd-row--total td.sales-report-ytd-num--ref {
+    background: #dbeafe;
+  }
   .sales-report-ytd-month-cell.is-past {
     background: rgba(4, 120, 87, 0.04);
   }

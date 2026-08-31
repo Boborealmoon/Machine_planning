@@ -532,6 +532,8 @@ function trialBoardOnlyTempCatalogEntries() {
     if (Object.prototype.hasOwnProperty.call(block, 'material_in') && block.material_in) {
       row.material_in = true;
     }
+    const mtlDate = String(block.material_in_date || '').trim();
+    if (mtlDate && !row.material_in_date) row.material_in_date = mtlDate;
     if (Object.prototype.hasOwnProperty.call(block, 'tooling_ready') && block.tooling_ready === false) {
       row.tooling_ready = false;
     }

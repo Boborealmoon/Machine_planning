@@ -78,7 +78,7 @@ from .process_sheets import (
     is_temp_planner_ps_id,
     list_delivery_schedule_board_items,
     list_process_sheets_payload,
-    material_in_map_for_planner_ps_ids,
+    material_in_overlay_for_planner_ps_ids,
     parse_planner_ps_id,
     tooling_map_for_operation_ids,
     program_map_for_operation_ids,
@@ -293,7 +293,7 @@ def _attach_board_meta_to_blocks(con, blocks):
     ))
     if not board_ps_ids:
         return
-    material_in_by_ps = material_in_map_for_planner_ps_ids(con, board_ps_ids)
+    material_overlay_by_ps = material_in_overlay_for_planner_ps_ids(con, board_ps_ids)
     due_date_by_ps = due_date_map_for_planner_ps_ids(con, board_ps_ids)
     operation_ids = [
         int(row.get("operation_id") or 0)
@@ -307,7 +307,11 @@ def _attach_board_meta_to_blocks(con, blocks):
         if not ps_id:
             continue
         row["planner_ps_id"] = ps_id
-        row["material_in"] = bool(material_in_by_ps.get(ps_id))
+        overlay = material_overlay_by_ps.get(ps_id) or {}
+        row["material_in"] = bool(overlay.get("material_in"))
+        mtl_date = compact_text(overlay.get("material_in_date"))
+        if mtl_date:
+            row["material_in_date"] = mtl_date
         op_id = int(row.get("operation_id") or 0)
         if op_id > 0:
             row["tooling_ready"] = bool(tooling_by_op.get(op_id, True))
@@ -338,6 +342,7 @@ def _attach_board_meta_to_blocks_rest(blocks):
     if not board_ps_ids and not operation_ids:
         return
     material_in_by_ps = {pid: False for pid in board_ps_ids}
+    material_in_date_by_ps = {pid: "" for pid in board_ps_ids}
     tooling_by_op = {op_id: True for op_id in operation_ids}
     program_by_op = {op_id: True for op_id in operation_ids}
     try:
@@ -347,21 +352,63 @@ def _attach_board_meta_to_blocks_rest(blocks):
                 f"{supa_url()}/planner_process_sheet",
                 headers={**supa_headers(write=True), "Prefer": "return=representation"},
                 params={
-                    "select": "planner_ps_id,material_in",
+                    "select": "planner_ps_id,source_ps_id,material_in,material_in_date",
                     "planner_ps_id": f"in.({quoted})",
                 },
                 timeout=30,
             )
             r.raise_for_status()
+            from .process_sheets import _iso_date_text
+
             for row in r.json() or []:
                 pid = compact_text(row.get("planner_ps_id"))
                 if pid:
                     material_in_by_ps[pid] = bool(row.get("material_in"))
+                    sheet_date = _iso_date_text(row.get("material_in_date"))
+                    if sheet_date:
+                        material_in_date_by_ps[pid] = sheet_date
     except Exception:
         import logging
 
         logging.getLogger(__name__).exception(
             "REST board material_in enrichment failed; defaulting to awaiting stock"
+        )
+    try:
+        if board_ps_ids:
+            from .process_sheets import material_in_date_from_subcon
+
+            note_keys = list(dict.fromkeys(
+                compact_text(pid).split("::", 1)[0]
+                for pid in board_ps_ids
+                if compact_text(pid)
+            ))
+            if note_keys:
+                quoted_notes = ",".join(f'"{key}"' for key in note_keys)
+                r = req.get(
+                    f"{supa_url()}/planner_so_pp_notes",
+                    headers={**supa_headers(write=True), "Prefer": "return=representation"},
+                    params={
+                        "select": "pp_voucher_no,material_subcon",
+                        "pp_voucher_no": f"in.({quoted_notes})",
+                    },
+                    timeout=30,
+                )
+                r.raise_for_status()
+                date_by_base = {}
+                for row in r.json() or []:
+                    base = compact_text(row.get("pp_voucher_no")).split("::", 1)[0]
+                    iso = material_in_date_from_subcon(row.get("material_subcon"))
+                    if base and iso:
+                        date_by_base[base] = iso
+                for pid in board_ps_ids:
+                    base = compact_text(pid).split("::", 1)[0]
+                    if date_by_base.get(base):
+                        material_in_date_by_ps[pid] = date_by_base[base]
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "REST board material-in date enrichment failed; cards will omit the date"
         )
     try:
         if operation_ids:
@@ -415,6 +462,9 @@ def _attach_board_meta_to_blocks_rest(blocks):
             continue
         row["planner_ps_id"] = ps_id
         row["material_in"] = bool(material_in_by_ps.get(ps_id))
+        mtl_date = compact_text(material_in_date_by_ps.get(ps_id))
+        if mtl_date:
+            row["material_in_date"] = mtl_date
         op_id = int(row.get("operation_id") or 0)
         if op_id > 0:
             row["tooling_ready"] = bool(tooling_by_op.get(op_id, True))

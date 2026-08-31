@@ -6,7 +6,7 @@
   const MATERIAL_ARRIVED = 'ARRIVED';
   const PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
   const EM_DASH = '-';
-  const PS_VIEWS = new Set(['active', 'no-wo']);
+  const PS_VIEWS = new Set(['active', 'no-wo', 'sr']);
   const PR_PO_VIEWS = new Set(['pr-enquiry', 'purchase-order']);
   const REQUEST_VIEW = 'part-requests';
   const QC_VIEW = 'qc-checklist';
@@ -112,6 +112,7 @@
     qcSource: '',
     qcBucket: 'ready_qc',
     qcLoaded: false,
+    srAssemblies: new Map(),
   };
 
   function isPrPoView(view) {
@@ -177,13 +178,47 @@
       </td>`;
   }
 
+  function renderSubassemblies(job) {
+    const children = Array.isArray(job?.children) ? job.children : [];
+    if (!children.length) return '';
+    const items = children.map(child => {
+      const part = String(child.part_no || '').trim() || EM_DASH;
+      const desc = String(child.description || '').trim();
+      const qty = formatQty(child.qty);
+      const childPs = String(child.process_sheet_no || '').trim();
+      const bomBtn = part && part !== EM_DASH
+        ? `<button type="button" class="sol-materials-btn sol-subasm-bom"
+             data-action="open-material"
+             data-part-no="${escapeHtml(part)}"
+             data-bom-code=""
+             data-process-sheet="${escapeHtml(childPs)}"
+             title="BOM materials for ${escapeHtml(part)}">BOM</button>`
+        : '';
+      return `
+        <li class="sol-subasm-item">
+          <span class="sol-subasm-part sol-mono" title="${escapeHtml(part)}">${escapeHtml(part)}</span>
+          ${desc ? `<span class="sol-subasm-desc">${escapeHtml(desc)}</span>` : ''}
+          <span class="sol-subasm-qty">${escapeHtml(qty)}</span>
+          ${bomBtn}
+        </li>`;
+    }).join('');
+    return `
+      <div class="sol-subasm">
+        <span class="sol-subasm-label">${children.length} sub-asm</span>
+        <ul class="sol-subasm-list">${items}</ul>
+      </div>`;
+  }
+
   function renderPartCell(pp, partial) {
     const part = partNoForRow(pp, partial) || EM_DASH;
     const desc = cellText(pp.description);
+    const assembly = assemblyForPp(pp);
+    const subHtml = assembly ? renderSubassemblies(assembly) : '';
     return `
       <td class="sol-part" title="${escapeHtml(`${part} · ${desc}`)}">
         <span class="sol-part-no sol-mono">${escapeHtml(part)}</span>
         <span class="sol-part-desc">${escapeHtml(desc)}</span>
+        ${subHtml}
       </td>`;
   }
 
@@ -256,6 +291,45 @@
     if (/\[sr\]/i.test(raw)) return 'SR';
     const match = raw.toUpperCase().match(/^([A-Z]+)/);
     return match ? match[1] : null;
+  }
+
+  function psBaseKey(value) {
+    return String(value || '').split('::')[0].trim().toUpperCase();
+  }
+
+  function stripSrTag(value) {
+    return String(value == null ? '' : value).replace(/\[sr\]/gi, '');
+  }
+
+  function textMatchesQuery(value, query) {
+    const q = String(query || '').trim().toLowerCase();
+    if (!q) return true;
+    const raw = String(value == null ? '' : value).toLowerCase();
+    if (raw.includes(q)) return true;
+    const strippedQ = stripSrTag(q).replace(/\s+/g, '');
+    if (!strippedQ) return false;
+    const strippedVal = stripSrTag(raw).toLowerCase();
+    if (strippedVal.includes(strippedQ)) return true;
+    return strippedVal.replace(/\s+/g, '').includes(strippedQ);
+  }
+
+  function assemblyForPp(pp) {
+    if (!state.srAssemblies.size) return null;
+    for (const key of [pp?.process_sheet_no, pp?.pp_voucher_no]) {
+      const id = psBaseKey(key);
+      if (id && state.srAssemblies.has(id)) return state.srAssemblies.get(id);
+    }
+    return null;
+  }
+
+  function assemblySearchBits(pp) {
+    const job = assemblyForPp(pp);
+    if (!job) return [];
+    const bits = [job.ps_id, job.part_no];
+    (job.children || []).forEach(child => {
+      bits.push(child.part_no, child.description, child.process_sheet_no);
+    });
+    return bits;
   }
 
   function psDisplayForPartial(pp, partial) {
@@ -378,8 +452,9 @@
       pp.material_need_date,
       formatDate(pp.material_need_date),
       materialSubconDisplay(pp.material_subcon),
+      ...assemblySearchBits(pp),
     ];
-    return parts.map(v => String(v == null ? '' : v).toLowerCase()).join(' ');
+    return parts.map(v => String(v == null ? '' : v)).join(' ');
   }
 
   function prPoSearchText(row) {
@@ -425,10 +500,14 @@
   function passesFilters(leaf) {
     const { order, pp, partial } = leaf;
     if (state.view === 'no-wo' && !ppIsNoWo(pp)) return false;
-    if (!passesPrefixFilter(pp)) return false;
+    if (state.view === 'sr') {
+      if (getPsType(pp) !== 'SR') return false;
+    } else if (!passesPrefixFilter(pp)) {
+      return false;
+    }
     if (!passesMaterialFilter(pp)) return false;
-    const q = String(state.search || '').trim().toLowerCase();
-    if (q && !searchText(order, pp, partial).includes(q)) return false;
+    const q = String(state.search || '').trim();
+    if (q && !textMatchesQuery(searchText(order, pp, partial), q)) return false;
     return true;
   }
 
@@ -892,16 +971,22 @@
   function renderRow(leaf) {
     const { order, pp, partial } = leaf;
     const psType = getPsType(pp);
+    const assembly = assemblyForPp(pp);
     const classes = [];
     if (ppIsNoWo(pp)) classes.push('is-no-wo');
     if (pp.material_delay) classes.push('is-material-delay');
+    if (psType === 'SR') classes.push('is-sr');
+    if (assembly) classes.push('has-subasm');
     const rowCls = classes.join(' ');
+    const subBadge = assembly
+      ? `<span class="sol-subasm-pill" title="Nested sub-assembly parts on this [SR] job">${escapeHtml(String((assembly.children || []).length))} sub-asm</span>`
+      : '';
     return `
       <tr class="${rowCls}">
         ${renderDelayCell(pp)}
         ${renderOrderCell(order)}
         <td class="sol-mono sol-col-ps">
-          <div class="sol-ps-line">${typeTagHtml(psType)}<span>${escapeHtml(psDisplayForPartial(pp, partial))}</span></div>
+          <div class="sol-ps-line">${typeTagHtml(psType)}<span>${escapeHtml(psDisplayForPartial(pp, partial))}</span>${subBadge}</div>
         </td>
         ${renderQtyCell(pp, partial)}
         ${renderStageCell(pp, partial)}
@@ -1280,6 +1365,20 @@
     return count;
   }
 
+  function countSrJobs() {
+    const seen = new Set();
+    let count = 0;
+    state.active.forEach(order => {
+      (order.pp_vouchers || []).forEach(pp => {
+        const ppNo = String(pp.pp_voucher_no || '').trim();
+        if (!ppNo || seen.has(ppNo) || getPsType(pp) !== 'SR') return;
+        seen.add(ppNo);
+        count += 1;
+      });
+    });
+    return count;
+  }
+
   function setChipCount(id, value) {
     const el = document.getElementById(id);
     if (!el) return;
@@ -1326,19 +1425,22 @@
     const subtitle = document.getElementById('sol-subtitle');
     const activeJobs = countActiveJobs();
     const noWoJobs = countNoWoJobs();
-    const viewLabel = state.view === 'no-wo' ? 'No WO' : 'Active';
+    const srJobs = countSrJobs();
+    const viewLabel = state.view === 'no-wo' ? 'No WO' : (state.view === 'sr' ? '[SR]' : 'Active');
 
     setChipCount('sol-active-count', activeJobs);
     setChipCount('sol-no-wo-count', noWoJobs);
+    setChipCount('sol-sr-count', srJobs);
     updatePrPoChipCounts();
     setStatPills([
       { label: 'Shown', value: rows.length },
       { label: 'Active PP', value: activeJobs },
       { label: 'Awaiting WO', value: noWoJobs },
+      { label: '[SR]', value: srJobs },
     ]);
 
     if (subtitle) {
-      subtitle.textContent = `${rows.length} ${viewLabel} rows shown | ${activeJobs} active PP | ${noWoJobs} awaiting WO`;
+      subtitle.textContent = `${rows.length} ${viewLabel} rows shown | ${activeJobs} active PP | ${noWoJobs} awaiting WO | ${srJobs} outstanding [SR]`;
     }
   }
 
@@ -1406,6 +1508,8 @@
     document.querySelectorAll('.sol-ps-only').forEach(el => {
       el.hidden = !isPsView();
     });
+    const typeDrop = document.getElementById('sol-ps-type-dropdown');
+    if (typeDrop) typeDrop.hidden = !isPsView() || state.view === 'sr';
     document.querySelectorAll('.sol-req-only').forEach(el => {
       el.hidden = !requests;
     });
@@ -1440,9 +1544,11 @@
         ? 'Search PR, PO, supplier, project...'
         : requests
           ? 'Search part no, inventory code, remarks...'
-          : qc
+            : qc
             ? 'Search shipment, PO, GRN, supplier, item...'
-            : 'Search SO, PP, part, customer...';
+            : state.view === 'sr'
+              ? 'Search [SR] sheet, SO, part, sub-assembly...'
+              : 'Search SO, PP, part, customer...';
     }
     if (legend) {
       legend.hidden = prPo;
@@ -1467,7 +1573,9 @@
           <span class="sol-legend-item sol-legend-item--date">Blue cell</span> expected date &middot;
           <span class="sol-legend-item sol-legend-item--arrived">Green cell</span> material arrived &middot;
           Click <strong>Flag</strong> for material arrival delay &middot;
-          Click <strong>BOM</strong> for materials + inventory enquiry
+          Click <strong>BOM</strong> for materials + inventory enquiry &middot;
+          <span class="sol-legend-item sol-legend-item--sr">[SR]</span> special process sheets &middot;
+          Sub-asm nested parts on that job
         `;
       }
     }
@@ -1520,6 +1628,7 @@
       let msg = 'No rows match your filters.';
       if (!state.active.length) msg = 'No active process sheets in ERP.';
       else if (state.view === 'no-wo') msg = 'No process sheets awaiting work order issuance.';
+      else if (state.view === 'sr') msg = 'No outstanding [SR] process sheets match your filters.';
       else if (state.materialFilter === 'empty') msg = 'No rows without a material date or arrival flag.';
       if (body) body.innerHTML = '';
       if (host) host.hidden = true;
@@ -1754,7 +1863,7 @@
     if (!state.ppTypes.size) return 'None';
     if (state.ppTypes.size === PS_TYPES.length) return 'All';
     const labels = PS_TYPES.filter(t => state.ppTypes.has(t)).map(t => (t === 'SR' ? '[SR]' : t));
-    return labels.length <= 2 ? labels.join(', ') : `${labels.length} types`;
+    return labels.length <= 3 ? labels.join(', ') : `${labels.length} types`;
   }
 
   function bindPsTypeDropdown() {
@@ -2075,6 +2184,33 @@
     }
   }
 
+  function indexSrAssemblies(items) {
+    const map = new Map();
+    (items || []).forEach(item => {
+      const psId = psBaseKey(item?.ps_id);
+      if (!psId) return;
+      map.set(psId, item);
+    });
+    return map;
+  }
+
+  async function loadSrAssemblies({ refresh = false } = {}) {
+    try {
+      const params = new URLSearchParams();
+      if (refresh) params.set('refresh', '1');
+      const qs = params.toString();
+      const res = await fetch(`/api/material-tracking/sr-assemblies${qs ? `?${qs}` : ''}`, {
+        cache: refresh ? 'no-store' : 'default',
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) return;
+      state.srAssemblies = indexSrAssemblies(payload.items);
+      if (isPsView()) render();
+    } catch (_err) {
+      state.srAssemblies = state.srAssemblies || new Map();
+    }
+  }
+
   async function loadSalesOrders({ refresh = false } = {}) {
     abortLoad('sales');
     const baseLabel = refresh
@@ -2110,6 +2246,7 @@
       state.salesOrdersLoaded = true;
       if (state.pendingLoad === 'ps') state.pendingLoad = '';
       if (isPsView()) render();
+      loadSrAssemblies({ refresh });
     } catch (err) {
       if (err && err.name === 'AbortError') {
         if (state.loadControllers.sales === ac && isPsView()) {

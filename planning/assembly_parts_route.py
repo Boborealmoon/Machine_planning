@@ -19,6 +19,7 @@ from .assembly_bom_route import (
 from .assembly_classify import (
     apply_stalled_child_flags,
     build_assembly_jobs,
+    is_component_child_ps,
     is_open_root,
 )
 from .helpers import planner_db, rows
@@ -133,7 +134,7 @@ def _job_ps_type(ps_id: str) -> str:
 
 def _is_component_child_ps(ps_id: str) -> bool:
     """Child COMP sheets use an extra numeric suffix (NPS26-0321-1), unlike N26-[SR]22."""
-    return compact_text(ps_id).count("-") >= 2
+    return is_component_child_ps(ps_id)
 
 
 def attach_related_process_sheets(

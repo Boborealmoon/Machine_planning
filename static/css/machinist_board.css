@@ -1399,6 +1399,14 @@ body.machinist-board.machinist-board--stock-colors .trial-focus-card.is-current.
   color: #b45309;
 }
 
+.trial-focus-date.is-mtl-avail {
+  color: #157347;
+}
+
+.trial-focus-date.is-mtl-date {
+  color: #0369a1;
+}
+
 body.machinist-board.machinist-board--focus .trial-empty {
   font-size: 11px;
   padding: 16px 8px;

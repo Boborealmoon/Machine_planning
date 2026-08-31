@@ -1,10 +1,15 @@
 """Shared assembly hierarchy + BOM flag classification for Monitor and Parts Tracker."""
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from typing import Any
 
 from .utils import bom_code_match_key, compact_text, shipped_quantity_completed
+
+# Child COMP sheets use a trailing numeric suffix (NPS26-0321-1), unlike N26-[SR]22.
+_CHILD_PS_SUFFIX_RE = re.compile(r"-\d+$")
+_RELATED_ROOT_RANK = {"APS": 0, "NPS": 1, "SR": 2}
 
 # Info flags: filterable but not "issues" / anomalies.
 INFO_FLAGS = frozenset(
@@ -35,6 +40,125 @@ def assembly_ps_type(ps_id: Any) -> str:
 
 def is_sr_process_sheet(ps_id: Any) -> bool:
     return assembly_ps_type(ps_id) == "SR"
+
+
+def catalog_source_ps_id(entry: dict[str, Any] | None) -> str:
+    raw = compact_text((entry or {}).get("source_ps_id") or (entry or {}).get("ps_id"))
+    return raw.split("::")[0]
+
+
+def is_component_child_ps(ps_id: Any) -> bool:
+    """True for COMP sheets like NPS26-0321-1 / N26-[SR]22-1, not the parent root."""
+    raw = compact_text(ps_id).split("::")[0]
+    return raw.count("-") >= 2 and bool(_CHILD_PS_SUFFIX_RE.search(raw))
+
+
+def parent_ps_id_from_child(ps_id: Any) -> str:
+    raw = compact_text(ps_id).split("::")[0]
+    if not is_component_child_ps(raw):
+        return ""
+    return _CHILD_PS_SUFFIX_RE.sub("", raw)
+
+
+def _catalog_line_item_from_entry(entry: dict[str, Any], *, related_from: str = "") -> dict[str, Any]:
+    return {
+        "process_sheet_no": catalog_source_ps_id(entry),
+        "part_no": compact_text(
+            entry.get("part_no") or entry.get("part_name") or entry.get("inventory_code")
+        ),
+        "part_desc": compact_text(entry.get("part_desc")),
+        "qty": as_float(entry.get("display_qty") or entry.get("partial_qty") or entry.get("total_qty")),
+        "source_line_item_no": compact_text(entry.get("source_line_item_no")),
+        "status": compact_text(entry.get("status")),
+        "current_stage_desc": compact_text(entry.get("current_stage_desc")),
+        "execution_status": compact_text(entry.get("execution_status")),
+        "related_from": compact_text(related_from),
+    }
+
+
+def _line_item_sort_key(item: dict[str, Any]) -> tuple[int, str]:
+    ps_id = compact_text(item.get("process_sheet_no"))
+    match = _CHILD_PS_SUFFIX_RE.search(ps_id)
+    suffix = int(match.group(0)[1:]) if match else 10**9
+    return (suffix, ps_id)
+
+
+def attach_catalog_assembly_line_items(entries: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Nest COMP line items on parent catalog cards, including SR jobs that share a part.
+
+    APS/NPS parents get their own ``NPS26-0321-1`` children. Direct-PP SRs such as
+    ``N26-[SR]22`` often have no COMP sheets of their own; those cards borrow the
+    matching assembly's line items (usually the NPS/APS voucher for the same part)
+    so planners can still trace into each sub-assembly.
+    """
+    rows = list(entries or [])
+    if not rows:
+        return rows
+
+    children_by_parent: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    roots_by_part: dict[str, list[str]] = defaultdict(list)
+
+    for entry in rows:
+        ps_id = catalog_source_ps_id(entry)
+        if not ps_id:
+            continue
+        if is_component_child_ps(ps_id):
+            parent = parent_ps_id_from_child(ps_id)
+            if parent:
+                children_by_parent[parent.upper()].append(entry)
+            continue
+        part = compact_text(entry.get("part_no") or entry.get("inventory_code")).upper()
+        if part:
+            roots_by_part[part].append(ps_id)
+
+    for entry in rows:
+        ps_id = catalog_source_ps_id(entry)
+        if not ps_id or is_component_child_ps(ps_id):
+            entry["assembly_line_items"] = []
+            entry["assembly_line_item_count"] = 0
+            entry.pop("assembly_line_items_related_from", None)
+            continue
+
+        own_children = children_by_parent.get(ps_id.upper(), [])
+        related_from = ""
+        source_children = own_children
+        if not source_children:
+            part = compact_text(entry.get("part_no") or entry.get("inventory_code")).upper()
+            candidates: list[tuple[int, int, str, list[dict[str, Any]]]] = []
+            for other_id in roots_by_part.get(part, []):
+                if other_id.upper() == ps_id.upper():
+                    continue
+                kids = children_by_parent.get(other_id.upper()) or []
+                if not kids:
+                    continue
+                rank = _RELATED_ROOT_RANK.get(assembly_ps_type(other_id), 9)
+                candidates.append((rank, -len(kids), other_id, kids))
+            if candidates:
+                candidates.sort()
+                related_from = candidates[0][2]
+                source_children = candidates[0][3]
+
+        source_children = sorted(
+            source_children,
+            key=lambda child: (as_int(child.get("pp_partial_no")) or 1, catalog_source_ps_id(child)),
+        )
+        items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for child in source_children:
+            row = _catalog_line_item_from_entry(child, related_from=related_from)
+            key = compact_text(row.get("process_sheet_no")).upper()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            items.append(row)
+        items.sort(key=_line_item_sort_key)
+        entry["assembly_line_items"] = items
+        entry["assembly_line_item_count"] = len(items)
+        if related_from:
+            entry["assembly_line_items_related_from"] = related_from
+        else:
+            entry.pop("assembly_line_items_related_from", None)
+    return rows
 
 
 def as_int(value: Any) -> int:

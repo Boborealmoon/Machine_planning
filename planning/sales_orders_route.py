@@ -642,9 +642,14 @@ def _sync_material_in_for_pp(con, pp_voucher_no: str, material_subcon_text: str)
         ps_id = _process_sheet_for_pp_voucher(con, pp_voucher_no)
         if not ps_id:
             return None
-        from .process_sheets import _update_material_in
+        from .process_sheets import _update_material_in, material_in_date_from_subcon
 
-        payload, err = _update_material_in(con, ps_id, _material_subcon_arrived(material_subcon_text))
+        payload, err = _update_material_in(
+            con,
+            ps_id,
+            _material_subcon_arrived(material_subcon_text),
+            material_in_date=material_in_date_from_subcon(material_subcon_text) or None,
+        )
         return payload if not err else None
     except Exception as exc:
         logger.warning("material_in sync for %s skipped: %s", pp_voucher_no, exc)

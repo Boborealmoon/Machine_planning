@@ -1452,6 +1452,9 @@ def _build_pp_vouchers_with_ops_data(include_completed: bool, con, cache_rows=No
     from planning.materials import enrich_items_material_inventory_codes
 
     enrich_items_material_inventory_codes(con, data)
+    from planning.assembly_classify import attach_catalog_assembly_line_items
+
+    attach_catalog_assembly_line_items(data)
     return data
 
 
@@ -1587,6 +1590,18 @@ def _pp_voucher_search_haystack(entry: dict) -> str:
                 op.get("execution_status"),
             ]
         )
+    for item in entry.get("assembly_line_items") or []:
+        parts.extend(
+            [
+                item.get("process_sheet_no"),
+                item.get("part_no"),
+                item.get("part_desc"),
+                item.get("related_from"),
+            ]
+        )
+    related_from = entry.get("assembly_line_items_related_from")
+    if related_from:
+        parts.append(related_from)
     return " ".join(str(part) for part in parts if part).lower()
 
 
@@ -2245,9 +2260,9 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
 
         master_cache = MasterTimeCache.load(con)
 
-    from planning.process_sheets import format_planner_ps_id, material_in_map_for_planner_ps_ids
+    from planning.process_sheets import format_planner_ps_id, material_in_overlay_for_planner_ps_ids
 
-    material_in_by_ps = {}
+    material_overlay_by_ps = {}
     if con is not None:
         planner_ps_ids = []
         for entry in entries:
@@ -2259,7 +2274,7 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
                 planner_ps_ids.append(
                     format_planner_ps_id(source_ps_id, int(entry.get("pp_partial_no") or 1))
                 )
-        material_in_by_ps = material_in_map_for_planner_ps_ids(con, planner_ps_ids)
+        material_overlay_by_ps = material_in_overlay_for_planner_ps_ids(con, planner_ps_ids)
 
     for entry in entries:
         bom_code = compact_text(entry.get("erp_bom_code") or entry.get("bom_code"))
@@ -2270,7 +2285,10 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
             source_ps_id = ps_id.split("::", 1)[0] if ps_id else ""
         partial_no = int(entry.get("pp_partial_no") or 1)
         planner_ps_id = format_planner_ps_id(source_ps_id, partial_no) if source_ps_id else ""
-        entry["material_in"] = bool(material_in_by_ps.get(planner_ps_id))
+        entry["material_in"] = bool((material_overlay_by_ps.get(planner_ps_id) or {}).get("material_in"))
+        entry["material_in_date"] = compact_text(
+            (material_overlay_by_ps.get(planner_ps_id) or {}).get("material_in_date")
+        )
         planner_row = planner_rows.get((source_ps_id, partial_no))
         if planner_row:
             inv = compact_text(planner_row.get("inventory_code"))
@@ -2340,6 +2358,9 @@ def api_pp_vouchers_with_ops():
         if refresh:
             _schedule_pp_vouchers_with_ops_refresh(scope, include_completed)
         merged = _merge_fresh_temp_ps_catalog_entries(cached_data, include_completed)
+        from planning.assembly_classify import attach_catalog_assembly_line_items
+
+        attach_catalog_assembly_line_items(merged)
         return jsonify(_filter_pp_vouchers_by_search(merged, raw_search))
 
     if refresh:
@@ -2351,6 +2372,9 @@ def api_pp_vouchers_with_ops():
         with planner_db() as con:
             temp_only = _append_temp_ps_catalog_entries([], con, include_completed=include_completed)
         if temp_only:
+            from planning.assembly_classify import attach_catalog_assembly_line_items
+
+            attach_catalog_assembly_line_items(temp_only)
             return jsonify(_filter_pp_vouchers_by_search(temp_only, raw_search))
     except Exception as exc:
         log.warning("temp-only catalog fallback failed: %s", exc)

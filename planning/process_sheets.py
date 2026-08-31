@@ -4260,29 +4260,93 @@ def _update_remarks(con, ps_id, remarks_text):
     }, None
 
 
-def material_in_map_for_planner_ps_ids(con, planner_ps_ids):
-    """Return {planner_ps_id: bool} for scheduler catalog material-in flags."""
+def material_in_date_from_subcon(raw) -> str:
+    """ISO date from S/O Material in / Sub-con. Empty when Arrived or free text."""
+    from .anticipated_material_service import parse_material_subcon_date
+
+    parsed = parse_material_subcon_date(raw)
+    return parsed.isoformat() if parsed else ""
+
+
+def _iso_date_text(value) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "isoformat"):
+        return compact_text(value.isoformat())[:10]
+    return material_in_date_from_subcon(value)
+
+
+def material_in_card_date(material_subcon=None, sheet_date=None) -> str:
+    """Prefer the S/O expected date; fall back to planner_process_sheet.material_in_date."""
+    return material_in_date_from_subcon(material_subcon) or _iso_date_text(sheet_date)
+
+
+def material_in_overlay_for_planner_ps_ids(con, planner_ps_ids):
+    """Return {planner_ps_id: {material_in, material_in_date}} for board / catalog cards."""
     flags = _overlay_column_flags(con)
     ids = [compact_text(i) for i in (planner_ps_ids or []) if compact_text(i)]
     if not ids:
         return {}
+    out = {pid: {"material_in": False, "material_in_date": ""} for pid in ids}
     if not flags.get("material_in"):
-        return {pid: False for pid in ids}
-    out = {pid: False for pid in ids}
-    for row in rows(
-        con.execute(
-            """
-            SELECT planner_ps_id, COALESCE(material_in, FALSE) AS material_in
-            FROM planner_process_sheet
-            WHERE planner_ps_id = ANY(%s)
-            """,
-            (ids,),
+        return out
+    date_select = "ps.material_in_date" if flags.get("material_in_date") else "NULL::date AS material_in_date"
+
+    def _load_joined():
+        return rows(
+            con.execute(
+                f"""
+                SELECT ps.planner_ps_id,
+                       COALESCE(ps.material_in, FALSE) AS material_in,
+                       {date_select},
+                       COALESCE(n_src.material_subcon, n_base.material_subcon) AS material_subcon
+                FROM planner_process_sheet ps
+                LEFT JOIN planner_so_pp_notes n_src
+                  ON n_src.pp_voucher_no = NULLIF(BTRIM(ps.source_ps_id), '')
+                LEFT JOIN planner_so_pp_notes n_base
+                  ON n_base.pp_voucher_no = split_part(ps.planner_ps_id, '::', 1)
+                WHERE ps.planner_ps_id = ANY(%s)
+                """,
+                (ids,),
+            )
         )
-    ):
+
+    def _load_flags_only():
+        sheet_date = "material_in_date" if flags.get("material_in_date") else "NULL::date AS material_in_date"
+        return rows(
+            con.execute(
+                f"""
+                SELECT planner_ps_id,
+                       COALESCE(material_in, FALSE) AS material_in,
+                       {sheet_date}
+                FROM planner_process_sheet
+                WHERE planner_ps_id = ANY(%s)
+                """,
+                (ids,),
+            )
+        )
+
+    query_rows = planner_try_savepoint(con, "material_in_overlay", _load_joined, default=None)
+    if query_rows is None:
+        query_rows = planner_try_savepoint(con, "material_in_flags", _load_flags_only, default=[])
+    for row in query_rows or []:
         pid = compact_text(row.get("planner_ps_id"))
-        if pid:
-            out[pid] = bool(row.get("material_in"))
+        if not pid:
+            continue
+        out[pid] = {
+            "material_in": bool(row.get("material_in")),
+            "material_in_date": material_in_card_date(
+                row.get("material_subcon"),
+                row.get("material_in_date"),
+            ),
+        }
     return out
+
+
+def material_in_map_for_planner_ps_ids(con, planner_ps_ids):
+    """Return {planner_ps_id: bool} for scheduler catalog material-in flags."""
+    overlay = material_in_overlay_for_planner_ps_ids(con, planner_ps_ids)
+    return {pid: bool(meta.get("material_in")) for pid, meta in overlay.items()}
 
 
 def due_date_map_for_planner_ps_ids(con, planner_ps_ids):
@@ -4407,7 +4471,7 @@ def _parse_material_in_field(raw):
     raise ValueError("material_in must be a boolean")
 
 
-def _update_material_in(con, ps_id, material_in):
+def _update_material_in(con, ps_id, material_in, material_in_date=None):
     _ensure_planner_overlay_columns(con)
     _, _, canonical_ps_id = _planner_ps_identity(ps_id)
     try:
@@ -4415,19 +4479,34 @@ def _update_material_in(con, ps_id, material_in):
     except ValueError as exc:
         return None, str(exc)
     material_in_bool = bool(material_in)
-    con.execute(
-        """
-        UPDATE planner_process_sheet
-        SET material_in = %s,
-            material_in_date = CASE
-                WHEN %s THEN COALESCE(material_in_date, CURRENT_DATE)
-                ELSE NULL
-            END,
-            updated_at = NOW()
-        WHERE planner_ps_id = %s
-        """,
-        (material_in_bool, material_in_bool, canonical_ps_id),
-    )
+    parsed_date = None
+    date_text = compact_text(material_in_date)
+    if date_text:
+        from .anticipated_material_service import parse_material_subcon_date
+
+        parsed_date = parse_material_subcon_date(date_text)
+    if material_in_bool:
+        con.execute(
+            """
+            UPDATE planner_process_sheet
+            SET material_in = TRUE,
+                material_in_date = COALESCE(%s, material_in_date, CURRENT_DATE),
+                updated_at = NOW()
+            WHERE planner_ps_id = %s
+            """,
+            (parsed_date, canonical_ps_id),
+        )
+    else:
+        con.execute(
+            """
+            UPDATE planner_process_sheet
+            SET material_in = FALSE,
+                material_in_date = COALESCE(%s, material_in_date),
+                updated_at = NOW()
+            WHERE planner_ps_id = %s
+            """,
+            (parsed_date, canonical_ps_id),
+        )
     row = one(
         con.execute(
             """

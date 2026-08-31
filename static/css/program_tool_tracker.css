@@ -1,5 +1,42 @@
 /* Program / Tool Tracker (PS coverage) */
-.ptt-page { max-width: 100%; }
+
+/* Full-viewport shell: 22-col catalogue needs the whole screen, not a 1600px card. */
+.app-main--program-tool-tracker {
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 14px 16px 16px;
+  box-sizing: border-box;
+  min-height: calc(100dvh - 52px);
+  height: calc(100dvh - 52px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ptt-page.new-orders-page {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  width: 100%;
+  overflow: hidden;
+}
+
+.ptt-page .new-orders-header {
+  flex: 0 0 auto;
+}
+
+.ptt-page .new-orders-title {
+  font-size: 22px;
+}
+
+.ptt-page .new-orders-subtitle {
+  max-width: none;
+}
 
 .ptt-toolbar.card {
   display: block;
@@ -83,19 +120,17 @@
 .ptt-chip:hover { background: #f7f7f7; }
 .ptt-chip--active { background: #111; border-color: #111; color: #fff; }
 
-.ptt-table-wrap { overflow-x: auto; max-width: 100%; }
-
 .ptt-tracker-table {
-  width: 100%;
-  min-width: 980px;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .ptt-tracker-table thead th {
-  padding: 9px 12px;
+  padding: 10px 12px;
   text-align: left;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.05em;
   color: #888;
@@ -231,8 +266,9 @@
 
 .ptt-view-tabs {
   display: flex;
+  flex: 0 0 auto;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 0;
 }
 
 .ptt-view-tab {
@@ -253,14 +289,60 @@
   color: #fff;
 }
 
+.ptt-panel {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
 .ptt-panel[hidden] { display: none !important; }
 .ptt-tracker-only[hidden],
 .ptt-catalogue-only[hidden] { display: none !important; }
 
-.ptt-catalogue-table-card { margin-top: 12px; }
+#ptt-panel-catalogue > .card:not(.ptt-catalogue-table-card),
+#ptt-panel-tracker > .ptt-toolbar,
+#ptt-panel-tracker > .ptt-summary-grid,
+#ptt-panel-tracker > .loading,
+#ptt-panel-tracker > .new-orders-empty,
+#ptt-panel-tracker > .mi-meta {
+  flex: 0 0 auto;
+}
 
-.ptt-page {
-  overflow-x: hidden;
+.ptt-catalogue-table-card {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+  margin-top: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-main--program-tool-tracker .new-orders-table-wrap,
+#ptt-table-wrap.ptt-table-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+}
+
+.ptt-catalogue-table-card .ptl-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  overflow: auto;
+}
+
+.ptt-catalogue-table-card .ptl-pagination {
+  flex: 0 0 auto;
+  justify-content: flex-end;
 }
 
 .ptt-table-wrap,
@@ -271,6 +353,28 @@
 }
 
 @media (max-width: 768px) {
+  .app-main--program-tool-tracker {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+    padding: 12px 10px 20px;
+  }
+
+  .ptt-page.new-orders-page,
+  .ptt-panel,
+  .ptt-catalogue-table-card,
+  #ptt-table-wrap.ptt-table-wrap {
+    height: auto;
+    overflow: visible;
+    flex: none;
+  }
+
+  .ptt-catalogue-table-card .ptl-wrap {
+    flex: none;
+    max-height: min(70dvh, 640px);
+    overflow: auto;
+  }
+
   .ptt-toolbar-row {
     grid-template-columns: 1fr;
   }

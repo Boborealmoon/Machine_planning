@@ -83,6 +83,9 @@ class SalesReportYtdGridTests(unittest.TestCase):
         mps_row = next(row for row in grid["rows"] if row["id"] == "MPS")
         june_cell = next(cell for cell in mps_row["cells"] if cell["month"] == 6)
         self.assertAlmostEqual(float(june_cell.get("on_hand") or 0), 5000.0, places=2)
+        self.assertAlmostEqual(float(mps_row.get("open_remaining") or 0), 5000.0, places=2)
+        total_row = next(row for row in grid["rows"] if row["id"] == "TOTAL")
+        self.assertAlmostEqual(float(total_row.get("open_remaining") or 0), 5000.0, places=2)
 
 
 class SalesReportPostedDateBasisTests(unittest.TestCase):
@@ -178,6 +181,44 @@ class SalesReportPostedDateBasisTests(unittest.TestCase):
         self.assertAlmostEqual(float(august_posted.get("backlog") or 0), 800.0, places=2)
         self.assertAlmostEqual(float(august_posted.get("on_hand") or 0), 0.0, places=2)
         self.assertAlmostEqual(float(june_posted.get("backlog_delivered") or 0), 0.0, places=2)
+
+
+    def test_posted_past_month_includes_sales_total(self):
+        shipments = [
+            {
+                "process_sheet_no": "APS26-0001",
+                "pp_type": "APS",
+                "shipment_date": "2026-02-10",
+                "due_date": "2026-02-20",
+                "so_due_date": "2026-02-20",
+                "first_posted_datetime": "2026-01-08",
+                "qty_issued": 1,
+                "total_home_amt": 400,
+            },
+            {
+                "process_sheet_no": "APS26-0002",
+                "pp_type": "APS",
+                "shipment_date": "2026-02-18",
+                "due_date": "2026-01-15",
+                "so_due_date": "2026-01-15",
+                "first_posted_datetime": "2026-02-03",
+                "qty_issued": 1,
+                "total_home_amt": 250,
+            },
+        ]
+        grid = _build_ytd_grid(
+            [], shipments, 2026, today=date(2026, 8, 20), basis=DATE_BASIS_POSTED
+        )
+        aps = next(row for row in grid["rows"] if row["id"] == "APS")
+        february = next(cell for cell in aps["cells"] if cell["month"] == 2)
+        self.assertAlmostEqual(float(february.get("sales") or 0), 650.0, places=2)
+        self.assertAlmostEqual(
+            float(february.get("backlog_delivered") or 0)
+            + float(february.get("delivered") or 0)
+            + float(february.get("early_delivered") or 0),
+            650.0,
+            places=2,
+        )
 
 
 class SalesReportOpenSoValueTests(unittest.TestCase):

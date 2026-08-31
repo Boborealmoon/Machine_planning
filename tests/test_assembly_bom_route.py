@@ -7,6 +7,7 @@ from planning.assembly_bom_route import (
     bom_code_match_key,
     build_assembly_jobs,
     is_open_root,
+    summarize_sr_assembly_jobs,
 )
 from planning.assembly_classify import (
     assembly_ps_type,
@@ -390,3 +391,69 @@ def test_include_history_merges_sr_jobs_from_bom_fallback(monkeypatch):
     jobs = assembly.fetch_assembly_jobs(refresh=True, include_history=True)
 
     assert [job["ps_id"] for job in jobs] == ["APS26-0053", "N26-[SR]22", "NPS26-0321"]
+
+
+def test_summarize_sr_assembly_jobs_keeps_nested_sr_only():
+    items = summarize_sr_assembly_jobs(
+        [
+            {
+                "ps_id": "APS26-0053",
+                "part_no": "KIT-001",
+                "children": [{"part_no": "CHILD-A", "is_subassembly": True, "qty": 2}],
+            },
+            {
+                "ps_id": "N26-[SR]22",
+                "part_no": "BB14-KS0188-05 REV 04",
+                "sales_order_no": "SO/2600874",
+                "children": [
+                    {
+                        "part_no": "BB18-KS1209-02 REV 06",
+                        "description": "3 LEG LOCKING PROBE",
+                        "qty": 1,
+                        "process_sheet_no": "",
+                        "is_subassembly": True,
+                    },
+                    {"part_no": "RAW-PROBE", "is_subassembly": False},
+                ],
+            },
+            {"ps_id": "N26-[SR]15", "part_no": "FIXTURE-0024", "children": []},
+        ]
+    )
+    assert len(items) == 1
+    assert items[0]["ps_id"] == "N26-[SR]22"
+    assert items[0]["part_no"] == "BB14-KS0188-05 REV 04"
+    assert [child["part_no"] for child in items[0]["children"]] == ["BB18-KS1209-02 REV 06"]
+    assert items[0]["children"][0]["description"] == "3 LEG LOCKING PROBE"
+
+
+def test_api_material_tracking_sr_assemblies(monkeypatch):
+    monkeypatch.setattr(
+        assembly,
+        "fetch_assembly_jobs",
+        lambda refresh=False, include_history=True: [
+            {
+                "ps_id": "N26-[SR]22",
+                "part_no": "BB14-KS0188-05 REV 04",
+                "sales_order_no": "SO/1",
+                "children": [
+                    {
+                        "part_no": "BB18-KS1209-02 REV 06",
+                        "description": "PROBE",
+                        "qty": 1,
+                        "is_subassembly": True,
+                    }
+                ],
+            }
+        ],
+    )
+    app = Flask(__name__, template_folder="../templates")
+    app.register_blueprint(assembly_bom_bp)
+
+    response = app.test_client().get("/api/material-tracking/sr-assemblies")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["ok"] is True
+    assert payload["count"] == 1
+    assert payload["items"][0]["ps_id"] == "N26-[SR]22"
+    assert payload["items"][0]["children"][0]["part_no"] == "BB18-KS1209-02 REV 06"

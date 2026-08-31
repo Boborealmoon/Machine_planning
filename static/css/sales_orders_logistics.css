@@ -237,6 +237,18 @@ body.sol-view .app-main--sales-logistics {
   color: #fff;
 }
 
+.sol-chip--sr:not(.is-active) {
+  border-color: #e8d4a8;
+  color: var(--sol-need);
+  background: #fbf6ea;
+}
+
+.sol-chip--sr.is-active {
+  background: #8a6b32;
+  border-color: #8a6b32;
+  color: #fff;
+}
+
 .sol-bucket-group[hidden],
 .sol-qc-bucket-group[hidden],
 .sol-chip--bucket[hidden],
@@ -633,8 +645,90 @@ body.sol-view .app-main--sales-logistics {
   background: #fff1f2;
 }
 
-.sol-table tbody tr.is-qc-ready td:first-child {
-  box-shadow: inset 3px 0 0 #16a34a;
+.sol-table tbody tr.is-sr td:first-child {
+  box-shadow: inset 3px 0 0 #c4a574;
+}
+
+.sol-table tbody tr.is-sr:not(.is-no-wo):not(.is-material-delay) td {
+  background: #fdfaf3;
+}
+
+.sol-table tbody tr.has-subasm td.sol-part {
+  overflow: visible;
+  vertical-align: top;
+}
+
+.sol-subasm-pill {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #f6ecd8;
+  color: var(--sol-need);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.sol-subasm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.sol-subasm-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sol-need);
+}
+
+.sol-subasm-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sol-subasm-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 8px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: #fbf6ea;
+  border: 1px solid #eee0c4;
+}
+
+.sol-subasm-part {
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.sol-subasm-desc {
+  flex: 1 1 8rem;
+  min-width: 0;
+  font-size: 0.72rem;
+  color: var(--sol-muted);
+}
+
+.sol-subasm-qty {
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: var(--sol-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.sol-subasm-bom {
+  font-size: 0.72rem;
 }
 
 .sol-table tbody tr.is-qc-awaiting td {
@@ -1226,6 +1320,11 @@ body.sol-view .so-editable-status:empty {
 .sol-legend-item--qc-awaiting {
   background: #ffedd5;
   color: #9a3412;
+}
+
+.sol-legend-item--sr {
+  background: #f6ecd8;
+  color: var(--sol-need);
 }
 
 .sol-qc-pill {

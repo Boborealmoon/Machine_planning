@@ -471,9 +471,20 @@ function salesReportBuildOpenMonthSummary(openLines, start, end) {
 }
 
 function salesReportYtdMonthColspan(meta) {
-  if (meta.mode === 'past') return 3;
+  if (meta.mode === 'past') return salesReportIsPostedBasis() ? 1 : 3;
   if (meta.is_current) return 2;
   return 1;
+}
+
+function salesReportYtdPastSales(cell) {
+  if (cell?.sales != null && Number.isFinite(Number(cell.sales))) return Number(cell.sales);
+  return Number(cell?.backlog_delivered || 0)
+    + Number(cell?.delivered || 0)
+    + Number(cell?.early_delivered || 0);
+}
+
+function salesReportYtdShowsOpenRemaining() {
+  return !salesReportIsPostedBasis();
 }
 
 function salesReportYtdMonthHeaderClass(meta, idx, firstFutureIdx) {
@@ -506,6 +517,9 @@ function salesReportScrollToYtdMonth(month) {
 
 function salesReportYtdSubheadCells(meta) {
   if (meta.mode === 'past') {
+    if (salesReportIsPostedBasis()) {
+      return [{ label: 'Sales', cls: 'is-sales' }];
+    }
     return [
       { label: 'Backlog', cls: 'is-shipped-backlog' },
       { label: 'On-time', cls: 'is-shipped-ontime' },
@@ -541,6 +555,15 @@ function salesReportYtdNumTd(value, rowId, month, colKey, extraCls = '') {
 
 function salesReportYtdCellHtml(cell, meta, rowId) {
   if (meta.mode === 'past') {
+    if (salesReportIsPostedBasis()) {
+      return salesReportYtdNumTd(
+        salesReportYtdPastSales(cell),
+        rowId,
+        meta.month,
+        'sales',
+        'sales-report-ytd-num--sales',
+      );
+    }
     return [
       salesReportYtdNumTd(cell.backlog_delivered, rowId, meta.month, 'backlog_delivered'),
       salesReportYtdNumTd(cell.delivered, rowId, meta.month, 'delivered'),
@@ -721,9 +744,13 @@ function salesReportBuildYtdGrid(openLines, shipments, year) {
     const cells = monthsMeta.map(meta => {
       if (meta.mode === 'past') {
         const past = salesReportBuildPastMonthSummary(typeShipments, meta.start, meta.end);
+        const sales = past.backlog_delivered.total_home_amt
+          + past.delivered.total_home_amt
+          + past.early_delivered.total_home_amt;
         return {
           month: meta.month,
           mode: 'past',
+          sales,
           backlog_delivered: past.backlog_delivered.total_home_amt,
           delivered: past.delivered.total_home_amt,
           early_delivered: past.early_delivered.total_home_amt,
@@ -752,12 +779,16 @@ function salesReportBuildYtdGrid(openLines, shipments, year) {
 
   const sumCells = (cellLists) => monthsMeta.map((meta, idx) => {
     if (meta.mode === 'past') {
+      const backlogDelivered = cellLists.reduce((sum, list) => sum + Number(list[idx]?.backlog_delivered || 0), 0);
+      const delivered = cellLists.reduce((sum, list) => sum + Number(list[idx]?.delivered || 0), 0);
+      const earlyDelivered = cellLists.reduce((sum, list) => sum + Number(list[idx]?.early_delivered || 0), 0);
       return {
         month: meta.month,
         mode: 'past',
-        backlog_delivered: cellLists.reduce((sum, list) => sum + Number(list[idx]?.backlog_delivered || 0), 0),
-        delivered: cellLists.reduce((sum, list) => sum + Number(list[idx]?.delivered || 0), 0),
-        early_delivered: cellLists.reduce((sum, list) => sum + Number(list[idx]?.early_delivered || 0), 0),
+        sales: cellLists.reduce((sum, list) => sum + salesReportYtdPastSales(list[idx]), 0),
+        backlog_delivered: backlogDelivered,
+        delivered,
+        early_delivered: earlyDelivered,
       };
     }
     return {
@@ -780,10 +811,15 @@ function salesReportBuildYtdGrid(openLines, shipments, year) {
     rowCells[type] = cellsForType(type);
   });
 
+  const remainingForType = (type) => salesReportOpenRemainingTotal(
+    openLines.filter(row => salesReportGetPsType(row) === type),
+  );
+
   const rows = SALES_REPORT_YTD_TYPES.map(type => ({
     id: type,
     label: type,
     cells: rowCells[type],
+    open_remaining: remainingForType(type),
   }));
 
   const activeTypes = salesReportActivePpTypes().filter(type => SALES_REPORT_YTD_TYPES.includes(type));
@@ -795,6 +831,9 @@ function salesReportBuildYtdGrid(openLines, shipments, year) {
       label: 'Total (selected)',
       cells: sumCells(activeCellLists),
       emphasis: 'total',
+      open_remaining: salesReportOpenRemainingTotal(
+        openLines.filter(row => activeTypes.includes(salesReportGetPsType(row))),
+      ),
     });
   }
 
@@ -1236,13 +1275,16 @@ function salesReportRenderYtd() {
   const grid = salesReportBuildYtdGrid(openLines, shipments, ytd.year);
 
   const firstFutureIdx = grid.months.findIndex(meta => meta.mode === 'open' && !meta.is_current);
+  const showOpenRemaining = salesReportYtdShowsOpenRemaining();
 
   const monthTopRow = grid.months.map((meta, idx) => {
     const cls = salesReportYtdMonthHeaderClass(meta, idx, firstFutureIdx);
     const btnCls = salesReportYtdMonthButtonClass(meta);
     const colspan = salesReportYtdMonthColspan(meta);
     const title = meta.mode === 'past'
-      ? `Shipments in ${meta.label}`
+      ? (salesReportIsPostedBasis()
+        ? `Total sales (all shipments) in ${meta.label}`
+        : `Shipments in ${meta.label}`)
       : meta.is_current
         ? `Backlog + onhand in ${meta.label}`
         : `Onhand with ${salesReportBasisShort()} in ${meta.label}`;
@@ -1253,6 +1295,13 @@ function salesReportRenderYtd() {
       </button>
     </th>`;
   }).join('');
+
+  const refHead = showOpenRemaining
+    ? `<th rowspan="2" class="sales-report-ytd-ref-head" title="All unfinished open $ for this segment (any due year) — year reference">
+        <span class="sales-report-ytd-ref-label">Open remaining</span>
+        <span class="sales-report-ytd-ref-hint">Year ref</span>
+      </th>`
+    : '';
 
   const subRow = grid.months.map(meta => (
     salesReportYtdSubheadCells(meta).map(sub => (
@@ -1267,9 +1316,13 @@ function salesReportRenderYtd() {
     const cells = row.cells.map((cell, idx) => {
       const meta = grid.months[idx];
       if (meta.mode === 'past') {
-        ['backlog_delivered', 'delivered', 'early_delivered'].forEach(col => {
-          validKeys.add(salesReportYtdCellKey(row.id, meta.month, col));
-        });
+        if (salesReportIsPostedBasis()) {
+          validKeys.add(salesReportYtdCellKey(row.id, meta.month, 'sales'));
+        } else {
+          ['backlog_delivered', 'delivered', 'early_delivered'].forEach(col => {
+            validKeys.add(salesReportYtdCellKey(row.id, meta.month, col));
+          });
+        }
       } else if (meta.is_current) {
         ['backlog', 'on_hand'].forEach(col => {
           validKeys.add(salesReportYtdCellKey(row.id, meta.month, col));
@@ -1279,7 +1332,19 @@ function salesReportRenderYtd() {
       }
       return salesReportYtdCellHtml(cell, meta, row.id);
     }).join('');
-    return `<tr class="${rowCls}"><th class="sales-report-ytd-row-label">${escapeHtml(row.label)}</th>${cells}</tr>`;
+    const refCell = showOpenRemaining
+      ? (() => {
+        validKeys.add(salesReportYtdCellKey(row.id, 0, 'open_remaining'));
+        return salesReportYtdNumTd(
+          row.open_remaining,
+          row.id,
+          0,
+          'open_remaining',
+          'sales-report-ytd-num--ref',
+        );
+      })()
+      : '';
+    return `<tr class="${rowCls}"><th class="sales-report-ytd-row-label">${escapeHtml(row.label)}</th>${cells}${refCell}</tr>`;
   }).join('');
 
   salesReportPruneYtdSelection(validKeys);
@@ -1289,6 +1354,7 @@ function salesReportRenderYtd() {
       <tr>
         <th class="sales-report-ytd-corner" rowspan="2" scope="rowgroup">Segment</th>
         ${monthTopRow}
+        ${refHead}
       </tr>
       <tr>${subRow}</tr>
     </thead>
@@ -1306,7 +1372,9 @@ function salesReportRenderYtd() {
   if (sub) {
     sub.textContent = salesReportState.focusMonth
       ? 'Line detail for the month you opened from the grid. Use Overview to return.'
-      : `Past = shipped · current = backlog + onhand · future = onhand by ${salesReportBasisPhrase()}.`;
+      : salesReportIsPostedBasis()
+        ? 'Past = total sales (all DO $ in month) · current = backlog + onhand · future = onhand by SO posted date.'
+        : 'Past = shipped · current = backlog + onhand · future = onhand by PO due date. Open remaining = all unfinished $ (any year).';
   }
   overview.hidden = false;
 }

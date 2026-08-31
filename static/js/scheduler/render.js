@@ -73,6 +73,60 @@ function trialMaterialInLaneClass(leader) {
   return trialMaterialInForBlockLeader(leader) ? 'material-in-yes' : 'material-in-no';
 }
 
+function trialMaterialInDateForLeader(leader) {
+  const fromLeader = String(leader?.material_in_date || '').trim();
+  if (fromLeader) return fromLeader.slice(0, 10);
+  const candidates = [leader?.planner_ps_id, leader?.source_ps_id, leader?.job_no]
+    .map(v => String(v || '').trim())
+    .filter(Boolean);
+  for (const key of candidates) {
+    const ps = typeof trialCatalogPsRecord === 'function' ? trialCatalogPsRecord(key) : null;
+    const fromPs = String(ps?.material_in_date || '').trim();
+    if (fromPs) return fromPs.slice(0, 10);
+  }
+  return '';
+}
+
+function trialMaterialInCardMeta(leader) {
+  const date = trialMaterialInDateForLeader(leader);
+  const available = trialMaterialInForBlockLeader(leader);
+  if (date) {
+    return {
+      text: date,
+      stateClass: available ? 'is-mtl-avail' : 'is-mtl-date',
+      title: available ? `Material arrived · ${date}` : `Material in ${date}`,
+    };
+  }
+  if (available) {
+    return {
+      text: 'Mtl Avail',
+      stateClass: 'is-mtl-avail',
+      title: 'Material arrived',
+    };
+  }
+  return {
+    text: '—',
+    stateClass: 'is-mtl-empty',
+    title: 'No material-in date',
+  };
+}
+
+function trialMaterialInDateRowHtml(vm, leader, options = {}) {
+  if (vm?.isDummy) return '';
+  const mtl = vm?.materialInCard || trialMaterialInCardMeta(leader);
+  const labelFn = typeof options.labelFn === 'function'
+    ? options.labelFn
+    : (key => ({ mtl: 'Mtl', mtl_avail: 'Mtl Avail' }[key] || key));
+  const rowClass = String(options.rowClass || 'trial-block-compact-date');
+  const value = mtl.stateClass === 'is-mtl-avail' && mtl.text === 'Mtl Avail'
+    ? labelFn('mtl_avail')
+    : mtl.text;
+  return `<span class="${escapeHtml(rowClass)} is-mtl ${escapeHtml(mtl.stateClass)}" title="${escapeHtml(mtl.title)}">
+            <span class="trial-pill-label">${escapeHtml(labelFn('mtl'))}</span>
+            <span>${escapeHtml(value || '—')}</span>
+          </span>`;
+}
+
 function trialReadinessSourcePs(psId) {
   const raw = String(psId || '').trim();
   if (!raw) return '';
@@ -615,6 +669,23 @@ function trialApplyMaterialInToCatalogPs(psId, materialIn) {
   pools.forEach(ps => {
     if (String(ps.ps_id || '').trim() === key) ps.material_in = Boolean(materialIn);
   });
+  const parts = typeof trialSplitPsId === 'function' ? trialSplitPsId(key) : { base: key, partial: '' };
+  const base = String(parts.base || key).trim();
+  const partial = String(parts.partial || '').trim();
+  (Array.isArray(trialState.blocks) ? trialState.blocks : []).forEach(block => {
+    const blockKey = String(block.planner_ps_id || block.source_ps_id || block.job_no || '').trim();
+    if (!blockKey) return;
+    if (blockKey === key) {
+      block.material_in = Boolean(materialIn);
+      return;
+    }
+    const blockParts = typeof trialSplitPsId === 'function' ? trialSplitPsId(blockKey) : { base: blockKey, partial: '' };
+    const blockBase = String(blockParts.base || blockKey).trim();
+    const blockPartial = String(blockParts.partial || '').trim();
+    if (blockBase === base && (!partial || !blockPartial || partial === blockPartial)) {
+      block.material_in = Boolean(materialIn);
+    }
+  });
 }
 
 function trialProfileOptions(selected) {
@@ -777,6 +848,98 @@ function trialCatalogBomBarHtml(ps) {
         onclick="openTrialBOMEditor('${escapeHtml(ps.ps_id)}')">BOM</button>
     </div>
   `;
+}
+
+function trialCatalogAssemblyLineItems(ps) {
+  return Array.isArray(ps?.assembly_line_items) ? ps.assembly_line_items : [];
+}
+
+function trialCatalogLineItemBadgeHtml(ps) {
+  const items = trialCatalogAssemblyLineItems(ps);
+  if (!items.length) return '';
+  const related = String(ps.assembly_line_items_related_from || '').trim();
+  const title = related
+    ? `${items.length} BOM line items via ${related}`
+    : `${items.length} BOM line items`;
+  return `<span class="trial-catalog-line-item-badge" title="${escapeHtml(title)}">${items.length} items</span>`;
+}
+
+function trialFocusCatalogLineItem(psId) {
+  const needle = String(psId || '').trim();
+  if (!needle) return;
+  const input = document.getElementById('trial-catalog-search');
+  if (input) input.value = needle;
+  if (typeof closeModal === 'function') closeModal();
+  if (typeof scheduleTrialCatalogSearchRender === 'function') {
+    scheduleTrialCatalogSearchRender();
+  } else if (typeof renderTrialCatalog === 'function') {
+    renderTrialCatalog();
+  }
+  window.setTimeout(() => {
+    const root = document.getElementById('trial-catalog');
+    const match = root && [...root.querySelectorAll('details.trial-catalog-ps[data-ps-id], .trial-catalog-planned-ps[data-ps-id]')]
+      .find(el => String(el.getAttribute('data-ps-id') || '').split('::')[0] === needle);
+    if (!match) return;
+    if (match.tagName === 'DETAILS') match.open = true;
+    match.scrollIntoView({ block: 'nearest' });
+  }, 80);
+}
+
+function trialCatalogAssemblyLineItemsHtml(ps) {
+  const items = trialCatalogAssemblyLineItems(ps);
+  if (!items.length) return '';
+  const related = String(ps.assembly_line_items_related_from || '').trim();
+  const note = related
+    ? `<div class="trial-catalog-line-items-note">Sub-assembly line items via ${escapeHtml(related)}</div>`
+    : '<div class="trial-catalog-line-items-note">BOM line items</div>';
+  const rows = items.map(item => {
+    const psNo = String(item.process_sheet_no || '').trim();
+    const part = String(item.part_no || '').trim();
+    const desc = String(item.part_desc || '').trim();
+    const line = String(item.source_line_item_no || '').replace(/\.0+$/, '').trim();
+    const lineHtml = line && line !== '0'
+      ? `<span class="trial-catalog-line-item-line">line ${escapeHtml(line)}</span>`
+      : '';
+    return `
+      <button type="button" class="trial-catalog-line-item"
+        title="${escapeHtml([psNo, part, desc].filter(Boolean).join(' · '))}"
+        onclick="event.preventDefault(); event.stopPropagation(); trialFocusCatalogLineItem('${escapeHtml(psNo)}')">
+        <span class="trial-catalog-line-item-ps">${escapeHtml(psNo)}</span>
+        <span class="trial-catalog-line-item-part">${escapeHtml(part)}</span>
+        ${lineHtml}
+      </button>`;
+  }).join('');
+  return `<div class="trial-catalog-line-items">${note}${rows}</div>`;
+}
+
+function trialCatalogAssemblyLineItemsDetailHtml(ps) {
+  const items = trialCatalogAssemblyLineItems(ps);
+  if (!items.length) return '';
+  const related = String(ps.assembly_line_items_related_from || '').trim();
+  const title = related
+    ? `BOM line items via ${related}`
+    : 'BOM line items';
+  const rows = items.map(item => {
+    const psNo = String(item.process_sheet_no || '').trim();
+    const part = String(item.part_no || '').trim();
+    const desc = String(item.part_desc || '').trim();
+    const qty = Number(item.qty || 0);
+    const qtyText = Number.isFinite(qty) && qty > 0 ? `${fmt(qty, 0)} pcs` : '';
+    return `
+      <button type="button" class="trial-ps-detail-op-row trial-catalog-line-item-detail"
+        onclick="trialFocusCatalogLineItem('${escapeHtml(psNo)}')">
+        <span class="trial-ps-detail-op-label">${escapeHtml(psNo)}</span>
+        <span class="trial-ps-detail-op-meta">
+          <span>${escapeHtml([part, desc].filter(Boolean).join(' · '))}</span>
+          ${qtyText ? `<span class="trial-ps-detail-op-qty">${escapeHtml(qtyText)}</span>` : ''}
+        </span>
+      </button>`;
+  }).join('');
+  return `
+    <div class="trial-op-detail-section">
+      <div class="trial-op-detail-section-title">${escapeHtml(title)}</div>
+      <div class="trial-ps-detail-op-list">${rows}</div>
+    </div>`;
 }
 
 function trialOpQtyLabel(op) {
@@ -2651,6 +2814,7 @@ function trialRenderCatalogPsDetailBody(ps) {
         ${ps.inventory_code ? trialRenderCatalogOpDetailRow('Inventory', escapeHtml(ps.inventory_code)) : ''}
         ${ps.source_voucher ? trialRenderCatalogOpDetailRow('SO voucher', escapeHtml(ps.source_voucher)) : ''}
       </dl>
+      ${trialCatalogAssemblyLineItemsDetailHtml(ps)}
       <div class="trial-op-detail-section">
         <div class="trial-op-detail-section-title">Operations</div>
         <div class="trial-ps-detail-op-list">${opsHtml}</div>
@@ -2787,6 +2951,8 @@ function trialRenderRunBlockDetailBody(group, block, machine) {
     partialQty != null && partialQty > 0.0001 ? partialQty : null,
     vm.targetQty || '—',
   );
+  const mtl = vm.materialInCard || trialMaterialInCardMeta(leader);
+  const mtlDetailValue = mtl.text || '—';
 
   return `
     <div class="trial-op-detail">
@@ -2806,6 +2972,7 @@ function trialRenderRunBlockDetailBody(group, block, machine) {
         ${trialRenderCatalogOpDetailRow(dueRowLabel, escapeHtml(dueDateText))}
         ${trialRenderCatalogOpDetailRow('Queued', escapeHtml(vm.queuedText))}
         ${trialRenderCatalogOpDetailRow('End', escapeHtml(vm.outputText))}
+        ${trialRenderCatalogOpDetailRow('Material in', escapeHtml(mtlDetailValue))}
         ${trialRenderCatalogOpDetailRow('Setup', leader?.include_setup ? 'Included' : 'Excluded')}
       </dl>
       ${trialOpReadinessTogglesHtml(
@@ -3253,6 +3420,7 @@ function trialBlockGroupViewModel(group, options = {}) {
     splitAllocationHtml: queuedMachines.length > 1
       ? trialRenderQueuedMachinePills(queuedMachines, { title: `Split across: ${queuedMachines.join(', ')}` })
       : '',
+    materialInCard: trialMaterialInCardMeta(leader),
   };
 }
 
@@ -3327,6 +3495,7 @@ function trialRenderFocusBlockCard(vm, options = {}) {
         <span class="trial-focus-date ${dueClass}"><span class="trial-pill-label">${escapeHtml(t('due'))}</span>${escapeHtml(dueDate || '—')}</span>
         <span class="trial-focus-date${vm.anchored ? ' is-anchored' : ''}"><span class="trial-pill-label">${escapeHtml(scheduleLabel)}</span>${escapeHtml(vm.scheduleTimeText || '—')}</span>
         <span class="trial-focus-date is-end ${vm.outputPillClass}"><span class="trial-pill-label">${escapeHtml(t('end'))}</span>${escapeHtml(vm.outputText || '—')}</span>
+        ${trialMaterialInDateRowHtml(vm, leader, { labelFn: t, rowClass: 'trial-focus-date' })}
       </div>
     </article>
   `;
@@ -3362,7 +3531,7 @@ function trialRenderCompactBlockCard(vm, options = {}) {
   const dummyClass = vm.isDummy ? ' trial-block-card--dummy' : '';
   const mb = (key, vars) => {
     if (readOnly && typeof trialMachinistT === 'function') return trialMachinistT(key, vars);
-    const labels = { qty: 'Qty', out: 'Out', target: 'Target', cycle: 'Cycle', due: 'Due', end: 'End', now: 'Now' };
+    const labels = { qty: 'Qty', out: 'Out', target: 'Target', cycle: 'Cycle', due: 'Due', end: 'End', now: 'Now', mtl: 'Mtl', mtl_avail: 'Mtl Avail' };
     if (key === 'partial' && vars?.n) return `Partial ${vars.n}`;
     return labels[key] || key;
   };
@@ -3454,6 +3623,7 @@ function trialRenderCompactBlockCard(vm, options = {}) {
             <span class="trial-pill-label">${escapeHtml(mb('end'))}</span>
             <span>${escapeHtml(vm.outputText)}</span>
           </span>
+          ${trialMaterialInDateRowHtml(vm, leader, { labelFn: mb })}
           ${targetHtml}
         </div>
       </div>
@@ -4436,6 +4606,7 @@ function trialCatalogPsSummaryHtml(ps, siblingCountByBase) {
       ${trialPendingDoBadgeHtml(ps)}
       ${trialOpStatusHtml(execStatus, { compact: true })}
       ${trialCatalogPsQueuePillHtml(ps)}
+      ${trialCatalogLineItemBadgeHtml(ps)}
     </div>
     <div class="trial-catalog-ps-right">
       ${trialCatalogQueueAllBtnHtml(ps)}
@@ -5030,6 +5201,13 @@ function trialCatalogSearchTokens(ps, planned = false) {
       ps.current_stage_desc,
       ps.inventory_code,
       ...opCards.flatMap(card => [card.operation_label, card.operation_name, card.source_op_no, card.source_op_seq_id]),
+      ...(ps.assembly_line_items || []).flatMap(item => [
+        item.process_sheet_no,
+        item.part_no,
+        item.part_desc,
+        item.related_from,
+      ]),
+      ps.assembly_line_items_related_from,
     ]
     : [
       psId,
@@ -5055,6 +5233,13 @@ function trialCatalogSearchTokens(ps, planned = false) {
       ps.inventory_code,
       ...(ps.ops || []).flatMap(op => [op.op_no, op.op_type, op.machine_category, op.preferred_machine, op.source_op_no]),
       ...opCards.flatMap(card => [card.operation_label, card.operation_name, card.source_op_no, card.source_op_seq_id]),
+      ...(ps.assembly_line_items || []).flatMap(item => [
+        item.process_sheet_no,
+        item.part_no,
+        item.part_desc,
+        item.related_from,
+      ]),
+      ps.assembly_line_items_related_from,
     ];
   return trialSearchableTokens(baseValues)
     .flatMap(token => [token, ...trialPsSerialSearchTokens(token)]);
@@ -5267,6 +5452,7 @@ function renderTrialCatalog() {
         <summary>${trialCatalogPsSummaryHtml(ps, siblingCountByBase)}</summary>
         ${trialRenderCatalogOpStatusStrip(ps)}
         ${trialCatalogBomBarHtml(ps)}
+        ${trialCatalogAssemblyLineItemsHtml(ps)}
         <div class="trial-catalog-oplist">${opCardsHtml}</div>
       </details>
     `;
@@ -5298,6 +5484,7 @@ function renderTrialCatalog() {
         <div class="trial-catalog-ps-main">
           <div class="trial-catalog-ps-id">${escapeHtml(String(ps.ps_id || '').split('::')[0] || ps.ps_id || '')}</div>
           ${trialCatalogPsQueuePillHtml(ps)}
+          ${trialCatalogLineItemBadgeHtml(ps)}
         </div>
         <div class="trial-catalog-planned-right">
           ${trialCatalogQueueAllBtnHtml(ps)}
@@ -5308,6 +5495,7 @@ function renderTrialCatalog() {
         </div>
       </div>
       ${trialCatalogBomBarHtml(ps)}
+      ${trialCatalogAssemblyLineItemsHtml(ps)}
       <div class="trial-catalog-oplist">
         ${(() => {
           const isOpAllocated = card => cachedIsOpAllocated(card, ps);

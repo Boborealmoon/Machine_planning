@@ -7,7 +7,7 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260829-arrived-hide-date">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260831-sr-assemblies">
 {% endblock %}
 {% block content %}
 <div class="sol-page">
@@ -32,6 +32,10 @@
         <button type="button" class="sol-chip" data-sol-view="no-wo" role="tab" aria-selected="false"
                 title="Process sheets with PP raised but no work order yet">
           No WO <span class="sol-chip-count" id="sol-no-wo-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip sol-chip--sr" data-sol-view="sr" role="tab" aria-selected="false"
+                title="Outstanding [SR] special process sheets (e.g. N26-[SR]22), including nested sub-assemblies">
+          [SR] <span class="sol-chip-count" id="sol-sr-count" hidden>0</span>
         </button>
         <button type="button" class="sol-chip" data-sol-view="pr-enquiry" role="tab" aria-selected="false"
                 title="Purchase request status enquiry">
@@ -195,7 +199,9 @@
       <span class="sol-legend-item sol-legend-item--date">Blue cell</span> expected date &middot;
       <span class="sol-legend-item sol-legend-item--arrived">Green cell</span> material arrived &middot;
       Click <strong>Flag</strong> for material arrival delay &middot;
-      Click <strong>BOM</strong> for materials + inventory enquiry
+      Click <strong>BOM</strong> for materials + inventory enquiry &middot;
+      <span class="sol-legend-item sol-legend-item--sr">[SR]</span> special process sheets &middot;
+      Sub-asm list nested parts on that job
     </p>
     <p class="sol-meta" id="sol-meta" hidden></p>
   </footer>
@@ -219,5 +225,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260829-arrived-hide-date"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260831-sr-assemblies"></script>
 {% endblock %}

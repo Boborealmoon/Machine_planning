@@ -30,7 +30,7 @@ from .process_sheets import (
     format_planner_ps_id,
     is_temp_planner_ps_id,
     manual_qty_by_ps_ids,
-    material_in_map_for_planner_ps_ids,
+    material_in_overlay_for_planner_ps_ids,
     parse_planner_ps_id,
     tooling_map_for_ps_op_keys,
     program_map_for_ps_op_keys,
@@ -1257,7 +1257,7 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None, *, sk
         planner_ps_ids.extend(item.get("planner_ps_ids") or [])
     unique_planner_ps_ids = list(dict.fromkeys(planner_ps_ids))
     manual_qty_by_ps = manual_qty_by_ps_ids(con, unique_planner_ps_ids)
-    material_in_by_ps = material_in_map_for_planner_ps_ids(con, unique_planner_ps_ids)
+    material_overlay_by_ps = material_in_overlay_for_planner_ps_ids(con, unique_planner_ps_ids)
     tooling_keys = []
     for item in grouped.values():
         ps_id = compact_text(item.get("ps_id"))
@@ -1271,13 +1271,21 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None, *, sk
 
     def _catalog_material_in(item):
         for pid in item.get("planner_ps_ids") or []:
-            if material_in_by_ps.get(pid):
+            if (material_overlay_by_ps.get(pid) or {}).get("material_in"):
                 return True
-        return bool(material_in_by_ps.get(item.get("ps_id")))
+        return bool((material_overlay_by_ps.get(item.get("ps_id")) or {}).get("material_in"))
+
+    def _catalog_material_in_date(item):
+        for pid in item.get("planner_ps_ids") or []:
+            date_text = compact_text((material_overlay_by_ps.get(pid) or {}).get("material_in_date"))
+            if date_text:
+                return date_text
+        return compact_text((material_overlay_by_ps.get(item.get("ps_id")) or {}).get("material_in_date"))
 
     for item in grouped.values():
         item.pop("_seen_op_keys", None)
         item["material_in"] = _catalog_material_in(item)
+        item["material_in_date"] = _catalog_material_in_date(item)
         _apply_catalog_op_qty_cascade(item, manual_qty_by_ps)
         item["flow_options"] = flow_options_for_inventory_code(
             item["inventory_code"],

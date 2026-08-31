@@ -117,6 +117,8 @@ class MaterialTrackingPrPoRouteTests(unittest.TestCase):
         self.assertIn('id="sol-item-search"', html)
         self.assertIn('id="sol-loading-label"', html)
         self.assertIn("Material need", html)
+        self.assertIn('data-sol-view="sr"', html)
+        self.assertIn('id="sol-sr-count"', html)
 
 
 if __name__ == "__main__":

@@ -385,6 +385,24 @@ def summarize_open_so_value(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _open_remaining_total(rows: list[dict[str, Any]]) -> float:
+    return round(sum(_open_value(row) for row in rows), 2)
+
+
+def _past_month_sales(cell: dict[str, Any]) -> float:
+    named = cell.get("sales")
+    if named is not None:
+        try:
+            return float(named)
+        except (TypeError, ValueError):
+            pass
+    return (
+        float(cell.get("backlog_delivered") or 0)
+        + float(cell.get("delivered") or 0)
+        + float(cell.get("early_delivered") or 0)
+    )
+
+
 def _open_qty(row: dict[str, Any]) -> float:
     try:
         if row.get("allocated_remaining_qty") is not None:
@@ -665,10 +683,16 @@ def _build_ytd_grid(
             start_d, end_d = _month_bounds(year, month)
             if meta["mode"] == "past":
                 past = _build_past_month_summary(type_shipments, start_d, end_d, basis=basis)
+                sales = (
+                    past["backlog_delivered"]["total_home_amt"]
+                    + past["delivered"]["total_home_amt"]
+                    + past["early_delivered"]["total_home_amt"]
+                )
                 cells.append(
                     {
                         "month": month,
                         "mode": "past",
+                        "sales": sales,
                         "backlog_delivered": past["backlog_delivered"]["total_home_amt"],
                         "delivered": past["delivered"]["total_home_amt"],
                         "early_delivered": past["early_delivered"]["total_home_amt"],
@@ -706,6 +730,7 @@ def _build_ytd_grid(
                 merged["backlog_delivered"] = sum(float(c[idx].get("backlog_delivered") or 0) for c in cell_lists)
                 merged["delivered"] = sum(float(c[idx].get("delivered") or 0) for c in cell_lists)
                 merged["early_delivered"] = sum(float(c[idx].get("early_delivered") or 0) for c in cell_lists)
+                merged["sales"] = sum(_past_month_sales(c[idx]) for c in cell_lists)
             else:
                 if meta.get("open_kind") == "current":
                     merged["backlog"] = sum(float(c[idx].get("backlog") or 0) for c in cell_lists)
@@ -718,8 +743,16 @@ def _build_ytd_grid(
         return out
 
     row_cells: dict[str, list[dict[str, Any]]] = {}
+    remaining_by_type: dict[str, float] = {}
     for pp_type in _YTD_ROW_TYPES:
         row_cells[pp_type] = _cells_for_type(pp_type)
+        remaining_by_type[pp_type] = _open_remaining_total(
+            [
+                row
+                for row in open_lines
+                if _ps_type(row.get("process_sheet_no"), row.get("pp_type")) == pp_type
+            ]
+        )
 
     rows: list[dict[str, Any]] = []
     for pp_type in _YTD_ROW_TYPES:
@@ -728,6 +761,7 @@ def _build_ytd_grid(
                 "id": pp_type,
                 "label": pp_type,
                 "cells": row_cells[pp_type],
+                "open_remaining": remaining_by_type[pp_type],
             }
         )
 
@@ -737,6 +771,7 @@ def _build_ytd_grid(
             "label": "Total (All Segment)",
             "cells": _sum_cells([row_cells[t] for t in _YTD_ROW_TYPES]),
             "emphasis": "total",
+            "open_remaining": round(sum(remaining_by_type.values()), 2),
         }
     )
 

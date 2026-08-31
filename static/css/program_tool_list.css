@@ -1,6 +1,7 @@
 /* ── Program / Tool List page ─────────────────────────────────────────── */
 .ptl-page {
-  max-width: 100%;
+  max-width: none;
+  width: 100%;
 }
 
 .ptl-toolbar {
@@ -11,8 +12,8 @@
 }
 
 .ptl-search-wrap {
-  flex: 1 1 280px;
-  max-width: 420px;
+  flex: 1 1 320px;
+  max-width: none;
   min-width: 200px;
 }
 
@@ -42,15 +43,16 @@
   min-width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  font-size: 12px;
-  --ptl-sticky-1-width: 112px;
-  --ptl-sticky-2-width: 148px;
+  table-layout: auto;
+  font-size: 13px;
+  --ptl-sticky-1-width: 128px;
+  --ptl-sticky-2-width: 220px;
 }
 
 .ptl-table thead th {
-  padding: 9px 14px;
+  padding: 10px 14px;
   text-align: left;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   color: #888;
@@ -69,7 +71,7 @@
 }
 
 .ptl-table td {
-  padding: 9px 14px;
+  padding: 10px 14px;
   border-bottom: 1px solid #f4f4f4;
   white-space: nowrap;
   color: #333;
@@ -364,7 +366,7 @@
 .ptl-page-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
 .ptl-page {
-  overflow-x: hidden;
+  overflow-x: auto;
 }
 
 .ptl-wrap,

@@ -46,6 +46,7 @@ __all__ = [
     "classify_assembly_job",
     "fetch_assembly_jobs",
     "is_open_root",
+    "summarize_sr_assembly_jobs",
 ]
 
 
@@ -507,6 +508,64 @@ def fetch_assembly_jobs(
 @assembly_bom_bp.get(ASSEMBLY_BOM_PATH)
 def assembly_bom_page():
     return render_template("assembly_boms.html", active="assembly_boms")
+
+
+def summarize_sr_assembly_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Slim [SR] jobs that have nested sub-assembly parts (e.g. ``N26-[SR]22``)."""
+    out: list[dict[str, Any]] = []
+    for job in jobs or []:
+        if not is_sr_process_sheet(job.get("ps_id")):
+            continue
+        children: list[dict[str, Any]] = []
+        for child in job.get("children") or []:
+            if not child.get("is_subassembly"):
+                continue
+            part_no = compact_text(child.get("part_no"))
+            if not part_no:
+                continue
+            children.append(
+                {
+                    "part_no": part_no,
+                    "description": compact_text(child.get("description")),
+                    "qty": as_float(child.get("qty")),
+                    "process_sheet_no": compact_text(child.get("process_sheet_no")),
+                    "is_subassembly": True,
+                }
+            )
+        if not children:
+            continue
+        out.append(
+            {
+                "ps_id": compact_text(job.get("ps_id")),
+                "part_no": compact_text(job.get("part_no")),
+                "sales_order_no": compact_text(job.get("sales_order_no")),
+                "children": children,
+            }
+        )
+    return out
+
+
+@assembly_bom_bp.get("/api/material-tracking/sr-assemblies")
+def api_material_tracking_sr_assemblies():
+    refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
+    try:
+        jobs = fetch_assembly_jobs(refresh=refresh, include_history=True)
+        items = summarize_sr_assembly_jobs(jobs)
+        return jsonify(
+            {
+                "ok": True,
+                "count": len(items),
+                "items": items,
+                "fetched_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+                "cache_ttl_sec": _CACHE_TTL_SEC,
+            }
+        )
+    except Exception as exc:
+        friendly = planner_db_connect_error(exc)
+        if friendly:
+            return jsonify({"ok": False, "error": friendly}), 503
+        logger.exception("material tracking SR assembly overlay failed")
+        return jsonify({"ok": False, "error": str(exc)}), 502
 
 
 @assembly_bom_bp.get("/api/assembly-boms")
