@@ -9010,10 +9010,12 @@
     color: var(--text2, #64748b);
     white-space: nowrap;
   }
-  .so-coway-edd-cell {
+  .so-coway-edd-cell,
+  .so-program-finish-cell {
     min-width: 128px;
   }
-  .so-coway-edd-input {
+  .so-coway-edd-input,
+  .so-program-finish-input {
     width: 100%;
     box-sizing: border-box;
     border: 1px solid #d6d3d1;
@@ -9025,15 +9027,18 @@
     color: var(--text1);
     background: #fff;
   }
-  .so-coway-edd-input:focus {
+  .so-coway-edd-input:focus,
+  .so-program-finish-input:focus {
     outline: none;
     border-color: #3b82f6;
     box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
   }
-  .so-coway-edd-input:disabled {
+  .so-coway-edd-input:disabled,
+  .so-program-finish-input:disabled {
     opacity: 0.6;
   }
-  .so-coway-edd-cell .so-editable-status {
+  .so-coway-edd-cell .so-editable-status,
+  .so-program-finish-cell .so-editable-status {
     margin-top: 2px;
     min-height: 12px;
   }

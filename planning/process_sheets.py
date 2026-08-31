@@ -4600,25 +4600,114 @@ def tooling_map_for_ps_op_keys(con, keys):
     if not flags.get("tooling_ready"):
         return {token: True for token in normalized}
     ps_ids = list(dict.fromkeys(ps for ps, _ in normalized))
-    out = {token: True for token in normalized}
-    for row in rows(
+    op_rows = rows(
         con.execute(
             """
-            SELECT source_ps_id, source_op_seq_id,
+            SELECT source_ps_id, job_no, source_op_seq_id,
                    COALESCE(tooling_ready, TRUE) AS tooling_ready
             FROM planner_operation
             WHERE source_ps_id = ANY(%s)
+               OR split_part(COALESCE(source_ps_id, ''), '::', 1) = ANY(%s)
+               OR split_part(COALESCE(job_no, ''), '::', 1) = ANY(%s)
             """,
-            (ps_ids,),
+            (
+                ps_ids,
+                [_readiness_source_ps_base(pid) for pid in ps_ids],
+                [_readiness_source_ps_base(pid) for pid in ps_ids],
+            ),
         )
-    ):
-        ps_id = compact_text(row.get("source_ps_id"))
-        seq_id = int(row.get("source_op_seq_id") or 0)
-        if not ps_id or seq_id <= 0:
+    )
+    return _apply_ready_exceptions_to_ps_op_keys(
+        normalized,
+        _ready_exception_bases_from_operation_rows(op_rows, "tooling_ready"),
+    )
+
+
+def _readiness_source_ps_base(ps_id):
+    """Canonical source process-sheet id (no ::partial) for tooling/program fan-out."""
+    text = compact_text(ps_id)
+    if not text:
+        return ""
+    source, _, _ = _planner_ps_identity(text)
+    return compact_text(source)
+
+
+def collapse_block_ready_flags_by_source_ps(blocks):
+    """Share tooling/program exceptions across BOM steps of the same process sheet.
+
+    False wins so lane card colours stay consistent for the same PS (and part).
+    """
+    tooling_false = set()
+    program_false = set()
+    for row in blocks or []:
+        base = _readiness_source_ps_base(
+            row.get("planner_ps_id") or row.get("source_ps_id") or row.get("job_no")
+        )
+        if not base:
             continue
-        token = (ps_id, seq_id)
-        if token in out:
-            out[token] = bool(row.get("tooling_ready"))
+        if row.get("tooling_ready") is False:
+            tooling_false.add(base)
+        if row.get("program_ready") is False:
+            program_false.add(base)
+    for row in blocks or []:
+        base = _readiness_source_ps_base(
+            row.get("planner_ps_id") or row.get("source_ps_id") or row.get("job_no")
+        )
+        if not base:
+            continue
+        if base in tooling_false:
+            row["tooling_ready"] = False
+        if base in program_false:
+            row["program_ready"] = False
+    return blocks
+
+
+def _ready_exception_bases_from_operation_rows(op_rows, ready_key):
+    bases = set()
+    for row in op_rows or []:
+        if bool(row.get(ready_key, True)):
+            continue
+        base = _readiness_source_ps_base(row.get("source_ps_id") or row.get("job_no"))
+        if base:
+            bases.add(base)
+    return bases
+
+
+def _apply_ready_exceptions_to_ps_op_keys(tokens, exception_bases):
+    out = {token: True for token in tokens}
+    for token in tokens:
+        base = _readiness_source_ps_base(token[0])
+        if base and base in exception_bases:
+            out[token] = False
+    return out
+
+
+def _sibling_operation_ids_for_source_ps(con, source_ps_id):
+    source_base = _readiness_source_ps_base(source_ps_id)
+    if not source_base:
+        return []
+    found = rows(
+        con.execute(
+            """
+            SELECT operation_id, source_ps_id, job_no
+            FROM planner_operation
+            WHERE split_part(COALESCE(source_ps_id, ''), '::', 1) = %s
+               OR split_part(COALESCE(job_no, ''), '::', 1) = %s
+            """,
+            (source_base, source_base),
+        )
+    )
+    out = []
+    seen = set()
+    for row in found:
+        op_id = int(row.get("operation_id") or 0)
+        if op_id <= 0 or op_id in seen:
+            continue
+        for candidate in (row.get("source_ps_id"), row.get("job_no")):
+            if _readiness_source_ps_base(candidate) == source_base:
+                seen.add(op_id)
+                out.append(op_id)
+                break
     return out
 
 
@@ -4647,49 +4736,95 @@ def _resolve_operation_id_for_tooling(con, operation_id=None, ps_id=None, source
     return int((row or {}).get("operation_id") or 0)
 
 
-def _update_tooling(con, tooling_ready, operation_id=None, ps_id=None, source_op_seq_id=None):
-    _ensure_tooling_columns(con)
+def _source_ps_for_operation(con, op_id, fallback_ps_id=""):
+    row = one(
+        con.execute(
+            """
+            SELECT source_ps_id, job_no
+            FROM planner_operation
+            WHERE operation_id = %s
+            """,
+            (int(op_id or 0),),
+        )
+    )
+    return (
+        compact_text((row or {}).get("source_ps_id"))
+        or compact_text((row or {}).get("job_no"))
+        or compact_text(fallback_ps_id)
+    )
+
+
+def _update_operation_ready_flag(
+    con,
+    *,
+    ready_bool,
+    column,
+    date_column,
+    operation_id=None,
+    ps_id=None,
+    source_op_seq_id=None,
+):
     op_id = _resolve_operation_id_for_tooling(
         con,
         operation_id=operation_id,
         ps_id=ps_id,
         source_op_seq_id=source_op_seq_id,
     )
-    if op_id <= 0:
+    source_ps = compact_text(ps_id)
+    if op_id > 0:
+        source_ps = _source_ps_for_operation(con, op_id, source_ps)
+    sibling_ids = _sibling_operation_ids_for_source_ps(con, source_ps)
+    if op_id > 0 and op_id not in sibling_ids:
+        sibling_ids.insert(0, op_id)
+    if not sibling_ids:
         return None, "operation not found"
-    tooling_bool = bool(tooling_ready)
+    return_id = op_id if op_id > 0 else sibling_ids[0]
     con.execute(
-        """
+        f"""
         UPDATE planner_operation
-        SET tooling_ready = %s,
-            tooling_ready_date = CASE
-                WHEN NOT %s THEN COALESCE(tooling_ready_date, CURRENT_DATE)
+        SET {column} = %s,
+            {date_column} = CASE
+                WHEN NOT %s THEN COALESCE({date_column}, CURRENT_DATE)
                 ELSE NULL
             END,
             updated_at = NOW()
-        WHERE operation_id = %s
+        WHERE operation_id = ANY(%s)
         """,
-        (tooling_bool, tooling_bool, op_id),
+        (ready_bool, ready_bool, sibling_ids),
     )
     row = one(
         con.execute(
-            """
+            f"""
             SELECT operation_id, source_ps_id, source_op_seq_id,
-                   tooling_ready, tooling_ready_date
+                   {column}, {date_column}
             FROM planner_operation
             WHERE operation_id = %s
             """,
-            (op_id,),
+            (return_id,),
         )
     )
-    tooling_date = (row or {}).get("tooling_ready_date")
+    ready_date = (row or {}).get(date_column)
     return {
-        "operation_id": op_id,
+        "operation_id": return_id,
         "ps_id": compact_text((row or {}).get("source_ps_id")),
         "source_op_seq_id": int((row or {}).get("source_op_seq_id") or 0),
-        "tooling_ready": bool((row or {}).get("tooling_ready")),
-        "tooling_ready_date": tooling_date.isoformat() if tooling_date else None,
+        column: bool((row or {}).get(column)),
+        date_column: ready_date.isoformat() if ready_date else None,
+        "updated_operation_ids": sibling_ids,
     }, None
+
+
+def _update_tooling(con, tooling_ready, operation_id=None, ps_id=None, source_op_seq_id=None):
+    _ensure_tooling_columns(con)
+    return _update_operation_ready_flag(
+        con,
+        ready_bool=bool(tooling_ready),
+        column="tooling_ready",
+        date_column="tooling_ready_date",
+        operation_id=operation_id,
+        ps_id=ps_id,
+        source_op_seq_id=source_op_seq_id,
+    )
 
 
 def tooling_post_response():
@@ -4839,71 +4974,40 @@ def program_map_for_ps_op_keys(con, keys):
     if not flags.get("program_ready"):
         return {token: True for token in normalized}
     ps_ids = list(dict.fromkeys(ps for ps, _ in normalized))
-    out = {token: True for token in normalized}
-    for row in rows(
+    op_rows = rows(
         con.execute(
             """
-            SELECT source_ps_id, source_op_seq_id,
+            SELECT source_ps_id, job_no, source_op_seq_id,
                    COALESCE(program_ready, TRUE) AS program_ready
             FROM planner_operation
             WHERE source_ps_id = ANY(%s)
+               OR split_part(COALESCE(source_ps_id, ''), '::', 1) = ANY(%s)
+               OR split_part(COALESCE(job_no, ''), '::', 1) = ANY(%s)
             """,
-            (ps_ids,),
+            (
+                ps_ids,
+                [_readiness_source_ps_base(pid) for pid in ps_ids],
+                [_readiness_source_ps_base(pid) for pid in ps_ids],
+            ),
         )
-    ):
-        ps_id = compact_text(row.get("source_ps_id"))
-        seq_id = int(row.get("source_op_seq_id") or 0)
-        if not ps_id or seq_id <= 0:
-            continue
-        token = (ps_id, seq_id)
-        if token in out:
-            out[token] = bool(row.get("program_ready"))
-    return out
+    )
+    return _apply_ready_exceptions_to_ps_op_keys(
+        normalized,
+        _ready_exception_bases_from_operation_rows(op_rows, "program_ready"),
+    )
 
 
 def _update_program(con, program_ready, operation_id=None, ps_id=None, source_op_seq_id=None):
     _ensure_program_columns(con)
-    op_id = _resolve_operation_id_for_tooling(
+    return _update_operation_ready_flag(
         con,
+        ready_bool=bool(program_ready),
+        column="program_ready",
+        date_column="program_ready_date",
         operation_id=operation_id,
         ps_id=ps_id,
         source_op_seq_id=source_op_seq_id,
     )
-    if op_id <= 0:
-        return None, "operation not found"
-    program_bool = bool(program_ready)
-    con.execute(
-        """
-        UPDATE planner_operation
-        SET program_ready = %s,
-            program_ready_date = CASE
-                WHEN NOT %s THEN COALESCE(program_ready_date, CURRENT_DATE)
-                ELSE NULL
-            END,
-            updated_at = NOW()
-        WHERE operation_id = %s
-        """,
-        (program_bool, program_bool, op_id),
-    )
-    row = one(
-        con.execute(
-            """
-            SELECT operation_id, source_ps_id, source_op_seq_id,
-                   program_ready, program_ready_date
-            FROM planner_operation
-            WHERE operation_id = %s
-            """,
-            (op_id,),
-        )
-    )
-    program_date = (row or {}).get("program_ready_date")
-    return {
-        "operation_id": op_id,
-        "ps_id": compact_text((row or {}).get("source_ps_id")),
-        "source_op_seq_id": int((row or {}).get("source_op_seq_id") or 0),
-        "program_ready": bool((row or {}).get("program_ready")),
-        "program_ready_date": program_date.isoformat() if program_date else None,
-    }, None
 
 
 def program_post_response():

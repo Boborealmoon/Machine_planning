@@ -579,6 +579,8 @@ async function trialRefreshCatalogSidebar() {
     trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + trialCatalogClientCacheMs();
     trialAssignCatalogRows(trialLoadCache[cacheKey]);
     if (typeof trialMaterialInOverrides !== 'undefined') trialMaterialInOverrides.clear();
+    if (typeof trialToolingOverrides !== 'undefined') trialToolingOverrides.clear();
+    if (typeof trialProgramOverrides !== 'undefined') trialProgramOverrides.clear();
     if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
     if (typeof bindTrialCatalogDnD === 'function') bindTrialCatalogDnD();
   } catch (err) {
@@ -977,6 +979,8 @@ function trialApplyCatalogPayload(erpVouchers, renderOptions = {}) {
   trialLoadCache[`${cacheKey}ExpiresAt`] = Date.now() + catalogCacheMs;
   trialAssignCatalogRows(trialLoadCache[cacheKey]);
   if (typeof trialMaterialInOverrides !== 'undefined') trialMaterialInOverrides.clear();
+  if (typeof trialToolingOverrides !== 'undefined') trialToolingOverrides.clear();
+  if (typeof trialProgramOverrides !== 'undefined') trialProgramOverrides.clear();
   if (typeof trialBoardTempPsIdsMissingFromCatalog === 'function'
     && trialBoardTempPsIdsMissingFromCatalog().length) {
     trialInvalidateCatalogCache();

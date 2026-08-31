@@ -352,6 +352,7 @@ def test_fetch_restores_material_dates_from_notes(monkeypatch):
     )
     monkeypatch.setattr("planning.sales_orders_route._load_material_in_overlay", lambda _ids: {})
     monkeypatch.setattr("planning.sales_orders_route._apply_proposed_cnc_overlay", lambda _orders: None)
+    monkeypatch.setattr("planning.sales_orders_route._load_program_finish_overlay", lambda _ids: {})
 
     payload = _fetch_sales_orders(active_only=True, lite=True)
     pp = payload["active"][0]["pp_vouchers"][0]
@@ -368,6 +369,7 @@ def test_overlay_skips_wipe_when_notes_load_fails(monkeypatch):
     )
     monkeypatch.setattr("planning.sales_orders_route._load_material_in_overlay", lambda _ids: None)
     monkeypatch.setattr("planning.sales_orders_route._apply_proposed_cnc_overlay", lambda _orders: None)
+    monkeypatch.setattr("planning.sales_orders_route._load_program_finish_overlay", lambda _ids: None)
 
     from planning.sales_orders_route import _overlay_planner_edits
 
@@ -510,3 +512,50 @@ def test_proposed_cnc_overlay_maps_by_part_number(monkeypatch):
     assert first["partials"][0]["proposed_cnc"] == ["CNC 20", "CNC 22"]
     assert orders[1]["pp_vouchers"][0]["proposed_cnc"] == ["CNC 20", "CNC 22"]
     assert orders[1]["pp_vouchers"][1]["proposed_cnc"] == []
+
+
+def test_program_finish_iso_normalizes_datetime():
+    from datetime import date, datetime
+
+    from planning.sales_orders_route import _program_finish_iso
+
+    assert _program_finish_iso("2026-07-31") == "2026-07-31"
+    assert _program_finish_iso("2026-07-31T16:00:00") == "2026-07-31"
+    assert _program_finish_iso("2026-07-31 16:00:00") == "2026-07-31"
+    assert _program_finish_iso(date(2026, 9, 4)) == "2026-09-04"
+    assert _program_finish_iso(datetime(2026, 9, 4, 16, 0)) == "2026-09-04"
+    assert _program_finish_iso("") == ""
+    assert _program_finish_iso(None) == ""
+    assert _program_finish_iso("31/07/2026") == ""
+
+
+def test_program_finish_overlay_applies_by_process_sheet():
+    from planning.sales_orders_route import _apply_program_finish_overlay
+
+    orders = [
+        {
+            "pp_vouchers": [
+                {"process_sheet_no": "nps26-0397", "pp_voucher_no": "PP/1"},
+                {"process_sheet_no": "APS26-0001", "pp_voucher_no": "PP/2"},
+            ]
+        }
+    ]
+    _apply_program_finish_overlay(orders, {"NPS26-0397": "2026-07-31"})
+    assert orders[0]["pp_vouchers"][0]["program_finish_at"] == "2026-07-31"
+    assert orders[0]["pp_vouchers"][1]["program_finish_at"] == ""
+
+
+def test_overlay_planner_edits_applies_program_finish(monkeypatch):
+    cached = _pp_payload("PP/1", process_sheet_no="NPS26-0397")
+    monkeypatch.setattr("planning.sales_orders_route._load_notes_map", lambda _ids: {})
+    monkeypatch.setattr("planning.sales_orders_route._load_material_in_overlay", lambda _ids: {})
+    monkeypatch.setattr("planning.sales_orders_route._apply_proposed_cnc_overlay", lambda _orders: None)
+    monkeypatch.setattr(
+        "planning.sales_orders_route._load_program_finish_overlay",
+        lambda _ids: {"NPS26-0397": "2026-09-04"},
+    )
+
+    from planning.sales_orders_route import _overlay_planner_edits
+
+    payload = _overlay_planner_edits(cached)
+    assert payload["active"][0]["pp_vouchers"][0]["program_finish_at"] == "2026-09-04"

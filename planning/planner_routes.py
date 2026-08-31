@@ -71,6 +71,7 @@ from .helpers import planner_db, one, planner_try_savepoint, rows, parse_dt_text
 from .materials import material_status_map_for_ps_ids, sync_material_requirements_for_ps_ids
 from .operation_sequence import apply_machine_queue_order, apply_machine_queue_orders
 from .process_sheets import (
+    collapse_block_ready_flags_by_source_ps,
     due_date_map_for_planner_ps_ids,
     ensure_planner_process_sheet,
     format_planner_ps_id,
@@ -314,6 +315,7 @@ def _attach_board_meta_to_blocks(con, blocks):
         due_text = compact_text(due_date_by_ps.get(ps_id))
         if due_text:
             row["due_date"] = due_text
+    collapse_block_ready_flags_by_source_ps(blocks)
 
 
 def _attach_board_meta_to_blocks_rest(blocks):
@@ -417,6 +419,7 @@ def _attach_board_meta_to_blocks_rest(blocks):
         if op_id > 0:
             row["tooling_ready"] = bool(tooling_by_op.get(op_id, True))
             row["program_ready"] = bool(program_by_op.get(op_id, True))
+    collapse_block_ready_flags_by_source_ps(blocks)
 
 
 def _trial_schedule_via_rest():

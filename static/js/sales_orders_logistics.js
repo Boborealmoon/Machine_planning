@@ -649,6 +649,11 @@
     if (!cell) return;
     cell.classList.toggle('has-material-date', Boolean(parsed.date) && !parsed.arrived);
     cell.classList.toggle('has-material-arrived', Boolean(parsed.arrived));
+    const dateInput = cell.querySelector('.so-material-subcon-date');
+    if (dateInput) {
+      dateInput.disabled = Boolean(parsed.arrived);
+      dateInput.classList.toggle('is-hidden', Boolean(parsed.arrived));
+    }
   }
 
   function renderMaterialCell(pp) {
@@ -656,6 +661,7 @@
     const raw = String(pp.material_subcon || '');
     const parsed = parseMaterialSubcon(raw);
     const arrivedCls = parsed.arrived ? ' is-active' : '';
+    const dateHiddenCls = parsed.arrived ? ' is-hidden' : '';
     const cellStateCls = parsed.arrived ? ' has-material-arrived' : (parsed.date ? ' has-material-date' : '');
     const legacyHtml = parsed.legacy
       ? `<span class="so-material-subcon-legacy" title="Previous note">${escapeHtml(parsed.legacy)}</span>`
@@ -672,8 +678,8 @@
             Arrived
           </button>
           <input type="date"
-            class="so-material-subcon-date"
-            value="${escapeHtml(parsed.date)}"
+            class="so-material-subcon-date${dateHiddenCls}"
+            value="${escapeHtml(parsed.arrived ? '' : parsed.date)}"
             ${parsed.arrived ? 'disabled' : ''}
             aria-label="Material expected / arrival date">
           ${legacyHtml}
@@ -992,6 +998,7 @@
     const raw = String(row.material_subcon || '');
     const parsed = parseMaterialSubcon(raw);
     const arrivedCls = parsed.arrived ? ' is-active' : '';
+    const dateHiddenCls = parsed.arrived ? ' is-hidden' : '';
     const cellStateCls = parsed.arrived ? ' has-material-arrived' : (parsed.date ? ' has-material-date' : '');
     return `
       <td class="so-material-subcon-cell${cellStateCls}" data-request-id="${escapeHtml(String(id))}" data-last-saved="${escapeHtml(raw)}">
@@ -1005,8 +1012,8 @@
             Arrived
           </button>
           <input type="date"
-            class="so-material-subcon-date"
-            value="${escapeHtml(parsed.date)}"
+            class="so-material-subcon-date${dateHiddenCls}"
+            value="${escapeHtml(parsed.arrived ? '' : parsed.date)}"
             ${parsed.arrived ? 'disabled' : ''}
             aria-label="Material EDD date">
         </div>
@@ -1099,9 +1106,9 @@
     }
     if (dateInput) {
       dateInput.disabled = parsed.arrived;
-      dateInput.classList.remove('is-hidden');
+      dateInput.classList.toggle('is-hidden', parsed.arrived);
       if (parsed.date) dateInput.value = parsed.date;
-      else if (!parsed.arrived) dateInput.value = '';
+      else dateInput.value = '';
     }
   }
 
@@ -1984,10 +1991,6 @@
       btn.classList.toggle('is-active', nextArrived);
       btn.setAttribute('aria-pressed', nextArrived ? 'true' : 'false');
       btn.title = nextArrived ? 'Material arrived - click to clear' : 'Mark material as arrived';
-      if (dateInput) {
-        dateInput.disabled = nextArrived;
-        dateInput.classList.remove('is-hidden');
-      }
       saveMaterialCell(cell, serializeMaterialSubcon({ arrived: nextArrived, date: nextArrived ? '' : date }));
     });
 

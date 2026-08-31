@@ -96,6 +96,7 @@ const SO_COLUMNS = [
   { id: 'customer_po_no', label: 'P/O No.', sortable: true, filterable: true },
   { id: 'due_date', label: 'Due date', sortable: true, filterable: true },
   { id: 'proposed_edd', label: 'Prop. EDD', sortable: true, filterable: true },
+  { id: 'program_finish_at', label: 'Programme finish', sortable: true, filterable: true },
   { id: 'week', label: 'Week', sortable: true, filterable: true },
   { id: 'delivery_date', label: 'Delivered', sortable: true, filterable: true },
   { id: 'unit_selling_price', label: 'U/Price', sortable: true, filterable: true },
@@ -243,6 +244,10 @@ function soFormatDate(value) {
 
 function soProposedEddDisplay(pp, partial) {
   return String(partial?.coway_proposed_edd || pp?.coway_proposed_edd || '').trim();
+}
+
+function soProgramFinishDisplay(pp) {
+  return soDateInputValue(pp?.program_finish_at);
 }
 
 const SO_WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -654,6 +659,7 @@ const SO_EXPORT_COLUMNS = [
   { id: 'customer_po_no', label: 'P/O No.', width: 16 },
   { id: 'due_date', label: 'Due date', width: 12 },
   { id: 'proposed_edd', label: 'Prop. EDD', width: 12 },
+  { id: 'program_finish_at', label: 'Programme finish', width: 14 },
   { id: 'week', label: 'Week', width: 18 },
   { id: 'delivery_date', label: 'Delivered', width: 12 },
   { id: 'unit_selling_price', label: 'U/Price', width: 12 },
@@ -695,10 +701,11 @@ function soExportCellValue(leaf, colId) {
     case 'order_date':
     case 'due_date':
     case 'proposed_edd':
+    case 'program_finish_at':
     case 'delivery_date': {
-      const raw = colId === 'proposed_edd'
-        ? soProposedEddDisplay(pp, partial)
-        : pp?.[colId];
+      let raw = pp?.[colId];
+      if (colId === 'proposed_edd') raw = soProposedEddDisplay(pp, partial);
+      else if (colId === 'program_finish_at') raw = soProgramFinishDisplay(pp);
       return soExportDateValue(raw);
     }
     case 'week':
@@ -910,6 +917,7 @@ function soRenderJobDetailFields(order, pp, partial) {
     soDetailField('SO line', pp?.source_line_item_no),
     soDetailField('Due date', soFormatDate(pp?.due_date)),
     ...(soProposedEddDisplay(pp, partial) ? [soDetailField('Prop. EDD', soFormatDate(soProposedEddDisplay(pp, partial)))] : []),
+    ...(soProgramFinishDisplay(pp) ? [soDetailField('Programme finish', soFormatDate(soProgramFinishDisplay(pp)))] : []),
     soDetailField('Week', soWeekLabel(pp, partial)),
     ...(pp?.delivery_date ? [soDetailField('Delivered', soFormatDate(pp?.delivery_date))] : []),
     soDetailField('Qty', pp?.pp_qty),
@@ -962,6 +970,7 @@ function soRenderPpDetail(order, pp) {
     soDetailField('Customer PO', pp?.customer_po_no, { mono: true }),
     soDetailField('Qty', pp?.pp_qty),
     soDetailField('Due date', soFormatDate(pp?.due_date)),
+    ...(soProgramFinishDisplay(pp) ? [soDetailField('Programme finish', soFormatDate(soProgramFinishDisplay(pp)))] : []),
     ...SO_NOTE_FIELDS.map(field => soDetailField(
       SO_NOTE_LABELS[field],
       field === 'material_subcon' ? soMaterialSubconDisplay(pp?.[field]) : pp?.[field],
@@ -1209,7 +1218,7 @@ function soBindTableClicks() {
   wrap.dataset.detailBound = '1';
 
   wrap.addEventListener('click', e => {
-    if (e.target.closest('.so-editable-input, .so-editable-cell, .so-material-subcon-cell, .so-exception-cell, .so-coway-edd-cell')) return;
+    if (e.target.closest('.so-editable-input, .so-editable-cell, .so-material-subcon-cell, .so-exception-cell, .so-coway-edd-cell, .so-program-finish-cell')) return;
 
     const materialBtn = e.target.closest('[data-action="open-material"]');
     if (materialBtn) {
@@ -1464,6 +1473,7 @@ function soLeafColumnValue(leaf, colId) {
     case 'customer_po_no': return pp?.customer_po_no;
     case 'due_date': return pp?.due_date;
     case 'proposed_edd': return soProposedEddDisplay(pp, partial);
+    case 'program_finish_at': return soProgramFinishDisplay(pp);
     case 'week': return soWeekLabel(pp, partial);
     case 'delivery_date': return pp?.delivery_date;
     case 'unit_selling_price': return pp?.unit_selling_price;
@@ -1534,6 +1544,8 @@ function soLeafColumnIsEmpty(leaf, colId) {
       return !String(pp?.due_date || '').trim();
     case 'proposed_edd':
       return !soProposedEddDisplay(pp, partial);
+    case 'program_finish_at':
+      return !soProgramFinishDisplay(pp);
     case 'week':
       return soWeekLabel(pp, partial) === '—';
     case 'delivery_date':
@@ -2512,6 +2524,7 @@ function soRenderPpCells(pp, partial) {
     <td class="new-orders-mono">${escapeHtml(String(pp.customer_po_no || '—'))}</td>
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.due_date))}</td>
     ${soRenderProposedEddCell(pp, partial)}
+    ${soRenderProgramFinishCell(pp, partial)}
     ${soRenderWeekCell(pp, partial)}
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.delivery_date))}</td>
     <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.unit_selling_price))}</td>
@@ -2583,6 +2596,29 @@ function soRenderProposedEddCell(pp, partial) {
         data-partial-no="${escapeHtml(String(soPartialNo(partial)))}"
         data-last-saved="${escapeHtml(value)}"
         aria-label="Proposed EDD">
+      <span class="so-editable-status" aria-live="polite"></span>
+    </td>
+  `;
+}
+
+function soRenderProgramFinishCell(pp, _partial) {
+  const ppNo = String(pp?.pp_voucher_no || '').trim();
+  const psBase = soProposedEddPsBase(pp);
+  const value = soProgramFinishDisplay(pp);
+  const editable = Boolean(psBase);
+  if (!editable) {
+    return `<td class="new-orders-date so-program-finish-cell"><span class="so-program-finish-static">${escapeHtml(soFormatDate(value))}</span></td>`;
+  }
+  return `
+    <td class="new-orders-date so-program-finish-cell">
+      <input type="date"
+        class="so-program-finish-input"
+        value="${escapeHtml(value)}"
+        data-pp-voucher-no="${escapeHtml(ppNo)}"
+        data-ps-base="${escapeHtml(psBase)}"
+        data-last-saved="${escapeHtml(value)}"
+        aria-label="Programme finish"
+        title="Same date as Finish on NPI/FA Management — New parts">
       <span class="so-editable-status" aria-live="polite"></span>
     </td>
   `;
@@ -2738,7 +2774,7 @@ function soRenderOrderGroup(order, soGroupIndex = 0) {
 }
 
 function soSetSaveStatus(control, state, message) {
-  const status = control?.closest('.so-editable-cell, .so-material-subcon-cell, .so-coway-edd-cell')?.querySelector('.so-editable-status');
+  const status = control?.closest('.so-editable-cell, .so-material-subcon-cell, .so-coway-edd-cell, .so-program-finish-cell')?.querySelector('.so-editable-status');
   if (!status) return;
   status.className = `so-editable-status${state ? ` is-${state}` : ''}`;
   status.textContent = message || '';
@@ -2869,6 +2905,65 @@ async function soSaveProposedEdd(input) {
     soSetSaveStatus(input, 'saved', 'Saved');
     window.setTimeout(() => {
       if (input.dataset.lastSaved === saved) soSetSaveStatus(input, '', '');
+    }, 1500);
+  } catch (err) {
+    input.value = lastSaved;
+    soSetSaveStatus(input, 'error', err.message || 'Save failed');
+  } finally {
+    input.disabled = false;
+    soState.saveInFlight.delete(key);
+  }
+}
+
+function soUpdateProgramFinishModel(psBase, savedValue) {
+  const target = String(psBase || '').trim().toUpperCase();
+  if (!target) return;
+  soAllOrders().forEach(order => {
+    (order.pp_vouchers || []).forEach(pp => {
+      if (soProposedEddPsBase(pp).toUpperCase() === target) {
+        pp.program_finish_at = savedValue;
+      }
+    });
+  });
+}
+
+function soSyncProgramFinishInputs(psBase, savedValue) {
+  const target = String(psBase || '').trim();
+  document.querySelectorAll('.so-program-finish-input').forEach(input => {
+    if (String(input.dataset.psBase || '').trim() !== target) return;
+    input.value = savedValue;
+    input.dataset.lastSaved = savedValue;
+  });
+}
+
+async function soSaveProgramFinish(input) {
+  const cell = input?.closest('.so-program-finish-cell');
+  const ppNo = String(input?.dataset?.ppVoucherNo || '').trim();
+  const psBase = String(input?.dataset?.psBase || '').trim();
+  if (!psBase) return;
+
+  const nextValue = String(input.value || '').slice(0, 10);
+  const lastSaved = String(input.dataset.lastSaved || '');
+  if (nextValue === lastSaved) return;
+
+  const key = `${psBase}::program_finish_at`;
+  if (soState.saveInFlight.has(key)) return;
+
+  soState.saveInFlight.add(key);
+  input.disabled = true;
+  soSetSaveStatus(input, 'saving', 'Saving…');
+  try {
+    const data = await soPostJson('/api/first-article/new-parts', {
+      process_sheet_no: psBase,
+      pp_voucher_no: ppNo || undefined,
+      program_finish_at: nextValue || '',
+    });
+    const saved = soDateInputValue(data.row?.program_finish_at ?? data.program_finish_at);
+    soSyncProgramFinishInputs(psBase, saved);
+    soUpdateProgramFinishModel(psBase, saved);
+    soSetSaveStatus(cell || input, 'saved', 'Saved');
+    window.setTimeout(() => {
+      if (String(input.dataset.lastSaved || '') === saved) soSetSaveStatus(input, '', '');
     }, 1500);
   } catch (err) {
     input.value = lastSaved;
@@ -3028,6 +3123,19 @@ function soBindProposedEddInputs() {
     if (!input || input.disabled) return;
     e.stopPropagation();
     soSaveProposedEdd(input);
+  });
+}
+
+function soBindProgramFinishInputs() {
+  const body = document.getElementById('so-table-body');
+  if (!body || body.dataset.programFinishBound === '1') return;
+  body.dataset.programFinishBound = '1';
+
+  body.addEventListener('change', e => {
+    const input = e.target.closest('.so-program-finish-input');
+    if (!input || input.disabled) return;
+    e.stopPropagation();
+    soSaveProgramFinish(input);
   });
 }
 
@@ -3335,6 +3443,7 @@ function soInit() {
   soBindColumnControls();
   soBindMaterialSubconInputs();
   soBindProposedEddInputs();
+  soBindProgramFinishInputs();
   soBindExceptionFlags();
   soBindPsTypeDropdown();
   soRenderTableHead();

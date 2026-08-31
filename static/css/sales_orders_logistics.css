@@ -965,8 +965,9 @@ body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-
   align-items: stretch;
 }
 
+body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-date,
 body.sol-view .so-material-subcon-date.is-hidden {
-  display: block !important;
+  display: none;
 }
 
 body.sol-view .so-material-subcon-arrived {
@@ -1012,14 +1013,32 @@ body.sol-view .so-material-subcon-arrived:focus:not(:focus-visible) {
 }
 
 body.sol-view .so-material-subcon-arrived.is-active {
-  border: 1px solid #b7d4c4;
-  background: var(--sol-arrived-bg);
-  color: var(--sol-arrived);
+  border: 1px solid var(--sol-arrived);
+  background: var(--sol-arrived);
+  color: #fff;
   box-shadow: none;
 }
 
+body.sol-view .so-material-subcon-arrived.is-active:hover {
+  border-color: var(--sol-arrived);
+  background: #245a43;
+  color: #fff;
+}
+
 body.sol-view .so-material-subcon-arrived.is-active:focus:not(:focus-visible) {
-  border: 1px solid #b7d4c4;
+  border: 1px solid var(--sol-arrived);
+}
+
+body.sol-view .so-material-subcon-arrived-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #c5d0c8;
+  flex-shrink: 0;
+}
+
+body.sol-view .so-material-subcon-arrived.is-active .so-material-subcon-arrived-dot {
+  background: #fff;
 }
 
 body.sol-view .so-material-subcon-date {

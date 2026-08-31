@@ -7,7 +7,7 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260827-notes-wider">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260829-arrived-hide-date">
 {% endblock %}
 {% block content %}
 <div class="sol-page">
@@ -219,5 +219,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260827-prpo-load"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260829-arrived-hide-date"></script>
 {% endblock %}

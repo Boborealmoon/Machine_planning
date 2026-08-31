@@ -73,53 +73,106 @@ function trialMaterialInLaneClass(leader) {
   return trialMaterialInForBlockLeader(leader) ? 'material-in-yes' : 'material-in-no';
 }
 
-function trialToolingKey(operationId, psId, sourceOpSeqId) {
+function trialReadinessSourcePs(psId) {
+  const raw = String(psId || '').trim();
+  if (!raw) return '';
+  if (typeof trialCatalogSourceBase === 'function') {
+    const base = trialCatalogSourceBase({ ps_id: raw, source_ps_id: raw, job_no: raw });
+    if (base) return base;
+  }
+  return trialSplitPsId(raw).base || raw;
+}
+
+function trialReadinessPartNo(value) {
+  return String(value || '').trim();
+}
+
+function trialLeaderPsId(leader) {
+  return String(
+    leader?.planner_ps_id || leader?.source_ps_id || leader?.ps_id || leader?.job_no || '',
+  ).trim();
+}
+
+function trialLeaderPartNo(leader) {
+  const direct = trialReadinessPartNo(
+    leader?.part_no || leader?.part_name || leader?.inventory_code,
+  );
+  if (direct) return direct;
+  const ps = typeof trialCatalogPsFromPayload === 'function'
+    ? trialCatalogPsFromPayload(leader || {})
+    : null;
+  return trialReadinessPartNo(ps?.part_no || ps?.part_name || ps?.inventory_code);
+}
+
+function trialSamePsAndPart(psId, partNo, otherPsId, otherPartNo) {
+  const aPs = trialReadinessSourcePs(psId);
+  const bPs = trialReadinessSourcePs(otherPsId);
+  if (!aPs || aPs !== bPs) return false;
+  const aPart = trialReadinessPartNo(partNo);
+  const bPart = trialReadinessPartNo(otherPartNo);
+  if (aPart && bPart && aPart !== bPart) return false;
+  return true;
+}
+
+function trialReadinessOverrideKey(psId, partNo) {
+  const ps = trialReadinessSourcePs(psId);
+  if (!ps) return '';
+  const part = trialReadinessPartNo(partNo);
+  return part ? `ps:${ps}|part:${part}` : `ps:${ps}`;
+}
+
+function trialReadinessOverrideGet(map, psId, partNo) {
+  if (!map) return undefined;
+  const psOnly = trialReadinessOverrideKey(psId, '');
+  if (map.has(psOnly)) return map.get(psOnly);
+  const withPart = trialReadinessOverrideKey(psId, partNo);
+  if (partNo && map.has(withPart)) return map.get(withPart);
+  return undefined;
+}
+
+function trialToolingKey(operationId, psId, sourceOpSeqId, partNo) {
+  const psKey = trialReadinessOverrideKey(psId, '');
+  if (psKey) return psKey;
   const opId = Number(operationId || 0);
   if (opId > 0) return `op:${opId}`;
-  const psKey = String(psId || '').trim();
   const seqId = Number(sourceOpSeqId || 0);
-  if (psKey && seqId > 0) return `ps:${psKey}|${seqId}`;
+  const rawPs = String(psId || '').trim();
+  if (rawPs && seqId > 0) return `ps:${rawPs}|${seqId}`;
   return '';
 }
 
-function trialToolingFromScheduleBlocks(leader) {
-  const opId = Number(leader?.operation_id || 0);
-  if (opId > 0) {
-    const block = (Array.isArray(trialState.blocks) ? trialState.blocks : [])
-      .find(row => Number(row.operation_id) === opId);
-    if (block && Object.prototype.hasOwnProperty.call(block, 'tooling_ready')) {
-      return Boolean(block.tooling_ready);
-    }
-  }
-  const psKey = String(
-    leader?.planner_ps_id || leader?.source_ps_id || leader?.job_no || '',
-  ).trim();
-  const seqId = Number(leader?.source_op_seq_id || 0);
-  if (!psKey || seqId <= 0) return null;
+function trialReadyFromScheduleBlocks(leader, readyKey) {
+  const psId = trialLeaderPsId(leader);
+  const partNo = trialLeaderPartNo(leader);
+  let found = null;
   for (const block of (Array.isArray(trialState.blocks) ? trialState.blocks : [])) {
-    if (!Object.prototype.hasOwnProperty.call(block, 'tooling_ready')) continue;
+    if (!Object.prototype.hasOwnProperty.call(block, readyKey)) continue;
     const blockPs = String(block.planner_ps_id || block.source_ps_id || block.job_no || '').trim();
-    if (blockPs === psKey && Number(block.source_op_seq_id || 0) === seqId) {
-      return Boolean(block.tooling_ready);
-    }
+    const blockPart = trialReadinessPartNo(
+      block.part_no || block.part_name || block.inventory_code,
+    );
+    if (!trialSamePsAndPart(psId, partNo, blockPs, blockPart)) continue;
+    const ready = Boolean(block[readyKey]);
+    if (!ready) return false;
+    found = true;
   }
-  return null;
+  return found;
+}
+
+function trialToolingFromScheduleBlocks(leader) {
+  return trialReadyFromScheduleBlocks(leader, 'tooling_ready');
 }
 
 function trialToolingForLeader(leader) {
-  const key = trialToolingKey(
-    leader?.operation_id,
-    leader?.planner_ps_id || leader?.source_ps_id || leader?.job_no,
-    leader?.source_op_seq_id,
-  );
-  if (key && trialToolingOverrides.has(key)) {
-    return Boolean(trialToolingOverrides.get(key));
-  }
+  const psId = trialLeaderPsId(leader);
+  const partNo = trialLeaderPartNo(leader);
+  const override = trialReadinessOverrideGet(trialToolingOverrides, psId, partNo);
+  if (override !== undefined) return Boolean(override);
+  const fromBlocks = trialToolingFromScheduleBlocks(leader);
+  if (fromBlocks !== null) return fromBlocks;
   if (leader && Object.prototype.hasOwnProperty.call(leader, 'tooling_ready')) {
     return Boolean(leader.tooling_ready);
   }
-  const fromBlocks = trialToolingFromScheduleBlocks(leader);
-  if (fromBlocks !== null) return fromBlocks;
   return true;
 }
 
@@ -133,53 +186,30 @@ function trialToolingForCatalogCard(card) {
     planner_ps_id: card?.ps_id || card?.source_ps_id,
     source_ps_id: card?.source_ps_id || card?.ps_id,
     source_op_seq_id: card?.source_op_seq_id,
+    part_no: card?.part_no || card?.part_name,
     tooling_ready: card?.tooling_ready,
   };
   return trialToolingForLeader(leader);
 }
 
-function trialProgramKey(operationId, psId, sourceOpSeqId) {
-  return trialToolingKey(operationId, psId, sourceOpSeqId);
+function trialProgramKey(operationId, psId, sourceOpSeqId, partNo) {
+  return trialToolingKey(operationId, psId, sourceOpSeqId, partNo);
 }
 
 function trialProgramFromScheduleBlocks(leader) {
-  const opId = Number(leader?.operation_id || 0);
-  if (opId > 0) {
-    const block = (Array.isArray(trialState.blocks) ? trialState.blocks : [])
-      .find(row => Number(row.operation_id) === opId);
-    if (block && Object.prototype.hasOwnProperty.call(block, 'program_ready')) {
-      return Boolean(block.program_ready);
-    }
-  }
-  const psKey = String(
-    leader?.planner_ps_id || leader?.source_ps_id || leader?.job_no || '',
-  ).trim();
-  const seqId = Number(leader?.source_op_seq_id || 0);
-  if (!psKey || seqId <= 0) return null;
-  for (const block of (Array.isArray(trialState.blocks) ? trialState.blocks : [])) {
-    if (!Object.prototype.hasOwnProperty.call(block, 'program_ready')) continue;
-    const blockPs = String(block.planner_ps_id || block.source_ps_id || block.job_no || '').trim();
-    if (blockPs === psKey && Number(block.source_op_seq_id || 0) === seqId) {
-      return Boolean(block.program_ready);
-    }
-  }
-  return null;
+  return trialReadyFromScheduleBlocks(leader, 'program_ready');
 }
 
 function trialProgramForLeader(leader) {
-  const key = trialProgramKey(
-    leader?.operation_id,
-    leader?.planner_ps_id || leader?.source_ps_id || leader?.job_no,
-    leader?.source_op_seq_id,
-  );
-  if (key && trialProgramOverrides.has(key)) {
-    return Boolean(trialProgramOverrides.get(key));
-  }
+  const psId = trialLeaderPsId(leader);
+  const partNo = trialLeaderPartNo(leader);
+  const override = trialReadinessOverrideGet(trialProgramOverrides, psId, partNo);
+  if (override !== undefined) return Boolean(override);
+  const fromBlocks = trialProgramFromScheduleBlocks(leader);
+  if (fromBlocks !== null) return fromBlocks;
   if (leader && Object.prototype.hasOwnProperty.call(leader, 'program_ready')) {
     return Boolean(leader.program_ready);
   }
-  const fromBlocks = trialProgramFromScheduleBlocks(leader);
-  if (fromBlocks !== null) return fromBlocks;
   return true;
 }
 
@@ -192,13 +222,13 @@ function trialProgramPillMeta(programReady) {
     return {
       stateClass: 'is-in',
       label: 'Program OK',
-      title: 'Assumed ready — click to flag no program',
+      title: 'Assumed ready — click to flag no program for every BOM step on this process sheet',
     };
   }
   return {
     stateClass: 'is-out',
     label: 'No program',
-    title: 'Program exception flagged — click to clear',
+    title: 'Program exception flagged — click to clear for every BOM step on this process sheet',
   };
 }
 
@@ -215,9 +245,8 @@ function trialProgramPillSync(pill, programReady) {
 
 function trialBlockProgramCheckboxHtml(leader) {
   const operationId = Number(leader?.operation_id || 0);
-  const psId = String(
-    leader?.planner_ps_id || leader?.source_ps_id || leader?.job_no || '',
-  ).trim();
+  const psId = trialLeaderPsId(leader);
+  const partNo = trialLeaderPartNo(leader);
   const sourceOpSeqId = Number(leader?.source_op_seq_id || 0);
   if (!operationId && (!psId || sourceOpSeqId <= 0)) return '';
   const checked = trialProgramForLeader(leader);
@@ -231,6 +260,7 @@ function trialBlockProgramCheckboxHtml(leader) {
       <input type="checkbox" class="trial-program-input"
         data-operation-id="${operationId || ''}"
         data-ps-id="${escapeHtml(psId)}"
+        data-part-no="${escapeHtml(partNo)}"
         data-source-op-seq-id="${sourceOpSeqId || ''}"
         ${checked ? 'checked' : ''}
         tabindex="-1"
@@ -247,13 +277,13 @@ function trialToolingPillMeta(toolingReady) {
     return {
       stateClass: 'is-in',
       label: 'Tooling OK',
-      title: 'Assumed ready — click to flag missing tooling',
+      title: 'Assumed ready — click to flag missing tooling for every BOM step on this process sheet',
     };
   }
   return {
     stateClass: 'is-out',
     label: 'Missing tooling',
-    title: 'Tooling exception flagged — click to clear',
+    title: 'Tooling exception flagged — click to clear for every BOM step on this process sheet',
   };
 }
 
@@ -270,9 +300,8 @@ function trialToolingPillSync(pill, toolingReady) {
 
 function trialBlockToolingCheckboxHtml(leader) {
   const operationId = Number(leader?.operation_id || 0);
-  const psId = String(
-    leader?.planner_ps_id || leader?.source_ps_id || leader?.job_no || '',
-  ).trim();
+  const psId = trialLeaderPsId(leader);
+  const partNo = trialLeaderPartNo(leader);
   const sourceOpSeqId = Number(leader?.source_op_seq_id || 0);
   if (!operationId && (!psId || sourceOpSeqId <= 0)) return '';
   const checked = trialToolingForLeader(leader);
@@ -286,6 +315,7 @@ function trialBlockToolingCheckboxHtml(leader) {
       <input type="checkbox" class="trial-tooling-input"
         data-operation-id="${operationId || ''}"
         data-ps-id="${escapeHtml(psId)}"
+        data-part-no="${escapeHtml(partNo)}"
         data-source-op-seq-id="${sourceOpSeqId || ''}"
         ${checked ? 'checked' : ''}
         tabindex="-1"
@@ -333,9 +363,15 @@ function trialPsForMaterialToggle(leader, extraIds = []) {
 
 function trialOpReadinessTogglesHtml(ps, leader) {
   const psForMaterial = ps || trialPsForMaterialToggle(leader);
+  const leaderWithPart = leader ? {
+    ...leader,
+    part_no: trialLeaderPartNo(leader) || trialReadinessPartNo(
+      ps?.part_no || ps?.part_name || ps?.inventory_code,
+    ),
+  } : leader;
   const materialHtml = psForMaterial ? trialCatalogMaterialInCheckboxHtml(psForMaterial) : '';
-  const toolingHtml = leader ? trialBlockToolingCheckboxHtml(leader) : '';
-  const programHtml = leader ? trialBlockProgramCheckboxHtml(leader) : '';
+  const toolingHtml = leaderWithPart ? trialBlockToolingCheckboxHtml(leaderWithPart) : '';
+  const programHtml = leaderWithPart ? trialBlockProgramCheckboxHtml(leaderWithPart) : '';
   if (!materialHtml && !toolingHtml && !programHtml) return '';
   return `
     <div class="trial-op-detail-section">
@@ -353,20 +389,22 @@ async function trialSetTooling(event, input) {
   if (event) event.stopPropagation();
   const operationId = Number(input?.dataset?.operationId || 0);
   const psId = String(input?.dataset?.psId || '').trim();
+  const partNo = trialReadinessPartNo(input?.dataset?.partNo);
   const sourceOpSeqId = Number(input?.dataset?.sourceOpSeqId || 0);
-  const key = trialToolingKey(operationId, psId, sourceOpSeqId);
+  const key = trialToolingKey(operationId, psId, sourceOpSeqId, partNo);
   if (!key || input.disabled) return;
   const leader = {
     operation_id: operationId,
     planner_ps_id: psId,
     source_ps_id: psId,
     source_op_seq_id: sourceOpSeqId,
+    part_no: partNo,
   };
   const previous = trialToolingForLeader(leader);
   const toolingReady = Boolean(input.checked);
   const pill = input.closest('.trial-tooling-pill');
   trialToolingOverrides.set(key, toolingReady);
-  trialApplyToolingToBlocks({ operationId, psId, sourceOpSeqId, toolingReady });
+  trialApplyReadyFlagToCards({ psId, partNo, readyKey: 'tooling_ready', ready: toolingReady });
   trialToolingPillSync(pill, toolingReady);
   input.disabled = true;
   if (pill) pill.classList.add('is-saving');
@@ -381,7 +419,7 @@ async function trialSetTooling(event, input) {
     if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
   } catch (err) {
     trialToolingOverrides.set(key, previous);
-    trialApplyToolingToBlocks({ operationId, psId, sourceOpSeqId, toolingReady: previous });
+    trialApplyReadyFlagToCards({ psId, partNo, readyKey: 'tooling_ready', ready: previous });
     input.checked = previous;
     trialToolingPillSync(pill, previous);
     window.alert(err?.message || 'Could not save tooling flag');
@@ -391,36 +429,48 @@ async function trialSetTooling(event, input) {
   }
 }
 
-function trialApplyToolingToBlocks({ operationId, psId, sourceOpSeqId, toolingReady }) {
-  const opId = Number(operationId || 0);
-  const psKey = String(psId || '').trim();
-  const seqId = Number(sourceOpSeqId || 0);
+function trialApplyReadyFlagToCards({ psId, partNo, readyKey, ready }) {
+  const value = Boolean(ready);
   (Array.isArray(trialState.blocks) ? trialState.blocks : []).forEach(block => {
-    if (opId > 0 && Number(block.operation_id) === opId) {
-      block.tooling_ready = Boolean(toolingReady);
-      return;
-    }
     const blockPs = String(block.planner_ps_id || block.source_ps_id || block.job_no || '').trim();
-    if (psKey && seqId > 0 && blockPs === psKey && Number(block.source_op_seq_id || 0) === seqId) {
-      block.tooling_ready = Boolean(toolingReady);
-    }
+    const blockPart = trialReadinessPartNo(
+      block.part_no || block.part_name || block.inventory_code,
+    );
+    if (!trialSamePsAndPart(psId, partNo, blockPs, blockPart)) return;
+    block[readyKey] = value;
   });
   const pools = [
     ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
     ...(Array.isArray(trialState.planned) ? trialState.planned : []),
   ];
   pools.forEach(ps => {
+    const psRowId = String(ps.ps_id || ps.source_ps_id || '').trim();
+    const psPart = trialReadinessPartNo(ps.part_no || ps.part_name || ps.inventory_code);
+    const psMatches = trialSamePsAndPart(psId, partNo, psRowId, psPart);
+    if (psMatches) ps[readyKey] = value;
     (ps.op_cards || []).forEach(card => {
-      if (opId > 0 && Number(card.operation_id) === opId) {
-        card.tooling_ready = Boolean(toolingReady);
-        return;
-      }
-      const cardPs = String(card.ps_id || card.source_ps_id || '').trim();
-      const cardSeq = Number(card.source_op_seq_id || 0);
-      if (psKey && seqId > 0 && cardPs === psKey && cardSeq === seqId) {
-        card.tooling_ready = Boolean(toolingReady);
-      }
+      const cardPs = String(card.ps_id || card.source_ps_id || psRowId || '').trim();
+      const cardPart = trialReadinessPartNo(
+        card.part_no || card.part_name || psPart,
+      );
+      if (!trialSamePsAndPart(psId, partNo, cardPs, cardPart)) return;
+      card[readyKey] = value;
     });
+    (ps.ops || []).forEach(op => {
+      const opPs = String(op.source_ps_id || op.ps_id || psRowId || '').trim();
+      const opPart = trialReadinessPartNo(op.part_no || op.part_name || psPart);
+      if (!trialSamePsAndPart(psId, partNo, opPs, opPart)) return;
+      op[readyKey] = value;
+    });
+  });
+}
+
+function trialApplyToolingToBlocks({ operationId, psId, sourceOpSeqId, toolingReady, partNo }) {
+  trialApplyReadyFlagToCards({
+    psId,
+    partNo,
+    readyKey: 'tooling_ready',
+    ready: toolingReady,
   });
 }
 
@@ -428,20 +478,22 @@ async function trialSetProgram(event, input) {
   if (event) event.stopPropagation();
   const operationId = Number(input?.dataset?.operationId || 0);
   const psId = String(input?.dataset?.psId || '').trim();
+  const partNo = trialReadinessPartNo(input?.dataset?.partNo);
   const sourceOpSeqId = Number(input?.dataset?.sourceOpSeqId || 0);
-  const key = trialProgramKey(operationId, psId, sourceOpSeqId);
+  const key = trialProgramKey(operationId, psId, sourceOpSeqId, partNo);
   if (!key || input.disabled) return;
   const leader = {
     operation_id: operationId,
     planner_ps_id: psId,
     source_ps_id: psId,
     source_op_seq_id: sourceOpSeqId,
+    part_no: partNo,
   };
   const previous = trialProgramForLeader(leader);
   const programReady = Boolean(input.checked);
   const pill = input.closest('.trial-program-pill');
   trialProgramOverrides.set(key, programReady);
-  trialApplyProgramToBlocks({ operationId, psId, sourceOpSeqId, programReady });
+  trialApplyReadyFlagToCards({ psId, partNo, readyKey: 'program_ready', ready: programReady });
   trialProgramPillSync(pill, programReady);
   input.disabled = true;
   if (pill) pill.classList.add('is-saving');
@@ -456,7 +508,7 @@ async function trialSetProgram(event, input) {
     if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
   } catch (err) {
     trialProgramOverrides.set(key, previous);
-    trialApplyProgramToBlocks({ operationId, psId, sourceOpSeqId, programReady: previous });
+    trialApplyReadyFlagToCards({ psId, partNo, readyKey: 'program_ready', ready: previous });
     input.checked = previous;
     trialProgramPillSync(pill, previous);
     window.alert(err?.message || 'Could not save program flag');
@@ -466,36 +518,12 @@ async function trialSetProgram(event, input) {
   }
 }
 
-function trialApplyProgramToBlocks({ operationId, psId, sourceOpSeqId, programReady }) {
-  const opId = Number(operationId || 0);
-  const psKey = String(psId || '').trim();
-  const seqId = Number(sourceOpSeqId || 0);
-  (Array.isArray(trialState.blocks) ? trialState.blocks : []).forEach(block => {
-    if (opId > 0 && Number(block.operation_id) === opId) {
-      block.program_ready = Boolean(programReady);
-      return;
-    }
-    const blockPs = String(block.planner_ps_id || block.source_ps_id || block.job_no || '').trim();
-    if (psKey && seqId > 0 && blockPs === psKey && Number(block.source_op_seq_id || 0) === seqId) {
-      block.program_ready = Boolean(programReady);
-    }
-  });
-  const pools = [
-    ...(Array.isArray(trialState.catalog) ? trialState.catalog : []),
-    ...(Array.isArray(trialState.planned) ? trialState.planned : []),
-  ];
-  pools.forEach(ps => {
-    (ps.op_cards || []).forEach(card => {
-      if (opId > 0 && Number(card.operation_id) === opId) {
-        card.program_ready = Boolean(programReady);
-        return;
-      }
-      const cardPs = String(card.ps_id || card.source_ps_id || '').trim();
-      const cardSeq = Number(card.source_op_seq_id || 0);
-      if (psKey && seqId > 0 && cardPs === psKey && cardSeq === seqId) {
-        card.program_ready = Boolean(programReady);
-      }
-    });
+function trialApplyProgramToBlocks({ operationId, psId, sourceOpSeqId, programReady, partNo }) {
+  trialApplyReadyFlagToCards({
+    psId,
+    partNo,
+    readyKey: 'program_ready',
+    ready: programReady,
   });
 }
 
@@ -2416,6 +2444,7 @@ function trialRenderCatalogOpDetailBody(ps, card) {
         planner_ps_id: psId,
         source_ps_id: psId,
         source_op_seq_id: Number(card.source_op_seq_id || 0),
+        part_no: ps?.part_no || ps?.part_name || ps?.inventory_code || card.part_no || '',
         tooling_ready: card.tooling_ready,
         program_ready: card.program_ready,
       })}

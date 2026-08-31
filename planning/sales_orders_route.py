@@ -845,6 +845,68 @@ def _apply_coway_edd_overlay(
                 partial["coway_proposed_edd"] = overlay.get((base, partial_no), "")
 
 
+def _program_finish_iso(value: Any) -> str:
+    text = compact_text(_serialize_value(value))
+    if not text:
+        return ""
+    head = text.replace(" ", "T")[:10]
+    if len(head) == 10 and head[4] == "-" and head[7] == "-":
+        return head
+    return ""
+
+
+def _load_program_finish_overlay(process_sheet_nos: list[str]) -> dict[str, str] | None:
+    """Programme finish dates from NPI/FA New parts, keyed by uppercase PS base."""
+    bases: list[str] = []
+    seen: set[str] = set()
+    for raw in process_sheet_nos:
+        base = _ps_base_id(raw)
+        if not base:
+            continue
+        key = base.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        bases.append(key)
+    if not bases:
+        return {}
+
+    try:
+        with planner_db() as con:
+            fetched = rows(
+                con.execute(
+                    """
+                    SELECT process_sheet_no, program_finish_at
+                    FROM planner_first_article_new_part
+                    WHERE TRIM(COALESCE(program_finish_at, '')) <> ''
+                      AND UPPER(TRIM(split_part(process_sheet_no, '::', 1))) = ANY(%s)
+                    """,
+                    (bases,),
+                )
+            )
+    except Exception as exc:
+        logger.warning("program_finish overlay load skipped: %s", exc)
+        return None
+
+    out: dict[str, str] = {}
+    for row in fetched:
+        base = _ps_base_id(row.get("process_sheet_no") or "")
+        finish = _program_finish_iso(row.get("program_finish_at"))
+        if base and finish:
+            out[base.upper()] = finish
+    return out
+
+
+def _apply_program_finish_overlay(
+    orders: list[dict[str, Any]],
+    overlay: dict[str, str],
+) -> None:
+    for order in orders:
+        for pp in order.get("pp_vouchers") or []:
+            base = _pp_ps_base(pp)
+            pp["program_finish_at"] = overlay.get(base.upper(), "") if base else ""
+
+
 _QUEUED_MACHINES_SQL = """
 SELECT DISTINCT
     COALESCE(NULLIF(TRIM(o.source_ps_id), ''), NULLIF(TRIM(o.job_no), '')) AS raw_ps_id,
@@ -1735,6 +1797,9 @@ def _build_sales_orders(*, scope: str, lite: bool = False) -> dict[str, Any]:
     if material_in_overlay is not None:
         _apply_material_in_overlay(orders, material_in_overlay)
     _apply_coway_edd_overlay(orders, _load_coway_edd_overlay(process_sheets))
+    program_finish_overlay = _load_program_finish_overlay(process_sheets)
+    if program_finish_overlay is not None:
+        _apply_program_finish_overlay(orders, program_finish_overlay)
     if scope != "complete":
         _reconcile_subcon_material_in(orders)
         _apply_stage_overlay(orders, _load_stage_overlay(process_sheets, live=live))
@@ -1779,11 +1844,12 @@ def _payload_orders(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _overlay_planner_edits(payload: dict[str, Any]) -> dict[str, Any]:
-    """Re-apply planner notes / material-in / NPI Proposed CNC on the ERP cache.
+    """Re-apply planner notes / material-in / NPI Proposed CNC / programme finish.
 
     Material dates live in planner_so_pp_notes. NPI Machine (CNC) is keyed by
-    part number. The ERP snapshot is cached, so without this overlay a reload
-    shows empty Material in / Proposed CNC cells until rebuild.
+    part number. Programme finish is the NPI/FA New parts date. The ERP
+    snapshot is cached, so without this overlay a reload shows empty Material
+    in / Proposed CNC / Programme finish cells until rebuild.
     """
     if not isinstance(payload, dict):
         return payload
@@ -1807,6 +1873,9 @@ def _overlay_planner_edits(payload: dict[str, Any]) -> dict[str, Any]:
     if material_in_overlay is not None:
         _apply_material_in_overlay(orders, material_in_overlay)
     _apply_proposed_cnc_overlay(orders)
+    program_finish_overlay = _load_program_finish_overlay(process_sheets)
+    if program_finish_overlay is not None:
+        _apply_program_finish_overlay(orders, program_finish_overlay)
     return payload
 
 
