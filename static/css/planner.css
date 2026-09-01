@@ -8100,6 +8100,7 @@
   .sales-report-kpi--cleared { border-top: 3px solid #b45309; }
   .sales-report-kpi--early { border-top: 3px solid #0e7490; }
   .sales-report-kpi--achieve { border-top: 3px solid #be185d; }
+  .sales-report-kpi--year { border-top: 3px solid #4338ca; }
   .sales-report-kpi-label {
     margin: 0 0 6px;
     font-size: 11px;
@@ -8492,6 +8493,13 @@
     background: #eff6ff;
     box-shadow: inset 1px 0 0 var(--border);
   }
+  .sales-report-ytd-ref-head--year {
+    right: 118px;
+    background: #eef2ff;
+  }
+  .sales-report-ytd-ref-head--year .sales-report-ytd-ref-label {
+    color: #3730a3;
+  }
   .sales-report-ytd-ref-label {
     display: block;
     font-size: 10px;
@@ -8520,8 +8528,16 @@
     color: #1e3a8a;
     box-shadow: inset 1px 0 0 var(--border);
   }
+  .sales-report-ytd-num--ref-year {
+    right: 118px;
+    background: #eef2ff;
+    color: #3730a3;
+  }
   .sales-report-ytd-row--total td.sales-report-ytd-num--ref {
     background: #dbeafe;
+  }
+  .sales-report-ytd-row--total td.sales-report-ytd-num--ref-year {
+    background: #c7d2fe;
   }
   .sales-report-ytd-month-cell.is-past {
     background: rgba(4, 120, 87, 0.04);

@@ -84,8 +84,39 @@ class SalesReportYtdGridTests(unittest.TestCase):
         june_cell = next(cell for cell in mps_row["cells"] if cell["month"] == 6)
         self.assertAlmostEqual(float(june_cell.get("on_hand") or 0), 5000.0, places=2)
         self.assertAlmostEqual(float(mps_row.get("open_remaining") or 0), 5000.0, places=2)
+        self.assertAlmostEqual(float(mps_row.get("open_remaining_year") or 0), 5000.0, places=2)
         total_row = next(row for row in grid["rows"] if row["id"] == "TOTAL")
         self.assertAlmostEqual(float(total_row.get("open_remaining") or 0), 5000.0, places=2)
+        self.assertAlmostEqual(float(total_row.get("open_remaining_year") or 0), 5000.0, places=2)
+
+    def test_open_remaining_year_only_counts_po_due_in_report_year(self):
+        open_lines = [
+            {
+                "process_sheet_no": "APS26-0001",
+                "pp_type": "APS",
+                "due_date": "2026-08-15",
+                "remaining_qty": 1,
+                "remaining_value": 400,
+            },
+            {
+                "process_sheet_no": "APS26-0002",
+                "pp_type": "APS",
+                "due_date": "2025-12-01",
+                "remaining_qty": 1,
+                "remaining_value": 150,
+            },
+            {
+                "process_sheet_no": "APS26-0003",
+                "pp_type": "APS",
+                "due_date": "2027-02-01",
+                "remaining_qty": 1,
+                "remaining_value": 250,
+            },
+        ]
+        grid = _build_ytd_grid(open_lines, [], 2026, today=date(2026, 8, 20))
+        aps = next(row for row in grid["rows"] if row["id"] == "APS")
+        self.assertAlmostEqual(float(aps.get("open_remaining") or 0), 800.0, places=2)
+        self.assertAlmostEqual(float(aps.get("open_remaining_year") or 0), 400.0, places=2)
 
 
 class SalesReportPostedDateBasisTests(unittest.TestCase):
@@ -178,9 +209,39 @@ class SalesReportPostedDateBasisTests(unittest.TestCase):
         june_posted = next(cell for cell in aps_posted["cells"] if cell["month"] == 6)
 
         self.assertAlmostEqual(float(august_due.get("on_hand") or 0), 800.0, places=2)
-        self.assertAlmostEqual(float(august_posted.get("backlog") or 0), 800.0, places=2)
+        self.assertAlmostEqual(float(august_posted.get("backlog") or 0), 0.0, places=2)
         self.assertAlmostEqual(float(august_posted.get("on_hand") or 0), 0.0, places=2)
+        self.assertAlmostEqual(float(august_posted.get("due_this_month") or 0), 0.0, places=2)
         self.assertAlmostEqual(float(june_posted.get("backlog_delivered") or 0), 0.0, places=2)
+        self.assertAlmostEqual(float(aps_posted.get("open_remaining") or 0), 800.0, places=2)
+
+    def test_posted_current_month_has_no_backlog_bucket(self):
+        open_lines = [
+            {
+                "process_sheet_no": "APS26-0001",
+                "pp_type": "APS",
+                "due_date": "2026-08-15",
+                "first_posted_datetime": "2026-06-05",
+                "remaining_qty": 1,
+                "remaining_value": 800,
+            },
+            {
+                "process_sheet_no": "APS26-0002",
+                "pp_type": "APS",
+                "due_date": "2026-10-01",
+                "first_posted_datetime": "2026-08-12",
+                "remaining_qty": 1,
+                "remaining_value": 200,
+            },
+        ]
+        posted_grid = _build_ytd_grid(
+            open_lines, [], 2026, today=date(2026, 8, 20), basis=DATE_BASIS_POSTED
+        )
+        aps_posted = next(row for row in posted_grid["rows"] if row["id"] == "APS")
+        august_posted = next(cell for cell in aps_posted["cells"] if cell["month"] == 8)
+        self.assertNotIn("backlog", august_posted)
+        self.assertAlmostEqual(float(august_posted.get("due_this_month") or 0), 200.0, places=2)
+        self.assertAlmostEqual(float(aps_posted.get("open_remaining") or 0), 1000.0, places=2)
 
 
     def test_posted_past_month_includes_sales_total(self):

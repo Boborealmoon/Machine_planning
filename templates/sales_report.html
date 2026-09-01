@@ -4,7 +4,7 @@
 
 {% block main_class %}app-main--new-orders app-main--sales-report{% endblock %}
 
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=sales-report-ytd-cols-20260831">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=sales-report-year-remaining-20260831">{% endblock %}
 
 {% block content %}
 
@@ -200,7 +200,7 @@
 
           <h2 class="sales-report-section-title">Year overview</h2>
 
-          <p class="sales-report-section-sub" id="sales-report-ytd-sub">Past = shipped (home $) · current = backlog + onhand (home $) · future = onhand by PO due month. Open remaining = all unfinished $ (any year). Breakdown shows FC price × exch → home amt.</p>
+          <p class="sales-report-section-sub" id="sales-report-ytd-sub">Past = shipped (home $) · current = backlog + onhand (home $) · future = onhand by PO due month. Due this year vs all years are the open-remaining reference columns. Breakdown shows FC price × exch → home amt.</p>
 
           <p class="sales-report-ytd-legend" id="sales-report-ytd-legend" hidden>
 
@@ -288,6 +288,6 @@
 
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-report-breakdown-20260622"></script>
 
-<script src="{{ url_for('static', filename='js/sales_report.js') }}?v=sales-report-ytd-cols-20260831"></script>
+<script src="{{ url_for('static', filename='js/sales_report.js') }}?v=sales-report-year-remaining-20260831"></script>
 
 {% endblock %}

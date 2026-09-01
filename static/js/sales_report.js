@@ -297,6 +297,20 @@ function salesReportOpenRemainingTotal(rows) {
   return (rows || []).reduce((sum, row) => sum + salesReportOpenValue(row), 0);
 }
 
+function salesReportPoDueDate(row) {
+  return salesReportParseDate(row?.due_date) || salesReportParseDate(row?.so_due_date);
+}
+
+function salesReportDueInYear(row, year) {
+  const due = salesReportPoDueDate(row);
+  if (!due) return false;
+  return due.getFullYear() === Number(year);
+}
+
+function salesReportYearOpenRemaining(rows, year) {
+  return salesReportOpenRemainingTotal((rows || []).filter(row => salesReportDueInYear(row, year)));
+}
+
 function salesReportSoLineKey(row) {
   const so = String(row?.sales_order_no || '').trim();
   const line = String(row?.line_item_no || row?.source_line_item_no || '').replace(/\.0+$/, '');
@@ -470,8 +484,13 @@ function salesReportBuildOpenMonthSummary(openLines, start, end) {
   };
 }
 
+function salesReportHidesBacklog() {
+  return salesReportIsPostedBasis();
+}
+
 function salesReportYtdMonthColspan(meta) {
-  if (meta.mode === 'past') return salesReportIsPostedBasis() ? 1 : 3;
+  if (salesReportHidesBacklog()) return 1;
+  if (meta.mode === 'past') return 3;
   if (meta.is_current) return 2;
   return 1;
 }
@@ -526,7 +545,7 @@ function salesReportYtdSubheadCells(meta) {
       { label: 'Early', cls: 'is-shipped-early' },
     ];
   }
-  if (meta.is_current) {
+  if (meta.is_current && !salesReportHidesBacklog()) {
     return [
       { label: 'Backlog', cls: 'is-overdue' },
       { label: 'Onhand', cls: 'is-due' },
@@ -570,7 +589,7 @@ function salesReportYtdCellHtml(cell, meta, rowId) {
       salesReportYtdNumTd(cell.early_delivered, rowId, meta.month, 'early_delivered'),
     ].join('');
   }
-  if (meta.is_current) {
+  if (meta.is_current && !salesReportHidesBacklog()) {
     const backlog = cell.backlog ?? cell.overdue ?? 0;
     const onHand = cell.on_hand ?? cell.due_this_month ?? 0;
     return [
@@ -758,7 +777,7 @@ function salesReportBuildYtdGrid(openLines, shipments, year) {
       }
       const open = salesReportBuildOpenMonthSummary(typeOpen, meta.start, meta.end);
       const dueVal = open.due_this_month.remaining_value;
-      if (meta.is_current) {
+      if (meta.is_current && !salesReportHidesBacklog()) {
         return {
           month: meta.month,
           mode: 'open',
@@ -770,7 +789,7 @@ function salesReportBuildYtdGrid(openLines, shipments, year) {
       return {
         month: meta.month,
         mode: 'open',
-        open_kind: 'future',
+        open_kind: meta.is_current ? 'current' : 'future',
         due_this_month: dueVal,
       };
     });
@@ -795,7 +814,7 @@ function salesReportBuildYtdGrid(openLines, shipments, year) {
       month: meta.month,
       mode: 'open',
       open_kind: meta.is_current ? 'current' : 'future',
-      ...(meta.is_current
+      ...((meta.is_current && !salesReportHidesBacklog())
         ? {
           backlog: cellLists.reduce((sum, list) => sum + Number(list[idx]?.backlog || 0), 0),
           on_hand: cellLists.reduce((sum, list) => sum + Number(list[idx]?.on_hand || 0), 0),
@@ -811,15 +830,19 @@ function salesReportBuildYtdGrid(openLines, shipments, year) {
     rowCells[type] = cellsForType(type);
   });
 
-  const remainingForType = (type) => salesReportOpenRemainingTotal(
-    openLines.filter(row => salesReportGetPsType(row) === type),
-  );
+  const remainingForType = (type) => {
+    const typeOpen = openLines.filter(row => salesReportGetPsType(row) === type);
+    return {
+      open_remaining: salesReportOpenRemainingTotal(typeOpen),
+      open_remaining_year: salesReportYearOpenRemaining(typeOpen, year),
+    };
+  };
 
   const rows = SALES_REPORT_YTD_TYPES.map(type => ({
     id: type,
     label: type,
     cells: rowCells[type],
-    open_remaining: remainingForType(type),
+    ...remainingForType(type),
   }));
 
   const activeTypes = salesReportActivePpTypes().filter(type => SALES_REPORT_YTD_TYPES.includes(type));
@@ -833,6 +856,10 @@ function salesReportBuildYtdGrid(openLines, shipments, year) {
       emphasis: 'total',
       open_remaining: salesReportOpenRemainingTotal(
         openLines.filter(row => activeTypes.includes(salesReportGetPsType(row))),
+      ),
+      open_remaining_year: salesReportYearOpenRemaining(
+        openLines.filter(row => activeTypes.includes(salesReportGetPsType(row))),
+        year,
       ),
     });
   }
@@ -1063,12 +1090,18 @@ function salesReportRenderStats(summary) {
   if (!el || !summary) return;
   const parts = [`<span class="new-orders-stat sales-report-stat-pill">${escapeHtml(salesReportPsTypeLabel())}</span>`];
   if (summary.mode === 'past') {
-    parts.push(`<span class="new-orders-stat">Delivered <strong>${salesReportFormatMoney(summary.delivered?.total_home_amt)}</strong></span>`);
-    parts.push(`<span class="new-orders-stat">Backlog del. <strong>${salesReportFormatMoney(summary.backlog_delivered?.total_home_amt)}</strong></span>`);
-    parts.push(`<span class="new-orders-stat">Early <strong>${salesReportFormatMoney(summary.early_delivered?.total_home_amt)}</strong></span>`);
-    parts.push(`<span class="new-orders-stat">All shipped <strong>${salesReportFormatMoney(summary.shipped?.total_home_amt)}</strong></span>`);
+    if (salesReportHidesBacklog()) {
+      parts.push(`<span class="new-orders-stat">All shipped <strong>${salesReportFormatMoney(summary.shipped?.total_home_amt)}</strong></span>`);
+    } else {
+      parts.push(`<span class="new-orders-stat">Delivered <strong>${salesReportFormatMoney(summary.delivered?.total_home_amt)}</strong></span>`);
+      parts.push(`<span class="new-orders-stat">Backlog del. <strong>${salesReportFormatMoney(summary.backlog_delivered?.total_home_amt)}</strong></span>`);
+      parts.push(`<span class="new-orders-stat">Early <strong>${salesReportFormatMoney(summary.early_delivered?.total_home_amt)}</strong></span>`);
+      parts.push(`<span class="new-orders-stat">All shipped <strong>${salesReportFormatMoney(summary.shipped?.total_home_amt)}</strong></span>`);
+    }
   } else {
-    parts.push(`<span class="new-orders-stat">Backlog <strong>${salesReportFormatMoney(summary.backlog?.remaining_value)}</strong></span>`);
+    if (!salesReportHidesBacklog()) {
+      parts.push(`<span class="new-orders-stat">Backlog <strong>${salesReportFormatMoney(summary.backlog?.remaining_value)}</strong></span>`);
+    }
     parts.push(`<span class="new-orders-stat">Onhand <strong>${salesReportFormatMoney(summary.on_hand?.remaining_value)}</strong></span>`);
     parts.push(`<span class="new-orders-stat">Booked <strong>${salesReportFormatMoney(summary.booked?.line_amount)}</strong></span>`);
   }
@@ -1080,18 +1113,25 @@ function salesReportRenderSummary(summary) {
   if (!el || !summary) return;
 
   const cards = summary.mode === 'past'
-    ? [
-      { title: 'Delivered (on time)', tone: 'shipped', value: summary.delivered?.total_home_amt, sub: `${summary.delivered?.line_count || 0} shipment lines`, hint: salesReportIsPostedBasis() ? 'Shipped in month · SO first posted in this month' : 'Shipped in month · original PO due date also in this month' },
-      { title: 'Backlog delivered', tone: 'cleared', value: summary.backlog_delivered?.total_home_amt, sub: `${summary.backlog_delivered?.line_count || 0} shipment lines`, hint: salesReportIsPostedBasis() ? 'Shipped in month · SO first posted before month start' : 'Shipped in month · original PO due was before month start' },
-      { title: 'Early delivered', tone: 'early', value: summary.early_delivered?.total_home_amt, sub: `${summary.early_delivered?.line_count || 0} shipment lines`, hint: salesReportIsPostedBasis() ? 'Shipped in month · SO first posted after month end' : 'Shipped in month · original PO due after month end' },
-      { title: 'All shipments', tone: 'booked', value: summary.shipped?.total_home_amt, sub: `${summary.shipped?.line_count || 0} lines`, hint: 'On-time + backlog + early (every DO dated in month)' },
-    ]
+    ? (salesReportHidesBacklog()
+      ? [
+        { title: 'All shipments', tone: 'booked', value: summary.shipped?.total_home_amt, sub: `${summary.shipped?.line_count || 0} lines`, hint: 'Every DO dated in month' },
+      ]
+      : [
+        { title: 'Delivered (on time)', tone: 'shipped', value: summary.delivered?.total_home_amt, sub: `${summary.delivered?.line_count || 0} shipment lines`, hint: 'Shipped in month · original PO due date also in this month' },
+        { title: 'Backlog delivered', tone: 'cleared', value: summary.backlog_delivered?.total_home_amt, sub: `${summary.backlog_delivered?.line_count || 0} shipment lines`, hint: 'Shipped in month · original PO due was before month start' },
+        { title: 'Early delivered', tone: 'early', value: summary.early_delivered?.total_home_amt, sub: `${summary.early_delivered?.line_count || 0} shipment lines`, hint: 'Shipped in month · original PO due after month end' },
+        { title: 'All shipments', tone: 'booked', value: summary.shipped?.total_home_amt, sub: `${summary.shipped?.line_count || 0} lines`, hint: 'On-time + backlog + early (every DO dated in month)' },
+      ])
     : (() => {
-      const openCards = [
-        { title: 'Backlog', tone: 'cleared', value: summary.backlog?.remaining_value, sub: `${salesReportFormatQty(summary.backlog?.remaining_qty)} pcs · ${summary.backlog?.line_count || 0} lines`, hint: salesReportIsPostedBasis() ? 'Still open · SO posted before this month' : 'Still open · PO due before this month' },
-        { title: 'Onhand', tone: 'on-hand', value: summary.on_hand?.remaining_value, sub: `${salesReportFormatQty(summary.on_hand?.remaining_qty)} pcs · ${summary.on_hand?.line_count || 0} lines`, hint: salesReportIsPostedBasis() ? 'Unfinished open $ · SO posted this month' : 'Unfinished open $ · PO due this month' },
-      ];
+      const openCards = [];
+      if (!salesReportHidesBacklog()) {
+        openCards.push(
+          { title: 'Backlog', tone: 'cleared', value: summary.backlog?.remaining_value, sub: `${salesReportFormatQty(summary.backlog?.remaining_qty)} pcs · ${summary.backlog?.line_count || 0} lines`, hint: 'Still open · PO due before this month' },
+        );
+      }
       openCards.push(
+        { title: 'Onhand', tone: 'on-hand', value: summary.on_hand?.remaining_value, sub: `${salesReportFormatQty(summary.on_hand?.remaining_qty)} pcs · ${summary.on_hand?.line_count || 0} lines`, hint: salesReportHidesBacklog() ? 'Unfinished open $ · SO posted this month' : 'Unfinished open $ · PO due this month' },
         { title: 'Shipped this month', tone: 'shipped', value: summary.shipped?.total_home_amt, sub: `${summary.shipped?.line_count || 0} lines`, hint: 'DO/shipment dated in month' },
         { title: 'Booked this month', tone: 'booked', value: summary.booked?.line_amount, sub: `${summary.booked?.line_count || 0} lines`, hint: 'First-posted in month' },
       );
@@ -1113,8 +1153,12 @@ function salesReportRenderBreakdown(breakdown, summary) {
   if (!el) return;
   const mode = summary?.mode || 'open';
   const headers = mode === 'past'
-    ? ['PP type', 'Backlog del. $', 'On-time $', 'Early $', 'All shipped $']
-    : ['PP type', 'Backlog $', 'Onhand $', 'Shipped $', 'Booked $'];
+    ? (salesReportHidesBacklog()
+      ? ['PP type', 'All shipped $']
+      : ['PP type', 'Backlog del. $', 'On-time $', 'Early $', 'All shipped $'])
+    : (salesReportHidesBacklog()
+      ? ['PP type', 'Onhand $', 'Shipped $', 'Booked $']
+      : ['PP type', 'Backlog $', 'Onhand $', 'Shipped $', 'Booked $']);
 
   const rows = (breakdown || []).filter(entry => {
     const s = entry.summary || {};
@@ -1126,6 +1170,12 @@ function salesReportRenderBreakdown(breakdown, summary) {
   }).map(entry => {
     const s = entry.summary || {};
     if (mode === 'past') {
+      if (salesReportHidesBacklog()) {
+        return `<tr>
+        <td>${salesReportTypeTagHtml(entry.type)}</td>
+        <td class="sales-report-breakdown-num">${salesReportFormatMoney(s.shipped?.total_home_amt)}</td>
+      </tr>`;
+      }
       return `<tr>
         <td>${salesReportTypeTagHtml(entry.type)}</td>
         <td class="sales-report-breakdown-num">${salesReportFormatMoney(s.backlog_delivered?.total_home_amt)}</td>
@@ -1133,6 +1183,14 @@ function salesReportRenderBreakdown(breakdown, summary) {
         <td class="sales-report-breakdown-num">${salesReportFormatMoney(s.early_delivered?.total_home_amt)}</td>
         <td class="sales-report-breakdown-num">${salesReportFormatMoney(s.shipped?.total_home_amt)}</td>
       </tr>`;
+    }
+    if (salesReportHidesBacklog()) {
+      return `<tr>
+      <td>${salesReportTypeTagHtml(entry.type)}</td>
+      <td class="sales-report-breakdown-num">${salesReportFormatMoney(s.on_hand?.remaining_value)}</td>
+      <td class="sales-report-breakdown-num">${salesReportFormatMoney(s.shipped?.total_home_amt)}</td>
+      <td class="sales-report-breakdown-num">${salesReportFormatMoney(s.booked?.line_amount)}</td>
+    </tr>`;
     }
     return `<tr>
       <td>${salesReportTypeTagHtml(entry.type)}</td>
@@ -1146,7 +1204,9 @@ function salesReportRenderBreakdown(breakdown, summary) {
   el.innerHTML = `
     <div class="sales-report-breakdown-head">
       <h2 class="sales-report-breakdown-title">Breakdown by PP type</h2>
-      <p class="sales-report-breakdown-sub">${mode === 'past' ? 'Past month — shipment outcomes' : `Open month — backlog + onhand by ${salesReportBasisPhrase()}`} for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong></p>
+      <p class="sales-report-breakdown-sub">${mode === 'past'
+        ? (salesReportHidesBacklog() ? 'Past month — total sales (all shipments)' : 'Past month — shipment outcomes')
+        : (salesReportHidesBacklog() ? `Open month — onhand by ${salesReportBasisPhrase()}` : `Open month — backlog + onhand by ${salesReportBasisPhrase()}`)} for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong></p>
     </div>
     <div class="sales-report-breakdown-scroll">
       <table class="sales-report-breakdown-table">
@@ -1163,18 +1223,26 @@ function salesReportRenderTypeCards(breakdown, summary) {
   const cards = (breakdown || []).map(entry => {
     const s = entry.summary || {};
     const metrics = mode === 'past'
-      ? [
-        ['Backlog del.', s.backlog_delivered?.total_home_amt],
-        ['On-time', s.delivered?.total_home_amt],
-        ['Early', s.early_delivered?.total_home_amt],
-        ['All shipped', s.shipped?.total_home_amt],
-      ]
-      : [
-        ['Backlog', s.backlog?.remaining_value],
-        ['Onhand', s.on_hand?.remaining_value],
-        ['Shipped', s.shipped?.total_home_amt],
-        ['Booked', s.booked?.line_amount],
-      ];
+      ? (salesReportHidesBacklog()
+        ? [['All shipped', s.shipped?.total_home_amt]]
+        : [
+          ['Backlog del.', s.backlog_delivered?.total_home_amt],
+          ['On-time', s.delivered?.total_home_amt],
+          ['Early', s.early_delivered?.total_home_amt],
+          ['All shipped', s.shipped?.total_home_amt],
+        ])
+      : (salesReportHidesBacklog()
+        ? [
+          ['Onhand', s.on_hand?.remaining_value],
+          ['Shipped', s.shipped?.total_home_amt],
+          ['Booked', s.booked?.line_amount],
+        ]
+        : [
+          ['Backlog', s.backlog?.remaining_value],
+          ['Onhand', s.on_hand?.remaining_value],
+          ['Shipped', s.shipped?.total_home_amt],
+          ['Booked', s.booked?.line_amount],
+        ]);
     return `
       <article class="sales-report-type-card">
         <div class="sales-report-type-card-head">${salesReportTypeTagHtml(entry.type)}</div>
@@ -1216,8 +1284,12 @@ function salesReportRenderYtdSummary(grid) {
       ytdShipped += Number(cell.backlog_delivered || 0) + Number(cell.delivered || 0) + Number(cell.early_delivered || 0);
       ytdBacklogDel += Number(cell.backlog_delivered || 0);
     } else if (meta.is_current) {
-      backlogNow += Number(cell.backlog || 0);
-      onHandNow += Number(cell.on_hand || 0);
+      if (salesReportHidesBacklog()) {
+        onHandNow += Number(cell.due_this_month || cell.on_hand || 0);
+      } else {
+        backlogNow += Number(cell.backlog || 0);
+        onHandNow += Number(cell.on_hand || 0);
+      }
     } else {
       forwardDue += Number(cell.due_this_month || 0);
     }
@@ -1227,14 +1299,31 @@ function salesReportRenderYtdSummary(grid) {
     salesReportState.ytdData?.allocated_open_lines || salesReportState.ytdData?.open_lines || [],
   );
   const openRemaining = salesReportOpenRemainingTotal(openLines);
+  const yearRemaining = salesReportYearOpenRemaining(openLines, grid.year);
+  const outsideYear = Math.max(0, openRemaining - yearRemaining);
   const soValue = salesReportSummarizeOpenSoValue(openLines);
 
   const cards = [
-    { title: 'YTD shipped', tone: 'shipped', value: ytdShipped, sub: `Includes ${salesReportFormatMoney(ytdBacklogDel)} backlog cleared`, hint: salesReportIsPostedBasis() ? 'All DO lines in past months, classified vs SO posted date' : 'All DO lines in past months' },
-    { title: 'Backlog now', tone: 'cleared', value: backlogNow, sub: salesReportIsPostedBasis() ? 'Still open · SO posted before this month' : 'Still open · PO due before this month', hint: 'Backlog column in current month' },
-    { title: 'Onhand now', tone: 'on-hand', value: onHandNow, sub: salesReportIsPostedBasis() ? 'Unfinished · SO posted in current month' : 'Unfinished · PO due in current month', hint: 'Onhand column in current month' },
-    { title: 'Forward onhand', tone: 'early', value: forwardDue, sub: salesReportIsPostedBasis() ? 'Unfinished · SO posted in future months' : 'Unfinished · PO due in future months', hint: 'Sum of onhand $ in future month columns' },
-    { title: 'Total open remaining', tone: 'booked', value: openRemaining, sub: `All unfinished open $ · ${salesReportPsTypeLabel()}`, hint: 'PP-allocated remaining for the selected types (any due year)' },
+    {
+      title: 'YTD shipped',
+      tone: 'shipped',
+      value: ytdShipped,
+      sub: salesReportHidesBacklog()
+        ? `${salesReportFormatMoney(ytdShipped)} shipped in past months`
+        : `Includes ${salesReportFormatMoney(ytdBacklogDel)} backlog cleared`,
+      hint: salesReportHidesBacklog() ? 'All DO lines in past months' : 'All DO lines in past months',
+    },
+  ];
+  if (!salesReportHidesBacklog()) {
+    cards.push(
+      { title: 'Backlog now', tone: 'cleared', value: backlogNow, sub: 'Still open · PO due before this month', hint: 'Backlog column in current month' },
+    );
+  }
+  cards.push(
+    { title: 'Onhand now', tone: 'on-hand', value: onHandNow, sub: salesReportHidesBacklog() ? 'Unfinished · SO posted in current month' : 'Unfinished · PO due in current month', hint: 'Onhand column in current month' },
+    { title: 'Forward onhand', tone: 'early', value: forwardDue, sub: salesReportHidesBacklog() ? 'Unfinished · SO posted in future months' : 'Unfinished · PO due in future months', hint: 'Sum of onhand $ in future month columns' },
+    { title: 'Total open remaining', tone: 'booked', value: openRemaining, sub: `All unfinished open $ · ${salesReportPsTypeLabel()}`, hint: outsideYear > 0.009 ? `Includes ${salesReportFormatMoney(outsideYear)} with PO due outside ${grid.year}` : 'PP-allocated remaining for the selected types (any due year)' },
+    { title: `Open remaining ${grid.year}`, tone: 'year', value: yearRemaining, sub: `PO due in ${grid.year} · ${salesReportPsTypeLabel()}`, hint: 'Unfinished open $ whose PO due date falls in this year' },
     {
       title: 'Sales left to achieve',
       tone: 'achieve',
@@ -1243,7 +1332,7 @@ function salesReportRenderYtdSummary(grid) {
       sub: `${salesReportFormatMoney(soValue.outstanding)} outstanding of ${salesReportFormatMoney(soValue.lineValue)} SO value`,
       hint: `Remaining SO qty × home unit · ${soValue.soLineCount} unique open SO line${soValue.soLineCount === 1 ? '' : 's'}`,
     },
-  ];
+  );
 
   el.innerHTML = `
     <div class="sales-report-ytd-summary-head">
@@ -1286,7 +1375,9 @@ function salesReportRenderYtd() {
         ? `Total sales (all shipments) in ${meta.label}`
         : `Shipments in ${meta.label}`)
       : meta.is_current
-        ? `Backlog + onhand in ${meta.label}`
+        ? (salesReportHidesBacklog()
+          ? `Onhand with SO posted in ${meta.label}`
+          : `Backlog + onhand in ${meta.label}`)
         : `Onhand with ${salesReportBasisShort()} in ${meta.label}`;
     return `<th colspan="${colspan}" class="${cls}">
       <button type="button" class="${btnCls}" data-ytd-month="${meta.month}" title="${escapeHtml(title)} — view breakdown">
@@ -1297,9 +1388,13 @@ function salesReportRenderYtd() {
   }).join('');
 
   const refHead = showOpenRemaining
-    ? `<th rowspan="2" class="sales-report-ytd-ref-head" title="All unfinished open $ for this segment (any due year) — year reference">
+    ? `<th rowspan="2" class="sales-report-ytd-ref-head sales-report-ytd-ref-head--year" title="Unfinished open $ whose PO due date falls in ${grid.year}">
         <span class="sales-report-ytd-ref-label">Open remaining</span>
-        <span class="sales-report-ytd-ref-hint">Year ref</span>
+        <span class="sales-report-ytd-ref-hint">Due ${grid.year}</span>
+      </th>
+      <th rowspan="2" class="sales-report-ytd-ref-head" title="All unfinished open $ for this segment (any due year)">
+        <span class="sales-report-ytd-ref-label">Open remaining</span>
+        <span class="sales-report-ytd-ref-hint">All years</span>
       </th>`
     : '';
 
@@ -1323,7 +1418,7 @@ function salesReportRenderYtd() {
             validKeys.add(salesReportYtdCellKey(row.id, meta.month, col));
           });
         }
-      } else if (meta.is_current) {
+      } else if (meta.is_current && !salesReportHidesBacklog()) {
         ['backlog', 'on_hand'].forEach(col => {
           validKeys.add(salesReportYtdCellKey(row.id, meta.month, col));
         });
@@ -1334,8 +1429,15 @@ function salesReportRenderYtd() {
     }).join('');
     const refCell = showOpenRemaining
       ? (() => {
+        validKeys.add(salesReportYtdCellKey(row.id, 0, 'open_remaining_year'));
         validKeys.add(salesReportYtdCellKey(row.id, 0, 'open_remaining'));
         return salesReportYtdNumTd(
+          row.open_remaining_year,
+          row.id,
+          0,
+          'open_remaining_year',
+          'sales-report-ytd-num--ref sales-report-ytd-num--ref-year',
+        ) + salesReportYtdNumTd(
           row.open_remaining,
           row.id,
           0,
@@ -1373,8 +1475,8 @@ function salesReportRenderYtd() {
     sub.textContent = salesReportState.focusMonth
       ? 'Line detail for the month you opened from the grid. Use Overview to return.'
       : salesReportIsPostedBasis()
-        ? 'Past = total sales (all DO $ in month) · current = backlog + onhand · future = onhand by SO posted date.'
-        : 'Past = shipped · current = backlog + onhand · future = onhand by PO due date. Open remaining = all unfinished $ (any year).';
+        ? 'Past = total sales (all DO $ in month) · current and future = onhand by SO posted date. Earlier posted open $ sits in Total open remaining.'
+        : 'Past = shipped · current = backlog + onhand · future = onhand by PO due date. Due this year vs all years are the open-remaining reference columns.';
   }
   overview.hidden = false;
 }
@@ -1468,19 +1570,30 @@ function salesReportColumnsForSection(sectionId) {
 function salesReportDetailSectionDefs(data) {
   const past = data.summary?.mode === 'past';
   if (past) {
+    if (salesReportHidesBacklog()) {
+      return [
+        { id: 'shipped', title: 'All shipments', hint: 'Every DO/shipment dated this month', rows: data.shipped || [] },
+      ];
+    }
     return [
-      { id: 'on_hand', title: 'On-time delivered', hint: salesReportIsPostedBasis() ? 'Shipped this month · SO first posted in same month' : 'Shipped this month · original PO due in same month', rows: data.on_hand || [] },
-      { id: 'backlog', title: 'Backlog delivered', hint: salesReportIsPostedBasis() ? 'Shipped this month · SO first posted before month start' : 'Shipped this month · original PO due before month start', rows: data.backlog || [] },
-      { id: 'early_delivered', title: 'Early delivered', hint: salesReportIsPostedBasis() ? 'Shipped this month · SO first posted after month end' : 'Shipped this month · original PO due after month end', rows: data.early_delivered || [] },
+      { id: 'on_hand', title: 'On-time delivered', hint: 'Shipped this month · original PO due in same month', rows: data.on_hand || [] },
+      { id: 'backlog', title: 'Backlog delivered', hint: 'Shipped this month · original PO due before month start', rows: data.backlog || [] },
+      { id: 'early_delivered', title: 'Early delivered', hint: 'Shipped this month · original PO due after month end', rows: data.early_delivered || [] },
       { id: 'shipped', title: 'All shipments', hint: 'Every DO/shipment dated this month', rows: data.shipped || [] },
     ];
   }
-  return [
-    { id: 'backlog', title: 'Backlog', hint: salesReportIsPostedBasis() ? 'Still open · SO posted before this month' : 'Still open · PO due before this month', rows: data.backlog || [] },
-    { id: 'on_hand', title: 'Onhand', hint: salesReportIsPostedBasis() ? 'Unfinished open $ · SO posted in this month' : 'Unfinished open $ · PO due in this month', rows: data.on_hand || [] },
+  const openSections = [];
+  if (!salesReportHidesBacklog()) {
+    openSections.push(
+      { id: 'backlog', title: 'Backlog', hint: 'Still open · PO due before this month', rows: data.backlog || [] },
+    );
+  }
+  openSections.push(
+    { id: 'on_hand', title: 'Onhand', hint: salesReportHidesBacklog() ? 'Unfinished open $ · SO posted in this month' : 'Unfinished open $ · PO due in this month', rows: data.on_hand || [] },
     { id: 'shipped', title: 'Shipped this month', hint: 'DO/shipment dated this month', rows: data.shipped || [] },
     { id: 'booked', title: 'Booked this month', hint: 'SO lines first-posted this month', rows: data.booked || [] },
-  ];
+  );
+  return openSections;
 }
 
 function salesReportBuildTableHtml(rows, cols) {

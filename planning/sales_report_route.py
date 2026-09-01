@@ -389,6 +389,19 @@ def _open_remaining_total(rows: list[dict[str, Any]]) -> float:
     return round(sum(_open_value(row) for row in rows), 2)
 
 
+def _po_due_date(row: dict[str, Any]) -> date | None:
+    return _parse_date_value(row.get("due_date")) or _parse_date_value(row.get("so_due_date"))
+
+
+def _due_in_year(row: dict[str, Any], year: int) -> bool:
+    due = _po_due_date(row)
+    return due is not None and due.year == year
+
+
+def _open_remaining_in_year(rows: list[dict[str, Any]], year: int) -> float:
+    return _open_remaining_total([row for row in rows if _due_in_year(row, year)])
+
+
 def _past_month_sales(cell: dict[str, Any]) -> float:
     named = cell.get("sales")
     if named is not None:
@@ -701,7 +714,7 @@ def _build_ytd_grid(
             else:
                 open_summary = _build_open_month_summary(type_open, start_d, end_d, basis=basis)
                 due_val = open_summary["due_this_month"]["remaining_value"]
-                if meta.get("open_kind") == "current":
+                if meta.get("open_kind") == "current" and basis != DATE_BASIS_POSTED:
                     cells.append(
                         {
                             "month": month,
@@ -716,7 +729,7 @@ def _build_ytd_grid(
                         {
                             "month": month,
                             "mode": "open",
-                            "open_kind": "future",
+                            "open_kind": "current" if meta.get("open_kind") == "current" else "future",
                             "due_this_month": due_val,
                         }
                     )
@@ -732,27 +745,28 @@ def _build_ytd_grid(
                 merged["early_delivered"] = sum(float(c[idx].get("early_delivered") or 0) for c in cell_lists)
                 merged["sales"] = sum(_past_month_sales(c[idx]) for c in cell_lists)
             else:
-                if meta.get("open_kind") == "current":
+                if meta.get("open_kind") == "current" and basis != DATE_BASIS_POSTED:
                     merged["backlog"] = sum(float(c[idx].get("backlog") or 0) for c in cell_lists)
                     merged["on_hand"] = sum(float(c[idx].get("on_hand") or 0) for c in cell_lists)
                     merged["open_kind"] = "current"
                 else:
                     merged["due_this_month"] = sum(float(c[idx].get("due_this_month") or 0) for c in cell_lists)
-                    merged["open_kind"] = "future"
+                    merged["open_kind"] = "current" if meta.get("open_kind") == "current" else "future"
             out.append(merged)
         return out
 
     row_cells: dict[str, list[dict[str, Any]]] = {}
     remaining_by_type: dict[str, float] = {}
+    year_remaining_by_type: dict[str, float] = {}
     for pp_type in _YTD_ROW_TYPES:
+        type_open = [
+            row
+            for row in open_lines
+            if _ps_type(row.get("process_sheet_no"), row.get("pp_type")) == pp_type
+        ]
         row_cells[pp_type] = _cells_for_type(pp_type)
-        remaining_by_type[pp_type] = _open_remaining_total(
-            [
-                row
-                for row in open_lines
-                if _ps_type(row.get("process_sheet_no"), row.get("pp_type")) == pp_type
-            ]
-        )
+        remaining_by_type[pp_type] = _open_remaining_total(type_open)
+        year_remaining_by_type[pp_type] = _open_remaining_in_year(type_open, year)
 
     rows: list[dict[str, Any]] = []
     for pp_type in _YTD_ROW_TYPES:
@@ -762,6 +776,7 @@ def _build_ytd_grid(
                 "label": pp_type,
                 "cells": row_cells[pp_type],
                 "open_remaining": remaining_by_type[pp_type],
+                "open_remaining_year": year_remaining_by_type[pp_type],
             }
         )
 
@@ -772,6 +787,7 @@ def _build_ytd_grid(
             "cells": _sum_cells([row_cells[t] for t in _YTD_ROW_TYPES]),
             "emphasis": "total",
             "open_remaining": round(sum(remaining_by_type.values()), 2),
+            "open_remaining_year": round(sum(year_remaining_by_type.values()), 2),
         }
     )
 
