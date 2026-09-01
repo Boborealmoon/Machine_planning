@@ -8138,6 +8138,110 @@
     align-items: center;
     gap: 8px;
   }
+  .sales-report-table thead th.is-sortable {
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .sales-report-th-inner {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+  .sales-report-th-sort {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    font-weight: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    color: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .sales-report-th-sort:hover {
+    color: #1d4ed8;
+  }
+  .sales-report-table thead th.is-sorted .sales-report-th-sort {
+    color: #1d4ed8;
+  }
+  .sales-report-table th.is-sorted[data-sort-dir="asc"]::after,
+  .sales-report-table th.is-sorted[data-sort-dir="desc"]::after {
+    content: none;
+  }
+  .sales-report-th-sort-ind {
+    font-size: 9px;
+    line-height: 1;
+    opacity: 0.85;
+  }
+  .sales-report-th-filter {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    padding: 2px;
+    margin: 0;
+    color: var(--text3);
+    cursor: pointer;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .sales-report-th-filter:hover,
+  .sales-report-th-filter[aria-expanded="true"] {
+    color: #1d4ed8;
+    background: #eff6ff;
+  }
+  .sales-report-th-filter.is-active {
+    color: #1d4ed8;
+    background: #dbeafe;
+  }
+  .sales-report-col-filter-panel {
+    max-height: 280px;
+    overflow: auto;
+    min-width: 220px;
+    max-width: 320px;
+  }
+  .sales-report-filter-search {
+    display: block;
+    width: calc(100% - 16px);
+    box-sizing: border-box;
+    margin: 4px 8px 6px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font: inherit;
+    font-size: 12px;
+  }
+  .sales-report-filter-all {
+    display: block;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #1d4ed8;
+    cursor: pointer;
+  }
+  .sales-report-filter-all:hover {
+    background: #eff6ff;
+  }
+  .sales-report-filter-empty {
+    margin: 0;
+    padding: 8px 14px 10px;
+    font-size: 12px;
+    color: var(--text3);
+  }
+  .sales-report-filter-panel .filter-dropdown-item[hidden] {
+    display: none !important;
+  }
   .sales-report-presets {
     display: inline-flex;
     flex-wrap: wrap;
@@ -9185,6 +9289,49 @@
   .so-program-finish-cell .so-editable-status {
     margin-top: 2px;
     min-height: 12px;
+  }
+
+  /* Sales Orders — colour-coded planning columns */
+  .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--edd {
+    background: #ede9fe;
+  }
+  .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--edd .so-col-sort-btn,
+  .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--edd .so-col-filter-btn {
+    color: #5b21b6;
+  }
+  .new-orders-page--sales-orders .so-table--wide tbody td.so-coway-edd-cell {
+    background: color-mix(in srgb, #7c3aed 9%, #ffffff);
+  }
+  .new-orders-page--sales-orders .new-orders-table tbody tr.is-clickable:hover td.so-coway-edd-cell {
+    background: color-mix(in srgb, #7c3aed 14%, #ffffff);
+  }
+
+  .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--finish {
+    background: #fef3c7;
+  }
+  .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--finish .so-col-sort-btn,
+  .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--finish .so-col-filter-btn {
+    color: #92400e;
+  }
+  .new-orders-page--sales-orders .so-table--wide tbody td.so-program-finish-cell {
+    background: color-mix(in srgb, #d97706 11%, #ffffff);
+  }
+  .new-orders-page--sales-orders .new-orders-table tbody tr.is-clickable:hover td.so-program-finish-cell {
+    background: color-mix(in srgb, #d97706 16%, #ffffff);
+  }
+
+  .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--material {
+    background: #e0f2fe;
+  }
+  .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--material .so-col-sort-btn,
+  .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--material .so-col-filter-btn {
+    color: #075985;
+  }
+  .new-orders-page--sales-orders .so-table--wide tbody td.so-material-subcon-cell:not(.has-material-date):not(.has-material-arrived) {
+    background: color-mix(in srgb, #0ea5e9 9%, #ffffff);
+  }
+  .new-orders-page--sales-orders .new-orders-table tbody tr.is-clickable:hover td.so-material-subcon-cell:not(.has-material-date):not(.has-material-arrived) {
+    background: color-mix(in srgb, #0ea5e9 14%, #ffffff);
   }
 
   /* Sales Orders — column sort / filter headers */

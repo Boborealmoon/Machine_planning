@@ -269,7 +269,7 @@ body.rfq-view .app-main--rfq-checker {
 
 .rfq-defaults-row {
   display: grid;
-  grid-template-columns: minmax(280px, 1.4fr) repeat(3, minmax(140px, 1fr));
+  grid-template-columns: minmax(280px, 1.4fr) repeat(5, minmax(120px, 1fr));
   gap: 12px;
   margin-top: 12px;
   align-items: end;
@@ -325,7 +325,7 @@ body.rfq-view .app-main--rfq-checker {
   letter-spacing: 0.03em;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .rfq-defaults-row {
     grid-template-columns: 1fr 1fr;
   }
@@ -406,6 +406,122 @@ body.rfq-view .app-main--rfq-checker {
 
 .rfq-table td.rfq-td-assignment { background: #dcfce7; }
 .rfq-table td.rfq-td-remark { background: #fefce8; }
+
+.rfq-summary {
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.rfq-batch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rfq-batch {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.rfq-batch-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  background: #f8fafc;
+}
+
+.rfq-batch-toggle {
+  flex-shrink: 0;
+  width: 42px;
+  padding: 6px 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #334155;
+  cursor: pointer;
+}
+
+.rfq-batch-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.rfq-batch-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: #0f172a;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.rfq-batch-sub {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
+.rfq-batch-known { color: #166534; font-weight: 800; }
+.rfq-batch-new { color: #9a3412; font-weight: 800; }
+
+.rfq-status-pill {
+  display: inline-flex;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.rfq-status-pill--draft { background: #e0f2fe; color: #075985; }
+.rfq-status-pill--archived { background: #ecfdf5; color: #047857; }
+
+.rfq-batch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.rfq-batch-panel { display: none; }
+.rfq-batch.is-open .rfq-batch-panel { display: block; }
+.rfq-batch.is-open .rfq-batch-toggle { background: #2563eb; border-color: #2563eb; color: #fff; }
+
+.rfq-batch-note {
+  margin: 0;
+  padding: 8px 14px 0;
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.rfq-batch-defaults .rfq-defaults-row {
+  margin-top: 8px;
+}
+
+.rfq-batch .rfq-table-scroll {
+  max-height: min(520px, calc(100dvh - 360px));
+}
+
+.rfq-cell--days,
+.rfq-cell--lead_time {
+  background: #eff6ff;
+}
+
+.rfq-table td.rfq-td-days,
+.rfq-table td.rfq-td-lead_time {
+  background: #eff6ff;
+}
 
 .rfq-drawer {
   position: fixed;

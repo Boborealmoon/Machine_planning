@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}RFQ Checker upload{% endblock %}
+{% block title %}RFQ Checker / Tracker upload{% endblock %}
 {% block body_class %}rfq-view{% endblock %}
 {% block main_class %}app-main--rfq-checker{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/rfq_checker.css') }}?v=rfq-20260827-defaults">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/rfq_checker.css') }}?v=rfq-20260901-tracker3">
 {% endblock %}
 {% block content %}
 <div class="rfq-page" data-rfq-page="upload">
@@ -12,11 +12,11 @@
       <p class="rfq-kicker">Archive</p>
       <h1 class="rfq-title">Upload RFQ Excel</h1>
       <p class="rfq-subtitle" id="rfq-upload-subtitle">
-        Workbooks can use any column layout. The checker maps them onto the Archive columns, fills cycle-time hours, and matches part numbers we have fabricated before.
+        Known parts pull assignment, machines, and C/T. New parts fill cycle time from the sheet, then hours = QTY × C/T ÷ 60. Days and lead time stay blank unless the workbook already has those columns.
       </p>
     </div>
     <div class="rfq-header-actions">
-      <a class="rfq-btn rfq-btn--ghost" href="/archive/rfq-checker">Existing parts</a>
+      <a class="rfq-btn rfq-btn--ghost" href="/archive/rfq-checker">Tracker</a>
       <button type="button" class="rfq-btn rfq-btn--primary" id="rfq-save-archive" hidden>Save to Archive</button>
     </div>
   </header>
@@ -46,7 +46,7 @@
     <div class="rfq-defaults-head">
       <div>
         <h2 class="rfq-defaults-title">Sheet defaults</h2>
-        <p class="rfq-upload-hint">Tag this whole upload, then fill RFQ, customer, and salesperson once for every line.</p>
+        <p class="rfq-upload-hint">Edit the whole upload here, or change any line below. Days and lead time only fill when you type them, or when the Excel already has those columns.</p>
       </div>
       <button type="button" class="rfq-btn rfq-btn--ghost" id="rfq-apply-defaults">Apply to all lines</button>
     </div>
@@ -74,6 +74,14 @@
       <label class="rfq-inline">
         <span class="rfq-label">Salesperson</span>
         <input id="rfq-default-salesperson" class="rfq-input" type="text" placeholder="Salesperson" autocomplete="off">
+      </label>
+      <label class="rfq-inline">
+        <span class="rfq-label">Days</span>
+        <input id="rfq-default-days" class="rfq-input" type="number" step="any" placeholder="Leave blank" autocomplete="off">
+      </label>
+      <label class="rfq-inline">
+        <span class="rfq-label">Lead time</span>
+        <input id="rfq-default-lead-time" class="rfq-input" type="text" placeholder="e.g. 4wks" autocomplete="off">
       </label>
     </div>
   </section>
@@ -112,5 +120,5 @@
 </aside>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/rfq_checker.js') }}?v=rfq-20260827-groq"></script>
+<script src="{{ url_for('static', filename='js/rfq_checker.js') }}?v=rfq-20260901-tracker3"></script>
 {% endblock %}

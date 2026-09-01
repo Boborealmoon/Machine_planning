@@ -17,13 +17,18 @@ from planning.rfq_checker_service import (
     build_mapped_lines,
     calculate_times,
     format_lead_time,
+    group_archive_batches,
     headers_from_source_rows,
     heuristic_column_map,
+    heuristic_covers_core_fields,
+    infer_cycle_time_from_source,
     invert_field_map,
+    list_workbook_sheets,
     llm_status,
     map_columns_with_llm,
     normalize_part_no,
     normalize_sheet_tag,
+    parse_named_sheet,
     parse_workbook_bytes,
     parse_yn,
     pick_default_sheet,
@@ -87,6 +92,9 @@ class RfqCheckerServiceTests(unittest.TestCase):
         self.assertEqual(archive["Part No."], "part_no")
         self.assertEqual(archive["Assignment"], "assignment")
         self.assertEqual(archive["Total C/T (mins)"], "total_ct_mins")
+        self.assertTrue(heuristic_covers_core_fields(archive))
+        self.assertFalse(heuristic_covers_core_fields({"Item Code": "part_no"}))
+        self.assertFalse(heuristic_covers_core_fields({"Part No.": "part_no", "Assignment": "assignment"}))
 
     def test_invert_field_map_accepts_either_direction(self):
         self.assertEqual(invert_field_map({"part_no": "Item Code"}), {"Item Code": "part_no"})
@@ -105,6 +113,19 @@ class RfqCheckerServiceTests(unittest.TestCase):
         self.assertTrue(status["configured"])
         self.assertEqual(status["provider"], "groq")
         self.assertEqual(status["base_url"], GROQ_DEFAULT_BASE_URL)
+        self.assertEqual(status["model"], GROQ_DEFAULT_MODEL)
+
+    def test_groq_openai_turbo_model_is_remapped(self):
+        env = {
+            "RFQ_LLM_API_KEY": "gsk_test_key",
+            "RFQ_LLM_BASE_URL": "",
+            "RFQ_LLM_MODEL": "openai/gpt-3.5-turbo",
+            "GROQ_API_KEY": "",
+            "OPENAI_API_KEY": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            status = llm_status()
+        self.assertEqual(status["provider"], "groq")
         self.assertEqual(status["model"], GROQ_DEFAULT_MODEL)
 
     def test_openai_key_keeps_openai_defaults(self):
@@ -154,13 +175,30 @@ class RfqCheckerServiceTests(unittest.TestCase):
         self.assertEqual(result["column_map"]["Qty pcs"], "qty")
         self.assertEqual(result["model"], GROQ_DEFAULT_MODEL)
 
-    def test_apply_map_calculates_and_fills_history(self):
+    def test_apply_map_calculates_hours_but_not_days(self):
         mapped = apply_column_map(
             {"Item Code": "BB18-KS0526-28", "Qty pcs": "104", "CT min": "180"},
             {"Item Code": "part_no", "Qty pcs": "qty", "CT min": "total_ct_mins"},
         )
         self.assertEqual(mapped["part_no"], "BB18-KS0526-28")
         self.assertEqual(mapped["total_hours"], 312.0)
+        self.assertIsNone(mapped["days"])
+        self.assertEqual(mapped["lead_time"], "")
+        with_schedule = apply_column_map(
+            {"Item Code": "BB18-KS0526-28", "Qty pcs": "104", "CT min": "180", "Days": 12, "Lead Time": "3wks"},
+            {
+                "Item Code": "part_no",
+                "Qty pcs": "qty",
+                "CT min": "total_ct_mins",
+                "Days": "days",
+                "Lead Time": "lead_time",
+            },
+        )
+        self.assertEqual(with_schedule["days"], 12.0)
+        self.assertEqual(with_schedule["lead_time"], "3wks")
+        self.assertEqual(with_schedule["total_hours"], 312.0)
+
+    def test_known_parts_pull_history_new_parts_stay_blank_on_schedule(self):
         lines = build_mapped_lines(
             [
                 {"Item Code": "BB18-KS0526-28", "Qty pcs": 104, "CT min": ""},
@@ -171,6 +209,7 @@ class RfqCheckerServiceTests(unittest.TestCase):
                 "BB18-KS0526-28": {
                     "part_no": "BB18-KS0526-28",
                     "opns": "2TN 1ML",
+                    "assignment": "MC 22",
                     "machines": "22,10,30,29",
                     "total_ct_mins": 180,
                 }
@@ -178,9 +217,65 @@ class RfqCheckerServiceTests(unittest.TestCase):
         )
         self.assertEqual(lines[0]["match_status"], "matched")
         self.assertEqual(lines[0]["opns"], "2TN 1ML")
+        self.assertEqual(lines[0]["assignment"], "MC 22")
+        self.assertIn("assignment", lines[0]["filled_from_history"])
         self.assertEqual(lines[0]["total_hours"], 312.0)
         self.assertIn("total_ct_mins", lines[0]["filled_from_history"])
+        self.assertIsNone(lines[0]["days"])
+        self.assertEqual(lines[0]["lead_time"], "")
         self.assertEqual(lines[1]["match_status"], "new")
+        self.assertIsNone(lines[1]["total_ct_mins"])
+        self.assertIsNone(lines[1]["days"])
+
+    def test_infer_cycle_time_sums_operation_columns(self):
+        source = {"Part No.": "NEW-1", "QTY": 4, "OP10": 12, "OP20": 8, "OP30": 5}
+        inferred = infer_cycle_time_from_source(source, {"Part No.": "part_no", "QTY": "qty"})
+        self.assertEqual(inferred, 25.0)
+        mapped = apply_column_map(source, {"Part No.": "part_no", "QTY": "qty"})
+        self.assertEqual(mapped["total_ct_mins"], 25.0)
+        self.assertEqual(mapped["total_hours"], 1.6667)
+
+    def test_group_archive_batches_keeps_upload_order(self):
+        grouped = group_archive_batches(
+            [
+                {
+                    "batch_id": 9,
+                    "line_id": 1,
+                    "part_no": "A",
+                    "match_status": "new",
+                    "filename": "rfq.xlsx",
+                    "sheet_name": "RFQ 3",
+                    "batch_status": "archived",
+                    "batch_updated_at": "2026-09-01",
+                    "qty": 2,
+                },
+                {
+                    "batch_id": 9,
+                    "line_id": 2,
+                    "part_no": "B",
+                    "match_status": "matched",
+                    "filename": "rfq.xlsx",
+                    "sheet_name": "RFQ 3",
+                    "batch_status": "archived",
+                    "qty": 4,
+                },
+                {
+                    "batch_id": 8,
+                    "line_id": 3,
+                    "part_no": "C",
+                    "match_status": "new",
+                    "filename": "older.xlsx",
+                    "sheet_name": "RFQ 1",
+                    "batch_status": "draft",
+                },
+            ]
+        )
+        self.assertEqual([item["batch_id"] for item in grouped], [9, 8])
+        self.assertEqual(grouped[0]["line_count"], 2)
+        self.assertEqual(grouped[0]["new_count"], 1)
+        self.assertEqual(grouped[0]["matched_count"], 1)
+        self.assertEqual(grouped[0]["filename"], "rfq.xlsx")
+        self.assertEqual(grouped[1]["status"], "draft")
 
     def test_parse_workbook_reads_sheets(self):
         sheets = parse_workbook_bytes(_xlsx_bytes(), "rfq.xlsx")
@@ -188,6 +283,15 @@ class RfqCheckerServiceTests(unittest.TestCase):
         self.assertIn("RFQ in", names)
         self.assertIn("Archive", names)
         incoming = next(sheet for sheet in sheets if sheet["name"] == "RFQ in")
+        self.assertEqual(incoming["row_count"], 2)
+        self.assertEqual(incoming["rows"][0]["Item Code"], "BB18-KS0526-28")
+
+    def test_parse_named_sheet_skips_other_tabs(self):
+        payload = _xlsx_bytes()
+        names = list_workbook_sheets(payload, "rfq.xlsx")
+        self.assertEqual(names, ["RFQ in", "Archive"])
+        incoming = parse_named_sheet(payload, "rfq.xlsx", "RFQ in")
+        self.assertEqual(incoming["name"], "RFQ in")
         self.assertEqual(incoming["row_count"], 2)
         self.assertEqual(incoming["rows"][0]["Item Code"], "BB18-KS0526-28")
 
@@ -240,6 +344,12 @@ class RfqCheckerServiceTests(unittest.TestCase):
         self.assertEqual(lines[0]["salesperson"], "Daniel")
         self.assertEqual(lines[1]["customer"], "OSS")
         self.assertEqual(lines[1]["salesperson"], "")
+        scheduled = apply_defaults_to_mapped_lines(
+            [{"part_no": "A", "days": None, "lead_time": ""}],
+            {"days": 4, "lead_time": "1wk"},
+        )
+        self.assertEqual(scheduled[0]["days"], 4.0)
+        self.assertEqual(scheduled[0]["lead_time"], "1wk")
 
 
 class RfqCheckerRouteTests(unittest.TestCase):
@@ -253,10 +363,13 @@ class RfqCheckerRouteTests(unittest.TestCase):
             library = self.client.get("/archive/rfq-checker")
             upload = self.client.get("/archive/rfq-checker/upload")
         self.assertEqual(library.status_code, 200)
-        self.assertIn("RFQ Checker", library.get_data(as_text=True))
+        self.assertIn("RFQ Checker / Tracker", library.get_data(as_text=True))
+        self.assertIn("Tracker", library.get_data(as_text=True))
+        self.assertIn("By part no.", library.get_data(as_text=True))
         self.assertEqual(upload.status_code, 200)
         self.assertIn("Upload RFQ Excel", upload.get_data(as_text=True))
         self.assertIn("Sheet defaults", upload.get_data(as_text=True))
+        self.assertIn("Lead time", upload.get_data(as_text=True))
         self.assertIn("data-rfq-tag=\"APS\"", upload.get_data(as_text=True))
 
     def test_short_path_redirects(self):
@@ -306,6 +419,19 @@ class RfqCheckerRouteTests(unittest.TestCase):
         self.assertIn("APS", body["sheet_tags"])
         self.assertIn("NPS", body["sheet_tags"])
         self.assertFalse(body["llm"]["configured"])
+
+    def test_part_master_route_ok(self):
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": ""}):
+            with patch("planning.rfq_checker_route.list_part_master") as listed:
+                listed.return_value = {
+                    "ok": True,
+                    "count": 1,
+                    "rows": [{"part_no": "BB18-KS0526-28", "assignment": "MC 22", "total_ct_mins": 180}],
+                    "query": "",
+                }
+                response = self.client.get("/api/rfq-checker/part-master")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["rows"][0]["assignment"], "MC 22")
 
     def test_defaults_route_requires_json(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": ""}):

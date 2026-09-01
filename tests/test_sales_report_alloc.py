@@ -41,6 +41,28 @@ class SalesReportAllocationTests(unittest.TestCase):
         self.assertEqual(len(allocated), 1)
         self.assertEqual(allocated[0]["due_date"], "2026-08-20")
         self.assertEqual(allocated[0]["schedule_due_date"], "2026-06-25")
+        self.assertEqual(allocated[0]["customer_name"], "Customer")
+
+    def test_allocated_open_lines_keep_salesperson_and_customer(self):
+        so_line = {
+            "sales_order_no": "SO/3",
+            "line_item_no": "1",
+            "remaining_qty": 2,
+            "remaining_value": 200,
+            "unit_selling_price": 100,
+            "due_date": "2026-09-01",
+            "inventory_code": "PART-2",
+            "customer_code": "C9",
+            "customer_name": "Acme",
+            "sales_person_code": "SP01",
+            "sales_person_name": "Jane Tan",
+        }
+        allocated = allocate_so_line_remaining(so_line, [])
+        self.assertEqual(len(allocated), 1)
+        self.assertEqual(allocated[0]["customer_code"], "C9")
+        self.assertEqual(allocated[0]["customer_name"], "Acme")
+        self.assertEqual(allocated[0]["sales_person_code"], "SP01")
+        self.assertEqual(allocated[0]["sales_person_name"], "Jane Tan")
 
     def test_partial_expansion_keeps_so_due_month_ownership(self):
         so_line = {

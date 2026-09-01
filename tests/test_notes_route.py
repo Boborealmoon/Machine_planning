@@ -26,7 +26,7 @@ class NotesRouteTests(unittest.TestCase):
         self.assertIn("Screen directory", html)
         self.assertIn("NPI/FA Management", html)
         self.assertIn("SO outstanding balance", html)
-        self.assertIn("RFQ checker", html)
+        self.assertIn("RFQ checker / Tracker", html)
         self.assertIn("Assembly Parts", html)
         self.assertIn("Queries &amp; Master Data", html)
         self.assertIn('id="admin-launch-toggle-all"', html)

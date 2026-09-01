@@ -346,12 +346,15 @@ SELECT
     det.required_shipment_date::date AS due_date,
     det.customer_code,
     det.customer_name,
+    soh.sales_person_code,
     det.sales_person_name,
     det.sbu_desc,
     COALESCE(det.first_posted_datetime, det.posted_datetime) AS first_posted_datetime
 FROM public.so_order_line det
 LEFT JOIN public.part_desc pd
        ON pd.inventory_code = det.inventory_code
+LEFT JOIN public.so_order_header soh
+       ON soh.sales_order_no = det.sales_order_no
 LEFT JOIN public.sum_qty_shipped_by_sales_order sq
        ON sq.sales_order_no = det.sales_order_no
       AND sq.line_item_no = det.line_item_no
@@ -408,32 +411,35 @@ ORDER BY pp_voucher_no, pp_partial_no
 
 STAGED_SHIPMENTS_SQL = """
 SELECT
-    sales_order_no,
-    line_item_no,
-    inventory_code,
-    description,
-    qty_issued,
-    unit_selling_price_fc,
-    (unit_selling_price_fc * qty_issued) AS line_fc_amt,
-    exch_rate,
-    (unit_selling_price_fc * qty_issued * exch_rate) AS total_home_amt,
-    order_currency_code,
-    shipment_voucher_no,
-    invoice_no,
-    invoice_line_item_no,
-    shipment_datetime,
-    shipment_date,
-    due_date,
-    customer_code,
-    customer_name,
-    sales_person_name,
-    sbu_desc,
-    first_posted_datetime,
-    (first_posted_datetime::date < %s::date) AS is_backlog_clear
-FROM public.lg_out_shipment_line
-WHERE sales_order_no LIKE 'SO/%%'
-  AND shipment_date BETWEEN %s AND %s
-ORDER BY shipment_datetime DESC, sales_order_no, line_item_no
+    ship.sales_order_no,
+    ship.line_item_no,
+    ship.inventory_code,
+    ship.description,
+    ship.qty_issued,
+    ship.unit_selling_price_fc,
+    (ship.unit_selling_price_fc * ship.qty_issued) AS line_fc_amt,
+    ship.exch_rate,
+    (ship.unit_selling_price_fc * ship.qty_issued * ship.exch_rate) AS total_home_amt,
+    ship.order_currency_code,
+    ship.shipment_voucher_no,
+    ship.invoice_no,
+    ship.invoice_line_item_no,
+    ship.shipment_datetime,
+    ship.shipment_date,
+    ship.due_date,
+    ship.customer_code,
+    ship.customer_name,
+    soh.sales_person_code,
+    ship.sales_person_name,
+    ship.sbu_desc,
+    ship.first_posted_datetime,
+    (ship.first_posted_datetime::date < %s::date) AS is_backlog_clear
+FROM public.lg_out_shipment_line ship
+LEFT JOIN public.so_order_header soh
+       ON soh.sales_order_no = ship.sales_order_no
+WHERE ship.sales_order_no LIKE 'SO/%%'
+  AND ship.shipment_date BETWEEN %s AND %s
+ORDER BY ship.shipment_datetime DESC, ship.sales_order_no, ship.line_item_no
 """
 
 STAGED_BOOKED_SQL = f"""
@@ -455,11 +461,14 @@ SELECT
     COALESCE(det.first_posted_datetime, det.posted_datetime) AS first_posted_datetime,
     det.customer_code,
     det.customer_name,
+    soh.sales_person_code,
     det.sales_person_name,
     det.sbu_desc
 FROM public.so_order_line det
 LEFT JOIN public.part_desc pd
        ON pd.inventory_code = det.inventory_code
+LEFT JOIN public.so_order_header soh
+       ON soh.sales_order_no = det.sales_order_no
 WHERE det.sales_order_no LIKE 'SO/%%'
   AND COALESCE(det.qty, 0) > 0
   AND COALESCE(det.ost_status, '') <> 'V'

@@ -5,6 +5,7 @@ const SALES_REPORT_YTD_TYPES = SALES_REPORT_PS_TYPES;
 const SALES_REPORT_BASIS_KEY = 'sales-report-date-basis';
 
 const SALES_REPORT_TABLE_PEEK = 3;
+const SALES_REPORT_BLANK_KEY = '__blank__';
 
 function salesReportReadStoredBasis() {
   try {
@@ -25,6 +26,13 @@ const salesReportState = {
   month: '',
   dateBasis: salesReportReadStoredBasis(),
   ppTypes: new Set(['APS', 'NPS']),
+  salespersons: new Set(),
+  customers: new Set(),
+  salespersonOptions: [],
+  customerOptions: [],
+  colFilterQuery: { salesperson: '', customer: '' },
+  openColFilter: null,
+  sortBySection: {},
   loading: false,
   ytdCellSelection: new Set(),
   /** Section ids currently showing full tables (default = peek of SALES_REPORT_TABLE_PEEK). */
@@ -95,12 +103,14 @@ function salesReportSyncPeriodUI() {
 function salesReportRenderContext() {
   const el = document.getElementById('sales-report-context');
   if (!el) return;
+  const extras = salesReportEntityFilterPhrase();
+  const suffix = extras ? ` · ${extras}` : '';
   const segment = salesReportPsTypeLabel();
   if (salesReportState.focusMonth) {
-    el.textContent = `${salesReportFocusMonthLabel()} · ${segment} · ${salesReportBasisPhrase()}`;
+    el.textContent = `${salesReportFocusMonthLabel()} · ${segment} · ${salesReportBasisPhrase()}${suffix}`;
     return;
   }
-  el.textContent = `${salesReportState.year} full year · ${segment} · ${salesReportBasisPhrase()}`;
+  el.textContent = `${salesReportState.year} full year · ${segment} · ${salesReportBasisPhrase()}${suffix}`;
 }
 
 function salesReportSetFocusMonth(month, options = {}) {
@@ -109,6 +119,8 @@ function salesReportSetFocusMonth(month, options = {}) {
   if (salesReportState.focusMonth === next) return;
   salesReportState.focusMonth = next;
   salesReportState.expandedSections.clear();
+  salesReportState.sortBySection = {};
+  salesReportState.openColFilter = null;
   salesReportSyncPeriodUI();
   if (next) {
     salesReportState.month = salesReportMonthValue(salesReportState.year, next);
@@ -133,6 +145,8 @@ function salesReportClearFocusMonth() {
   salesReportState.focusMonth = null;
   salesReportState.search = '';
   salesReportState.expandedSections.clear();
+  salesReportState.sortBySection = {};
+  salesReportState.openColFilter = null;
   const search = document.getElementById('sales-report-search');
   if (search) search.value = '';
   salesReportSyncPeriodUI();
@@ -264,6 +278,255 @@ function salesReportPassesPsFilter(row) {
   return salesReportState.ppTypes.has(psType);
 }
 
+function salesReportCompactField(value) {
+  return String(value || '').trim();
+}
+
+function salesReportSalespersonKey(row) {
+  return salesReportCompactField(row?.sales_person_code)
+    || salesReportCompactField(row?.sales_person_name)
+    || SALES_REPORT_BLANK_KEY;
+}
+
+function salesReportCustomerKey(row) {
+  return salesReportCompactField(row?.customer_code)
+    || salesReportCompactField(row?.customer_name)
+    || SALES_REPORT_BLANK_KEY;
+}
+
+function salesReportSalespersonLabel(row) {
+  const code = salesReportCompactField(row?.sales_person_code);
+  const name = salesReportCompactField(row?.sales_person_name);
+  if (code && name && code !== name) return `${name} (${code})`;
+  return name || code || '(Blank)';
+}
+
+function salesReportCustomerLabel(row) {
+  const code = salesReportCompactField(row?.customer_code);
+  const name = salesReportCompactField(row?.customer_name);
+  if (name && code && name !== code) return `${name} (${code})`;
+  return name || code || '(Blank)';
+}
+
+function salesReportFormatSalesperson(_value, row) {
+  const text = salesReportSalespersonLabel(row);
+  return text === '(Blank)' ? '—' : text;
+}
+
+function salesReportFormatCustomer(_value, row) {
+  const name = salesReportCompactField(row?.customer_name);
+  const code = salesReportCompactField(row?.customer_code);
+  return name || code || '—';
+}
+
+function salesReportPassesSalespersonFilter(row) {
+  if (!salesReportState.salespersons.size) return true;
+  return salesReportState.salespersons.has(salesReportSalespersonKey(row));
+}
+
+function salesReportPassesCustomerFilter(row) {
+  if (!salesReportState.customers.size) return true;
+  return salesReportState.customers.has(salesReportCustomerKey(row));
+}
+
+function salesReportEntityFiltersActive() {
+  return salesReportState.salespersons.size > 0 || salesReportState.customers.size > 0;
+}
+
+function salesReportEntityButtonLabel(selected, options, allLabel, plural) {
+  if (!selected.size) return allLabel;
+  const labels = options.filter(opt => selected.has(opt.key)).map(opt => opt.label);
+  if (labels.length === 1) return labels[0];
+  if (labels.length === 2) return labels.join(', ');
+  return `${labels.length} ${plural}`;
+}
+
+function salesReportEntityFilterPhrase() {
+  const parts = [];
+  const people = salesReportEntityButtonLabel(
+    salesReportState.salespersons,
+    salesReportState.salespersonOptions,
+    '',
+    'salespeople',
+  );
+  const customers = salesReportEntityButtonLabel(
+    salesReportState.customers,
+    salesReportState.customerOptions,
+    '',
+    'customers',
+  );
+  if (people) parts.push(people);
+  if (customers) parts.push(customers);
+  return parts.join(' · ');
+}
+
+function salesReportScopeLabel() {
+  const extras = salesReportEntityFilterPhrase();
+  return extras ? `${salesReportPsTypeLabel()} · ${extras}` : salesReportPsTypeLabel();
+}
+
+function salesReportAllSourceRows() {
+  const ytd = salesReportState.ytdData || {};
+  const data = salesReportState.data || {};
+  return [
+    ...(ytd.allocated_open_lines || ytd.open_lines || []),
+    ...(ytd.shipments_attributed || ytd.shipments || []),
+    ...(data.allocated_open_lines || data.open_lines || []),
+    ...(data.shipments_attributed || data.shipped || []),
+    ...(data.booked || []),
+  ];
+}
+
+function salesReportCollectEntityOptions(rows, keyFn, labelFn) {
+  const byKey = new Map();
+  (rows || []).forEach(row => {
+    const key = keyFn(row);
+    if (!key || byKey.has(key)) return;
+    byKey.set(key, { key, label: labelFn(row) });
+  });
+  return [...byKey.values()].sort((a, b) => {
+    if (a.key === SALES_REPORT_BLANK_KEY) return 1;
+    if (b.key === SALES_REPORT_BLANK_KEY) return -1;
+    return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
+  });
+}
+
+function salesReportPruneEntitySelection(selected, options) {
+  if (!selected.size) return;
+  const valid = new Set(options.map(opt => opt.key));
+  [...selected].forEach(key => {
+    if (!valid.has(key)) selected.delete(key);
+  });
+}
+
+function salesReportFilterPanelItems(panel, query) {
+  const q = String(query || '').trim().toLowerCase();
+  panel.querySelectorAll('.filter-dropdown-item').forEach(label => {
+    label.hidden = Boolean(q) && !label.textContent.toLowerCase().includes(q);
+  });
+}
+
+function salesReportColFilterMarkup(options, selected, allLabel, plural, query) {
+  const searchHtml = options.length > 8
+    ? `<input type="search" class="sales-report-filter-search" placeholder="Find ${plural}…" autocomplete="off" value="${escapeHtml(query || '')}">`
+    : '';
+  const clearHtml = `<button type="button" class="sales-report-filter-all" data-action="clear-entity">${escapeHtml(allLabel)}</button>`;
+  const emptyHtml = options.length
+    ? options.map(opt => {
+      const checked = selected.has(opt.key) ? 'checked' : '';
+      return `<label class="filter-dropdown-item"><input type="checkbox" value="${escapeHtml(opt.key)}" ${checked} /> ${escapeHtml(opt.label)}</label>`;
+    }).join('')
+    : `<p class="sales-report-filter-empty">No ${escapeHtml(plural)} in the current data.</p>`;
+  return `${searchHtml}${clearHtml}${emptyHtml}`;
+}
+
+function salesReportFillColFilterPanels(entity, options, selected, allLabel, plural) {
+  const query = salesReportState.colFilterQuery[entity] || '';
+  const signature = options.map(opt => opt.key).join('\u0001');
+  document.querySelectorAll(`.sales-report-col-filter-panel[data-entity="${entity}"]`).forEach(panel => {
+    if (panel.dataset.signature === signature) {
+      panel.querySelectorAll('input[type="checkbox"]').forEach(input => {
+        input.checked = selected.has(input.value);
+      });
+      const search = panel.querySelector('.sales-report-filter-search');
+      if (search && search.value !== query) search.value = query;
+      salesReportFilterPanelItems(panel, query);
+      return;
+    }
+    panel.dataset.signature = signature;
+    panel.innerHTML = salesReportColFilterMarkup(options, selected, allLabel, plural, query);
+    if (query) salesReportFilterPanelItems(panel, query);
+  });
+  document.querySelectorAll(`.sales-report-th-filter[data-entity="${entity}"]`).forEach(btn => {
+    const count = selected.size;
+    btn.classList.toggle('is-active', count > 0);
+    btn.title = count
+      ? `Filter ${plural} · ${count} selected`
+      : `Filter ${plural}`;
+  });
+}
+
+function salesReportRefreshEntityOptions() {
+  const rows = salesReportEntitySourceRows();
+  salesReportState.salespersonOptions = salesReportCollectEntityOptions(
+    rows, salesReportSalespersonKey, salesReportSalespersonLabel,
+  );
+  salesReportPruneEntitySelection(salesReportState.salespersons, salesReportState.salespersonOptions);
+
+  const customerRows = rows.filter(salesReportPassesSalespersonFilter);
+  salesReportState.customerOptions = salesReportCollectEntityOptions(
+    customerRows, salesReportCustomerKey, salesReportCustomerLabel,
+  );
+  salesReportPruneEntitySelection(salesReportState.customers, salesReportState.customerOptions);
+}
+
+function salesReportFillAllColFilterPanels() {
+  salesReportFillColFilterPanels(
+    'salesperson',
+    salesReportState.salespersonOptions,
+    salesReportState.salespersons,
+    'All salespeople',
+    'salespeople',
+  );
+  salesReportFillColFilterPanels(
+    'customer',
+    salesReportState.customerOptions,
+    salesReportState.customers,
+    'All customers',
+    'customers',
+  );
+}
+
+function salesReportEntitySourceRows() {
+  const data = salesReportState.data;
+  if (salesReportState.focusMonth && data) {
+    return [
+      ...(data.allocated_open_lines || data.open_lines || []),
+      ...(data.shipments_attributed || data.shipped || []),
+      ...(data.booked || []),
+    ].filter(salesReportPassesPsFilter);
+  }
+  return salesReportAllSourceRows().filter(salesReportPassesPsFilter);
+}
+
+function salesReportPositionColFilterPanel(btn, panel) {
+  const rect = btn.getBoundingClientRect();
+  const width = Math.max(panel.offsetWidth || 240, 220);
+  const left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8);
+  panel.style.position = 'fixed';
+  panel.style.left = `${left}px`;
+  panel.style.top = `${rect.bottom + 4}px`;
+  panel.style.zIndex = '80';
+}
+
+function salesReportRestoreOpenColFilter() {
+  const open = salesReportState.openColFilter;
+  if (!open) return;
+  const root = open.sectionId
+    ? document.querySelector(`#sales-report-details [data-section="${open.sectionId}"]`)
+    : document.getElementById('sales-report-details');
+  const btn = root?.querySelector(`.sales-report-th-filter[data-entity="${open.entity}"]`);
+  const panel = btn?.parentElement?.querySelector('.sales-report-col-filter-panel');
+  if (!btn || !panel) return;
+  salesReportCloseFilterPanels(panel, { keepOpen: true });
+  panel.hidden = false;
+  btn.setAttribute('aria-expanded', 'true');
+  salesReportPositionColFilterPanel(btn, panel);
+}
+
+function salesReportCloseFilterPanels(except, options = {}) {
+  document.querySelectorAll('.sales-report-filter-panel').forEach(panel => {
+    if (panel !== except) panel.hidden = true;
+  });
+  document.querySelectorAll('.sales-report-th-filter, #sales-report-ps-type-btn').forEach(btn => {
+    const panel = btn.id === 'sales-report-ps-type-btn'
+      ? document.getElementById('sales-report-ps-type-panel')
+      : btn.parentElement?.querySelector('.sales-report-filter-panel');
+    btn.setAttribute('aria-expanded', panel && !panel.hidden ? 'true' : 'false');
+  });
+  if (!except && !options.keepOpen) salesReportState.openColFilter = null;
+}
+
 function salesReportActivePpTypes() {
   if (salesReportPpTypesAllSelected()) return [...SALES_REPORT_PS_TYPES];
   return SALES_REPORT_PS_TYPES.filter(type => salesReportState.ppTypes.has(type));
@@ -289,8 +552,13 @@ function salesReportFilterBySearch(rows) {
   return (rows || []).filter(row => salesReportSearchHaystack(row).includes(q));
 }
 
-function salesReportFilteredSection(rows) {
-  return salesReportFilterBySearch((rows || []).filter(salesReportPassesPsFilter));
+function salesReportFilteredSection(rows, options = {}) {
+  const entity = options.entity !== false;
+  return salesReportFilterBySearch((rows || []).filter(row => (
+    salesReportPassesPsFilter(row)
+    && (!entity || salesReportPassesSalespersonFilter(row))
+    && (!entity || salesReportPassesCustomerFilter(row))
+  )));
 }
 
 function salesReportOpenRemainingTotal(rows) {
@@ -362,10 +630,17 @@ function salesReportFilteredIntegrity(data) {
   const integrity = data?.integrity;
   if (!integrity) return null;
   const searchOn = Boolean(String(salesReportState.search || '').trim());
-  if (salesReportPpTypesAllSelected() && !searchOn) return integrity;
+  const entityOn = Boolean(salesReportState.focusMonth) && salesReportEntityFiltersActive();
+  if (salesReportPpTypesAllSelected() && !searchOn && !entityOn) return integrity;
 
-  const openLines = salesReportFilteredSection(data.allocated_open_lines || data.open_lines || []);
-  const shipments = salesReportFilteredSection(data.shipments_attributed || data.shipments || data.shipped || []);
+  const openLines = salesReportFilteredSection(
+    data.allocated_open_lines || data.open_lines || [],
+    { entity: Boolean(salesReportState.focusMonth) },
+  );
+  const shipments = salesReportFilteredSection(
+    data.shipments_attributed || data.shipments || data.shipped || [],
+    { entity: Boolean(salesReportState.focusMonth) },
+  );
   const remaining = salesReportOpenRemainingTotal(openLines);
   return {
     ...integrity,
@@ -381,7 +656,8 @@ function salesReportFilteredIntegrity(data) {
 function salesReportSearchHaystack(row) {
   return [
     row.sales_order_no, row.line_item_no, row.process_sheet_no, row.inventory_code,
-    row.description, row.customer_code, row.customer_name, row.sales_person_name,
+    row.description, row.customer_code, row.customer_name,
+    row.sales_person_code, row.sales_person_name,
     row.sbu_desc, row.shipment_voucher_no, row.invoice_no,
   ].map(v => String(v || '').toLowerCase()).join(' ');
 }
@@ -1011,7 +1287,7 @@ function salesReportRenderIntegrity(integrity) {
     </div>
     <p class="sales-report-integrity-body">
       Open $ uses one SO-line total split across process sheets by quantity — never duplicated per PS.
-      Figures below are for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong>.
+      Figures below are for <strong>${escapeHtml(salesReportScopeLabel())}</strong>.
       Shipped $ uses deduped DO/invoice lines (${dedupRows} rows${rawRows !== dedupRows ? `, ${rawRows - dedupRows} join duplicates removed` : ''}).
       All grid and breakdown amounts are <strong>home currency</strong> (foreign unit × exch rate, or ERP pre_tax_extended_home_amt).
       ${!ok ? `Allocation gap ${salesReportFormatMoney(gap)} · shipment dedup delta ${salesReportFormatMoney(dedupSavings)}.` : ''}
@@ -1088,7 +1364,7 @@ function salesReportEndLoad() {
 function salesReportRenderStats(summary) {
   const el = document.getElementById('sales-report-stats');
   if (!el || !summary) return;
-  const parts = [`<span class="new-orders-stat sales-report-stat-pill">${escapeHtml(salesReportPsTypeLabel())}</span>`];
+  const parts = [`<span class="new-orders-stat sales-report-stat-pill">${escapeHtml(salesReportScopeLabel())}</span>`];
   if (summary.mode === 'past') {
     if (salesReportHidesBacklog()) {
       parts.push(`<span class="new-orders-stat">All shipped <strong>${salesReportFormatMoney(summary.shipped?.total_home_amt)}</strong></span>`);
@@ -1206,7 +1482,7 @@ function salesReportRenderBreakdown(breakdown, summary) {
       <h2 class="sales-report-breakdown-title">Breakdown by PP type</h2>
       <p class="sales-report-breakdown-sub">${mode === 'past'
         ? (salesReportHidesBacklog() ? 'Past month — total sales (all shipments)' : 'Past month — shipment outcomes')
-        : (salesReportHidesBacklog() ? `Open month — onhand by ${salesReportBasisPhrase()}` : `Open month — backlog + onhand by ${salesReportBasisPhrase()}`)} for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong></p>
+        : (salesReportHidesBacklog() ? `Open month — onhand by ${salesReportBasisPhrase()}` : `Open month — backlog + onhand by ${salesReportBasisPhrase()}`)} for <strong>${escapeHtml(salesReportScopeLabel())}</strong></p>
     </div>
     <div class="sales-report-breakdown-scroll">
       <table class="sales-report-breakdown-table">
@@ -1297,6 +1573,7 @@ function salesReportRenderYtdSummary(grid) {
 
   const openLines = salesReportFilteredSection(
     salesReportState.ytdData?.allocated_open_lines || salesReportState.ytdData?.open_lines || [],
+    { entity: false },
   );
   const openRemaining = salesReportOpenRemainingTotal(openLines);
   const yearRemaining = salesReportYearOpenRemaining(openLines, grid.year);
@@ -1322,8 +1599,8 @@ function salesReportRenderYtdSummary(grid) {
   cards.push(
     { title: 'Onhand now', tone: 'on-hand', value: onHandNow, sub: salesReportHidesBacklog() ? 'Unfinished · SO posted in current month' : 'Unfinished · PO due in current month', hint: 'Onhand column in current month' },
     { title: 'Forward onhand', tone: 'early', value: forwardDue, sub: salesReportHidesBacklog() ? 'Unfinished · SO posted in future months' : 'Unfinished · PO due in future months', hint: 'Sum of onhand $ in future month columns' },
-    { title: 'Total open remaining', tone: 'booked', value: openRemaining, sub: `All unfinished open $ · ${salesReportPsTypeLabel()}`, hint: outsideYear > 0.009 ? `Includes ${salesReportFormatMoney(outsideYear)} with PO due outside ${grid.year}` : 'PP-allocated remaining for the selected types (any due year)' },
-    { title: `Open remaining ${grid.year}`, tone: 'year', value: yearRemaining, sub: `PO due in ${grid.year} · ${salesReportPsTypeLabel()}`, hint: 'Unfinished open $ whose PO due date falls in this year' },
+    { title: 'Total open remaining', tone: 'booked', value: openRemaining, sub: `All unfinished open $ · ${salesReportScopeLabel()}`, hint: outsideYear > 0.009 ? `Includes ${salesReportFormatMoney(outsideYear)} with PO due outside ${grid.year}` : 'PP-allocated remaining for the selected types (any due year)' },
+    { title: `Open remaining ${grid.year}`, tone: 'year', value: yearRemaining, sub: `PO due in ${grid.year} · ${salesReportScopeLabel()}`, hint: 'Unfinished open $ whose PO due date falls in this year' },
     {
       title: 'Sales left to achieve',
       tone: 'achieve',
@@ -1337,7 +1614,7 @@ function salesReportRenderYtdSummary(grid) {
   el.innerHTML = `
     <div class="sales-report-ytd-summary-head">
       <h3 class="sales-report-ytd-summary-title">Year at a glance</h3>
-      <p class="sales-report-ytd-summary-sub">Summary for <strong>${escapeHtml(salesReportPsTypeLabel())}</strong> · <strong>${escapeHtml(salesReportBasisPhrase())}</strong> — use <strong>View breakdown</strong> on a month header for line detail.</p>
+      <p class="sales-report-ytd-summary-sub">Summary for <strong>${escapeHtml(salesReportScopeLabel())}</strong> · <strong>${escapeHtml(salesReportBasisPhrase())}</strong> — use <strong>View breakdown</strong> on a month header for line detail.</p>
     </div>
     <div class="sales-report-kpi-grid sales-report-kpi-grid--ytd card">
       ${cards.map(card => `
@@ -1359,8 +1636,8 @@ function salesReportRenderYtd() {
   const ytd = salesReportState.ytdData;
   if (!overview || !table || !ytd) return;
 
-  const openLines = salesReportFilteredSection(ytd.allocated_open_lines || ytd.open_lines || []);
-  const shipments = salesReportFilteredSection(ytd.shipments_attributed || ytd.shipments || []);
+  const openLines = salesReportFilteredSection(ytd.allocated_open_lines || ytd.open_lines || [], { entity: false });
+  const shipments = salesReportFilteredSection(ytd.shipments_attributed || ytd.shipments || [], { entity: false });
   const grid = salesReportBuildYtdGrid(openLines, shipments, ytd.year);
 
   const firstFutureIdx = grid.months.findIndex(meta => meta.mode === 'open' && !meta.is_current);
@@ -1494,55 +1771,60 @@ function salesReportFormatCurrency(value) {
 
 function salesReportOpenLineColumns() {
   return [
-    { id: 'sales_order_no', label: 'Sales order' },
-    { id: 'line_item_no', label: 'Line' },
-    { id: 'process_sheet_no', label: 'PS' },
-    { id: 'inventory_code', label: 'Part' },
-    { id: 'description', label: 'Description' },
-    { id: 'customer_name', label: 'Customer' },
-    { id: 'due_date', label: 'Due', fmt: salesReportFormatDate },
-    { id: 'first_posted_datetime', label: 'First post', fmt: salesReportFormatDt },
-    { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency },
-    { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney },
-    { id: 'exch_rate', label: 'Exch', fmt: salesReportFormatExchRate },
-    { id: 'unit_selling_price', label: 'Home U/Price', fmt: salesReportFormatMoney },
-    { id: 'remaining_qty', label: 'Remaining', fmt: (v, row) => salesReportFormatQty(salesReportOpenQty(row)) },
-    { id: 'remaining_value', label: 'Home amt', fmt: (v, row) => salesReportFormatMoney(salesReportOpenValue(row)) },
+    { id: 'sales_order_no', label: 'Sales order', sort: 'text' },
+    { id: 'line_item_no', label: 'Line', sort: 'text' },
+    { id: 'process_sheet_no', label: 'PS', sort: 'text' },
+    { id: 'inventory_code', label: 'Part', sort: 'text' },
+    { id: 'description', label: 'Description', sort: 'text' },
+    { id: 'customer_name', label: 'Customer', fmt: salesReportFormatCustomer, sort: 'text', filter: 'customer' },
+    { id: 'sales_person_name', label: 'Salesperson', fmt: salesReportFormatSalesperson, sort: 'text', filter: 'salesperson' },
+    { id: 'due_date', label: 'Due', fmt: salesReportFormatDate, sort: 'date' },
+    { id: 'first_posted_datetime', label: 'First post', fmt: salesReportFormatDt, sort: 'date' },
+    { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency, sort: 'text' },
+    { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney, sort: 'num' },
+    { id: 'exch_rate', label: 'Exch', fmt: salesReportFormatExchRate, sort: 'num' },
+    { id: 'unit_selling_price', label: 'Home U/Price', fmt: salesReportFormatMoney, sort: 'num' },
+    { id: 'remaining_qty', label: 'Remaining', fmt: (v, row) => salesReportFormatQty(salesReportOpenQty(row)), sort: 'num' },
+    { id: 'remaining_value', label: 'Home amt', fmt: (v, row) => salesReportFormatMoney(salesReportOpenValue(row)), sort: 'num' },
   ];
 }
 
 function salesReportShippedLineColumns() {
   return [
-    { id: 'sales_order_no', label: 'Sales order' },
-    { id: 'line_item_no', label: 'Line' },
-    { id: 'process_sheet_no', label: 'PS' },
-    { id: 'pp_partial_no', label: 'Partial' },
-    { id: 'due_date', label: 'Due', fmt: salesReportFormatDate },
-    { id: 'first_posted_datetime', label: 'First post', fmt: salesReportFormatDt },
-    { id: 'shipment_datetime', label: 'Shipped', fmt: salesReportFormatDt },
-    { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency },
-    { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney },
-    { id: 'exch_rate', label: 'Exch', fmt: salesReportFormatExchRate },
-    { id: 'qty_issued', label: 'Qty', fmt: salesReportFormatQty },
-    { id: 'total_home_amt', label: 'Home amt', fmt: salesReportFormatMoney },
-    { id: 'shipment_voucher_no', label: 'Shipment' },
-    { id: 'invoice_no', label: 'Invoice' },
+    { id: 'sales_order_no', label: 'Sales order', sort: 'text' },
+    { id: 'line_item_no', label: 'Line', sort: 'text' },
+    { id: 'process_sheet_no', label: 'PS', sort: 'text' },
+    { id: 'pp_partial_no', label: 'Partial', sort: 'text' },
+    { id: 'customer_name', label: 'Customer', fmt: salesReportFormatCustomer, sort: 'text', filter: 'customer' },
+    { id: 'sales_person_name', label: 'Salesperson', fmt: salesReportFormatSalesperson, sort: 'text', filter: 'salesperson' },
+    { id: 'due_date', label: 'Due', fmt: salesReportFormatDate, sort: 'date' },
+    { id: 'first_posted_datetime', label: 'First post', fmt: salesReportFormatDt, sort: 'date' },
+    { id: 'shipment_datetime', label: 'Shipped', fmt: salesReportFormatDt, sort: 'date' },
+    { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency, sort: 'text' },
+    { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney, sort: 'num' },
+    { id: 'exch_rate', label: 'Exch', fmt: salesReportFormatExchRate, sort: 'num' },
+    { id: 'qty_issued', label: 'Qty', fmt: salesReportFormatQty, sort: 'num' },
+    { id: 'total_home_amt', label: 'Home amt', fmt: salesReportFormatMoney, sort: 'num' },
+    { id: 'shipment_voucher_no', label: 'Shipment', sort: 'text' },
+    { id: 'invoice_no', label: 'Invoice', sort: 'text' },
   ];
 }
 
 function salesReportBookedLineColumns() {
   return [
-    { id: 'sales_order_no', label: 'Sales order' },
-    { id: 'line_item_no', label: 'Line' },
-    { id: 'inventory_code', label: 'Part' },
-    { id: 'due_date', label: 'Due', fmt: salesReportFormatDate },
-    { id: 'first_posted_datetime', label: 'First post', fmt: salesReportFormatDt },
-    { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency },
-    { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney },
-    { id: 'exch_rate', label: 'Exch', fmt: salesReportFormatExchRate },
-    { id: 'qty', label: 'Qty', fmt: salesReportFormatQty },
-    { id: 'unit_selling_price', label: 'Home U/Price', fmt: salesReportFormatMoney },
-    { id: 'line_amount', label: 'Home amt', fmt: salesReportFormatMoney },
+    { id: 'sales_order_no', label: 'Sales order', sort: 'text' },
+    { id: 'line_item_no', label: 'Line', sort: 'text' },
+    { id: 'inventory_code', label: 'Part', sort: 'text' },
+    { id: 'customer_name', label: 'Customer', fmt: salesReportFormatCustomer, sort: 'text', filter: 'customer' },
+    { id: 'sales_person_name', label: 'Salesperson', fmt: salesReportFormatSalesperson, sort: 'text', filter: 'salesperson' },
+    { id: 'due_date', label: 'Due', fmt: salesReportFormatDate, sort: 'date' },
+    { id: 'first_posted_datetime', label: 'First post', fmt: salesReportFormatDt, sort: 'date' },
+    { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency, sort: 'text' },
+    { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney, sort: 'num' },
+    { id: 'exch_rate', label: 'Exch', fmt: salesReportFormatExchRate, sort: 'num' },
+    { id: 'qty', label: 'Qty', fmt: salesReportFormatQty, sort: 'num' },
+    { id: 'unit_selling_price', label: 'Home U/Price', fmt: salesReportFormatMoney, sort: 'num' },
+    { id: 'line_amount', label: 'Home amt', fmt: salesReportFormatMoney, sort: 'num' },
   ];
 }
 
@@ -1596,24 +1878,106 @@ function salesReportDetailSectionDefs(data) {
   return openSections;
 }
 
-function salesReportBuildTableHtml(rows, cols) {
+function salesReportSortValue(row, col) {
+  if (col.id === 'remaining_value') return salesReportOpenValue(row);
+  if (col.id === 'remaining_qty') return salesReportOpenQty(row);
+  if (col.sort === 'num') {
+    const num = Number(row[col.id]);
+    return Number.isFinite(num) ? num : null;
+  }
+  if (col.sort === 'date') {
+    const parsed = salesReportParseDate(row[col.id]);
+    if (parsed) return parsed.getTime();
+    const ms = Date.parse(String(row[col.id] || ''));
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (col.filter === 'salesperson') return salesReportSalespersonLabel(row).toLowerCase();
+  if (col.filter === 'customer') return salesReportCustomerLabel(row).toLowerCase();
+  const text = col.fmt ? String(col.fmt(row[col.id], row) || '') : String(row[col.id] ?? '');
+  return text.replace(/[—]/g, '').trim().toLowerCase();
+}
+
+function salesReportDefaultSortDir(col) {
+  return col.sort === 'num' || col.sort === 'date' ? 'desc' : 'asc';
+}
+
+function salesReportCompareSortValues(a, b) {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function salesReportSortRows(rows, sectionId, cols) {
+  const sort = salesReportState.sortBySection[sectionId];
+  if (!sort) return rows || [];
+  const col = (cols || []).find(item => item.id === sort.id);
+  if (!col) return rows || [];
+  const dir = sort.dir === 'desc' ? -1 : 1;
+  return [...(rows || [])].sort((left, right) => (
+    dir * salesReportCompareSortValues(salesReportSortValue(left, col), salesReportSortValue(right, col))
+  ));
+}
+
+function salesReportToggleSort(sectionId, colId) {
+  const cols = salesReportColumnsForSection(sectionId);
+  const col = cols.find(item => item.id === colId);
+  if (!col) return;
+  const current = salesReportState.sortBySection[sectionId];
+  if (!current || current.id !== colId) {
+    salesReportState.sortBySection[sectionId] = { id: colId, dir: salesReportDefaultSortDir(col) };
+  } else if (current.dir === salesReportDefaultSortDir(col)) {
+    current.dir = current.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    delete salesReportState.sortBySection[sectionId];
+  }
+}
+
+function salesReportFilterIconSvg() {
+  return `<svg class="sales-report-th-filter-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3h12L9.5 8.6V13l-3-1.5V8.6L2 3z" fill="currentColor"/></svg>`;
+}
+
+function salesReportHeaderCellHtml(col, sectionId) {
+  const sort = salesReportState.sortBySection[sectionId];
+  const sorted = Boolean(sort && sort.id === col.id);
+  const classes = ['is-sortable', sorted ? 'is-sorted' : '', col.filter ? 'has-col-filter' : '']
+    .filter(Boolean).join(' ');
+  const dirAttr = sorted ? ` data-sort-dir="${sort.dir}"` : '';
+  const sortMark = sorted ? (sort.dir === 'desc' ? '▼' : '▲') : '';
+  const sortBtn = `<button type="button" class="sales-report-th-sort" data-action="sort-col" data-section="${escapeHtml(sectionId)}" data-sort="${escapeHtml(col.id)}" title="Sort by ${escapeHtml(col.label)}">${escapeHtml(col.label)}${sortMark ? `<span class="sales-report-th-sort-ind">${sortMark}</span>` : ''}</button>`;
+  let filterHtml = '';
+  if (col.filter) {
+    const selected = col.filter === 'salesperson' ? salesReportState.salespersons : salesReportState.customers;
+    const active = selected.size ? ' is-active' : '';
+    filterHtml = `<div class="filter-dropdown sales-report-col-filter">
+      <button type="button" class="sales-report-th-filter${active}" data-action="toggle-col-filter" data-entity="${escapeHtml(col.filter)}" data-section="${escapeHtml(sectionId)}" aria-label="Filter ${escapeHtml(col.label)}" aria-expanded="false" title="Filter ${escapeHtml(col.label)}">${salesReportFilterIconSvg()}</button>
+      <div class="filter-dropdown-panel sales-report-filter-panel sales-report-col-filter-panel" data-entity="${escapeHtml(col.filter)}" hidden></div>
+    </div>`;
+  }
+  return `<th class="${classes}" data-sort="${escapeHtml(col.id)}"${dirAttr}><div class="sales-report-th-inner">${sortBtn}${filterHtml}</div></th>`;
+}
+
+function salesReportBuildTableHtml(rows, cols, sectionId) {
   if (!rows.length) return '';
+  const sorted = salesReportSortRows(rows, sectionId, cols);
+  const sortOn = Boolean(salesReportState.sortBySection[sectionId]);
   const groups = salesReportActivePpTypes().map(type => ({
     type,
-    rows: salesReportRowsForType(rows, type),
+    rows: salesReportRowsForType(sorted, type),
   })).filter(group => group.rows.length);
   const bodyParts = [];
-  if (groups.length > 1) {
+  if (!sortOn && groups.length > 1) {
     groups.forEach(group => {
       bodyParts.push(`<tr class="sales-report-group-head"><td colspan="${cols.length}"><div class="sales-report-group-head-inner">${salesReportTypeTagHtml(group.type, group.rows.length)}</div></td></tr>`);
       group.rows.forEach(row => bodyParts.push(salesReportRenderTableRow(row, cols)));
     });
   } else {
-    rows.forEach(row => bodyParts.push(salesReportRenderTableRow(row, cols)));
+    sorted.forEach(row => bodyParts.push(salesReportRenderTableRow(row, cols)));
   }
   return `
     <table class="new-orders-table sales-report-table">
-      <thead><tr>${cols.map(col => `<th>${escapeHtml(col.label)}</th>`).join('')}</tr></thead>
+      <thead><tr>${cols.map(col => salesReportHeaderCellHtml(col, sectionId)).join('')}</tr></thead>
       <tbody>${bodyParts.join('')}</tbody>
     </table>`;
 }
@@ -1642,13 +2006,14 @@ function salesReportRenderDetails(data) {
   wrap.innerHTML = sections.map(section => {
     const cols = salesReportColumnsForSection(section.id);
     const expanded = salesReportState.expandedSections.has(section.id);
-    const canPeek = section.rows.length > SALES_REPORT_TABLE_PEEK;
+    const sortedRows = salesReportSortRows(section.rows, section.id, cols);
+    const canPeek = sortedRows.length > SALES_REPORT_TABLE_PEEK;
     const displayRows = (!expanded && canPeek)
-      ? section.rows.slice(0, SALES_REPORT_TABLE_PEEK)
-      : section.rows;
+      ? sortedRows.slice(0, SALES_REPORT_TABLE_PEEK)
+      : sortedRows;
     const peekNote = (!expanded && canPeek)
-      ? ` · showing ${SALES_REPORT_TABLE_PEEK} of ${section.rows.length}`
-      : ` · ${section.rows.length} lines`;
+      ? ` · showing ${SALES_REPORT_TABLE_PEEK} of ${sortedRows.length}`
+      : ` · ${sortedRows.length} lines`;
     return `
       <section class="sales-report-detail-section card${expanded ? ' is-expanded' : ''}" data-section="${escapeHtml(section.id)}">
         <div class="sales-report-detail-head">
@@ -1659,11 +2024,13 @@ function salesReportRenderDetails(data) {
           ${salesReportSectionToggleHtml(section.id, section.rows.length, expanded)}
         </div>
         <div class="new-orders-table-wrap sales-report-detail-table-wrap">
-          ${salesReportBuildTableHtml(displayRows, cols)}
+          ${salesReportBuildTableHtml(displayRows, cols, section.id)}
         </div>
       </section>`;
   }).join('');
   wrap.hidden = false;
+  salesReportFillAllColFilterPanels();
+  salesReportRestoreOpenColFilter();
 }
 
 function salesReportRenderTableRow(row, cols) {
@@ -1712,6 +2079,8 @@ function salesReportRenderMeta() {
     if (salesReportState.ytdData?.cached_at) parts.push(`Cached ${salesReportState.ytdData.cached_at}`);
   }
   parts.push(`PP: ${salesReportPsTypeLabel()}`);
+  const extras = salesReportEntityFilterPhrase();
+  if (extras) parts.push(extras);
   parts.push(salesReportBasisPhrase());
   el.textContent = parts.join(' · ');
   el.hidden = false;
@@ -1719,6 +2088,7 @@ function salesReportRenderMeta() {
 
 function salesReportRender() {
   if (salesReportState.loading) return;
+  salesReportRefreshEntityOptions();
 
   if (salesReportNoPsTypesSelected()) {
     salesReportEndLoad();
@@ -1866,8 +2236,13 @@ function salesReportBindPsTypeDropdown() {
   const panel = document.getElementById('sales-report-ps-type-panel');
   if (!btn || !panel) return;
   salesReportSyncPsTypeCheckboxes();
-  btn.addEventListener('click', (e) => { e.stopPropagation(); panel.hidden = !panel.hidden; });
-  document.addEventListener('click', () => { panel.hidden = true; });
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const willOpen = panel.hidden;
+    salesReportCloseFilterPanels(willOpen ? panel : null);
+    panel.hidden = !willOpen;
+    btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+  });
   panel.addEventListener('click', e => e.stopPropagation());
   panel.querySelectorAll('input[type="checkbox"]').forEach(input => {
     input.addEventListener('change', () => {
@@ -1953,10 +2328,52 @@ function salesReportBindControls() {
 
   document.getElementById('sales-report-export')?.addEventListener('click', salesReportExportCsv);
 
-  document.getElementById('sales-report-details')?.addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-action="toggle-section"]');
-    if (!btn) return;
-    const sectionId = btn.dataset.section;
+  const details = document.getElementById('sales-report-details');
+  details?.addEventListener('click', (e) => {
+    if (e.target.closest('.sales-report-col-filter-panel')) e.stopPropagation();
+
+    const filterBtn = e.target.closest('[data-action="toggle-col-filter"]');
+    if (filterBtn) {
+      e.stopPropagation();
+      const entity = filterBtn.dataset.entity;
+      const sectionId = filterBtn.dataset.section;
+      const panel = filterBtn.parentElement?.querySelector('.sales-report-col-filter-panel');
+      if (!panel || !entity) return;
+      const willOpen = panel.hidden;
+      salesReportCloseFilterPanels(willOpen ? panel : null);
+      panel.hidden = !willOpen;
+      filterBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+      salesReportState.openColFilter = willOpen ? { entity, sectionId } : null;
+      if (willOpen) salesReportPositionColFilterPanel(filterBtn, panel);
+      return;
+    }
+
+    const clearBtn = e.target.closest('[data-action="clear-entity"]');
+    if (clearBtn) {
+      e.stopPropagation();
+      const panel = clearBtn.closest('.sales-report-col-filter-panel');
+      const entity = panel?.dataset.entity;
+      if (entity === 'salesperson') salesReportState.salespersons.clear();
+      if (entity === 'customer') salesReportState.customers.clear();
+      salesReportRender();
+      return;
+    }
+
+    const sortBtn = e.target.closest('[data-action="sort-col"]');
+    const sortTh = e.target.closest('th.is-sortable');
+    if (sortBtn || (sortTh && !e.target.closest('.sales-report-col-filter'))) {
+      const sectionId = (sortBtn || sortTh).dataset.section || sortTh?.closest('[data-section]')?.dataset.section;
+      const colId = (sortBtn || sortTh).dataset.sort;
+      if (sectionId && colId) {
+        salesReportToggleSort(sectionId, colId);
+        salesReportRenderDetails(salesReportFilteredPayload());
+      }
+      return;
+    }
+
+    const toggleBtn = e.target.closest('[data-action="toggle-section"]');
+    if (!toggleBtn) return;
+    const sectionId = toggleBtn.dataset.section;
     if (!sectionId) return;
     if (salesReportState.expandedSections.has(sectionId)) {
       salesReportState.expandedSections.delete(sectionId);
@@ -1966,8 +2383,42 @@ function salesReportBindControls() {
     salesReportRenderDetails(salesReportFilteredPayload());
   });
 
+  details?.addEventListener('change', (e) => {
+    const input = e.target.closest('.sales-report-col-filter-panel input[type="checkbox"]');
+    if (!input) return;
+    const panel = input.closest('.sales-report-col-filter-panel');
+    const entity = panel?.dataset.entity;
+    const selected = entity === 'salesperson'
+      ? salesReportState.salespersons
+      : entity === 'customer'
+        ? salesReportState.customers
+        : null;
+    if (!selected) return;
+    if (input.checked) selected.add(input.value);
+    else selected.delete(input.value);
+    salesReportRender();
+  });
+
+  details?.addEventListener('input', (e) => {
+    const search = e.target.closest('.sales-report-filter-search');
+    if (!search) return;
+    const panel = search.closest('.sales-report-col-filter-panel');
+    const entity = panel?.dataset.entity;
+    if (!entity) return;
+    salesReportState.colFilterQuery[entity] = search.value;
+    salesReportFilterPanelItems(panel, search.value);
+  });
+
+  window.addEventListener('scroll', () => salesReportRestoreOpenColFilter(), true);
+  window.addEventListener('resize', () => salesReportRestoreOpenColFilter());
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      const openPanel = [...document.querySelectorAll('.sales-report-filter-panel')].find(panel => !panel.hidden);
+      if (openPanel) {
+        salesReportCloseFilterPanels();
+        return;
+      }
       if (salesReportState.ytdCellSelection.size) {
         salesReportClearYtdSelection();
         return;
@@ -1986,9 +2437,10 @@ function salesReportExportCsv() {
   const lines = [];
   sections.forEach(section => {
     const cols = salesReportColumnsForSection(section.id);
+    const rows = salesReportSortRows(section.rows, section.id, cols);
     lines.push(`# ${section.title}`);
     lines.push(cols.map(col => col.label).join(','));
-    section.rows.forEach(row => {
+    rows.forEach(row => {
       lines.push(cols.map(col => {
         const raw = row[col.id];
         const text = col.fmt ? col.fmt(raw, row) : (raw == null ? '' : String(raw));
@@ -2010,5 +2462,6 @@ document.addEventListener('DOMContentLoaded', () => {
   salesReportBindPresets();
   salesReportBindPsTypeDropdown();
   salesReportBindDateBasis();
+  document.addEventListener('click', () => salesReportCloseFilterPanels());
   salesReportLoadYtd();
 });

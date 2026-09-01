@@ -24,13 +24,17 @@ logger = logging.getLogger(__name__)
 HOURS_PER_DAY = 10.0
 DAYS_PER_WEEK = 5.0
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
+MAX_RFQ_LINES = 2000
 SAMPLE_ROWS_FOR_LLM = 8
+LLM_TIMEOUT_SEC = 12
 SHEET_TAGS = ("APS", "NPS", "PPS", "MPS", "CPS", "SR")
 BATCH_DEFAULT_FIELDS = ("rfq", "customer", "salesperson")
+BATCH_SCHEDULE_FIELDS = ("days", "lead_time")
 OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 GROQ_DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
 GROQ_DEFAULT_MODEL = "openai/gpt-oss-20b"
+_GROQ_OPENAI_MODELS = frozenset({"openai/gpt-oss-20b", "openai/gpt-oss-120b"})
 
 FIXED_FIELDS = (
     "part_no",
@@ -87,6 +91,8 @@ _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "total_ct_mins": (
         "total_c_t_mins", "total_ct_mins", "total_ct", "total_c_t", "cycle_time",
         "ct_mins", "ct_min", "c_t", "total_cycle_time", "cycle_time_mins",
+        "mins_pc", "min_pc", "minutes_pc", "std_time", "std_mins", "unit_time",
+        "time_mins", "cycletime", "ctpc", "mins_per_pc",
     ),
     "machine_hours": ("machine_hours", "mc_hours", "mch_hours"),
     "total_hours": ("total_hours", "hours"),
@@ -105,7 +111,23 @@ def json_error(exc: Exception, *, fallback_status: int = 500):
     friendly = planner_db_connect_error(exc)
     if friendly:
         return {"error": friendly}, 503
-    return {"error": str(exc)}, fallback_status
+    text = str(exc) or exc.__class__.__name__
+    lower = text.lower()
+    if (
+        "timed out" in lower
+        or "timeout" in lower
+        or "querycanceled" in lower
+        or "statement timeout" in lower
+        or "read timed out" in lower
+    ):
+        return {
+            "error": (
+                "RFQ upload timed out before assignment and cycle times could be saved. "
+                "Uncheck “Use LLM to map columns”, or choose a single RFQ sheet instead of "
+                "a full Archive workbook."
+            )
+        }, 504
+    return {"error": text}, fallback_status
 
 
 def llm_status() -> dict[str, Any]:
@@ -157,11 +179,32 @@ def _llm_base_url() -> str:
 
 def _llm_model() -> str:
     explicit = compact_text(os.getenv("RFQ_LLM_MODEL"))
+    if _llm_uses_groq():
+        return _groq_model_name(explicit)
     if explicit:
         return explicit
-    if _llm_uses_groq():
-        return GROQ_DEFAULT_MODEL
     return OPENAI_DEFAULT_MODEL
+
+
+def _groq_model_name(explicit: str) -> str:
+    if not explicit:
+        return GROQ_DEFAULT_MODEL
+    lower = explicit.lower()
+    if "gpt-oss" in lower or lower in _GROQ_OPENAI_MODELS:
+        return explicit
+    if lower.startswith("openai/gpt-") or lower.startswith(("gpt-3", "gpt-4", "gpt-5", "o1-", "o3-", "o4-")):
+        logger.warning(
+            "RFQ_LLM_MODEL %s is not served by Groq; using %s",
+            explicit,
+            GROQ_DEFAULT_MODEL,
+        )
+        return GROQ_DEFAULT_MODEL
+    return explicit
+
+
+def heuristic_covers_core_fields(column_map: dict[str, str] | None) -> bool:
+    fields = {compact_text(value) for value in (column_map or {}).values()}
+    return "part_no" in fields and "total_ct_mins" in fields
 
 
 def normalize_part_no(value: Any) -> str:
@@ -195,7 +238,7 @@ def apply_defaults_to_mapped_lines(
     fields: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     payload = defaults or {}
-    wanted = fields or ["sheet_tag", *BATCH_DEFAULT_FIELDS]
+    wanted = fields or ["sheet_tag", *BATCH_DEFAULT_FIELDS, *BATCH_SCHEDULE_FIELDS]
     tag = normalize_sheet_tag(payload.get("sheet_tag"))
     out: list[dict[str, Any]] = []
     for line in lines:
@@ -210,6 +253,14 @@ def apply_defaults_to_mapped_lines(
             value = compact_text(payload.get(field) or payload.get(f"default_{field}"))
             if overwrite or not compact_text(row.get(field)):
                 row[field] = value
+        if "days" in wanted and ("days" in payload or "default_days" in payload):
+            days_val = payload.get("days") if payload.get("days") is not None else payload.get("default_days")
+            if overwrite or row.get("days") in (None, ""):
+                row["days"] = _to_number(days_val)
+        if "lead_time" in wanted and ("lead_time" in payload or "default_lead_time" in payload):
+            lead = compact_text(payload.get("lead_time") or payload.get("default_lead_time"))
+            if overwrite or not compact_text(row.get("lead_time")):
+                row["lead_time"] = lead
         out.append(row)
     return out
 
@@ -350,8 +401,54 @@ def invert_field_map(mapping: dict[str, Any] | None) -> dict[str, str]:
     return inverted
 
 
+def apply_hours(mapped: dict[str, Any], *, hours_override: Any = None) -> dict[str, Any]:
+    """Fill machine/total hours from qty x C/T. Never touches days or lead time."""
+    calc = calculate_times(
+        mapped.get("qty"),
+        mapped.get("total_ct_mins"),
+        total_hours=_to_number(hours_override) if hours_override is not None else None,
+    )
+    mapped["machine_hours"] = calc["machine_hours"]
+    mapped["total_hours"] = calc["total_hours"]
+    return mapped
+
+
+def mapped_field_set(column_map: dict[str, str] | None) -> set[str]:
+    return {compact_text(value) for value in (column_map or {}).values() if compact_text(value)}
+
+
+def infer_cycle_time_from_source(
+    source_row: dict[str, Any] | None,
+    column_map: dict[str, str] | None = None,
+) -> float | None:
+    """Guess total C/T from leftover columns (a dedicated CT col, or summed op times)."""
+    source = source_row or {}
+    used = {normalize_header(header) for header in (column_map or {})}
+    dedicated: list[float] = []
+    op_times: list[float] = []
+    for header, value in source.items():
+        if normalize_header(header) in used:
+            continue
+        number = _to_number(value)
+        if number is None or number <= 0 or number > 20000:
+            continue
+        norm = normalize_header(header)
+        collapsed = norm.replace("_", "")
+        if any(token in collapsed for token in ("totalct", "cycletime", "ctmins", "ctmin", "minspc", "stdtime", "unittime")):
+            dedicated.append(number)
+            continue
+        if re.search(r"(^op|_op|operation|stage).*(ct|cycle|min|time)|^(op|stage)_?\d+$", norm):
+            op_times.append(number)
+    if len(dedicated) == 1:
+        return dedicated[0]
+    if len(op_times) >= 2:
+        return round(sum(op_times), 4)
+    return None
+
+
 def apply_column_map(source_row: dict[str, Any], column_map: dict[str, str]) -> dict[str, Any]:
     mapped: dict[str, Any] = {field: "" for field in FIXED_FIELDS}
+    present = mapped_field_set(column_map)
     for header, field in (column_map or {}).items():
         if field not in mapped or compact_text(mapped.get(field)):
             continue
@@ -369,15 +466,18 @@ def apply_column_map(source_row: dict[str, Any], column_map: dict[str, str]) -> 
         mapped[text_field] = compact_text(mapped.get(text_field))
     mapped["qty"] = _to_number(mapped.get("qty"))
     mapped["total_ct_mins"] = _to_number(mapped.get("total_ct_mins"))
-    incoming_hours = _to_number(mapped.get("total_hours"))
+    if mapped["total_ct_mins"] is None:
+        inferred = infer_cycle_time_from_source(source_row, column_map)
+        if inferred is not None:
+            mapped["total_ct_mins"] = inferred
+    incoming_hours = _to_number(mapped.get("total_hours")) if "total_hours" in present else None
+    incoming_mc = _to_number(mapped.get("machine_hours")) if "machine_hours" in present else None
     calc = calculate_times(mapped["qty"], mapped["total_ct_mins"], total_hours=incoming_hours)
-    mapped["machine_hours"] = _to_number(mapped.get("machine_hours")) or calc["machine_hours"]
+    mapped["machine_hours"] = incoming_mc if incoming_mc is not None else calc["machine_hours"]
     mapped["total_hours"] = incoming_hours if incoming_hours is not None else calc["total_hours"]
-    mapped["days"] = _to_number(mapped.get("days"))
-    if mapped["days"] is None:
-        mapped["days"] = calc["days"]
-    if not mapped["lead_time"]:
-        mapped["lead_time"] = format_lead_time(float(mapped["days"] or 0))
+    mapped["days"] = _to_number(mapped.get("days")) if "days" in present else None
+    if "lead_time" not in present:
+        mapped["lead_time"] = ""
     return mapped
 
 
@@ -400,6 +500,79 @@ def parse_workbook_bytes(payload: bytes, filename: str = "") -> list[dict[str, A
     if name.endswith(".xls") and not name.endswith(".xlsx"):
         return _parse_xls(payload)
     return _parse_xlsx(payload)
+
+
+def list_workbook_sheets(payload: bytes, filename: str = "") -> list[str]:
+    name = compact_text(filename).lower()
+    if name.endswith(".xls") and not name.endswith(".xlsx"):
+        return [item["name"] for item in _parse_xls(payload)]
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(io.BytesIO(payload), read_only=True, data_only=True)
+    try:
+        return [compact_text(title) or "Sheet1" for title in workbook.sheetnames]
+    finally:
+        workbook.close()
+
+
+def parse_named_sheet(payload: bytes, filename: str = "", sheet_name: str = "") -> dict[str, Any]:
+    name = compact_text(filename).lower()
+    wanted = compact_text(sheet_name)
+    if name.endswith(".xls") and not name.endswith(".xlsx"):
+        sheets = _parse_xls(payload)
+        if not sheets:
+            raise ValueError("No usable worksheet was found in that workbook.")
+        chosen = wanted or pick_default_sheet(sheets)
+        sheet = sheet_by_name(sheets, chosen) if chosen else sheets[0]
+        if not sheet:
+            available = ", ".join(item["name"] for item in sheets) or "none"
+            raise ValueError(f"Sheet {chosen!r} was not found. Available: {available}.")
+        return sheet
+    names = list_workbook_sheets(payload, filename)
+    if not names:
+        raise ValueError("No usable worksheet was found in that workbook.")
+    summaries = [{"name": item, "row_count": 0} for item in names]
+    chosen = wanted or pick_default_sheet(summaries)
+    match = next(
+        (
+            item
+            for item in names
+            if compact_text(item) == compact_text(chosen)
+            or normalize_header(item) == normalize_header(chosen)
+        ),
+        "",
+    )
+    if not match:
+        available = ", ".join(names) or "none"
+        raise ValueError(f"Sheet {chosen!r} was not found. Available: {available}.")
+    sheet = _parse_xlsx_named(payload, match, read_only=True)
+    if int(sheet.get("row_count") or 0) == 0:
+        fallback = _parse_xlsx_named(payload, match, read_only=False)
+        if int(fallback.get("row_count") or 0) > 0 or fallback.get("headers"):
+            return fallback
+    return sheet
+
+
+def _parse_xlsx_named(payload: bytes, sheet_name: str, *, read_only: bool) -> dict[str, Any]:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(io.BytesIO(payload), data_only=True, read_only=read_only)
+    try:
+        try:
+            ws = workbook[sheet_name]
+        except KeyError as exc:
+            raise ValueError(f"Sheet {sheet_name!r} was not found.") from exc
+        if not read_only:
+            try:
+                ws.reset_dimensions()
+            except Exception:
+                pass
+        matrix: list[list[Any]] = []
+        for row in ws.iter_rows(values_only=True):
+            matrix.append([_serialize_cell(cell) for cell in row])
+        return _sheet_from_matrix(ws.title, matrix)
+    finally:
+        workbook.close()
 
 
 def _parse_xlsx(payload: bytes) -> list[dict[str, Any]]:
@@ -566,14 +739,18 @@ def map_columns_with_llm(headers: list[str], sample_rows: list[dict[str, Any]]) 
             {
                 "role": "system",
                 "content": (
-                    "You map spreadsheet columns onto a fixed RFQ archive schema. "
+                    "You map spreadsheet columns onto a fixed RFQ tracker schema. "
                     "Return a JSON object with keys column_map and notes. "
                     "column_map maps original Excel header strings to schema field keys. "
                     "Match semantically, not only by exact name. Examples: "
                     "Item Code or Part Number -> part_no; Qty pcs or Quantity -> qty; "
                     "Quote No or RFQ No -> rfq; Cust. or Customer -> customer; "
-                    "CT min, Cycle Time, or Total C/T (mins) -> total_ct_mins; "
-                    "Notes or Remarks -> remark. "
+                    "CT min, Cycle Time, mins/pc, or Total C/T (mins) -> total_ct_mins; "
+                    "Hours or Mach hours -> total_hours; Notes or Remarks -> remark. "
+                    "total_ct_mins is minutes per piece, never hours. "
+                    "Map days only if a column clearly holds calendar/shop days. "
+                    "Map lead_time only if a column clearly holds lead time (weeks/days text). "
+                    "Do not invent days or lead time from hours. "
                     "Only omit a header if it clearly has no matching field. "
                     "Do not map two headers to the same field. "
                     "Schema field keys: "
@@ -596,10 +773,10 @@ def map_columns_with_llm(headers: list[str], sample_rows: list[dict[str, Any]]) 
     }
     url = _llm_base_url().rstrip("/") + "/chat/completions"
     http_headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    response = requests.post(url, json=payload, headers=http_headers, timeout=60)
+    response = requests.post(url, json=payload, headers=http_headers, timeout=LLM_TIMEOUT_SEC)
     if response.status_code >= 400 and "response_format" in (response.text or ""):
         payload.pop("response_format", None)
-        response = requests.post(url, json=payload, headers=http_headers, timeout=60)
+        response = requests.post(url, json=payload, headers=http_headers, timeout=LLM_TIMEOUT_SEC)
     if response.status_code == 401:
         provider = _llm_provider()
         hint = (
@@ -654,16 +831,20 @@ def build_mapped_lines(
         if existing:
             mapped["match_status"] = "matched"
             mapped["matched_part_no"] = existing.get("part_no") or mapped["part_no"]
-            if not mapped["opns"] and existing.get("opns"):
-                mapped["opns"] = existing["opns"]
-                filled.append("opns")
-            if not mapped["machines"] and existing.get("machines"):
-                mapped["machines"] = existing["machines"]
-                filled.append("machines")
-            if not mapped["total_ct_mins"] and existing.get("total_ct_mins"):
+            for field in ("assignment", "opns", "machines"):
+                if not mapped.get(field) and existing.get(field):
+                    mapped[field] = existing[field]
+                    filled.append(field)
+            if mapped.get("total_ct_mins") in (None, "") and existing.get("total_ct_mins") not in (None, ""):
                 mapped["total_ct_mins"] = existing["total_ct_mins"]
                 filled.append("total_ct_mins")
-                mapped.update(calculate_times(mapped["qty"], mapped["total_ct_mins"]))
+            if not mapped.get("customer") and existing.get("rfq_customer"):
+                mapped["customer"] = existing["rfq_customer"]
+                filled.append("customer")
+            if "total_ct_mins" in filled:
+                calc = calculate_times(mapped.get("qty"), mapped.get("total_ct_mins"))
+                mapped["machine_hours"] = calc["machine_hours"]
+                mapped["total_hours"] = calc["total_hours"]
         else:
             mapped["match_status"] = "new"
             mapped["matched_part_no"] = mapped["part_no"]
@@ -672,6 +853,92 @@ def build_mapped_lines(
         mapped["source_row"] = source
         lines.append(mapped)
     return lines
+
+
+def fill_missing_cycle_times_with_llm(lines: list[dict[str, Any]]) -> str:
+    """For new parts still missing C/T, ask the LLM to read leftover columns. Never invent days/lead time."""
+    key = _llm_api_key()
+    if not key:
+        return ""
+    gaps = [
+        line for line in lines
+        if compact_text(line.get("match_status")) == "new"
+        and line.get("total_ct_mins") in (None, "")
+        and isinstance(line.get("source_row"), dict)
+    ]
+    if not gaps:
+        return ""
+    sample = gaps[:40]
+    payload = {
+        "model": _llm_model(),
+        "temperature": 0,
+        "max_tokens": 2000,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You extract machining cycle time from messy RFQ spreadsheet rows. "
+                    "Return JSON {rows: [{line_no, total_ct_mins, days, lead_time}]}. "
+                    "total_ct_mins is minutes per piece. If several operation times exist, sum them. "
+                    "Use null when the row has no cycle-time numbers — do not guess. "
+                    "days and lead_time: copy only if the row already contains those values; otherwise null. "
+                    "Never convert hours into days. Never invent a schedule."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "line_no": line.get("line_no"),
+                                "qty": line.get("qty"),
+                                "source": line.get("source_row"),
+                            }
+                            for line in sample
+                        ]
+                    },
+                    default=str,
+                ),
+            },
+        ],
+    }
+    url = _llm_base_url().rstrip("/") + "/chat/completions"
+    http_headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    response = requests.post(url, json=payload, headers=http_headers, timeout=LLM_TIMEOUT_SEC)
+    if response.status_code >= 400 and "response_format" in (response.text or ""):
+        payload.pop("response_format", None)
+        response = requests.post(url, json=payload, headers=http_headers, timeout=LLM_TIMEOUT_SEC)
+    if response.status_code >= 400:
+        detail = compact_text(response.text)[:300]
+        raise RuntimeError(f"LLM cycle-time fill failed ({response.status_code}): {detail}")
+    body = response.json()
+    content = ((body.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}"
+    parsed = _parse_llm_json(content)
+    raw_rows = parsed.get("rows") or parsed.get("lines") or []
+    by_no = {
+        int(item.get("line_no") or 0): item
+        for item in raw_rows
+        if isinstance(item, dict) and item.get("line_no") not in (None, "")
+    }
+    filled = 0
+    for line in lines:
+        item = by_no.get(int(line.get("line_no") or 0))
+        if not item:
+            continue
+        ct = _to_number(item.get("total_ct_mins"))
+        if ct is not None and line.get("total_ct_mins") in (None, ""):
+            line["total_ct_mins"] = ct
+            apply_hours(line)
+            filled += 1
+        if line.get("days") in (None, "") and _to_number(item.get("days")) is not None:
+            line["days"] = _to_number(item.get("days"))
+        if not compact_text(line.get("lead_time")) and compact_text(item.get("lead_time")):
+            line["lead_time"] = compact_text(item.get("lead_time"))
+    if not filled:
+        return "LLM checked new parts with no C/T column and did not find extra cycle times."
+    return f"LLM filled cycle time on {filled} new part{'s' if filled != 1 else ''} from leftover columns."
 
 
 def _ensure_tables(con) -> None:
@@ -690,6 +957,8 @@ def _ensure_tables(con) -> None:
             default_rfq           TEXT         NOT NULL DEFAULT '',
             default_customer      TEXT         NOT NULL DEFAULT '',
             default_salesperson   TEXT         NOT NULL DEFAULT '',
+            default_days          NUMERIC,
+            default_lead_time     TEXT         NOT NULL DEFAULT '',
             created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
             updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
             CONSTRAINT planner_rfq_batch_status_chk
@@ -752,11 +1021,43 @@ def _ensure_tables(con) -> None:
         "ALTER TABLE public.planner_rfq_batch ADD COLUMN IF NOT EXISTS default_rfq TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE public.planner_rfq_batch ADD COLUMN IF NOT EXISTS default_customer TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE public.planner_rfq_batch ADD COLUMN IF NOT EXISTS default_salesperson TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE public.planner_rfq_batch ADD COLUMN IF NOT EXISTS default_days NUMERIC",
+        "ALTER TABLE public.planner_rfq_batch ADD COLUMN IF NOT EXISTS default_lead_time TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE public.planner_rfq_line ADD COLUMN IF NOT EXISTS sheet_tag TEXT NOT NULL DEFAULT ''",
         "CREATE INDEX IF NOT EXISTS idx_rfq_batch_sheet_tag ON public.planner_rfq_batch (UPPER(TRIM(sheet_tag)))",
         "CREATE INDEX IF NOT EXISTS idx_rfq_line_sheet_tag ON public.planner_rfq_line (UPPER(TRIM(sheet_tag)))",
     ):
         con.execute(statement)
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS public.planner_rfq_part_master (
+            part_key         TEXT         PRIMARY KEY,
+            part_no          TEXT         NOT NULL DEFAULT '',
+            assignment       TEXT         NOT NULL DEFAULT '',
+            opns             TEXT         NOT NULL DEFAULT '',
+            machines         TEXT         NOT NULL DEFAULT '',
+            total_ct_mins    NUMERIC,
+            last_rfq         TEXT         NOT NULL DEFAULT '',
+            customer         TEXT         NOT NULL DEFAULT '',
+            salesperson      TEXT         NOT NULL DEFAULT '',
+            sheet_tag        TEXT         NOT NULL DEFAULT '',
+            source_batch_id  BIGINT,
+            updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_rfq_part_master_part_no
+            ON public.planner_rfq_part_master (UPPER(TRIM(part_no)))
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_rfq_part_master_updated
+            ON public.planner_rfq_part_master (updated_at DESC)
+        """
+    )
 
 
 def _json_ready(value: Any) -> Any:
@@ -771,12 +1072,14 @@ def _json_ready(value: Any) -> Any:
     return value
 
 
-def serialize_line(row: dict[str, Any] | None) -> dict[str, Any] | None:
+def serialize_line(row: dict[str, Any] | None, *, include_source: bool = False) -> dict[str, Any] | None:
     if not row:
         return None
     out = {key: _json_ready(value) for key, value in dict(row).items()}
     source = out.get("source_row")
-    if isinstance(source, str):
+    if not include_source:
+        out.pop("source_row", None)
+    elif isinstance(source, str):
         try:
             out["source_row"] = json.loads(source)
         except json.JSONDecodeError:
@@ -797,14 +1100,23 @@ def serialize_batch(row: dict[str, Any] | None) -> dict[str, Any] | None:
             out["mapping"] = json.loads(mapping)
         except json.JSONDecodeError:
             out["mapping"] = {}
+    if out.get("default_days") is not None:
+        out["default_days"] = float(out["default_days"])
     return out
 
 
 def lookup_existing_parts(con, part_nos: list[str]) -> dict[str, dict[str, Any]]:
-    keys = [normalize_part_no(part) for part in part_nos if normalize_part_no(part)]
+    keys: list[str] = []
+    seen: set[str] = set()
+    for part in part_nos:
+        for variant in (compact_text(part).upper(), normalize_part_no(part)):
+            if variant and variant not in seen:
+                seen.add(variant)
+                keys.append(variant)
     if not keys:
         return {}
     found: dict[str, dict[str, Any]] = {}
+    normalized_keys = [normalize_part_no(key) for key in keys if normalize_part_no(key)]
 
     def from_cycle_times():
         return rows(
@@ -821,7 +1133,7 @@ def lookup_existing_parts(con, part_nos: list[str]) -> dict[str, dict[str, Any]]
                         ''
                     ) AS op_types
                 FROM public.planner_cycle_time_master
-                WHERE UPPER(REGEXP_REPLACE(TRIM(part_no), '[\\s_]+', '-', 'g')) = ANY(%s)
+                WHERE UPPER(TRIM(part_no)) = ANY(%s)
                 GROUP BY TRIM(part_no)
                 """,
                 (keys,),
@@ -837,6 +1149,7 @@ def lookup_existing_parts(con, part_nos: list[str]) -> dict[str, dict[str, Any]]
             "op_count": int(item.get("op_count") or 0),
             "total_ct_mins": float(item.get("total_ct_mins") or 0) or None,
             "opns": summarize_opns(types),
+            "assignment": "",
             "machines": "",
             "source": "cycle_time_master",
         }
@@ -851,7 +1164,7 @@ def lookup_existing_parts(con, part_nos: list[str]) -> dict[str, dict[str, Any]]
                     COUNT(DISTINCT ps_id)::INT AS ps_count,
                     MAX(order_date) AS last_order_date
                 FROM public.pp_vouchers_cache
-                WHERE UPPER(REGEXP_REPLACE(TRIM(part_no), '[\\s_]+', '-', 'g')) = ANY(%s)
+                WHERE UPPER(TRIM(part_no)) = ANY(%s)
                 GROUP BY TRIM(part_no)
                 """,
                 (keys,),
@@ -868,6 +1181,7 @@ def lookup_existing_parts(con, part_nos: list[str]) -> dict[str, dict[str, Any]]
                 "op_count": 0,
                 "total_ct_mins": None,
                 "opns": "",
+                "assignment": "",
                 "machines": "",
                 "source": "process_sheets",
             },
@@ -890,7 +1204,7 @@ def lookup_existing_parts(con, part_nos: list[str]) -> dict[str, dict[str, Any]]
                     ) AS machines
                 FROM public.planner_bom_variation bv
                 JOIN public.planner_operation_seq os ON os.bom_id = bv.bom_id
-                WHERE UPPER(REGEXP_REPLACE(TRIM(bv.inventory_code), '[\\s_]+', '-', 'g')) = ANY(%s)
+                WHERE UPPER(TRIM(bv.inventory_code)) = ANY(%s)
                 GROUP BY TRIM(bv.inventory_code)
                 """,
                 (keys,),
@@ -902,6 +1216,46 @@ def lookup_existing_parts(con, part_nos: list[str]) -> dict[str, dict[str, Any]]
         current = found.get(key)
         if current and not current.get("machines"):
             current["machines"] = compact_text(item.get("machines"))
+
+    def from_rfq_master():
+        return rows(
+            con.execute(
+                """
+                SELECT part_key, part_no, assignment, opns, machines, total_ct_mins,
+                       last_rfq, customer, salesperson, sheet_tag
+                FROM public.planner_rfq_part_master
+                WHERE part_key = ANY(%s) OR UPPER(TRIM(part_no)) = ANY(%s)
+                """,
+                (normalized_keys or keys, keys),
+            )
+        )
+
+    for item in planner_try_savepoint(con, "rfq_master", from_rfq_master, default=[]) or []:
+        key = normalize_part_no(item.get("part_no") or item.get("part_key"))
+        current = found.setdefault(
+            key,
+            {
+                "part_no": compact_text(item.get("part_no")) or key,
+                "part_description": "",
+                "op_count": 0,
+                "total_ct_mins": None,
+                "opns": "",
+                "assignment": "",
+                "machines": "",
+                "source": "rfq_part_master",
+            },
+        )
+        if compact_text(item.get("assignment")):
+            current["assignment"] = compact_text(item.get("assignment"))
+        if compact_text(item.get("opns")):
+            current["opns"] = compact_text(item.get("opns"))
+        if compact_text(item.get("machines")):
+            current["machines"] = compact_text(item.get("machines"))
+        if item.get("total_ct_mins") not in (None, ""):
+            current["total_ct_mins"] = float(item.get("total_ct_mins") or 0) or None
+        current["source"] = "rfq_part_master"
+        current["last_rfq"] = compact_text(item.get("last_rfq"))
+        current["rfq_customer"] = compact_text(item.get("customer"))
     return found
 
 
@@ -992,7 +1346,8 @@ def get_existing_part(part_no: str) -> dict[str, Any] | None:
     if not key:
         return None
     with planner_db() as con:
-        found = lookup_existing_parts(con, [part_no])
+        _ensure_tables(con)
+        found = lookup_existing_parts(con, [part_no, key])
         summary = found.get(key)
         if not summary:
             return None
@@ -1004,7 +1359,7 @@ def get_existing_part(part_no: str) -> dict[str, Any] | None:
                     SELECT part_no, bom_code, stage_no, stage_name, op_no, op_type,
                            cycle_time, ideal_cycle_time, set_up_time, program_no
                     FROM public.planner_cycle_time_master
-                    WHERE UPPER(REGEXP_REPLACE(TRIM(part_no), '[\\s_]+', '-', 'g')) = %s
+                    WHERE UPPER(TRIM(part_no)) = %s
                     ORDER BY bom_code, stage_no, op_no NULLS LAST
                     """,
                     (key,),
@@ -1017,7 +1372,7 @@ def get_existing_part(part_no: str) -> dict[str, Any] | None:
                     """
                     SELECT ps_id, part_no, description, total_qty, order_date, due_date, status, bom_code
                     FROM public.pp_vouchers_cache
-                    WHERE UPPER(REGEXP_REPLACE(TRIM(part_no), '[\\s_]+', '-', 'g')) = %s
+                    WHERE UPPER(TRIM(part_no)) = %s
                     ORDER BY order_date DESC NULLS LAST, ps_id
                     LIMIT 40
                     """,
@@ -1026,16 +1381,28 @@ def get_existing_part(part_no: str) -> dict[str, Any] | None:
             )
 
         def archive_lines():
-            _ensure_tables(con)
             return rows(
                 con.execute(
                     """
                     SELECT l.*, b.filename, b.sheet_name, b.status AS batch_status
                     FROM public.planner_rfq_line l
                     JOIN public.planner_rfq_batch b ON b.batch_id = l.batch_id
-                    WHERE UPPER(REGEXP_REPLACE(TRIM(l.part_no), '[\\s_]+', '-', 'g')) = %s
+                    WHERE UPPER(TRIM(l.part_no)) = %s
                     ORDER BY l.updated_at DESC
                     LIMIT 40
+                    """,
+                    (key,),
+                )
+            )
+
+        def profile():
+            return one(
+                con.execute(
+                    """
+                    SELECT part_no, assignment, opns, machines, total_ct_mins,
+                           last_rfq, customer, salesperson, sheet_tag, updated_at
+                    FROM public.planner_rfq_part_master
+                    WHERE part_key = %s
                     """,
                     (key,),
                 )
@@ -1053,38 +1420,127 @@ def get_existing_part(part_no: str) -> dict[str, Any] | None:
             serialize_line(item)
             for item in (planner_try_savepoint(con, "rfq_part_hist", archive_lines, default=[]) or [])
         ]
+        profile_row = planner_try_savepoint(con, "rfq_part_profile", profile, default=None)
+        if profile_row:
+            summary["rfq_profile"] = {k: _json_ready(v) for k, v in dict(profile_row).items()}
+            if summary["rfq_profile"].get("total_ct_mins") is not None:
+                summary["rfq_profile"]["total_ct_mins"] = float(summary["rfq_profile"]["total_ct_mins"])
+        else:
+            summary["rfq_profile"] = {
+                "part_no": summary.get("part_no") or key,
+                "assignment": compact_text(summary.get("assignment")),
+                "opns": compact_text(summary.get("opns")),
+                "machines": compact_text(summary.get("machines")),
+                "total_ct_mins": summary.get("total_ct_mins"),
+            }
         return summary
 
 
-def list_archive(query: str = "", *, limit: int = 300) -> dict[str, Any]:
+def group_archive_batches(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[int, dict[str, Any]] = {}
+    order: list[int] = []
+    for item in items:
+        serialized = serialize_line(item) or {}
+        bid = int(serialized.get("batch_id") or item.get("batch_id") or 0)
+        if not bid:
+            continue
+        if bid not in groups:
+            order.append(bid)
+            days = item.get("default_days")
+            groups[bid] = {
+                "batch_id": bid,
+                "filename": compact_text(item.get("filename")),
+                "sheet_name": compact_text(item.get("sheet_name")),
+                "status": compact_text(item.get("batch_status") or item.get("status")),
+                "sheet_tag": compact_text(
+                    item.get("batch_sheet_tag")
+                    if item.get("batch_sheet_tag") is not None
+                    else item.get("sheet_tag")
+                ),
+                "default_rfq": compact_text(item.get("default_rfq")),
+                "default_customer": compact_text(item.get("default_customer")),
+                "default_salesperson": compact_text(item.get("default_salesperson")),
+                "default_days": float(days) if days not in (None, "") else None,
+                "default_lead_time": compact_text(item.get("default_lead_time")),
+                "updated_at": _json_ready(item.get("batch_updated_at") or item.get("updated_at")),
+                "created_at": _json_ready(item.get("batch_created_at")),
+                "mapping_notes": compact_text(item.get("mapping_notes")),
+                "lines": [],
+            }
+        groups[bid]["lines"].append(serialized)
+    out: list[dict[str, Any]] = []
+    for bid in order:
+        batch = groups[bid]
+        lines = batch["lines"]
+        batch["line_count"] = len(lines)
+        batch["new_count"] = sum(1 for line in lines if compact_text(line.get("match_status")) == "new")
+        batch["matched_count"] = sum(1 for line in lines if compact_text(line.get("match_status")) == "matched")
+        out.append(batch)
+    return out
+
+
+def list_archive(query: str = "", *, limit: int = 40) -> dict[str, Any]:
     needle = compact_text(query)
     like = f"%{needle}%"
-    limit = max(1, min(int(limit or 300), 2000))
+    batch_limit = max(1, min(int(limit or 40), 80))
     with planner_db() as con:
         _ensure_tables(con)
         sql = """
-            SELECT l.*, b.filename, b.sheet_name, b.status AS batch_status, b.updated_at AS batch_updated_at
-            FROM public.planner_rfq_line l
-            JOIN public.planner_rfq_batch b ON b.batch_id = l.batch_id
-            WHERE b.status = 'archived'
+            SELECT
+                b.batch_id, b.filename, b.sheet_name, b.status, b.sheet_tag,
+                b.default_rfq, b.default_customer, b.default_salesperson,
+                b.default_days, b.default_lead_time, b.updated_at, b.created_at,
+                b.mapping_notes,
+                COUNT(l.line_id)::INT AS line_count,
+                COUNT(l.line_id) FILTER (WHERE l.match_status = 'new')::INT AS new_count,
+                COUNT(l.line_id) FILTER (WHERE l.match_status = 'matched')::INT AS matched_count
+            FROM public.planner_rfq_batch b
+            LEFT JOIN public.planner_rfq_line l ON l.batch_id = b.batch_id
+            WHERE b.status IN ('archived', 'draft')
         """
         params: list[Any] = []
         if needle:
             sql += """
                 AND (
-                    l.part_no ILIKE %s OR l.rfq ILIKE %s OR l.customer ILIKE %s
-                    OR l.salesperson ILIKE %s OR l.remark ILIKE %s
-                    OR l.sheet_tag ILIKE %s OR b.sheet_tag ILIKE %s
+                    b.filename ILIKE %s OR b.sheet_name ILIKE %s OR b.sheet_tag ILIKE %s
+                    OR b.default_rfq ILIKE %s OR b.default_customer ILIKE %s
+                    OR EXISTS (
+                        SELECT 1 FROM public.planner_rfq_line x
+                        WHERE x.batch_id = b.batch_id
+                          AND (
+                              x.part_no ILIKE %s OR x.rfq ILIKE %s OR x.customer ILIKE %s
+                              OR x.salesperson ILIKE %s OR x.remark ILIKE %s
+                              OR x.sheet_tag ILIKE %s OR x.lead_time ILIKE %s
+                          )
+                    )
                 )
             """
-            params.extend([like, like, like, like, like, like, like])
-        sql += " ORDER BY b.updated_at DESC, l.line_no LIMIT %s"
-        params.append(limit)
-        items = [serialize_line(item) for item in rows(con.execute(sql, tuple(params)))]
-        return {"ok": True, "count": len(items), "rows": items}
+            params.extend([like] * 12)
+        sql += """
+            GROUP BY b.batch_id
+            ORDER BY b.updated_at DESC
+            LIMIT %s
+        """
+        params.append(batch_limit)
+        batches = []
+        for item in rows(con.execute(sql, tuple(params))):
+            row = serialize_batch(item) or {}
+            row["line_count"] = int(item.get("line_count") or 0)
+            row["new_count"] = int(item.get("new_count") or 0)
+            row["matched_count"] = int(item.get("matched_count") or 0)
+            row["lines"] = []
+            batches.append(row)
+        return {
+            "ok": True,
+            "count": sum(item["line_count"] for item in batches),
+            "batch_count": len(batches),
+            "batches": batches,
+            "rows": [],
+            "query": needle,
+        }
 
 
-def get_batch(batch_id: int) -> dict[str, Any] | None:
+def get_batch(batch_id: int, *, line_limit: int | None = None) -> dict[str, Any] | None:
     with planner_db() as con:
         _ensure_tables(con)
         batch = serialize_batch(
@@ -1092,69 +1548,178 @@ def get_batch(batch_id: int) -> dict[str, Any] | None:
         )
         if not batch:
             return None
-        lines = [
-            serialize_line(item)
-            for item in rows(
-                con.execute(
-                    """
-                    SELECT * FROM public.planner_rfq_line
-                    WHERE batch_id = %s
-                    ORDER BY line_no, line_id
-                    """,
-                    (int(batch_id),),
-                )
+        counts = one(
+            con.execute(
+                """
+                SELECT
+                    COUNT(*)::INT AS line_count,
+                    COUNT(*) FILTER (WHERE match_status = 'new')::INT AS new_count,
+                    COUNT(*) FILTER (WHERE match_status = 'matched')::INT AS matched_count
+                FROM public.planner_rfq_line
+                WHERE batch_id = %s
+                """,
+                (int(batch_id),),
             )
-        ]
-        batch["lines"] = lines
-        batch["line_count"] = len(lines)
+        ) or {}
+        sql = """
+            SELECT * FROM public.planner_rfq_line
+            WHERE batch_id = %s
+            ORDER BY line_no, line_id
+        """
+        params: list[Any] = [int(batch_id)]
+        if line_limit:
+            sql += " LIMIT %s"
+            params.append(max(1, int(line_limit)))
+        raw_lines = rows(con.execute(sql, tuple(params)))
+        batch["lines"] = [serialize_line(item) for item in raw_lines]
+        batch["line_count"] = int(counts.get("line_count") or 0)
+        batch["new_count"] = int(counts.get("new_count") or 0)
+        batch["matched_count"] = int(counts.get("matched_count") or 0)
+        batch["lines_truncated"] = bool(line_limit and batch["line_count"] > len(raw_lines))
         batch["field_labels"] = FIELD_LABELS
         batch["hours_per_day"] = HOURS_PER_DAY
-        batch["headers"] = headers_from_source_rows(lines)
+        batch["headers"] = headers_from_source_rows(raw_lines)
         return batch
 
 
 def _insert_lines(con, batch_id: int, lines: list[dict[str, Any]]) -> None:
-    for line in lines:
-        con.execute(
-            """
-            INSERT INTO public.planner_rfq_line (
-                batch_id, line_no, part_no, rfq, customer, salesperson, sheet_tag, qty, opns,
-                assignment, machines, total_ct_mins, machine_hours, total_hours, days,
-                lead_time, need_tooling, need_fixture, remark, match_status,
-                matched_part_no, source_row
-            )
-            VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s,
-                %s, %s
-            )
-            """,
+    if not lines:
+        return
+    from psycopg2.extras import execute_values
+
+    values = [
+        (
+            batch_id,
+            int(line.get("line_no") or 0),
+            compact_text(line.get("part_no")),
+            compact_text(line.get("rfq")),
+            compact_text(line.get("customer")),
+            compact_text(line.get("salesperson")),
+            normalize_sheet_tag(line.get("sheet_tag")),
+            line.get("qty"),
+            compact_text(line.get("opns")),
+            compact_text(line.get("assignment")),
+            compact_text(line.get("machines")),
+            line.get("total_ct_mins"),
+            line.get("machine_hours"),
+            line.get("total_hours"),
+            line.get("days"),
+            compact_text(line.get("lead_time")),
+            compact_text(line.get("need_tooling")),
+            compact_text(line.get("need_fixture")),
+            compact_text(line.get("remark")),
+            compact_text(line.get("match_status")) or "new",
+            compact_text(line.get("matched_part_no")),
+            Json(line.get("source_row") or {}),
+        )
+        for line in lines
+    ]
+    cur = con._conn.cursor()
+    execute_values(
+        cur,
+        """
+        INSERT INTO public.planner_rfq_line (
+            batch_id, line_no, part_no, rfq, customer, salesperson, sheet_tag, qty, opns,
+            assignment, machines, total_ct_mins, machine_hours, total_hours, days,
+            lead_time, need_tooling, need_fixture, remark, match_status,
+            matched_part_no, source_row
+        ) VALUES %s
+        """,
+        values,
+        page_size=200,
+    )
+
+
+def upsert_part_master(con, lines: list[dict[str, Any]], *, batch_id: int | None = None) -> int:
+    rows_in: list[tuple[Any, ...]] = []
+    seen: set[str] = set()
+    for line in reversed(lines or []):
+        key = normalize_part_no(line.get("part_no"))
+        if not key or key in seen:
+            continue
+        assignment = compact_text(line.get("assignment"))
+        opns = compact_text(line.get("opns"))
+        machines = compact_text(line.get("machines"))
+        ct = _to_number(line.get("total_ct_mins"))
+        if not assignment and not opns and not machines and ct is None:
+            continue
+        seen.add(key)
+        rows_in.append(
             (
-                batch_id,
-                int(line.get("line_no") or 0),
-                compact_text(line.get("part_no")),
+                key,
+                compact_text(line.get("part_no")) or key,
+                assignment,
+                opns,
+                machines,
+                ct,
                 compact_text(line.get("rfq")),
                 compact_text(line.get("customer")),
                 compact_text(line.get("salesperson")),
                 normalize_sheet_tag(line.get("sheet_tag")),
-                line.get("qty"),
-                compact_text(line.get("opns")),
-                compact_text(line.get("assignment")),
-                compact_text(line.get("machines")),
-                line.get("total_ct_mins"),
-                line.get("machine_hours"),
-                line.get("total_hours"),
-                line.get("days"),
-                compact_text(line.get("lead_time")),
-                compact_text(line.get("need_tooling")),
-                compact_text(line.get("need_fixture")),
-                compact_text(line.get("remark")),
-                compact_text(line.get("match_status")) or "new",
-                compact_text(line.get("matched_part_no")),
-                Json(line.get("source_row") or {}),
-            ),
+                int(batch_id) if batch_id else None,
+            )
         )
+    if not rows_in:
+        return 0
+    from psycopg2.extras import execute_values
+
+    cur = con._conn.cursor()
+    execute_values(
+        cur,
+        """
+        INSERT INTO public.planner_rfq_part_master (
+            part_key, part_no, assignment, opns, machines, total_ct_mins,
+            last_rfq, customer, salesperson, sheet_tag, source_batch_id
+        ) VALUES %s
+        ON CONFLICT (part_key) DO UPDATE SET
+            part_no = COALESCE(NULLIF(EXCLUDED.part_no, ''), planner_rfq_part_master.part_no),
+            assignment = CASE WHEN EXCLUDED.assignment <> '' THEN EXCLUDED.assignment ELSE planner_rfq_part_master.assignment END,
+            opns = CASE WHEN EXCLUDED.opns <> '' THEN EXCLUDED.opns ELSE planner_rfq_part_master.opns END,
+            machines = CASE WHEN EXCLUDED.machines <> '' THEN EXCLUDED.machines ELSE planner_rfq_part_master.machines END,
+            total_ct_mins = COALESCE(EXCLUDED.total_ct_mins, planner_rfq_part_master.total_ct_mins),
+            last_rfq = CASE WHEN EXCLUDED.last_rfq <> '' THEN EXCLUDED.last_rfq ELSE planner_rfq_part_master.last_rfq END,
+            customer = CASE WHEN EXCLUDED.customer <> '' THEN EXCLUDED.customer ELSE planner_rfq_part_master.customer END,
+            salesperson = CASE WHEN EXCLUDED.salesperson <> '' THEN EXCLUDED.salesperson ELSE planner_rfq_part_master.salesperson END,
+            sheet_tag = CASE WHEN EXCLUDED.sheet_tag <> '' THEN EXCLUDED.sheet_tag ELSE planner_rfq_part_master.sheet_tag END,
+            source_batch_id = COALESCE(EXCLUDED.source_batch_id, planner_rfq_part_master.source_batch_id),
+            updated_at = NOW()
+        """,
+        rows_in,
+        page_size=200,
+    )
+    return len(rows_in)
+
+
+def list_part_master(query: str = "", *, limit: int = 400) -> dict[str, Any]:
+    needle = compact_text(query)
+    like = f"%{needle}%"
+    limit = max(1, min(int(limit or 400), 2000))
+    with planner_db() as con:
+        _ensure_tables(con)
+        sql = """
+            SELECT part_no, assignment, opns, machines, total_ct_mins,
+                   last_rfq, customer, salesperson, sheet_tag, updated_at
+            FROM public.planner_rfq_part_master
+            WHERE TRIM(part_no) <> ''
+        """
+        params: list[Any] = []
+        if needle:
+            sql += """
+                AND (
+                    part_no ILIKE %s OR assignment ILIKE %s OR last_rfq ILIKE %s
+                    OR customer ILIKE %s OR opns ILIKE %s OR machines ILIKE %s
+                )
+            """
+            params.extend([like, like, like, like, like, like])
+        sql += " ORDER BY updated_at DESC, part_no LIMIT %s"
+        params.append(limit)
+        items = []
+        for item in rows(con.execute(sql, tuple(params))):
+            row = {key: _json_ready(value) for key, value in dict(item).items()}
+            if row.get("total_ct_mins") is not None:
+                row["total_ct_mins"] = float(row["total_ct_mins"])
+            items.append(row)
+        return {"ok": True, "count": len(items), "rows": items, "query": needle}
 
 
 def create_batch_from_upload(
@@ -1172,21 +1737,30 @@ def create_batch_from_upload(
         raise ValueError("The Excel file is empty.")
     if len(payload) > MAX_UPLOAD_BYTES:
         raise ValueError("Excel file is larger than 12 MB.")
-    sheets = parse_workbook_bytes(payload, filename)
-    if not sheets:
+    names = list_workbook_sheets(payload, filename)
+    if not names:
         raise ValueError("No usable worksheet was found in that workbook.")
-    chosen = compact_text(sheet_name) or pick_default_sheet(sheets)
-    sheet = sheet_by_name(sheets, chosen)
-    if not sheet:
-        available = ", ".join(item["name"] for item in sheets) or "none"
-        raise ValueError(f"Sheet {chosen!r} was not found. Available: {available}.")
+    sheet_summaries = [{"name": item, "row_count": 0, "headers": []} for item in names]
+    chosen = compact_text(sheet_name) or pick_default_sheet(sheet_summaries)
+    sheet = parse_named_sheet(payload, filename, chosen)
+    for item in sheet_summaries:
+        if compact_text(item["name"]) == compact_text(sheet.get("name")):
+            item["row_count"] = int(sheet.get("row_count") or 0)
+            item["headers"] = list(sheet.get("headers") or [])
+            break
+    truncated = 0
+    source_rows = list(sheet.get("rows") or [])
+    if len(source_rows) > MAX_RFQ_LINES:
+        truncated = len(source_rows) - MAX_RFQ_LINES
+        source_rows = source_rows[:MAX_RFQ_LINES]
     column_map = heuristic_column_map(sheet["headers"])
     mapping_notes = "Mapped with header aliases."
     llm_used = False
     llm_model = ""
-    if use_llm and _llm_api_key():
+    skip_llm = heuristic_covers_core_fields(column_map)
+    if use_llm and _llm_api_key() and not skip_llm:
         try:
-            llm = map_columns_with_llm(sheet["headers"], sheet["rows"])
+            llm = map_columns_with_llm(sheet["headers"], source_rows)
             if llm.get("column_map"):
                 column_map = llm["column_map"]
                 mapping_notes = llm.get("notes") or "Mapped with LLM."
@@ -1195,22 +1769,47 @@ def create_batch_from_upload(
         except Exception as exc:
             mapping_notes = f"LLM mapping failed; used header aliases. {exc}"
             logger.warning("RFQ LLM mapping fell back to heuristic: %s", exc)
+    elif use_llm and skip_llm:
+        mapping_notes = (
+            "Mapped with header aliases. LLM skipped because Part No. and C/T columns were already found."
+        )
     elif use_llm:
         mapping_notes = "LLM is not configured; mapped with header aliases. Set RFQ_LLM_API_KEY."
+    if truncated:
+        mapping_notes += (
+            f" Stored the first {MAX_RFQ_LINES} rows ({truncated} extra rows skipped to avoid timeout)."
+        )
 
-    part_nos = [compact_text(apply_column_map(row, column_map).get("part_no")) for row in sheet["rows"]]
+    part_nos = [compact_text(apply_column_map(row, column_map).get("part_no")) for row in source_rows]
     with planner_db() as con:
         _ensure_tables(con)
         existing = lookup_existing_parts(con, part_nos)
-        lines = build_mapped_lines(sheet["rows"], column_map, existing)
-        defaults = {
-            "sheet_tag": normalize_sheet_tag(sheet_tag),
-            "rfq": compact_text(default_rfq),
-            "customer": compact_text(default_customer),
-            "salesperson": compact_text(default_salesperson),
-        }
-        if any(defaults.values()):
-            lines = apply_defaults_to_mapped_lines(lines, defaults, overwrite=True)
+    lines = build_mapped_lines(source_rows, column_map, existing)
+    if use_llm and _llm_api_key():
+        try:
+            extra = fill_missing_cycle_times_with_llm(lines)
+            if extra:
+                mapping_notes = f"{mapping_notes} {extra}".strip()
+                llm_used = True
+                llm_model = llm_model or _llm_model()
+        except Exception as exc:
+            logger.warning("RFQ LLM cycle-time fill failed: %s", exc)
+            mapping_notes += f" LLM cycle-time fill failed. {exc}"
+    defaults = {
+        "sheet_tag": normalize_sheet_tag(sheet_tag),
+        "rfq": compact_text(default_rfq),
+        "customer": compact_text(default_customer),
+        "salesperson": compact_text(default_salesperson),
+    }
+    if any(defaults.values()):
+        lines = apply_defaults_to_mapped_lines(lines, defaults, overwrite=True)
+    with planner_db() as con:
+        try:
+            con.execute("SET LOCAL statement_timeout = '45s'")
+            con.execute("SET LOCAL lock_timeout = '8s'")
+        except Exception:
+            pass
+        _ensure_tables(con)
         inserted = one(
             con.execute(
                 """
@@ -1237,27 +1836,27 @@ def create_batch_from_upload(
         )
         batch_id = int(inserted["batch_id"])
         _insert_lines(con, batch_id, lines)
+        upsert_part_master(con, lines, batch_id=batch_id)
     batch = get_batch(batch_id)
     assert batch is not None
-    batch["sheets"] = [
-        {"name": item["name"], "row_count": item["row_count"], "headers": item["headers"]}
-        for item in sheets
-    ]
+    batch["sheets"] = sheet_summaries
     batch["headers"] = sheet["headers"]
     return batch
 
 
-def _defaults_from_batch_row(row: dict[str, Any] | None) -> dict[str, str]:
+def _defaults_from_batch_row(row: dict[str, Any] | None) -> dict[str, Any]:
     data = row or {}
     return {
         "sheet_tag": normalize_sheet_tag(data.get("sheet_tag")),
         "rfq": compact_text(data.get("default_rfq") or data.get("rfq")),
         "customer": compact_text(data.get("default_customer") or data.get("customer")),
         "salesperson": compact_text(data.get("default_salesperson") or data.get("salesperson")),
+        "days": _to_number(data.get("default_days") if data.get("default_days") is not None else data.get("days")),
+        "lead_time": compact_text(data.get("default_lead_time") or data.get("lead_time")),
     }
 
 
-def _apply_defaults_sql(con, batch_id: int, defaults: dict[str, str], fields: list[str]) -> None:
+def _apply_defaults_sql(con, batch_id: int, defaults: dict[str, Any], fields: list[str]) -> None:
     assignments: list[str] = []
     values: list[Any] = []
     for field in fields:
@@ -1267,6 +1866,12 @@ def _apply_defaults_sql(con, batch_id: int, defaults: dict[str, str], fields: li
         elif field in BATCH_DEFAULT_FIELDS:
             assignments.append(f"{field} = %s")
             values.append(compact_text(defaults.get(field)))
+        elif field == "days":
+            assignments.append("days = %s")
+            values.append(_to_number(defaults.get("days")))
+        elif field == "lead_time":
+            assignments.append("lead_time = %s")
+            values.append(compact_text(defaults.get("lead_time")))
     if not assignments:
         return
     assignments.append("updated_at = NOW()")
@@ -1280,7 +1885,7 @@ def _apply_defaults_sql(con, batch_id: int, defaults: dict[str, str], fields: li
 def update_batch_defaults(batch_id: int, patch: dict[str, Any]) -> dict[str, Any]:
     data = patch or {}
     changed: list[str] = []
-    next_values: dict[str, str] = {}
+    next_values: dict[str, Any] = {}
     if "sheet_tag" in data:
         next_values["sheet_tag"] = normalize_sheet_tag(data.get("sheet_tag"))
         changed.append("sheet_tag")
@@ -1288,6 +1893,14 @@ def update_batch_defaults(batch_id: int, patch: dict[str, Any]) -> dict[str, Any
         if field in data or f"default_{field}" in data:
             next_values[field] = compact_text(data.get(field) or data.get(f"default_{field}"))
             changed.append(field)
+    if "days" in data or "default_days" in data:
+        next_values["days"] = _to_number(
+            data.get("days") if data.get("days") is not None else data.get("default_days")
+        )
+        changed.append("days")
+    if "lead_time" in data or "default_lead_time" in data:
+        next_values["lead_time"] = compact_text(data.get("lead_time") or data.get("default_lead_time"))
+        changed.append("lead_time")
     if not changed:
         raise ValueError("No sheet defaults supplied.")
     with planner_db() as con:
@@ -1301,7 +1914,8 @@ def update_batch_defaults(batch_id: int, patch: dict[str, Any]) -> dict[str, Any
             """
             UPDATE public.planner_rfq_batch
             SET sheet_tag = %s, default_rfq = %s, default_customer = %s,
-                default_salesperson = %s, updated_at = NOW()
+                default_salesperson = %s, default_days = %s, default_lead_time = %s,
+                updated_at = NOW()
             WHERE batch_id = %s
             """,
             (
@@ -1309,6 +1923,8 @@ def update_batch_defaults(batch_id: int, patch: dict[str, Any]) -> dict[str, Any
                 merged["rfq"],
                 merged["customer"],
                 merged["salesperson"],
+                merged.get("days"),
+                merged.get("lead_time") or "",
                 int(batch_id),
             ),
         )
@@ -1342,10 +1958,12 @@ def remap_batch(batch_id: int, column_map: dict[str, str]) -> dict[str, Any]:
         existing = lookup_existing_parts(con, part_nos)
         lines = build_mapped_lines(source_rows, cleaned, existing)
         defaults = _defaults_from_batch_row(batch)
-        if any(defaults.values()):
-            lines = apply_defaults_to_mapped_lines(lines, defaults, overwrite=True)
+        text_fields = ["sheet_tag", *BATCH_DEFAULT_FIELDS]
+        if any(compact_text(defaults.get(field)) for field in text_fields):
+            lines = apply_defaults_to_mapped_lines(lines, defaults, overwrite=True, fields=text_fields)
         con.execute("DELETE FROM public.planner_rfq_line WHERE batch_id = %s", (int(batch_id),))
         _insert_lines(con, int(batch_id), lines)
+        upsert_part_master(con, lines, batch_id=int(batch_id))
         con.execute(
             """
             UPDATE public.planner_rfq_batch
@@ -1388,15 +2006,13 @@ def update_line(line_id: int, patch: dict[str, Any]) -> dict[str, Any]:
             if recalc_hours:
                 merged["machine_hours"] = calc["machine_hours"]
                 merged["total_hours"] = calc["total_hours"]
-            if "days" not in data:
-                merged["days"] = calc["days"]
-            if "lead_time" not in data:
-                merged["lead_time"] = format_lead_time(float(merged.get("days") or 0))
+            elif "machine_hours" not in data:
+                merged["machine_hours"] = calc["machine_hours"]
         assignments = []
         values: list[Any] = []
         recalc_fields = set()
         if recalc_hours or "total_hours" in data:
-            recalc_fields.update({"machine_hours", "total_hours", "days", "lead_time"})
+            recalc_fields.update({"machine_hours", "total_hours"})
         for field in LINE_PATCH_FIELDS:
             if field in data or field in recalc_fields:
                 assignments.append(f"{field} = %s")
@@ -1428,6 +2044,7 @@ def update_line(line_id: int, patch: dict[str, Any]) -> dict[str, Any]:
             "UPDATE public.planner_rfq_batch SET updated_at = NOW() WHERE batch_id = %s",
             (updated["batch_id"],),
         )
+        upsert_part_master(con, [merged], batch_id=int(updated["batch_id"]))
     return serialize_line(updated) or {}
 
 
@@ -1448,6 +2065,14 @@ def set_batch_status(batch_id: int, status: str) -> dict[str, Any]:
                 (status, int(batch_id)),
             )
         )
+        if updated and status == "archived":
+            archived_lines = rows(
+                con.execute(
+                    "SELECT * FROM public.planner_rfq_line WHERE batch_id = %s",
+                    (int(batch_id),),
+                )
+            )
+            upsert_part_master(con, archived_lines, batch_id=int(batch_id))
     if not updated:
         raise ValueError("RFQ batch not found.")
     return get_batch(int(batch_id)) or {}

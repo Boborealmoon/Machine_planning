@@ -338,5 +338,24 @@ class SalesReportOpenSoValueTests(unittest.TestCase):
         self.assertAlmostEqual(summary["pct_left"], 25.0, places=1)
 
 
+class SalesReportSalespersonCustomerSqlTests(unittest.TestCase):
+    def test_live_and_staged_queries_select_salesperson_account(self):
+        from planning.sales_report_route import _BOOKED_SQL, _SHIPMENTS_SQL, _SO_LINES_SQL
+        from planning.staged_erp import STAGED_BOOKED_SQL, STAGED_SHIPMENTS_SQL, STAGED_SO_LINES_SQL
+
+        for sql in (
+            _SO_LINES_SQL,
+            _SHIPMENTS_SQL,
+            _BOOKED_SQL,
+            STAGED_SO_LINES_SQL,
+            STAGED_SHIPMENTS_SQL,
+            STAGED_BOOKED_SQL,
+        ):
+            self.assertIn("sales_person_code", sql)
+            self.assertIn("sales_person_name", sql)
+            self.assertIn("customer_code", sql)
+            self.assertIn("customer_name", sql)
+
+
 if __name__ == "__main__":
     unittest.main()

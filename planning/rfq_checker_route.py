@@ -15,6 +15,7 @@ from .rfq_checker_service import (
     json_error,
     list_archive,
     list_existing_parts,
+    list_part_master,
     llm_status,
     remap_batch,
     set_batch_status,
@@ -82,7 +83,7 @@ def api_rfq_part_detail(part_no: str):
         body, status = json_error(exc, fallback_status=502)
         return jsonify(body), status
     if not row:
-        return jsonify({"error": "Part not found in cycle times, process sheets, or RFQ archive"}), 404
+        return jsonify({"error": "Part not found in cycle times, process sheets, or RFQ part records"}), 404
     return jsonify({"ok": True, "part": row})
 
 
@@ -93,6 +94,18 @@ def api_rfq_archive():
         payload = list_archive(query)
     except Exception as exc:
         logger.exception("RFQ archive list failed")
+        body, status = json_error(exc, fallback_status=502)
+        return jsonify(body), status
+    return jsonify(payload)
+
+
+@rfq_checker_bp.get("/api/rfq-checker/part-master")
+def api_rfq_part_master():
+    query = compact_text(request.args.get("q"))
+    try:
+        payload = list_part_master(query)
+    except Exception as exc:
+        logger.exception("RFQ part master list failed")
         body, status = json_error(exc, fallback_status=502)
         return jsonify(body), status
     return jsonify(payload)
@@ -139,8 +152,15 @@ def api_rfq_upload():
 
 @rfq_checker_bp.get("/api/rfq-checker/batches/<int:batch_id>")
 def api_rfq_batch(batch_id: int):
+    line_limit = None
+    raw_limit = compact_text(request.args.get("limit"))
+    if raw_limit:
+        try:
+            line_limit = max(1, min(int(raw_limit), 2000))
+        except (TypeError, ValueError):
+            line_limit = 300
     try:
-        batch = get_batch(batch_id)
+        batch = get_batch(batch_id, line_limit=line_limit)
     except Exception as exc:
         logger.exception("RFQ batch load failed")
         body, status = json_error(exc, fallback_status=502)

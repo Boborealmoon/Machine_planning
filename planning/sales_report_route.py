@@ -110,6 +110,7 @@ SELECT
     det.required_shipment_date::date AS due_date,
     hdr.customer_code,
     hdr.customer_name,
+    hdr.sales_person_code,
     hdr.sales_person_name,
     hdr.sbu_desc,
     COALESCE(rev.first_posted_datetime, ost.posted_datetime) AS first_posted_datetime
@@ -203,6 +204,7 @@ SELECT
     so_det.required_shipment_date::date AS due_date,
     v.customer_code,
     v.customer_name,
+    v.sales_person_code,
     v.sales_person_name,
     v.sbu_desc,
     COALESCE(rev.first_posted_datetime, hdr.posted_datetime) AS first_posted_datetime,
@@ -250,6 +252,7 @@ SELECT
     COALESCE(rev.first_posted_datetime, ost.posted_datetime) AS first_posted_datetime,
     v.customer_code,
     v.customer_name,
+    v.sales_person_code,
     v.sales_person_name,
     v.sbu_desc
 FROM public.so_order_ost_det det

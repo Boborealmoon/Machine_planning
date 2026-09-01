@@ -93,15 +93,12 @@ const SO_COLUMNS = [
   { id: 'order_date', label: 'Date', sortable: true, filterable: true },
   { id: 'part', label: 'Part', sortable: true, filterable: true },
   { id: 'description', label: 'Description', sortable: true, filterable: true },
-  { id: 'customer_po_no', label: 'P/O No.', sortable: true, filterable: true },
   { id: 'due_date', label: 'Due date', sortable: true, filterable: true },
-  { id: 'proposed_edd', label: 'Prop. EDD', sortable: true, filterable: true },
-  { id: 'program_finish_at', label: 'Programme finish', sortable: true, filterable: true },
+  { id: 'proposed_edd', label: 'Prop. EDD', sortable: true, filterable: true, tone: 'edd' },
+  { id: 'program_finish_at', label: 'Programme finish', sortable: true, filterable: true, tone: 'finish' },
+  { id: 'material_subcon', label: 'Material in / Sub-con', sortable: true, filterable: true, tone: 'material' },
   { id: 'week', label: 'Week', sortable: true, filterable: true },
   { id: 'delivery_date', label: 'Delivered', sortable: true, filterable: true },
-  { id: 'unit_selling_price', label: 'U/Price', sortable: true, filterable: true },
-  { id: 'amount', label: 'Amount', sortable: true, filterable: true },
-  { id: 'material_subcon', label: 'Material in / Sub-con', sortable: true, filterable: true },
   { id: 'mtl_part_order', label: 'Mtl / Part Order', sortable: true, filterable: true },
   { id: 'quality_doc', label: 'Quality Doc', sortable: true, filterable: true },
   { id: 'ops_notes', label: 'Ops', sortable: true, filterable: true },
@@ -1649,11 +1646,12 @@ function soRenderTableHead() {
     const filterCls = activeFilter ? ' is-active' : '';
     const sortCls = soState.sortCol === col.id ? ' is-sorted' : '';
     const stickyCls = col.stickyAfterSide ? ' so-sticky-ps-head' : '';
+    const toneCls = col.tone ? ` so-col-tone so-col-tone--${col.tone}` : '';
     if (!col.sortable && !col.filterable) {
-      return `<th class="${sideCls}${stickyCls}">${escapeHtml(col.label)}</th>`;
+      return `<th class="${sideCls}${stickyCls}${toneCls}">${escapeHtml(col.label)}</th>`;
     }
     return `
-      <th class="so-col-head${sideCls}${stickyCls}${sortCls}" data-so-col="${escapeHtml(col.id)}">
+      <th class="so-col-head${sideCls}${stickyCls}${toneCls}${sortCls}" data-so-col="${escapeHtml(col.id)}">
         <div class="so-col-head-inner">
           <button type="button" class="so-col-sort-btn" data-action="sort-col" data-so-col="${escapeHtml(col.id)}" title="Sort">
             <span class="so-col-label">${escapeHtml(col.label)}</span>
@@ -2521,15 +2519,12 @@ function soRenderWeekCell(pp, partial) {
 function soRenderPpCells(pp, partial) {
   return `
     <td class="new-orders-desc" title="${escapeHtml(String(pp.description || ''))}">${escapeHtml(String(pp.description || '—'))}</td>
-    <td class="new-orders-mono">${escapeHtml(String(pp.customer_po_no || '—'))}</td>
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.due_date))}</td>
     ${soRenderProposedEddCell(pp, partial)}
     ${soRenderProgramFinishCell(pp, partial)}
+    ${soRenderMaterialSubconCell(pp)}
     ${soRenderWeekCell(pp, partial)}
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.delivery_date))}</td>
-    <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.unit_selling_price))}</td>
-    <td class="new-orders-num">${escapeHtml(soFormatMoney(pp.amount))}</td>
-    ${soRenderMaterialSubconCell(pp)}
     ${SO_NOTE_FIELDS.filter(field => field !== 'material_subcon').map(field => soRenderEditableCell(pp, field)).join('')}
   `;
 }
