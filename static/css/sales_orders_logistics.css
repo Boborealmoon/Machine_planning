@@ -653,11 +653,6 @@ body.sol-view .app-main--sales-logistics {
   background: #fdfaf3;
 }
 
-.sol-table tbody tr.has-subasm td.sol-part {
-  overflow: visible;
-  vertical-align: top;
-}
-
 .sol-subasm-pill {
   display: inline-flex;
   align-items: center;
@@ -672,63 +667,16 @@ body.sol-view .app-main--sales-logistics {
   white-space: nowrap;
 }
 
-.sol-subasm {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 6px;
-  min-width: 0;
+.sol-table tbody tr.is-asm-parent td:first-child {
+  box-shadow: inset 3px 0 0 #64748b;
 }
 
-.sol-subasm-label {
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--sol-need);
+.sol-table tbody tr.is-sr-line td:first-child {
+  box-shadow: inset 3px 0 0 #d4a017;
 }
 
-.sol-subasm-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.sol-subasm-item {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px 8px;
-  padding: 4px 8px;
-  border-radius: 8px;
-  background: #fbf6ea;
-  border: 1px solid #eee0c4;
-}
-
-.sol-subasm-part {
-  font-size: 0.75rem;
-  font-weight: 650;
-}
-
-.sol-subasm-desc {
-  flex: 1 1 8rem;
-  min-width: 0;
-  font-size: 0.72rem;
-  color: var(--sol-muted);
-}
-
-.sol-subasm-qty {
-  font-size: 0.72rem;
-  font-weight: 650;
-  color: var(--sol-ink);
-  font-variant-numeric: tabular-nums;
-}
-
-.sol-subasm-bom {
-  font-size: 0.72rem;
+.sol-table tbody tr.is-sr-line-first td {
+  border-top: 1px solid #ead9a8;
 }
 
 .sol-table tbody tr.is-qc-awaiting td {

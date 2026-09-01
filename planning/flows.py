@@ -637,6 +637,69 @@ def erp_bom_codes_by_inventory(con, inventory_codes):
     return out
 
 
+def erp_domain_bom_stages_by_inventory(inventory_codes):
+    """ERP mt_inventory_bom_stage rows keyed by inventory_code (COMAIN, not planner cache)."""
+    codes = [compact_text(code) for code in (inventory_codes or []) if compact_text(code)]
+    if not codes:
+        return {}
+    try:
+        from db import domain_sync_unreachable, get_conn, release_conn
+
+        if domain_sync_unreachable():
+            return {}
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT inventory_code, bom_code, stage_no, stage_desc
+                    FROM public.mt_inventory_bom_stage
+                    WHERE inventory_code = ANY(%s)
+                    ORDER BY inventory_code, bom_code, stage_no
+                    """,
+                    (codes,),
+                )
+                cols = [desc[0] for desc in cur.description]
+                stage_rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        finally:
+            release_conn(conn)
+    except Exception:
+        return {}
+    grouped: dict[str, list[dict]] = {}
+    for row in stage_rows:
+        inv = compact_text(row.get("inventory_code"))
+        if not inv:
+            continue
+        grouped.setdefault(inv, []).append(
+            {
+                "inventory_code": inv,
+                "bom_code": compact_text(row.get("bom_code")),
+                "stage_no": int(row.get("stage_no") or 0),
+                "stage_desc": compact_text(row.get("stage_desc")),
+            }
+        )
+    return grouped
+
+
+def preferred_machining_bom_code(stage_rows: list[dict] | None) -> str:
+    """Pick the ERP BOM with the most turning/milling/turnmill stages."""
+    scores: dict[str, int] = {}
+    for row in stage_rows or []:
+        bom_code = compact_text(row.get("bom_code"))
+        if not bom_code:
+            continue
+        scores.setdefault(bom_code, 0)
+        if _is_machining_stage_desc(row.get("stage_desc")):
+            scores[bom_code] += 1
+    if not scores:
+        return ""
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    best_code, machining_count = ranked[0]
+    if machining_count <= 0:
+        return ""
+    return best_code
+
+
 def _resolve_inventory_bom_code(con, inventory_code, bom_code):
     """Resolve canonical bom_code from bom_op_stage or material_per_bom."""
     inventory_code = compact_text(inventory_code)

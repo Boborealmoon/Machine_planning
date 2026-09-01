@@ -61,17 +61,33 @@ def parent_ps_id_from_child(ps_id: Any) -> str:
 
 
 def _catalog_line_item_from_entry(entry: dict[str, Any], *, related_from: str = "") -> dict[str, Any]:
+    """Slim nested catalog snapshot so a parent can render child BOM ops as op cards."""
+    ps_id = compact_text(entry.get("ps_id"))
+    source_ps_id = catalog_source_ps_id(entry)
     return {
-        "process_sheet_no": catalog_source_ps_id(entry),
+        "process_sheet_no": source_ps_id,
+        "ps_id": ps_id or source_ps_id,
+        "source_ps_id": source_ps_id,
+        "display_ps_id": compact_text(entry.get("display_ps_id")) or source_ps_id,
+        "pp_partial_no": as_int(entry.get("pp_partial_no")) or 1,
         "part_no": compact_text(
             entry.get("part_no") or entry.get("part_name") or entry.get("inventory_code")
         ),
         "part_desc": compact_text(entry.get("part_desc")),
+        "inventory_code": compact_text(entry.get("inventory_code") or entry.get("part_no")),
         "qty": as_float(entry.get("display_qty") or entry.get("partial_qty") or entry.get("total_qty")),
+        "display_qty": as_float(entry.get("display_qty") or entry.get("partial_qty") or entry.get("total_qty")),
         "source_line_item_no": compact_text(entry.get("source_line_item_no")),
         "status": compact_text(entry.get("status")),
+        "due_date": compact_text(entry.get("due_date")),
+        "current_stage_no": entry.get("current_stage_no"),
         "current_stage_desc": compact_text(entry.get("current_stage_desc")),
+        "current_stage_status": compact_text(entry.get("current_stage_status")),
         "execution_status": compact_text(entry.get("execution_status")),
+        "selected_bom_code": compact_text(entry.get("selected_bom_code") or entry.get("selected_flow_code")),
+        "erp_bom_code": compact_text(entry.get("erp_bom_code") or entry.get("bom_code")),
+        "material_in": bool(entry.get("material_in")),
+        "op_cards": list(entry.get("op_cards") or []),
         "related_from": compact_text(related_from),
     }
 

@@ -7,8 +7,10 @@ from planning.assembly_bom_route import (
     bom_code_match_key,
     build_assembly_jobs,
     is_open_root,
+    summarize_assembly_line_jobs,
     summarize_sr_assembly_jobs,
 )
+from planning.assembly_bom_route import _related_root_jobs
 from planning.assembly_classify import (
     assembly_ps_type,
     hierarchy_from_bom_listing,
@@ -393,6 +395,55 @@ def test_include_history_merges_sr_jobs_from_bom_fallback(monkeypatch):
     assert [job["ps_id"] for job in jobs] == ["APS26-0053", "N26-[SR]22", "NPS26-0321"]
 
 
+def test_related_root_jobs_clone_nps_from_sr_donor():
+    jobs = [
+        {
+            "ps_id": "N26-[SR]22",
+            "part_no": "BB14-KS0188-05 REV 04",
+            "sales_order_no": "SO/1",
+            "children": [
+                {"part_no": "BB18-KS1209-02 REV 06", "is_subassembly": True, "qty": 1},
+                {"part_no": "BB18-KS1211-04 REV 00", "is_subassembly": True, "qty": 1},
+            ],
+        }
+    ]
+    related = _related_root_jobs(
+        jobs,
+        [
+            {
+                "ps_id": "NPS26-0321",
+                "part_no": "BB14-KS0188-05 REV 04",
+                "sales_order_no": "SO/2602442",
+                "status": "Outstanding",
+                "so_det_qty": 1,
+                "qty_shipped": 0,
+            },
+            {
+                "ps_id": "NPS26-0321-1",
+                "part_no": "BB18-KS1209-02 REV 06",
+                "status": "Outstanding",
+                "so_det_qty": 1,
+                "qty_shipped": 0,
+            },
+            {
+                "ps_id": "N26-[SR]22",
+                "part_no": "BB14-KS0188-05 REV 04",
+                "status": "Outstanding",
+                "so_det_qty": 1,
+                "qty_shipped": 0,
+            },
+        ],
+    )
+    assert len(related) == 1
+    assert related[0]["ps_id"] == "NPS26-0321"
+    assert related[0]["ps_type"] == "NPS"
+    assert related[0]["sales_order_no"] == "SO/2602442"
+    assert [child["part_no"] for child in related[0]["children"]] == [
+        "BB18-KS1209-02 REV 06",
+        "BB18-KS1211-04 REV 00",
+    ]
+
+
 def test_summarize_sr_assembly_jobs_keeps_nested_sr_only():
     items = summarize_sr_assembly_jobs(
         [
@@ -426,15 +477,69 @@ def test_summarize_sr_assembly_jobs_keeps_nested_sr_only():
     assert items[0]["children"][0]["description"] == "3 LEG LOCKING PROBE"
 
 
+def test_summarize_assembly_line_jobs_includes_nps_subassembly_fg(monkeypatch):
+    monkeypatch.setattr(assembly, "_overlay_assembly_line_notes", lambda items: items)
+    items = summarize_assembly_line_jobs(
+        [
+            {
+                "ps_id": "NPS26-0321",
+                "part_no": "BB14-KS0188-05 REV 04",
+                "sales_order_no": "SO/2602442",
+                "ps_type": "NPS",
+                "children": [
+                    {
+                        "part_no": "BB18-KS1209-02 REV 06",
+                        "description": "3 LEG LOCKING PROBE",
+                        "qty": 1,
+                        "process_sheet_no": "NPS26-0321-1",
+                        "selected_bom_code": "SMP-PROBE",
+                        "is_subassembly": True,
+                    },
+                    {"part_no": "RAW-PROBE", "is_subassembly": False},
+                ],
+            },
+            {
+                "ps_id": "APS26-0053",
+                "part_no": "KIT-001",
+                "children": [{"part_no": "CHILD-A", "is_subassembly": True, "qty": 2}],
+            },
+            {"ps_id": "NPS26-0001", "part_no": "LEAF-ONLY", "children": []},
+        ]
+    )
+    assert [item["ps_id"] for item in items] == ["NPS26-0321", "APS26-0053"]
+    nps = items[0]
+    assert nps["part_no"] == "BB14-KS0188-05 REV 04"
+    assert nps["ps_type"] == "NPS"
+    assert [child["part_no"] for child in nps["children"]] == ["BB18-KS1209-02 REV 06"]
+    assert nps["children"][0]["process_sheet_no"] == "NPS26-0321-1"
+    assert nps["children"][0]["selected_bom_code"] == "SMP-PROBE"
+
+
 def test_api_material_tracking_sr_assemblies(monkeypatch):
     monkeypatch.setattr(
         assembly,
         "fetch_assembly_jobs",
         lambda refresh=False, include_history=True: [
             {
+                "ps_id": "NPS26-0321",
+                "part_no": "BB14-KS0188-05 REV 04",
+                "sales_order_no": "SO/2602442",
+                "ps_type": "NPS",
+                "children": [
+                    {
+                        "part_no": "BB18-KS1209-02 REV 06",
+                        "description": "PROBE",
+                        "qty": 1,
+                        "process_sheet_no": "NPS26-0321-1",
+                        "is_subassembly": True,
+                    }
+                ],
+            },
+            {
                 "ps_id": "N26-[SR]22",
                 "part_no": "BB14-KS0188-05 REV 04",
                 "sales_order_no": "SO/1",
+                "ps_type": "SR",
                 "children": [
                     {
                         "part_no": "BB18-KS1209-02 REV 06",
@@ -443,9 +548,10 @@ def test_api_material_tracking_sr_assemblies(monkeypatch):
                         "is_subassembly": True,
                     }
                 ],
-            }
+            },
         ],
     )
+    monkeypatch.setattr(assembly, "_overlay_assembly_line_notes", lambda items: items)
     app = Flask(__name__, template_folder="../templates")
     app.register_blueprint(assembly_bom_bp)
 
@@ -454,6 +560,7 @@ def test_api_material_tracking_sr_assemblies(monkeypatch):
 
     assert response.status_code == 200
     assert payload["ok"] is True
-    assert payload["count"] == 1
-    assert payload["items"][0]["ps_id"] == "N26-[SR]22"
+    assert payload["count"] == 2
+    assert [item["ps_id"] for item in payload["items"]] == ["NPS26-0321", "N26-[SR]22"]
     assert payload["items"][0]["children"][0]["part_no"] == "BB18-KS1209-02 REV 06"
+    assert payload["items"][0]["children"][0]["process_sheet_no"] == "NPS26-0321-1"

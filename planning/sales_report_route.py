@@ -79,6 +79,14 @@ FROM public.so_order_rev_hst_hdr
 GROUP BY sales_order_no
 """
 
+# SO posted-date basis = first created, never the latest re-post on ost.posted_datetime.
+_SO_CREATED_HDR = (
+    "COALESCE(hdr.created_datetime, hdr.order_date::timestamptz, rev.first_posted_datetime)"
+)
+_SO_CREATED_VIEW = (
+    "COALESCE(v.created_datetime, v.order_date::timestamptz, rev.first_posted_datetime)"
+)
+
 _PS_SOURCING_JOIN = """
 LEFT JOIN public.mfg_arc_format_sourcing_v1_view src
        ON src.pk_key_sales_order_no = {so_col}
@@ -113,7 +121,8 @@ SELECT
     hdr.sales_person_code,
     hdr.sales_person_name,
     hdr.sbu_desc,
-    COALESCE(rev.first_posted_datetime, ost.posted_datetime) AS first_posted_datetime
+    hdr.created_datetime,
+    {_SO_CREATED_HDR} AS first_posted_datetime
 FROM public.so_order_ost_det det
 JOIN public.so_order_ost_hdr ost ON ost.sales_order_no = det.sales_order_no
 LEFT JOIN public.so_order_view hdr ON hdr.sales_order_no = det.sales_order_no
@@ -184,7 +193,7 @@ ORDER BY pp_voucher_no, pp_partial_no
 
 _OPEN_LINES_SQL = _SO_LINES_SQL
 
-_SHIPMENTS_SQL = """
+_SHIPMENTS_SQL = f"""
 SELECT
     d.source_voucher_no AS sales_order_no,
     regexp_replace(d.source_voucher_line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
@@ -207,9 +216,10 @@ SELECT
     v.sales_person_code,
     v.sales_person_name,
     v.sbu_desc,
-    COALESCE(rev.first_posted_datetime, hdr.posted_datetime) AS first_posted_datetime,
+    v.created_datetime,
+    {_SO_CREATED_VIEW} AS first_posted_datetime,
     (
-        COALESCE(rev.first_posted_datetime, hdr.posted_datetime)::date < %s::date
+        {_SO_CREATED_VIEW}::date < %s::date
     ) AS is_backlog_clear
 FROM public.lg_out_shm_detail d
 LEFT JOIN public.lg_out_shm_hst_hdr h
@@ -249,7 +259,8 @@ SELECT
     {_UNIT_HOME_SQL.strip()} AS unit_selling_price,
     ({_LINE_HOME_SQL.strip()}) AS line_amount,
     det.required_shipment_date::date AS due_date,
-    COALESCE(rev.first_posted_datetime, ost.posted_datetime) AS first_posted_datetime,
+    v.created_datetime,
+    {_SO_CREATED_VIEW} AS first_posted_datetime,
     v.customer_code,
     v.customer_name,
     v.sales_person_code,
@@ -265,7 +276,7 @@ LEFT JOIN ({_FIRST_POSTED_SQL.strip()}) rev
 WHERE det.sales_order_no LIKE 'SO/%%'
   AND COALESCE(det.qty, 0) > 0
   AND COALESCE(ost.status, '') <> 'V'
-  AND COALESCE(rev.first_posted_datetime, ost.posted_datetime)::date BETWEEN %s AND %s
+  AND {_SO_CREATED_VIEW}::date BETWEEN %s AND %s
 ORDER BY first_posted_datetime DESC, det.sales_order_no, line_item_no
 """
 
@@ -454,10 +465,12 @@ def _row_anchor_date(
     basis: str = DATE_BASIS_PO_DUE,
     for_shipment: bool = False,
 ) -> date | None:
-    """Date that owns the month bucket — PO due (default) or SO first-posted."""
+    """Date that owns the month bucket — PO due (default) or SO first created."""
     if basis == DATE_BASIS_POSTED:
         return (
-            _parse_date_value(row.get("first_posted_datetime"))
+            _parse_date_value(row.get("created_datetime"))
+            or _parse_date_value(row.get("so_created_datetime"))
+            or _parse_date_value(row.get("first_posted_datetime"))
             or _parse_date_value(row.get("so_posted_date"))
         )
     if for_shipment:

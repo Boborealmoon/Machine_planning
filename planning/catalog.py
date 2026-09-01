@@ -521,6 +521,135 @@ def _catalog_op_card_from_planner_op(op, entry):
     }
 
 
+def _catalog_entry_needs_child_bom_ops(entry) -> bool:
+    from planning.assembly_classify import is_component_child_ps
+
+    ps_id = compact_text(entry.get("source_ps_id") or entry.get("ps_id")).split("::")[0]
+    if not is_component_child_ps(ps_id):
+        return False
+    if int(entry.get("selected_bom_id") or 0) > 0:
+        sidebar = _catalog_ops_for_sidebar(entry.get("ops") or entry.get("op_cards") or [])
+        if sidebar:
+            return False
+        bom_code = compact_text(entry.get("selected_bom_code") or entry.get("selected_flow_code"))
+        if bom_code and bom_code.upper() != "PLACEHOLDER":
+            return False
+    return True
+
+
+def enrich_component_child_bom_ops(
+    con,
+    entries,
+    *,
+    only_ps_ids=None,
+    planned_qty_by_op=None,
+    queued_machines_by_op=None,
+    bom_stage_keys=None,
+    master_cache=None,
+):
+    """Seed machining op cards for COMP sheets from their ERP inventory BOM route."""
+    from planning.flows import (
+        ensure_planner_bom_from_bom_op_stage,
+        erp_domain_bom_stages_by_inventory,
+        preferred_machining_bom_code,
+        merge_flow_options,
+        planner_flow_options_for_inventory,
+    )
+
+    rows_in = list(entries or [])
+    if not entries or con is None:
+        return rows_in
+
+    wanted = None
+    if only_ps_ids:
+        wanted = {
+            compact_text(ps_id).split("::")[0].upper()
+            for ps_id in only_ps_ids
+            if compact_text(ps_id)
+        }
+
+    targets = []
+    for entry in rows_in:
+        ps_id = compact_text(entry.get("source_ps_id") or entry.get("ps_id")).split("::")[0]
+        if wanted and ps_id.upper() not in wanted:
+            continue
+        if not _catalog_entry_needs_child_bom_ops(entry):
+            continue
+        inventory_code = compact_text(
+            entry.get("inventory_code") or entry.get("part_no") or entry.get("part_name")
+        )
+        if not inventory_code:
+            continue
+        targets.append((entry, ps_id, inventory_code))
+    if not targets:
+        return rows_in
+
+    if planned_qty_by_op is None or queued_machines_by_op is None:
+        planned_qty_by_op, queued_machines_by_op = _catalog_lane_qty_maps(con)
+    if bom_stage_keys is None:
+        bom_stage_keys = _bom_op_stage_keys(con)
+    if master_cache is None:
+        from .cycle_time_service import MasterTimeCache
+
+        master_cache = MasterTimeCache.load(con)
+
+    stages_by_inv = erp_domain_bom_stages_by_inventory(
+        sorted({inv for _entry, _ps, inv in targets})
+    )
+    bom_id_cache: dict[tuple[str, str], int] = {}
+    for entry, ps_id, inventory_code in targets:
+        bom_code = preferred_machining_bom_code(stages_by_inv.get(inventory_code) or [])
+        if not bom_code:
+            continue
+        cache_key = (inventory_code.upper(), bom_code.upper())
+        if cache_key not in bom_id_cache:
+            bom_id_cache[cache_key] = int(
+                ensure_planner_bom_from_bom_op_stage(
+                    con,
+                    inventory_code,
+                    bom_code,
+                    is_default=True,
+                )
+                or 0
+            )
+        bom_id = bom_id_cache[cache_key]
+        if bom_id <= 0:
+            continue
+        entry["inventory_code"] = inventory_code
+        entry["erp_bom_code"] = compact_text(entry.get("erp_bom_code")) or bom_code
+        entry["selected_bom_id"] = bom_id
+        entry["selected_bom_code"] = bom_code
+        entry["selected_flow_code"] = bom_code
+        entry["flow_options"] = merge_flow_options(
+            planner_flow_options_for_inventory(con, inventory_code),
+            [bom_code],
+            erp_voucher_bom=bom_code,
+        )
+        attach_planner_bom_ops_to_catalog_entry(
+            con,
+            entry,
+            planned_qty_by_op=planned_qty_by_op,
+            queued_machines_by_op=queued_machines_by_op,
+            bom_stage_keys=bom_stage_keys,
+            master_cache=master_cache,
+        )
+        partial_no = int(entry.get("pp_partial_no") or 1)
+        try:
+            con.execute(
+                """
+                UPDATE planner_process_sheet
+                SET selected_bom_id = %s
+                WHERE source_ps_id = %s
+                  AND COALESCE(pp_partial_no, 1) = %s
+                  AND COALESCE(selected_bom_id, 0) = 0
+                """,
+                (bom_id, ps_id, partial_no),
+            )
+        except Exception:
+            pass
+    return rows_in
+
+
 def attach_planner_bom_ops_to_catalog_entry(
     con,
     entry,

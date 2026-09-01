@@ -15,9 +15,17 @@ function trialCatalogCombineSummary(source, target) {
 
 function trialEnrichOpCardPayload(el, sourcePayload) {
   if (!sourcePayload) return sourcePayload;
+  const nestedPsId = typeof trialCatalogResolvePsIdFromElement === 'function'
+    ? trialCatalogResolvePsIdFromElement(el, sourcePayload)
+    : '';
   const psWrap = el?.closest('.trial-catalog-ps, .trial-catalog-planned-ps');
-  const parentPsId = String(psWrap?.dataset?.psId || sourcePayload.ps_id || '').trim();
-  const elPartial = Number(el?.dataset?.ppPartialNo || sourcePayload.pp_partial_no || 0);
+  const parentPsId = String(nestedPsId || psWrap?.dataset?.psId || sourcePayload.ps_id || '').trim();
+  const elPartial = Number(
+    el?.dataset?.ppPartialNo
+    || el?.closest?.('.trial-catalog-line-item-group')?.dataset?.ppPartialNo
+    || sourcePayload.pp_partial_no
+    || 0,
+  );
   const psRow = typeof trialCatalogFindPsRow === 'function'
     ? trialCatalogFindPsRow(parentPsId, elPartial || sourcePayload.pp_partial_no || '')
     : null;

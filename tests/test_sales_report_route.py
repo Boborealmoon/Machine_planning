@@ -119,7 +119,6 @@ class SalesReportYtdGridTests(unittest.TestCase):
         self.assertAlmostEqual(float(aps.get("open_remaining_year") or 0), 400.0, places=2)
 
 
-class SalesReportPostedDateBasisTests(unittest.TestCase):
     def test_open_month_uses_posted_date_not_po_due(self):
         start_d = date(2026, 8, 1)
         end_d = date(2026, 8, 31)
@@ -154,6 +153,25 @@ class SalesReportPostedDateBasisTests(unittest.TestCase):
         self.assertEqual(posted_summary["due_this_month"]["remaining_value"], 200)
         self.assertEqual(posted_summary["overdue"]["remaining_value"], 100)
         self.assertEqual(posted_summary["outstanding_rest"]["remaining_value"], 300)
+
+    def test_posted_basis_uses_created_date_not_repost(self):
+        """Re-posted SOs stay in the month they were first created."""
+        line = {
+            "due_date": "2026-08-17",
+            "created_datetime": "2026-07-20 13:24:17",
+            "first_posted_datetime": "2026-09-01 08:42:24",
+            "remaining_qty": 6,
+            "remaining_value": 7069.20,
+        }
+        july = _build_open_month_summary(
+            [line], date(2026, 7, 1), date(2026, 7, 31), basis=DATE_BASIS_POSTED
+        )
+        sept = _build_open_month_summary(
+            [line], date(2026, 9, 1), date(2026, 9, 30), basis=DATE_BASIS_POSTED
+        )
+        self.assertAlmostEqual(july["due_this_month"]["remaining_value"], 7069.20, places=2)
+        self.assertAlmostEqual(sept["due_this_month"]["remaining_value"], 0.0, places=2)
+        self.assertAlmostEqual(sept["overdue"]["remaining_value"], 7069.20, places=2)
 
     def test_past_month_classifies_shipments_by_posted_date(self):
         start_d = date(2026, 2, 1)
@@ -355,6 +373,23 @@ class SalesReportSalespersonCustomerSqlTests(unittest.TestCase):
             self.assertIn("sales_person_name", sql)
             self.assertIn("customer_code", sql)
             self.assertIn("customer_name", sql)
+
+    def test_posted_date_sql_uses_created_datetime_not_latest_post(self):
+        from planning.sales_report_route import _BOOKED_SQL, _SHIPMENTS_SQL, _SO_LINES_SQL
+        from planning.staged_erp import STAGED_BOOKED_SQL, STAGED_SHIPMENTS_SQL, STAGED_SO_LINES_SQL
+
+        for sql in (
+            _SO_LINES_SQL,
+            _SHIPMENTS_SQL,
+            _BOOKED_SQL,
+            STAGED_SO_LINES_SQL,
+            STAGED_SHIPMENTS_SQL,
+            STAGED_BOOKED_SQL,
+        ):
+            self.assertIn("created_datetime", sql)
+            self.assertNotIn("ost.posted_datetime) AS first_posted_datetime", sql)
+            self.assertNotIn("det.posted_datetime) AS first_posted_datetime", sql)
+            self.assertNotIn("hdr.posted_datetime) AS first_posted_datetime", sql)
 
 
 if __name__ == "__main__":

@@ -1568,6 +1568,24 @@ def _load_pp_vouchers_board_erp_data(include_completed: bool, refresh: bool, sco
     return erp_data
 
 
+def _assembly_line_item_ps_ids_missing_ops(entries) -> list[str]:
+    from planning.utils import compact_text
+
+    missing: list[str] = []
+    seen: set[str] = set()
+    for entry in entries or []:
+        for item in entry.get("assembly_line_items") or []:
+            if item.get("op_cards"):
+                continue
+            ps_id = compact_text(item.get("ps_id") or item.get("process_sheet_no"))
+            key = ps_id.upper()
+            if not ps_id or key in seen:
+                continue
+            seen.add(key)
+            missing.append(ps_id)
+    return missing
+
+
 def _pp_voucher_search_haystack(entry: dict) -> str:
     parts = [
         entry.get("ps_id"),
@@ -1594,11 +1612,23 @@ def _pp_voucher_search_haystack(entry: dict) -> str:
         parts.extend(
             [
                 item.get("process_sheet_no"),
+                item.get("ps_id"),
                 item.get("part_no"),
                 item.get("part_desc"),
                 item.get("related_from"),
+                item.get("selected_bom_code"),
+                item.get("erp_bom_code"),
             ]
         )
+        for card in item.get("op_cards") or []:
+            parts.extend(
+                [
+                    card.get("operation_label"),
+                    card.get("operation_name"),
+                    card.get("source_op_no"),
+                    card.get("op_type"),
+                ]
+            )
     related_from = entry.get("assembly_line_items_related_from")
     if related_from:
         parts.append(related_from)
@@ -2321,6 +2351,18 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
                 master_cache=master_cache,
             )
 
+    from planning.catalog import enrich_component_child_bom_ops
+
+    if con is not None:
+        enrich_component_child_bom_ops(
+            con,
+            entries,
+            planned_qty_by_op=planned_qty_by_op,
+            queued_machines_by_op=queued_machines_by_op,
+            bom_stage_keys=bom_stage_keys,
+            master_cache=master_cache,
+        )
+
     return entries
 
 
@@ -2361,7 +2403,20 @@ def api_pp_vouchers_with_ops():
         from planning.assembly_classify import attach_catalog_assembly_line_items
 
         attach_catalog_assembly_line_items(merged)
-        return jsonify(_filter_pp_vouchers_by_search(merged, raw_search))
+        filtered = _filter_pp_vouchers_by_search(merged, raw_search)
+        child_ids = _assembly_line_item_ps_ids_missing_ops(filtered)
+        if child_ids:
+            try:
+                from planning.catalog import enrich_component_child_bom_ops
+                from planning.helpers import planner_db
+
+                with planner_db() as con:
+                    enrich_component_child_bom_ops(con, merged, only_ps_ids=child_ids)
+                attach_catalog_assembly_line_items(merged)
+                filtered = _filter_pp_vouchers_by_search(merged, raw_search)
+            except Exception as exc:
+                log.warning("sub-assembly BOM op enrich failed: %s", exc)
+        return jsonify(filtered)
 
     if refresh:
         _schedule_pp_vouchers_with_ops_refresh(scope, include_completed)

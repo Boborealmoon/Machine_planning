@@ -349,7 +349,8 @@ SELECT
     soh.sales_person_code,
     det.sales_person_name,
     det.sbu_desc,
-    COALESCE(det.first_posted_datetime, det.posted_datetime) AS first_posted_datetime
+    soh.created_datetime,
+    COALESCE(soh.created_datetime, det.order_date::timestamptz, det.first_posted_datetime) AS first_posted_datetime
 FROM public.so_order_line det
 LEFT JOIN public.part_desc pd
        ON pd.inventory_code = det.inventory_code
@@ -432,8 +433,9 @@ SELECT
     soh.sales_person_code,
     ship.sales_person_name,
     ship.sbu_desc,
-    ship.first_posted_datetime,
-    (ship.first_posted_datetime::date < %s::date) AS is_backlog_clear
+    soh.created_datetime,
+    COALESCE(soh.created_datetime, soh.order_date::timestamptz, ship.first_posted_datetime) AS first_posted_datetime,
+    (COALESCE(soh.created_datetime, soh.order_date::timestamptz, ship.first_posted_datetime)::date < %s::date) AS is_backlog_clear
 FROM public.lg_out_shipment_line ship
 LEFT JOIN public.so_order_header soh
        ON soh.sales_order_no = ship.sales_order_no
@@ -458,7 +460,8 @@ SELECT
     {_UNIT_HOME_STAGED.strip()} AS unit_selling_price,
     ({_LINE_HOME_STAGED.strip()}) AS line_amount,
     det.required_shipment_date::date AS due_date,
-    COALESCE(det.first_posted_datetime, det.posted_datetime) AS first_posted_datetime,
+    soh.created_datetime,
+    COALESCE(soh.created_datetime, det.order_date::timestamptz, det.first_posted_datetime) AS first_posted_datetime,
     det.customer_code,
     det.customer_name,
     soh.sales_person_code,
@@ -472,7 +475,7 @@ LEFT JOIN public.so_order_header soh
 WHERE det.sales_order_no LIKE 'SO/%%'
   AND COALESCE(det.qty, 0) > 0
   AND COALESCE(det.ost_status, '') <> 'V'
-  AND COALESCE(det.first_posted_datetime, det.posted_datetime)::date BETWEEN %s AND %s
+  AND COALESCE(soh.created_datetime, det.order_date::timestamptz, det.first_posted_datetime)::date BETWEEN %s AND %s
 ORDER BY first_posted_datetime DESC, det.sales_order_no, det.line_item_no
 """
 

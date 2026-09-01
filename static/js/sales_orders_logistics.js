@@ -112,7 +112,7 @@
     qcSource: '',
     qcBucket: 'ready_qc',
     qcLoaded: false,
-    srAssemblies: new Map(),
+    assemblyJobs: new Map(),
   };
 
   function isPrPoView(view) {
@@ -167,7 +167,16 @@
       </td>`;
   }
 
-  function renderQtyCell(pp, partial) {
+  function renderQtyCell(pp, partial, assemblyChild) {
+    if (assemblyChild) {
+      const bomQty = formatQty(assemblyChild.qty);
+      const soQty = soQtyDisplay(pp);
+      return `
+        <td class="sol-col-qty sol-qty-combo" title="BOM qty ${escapeHtml(bomQty)} · parent SO qty ${escapeHtml(soQty)}">
+          <span class="sol-qty-ptl">BOM</span>
+          <span class="sol-qty-frac">${escapeHtml(bomQty)}</span>
+        </td>`;
+    }
     const ptl = String(partialNo(partial));
     const soQty = soQtyDisplay(pp);
     const pQty = partialQtyDisplay(partial, pp);
@@ -178,47 +187,15 @@
       </td>`;
   }
 
-  function renderSubassemblies(job) {
-    const children = Array.isArray(job?.children) ? job.children : [];
-    if (!children.length) return '';
-    const items = children.map(child => {
-      const part = String(child.part_no || '').trim() || EM_DASH;
-      const desc = String(child.description || '').trim();
-      const qty = formatQty(child.qty);
-      const childPs = String(child.process_sheet_no || '').trim();
-      const bomBtn = part && part !== EM_DASH
-        ? `<button type="button" class="sol-materials-btn sol-subasm-bom"
-             data-action="open-material"
-             data-part-no="${escapeHtml(part)}"
-             data-bom-code=""
-             data-process-sheet="${escapeHtml(childPs)}"
-             title="BOM materials for ${escapeHtml(part)}">BOM</button>`
-        : '';
-      return `
-        <li class="sol-subasm-item">
-          <span class="sol-subasm-part sol-mono" title="${escapeHtml(part)}">${escapeHtml(part)}</span>
-          ${desc ? `<span class="sol-subasm-desc">${escapeHtml(desc)}</span>` : ''}
-          <span class="sol-subasm-qty">${escapeHtml(qty)}</span>
-          ${bomBtn}
-        </li>`;
-    }).join('');
-    return `
-      <div class="sol-subasm">
-        <span class="sol-subasm-label">${children.length} sub-asm</span>
-        <ul class="sol-subasm-list">${items}</ul>
-      </div>`;
-  }
-
-  function renderPartCell(pp, partial) {
-    const part = partNoForRow(pp, partial) || EM_DASH;
-    const desc = cellText(pp.description);
-    const assembly = assemblyForPp(pp);
-    const subHtml = assembly ? renderSubassemblies(assembly) : '';
+  function renderPartCell(pp, partial, assemblyChild) {
+    const part = partNoForRow(pp, partial, assemblyChild) || EM_DASH;
+    const desc = assemblyChild
+      ? cellText(assemblyChild.description)
+      : cellText(pp.description);
     return `
       <td class="sol-part" title="${escapeHtml(`${part} · ${desc}`)}">
         <span class="sol-part-no sol-mono">${escapeHtml(part)}</span>
         <span class="sol-part-desc">${escapeHtml(desc)}</span>
-        ${subHtml}
       </td>`;
   }
 
@@ -313,18 +290,189 @@
     return strippedVal.replace(/\s+/g, '').includes(strippedQ);
   }
 
+  function isComponentChildPs(value) {
+    const raw = psBaseKey(value);
+    return (raw.match(/-/g) || []).length >= 2 && /-\d+$/.test(raw);
+  }
+
+  function parentPsIdFromChild(value) {
+    const raw = psBaseKey(value);
+    return isComponentChildPs(raw) ? raw.replace(/-\d+$/, '') : '';
+  }
+
+  function psIdOf(leaf) {
+    return psBaseKey(leaf?.pp?.process_sheet_no || leaf?.pp?.pp_voucher_no);
+  }
+
   function assemblyForPp(pp) {
-    if (!state.srAssemblies.size) return null;
+    if (!state.assemblyJobs.size) return null;
     for (const key of [pp?.process_sheet_no, pp?.pp_voucher_no]) {
       const id = psBaseKey(key);
-      if (id && state.srAssemblies.has(id)) return state.srAssemblies.get(id);
+      if (!id) continue;
+      if (state.assemblyJobs.has(id)) return state.assemblyJobs.get(id);
+      const parent = parentPsIdFromChild(id);
+      if (parent && state.assemblyJobs.has(parent)) return state.assemblyJobs.get(parent);
     }
+    const part = partKeyOf(pp?.inventory_code);
+    if (part && state.assemblyJobs.has(`part:${part}`)) return state.assemblyJobs.get(`part:${part}`);
     return null;
   }
 
-  function assemblySearchBits(pp) {
+  function assemblyLineItems(pp) {
     const job = assemblyForPp(pp);
     if (!job) return [];
+    return (job.children || []).filter(child => String(child.part_no || '').trim());
+  }
+
+  function partKeyOf(value) {
+    return String(value || '').trim().toUpperCase();
+  }
+
+  function bomChildPp(parentPp, child) {
+    const childPs = String(child?.process_sheet_no || '').trim();
+    const parentPs = psBaseKey(parentPp?.process_sheet_no || parentPp?.pp_voucher_no);
+    if (!childPs || psBaseKey(childPs) === parentPs) return parentPp;
+    return {
+      ...parentPp,
+      pp_voucher_no: childPs,
+      process_sheet_no: childPs,
+      inventory_code: child.part_no || parentPp.inventory_code,
+      description: child.description || parentPp.description,
+      pp_qty: child.qty == null ? parentPp.pp_qty : child.qty,
+      bom_code: child.selected_bom_code || child.resolved_bom_code || '',
+      material_subcon: child.material_subcon || '',
+      mtl_part_order: child.mtl_part_order || '',
+      material_need_date: child.material_need_date || '',
+      material_delay: Boolean(child.material_delay),
+    };
+  }
+
+  function asBomChildRow(parentLeaf, child, index, count) {
+    return {
+      ...parentLeaf,
+      pp: bomChildPp(parentLeaf.pp, child),
+      partial: {
+        ...(parentLeaf.partial || {}),
+        inventory_code: child.part_no || parentLeaf.partial?.inventory_code,
+        partial_qty: child.qty == null ? parentLeaf.partial?.partial_qty : child.qty,
+      },
+      assemblyChild: child,
+      assemblyChildIndex: index,
+      assemblyChildCount: count,
+    };
+  }
+
+  function asNestedChildRow(parentLeaf, childLeaf, index, count) {
+    const part = String(childLeaf.partial?.inventory_code || childLeaf.pp?.inventory_code || '').trim();
+    return {
+      ...childLeaf,
+      assemblyChild: {
+        part_no: part,
+        description: childLeaf.pp?.description || '',
+        qty: childLeaf.partial?.partial_qty ?? childLeaf.pp?.pp_qty,
+        process_sheet_no: psDisplayForPartial(childLeaf.pp, childLeaf.partial),
+        selected_bom_code: childLeaf.pp?.bom_code || '',
+        is_subassembly: true,
+      },
+      assemblyChildIndex: index,
+      assemblyChildCount: count,
+    };
+  }
+
+  function explodeLeaf(leaf) {
+    const items = assemblyLineItems(leaf.pp);
+    if (!items.length) return [leaf];
+    const children = items.map((child, index) => asBomChildRow(leaf, child, index, items.length));
+    if (getPsType(leaf.pp) === 'SR') return children;
+    return [{ ...leaf, assemblyChildCount: items.length }, ...children];
+  }
+
+  function nestAndExplodeLeaves(leaves) {
+    const parentKeys = new Set();
+    leaves.forEach(leaf => {
+      const ps = psIdOf(leaf);
+      if (ps && !isComponentChildPs(ps)) parentKeys.add(ps);
+    });
+
+    const nestedByParent = new Map();
+    const roots = [];
+    const orphans = [];
+    leaves.forEach(leaf => {
+      const ps = psIdOf(leaf);
+      if (isComponentChildPs(ps)) {
+        const parent = parentPsIdFromChild(ps);
+        if (parent && parentKeys.has(parent)) {
+          const list = nestedByParent.get(parent) || [];
+          list.push(leaf);
+          nestedByParent.set(parent, list);
+          return;
+        }
+        orphans.push(leaf);
+        return;
+      }
+      roots.push(leaf);
+    });
+
+    const out = [];
+    roots.forEach(leaf => {
+      const ps = psIdOf(leaf);
+      const nested = (nestedByParent.get(ps) || []).slice().sort((a, b) => {
+        const psCmp = psIdOf(a).localeCompare(psIdOf(b), undefined, { numeric: true });
+        if (psCmp) return psCmp;
+        return partialNo(a.partial) - partialNo(b.partial);
+      });
+      const nestedParts = new Set(
+        nested
+          .map(childLeaf => partKeyOf(childLeaf.partial?.inventory_code || childLeaf.pp?.inventory_code))
+          .filter(Boolean)
+      );
+      const extraBom = assemblyLineItems(leaf.pp).filter(child => {
+        const part = partKeyOf(child.part_no);
+        return part && !nestedParts.has(part);
+      });
+      const childRows = [
+        ...nested.map((childLeaf, index) => asNestedChildRow(leaf, childLeaf, index, 0)),
+        ...extraBom.map((child, index) => asBomChildRow(leaf, child, nested.length + index, 0)),
+      ];
+      if (!childRows.length) {
+        explodeLeaf(leaf).forEach(row => out.push(row));
+        return;
+      }
+      const keepParent = getPsType(leaf.pp) !== 'SR';
+      childRows.forEach((row, index) => {
+        row.assemblyChildIndex = index;
+        row.assemblyChildCount = childRows.length;
+      });
+      if (keepParent) out.push({ ...leaf, assemblyChildCount: childRows.length });
+      out.push(...childRows);
+    });
+    orphans.forEach(leaf => out.push(leaf));
+    return out;
+  }
+
+  function patchAssemblyChildNotes(ppNo, patch) {
+    const key = psBaseKey(ppNo);
+    if (!key || !state.assemblyJobs.size) return;
+    state.assemblyJobs.forEach(job => {
+      (job.children || []).forEach(child => {
+        if (psBaseKey(child.process_sheet_no) !== key) return;
+        Object.assign(child, patch);
+      });
+    });
+  }
+
+  function assemblySearchBits(pp, assemblyChild) {
+    const job = assemblyForPp(pp);
+    if (!job) return [];
+    if (assemblyChild) {
+      return [
+        job.ps_id,
+        job.part_no,
+        assemblyChild.part_no,
+        assemblyChild.description,
+        assemblyChild.process_sheet_no,
+      ];
+    }
     const bits = [job.ps_id, job.part_no];
     (job.children || []).forEach(child => {
       bits.push(child.part_no, child.description, child.process_sheet_no);
@@ -436,7 +584,7 @@
     return leaves;
   }
 
-  function searchText(order, pp, partial) {
+  function searchText(order, pp, partial, assemblyChild) {
     const parts = [
       order.sales_order_no,
       order.customer_name,
@@ -452,7 +600,7 @@
       pp.material_need_date,
       formatDate(pp.material_need_date),
       materialSubconDisplay(pp.material_subcon),
-      ...assemblySearchBits(pp),
+      ...assemblySearchBits(pp, assemblyChild),
     ];
     return parts.map(v => String(v == null ? '' : v)).join(' ');
   }
@@ -498,7 +646,7 @@
   }
 
   function passesFilters(leaf) {
-    const { order, pp, partial } = leaf;
+    const { order, pp, partial, assemblyChild } = leaf;
     if (state.view === 'no-wo' && !ppIsNoWo(pp)) return false;
     if (state.view === 'sr') {
       if (getPsType(pp) !== 'SR') return false;
@@ -507,22 +655,27 @@
     }
     if (!passesMaterialFilter(pp)) return false;
     const q = String(state.search || '').trim();
-    if (q && !textMatchesQuery(searchText(order, pp, partial), q)) return false;
+    if (q && !textMatchesQuery(searchText(order, pp, partial, assemblyChild), q)) return false;
     return true;
   }
 
   function visibleLeaves() {
     const rows = [];
+    const leaves = [];
     state.active.forEach(order => {
-      leafRows(order).forEach(leaf => {
-        if (passesFilters(leaf)) rows.push(leaf);
-      });
+      leafRows(order).forEach(leaf => leaves.push(leaf));
+    });
+    nestAndExplodeLeaves(leaves).forEach(expanded => {
+      if (passesFilters(expanded)) rows.push(expanded);
     });
     rows.sort((a, b) => {
       const soCmp = String(a.order.sales_order_no || '').localeCompare(String(b.order.sales_order_no || ''));
       if (soCmp) return soCmp;
       const psCmp = psDisplayForPartial(a.pp, a.partial).localeCompare(psDisplayForPartial(b.pp, b.partial));
       if (psCmp) return psCmp;
+      const childA = Number.isInteger(a.assemblyChildIndex) ? a.assemblyChildIndex : -1;
+      const childB = Number.isInteger(b.assemblyChildIndex) ? b.assemblyChildIndex : -1;
+      if (childA !== childB) return childA - childB;
       return partialNo(a.partial) - partialNo(b.partial);
     });
     return rows;
@@ -679,7 +832,9 @@
     return Number.isFinite(id) && id > 0 ? id : 0;
   }
 
-  function partNoForRow(pp, partial) {
+  function partNoForRow(pp, partial, assemblyChild) {
+    const childPart = String(assemblyChild?.part_no || '').trim();
+    if (childPart) return childPart;
     return String(partial?.inventory_code || pp?.inventory_code || '').trim();
   }
 
@@ -706,11 +861,14 @@
     return `<td class="sol-stage so-stage-cell"><div class="so-stage-stack">${stageHtml}${pendingHtml}</div></td>`;
   }
 
-  function renderMaterialsCell(pp, partial) {
-    const partNo = partNoForRow(pp, partial);
+  function renderMaterialsCell(pp, partial, assemblyChild) {
+    const partNo = partNoForRow(pp, partial, assemblyChild);
     if (!partNo) return `<td class="sol-col-bom">${EM_DASH}</td>`;
-    const bomCode = String(pp?.bom_code || '').trim();
-    const processSheetNo = psDisplayForPartial(pp, partial);
+    const bomCode = assemblyChild
+      ? String(assemblyChild.selected_bom_code || assemblyChild.resolved_bom_code || '').trim()
+      : String(pp?.bom_code || '').trim();
+    const processSheetNo = String(assemblyChild?.process_sheet_no || '').trim()
+      || psDisplayForPartial(pp, partial);
     const title = `BOM materials and inventory for ${partNo}`;
     return `
       <td class="sol-col-bom">
@@ -855,6 +1013,26 @@
     });
   }
 
+  function syncNotesRows(ppNo, field, value) {
+    const body = document.getElementById('sol-table-body');
+    if (!body || !ppNo || !field) return;
+    const saved = String(value == null ? '' : value);
+    body.querySelectorAll(`.so-editable-input[data-field="${field}"]`).forEach(input => {
+      if (String(input.dataset.ppVoucherNo || '') !== ppNo) return;
+      input.value = saved;
+      input.dataset.lastSaved = saved;
+    });
+  }
+
+  function syncMaterialRows(ppNo, raw) {
+    const body = document.getElementById('sol-table-body');
+    if (!body || !ppNo) return;
+    body.querySelectorAll('.so-material-subcon-cell').forEach(cell => {
+      if (String(cell.dataset.ppVoucherNo || '') !== ppNo) return;
+      syncMaterialCell(cell, raw);
+    });
+  }
+
   function syncRequestDelayRows(requestId, flagged) {
     const body = document.getElementById('sol-table-body');
     const id = Number(requestId);
@@ -906,6 +1084,7 @@
     }
 
     if (found?.pp) found.pp.material_delay = flagged;
+    patchAssemblyChildNotes(ppNo, { material_delay: flagged });
     syncDelayRows(ppNo, flagged);
     state.saveInFlight.add(key);
     input.disabled = true;
@@ -917,11 +1096,13 @@
       });
       const saved = Boolean(data.material_delay);
       if (found?.pp) found.pp.material_delay = saved;
+      patchAssemblyChildNotes(ppNo, { material_delay: saved });
       syncDelayRows(ppNo, saved);
       setDelayStatus(input, 'saved', saved ? 'Flagged' : 'Cleared');
       window.setTimeout(() => setDelayStatus(input, '', ''), 1500);
     } catch (err) {
       if (found?.pp) found.pp.material_delay = previous;
+      patchAssemblyChildNotes(ppNo, { material_delay: previous });
       syncDelayRows(ppNo, previous);
       setDelayStatus(input, 'error', err.message || 'Save failed');
     } finally {
@@ -969,18 +1150,26 @@
   }
 
   function renderRow(leaf) {
-    const { order, pp, partial } = leaf;
+    const { order, pp, partial, assemblyChild, assemblyChildIndex, assemblyChildCount } = leaf;
     const psType = getPsType(pp);
-    const assembly = assemblyForPp(pp);
     const classes = [];
     if (ppIsNoWo(pp)) classes.push('is-no-wo');
     if (pp.material_delay) classes.push('is-material-delay');
     if (psType === 'SR') classes.push('is-sr');
-    if (assembly) classes.push('has-subasm');
+    if (assemblyChild) {
+      classes.push('is-sr-line');
+      if (assemblyChildIndex === 0) classes.push('is-sr-line-first');
+    } else if (Number(assemblyChildCount) > 0) {
+      classes.push('is-asm-parent');
+    }
     const rowCls = classes.join(' ');
-    const subBadge = assembly
-      ? `<span class="sol-subasm-pill" title="Nested sub-assembly parts on this [SR] job">${escapeHtml(String((assembly.children || []).length))} sub-asm</span>`
-      : '';
+    const lineNo = Number(assemblyChildIndex) + 1;
+    const lineCount = Number(assemblyChildCount) || 0;
+    const subBadge = assemblyChild
+      ? `<span class="sol-subasm-pill" title="Sub-assembly finished good ${lineNo} of ${lineCount} on this assembly">${escapeHtml(String(lineNo))}/${escapeHtml(String(lineCount))}</span>`
+      : (Number(assemblyChildCount) > 0
+        ? `<span class="sol-subasm-pill" title="${escapeHtml(String(assemblyChildCount))} sub-assembly finished goods tracked as line items">${escapeHtml(String(assemblyChildCount))} FG</span>`
+        : '');
     return `
       <tr class="${rowCls}">
         ${renderDelayCell(pp)}
@@ -988,12 +1177,12 @@
         <td class="sol-mono sol-col-ps">
           <div class="sol-ps-line">${typeTagHtml(psType)}<span>${escapeHtml(psDisplayForPartial(pp, partial))}</span>${subBadge}</div>
         </td>
-        ${renderQtyCell(pp, partial)}
+        ${renderQtyCell(pp, partial, assemblyChild)}
         ${renderStageCell(pp, partial)}
-        ${renderPartCell(pp, partial)}
+        ${renderPartCell(pp, partial, assemblyChild)}
         <td class="sol-date sol-col-due">${escapeHtml(formatDate(pp.due_date))}</td>
         ${renderNeedDateCell(pp)}
-        ${renderMaterialsCell(pp, partial)}
+        ${renderMaterialsCell(pp, partial, assemblyChild)}
         ${renderMaterialCell(pp)}
         ${renderNotesCell(pp)}
       </tr>
@@ -1258,7 +1447,7 @@
         material_subcon: savedValue,
       });
       const saved = String(data.material_subcon || '').trim();
-      syncMaterialCell(cell, saved);
+      syncMaterialRows(ppNo, saved);
       const found = findPp(ppNo);
       if (found.pp) {
         found.pp.material_subcon = saved;
@@ -1267,12 +1456,18 @@
           syncDelayRows(ppNo, found.pp.material_delay);
         }
       }
+      patchAssemblyChildNotes(ppNo, {
+        material_subcon: saved,
+        ...(Object.prototype.hasOwnProperty.call(data, 'material_delay')
+          ? { material_delay: Boolean(data.material_delay) }
+          : {}),
+      });
       setSaveStatus(cell, 'saved', 'Saved');
       window.setTimeout(() => {
         if (String(cell.dataset.lastSaved || '').trim() === saved) setSaveStatus(cell, '', '');
       }, 1500);
     } catch (err) {
-      syncMaterialCell(cell, lastSaved);
+      syncMaterialRows(ppNo, lastSaved);
       setSaveStatus(cell, 'error', err.message || 'Save failed');
     } finally {
       state.saveInFlight.delete(key);
@@ -1320,11 +1515,11 @@
       const saved = field === 'material_need_date'
         ? isoDateValue(data.material_need_date)
         : String(data[field] || '').trim();
-      control.value = saved;
-      control.dataset.lastSaved = saved;
       const found = findPp(ppNo);
       if (found.pp) found.pp[field] = saved;
+      patchAssemblyChildNotes(ppNo, { [field]: saved });
       if (field === 'material_need_date') syncNeedDateRows(ppNo, saved);
+      else syncNotesRows(ppNo, field, saved);
       setSaveStatus(control, 'saved', 'Saved');
       window.setTimeout(() => {
         if (control.dataset.lastSaved === saved) setSaveStatus(control, '', '');
@@ -1548,7 +1743,7 @@
             ? 'Search shipment, PO, GRN, supplier, item...'
             : state.view === 'sr'
               ? 'Search [SR] sheet, SO, part, sub-assembly...'
-              : 'Search SO, PP, part, customer...';
+              : 'Search SO, PP, part, sub-assembly...';
     }
     if (legend) {
       legend.hidden = prPo;
@@ -1575,7 +1770,7 @@
           Click <strong>Flag</strong> for material arrival delay &middot;
           Click <strong>BOM</strong> for materials + inventory enquiry &middot;
           <span class="sol-legend-item sol-legend-item--sr">[SR]</span> special process sheets &middot;
-          Sub-asm nested parts on that job
+          Assembly sub-assembly finished goods appear as separate lines
         `;
       }
     }
@@ -2184,17 +2379,18 @@
     }
   }
 
-  function indexSrAssemblies(items) {
+  function indexAssemblyJobs(items) {
     const map = new Map();
     (items || []).forEach(item => {
       const psId = psBaseKey(item?.ps_id);
-      if (!psId) return;
-      map.set(psId, item);
+      if (psId) map.set(psId, item);
+      const part = partKeyOf(item?.part_no);
+      if (part && !map.has(`part:${part}`)) map.set(`part:${part}`, item);
     });
     return map;
   }
 
-  async function loadSrAssemblies({ refresh = false } = {}) {
+  async function loadAssemblyJobs({ refresh = false } = {}) {
     try {
       const params = new URLSearchParams();
       if (refresh) params.set('refresh', '1');
@@ -2204,10 +2400,10 @@
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) return;
-      state.srAssemblies = indexSrAssemblies(payload.items);
+      state.assemblyJobs = indexAssemblyJobs(payload.items);
       if (isPsView()) render();
     } catch (_err) {
-      state.srAssemblies = state.srAssemblies || new Map();
+      state.assemblyJobs = state.assemblyJobs || new Map();
     }
   }
 
@@ -2246,7 +2442,7 @@
       state.salesOrdersLoaded = true;
       if (state.pendingLoad === 'ps') state.pendingLoad = '';
       if (isPsView()) render();
-      loadSrAssemblies({ refresh });
+      loadAssemblyJobs({ refresh });
     } catch (err) {
       if (err && err.name === 'AbortError') {
         if (state.loadControllers.sales === ac && isPsView()) {

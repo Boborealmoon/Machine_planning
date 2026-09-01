@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
@@ -16,6 +17,7 @@ from .assembly_classify import (
     build_assembly_jobs,
     classify_assembly_family,
     hierarchy_from_bom_listing,
+    is_component_child_ps,
     is_open_root,
     is_sr_process_sheet,
     resolve_child_bom,
@@ -46,6 +48,7 @@ __all__ = [
     "classify_assembly_job",
     "fetch_assembly_jobs",
     "is_open_root",
+    "summarize_assembly_line_jobs",
     "summarize_sr_assembly_jobs",
 ]
 
@@ -330,6 +333,82 @@ def _jobs_from_bom_listings(roots: list[dict[str, Any]]) -> list[dict[str, Any]]
     return build_assembly_jobs(roots, hierarchy, bom_rows, require_subassembly_children=True)
 
 
+_RELATED_ROOT_RANK = {"APS": 0, "NPS": 1, "SR": 2}
+
+
+def _related_root_jobs(jobs: list[dict[str, Any]], all_roots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Clone nested sub-assembly children onto APS/NPS roots that share the same FG part.
+
+    [SR] jobs often carry the BOM children while the matching NPS/APS voucher
+    (e.g. ``NPS26-0321`` for ``BB14-KS0188-05``) is the Material Tracking row.
+    """
+    classified = {
+        compact_text(job.get("ps_id")).upper()
+        for job in jobs
+        if compact_text(job.get("ps_id"))
+    }
+    donors: dict[str, dict[str, Any]] = {}
+    for job in jobs:
+        part = compact_text(job.get("part_no")).upper()
+        children = job.get("children") or []
+        if not part or not children:
+            continue
+        current = donors.get(part)
+        job_key = (
+            _RELATED_ROOT_RANK.get(assembly_ps_type(job.get("ps_id")), 9),
+            -len(children),
+        )
+        current_key = (
+            _RELATED_ROOT_RANK.get(assembly_ps_type((current or {}).get("ps_id")), 9),
+            -len((current or {}).get("children") or []),
+        )
+        if current is None or job_key < current_key:
+            donors[part] = job
+
+    out: list[dict[str, Any]] = []
+    for root in all_roots or []:
+        ps_id = compact_text(root.get("ps_id"))
+        if not ps_id or is_component_child_ps(ps_id) or ps_id.upper() in classified:
+            continue
+        part = compact_text(root.get("part_no")).upper()
+        donor = donors.get(part)
+        if not donor:
+            continue
+        cloned = deepcopy(donor)
+        cloned["ps_id"] = ps_id
+        cloned["pp_partial_no"] = as_int(root.get("pp_partial_no")) or 1
+        cloned["part_no"] = compact_text(root.get("part_no")) or compact_text(donor.get("part_no"))
+        cloned["part_desc"] = compact_text(root.get("part_desc")) or compact_text(donor.get("part_desc"))
+        cloned["sales_order_no"] = compact_text(root.get("sales_order_no")) or compact_text(
+            donor.get("sales_order_no")
+        )
+        cloned["due_date"] = compact_text(root.get("due_date")) or compact_text(donor.get("due_date"))
+        cloned["status"] = compact_text(root.get("status")) or compact_text(donor.get("status"))
+        cloned["ps_type"] = assembly_ps_type(ps_id)
+        cloned["is_open"] = is_open_root(root)
+        cloned["is_history"] = not cloned["is_open"]
+        out.append(cloned)
+        classified.add(ps_id.upper())
+    return out
+
+
+def _attach_related_assembly_roots(
+    jobs: list[dict[str, Any]],
+    all_roots: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if not jobs:
+        return jobs
+    try:
+        roots = all_roots if all_roots is not None else _load_open_roots()
+        related = _related_root_jobs(jobs, roots)
+    except Exception:
+        logger.exception("assembly related-root overlay failed")
+        return jobs
+    if not related:
+        return jobs
+    return _merge_open_and_historical_jobs(jobs, related)
+
+
 def _fetch_assembly_jobs_uncached() -> list[dict[str, Any]]:
     all_roots = _load_open_roots()
     ps_ids = sorted({compact_text(row.get("ps_id")) for row in all_roots if compact_text(row.get("ps_id"))})
@@ -374,7 +453,7 @@ def _fetch_assembly_jobs_uncached() -> list[dict[str, Any]]:
             jobs = _merge_open_and_historical_jobs(jobs, _jobs_from_bom_listings(leftover_srs))
         except Exception:
             logger.exception("assembly BOM open SR listing fallback failed")
-    return jobs
+    return _attach_related_assembly_roots(jobs, all_roots)
 
 
 def _fetch_historical_assembly_jobs_uncached() -> list[dict[str, Any]]:
@@ -501,6 +580,7 @@ def fetch_assembly_jobs(
         jobs = _merge_open_and_historical_jobs(open_jobs, [*historical_jobs, *sr_jobs])
     else:
         jobs = open_jobs
+    jobs = _attach_related_assembly_roots(jobs)
     _cache[include_history] = (now, jobs)
     return jobs
 
@@ -510,28 +590,124 @@ def assembly_bom_page():
     return render_template("assembly_boms.html", active="assembly_boms")
 
 
-def summarize_sr_assembly_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Slim [SR] jobs that have nested sub-assembly parts (e.g. ``N26-[SR]22``)."""
+def _ps_base_id(ps_id: Any) -> str:
+    return compact_text(ps_id).split("::")[0].upper()
+
+
+def _serialize_need_date(value: Any) -> str:
+    text = compact_text(value)
+    return text[:10] if len(text) >= 10 else ""
+
+
+def _load_assembly_line_notes(process_sheet_nos: list[str]) -> dict[str, dict[str, Any]]:
+    """Material Tracking overlays keyed by child COMP process sheet."""
+    bases: list[str] = []
+    seen: set[str] = set()
+    for raw in process_sheet_nos:
+        base = _ps_base_id(raw)
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        bases.append(base)
+    default = {
+        "material_subcon": "",
+        "mtl_part_order": "",
+        "material_need_date": "",
+        "material_delay": False,
+    }
+    if not bases:
+        return {}
+    try:
+        from .sales_orders_route import _ensure_notes_table
+
+        with planner_db() as con:
+            _ensure_notes_table(con)
+            fetched = rows(
+                con.execute(
+                    """
+                    SELECT pp_voucher_no, material_subcon, mtl_part_order,
+                           material_need_date, material_delay
+                    FROM planner_so_pp_notes
+                    WHERE pp_voucher_no = ANY(%s)
+                    """,
+                    (bases,),
+                )
+            )
+    except Exception as exc:
+        logger.warning("assembly line-item logistics notes overlay skipped: %s", exc)
+        return {base: dict(default) for base in bases}
+
+    out = {base: dict(default) for base in bases}
+    for row in fetched:
+        key = _ps_base_id(row.get("pp_voucher_no"))
+        if key not in out:
+            continue
+        out[key] = {
+            "material_subcon": compact_text(row.get("material_subcon")),
+            "mtl_part_order": compact_text(row.get("mtl_part_order")),
+            "material_need_date": _serialize_need_date(row.get("material_need_date")),
+            "material_delay": bool(row.get("material_delay")),
+        }
+    return out
+
+
+def _overlay_assembly_line_notes(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    child_ids = [
+        compact_text(child.get("process_sheet_no"))
+        for item in items
+        for child in (item.get("children") or [])
+        if compact_text(child.get("process_sheet_no"))
+    ]
+    notes = _load_assembly_line_notes(child_ids)
+    if not notes:
+        return items
+    for item in items:
+        for child in item.get("children") or []:
+            ps_no = compact_text(child.get("process_sheet_no"))
+            overlay = notes.get(_ps_base_id(ps_no), {})
+            child["material_subcon"] = compact_text(overlay.get("material_subcon"))
+            child["mtl_part_order"] = compact_text(overlay.get("mtl_part_order"))
+            child["material_need_date"] = compact_text(overlay.get("material_need_date"))
+            child["material_delay"] = bool(overlay.get("material_delay"))
+    return items
+
+
+def _assembly_line_child(child: dict[str, Any]) -> dict[str, Any] | None:
+    if not child.get("is_subassembly"):
+        return None
+    part_no = compact_text(child.get("part_no"))
+    if not part_no:
+        return None
+    return {
+        "part_no": part_no,
+        "description": compact_text(child.get("description")),
+        "qty": as_float(child.get("qty")),
+        "process_sheet_no": compact_text(child.get("process_sheet_no")),
+        "selected_bom_code": compact_text(child.get("selected_bom_code")),
+        "resolved_bom_code": compact_text(child.get("resolved_bom_code")),
+        "is_subassembly": True,
+        "material_subcon": "",
+        "mtl_part_order": "",
+        "material_need_date": "",
+        "material_delay": False,
+    }
+
+
+def summarize_assembly_line_jobs(
+    jobs: list[dict[str, Any]],
+    *,
+    sr_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Slim APS/NPS/[SR] jobs that have nested sub-assembly finished goods."""
     out: list[dict[str, Any]] = []
     for job in jobs or []:
-        if not is_sr_process_sheet(job.get("ps_id")):
+        if sr_only and not is_sr_process_sheet(job.get("ps_id")):
             continue
-        children: list[dict[str, Any]] = []
-        for child in job.get("children") or []:
-            if not child.get("is_subassembly"):
-                continue
-            part_no = compact_text(child.get("part_no"))
-            if not part_no:
-                continue
-            children.append(
-                {
-                    "part_no": part_no,
-                    "description": compact_text(child.get("description")),
-                    "qty": as_float(child.get("qty")),
-                    "process_sheet_no": compact_text(child.get("process_sheet_no")),
-                    "is_subassembly": True,
-                }
-            )
+        children = [
+            slim
+            for child in (job.get("children") or [])
+            if (slim := _assembly_line_child(child))
+        ]
         if not children:
             continue
         out.append(
@@ -539,10 +715,16 @@ def summarize_sr_assembly_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any
                 "ps_id": compact_text(job.get("ps_id")),
                 "part_no": compact_text(job.get("part_no")),
                 "sales_order_no": compact_text(job.get("sales_order_no")),
+                "ps_type": compact_text(job.get("ps_type")) or assembly_ps_type(job.get("ps_id")),
                 "children": children,
             }
         )
-    return out
+    return _overlay_assembly_line_notes(out)
+
+
+def summarize_sr_assembly_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Slim [SR] jobs that have nested sub-assembly parts (e.g. ``N26-[SR]22``)."""
+    return summarize_assembly_line_jobs(jobs, sr_only=True)
 
 
 @assembly_bom_bp.get("/api/material-tracking/sr-assemblies")
@@ -550,7 +732,7 @@ def api_material_tracking_sr_assemblies():
     refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
     try:
         jobs = fetch_assembly_jobs(refresh=refresh, include_history=True)
-        items = summarize_sr_assembly_jobs(jobs)
+        items = summarize_assembly_line_jobs(jobs)
         return jsonify(
             {
                 "ok": True,
@@ -564,7 +746,7 @@ def api_material_tracking_sr_assemblies():
         friendly = planner_db_connect_error(exc)
         if friendly:
             return jsonify({"ok": False, "error": friendly}), 503
-        logger.exception("material tracking SR assembly overlay failed")
+        logger.exception("material tracking assembly overlay failed")
         return jsonify({"ok": False, "error": str(exc)}), 502
 
 

@@ -282,15 +282,19 @@ function salesReportCompactField(value) {
   return String(value || '').trim();
 }
 
+function salesReportNormField(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
 function salesReportSalespersonKey(row) {
-  return salesReportCompactField(row?.sales_person_code)
-    || salesReportCompactField(row?.sales_person_name)
+  return salesReportNormField(row?.sales_person_name)
+    || salesReportNormField(row?.sales_person_code)
     || SALES_REPORT_BLANK_KEY;
 }
 
 function salesReportCustomerKey(row) {
-  return salesReportCompactField(row?.customer_code)
-    || salesReportCompactField(row?.customer_name)
+  return salesReportNormField(row?.customer_code)
+    || salesReportNormField(row?.customer_name)
     || SALES_REPORT_BLANK_KEY;
 }
 
@@ -319,14 +323,31 @@ function salesReportFormatCustomer(_value, row) {
   return name || code || '—';
 }
 
+function salesReportPassesEntitySelection(row, selected, keyFn, fields) {
+  if (!selected.size) return true;
+  if (selected.has(keyFn(row))) return true;
+  return fields.some(field => {
+    const token = salesReportNormField(row?.[field]);
+    return token && selected.has(token);
+  });
+}
+
 function salesReportPassesSalespersonFilter(row) {
-  if (!salesReportState.salespersons.size) return true;
-  return salesReportState.salespersons.has(salesReportSalespersonKey(row));
+  return salesReportPassesEntitySelection(
+    row,
+    salesReportState.salespersons,
+    salesReportSalespersonKey,
+    ['sales_person_code', 'sales_person_name'],
+  );
 }
 
 function salesReportPassesCustomerFilter(row) {
-  if (!salesReportState.customers.size) return true;
-  return salesReportState.customers.has(salesReportCustomerKey(row));
+  return salesReportPassesEntitySelection(
+    row,
+    salesReportState.customers,
+    salesReportCustomerKey,
+    ['customer_code', 'customer_name'],
+  );
 }
 
 function salesReportEntityFiltersActive() {
@@ -423,6 +444,7 @@ function salesReportColFilterMarkup(options, selected, allLabel, plural, query) 
 function salesReportFillColFilterPanels(entity, options, selected, allLabel, plural) {
   const query = salesReportState.colFilterQuery[entity] || '';
   const signature = options.map(opt => opt.key).join('\u0001');
+  const btnLabel = `${salesReportEntityButtonLabel(selected, options, 'All', plural)} ▾`;
   document.querySelectorAll(`.sales-report-col-filter-panel[data-entity="${entity}"]`).forEach(panel => {
     if (panel.dataset.signature === signature) {
       panel.querySelectorAll('input[type="checkbox"]').forEach(input => {
@@ -431,15 +453,16 @@ function salesReportFillColFilterPanels(entity, options, selected, allLabel, plu
       const search = panel.querySelector('.sales-report-filter-search');
       if (search && search.value !== query) search.value = query;
       salesReportFilterPanelItems(panel, query);
-      return;
+    } else {
+      panel.dataset.signature = signature;
+      panel.innerHTML = salesReportColFilterMarkup(options, selected, allLabel, plural, query);
+      if (query) salesReportFilterPanelItems(panel, query);
     }
-    panel.dataset.signature = signature;
-    panel.innerHTML = salesReportColFilterMarkup(options, selected, allLabel, plural, query);
-    if (query) salesReportFilterPanelItems(panel, query);
   });
   document.querySelectorAll(`.sales-report-th-filter[data-entity="${entity}"]`).forEach(btn => {
     const count = selected.size;
     btn.classList.toggle('is-active', count > 0);
+    btn.textContent = btnLabel;
     btn.title = count
       ? `Filter ${plural} · ${count} selected`
       : `Filter ${plural}`;
@@ -481,8 +504,10 @@ function salesReportEntitySourceRows() {
   const data = salesReportState.data;
   if (salesReportState.focusMonth && data) {
     return [
-      ...(data.allocated_open_lines || data.open_lines || []),
-      ...(data.shipments_attributed || data.shipped || []),
+      ...(data.backlog || []),
+      ...(data.on_hand || []),
+      ...(data.early_delivered || []),
+      ...(data.shipped || []),
       ...(data.booked || []),
     ].filter(salesReportPassesPsFilter);
   }
@@ -668,7 +693,9 @@ function salesReportNoPsTypesSelected() {
 
 function salesReportAnchorDate(row, options = {}) {
   if (salesReportIsPostedBasis()) {
-    return salesReportParseDate(row?.first_posted_datetime || row?.so_posted_date);
+    return salesReportParseDate(
+      row?.created_datetime || row?.first_posted_datetime || row?.so_posted_date,
+    );
   }
   if (options.shipment) {
     return salesReportParseDate(row?.so_due_date) || salesReportParseDate(row?.due_date);
@@ -1409,7 +1436,7 @@ function salesReportRenderSummary(summary) {
       openCards.push(
         { title: 'Onhand', tone: 'on-hand', value: summary.on_hand?.remaining_value, sub: `${salesReportFormatQty(summary.on_hand?.remaining_qty)} pcs · ${summary.on_hand?.line_count || 0} lines`, hint: salesReportHidesBacklog() ? 'Unfinished open $ · SO posted this month' : 'Unfinished open $ · PO due this month' },
         { title: 'Shipped this month', tone: 'shipped', value: summary.shipped?.total_home_amt, sub: `${summary.shipped?.line_count || 0} lines`, hint: 'DO/shipment dated in month' },
-        { title: 'Booked this month', tone: 'booked', value: summary.booked?.line_amount, sub: `${summary.booked?.line_count || 0} lines`, hint: 'First-posted in month' },
+        { title: 'Booked this month', tone: 'booked', value: summary.booked?.line_amount, sub: `${summary.booked?.line_count || 0} lines`, hint: 'Created in month' },
       );
       return openCards;
     })();
@@ -1769,6 +1796,10 @@ function salesReportFormatCurrency(value) {
   return text || '—';
 }
 
+function salesReportFormatCreated(value, row) {
+  return salesReportFormatDt(row?.created_datetime || value);
+}
+
 function salesReportOpenLineColumns() {
   return [
     { id: 'sales_order_no', label: 'Sales order', sort: 'text' },
@@ -1779,7 +1810,7 @@ function salesReportOpenLineColumns() {
     { id: 'customer_name', label: 'Customer', fmt: salesReportFormatCustomer, sort: 'text', filter: 'customer' },
     { id: 'sales_person_name', label: 'Salesperson', fmt: salesReportFormatSalesperson, sort: 'text', filter: 'salesperson' },
     { id: 'due_date', label: 'Due', fmt: salesReportFormatDate, sort: 'date' },
-    { id: 'first_posted_datetime', label: 'First post', fmt: salesReportFormatDt, sort: 'date' },
+    { id: 'first_posted_datetime', label: 'Created', fmt: salesReportFormatCreated, sort: 'date' },
     { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency, sort: 'text' },
     { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney, sort: 'num' },
     { id: 'exch_rate', label: 'Exch', fmt: salesReportFormatExchRate, sort: 'num' },
@@ -1798,7 +1829,7 @@ function salesReportShippedLineColumns() {
     { id: 'customer_name', label: 'Customer', fmt: salesReportFormatCustomer, sort: 'text', filter: 'customer' },
     { id: 'sales_person_name', label: 'Salesperson', fmt: salesReportFormatSalesperson, sort: 'text', filter: 'salesperson' },
     { id: 'due_date', label: 'Due', fmt: salesReportFormatDate, sort: 'date' },
-    { id: 'first_posted_datetime', label: 'First post', fmt: salesReportFormatDt, sort: 'date' },
+    { id: 'first_posted_datetime', label: 'Created', fmt: salesReportFormatCreated, sort: 'date' },
     { id: 'shipment_datetime', label: 'Shipped', fmt: salesReportFormatDt, sort: 'date' },
     { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency, sort: 'text' },
     { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney, sort: 'num' },
@@ -1818,7 +1849,7 @@ function salesReportBookedLineColumns() {
     { id: 'customer_name', label: 'Customer', fmt: salesReportFormatCustomer, sort: 'text', filter: 'customer' },
     { id: 'sales_person_name', label: 'Salesperson', fmt: salesReportFormatSalesperson, sort: 'text', filter: 'salesperson' },
     { id: 'due_date', label: 'Due', fmt: salesReportFormatDate, sort: 'date' },
-    { id: 'first_posted_datetime', label: 'First post', fmt: salesReportFormatDt, sort: 'date' },
+    { id: 'first_posted_datetime', label: 'Created', fmt: salesReportFormatCreated, sort: 'date' },
     { id: 'order_currency_code', label: 'Curr', fmt: salesReportFormatCurrency, sort: 'text' },
     { id: 'unit_selling_price_fc', label: 'FC U/Price', fmt: salesReportFormatMoney, sort: 'num' },
     { id: 'exch_rate', label: 'Exch', fmt: salesReportFormatExchRate, sort: 'num' },
@@ -1873,7 +1904,7 @@ function salesReportDetailSectionDefs(data) {
   openSections.push(
     { id: 'on_hand', title: 'Onhand', hint: salesReportHidesBacklog() ? 'Unfinished open $ · SO posted in this month' : 'Unfinished open $ · PO due in this month', rows: data.on_hand || [] },
     { id: 'shipped', title: 'Shipped this month', hint: 'DO/shipment dated this month', rows: data.shipped || [] },
-    { id: 'booked', title: 'Booked this month', hint: 'SO lines first-posted this month', rows: data.booked || [] },
+    { id: 'booked', title: 'Booked this month', hint: 'SO lines created this month', rows: data.booked || [] },
   );
   return openSections;
 }
@@ -1886,7 +1917,10 @@ function salesReportSortValue(row, col) {
     return Number.isFinite(num) ? num : null;
   }
   if (col.sort === 'date') {
-    const parsed = salesReportParseDate(row[col.id]);
+    const raw = col.id === 'first_posted_datetime'
+      ? (row.created_datetime || row[col.id])
+      : row[col.id];
+    const parsed = salesReportParseDate(raw);
     if (parsed) return parsed.getTime();
     const ms = Date.parse(String(row[col.id] || ''));
     return Number.isFinite(ms) ? ms : null;
@@ -1934,10 +1968,6 @@ function salesReportToggleSort(sectionId, colId) {
   }
 }
 
-function salesReportFilterIconSvg() {
-  return `<svg class="sales-report-th-filter-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3h12L9.5 8.6V13l-3-1.5V8.6L2 3z" fill="currentColor"/></svg>`;
-}
-
 function salesReportHeaderCellHtml(col, sectionId) {
   const sort = salesReportState.sortBySection[sectionId];
   const sorted = Boolean(sort && sort.id === col.id);
@@ -1949,9 +1979,13 @@ function salesReportHeaderCellHtml(col, sectionId) {
   let filterHtml = '';
   if (col.filter) {
     const selected = col.filter === 'salesperson' ? salesReportState.salespersons : salesReportState.customers;
+    const options = col.filter === 'salesperson' ? salesReportState.salespersonOptions : salesReportState.customerOptions;
+    const allLabel = 'All';
+    const plural = col.filter === 'salesperson' ? 'salespeople' : 'customers';
     const active = selected.size ? ' is-active' : '';
+    const btnLabel = `${salesReportEntityButtonLabel(selected, options, allLabel, plural)} ▾`;
     filterHtml = `<div class="filter-dropdown sales-report-col-filter">
-      <button type="button" class="sales-report-th-filter${active}" data-action="toggle-col-filter" data-entity="${escapeHtml(col.filter)}" data-section="${escapeHtml(sectionId)}" aria-label="Filter ${escapeHtml(col.label)}" aria-expanded="false" title="Filter ${escapeHtml(col.label)}">${salesReportFilterIconSvg()}</button>
+      <button type="button" class="sales-report-th-filter${active}" data-action="toggle-col-filter" data-entity="${escapeHtml(col.filter)}" data-section="${escapeHtml(sectionId)}" aria-label="Filter ${escapeHtml(col.label)}" aria-haspopup="listbox" aria-expanded="false" title="Filter ${escapeHtml(col.label)}">${escapeHtml(btnLabel)}</button>
       <div class="filter-dropdown-panel sales-report-filter-panel sales-report-col-filter-panel" data-entity="${escapeHtml(col.filter)}" hidden></div>
     </div>`;
   }
@@ -2462,6 +2496,9 @@ document.addEventListener('DOMContentLoaded', () => {
   salesReportBindPresets();
   salesReportBindPsTypeDropdown();
   salesReportBindDateBasis();
-  document.addEventListener('click', () => salesReportCloseFilterPanels());
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('.sales-report-col-filter, #sales-report-ps-type-dropdown, .sales-report-filter-panel')) return;
+    salesReportCloseFilterPanels();
+  });
   salesReportLoadYtd();
 });

@@ -95,6 +95,35 @@ def test_own_children_win_over_related_root():
     assert "assembly_line_items_related_from" not in sr
 
 
+def test_line_items_copy_child_bom_op_cards():
+    child_card = {
+        "card_kind": "single",
+        "ps_id": "NPS26-0321-1",
+        "source_ps_id": "NPS26-0321-1",
+        "source_op_no": "20",
+        "operation_name": "Turning 20",
+        "remaining_qty": 4,
+    }
+    entries = [
+        _entry("NPS26-0321", "KIT-001"),
+        _entry(
+            "NPS26-0321-1",
+            "CHILD-A",
+            display_qty=4,
+            selected_bom_code="TURN-A",
+            erp_bom_code="TURN-A",
+            current_stage_no=20,
+            op_cards=[child_card],
+        ),
+    ]
+    attach_catalog_assembly_line_items(entries)
+    kid = entries[0]["assembly_line_items"][0]
+    assert kid["ps_id"] == "NPS26-0321-1"
+    assert kid["selected_bom_code"] == "TURN-A"
+    assert kid["op_cards"] == [child_card]
+    assert kid["op_cards"][0]["operation_name"] == "Turning 20"
+
+
 def test_duplicate_partial_rows_dedupe_to_one_line_item():
     entries = [
         _entry("NPS26-0321", "KIT-001"),
@@ -106,3 +135,19 @@ def test_duplicate_partial_rows_dedupe_to_one_line_item():
     assert len(kids) == 1
     assert kids[0]["process_sheet_no"] == "NPS26-0321-4"
     assert kids[0]["qty"] == 8
+
+
+def test_preferred_machining_bom_picks_turnmill_route():
+    from planning.flows import preferred_machining_bom_code
+
+    rows = [
+        {"bom_code": "SMP-MAT-01_REV00", "stage_desc": "Issue/ Verification"},
+        {"bom_code": "SMP-MAT-01_REV00", "stage_desc": "Turnmill 20"},
+        {"bom_code": "SMP-MAT-01_REV00", "stage_desc": "Turnmill 30"},
+        {"bom_code": "PACK-ONLY", "stage_desc": "Packing & Engraving"},
+    ]
+    assert preferred_machining_bom_code(rows) == "SMP-MAT-01_REV00"
+    assert preferred_machining_bom_code([]) == ""
+    assert preferred_machining_bom_code(
+        [{"bom_code": "PACK-ONLY", "stage_desc": "Packing & Engraving"}]
+    ) == ""
