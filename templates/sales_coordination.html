@@ -3,47 +3,48 @@
 {% block body_class %}sc-view{% endblock %}
 {% block main_class %}app-main--sc{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_coordination.css') }}?v=sc-20260903b">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_coordination.css') }}?v=sc-20260903-mt2">
 {% endblock %}
 {% block content %}
 <div class="sc-page">
   <header class="sc-header">
-    <div>
+    <div class="sc-header-text">
+      <p class="sc-kicker">Sales</p>
       <h1 class="sc-title">Sales Coordination</h1>
       <p class="sc-subtitle">
         APS and NPS process sheets for delivery follow-up.
         Material status, dates, and material are read-only from Material Tracking.
-        Enter a <strong>Buyer</strong> on each line. Work order status comes from ERP.
+        Enter a Buyer on each line. Work order status comes from ERP.
       </p>
     </div>
     <div class="sc-header-actions">
-      <button type="button" class="btn btn-secondary btn-sm" id="sc-refresh">Refresh</button>
+      <button type="button" class="sc-btn sc-btn--ghost" id="sc-clear-filters" hidden>Clear filters</button>
+      <button type="button" class="sc-btn sc-btn--primary" id="sc-refresh">Refresh</button>
     </div>
   </header>
 
-  <section class="sc-toolbar card">
-    <label class="sc-field sc-field--search">
-      <span>Search</span>
-      <input type="search" id="sc-search" placeholder="Process sheet, SO, part, description, P/O, buyer..." autocomplete="off">
-    </label>
-    <div class="sc-field">
-      <span>PS type</span>
-      <div class="sc-type-chips" id="sc-type-chips" role="group" aria-label="Process sheet type filter"></div>
-    </div>
-    <div class="sc-toolbar-aside">
+  <nav class="sc-toolbar" aria-label="Filters">
+    <div class="sc-nav">
+      <label class="sc-search-wrap">
+        <svg class="sc-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input id="sc-search" class="sc-search-input" type="search" placeholder="Search process sheet, SO, part, description, P/O, buyer..." autocomplete="off">
+      </label>
+      <div class="sc-nav-group" id="sc-type-chips" role="group" aria-label="Process sheet type filter"></div>
       <div class="sc-meta" id="sc-meta">Loading...</div>
-      <button type="button" class="btn btn-ghost btn-sm" id="sc-clear-filters" hidden>Clear filters</button>
     </div>
-  </section>
+  </nav>
 
   <div id="sc-loading" class="sc-loading" hidden>
-    <div class="spinner"></div>
+    <div class="sc-spinner" aria-hidden="true"></div>
     <span>Loading process sheets...</span>
   </div>
   <div id="sc-alert" class="sc-alert" hidden></div>
 
-  <section class="sc-table-panel card" id="sc-table-panel" hidden>
-    <div class="sc-table-wrap">
+  <div id="sc-table-panel" class="sc-table-card" hidden>
+    <div class="sc-table-scroll">
       <table class="sc-table" id="sc-table">
         <thead>
           <tr>
@@ -66,10 +67,13 @@
         <tbody id="sc-body"></tbody>
       </table>
     </div>
-    <div id="sc-empty" class="sc-empty" hidden>No process sheets matched.</div>
-  </section>
+    <p id="sc-empty" class="sc-empty" hidden>
+      <span class="sc-empty-title">No process sheets matched</span>
+      <span class="sc-empty-copy">Try another PS type, clear search, or refresh from ERP.</span>
+    </p>
+  </div>
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/sales_coordination.js') }}?v=sc-20260903a"></script>
+<script src="{{ url_for('static', filename='js/sales_coordination.js') }}?v=sc-20260903-mt"></script>
 {% endblock %}

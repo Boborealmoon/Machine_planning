@@ -54,7 +54,7 @@ function trialBoardGroupMachineCount(group) {
   return (group?.machines || []).length;
 }
 
-/** Main planner: show CNC 35/36/41 lanes (default hidden — use MPP planner tab). */
+/** Main planner: CNC 35/36/41 indicated-plan lanes (default shown). */
 const TRIAL_MPP_MACHINES_VISIBLE_KEY = 'planner-mpp-machines-visible-v1';
 /** Machine Queue: same lanes, default shown; store '0' only when shop floor hides them. */
 const TRIAL_MACHINIST_MPP_VISIBLE_KEY = 'machinist-mpp-machines-visible-v1';
@@ -64,9 +64,9 @@ function trialIsMppMachinesVisible() {
     if (typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard()) {
       return localStorage.getItem(TRIAL_MACHINIST_MPP_VISIBLE_KEY) !== '0';
     }
-    return localStorage.getItem(TRIAL_MPP_MACHINES_VISIBLE_KEY) === '1';
+    return localStorage.getItem(TRIAL_MPP_MACHINES_VISIBLE_KEY) !== '0';
   } catch (_) {
-    return typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
+    return true;
   }
 }
 

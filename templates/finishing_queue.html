@@ -23,6 +23,7 @@
 
   <header class="fq-header">
     <div class="fq-header-text">
+      <p class="fq-kicker" data-fq-i18n="page_kicker">Quality</p>
       <h1 class="fq-title" data-fq-i18n="page_title">QAQC View</h1>
       <p class="fq-subtitle" id="fq-stats" aria-live="polite"></p>
     </div>
@@ -37,7 +38,8 @@
     </div>
   </header>
 
-  <nav class="fq-nav" aria-label="Queue navigation" data-fq-i18n-aria="nav_aria">
+  <nav class="fq-toolbar" aria-label="Queue navigation" data-fq-i18n-aria="nav_aria">
+  <div class="fq-nav">
     <div class="fq-nav-row">
       <div class="fq-nav-group" role="tablist" aria-label="Screen mode" data-fq-i18n-aria="screen_aria">
         <button type="button" class="fq-chip is-active" data-fq-screen="queue" role="tab" aria-selected="true" data-fq-i18n="screen_queue">Queue</button>
@@ -150,6 +152,7 @@
         </span>
       </label>
     </div>
+  </div>
   </nav>
 
   <div id="fq-assignee-board" class="fq-assignee-board" hidden aria-label="Workload by assignee" data-fq-i18n-aria="board_aria"></div>

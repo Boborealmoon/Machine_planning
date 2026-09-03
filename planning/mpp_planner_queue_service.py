@@ -1,4 +1,9 @@
-"""MPP planner live queue — persist cycles and sync planner_run_block lanes."""
+"""MPP planner live queue — persist cycles in planner_mpp_* tables.
+
+CNC 35/36/41 on the main planner board are a separate indicated plan
+(planner_run_block). This module must not create, reorder, or delete those
+blocks. Leftover mirrors from the old coupled design are detached on load.
+"""
 from __future__ import annotations
 
 import logging
@@ -405,61 +410,21 @@ def _load_probation(con, mpp_machines: list[dict[str, Any]]) -> dict[str, list[d
 
 
 def _mpp_cycle_ops_need_scheduler_blocks(con) -> bool:
-    """True when planner_mpp_cycle_op rows lack an active planner_run_block mirror."""
-    from .machines import fetch_mpp_planner_machine_ids
-
-    machine_ids = fetch_mpp_planner_machine_ids(con)
-    if not machine_ids:
-        return False
-    stale = one(
-        con.execute(
-            """
-            SELECT 1
-            FROM planner_mpp_cycle c
-            JOIN planner_mpp_cycle_op co ON co.cycle_id = c.cycle_id
-            WHERE c.machine_id = ANY(%s)
-              AND (
-                COALESCE(co.block_id, 0) = 0
-                OR NOT EXISTS (
-                    SELECT 1
-                    FROM planner_run_block b
-                    WHERE b.block_id = co.block_id
-                      AND COALESCE(b.active, TRUE) = TRUE
-                )
-              )
-            LIMIT 1
-            """,
-            (machine_ids,),
-        )
-    )
-    return bool(stale)
+    """Deprecated: MPP no longer mirrors onto planner_run_block. Always False."""
+    return False
 
 
 def rehydrate_mpp_scheduler_blocks_if_needed(con) -> dict[str, Any]:
-    """Recreate scheduler-lane blocks for MPP cycles when cycle_op.block_id links are broken."""
+    """No-op — MPP cycles stay in planner_mpp_* and do not occupy scheduler lanes."""
     ensure_mpp_queue_schema(con)
-    if not _mpp_cycle_ops_need_scheduler_blocks(con):
-        return {"rehydrated": False}
-    queue = _hydrate_mpp_queue_from_db(con)
-    machines = queue.get("machines") or {}
-    if not any((lane.get("cycles") or []) for lane in machines.values()):
-        return {"rehydrated": False}
-    save_mpp_planner_queue(
-        con,
-        {
-            "machines": machines,
-            "jobs": queue.get("jobOverrides") or {},
-        },
-    )
-    return {"rehydrated": True}
+    return {"rehydrated": False}
 
 
 def load_mpp_planner_queue(con) -> dict[str, Any]:
     """Hydrate frontend queue state from planner_mpp_* tables."""
     ensure_mpp_queue_schema(con)
-    rehydrate_mpp_scheduler_blocks_if_needed(con)
+    detach_mpp_planner_scheduler_blocks(con)
     _recover_db_transaction(con)
-    purge_orphan_mpp_scheduler_blocks(con)
     return _hydrate_mpp_queue_from_db(con)
 
 
@@ -825,27 +790,55 @@ def _upsert_block_for_op(
 
 
 def _delete_orphan_mpp_blocks(con, machine_id: int, keep_block_ids: set[int]) -> None:
-    """Remove every active block on an MPP machine that is not owned by the current MPP queue save."""
-    keep = [int(bid) for bid in keep_block_ids if int(bid or 0) > 0] or [0]
-    stale = rows(
+    """Detach leftover MPP mirrors on this machine. Never delete indicated-plan blocks."""
+    _ = keep_block_ids
+    detach_mpp_planner_scheduler_blocks(con, machine_ids=[int(machine_id)])
+
+
+def _release_mpp_mirror_block(con, block_id: int) -> bool:
+    """Drop an unstarted MPP mirror, or keep it as an indicated-plan card.
+
+    Returns True when the run_block was deleted.
+    """
+    bid = int(block_id or 0)
+    if bid <= 0:
+        return False
+    started = one(
         con.execute(
-            """
-            SELECT b.block_id
-            FROM planner_run_block b
-            WHERE b.machine_id = %s
-              AND COALESCE(b.active, TRUE) = TRUE
-              AND NOT (b.block_id = ANY(%s))
-            """,
-            (machine_id, keep),
+            "SELECT execution_status FROM planner_run_block WHERE block_id = %s",
+            (bid,),
         )
     )
-    for row in stale:
-        block_id = int(row["block_id"])
-        con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (block_id,))
+    if not started:
+        return False
+    exec_status = compact_text((started or {}).get("execution_status")).upper()
+    has_actuals = one(
+        con.execute(
+            "SELECT 1 FROM planner_production_actual WHERE block_id = %s LIMIT 1",
+            (bid,),
+        )
+    )
+    if has_actuals or exec_status in {"IN_PROGRESS", "STARTED", "DONE", "COMPLETED"}:
+        con.execute(
+            """
+            UPDATE planner_run_block
+            SET group_id = NULL, updated_at = NOW()
+            WHERE block_id = %s
+            """,
+            (bid,),
+        )
+        return False
+    con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (bid,))
+    return True
 
 
 def detach_mpp_planner_scheduler_blocks(con, *, machine_ids: list[int] | None = None) -> list[int]:
-    """Remove legacy planner_run_block rows linked from the MPP planner tab."""
+    """Unlink MPP-tab cycles from scheduler lanes.
+
+    Mirror blocks with no shop actuals are deleted so CNC 35/36/41 stay free for
+    the indicated plan. Blocks that already have actuals or a started status are
+    kept as normal lane cards (group_id cleared so they are not MPP_CYCLE-owned).
+    """
     ensure_mpp_queue_schema(con)
     params: list = []
     machine_clause = ""
@@ -865,13 +858,7 @@ def detach_mpp_planner_scheduler_blocks(con, *, machine_ids: list[int] | None = 
             tuple(params),
         )
     )
-    removed: list[int] = []
-    for row in linked:
-        block_id = int(row.get("block_id") or 0)
-        if block_id <= 0:
-            continue
-        con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (block_id,))
-        removed.append(block_id)
+    block_ids = [int(row.get("block_id") or 0) for row in linked if int(row.get("block_id") or 0) > 0]
     if linked:
         con.execute(
             f"""
@@ -884,54 +871,20 @@ def detach_mpp_planner_scheduler_blocks(con, *, machine_ids: list[int] | None = 
             """,
             tuple(params),
         )
+    removed: list[int] = []
+    for block_id in block_ids:
+        if _release_mpp_mirror_block(con, block_id):
+            removed.append(block_id)
     return removed
 
 
 def purge_orphan_mpp_scheduler_blocks(con) -> list[int]:
-    """Drop scheduler-lane blocks on MPP machines that are not linked to planner_mpp_cycle_op."""
-    from .machines import fetch_mpp_planner_machine_ids
-
-    ensure_mpp_queue_schema(con)
-    machine_ids = fetch_mpp_planner_machine_ids(con)
-    if not machine_ids:
-        return []
-    owned = {
-        int(row["block_id"])
-        for row in rows(
-            con.execute(
-                """
-                SELECT DISTINCT co.block_id
-                FROM planner_mpp_cycle_op co
-                JOIN planner_mpp_cycle c ON c.cycle_id = co.cycle_id
-                WHERE c.machine_id = ANY(%s)
-                  AND COALESCE(co.block_id, 0) > 0
-                """,
-                (machine_ids,),
-            )
-        )
-        if int(row.get("block_id") or 0) > 0
-    }
-    removed: list[int] = []
-    for row in rows(
-        con.execute(
-            """
-            SELECT b.block_id
-            FROM planner_run_block b
-            WHERE b.machine_id = ANY(%s)
-              AND COALESCE(b.active, TRUE) = TRUE
-              AND NOT (b.block_id = ANY(%s))
-            """,
-            (machine_ids, list(owned) if owned else [0]),
-        )
-    ):
-        block_id = int(row["block_id"])
-        con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (block_id,))
-        removed.append(block_id)
-    return removed
+    """Detach leftover MPP-tab mirrors. Independent indicated-plan blocks are kept."""
+    return detach_mpp_planner_scheduler_blocks(con)
 
 
 def purge_legacy_mpp_scheduler_blocks(con) -> list[int]:
-    """Deprecated alias — removes orphan blocks only (keeps MPP-tab mirror blocks)."""
+    """Deprecated alias — detaches leftover MPP-tab mirrors only."""
     return purge_orphan_mpp_scheduler_blocks(con)
 
 
@@ -1135,14 +1088,13 @@ def tag_mpp_planner_mirror_blocks(con, blocks: list[dict]) -> None:
 
 
 def ensure_mpp_planner_scheduler_lanes(con) -> dict[str, Any]:
-    """Mirror planner_mpp_* queue onto CNC 35/36/41 scheduler lanes for the main board."""
+    """Keep CNC 35/36/41 scheduler lanes free for the indicated plan.
+
+    Detaches leftover MPP-tab mirrors; does not recreate them.
+    """
     ensure_mpp_queue_schema(con)
-    repaired = repair_mpp_block_machine_mismatches(con)
-    result = rehydrate_mpp_scheduler_blocks_if_needed(con)
-    purge_orphan_mpp_scheduler_blocks(con)
-    if repaired:
-        result = {**(result or {}), "repaired_block_ids": repaired, "repaired": True}
-    return result
+    detached = detach_mpp_planner_scheduler_blocks(con)
+    return {"rehydrated": False, "detached_block_ids": detached}
 
 
 def reset_mpp_planner_lanes(
@@ -1229,34 +1181,17 @@ def recalculate_mpp_planner_machines(
     *,
     reason: str = "MPP_PLANNER_RECALC",
 ) -> dict[str, Any]:
-    """Rebuild planner_run_block_segment rows for MPP planner lanes."""
-    from .blocks import recalculate_machine
-    from .machines import fetch_mpp_planner_machine_ids
+    """No-op: MPP timing lives in planner_mpp_* / the MPP tab.
 
-    _configure_mpp_save_session(con)
+    Must not rewrite CNC 35/36/41 indicated-plan segments on the main board.
+    """
+    _ = reason
     ensure_mpp_queue_schema(con)
-    ids = sorted(
-        {
-            int(mid)
-            for mid in (machine_ids or fetch_mpp_planner_machine_ids(con))
-            if int(mid or 0) > 0
-        }
-    )
-    recalculated: list[int] = []
-    warnings: list[str] = []
-    for machine_id in ids:
-        try:
-            recalculate_machine(con, machine_id, reason=reason)
-            con.commit()
-            recalculated.append(machine_id)
-        except Exception as exc:
-            logger.warning("MPP planner recalculate machine %s: %s", machine_id, exc)
-            warnings.append(f"Schedule segments not updated for machine {machine_id}: {exc}")
-            _recover_db_transaction(con)
+    ids = sorted({int(mid) for mid in (machine_ids or []) if int(mid or 0) > 0})
     return {
-        "recalculated": len(recalculated),
-        "machineIds": recalculated,
-        "warnings": warnings,
+        "recalculated": 0,
+        "machineIds": ids,
+        "warnings": [],
     }
 
 
@@ -1271,7 +1206,7 @@ def _save_one_mpp_machine_lane(
     primary_blocks_by_machine: dict[int, list[int]],
     save_warnings: list[str],
 ) -> None:
-    """Rewrite one MPP machine lane (cycles + blocks). Caller commits."""
+    """Rewrite one MPP machine lane (cycles only). Caller commits."""
     _ = slug  # kept for call-site clarity / future logging
     lane_anchor = _parse_anchor_text(lane.get("laneAnchor"))
     con.execute(
@@ -1295,16 +1230,6 @@ def _save_one_mpp_machine_lane(
         )
     }
     seen_cycle_ids: set[int] = set()
-    primary_blocks: list[int] = []
-
-    machine = one(
-        con.execute(
-            "SELECT machine_category FROM planner_machines WHERE machine_id = %s",
-            (machine_id,),
-        )
-    ) or {}
-    machine_category = compact_text(machine.get("machine_category")) or "MPP"
-    prev_cycle_fingerprint: str | None = None
 
     for queue_index, cycle in enumerate(lane.get("cycles") or []):
         client_cycle_id = compact_text(cycle.get("cycleId"))
@@ -1313,14 +1238,7 @@ def _save_one_mpp_machine_lane(
         shift = _normalize_shift(cycle.get("shift"))
         anchor_dt = _parse_anchor_text(cycle.get("anchor"))
         cycle_label = compact_text(cycle.get("label"))
-        cycle_fp = _cycle_fingerprint(cycle)
-        is_sprint_start = cycle_fp != prev_cycle_fingerprint
-        prev_cycle_fingerprint = cycle_fp
-
         cycle_timing = _cycle_timing_from_payload(cycle)
-        cycle_ops = [op for op in (cycle.get("ops") or []) if compact_text(op.get("jobId"))]
-        op_count = len(cycle_ops)
-        sprint_setup_total = _sprint_setup_minutes(cycle_timing, cycle_ops, job_overrides)
 
         cycle_id = existing_cycles.get(client_cycle_id)
         if not cycle_id:
@@ -1401,32 +1319,10 @@ def _save_one_mpp_machine_lane(
             cycle_id = int(row["cycle_id"])
 
         seen_cycle_ids.add(cycle_id)
-        cycle_row = one(
-            con.execute("SELECT group_id FROM planner_mpp_cycle WHERE cycle_id = %s", (cycle_id,))
-        ) or {}
-        group_id = int(cycle_row.get("group_id") or 0)
-        if group_id <= 0:
-            group_label = cycle_label or f"MPP cycle {queue_index + 1}"
-            group_row = one(
-                con.execute(
-                    """
-                    INSERT INTO planner_run_block_group (group_label, group_type)
-                    VALUES (%s, 'MPP_CYCLE')
-                    RETURNING group_id
-                    """,
-                    (group_label,),
-                )
-            )
-            group_id = int(group_row["group_id"])
-            con.execute(
-                "UPDATE planner_mpp_cycle SET group_id = %s WHERE cycle_id = %s",
-                (group_id, cycle_id),
-            )
-        elif cycle_label:
-            con.execute(
-                "UPDATE planner_run_block_group SET group_label = %s WHERE group_id = %s",
-                (cycle_label, group_id),
-            )
+        con.execute(
+            "UPDATE planner_mpp_cycle SET group_id = NULL WHERE cycle_id = %s",
+            (cycle_id,),
+        )
 
         existing_ops = {
             compact_text(row["client_op_id"]): dict(row)
@@ -1438,10 +1334,8 @@ def _save_one_mpp_machine_lane(
             )
         }
         seen_op_ids: set[int] = set()
-        queue_position = float(queue_index + 1)
-        first_block_id = 0
 
-        for op_index, op in enumerate(cycle.get("ops") or []):
+        for op in cycle.get("ops") or []:
             client_op_id = compact_text(op.get("opId"))
             job_id = compact_text(op.get("jobId"))
             if not client_op_id or not job_id:
@@ -1457,7 +1351,6 @@ def _save_one_mpp_machine_lane(
             planner_ps_id = _canonical_planner_ps_id(con, source_ps_id, pp_partial_no)
             min_per_pallet = max(0.1, float(job_row.get("minPerPallet") or op.get("minPerPallet") or 90))
             pcs_per_pallet = _resolve_cycle_op_pcs_per_pallet(op, job_row, prior)
-            scheduled_qty = float(pallet_count) * pcs_per_pallet
 
             step = _resolve_bom_step(con, planner_ps_id, source_op_seq_id, source_op_no)
             if not step:
@@ -1468,53 +1361,22 @@ def _save_one_mpp_machine_lane(
             source_op_seq_id = int(step.get("op_seq_id") or 0)
             source_op_no = compact_text(step.get("op_no"))
 
-            operation_id = _ensure_operation_for_op(
-                con,
-                planner_ps_id=planner_ps_id,
-                step=step,
-                scheduled_qty=scheduled_qty,
-                min_per_pallet=min_per_pallet,
-                pcs_per_pallet=pcs_per_pallet,
-                machine_category=machine_category,
-                job_row=job_row,
-                pallet_count=pallet_count,
-                cycle_timing=cycle_timing,
-                op_index=op_index,
-                op_count=op_count,
-                sprint_setup_total=sprint_setup_total if is_sprint_start else 0.0,
-            )
-
-            block_id = int(prior.get("block_id") or op.get("blockId") or 0)
-            anchor_for_block = anchor_dt if op_index == 0 else None
-            include_setup = is_sprint_start and op_index == 0
-            block_id = _upsert_block_for_op(
-                con,
-                operation_id=operation_id,
-                machine_id=machine_id,
-                group_id=group_id,
-                queue_position=queue_position,
-                scheduled_qty=scheduled_qty,
-                anchor_dt=anchor_for_block,
-                block_id=block_id,
-                include_setup=include_setup,
-            )
-            machine_keep_blocks.add(block_id)
-            if op_index == 0:
-                first_block_id = block_id
+            leftover_block_id = int(prior.get("block_id") or 0)
+            if leftover_block_id > 0:
+                _release_mpp_mirror_block(con, leftover_block_id)
 
             prior_cycle_op_id = int(prior.get("cycle_op_id") or 0)
             if prior_cycle_op_id > 0:
                 con.execute(
                     """
                     UPDATE planner_mpp_cycle_op
-                    SET block_id = %s, job_id = %s, source_ps_id = %s,
+                    SET block_id = NULL, job_id = %s, source_ps_id = %s,
                         source_op_seq_id = %s, source_op_no = %s, pp_partial_no = %s,
                         pallet_count = %s, min_per_pallet = %s, pcs_per_pallet = %s,
                         updated_at = NOW()
                     WHERE cycle_op_id = %s
                     """,
                     (
-                        block_id,
                         job_id,
                         source_ps_id,
                         source_op_seq_id,
@@ -1535,13 +1397,12 @@ def _save_one_mpp_machine_lane(
                           client_op_id, cycle_id, block_id, job_id, source_ps_id,
                           source_op_seq_id, source_op_no, pp_partial_no,
                           pallet_count, min_per_pallet, pcs_per_pallet, updated_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ) VALUES (%s, %s, NULL, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                         RETURNING cycle_op_id
                         """,
                         (
                             client_op_id,
                             cycle_id,
-                            block_id,
                             job_id,
                             source_ps_id,
                             source_op_seq_id,
@@ -1554,9 +1415,6 @@ def _save_one_mpp_machine_lane(
                     )
                 )
                 seen_op_ids.add(int(row["cycle_op_id"]))
-
-        if first_block_id > 0:
-            primary_blocks.append(first_block_id)
 
         stale_ops = [
             int(row["cycle_op_id"])
@@ -1573,10 +1431,7 @@ def _save_one_mpp_machine_lane(
                 )
             )
             if op_row and int(op_row.get("block_id") or 0) > 0:
-                con.execute(
-                    "DELETE FROM planner_run_block WHERE block_id = %s",
-                    (int(op_row["block_id"]),),
-                )
+                _release_mpp_mirror_block(con, int(op_row["block_id"]))
             con.execute("DELETE FROM planner_mpp_cycle_op WHERE cycle_op_id = %s", (cycle_op_id,))
 
     stale_cycle_ids = [cid for cid in existing_cycles.values() if cid not in seen_cycle_ids]
@@ -1588,10 +1443,7 @@ def _save_one_mpp_machine_lane(
             )
         ):
             if int(op_row.get("block_id") or 0) > 0:
-                con.execute(
-                    "DELETE FROM planner_run_block WHERE block_id = %s",
-                    (int(op_row["block_id"]),),
-                )
+                _release_mpp_mirror_block(con, int(op_row["block_id"]))
         cycle_row = one(
             con.execute("SELECT group_id FROM planner_mpp_cycle WHERE cycle_id = %s", (cycle_id,))
         )
@@ -1604,19 +1456,19 @@ def _save_one_mpp_machine_lane(
         con.execute("DELETE FROM planner_mpp_cycle WHERE cycle_id = %s", (cycle_id,))
 
     _delete_orphan_mpp_blocks(con, machine_id, machine_keep_blocks)
-    primary_blocks_by_machine[machine_id] = primary_blocks
+    primary_blocks_by_machine[machine_id] = []
 
 
 
 def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
-    """Persist queue state and sync planner_run_block groups for MPP machines.
+    """Persist MPP cycles/probation in planner_mpp_* (not main-planner lanes).
 
     When the client sends dirtyMachines, only those lanes are rewritten and each
     machine is committed independently so one failure cannot block the others.
     """
     _configure_mpp_save_session(con)
     ensure_mpp_queue_schema(con)
-    recalculate = _parse_recalculate_flag(payload)
+    _ = _parse_recalculate_flag(payload)
     scope = _save_scope_slugs(payload)
     all_machines_payload = payload.get("machines") or {}
     job_overrides = payload.get("jobs") or payload.get("jobOverrides") or {}
@@ -1667,9 +1519,6 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
                 machine_keep_blocks=machine_keep_blocks,
                 primary_blocks_by_machine=primary_blocks_by_machine,
                 save_warnings=save_warnings,
-            )
-            _sync_machine_queue(
-                con, machine_id, primary_blocks_by_machine.get(machine_id, [])
             )
             con.commit()
             touched_machine_ids.append(machine_id)
@@ -1800,23 +1649,13 @@ def save_mpp_planner_queue(con, payload: dict[str, Any]) -> dict[str, Any]:
     # Probation + job overrides are light; commit once after them.
     con.commit()
 
-    recalc_machine_ids = _recalc_machine_ids_from_payload(con, payload, touched_machine_ids)
-    recalc_result: dict[str, Any] = {"recalculated": 0, "machineIds": []}
-    if recalculate and recalc_machine_ids:
-        recalc_result = recalculate_mpp_planner_machines(
-            con,
-            recalc_machine_ids,
-            reason="MPP_PLANNER_SAVE",
-        )
-        save_warnings.extend(recalc_result.get("warnings") or [])
-
     return {
         "savedAt": datetime.now().isoformat(sep=" ", timespec="seconds"),
         "machinesTouched": len(touched_machine_ids),
-        "blocksSynced": len(keep_block_ids),
-        "touchedMachineIds": recalc_machine_ids,
-        "recalculated": bool(recalculate and int(recalc_result.get("recalculated") or 0) > 0),
-        "recalculatedMachines": int(recalc_result.get("recalculated") or 0),
+        "blocksSynced": 0,
+        "touchedMachineIds": [],
+        "recalculated": False,
+        "recalculatedMachines": 0,
         "warnings": save_warnings,
         "partial": scope is not None,
     }
@@ -2099,17 +1938,8 @@ def dequeue_done_mpp_block(
                     (group_id,),
                 )
 
-    if recalculate and machine_id > 0:
-        from .blocks import recalculate_machine
-        from .operation_sequence import compact_machine_lane_queue
-
-        try:
-            compact_machine_lane_queue(con, machine_id, recalculate=False)
-            recalculate_machine(con, machine_id, reason=f"MPP_AUTO_DEQUEUE_{reason}")
-            con.commit()
-        except Exception as exc:
-            logger.warning("MPP dequeue recalculate machine %s: %s", machine_id, exc)
-            _recover_db_transaction(con)
+    if recalculate:
+        logger.debug("MPP dequeue skips indicated-plan recalc for machine %s", machine_id)
 
     return {
         "ok": True,
@@ -2128,8 +1958,104 @@ def maybe_auto_dequeue_mpp_block(con, block_id: int) -> dict | None:
     return dequeue_done_mpp_block(con, block_id, reason="AUTO_DONE_ACTUAL")
 
 
+def find_done_mpp_cycle_op_ids(con) -> list[int]:
+    """Cycle-op ids whose ERP qty is met — they should leave the MPP queue."""
+    from .machines import fetch_mpp_planner_machine_ids
+    from .process_sheets import format_planner_ps_id
+
+    mpp_ids = fetch_mpp_planner_machine_ids(con)
+    if not mpp_ids:
+        return []
+    done: list[int] = []
+    for row in rows(
+        con.execute(
+            """
+            SELECT co.cycle_op_id, co.source_ps_id, co.source_op_no, co.pp_partial_no,
+                   co.pallet_count, co.pcs_per_pallet, co.job_id
+            FROM planner_mpp_cycle_op co
+            JOIN planner_mpp_cycle c ON c.cycle_id = co.cycle_id
+            WHERE c.machine_id = ANY(%s)
+            ORDER BY c.machine_id, c.queue_index, co.cycle_op_id
+            """,
+            (mpp_ids,),
+        )
+    ):
+        scheduled = float(row.get("pallet_count") or 1) * max(1.0, float(row.get("pcs_per_pallet") or 1))
+        ps = compact_text(row.get("source_ps_id"))
+        try:
+            partial = int(row.get("pp_partial_no") or 1)
+        except (TypeError, ValueError):
+            partial = 1
+        fake_block = {
+            "source_ps_id": format_planner_ps_id(ps, partial) or ps,
+            "source_op_no": compact_text(row.get("source_op_no")),
+            "scheduled_qty": scheduled,
+            "job_no": ps,
+        }
+        if _mpp_erp_qty_met_for_block(con, fake_block):
+            done.append(int(row["cycle_op_id"]))
+    return done
+
+
+def dequeue_done_mpp_cycle_op(
+    con,
+    cycle_op_id: int,
+    *,
+    reason: str = "AUTO_DONE",
+) -> dict:
+    """Remove a completed MPP cycle op. Does not touch indicated-plan run_blocks."""
+    ensure_mpp_queue_schema(con)
+    op_row = one(
+        con.execute(
+            """
+            SELECT co.cycle_op_id, co.cycle_id, co.block_id, c.machine_id, c.group_id
+            FROM planner_mpp_cycle_op co
+            JOIN planner_mpp_cycle c ON c.cycle_id = co.cycle_id
+            WHERE co.cycle_op_id = %s
+            """,
+            (int(cycle_op_id),),
+        )
+    )
+    if not op_row:
+        return {"ok": False, "reason": "not_mpp_cycle_op", "cycle_op_id": int(cycle_op_id)}
+    leftover_block_id = int(op_row.get("block_id") or 0)
+    if leftover_block_id > 0:
+        return dequeue_done_mpp_block(con, leftover_block_id, reason=reason, recalculate=False)
+    machine_id = int(op_row.get("machine_id") or 0)
+    cycle_id = int(op_row.get("cycle_id") or 0)
+    group_id = int(op_row.get("group_id") or 0)
+    con.execute("DELETE FROM planner_mpp_cycle_op WHERE cycle_op_id = %s", (int(cycle_op_id),))
+    remaining = rows(
+        con.execute(
+            "SELECT cycle_op_id FROM planner_mpp_cycle_op WHERE cycle_id = %s",
+            (cycle_id,),
+        )
+    )
+    if not remaining:
+        con.execute("DELETE FROM planner_mpp_cycle WHERE cycle_id = %s", (cycle_id,))
+        if group_id > 0:
+            leftover = one(
+                con.execute(
+                    "SELECT COUNT(*) AS cnt FROM planner_run_block WHERE group_id = %s",
+                    (group_id,),
+                )
+            )
+            if int((leftover or {}).get("cnt") or 0) == 0:
+                con.execute(
+                    "DELETE FROM planner_run_block_group WHERE group_id = %s",
+                    (group_id,),
+                )
+    return {
+        "ok": True,
+        "reason": reason,
+        "cycle_op_id": int(cycle_op_id),
+        "cycle_id": cycle_id,
+        "machine_id": machine_id,
+    }
+
+
 def find_done_mpp_queue_block_ids(con) -> list[int]:
-    """Block ids for completed MPP cycle ops still present on machine lanes."""
+    """Legacy: leftover mirrored block ids that are ERP-complete."""
     from .machines import fetch_mpp_planner_machine_ids
 
     mpp_ids = fetch_mpp_planner_machine_ids(con)
@@ -2176,32 +2102,17 @@ def run_mpp_auto_dequeue_sweep(
     if not dry_run and not _try_mpp_dequeue_lock(con):
         return {"dry_run": False, "skipped": "locked", "candidates": 0, "dequeued": 0, "results": []}
     try:
-        block_ids = find_done_mpp_queue_block_ids(con)
+        cycle_op_ids = find_done_mpp_cycle_op_ids(con)
         if dry_run:
-            return {"dry_run": True, "candidates": block_ids, "results": []}
+            return {"dry_run": True, "candidates": cycle_op_ids, "results": []}
         results = []
-        touched_machines: set[int] = set()
-        for block_id in block_ids:
-            result = dequeue_done_mpp_block(con, block_id, reason=reason, recalculate=False)
+        for cycle_op_id in cycle_op_ids:
+            result = dequeue_done_mpp_cycle_op(con, cycle_op_id, reason=reason)
             results.append(result)
-            if result.get("ok") and int(result.get("machine_id") or 0) > 0:
-                touched_machines.add(int(result["machine_id"]))
-        if recalculate and touched_machines:
-            from .blocks import recalculate_machine
-            from .operation_sequence import compact_machine_lane_queue
-
-            for machine_id in sorted(touched_machines):
-                try:
-                    compact_machine_lane_queue(con, machine_id, recalculate=False)
-                    recalculate_machine(con, machine_id, reason=f"MPP_AUTO_DEQUEUE_{reason}")
-                    con.commit()
-                except Exception as exc:
-                    logger.warning("MPP auto-dequeue recalculate machine %s: %s", machine_id, exc)
-                    _recover_db_transaction(con)
         ok_count = sum(1 for item in results if item.get("ok"))
         return {
             "dry_run": False,
-            "candidates": len(block_ids),
+            "candidates": len(cycle_op_ids),
             "dequeued": ok_count,
             "results": results,
         }

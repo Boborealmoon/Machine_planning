@@ -514,7 +514,7 @@ def fetch_machines(con):
 
 
 # MPP machines (CNC 35/36/41) appear on both the main planner board and the MPP planner tab.
-# Lane data is stored separately: planner_run_block (main planner) vs planner_mpp_* (MPP tab).
+# Lane data is stored separately: planner_run_block (indicated plan) vs planner_mpp_* (MPP tab).
 MPP_PLANNER_MACHINE_CODES = frozenset({"CNC 35", "CNC 36", "CNC 41"})
 SCHEDULER_EXCLUDED_MACHINE_CODES = MPP_PLANNER_MACHINE_CODES  # legacy alias
 MPP_PLANNER_GUARD_MSG = (

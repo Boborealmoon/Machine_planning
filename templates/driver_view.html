@@ -20,6 +20,7 @@
 <div class="dv-page">
   <header class="dv-header">
     <div class="dv-header-text">
+      <p class="dv-kicker">Delivery</p>
       <h1 class="dv-title">Delivery Schedule View</h1>
       <p class="dv-subtitle" id="dv-stats" aria-live="polite">Loading delivery schedule…</p>
     </div>
@@ -29,9 +30,11 @@
     </div>
   </header>
 
-  <nav class="dv-nav" aria-label="Week filter">
-    <span class="dv-nav-label">Show weeks</span>
-    <div class="dv-nav-group" id="dv-week-filters" role="group" aria-label="Delivery weeks"></div>
+  <nav class="dv-toolbar" aria-label="Week filter">
+    <div class="dv-nav">
+      <span class="dv-nav-label">Show weeks</span>
+      <div class="dv-nav-group" id="dv-week-filters" role="group" aria-label="Delivery weeks"></div>
+    </div>
   </nav>
 
   <div id="dv-loading" class="dv-loading">
@@ -63,7 +66,10 @@
     </div>
   </div>
 
-  <p id="dv-empty" class="dv-empty" hidden>No deliveries scheduled for the selected weeks.</p>
+  <p id="dv-empty" class="dv-empty" hidden>
+    <span class="dv-empty-title">No deliveries scheduled</span>
+    <span class="dv-empty-copy">Try another week, or refresh the schedule.</span>
+  </p>
 </div>
 {% endblock %}
 

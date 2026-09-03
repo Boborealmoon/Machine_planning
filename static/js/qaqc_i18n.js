@@ -5,6 +5,7 @@ const FQ_LOCALE_KEY = 'qaqc-view-locale-v1';
 const FQ_STRINGS = {
   en: {
     page_title: 'QAQC View',
+    page_kicker: 'Quality',
     lang_toggle_aria: 'Language',
     hide_done: 'Hide done',
     hide_done_title: 'Grey out and hide checklist-completed rows',
@@ -277,6 +278,7 @@ const FQ_STRINGS = {
   },
   zh: {
     page_title: '质检视图',
+    page_kicker: '质量',
     lang_toggle_aria: '语言',
     hide_done: '隐藏已完成',
     hide_done_title: '隐藏已勾选完成的行',

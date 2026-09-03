@@ -2377,8 +2377,8 @@ function renderTrialMppMachinesToggle() {
     ? (t ? t('mpp_lanes_on') : 'MPP lanes on')
     : (t ? t('mpp_lanes_show') : 'Show MPP lanes');
   const title = visible
-    ? (t ? t('mpp_lanes_on_title') : 'Hide CNC 35, 36, and 41 lanes (use MPP planner tab)')
-    : (t ? t('mpp_lanes_show_title') : 'Show CNC 35, 36, and 41 lanes on this board');
+    ? (t ? t('mpp_lanes_on_title') : 'Hide CNC 35, 36, and 41 plan lanes')
+    : (t ? t('mpp_lanes_show_title') : 'Show CNC 35, 36, and 41 plan lanes');
   const sectionLabel = t ? t('mpp_label') : 'MPP';
   return `
     <div class="trial-filter-inline trial-filter-section-mpp">
@@ -2401,10 +2401,6 @@ function trialIsMppMirrorDisplayGroup(group, leader = null) {
   if (String(group?.group_type || head?.group_type || '').toUpperCase() === 'MPP_CYCLE') return true;
   const label = String(group?.group_label || group?.operation_label || head?.group_label || '').trim();
   if (/^MPP cycle\b/i.test(label)) return true;
-  if (typeof trialIsMppPlannerMachine === 'function'
-    && trialIsMppPlannerMachine(Number(head?.machine_id || group?.machine_id || 0), head?.machine_code)) {
-    return true;
-  }
   return false;
 }
 
@@ -4205,25 +4201,11 @@ function renderTrialMachine(machine) {
 
   const focusMode = typeof trialMachinistFocusLayoutActive === 'function'
     && trialMachinistFocusLayoutActive();
-  const isMppLane = typeof trialIsMppPlannerMachine === 'function'
-    && trialIsMppPlannerMachine(Number(machine.machine_id || 0), machine.machine_code);
-  const mppLaneBadge = isMppLane && typeof trialMppOriginBadgeHtml === 'function'
-    ? trialMppOriginBadgeHtml({ compact: false })
-    : '';
-  const mppLaneTitle = isMppLane
-    ? (typeof trialMachinistT === 'function' ? trialMachinistT('mpp_lane_title') : 'MPP planner machine')
-    : '';
   const displayGroups = focusMode && typeof trialMachinistFocusGroups === 'function'
     ? trialMachinistFocusGroups(groups)
     : groups;
   const blockHtml = displayGroups.length
-    ? (isMppLane && typeof trialRenderMppLaneBlockHtml === 'function'
-      ? trialRenderMppLaneBlockHtml(displayGroups, {
-        machineId: machine.machine_id,
-        focusMode,
-        queueGroups: groups,
-      })
-      : displayGroups.map((group, idx) => {
+    ? displayGroups.map((group, idx) => {
         const queueIndex = groups.indexOf(group);
         const sequenceNo = queueIndex >= 0 ? queueIndex + 1 : idx + 1;
         const vm = trialBlockGroupViewModel(group, { displaySequenceNo: sequenceNo });
@@ -4231,16 +4213,15 @@ function renderTrialMachine(machine) {
           return trialRenderFocusBlockCard(vm, { isCurrent: idx === 0, upcomingIdx: idx });
         }
         return trialRenderCompactBlockCard(vm, { focusMode: false, isCurrent: idx === 0 });
-      }).join(''))
+      }).join('')
     : `<div class="trial-empty">${escapeHtml(trialMachineLaneEmptyMessage(allGroups.length, groups.length))}</div>`;
 
   if (focusMode) {
     return `
-    <section class="trial-machine trial-machine--focus trial-machine--focus-lane${isMppLane ? ' trial-machine--mpp' : ''}" data-machine-id="${machine.machine_id}">
+    <section class="trial-machine trial-machine--focus trial-machine--focus-lane" data-machine-id="${machine.machine_id}">
       <header class="trial-machine-head trial-machine-head--focus">
         <div class="trial-machine-title-row">
-          <div class="trial-machine-title"${mppLaneTitle ? ` title="${escapeHtml(mppLaneTitle)}"` : ''}>${escapeHtml(machine.machine_code)}</div>
-          ${mppLaneBadge}
+          <div class="trial-machine-title">${escapeHtml(machine.machine_code)}</div>
         </div>
         <span class="trial-machine-focus-hint">${escapeHtml(
           typeof trialMachinistT === 'function'
@@ -4268,12 +4249,11 @@ function renderTrialMachine(machine) {
           ${staleBadge ? `<button class="btn btn-primary btn-sm" type="button" data-trial-recalc-btn="1" onclick="event.stopPropagation(); trialRecalculateSingleMachine(${machine.machine_id})">Recalc</button>` : ''}
         </div>`;
   return `
-    <section class="trial-machine${isMppLane ? ' trial-machine--mpp' : ''}" data-machine-id="${machine.machine_id}">
+    <section class="trial-machine" data-machine-id="${machine.machine_id}">
       <div class="trial-machine-head">
         <div class="trial-machine-head-main"${headMainAttrs}>
           <div class="trial-machine-title-row">
-            <div class="trial-machine-title"${mppLaneTitle ? ` title="${escapeHtml(mppLaneTitle)}"` : ''}>${escapeHtml(machine.machine_code)}</div>
-            ${mppLaneBadge}
+            <div class="trial-machine-title">${escapeHtml(machine.machine_code)}</div>
           </div>
           <div class="trial-machine-meta">${escapeHtml(machine.machine_category)} - ${escapeHtml(machine.shift_profile || 'STANDARD')}</div>
           <div class="trial-machine-queue-summary">${queueSummary}</div>

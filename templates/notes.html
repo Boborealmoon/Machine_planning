@@ -64,11 +64,14 @@
       <details class="admin-launch-group admin-launch-group--ops" data-group="ops">
         <summary class="admin-launch-summary">
           <span class="admin-launch-icon" aria-hidden="true">O</span>
-          <div><h3>Ops</h3><p>Process sheets and first article</p></div>
+          <div><h3>Ops</h3><p>Process sheets, shop floor, and ERP output</p></div>
         </summary>
         <div class="admin-launch-links">
           {{ launch_link("Process sheets", url_for("process_sheets")) }}
           {{ launch_link("NPI/FA Management", url_for("first_article.first_article_page")) }}
+          {{ launch_link("Assembly Parts", url_for("assembly_parts.assembly_parts_page")) }}
+          {{ launch_link("Shift Management", "/Shift-management") }}
+          {{ launch_link("ERP scanned output", url_for("erp_scanned_output.erp_scanned_output_page")) }}
         </div>
       </details>
 
@@ -125,12 +128,9 @@
         <div class="admin-launch-links">
           {{ launch_link("Machine Queue Overview", url_for("machinist_board")) }}
           {{ launch_link("QAQC View", url_for("finishing_queue.finishing_queue_page")) }}
-          {{ launch_link("Assembly Parts", url_for("assembly_parts.assembly_parts_page")) }}
           {{ launch_link("Delivery Schedule View", url_for("driver_view.driver_view_page")) }}
           {{ launch_link("Material Tracking", url_for("sales_orders.sales_orders_logistics_page")) }}
           {{ launch_link("Sales Coordination", url_for("sales_coordination.sales_coordination_page")) }}
-          {{ launch_link("Shift Management", "/Shift-management") }}
-          {{ launch_link("ERP scanned output", url_for("erp_scanned_output.erp_scanned_output_page")) }}
         </div>
       </details>
 
@@ -143,7 +143,6 @@
           {{ launch_link("RFQ checker / Tracker", url_for("rfq_checker.rfq_checker_page")) }}
           {{ launch_link("SO line archive", url_for("so_archive.so_archive_page")) }}
           {{ launch_link("Daily output", url_for("daily_output_view")) }}
-          {{ launch_link("ERP scanned output", url_for("erp_scanned_output.erp_scanned_output_page")) }}
           {{ launch_link("AUK OEE dashboard", url_for("auk_oee.auk_oee_page")) }}
           {{ launch_link("Preferred machines", url_for("preferred_machines.preferred_machines_page")) }}
           {{ launch_link("Factory floor plan", url_for("floor_plan.floor_plan_page")) }}

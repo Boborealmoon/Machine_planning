@@ -150,3 +150,52 @@ def test_bulk_schedule_plan_only_partial_leftover():
     assert plan["scheduledPcs"] == 2
     assert plan["partialPcs"] == 2
     assert plan["leftoverPcs"] == 0
+
+
+def test_mpp_save_does_not_write_scheduler_blocks():
+    import inspect
+
+    from planning.mpp_planner_queue_service import (
+        _save_one_mpp_machine_lane,
+        save_mpp_planner_queue,
+    )
+
+    save_lane = inspect.getsource(_save_one_mpp_machine_lane)
+    assert "_upsert_block_for_op" not in save_lane
+    assert "_ensure_operation_for_op" not in save_lane
+    save_queue = inspect.getsource(save_mpp_planner_queue)
+    assert "_sync_machine_queue" not in save_queue
+
+
+def test_mpp_load_detaches_mirrors_instead_of_rehydrating():
+    import inspect
+
+    from planning.mpp_planner_queue_service import (
+        _mpp_cycle_ops_need_scheduler_blocks,
+        ensure_mpp_planner_scheduler_lanes,
+        load_mpp_planner_queue,
+        recalculate_mpp_planner_machines,
+    )
+
+    assert _mpp_cycle_ops_need_scheduler_blocks(None) is False
+    load_src = inspect.getsource(load_mpp_planner_queue)
+    assert "detach_mpp_planner_scheduler_blocks" in load_src
+    assert "rehydrate_mpp_scheduler_blocks_if_needed" not in load_src
+    ensure_src = inspect.getsource(ensure_mpp_planner_scheduler_lanes)
+    assert "detach_mpp_planner_scheduler_blocks" in ensure_src
+    assert "rehydrate_mpp_scheduler_blocks_if_needed" not in ensure_src
+    recalc_src = inspect.getsource(recalculate_mpp_planner_machines)
+    assert "recalculate_machine" not in recalc_src
+    assert '"recalculated": 0' in recalc_src
+
+
+def test_main_planner_lane_queries_always_exclude_mpp_owned():
+    import inspect
+
+    from planning.catalog import _catalog_lane_qty_maps
+    from planning.operation_sequence import main_planner_lane_block_ids
+
+    lane_src = inspect.getsource(main_planner_lane_block_ids)
+    assert "is_mpp_planner_machine_id" not in lane_src
+    catalog_src = inspect.getsource(_catalog_lane_qty_maps)
+    assert "scheduler_blocks_exclude_mpp_planner_clause" in catalog_src

@@ -12553,7 +12553,7 @@
   }
   body.qaqc-view .app-main--finishing-queue {
     min-height: 100dvh;
-    padding: 16px 20px 32px;
+    padding: 20px 24px 28px;
   }
   .app-main--finishing-queue {
     max-width: none;
@@ -12577,8 +12577,8 @@
   .app-main--finishing-queue .fq-spinner {
     width: 18px;
     height: 18px;
-    border: 2px solid rgba(37, 99, 235, 0.18);
-    border-top-color: #2563eb;
+    border: 2px solid var(--fq-line, #e4ddd2);
+    border-top-color: var(--fq-accent, #2f5d56);
     border-radius: 50%;
     animation: fq-spin 0.8s linear infinite;
     flex: 0 0 auto;

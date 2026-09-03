@@ -807,7 +807,7 @@ function trialHasLiveBlockQueueIndex() {
   return Array.isArray(trialState?.blocks);
 }
 
-/** CNC lanes owned by the MPP planner tab — must mirror on the main board (planning/machines.py). */
+/** CNC 35/36/41 also have an MPP planner tab. Main-board lanes are the indicated plan. */
 const TRIAL_MPP_PLANNER_MACHINE_CODES = new Set(['CNC 35', 'CNC 36', 'CNC 41']);
 
 function trialIsMppPlannerMachine(machineId, machineCode) {
@@ -821,13 +821,12 @@ function trialIsMppPlannerMachine(machineId, machineCode) {
   return String(machine?.machine_category || '').toUpperCase() === 'MPP';
 }
 
-/** Lane blocks for the main planner board (MPP machines mirror the MPP planner tab). */
+/** Indicated-plan blocks only — exclude leftover MPP-tab cycle mirrors. */
 function trialIsMainPlannerLaneBlock(block) {
   if (!block) return false;
-  if (block.is_mpp_planner_mirror) return true;
-  if (trialIsMppPlannerMachine(Number(block.machine_id), block.machine_code)) return true;
-  if (String(block.group_type || '').toUpperCase() === 'MPP_CYCLE') return false;
+  if (block.is_mpp_planner_mirror) return false;
   if (block.is_mpp_planner_owned) return false;
+  if (String(block.group_type || '').toUpperCase() === 'MPP_CYCLE') return false;
   const groupLabel = String(block.group_label || '').trim();
   if (/^MPP cycle\b/i.test(groupLabel)) return false;
   const opLabel = String(block.operation_name || '').trim();
@@ -1947,12 +1946,11 @@ function trialBlocksGroupedForMachine(machineId) {
   const machineBlocks = trialBlocksForMachine(machineId);
   if (!machineBlocks.length) return [];
 
-  const isMppLane = typeof trialIsMppPlannerMachine === 'function' && trialIsMppPlannerMachine(machineId);
   const summaryByGroupId = new Map(
     (trialState.block_groups || [])
       .filter(g => String(g.machine_id || 0) === String(machineId) && Number(g.group_id || 0) > 0)
-      .filter(g => isMppLane || String(g.group_type || '').toUpperCase() !== 'MPP_CYCLE')
-      .filter(g => isMppLane || !/^MPP cycle\b/i.test(String(g.group_label || '').trim()))
+      .filter(g => String(g.group_type || '').toUpperCase() !== 'MPP_CYCLE')
+      .filter(g => !/^MPP cycle\b/i.test(String(g.group_label || '').trim()))
       .map(g => [String(g.group_id), g])
   );
 

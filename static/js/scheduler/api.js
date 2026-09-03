@@ -1046,7 +1046,7 @@ function trialApplySchedulePayload(scheduleData, machinesResult, programToolsLoo
     .map(m => ({ ...m, machine_code: m.machine_no || m.machine_code }));
 
   // Apply machines before merging blocks — trialIsMainPlannerLaneBlock reads trialState.machines
-  // for MPP lanes, and MPP_CYCLE rows must not be dropped during the same assignment.
+  // and leftover MPP_CYCLE rows must stay excluded from the indicated-plan lanes.
   trialState = {
     ...trialState,
     machines,

@@ -2526,10 +2526,9 @@ def _recalculate_machine_inner(con, machine_id, reason, schedule_run_id, tail_fr
             machine_id=int(machine_id),
             notes=f"Recalculate machine {machine_id}",
         )
-    from .machines import is_mpp_planner_machine_id, scheduler_blocks_exclude_mpp_planner_clause
+    from .machines import scheduler_blocks_exclude_mpp_planner_clause
 
-    use_all_lane_blocks = is_mpp_planner_machine_id(con, int(machine_id))
-    lane_clause = "" if use_all_lane_blocks else f" AND {scheduler_blocks_exclude_mpp_planner_clause('b')}"
+    lane_clause = f" AND {scheduler_blocks_exclude_mpp_planner_clause('b')}"
     blocks = rows(
         con.execute(
             f"""

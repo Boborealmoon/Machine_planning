@@ -404,11 +404,14 @@ def _catalog_ops_for_sidebar(refreshed_ops):
 
 def _catalog_lane_qty_maps(con):
     """Planned + queued qty keyed for catalog / PP sidebar op cards."""
+    from .machines import scheduler_blocks_exclude_mpp_planner_clause
+
+    exclude_mpp = scheduler_blocks_exclude_mpp_planner_clause("b")
     planned_qty_by_op = {}
     queued_machines_by_op = {}
     for row in rows(
         con.execute(
-            """
+            f"""
             SELECT o.source_ps_id,
                    o.source_op_no, o.source_op_seq_id AS source_op_seq_id,
                    COALESCE(SUM(COALESCE(b.scheduled_qty, 0)), 0) AS planned_qty
@@ -417,6 +420,7 @@ def _catalog_lane_qty_maps(con):
             WHERE COALESCE(o.source_ps_id, '') <> ''
               AND COALESCE(b.active, TRUE) = TRUE
               AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
+              AND {exclude_mpp}
             GROUP BY o.source_ps_id, o.source_op_no, o.source_op_seq_id
             """
         )
@@ -426,7 +430,7 @@ def _catalog_lane_qty_maps(con):
         planned_qty_by_op[key] = float(planned_qty_by_op.get(key, 0) or 0) + float(row["planned_qty"] or 0)
     for row in rows(
         con.execute(
-            """
+            f"""
             SELECT DISTINCT o.source_ps_id, o.source_op_no, o.source_op_seq_id AS source_op_seq_id,
                    m.machine_no AS machine_code
             FROM planner_operation o
@@ -435,6 +439,7 @@ def _catalog_lane_qty_maps(con):
             WHERE COALESCE(o.source_ps_id, '') <> ''
               AND COALESCE(b.active, TRUE) = TRUE
               AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
+              AND {exclude_mpp}
             ORDER BY m.machine_no
             """
         )

@@ -701,6 +701,7 @@ def _trial_machine_refresh_payload_inner(con, machine_ids, *, lite=True):
             LEFT JOIN planner_machine_queue_state qs ON qs.block_id = b.block_id
             WHERE COALESCE(b.active, TRUE) = TRUE
               AND b.machine_id = ANY(%s)
+              AND {scheduler_blocks_exclude_mpp_planner_clause("b")}
             ORDER BY b.machine_id, b.queue_position, b.block_id
             """,
             (machine_ids,),
@@ -889,9 +890,8 @@ def _api_trial_schedule_db():
             except Exception:
                 pass
 
-        # Full (non-lite) board loads may repair MPP mirrors. Lite Machine Queue
-        # load must not — rehydrate calls save_mpp_planner_queue when links are
-        # broken, which holds the request on "Loading machine queues...".
+        # Full (non-lite) board loads detach leftover MPP-tab mirrors so CNC 35/36/41
+        # stay free for the indicated plan. Lite Machine Queue must not run this.
         if not is_machine_scoped and not board_lite:
             from .mpp_planner_queue_service import ensure_mpp_planner_scheduler_lanes
 
@@ -977,6 +977,7 @@ def _api_trial_schedule_db():
             if include_completed
             else "COALESCE(b.active, TRUE) = TRUE"
         )
+        _block_where += f" AND {scheduler_blocks_exclude_mpp_planner_clause('b')}"
         _block_params: list = []
         if is_machine_scoped:
             _block_where += " AND b.machine_id = ANY(%s)"
@@ -2945,12 +2946,9 @@ def api_trial_reorder_queue_batch():
         return jsonify({"error": "lanes must include machine_id and ordered_ids"}), 400
 
     with planner_db() as con:
-        from .machines import is_mpp_planner_machine_id, is_mpp_planner_owned_block
+        from .machines import is_mpp_planner_owned_block
 
         for entry in lane_orders:
-            machine_id = int(entry["machine_id"])
-            if is_mpp_planner_machine_id(con, machine_id):
-                return jsonify({"error": MPP_PLANNER_GUARD_MSG}), 400
             for block_id in entry["ordered_ids"]:
                 if is_mpp_planner_owned_block(con, int(block_id)):
                     return jsonify({"error": MPP_PLANNER_GUARD_MSG}), 400

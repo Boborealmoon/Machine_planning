@@ -11,28 +11,10 @@ def _main_planner_lane_clause(alias: str = "b") -> str:
 
 
 def main_planner_lane_block_ids(con, machine_id):
-    """Active lane blocks in queue order (MPP machines include mirrored MPP-tab cycles)."""
+    """Active indicated-plan blocks in queue order (excludes MPP-tab cycle storage)."""
     machine_id = int(machine_id or 0)
     if machine_id <= 0:
         return []
-    from .machines import is_mpp_planner_machine_id
-
-    if is_mpp_planner_machine_id(con, machine_id):
-        return [
-            int(row["block_id"])
-            for row in rows(
-                con.execute(
-                    """
-                    SELECT block_id
-                    FROM planner_run_block
-                    WHERE machine_id = %s
-                      AND COALESCE(active, TRUE) = TRUE
-                    ORDER BY queue_position, block_id
-                    """,
-                    (machine_id,),
-                )
-            )
-        ]
     clause = _main_planner_lane_clause("b")
     return [
         int(row["block_id"])
@@ -56,21 +38,6 @@ def main_planner_lane_max_queue_position(con, machine_id) -> float:
     machine_id = int(machine_id or 0)
     if machine_id <= 0:
         return 0.0
-    from .machines import is_mpp_planner_machine_id
-
-    if is_mpp_planner_machine_id(con, machine_id):
-        row = one(
-            con.execute(
-                """
-                SELECT COALESCE(MAX(queue_position), 0) AS mx
-                FROM planner_run_block
-                WHERE machine_id = %s
-                  AND COALESCE(active, TRUE) = TRUE
-                """,
-                (machine_id,),
-            )
-        )
-        return float((row or {}).get("mx") or 0)
     clause = _main_planner_lane_clause("b")
     row = one(
         con.execute(
