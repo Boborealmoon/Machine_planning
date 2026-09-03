@@ -766,6 +766,41 @@ function trialLaneShowsBlock(block, machineId) {
   return true;
 }
 
+/** Fill missing cycle/setup from master before queue POST (sub-assembly cards often cache 0). */
+async function trialResolveQueueCycleTimes(body, catalogCard) {
+  const payload = { ...(body || {}) };
+  if (Number(payload.cycle_minutes_per_qty || 0) > 0) return payload;
+  const partNo = String(
+    payload.part_no || catalogCard?.part_no || catalogCard?.part_name || catalogCard?.inventory_code || '',
+  ).trim();
+  if (!partNo || typeof GET !== 'function') return payload;
+  try {
+    const q = new URLSearchParams({
+      part_no: partNo,
+      bom_code: String(
+        payload.bom_code || catalogCard?.selected_bom_code || catalogCard?.erp_bom_code || '',
+      ).trim(),
+      op_no: String(payload.source_op_no || catalogCard?.source_op_no || '').trim(),
+      op_type: String(payload.operation_name || catalogCard?.op_type || '').trim(),
+      inventory_code: String(payload.inventory_code || catalogCard?.inventory_code || '').trim(),
+      part_desc: String(catalogCard?.part_desc || '').trim(),
+      erp_bom_code: String(payload.erp_bom_code || catalogCard?.erp_bom_code || '').trim(),
+      fallback_cycle: String(payload.cycle_minutes_per_qty || 0),
+      fallback_setup: String(payload.setup_minutes || 0),
+    });
+    const resolved = await GET(`/api/trial/cycle-times/resolve?${q.toString()}`);
+    if (resolved?.source === 'master' && Number(resolved.cycle_time || 0) > 0) {
+      payload.cycle_minutes_per_qty = Number(resolved.cycle_time);
+      if (Number(resolved.set_up_time || 0) > 0) {
+        payload.setup_minutes = Number(resolved.set_up_time);
+      }
+    }
+  } catch (err) {
+    console.warn('queue cycle-time resolve failed:', err);
+  }
+  return payload;
+}
+
 /** POST queue row; canonical PS id; retry once if server matched another partial. */
 async function trialPostCatalogQueueOperation(body, catalogCard) {
   const build = typeof trialCanonicalQueuePayload === 'function'
@@ -794,6 +829,7 @@ async function trialPostCatalogQueueOperation(body, catalogCard) {
     return built;
   };
   let payload = buildPayload();
+  payload = await trialResolveQueueCycleTimes(payload, resolve?.catalogCard || catalogCard);
   let result = await POST('/api/trial/operations', payload);
   if (!result?.duplicate || !result?.block) return result;
   const want = Number(payload.pp_partial_no)
@@ -809,7 +845,7 @@ async function trialPostCatalogQueueOperation(body, catalogCard) {
     response: result,
   });
   payload = buildPayload({
-    ...body,
+    ...payload,
     pp_partial_no: want,
     job_no: typeof trialFormatPlannerPsId === 'function'
       ? trialFormatPlannerPsId(
@@ -818,7 +854,7 @@ async function trialPostCatalogQueueOperation(body, catalogCard) {
           : '',
         want,
       )
-      : body.job_no,
+      : payload.job_no,
     source_ps_id: typeof trialFormatPlannerPsId === 'function'
       ? trialFormatPlannerPsId(
         typeof trialCatalogSourceBase === 'function'
@@ -826,8 +862,11 @@ async function trialPostCatalogQueueOperation(body, catalogCard) {
           : '',
         want,
       )
-      : body.source_ps_id,
+      : payload.source_ps_id,
   });
+  if (Number(payload.cycle_minutes_per_qty || 0) <= 0) {
+    payload = await trialResolveQueueCycleTimes(payload, resolve?.catalogCard || catalogCard);
+  }
   result = await POST('/api/trial/operations', payload);
   return result;
 }

@@ -237,8 +237,16 @@ function fqCompareAssigneeLabels(a, b, dir) {
   return desc ? -cmp : cmp;
 }
 
-function fqRenderGroupRow(label, { count = 0, exceptions = 0, nextQa = '' } = {}) {
-  const initial = (label === fqUnassignedLabel() || label === 'Unassigned') ? '?' : (label.trim().charAt(0).toUpperCase() || '?');
+function fqRenderGroupRow(label, {
+  count = 0,
+  exceptions = 0,
+  nextQa = '',
+  extraClass = '',
+  avatar = '',
+  nextDateKey = 'next_qa',
+} = {}) {
+  const initial = avatar
+    || ((label === fqUnassignedLabel() || label === 'Unassigned') ? '?' : (label.trim().charAt(0).toUpperCase() || '?'));
   const meta = [];
   if (count) {
     meta.push(typeof fqPlural === 'function'
@@ -251,13 +259,14 @@ function fqRenderGroupRow(label, { count = 0, exceptions = 0, nextQa = '' } = {}
       : `${exceptions} exception${exceptions === 1 ? '' : 's'}`);
   }
   if (nextQa && nextQa !== '—') {
-    meta.push(typeof fqT === 'function' ? fqT('next_qa', { date: nextQa }) : `next QA ${nextQa}`);
+    const dateKey = nextDateKey || 'next_qa';
+    meta.push(typeof fqT === 'function' ? fqT(dateKey, { date: nextQa }) : `next target ${nextQa}`);
   }
   const metaHtml = meta.length
     ? `<span class="fq-group-row-meta">${meta.map((m) => escapeHtml(m)).join(' · ')}</span>`
     : '';
   return `
-    <tr class="fq-group-row">
+    <tr class="fq-group-row${extraClass}">
       <td colspan="${FQ_TABLE_COL_COUNT}">
         <div class="fq-group-row-inner">
           <span class="fq-group-row-avatar" aria-hidden="true">${escapeHtml(initial)}</span>
@@ -267,6 +276,55 @@ function fqRenderGroupRow(label, { count = 0, exceptions = 0, nextQa = '' } = {}
       </td>
     </tr>
   `;
+}
+
+function fqIsDeburringItem(item) {
+  return String(item?.stage_bucket || '') === 'deburring';
+}
+
+function fqIsDeburringQueue() {
+  return fqState.screen === 'queue' && fqState.stage === 'deburring';
+}
+
+function fqIsFinalInspectionQueue() {
+  return fqState.screen === 'queue' && fqState.stage === 'final_inspection';
+}
+
+function fqMatchesQueueStage(item) {
+  if (fqState.stage === 'all') return true;
+  if (item?.stage_bucket === fqState.stage) return true;
+  return fqIsFinalInspectionQueue() && fqIsDeburringItem(item);
+}
+
+function fqQaDueLabel(item) {
+  const deadline = item ? fqIsDeburringItem(item) : fqIsDeburringQueue();
+  if (typeof fqT === 'function') return fqT(deadline ? 'col_deadline' : 'col_qa_due');
+  return deadline ? 'Deadline' : 'Target completion date';
+}
+
+function fqDetailDueLabel(item) {
+  if (fqIsDeburringItem(item)) {
+    return (typeof fqT === 'function') ? fqT('detail_deadline') : 'Deadline';
+  }
+  return (typeof fqT === 'function') ? fqT('detail_qa_due') : 'Target completion date';
+}
+
+function fqDueSavedMessage(item) {
+  if (fqIsDeburringItem(item)) {
+    return (typeof fqT === 'function') ? fqT('toast_deadline_saved') : 'Deadline saved';
+  }
+  return (typeof fqT === 'function') ? fqT('toast_qa_due_saved') : 'Target completion date saved';
+}
+
+function fqSyncQaDueColumnLabel() {
+  const label = document.getElementById('fq-col-qa-due-label')
+    || document.querySelector('[data-fq-sort="qa_due_date"] [data-fq-i18n="col_qa_due"], [data-fq-sort="qa_due_date"] [data-fq-i18n="col_deadline"]')
+    || document.querySelector('[data-fq-sort="qa_due_date"] span');
+  if (!label) return;
+  const key = fqIsDeburringQueue() ? 'col_deadline' : 'col_qa_due';
+  label.id = 'fq-col-qa-due-label';
+  label.dataset.fqI18n = key;
+  label.textContent = (typeof fqT === 'function') ? fqT(key) : (key === 'col_deadline' ? 'Deadline' : 'Target completion date');
 }
 
 function fqActiveSourceItems() {
@@ -470,7 +528,7 @@ function fqFilteredItems() {
   const filtered = (source || []).filter((item) => {
     if (!fqMatchesPsType(item)) return false;
     if (!fqIsMaterialIssueScreen() && fqState.hideDone && item.checklist_done) return false;
-    if (fqState.screen !== 'assignments' && !fqIsMaterialIssueScreen() && fqState.stage !== 'all' && item.stage_bucket !== fqState.stage) {
+    if (fqState.screen !== 'assignments' && !fqIsMaterialIssueScreen() && fqState.stage !== 'all' && !fqMatchesQueueStage(item)) {
       return false;
     }
     if (fqState.screen === 'assignments' && fqState.assignee !== 'all') {
@@ -653,10 +711,13 @@ function fqWrapEditableField(innerHtml, field) {
   return `<div class="fq-field-wrap" data-fq-field-wrap="${escapeHtml(field)}">${innerHtml}<span class="fq-save-hint" aria-live="polite"></span></div>`;
 }
 
-function fqJobCell(item) {
+function fqJobCell(item, { incoming = false } = {}) {
   const ps = escapeHtml(item.ps_id || '—');
   const partial = Number(item.pp_partial_no) > 1
     ? `<span class="fq-partial-tag">p${escapeHtml(String(item.pp_partial_no))}</span>`
+    : '';
+  const incomingTag = incoming
+    ? `<span class="fq-incoming-tag">${escapeHtml((typeof fqT === 'function') ? fqT('incoming_badge') : 'Incoming')}</span>`
     : '';
   const part = item.part_no
     ? `<span class="fq-part-sub">${escapeHtml(item.part_no)}</span>`
@@ -665,7 +726,7 @@ function fqJobCell(item) {
   const qtyHtml = qty !== '—'
     ? `<span class="fq-qty-sub">${escapeHtml(qty)} ${(typeof fqT === 'function') ? fqT('pcs') : 'pcs'}</span>`
     : '';
-  return `<div class="fq-job-cell"><span class="fq-job-ps">${ps}${partial}</span>${part}${qtyHtml}</div>`;
+  return `<div class="fq-job-cell"><span class="fq-job-ps">${ps}${partial}${incomingTag}</span>${part}${qtyHtml}</div>`;
 }
 
 function fqResolveOverlayItem(el) {
@@ -799,7 +860,7 @@ async function fqPersistOverlayField(el) {
     if (inDetail) {
       fqSetDetailSaveStatus(
         field === 'inspector_id' ? 'Assignment saved ✓'
-          : field === 'qa_due_date' ? 'QA due date saved ✓'
+          : field === 'qa_due_date' ? `${fqDueSavedMessage(item)} ✓`
             : 'Remarks saved ✓',
         'success',
       );
@@ -872,13 +933,14 @@ function fqRenderDetail(item) {
   const qaValue = escapeHtml(fqDateInputValue(item.qa_due_date));
   const remarksValue = escapeHtml(item.remarks || '');
   const t = (typeof fqT === 'function') ? fqT : (k) => k;
+  const dueLabel = fqDetailDueLabel(item);
   const editHtml = `
     <section class="fq-detail-edit card">
       <h3 class="fq-detail-edit-title">${escapeHtml(t('detail_quick_edit'))}</h3>
       <div class="fq-detail-edit-grid">
         <label class="fq-detail-edit-field">
-          <span>${escapeHtml(t('detail_qa_due'))}</span>
-          ${fqWrapEditableField(`<input type="date" class="fq-cell-input fq-cell-date" data-fq-field="qa_due_date" ${fieldAttrs} ${fqOverlayControlHandlers('qa_due_date')} value="${qaValue}">`, 'qa_due_date')}
+          <span>${escapeHtml(dueLabel)}</span>
+          ${fqWrapEditableField(`<input type="date" class="fq-cell-input fq-cell-date" data-fq-field="qa_due_date" ${fieldAttrs} ${fqOverlayControlHandlers('qa_due_date')} value="${qaValue}" title="${escapeHtml(dueLabel)}" aria-label="${escapeHtml(dueLabel)}">`, 'qa_due_date')}
         </label>
         <label class="fq-detail-edit-field">
           <span>${escapeHtml(t('detail_assigned'))}</span>
@@ -966,6 +1028,24 @@ function fqUpdateNavCounts() {
   fqSetNavCount('fq-count-all', queueItems.length);
   fqSetNavCount('fq-count-deburring', stageCounts.deburring);
   fqSetNavCount('fq-count-final_inspection', stageCounts.final_inspection);
+  let incomingChip = document.getElementById('fq-count-final_inspection-incoming');
+  if (!incomingChip) {
+    const fiBtn = document.querySelector('[data-fq-stage="final_inspection"]');
+    if (fiBtn) {
+      incomingChip = document.createElement('span');
+      incomingChip.id = 'fq-count-final_inspection-incoming';
+      incomingChip.className = 'fq-chip-count fq-chip-count--incoming';
+      incomingChip.hidden = true;
+      fiBtn.appendChild(incomingChip);
+    }
+  }
+  fqSetNavCount('fq-count-final_inspection-incoming', stageCounts.deburring);
+  incomingChip = document.getElementById('fq-count-final_inspection-incoming');
+  if (incomingChip) {
+    incomingChip.title = (typeof fqT === 'function')
+      ? fqT('incoming_from_deburring')
+      : 'Incoming from Deburring';
+  }
   fqSetNavCount('fq-count-packing', stageCounts.packing);
   fqSetNavCount('fq-count-engraving_packing', stageCounts.engraving_packing);
   fqSetNavCount('fq-count-material_issue', fqMaterialIssueItemsMatchingPsTypes().length);
@@ -1046,9 +1126,10 @@ function fqFindItemByKey(key) {
 function fqEditableCells(item) {
   const fieldAttrs = fqOverlayFieldAttrs(item);
   const qaValue = escapeHtml(fqDateInputValue(item.qa_due_date));
+  const dueLabel = escapeHtml(fqQaDueLabel(item));
   return {
     qaDue: fqWrapEditableField(
-      `<input type="date" class="fq-cell-input fq-cell-date fq-cell-date--compact" data-fq-field="qa_due_date" ${fieldAttrs} ${fqOverlayControlHandlers('qa_due_date')} value="${qaValue}">`,
+      `<input type="date" class="fq-cell-input fq-cell-date fq-cell-date--compact" data-fq-field="qa_due_date" ${fieldAttrs} ${fqOverlayControlHandlers('qa_due_date')} value="${qaValue}" title="${dueLabel}" aria-label="${dueLabel}">`,
       'qa_due_date',
     ),
     assignee: fqWrapEditableField(
@@ -2167,19 +2248,20 @@ function fqBindQcQueue() {
   }
 }
 
-function fqRenderDataRow(item) {
+function fqRenderDataRow(item, { incoming = false } = {}) {
   const key = fqItemKey(item);
   const selected = key === fqState.selectedKey ? ' is-selected' : '';
   const statusCls = fqRowStatusClass(item.current_stage_status);
   const doneCls = item.checklist_done ? ' fq-row--done' : '';
   const exceptionCls = item.exception_flag ? ' fq-row--exception' : '';
+  const incomingCls = incoming ? ' fq-row--incoming' : '';
   const cells = fqEditableCells(item);
   const attrs = fqOverlayFieldAttrs(item);
   const schedule = fqWeekCellMeta(item);
   return `
-    <tr class="fq-row${selected}${statusCls}${doneCls}${exceptionCls}" data-key="${escapeHtml(key)}" tabindex="0">
+    <tr class="fq-row${selected}${statusCls}${doneCls}${exceptionCls}${incomingCls}" data-key="${escapeHtml(key)}" tabindex="0">
       <td class="fq-col-actions fq-col-sticky">${fqRowActionCells(item)}</td>
-      <td class="fq-col-sticky fq-col-sticky--job fq-open-detail">${fqJobCell(item)}</td>
+      <td class="fq-col-sticky fq-col-sticky--job fq-open-detail">${fqJobCell(item, { incoming })}</td>
       <td class="fq-open-detail">${fqStageBadge(item)}</td>
       <td class="fq-open-detail">${fqStatusPill(item.current_stage_status)}</td>
       <td class="fq-open-detail fq-col-date">${escapeHtml(fqFormatDate(item.due_date))}</td>
@@ -2307,7 +2389,7 @@ function fqRenderAssigneeBoard() {
           <span class="fq-assignee-card-name">${escapeHtml(row.label)}</span>
           <span class="fq-assignee-card-meta">
             <span class="fq-assignee-card-stat">${typeof fqPlural === 'function' ? fqPlural('jobs_count', row.count) : `${row.count} job${row.count === 1 ? '' : 's'}`}</span>
-            <span class="fq-assignee-card-stat">${escapeHtml(typeof fqT === 'function' ? fqT('qa_from', { date: nextQa }) : `QA from ${nextQa}`)}</span>
+            <span class="fq-assignee-card-stat">${escapeHtml(typeof fqT === 'function' ? fqT('qa_from', { date: nextQa }) : `Target from ${nextQa}`)}</span>
             ${excHtml}
           </span>
         </span>
@@ -2363,6 +2445,41 @@ function fqRenderAssignmentsBody(filtered) {
     groupItems.push(item);
   }
   flushGroup(lastLabel);
+  return parts.join('');
+}
+
+function fqRenderQueueBody(filtered) {
+  if (!fqIsFinalInspectionQueue()) {
+    return filtered.map((item) => fqRenderDataRow(item)).join('');
+  }
+
+  const current = [];
+  const incoming = [];
+  for (const item of filtered) {
+    if (fqIsDeburringItem(item)) incoming.push(item);
+    else current.push(item);
+  }
+
+  const parts = [];
+  if (incoming.length && current.length) {
+    parts.push(fqRenderGroupRow(
+      (typeof fqT === 'function') ? fqT('incoming_now_final_inspection') : 'In final inspection',
+      fqGroupRowStats(current),
+    ));
+  }
+  for (const item of current) parts.push(fqRenderDataRow(item));
+  if (incoming.length) {
+    parts.push(fqRenderGroupRow(
+      (typeof fqT === 'function') ? fqT('incoming_from_deburring') : 'Incoming from Deburring',
+      {
+        ...fqGroupRowStats(incoming),
+        extraClass: ' fq-group-row--incoming',
+        avatar: '↓',
+        nextDateKey: 'next_deadline',
+      },
+    ));
+    for (const item of incoming) parts.push(fqRenderDataRow(item, { incoming: true }));
+  }
   return parts.join('');
 }
 
@@ -2446,6 +2563,8 @@ function fqUpdateScreenChrome() {
       board.innerHTML = '';
     }
   }
+
+  fqSyncQaDueColumnLabel();
 }
 
 function fqRenderTable() {
@@ -2512,7 +2631,7 @@ function fqRenderTable() {
     empty.hidden = true;
     tbody.innerHTML = fqIsAssignmentsView()
       ? fqRenderAssignmentsBody(filtered)
-      : filtered.map((item) => fqRenderDataRow(item)).join('');
+      : fqRenderQueueBody(filtered);
   }
 
   if (stats) {
@@ -2536,9 +2655,15 @@ function fqRenderTable() {
           : `${filtered.length} job${filtered.length === 1 ? '' : 's'} · sorted by column`;
       }
     } else {
+      const incomingItems = fqIsFinalInspectionQueue()
+        ? filtered.filter((item) => fqIsDeburringItem(item))
+        : [];
+      const currentItems = incomingItems.length
+        ? filtered.filter((item) => !fqIsDeburringItem(item))
+        : filtered;
       const statusCounts = { I: 0, R: 0, P: 0 };
       let exceptionCount = 0;
-      for (const item of filtered) {
+      for (const item of currentItems) {
         const code = String(item.current_stage_status || '').trim().toUpperCase();
         if (code in statusCounts) statusCounts[code] += 1;
         if (item.exception_flag) exceptionCount += 1;
@@ -2551,9 +2676,20 @@ function fqRenderTable() {
           ? fqT(exceptionCount === 1 ? 'stats_exceptions' : 'stats_exceptions_plural', { n: exceptionCount })
           : ` · ${exceptionCount} exception${exceptionCount === 1 ? '' : 's'}`)
         : '';
-      stats.textContent = (typeof fqT === 'function')
-        ? fqT('stats_queue', { n: filtered.length, i: statusCounts.I, r: statusCounts.R, stage: stageLabel }) + excText
-        : `${filtered.length} in queue · ${statusCounts.I} in process · ${statusCounts.R} ready · ${stageLabel}${excText}`;
+      const incomingText = incomingItems.length
+        ? ((typeof fqT === 'function')
+          ? fqT('stats_incoming', { n: incomingItems.length })
+          : ` · ${incomingItems.length} incoming`)
+        : '';
+      if (!currentItems.length && incomingItems.length) {
+        stats.textContent = (typeof fqT === 'function')
+          ? fqT('stats_incoming_only', { n: incomingItems.length })
+          : `${incomingItems.length} incoming from Deburring`;
+      } else {
+        stats.textContent = (typeof fqT === 'function')
+          ? fqT('stats_queue', { n: currentItems.length, i: statusCounts.I, r: statusCounts.R, stage: stageLabel }) + excText + incomingText
+          : `${currentItems.length} in queue · ${statusCounts.I} in process · ${statusCounts.R} ready · ${stageLabel}${excText}${incomingText}`;
+      }
     }
   }
 

@@ -29,6 +29,10 @@ DAY_END_MINUTE = 24 * 60
 BLOCKING_WINDOW_TYPES = {"DOWN", "MAINTENANCE", "HOLIDAY", "BLOCKED"}
 ADDING_WINDOW_TYPES = {"OVERTIME", "AVAILABLE"}
 
+INTERVAL_CACHE_CAPACITY_CTX = "__capacity_ctx__"
+INTERVAL_CACHE_WINDOWS = "__calendar_windows__"
+INTERVAL_CACHE_DATE_RANGE = "__date_range__"
+
 
 def default_profile_for_weekday(weekday, shift_profile="STANDARD"):
     if weekday == 6:
@@ -343,23 +347,83 @@ def _add_interval(base_intervals, add_start, add_end):
     return _merge_intervals([*base_intervals, (add_start, add_end)])
 
 
+def interval_cache_covers_date(interval_cache, work_day):
+    rng = (interval_cache or {}).get(INTERVAL_CACHE_DATE_RANGE)
+    if not rng:
+        return False
+    start, end = rng
+    return start <= work_day <= end
+
+
+def _calendar_windows_overlapping_day(windows, work_day):
+    day_start = datetime.combine(work_day, datetime.min.time())
+    day_end = day_start + timedelta(days=1)
+    matched = []
+    for window in windows or []:
+        start_raw = window.get("start_at") if isinstance(window, dict) else None
+        end_raw = window.get("end_at") if isinstance(window, dict) else None
+        if start_raw is None or end_raw is None:
+            continue
+        start_dt = start_raw if isinstance(start_raw, datetime) else datetime.fromisoformat(str(start_raw).replace("T", " "))
+        end_dt = end_raw if isinstance(end_raw, datetime) else datetime.fromisoformat(str(end_raw).replace("T", " "))
+        if start_dt.tzinfo is not None:
+            start_dt = start_dt.replace(tzinfo=None)
+        if end_dt.tzinfo is not None:
+            end_dt = end_dt.replace(tzinfo=None)
+        if start_dt < day_end and end_dt > day_start:
+            matched.append(window)
+    return matched
+
+
+def prepare_machine_interval_cache(con, machine_id, start_date=None, end_date=None):
+    """Prefetch capacity, holidays, and calendar windows for one machine's schedule rebuild."""
+    from .utils import planner_today
+
+    machine_id = int(machine_id or 0)
+    start_day = start_date if isinstance(start_date, date) else planner_today() - timedelta(days=45)
+    end_day = end_date if isinstance(end_date, date) else planner_today() + timedelta(days=400)
+    if end_day < start_day:
+        start_day, end_day = end_day, start_day
+    ctx = prefetch_capacity_context(con, [machine_id] if machine_id else [], start_day, end_day)
+    from .scheduler_state import prefetch_calendar_windows_for_machines
+
+    windows_by_machine = prefetch_calendar_windows_for_machines(
+        con, [machine_id] if machine_id else [], start_day, end_day
+    )
+    return {
+        INTERVAL_CACHE_CAPACITY_CTX: ctx,
+        INTERVAL_CACHE_WINDOWS: windows_by_machine.get(machine_id, []),
+        INTERVAL_CACHE_DATE_RANGE: (start_day, end_day),
+    }
+
+
 def machine_work_intervals_for_day(con, machine_id, work_date, interval_cache=None):
     work_day = work_date if isinstance(work_date, date) else date.fromisoformat(str(work_date))
     cache_key = (int(machine_id), work_day.isoformat())
     if interval_cache is not None and cache_key in interval_cache:
         return interval_cache[cache_key]
-    machine = (
-        one(
-            con.execute(
-                "SELECT machine_id, shift_profile FROM planner_machines WHERE machine_id = %s",
-                (int(machine_id),),
-            )
+    use_prefetch = interval_cache_covers_date(interval_cache, work_day)
+    capacity_ctx = (interval_cache or {}).get(INTERVAL_CACHE_CAPACITY_CTX) if use_prefetch else None
+    if capacity_ctx is not None:
+        machine_shift_profile = compact_text(
+            (capacity_ctx.get("shift_profiles") or {}).get(int(machine_id))
         )
-        if machine_id
-        else None
-    )
-    machine_shift_profile = compact_text(machine["shift_profile"]) if machine else ""
-    cap = machine_capacity_details_for_date(con, machine_id, work_day)
+        cap = machine_capacity_details_with_context(con, machine_id, work_day, capacity_ctx)
+        holiday = work_day.isoformat() in (capacity_ctx.get("holidays") or set())
+    else:
+        machine = (
+            one(
+                con.execute(
+                    "SELECT machine_id, shift_profile FROM planner_machines WHERE machine_id = %s",
+                    (int(machine_id),),
+                )
+            )
+            if machine_id
+            else None
+        )
+        machine_shift_profile = compact_text(machine["shift_profile"]) if machine else ""
+        cap = machine_capacity_details_for_date(con, machine_id, work_day)
+        holiday = is_public_holiday(con, work_day)
     base_intervals = []
     if cap and bool(cap.get("has_capacity_day_override")):
         if int(cap.get("capacity_minutes") or 0) > 0:
@@ -372,7 +436,7 @@ def machine_work_intervals_for_day(con, machine_id, work_date, interval_cache=No
         start_minute = int(cap.get("start_minute") or 0)
         end_minute = min(DAY_END_MINUTE, start_minute + int(cap.get("capacity_minutes") or 0))
         base_intervals = [(_minute_to_datetime(work_day, start_minute), _minute_to_datetime(work_day, end_minute))]
-    elif work_day.weekday() == 6 or is_public_holiday(con, work_day):
+    elif work_day.weekday() == 6 or holiday:
         base_intervals = []
     elif work_day.weekday() == 5 and compact_text((cap or {}).get("profile_name")).upper() == "SATURDAY":
         base_intervals = [
@@ -391,15 +455,26 @@ def machine_work_intervals_for_day(con, machine_id, work_date, interval_cache=No
             (_minute_to_datetime(work_day, WEEKDAY_COFFEE_END_MINUTE), _minute_to_datetime(work_day, STANDARD_WORK_END_MINUTE)),
         ]
 
-    calendar_windows = (
-        list(active_calendar_windows_for_machine_day(con, machine_id, work_day))
-        if con and machine_id
-        else []
-    )
+    if use_prefetch and INTERVAL_CACHE_WINDOWS in (interval_cache or {}):
+        calendar_windows = _calendar_windows_overlapping_day(
+            interval_cache.get(INTERVAL_CACHE_WINDOWS), work_day
+        )
+    else:
+        calendar_windows = (
+            list(active_calendar_windows_for_machine_day(con, machine_id, work_day))
+            if con and machine_id
+            else []
+        )
     for window in calendar_windows:
         window_type = compact_text(window["window_type"]).upper()
-        start_dt = datetime.fromisoformat(str(window["start_at"]).replace("T", " "))
-        end_dt = datetime.fromisoformat(str(window["end_at"]).replace("T", " "))
+        start_raw = window["start_at"]
+        end_raw = window["end_at"]
+        start_dt = start_raw if isinstance(start_raw, datetime) else datetime.fromisoformat(str(start_raw).replace("T", " "))
+        end_dt = end_raw if isinstance(end_raw, datetime) else datetime.fromisoformat(str(end_raw).replace("T", " "))
+        if start_dt.tzinfo is not None:
+            start_dt = start_dt.replace(tzinfo=None)
+        if end_dt.tzinfo is not None:
+            end_dt = end_dt.replace(tzinfo=None)
         if window_type in BLOCKING_WINDOW_TYPES:
             base_intervals = _subtract_interval(base_intervals, start_dt, end_dt)
         elif window_type in ADDING_WINDOW_TYPES:

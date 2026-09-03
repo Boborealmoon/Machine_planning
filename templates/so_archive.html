@@ -3,7 +3,7 @@
 {% block body_class %}soa-page{% endblock %}
 {% block main_class %}app-main--soa{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/so_archive.css') }}?v=soa-20260730c">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/so_archive.css') }}?v=soa-analytics-20260902">
 {% endblock %}
 {% block content %}
 <div class="soa-shell">
@@ -11,66 +11,148 @@
     <div class="soa-header-main">
       <p class="soa-kicker">Archive</p>
       <h1 class="soa-title">SO Line Archive</h1>
-      <p class="soa-subtitle">
+      <p class="soa-subtitle" id="soa-subtitle">
         Sales order / process sheet / shipment lines - APS, NPS, and other PS.
         Columns match the Power Query export order.
       </p>
     </div>
     <div class="soa-header-actions">
-      <button type="button" class="btn btn-ghost btn-sm" id="soa-export" hidden>Export CSV</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="soa-export" title="Export month line lists to CSV" hidden>Export CSV</button>
       <button type="button" class="btn btn-secondary btn-sm" id="soa-refresh">Refresh</button>
     </div>
   </header>
 
-  <div class="soa-layout">
+  <nav class="soa-tabs" role="tablist" aria-label="Archive views">
+    <button type="button" class="soa-tab is-active" id="soa-tab-lines" data-tab="lines" role="tab" aria-selected="true" aria-controls="soa-panel-lines">Lines</button>
+    <button type="button" class="soa-tab" id="soa-tab-analytics" data-tab="analytics" role="tab" aria-selected="false" aria-controls="soa-panel-analytics">Visual analytics</button>
+  </nav>
+
+  <div class="soa-layout" id="soa-layout">
     <div class="soa-main">
-      <section class="soa-toolbar">
-        <div class="soa-field soa-field--buckets">
-          <span>PS filter</span>
-          <div class="soa-bucket-chips" id="soa-bucket-chips" role="group" aria-label="Process sheet bucket">
-            <button type="button" class="soa-bucket-chip is-active" data-bucket="APS" aria-pressed="true">APS</button>
-            <button type="button" class="soa-bucket-chip is-active" data-bucket="NPS" aria-pressed="true">NPS</button>
-            <button type="button" class="soa-bucket-chip" data-bucket="OTHER" aria-pressed="false">Other PS</button>
+      <div id="soa-panel-lines" class="soa-panel" role="tabpanel" aria-labelledby="soa-tab-lines">
+        <section class="soa-toolbar">
+          <div class="soa-field soa-field--buckets">
+            <span>PS filter</span>
+            <div class="soa-bucket-chips" id="soa-bucket-chips" role="group" aria-label="Process sheet bucket">
+              <button type="button" class="soa-bucket-chip is-active" data-bucket="APS" aria-pressed="true">APS</button>
+              <button type="button" class="soa-bucket-chip is-active" data-bucket="NPS" aria-pressed="true">NPS</button>
+              <button type="button" class="soa-bucket-chip" data-bucket="OTHER" aria-pressed="false">Other PS</button>
+            </div>
           </div>
+          <label class="soa-field">
+            <span>Lookback</span>
+            <select id="soa-lookback">
+              <option value="14">Last 14 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="60" selected>Last 60 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="custom">Custom range</option>
+            </select>
+          </label>
+          <label class="soa-field soa-field--custom" id="soa-from-wrap" hidden>
+            <span>From</span>
+            <input type="date" id="soa-from">
+          </label>
+          <label class="soa-field soa-field--custom" id="soa-to-wrap" hidden>
+            <span>To</span>
+            <input type="date" id="soa-to">
+          </label>
+          <label class="soa-field soa-field--search">
+            <span>Search</span>
+            <input type="search" id="soa-search" placeholder="SO, PS, part, customer PO..." autocomplete="off">
+          </label>
+          <div class="soa-meta" id="soa-meta">Loading...</div>
+        </section>
+
+        <div id="soa-loading" class="soa-loading">
+          <div class="spinner"></div>
+          <span>Loading SO line archive...</span>
         </div>
-        <label class="soa-field">
-          <span>Lookback</span>
-          <select id="soa-lookback">
-            <option value="14">Last 14 days</option>
-            <option value="30">Last 30 days</option>
-            <option value="60" selected>Last 60 days</option>
-            <option value="90">Last 90 days</option>
-            <option value="custom">Custom range</option>
-          </select>
-        </label>
-        <label class="soa-field soa-field--custom" id="soa-from-wrap" hidden>
-          <span>From</span>
-          <input type="date" id="soa-from">
-        </label>
-        <label class="soa-field soa-field--custom" id="soa-to-wrap" hidden>
-          <span>To</span>
-          <input type="date" id="soa-to">
-        </label>
-        <label class="soa-field soa-field--search">
-          <span>Search</span>
-          <input type="search" id="soa-search" placeholder="SO, PS, part, customer PO..." autocomplete="off">
-        </label>
-        <div class="soa-meta" id="soa-meta">Loading...</div>
-      </section>
+        <div id="soa-alert" class="soa-alert" hidden></div>
 
-      <div id="soa-loading" class="soa-loading">
-        <div class="spinner"></div>
-        <span>Loading SO line archive...</span>
+        <section class="soa-kpi" id="soa-kpi" hidden></section>
+
+        <section class="soa-groups" id="soa-groups" hidden></section>
+        <div id="soa-empty" class="soa-empty" hidden>No sales order lines match this filter.</div>
       </div>
-      <div id="soa-alert" class="soa-alert" hidden></div>
 
-      <section class="soa-kpi" id="soa-kpi" hidden></section>
+      <div id="soa-panel-analytics" class="soa-panel soa-analytics" role="tabpanel" aria-labelledby="soa-tab-analytics" hidden>
+        <section class="soa-toolbar soa-analytics-toolbar">
+          <label class="soa-field">
+            <span>Year</span>
+            <input id="soa-an-year" type="number" min="2000" max="2100" step="1">
+          </label>
+          <div class="soa-field soa-field--buckets">
+            <span>Segment</span>
+            <div class="soa-bucket-chips" id="soa-an-presets" role="group" aria-label="PP prefix presets">
+              <button type="button" class="soa-bucket-chip is-active" data-an-preset="aps-nps">APS + NPS</button>
+              <button type="button" class="soa-bucket-chip" data-an-preset="aps">APS</button>
+              <button type="button" class="soa-bucket-chip" data-an-preset="nps">NPS</button>
+              <button type="button" class="soa-bucket-chip" data-an-preset="all">All</button>
+            </div>
+          </div>
+          <div class="soa-field soa-field--buckets">
+            <span>PP type</span>
+            <div class="soa-bucket-chips" id="soa-an-types" role="group" aria-label="PP types">
+              <button type="button" class="soa-bucket-chip" data-an-type="MPS">MPS</button>
+              <button type="button" class="soa-bucket-chip is-active" data-an-type="APS">APS</button>
+              <button type="button" class="soa-bucket-chip is-active" data-an-type="NPS">NPS</button>
+              <button type="button" class="soa-bucket-chip" data-an-type="PPS">PPS</button>
+              <button type="button" class="soa-bucket-chip" data-an-type="CPS">CPS</button>
+              <button type="button" class="soa-bucket-chip" data-an-type="SR">[SR]</button>
+            </div>
+          </div>
+          <div class="soa-field soa-field--buckets">
+            <span>Date basis</span>
+            <div class="soa-bucket-chips" id="soa-an-basis" role="group" aria-label="Date basis">
+              <button type="button" class="soa-bucket-chip is-active" data-an-basis="po_due">PO due date</button>
+              <button type="button" class="soa-bucket-chip" data-an-basis="posted">SO posted date</button>
+            </div>
+          </div>
+          <p class="soa-analytics-context" id="soa-an-context">Sales-report year view · remaining $ / shipments</p>
+        </section>
 
-      <section class="soa-groups" id="soa-groups" hidden></section>
-      <div id="soa-empty" class="soa-empty" hidden>No sales order lines match this filter.</div>
+        <div id="soa-an-loading" class="soa-loading" hidden>
+          <div class="spinner"></div>
+          <span id="soa-an-loading-text">Loading sales analytics…</span>
+        </div>
+        <div id="soa-an-alert" class="soa-alert" hidden></div>
+        <div id="soa-an-empty" class="soa-empty" hidden>No sales-report rows match this filter.</div>
+
+        <div class="soa-analytics-grid" id="soa-an-grid" hidden>
+          <article class="soa-chart-card">
+            <header class="soa-chart-head">
+              <h2 class="soa-chart-title">Monthly composition</h2>
+              <p class="soa-chart-sub" id="soa-an-comp-sub">Past = shipped · current = backlog + onhand · future = due this month</p>
+            </header>
+            <div class="soa-chart-body" id="soa-an-composition"></div>
+          </article>
+          <article class="soa-chart-card">
+            <header class="soa-chart-head">
+              <h2 class="soa-chart-title">PP-type mix</h2>
+              <p class="soa-chart-sub">Open remaining home $ by process-sheet prefix</p>
+            </header>
+            <div class="soa-chart-body" id="soa-an-mix"></div>
+          </article>
+          <article class="soa-chart-card">
+            <header class="soa-chart-head">
+              <h2 class="soa-chart-title">Customer Pareto</h2>
+              <p class="soa-chart-sub" id="soa-an-pareto-sub">Who owns remaining open $</p>
+            </header>
+            <div class="soa-chart-body soa-chart-body--tall" id="soa-an-pareto"></div>
+          </article>
+          <article class="soa-chart-card">
+            <header class="soa-chart-head">
+              <h2 class="soa-chart-title">OTIF vs PO due</h2>
+              <p class="soa-chart-sub" id="soa-an-otif-sub">Shipment date minus original PO due (days)</p>
+            </header>
+            <div class="soa-chart-body" id="soa-an-otif"></div>
+          </article>
+        </div>
+      </div>
     </div>
 
-    <aside class="soa-notify" aria-label="Recent new sales orders">
+    <aside class="soa-notify" id="soa-notify" aria-label="Recent new sales orders">
       <div class="soa-notify-head">
         <div>
           <p class="soa-notify-kicker">Incoming</p>
@@ -89,5 +171,6 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/so_archive.js') }}?v=soa-20260730c"></script>
+<script src="{{ url_for('static', filename='js/so_archive_analytics.js') }}?v=soa-analytics-20260902"></script>
+<script src="{{ url_for('static', filename='js/so_archive.js') }}?v=soa-analytics-20260902"></script>
 {% endblock %}

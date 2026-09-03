@@ -28,12 +28,17 @@ function trialNormalizeOpNo(...candidates) {
   return '';
 }
 
+function trialNormalizeBomCode(value) {
+  return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '');
+}
+
 function trialProgramToolsLookup(card) {
   const lookup = trialState.program_tools_lookup;
   if (!lookup) return null;
 
   const psId = card.source_ps_id || card.ps_id || '';
-  const partNo = card.part_no || card.part_name || '';
+  const donorPsId = card.donor_ps_id || '';
+  const partNo = card.part_no || card.part_name || card.inventory_code || '';
   const opCandidates = [
     card.source_op_no,
     card.operation_label,
@@ -41,14 +46,23 @@ function trialProgramToolsLookup(card) {
     card.op_type,
   ];
 
-  const ps = trialNormalizePsId(psId);
   const op = trialNormalizeOpNo(...opCandidates);
-  if (ps && op) {
-    const hit = lookup.by_ps_op?.[`${ps}|${op}`];
-    if (hit) return hit;
-  }
+  const tryPs = (raw) => {
+    const ps = trialNormalizePsId(raw);
+    if (!ps || !op) return null;
+    return lookup.by_ps_op?.[`${ps}|${op}`] || null;
+  };
+  const hit = tryPs(psId) || tryPs(donorPsId);
+  if (hit) return hit;
 
   const part = trialNormalizePartNo(partNo);
+  const bom = trialNormalizeBomCode(
+    card.selected_bom_code || card.erp_bom_code || card.bom_code || '',
+  );
+  if (part && bom && op) {
+    const bomHit = lookup.by_part_bom_op?.[`PART|${part}|${bom}|${op}`];
+    if (bomHit) return bomHit;
+  }
   if (part && op) {
     return lookup.by_part_op?.[`PART|${part}|${op}`] || null;
   }

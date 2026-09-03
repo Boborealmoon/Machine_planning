@@ -616,11 +616,25 @@ function trialCanonicalQueuePayload(body, catalogCard) {
       body?.source_ps_id || body?.job_no || ctx?.ps_id || ctx?.source_ps_id || '',
     )).base;
   const plannerPsId = trialFormatPlannerPsId(base, partial);
+  const partNo = String(
+    body?.part_no || ctx.part_no || ctx.part_name || ctx.inventory_code || '',
+  ).trim();
+  const bomCode = String(
+    body?.bom_code || ctx.selected_bom_code || ctx.erp_bom_code || ctx.bom_code || '',
+  ).trim();
+  const donorPsId = String(ctx.donor_ps_id || body?.donor_ps_id || '').trim();
   return {
     ...body,
     job_no: plannerPsId,
     source_ps_id: plannerPsId,
     pp_partial_no: partial,
+    part_no: partNo || body?.part_no || '',
+    part_name: String(body?.part_name || ctx.part_name || partNo).trim(),
+    inventory_code: String(body?.inventory_code || ctx.inventory_code || partNo).trim(),
+    bom_code: bomCode || body?.bom_code || '',
+    selected_bom_code: String(body?.selected_bom_code || ctx.selected_bom_code || bomCode).trim(),
+    erp_bom_code: String(body?.erp_bom_code || ctx.erp_bom_code || '').trim(),
+    donor_ps_id: donorPsId,
   };
 }
 
@@ -697,6 +711,14 @@ function trialCatalogOpForPs(card, ps) {
     ps_id: plannerPsId || String(merged.ps_id || '').trim(),
     pp_partial_no: partial,
     source_ps_id: base || String(merged.source_ps_id || '').trim(),
+    part_no: card?.part_no || ps?.part_no || ps?.part_name || ps?.inventory_code || '',
+    part_name: card?.part_name || ps?.part_name || ps?.part_no || '',
+    inventory_code: card?.inventory_code || ps?.inventory_code || '',
+    selected_bom_code: card?.selected_bom_code || ps?.selected_bom_code || ps?.selected_flow_code || '',
+    erp_bom_code: card?.erp_bom_code || ps?.erp_bom_code || ps?.bom_code || '',
+    bom_code: card?.bom_code || ps?.selected_bom_code || ps?.erp_bom_code || ps?.bom_code || '',
+    donor_ps_id: card?.donor_ps_id || ps?.donor_ps_id || '',
+    related_from: card?.related_from || ps?.related_from || '',
   };
 }
 

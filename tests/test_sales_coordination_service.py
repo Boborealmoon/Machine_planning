@@ -7,6 +7,7 @@ from datetime import date
 from planning.sales_coordination_service import (
     build_sales_coordination,
     expand_sales_coordination_lines,
+    parse_material_tracking_fields,
     week_label,
 )
 
@@ -114,6 +115,76 @@ class SalesCoordinationTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["line_count"], 0)
         self.assertEqual(result["lines"], [])
+
+    def test_parse_material_tracking_fields(self):
+        arrived = parse_material_tracking_fields(
+            {
+                "material_subcon": "ARRIVED",
+                "material_in_date": "2026-08-01",
+                "material_need_date": "2026-07-20",
+            }
+        )
+        self.assertEqual(arrived["material_status"], "Arrived")
+        self.assertEqual(arrived["material_in_date"], "2026-08-01")
+        self.assertEqual(arrived["material_need_date"], "2026-07-20")
+
+        expected = parse_material_tracking_fields({"material_subcon": "2026-09-15"})
+        self.assertEqual(expected["material_status"], "Expected")
+        self.assertEqual(expected["material_in_date"], "2026-09-15")
+
+        empty = parse_material_tracking_fields({})
+        self.assertEqual(empty["material_status"], "")
+        self.assertIsNone(empty["material_in_date"])
+
+    def test_includes_qty_buyer_status_and_sorts_aps_before_nps(self):
+        orders = [
+            {
+                "sales_order_no": "SO/9",
+                "customer_po_no": "PO-9",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "NPS26-2",
+                        "process_sheet_no": "NPS26-2",
+                        "inventory_code": "N-1",
+                        "description": "NPS part",
+                        "pp_qty": 20,
+                        "due_date": "2026-08-01",
+                        "buyer": "Alex",
+                        "material_subcon": "ARRIVED",
+                        "material_need_date": "2026-07-15",
+                        "current_stage_desc": "CNC",
+                        "current_stage_status": "I",
+                        "erp_stage_mode": "open",
+                        "shipped_completed": False,
+                        "partials": [{"pp_partial_no": 1, "partial_qty": 8}],
+                    },
+                    {
+                        "pp_voucher_no": "APS26-1",
+                        "process_sheet_no": "APS26-1",
+                        "inventory_code": "A-1",
+                        "description": "APS part",
+                        "pp_qty": 10,
+                        "due_date": "2026-08-19",
+                        "buyer": "",
+                        "material_subcon": "2026-08-10",
+                        "shipped_completed": False,
+                        "partials": [],
+                    },
+                ],
+            }
+        ]
+        lines = expand_sales_coordination_lines(orders)
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0]["process_sheet_no"], "APS26-1")
+        self.assertEqual(lines[0]["qty"], 10)
+        self.assertEqual(lines[0]["partial_qty"], 10)
+        self.assertEqual(lines[0]["material_status"], "Expected")
+        self.assertEqual(lines[0]["material_in_date"], "2026-08-10")
+        self.assertEqual(lines[1]["process_sheet_no"], "NPS26-2")
+        self.assertEqual(lines[1]["partial_qty"], 8)
+        self.assertEqual(lines[1]["buyer"], "Alex")
+        self.assertEqual(lines[1]["material_status"], "Arrived")
+        self.assertIn("CNC", lines[1]["order_status"])
 
 
 if __name__ == "__main__":

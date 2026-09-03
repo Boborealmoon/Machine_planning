@@ -122,8 +122,8 @@
 
   function canonicalPlannerPsId(itemOrId) {
     if (itemOrId && typeof itemOrId === 'object') {
-      const psId = String(itemOrId.ps_id || '').trim();
-      if (psId.startsWith('[Temp]')) return psId;
+      const psId = String(itemOrId.ps_id || itemOrId.planner_ps_id || '').trim();
+      if (/^\[Temp\]/i.test(psId)) return psId.replace(/^\[Temp\]\s*/i, '[Temp]');
       const source = String(itemOrId.source_ps_id || itemOrId.display_ps_id || psId || '')
         .split('::')[0]
         .trim();
@@ -131,7 +131,7 @@
       return partial > 1 ? `${source}::${partial}` : source;
     }
     const raw = String(itemOrId || '').trim();
-    if (raw.startsWith('[Temp]')) return raw;
+    if (/^\[Temp\]/i.test(raw)) return raw.replace(/^\[Temp\]\s*/i, '[Temp]');
     if (!raw) return '';
     const source = raw.split('::')[0];
     const partial = Number(raw.split('::')[1] || 1) || 1;
@@ -3230,11 +3230,17 @@
     const urls = [
       `/api/temp-process-sheets/${encodeURIComponent(canonical)}`,
       `/api/trial/temp-process-sheets/${encodeURIComponent(canonical)}`,
+      `/api/temp-process-sheets/${encodeURIComponent(canonical)}/delete`,
+      `/api/trial/temp-process-sheets/${encodeURIComponent(canonical)}/delete`,
     ];
     let lastError = null;
     for (const url of urls) {
       try {
-        await deleteJson(url);
+        if (url.endsWith('/delete')) {
+          await postJson(url, {});
+        } else {
+          await deleteJson(url);
+        }
         state.details.delete(canonical);
         window.dispatchEvent(new CustomEvent('temp-ps-deleted', {
           detail: { planner_ps_id: canonical, ps_id: canonical },

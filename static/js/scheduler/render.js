@@ -854,42 +854,93 @@ function trialCatalogAssemblyLineItems(ps) {
   return Array.isArray(ps?.assembly_line_items) ? ps.assembly_line_items : [];
 }
 
+/** Re-key a borrowed COMP sheet onto the host root (NPS26-0321-12 → N26-[SR]22-12). */
+function trialHostChildPsId(hostPsId, donorChildPsId) {
+  const host = String(hostPsId || '').split('::')[0].trim();
+  const donor = String(donorChildPsId || '').split('::')[0].trim();
+  if (!host) return donor;
+  const match = donor.match(/-(\d+)$/);
+  if (!match) return host;
+  return `${host}-${match[1]}`;
+}
+
 function trialCatalogAssemblyLineItemPs(item, parentPs) {
-  const psNo = String(item?.ps_id || item?.process_sheet_no || '').trim();
-  if (!psNo) return null;
+  const related = String(
+    item?.related_from || parentPs?.assembly_line_items_related_from || '',
+  ).trim();
+  const rawId = String(item?.ps_id || item?.process_sheet_no || '').trim();
+  const donorFromRelated = related && rawId.toUpperCase().startsWith(related.toUpperCase())
+    ? rawId
+    : '';
+  const donorPsNo = String(item?.donor_ps_id || '').trim() || donorFromRelated || rawId;
+  const parentId = String(parentPs?.source_ps_id || parentPs?.ps_id || '').split('::')[0].trim();
+  const hostedPsNo = related && parentId
+    ? trialHostChildPsId(parentId, donorPsNo)
+    : String(item?.ps_id || item?.process_sheet_no || '').trim();
+  if (!hostedPsNo && !donorPsNo) return null;
   const pools = typeof trialCatalogPsPools === 'function'
     ? trialCatalogPsPools()
     : { catalog: Array.isArray(trialState?.catalog) ? trialState.catalog : [], planned: [] };
-  const live = [...(pools.catalog || []), ...(pools.planned || [])]
-    .find(row => String(row?.ps_id || '').trim() === psNo && !row?.is_assembly_line_item);
-  if (live) return live;
   const parts = typeof trialSplitPsId === 'function'
-    ? trialSplitPsId(psNo)
-    : { base: psNo, partial: '' };
-  const sourceBase = String(item?.source_ps_id || parts.base || psNo).trim();
-  return {
-    ps_id: psNo,
-    source_ps_id: sourceBase,
-    display_ps_id: String(item.display_ps_id || sourceBase).trim(),
+    ? trialSplitPsId(hostedPsNo || donorPsNo)
+    : { base: hostedPsNo || donorPsNo, partial: '' };
+  const sourceBase = String(hostedPsNo || item?.source_ps_id || parts.base || donorPsNo).trim();
+  const wantPartial = String(item?.pp_partial_no || parts.partial || '1').trim() || '1';
+  const matchLive = (needle) => [...(pools.catalog || []), ...(pools.planned || [])]
+    .find(row => {
+      if (row?.is_assembly_line_item) return false;
+      const rowId = String(row?.ps_id || '').trim();
+      const rowBase = String(
+        row?.source_ps_id
+        || (typeof trialSplitPsId === 'function' ? trialSplitPsId(rowId).base : rowId)
+        || '',
+      ).trim();
+      if (rowId !== needle && rowBase !== needle) return false;
+      const rowPartial = String(
+        row?.pp_partial_no
+        || (typeof trialSplitPsId === 'function' ? trialSplitPsId(rowId).partial : '')
+        || '1',
+      ).trim() || '1';
+      return rowPartial === wantPartial || rowId === needle;
+    });
+  const hostedLive = related ? null : matchLive(hostedPsNo);
+  if (hostedLive) return hostedLive;
+  const donorLive = donorPsNo ? matchLive(donorPsNo) : null;
+  const pickList = (fromItem, fromLive) => (
+    Array.isArray(fromItem) && fromItem.length
+      ? fromItem
+      : (Array.isArray(fromLive) ? fromLive : [])
+  );
+  const opsSource = donorLive || {};
+  const snapshot = {
+    ps_id: hostedPsNo || donorPsNo,
+    source_ps_id: related ? (hostedPsNo || sourceBase) : sourceBase,
+    display_ps_id: String(item.display_ps_id || hostedPsNo || sourceBase).trim(),
     pp_partial_no: Number(item.pp_partial_no || parts.partial || 1) || 1,
-    part_no: item.part_no || '',
-    part_name: item.part_no || '',
-    part_desc: item.part_desc || '',
-    inventory_code: item.inventory_code || item.part_no || '',
-    due_date: item.due_date || parentPs?.due_date || '',
-    selected_bom_code: item.selected_bom_code || '',
-    erp_bom_code: item.erp_bom_code || '',
-    current_stage_no: item.current_stage_no,
-    current_stage_desc: item.current_stage_desc || '',
-    current_stage_status: item.current_stage_status || '',
-    execution_status: item.execution_status || '',
-    status: item.status || '',
-    material_in: Boolean(item.material_in),
-    op_cards: Array.isArray(item.op_cards) ? item.op_cards : [],
-    display_qty: item.display_qty ?? item.qty,
-    related_from: item.related_from || '',
+    part_no: item.part_no || item.part_name || opsSource.part_no || opsSource.part_name || '',
+    part_name: item.part_name || item.part_no || opsSource.part_name || '',
+    part_desc: item.part_desc || opsSource.part_desc || '',
+    inventory_code: item.inventory_code || item.part_no || opsSource.inventory_code || '',
+    due_date: item.due_date || parentPs?.due_date || opsSource.due_date || '',
+    selected_bom_id: item.selected_bom_id || opsSource.selected_bom_id || 0,
+    selected_bom_code: item.selected_bom_code || opsSource.selected_bom_code || '',
+    erp_bom_code: item.erp_bom_code || opsSource.erp_bom_code || '',
+    bom_code: item.selected_bom_code || item.erp_bom_code || opsSource.bom_code || '',
+    current_stage_no: item.current_stage_no ?? opsSource.current_stage_no,
+    current_stage_desc: item.current_stage_desc || opsSource.current_stage_desc || '',
+    current_stage_status: item.current_stage_status || opsSource.current_stage_status || '',
+    execution_status: item.execution_status || opsSource.execution_status || '',
+    status: item.status || opsSource.status || '',
+    material_in: Boolean(item.material_in || opsSource.material_in),
+    ops: pickList(item.ops, opsSource.ops),
+    all_ops: pickList(item.all_ops, opsSource.all_ops),
+    op_cards: pickList(item.op_cards, opsSource.op_cards),
+    display_qty: item.display_qty ?? item.qty ?? opsSource.display_qty,
+    related_from: related,
+    donor_ps_id: donorPsNo,
     is_assembly_line_item: true,
   };
+  return snapshot;
 }
 
 function trialCatalogFindNestedAssemblyLineItemPs(psId, partialNo = '') {
@@ -908,21 +959,33 @@ function trialCatalogFindNestedAssemblyLineItemPs(psId, partialNo = '') {
     : { catalog: Array.isArray(trialState?.catalog) ? trialState.catalog : [], planned: [] };
   const rows = [...(pools.catalog || []), ...(pools.planned || [])];
   for (const row of rows) {
+    const related = String(row?.assembly_line_items_related_from || '').trim();
+    const parentId = String(row?.source_ps_id || row?.ps_id || '').split('::')[0].trim();
     for (const item of trialCatalogAssemblyLineItems(row)) {
       const itemId = String(item.ps_id || item.process_sheet_no || '').trim();
       if (!itemId) continue;
+      const donorId = String(item.donor_ps_id || '').trim();
+      const hostedGuess = related && parentId
+        ? trialHostChildPsId(parentId, donorId || itemId)
+        : itemId;
       const itemBase = String(
         item.source_ps_id
         || (typeof trialSplitPsId === 'function' ? trialSplitPsId(itemId).base : itemId)
         || itemId,
       ).trim();
-      if (itemId !== needle && itemBase !== needle && itemBase !== needleBase) continue;
+      if (
+        itemId !== needle
+        && itemBase !== needle
+        && itemBase !== needleBase
+        && hostedGuess !== needle
+        && donorId !== needle
+      ) continue;
       const itemPartial = String(
         item.pp_partial_no
         || (typeof trialSplitPsId === 'function' ? trialSplitPsId(itemId).partial : '')
         || '1',
       ).trim() || '1';
-      if (itemPartial !== wantPartial && needle !== itemId) continue;
+      if (itemPartial !== wantPartial && needle !== itemId && needle !== hostedGuess) continue;
       return trialCatalogAssemblyLineItemPs(item, row);
     }
   }
@@ -1004,7 +1067,7 @@ function trialCatalogAssemblyLineItemsHtml(ps) {
     : '<div class="trial-catalog-line-items-note">Sub-assembly BOM ops</div>';
   const rows = items.map(item => {
     const childPs = trialCatalogAssemblyLineItemPs(item, ps);
-    const psNo = String(item.process_sheet_no || item.ps_id || '').trim();
+    const psNo = String(childPs?.ps_id || item.process_sheet_no || item.ps_id || '').trim();
     const childPsId = String(childPs?.ps_id || psNo).trim();
     const part = String(item.part_no || '').trim();
     const desc = String(item.part_desc || '').trim();
@@ -1017,13 +1080,15 @@ function trialCatalogAssemblyLineItemsHtml(ps) {
       ? `<span class="trial-catalog-line-item-bom">${escapeHtml(bom)}</span>`
       : '';
     const cardsHtml = trialCatalogAssemblyLineItemOpCardsHtml(item, ps);
+    const parentId = String(ps?.source_ps_id || ps?.ps_id || '').split('::')[0].trim();
+    const focusId = related && parentId ? parentId : psNo;
     return `
       <div class="trial-catalog-line-item-group"
         data-ps-id="${escapeHtml(childPsId)}"
         data-pp-partial-no="${escapeHtml(childPs?.pp_partial_no || item.pp_partial_no || 1)}">
         <button type="button" class="trial-catalog-line-item"
           title="${escapeHtml([psNo, part, desc].filter(Boolean).join(' · '))}"
-          onclick="event.preventDefault(); event.stopPropagation(); trialFocusCatalogLineItem('${escapeHtml(psNo)}')">
+          onclick="event.preventDefault(); event.stopPropagation(); trialFocusCatalogLineItem('${escapeHtml(focusId)}')">
           <span class="trial-catalog-line-item-ps">${escapeHtml(psNo)}</span>
           <span class="trial-catalog-line-item-part">${escapeHtml(part)}</span>
           ${lineHtml}
@@ -1043,7 +1108,8 @@ function trialCatalogAssemblyLineItemsDetailHtml(ps) {
     ? `BOM line items via ${related}`
     : 'BOM line items';
   const rows = items.map(item => {
-    const psNo = String(item.process_sheet_no || item.ps_id || '').trim();
+    const childPs = trialCatalogAssemblyLineItemPs(item, ps);
+    const psNo = String(childPs?.ps_id || item.process_sheet_no || item.ps_id || '').trim();
     const part = String(item.part_no || '').trim();
     const desc = String(item.part_desc || '').trim();
     const qty = Number(item.qty || 0);
@@ -1056,9 +1122,11 @@ function trialCatalogAssemblyLineItemsDetailHtml(ps) {
         `<span class="trial-catalog-line-item-detail-op">${escapeHtml(name)}</span>`
       ).join('')}</div>`
       : '';
+    const parentId = String(ps?.source_ps_id || ps?.ps_id || '').split('::')[0].trim();
+    const focusId = related && parentId ? parentId : psNo;
     return `
       <button type="button" class="trial-ps-detail-op-row trial-catalog-line-item-detail"
-        onclick="trialFocusCatalogLineItem('${escapeHtml(psNo)}')">
+        onclick="trialFocusCatalogLineItem('${escapeHtml(focusId)}')">
         <span class="trial-ps-detail-op-label">${escapeHtml(psNo)}</span>
         <span class="trial-ps-detail-op-meta">
           <span>${escapeHtml([part, desc].filter(Boolean).join(' · '))}</span>
@@ -2626,24 +2694,43 @@ function trialFindCatalogOpContext(payload) {
   const opNo = String(payload.source_op_no || payload.operation_label || '').trim();
   const stepId = Number(payload.source_op_seq_id || 0);
   const cardId = Number(payload.card_id || 0);
+  const wantPartial = String(payload.pp_partial_no || '').trim();
   const pools = [...(trialState.catalog || []), ...(trialState.planned || [])];
+
+  const matchCard = (ps) => {
+    for (const card of ps.op_cards || []) {
+      if (cardId && Number(card.card_id || 0) === cardId) {
+        return card;
+      }
+      if (stepId > 0 && Number(card.source_op_seq_id || 0) === stepId) {
+        return card;
+      }
+      const cardOp = String(card.source_op_no || card.operation_label || '').trim();
+      if (opNo && cardOp === opNo) {
+        return card;
+      }
+    }
+    return null;
+  };
+
   for (const ps of pools) {
     const rowPsId = String(ps.ps_id || '').trim();
     const rowBase = rowPsId.split('::')[0] || rowPsId;
     if (psId && rowPsId !== psId && rowBase !== basePs) continue;
-    for (const card of ps.op_cards || []) {
-      if (cardId && Number(card.card_id || 0) === cardId) {
-        return { ps, card };
-      }
-      if (stepId > 0 && Number(card.source_op_seq_id || 0) === stepId) {
-        return { ps, card };
-      }
-      const cardOp = String(card.source_op_no || card.operation_label || '').trim();
-      if (opNo && cardOp === opNo) {
-        return { ps, card };
-      }
-    }
+    const card = matchCard(ps);
+    if (card) return { ps, card };
   }
+
+  const nested = typeof trialCatalogFindNestedAssemblyLineItemPs === 'function'
+    ? trialCatalogFindNestedAssemblyLineItemPs(psId, wantPartial)
+    : null;
+  if (nested) {
+    const card = matchCard(nested);
+    if (card) return { ps: nested, card };
+    const fallback = trialCatalogCardFromPayload(payload);
+    return { ps: nested, card: fallback };
+  }
+
   const fallback = trialCatalogCardFromPayload(payload);
   return { ps: null, card: fallback };
 }
@@ -2804,6 +2891,7 @@ async function openTrialCatalogOpDetail(payload) {
         fallback_setup: String(card.setup_minutes || card.op?.setup_time || 0),
         inventory_code: String(ps?.inventory_code || '').trim(),
         part_desc: String(ps?.part_desc || '').trim(),
+        erp_bom_code: String(ps?.erp_bom_code || ps?.bom_code || '').trim(),
       });
       const resolved = await GET(`/api/trial/cycle-times/resolve?${q.toString()}`);
       if (resolved?.source === 'master') {
@@ -3282,6 +3370,12 @@ function renderTrialOpCardHtml(card, ps) {
     op_type: card.op_type || '',
     operation_name: card.operation_name || '',
     total_qty: Number(card.total_qty || card.remaining_qty || 0),
+    part_no: card.part_no || ps?.part_no || ps?.part_name || ps?.inventory_code || '',
+    part_name: card.part_name || ps?.part_name || ps?.part_no || '',
+    inventory_code: card.inventory_code || ps?.inventory_code || '',
+    selected_bom_code: card.selected_bom_code || ps?.selected_bom_code || '',
+    erp_bom_code: card.erp_bom_code || ps?.erp_bom_code || '',
+    bom_code: card.bom_code || ps?.selected_bom_code || ps?.erp_bom_code || '',
   };
   if (cardKind === 'single') {
     const opRef = card.op || {};
@@ -4691,10 +4785,16 @@ function trialCatalogPsHasOpenOps(ps) {
 }
 
 function trialCatalogPsHasAssemblyLineItemWork(ps) {
-  return trialCatalogAssemblyLineItems(ps).some(item => {
+  const items = trialCatalogAssemblyLineItems(ps);
+  if (!items.length) return false;
+  // Borrowed SR assemblies (N26-[SR]22 via NPS26-0321) must stay visible even
+  // when nested COMP sheets still have empty op_cards in the disk cache.
+  if (String(ps.assembly_line_items_related_from || '').trim()) return true;
+  return items.some(item => {
     const childPs = trialCatalogAssemblyLineItemPs(item, ps);
-    if (!childPs) return false;
+    if (!childPs) return Boolean(item.process_sheet_no || item.ps_id);
     const cards = Array.isArray(childPs.op_cards) ? childPs.op_cards : [];
+    if (!cards.length) return true;
     return cards.some(card =>
       trialCatalogOpIsRelevant(card)
       && (
@@ -4967,7 +5067,13 @@ function trialEnsureCatalogSearchIndex() {
   catalogRows.forEach(ps => {
     const id = String(ps.ps_id || '');
     if (!id) return;
-    const tokens = trialCatalogSearchTokens(ps, false);
+    let tokens;
+    try {
+      tokens = trialCatalogSearchTokens(ps, false);
+    } catch (err) {
+      console.warn('catalog search tokens failed', id, err);
+      tokens = trialSearchableTokens([id, ps.source_ps_id, ps.part_no, ps.part_name]);
+    }
     catalog.set(id, tokens);
     if (typeof trialNormalizeTempPsKey === 'function' && /^\[Temp\]/i.test(id)) {
       const body = trialNormalizeTempPsKey(id);
@@ -5306,16 +5412,25 @@ function trialPsSerialSearchTokens(value) {
   return extras;
 }
 
+function trialStripSrSearchTag(value) {
+  return String(value == null ? '' : value).replace(/\[sr\]/gi, '');
+}
+
 function trialQueryMatchesSearchTokens(tokens, rawQuery) {
   const rawLower = String(rawQuery || '').trim().toLowerCase();
   if (!rawLower) return true;
   const normalizedQuery = trialNormalizeSearchText(rawLower);
+  const strippedQuery = trialStripSrSearchTag(rawLower).replace(/\s+/g, '');
+  const strippedNorm = trialNormalizeSearchText(strippedQuery);
   return (tokens || []).some(token => {
     const text = String(token || '').toLowerCase();
     if (!text) return false;
     const normalized = trialNormalizeSearchText(token);
+    const strippedText = trialStripSrSearchTag(text).replace(/\s+/g, '');
     return text.includes(rawLower)
-      || (normalizedQuery && normalized.includes(normalizedQuery));
+      || (strippedQuery && strippedText.includes(strippedQuery))
+      || (normalizedQuery && normalized.includes(normalizedQuery))
+      || (strippedNorm && trialNormalizeSearchText(strippedText).includes(strippedNorm));
   });
 }
 
@@ -5342,14 +5457,35 @@ function trialCatalogSearchBaseKeys(ps) {
   return keys;
 }
 
+function trialCatalogLineItemSearchValues(item) {
+  const cards = Array.isArray(item?.op_cards) ? item.op_cards : [];
+  return [
+    item?.process_sheet_no,
+    item?.ps_id,
+    item?.donor_ps_id,
+    item?.part_no,
+    item?.part_desc,
+    item?.related_from,
+    item?.selected_bom_code,
+    ...cards.flatMap(card => [
+      card?.operation_label,
+      card?.operation_name,
+      card?.source_op_no,
+    ]),
+  ];
+}
+
 function trialCatalogSearchTokens(ps, planned = false) {
   const psId = String(ps.ps_id || '');
   const psParts = trialSplitPsId(psId);
-  const opCards = ps.op_cards || [];
+  const opCards = Array.isArray(ps.op_cards) ? ps.op_cards : [];
+  const lineItems = Array.isArray(ps.assembly_line_items) ? ps.assembly_line_items : [];
+  const ops = Array.isArray(ps.ops) ? ps.ops : [];
   const baseValues = planned
     ? [
       psId,
       psParts.base,
+      trialStripSrSearchTag(psId),
       psParts.partial ? `partial ${psParts.partial}` : '',
       ps.source_ps_id,
       ps.display_ps_id,
@@ -5364,24 +5500,13 @@ function trialCatalogSearchTokens(ps, planned = false) {
       ps.current_stage_desc,
       ps.inventory_code,
       ...opCards.flatMap(card => [card.operation_label, card.operation_name, card.source_op_no, card.source_op_seq_id]),
-      ...(ps.assembly_line_items || []).flatMap(item => [
-        item.process_sheet_no,
-        item.ps_id,
-        item.part_no,
-        item.part_desc,
-        item.related_from,
-        item.selected_bom_code,
-        ...(item.op_cards || []).flatMap(card => [
-          card.operation_label,
-          card.operation_name,
-          card.source_op_no,
-        ]),
-      ]),
+      ...lineItems.flatMap(trialCatalogLineItemSearchValues),
       ps.assembly_line_items_related_from,
     ]
     : [
       psId,
       psParts.base,
+      trialStripSrSearchTag(psId),
       trialCatalogTempSourceRef(ps),
       psParts.partial ? `partial ${psParts.partial}` : '',
       ps.source_ps_id,
@@ -5401,21 +5526,9 @@ function trialCatalogSearchTokens(ps, planned = false) {
       ps.bom_code,
       ps.selected_bom_code,
       ps.inventory_code,
-      ...(ps.ops || []).flatMap(op => [op.op_no, op.op_type, op.machine_category, op.preferred_machine, op.source_op_no]),
+      ...ops.flatMap(op => [op.op_no, op.op_type, op.machine_category, op.preferred_machine, op.source_op_no]),
       ...opCards.flatMap(card => [card.operation_label, card.operation_name, card.source_op_no, card.source_op_seq_id]),
-      ...(ps.assembly_line_items || []).flatMap(item => [
-        item.process_sheet_no,
-        item.ps_id,
-        item.part_no,
-        item.part_desc,
-        item.related_from,
-        item.selected_bom_code,
-        ...(item.op_cards || []).flatMap(card => [
-          card.operation_label,
-          card.operation_name,
-          card.source_op_no,
-        ]),
-      ]),
+      ...lineItems.flatMap(trialCatalogLineItemSearchValues),
       ps.assembly_line_items_related_from,
     ];
   return trialSearchableTokens(baseValues)
@@ -5605,32 +5718,44 @@ function renderTrialCatalog() {
   });
 
   const availableHtml = catalogWithOpenOps.map(ps => {
-    const psIdParts = String(ps.ps_id || '').split('::');
-    const basePsId = psIdParts[0] || ps.ps_id || '';
-    const cards = cachedResolvedCards(ps);
-    const isOpAllocated = card => cachedIsOpAllocated(card, ps);
-    const opCardsHtml = cards
-      .filter(card => trialCatalogOpVisibleInList(card, isOpAllocated, ps))
-      .map(card => {
-        const ctx = typeof trialCatalogOpForPs === 'function' ? trialCatalogOpForPs(card, ps) : card;
-        return renderTrialOpCardHtml({
-          ...ctx,
-          is_allocated: isOpAllocated(card),
-          part_no: ctx.part_no || ps.part_no || ps.part_name || '',
-        }, ps);
-      })
-      .join('');
-    const dueClass = trialCatalogPsDueClass(ps);
     const psKey = String(ps.ps_id || '');
+    const dueClass = trialCatalogPsDueClass(ps);
     const psOpen = trialIsCatalogPsExpanded(psKey) || Boolean(rawQuery);
-    return `
-      <details class="trial-catalog-ps ${dueClass}"${psOpen ? ' open' : ''}
-        data-ps-id="${escapeHtml(psKey)}">
-        <summary>${trialCatalogPsSummaryHtml(ps, siblingCountByBase)}</summary>
+    let summaryHtml = escapeHtml(psKey);
+    try {
+      summaryHtml = trialCatalogPsSummaryHtml(ps, siblingCountByBase);
+    } catch (err) {
+      console.warn('catalog summary failed', psKey, err);
+    }
+    let bodyHtml = '';
+    try {
+      const cards = cachedResolvedCards(ps);
+      const isOpAllocated = card => cachedIsOpAllocated(card, ps);
+      const opCardsHtml = cards
+        .filter(card => trialCatalogOpVisibleInList(card, isOpAllocated, ps))
+        .map(card => {
+          const ctx = typeof trialCatalogOpForPs === 'function' ? trialCatalogOpForPs(card, ps) : card;
+          return renderTrialOpCardHtml({
+            ...ctx,
+            is_allocated: isOpAllocated(card),
+            part_no: ctx.part_no || ps.part_no || ps.part_name || '',
+          }, ps);
+        })
+        .join('');
+      bodyHtml = `
         ${trialRenderCatalogOpStatusStrip(ps)}
         ${trialCatalogBomBarHtml(ps)}
         ${trialCatalogAssemblyLineItemsHtml(ps)}
-        <div class="trial-catalog-oplist">${opCardsHtml}</div>
+        <div class="trial-catalog-oplist">${opCardsHtml}</div>`;
+    } catch (err) {
+      console.warn('catalog row render failed', psKey, err);
+      bodyHtml = '<div class="trial-catalog-empty">Could not render ops for this PS.</div>';
+    }
+    return `
+      <details class="trial-catalog-ps ${dueClass}"${psOpen ? ' open' : ''}
+        data-ps-id="${escapeHtml(psKey)}">
+        <summary>${summaryHtml}</summary>
+        ${bodyHtml}
       </details>
     `;
   }).join('');

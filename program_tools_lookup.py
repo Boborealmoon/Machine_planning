@@ -41,7 +41,8 @@ def ps_op_key(ps_id: str, *op_candidates: str) -> str:
 
 
 def normalize_bom_code(value: str) -> str:
-    return re.sub(r"\s+", "", str(value or "").strip().upper())
+    text = re.sub(r"\s+", "", str(value or "").strip().upper())
+    return re.sub(r"[^A-Z0-9]+", "", text) if text else ""
 
 
 def part_bom_op_key(part_no: str, bom_code: str, *op_candidates: str) -> str:

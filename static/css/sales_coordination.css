@@ -1,10 +1,24 @@
-/* Sales Coordination - read-only delivery commitment view */
+/* Sales Coordination - APS/NPS follow-up view */
+
+body.sc-view .navbar,
+body.sc-view .navbar-backdrop {
+  display: none !important;
+}
+
+body.sc-view .app-main--sc {
+  min-height: 100dvh;
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 20px 24px 28px;
+  box-sizing: border-box;
+}
 
 .sc-page {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  padding: 0.15rem 0 1.75rem;
+  padding: 0;
 }
 
 .sc-header {
@@ -26,7 +40,7 @@
 .sc-subtitle {
   margin: 0.25rem 0 0;
   color: #64748b;
-  max-width: 44rem;
+  max-width: 48rem;
   line-height: 1.4;
   font-size: 0.875rem;
 }
@@ -145,11 +159,12 @@
 
 .sc-table-wrap {
   overflow: auto;
-  max-height: calc(100vh - 14rem);
+  max-height: calc(100vh - 10rem);
 }
 
 .sc-table {
   width: 100%;
+  min-width: 92rem;
   border-collapse: collapse;
   font-size: 0.8125rem;
   color: #1e293b;
@@ -174,18 +189,18 @@
 }
 
 .sc-table thead th::after {
-  content: " ?";
+  content: " \2195";
   opacity: 0.35;
   font-size: 0.65rem;
 }
 
 .sc-table thead th.is-sorted-asc::after {
-  content: " ?";
+  content: " \2191";
   opacity: 0.9;
 }
 
 .sc-table thead th.is-sorted-desc::after {
-  content: " ?";
+  content: " \2193";
   opacity: 0.9;
 }
 
@@ -199,10 +214,31 @@
   background: #f8fafc;
 }
 
+.sc-group-row td {
+  background: #f1f5f9;
+  color: #1e3a8a;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.4rem 0.7rem;
+  border-bottom: 1px solid #dbe3ee;
+}
+
+.sc-table tbody tr.sc-group-row:hover td {
+  background: #f1f5f9;
+}
+
 .sc-mono {
   font-variant-numeric: tabular-nums;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.78rem;
+}
+
+.sc-num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .sc-date {
@@ -210,13 +246,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-.sc-date--prop {
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.sc-date--prop.is-empty {
-  font-weight: 400;
+.sc-date.is-empty {
   color: #94a3b8;
 }
 
@@ -251,6 +281,122 @@
   background: rgba(2, 132, 199, 0.12);
   color: #0369a1;
   border: 1px solid rgba(2, 132, 199, 0.3);
+}
+
+.sc-buyer-cell {
+  min-width: 8.5rem;
+}
+
+.sc-buyer-input {
+  width: 100%;
+  min-width: 7.5rem;
+  padding: 0.28rem 0.45rem;
+  border: 1px solid #dbe2ea;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.8rem;
+  background: #fff;
+}
+
+.sc-buyer-input:focus {
+  outline: none;
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.sc-buyer-input.is-saving {
+  opacity: 0.7;
+}
+
+.sc-buyer-input.is-saved {
+  border-color: #86efac;
+}
+
+.sc-buyer-input.is-error {
+  border-color: #fca5a5;
+}
+
+.sc-stage-cell {
+  white-space: nowrap;
+}
+
+.sc-stage-stack {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.28rem 0.4rem;
+}
+
+.sc-stage-desc {
+  font-weight: 600;
+}
+
+.sc-stage-mode {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.sc-stage-mode--unassigned {
+  color: #b45309;
+}
+
+.sc-stage-mode--completed {
+  color: #15803d;
+}
+
+.sc-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  background: #e2e8f0;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+.sc-status-pill--o {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fcd34d;
+}
+
+.sc-status-pill--r {
+  background: #dbeafe;
+  color: #1e40af;
+  border-color: #93c5fd;
+}
+
+.sc-mtl-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sc-mtl-status--arrived {
+  background: #e7f3ec;
+  color: #2d6a4f;
+}
+
+.sc-mtl-status--expected {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.sc-mtl-status--empty {
+  color: #94a3b8;
+  background: transparent;
+  padding: 0;
+  font-weight: 500;
 }
 
 .sc-empty {

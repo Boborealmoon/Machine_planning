@@ -244,6 +244,22 @@ body.qaqc-view {
   color: #1d4ed8;
 }
 
+.fq-chip-count--incoming {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.fq-chip-count--incoming::before {
+  content: "↓";
+  margin-right: 2px;
+  font-weight: 800;
+}
+
+.fq-chip.is-active .fq-chip-count--incoming {
+  background: #fde68a;
+  color: #92400e;
+}
+
 .fq-assignee-toggle {
   display: flex;
   flex-wrap: wrap;
@@ -480,6 +496,20 @@ body.qaqc-view {
   color: #475569;
   font-size: 0.65rem;
   font-weight: 700;
+  vertical-align: middle;
+}
+
+.fq-incoming-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
   vertical-align: middle;
 }
 
@@ -764,6 +794,19 @@ body.qaqc-view {
   letter-spacing: 0.01em;
 }
 
+.fq-table thead th[data-fq-sort-col="qa_due_date"] {
+  white-space: normal;
+  min-width: 7.25rem;
+  max-width: 8.75rem;
+}
+
+.fq-table thead th[data-fq-sort-col="qa_due_date"] .so-col-sort-btn {
+  white-space: normal;
+  text-align: left;
+  line-height: 1.2;
+  align-items: flex-start;
+}
+
 .fq-table thead th.is-sorted {
   color: #1d4ed8;
 }
@@ -890,6 +933,29 @@ body.qaqc-view {
   font-size: 0.72rem;
   font-weight: 600;
   color: #64748b;
+}
+
+.fq-group-row--incoming td {
+  background: #fef3c7;
+  border-top-color: #f59e0b;
+}
+
+.fq-group-row--incoming .fq-group-row-avatar {
+  background: #fde68a;
+  color: #92400e;
+}
+
+.fq-table tbody tr.fq-row--incoming:not(.fq-row--exception):not(.fq-row--done) td {
+  background: #fffbeb;
+}
+
+.fq-table tbody tr.fq-row--incoming:not(.fq-row--exception):not(.fq-row--done) .fq-col-sticky {
+  background: #fffbeb;
+}
+
+.fq-table tbody tr.fq-row--incoming:not(.fq-row--exception):not(.fq-row--done):hover td,
+.fq-table tbody tr.fq-row--incoming:not(.fq-row--exception):not(.fq-row--done):hover .fq-col-sticky {
+  background: #fef3c7;
 }
 
 /* ── Assignee workload board ──────────────────────────── */

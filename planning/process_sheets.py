@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import re
 from datetime import date
+from urllib.parse import unquote
 
 from flask import Blueprint, jsonify, has_request_context, request
 
@@ -650,7 +651,18 @@ def list_temp_process_sheets_payload(con, limit=500):
 
 
 def is_temp_planner_ps_id(planner_ps_id):
-    return compact_text(planner_ps_id).startswith(TEMP_PS_PREFIX)
+    return compact_text(planner_ps_id).upper().startswith("[TEMP]")
+
+
+def canonical_temp_planner_ps_id(planner_ps_id):
+    """Stored [Temp] identity: decode URL encoding and drop the display space after [Temp]."""
+    raw = compact_text(unquote(compact_text(planner_ps_id)))
+    if not raw:
+        return ""
+    if not raw.upper().startswith("[TEMP]"):
+        return raw
+    body = compact_text(raw[len(TEMP_PS_PREFIX) :] if raw.startswith(TEMP_PS_PREFIX) else raw[6:])
+    return f"{TEMP_PS_PREFIX}{body}" if body else TEMP_PS_PREFIX
 
 
 def temp_planner_ps_display_label(planner_ps_id):
@@ -1197,7 +1209,7 @@ def temp_process_sheet_source_preview(con, source_ps_id, pp_partial_no=1):
 
 def update_temp_process_sheet(con, planner_ps_id, updates=None):
     """Update editable fields on a [Temp] process sheet."""
-    planner_ps_id = compact_text(planner_ps_id)
+    planner_ps_id = canonical_temp_planner_ps_id(planner_ps_id)
     if not is_temp_planner_ps_id(planner_ps_id):
         raise ValueError("Not a temp process sheet")
     updates = dict(updates or {})
@@ -1825,16 +1837,22 @@ def _repair_erp_ps_planner_bom_if_missing(con, planner_ps_id):
 
 
 def delete_temp_process_sheet(con, planner_ps_id):
-    planner_ps_id = compact_text(planner_ps_id)
+    planner_ps_id = canonical_temp_planner_ps_id(planner_ps_id)
     if not is_temp_planner_ps_id(planner_ps_id):
         raise ValueError("Only [Temp] process sheets can be deleted from this action.")
-    row = one(
+    ps_row = one(
         con.execute(
             "SELECT planner_ps_id FROM planner_process_sheet WHERE planner_ps_id = %s",
             (planner_ps_id,),
         )
     )
-    if not row:
+    temp_row = one(
+        con.execute(
+            "SELECT planner_ps_id FROM planner_temp_process_sheet WHERE planner_ps_id = %s",
+            (planner_ps_id,),
+        )
+    )
+    if not ps_row and not temp_row:
         raise ValueError("Temp process sheet not found.")
 
     op_ids = [
@@ -1867,6 +1885,27 @@ def delete_temp_process_sheet(con, planner_ps_id):
             if int(r.get("block_id") or 0) > 0
         ]
         if block_ids:
+            # Break the run_block ↔ operation_sequence circular FK before deleting blocks.
+            planner_try_savepoint(
+                con,
+                "temp_ps_clear_opseq",
+                lambda: con.execute(
+                    """
+                    UPDATE planner_run_block
+                    SET operation_sequence_id = NULL
+                    WHERE block_id = ANY(%s)
+                    """,
+                    (block_ids,),
+                ),
+            )
+            planner_try_savepoint(
+                con,
+                "temp_ps_del_opseq",
+                lambda: con.execute(
+                    "DELETE FROM planner_operation_sequence WHERE block_id = ANY(%s)",
+                    (block_ids,),
+                ),
+            )
             con.execute(
                 "DELETE FROM planner_run_block_segment WHERE block_id = ANY(%s)",
                 (block_ids,),
@@ -1874,10 +1913,17 @@ def delete_temp_process_sheet(con, planner_ps_id):
             con.execute("DELETE FROM planner_run_block WHERE block_id = ANY(%s)", (block_ids,))
         con.execute("DELETE FROM planner_operation WHERE operation_id = ANY(%s)", (op_ids,))
 
+    # Delete the temp registry first. Live DBs may have RESTRICT instead of ON DELETE CASCADE
+    # (CREATE TABLE IF NOT EXISTS never upgrades an existing FK).
     con.execute(
-        "DELETE FROM planner_process_sheet WHERE planner_ps_id = %s",
+        "DELETE FROM planner_temp_process_sheet WHERE planner_ps_id = %s",
         (planner_ps_id,),
     )
+    if ps_row:
+        con.execute(
+            "DELETE FROM planner_process_sheet WHERE planner_ps_id = %s",
+            (planner_ps_id,),
+        )
     return {"ok": True, "planner_ps_id": planner_ps_id, "deleted": True}
 
 
@@ -1945,7 +1991,7 @@ def resolve_temp_process_sheet(con, planner_ps_id, qty_produced, qty_rejected=0.
     """Record rework output for a [Temp] PS and pop queued blocks off the planner when done."""
     from .actuals import actual_totals_for_block, refresh_block_actual_status
 
-    planner_ps_id = compact_text(planner_ps_id)
+    planner_ps_id = canonical_temp_planner_ps_id(planner_ps_id)
     if not is_temp_planner_ps_id(planner_ps_id):
         raise ValueError("Only [Temp] process sheets can be resolved from this action.")
 
@@ -2173,11 +2219,65 @@ def _ensure_coway_proposed_edd_column(con):
     _ensure_planner_overlay_columns(con)
 
 
-def ensure_planner_process_sheet(con, planner_ps_id):
+def _hosted_sr_child_donor_cache_row(con, hosted_ps_id, pp_partial_no=1, donor_ps_id=""):
+    """ERP cache row for a hosted SR child such as N26-[SR]22-12 (donor NPS26-0321-12)."""
+    from planning.assembly_classify import (
+        hosted_sr_child_donor_guesses,
+        is_component_child_ps,
+        is_sr_process_sheet,
+        parent_ps_id_from_child,
+    )
+
+    hosted = compact_text(hosted_ps_id).split("::")[0]
+    guesses: list[str] = []
+    hint = compact_text(donor_ps_id).split("::")[0]
+    if hint:
+        guesses.append(hint)
+    parent = parent_ps_id_from_child(hosted) if is_component_child_ps(hosted) else ""
+    if parent and is_sr_process_sheet(parent):
+        parent_row = _voucher_partial_row(con, parent, pp_partial_no)
+        if not parent_row:
+            found = _voucher_rows_for_source_ps(con, parent)
+            parent_row = found[0] if found else None
+        part = compact_text((parent_row or {}).get("part_no")).upper()
+        related_ids = []
+        if part:
+            related_ids = [
+                compact_text(row["ps_id"])
+                for row in rows(
+                    con.execute(
+                        """
+                        SELECT ps_id
+                        FROM pp_vouchers_cache
+                        WHERE UPPER(part_no) = %s
+                        GROUP BY ps_id
+                        """,
+                        (part,),
+                    )
+                )
+            ]
+        for guess in hosted_sr_child_donor_guesses(hosted, related_ids):
+            if guess not in guesses:
+                guesses.append(guess)
+    for donor in guesses:
+        cache_row = _voucher_partial_row(con, donor, pp_partial_no)
+        if cache_row:
+            return donor, cache_row
+        found = _voucher_rows_for_source_ps(con, donor, pp_partial_no)
+        if found:
+            return donor, found[0]
+    return "", None
+
+
+def ensure_planner_process_sheet(con, planner_ps_id, donor_ps_id=None):
     """Ensure a planner_process_sheet row exists for an ERP-sourced ps id.
 
     The trial catalog sidebar reads pp_vouchers_cache directly; scheduling writes
     planner_planning_card rows that FK to planner_process_sheet. Materialize on demand.
+
+    Hosted SR children (``N26-[SR]22-12``) are not ERP vouchers; ``donor_ps_id``
+    (or the matching NPS/APS COMP sheet) supplies the cache row while the hosted
+    id stays on planner_process_sheet.
     """
     planner_ps_id = compact_text(planner_ps_id)
     if not planner_ps_id:
@@ -2185,6 +2285,8 @@ def ensure_planner_process_sheet(con, planner_ps_id):
 
     source_ps_id, pp_partial_no = parse_planner_ps_id(planner_ps_id)
     source_ps_id = normalize_standard_ps_id(source_ps_id)
+    requested_source = source_ps_id
+    requested_partial = pp_partial_no
     if is_temp_planner_ps_id(source_ps_id):
         planner_ps_id = source_ps_id
     else:
@@ -2224,10 +2326,23 @@ def ensure_planner_process_sheet(con, planner_ps_id):
     if not cache_row and source_ps_id != planner_ps_id:
         cache_row = _voucher_partial_row(con, planner_ps_id, 1)
 
-    if cache_row:
+    used_donor_cache = False
+    if not cache_row:
+        _donor_id, donor_row = _hosted_sr_child_donor_cache_row(
+            con, requested_source, requested_partial, donor_ps_id
+        )
+        if donor_row:
+            cache_row = donor_row
+            used_donor_cache = True
+
+    if cache_row and not used_donor_cache:
         source_ps_id = normalize_standard_ps_id(compact_text(cache_row.get("ps_id"))) or source_ps_id
         pp_partial_no = int(cache_row.get("pp_partial_no") or pp_partial_no or 1)
         planner_ps_id = format_planner_ps_id(source_ps_id, pp_partial_no)
+    elif cache_row and used_donor_cache:
+        source_ps_id = requested_source
+        pp_partial_no = requested_partial
+        planner_ps_id = format_planner_ps_id(requested_source, requested_partial)
 
     if not cache_row:
         raise ValueError(
@@ -5781,20 +5896,26 @@ def api_resolve_temp_process_sheet(planner_ps_id):
         return jsonify({"error": str(e)}), 500
 
 
+def _api_delete_temp_process_sheet_result(planner_ps_id):
+    with planner_db() as con:
+        _ensure_planner_temp_process_sheet_table(con)
+        result = delete_temp_process_sheet(con, planner_ps_id)
+    try:
+        from app import _invalidate_pp_vouchers_with_ops_cache
+
+        _invalidate_pp_vouchers_with_ops_cache(schedule_rebuild=True)
+    except Exception:
+        pass
+    return result
+
+
+@process_sheets_bp.post("/api/trial/temp-process-sheets/<path:planner_ps_id>/delete")
+@process_sheets_bp.post("/api/temp-process-sheets/<path:planner_ps_id>/delete")
 @process_sheets_bp.delete("/api/trial/temp-process-sheets/<path:planner_ps_id>")
 @process_sheets_bp.delete("/api/temp-process-sheets/<path:planner_ps_id>")
 def api_delete_temp_process_sheet(planner_ps_id):
     try:
-        with planner_db() as con:
-            _ensure_planner_temp_process_sheet_table(con)
-            result = delete_temp_process_sheet(con, planner_ps_id)
-            try:
-                from app import _invalidate_pp_vouchers_with_ops_cache
-
-                _invalidate_pp_vouchers_with_ops_cache(schedule_rebuild=True)
-            except Exception:
-                pass
-            return jsonify(result)
+        return jsonify(_api_delete_temp_process_sheet_result(planner_ps_id))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as e:

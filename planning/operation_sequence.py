@@ -141,8 +141,24 @@ def sync_machine_operation_sequence(con, machine_id):
         return []
 
     result = []
-    for sequence_no, block_id in enumerate(active_block_ids, 1):
-        row = one(
+    values = [(machine_id, int(block_id), sequence_no) for sequence_no, block_id in enumerate(active_block_ids, 1)]
+    execute_values = getattr(con, "execute_values", None)
+    if execute_values:
+        execute_values(
+            """
+            INSERT INTO planner_operation_sequence (
+              machine_id, block_id, sequence_no, created_at, updated_at
+            ) VALUES %s
+            ON CONFLICT (block_id) DO UPDATE SET
+              machine_id = EXCLUDED.machine_id,
+              sequence_no = EXCLUDED.sequence_no,
+              updated_at = NOW()
+            """,
+            values,
+            template="(%s, %s, %s, NOW(), NOW())",
+        )
+    else:
+        for machine_id_value, block_id, sequence_no in values:
             con.execute(
                 """
                 INSERT INTO planner_operation_sequence (
@@ -152,20 +168,33 @@ def sync_machine_operation_sequence(con, machine_id):
                   machine_id = EXCLUDED.machine_id,
                   sequence_no = EXCLUDED.sequence_no,
                   updated_at = NOW()
-                RETURNING operation_sequence_id, block_id, machine_id, sequence_no
                 """,
-                (machine_id, block_id, sequence_no),
+                (machine_id_value, block_id, sequence_no),
             )
-        )
-        operation_sequence_id = int(row["operation_sequence_id"])
+    con.execute(
+        """
+        UPDATE planner_run_block b
+        SET operation_sequence_id = s.operation_sequence_id,
+            updated_at = NOW()
+        FROM planner_operation_sequence s
+        WHERE s.block_id = b.block_id
+          AND s.machine_id = %s
+          AND b.block_id = ANY(%s)
+        """,
+        (machine_id, active_block_ids),
+    )
+    for row in rows(
         con.execute(
             """
-            UPDATE planner_run_block
-            SET operation_sequence_id = %s, updated_at = NOW()
-            WHERE block_id = %s
+            SELECT operation_sequence_id, block_id, machine_id, sequence_no
+            FROM planner_operation_sequence
+            WHERE machine_id = %s
+              AND block_id = ANY(%s)
+            ORDER BY sequence_no, block_id
             """,
-            (operation_sequence_id, block_id),
+            (machine_id, active_block_ids),
         )
+    ):
         result.append(dict(row))
     return result
 
@@ -411,21 +440,33 @@ def lane_tail_recalc_block_after_remove(con, machine_id, removed_block_ids):
     return None
 
 
-def resync_machine_lane_after_remove(con, machine_id, *, tail_block_id=None):
-    """Compact queue positions and reschedule only the tail when needed."""
+def resync_machine_lane_after_remove(con, machine_id, *, tail_block_id=None, recalculate=False):
+    """Compact queue positions after a removal.
+
+    Recalc is off by default so DELETE stays as fast as add/reorder. Schedule
+    times stay stale until the client posts /api/trial/queue/recalculate.
+    """
     from .blocks import recalculate_machine
 
     machine_id = int(machine_id)
     if machine_id <= 0:
-        return
-    compact_machine_lane_queue(con, machine_id, recalculate=False)
-    if tail_block_id:
+        return {"tail_from_block_id": None, "recalculated": False}
+    compact_result = compact_machine_lane_queue(con, machine_id, recalculate=False)
+    tail = int(tail_block_id or 0) or compact_result.get("tail_from_block_id")
+    did_recalc = False
+    if recalculate and tail:
         recalculate_machine(
             con,
             machine_id,
-            tail_from_block_id=int(tail_block_id),
+            tail_from_block_id=int(tail),
             reason="QUEUE_DELETE",
         )
+        did_recalc = True
+    return {
+        "tail_from_block_id": int(tail) if tail else None,
+        "recalculated": did_recalc,
+        "affected_machine_ids": compact_result.get("affected_machine_ids") or [],
+    }
 
 
 def infer_tail_by_machine(con, machine_ids):

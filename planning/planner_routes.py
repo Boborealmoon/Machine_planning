@@ -21,6 +21,7 @@ Key changes vs SQLite original:
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from datetime import date, datetime, timedelta
@@ -2167,7 +2168,15 @@ def api_trial_resolve_cycle_times():
     op_no = _parse_op_no(request.args.get("op_no"))
     op_type = compact_text(request.args.get("op_type"))
     stage_no = int(request.args.get("stage_no") or 0)
-    extra_part = compact_text(request.args.get("inventory_code") or request.args.get("part_desc"))
+    extra_parts = [
+        compact_text(request.args.get("inventory_code")),
+        compact_text(request.args.get("part_desc")),
+        compact_text(request.args.get("part_name")),
+    ]
+    extra_boms = [
+        compact_text(request.args.get("erp_bom_code")),
+        compact_text(request.args.get("extra_bom_code")),
+    ]
     try:
         with planner_db() as con:
             master_cache = MasterTimeCache.load(con)
@@ -2182,7 +2191,8 @@ def api_trial_resolve_cycle_times():
                     "cycle_time": parse_number(request.args.get("fallback_cycle"), 0),
                     "setup_time": parse_number(request.args.get("fallback_setup"), 0),
                 },
-                extra_part_nos=[extra_part] if extra_part else None,
+                extra_part_nos=[value for value in extra_parts if value],
+                extra_bom_codes=[value for value in extra_boms if value],
                 master_cache=master_cache,
             )
         return jsonify(resolved)
@@ -2230,6 +2240,7 @@ def api_trial_create_operation():
             source_ps_id_val = format_planner_ps_id(src_base, src_partial) if src_base else raw_source_ps
             source_op_no_val = compact_text(data.get("source_op_no"))
             source_op_seq_val = int(data.get("source_op_seq_id") or 0)
+            donor_ps_id_val = compact_text(data.get("donor_ps_id"))
 
             from .cycle_time_service import resolve_schedule_times
 
@@ -2238,8 +2249,27 @@ def api_trial_create_operation():
                 source_ps_id=source_ps_id_val,
                 source_op_seq_id=source_op_seq_val,
                 source_op_no=source_op_no_val,
+                donor_ps_id=donor_ps_id_val,
                 cycle_minutes_per_qty=parse_number(data.get("cycle_minutes_per_qty"), 0),
                 setup_minutes=parse_number(data.get("setup_minutes"), 0),
+                part_no=compact_text(
+                    data.get("part_no") or data.get("part_name") or data.get("inventory_code") or ""
+                ),
+                bom_code=compact_text(
+                    data.get("bom_code")
+                    or data.get("selected_bom_code")
+                    or data.get("erp_bom_code")
+                    or ""
+                ),
+                extra_part_nos=[
+                    compact_text(data.get("inventory_code") or ""),
+                    compact_text(data.get("part_desc") or ""),
+                    compact_text(data.get("part_name") or ""),
+                ],
+                extra_bom_codes=[
+                    compact_text(data.get("erp_bom_code") or ""),
+                    compact_text(data.get("selected_bom_code") or ""),
+                ],
             )
             cycle_minutes_per_qty = float(resolved_times.get("cycle_minutes_per_qty") or 0)
             setup_minutes = float(resolved_times.get("setup_minutes") or 0)
@@ -2368,7 +2398,7 @@ def api_trial_create_operation():
 
             # Write planning card + operation link when this op has a process sheet source
             if source_ps_id_val:
-                ensure_planner_process_sheet(con, source_ps_id_val)
+                ensure_planner_process_sheet(con, source_ps_id_val, donor_ps_id=donor_ps_id_val)
                 scheduled_qty_val = parse_number(data.get("scheduled_qty"), parse_number(data.get("total_qty"), 0))
                 card_label = compact_text(data.get("source_op_no")) or operation_name
                 card_cur2 = con.execute(
@@ -2963,7 +2993,10 @@ def api_trial_queue_recalculate():
     })
     if not machine_ids:
         return jsonify({"error": "machine_ids are required"}), 400
+    started = time.perf_counter()
     with planner_db() as con:
+        con.execute("SET LOCAL statement_timeout = '120s'")
+        con.execute("SET LOCAL lock_timeout = '15s'")
         tail_by_machine = _parse_tail_by_machine(data)
         missing = [mid for mid in machine_ids if mid not in tail_by_machine]
         if missing:
@@ -2974,13 +3007,19 @@ def api_trial_queue_recalculate():
             reason="PLANNER_CHANGE",
             tail_by_machine=tail_by_machine,
         )
-        return jsonify({
+        payload = {
             "ok": True,
             "machine_ids": machine_ids,
             "recalculated": True,
             "tail_by_machine": {str(k): v for k, v in tail_by_machine.items()},
             "machine_refresh": _trial_machine_refresh_payload(con, machine_ids, lite=True),
-        })
+        }
+    logging.getLogger(__name__).info(
+        "queue recalculate machines=%s in %.2fs",
+        machine_ids,
+        time.perf_counter() - started,
+    )
+    return jsonify(payload)
 
 
 @trial_bp.post("/api/trial/blocks/<int:block_id>/combine")
@@ -3007,9 +3046,26 @@ def api_trial_dedupe_machine_queue(machine_id):
         return jsonify(payload)
 
 
+def _trial_delete_response(con, refresh_ids, tail_by_machine, *, extra=None):
+    payload = {
+        "ok": True,
+        "recalculated": False,
+        "tail_recalculated": False,
+        "tail_by_machine": {str(k): int(v) for k, v in (tail_by_machine or {}).items() if v},
+        "machine_refresh": _trial_machine_refresh_payload(con, refresh_ids, lite=True),
+    }
+    if extra:
+        payload.update(extra)
+    return jsonify(payload)
+
+
 @trial_bp.delete("/api/trial/blocks/<int:block_id>")
 def api_trial_delete_block(block_id):
+    """Remove a queue card. Compact the lane; do not reschedule inline."""
+    started = time.perf_counter()
     with planner_db() as con:
+        from .operation_sequence import lane_tail_recalc_block_after_remove, resync_machine_lane_after_remove
+
         block = trial_block_row(con, block_id)
         if not block:
             return jsonify({"error": "Run block not found"}), 404
@@ -3017,15 +3073,20 @@ def api_trial_delete_block(block_id):
         if guard:
             return guard
         if is_dummy_block_row(block) and not int(block.get("group_id") or 0):
-            machine_id = delete_dummy_card(con, block_id)
-            return jsonify({
-                "ok": True,
-                "deleted": True,
-                "permanent": True,
-                "machine_refresh": _trial_machine_refresh_payload(con, [machine_id], lite=True),
-            })
-
-        from .operation_sequence import lane_tail_recalc_block_after_remove, resync_machine_lane_after_remove
+            machine_id, tail_id = delete_dummy_card(con, block_id)
+            payload = _trial_delete_response(
+                con,
+                [machine_id],
+                {int(machine_id): tail_id} if tail_id else {},
+                extra={"deleted": True, "permanent": True},
+            )
+            logging.getLogger(__name__).info(
+                "queue delete dummy block=%s machine=%s in %.2fs",
+                block_id,
+                machine_id,
+                time.perf_counter() - started,
+            )
+            return payload
 
         machine_id = int(block["machine_id"])
         operation_id = int(block["operation_id"])
@@ -3096,15 +3157,23 @@ def api_trial_delete_block(block_id):
 
         refresh_ids = sorted(int(mid) for mid in affected_machine_ids if int(mid or 0) > 0)
         for mid in refresh_ids:
-            resync_machine_lane_after_remove(
+            resync = resync_machine_lane_after_remove(
                 con,
                 mid,
                 tail_block_id=tail_by_machine.get(mid),
+                recalculate=False,
             )
-        return jsonify({
-            "ok": True,
-            "machine_refresh": _trial_machine_refresh_payload(con, refresh_ids, lite=True),
-        })
+            compact_tail = (resync or {}).get("tail_from_block_id")
+            if compact_tail and mid not in tail_by_machine:
+                tail_by_machine[int(mid)] = int(compact_tail)
+        payload = _trial_delete_response(con, refresh_ids, tail_by_machine)
+    logging.getLogger(__name__).info(
+        "queue delete block=%s machines=%s in %.2fs",
+        block_id,
+        refresh_ids,
+        time.perf_counter() - started,
+    )
+    return payload
 
 
 @trial_bp.route("/api/trial/segments/<int:segment_id>/actual", methods=["PATCH", "POST"])

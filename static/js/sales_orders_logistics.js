@@ -330,8 +330,7 @@
 
   function bomChildPp(parentPp, child) {
     const childPs = String(child?.process_sheet_no || '').trim();
-    const parentPs = psBaseKey(parentPp?.process_sheet_no || parentPp?.pp_voucher_no);
-    if (!childPs || psBaseKey(childPs) === parentPs) return parentPp;
+    if (!childPs) return parentPp;
     return {
       ...parentPp,
       pp_voucher_no: childPs,
@@ -362,18 +361,33 @@
     };
   }
 
-  function asNestedChildRow(parentLeaf, childLeaf, index, count) {
-    const part = String(childLeaf.partial?.inventory_code || childLeaf.pp?.inventory_code || '').trim();
-    return {
-      ...childLeaf,
-      assemblyChild: {
+  function asNestedChildRow(parentLeaf, childLeaf, child, index, count) {
+    const part = String(
+      child?.part_no || childLeaf.partial?.inventory_code || childLeaf.pp?.inventory_code || ''
+    ).trim();
+    const assemblyChild = child && String(child.process_sheet_no || '').trim()
+      ? child
+      : {
         part_no: part,
         description: childLeaf.pp?.description || '',
         qty: childLeaf.partial?.partial_qty ?? childLeaf.pp?.pp_qty,
-        process_sheet_no: psDisplayForPartial(childLeaf.pp, childLeaf.partial),
+        process_sheet_no: psIdOf(childLeaf) || String(childLeaf.pp?.process_sheet_no || '').trim(),
         selected_bom_code: childLeaf.pp?.bom_code || '',
         is_subassembly: true,
+        material_subcon: childLeaf.pp?.material_subcon || '',
+        mtl_part_order: childLeaf.pp?.mtl_part_order || '',
+        material_need_date: childLeaf.pp?.material_need_date || '',
+        material_delay: Boolean(childLeaf.pp?.material_delay),
+      };
+    return {
+      ...childLeaf,
+      pp: bomChildPp(childLeaf.pp, assemblyChild),
+      partial: {
+        ...(childLeaf.partial || {}),
+        inventory_code: assemblyChild.part_no || childLeaf.partial?.inventory_code,
+        partial_qty: assemblyChild.qty == null ? childLeaf.partial?.partial_qty : assemblyChild.qty,
       },
+      assemblyChild,
       assemblyChildIndex: index,
       assemblyChildCount: count,
     };
@@ -421,19 +435,29 @@
         if (psCmp) return psCmp;
         return partialNo(a.partial) - partialNo(b.partial);
       });
-      const nestedParts = new Set(
-        nested
-          .map(childLeaf => partKeyOf(childLeaf.partial?.inventory_code || childLeaf.pp?.inventory_code))
-          .filter(Boolean)
-      );
-      const extraBom = assemblyLineItems(leaf.pp).filter(child => {
-        const part = partKeyOf(child.part_no);
-        return part && !nestedParts.has(part);
+      const items = assemblyLineItems(leaf.pp);
+      const nestedByPs = new Map();
+      const nestedByPart = new Map();
+      nested.forEach(childLeaf => {
+        const ps = psIdOf(childLeaf);
+        if (ps && !nestedByPs.has(ps)) nestedByPs.set(ps, childLeaf);
+        const part = partKeyOf(childLeaf.partial?.inventory_code || childLeaf.pp?.inventory_code);
+        if (part && !nestedByPart.has(part)) nestedByPart.set(part, childLeaf);
       });
-      const childRows = [
-        ...nested.map((childLeaf, index) => asNestedChildRow(leaf, childLeaf, index, 0)),
-        ...extraBom.map((child, index) => asBomChildRow(leaf, child, nested.length + index, 0)),
-      ];
+      const usedNested = new Set();
+      const childRows = items.map((child, index) => {
+        const childPs = psBaseKey(child.process_sheet_no);
+        const nestedLeaf = (childPs && nestedByPs.get(childPs))
+          || nestedByPart.get(partKeyOf(child.part_no))
+          || null;
+        if (nestedLeaf) usedNested.add(nestedLeaf);
+        if (nestedLeaf) return asNestedChildRow(leaf, nestedLeaf, child, index, 0);
+        return asBomChildRow(leaf, child, index, 0);
+      });
+      nested.forEach(childLeaf => {
+        if (usedNested.has(childLeaf)) return;
+        childRows.push(asNestedChildRow(leaf, childLeaf, null, childRows.length, 0));
+      });
       if (!childRows.length) {
         explodeLeaf(leaf).forEach(row => out.push(row));
         return;
@@ -928,7 +952,8 @@
 
   function isoDateValue(value) {
     const text = String(value == null ? '' : value).trim();
-    return /^\d{4}-\d{2}-\d{2}/.test(text) ? text.slice(0, 10) : '';
+    if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10);
+    return parseMaterialSubcon(text).date || '';
   }
 
   function renderNeedDateCell(pp) {
@@ -2290,7 +2315,7 @@
       const parsed = parseMaterialSubcon(cell.dataset.lastSaved);
       const nextArrived = !parsed.arrived;
       const dateInput = cell.querySelector('.so-material-subcon-date');
-      const date = String(dateInput?.value || '').trim();
+      const date = isoDateValue(dateInput?.value);
       applyMaterialCellState(cell, { arrived: nextArrived, date: nextArrived ? '' : date });
       btn.classList.toggle('is-active', nextArrived);
       btn.setAttribute('aria-pressed', nextArrived ? 'true' : 'false');
@@ -2316,7 +2341,7 @@
       e.stopPropagation();
       const cell = dateInput.closest('.so-material-subcon-cell');
       if (!cell) return;
-      const date = String(dateInput.value || '').trim();
+      const date = isoDateValue(dateInput.value);
       applyMaterialCellState(cell, { arrived: false, date });
       saveMaterialCell(cell, serializeMaterialSubcon({ arrived: false, date }));
     });
@@ -2331,6 +2356,20 @@
       const textarea = e.target.closest('.so-editable-input');
       if (textarea) {
         saveNotesField(textarea);
+        return;
+      }
+      const needDateInput = e.target.closest('.sol-need-date-input');
+      if (needDateInput) {
+        saveNotesField(needDateInput);
+        return;
+      }
+      const dateInput = e.target.closest('.so-material-subcon-date');
+      if (dateInput && !dateInput.disabled) {
+        const cell = dateInput.closest('.so-material-subcon-cell');
+        if (!cell) return;
+        const date = isoDateValue(dateInput.value);
+        applyMaterialCellState(cell, { arrived: false, date });
+        saveMaterialCell(cell, serializeMaterialSubcon({ arrived: false, date }));
         return;
       }
       const qtyInput = e.target.closest('.sol-qty-cell-input');

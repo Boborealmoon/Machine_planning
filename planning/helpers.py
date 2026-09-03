@@ -112,6 +112,13 @@ class PlannerCon:
         cur.executemany(pg_sql, seq_of_params)
         return cur
 
+    def execute_values(self, sql: str, argslist, template=None, page_size=500):
+        """One multi-row INSERT/UPSERT instead of N round-trips."""
+        pg_sql = _PLACEHOLDER_RE.sub("%s", sql)
+        cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        psycopg2.extras.execute_values(cur, pg_sql, argslist, template=template, page_size=page_size)
+        return cur
+
     def commit(self):
         self._conn.commit()
 

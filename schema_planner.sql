@@ -810,6 +810,7 @@ CREATE TABLE IF NOT EXISTS public.planner_so_pp_notes (
     quality_doc         TEXT         NOT NULL DEFAULT '',
     ops_notes           TEXT         NOT NULL DEFAULT '',
     sales_notes         TEXT         NOT NULL DEFAULT '',
+    buyer               TEXT         NOT NULL DEFAULT '',
     updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 

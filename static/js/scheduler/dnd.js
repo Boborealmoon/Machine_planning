@@ -888,6 +888,7 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0, opt
         execution_status: 'NOT_STARTED',
         include_setup: includeSetup,
         recalculate: false,
+        donor_ps_id: String(workCard?.donor_ps_id || card?.donor_ps_id || op?.donor_ps_id || '').trim(),
       };
       const result = typeof trialPostCatalogQueueOperation === 'function'
         ? await trialPostCatalogQueueOperation(queueBody, workCard)
@@ -940,6 +941,7 @@ async function scheduleTrialSingleOpCard(card, machineId, queuePosition = 0, opt
       execution_status: 'NOT_STARTED',
       include_setup: 1,
       recalculate: false,
+      donor_ps_id: String(workCard?.donor_ps_id || card?.donor_ps_id || op?.donor_ps_id || '').trim(),
     };
     const result = typeof trialPostCatalogQueueOperation === 'function'
       ? await trialPostCatalogQueueOperation(queueBody, workCard)

@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 from .helpers import one, rows
-from .utils import compact_text, parse_number
+from .utils import bom_code_match_key, compact_text, parse_number
 
 SOURCE_MANUAL = "MANUAL"
 SOURCE_PLANNER_JOB = "PLANNER_JOB"
@@ -25,6 +25,7 @@ _VALID_SOURCES = {
 }
 
 _SNAPSHOT_READY = False
+_REV_SUFFIX_RE = re.compile(r"\s+REV\s*\d+$", re.I)
 
 
 def planner_db_available() -> bool:
@@ -78,6 +79,37 @@ def normalize_op_identity(
     return op_no, op_type
 
 
+def schedule_time_lookup_keys(
+    *,
+    ps: dict[str, Any] | None = None,
+    bom_row: dict[str, Any] | None = None,
+    part_no: str = "",
+    bom_code: str = "",
+    extra_part_nos: list[str] | None = None,
+    extra_bom_codes: list[str] | None = None,
+) -> tuple[str, str, list[str], list[str]]:
+    """Prefer catalog/sub-assembly identity, then planner PS / selected BOM."""
+    ps = ps or {}
+    bom_row = bom_row or {}
+    payload_part = compact_text(part_no)
+    payload_bom = compact_text(bom_code)
+    ps_part = compact_text(bom_row.get("inventory_code") or ps.get("inventory_code") or "")
+    ps_bom = compact_text(bom_row.get("bom_code") or "")
+    primary_part = payload_part or ps_part
+    primary_bom = payload_bom or ps_bom
+    parts: list[str] = []
+    for value in (payload_part, ps_part, *(extra_part_nos or [])):
+        value = compact_text(value)
+        if value and value not in parts and value != primary_part:
+            parts.append(value)
+    boms: list[str] = []
+    for value in (payload_bom, ps_bom, *(extra_bom_codes or [])):
+        value = compact_text(value)
+        if value and value not in boms and value != primary_bom:
+            boms.append(value)
+    return primary_part, primary_bom, parts, boms
+
+
 def resolve_schedule_times(
     con,
     *,
@@ -86,29 +118,34 @@ def resolve_schedule_times(
     source_op_no: str = "",
     cycle_minutes_per_qty: float = 0,
     setup_minutes: float = 0,
+    part_no: str = "",
+    bom_code: str = "",
+    extra_part_nos: list[str] | None = None,
+    extra_bom_codes: list[str] | None = None,
+    donor_ps_id: str = "",
 ) -> dict[str, Any]:
     """Master-first cycle/setup for new scheduler jobs (catalog drag-drop path)."""
     fallback_cycle = max(0.0, float(cycle_minutes_per_qty or 0))
     fallback_setup = max(0.0, float(setup_minutes or 0))
     source_ps_id = compact_text(source_ps_id)
+    empty = {
+        "cycle_minutes_per_qty": fallback_cycle,
+        "setup_minutes": fallback_setup,
+        "source": "bom_step" if fallback_cycle > 0 else "none",
+    }
     if not source_ps_id:
-        return {
-            "cycle_minutes_per_qty": fallback_cycle,
-            "setup_minutes": fallback_setup,
-            "source": "bom_step" if fallback_cycle > 0 else "none",
-        }
+        return empty
 
     from .process_sheets import ensure_planner_process_sheet
 
-    ps = ensure_planner_process_sheet(con, source_ps_id)
-    if not ps:
-        return {
-            "cycle_minutes_per_qty": fallback_cycle,
-            "setup_minutes": fallback_setup,
-            "source": "bom_step" if fallback_cycle > 0 else "none",
-        }
+    try:
+        ps = ensure_planner_process_sheet(con, source_ps_id, donor_ps_id=donor_ps_id)
+    except Exception:
+        ps = None
+    if not ps and not compact_text(part_no):
+        return empty
 
-    bom_id = int(ps.get("selected_bom_id") or 0)
+    bom_id = int((ps or {}).get("selected_bom_id") or 0)
     step = None
     if int(source_op_seq_id or 0) > 0 and bom_id > 0:
         step = one(
@@ -139,14 +176,16 @@ def resolve_schedule_times(
         if bom_id > 0
         else None
     )
-    part_no = compact_text((bom_row or {}).get("inventory_code") or ps.get("inventory_code") or "")
-    bom_code = compact_text((bom_row or {}).get("bom_code") or "")
+    part_no, bom_code, extra_parts, extra_boms = schedule_time_lookup_keys(
+        ps=ps,
+        bom_row=bom_row,
+        part_no=part_no,
+        bom_code=bom_code,
+        extra_part_nos=extra_part_nos,
+        extra_bom_codes=extra_bom_codes,
+    )
     if not part_no:
-        return {
-            "cycle_minutes_per_qty": fallback_cycle,
-            "setup_minutes": fallback_setup,
-            "source": "bom_step" if fallback_cycle > 0 else "none",
-        }
+        return empty
 
     master_cache = MasterTimeCache.load(con)
     resolved = resolve_step_times(
@@ -158,7 +197,8 @@ def resolve_schedule_times(
             "cycle_time": fallback_cycle,
             "setup_time": fallback_setup,
         },
-        extra_part_nos=[compact_text(ps.get("inventory_code") or "")],
+        extra_part_nos=extra_parts,
+        extra_bom_codes=extra_boms,
         master_cache=master_cache,
     )
     cycle = parse_number(resolved.get("cycle_time"), fallback_cycle)
@@ -171,14 +211,19 @@ def resolve_schedule_times(
             "master_id": resolved.get("master_id"),
         }
 
-    if not step and part_no:
-        op_no, op_type = normalize_op_identity("", source_op_no)
+    if part_no and (resolved.get("source") != "master" or cycle <= 0):
+        op_no, op_type = normalize_op_identity(
+            compact_text((step or {}).get("op_type") or ""),
+            source_op_no or (step or {}).get("op_no"),
+        )
         master = lookup_master_row(
             con,
             part_no=part_no,
             bom_code=bom_code,
             op_no=op_no,
             op_type=op_type,
+            extra_part_nos=extra_parts,
+            extra_bom_codes=extra_boms,
             master_cache=master_cache,
         )
         if master:
@@ -259,6 +304,9 @@ def _part_no_lookup_candidates(primary: str, *extras: str) -> list[str]:
             return
         if value not in out:
             out.append(value)
+        stripped = _REV_SUFFIX_RE.sub("", value).strip()
+        if stripped and stripped != value:
+            add(stripped)
         upper = value.upper()
         for prefix in ("PMM-SUBCON-", "SUBCON-"):
             if upper.startswith(prefix):
@@ -268,6 +316,33 @@ def _part_no_lookup_candidates(primary: str, *extras: str) -> list[str]:
     for extra in extras:
         add(extra)
     return out
+
+
+def _bom_codes_match(left: str, right: str) -> bool:
+    a = compact_text(left)
+    b = compact_text(right)
+    if a == b:
+        return True
+    ka = bom_code_match_key(a)
+    kb = bom_code_match_key(b)
+    return bool(ka) and ka == kb
+
+
+def _lookup_bom_candidates(bom_code: str, extra_bom_codes: list[str] | None = None) -> list[str]:
+    candidates: list[str] = []
+    for raw in (bom_code, *(extra_bom_codes or [])):
+        code = compact_text(raw)
+        if code and code not in candidates:
+            candidates.append(code)
+    if "" not in candidates:
+        candidates.append("")
+    return candidates
+
+
+def _part_matches_candidates(row_part: str, part_candidates: list[str]) -> bool:
+    if compact_text(row_part) in part_candidates:
+        return True
+    return any(candidate in part_candidates for candidate in _part_no_lookup_candidates(row_part))
 
 
 def _load_master_rows_rest() -> list[dict[str, Any]]:
@@ -338,6 +413,7 @@ def _pick_master_row(
     op_type: str = "",
     stage_no: int | None = None,
     extra_part_nos: list[str] | None = None,
+    extra_bom_codes: list[str] | None = None,
 ) -> dict[str, Any] | None:
     part_candidates = _part_no_lookup_candidates(part_no, *(extra_part_nos or []))
     if not part_candidates:
@@ -346,9 +422,7 @@ def _pick_master_row(
     op_type = compact_text(op_type)
     op_text = str(op_no) if op_no is not None else ""
     stage_val = int(stage_no or 0)
-    bom_candidates = [bom_code] if bom_code else []
-    if "" not in bom_candidates:
-        bom_candidates.append("")
+    bom_candidates = _lookup_bom_candidates(bom_code, extra_bom_codes)
 
     best: tuple[int, dict[str, Any]] | None = None
 
@@ -359,9 +433,14 @@ def _pick_master_row(
         if best is None or score > best[0] or (score == best[0] and int(row.get("id") or 0) > int(best[1].get("id") or 0)):
             best = (score, row)
 
+    def bom_bonus(row_bom: str) -> int:
+        if not row_bom:
+            return 0
+        return 10 if any(_bom_codes_match(row_bom, code) for code in bom_candidates if code) else 0
+
     for row in master_rows or []:
         row_part = compact_text(row.get("part_no"))
-        if row_part not in part_candidates:
+        if not _part_matches_candidates(row_part, part_candidates):
             continue
         row_bom = compact_text(row.get("bom_code"))
         row_op_text = str(row.get("op_no")) if row.get("op_no") is not None else ""
@@ -372,32 +451,27 @@ def _pick_master_row(
             not compact_text(row.get("program_file"))
             and not compact_text(row.get("tool_list_file"))
         )
+        matched_bom = any(_bom_codes_match(row_bom, code) for code in bom_candidates if code)
+        empty_bom = not row_bom
 
-        for bom_try in bom_candidates:
-            if row_bom != bom_try:
-                continue
+        if matched_bom or empty_bom:
+            bonus = 10 if matched_bom else 0
             if op_text and row_op_text == op_text:
-                score = 900 + (10 if bom_try else 0) + (1 if generic_program else 0)
-                consider(row, score)
+                consider(row, 900 + bonus + (1 if generic_program else 0))
             elif stage_val > 0 and row_stage == stage_val:
-                score = 700 + (10 if bom_try else 0) + (1 if generic_program else 0)
-                consider(row, score)
+                consider(row, 700 + bonus + (1 if generic_program else 0))
             elif not op_text and row_op_type and row_op_type == op_type:
-                score = 500 + (10 if bom_try else 0) + (1 if generic_program else 0)
-                consider(row, score)
+                consider(row, 500 + bonus + (1 if generic_program else 0))
 
         if op_text:
             for program_no in _program_no_candidates(row_part, op_text):
                 if row_program == program_no.upper():
-                    score = 850 + (1 if generic_program else 0)
-                    consider(row, score)
+                    consider(row, 850 + bom_bonus(row_bom) + (1 if generic_program else 0))
             if row_program.endswith(f"-OP{op_text}"):
-                score = 800 + (1 if generic_program else 0)
-                consider(row, score)
+                consider(row, 800 + bom_bonus(row_bom) + (1 if generic_program else 0))
 
-        if op_text and row_op_text == op_text and not bom_code:
-            score = 600 + (1 if generic_program else 0)
-            consider(row, score)
+        if op_text and row_op_text == op_text and not matched_bom:
+            consider(row, 600 + (1 if generic_program else 0))
 
     return best[1] if best else None
 
@@ -423,6 +497,7 @@ class MasterTimeCache:
         op_type: str = "",
         stage_no: int | None = None,
         extra_part_nos: list[str] | None = None,
+        extra_bom_codes: list[str] | None = None,
     ) -> dict[str, Any] | None:
         return _pick_master_row(
             self._rows,
@@ -432,6 +507,7 @@ class MasterTimeCache:
             op_type=op_type,
             stage_no=stage_no,
             extra_part_nos=extra_part_nos,
+            extra_bom_codes=extra_bom_codes,
         )
 
 
@@ -444,6 +520,7 @@ def lookup_master_row(
     op_type: str = "",
     stage_no: int | None = None,
     extra_part_nos: list[str] | None = None,
+    extra_bom_codes: list[str] | None = None,
     master_cache: MasterTimeCache | None = None,
 ) -> dict[str, Any] | None:
     part_no = compact_text(part_no)
@@ -457,6 +534,7 @@ def lookup_master_row(
             op_type=op_type,
             stage_no=stage_no,
             extra_part_nos=extra_part_nos,
+            extra_bom_codes=extra_bom_codes,
         )
         if hit:
             return hit
@@ -467,11 +545,7 @@ def lookup_master_row(
     stage_val = int(stage_no or 0)
 
     part_candidates = _part_no_lookup_candidates(part_no, *(extra_part_nos or []))
-    bom_candidates: list[str] = []
-    if bom_code:
-        bom_candidates.append(bom_code)
-    if "" not in bom_candidates:
-        bom_candidates.append("")
+    bom_candidates = _lookup_bom_candidates(bom_code, extra_bom_codes)
 
     for part_try in part_candidates:
         for bom_try in bom_candidates:
@@ -540,6 +614,7 @@ def lookup_master_row(
                 op_type=op_type,
                 stage_no=stage_no,
                 extra_part_nos=extra_part_nos,
+                extra_bom_codes=extra_bom_codes,
             )
     return None
 
@@ -598,6 +673,7 @@ def resolve_step_times(
     bom_code: str,
     step: dict[str, Any] | None = None,
     extra_part_nos: list[str] | None = None,
+    extra_bom_codes: list[str] | None = None,
     master_cache: MasterTimeCache | None = None,
 ) -> dict[str, float]:
     """Master-first times for new schedules; never reads planner_operation."""
@@ -616,6 +692,7 @@ def resolve_step_times(
         op_type=op_type,
         stage_no=stage_no or None,
         extra_part_nos=extra_part_nos,
+        extra_bom_codes=extra_bom_codes,
         master_cache=master_cache,
     )
     if master:

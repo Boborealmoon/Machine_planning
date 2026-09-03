@@ -60,6 +60,79 @@ def parent_ps_id_from_child(ps_id: Any) -> str:
     return _CHILD_PS_SUFFIX_RE.sub("", raw)
 
 
+def host_child_ps_id(host_ps_id: Any, donor_child_ps_id: Any) -> str:
+    """Re-key a borrowed COMP sheet onto the host root (NPS26-0321-12 → N26-[SR]22-12)."""
+    host = compact_text(host_ps_id).split("::")[0]
+    donor = compact_text(donor_child_ps_id).split("::")[0]
+    if not host:
+        return donor
+    match = _CHILD_PS_SUFFIX_RE.search(donor)
+    if not match:
+        return host
+    return f"{host}{match.group(0)}"
+
+
+def hosted_sr_child_donor_guesses(hosted_ps_id: Any, related_root_ps_ids: list[Any] | None) -> list[str]:
+    """ERP COMP sheets that a hosted SR child (``N26-[SR]22-12``) may have borrowed."""
+    hosted = compact_text(hosted_ps_id).split("::")[0]
+    if not is_component_child_ps(hosted):
+        return []
+    parent = parent_ps_id_from_child(hosted)
+    if not parent or not is_sr_process_sheet(parent):
+        return []
+    suffix = _CHILD_PS_SUFFIX_RE.search(hosted)
+    if not suffix:
+        return []
+    guesses: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for root in related_root_ps_ids or []:
+        root_id = compact_text(root).split("::")[0]
+        if not root_id or is_component_child_ps(root_id) or root_id.upper() == parent.upper():
+            continue
+        donor = f"{root_id}{suffix.group(0)}"
+        key = donor.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        guesses.append((_RELATED_ROOT_RANK.get(assembly_ps_type(root_id), 9), donor))
+    guesses.sort()
+    return [donor for _rank, donor in guesses]
+
+
+def _reborn_identity_fields(row: dict[str, Any], new_ps_id: str) -> dict[str, Any]:
+    out = dict(row)
+    out["ps_id"] = new_ps_id
+    out["source_ps_id"] = new_ps_id
+    if compact_text(out.get("job_no")):
+        out["job_no"] = new_ps_id
+    if compact_text(out.get("display_ps_id")):
+        out["display_ps_id"] = new_ps_id
+    nested = out.get("op")
+    if isinstance(nested, dict):
+        out["op"] = _reborn_identity_fields(nested, new_ps_id)
+    return out
+
+
+def _reborn_line_item(item: dict[str, Any], host_ps_id: str, donor_ps_id: str) -> dict[str, Any]:
+    donor = compact_text(donor_ps_id)
+    hosted = host_child_ps_id(host_ps_id, donor)
+    if not hosted or hosted.upper() == donor.upper():
+        out = dict(item)
+        out["donor_ps_id"] = donor
+        return out
+    out = _reborn_identity_fields(item, hosted)
+    out["process_sheet_no"] = hosted
+    out["display_ps_id"] = hosted
+    out["donor_ps_id"] = donor
+    for key in ("ops", "all_ops", "op_cards"):
+        rows = item.get(key) or []
+        out[key] = [
+            _reborn_identity_fields(row, hosted) if isinstance(row, dict) else row
+            for row in rows
+        ]
+    return out
+
+
 def _catalog_line_item_from_entry(entry: dict[str, Any], *, related_from: str = "") -> dict[str, Any]:
     """Slim nested catalog snapshot so a parent can render child BOM ops as op cards."""
     ps_id = compact_text(entry.get("ps_id"))
@@ -86,7 +159,11 @@ def _catalog_line_item_from_entry(entry: dict[str, Any], *, related_from: str = 
         "execution_status": compact_text(entry.get("execution_status")),
         "selected_bom_code": compact_text(entry.get("selected_bom_code") or entry.get("selected_flow_code")),
         "erp_bom_code": compact_text(entry.get("erp_bom_code") or entry.get("bom_code")),
+        "selected_bom_id": as_int(entry.get("selected_bom_id")),
+        "part_name": compact_text(entry.get("part_name") or entry.get("part_no")),
         "material_in": bool(entry.get("material_in")),
+        "ops": list(entry.get("ops") or []),
+        "all_ops": list(entry.get("all_ops") or []),
         "op_cards": list(entry.get("op_cards") or []),
         "related_from": compact_text(related_from),
     }
@@ -105,7 +182,9 @@ def attach_catalog_assembly_line_items(entries: list[dict[str, Any]] | None) -> 
     APS/NPS parents get their own ``NPS26-0321-1`` children. Direct-PP SRs such as
     ``N26-[SR]22`` often have no COMP sheets of their own; those cards borrow the
     matching assembly's line items (usually the NPS/APS voucher for the same part)
-    so planners can still trace into each sub-assembly.
+    so planners can still trace into each sub-assembly. Borrowed children are
+    re-keyed onto the host (``N26-[SR]22-12``) so queued ops register as the SR
+    job, while ``donor_ps_id`` keeps the NPS sheet for program/BOM lookup.
     """
     rows = list(entries or [])
     if not rows:
@@ -162,6 +241,11 @@ def attach_catalog_assembly_line_items(entries: list[dict[str, Any]] | None) -> 
         seen: set[str] = set()
         for child in source_children:
             row = _catalog_line_item_from_entry(child, related_from=related_from)
+            donor_ps = catalog_source_ps_id(child)
+            if related_from:
+                row = _reborn_line_item(row, ps_id, donor_ps)
+            else:
+                row["donor_ps_id"] = ""
             key = compact_text(row.get("process_sheet_no")).upper()
             if not key or key in seen:
                 continue

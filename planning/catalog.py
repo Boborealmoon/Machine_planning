@@ -457,6 +457,7 @@ def _catalog_op_times_with_master(
     step_row: dict,
     master_cache=None,
     extra_part_nos: list[str] | None = None,
+    extra_bom_codes: list[str] | None = None,
 ) -> tuple[float, float]:
     """Return (cycle_time, setup_time) preferring planner_cycle_time_master."""
     cycle_time = float(step_row.get("cycle_time") or 0)
@@ -473,6 +474,7 @@ def _catalog_op_times_with_master(
             bom_code=compact_text(bom_code),
             step=step_row,
             extra_part_nos=extra_part_nos,
+            extra_bom_codes=extra_bom_codes,
             master_cache=master_cache,
         )
         if resolved.get("source") == "master":
@@ -525,14 +527,41 @@ def _catalog_entry_needs_child_bom_ops(entry) -> bool:
     from planning.assembly_classify import is_component_child_ps
 
     ps_id = compact_text(entry.get("source_ps_id") or entry.get("ps_id")).split("::")[0]
-    if not is_component_child_ps(ps_id):
+    sidebar = _catalog_ops_for_sidebar(entry.get("ops") or entry.get("op_cards") or [])
+    selected_id = int(entry.get("selected_bom_id") or 0)
+    bom_code = compact_text(entry.get("selected_bom_code") or entry.get("selected_flow_code"))
+    if is_component_child_ps(ps_id):
+        if selected_id > 0:
+            if sidebar:
+                return False
+            if bom_code and bom_code.upper() != "PLACEHOLDER":
+                return False
+        return True
+    if selected_id > 0 or sidebar or is_temp_planner_ps_id(ps_id):
         return False
-    if int(entry.get("selected_bom_id") or 0) > 0:
-        sidebar = _catalog_ops_for_sidebar(entry.get("ops") or entry.get("op_cards") or [])
-        if sidebar:
+    inventory_code = compact_text(
+        entry.get("inventory_code") or entry.get("part_no") or entry.get("part_name")
+    )
+    return bool(inventory_code)
+
+
+def catalog_entry_missing_current_machining_op(entry) -> bool:
+    """True when ERP current stage is Turning/Milling but the sidebar has no matching op."""
+    from planning.erp_wo_merge import is_machining_stage_desc, op_no_from_stage
+
+    current = compact_text(entry.get("current_stage_desc"))
+    if not is_machining_stage_desc(current):
+        return False
+    current_no = op_no_from_stage(current, entry.get("current_stage_no") or 0)
+    current_fold = current.casefold()
+    for op in entry.get("ops") or entry.get("op_cards") or []:
+        op_no = compact_text(op.get("source_op_no") or op.get("op_no"))
+        desc = compact_text(
+            op.get("stage_desc") or op.get("operation_name") or op.get("op_type") or ""
+        )
+        if current_no and op_no == current_no:
             return False
-        bom_code = compact_text(entry.get("selected_bom_code") or entry.get("selected_flow_code"))
-        if bom_code and bom_code.upper() != "PLACEHOLDER":
+        if desc and (desc.casefold() == current_fold or current_fold in desc.casefold()):
             return False
     return True
 
@@ -596,6 +625,22 @@ def enrich_component_child_bom_ops(
     stages_by_inv = erp_domain_bom_stages_by_inventory(
         sorted({inv for _entry, _ps, inv in targets})
     )
+    missing_invs = sorted({inv for _entry, _ps, inv in targets if not (stages_by_inv.get(inv) or [])})
+    if missing_invs:
+        for row in rows(
+            con.execute(
+                """
+                SELECT inventory_code, bom_code, stage_no, stage_desc
+                FROM bom_op_stage
+                WHERE inventory_code = ANY(%s)
+                ORDER BY inventory_code, bom_code, stage_no
+                """,
+                (missing_invs,),
+            )
+        ):
+            inv = compact_text(row.get("inventory_code"))
+            if inv:
+                stages_by_inv.setdefault(inv, []).append(dict(row))
     bom_id_cache: dict[tuple[str, str], int] = {}
     for entry, ps_id, inventory_code in targets:
         bom_code = preferred_machining_bom_code(stages_by_inv.get(inventory_code) or [])
@@ -620,10 +665,15 @@ def enrich_component_child_bom_ops(
         entry["selected_bom_id"] = bom_id
         entry["selected_bom_code"] = bom_code
         entry["selected_flow_code"] = bom_code
+        extra_codes = [
+            compact_text(row.get("bom_code"))
+            for row in (stages_by_inv.get(inventory_code) or [])
+            if compact_text(row.get("bom_code"))
+        ]
         entry["flow_options"] = merge_flow_options(
             planner_flow_options_for_inventory(con, inventory_code),
-            [bom_code],
-            erp_voucher_bom=bom_code,
+            extra_codes or [bom_code],
+            erp_voucher_bom=compact_text(entry.get("erp_bom_code")) or bom_code,
         )
         attach_planner_bom_ops_to_catalog_entry(
             con,
@@ -635,6 +685,7 @@ def enrich_component_child_bom_ops(
         )
         partial_no = int(entry.get("pp_partial_no") or 1)
         try:
+            ensure_planner_process_sheet(con, format_planner_ps_id(ps_id, partial_no))
             con.execute(
                 """
                 UPDATE planner_process_sheet
@@ -648,6 +699,85 @@ def enrich_component_child_bom_ops(
         except Exception:
             pass
     return rows_in
+
+
+def repair_catalog_sidebar_ops(
+    con,
+    entries,
+    *,
+    only_ps_ids=None,
+    planned_qty_by_op=None,
+    queued_machines_by_op=None,
+    bom_stage_keys=None,
+    master_cache=None,
+):
+    """Seed missing inventory BOM ops and refresh planner BOM from WO machining stages."""
+    rows_in = enrich_component_child_bom_ops(
+        con,
+        entries,
+        only_ps_ids=only_ps_ids,
+        planned_qty_by_op=planned_qty_by_op,
+        queued_machines_by_op=queued_machines_by_op,
+        bom_stage_keys=bom_stage_keys,
+        master_cache=master_cache,
+    )
+    wanted = None
+    if only_ps_ids:
+        wanted = {
+            compact_text(ps_id).split("::")[0].upper()
+            for ps_id in only_ps_ids
+            if compact_text(ps_id)
+        }
+    targets = []
+    for entry in rows_in:
+        ps_id = compact_text(entry.get("source_ps_id") or entry.get("ps_id")).split("::")[0]
+        if wanted and ps_id.upper() not in wanted:
+            continue
+        if int(entry.get("selected_bom_id") or 0) <= 0:
+            continue
+        if not catalog_entry_missing_current_machining_op(entry):
+            continue
+        targets.append(entry)
+    if not targets:
+        return rows_in
+    if planned_qty_by_op is None or queued_machines_by_op is None:
+        planned_qty_by_op, queued_machines_by_op = _catalog_lane_qty_maps(con)
+    if bom_stage_keys is None:
+        bom_stage_keys = _bom_op_stage_keys(con)
+    if master_cache is None:
+        from .cycle_time_service import MasterTimeCache
+
+        master_cache = MasterTimeCache.load(con)
+    for entry in targets:
+        attach_planner_bom_ops_to_catalog_entry(
+            con,
+            entry,
+            planned_qty_by_op=planned_qty_by_op,
+            queued_machines_by_op=queued_machines_by_op,
+            bom_stage_keys=bom_stage_keys,
+            master_cache=master_cache,
+        )
+    return rows_in
+
+
+def catalog_ps_ids_needing_live_ops_repair(entries, *, include_missing_bom=True) -> list[str]:
+    ids = []
+    seen: set[str] = set()
+    for entry in entries or []:
+        ps_id = compact_text(entry.get("source_ps_id") or entry.get("ps_id"))
+        if not ps_id:
+            continue
+        key = ps_id.split("::")[0].upper()
+        if key in seen:
+            continue
+        need = catalog_entry_missing_current_machining_op(entry)
+        if include_missing_bom and _catalog_entry_needs_child_bom_ops(entry):
+            need = True
+        if not need:
+            continue
+        seen.add(key)
+        ids.append(ps_id)
+    return ids
 
 
 def attach_planner_bom_ops_to_catalog_entry(
@@ -678,6 +808,22 @@ def attach_planner_bom_ops_to_catalog_entry(
         or entry.get("total_qty")
         or 0
     )
+    from planning.erp_wo_merge import (
+        erp_accepted_qty_for_op,
+        erp_exec_status_for_op,
+        merge_finishing_steps_into_flow_steps,
+        mfg_wo_stages_batch,
+        overlay_wo_stages_on_erp_qty_maps,
+        voucher_erp_qty_maps_for_partial,
+    )
+    from planning.flows import append_missing_wo_machining_steps
+
+    wo_stages = mfg_wo_stages_batch(con, [(source_ps_id, pp_partial_no)]).get(
+        (source_ps_id, pp_partial_no), []
+    )
+    if wo_stages:
+        append_missing_wo_machining_steps(con, bom_id, wo_stages)
+
     step_rows = rows(
         con.execute(
             """
@@ -719,14 +865,11 @@ def attach_planner_bom_ops_to_catalog_entry(
 
         master_cache = MasterTimeCache.load(con)
 
-    from planning.erp_wo_merge import (
-        erp_accepted_qty_for_op,
-        erp_exec_status_for_op,
-        voucher_erp_qty_maps_for_partial,
-    )
-
     erp_by_op, erp_by_stage, erp_status_by_op, erp_status_by_stage = voucher_erp_qty_maps_for_partial(
         con, source_ps_id, pp_partial_no
+    )
+    overlay_wo_stages_on_erp_qty_maps(
+        erp_by_op, erp_by_stage, erp_status_by_op, erp_status_by_stage, wo_stages
     )
 
     all_ops = []
@@ -758,8 +901,15 @@ def attach_planner_bom_ops_to_catalog_entry(
                 step_row=row,
                 master_cache=master_cache,
                 extra_part_nos=[
+                    compact_text(entry.get("part_no") or ""),
+                    compact_text(entry.get("part_name") or ""),
                     compact_text(entry.get("part_desc") or ""),
                     compact_text(entry.get("inventory_code") or ""),
+                ],
+                extra_bom_codes=[
+                    compact_text(entry.get("erp_bom_code") or ""),
+                    compact_text(entry.get("bom_code") or ""),
+                    compact_text(entry.get("selected_flow_code") or ""),
                 ],
             )
         all_ops.append(
@@ -794,11 +944,6 @@ def attach_planner_bom_ops_to_catalog_entry(
         )
         _finalize_catalog_op_execution_status(all_ops[-1])
 
-    from planning.erp_wo_merge import mfg_wo_stages_batch, merge_finishing_steps_into_flow_steps
-
-    wo_stages = mfg_wo_stages_batch(con, [(source_ps_id, pp_partial_no)]).get(
-        (source_ps_id, pp_partial_no), []
-    )
     for step in merge_finishing_steps_into_flow_steps([], wo_stages):
         finishing_op = _catalog_op_from_finishing_step(
             step,
@@ -1304,8 +1449,14 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None, *, sk
             step_row=step_row,
             master_cache=master_cache,
             extra_part_nos=[
+                compact_text(row.get("part_no") or ""),
                 compact_text(row.get("inventory_code") or ""),
                 compact_text(row.get("part_desc") or ""),
+            ],
+            extra_bom_codes=[
+                compact_text(row.get("erp_bom_code") or ""),
+                compact_text(row.get("bom_code") or ""),
+                compact_text(row.get("selected_flow_code") or ""),
             ],
         )
         op_item = {

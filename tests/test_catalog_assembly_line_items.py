@@ -1,5 +1,7 @@
 from planning.assembly_classify import (
     attach_catalog_assembly_line_items,
+    host_child_ps_id,
+    hosted_sr_child_donor_guesses,
     is_component_child_ps,
     parent_ps_id_from_child,
 )
@@ -31,6 +33,12 @@ def test_child_ps_ids():
     assert parent_ps_id_from_child("NPS26-0321-10") == "NPS26-0321"
     assert parent_ps_id_from_child("N26-[SR]22") == ""
     assert parent_ps_id_from_child("N26-[SR]22-1") == "N26-[SR]22"
+    assert host_child_ps_id("N26-[SR]22", "NPS26-0321-12") == "N26-[SR]22-12"
+    assert host_child_ps_id("N26-[SR]22", "NPS26-0321-1") == "N26-[SR]22-1"
+    assert hosted_sr_child_donor_guesses("N26-[SR]22-12", ["NPS26-0321", "N26-[SR]22", "NPS26-0321-12"]) == [
+        "NPS26-0321-12"
+    ]
+    assert hosted_sr_child_donor_guesses("NPS26-0321-12", ["NPS26-0321"]) == []
 
 
 def test_parent_nests_own_comp_line_items():
@@ -71,15 +79,49 @@ def test_sr_without_comp_sheets_borrows_related_assembly_line_items():
     assert sr["assembly_line_item_count"] == 2
     assert sr["assembly_line_items_related_from"] == "NPS26-0321"
     assert [item["process_sheet_no"] for item in sr["assembly_line_items"]] == [
-        "NPS26-0321-1",
-        "NPS26-0321-2",
+        "N26-[SR]22-1",
+        "N26-[SR]22-2",
     ]
     assert sr["assembly_line_items"][0]["related_from"] == "NPS26-0321"
+    assert sr["assembly_line_items"][0]["donor_ps_id"] == "NPS26-0321-1"
+    assert sr["assembly_line_items"][0]["source_ps_id"] == "N26-[SR]22-1"
     assert sr["assembly_line_items"][0]["part_no"] == "BB18-KS1209-02 REV 06"
     nps = entries[1]
     assert "assembly_line_items_related_from" not in nps
     assert nps["assembly_line_item_count"] == 2
+    assert nps["assembly_line_items"][0]["process_sheet_no"] == "NPS26-0321-1"
     assert nps["assembly_line_items"][0]["related_from"] == ""
+    assert nps["assembly_line_items"][0]["source_ps_id"] == "NPS26-0321-1"
+
+
+def test_borrowed_line_item_op_cards_use_host_ps_id():
+    child_card = {
+        "card_kind": "single",
+        "ps_id": "NPS26-0321-12",
+        "source_ps_id": "NPS26-0321-12",
+        "job_no": "NPS26-0321-12",
+        "source_op_no": "20",
+        "operation_name": "Turning 20",
+    }
+    entries = [
+        _entry("N26-[SR]22", "KIT-001"),
+        _entry("NPS26-0321", "KIT-001"),
+        _entry(
+            "NPS26-0321-12",
+            "CHILD-L",
+            op_cards=[child_card],
+            ops=[{"source_ps_id": "NPS26-0321-12", "source_op_no": "20"}],
+        ),
+    ]
+    attach_catalog_assembly_line_items(entries)
+    kid = entries[0]["assembly_line_items"][0]
+    assert kid["process_sheet_no"] == "N26-[SR]22-12"
+    assert kid["donor_ps_id"] == "NPS26-0321-12"
+    assert kid["op_cards"][0]["ps_id"] == "N26-[SR]22-12"
+    assert kid["op_cards"][0]["source_ps_id"] == "N26-[SR]22-12"
+    assert kid["ops"][0]["source_ps_id"] == "N26-[SR]22-12"
+    assert entries[2]["op_cards"][0]["source_ps_id"] == "NPS26-0321-12"
+    assert entries[2]["ops"][0]["source_ps_id"] == "NPS26-0321-12"
 
 
 def test_own_children_win_over_related_root():
@@ -103,6 +145,14 @@ def test_line_items_copy_child_bom_op_cards():
         "source_op_no": "20",
         "operation_name": "Turning 20",
         "remaining_qty": 4,
+        "cycle_minutes_per_qty": 4.5,
+        "setup_minutes": 30,
+    }
+    child_op = {
+        "source_op_no": "20",
+        "op_type": "Turning",
+        "cycle_time": 4.5,
+        "setup_time": 30,
     }
     entries = [
         _entry("NPS26-0321", "KIT-001"),
@@ -110,17 +160,23 @@ def test_line_items_copy_child_bom_op_cards():
             "NPS26-0321-1",
             "CHILD-A",
             display_qty=4,
-            selected_bom_code="TURN-A",
-            erp_bom_code="TURN-A",
+            selected_bom_code="SMP-MAT-01_REV00",
+            erp_bom_code="SMP-MAT01-REV00",
             current_stage_no=20,
             op_cards=[child_card],
+            ops=[child_op],
+            all_ops=[child_op],
         ),
     ]
     attach_catalog_assembly_line_items(entries)
     kid = entries[0]["assembly_line_items"][0]
     assert kid["ps_id"] == "NPS26-0321-1"
-    assert kid["selected_bom_code"] == "TURN-A"
+    assert kid["selected_bom_code"] == "SMP-MAT-01_REV00"
+    assert kid["erp_bom_code"] == "SMP-MAT01-REV00"
     assert kid["op_cards"] == [child_card]
+    assert kid["op_cards"][0]["cycle_minutes_per_qty"] == 4.5
+    assert kid["ops"][0]["cycle_time"] == 4.5
+    assert kid["all_ops"][0]["setup_time"] == 30
     assert kid["op_cards"][0]["operation_name"] == "Turning 20"
 
 
@@ -151,3 +207,10 @@ def test_preferred_machining_bom_picks_turnmill_route():
     assert preferred_machining_bom_code(
         [{"bom_code": "PACK-ONLY", "stage_desc": "Packing & Engraving"}]
     ) == ""
+    assert preferred_machining_bom_code(
+        [
+            {"bom_code": "ALT-MAT-01_REV00", "stage_desc": "Turning 20"},
+            {"bom_code": "SMP-MAT-01_REV00", "stage_desc": "Turning 20"},
+            {"bom_code": "SMP-MAT-01_REV00", "stage_desc": "Material issue"},
+        ]
+    ) == "SMP-MAT-01_REV00"

@@ -74,7 +74,7 @@
           <span data-fq-i18n="stage_deburring">Deburring</span> <span class="fq-chip-count" id="fq-count-deburring" hidden>0</span>
         </button>
         <button type="button" class="fq-chip is-active" data-fq-stage="final_inspection" role="tab" aria-selected="true">
-          <span data-fq-i18n="stage_final_inspection">Final inspection</span> <span class="fq-chip-count" id="fq-count-final_inspection" hidden>0</span>
+          <span data-fq-i18n="stage_final_inspection">Final inspection</span> <span class="fq-chip-count" id="fq-count-final_inspection" hidden>0</span> <span class="fq-chip-count fq-chip-count--incoming" id="fq-count-final_inspection-incoming" hidden title="Incoming from Deburring">0</span>
         </button>
         <button type="button" class="fq-chip" data-fq-stage="packing" role="tab" aria-selected="false">
           <span data-fq-i18n="stage_packing">Packing</span> <span class="fq-chip-count" id="fq-count-packing" hidden>0</span>
@@ -183,7 +183,7 @@
             <button type="button" class="so-col-sort-btn" data-fq-sort="commitment_date" data-fq-i18n-title="col_delivery_schedule_title" title="Week and day from Coway EDD or PO due"><span data-fq-i18n="col_delivery_schedule">Delivery schedule</span> <span data-fq-sort-icon="commitment_date">↕</span></button>
           </th>
           <th class="so-col-head" data-fq-sort-col="qa_due_date">
-            <button type="button" class="so-col-sort-btn" data-fq-sort="qa_due_date"><span data-fq-i18n="col_qa_due">QA due</span> <span data-fq-sort-icon="qa_due_date">↕</span></button>
+            <button type="button" class="so-col-sort-btn" data-fq-sort="qa_due_date"><span id="fq-col-qa-due-label" data-fq-i18n="col_qa_due">Target completion date</span> <span data-fq-sort-icon="qa_due_date">↕</span></button>
           </th>
           <th data-fq-sort-col="inspector_name">
             <button type="button" class="so-col-sort-btn" data-fq-sort="inspector_name"><span data-fq-i18n="col_assigned">Assigned</span> <span data-fq-sort-icon="inspector_name">↕</span></button>
@@ -753,7 +753,7 @@
       else if (field === 'qa_due_date') patch.qa_due_date = el.value || null;
       else return;
       fqInlineSaveOverlay(item, patch).then(function () {
-        fqInlineToast(field === 'inspector_id' ? 'Assignment saved' : 'QA due date saved', 'success');
+        fqInlineToast(field === 'inspector_id' ? 'Assignment saved' : 'Target completion date saved', 'success');
       }).catch(function (err) {
         fqInlineToast(err.message || 'Save failed', 'error');
       });

@@ -731,11 +731,17 @@ async function deleteTempProcessSheetFromScheduler(psId) {
   const urls = [
     `/api/temp-process-sheets/${encodeURIComponent(canonical)}`,
     `/api/trial/temp-process-sheets/${encodeURIComponent(canonical)}`,
+    `/api/temp-process-sheets/${encodeURIComponent(canonical)}/delete`,
+    `/api/trial/temp-process-sheets/${encodeURIComponent(canonical)}/delete`,
   ];
   let lastError = null;
   for (const url of urls) {
     try {
-      await DEL(url);
+      if (url.endsWith('/delete')) {
+        await POST(url, {});
+      } else {
+        await DEL(url);
+      }
       if (typeof closeModal === 'function') closeModal();
       window.dispatchEvent(new CustomEvent('temp-ps-deleted', {
         detail: { planner_ps_id: canonical, ps_id: canonical },

@@ -1435,45 +1435,55 @@ async function removeTrialBlock(blockId, groupId) {
   if (!confirm(msg)) return;
   const _rmMachineId = _rmBlock ? Number(_rmBlock.machine_id || 0) : 0;
   const _rmGroupId = Number(groupId || _rmBlock?.group_id || 0);
-  const queueRow = document.querySelector(`.trial-queue-row[data-block-id="${numericBlockId}"]`);
+  const refreshIds = [_rmMachineId].filter(Boolean);
 
   removeTrialBlock._inFlight = true;
+  if (typeof trialPurgeBlocksFromState === 'function') {
+    trialPurgeBlocksFromState([numericBlockId], { groupId: _rmGroupId });
+  }
+  if (typeof trialRenumberOpenQueuePanel === 'function') trialRenumberOpenQueuePanel();
+  if (refreshIds.length) {
+    trialScheduleRender(refreshIds, {
+      skipCatalog: true,
+      deferCatalog: true,
+      preserveScroll: true,
+    });
+  }
+  if (!isDummy) {
+    if (typeof trialDeferCatalogRender === 'function') trialDeferCatalogRender();
+    else if (typeof trialRerenderCatalogFromBlocks === 'function') trialRerenderCatalogFromBlocks();
+  }
+
   try {
-    await trialRunWithPlannerBusy(async () => {
-      trialSetFormModalBusy(isDummy ? 'Deleting dummy card…' : 'Removing from queue…');
-      queueRow?.classList.add('is-removing');
-      try {
-        const result = await DEL(`/api/trial/blocks/${numericBlockId}`);
-        if (typeof trialPurgeBlocksFromState === 'function') {
-          trialPurgeBlocksFromState([numericBlockId], { groupId: _rmGroupId });
-        }
-        queueRow?.remove();
-        const refreshIds = [_rmMachineId].filter(Boolean);
-        if (!trialApplyMachineRefreshFromResponse(refreshIds, result)) {
-          if (refreshIds.length) {
-            trialScheduleRender(refreshIds, { skipCatalog: true, deferCatalog: true, preserveScroll: true });
-          }
-          await refreshMachines(refreshIds);
-        }
-      } catch (e) {
-        if (!/not found/i.test(String(e.message || ''))) throw e;
-        if (typeof trialPurgeBlocksFromState === 'function') {
-          trialPurgeBlocksFromState([numericBlockId], { groupId: _rmGroupId });
-        }
-        queueRow?.remove();
-        await refreshMachines([_rmMachineId].filter(Boolean));
-      }
-      if (!isDummy && typeof trialRerenderCatalogFromBlocks === 'function') {
-        trialRerenderCatalogFromBlocks();
-      }
-    }, isDummy ? 'Deleting dummy card…' : 'Removing from queue…');
+    const result = await DEL(`/api/trial/blocks/${numericBlockId}`);
+    const tailMap = result?.tail_by_machine || {};
+    const extraIds = Object.keys(tailMap).map(Number).filter(Boolean);
+    const fromBlocks = (result?.machine_refresh?.blocks || []).map(b => Number(b.machine_id || 0));
+    const allIds = [...new Set([...refreshIds, ...extraIds, ...fromBlocks].filter(Boolean))];
+    if (!trialApplyMachineRefreshFromResponse(allIds, result)) {
+      if (allIds.length) await refreshMachines(allIds);
+    }
+    if (typeof trialAfterQueueMutation === 'function') {
+      trialAfterQueueMutation(allIds, result, {
+        tailFromBlockId: tailMap[String(_rmMachineId)] || tailMap[_rmMachineId],
+      });
+    }
     if (typeof closeModal === 'function') closeModal();
     toast(isDummy ? 'Dummy card deleted' : 'Removed from machine — returned to side panel', 'success');
   } catch (e) {
-    queueRow?.classList.remove('is-removing');
-    toast('Remove failed: ' + e.message, 'error');
+    if (/not found/i.test(String(e.message || ''))) {
+      if (refreshIds.length) await refreshMachines(refreshIds);
+      if (!isDummy && typeof trialDeferCatalogRender === 'function') trialDeferCatalogRender();
+      toast(isDummy ? 'Dummy card deleted' : 'Removed from machine — returned to side panel', 'success');
+    } else {
+      toast('Remove failed: ' + e.message, 'error');
+      if (refreshIds.length) await refreshMachines(refreshIds);
+      if (!isDummy && typeof trialRerenderCatalogFromBlocks === 'function') {
+        trialRerenderCatalogFromBlocks();
+      }
+    }
   } finally {
     removeTrialBlock._inFlight = false;
-    trialClearFormModalBusy();
+    if (typeof trialClearFormModalBusy === 'function') trialClearFormModalBusy();
   }
 }

@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+from urllib.parse import urlsplit, urlunsplit
 
 import psycopg2
 from psycopg2 import pool
@@ -142,32 +143,87 @@ def supa_headers(write: bool = False) -> dict:
     }
 
 
-# ── Supabase direct PostgreSQL connection (for planner module complex queries) ──
-# Set SUPA_DB_URL in .env to a direct PostgreSQL connection string, e.g.:
-#   SUPA_DB_URL=postgresql://postgres:[password]@db.[ref].supabase.co:5432/postgres
+# ── Supabase PostgreSQL (planner module) ───────────────────────────────────
+# Set SUPA_DB_URL to the transaction-mode pooler (port 6543), e.g.:
+#   SUPA_DB_URL=postgresql://postgres.[ref]:[pw]@aws-0-[region].pooler.supabase.com:6543/postgres
+# Session mode (port 5432) is capped at pool_size (often 15) and fails with EMAXCONNSESSION.
 
 _planner_pool = None
+
+# Leave headroom on session-mode poolers for ERP sync and other clients.
+_SESSION_POOLER_CLIENT_CAP = 10
 
 
 def _planner_pool_wait_sec() -> float:
     return max(0.0, float(os.getenv("PLANNER_POOL_WAIT_SEC", "3")))
 
 
+def _use_transaction_pooler() -> bool:
+    raw = (os.getenv("SUPA_DB_USE_SESSION_MODE") or "").strip().lower()
+    return raw not in {"1", "true", "yes"}
+
+
+def dsn_is_session_pooler(dsn: str) -> bool:
+    """True when DSN points at Supabase pooler session mode (port 5432)."""
+    parts = urlsplit((dsn or "").strip())
+    host = (parts.hostname or "").lower()
+    if "pooler.supabase.com" not in host:
+        return False
+    port = parts.port or 5432
+    return int(port) == 5432
+
+
+def normalize_planner_dsn(dsn: str, *, use_transaction_pooler: bool = True) -> str:
+    """Rewrite Supabase session-mode pooler URLs (port 5432) to transaction mode (6543).
+
+    Session mode holds a backend for the life of each client socket, so a local
+    pool of 8–16 plus ERP sync overflows pool_size (often 15). Transaction mode
+    multiplexes those clients. Direct db.*.supabase.co URLs are left unchanged.
+    """
+    raw = (dsn or "").strip()
+    if not raw or not use_transaction_pooler or not dsn_is_session_pooler(raw):
+        return raw
+    parts = urlsplit(raw)
+    netloc = parts.netloc
+    userinfo = ""
+    hostport = netloc
+    if "@" in netloc:
+        userinfo, hostport = netloc.rsplit("@", 1)
+    host = hostport.rsplit(":", 1)[0] if ":" in hostport else hostport
+    new_hostport = f"{host}:6543"
+    new_netloc = f"{userinfo}@{new_hostport}" if userinfo else new_hostport
+    return urlunsplit((parts.scheme, new_netloc, parts.path, parts.query, parts.fragment))
+
+
+def planner_dsn() -> str:
+    dsn = (os.getenv("SUPA_DB_URL") or "").strip()
+    if not dsn:
+        raise RuntimeError(
+            "SUPA_DB_URL env var is not set. "
+            "Add the transaction-mode pooler URL to .env: "
+            "postgresql://postgres.[ref]:[pw]@aws-0-[region].pooler.supabase.com:6543/postgres"
+        )
+    return normalize_planner_dsn(dsn, use_transaction_pooler=_use_transaction_pooler())
+
+
 def get_planner_pool():
     global _planner_pool
     if _planner_pool is None:
-        dsn = os.getenv("SUPA_DB_URL")
-        if not dsn:
-            raise RuntimeError(
-                "SUPA_DB_URL env var is not set. "
-                "Add it to .env: postgresql://postgres:[pw]@db.[ref].supabase.co:5432/postgres"
-            )
+        dsn = planner_dsn()
         minconn = max(1, int(os.getenv("PLANNER_POOL_MIN", "2")))
         # Must exceed Waitress workers + background threads; MPP autosave/recalc holds
         # connections while nav polls and other tabs also check out.
         threads = max(1, int(os.getenv("WAITRESS_THREADS", "12")))
-        default_max = max(20, threads + 4)
+        default_max = max(16, threads + 4)
         maxconn = max(minconn, int(os.getenv("PLANNER_POOL_MAX", str(default_max))))
+        if dsn_is_session_pooler(dsn) and maxconn > _SESSION_POOLER_CLIENT_CAP:
+            _log.warning(
+                "Capping PLANNER_POOL_MAX from %s to %s — session-mode pooler "
+                "only allows pool_size clients (often 15). Switch SUPA_DB_URL to port 6543.",
+                maxconn,
+                _SESSION_POOLER_CLIENT_CAP,
+            )
+            maxconn = max(minconn, _SESSION_POOLER_CLIENT_CAP)
         if maxconn < threads:
             _log.warning(
                 "PLANNER_POOL_MAX=%s is below WAITRESS_THREADS=%s — "
@@ -177,6 +233,14 @@ def get_planner_pool():
                 threads,
                 threads + 4,
             )
+        parts = urlsplit(dsn)
+        _log.info(
+            "Planner DB pool min=%s max=%s host=%s port=%s",
+            minconn,
+            maxconn,
+            parts.hostname or "",
+            parts.port,
+        )
         _planner_pool = psycopg2.pool.ThreadedConnectionPool(
             minconn, maxconn, dsn=dsn, connect_timeout=_db_connect_timeout()
         )
@@ -190,6 +254,12 @@ def planner_db_connect_error(exc: Exception) -> str | None:
         return (
             "Planner database is unreachable (could not resolve Supabase host). "
             "Check internet/VPN, then verify SUPA_DB_URL in .env."
+        )
+    if "emaxconnsession" in msg or "max clients reached" in msg:
+        return (
+            "Planner database is busy (Supabase connection limit reached). "
+            "Wait a moment and refresh. If it keeps happening, use the "
+            "transaction-mode pooler (port 6543) in SUPA_DB_URL and restart the app."
         )
     if any(
         token in msg
@@ -213,9 +283,10 @@ def planner_db_connect_error(exc: Exception) -> str | None:
 
 
 def planner_configure_connection(conn) -> None:
-    """Interpret naive timestamps as Singapore wall clock on this session."""
+    """Interpret naive timestamps as Singapore wall clock for this transaction."""
     with conn.cursor() as cur:
-        cur.execute("SET TIME ZONE 'Asia/Singapore'")
+        # SET LOCAL survives transaction-mode pooling; session SET does not.
+        cur.execute("SET LOCAL TIME ZONE 'Asia/Singapore'")
 
 
 def _checkout_planner_conn(pool):

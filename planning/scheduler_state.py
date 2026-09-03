@@ -187,6 +187,34 @@ def active_calendar_windows_for_machine_day(con, machine_id, work_day):
     )
 
 
+def prefetch_calendar_windows_for_machines(con, machine_ids, start_date, end_date):
+    """Bulk-load calendar windows overlapping [start_date, end_date] keyed by machine_id."""
+    from datetime import date as date_type
+
+    mids = [int(machine_id) for machine_id in (machine_ids or []) if int(machine_id or 0) > 0]
+    if not mids:
+        return {}
+    start_day = start_date if isinstance(start_date, date_type) else date_type.fromisoformat(str(start_date)[:10])
+    end_day = end_date if isinstance(end_date, date_type) else date_type.fromisoformat(str(end_date)[:10])
+    grouped = {mid: [] for mid in mids}
+    for row in rows(
+        con.execute(
+            """
+            SELECT *
+            FROM planner_machine_calendar_window
+            WHERE machine_id = ANY(%s)
+              AND active = TRUE
+              AND start_at < %s
+              AND end_at > %s
+            ORDER BY machine_id, start_at, window_id
+            """,
+            (mids, (end_day + timedelta(days=1)).strftime("%Y-%m-%d"), start_day.strftime("%Y-%m-%d")),
+        )
+    ):
+        grouped.setdefault(int(row["machine_id"]), []).append(dict(row))
+    return grouped
+
+
 def _effective_qty_totals_for_block(con, block_row):
     """Shop actuals plus ERP WO progress (ERP wins when shop has not reported)."""
     try:
@@ -501,34 +529,157 @@ def refresh_process_sheet_state(con, ps_id):
 
 
 def refresh_states_for_machine(con, machine_id, schedule_run_id=None):
-    block_rows = rows(
-        con.execute(
-            "SELECT block_id, operation_id FROM planner_run_block WHERE machine_id = %s",
-            (int(machine_id),),
+    machine_id = int(machine_id)
+    run_id = int(schedule_run_id) if schedule_run_id is not None else None
+    con.execute(
+        """
+        INSERT INTO planner_machine_queue_state (
+          block_id, schedule_run_id, predicted_start_at, predicted_end_at, remaining_qty, output_qty,
+          reject_qty, good_qty, planned_minutes, schedule_status, execution_status, is_late, delay_minutes, updated_at
         )
+        SELECT
+          b.block_id,
+          COALESCE(%s, b.last_schedule_run_id),
+          b.calculated_start_datetime,
+          b.calculated_end_datetime,
+          GREATEST(0, COALESCE(b.scheduled_qty, 0) - COALESCE(b.actual_good_qty, 0)),
+          COALESCE(b.actual_good_qty, 0) + COALESCE(b.actual_reject_qty, 0),
+          COALESCE(b.actual_reject_qty, 0),
+          COALESCE(b.actual_good_qty, 0),
+          CASE
+            WHEN b.calculated_start_datetime IS NOT NULL AND b.calculated_end_datetime IS NOT NULL
+            THEN GREATEST(0, EXTRACT(EPOCH FROM (b.calculated_end_datetime - b.calculated_start_datetime)) / 60.0)
+            ELSE 0
+          END,
+          COALESCE(NULLIF(b.planning_status, ''), 'UNSCHEDULED'),
+          COALESCE(b.execution_status, b.status, 'NOT_STARTED'),
+          CASE
+            WHEN b.calculated_end_datetime IS NOT NULL
+             AND b.calculated_end_datetime < NOW()
+             AND COALESCE(b.execution_status, b.status, 'NOT_STARTED') NOT IN ('DONE', 'COMPLETED')
+            THEN TRUE ELSE FALSE
+          END,
+          CASE
+            WHEN b.calculated_end_datetime IS NOT NULL
+             AND b.calculated_end_datetime < NOW()
+             AND COALESCE(b.execution_status, b.status, 'NOT_STARTED') NOT IN ('DONE', 'COMPLETED')
+            THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - b.calculated_end_datetime)) / 60.0)
+            ELSE 0
+          END,
+          NOW()
+        FROM planner_run_block b
+        WHERE b.machine_id = %s
+          AND COALESCE(b.active, TRUE) = TRUE
+        ON CONFLICT (block_id) DO UPDATE SET
+          schedule_run_id    = EXCLUDED.schedule_run_id,
+          predicted_start_at = EXCLUDED.predicted_start_at,
+          predicted_end_at   = EXCLUDED.predicted_end_at,
+          planned_minutes    = EXCLUDED.planned_minutes,
+          is_late            = EXCLUDED.is_late,
+          delay_minutes      = EXCLUDED.delay_minutes,
+          updated_at         = NOW()
+        """,
+        (run_id, machine_id),
     )
-    operation_ids = set()
-    ps_ids = set()
-    for row in block_rows:
-        block_id = int(row["block_id"])
-        operation_id = int(row["operation_id"] or 0)
-        refresh_machine_queue_state(con, block_id, schedule_run_id=schedule_run_id)
-        if operation_id:
-            operation_ids.add(operation_id)
-            op_state = refresh_operation_state(con, operation_id)
-            if op_state and op_state.get("ps_id"):
-                ps_ids.add(op_state["ps_id"])
-    for operation_id in operation_ids:
-        op_row = one(
+    con.execute(
+        """
+        UPDATE planner_process_sheet_operation_state s
+        SET predicted_start_at = bounds.start_datetime,
+            predicted_end_at = bounds.end_datetime,
+            updated_at = NOW()
+        FROM (
+            SELECT b.operation_id,
+                   MIN(seg.start_datetime) AS start_datetime,
+                   MAX(seg.end_datetime) AS end_datetime
+            FROM planner_run_block b
+            JOIN planner_run_block_segment seg ON seg.block_id = b.block_id
+            WHERE b.machine_id = %s
+              AND COALESCE(b.active, TRUE) = TRUE
+              AND COALESCE(seg.segment_status, 'PLANNED') = 'PLANNED'
+            GROUP BY b.operation_id
+        ) bounds
+        WHERE s.operation_id = bounds.operation_id
+        """,
+        (machine_id,),
+    )
+    missing_ops = [
+        int(row["operation_id"])
+        for row in rows(
             con.execute(
-                "SELECT COALESCE(source_ps_id, '') AS ps_id FROM planner_operation WHERE operation_id = %s",
-                (int(operation_id),),
+                """
+                SELECT DISTINCT b.operation_id
+                FROM planner_run_block b
+                LEFT JOIN planner_process_sheet_operation_state s ON s.operation_id = b.operation_id
+                WHERE b.machine_id = %s
+                  AND COALESCE(b.active, TRUE) = TRUE
+                  AND COALESCE(b.operation_id, 0) > 0
+                  AND s.operation_id IS NULL
+                """,
+                (machine_id,),
             )
         )
-        if op_row and op_row["ps_id"]:
-            ps_ids.add(str(op_row["ps_id"]))
-    for ps_id in ps_ids:
-        refresh_process_sheet_state(con, ps_id)
+        if int(row["operation_id"] or 0) > 0
+    ]
+    ps_ids = {
+        str(row["ps_id"])
+        for row in rows(
+            con.execute(
+                """
+                SELECT DISTINCT COALESCE(o.source_ps_id, '') AS ps_id
+                FROM planner_run_block b
+                JOIN planner_operation o ON o.operation_id = b.operation_id
+                WHERE b.machine_id = %s
+                  AND COALESCE(b.active, TRUE) = TRUE
+                  AND COALESCE(o.source_ps_id, '') <> ''
+                """,
+                (machine_id,),
+            )
+        )
+        if compact_text(row.get("ps_id"))
+    }
+    for operation_id in missing_ops:
+        op_state = refresh_operation_state(con, operation_id)
+        if op_state and op_state.get("ps_id"):
+            ps_ids.add(str(op_state["ps_id"]))
+    if ps_ids:
+        con.execute(
+            """
+            UPDATE planner_process_sheet_state s
+            SET predicted_start_at = bounds.start_datetime,
+                predicted_end_at = bounds.end_datetime,
+                updated_at = NOW()
+            FROM (
+                SELECT o.source_ps_id,
+                       MIN(seg.start_datetime) AS start_datetime,
+                       MAX(seg.end_datetime) AS end_datetime
+                FROM planner_operation o
+                JOIN planner_run_block b ON b.operation_id = o.operation_id
+                JOIN planner_run_block_segment seg ON seg.block_id = b.block_id
+                WHERE COALESCE(o.source_ps_id, '') = ANY(%s)
+                  AND COALESCE(seg.segment_status, 'PLANNED') = 'PLANNED'
+                GROUP BY o.source_ps_id
+            ) bounds
+            WHERE s.planner_ps_id = bounds.source_ps_id
+            """,
+            (list(ps_ids),),
+        )
+        existing_ps = {
+            str(row["planner_ps_id"])
+            for row in rows(
+                con.execute(
+                    """
+                    SELECT planner_ps_id
+                    FROM planner_process_sheet_state
+                    WHERE planner_ps_id = ANY(%s)
+                    """,
+                    (list(ps_ids),),
+                )
+            )
+            if compact_text(row.get("planner_ps_id"))
+        }
+        for ps_id in ps_ids:
+            if ps_id not in existing_ps:
+                refresh_process_sheet_state(con, ps_id)
 
 
 def _alert_timestamp_for_db(value):

@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Sales Coordination{% endblock %}
+{% block body_class %}sc-view{% endblock %}
 {% block main_class %}app-main--sc{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_coordination.css') }}?v=sc-20260805a">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_coordination.css') }}?v=sc-20260903b">
 {% endblock %}
 {% block content %}
 <div class="sc-page">
@@ -10,9 +11,9 @@
     <div>
       <h1 class="sc-title">Sales Coordination</h1>
       <p class="sc-subtitle">
-        View and search process sheets for delivery commitment.
-        <strong>Prop. EDD</strong> is the proposed delivery date; <strong>Week</strong> follows Prop. EDD when set, otherwise the due date.
-        Read-only - edit Prop. EDD in S/O Management.
+        APS and NPS process sheets for delivery follow-up.
+        Material status, dates, and material are read-only from Material Tracking.
+        Enter a <strong>Buyer</strong> on each line. Work order status comes from ERP.
       </p>
     </div>
     <div class="sc-header-actions">
@@ -23,7 +24,7 @@
   <section class="sc-toolbar card">
     <label class="sc-field sc-field--search">
       <span>Search</span>
-      <input type="search" id="sc-search" placeholder="Process sheet, SO, part, description, P/O..." autocomplete="off">
+      <input type="search" id="sc-search" placeholder="Process sheet, SO, part, description, P/O, buyer..." autocomplete="off">
     </label>
     <div class="sc-field">
       <span>PS type</span>
@@ -46,14 +47,20 @@
       <table class="sc-table" id="sc-table">
         <thead>
           <tr>
-            <th data-sort="process_sheet_no">Process sheet</th>
-            <th data-sort="sales_order_no">SO no.</th>
-            <th data-sort="part_no">Part</th>
-            <th data-sort="part_desc">Description</th>
-            <th data-sort="customer_po_no">P/O No.</th>
-            <th data-sort="due_date">Due date</th>
-            <th data-sort="proposed_edd">Prop. EDD</th>
-            <th data-sort="week">Week</th>
+            <th data-sort="process_sheet_no">Process sheet no</th>
+            <th data-sort="sales_order_no">SO no</th>
+            <th data-sort="customer_po_no">PO no</th>
+            <th data-sort="part_no">Part no</th>
+            <th data-sort="part_desc">Part description</th>
+            <th data-sort="qty">Qty</th>
+            <th data-sort="partial_qty">Partial qty</th>
+            <th data-sort="due_date">PO due date</th>
+            <th data-sort="buyer">Buyer</th>
+            <th data-sort="order_status">Order status</th>
+            <th data-sort="material">Material</th>
+            <th data-sort="material_status">Material status</th>
+            <th data-sort="material_in_date">Material in date</th>
+            <th data-sort="material_need_date">Material need date</th>
           </tr>
         </thead>
         <tbody id="sc-body"></tbody>
@@ -64,5 +71,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/sales_coordination.js') }}?v=sc-20260805a"></script>
+<script src="{{ url_for('static', filename='js/sales_coordination.js') }}?v=sc-20260903a"></script>
 {% endblock %}

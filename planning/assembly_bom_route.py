@@ -617,6 +617,14 @@ def _load_assembly_line_notes(process_sheet_nos: list[str]) -> dict[str, dict[st
     }
     if not bases:
         return {}
+    query_ids: list[str] = []
+    seen_query: set[str] = set()
+    for raw in process_sheet_nos:
+        compact = compact_text(raw).split("::")[0]
+        for variant in (compact, compact.upper()):
+            if variant and variant not in seen_query:
+                seen_query.add(variant)
+                query_ids.append(variant)
     try:
         from .sales_orders_route import _ensure_notes_table
 
@@ -630,7 +638,7 @@ def _load_assembly_line_notes(process_sheet_nos: list[str]) -> dict[str, dict[st
                     FROM planner_so_pp_notes
                     WHERE pp_voucher_no = ANY(%s)
                     """,
-                    (bases,),
+                    (query_ids or bases,),
                 )
             )
     except Exception as exc:

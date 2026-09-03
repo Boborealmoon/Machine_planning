@@ -85,3 +85,58 @@ def test_filter_pp_vouchers_by_search_matches_bulk_ps_ids_without_haystack():
     matched = _filter_pp_vouchers_by_search(rows, "APS26-0151 NPS25-0277")
     ids = {row["source_ps_id"] for row in matched}
     assert ids == {"APS26-0151", "NPS25-0277"}
+
+
+def test_filter_pp_vouchers_by_search_matches_sr_tagged_ids():
+    rows = [
+        {
+            "ps_id": "N26-[SR]22",
+            "source_ps_id": "N26-[SR]22",
+            "pp_partial_no": 1,
+            "part_no": "BB14-KS0188-05 REV 04",
+            "ops": [],
+        }
+    ]
+    assert [row["ps_id"] for row in _filter_pp_vouchers_by_search(rows, "n26-[SR]22")] == [
+        "N26-[SR]22"
+    ]
+    assert [row["ps_id"] for row in _filter_pp_vouchers_by_search(rows, "n26-22")] == [
+        "N26-[SR]22"
+    ]
+
+
+def test_inline_live_repair_ids_prefer_sr_hosts_and_donors():
+    from app import _pp_vouchers_inline_live_repair_ids
+
+    merged = [
+        {
+            "ps_id": "MPS26-2821",
+            "source_ps_id": "MPS26-2821",
+            "assembly_line_items": [
+                {"ps_id": "MPS26-2821-1", "op_cards": []},
+            ],
+        },
+        {
+            "ps_id": "N26-[SR]22",
+            "source_ps_id": "N26-[SR]22",
+            "assembly_line_items_related_from": "NPS26-0321",
+            "assembly_line_items": [
+                {
+                    "ps_id": "N26-[SR]22-12",
+                    "donor_ps_id": "NPS26-0321-12",
+                    "op_cards": [],
+                }
+            ],
+        },
+        {
+            "ps_id": "APS26-0001",
+            "source_ps_id": "APS26-0001",
+            "inventory_code": "X",
+            "selected_bom_id": 0,
+            "ops": [],
+        },
+    ]
+    ids = _pp_vouchers_inline_live_repair_ids(merged)
+    assert ids[0] == "N26-[SR]22"
+    assert ids[1] == "NPS26-0321-12"
+    assert "MPS26-2821-1" in ids

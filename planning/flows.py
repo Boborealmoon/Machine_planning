@@ -683,19 +683,27 @@ def erp_domain_bom_stages_by_inventory(inventory_codes):
 
 def preferred_machining_bom_code(stage_rows: list[dict] | None) -> str:
     """Pick the ERP BOM with the most turning/milling/turnmill stages."""
-    scores: dict[str, int] = {}
+    scores: dict[str, list[int]] = {}
     for row in stage_rows or []:
         bom_code = compact_text(row.get("bom_code"))
         if not bom_code:
             continue
-        scores.setdefault(bom_code, 0)
+        rec = scores.setdefault(bom_code, [0, 0])
+        rec[1] += 1
         if _is_machining_stage_desc(row.get("stage_desc")):
-            scores[bom_code] += 1
+            rec[0] += 1
     if not scores:
         return ""
-    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
-    best_code, machining_count = ranked[0]
-    if machining_count <= 0:
+
+    def _rank(item: tuple[str, list[int]]) -> tuple:
+        code, rec = item
+        upper = code.upper()
+        family = 0 if upper.startswith("SMP") else 2 if upper.startswith("ALT") else 1
+        return (-rec[0], family, -rec[1], code)
+
+    ranked = sorted(scores.items(), key=_rank)
+    best_code, rec = ranked[0]
+    if rec[0] <= 0:
         return ""
     return best_code
 
@@ -828,12 +836,9 @@ def _bom_op_stage_steps(con, inventory_code, bom_code):
 
 
 def _is_machining_stage_desc(stage_desc):
-    upper = compact_text(stage_desc).upper()
-    return upper.startswith(("TURNING ", "MILLING ", "TURNMILL ")) or upper in {
-        "TURNING",
-        "MILLING",
-        "TURNMILL",
-    }
+    from planning.erp_wo_merge import is_machining_stage_desc
+
+    return is_machining_stage_desc(stage_desc)
 
 
 def _planner_step_from_erp_stage_row(row, idx, total):
@@ -1027,6 +1032,82 @@ def ensure_planner_bom_from_bom_op_stage(con, inventory_code, bom_code, *, is_de
         (persisted_source_kind, bom_id),
     )
     return bom_id
+
+
+def append_missing_wo_machining_steps(con, bom_id, wo_stages) -> int:
+    """Insert Turning/Milling WO stages into an existing planner BOM without rewriting ids."""
+    from planning.erp_wo_merge import merge_machining_steps_into_flow_steps
+
+    bom_id = int(bom_id or 0)
+    if bom_id <= 0 or not wo_stages:
+        return 0
+    _ensure_flow_source_columns(con)
+    existing = rows(
+        con.execute(
+            """
+            SELECT op_seq_id, seq_no, op_no, op_type, machine_category, preferred_machine,
+                   cycle_time, setup_time, is_last_op, source_kind, source_stage_no
+            FROM planner_operation_seq
+            WHERE bom_id = %s
+            ORDER BY seq_no, op_seq_id
+            """,
+            (bom_id,),
+        )
+    )
+    merged = merge_machining_steps_into_flow_steps(existing, wo_stages)
+    existing_ids = {int(row.get("op_seq_id") or 0) for row in existing if int(row.get("op_seq_id") or 0)}
+    inserted = 0
+    for step in merged:
+        if int(step.get("op_seq_id") or 0) in existing_ids:
+            continue
+        preferred_machine = compact_text(step.get("preferred_machine"))
+        machine_category = compact_text(step.get("machine_category")) or _machine_category_from_op_type(
+            step.get("op_type")
+        )
+        con.execute(
+            """
+            INSERT INTO planner_operation_seq (
+                bom_id, seq_no, op_no, op_type, machine_category,
+                preferred_machine, cycle_time, setup_time, is_last_op,
+                source_kind, source_stage_no, planner_note
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                bom_id,
+                int(step.get("seq_no") or 0) or None,
+                compact_text(step.get("op_no")),
+                compact_text(step.get("op_type")),
+                machine_category or "UNKNOWN",
+                preferred_machine,
+                parse_number(step.get("cycle_time"), 0),
+                parse_number(step.get("setup_time"), 0),
+                bool(step.get("is_last_op")),
+                compact_text(step.get("source_kind") or "ERP") or "ERP",
+                int(step.get("source_stage_no") or 0) or None,
+                compact_text(step.get("planner_note")),
+            ),
+        )
+        inserted += 1
+    if not inserted:
+        return 0
+    con.execute(
+        """
+        UPDATE planner_operation_seq s
+        SET seq_no = m.seq_no,
+            is_last_op = m.is_last
+        FROM (
+            SELECT op_seq_id,
+                   ROW_NUMBER() OVER (ORDER BY COALESCE(source_stage_no, 0), seq_no, op_seq_id) AS seq_no,
+                   ROW_NUMBER() OVER (ORDER BY COALESCE(source_stage_no, 0) DESC, seq_no DESC, op_seq_id DESC) = 1 AS is_last
+            FROM planner_operation_seq
+            WHERE bom_id = %s
+        ) m
+        WHERE s.op_seq_id = m.op_seq_id
+          AND s.bom_id = %s
+        """,
+        (bom_id, bom_id),
+    )
+    return inserted
 
 _PS_FLOW_SELECT = """
     SELECT

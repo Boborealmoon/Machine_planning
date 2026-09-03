@@ -464,6 +464,35 @@ def test_notes_api_accepts_material_need_date(monkeypatch):
     assert captured[1]["patch"]["material_need_date"] == ""
 
 
+def test_notes_api_accepts_buyer(monkeypatch):
+    import os
+    from unittest.mock import patch
+
+    from app import app
+    from planning.sales_orders_route import _empty_notes
+
+    captured = []
+
+    def fake_upsert(pp_voucher_no, patch):
+        captured.append({"pp": pp_voucher_no, "patch": dict(patch)})
+        return {"pp_voucher_no": pp_voucher_no, **_empty_notes(), **patch}
+
+    monkeypatch.setattr("planning.sales_orders_route._upsert_notes", fake_upsert)
+    monkeypatch.setattr("planning.sales_orders_route._patch_sales_orders_pp_notes", lambda *_args, **_kwargs: None)
+
+    client = app.test_client()
+    with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+        ok = client.patch(
+            "/api/sales-orders/notes/APS26-1",
+            json={"buyer": "  Jane  "},
+        )
+
+    assert ok.status_code == 200
+    assert ok.get_json()["buyer"] == "Jane"
+    assert captured[0]["pp"] == "APS26-1"
+    assert captured[0]["patch"]["buyer"] == "Jane"
+
+
 def test_proposed_cnc_overlay_maps_by_part_number(monkeypatch):
     from planning.sales_orders_route import _apply_proposed_cnc_overlay
 
@@ -559,3 +588,68 @@ def test_overlay_planner_edits_applies_program_finish(monkeypatch):
 
     payload = _overlay_planner_edits(cached)
     assert payload["active"][0]["pp_vouchers"][0]["program_finish_at"] == "2026-09-04"
+
+def test_overlay_child_process_sheet_notes_from_assembly_tracker(monkeypatch):
+    from planning.sales_orders_route import _overlay_planner_edits
+
+    cached = _pp_payload("PP/CHILD", process_sheet_no="NPS26-0321-1", material_subcon="")
+    monkeypatch.setattr(
+        "planning.sales_orders_route._load_notes_map",
+        lambda _ids: {
+            "NPS26-0321-1": {
+                "material_subcon": "2027-01-08",
+                "mtl_part_order": "Seq 1",
+                "material_need_date": "2026-09-15",
+            }
+        },
+    )
+    monkeypatch.setattr("planning.sales_orders_route._load_material_in_overlay", lambda _ids: {})
+    monkeypatch.setattr("planning.sales_orders_route._apply_proposed_cnc_overlay", lambda _orders: None)
+    monkeypatch.setattr("planning.sales_orders_route._load_program_finish_overlay", lambda _ids: {})
+
+    payload = _overlay_planner_edits(cached)
+    pp = payload["active"][0]["pp_vouchers"][0]
+    assert pp["material_subcon"] == "2027-01-08"
+    assert pp["mtl_part_order"] == "Seq 1"
+    assert pp["material_need_date"] == "2026-09-15"
+
+
+def test_overlay_parent_uses_voucher_notes_not_child_sheet(monkeypatch):
+    from planning.sales_orders_route import _overlay_planner_edits
+
+    cached = _pp_payload("PP/1", process_sheet_no="NPS26-0321", material_subcon="")
+    monkeypatch.setattr(
+        "planning.sales_orders_route._load_notes_map",
+        lambda _ids: {
+            "PP/1": {
+                "material_subcon": "2026-09-05",
+                "mtl_part_order": "parent",
+                "material_need_date": "",
+            },
+            "NPS26-0321-1": {
+                "material_subcon": "2027-01-08",
+                "mtl_part_order": "child",
+                "material_need_date": "2026-12-01",
+            },
+        },
+    )
+    monkeypatch.setattr("planning.sales_orders_route._load_material_in_overlay", lambda _ids: {})
+    monkeypatch.setattr("planning.sales_orders_route._apply_proposed_cnc_overlay", lambda _orders: None)
+    monkeypatch.setattr("planning.sales_orders_route._load_program_finish_overlay", lambda _ids: {})
+
+    payload = _overlay_planner_edits(cached)
+    pp = payload["active"][0]["pp_vouchers"][0]
+    assert pp["material_subcon"] == "2026-09-05"
+    assert pp["mtl_part_order"] == "parent"
+
+
+def test_patch_sales_orders_pp_notes_matches_child_process_sheet(monkeypatch, tmp_path):
+    monkeypatch.setattr(erp_route_cache, "_CACHE_DIR", tmp_path)
+    key = _sales_orders_cache_key("active", lite=True)
+    erp_route_cache.set(key, _pp_payload("PP/CHILD", process_sheet_no="NPS26-0321-1"))
+
+    _patch_sales_orders_pp_notes("NPS26-0321-1", {"material_subcon": "2026-09-11"})
+
+    cached = erp_route_cache.get(key, ttl_sec=999)
+    assert cached["active"][0]["pp_vouchers"][0]["material_subcon"] == "2026-09-11"
+

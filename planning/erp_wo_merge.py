@@ -60,6 +60,9 @@ def finishing_pack_stage_sql_match(column: str) -> str:
     )"""
 
 
+_STAGE_OP_NO_RE = re.compile(r"(\d+)\s*$")
+_MACHINING_STAGE_RE = re.compile(r"^(turning|milling|turnmill)(?:\s|$)", re.IGNORECASE)
+
 _ASSEMBLY_STAGE_WORD = re.compile(r"(?:^|[^a-z])assembly(?:[^a-z]|$)", re.IGNORECASE)
 
 
@@ -91,6 +94,43 @@ def is_finishing_stage_desc(stage_desc: str) -> bool:
     if any(known.casefold() == lowered for known in FINISHING_STAGE_DESCS):
         return True
     return any(pattern.search(text) for pattern in _FINISHING_STAGE_PATTERNS)
+
+
+def is_machining_stage_desc(stage_desc: str) -> bool:
+    """True for Turning / Milling / Turnmill WO or BOM stage labels."""
+    text = compact_text(stage_desc)
+    return bool(text) and bool(_MACHINING_STAGE_RE.match(text))
+
+
+def op_no_from_stage(stage_desc, stage_no=0) -> str:
+    """Op number from 'Milling 40' (40), else the ERP stage_no."""
+    text = compact_text(stage_desc)
+    match = _STAGE_OP_NO_RE.search(text)
+    if match:
+        return match.group(1)
+    try:
+        stage_no = int(stage_no or 0)
+    except (TypeError, ValueError):
+        stage_no = 0
+    return str(stage_no) if stage_no else ""
+
+
+def _step_matches_wo_stage(step, row) -> bool:
+    stage_desc = compact_text(row.get("stage_desc"))
+    stage_no = int(row.get("stage_no") or 0)
+    op_no = op_no_from_stage(stage_desc, stage_no)
+    step_stage = int(step.get("source_stage_no") or step.get("stage_no") or 0)
+    step_op = compact_text(step.get("op_no") or step.get("source_op_no"))
+    step_desc = compact_text(
+        step.get("stage_desc") or step.get("operation_name") or step.get("op_type") or ""
+    )
+    if stage_no and step_stage == stage_no:
+        return True
+    if op_no and step_op == op_no:
+        return True
+    if stage_desc and step_desc and stage_desc.casefold() == step_desc.casefold():
+        return True
+    return False
 
 
 def filter_wo_stages_for_main_partial(wo_stages, main_qty):
@@ -304,6 +344,31 @@ def voucher_erp_qty_maps_for_partial(con, source_ps_id, pp_partial_no) -> tuple[
     return by_op, by_stage, status_by_op, status_by_stage
 
 
+def overlay_wo_stages_on_erp_qty_maps(
+    by_op: dict[str, float],
+    by_stage: dict[int, float],
+    status_by_op: dict[str, str],
+    status_by_stage: dict[int, str],
+    wo_stages,
+) -> None:
+    """Fill qty/status for WO machining stages omitted from pp_vouchers_cache."""
+    for row in wo_stages or []:
+        stage_desc = compact_text(row.get("stage_desc"))
+        stage_no = int(row.get("stage_no") or 0)
+        op_no = op_no_from_stage(stage_desc, stage_no)
+        produced = max(0.0, float(row.get("total_acc_qty_produced") or 0))
+        status = compact_text(row.get("execution_status") or "")
+        for key in {op_no, normalize_op_no_key(op_no)}:
+            if key:
+                by_op[key] = max(by_op.get(key, 0.0), produced)
+                if status:
+                    status_by_op[key] = status
+        if stage_no:
+            by_stage[stage_no] = max(by_stage.get(stage_no, 0.0), produced)
+            if status:
+                status_by_stage[stage_no] = status
+
+
 def erp_exec_status_for_op(
     status_by_op: dict[str, str],
     status_by_stage: dict[int, str],
@@ -397,15 +462,28 @@ def _wo_stage_row_to_flow_step(row, seq_no: int) -> dict:
     stage_desc = compact_text(row.get("stage_desc"))
     stage_no = int(row.get("stage_no") or 0)
     finishing = is_finishing_stage_desc(stage_desc)
-    op_type = stage_desc if finishing else (stage_desc.split()[0] if stage_desc else "")
+    machining = is_machining_stage_desc(stage_desc)
+    op_no = op_no_from_stage(stage_desc, stage_no) or (str(seq_no) if seq_no else "")
+    if finishing:
+        op_type = stage_desc
+        machine_category = "FINISHING"
+        source_kind = "ERP_WO"
+    elif machining:
+        op_type = stage_desc.split()[0] if stage_desc else ""
+        machine_category = op_type.upper() if op_type else "GENERAL"
+        source_kind = "ERP"
+    else:
+        op_type = stage_desc.split()[0] if stage_desc else ""
+        machine_category = op_type.upper() if op_type else "GENERAL"
+        source_kind = ""
     return {
-        "op_seq_id": stage_no or seq_no,
+        "op_seq_id": None,
         "seq_no": seq_no,
-        "op_no": str(stage_no) if stage_no else str(seq_no),
+        "op_no": op_no,
         "op_type": op_type,
         "stage_desc": stage_desc,
-        "machine_category": "FINISHING" if finishing else op_type.upper(),
-        "source_kind": "ERP_WO" if finishing else "",
+        "machine_category": machine_category,
+        "source_kind": source_kind,
         "preferred_machine": "",
         "cycle_time": 0,
         "setup_time": 0,
@@ -439,6 +517,30 @@ def merge_finishing_steps_into_flow_steps(steps, wo_stages) -> list:
             int(step.get("seq_no") or 0),
         )
     )
+    return merged
+
+
+def merge_machining_steps_into_flow_steps(steps, wo_stages) -> list:
+    """Insert Turning/Milling/Turnmill WO stages missing from the planner BOM."""
+    merged = list(steps or [])
+    next_seq = max((int(step.get("seq_no") or 0) for step in merged), default=0) + 1
+    for row in sorted(wo_stages or [], key=lambda item: int(item.get("stage_no") or 0)):
+        stage_desc = compact_text(row.get("stage_desc"))
+        if not is_machining_stage_desc(stage_desc):
+            continue
+        if any(_step_matches_wo_stage(step, row) for step in merged):
+            continue
+        merged.append(_wo_stage_row_to_flow_step(row, next_seq))
+        next_seq += 1
+    merged.sort(
+        key=lambda step: (
+            int(step.get("source_stage_no") or 0) or 10**9,
+            int(step.get("seq_no") or 0),
+        )
+    )
+    for idx, step in enumerate(merged, 1):
+        step["seq_no"] = idx
+        step["is_last_op"] = 1 if idx == len(merged) else 0
     return merged
 
 

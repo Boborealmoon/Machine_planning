@@ -1,6 +1,10 @@
 /* SO Line Archive - APS / NPS / Other + recent SO notifications */
 
+const SOA_LINES_SUBTITLE = 'Sales order / process sheet / shipment lines - APS, NPS, and other PS. Columns match the Power Query export order.';
+const SOA_ANALYTICS_SUBTITLE = 'Sample visual analytics from the sales-report year payload: composition, PP mix, customer concentration, and OTIF vs PO due.';
+
 const soaState = {
+  tab: 'lines',
   loading: false,
   data: null,
   buckets: new Set(['APS', 'NPS']),
@@ -10,6 +14,63 @@ const soaState = {
   openLines: new Set(),
   focusSo: '',
 };
+
+function soaReadTab() {
+  try {
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    if (tab === 'analytics') return 'analytics';
+  } catch (err) {
+    /* ignore */
+  }
+  return 'lines';
+}
+
+function soaWriteTab(tab) {
+  try {
+    const url = new URL(window.location.href);
+    if (tab === 'analytics') url.searchParams.set('tab', 'analytics');
+    else url.searchParams.delete('tab');
+    history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+  } catch (err) {
+    /* ignore */
+  }
+}
+
+function soaApplyTab(tab, options = {}) {
+  const next = tab === 'analytics' ? 'analytics' : 'lines';
+  const changed = soaState.tab !== next;
+  soaState.tab = next;
+  soaWriteTab(next);
+
+  document.querySelectorAll('.soa-tab').forEach((btn) => {
+    const on = btn.dataset.tab === next;
+    btn.classList.toggle('is-active', on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+
+  const linesPanel = soaEl('soa-panel-lines');
+  const analyticsPanel = soaEl('soa-panel-analytics');
+  const layout = soaEl('soa-layout');
+  const subtitle = soaEl('soa-subtitle');
+  const exportBtn = soaEl('soa-export');
+  if (linesPanel) linesPanel.hidden = next !== 'lines';
+  if (analyticsPanel) analyticsPanel.hidden = next !== 'analytics';
+  layout?.classList.toggle('is-analytics', next === 'analytics');
+  if (subtitle) subtitle.textContent = next === 'analytics' ? SOA_ANALYTICS_SUBTITLE : SOA_LINES_SUBTITLE;
+  if (exportBtn && next === 'analytics') exportBtn.hidden = true;
+  else if (exportBtn && next === 'lines') exportBtn.hidden = !(soaState.data?.rows && soaState.data.rows.length);
+
+  if (next === 'analytics') {
+    window.soaAnalytics?.ensureLoaded();
+    return;
+  }
+  if (options.initial || !soaState.data) {
+    loadArchive();
+  }
+  if (changed && options.scroll !== false) {
+    linesPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
 
 const SOA_DETAIL_FIELDS = [
   ['source_voucher_line_item_no', 'Line'],
@@ -539,8 +600,18 @@ function bindEvents() {
     }, 120);
   });
 
-  soaEl('soa-refresh')?.addEventListener('click', () => loadArchive({ refresh: true }));
+  soaEl('soa-refresh')?.addEventListener('click', () => {
+    if (soaState.tab === 'analytics') {
+      window.soaAnalytics?.load({ refresh: true, force: true });
+      return;
+    }
+    loadArchive({ refresh: true });
+  });
   soaEl('soa-export')?.addEventListener('click', exportCsv);
+
+  document.querySelectorAll('.soa-tab').forEach((btn) => {
+    btn.addEventListener('click', () => soaApplyTab(btn.dataset.tab || 'lines'));
+  });
 
   document.addEventListener('click', (event) => {
     const btn = event.target.closest('[data-action]');
@@ -567,5 +638,5 @@ function bindEvents() {
 document.addEventListener('DOMContentLoaded', () => {
   bindEvents();
   updateLookbackVisibility();
-  loadArchive();
+  soaApplyTab(soaReadTab(), { initial: true, scroll: false });
 });

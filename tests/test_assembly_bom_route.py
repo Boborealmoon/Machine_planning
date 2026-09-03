@@ -564,3 +564,93 @@ def test_api_material_tracking_sr_assemblies(monkeypatch):
     assert [item["ps_id"] for item in payload["items"]] == ["NPS26-0321", "N26-[SR]22"]
     assert payload["items"][0]["children"][0]["part_no"] == "BB18-KS1209-02 REV 06"
     assert payload["items"][0]["children"][0]["process_sheet_no"] == "NPS26-0321-1"
+
+
+def test_summarize_overlays_child_process_sheet_dates(monkeypatch):
+    monkeypatch.setattr(
+        assembly,
+        "_load_assembly_line_notes",
+        lambda _ids: {
+            "NPS26-0321-1": {
+                "material_subcon": "2027-01-08",
+                "mtl_part_order": "from APT",
+                "material_need_date": "2026-12-01",
+                "material_delay": False,
+            },
+            "NPS26-0321-2": {
+                "material_subcon": "2026-09-11",
+                "mtl_part_order": "Seq 2",
+                "material_need_date": "",
+                "material_delay": False,
+            },
+        },
+    )
+    items = summarize_assembly_line_jobs(
+        [
+            {
+                "ps_id": "NPS26-0321",
+                "part_no": "BB14-KS0188-05 REV 04",
+                "sales_order_no": "SO/2602442",
+                "ps_type": "NPS",
+                "children": [
+                    {
+                        "part_no": "BB18-KS1217-02",
+                        "description": "GUIDE BUSH",
+                        "qty": 2,
+                        "process_sheet_no": "NPS26-0321-1",
+                        "is_subassembly": True,
+                    },
+                    {
+                        "part_no": "BB18-KS1211-04",
+                        "description": "SLEEVE",
+                        "qty": 8,
+                        "process_sheet_no": "NPS26-0321-2",
+                        "is_subassembly": True,
+                    },
+                ],
+            }
+        ]
+    )
+    assert len(items) == 1
+    children = items[0]["children"]
+    assert children[0]["process_sheet_no"] == "NPS26-0321-1"
+    assert children[0]["material_subcon"] == "2027-01-08"
+    assert children[0]["material_need_date"] == "2026-12-01"
+    assert children[0]["mtl_part_order"] == "from APT"
+    assert children[1]["process_sheet_no"] == "NPS26-0321-2"
+    assert children[1]["material_subcon"] == "2026-09-11"
+    assert children[1]["mtl_part_order"] == "Seq 2"
+
+
+def test_overlay_assembly_line_notes_does_not_use_parent_ps(monkeypatch):
+    monkeypatch.setattr(
+        assembly,
+        "_load_assembly_line_notes",
+        lambda ids: {
+            "NPS26-0321": {
+                "material_subcon": "2026-09-05",
+                "mtl_part_order": "parent",
+                "material_need_date": "",
+                "material_delay": False,
+            },
+            "NPS26-0321-7": {
+                "material_subcon": "2025-10-31",
+                "mtl_part_order": "child 7",
+                "material_need_date": "2026-08-01",
+                "material_delay": False,
+            },
+        },
+    )
+    items = [
+        {
+            "ps_id": "NPS26-0321",
+            "children": [
+                {"process_sheet_no": "NPS26-0321-7", "part_no": "GUIDE-BUSH", "material_subcon": ""},
+            ],
+        }
+    ]
+    out = assembly._overlay_assembly_line_notes(items)
+    child = out[0]["children"][0]
+    assert child["material_subcon"] == "2025-10-31"
+    assert child["mtl_part_order"] == "child 7"
+    assert child["material_need_date"] == "2026-08-01"

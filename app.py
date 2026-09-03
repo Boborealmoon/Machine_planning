@@ -1577,13 +1577,61 @@ def _assembly_line_item_ps_ids_missing_ops(entries) -> list[str]:
         for item in entry.get("assembly_line_items") or []:
             if item.get("op_cards"):
                 continue
-            ps_id = compact_text(item.get("ps_id") or item.get("process_sheet_no"))
+            ps_id = compact_text(
+                item.get("donor_ps_id") or item.get("ps_id") or item.get("process_sheet_no")
+            )
             key = ps_id.upper()
             if not ps_id or key in seen:
                 continue
             seen.add(key)
             missing.append(ps_id)
     return missing
+
+
+# Live BOM/WO repair on catalog GET must stay small. Repairing hundreds of IDs
+# blocks /api/pp-vouchers/with-ops until the client aborts with an empty sidebar.
+_MAX_INLINE_CATALOG_LIVE_REPAIR = 48
+_INLINE_CATALOG_LIVE_REPAIR_TIMEOUT_MS = "8000"
+
+
+def _pp_vouchers_inline_live_repair_ids(merged) -> list[str]:
+    """Prefer SR hosts + borrowed COMP donors, then cap remaining missing-ops IDs."""
+    from planning.catalog import catalog_ps_ids_needing_live_ops_repair
+    from planning.utils import compact_text
+
+    priority: list[str] = []
+    seen: set[str] = set()
+
+    def _add(ps_id) -> None:
+        raw = compact_text(ps_id)
+        key = raw.split("::", 1)[0].upper()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        priority.append(raw)
+
+    for entry in merged or []:
+        if not compact_text(entry.get("assembly_line_items_related_from")):
+            continue
+        _add(entry.get("source_ps_id") or entry.get("ps_id"))
+        for item in entry.get("assembly_line_items") or []:
+            if item.get("op_cards"):
+                continue
+            _add(item.get("donor_ps_id") or item.get("ps_id") or item.get("process_sheet_no"))
+    for ps_id in _assembly_line_item_ps_ids_missing_ops(merged):
+        _add(ps_id)
+    if len(priority) < _MAX_INLINE_CATALOG_LIVE_REPAIR:
+        for ps_id in catalog_ps_ids_needing_live_ops_repair(merged, include_missing_bom=True):
+            _add(ps_id)
+            if len(priority) >= _MAX_INLINE_CATALOG_LIVE_REPAIR:
+                break
+    return priority[:_MAX_INLINE_CATALOG_LIVE_REPAIR]
+
+
+def _strip_sr_search_text(value: str) -> str:
+    import re
+
+    return re.sub(r"\[sr\]", "", str(value or ""), flags=re.I)
 
 
 def _pp_voucher_search_haystack(entry: dict) -> str:
@@ -1613,6 +1661,7 @@ def _pp_voucher_search_haystack(entry: dict) -> str:
             [
                 item.get("process_sheet_no"),
                 item.get("ps_id"),
+                item.get("donor_ps_id"),
                 item.get("part_no"),
                 item.get("part_desc"),
                 item.get("related_from"),
@@ -1672,7 +1721,18 @@ def _entry_matches_search_term(entry: dict, term: str) -> bool:
     ]
     if ps_ids and any(base_term in ps_id for ps_id in ps_ids):
         return True
-    return base_term in _pp_voucher_search_haystack(entry)
+    haystack = _pp_voucher_search_haystack(entry)
+    if base_term in haystack:
+        return True
+    stripped_term = _strip_sr_search_text(base_term).replace(" ", "")
+    if stripped_term:
+        stripped_hay = _strip_sr_search_text(haystack).replace(" ", "")
+        if stripped_term in stripped_hay:
+            return True
+        stripped_ids = [_strip_sr_search_text(ps_id).replace(" ", "") for ps_id in ps_ids]
+        if any(stripped_term in ps_id for ps_id in stripped_ids):
+            return True
+    return False
 
 
 def _filter_pp_vouchers_by_search(data: list, raw_search: str) -> list:
@@ -2404,18 +2464,30 @@ def api_pp_vouchers_with_ops():
 
         attach_catalog_assembly_line_items(merged)
         filtered = _filter_pp_vouchers_by_search(merged, raw_search)
-        child_ids = _assembly_line_item_ps_ids_missing_ops(filtered)
-        if child_ids:
+        unique_live_ids = _pp_vouchers_inline_live_repair_ids(merged)
+        seen_live = {
+            str(ps_id or "").split("::", 1)[0].upper()
+            for ps_id in unique_live_ids
+            if str(ps_id or "").strip()
+        }
+        if unique_live_ids:
             try:
-                from planning.catalog import enrich_component_child_bom_ops
+                from planning.catalog import repair_catalog_sidebar_ops
                 from planning.helpers import planner_db
 
                 with planner_db() as con:
-                    enrich_component_child_bom_ops(con, merged, only_ps_ids=child_ids)
+                    con.execute(
+                        f"SET LOCAL statement_timeout = '{_INLINE_CATALOG_LIVE_REPAIR_TIMEOUT_MS}'"
+                    )
+                    repair_catalog_sidebar_ops(con, merged, only_ps_ids=unique_live_ids)
+                for entry in merged:
+                    source = str(entry.get("source_ps_id") or entry.get("ps_id") or "").split("::", 1)[0].upper()
+                    if source in seen_live:
+                        _finalize_pp_voucher_entry(entry)
                 attach_catalog_assembly_line_items(merged)
                 filtered = _filter_pp_vouchers_by_search(merged, raw_search)
             except Exception as exc:
-                log.warning("sub-assembly BOM op enrich failed: %s", exc)
+                log.warning("catalog BOM/WO op repair failed: %s", exc)
         return jsonify(filtered)
 
     if refresh:

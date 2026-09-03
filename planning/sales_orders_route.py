@@ -17,6 +17,7 @@ from .frame_agreement_service import (
     load_frame_agreement_part_keys,
 )
 from .helpers import planner_db, rows
+from .assembly_classify import is_component_child_ps
 from .utils import compact_text, parse_date_text, shipped_quantity_completed
 from .staged_erp import (
     STAGED_MFG_PP_PARTIAL_SQL,
@@ -53,6 +54,7 @@ _NOTE_FIELDS = (
     "quality_doc",
     "ops_notes",
     "sales_notes",
+    "buyer",
 )
 
 _MFG_PP_VCH_SQL = """
@@ -411,6 +413,7 @@ def _ensure_notes_table(con) -> None:
             quality_doc         TEXT         NOT NULL DEFAULT '',
             ops_notes           TEXT         NOT NULL DEFAULT '',
             sales_notes         TEXT         NOT NULL DEFAULT '',
+            buyer               TEXT         NOT NULL DEFAULT '',
             ps_highlighted      BOOLEAN      NOT NULL DEFAULT FALSE,
             material_need_date  DATE,
             updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
@@ -439,6 +442,12 @@ def _ensure_notes_table(con) -> None:
         """
         ALTER TABLE planner_so_pp_notes
         ADD COLUMN IF NOT EXISTS material_need_date DATE
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_so_pp_notes
+        ADD COLUMN IF NOT EXISTS buyer TEXT NOT NULL DEFAULT ''
         """
     )
 
@@ -676,12 +685,16 @@ def _patch_sales_orders_pp_notes(pp_voucher_no: str, payload: dict[str, Any]) ->
     target = compact_text(pp_voucher_no)
     if not target:
         return
+    target_key = target.upper()
 
     def mutator(pp: dict[str, Any]) -> bool:
-        if compact_text(pp.get("pp_voucher_no")) != target:
-            return False
-        pp.update(payload)
-        return True
+        if compact_text(pp.get("pp_voucher_no")).upper() == target_key:
+            pp.update(payload)
+            return True
+        if _ps_base_id(pp.get("process_sheet_no")).upper() == target_key:
+            pp.update(payload)
+            return True
+        return False
 
     _patch_cached_sales_orders(mutator)
 
@@ -1634,7 +1647,7 @@ def _load_notes_map(pp_voucher_nos: list[str]) -> dict[str, dict[str, str]] | No
                 con.execute(
                     """
                     SELECT pp_voucher_no, material_subcon, mtl_part_order,
-                           quality_doc, ops_notes, sales_notes, ps_highlighted,
+                           quality_doc, ops_notes, sales_notes, buyer, ps_highlighted,
                            highlighted_partials, material_delay, material_need_date
                     FROM planner_so_pp_notes
                     WHERE pp_voucher_no = ANY(%s)
@@ -1649,9 +1662,31 @@ def _load_notes_map(pp_voucher_nos: list[str]) -> dict[str, dict[str, str]] | No
     out: dict[str, dict[str, str]] = {}
     for row in fetched:
         key = compact_text(row.get("pp_voucher_no"))
-        if key:
-            out[key] = _notes_from_row(row)
+        if not key:
+            continue
+        parsed = _notes_from_row(row)
+        out[key] = parsed
+        upper = key.upper()
+        if upper not in out:
+            out[upper] = parsed
     return out
+
+
+def _notes_for_pp(pp: dict[str, Any], notes_map: dict[str, dict[str, str]], default: dict[str, Any]) -> dict[str, Any]:
+    """Resolve planner notes. Child COMP sheets share Assembly Parts Tracker keys."""
+    pp_no = compact_text(pp.get("pp_voucher_no"))
+    ps_no = _ps_base_id(pp.get("process_sheet_no"))
+    if is_component_child_ps(ps_no):
+        child_notes = notes_map.get(ps_no) or notes_map.get(ps_no.upper())
+        if child_notes:
+            return child_notes
+    for key in (pp_no, ps_no):
+        if not key:
+            continue
+        found = notes_map.get(key) or notes_map.get(key.upper())
+        if found:
+            return found
+    return default
 
 
 def _build_orders_from_pp_vouchers(
@@ -1681,7 +1716,7 @@ def _build_orders_from_pp_vouchers(
             pp.get("so_det_qty"),
             pp.get("qty_shipped"),
         )
-        pp.update(notes_map.get(pp_no, _empty_notes()))
+        pp.update(_notes_for_pp(pp, notes_map, _empty_notes()))
 
         if so_no not in grouped:
             header = dict(headers_by_so.get(so_no, {}))
@@ -1751,7 +1786,10 @@ def _build_sales_orders(*, scope: str, lite: bool = False) -> dict[str, Any]:
     pp_rows = _erp_query(staged_sql, live_sql=live_sql, live=live)
     pp_nos = _unique_texts(row.get("pp_voucher_no") for row in pp_rows)
     so_nos = _unique_texts(row.get("source_voucher_no") for row in pp_rows)
-    notes_map = _load_notes_map(pp_nos) or {}
+    note_ids = _unique_texts(
+        list(pp_nos) + [_ps_base_id(row.get("process_sheet_no")) for row in pp_rows]
+    )
+    notes_map = _load_notes_map(note_ids) or {}
     partials = _erp_query_for_ids(
         STAGED_MFG_PP_PARTIAL_SQL,
         _MFG_PP_PARTIAL_SQL,
@@ -1865,14 +1903,15 @@ def _overlay_planner_edits(payload: dict[str, Any]) -> dict[str, Any]:
     pps = [pp for order in orders for pp in (order.get("pp_vouchers") or [])]
     pp_nos = _unique_texts(pp.get("pp_voucher_no") for pp in pps)
     process_sheets = [pp.get("process_sheet_no") for pp in pps if pp.get("process_sheet_no")]
+    note_ids = _unique_texts(
+        list(pp_nos) + [_ps_base_id(ps) for ps in process_sheets]
+    )
 
-    notes_map = _load_notes_map(pp_nos)
+    notes_map = _load_notes_map(note_ids)
     if notes_map is not None:
         default = _empty_notes()
         for pp in pps:
-            pp_no = compact_text(pp.get("pp_voucher_no"))
-            if pp_no:
-                pp.update(notes_map.get(pp_no, default))
+            pp.update(_notes_for_pp(pp, notes_map, default))
 
     material_in_overlay = _load_material_in_overlay(process_sheets)
     if material_in_overlay is not None:
@@ -1934,7 +1973,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
             con.execute(
                 """
                 SELECT pp_voucher_no, material_subcon, mtl_part_order,
-                       quality_doc, ops_notes, sales_notes, ps_highlighted,
+                       quality_doc, ops_notes, sales_notes, buyer, ps_highlighted,
                        highlighted_partials, material_delay, material_need_date
                 FROM planner_so_pp_notes
                 WHERE pp_voucher_no = %s
@@ -1984,15 +2023,16 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
             """
             INSERT INTO planner_so_pp_notes (
                 pp_voucher_no, material_subcon, mtl_part_order,
-                quality_doc, ops_notes, sales_notes, ps_highlighted,
+                quality_doc, ops_notes, sales_notes, buyer, ps_highlighted,
                 highlighted_partials, material_delay, material_need_date, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (pp_voucher_no) DO UPDATE SET
                 material_subcon = EXCLUDED.material_subcon,
                 mtl_part_order = EXCLUDED.mtl_part_order,
                 quality_doc = EXCLUDED.quality_doc,
                 ops_notes = EXCLUDED.ops_notes,
                 sales_notes = EXCLUDED.sales_notes,
+                buyer = EXCLUDED.buyer,
                 ps_highlighted = EXCLUDED.ps_highlighted,
                 highlighted_partials = EXCLUDED.highlighted_partials,
                 material_delay = EXCLUDED.material_delay,
@@ -2006,6 +2046,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 current["quality_doc"],
                 current["ops_notes"],
                 current["sales_notes"],
+                current.get("buyer") or "",
                 current["ps_highlighted"],
                 highlighted_text,
                 current["material_delay"],

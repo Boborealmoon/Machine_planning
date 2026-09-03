@@ -17,7 +17,9 @@ Key changes vs SQLite original:
 """
 from __future__ import annotations
 
+import logging
 import math
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
@@ -25,7 +27,7 @@ from .actuals import actual_totals_for_block
 from .planner_actuals import actual_summary_for_block_row
 from .helpers import one, planner_try_savepoint, rows, parse_dt_text
 from .utils import planner_today, planner_timestamptz_for_db
-from .machines import capacity_minutes_for_machine_day, machine_work_intervals_for_day
+from .machines import capacity_minutes_for_machine_day, machine_work_intervals_for_day, prepare_machine_interval_cache
 from .scheduler_state import (
     compute_change_summary,
     create_schedule_run,
@@ -34,7 +36,6 @@ from .scheduler_state import (
     refresh_operation_state,
     refresh_process_sheet_state,
     refresh_states_for_machine,
-    resolve_schedule_alert,
     snapshot_queue_state,
     snapshot_queue_state_all,
     upsert_schedule_alert,
@@ -49,6 +50,56 @@ from .utils import (
     planner_wall_datetime_to_api,
     trial_catalog_op_key,
 )
+
+logger = logging.getLogger(__name__)
+
+_SEGMENT_INSERT_SQL = """
+            INSERT INTO planner_run_block_segment (
+              block_id, machine_id, schedule_run_id, segment_date, segment_type, qty_done, planned_qty,
+              minutes_used, planned_minutes, segment_status, start_datetime, end_datetime, is_actual
+            ) VALUES %s
+            """
+_SEGMENT_INSERT_TEMPLATE = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, 'PLANNED', %s, %s, FALSE)"
+
+
+def _recalc_cache(con):
+    cache = getattr(con, "_recalc_cache", None)
+    if cache is None:
+        cache = {}
+        try:
+            con._recalc_cache = cache
+        except Exception:
+            return cache
+    return cache
+
+
+def _operation_seq_table_exists(con):
+    cache = _recalc_cache(con)
+    if "seq_table" in cache:
+        return cache["seq_table"]
+    row = one(con.execute("SELECT to_regclass('public.planner_operation_seq') AS table_name"))
+    exists = bool(row and row.get("table_name"))
+    cache["seq_table"] = exists
+    return exists
+
+
+def _insert_segment_rows(con, segment_rows):
+    if not segment_rows:
+        return
+    execute_values = getattr(con, "execute_values", None)
+    if execute_values:
+        execute_values(_SEGMENT_INSERT_SQL, segment_rows, template=_SEGMENT_INSERT_TEMPLATE)
+        return
+    for row in segment_rows:
+        con.execute(
+            """
+            INSERT INTO planner_run_block_segment (
+              block_id, machine_id, schedule_run_id, segment_date, segment_type, qty_done, planned_qty,
+              minutes_used, planned_minutes, segment_status, start_datetime, end_datetime, is_actual
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'PLANNED', %s, %s, FALSE)
+            """,
+            row,
+        )
 
 
 def _catalog_ps_base_partial(source_ps_id: str):
@@ -938,10 +989,7 @@ def _dependency_finish_max_prior_ops(con, block):
     source_op_seq_id = int(block.get("source_op_seq_id") or 0)
     if not source_ps_id or not source_op_seq_id:
         return None
-    has_operation_seq = one(
-        con.execute("SELECT to_regclass('public.planner_operation_seq') AS table_name")
-    )
-    if not (has_operation_seq and has_operation_seq.get("table_name")):
+    if not _operation_seq_table_exists(con):
         prev_row = one(
             con.execute(
                 """
@@ -996,10 +1044,12 @@ def previous_operation_step_for_block(con, block):
     source_op_seq_id = int(block.get("source_op_seq_id") or 0)
     if not source_op_seq_id:
         return None
-    has_operation_seq = one(
-        con.execute("SELECT to_regclass('public.planner_operation_seq') AS table_name")
-    )
-    if not (has_operation_seq and has_operation_seq.get("table_name")):
+    cache = _recalc_cache(con)
+    prev_steps = cache.setdefault("prev_step", {})
+    if source_op_seq_id in prev_steps:
+        return prev_steps[source_op_seq_id]
+    if not _operation_seq_table_exists(con):
+        prev_steps[source_op_seq_id] = None
         return None
     current_step = one(
         con.execute(
@@ -1012,8 +1062,9 @@ def previous_operation_step_for_block(con, block):
         )
     )
     if not current_step:
+        prev_steps[source_op_seq_id] = None
         return None
-    return one(
+    previous = one(
         con.execute(
             """
             SELECT op_seq_id, seq_no, bom_id
@@ -1026,6 +1077,8 @@ def previous_operation_step_for_block(con, block):
             (int(current_step["bom_id"] or 0), int(current_step["seq_no"] or 0)),
         )
     )
+    prev_steps[source_op_seq_id] = previous
+    return previous
 
 
 def cumulative_required_qty_for_block(con, block):
@@ -1036,21 +1089,27 @@ def cumulative_required_qty_for_block(con, block):
     if not source_ps_id or not source_op_seq_id or not block_id:
         return max(0.0, float(block.get("scheduled_qty") or 0))
 
-    ordered_blocks = rows(
-        con.execute(
-            """
-            SELECT b.block_id, b.scheduled_qty
-            FROM planner_run_block b
-            JOIN planner_operation o ON o.operation_id = b.operation_id
-            WHERE COALESCE(o.source_ps_id, '') = %s
-              AND COALESCE(o.source_op_seq_id, 0) = %s
-              AND COALESCE(b.active, TRUE) = TRUE
-              AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
-            ORDER BY COALESCE(b.queue_position, 0) ASC, b.block_id ASC
-            """,
-            (source_ps_id, source_op_seq_id),
+    cache = _recalc_cache(con)
+    siblings = cache.setdefault("siblings", {})
+    sibling_key = (source_ps_id, source_op_seq_id)
+    ordered_blocks = siblings.get(sibling_key)
+    if ordered_blocks is None:
+        ordered_blocks = rows(
+            con.execute(
+                """
+                SELECT b.block_id, b.scheduled_qty
+                FROM planner_run_block b
+                JOIN planner_operation o ON o.operation_id = b.operation_id
+                WHERE COALESCE(o.source_ps_id, '') = %s
+                  AND COALESCE(o.source_op_seq_id, 0) = %s
+                  AND COALESCE(b.active, TRUE) = TRUE
+                  AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
+                ORDER BY COALESCE(b.queue_position, 0) ASC, b.block_id ASC
+                """,
+                (source_ps_id, source_op_seq_id),
+            )
         )
-    )
+        siblings[sibling_key] = ordered_blocks
     running_qty = 0.0
     for row in ordered_blocks:
         running_qty += max(0.0, float(row["scheduled_qty"] or 0))
@@ -1077,27 +1136,33 @@ def dependency_ready_time_by_quantity(con, block):
         return None
 
     source_ps_id = compact_text(block.get("source_ps_id") or "")
-    prior_blocks = rows(
-        con.execute(
-            """
-            SELECT b.block_id,
-                   b.scheduled_qty,
-                   COALESCE(b.calculated_end_datetime, q.predicted_end_at, b.planned_end_at, b.anchor_datetime) AS finish_at,
-                   COALESCE(b.queue_position, 0) AS queue_position
-            FROM planner_run_block b
-            JOIN planner_operation o ON o.operation_id = b.operation_id
-            LEFT JOIN planner_machine_queue_state q ON q.block_id = b.block_id
-            WHERE COALESCE(o.source_ps_id, '') = %s
-              AND COALESCE(o.source_op_seq_id, 0) = %s
-              AND COALESCE(b.active, TRUE) = TRUE
-              AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
-            ORDER BY COALESCE(b.calculated_end_datetime, q.predicted_end_at, b.planned_end_at, b.anchor_datetime) ASC NULLS LAST,
-                     COALESCE(b.queue_position, 0) ASC,
-                     b.block_id ASC
-            """,
-            (source_ps_id, int(previous_step["op_seq_id"] or 0)),
+    prior_key = (source_ps_id, int(previous_step["op_seq_id"] or 0))
+    cache = _recalc_cache(con)
+    prior_map = cache.setdefault("prior_blocks", {})
+    prior_blocks = prior_map.get(prior_key)
+    if prior_blocks is None:
+        prior_blocks = rows(
+            con.execute(
+                """
+                SELECT b.block_id,
+                       b.scheduled_qty,
+                       COALESCE(b.calculated_end_datetime, q.predicted_end_at, b.planned_end_at, b.anchor_datetime) AS finish_at,
+                       COALESCE(b.queue_position, 0) AS queue_position
+                FROM planner_run_block b
+                JOIN planner_operation o ON o.operation_id = b.operation_id
+                LEFT JOIN planner_machine_queue_state q ON q.block_id = b.block_id
+                WHERE COALESCE(o.source_ps_id, '') = %s
+                  AND COALESCE(o.source_op_seq_id, 0) = %s
+                  AND COALESCE(b.active, TRUE) = TRUE
+                  AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
+                ORDER BY COALESCE(b.calculated_end_datetime, q.predicted_end_at, b.planned_end_at, b.anchor_datetime) ASC NULLS LAST,
+                         COALESCE(b.queue_position, 0) ASC,
+                         b.block_id ASC
+                """,
+                prior_key,
+            )
         )
-    )
+        prior_map[prior_key] = prior_blocks
     if not prior_blocks:
         return None
 
@@ -1127,7 +1192,7 @@ def dependency_finish_for_block(con, block):
     return _dependency_finish_max_prior_ops(con, block)
 
 
-def add_future_segments_after_date(con, block_id, after_date: date, qty_to_add, schedule_run_id=None):
+def add_future_segments_after_date(con, block_id, after_date: date, qty_to_add, schedule_run_id=None, interval_cache=None):
     block = trial_block_row(con, block_id)
     if not block:
         return False
@@ -1147,7 +1212,7 @@ def add_future_segments_after_date(con, block_id, after_date: date, qty_to_add, 
 
     while remaining_qty > 0 and safety < 370:
         safety += 1
-        intervals = machine_work_intervals_for_day(con, machine_id, work_date)
+        intervals = machine_work_intervals_for_day(con, machine_id, work_date, interval_cache=interval_cache)
         if not intervals:
             work_date += timedelta(days=1)
             continue
@@ -1803,6 +1868,7 @@ def _schedule_setup_across_intervals(con, machine_id, block_id, schedule_run_id,
     end_dt = None
     safety = 0
     remaining = float(remaining_setup or 0)
+    pending = []
     while remaining > 0 and safety < 365:
         safety += 1
         interval_start, interval_end = _next_interval_after(con, machine_id, current_dt, interval_cache=interval_cache)
@@ -1818,27 +1884,25 @@ def _schedule_setup_across_intervals(con, machine_id, block_id, schedule_run_id,
             continue
         use = min(remaining, available)
         seg_end = current_dt + timedelta(minutes=use)
-        con.execute(
-            """
-            INSERT INTO planner_run_block_segment (
-              block_id, machine_id, schedule_run_id, segment_date, segment_type, qty_done, planned_qty,
-              minutes_used, planned_minutes, segment_status, start_datetime, end_datetime, is_actual
-            ) VALUES (%s, %s, %s, %s, 'setup', 0, 0, %s, %s, 'PLANNED', %s, %s, FALSE)
-            """,
+        pending.append(
             (
                 int(block_id),
                 int(machine_id),
                 int(schedule_run_id),
                 date_text(current_dt.date()),
+                "setup",
+                0,
+                0,
                 use,
                 use,
                 current_dt,
                 seg_end,
-            ),
+            )
         )
         remaining -= use
         current_dt = seg_end
         end_dt = seg_end
+    _insert_segment_rows(con, pending)
     return first_start, current_dt, end_dt, remaining
 
 
@@ -1849,6 +1913,7 @@ def _schedule_production_across_intervals(con, machine_id, block, schedule_run_i
     remaining = float(remaining_qty or 0)
     cycle_time = max(0.0, float(cycle_time or 0))
     safety = 0
+    pending = []
     while remaining > 0 and safety < 365:
         safety += 1
         interval_start, interval_end = _next_interval_after(con, machine_id, current_dt, interval_cache=interval_cache)
@@ -1870,29 +1935,25 @@ def _schedule_production_across_intervals(con, machine_id, block, schedule_run_i
             continue
         use = qty * cycle_time
         seg_end = current_dt + timedelta(minutes=use)
-        con.execute(
-            """
-            INSERT INTO planner_run_block_segment (
-              block_id, machine_id, schedule_run_id, segment_date, segment_type, qty_done, planned_qty,
-              minutes_used, planned_minutes, segment_status, start_datetime, end_datetime, is_actual
-            ) VALUES (%s, %s, %s, %s, 'production', %s, %s, %s, %s, 'PLANNED', %s, %s, FALSE)
-            """,
+        pending.append(
             (
                 int(block["block_id"]),
                 int(machine_id),
                 int(schedule_run_id),
                 date_text(current_dt.date()),
+                "production",
                 qty,
                 qty,
                 use,
                 use,
                 current_dt,
                 seg_end,
-            ),
+            )
         )
         remaining -= qty
         current_dt = seg_end
         end_dt = seg_end
+    _insert_segment_rows(con, pending)
     return first_start, current_dt, end_dt, remaining
 
 
@@ -1903,6 +1964,7 @@ def _schedule_combined_production_across_intervals(con, machine_id, members, sch
     remaining = float(remaining_qty or 0)
     combined_cycle = sum(float(member["cycle_minutes_per_qty"] or 0) for member in members)
     safety = 0
+    pending = []
     while remaining > 0 and safety < 365:
         safety += 1
         interval_start, interval_end = _next_interval_after(con, machine_id, current_dt, interval_cache=interval_cache)
@@ -1928,30 +1990,26 @@ def _schedule_combined_production_across_intervals(con, machine_id, members, sch
             member_cycle = max(0.0, float(member["cycle_minutes_per_qty"] or 0))
             member_minutes = qty * member_cycle
             member_end = current_dt + timedelta(minutes=member_minutes)
-            con.execute(
-                """
-                INSERT INTO planner_run_block_segment (
-                  block_id, machine_id, schedule_run_id, segment_date, segment_type, qty_done, planned_qty,
-                  minutes_used, planned_minutes, segment_status, start_datetime, end_datetime, is_actual
-                ) VALUES (%s, %s, %s, %s, 'production', %s, %s, %s, %s, 'PLANNED', %s, %s, FALSE)
-                """,
+            pending.append(
                 (
                     int(member["block_id"]),
                     int(machine_id),
                     int(schedule_run_id),
                     date_text(current_dt.date()),
+                    "production",
                     qty,
                     qty,
                     member_minutes,
                     member_minutes,
                     current_dt,
                     member_end,
-                ),
+                )
             )
             if idx == len(members) - 1:
                 end_dt = seg_end
         remaining -= qty
         current_dt = seg_end
+    _insert_segment_rows(con, pending)
     return first_start, current_dt, end_dt, remaining
 
 
@@ -2433,11 +2491,31 @@ def delete_dummy_card(con, block_id):
     )
     con.execute("DELETE FROM planner_run_block WHERE block_id = %s", (block_id,))
     con.execute("DELETE FROM planner_operation WHERE operation_id = %s", (operation_id,))
-    resync_machine_lane_after_remove(con, machine_id, tail_block_id=tail_block_id)
-    return machine_id
+    resync_machine_lane_after_remove(
+        con, machine_id, tail_block_id=tail_block_id, recalculate=False,
+    )
+    return machine_id, tail_block_id
 
 
 def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_id=None, tail_from_block_id=None):
+    started = time.perf_counter()
+    previous_cache = getattr(con, "_recalc_cache", None)
+    con._recalc_cache = {}
+    try:
+        _recalculate_machine_inner(con, machine_id, reason, schedule_run_id, tail_from_block_id)
+    finally:
+        logger.info(
+            "recalculate_machine %s finished in %.2fs",
+            int(machine_id),
+            time.perf_counter() - started,
+        )
+        if previous_cache is None:
+            con._recalc_cache = None
+        else:
+            con._recalc_cache = previous_cache
+
+
+def _recalculate_machine_inner(con, machine_id, reason, schedule_run_id, tail_from_block_id):
     own_run = schedule_run_id is None
     if own_run:
         old_snap = snapshot_queue_state(con, machine_id)
@@ -2547,18 +2625,29 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
     ]
     preserved_bounds_by_block = preserved_actual_bounds_for_blocks(con, all_block_ids)
 
-    interval_cache = {}
+    interval_cache = prepare_machine_interval_cache(con, int(machine_id))
     queue_cursor_end = None
+    scheduled_ok_ids = []
+    no_capacity_items = []
 
-    def update_block_schedule_window(block_id, start_dt, end_dt, planning_status=None, *, anchor_dt=None):
+    def update_block_schedule_window(block_id, start_dt, end_dt, planning_status=None, *, anchor_dt=None, source_block=None):
         start_bind = planner_timestamptz_for_db(start_dt)
         end_bind = planner_timestamptz_for_db(end_dt)
-        start_text = start_dt.strftime("%Y-%m-%d %H:%M:%S") if start_dt else None
-        end_text = end_dt.strftime("%Y-%m-%d %H:%M:%S") if end_dt else None
+        planned_start_bind = None
+        planned_end_bind = None
+        if start_dt and end_dt:
+            naive_start = _naive_schedule_dt(start_dt)
+            naive_end = _naive_schedule_dt(end_dt)
+            naive_anchor = _naive_schedule_dt(anchor_dt)
+            planned_start = max(naive_start, naive_anchor) if naive_anchor and naive_start else naive_start
+            planned_start_bind = planner_timestamptz_for_db(planned_start) if planned_start else None
+            planned_end_bind = planner_timestamptz_for_db(naive_end) if naive_end else None
         con.execute(
             """
             UPDATE planner_run_block
             SET calculated_start_datetime = %s, calculated_end_datetime = %s,
+                planned_start_at = COALESCE(%s, planned_start_at),
+                planned_end_at = COALESCE(%s, planned_end_at),
                 last_schedule_run_id = %s,
                 planned_qty_original = CASE WHEN COALESCE(planned_qty_original, 0) <= 0 THEN scheduled_qty ELSE planned_qty_original END,
                 planning_status = COALESCE(%s, CASE
@@ -2572,66 +2661,25 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
             (
                 start_bind,
                 end_bind,
+                planned_start_bind,
+                planned_end_bind,
                 int(schedule_run_id) if schedule_run_id is not None else None,
                 planning_status,
                 int(block_id),
             ),
         )
-        if start_text and end_text:
-            _sync_block_planned_dates(
-                con,
-                int(block_id),
-                start_dt,
-                end_dt,
-                anchor_dt=anchor_dt,
-            )
-        if not start_text or not end_text:
-            upsert_schedule_alert(
-                con,
-                schedule_run_id=schedule_run_id,
-                block_id=block_id,
-                operation_id=int(block["operation_id"]),
-                ps_id=compact_text(block.get("source_ps_id")),
-                machine_id=int(machine_id),
-                alert_type="NO_CAPACITY",
-                severity="WARN",
-                message="No capacity found while recalculating.",
-                planned_at=block.get("planned_end_at") or block.get("calculated_end_datetime") or None,
-                predicted_at=None,
-                delay_minutes=0,
-                status="OPEN",
-            )
+        if start_dt and end_dt:
+            scheduled_ok_ids.append(int(block_id))
         else:
-            for alert in rows(
-                con.execute(
-                    """
-                    SELECT alert_id FROM planner_schedule_alert
-                    WHERE block_id = %s AND alert_type = 'NO_CAPACITY' AND status IN ('OPEN', 'ACKNOWLEDGED')
-                    """,
-                    (int(block_id),),
-                )
-            ):
-                resolve_schedule_alert(con, int(alert["alert_id"]))
-            old_end = block.get("planned_end_at") or block.get("calculated_end_datetime")
-            old_end_str = old_end.strftime("%Y-%m-%d %H:%M:%S") if isinstance(old_end, datetime) else compact_text(old_end)
-            if old_end_str and old_end_str != end_text:
-                upsert_schedule_alert(
-                    con,
-                    schedule_run_id=schedule_run_id,
-                    block_id=block_id,
-                    operation_id=int(block["operation_id"]),
-                    ps_id=compact_text(block.get("source_ps_id")),
-                    machine_id=int(machine_id),
-                    alert_type="PREDICTED_END_CHANGED",
-                    severity="INFO",
-                    message="Predicted end changed after recalculation.",
-                    old_value=old_end_str,
-                    new_value=end_text,
-                    planned_at=old_end_str,
-                    predicted_at=end_text,
-                    delay_minutes=0,
-                    status="OPEN",
-                )
+            src = source_block or leader
+            no_capacity_items.append(
+                {
+                    "block_id": int(block_id),
+                    "operation_id": int(src.get("operation_id") or 0),
+                    "source_ps_id": compact_text(src.get("source_ps_id")),
+                    "planned_end_at": src.get("planned_end_at") or src.get("calculated_end_datetime"),
+                }
+            )
 
     for rel_idx, item in enumerate(queue_items[start_item_idx:]):
         members = item["members"]
@@ -2679,7 +2727,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                 remaining_qty = max(0.0, scheduled_qty - reported_output)
                 latest_actual_date = latest_actual_date_for_block(con, int(block["block_id"]))
                 if remaining_qty > 0 and latest_actual_date:
-                    add_future_segments_after_date(con, int(block["block_id"]), latest_actual_date, remaining_qty, schedule_run_id=schedule_run_id)
+                    add_future_segments_after_date(con, int(block["block_id"]), latest_actual_date, remaining_qty, schedule_run_id=schedule_run_id, interval_cache=interval_cache)
                 refresh_block_schedule_bounds(con, int(block["block_id"]))
                 refreshed = trial_block_row(con, int(block["block_id"]))
                 refreshed_end = refreshed["calculated_end_datetime"] if refreshed else None
@@ -2772,7 +2820,7 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
                 remaining_qty = max(0.0, member_scheduled_qty - reported_output)
                 latest_actual_date = latest_actual_date_for_block(con, member_id)
                 if remaining_qty > 0 and latest_actual_date:
-                    add_future_segments_after_date(con, member_id, latest_actual_date, remaining_qty, schedule_run_id=schedule_run_id)
+                    add_future_segments_after_date(con, member_id, latest_actual_date, remaining_qty, schedule_run_id=schedule_run_id, interval_cache=interval_cache)
                 refresh_block_schedule_bounds(con, member_id)
                 refreshed = trial_block_row(con, member_id)
                 refreshed_end = _naive_schedule_dt(
@@ -2825,6 +2873,36 @@ def recalculate_machine(con, machine_id, reason="PLANNER_CHANGE", schedule_run_i
         queue_cursor_end = current_dt
 
     from .operation_sequence import sync_machine_operation_sequence, sync_planning_cards_for_machine
+
+    if scheduled_ok_ids:
+        con.execute(
+            """
+            UPDATE planner_schedule_alert
+            SET status = 'RESOLVED',
+                resolved_at = COALESCE(resolved_at, NOW()),
+                updated_at = NOW()
+            WHERE block_id = ANY(%s)
+              AND alert_type = 'NO_CAPACITY'
+              AND status IN ('OPEN', 'ACKNOWLEDGED')
+            """,
+            (scheduled_ok_ids,),
+        )
+    for item in no_capacity_items:
+        upsert_schedule_alert(
+            con,
+            schedule_run_id=schedule_run_id,
+            block_id=item["block_id"],
+            operation_id=item["operation_id"] or None,
+            ps_id=item["source_ps_id"],
+            machine_id=int(machine_id),
+            alert_type="NO_CAPACITY",
+            severity="WARN",
+            message="No capacity found while recalculating.",
+            planned_at=item.get("planned_end_at"),
+            predicted_at=None,
+            delay_minutes=0,
+            status="OPEN",
+        )
 
     sync_machine_operation_sequence(con, int(machine_id))
     sync_planning_cards_for_machine(con, int(machine_id))
