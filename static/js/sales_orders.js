@@ -137,6 +137,7 @@ const soState = {
   colEmptyFilters: {},
   openFilterCol: '',
   frameAgreementParts: new Set(),
+  assemblyJobs: new Map(),
 };
 
 function soAllPpItems() {
@@ -419,8 +420,9 @@ function soDetailSection(title, html) {
 function soPsDisplayId(pp) {
   const ppNo = String(pp?.pp_voucher_no || '').trim();
   const psNo = String(pp?.process_sheet_no || '').trim();
-  if (psNo && ppNo && psNo !== ppNo) return `${ppNo} · ${psNo}`;
-  return psNo || ppNo || '—';
+  const displayPp = ppNo.includes('#fg') ? psNo : ppNo;
+  if (psNo && displayPp && psNo !== displayPp) return `${displayPp} · ${psNo}`;
+  return psNo || displayPp || '—';
 }
 
 function soPsDisplayLabel(pp) {
@@ -599,6 +601,7 @@ function soCollectNoWoProcessSheets() {
   const sheets = [];
   soVisibleOrders(soActiveOrders()).forEach(order => {
     soVisibleLeaves(order).forEach(leaf => {
+      if (leaf.assemblyChild) return;
       if (!soPpIsNoWo(leaf.pp)) return;
       const ps = soPsDisplayForPartial(leaf.pp, leaf.partial);
       if (!ps || ps === '—') return;
@@ -1046,10 +1049,17 @@ function soFindByKey(key) {
   const parts = target.split('::');
   const order = soFindOrder(parts[0]);
   if (!order) return { order: null, pp: null, partial: null };
-  const pp = (order.pp_vouchers || []).find(row => String(row.pp_voucher_no || '').trim() === parts[1]) || null;
+  let pp = (order.pp_vouchers || []).find(row => String(row.pp_voucher_no || '').trim() === parts[1]) || null;
+  if (!pp) {
+    const found = soFindPp(parts[1]);
+    if (found.pp && String(found.order?.sales_order_no || '').trim() === String(order.sales_order_no || '').trim()) {
+      pp = found.pp;
+    }
+  }
   if (!pp) return { order, pp: null, partial: null };
   if (parts.length < 3 || parts[2] === '') return { order, pp, partial: null };
-  const partial = (pp.partials || []).find(row => String(row.pp_partial_no ?? '').trim() === parts[2]) || null;
+  const partial = (pp.partials || []).find(row => String(row.pp_partial_no ?? '').trim() === parts[2])
+    || (pp.assembly_synthetic ? { pp_partial_no: parts[2], inventory_code: pp.inventory_code, partial_qty: pp.pp_qty } : null);
   return { order, pp, partial };
 }
 
@@ -1059,7 +1069,14 @@ function soFindPp(ppVoucherNo) {
     const pp = (order.pp_vouchers || []).find(row => String(row.pp_voucher_no || '').trim() === target);
     if (pp) return { order, pp };
   }
-  return { order: null, pp: null };
+  const asm = soFindAssemblyChild(target);
+  if (!asm) return { order: null, pp: null };
+  const parentId = String(asm.job?.ps_id || '').trim();
+  const parent = parentId && soPsBaseKey(parentId) !== soPsBaseKey(target)
+    ? soFindPp(parentId)
+    : { order: null, pp: null };
+  const order = parent.order || soFindOrder(asm.job.sales_order_no);
+  return { order, pp: soBomChildPp(parent.pp || {}, asm.child, { synthetic: !parent.pp }) };
 }
 
 function soOpenDetail({ title, bodyHtml }) {
@@ -1327,6 +1344,7 @@ function soLeafSearchText(leaf) {
     partial?.erp_last_stage_desc,
     ...(soPartialQueuedMachines(pp, partial)),
     ...(soProposedCncMachines(pp, partial)),
+    ...soAssemblySearchBits(pp, leaf.assemblyChild),
   ];
   return parts.map(v => String(v == null ? '' : v)).join(' ');
 }
@@ -1386,6 +1404,313 @@ function soGetPsType(pp) {
   return SO_PS_TYPES.includes(prefix) ? prefix : prefix;
 }
 
+function soPsBaseKey(value) {
+  return String(value || '').split('::')[0].trim().toUpperCase();
+}
+
+function soPartKeyOf(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function soIsComponentChildPs(value) {
+  const raw = soPsBaseKey(value);
+  return (raw.match(/-/g) || []).length >= 2 && /-\d+$/.test(raw);
+}
+
+function soParentPsIdFromChild(value) {
+  const raw = soPsBaseKey(value);
+  return soIsComponentChildPs(raw) ? raw.replace(/-\d+$/, '') : '';
+}
+
+function soPsIdOfLeaf(leaf) {
+  return soPsBaseKey(leaf?.pp?.process_sheet_no || leaf?.pp?.pp_voucher_no);
+}
+
+function soIndexAssemblyJobs(items) {
+  const map = new Map();
+  (items || []).forEach(item => {
+    const psId = soPsBaseKey(item?.ps_id);
+    if (psId) map.set(psId, item);
+    const part = soPartKeyOf(item?.part_no);
+    if (part && !map.has(`part:${part}`)) map.set(`part:${part}`, item);
+  });
+  return map;
+}
+
+function soAssemblyForPp(pp) {
+  if (!soState.assemblyJobs.size) return null;
+  for (const key of [pp?.process_sheet_no, pp?.pp_voucher_no]) {
+    const id = soPsBaseKey(key);
+    if (!id) continue;
+    if (soState.assemblyJobs.has(id)) return soState.assemblyJobs.get(id);
+    const parent = soParentPsIdFromChild(id);
+    if (parent && soState.assemblyJobs.has(parent)) return soState.assemblyJobs.get(parent);
+  }
+  const part = soPartKeyOf(pp?.inventory_code);
+  if (part && soState.assemblyJobs.has(`part:${part}`)) return soState.assemblyJobs.get(`part:${part}`);
+  return null;
+}
+
+function soAssemblyLineItems(pp) {
+  const job = soAssemblyForPp(pp);
+  if (!job) return [];
+  return (job.children || []).filter(child => String(child.part_no || '').trim());
+}
+
+function soBomChildPp(parentPp, child, { synthetic = true } = {}) {
+  const childPs = String(child?.process_sheet_no || '').trim();
+  const out = {
+    ...parentPp,
+    pp_voucher_no: childPs || parentPp?.pp_voucher_no,
+    process_sheet_no: childPs || parentPp?.process_sheet_no,
+    inventory_code: child.part_no || parentPp?.inventory_code,
+    description: child.description || parentPp?.description,
+    pp_qty: child.qty == null ? parentPp?.pp_qty : child.qty,
+    bom_code: child.selected_bom_code || child.resolved_bom_code || parentPp?.bom_code || '',
+  };
+  if (child.material_subcon) out.material_subcon = child.material_subcon;
+  if (child.mtl_part_order) out.mtl_part_order = child.mtl_part_order;
+  if (child.material_need_date) out.material_need_date = child.material_need_date;
+  if (child.material_delay != null) out.material_delay = Boolean(child.material_delay);
+  if (!synthetic) {
+    out.assembly_synthetic = false;
+    return out;
+  }
+  out.assembly_synthetic = true;
+  out.partials = [];
+  out.partial_count = 0;
+  out.queued_machines = [];
+  out.queued_machines_by_partial = {};
+  out.proposed_cnc = [];
+  out.current_stage_no = null;
+  out.current_stage_desc = '';
+  out.current_stage_status = '';
+  out.erp_stage_mode = 'subassembly';
+  out.erp_wo_stage_count = 0;
+  out.erp_all_wo_complete = false;
+  out.erp_pending_no_wo = false;
+  out.erp_has_wo = true;
+  out.erp_pending_wo_qty = 0;
+  out.erp_wo_issued_qty = null;
+  out.highlighted_partials = [];
+  out.ps_highlighted = false;
+  out.is_new_part = false;
+  out.similar_ps_count = 0;
+  out.coway_proposed_edd = '';
+  out.program_finish_at = '';
+  return out;
+}
+
+function soAsBomChildRow(parentLeaf, child, index, count) {
+  const pp = soBomChildPp(parentLeaf.pp, child, { synthetic: true });
+  if (!String(child?.process_sheet_no || '').trim()) {
+    const parentNo = String(parentLeaf.pp?.pp_voucher_no || 'FG').trim();
+    pp.pp_voucher_no = `${parentNo}#fg${index + 1}`;
+    pp.process_sheet_no = String(parentLeaf.pp?.process_sheet_no || parentNo);
+  }
+  return {
+    ...parentLeaf,
+    pp,
+    partial: {
+      pp_partial_no: 1,
+      partial_qty: child.qty == null ? parentLeaf.partial?.partial_qty : child.qty,
+      inventory_code: child.part_no || parentLeaf.partial?.inventory_code,
+      queued_machines: [],
+      proposed_cnc: [],
+      erp_stage_mode: 'subassembly',
+      erp_wo_stage_count: 0,
+      current_stage_desc: '',
+      current_stage_status: '',
+    },
+    assemblyChild: child,
+    assemblyChildIndex: index,
+    assemblyChildCount: count,
+  };
+}
+
+function soAsNestedChildRow(parentLeaf, childLeaf, child, index, count) {
+  const part = String(
+    child?.part_no || childLeaf.partial?.inventory_code || childLeaf.pp?.inventory_code || ''
+  ).trim();
+  const assemblyChild = child && String(child.process_sheet_no || '').trim()
+    ? child
+    : {
+      part_no: part,
+      description: childLeaf.pp?.description || '',
+      qty: childLeaf.partial?.partial_qty ?? childLeaf.pp?.pp_qty,
+      process_sheet_no: soPsIdOfLeaf(childLeaf) || String(childLeaf.pp?.process_sheet_no || '').trim(),
+      selected_bom_code: childLeaf.pp?.bom_code || '',
+      is_subassembly: true,
+      material_subcon: childLeaf.pp?.material_subcon || '',
+      mtl_part_order: childLeaf.pp?.mtl_part_order || '',
+      material_need_date: childLeaf.pp?.material_need_date || '',
+      material_delay: Boolean(childLeaf.pp?.material_delay),
+    };
+  return {
+    ...childLeaf,
+    pp: soBomChildPp(childLeaf.pp, assemblyChild, { synthetic: false }),
+    partial: {
+      ...(childLeaf.partial || {}),
+      inventory_code: assemblyChild.part_no || childLeaf.partial?.inventory_code,
+      partial_qty: assemblyChild.qty == null ? childLeaf.partial?.partial_qty : assemblyChild.qty,
+    },
+    assemblyChild,
+    assemblyChildIndex: index,
+    assemblyChildCount: count,
+  };
+}
+
+function soNestAndExplodeLeaves(leaves) {
+  const parentKeys = new Set();
+  leaves.forEach(leaf => {
+    const ps = soPsIdOfLeaf(leaf);
+    if (ps && !soIsComponentChildPs(ps)) parentKeys.add(ps);
+  });
+
+  const nestedByParent = new Map();
+  const roots = [];
+  const orphans = [];
+  leaves.forEach(leaf => {
+    const ps = soPsIdOfLeaf(leaf);
+    if (soIsComponentChildPs(ps)) {
+      const parent = soParentPsIdFromChild(ps);
+      if (parent && parentKeys.has(parent)) {
+        const list = nestedByParent.get(parent) || [];
+        list.push(leaf);
+        nestedByParent.set(parent, list);
+        return;
+      }
+      orphans.push(leaf);
+      return;
+    }
+    roots.push(leaf);
+  });
+
+  const out = [];
+  roots.forEach(leaf => {
+    const ps = soPsIdOfLeaf(leaf);
+    const nested = (nestedByParent.get(ps) || []).slice().sort((a, b) => {
+      const psCmp = soPsIdOfLeaf(a).localeCompare(soPsIdOfLeaf(b), undefined, { numeric: true });
+      if (psCmp) return psCmp;
+      return soPartialNo(a.partial) - soPartialNo(b.partial);
+    });
+    const items = soAssemblyLineItems(leaf.pp);
+    const nestedByPs = new Map();
+    const nestedByPart = new Map();
+    nested.forEach(childLeaf => {
+      const childPs = soPsIdOfLeaf(childLeaf);
+      if (childPs && !nestedByPs.has(childPs)) nestedByPs.set(childPs, childLeaf);
+      const part = soPartKeyOf(childLeaf.partial?.inventory_code || childLeaf.pp?.inventory_code);
+      if (part && !nestedByPart.has(part)) nestedByPart.set(part, childLeaf);
+    });
+    const usedNested = new Set();
+    const childRows = items.map((child, index) => {
+      const childPs = soPsBaseKey(child.process_sheet_no);
+      const nestedLeaf = (childPs && nestedByPs.get(childPs))
+        || nestedByPart.get(soPartKeyOf(child.part_no))
+        || null;
+      if (nestedLeaf) usedNested.add(nestedLeaf);
+      if (nestedLeaf) return soAsNestedChildRow(leaf, nestedLeaf, child, index, 0);
+      return soAsBomChildRow(leaf, child, index, 0);
+    });
+    nested.forEach(childLeaf => {
+      if (usedNested.has(childLeaf)) return;
+      childRows.push(soAsNestedChildRow(leaf, childLeaf, null, childRows.length, 0));
+    });
+    if (!childRows.length) {
+      out.push(leaf);
+      return;
+    }
+    childRows.forEach((row, index) => {
+      row.assemblyChildIndex = index;
+      row.assemblyChildCount = childRows.length;
+    });
+    out.push({ ...leaf, assemblyChildCount: childRows.length });
+    out.push(...childRows);
+  });
+  orphans.forEach(leaf => out.push(leaf));
+  return out;
+}
+
+function soAssemblySearchBits(pp, assemblyChild) {
+  const job = soAssemblyForPp(pp);
+  if (!job) {
+    if (!assemblyChild) return [];
+    return [
+      assemblyChild.part_no,
+      assemblyChild.description,
+      assemblyChild.process_sheet_no,
+    ];
+  }
+  if (assemblyChild) {
+    return [
+      job.ps_id,
+      job.part_no,
+      assemblyChild.part_no,
+      assemblyChild.description,
+      assemblyChild.process_sheet_no,
+    ];
+  }
+  const bits = [job.ps_id, job.part_no];
+  (job.children || []).forEach(child => {
+    bits.push(child.part_no, child.description, child.process_sheet_no);
+  });
+  return bits;
+}
+
+function soFindAssemblyChild(ppVoucherNo) {
+  const key = soPsBaseKey(ppVoucherNo);
+  if (!key || !soState.assemblyJobs.size) return null;
+  for (const [mapKey, job] of soState.assemblyJobs) {
+    if (String(mapKey).startsWith('part:')) continue;
+    for (const child of job.children || []) {
+      if (soPsBaseKey(child.process_sheet_no) === key) return { job, child };
+    }
+  }
+  return null;
+}
+
+function soPatchAssemblyChildNotes(ppNo, patch) {
+  const key = soPsBaseKey(ppNo);
+  if (!key || !soState.assemblyJobs.size) return;
+  soState.assemblyJobs.forEach((job, mapKey) => {
+    if (String(mapKey).startsWith('part:')) return;
+    (job.children || []).forEach(child => {
+      if (soPsBaseKey(child.process_sheet_no) !== key) return;
+      Object.assign(child, patch);
+    });
+  });
+}
+
+function soSortLeavesKeepingAssembly(leaves, colId, dir) {
+  const groups = [];
+  let current = null;
+  leaves.forEach(leaf => {
+    if (leaf.assemblyChild) {
+      if (!current) {
+        current = { root: null, children: [leaf] };
+        groups.push(current);
+        return;
+      }
+      current.children.push(leaf);
+      return;
+    }
+    current = { root: leaf, children: [] };
+    groups.push(current);
+  });
+  groups.sort((a, b) => {
+    const left = a.root || a.children[0];
+    const right = b.root || b.children[0];
+    return soCompareValues(soLeafSortValue(left, colId), soLeafSortValue(right, colId), dir);
+  });
+  const out = [];
+  groups.forEach(group => {
+    if (group.root) out.push(group.root);
+    out.push(...group.children);
+  });
+  return out;
+}
+
 function soTypeTagLabel(psType) {
   const t = String(psType || 'OTHER');
   return t === 'SR' ? '[SR]' : t;
@@ -1416,6 +1741,7 @@ function soVisibleTypeCounts() {
   const ppSeen = new Set();
   soVisibleOrders(soActiveOrders()).forEach(order => {
     soVisibleLeaves(order).forEach(leaf => {
+      if (leaf.assemblyChild) return;
       const ppNo = String(leaf.pp?.pp_voucher_no || '').trim();
       if (ppNo && !ppSeen.has(ppNo)) {
         ppSeen.add(ppNo);
@@ -1584,6 +1910,7 @@ function soLeafPassesColumnFilters(leaf) {
 }
 
 function soLeafPassesFilters(leaf) {
+  if (leaf.assemblyChild && soState.view === 'no-wo') return false;
   if (soState.view === 'no-wo' && !soPpIsNoWo(leaf.pp)) return false;
   if (!soLeafPassesPrefixFilter(leaf.pp)) return false;
   if (!soLeafPassesSearch(leaf)) return false;
@@ -1598,13 +1925,9 @@ function soLeafSortValue(leaf, colId) {
 }
 
 function soVisibleLeaves(order) {
-  let leaves = soLeafRows(order).filter(soLeafPassesFilters);
+  let leaves = soNestAndExplodeLeaves(soLeafRows(order)).filter(soLeafPassesFilters);
   if (soState.sortCol) {
-    leaves = [...leaves].sort((a, b) => soCompareValues(
-      soLeafSortValue(a, soState.sortCol),
-      soLeafSortValue(b, soState.sortCol),
-      soState.sortDir,
-    ));
+    leaves = soSortLeavesKeepingAssembly(leaves, soState.sortCol, soState.sortDir);
   }
   return leaves;
 }
@@ -1979,9 +2302,22 @@ function soRenderSideRail(order, rowSpan, { shadeAlt = false } = {}) {
   `;
 }
 
-function soRenderProcessSheetCell(order, pp, partial) {
+function soRenderSubasmPill(leaf) {
+  if (!leaf) return '';
+  if (leaf.assemblyChild) {
+    const lineNo = Number(leaf.assemblyChildIndex) + 1;
+    const lineCount = Number(leaf.assemblyChildCount) || 0;
+    const label = lineCount > 0 ? `${lineNo}/${lineCount}` : String(lineNo);
+    return `<span class="so-subasm-pill" title="Sub-assembly finished good ${escapeHtml(label)} on this line item">${escapeHtml(label)}</span>`;
+  }
+  const count = Number(leaf.assemblyChildCount) || 0;
+  if (count <= 0) return '';
+  return `<span class="so-subasm-pill" title="${escapeHtml(String(count))} sub-assembly finished goods on this line item">${escapeHtml(String(count))} FG</span>`;
+}
+
+function soRenderProcessSheetCell(order, pp, partial, leaf) {
   const psCode = soPsDisplayForPartial(pp, partial);
-  const repeatPill = soRenderRepeatPill(order, pp);
+  const repeatPill = leaf?.assemblyChild ? '' : soRenderRepeatPill(order, pp);
   const psType = soGetPsType(pp);
   const tag = psType ? soTypeTagHtml(psType) : '';
   return `
@@ -1989,6 +2325,7 @@ function soRenderProcessSheetCell(order, pp, partial) {
       <div class="so-ps-headline">
         ${tag}
         <span class="new-orders-ps-code">${escapeHtml(psCode)}</span>
+        ${soRenderSubasmPill(leaf)}
       </div>
       ${repeatPill}
     </td>
@@ -2034,6 +2371,15 @@ function soRenderStageMaterialBtn(pp, partial) {
 }
 
 function soRenderStageCell(pp, partial) {
+  if (pp?.assembly_synthetic) {
+    return `
+    <td class="so-stage-cell">
+      <div class="so-stage-stack">
+        <span class="so-dash">—</span>
+        ${soRenderStageMaterialBtn(pp, partial)}
+      </div>
+    </td>`;
+  }
   const stage = soPartialStage(partial);
   let stageHtml = '';
   if (stage.desc || stage.status) {
@@ -2577,7 +2923,7 @@ function soRenderProposedEddCell(pp, partial) {
   const ppNo = String(pp?.pp_voucher_no || '').trim();
   const psId = soProposedEddPsId(pp, partial);
   const value = String(soProposedEddDisplay(pp, partial) || '').slice(0, 10);
-  const editable = Boolean(psId);
+  const editable = Boolean(psId) && !pp?.assembly_synthetic;
   if (!editable) {
     return `<td class="new-orders-date so-coway-edd-cell"><span class="so-coway-edd-static">${escapeHtml(soFormatDate(value))}</span></td>`;
   }
@@ -2600,7 +2946,7 @@ function soRenderProgramFinishCell(pp, _partial) {
   const ppNo = String(pp?.pp_voucher_no || '').trim();
   const psBase = soProposedEddPsBase(pp);
   const value = soProgramFinishDisplay(pp);
-  const editable = Boolean(psBase);
+  const editable = Boolean(psBase) && !pp?.assembly_synthetic;
   if (!editable) {
     return `<td class="new-orders-date so-program-finish-cell"><span class="so-program-finish-static">${escapeHtml(soFormatDate(value))}</span></td>`;
   }
@@ -2674,6 +3020,9 @@ function soSyncExceptionRow(row, flagged) {
 }
 
 function soRenderExceptionCell(pp, partial) {
+  if (pp?.assembly_synthetic) {
+    return `<td class="so-exception-cell"><span class="so-dash">—</span></td>`;
+  }
   const ppNo = String(pp?.pp_voucher_no || '').trim();
   const partialNo = soPartialNo(partial);
   const flagged = soIsPartialException(pp, partial);
@@ -2701,26 +3050,29 @@ function soRenderPartialCell(partial) {
   return `<td class="new-orders-num so-partial-cell">${escapeHtml(String(partial?.pp_partial_no ?? '—'))}</td>`;
 }
 
-function soRenderPartCell(order, pp, partial) {
+function soRenderPartCell(order, pp, partial, leaf) {
   const part = partial?.inventory_code || pp?.inventory_code || '—';
   const faBadge = soRenderFrameAgreementBadge(pp, partial);
-  const newBadge = soRenderNewPartBadge(order, pp);
+  const newBadge = leaf?.assemblyChild ? '' : soRenderNewPartBadge(order, pp);
   const faClass = faBadge ? ' so-part-cell--fa' : '';
   return `<td class="new-orders-num so-part-cell${faClass}"><span class="so-part-text">${escapeHtml(String(part))}</span>${newBadge}${faBadge}</td>`;
 }
 
 function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, shadeAlt }) {
-  const { order, pp, partial } = leaf;
+  const { order, pp, partial, assemblyChild, assemblyChildCount } = leaf;
   const key = soPartialKey(order, pp, partial);
   const selected = key === soState.selectedKey;
   const sideRail = includeSideRail ? soRenderSideRail(order, sideRowSpan, { shadeAlt }) : '';
-  const processSheetCell = soRenderProcessSheetCell(order, pp, partial);
+  const processSheetCell = soRenderProcessSheetCell(order, pp, partial, leaf);
   const orderDateCell = soRenderOrderDateCell(pp);
   const startClass = groupStart ? ' new-orders-group-start' : '';
   const queuedMark = soIsPartialQueued(pp, partial) ? ' is-ps-queued-mark' : '';
   const exceptionMark = soIsPartialException(pp, partial) ? ' is-so-exception' : '';
+  const asmMark = assemblyChild
+    ? ' is-so-asm-child'
+    : (Number(assemblyChildCount) > 0 ? ' is-so-asm-parent' : '');
   return `
-    <tr class="new-orders-child-row is-clickable${startClass}${queuedMark}${exceptionMark}${selected ? ' is-selected' : ''}" data-sales-order="${escapeHtml(String(order.sales_order_no || ''))}" data-detail-key="${escapeHtml(key)}" title="Click for detail">
+    <tr class="new-orders-child-row is-clickable${startClass}${queuedMark}${exceptionMark}${asmMark}${selected ? ' is-selected' : ''}" data-sales-order="${escapeHtml(String(order.sales_order_no || ''))}" data-detail-key="${escapeHtml(key)}" title="Click for detail">
       ${sideRail}
       ${processSheetCell}
       ${soRenderPartialCell(partial)}
@@ -2731,7 +3083,7 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, shade
       ${soRenderStageCell(pp, partial)}
       ${soRenderQtyCell(pp)}
       ${orderDateCell}
-      ${soRenderPartCell(order, pp, partial)}
+      ${soRenderPartCell(order, pp, partial, leaf)}
       ${soRenderPpCells(pp, partial)}
     </tr>
   `;
@@ -2838,6 +3190,7 @@ async function soSaveMaterialSubconCell(cell, nextValue) {
         if (!parsed.arrived) found.pp.material_in_date = null;
       }
     }
+    soPatchAssemblyChildNotes(ppNo, { material_subcon: saved });
     soSetSaveStatus(cell, 'saved', 'Saved');
     window.setTimeout(() => {
       if (String(cell.dataset.lastSaved || '').trim() === saved) soSetSaveStatus(cell, '', '');
@@ -2992,6 +3345,7 @@ async function soSaveField(control) {
     control.dataset.lastSaved = saved;
     const found = soFindPp(ppNo);
     if (found.pp) found.pp[field] = saved;
+    soPatchAssemblyChildNotes(ppNo, { [field]: saved });
     soSetSaveStatus(control, 'saved', 'Saved');
     window.setTimeout(() => {
       if (control.dataset.lastSaved === saved) soSetSaveStatus(control, '', '');
@@ -3411,6 +3765,24 @@ async function soLoad({ refresh = false, bustCache = false, includeComplete = fa
 
   soSetLoading(false);
   soRender();
+  soLoadAssemblyJobs({ refresh });
+}
+
+async function soLoadAssemblyJobs({ refresh = false } = {}) {
+  try {
+    const params = new URLSearchParams();
+    if (refresh) params.set('refresh', '1');
+    const qs = params.toString();
+    const res = await fetch(`/api/material-tracking/sr-assemblies${qs ? `?${qs}` : ''}`, {
+      cache: refresh ? 'no-store' : 'default',
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) return;
+    soState.assemblyJobs = soIndexAssemblyJobs(payload.items);
+    soRender();
+  } catch (_err) {
+    soState.assemblyJobs = soState.assemblyJobs.size ? soState.assemblyJobs : new Map();
+  }
 }
 
 function soInit() {

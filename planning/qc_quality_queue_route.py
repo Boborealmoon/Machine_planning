@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 qc_quality_queue_bp = Blueprint("qc_quality_queue", __name__)
 
 _CACHE_TTL_SEC = 300
-_CACHE_VERSION = 8
+_CACHE_VERSION = 9
 _cache: tuple[float, int, list[dict[str, Any]]] | None = None
 
 # Link chain:
@@ -186,6 +186,14 @@ def api_qc_quality_queue():
         return jsonify({"error": f"ERP query failed: {exc}"}), 502
 
     buckets = _split_by_status(rows)
+    try:
+        from .finishing_queue_service import attach_deburr_qc_pushes_to_rows
+        from .helpers import planner_db
+
+        with planner_db() as con:
+            attach_deburr_qc_pushes_to_rows(con, rows)
+    except Exception:
+        logger.exception("qc quality queue deburr push attach failed")
     cached_at = _cache[0] if _cache else time.time()
 
     return jsonify(

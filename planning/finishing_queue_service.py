@@ -14,9 +14,9 @@ from planning.erp_wo_merge import (
     finishing_stage_sql_match,
     is_finishing_stage_desc,
 )
-from planning.helpers import one, rows
+from planning.helpers import one, planner_try_savepoint, rows
 from planning.process_sheets import format_planner_ps_id, parse_planner_ps_id
-from planning.utils import compact_text, shipped_quantity_completed
+from planning.utils import compact_text, planner_wall_datetime_to_api, shipped_quantity_completed
 from sync import _pp_ps_id_prefix_params, _pp_ps_id_prefix_sql
 
 _TEMP_PS_PREFIX_LIKE = "[Temp]%"
@@ -356,6 +356,10 @@ def ensure_finishing_queue_tables(con) -> None:
             con.execute(ddl)
         except Exception:
             pass
+    try:
+        _ensure_deburr_qc_push_table(con)
+    except Exception:
+        pass
 
 
 def ensure_material_inspection_overlay_table(con) -> None:
@@ -378,6 +382,321 @@ def ensure_material_inspection_overlay_table(con) -> None:
             WHERE inspector_id IS NOT NULL
         """
     )
+
+
+_DEBURR_PUSH_SOURCE_JUMP = "qty_jump"
+_DEBURR_PUSH_SOURCE_SEEN = "first_seen"
+
+
+def _ensure_deburr_qc_push_table(con) -> None:
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS public.planner_deburr_qc_push (
+            source_mps_no   TEXT         NOT NULL,
+            pp_partial_no   INTEGER      NOT NULL DEFAULT 1,
+            pushed_at       TIMESTAMPTZ  NOT NULL,
+            source          TEXT         NOT NULL DEFAULT 'qty_jump',
+            qty_jump        NUMERIC,
+            stage_no        INTEGER,
+            jump_id         BIGINT,
+            updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (source_mps_no, pp_partial_no)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_deburr_qc_push_pushed_at
+            ON public.planner_deburr_qc_push (pushed_at DESC)
+        """
+    )
+
+
+def _deburr_push_key(ps_id: Any, pp_partial_no: Any) -> tuple[str, int] | None:
+    ps = compact_text(ps_id)
+    if not ps:
+        return None
+    try:
+        partial = max(1, int(pp_partial_no or 1))
+    except (TypeError, ValueError):
+        partial = 1
+    return ps, partial
+
+
+def is_deburr_qty_jump(jump: dict[str, Any] | None) -> bool:
+    if not jump:
+        return False
+    return finishing_stage_bucket(jump.get("stage_desc")) == "deburring"
+
+
+def _deburr_push_upsert_sql() -> str:
+    return """
+        INSERT INTO planner_deburr_qc_push (
+            source_mps_no, pp_partial_no, pushed_at, source, qty_jump, stage_no, jump_id, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (source_mps_no, pp_partial_no) DO UPDATE SET
+            pushed_at = CASE
+                WHEN EXCLUDED.source = 'qty_jump' AND (
+                    planner_deburr_qc_push.source <> 'qty_jump'
+                    OR EXCLUDED.pushed_at > planner_deburr_qc_push.pushed_at
+                ) THEN EXCLUDED.pushed_at
+                ELSE planner_deburr_qc_push.pushed_at
+            END,
+            source = CASE
+                WHEN EXCLUDED.source = 'qty_jump' THEN 'qty_jump'
+                ELSE planner_deburr_qc_push.source
+            END,
+            qty_jump = CASE
+                WHEN EXCLUDED.source = 'qty_jump' AND (
+                    planner_deburr_qc_push.source <> 'qty_jump'
+                    OR EXCLUDED.pushed_at > planner_deburr_qc_push.pushed_at
+                ) THEN EXCLUDED.qty_jump
+                ELSE planner_deburr_qc_push.qty_jump
+            END,
+            stage_no = CASE
+                WHEN EXCLUDED.source = 'qty_jump' AND (
+                    planner_deburr_qc_push.source <> 'qty_jump'
+                    OR EXCLUDED.pushed_at > planner_deburr_qc_push.pushed_at
+                ) THEN EXCLUDED.stage_no
+                ELSE planner_deburr_qc_push.stage_no
+            END,
+            jump_id = CASE
+                WHEN EXCLUDED.source = 'qty_jump' AND (
+                    planner_deburr_qc_push.source <> 'qty_jump'
+                    OR EXCLUDED.pushed_at > planner_deburr_qc_push.pushed_at
+                ) THEN EXCLUDED.jump_id
+                ELSE planner_deburr_qc_push.jump_id
+            END,
+            updated_at = NOW()
+        WHERE EXCLUDED.source = 'qty_jump'
+          AND (
+                planner_deburr_qc_push.source <> 'qty_jump'
+                OR EXCLUDED.pushed_at > planner_deburr_qc_push.pushed_at
+          )
+    """
+
+
+def record_deburr_qc_pushes_from_jumps(con, jumps: list[dict[str, Any]] | None) -> int:
+    """Persist latest Deburring ERP scan as the time the job was pushed toward QC."""
+    _ensure_tables_once(con)
+    _ensure_deburr_qc_push_table(con)
+    payload = []
+    latest: dict[tuple[str, int], tuple] = {}
+    for jump in jumps or []:
+        if not is_deburr_qty_jump(jump):
+            continue
+        key = _deburr_push_key(jump.get("source_mps_no"), jump.get("pp_partial_no"))
+        if not key:
+            continue
+        scanned_at = jump.get("scanned_at")
+        if scanned_at is None:
+            continue
+        existing = latest.get(key)
+        if existing and existing[2] and scanned_at <= existing[2]:
+            continue
+        qty_jump = jump.get("qty_jump")
+        stage_no = jump.get("stage_no")
+        jump_id = jump.get("jump_id")
+        latest[key] = (
+            key[0],
+            key[1],
+            scanned_at,
+            _DEBURR_PUSH_SOURCE_JUMP,
+            qty_jump,
+            int(stage_no) if stage_no is not None else None,
+            int(jump_id) if jump_id is not None else None,
+        )
+    payload = list(latest.values())
+    if not payload:
+        return 0
+    con.executemany(_deburr_push_upsert_sql(), payload)
+    return len(payload)
+
+
+def _backfill_deburr_qc_pushes_from_jumps(con, keys: list[tuple[str, int]]) -> None:
+    if not keys:
+        return
+    ps_ids = [k[0] for k in keys]
+    partials = [k[1] for k in keys]
+
+    def _run():
+        con.execute(
+            f"""
+            INSERT INTO planner_deburr_qc_push (
+                source_mps_no, pp_partial_no, pushed_at, source, qty_jump, stage_no, jump_id, updated_at
+            )
+            SELECT DISTINCT ON (j.source_mps_no, j.pp_partial_no)
+                j.source_mps_no,
+                j.pp_partial_no,
+                j.scanned_at,
+                '{_DEBURR_PUSH_SOURCE_JUMP}',
+                j.qty_jump,
+                j.stage_no,
+                j.jump_id,
+                NOW()
+            FROM planner_erp_qty_jump j
+            INNER JOIN UNNEST(%s::text[], %s::int[]) AS k(source_mps_no, pp_partial_no)
+                    ON j.source_mps_no = k.source_mps_no
+                   AND j.pp_partial_no = k.pp_partial_no
+            WHERE LOWER(BTRIM(COALESCE(j.stage_desc, ''))) = 'deburring'
+            ORDER BY j.source_mps_no, j.pp_partial_no, j.scanned_at DESC
+            ON CONFLICT (source_mps_no, pp_partial_no) DO UPDATE SET
+                pushed_at = CASE
+                    WHEN planner_deburr_qc_push.source <> 'qty_jump'
+                      OR EXCLUDED.pushed_at > planner_deburr_qc_push.pushed_at
+                    THEN EXCLUDED.pushed_at
+                    ELSE planner_deburr_qc_push.pushed_at
+                END,
+                source = 'qty_jump',
+                qty_jump = CASE
+                    WHEN planner_deburr_qc_push.source <> 'qty_jump'
+                      OR EXCLUDED.pushed_at > planner_deburr_qc_push.pushed_at
+                    THEN EXCLUDED.qty_jump
+                    ELSE planner_deburr_qc_push.qty_jump
+                END,
+                stage_no = CASE
+                    WHEN planner_deburr_qc_push.source <> 'qty_jump'
+                      OR EXCLUDED.pushed_at > planner_deburr_qc_push.pushed_at
+                    THEN EXCLUDED.stage_no
+                    ELSE planner_deburr_qc_push.stage_no
+                END,
+                jump_id = CASE
+                    WHEN planner_deburr_qc_push.source <> 'qty_jump'
+                      OR EXCLUDED.pushed_at > planner_deburr_qc_push.pushed_at
+                    THEN EXCLUDED.jump_id
+                    ELSE planner_deburr_qc_push.jump_id
+                END,
+                updated_at = NOW()
+            WHERE planner_deburr_qc_push.source <> 'qty_jump'
+               OR EXCLUDED.pushed_at > planner_deburr_qc_push.pushed_at
+            """,
+            (ps_ids, partials),
+        )
+
+    planner_try_savepoint(con, "deburr_qc_push_backfill", _run)
+
+
+def _stamp_deburr_qc_first_seen(con, items: list[dict[str, Any]]) -> None:
+    payload = []
+    seen: set[tuple[str, int]] = set()
+    for item in items:
+        if compact_text(item.get("stage_bucket")) != "final_inspection":
+            continue
+        key = _deburr_push_key(item.get("ps_id"), item.get("pp_partial_no"))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        payload.append((key[0], key[1], _DEBURR_PUSH_SOURCE_SEEN))
+    if not payload:
+        return
+    con.executemany(
+        """
+        INSERT INTO planner_deburr_qc_push (
+            source_mps_no, pp_partial_no, pushed_at, source, qty_jump, stage_no, jump_id, updated_at
+        ) VALUES (%s, %s, NOW(), %s, NULL, NULL, NULL, NOW())
+        ON CONFLICT (source_mps_no, pp_partial_no) DO NOTHING
+        """,
+        payload,
+    )
+
+
+def load_deburr_qc_push_map(
+    con, keys: list[tuple[str, int]]
+) -> dict[tuple[str, int], dict[str, Any]]:
+    clean = []
+    seen: set[tuple[str, int]] = set()
+    for key in keys:
+        parsed = _deburr_push_key(key[0], key[1]) if key else None
+        if not parsed or parsed in seen:
+            continue
+        seen.add(parsed)
+        clean.append(parsed)
+    if not clean:
+        return {}
+    ps_ids = [k[0] for k in clean]
+    partials = [k[1] for k in clean]
+    try:
+        overlay_rows = rows(
+            con.execute(
+                """
+                SELECT o.source_mps_no, o.pp_partial_no, o.pushed_at, o.source,
+                       o.qty_jump, o.stage_no, o.jump_id
+                FROM planner_deburr_qc_push o
+                INNER JOIN UNNEST(%s::text[], %s::int[]) AS k(source_mps_no, pp_partial_no)
+                    ON o.source_mps_no = k.source_mps_no
+                   AND o.pp_partial_no = k.pp_partial_no
+                """,
+                (ps_ids, partials),
+            )
+        )
+    except Exception:
+        return {}
+    out: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in overlay_rows:
+        key = _deburr_push_key(row.get("source_mps_no"), row.get("pp_partial_no"))
+        if key:
+            out[key] = dict(row)
+    return out
+
+
+def _serialize_deburr_push(row: dict[str, Any] | None) -> dict[str, Any]:
+    if not row:
+        return {"deburr_pushed_at": "", "deburr_push_source": ""}
+    return {
+        "deburr_pushed_at": planner_wall_datetime_to_api(row.get("pushed_at")),
+        "deburr_push_source": compact_text(row.get("source")),
+    }
+
+
+def sync_deburr_qc_pushes_for_items(con, items: list[dict[str, Any]]) -> dict[tuple[str, int], dict[str, Any]]:
+    """Backfill from ERP scans, stamp first-seen FI jobs, then return the lookup map."""
+    _ensure_tables_once(con)
+    keys = []
+    for item in items:
+        key = _deburr_push_key(item.get("ps_id"), item.get("pp_partial_no"))
+        if key:
+            keys.append(key)
+    try:
+        _backfill_deburr_qc_pushes_from_jumps(con, keys)
+        _stamp_deburr_qc_first_seen(con, items)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("deburr QC push sync failed", exc_info=True)
+    return load_deburr_qc_push_map(con, keys)
+
+
+def attach_deburr_qc_pushes_to_rows(con, rows_in: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach deburr_pushed_at onto QC-queue ERP rows matched by MPS / process sheet."""
+    keys = []
+    for row in rows_in or []:
+        mps = (
+            compact_text(row.get("mps_no"))
+            or compact_text(row.get("alloc_source_mps_no"))
+            or compact_text(row.get("process_sheet_no"))
+        )
+        partial = row.get("source_seq_partial_no") or row.get("pp_partial_no") or 1
+        key = _deburr_push_key(mps, partial)
+        if key:
+            keys.append(key)
+    if not keys:
+        for row in rows_in or []:
+            row["deburr_pushed_at"] = compact_text(row.get("deburr_pushed_at"))
+            row["deburr_push_source"] = compact_text(row.get("deburr_push_source"))
+        return rows_in
+    _ensure_tables_once(con)
+    push_map = load_deburr_qc_push_map(con, keys)
+    for row in rows_in or []:
+        mps = (
+            compact_text(row.get("mps_no"))
+            or compact_text(row.get("alloc_source_mps_no"))
+            or compact_text(row.get("process_sheet_no"))
+        )
+        partial = row.get("source_seq_partial_no") or row.get("pp_partial_no") or 1
+        key = _deburr_push_key(mps, partial)
+        serialized = _serialize_deburr_push(push_map.get(key) if key else None)
+        row["deburr_pushed_at"] = serialized["deburr_pushed_at"]
+        row["deburr_push_source"] = serialized["deburr_push_source"]
+    return rows_in
 
 
 def load_mi_overlay_map(con, voucher_nos: list[str]) -> dict[str, dict[str, Any]]:
@@ -649,6 +968,15 @@ def load_coway_edd_map(con, items: list[dict[str, Any]]) -> dict[str, str]:
 def enrich_finishing_items(con, raw_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     overlay_map = load_overlay_map(con, raw_items)
     coway_map = load_coway_edd_map(con, raw_items)
+    push_map = sync_deburr_qc_pushes_for_items(con, [
+        {
+            "ps_id": row.get("ps_id"),
+            "pp_partial_no": row.get("pp_partial_no"),
+            "stage_bucket": finishing_stage_bucket(compact_text(row.get("current_stage_desc"))),
+        }
+        for row in raw_items
+        if is_finishing_stage_desc(compact_text(row.get("current_stage_desc")))
+    ])
     enriched: list[dict[str, Any]] = []
     for row in raw_items:
         stage_desc = compact_text(row.get("current_stage_desc"))
@@ -674,6 +1002,11 @@ def enrich_finishing_items(con, raw_items: list[dict[str, Any]]) -> list[dict[st
         item["checklist_done"] = bool(overlay.get("checklist_done"))
         item["exception_flag"] = bool(overlay.get("exception_flag"))
         item["overlay_updated_at"] = _serialize_value(overlay.get("updated_at"))
+        push = _serialize_deburr_push(
+            push_map.get(_deburr_push_key(item.get("ps_id"), item.get("pp_partial_no")))
+        )
+        item["deburr_pushed_at"] = push["deburr_pushed_at"]
+        item["deburr_push_source"] = push["deburr_push_source"]
 
         planner_id = _planner_ps_id(item.get("ps_id"), item.get("pp_partial_no"))
         item["planner_ps_id"] = planner_id

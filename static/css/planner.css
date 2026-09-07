@@ -9020,6 +9020,35 @@
     gap: 4px;
     min-width: 0;
   }
+  .new-orders-page--sales-orders .so-subasm-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: #f6ecd8;
+    color: #b45309;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .new-orders-page--sales-orders .so-table--wide tbody tr.is-so-asm-parent td.so-sticky-ps-cell {
+    box-shadow: inset 3px 0 0 #64748b, 1px 0 0 rgba(148, 163, 184, 0.35);
+  }
+  .new-orders-page--sales-orders .so-table--wide tbody tr.is-so-asm-child td.so-sticky-ps-cell {
+    box-shadow: inset 3px 0 0 #d4a017, 1px 0 0 rgba(148, 163, 184, 0.35);
+    background: #fdfaf3;
+  }
+  .new-orders-page--sales-orders tr.is-so-asm-child .new-orders-ps-code {
+    font-weight: 600;
+  }
+  .new-orders-page--sales-orders tr.is-so-asm-child td:not(.new-orders-side-rail) {
+    background: #fdfaf3;
+  }
+  .new-orders-page--sales-orders tr.is-so-asm-child:hover td:not(.new-orders-side-rail),
+  .new-orders-page--sales-orders tr.is-so-asm-child.is-clickable:hover td.so-sticky-ps-cell {
+    background: #f8f1de;
+  }
   .new-orders-page--sales-orders .so-process-sheet-cell .new-orders-ps-code {
     display: inline-block;
     max-width: 100%;

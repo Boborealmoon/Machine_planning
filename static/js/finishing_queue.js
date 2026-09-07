@@ -41,7 +41,7 @@ function fqShowLoadError(message) {
   document.getElementById('fq-qcq-table-wrap')?.setAttribute('hidden', '');
 }
 
-const FQ_TABLE_COL_COUNT = 10;
+const FQ_TABLE_COL_COUNT = 11;
 
 const FQ_PS_TYPE_ORDER = ['APS', 'NPS', 'MPS', 'PPS', 'CPS', 'SR', 'TEMP'];
 const FQ_PS_TYPES_DEFAULT = new Set(['APS', 'NPS']);
@@ -327,6 +327,72 @@ function fqSyncQaDueColumnLabel() {
   label.textContent = (typeof fqT === 'function') ? fqT(key) : (key === 'col_deadline' ? 'Deadline' : 'Target completion date');
 }
 
+function fqPushedColumnKey(item) {
+  const deburr = item ? fqIsDeburringItem(item) : fqIsDeburringQueue();
+  return deburr ? 'col_deburr_scanned' : 'col_pushed_to_qc';
+}
+
+function fqPushedColumnLabel(item) {
+  const key = fqPushedColumnKey(item);
+  if (typeof fqT === 'function') return fqT(key);
+  return key === 'col_deburr_scanned' ? 'Deburr scanned' : 'Pushed to QC';
+}
+
+function fqSyncPushedColumnLabel() {
+  const label = document.getElementById('fq-col-pushed-label')
+    || document.querySelector('[data-fq-sort="deburr_pushed_at"] [data-fq-i18n="col_pushed_to_qc"], [data-fq-sort="deburr_pushed_at"] [data-fq-i18n="col_deburr_scanned"]')
+    || document.querySelector('[data-fq-sort="deburr_pushed_at"] span');
+  if (!label) return;
+  const key = fqPushedColumnKey();
+  label.id = 'fq-col-pushed-label';
+  label.dataset.fqI18n = key;
+  label.textContent = fqPushedColumnLabel();
+}
+
+function fqFormatDateTime(value) {
+  if (!value) return '';
+  const text = String(value).trim().replace('T', ' ');
+  if (text.length >= 16) return text.slice(0, 16);
+  return text;
+}
+
+function fqElapsedParts(fromValue, nowMs) {
+  const stamp = String(fromValue || '').trim();
+  if (!stamp) return null;
+  const parsed = Date.parse(stamp.replace(' ', 'T'));
+  if (!Number.isFinite(parsed)) return null;
+  const secs = Math.max(0, Math.floor(((nowMs == null ? Date.now() : nowMs) - parsed) / 1000));
+  const days = Math.floor(secs / 86400);
+  const hours = Math.floor((secs % 86400) / 3600);
+  const mins = Math.floor((secs % 3600) / 60);
+  return { days, hours, mins, secs };
+}
+
+function fqElapsedLabel(fromValue, nowMs) {
+  const parts = fqElapsedParts(fromValue, nowMs);
+  if (!parts) return '';
+  const { days, hours, mins } = parts;
+  if (typeof fqT === 'function') {
+    if (days > 0) return fqT('elapsed_d_h', { d: days, h: hours });
+    if (hours > 0) return fqT('elapsed_h_m', { h: hours, m: mins });
+    return fqT('elapsed_m', { m: mins });
+  }
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
+function fqPushedCellHtml(item) {
+  const stamp = String(item?.deburr_pushed_at || '').trim();
+  if (!stamp) return '—';
+  const when = fqFormatDateTime(stamp);
+  const elapsed = fqElapsedLabel(stamp);
+  const elapsedHtml = elapsed
+    ? `<span class="fq-elapsed">${escapeHtml(elapsed)}</span>`
+    : '';
+  return `<div class="fq-pushed-cell" title="${escapeHtml(stamp)}"><span class="fq-pushed-when">${escapeHtml(when)}</span>${elapsedHtml}</div>`;
+}
+
 function fqActiveSourceItems() {
   if (fqState.screen === 'material_issue') {
     return fqState.materialIssueItems || [];
@@ -431,11 +497,12 @@ function fqSortValue(item, col) {
   if (col === 'inspector_name') return fqAssigneeLabel(item).toLowerCase();
   if (col === 'part_no') return String(item?.part_no || '').trim().toLowerCase();
   if (col === 'part_desc') return String(item?.part_desc || '').trim().toLowerCase();
-  if (col === 'due_date' || col === 'coway_proposed_edd' || col === 'qa_due_date' || col === 'commitment_date') {
+  if (col === 'due_date' || col === 'coway_proposed_edd' || col === 'qa_due_date' || col === 'commitment_date' || col === 'deburr_pushed_at') {
     if (col === 'commitment_date') {
       return fqCommitmentDate(item) || '';
     }
     const text = String(item?.[col] || '').trim();
+    if (col === 'deburr_pushed_at') return text;
     return text.length >= 10 ? text.slice(0, 10) : text;
   }
   return '';
@@ -956,6 +1023,8 @@ function fqRenderDetail(item) {
   const stageHtml = [
     fqDetailField(t('detail_field_stage'), (typeof fqStageDescI18n === 'function') ? fqStageDescI18n(item.current_stage_desc) : item.current_stage_desc),
     fqDetailField(t('detail_field_status'), fqExecutionLabel(item.current_stage_status)),
+    fqDetailField(t('detail_field_pushed_to_qc'), fqFormatDateTime(item.deburr_pushed_at) || '—'),
+    fqDetailField(t('detail_field_time_in_qc'), fqElapsedLabel(item.deburr_pushed_at) || '—'),
     fqDetailField(t('detail_field_progress'), fqStageProgress(item)),
     fqDetailField(t('detail_field_stage_required'), fqFormatQty(item.stage_qty_required)),
     fqDetailField(t('detail_field_stage_produced'), fqFormatQty(item.stage_qty_produced)),
@@ -1252,9 +1321,10 @@ function fqAmApiUrl() {
 
 function fqAmSearchText(item) {
   return [
-    item.process_sheet_no, item.ps_id, item.sales_order_no, item.part_no,
-    item.description, item.customer_name, item.customer_po_no, item.notes,
-    item.arrival_date, item.week_day_label, item.week_range_label,
+    item.material, item.material_description, item.process_sheet_no, item.ps_id,
+    item.sales_order_no, item.part_no, item.description, item.customer_name,
+    item.customer_po_no, item.notes, item.arrival_date, item.week_day_label,
+    item.week_range_label,
   ].map((v) => String(v == null ? '' : v).toLowerCase()).join(' ');
 }
 
@@ -1288,7 +1358,7 @@ function fqAmGroupRow(item, count) {
   const overdueCls = item?.overdue && !item?.this_week ? ' fq-group-row--overdue' : '';
   return `
     <tr class="fq-group-row${overdueCls}">
-      <td colspan="10">
+      <td colspan="6">
         <div class="fq-group-row-inner">
           <span class="fq-group-row-avatar" aria-hidden="true">W${escapeHtml(String(weekNo))}</span>
           <span class="fq-group-row-name">${escapeHtml(label)}</span>
@@ -1309,6 +1379,8 @@ function fqRenderAnticipatedMaterialRow(item) {
     ? `<span class="fq-am-delay" title="${escapeHtml((typeof fqT === 'function') ? fqT('am_delay') : 'Material delay flagged')}">⚑</span>`
     : '';
   const arrivalCls = item?.overdue ? ' fq-am-date--overdue' : (item?.this_week ? ' fq-am-date--this' : '');
+  const material = String(item?.material || '').trim() || '—';
+  const description = String(item?.material_description || item?.description || '').trim() || '—';
   return `
     <tr class="fq-row fq-row--anticipated-material${item?.overdue ? ' is-overdue' : ''}${item?.material_delay ? ' is-delay' : ''}">
       <td class="fq-col-sticky fq-col-sticky--job">
@@ -1317,15 +1389,11 @@ function fqRenderAnticipatedMaterialRow(item) {
           ${delay}
         </div>
       </td>
-      <td class="fq-col-mono">${escapeHtml(item?.sales_order_no || '—')}</td>
-      <td class="fq-col-mono">${escapeHtml(item?.part_no || '—')}</td>
-      <td>${escapeHtml(item?.description || '—')}</td>
+      <td class="fq-am-material">${escapeHtml(material)}</td>
+      <td>${escapeHtml(description)}</td>
       <td class="fq-col-num">${escapeHtml(fqFormatQty(item?.qty))}</td>
       <td class="fq-col-date${arrivalCls}">${escapeHtml(fqFormatDate(item?.arrival_date))}</td>
       <td>${escapeHtml(item?.week_day_label || '—')}</td>
-      <td class="fq-col-date">${escapeHtml(fqFormatDate(item?.due_date))}</td>
-      <td>${escapeHtml(item?.customer_name || '—')}</td>
-      <td class="fq-col-remarks">${escapeHtml(item?.notes || '—')}</td>
     </tr>
   `;
 }
@@ -1981,7 +2049,7 @@ function fqQcqRowSearchText(row) {
     row.inspection_voucher_no, row.wo_voucher_no, row.work_order_no, row.mps_no,
     row.alloc_source_mps_no, row.process_sheet_no, row.wo_part_no, row.job_lot_part_no, row.so_no,
     row.wo_stage_desc, row.inspector_code, row.job_inspector_code, row.ncr_voucher_no,
-    row.reference_no, row.alloc_wo_voucher_no, row.wo_segment_code,
+    row.reference_no, row.alloc_wo_voucher_no, row.wo_segment_code, row.deburr_pushed_at,
   ].map((v) => String(v == null ? '' : v).toLowerCase()).join(' ');
 }
 
@@ -2022,6 +2090,7 @@ function fqQcqRenderRow(row) {
       <td class="fq-col-mono">${escapeHtml(fqQcqSegmentCode(row) || '—')}</td>
       <td class="fq-col-mono" title="${escapeHtml(part)}">${escapeHtml(part)}</td>
       <td>${escapeHtml(String(row.wo_stage_desc || row.alloc_wo_stage_desc || '—'))}</td>
+      <td class="fq-col-pushed">${fqPushedCellHtml(row)}</td>
       <td class="fq-col-mono">${escapeHtml(String(row.so_no || '—'))}</td>
       <td class="fq-col-num">${escapeHtml(row.wo_qty_required == null ? '—' : String(row.wo_qty_required))}</td>
       <td class="fq-col-num">${escapeHtml(row.job_qty_assigned == null ? '—' : String(row.job_qty_assigned))}</td>
@@ -2264,6 +2333,7 @@ function fqRenderDataRow(item, { incoming = false } = {}) {
       <td class="fq-col-sticky fq-col-sticky--job fq-open-detail">${fqJobCell(item, { incoming })}</td>
       <td class="fq-open-detail">${fqStageBadge(item)}</td>
       <td class="fq-open-detail">${fqStatusPill(item.current_stage_status)}</td>
+      <td class="fq-open-detail fq-col-pushed">${fqPushedCellHtml(item)}</td>
       <td class="fq-open-detail fq-col-date">${escapeHtml(fqFormatDate(item.due_date))}</td>
       <td class="fq-open-detail fq-col-date">${escapeHtml(fqFormatDate(item.coway_proposed_edd))}</td>
       <td class="fq-open-detail fq-col-schedule"${schedule.title ? ` title="${escapeHtml(schedule.title)}"` : ''}>${escapeHtml(schedule.label)}</td>
@@ -2565,6 +2635,7 @@ function fqUpdateScreenChrome() {
   }
 
   fqSyncQaDueColumnLabel();
+  fqSyncPushedColumnLabel();
 }
 
 function fqRenderTable() {

@@ -838,6 +838,31 @@ body.qaqc-view {
   align-items: flex-start;
 }
 
+.fq-table thead th[data-fq-sort-col="deburr_pushed_at"] {
+  white-space: normal;
+  min-width: 7.5rem;
+  max-width: 9.5rem;
+}
+
+.fq-pushed-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.2;
+}
+
+.fq-pushed-when {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.fq-elapsed {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--fq-muted);
+  white-space: nowrap;
+}
+
 .fq-table thead th.is-sorted {
   color: var(--fq-accent);
 }
@@ -1128,6 +1153,22 @@ body.qaqc-view {
 
 .fq-table-card--anticipated-material {
   margin-top: 0;
+}
+
+.fq-table--anticipated-material .fq-col-sticky--job,
+.fq-table--anticipated-material thead th.fq-col-sticky--job {
+  left: 0;
+  min-width: 8.75rem;
+  max-width: 11rem;
+}
+
+.fq-am-material {
+  font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: normal;
+  word-break: break-word;
+  min-width: 12rem;
 }
 
 .fq-am-badge {

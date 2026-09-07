@@ -93,7 +93,7 @@
             <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
             <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
-          <input id="fq-am-search" class="planner-page-search-input" type="search" placeholder="SO, process sheet, part, customer..." data-fq-i18n-placeholder="am_search_placeholder" autocomplete="off">
+          <input id="fq-am-search" class="planner-page-search-input" type="search" placeholder="Material, PS, description..." data-fq-i18n-placeholder="am_search_placeholder" autocomplete="off">
         </span>
       </label>
     </div>
@@ -176,6 +176,9 @@
           <th data-fq-sort-col="current_stage_status">
             <button type="button" class="so-col-sort-btn" data-fq-sort="current_stage_status"><span data-fq-i18n="col_status">Status</span> <span data-fq-sort-icon="current_stage_status">↕</span></button>
           </th>
+          <th class="so-col-head fq-col-pushed" data-fq-sort-col="deburr_pushed_at">
+            <button type="button" class="so-col-sort-btn" data-fq-sort="deburr_pushed_at"><span id="fq-col-pushed-label" data-fq-i18n="col_pushed_to_qc">Pushed to QC</span> <span data-fq-sort-icon="deburr_pushed_at">↕</span></button>
+          </th>
           <th class="so-col-head" data-fq-sort-col="due_date">
             <button type="button" class="so-col-sort-btn" data-fq-sort="due_date"><span data-fq-i18n="col_po_due">PO due</span> <span data-fq-sort-icon="due_date">↕</span></button>
           </th>
@@ -227,16 +230,12 @@
       <table class="fq-table fq-table--anticipated-material">
         <thead>
           <tr>
-            <th class="fq-col-sticky fq-col-sticky--job" data-fq-i18n="am_col_job">Job</th>
-            <th data-fq-i18n="am_col_so">SO</th>
-            <th data-fq-i18n="am_col_part">Part</th>
+            <th class="fq-col-sticky fq-col-sticky--job" data-fq-i18n="am_col_ps">PS</th>
+            <th data-fq-i18n="am_col_material">Material</th>
             <th data-fq-i18n="am_col_description">Description</th>
             <th data-fq-i18n="am_col_qty">Qty</th>
             <th data-fq-i18n="am_col_arrival">Material in</th>
             <th data-fq-i18n="am_col_week">Week</th>
-            <th data-fq-i18n="am_col_po_due">PO due</th>
-            <th data-fq-i18n="am_col_customer">Customer</th>
-            <th data-fq-i18n="am_col_notes">Notes</th>
           </tr>
         </thead>
         <tbody id="fq-am-table-body"></tbody>
@@ -280,6 +279,7 @@
             <th data-fq-i18n="qcq_col_segment">Segment</th>
             <th data-fq-i18n="qcq_col_part">Part</th>
             <th data-fq-i18n="qcq_col_stage">Stage</th>
+            <th data-fq-i18n="qcq_col_pushed_to_qc">Pushed to QC</th>
             <th data-fq-i18n="qcq_col_so">SO</th>
             <th data-fq-i18n="qcq_col_wo_qty">WO qty</th>
             <th data-fq-i18n="qcq_col_assigned">Assigned</th>
@@ -719,6 +719,7 @@
         '<td class="fq-col-sticky fq-col-sticky--job"><div class="fq-job-cell"><span class="fq-job-ps">' + fqEsc(item.ps_id || '—') + partialTag + '</span>' + partSub + qtySub + '</div></td>' +
         '<td>' + fqEsc(item.current_stage_desc || '—') + '</td>' +
         '<td>' + fqEsc(fqStatusLabel(item.current_stage_status)) + '</td>' +
+        '<td class="fq-col-pushed">' + fqEsc(item.deburr_pushed_at || '—') + '</td>' +
         '<td class="fq-col-date">' + fqEsc(fqFmtDate(item.due_date)) + '</td>' +
         '<td class="fq-col-date">' + fqEsc(fqFmtDate(item.coway_proposed_edd)) + '</td>' +
         '<td class="fq-col-schedule">' + fqEsc(fqFmtCowayWeek(item)) + '</td>' +

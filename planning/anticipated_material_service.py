@@ -8,7 +8,7 @@ from typing import Any
 
 from .helpers import planner_try_savepoint, rows
 from .so_outstanding_balance_service import _parse_date, ps_type
-from .utils import PLANNER_TZ, compact_text, shipped_quantity_completed
+from .utils import PLANNER_TZ, bom_code_match_key, compact_text, shipped_quantity_completed
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +141,7 @@ def _load_pp_meta(con, pp_voucher_nos: list[str]) -> dict[str, dict[str, Any]]:
             ps_id,
             part_no,
             description,
+            bom_code,
             due_date,
             source_voucher_no,
             customer_po_no,
@@ -226,6 +227,7 @@ def _load_pp_meta(con, pp_voucher_nos: list[str]) -> dict[str, dict[str, Any]]:
             "process_sheet_no": ps_id,
             "part_no": part_no,
             "description": description,
+            "bom_code": compact_text(cache.get("bom_code")),
             "qty": qty,
             "due_date": due,
             "sales_order_no": so_no,
@@ -248,6 +250,7 @@ def build_item(
     sales_order_no: str = "",
     part_no: str = "",
     description: str = "",
+    bom_code: str = "",
     qty: Any = None,
     due_date: Any = None,
     customer_name: str = "",
@@ -267,6 +270,10 @@ def build_item(
         "sales_order_no": compact_text(sales_order_no),
         "part_no": compact_text(part_no),
         "description": compact_text(description),
+        "bom_code": compact_text(bom_code),
+        "material": "",
+        "material_description": compact_text(description),
+        "material_codes": [],
         "qty": _serialize_value(qty),
         "due_date": (str(_serialize_value(due_date))[:10] if due_date else None),
         "customer_name": compact_text(customer_name),
@@ -277,6 +284,218 @@ def build_item(
         "arrival_date": arrival.isoformat(),
         **fields,
     }
+
+
+def _material_entry(code: str, description: str, bom_code: str = "") -> dict[str, str]:
+    return {
+        "material_inventory_code": compact_text(code),
+        "description": compact_text(description),
+        "bom_code": compact_text(bom_code),
+    }
+
+
+def _unique_material_entries(entries: list[dict[str, Any]]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    seen_codes: set[str] = set()
+    for entry in entries or []:
+        code = compact_text(entry.get("material_inventory_code"))
+        if not code or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        out.append(
+            _material_entry(code, entry.get("description") or "", entry.get("bom_code") or "")
+        )
+    return out
+
+
+def resolve_anticipated_material_entries(
+    item: dict[str, Any],
+    *,
+    code_map: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
+    by_part: dict[str, list[dict[str, Any]]] | None = None,
+    by_ps: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, str]]:
+    """Pick leaf material rows for one anticipated-material job."""
+    ps_id = compact_text(item.get("process_sheet_no") or item.get("ps_id"))
+    part = compact_text(item.get("part_no"))
+    bom = compact_text(item.get("bom_code"))
+    ps_entries = _unique_material_entries((by_ps or {}).get(ps_id) or [])
+    if ps_entries:
+        return ps_entries
+    exact = _unique_material_entries((code_map or {}).get((part, bom)) or [])
+    if exact:
+        return exact
+    part_entries = list((by_part or {}).get(part) or [])
+    if bom:
+        wanted = bom_code_match_key(bom)
+        matched = [
+            entry for entry in part_entries
+            if bom_code_match_key(entry.get("bom_code")) == wanted
+        ]
+        matched_unique = _unique_material_entries(matched)
+        if matched_unique:
+            return matched_unique
+    return _unique_material_entries(part_entries)
+
+
+def _usable_incoming_material_note(raw: Any) -> str:
+    """mtl_part_order is often the incoming stock label; skip status blobs."""
+    text = compact_text(raw)
+    if not text or "\n" in text or "\r" in text:
+        return ""
+    lowered = text.lower()
+    if "assembly part" in lowered or "tooling status" in lowered or "programme status" in lowered:
+        return ""
+    if len(text) > 80:
+        return ""
+    return text
+
+
+def apply_anticipated_material_fields(
+    items: list[dict[str, Any]],
+    code_map: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
+    *,
+    by_part: dict[str, list[dict[str, Any]]] | None = None,
+    by_ps: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Fill material code + simple description from BOM leaf materials."""
+    for item in items:
+        entries = resolve_anticipated_material_entries(
+            item, code_map=code_map, by_part=by_part, by_ps=by_ps
+        )
+        codes = [compact_text(entry.get("material_inventory_code")) for entry in entries]
+        descs: list[str] = []
+        seen_descs: set[str] = set()
+        for entry in entries:
+            desc = compact_text(entry.get("description"))
+            if desc and desc not in seen_descs:
+                seen_descs.add(desc)
+                descs.append(desc)
+        notes = _usable_incoming_material_note(item.get("notes"))
+        if notes:
+            item["material"] = notes
+            item["material_description"] = " · ".join(descs) or compact_text(item.get("description"))
+        elif codes:
+            item["material"] = ", ".join(codes)
+            item["material_description"] = " · ".join(descs) or compact_text(item.get("description"))
+        elif compact_text(item.get("source")) == "request" and compact_text(item.get("part_no")):
+            item["material"] = compact_text(item.get("part_no"))
+            item["material_description"] = compact_text(item.get("description"))
+        else:
+            item["material"] = compact_text(item.get("material"))
+            item["material_description"] = compact_text(item.get("material_description") or item.get("description"))
+        item["material_codes"] = codes
+    return items
+
+
+def _load_selected_bom_by_ps(con, ps_ids: list[str]) -> dict[str, str]:
+    ids = [compact_text(v) for v in ps_ids if compact_text(v)]
+    if not ids:
+        return {}
+    rows_out = _optional_rows(
+        con,
+        "am_selected_bom",
+        """
+        SELECT DISTINCT ON (ps.source_ps_id)
+            ps.source_ps_id,
+            COALESCE(sf.bom_code, '') AS selected_flow_code
+        FROM planner_process_sheet ps
+        LEFT JOIN planner_bom_variation sf ON sf.bom_id = ps.selected_bom_id
+        WHERE ps.source_ps_id = ANY(%s)
+        ORDER BY ps.source_ps_id, ps.pp_partial_no
+        """,
+        (ids,),
+    )
+    return {
+        compact_text(row.get("source_ps_id")): compact_text(row.get("selected_flow_code"))
+        for row in rows_out
+        if compact_text(row.get("source_ps_id")) and compact_text(row.get("selected_flow_code"))
+    }
+
+
+def _load_materials_by_part(con, part_nos: list[str]) -> dict[str, list[dict[str, Any]]]:
+    codes = [compact_text(v) for v in part_nos if compact_text(v)]
+    codes = list(dict.fromkeys(codes))
+    if not codes:
+        return {}
+    rows_out = _optional_rows(
+        con,
+        "am_material_per_bom",
+        """
+        SELECT source_inventory_code, bom_code, material_inventory_code, description
+        FROM material_per_bom
+        WHERE source_inventory_code = ANY(%s)
+        ORDER BY source_inventory_code, bom_code, material_inventory_code
+        """,
+        (codes,),
+    )
+    out: dict[str, list[dict[str, Any]]] = {}
+    for row in rows_out:
+        part = compact_text(row.get("source_inventory_code"))
+        code = compact_text(row.get("material_inventory_code"))
+        if not part or not code:
+            continue
+        out.setdefault(part, []).append(
+            _material_entry(code, row.get("description") or "", row.get("bom_code") or "")
+        )
+    return out
+
+
+def _load_materials_by_ps(con, ps_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    ids = [compact_text(v) for v in ps_ids if compact_text(v)]
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return {}
+    rows_out = _optional_rows(
+        con,
+        "am_material_requirement",
+        """
+        SELECT ps.source_ps_id,
+               mr.material_inventory_code,
+               mr.material_description,
+               mr.bom_code
+        FROM planner_material_requirement mr
+        JOIN planner_process_sheet ps ON ps.planner_ps_id = mr.planner_ps_id
+        WHERE ps.source_ps_id = ANY(%s)
+          AND COALESCE(mr.material_inventory_code, '') <> ''
+        ORDER BY ps.source_ps_id, mr.requirement_id
+        """,
+        (ids,),
+    )
+    out: dict[str, list[dict[str, Any]]] = {}
+    for row in rows_out:
+        ps_id = compact_text(row.get("source_ps_id"))
+        code = compact_text(row.get("material_inventory_code"))
+        if not ps_id or not code:
+            continue
+        out.setdefault(ps_id, []).append(
+            _material_entry(code, row.get("material_description") or "", row.get("bom_code") or "")
+        )
+    return out
+
+
+def _attach_bom_materials(con, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not items:
+        return items
+    ps_ids = [compact_text(item.get("process_sheet_no") or item.get("ps_id")) for item in items]
+    selected_bom = _load_selected_bom_by_ps(con, ps_ids)
+    for item in items:
+        if compact_text(item.get("bom_code")):
+            continue
+        ps_id = compact_text(item.get("process_sheet_no") or item.get("ps_id"))
+        if selected_bom.get(ps_id):
+            item["bom_code"] = selected_bom[ps_id]
+    try:
+        from .materials import material_inventory_codes_map
+        keys = [(item.get("part_no"), item.get("bom_code")) for item in items]
+        code_map = material_inventory_codes_map(con, keys)
+    except Exception:
+        logger.exception("anticipated material BOM lookup failed")
+        code_map = {}
+    part_nos = [compact_text(item.get("part_no")) for item in items]
+    by_part = _load_materials_by_part(con, part_nos)
+    by_ps = _load_materials_by_ps(con, ps_ids)
+    return apply_anticipated_material_fields(items, code_map, by_part=by_part, by_ps=by_ps)
 
 
 def _item_sort_key(item: dict[str, Any]) -> tuple:
@@ -335,6 +554,7 @@ def fetch_anticipated_material(con, *, today: date | None = None) -> list[dict[s
                 sales_order_no=info.get("sales_order_no") or "",
                 part_no=info.get("part_no") or "",
                 description=info.get("description") or "",
+                bom_code=info.get("bom_code") or "",
                 qty=info.get("qty"),
                 due_date=info.get("due_date"),
                 customer_name=info.get("customer_name") or "",
@@ -385,7 +605,7 @@ def fetch_anticipated_material(con, *, today: date | None = None) -> list[dict[s
         )
 
     items.sort(key=_item_sort_key)
-    return items
+    return _attach_bom_materials(con, items)
 
 
 def anticipated_material_payload(items: list[dict[str, Any]], *, fetched_at: datetime | None = None) -> dict[str, Any]:

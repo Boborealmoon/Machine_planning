@@ -717,6 +717,12 @@ def _insert_jumps(con, jumps: list[dict]) -> int:
         """,
         payload,
     )
+    try:
+        from planning.finishing_queue_service import record_deburr_qc_pushes_from_jumps
+
+        record_deburr_qc_pushes_from_jumps(con, jumps)
+    except Exception:
+        logger.exception("deburr QC push capture from qty jumps failed")
     return len(payload)
 
 
