@@ -54,7 +54,9 @@ function miFormatWeekRangeLabel(range) {
 }
 
 function miArrivalDate(row) {
-  const raw = row?.actual_arrival_date || row?.goods_receipt_date;
+  // Jasper aliases shipment planned arrival_date as actual_arrival_date (mill ETAs
+  // can be 2028). goods_receipt_date is when the material actually landed.
+  const raw = row?.goods_receipt_date || row?.actual_arrival_date;
   if (!raw) return null;
   const text = String(raw).trim();
   if (!text) return null;
@@ -197,7 +199,7 @@ function miRenderDetail(row) {
     miDetailField('PO', row.po_no, { mono: true }),
     miDetailField('Supplier', row.supplier_name),
     miDetailField('GRN', row.grn_no, { mono: true }),
-    miDetailField('Arrival date', miFormatDate(row.actual_arrival_date)),
+    miDetailField('Planned arrival', miFormatDate(row.actual_arrival_date)),
     miDetailField('Goods receipt date', miFormatDate(row.goods_receipt_date)),
     miDetailField('Receiving location', row.shipment_receiving_location_name),
     miDetailField('Contact', row.contact_person_name),
@@ -376,7 +378,7 @@ function miRenderRow(row) {
       <td>${escapeHtml(String(row.supplier_name || '—'))}</td>
       ${shipmentCell}
       <td class="mi-cell--mono">${escapeHtml(String(row.grn_no || '—'))}</td>
-      <td class="mi-cell--dt">${escapeHtml(miFormatDate(row.actual_arrival_date || row.goods_receipt_date))}</td>
+      <td class="mi-cell--dt">${escapeHtml(miFormatDate(row.goods_receipt_date || row.actual_arrival_date))}</td>
       <td>${escapeHtml(String(row.shipment_line_item_no ?? '—'))}</td>
       <td class="mi-cell--mono">${escapeHtml(String(row.inventory_code || '—'))}</td>
       <td class="mi-cell--desc" title="${escapeHtml(desc)}">${escapeHtml(desc || '—')}</td>

@@ -120,7 +120,7 @@
             title="Sort operations by due date (earliest first)"
           >Sort by due</button>
         </div>
-        <input id="trial-catalog-search" class="trial-catalog-search" type="search" placeholder="Search PS, part, op..." oninput="scheduleTrialCatalogSearchRender()" onsearch="scheduleTrialCatalogSearchRender()">
+        <input id="trial-catalog-search" class="trial-catalog-search" type="search" placeholder="Search PS, part, op..." autocomplete="off" spellcheck="false" oninput="scheduleTrialCatalogSearchRender()" onsearch="scheduleTrialCatalogSearchRender()">
         <div id="trial-catalog" class="trial-catalog"></div>
       </div>
     </aside>
@@ -136,9 +136,10 @@
 <script>window.trialFinishingQueueUrl = {{ finishing_queue_path|tojson }};</script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <script src="{{ url_for('static', filename='js/scheduler/board_mode.js') }}?v=board-zoom-20260619"></script>
-<script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v=program-ready-20260827"></script>
+<script src="{{ url_for('static', filename='js/scheduler/state.js') }}?v={{ scheduler_asset_version }}"></script>
 <script>window.SCHEDULER_BUILD = {{ (scheduler_asset_version or 'partial-lane-dev')|tojson }};</script>
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v={{ scheduler_asset_version }}"></script>
+<script src="{{ url_for('static', filename='js/scheduler/catalog_search.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/data.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/catalog_op_rules.js') }}?v={{ scheduler_asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduler/program_tools.js') }}?v=lane-height-viewport-20260529"></script>
@@ -156,6 +157,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const _trialScriptChecks = [
     ['trialMachineCategories', 'data.js'],
     ['trialSplitPsId', 'utils.js'],
+    ['trialQueryMatchesSearchTokens', 'catalog_search.js'],
     ['loadTrial', 'api.js'],
     ['renderTrial', 'render.js'],
   ];

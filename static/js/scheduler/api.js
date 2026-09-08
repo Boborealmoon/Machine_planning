@@ -1028,12 +1028,18 @@ function trialApplyCatalogPayload(erpVouchers, renderOptions = {}) {
     }
     return;
   }
-  trialScheduleRender(null, {
-    deferCatalog: true,
-    skipFilterShell: true,
-    preserveScroll: true,
-    ...renderOptions,
-  });
+  const boardReady = Boolean(document.getElementById('trial-grid')?.childElementCount);
+  if (boardReady && !renderOptions.catalogOnly) {
+    trialScheduleRender(null, {
+      deferCatalog: true,
+      skipFilterShell: true,
+      preserveScroll: true,
+      ...renderOptions,
+    });
+    return;
+  }
+  if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
+  if (typeof bindTrialCatalogDnD === 'function') bindTrialCatalogDnD();
 }
 
 function trialApplySchedulePayload(scheduleData, machinesResult, programToolsLookup) {
@@ -1046,7 +1052,7 @@ function trialApplySchedulePayload(scheduleData, machinesResult, programToolsLoo
     .map(m => ({ ...m, machine_code: m.machine_no || m.machine_code }));
 
   // Apply machines before merging blocks — trialIsMainPlannerLaneBlock reads trialState.machines
-  // and leftover MPP_CYCLE rows must stay excluded from the indicated-plan lanes.
+  // for MPP lanes, and MPP_CYCLE rows must not be dropped during the same assignment.
   trialState = {
     ...trialState,
     machines,
@@ -1246,16 +1252,48 @@ async function loadTrialImpl(options = {}) {
     ? trialNoCacheUrl(`/api/trial/schedule?${shellParams}`)
     : `/api/trial/schedule?${shellParams}`;
   const skipCatalog = typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
-  if (!skipCatalog && typeof trialShowCatalogLoadingPlaceholder === 'function') {
-    trialShowCatalogLoadingPlaceholder();
-  }
-
   const catalogCacheMs = trialCatalogClientCacheMs();
   const loadCatalog = () => skipCatalog
     ? Promise.resolve([])
     : (force
       ? GET(trialNoCacheUrl(trialCatalogUrl(true))).catch(() => [])
       : trialCachedGET(trialCatalogCacheKey(), catalogCacheMs, trialCatalogUrl(false)).catch(() => []));
+  const catalogPromise = loadCatalog();
+
+  if (!skipCatalog) {
+    const cacheKey = trialCatalogCacheKey();
+    const cachedRows = (!force
+      && Array.isArray(trialLoadCache[cacheKey])
+      && Date.now() < Number(trialLoadCache[`${cacheKey}ExpiresAt`] || 0))
+      ? trialLoadCache[cacheKey]
+      : (Array.isArray(trialState.catalog) && trialState.catalog.length ? trialState.catalog : null);
+    const pendingSearch = String(
+      document.getElementById('trial-catalog-search')?.value || trialCatalogSearch || '',
+    ).trim();
+    if (cachedRows && cachedRows.length) {
+      trialAssignCatalogRows(cachedRows);
+      if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
+    } else if (pendingSearch && typeof trialScheduleCatalogRemoteSearch === 'function') {
+      trialScheduleCatalogRemoteSearch(pendingSearch);
+      if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
+    } else if (typeof trialShowCatalogLoadingPlaceholder === 'function') {
+      trialShowCatalogLoadingPlaceholder();
+    }
+    catalogPromise
+      .then(erpVouchers => {
+        if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'fetch-catalog');
+        trialApplyCatalogPayload(erpVouchers);
+        if (typeof trialPerfEnd === 'function') {
+          trialPerfEnd(perf, { catalog_rows: Array.isArray(erpVouchers) ? erpVouchers.length : 0 });
+        }
+      })
+      .catch(err => {
+        console.error('Failed to load process sheet catalog:', err);
+        toast('Could not load PS / Ops sidebar: ' + (err?.message || err), 'error');
+        if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
+        if (typeof trialPerfEnd === 'function') trialPerfEnd(perf, { catalog_error: true });
+      });
+  }
 
   if (!machinistBoard && !boardAlreadyPainted) {
     if (showLoadUi) trialLoadingStage('shell');
@@ -1323,30 +1361,6 @@ async function loadTrialImpl(options = {}) {
     }
     return;
   }
-
-  const applyCatalogWhenReady = erpVouchers => {
-    if (typeof trialPerfMark === 'function') {
-      trialPerfMark(perf, 'fetch-catalog');
-    }
-    trialApplyCatalogPayload(erpVouchers);
-    if (typeof trialPerfEnd === 'function') {
-      trialPerfEnd(perf, {
-        schedule_error: Boolean(scheduleError),
-        catalog_rows: Array.isArray(erpVouchers) ? erpVouchers.length : 0,
-      });
-    }
-  };
-
-  loadCatalog()
-    .then(applyCatalogWhenReady)
-    .catch(err => {
-      console.error('Failed to load process sheet catalog:', err);
-      toast('Could not load PS / Ops sidebar: ' + (err?.message || err), 'error');
-      if (typeof renderTrialCatalog === 'function') renderTrialCatalog();
-      if (typeof trialPerfEnd === 'function') {
-        trialPerfEnd(perf, { schedule_error: Boolean(scheduleError), catalog_error: true });
-      }
-    });
 
   if (typeof trialPerfMark === 'function') {
     trialPerfMark(perf, 'schedule-render-dispatch');

@@ -5,7 +5,13 @@
   <h2 class="sm-section-title" style="margin:0">Active queue</h2>
   <button type="button" class="sm-btn sm-btn-ghost" id="sm-ops-refresh">Refresh</button>
 </section>
-<p class="sm-muted">Jobs on the machining queue for this shift. Raise a ticket or start handover.</p>
+<p class="sm-muted" id="sm-ops-lead">
+  {% if user_caps and user_caps.can_ops_actions %}
+  Jobs on the machining queue. Raise a ticket, start a handover, or scan remaining qty.
+  {% else %}
+  Fleet queue occupancy for this shift. This is a dashboard view — no shop-floor actions.
+  {% endif %}
+</p>
 
 <section class="sm-toolbar">
   <label class="sm-field-inline">

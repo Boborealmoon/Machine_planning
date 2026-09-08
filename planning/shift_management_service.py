@@ -513,6 +513,11 @@ def _guess_shift(now: datetime | None = None) -> str:
 
 def machine_ids_for_user(con, user: dict[str, Any]) -> list[int] | None:
     """Return assigned machine ids, or None when user may see the full fleet."""
+    from .shift_management_roles import capabilities
+
+    caps = capabilities(user)
+    if caps.get("fleet_view"):
+        return None
     user_id = int(user["user_id"])
     assigned = rows(
         con.execute(
@@ -522,9 +527,8 @@ def machine_ids_for_user(con, user: dict[str, Any]) -> list[int] | None:
             (user_id,),
         )
     )
-    if not assigned:
-        return None
-    return [int(r["machine_id"]) for r in assigned]
+    ids = [int(r["machine_id"]) for r in assigned] if assigned else []
+    return ids or None
 
 
 def list_active_machines(con, machine_ids: list[int] | None = None) -> list[dict]:
@@ -993,12 +997,15 @@ def add_handover_comment(
 
 
 def _can_edit(ho: dict[str, Any], user: dict[str, Any]) -> bool:
+    from .shift_management_roles import has_cap
+
+    if not has_cap(user, "can_handover"):
+        return False
     status = compact_text(ho.get("status")).lower()
-    role = compact_text(user.get("role")).lower()
-    if status == "acknowledged" and role not in ("supervisor", "admin"):
+    if status == "acknowledged" and not has_cap(user, "can_resolve_ticket"):
         return False
     if status in ("pending_ack", "disputed"):
-        return role in ("supervisor", "admin")
+        return has_cap(user, "can_resolve_ticket")
     return status == "draft"
 
 
@@ -1281,6 +1288,7 @@ def list_tickets(
     planner_ps_id: str | None = None,
     work_date: date | None = None,
     shift_out: str | None = None,
+    created_by: int | None = None,
     limit: int = 200,
 ) -> list[dict]:
     clauses = ["1=1"]
@@ -1297,6 +1305,9 @@ def list_tickets(
     if shift_out:
         clauses.append("t.shift_out = %s")
         params.append(normalize_shift(shift_out))
+    if created_by:
+        clauses.append("t.created_by = %s")
+        params.append(int(created_by))
     if status:
         statuses = [compact_text(s) for s in str(status).split(",") if compact_text(s)]
         if statuses:
@@ -1364,7 +1375,12 @@ def create_ticket(con, user: dict[str, Any], data: dict[str, Any]) -> dict[str, 
     title = compact_text(data.get("title"))
     if not title:
         raise ValueError("title required")
-    category = compact_text(data.get("category")) or "Other"
+    from .shift_management_roles import capabilities
+
+    caps = capabilities(user)
+    category = compact_text(data.get("category")) or compact_text(
+        caps.get("default_ticket_category")
+    ) or "Other"
     if category not in TICKET_CATEGORIES:
         raise ValueError("Invalid category")
     priority = compact_text(data.get("priority")) or "Normal"
@@ -1394,8 +1410,7 @@ def create_ticket(con, user: dict[str, Any], data: dict[str, Any]) -> dict[str, 
     except (TypeError, ValueError):
         assigned_to_int = None
 
-    role = compact_text(user.get("role")).lower()
-    if assigned_to_int and role not in ("supervisor", "admin", "quality"):
+    if assigned_to_int and not caps.get("can_assign_ticket"):
         assigned_to_int = None
 
     user_id = int(user["user_id"])
@@ -1437,8 +1452,8 @@ def patch_ticket(
     ticket = get_ticket(con, ticket_id, with_comments=False)
     if not ticket:
         raise LookupError("Ticket not found")
-    role = compact_text(user.get("role")).lower()
-    user_id = int(user["user_id"])
+    from .shift_management_roles import has_cap
+
     updates: list[str] = []
     params: list[Any] = []
 
@@ -1446,12 +1461,8 @@ def patch_ticket(
         status = compact_text(patch.get("status")).lower()
         if status not in TICKET_STATUSES:
             raise ValueError("Invalid status")
-        created_by = ticket.get("created_by")
-        can_close = role in ("supervisor", "admin", "quality") or (
-            created_by is not None and int(created_by) == user_id
-        )
-        if status == "closed" and not can_close:
-            raise PermissionError("Not allowed to close this ticket")
+        if not has_cap(user, "can_resolve_ticket"):
+            raise PermissionError("Not allowed to update ticket status")
         updates.append("status = %s")
         params.append(status)
         if status == "closed":
@@ -1467,7 +1478,7 @@ def patch_ticket(
         params.append(priority)
 
     if "assigned_to" in patch:
-        if role not in ("supervisor", "admin", "quality"):
+        if not has_cap(user, "can_assign_ticket"):
             raise PermissionError("Only supervisors can assign tickets")
         assigned = patch.get("assigned_to")
         if assigned in (None, ""):
@@ -1625,11 +1636,34 @@ def dashboard_payload(con, work_date: date, shift_out: str | None = None) -> dic
             tuple(ho_params),
         )
     )
+    open_tickets = list_tickets(
+        con,
+        work_date=work_date,
+        shift_out=normalize_shift(shift_out) if shift_out else None,
+        status="open,in_progress",
+        limit=80,
+    )
+    fleet = list_active_machines(con, None)
+    mids = [int(m["machine_id"]) for m in fleet]
+    blocks = queue_blocks_for_machines(con, mids, per_machine_limit=OPS_QUEUE_DEPTH)
+    queue_rows = group_ops_machines(fleet, blocks, {}, {}, {})
+    queue_summary = [
+        {
+            "machine_id": row["machine_id"],
+            "machine_no": row.get("machine_no"),
+            "machine_category": row.get("machine_category"),
+            "queue_count": row.get("queue_count") or 0,
+            "head_job": (row.get("jobs") or [{}])[0] if row.get("jobs") else None,
+        }
+        for row in queue_rows
+    ]
     return {
         "work_date": work_date.isoformat(),
         "shift_out": normalize_shift(shift_out) if shift_out else None,
         "kpis": {k: int(v or 0) for k, v in kpis.items()},
         "handovers": [serialize_handover(r) for r in machines],
+        "open_tickets": open_tickets,
+        "queue": queue_summary,
     }
 
 

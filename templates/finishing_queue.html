@@ -194,6 +194,9 @@
           <th data-fq-sort-col="inspector_name">
             <button type="button" class="so-col-sort-btn" data-fq-sort="inspector_name"><span data-fq-i18n="col_assigned">Assigned</span> <span data-fq-sort-icon="inspector_name">↕</span></button>
           </th>
+          <th class="so-col-head fq-col-remarks" data-fq-sort-col="remarks">
+            <button type="button" class="so-col-sort-btn" data-fq-sort="remarks"><span data-fq-i18n="col_remarks">Remarks</span> <span data-fq-sort-icon="remarks">↕</span></button>
+          </th>
           <th class="fq-col-more" data-fq-i18n="col_more">More</th>
         </tr>
       </thead>
@@ -217,7 +220,7 @@
             <th data-fq-i18n="mia_col_po_due">PO due</th>
             <th data-fq-i18n="mia_col_edd">EDD</th>
             <th data-fq-i18n="mia_col_material_in">Material in</th>
-            <th data-fq-i18n="mia_col_remarks">Remarks</th>
+            <th class="fq-col-remarks" data-fq-i18n="mia_col_remarks">Remarks</th>
           </tr>
         </thead>
         <tbody id="fq-mia-table-body"></tbody>
@@ -580,7 +583,7 @@
     if (empty) empty.hidden = true;
     if (!window.__fqInteractive) {
       if (loading) loading.hidden = false;
-      tbody.innerHTML = '<tr class="fq-boot-placeholder"><td colspan="10">Loading interactive queue…</td></tr>';
+      tbody.innerHTML = '<tr class="fq-boot-placeholder"><td colspan="12">Loading interactive queue…</td></tr>';
       if (stats) stats.textContent = filteredTotal + ' loading…';
     }
 
@@ -719,12 +722,13 @@
         '<td class="fq-col-sticky fq-col-sticky--job"><div class="fq-job-cell"><span class="fq-job-ps">' + fqEsc(item.ps_id || '—') + partialTag + '</span>' + partSub + qtySub + '</div></td>' +
         '<td>' + fqEsc(item.current_stage_desc || '—') + '</td>' +
         '<td>' + fqEsc(fqStatusLabel(item.current_stage_status)) + '</td>' +
-        '<td class="fq-col-pushed">' + fqEsc(item.deburr_pushed_at || '—') + '</td>' +
+        '<td class="fq-col-pushed">' + fqEsc(item.deburr_pushed_at || '-') + '</td>' +
         '<td class="fq-col-date">' + fqEsc(fqFmtDate(item.due_date)) + '</td>' +
         '<td class="fq-col-date">' + fqEsc(fqFmtDate(item.coway_proposed_edd)) + '</td>' +
         '<td class="fq-col-schedule">' + fqEsc(fqFmtCowayWeek(item)) + '</td>' +
         '<td class="fq-col-edit">' + cells.qaDue + '</td>' +
         '<td class="fq-col-edit">' + cells.assignee + '</td>' +
+        '<td class="fq-col-edit fq-col-remarks">' + cells.remarks + '</td>' +
         '<td class="fq-col-more"></td>' +
         '</tr>'
       );

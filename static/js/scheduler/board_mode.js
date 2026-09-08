@@ -54,7 +54,7 @@ function trialBoardGroupMachineCount(group) {
   return (group?.machines || []).length;
 }
 
-/** Main planner: CNC 35/36/41 indicated-plan lanes (default shown). */
+/** Main planner: CNC 35/36/41 MPP lanes (default shown). */
 const TRIAL_MPP_MACHINES_VISIBLE_KEY = 'planner-mpp-machines-visible-v1';
 /** Machine Queue: same lanes, default shown; store '0' only when shop floor hides them. */
 const TRIAL_MACHINIST_MPP_VISIBLE_KEY = 'machinist-mpp-machines-visible-v1';

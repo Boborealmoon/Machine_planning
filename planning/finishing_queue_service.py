@@ -106,6 +106,8 @@ def _build_finishing_queue_staging_sql() -> tuple[str, tuple]:
     Candidates are partials that already have an open finishing-stage WO. Current
     stage is then resolved only for those keys so the API does not DISTINCT ON
     the whole open WO table (that scan hits statement_timeout under load).
+    Tie-break prefers the main WO (highest wo_qty_required) so qty=1 rework
+    rows with inverted stage numbers cannot steal the current finishing stage.
     """
     finishing_match_ws = _finishing_stage_eq_sql("ws.stage_desc")
     finishing_match_ces = finishing_stage_sql_match("ces.stage_desc")
@@ -145,7 +147,7 @@ current_execution_stage AS (
             WHEN 'P' THEN 2
             ELSE 3
         END,
-        COALESCE(ws.total_acc_qty_produced, 0) DESC,
+        COALESCE(ws.wo_qty_required, 0) DESC,
         ws.stage_no ASC
 ),
 finishing_current AS (
@@ -385,7 +387,6 @@ def ensure_material_inspection_overlay_table(con) -> None:
 
 
 _DEBURR_PUSH_SOURCE_JUMP = "qty_jump"
-_DEBURR_PUSH_SOURCE_SEEN = "first_seen"
 
 
 def _ensure_deburr_qc_push_table(con) -> None:
@@ -576,30 +577,6 @@ def _backfill_deburr_qc_pushes_from_jumps(con, keys: list[tuple[str, int]]) -> N
     planner_try_savepoint(con, "deburr_qc_push_backfill", _run)
 
 
-def _stamp_deburr_qc_first_seen(con, items: list[dict[str, Any]]) -> None:
-    payload = []
-    seen: set[tuple[str, int]] = set()
-    for item in items:
-        if compact_text(item.get("stage_bucket")) != "final_inspection":
-            continue
-        key = _deburr_push_key(item.get("ps_id"), item.get("pp_partial_no"))
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        payload.append((key[0], key[1], _DEBURR_PUSH_SOURCE_SEEN))
-    if not payload:
-        return
-    con.executemany(
-        """
-        INSERT INTO planner_deburr_qc_push (
-            source_mps_no, pp_partial_no, pushed_at, source, qty_jump, stage_no, jump_id, updated_at
-        ) VALUES (%s, %s, NOW(), %s, NULL, NULL, NULL, NOW())
-        ON CONFLICT (source_mps_no, pp_partial_no) DO NOTHING
-        """,
-        payload,
-    )
-
-
 def load_deburr_qc_push_map(
     con, keys: list[tuple[str, int]]
 ) -> dict[tuple[str, int], dict[str, Any]]:
@@ -642,14 +619,31 @@ def load_deburr_qc_push_map(
 def _serialize_deburr_push(row: dict[str, Any] | None) -> dict[str, Any]:
     if not row:
         return {"deburr_pushed_at": "", "deburr_push_source": ""}
+    source = compact_text(row.get("source"))
+    if source != _DEBURR_PUSH_SOURCE_JUMP:
+        return {"deburr_pushed_at": "", "deburr_push_source": source}
     return {
         "deburr_pushed_at": planner_wall_datetime_to_api(row.get("pushed_at")),
-        "deburr_push_source": compact_text(row.get("source")),
+        "deburr_push_source": source,
     }
 
 
+def _clear_guessed_deburr_qc_pushes(con) -> None:
+    """Drop inferred first-seen stamps so the column stays blank without an ERP scan."""
+    def _run():
+        con.execute(
+            """
+            DELETE FROM planner_deburr_qc_push
+            WHERE source IS DISTINCT FROM %s
+            """,
+            (_DEBURR_PUSH_SOURCE_JUMP,),
+        )
+
+    planner_try_savepoint(con, "deburr_qc_push_clear_guessed", _run)
+
+
 def sync_deburr_qc_pushes_for_items(con, items: list[dict[str, Any]]) -> dict[tuple[str, int], dict[str, Any]]:
-    """Backfill from ERP scans, stamp first-seen FI jobs, then return the lookup map."""
+    """Backfill from ERP Deburring scans, then return the lookup map."""
     _ensure_tables_once(con)
     keys = []
     for item in items:
@@ -657,8 +651,8 @@ def sync_deburr_qc_pushes_for_items(con, items: list[dict[str, Any]]) -> dict[tu
         if key:
             keys.append(key)
     try:
+        _clear_guessed_deburr_qc_pushes(con)
         _backfill_deburr_qc_pushes_from_jumps(con, keys)
-        _stamp_deburr_qc_first_seen(con, items)
     except Exception:
         import logging
         logging.getLogger(__name__).warning("deburr QC push sync failed", exc_info=True)

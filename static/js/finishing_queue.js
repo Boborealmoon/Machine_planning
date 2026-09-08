@@ -41,7 +41,7 @@ function fqShowLoadError(message) {
   document.getElementById('fq-qcq-table-wrap')?.setAttribute('hidden', '');
 }
 
-const FQ_TABLE_COL_COUNT = 11;
+const FQ_TABLE_COL_COUNT = 12;
 
 const FQ_PS_TYPE_ORDER = ['APS', 'NPS', 'MPS', 'PPS', 'CPS', 'SR', 'TEMP'];
 const FQ_PS_TYPES_DEFAULT = new Set(['APS', 'NPS']);
@@ -384,7 +384,7 @@ function fqElapsedLabel(fromValue, nowMs) {
 
 function fqPushedCellHtml(item) {
   const stamp = String(item?.deburr_pushed_at || '').trim();
-  if (!stamp) return '—';
+  if (!stamp) return '-';
   const when = fqFormatDateTime(stamp);
   const elapsed = fqElapsedLabel(stamp);
   const elapsedHtml = elapsed
@@ -495,6 +495,7 @@ function fqSortValue(item, col) {
   if (col === 'current_stage_desc') return String(item?.current_stage_desc || '').trim();
   if (col === 'current_stage_status') return fqStatusSortRank(item?.current_stage_status);
   if (col === 'inspector_name') return fqAssigneeLabel(item).toLowerCase();
+  if (col === 'remarks') return String(item?.remarks || '').trim().toLowerCase();
   if (col === 'part_no') return String(item?.part_no || '').trim().toLowerCase();
   if (col === 'part_desc') return String(item?.part_desc || '').trim().toLowerCase();
   if (col === 'due_date' || col === 'coway_proposed_edd' || col === 'qa_due_date' || col === 'commitment_date' || col === 'deburr_pushed_at') {
@@ -1196,6 +1197,9 @@ function fqEditableCells(item) {
   const fieldAttrs = fqOverlayFieldAttrs(item);
   const qaValue = escapeHtml(fqDateInputValue(item.qa_due_date));
   const dueLabel = escapeHtml(fqQaDueLabel(item));
+  const remarksLabel = escapeHtml((typeof fqT === 'function') ? fqT('col_remarks') : 'Remarks');
+  const remarksPlaceholder = escapeHtml((typeof fqT === 'function') ? fqT('detail_remarks_placeholder') : 'Notes for QA team');
+  const remarksValue = escapeHtml(item.remarks || '');
   return {
     qaDue: fqWrapEditableField(
       `<input type="date" class="fq-cell-input fq-cell-date fq-cell-date--compact" data-fq-field="qa_due_date" ${fieldAttrs} ${fqOverlayControlHandlers('qa_due_date')} value="${qaValue}" title="${dueLabel}" aria-label="${dueLabel}">`,
@@ -1204,6 +1208,10 @@ function fqEditableCells(item) {
     assignee: fqWrapEditableField(
       `<select class="fq-cell-input fq-cell-select fq-cell-select--compact" data-fq-field="inspector_id" ${fieldAttrs} ${fqOverlayControlHandlers('inspector_id')}>${fqInspectorOptions(item.inspector_id)}</select>`,
       'inspector_id',
+    ),
+    remarks: fqWrapEditableField(
+      `<textarea class="fq-cell-input fq-cell-remarks" rows="2" data-fq-field="remarks" ${fieldAttrs} ${fqOverlayControlHandlers('remarks')} placeholder="${remarksPlaceholder}" title="${remarksLabel}" aria-label="${remarksLabel}">${remarksValue}</textarea>`,
+      'remarks',
     ),
   };
 }
@@ -1642,6 +1650,12 @@ function fqMiFormatDate(value) {
   return text.length >= 10 ? text.slice(0, 10) : text || '—';
 }
 
+function fqMiReceivedDate(row) {
+  // Jasper aliases shipment planned arrival_date as actual_arrival_date (mill ETAs
+  // can be 2028). goods_receipt_date is when the material actually landed.
+  return row?.goods_receipt_date || row?.actual_arrival_date;
+}
+
 function fqMiStatusPill(code) {
   const c = String(code || '').trim().toUpperCase();
   const cls = c === 'O' ? 'o' : c === 'R' ? 'r' : c === 'H' ? 'h' : '';
@@ -1671,7 +1685,7 @@ function fqMiRenderRow(row) {
       <td>${escapeHtml(String(row.supplier_name || '—'))}</td>
       <td class="fq-col-mono">${escapeHtml(String(row.shipment_voucher_no || '—'))}</td>
       <td class="fq-col-mono">${escapeHtml(String(row.grn_no || '—'))}</td>
-      <td class="fq-col-date">${escapeHtml(fqMiFormatDate(row.actual_arrival_date || row.goods_receipt_date))}</td>
+      <td class="fq-col-date">${escapeHtml(fqMiFormatDate(fqMiReceivedDate(row)))}</td>
       <td class="fq-col-mono">${escapeHtml(String(row.inventory_code || '—'))}</td>
       <td class="fq-col-desc" title="${escapeHtml(desc)}">${escapeHtml(desc || '—')}</td>
       <td class="fq-col-num">${escapeHtml(row.receiving_qty == null ? '—' : String(row.receiving_qty))}</td>
@@ -2339,6 +2353,7 @@ function fqRenderDataRow(item, { incoming = false } = {}) {
       <td class="fq-open-detail fq-col-schedule"${schedule.title ? ` title="${escapeHtml(schedule.title)}"` : ''}>${escapeHtml(schedule.label)}</td>
       <td class="fq-col-edit">${cells.qaDue}</td>
       <td class="fq-col-edit fq-col-assignee">${cells.assignee}</td>
+      <td class="fq-col-edit fq-col-remarks">${cells.remarks}</td>
       <td class="fq-col-more">
         <button type="button" class="fq-more-btn" data-fq-open-detail ${attrs} title="${(typeof fqT === 'function') ? fqT('open_details') : 'Open full details'}">⋯</button>
       </td>
@@ -2820,7 +2835,7 @@ window.fqApplyPayload = fqApplyPayload;
 
 async function fqSyncWoStatus() {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 90000);
+  const timer = window.setTimeout(() => controller.abort(), 180000);
   try {
     const res = await fetch(fqApiUrl('woStatusSync'), {
       method: 'POST',

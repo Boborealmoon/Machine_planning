@@ -178,6 +178,7 @@
   let mppOpsSearch = '';
   let mppOpsSearchTimer = null;
   let queueManagerMachineId = null;
+  let queueManagerExpandedRuns = new Set();
   let cycleRunModal = null;
   let cycleDetailModalCycleId = null;
   let cycleAddOpModalCycleId = null;
@@ -376,10 +377,49 @@
       .join(' ');
   }
 
-  function mppQueryMatchesBlob(blob, query) {
-    const q = compactText(query).toLowerCase();
+  function mppJobSearchValues(job) {
+    return [
+      job?.psId,
+      job?.sourcePsId,
+      job?.jobId,
+      job?.partNo,
+      job?.partDesc,
+      job?.opLabel,
+      job?.preferredMachine,
+      job?.bomCode,
+    ];
+  }
+
+  function mppGroupSearchTokens(group) {
+    const values = [group.psId, group.sourcePsId, group.partNo, group.partDesc];
+    (group.jobs || []).forEach((row) => {
+      values.push(...mppJobSearchValues(getJob(row.jobId) || row));
+    });
+    if (typeof trialSearchableTokens === 'function') return trialSearchableTokens(values);
+    return values.map((v) => compactText(v)).filter(Boolean);
+  }
+
+  function mppQueryMatchesGroup(group, query) {
+    const q = compactText(query);
     if (!q) return true;
-    return blob.includes(q);
+    if (typeof trialQueryMatchesSearchTokens === 'function') {
+      return trialQueryMatchesSearchTokens(mppGroupSearchTokens(group), q);
+    }
+    return mppGroupSearchBlob(group).includes(q.toLowerCase());
+  }
+
+  function mppQueryMatchesJob(job, query) {
+    const q = compactText(query);
+    if (!q) return true;
+    if (typeof trialQueryMatchesSearchTokens === 'function') {
+      const values = mppJobSearchValues(job);
+      const tokens = typeof trialSearchableTokens === 'function'
+        ? trialSearchableTokens(values)
+        : values.map((v) => compactText(v)).filter(Boolean);
+      return trialQueryMatchesSearchTokens(tokens, q);
+    }
+    const blob = mppJobSearchBlob(job);
+    return blob.includes(q.toLowerCase());
   }
 
   function mppPsBaseId(psId) {
@@ -802,9 +842,14 @@
     if (el) el.checked = mppFaOnly;
     if (!label) return;
     const faCount = JOB_TEMPLATES.filter((j) => j.isFrameAgreement).length;
-    const otherCount = JOB_TEMPLATES.length - faCount;
+    const srCount = JOB_TEMPLATES.filter((j) => jobIsSr(j) && !j.isFrameAgreement).length;
+    const otherCount = JOB_TEMPLATES.length - faCount - srCount;
     if (mppFaOnly && otherCount > 0) {
-      label.textContent = `FA parts only (${otherCount} other hidden)`;
+      label.textContent = srCount
+        ? `FA + [SR] (${otherCount} other hidden)`
+        : `FA parts only (${otherCount} other hidden)`;
+    } else if (mppFaOnly && srCount) {
+      label.textContent = 'FA + [SR]';
     } else {
       label.textContent = 'FA parts only';
     }
@@ -862,7 +907,7 @@
   function applyMppOpsSearchFilter(query) {
     const root = document.getElementById('mpp-ops-list');
     if (!root) return;
-    const q = compactText(query).toLowerCase();
+    const q = compactText(query);
     const groups = [...root.querySelectorAll('details.mpp-ps-group')];
     if (!q) {
       groups.forEach((el) => { el.hidden = false; });
@@ -871,8 +916,12 @@
     }
     let anyVisible = false;
     groups.forEach((el) => {
-      const blob = String(el.dataset.search || '').toLowerCase();
-      const match = blob.includes(q);
+      const tokens = typeof trialSearchableTokens === 'function'
+        ? trialSearchableTokens([el.dataset.psId, el.dataset.search])
+        : [el.dataset.search || ''];
+      const match = typeof trialQueryMatchesSearchTokens === 'function'
+        ? trialQueryMatchesSearchTokens(tokens, q)
+        : String(el.dataset.search || '').toLowerCase().includes(q.toLowerCase());
       el.hidden = !match;
       if (match) {
         el.open = true;
@@ -1235,6 +1284,7 @@
       inventoryCode: job.inventoryCode || job.partNo || '',
       opSeqId: Number(job.opSeqId) || 0,
       isFrameAgreement: job.isFrameAgreement === true,
+      isSr: job.isSr === true || /\[sr\]/i.test(`${job.psId || ''} ${job.sourcePsId || ''}`),
     };
   }
 
@@ -1688,6 +1738,7 @@
 
   function scheduleQueueSave({ recalculate = false } = {}) {
     if (suppressQueueSave || !queueHydrated) return;
+    if (!dirtyMachineSlugs.size && !recalculate) return;
     if (skipNextQueueSave) {
       skipNextQueueSave = false;
       return;
@@ -1734,9 +1785,35 @@
     }
   }
 
+  let mppSearchAllInFlight = false;
+
+  function mppLooksLikePsSearch(query) {
+    const q = compactText(query);
+    return /\[sr\]/i.test(q)
+      || /^[an]\d{2}/i.test(q)
+      || /(?:aps|nps|pps|cps|mps|sr)\d{2}/i.test(q);
+  }
+
+  async function expandJobsPoolForSearch(query) {
+    if (!mppLooksLikePsSearch(query) || jobsPoolIncludesNonFa || mppSearchAllInFlight) return;
+    mppSearchAllInFlight = true;
+    try {
+      const ok = await loadFrameAgreementJobs({ all: true });
+      if (ok) renderOpsList();
+    } finally {
+      mppSearchAllInFlight = false;
+    }
+  }
+
+  function jobIsSr(job) {
+    if (!job) return false;
+    if (job.isSr === true) return true;
+    return /\[sr\]/i.test(`${job.psId || ''} ${job.sourcePsId || ''} ${job.jobId || ''}`);
+  }
+
   function poolJobTemplates() {
     if (!mppFaOnly) return JOB_TEMPLATES;
-    return JOB_TEMPLATES.filter((job) => job.isFrameAgreement);
+    return JOB_TEMPLATES.filter((job) => job.isFrameAgreement || jobIsSr(job));
   }
 
   function compactText(value) {
@@ -2189,12 +2266,15 @@
       syncFaOnlyToggle();
       return;
     }
-    const allMatching = groupPoolJobs(pool).filter((group) => mppQueryMatchesBlob(mppGroupSearchBlob(group), rawQuery));
+    const allMatching = groupPoolJobs(pool).filter((group) => mppQueryMatchesGroup(group, rawQuery));
     const completedHidden = allMatching.filter(psGroupIsCompleted).length;
     const groups = mppShowCompleted ? allMatching : allMatching.filter((g) => !psGroupIsCompleted(g));
     if (!groups.length) {
       if (allMatching.length && completedHidden && !mppShowCompleted) {
         list.innerHTML = `<p class="mpp-ops-empty">Nothing left to drag — ${completedHidden} accounted PS hidden. Turn on <strong>Show accounted</strong> above.</p>`;
+      } else if (rawQuery && !jobsPoolIncludesNonFa && mppLooksLikePsSearch(rawQuery)) {
+        list.innerHTML = '<p class="mpp-ops-empty">Searching all process sheets, including [SR]…</p>';
+        expandJobsPoolForSearch(rawQuery);
       } else {
         list.innerHTML = '<p class="mpp-ops-empty">No process sheets or ops match this search.</p>';
       }
@@ -2460,13 +2540,12 @@
   }
 
   function schedulablePoolJobs(query = '') {
-    const q = compactText(query).toLowerCase();
+    const q = compactText(query);
     return poolJobTemplates().filter((job) => {
       if (!jobIsSchedulable(job)) return false;
       if (!canQueueAnyPcs(job.jobId)) return false;
       if (!q) return true;
-      const blob = [job.psId, job.partNo, job.partDesc, job.opLabel].filter(Boolean).join(' ').toLowerCase();
-      return blob.includes(q);
+      return mppQueryMatchesJob(job, q);
     });
   }
 
@@ -2756,7 +2835,8 @@
     if (el) el.hidden = false;
   }
 
-  function renderQueueManagerRow(machine, item, total) {
+  function renderQueueManagerRow(machine, item, total, options = {}) {
+    const nested = options.nested === true;
     const { cycle, idx, metrics, start, end, shift, overflows } = item;
     const queueLabel = idx === 0 ? 'Now' : `#${idx + 1}`;
     const opsHtml = metrics.rows.length
@@ -2769,19 +2849,22 @@
         `).join('')
       : '<span class="mpp-queue-no-ops">No ops — drag from the left or use Schedule to MPP…</span>';
     const canAnchor = idx === 0 || cycle.anchor;
-    return `
-      <article class="mpp-queue-row mpp-queue-row--${escapeHtml(shift)}${idx === 0 ? ' is-current' : ''}" data-cycle-id="${escapeHtml(cycle.cycleId)}">
-        <div class="mpp-queue-row-main">
-          <div class="mpp-queue-row-head">
-            <span class="mpp-queue-pos">${escapeHtml(queueLabel)}</span>
-            ${renderShiftToggle(cycle.cycleId, shift, machine)}
-            <span class="mpp-queue-duration">${escapeHtml(fmtMinutes(item.durationMin ?? metrics.cycleMinutes))}</span>
-            <div class="mpp-queue-reorder">
+    const reorderHtml = nested
+      ? ''
+      : `<div class="mpp-queue-reorder">
               <button type="button" class="mpp-queue-move" data-action="queue-move-up" data-cycle-id="${escapeHtml(cycle.cycleId)}"
                 title="Move earlier in queue" aria-label="Move up"${idx === 0 ? ' disabled' : ''}>↑</button>
               <button type="button" class="mpp-queue-move" data-action="queue-move-down" data-cycle-id="${escapeHtml(cycle.cycleId)}"
                 title="Move later in queue" aria-label="Move down"${idx >= total - 1 ? ' disabled' : ''}>↓</button>
-            </div>
+            </div>`;
+    return `
+      <article class="mpp-queue-row mpp-queue-row--${escapeHtml(shift)}${idx === 0 ? ' is-current' : ''}${nested ? ' mpp-queue-row--nested' : ''}" data-cycle-id="${escapeHtml(cycle.cycleId)}">
+        <div class="mpp-queue-row-main">
+          <div class="mpp-queue-row-head">
+            <span class="mpp-queue-pos">${escapeHtml(queueLabel)}</span>
+            ${nested ? '' : renderShiftToggle(cycle.cycleId, shift, machine)}
+            <span class="mpp-queue-duration">${escapeHtml(fmtMinutes(item.durationMin ?? metrics.cycleMinutes))}</span>
+            ${reorderHtml}
           </div>
           <div class="mpp-queue-timing${overflows ? ' is-overflow' : ''}">
             ${escapeHtml(start)} → ${escapeHtml(end)}${overflows ? ' · exceeds shift window' : ''}
@@ -2791,10 +2874,10 @@
         <div class="mpp-queue-row-actions">
           ${canAnchor ? `<button type="button" class="btn btn-ghost btn-sm" data-action="edit-anchor"
             data-cycle-id="${escapeHtml(cycle.cycleId)}">${cycle.anchor ? 'Edit anchor' : 'Set anchor'}</button>` : ''}
-          ${metrics.opCount ? `<button type="button" class="btn btn-ghost btn-sm" data-action="replicate-cycle"
+          ${!nested && metrics.opCount ? `<button type="button" class="btn btn-ghost btn-sm" data-action="replicate-cycle"
             data-cycle-id="${escapeHtml(cycle.cycleId)}">Replicate…</button>` : ''}
-          <button type="button" class="btn btn-ghost btn-sm" data-action="review-cycle"
-            data-cycle-id="${escapeHtml(cycle.cycleId)}">Review</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-action="open-cycle"
+            data-cycle-id="${escapeHtml(cycle.cycleId)}">Open</button>
           <button type="button" class="trial-block-remove mpp-cycle-remove" data-action="remove-cycle"
             data-cycle-id="${escapeHtml(cycle.cycleId)}" title="Remove cycle">×</button>
         </div>
@@ -2818,9 +2901,14 @@
     title.textContent = `${machine.code} — Queue manager`;
     const scheduled = scheduleLane(lane, machine);
     const summary = laneQueueSummary(lane, machine);
-    sub.textContent = `${summary.count} cycle${summary.count === 1 ? '' : 's'} queued · Next available ${summary.nextEnd || '—'} · ${escapeHtml(machine.category)} · ${escapeHtml(machine.shift)}`;
+    const runs = groupIdenticalCycleRuns(scheduled);
+    const runCount = runs.length;
+    const stackHint = runCount && runCount < scheduled.length
+      ? ` · ${runCount} run${runCount === 1 ? '' : 's'}`
+      : '';
+    sub.textContent = `${summary.count} cycle${summary.count === 1 ? '' : 's'} queued${stackHint} · Next available ${summary.nextEnd || '—'} · ${escapeHtml(machine.category)} · ${escapeHtml(machine.shift)}`;
     body.innerHTML = scheduled.length
-      ? `<div class="mpp-queue-list">${scheduled.map((item) => renderQueueManagerRow(machine, item, scheduled.length)).join('')}</div>`
+      ? `<div class="mpp-queue-list">${runs.map((run, idx) => renderQueueManagerRun(machine, run, idx, runCount, scheduled.length)).join('')}</div>`
       : '<p class="mpp-queue-empty">No cycles in queue. Add a day or night cycle below, or drag ops from the left.</p>';
     foot.innerHTML = `
       <button type="button" class="btn btn-ghost btn-sm mpp-new-box-btn mpp-new-box-btn--day" data-action="new-cycle"
@@ -2829,6 +2917,121 @@
     ? `<button type="button" class="btn btn-ghost btn-sm mpp-new-box-btn mpp-new-box-btn--night" data-action="new-cycle"
         data-machine-id="${escapeHtml(machine.id)}" data-shift="night">+ Night cycle</button>`
     : ''}
+    `;
+  }
+
+  function queueRunKey(run) {
+    return `${run.fingerprint}::${run.items[0]?.cycle?.cycleId || ''}`;
+  }
+
+  function isQueueRunExpanded(run) {
+    return queueManagerExpandedRuns.has(queueRunKey(run));
+  }
+
+  function toggleQueueRunExpanded(cycleId) {
+    const ctx = findQueueRunByCycleId(cycleId);
+    if (!ctx) return;
+    const key = queueRunKey(ctx.run);
+    if (queueManagerExpandedRuns.has(key)) queueManagerExpandedRuns.delete(key);
+    else queueManagerExpandedRuns.add(key);
+    renderQueueManagerModal();
+  }
+
+  function findQueueRunByCycleId(cycleId) {
+    const found = findCycle(cycleId);
+    if (!found) return null;
+    const machine = machineById(found.machineId);
+    const scheduled = scheduleLane(found.lane, machine);
+    const runs = groupIdenticalCycleRuns(scheduled);
+    const runIdx = runs.findIndex((run) => run.items.some((item) => item.cycle.cycleId === cycleId));
+    if (runIdx < 0) return null;
+    return { ...found, machine, scheduled, runs, run: runs[runIdx], runIdx };
+  }
+
+  function moveRunInQueue(cycleId, direction) {
+    const ctx = findQueueRunByCycleId(cycleId);
+    if (!ctx) return;
+    const swapWith = ctx.runIdx + (direction === 'up' ? -1 : 1);
+    if (swapWith < 0 || swapWith >= ctx.runs.length) return;
+    const order = ctx.runs.map((run) => run.items.map((item) => item.cycle.cycleId));
+    const tmp = order[ctx.runIdx];
+    order[ctx.runIdx] = order[swapWith];
+    order[swapWith] = tmp;
+    const byId = Object.fromEntries(ctx.lane.cycles.map((cycle) => [cycle.cycleId, cycle]));
+    ctx.lane.cycles = order.flat().map((id) => byId[id]).filter(Boolean);
+    markMachineDirty(ctx.machineId);
+    render();
+  }
+
+  function setRunShift(cycleId, shift) {
+    const ctx = findQueueRunByCycleId(cycleId);
+    if (!ctx) return;
+    const next = normalizeShift(shift, ctx.machine);
+    ctx.run.items.forEach((item) => {
+      item.cycle.shift = next;
+    });
+    markMachineDirty(ctx.machineId);
+    render();
+  }
+
+  function removeRun(cycleId) {
+    const ctx = findQueueRunByCycleId(cycleId);
+    if (!ctx) return;
+    const count = ctx.run.items.length;
+    if (count > 1 && !window.confirm(`Remove ${count} identical cycles from ${ctx.machine.code}?`)) return;
+    const ids = new Set(ctx.run.items.map((item) => item.cycle.cycleId));
+    ctx.lane.cycles = ctx.lane.cycles.filter((cycle) => !ids.has(cycle.cycleId));
+    if (ids.has(cycleDetailModalCycleId)) closeCycleDetailModal();
+    if (ids.has(reviewModalCycleId)) closeReviewPanel();
+    markMachineDirty(ctx.machineId);
+    render();
+  }
+
+  function renderQueueManagerRun(machine, run, runIdx, totalRuns, totalCycles) {
+    if (run.items.length === 1) {
+      return renderQueueManagerRow(machine, run.items[0], totalCycles);
+    }
+    const first = run.items[0];
+    const last = run.items[run.items.length - 1];
+    const count = run.items.length;
+    const queueLabel = first.idx === 0
+      ? `Now–#${last.idx + 1}`
+      : `#${first.idx + 1}–#${last.idx + 1}`;
+    const expanded = isQueueRunExpanded(run);
+    const firstId = first.cycle.cycleId;
+    const opsHtml = `<div class="mpp-queue-ops">${cycleOpsPillsHtml(first.cycle)}</div>`;
+    const overflow = run.items.some((item) => item.overflows);
+    return `
+      <article class="mpp-queue-run mpp-queue-run--${escapeHtml(first.shift)}${first.idx === 0 ? ' is-current' : ''}"
+        data-run-cycle-id="${escapeHtml(firstId)}">
+        <div class="mpp-queue-row-main">
+          <div class="mpp-queue-row-head">
+            <span class="mpp-queue-pos">${escapeHtml(queueLabel)}</span>
+            <span class="mpp-run-count">${count}×</span>
+            ${renderShiftToggle(firstId, first.shift, machine).replaceAll('data-action="set-shift"', 'data-action="set-run-shift"')}
+            <span class="mpp-queue-duration">${escapeHtml(fmtMinutes(first.durationMin ?? first.metrics.cycleMinutes))}/cycle</span>
+            <div class="mpp-queue-reorder">
+              <button type="button" class="mpp-queue-move" data-action="queue-run-move-up" data-cycle-id="${escapeHtml(firstId)}"
+                title="Move this run earlier" aria-label="Move run up"${runIdx === 0 ? ' disabled' : ''}>↑</button>
+              <button type="button" class="mpp-queue-move" data-action="queue-run-move-down" data-cycle-id="${escapeHtml(firstId)}"
+                title="Move this run later" aria-label="Move run down"${runIdx >= totalRuns - 1 ? ' disabled' : ''}>↓</button>
+            </div>
+          </div>
+          <div class="mpp-queue-timing${overflow ? ' is-overflow' : ''}">
+            ${escapeHtml(first.start)} → ${escapeHtml(last.end)}${overflow ? ' · exceeds shift window' : ''}
+          </div>
+          ${opsHtml}
+        </div>
+        <div class="mpp-queue-row-actions">
+          ${first.metrics.opCount ? `<button type="button" class="btn btn-ghost btn-sm" data-action="replicate-cycle"
+            data-cycle-id="${escapeHtml(firstId)}">Replicate…</button>` : ''}
+          <button type="button" class="btn btn-ghost btn-sm" data-action="toggle-queue-run"
+            data-cycle-id="${escapeHtml(firstId)}">${expanded ? 'Hide cycles' : 'Show cycles'}</button>
+          <button type="button" class="trial-block-remove mpp-cycle-remove" data-action="remove-run"
+            data-cycle-id="${escapeHtml(firstId)}" title="Remove ${count} cycles">×</button>
+        </div>
+        ${expanded ? `<div class="mpp-queue-run-children">${run.items.map((item) => renderQueueManagerRow(machine, item, totalCycles, { nested: true })).join('')}</div>` : ''}
+      </article>
     `;
   }
 
@@ -3694,6 +3897,11 @@
     if (action === 'open-cycle-run') openCycleRunModal(btn.dataset.machineId, btn.dataset.runKey);
     if (action === 'queue-move-up') moveCycleInQueue(btn.dataset.cycleId, 'up');
     if (action === 'queue-move-down') moveCycleInQueue(btn.dataset.cycleId, 'down');
+    if (action === 'queue-run-move-up') moveRunInQueue(btn.dataset.cycleId, 'up');
+    if (action === 'queue-run-move-down') moveRunInQueue(btn.dataset.cycleId, 'down');
+    if (action === 'set-run-shift') setRunShift(btn.dataset.cycleId, btn.dataset.shift);
+    if (action === 'toggle-queue-run') toggleQueueRunExpanded(btn.dataset.cycleId);
+    if (action === 'remove-run') removeRun(btn.dataset.cycleId);
     if (action === 'add-probation') {
       const job = getJob(btn.dataset.jobId);
       addToProbation(resolveMachineForJob(job), btn.dataset.jobId, estimateProbationPallets(job));

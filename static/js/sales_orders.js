@@ -94,9 +94,9 @@ const SO_COLUMNS = [
   { id: 'part', label: 'Part', sortable: true, filterable: true },
   { id: 'description', label: 'Description', sortable: true, filterable: true },
   { id: 'due_date', label: 'Due date', sortable: true, filterable: true },
-  { id: 'proposed_edd', label: 'Prop. EDD', sortable: true, filterable: true, tone: 'edd' },
-  { id: 'program_finish_at', label: 'Programme finish', sortable: true, filterable: true, tone: 'finish' },
   { id: 'material_subcon', label: 'Material in / Sub-con', sortable: true, filterable: true, tone: 'material' },
+  { id: 'program_finish_at', label: 'Programme finish', sortable: true, filterable: true, tone: 'finish' },
+  { id: 'proposed_edd', label: 'Prop. EDD', sortable: true, filterable: true, tone: 'edd' },
   { id: 'week', label: 'Week', sortable: true, filterable: true },
   { id: 'delivery_date', label: 'Delivered', sortable: true, filterable: true },
   { id: 'mtl_part_order', label: 'Mtl / Part Order', sortable: true, filterable: true },
@@ -438,14 +438,18 @@ function soPartialNo(partial) {
 }
 
 function soPartialQueuedMachines(pp, partial) {
-  if (Array.isArray(partial?.queued_machines)) {
+  if (Array.isArray(partial?.queued_machines) && partial.queued_machines.length) {
     return partial.queued_machines.filter(Boolean);
   }
   const pno = String(soPartialNo(partial));
   const byPartial = pp?.queued_machines_by_partial;
-  if (byPartial && Array.isArray(byPartial[pno])) return byPartial[pno].filter(Boolean);
+  if (byPartial && Array.isArray(byPartial[pno]) && byPartial[pno].length) {
+    return byPartial[pno].filter(Boolean);
+  }
   const fromList = (pp?.partials || []).find(row => String(soPartialNo(row)) === pno);
-  if (Array.isArray(fromList?.queued_machines)) return fromList.queued_machines.filter(Boolean);
+  if (Array.isArray(fromList?.queued_machines) && fromList.queued_machines.length) {
+    return fromList.queued_machines.filter(Boolean);
+  }
   if (pno === '1' && Array.isArray(pp?.queued_machines)) return pp.queued_machines.filter(Boolean);
   return [];
 }
@@ -658,13 +662,13 @@ const SO_EXPORT_COLUMNS = [
   { id: 'description', label: 'Description', width: 32 },
   { id: 'customer_po_no', label: 'P/O No.', width: 16 },
   { id: 'due_date', label: 'Due date', width: 12 },
-  { id: 'proposed_edd', label: 'Prop. EDD', width: 12 },
+  { id: 'material_subcon', label: 'Material in / Sub-con', width: 18 },
   { id: 'program_finish_at', label: 'Programme finish', width: 14 },
+  { id: 'proposed_edd', label: 'Prop. EDD', width: 12 },
   { id: 'week', label: 'Week', width: 18 },
   { id: 'delivery_date', label: 'Delivered', width: 12 },
   { id: 'unit_selling_price', label: 'U/Price', width: 12 },
   { id: 'amount', label: 'Amount', width: 12 },
-  { id: 'material_subcon', label: 'Material in / Sub-con', width: 18 },
   { id: 'mtl_part_order', label: 'Mtl / Part Order', width: 16 },
   { id: 'quality_doc', label: 'Quality Doc', width: 14 },
   { id: 'ops_notes', label: 'Ops', width: 16 },
@@ -2866,9 +2870,9 @@ function soRenderPpCells(pp, partial) {
   return `
     <td class="new-orders-desc" title="${escapeHtml(String(pp.description || ''))}">${escapeHtml(String(pp.description || '—'))}</td>
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.due_date))}</td>
-    ${soRenderProposedEddCell(pp, partial)}
-    ${soRenderProgramFinishCell(pp, partial)}
     ${soRenderMaterialSubconCell(pp)}
+    ${soRenderProgramFinishCell(pp, partial)}
+    ${soRenderProposedEddCell(pp, partial)}
     ${soRenderWeekCell(pp, partial)}
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.delivery_date))}</td>
     ${SO_NOTE_FIELDS.filter(field => field !== 'material_subcon').map(field => soRenderEditableCell(pp, field)).join('')}

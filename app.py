@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -46,6 +47,7 @@ from planning.sales_orders_route import sales_orders_bp
 from planning.pending_pp_route import pending_pp_bp
 from planning.sales_report_route import sales_report_bp
 from planning.job_ratio_route import job_ratio_bp
+from planning.on_time_delivery_route import on_time_delivery_bp
 from planning.material_inspection_route import material_inspection_bp
 from planning.qc_quality_queue_route import qc_quality_queue_bp
 from planning.kobelco_mps_archive_route import kobelco_mps_archive_bp
@@ -130,6 +132,7 @@ app.register_blueprint(so_archive_bp)
 app.register_blueprint(first_article_bp)
 app.register_blueprint(rfq_checker_bp)
 app.register_blueprint(job_ratio_bp)
+app.register_blueprint(on_time_delivery_bp)
 app.register_blueprint(material_inspection_bp)
 app.register_blueprint(qc_quality_queue_bp)
 app.register_blueprint(kobelco_mps_archive_bp)
@@ -843,6 +846,7 @@ def _scheduler_asset_version() -> str:
     root = os.path.dirname(os.path.abspath(__file__))
     watch = (
         "static/js/scheduler/data.js",
+        "static/js/scheduler/catalog_search.js",
         "static/js/scheduler/catalog_op_rules.js",
         "static/js/scheduler/api.js",
         "static/js/scheduler/dnd.js",
@@ -1588,8 +1592,9 @@ def _assembly_line_item_ps_ids_missing_ops(entries) -> list[str]:
     return missing
 
 
-# Live BOM/WO repair on catalog GET must stay small. Repairing hundreds of IDs
-# blocks /api/pp-vouchers/with-ops until the client aborts with an empty sidebar.
+# Live BOM/WO repair used to run on every catalog GET and routinely hit the
+# statement timeout, leaving PS / Ops on "Loading jobs…" for ~8s. Repair stays
+# available for tests / cache rebuilds; the GET path must not wait on it.
 _MAX_INLINE_CATALOG_LIVE_REPAIR = 48
 _INLINE_CATALOG_LIVE_REPAIR_TIMEOUT_MS = "8000"
 
@@ -1632,6 +1637,102 @@ def _strip_sr_search_text(value: str) -> str:
     import re
 
     return re.sub(r"\[sr\]", "", str(value or ""), flags=re.I)
+
+
+def _search_term_variants(term: str) -> list[str]:
+    """Normalized forms of a search term (no unpadded fragments that match 3850)."""
+    import re
+
+    raw = str(term or "").strip().lower()
+    if not raw:
+        return []
+    variants: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").strip().lower()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        variants.append(text)
+
+    add(raw)
+    add(_strip_sr_search_text(raw).replace(" ", ""))
+    add(re.sub(r"[^a-z0-9]+", "", raw))
+    return variants
+
+
+_PS_SEARCH_STANDARD_RE = re.compile(
+    r"^(?:\[(?:temp|sr)\]\s*)?(aps|nps|pps|cps|mps|sr)(\d{2})-(\d+)(?:-(\d+))?",
+    re.I,
+)
+_PS_SEARCH_SR_INFIX_RE = re.compile(
+    r"^([a-z]{0,3})(\d{2})-\[sr\](\d+)(?:-(\d+))?",
+    re.I,
+)
+_PS_SEARCH_SHORT_RE = re.compile(
+    r"^([a-z])(\d{2})-(\d+)(?:-(\d+))?$",
+    re.I,
+)
+
+
+def _unpad_ps_serial(serial: str) -> str:
+    return str(serial or "").lstrip("0") or "0"
+
+
+def _parse_ps_search_identity(value: str) -> dict | None:
+    raw = str(value or "").split("::", 1)[0].strip()
+    if not raw:
+        return None
+    match = _PS_SEARCH_STANDARD_RE.match(raw)
+    if match:
+        return {
+            "prefix": match.group(1).upper(),
+            "year": match.group(2),
+            "serial": _unpad_ps_serial(match.group(3)),
+            "child": match.group(4) or "",
+        }
+    match = _PS_SEARCH_SR_INFIX_RE.match(raw)
+    if match:
+        return {
+            "prefix": (match.group(1) or "").upper(),
+            "year": match.group(2),
+            "serial": _unpad_ps_serial(match.group(3)),
+            "child": match.group(4) or "",
+        }
+    stripped = _strip_sr_search_text(raw).replace(" ", "")
+    match = _PS_SEARCH_SHORT_RE.match(stripped)
+    if match:
+        return {
+            "prefix": match.group(1).upper(),
+            "year": match.group(2),
+            "serial": _unpad_ps_serial(match.group(3)),
+            "child": match.group(4) or "",
+        }
+    return None
+
+
+def _ps_identities_match(query_id: dict | None, token_id: dict | None) -> bool:
+    if not query_id or not token_id:
+        return False
+    if query_id["serial"] != token_id["serial"]:
+        return False
+    if query_id.get("year") and token_id.get("year") and query_id["year"] != token_id["year"]:
+        return False
+    if query_id.get("prefix") and token_id.get("prefix") and query_id["prefix"] != token_id["prefix"]:
+        return False
+    if query_id.get("child") and token_id.get("child") and query_id["child"] != token_id["child"]:
+        return False
+    return True
+
+
+def _digit_serial_boundary_match(haystack: str, digits: str) -> bool:
+    import re
+
+    unpadded = _unpad_ps_serial(digits)
+    if not unpadded.isdigit():
+        return False
+    return re.search(rf"(?:^|\D)0*{re.escape(unpadded)}(?!\d)", haystack or "") is not None
 
 
 def _pp_voucher_search_haystack(entry: dict) -> str:
@@ -1703,26 +1804,37 @@ def _entry_matches_search_term(entry: dict, term: str) -> bool:
         return True
     base_term, partial_no = parse_bulk_lookup_ps_term(term)
     source, entry_partial = _entry_ps_base_and_partial(entry)
-    if is_ps_base_id(base_term):
-        if partial_no is not None:
-            return source == base_term and entry_partial == partial_no
-        if source == base_term:
-            return True
-        ps_ids = [
-            str(entry.get(key) or "").lower()
-            for key in ("ps_id", "source_ps_id", "display_ps_id")
-            if entry.get(key)
-        ]
-        return any(base_term in ps_id for ps_id in ps_ids)
     ps_ids = [
         str(entry.get(key) or "").lower()
         for key in ("ps_id", "source_ps_id", "display_ps_id")
         if entry.get(key)
     ]
-    if ps_ids and any(base_term in ps_id for ps_id in ps_ids):
+    query_id = _parse_ps_search_identity(base_term)
+    if query_id and query_id.get("prefix"):
+        token_ids = [_parse_ps_search_identity(ps_id) for ps_id in (*ps_ids, source)]
+        if any(_ps_identities_match(query_id, token_id) for token_id in token_ids):
+            return partial_no is None or entry_partial == partial_no
+        return False
+    if base_term.isdigit():
+        serial = _unpad_ps_serial(base_term)
+        if any(
+            (parsed := _parse_ps_search_identity(ps_id)) and parsed["serial"] == serial
+            for ps_id in (*ps_ids, source)
+        ):
+            return True
+        haystack = _pp_voucher_search_haystack(entry)
+        return _digit_serial_boundary_match(haystack, base_term)
+    if is_ps_base_id(base_term):
+        if partial_no is not None:
+            return source == base_term and entry_partial == partial_no
+        if source == base_term:
+            return True
+        return any(base_term in ps_id for ps_id in ps_ids)
+    variants = _search_term_variants(base_term)
+    if ps_ids and any(variant in ps_id for ps_id in ps_ids for variant in variants):
         return True
     haystack = _pp_voucher_search_haystack(entry)
-    if base_term in haystack:
+    if any(variant in haystack for variant in variants):
         return True
     stripped_term = _strip_sr_search_text(base_term).replace(" ", "")
     if stripped_term:
@@ -2442,6 +2554,75 @@ def api_pp_vouchers():
         return jsonify({"error": str(e)}), 500
 
 
+def _catalog_rows_for_search_attach(merged: list, filtered: list) -> list:
+    """Parent + child rows needed to nest assembly line items on search hits."""
+    from planning.assembly_classify import (
+        catalog_source_ps_id,
+        is_component_child_ps,
+        parent_ps_id_from_child,
+    )
+
+    roots: set[str] = set()
+    for entry in filtered or []:
+        ps_id = catalog_source_ps_id(entry)
+        if not ps_id:
+            continue
+        roots.add(ps_id.upper())
+        if is_component_child_ps(ps_id):
+            parent = parent_ps_id_from_child(ps_id)
+            if parent:
+                roots.add(parent.upper())
+    if not roots:
+        return list(filtered or [])
+    subset = []
+    seen: set[int] = set()
+    for entry in merged or []:
+        ps_id = catalog_source_ps_id(entry)
+        if not ps_id:
+            continue
+        key = ps_id.upper()
+        include = key in roots
+        if not include and is_component_child_ps(ps_id):
+            parent = parent_ps_id_from_child(ps_id)
+            include = bool(parent) and parent.upper() in roots
+        if not include:
+            continue
+        marker = id(entry)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        subset.append(entry)
+    return subset
+
+
+def _pp_vouchers_cached_response_rows(
+    cached_data, include_completed, raw_search, *, merge_temps=False
+):
+    """Serve PS / Ops from prebuilt cache without blocking on live BOM/WO repair.
+
+    Fresh [Temp] rows are merged only for refresh or when search needs them —
+    trial_catalog_items is too slow to run on every sidebar load.
+    """
+    from planning.assembly_classify import attach_catalog_assembly_line_items
+
+    cached = list(cached_data or [])
+    if raw_search:
+        filtered = _filter_pp_vouchers_by_search(cached, raw_search)
+        looks_temp = "temp" in raw_search.lower()
+        if filtered and not looks_temp:
+            attach_catalog_assembly_line_items(_catalog_rows_for_search_attach(cached, filtered))
+            return _filter_pp_vouchers_by_search(cached, raw_search)
+        merged = _merge_fresh_temp_ps_catalog_entries(cached, include_completed)
+        hits = _filter_pp_vouchers_by_search(merged, raw_search)
+        if hits:
+            attach_catalog_assembly_line_items(_catalog_rows_for_search_attach(merged, hits))
+        return _filter_pp_vouchers_by_search(merged, raw_search)
+    if merge_temps:
+        cached = _merge_fresh_temp_ps_catalog_entries(cached, include_completed)
+    attach_catalog_assembly_line_items(cached)
+    return cached
+
+
 @app.get("/api/pp-vouchers/with-ops")
 def api_pp_vouchers_with_ops():
     """Pre-built catalog only — rebuilt during ERP sync, not on page load."""
@@ -2459,36 +2640,11 @@ def api_pp_vouchers_with_ops():
     if cached_data is not None:
         if refresh:
             _schedule_pp_vouchers_with_ops_refresh(scope, include_completed)
-        merged = _merge_fresh_temp_ps_catalog_entries(cached_data, include_completed)
-        from planning.assembly_classify import attach_catalog_assembly_line_items
-
-        attach_catalog_assembly_line_items(merged)
-        filtered = _filter_pp_vouchers_by_search(merged, raw_search)
-        unique_live_ids = _pp_vouchers_inline_live_repair_ids(merged)
-        seen_live = {
-            str(ps_id or "").split("::", 1)[0].upper()
-            for ps_id in unique_live_ids
-            if str(ps_id or "").strip()
-        }
-        if unique_live_ids:
-            try:
-                from planning.catalog import repair_catalog_sidebar_ops
-                from planning.helpers import planner_db
-
-                with planner_db() as con:
-                    con.execute(
-                        f"SET LOCAL statement_timeout = '{_INLINE_CATALOG_LIVE_REPAIR_TIMEOUT_MS}'"
-                    )
-                    repair_catalog_sidebar_ops(con, merged, only_ps_ids=unique_live_ids)
-                for entry in merged:
-                    source = str(entry.get("source_ps_id") or entry.get("ps_id") or "").split("::", 1)[0].upper()
-                    if source in seen_live:
-                        _finalize_pp_voucher_entry(entry)
-                attach_catalog_assembly_line_items(merged)
-                filtered = _filter_pp_vouchers_by_search(merged, raw_search)
-            except Exception as exc:
-                log.warning("catalog BOM/WO op repair failed: %s", exc)
-        return jsonify(filtered)
+        return jsonify(
+            _pp_vouchers_cached_response_rows(
+                cached_data, include_completed, raw_search, merge_temps=refresh
+            )
+        )
 
     if refresh:
         _schedule_pp_vouchers_with_ops_refresh(scope, include_completed)

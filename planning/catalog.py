@@ -31,6 +31,7 @@ from .process_sheets import (
     is_temp_planner_ps_id,
     manual_qty_by_ps_ids,
     material_in_overlay_for_planner_ps_ids,
+    normalize_standard_ps_id,
     parse_planner_ps_id,
     tooling_map_for_ps_op_keys,
     program_map_for_ps_op_keys,
@@ -53,7 +54,10 @@ def _base_ps_id(ps_id):
 def _canonical_catalog_ps_id(ps_id):
     """Normalize PS ids so catalog op keys match planner_operation.source_ps_id."""
     source, partial = parse_planner_ps_id(ps_id)
-    return format_planner_ps_id(source, partial) if source else compact_text(ps_id)
+    if source:
+        source = normalize_standard_ps_id(source)
+        return format_planner_ps_id(source, partial)
+    return compact_text(ps_id)
 
 
 def _catalog_op_qty_ps_ids(ps_id):
@@ -62,8 +66,9 @@ def _catalog_op_qty_ps_ids(ps_id):
     raw = compact_text(ps_id)
     if not source:
         return [raw] if raw else []
+    source = normalize_standard_ps_id(source)
     ids = []
-    for pid in (format_planner_ps_id(source, partial), raw):
+    for pid in (format_planner_ps_id(source, partial), raw, normalize_standard_ps_id(raw)):
         if pid and pid not in ids:
             ids.append(pid)
     # Legacy unsuffixed source_ps_id rows count as partial 1 only.
@@ -72,13 +77,45 @@ def _catalog_op_qty_ps_ids(ps_id):
     return ids
 
 
+def _catalog_lane_source_ps_ids(ps_ids):
+    """Expand planner_ps_id filters to the source_ps_id values stored on operations."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for pid in ps_ids or []:
+        for variant in _catalog_op_qty_ps_ids(pid):
+            for key in (variant, _canonical_catalog_ps_id(variant), parse_planner_ps_id(variant)[0]):
+                text = compact_text(key)
+                if text and text not in seen:
+                    seen.add(text)
+                    out.append(text)
+    return out
+
+
+def _catalog_op_map_keys(ps_id, op_no, op_seq_id):
+    keys = []
+    seen: set = set()
+    for pid in _catalog_op_qty_ps_ids(ps_id):
+        key = trial_catalog_op_key(_canonical_catalog_ps_id(pid) or pid, op_no, op_seq_id)
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+    return keys
+
+
 def _planned_qty_for_catalog_op(planned_qty_by_op, ps_id, op_no, op_seq_id):
     """Lookup planned queue qty for one partial (not sibling partials on the same PS)."""
-    keys = [
-        trial_catalog_op_key(pid, op_no, op_seq_id)
-        for pid in _catalog_op_qty_ps_ids(ps_id)
-    ]
+    keys = _catalog_op_map_keys(ps_id, op_no, op_seq_id)
     return max(float(planned_qty_by_op.get(key, 0) or 0) for key in keys) if keys else 0.0
+
+
+def _queued_machines_for_catalog_op(queued_machines_by_op, ps_id, op_no, op_seq_id):
+    machines: list[str] = []
+    for key in _catalog_op_map_keys(ps_id, op_no, op_seq_id):
+        for code in queued_machines_by_op.get(key, []) or []:
+            text = compact_text(code)
+            if text and text not in machines:
+                machines.append(text)
+    return machines
 
 
 def _catalog_ps_id(row):
@@ -402,13 +439,16 @@ def _catalog_ops_for_sidebar(refreshed_ops):
     return sidebar_ops
 
 
-def _catalog_lane_qty_maps(con):
+def _catalog_lane_qty_maps(con, source_ps_ids=None):
     """Planned + queued qty keyed for catalog / PP sidebar op cards."""
-    from .machines import scheduler_blocks_exclude_mpp_planner_clause
-
-    exclude_mpp = scheduler_blocks_exclude_mpp_planner_clause("b")
     planned_qty_by_op = {}
     queued_machines_by_op = {}
+    wanted = _catalog_lane_source_ps_ids(source_ps_ids)
+    ps_filter = ""
+    params: list = []
+    if wanted:
+        ps_filter = " AND o.source_ps_id = ANY(%s)"
+        params = [wanted]
     for row in rows(
         con.execute(
             f"""
@@ -420,9 +460,10 @@ def _catalog_lane_qty_maps(con):
             WHERE COALESCE(o.source_ps_id, '') <> ''
               AND COALESCE(b.active, TRUE) = TRUE
               AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
-              AND {exclude_mpp}
+              {ps_filter}
             GROUP BY o.source_ps_id, o.source_op_no, o.source_op_seq_id
-            """
+            """,
+            tuple(params),
         )
     ):
         canonical_ps = _canonical_catalog_ps_id(row["source_ps_id"])
@@ -439,9 +480,10 @@ def _catalog_lane_qty_maps(con):
             WHERE COALESCE(o.source_ps_id, '') <> ''
               AND COALESCE(b.active, TRUE) = TRUE
               AND COALESCE(b.block_type, 'ORIGINAL') <> 'REWORK'
-              AND {exclude_mpp}
+              {ps_filter}
             ORDER BY m.machine_no
-            """
+            """,
+            tuple(params),
         )
     ):
         canonical_ps = _canonical_catalog_ps_id(row["source_ps_id"])
@@ -895,7 +937,9 @@ def attach_planner_bom_ops_to_catalog_entry(
             op_no=row.get("op_no"),
             source_stage_no=int(row.get("source_stage_no") or 0),
         )
-        queued_machines = list(queued_machines_by_op.get(op_key, []) or [])
+        queued_machines = _queued_machines_for_catalog_op(
+            queued_machines_by_op, ps_id, row["op_no"], op_seq_id
+        )
         cycle_time = float(row["cycle_time"] or 0)
         setup_time = float(row["setup_time"] or 0)
         if part_no:
@@ -1211,7 +1255,9 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None, *, sk
             except Exception:
                 pass
     bom_stage_keys = set() if skip_erp_cache else _bom_op_stage_keys(con)
-    planned_qty_by_op, queued_machines_by_op = _catalog_lane_qty_maps(con)
+    planned_qty_by_op, queued_machines_by_op = _catalog_lane_qty_maps(
+        con, source_ps_ids=wanted_ps_ids or None
+    )
     from .cycle_time_service import MasterTimeCache
 
     master_cache = MasterTimeCache() if skip_erp_cache else MasterTimeCache.load(con)
@@ -1437,7 +1483,9 @@ def trial_catalog_items(con, include_completed=False, planner_ps_ids=None, *, sk
         if op_key in item["_seen_op_keys"]:
             continue
         item["_seen_op_keys"].add(op_key)
-        queued_machines = list(queued_machines_by_op.get(op_key, []) or [])
+        queued_machines = _queued_machines_for_catalog_op(
+            queued_machines_by_op, ps_id, row["op_no"], op_seq_id
+        )
         part_no_for_master = compact_text(row.get("part_no") or row.get("inventory_code") or "")
         bom_code_for_master = compact_text(row.get("selected_bom_code") or row.get("erp_bom_code") or "")
         step_row = {

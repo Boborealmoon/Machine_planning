@@ -118,10 +118,252 @@ body.sol-view .app-main--sales-logistics {
 }
 
 .sol-header-actions {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  z-index: 50;
+}
+
+.sol-notif {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.sol-notif-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  color: var(--sol-accent);
+  background: var(--sol-paper);
+  border: 1px solid var(--sol-line);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.sol-notif-btn:hover,
+.sol-notif-btn[aria-expanded="true"] {
+  color: var(--sol-accent-hover);
+  background: var(--sol-accent-soft);
+  border-color: #c5d4cf;
+}
+
+.sol-notif-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.sol-notif-badge[hidden] {
+  display: none;
+}
+
+.sol-notif-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  color: #fff;
+  background: #dc2626;
+  border: 2px solid var(--sol-paper);
+  border-radius: 999px;
+  box-sizing: border-box;
+}
+
+.sol-notif-panel[hidden] {
+  display: none;
+}
+
+.sol-notif-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 360px;
+  max-width: min(92vw, 360px);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--sol-paper);
+  border: 1px solid var(--sol-line);
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(28, 25, 23, 0.14);
+  overflow: hidden;
+}
+
+.sol-notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px 8px;
+}
+
+.sol-notif-title {
+  font-size: 0.82rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  color: var(--sol-ink);
+}
+
+.sol-notif-markread {
+  border: 0;
+  background: transparent;
+  color: var(--sol-accent);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 650;
+  cursor: pointer;
+  padding: 0;
+}
+
+.sol-notif-markread:hover {
+  color: var(--sol-accent-hover);
+  text-decoration: underline;
+}
+
+.sol-notif-sub {
+  margin: 0;
+  padding: 0 14px 10px;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--sol-muted);
+}
+
+.sol-notif-list {
+  overflow: auto;
+  padding: 0 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sol-notif-empty {
+  padding: 18px 10px 12px;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--sol-faint);
+}
+
+.sol-notif-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--sol-line);
+  border-radius: 12px;
+  background: var(--sol-paper-2);
+  padding: 10px 12px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.sol-notif-card:hover {
+  border-color: #c5d4cf;
+  background: var(--sol-accent-soft);
+}
+
+.sol-notif-card.is-unread {
+  border-color: #f0c4c4;
+  background: #fff7f7;
+  box-shadow: inset 3px 0 0 #dc2626;
+}
+
+.sol-notif-card.is-updated {
+  border-color: #ead9a8;
+}
+
+.sol-notif-tag {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 6px 4px 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--sol-arrived-bg);
+  color: var(--sol-arrived);
+}
+
+.sol-notif-tag--updated {
+  background: var(--sol-need-bg);
+  color: var(--sol-need);
+}
+
+.sol-notif-so {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  color: var(--sol-ink);
+}
+
+.sol-notif-customer {
+  margin: 2px 0 0;
+  font-size: 0.75rem;
+  color: var(--sol-muted);
+}
+
+.sol-notif-parts {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sol-notif-part {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.sol-notif-part:hover .sol-notif-part-ps {
+  text-decoration: underline;
+}
+
+.sol-notif-part-ps {
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--sol-accent);
+}
+
+.sol-notif-part-no {
+  font-size: 0.72rem;
+  color: var(--sol-muted);
+}
+
+.sol-notif-part-more,
+.sol-notif-time {
+  margin: 6px 0 0;
+  font-size: 0.7rem;
+  color: var(--sol-faint);
 }
 
 .sol-btn {
@@ -602,6 +844,41 @@ body.sol-view .app-main--sales-logistics {
 
 .sol-table tbody tr:hover td {
   background: #f4f1ea;
+}
+
+.sol-table tbody tr.is-focus td {
+  background: #e7f3ec;
+}
+
+.sol-table tbody tr.is-focus:hover td {
+  background: #dceee4;
+}
+
+.sol-order-so-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sol-order-so-line .sol-order-so {
+  min-width: 0;
+}
+
+.sol-new-pill {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 0.62rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  text-transform: uppercase;
+  background: var(--sol-arrived-bg);
+  color: var(--sol-arrived);
 }
 
 .sol-table tbody tr:last-child td {

@@ -453,6 +453,11 @@ def attribute_shipments(
             so_due = due
         attributed["due_date"] = due.isoformat() if due else row.get("due_date")
         attributed["so_due_date"] = so_due.isoformat() if so_due else row.get("due_date")
+        if so_line:
+            if not compact_text(attributed.get("sales_person_name")):
+                attributed["sales_person_name"] = compact_text(so_line.get("sales_person_name"))
+            if not compact_text(attributed.get("sales_person_code")):
+                attributed["sales_person_code"] = compact_text(so_line.get("sales_person_code"))
         attributed["attribution_method"] = (
             "inventory_match" if matched and compact_text(row.get("inventory_code")) else
             ("single_pp_job" if matched else "unmatched")

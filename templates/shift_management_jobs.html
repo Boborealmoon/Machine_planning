@@ -1,0 +1,57 @@
+{% extends "shift_management_base.html" %}
+{% block title %}Jobs - Day/Night HOTO{% endblock %}
+{% block content %}
+<section class="sm-toolbar sm-toolbar-wrap">
+  <h2 class="sm-section-title" style="margin:0">Work instructions</h2>
+  <button type="button" class="sm-btn sm-btn-ghost" id="sm-jobs-refresh">Refresh</button>
+</section>
+<p class="sm-muted">Jobs on your machines this shift. Open the instruction, or raise a ticket.</p>
+
+<section class="sm-toolbar">
+  <label class="sm-field-inline">
+    <span>Date</span>
+    <input type="date" id="sm-ops-date" />
+  </label>
+  <div class="sm-chip-row" id="sm-ops-shift-chips" role="group" aria-label="Shift">
+    <button type="button" class="sm-chip" data-shift="Day">Day</button>
+    <button type="button" class="sm-chip" data-shift="Night">Night</button>
+  </div>
+  <label class="sm-field-inline sm-ops-search-field">
+    <span>Find</span>
+    <input type="search" id="sm-ops-search" placeholder="Machine or PS no." autocomplete="off" />
+  </label>
+</section>
+
+<div id="sm-jobs-list" class="sm-ops-list">
+  <p class="sm-muted">Loading...</p>
+</div>
+
+<dialog id="sm-ticket-dialog" class="sm-dialog">
+  <form method="dialog" id="sm-ticket-form" onsubmit="return false;">
+    <h3>Raise ticket</h3>
+    <p id="sm-ticket-context" class="sm-muted"></p>
+    <input type="hidden" id="sm-tk-machine-id" />
+    <input type="hidden" id="sm-tk-block-id" />
+    <input type="hidden" id="sm-tk-ps" />
+    <input type="hidden" id="sm-tk-job" />
+    <label class="sm-label">Category</label>
+    <select class="sm-input" id="sm-tk-category"></select>
+    <label class="sm-label">Priority</label>
+    <select class="sm-input" id="sm-tk-priority">
+      <option>Normal</option><option>High</option><option>Urgent</option>
+    </select>
+    <label class="sm-label" for="sm-tk-title">Title</label>
+    <input class="sm-input" id="sm-tk-title" type="text" required maxlength="200" />
+    <label class="sm-label" for="sm-tk-desc">Details</label>
+    <textarea class="sm-textarea" id="sm-tk-desc" rows="3" placeholder="What needs attention?"></textarea>
+    <p id="sm-tk-status" class="sm-muted" hidden></p>
+    <div class="sm-dialog-actions">
+      <button type="button" class="sm-btn sm-btn-ghost" id="sm-tk-cancel">Cancel</button>
+      <button type="submit" class="sm-btn sm-btn-primary" id="sm-tk-save">Create ticket</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}
+<script>SM.page = "jobs";</script>
+{% endblock %}

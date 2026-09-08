@@ -113,6 +113,12 @@
     qcBucket: 'ready_qc',
     qcLoaded: false,
     assemblyJobs: new Map(),
+    newOrders: [],
+    unreadSoKeys: new Set(),
+    rowFocus: null,
+    maxNotifSoTime: 0,
+    notifInFlight: null,
+    notifFetchedAt: 0,
   };
 
   function isPrPoView(view) {
@@ -160,9 +166,14 @@
   function renderOrderCell(order) {
     const so = String(order.sales_order_no || EM_DASH);
     const customer = order.customer_name || order.customer_short_name || order.customer_code || EM_DASH;
+    const soKey = so.trim().toUpperCase();
+    const isNew = soKey && state.unreadSoKeys.has(soKey);
+    const newPill = isNew ? '<span class="sol-new-pill">New</span>' : '';
     return `
       <td class="sol-order" title="${escapeHtml(`${so} · ${customer}`)}">
-        <span class="sol-order-so sol-mono">${escapeHtml(so)}</span>
+        <span class="sol-order-so-line">
+          <span class="sol-order-so sol-mono">${escapeHtml(so)}</span>${newPill}
+        </span>
         <span class="sol-order-customer">${escapeHtml(customer)}</span>
       </td>`;
   }
@@ -1187,6 +1198,8 @@
     } else if (Number(assemblyChildCount) > 0) {
       classes.push('is-asm-parent');
     }
+    const soKey = String(order.sales_order_no || '').trim().toUpperCase();
+    const psKey = psBaseKey(psDisplayForPartial(pp, partial));
     const rowCls = classes.join(' ');
     const lineNo = Number(assemblyChildIndex) + 1;
     const lineCount = Number(assemblyChildCount) || 0;
@@ -1196,7 +1209,7 @@
         ? `<span class="sol-subasm-pill" title="${escapeHtml(String(assemblyChildCount))} sub-assembly finished goods tracked as line items">${escapeHtml(String(assemblyChildCount))} FG</span>`
         : '');
     return `
-      <tr class="${rowCls}">
+      <tr class="${rowCls}" data-sol-so="${escapeHtml(soKey)}" data-sol-ps="${escapeHtml(psKey)}">
         ${renderDelayCell(pp)}
         ${renderOrderCell(order)}
         <td class="sol-mono sol-col-ps">
@@ -1862,6 +1875,7 @@
       if (body) {
         body.innerHTML = rows.map(renderRow).join('');
         bindInputs();
+        applyRowFocus();
       }
     }
 
@@ -2108,6 +2122,7 @@
         );
         btn.textContent = `${psTypeLabel()} v`;
         render();
+        renderNotifications();
       });
     });
 
@@ -2449,11 +2464,11 @@
   async function loadSalesOrders({ refresh = false } = {}) {
     abortLoad('sales');
     const baseLabel = refresh
-      ? 'Refreshing...'
-      : 'Loading process sheets...';
+      ? 'Refreshing from ERP...'
+      : 'Loading process sheets from ERP...';
     if (isPsView()) beginViewLoad('ps', baseLabel);
 
-    const params = new URLSearchParams({ active_only: '1', lite: '1' });
+    const params = new URLSearchParams({ active_only: '1' });
     if (refresh) params.set('refresh', '1');
 
     const ac = new AbortController();
@@ -2482,14 +2497,16 @@
       if (state.pendingLoad === 'ps') state.pendingLoad = '';
       if (isPsView()) render();
       loadAssemblyJobs({ refresh });
+      return true;
     } catch (err) {
       if (err && err.name === 'AbortError') {
         if (state.loadControllers.sales === ac && isPsView()) {
           showLoadError(new Error('Timed out waiting for ERP. Click Refresh to retry.'));
         }
-        return;
+        return false;
       }
       if (isPsView()) showLoadError(err);
+      return false;
     } finally {
       if (state.loadControllers.sales === ac) state.loadControllers.sales = null;
       window.clearTimeout(timeoutId);
@@ -2857,6 +2874,330 @@
     });
   }
 
+  function notifToMs(value) {
+    if (!value) return 0;
+    const t = Date.parse(String(value).replace(' ', 'T'));
+    return Number.isFinite(t) ? t : 0;
+  }
+
+  function notifFmtTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso);
+    const diffMin = Math.round((Date.now() - d.getTime()) / 60000);
+    let rel;
+    if (diffMin < 1) rel = 'just now';
+    else if (diffMin < 60) rel = `${diffMin} min ago`;
+    else if (diffMin < 1440) rel = `${Math.round(diffMin / 60)} hr ago`;
+    else rel = `${Math.round(diffMin / 1440)} d ago`;
+    const abs = d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return `${rel} · ${abs}`;
+  }
+
+  function psTypeFromId(ps) {
+    const raw = String(ps || '').split('::')[0];
+    if (/\[sr\]/i.test(raw)) return 'SR';
+    const match = raw.toUpperCase().match(/^([A-Z]+)/);
+    return match ? match[1] : null;
+  }
+
+  function readLastSeenSoTime() {
+    try {
+      return Number(localStorage.getItem('notif-last-seen-so-time') || 0) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  function writeLastSeenSoTime(value) {
+    try {
+      localStorage.setItem('notif-last-seen-so-time', String(Number(value) || 0));
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }
+
+  function visibleNotifParts(order) {
+    return (order.parts || []).filter(part => {
+      const type = part.type || psTypeFromId(part.ps);
+      if (!type) return true;
+      if (!state.ppTypes.size || state.ppTypes.size === PS_TYPES.length) return true;
+      return state.ppTypes.has(type);
+    });
+  }
+
+  function trackerHasOrder(so, ps) {
+    const soKey = String(so || '').trim().toUpperCase();
+    const psKey = psBaseKey(ps);
+    return state.active.some(order => {
+      if (soKey && String(order.sales_order_no || '').trim().toUpperCase() !== soKey) return false;
+      if (!psKey) return true;
+      return leafRows(order).some(leaf => psBaseKey(psDisplayForPartial(leaf.pp, leaf.partial)) === psKey);
+    });
+  }
+
+  function applyRowFocus() {
+    const focus = state.rowFocus;
+    document.querySelectorAll('#sol-table-body tr.is-focus').forEach(row => {
+      row.classList.remove('is-focus');
+    });
+    if (!focus || !isPsView()) return;
+    const soKey = String(focus.so || '').trim().toUpperCase();
+    const psKey = psBaseKey(focus.ps);
+    const rows = [...document.querySelectorAll('#sol-table-body tr[data-sol-so]')];
+    const match = rows.find(row => {
+      const rowSo = String(row.getAttribute('data-sol-so') || '').toUpperCase();
+      const rowPs = String(row.getAttribute('data-sol-ps') || '').toUpperCase();
+      if (psKey && rowPs === psKey) return true;
+      return Boolean(soKey) && rowSo === soKey;
+    }) || rows[0];
+    if (!match) return;
+    match.classList.add('is-focus');
+    match.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+
+  function enablePsType(type) {
+    if (!type || !PS_TYPES.includes(type) || state.ppTypes.has(type)) return;
+    state.ppTypes.add(type);
+    const panel = document.getElementById('sol-ps-type-panel');
+    panel?.querySelectorAll('input[type="checkbox"]').forEach(input => {
+      if (input.value === type) input.checked = true;
+    });
+    const btn = document.getElementById('sol-ps-type-btn');
+    if (btn) btn.textContent = `${psTypeLabel()} v`;
+  }
+
+  function closeNotifPanel() {
+    const panel = document.getElementById('sol-notif-panel');
+    const btn = document.getElementById('sol-notif-btn');
+    if (panel) panel.hidden = true;
+    btn?.setAttribute('aria-expanded', 'false');
+  }
+
+  async function focusTrackerItem({ so, ps, type } = {}) {
+    closeNotifPanel();
+    enablePsType(type);
+    const soKey = String(so || '').trim().toUpperCase();
+    const order = state.newOrders.find(item => String(item.so || '').trim().toUpperCase() === soKey);
+    (order?.parts || []).forEach(part => {
+      enablePsType(part.type || psTypeFromId(part.ps));
+    });
+    if (state.view !== 'active') {
+      state.view = 'active';
+      syncNavUi();
+    }
+    state.materialFilter = 'all';
+    const material = document.getElementById('sol-material-filter');
+    if (material) material.value = 'all';
+    const needle = String(ps || so || '').trim();
+    state.search = needle;
+    const search = document.getElementById('sol-search');
+    if (search) search.value = needle;
+    state.rowFocus = { so: String(so || '').trim().toUpperCase(), ps: psBaseKey(ps) };
+
+    if (!state.salesOrdersLoaded) {
+      await loadSalesOrders({ refresh: false });
+    } else {
+      render();
+    }
+
+    if (!trackerHasOrder(so, ps)) {
+      await loadSalesOrders({ refresh: true });
+    }
+    applyRowFocus();
+
+    if (!trackerHasOrder(so, ps)) {
+      const subtitle = document.getElementById('sol-subtitle');
+      if (subtitle) {
+        subtitle.textContent = `${needle} is posted in ERP but not in this tracker yet. It appears once a PP voucher exists — click Refresh after PP is raised.`;
+      }
+    }
+  }
+
+  function renderNotifications() {
+    const list = document.getElementById('sol-notif-list');
+    const empty = document.getElementById('sol-notif-empty');
+    const badge = document.getElementById('sol-notif-badge');
+    const sub = document.getElementById('sol-notif-sub');
+    if (!list || !badge) return;
+
+    const lastSeen = readLastSeenSoTime();
+    const items = [];
+    const unreadKeys = new Set();
+    let unread = 0;
+    let maxSoTime = 0;
+
+    state.newOrders.forEach(order => {
+      const parts = visibleNotifParts(order);
+      if (!parts.length) return;
+      const postedAt = order.postedAt || order.latestPostedAt || order.firstPostedAt;
+      const ms = notifToMs(postedAt);
+      maxSoTime = Math.max(maxSoTime, ms);
+      const isUnread = ms > 0 && ms > lastSeen;
+      const soKey = String(order.so || '').trim().toUpperCase();
+      if (isUnread && soKey) {
+        unread += 1;
+        unreadKeys.add(soKey);
+      }
+      const isUpdated = String(order.kind || '').toLowerCase() === 'updated';
+      const hasNewPs = parts.some(part => {
+        const psType = part.type || psTypeFromId(part.ps);
+        return psType === 'NPS' || psType === 'APS' || !psType;
+      });
+      const soTag = isUpdated ? 'Updated sales order' : 'New sales order';
+      const tagCls = isUpdated ? 'sol-notif-tag sol-notif-tag--updated' : 'sol-notif-tag';
+      const tagsHtml = `
+        <span class="${tagCls}">${escapeHtml(soTag)}</span>
+        ${hasNewPs ? '<span class="sol-notif-tag">New process sheet</span>' : ''}`;
+      const shown = parts.slice(0, 4);
+      const extra = parts.length - shown.length;
+      const partsHtml = shown.map(part => {
+        const detail = [part.part, part.desc].filter(Boolean).join(' · ');
+        const psType = part.type || psTypeFromId(part.ps);
+        const psLabel = psType ? `${psType} ${part.ps || ''}`.trim() : (part.ps || '—');
+        return `
+          <li>
+            <button type="button" class="sol-notif-part" data-sol-focus-so="${escapeHtml(order.so || '')}" data-sol-focus-ps="${escapeHtml(part.ps || '')}" data-sol-focus-type="${escapeHtml(psType || '')}">
+              <span class="sol-notif-part-ps">${escapeHtml(psLabel || 'New process sheet')}</span>
+              ${detail ? `<span class="sol-notif-part-no">${escapeHtml(detail)}</span>` : ''}
+            </button>
+          </li>`;
+      }).join('');
+      items.push(`
+        <article class="sol-notif-card${isUnread ? ' is-unread' : ''}${isUpdated ? ' is-updated' : ''}" data-sol-focus-so="${escapeHtml(order.so || '')}">
+          ${tagsHtml}
+          <p class="sol-notif-so">${escapeHtml(order.so || '—')}</p>
+          ${order.customer ? `<p class="sol-notif-customer">from ${escapeHtml(order.customer)}</p>` : ''}
+          <ul class="sol-notif-parts">${partsHtml}</ul>
+          ${extra > 0 ? `<p class="sol-notif-part-more">+${extra} more process sheets</p>` : ''}
+          <p class="sol-notif-time">${escapeHtml(notifFmtTime(postedAt))}</p>
+        </article>`);
+    });
+
+    const unreadChanged = unreadKeys.size !== state.unreadSoKeys.size
+      || [...unreadKeys].some(key => !state.unreadSoKeys.has(key));
+    state.unreadSoKeys = unreadKeys;
+    state.maxNotifSoTime = maxSoTime;
+
+    if (!items.length) {
+      list.innerHTML = '';
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = 'No new sales orders this week.';
+        list.appendChild(empty);
+      }
+    } else {
+      list.innerHTML = items.join('');
+    }
+
+    if (sub) {
+      sub.textContent = items.length
+        ? 'This week’s posted sales orders and process sheets. Click a card to jump to the tracker row.'
+        : 'No new APS/NPS sales orders posted this week.';
+    }
+
+    if (unread > 0) {
+      badge.textContent = unread > 99 ? '99+' : String(unread);
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+
+    if (unreadChanged && isPsView() && state.salesOrdersLoaded && !state.pendingLoad) {
+      renderPs();
+    }
+  }
+
+  async function fetchNotifications({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && state.notifInFlight) return state.notifInFlight;
+    if (!force && state.notifFetchedAt && now - state.notifFetchedAt < 20000) return state.notifInFlight;
+    state.notifFetchedAt = now;
+    state.notifInFlight = (async () => {
+      try {
+        const res = await fetch('/api/new-orders/notifications', {
+          headers: { Accept: 'application/json' },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data || data.ok === false || !Array.isArray(data.orders)) return;
+        state.newOrders = data.orders.map(order => ({
+          ...order,
+          parts: (order.parts || []).map(part => ({
+            ...part,
+            type: part.type || psTypeFromId(part.ps),
+          })),
+        }));
+        renderNotifications();
+      } catch {
+        /* silent — bell just won't update */
+      } finally {
+        state.notifInFlight = null;
+      }
+    })();
+    return state.notifInFlight;
+  }
+
+  function bindNotifications() {
+    const root = document.getElementById('sol-notif');
+    const btn = document.getElementById('sol-notif-btn');
+    const panel = document.getElementById('sol-notif-panel');
+    const list = document.getElementById('sol-notif-list');
+    const markRead = document.getElementById('sol-notif-markread');
+    if (!root || !btn || !panel || !list) return;
+
+    const openPanel = () => {
+      panel.hidden = false;
+      btn.setAttribute('aria-expanded', 'true');
+      fetchNotifications({ force: true });
+    };
+
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      if (panel.hidden) openPanel();
+      else closeNotifPanel();
+    });
+
+    markRead?.addEventListener('click', e => {
+      e.stopPropagation();
+      if ((state.maxNotifSoTime || 0) > readLastSeenSoTime()) {
+        writeLastSeenSoTime(state.maxNotifSoTime);
+      }
+      renderNotifications();
+    });
+
+    list.addEventListener('click', e => {
+      const partBtn = e.target.closest('[data-sol-focus-ps]');
+      const card = e.target.closest('[data-sol-focus-so]');
+      const target = partBtn || card;
+      if (!target) return;
+      e.preventDefault();
+      e.stopPropagation();
+      focusTrackerItem({
+        so: target.getAttribute('data-sol-focus-so') || '',
+        ps: target.getAttribute('data-sol-focus-ps') || '',
+        type: target.getAttribute('data-sol-focus-type') || '',
+      });
+    });
+
+    document.addEventListener('click', e => {
+      if (!panel.hidden && !root.contains(e.target)) closeNotifPanel();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && !panel.hidden) closeNotifPanel();
+    });
+
+    window.setTimeout(() => fetchNotifications(), 2000);
+    window.setInterval(() => {
+      if (document.visibilityState === 'visible') fetchNotifications();
+    }, 60000);
+    window.addEventListener('focus', () => fetchNotifications());
+    window.addEventListener('pp-vouchers-synced', () => {
+      fetchNotifications({ force: true });
+      if (isPsView()) loadSalesOrders({ refresh: true });
+    });
+  }
+
   function init() {
     document.querySelectorAll('[data-sol-view]').forEach(btn => {
       btn.addEventListener('click', () => setView(btn.getAttribute('data-sol-view')));
@@ -2881,6 +3222,7 @@
     });
 
     document.getElementById('sol-refresh')?.addEventListener('click', () => load({ refresh: true }));
+    bindNotifications();
 
     bindMaterialButtons();
     bindPsTypeDropdown();
@@ -2889,7 +3231,7 @@
     bindRequestAdd();
     bindInputs();
     syncNavUi();
-    // Cache-first (same as Sales Orders). Use Refresh for a live ERP reload.
+    // Same live /api/sales-orders path as Sales Orders (COMAIN, not staging).
     load({ refresh: false });
     loadRequests({ refresh: false, silent: true });
     loadQcChecklist({ refresh: false, silent: true });

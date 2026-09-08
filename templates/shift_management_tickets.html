@@ -1,0 +1,70 @@
+{% extends "shift_management_base.html" %}
+{% block title %}Tickets - Day/Night HOTO{% endblock %}
+{% block content %}
+<section class="sm-toolbar sm-toolbar-wrap">
+  <h2 class="sm-section-title" style="margin:0">Tickets</h2>
+  {% if user_caps and user_caps.can_create_ticket %}
+  <button type="button" class="sm-btn sm-btn-primary" id="sm-tickets-new">New ticket</button>
+  {% endif %}
+</section>
+<p class="sm-muted" id="sm-tickets-hint">
+  {% if user_caps and user_caps.can_review_ticket %}
+  Review, assign priority, and resolve tickets across the floor.
+  {% else %}
+  Raise a ticket from a job. You can see tickets you created here.
+  {% endif %}
+</p>
+
+<section class="sm-toolbar">
+  <label class="sm-field-inline">
+    <span>Status</span>
+    <select id="sm-tickets-status" class="sm-input">
+      <option value="open,in_progress">Open</option>
+      <option value="open">open</option>
+      <option value="in_progress">in_progress</option>
+      <option value="closed">closed</option>
+      <option value="">All</option>
+    </select>
+  </label>
+  <label class="sm-field-inline">
+    <span>Date</span>
+    <input type="date" id="sm-tickets-date" />
+  </label>
+  <button type="button" class="sm-btn sm-btn-ghost" id="sm-tickets-refresh">Refresh</button>
+</section>
+
+<div id="sm-tickets-list" class="sm-list">
+  <p class="sm-muted">Loading...</p>
+</div>
+
+<dialog id="sm-ticket-dialog" class="sm-dialog">
+  <form method="dialog" id="sm-ticket-form" onsubmit="return false;">
+    <h3>Raise ticket</h3>
+    <p id="sm-ticket-context" class="sm-muted">Pick a machine from today's queue.</p>
+    <label class="sm-label" for="sm-tk-machine-select">Machine / job</label>
+    <select class="sm-input" id="sm-tk-machine-select"></select>
+    <input type="hidden" id="sm-tk-machine-id" />
+    <input type="hidden" id="sm-tk-block-id" />
+    <input type="hidden" id="sm-tk-ps" />
+    <input type="hidden" id="sm-tk-job" />
+    <label class="sm-label">Category</label>
+    <select class="sm-input" id="sm-tk-category"></select>
+    <label class="sm-label">Priority</label>
+    <select class="sm-input" id="sm-tk-priority">
+      <option>Normal</option><option>High</option><option>Urgent</option>
+    </select>
+    <label class="sm-label" for="sm-tk-title">Title</label>
+    <input class="sm-input" id="sm-tk-title" type="text" required maxlength="200" />
+    <label class="sm-label" for="sm-tk-desc">Details</label>
+    <textarea class="sm-textarea" id="sm-tk-desc" rows="3"></textarea>
+    <p id="sm-tk-status" class="sm-muted" hidden></p>
+    <div class="sm-dialog-actions">
+      <button type="button" class="sm-btn sm-btn-ghost" id="sm-tk-cancel">Cancel</button>
+      <button type="submit" class="sm-btn sm-btn-primary">Create ticket</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}
+<script>SM.page = "tickets";</script>
+{% endblock %}

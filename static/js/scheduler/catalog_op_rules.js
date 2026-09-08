@@ -4,7 +4,8 @@
  * Rule layers (evaluated in order for drag; do not mix across layers):
  *   1. PS kind     — [Temp] ignores ERP stage inheritance; rework uses planner qty only
  *   2. Quantity    — schedulable remaining, production-complete (qty-backed)
- *   3. ERP stage   — stage-passed / current-stage (standard PS only; never temp)
+ *   3. ERP stage   — stage-passed / current-stage (standard PS only; never temp).
+ *                    Stock Issue / material issue do not lock machining ops.
  *   4. Route order — earlier ops satisfied before later steps
  *   5. Queue state — fully queued / superseded by temp sibling
  */
@@ -236,6 +237,63 @@ function trialCatalogOpQueueBlockReason(card) {
     : 'This operation is already fully queued.';
 }
 
+/** Warehouse / kitting stages are not machine ops — do not lock turning/milling behind them. */
+function trialCatalogErpCurrentStageIsPreMachining(ps) {
+  const desc = String(ps?.current_stage_desc || '').trim();
+  if (!desc) return false;
+  const lower = desc.toLowerCase().replace(/&/g, ' and ');
+  return (
+    /\bstock\s*issue\b/.test(lower)
+    || /\bmaterial\s*issue\b/.test(lower)
+    || /\bmat(?:l|erial)?\s*issue\b/.test(lower)
+    || /\bkitting\b/.test(lower)
+    || /^smp[\s-]*mat\b/i.test(desc)
+    || /^(bom|material|mat\b|subcon|sub\s*con)\b/i.test(desc)
+  );
+}
+
+function trialCatalogErpStageGateApplies(ps) {
+  if (!ps) return false;
+  if (trialCatalogErpCurrentStageIsPreMachining(ps)) return false;
+  const stageNo = Number(ps.current_stage_no || 0);
+  const stageDesc = String(ps.current_stage_desc || '').trim();
+  if (!stageNo && !stageDesc) return false;
+  if (typeof trialCatalogRouteOpsForPs !== 'function'
+    || typeof trialCatalogOpMatchesCurrentStage !== 'function') {
+    return true;
+  }
+  const cards = trialCatalogRouteOpsForPs(ps);
+  if (!cards.length) return false;
+  return cards.some(card => trialCatalogOpMatchesCurrentStage(card, ps));
+}
+
+function trialCatalogOpRouteOrderBlock(card, ps, pool) {
+  if (!ps || !card || typeof trialCatalogRouteOpsForPs !== 'function') return null;
+  const routeOps = trialCatalogRouteOpsForPs(ps);
+  const myKey = typeof trialCatalogOpCardKey === 'function' ? trialCatalogOpCardKey(card) : '';
+  const myIdx = routeOps.findIndex(row => (
+    typeof trialCatalogOpCardKey === 'function' && trialCatalogOpCardKey(row) === myKey
+  ));
+  if (myIdx <= 0) return null;
+  let blockingPrior = null;
+  for (let i = 0; i < myIdx; i += 1) {
+    const prior = routeOps[i];
+    if (!trialCatalogPriorOpSatisfiedForRoute(prior, ps, pool)) {
+      blockingPrior = prior;
+      break;
+    }
+  }
+  if (!blockingPrior) return null;
+  const priorLabel = String(blockingPrior.source_op_no || blockingPrior.operation_label || '').trim();
+  return {
+    ok: false,
+    reason: priorLabel
+      ? `Queue op ${priorLabel} on a machine before scheduling this step.`
+      : 'Queue earlier route operations on a machine before scheduling this step.',
+    code: 'route_order',
+  };
+}
+
 /**
  * Single drag gate — all pointer/drop paths must use this (render + dnd).
  * Returns { ok, reason, code }.
@@ -303,34 +361,21 @@ function trialCatalogOpDragEligibility(card, ps) {
     };
   }
 
-  if (!bypassStage && typeof trialCatalogOpMatchesCurrentStage === 'function'
+  if (!bypassStage && trialCatalogErpStageGateApplies(ps)
+    && typeof trialCatalogOpMatchesCurrentStage === 'function'
     && !trialCatalogOpMatchesCurrentStage(card, ps)) {
-    const routeOps = typeof trialCatalogRouteOpsForPs === 'function'
-      ? trialCatalogRouteOpsForPs(ps)
-      : [];
-    const myKey = typeof trialCatalogOpCardKey === 'function' ? trialCatalogOpCardKey(card) : '';
-    const myIdx = routeOps.findIndex(row => (
-      typeof trialCatalogOpCardKey === 'function' && trialCatalogOpCardKey(row) === myKey
-    ));
-    let blockingPrior = null;
-    if (myIdx > 0) {
-      for (let i = 0; i < myIdx; i += 1) {
-        const prior = routeOps[i];
-        if (!trialCatalogPriorOpSatisfiedForRoute(prior, ps, pool)) {
-          blockingPrior = prior;
-          break;
-        }
-      }
-    }
-    const priorLabel = blockingPrior
-      ? String(blockingPrior.source_op_no || blockingPrior.operation_label || '').trim()
-      : '';
-    const reason = myIdx <= 0
-      ? 'Only the current ERP stage can be queued for this process sheet.'
-      : (priorLabel
-        ? `Queue op ${priorLabel} on a machine before scheduling this step.`
-        : 'Queue earlier route operations on a machine before scheduling this step.');
-    return { ok: false, reason, code: 'route_order' };
+    const routeBlock = trialCatalogOpRouteOrderBlock(card, ps, pool);
+    if (routeBlock) return routeBlock;
+    return {
+      ok: false,
+      reason: 'Only the current ERP stage can be queued for this process sheet.',
+      code: 'route_order',
+    };
+  }
+
+  if (!bypassStage && trialCatalogErpCurrentStageIsPreMachining(ps)) {
+    const routeBlock = trialCatalogOpRouteOrderBlock(card, ps, pool);
+    if (routeBlock) return routeBlock;
   }
 
   return { ok: true, reason: '', code: 'ok' };

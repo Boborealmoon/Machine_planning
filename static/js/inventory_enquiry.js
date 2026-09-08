@@ -18,6 +18,10 @@ const invState = {
   selectedLotRef: '',
   stockCounts: {},
   partLotStatus: {},
+  whereUsedByCode: {},
+  whereUsedStatus: {},
+  whereUsedFilter: '',
+  whereUsedCollapsed: {},
 };
 
 const INV_CLASS_LABELS = {
@@ -446,6 +450,246 @@ function invDetailSection(title, html) {
   `;
 }
 
+function invWuMatchLabel(matchType) {
+  if (matchType === 'exact') return 'exact BOM code';
+  if (matchType === 'inventory_suffix') return 'BOM code without size suffix';
+  if (matchType === 'bom_suffix') return 'BOM lists a sized variant';
+  return matchType || '';
+}
+
+function invWuPsMatchesFilter(ps, needle) {
+  if (!needle) return true;
+  const hay = [
+    ps.ps_id,
+    ps.part_no,
+    ps.part_desc,
+    ps.bom_code,
+    ps.sales_order_no,
+    ps.planner_status,
+    ps.status,
+    ps.current_stage_desc,
+  ].join(' ').toLowerCase();
+  return hay.includes(needle);
+}
+
+function invWuParentMatchesFilter(parent, needle) {
+  if (!needle) return true;
+  const hay = [
+    parent.source_inventory_code,
+    parent.part_desc,
+    ...(parent.boms || []).map((bom) => [bom.bom_code, bom.material_inventory_code, bom.description].join(' ')),
+  ].join(' ').toLowerCase();
+  if (hay.includes(needle)) return true;
+  const sheets = [
+    ...(parent.open_process_sheets || []),
+    ...(parent.historical_process_sheets || []),
+  ];
+  return sheets.some((ps) => invWuPsMatchesFilter(ps, needle));
+}
+
+function invWuPsRow(ps) {
+  const partial = Number(ps.pp_partial_no || 1) > 1 ? ` · P${ps.pp_partial_no}` : '';
+  const href = ps.process_sheets_url || `/process-sheets?q=${encodeURIComponent(ps.ps_id || '')}`;
+  const due = ps.due_date || ps.order_date || '';
+  const bom = ps.bom_code
+    ? (ps.bom_unconfirmed ? `${ps.bom_code} (unconfirmed)` : ps.bom_code)
+    : (ps.bom_unconfirmed ? 'BOM not recorded' : '—');
+  const needed = ps.qty_needed != null && ps.qty_needed !== ''
+    ? invFormatNum(ps.qty_needed)
+    : '—';
+  const stage = ps.current_stage_desc || ps.planner_status || ps.status || '';
+  return `
+    <tr>
+      <td>
+        <a class="inv-wu-ps-link" href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(ps.ps_id || '—')}${escapeHtml(partial)}</a>
+      </td>
+      <td class="mi-cell--num">${escapeHtml(invFormatNum(ps.qty))}</td>
+      <td class="mi-cell--num">${escapeHtml(needed)}</td>
+      <td>${escapeHtml(invFormatDate(due))}</td>
+      <td class="inv-wu-mono">${escapeHtml(bom)}</td>
+      <td>${escapeHtml(stage || '—')}</td>
+      <td class="inv-wu-mono">${escapeHtml(ps.sales_order_no || '—')}</td>
+    </tr>
+  `;
+}
+
+function invWuPsTable(title, sheets, emptyText) {
+  if (!sheets.length) {
+    return `<p class="inv-wu-empty">${escapeHtml(emptyText)}</p>`;
+  }
+  return `
+    <div class="inv-wu-table-wrap">
+      <h5 class="inv-wu-subhead">${escapeHtml(title)}</h5>
+      <table class="inv-wu-table">
+        <thead>
+          <tr>
+            <th>Process sheet</th>
+            <th>Job qty</th>
+            <th>Mat. needed</th>
+            <th>Due / date</th>
+            <th>BOM</th>
+            <th>Stage / status</th>
+            <th>S/O</th>
+          </tr>
+        </thead>
+        <tbody>${sheets.map(invWuPsRow).join('')}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function invWuBomChips(boms) {
+  if (!boms.length) return '';
+  return `
+    <div class="inv-wu-bom-list">
+      ${boms.map((bom) => {
+        const qty = bom.qty_per_fg != null ? `${invFormatNum(bom.qty_per_fg)} ${bom.uom_code || ''}`.trim() : '';
+        const match = invWuMatchLabel(bom.match_type);
+        return `
+          <div class="inv-wu-bom-chip">
+            <strong class="inv-wu-mono">${escapeHtml(bom.bom_code || '—')}</strong>
+            <span>${escapeHtml(qty ? `${qty} / FG` : 'qty / FG unknown')}</span>
+            <span class="inv-wu-bom-match">${escapeHtml(match)}</span>
+            ${bom.material_inventory_code ? `<span class="inv-wu-mono">${escapeHtml(bom.material_inventory_code)}</span>` : ''}
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function invWuFinishedBlock(data, needle) {
+  const open = (data.open_process_sheets || []).filter((ps) => invWuPsMatchesFilter(ps, needle));
+  const history = (data.historical_process_sheets || []).filter((ps) => invWuPsMatchesFilter(ps, needle));
+  const histTotal = Number(data.historical_total || history.length);
+  if (!open.length && !history.length && !histTotal) return '';
+  const extra = histTotal > history.length
+    ? `<p class="inv-wu-more">${histTotal - history.length} older sheet${histTotal - history.length === 1 ? '' : 's'} not listed</p>`
+    : '';
+  return `
+    <div class="inv-wu-block">
+      <h4 class="inv-wu-block-title">Makes this part</h4>
+      ${invWuPsTable('Will use / in progress', open, needle ? 'No open sheets match this filter.' : 'No open process sheets make this part.')}
+      ${invWuPsTable('Have used', history, needle ? 'No history matches this filter.' : 'No historical process sheets found for this part.')}
+      ${extra}
+    </div>
+  `;
+}
+
+function invWuParentCard(parent, needle) {
+  const key = invNormCode(parent.source_inventory_code);
+  const open = (parent.open_process_sheets || []).filter((ps) => invWuPsMatchesFilter(ps, needle));
+  const history = (parent.historical_process_sheets || []).filter((ps) => invWuPsMatchesFilter(ps, needle));
+  const histTotal = Number(parent.historical_total || history.length);
+  const hasOpen = (parent.open_process_sheets || []).length > 0;
+  const collapsed = invState.whereUsedCollapsed[key] === true
+    || (invState.whereUsedCollapsed[key] !== false && !hasOpen);
+  const extra = histTotal > history.length
+    ? `<p class="inv-wu-more">${histTotal - history.length} older sheet${histTotal - history.length === 1 ? '' : 's'} not listed</p>`
+    : '';
+  return `
+    <article class="inv-wu-parent${collapsed ? ' is-collapsed' : ''}" data-inv-wu-parent="${escapeHtml(key)}">
+      <button type="button" class="inv-wu-parent-toggle" data-inv-wu-toggle="${escapeHtml(key)}" aria-expanded="${collapsed ? 'false' : 'true'}">
+        <span class="inv-wu-parent-id inv-wu-mono">${escapeHtml(parent.source_inventory_code || '—')}</span>
+        <span class="inv-wu-parent-desc">${escapeHtml(parent.part_desc || '')}</span>
+        <span class="inv-wu-parent-counts">${open.length} open · ${histTotal} used · ${(parent.boms || []).length} BOM</span>
+      </button>
+      <div class="inv-wu-parent-body">
+        ${invWuBomChips(parent.boms || [])}
+        ${invWuPsTable('Will use / in progress', open, 'No open process sheets for this parent BOM.')}
+        ${invWuPsTable('Have used', history, 'No historical process sheets listed for this parent.')}
+        ${extra}
+      </div>
+    </article>
+  `;
+}
+
+function invRenderWhereUsedBody(code) {
+  const key = invNormCode(code);
+  const status = invState.whereUsedStatus[key] || 'loading';
+  const data = invState.whereUsedByCode[key];
+  if (status === 'loading' && !data) {
+    return '<p class="inv-lot-empty">Looking up process sheets from BOM…</p>';
+  }
+  if (status === 'error' && !data) {
+    return `<p class="inv-lot-empty">Could not load process-sheet where-used: ${escapeHtml(invState.whereUsedStatus[`${key}_error`] || 'unknown error')}</p>`;
+  }
+  if (!data) {
+    return '<p class="inv-lot-empty">No BOM where-used data yet.</p>';
+  }
+  const needle = String(invState.whereUsedFilter || '').trim().toLowerCase();
+  const parents = (data.parents || []).filter((parent) => invWuParentMatchesFilter(parent, needle));
+  const finished = invWuFinishedBlock(data.as_finished_part || {}, needle);
+  if (!finished && !parents.length) {
+    if (needle) return '<p class="inv-lot-empty">No process sheets or parent parts match this filter.</p>';
+    if (!(data.counts?.parent_parts) && !(data.counts?.makes_this_part_open) && !(data.counts?.makes_this_part_historical)) {
+      return '<p class="inv-lot-empty">No process sheets found. No leaf BOM lists this inventory code, and no open jobs make this part.</p>';
+    }
+    return '<p class="inv-lot-empty">No process sheets matched the current filters.</p>';
+  }
+  return `
+    ${finished}
+    ${parents.length ? `
+      <div class="inv-wu-block">
+        <h4 class="inv-wu-block-title">Uses this material in BOM</h4>
+        <div class="inv-wu-parent-list">${parents.map((parent) => invWuParentCard(parent, needle)).join('')}</div>
+      </div>
+    ` : ''}
+  `;
+}
+
+function invRenderWhereUsedSection(code) {
+  const key = invNormCode(code);
+  const data = invState.whereUsedByCode[key];
+  const counts = data?.counts || {};
+  const countLabel = data
+    ? `${Number(counts.open_ps || 0)} open · ${Number(counts.historical_ps || 0)} used · ${Number(counts.parent_parts || 0)} parent part${Number(counts.parent_parts || 0) === 1 ? '' : 's'}`
+    : 'loading…';
+  return `
+    <section class="mi-detail-section inv-wu-section" data-inv-wu-code="${escapeHtml(String(code || ''))}">
+      <div class="inv-lot-section-head">
+        <h3 class="mi-detail-section-title">Process sheets · BOM where-used</h3>
+        <span class="inv-lot-section-count">${escapeHtml(countLabel)}</span>
+      </div>
+      <p class="inv-wu-note">Parents come from leaf materials in <code>material_per_bom</code>. Open jobs are the live voucher cache; history is ERP process-sheet staging. Sized inventory codes also match the shorter BOM material (for example <code>WHITE ACETAL-NATURAL_D320_220</code> → <code>WHITE ACETAL-NATURAL</code>).</p>
+      <label class="inv-wu-filter">
+        <span>Filter sheets</span>
+        <input id="inv-wu-filter" type="search" value="${escapeHtml(invState.whereUsedFilter || '')}" placeholder="Process sheet, parent part, BOM, S/O…" autocomplete="off">
+      </label>
+      <div id="inv-wu-body">${invRenderWhereUsedBody(code)}</div>
+    </section>
+  `;
+}
+
+const _invWhereUsedPromises = {};
+
+async function invLoadWhereUsed(code) {
+  const target = String(code || '').trim();
+  const key = invNormCode(target);
+  if (!target || !key) return;
+  if (invState.whereUsedByCode[key]) return;
+  if (_invWhereUsedPromises[key]) return _invWhereUsedPromises[key];
+  invState.whereUsedStatus[key] = 'loading';
+  _invWhereUsedPromises[key] = (async () => {
+    try {
+      const params = new URLSearchParams({ code: target });
+      const res = await fetch('/api/inventory-enquiry/where-used?' + params.toString());
+      const data = await res.json();
+      if (!res.ok || data.error || data.ok === false) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      invState.whereUsedByCode[key] = data;
+      invState.whereUsedStatus[key] = 'done';
+    } catch (err) {
+      invState.whereUsedStatus[key] = 'error';
+      invState.whereUsedStatus[`${key}_error`] = err.message || String(err);
+    } finally {
+      delete _invWhereUsedPromises[key];
+    }
+  })();
+  return _invWhereUsedPromises[key];
+}
+
 function invRenderDetail(row, { selectedLotKey = '', selectedLotRef = '' } = {}) {
   const sections = INV_DETAIL_SECTIONS.map((section) => {
     const html = section.fields
@@ -465,7 +709,10 @@ function invRenderDetail(row, { selectedLotKey = '', selectedLotRef = '' } = {})
   const summaries = selectedLotRef
     ? invLotSummaries(row).filter((item) => String(item.reference_no || '').trim() === selectedLotRef)
     : invLotSummaries(row);
-  if (!allLots.length && !invLotSummaries(row).length) return sections;
+  const whereUsedSection = invRenderWhereUsedSection(row.inventory_code);
+  if (!allLots.length && !invLotSummaries(row).length) {
+    return `${sections}${whereUsedSection}`;
+  }
 
   const lotCount = lots.length || summaries.reduce((sum, item) => sum + Number(item.batch_count || 1), 0);
   const refCount = lots.length ? invGroupLotsByRef(lots).length : summaries.length;
@@ -493,7 +740,7 @@ function invRenderDetail(row, { selectedLotKey = '', selectedLotRef = '' } = {})
         ${lotBody}
       </section>
     `;
-  return `${sections}${lotSection}`;
+  return `${sections}${lotSection}${whereUsedSection}`;
 }
 
 function invFindRow(code) {
@@ -603,6 +850,10 @@ async function invOpenRowDetail(row, { lotKey = '', lotRef = '' } = {}) {
     : null;
   invState.selectedLotRef = lotRef || String(lot?.reference_no || '').trim();
   const desc = String(row.main_desc || '').trim();
+  const wuKey = invNormCode(code);
+  if (wuKey && !invState.whereUsedByCode[wuKey] && invState.whereUsedStatus[wuKey] !== 'error') {
+    invState.whereUsedStatus[wuKey] = 'loading';
+  }
   const titleFor = () => (
     invState.selectedLotRef
       ? invState.selectedLotRef
@@ -632,7 +883,10 @@ async function invOpenRowDetail(row, { lotKey = '', lotRef = '' } = {}) {
   };
 
   paint();
-  await invLoadLotsForPart(code);
+  await Promise.all([
+    invLoadLotsForPart(code),
+    invLoadWhereUsed(code),
+  ]);
   if (invState.selectedCode !== code) return;
   const loadedLot = invState.selectedLotKey
     ? invState.lotRows.find((item) => item.lot_key === invState.selectedLotKey)
@@ -1057,6 +1311,10 @@ async function invLoad({ refresh = false } = {}) {
       invState.lotsLoaded = false;
       invState.lotRows = [];
       invState.partLotStatus = {};
+      invState.whereUsedByCode = {};
+      invState.whereUsedStatus = {};
+      invState.whereUsedCollapsed = {};
+      Object.keys(_invWhereUsedPromises).forEach((k) => { delete _invWhereUsedPromises[k]; });
       _invLotsPromise = null;
     }
     if (invState.tableView === 'lot') {
@@ -1137,10 +1395,31 @@ function invBindEvents() {
 
   const detailBody = document.getElementById('inv-detail-body');
   detailBody?.addEventListener('click', async (e) => {
+    const toggle = e.target.closest('[data-inv-wu-toggle]');
+    if (toggle && detailBody.contains(toggle)) {
+      e.preventDefault();
+      const key = invNormCode(toggle.getAttribute('data-inv-wu-toggle'));
+      const card = Array.from(detailBody.querySelectorAll('[data-inv-wu-parent]'))
+        .find((el) => invNormCode(el.getAttribute('data-inv-wu-parent')) === key);
+      const willCollapse = !card?.classList.contains('is-collapsed');
+      invState.whereUsedCollapsed[key] = willCollapse;
+      if (card) {
+        card.classList.toggle('is-collapsed', willCollapse);
+        toggle.setAttribute('aria-expanded', willCollapse ? 'false' : 'true');
+      }
+      return;
+    }
     const tr = e.target.closest('tr[data-lot-key]');
     if (!tr || !detailBody.contains(tr)) return;
     const lot = invFindLot(tr.dataset.lotKey);
     if (lot) await invOpenLotDetail(lot);
+  });
+  detailBody?.addEventListener('input', (e) => {
+    if (e.target.id !== 'inv-wu-filter') return;
+    invState.whereUsedFilter = e.target.value || '';
+    const body = document.getElementById('inv-wu-body');
+    const code = document.querySelector('.inv-wu-section')?.getAttribute('data-inv-wu-code') || invState.selectedCode;
+    if (body) body.innerHTML = invRenderWhereUsedBody(code);
   });
 }
 

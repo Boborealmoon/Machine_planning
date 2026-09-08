@@ -924,7 +924,18 @@ body.qaqc-view {
 
 .fq-table th.fq-col-remarks,
 .fq-table td.fq-col-remarks {
-  display: none;
+  min-width: 11rem;
+  width: 14rem;
+  max-width: 18rem;
+  vertical-align: top;
+}
+
+.fq-table td.fq-col-remarks .fq-cell-remarks {
+  min-width: 0;
+  width: 100%;
+  max-width: none;
+  min-height: 2.4rem;
+  max-height: 5rem;
 }
 
 /* ── Empty / loading ──────────────────────────────────────── */

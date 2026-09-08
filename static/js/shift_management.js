@@ -4,6 +4,10 @@
 
   const SM = (window.SM = window.SM || {});
 
+  function can(flag) {
+    return !!(SM.caps && SM.caps[flag]);
+  }
+
   function toast(msg) {
     const el = document.getElementById("sm-toast");
     if (!el) {
@@ -543,7 +547,9 @@
                   ? '<span class="sm-badge urgent">' + jTickets + " ticket" + (jTickets === 1 ? "" : "s") + "</span>"
                   : "") +
                 "</div>" +
-                '<button type="button" class="sm-btn sm-btn-ghost sm-ops-ticket">Ticket</button>' +
+                (can("can_create_ticket") && can("can_ops_actions")
+                  ? '<button type="button" class="sm-btn sm-btn-ghost sm-ops-ticket">Ticket</button>'
+                  : "") +
                 "</div></div>"
               );
             })
@@ -566,12 +572,14 @@
               : "") +
             "</div>" +
             '<div class="sm-ops-actions">' +
-            '<a class="sm-btn sm-btn-primary" href="' +
-            SM.appPath +
-            "/entry/" +
-            m.machine_id +
-            (ps ? "?ps=" + ps : "") +
-            '">Handover</a>' +
+            (can("can_ops_actions")
+              ? '<a class="sm-btn sm-btn-primary" href="' +
+                SM.appPath +
+                "/entry/" +
+                m.machine_id +
+                (ps ? "?ps=" + ps : "") +
+                '">Handover</a>'
+              : "") +
             "</div></div>" +
             (jobs.length
               ? jobHtml +
@@ -859,9 +867,11 @@
             " · PS " +
             escapeHtml(t.process_sheet_no || t.job_no || "-") +
             "</span></span>" +
-            '<button type="button" class="sm-btn sm-btn-ghost sm-close-ticket" data-id="' +
-            t.ticket_id +
-            '">Close</button>' +
+            (can("can_resolve_ticket")
+              ? '<button type="button" class="sm-btn sm-btn-ghost sm-close-ticket" data-id="' +
+                t.ticket_id +
+                '">Close</button>'
+              : "") +
             "</div>"
           );
         })
@@ -1378,17 +1388,11 @@
           })
           .join("");
         const items = data.handovers || [];
-        list.innerHTML = items.length
+        if (list) {
+          list.innerHTML = items.length
           ? items
               .map(function (h) {
-                const href =
-                  h.status === "pending_ack" || h.status === "disputed"
-                    ? SM.appPath + "/ack/" + h.handover_id
-                    : SM.appPath + "/entry/" + h.machine_id;
-                return (
-                  '<a class="sm-list-item" href="' +
-                  href +
-                  '">' +
+                const inner =
                   "<span><strong>" +
                   escapeHtml(h.machine_no) +
                   "</strong> | " +
@@ -1400,15 +1404,81 @@
                   " | " +
                   escapeHtml(h.status) +
                   "</span></span>" +
-                  badgeForHandover(h) +
-                  "</a>"
-                );
+                  badgeForHandover(h);
+                if (!can("can_ops_actions")) {
+                  return '<div class="sm-list-item">' + inner + "</div>";
+                }
+                const href =
+                  h.status === "pending_ack" || h.status === "disputed"
+                    ? SM.appPath + "/ack/" + h.handover_id
+                    : SM.appPath + "/entry/" + h.machine_id;
+                return '<a class="sm-list-item" href="' + href + '">' + inner + "</a>";
               })
               .join("")
           : '<p class="sm-muted">No handovers for this date yet.</p>';
+        }
+
+        const queueEl = document.getElementById("sm-dash-queue");
+        if (queueEl) {
+          const queue = data.queue || [];
+          const busy = queue.filter(function (row) {
+            return Number(row.queue_count || 0) > 0;
+          });
+          queueEl.innerHTML = busy.length
+            ? busy
+                .map(function (row) {
+                  const head = row.head_job || {};
+                  return (
+                    '<div class="sm-dash-queue-card">' +
+                    "<strong>" +
+                    escapeHtml(row.machine_no) +
+                    "</strong>" +
+                    '<div class="sm-dash-queue-count">' +
+                    escapeHtml(row.queue_count) +
+                    "</div>" +
+                    '<div class="sm-muted">queued job' +
+                    (row.queue_count === 1 ? "" : "s") +
+                    "</div>" +
+                    '<div class="sm-muted">' +
+                    escapeHtml(head.process_sheet_no || head.job_no || "—") +
+                    (head.operation_name ? " · " + escapeHtml(head.operation_name) : "") +
+                    "</div></div>"
+                  );
+                })
+                .join("")
+            : '<p class="sm-muted">No queued jobs for this shift.</p>';
+        }
+
+        const ticketsEl = document.getElementById("sm-dash-tickets");
+        if (ticketsEl) {
+          const tickets = data.open_tickets || [];
+          ticketsEl.innerHTML = tickets.length
+            ? tickets
+                .map(function (t) {
+                  return (
+                    '<div class="sm-list-item"><span><strong>#' +
+                    t.ticket_id +
+                    "</strong> " +
+                    escapeHtml(t.machine_no || "") +
+                    " · " +
+                    escapeHtml(t.category) +
+                    ": " +
+                    escapeHtml(t.title) +
+                    '<br><span class="sm-muted">' +
+                    escapeHtml(t.priority) +
+                    " · " +
+                    escapeHtml(t.status) +
+                    " · PS " +
+                    escapeHtml(t.process_sheet_no || t.job_no || "-") +
+                    "</span></span></div>"
+                  );
+                })
+                .join("")
+            : '<p class="sm-muted">No open tickets.</p>';
+        }
       } catch (err) {
         kpi.innerHTML = "";
-        list.innerHTML = '<p class="sm-muted">' + escapeHtml(err.message) + "</p>";
+        if (list) list.innerHTML = '<p class="sm-muted">' + escapeHtml(err.message) + "</p>";
       }
     }
 
@@ -1419,9 +1489,12 @@
         load();
       });
     });
-    document.getElementById("sm-dash-report").addEventListener("click", function () {
-      downloadReportPdf(dateEl.value, shift || rememberedShift());
-    });
+    const reportBtn = document.getElementById("sm-dash-report");
+    if (reportBtn) {
+      reportBtn.addEventListener("click", function () {
+        downloadReportPdf(dateEl.value, shift || rememberedShift());
+      });
+    }
     dateEl.addEventListener("change", load);
     paintShift();
     load();
@@ -1492,10 +1565,423 @@
       }
     }
     document.getElementById("sm-hist-apply").addEventListener("click", load);
-    document.getElementById("sm-hist-report").addEventListener("click", function () {
-      const shift = document.getElementById("sm-hist-shift").value || rememberedShift();
-      downloadReportPdf(to.value || todayISO(), shift);
+    const histReport = document.getElementById("sm-hist-report");
+    if (histReport) {
+      histReport.addEventListener("click", function () {
+        const shift = document.getElementById("sm-hist-shift").value || rememberedShift();
+        downloadReportPdf(to.value || todayISO(), shift);
+      });
+    }
+    load();
+  }
+
+  async function initJobs() {
+    const list = document.getElementById("sm-jobs-list");
+    if (!list) return;
+    const dateEl = document.getElementById("sm-ops-date");
+    const searchEl = document.getElementById("sm-ops-search");
+    let meta = null;
+    let machines = [];
+    let shift = rememberedShift();
+    const dialog = document.getElementById("sm-ticket-dialog");
+    const form = document.getElementById("sm-ticket-form");
+    if (dateEl) dateEl.value = rememberedDate();
+
+    function paintShiftChips() {
+      document.querySelectorAll("#sm-ops-shift-chips .sm-chip").forEach(function (btn) {
+        btn.classList.toggle("is-active", btn.dataset.shift === shift);
+      });
+    }
+
+    function openTicketDialog(machine, job) {
+      const item = Object.assign({ machine_id: machine.machine_id, machine_no: machine.machine_no }, job || {});
+      document.getElementById("sm-tk-machine-id").value = item.machine_id;
+      document.getElementById("sm-tk-block-id").value = item.block_id || "";
+      document.getElementById("sm-tk-ps").value = item.process_sheet_no || item.source_ps_id || "";
+      document.getElementById("sm-tk-job").value = item.job_no || item.process_sheet_no || "";
+      document.getElementById("sm-ticket-context").textContent =
+        (item.machine_no || "") + " · PS " + (item.process_sheet_no || item.job_no || "-");
+      fillSelect(
+        document.getElementById("sm-tk-category"),
+        (meta && meta.ticket_categories) || ["Other"],
+        (SM.caps && SM.caps.default_ticket_category) || "Other"
+      );
+      document.getElementById("sm-tk-title").value = "";
+      document.getElementById("sm-tk-desc").value = "";
+      document.getElementById("sm-tk-status").hidden = true;
+      if (dialog && dialog.showModal) dialog.showModal();
+    }
+
+    function matchesSearch(machine, q) {
+      if (!q) return true;
+      const hay = [
+        machine.machine_no,
+        (machine.jobs || [])
+          .map(function (j) {
+            return [j.process_sheet_no, j.job_no, j.operation_name].join(" ");
+          })
+          .join(" "),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return hay.indexOf(q) >= 0;
+    }
+
+    function render() {
+      const q = ((searchEl && searchEl.value) || "").trim().toLowerCase();
+      const shown = machines.filter(function (m) {
+        return (m.jobs || []).length && matchesSearch(m, q);
+      });
+      if (!shown.length) {
+        list.innerHTML =
+          '<div class="sm-ops-empty"><p class="sm-muted">' +
+          (machines.length ? "No jobs match that search." : "No jobs on the queue for this shift.") +
+          "</p></div>";
+        return;
+      }
+      list.innerHTML = shown
+        .map(function (m, idx) {
+          return (m.jobs || [])
+            .map(function (job, jIdx) {
+              return (
+                '<article class="sm-job-card" data-machine="' +
+                idx +
+                '" data-job="' +
+                jIdx +
+                '">' +
+                '<div class="sm-job-card-head">' +
+                "<div><strong>" +
+                escapeHtml(m.machine_no) +
+                "</strong>" +
+                '<div class="sm-ops-ps">PS ' +
+                escapeHtml(job.process_sheet_no || job.job_no || "-") +
+                "</div></div>" +
+                (can("can_create_ticket")
+                  ? '<button type="button" class="sm-btn sm-btn-ghost sm-ops-ticket">Ticket</button>'
+                  : "") +
+                "</div>" +
+                '<div class="sm-wi">' +
+                '<div class="sm-wi-title">Work instruction</div>' +
+                "<div>" +
+                escapeHtml(job.operation_name || "Operation") +
+                (job.source_op_no ? " · Op " + escapeHtml(job.source_op_no) : "") +
+                "</div>" +
+                '<div class="sm-muted">Remaining ' +
+                escapeHtml(job.remaining_qty != null ? job.remaining_qty : "-") +
+                " / planned " +
+                escapeHtml(job.scheduled_qty != null ? job.scheduled_qty : "-") +
+                (job.execution_status ? " · " + escapeHtml(job.execution_status) : "") +
+                "</div></div></article>"
+              );
+            })
+            .join("");
+        })
+        .join("");
+      list.querySelectorAll(".sm-ops-ticket").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          const card = btn.closest(".sm-job-card");
+          const machine = shown[Number(card.dataset.machine)];
+          const job = machine.jobs[Number(card.dataset.job)];
+          openTicketDialog(machine, job);
+        });
+      });
+    }
+
+    async function load() {
+      list.innerHTML = '<p class="sm-muted">Loading…</p>';
+      if (dateEl) rememberContext(dateEl.value, shift);
+      try {
+        const q = new URLSearchParams({
+          date: (dateEl && dateEl.value) || rememberedDate(),
+          shift: shift,
+        });
+        const data = await api("/api/shift-management/ops-queue?" + q.toString());
+        meta = data.meta || meta;
+        shift = normalizeShiftClient(data.shift_out || shift);
+        paintShiftChips();
+        machines = data.machines || [];
+        render();
+      } catch (err) {
+        list.innerHTML = '<p class="sm-muted">' + escapeHtml(err.message) + "</p>";
+      }
+    }
+
+    const refresh = document.getElementById("sm-jobs-refresh");
+    if (refresh) refresh.addEventListener("click", load);
+    document.querySelectorAll("#sm-ops-shift-chips .sm-chip").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        shift = btn.dataset.shift;
+        paintShiftChips();
+        load();
+      });
     });
+    if (dateEl) dateEl.addEventListener("change", load);
+    if (searchEl) searchEl.addEventListener("input", render);
+    const cancel = document.getElementById("sm-tk-cancel");
+    if (cancel) {
+      cancel.addEventListener("click", function () {
+        if (dialog) dialog.close();
+      });
+    }
+    if (form) {
+      form.addEventListener("submit", async function (e) {
+        e.preventDefault();
+        const status = document.getElementById("sm-tk-status");
+        try {
+          status.hidden = false;
+          status.textContent = "Creating…";
+          await api("/api/shift-management/tickets", {
+            method: "POST",
+            body: JSON.stringify({
+              machine_id: Number(document.getElementById("sm-tk-machine-id").value),
+              block_id: document.getElementById("sm-tk-block-id").value || null,
+              planner_ps_id: document.getElementById("sm-tk-ps").value,
+              job_no: document.getElementById("sm-tk-job").value,
+              category: document.getElementById("sm-tk-category").value,
+              priority: document.getElementById("sm-tk-priority").value,
+              title: document.getElementById("sm-tk-title").value,
+              description: document.getElementById("sm-tk-desc").value,
+              work_date: (dateEl && dateEl.value) || rememberedDate(),
+              shift_out: shift,
+            }),
+          });
+          toast("Ticket created");
+          if (dialog) dialog.close();
+        } catch (err) {
+          status.hidden = false;
+          status.textContent = err.message;
+        }
+      });
+    }
+    paintShiftChips();
+    load();
+  }
+
+  async function initTickets() {
+    const list = document.getElementById("sm-tickets-list");
+    if (!list) return;
+    const statusEl = document.getElementById("sm-tickets-status");
+    const dateEl = document.getElementById("sm-tickets-date");
+    const dialog = document.getElementById("sm-ticket-dialog");
+    const form = document.getElementById("sm-ticket-form");
+    let meta = null;
+    let queueMachines = [];
+    if (dateEl) dateEl.value = rememberedDate();
+
+    function applyMachineSelect() {
+      const sel = document.getElementById("sm-tk-machine-select");
+      if (!sel) return;
+      const options = [];
+      queueMachines.forEach(function (m) {
+        const jobs = m.jobs || [];
+        if (!jobs.length) {
+          options.push({
+            label: m.machine_no + " · idle",
+            machine_id: m.machine_id,
+            block_id: "",
+            ps: "",
+            job: "",
+          });
+          return;
+        }
+        jobs.forEach(function (job) {
+          options.push({
+            label: m.machine_no + " · PS " + (job.process_sheet_no || job.job_no || "-"),
+            machine_id: m.machine_id,
+            block_id: job.block_id || "",
+            ps: job.process_sheet_no || job.source_ps_id || "",
+            job: job.job_no || job.process_sheet_no || "",
+          });
+        });
+      });
+      sel.innerHTML = options
+        .map(function (o, i) {
+          return (
+            '<option value="' +
+            i +
+            '" data-machine="' +
+            o.machine_id +
+            '" data-block="' +
+            escapeHtml(o.block_id) +
+            '" data-ps="' +
+            escapeHtml(o.ps) +
+            '" data-job="' +
+            escapeHtml(o.job) +
+            '">' +
+            escapeHtml(o.label) +
+            "</option>"
+          );
+        })
+        .join("");
+      sel._opts = options;
+    }
+
+    function syncTicketHidden() {
+      const sel = document.getElementById("sm-tk-machine-select");
+      if (!sel) return;
+      const opt = (sel._opts || [])[Number(sel.value)] || {};
+      document.getElementById("sm-tk-machine-id").value = opt.machine_id || "";
+      document.getElementById("sm-tk-block-id").value = opt.block_id || "";
+      document.getElementById("sm-tk-ps").value = opt.ps || "";
+      document.getElementById("sm-tk-job").value = opt.job || "";
+    }
+
+    async function loadQueue() {
+      try {
+        const q = new URLSearchParams({
+          date: (dateEl && dateEl.value) || rememberedDate(),
+          shift: rememberedShift(),
+        });
+        const data = await api("/api/shift-management/ops-queue?" + q.toString());
+        meta = data.meta || meta;
+        queueMachines = data.machines || [];
+        applyMachineSelect();
+        syncTicketHidden();
+      } catch (_) {
+        queueMachines = [];
+      }
+    }
+
+    async function load() {
+      list.innerHTML = '<p class="sm-muted">Loading…</p>';
+      try {
+        const q = new URLSearchParams();
+        if (statusEl && statusEl.value) q.set("status", statusEl.value);
+        if (dateEl && dateEl.value) q.set("date", dateEl.value);
+        const data = await api("/api/shift-management/tickets?" + q.toString());
+        meta = data.meta || meta;
+        const items = data.items || [];
+        if (!items.length) {
+          list.innerHTML = '<p class="sm-muted">No tickets.</p>';
+          return;
+        }
+        list.innerHTML = items
+          .map(function (t) {
+            const actions =
+              can("can_resolve_ticket") && t.status !== "closed"
+                ? '<div class="sm-ticket-actions">' +
+                  '<button type="button" class="sm-btn sm-btn-ghost sm-ticket-progress" data-id="' +
+                  t.ticket_id +
+                  '">In progress</button>' +
+                  '<button type="button" class="sm-btn sm-btn-primary sm-ticket-close" data-id="' +
+                  t.ticket_id +
+                  '">Resolve</button></div>'
+                : "";
+            return (
+              '<div class="sm-list-item sm-ticket-item">' +
+              "<span><strong>#" +
+              t.ticket_id +
+              "</strong> " +
+              escapeHtml(t.machine_no || "") +
+              " · " +
+              escapeHtml(t.category) +
+              ": " +
+              escapeHtml(t.title) +
+              '<br><span class="sm-muted">' +
+              escapeHtml(t.status) +
+              " · " +
+              escapeHtml(t.priority) +
+              " · PS " +
+              escapeHtml(t.process_sheet_no || t.job_no || "-") +
+              (t.created_by_name ? " · " + escapeHtml(t.created_by_name) : "") +
+              "</span></span>" +
+              actions +
+              "</div>"
+            );
+          })
+          .join("");
+        list.querySelectorAll(".sm-ticket-close").forEach(function (btn) {
+          btn.addEventListener("click", async function () {
+            try {
+              await api("/api/shift-management/tickets/" + btn.dataset.id, {
+                method: "PATCH",
+                body: JSON.stringify({ status: "closed" }),
+              });
+              toast("Ticket resolved");
+              load();
+            } catch (err) {
+              toast(err.message);
+            }
+          });
+        });
+        list.querySelectorAll(".sm-ticket-progress").forEach(function (btn) {
+          btn.addEventListener("click", async function () {
+            try {
+              await api("/api/shift-management/tickets/" + btn.dataset.id, {
+                method: "PATCH",
+                body: JSON.stringify({ status: "in_progress" }),
+              });
+              toast("Marked in progress");
+              load();
+            } catch (err) {
+              toast(err.message);
+            }
+          });
+        });
+      } catch (err) {
+        list.innerHTML = '<p class="sm-muted">' + escapeHtml(err.message) + "</p>";
+      }
+    }
+
+    const refresh = document.getElementById("sm-tickets-refresh");
+    if (refresh) refresh.addEventListener("click", load);
+    if (statusEl) statusEl.addEventListener("change", load);
+    if (dateEl) dateEl.addEventListener("change", load);
+    const newBtn = document.getElementById("sm-tickets-new");
+    if (newBtn) {
+      newBtn.addEventListener("click", async function () {
+        await loadQueue();
+        fillSelect(
+          document.getElementById("sm-tk-category"),
+          (meta && meta.ticket_categories) || ["Other"],
+          (SM.caps && SM.caps.default_ticket_category) || "Other"
+        );
+        document.getElementById("sm-tk-title").value = "";
+        document.getElementById("sm-tk-desc").value = "";
+        document.getElementById("sm-tk-status").hidden = true;
+        if (dialog && dialog.showModal) dialog.showModal();
+      });
+    }
+    const machineSel = document.getElementById("sm-tk-machine-select");
+    if (machineSel) machineSel.addEventListener("change", syncTicketHidden);
+    const cancel = document.getElementById("sm-tk-cancel");
+    if (cancel) {
+      cancel.addEventListener("click", function () {
+        if (dialog) dialog.close();
+      });
+    }
+    if (form) {
+      form.addEventListener("submit", async function (e) {
+        e.preventDefault();
+        syncTicketHidden();
+        const status = document.getElementById("sm-tk-status");
+        try {
+          status.hidden = false;
+          status.textContent = "Creating…";
+          await api("/api/shift-management/tickets", {
+            method: "POST",
+            body: JSON.stringify({
+              machine_id: Number(document.getElementById("sm-tk-machine-id").value),
+              block_id: document.getElementById("sm-tk-block-id").value || null,
+              planner_ps_id: document.getElementById("sm-tk-ps").value,
+              job_no: document.getElementById("sm-tk-job").value,
+              category: document.getElementById("sm-tk-category").value,
+              priority: document.getElementById("sm-tk-priority").value,
+              title: document.getElementById("sm-tk-title").value,
+              description: document.getElementById("sm-tk-desc").value,
+              work_date: (dateEl && dateEl.value) || rememberedDate(),
+              shift_out: rememberedShift(),
+            }),
+          });
+          toast("Ticket created");
+          if (dialog) dialog.close();
+          load();
+        } catch (err) {
+          status.hidden = false;
+          status.textContent = err.message;
+        }
+      });
+    }
     load();
   }
 
@@ -1507,6 +1993,8 @@
     const page = currentPage();
     if (page === "home") initHome();
     else if (page === "ops") initOps();
+    else if (page === "jobs") initJobs();
+    else if (page === "tickets") initTickets();
     else if (page === "entry") initEntry();
     else if (page === "ack") initAck();
     else if (page === "dashboard") initDashboard();

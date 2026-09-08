@@ -1,7 +1,8 @@
 {% extends "shift_management_base.html" %}
-{% block title %}Board — Day/Night HOTO{% endblock %}
+{% block title %}Dashboard — Day/Night HOTO{% endblock %}
 {% block content %}
 <section class="sm-toolbar sm-toolbar-wrap">
+  <h2 class="sm-section-title" style="margin:0">Shift dashboard</h2>
   <label class="sm-field-inline">
     <span>Date</span>
     <input type="date" id="sm-dash-date" />
@@ -11,10 +12,19 @@
     <button type="button" class="sm-chip" data-shift="Day">Day</button>
     <button type="button" class="sm-chip" data-shift="Night">Night</button>
   </div>
+  {% if user_caps and user_caps.can_report %}
   <button type="button" class="sm-btn sm-btn-primary" id="sm-dash-report">Download PDF report</button>
+  {% endif %}
 </section>
 <div id="sm-kpi-grid" class="sm-kpi-grid"></div>
-<h2 class="sm-section-title">Handovers</h2>
+
+<h2 class="sm-section-title">Queued jobs per CNC</h2>
+<div id="sm-dash-queue" class="sm-dash-queue"></div>
+
+<h2 class="sm-section-title">Open tickets</h2>
+<div id="sm-dash-tickets" class="sm-list"></div>
+
+<h2 class="sm-section-title">Handover status</h2>
 <div id="sm-dash-list" class="sm-list"></div>
 {% endblock %}
 {% block scripts %}

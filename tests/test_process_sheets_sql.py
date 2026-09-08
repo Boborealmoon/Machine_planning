@@ -105,6 +105,32 @@ def test_filter_pp_vouchers_by_search_matches_sr_tagged_ids():
     ]
 
 
+def test_search_term_variants_pad_unpad_serials():
+    from app import _search_term_variants
+
+    variants = _search_term_variants("0385")
+    assert "0385" in variants
+    assert "385" not in variants
+    rows = [
+        {"ps_id": "NPS26-0385", "source_ps_id": "NPS26-0385", "pp_partial_no": 1, "ops": []},
+        {"ps_id": "NPS26-385", "source_ps_id": "NPS26-385", "pp_partial_no": 1, "ops": []},
+        {"ps_id": "MPS26-3850", "source_ps_id": "MPS26-3850", "pp_partial_no": 1, "ops": []},
+        {"ps_id": "NPS26-0999", "source_ps_id": "NPS26-0999", "pp_partial_no": 1, "ops": []},
+    ]
+    assert {row["ps_id"] for row in _filter_pp_vouchers_by_search(rows, "0385")} == {
+        "NPS26-0385",
+        "NPS26-385",
+    }
+    assert {row["ps_id"] for row in _filter_pp_vouchers_by_search(rows, "385")} == {
+        "NPS26-0385",
+        "NPS26-385",
+    }
+    assert {row["ps_id"] for row in _filter_pp_vouchers_by_search(rows, "NPS26-0385")} == {
+        "NPS26-0385",
+    }
+    assert _filter_pp_vouchers_by_search(rows, "NPS26-0385")[0]["ps_id"] != "MPS26-3850"
+
+
 def test_inline_live_repair_ids_prefer_sr_hosts_and_donors():
     from app import _pp_vouchers_inline_live_repair_ids
 
@@ -140,3 +166,41 @@ def test_inline_live_repair_ids_prefer_sr_hosts_and_donors():
     assert ids[0] == "N26-[SR]22"
     assert ids[1] == "NPS26-0321-12"
     assert "MPS26-2821-1" in ids
+
+
+def test_cached_catalog_search_filters_without_live_repair():
+    from app import _pp_vouchers_cached_response_rows
+
+    parent = {"ps_id": "NPS26-0361", "source_ps_id": "NPS26-0361", "pp_partial_no": 1, "ops": []}
+    child = {"ps_id": "NPS26-0361-1", "source_ps_id": "NPS26-0361-1", "pp_partial_no": 1, "ops": []}
+    other = {"ps_id": "NPS26-0999", "source_ps_id": "NPS26-0999", "pp_partial_no": 1, "ops": []}
+    attached_ids = []
+
+    def fake_attach(rows):
+        attached_ids.extend(row["ps_id"] for row in rows)
+        return rows
+
+    with (
+        patch(
+            "app._merge_fresh_temp_ps_catalog_entries",
+            side_effect=lambda data, include_completed=False: list(data),
+        ) as merge,
+        patch("planning.assembly_classify.attach_catalog_assembly_line_items", side_effect=fake_attach),
+        patch("planning.catalog.repair_catalog_sidebar_ops") as repair,
+    ):
+        rows = _pp_vouchers_cached_response_rows([parent, child, other], False, "0361")
+
+    assert {row["ps_id"] for row in rows} == {"NPS26-0361", "NPS26-0361-1"}
+    assert set(attached_ids) == {"NPS26-0361", "NPS26-0361-1"}
+    merge.assert_not_called()
+    repair.assert_not_called()
+
+
+def test_catalog_search_attach_subset_includes_children():
+    from app import _catalog_rows_for_search_attach
+
+    parent = {"ps_id": "NPS26-0361", "source_ps_id": "NPS26-0361"}
+    child = {"ps_id": "NPS26-0361-1", "source_ps_id": "NPS26-0361-1"}
+    other = {"ps_id": "NPS26-0999", "source_ps_id": "NPS26-0999"}
+    subset = _catalog_rows_for_search_attach([parent, child, other], [parent])
+    assert {row["ps_id"] for row in subset} == {"NPS26-0361", "NPS26-0361-1"}

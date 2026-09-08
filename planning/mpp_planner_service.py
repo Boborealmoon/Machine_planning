@@ -15,6 +15,7 @@ from .frame_agreement_service import (
     normalize_part_key,
     resolve_fa_mpp_settings,
 )
+from .assembly_classify import is_sr_process_sheet
 from .helpers import rows
 from .machines import fetch_machines
 from .process_sheets import format_planner_ps_id, manual_qty_by_ps_ids
@@ -337,6 +338,7 @@ def _serialize_catalog_mpp_job(
         "machineCategory": compact_text(op.get("machine_category") or "MPP"),
         "status": compact_text(item.get("status") or item.get("planner_status") or ""),
         "isFrameAgreement": is_fa,
+        "isSr": is_sr_process_sheet(source_ps_id),
         "opSeqId": op_seq_id,
         "opNo": op_no,
         "ppPartialNo": pp_partial_no,
@@ -517,9 +519,10 @@ def _load_mpp_planner_process_sheet_rows(
 ) -> list[dict[str, Any]]:
     """Open process sheets with schedulable MPP qty from planner_process_sheet.
 
-    When ``fa_only`` is True (default), only Frame Agreement master-list parts
-    are included. When False, all open PS with MPP-ready qty are included and
-    ``isFrameAgreement`` marks FA membership.
+    When ``fa_only`` is True (default), Frame Agreement master-list parts and
+    service-repair ``[SR]`` sheets (``N26-[SR]22``) are included. When False,
+    all open PS with MPP-ready qty are included and ``isFrameAgreement``
+    marks FA membership.
     """
     raw = rows(
         con.execute(
@@ -554,9 +557,9 @@ def _load_mpp_planner_process_sheet_rows(
     for row in raw:
         inventory_code = compact_text(row.get("inventory_code"))
         is_fa = bool(fa_keys) and is_frame_agreement_part(inventory_code, fa_keys)
-        if fa_only and not is_fa:
-            continue
         source_ps_id = compact_text(row.get("source_ps_id"))
+        if fa_only and not is_fa and not is_sr_process_sheet(source_ps_id):
+            continue
         pp_partial_no = int(row.get("pp_partial_no") or 1)
         partial_key = (source_ps_id, pp_partial_no)
         if partial_key in seen_partials:
@@ -662,9 +665,9 @@ def fetch_mpp_planner_jobs(con, *, fa_only: bool = True) -> list[dict[str, Any]]
     """
     Outstanding process sheets with schedulable MPP ops.
 
-    When ``fa_only`` is True (default), only parts on the Frame Agreement Parts
-    master list are included. When False, all open MPP-ready process sheets are
-    included (FA parts still flagged via ``isFrameAgreement``).
+    When ``fa_only`` is True (default), Frame Agreement parts and ``[SR]``
+    service-repair sheets are included. When False, all open MPP-ready process
+    sheets are included (FA parts still flagged via ``isFrameAgreement``).
     """
     ensure_frame_agreement_schema(con)
     fa_keys = load_frame_agreement_mpp_part_keys(con)

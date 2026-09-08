@@ -548,11 +548,27 @@ function trialBoardOnlyTempCatalogEntries() {
   return [...byId.values()];
 }
 
-/** Catalog rows plus any [Temp] lines visible on the board but absent from the API. */
+/** Catalog rows plus board-only [Temp] lines and active remote search hits. */
 function trialMergedCatalogRows() {
-  const boardTemp = trialBoardOnlyTempCatalogEntries();
-  if (!boardTemp.length) return trialState.catalog || [];
-  return [...(trialState.catalog || []), ...boardTemp];
+  const local = Array.isArray(trialState.catalog) ? trialState.catalog : [];
+  const boardTemp = typeof trialBoardOnlyTempCatalogEntries === 'function'
+    ? trialBoardOnlyTempCatalogEntries()
+    : [];
+  const query = String(trialCatalogSearch || '').trim().toLowerCase();
+  const remote = (query && String(trialCatalogRemoteSearchQuery || '') === query
+    && Array.isArray(trialCatalogRemoteSearchRows))
+    ? trialCatalogRemoteSearchRows
+    : [];
+  if (!boardTemp.length && !remote.length) return local;
+  const seen = new Set(local.map(ps => String(ps?.ps_id || '')));
+  const extra = [];
+  [...boardTemp, ...remote].forEach(ps => {
+    const id = String(ps?.ps_id || '');
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    extra.push(ps);
+  });
+  return extra.length ? [...local, ...extra] : local;
 }
 
 /** Resolve partial number from pp_partial_no and/or ::suffix on any planner id field. */
@@ -807,7 +823,7 @@ function trialHasLiveBlockQueueIndex() {
   return Array.isArray(trialState?.blocks);
 }
 
-/** CNC 35/36/41 also have an MPP planner tab. Main-board lanes are the indicated plan. */
+/** CNC lanes owned by the MPP planner tab — mirrored on the main board (planning/machines.py). */
 const TRIAL_MPP_PLANNER_MACHINE_CODES = new Set(['CNC 35', 'CNC 36', 'CNC 41']);
 
 function trialIsMppPlannerMachine(machineId, machineCode) {
@@ -821,12 +837,13 @@ function trialIsMppPlannerMachine(machineId, machineCode) {
   return String(machine?.machine_category || '').toUpperCase() === 'MPP';
 }
 
-/** Indicated-plan blocks only — exclude leftover MPP-tab cycle mirrors. */
+/** Lane blocks for the main planner board (MPP machines mirror the MPP planner tab). */
 function trialIsMainPlannerLaneBlock(block) {
   if (!block) return false;
-  if (block.is_mpp_planner_mirror) return false;
-  if (block.is_mpp_planner_owned) return false;
+  if (block.is_mpp_planner_mirror) return true;
+  if (trialIsMppPlannerMachine(Number(block.machine_id), block.machine_code)) return true;
   if (String(block.group_type || '').toUpperCase() === 'MPP_CYCLE') return false;
+  if (block.is_mpp_planner_owned) return false;
   const groupLabel = String(block.group_label || '').trim();
   if (/^MPP cycle\b/i.test(groupLabel)) return false;
   const opLabel = String(block.operation_name || '').trim();
@@ -1066,7 +1083,7 @@ function trialMachinistGroupSearchHaystack(group) {
     ? trialSplitPsId(psId)
     : { base: psId, partial: '' };
   const blocks = Array.isArray(group?.blocks) ? group.blocks : [leader];
-  return trialSearchableTokens([
+  const values = [
     psId,
     parts.base,
     parts.partial ? `partial ${parts.partial}` : '',
@@ -1080,15 +1097,19 @@ function trialMachinistGroupSearchHaystack(group) {
       block?.operation_name,
       block?.group_label,
     ]),
-  ]);
+  ];
+  return trialSearchableTokens(values);
 }
 
 function trialMachinistJobMatchesQuery(group, query) {
+  const haystack = trialMachinistGroupSearchHaystack(group);
+  if (typeof trialQueryMatchesSearchTokens === 'function') {
+    return trialQueryMatchesSearchTokens(haystack, query);
+  }
   const rawQuery = String(query || '').trim();
   if (!rawQuery || rawQuery.length < 2) return false;
   const normalizedQuery = trialNormalizeSearchText(rawQuery);
   const rawLower = rawQuery.toLowerCase();
-  const haystack = trialMachinistGroupSearchHaystack(group);
   return haystack.some(token => {
     const text = String(token).toLowerCase();
     const normalized = trialNormalizeSearchText(token);
@@ -1946,11 +1967,12 @@ function trialBlocksGroupedForMachine(machineId) {
   const machineBlocks = trialBlocksForMachine(machineId);
   if (!machineBlocks.length) return [];
 
+  const isMppLane = typeof trialIsMppPlannerMachine === 'function' && trialIsMppPlannerMachine(machineId);
   const summaryByGroupId = new Map(
     (trialState.block_groups || [])
       .filter(g => String(g.machine_id || 0) === String(machineId) && Number(g.group_id || 0) > 0)
-      .filter(g => String(g.group_type || '').toUpperCase() !== 'MPP_CYCLE')
-      .filter(g => !/^MPP cycle\b/i.test(String(g.group_label || '').trim()))
+      .filter(g => isMppLane || String(g.group_type || '').toUpperCase() !== 'MPP_CYCLE')
+      .filter(g => isMppLane || !/^MPP cycle\b/i.test(String(g.group_label || '').trim()))
       .map(g => [String(g.group_id), g])
   );
 

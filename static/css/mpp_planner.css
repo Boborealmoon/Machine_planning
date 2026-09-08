@@ -1522,6 +1522,61 @@
 }
 
 .mpp-queue-row--day {
+  border-color: rgba(217, 119, 6, 0.55);
+}
+
+.mpp-queue-row--night {
+  border-color: rgba(29, 78, 216, 0.45);
+}
+
+.mpp-queue-row.is-current {
+  box-shadow: inset 3px 0 0 #0e7490;
+}
+
+.mpp-queue-row--nested {
+  border-width: 1px;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.mpp-queue-run {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 2px solid rgba(14, 116, 144, 0.28);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(14, 116, 144, 0.08), #fff 42px);
+}
+
+.mpp-queue-run--day {
+  border-color: rgba(217, 119, 6, 0.5);
+}
+
+.mpp-queue-run--night {
+  border-color: rgba(29, 78, 216, 0.42);
+}
+
+.mpp-queue-run.is-current {
+  box-shadow: inset 3px 0 0 #0e7490;
+}
+
+.mpp-queue-run .mpp-queue-row-main {
+  min-width: 0;
+}
+
+.mpp-queue-run .mpp-queue-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.mpp-queue-run-children {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(14, 116, 144, 0.22);
+}
   border-color: rgba(234, 88, 12, 0.45);
 }
 

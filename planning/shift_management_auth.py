@@ -18,7 +18,7 @@ from flask import (
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from .helpers import one, planner_db, rows
+from .helpers import one, planner_db, planner_try_savepoint, rows
 from .utils import compact_text
 
 logger = logging.getLogger(__name__)
@@ -76,23 +76,14 @@ def ensure_shift_mgmt_auth_tables(con) -> None:
 
 
 def seed_demo_users_if_empty(con) -> None:
-    """Seed op1 / op2 / sup1 (PIN 1234) when no approved users exist."""
-    row = one(
-        con.execute(
-            """
-            SELECT COUNT(*)::int AS n
-            FROM public.shift_mgmt_users
-            WHERE status = 'approved'
-            """
-        )
-    )
-    if row and int(row.get("n") or 0) > 0:
-        return
+    """Seed demo accounts (PIN 1234) when those usernames are missing."""
     pin_hash = generate_password_hash("1234")
     for username, display, role, shift in (
         ("op1", "Operator One", "operator", "Day"),
         ("op2", "Operator Two", "operator", "Night"),
         ("sup1", "Supervisor", "supervisor", "Day"),
+        ("qc1", "Quality", "quality", "Day"),
+        ("adm1", "Admin", "admin", "Day"),
     ):
         existing = one(
             con.execute(
@@ -105,14 +96,32 @@ def seed_demo_users_if_empty(con) -> None:
         )
         if existing:
             continue
-        con.execute(
-            """
-            INSERT INTO public.shift_mgmt_users
-                (username, display_name, password_hash, role, default_shift, status, approved_at)
-            VALUES (%s, %s, %s, %s, %s, 'approved', NOW())
-            """,
-            (username, display, pin_hash, role, shift),
-        )
+
+        def _insert(shift_val=shift):
+            con.execute(
+                """
+                INSERT INTO public.shift_mgmt_users
+                    (username, display_name, password_hash, role, default_shift, status, approved_at)
+                VALUES (%s, %s, %s, %s, %s, 'approved', NOW())
+                """,
+                (username, display, pin_hash, role, shift_val),
+            )
+
+        # Older DBs may still CHECK default_shift IN ('A','B','C'); NULL is always valid.
+        if planner_try_savepoint(con, f"sm_seed_{username}", _insert, default="fail") == "fail":
+            legacy = "A" if shift == "Day" else "B"
+            if planner_try_savepoint(
+                con,
+                f"sm_seed_{username}_legacy",
+                lambda legacy=legacy: _insert(legacy),
+                default="fail",
+            ) == "fail":
+                planner_try_savepoint(
+                    con,
+                    f"sm_seed_{username}_null",
+                    lambda: _insert(None),
+                    default="fail",
+                )
 
 
 def is_shift_mgmt_auth_public_path(path: str) -> bool:

@@ -10,6 +10,10 @@ let trialState = {
 let trialDragPayload = null;
 let trialCatalogSearch = '';
 let trialCatalogSearchTimer = null;
+let trialCatalogRemoteSearchQuery = '';
+let trialCatalogRemoteSearchRows = [];
+let trialCatalogRemoteSearchDone = true;
+let trialCatalogRemoteSearchGen = 0;
 /** Machinist board job queue search (locate position on lanes). */
 let trialMachinistJobSearch = '';
 let trialMachinistJobSearchTimer = null;

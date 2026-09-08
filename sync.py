@@ -134,8 +134,23 @@ def _planner_set_timeout(cur) -> None:
     cur.execute(f"SET LOCAL lock_timeout = '{PLANNER_LOCK_TIMEOUT_MS}'")
 
 
+def _is_lock_timeout(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "lock timeout" in text or "lock_not_available" in text
+
+
+# REST delete+insert commits the wipe before inserts finish. Never use it for
+# tables the QAQC queue reads live — a 2-minute partial reload shows wrong WO stages.
+_REST_UNSAFE_STAGING_TABLES = frozenset({"mfg_wo_status", "pp_vouchers_cache"})
+
+
 def _planner_reload(table: str, columns: list, rows: list) -> int:
-    """TRUNCATE live table and insert rows via SUPA_DB_URL."""
+    """Replace live table contents in one transaction via SUPA_DB_URL.
+
+    DELETE + INSERT (not TRUNCATE) so concurrent SELECTs keep seeing the old
+    rows until COMMIT. TRUNCATE needs AccessExclusiveLock and fights finishing-
+    queue reads, which used to trip lock_timeout and fall back to REST.
+    """
     from psycopg2.extras import execute_values
 
     from db import planner_get_conn, planner_release_conn
@@ -145,7 +160,7 @@ def _planner_reload(table: str, columns: list, rows: list) -> int:
     try:
         with conn.cursor() as cur:
             _planner_set_timeout(cur)
-            cur.execute(f"TRUNCATE {live}")
+            cur.execute(f"DELETE FROM {live}")
             if rows:
                 col_list = ", ".join(columns)
                 insert_sql = f"INSERT INTO {live} ({col_list}) VALUES %s"
@@ -169,15 +184,32 @@ def _planner_reload(table: str, columns: list, rows: list) -> int:
 def _staging_reload(table: str, clear_col: str, columns: list, rows: list) -> str:
     """Prefer direct Postgres via SUPA_DB_URL; fall back to REST delete+insert."""
     if _planner_db_available():
-        try:
-            _planner_reload(table, columns, rows)
-            return RELOAD_DIRECT_POSTGRES
-        except Exception as exc:
-            log.warning(
-                "direct Postgres reload failed for %s (%s); using REST delete+insert",
-                table,
-                exc,
-            )
+        last_exc: BaseException | None = None
+        for attempt in range(3):
+            try:
+                _planner_reload(table, columns, rows)
+                return RELOAD_DIRECT_POSTGRES
+            except Exception as exc:
+                last_exc = exc
+                if attempt < 2 and _is_lock_timeout(exc):
+                    log.warning(
+                        "direct Postgres reload lock timeout for %s (attempt %d); retrying",
+                        table,
+                        attempt + 1,
+                    )
+                    time.sleep(2)
+                    continue
+                break
+        if table in _REST_UNSAFE_STAGING_TABLES:
+            raise RuntimeError(
+                f"direct Postgres reload failed for {table}; refusing REST delete+insert "
+                f"because it leaves the live table empty/partial ({last_exc})"
+            ) from last_exc
+        log.warning(
+            "direct Postgres reload failed for %s (%s); using REST delete+insert",
+            table,
+            last_exc,
+        )
     _supa_reload(table, clear_col, columns, rows)
     return RELOAD_REST_DELETE_INSERT
 
@@ -1374,7 +1406,7 @@ def get_pp_staging_status() -> dict:
         "cooldown_secs": SYNC_COOLDOWN_SECS,
         "direct_postgres_available": _planner_db_available(),
         "reload_modes": {
-            RELOAD_DIRECT_POSTGRES: "TRUNCATE + insert via SUPA_DB_URL",
+            RELOAD_DIRECT_POSTGRES: "DELETE + insert via SUPA_DB_URL (one transaction)",
             RELOAD_REST_DELETE_INSERT: "REST delete all rows then insert",
         },
     }

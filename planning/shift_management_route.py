@@ -11,9 +11,9 @@ from .helpers import planner_db
 from .shift_management_auth import (
     SHIFT_MGMT_LOGIN_PATH,
     current_shift_mgmt_user,
-    shift_mgmt_user_authenticated,
 )
 from .shift_management_report import build_shift_report_pdf
+from .shift_management_roles import capabilities, has_cap, home_path, nav_items
 from .shift_management_service import (
     acknowledge_handover,
     add_handover_comment,
@@ -72,14 +72,26 @@ def _require_user():
     return user
 
 
+def _require_cap(flag: str):
+    user = _require_user()
+    if not user:
+        return None, jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    if not has_cap(user, flag):
+        return None, jsonify({"error": "not allowed"}), 403
+    return user, None, None
+
+
 def _page_ctx(**extra):
     user = current_shift_mgmt_user() or {}
+    caps = capabilities(user)
     return {
         "app_path": SHIFT_MGMT_PATH,
         "user_display": compact_text(user.get("display_name"))
         or compact_text(user.get("username"))
         or "",
         "user_role": compact_text(user.get("role")) or "operator",
+        "user_caps": caps,
+        "nav_items": nav_items(user, SHIFT_MGMT_PATH),
         "default_shift": normalize_shift(
             user.get("default_shift") or meta_constants()["guess_shift"]
         ),
@@ -87,43 +99,74 @@ def _page_ctx(**extra):
     }
 
 
+def _page_or_home(flag: str, template: str, **extra):
+    user = current_shift_mgmt_user()
+    if not user:
+        return redirect(SHIFT_MGMT_LOGIN_PATH)
+    if not has_cap(user, flag):
+        return redirect(home_path(user, SHIFT_MGMT_PATH))
+    return render_template(template, **_page_ctx(**extra))
+
+
 # -- Pages ------------------------------------------------------------------
 
 
 @shift_mgmt_bp.get(SHIFT_MGMT_PATH)
 def shift_mgmt_home():
-    return render_template("shift_management_home.html", **_page_ctx(page="home"))
+    user = current_shift_mgmt_user()
+    if not user:
+        return redirect(SHIFT_MGMT_LOGIN_PATH)
+    return redirect(home_path(user, SHIFT_MGMT_PATH))
 
 
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/ops")
 def shift_mgmt_ops():
-    return render_template("shift_management_ops.html", **_page_ctx(page="ops"))
+    return _page_or_home("can_view_ops", "shift_management_ops.html", page="ops")
+
+
+@shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/jobs")
+def shift_mgmt_jobs():
+    return _page_or_home("can_view_jobs", "shift_management_jobs.html", page="jobs")
+
+
+@shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/tickets")
+def shift_mgmt_tickets():
+    return _page_or_home("can_view_tickets", "shift_management_tickets.html", page="tickets")
+
+
+@shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/machines")
+def shift_mgmt_machines():
+    return _page_or_home("can_view_machines", "shift_management_home.html", page="home")
 
 
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/entry/<int:machine_id>")
 def shift_mgmt_entry(machine_id: int):
-    return render_template(
+    return _page_or_home(
+        "can_handover",
         "shift_management_entry.html",
-        **_page_ctx(page="entry", machine_id=machine_id),
+        page="entry",
+        machine_id=machine_id,
     )
 
 
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/ack/<int:handover_id>")
 def shift_mgmt_ack(handover_id: int):
-    return render_template(
+    return _page_or_home(
+        "can_handover",
         "shift_management_ack.html",
-        **_page_ctx(page="ack", handover_id=handover_id),
+        page="ack",
+        handover_id=handover_id,
     )
 
 
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/dashboard")
 def shift_mgmt_dashboard():
-    return render_template("shift_management_dashboard.html", **_page_ctx(page="dashboard"))
+    return _page_or_home("can_view_dashboard", "shift_management_dashboard.html", page="dashboard")
 
 
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/history")
 def shift_mgmt_history():
-    return render_template("shift_management_history.html", **_page_ctx(page="history"))
+    return _page_or_home("can_view_history", "shift_management_history.html", page="history")
 
 
 if SHIFT_MGMT_PATH != _DEFAULT_SHIFT_MGMT_PATH:
@@ -138,16 +181,20 @@ if SHIFT_MGMT_PATH != _DEFAULT_SHIFT_MGMT_PATH:
 
 @shift_mgmt_bp.get("/api/shift-management/meta")
 def api_meta():
-    if not shift_mgmt_user_authenticated():
+    user = _require_user()
+    if not user:
         return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
-    return jsonify(meta_constants())
+    payload = meta_constants()
+    payload["caps"] = capabilities(user)
+    payload["home"] = home_path(user, SHIFT_MGMT_PATH)
+    return jsonify(payload)
 
 
 @shift_mgmt_bp.get("/api/shift-management/machines")
 def api_machines():
-    user = _require_user()
-    if not user:
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_view_machines")
+    if err:
+        return err, status
     work_date = _parse_date(request.args.get("date"))
     shift_out = normalize_shift(
         request.args.get("shift") or user.get("default_shift") or meta_constants()["guess_shift"]
@@ -179,6 +226,8 @@ def api_ops_queue():
     user = _require_user()
     if not user:
         return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    if not (has_cap(user, "can_view_ops") or has_cap(user, "can_view_jobs")):
+        return jsonify({"error": "not allowed"}), 403
     work_date = _parse_date(request.args.get("date"))
     shift_out = normalize_shift(
         request.args.get("shift") or user.get("default_shift") or meta_constants()["guess_shift"]
@@ -195,9 +244,9 @@ def api_ops_queue():
 
 @shift_mgmt_bp.post("/api/shift-management/handovers")
 def api_create_or_get_handover():
-    user = _require_user()
-    if not user:
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_handover")
+    if err:
+        return err, status
     data = request.get_json(silent=True) or {}
     work_date = _parse_date(data.get("work_date") or data.get("date"))
     shift_out = normalize_shift(data.get("shift_out") or data.get("shift") or "Day")
@@ -226,8 +275,9 @@ def api_create_or_get_handover():
 
 @shift_mgmt_bp.get("/api/shift-management/handovers/<int:handover_id>")
 def api_get_handover(handover_id: int):
-    if not shift_mgmt_user_authenticated():
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_handover")
+    if err:
+        return err, status
     try:
         with planner_db() as con:
             ensure_shift_mgmt_schema(con)
@@ -242,9 +292,9 @@ def api_get_handover(handover_id: int):
 
 @shift_mgmt_bp.patch("/api/shift-management/handovers/<int:handover_id>")
 def api_patch_handover(handover_id: int):
-    user = _require_user()
-    if not user:
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_handover")
+    if err:
+        return err, status
     data = request.get_json(silent=True) or {}
     try:
         with planner_db() as con:
@@ -264,9 +314,9 @@ def api_patch_handover(handover_id: int):
 
 @shift_mgmt_bp.post("/api/shift-management/handovers/<int:handover_id>/comments")
 def api_add_handover_comment(handover_id: int):
-    user = _require_user()
-    if not user:
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_handover")
+    if err:
+        return err, status
     data = request.get_json(silent=True) or {}
     try:
         with planner_db() as con:
@@ -285,9 +335,9 @@ def api_add_handover_comment(handover_id: int):
 
 @shift_mgmt_bp.post("/api/shift-management/handovers/<int:handover_id>/submit")
 def api_submit_handover(handover_id: int):
-    user = _require_user()
-    if not user:
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_handover")
+    if err:
+        return err, status
     try:
         with planner_db() as con:
             ensure_shift_mgmt_schema(con)
@@ -306,9 +356,9 @@ def api_submit_handover(handover_id: int):
 
 @shift_mgmt_bp.post("/api/shift-management/handovers/<int:handover_id>/acknowledge")
 def api_ack_handover(handover_id: int):
-    user = _require_user()
-    if not user:
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_handover")
+    if err:
+        return err, status
     data = request.get_json(silent=True) or {}
     try:
         with planner_db() as con:
@@ -328,9 +378,9 @@ def api_ack_handover(handover_id: int):
 
 @shift_mgmt_bp.post("/api/shift-management/handovers/<int:handover_id>/dispute")
 def api_dispute_handover(handover_id: int):
-    user = _require_user()
-    if not user:
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_handover")
+    if err:
+        return err, status
     data = request.get_json(silent=True) or {}
     try:
         with planner_db() as con:
@@ -350,15 +400,18 @@ def api_dispute_handover(handover_id: int):
 
 @shift_mgmt_bp.get("/api/shift-management/tickets")
 def api_list_tickets():
-    user = _require_user()
-    if not user:
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_view_tickets")
+    if err:
+        return err, status
     machine_id = request.args.get("machine_id")
     try:
         mid = int(machine_id) if machine_id else None
     except ValueError:
         mid = None
     work_date = request.args.get("date") or request.args.get("work_date")
+    created_by = None
+    if not has_cap(user, "can_review_ticket"):
+        created_by = int(user["user_id"])
     try:
         with planner_db() as con:
             ensure_shift_mgmt_schema(con)
@@ -370,6 +423,7 @@ def api_list_tickets():
                 or None,
                 work_date=_parse_date(work_date) if work_date else None,
                 shift_out=compact_text(request.args.get("shift")) or None,
+                created_by=created_by,
             )
     except Exception as exc:
         logger.exception("list tickets failed")
@@ -379,9 +433,9 @@ def api_list_tickets():
 
 @shift_mgmt_bp.post("/api/shift-management/tickets")
 def api_create_ticket():
-    user = _require_user()
-    if not user:
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_create_ticket")
+    if err:
+        return err, status
     data = request.get_json(silent=True) or {}
     try:
         with planner_db() as con:
@@ -397,8 +451,9 @@ def api_create_ticket():
 
 @shift_mgmt_bp.get("/api/shift-management/tickets/<int:ticket_id>")
 def api_get_ticket(ticket_id: int):
-    if not shift_mgmt_user_authenticated():
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_view_tickets")
+    if err:
+        return err, status
     try:
         with planner_db() as con:
             ensure_shift_mgmt_schema(con)
@@ -408,15 +463,21 @@ def api_get_ticket(ticket_id: int):
         return jsonify({"error": str(exc)}), 500
     if not ticket:
         return jsonify({"error": "not found"}), 404
+    if not has_cap(user, "can_review_ticket") and int(ticket.get("created_by") or 0) != int(
+        user["user_id"]
+    ):
+        return jsonify({"error": "not found"}), 404
     return jsonify({"ticket": ticket})
 
 
 @shift_mgmt_bp.patch("/api/shift-management/tickets/<int:ticket_id>")
 def api_patch_ticket(ticket_id: int):
-    user = _require_user()
-    if not user:
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_view_tickets")
+    if err:
+        return err, status
     data = request.get_json(silent=True) or {}
+    if "status" in data and not has_cap(user, "can_resolve_ticket"):
+        return jsonify({"error": "not allowed to resolve tickets"}), 403
     try:
         with planner_db() as con:
             ensure_shift_mgmt_schema(con)
@@ -435,9 +496,9 @@ def api_patch_ticket(ticket_id: int):
 
 @shift_mgmt_bp.post("/api/shift-management/tickets/<int:ticket_id>/comments")
 def api_add_ticket_comment(ticket_id: int):
-    user = _require_user()
-    if not user:
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_view_tickets")
+    if err:
+        return err, status
     data = request.get_json(silent=True) or {}
     try:
         with planner_db() as con:
@@ -456,8 +517,9 @@ def api_add_ticket_comment(ticket_id: int):
 
 @shift_mgmt_bp.get("/api/shift-management/dashboard")
 def api_dashboard():
-    if not shift_mgmt_user_authenticated():
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_view_dashboard")
+    if err:
+        return err, status
     work_date = _parse_date(request.args.get("date"))
     shift = compact_text(request.args.get("shift")) or None
     try:
@@ -472,8 +534,9 @@ def api_dashboard():
 
 @shift_mgmt_bp.get("/api/shift-management/history")
 def api_history():
-    if not shift_mgmt_user_authenticated():
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_view_history")
+    if err:
+        return err, status
     machine_id = request.args.get("machine_id")
     try:
         mid = int(machine_id) if machine_id else None
@@ -500,8 +563,9 @@ def api_history():
 
 @shift_mgmt_bp.get("/api/shift-management/report.pdf")
 def api_report_pdf():
-    if not shift_mgmt_user_authenticated():
-        return jsonify({"error": "login required", "login": SHIFT_MGMT_LOGIN_PATH}), 401
+    user, err, status = _require_cap("can_report")
+    if err:
+        return err, status
     work_date = _parse_date(request.args.get("date"))
     shift_out = normalize_shift(request.args.get("shift") or meta_constants()["guess_shift"])
     try:

@@ -643,6 +643,77 @@ def test_overlay_parent_uses_voucher_notes_not_child_sheet(monkeypatch):
     assert pp["mtl_part_order"] == "parent"
 
 
+def test_queued_machines_overlay_matches_sheet_voucher_and_case():
+    from planning.sales_orders_route import _apply_queued_machines_overlay
+
+    orders = [
+        {
+            "pp_vouchers": [
+                {
+                    "process_sheet_no": "nps20-0358",
+                    "pp_voucher_no": "PP/1",
+                    "partials": [
+                        {"pp_partial_no": 1},
+                        {"pp_partial_no": 2},
+                    ],
+                },
+                {
+                    "process_sheet_no": "PP/2",
+                    "pp_voucher_no": "NPS20-0400",
+                    "partials": [],
+                },
+            ]
+        }
+    ]
+    by_canonical = {
+        "NPS20-0358": ["CNC 21"],
+        "NPS20-0358::2": ["CNC 30"],
+        "NPS20-0400": ["CNC 12"],
+    }
+    _apply_queued_machines_overlay(orders, by_canonical)
+    first = orders[0]["pp_vouchers"][0]
+    assert first["queued_machines"] == ["CNC 21", "CNC 30"]
+    assert first["partials"][0]["queued_machines"] == ["CNC 21"]
+    assert first["partials"][1]["queued_machines"] == ["CNC 30"]
+    second = orders[0]["pp_vouchers"][1]
+    assert second["queued_machines"] == ["CNC 12"]
+    assert second["queued_machines_by_partial"]["1"] == ["CNC 12"]
+
+
+def test_overlay_planner_edits_applies_queued_cnc(monkeypatch):
+    from planning.sales_orders_route import _overlay_planner_edits
+
+    cached = {
+        "active": [
+            {
+                "sales_order_no": "SO/1",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "PP/1",
+                        "process_sheet_no": "NPS20-0358",
+                        "queued_machines": [],
+                        "partials": [{"pp_partial_no": 1, "queued_machines": []}],
+                    }
+                ],
+            }
+        ],
+        "complete": [],
+    }
+    monkeypatch.setattr("planning.sales_orders_route._load_notes_map", lambda _ids: {})
+    monkeypatch.setattr("planning.sales_orders_route._load_material_in_overlay", lambda _ids: {})
+    monkeypatch.setattr(
+        "planning.sales_orders_route._load_queued_machines_by_canonical_ps",
+        lambda: {"NPS20-0358": ["CNC 21"]},
+    )
+    monkeypatch.setattr("planning.sales_orders_route._apply_proposed_cnc_overlay", lambda _orders: None)
+    monkeypatch.setattr("planning.sales_orders_route._load_program_finish_overlay", lambda _ids: {})
+
+    payload = _overlay_planner_edits(cached)
+    pp = payload["active"][0]["pp_vouchers"][0]
+    assert pp["queued_machines"] == ["CNC 21"]
+    assert pp["partials"][0]["queued_machines"] == ["CNC 21"]
+
+
 def test_patch_sales_orders_pp_notes_matches_child_process_sheet(monkeypatch, tmp_path):
     monkeypatch.setattr(erp_route_cache, "_CACHE_DIR", tmp_path)
     key = _sales_orders_cache_key("active", lite=True)

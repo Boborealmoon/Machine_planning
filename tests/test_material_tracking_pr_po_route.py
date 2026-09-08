@@ -119,6 +119,9 @@ class MaterialTrackingPrPoRouteTests(unittest.TestCase):
         self.assertIn("Material need", html)
         self.assertIn('data-sol-view="sr"', html)
         self.assertIn('id="sol-sr-count"', html)
+        self.assertIn('id="sol-notif"', html)
+        self.assertIn('id="sol-notif-btn"', html)
+        self.assertIn('New S/O &amp; process sheets', html)
 
 
 if __name__ == "__main__":

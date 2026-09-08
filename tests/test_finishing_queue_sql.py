@@ -17,6 +17,10 @@ def test_finishing_queue_sql_scopes_distinct_on_to_finishing_candidates():
     assert sql.count("%s") == 2 + len(PP_VOUCHER_PS_ID_PREFIXES) + 1
     assert "final insp%%" in lowered
     assert "final ispection%%" in lowered
+    # Prefer the main WO (highest qty) so qty=1 rework rows with inverted stage_no
+    # cannot steal "current stage" from Deburring/FI.
+    assert "coalesce(ws.wo_qty_required, 0) desc" in lowered
+    assert "coalesce(ws.total_acc_qty_produced, 0) desc" not in lowered
 
     stage_list = list(FINISHING_STAGE_DESCS)
     assert params[0] == stage_list

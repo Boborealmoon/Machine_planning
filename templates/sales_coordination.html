@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Sales Coordination{% endblock %}
+{% block favicon %}
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-sales-coordination.svg') }}" />
+{% endblock %}
 {% block body_class %}sc-view{% endblock %}
 {% block main_class %}app-main--sc{% endblock %}
 {% block extra_css %}

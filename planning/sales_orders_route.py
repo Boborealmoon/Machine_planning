@@ -1477,6 +1477,16 @@ def _apply_stage_overlay(
                 partial.update(overlay.get((base, partial_no), fallback))
 
 
+def _pp_queue_ps_bases(pp: dict[str, Any]) -> list[str]:
+    """Process-sheet and PP voucher ids that may appear on planner_operation."""
+    bases: list[str] = []
+    for raw in (pp.get("process_sheet_no"), pp.get("pp_voucher_no")):
+        base = _ps_base_id(raw or "")
+        if base and base not in bases:
+            bases.append(base)
+    return bases
+
+
 def _apply_queued_machines_overlay(
     orders: list[dict[str, Any]],
     by_canonical: dict[str, list[str]],
@@ -1485,16 +1495,23 @@ def _apply_queued_machines_overlay(
 
     for order in orders:
         for pp in order.get("pp_vouchers") or []:
-            base = _pp_ps_base(pp)
+            bases = _pp_queue_ps_bases(pp)
             partial_rows = pp.get("partials") or []
             if not partial_rows:
                 partial_rows = [{"pp_partial_no": 1}]
             all_machines: list[str] = []
             by_partial: dict[str, list[str]] = {}
             for partial in partial_rows:
-                partial_no = int(partial.get("pp_partial_no") or 1)
-                ps_id = format_planner_ps_id(base, partial_no)
-                machines = _machines_for_planner_ps_id(by_canonical, ps_id)
+                try:
+                    partial_no = max(1, int(partial.get("pp_partial_no") or 1))
+                except (TypeError, ValueError):
+                    partial_no = 1
+                machines: list[str] = []
+                for base in bases:
+                    ps_id = format_planner_ps_id(base, partial_no)
+                    for machine in _machines_for_planner_ps_id(by_canonical, ps_id):
+                        if machine not in machines:
+                            machines.append(machine)
                 partial["queued_machines"] = machines
                 by_partial[str(partial_no)] = machines
                 for machine in machines:
@@ -1887,12 +1904,13 @@ def _payload_orders(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _overlay_planner_edits(payload: dict[str, Any]) -> dict[str, Any]:
-    """Re-apply planner notes / material-in / NPI Proposed CNC / programme finish.
+    """Re-apply planner notes / material-in / queued CNC / NPI Proposed CNC / programme finish.
 
-    Material dates live in planner_so_pp_notes. NPI Machine (CNC) is keyed by
-    part number. Programme finish is the NPI/FA New parts date. The ERP
-    snapshot is cached, so without this overlay a reload shows empty Material
-    in / Proposed CNC / Programme finish cells until rebuild.
+    Material dates live in planner_so_pp_notes. Queued CNC is the live planner
+    queue. NPI Machine (CNC) is keyed by part number. Programme finish is the
+    NPI/FA New parts date. The ERP snapshot is cached, so without this overlay
+    a reload shows empty Material in / Queued CNC / Proposed CNC / Programme
+    finish cells until rebuild.
     """
     if not isinstance(payload, dict):
         return payload
@@ -1916,6 +1934,7 @@ def _overlay_planner_edits(payload: dict[str, Any]) -> dict[str, Any]:
     material_in_overlay = _load_material_in_overlay(process_sheets)
     if material_in_overlay is not None:
         _apply_material_in_overlay(orders, material_in_overlay)
+    _apply_queued_machines_overlay(orders, _load_queued_machines_by_canonical_ps())
     _apply_proposed_cnc_overlay(orders)
     program_finish_overlay = _load_program_finish_overlay(process_sheets)
     if program_finish_overlay is not None:

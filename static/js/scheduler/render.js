@@ -2377,8 +2377,8 @@ function renderTrialMppMachinesToggle() {
     ? (t ? t('mpp_lanes_on') : 'MPP lanes on')
     : (t ? t('mpp_lanes_show') : 'Show MPP lanes');
   const title = visible
-    ? (t ? t('mpp_lanes_on_title') : 'Hide CNC 35, 36, and 41 plan lanes')
-    : (t ? t('mpp_lanes_show_title') : 'Show CNC 35, 36, and 41 plan lanes');
+    ? (t ? t('mpp_lanes_on_title') : 'Hide CNC 35, 36, and 41 MPP lanes')
+    : (t ? t('mpp_lanes_show_title') : 'Show CNC 35, 36, and 41 MPP lanes');
   const sectionLabel = t ? t('mpp_label') : 'MPP';
   return `
     <div class="trial-filter-inline trial-filter-section-mpp">
@@ -2401,6 +2401,10 @@ function trialIsMppMirrorDisplayGroup(group, leader = null) {
   if (String(group?.group_type || head?.group_type || '').toUpperCase() === 'MPP_CYCLE') return true;
   const label = String(group?.group_label || group?.operation_label || head?.group_label || '').trim();
   if (/^MPP cycle\b/i.test(label)) return true;
+  if (typeof trialIsMppPlannerMachine === 'function'
+    && trialIsMppPlannerMachine(Number(head?.machine_id || group?.machine_id || 0), head?.machine_code)) {
+    return true;
+  }
   return false;
 }
 
@@ -2414,6 +2418,46 @@ function trialMppOriginBadgeHtml(options = {}) {
     : 'MPP';
   const cls = compact ? 'trial-mpp-origin-badge' : 'trial-mpp-origin-badge trial-mpp-origin-badge--lane';
   return `<span class="${cls}" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+}
+
+function trialMppFmtDuration(minutes) {
+  const m = Math.max(0, Math.round(Number(minutes) || 0));
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  if (h <= 0) return `${r} min`;
+  return r ? `${h} hr ${r} min` : `${h} hr`;
+}
+
+function trialMppGroupDurationMinutes(group) {
+  const leader = group?.leader || group;
+  const startRaw = (typeof trialBlockQueuedAt === 'function' ? trialBlockQueuedAt(leader || group) : '')
+    || group?.visual_start_datetime
+    || group?.group_start
+    || '';
+  const endRaw = (typeof trialBlockOutputAt === 'function' ? trialBlockOutputAt(leader || group) : '')
+    || group?.visual_end_datetime
+    || group?.group_end
+    || '';
+  const start = typeof trialParseDateTime === 'function' ? trialParseDateTime(startRaw) : null;
+  const end = typeof trialParseDateTime === 'function' ? trialParseDateTime(endRaw) : null;
+  if (start && end) return Math.max(0, (end.getTime() - start.getTime()) / 60000);
+  return Math.max(0, Number(group?.remaining_minutes || group?.remainingMinutes || 0));
+}
+
+function trialMppLaneQueuedMinutes(groups) {
+  return (groups || []).reduce((sum, group) => sum + trialMppGroupDurationMinutes(group), 0);
+}
+
+function trialMppShiftLabel(group) {
+  const raw = [
+    group?.group_label,
+    group?.leader?.group_label,
+    group?.shift,
+    group?.leader?.shift,
+  ].map(v => String(v || '')).join(' ');
+  if (/\bnight\b/i.test(raw)) return 'NIGHT';
+  if (/\bday\b/i.test(raw)) return 'DAY';
+  return '';
 }
 
 function trialMppCyclePillsHtml(group) {
@@ -2447,6 +2491,7 @@ function trialRenderMppCycleStackCard(run, options = {}) {
     if (key === 'mpp_collapse_cycles') return 'Collapse';
     if (key === 'mpp_qty_per_cycle') return `${vars.qty}/cycle`;
     if (key === 'mpp_qty_total') return `${vars.total} total`;
+    if (key === 'mpp_per_cycle') return `${vars.dur}/cycle`;
     return key;
   };
   const expanded = typeof trialIsMppRunExpanded === 'function'
@@ -2467,6 +2512,8 @@ function trialRenderMppCycleStackCard(run, options = {}) {
     (sum, g) => sum + Math.max(0, Number(g.target_qty || g.leader?.scheduled_qty || 0)),
     0,
   );
+  const perCycleMin = trialMppGroupDurationMinutes(first);
+  const shift = trialMppShiftLabel(first);
   const bandClass = (options.runIdx || 0) % 2 ? 'is-band-b' : 'is-band-a';
   const expandLabel = expanded ? t('mpp_collapse_cycles') : t('mpp_expand_cycles');
   const fpAttr = escapeHtml(String(run.fingerprint || ''));
@@ -2489,7 +2536,8 @@ function trialRenderMppCycleStackCard(run, options = {}) {
       data-machine-id="${machineId}">
       <header class="trial-mpp-run-head">
         <span class="trial-mpp-run-seq">${escapeHtml(queueLabel)}</span>
-        <span class="trial-mpp-run-count">${escapeHtml(t('mpp_cycles_count', { n: count }))}</span>
+        <span class="trial-mpp-run-count">${count}×</span>
+        ${shift ? `<span class="trial-mpp-run-shift">${escapeHtml(shift)}</span>` : ''}
         <button type="button"
           class="trial-mpp-run-toggle"
           data-mpp-run-toggle="1"
@@ -2501,6 +2549,7 @@ function trialRenderMppCycleStackCard(run, options = {}) {
       </header>
       <div class="trial-mpp-run-pills">${trialMppCyclePillsHtml(first)}</div>
       <div class="trial-mpp-run-meta">
+        <span>${escapeHtml(t('mpp_per_cycle', { dur: trialMppFmtDuration(perCycleMin) }))}</span>
         <span>${escapeHtml(t('mpp_qty_per_cycle', { qty: fmt(perCycleQty, 0) }))}</span>
         <span>${escapeHtml(t('mpp_qty_total', { total: fmt(totalQty, 0) }))}</span>
       </div>
@@ -4201,11 +4250,28 @@ function renderTrialMachine(machine) {
 
   const focusMode = typeof trialMachinistFocusLayoutActive === 'function'
     && trialMachinistFocusLayoutActive();
+  const isMppLane = typeof trialIsMppPlannerMachine === 'function'
+    && trialIsMppPlannerMachine(Number(machine.machine_id || 0), machine.machine_code);
+  const mppLaneBadge = isMppLane && typeof trialMppOriginBadgeHtml === 'function'
+    ? trialMppOriginBadgeHtml({ compact: false })
+    : '';
+  const mppLaneTitle = isMppLane
+    ? (typeof trialMachinistT === 'function' ? trialMachinistT('mpp_lane_title') : 'MPP planner machine')
+    : '';
   const displayGroups = focusMode && typeof trialMachinistFocusGroups === 'function'
     ? trialMachinistFocusGroups(groups)
     : groups;
+  const mppEmpty = typeof trialMachinistT === 'function'
+    ? trialMachinistT('mpp_empty')
+    : 'No cycles yet — schedule in MPP planner';
   const blockHtml = displayGroups.length
-    ? displayGroups.map((group, idx) => {
+    ? (isMppLane && typeof trialRenderMppLaneBlockHtml === 'function'
+      ? trialRenderMppLaneBlockHtml(displayGroups, {
+        machineId: machine.machine_id,
+        focusMode,
+        queueGroups: groups,
+      })
+      : displayGroups.map((group, idx) => {
         const queueIndex = groups.indexOf(group);
         const sequenceNo = queueIndex >= 0 ? queueIndex + 1 : idx + 1;
         const vm = trialBlockGroupViewModel(group, { displaySequenceNo: sequenceNo });
@@ -4213,15 +4279,16 @@ function renderTrialMachine(machine) {
           return trialRenderFocusBlockCard(vm, { isCurrent: idx === 0, upcomingIdx: idx });
         }
         return trialRenderCompactBlockCard(vm, { focusMode: false, isCurrent: idx === 0 });
-      }).join('')
-    : `<div class="trial-empty">${escapeHtml(trialMachineLaneEmptyMessage(allGroups.length, groups.length))}</div>`;
+      }).join(''))
+    : `<div class="trial-empty">${escapeHtml(isMppLane ? mppEmpty : trialMachineLaneEmptyMessage(allGroups.length, groups.length))}</div>`;
 
   if (focusMode) {
     return `
-    <section class="trial-machine trial-machine--focus trial-machine--focus-lane" data-machine-id="${machine.machine_id}">
+    <section class="trial-machine trial-machine--focus trial-machine--focus-lane${isMppLane ? ' trial-machine--mpp' : ''}" data-machine-id="${machine.machine_id}">
       <header class="trial-machine-head trial-machine-head--focus">
         <div class="trial-machine-title-row">
-          <div class="trial-machine-title">${escapeHtml(machine.machine_code)}</div>
+          <div class="trial-machine-title"${mppLaneTitle ? ` title="${escapeHtml(mppLaneTitle)}"` : ''}>${escapeHtml(machine.machine_code)}</div>
+          ${mppLaneBadge}
         </div>
         <span class="trial-machine-focus-hint">${escapeHtml(
           typeof trialMachinistT === 'function'
@@ -4236,6 +4303,28 @@ function renderTrialMachine(machine) {
   `;
   }
 
+  const cycleCount = allGroups.length;
+  const queuedDur = trialMppFmtDuration(trialMppLaneQueuedMinutes(allGroups));
+  const mppOpenLabel = typeof trialMachinistT === 'function' ? trialMachinistT('mpp_open') : 'Open MPP';
+  const mppLoadLine = cycleCount
+    ? `${cycleCount} cycle${cycleCount === 1 ? '' : 's'} · ${typeof trialMachinistT === 'function' ? trialMachinistT('mpp_queued_load', { dur: queuedDur }) : `Queued ${queuedDur}`}`
+    : (t ? t('empty_queue') : 'Empty queue');
+  const mppNextLine = availabilityEnd
+    ? (t ? t('next_available', { dt: trialFormatDt(availabilityEnd) }) : `Next ${trialFormatDt(availabilityEnd)}`)
+    : '';
+  const mppAvailabilityTag = isMppLane
+    ? (cycleCount
+      ? `<div class="trial-machine-availability trial-machine-availability--mpp">
+            <span class="trial-machine-availability-text">${escapeHtml(mppNextLine || availabilityText)}</span>
+            ${!readOnly && firstBlockId
+              ? `<button type="button" class="trial-mpp-anchor-btn ${firstAnchorText ? 'is-set' : ''}"
+                    onclick="event.stopPropagation(); editTrialAnchor(${firstBlockId})"
+                    title="${escapeHtml(anchorTitle)}">${escapeHtml(firstAnchorText ? `Anchor ${firstAnchorText}` : 'Set anchor')}</button>`
+              : ''}
+          </div>`
+      : '')
+    : availabilityTag;
+
   const headMainAttrs = readOnly
     ? ''
     : ` role="button" tabindex="0"
@@ -4244,25 +4333,31 @@ function renderTrialMachine(machine) {
           title="Open full queue"`;
   const headActionsHtml = readOnly
     ? ''
-    : `<div class="trial-machine-head-actions">
+    : (isMppLane
+      ? `<div class="trial-machine-head-actions">
+            <a class="btn btn-primary btn-sm" href="/mpp-planner" onclick="event.stopPropagation()">${escapeHtml(mppOpenLabel)}</a>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="event.stopPropagation(); openTrialMachineQueue(${machine.machine_id})">Queue</button>
+          </div>`
+      : `<div class="trial-machine-head-actions">
           <button class="btn btn-ghost btn-sm" type="button" onclick="event.stopPropagation(); openTrialMachineQueue(${machine.machine_id})">Queue</button>
           ${staleBadge ? `<button class="btn btn-primary btn-sm" type="button" data-trial-recalc-btn="1" onclick="event.stopPropagation(); trialRecalculateSingleMachine(${machine.machine_id})">Recalc</button>` : ''}
-        </div>`;
+        </div>`);
   return `
-    <section class="trial-machine" data-machine-id="${machine.machine_id}">
+    <section class="trial-machine${isMppLane ? ' trial-machine--mpp' : ''}" data-machine-id="${machine.machine_id}">
       <div class="trial-machine-head">
         <div class="trial-machine-head-main"${headMainAttrs}>
           <div class="trial-machine-title-row">
-            <div class="trial-machine-title">${escapeHtml(machine.machine_code)}</div>
+            <div class="trial-machine-title"${mppLaneTitle ? ` title="${escapeHtml(mppLaneTitle)}"` : ''}>${escapeHtml(machine.machine_code)}</div>
+            ${mppLaneBadge}
           </div>
           <div class="trial-machine-meta">${escapeHtml(machine.machine_category)} - ${escapeHtml(machine.shift_profile || 'STANDARD')}</div>
-          <div class="trial-machine-queue-summary">${queueSummary}</div>
-          ${readOnly ? '' : staleBadge}
+          <div class="trial-machine-queue-summary">${isMppLane ? escapeHtml(mppLoadLine) : queueSummary}</div>
+          ${readOnly || isMppLane ? '' : staleBadge}
         </div>
         ${headActionsHtml}
       </div>
-      ${availabilityTag}
-      <div class="trial-lane" id="${laneId}" data-machine-id="${machine.machine_id}">
+      ${isMppLane ? mppAvailabilityTag : availabilityTag}
+      <div class="trial-lane${isMppLane ? ' trial-lane--mpp' : ''}" id="${laneId}" data-machine-id="${machine.machine_id}">
         ${blockHtml}
       </div>
     </section>
@@ -5065,7 +5160,13 @@ function trialEnsureCatalogSearchIndex() {
   });
   (trialState.planned || []).forEach(ps => {
     const id = String(ps.ps_id || '');
-    if (id) planned.set(id, trialCatalogSearchTokens(ps, true));
+    if (!id) return;
+    try {
+      planned.set(id, trialCatalogSearchTokens(ps, true));
+    } catch (err) {
+      console.warn('planned search tokens failed', id, err);
+      planned.set(id, trialSearchableTokens([id, ps.source_ps_id, ps.part_no, ps.part_name]));
+    }
   });
   trialCatalogSearchIndex = { catalog, planned };
   return trialCatalogSearchIndex;
@@ -5182,6 +5283,7 @@ function scheduleTrialCatalogSearchRender() {
     }
   } else {
     trialClearCatalogSearchFilter();
+    if (typeof trialResetCatalogRemoteSearch === 'function') trialResetCatalogRemoteSearch();
   }
 
   trialCatalogSearchTimer = window.setTimeout(() => {
@@ -5348,72 +5450,6 @@ function toggleTrialCatalogQueuedOp40Pending() {
   renderTrialCatalog();
 }
 
-function trialNormalizeSearchText(value) {
-  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
-}
-
-function trialSearchableTokens(values) {
-  const raw = values
-    .map(value => String(value == null ? '' : value).trim())
-    .filter(Boolean);
-  const normalized = raw.map(trialNormalizeSearchText).filter(Boolean);
-  return [...raw, ...normalized];
-}
-
-const _PS_SERIAL_SEARCH_RE = /^(APS|NPS|PPS|CPS|MPS|SR)(\d{2})-(\d+)/i;
-
-/** Extra tokens so "321" / "NPS26-321" match NPS26-0321-13 (and unpadded serials). */
-function trialPsSerialSearchTokens(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return [];
-  const extras = [];
-  const body = raw.replace(/^\[(?:Temp|SR)\]\s*/ig, '').trim();
-  const m = body.match(_PS_SERIAL_SEARCH_RE);
-  if (m) {
-    const prefix = m[1].toUpperCase();
-    const year = m[2];
-    const serial = m[3];
-    const unpadded = serial.replace(/^0+/, '') || '0';
-    extras.push(
-      serial,
-      unpadded,
-      `${year}-${serial}`,
-      `${year}-${unpadded}`,
-      `${year}${serial}`,
-      `${year}${unpadded}`,
-      `${prefix}${year}-${serial}`,
-      `${prefix}${year}-${unpadded}`,
-      `${prefix}${year}${serial}`,
-      `${prefix}${year}${unpadded}`,
-    );
-    if (serial.length < 4) extras.push(serial.padStart(4, '0'));
-  }
-  if (body !== raw) extras.push(...trialPsSerialSearchTokens(body));
-  return extras;
-}
-
-function trialStripSrSearchTag(value) {
-  return String(value == null ? '' : value).replace(/\[sr\]/gi, '');
-}
-
-function trialQueryMatchesSearchTokens(tokens, rawQuery) {
-  const rawLower = String(rawQuery || '').trim().toLowerCase();
-  if (!rawLower) return true;
-  const normalizedQuery = trialNormalizeSearchText(rawLower);
-  const strippedQuery = trialStripSrSearchTag(rawLower).replace(/\s+/g, '');
-  const strippedNorm = trialNormalizeSearchText(strippedQuery);
-  return (tokens || []).some(token => {
-    const text = String(token || '').toLowerCase();
-    if (!text) return false;
-    const normalized = trialNormalizeSearchText(token);
-    const strippedText = trialStripSrSearchTag(text).replace(/\s+/g, '');
-    return text.includes(rawLower)
-      || (strippedQuery && strippedText.includes(strippedQuery))
-      || (normalizedQuery && normalized.includes(normalizedQuery))
-      || (strippedNorm && trialNormalizeSearchText(strippedText).includes(strippedNorm));
-  });
-}
-
 /** Source ERP PS number stripped from a [Temp] planner id (for sidebar search). */
 function trialCatalogTempSourceRef(ps) {
   const raw = String(ps?.ps_id || ps?.source_ps_id || '').trim();
@@ -5511,8 +5547,7 @@ function trialCatalogSearchTokens(ps, planned = false) {
       ...lineItems.flatMap(trialCatalogLineItemSearchValues),
       ps.assembly_line_items_related_from,
     ];
-  return trialSearchableTokens(baseValues)
-    .flatMap(token => [token, ...trialPsSerialSearchTokens(token)]);
+  return trialSearchableTokens(baseValues);
 }
 
 function trialCatalogHaystack(ps) {
@@ -5556,6 +5591,56 @@ function trialShowCatalogLoadingPlaceholder() {
   root.innerHTML = '<div class="trial-catalog-empty trial-catalog-loading">Loading jobs…</div>';
 }
 
+function trialResetCatalogRemoteSearch() {
+  trialCatalogRemoteSearchGen = (Number(trialCatalogRemoteSearchGen) || 0) + 1;
+  trialCatalogRemoteSearchQuery = '';
+  trialCatalogRemoteSearchRows = [];
+  trialCatalogRemoteSearchDone = true;
+  if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
+}
+
+function trialScheduleCatalogRemoteSearch(rawQuery) {
+  const q = String(rawQuery || '').trim().toLowerCase();
+  if (!q) {
+    trialResetCatalogRemoteSearch();
+    return;
+  }
+  if (trialCatalogRemoteSearchQuery === q) return;
+  if (typeof GET !== 'function') {
+    trialCatalogRemoteSearchQuery = q;
+    trialCatalogRemoteSearchRows = [];
+    trialCatalogRemoteSearchDone = true;
+    return;
+  }
+  const gen = (Number(trialCatalogRemoteSearchGen) || 0) + 1;
+  trialCatalogRemoteSearchGen = gen;
+  trialCatalogRemoteSearchQuery = q;
+  trialCatalogRemoteSearchDone = false;
+  trialCatalogRemoteSearchRows = [];
+  const params = new URLSearchParams();
+  params.set('search', q);
+  if (typeof trialShowCompletedFlag === 'function' ? trialShowCompletedFlag() : !!trialShowCompleted) {
+    params.set('show_completed', '1');
+  }
+  GET(`/api/pp-vouchers/with-ops?${params.toString()}`, { timeoutMs: 12000 })
+    .then(data => {
+      if (gen !== trialCatalogRemoteSearchGen) return;
+      trialCatalogRemoteSearchRows = (Array.isArray(data) ? data : []).map(row => (
+        row && typeof row === 'object' ? { ...row, _catalog_search_hit: true } : row
+      ));
+      trialCatalogRemoteSearchDone = true;
+      if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
+      renderTrialCatalog();
+    })
+    .catch(err => {
+      if (gen !== trialCatalogRemoteSearchGen) return;
+      console.warn('catalog remote search failed', err);
+      trialCatalogRemoteSearchRows = [];
+      trialCatalogRemoteSearchDone = true;
+      renderTrialCatalog();
+    });
+}
+
 function renderTrialCatalog() {
   clearTimeout(trialCatalogSearchTimer);
   trialCatalogSearchTimer = null;
@@ -5582,7 +5667,9 @@ function renderTrialCatalog() {
   const catalogSource = typeof trialMergedCatalogRows === 'function'
     ? trialMergedCatalogRows()
     : (trialState.catalog || []);
-  const hadBoardOnlyTemp = catalogSource.length > (trialState.catalog || []).length;
+  const hadBoardOnlyTemp = typeof trialBoardOnlyTempCatalogEntries === 'function'
+    ? trialBoardOnlyTempCatalogEntries().length > 0
+    : catalogSource.length > (trialState.catalog || []).length;
   const searchIndex = trialEnsureCatalogSearchIndex();
   const resolvedCardsCache = new WeakMap();
   const allocatedCardCache = new Map();
@@ -5636,6 +5723,7 @@ function renderTrialCatalog() {
     if (!rawQuery && !trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
     if (!rawQuery && trialCatalogSupersededByTempSibling(ps, catalogSource)) return false;
     if (!rawQuery && !trialCatalogMatchesQueueFilter(ps)) return false;
+    if (rawQuery && ps?._catalog_search_hit) return true;
     return catalogMatchesSearch(ps);
   });
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'filter-catalog', { kept: catalog.length });
@@ -5663,15 +5751,27 @@ function renderTrialCatalog() {
     if (!rawQuery && !trialShowCompleted && trialPsCatalogCompleted(ps)) return false;
     if (!rawQuery && trialCatalogSupersededByTempSibling(ps, catalogSource)) return false;
     if (!rawQuery && !trialCatalogMatchesQueueFilter(ps)) return false;
+    if (rawQuery && ps?._catalog_search_hit) return true;
     return trialQueryMatchesSearchTokens(cachedPlannedHaystack(ps), rawQuery);
   }).sort(trialCompareCatalogPs);
   if (typeof trialPerfMark === 'function') trialPerfMark(perf, 'filter-planned', { kept: plannedCatalog.length });
 
   if (!catalog.length && !plannedCatalog.length) {
-    root.innerHTML = rawQuery
-      ? renderTrialCatalogBoardSearchFallback(rawQuery)
-      : '<div class="trial-catalog-empty">No available PS / ops match this search.</div>';
-    if (typeof trialPerfEnd === 'function') trialPerfEnd(perf, { empty: true, board_fallback: Boolean(rawQuery) });
+    if (rawQuery) {
+      if (trialCatalogRemoteSearchQuery !== rawQuery || !trialCatalogRemoteSearchDone) {
+        trialScheduleCatalogRemoteSearch(rawQuery);
+      }
+      if (trialCatalogRemoteSearchQuery !== rawQuery || !trialCatalogRemoteSearchDone) {
+        root.innerHTML = '<div class="trial-catalog-empty trial-catalog-search-empty">Searching…</div>';
+        if (typeof trialPerfEnd === 'function') trialPerfEnd(perf, { empty: true, remote_search: true });
+        return;
+      }
+      root.innerHTML = renderTrialCatalogBoardSearchFallback(rawQuery);
+      if (typeof trialPerfEnd === 'function') trialPerfEnd(perf, { empty: true, board_fallback: true });
+      return;
+    }
+    root.innerHTML = '<div class="trial-catalog-empty">No available PS / ops match this search.</div>';
+    if (typeof trialPerfEnd === 'function') trialPerfEnd(perf, { empty: true });
     return;
   }
 
@@ -5697,10 +5797,11 @@ function renderTrialCatalog() {
     return hasActiveWork;
   });
 
+  const autoOpenSearch = Boolean(rawQuery) && catalogWithOpenOps.length <= 6;
   const availableHtml = catalogWithOpenOps.map(ps => {
     const psKey = String(ps.ps_id || '');
     const dueClass = trialCatalogPsDueClass(ps);
-    const psOpen = trialIsCatalogPsExpanded(psKey) || Boolean(rawQuery);
+    const psOpen = trialIsCatalogPsExpanded(psKey) || autoOpenSearch;
     let summaryHtml = escapeHtml(psKey);
     try {
       summaryHtml = trialCatalogPsSummaryHtml(ps, siblingCountByBase);

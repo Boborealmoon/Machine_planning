@@ -71,3 +71,28 @@ class CatalogMissingOpsTests(TestCase):
         self.assertEqual(milling_only, ["NPS26-0361"])
         both = catalog_ps_ids_needing_live_ops_repair([nps, aps], include_missing_bom=True)
         self.assertEqual(both, ["NPS26-0361", "APS26-0260"])
+
+
+class CatalogQueuedMachineKeyTests(TestCase):
+    def test_canonical_ps_id_uppercases_standard_sheets(self):
+        from planning.catalog import _canonical_catalog_ps_id
+
+        self.assertEqual(_canonical_catalog_ps_id("nps20-0358"), "NPS20-0358")
+        self.assertEqual(_canonical_catalog_ps_id("nps20-0358::2"), "NPS20-0358::2")
+
+    def test_lane_source_ids_include_unsuffixed_source(self):
+        from planning.catalog import _catalog_lane_source_ps_ids
+
+        ids = _catalog_lane_source_ps_ids(["NPS20-0358::2"])
+        self.assertIn("NPS20-0358::2", ids)
+        self.assertIn("NPS20-0358", ids)
+
+    def test_queued_machines_lookup_uses_canonical_key(self):
+        from planning.catalog import _queued_machines_for_catalog_op
+        from planning.utils import trial_catalog_op_key
+
+        keyed = {trial_catalog_op_key("NPS20-0358", "20", 1): ["CNC 21"]}
+        self.assertEqual(
+            _queued_machines_for_catalog_op(keyed, "nps20-0358", "20", 1),
+            ["CNC 21"],
+        )

@@ -7,7 +7,7 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260901-asm-fg-v2">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260908-no-green-bars">
 {% endblock %}
 {% block content %}
 <div class="sol-page">
@@ -19,6 +19,33 @@
       <div class="sol-stat-pills" id="sol-stat-pills" aria-live="polite"></div>
     </div>
     <div class="sol-header-actions">
+      <div class="sol-notif" id="sol-notif">
+        <button
+          type="button"
+          class="sol-notif-btn"
+          id="sol-notif-btn"
+          aria-haspopup="true"
+          aria-expanded="false"
+          aria-label="New sales orders and process sheets"
+          title="New sales orders and process sheets"
+        >
+          <svg class="sol-notif-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+            <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+          </svg>
+          <span class="sol-notif-badge" id="sol-notif-badge" hidden>0</span>
+        </button>
+        <div class="sol-notif-panel" id="sol-notif-panel" hidden role="dialog" aria-label="New sales orders and process sheets">
+          <div class="sol-notif-head">
+            <span class="sol-notif-title">New S/O &amp; process sheets</span>
+            <button type="button" class="sol-notif-markread" id="sol-notif-markread">Mark all read</button>
+          </div>
+          <p class="sol-notif-sub" id="sol-notif-sub">This week’s posted sales orders and NPS/APS sheets. Click a card to jump to the tracker row.</p>
+          <div class="sol-notif-list" id="sol-notif-list">
+            <div class="sol-notif-empty" id="sol-notif-empty">No new sales orders this week.</div>
+          </div>
+        </div>
+      </div>
       <button type="button" class="sol-btn sol-btn--primary" id="sol-refresh">Refresh</button>
     </div>
   </header>
@@ -225,5 +252,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260902-line-item-dates"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260908-no-green-bars"></script>
 {% endblock %}

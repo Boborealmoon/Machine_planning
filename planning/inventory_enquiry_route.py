@@ -432,6 +432,24 @@ def api_inventory_enquiry():
     )
 
 
+@inventory_enquiry_bp.get("/api/inventory-enquiry/where-used")
+def api_inventory_enquiry_where_used():
+    from .inventory_where_used import fetch_inventory_where_used
+
+    code = compact_text(request.args.get("code") or request.args.get("inventory_code"))
+    if not code:
+        return jsonify({"ok": False, "error": "code is required"}), 400
+
+    try:
+        with planner_db() as con:
+            payload = fetch_inventory_where_used(con, code)
+    except Exception as exc:
+        logger.exception("inventory enquiry where-used query failed")
+        return jsonify({"ok": False, "error": f"Where-used query failed: {exc}"}), 502
+
+    return jsonify({"ok": True, **payload})
+
+
 @inventory_enquiry_bp.get("/api/inventory-enquiry/lots")
 def api_inventory_enquiry_lots():
     refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
