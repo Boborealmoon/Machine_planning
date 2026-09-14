@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Material Tracking{% endblock %}
+{% block title %}Supply Chain View{% endblock %}
 {% block favicon %}
 <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-material-tracking.svg') }}" />
 {% endblock %}
@@ -7,14 +7,14 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260908-no-green-bars">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260910-sc-view">
 {% endblock %}
 {% block content %}
 <div class="sol-page">
   <header class="sol-header">
     <div class="sol-header-text">
-      <p class="sol-kicker">Logistics</p>
-      <h1 class="sol-title">Material Tracking</h1>
+      <p class="sol-kicker">Supply chain</p>
+      <h1 class="sol-title">Supply Chain View</h1>
       <p class="sol-subtitle" id="sol-subtitle" aria-live="polite">Loading process sheets...</p>
       <div class="sol-stat-pills" id="sol-stat-pills" aria-live="polite"></div>
     </div>
@@ -203,7 +203,7 @@
             <th class="sol-col-stage">Stage</th>
             <th class="sol-col-part">Part</th>
             <th class="sol-col-due">Due</th>
-            <th class="sol-col-need" title="Material need date">Need</th>
+            <th class="sol-col-need" title="Same Need date as S/O Management — saved per PP voucher">Need date</th>
             <th class="sol-col-bom">BOM</th>
             <th class="sol-col-material" title="Material in">In</th>
             <th class="sol-col-notes" title="Mtl / Part Order">Notes</th>
@@ -248,9 +248,28 @@
     <p class="so-material-modal-foot">BOM: <code>inventory_bom_listing</code> &middot; Inventory: <code>ic_inventory_enquiry_summary_view</code></p>
   </div>
 </div>
+
+<div id="sol-date-history-modal" class="sol-date-history-backdrop" hidden>
+  <div class="sol-date-history-box" role="dialog" aria-modal="true" aria-labelledby="sol-date-history-title">
+    <div class="sol-date-history-head">
+      <div>
+        <h2 class="sol-date-history-title" id="sol-date-history-title">Date history</h2>
+        <p class="sol-date-history-sub" id="sol-date-history-sub"></p>
+      </div>
+      <button type="button" class="sol-btn sol-btn--ghost" id="sol-date-history-close">Close</button>
+    </div>
+    <p id="sol-date-history-status" class="sol-date-history-status" hidden></p>
+    <div id="sol-date-history-loading" class="sol-date-history-loading" hidden>
+      <div class="sol-spinner" aria-hidden="true"></div>
+      Loading history...
+    </div>
+    <ol id="sol-date-history-list" class="sol-date-history-list"></ol>
+    <p id="sol-date-history-empty" class="sol-date-history-empty" hidden>No changes recorded yet.</p>
+  </div>
+</div>
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260908-no-green-bars"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260910-sc-view"></script>
 {% endblock %}

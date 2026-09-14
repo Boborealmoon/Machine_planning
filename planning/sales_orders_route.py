@@ -1,6 +1,7 @@
 """Sales orders — mfg_pp_vch foundation, nested partials, so_order_view header join."""
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -35,7 +36,7 @@ sales_orders_bp = Blueprint("sales_orders", __name__)
 _CACHE_TTL_SEC = 300
 _LIVE_OVERLAY_TIMEOUT_MS = 30000
 _cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
-_SCHEMA_VERSION = 23
+_SCHEMA_VERSION = 27
 _ACTIVE_PP_AND = """
   AND (
     det.qty IS NULL
@@ -47,6 +48,11 @@ _COMPLETE_PP_AND = """
   AND COALESCE(sq.qty_shipped, 0) >= det.qty - 0.0001
 """
 _SIMILAR_PS_PREVIEW = 8
+_DATE_HISTORY_FIELDS = {
+    "material_need_date": "Need date",
+    "material_in_date": "In date",
+}
+_DATE_HISTORY_LIMIT = 200
 
 _NOTE_FIELDS = (
     "material_subcon",
@@ -56,6 +62,33 @@ _NOTE_FIELDS = (
     "sales_notes",
     "buyer",
 )
+_EXCEPTION_ISSUE_IDS = (
+    "supply_chain",
+    "process_engr",
+    "qlty",
+    "sales",
+    "others",
+)
+_EXCEPTION_ISSUE_ALIASES = {
+    "supply chain": "supply_chain",
+    "supply_chain": "supply_chain",
+    "sc": "supply_chain",
+    "process / engr": "process_engr",
+    "process/engr": "process_engr",
+    "process_engr": "process_engr",
+    "process": "process_engr",
+    "engr": "process_engr",
+    "engineering": "process_engr",
+    "qlty": "qlty",
+    "quality": "qlty",
+    "qa": "qlty",
+    "qc": "qlty",
+    "sales": "sales",
+    "others": "others",
+    "other": "others",
+    "flagged": "others",
+    "exception": "others",
+}
 
 _MFG_PP_VCH_SQL = """
 SELECT
@@ -264,7 +297,7 @@ def _sales_orders_cache_keys() -> tuple[str, ...]:
 
 
 def _patch_cached_sales_orders(mutator) -> None:
-    """Overlay planner edits onto the file cache Material Tracking actually reads."""
+    """Overlay planner edits onto the file cache Supply Chain View actually reads."""
     from .erp_route_cache import update_data
 
     def apply(data) -> bool:
@@ -366,8 +399,12 @@ def _empty_notes() -> dict[str, Any]:
     out = {field: "" for field in _NOTE_FIELDS}
     out["ps_highlighted"] = False
     out["highlighted_partials"] = []
+    out["exception_issues"] = {}
+    out["proposed_cnc_saved"] = None
     out["material_delay"] = False
     out["material_need_date"] = ""
+    out["material_need_date_history_count"] = 0
+    out["material_in_date_history_count"] = 0
     return out
 
 
@@ -388,6 +425,147 @@ def _format_highlighted_partials(partials: list[int]) -> str:
     return ",".join(str(p) for p in sorted(set(int(p) for p in partials if int(p) > 0)))
 
 
+def _parse_proposed_cnc(raw: Any) -> list[str]:
+    from .first_article_service import _parse_machine_codes
+
+    try:
+        return _parse_machine_codes(raw)
+    except ValueError:
+        return []
+
+
+def _format_proposed_cnc(machines: list[str] | None) -> str | None:
+    if machines is None:
+        return None
+    return ", ".join(_parse_proposed_cnc(machines))
+
+
+def _load_cnc_machine_names() -> list[str]:
+    try:
+        with planner_db() as con:
+            fetched = rows(
+                con.execute(
+                    """
+                    SELECT machine_no
+                    FROM planner_machines
+                    WHERE COALESCE(active, TRUE) = TRUE
+                      AND NULLIF(TRIM(machine_no), '') IS NOT NULL
+                      AND (
+                        UPPER(TRIM(COALESCE(machine_category, ''))) IN ('TURNING', 'MILLING', 'TURNMILL')
+                        OR UPPER(TRIM(machine_no)) LIKE '%CNC%'
+                      )
+                    ORDER BY machine_no
+                    """
+                )
+            )
+    except Exception as exc:
+        logger.warning("CNC machine catalog load skipped: %s", exc)
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in fetched:
+        name = compact_text(row.get("machine_no"))
+        key = name.upper()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def _resolve_proposed_cnc(raw: Any) -> list[str]:
+    from .first_article_service import _resolve_machine_codes
+
+    return _resolve_machine_codes(raw, _load_cnc_machine_names())
+
+
+def _normalize_exception_issue(raw: Any) -> str:
+    key = compact_text(raw).lower().replace("-", "_")
+    key = " ".join(key.replace("/", " / ").split())
+    if not key:
+        return ""
+    if key in _EXCEPTION_ISSUE_IDS:
+        return key
+    return _EXCEPTION_ISSUE_ALIASES.get(key, "")
+
+
+def _normalize_exception_issue_list(raw: Any) -> list[str]:
+    if raw is None or raw is False:
+        return []
+    payload: Any = raw
+    if isinstance(raw, str):
+        text = compact_text(raw)
+        if not text:
+            return []
+        if text.startswith("["):
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                payload = [part for part in text.replace(";", ",").split(",") if compact_text(part)]
+        elif "," in text or ";" in text:
+            payload = [part for part in text.replace(";", ",").split(",") if compact_text(part)]
+        else:
+            payload = [text]
+    if not isinstance(payload, (list, tuple, set)):
+        payload = [payload]
+    seen: set[str] = set()
+    for item in payload:
+        issue = _normalize_exception_issue(item)
+        if issue:
+            seen.add(issue)
+    return [issue for issue in _EXCEPTION_ISSUE_IDS if issue in seen]
+
+
+def _parse_exception_issues(raw: Any) -> dict[int, list[str]]:
+    payload: Any = raw
+    if isinstance(raw, str):
+        text = compact_text(raw)
+        if not text:
+            return {}
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+    if not isinstance(payload, dict):
+        return {}
+    out: dict[int, list[str]] = {}
+    for key, value in payload.items():
+        try:
+            partial_no = int(key)
+        except (TypeError, ValueError):
+            continue
+        if partial_no <= 0:
+            continue
+        issues = _normalize_exception_issue_list(value)
+        if issues:
+            out[partial_no] = issues
+    return out
+
+
+def _format_exception_issues(issues: dict | None) -> str:
+    parsed = _parse_exception_issues(issues)
+    out = {str(partial_no): values for partial_no, values in sorted(parsed.items())}
+    return json.dumps(out, separators=(",", ":")) if out else ""
+
+
+def _sync_exception_issues(highlighted: list[int], issues: dict | None) -> dict[int, list[str]]:
+    source = issues or {}
+    out: dict[int, list[str]] = {}
+    for partial_no in highlighted:
+        try:
+            key = int(partial_no)
+        except (TypeError, ValueError):
+            continue
+        if key <= 0:
+            continue
+        saved = source.get(key)
+        if saved is None:
+            saved = source.get(str(key))
+        selected = _normalize_exception_issue_list(saved)
+        out[key] = selected or ["others"]
+    return out
+
+
 def _notes_from_row(row: dict[str, Any] | None) -> dict[str, Any]:
     if not row:
         return _empty_notes()
@@ -398,8 +576,21 @@ def _notes_from_row(row: dict[str, Any] | None) -> dict[str, Any]:
     )
     out["highlighted_partials"] = highlighted
     out["ps_highlighted"] = bool(highlighted)
+    out["exception_issues"] = {
+        str(partial_no): issue
+        for partial_no, issue in _sync_exception_issues(
+            highlighted,
+            _parse_exception_issues(row.get("exception_issues")),
+        ).items()
+    }
     out["material_delay"] = bool(row.get("material_delay"))
     out["material_need_date"] = _parse_material_need_date(row.get("material_need_date"))
+    out["material_need_date_history_count"] = int(row.get("material_need_date_history_count") or 0)
+    out["material_in_date_history_count"] = int(row.get("material_in_date_history_count") or 0)
+    if "proposed_cnc" not in row or row.get("proposed_cnc") is None:
+        out["proposed_cnc_saved"] = None
+    else:
+        out["proposed_cnc_saved"] = _parse_proposed_cnc(row.get("proposed_cnc"))
     return out
 
 
@@ -450,6 +641,183 @@ def _ensure_notes_table(con) -> None:
         ADD COLUMN IF NOT EXISTS buyer TEXT NOT NULL DEFAULT ''
         """
     )
+    con.execute(
+        """
+        ALTER TABLE planner_so_pp_notes
+        ADD COLUMN IF NOT EXISTS exception_issues TEXT NOT NULL DEFAULT ''
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_so_pp_notes
+        ADD COLUMN IF NOT EXISTS proposed_cnc TEXT
+        """
+    )
+    _ensure_date_history_table(con)
+
+
+def _ensure_date_history_table(con) -> None:
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS planner_so_pp_notes_date_history (
+            change_id          BIGSERIAL    PRIMARY KEY,
+            pp_voucher_no      TEXT         NOT NULL,
+            field_name         TEXT         NOT NULL,
+            old_value          TEXT         NOT NULL DEFAULT '',
+            new_value          TEXT         NOT NULL DEFAULT '',
+            changed_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            CONSTRAINT planner_so_pp_notes_date_history_field_chk
+                CHECK (field_name IN ('material_need_date', 'material_in_date'))
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_so_pp_date_history_pp_field_at
+            ON planner_so_pp_notes_date_history (
+                LOWER(TRIM(pp_voucher_no)),
+                field_name,
+                changed_at DESC
+            )
+        """
+    )
+
+
+def _pp_history_key(value: Any) -> str:
+    return compact_text(value).upper()
+
+
+def _in_date_history_value(material_subcon: Any) -> str:
+    """ISO in-date for history. Arrived is not an in-date value."""
+    if _material_subcon_arrived(material_subcon):
+        return ""
+    return _parse_material_need_date(material_subcon)
+
+
+def _date_history_changes(before: dict[str, Any] | None, after: dict[str, Any] | None) -> list[dict[str, str]]:
+    previous = before or {}
+    current = after or {}
+    changes: list[dict[str, str]] = []
+    old_need = compact_text(previous.get("material_need_date"))
+    new_need = compact_text(current.get("material_need_date"))
+    if old_need != new_need:
+        changes.append({
+            "field_name": "material_need_date",
+            "old_value": old_need,
+            "new_value": new_need,
+        })
+    # Arrived toggles hide the date picker; only log real in-date edits.
+    if not _material_subcon_arrived(current.get("material_subcon")):
+        old_in = _in_date_history_value(previous.get("material_subcon"))
+        new_in = _in_date_history_value(current.get("material_subcon"))
+        if old_in != new_in:
+            changes.append({
+                "field_name": "material_in_date",
+                "old_value": old_in,
+                "new_value": new_in,
+            })
+    return changes
+
+
+def _insert_date_history(con, pp_voucher_no: str, changes: list[dict[str, str]]) -> None:
+    pp_no = compact_text(pp_voucher_no)
+    if not pp_no or not changes:
+        return
+    for change in changes:
+        field_name = compact_text(change.get("field_name"))
+        if field_name not in _DATE_HISTORY_FIELDS:
+            continue
+        con.execute(
+            """
+            INSERT INTO planner_so_pp_notes_date_history (
+                pp_voucher_no, field_name, old_value, new_value
+            )
+            VALUES (%s, %s, %s, %s)
+            """,
+            (
+                pp_no,
+                field_name,
+                compact_text(change.get("old_value")),
+                compact_text(change.get("new_value")),
+            ),
+        )
+
+
+def _apply_date_history_counts(notes: dict[str, Any], counts: dict[str, int] | None) -> dict[str, Any]:
+    payload = counts or {}
+    notes["material_need_date_history_count"] = int(payload.get("material_need_date") or 0)
+    notes["material_in_date_history_count"] = int(payload.get("material_in_date") or 0)
+    return notes
+
+
+def _date_history_counts_for_pps(con, pp_voucher_nos: list[str]) -> dict[str, dict[str, int]]:
+    ids = [compact_text(item) for item in pp_voucher_nos if compact_text(item)]
+    if not ids:
+        return {}
+    fetched = rows(
+        con.execute(
+            """
+            SELECT UPPER(TRIM(pp_voucher_no)) AS pp_key, field_name, COUNT(*) AS n
+            FROM planner_so_pp_notes_date_history
+            WHERE UPPER(TRIM(pp_voucher_no)) = ANY(%s)
+              AND field_name = ANY(%s)
+            GROUP BY UPPER(TRIM(pp_voucher_no)), field_name
+            """,
+            ([_pp_history_key(item) for item in ids], list(_DATE_HISTORY_FIELDS)),
+        )
+    )
+    out: dict[str, dict[str, int]] = {}
+    for row in fetched or []:
+        key = _pp_history_key(row.get("pp_key"))
+        field_name = compact_text(row.get("field_name"))
+        if not key or field_name not in _DATE_HISTORY_FIELDS:
+            continue
+        out.setdefault(key, {})[field_name] = int(row.get("n") or 0)
+    return out
+
+
+def _serialize_date_history_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    field_name = compact_text(row.get("field_name"))
+    changed_at = row.get("changed_at")
+    if hasattr(changed_at, "isoformat"):
+        changed_at = changed_at.isoformat(sep=" ", timespec="seconds")
+    return {
+        "change_id": int(row.get("change_id") or 0),
+        "pp_voucher_no": compact_text(row.get("pp_voucher_no")),
+        "field_name": field_name,
+        "field_label": _DATE_HISTORY_FIELDS.get(field_name, field_name),
+        "old_value": compact_text(row.get("old_value")),
+        "new_value": compact_text(row.get("new_value")),
+        "changed_at": compact_text(changed_at),
+    }
+
+
+def _list_date_history(pp_voucher_no: str, field_name: str, limit: int = _DATE_HISTORY_LIMIT) -> list[dict[str, Any]]:
+    pp_no = compact_text(pp_voucher_no)
+    field = compact_text(field_name)
+    if not pp_no:
+        raise ValueError("pp_voucher_no is required")
+    if field not in _DATE_HISTORY_FIELDS:
+        raise ValueError("field must be material_need_date or material_in_date")
+    cap = max(1, min(int(limit or _DATE_HISTORY_LIMIT), 500))
+    with planner_db() as con:
+        _ensure_notes_table(con)
+        fetched = rows(
+            con.execute(
+                """
+                SELECT change_id, pp_voucher_no, field_name, old_value, new_value, changed_at
+                FROM planner_so_pp_notes_date_history
+                WHERE LOWER(TRIM(pp_voucher_no)) = LOWER(TRIM(%s))
+                  AND field_name = %s
+                ORDER BY changed_at DESC, change_id DESC
+                LIMIT %s
+                """,
+                (pp_no, field, cap),
+            )
+        )
+    return [item for item in (_serialize_date_history_row(row) for row in fetched) if item]
 
 
 def _ps_base_id(ps_id: str) -> str:
@@ -690,9 +1058,13 @@ def _patch_sales_orders_pp_notes(pp_voucher_no: str, payload: dict[str, Any]) ->
     def mutator(pp: dict[str, Any]) -> bool:
         if compact_text(pp.get("pp_voucher_no")).upper() == target_key:
             pp.update(payload)
+            if "proposed_cnc" in payload and payload.get("proposed_cnc") is not None:
+                _set_pp_proposed_cnc(pp, _parse_proposed_cnc(payload.get("proposed_cnc")))
             return True
         if _ps_base_id(pp.get("process_sheet_no")).upper() == target_key:
             pp.update(payload)
+            if "proposed_cnc" in payload and payload.get("proposed_cnc") is not None:
+                _set_pp_proposed_cnc(pp, _parse_proposed_cnc(payload.get("proposed_cnc")))
             return True
         return False
 
@@ -1546,22 +1918,37 @@ def _jobs_by_ps_from_orders(orders: list[dict[str, Any]]) -> dict[str, dict[str,
     return index_jobs_by_ps(jobs)
 
 
+def _set_pp_proposed_cnc(pp: dict[str, Any], machines: list[str]) -> None:
+    values = list(machines)
+    pp["proposed_cnc"] = values
+    for partial in pp.get("partials") or []:
+        partial["proposed_cnc"] = list(values)
+
+
 def _apply_proposed_cnc_overlay(orders: list[dict[str, Any]]) -> None:
-    """Copy NPI/FA Machine (CNC) onto S/O rows that share the same part number."""
+    """Copy NPI/FA Machine (CNC) onto S/O rows that share the same part number.
+
+    A saved Proposed CNC on planner_so_pp_notes overrides the NPI/FA default.
+    """
     from .first_article_service import _part_key, load_proposed_cnc_by_part
 
     try:
         by_part = load_proposed_cnc_by_part(live_by_ps=_jobs_by_ps_from_orders(orders))
     except Exception as exc:
         logger.warning("proposed CNC overlay skipped: %s", exc)
-        return
+        by_part = {}
     for order in orders:
         for pp in order.get("pp_vouchers") or []:
+            saved = pp.get("proposed_cnc_saved")
+            if saved is not None:
+                _set_pp_proposed_cnc(pp, _parse_proposed_cnc(saved))
+                continue
             pp_part = compact_text(pp.get("inventory_code"))
-            pp["proposed_cnc"] = list(by_part.get(_part_key(pp_part), []))
+            npi = list(by_part.get(_part_key(pp_part), []))
+            pp["proposed_cnc"] = npi
             for partial in pp.get("partials") or []:
                 part = compact_text(partial.get("inventory_code")) or pp_part
-                partial["proposed_cnc"] = list(by_part.get(_part_key(part), []))
+                partial["proposed_cnc"] = list(by_part.get(_part_key(part), npi))
 
 
 def _apply_new_part_overlay(orders: list[dict[str, Any]]) -> None:
@@ -1612,9 +1999,10 @@ def _strip_completed_highlights(orders: list[dict[str, Any]]) -> list[str]:
             if not pp.get("shipped_completed"):
                 continue
             cleared = False
-            if pp.get("highlighted_partials"):
+            if pp.get("highlighted_partials") or pp.get("exception_issues"):
                 pp["highlighted_partials"] = []
                 pp["ps_highlighted"] = False
+                pp["exception_issues"] = {}
                 cleared = True
             if pp.get("material_delay"):
                 pp["material_delay"] = False
@@ -1638,12 +2026,14 @@ def _batch_clear_ps_highlights(pp_voucher_nos: list[str]) -> None:
                 UPDATE planner_so_pp_notes
                 SET ps_highlighted = FALSE,
                     highlighted_partials = '',
+                    exception_issues = '',
                     material_delay = FALSE,
                     updated_at = NOW()
                 WHERE pp_voucher_no = ANY(%s)
                   AND (
                     ps_highlighted = TRUE
                     OR highlighted_partials <> ''
+                    OR exception_issues <> ''
                     OR material_delay = TRUE
                   )
                 """,
@@ -1665,13 +2055,19 @@ def _load_notes_map(pp_voucher_nos: list[str]) -> dict[str, dict[str, str]] | No
                     """
                     SELECT pp_voucher_no, material_subcon, mtl_part_order,
                            quality_doc, ops_notes, sales_notes, buyer, ps_highlighted,
-                           highlighted_partials, material_delay, material_need_date
+                           highlighted_partials, exception_issues, proposed_cnc,
+                           material_delay, material_need_date
                     FROM planner_so_pp_notes
                     WHERE pp_voucher_no = ANY(%s)
                     """,
                     (ids,),
                 )
             )
+            try:
+                counts_map = _date_history_counts_for_pps(con, ids)
+            except Exception as exc:
+                logger.warning("material date history counts skipped: %s", exc)
+                counts_map = {}
     except Exception as exc:
         logger.warning("planner_so_pp_notes load skipped: %s", exc)
         return None
@@ -1682,6 +2078,7 @@ def _load_notes_map(pp_voucher_nos: list[str]) -> dict[str, dict[str, str]] | No
         if not key:
             continue
         parsed = _notes_from_row(row)
+        _apply_date_history_counts(parsed, counts_map.get(_pp_history_key(key)))
         out[key] = parsed
         upper = key.upper()
         if upper not in out:
@@ -1939,6 +2336,7 @@ def _overlay_planner_edits(payload: dict[str, Any]) -> dict[str, Any]:
     program_finish_overlay = _load_program_finish_overlay(process_sheets)
     if program_finish_overlay is not None:
         _apply_program_finish_overlay(orders, program_finish_overlay)
+    payload["cnc_machines"] = _load_cnc_machine_names()
     return payload
 
 
@@ -1985,6 +2383,45 @@ def _fetch_sales_orders(
     return _overlay_planner_edits(payload)
 
 
+def _apply_partial_exception(
+    current: dict[str, Any],
+    *,
+    partial_no: int,
+    highlighted: bool | None = None,
+    issue: Any = None,
+    issues: Any = None,
+    issue_provided: bool = False,
+    issues_provided: bool = False,
+) -> None:
+    highlighted_set = set(current.get("highlighted_partials") or [])
+    issue_map = dict(current.get("exception_issues") or {})
+    if issues_provided or issue_provided:
+        selected = _normalize_exception_issue_list(issues if issues_provided else issue)
+        if selected:
+            issue_map.pop(partial_no, None)
+            issue_map[str(partial_no)] = selected
+            highlighted_set.add(partial_no)
+        else:
+            issue_map.pop(partial_no, None)
+            issue_map.pop(str(partial_no), None)
+            highlighted_set.discard(partial_no)
+    elif highlighted is True:
+        highlighted_set.add(partial_no)
+        if not _normalize_exception_issue_list(issue_map.get(partial_no) or issue_map.get(str(partial_no))):
+            issue_map[str(partial_no)] = ["others"]
+    elif highlighted is False:
+        highlighted_set.discard(partial_no)
+        issue_map.pop(partial_no, None)
+        issue_map.pop(str(partial_no), None)
+    sorted_partials = sorted(highlighted_set)
+    current["highlighted_partials"] = sorted_partials
+    current["ps_highlighted"] = bool(sorted_partials)
+    current["exception_issues"] = {
+        str(partial_no): values
+        for partial_no, values in _sync_exception_issues(sorted_partials, issue_map).items()
+    }
+
+
 def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
     with planner_db() as con:
         _ensure_notes_table(con)
@@ -1993,7 +2430,8 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 """
                 SELECT pp_voucher_no, material_subcon, mtl_part_order,
                        quality_doc, ops_notes, sales_notes, buyer, ps_highlighted,
-                       highlighted_partials, material_delay, material_need_date
+                       highlighted_partials, exception_issues, proposed_cnc,
+                       material_delay, material_need_date
                 FROM planner_so_pp_notes
                 WHERE pp_voucher_no = %s
                 """,
@@ -2001,36 +2439,40 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
             )
         )
         current = _notes_from_row(existing[0] if existing else None)
+        before_dates = {
+            "material_need_date": current.get("material_need_date") or "",
+            "material_subcon": current.get("material_subcon") or "",
+        }
         partial_toggle = patch.pop("partial_highlight", None)
         if partial_toggle is not None:
             try:
                 partial_no = max(1, int(partial_toggle.get("pp_partial_no") or 1))
             except (TypeError, ValueError):
                 partial_no = 1
-            highlighted_set = set(current.get("highlighted_partials") or [])
-            if bool(partial_toggle.get("highlighted")):
-                highlighted_set.add(partial_no)
-            else:
-                highlighted_set.discard(partial_no)
-            current["highlighted_partials"] = sorted(highlighted_set)
-            current["ps_highlighted"] = bool(highlighted_set)
+            issue_provided = "issue" in partial_toggle
+            issues_provided = "issues" in partial_toggle
+            _apply_partial_exception(
+                current,
+                partial_no=partial_no,
+                highlighted=None if (issue_provided or issues_provided) else bool(partial_toggle.get("highlighted")),
+                issue=partial_toggle.get("issue") if issue_provided else None,
+                issues=partial_toggle.get("issues") if issues_provided else None,
+                issue_provided=issue_provided and not issues_provided,
+                issues_provided=issues_provided,
+            )
         elif "ps_highlighted" in patch:
             on = bool(patch.pop("ps_highlighted"))
             try:
                 partial_no = max(1, int(patch.pop("pp_partial_no", 1) or 1))
             except (TypeError, ValueError):
                 partial_no = 1
-            highlighted_set = set(current.get("highlighted_partials") or [])
-            if on:
-                highlighted_set.add(partial_no)
-            else:
-                highlighted_set.discard(partial_no)
-            current["highlighted_partials"] = sorted(highlighted_set)
-            current["ps_highlighted"] = bool(highlighted_set)
+            _apply_partial_exception(current, partial_no=partial_no, highlighted=on)
         if "material_delay" in patch:
             current["material_delay"] = bool(patch.pop("material_delay"))
         if "material_need_date" in patch:
             current["material_need_date"] = _parse_material_need_date(patch.pop("material_need_date"))
+        if "proposed_cnc" in patch:
+            current["proposed_cnc_saved"] = _resolve_proposed_cnc(patch.pop("proposed_cnc"))
         for key, value in patch.items():
             if key in _NOTE_FIELDS:
                 current[key] = compact_text(value)
@@ -2038,13 +2480,16 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
         if "material_subcon" in patch and _material_subcon_arrived(current.get("material_subcon")):
             current["material_delay"] = False
         highlighted_text = _format_highlighted_partials(current.get("highlighted_partials") or [])
+        issues_text = _format_exception_issues(current.get("exception_issues") or {})
+        proposed_cnc_text = _format_proposed_cnc(current.get("proposed_cnc_saved"))
         con.execute(
             """
             INSERT INTO planner_so_pp_notes (
                 pp_voucher_no, material_subcon, mtl_part_order,
                 quality_doc, ops_notes, sales_notes, buyer, ps_highlighted,
-                highlighted_partials, material_delay, material_need_date, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                highlighted_partials, exception_issues, proposed_cnc,
+                material_delay, material_need_date, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (pp_voucher_no) DO UPDATE SET
                 material_subcon = EXCLUDED.material_subcon,
                 mtl_part_order = EXCLUDED.mtl_part_order,
@@ -2054,6 +2499,8 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 buyer = EXCLUDED.buyer,
                 ps_highlighted = EXCLUDED.ps_highlighted,
                 highlighted_partials = EXCLUDED.highlighted_partials,
+                exception_issues = EXCLUDED.exception_issues,
+                proposed_cnc = EXCLUDED.proposed_cnc,
                 material_delay = EXCLUDED.material_delay,
                 material_need_date = EXCLUDED.material_need_date,
                 updated_at = NOW()
@@ -2068,17 +2515,34 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 current.get("buyer") or "",
                 current["ps_highlighted"],
                 highlighted_text,
+                issues_text,
+                proposed_cnc_text,
                 current["material_delay"],
                 current["material_need_date"] or None,
             ),
         )
         current["highlighted_partials"] = _parse_highlighted_partials(highlighted_text)
+        current["exception_issues"] = {
+            str(partial_no): issue
+            for partial_no, issue in _parse_exception_issues(issues_text).items()
+        }
+        if proposed_cnc_text is None:
+            current["proposed_cnc_saved"] = None
+            current["proposed_cnc"] = []
+        else:
+            current["proposed_cnc_saved"] = _parse_proposed_cnc(proposed_cnc_text)
+            current["proposed_cnc"] = list(current["proposed_cnc_saved"])
         result = {"pp_voucher_no": pp_voucher_no, **current}
         if "material_subcon" in patch:
             sync_payload = _sync_material_in_for_pp(con, pp_voucher_no, current["material_subcon"])
             if sync_payload:
                 result["material_in"] = bool(sync_payload.get("material_in"))
                 result["material_in_date"] = sync_payload.get("material_in_date")
+        _insert_date_history(con, pp_voucher_no, _date_history_changes(before_dates, current))
+        counts = _date_history_counts_for_pps(con, [pp_voucher_no]).get(
+            _pp_history_key(pp_voucher_no), {}
+        )
+        _apply_date_history_counts(result, counts)
         return result
 
 
@@ -2146,6 +2610,7 @@ def api_sales_orders():
             "lite": lite,
             "active": active,
             "complete": complete,
+            "cnc_machines": data.get("cnc_machines") or [],
         }
     )
 
@@ -2165,7 +2630,32 @@ def api_sales_order_notes(pp_voucher_no):
         if field in data:
             patch[field] = compact_text(data.get(field))
     if "partial_highlight" in data and isinstance(data.get("partial_highlight"), dict):
-        patch["partial_highlight"] = data.get("partial_highlight")
+        toggle = dict(data.get("partial_highlight") or {})
+        if "issues" in toggle:
+            raw_issues = toggle.get("issues")
+            if raw_issues in (None, ""):
+                toggle["issues"] = []
+            else:
+                parsed = _normalize_exception_issue_list(raw_issues)
+                raw_items = raw_issues if isinstance(raw_issues, (list, tuple)) else [raw_issues]
+                attempted = any(compact_text(item) for item in raw_items)
+                if attempted and not parsed:
+                    return jsonify({
+                        "error": "issues must be Supply Chain, Process / Engr, Qlty, Sales, or Others",
+                    }), 400
+                toggle["issues"] = parsed
+        elif "issue" in toggle:
+            raw_issue = toggle.get("issue")
+            if raw_issue in (None, ""):
+                toggle["issue"] = ""
+            else:
+                issue = _normalize_exception_issue(raw_issue)
+                if not issue:
+                    return jsonify({
+                        "error": "issue must be Supply Chain, Process / Engr, Qlty, Sales, or Others",
+                    }), 400
+                toggle["issue"] = issue
+        patch["partial_highlight"] = toggle
     elif "ps_highlighted" in data:
         patch["ps_highlighted"] = bool(data.get("ps_highlighted"))
         if "pp_partial_no" in data:
@@ -2181,6 +2671,8 @@ def api_sales_order_notes(pp_voucher_no):
             if not parsed_need_date:
                 return jsonify({"error": "material_need_date must be YYYY-MM-DD"}), 400
             patch["material_need_date"] = parsed_need_date
+    if "proposed_cnc" in data:
+        patch["proposed_cnc"] = data.get("proposed_cnc")
 
     if not patch:
         return jsonify({"error": "No editable fields supplied"}), 400
@@ -2196,3 +2688,35 @@ def api_sales_order_notes(pp_voucher_no):
 
     _patch_sales_orders_pp_notes(pp_voucher_no, payload)
     return jsonify({"ok": True, **payload})
+
+
+@sales_orders_bp.get("/api/sales-orders/date-history")
+def api_sales_order_date_history():
+    pp_voucher_no = compact_text(request.args.get("pp_voucher_no") or request.args.get("pp"))
+    field = compact_text(request.args.get("field")).lower()
+    try:
+        limit = int(request.args.get("limit") or _DATE_HISTORY_LIMIT)
+    except (TypeError, ValueError):
+        limit = _DATE_HISTORY_LIMIT
+    if not pp_voucher_no:
+        return jsonify({"error": "pp_voucher_no is required"}), 400
+    if field not in _DATE_HISTORY_FIELDS:
+        return jsonify({"error": "field must be material_need_date or material_in_date"}), 400
+    try:
+        items = _list_date_history(pp_voucher_no, field, limit=limit)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        friendly = planner_db_connect_error(exc)
+        if friendly:
+            return jsonify({"error": friendly}), 503
+        logger.exception("material date history list failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({
+        "ok": True,
+        "pp_voucher_no": pp_voucher_no,
+        "field": field,
+        "field_label": _DATE_HISTORY_FIELDS[field],
+        "count": len(items),
+        "rows": items,
+    })

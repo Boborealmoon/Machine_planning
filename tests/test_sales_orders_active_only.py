@@ -416,10 +416,14 @@ def test_parse_material_need_date_accepts_iso_and_dmy():
     empty = _empty_notes()
     assert empty["material_need_date"] == ""
     assert empty["material_delay"] is False
+    assert empty["material_need_date_history_count"] == 0
+    assert empty["material_in_date_history_count"] == 0
 
     parsed = _notes_from_row({"material_need_date": date(2026, 9, 15), "material_delay": True})
     assert parsed["material_need_date"] == "2026-09-15"
     assert parsed["material_delay"] is True
+    assert parsed["material_need_date_history_count"] == 0
+    assert parsed["material_in_date_history_count"] == 0
 
 
 def test_notes_api_accepts_material_need_date(monkeypatch):
@@ -464,6 +468,99 @@ def test_notes_api_accepts_material_need_date(monkeypatch):
     assert captured[1]["patch"]["material_need_date"] == ""
 
 
+def test_date_history_changes_need_and_in_dates():
+    from planning.sales_orders_route import _date_history_changes, _in_date_history_value
+
+    assert _in_date_history_value("2026-11-27") == "2026-11-27"
+    assert _in_date_history_value("ARRIVED") == ""
+    assert _in_date_history_value("") == ""
+
+    need_changes = _date_history_changes(
+        {"material_need_date": "", "material_subcon": ""},
+        {"material_need_date": "2026-09-23", "material_subcon": ""},
+    )
+    assert need_changes == [{
+        "field_name": "material_need_date",
+        "old_value": "",
+        "new_value": "2026-09-23",
+    }]
+
+    in_changes = _date_history_changes(
+        {"material_need_date": "2026-09-23", "material_subcon": "2026-11-27"},
+        {"material_need_date": "2026-09-23", "material_subcon": "2026-12-01"},
+    )
+    assert in_changes == [{
+        "field_name": "material_in_date",
+        "old_value": "2026-11-27",
+        "new_value": "2026-12-01",
+    }]
+
+    arrived = _date_history_changes(
+        {"material_need_date": "", "material_subcon": "2026-11-27"},
+        {"material_need_date": "", "material_subcon": "ARRIVED"},
+    )
+    assert arrived == []
+
+    unarrive_to_date = _date_history_changes(
+        {"material_need_date": "", "material_subcon": "ARRIVED"},
+        {"material_need_date": "", "material_subcon": "2026-11-27"},
+    )
+    assert unarrive_to_date == [{
+        "field_name": "material_in_date",
+        "old_value": "",
+        "new_value": "2026-11-27",
+    }]
+
+    unchanged = _date_history_changes(
+        {"material_need_date": "2026-09-23", "material_subcon": "2026-11-27"},
+        {"material_need_date": "2026-09-23", "material_subcon": "2026-11-27"},
+    )
+    assert unchanged == []
+
+
+def test_date_history_api_validates_and_lists(monkeypatch):
+    import os
+    from unittest.mock import patch
+
+    from app import app
+
+    monkeypatch.setattr("planning.sales_orders_route._patch_sales_orders_pp_notes", lambda *_args, **_kwargs: None)
+    client = app.test_client()
+    rows = [{
+        "change_id": 1,
+        "pp_voucher_no": "PP/1",
+        "field_name": "material_need_date",
+        "field_label": "Need date",
+        "old_value": "",
+        "new_value": "2026-09-23",
+        "changed_at": "2026-09-10 11:00:00",
+    }]
+    with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+        missing_pp = client.get("/api/sales-orders/date-history?field=material_need_date")
+        bad_field = client.get("/api/sales-orders/date-history?pp_voucher_no=PP/1&field=notes")
+        with patch(
+            "planning.sales_orders_route._list_date_history",
+            return_value=rows,
+        ) as list_fn:
+            ok = client.get(
+                "/api/sales-orders/date-history?pp_voucher_no=PP/1&field=material_need_date"
+            )
+
+    assert missing_pp.status_code == 400
+    assert "pp_voucher_no" in missing_pp.get_json()["error"]
+    assert bad_field.status_code == 400
+    assert "material_need_date" in bad_field.get_json()["error"]
+    assert ok.status_code == 200
+    body = ok.get_json()
+    assert body["ok"] is True
+    assert body["count"] == 1
+    assert body["field_label"] == "Need date"
+    assert body["rows"][0]["new_value"] == "2026-09-23"
+    list_fn.assert_called_once()
+    assert list_fn.call_args.args[0] == "PP/1"
+    assert list_fn.call_args.args[1] == "material_need_date"
+
+
 def test_notes_api_accepts_buyer(monkeypatch):
     import os
     from unittest.mock import patch
@@ -491,6 +588,123 @@ def test_notes_api_accepts_buyer(monkeypatch):
     assert ok.get_json()["buyer"] == "Jane"
     assert captured[0]["pp"] == "APS26-1"
     assert captured[0]["patch"]["buyer"] == "Jane"
+
+
+def test_notes_from_row_parses_exception_issues():
+    from planning.sales_orders_route import (
+        _apply_partial_exception,
+        _empty_notes,
+        _format_exception_issues,
+        _normalize_exception_issue,
+        _notes_from_row,
+        _parse_exception_issues,
+        _sync_exception_issues,
+    )
+
+    empty = _empty_notes()
+    assert empty["exception_issues"] == {}
+    assert empty["highlighted_partials"] == []
+
+    assert _normalize_exception_issue("Process / Engr") == "process_engr"
+    assert _normalize_exception_issue("Qlty") == "qlty"
+    assert _normalize_exception_issue("supply chain") == "supply_chain"
+    assert _parse_exception_issues('{"1":"qlty","2":"Sales"}') == {1: ["qlty"], 2: ["sales"]}
+    assert _parse_exception_issues('{"1":["qlty","Sales"]}') == {1: ["qlty", "sales"]}
+    assert _format_exception_issues({1: ["qlty", "sales"]}) == '{"1":["qlty","sales"]}'
+    assert _format_exception_issues({1: "qlty", 2: "sales"}) == '{"1":["qlty"],"2":["sales"]}'
+    assert _sync_exception_issues([1, 3], {1: "supply_chain"}) == {
+        1: ["supply_chain"],
+        3: ["others"],
+    }
+
+    parsed = _notes_from_row({
+        "ps_highlighted": True,
+        "highlighted_partials": "1,2",
+        "exception_issues": '{"1":"supply_chain"}',
+    })
+    assert parsed["highlighted_partials"] == [1, 2]
+    assert parsed["exception_issues"] == {"1": ["supply_chain"], "2": ["others"]}
+
+    current = _empty_notes()
+    _apply_partial_exception(current, partial_no=1, issues=["Qlty", "Sales"], issues_provided=True)
+    assert current["highlighted_partials"] == [1]
+    assert current["ps_highlighted"] is True
+    assert current["exception_issues"] == {"1": ["qlty", "sales"]}
+    _apply_partial_exception(current, partial_no=1, issues=[], issues_provided=True)
+    assert current["highlighted_partials"] == []
+    assert current["exception_issues"] == {}
+
+
+def test_notes_api_accepts_exception_issue(monkeypatch):
+    import os
+    from unittest.mock import patch
+
+    from app import app
+    from planning.sales_orders_route import _apply_partial_exception, _empty_notes
+
+    captured = []
+
+    def fake_upsert(pp_voucher_no, patch):
+        captured.append({"pp": pp_voucher_no, "patch": dict(patch)})
+        toggle = patch.get("partial_highlight") or {}
+        notes = _empty_notes()
+        issue_provided = "issue" in toggle
+        issues_provided = "issues" in toggle
+        _apply_partial_exception(
+            notes,
+            partial_no=int(toggle.get("pp_partial_no") or 1),
+            highlighted=None if (issue_provided or issues_provided) else bool(toggle.get("highlighted")),
+            issue=toggle.get("issue") if issue_provided else None,
+            issues=toggle.get("issues") if issues_provided else None,
+            issue_provided=issue_provided and not issues_provided,
+            issues_provided=issues_provided,
+        )
+        return {"pp_voucher_no": pp_voucher_no, **notes}
+
+    monkeypatch.setattr("planning.sales_orders_route._upsert_notes", fake_upsert)
+    monkeypatch.setattr("planning.sales_orders_route._patch_sales_orders_pp_notes", lambda *_args, **_kwargs: None)
+
+    client = app.test_client()
+    with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+        ok = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"partial_highlight": {"pp_partial_no": 2, "issue": "Process / Engr"}},
+        )
+        multi = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"partial_highlight": {"pp_partial_no": 2, "issues": ["Supply Chain", "Qlty"]}},
+        )
+        cleared = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"partial_highlight": {"pp_partial_no": 2, "issues": []}},
+        )
+        cleared_legacy = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"partial_highlight": {"pp_partial_no": 2, "issue": ""}},
+        )
+        bad = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"partial_highlight": {"pp_partial_no": 2, "issue": "unknown"}},
+        )
+        bad_issues = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"partial_highlight": {"pp_partial_no": 2, "issues": ["unknown"]}},
+        )
+
+    assert ok.status_code == 200
+    assert ok.get_json()["exception_issues"] == {"2": ["process_engr"]}
+    assert captured[0]["patch"]["partial_highlight"]["issue"] == "process_engr"
+    assert multi.status_code == 200
+    assert multi.get_json()["exception_issues"] == {"2": ["supply_chain", "qlty"]}
+    assert captured[1]["patch"]["partial_highlight"]["issues"] == ["supply_chain", "qlty"]
+    assert cleared.status_code == 200
+    assert cleared.get_json()["exception_issues"] == {}
+    assert cleared_legacy.status_code == 200
+    assert cleared_legacy.get_json()["exception_issues"] == {}
+    assert bad.status_code == 400
+    assert "Supply Chain" in bad.get_json()["error"]
+    assert bad_issues.status_code == 400
+    assert "Supply Chain" in bad_issues.get_json()["error"]
 
 
 def test_proposed_cnc_overlay_maps_by_part_number(monkeypatch):
@@ -541,6 +755,100 @@ def test_proposed_cnc_overlay_maps_by_part_number(monkeypatch):
     assert first["partials"][0]["proposed_cnc"] == ["CNC 20", "CNC 22"]
     assert orders[1]["pp_vouchers"][0]["proposed_cnc"] == ["CNC 20", "CNC 22"]
     assert orders[1]["pp_vouchers"][1]["proposed_cnc"] == []
+
+
+def test_proposed_cnc_overlay_uses_saved_override(monkeypatch):
+    from planning.sales_orders_route import _apply_proposed_cnc_overlay
+
+    orders = [
+        {
+            "pp_vouchers": [
+                {
+                    "process_sheet_no": "NPS26-100",
+                    "pp_voucher_no": "PP/1",
+                    "inventory_code": "PART-A",
+                    "proposed_cnc_saved": ["CNC 38"],
+                    "partials": [{"pp_partial_no": 1, "inventory_code": "PART-A"}],
+                },
+                {
+                    "process_sheet_no": "NPS26-101",
+                    "pp_voucher_no": "PP/2",
+                    "inventory_code": "PART-A",
+                    "proposed_cnc_saved": None,
+                    "partials": [{"pp_partial_no": 1}],
+                },
+            ]
+        }
+    ]
+    monkeypatch.setattr(
+        "planning.first_article_service.load_proposed_cnc_by_part",
+        lambda live_by_ps=None: {"PART-A": ["CNC 20", "CNC 22"]},
+    )
+    _apply_proposed_cnc_overlay(orders)
+    first, second = orders[0]["pp_vouchers"]
+    assert first["proposed_cnc"] == ["CNC 38"]
+    assert first["partials"][0]["proposed_cnc"] == ["CNC 38"]
+    assert second["proposed_cnc"] == ["CNC 20", "CNC 22"]
+
+
+def test_notes_from_row_parses_proposed_cnc():
+    from planning.sales_orders_route import _empty_notes, _format_proposed_cnc, _notes_from_row, _parse_proposed_cnc
+
+    empty = _empty_notes()
+    assert empty["proposed_cnc_saved"] is None
+    assert _parse_proposed_cnc("CNC 10, 22") == ["CNC 10", "22"]
+    assert _format_proposed_cnc(["CNC 10", "CNC 22"]) == "CNC 10, CNC 22"
+    assert _format_proposed_cnc(None) is None
+    assert _format_proposed_cnc([]) == ""
+
+    unset = _notes_from_row({"material_subcon": "x"})
+    assert unset["proposed_cnc_saved"] is None
+    parsed = _notes_from_row({"proposed_cnc": "CNC 20, CNC 22"})
+    assert parsed["proposed_cnc_saved"] == ["CNC 20", "CNC 22"]
+    cleared = _notes_from_row({"proposed_cnc": ""})
+    assert cleared["proposed_cnc_saved"] == []
+
+
+def test_notes_api_accepts_proposed_cnc(monkeypatch):
+    import os
+    from unittest.mock import patch
+
+    from app import app
+    from planning.sales_orders_route import _empty_notes
+
+    captured = []
+
+    def fake_upsert(pp_voucher_no, patch):
+        captured.append({"pp": pp_voucher_no, "patch": dict(patch)})
+        notes = _empty_notes()
+        machines = patch.get("proposed_cnc") or []
+        notes["proposed_cnc_saved"] = machines
+        notes["proposed_cnc"] = machines
+        return {"pp_voucher_no": pp_voucher_no, **notes}
+
+    monkeypatch.setattr("planning.sales_orders_route._upsert_notes", fake_upsert)
+    monkeypatch.setattr("planning.sales_orders_route._patch_sales_orders_pp_notes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "planning.sales_orders_route._resolve_proposed_cnc",
+        lambda raw: ["CNC 22"] if raw else [],
+    )
+
+    client = app.test_client()
+    with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+        ok = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"proposed_cnc": ["22", "CNC 38"]},
+        )
+        cleared = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"proposed_cnc": []},
+        )
+
+    assert ok.status_code == 200
+    assert captured[0]["patch"]["proposed_cnc"] == ["22", "CNC 38"]
+    assert ok.get_json()["proposed_cnc"] == ["22", "CNC 38"]
+    assert cleared.status_code == 200
+    assert cleared.get_json()["proposed_cnc"] == []
 
 
 def test_program_finish_iso_normalizes_datetime():

@@ -1407,8 +1407,11 @@ class FirstArticleRouteTests(unittest.TestCase):
         self.assertIn("id=\"fa-history-table-body\"", html)
         self.assertIn("id=\"fa-history-modal\"", html)
         self.assertIn("quotations for new parts", html)
-        self.assertIn("From NPI Tracker", html)
-        self.assertIn("fa-20260827-2", html)
+        self.assertIn("fa-20260910-pic", html)
+        self.assertIn("id=\"fa-new-assigned-pic\"", html)
+        self.assertIn("id=\"fa-col-filter-popover\"", html)
+        self.assertIn("fa-col-so", html)
+        self.assertNotIn("From NPI Tracker", html)
         self.assertNotIn("First Article Tracker", html)
         self.assertNotIn("Flagged jobs", html)
 

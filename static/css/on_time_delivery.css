@@ -15,11 +15,54 @@
   min-width: 0;
 }
 
+.otd-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+
+.otd-tab {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 14px 9px;
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #64748b;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.otd-tab:hover {
+  color: #0f172a;
+}
+
+.otd-tab.is-active {
+  border-bottom-color: #2563eb;
+  color: #0f172a;
+}
+
 .otd-context {
   margin: 0;
   font-size: 13px;
   color: var(--text2, #64748b);
   align-self: flex-end;
+}
+
+.otd-page.is-overview .otd-detail-filters,
+.otd-page.is-detail .otd-overview-filters {
+  display: none;
+}
+
+#otd-detail-panel[hidden],
+#otd-overview-panel[hidden],
+#otd-overview-trend-wrap[hidden] {
+  display: none !important;
 }
 
 #otd-salesperson-btn.is-active {
@@ -263,8 +306,111 @@
   border: 0;
 }
 
+.otd-overview-compare {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.otd-overview-kpi {
+  background: #fff;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.otd-overview-kpi--aps { border-top: 3px solid #0369a1; }
+.otd-overview-kpi--nps { border-top: 3px solid #0f766e; }
+.otd-overview-kpi--pps { border-top: 3px solid #7c3aed; }
+
+.otd-overview-kpi-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.otd-overview-kpi-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.otd-overview-kpi-value {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.otd-overview-kpi-sub {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.otd-overview-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.otd-overview-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.otd-overview-block-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.otd-overview-block-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.otd-overview-block-sub {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.otd-charts--overview {
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.3fr) minmax(0, 1.1fr);
+}
+
+.otd-overview-empty {
+  padding: 28px 16px;
+  text-align: center;
+  color: #64748b;
+  font-size: 13px;
+  background: #fff;
+  border: 1px dashed var(--border, #e2e8f0);
+  border-radius: 12px;
+}
+
 @media (max-width: 980px) {
   .otd-charts {
+    grid-template-columns: 1fr;
+  }
+  .otd-charts--overview {
+    grid-template-columns: 1fr;
+  }
+  .otd-overview-compare {
     grid-template-columns: 1fr;
   }
   .otd-chart-card--wide {

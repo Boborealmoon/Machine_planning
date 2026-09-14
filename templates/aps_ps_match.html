@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}APS PS material match{% endblock %}
+{% block body_class %}aps-ps-match-view{% endblock %}
+{% block main_class %}app-main--aps-ps-match{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/aps_ps_match.css') }}?v=aps-ps-match-20260910">
+{% endblock %}
+{% block content %}
+<div class="aps-match-page">
+  <header class="aps-match-header">
+    <div class="aps-match-header-text">
+      <p class="aps-match-kicker">Archive</p>
+      <h1 class="aps-match-title">APS PS material match</h1>
+      <p class="aps-match-subtitle">
+        Upload an APS order Excel. The tool matches Part Number to <strong>active</strong> APS
+        process sheets (open SO lines only, not historical), looks up In-house M/AM Ref in
+        inventory enquiry, then downloads the enriched workbook.
+      </p>
+    </div>
+  </header>
+
+  <div id="aps-match-alert" class="aps-match-alert" hidden></div>
+
+  <section class="aps-match-upload" id="aps-match-dropzone">
+    <input id="aps-match-file" type="file" accept=".xlsx,.xlsm,.xls" hidden>
+    <p class="aps-match-upload-title">Drop an Excel file here, or browse</p>
+    <p class="aps-match-upload-hint">
+      Needs Part Number and In-house M/AM Ref. Matches active APS only. Does not change live process sheets.
+    </p>
+    <div class="aps-match-upload-actions">
+      <button type="button" class="aps-match-btn aps-match-btn--primary" id="aps-match-browse">Choose file</button>
+    </div>
+    <p class="aps-match-filename" id="aps-match-filename" hidden></p>
+  </section>
+
+  <section class="aps-match-summary" id="aps-match-summary" hidden>
+    <div class="aps-match-card">
+      <span>Input rows</span>
+      <strong id="aps-match-input">0</strong>
+    </div>
+    <div class="aps-match-card">
+      <span>Output rows</span>
+      <strong id="aps-match-output">0</strong>
+    </div>
+    <div class="aps-match-card">
+      <span>Matched PS</span>
+      <strong id="aps-match-ps">0</strong>
+    </div>
+    <div class="aps-match-card">
+      <span>Unmatched PS</span>
+      <strong id="aps-match-unmatched-ps">0</strong>
+    </div>
+    <div class="aps-match-card">
+      <span>Unmatched inventory</span>
+      <strong id="aps-match-unmatched-inv">0</strong>
+    </div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/aps_ps_match.js') }}?v=aps-ps-match-20260910"></script>
+{% endblock %}

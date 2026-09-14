@@ -77,6 +77,67 @@ function soApplyMaterialSubconCellState(cell, parsed) {
   cell.classList.toggle('has-material-arrived', Boolean(parsed?.arrived));
 }
 
+const SO_EXCEPTION_ISSUES = [
+  { id: 'supply_chain', label: 'Supply Chain' },
+  { id: 'process_engr', label: 'Process / Engr' },
+  { id: 'qlty', label: 'Qlty' },
+  { id: 'sales', label: 'Sales' },
+  { id: 'others', label: 'Others' },
+];
+const SO_EXCEPTION_ISSUE_IDS = new Set(SO_EXCEPTION_ISSUES.map(item => item.id));
+const SO_EXCEPTION_ISSUE_ALIASES = {
+  'supply chain': 'supply_chain',
+  supply_chain: 'supply_chain',
+  sc: 'supply_chain',
+  'process / engr': 'process_engr',
+  'process/engr': 'process_engr',
+  process_engr: 'process_engr',
+  process: 'process_engr',
+  engr: 'process_engr',
+  engineering: 'process_engr',
+  qlty: 'qlty',
+  quality: 'qlty',
+  qa: 'qlty',
+  qc: 'qlty',
+  sales: 'sales',
+  others: 'others',
+  other: 'others',
+  flagged: 'others',
+  exception: 'others',
+};
+
+function soNormalizeExceptionIssue(raw) {
+  const key = String(raw || '').trim().toLowerCase().replace(/-/g, '_').replace(/\s*\/\s*/g, ' / ').replace(/\s+/g, ' ');
+  if (!key) return '';
+  if (SO_EXCEPTION_ISSUE_IDS.has(key)) return key;
+  return SO_EXCEPTION_ISSUE_ALIASES[key] || '';
+}
+
+function soExceptionIssueLabel(id) {
+  const issue = soNormalizeExceptionIssue(id);
+  return SO_EXCEPTION_ISSUES.find(item => item.id === issue)?.label || '';
+}
+
+function soNormalizeExceptionIssues(raw) {
+  if (Array.isArray(raw)) {
+    const seen = new Set();
+    const out = [];
+    raw.forEach(item => {
+      const id = soNormalizeExceptionIssue(item);
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      out.push(id);
+    });
+    return SO_EXCEPTION_ISSUES.map(item => item.id).filter(id => seen.has(id));
+  }
+  const single = soNormalizeExceptionIssue(raw);
+  return single ? [single] : [];
+}
+
+function soExceptionIssuesLabel(ids) {
+  return soNormalizeExceptionIssues(ids).map(soExceptionIssueLabel).filter(Boolean).join(', ');
+}
+
 const SO_PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
 const SO_STAGE_EXCLUDE_ALL_COMPLETE = 'all complete';
 
@@ -85,7 +146,7 @@ const SO_COLUMNS = [
   { id: 'process_sheet_no', label: 'Process sheet', sortable: true, filterable: true, filterType: 'prefix', stickyAfterSide: true },
   { id: 'partial', label: 'Partial', sortable: true, filterable: true },
   { id: 'partial_qty', label: 'Partial qty', sortable: true, filterable: true },
-  { id: 'exception', label: 'Exception', sortable: true, filterable: false },
+  { id: 'exception', label: 'Exception', sortable: true, filterable: true },
   { id: 'queued_cnc', label: 'Queued CNC', sortable: true, filterable: true },
   { id: 'proposed_cnc', label: 'Proposed CNC', sortable: true, filterable: true },
   { id: 'erp_stage', label: 'Stage', sortable: true, filterable: true },
@@ -94,6 +155,7 @@ const SO_COLUMNS = [
   { id: 'part', label: 'Part', sortable: true, filterable: true },
   { id: 'description', label: 'Description', sortable: true, filterable: true },
   { id: 'due_date', label: 'Due date', sortable: true, filterable: true },
+  { id: 'material_need_date', label: 'Need date', sortable: true, filterable: true, tone: 'need' },
   { id: 'material_subcon', label: 'Material in / Sub-con', sortable: true, filterable: true, tone: 'material' },
   { id: 'program_finish_at', label: 'Programme finish', sortable: true, filterable: true, tone: 'finish' },
   { id: 'proposed_edd', label: 'Prop. EDD', sortable: true, filterable: true, tone: 'edd' },
@@ -138,6 +200,10 @@ const soState = {
   openFilterCol: '',
   frameAgreementParts: new Set(),
   assemblyJobs: new Map(),
+  cncMachines: [],
+  openProposedCncPp: '',
+  proposedCncQuery: '',
+  openExceptionKey: '',
 };
 
 function soAllPpItems() {
@@ -251,9 +317,9 @@ function soProgramFinishDisplay(pp) {
 const SO_WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 function soDateInputValue(value) {
-  const text = String(value || '').trim();
-  if (!text) return '';
-  return text.slice(0, 10);
+  const text = String(value == null ? '' : value).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10);
+  return soParseMaterialSubcon(text).date || '';
 }
 
 function soParseDateOnly(value) {
@@ -491,9 +557,46 @@ function soRenderQueuedMachinesHtml(machines) {
 
 function soRenderProposedCncHtml(machines) {
   return soRenderMachinePillsHtml(machines, {
-    title: 'Proposed CNC from NPI/FA Management for this part number',
+    title: 'Proposed CNC — click to choose machines',
     pillClass: 'so-proposed-cnc-pill',
   });
+}
+
+function soCncMachineNumber(code) {
+  const match = String(code || '').trim().match(/(\d+)\s*$/);
+  return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
+}
+
+function soNormalizeCncMachine(raw) {
+  const text = String(raw || '').trim().replace(/\s+/g, ' ');
+  if (!text) return '';
+  if (/^\d+$/.test(text)) return `CNC ${text}`;
+  return text;
+}
+
+function soCncMachineCatalog(selected) {
+  const out = [];
+  const seen = new Set();
+  const add = (raw) => {
+    const name = soNormalizeCncMachine(raw);
+    const key = name.toUpperCase();
+    if (!name || seen.has(key)) return;
+    seen.add(key);
+    out.push(name);
+  };
+  (soState.cncMachines || []).forEach(add);
+  (selected || []).forEach(add);
+  out.sort((a, b) => {
+    const an = soCncMachineNumber(a);
+    const bn = soCncMachineNumber(b);
+    if (an !== bn) return an - bn;
+    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+  });
+  return out;
+}
+
+function soProposedCncSelectedSet(machines) {
+  return new Set((machines || []).map(item => soNormalizeCncMachine(item).toUpperCase()).filter(Boolean));
 }
 
 function soIsPartialQueued(pp, partial) {
@@ -652,7 +755,7 @@ const SO_EXPORT_COLUMNS = [
   { id: 'process_sheet_no', label: 'Process sheet', width: 18 },
   { id: 'partial', label: 'Partial', width: 10 },
   { id: 'partial_qty', label: 'Partial qty', width: 12 },
-  { id: 'exception', label: 'Exception', width: 12 },
+  { id: 'exception', label: 'Exception', width: 16 },
   { id: 'queued_cnc', label: 'Queued CNC', width: 16 },
   { id: 'proposed_cnc', label: 'Proposed CNC', width: 16 },
   { id: 'erp_stage', label: 'Stage', width: 18 },
@@ -662,6 +765,7 @@ const SO_EXPORT_COLUMNS = [
   { id: 'description', label: 'Description', width: 32 },
   { id: 'customer_po_no', label: 'P/O No.', width: 16 },
   { id: 'due_date', label: 'Due date', width: 12 },
+  { id: 'material_need_date', label: 'Need date', width: 12 },
   { id: 'material_subcon', label: 'Material in / Sub-con', width: 18 },
   { id: 'program_finish_at', label: 'Programme finish', width: 14 },
   { id: 'proposed_edd', label: 'Prop. EDD', width: 12 },
@@ -701,15 +805,17 @@ function soExportCellValue(leaf, colId) {
     case 'process_sheet_no':
       return soExportBlankDash(soPsDisplayForPartial(pp, partial));
     case 'exception':
-      return soIsPartialException(pp, partial) ? 'Yes' : '';
+      return soExceptionIssuesLabel(soPartialExceptionIssues(pp, partial));
     case 'order_date':
     case 'due_date':
+    case 'material_need_date':
     case 'proposed_edd':
     case 'program_finish_at':
     case 'delivery_date': {
       let raw = pp?.[colId];
       if (colId === 'proposed_edd') raw = soProposedEddDisplay(pp, partial);
       else if (colId === 'program_finish_at') raw = soProgramFinishDisplay(pp);
+      else if (colId === 'material_need_date') raw = soDateInputValue(pp?.material_need_date);
       return soExportDateValue(raw);
     }
     case 'week':
@@ -920,6 +1026,7 @@ function soRenderJobDetailFields(order, pp, partial) {
     soDetailField('Customer PO', partial?.customer_po_no || pp?.customer_po_no || order?.customer_po_no, { mono: true }),
     soDetailField('SO line', pp?.source_line_item_no),
     soDetailField('Due date', soFormatDate(pp?.due_date)),
+    ...(soDateInputValue(pp?.material_need_date) ? [soDetailField('Need date', soFormatDate(pp?.material_need_date))] : []),
     ...(soProposedEddDisplay(pp, partial) ? [soDetailField('Prop. EDD', soFormatDate(soProposedEddDisplay(pp, partial)))] : []),
     ...(soProgramFinishDisplay(pp) ? [soDetailField('Programme finish', soFormatDate(soProgramFinishDisplay(pp)))] : []),
     soDetailField('Week', soWeekLabel(pp, partial)),
@@ -974,6 +1081,7 @@ function soRenderPpDetail(order, pp) {
     soDetailField('Customer PO', pp?.customer_po_no, { mono: true }),
     soDetailField('Qty', pp?.pp_qty),
     soDetailField('Due date', soFormatDate(pp?.due_date)),
+    ...(soDateInputValue(pp?.material_need_date) ? [soDetailField('Need date', soFormatDate(pp?.material_need_date))] : []),
     ...(soProgramFinishDisplay(pp) ? [soDetailField('Programme finish', soFormatDate(soProgramFinishDisplay(pp)))] : []),
     ...SO_NOTE_FIELDS.map(field => soDetailField(
       SO_NOTE_LABELS[field],
@@ -1236,7 +1344,7 @@ function soBindTableClicks() {
   wrap.dataset.detailBound = '1';
 
   wrap.addEventListener('click', e => {
-    if (e.target.closest('.so-editable-input, .so-editable-cell, .so-material-subcon-cell, .so-exception-cell, .so-coway-edd-cell, .so-program-finish-cell')) return;
+    if (e.target.closest('.so-editable-input, .so-editable-cell, .so-material-subcon-cell, .so-need-date-cell, .so-exception-cell, .so-coway-edd-cell, .so-program-finish-cell, .so-proposed-cnc-cell')) return;
 
     const materialBtn = e.target.closest('[data-action="open-material"]');
     if (materialBtn) {
@@ -1328,6 +1436,8 @@ function soLeafSearchText(leaf) {
     pp?.bom_code,
     pp?.description,
     pp?.customer_po_no,
+    pp?.material_need_date,
+    soFormatDate(pp?.material_need_date),
     pp?.status,
     pp?.source_line_item_no,
     pp?.segment_1_code,
@@ -1472,10 +1582,19 @@ function soBomChildPp(parentPp, child, { synthetic = true } = {}) {
     pp_qty: child.qty == null ? parentPp?.pp_qty : child.qty,
     bom_code: child.selected_bom_code || child.resolved_bom_code || parentPp?.bom_code || '',
   };
-  if (child.material_subcon) out.material_subcon = child.material_subcon;
-  if (child.mtl_part_order) out.mtl_part_order = child.mtl_part_order;
-  if (child.material_need_date) out.material_need_date = child.material_need_date;
-  if (child.material_delay != null) out.material_delay = Boolean(child.material_delay);
+  if (childPs) {
+    out.material_subcon = child.material_subcon || '';
+    out.mtl_part_order = child.mtl_part_order || '';
+    out.material_need_date = child.material_need_date || '';
+    out.material_need_date_history_count = Number(child.material_need_date_history_count || 0);
+    out.material_in_date_history_count = Number(child.material_in_date_history_count || 0);
+    out.material_delay = Boolean(child.material_delay);
+  } else {
+    if (child.material_subcon) out.material_subcon = child.material_subcon;
+    if (child.mtl_part_order) out.mtl_part_order = child.mtl_part_order;
+    if (child.material_need_date) out.material_need_date = child.material_need_date;
+    if (child.material_delay != null) out.material_delay = Boolean(child.material_delay);
+  }
   if (!synthetic) {
     out.assembly_synthetic = false;
     return out;
@@ -1498,6 +1617,7 @@ function soBomChildPp(parentPp, child, { synthetic = true } = {}) {
   out.erp_wo_issued_qty = null;
   out.highlighted_partials = [];
   out.ps_highlighted = false;
+  out.exception_issues = {};
   out.is_new_part = false;
   out.similar_ps_count = 0;
   out.coway_proposed_edd = '';
@@ -1786,7 +1906,7 @@ function soLeafColumnValue(leaf, colId) {
     case '_so': return order?.sales_order_no;
     case 'partial': return partial?.pp_partial_no ?? '';
     case 'partial_qty': return soPartialQtyValue(pp, partial);
-    case 'exception': return soIsPartialException(pp, partial) ? 'flagged' : '';
+    case 'exception': return soExceptionIssuesLabel(soPartialExceptionIssues(pp, partial));
     case 'process_sheet_no': return soPsDisplayId(pp);
     case 'queued_cnc': return soQueuedMachinesLabel(pp, partial);
     case 'proposed_cnc': return soProposedCncLabel(pp, partial);
@@ -1799,6 +1919,7 @@ function soLeafColumnValue(leaf, colId) {
     case 'description': return pp?.description;
     case 'customer_po_no': return pp?.customer_po_no;
     case 'due_date': return pp?.due_date;
+    case 'material_need_date': return soDateInputValue(pp?.material_need_date);
     case 'proposed_edd': return soProposedEddDisplay(pp, partial);
     case 'program_finish_at': return soProgramFinishDisplay(pp);
     case 'week': return soWeekLabel(pp, partial);
@@ -1851,6 +1972,8 @@ function soLeafColumnIsEmpty(leaf, colId) {
       return partial?.pp_partial_no == null || partial?.pp_partial_no === '';
     case 'partial_qty':
       return soPartialQtyValue(pp, partial) == null;
+    case 'exception':
+      return !soPartialExceptionIssues(pp, partial).length;
     case 'queued_cnc':
       return soPartialQueuedMachines(pp, partial).length === 0;
     case 'proposed_cnc':
@@ -1869,6 +1992,8 @@ function soLeafColumnIsEmpty(leaf, colId) {
       return !String(pp?.customer_po_no || '').trim();
     case 'due_date':
       return !String(pp?.due_date || '').trim();
+    case 'material_need_date':
+      return !soDateInputValue(pp?.material_need_date);
     case 'proposed_edd':
       return !soProposedEddDisplay(pp, partial);
     case 'program_finish_at':
@@ -2097,6 +2222,8 @@ function soOpenColumnFilter(btn, colId) {
     return;
   }
 
+  soCloseProposedCncPopover();
+  soCloseExceptionPopover();
   soState.openFilterCol = colId;
   pop.innerHTML = col.filterType === 'prefix'
     ? soRenderPrefixFilterPanel(colId)
@@ -2345,9 +2472,28 @@ function soRenderQueuedCncCell(pp, partial) {
 }
 
 function soRenderProposedCncCell(pp, partial) {
+  if (pp?.assembly_synthetic) {
+    return `<td class="so-queued-cnc-cell so-proposed-cnc-cell"><span class="so-dash">—</span></td>`;
+  }
+  const ppNo = String(pp?.pp_voucher_no || '').trim();
+  const machines = soProposedCncMachines(pp, partial);
+  const open = soState.openProposedCncPp === ppNo;
   return `
     <td class="so-queued-cnc-cell so-proposed-cnc-cell">
-      ${soRenderProposedCncHtml(soProposedCncMachines(pp, partial))}
+      <button type="button"
+        class="so-proposed-cnc-btn${machines.length ? ' has-value' : ''}${open ? ' is-open' : ''}"
+        data-pp-voucher-no="${escapeHtml(ppNo)}"
+        aria-haspopup="listbox"
+        aria-expanded="${open ? 'true' : 'false'}"
+        title="Choose proposed CNC machines">
+        <span class="so-proposed-cnc-btn-value">${
+          machines.length
+            ? soRenderProposedCncHtml(machines)
+            : '<span class="so-dash">—</span>'
+        }</span>
+        <span class="so-proposed-cnc-btn-caret" aria-hidden="true">▾</span>
+      </button>
+      <span class="so-proposed-cnc-status so-editable-status" aria-live="polite"></span>
     </td>
   `;
 }
@@ -2870,12 +3016,34 @@ function soRenderPpCells(pp, partial) {
   return `
     <td class="new-orders-desc" title="${escapeHtml(String(pp.description || ''))}">${escapeHtml(String(pp.description || '—'))}</td>
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.due_date))}</td>
+    ${soRenderNeedDateCell(pp)}
     ${soRenderMaterialSubconCell(pp)}
     ${soRenderProgramFinishCell(pp, partial)}
     ${soRenderProposedEddCell(pp, partial)}
     ${soRenderWeekCell(pp, partial)}
     <td class="new-orders-date">${escapeHtml(soFormatDate(pp.delivery_date))}</td>
     ${SO_NOTE_FIELDS.filter(field => field !== 'material_subcon').map(field => soRenderEditableCell(pp, field)).join('')}
+  `;
+}
+
+function soRenderNeedDateCell(pp) {
+  const ppNo = String(pp?.pp_voucher_no || '').trim();
+  const value = soDateInputValue(pp?.material_need_date);
+  const editable = Boolean(ppNo) && !pp?.assembly_synthetic;
+  if (!editable) {
+    return `<td class="new-orders-date so-need-date-cell${value ? ' has-need-date' : ''}"><span class="so-need-date-static">${escapeHtml(soFormatDate(value))}</span></td>`;
+  }
+  return `
+    <td class="new-orders-date so-need-date-cell${value ? ' has-need-date' : ''}">
+      <input type="date"
+        class="so-need-date-input"
+        value="${escapeHtml(value)}"
+        data-pp-voucher-no="${escapeHtml(ppNo)}"
+        data-last-saved="${escapeHtml(value)}"
+        aria-label="Need date"
+        title="Same Need date as Supply Chain View — saved per PP voucher">
+      <span class="so-editable-status" aria-live="polite"></span>
+    </td>
   `;
 }
 
@@ -2994,6 +3162,23 @@ function soPartialNo(partial) {
   return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
+function soExceptionIssuesMap(pp) {
+  const raw = pp?.exception_issues;
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+}
+
+function soPartialExceptionIssues(pp, partial) {
+  const partialNo = soPartialNo(partial);
+  const issues = soExceptionIssuesMap(pp);
+  const fromMap = soNormalizeExceptionIssues(issues[partialNo] ?? issues[String(partialNo)]);
+  if (fromMap.length) return fromMap;
+  return soIsPartialException(pp, partial) ? ['others'] : [];
+}
+
+function soPartialExceptionIssue(pp, partial) {
+  return soPartialExceptionIssues(pp, partial)[0] || '';
+}
+
 function soIsPartialException(pp, partial) {
   const partials = Array.isArray(pp?.highlighted_partials) ? pp.highlighted_partials : [];
   return partials.includes(soPartialNo(partial));
@@ -3009,18 +3194,27 @@ function soSetPartialException(pp, partialNo, on) {
   pp.ps_highlighted = sorted.length > 0;
 }
 
-function soSyncExceptionRow(row, flagged) {
-  if (!row) return;
-  row.classList.toggle('is-so-exception', Boolean(flagged));
-  const cell = row.querySelector('.so-exception-cell');
-  const input = cell?.querySelector('.so-exception-input');
-  const label = cell?.querySelector('.so-exception-flag');
-  if (input) input.checked = Boolean(flagged);
-  if (label) {
-    label.classList.toggle('is-active', Boolean(flagged));
-    label.setAttribute('aria-pressed', flagged ? 'true' : 'false');
-    label.title = flagged ? 'Exception raised — click to clear' : 'Raise exception for this line';
-  }
+function soSetPartialExceptionIssues(pp, partialNo, issueIds) {
+  if (!pp) return;
+  const next = soNormalizeExceptionIssues(issueIds);
+  const issues = { ...soExceptionIssuesMap(pp) };
+  delete issues[partialNo];
+  delete issues[String(partialNo)];
+  if (next.length) issues[String(partialNo)] = next;
+  pp.exception_issues = issues;
+  soSetPartialException(pp, partialNo, next.length > 0);
+}
+
+function soExceptionKey(ppNo, partialNo) {
+  return `${String(ppNo || '').trim()}::${Math.max(1, Number(partialNo) || 1)}`;
+}
+
+function soExceptionChipsHtml(ids) {
+  const selected = soNormalizeExceptionIssues(ids);
+  if (!selected.length) return '<span class="so-dash">—</span>';
+  return selected.map(id => (
+    `<span class="so-exception-chip so-exception-chip--${escapeHtml(id)}">${escapeHtml(soExceptionIssueLabel(id))}</span>`
+  )).join('');
 }
 
 function soRenderExceptionCell(pp, partial) {
@@ -3029,22 +3223,23 @@ function soRenderExceptionCell(pp, partial) {
   }
   const ppNo = String(pp?.pp_voucher_no || '').trim();
   const partialNo = soPartialNo(partial);
-  const flagged = soIsPartialException(pp, partial);
+  const issues = soPartialExceptionIssues(pp, partial);
+  const open = soState.openExceptionKey === soExceptionKey(ppNo, partialNo);
+  const label = soExceptionIssuesLabel(issues);
+  const title = label ? `${label} — click to change` : 'Choose exception categories';
   return `
-    <td class="so-exception-cell">
-      <label class="so-exception-flag${flagged ? ' is-active' : ''}"
-        title="${flagged ? 'Exception raised — click to clear' : 'Raise exception for this line'}"
-        aria-pressed="${flagged ? 'true' : 'false'}"
-        aria-label="${flagged ? 'Exception raised' : 'Raise exception'}">
-        <input type="checkbox"
-          class="so-exception-input"
-          data-pp-voucher-no="${escapeHtml(ppNo)}"
-          data-partial-no="${partialNo}"
-          ${flagged ? 'checked' : ''}
-          tabindex="-1"
-          aria-hidden="true">
-        <span class="so-exception-mark" aria-hidden="true">!</span>
-      </label>
+    <td class="so-exception-cell${issues.length ? ' is-active' : ''}" data-issues="${escapeHtml(issues.join(','))}">
+      <button type="button"
+        class="so-exception-btn${issues.length ? ' has-value' : ''}${open ? ' is-open' : ''}"
+        data-pp-voucher-no="${escapeHtml(ppNo)}"
+        data-partial-no="${partialNo}"
+        aria-haspopup="listbox"
+        aria-expanded="${open ? 'true' : 'false'}"
+        aria-label="Exception issues"
+        title="${escapeHtml(title)}">
+        <span class="so-exception-btn-value">${soExceptionChipsHtml(issues)}</span>
+        <span class="so-exception-btn-caret" aria-hidden="true">▾</span>
+      </button>
       <span class="so-exception-status" aria-live="polite"></span>
     </td>
   `;
@@ -3071,7 +3266,7 @@ function soRenderLeafRow(leaf, { includeSideRail, sideRowSpan, groupStart, shade
   const orderDateCell = soRenderOrderDateCell(pp);
   const startClass = groupStart ? ' new-orders-group-start' : '';
   const queuedMark = soIsPartialQueued(pp, partial) ? ' is-ps-queued-mark' : '';
-  const exceptionMark = soIsPartialException(pp, partial) ? ' is-so-exception' : '';
+  const exceptionMark = soPartialExceptionIssues(pp, partial).length ? ' is-so-exception' : '';
   const asmMark = assemblyChild
     ? ' is-so-asm-child'
     : (Number(assemblyChildCount) > 0 ? ' is-so-asm-parent' : '');
@@ -3125,7 +3320,7 @@ function soRenderOrderGroup(order, soGroupIndex = 0) {
 }
 
 function soSetSaveStatus(control, state, message) {
-  const status = control?.closest('.so-editable-cell, .so-material-subcon-cell, .so-coway-edd-cell, .so-program-finish-cell')?.querySelector('.so-editable-status');
+  const status = control?.closest('.so-editable-cell, .so-material-subcon-cell, .so-need-date-cell, .so-coway-edd-cell, .so-program-finish-cell')?.querySelector('.so-editable-status');
   if (!status) return;
   status.className = `so-editable-status${state ? ` is-${state}` : ''}`;
   status.textContent = message || '';
@@ -3362,33 +3557,154 @@ async function soSaveField(control) {
   }
 }
 
-function soSetExceptionStatus(control, state, message) {
-  const status = control?.closest('.so-exception-cell')?.querySelector('.so-exception-status');
-  if (!status) return;
-  status.className = `so-exception-status${state ? ` is-${state}` : ''}`;
-  status.textContent = message || '';
+function soExceptionPopover() {
+  return document.getElementById('so-exception-popover');
 }
 
-async function soSaveExceptionFlag(input) {
-  const ppNo = String(input?.dataset?.ppVoucherNo || '').trim();
-  const partialNo = Math.max(1, Number(input?.dataset?.partialNo) || 1);
-  if (!ppNo || input.disabled) return;
+function soCloseExceptionPopover() {
+  const pop = soExceptionPopover();
+  if (pop) pop.hidden = true;
+  soState.openExceptionKey = '';
+  document.querySelectorAll('.so-exception-btn.is-open').forEach(btn => {
+    btn.classList.remove('is-open');
+    btn.setAttribute('aria-expanded', 'false');
+  });
+}
 
-  const flagged = Boolean(input.checked);
-  const row = input.closest('tr');
-  const label = input.closest('.so-exception-flag');
+function soRepositionExceptionPopover() {
+  const pop = soExceptionPopover();
+  if (!pop || pop.hidden || !soState.openExceptionKey) return;
+  const [ppNo, partialRaw] = soState.openExceptionKey.split('::');
+  const btn = document.querySelector(
+    `.so-exception-btn[data-pp-voucher-no="${CSS.escape(ppNo)}"][data-partial-no="${CSS.escape(partialRaw)}"]`
+  );
+  if (!btn) {
+    soCloseExceptionPopover();
+    return;
+  }
+  const rect = btn.getBoundingClientRect();
+  const width = Math.max(200, Math.min(240, window.innerWidth - 16));
+  let left = rect.left;
+  if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
+  let top = rect.bottom + 4;
+  if (top + 220 > window.innerHeight && rect.top > 180) {
+    top = Math.max(8, rect.top - 220);
+  }
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+  pop.style.width = `${width}px`;
+}
+
+function soSetExceptionStatus(ppNo, partialNo, state, message) {
+  document.querySelectorAll(
+    `.so-exception-btn[data-pp-voucher-no="${CSS.escape(ppNo)}"][data-partial-no="${CSS.escape(String(partialNo))}"]`
+  ).forEach(btn => {
+    const status = btn.closest('.so-exception-cell')?.querySelector('.so-exception-status');
+    if (!status) return;
+    status.className = `so-exception-status${state ? ` is-${state}` : ''}`;
+    status.textContent = message || '';
+  });
+}
+
+function soSyncExceptionButtons(ppNo, partialNo, issueIds) {
+  const selected = soNormalizeExceptionIssues(issueIds);
+  const flagged = selected.length > 0;
+  const key = soExceptionKey(ppNo, partialNo);
+  const label = soExceptionIssuesLabel(selected);
+  document.querySelectorAll(
+    `.so-exception-btn[data-pp-voucher-no="${CSS.escape(ppNo)}"][data-partial-no="${CSS.escape(String(partialNo))}"]`
+  ).forEach(btn => {
+    const value = btn.querySelector('.so-exception-btn-value');
+    if (value) value.innerHTML = soExceptionChipsHtml(selected);
+    btn.classList.toggle('has-value', flagged);
+    btn.classList.toggle('is-open', soState.openExceptionKey === key);
+    btn.setAttribute('aria-expanded', soState.openExceptionKey === key ? 'true' : 'false');
+    btn.title = label ? `${label} — click to change` : 'Choose exception categories';
+    const cell = btn.closest('.so-exception-cell');
+    if (cell) {
+      cell.classList.toggle('is-active', flagged);
+      cell.dataset.issues = selected.join(',');
+    }
+    const row = btn.closest('tr');
+    if (row) row.classList.toggle('is-so-exception', flagged);
+  });
+}
+
+function soSavedExceptionIssues(data, partialNo, fallback) {
+  const issues = data?.exception_issues && typeof data.exception_issues === 'object'
+    ? data.exception_issues
+    : {};
+  const fromMap = soNormalizeExceptionIssues(issues[partialNo] ?? issues[String(partialNo)]);
+  if (fromMap.length) return fromMap;
+  const highlighted = Array.isArray(data?.highlighted_partials)
+    ? data.highlighted_partials.includes(partialNo)
+    : false;
+  if (highlighted) return ['others'];
+  return soNormalizeExceptionIssues(fallback);
+}
+
+function soRenderExceptionPopover() {
+  const pop = soExceptionPopover();
+  const key = soState.openExceptionKey;
+  if (!pop || !key) return;
+  const [ppNo, partialRaw] = key.split('::');
+  const partialNo = Math.max(1, Number(partialRaw) || 1);
   const found = soFindPp(ppNo);
-  const previous = found?.pp ? soIsPartialException(found.pp, { pp_partial_no: partialNo }) : false;
+  const selected = new Set(soPartialExceptionIssues(found?.pp, { pp_partial_no: partialNo }));
+  const checks = SO_EXCEPTION_ISSUES.map(item => {
+    const checked = selected.has(item.id) ? ' checked' : '';
+    return `<label class="so-col-filter-check so-exception-check">
+      <input type="checkbox" data-so-exception-issue="${escapeHtml(item.id)}"${checked} />
+      ${escapeHtml(item.label)}
+    </label>`;
+  }).join('');
+  pop.innerHTML = `
+    <div class="so-col-filter-title">Exception</div>
+    <div class="so-exception-checks">${checks}</div>
+    <div class="so-col-filter-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-action="clear-exception">Clear</button>
+    </div>
+  `;
+  pop.hidden = false;
+  soRepositionExceptionPopover();
+}
 
-  soSyncExceptionRow(row, flagged);
-  input.disabled = true;
-  if (label) label.classList.add('is-saving');
-  soSetExceptionStatus(input, 'saving', 'Saving…');
+function soOpenExceptionPopover(btn) {
+  const ppNo = String(btn?.dataset?.ppVoucherNo || '').trim();
+  const partialNo = Math.max(1, Number(btn?.dataset?.partialNo) || 1);
+  const key = soExceptionKey(ppNo, partialNo);
+  if (!ppNo) return;
+  if (soState.openExceptionKey === key && soExceptionPopover() && !soExceptionPopover().hidden) {
+    soCloseExceptionPopover();
+    return;
+  }
+  soCloseColumnFilter();
+  soCloseProposedCncPopover();
+  soState.openExceptionKey = key;
+  document.querySelectorAll('.so-exception-btn.is-open').forEach(el => {
+    el.classList.remove('is-open');
+    el.setAttribute('aria-expanded', 'false');
+  });
+  btn.classList.add('is-open');
+  btn.setAttribute('aria-expanded', 'true');
+  soRenderExceptionPopover();
+}
+
+async function soSaveExceptionIssues(ppNo, partialNo, issueIds) {
+  const next = soNormalizeExceptionIssues(issueIds);
+  const saveKey = `${ppNo}::exception::${partialNo}`;
+  if (!ppNo || soState.saveInFlight.has(saveKey)) return;
+  const found = soFindPp(ppNo);
+  soState.saveInFlight.add(saveKey);
+  soSetPartialExceptionIssues(found?.pp, partialNo, next);
+  soSyncExceptionButtons(ppNo, partialNo, next);
+  soSetExceptionStatus(ppNo, partialNo, 'saving', 'Saving…');
   try {
     const data = await soPostJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
       partial_highlight: {
         pp_partial_no: partialNo,
-        highlighted: flagged,
+        highlighted: next.length > 0,
+        issues: next,
       },
     });
     if (found?.pp) {
@@ -3396,39 +3712,374 @@ async function soSaveExceptionFlag(input) {
         ? data.highlighted_partials
         : [];
       found.pp.ps_highlighted = Boolean(data.ps_highlighted);
+      found.pp.exception_issues = data.exception_issues && typeof data.exception_issues === 'object'
+        ? data.exception_issues
+        : {};
     }
-    const saved = Array.isArray(data.highlighted_partials)
-      ? data.highlighted_partials.includes(partialNo)
-      : flagged;
-    soSyncExceptionRow(row, saved);
-    soSetExceptionStatus(input, 'saved', saved ? 'Flagged' : 'Cleared');
-    window.setTimeout(() => soSetExceptionStatus(input, '', ''), 1500);
+    const saved = soSavedExceptionIssues(data, partialNo, next);
+    soSetPartialExceptionIssues(found?.pp, partialNo, saved);
+    soSyncExceptionButtons(ppNo, partialNo, saved);
+    if (soState.openExceptionKey === soExceptionKey(ppNo, partialNo)) soRenderExceptionPopover();
+    soSetExceptionStatus(ppNo, partialNo, 'saved', saved.length ? soExceptionIssuesLabel(saved) : 'Cleared');
+    window.setTimeout(() => soSetExceptionStatus(ppNo, partialNo, '', ''), 1500);
   } catch (err) {
-    if (found?.pp) soSetPartialException(found.pp, partialNo, previous);
-    soSyncExceptionRow(row, previous);
-    soSetExceptionStatus(input, 'error', err.message || 'Save failed');
+    soSetExceptionStatus(ppNo, partialNo, 'error', err.message || 'Save failed');
   } finally {
-    input.disabled = false;
-    if (label) label.classList.remove('is-saving');
+    soState.saveInFlight.delete(saveKey);
   }
+}
+
+function soToggleExceptionIssue(ppNo, partialNo, issue, checked) {
+  const found = soFindPp(ppNo);
+  const current = soPartialExceptionIssues(found?.pp, { pp_partial_no: partialNo });
+  const next = new Set(current);
+  const id = soNormalizeExceptionIssue(issue);
+  if (!id) return;
+  if (checked) next.add(id);
+  else next.delete(id);
+  soSaveExceptionIssues(ppNo, partialNo, [...next]);
 }
 
 function soBindExceptionFlags() {
   const body = document.getElementById('so-table-body');
-  if (!body || body.dataset.exceptionBound === '1') return;
-  body.dataset.exceptionBound = '1';
+  if (body && body.dataset.exceptionBound !== '1') {
+    body.dataset.exceptionBound = '1';
+    body.addEventListener('click', e => {
+      const btn = e.target.closest('.so-exception-btn');
+      if (!btn) {
+        if (e.target.closest('.so-exception-cell')) e.stopPropagation();
+        return;
+      }
+      e.stopPropagation();
+      soOpenExceptionPopover(btn);
+    });
+  }
 
-  body.addEventListener('change', e => {
-    const input = e.target.closest('.so-exception-input');
+  const pop = soExceptionPopover();
+  if (!pop || pop.dataset.bound === '1') return;
+  pop.dataset.bound = '1';
+  pop.addEventListener('click', e => e.stopPropagation());
+  pop.addEventListener('change', e => {
+    const input = e.target.closest('[data-so-exception-issue]');
     if (!input) return;
-    e.stopPropagation();
-    soSaveExceptionFlag(input);
+    const key = soState.openExceptionKey;
+    if (!key) return;
+    const [ppNo, partialRaw] = key.split('::');
+    soToggleExceptionIssue(ppNo, Math.max(1, Number(partialRaw) || 1), input.getAttribute('data-so-exception-issue'), input.checked);
+  });
+  pop.addEventListener('click', e => {
+    const clearBtn = e.target.closest('[data-action="clear-exception"]');
+    if (!clearBtn) return;
+    const key = soState.openExceptionKey;
+    if (!key) return;
+    const [ppNo, partialRaw] = key.split('::');
+    soSaveExceptionIssues(ppNo, Math.max(1, Number(partialRaw) || 1), []);
+  });
+  document.addEventListener('click', e => {
+    const popEl = soExceptionPopover();
+    if (!popEl || popEl.hidden) return;
+    if (popEl.contains(e.target) || e.target.closest('.so-exception-btn')) return;
+    soCloseExceptionPopover();
+  });
+  window.addEventListener('resize', soRepositionExceptionPopover);
+  document.getElementById('so-table-wrap')?.addEventListener('scroll', soRepositionExceptionPopover, { passive: true });
+}
+
+function soProposedCncPopover() {
+  return document.getElementById('so-proposed-cnc-popover');
+}
+
+function soCloseProposedCncPopover() {
+  const pop = soProposedCncPopover();
+  if (pop) pop.hidden = true;
+  soState.openProposedCncPp = '';
+  soState.proposedCncQuery = '';
+  document.querySelectorAll('.so-proposed-cnc-btn.is-open').forEach(btn => {
+    btn.classList.remove('is-open');
+    btn.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function soRepositionProposedCncPopover() {
+  const pop = soProposedCncPopover();
+  if (!pop || pop.hidden || !soState.openProposedCncPp) return;
+  const btn = document.querySelector(
+    `.so-proposed-cnc-btn[data-pp-voucher-no="${CSS.escape(soState.openProposedCncPp)}"]`
+  );
+  if (!btn) {
+    soCloseProposedCncPopover();
+    return;
+  }
+  const rect = btn.getBoundingClientRect();
+  const width = Math.max(220, Math.min(280, window.innerWidth - 16));
+  let left = rect.left;
+  if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
+  let top = rect.bottom + 4;
+  const maxHeight = 320;
+  if (top + 180 > window.innerHeight && rect.top > 200) {
+    top = Math.max(8, rect.top - Math.min(maxHeight, 280) - 4);
+  }
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+  pop.style.width = `${width}px`;
+}
+
+function soSetProposedCncStatus(ppNo, state, message) {
+  document.querySelectorAll(`.so-proposed-cnc-btn[data-pp-voucher-no="${CSS.escape(ppNo)}"]`).forEach(btn => {
+    const status = btn.closest('.so-proposed-cnc-cell')?.querySelector('.so-proposed-cnc-status');
+    if (!status) return;
+    status.className = `so-proposed-cnc-status so-editable-status${state ? ` is-${state}` : ''}`;
+    status.textContent = message || '';
+  });
+}
+
+function soSyncProposedCncButtons(ppNo, machines) {
+  document.querySelectorAll(`.so-proposed-cnc-btn[data-pp-voucher-no="${CSS.escape(ppNo)}"]`).forEach(btn => {
+    const value = btn.querySelector('.so-proposed-cnc-btn-value');
+    if (value) {
+      value.innerHTML = machines.length
+        ? soRenderProposedCncHtml(machines)
+        : '<span class="so-dash">—</span>';
+    }
+    btn.classList.toggle('has-value', machines.length > 0);
+    btn.classList.toggle('is-open', soState.openProposedCncPp === ppNo);
+    btn.setAttribute('aria-expanded', soState.openProposedCncPp === ppNo ? 'true' : 'false');
+  });
+}
+
+function soApplyProposedCncLocal(ppNo, machines) {
+  const found = soFindPp(ppNo);
+  if (found?.pp) {
+    found.pp.proposed_cnc = machines;
+    found.pp.proposed_cnc_saved = machines;
+    (found.pp.partials || []).forEach(partial => {
+      partial.proposed_cnc = [...machines];
+    });
+  }
+  soSyncProposedCncButtons(ppNo, machines);
+}
+
+function soRenderProposedCncPopover() {
+  const pop = soProposedCncPopover();
+  const ppNo = soState.openProposedCncPp;
+  if (!pop || !ppNo) return;
+  const found = soFindPp(ppNo);
+  const selected = soProposedCncMachines(found?.pp);
+  const selectedSet = soProposedCncSelectedSet(selected);
+  const query = String(soState.proposedCncQuery || '').trim().toLowerCase();
+  const catalog = soCncMachineCatalog(selected).filter(name => (
+    !query || name.toLowerCase().includes(query) || soCncMachineNumber(name).toString() === query
+  ));
+  const checks = catalog.length
+    ? catalog.map(name => {
+      const checked = selectedSet.has(name.toUpperCase()) ? ' checked' : '';
+      return `<label class="so-col-filter-check so-proposed-cnc-check">
+        <input type="checkbox" data-so-cnc-machine="${escapeHtml(name)}"${checked} />
+        ${escapeHtml(name)}
+      </label>`;
+    }).join('')
+    : '<p class="so-proposed-cnc-empty">No matching CNC machines</p>';
+  pop.innerHTML = `
+    <div class="so-col-filter-title">Proposed CNC</div>
+    <input type="search" class="so-col-filter-input so-proposed-cnc-search" value="${escapeHtml(soState.proposedCncQuery || '')}" placeholder="Search or type CNC…" autocomplete="off" />
+    <div class="so-proposed-cnc-checks">${checks}</div>
+    <form class="so-proposed-cnc-add" data-action="add-proposed-cnc">
+      <input type="text" class="so-col-filter-input so-proposed-cnc-add-input" placeholder="Add CNC 22" autocomplete="off" />
+      <button type="submit" class="btn btn-ghost btn-sm">Add</button>
+    </form>
+    <div class="so-col-filter-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-action="clear-proposed-cnc">Clear</button>
+    </div>
+  `;
+  pop.hidden = false;
+  soRepositionProposedCncPopover();
+}
+
+function soOpenProposedCncPopover(btn) {
+  const ppNo = String(btn?.dataset?.ppVoucherNo || '').trim();
+  if (!ppNo) return;
+  if (soState.openProposedCncPp === ppNo && soProposedCncPopover() && !soProposedCncPopover().hidden) {
+    soCloseProposedCncPopover();
+    return;
+  }
+  soCloseColumnFilter();
+  soCloseExceptionPopover();
+  soState.openProposedCncPp = ppNo;
+  soState.proposedCncQuery = '';
+  document.querySelectorAll('.so-proposed-cnc-btn.is-open').forEach(el => {
+    el.classList.remove('is-open');
+    el.setAttribute('aria-expanded', 'false');
+  });
+  btn.classList.add('is-open');
+  btn.setAttribute('aria-expanded', 'true');
+  soRenderProposedCncPopover();
+  soProposedCncPopover()?.querySelector('.so-proposed-cnc-search')?.focus();
+}
+
+async function soSaveProposedCnc(ppNo, machines) {
+  const next = (machines || []).map(soNormalizeCncMachine).filter(Boolean);
+  if (!ppNo || soState.saveInFlight.has(`${ppNo}::proposed_cnc`)) return;
+  soState.saveInFlight.add(`${ppNo}::proposed_cnc`);
+  soApplyProposedCncLocal(ppNo, next);
+  soSetProposedCncStatus(ppNo, 'saving', 'Saving…');
+  try {
+    const data = await soPostJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
+      proposed_cnc: next,
+    });
+    const saved = Array.isArray(data.proposed_cnc) ? data.proposed_cnc.filter(Boolean) : next;
+    soApplyProposedCncLocal(ppNo, saved);
+    if (soState.openProposedCncPp === ppNo) soRenderProposedCncPopover();
+    soSetProposedCncStatus(ppNo, 'saved', 'Saved');
+    window.setTimeout(() => soSetProposedCncStatus(ppNo, '', ''), 1500);
+  } catch (err) {
+    soSetProposedCncStatus(ppNo, 'error', err.message || 'Save failed');
+  } finally {
+    soState.saveInFlight.delete(`${ppNo}::proposed_cnc`);
+  }
+}
+
+function soToggleProposedCncMachine(ppNo, machine, checked) {
+  const found = soFindPp(ppNo);
+  const current = soProposedCncMachines(found?.pp);
+  const next = [];
+  const seen = new Set();
+  current.forEach(item => {
+    const name = soNormalizeCncMachine(item);
+    const key = name.toUpperCase();
+    if (!name || seen.has(key)) return;
+    seen.add(key);
+    next.push(name);
+  });
+  const added = soNormalizeCncMachine(machine);
+  const key = added.toUpperCase();
+  if (checked && added && !seen.has(key)) next.push(added);
+  if (!checked) {
+    const filtered = next.filter(item => item.toUpperCase() !== key);
+    soSaveProposedCnc(ppNo, filtered);
+    return;
+  }
+  soSaveProposedCnc(ppNo, next);
+}
+
+function soBindProposedCncPicker() {
+  const body = document.getElementById('so-table-body');
+  if (body && body.dataset.proposedCncBound !== '1') {
+    body.dataset.proposedCncBound = '1';
+    body.addEventListener('click', e => {
+      const btn = e.target.closest('.so-proposed-cnc-btn');
+      if (!btn) return;
+      e.stopPropagation();
+      soOpenProposedCncPopover(btn);
+    });
+  }
+
+  const pop = soProposedCncPopover();
+  if (!pop || pop.dataset.bound === '1') return;
+  pop.dataset.bound = '1';
+
+  pop.addEventListener('click', e => e.stopPropagation());
+  pop.addEventListener('change', e => {
+    const input = e.target.closest('[data-so-cnc-machine]');
+    if (!input) return;
+    const ppNo = soState.openProposedCncPp;
+    if (!ppNo) return;
+    soToggleProposedCncMachine(ppNo, input.getAttribute('data-so-cnc-machine'), input.checked);
+  });
+  pop.addEventListener('input', e => {
+    const search = e.target.closest('.so-proposed-cnc-search');
+    if (!search) return;
+    soState.proposedCncQuery = search.value || '';
+    const active = document.activeElement === search;
+    const start = search.selectionStart;
+    soRenderProposedCncPopover();
+    if (!active) return;
+    const next = soProposedCncPopover()?.querySelector('.so-proposed-cnc-search');
+    if (!next) return;
+    next.focus();
+    const pos = typeof start === 'number' ? start : next.value.length;
+    next.setSelectionRange(pos, pos);
+  });
+  pop.addEventListener('submit', e => {
+    const form = e.target.closest('[data-action="add-proposed-cnc"]');
+    if (!form) return;
+    e.preventDefault();
+    const ppNo = soState.openProposedCncPp;
+    const input = form.querySelector('.so-proposed-cnc-add-input');
+    const typed = soNormalizeCncMachine(input?.value);
+    if (!ppNo || !typed) return;
+    soToggleProposedCncMachine(ppNo, typed, true);
+    if (input) input.value = '';
+  });
+  pop.addEventListener('click', e => {
+    const clearBtn = e.target.closest('[data-action="clear-proposed-cnc"]');
+    if (!clearBtn) return;
+    const ppNo = soState.openProposedCncPp;
+    if (ppNo) soSaveProposedCnc(ppNo, []);
   });
 
-  body.addEventListener('click', e => {
-    const flag = e.target.closest('.so-exception-flag');
-    if (!flag) return;
+  document.addEventListener('click', e => {
+    const popEl = soProposedCncPopover();
+    if (!popEl || popEl.hidden) return;
+    if (popEl.contains(e.target) || e.target.closest('.so-proposed-cnc-btn')) return;
+    soCloseProposedCncPopover();
+  });
+  window.addEventListener('resize', soRepositionProposedCncPopover);
+  document.getElementById('so-table-wrap')?.addEventListener('scroll', soRepositionProposedCncPopover, { passive: true });
+}
+
+function soSyncNeedDateRows(ppNo, value) {
+  const target = String(ppNo || '').trim();
+  const saved = soDateInputValue(value);
+  if (!target) return;
+  document.querySelectorAll('.so-need-date-input').forEach(input => {
+    if (String(input.dataset.ppVoucherNo || '').trim() !== target) return;
+    input.value = saved;
+    input.dataset.lastSaved = saved;
+    const cell = input.closest('.so-need-date-cell');
+    if (cell) cell.classList.toggle('has-need-date', Boolean(saved));
+  });
+}
+
+async function soSaveNeedDate(input) {
+  const ppNo = String(input?.dataset?.ppVoucherNo || '').trim();
+  if (!ppNo) return;
+
+  const nextValue = soDateInputValue(input.value);
+  const lastSaved = String(input.dataset.lastSaved || '');
+  const key = `${ppNo}::material_need_date`;
+  if (nextValue === lastSaved || soState.saveInFlight.has(key)) return;
+
+  soState.saveInFlight.add(key);
+  soSetSaveStatus(input, 'saving', 'Saving…');
+  try {
+    const data = await soPostJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
+      material_need_date: nextValue,
+    });
+    const saved = soDateInputValue(data.material_need_date);
+    const found = soFindPp(ppNo);
+    if (found.pp) found.pp.material_need_date = saved;
+    soPatchAssemblyChildNotes(ppNo, { material_need_date: saved });
+    soSyncNeedDateRows(ppNo, saved);
+    soSetSaveStatus(input, 'saved', saved ? 'Saved' : 'Cleared');
+    window.setTimeout(() => soSetSaveStatus(input, '', ''), 1500);
+  } catch (err) {
+    input.value = lastSaved;
+    soSetSaveStatus(input, 'error', err.message || 'Save failed');
+  } finally {
+    soState.saveInFlight.delete(key);
+  }
+}
+
+function soBindNeedDateInputs() {
+  const body = document.getElementById('so-table-body');
+  if (!body || body.dataset.needDateBound === '1') return;
+  body.dataset.needDateBound = '1';
+
+  body.addEventListener('change', e => {
+    const input = e.target.closest('.so-need-date-input');
+    if (!input || input.disabled) return;
     e.stopPropagation();
+    soSaveNeedDate(input);
   });
 }
 
@@ -3671,9 +4322,9 @@ function soRender() {
   if (body) {
     body.innerHTML = orders.map((order, idx) => soRenderOrderGroup(order, idx)).filter(Boolean).join('');
     delete body.dataset.editableBound;
-    delete body.dataset.exceptionBound;
     soBindEditableInputs();
     soBindExceptionFlags();
+    soBindProposedCncPicker();
   }
   if (meta) {
     meta.hidden = false;
@@ -3685,6 +4336,8 @@ function soRender() {
   soUpdateStats();
   soUpdateTabCounts();
   soRepositionColumnFilter();
+  soRepositionProposedCncPopover();
+  soRepositionExceptionPopover();
   soSyncTableScrollWidth();
 }
 
@@ -3701,6 +4354,8 @@ async function soLoad({ refresh = false, bustCache = false, includeComplete = fa
   });
   soCloseDetail();
   soCloseMaterialModal();
+  soCloseProposedCncPopover();
+  soCloseExceptionPopover();
 
   const params = new URLSearchParams();
   if (refresh) params.set('refresh', '1');
@@ -3752,6 +4407,9 @@ async function soLoad({ refresh = false, bustCache = false, includeComplete = fa
   soState.missingHeaderCount = Number(payload.missing_header_count) || 0;
   const faParts = Array.isArray(payload.frame_agreement_parts) ? payload.frame_agreement_parts : [];
   soState.frameAgreementParts = new Set(faParts.map(soNormalizePartKey).filter(Boolean));
+  if (Array.isArray(payload.cnc_machines) && payload.cnc_machines.length) {
+    soState.cncMachines = payload.cnc_machines.filter(Boolean);
+  }
 
   const orderTotal = soState.active.length + (soState.completeLoaded ? soState.complete.length : 0);
   const nestedPp = soState.active.concat(soState.completeLoaded ? soState.complete : [])
@@ -3812,10 +4470,12 @@ function soInit() {
   soBindTableClicks();
   soBindTableScroll();
   soBindColumnControls();
+  soBindNeedDateInputs();
   soBindMaterialSubconInputs();
   soBindProposedEddInputs();
   soBindProgramFinishInputs();
   soBindExceptionFlags();
+  soBindProposedCncPicker();
   soBindPsTypeDropdown();
   soRenderTableHead();
 

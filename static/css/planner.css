@@ -9234,59 +9234,133 @@
     background: #ede9fe;
     color: #5b21b6;
   }
+  .new-orders-page--sales-orders .so-proposed-cnc-cell {
+    min-width: 108px;
+    max-width: 168px;
+    vertical-align: middle;
+  }
+  .new-orders-page--sales-orders .so-proposed-cnc-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    min-height: 26px;
+    padding: 2px 4px 2px 6px;
+    border: 1.5px solid #d6d3d1;
+    border-radius: 6px;
+    background: #fff;
+    cursor: pointer;
+    text-align: left;
+  }
+  .new-orders-page--sales-orders .so-proposed-cnc-btn:hover,
+  .new-orders-page--sales-orders .so-proposed-cnc-btn.is-open {
+    border-color: #a78bfa;
+    background: #f5f3ff;
+  }
+  .new-orders-page--sales-orders .so-proposed-cnc-btn.has-value {
+    border-color: #c4b5fd;
+  }
+  .new-orders-page--sales-orders .so-proposed-cnc-btn-value {
+    flex: 1;
+    min-width: 0;
+  }
+  .new-orders-page--sales-orders .so-proposed-cnc-btn-caret {
+    flex: none;
+    color: #64748b;
+    font-size: 10px;
+    font-weight: 800;
+  }
+  .new-orders-page--sales-orders .so-proposed-cnc-status {
+    display: block;
+    min-height: 12px;
+    margin-top: 2px;
+    font-size: 9px;
+    font-weight: 700;
+  }
   .new-orders-page--sales-orders tr.is-ps-queued-mark td:not(.new-orders-side-rail) {
     background: color-mix(in srgb, #22c55e 14%, #ffffff) !important;
   }
   .new-orders-page--sales-orders tr.is-ps-queued-mark:hover td:not(.new-orders-side-rail) {
     background: color-mix(in srgb, #22c55e 20%, #ffffff) !important;
   }
-  .new-orders-page--sales-orders .so-exception-cell {
-    min-width: 52px;
-    width: 52px;
-    max-width: 60px;
-    text-align: center;
-    padding: 2px 4px !important;
+  .new-orders-page--sales-orders .so-table--wide thead th[data-so-col="exception"] {
+    min-width: 122px;
+    width: 128px;
   }
-  .new-orders-page--sales-orders .so-exception-flag {
-    display: inline-flex;
+  .new-orders-page--sales-orders .so-exception-cell {
+    min-width: 122px;
+    width: 128px;
+    max-width: 168px;
+    text-align: left;
+    padding: 2px 4px !important;
+    vertical-align: middle;
+  }
+  .new-orders-page--sales-orders .so-exception-btn {
+    display: flex;
     align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    border-radius: 6px;
+    gap: 4px;
+    width: 100%;
+    min-height: 26px;
+    padding: 2px 4px 2px 6px;
     border: 1.5px solid #d6d3d1;
+    border-radius: 6px;
     background: #fff;
     cursor: pointer;
-    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    text-align: left;
   }
-  .new-orders-page--sales-orders .so-exception-flag:hover {
+  .new-orders-page--sales-orders .so-exception-btn:hover,
+  .new-orders-page--sales-orders .so-exception-btn.is-open {
     border-color: #f87171;
     background: #fef2f2;
   }
-  .new-orders-page--sales-orders .so-exception-flag.is-active {
-    border-color: #dc2626;
+  .new-orders-page--sales-orders .so-exception-btn.has-value {
+    border-color: #f87171;
+    background: #fff1f2;
+  }
+  .new-orders-page--sales-orders .so-exception-btn-value {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    flex: 1;
+    min-width: 0;
+  }
+  .new-orders-page--sales-orders .so-exception-btn-caret {
+    flex: none;
+    color: #64748b;
+    font-size: 10px;
+    font-weight: 800;
+  }
+  .new-orders-page--sales-orders .so-exception-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 5px;
+    border-radius: 999px;
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1.3;
+    white-space: nowrap;
     background: #fee2e2;
-    color: #b91c1c;
+    color: #991b1b;
   }
-  .new-orders-page--sales-orders .so-exception-flag.is-saving {
-    opacity: 0.65;
-    pointer-events: none;
+  .new-orders-page--sales-orders .so-exception-chip--supply_chain {
+    background: #ffedd5;
+    color: #9a3412;
   }
-  .new-orders-page--sales-orders .so-exception-input {
-    position: absolute;
-    opacity: 0;
-    width: 0;
-    height: 0;
-    pointer-events: none;
+  .new-orders-page--sales-orders .so-exception-chip--process_engr {
+    background: #ede9fe;
+    color: #5b21b6;
   }
-  .new-orders-page--sales-orders .so-exception-mark {
-    font-size: 12px;
-    font-weight: 900;
-    line-height: 1;
-    opacity: 0.35;
+  .new-orders-page--sales-orders .so-exception-chip--qlty {
+    background: #ccfbf1;
+    color: #0f766e;
   }
-  .new-orders-page--sales-orders .so-exception-flag.is-active .so-exception-mark {
-    opacity: 1;
+  .new-orders-page--sales-orders .so-exception-chip--sales {
+    background: #dbeafe;
+    color: #1d4ed8;
+  }
+  .new-orders-page--sales-orders .so-exception-chip--others {
+    background: #e2e8f0;
+    color: #334155;
   }
   .new-orders-page--sales-orders .so-exception-status {
     display: block;
@@ -9409,11 +9483,13 @@
     white-space: nowrap;
   }
   .so-coway-edd-cell,
-  .so-program-finish-cell {
+  .so-program-finish-cell,
+  .so-need-date-cell {
     min-width: 128px;
   }
   .so-coway-edd-input,
-  .so-program-finish-input {
+  .so-program-finish-input,
+  .so-need-date-input {
     width: 100%;
     box-sizing: border-box;
     border: 1px solid #d6d3d1;
@@ -9426,17 +9502,20 @@
     background: #fff;
   }
   .so-coway-edd-input:focus,
-  .so-program-finish-input:focus {
+  .so-program-finish-input:focus,
+  .so-need-date-input:focus {
     outline: none;
     border-color: #3b82f6;
     box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
   }
   .so-coway-edd-input:disabled,
-  .so-program-finish-input:disabled {
+  .so-program-finish-input:disabled,
+  .so-need-date-input:disabled {
     opacity: 0.6;
   }
   .so-coway-edd-cell .so-editable-status,
-  .so-program-finish-cell .so-editable-status {
+  .so-program-finish-cell .so-editable-status,
+  .so-need-date-cell .so-editable-status {
     margin-top: 2px;
     min-height: 12px;
   }
@@ -9468,6 +9547,26 @@
   }
   .new-orders-page--sales-orders .new-orders-table tbody tr.is-clickable:hover td.so-program-finish-cell {
     background: color-mix(in srgb, #d97706 16%, #ffffff);
+  }
+
+  .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--need {
+    background: #f6ecd8;
+  }
+  .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--need .so-col-sort-btn,
+  .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--need .so-col-filter-btn {
+    color: #7c5a1e;
+  }
+  .new-orders-page--sales-orders .so-table--wide tbody td.so-need-date-cell {
+    background: color-mix(in srgb, #d6b56a 12%, #ffffff);
+  }
+  .new-orders-page--sales-orders .new-orders-table tbody tr.is-clickable:hover td.so-need-date-cell {
+    background: color-mix(in srgb, #d6b56a 18%, #ffffff);
+  }
+  .new-orders-page--sales-orders .so-table--wide tbody td.so-need-date-cell.has-need-date {
+    background: #f6ecd8;
+  }
+  .new-orders-page--sales-orders .new-orders-table tbody tr.is-clickable:hover td.so-need-date-cell.has-need-date {
+    background: color-mix(in srgb, #f6ecd8 80%, #e8dcc0);
   }
 
   .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--material {
@@ -9606,6 +9705,41 @@
   .so-col-filter-actions {
     display: flex;
     justify-content: flex-end;
+  }
+  .so-proposed-cnc-popover {
+    z-index: 130;
+    max-width: 280px;
+  }
+  .so-proposed-cnc-checks {
+    display: grid;
+    gap: 4px;
+    max-height: 180px;
+    overflow: auto;
+    margin: 0 0 8px;
+    padding-right: 2px;
+  }
+  .so-proposed-cnc-empty {
+    margin: 0 0 8px;
+    font-size: 12px;
+    color: #64748b;
+  }
+  .so-proposed-cnc-add {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .so-proposed-cnc-add .so-col-filter-input {
+    margin-bottom: 0;
+  }
+  .so-exception-popover {
+    z-index: 130;
+    max-width: 240px;
+  }
+  .so-exception-checks {
+    display: grid;
+    gap: 6px;
+    margin: 0 0 8px;
   }
   .so-col-filter-empty-only {
     margin-bottom: 8px;

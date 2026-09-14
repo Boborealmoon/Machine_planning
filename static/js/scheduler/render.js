@@ -823,10 +823,7 @@ function trialCatalogBomBarHtml(ps) {
   const selectedFlowCode = String(ps.selected_bom_code || ps.selected_flow_code || '');
   const erpBom = trialPsErpBomCode(ps) || '-';
   const options = [];
-  if (!flows.length) {
-    const hint = erpBom && erpBom !== '-' ? `ERP ${erpBom}` : 'No BOM routes';
-    options.push(`<option value="">${escapeHtml(hint)}</option>`);
-  } else {
+  if (flows.length) {
     options.push('<option value="">Planner BOM…</option>');
     flows.forEach(flow => {
       const code = String(flow.bom_code || flow.flow_code || '');
@@ -835,15 +832,17 @@ function trialCatalogBomBarHtml(ps) {
       options.push(`<option value="${escapeHtml(code)}" ${code.toUpperCase() === selectedFlowCode.toUpperCase() ? 'selected' : ''}>${escapeHtml(label)}</option>`);
     });
   }
+  const selectHtml = flows.length
+    ? `<select class="trial-catalog-flow-select" data-ps-id="${escapeHtml(ps.ps_id || '')}"
+        onchange="setTrialSelectedFlow(this.dataset.psId, this.value)">
+        ${options.join('')}
+      </select>`
+    : '';
   return `
     <div class="trial-catalog-bom-bar trial-catalog-bom-bar--compact">
       <span class="trial-catalog-bom-erp" title="ERP BOM (pp_voucher)">ERP ${escapeHtml(erpBom)}</span>
       ${trialBomStageBadgeHtml(ps)}
-      <select class="trial-catalog-flow-select" data-ps-id="${escapeHtml(ps.ps_id || '')}"
-        ${flows.length ? '' : 'disabled'}
-        onchange="setTrialSelectedFlow(this.dataset.psId, this.value)">
-        ${options.join('')}
-      </select>
+      ${selectHtml}
       <button class="btn btn-ghost btn-sm trial-catalog-bom-btn" type="button"
         onclick="openTrialBOMEditor('${escapeHtml(ps.ps_id)}')">BOM</button>
     </div>
@@ -904,8 +903,15 @@ function trialCatalogAssemblyLineItemPs(item, parentPs) {
       return rowPartial === wantPartial || rowId === needle;
     });
   const hostedLive = related ? null : matchLive(hostedPsNo);
-  if (hostedLive) return hostedLive;
-  const donorLive = donorPsNo ? matchLive(donorPsNo) : null;
+  const hostedHasOps = hostedLive && (
+    (Array.isArray(hostedLive.op_cards) && hostedLive.op_cards.length)
+    || (Array.isArray(hostedLive.ops) && hostedLive.ops.length)
+    || (Array.isArray(hostedLive.all_ops) && hostedLive.all_ops.length)
+  );
+  if (hostedLive && hostedHasOps) return hostedLive;
+  const donorLive = donorPsNo ? matchLive(donorPsNo) : (
+    related ? matchLive(trialHostChildPsId(related, hostedPsNo)) : null
+  );
   const pickList = (fromItem, fromLive) => (
     Array.isArray(fromItem) && fromItem.length
       ? fromItem
@@ -1730,6 +1736,8 @@ function trialResolvedOpCardsForPs(ps) {
     ...card,
     ps_id: card?.ps_id || ps?.ps_id || '',
     pp_partial_no: card?.pp_partial_no ?? ps?.pp_partial_no,
+    donor_ps_id: card?.donor_ps_id || ps?.donor_ps_id || '',
+    part_no: card?.part_no || ps?.part_no || ps?.part_name || ps?.inventory_code || '',
   });
   const baseCards = (Array.isArray(ps?.op_cards) ? ps.op_cards : [])
     .filter(card => trialCatalogOpIsRelevant(card))
@@ -5596,6 +5604,7 @@ function trialResetCatalogRemoteSearch() {
   trialCatalogRemoteSearchQuery = '';
   trialCatalogRemoteSearchRows = [];
   trialCatalogRemoteSearchDone = true;
+  trialCatalogRemoteSearchFailed = false;
   if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
 }
 
@@ -5605,7 +5614,7 @@ function trialScheduleCatalogRemoteSearch(rawQuery) {
     trialResetCatalogRemoteSearch();
     return;
   }
-  if (trialCatalogRemoteSearchQuery === q) return;
+  if (trialCatalogRemoteSearchQuery === q && !trialCatalogRemoteSearchFailed) return;
   if (typeof GET !== 'function') {
     trialCatalogRemoteSearchQuery = q;
     trialCatalogRemoteSearchRows = [];
@@ -5616,19 +5625,21 @@ function trialScheduleCatalogRemoteSearch(rawQuery) {
   trialCatalogRemoteSearchGen = gen;
   trialCatalogRemoteSearchQuery = q;
   trialCatalogRemoteSearchDone = false;
+  trialCatalogRemoteSearchFailed = false;
   trialCatalogRemoteSearchRows = [];
   const params = new URLSearchParams();
   params.set('search', q);
   if (typeof trialShowCompletedFlag === 'function' ? trialShowCompletedFlag() : !!trialShowCompleted) {
     params.set('show_completed', '1');
   }
-  GET(`/api/pp-vouchers/with-ops?${params.toString()}`, { timeoutMs: 12000 })
+  GET(`/api/pp-vouchers/with-ops?${params.toString()}`, { timeoutMs: 25000 })
     .then(data => {
       if (gen !== trialCatalogRemoteSearchGen) return;
       trialCatalogRemoteSearchRows = (Array.isArray(data) ? data : []).map(row => (
         row && typeof row === 'object' ? { ...row, _catalog_search_hit: true } : row
       ));
       trialCatalogRemoteSearchDone = true;
+      trialCatalogRemoteSearchFailed = false;
       if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
       renderTrialCatalog();
     })
@@ -5637,6 +5648,7 @@ function trialScheduleCatalogRemoteSearch(rawQuery) {
       console.warn('catalog remote search failed', err);
       trialCatalogRemoteSearchRows = [];
       trialCatalogRemoteSearchDone = true;
+      trialCatalogRemoteSearchFailed = true;
       renderTrialCatalog();
     });
 }

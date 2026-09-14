@@ -119,6 +119,7 @@ def test_borrowed_line_item_op_cards_use_host_ps_id():
     assert kid["donor_ps_id"] == "NPS26-0321-12"
     assert kid["op_cards"][0]["ps_id"] == "N26-[SR]22-12"
     assert kid["op_cards"][0]["source_ps_id"] == "N26-[SR]22-12"
+    assert kid["op_cards"][0]["donor_ps_id"] == "NPS26-0321-12"
     assert kid["ops"][0]["source_ps_id"] == "N26-[SR]22-12"
     assert entries[2]["op_cards"][0]["source_ps_id"] == "NPS26-0321-12"
     assert entries[2]["ops"][0]["source_ps_id"] == "NPS26-0321-12"
@@ -135,6 +136,36 @@ def test_own_children_win_over_related_root():
     sr = entries[0]
     assert [item["process_sheet_no"] for item in sr["assembly_line_items"]] == ["N26-[SR]22-1"]
     assert "assembly_line_items_related_from" not in sr
+
+
+def test_empty_own_children_borrow_donor_ops():
+    child_card = {
+        "card_kind": "single",
+        "ps_id": "NPS26-0321-10",
+        "source_ps_id": "NPS26-0321-10",
+        "source_op_no": "20",
+        "operation_name": "Turning",
+    }
+    entries = [
+        _entry("N26-[SR]22", "KIT-001"),
+        _entry("N26-[SR]22-10", "SR-CHILD"),
+        _entry("NPS26-0321", "KIT-001"),
+        _entry(
+            "NPS26-0321-10",
+            "NPS-CHILD",
+            op_cards=[child_card],
+            ops=[{"source_ps_id": "NPS26-0321-10", "source_op_no": "20", "op_type": "Turning"}],
+        ),
+    ]
+    attach_catalog_assembly_line_items(entries)
+    sr = entries[0]
+    assert [item["process_sheet_no"] for item in sr["assembly_line_items"]] == ["N26-[SR]22-10"]
+    assert sr["assembly_line_items_related_from"] == "NPS26-0321"
+    kid = sr["assembly_line_items"][0]
+    assert kid["donor_ps_id"] == "NPS26-0321-10"
+    assert kid["op_cards"][0]["source_op_no"] == "20"
+    assert kid["op_cards"][0]["ps_id"] == "N26-[SR]22-10"
+    assert kid["op_cards"][0]["donor_ps_id"] == "NPS26-0321-10"
 
 
 def test_line_items_copy_child_bom_op_cards():
@@ -191,6 +222,64 @@ def test_duplicate_partial_rows_dedupe_to_one_line_item():
     assert len(kids) == 1
     assert kids[0]["process_sheet_no"] == "NPS26-0321-4"
     assert kids[0]["qty"] == 8
+
+
+def test_stamp_inventory_bom_ops_fills_nested_sr_child():
+    from unittest.mock import patch
+
+    from planning.catalog import stamp_inventory_bom_ops
+
+    child = {
+        "process_sheet_no": "N26-[SR]22-1",
+        "ps_id": "N26-[SR]22-1",
+        "part_no": "BB18-KS1209-02 REV 06",
+        "inventory_code": "BB18-KS1209-02 REV 06",
+        "display_qty": 4,
+        "op_cards": [],
+        "ops": [],
+    }
+    parent = {
+        "ps_id": "N26-[SR]22",
+        "op_cards": [{"operation_name": "Turning 20", "compatible_machine_group": "TURNING"}],
+        "assembly_line_items": [child],
+    }
+    stages = {
+        "BB18-KS1209-02": [
+            {
+                "inventory_code": "BB18-KS1209-02",
+                "bom_code": "SMP-MAT-01_REV00",
+                "stage_no": 10,
+                "stage_desc": "Issue/ Verification",
+            },
+            {
+                "inventory_code": "BB18-KS1209-02",
+                "bom_code": "SMP-MAT-01_REV00",
+                "stage_no": 20,
+                "stage_desc": "Turnmill 20",
+            },
+            {
+                "inventory_code": "BB18-KS1209-02",
+                "bom_code": "SMP-MAT-01_REV00",
+                "stage_no": 30,
+                "stage_desc": "Turnmill 30",
+            },
+            {
+                "inventory_code": "BB18-KS1209-02",
+                "bom_code": "SMP-MAT-01_REV00",
+                "stage_no": 40,
+                "stage_desc": "Deburring",
+            },
+        ]
+    }
+    with patch("planning.flows.erp_domain_bom_stages_by_inventory", return_value=stages) as lookup:
+        stamp_inventory_bom_ops([parent])
+    lookup.assert_called_once()
+    names = [card["operation_name"] for card in child["op_cards"]]
+    assert names == ["Turnmill 20", "Turnmill 30"]
+    assert child["ops"][0]["source_kind"] == "ERP_BOM"
+    assert child["selected_bom_code"] == "SMP-MAT-01_REV00"
+    assert child["op_cards"][0]["remaining_qty"] == 4
+    assert parent["op_cards"][0]["operation_name"] == "Turning 20"
 
 
 def test_preferred_machining_bom_picks_turnmill_route():

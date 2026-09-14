@@ -16,6 +16,35 @@
     { prefix: 'gauges', label: 'Gauges/CMM' },
   ];
   const PS_TYPE_ORDER = ['APS', 'NPS', 'MPS', 'PPS', 'CPS', 'SR', 'OTHER'];
+  const BLANK_FILTER = '';
+  const BLANK_FILTER_LABEL = '(Blank)';
+  const NEW_PART_COLUMNS = [
+    { id: 'process_sheet_no', label: 'PS', className: 'fa-col-ps', sortable: true, filterable: true },
+    { id: 'part_no', label: 'Part', className: 'fa-col-part', filterable: true },
+    { id: 'part_description', label: 'Description', className: 'fa-col-desc', filterable: true },
+    { id: 'posted_date', label: 'Posted', className: 'fa-col-date', filterable: true },
+    { id: 'po_due_date', label: 'Due', className: 'fa-col-date', sortable: true, filterable: true, title: 'PO due date' },
+    { id: 'total_qty', label: 'Qty', className: 'fa-col-qty', filterable: true },
+    { id: 'stage', label: 'WO / Stage', className: 'fa-col-stage', filterable: true, title: 'Current work-order stage and WO status from ERP' },
+    { id: 'bom', label: 'BOM', className: 'fa-col-bom', filterable: true, title: 'Opens BOM materials. Green = ERP material lines exist.' },
+    { id: 'material', label: 'Material', className: 'fa-col-material', filterable: true },
+    { id: 'pic', label: 'PIC', className: 'fa-col-pic', filterable: true, title: 'Programme PIC' },
+    { id: 'remarks', label: 'Remarks', className: 'fa-col-remarks', filterable: true },
+    { id: 'program_finish_at', label: 'Finish', className: 'fa-col-finish', sortable: true, filterable: true, title: 'Programme estimated finish' },
+    { id: '_actions', label: '', className: 'fa-col-actions' },
+    { id: 'sales_order_no', label: 'SO', className: 'fa-col-so fa-so-head', sortable: true, filterable: true, side: true, title: 'Grouped by sales order, like S/O Management' },
+  ];
+  const NEW_PART_DATA_COLSPAN = NEW_PART_COLUMNS.filter((col) => !col.side).length;
+
+  function makeTableView() {
+    return {
+      sortCol: 'sales_order_no',
+      sortDir: 'asc',
+      assignedPicOnly: false,
+      colFilters: {},
+      collapsedGroups: new Set(),
+    };
+  }
 
   const state = {
     tab: 'flagged',
@@ -24,10 +53,16 @@
     newLoaded: false,
     newFilter: '',
     newTypes: new Set(['APS', 'NPS']),
+    newView: makeTableView(),
     completedRows: [],
     completedLoaded: false,
     completedFilter: '',
     completedTypes: new Set(['APS', 'NPS']),
+    completedView: makeTableView(),
+    openFilterCol: '',
+    openFilterTable: '',
+    filterQuery: '',
+    flaggedAssignedPicOnly: false,
     pics: [],
     machines: [],
     filter: '',
@@ -71,6 +106,365 @@
   function dash(value) {
     const text = String(value == null ? '' : value).trim();
     return text || '\u2014';
+  }
+
+  function tableView(which) {
+    return which === 'history' ? state.completedView : state.newView;
+  }
+
+  function tableKindFromEl(el) {
+    if (el && el.closest && el.closest('#fa-panel-history, #fa-history-table, #fa-history-assigned-pic')) {
+      return 'history';
+    }
+    return 'new';
+  }
+
+  function rerenderTable(which) {
+    if (which === 'history') renderHistoryTable();
+    else renderNewTable();
+  }
+
+  function hasAssignedPic(row) {
+    return (row?.program_pics || []).some((pic) => String(pic?.name || '').trim());
+  }
+
+  function soGroupKey(row) {
+    return String(row?.sales_order_no || '').trim() || '\u2014';
+  }
+
+  function stageFilterLabel(row) {
+    const desc = String(row?.current_stage_desc || '').trim();
+    const statusCode = String(row?.current_stage_status || '').trim();
+    const status = String(row?.current_stage_status_label || stageStatusLabel(statusCode) || '').trim();
+    if (desc || status) return [desc, status].filter(Boolean).join(' · ');
+    const mode = String(row?.erp_stage_mode || '').trim().toLowerCase();
+    if (mode === 'completed' || isCompleteStatus(row)) return 'All complete';
+    if (mode === 'unassigned') return 'No WO';
+    return '';
+  }
+
+  function materialFilterLabel(row) {
+    if (row?.material_arrived) return 'In';
+    if (row?.material_date) return String(row.material_date).trim();
+    return String(row?.material_legacy || row?.material_display || '').trim();
+  }
+
+  function colFilterValues(row, colId) {
+    if (colId === 'pic') {
+      const names = (row?.program_pics || []).map((pic) => String(pic?.name || '').trim()).filter(Boolean);
+      return names.length ? names : [BLANK_FILTER];
+    }
+    let raw = '';
+    if (colId === 'process_sheet_no') raw = row?.process_sheet_no || row?.pp_voucher_no || '';
+    else if (colId === 'part_no') raw = row?.part_no;
+    else if (colId === 'part_description') raw = row?.part_description;
+    else if (colId === 'posted_date') raw = row?.posted_date;
+    else if (colId === 'po_due_date') raw = row?.po_due_date;
+    else if (colId === 'total_qty') raw = row?.total_qty;
+    else if (colId === 'stage') raw = stageFilterLabel(row);
+    else if (colId === 'bom') raw = hasBom(row) ? 'Yes' : 'None';
+    else if (colId === 'material') raw = materialFilterLabel(row);
+    else if (colId === 'remarks') raw = row?.remarks;
+    else if (colId === 'program_finish_at') raw = formatFinishDate(row?.program_finish_at) || row?.program_finish_at;
+    else if (colId === 'sales_order_no') raw = row?.sales_order_no;
+    const text = String(raw == null ? '' : raw).trim();
+    return [text];
+  }
+
+  function colFilterLabel(value) {
+    return String(value || '') === BLANK_FILTER ? BLANK_FILTER_LABEL : String(value);
+  }
+
+  function colSortValue(row, colId) {
+    if (colId === 'process_sheet_no') return String(row?.process_sheet_no || row?.pp_voucher_no || '').trim();
+    if (colId === 'po_due_date') return parseIsoDate(row?.po_due_date) || String(row?.po_due_date || '').trim();
+    if (colId === 'program_finish_at') return parseFinishDate(row?.program_finish_at);
+    if (colId === 'sales_order_no') return soGroupKey(row);
+    const values = colFilterValues(row, colId).filter((value) => value !== BLANK_FILTER);
+    return values[0] || '';
+  }
+
+  function compareSortValues(a, b, dir) {
+    const emptyA = a == null || String(a).trim() === '';
+    const emptyB = b == null || String(b).trim() === '';
+    if (emptyA && emptyB) return 0;
+    if (emptyA) return 1;
+    if (emptyB) return -1;
+    const sa = String(a).trim();
+    const sb = String(b).trim();
+    const da = parseIsoDate(sa) || (/^\d{4}-\d{2}-\d{2}/.test(sa) ? sa.slice(0, 10) : '');
+    const db = parseIsoDate(sb) || (/^\d{4}-\d{2}-\d{2}/.test(sb) ? sb.slice(0, 10) : '');
+    if (da && db) {
+      const cmp = da.localeCompare(db);
+      return dir === 'desc' ? -cmp : cmp;
+    }
+    const na = Number(sa);
+    const nb = Number(sb);
+    if (sa !== '' && sb !== '' && Number.isFinite(na) && Number.isFinite(nb)) {
+      const cmp = na - nb;
+      return dir === 'desc' ? -cmp : cmp;
+    }
+    const cmp = sa.localeCompare(sb, undefined, { numeric: true, sensitivity: 'base' });
+    return dir === 'desc' ? -cmp : cmp;
+  }
+
+  function columnFilterActive(view, colId) {
+    const selected = view.colFilters[colId];
+    return Array.isArray(selected);
+  }
+
+  function rowMatchesColumnFilters(row, view) {
+    return NEW_PART_COLUMNS.every((col) => {
+      if (!col.filterable) return true;
+      const selected = view.colFilters[col.id];
+      if (!Array.isArray(selected)) return true;
+      const wanted = new Set(selected);
+      return colFilterValues(row, col.id).some((value) => wanted.has(value));
+    });
+  }
+
+  function newPartSearchBlob(row) {
+    return [
+      row.process_sheet_no,
+      row.pp_voucher_no,
+      row.part_no,
+      row.part_description,
+      row.posted_date,
+      row.po_due_date,
+      row.material_display,
+      row.material_subcon,
+      row.remarks,
+      row.program_finish_at,
+      row.current_stage_desc,
+      row.current_stage_status_label,
+      row.erp_last_stage_desc,
+      row.ps_type,
+      row.machine_cnc,
+      row.tooling_text,
+      row.fixture_text,
+      row.gauges_text,
+      row.sales_order_no,
+      row.customer_name,
+      isExceptionRow(row) ? 'EXCEPTION' : '',
+      row.from_npi_tracker ? 'NPI' : '',
+      ...(row.program_pics || []).map((pic) => pic.name),
+    ].join(' ').toUpperCase();
+  }
+
+  function applyTableView(rows, view, { needle, selectedTypes, extraBlob }) {
+    const types = selectedTypes;
+    const search = String(needle || '').trim().toUpperCase();
+    let out = (rows || []).filter((row) => {
+      if (!types.size || !types.has(newRowPsType(row))) return false;
+      if (view.assignedPicOnly && !hasAssignedPic(row)) return false;
+      if (search) {
+        const blob = extraBlob ? extraBlob(row) : newPartSearchBlob(row);
+        if (!blob.includes(search)) return false;
+      }
+      return rowMatchesColumnFilters(row, view);
+    });
+    const sortCol = view.sortCol || 'sales_order_no';
+    const sortDir = view.sortDir === 'desc' ? 'desc' : 'asc';
+    const groups = [];
+    const map = new Map();
+    out.forEach((row) => {
+      const key = soGroupKey(row);
+      let group = map.get(key);
+      if (!group) {
+        group = {
+          so: key,
+          customer: String(row.customer_name || '').trim(),
+          rows: [],
+        };
+        map.set(key, group);
+        groups.push(group);
+      }
+      group.rows.push(row);
+      if (!group.customer && row.customer_name) {
+        group.customer = String(row.customer_name).trim();
+      }
+    });
+    groups.forEach((group) => {
+      group.rows.sort((a, b) => {
+        const cmp = compareSortValues(colSortValue(a, sortCol), colSortValue(b, sortCol), sortCol === 'sales_order_no' ? 'asc' : sortDir);
+        if (cmp) return cmp;
+        return compareSortValues(colSortValue(a, 'process_sheet_no'), colSortValue(b, 'process_sheet_no'), 'asc');
+      });
+    });
+    groups.sort((a, b) => {
+      const av = colSortValue(a.rows[0], sortCol);
+      const bv = colSortValue(b.rows[0], sortCol);
+      const cmp = compareSortValues(av, bv, sortDir);
+      if (cmp) return cmp;
+      return compareSortValues(a.so, b.so, 'asc');
+    });
+    return { rows: groups.flatMap((group) => group.rows), groups };
+  }
+
+  function uniqueFilterOptions(rows, colId) {
+    const seen = new Set();
+    const values = [];
+    (rows || []).forEach((row) => {
+      colFilterValues(row, colId).forEach((value) => {
+        if (seen.has(value)) return;
+        seen.add(value);
+        values.push(value);
+      });
+    });
+    values.sort((a, b) => {
+      if (a === BLANK_FILTER) return 1;
+      if (b === BLANK_FILTER) return -1;
+      return compareSortValues(a, b, 'asc');
+    });
+    return values;
+  }
+
+  function sortIcon(view, colId) {
+    if (view.sortCol !== colId) return '↕';
+    return view.sortDir === 'desc' ? '↓' : '↑';
+  }
+
+  function renderNewPartHead(tableId, view) {
+    const row = document.querySelector(`#${tableId} thead tr`);
+    if (!row) return;
+    row.innerHTML = NEW_PART_COLUMNS.map((col) => {
+      const title = col.title ? ` title="${escapeHtml(col.title)}"` : '';
+      if (!col.sortable && !col.filterable) {
+        return `<th class="${escapeHtml(col.className || '')}"${title}>${escapeHtml(col.label)}</th>`;
+      }
+      const sorted = view.sortCol === col.id ? ' is-sorted' : '';
+      const filterOn = columnFilterActive(view, col.id) ? ' is-active' : '';
+      const sortBtn = col.sortable
+        ? `<button type="button" class="fa-col-sort-btn" data-fa-sort-col="${escapeHtml(col.id)}" title="Sort">
+            <span class="fa-col-label">${escapeHtml(col.label)}</span>
+            <span class="fa-col-sort-icon">${sortIcon(view, col.id)}</span>
+          </button>`
+        : `<span class="fa-col-label">${escapeHtml(col.label)}</span>`;
+      const filterBtn = col.filterable
+        ? `<button type="button" class="fa-col-filter-btn${filterOn}" data-fa-filter-col="${escapeHtml(col.id)}" title="Filter">▾</button>`
+        : '';
+      return `<th class="fa-col-head ${escapeHtml(col.className || '')}${sorted}" data-fa-col="${escapeHtml(col.id)}"${title}>
+        <div class="fa-col-head-inner">${sortBtn}${filterBtn}</div>
+      </th>`;
+    }).join('');
+  }
+
+  function closeColumnFilter() {
+    const pop = $('fa-col-filter-popover');
+    if (pop) pop.hidden = true;
+    state.openFilterCol = '';
+    state.openFilterTable = '';
+    state.filterQuery = '';
+  }
+
+  function columnFilterBtn(which, colId) {
+    const tableId = which === 'history' ? 'fa-history-table' : 'fa-new-table';
+    return document.querySelector(`#${tableId} [data-fa-filter-col="${CSS.escape(colId)}"]`);
+  }
+
+  function repositionColumnFilter() {
+    const pop = $('fa-col-filter-popover');
+    if (!pop || pop.hidden || !state.openFilterCol) return;
+    const btn = columnFilterBtn(state.openFilterTable, state.openFilterCol);
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const width = pop.offsetWidth || 220;
+    const left = Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8);
+    pop.style.left = `${left}px`;
+    pop.style.top = `${rect.bottom + 4}px`;
+  }
+
+  function columnFilterSourceRows(which, skipColId) {
+    const view = tableView(which);
+    const probe = {
+      ...view,
+      colFilters: { ...view.colFilters },
+    };
+    delete probe.colFilters[skipColId];
+    const grouped = which === 'history'
+      ? applyTableView(state.completedRows, probe, { needle: state.completedFilter, selectedTypes: state.completedTypes })
+      : applyTableView(state.newRows, probe, { needle: state.newFilter, selectedTypes: state.newTypes });
+    return grouped.rows;
+  }
+
+  function renderColumnFilterPanel(which, colId) {
+    const col = NEW_PART_COLUMNS.find((item) => item.id === colId);
+    if (!col) return '';
+    const view = tableView(which);
+    const options = uniqueFilterOptions(columnFilterSourceRows(which, colId), colId);
+    const selected = Array.isArray(view.colFilters[colId]) ? new Set(view.colFilters[colId]) : null;
+    const query = String(state.filterQuery || '').trim().toUpperCase();
+    const visible = query
+      ? options.filter((value) => colFilterLabel(value).toUpperCase().includes(query))
+      : options;
+    const allChecked = !selected;
+    const checks = visible.map((value) => {
+      const checked = !selected || selected.has(value) ? ' checked' : '';
+      return `<label class="fa-col-filter-check">
+        <input type="checkbox" data-fa-filter-value="${escapeHtml(value)}"${checked} />
+        <span title="${escapeHtml(colFilterLabel(value))}">${escapeHtml(colFilterLabel(value))}</span>
+      </label>`;
+    }).join('') || '<p class="fa-col-filter-empty">No values</p>';
+    return `
+      <div class="fa-col-filter-title">Filter: ${escapeHtml(col.label)}</div>
+      <input type="search" class="fa-col-filter-search" value="${escapeHtml(state.filterQuery || '')}" placeholder="Search values..." autocomplete="off">
+      <label class="fa-col-filter-check fa-col-filter-all">
+        <input type="checkbox" data-fa-filter-all${allChecked ? ' checked' : ''}>
+        Select all
+      </label>
+      <div class="fa-col-filter-checks">${checks}</div>
+      <div class="fa-col-filter-actions">
+        <button type="button" class="fa-btn fa-btn--ghost" data-fa-clear-col-filter="${escapeHtml(colId)}">Clear</button>
+      </div>
+    `;
+  }
+
+  function openColumnFilter(btn, which, colId) {
+    const pop = $('fa-col-filter-popover');
+    if (!pop || !colId) return;
+    if (state.openFilterCol === colId && state.openFilterTable === which && !pop.hidden) {
+      closeColumnFilter();
+      return;
+    }
+    state.openFilterCol = colId;
+    state.openFilterTable = which;
+    state.filterQuery = '';
+    pop.innerHTML = renderColumnFilterPanel(which, colId);
+    pop.hidden = false;
+    repositionColumnFilter();
+    pop.querySelector('.fa-col-filter-search')?.focus();
+  }
+
+  function syncAssignedPicChip(which) {
+    const id = which === 'history' ? 'fa-history-assigned-pic' : 'fa-new-assigned-pic';
+    const btn = $(id);
+    if (!btn) return;
+    const view = tableView(which);
+    const rows = which === 'history' ? state.completedRows : state.newRows;
+    const count = rows.filter(hasAssignedPic).length;
+    btn.textContent = count ? `Assigned PIC ${count}` : 'Assigned PIC';
+    btn.classList.toggle('is-active', view.assignedPicOnly);
+    btn.setAttribute('aria-pressed', view.assignedPicOnly ? 'true' : 'false');
+  }
+
+  function soRailHtml(group, rowSpan, { shadeAlt, collapsed } = {}) {
+    const soNo = group.so;
+    const chevron = collapsed ? '▸' : '▾';
+    const customer = group.customer || '';
+    const hasSo = soNo && soNo !== '\u2014';
+    const href = hasSo ? `/sales-orders?q=${encodeURIComponent(soNo)}` : '';
+    const soInner = href
+      ? `<a class="fa-so-link" href="${escapeHtml(href)}" title="Open ${escapeHtml(soNo)} in S/O Management">${escapeHtml(soNo)}</a>`
+      : `<strong class="fa-so-no">${escapeHtml(soNo)}</strong>`;
+    return `
+      <td class="fa-col-so fa-so-rail${shadeAlt ? ' fa-so-rail--shade-alt' : ''}" rowspan="${rowSpan}" data-sales-order="${escapeHtml(soNo)}">
+        <div class="fa-so-rail-inner">
+          <button type="button" class="fa-so-toggle" data-fa-toggle-so="${escapeHtml(soNo)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} process sheets">${chevron}</button>
+          ${soInner}
+          ${customer ? `<span class="fa-so-customer" title="${escapeHtml(customer)}">${escapeHtml(customer)}</span>` : ''}
+        </div>
+      </td>
+    `;
   }
 
   async function api(url, options) {
@@ -120,8 +514,11 @@
 
   function filteredRows() {
     const needle = state.filter.trim().toUpperCase();
-    if (!needle) return state.rows;
     return state.rows.filter((row) => {
+      if (state.flaggedAssignedPicOnly && !(row.pics || []).some((pic) => String(pic?.name || '').trim())) {
+        return false;
+      }
+      if (!needle) return true;
       const blob = [
         row.process_sheet_no,
         row.pp_voucher_no,
@@ -175,16 +572,14 @@
     return '';
   }
 
-  function picOptions(selectedIds, includeBlank) {
-    const selected = new Set((selectedIds || []).map(Number));
-    const unused = state.pics.filter((pic) => !selected.has(Number(pic.pic_id)));
-    const blank = includeBlank ? '<option value="">PIC...</option>' : '';
-    if (!unused.length) {
-      return `${blank}<option value="__new">New PIC name...</option>`;
-    }
-    return `${blank}${unused.map((pic) => (
-      `<option value="${escapeHtml(pic.pic_id)}">${escapeHtml(pic.name)}</option>`
-    )).join('')}<option value="__new">New PIC name...</option>`;
+  function picOptions(selectedId) {
+    const current = Number(selectedId || 0);
+    const blank = '<option value="">PIC...</option>';
+    const pics = state.pics.map((pic) => {
+      const selected = Number(pic.pic_id) === current ? ' selected' : '';
+      return `<option value="${escapeHtml(pic.pic_id)}"${selected}>${escapeHtml(pic.name)}</option>`;
+    }).join('');
+    return `${blank}${pics}<option value="__new">New PIC name...</option>`;
   }
 
   function isHistorical(row) {
@@ -296,30 +691,6 @@
     return '<span class="fa-muted">—</span>';
   }
 
-  function prepValueHtml(parsed) {
-    if (parsed.ready) return '<span class="fa-prep-val is-ready">OK</span>';
-    if (parsed.date) return `<span class="fa-prep-val has-date">${escapeHtml(formatDmy(parsed.date))}</span>`;
-    if (parsed.legacy) return `<span class="fa-prep-val" title="${escapeHtml(parsed.legacy)}">${escapeHtml(parsed.legacy)}</span>`;
-    return '<span class="fa-prep-val is-empty">—</span>';
-  }
-
-  function prepCell(row) {
-    const shorts = { tooling: 'T', fixture: 'F', gauges: 'G' };
-    const items = [];
-    const machine = String(row.machine_cnc || '').trim();
-    if (machine) {
-      items.push(`<span class="fa-prep-item" title="Machine (CNC)"><span class="fa-prep-k">CNC</span><span class="fa-prep-val">${escapeHtml(machine)}</span></span>`);
-    }
-    CHECK_FIELDS.forEach((field) => {
-      const parsed = parseCheckValue(row, field.prefix);
-      if (!parsed.ready && !parsed.date && !parsed.legacy) return;
-      const cls = parsed.ready ? ' is-ready' : (parsed.date ? ' has-date' : '');
-      items.push(`<span class="fa-prep-item${cls}" title="${escapeHtml(field.label)}"><span class="fa-prep-k">${shorts[field.prefix] || ''}</span>${prepValueHtml(parsed)}</span>`);
-    });
-    if (!items.length) return '<span class="fa-muted">\u2014</span>';
-    return `<div class="fa-prep">${items.join('')}</div>`;
-  }
-
   function psCell(row) {
     return `<span class="fa-mono">${escapeHtml(dash(row.process_sheet_no))}</span>`;
   }
@@ -378,18 +749,12 @@
 
   function programPicCell(row) {
     const ps = escapeHtml(row.process_sheet_no || row.pp_voucher_no || '');
-    const chips = (row.program_pics || []).map((pic) => (
-      `<span class="fa-chip">${escapeHtml(pic.name)}
-        <button type="button" class="fa-chip-x" data-fa-new-remove-pic="${pic.pic_id}" data-ps="${ps}" aria-label="Remove ${escapeHtml(pic.name)}">\u00d7</button>
-      </span>`
-    )).join('');
+    const currentId = Number((row.program_pic_ids || [])[0] || 0);
+    const filled = currentId ? ' has-value' : '';
     return `
-      <div class="fa-pic-cell">
-        ${chips ? `<div class="fa-pic-chips">${chips}</div>` : ''}
-        <select class="fa-pic-select" data-fa-new-add-pic data-ps="${ps}" aria-label="Add programme PIC">
-          ${picOptions(row.program_pic_ids, true)}
-        </select>
-      </div>
+      <select class="fa-pic-select${filled}" data-fa-set-pic data-ps="${ps}" aria-label="Programme PIC">
+        ${picOptions(currentId)}
+      </select>
     `;
   }
 
@@ -398,6 +763,13 @@
     const empty = $('fa-empty');
     const body = $('fa-table-body');
     const rows = filteredRows();
+    const picBtn = $('fa-flagged-assigned-pic');
+    if (picBtn) {
+      const count = state.rows.filter((row) => (row.pics || []).some((pic) => String(pic?.name || '').trim())).length;
+      picBtn.textContent = count ? `Assigned PIC ${count}` : 'Assigned PIC';
+      picBtn.classList.toggle('is-active', state.flaggedAssignedPicOnly);
+      picBtn.setAttribute('aria-pressed', state.flaggedAssignedPicOnly ? 'true' : 'false');
+    }
     if (!state.rows.length) {
       if (host) host.hidden = true;
       if (empty) {
@@ -413,7 +785,9 @@
       if (host) host.hidden = true;
       if (empty) {
         empty.hidden = false;
-        empty.textContent = 'No flagged jobs match this filter.';
+        empty.textContent = state.flaggedAssignedPicOnly
+          ? 'No process sheets with an assigned PIC match this filter.'
+          : 'No flagged jobs match this filter.';
       }
       return;
     }
@@ -518,37 +892,15 @@
     return PS_TYPE_ORDER.filter((label) => state.newTypes.has(label));
   }
 
-  function filteredNewRows() {
-    const needle = state.newFilter.trim().toUpperCase();
-    const selected = state.newTypes;
-    return state.newRows.filter((row) => {
-      if (!selected.size || !selected.has(newRowPsType(row))) return false;
-      if (!needle) return true;
-      const blob = [
-        row.process_sheet_no,
-        row.pp_voucher_no,
-        row.part_no,
-        row.part_description,
-        row.posted_date,
-        row.po_due_date,
-        row.material_display,
-        row.material_subcon,
-        row.remarks,
-        row.program_finish_at,
-        row.current_stage_desc,
-        row.current_stage_status_label,
-        row.erp_last_stage_desc,
-        row.ps_type,
-        row.machine_cnc,
-        row.tooling_text,
-        row.fixture_text,
-        row.gauges_text,
-        isExceptionRow(row) ? 'EXCEPTION' : '',
-        row.from_npi_tracker ? 'NPI' : '',
-        ...(row.program_pics || []).map((pic) => pic.name),
-      ].join(' ').toUpperCase();
-      return blob.includes(needle);
+  function groupedNewRows() {
+    return applyTableView(state.newRows, state.newView, {
+      needle: state.newFilter,
+      selectedTypes: state.newTypes,
     });
+  }
+
+  function filteredNewRows() {
+    return groupedNewRows().rows;
   }
 
   function renderNewTypeChips() {
@@ -733,39 +1085,17 @@
     state.completedTypes = new Set(present.length ? present : ['APS', 'NPS']);
   }
 
-  function filteredCompletedRows() {
+  function groupedCompletedRows() {
     ensureCompletedTypes();
-    const needle = state.completedFilter.trim().toUpperCase();
-    const selected = state.completedTypes;
-    return state.completedRows.filter((row) => {
-      if (!selected.size || !selected.has(newRowPsType(row))) return false;
-      if (!needle) return true;
-      const blob = [
-        row.process_sheet_no,
-        row.pp_voucher_no,
-        row.part_no,
-        row.part_description,
-        row.posted_date,
-        row.po_due_date,
-        row.material_display,
-        row.material_subcon,
-        row.remarks,
-        row.program_finish_at,
-        row.current_stage_desc,
-        row.current_stage_status_label,
-        row.erp_last_stage_desc,
-        row.ps_type,
-        row.machine_cnc,
-        row.tooling_text,
-        row.fixture_text,
-        row.gauges_text,
-        isExceptionRow(row) ? 'EXCEPTION' : '',
-        row.from_npi_tracker ? 'NPI' : '',
-        'COMPLETE',
-        ...(row.program_pics || []).map((pic) => pic.name),
-      ].join(' ').toUpperCase();
-      return blob.includes(needle);
+    return applyTableView(state.completedRows, state.completedView, {
+      needle: state.completedFilter,
+      selectedTypes: state.completedTypes,
+      extraBlob: (row) => `${newPartSearchBlob(row)} COMPLETE`,
     });
+  }
+
+  function filteredCompletedRows() {
+    return groupedCompletedRows().rows;
   }
 
   function renderCompletedTypeChips() {
@@ -808,7 +1138,15 @@
     return bits.join('');
   }
 
-  function newPartRowHtml(row, { allowRemove } = {}) {
+  function newPartRowHtml(row, {
+    allowRemove,
+    includeSoRail,
+    soRowSpan,
+    shadeAlt,
+    groupStart,
+    groupSo,
+    groupCustomer,
+  } = {}) {
     const ps = escapeHtml(row.process_sheet_no || row.pp_voucher_no || '');
     const exists = hasBom(row);
     const exception = isExceptionRow(row);
@@ -819,10 +1157,17 @@
     const remove = allowRemove && exception
       ? `<button type="button" class="fa-btn fa-btn--danger" data-fa-remove-exception="${ps}">Remove</button>`
       : '';
-    const rowClass = [missing ? 'is-missing' : '', complete ? 'is-historical' : ''].filter(Boolean).join(' ');
+    const rowClass = [
+      missing ? 'is-missing' : '',
+      complete ? 'is-historical' : '',
+      groupStart ? 'fa-so-group-start' : '',
+    ].filter(Boolean).join(' ');
     const missingHint = missing ? ' title="Not found in S/O management or ERP cache"' : '';
+    const soCell = includeSoRail
+      ? soRailHtml({ so: groupSo || soGroupKey(row), customer: groupCustomer || row.customer_name || '' }, soRowSpan || 1, { shadeAlt, collapsed: false })
+      : '';
     return `
-      <tr class="${rowClass}" data-ps="${escapeHtml(row.process_sheet_no || '')}" data-pp="${escapeHtml(row.pp_voucher_no || '')}"${missingHint}>
+      <tr class="${rowClass}" data-ps="${escapeHtml(row.process_sheet_no || '')}" data-pp="${escapeHtml(row.pp_voucher_no || '')}" data-so="${escapeHtml(groupSo || soGroupKey(row))}"${missingHint}>
         <td class="fa-col-ps">
           <div class="fa-id-cell">
             <span class="fa-mono">${escapeHtml(dash(row.process_sheet_no))}</span>
@@ -835,7 +1180,6 @@
         <td class="fa-col-date">${escapeHtml(dash(row.po_due_date))}</td>
         <td class="fa-col-qty">${escapeHtml(dash(row.total_qty))}</td>
         <td class="fa-col-stage">${stageCell(row)}</td>
-        <td class="fa-col-prep">${prepCell(row)}</td>
         <td class="fa-col-bom${exists ? ' has-bom' : ''}">${bomCell(row)}</td>
         <td class="fa-col-material${row.material_arrived ? ' is-ready' : (row.material_date ? ' has-date' : '')}">${materialCell(row)}</td>
         <td class="fa-col-pic">${programPicCell(row)}</td>
@@ -854,16 +1198,61 @@
           </div>
         </td>
         <td class="fa-col-actions">${historyButton(row, 'new_part')}${remove}</td>
+        ${soCell}
       </tr>
     `;
+  }
+
+  function groupedTableBodyHtml(groups, view, { allowRemove }) {
+    if (!groups.length) return '';
+    return groups.map((group, gi) => {
+      const shadeAlt = gi % 2 === 1;
+      const collapsed = view.collapsedGroups.has(group.so);
+      if (collapsed) {
+        const label = `${group.rows.length} process sheet${group.rows.length === 1 ? '' : 's'} — expand to view`;
+        return `<tr class="fa-so-group-row" data-so="${escapeHtml(group.so)}">
+          <td colspan="${NEW_PART_DATA_COLSPAN}" class="fa-so-collapsed">${escapeHtml(label)}</td>
+          ${soRailHtml(group, 1, { shadeAlt, collapsed: true })}
+        </tr>`;
+      }
+      return group.rows.map((row, i) => newPartRowHtml(row, {
+        allowRemove,
+        includeSoRail: i === 0,
+        soRowSpan: group.rows.length,
+        shadeAlt,
+        groupStart: i === 0,
+        groupSo: group.so,
+        groupCustomer: group.customer,
+      })).join('');
+    }).join('');
+  }
+
+  function filterEmptyMessage(view, { typeSelected, history }) {
+    if (!typeSelected) {
+      return history
+        ? 'Select a process sheet type to view history.'
+        : 'Select a process sheet type to view NEW parts.';
+    }
+    if (view.assignedPicOnly) return 'No process sheets with an assigned PIC match this filter.';
+    if (Object.keys(view.colFilters).length) {
+      return history
+        ? 'No completed process sheets match this type, search, or column filter.'
+        : 'No NEW parts match this type, search, or column filter.';
+    }
+    return history
+      ? 'No completed process sheets match this type or search filter.'
+      : 'No NEW parts match this type or search filter.';
   }
 
   function renderNewTable() {
     const host = $('fa-new-table-host');
     const empty = $('fa-new-empty');
     const body = $('fa-new-table-body');
-    const rows = filteredNewRows();
+    const grouped = groupedNewRows();
+    const rows = grouped.rows;
     renderNewTypeChips();
+    syncAssignedPicChip('new');
+    renderNewPartHead('fa-new-table', state.newView);
     updateNewCount();
     if (state.tab === 'new') {
       if (!state.newLoaded) {
@@ -877,9 +1266,10 @@
         const exceptionPart = exceptionCount
           ? ` · ${exceptionCount} exception${exceptionCount === 1 ? '' : 's'}`
           : '';
+        const picPart = state.newView.assignedPicOnly ? ' with assigned PIC' : '';
         $('fa-subtitle').textContent = allSelected
-          ? `${state.newRows.length} NEW part${state.newRows.length === 1 ? '' : 's'} from active S/O management${exceptionPart}`
-          : `${rows.length} NEW ${labels} part${rows.length === 1 ? '' : 's'} of ${state.newRows.length}${exceptionPart}`;
+          ? `${rows.length} NEW part${rows.length === 1 ? '' : 's'} from active S/O management${picPart}${exceptionPart}`
+          : `${rows.length} NEW ${labels} part${rows.length === 1 ? '' : 's'} of ${state.newRows.length}${picPart}${exceptionPart}`;
       }
     }
     if (!state.newRows.length) {
@@ -890,29 +1280,30 @@
       }
       return;
     }
+    if (host) host.hidden = false;
     if (!rows.length) {
-      if (host) host.hidden = true;
-      if (empty) {
-        empty.hidden = false;
-        empty.textContent = state.newTypes.size
-          ? 'No NEW parts match this type or search filter.'
-          : 'Select a process sheet type to view NEW parts.';
+      if (empty) empty.hidden = true;
+      if (body) {
+        body.innerHTML = `<tr><td colspan="${NEW_PART_COLUMNS.length}" class="fa-so-collapsed">${escapeHtml(filterEmptyMessage(state.newView, { typeSelected: state.newTypes.size, history: false }))}</td></tr>`;
       }
+      if (state.openFilterTable === 'new' && state.openFilterCol) repositionColumnFilter();
       return;
     }
-    if (host) host.hidden = false;
     if (empty) empty.hidden = true;
     if (!body) return;
-    syncBomColumnHeader();
-    body.innerHTML = rows.map((row) => newPartRowHtml(row, { allowRemove: true })).join('');
+    body.innerHTML = groupedTableBodyHtml(grouped.groups, state.newView, { allowRemove: true });
+    if (state.openFilterTable === 'new' && state.openFilterCol) repositionColumnFilter();
   }
 
   function renderHistoryTable() {
     const host = $('fa-history-table-host');
     const empty = $('fa-completed-empty');
     const body = $('fa-history-table-body');
-    const rows = filteredCompletedRows();
+    const grouped = groupedCompletedRows();
+    const rows = grouped.rows;
     renderCompletedTypeChips();
+    syncAssignedPicChip('history');
+    renderNewPartHead('fa-history-table', state.completedView);
     updateHistoryCount();
     if (state.tab === 'history') {
       if (!state.completedLoaded) {
@@ -922,9 +1313,10 @@
         const present = PS_TYPE_ORDER.filter((label) => counts[label]);
         const allSelected = present.length > 0 && present.every((label) => state.completedTypes.has(label));
         const labels = selectedCompletedTypeLabels().join(' / ') || 'selected types';
+        const picPart = state.completedView.assignedPicOnly ? ' with assigned PIC' : '';
         $('fa-subtitle').textContent = allSelected
-          ? `${state.completedRows.length} completed process sheet${state.completedRows.length === 1 ? '' : 's'}`
-          : `${rows.length} completed ${labels} of ${state.completedRows.length}`;
+          ? `${rows.length} completed process sheet${rows.length === 1 ? '' : 's'}${picPart}`
+          : `${rows.length} completed ${labels} of ${state.completedRows.length}${picPart}`;
       }
     }
     if (!state.completedRows.length) {
@@ -936,26 +1328,25 @@
       if (body) body.innerHTML = '';
       return;
     }
+    if (host) host.hidden = false;
     if (!rows.length) {
-      if (host) host.hidden = true;
-      if (empty) {
-        empty.hidden = false;
-        empty.textContent = state.completedTypes.size
-          ? 'No completed process sheets match this type or search filter.'
-          : 'Select a process sheet type to view history.';
+      if (empty) empty.hidden = true;
+      if (body) {
+        body.innerHTML = `<tr><td colspan="${NEW_PART_COLUMNS.length}" class="fa-so-collapsed">${escapeHtml(filterEmptyMessage(state.completedView, { typeSelected: state.completedTypes.size, history: true }))}</td></tr>`;
       }
-      if (body) body.innerHTML = '';
+      if (state.openFilterTable === 'history' && state.openFilterCol) repositionColumnFilter();
       return;
     }
-    if (host) host.hidden = false;
     if (empty) empty.hidden = true;
     if (!body) return;
-    body.innerHTML = rows.map((row) => newPartRowHtml(row, { allowRemove: false })).join('');
+    body.innerHTML = groupedTableBodyHtml(grouped.groups, state.completedView, { allowRemove: false });
+    if (state.openFilterTable === 'history' && state.openFilterCol) repositionColumnFilter();
   }
 
   function setTab(tab, options) {
     const persistHash = options && options.persistHash;
     const next = tab === 'new' ? 'new' : (tab === 'history' ? 'history' : 'flagged');
+    if (next !== state.tab) closeColumnFilter();
     state.tab = next;
     document.querySelectorAll('[data-fa-tab]').forEach((btn) => {
       const active = btn.getAttribute('data-fa-tab') === next;
@@ -1882,6 +2273,18 @@
       }
       renderHistoryTable();
     });
+    $('fa-new-assigned-pic')?.addEventListener('click', () => {
+      state.newView.assignedPicOnly = !state.newView.assignedPicOnly;
+      renderNewTable();
+    });
+    $('fa-history-assigned-pic')?.addEventListener('click', () => {
+      state.completedView.assignedPicOnly = !state.completedView.assignedPicOnly;
+      renderHistoryTable();
+    });
+    $('fa-flagged-assigned-pic')?.addEventListener('click', () => {
+      state.flaggedAssignedPicOnly = !state.flaggedAssignedPicOnly;
+      renderTable();
+    });
     $('fa-manage-pics')?.addEventListener('click', openPicModal);
     $('fa-pic-modal-close')?.addEventListener('click', closePicModal);
     $('fa-pic-modal')?.addEventListener('click', (e) => {
@@ -1965,6 +2368,10 @@
     }
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
+      if (!$('fa-col-filter-popover')?.hidden) {
+        closeColumnFilter();
+        return;
+      }
       if (!$('fa-history-modal')?.hidden) {
         closeHistoryModal();
         return;
@@ -2001,6 +2408,30 @@
     }
 
     onNewPartBodies('click', async (e) => {
+      const toggleSo = e.target.closest('[data-fa-toggle-so]');
+      if (toggleSo) {
+        e.preventDefault();
+        e.stopPropagation();
+        const which = tableKindFromEl(toggleSo);
+        const view = tableView(which);
+        const soNo = toggleSo.getAttribute('data-fa-toggle-so') || '';
+        if (!soNo) return;
+        if (view.collapsedGroups.has(soNo)) view.collapsedGroups.delete(soNo);
+        else view.collapsedGroups.add(soNo);
+        rerenderTable(which);
+        return;
+      }
+      const groupRow = e.target.closest('tr.fa-so-group-row');
+      if (groupRow && !e.target.closest('a, button')) {
+        const which = tableKindFromEl(groupRow);
+        const view = tableView(which);
+        const soNo = groupRow.getAttribute('data-so') || '';
+        if (soNo) {
+          view.collapsedGroups.delete(soNo);
+          rerenderTable(which);
+        }
+        return;
+      }
       const historyBtn = e.target.closest('[data-fa-history]');
       if (historyBtn) {
         await openHistoryModal(
@@ -2019,19 +2450,6 @@
         await removeException(removeExceptionBtn.getAttribute('data-fa-remove-exception'));
         return;
       }
-      const removePic = e.target.closest('[data-fa-new-remove-pic]');
-      if (removePic) {
-        const ps = removePic.getAttribute('data-ps');
-        const picId = Number(removePic.getAttribute('data-fa-new-remove-pic'));
-        const row = newRowByPs(ps);
-        const next = (row?.program_pic_ids || []).filter((value) => Number(value) !== picId);
-        try {
-          await saveNewPatch(ps, { program_pic_ids: next });
-        } catch (err) {
-          showAlert(err.message || 'Could not remove PIC');
-        }
-        return;
-      }
       const materialBtn = e.target.closest('[data-action="open-material"]');
       if (materialBtn) {
         try {
@@ -2042,25 +2460,31 @@
       }
     });
     onNewPartBodies('change', async (e) => {
-      const addPic = e.target.closest('[data-fa-new-add-pic]');
-      if (addPic) {
-        const ps = addPic.getAttribute('data-ps');
-        const value = addPic.value;
-        addPic.value = '';
-        if (!value) return;
+      const setPic = e.target.closest('[data-fa-set-pic]');
+      if (setPic) {
+        const ps = setPic.getAttribute('data-ps');
+        const value = setPic.value;
+        const previous = String((newRowByPs(ps)?.program_pic_ids || [])[0] || '');
         try {
+          if (!value) {
+            await saveNewPatch(ps, { program_pic_ids: [] });
+            return;
+          }
           let picId = value;
           if (value === '__new') {
             const name = window.prompt('PIC name');
-            if (!name || !name.trim()) return;
+            if (!name || !name.trim()) {
+              setPic.value = previous;
+              return;
+            }
             const pic = await addPicName(name.trim());
             picId = pic && pic.pic_id;
           }
-          const row = newRowByPs(ps);
-          const next = Array.from(new Set([...(row?.program_pic_ids || []), Number(picId)])).filter(Boolean);
+          const next = Number(picId) ? [Number(picId)] : [];
           await saveNewPatch(ps, { program_pic_ids: next });
         } catch (err) {
-          showAlert(err.message || 'Could not add PIC');
+          setPic.value = previous;
+          showAlert(err.message || 'Could not save PIC');
         }
         return;
       }
@@ -2282,6 +2706,113 @@
         setStatus('fa-pic-status', err.message || 'Could not delete PIC', 'error');
       }
     });
+
+    function bindColumnControls() {
+      ['fa-new-table-host', 'fa-history-table-host'].forEach((id) => {
+        const host = $(id);
+        if (!host || host.dataset.colControlsBound === '1') return;
+        host.dataset.colControlsBound = '1';
+        host.addEventListener('scroll', repositionColumnFilter, { passive: true });
+        host.addEventListener('click', (e) => {
+          const sortBtn = e.target.closest('[data-fa-sort-col]');
+          if (sortBtn) {
+            e.stopPropagation();
+            const which = tableKindFromEl(sortBtn);
+            const view = tableView(which);
+            const colId = sortBtn.getAttribute('data-fa-sort-col');
+            if (!colId) return;
+            if (view.sortCol === colId) {
+              view.sortDir = view.sortDir === 'asc' ? 'desc' : 'asc';
+            } else {
+              view.sortCol = colId;
+              view.sortDir = 'asc';
+            }
+            closeColumnFilter();
+            rerenderTable(which);
+            return;
+          }
+          const filterBtn = e.target.closest('[data-fa-filter-col]');
+          if (filterBtn) {
+            e.stopPropagation();
+            openColumnFilter(filterBtn, tableKindFromEl(filterBtn), filterBtn.getAttribute('data-fa-filter-col'));
+          }
+        });
+      });
+      document.querySelectorAll('.fa-table-scroll').forEach((el) => {
+        el.addEventListener('scroll', repositionColumnFilter, { passive: true });
+      });
+      window.addEventListener('resize', repositionColumnFilter);
+
+      document.addEventListener('click', (e) => {
+        const pop = $('fa-col-filter-popover');
+        if (!pop || pop.hidden) return;
+        if (pop.contains(e.target) || e.target.closest('[data-fa-filter-col]')) return;
+        closeColumnFilter();
+      });
+
+      const pop = $('fa-col-filter-popover');
+      pop?.addEventListener('click', (e) => {
+        const clearBtn = e.target.closest('[data-fa-clear-col-filter]');
+        if (clearBtn) {
+          const which = state.openFilterTable || 'new';
+          const view = tableView(which);
+          const colId = clearBtn.getAttribute('data-fa-clear-col-filter');
+          if (colId) delete view.colFilters[colId];
+          closeColumnFilter();
+          rerenderTable(which);
+          return;
+        }
+        e.stopPropagation();
+      });
+
+      pop?.addEventListener('input', (e) => {
+        const search = e.target.closest('.fa-col-filter-search');
+        if (!search || !state.openFilterCol) return;
+        state.filterQuery = search.value || '';
+        const which = state.openFilterTable || 'new';
+        pop.innerHTML = renderColumnFilterPanel(which, state.openFilterCol);
+        const next = pop.querySelector('.fa-col-filter-search');
+        if (next) {
+          next.focus();
+          const pos = state.filterQuery.length;
+          next.setSelectionRange(pos, pos);
+        }
+        repositionColumnFilter();
+      });
+
+      pop?.addEventListener('change', (e) => {
+        const which = state.openFilterTable || 'new';
+        const view = tableView(which);
+        const colId = state.openFilterCol;
+        if (!colId) return;
+        const allOptions = uniqueFilterOptions(columnFilterSourceRows(which, colId), colId);
+        const allInput = e.target.closest('input[data-fa-filter-all]');
+        if (allInput) {
+          if (allInput.checked) delete view.colFilters[colId];
+          else view.colFilters[colId] = [];
+          rerenderTable(which);
+          pop.innerHTML = renderColumnFilterPanel(which, colId);
+          repositionColumnFilter();
+          return;
+        }
+        const valueInput = e.target.closest('input[data-fa-filter-value]');
+        if (!valueInput) return;
+        const selected = new Set(Array.isArray(view.colFilters[colId]) ? view.colFilters[colId] : allOptions);
+        const value = valueInput.getAttribute('data-fa-filter-value') || '';
+        if (valueInput.checked) selected.add(value);
+        else selected.delete(value);
+        if (selected.size === allOptions.length && allOptions.every((item) => selected.has(item))) {
+          delete view.colFilters[colId];
+        } else {
+          view.colFilters[colId] = allOptions.filter((item) => selected.has(item));
+        }
+        rerenderTable(which);
+        pop.innerHTML = renderColumnFilterPanel(which, colId);
+        repositionColumnFilter();
+      });
+    }
+
+    bindColumnControls();
   }
 
   bind();

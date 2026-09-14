@@ -1,4 +1,4 @@
-/* Material Tracking — lean logistics view */
+/* Supply Chain View — lean logistics view */
 
 body.sol-view {
   --sol-bg: #f3efe8;
@@ -789,7 +789,8 @@ body.sol-view .app-main--sales-logistics {
 .sol-table[data-mode="ps"] td.sol-need-date-cell,
 .sol-table[data-mode="ps"] th.sol-col-material,
 .sol-table[data-mode="ps"] td.so-material-subcon-cell {
-  min-width: 10.5rem;
+  min-width: 12rem;
+  overflow: visible;
 }
 
 .sol-table[data-mode="ps"] th.sol-col-due,
@@ -1142,12 +1143,20 @@ body.sol-view .app-main--sales-logistics {
   background: color-mix(in srgb, var(--sol-need-bg) 80%, #e8dcc0) !important;
 }
 
+.sol-date-with-history {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .sol-need-date-input {
   display: block;
   width: 100%;
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
+  flex: 1 1 auto;
   border: 1px solid var(--sol-line);
   border-radius: 8px;
   padding: 6px 8px;
@@ -1156,6 +1165,42 @@ body.sol-view .app-main--sales-logistics {
   line-height: 1.25;
   color: var(--sol-ink);
   background: var(--sol-paper);
+}
+
+.sol-date-history-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--sol-line);
+  border-radius: 8px;
+  background: var(--sol-paper);
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
+.sol-date-history-btn.has-history {
+  border-color: color-mix(in srgb, var(--sol-accent) 40%, #fff);
+  background: var(--sol-accent-soft);
+  color: var(--sol-accent);
+  cursor: pointer;
+}
+
+.sol-date-history-btn.has-history:hover {
+  background: color-mix(in srgb, var(--sol-accent-soft) 70%, #fff);
+  color: var(--sol-accent-hover);
+}
+
+.sol-date-history-btn:disabled {
+  opacity: 0.42;
+  color: #94a3b8;
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 body.sol-view input[type="date"] {
@@ -1276,6 +1321,18 @@ body.sol-view .so-material-subcon-controls {
   flex-wrap: nowrap;
   align-items: stretch;
   gap: 6px;
+}
+
+body.sol-view .so-material-subcon-arrived-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+body.sol-view .so-material-subcon-arrived-row .so-material-subcon-arrived {
+  width: auto;
+  flex: 1 1 auto;
 }
 
 body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-controls {
@@ -1802,4 +1859,119 @@ body.sol-view .so-editable-status:empty {
   .sol-table-scroll {
     max-height: calc(100dvh - 320px);
   }
+}
+
+.sol-date-history-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.sol-date-history-backdrop[hidden] {
+  display: none;
+}
+
+.sol-date-history-box {
+  width: min(420px, 100%);
+  max-height: calc(100dvh - 40px);
+  overflow: auto;
+  background: var(--sol-paper);
+  border-radius: 16px;
+  padding: 16px 18px 18px;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.22);
+}
+
+.sol-date-history-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.sol-date-history-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--sol-ink);
+}
+
+.sol-date-history-sub {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  color: var(--sol-muted);
+  word-break: break-all;
+}
+
+.sol-date-history-status {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  color: #9f1239;
+}
+
+.sol-date-history-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  font-size: 0.82rem;
+  color: var(--sol-muted);
+}
+
+.sol-date-history-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sol-date-history-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--sol-line);
+}
+
+.sol-date-history-item:last-child {
+  border-bottom: 0;
+}
+
+.sol-date-history-when {
+  margin: 0 0 2px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--sol-muted);
+}
+
+.sol-date-history-change {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.sol-date-history-old {
+  color: #94a3b8;
+  text-decoration: line-through;
+}
+
+.sol-date-history-arrow {
+  color: #94a3b8;
+  font-weight: 700;
+}
+
+.sol-date-history-new {
+  color: var(--sol-ink);
+  font-weight: 650;
+}
+
+.sol-date-history-empty {
+  margin: 8px 0 0;
+  font-size: 0.82rem;
+  color: var(--sol-muted);
 }

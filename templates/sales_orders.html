@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}S/O Management{% endblock %}
 {% block main_class %}app-main--new-orders app-main--sales-orders-wide{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-asm-lines-20260907">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-need-date-scv-20260910">{% endblock %}
 {% block content %}
 <div class="new-orders-page new-orders-page--sales-orders">
   <div class="new-orders-header">
@@ -15,10 +15,11 @@
             with <code>so_order_view</code> customer/header joined on <strong>sales_order_no</strong>.
             <strong>Material in</strong> links to the planner stock flag (same as the scheduler sidebar) and records the date when checked.
             Rows turn <strong>green automatically</strong> when that partial is on a planner CNC lane (Active view).
+            <strong>Need date</strong> is the same field as Supply Chain View Need date (saved per PP voucher).
             <strong>Queued CNC</strong> column shows machine pills per partial from the live planner queue.
-            <strong>Proposed CNC</strong> copies <strong>Machine (CNC)</strong> from NPI/FA Management and maps it by <strong>Part no.</strong>
+            <strong>Proposed CNC</strong> is a checkbox dropdown of planner CNC machines. Pick one or more, or type a machine and Add. Saved per PP voucher (overrides the NPI/FA default).
             Note columns autosave to Supabase per PP voucher.
-            <strong>Exception</strong> flags a line item (saved per partial) and highlights the row in red.
+            <strong>Exception</strong> is a checkbox dropdown of issue categories (Supply Chain, Process / Engr, Qlty, Sales, Others). Tick one or more per partial; the row highlights in red.
             <strong>FA</strong> marks frame agreement parts from the master list under Queries &amp; Master Data.
             Assembly jobs such as <code>NPS26-0321</code> and <code>N26-[SR]22</code> expand to show each sub-assembly finished good as its own line (1/n, 2/n).
             Toggle <strong>Active</strong> (SO line not fully shipped), <strong>Complete</strong> (fully shipped qty on the SO line),
@@ -105,6 +106,8 @@
         <tbody id="so-table-body"></tbody>
       </table>
       <div id="so-col-filter-popover" class="so-col-filter-popover" hidden></div>
+      <div id="so-proposed-cnc-popover" class="so-col-filter-popover so-proposed-cnc-popover" hidden></div>
+      <div id="so-exception-popover" class="so-col-filter-popover so-exception-popover" hidden></div>
     </div>
   </div>
   <div id="so-empty" class="new-orders-empty card" hidden>
@@ -175,5 +178,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-orders-pp-20260608"></script>
 <script src="{{ url_for('static', filename='js/repeat_order_tags.js') }}?v=so-slim-similar-20260804"></script>
-<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=so-date-cols-20260908"></script>
+<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=so-need-date-scv-20260910"></script>
 {% endblock %}

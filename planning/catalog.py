@@ -570,6 +570,155 @@ def _catalog_op_card_from_planner_op(op, entry):
     }
 
 
+def _inventory_code_lookup_candidates(*values) -> list[str]:
+    from .cycle_time_service import _part_no_lookup_candidates
+
+    out: list[str] = []
+    for value in values:
+        for cand in _part_no_lookup_candidates(compact_text(value)):
+            if cand and cand not in out:
+                out.append(cand)
+    return out
+
+
+def _entry_has_machining_sidebar_ops(entry) -> bool:
+    return bool(_catalog_ops_for_sidebar((entry or {}).get("op_cards") or (entry or {}).get("ops") or []))
+
+
+def _machining_op_card_from_bom_stage(entry, row, *, qty: float) -> dict:
+    from planning.erp_wo_merge import op_no_from_stage
+
+    stage_desc = compact_text(row.get("stage_desc"))
+    stage_no = int(row.get("stage_no") or 0)
+    op_no = op_no_from_stage(stage_desc, stage_no)
+    machine_group = stage_desc.split()[0].upper() if stage_desc else ""
+    ps_id = compact_text(entry.get("ps_id") or entry.get("source_ps_id") or entry.get("process_sheet_no"))
+    launch_qty = max(0.0, float(qty or 0))
+    op = {
+        "source_ps_id": ps_id,
+        "pp_partial_no": int(entry.get("pp_partial_no") or 1),
+        "source_op_seq_id": stage_no,
+        "source_op_no": op_no,
+        "op_no": op_no,
+        "op_type": stage_desc,
+        "operation_name": stage_desc,
+        "seq_no": stage_no,
+        "source_kind": "ERP_BOM",
+        "source_stage_no": stage_no,
+        "machine_category": machine_group,
+        "preferred_machine": "",
+        "cycle_time": 0.0,
+        "setup_time": 0.0,
+        "job_no": ps_id,
+        "total_qty": launch_qty,
+        "required_qty": launch_qty,
+        "planned_qty": 0.0,
+        "erp_finished_qty": 0.0,
+        "remaining_qty": launch_qty,
+        "queued_machines": [],
+        "is_allocated": False,
+        "compatible_machine_group": machine_group,
+        "execution_status": "",
+        "stage_desc": stage_desc,
+    }
+    card = _catalog_op_card_from_planner_op(op, {**entry, "ps_id": ps_id})
+    card["donor_ps_id"] = compact_text(entry.get("donor_ps_id"))
+    card["part_no"] = compact_text(
+        entry.get("part_no") or entry.get("inventory_code") or entry.get("part_name")
+    )
+    card["stage_desc"] = stage_desc
+    return card
+
+
+def stamp_inventory_bom_ops(entries, *, nested_only=False):
+    """Fill missing Turning/Milling cards from COMAIN inventory BOM stages.
+
+    Read-only — no planner_bom_variation writes. Safe on the search GET path.
+    """
+    from planning.erp_wo_merge import is_machining_stage_desc
+    from planning.flows import erp_domain_bom_stages_by_inventory, preferred_machining_bom_code
+
+    rows_in = list(entries or [])
+    targets: list[dict] = []
+    for entry in rows_in:
+        if not nested_only and not _entry_has_machining_sidebar_ops(entry):
+            targets.append(entry)
+        for item in entry.get("assembly_line_items") or []:
+            if isinstance(item, dict) and not _entry_has_machining_sidebar_ops(item):
+                targets.append(item)
+    if not targets:
+        return rows_in
+
+    candidates: list[str] = []
+    for target in targets:
+        for cand in _inventory_code_lookup_candidates(
+            target.get("inventory_code"),
+            target.get("part_no"),
+            target.get("part_name"),
+        ):
+            if cand not in candidates:
+                candidates.append(cand)
+    if not candidates:
+        return rows_in
+
+    stages_by_inv = erp_domain_bom_stages_by_inventory(candidates)
+    stages_index: dict[str, list[dict]] = {}
+    for key, rows in (stages_by_inv or {}).items():
+        if not compact_text(key):
+            continue
+        for alias in _inventory_code_lookup_candidates(key):
+            stages_index.setdefault(alias.upper(), rows)
+
+    for target in targets:
+        stage_rows: list[dict] = []
+        for cand in _inventory_code_lookup_candidates(
+            target.get("inventory_code"),
+            target.get("part_no"),
+            target.get("part_name"),
+        ):
+            stage_rows = stages_index.get(cand.upper()) or []
+            if stage_rows:
+                break
+        bom_code = preferred_machining_bom_code(stage_rows)
+        if not bom_code:
+            continue
+        bom_key = compact_text(bom_code).upper()
+        machining = [
+            row
+            for row in stage_rows
+            if compact_text(row.get("bom_code")).upper() == bom_key
+            and is_machining_stage_desc(row.get("stage_desc"))
+        ]
+        if not machining:
+            continue
+        qty = float(
+            target.get("display_qty")
+            or target.get("qty")
+            or target.get("partial_qty")
+            or target.get("total_qty")
+            or 0
+        )
+        if qty <= 0:
+            qty = 1.0
+        cards = [_machining_op_card_from_bom_stage(target, row, qty=qty) for row in machining]
+        cards = [card for card in cards if _is_machining_plannable_op(
+            card.get("op_type") or card.get("operation_name"),
+            card.get("compatible_machine_group"),
+            card.get("source_kind"),
+            card.get("preferred_machine"),
+        )]
+        if not cards:
+            continue
+        target["op_cards"] = cards
+        target["ops"] = list(cards)
+        target["all_ops"] = list(cards)
+        if not compact_text(target.get("selected_bom_code")):
+            target["selected_bom_code"] = bom_code
+        if not compact_text(target.get("erp_bom_code")):
+            target["erp_bom_code"] = bom_code
+    return rows_in
+
+
 def _catalog_entry_needs_child_bom_ops(entry) -> bool:
     from planning.assembly_classify import is_component_child_ps
 

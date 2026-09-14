@@ -87,6 +87,7 @@ class MaterialTrackingInspectionRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
+        self.assertIn("Supply Chain View", html)
         self.assertIn('data-sol-view="qc-checklist"', html)
         self.assertIn('data-sol-qc-bucket="ready_qc"', html)
         self.assertIn('data-sol-qc-bucket="awaiting_grn"', html)

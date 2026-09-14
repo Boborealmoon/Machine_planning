@@ -168,7 +168,7 @@ def test_inline_live_repair_ids_prefer_sr_hosts_and_donors():
     assert "MPS26-2821-1" in ids
 
 
-def test_cached_catalog_search_filters_without_live_repair():
+def test_cached_catalog_search_filters_and_repairs_hit_family():
     from app import _pp_vouchers_cached_response_rows
 
     parent = {"ps_id": "NPS26-0361", "source_ps_id": "NPS26-0361", "pp_partial_no": 1, "ops": []}
@@ -186,14 +186,16 @@ def test_cached_catalog_search_filters_without_live_repair():
             side_effect=lambda data, include_completed=False: list(data),
         ) as merge,
         patch("planning.assembly_classify.attach_catalog_assembly_line_items", side_effect=fake_attach),
-        patch("planning.catalog.repair_catalog_sidebar_ops") as repair,
+        patch("app._repair_scoped_catalog_ops") as repair,
     ):
         rows = _pp_vouchers_cached_response_rows([parent, child, other], False, "0361")
 
     assert {row["ps_id"] for row in rows} == {"NPS26-0361", "NPS26-0361-1"}
     assert set(attached_ids) == {"NPS26-0361", "NPS26-0361-1"}
     merge.assert_not_called()
-    repair.assert_not_called()
+    repair.assert_called_once()
+    repaired = repair.call_args.args[0]
+    assert {row["ps_id"] for row in repaired} == {"NPS26-0361", "NPS26-0361-1"}
 
 
 def test_catalog_search_attach_subset_includes_children():
@@ -204,3 +206,14 @@ def test_catalog_search_attach_subset_includes_children():
     other = {"ps_id": "NPS26-0999", "source_ps_id": "NPS26-0999"}
     subset = _catalog_rows_for_search_attach([parent, child, other], [parent])
     assert {row["ps_id"] for row in subset} == {"NPS26-0361", "NPS26-0361-1"}
+
+
+def test_catalog_search_attach_subset_includes_related_sr_family():
+    from app import _catalog_rows_for_search_attach
+
+    sr = {"ps_id": "N26-[SR]22", "source_ps_id": "N26-[SR]22", "part_no": "KIT-001"}
+    nps = {"ps_id": "NPS26-0321", "source_ps_id": "NPS26-0321", "part_no": "KIT-001"}
+    nps_child = {"ps_id": "NPS26-0321-10", "source_ps_id": "NPS26-0321-10", "part_no": "CHILD-J"}
+    other = {"ps_id": "NPS26-0999", "source_ps_id": "NPS26-0999", "part_no": "OTHER"}
+    subset = _catalog_rows_for_search_attach([sr, nps, nps_child, other], [sr])
+    assert {row["ps_id"] for row in subset} == {"N26-[SR]22", "NPS26-0321", "NPS26-0321-10"}

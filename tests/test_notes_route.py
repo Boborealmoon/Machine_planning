@@ -29,6 +29,8 @@ class NotesRouteTests(unittest.TestCase):
         self.assertIn("RFQ checker / Tracker", html)
         self.assertIn("Assembly Parts", html)
         self.assertIn("On-time delivery", html)
+        self.assertIn("APS PS material match", html)
+        self.assertIn("/archive/aps-ps-match", html)
         self.assertRegex(html, r'data-group="ops"[\s\S]*On-time delivery')
         self.assertNotRegex(html, r'data-group="reports"[\s\S]*On-time delivery')
         self.assertIn("Queries &amp; Master Data", html)

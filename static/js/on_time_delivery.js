@@ -46,15 +46,21 @@ const OTD_HIST_BUCKETS = [
   { id: 'ge_31', label: '31+', lo: 31, hi: null },
 ];
 const OTD_BLANK_PERSON = '(blank)';
+const OTD_OVERVIEW_SECTIONS = [
+  { id: 'aps', label: 'APS', ppTypes: ['APS'], salesContains: null, subtitle: 'All sales people' },
+  { id: 'nps', label: 'NPS', ppTypes: ['NPS'], salesContains: null, subtitle: 'All sales people' },
+  { id: 'pps', label: 'PPS', ppTypes: ['PPS'], salesContains: 'alice', subtitle: 'Alice only' },
+];
 
 const otdState = {
   year: new Date().getFullYear(),
-  monthBasis: 'delivery',
+  tab: 'detail',
   ppTypes: new Set(['APS', 'NPS']),
   salespersons: new Set(),
   salespersonOptions: [],
   sourceRows: [],
   data: null,
+  overview: [],
   loading: false,
   statusFilter: 'all',
   search: '',
@@ -125,8 +131,15 @@ function otdParseDateParts(value) {
   return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
 }
 
-function otdAnchorDate(row, monthBasis) {
-  return otdParseDateParts(monthBasis === 'po_due' ? row?.po_due_date : row.delivery_date);
+function otdDeliveryDate(row) {
+  return otdParseDateParts(row?.delivery_date);
+}
+
+function otdSalesContains(row, needle) {
+  const text = otdCompact(needle).toLowerCase();
+  if (!text) return true;
+  const hay = `${otdCompact(row?.sales_person_name)} ${otdCompact(row?.sales_person_code)} ${otdSalespersonKey(row)}`.toLowerCase();
+  return hay.includes(text);
 }
 
 function otdAllTypesSelected() {
@@ -251,11 +264,11 @@ function otdCollectSalespeople(rows) {
 
 function otdYearRows() {
   return (otdState.sourceRows || []).map((row) => {
-    const anchor = otdAnchorDate(row, otdState.monthBasis);
-    if (!anchor || anchor.year !== otdState.year) return null;
+    const delivery = otdDeliveryDate(row);
+    if (!delivery || delivery.year !== otdState.year) return null;
     return {
       ...row,
-      month: anchor.month,
+      month: delivery.month,
       sales_person_label: otdSalespersonLabel(row),
     };
   }).filter(Boolean);
@@ -287,6 +300,7 @@ function otdApplyFilters() {
   payload.by_ps = otdAggregate(otdScopedRows({ month: true, ps: false }), selected).by_ps;
   payload.by_month_ps = otdAggregate(otdScopedRows({ month: false, ps: false }), selected).by_month_ps;
   otdState.data = payload;
+  otdState.overview = otdBuildOverview();
   otdSyncSalespersonDropdown();
   otdRender();
 }
@@ -394,7 +408,6 @@ function otdAggregate(rows, ppTypes) {
   });
   return {
     year: otdState.year,
-    month_basis: otdState.monthBasis,
     pp_types: selected,
     summary,
     by_month: months,
@@ -455,8 +468,7 @@ function otdDonutArc(cx, cy, r, r0, start, end) {
   return `M ${sx} ${sy} A ${r} ${r} 0 ${large} 1 ${ex} ${ey} L ${sx0} ${sy0} A ${r0} ${r0} 0 ${large} 0 ${ex0} ${ey0} Z`;
 }
 
-function otdRenderKpis(summary) {
-  const host = otdEl('otd-kpis');
+function otdRenderKpis(summary, host = otdEl('otd-kpis')) {
   if (!host) return;
   const classified = summary.classified || 0;
   const onTime = (summary.early || 0) + (summary.on_time || 0);
@@ -488,8 +500,7 @@ function otdRenderKpis(summary) {
     </article>`;
 }
 
-function otdRenderDonut(summary) {
-  const host = otdEl('otd-donut');
+function otdRenderDonut(summary, host = otdEl('otd-donut')) {
   if (!host) return;
   const slices = [
     { id: 'early', value: summary.early || 0 },
@@ -526,8 +537,7 @@ function otdRenderDonut(summary) {
   </div>`;
 }
 
-function otdRenderMonthChart(months) {
-  const host = otdEl('otd-month-chart');
+function otdRenderMonthChart(months, host = otdEl('otd-month-chart'), { interactive = true } = {}) {
   if (!host) return;
   const max = Math.max(1, ...months.map((row) => (row.early || 0) + (row.on_time || 0) + (row.late || 0)));
   const W = 640;
@@ -549,8 +559,10 @@ function otdRenderMonthChart(months) {
       const h = (val / max) * innerH;
       y -= h;
       if (h < 0.4) return '';
-      const selected = otdState.selectedMonth === row.month;
-      return `<rect class="otd-month-chip" data-month="${row.month}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${OTD_STATUS_COLORS[key]}" rx="1" opacity="${selected || otdState.selectedMonth == null ? 1 : 0.45}">
+      const selected = interactive && otdState.selectedMonth === row.month;
+      const chipClass = interactive ? 'otd-month-chip' : '';
+      const monthAttr = interactive ? `data-month="${row.month}"` : '';
+      return `<rect class="${chipClass}" ${monthAttr} x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${OTD_STATUS_COLORS[key]}" rx="1" opacity="${!interactive || selected || otdState.selectedMonth == null ? 1 : 0.45}">
         <title>${otdEscape(row.label)} ${otdEscape(OTD_STATUS_LABELS[key])}: ${val}</title>
       </rect>`;
     }).join('');
@@ -577,8 +589,7 @@ function otdRenderMonthChart(months) {
   ])}`;
 }
 
-function otdRenderPsChart(rows) {
-  const host = otdEl('otd-ps-chart');
+function otdRenderPsChart(rows, host = otdEl('otd-ps-chart')) {
   if (!host) return;
   const items = (rows || []).filter((row) => (row.classified || 0) > 0);
   if (!items.length) {
@@ -617,8 +628,7 @@ function otdRenderPsChart(rows) {
     ])}`;
 }
 
-function otdRenderMonthPsChart(blocks, ppTypes) {
-  const host = otdEl('otd-month-ps-chart');
+function otdRenderMonthPsChart(blocks, ppTypes, host = otdEl('otd-month-ps-chart')) {
   if (!host) return;
   const types = (ppTypes || []).filter((ppType) =>
     (blocks || []).some((block) => (block.series?.[ppType]?.classified || 0) > 0)
@@ -670,9 +680,7 @@ function otdRenderMonthPsChart(blocks, ppTypes) {
   </svg>${otdLegend(types.map((ppType) => ({ color: OTD_PP_COLORS[ppType], label: otdPsLabel(ppType) })))}`;
 }
 
-function otdRenderHist(payload) {
-  const host = otdEl('otd-hist-chart');
-  const sub = otdEl('otd-hist-sub');
+function otdRenderHist(payload, host = otdEl('otd-hist-chart'), sub = otdEl('otd-hist-sub')) {
   if (!host) return;
   if (sub) {
     sub.textContent = payload.classified
@@ -763,9 +771,151 @@ function otdRenderTable() {
   }).join('');
 }
 
+function otdOverviewRows(spec) {
+  const types = new Set(spec.ppTypes || []);
+  return otdYearRows().filter((row) => {
+    if (types.size && !types.has(row.pp_type)) return false;
+    return otdSalesContains(row, spec.salesContains);
+  });
+}
+
+function otdBuildOverview() {
+  return OTD_OVERVIEW_SECTIONS.map((spec) => {
+    const rows = otdOverviewRows(spec);
+    const payload = otdAggregate(rows, spec.ppTypes);
+    return {
+      ...spec,
+      ...payload,
+    };
+  });
+}
+
+function otdSetTab(tab) {
+  otdState.tab = tab === 'overview' ? 'overview' : 'detail';
+  const page = document.querySelector('.otd-page');
+  page?.classList.toggle('is-overview', otdState.tab === 'overview');
+  page?.classList.toggle('is-detail', otdState.tab === 'detail');
+  document.querySelectorAll('[data-otd-tab]').forEach((btn) => {
+    const active = btn.getAttribute('data-otd-tab') === otdState.tab;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const detail = otdEl('otd-detail-panel');
+  const overview = otdEl('otd-overview-panel');
+  const overviewContext = otdEl('otd-overview-context');
+  if (detail) detail.hidden = otdState.loading || otdState.tab !== 'detail';
+  if (overview) overview.hidden = otdState.loading || otdState.tab !== 'overview';
+  if (overviewContext) overviewContext.hidden = otdState.tab !== 'overview';
+}
+
+function otdRenderOverviewCompare(sections) {
+  const host = otdEl('otd-overview-compare');
+  if (!host) return;
+  host.innerHTML = sections.map((section) => {
+    const summary = section.summary || {};
+    const classified = summary.classified || 0;
+    const onTime = (summary.early || 0) + (summary.on_time || 0);
+    return `<article class="otd-overview-kpi otd-overview-kpi--${otdEscape(section.id)}">
+      <p class="otd-overview-kpi-label">${otdEscape(section.subtitle)}</p>
+      <p class="otd-overview-kpi-title">${otdEscape(section.label)}</p>
+      <p class="otd-overview-kpi-value">${otdEscape(otdPct(summary.on_time_rate))}</p>
+      <p class="otd-overview-kpi-sub">${otdNum(onTime)} of ${otdNum(classified)} process sheets · ${otdNum(summary.late)} late</p>
+    </article>`;
+  }).join('');
+}
+
+function otdRenderOverviewTrend(sections) {
+  const wrap = otdEl('otd-overview-trend-wrap');
+  const host = otdEl('otd-overview-trend');
+  if (!wrap || !host) return;
+  const months = Array.from({ length: 12 }, (_, idx) => ({
+    month: idx + 1,
+    label: OTD_MONTH_LABELS[idx],
+    series: {},
+  }));
+  const types = [];
+  sections.forEach((section) => {
+    const ppType = section.ppTypes?.[0];
+    if (!ppType) return;
+    types.push(ppType);
+    (section.by_month || []).forEach((row, idx) => {
+      months[idx].series[ppType] = {
+        classified: row.classified || 0,
+        on_time_rate: row.on_time_rate || 0,
+      };
+    });
+  });
+  const hasData = types.some((ppType) =>
+    months.some((block) => (block.series?.[ppType]?.classified || 0) > 0)
+  );
+  wrap.hidden = !hasData;
+  if (!hasData) {
+    host.innerHTML = '';
+    return;
+  }
+  otdRenderMonthPsChart(months, types, host);
+}
+
+function otdRenderOverviewSections(sections) {
+  const host = otdEl('otd-overview-sections');
+  if (!host) return;
+  host.innerHTML = sections.map((section) => {
+    const classified = section.summary?.classified || 0;
+    const body = classified
+      ? `<section class="sales-report-kpi-grid card otd-kpi-grid" data-otd-section-kpis></section>
+        <section class="otd-charts otd-charts--overview">
+          <article class="otd-chart-card">
+            <header class="otd-chart-head">
+              <h2 class="otd-chart-title">On time vs late</h2>
+              <p class="otd-chart-sub">Share delivered on or before PO due</p>
+            </header>
+            <div class="otd-chart-body" data-otd-section-donut></div>
+          </article>
+          <article class="otd-chart-card">
+            <header class="otd-chart-head">
+              <h2 class="otd-chart-title">By month</h2>
+              <p class="otd-chart-sub">Early / on-time / late by delivery month</p>
+            </header>
+            <div class="otd-chart-body otd-chart-body--tall" data-otd-section-month></div>
+          </article>
+          <article class="otd-chart-card">
+            <header class="otd-chart-head">
+              <h2 class="otd-chart-title">Days vs PO due</h2>
+              <p class="otd-chart-sub">Last delivery minus PO due</p>
+            </header>
+            <div class="otd-chart-body" data-otd-section-hist></div>
+          </article>
+        </section>`
+      : `<div class="otd-overview-empty">No fully shipped ${otdEscape(section.label)} process sheets${section.salesContains ? ` for ${otdEscape(section.subtitle)}` : ''} in ${otdState.year}.</div>`;
+    return `<section class="otd-overview-block" data-otd-section="${otdEscape(section.id)}">
+      <header class="otd-overview-block-head">
+        <h2 class="otd-overview-block-title">${otdEscape(section.label)}</h2>
+        <p class="otd-overview-block-sub">${otdEscape(section.subtitle)} · ${otdNum(classified)} process sheets</p>
+      </header>
+      ${body}
+    </section>`;
+  }).join('');
+  host.querySelectorAll('[data-otd-section]').forEach((block) => {
+    const section = sections.find((item) => item.id === block.getAttribute('data-otd-section'));
+    if (!section || !(section.summary?.classified)) return;
+    otdRenderKpis(section.summary, block.querySelector('[data-otd-section-kpis]'));
+    otdRenderDonut(section.summary, block.querySelector('[data-otd-section-donut]'));
+    otdRenderMonthChart(section.by_month || [], block.querySelector('[data-otd-section-month]'), { interactive: false });
+    otdRenderHist(section.histogram || {}, block.querySelector('[data-otd-section-hist]'), null);
+  });
+}
+
+function otdRenderOverview() {
+  const sections = otdState.overview || [];
+  otdRenderOverviewCompare(sections);
+  otdRenderOverviewTrend(sections);
+  otdRenderOverviewSections(sections);
+}
+
 function otdRender() {
   const data = otdState.data;
   const hasRows = Boolean(data?.summary?.process_sheet_count);
+  const overviewHasRows = (otdState.overview || []).some((section) => (section.summary?.classified || 0) > 0);
   const loading = otdEl('otd-loading');
   const empty = otdEl('otd-empty');
   const kpis = otdEl('otd-kpis');
@@ -773,29 +923,41 @@ function otdRender() {
   const table = otdEl('otd-table-wrap');
   const meta = otdEl('otd-meta');
   const context = otdEl('otd-context');
+  const showDetail = !otdState.loading && hasRows && otdState.tab === 'detail';
+  const showOverviewEmpty = !otdState.loading && otdState.tab === 'overview' && !overviewHasRows;
   if (loading) loading.hidden = otdState.loading === false;
-  if (empty) empty.hidden = otdState.loading || hasRows || Boolean(otdEl('otd-alert')?.textContent);
-  if (kpis) kpis.hidden = otdState.loading || !hasRows;
-  if (charts) charts.hidden = otdState.loading || !hasRows;
-  if (table) table.hidden = otdState.loading || !hasRows;
+  if (empty) {
+    empty.hidden = otdState.loading || Boolean(otdEl('otd-alert')?.textContent) || (otdState.tab === 'detail' ? hasRows : overviewHasRows);
+    if (!empty.hidden && showOverviewEmpty) {
+      empty.querySelector('p').textContent = 'No fully shipped APS, NPS, or PPS (Alice) process sheets for this year.';
+    } else if (!empty.hidden) {
+      empty.querySelector('p').textContent = 'No delivered process sheets match this filter.';
+    }
+  }
+  if (kpis) kpis.hidden = !showDetail;
+  if (charts) charts.hidden = !showDetail;
+  if (table) table.hidden = !showDetail;
   if (context) {
     const types = otdAllTypesSelected()
       ? 'All PS types'
       : OTD_PS_TYPES.filter((item) => otdState.ppTypes.has(item)).map(otdPsLabel).join(', ') || 'None';
-    const basis = otdState.monthBasis === 'po_due' ? 'PO due month' : 'Delivery month';
     const people = !otdState.salespersons.size
       ? ''
       : (otdState.salespersons.size === 1
         ? (otdState.salespersonOptions.find((item) => otdState.salespersons.has(item.id))?.label || '1 sales person')
         : `${otdState.salespersons.size} sales people`);
-    context.textContent = people ? `${basis} - ${types} - ${people}` : `${basis} - ${types}`;
+    context.textContent = people ? `Delivery date vs PO due - ${types} - ${people}` : `Delivery date vs PO due - ${types}`;
   }
   if (meta) {
     meta.hidden = !data;
     if (data) {
-      const basisLabel = otdState.monthBasis === 'po_due' ? 'PO due date' : 'Delivery date';
-      meta.textContent = `${data.year} - ${basisLabel} - ${otdNum(data.summary?.classified)} classified`;
+      meta.textContent = `${data.year} - last delivery vs PO due - ${otdNum(data.summary?.classified)} classified`;
     }
+  }
+  otdSetTab(otdState.tab);
+  if (otdState.tab === 'overview' && !otdState.loading) {
+    otdRenderOverview();
+    return;
   }
   if (!hasRows) return;
   otdRenderKpis(data.summary || {});
@@ -815,7 +977,6 @@ async function otdFetch(refresh = false) {
   const params = new URLSearchParams({
     year: String(otdState.year),
     pp_types: 'ALL',
-    month_basis: otdState.monthBasis,
   });
   if (refresh) params.set('refresh', '1');
   try {
@@ -874,18 +1035,10 @@ function otdBind() {
       otdFetch();
     });
   }
-  document.querySelectorAll('[data-otd-basis]').forEach((btn) => {
+  document.querySelectorAll('[data-otd-tab]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const basis = btn.getAttribute('data-otd-basis');
-      otdState.monthBasis = basis === 'po_due' ? 'po_due' : 'delivery';
-      document.querySelectorAll('[data-otd-basis]').forEach((el) => {
-        const active = el === btn;
-        el.classList.toggle('is-active', active);
-        el.setAttribute('aria-pressed', active ? 'true' : 'false');
-      });
-      otdState.selectedMonth = null;
-      otdState.selectedPs = null;
-      otdApplyFilters();
+      otdSetTab(btn.getAttribute('data-otd-tab'));
+      otdRender();
     });
   });
   document.querySelectorAll('[data-otd-preset]').forEach((btn) => {
@@ -991,6 +1144,7 @@ function otdBind() {
 document.addEventListener('DOMContentLoaded', () => {
   otdSyncPsCheckboxes();
   otdSyncPresets();
+  otdSetTab('detail');
   otdBind();
   otdFetch();
 });

@@ -89,6 +89,7 @@ from planning.sales_coordination_route import sales_coordination_bp
 from planning.so_archive_route import so_archive_bp
 from planning.first_article_route import first_article_bp
 from planning.rfq_checker_route import rfq_checker_bp
+from planning.aps_ps_match_route import aps_ps_match_bp
 from planning.queue_exit_history_route import queue_exit_history_bp
 from planning.erp_scanned_output_route import erp_scanned_output_bp
 from planning.mpp_planner_route import mpp_planner_bp
@@ -131,6 +132,7 @@ app.register_blueprint(sales_coordination_bp)
 app.register_blueprint(so_archive_bp)
 app.register_blueprint(first_article_bp)
 app.register_blueprint(rfq_checker_bp)
+app.register_blueprint(aps_ps_match_bp)
 app.register_blueprint(job_ratio_bp)
 app.register_blueprint(on_time_delivery_bp)
 app.register_blueprint(material_inspection_bp)
@@ -2555,14 +2557,21 @@ def api_pp_vouchers():
 
 
 def _catalog_rows_for_search_attach(merged: list, filtered: list) -> list:
-    """Parent + child rows needed to nest assembly line items on search hits."""
+    """Parent + child rows needed to nest assembly line items on search hits.
+
+    Direct-PP SR hosts such as N26-[SR]22 borrow COMP sheets from the NPS/APS
+    family that shares a part number. Those related roots must be in the subset
+    or attach wipes the nested machining ops.
+    """
     from planning.assembly_classify import (
         catalog_source_ps_id,
         is_component_child_ps,
         parent_ps_id_from_child,
     )
+    from planning.utils import compact_text
 
     roots: set[str] = set()
+    part_keys: set[str] = set()
     for entry in filtered or []:
         ps_id = catalog_source_ps_id(entry)
         if not ps_id:
@@ -2572,6 +2581,18 @@ def _catalog_rows_for_search_attach(merged: list, filtered: list) -> list:
             parent = parent_ps_id_from_child(ps_id)
             if parent:
                 roots.add(parent.upper())
+        else:
+            part = compact_text(entry.get("part_no") or entry.get("inventory_code")).upper()
+            if part:
+                part_keys.add(part)
+    if part_keys:
+        for entry in merged or []:
+            ps_id = catalog_source_ps_id(entry)
+            if not ps_id or is_component_child_ps(ps_id):
+                continue
+            part = compact_text(entry.get("part_no") or entry.get("inventory_code")).upper()
+            if part in part_keys:
+                roots.add(ps_id.upper())
     if not roots:
         return list(filtered or [])
     subset = []
@@ -2595,13 +2616,30 @@ def _catalog_rows_for_search_attach(merged: list, filtered: list) -> list:
     return subset
 
 
+def _repair_scoped_catalog_ops(subset):
+    """Stamp missing COMP machining ops from COMAIN inventory BOM stages.
+
+    Must not write planner_bom_variation / planner_operation_seq on page load —
+    that path deadlocks and times out the search GET.
+    """
+    if not subset:
+        return
+    try:
+        from planning.catalog import stamp_inventory_bom_ops
+
+        stamp_inventory_bom_ops(subset)
+    except Exception as exc:
+        log.warning("scoped catalog ops seed failed: %s", exc)
+
+
 def _pp_vouchers_cached_response_rows(
     cached_data, include_completed, raw_search, *, merge_temps=False
 ):
     """Serve PS / Ops from prebuilt cache without blocking on live BOM/WO repair.
 
     Fresh [Temp] rows are merged only for refresh or when search needs them —
-    trial_catalog_items is too slow to run on every sidebar load.
+    trial_catalog_items is too slow to run on every sidebar load. Search still
+    seeds missing COMP machining ops for the hit family only.
     """
     from planning.assembly_classify import attach_catalog_assembly_line_items
 
@@ -2610,16 +2648,26 @@ def _pp_vouchers_cached_response_rows(
         filtered = _filter_pp_vouchers_by_search(cached, raw_search)
         looks_temp = "temp" in raw_search.lower()
         if filtered and not looks_temp:
-            attach_catalog_assembly_line_items(_catalog_rows_for_search_attach(cached, filtered))
+            subset = _catalog_rows_for_search_attach(cached, filtered)
+            attach_catalog_assembly_line_items(subset)
+            _repair_scoped_catalog_ops(subset)
             return _filter_pp_vouchers_by_search(cached, raw_search)
         merged = _merge_fresh_temp_ps_catalog_entries(cached, include_completed)
         hits = _filter_pp_vouchers_by_search(merged, raw_search)
         if hits:
-            attach_catalog_assembly_line_items(_catalog_rows_for_search_attach(merged, hits))
+            subset = _catalog_rows_for_search_attach(merged, hits)
+            attach_catalog_assembly_line_items(subset)
+            _repair_scoped_catalog_ops(subset)
         return _filter_pp_vouchers_by_search(merged, raw_search)
     if merge_temps:
         cached = _merge_fresh_temp_ps_catalog_entries(cached, include_completed)
     attach_catalog_assembly_line_items(cached)
+    try:
+        from planning.catalog import stamp_inventory_bom_ops
+
+        stamp_inventory_bom_ops(cached, nested_only=True)
+    except Exception as exc:
+        log.warning("catalog nested ops seed failed: %s", exc)
     return cached
 
 

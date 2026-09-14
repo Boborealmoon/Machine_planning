@@ -3,7 +3,7 @@
 {% block body_class %}fa-view{% endblock %}
 {% block main_class %}app-main--first-article{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260827-2">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260910-pic">
 {% endblock %}
 {% block content %}
 <div class="fa-page">
@@ -62,6 +62,8 @@
         <input id="fa-filter" class="fa-search-input" type="search"
                placeholder="Search this list..." autocomplete="off">
       </label>
+      <button type="button" class="fa-type-chip" id="fa-flagged-assigned-pic" aria-pressed="false"
+              title="Show only process sheets with an assigned PIC">Assigned PIC</button>
     </div>
     <p class="fa-add-status" id="fa-add-status" aria-live="polite"></p>
   </section>
@@ -116,6 +118,8 @@
                  placeholder="Search this list..." autocomplete="off">
         </label>
         <div class="fa-new-types" id="fa-new-types" role="group" aria-label="Filter by process sheet type"></div>
+        <button type="button" class="fa-type-chip" id="fa-new-assigned-pic" aria-pressed="false"
+                title="Show only process sheets with an assigned programme PIC">Assigned PIC</button>
       </div>
       <p class="fa-add-status" id="fa-new-exception-status" aria-live="polite"></p>
     </section>
@@ -131,13 +135,13 @@
               <th class="fa-col-date" title="PO due date">Due</th>
               <th class="fa-col-qty">Qty</th>
               <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
-              <th class="fa-col-prep" title="From NPI Tracker: machine, tooling, fixture/jig, and gauges/CMM">Prep</th>
               <th class="fa-col-bom" title="Opens BOM materials. Green = ERP material lines exist.">BOM</th>
               <th class="fa-col-material">Material</th>
               <th class="fa-col-pic" title="Programme PIC">PIC</th>
               <th class="fa-col-remarks">Remarks</th>
               <th class="fa-col-finish" title="Programme estimated finish">Finish</th>
               <th class="fa-col-actions"></th>
+              <th class="fa-col-so">SO</th>
             </tr>
           </thead>
           <tbody id="fa-new-table-body"></tbody>
@@ -156,6 +160,8 @@
                  placeholder="Search completed sheets..." autocomplete="off">
         </label>
         <div class="fa-new-types" id="fa-history-types" role="group" aria-label="Filter history by process sheet type"></div>
+        <button type="button" class="fa-type-chip" id="fa-history-assigned-pic" aria-pressed="false"
+                title="Show only completed process sheets with an assigned programme PIC">Assigned PIC</button>
       </div>
     </section>
     <div id="fa-history-table-host" class="fa-table-card" hidden>
@@ -170,13 +176,13 @@
               <th class="fa-col-date" title="PO due date">Due</th>
               <th class="fa-col-qty">Qty</th>
               <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
-              <th class="fa-col-prep" title="From NPI Tracker: machine, tooling, fixture/jig, and gauges/CMM">Prep</th>
               <th class="fa-col-bom" title="Opens BOM materials. Green = ERP material lines exist.">BOM</th>
               <th class="fa-col-material">Material</th>
               <th class="fa-col-pic" title="Programme PIC">PIC</th>
               <th class="fa-col-remarks">Remarks</th>
               <th class="fa-col-finish" title="Programme estimated finish">Finish</th>
               <th class="fa-col-actions"></th>
+              <th class="fa-col-so">SO</th>
             </tr>
           </thead>
           <tbody id="fa-history-table-body"></tbody>
@@ -308,8 +314,10 @@
     <p class="so-material-modal-foot">BOM: <code>inventory_bom_listing</code> · Inventory: <code>ic_inventory_enquiry_summary_view</code></p>
   </div>
 </div>
+
+<div id="fa-col-filter-popover" class="fa-col-filter-popover" hidden></div>
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=fa-20260825-2"></script>
-<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260827-2"></script>
+<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260910-pic"></script>
 {% endblock %}

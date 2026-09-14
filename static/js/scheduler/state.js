@@ -13,6 +13,7 @@ let trialCatalogSearchTimer = null;
 let trialCatalogRemoteSearchQuery = '';
 let trialCatalogRemoteSearchRows = [];
 let trialCatalogRemoteSearchDone = true;
+let trialCatalogRemoteSearchFailed = false;
 let trialCatalogRemoteSearchGen = 0;
 /** Machinist board job queue search (locate position on lanes). */
 let trialMachinistJobSearch = '';

@@ -548,6 +548,15 @@ function trialBoardOnlyTempCatalogEntries() {
   return [...byId.values()];
 }
 
+function trialCatalogAssemblyOpsCount(ps) {
+  const items = Array.isArray(ps?.assembly_line_items) ? ps.assembly_line_items : [];
+  return items.reduce((n, item) => {
+    const cards = Array.isArray(item?.op_cards) ? item.op_cards.length : 0;
+    const ops = Array.isArray(item?.ops) ? item.ops.length : 0;
+    return n + cards + ops;
+  }, Array.isArray(ps?.op_cards) ? ps.op_cards.length : 0);
+}
+
 /** Catalog rows plus board-only [Temp] lines and active remote search hits. */
 function trialMergedCatalogRows() {
   const local = Array.isArray(trialState.catalog) ? trialState.catalog : [];
@@ -560,15 +569,25 @@ function trialMergedCatalogRows() {
     ? trialCatalogRemoteSearchRows
     : [];
   if (!boardTemp.length && !remote.length) return local;
-  const seen = new Set(local.map(ps => String(ps?.ps_id || '')));
-  const extra = [];
-  [...boardTemp, ...remote].forEach(ps => {
+  const byId = new Map();
+  const order = [];
+  const take = (ps, preferIfRicher) => {
     const id = String(ps?.ps_id || '');
-    if (!id || seen.has(id)) return;
-    seen.add(id);
-    extra.push(ps);
-  });
-  return extra.length ? [...local, ...extra] : local;
+    if (!id) return;
+    const existing = byId.get(id);
+    if (!existing) {
+      byId.set(id, ps);
+      order.push(id);
+      return;
+    }
+    if (preferIfRicher && trialCatalogAssemblyOpsCount(ps) > trialCatalogAssemblyOpsCount(existing)) {
+      byId.set(id, { ...existing, ...ps });
+    }
+  };
+  local.forEach(ps => take(ps, false));
+  boardTemp.forEach(ps => take(ps, true));
+  remote.forEach(ps => take(ps, true));
+  return order.map(id => byId.get(id));
 }
 
 /** Resolve partial number from pp_partial_no and/or ::suffix on any planner id field. */

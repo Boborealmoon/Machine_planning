@@ -2,18 +2,18 @@
 {% block title %}On-time delivery{% endblock %}
 {% block main_class %}app-main--new-orders app-main--otd{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=otd-20260908">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/on_time_delivery.css') }}?v=otd-20260908">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=otd-20260910">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/on_time_delivery.css') }}?v=otd-20260910">
 {% endblock %}
 {% block content %}
-<div class="new-orders-page otd-page">
+<div class="new-orders-page otd-page is-detail">
   <header class="sales-report-header">
     <div class="sales-report-header-main">
       <h1 class="new-orders-title">On-time delivery</h1>
       <p class="sales-report-context">
         Process sheets compared by <strong>PO due date</strong> (SO required shipment date) and
-        <strong>last delivery date</strong>. On time = delivered on or before the PO due date.
-        Charts split by month and by PS type.
+        <strong>last delivery date</strong>. On time = last delivery on or before the PO due date.
+        Months follow the delivery date. Only fully shipped process sheets are counted.
       </p>
     </div>
     <div class="new-orders-header-actions">
@@ -22,21 +22,21 @@
     </div>
   </header>
 
+  <div class="otd-tabs" role="tablist" aria-label="On-time delivery views">
+    <button type="button" class="otd-tab is-active" id="otd-tab-detail" data-otd-tab="detail"
+            role="tab" aria-selected="true" aria-controls="otd-detail-panel">Detail</button>
+    <button type="button" class="otd-tab" id="otd-tab-overview" data-otd-tab="overview"
+            role="tab" aria-selected="false" aria-controls="otd-overview-panel">Overview</button>
+  </div>
+
   <div class="sales-report-period card">
     <div class="sales-report-period-row">
       <label class="sales-report-year-field">
         <span>Year</span>
         <input id="otd-year" type="number" min="2000" max="2100" step="1">
       </label>
-      <div class="sales-report-segment">
-        <span class="sales-report-segment-label">Month basis</span>
-        <div class="mi-view-toggle" role="group" aria-label="Month basis">
-          <button type="button" class="mi-view-btn is-active" data-otd-basis="delivery" aria-pressed="true">Delivery date</button>
-          <button type="button" class="mi-view-btn" data-otd-basis="po_due" aria-pressed="false">PO due date</button>
-        </div>
-      </div>
     </div>
-    <div class="sales-report-period-row sales-report-period-row--filters">
+    <div class="sales-report-period-row sales-report-period-row--filters otd-detail-filters">
       <div class="sales-report-filters-main">
         <div class="sales-report-segment">
           <span class="sales-report-segment-label">PP prefix</span>
@@ -70,6 +70,7 @@
       </div>
       <p class="otd-context" id="otd-context">Delivery month - APS + NPS</p>
     </div>
+    <p class="otd-context otd-overview-filters" id="otd-overview-context" hidden>APS · NPS · PPS (Alice)</p>
   </div>
 
   <div id="otd-loading" class="sales-report-loading sales-report-loading--page" aria-live="polite">
@@ -81,86 +82,100 @@
     <p>No delivered process sheets match this filter.</p>
   </div>
 
-  <section class="sales-report-kpi-grid card otd-kpi-grid" id="otd-kpis" hidden></section>
+  <div id="otd-detail-panel" role="tabpanel" aria-labelledby="otd-tab-detail">
+    <section class="sales-report-kpi-grid card otd-kpi-grid" id="otd-kpis" hidden></section>
 
-  <section class="otd-charts" id="otd-charts" hidden>
-    <article class="otd-chart-card">
-      <header class="otd-chart-head">
-        <h2 class="otd-chart-title">On time vs late</h2>
-        <p class="otd-chart-sub">Share of process sheets delivered on or before PO due</p>
-      </header>
-      <div class="otd-chart-body" id="otd-donut"></div>
-    </article>
-    <article class="otd-chart-card">
-      <header class="otd-chart-head">
-        <h2 class="otd-chart-title">By month</h2>
-        <p class="otd-chart-sub" id="otd-month-sub">Early / on-time / late counts with OTD % line</p>
-      </header>
-      <div class="otd-chart-body otd-chart-body--tall" id="otd-month-chart"></div>
-    </article>
-    <article class="otd-chart-card">
-      <header class="otd-chart-head">
-        <h2 class="otd-chart-title">By PS type</h2>
-        <p class="otd-chart-sub">On-time vs late process sheets for each prefix</p>
-      </header>
-      <div class="otd-chart-body" id="otd-ps-chart"></div>
-    </article>
-    <article class="otd-chart-card">
-      <header class="otd-chart-head">
-        <h2 class="otd-chart-title">Monthly OTD by PS</h2>
-        <p class="otd-chart-sub">On-time rate each month, one line per PS type</p>
-      </header>
-      <div class="otd-chart-body" id="otd-month-ps-chart"></div>
-    </article>
-    <article class="otd-chart-card otd-chart-card--wide">
-      <header class="otd-chart-head">
-        <h2 class="otd-chart-title">Days vs PO due</h2>
-        <p class="otd-chart-sub" id="otd-hist-sub">Last delivery minus PO due (negative = early)</p>
-      </header>
-      <div class="otd-chart-body" id="otd-hist-chart"></div>
-    </article>
-  </section>
+    <section class="otd-charts" id="otd-charts" hidden>
+      <article class="otd-chart-card">
+        <header class="otd-chart-head">
+          <h2 class="otd-chart-title">On time vs late</h2>
+          <p class="otd-chart-sub">Share of process sheets delivered on or before PO due</p>
+        </header>
+        <div class="otd-chart-body" id="otd-donut"></div>
+      </article>
+      <article class="otd-chart-card">
+        <header class="otd-chart-head">
+          <h2 class="otd-chart-title">By month</h2>
+          <p class="otd-chart-sub" id="otd-month-sub">Early / on-time / late counts with OTD % line</p>
+        </header>
+        <div class="otd-chart-body otd-chart-body--tall" id="otd-month-chart"></div>
+      </article>
+      <article class="otd-chart-card">
+        <header class="otd-chart-head">
+          <h2 class="otd-chart-title">By PS type</h2>
+          <p class="otd-chart-sub">On-time vs late process sheets for each prefix</p>
+        </header>
+        <div class="otd-chart-body" id="otd-ps-chart"></div>
+      </article>
+      <article class="otd-chart-card">
+        <header class="otd-chart-head">
+          <h2 class="otd-chart-title">Monthly OTD by PS</h2>
+          <p class="otd-chart-sub">On-time rate each month, one line per PS type</p>
+        </header>
+        <div class="otd-chart-body" id="otd-month-ps-chart"></div>
+      </article>
+      <article class="otd-chart-card otd-chart-card--wide">
+        <header class="otd-chart-head">
+          <h2 class="otd-chart-title">Days vs PO due</h2>
+          <p class="otd-chart-sub" id="otd-hist-sub">Last delivery minus PO due (negative = early)</p>
+        </header>
+        <div class="otd-chart-body" id="otd-hist-chart"></div>
+      </article>
+    </section>
 
-  <section class="otd-table-card card" id="otd-table-wrap" hidden>
-    <div class="otd-table-toolbar">
-      <h2 class="otd-chart-title">Process sheets</h2>
-      <div class="otd-table-filters">
-        <div class="otd-status-chips" role="group" aria-label="Status filter">
-          <button type="button" class="otd-chip is-active" data-otd-status="all">All</button>
-          <button type="button" class="otd-chip" data-otd-status="on_time">On time</button>
-          <button type="button" class="otd-chip" data-otd-status="late">Late</button>
+    <section class="otd-table-card card" id="otd-table-wrap" hidden>
+      <div class="otd-table-toolbar">
+        <h2 class="otd-chart-title">Process sheets</h2>
+        <div class="otd-table-filters">
+          <div class="otd-status-chips" role="group" aria-label="Status filter">
+            <button type="button" class="otd-chip is-active" data-otd-status="all">All</button>
+            <button type="button" class="otd-chip" data-otd-status="on_time">On time</button>
+            <button type="button" class="otd-chip" data-otd-status="late">Late</button>
+          </div>
+          <label class="otd-search-field">
+            <span class="visually-hidden">Search</span>
+            <input id="otd-search" type="search" placeholder="PS, SO, part, customer..." autocomplete="off">
+          </label>
         </div>
-        <label class="otd-search-field">
-          <span class="visually-hidden">Search</span>
-          <input id="otd-search" type="search" placeholder="PS, SO, part, customer..." autocomplete="off">
-        </label>
       </div>
-    </div>
-    <p class="otd-table-hint" id="otd-table-hint"></p>
-    <div class="new-orders-table-wrap sales-report-detail-table-wrap">
-      <table class="new-orders-table sales-report-table" id="otd-table">
-        <thead>
-          <tr>
-            <th>Process sheet</th>
-            <th>PS</th>
-            <th>Sales order</th>
-            <th>Customer</th>
-            <th>Sales person</th>
-            <th>Part</th>
-            <th>PO due</th>
-            <th>Delivery</th>
-            <th>Days</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody id="otd-table-body"></tbody>
-      </table>
-    </div>
-  </section>
+      <p class="otd-table-hint" id="otd-table-hint"></p>
+      <div class="new-orders-table-wrap sales-report-detail-table-wrap">
+        <table class="new-orders-table sales-report-table" id="otd-table">
+          <thead>
+            <tr>
+              <th>Process sheet</th>
+              <th>PS</th>
+              <th>Sales order</th>
+              <th>Customer</th>
+              <th>Sales person</th>
+              <th>Part</th>
+              <th>PO due</th>
+              <th>Delivery</th>
+              <th>Days</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="otd-table-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div id="otd-overview-panel" role="tabpanel" aria-labelledby="otd-tab-overview" hidden>
+    <section class="otd-overview-compare" id="otd-overview-compare"></section>
+    <section class="otd-chart-card otd-overview-trend-card" id="otd-overview-trend-wrap" hidden>
+      <header class="otd-chart-head">
+        <h2 class="otd-chart-title">Monthly OTD</h2>
+        <p class="otd-chart-sub">On-time rate by delivery month for APS, NPS, and PPS (Alice)</p>
+      </header>
+      <div class="otd-chart-body" id="otd-overview-trend"></div>
+    </section>
+    <div id="otd-overview-sections" class="otd-overview-sections"></div>
+  </div>
 
   <p class="new-orders-meta" id="otd-meta" hidden></p>
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/on_time_delivery.js') }}?v=otd-20260908"></script>
+<script src="{{ url_for('static', filename='js/on_time_delivery.js') }}?v=otd-20260910"></script>
 {% endblock %}

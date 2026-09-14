@@ -99,17 +99,20 @@ def hosted_sr_child_donor_guesses(hosted_ps_id: Any, related_root_ps_ids: list[A
     return [donor for _rank, donor in guesses]
 
 
-def _reborn_identity_fields(row: dict[str, Any], new_ps_id: str) -> dict[str, Any]:
+def _reborn_identity_fields(row: dict[str, Any], new_ps_id: str, donor_ps_id: str = "") -> dict[str, Any]:
     out = dict(row)
     out["ps_id"] = new_ps_id
     out["source_ps_id"] = new_ps_id
+    donor = compact_text(donor_ps_id)
+    if donor:
+        out["donor_ps_id"] = donor
     if compact_text(out.get("job_no")):
         out["job_no"] = new_ps_id
     if compact_text(out.get("display_ps_id")):
         out["display_ps_id"] = new_ps_id
     nested = out.get("op")
     if isinstance(nested, dict):
-        out["op"] = _reborn_identity_fields(nested, new_ps_id)
+        out["op"] = _reborn_identity_fields(nested, new_ps_id, donor)
     return out
 
 
@@ -120,16 +123,65 @@ def _reborn_line_item(item: dict[str, Any], host_ps_id: str, donor_ps_id: str) -
         out = dict(item)
         out["donor_ps_id"] = donor
         return out
-    out = _reborn_identity_fields(item, hosted)
+    out = _reborn_identity_fields(item, hosted, donor)
     out["process_sheet_no"] = hosted
     out["display_ps_id"] = hosted
     out["donor_ps_id"] = donor
     for key in ("ops", "all_ops", "op_cards"):
         rows = item.get(key) or []
         out[key] = [
-            _reborn_identity_fields(row, hosted) if isinstance(row, dict) else row
+            _reborn_identity_fields(row, hosted, donor) if isinstance(row, dict) else row
             for row in rows
         ]
+    return out
+
+
+def _catalog_entry_has_ops(entry: dict[str, Any] | None) -> bool:
+    row = entry or {}
+    return bool(row.get("op_cards") or row.get("ops") or row.get("all_ops"))
+
+
+def _child_suffix_key(ps_id: Any) -> str:
+    match = _CHILD_PS_SUFFIX_RE.search(compact_text(ps_id).split("::")[0])
+    return match.group(0) if match else ""
+
+
+def _related_source_children(
+    ps_id: str,
+    part: str,
+    roots_by_part: dict[str, list[str]],
+    children_by_parent: dict[str, list[dict[str, Any]]],
+) -> tuple[str, list[dict[str, Any]]]:
+    candidates: list[tuple[int, int, str, list[dict[str, Any]]]] = []
+    for other_id in roots_by_part.get(part, []):
+        if other_id.upper() == ps_id.upper():
+            continue
+        kids = children_by_parent.get(other_id.upper()) or []
+        if not kids:
+            continue
+        rank = _RELATED_ROOT_RANK.get(assembly_ps_type(other_id), 9)
+        candidates.append((rank, -len(kids), other_id, kids))
+    if not candidates:
+        return "", []
+    candidates.sort()
+    return candidates[0][2], candidates[0][3]
+
+
+def _overlay_child_ops_from_donor(child: dict[str, Any], donor: dict[str, Any]) -> dict[str, Any]:
+    out = dict(child)
+    for key in ("ops", "all_ops", "op_cards"):
+        rows = donor.get(key) or []
+        if rows:
+            out[key] = list(rows)
+    if not compact_text(out.get("selected_bom_code")):
+        out["selected_bom_code"] = compact_text(
+            donor.get("selected_bom_code") or donor.get("selected_flow_code")
+        )
+    if not compact_text(out.get("erp_bom_code")):
+        out["erp_bom_code"] = compact_text(donor.get("erp_bom_code") or donor.get("bom_code"))
+    if not as_int(out.get("selected_bom_id")):
+        out["selected_bom_id"] = as_int(donor.get("selected_bom_id"))
+    out["_ops_donor_ps_id"] = catalog_source_ps_id(donor)
     return out
 
 
@@ -215,23 +267,36 @@ def attach_catalog_assembly_line_items(entries: list[dict[str, Any]] | None) -> 
             continue
 
         own_children = children_by_parent.get(ps_id.upper(), [])
-        related_from = ""
+        part = compact_text(entry.get("part_no") or entry.get("inventory_code")).upper()
+        related_from, related_children = _related_source_children(
+            ps_id, part, roots_by_part, children_by_parent
+        )
         source_children = own_children
         if not source_children:
-            part = compact_text(entry.get("part_no") or entry.get("inventory_code")).upper()
-            candidates: list[tuple[int, int, str, list[dict[str, Any]]]] = []
-            for other_id in roots_by_part.get(part, []):
-                if other_id.upper() == ps_id.upper():
+            source_children = related_children
+        elif related_children:
+            donors = {
+                _child_suffix_key(catalog_source_ps_id(kid)): kid
+                for kid in related_children
+                if _child_suffix_key(catalog_source_ps_id(kid))
+            }
+            merged_children: list[dict[str, Any]] = []
+            borrowed = False
+            for child in source_children:
+                if _catalog_entry_has_ops(child):
+                    merged_children.append(child)
                     continue
-                kids = children_by_parent.get(other_id.upper()) or []
-                if not kids:
-                    continue
-                rank = _RELATED_ROOT_RANK.get(assembly_ps_type(other_id), 9)
-                candidates.append((rank, -len(kids), other_id, kids))
-            if candidates:
-                candidates.sort()
-                related_from = candidates[0][2]
-                source_children = candidates[0][3]
+                donor = donors.get(_child_suffix_key(catalog_source_ps_id(child)))
+                if donor and _catalog_entry_has_ops(donor):
+                    merged_children.append(_overlay_child_ops_from_donor(child, donor))
+                    borrowed = True
+                else:
+                    merged_children.append(child)
+            source_children = merged_children
+            if not borrowed:
+                related_from = ""
+        else:
+            related_from = ""
 
         source_children = sorted(
             source_children,
@@ -241,7 +306,7 @@ def attach_catalog_assembly_line_items(entries: list[dict[str, Any]] | None) -> 
         seen: set[str] = set()
         for child in source_children:
             row = _catalog_line_item_from_entry(child, related_from=related_from)
-            donor_ps = catalog_source_ps_id(child)
+            donor_ps = compact_text(child.get("_ops_donor_ps_id")) or catalog_source_ps_id(child)
             if related_from:
                 row = _reborn_line_item(row, ps_id, donor_ps)
             else:
@@ -252,11 +317,19 @@ def attach_catalog_assembly_line_items(entries: list[dict[str, Any]] | None) -> 
             seen.add(key)
             items.append(row)
         items.sort(key=_line_item_sort_key)
-        entry["assembly_line_items"] = items
-        entry["assembly_line_item_count"] = len(items)
-        if related_from:
-            entry["assembly_line_items_related_from"] = related_from
+        existing_items = list(entry.get("assembly_line_items") or [])
+        if items:
+            entry["assembly_line_items"] = items
+            entry["assembly_line_item_count"] = len(items)
+            if related_from:
+                entry["assembly_line_items_related_from"] = related_from
+            else:
+                entry.pop("assembly_line_items_related_from", None)
+        elif existing_items:
+            entry["assembly_line_item_count"] = len(existing_items)
         else:
+            entry["assembly_line_items"] = []
+            entry["assembly_line_item_count"] = 0
             entry.pop("assembly_line_items_related_from", None)
     return rows
 

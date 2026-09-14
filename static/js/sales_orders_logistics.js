@@ -1,4 +1,4 @@
-// Material Tracking - logistics view for material-in dates, PR enquiry, and POs.
+// Supply Chain View - logistics view for material-in dates, PR enquiry, and POs.
 
 (function () {
   'use strict';
@@ -24,7 +24,7 @@
       <th class="sol-col-stage">Stage</th>
       <th class="sol-col-part">Part</th>
       <th class="sol-col-due">Due</th>
-      <th class="sol-col-need" title="Material need date">Need</th>
+      <th class="sol-col-need" title="Same Need date as S/O Management — saved per PP voucher">Need date</th>
       <th class="sol-col-bom">BOM</th>
       <th class="sol-col-material" title="Material in">In</th>
       <th class="sol-col-notes" title="Mtl / Part Order">Notes</th>
@@ -353,6 +353,8 @@
       material_subcon: child.material_subcon || '',
       mtl_part_order: child.mtl_part_order || '',
       material_need_date: child.material_need_date || '',
+      material_need_date_history_count: Number(child.material_need_date_history_count || 0),
+      material_in_date_history_count: Number(child.material_in_date_history_count || 0),
       material_delay: Boolean(child.material_delay),
     };
   }
@@ -941,14 +943,17 @@
     return `
       <td class="so-material-subcon-cell${cellStateCls}" data-pp-voucher-no="${escapeHtml(ppNo)}" data-last-saved="${escapeHtml(raw)}">
         <div class="so-material-subcon-controls">
-          <button type="button"
-            class="so-material-subcon-arrived${arrivedCls}"
-            data-action="toggle-subcon-arrived"
-            aria-pressed="${parsed.arrived ? 'true' : 'false'}"
-            title="${parsed.arrived ? 'Material arrived - click to clear' : 'Mark material as arrived'}">
-            <span class="so-material-subcon-arrived-dot" aria-hidden="true"></span>
-            Arrived
-          </button>
+          <div class="so-material-subcon-arrived-row">
+            <button type="button"
+              class="so-material-subcon-arrived${arrivedCls}"
+              data-action="toggle-subcon-arrived"
+              aria-pressed="${parsed.arrived ? 'true' : 'false'}"
+              title="${parsed.arrived ? 'Material arrived - click to clear' : 'Mark material as arrived'}">
+              <span class="so-material-subcon-arrived-dot" aria-hidden="true"></span>
+              Arrived
+            </button>
+            ${renderDateHistoryButton(pp, 'material_in_date')}
+          </div>
           <input type="date"
             class="so-material-subcon-date${dateHiddenCls}"
             value="${escapeHtml(parsed.arrived ? '' : parsed.date)}"
@@ -967,20 +972,192 @@
     return parseMaterialSubcon(text).date || '';
   }
 
+  function dateHistoryCount(pp, field) {
+    const key = field === 'material_in_date'
+      ? 'material_in_date_history_count'
+      : 'material_need_date_history_count';
+    return Math.max(0, Number(pp?.[key]) || 0);
+  }
+
+  function dateHistoryLabel(field) {
+    return field === 'material_in_date' ? 'in date' : 'need date';
+  }
+
+  function renderDateHistoryButton(pp, field) {
+    const ppNo = String(pp.pp_voucher_no || '').trim();
+    const count = dateHistoryCount(pp, field);
+    const has = count > 0;
+    const label = dateHistoryLabel(field);
+    const title = has
+      ? `View ${count} ${label} change${count === 1 ? '' : 's'}`
+      : `No ${label} change history`;
+    return `
+      <button type="button"
+        class="sol-date-history-btn${has ? ' has-history' : ''}"
+        data-action="open-date-history"
+        data-field="${escapeHtml(field)}"
+        data-pp-voucher-no="${escapeHtml(ppNo)}"
+        ${has ? '' : 'disabled'}
+        title="${escapeHtml(title)}"
+        aria-label="${escapeHtml(title)}">
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6">
+          <circle cx="8" cy="8" r="6.2"/>
+          <path d="M8 4.5V8l2.2 1.6"/>
+        </svg>
+      </button>
+    `;
+  }
+
+  function syncDateHistoryButtons(ppNo, field, count) {
+    const body = document.getElementById('sol-table-body');
+    if (!body || !ppNo || !field) return;
+    const n = Math.max(0, Number(count) || 0);
+    const has = n > 0;
+    const label = dateHistoryLabel(field);
+    const title = has
+      ? `View ${n} ${label} change${n === 1 ? '' : 's'}`
+      : `No ${label} change history`;
+    body.querySelectorAll('.sol-date-history-btn').forEach(btn => {
+      if (String(btn.dataset.ppVoucherNo || '') !== ppNo) return;
+      if (String(btn.dataset.field || '') !== field) return;
+      btn.disabled = !has;
+      btn.classList.toggle('has-history', has);
+      btn.title = title;
+      btn.setAttribute('aria-label', title);
+    });
+  }
+
+  function applyHistoryCountsFromSave(ppNo, data) {
+    if (!ppNo || !data) return;
+    const found = findPp(ppNo);
+    const patch = {};
+    if (Object.prototype.hasOwnProperty.call(data, 'material_need_date_history_count')) {
+      const n = Math.max(0, Number(data.material_need_date_history_count) || 0);
+      patch.material_need_date_history_count = n;
+      if (found.pp) found.pp.material_need_date_history_count = n;
+      syncDateHistoryButtons(ppNo, 'material_need_date', n);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'material_in_date_history_count')) {
+      const n = Math.max(0, Number(data.material_in_date_history_count) || 0);
+      patch.material_in_date_history_count = n;
+      if (found.pp) found.pp.material_in_date_history_count = n;
+      syncDateHistoryButtons(ppNo, 'material_in_date', n);
+    }
+    if (Object.keys(patch).length) patchAssemblyChildNotes(ppNo, patch);
+  }
+
+  function formatHistoryWhen(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    const iso = text.replace(' ', 'T');
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return text;
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${day}/${month}/${year} ${hours}:${minutes}`;
+  }
+
+  function formatHistoryDateValue(value) {
+    const text = String(value == null ? '' : value).trim();
+    if (!text) return '(empty)';
+    const iso = isoDateValue(text);
+    if (iso) return formatDate(iso) || iso;
+    return text;
+  }
+
+  function closeDateHistoryModal() {
+    const modal = document.getElementById('sol-date-history-modal');
+    if (modal) modal.hidden = true;
+  }
+
+  function renderDateHistoryList(rows) {
+    const list = document.getElementById('sol-date-history-list');
+    const empty = document.getElementById('sol-date-history-empty');
+    if (!list) return;
+    const items = Array.isArray(rows) ? rows : [];
+    if (!items.length) {
+      list.innerHTML = '';
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = 'No changes recorded yet.';
+      }
+      return;
+    }
+    if (empty) empty.hidden = true;
+    list.innerHTML = items.map((item) => {
+      const when = formatHistoryWhen(item.changed_at);
+      const oldValue = formatHistoryDateValue(item.old_value);
+      const newValue = formatHistoryDateValue(item.new_value);
+      return `
+        <li class="sol-date-history-item">
+          <p class="sol-date-history-when">${escapeHtml(when || 'Unknown time')}</p>
+          <p class="sol-date-history-change">
+            <span class="sol-date-history-old">${escapeHtml(oldValue)}</span>
+            <span class="sol-date-history-arrow" aria-hidden="true">\u2192</span>
+            <span class="sol-date-history-new">${escapeHtml(newValue)}</span>
+          </p>
+        </li>
+      `;
+    }).join('');
+  }
+
+  async function openDateHistoryModal(ppNo, field) {
+    const modal = document.getElementById('sol-date-history-modal');
+    if (!modal || !ppNo || !field) return;
+    const label = field === 'material_in_date' ? 'In date' : 'Need date';
+    modal.hidden = false;
+    const title = document.getElementById('sol-date-history-title');
+    const sub = document.getElementById('sol-date-history-sub');
+    const loading = document.getElementById('sol-date-history-loading');
+    const empty = document.getElementById('sol-date-history-empty');
+    const status = document.getElementById('sol-date-history-status');
+    if (title) title.textContent = `${label} history`;
+    if (sub) sub.textContent = ppNo;
+    if (status) {
+      status.hidden = true;
+      status.textContent = '';
+    }
+    if (loading) loading.hidden = false;
+    if (empty) empty.hidden = true;
+    renderDateHistoryList([]);
+    try {
+      const qs = new URLSearchParams({ pp_voucher_no: ppNo, field });
+      const data = await requestJson(`/api/sales-orders/date-history?${qs.toString()}`);
+      renderDateHistoryList(data.rows || []);
+    } catch (err) {
+      if (status) {
+        status.hidden = false;
+        status.textContent = err.message || 'Could not load history';
+      }
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = 'Could not load history.';
+      }
+    } finally {
+      if (loading) loading.hidden = true;
+    }
+  }
+
   function renderNeedDateCell(pp) {
     const ppNo = String(pp.pp_voucher_no || '').trim();
     const value = isoDateValue(pp.material_need_date);
     const cellStateCls = value ? ' has-need-date' : '';
     return `
       <td class="sol-need-date-cell${cellStateCls}">
-        <input type="date"
-          class="sol-need-date-input"
-          data-pp-voucher-no="${escapeHtml(ppNo)}"
-          data-field="material_need_date"
-          data-last-saved="${escapeHtml(value)}"
-          value="${escapeHtml(value)}"
-          aria-label="Material need date"
-          title="Material need date">
+        <div class="sol-date-with-history">
+          <input type="date"
+            class="sol-need-date-input"
+            data-pp-voucher-no="${escapeHtml(ppNo)}"
+            data-field="material_need_date"
+            data-last-saved="${escapeHtml(value)}"
+            value="${escapeHtml(value)}"
+            aria-label="Need date"
+            title="Same Need date as S/O Management — saved per PP voucher">
+          ${renderDateHistoryButton(pp, 'material_need_date')}
+        </div>
         <span class="so-editable-status" aria-live="polite"></span>
       </td>
     `;
@@ -1500,6 +1677,7 @@
           ? { material_delay: Boolean(data.material_delay) }
           : {}),
       });
+      applyHistoryCountsFromSave(ppNo, data);
       setSaveStatus(cell, 'saved', 'Saved');
       window.setTimeout(() => {
         if (String(cell.dataset.lastSaved || '').trim() === saved) setSaveStatus(cell, '', '');
@@ -1558,6 +1736,7 @@
       patchAssemblyChildNotes(ppNo, { [field]: saved });
       if (field === 'material_need_date') syncNeedDateRows(ppNo, saved);
       else syncNotesRows(ppNo, field, saved);
+      applyHistoryCountsFromSave(ppNo, data);
       setSaveStatus(control, 'saved', 'Saved');
       window.setTimeout(() => {
         if (control.dataset.lastSaved === saved) setSaveStatus(control, '', '');
@@ -2320,6 +2499,16 @@
       if (deleteBtn) {
         e.stopPropagation();
         deleteRequestRow(deleteBtn);
+        return;
+      }
+      const historyBtn = e.target.closest('[data-action="open-date-history"]');
+      if (historyBtn) {
+        e.stopPropagation();
+        if (historyBtn.disabled) return;
+        openDateHistoryModal(
+          String(historyBtn.dataset.ppVoucherNo || '').trim(),
+          String(historyBtn.dataset.field || '').trim(),
+        );
         return;
       }
       const btn = e.target.closest('[data-action="toggle-subcon-arrived"]');
@@ -3198,6 +3387,19 @@
     });
   }
 
+  function bindDateHistoryModal() {
+    const modal = document.getElementById('sol-date-history-modal');
+    if (!modal || modal.dataset.bound === '1') return;
+    modal.dataset.bound = '1';
+    document.getElementById('sol-date-history-close')?.addEventListener('click', closeDateHistoryModal);
+    modal.addEventListener('click', e => {
+      if (e.target && e.target.id === 'sol-date-history-modal') closeDateHistoryModal();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && !modal.hidden) closeDateHistoryModal();
+    });
+  }
+
   function init() {
     document.querySelectorAll('[data-sol-view]').forEach(btn => {
       btn.addEventListener('click', () => setView(btn.getAttribute('data-sol-view')));
@@ -3230,6 +3432,7 @@
     bindPrPoSort();
     bindRequestAdd();
     bindInputs();
+    bindDateHistoryModal();
     syncNavUi();
     // Same live /api/sales-orders path as Sales Orders (COMAIN, not staging).
     load({ refresh: false });

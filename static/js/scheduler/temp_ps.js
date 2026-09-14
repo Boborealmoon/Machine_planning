@@ -36,6 +36,7 @@ function tempPsSearchLocalBoard(needle) {
   return window.psBoardItemsForTempSearch()
     .filter(item => {
       const psId = String(item.ps_id || '').toLowerCase();
+      if (psId.startsWith('[temp]')) return false;
       const hay = [
         psId,
         item.part_no,
@@ -65,11 +66,11 @@ async function tempPsFetchSearch(query) {
     try {
       const data = await (typeof GET === 'function' ? GET(url) : tempPsFetchJson(url));
       if (Array.isArray(data)) {
-        const items = data.map(tempPsNormalizeEntry).filter(item => item.source_ps_id);
+        const items = data.map(tempPsNormalizeEntry).filter(item => item.source_ps_id && !/^\[temp\]/i.test(item.source_ps_id));
         if (items.length) return items;
       }
       const items = Array.isArray(data?.items) ? data.items : [];
-      if (items.length) return items.map(tempPsNormalizeEntry).filter(item => item.source_ps_id);
+      if (items.length) return items.map(tempPsNormalizeEntry).filter(item => item.source_ps_id && !/^\[temp\]/i.test(item.source_ps_id));
     } catch (err) {
       lastError = err;
     }
@@ -439,10 +440,22 @@ async function loadTempPsPreview(selection) {
 
 async function saveTempProcessSheet() {
   const placeholderMode = _tempPsPlaceholderMode
-    || !document.getElementById('temp-ps-mode-placeholder')?.hidden;
+    || (document.getElementById('temp-ps-mode-placeholder') && !document.getElementById('temp-ps-mode-placeholder').hidden);
   if (!placeholderMode && !_tempPsSelected?.source_ps_id) {
-    window.alert('Pick a process sheet from the dropdown list first (don’t only type the number).');
-    return;
+    if (_tempPsPreview?.source_ps_id) {
+      _tempPsSelected = {
+        source_ps_id: _tempPsPreview.source_ps_id,
+        pp_partial_no: Number(_tempPsPreview.pp_partial_no || 1) || 1,
+      };
+    } else {
+      const typed = String(document.getElementById('temp-ps-search')?.value || '').trim();
+      if (typed && !/^\[temp\]/i.test(typed)) {
+        _tempPsSelected = { source_ps_id: typed, pp_partial_no: 1 };
+      } else {
+        window.alert('Pick a process sheet from the dropdown, or type a PS number such as NPS25-0205.');
+        return;
+      }
+    }
   }
   const qty = Number(document.getElementById('temp-ps-qty')?.value || 0);
   if (!Number.isFinite(qty) || qty <= 0) {

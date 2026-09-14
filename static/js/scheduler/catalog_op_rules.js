@@ -132,7 +132,11 @@ function trialCatalogOpIsOpen(card, ps) {
   if (required > TRIAL_CATALOG_QTY_TOL && produced >= required - TRIAL_CATALOG_QTY_TOL) return false;
   if (produced > TRIAL_CATALOG_QTY_TOL && schedRemaining <= TRIAL_CATALOG_QTY_TOL) return false;
   const hasWoOutput = required > TRIAL_CATALOG_QTY_TOL || produced > TRIAL_CATALOG_QTY_TOL || Boolean(exec);
-  if (!hasWoOutput) return false;
+  if (!hasWoOutput) {
+    // Inventory BOM routes have no WO remaining yet — still show Turning/Milling cards.
+    const kind = String(card?.source_kind || card?.op?.source_kind || '').trim().toUpperCase();
+    return kind === 'ERP_BOM';
+  }
   return exec !== 'C' && exec !== 'COMPLETED';
 }
 

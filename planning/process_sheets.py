@@ -34,6 +34,7 @@ from .materials import (
 from .utils import (
     compact_text,
     op_production_complete,
+    parse_date_text,
     pending_delivery_order,
     sanitize_erp_execution_status,
     shipped_quantity_completed,
@@ -503,14 +504,17 @@ def _apply_temp_ps_stage_fields(payload, temp_reg):
     payload["current_stage_status"] = compact_text(temp_reg.get("current_stage_status") or "")
 
 
-def _parse_temp_due_date(raw) -> date | None:
+def _parse_temp_due_date(raw, *, strict=True) -> date | None:
     text = compact_text(raw)
     if not text:
         return None
+    iso = compact_text(parse_date_text(raw)) or text
     try:
-        return date.fromisoformat(text[:10])
+        return date.fromisoformat(iso[:10])
     except ValueError:
-        raise ValueError("due_date must be YYYY-MM-DD") from None
+        if strict:
+            raise ValueError("due_date must be YYYY-MM-DD") from None
+        return None
 
 
 def _persist_temp_process_sheet_record(
@@ -518,7 +522,7 @@ def _persist_temp_process_sheet_record(
 ):
     _ensure_planner_temp_process_sheet_table(con)
     due_raw = compact_text(due_date if due_date is not None else preview.get("due_date"))
-    due_val = _parse_temp_due_date(due_raw) if due_raw else None
+    due_val = _parse_temp_due_date(due_raw, strict=False) if due_raw else None
     con.execute(
         """
         INSERT INTO planner_temp_process_sheet (
@@ -542,7 +546,7 @@ def _persist_temp_process_sheet_record(
             compact_text(preview.get("part_desc")),
             due_val,
             compact_text(preview.get("erp_bom_code")),
-            int(preview.get("selected_bom_id") or 0) or None,
+            None,
             compact_text(preview.get("selected_bom_code")),
             compact_text(remarks),
         ),
@@ -845,7 +849,9 @@ def _temp_ps_flow_steps_from_preview(con, preview, *, placeholder=False):
 def _ensure_temp_ps_bom(con, planner_ps_id, inventory_code, preview, *, placeholder=False):
     """Assign a dedicated planner BOM to a temp PS — clone assigned route steps when available."""
     planner_ps_id = compact_text(planner_ps_id)
-    inventory_code = compact_text(inventory_code)
+    inventory_code = compact_text(inventory_code) or compact_text(preview.get("part_no")) or compact_text(
+        preview.get("source_ps_id")
+    ) or planner_ps_id
     if not inventory_code:
         raise ValueError("Inventory code is required to assign a BOM flow.")
 
@@ -904,6 +910,8 @@ def _ensure_temp_ps_bom(con, planner_ps_id, inventory_code, preview, *, placehol
         is_default=False,
         flow_source_kind=flow_source_kind,
     )
+    if not flow_row:
+        raise ValueError("Could not create a BOM flow for this temp process sheet.")
     bom_id = int(flow_row["bom_id"])
     stage_kinds = _save_flow_steps(con, bom_id, flow_steps)
     persisted_source_kind = _combined_flow_source_kind(stage_kinds, flow_source_kind)
@@ -934,6 +942,13 @@ def _ensure_temp_ps_bom(con, planner_ps_id, inventory_code, preview, *, placehol
     return bom_id
 
 
+def _temp_planner_ps_id_for_sequence(source_ps_id, sequence):
+    source_ps_id = compact_text(source_ps_id)
+    if int(sequence or 0) <= 1:
+        return f"{TEMP_PS_PREFIX}{source_ps_id}"
+    return f"{TEMP_PS_PREFIX}{source_ps_id}-{int(sequence)}"
+
+
 def _allocate_temp_planner_identity(con, source_ps_id):
     """Next temp planner_ps_id and pp_partial_no for reject/rework copies."""
     source_ps_id = compact_text(source_ps_id)
@@ -950,11 +965,25 @@ def _allocate_temp_planner_identity(con, source_ps_id):
     )
     next_partial = max(TEMP_PARTIAL_MIN, int((row or {}).get("mx") or TEMP_PARTIAL_MIN - 1) + 1)
     sequence = next_partial - TEMP_PARTIAL_MIN + 1
-    if sequence <= 1:
-        planner_ps_id = f"{TEMP_PS_PREFIX}{source_ps_id}"
-    else:
-        planner_ps_id = f"{TEMP_PS_PREFIX}{source_ps_id}-{sequence}"
-    return planner_ps_id, next_partial
+    for _ in range(500):
+        planner_ps_id = _temp_planner_ps_id_for_sequence(source_ps_id, sequence)
+        taken = one(
+            con.execute(
+                """
+                SELECT 1 AS ok
+                FROM planner_process_sheet
+                WHERE planner_ps_id = %s
+                   OR (source_ps_id = %s AND pp_partial_no = %s)
+                LIMIT 1
+                """,
+                (planner_ps_id, source_ps_id, next_partial),
+            )
+        )
+        if not taken:
+            return planner_ps_id, next_partial
+        sequence += 1
+        next_partial += 1
+    raise ValueError(f"Could not allocate a temp process sheet id for {source_ps_id}.")
 
 
 def _voucher_partial_row(con, source_ps_id, pp_partial_no):
@@ -1424,10 +1453,102 @@ def update_temp_process_sheet_due_date(con, planner_ps_id, due_date_raw):
     return update_temp_process_sheet(con, planner_ps_id, {"due_date": due_date_raw})
 
 
+def _assign_created_temp_ps_bom(con, planner_ps_id, inventory_code, preview, *, placeholder=False):
+    if placeholder:
+        return _ensure_temp_ps_bom(
+            con,
+            planner_ps_id,
+            inventory_code,
+            preview,
+            placeholder=True,
+        )
+    bom_id = planner_try_savepoint(
+        con,
+        "temp_ps_bom",
+        lambda: _ensure_temp_ps_bom(
+            con,
+            planner_ps_id,
+            inventory_code,
+            preview,
+            placeholder=False,
+        ),
+        default=0,
+    )
+    if int(bom_id or 0) > 0:
+        return int(bom_id)
+    return _ensure_temp_ps_bom(
+        con,
+        planner_ps_id,
+        inventory_code,
+        preview,
+        placeholder=True,
+    )
+
+
+def _temp_ps_created_payload(
+    con,
+    *,
+    planner_ps_id,
+    source_ps_id,
+    source_pp_partial_no,
+    temp_partial_no,
+    qty,
+    preview,
+    is_placeholder=False,
+):
+    temp_row = one(
+        con.execute(
+            """
+            SELECT due_date, selected_bom_code
+            FROM planner_temp_process_sheet
+            WHERE planner_ps_id = %s
+            """,
+            (planner_ps_id,),
+        )
+    )
+    selected_bom_code = compact_text((temp_row or {}).get("selected_bom_code"))
+    if not selected_bom_code and int(preview.get("selected_bom_id") or 0):
+        flow = one(
+            con.execute(
+                "SELECT bom_code FROM planner_bom_variation WHERE bom_id = %s",
+                (int(preview["selected_bom_id"]),),
+            )
+        )
+        selected_bom_code = compact_text((flow or {}).get("bom_code"))
+    if is_placeholder:
+        selected_bom_code = selected_bom_code or "PLACEHOLDER"
+    payload = {
+        "planner_ps_id": planner_ps_id,
+        "ps_id": planner_ps_id,
+        "display_ps_id": temp_planner_ps_display_label(planner_ps_id),
+        "source_ps_id": source_ps_id,
+        "source_pp_partial_no": source_pp_partial_no,
+        "temp_source_ps_id": source_ps_id,
+        "temp_source_label": (
+            source_ps_id if is_placeholder else format_planner_ps_id(source_ps_id, source_pp_partial_no)
+        ),
+        "is_temp_ps": True,
+        "pp_partial_no": temp_partial_no,
+        "planned_qty": qty,
+        "reject_qty": qty,
+        "part_no": compact_text(preview.get("part_no")),
+        "part_desc": compact_text(preview.get("part_desc")),
+        "due_date": compact_text((temp_row or {}).get("due_date")) or compact_text(preview.get("due_date")),
+        "selected_bom_code": selected_bom_code or compact_text(preview.get("selected_bom_code")),
+        "is_temp": True,
+        "stored_in": "planner_process_sheet + planner_temp_process_sheet",
+    }
+    if is_placeholder:
+        payload["is_placeholder"] = True
+        payload["selected_bom_code"] = "PLACEHOLDER"
+    return payload
+
+
 def create_temp_process_sheet(con, source_ps_id, pp_partial_no, qty, remarks="", due_date=""):
     preview = temp_process_sheet_source_preview(con, source_ps_id, pp_partial_no)
     if compact_text(due_date):
-        preview["due_date"] = compact_text(due_date)[:10]
+        parsed_due = _parse_temp_due_date(due_date, strict=True)
+        preview["due_date"] = parsed_due.isoformat() if parsed_due else ""
     qty = max(0.0, _to_float(qty))
     if qty <= 0:
         raise ValueError("Quantity must be greater than zero.")
@@ -1435,15 +1556,6 @@ def create_temp_process_sheet(con, source_ps_id, pp_partial_no, qty, remarks="",
     source_ps_id = preview["source_ps_id"]
     pp_partial_no = int(preview["pp_partial_no"])
     planner_ps_id, temp_partial_no = _allocate_temp_planner_identity(con, source_ps_id)
-
-    existing = one(
-        con.execute(
-            "SELECT planner_ps_id FROM planner_process_sheet WHERE planner_ps_id = %s",
-            (planner_ps_id,),
-        )
-    )
-    if existing:
-        raise ValueError(f"Temp process sheet {planner_ps_id} already exists.")
 
     inventory_code = compact_text(preview.get("part_no"))
     note = compact_text(remarks)
@@ -1475,55 +1587,22 @@ def create_temp_process_sheet(con, source_ps_id, pp_partial_no, qty, remarks="",
         qty=qty,
         remarks=note,
     )
-    preview["selected_bom_id"] = _ensure_temp_ps_bom(
+    preview["selected_bom_id"] = _assign_created_temp_ps_bom(
         con,
         planner_ps_id,
         inventory_code,
         preview,
         placeholder=False,
     )
-    row = one(
-        con.execute(
-            "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
-            (planner_ps_id,),
-        )
+    return _temp_ps_created_payload(
+        con,
+        planner_ps_id=planner_ps_id,
+        source_ps_id=source_ps_id,
+        source_pp_partial_no=pp_partial_no,
+        temp_partial_no=temp_partial_no,
+        qty=qty,
+        preview=preview,
     )
-    temp_row = one(
-        con.execute(
-            "SELECT * FROM planner_temp_process_sheet WHERE planner_ps_id = %s",
-            (planner_ps_id,),
-        )
-    )
-    selected_bom_code = compact_text((temp_row or {}).get("selected_bom_code"))
-    if not selected_bom_code and int(preview.get("selected_bom_id") or 0):
-        flow = one(
-            con.execute(
-                "SELECT bom_code FROM planner_bom_variation WHERE bom_id = %s",
-                (int(preview["selected_bom_id"]),),
-            )
-        )
-        selected_bom_code = compact_text((flow or {}).get("bom_code"))
-    return {
-        "planner_ps_id": planner_ps_id,
-        "ps_id": planner_ps_id,
-        "display_ps_id": temp_planner_ps_display_label(planner_ps_id),
-        "source_ps_id": source_ps_id,
-        "source_pp_partial_no": pp_partial_no,
-        "temp_source_ps_id": source_ps_id,
-        "temp_source_label": format_planner_ps_id(source_ps_id, pp_partial_no),
-        "is_temp_ps": True,
-        "pp_partial_no": temp_partial_no,
-        "planned_qty": qty,
-        "reject_qty": qty,
-        "part_no": preview.get("part_no") or "",
-        "part_desc": preview.get("part_desc") or "",
-        "due_date": compact_text((temp_row or {}).get("due_date")) or preview.get("due_date") or "",
-        "selected_bom_code": selected_bom_code or preview.get("selected_bom_code") or "",
-        "is_temp": True,
-        "stored_in": "planner_process_sheet + planner_temp_process_sheet",
-        "row": dict(row) if row else {},
-        "temp_record": dict(temp_row) if temp_row else {},
-    }
 
 
 def create_placeholder_temp_process_sheet(
@@ -1551,22 +1630,15 @@ def create_placeholder_temp_process_sheet(
         raise ValueError("Quantity must be greater than zero.")
 
     planner_ps_id, temp_partial_no = _allocate_temp_planner_identity(con, reference_ps_id)
-    existing = one(
-        con.execute(
-            "SELECT planner_ps_id FROM planner_process_sheet WHERE planner_ps_id = %s",
-            (planner_ps_id,),
-        )
-    )
-    if existing:
-        raise ValueError(f"Temp process sheet {planner_ps_id} already exists.")
 
     note = compact_text(remarks) or f"Temp placeholder PS ({reference_ps_id})"
+    parsed_due = _parse_temp_due_date(due_date, strict=True) if compact_text(due_date) else None
     preview = {
         "source_ps_id": reference_ps_id,
         "pp_partial_no": 1,
         "part_no": part_no,
         "part_desc": compact_text(part_desc),
-        "due_date": compact_text(due_date)[:10] if compact_text(due_date) else "",
+        "due_date": parsed_due.isoformat() if parsed_due else "",
         "display_qty": 0,
         "erp_bom_code": "",
         "selected_bom_id": 0,
@@ -1601,7 +1673,7 @@ def create_placeholder_temp_process_sheet(
         qty=qty,
         remarks=note,
     )
-    bom_id = _ensure_temp_ps_bom(
+    bom_id = _assign_created_temp_ps_bom(
         con,
         planner_ps_id,
         part_no,
@@ -1610,41 +1682,16 @@ def create_placeholder_temp_process_sheet(
     )
     preview["selected_bom_id"] = bom_id
     preview["selected_bom_code"] = "PLACEHOLDER"
-
-    row = one(
-        con.execute(
-            "SELECT * FROM planner_process_sheet WHERE planner_ps_id = %s",
-            (planner_ps_id,),
-        )
+    return _temp_ps_created_payload(
+        con,
+        planner_ps_id=planner_ps_id,
+        source_ps_id=reference_ps_id,
+        source_pp_partial_no=1,
+        temp_partial_no=temp_partial_no,
+        qty=qty,
+        preview=preview,
+        is_placeholder=True,
     )
-    temp_row = one(
-        con.execute(
-            "SELECT * FROM planner_temp_process_sheet WHERE planner_ps_id = %s",
-            (planner_ps_id,),
-        )
-    )
-    return {
-        "planner_ps_id": planner_ps_id,
-        "ps_id": planner_ps_id,
-        "display_ps_id": temp_planner_ps_display_label(planner_ps_id),
-        "source_ps_id": reference_ps_id,
-        "source_pp_partial_no": 1,
-        "temp_source_ps_id": reference_ps_id,
-        "temp_source_label": reference_ps_id,
-        "is_temp_ps": True,
-        "is_placeholder": True,
-        "pp_partial_no": temp_partial_no,
-        "planned_qty": qty,
-        "reject_qty": qty,
-        "part_no": part_no,
-        "part_desc": compact_text(part_desc),
-        "due_date": compact_text((temp_row or {}).get("due_date")) or preview.get("due_date") or "",
-        "selected_bom_code": "PLACEHOLDER",
-        "is_temp": True,
-        "stored_in": "planner_process_sheet + planner_temp_process_sheet",
-        "row": dict(row) if row else {},
-        "temp_record": dict(temp_row) if temp_row else {},
-    }
 
 
 def _repair_temp_ps_bom_if_missing(con, planner_ps_id):
@@ -5782,6 +5829,8 @@ def api_create_temp_process_sheet():
     qty = data.get("qty") or data.get("quantity") or data.get("planned_qty")
     remarks = compact_text(data.get("remarks") or "")
     due_date = compact_text(data.get("due_date") or data.get("po_due_date") or "")
+    if not placeholder and not source_ps_id:
+        return jsonify({"error": "source_ps_id is required"}), 400
     try:
         with planner_db() as con:
             _ensure_planner_temp_process_sheet_table(con)
@@ -5805,18 +5854,16 @@ def api_create_temp_process_sheet():
                     due_date=due_date,
                 )
             else:
-                if not source_ps_id:
-                    return jsonify({"error": "source_ps_id is required"}), 400
                 result = create_temp_process_sheet(
                     con, source_ps_id, pp_partial_no, qty, remarks=remarks, due_date=due_date
                 )
-            try:
-                from app import _invalidate_pp_vouchers_with_ops_cache
+        try:
+            from app import _invalidate_pp_vouchers_with_ops_cache
 
-                _invalidate_pp_vouchers_with_ops_cache(schedule_rebuild=True)
-            except Exception:
-                pass
-            return jsonify(result)
+            _invalidate_pp_vouchers_with_ops_cache(schedule_rebuild=True)
+        except Exception:
+            pass
+        return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as e:
