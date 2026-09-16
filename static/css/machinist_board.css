@@ -440,34 +440,56 @@ body.machinist-board .trial-focus-card.is-mpp-mirror {
 
 /* MPP lanes are wider — cycles / multi-PS need room, not stamp-size cards */
 body.machinist-board .trial-machine.trial-machine--mpp {
-  flex: 0 0 292px;
-  width: 292px;
-  max-width: 292px;
-  min-width: 292px;
+  flex: 0 0 300px;
+  width: 300px;
+  max-width: 300px;
+  min-width: 300px;
+}
+
+body.machinist-board .trial-machine--mpp .trial-lane .trial-mpp-origin-badge {
+  display: none;
 }
 
 body.machinist-board .trial-mpp-cycle-pills,
 body.machinist-board .trial-mpp-run-pills {
   display: flex;
   flex-wrap: wrap;
-  gap: 3px;
+  gap: 4px;
   margin: 2px 0 4px;
 }
 
 body.machinist-board .trial-mpp-cycle-pill {
   display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
   max-width: 100%;
-  padding: 1px 5px;
-  border-radius: 4px;
+  padding: 3px 6px;
+  border-radius: 5px;
   background: rgba(14, 116, 144, 0.08);
   border: 1px solid rgba(14, 116, 144, 0.18);
   color: #0f766e;
-  font-size: 8px;
-  font-weight: 700;
-  line-height: 1.35;
-  white-space: nowrap;
+  line-height: 1.25;
+  overflow: hidden;
+}
+
+body.machinist-board .trial-mpp-cycle-pill-ps,
+body.machinist-board .trial-mpp-cycle-pill-op {
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.machinist-board .trial-mpp-cycle-pill-ps {
+  font-size: 9px;
+  font-weight: 800;
+}
+
+body.machinist-board .trial-mpp-cycle-pill-op {
+  font-size: 8px;
+  font-weight: 650;
+  opacity: 0.9;
 }
 
 body.machinist-board .trial-mpp-run-stack {
@@ -532,21 +554,43 @@ body.machinist-board .trial-mpp-run-toggle:hover {
 body.machinist-board .trial-mpp-run-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 8px;
-  font-size: 9px;
-  font-weight: 700;
-  color: var(--text3);
+  gap: 3px;
+}
+
+body.machinist-board .trial-mpp-run-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(14, 116, 144, 0.16);
+  font-size: 8px;
+  font-weight: 750;
+  color: var(--text2);
+  white-space: nowrap;
 }
 
 body.machinist-board .trial-mpp-run-timing {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  flex-wrap: wrap;
-  gap: 3px 4px;
-  font-size: 9px;
+  gap: 4px;
+  font-size: 8px;
   font-weight: 700;
   color: var(--text2);
   line-height: 1.3;
+}
+
+body.machinist-board .trial-mpp-run-timing-start,
+body.machinist-board .trial-mpp-run-timing-end {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.machinist-board .trial-mpp-run-timing-end {
+  text-align: right;
 }
 
 body.machinist-board .trial-mpp-run-timing-sep {
@@ -759,6 +803,53 @@ body.machinist-board .trial-machine-availability {
   font-size: 8px;
   border-radius: 5px;
   line-height: 1.2;
+}
+
+body.machinist-board .trial-machine-availability--mpp {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-height: 0;
+  padding: 6px 7px;
+}
+
+body.machinist-board .trial-mpp-avail-main,
+body.machinist-board .trial-mpp-anchor-btn {
+  grid-template-columns: 3.6em minmax(0, 1fr);
+  gap: 6px;
+}
+
+body.machinist-board .trial-mpp-avail-label,
+body.machinist-board .trial-mpp-anchor-label {
+  font-size: 8px;
+}
+
+body.machinist-board .trial-mpp-avail-value,
+body.machinist-board .trial-mpp-anchor-time {
+  font-size: 9px;
+}
+
+body.machinist-board .trial-mpp-anchor-btn {
+  padding: 3px 6px;
+  border-radius: 6px;
+}
+
+body.machinist-board .trial-machine--mpp .trial-block-compact-date {
+  display: grid;
+  grid-template-columns: 3.8em minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+
+body.machinist-board .trial-machine--mpp .trial-block-compact-date .trial-pill-label,
+body.machinist-board .trial-machine--mpp .trial-anchor-time-value,
+body.machinist-board .trial-machine--mpp .trial-block-compact-date > span:last-child {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  word-break: keep-all;
 }
 
 body.machinist-board .trial-machine-anchor-meta {

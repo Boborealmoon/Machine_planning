@@ -36,6 +36,7 @@
     { key: 'pr_date', label: 'PR Date', type: 'date' },
     { key: 'item_code', label: 'Item' },
     { key: 'description', label: 'Description' },
+    { key: 'remarks', label: 'Remarks', cls: 'sol-desc' },
     { key: 'qty', label: 'Qty', type: 'num', cls: 'sol-col-qty' },
     { key: 'required_arrival_date', label: 'Required arrival', type: 'date' },
     { key: 'purchase_order_no', label: 'PO No' },
@@ -642,6 +643,10 @@
     return parts.map(v => String(v == null ? '' : v)).join(' ');
   }
 
+  function normalizeItemText(value) {
+    return String(value == null ? '' : value).toLowerCase().replace(/[+*]/g, '');
+  }
+
   function prPoSearchText(row) {
     const parts = [
       row.status,
@@ -657,6 +662,10 @@
       row.created_by,
       row.grn_no,
       row.shipment_voucher_no,
+      row.remarks,
+      row.internal_remarks,
+      row.sales_order_no,
+      normalizeItemText(row.item_code),
     ];
     return parts.map(v => String(v == null ? '' : v).toLowerCase()).join(' ');
   }
@@ -745,10 +754,25 @@
   }
 
   function passesItemSearch(row) {
-    const q = String(state.itemSearch || '').trim().toLowerCase();
+    const q = String(state.itemSearch || '').trim();
     if (!q) return true;
-    const item = String(row.item_code || '').toLowerCase();
-    return q.split(/\s+/).filter(Boolean).every(token => item.includes(token));
+    const hay = normalizeItemText([
+      row.item_code,
+      row.item_description,
+      row.line_item_description,
+      row.remarks,
+      row.internal_remarks,
+    ].join(' '));
+    return q.split(/\s+/).filter(Boolean).every(token => hay.includes(normalizeItemText(token)));
+  }
+
+  function passesPrPoTextSearch(row) {
+    const q = String(state.search || '').trim();
+    if (!q) return true;
+    const blob = prPoSearchText(row);
+    if (textMatchesQuery(blob, q)) return true;
+    const needle = normalizeItemText(q);
+    return Boolean(needle) && normalizeItemText(blob).includes(needle);
   }
 
   function dateSortValue(value) {
@@ -789,12 +813,14 @@
   }
 
   function visiblePrPoRows() {
-    const q = String(state.search || '').trim().toLowerCase();
+    const itemQ = String(state.itemSearch || '').trim();
     const rows = state.prPoRows.filter(row => {
       if (!passesSbuFilter(row)) return false;
       if (!passesSupplierFilter(row)) return false;
       if (!passesItemSearch(row)) return false;
-      if (q && !prPoSearchText(row).includes(q)) return false;
+      // Dedicated item search is enough; leftover Active-tab SO search
+      // should not hide matching purchase rows.
+      if (!itemQ && !passesPrPoTextSearch(row)) return false;
       return true;
     });
     return sortPrPoRows(rows);
@@ -1406,6 +1432,7 @@
 
   function renderPrPoRow(row) {
     const desc = String(row.line_item_description || row.item_description || '').trim();
+    const remarks = String(row.remarks || row.internal_remarks || '').trim();
     const supplier = String(row.supplier_name || row.supplier_code || '').trim() || EM_DASH;
     return `
       <tr>
@@ -1414,6 +1441,7 @@
         <td class="sol-date">${escapeHtml(formatDate(row.pr_date))}</td>
         <td class="sol-mono">${escapeHtml(cellText(row.item_code))}</td>
         ${renderDescCell(desc)}
+        ${renderDescCell(remarks)}
         <td class="sol-col-qty">${escapeHtml(formatQty(row.qty))}</td>
         <td class="sol-date">${escapeHtml(formatDate(row.required_arrival_date))}</td>
         <td class="sol-mono">${escapeHtml(cellText(row.purchase_order_no))}</td>

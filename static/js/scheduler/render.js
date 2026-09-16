@@ -2428,10 +2428,14 @@ function trialMppOriginBadgeHtml(options = {}) {
   return `<span class="${cls}" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
 }
 
-function trialMppFmtDuration(minutes) {
+function trialMppFmtDuration(minutes, options = {}) {
   const m = Math.max(0, Math.round(Number(minutes) || 0));
   const h = Math.floor(m / 60);
   const r = m % 60;
+  if (options.compact) {
+    if (h <= 0) return `${r}m`;
+    return r ? `${h}h ${r}m` : `${h}h`;
+  }
   if (h <= 0) return `${r} min`;
   return r ? `${h} hr ${r} min` : `${h} hr`;
 }
@@ -2474,12 +2478,13 @@ function trialMppCyclePillsHtml(group) {
     : [];
   if (!rows.length) {
     const vm = trialBlockGroupViewModel(group);
-    return `<span class="trial-mpp-cycle-pill">${escapeHtml(vm.psDisplay.base || '—')}</span>`;
+    return `<span class="trial-mpp-cycle-pill"><span class="trial-mpp-cycle-pill-ps">${escapeHtml(vm.psDisplay.base || '—')}</span></span>`;
   }
   return rows.map(row => {
     const ps = row.partial ? `${row.base} · P${row.partial}` : row.base;
-    const label = [ps, row.op].filter(Boolean).join(' · ');
-    return `<span class="trial-mpp-cycle-pill" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+    const op = String(row.op || '').trim();
+    const title = [ps, op].filter(Boolean).join(' · ');
+    return `<span class="trial-mpp-cycle-pill" title="${escapeHtml(title)}"><span class="trial-mpp-cycle-pill-ps">${escapeHtml(ps)}</span>${op ? `<span class="trial-mpp-cycle-pill-op">${escapeHtml(op)}</span>` : ''}</span>`;
   }).join('');
 }
 
@@ -2557,14 +2562,14 @@ function trialRenderMppCycleStackCard(run, options = {}) {
       </header>
       <div class="trial-mpp-run-pills">${trialMppCyclePillsHtml(first)}</div>
       <div class="trial-mpp-run-meta">
-        <span>${escapeHtml(t('mpp_per_cycle', { dur: trialMppFmtDuration(perCycleMin) }))}</span>
-        <span>${escapeHtml(t('mpp_qty_per_cycle', { qty: fmt(perCycleQty, 0) }))}</span>
-        <span>${escapeHtml(t('mpp_qty_total', { total: fmt(totalQty, 0) }))}</span>
+        <span class="trial-mpp-run-chip">${escapeHtml(t('mpp_per_cycle', { dur: trialMppFmtDuration(perCycleMin, { compact: true }) }))}</span>
+        <span class="trial-mpp-run-chip">${escapeHtml(t('mpp_qty_per_cycle', { qty: fmt(perCycleQty, 0) }))}</span>
+        <span class="trial-mpp-run-chip">${escapeHtml(t('mpp_qty_total', { total: fmt(totalQty, 0) }))}</span>
       </div>
       <div class="trial-mpp-run-timing">
-        ${escapeHtml(trialFormatDt(firstStart) || '—')}
-        <span class="trial-mpp-run-timing-sep">→</span>
-        ${escapeHtml(trialFormatDt(lastEnd) || '—')}
+        <span class="trial-mpp-run-timing-start">${escapeHtml(trialFormatDt(firstStart) || '—')}</span>
+        <span class="trial-mpp-run-timing-sep" aria-hidden="true">→</span>
+        <span class="trial-mpp-run-timing-end">${escapeHtml(trialFormatDt(lastEnd) || '—')}</span>
       </div>
       ${expanded ? `<div class="trial-mpp-run-children">${childHtml}</div>` : ''}
     </article>
@@ -4312,22 +4317,28 @@ function renderTrialMachine(machine) {
   }
 
   const cycleCount = allGroups.length;
-  const queuedDur = trialMppFmtDuration(trialMppLaneQueuedMinutes(allGroups));
+  const queuedDur = trialMppFmtDuration(trialMppLaneQueuedMinutes(allGroups), { compact: true });
   const mppOpenLabel = typeof trialMachinistT === 'function' ? trialMachinistT('mpp_open') : 'Open MPP';
   const mppLoadLine = cycleCount
-    ? `${cycleCount} cycle${cycleCount === 1 ? '' : 's'} · ${typeof trialMachinistT === 'function' ? trialMachinistT('mpp_queued_load', { dur: queuedDur }) : `Queued ${queuedDur}`}`
+    ? `${cycleCount} cycle${cycleCount === 1 ? '' : 's'} · ${queuedDur}`
     : (t ? t('empty_queue') : 'Empty queue');
-  const mppNextLine = availabilityEnd
-    ? (t ? t('next_available', { dt: trialFormatDt(availabilityEnd) }) : `Next ${trialFormatDt(availabilityEnd)}`)
-    : '';
+  const mppNextValue = availabilityEnd ? (trialFormatDt(availabilityEnd) || '') : '';
+  const mppNextLabel = t ? t('next') : 'Next';
+  const mppAnchorLabel = firstAnchorText ? 'Anchor' : 'Set anchor';
   const mppAvailabilityTag = isMppLane
     ? (cycleCount
       ? `<div class="trial-machine-availability trial-machine-availability--mpp">
-            <span class="trial-machine-availability-text">${escapeHtml(mppNextLine || availabilityText)}</span>
+            <div class="trial-mpp-avail-main">
+              <span class="trial-mpp-avail-label">${escapeHtml(mppNextLabel)}</span>
+              <span class="trial-mpp-avail-value">${escapeHtml(mppNextValue || '—')}</span>
+            </div>
             ${!readOnly && firstBlockId
               ? `<button type="button" class="trial-mpp-anchor-btn ${firstAnchorText ? 'is-set' : ''}"
                     onclick="event.stopPropagation(); editTrialAnchor(${firstBlockId})"
-                    title="${escapeHtml(anchorTitle)}">${escapeHtml(firstAnchorText ? `Anchor ${firstAnchorText}` : 'Set anchor')}</button>`
+                    title="${escapeHtml(anchorTitle)}">
+                    <span class="trial-mpp-anchor-label">${escapeHtml(mppAnchorLabel)}</span>
+                    ${firstAnchorText ? `<span class="trial-mpp-anchor-time">${escapeHtml(firstAnchorText)}</span>` : ''}
+                  </button>`
               : ''}
           </div>`
       : '')

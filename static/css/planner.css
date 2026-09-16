@@ -2444,10 +2444,20 @@
     display: block;
     margin-top: 2px;
   }
+  .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine.trial-machine--mpp {
+    min-width: 300px;
+    width: 300px;
+    max-width: 300px;
+    flex-basis: 300px;
+  }
   .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine-availability {
     padding: 4px 6px;
     font-size: 9px;
     border-radius: 6px;
+  }
+  .trial-machine-board-group:not(.is-chrome-expanded) .trial-machine-availability.trial-machine-availability--mpp {
+    padding: 8px 10px;
+    font-size: inherit;
   }
   .trial-machine-board-group.is-chrome-expanded .trial-machine-board-group-caret {
     transform: none;
@@ -3021,53 +3031,133 @@
     line-height: 1.35;
     text-transform: uppercase;
   }
-  .trial-machine--mpp {
-    background: linear-gradient(180deg, rgba(14, 116, 144, 0.06), rgba(255, 255, 255, 0.98) 48px);
-    border-color: rgba(14, 116, 144, 0.22);
+  .trial-machine.trial-machine--mpp {
+    flex: 0 0 300px;
+    width: 300px;
+    max-width: 300px;
+    min-width: 300px;
+    background: linear-gradient(180deg, rgba(14, 116, 144, 0.07), rgba(255, 255, 255, 0.98) 56px);
+    border-color: rgba(14, 116, 144, 0.24);
   }
   .trial-machine--mpp .trial-machine-head {
+    flex-direction: column;
+    align-items: stretch;
     box-shadow: inset 0 3px 0 #0e7490;
+    gap: 6px;
+  }
+  .trial-machine--mpp .trial-machine-head-main {
+    min-width: 0;
+  }
+  .trial-machine--mpp .trial-machine-title-row {
     gap: 8px;
-    flex-wrap: wrap;
+  }
+  .trial-machine--mpp .trial-machine-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .trial-machine--mpp .trial-machine-head-actions {
     width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
   }
   .trial-machine--mpp .trial-machine-head-actions .btn {
-    font-size: 10px;
-    padding: 3px 8px;
+    display: inline-flex;
+    align-items: center;
+    width: 100%;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 750;
+    padding: 5px 8px;
+    white-space: nowrap;
+  }
+  .trial-machine--mpp .trial-machine-meta {
+    display: none;
   }
   .trial-machine--mpp .trial-machine-queue-summary {
+    margin-top: 3px;
     font-size: 11px;
     font-weight: 750;
     color: #0f766e;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow-wrap: normal;
+    word-break: keep-all;
   }
-  .trial-machine-availability--mpp {
+  .trial-machine-availability.trial-machine-availability--mpp {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 6px 10px;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 6px;
+    min-height: 0;
+    padding: 8px 10px;
     background: rgba(14, 116, 144, 0.06);
+    border-color: rgba(14, 116, 144, 0.16);
+  }
+  .trial-mpp-avail-main {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+  .trial-mpp-avail-label,
+  .trial-mpp-anchor-label {
+    flex-shrink: 0;
+    font-size: 9px;
+    font-weight: 900;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text3);
+    white-space: nowrap;
+  }
+  .trial-mpp-avail-value,
+  .trial-mpp-anchor-time {
+    min-width: 0;
+    font-size: 11px;
+    font-weight: 800;
+    color: var(--text2);
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow-wrap: normal;
+    word-break: keep-all;
   }
   .trial-mpp-anchor-btn {
-    flex: 0 0 auto;
-    padding: 2px 8px;
-    border-radius: 999px;
-    border: 1px dashed rgba(14, 116, 144, 0.4);
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 5px 8px;
+    border-radius: 8px;
+    border: 1px dashed rgba(14, 116, 144, 0.42);
     background: #fff;
     color: #0e7490;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 750;
+    text-align: left;
     cursor: pointer;
+  }
+  .trial-mpp-anchor-btn:not(.is-set) {
+    display: flex;
+    justify-content: center;
   }
   .trial-mpp-anchor-btn.is-set {
     border-style: solid;
     background: rgba(14, 116, 144, 0.1);
   }
+  .trial-mpp-anchor-btn:hover {
+    border-color: rgba(14, 116, 144, 0.6);
+    background: rgba(14, 116, 144, 0.12);
+  }
   .trial-lane--mpp {
     gap: 8px;
-    padding-top: 8px;
+    padding-top: 6px;
   }
   .trial-machine--mpp .trial-empty {
     padding: 18px 12px;
@@ -3076,36 +3166,105 @@
     line-height: 1.4;
     text-align: center;
   }
+  .trial-machine--mpp .trial-lane .trial-mpp-origin-badge {
+    display: none;
+  }
   .trial-block-card--compact.is-mpp-mirror {
     box-shadow: inset 3px 0 0 rgba(14, 116, 144, 0.55);
+  }
+  .trial-machine--mpp .trial-block-card--compact {
+    padding: 8px 8px 8px 18px;
+  }
+  .trial-machine--mpp .trial-block-compact-top {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+  .trial-machine--mpp .trial-block-compact-metrics {
+    flex-wrap: nowrap;
+  }
+  .trial-machine--mpp .trial-block-title-row {
+    margin-top: 2px;
+  }
+  .trial-machine--mpp .trial-block-op {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .trial-machine--mpp .trial-block-compact-dates {
+    gap: 3px;
+    margin-top: 6px;
+  }
+  .trial-machine--mpp .trial-block-compact-date {
+    display: grid;
+    grid-template-columns: 4.6em minmax(0, 1fr);
+    align-items: center;
+    gap: 6px;
+    overflow-wrap: normal;
+    word-break: keep-all;
+  }
+  .trial-machine--mpp button.trial-block-compact-date.is-queued.is-clickable {
+    grid-template-columns: 4.6em minmax(0, 1fr) auto;
+    padding: 4px 6px;
+  }
+  .trial-machine--mpp .trial-block-compact-date .trial-pill-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .trial-machine--mpp .trial-block-compact-date > span:last-child,
+  .trial-machine--mpp .trial-anchor-time-value {
+    min-width: 0;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow-wrap: normal;
+    word-break: keep-all;
   }
   /* Identical MPP cycle stacks (shared by planner + machinist boards) */
   .trial-mpp-cycle-pills,
   .trial-mpp-run-pills {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
-    margin: 2px 0 4px;
+    gap: 5px;
+    margin: 4px 0 2px;
   }
   .trial-mpp-cycle-pill {
     display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
     max-width: 100%;
-    padding: 2px 7px;
-    border-radius: 5px;
+    padding: 4px 8px;
+    border-radius: 7px;
     background: rgba(14, 116, 144, 0.1);
     border: 1px solid rgba(14, 116, 144, 0.2);
     color: #0f766e;
-    font-size: 10px;
-    font-weight: 750;
-    line-height: 1.35;
-    white-space: nowrap;
+    line-height: 1.25;
+    overflow: hidden;
+  }
+  .trial-mpp-cycle-pill-ps {
+    max-width: 100%;
+    font-size: 11px;
+    font-weight: 800;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .trial-mpp-cycle-pill-op {
+    max-width: 100%;
+    font-size: 10px;
+    font-weight: 650;
+    color: #0f766e;
+    opacity: 0.88;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .trial-mpp-run-stack {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 7px;
     padding: 10px 10px 11px;
     border-radius: 10px;
     border: 1px solid rgba(14, 116, 144, 0.24);
@@ -3128,6 +3287,7 @@
     font-weight: 850;
     color: var(--text);
     letter-spacing: -0.02em;
+    white-space: nowrap;
   }
   .trial-mpp-run-count {
     flex: 0 0 auto;
@@ -3138,6 +3298,7 @@
     font-size: 10px;
     font-weight: 850;
     line-height: 1.5;
+    white-space: nowrap;
   }
   .trial-mpp-run-shift {
     flex: 0 0 auto;
@@ -3148,10 +3309,12 @@
     font-size: 9px;
     font-weight: 800;
     letter-spacing: 0.04em;
+    white-space: nowrap;
   }
   .trial-mpp-run-toggle {
     margin-left: auto;
-    padding: 2px 9px;
+    flex-shrink: 0;
+    padding: 3px 9px;
     border-radius: 999px;
     border: 1px solid rgba(14, 116, 144, 0.3);
     background: rgba(255, 255, 255, 0.94);
@@ -3159,6 +3322,7 @@
     font-size: 10px;
     font-weight: 750;
     line-height: 1.4;
+    white-space: nowrap;
     cursor: pointer;
   }
   .trial-mpp-run-toggle:hover {
@@ -3167,20 +3331,41 @@
   .trial-mpp-run-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px 10px;
-    font-size: 11px;
+    gap: 4px;
+  }
+  .trial-mpp-run-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.78);
+    border: 1px solid rgba(14, 116, 144, 0.16);
+    font-size: 10px;
     font-weight: 750;
     color: var(--text2);
+    white-space: nowrap;
   }
   .trial-mpp-run-timing {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     align-items: center;
-    flex-wrap: wrap;
-    gap: 3px 4px;
-    font-size: 11px;
+    gap: 6px;
+    font-size: 10px;
     font-weight: 700;
     color: var(--text2);
     line-height: 1.3;
+  }
+  .trial-mpp-run-timing-start,
+  .trial-mpp-run-timing-end {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow-wrap: normal;
+    word-break: keep-all;
+  }
+  .trial-mpp-run-timing-end {
+    text-align: right;
   }
   .trial-mpp-run-timing-sep {
     color: var(--text3);
@@ -3216,6 +3401,7 @@
   }
   .trial-mpp-run-child-qty {
     color: var(--text3);
+    white-space: nowrap;
   }
   .trial-machine-meta {
     font-size: 10px;
@@ -5975,6 +6161,12 @@
       width: 200px;
       max-width: 200px;
       min-width: 200px;
+    }
+    .trial-machine.trial-machine--mpp {
+      flex-basis: 280px;
+      width: 280px;
+      max-width: 280px;
+      min-width: 280px;
     }
     .trial-modal-grid {
       grid-template-columns: 1fr;
@@ -11008,6 +11200,12 @@
       max-width: 168px;
       min-width: 168px;
       min-height: 180px;
+    }
+    .trial-machine.trial-machine--mpp {
+      flex-basis: min(280px, calc(100vw - 24px));
+      width: min(280px, calc(100vw - 24px));
+      max-width: min(280px, calc(100vw - 24px));
+      min-width: min(280px, calc(100vw - 24px));
     }
 
     .app-main--planner {

@@ -11,9 +11,13 @@ from openpyxl import Workbook, load_workbook
 from app import app
 from planning.aps_ps_match_service import (
     FIELD_LABELS,
+    compact_lot_key,
     field_for_header,
+    index_lot_rows,
     index_outstanding_aps,
     is_outstanding_cache_row,
+    lot_lookup_keys,
+    lots_for_in_house_ref,
     match_source_rows,
     normalize_header,
     parse_inventory_dimensions,
@@ -152,6 +156,52 @@ class InventoryPickTests(unittest.TestCase):
     def test_dimension_suffix_parse(self):
         self.assertEqual(parse_inventory_dimensions("CuZn19Al6*3_D38.1"), (38.1, None))
         self.assertEqual(parse_inventory_dimensions("NITRONIC 50(HS)*3_D50.8_39.1"), (50.8, 39.1))
+
+    def test_lot_keys_include_batch_and_compact_am_ref(self):
+        keys = lot_lookup_keys("AM/0454/21")
+        self.assertIn("AM/0454/21", keys)
+        self.assertIn("AM045421", keys)
+        self.assertIn("AM45421", keys)
+        self.assertEqual(compact_lot_key("AM/0454/21"), compact_lot_key("AM/454/21"))
+        self.assertIn("454", lot_lookup_keys(454))
+        self.assertIn("454", lot_lookup_keys(454.0))
+
+    def test_reverse_search_by_batch_no(self):
+        indexed = index_lot_rows(
+            [
+                {
+                    "inventory_code": "CuZn19Al6*3_D38.1",
+                    "reference_no": "AM/0454/21",
+                    "lot_no": "454",
+                    "remaining_qty": 12,
+                    "inventory_class_code": "RAW MATERIAL",
+                }
+            ]
+        )
+        by_batch = lots_for_in_house_ref("454", indexed)
+        self.assertEqual(by_batch[0]["inventory_code"], "CuZn19Al6*3_D38.1")
+        by_ref = lots_for_in_house_ref("AM/0454/21", indexed)
+        self.assertEqual(by_ref[0]["inventory_code"], "CuZn19Al6*3_D38.1")
+        by_compact = lots_for_in_house_ref("AM/454/21", indexed)
+        self.assertEqual(by_compact[0]["inventory_code"], "CuZn19Al6*3_D38.1")
+
+    def test_match_uses_batch_no_when_ref_key_missing(self):
+        matched = match_source_rows(
+            [_source(in_house_ref="454")],
+            {"88D012": ["APS26-0151"]},
+            {
+                "454": [
+                    {
+                        "inventory_code": "CuZn19Al6*3_D38.1",
+                        "batch_no": "454",
+                        "inventory_class_code": "RAW MATERIAL",
+                        "remaining_qty": 12,
+                    }
+                ]
+            },
+        )
+        self.assertEqual(matched[0]["inventory_code"], "CuZn19Al6*3_D38.1")
+        self.assertEqual(matched[0]["match_status"], "ok")
 
     def test_prefers_raw_material_and_od_match(self):
         source = _source()

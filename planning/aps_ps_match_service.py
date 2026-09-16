@@ -174,21 +174,38 @@ GROUP BY 1
 ORDER BY 1
 """
 
-_LOTS_BY_REF_SQL = """
+_LOTS_BY_BATCH_SQL = """
 SELECT
     o.inventory_code,
     o.reference_no,
+    o.lot_no,
     SUM(COALESCE(o.remaining_qty, 0)) AS remaining_qty,
     SUM(COALESCE(o.available_qty, 0)) AS available_qty,
     SUM(COALESCE(o.allocation_qty, 0)) AS allocation_qty
 FROM public.ic_inventory_ost_lot o
 WHERE o.inventory_code IS NOT NULL
   AND BTRIM(o.inventory_code) <> ''
-  AND o.reference_no IS NOT NULL
-  AND BTRIM(o.reference_no) <> ''
-  AND UPPER(REPLACE(BTRIM(o.reference_no), ' ', '')) = ANY(%s)
-GROUP BY o.inventory_code, o.reference_no
-ORDER BY o.inventory_code, o.reference_no
+  AND (
+    UPPER(REPLACE(BTRIM(COALESCE(o.reference_no, '')), ' ', '')) = ANY(%s)
+    OR UPPER(REPLACE(BTRIM(COALESCE(o.lot_no::TEXT, '')), ' ', '')) = ANY(%s)
+    OR UPPER(REGEXP_REPLACE(COALESCE(o.reference_no, ''), '[^A-Za-z0-9]', '', 'g')) = ANY(%s)
+    OR UPPER(REGEXP_REPLACE(COALESCE(o.lot_no::TEXT, ''), '[^A-Za-z0-9]', '', 'g')) = ANY(%s)
+    OR EXISTS (
+        SELECT 1
+        FROM unnest(%s::text[]) AS needle
+        WHERE length(needle) >= 4
+          AND (
+            UPPER(REPLACE(BTRIM(COALESCE(o.reference_no, '')), ' ', '')) LIKE '%%' || needle || '%%'
+            OR UPPER(REPLACE(BTRIM(COALESCE(o.lot_no::TEXT, '')), ' ', '')) LIKE '%%' || needle || '%%'
+            OR UPPER(REGEXP_REPLACE(COALESCE(o.reference_no, ''), '[^A-Za-z0-9]', '', 'g'))
+                LIKE '%%' || needle || '%%'
+            OR UPPER(REGEXP_REPLACE(COALESCE(o.lot_no::TEXT, ''), '[^A-Za-z0-9]', '', 'g'))
+                LIKE '%%' || needle || '%%'
+          )
+    )
+  )
+GROUP BY o.inventory_code, o.reference_no, o.lot_no
+ORDER BY o.inventory_code, o.reference_no, o.lot_no
 """
 
 _CLASS_BY_CODE_SQL = """
@@ -230,8 +247,53 @@ def normalize_part_no(value: Any) -> str:
     return text.strip("-")
 
 
+_REF_SPLIT_RE = re.compile(r"[,;|\n]+")
+_LEADING_ZERO_RE = re.compile(r"(?<=[A-Z])0+(?=\d)")
+
+
 def normalize_lot_ref(value: Any) -> str:
-    return re.sub(r"\s+", "", compact_text(value).upper())
+    if isinstance(value, float) and value == int(value):
+        value = int(value)
+    text = compact_text(value).upper()
+    if re.fullmatch(r"\d+\.0+", text):
+        text = text.split(".", 1)[0]
+    return re.sub(r"\s+", "", text)
+
+
+def compact_lot_key(value: Any) -> str:
+    alnum = re.sub(r"[^A-Z0-9]+", "", normalize_lot_ref(value))
+    return _LEADING_ZERO_RE.sub("", alnum)
+
+
+def lot_lookup_keys(value: Any) -> list[str]:
+    """Keys for reverse lot lookup: In-house ref, batch/lot no, and compact forms."""
+    keys: list[str] = []
+    seen: set[str] = set()
+
+    def add(item: Any) -> None:
+        text = normalize_lot_ref(item)
+        if not text or text in seen:
+            return
+        seen.add(text)
+        keys.append(text)
+        alnum = re.sub(r"[^A-Z0-9]+", "", text)
+        if alnum and alnum not in seen:
+            seen.add(alnum)
+            keys.append(alnum)
+        stripped = compact_lot_key(text)
+        if stripped and stripped not in seen:
+            seen.add(stripped)
+            keys.append(stripped)
+
+    raw = compact_text(value)
+    if isinstance(value, float) and value == int(value):
+        add(int(value))
+    parts = [part.strip() for part in _REF_SPLIT_RE.split(raw)] if raw else []
+    if not parts:
+        add(value)
+    for part in parts:
+        add(part)
+    return keys
 
 
 def _alnum_key(value: Any) -> str:
@@ -509,29 +571,101 @@ def fetch_outstanding_aps() -> dict[str, list[str]]:
     return index_outstanding_aps(live_query(_ACTIVE_APS_SQL))
 
 
+def index_lot_rows(lot_rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Index lots by reference_no and batch/lot_no so Excel can reverse-search either."""
+    lots_by_key: dict[str, list[dict[str, Any]]] = {}
+    seen: set[tuple[str, str, str, str]] = set()
+    for row in lot_rows:
+        code = compact_text(row.get("inventory_code"))
+        if not code:
+            continue
+        item = {
+            "inventory_code": code,
+            "reference_no": compact_text(row.get("reference_no")),
+            "batch_no": compact_text(row.get("batch_no") or row.get("lot_no")),
+            "lot_no": compact_text(row.get("lot_no") or row.get("batch_no")),
+            "remaining_qty": parse_number(row.get("remaining_qty"), 0),
+            "available_qty": parse_number(row.get("available_qty"), 0),
+            "allocation_qty": parse_number(row.get("allocation_qty"), 0),
+            "inventory_class_code": compact_text(row.get("inventory_class_code")),
+        }
+        for key in (
+            *lot_lookup_keys(item.get("reference_no")),
+            *lot_lookup_keys(item.get("batch_no")),
+        ):
+            sig = (key, code, item["reference_no"], item["batch_no"])
+            if sig in seen:
+                continue
+            seen.add(sig)
+            lots_by_key.setdefault(key, []).append(item)
+    return lots_by_key
+
+
+def lots_for_in_house_ref(
+    in_house_ref: Any,
+    lots_by_key: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(item: dict[str, Any]) -> None:
+        sig = (
+            compact_text(item.get("inventory_code")).upper(),
+            compact_text(item.get("reference_no")),
+            compact_text(item.get("batch_no") or item.get("lot_no")),
+        )
+        if not sig[0] or sig in seen:
+            return
+        seen.add(sig)
+        candidates.append(item)
+
+    needles = lot_lookup_keys(in_house_ref)
+    for key in needles:
+        for item in lots_by_key.get(key) or []:
+            add(item)
+    if candidates or not needles:
+        return candidates
+    for item in _unique_lot_items(lots_by_key):
+        hay = {
+            *lot_lookup_keys(item.get("reference_no")),
+            *lot_lookup_keys(item.get("batch_no") or item.get("lot_no")),
+        }
+        for needle in needles:
+            if needle in hay:
+                add(item)
+                break
+            if len(needle) >= 4 and any(needle in key or key in needle for key in hay if key):
+                add(item)
+                break
+    return candidates
+
+
+def _unique_lot_items(lots_by_key: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for items in lots_by_key.values():
+        for item in items:
+            sig = (
+                compact_text(item.get("inventory_code")).upper(),
+                compact_text(item.get("reference_no")),
+                compact_text(item.get("batch_no") or item.get("lot_no")),
+            )
+            if not sig[0] or sig in seen:
+                continue
+            seen.add(sig)
+            unique.append(item)
+    return unique
+
+
 def fetch_lots_by_reference_nos(refs: list[str]) -> dict[str, list[dict[str, Any]]]:
-    normalized = sorted({normalize_lot_ref(ref) for ref in refs if normalize_lot_ref(ref)})
-    if not normalized:
+    keys = sorted({key for ref in refs for key in lot_lookup_keys(ref)})
+    if not keys:
         return {}
+    needles = [key for key in keys if len(key) >= 4]
     from .staged_erp import live_query
 
-    lots_by_ref: dict[str, list[dict[str, Any]]] = {}
-    for row in live_query(_LOTS_BY_REF_SQL, (normalized,)):
-        ref = normalize_lot_ref(row.get("reference_no"))
-        code = compact_text(row.get("inventory_code"))
-        if not ref or not code:
-            continue
-        lots_by_ref.setdefault(ref, []).append(
-            {
-                "inventory_code": code,
-                "reference_no": compact_text(row.get("reference_no")),
-                "remaining_qty": parse_number(row.get("remaining_qty"), 0),
-                "available_qty": parse_number(row.get("available_qty"), 0),
-                "allocation_qty": parse_number(row.get("allocation_qty"), 0),
-                "inventory_class_code": compact_text(row.get("inventory_class_code")),
-            }
-        )
-    return lots_by_ref
+    rows_out = live_query(_LOTS_BY_BATCH_SQL, (keys, keys, keys, keys, needles))
+    return index_lot_rows(rows_out)
 
 
 def fetch_inventory_classes(codes: list[str]) -> dict[str, str]:
@@ -619,9 +753,8 @@ def match_source_rows(
         ps_ids = list(aps_by_part.get(part_key) or [])
         if not ps_ids:
             ps_ids = [""]
-        ref = normalize_lot_ref(source.get("in_house_ref"))
         candidates = []
-        for item in lots_by_ref.get(ref) or []:
+        for item in lots_for_in_house_ref(source.get("in_house_ref"), lots_by_ref):
             row = dict(item)
             code_key = compact_text(row.get("inventory_code")).upper()
             if not row.get("inventory_class_code"):

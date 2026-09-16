@@ -2117,7 +2117,14 @@ function trialMppCycleMemberSummaries(group) {
     }
     const opNo = String(block.source_op_no || '').trim();
     const opName = String(block.operation_name || '').trim();
-    const op = [opNo, opName].filter(Boolean).join(' ') || opNo || opName;
+    const opNoBare = opNo.replace(/^OP\s*/i, '');
+    let op = opName || opNoBare;
+    if (opNoBare && opName) {
+      const nameBare = opName.replace(/^OP\s*/i, '');
+      op = nameBare === opNoBare || nameBare.startsWith(`${opNoBare} `)
+        ? nameBare
+        : `${opNoBare} ${opName}`.trim();
+    }
     const key = `${base}::${partial}::${opNo || opName}`;
     if (!base || seen.has(key)) return;
     seen.add(key);
