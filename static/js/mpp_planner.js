@@ -1344,6 +1344,10 @@
     } else if (queueLoadError) {
       syncEl.textContent = `Queue load failed — ${queueLoadError}`;
       syncEl.className = 'mpp-queue-sync mpp-queue-sync--error';
+    } else if (!queueHydrated) {
+      syncEl.textContent = 'Loading queue…';
+      syncEl.className = 'mpp-queue-sync';
+      syncEl.title = '';
     } else if (queueSavedAt) {
       const cycleCount = Object.values(state.machines || {}).reduce(
         (sum, lane) => sum + (lane?.cycles?.length || 0),
@@ -1511,8 +1515,7 @@
   async function loadMppQueue() {
     queueLoadError = '';
     try {
-      const res = await fetch('/api/mpp-planner/queue');
-      const payload = await parseJsonResponse(res);
+      const { res, payload } = await mppFetchJson('/api/mpp-planner/queue', { timeoutMs: 30000 });
       if (!res.ok || !payload.ok) {
         queueLoadError = compactApiError(payload?.error) || `HTTP ${res.status}`;
         return false;
@@ -1764,8 +1767,10 @@
     // Keep the full pool once loaded so FA-only can stay a client filter.
     const wantAll = opts.all === true || !mppFaOnly || jobsPoolIncludesNonFa;
     try {
-      const res = await fetch(`/api/mpp-planner/jobs?fa_only=${wantAll ? '0' : '1'}`);
-      const payload = await parseJsonResponse(res);
+      const { res, payload } = await mppFetchJson(
+        `/api/mpp-planner/jobs?fa_only=${wantAll ? '0' : '1'}`,
+        { timeoutMs: 60000 },
+      );
       if (!res.ok || !payload.ok) {
         jobsLoadError = compactApiError(payload?.error) || `HTTP ${res.status}`;
         jobsSource = 'error';
@@ -2045,6 +2050,26 @@
       return JSON.parse(text);
     } catch {
       throw new Error(`Server returned an HTML page (HTTP ${res.status || 'ok'}) instead of JSON.`);
+    }
+  }
+
+  async function mppFetchJson(url, options = {}) {
+    const timeoutMs = Number(options.timeoutMs) || 45000;
+    const opts = { ...options };
+    delete opts.timeoutMs;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...opts, signal: controller.signal });
+      const payload = await parseJsonResponse(res);
+      return { res, payload };
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        throw new Error(`Timed out after ${Math.round(timeoutMs / 1000)}s`);
+      }
+      throw err;
+    } finally {
+      window.clearTimeout(timer);
     }
   }
 
@@ -3597,8 +3622,7 @@
 
   async function loadMppMachines() {
     try {
-      const res = await fetch('/api/mpp-planner/machines');
-      const payload = await parseJsonResponse(res);
+      const { res, payload } = await mppFetchJson('/api/mpp-planner/machines', { timeoutMs: 15000 });
       if (!res.ok || !payload.ok) return false;
       const machines = Array.isArray(payload.machines) ? payload.machines : [];
       if (!machines.length) return false;
@@ -4059,19 +4083,31 @@
     }
   });
 
+  function mergeJobTemplatesIntoState() {
+    const next = { ...state.jobs };
+    JOB_TEMPLATES.forEach((t) => {
+      const prev = next[t.jobId];
+      next[t.jobId] = prev ? { ...prev, ...t } : { ...t };
+    });
+    state.jobs = next;
+  }
+
+  function paintMppShell() {
+    syncSidebarCollapsedUi();
+    syncExtraCollapsedUi();
+    updateJobsSourceBadge();
+    updateJobsStatusLine();
+    renderOpsList();
+    renderMachineFilters();
+    renderLanes();
+    renderProbationBracket();
+  }
+
   async function refreshLiveJobs(opts = {}) {
     const btn = document.getElementById('mpp-refresh-jobs');
     if (btn) btn.disabled = true;
     const liveOk = await loadFrameAgreementJobs(opts);
-    if (liveOk) {
-      // Merge templates into existing jobs so queued / edited rows keep local fields.
-      const next = { ...state.jobs };
-      JOB_TEMPLATES.forEach((t) => {
-        const prev = next[t.jobId];
-        next[t.jobId] = prev ? { ...prev, ...t } : { ...t };
-      });
-      state.jobs = next;
-    }
+    if (liveOk) mergeJobTemplatesIntoState();
     updateJobsSourceBadge();
     updateJobsStatusLine();
     render();
@@ -4082,18 +4118,46 @@
     try { localStorage.removeItem('mpp-planner-ps-expanded'); } catch { /* ignore */ }
     queueHydrated = false;
     queueLoadError = '';
-    await Promise.all([loadMppMachines(), loadFrameAgreementJobs()]);
-    state = defaultState();
-    const queueOk = await loadMppQueue();
-    if (!queueOk && !queueLoadError) {
-      queueLoadError = 'could not load saved queue';
+    jobsSource = 'loading';
+    paintMppShell();
+    try {
+      await loadMppMachines();
+      state = defaultState();
+      paintMppShell();
+
+      // Queue and jobs are independent. Waiting on jobs first left the board
+      // stuck on "Loading queue…" whenever the op-pool query was slow.
+      const queuePromise = loadMppQueue();
+      const jobsPromise = loadFrameAgreementJobs();
+
+      const queueOk = await queuePromise;
+      if (!queueOk && !queueLoadError) {
+        queueLoadError = 'could not load saved queue';
+      }
+      queueHydrated = queueOk;
+      skipNextQueueSave = true;
+      updateJobsSourceBadge();
+      render();
+      startQueueSaveIdleFlush();
+
+      await jobsPromise;
+      mergeJobTemplatesIntoState();
+      skipNextQueueSave = true;
+      updateJobsSourceBadge();
+      updateJobsStatusLine();
+      render();
+    } catch (err) {
+      if (!queueLoadError && !queueHydrated) {
+        queueLoadError = err?.message || 'could not load planner';
+      }
+      if (!jobsLoadError && jobsSource === 'loading') {
+        jobsLoadError = err?.message || 'could not load process sheets';
+        jobsSource = 'error';
+      }
+      updateJobsSourceBadge();
+      updateJobsStatusLine();
+      renderOpsList();
     }
-    queueHydrated = queueOk;
-    skipNextQueueSave = true;
-    updateJobsSourceBadge();
-    updateJobsStatusLine();
-    render();
-    startQueueSaveIdleFlush();
   }
 
   function startQueueSaveIdleFlush() {
@@ -4136,5 +4200,7 @@
     if (queueRecalcStatus === 'error') scheduleQueueRecalcRetry();
   });
 
+  syncSidebarCollapsedUi();
+  syncExtraCollapsedUi();
   initMppPlanner();
 })();

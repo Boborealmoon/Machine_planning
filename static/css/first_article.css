@@ -548,7 +548,7 @@ body.fa-view .app-main--first-article {
   font-variant-numeric: tabular-nums;
 }
 .fa-col-machine { min-width: 140px; }
-.fa-table--new .fa-col-machine { min-width: 56px; max-width: 96px; }
+.fa-table--new .fa-col-machine { min-width: 108px; max-width: 180px; }
 .fa-col-stage { min-width: 110px; max-width: 168px; }
 .fa-col-pic { min-width: 148px; }
 .fa-col-prep {
@@ -2014,4 +2014,107 @@ body.so-material-modal-open {
 
 .fa-so-group-start td.fa-col-ps {
   border-top-color: #e2e8f0;
+}
+
+.fa-proposed-cnc-cell {
+  vertical-align: middle;
+}
+
+.fa-proposed-cnc-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 26px;
+  padding: 2px 4px 2px 6px;
+  border: 1.5px solid #d6d3d1;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.fa-proposed-cnc-btn:hover,
+.fa-proposed-cnc-btn.is-open {
+  border-color: #a78bfa;
+  background: #f5f3ff;
+}
+
+.fa-proposed-cnc-btn.has-value {
+  border-color: #c4b5fd;
+}
+
+.fa-proposed-cnc-btn-value {
+  flex: 1;
+  min-width: 0;
+}
+
+.fa-proposed-cnc-btn-caret {
+  flex: none;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.fa-proposed-cnc-status {
+  display: block;
+  min-height: 12px;
+  margin-top: 2px;
+  font-size: 9px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.fa-proposed-cnc-status.is-saving {
+  color: #2563eb;
+}
+
+.fa-proposed-cnc-status.is-saved {
+  color: #15803d;
+}
+
+.fa-proposed-cnc-status.is-error {
+  color: #b91c1c;
+}
+
+.fa-cnc-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  max-width: 100%;
+}
+
+.fa-cnc-pill {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: #ede9fe;
+  color: #5b21b6;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.fa-proposed-cnc-popover {
+  z-index: 250;
+}
+
+.fa-proposed-cnc-checks {
+  display: grid;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+  margin-bottom: 8px;
+}
+
+.fa-proposed-cnc-add {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.fa-proposed-cnc-add .fa-col-filter-search {
+  margin-bottom: 0;
+  flex: 1;
 }

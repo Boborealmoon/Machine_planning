@@ -1,6 +1,7 @@
 """MPP planner — machine fleet resolution and frame-agreement job intake."""
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -20,6 +21,8 @@ from .helpers import rows
 from .machines import fetch_machines
 from .process_sheets import format_planner_ps_id, manual_qty_by_ps_ids
 from .utils import compact_text, parse_number
+
+logger = logging.getLogger(__name__)
 
 MPP_PLANNER_EXTRA_MACHINE_CODES = frozenset({"CNC 41"})
 MPP_DEFAULT_LOAD_MIN_PER_PALLET = 15.0
@@ -679,8 +682,19 @@ def fetch_mpp_planner_jobs(con, *, fa_only: bool = True) -> list[dict[str, Any]]
     jobs = _mpp_jobs_from_process_sheets(con, fa_keys, mpp_codes, fa_only=fa_only)
     seen = {job["jobId"] for job in jobs}
 
-    # ERP fallback is FA-scoped (INNER JOIN master list); always merge for FA gaps.
-    for row in _fetch_erp_mpp_job_candidates(con, mpp_machine_codes=mpp_codes):
+    # ERP fallback is FA-scoped (INNER JOIN master list); merge for FA gaps.
+    # A timeout here must not discard the process-sheet jobs already loaded.
+    try:
+        erp_rows = _fetch_erp_mpp_job_candidates(con, mpp_machine_codes=mpp_codes)
+    except Exception as exc:
+        logger.warning("mpp planner ERP job fallback skipped: %s", exc)
+        try:
+            con.rollback()
+        except Exception:
+            pass
+        erp_rows = []
+
+    for row in erp_rows:
         job_id = compact_text(row.get("jobId"))
         if not job_id or job_id in seen:
             continue

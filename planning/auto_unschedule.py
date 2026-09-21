@@ -6,8 +6,8 @@ Triggers (any one is enough):
   - Background thread in app.py and/or OS cron scripts (optional backup)
 
 MPP planner machines (CNC 35/36/41) use planner_mpp_cycle_op dequeue instead — see
-mpp_planner_queue_service.mpp_auto_dequeue_on_page_load, maybe_auto_dequeue_mpp_block,
-and run_mpp_auto_dequeue_sweep (also called from the app.py background thread).
+mpp_planner_queue_service.maybe_auto_dequeue_mpp_block and run_mpp_auto_dequeue_sweep
+(background thread in app.py). Queue GET does not sweep; that path blocked first paint.
 
 Opt out: DISABLE_AUTO_UNSCHEDULE_DONE_OPS=1
 """

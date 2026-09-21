@@ -3,7 +3,7 @@
 {% block main_class %}app-main--mpp-planner{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css', v='mpp-planner-20260624') }}" />
-<link rel="stylesheet" href="{{ url_for('static', filename='css/mpp_planner.css', v='mpp-planner-20260908-queue') }}" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/mpp_planner.css', v='mpp-planner-20260917-load') }}" />
 {% endblock %}
 {% block content %}
 <div class="mpp-page">
@@ -37,7 +37,9 @@
       </label>
     </div>
     <p class="mpp-ops-status" id="mpp-ops-status" hidden></p>
-    <div class="mpp-ops-list trial-catalog" id="mpp-ops-list"></div>
+    <div class="mpp-ops-list trial-catalog" id="mpp-ops-list">
+      <p class="mpp-ops-empty">Loading process sheets…</p>
+    </div>
   </aside>
 
   <section class="mpp-board" aria-label="MPP machine queues">
@@ -214,5 +216,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/catalog_search.js', v='mpp-sr-search-20260908') }}"></script>
-<script src="{{ url_for('static', filename='js/mpp_planner.js', v='mpp-planner-20260908-queue') }}"></script>
+<script src="{{ url_for('static', filename='js/mpp_planner.js', v='mpp-planner-20260917-load') }}"></script>
 {% endblock %}

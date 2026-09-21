@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 qc_quality_queue_bp = Blueprint("qc_quality_queue", __name__)
 
 _CACHE_TTL_SEC = 300
-_CACHE_VERSION = 10
+_CACHE_VERSION = 11
 _cache: tuple[float, int, list[dict[str, Any]]] | None = None
 
 # Link chain:

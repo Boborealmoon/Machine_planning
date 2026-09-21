@@ -26,6 +26,7 @@
     { id: 'po_due_date', label: 'Due', className: 'fa-col-date', sortable: true, filterable: true, title: 'PO due date' },
     { id: 'total_qty', label: 'Qty', className: 'fa-col-qty', filterable: true },
     { id: 'stage', label: 'WO / Stage', className: 'fa-col-stage', filterable: true, title: 'Current work-order stage and WO status from ERP' },
+    { id: 'proposed_cnc', label: 'Proposed CNC', className: 'fa-col-machine', filterable: true, title: 'Same Proposed CNC as S/O Management. Pick one or more planner CNC machines.' },
     { id: 'bom', label: 'BOM', className: 'fa-col-bom', filterable: true, title: 'Opens BOM materials. Green = ERP material lines exist.' },
     { id: 'material', label: 'Material', className: 'fa-col-material', filterable: true },
     { id: 'pic', label: 'PIC', className: 'fa-col-pic', filterable: true, title: 'Programme PIC' },
@@ -62,6 +63,10 @@
     openFilterCol: '',
     openFilterTable: '',
     filterQuery: '',
+    openProposedCncKey: '',
+    proposedCncQuery: '',
+    proposedCncSource: '',
+    saveInFlight: new Set(),
     flaggedAssignedPicOnly: false,
     pics: [],
     machines: [],
@@ -162,6 +167,10 @@
     else if (colId === 'po_due_date') raw = row?.po_due_date;
     else if (colId === 'total_qty') raw = row?.total_qty;
     else if (colId === 'stage') raw = stageFilterLabel(row);
+    else if (colId === 'proposed_cnc') {
+      const names = proposedCncMachines(row);
+      return names.length ? names : [BLANK_FILTER];
+    }
     else if (colId === 'bom') raw = hasBom(row) ? 'Yes' : 'None';
     else if (colId === 'material') raw = materialFilterLabel(row);
     else if (colId === 'remarks') raw = row?.remarks;
@@ -240,6 +249,8 @@
       row.erp_last_stage_desc,
       row.ps_type,
       row.machine_cnc,
+      ...(row.proposed_cnc || []),
+      ...(row.machine_codes || []),
       row.tooling_text,
       row.fixture_text,
       row.gauges_text,
@@ -426,6 +437,7 @@
       closeColumnFilter();
       return;
     }
+    closeProposedCncPopover();
     state.openFilterCol = colId;
     state.openFilterTable = which;
     state.filterQuery = '';
@@ -525,6 +537,7 @@
         row.part_no,
         row.part_description,
         row.machine_cnc,
+        ...(row.proposed_cnc || []),
         ...(row.machine_codes || []),
         row.current_stage_desc,
         row.erp_last_stage_desc,
@@ -603,17 +616,92 @@
     return String(value == null ? '' : value).trim();
   }
 
-  function machineCell(row) {
+  function proposedCncMachines(row) {
+    if (Array.isArray(row?.proposed_cnc) && row.proposed_cnc.some(Boolean)) {
+      return row.proposed_cnc.filter(Boolean);
+    }
+    if (Array.isArray(row?.machine_codes) && row.machine_codes.some(Boolean)) {
+      return row.machine_codes.filter(Boolean);
+    }
+    const text = String(row?.machine_cnc || '').trim();
+    if (!text) return [];
+    return text.split(',').map((part) => part.trim()).filter(Boolean);
+  }
+
+  function faCncMachineNumber(code) {
+    const match = String(code || '').trim().match(/(\d+)\s*$/);
+    return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
+  }
+
+  function faNormalizeCncMachine(raw) {
+    const text = String(raw || '').trim().replace(/\s+/g, ' ');
+    if (!text) return '';
+    if (/^\d+$/.test(text)) return `CNC ${text}`;
+    return text;
+  }
+
+  function faCncMachineCatalog(selected) {
+    const out = [];
+    const seen = new Set();
+    const add = (raw) => {
+      const name = faNormalizeCncMachine(raw);
+      const key = name.toUpperCase();
+      if (!name || seen.has(key)) return;
+      seen.add(key);
+      out.push(name);
+    };
+    (state.machines || []).forEach(add);
+    (selected || []).forEach(add);
+    out.sort((a, b) => {
+      const an = faCncMachineNumber(a);
+      const bn = faCncMachineNumber(b);
+      if (an !== bn) return an - bn;
+      return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+    });
+    return out;
+  }
+
+  function faRenderCncPills(machines) {
+    const list = Array.isArray(machines) ? machines.filter(Boolean) : [];
+    if (!list.length) return '<span class="fa-muted">\u2014</span>';
+    const pills = list.map((machine) => (
+      `<span class="fa-cnc-pill">${escapeHtml(String(machine))}</span>`
+    )).join('');
+    return `<span class="fa-cnc-pills" title="Proposed CNC">${pills}</span>`;
+  }
+
+  function proposedCncOpenKey(row, source) {
+    if (source === 'tracker') return `tracker:${row.first_article_id}`;
+    return `new:${String(row.process_sheet_no || row.pp_voucher_no || '').trim().toUpperCase()}`;
+  }
+
+  function proposedCncPickerHtml(row, source) {
+    const key = proposedCncOpenKey(row, source);
+    const machines = proposedCncMachines(row);
+    const open = state.openProposedCncKey === key;
+    const extraAttr = source === 'tracker'
+      ? `data-fa-cnc-id="${escapeHtml(row.first_article_id)}"`
+      : `data-fa-cnc-ps="${escapeHtml(row.process_sheet_no || row.pp_voucher_no || '')}"`;
     return `
-      <input type="text"
-        class="fa-cell-input fa-machine-input"
-        data-fa-field="machine_codes"
-        data-id="${row.first_article_id}"
-        value="${escapeHtml(row.machine_cnc || '')}"
-        placeholder="CNC 10, CNC 20"
-        autocomplete="off"
-        aria-label="Machines">
+      <button type="button"
+        class="fa-proposed-cnc-btn${machines.length ? ' has-value' : ''}${open ? ' is-open' : ''}"
+        data-fa-cnc-source="${escapeHtml(source)}"
+        data-fa-cnc-key="${escapeHtml(key)}"
+        ${extraAttr}
+        aria-haspopup="listbox"
+        aria-expanded="${open ? 'true' : 'false'}"
+        title="Choose proposed CNC machines — same field as S/O Management">
+        <span class="fa-proposed-cnc-btn-value">${
+          machines.length ? faRenderCncPills(machines) : '<span class="fa-muted">\u2014</span>'
+        }</span>
+        <span class="fa-proposed-cnc-btn-caret" aria-hidden="true">▾</span>
+      </button>
+      <span class="fa-proposed-cnc-status" aria-live="polite"></span>
     `;
+  }
+
+  function machineCell(row) {
+    return proposedCncPickerHtml(row, 'tracker');
   }
 
   function stageStatusClass(value) {
@@ -803,7 +891,7 @@
         <th class="fa-col-date">PO Due Date</th>
         <th class="fa-col-date" title="S/O posted date when the quotation becomes our PO">Posted</th>
         <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
-        <th class="fa-col-machine">Machine (CNC)</th>
+        <th class="fa-col-machine" title="Same Proposed CNC as S/O Management">Proposed CNC</th>
         <th class="fa-col-edd" title="Read-only from S/O management">Stipulated Coway EDD</th>
         <th class="fa-col-pic">PIC</th>
         <th class="fa-col-check">Tooling</th>
@@ -830,7 +918,7 @@
           <td class="fa-col-date">${escapeHtml(dash(row.po_due_date))}</td>
           <td class="fa-col-date">${escapeHtml(dash(row.posted_date))}</td>
           <td class="fa-col-stage">${stageCell(row)}</td>
-          <td class="fa-col-machine">${machineCell(row)}</td>
+          <td class="fa-col-machine fa-proposed-cnc-cell">${proposedCncPickerHtml(row, 'tracker')}</td>
           <td class="fa-edd">${escapeHtml(dash(row.coway_proposed_edd))}</td>
           <td class="fa-col-pic">${picCell(row)}</td>
           ${CHECK_FIELDS.map((field) => {
@@ -851,6 +939,7 @@
         $('fa-subtitle').textContent = `${state.rows.length} quotation${state.rows.length === 1 ? '' : 's'} on NPI Tracker`;
     }
     renderPicDatalist();
+    repositionProposedCncPopover();
   }
 
   function newRowKey(row) {
@@ -1180,6 +1269,7 @@
         <td class="fa-col-date">${escapeHtml(dash(row.po_due_date))}</td>
         <td class="fa-col-qty">${escapeHtml(dash(row.total_qty))}</td>
         <td class="fa-col-stage">${stageCell(row)}</td>
+        <td class="fa-col-machine fa-proposed-cnc-cell">${proposedCncPickerHtml(row, 'new')}</td>
         <td class="fa-col-bom${exists ? ' has-bom' : ''}">${bomCell(row)}</td>
         <td class="fa-col-material${row.material_arrived ? ' is-ready' : (row.material_date ? ' has-date' : '')}">${materialCell(row)}</td>
         <td class="fa-col-pic">${programPicCell(row)}</td>
@@ -1293,6 +1383,7 @@
     if (!body) return;
     body.innerHTML = groupedTableBodyHtml(grouped.groups, state.newView, { allowRemove: true });
     if (state.openFilterTable === 'new' && state.openFilterCol) repositionColumnFilter();
+    repositionProposedCncPopover();
   }
 
   function renderHistoryTable() {
@@ -1341,12 +1432,16 @@
     if (!body) return;
     body.innerHTML = groupedTableBodyHtml(grouped.groups, state.completedView, { allowRemove: false });
     if (state.openFilterTable === 'history' && state.openFilterCol) repositionColumnFilter();
+    repositionProposedCncPopover();
   }
 
   function setTab(tab, options) {
     const persistHash = options && options.persistHash;
     const next = tab === 'new' ? 'new' : (tab === 'history' ? 'history' : 'flagged');
-    if (next !== state.tab) closeColumnFilter();
+    if (next !== state.tab) {
+      closeColumnFilter();
+      closeProposedCncPopover();
+    }
     state.tab = next;
     document.querySelectorAll('[data-fa-tab]').forEach((btn) => {
       const active = btn.getAttribute('data-fa-tab') === next;
@@ -1444,7 +1539,7 @@
       const data = await api(API.list, { timeoutMs: 30000 });
       state.rows = data.rows || [];
       state.pics = data.pics || [];
-      state.machines = data.machines || [];
+      state.machines = data.machines || state.machines || [];
       renderPicList();
       renderTable();
     } catch (err) {
@@ -1472,6 +1567,9 @@
       if (Array.isArray(data.pics)) {
         state.pics = data.pics;
         renderPicList();
+      }
+      if (Array.isArray(data.machines) && data.machines.length) {
+        state.machines = data.machines;
       }
       state.newLoaded = true;
       renderNewTable();
@@ -1502,6 +1600,9 @@
       if (Array.isArray(data.pics)) {
         state.pics = data.pics;
         renderPicList();
+      }
+      if (Array.isArray(data.machines) && data.machines.length) {
+        state.machines = data.machines;
       }
       state.completedLoaded = true;
       if (!state.completedTypes.size) ensureCompletedTypes();
@@ -2203,6 +2304,278 @@
     }
   }
 
+  function proposedCncPopover() {
+    return $('fa-proposed-cnc-popover');
+  }
+
+  function closeProposedCncPopover() {
+    const pop = proposedCncPopover();
+    if (pop) pop.hidden = true;
+    state.openProposedCncKey = '';
+    state.proposedCncQuery = '';
+    state.proposedCncSource = '';
+    document.querySelectorAll('.fa-proposed-cnc-btn.is-open').forEach((btn) => {
+      btn.classList.remove('is-open');
+      btn.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+  function repositionProposedCncPopover() {
+    const pop = proposedCncPopover();
+    if (!pop || pop.hidden || !state.openProposedCncKey) return;
+    const btn = document.querySelector(
+      `.fa-proposed-cnc-btn[data-fa-cnc-key="${CSS.escape(state.openProposedCncKey)}"]`
+    );
+    if (!btn) {
+      closeProposedCncPopover();
+      return;
+    }
+    const rect = btn.getBoundingClientRect();
+    const width = Math.max(220, Math.min(280, window.innerWidth - 16));
+    let left = rect.left;
+    if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
+    let top = rect.bottom + 4;
+    const maxHeight = 320;
+    if (top + 180 > window.innerHeight && rect.top > 200) {
+      top = Math.max(8, rect.top - Math.min(maxHeight, 280) - 4);
+    }
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+    pop.style.width = `${width}px`;
+  }
+
+  function setProposedCncStatus(key, kind, message) {
+    document.querySelectorAll(`.fa-proposed-cnc-btn[data-fa-cnc-key="${CSS.escape(key)}"]`).forEach((btn) => {
+      const status = btn.parentElement?.querySelector('.fa-proposed-cnc-status');
+      if (!status) return;
+      status.className = `fa-proposed-cnc-status${kind ? ` is-${kind}` : ''}`;
+      status.textContent = message || '';
+    });
+  }
+
+  function syncProposedCncButtons(key, machines) {
+    document.querySelectorAll(`.fa-proposed-cnc-btn[data-fa-cnc-key="${CSS.escape(key)}"]`).forEach((btn) => {
+      const value = btn.querySelector('.fa-proposed-cnc-btn-value');
+      if (value) {
+        value.innerHTML = machines.length
+          ? faRenderCncPills(machines)
+          : '<span class="fa-muted">\u2014</span>';
+      }
+      btn.classList.toggle('has-value', machines.length > 0);
+      btn.classList.toggle('is-open', state.openProposedCncKey === key);
+      btn.setAttribute('aria-expanded', state.openProposedCncKey === key ? 'true' : 'false');
+    });
+  }
+
+  function rowForProposedCncKey(key) {
+    const text = String(key || '');
+    if (text.startsWith('tracker:')) {
+      return rowById(text.slice('tracker:'.length));
+    }
+    if (text.startsWith('new:')) {
+      return newRowByPs(text.slice('new:'.length));
+    }
+    return null;
+  }
+
+  function applyProposedCncLocal(row, source, machines) {
+    if (!row) return;
+    if (source === 'tracker') {
+      row.machine_codes = machines;
+      row.machine_cnc = machines.join(', ');
+      applyRow(row);
+    } else {
+      row.proposed_cnc = machines;
+      applyNewRow(row, { render: false });
+    }
+    syncProposedCncButtons(proposedCncOpenKey(row, source), machines);
+  }
+
+  function renderProposedCncPopover() {
+    const pop = proposedCncPopover();
+    const key = state.openProposedCncKey;
+    if (!pop || !key) return;
+    const row = rowForProposedCncKey(key);
+    const selected = proposedCncMachines(row);
+    const selectedSet = new Set(selected.map((item) => faNormalizeCncMachine(item).toUpperCase()).filter(Boolean));
+    const query = String(state.proposedCncQuery || '').trim().toLowerCase();
+    const catalog = faCncMachineCatalog(selected).filter((name) => (
+      !query || name.toLowerCase().includes(query) || String(faCncMachineNumber(name)) === query
+    ));
+    const checks = catalog.length
+      ? catalog.map((name) => {
+        const checked = selectedSet.has(name.toUpperCase()) ? ' checked' : '';
+        return `<label class="fa-col-filter-check fa-proposed-cnc-check">
+          <input type="checkbox" data-fa-cnc-machine="${escapeHtml(name)}"${checked} />
+          ${escapeHtml(name)}
+        </label>`;
+      }).join('')
+      : '<p class="fa-col-filter-empty">No matching CNC machines</p>';
+    pop.innerHTML = `
+      <div class="fa-col-filter-title">Proposed CNC</div>
+      <input type="search" class="fa-col-filter-search fa-proposed-cnc-search" value="${escapeHtml(state.proposedCncQuery || '')}" placeholder="Search or type CNC…" autocomplete="off" />
+      <div class="fa-proposed-cnc-checks">${checks}</div>
+      <form class="fa-proposed-cnc-add" data-action="add-proposed-cnc">
+        <input type="text" class="fa-col-filter-search fa-proposed-cnc-add-input" placeholder="Add CNC 22" autocomplete="off" />
+        <button type="submit" class="fa-btn fa-btn--ghost">Add</button>
+      </form>
+      <div class="fa-col-filter-actions">
+        <button type="button" class="fa-btn fa-btn--ghost" data-action="clear-proposed-cnc">Clear</button>
+      </div>
+    `;
+    pop.hidden = false;
+    repositionProposedCncPopover();
+  }
+
+  function openProposedCncPopover(btn) {
+    const key = String(btn?.dataset?.faCncKey || '').trim();
+    const source = String(btn?.dataset?.faCncSource || '').trim() || 'new';
+    if (!key) return;
+    if (state.openProposedCncKey === key && proposedCncPopover() && !proposedCncPopover().hidden) {
+      closeProposedCncPopover();
+      return;
+    }
+    closeColumnFilter();
+    state.openProposedCncKey = key;
+    state.proposedCncSource = source;
+    state.proposedCncQuery = '';
+    document.querySelectorAll('.fa-proposed-cnc-btn.is-open').forEach((el) => {
+      el.classList.remove('is-open');
+      el.setAttribute('aria-expanded', 'false');
+    });
+    btn.classList.add('is-open');
+    btn.setAttribute('aria-expanded', 'true');
+    renderProposedCncPopover();
+    proposedCncPopover()?.querySelector('.fa-proposed-cnc-search')?.focus();
+  }
+
+  async function saveProposedCnc(row, source, machines) {
+    const next = (machines || []).map(faNormalizeCncMachine).filter(Boolean);
+    if (!row) return;
+    const key = proposedCncOpenKey(row, source);
+    const flight = `${key}::save`;
+    if (state.saveInFlight.has(flight)) return;
+    state.saveInFlight.add(flight);
+    applyProposedCncLocal(row, source, next);
+    setProposedCncStatus(key, 'saving', 'Saving…');
+    try {
+      let saved = row;
+      if (source === 'tracker') {
+        saved = await savePatch(row.first_article_id, { machine_codes: next });
+      } else {
+        saved = await saveNewPatch(row.process_sheet_no || row.pp_voucher_no, { proposed_cnc: next }, { render: false });
+      }
+      const machinesSaved = proposedCncMachines(saved || { proposed_cnc: next, machine_codes: next });
+      applyProposedCncLocal(saved || row, source, machinesSaved);
+      if (state.openProposedCncKey === key) renderProposedCncPopover();
+      setProposedCncStatus(key, 'saved', 'Saved');
+      window.setTimeout(() => setProposedCncStatus(key, '', ''), 1500);
+    } catch (err) {
+      setProposedCncStatus(key, 'error', err.message || 'Save failed');
+      showAlert(err.message || 'Save failed');
+    } finally {
+      state.saveInFlight.delete(flight);
+    }
+  }
+
+  function toggleProposedCncMachine(row, source, machine, checked) {
+    const current = proposedCncMachines(row);
+    const next = [];
+    const seen = new Set();
+    current.forEach((item) => {
+      const name = faNormalizeCncMachine(item);
+      const itemKey = name.toUpperCase();
+      if (!name || seen.has(itemKey)) return;
+      seen.add(itemKey);
+      next.push(name);
+    });
+    const added = faNormalizeCncMachine(machine);
+    const addedKey = added.toUpperCase();
+    if (checked && added && !seen.has(addedKey)) next.push(added);
+    if (!checked) {
+      saveProposedCnc(row, source, next.filter((item) => item.toUpperCase() !== addedKey));
+      return;
+    }
+    saveProposedCnc(row, source, next);
+  }
+
+  function bindProposedCncPicker() {
+    const onOpen = (e) => {
+      const btn = e.target.closest('.fa-proposed-cnc-btn');
+      if (!btn) return;
+      e.stopPropagation();
+      openProposedCncPopover(btn);
+    };
+    ['fa-table-body', 'fa-new-table-body', 'fa-history-table-body'].forEach((id) => {
+      const body = $(id);
+      if (!body || body.dataset.proposedCncBound === '1') return;
+      body.dataset.proposedCncBound = '1';
+      body.addEventListener('click', onOpen);
+    });
+
+    const pop = proposedCncPopover();
+    if (!pop || pop.dataset.bound === '1') return;
+    pop.dataset.bound = '1';
+    pop.addEventListener('click', (e) => e.stopPropagation());
+    pop.addEventListener('change', (e) => {
+      const input = e.target.closest('[data-fa-cnc-machine]');
+      if (!input) return;
+      const row = rowForProposedCncKey(state.openProposedCncKey);
+      if (!row) return;
+      toggleProposedCncMachine(
+        row,
+        state.proposedCncSource || 'new',
+        input.getAttribute('data-fa-cnc-machine'),
+        input.checked,
+      );
+    });
+    pop.addEventListener('input', (e) => {
+      const search = e.target.closest('.fa-proposed-cnc-search');
+      if (!search) return;
+      state.proposedCncQuery = search.value || '';
+      const active = document.activeElement === search;
+      const start = search.selectionStart;
+      renderProposedCncPopover();
+      if (!active) return;
+      const next = proposedCncPopover()?.querySelector('.fa-proposed-cnc-search');
+      if (!next) return;
+      next.focus();
+      const pos = typeof start === 'number' ? start : next.value.length;
+      next.setSelectionRange(pos, pos);
+    });
+    pop.addEventListener('submit', (e) => {
+      const form = e.target.closest('[data-action="add-proposed-cnc"]');
+      if (!form) return;
+      e.preventDefault();
+      const row = rowForProposedCncKey(state.openProposedCncKey);
+      const input = form.querySelector('.fa-proposed-cnc-add-input');
+      const typed = faNormalizeCncMachine(input?.value);
+      if (!row || !typed) return;
+      toggleProposedCncMachine(row, state.proposedCncSource || 'new', typed, true);
+      if (input) input.value = '';
+    });
+    pop.addEventListener('click', (e) => {
+      const clearBtn = e.target.closest('[data-action="clear-proposed-cnc"]');
+      if (!clearBtn) return;
+      const row = rowForProposedCncKey(state.openProposedCncKey);
+      if (row) saveProposedCnc(row, state.proposedCncSource || 'new', []);
+    });
+
+    document.addEventListener('click', (e) => {
+      const popEl = proposedCncPopover();
+      if (!popEl || popEl.hidden) return;
+      if (popEl.contains(e.target) || e.target.closest('.fa-proposed-cnc-btn')) return;
+      closeProposedCncPopover();
+    });
+    window.addEventListener('resize', repositionProposedCncPopover);
+    ['fa-table-host', 'fa-new-table-host', 'fa-history-table-host'].forEach((id) => {
+      $(id)?.addEventListener('scroll', repositionProposedCncPopover, { passive: true });
+    });
+    document.querySelectorAll('.fa-table-scroll').forEach((el) => {
+      el.addEventListener('scroll', repositionProposedCncPopover, { passive: true });
+    });
+  }
+
   function bind() {
     $('fa-refresh')?.addEventListener('click', () => {
       if (state.tab === 'new') loadNewParts();
@@ -2370,6 +2743,10 @@
       if (e.key !== 'Escape') return;
       if (!$('fa-col-filter-popover')?.hidden) {
         closeColumnFilter();
+        return;
+      }
+      if (proposedCncPopover() && !proposedCncPopover().hidden) {
+        closeProposedCncPopover();
         return;
       }
       if (!$('fa-history-modal')?.hidden) {
@@ -2614,7 +2991,7 @@
       }
       if (fieldEl.getAttribute('data-fa-field') === 'pic_names') return;
       if (fieldEl.classList.contains('fa-check-input')) return;
-      if (fieldEl.tagName !== 'TEXTAREA' && !fieldEl.classList.contains('fa-machine-input') && !fieldEl.classList.contains('fa-check-input')) return;
+      if (fieldEl.tagName !== 'TEXTAREA' && !fieldEl.classList.contains('fa-check-input')) return;
       const id = fieldEl.getAttribute('data-id');
       const field = fieldEl.getAttribute('data-fa-field');
       queueSave(id, { [field]: fieldEl.value }, 450);
@@ -2813,6 +3190,7 @@
     }
 
     bindColumnControls();
+    bindProposedCncPicker();
   }
 
   bind();

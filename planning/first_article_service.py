@@ -1018,6 +1018,7 @@ def job_from_sales_order_pp(
         "posted_date": posted,
         "queued_machines": machines,
         "machine_cnc": ", ".join(machines),
+        "proposed_cnc": _parse_machine_codes(pp.get("proposed_cnc")),
         "coway_proposed_edd": _coway_edd(pp),
         "sales_order_no": compact_text(order.get("sales_order_no") or pp.get("source_voucher_no")),
         "customer_name": compact_text(order.get("customer_name")),
@@ -1700,6 +1701,19 @@ def _sales_order_payload(*, allow_rebuild: bool = False) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _ensure_proposed_cnc_overlay(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy NPI Machine (CNC) / saved S/O Proposed CNC onto New parts jobs."""
+    if not orders:
+        return orders
+    try:
+        from .sales_orders_route import _apply_proposed_cnc_overlay
+
+        _apply_proposed_cnc_overlay(orders)
+    except Exception:
+        logger.exception("first article proposed CNC overlay failed")
+    return orders
+
+
 def _ensure_new_part_flags(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
     needs = False
     for order in orders or []:
@@ -1754,6 +1768,7 @@ def _job_from_pp_cache_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "posted_date": _date_text(row.get("order_date") or row.get("posted_date")),
         "queued_machines": [],
         "machine_cnc": "",
+        "proposed_cnc": [],
         "coway_proposed_edd": "",
         "sales_order_no": compact_text(row.get("sales_order_no") or row.get("source_voucher_no")),
         "customer_name": compact_text(row.get("customer_name")),
@@ -1801,6 +1816,8 @@ def _merge_live_job(primary: dict[str, Any] | None, extra: dict[str, Any] | None
     if not out.get("queued_machines") and extra.get("queued_machines"):
         out["queued_machines"] = list(extra.get("queued_machines") or [])
         out["machine_cnc"] = compact_text(extra.get("machine_cnc")) or ", ".join(out["queued_machines"])
+    if not _parse_machine_codes(out.get("proposed_cnc")) and extra.get("proposed_cnc"):
+        out["proposed_cnc"] = _parse_machine_codes(extra.get("proposed_cnc"))
     if compact_text(out.get("erp_stage_mode")) in {"", "unassigned"} and compact_text(extra.get("erp_stage_mode")):
         out["erp_stage_mode"] = extra.get("erp_stage_mode")
         out["current_stage_no"] = extra.get("current_stage_no")
@@ -1969,6 +1986,14 @@ def _search_jobs_from_pp_cache(query: str, *, flagged_keys: set[str], limit: int
 
 
 def load_machine_catalog() -> list[str]:
+    try:
+        from .sales_orders_route import _load_cnc_machine_names
+
+        cnc = _load_cnc_machine_names()
+        if cnc:
+            return list(cnc)
+    except Exception:
+        logger.exception("first article CNC catalog load failed")
     try:
         from .machines import fetch_machines
 
@@ -2691,6 +2716,7 @@ def _blank_new_part_job(process_sheet_no: str, pp_voucher_no: str = "") -> dict[
         "posted_date": "",
         "queued_machines": [],
         "machine_cnc": "",
+        "proposed_cnc": [],
         "coway_proposed_edd": "",
         "sales_order_no": "",
         "customer_name": "",
@@ -2778,6 +2804,7 @@ def _apply_npi_tracker_to_new_part(
             out.setdefault(f"{prefix}_mode", "tick")
             out.setdefault(f"{prefix}_tick", False)
             out.setdefault(f"{prefix}_text", "")
+        out["proposed_cnc"] = _parse_machine_codes(out.get("proposed_cnc"))
         return out
 
     out["from_npi_tracker"] = True
@@ -2800,6 +2827,8 @@ def _apply_npi_tracker_to_new_part(
         machines = _parse_machine_codes(saved_machines)
         out["machine_codes"] = machines
         out["machine_cnc"] = ", ".join(machines)
+        if not _parse_machine_codes(out.get("proposed_cnc")):
+            out["proposed_cnc"] = list(machines)
 
     for prefix in CHECK_TEXT_FIELDS:
         out[f"{prefix}_mode"] = compact_text(flagged.get(f"{prefix}_mode")).lower() or "tick"
@@ -2817,6 +2846,7 @@ def _apply_npi_tracker_to_new_part(
             out["program_pic_ids"] = pic_ids
             out["program_pics"] = _pics_for_ids(pics_by_id or {}, pic_ids)
             out["program_pic_from_tracker"] = True
+    out["proposed_cnc"] = _parse_machine_codes(out.get("proposed_cnc"))
     return out
 
 
@@ -2915,6 +2945,7 @@ def _live_jobs_for_new_parts(payload: dict[str, Any]) -> tuple[list[dict[str, An
     complete_orders = list(payload.get("complete") or [])
     _ensure_new_part_flags(active_orders)
     _ensure_new_part_flags(complete_orders)
+    _ensure_proposed_cnc_overlay([*active_orders, *complete_orders])
     active_jobs = flatten_sales_order_jobs(active_orders, so_scope="active")
     live_map = index_jobs_by_ps(active_jobs)
     complete_jobs = flatten_sales_order_jobs(complete_orders, so_scope="complete")
@@ -3058,6 +3089,20 @@ def list_new_part_rows(*, allow_rebuild: bool = True, scope: str = "active") -> 
     return scoped
 
 
+def _save_proposed_cnc_to_so(pp_voucher_no: str, raw: Any) -> list[str]:
+    """Persist Proposed CNC onto the same S/O notes field used by S/O Management."""
+    note_key = compact_text(pp_voucher_no)
+    if not note_key:
+        raise ValueError("pp_voucher_no is required to save Proposed CNC")
+    machines = _resolve_machine_codes(raw, load_machine_catalog())
+    from .sales_orders_route import _patch_sales_orders_pp_notes, _upsert_notes
+
+    payload = _upsert_notes(note_key, {"proposed_cnc": machines})
+    _patch_sales_orders_pp_notes(note_key, payload)
+    saved = payload.get("proposed_cnc")
+    return _parse_machine_codes(saved if saved is not None else machines)
+
+
 def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
     process_sheet_no = _ps_base(data.get("process_sheet_no") or data.get("pp_voucher_no"))
     if not process_sheet_no:
@@ -3067,6 +3112,16 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
     if live:
         process_sheet_no = compact_text(live.get("process_sheet_no")) or process_sheet_no
         pp_voucher_no = compact_text(live.get("pp_voucher_no")) or pp_voucher_no
+
+    saved_cnc = None
+    if "proposed_cnc" in data:
+        saved_cnc = _save_proposed_cnc_to_so(
+            pp_voucher_no or process_sheet_no,
+            data.get("proposed_cnc"),
+        )
+        if live:
+            live = dict(live)
+            live["proposed_cnc"] = list(saved_cnc)
 
     with planner_db() as con:
         _ensure_tables(con)
@@ -3169,6 +3224,8 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
         merged["list_scope"] = "active"
     else:
         merged["list_scope"] = "history"
+    if saved_cnc is not None:
+        merged["proposed_cnc"] = list(saved_cnc)
     return merged
 
 

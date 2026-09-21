@@ -74,6 +74,16 @@ def _coway_edd(pp: dict[str, Any], partial: dict[str, Any] | None) -> str | None
     return raw or None
 
 
+def _posted_date(order: dict[str, Any], pp: dict[str, Any]) -> str | None:
+    """S/O posted date — first posted datetime, else process-sheet / header order date."""
+    return _iso_date(
+        order.get("first_posted_datetime")
+        or pp.get("order_date")
+        or order.get("order_date")
+        or pp.get("posted_date")
+    )
+
+
 def _customer_po(
     order: dict[str, Any],
     pp: dict[str, Any],
@@ -228,6 +238,7 @@ def expand_sales_coordination_lines(orders: list[dict[str, Any]]) -> list[dict[s
                         "bom_code": bom_code,
                         "customer_po_no": _customer_po(order, pp, partial),
                         "due_date": due,
+                        "posted_date": _posted_date(order, pp),
                         "qty": qty,
                         "partial_qty": partial_qty,
                         "buyer": buyer,

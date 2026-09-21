@@ -755,7 +755,7 @@ const SO_EXPORT_COLUMNS = [
   { id: 'process_sheet_no', label: 'Process sheet', width: 18 },
   { id: 'partial', label: 'Partial', width: 10 },
   { id: 'partial_qty', label: 'Partial qty', width: 12 },
-  { id: 'exception', label: 'Exception', width: 16 },
+  { id: 'exception', label: 'Exception', width: 18 },
   { id: 'queued_cnc', label: 'Queued CNC', width: 16 },
   { id: 'proposed_cnc', label: 'Proposed CNC', width: 16 },
   { id: 'erp_stage', label: 'Stage', width: 18 },
@@ -773,13 +773,40 @@ const SO_EXPORT_COLUMNS = [
   { id: 'delivery_date', label: 'Delivered', width: 12 },
   { id: 'unit_selling_price', label: 'U/Price', width: 12 },
   { id: 'amount', label: 'Amount', width: 12 },
-  { id: 'mtl_part_order', label: 'Mtl / Part Order', width: 16 },
-  { id: 'quality_doc', label: 'Quality Doc', width: 14 },
-  { id: 'ops_notes', label: 'Ops', width: 16 },
-  { id: 'sales_notes', label: 'Sales', width: 16 },
+  { id: 'mtl_part_order', label: 'Mtl / Part Order', width: 18 },
+  { id: 'quality_doc', label: 'Quality Doc', width: 16 },
+  { id: 'ops_notes', label: 'Ops remarks', width: 28 },
+  { id: 'sales_notes', label: 'Sales remarks', width: 28 },
+  { id: 'remarks', label: 'PP remarks', width: 28 },
+  { id: '_so_remarks', label: 'SO remarks', width: 28 },
+  { id: '_external_remarks', label: 'External remarks', width: 28 },
 ];
 
-let soExportView = 'active';
+const SO_EXPORT_VIEW_COLUMN = { id: '_view', label: 'View', width: 12 };
+const SO_EXPORT_WRAP_IDS = new Set([
+  'description',
+  'exception',
+  'mtl_part_order',
+  'quality_doc',
+  'ops_notes',
+  'sales_notes',
+  'remarks',
+  '_so_remarks',
+  '_external_remarks',
+]);
+const SO_EXPORT_EXCEPTION_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+
+let soExportView = 'exceptions';
+
+function soNormalizeExportView(view) {
+  if (view === 'no-wo' || view === 'exceptions' || view === 'all') return view;
+  return 'active';
+}
+
+function soExportColumnsForSheet(view) {
+  if (view === 'exceptions') return [SO_EXPORT_VIEW_COLUMN, ...SO_EXPORT_COLUMNS];
+  return SO_EXPORT_COLUMNS;
+}
 
 function soExportOrderCustomer(order) {
   return order?.customer_name || order?.customer_short_name || order?.customer_code || '';
@@ -798,6 +825,8 @@ function soExportDateValue(value) {
 function soExportCellValue(leaf, colId) {
   const { order, pp, partial } = leaf;
   switch (colId) {
+    case '_view':
+      return soExportBlankDash(leaf.exportView);
     case '_so':
       return soExportBlankDash(order?.sales_order_no);
     case '_customer':
@@ -806,6 +835,12 @@ function soExportCellValue(leaf, colId) {
       return soExportBlankDash(soPsDisplayForPartial(pp, partial));
     case 'exception':
       return soExceptionIssuesLabel(soPartialExceptionIssues(pp, partial));
+    case 'remarks':
+      return soExportBlankDash(pp?.remarks);
+    case '_so_remarks':
+      return soExportBlankDash(order?.remarks);
+    case '_external_remarks':
+      return soExportBlankDash(order?.external_remarks);
     case 'order_date':
     case 'due_date':
     case 'material_need_date':
@@ -844,8 +879,8 @@ function soExportCellValue(leaf, colId) {
   }
 }
 
-function soCollectExportLeaves(view) {
-  const next = view === 'no-wo' ? 'no-wo' : 'active';
+function soCollectFilteredLeaves(tableView) {
+  const next = tableView === 'no-wo' ? 'no-wo' : (tableView === 'complete' ? 'complete' : 'active');
   const prevView = soState.view;
   soState.view = next;
   try {
@@ -859,10 +894,56 @@ function soCollectExportLeaves(view) {
   }
 }
 
+function soCollectExceptionLeaves() {
+  const leaves = [];
+  [
+    { label: 'Active', orders: soState.active || [] },
+    { label: 'Complete', orders: soState.complete || [] },
+  ].forEach(({ label, orders }) => {
+    orders.forEach(order => {
+      soNestAndExplodeLeaves(soLeafRows(order)).forEach(leaf => {
+        if (leaf.assemblyChild || leaf.pp?.assembly_synthetic) return;
+        if (!soLeafPassesPrefixFilter(leaf.pp)) return;
+        if (!soPartialExceptionIssues(leaf.pp, leaf.partial).length) return;
+        leaves.push({ ...leaf, exportView: label });
+      });
+    });
+  });
+  return leaves;
+}
+
+function soExportSheets(view) {
+  const next = soNormalizeExportView(view);
+  if (next === 'all') {
+    return [
+      { name: 'Exceptions', view: 'exceptions', leaves: soCollectExceptionLeaves() },
+      { name: 'Active', view: 'active', leaves: soCollectFilteredLeaves('active') },
+      { name: 'No WO', view: 'no-wo', leaves: soCollectFilteredLeaves('no-wo') },
+    ];
+  }
+  if (next === 'exceptions') {
+    return [{ name: 'Exceptions', view: 'exceptions', leaves: soCollectExceptionLeaves() }];
+  }
+  if (next === 'no-wo') {
+    return [{ name: 'No WO', view: 'no-wo', leaves: soCollectFilteredLeaves('no-wo') }];
+  }
+  return [{ name: 'Active', view: 'active', leaves: soCollectFilteredLeaves('active') }];
+}
+
 function soExportFilename(view) {
   const stamp = new Date().toISOString().slice(0, 10);
-  const label = view === 'no-wo' ? 'no-wo' : 'active';
+  const next = soNormalizeExportView(view);
+  const label = next === 'no-wo' ? 'no-wo' : (next === 'exceptions' ? 'exceptions' : (next === 'all' ? 'all' : 'active'));
   return `so-management-${label}-${stamp}.xlsx`;
+}
+
+function soExportEmptyMessage(view) {
+  const next = soNormalizeExportView(view);
+  if (next === 'exceptions') {
+    return 'No exception rows to export. Flag Exception on a partial first. Complete-tab rows are included after that tab has been loaded.';
+  }
+  if (next === 'all') return 'No rows to export with the current filters.';
+  return `No ${next === 'no-wo' ? 'No WO' : 'Active'} rows to export with the current filters.`;
 }
 
 async function soEnsureExcelJs() {
@@ -878,36 +959,34 @@ async function soEnsureExcelJs() {
   return window.ExcelJS;
 }
 
-async function soExportToExcel(view) {
-  const exportView = view === 'no-wo' ? 'no-wo' : 'active';
-  const leaves = soCollectExportLeaves(exportView);
-  if (!leaves.length) {
-    window.alert(`No ${exportView === 'no-wo' ? 'No WO' : 'Active'} rows to export with the current filters.`);
-    return;
-  }
-
-  const ExcelJS = await soEnsureExcelJs();
-  const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Production Planner';
-  workbook.created = new Date();
-  const sheetName = exportView === 'no-wo' ? 'No WO' : 'Active';
+function soWriteExportSheet(workbook, sheetName, view, leaves) {
+  const columns = soExportColumnsForSheet(view);
   const sheet = workbook.addWorksheet(sheetName);
-
-  const headers = SO_EXPORT_COLUMNS.map(col => col.label);
-  const headerRow = sheet.addRow(headers);
+  const headerRow = sheet.addRow(columns.map(col => col.label));
   headerRow.font = { bold: true, size: 11 };
   headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
-  headerRow.alignment = { vertical: 'middle' };
+  headerRow.alignment = { vertical: 'middle', wrapText: true };
 
   leaves.forEach(leaf => {
-    sheet.addRow(SO_EXPORT_COLUMNS.map(col => soExportCellValue(leaf, col.id)));
+    const row = sheet.addRow(columns.map(col => soExportCellValue(leaf, col.id)));
+    row.alignment = { vertical: 'top', wrapText: true };
+    if (soPartialExceptionIssues(leaf.pp, leaf.partial).length) {
+      row.fill = SO_EXPORT_EXCEPTION_FILL;
+    }
   });
 
-  SO_EXPORT_COLUMNS.forEach((col, index) => {
-    sheet.getColumn(index + 1).width = col.width;
+  columns.forEach((col, index) => {
+    const column = sheet.getColumn(index + 1);
+    column.width = col.width;
+    if (SO_EXPORT_WRAP_IDS.has(col.id)) {
+      column.alignment = { vertical: 'top', wrapText: true };
+    }
   });
   sheet.views = [{ state: 'frozen', ySplit: 1, xSplit: 0, activeCell: 'A2' }];
+  return sheet;
+}
 
+async function soDownloadWorkbook(workbook, filename) {
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -915,23 +994,52 @@ async function soExportToExcel(view) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = soExportFilename(exportView);
+  link.download = filename;
   document.body.appendChild(link);
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
 }
 
+async function soExportToExcel(view) {
+  const exportView = soNormalizeExportView(view);
+  const sheets = soExportSheets(exportView);
+  const total = sheets.reduce((sum, sheet) => sum + sheet.leaves.length, 0);
+  if (!total) {
+    window.alert(soExportEmptyMessage(exportView));
+    return;
+  }
+
+  const ExcelJS = await soEnsureExcelJs();
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Production Planner';
+  workbook.created = new Date();
+  sheets.forEach(sheet => {
+    if (!sheet.leaves.length) return;
+    soWriteExportSheet(workbook, sheet.name, sheet.view, sheet.leaves);
+  });
+  await soDownloadWorkbook(workbook, soExportFilename(exportView));
+}
+
 function soUpdateExportModalCount() {
   const el = document.getElementById('so-export-modal-count');
   if (!el) return;
-  const count = soCollectExportLeaves(soExportView).length;
-  const label = soExportView === 'no-wo' ? 'No WO' : 'Active';
+  const sheets = soExportSheets(soExportView);
+  if (soExportView === 'all') {
+    el.textContent = `${sheets.map(sheet => `${sheet.leaves.length} ${sheet.name}`).join(' · ')} will be exported in one workbook.`;
+    return;
+  }
+  const count = sheets[0]?.leaves.length || 0;
+  if (soExportView === 'exceptions') {
+    el.textContent = `${count} exception row${count === 1 ? '' : 's'} will be exported.`;
+    return;
+  }
+  const label = sheets[0]?.name || 'Active';
   el.textContent = `${count} ${label} row${count === 1 ? '' : 's'} will be exported.`;
 }
 
 function soSetExportView(view) {
-  soExportView = view === 'no-wo' ? 'no-wo' : 'active';
+  soExportView = soNormalizeExportView(view);
   document.querySelectorAll('[data-so-export-view]').forEach(btn => {
     const active = btn.getAttribute('data-so-export-view') === soExportView;
     btn.classList.toggle('is-active', active);
@@ -954,7 +1062,7 @@ function soOpenExportModal() {
   }
   const modal = document.getElementById('so-export-modal');
   if (!modal) return;
-  soSetExportView(soState.view === 'no-wo' ? 'no-wo' : 'active');
+  soSetExportView('exceptions');
   modal.hidden = false;
   document.body.classList.add('so-export-modal-open');
 }
@@ -1023,6 +1131,9 @@ function soRenderJobDetailFields(order, pp, partial) {
       : []),
     soDetailField('Part', partial?.inventory_code || pp?.inventory_code, { mono: true }),
     soDetailField('Description', pp?.description, { fullWidth: true }),
+    ...(pp?.remarks ? [soDetailField('PP remarks', pp.remarks, { fullWidth: true })] : []),
+    ...(order?.remarks ? [soDetailField('SO remarks', order.remarks, { fullWidth: true })] : []),
+    ...(order?.external_remarks ? [soDetailField('External remarks', order.external_remarks, { fullWidth: true })] : []),
     soDetailField('Customer PO', partial?.customer_po_no || pp?.customer_po_no || order?.customer_po_no, { mono: true }),
     soDetailField('SO line', pp?.source_line_item_no),
     soDetailField('Due date', soFormatDate(pp?.due_date)),
@@ -1049,6 +1160,8 @@ function soRenderPartialDetail(order, pp, partial) {
     soDetailField('Customer code', partial?.customer_code || order?.customer_code, { mono: true }),
     soDetailField('Order date', soFormatDate(order?.order_date)),
     soPostedDetailFields(order),
+    ...(order?.remarks ? [soDetailField('SO remarks', order.remarks, { fullWidth: true })] : []),
+    ...(order?.external_remarks ? [soDetailField('External remarks', order.external_remarks, { fullWidth: true })] : []),
     soDetailField('Voucher status', order?.voucher_status, { mono: true }),
   ].join('');
   return [
@@ -1078,6 +1191,7 @@ function soRenderPpDetail(order, pp) {
     soDetailField('Part', pp?.inventory_code, { mono: true }),
     soDetailField('BOM', pp?.bom_code, { mono: true }),
     soDetailField('Description', pp?.description, { fullWidth: true }),
+    ...(pp?.remarks ? [soDetailField('PP remarks', pp.remarks, { fullWidth: true })] : []),
     soDetailField('Customer PO', pp?.customer_po_no, { mono: true }),
     soDetailField('Qty', pp?.pp_qty),
     soDetailField('Due date', soFormatDate(pp?.due_date)),
@@ -1117,6 +1231,8 @@ function soRenderOrderDetail(order) {
     soDetailField('Sales person', order.sales_person_name || order.sales_person_code),
     soDetailField('SBU', order.sbu_desc || order.sbu_code),
     soDetailField('Reference', order.reference_no, { mono: true }),
+    ...(order.remarks ? [soDetailField('Remarks', order.remarks, { fullWidth: true })] : []),
+    ...(order.external_remarks ? [soDetailField('External remarks', order.external_remarks, { fullWidth: true })] : []),
     soDetailField('After tax (home)', order.total_after_tax_home_amt),
     soDetailField('PP vouchers', order.pp_count),
     soDetailField('Partials', order.partial_count),
@@ -1428,6 +1544,8 @@ function soLeafSearchText(leaf) {
     order?.sales_person_name,
     order?.sbu_code,
     order?.sbu_desc,
+    order?.remarks,
+    order?.external_remarks,
     pp?.pp_voucher_no,
     pp?.process_sheet_no,
     soPsDisplayId(pp),
@@ -1435,6 +1553,7 @@ function soLeafSearchText(leaf) {
     pp?.inventory_code,
     pp?.bom_code,
     pp?.description,
+    pp?.remarks,
     pp?.customer_po_no,
     pp?.material_need_date,
     soFormatDate(pp?.material_need_date),

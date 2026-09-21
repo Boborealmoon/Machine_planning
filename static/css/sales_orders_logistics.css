@@ -47,6 +47,11 @@ body.sol-view .app-main--sales-logistics {
   min-height: calc(100dvh - 48px);
 }
 
+.sol-page.sol-page--wide {
+  width: 100%;
+  max-width: none;
+}
+
 .sol-header {
   display: flex;
   align-items: flex-start;
@@ -423,6 +428,12 @@ body.sol-view .app-main--sales-logistics {
   gap: 8px;
 }
 
+.sol-nav > .sol-search-wrap {
+  flex: 1 1 16rem;
+  min-width: 14rem;
+  max-width: none;
+}
+
 .sol-nav-group {
   display: flex;
   flex-wrap: wrap;
@@ -510,11 +521,28 @@ body.sol-view .app-main--sales-logistics {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 12px 16px;
-  padding: 12px;
+  gap: 10px 14px;
+  padding: 10px 12px;
   background: var(--sol-paper);
   border: 1px solid var(--sol-line);
   border-radius: 14px;
+  position: relative;
+  z-index: 6;
+}
+
+.sol-prpo-status {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  background: var(--sol-paper-2);
+  border: 1px solid var(--sol-line);
+  border-radius: 12px;
+}
+
+.sol-prpo-status .sol-chip {
+  border-radius: 9px;
 }
 
 .sol-tab-box {
@@ -525,7 +553,7 @@ body.sol-view .app-main--sales-logistics {
   background: var(--sol-paper-2);
   border: 1px solid var(--sol-line);
   border-radius: 12px;
-  min-width: min(100%, 22rem);
+  min-width: 0;
 }
 
 .sol-tab-box-head {
@@ -568,16 +596,12 @@ body.sol-view .app-main--sales-logistics {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 
-.sol-item-search-field {
-  flex: 1 1 180px;
-  min-width: 180px;
-  max-width: 22rem;
-}
-
-.sol-item-search-field .sol-search-wrap {
-  max-width: none;
+.sol-prpo-toolbar .filter-dropdown {
+  position: relative;
+  z-index: 8;
 }
 
 .sol-prpo-toolbar .filter-dropdown-panel {
@@ -585,6 +609,10 @@ body.sol-view .app-main--sales-logistics {
   overflow: auto;
   min-width: 160px;
   z-index: 40;
+}
+
+.sol-prpo-toolbar .filter-dropdown-panel[hidden] {
+  display: none !important;
 }
 
 .sol-filter-panel--wide {
@@ -678,10 +706,9 @@ body.sol-view .app-main--sales-logistics {
 }
 
 .sol-search-wrap {
-  flex: 1 1 180px;
-  max-width: 24rem;
-  min-width: 180px;
   position: relative;
+  display: block;
+  min-width: 12rem;
 }
 
 .sol-search-icon {
@@ -763,6 +790,10 @@ body.sol-view .app-main--sales-logistics {
 .sol-table-scroll {
   overflow: auto;
   max-height: calc(100dvh - 220px);
+}
+
+.sol-page--wide .sol-table-scroll {
+  max-height: calc(100dvh - 270px);
 }
 
 .sol-table {
@@ -1110,23 +1141,71 @@ body.sol-view .app-main--sales-logistics {
 }
 
 .sol-desc {
-  min-width: 0;
-  max-width: 16rem;
+  min-width: 16rem;
+  max-width: 28rem;
   color: #334155;
-  vertical-align: middle;
+  vertical-align: top;
 }
 
 .sol-desc-text {
-  display: block;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: normal;
+  line-height: 1.4;
+}
+
+.sol-table[data-mode="prpo"],
+.sol-table[data-mode="qc"] {
+  table-layout: auto;
+  width: max(100%, 108rem);
+  min-width: 108rem;
+}
+
+.sol-table[data-mode="prpo"] th,
+.sol-table[data-mode="prpo"] td,
+.sol-table[data-mode="qc"] th,
+.sol-table[data-mode="qc"] td {
+  box-sizing: border-box;
+  vertical-align: top;
   white-space: nowrap;
-  line-height: 1.3;
 }
 
 .sol-table[data-mode="prpo"] th.sol-desc,
-.sol-table[data-mode="prpo"] td.sol-desc {
-  max-width: 22rem;
+.sol-table[data-mode="prpo"] td.sol-desc,
+.sol-table[data-mode="qc"] th.sol-desc,
+.sol-table[data-mode="qc"] td.sol-desc {
+  min-width: 18rem;
+  max-width: 32rem;
+  white-space: normal;
+}
+
+.sol-table[data-mode="prpo"] .sol-col-item,
+.sol-table[data-mode="prpo"] .sol-col-code,
+.sol-table[data-mode="qc"] .sol-mono {
+  min-width: 7.5rem;
+}
+
+.sol-table[data-mode="prpo"] .sol-col-supplier {
+  min-width: 12rem;
+  max-width: 18rem;
+  white-space: normal;
+}
+
+.sol-table[data-mode="prpo"] .sol-date {
+  min-width: 6.5rem;
+}
+
+.sol-table[data-mode="prpo"] .sol-col-status {
+  min-width: 7.5rem;
+}
+
+.sol-table[data-mode="req"] {
+  width: max(100%, 72rem);
+  min-width: 72rem;
 }
 
 .sol-col-partial,
@@ -1846,10 +1925,10 @@ body.sol-view .so-editable-status:empty {
     align-items: stretch;
   }
 
-  .sol-search-wrap,
-  .sol-item-search-field {
+  .sol-search-wrap {
     min-width: 0;
     max-width: none;
+    flex: 1 1 100%;
   }
 
   .sol-prpo-toolbar {
@@ -1857,8 +1936,8 @@ body.sol-view .so-editable-status:empty {
     align-items: stretch;
   }
 
-  .sol-tab-box {
-    min-width: 0;
+  .sol-prpo-status {
+    width: 100%;
   }
 
   .sol-table-scroll {

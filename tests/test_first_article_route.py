@@ -66,6 +66,7 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertEqual(job["total_qty"], 12)
         self.assertEqual(job["po_due_date"], "2026-09-01")
         self.assertEqual(job["machine_cnc"], "CNC-01")
+        self.assertEqual(job["proposed_cnc"], [])
         self.assertEqual(job["posted_date"], "")
         self.assertFalse(job["is_new_part"])
         self.assertEqual(job["ps_type"], "APS")
@@ -122,6 +123,27 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertEqual(job["erp_stage_mode"], "open")
         self.assertEqual(job["so_scope"], "complete")
         self.assertTrue(job["shipped_completed"])
+
+    def test_job_copies_proposed_cnc_from_sales_order(self):
+        job = job_from_sales_order_pp(
+            {"sales_order_no": "SO-9"},
+            _pp(proposed_cnc=["CNC 20", "CNC 22"]),
+        )
+        self.assertEqual(job["proposed_cnc"], ["CNC 20", "CNC 22"])
+
+    def test_merge_keeps_so_proposed_cnc_over_npi_machines(self):
+        job = job_from_sales_order_pp(
+            {"sales_order_no": "SO-9"},
+            _pp(proposed_cnc=["CNC 38"], is_new_part=True),
+        )
+        flagged = {
+            "first_article_id": 44,
+            "process_sheet_no": "APS-1001",
+            "machine_codes": ["CNC 10", "CNC 20"],
+        }
+        merged = _merge_new_part_row(job, None, flagged=flagged)
+        self.assertEqual(merged["proposed_cnc"], ["CNC 38"])
+        self.assertEqual(merged["machine_cnc"], "CNC 10, CNC 20")
 
     def test_parse_machine_codes_dedupes(self):
         self.assertEqual(_parse_machine_codes("CNC 10, cnc 10, CNC 20"), ["CNC 10", "CNC 20"])
@@ -904,6 +926,7 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertEqual(merged["program_pics"][0]["name"], "Chang Peng")
         self.assertTrue(merged["program_pic_from_tracker"])
         self.assertEqual(merged["machine_cnc"], "CNC 10, CNC 20")
+        self.assertEqual(merged["proposed_cnc"], ["CNC 10", "CNC 20"])
         self.assertTrue(merged["tooling_tick"])
         self.assertEqual(merged["fixture_text"], "Est. Wk 32")
         kept = _merge_new_part_row(
@@ -1214,6 +1237,50 @@ class FirstArticleRouteTests(unittest.TestCase):
         self.assertEqual(payload["program_finish_at"], "2026-09-01T16:00")
         self.assertEqual(payload["program_pic_ids"], [4])
 
+    def test_new_parts_patch_accepts_proposed_cnc(self):
+        saved = {
+            "process_sheet_no": "NPS26-0374",
+            "proposed_cnc": ["CNC 20", "CNC 22"],
+        }
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+            with patch(
+                "planning.first_article_route.update_new_part_row",
+                return_value=saved,
+            ) as update_fn:
+                response = self.client.patch(
+                    "/api/first-article/new-parts",
+                    json={
+                        "process_sheet_no": "NPS26-0374",
+                        "pp_voucher_no": "NPS26-0374",
+                        "proposed_cnc": ["CNC 20", "22"],
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["row"]["proposed_cnc"], ["CNC 20", "CNC 22"])
+        update_fn.assert_called_once()
+        self.assertEqual(update_fn.call_args.args[0]["proposed_cnc"], ["CNC 20", "22"])
+
+    def test_save_proposed_cnc_writes_sales_order_notes(self):
+        from planning.first_article_service import _save_proposed_cnc_to_so
+
+        with patch(
+            "planning.first_article_service.load_machine_catalog",
+            return_value=["CNC 20", "CNC 22"],
+        ):
+            with patch(
+                "planning.sales_orders_route._upsert_notes",
+                return_value={"proposed_cnc": ["CNC 20", "CNC 22"]},
+            ) as upsert:
+                with patch("planning.sales_orders_route._patch_sales_orders_pp_notes") as patch_cache:
+                    saved = _save_proposed_cnc_to_so("NPS26-0374", ["20", "CNC 22"])
+
+        self.assertEqual(saved, ["CNC 20", "CNC 22"])
+        upsert.assert_called_once()
+        self.assertEqual(upsert.call_args.args[0], "NPS26-0374")
+        self.assertEqual(upsert.call_args.args[1]["proposed_cnc"], ["CNC 20", "CNC 22"])
+        patch_cache.assert_called_once()
+
     def test_new_parts_exception_requires_process_sheet(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
             response = self.client.post("/api/first-article/new-parts", json={})
@@ -1407,9 +1474,10 @@ class FirstArticleRouteTests(unittest.TestCase):
         self.assertIn("id=\"fa-history-table-body\"", html)
         self.assertIn("id=\"fa-history-modal\"", html)
         self.assertIn("quotations for new parts", html)
-        self.assertIn("fa-20260910-pic", html)
+        self.assertIn("fa-20260921-cnc", html)
         self.assertIn("id=\"fa-new-assigned-pic\"", html)
         self.assertIn("id=\"fa-col-filter-popover\"", html)
+        self.assertIn("id=\"fa-proposed-cnc-popover\"", html)
         self.assertIn("fa-col-so", html)
         self.assertNotIn("From NPI Tracker", html)
         self.assertNotIn("First Article Tracker", html)

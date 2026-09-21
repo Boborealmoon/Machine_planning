@@ -1032,3 +1032,21 @@ def test_patch_sales_orders_pp_notes_matches_child_process_sheet(monkeypatch, tm
     cached = erp_route_cache.get(key, ttl_sec=999)
     assert cached["active"][0]["pp_vouchers"][0]["material_subcon"] == "2026-09-11"
 
+
+def test_sales_orders_page_offers_exception_workbook_export():
+    import os
+    from unittest.mock import patch
+
+    from app import app
+
+    client = app.test_client()
+    with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+        response = client.get("/sales-orders")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert 'data-so-export-view="exceptions"' in html
+    assert 'data-so-export-view="all"' in html
+    assert "Ops / Sales / PP / SO remarks" in html
+    assert "so-exception-export-remarks-20260921" in html
+

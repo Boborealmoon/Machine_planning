@@ -9,9 +9,7 @@ from flask import Blueprint, jsonify, render_template, request
 from db import planner_db_connect_error
 from .helpers import planner_db
 from .mpp_planner_queue_service import (
-    _recover_db_transaction,
     load_mpp_planner_queue,
-    mpp_auto_dequeue_on_page_load,
     recalculate_mpp_planner_machines,
     save_mpp_planner_queue,
 )
@@ -60,6 +58,10 @@ def api_mpp_planner_jobs():
     try:
         fa_only = _request_fa_only()
         with planner_db() as con:
+            # Keep the op-pool fetch inside a bounded window so the page can
+            # paint the saved queue even when ERP fallback is slow.
+            con.execute("SET LOCAL statement_timeout = '45000'")
+            con.execute("SET LOCAL lock_timeout = '8s'")
             jobs = fetch_mpp_planner_jobs(con, fa_only=fa_only)
             meta = fetch_mpp_planner_intake_meta(con)
         return jsonify({
@@ -83,14 +85,11 @@ def api_mpp_planner_jobs():
 def api_mpp_planner_queue_get():
     try:
         with planner_db() as con:
+            # Do not run auto-dequeue on this GET. Sweeping completed cycle ops
+            # hits ERP per block and used to leave the planner stuck on
+            # "Loading queue…". Actuals saves + the background unschedule
+            # thread still dequeue finished work.
             queue = load_mpp_planner_queue(con)
-            try:
-                deq = mpp_auto_dequeue_on_page_load(con)
-                if int((deq or {}).get("dequeued") or 0) > 0:
-                    queue = load_mpp_planner_queue(con)
-            except Exception as exc:
-                logger.warning("mpp planner auto-dequeue skipped: %s", exc)
-                _recover_db_transaction(con)
         return jsonify({"ok": True, **queue})
     except Exception as exc:
         friendly = planner_db_connect_error(exc)

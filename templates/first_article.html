@@ -3,7 +3,7 @@
 {% block body_class %}fa-view{% endblock %}
 {% block main_class %}app-main--first-article{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260910-pic">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260921-cnc">
 {% endblock %}
 {% block content %}
 <div class="fa-page">
@@ -80,7 +80,7 @@
             <th class="fa-col-date">PO Due Date</th>
             <th class="fa-col-date" title="S/O posted date when the quotation becomes our PO">Posted</th>
             <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
-            <th class="fa-col-machine">Machine (CNC)</th>
+            <th class="fa-col-machine" title="Same Proposed CNC as S/O Management">Proposed CNC</th>
             <th class="fa-col-edd" title="Read-only from S/O management">Stipulated Coway EDD</th>
             <th class="fa-col-pic">PIC</th>
             <th class="fa-col-check">Tooling</th>
@@ -316,8 +316,9 @@
 </div>
 
 <div id="fa-col-filter-popover" class="fa-col-filter-popover" hidden></div>
+<div id="fa-proposed-cnc-popover" class="fa-col-filter-popover fa-proposed-cnc-popover" hidden></div>
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=fa-20260825-2"></script>
-<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260910-pic"></script>
+<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260921-cnc"></script>
 {% endblock %}

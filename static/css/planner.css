@@ -9469,10 +9469,10 @@
     font-size: 9px;
     font-weight: 700;
   }
-  .new-orders-page--sales-orders tr.is-ps-queued-mark td:not(.new-orders-side-rail) {
+  .new-orders-page--sales-orders tr.is-ps-queued-mark td:not(.new-orders-side-rail):not(.so-coway-edd-cell):not(.so-program-finish-cell):not(.so-need-date-cell):not(.so-material-subcon-cell) {
     background: color-mix(in srgb, #22c55e 14%, #ffffff) !important;
   }
-  .new-orders-page--sales-orders tr.is-ps-queued-mark:hover td:not(.new-orders-side-rail) {
+  .new-orders-page--sales-orders tr.is-ps-queued-mark:hover td:not(.new-orders-side-rail):not(.so-coway-edd-cell):not(.so-program-finish-cell):not(.so-need-date-cell):not(.so-material-subcon-cell) {
     background: color-mix(in srgb, #22c55e 20%, #ffffff) !important;
   }
   .new-orders-page--sales-orders .so-table--wide thead th[data-so-col="exception"] {
@@ -9565,13 +9565,13 @@
   .new-orders-page--sales-orders .so-exception-status.is-saving { color: #2563eb; }
   .new-orders-page--sales-orders .so-exception-status.is-saved { color: #15803d; }
   .new-orders-page--sales-orders .so-exception-status.is-error { color: #dc2626; }
-  .new-orders-page--sales-orders tr.is-so-exception td:not(.new-orders-side-rail) {
+  .new-orders-page--sales-orders tr.is-so-exception td:not(.new-orders-side-rail):not(.so-coway-edd-cell):not(.so-program-finish-cell):not(.so-need-date-cell):not(.so-material-subcon-cell) {
     background: color-mix(in srgb, #ef4444 16%, #ffffff) !important;
   }
-  .new-orders-page--sales-orders tr.is-so-exception:hover td:not(.new-orders-side-rail) {
+  .new-orders-page--sales-orders tr.is-so-exception:hover td:not(.new-orders-side-rail):not(.so-coway-edd-cell):not(.so-program-finish-cell):not(.so-need-date-cell):not(.so-material-subcon-cell) {
     background: color-mix(in srgb, #ef4444 22%, #ffffff) !important;
   }
-  .new-orders-page--sales-orders tr.is-so-exception.is-ps-queued-mark td:not(.new-orders-side-rail) {
+  .new-orders-page--sales-orders tr.is-so-exception.is-ps-queued-mark td:not(.new-orders-side-rail):not(.so-coway-edd-cell):not(.so-program-finish-cell):not(.so-need-date-cell):not(.so-material-subcon-cell) {
     background: linear-gradient(
       90deg,
       color-mix(in srgb, #ef4444 16%, #ffffff) 0%,
@@ -9721,10 +9721,10 @@
     color: #5b21b6;
   }
   .new-orders-page--sales-orders .so-table--wide tbody td.so-coway-edd-cell {
-    background: color-mix(in srgb, #7c3aed 9%, #ffffff);
+    background: color-mix(in srgb, #7c3aed 9%, #ffffff) !important;
   }
   .new-orders-page--sales-orders .new-orders-table tbody tr.is-clickable:hover td.so-coway-edd-cell {
-    background: color-mix(in srgb, #7c3aed 14%, #ffffff);
+    background: color-mix(in srgb, #7c3aed 14%, #ffffff) !important;
   }
 
   .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--finish {
@@ -9735,10 +9735,10 @@
     color: #92400e;
   }
   .new-orders-page--sales-orders .so-table--wide tbody td.so-program-finish-cell {
-    background: color-mix(in srgb, #d97706 11%, #ffffff);
+    background: color-mix(in srgb, #d97706 11%, #ffffff) !important;
   }
   .new-orders-page--sales-orders .new-orders-table tbody tr.is-clickable:hover td.so-program-finish-cell {
-    background: color-mix(in srgb, #d97706 16%, #ffffff);
+    background: color-mix(in srgb, #d97706 16%, #ffffff) !important;
   }
 
   .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--need {
@@ -9749,16 +9749,16 @@
     color: #7c5a1e;
   }
   .new-orders-page--sales-orders .so-table--wide tbody td.so-need-date-cell {
-    background: color-mix(in srgb, #d6b56a 12%, #ffffff);
+    background: color-mix(in srgb, #d6b56a 12%, #ffffff) !important;
   }
   .new-orders-page--sales-orders .new-orders-table tbody tr.is-clickable:hover td.so-need-date-cell {
-    background: color-mix(in srgb, #d6b56a 18%, #ffffff);
+    background: color-mix(in srgb, #d6b56a 18%, #ffffff) !important;
   }
   .new-orders-page--sales-orders .so-table--wide tbody td.so-need-date-cell.has-need-date {
-    background: #f6ecd8;
+    background: #f6ecd8 !important;
   }
   .new-orders-page--sales-orders .new-orders-table tbody tr.is-clickable:hover td.so-need-date-cell.has-need-date {
-    background: color-mix(in srgb, #f6ecd8 80%, #e8dcc0);
+    background: color-mix(in srgb, #f6ecd8 80%, #e8dcc0) !important;
   }
 
   .new-orders-page--sales-orders .so-table--wide thead th.so-col-tone--material {
@@ -9769,10 +9769,10 @@
     color: #075985;
   }
   .new-orders-page--sales-orders .so-table--wide tbody td.so-material-subcon-cell:not(.has-material-date):not(.has-material-arrived) {
-    background: color-mix(in srgb, #0ea5e9 9%, #ffffff);
+    background: color-mix(in srgb, #0ea5e9 9%, #ffffff) !important;
   }
   .new-orders-page--sales-orders .new-orders-table tbody tr.is-clickable:hover td.so-material-subcon-cell:not(.has-material-date):not(.has-material-arrived) {
-    background: color-mix(in srgb, #0ea5e9 14%, #ffffff);
+    background: color-mix(in srgb, #0ea5e9 14%, #ffffff) !important;
   }
 
   /* Sales Orders — column sort / filter headers */
@@ -10454,7 +10454,7 @@
   .so-export-modal-panel {
     position: relative;
     z-index: 1;
-    width: min(420px, 96vw);
+    width: min(480px, 96vw);
     display: grid;
     gap: 0;
     background: var(--surface1, #fff);

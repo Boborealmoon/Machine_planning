@@ -115,7 +115,13 @@ body.sc-view .app-main--sc {
   border-color: var(--sc-line);
 }
 
-.sc-btn--ghost:hover {
+.sc-btn--ghost:hover:not(:disabled) {
+  background: var(--sc-accent-soft);
+  border-color: #c5d6d0;
+  color: var(--sc-accent);
+}
+
+#sc-clear-filters.sc-btn--ghost:hover:not(:disabled) {
   background: #fdf2f2;
   border-color: #f0c4c4;
   color: #9f1239;
@@ -123,7 +129,7 @@ body.sc-view .app-main--sc {
 
 .sc-btn:disabled {
   opacity: 0.55;
-  cursor: wait;
+  cursor: not-allowed;
 }
 
 .sc-btn[hidden] {
@@ -214,12 +220,35 @@ body.sc-view .app-main--sc {
   color: #fff;
 }
 
-.sc-meta {
+.sc-meta-wrap {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sc-meta {
   font-size: 0.8rem;
   font-weight: 500;
   color: var(--sc-muted);
   white-space: nowrap;
+}
+
+.sc-selection-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--sc-accent-soft);
+  color: var(--sc-accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sc-selection-pill[hidden] {
+  display: none !important;
 }
 
 .sc-loading {
@@ -276,17 +305,32 @@ body.sc-view .app-main--sc {
 }
 
 .sc-table {
-  width: 100%;
-  min-width: 92rem;
-  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 0.8125rem;
   color: var(--sc-ink);
 }
 
+.sc-table col.sc-col-check { width: 2.6rem; }
+.sc-table col.sc-col-ps { width: 8.5rem; }
+.sc-table col.sc-col-so { width: 8.2rem; }
+.sc-table col.sc-col-po { width: 8.2rem; }
+.sc-table col.sc-col-part { width: 11.5rem; }
+.sc-table col.sc-col-desc { width: 16rem; }
+.sc-table col.sc-col-qty { width: 5.8rem; }
+.sc-table col.sc-col-date { width: 7.6rem; }
+.sc-table col.sc-col-buyer { width: 10.5rem; }
+.sc-table col.sc-col-status { width: 10.5rem; }
+.sc-table col.sc-col-material { width: 9.5rem; }
+.sc-table col.sc-col-mtl-status { width: 8.5rem; }
+
 .sc-table thead th {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 2;
   background: var(--sc-paper-2);
   color: var(--sc-faint);
   font-size: 0.68rem;
@@ -297,8 +341,11 @@ body.sc-view .app-main--sc {
   padding: 11px 12px;
   border-bottom: 1px solid var(--sc-line);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
   user-select: none;
+  box-sizing: border-box;
 }
 
 .sc-table thead th:hover {
@@ -325,11 +372,49 @@ body.sc-view .app-main--sc {
   content: " \2193";
 }
 
+.sc-table thead th.sc-check-col {
+  cursor: default;
+  width: 2.6rem;
+  min-width: 2.6rem;
+  text-align: center;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.sc-table thead th.sc-check-col::after {
+  content: none;
+}
+
+.sc-check-col {
+  width: 2.6rem;
+  min-width: 2.6rem;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.sc-check-col input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--sc-accent);
+}
+
+.sc-table tbody tr.is-selected td {
+  background: #eef5f2;
+}
+
+.sc-table tbody tr.is-selected:hover td {
+  background: #e4eeea;
+}
+
 .sc-table tbody td {
   padding: 10px 12px;
   border-bottom: 1px solid #f0ebe3;
   vertical-align: middle;
   background: var(--sc-paper);
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .sc-table tbody tr:nth-child(even) td {
@@ -349,6 +434,7 @@ body.sc-view .app-main--sc {
   text-transform: uppercase;
   padding: 8px 12px;
   border-bottom: 1px solid var(--sc-line);
+  overflow: visible;
 }
 
 .sc-table tbody tr.sc-group-row:hover td,
@@ -416,7 +502,9 @@ body.sc-view .app-main--sc {
 
 .sc-buyer-input {
   width: 100%;
-  min-width: 7.5rem;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 6px 9px;
   border: 1px solid var(--sc-line);
   border-radius: 8px;
@@ -563,6 +651,7 @@ body.sc-view .app-main--sc {
     max-width: none;
   }
 
+  .sc-meta-wrap,
   .sc-meta {
     margin-left: 0;
     width: 100%;

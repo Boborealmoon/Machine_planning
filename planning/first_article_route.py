@@ -73,6 +73,7 @@ _NEW_PART_PATCH_FIELDS = (
     "remarks",
     "program_finish_at",
     "program_pic_ids",
+    "proposed_cnc",
 )
 
 
@@ -255,11 +256,19 @@ def api_list_first_article_new_parts():
         with planner_db() as con:
             pics = load_pics(con)
         rows = list_new_part_rows(scope=scope)
+        machines = load_machine_catalog()
     except Exception as exc:
         logger.exception("first article new-parts list failed")
         payload, status = json_error(exc, fallback_status=502)
         return jsonify(payload), status
-    return jsonify({"ok": True, "scope": scope, "count": len(rows), "rows": rows, "pics": pics})
+    return jsonify({
+        "ok": True,
+        "scope": scope,
+        "count": len(rows),
+        "rows": rows,
+        "pics": pics,
+        "machines": machines,
+    })
 
 
 @first_article_bp.post("/api/first-article/new-parts")

@@ -1,9 +1,12 @@
 """Tests for sales-coordination read-only commitment lines."""
 from __future__ import annotations
 
+import os
 import unittest
 from datetime import date
+from unittest.mock import patch
 
+from app import app
 from planning.sales_coordination_service import (
     build_sales_coordination,
     expand_sales_coordination_lines,
@@ -24,6 +27,7 @@ class SalesCoordinationTests(unittest.TestCase):
                 "sales_order_no": "SO/1",
                 "customer_name": "Acme",
                 "customer_po_no": "PO-HEADER",
+                "first_posted_datetime": "2026-07-28 09:00:00",
                 "pp_vouchers": [
                     {
                         "pp_voucher_no": "APS26-100026",
@@ -49,9 +53,32 @@ class SalesCoordinationTests(unittest.TestCase):
         self.assertEqual(row["part_no"], "D61063EB")
         self.assertEqual(row["customer_po_no"], "3056043022/00")
         self.assertEqual(row["due_date"], "2026-08-19")
+        self.assertEqual(row["posted_date"], "2026-07-28")
         self.assertEqual(row["proposed_edd"], "2026-08-18")
         self.assertEqual(row["week"], "Week 34 - Tuesday")
         self.assertTrue(row["is_frame_agreement"])
+
+    def test_posted_date_falls_back_to_order_date(self):
+        orders = [
+            {
+                "sales_order_no": "SO/posted",
+                "order_date": "2026-06-01",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "APS26-9",
+                        "process_sheet_no": "APS26-9",
+                        "inventory_code": "X",
+                        "description": "Part",
+                        "due_date": "2026-08-19",
+                        "order_date": "2026-06-15",
+                        "shipped_completed": False,
+                        "partials": [],
+                    }
+                ],
+            }
+        ]
+        row = expand_sales_coordination_lines(orders)[0]
+        self.assertEqual(row["posted_date"], "2026-06-15")
 
     def test_falls_back_to_due_date_when_no_prop_edd(self):
         orders = [
@@ -185,6 +212,68 @@ class SalesCoordinationTests(unittest.TestCase):
         self.assertEqual(lines[1]["buyer"], "Alex")
         self.assertEqual(lines[1]["material_status"], "Arrived")
         self.assertIn("CNC", lines[1]["order_status"])
+
+
+class SalesCoordinationRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.app = app
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+
+    def test_page_includes_date_columns_export_and_sort(self):
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+            response = self.client.get("/sales-coordination")
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn("data-sort=\"posted_date\"", html)
+        self.assertIn("data-sort=\"proposed_edd\"", html)
+        self.assertIn("data-sort=\"due_date\"", html)
+        self.assertIn("id=\"sc-export\"", html)
+        self.assertIn("id=\"sc-select-all\"", html)
+        self.assertIn("sc-col-check", html)
+        self.assertIn("Posted date", html)
+        self.assertIn("Proposed EDD", html)
+        self.assertIn("sc-20260921-col-align", html)
+
+    def test_api_includes_posted_and_proposed_edd(self):
+        payload = {
+            "active": [
+                {
+                    "sales_order_no": "SO/1",
+                    "customer_name": "Acme",
+                    "first_posted_datetime": "2026-07-28 09:00:00",
+                    "pp_vouchers": [
+                        {
+                            "pp_voucher_no": "APS26-100026",
+                            "process_sheet_no": "APS26-100026",
+                            "inventory_code": "D61063EB",
+                            "description": "BUSH",
+                            "due_date": "2026-08-19",
+                            "coway_proposed_edd": "2026-08-18",
+                            "shipped_completed": False,
+                            "partials": [],
+                        }
+                    ],
+                }
+            ],
+            "frame_agreement_parts": [],
+        }
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}), patch(
+            "planning.sales_orders_route._fetch_sales_orders",
+            return_value=payload,
+        ), patch(
+            "planning.sales_orders_route._job_count",
+            return_value=1,
+        ):
+            response = self.client.get("/api/sales-coordination")
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(len(data["lines"]), 1)
+        row = data["lines"][0]
+        self.assertEqual(row["posted_date"], "2026-07-28")
+        self.assertEqual(row["proposed_edd"], "2026-08-18")
+        self.assertEqual(row["due_date"], "2026-08-19")
 
 
 if __name__ == "__main__":

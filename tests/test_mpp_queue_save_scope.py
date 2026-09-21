@@ -199,3 +199,12 @@ def test_cycle_content_signature_skips_identical_lane_rewrite():
     assert payload == _snapshot_cycle_content_signature(snap)
     changed = {**cycle, "ops": [{**cycle["ops"][0], "palletCount": 2}]}
     assert _payload_cycle_content_signature(changed, timing, None) != payload
+
+
+def test_queue_get_does_not_auto_dequeue_on_first_paint():
+    import inspect
+    from planning.mpp_planner_route import api_mpp_planner_queue_get
+
+    source = inspect.getsource(api_mpp_planner_queue_get)
+    assert "load_mpp_planner_queue" in source
+    assert "mpp_auto_dequeue_on_page_load" not in source

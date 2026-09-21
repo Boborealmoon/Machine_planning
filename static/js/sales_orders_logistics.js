@@ -34,8 +34,8 @@
     { key: 'status', label: 'Status' },
     { key: 'purchase_requisition_no', label: 'PR No' },
     { key: 'pr_date', label: 'PR Date', type: 'date' },
-    { key: 'item_code', label: 'Item' },
-    { key: 'description', label: 'Description' },
+    { key: 'item_code', label: 'Item', cls: 'sol-col-item' },
+    { key: 'description', label: 'Description', cls: 'sol-desc' },
     { key: 'remarks', label: 'Remarks', cls: 'sol-desc' },
     { key: 'qty', label: 'Qty', type: 'num', cls: 'sol-col-qty' },
     { key: 'required_arrival_date', label: 'Required arrival', type: 'date' },
@@ -90,7 +90,6 @@
     view: 'active',
     prPoBucket: 'ost',
     search: '',
-    itemSearch: '',
     selectedSbu: new Set(['MFG']),
     selectedSuppliers: new Set(),
     sortKey: 'pr_date',
@@ -753,26 +752,13 @@
     return state.selectedSuppliers.has(supplierKey(row));
   }
 
-  function passesItemSearch(row) {
-    const q = String(state.itemSearch || '').trim();
-    if (!q) return true;
-    const hay = normalizeItemText([
-      row.item_code,
-      row.item_description,
-      row.line_item_description,
-      row.remarks,
-      row.internal_remarks,
-    ].join(' '));
-    return q.split(/\s+/).filter(Boolean).every(token => hay.includes(normalizeItemText(token)));
-  }
-
   function passesPrPoTextSearch(row) {
     const q = String(state.search || '').trim();
     if (!q) return true;
     const blob = prPoSearchText(row);
     if (textMatchesQuery(blob, q)) return true;
-    const needle = normalizeItemText(q);
-    return Boolean(needle) && normalizeItemText(blob).includes(needle);
+    const hay = normalizeItemText(blob);
+    return q.split(/\s+/).filter(Boolean).every(token => hay.includes(normalizeItemText(token)));
   }
 
   function dateSortValue(value) {
@@ -813,14 +799,10 @@
   }
 
   function visiblePrPoRows() {
-    const itemQ = String(state.itemSearch || '').trim();
     const rows = state.prPoRows.filter(row => {
       if (!passesSbuFilter(row)) return false;
       if (!passesSupplierFilter(row)) return false;
-      if (!passesItemSearch(row)) return false;
-      // Dedicated item search is enough; leftover Active-tab SO search
-      // should not hide matching purchase rows.
-      if (!itemQ && !passesPrPoTextSearch(row)) return false;
+      if (!passesPrPoTextSearch(row)) return false;
       return true;
     });
     return sortPrPoRows(rows);
@@ -1436,22 +1418,22 @@
     const supplier = String(row.supplier_name || row.supplier_code || '').trim() || EM_DASH;
     return `
       <tr>
-        <td>${prPoStatusPill(row.status)}</td>
-        <td class="sol-mono">${escapeHtml(cellText(row.purchase_requisition_no))}</td>
+        <td class="sol-col-status">${prPoStatusPill(row.status)}</td>
+        <td class="sol-mono sol-col-code">${escapeHtml(cellText(row.purchase_requisition_no))}</td>
         <td class="sol-date">${escapeHtml(formatDate(row.pr_date))}</td>
-        <td class="sol-mono">${escapeHtml(cellText(row.item_code))}</td>
+        <td class="sol-mono sol-col-item">${escapeHtml(cellText(row.item_code))}</td>
         ${renderDescCell(desc)}
         ${renderDescCell(remarks)}
         <td class="sol-col-qty">${escapeHtml(formatQty(row.qty))}</td>
         <td class="sol-date">${escapeHtml(formatDate(row.required_arrival_date))}</td>
-        <td class="sol-mono">${escapeHtml(cellText(row.purchase_order_no))}</td>
+        <td class="sol-mono sol-col-code">${escapeHtml(cellText(row.purchase_order_no))}</td>
         <td class="sol-date">${escapeHtml(formatDate(row.po_date))}</td>
         <td class="sol-date">${escapeHtml(formatDate(row.estimated_arrival_date))}</td>
-        <td title="${escapeHtml(supplier)}">${escapeHtml(supplier)}</td>
-        <td class="sol-mono">${escapeHtml(cellText(row.project_no))}</td>
-        <td>${escapeHtml(cellText(row.sbu_code))}</td>
-        <td>${escapeHtml(cellText(row.created_by))}</td>
-        <td class="sol-mono">${escapeHtml(cellText(row.grn_no))}</td>
+        <td class="sol-col-supplier" title="${escapeHtml(supplier)}">${escapeHtml(supplier)}</td>
+        <td class="sol-mono sol-col-code">${escapeHtml(cellText(row.project_no))}</td>
+        <td class="sol-col-sbu">${escapeHtml(cellText(row.sbu_code))}</td>
+        <td class="sol-col-user">${escapeHtml(cellText(row.created_by))}</td>
+        <td class="sol-mono sol-col-code">${escapeHtml(cellText(row.grn_no))}</td>
         <td class="sol-date">${escapeHtml(formatDate(row.actual_arrival_date))}</td>
       </tr>
     `;
@@ -1944,6 +1926,11 @@
     const newBucketBtn = document.querySelector('[data-sol-bucket="new"]');
     const search = document.getElementById('sol-search');
     const legend = document.getElementById('sol-legend');
+    const page = document.querySelector('.sol-page');
+    if (page) {
+      page.classList.toggle('sol-page--wide', prPo || qc);
+      page.classList.toggle('sol-page--prpo', prPo);
+    }
 
     document.querySelectorAll('.sol-ps-only').forEach(el => {
       el.hidden = !isPsView();
@@ -1981,7 +1968,7 @@
 
     if (search) {
       search.placeholder = prPo
-        ? 'Search PR, PO, supplier, project...'
+        ? 'Search item, PR, PO, supplier, remarks...'
         : requests
           ? 'Search part no, inventory code, remarks...'
             : qc
@@ -2247,6 +2234,20 @@
     return bucket === 'hst' ? 'hst' : 'ost';
   }
 
+  function viewFamily(view) {
+    if (isPrPoView(view)) return 'prpo';
+    if (isRequestView(view)) return 'req';
+    if (isQcView(view)) return 'qc';
+    return 'ps';
+  }
+
+  function clearSearchIfFamilyChanged(nextView) {
+    if (viewFamily(state.view) === viewFamily(nextView)) return;
+    state.search = '';
+    const search = document.getElementById('sol-search');
+    if (search) search.value = '';
+  }
+
   function setView(view) {
     const next = PR_PO_VIEWS.has(view) || PS_VIEWS.has(view) || view === REQUEST_VIEW || view === QC_VIEW
       ? view
@@ -2254,6 +2255,7 @@
     const nextIsPrPo = isPrPoView(next);
     const nextIsRequest = isRequestView(next);
     const nextIsQc = isQcView(next);
+    clearSearchIfFamilyChanged(next);
     state.view = next;
     if (nextIsPrPo) {
       state.prPoBucket = normalizeBucketForView(next, state.prPoBucket);
@@ -2468,11 +2470,6 @@
         [...panel.querySelectorAll('input[type="checkbox"]:checked')].map(el => el.value),
       );
       setFilterButtonLabel('sol-supplier-btn', state.selectedSuppliers, 'All suppliers');
-      render();
-    });
-
-    document.getElementById('sol-item-search')?.addEventListener('input', e => {
-      state.itemSearch = e.target.value || '';
       render();
     });
 
