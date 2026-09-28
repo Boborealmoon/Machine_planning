@@ -632,14 +632,28 @@
     return text.split(',').map((part) => part.trim()).filter(Boolean);
   }
 
+  const FA_NON_CNC_OPTIONS = ['Subcon', 'Wirecut'];
+
   function faCncMachineNumber(code) {
     const match = String(code || '').trim().match(/(\d+)\s*$/);
     return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
   }
 
+  function faNonCncOptionKey(raw) {
+    return String(raw || '').trim().replace(/[\s_-]+/g, '').toUpperCase();
+  }
+
+  function faIsNonCncOption(raw) {
+    const key = faNonCncOptionKey(raw);
+    return key === 'SUBCON' || key === 'WIRECUT';
+  }
+
   function faNormalizeCncMachine(raw) {
     const text = String(raw || '').trim().replace(/\s+/g, ' ');
     if (!text) return '';
+    const key = faNonCncOptionKey(text);
+    if (key === 'SUBCON') return 'Subcon';
+    if (key === 'WIRECUT') return 'Wirecut';
     if (/^\d+$/.test(text)) return `CNC ${text}`;
     return text;
   }
@@ -650,7 +664,7 @@
     const add = (raw) => {
       const name = faNormalizeCncMachine(raw);
       const key = name.toUpperCase();
-      if (!name || seen.has(key)) return;
+      if (!name || seen.has(key) || faIsNonCncOption(name)) return;
       seen.add(key);
       out.push(name);
     };
@@ -668,9 +682,10 @@
   function faRenderCncPills(machines) {
     const list = Array.isArray(machines) ? machines.filter(Boolean) : [];
     if (!list.length) return '<span class="fa-muted">\u2014</span>';
-    const pills = list.map((machine) => (
-      `<span class="fa-cnc-pill">${escapeHtml(String(machine))}</span>`
-    )).join('');
+    const pills = list.map((machine) => {
+      const other = faIsNonCncOption(machine) ? ' fa-cnc-pill--other' : '';
+      return `<span class="fa-cnc-pill${other}">${escapeHtml(String(machine))}</span>`;
+    }).join('');
     return `<span class="fa-cnc-pills" title="Proposed CNC">${pills}</span>`;
   }
 
@@ -2410,22 +2425,35 @@
     const selected = proposedCncMachines(row);
     const selectedSet = new Set(selected.map((item) => faNormalizeCncMachine(item).toUpperCase()).filter(Boolean));
     const query = String(state.proposedCncQuery || '').trim().toLowerCase();
-    const catalog = faCncMachineCatalog(selected).filter((name) => (
+    const matches = (name) => (
       !query || name.toLowerCase().includes(query) || String(faCncMachineNumber(name)) === query
-    ));
-    const checks = catalog.length
-      ? catalog.map((name) => {
-        const checked = selectedSet.has(name.toUpperCase()) ? ' checked' : '';
-        return `<label class="fa-col-filter-check fa-proposed-cnc-check">
+    );
+    const checkHtml = (name) => {
+      const checked = selectedSet.has(name.toUpperCase()) ? ' checked' : '';
+      return `<label class="fa-col-filter-check fa-proposed-cnc-check">
           <input type="checkbox" data-fa-cnc-machine="${escapeHtml(name)}"${checked} />
           ${escapeHtml(name)}
         </label>`;
-      }).join('')
-      : '<p class="fa-col-filter-empty">No matching CNC machines</p>';
+    };
+    const nonCnc = FA_NON_CNC_OPTIONS.filter(matches);
+    const catalog = faCncMachineCatalog(selected).filter(matches);
+    const nonCncHtml = nonCnc.length
+      ? `<div class="fa-proposed-cnc-other">
+          <div class="fa-proposed-cnc-group-label">Not CNC</div>
+          ${nonCnc.map(checkHtml).join('')}
+        </div>`
+      : '';
+    const checks = catalog.length
+      ? catalog.map(checkHtml).join('')
+      : (nonCnc.length ? '' : '<p class="fa-col-filter-empty">No matching CNC machines</p>');
+    const cncLabel = catalog.length && nonCnc.length
+      ? '<div class="fa-proposed-cnc-group-label">CNC</div>'
+      : '';
     pop.innerHTML = `
       <div class="fa-col-filter-title">Proposed CNC</div>
       <input type="search" class="fa-col-filter-search fa-proposed-cnc-search" value="${escapeHtml(state.proposedCncQuery || '')}" placeholder="Search or type CNC…" autocomplete="off" />
-      <div class="fa-proposed-cnc-checks">${checks}</div>
+      ${nonCncHtml}
+      <div class="fa-proposed-cnc-checks">${cncLabel}${checks}</div>
       <form class="fa-proposed-cnc-add" data-action="add-proposed-cnc">
         <input type="text" class="fa-col-filter-search fa-proposed-cnc-add-input" placeholder="Add CNC 22" autocomplete="off" />
         <button type="submit" class="fa-btn fa-btn--ghost">Add</button>

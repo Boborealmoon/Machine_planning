@@ -64,6 +64,7 @@
       <input id="pps-tracking-hide-zero-value" type="checkbox" checked>
       Hide $0 SO
     </label>
+    <button type="button" class="pps-clear-filters" id="pps-clear-col-filters" hidden>Clear column filters</button>
   </div>
 
   <div id="pps-tracking-loading" class="pps-loading" hidden>
@@ -73,6 +74,15 @@
 
   <div id="pps-board" class="pps-board pps-board--columns" hidden></div>
   <p id="pps-tracking-empty" class="pps-empty" hidden>No jobs match.</p>
+</div>
+
+<div id="pps-col-popover" class="pps-col-popover" hidden>
+  <div class="pps-col-popover-head">
+    <strong id="pps-col-popover-title">Filter</strong>
+    <button type="button" class="pps-col-popover-clear" id="pps-col-popover-clear">Clear</button>
+  </div>
+  <input id="pps-col-popover-q" type="search" placeholder="Contains…" autocomplete="off" aria-label="Filter this column">
+  <div id="pps-col-popover-list" class="pps-col-popover-list"></div>
 </div>
 
 <div id="pps-stage-modal" class="pps-modal" hidden>

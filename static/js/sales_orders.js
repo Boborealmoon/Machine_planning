@@ -569,20 +569,37 @@ function soRenderQueuedMachinesHtml(machines) {
 }
 
 function soRenderProposedCncHtml(machines) {
-  return soRenderMachinePillsHtml(machines, {
-    title: 'Proposed CNC — click to choose machines',
-    pillClass: 'so-proposed-cnc-pill',
-  });
+  const list = Array.isArray(machines) ? machines.filter(Boolean) : [];
+  if (!list.length) return '<span class="so-dash">—</span>';
+  const pills = list.map(machine => {
+    const other = soIsNonCncOption(machine) ? ' so-proposed-cnc-pill--other' : '';
+    return `<span class="so-queue-machine-pill so-proposed-cnc-pill${other}">${escapeHtml(String(machine))}</span>`;
+  }).join('');
+  return `<span class="so-queue-machines" title="Proposed CNC — click to choose machines or Subcon / Wirecut">${pills}</span>`;
 }
+
+const SO_NON_CNC_OPTIONS = ['Subcon', 'Wirecut'];
 
 function soCncMachineNumber(code) {
   const match = String(code || '').trim().match(/(\d+)\s*$/);
   return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
 }
 
+function soNonCncOptionKey(raw) {
+  return String(raw || '').trim().replace(/[\s_-]+/g, '').toUpperCase();
+}
+
+function soIsNonCncOption(raw) {
+  const key = soNonCncOptionKey(raw);
+  return key === 'SUBCON' || key === 'WIRECUT';
+}
+
 function soNormalizeCncMachine(raw) {
   const text = String(raw || '').trim().replace(/\s+/g, ' ');
   if (!text) return '';
+  const key = soNonCncOptionKey(text);
+  if (key === 'SUBCON') return 'Subcon';
+  if (key === 'WIRECUT') return 'Wirecut';
   if (/^\d+$/.test(text)) return `CNC ${text}`;
   return text;
 }
@@ -593,7 +610,7 @@ function soCncMachineCatalog(selected) {
   const add = (raw) => {
     const name = soNormalizeCncMachine(raw);
     const key = name.toUpperCase();
-    if (!name || seen.has(key)) return;
+    if (!name || seen.has(key) || soIsNonCncOption(name)) return;
     seen.add(key);
     out.push(name);
   };
@@ -2617,7 +2634,7 @@ function soRenderProposedCncCell(pp, partial) {
         data-pp-voucher-no="${escapeHtml(ppNo)}"
         aria-haspopup="listbox"
         aria-expanded="${open ? 'true' : 'false'}"
-        title="Choose proposed CNC machines">
+        title="Choose proposed CNC machines, or Subcon / Wirecut">
         <span class="so-proposed-cnc-btn-value">${
           machines.length
             ? soRenderProposedCncHtml(machines)
@@ -4075,6 +4092,19 @@ function soApplyProposedCncLocal(ppNo, machines) {
   soSyncProposedCncButtons(ppNo, machines);
 }
 
+function soProposedCncCheckHtml(name, selectedSet) {
+  const checked = selectedSet.has(name.toUpperCase()) ? ' checked' : '';
+  return `<label class="so-col-filter-check so-proposed-cnc-check">
+    <input type="checkbox" data-so-cnc-machine="${escapeHtml(name)}"${checked} />
+    ${escapeHtml(name)}
+  </label>`;
+}
+
+function soProposedCncMatchesQuery(name, query) {
+  if (!query) return true;
+  return name.toLowerCase().includes(query) || soCncMachineNumber(name).toString() === query;
+}
+
 function soRenderProposedCncPopover() {
   const pop = soProposedCncPopover();
   const ppNo = soState.openProposedCncPp;
@@ -4083,22 +4113,25 @@ function soRenderProposedCncPopover() {
   const selected = soProposedCncMachines(found?.pp);
   const selectedSet = soProposedCncSelectedSet(selected);
   const query = String(soState.proposedCncQuery || '').trim().toLowerCase();
-  const catalog = soCncMachineCatalog(selected).filter(name => (
-    !query || name.toLowerCase().includes(query) || soCncMachineNumber(name).toString() === query
-  ));
+  const nonCnc = SO_NON_CNC_OPTIONS.filter(name => soProposedCncMatchesQuery(name, query));
+  const catalog = soCncMachineCatalog(selected).filter(name => soProposedCncMatchesQuery(name, query));
+  const nonCncHtml = nonCnc.length
+    ? `<div class="so-proposed-cnc-other">
+        <div class="so-proposed-cnc-group-label">Not CNC</div>
+        ${nonCnc.map(name => soProposedCncCheckHtml(name, selectedSet)).join('')}
+      </div>`
+    : '';
   const checks = catalog.length
-    ? catalog.map(name => {
-      const checked = selectedSet.has(name.toUpperCase()) ? ' checked' : '';
-      return `<label class="so-col-filter-check so-proposed-cnc-check">
-        <input type="checkbox" data-so-cnc-machine="${escapeHtml(name)}"${checked} />
-        ${escapeHtml(name)}
-      </label>`;
-    }).join('')
-    : '<p class="so-proposed-cnc-empty">No matching CNC machines</p>';
+    ? catalog.map(name => soProposedCncCheckHtml(name, selectedSet)).join('')
+    : (nonCnc.length ? '' : '<p class="so-proposed-cnc-empty">No matching CNC machines</p>');
+  const cncLabel = catalog.length && nonCnc.length
+    ? '<div class="so-proposed-cnc-group-label">CNC</div>'
+    : '';
   pop.innerHTML = `
     <div class="so-col-filter-title">Proposed CNC</div>
     <input type="search" class="so-col-filter-input so-proposed-cnc-search" value="${escapeHtml(soState.proposedCncQuery || '')}" placeholder="Search or type CNC…" autocomplete="off" />
-    <div class="so-proposed-cnc-checks">${checks}</div>
+    ${nonCncHtml}
+    <div class="so-proposed-cnc-checks">${cncLabel}${checks}</div>
     <form class="so-proposed-cnc-add" data-action="add-proposed-cnc">
       <input type="text" class="so-col-filter-input so-proposed-cnc-add-input" placeholder="Add CNC 22" autocomplete="off" />
       <button type="submit" class="btn btn-ghost btn-sm">Add</button>

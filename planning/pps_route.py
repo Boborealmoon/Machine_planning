@@ -51,7 +51,9 @@ LIMIT 1
 _PPS_SO_VALUES_SQL = """
 SELECT
     sales_order_no,
-    COALESCE(total_pre_tax_home_amt, total_after_tax_home_amt, 0) AS sales_order_value
+    COALESCE(total_pre_tax_home_amt, total_after_tax_home_amt, 0) AS sales_order_value,
+    NULLIF(TRIM(sales_person_code), '') AS sales_person_code,
+    NULLIF(TRIM(sales_person_name), '') AS sales_person_name
 FROM public.so_order_header
 WHERE sales_order_no = ANY(%s)
 """
@@ -190,12 +192,12 @@ def api_pps_process_sheet_tracking():
                 if compact_text(row.get("source_voucher_no"))
             }
         )
-        sales_order_values: dict[str, Any] = {}
+        sales_order_meta: dict[str, dict[str, Any]] = {}
         if sales_order_nos:
             try:
                 with planner_db() as con:
-                    sales_order_values = {
-                        compact_text(value_row.get("sales_order_no")): value_row.get("sales_order_value")
+                    sales_order_meta = {
+                        compact_text(value_row.get("sales_order_no")): value_row
                         for value_row in db_rows(
                             con.execute(_PPS_SO_VALUES_SQL, (sales_order_nos,))
                         )
@@ -203,9 +205,10 @@ def api_pps_process_sheet_tracking():
             except Exception as exc:
                 logger.warning("PPS sales-order value lookup failed: %s", exc)
         for row in tracking_rows:
-            row["sales_order_value"] = sales_order_values.get(
-                compact_text(row.get("source_voucher_no"))
-            )
+            meta = sales_order_meta.get(compact_text(row.get("source_voucher_no"))) or {}
+            row["sales_order_value"] = meta.get("sales_order_value")
+            row["sales_person_code"] = compact_text(meta.get("sales_person_code"))
+            row["sales_person_name"] = compact_text(meta.get("sales_person_name"))
 
         overlays_map: dict[tuple[str, int], Any] = {}
         try:

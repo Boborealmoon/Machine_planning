@@ -167,6 +167,27 @@ body.pps-app .app-main--pps {
   width: 100%;
 }
 
+.pps-board--columns {
+  width: 66.666%;
+}
+
+.pps-clear-filters {
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pps-accent);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.pps-clear-filters:hover {
+  background: var(--pps-accent-soft);
+}
+
 .pps-table-wrap {
   overflow: auto;
   max-height: calc(100dvh - 170px);
@@ -181,43 +202,218 @@ body.pps-app .app-main--pps {
   table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
-  min-width: 1080px;
+  min-width: 1040px;
 }
 
-.pps-w-ps { width: 132px; }
-.pps-w-part { width: 26%; }
-.pps-w-stage { width: 190px; }
-.pps-w-due { width: 104px; }
-.pps-w-qty { width: 68px; }
-.pps-w-flag { width: 48px; }
-.pps-w-remarks { width: 200px; }
-.pps-w-date { width: 118px; }
-.pps-w-week { width: 118px; }
+.pps-w-ps { width: 112px; }
+.pps-w-sales { width: 108px; }
+.pps-w-part { width: auto; }
+.pps-w-stage { width: 132px; }
+.pps-w-due { width: 86px; }
+.pps-w-qty { width: 64px; }
+.pps-w-flag { width: 78px; }
+.pps-w-remarks { width: 128px; }
+.pps-w-date { width: 112px; }
+.pps-w-week { width: 112px; }
 
 .pps-grid th,
 .pps-grid td {
-  padding: 10px 10px;
+  padding: 5px 7px;
   border-bottom: 1px solid #e8eef1;
   vertical-align: middle;
   text-align: left;
-  font-size: 0.86rem;
-  line-height: 1.3;
+  font-size: 0.8rem;
+  line-height: 1.25;
 }
 
 .pps-grid th {
   position: sticky;
   top: 0;
   z-index: 2;
-  height: 38px;
-  padding: 0 10px;
+  height: 34px;
+  padding: 0 4px;
   background: linear-gradient(180deg, #f4f8f9, #ebf1f3);
   color: #4d6068;
-  font-size: 0.68rem;
+  font-size: 0.66rem;
   font-weight: 750;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   white-space: nowrap;
   border-bottom: 1px solid #d0dbe0;
+}
+
+.pps-th-row {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  min-width: 0;
+}
+
+.pps-th-right .pps-th-row { justify-content: flex-end; }
+.pps-th-center .pps-th-row { justify-content: center; }
+
+.pps-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.pps-sort-btn span:first-child {
+  white-space: nowrap;
+}
+
+.pps-sort-ind {
+  font-size: 0.58rem;
+  letter-spacing: 0;
+  color: var(--pps-accent);
+}
+
+.pps-grid th.is-sorted {
+  color: var(--pps-ink);
+}
+
+.pps-col-filter-btn {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #8aa0a8;
+  cursor: pointer;
+}
+
+.pps-col-filter-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+.pps-col-filter-btn:hover,
+.pps-col-filter-btn[aria-expanded="true"] {
+  background: #fff;
+  color: var(--pps-ink);
+}
+
+.pps-col-filter-btn.is-active {
+  background: var(--pps-accent-soft);
+  color: var(--pps-accent);
+}
+
+.pps-col-popover {
+  position: fixed;
+  z-index: 40;
+  width: 240px;
+  padding: 10px;
+  border: 1px solid var(--pps-line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgba(28, 42, 48, 0.16);
+}
+
+.pps-col-popover[hidden] { display: none !important; }
+
+.pps-col-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pps-col-popover-head strong {
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--pps-muted);
+}
+
+.pps-col-popover-clear {
+  border: 0;
+  background: transparent;
+  color: var(--pps-accent);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.pps-col-popover input[type="search"] {
+  width: 100%;
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--pps-line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.82rem;
+  outline: none;
+}
+
+.pps-col-popover input[type="search"]:focus {
+  border-color: var(--pps-accent);
+  box-shadow: 0 0 0 3px var(--pps-accent-soft);
+}
+
+.pps-col-popover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  margin-top: 8px;
+  overflow: auto;
+}
+
+.pps-filter-opt {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 4px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.pps-filter-opt:hover { background: var(--pps-soft); }
+
+.pps-filter-opt span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pps-filter-opt em {
+  font-style: normal;
+  font-size: 0.72rem;
+  color: var(--pps-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pps-col-popover-empty {
+  margin: 4px 2px 2px;
+  color: var(--pps-muted);
+  font-size: 0.78rem;
+}
+
+.pps-filter-empty td {
+  padding: 18px 12px;
+  text-align: center;
+  color: var(--pps-muted);
 }
 
 .pps-th-center,
@@ -300,15 +496,24 @@ body.pps-app .app-main--pps {
 }
 
 .pps-col-part .pps-part-desc {
-  margin-top: 2px;
-  font-size: 0.74rem;
+  margin-top: 1px;
+  font-size: 0.72rem;
   color: var(--pps-muted);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  white-space: nowrap;
   overflow: hidden;
-  white-space: normal;
-  line-height: 1.35;
+  text-overflow: ellipsis;
+}
+
+.pps-col-sales {
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pps-col-sales.is-empty {
+  color: #9aa8ae;
+  font-weight: 500;
 }
 
 .pps-col-stage-inner {
@@ -331,13 +536,13 @@ body.pps-app .app-main--pps {
 .pps-stage-btn {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
   min-width: 0;
   margin: 0;
-  padding: 6px 8px;
+  padding: 3px 6px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--pps-soft);
   color: inherit;
   font: inherit;
@@ -435,15 +640,16 @@ body.pps-app .app-main--pps {
 .pps-grid input[type='date'],
 .pps-grid textarea {
   width: 100%;
+  min-width: 0;
   box-sizing: border-box;
-  height: 32px;
+  height: 26px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 7px;
   background: transparent;
   color: var(--pps-ink);
   font: inherit;
-  font-size: 0.8rem;
-  padding: 0 8px;
+  font-size: 0.75rem;
+  padding: 0 4px;
   outline: none;
   transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
 }
@@ -737,6 +943,15 @@ body.pps-app .app-main--pps {
 .pps-ps-so {
   font-size: 0.8rem;
   color: var(--pps-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pps-ps-sales {
+  font-size: 0.75rem;
+  font-weight: 650;
+  color: var(--pps-ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1086,6 +1301,12 @@ body.pps-app .app-main--pps {
 .pps-muted-text {
   color: var(--pps-muted);
   font-size: 0.88rem;
+}
+
+@media (max-width: 1100px) {
+  .pps-board--columns {
+    width: 100%;
+  }
 }
 
 @media (max-width: 860px) {

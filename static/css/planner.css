@@ -9433,6 +9433,10 @@
     background: #ede9fe;
     color: #5b21b6;
   }
+  .new-orders-page--sales-orders .so-proposed-cnc-pill--other {
+    background: #ffedd5;
+    color: #9a3412;
+  }
   .new-orders-page--sales-orders .so-proposed-cnc-cell {
     min-width: 108px;
     max-width: 168px;
@@ -9908,6 +9912,21 @@
   .so-proposed-cnc-popover {
     z-index: 130;
     max-width: 280px;
+  }
+  .so-proposed-cnc-other {
+    display: grid;
+    gap: 2px;
+    margin: 0 0 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .so-proposed-cnc-group-label {
+    margin: 0 2px 2px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #64748b;
   }
   .so-proposed-cnc-checks {
     display: grid;

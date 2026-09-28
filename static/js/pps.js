@@ -2,6 +2,20 @@
 const PPS_VIEW_KEY = 'pps.viewStyle';
 const PPS_FLAGGED_FIRST_KEY = 'pps.flaggedFirst';
 
+const PPS_COLUMNS = [
+  { id: 'job', label: 'Job' },
+  { id: 'sales', label: 'Sales', title: 'Sales person' },
+  { id: 'part', label: 'Part' },
+  { id: 'stage', label: 'Stage' },
+  { id: 'due', label: 'Due' },
+  { id: 'qty', label: 'Qty', align: 'right', title: 'Remaining qty' },
+  { id: 'flag', label: 'Flag', align: 'center' },
+  { id: 'remarks', label: 'Remarks' },
+  { id: 'material', label: 'Material' },
+  { id: 'delivery', label: 'Delivery' },
+];
+const PPS_FILTER_LIST_LIMIT = 40;
+
 const ppsState = {
   trackingRows: [],
   trackingSearch: '',
@@ -12,6 +26,9 @@ const ppsState = {
   openKey: '',
   view: localStorage.getItem(PPS_VIEW_KEY) === 'cards' ? 'cards' : 'columns',
   flaggedFirst: localStorage.getItem(PPS_FLAGGED_FIRST_KEY) === '1',
+  sort: null,
+  filters: {},
+  openFilter: '',
 };
 
 const ppsRemarkTimers = new Map();
@@ -119,47 +136,147 @@ function ppsHaystack(row) {
     row.current_stage_desc,
     row.source_voucher_no,
     row.pps_remarks,
+    row.sales_person_name,
+    row.sales_person_code,
   ].filter((value) => value != null).join(' ').toLowerCase();
 }
 
-function ppsFilteredRows() {
+function ppsSalesLabel(row) {
+  const name = String(row?.sales_person_name || '').trim();
+  const code = String(row?.sales_person_code || '').trim();
+  return name || code;
+}
+
+function ppsFilterSpec(colId) {
+  if (!ppsState.filters[colId]) {
+    ppsState.filters[colId] = { q: '', selected: new Set() };
+  }
+  return ppsState.filters[colId];
+}
+
+function ppsFilterActive(colId) {
+  const spec = ppsState.filters[colId];
+  return !!(spec && (String(spec.q || '').trim() || spec.selected.size));
+}
+
+function ppsAnyColumnFilter() {
+  return PPS_COLUMNS.some((col) => ppsFilterActive(col.id));
+}
+
+function ppsColFilterText(row, colId) {
+  if (colId === 'job') {
+    const ps = row.display_ps_id || row.source_ps_id || row.ps_id || '';
+    const so = row.source_voucher_no || '';
+    return `${ps} ${so}`.trim();
+  }
+  if (colId === 'sales') return ppsSalesLabel(row);
+  if (colId === 'part') {
+    return `${row.part_no || row.inventory_code || ''} ${row.part_desc || ''}`.trim();
+  }
+  if (colId === 'stage') return ppsStageLabel(row);
+  if (colId === 'due') return ppsFormatDate(row.due_date);
+  if (colId === 'qty') {
+    const remaining = ppsIsShippedComplete(row) ? 0 : row.remaining_qty;
+    return ppsFormatQty(remaining);
+  }
+  if (colId === 'flag') return row.pps_flagged ? 'Flagged' : 'Open';
+  if (colId === 'remarks') return String(row.pps_remarks || '').trim();
+  if (colId === 'material') return ppsFormatDate(row.pps_material_date);
+  if (colId === 'delivery') return ppsFormatDate(ppsAsDateInput(row.pps_delivery_week) || row.pps_delivery_week);
+  return '';
+}
+
+function ppsColSortValue(row, colId) {
+  if (colId === 'qty') {
+    const remaining = ppsIsShippedComplete(row) ? 0 : row.remaining_qty;
+    const number = Number(remaining);
+    return Number.isFinite(number) ? number : null;
+  }
+  if (colId === 'flag') return row.pps_flagged ? 1 : 0;
+  if (colId === 'due') return ppsSortableDate(row.due_date);
+  if (colId === 'material') return ppsSortableDate(row.pps_material_date);
+  if (colId === 'delivery') return ppsSortableDate(ppsAsDateInput(row.pps_delivery_week) || row.pps_delivery_week);
+  const text = ppsColFilterText(row, colId).trim();
+  return text && text !== '-' ? text : null;
+}
+
+function ppsSortableDate(value) {
+  const text = String(value || '').trim();
+  if (!text || text === '-') return null;
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const dmy = text.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (dmy) return `${dmy[3]}-${dmy[2]}-${dmy[1]}`;
+  return text;
+}
+
+function ppsCompareSort(left, right, dir) {
+  const emptyLeft = left == null || left === '';
+  const emptyRight = right == null || right === '';
+  if (emptyLeft && emptyRight) return 0;
+  if (emptyLeft) return 1;
+  if (emptyRight) return -1;
+  let cmp = 0;
+  if (typeof left === 'number' && typeof right === 'number') cmp = left - right;
+  else cmp = String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' });
+  return dir === 'desc' ? -cmp : cmp;
+}
+
+function ppsRowHiddenByValue(row) {
+  const hasSalesOrderValue = row.sales_order_value != null
+    && String(row.sales_order_value).trim() !== '';
+  const salesOrderValue = Number(row.sales_order_value);
+  return ppsState.trackingHideZeroValue
+    && hasSalesOrderValue
+    && Number.isFinite(salesOrderValue)
+    && Math.abs(salesOrderValue) < 0.0001;
+}
+
+function ppsBaseRows() {
   const search = ppsState.trackingSearch.trim().toLowerCase();
-  const rows = ppsState.trackingRows.filter((row) => {
-    const kind = ppsStageKind(row);
-    const hasSalesOrderValue = row.sales_order_value != null
-      && String(row.sales_order_value).trim() !== '';
-    const salesOrderValue = Number(row.sales_order_value);
-    if (
-      ppsState.trackingHideZeroValue
-      && hasSalesOrderValue
-      && Number.isFinite(salesOrderValue)
-      && Math.abs(salesOrderValue) < 0.0001
-    ) {
-      return false;
-    }
-    if (ppsState.trackingStatus !== 'all' && kind !== ppsState.trackingStatus) {
-      return false;
-    }
+  return ppsState.trackingRows.filter((row) => {
+    if (ppsRowHiddenByValue(row)) return false;
+    if (ppsState.trackingStatus !== 'all' && ppsStageKind(row) !== ppsState.trackingStatus) return false;
     return !search || ppsHaystack(row).includes(search);
   });
-  if (!ppsState.flaggedFirst) return rows;
-  return rows.slice().sort((a, b) => Number(!!b.pps_flagged) - Number(!!a.pps_flagged));
+}
+
+function ppsColumnMatch(row, colId) {
+  const spec = ppsState.filters[colId];
+  if (!spec) return true;
+  const query = String(spec.q || '').trim().toLowerCase();
+  const text = ppsColFilterText(row, colId);
+  const display = text && text !== '-' ? text : '';
+  if (spec.selected && spec.selected.size && !spec.selected.has(display)) return false;
+  if (!query) return true;
+  return display.toLowerCase().includes(query);
+}
+
+function ppsPassesColumnFilters(row, exceptId = '') {
+  return PPS_COLUMNS.every((col) => col.id === exceptId || ppsColumnMatch(row, col.id));
+}
+
+function ppsSortRows(rows) {
+  const sort = ppsState.sort;
+  if (!ppsState.flaggedFirst && !sort) return rows;
+  return rows.slice().sort((a, b) => {
+    if (ppsState.flaggedFirst) {
+      const flagCmp = Number(!!b.pps_flagged) - Number(!!a.pps_flagged);
+      if (flagCmp) return flagCmp;
+    }
+    if (!sort) return 0;
+    return ppsCompareSort(ppsColSortValue(a, sort.id), ppsColSortValue(b, sort.id), sort.dir);
+  });
+}
+
+function ppsFilteredRows() {
+  return ppsSortRows(ppsBaseRows().filter((row) => ppsPassesColumnFilters(row)));
 }
 
 function ppsUpdateTabCounts() {
   const counts = { active: 0, completed: 0, 'not-started': 0, all: 0 };
   for (const row of ppsState.trackingRows) {
-    const hasSalesOrderValue = row.sales_order_value != null
-      && String(row.sales_order_value).trim() !== '';
-    const salesOrderValue = Number(row.sales_order_value);
-    if (
-      ppsState.trackingHideZeroValue
-      && hasSalesOrderValue
-      && Number.isFinite(salesOrderValue)
-      && Math.abs(salesOrderValue) < 0.0001
-    ) {
-      continue;
-    }
+    if (ppsRowHiddenByValue(row)) continue;
     counts[ppsStageKind(row)] += 1;
     counts.all += 1;
   }
@@ -236,13 +353,11 @@ function ppsAsDateInput(value) {
 function ppsStageCellHtml(row) {
   const kind = ppsStageKind(row);
   const key = ppsRowKey(row);
+  const label = ppsStageLabel(row);
   return `
-    <button type="button" class="pps-stage-btn pps-stage-btn--${kind}" data-stage-popup="${ppsEscapeHtml(key)}" title="View full route stages">
+    <button type="button" class="pps-stage-btn pps-stage-btn--${kind}" data-stage-popup="${ppsEscapeHtml(key)}" title="${ppsEscapeHtml(`${label} · ${ppsStatusLabel(kind)}. View route stages`)}">
       <span class="pps-dot pps-dot--${kind}" aria-hidden="true"></span>
-      <span class="pps-stage-btn-text">
-        <span class="pps-stage-name">${ppsEscapeHtml(ppsStageLabel(row))}</span>
-        <span class="pps-stage-kind pps-stage-kind--${kind}">${ppsEscapeHtml(ppsStatusLabel(kind))}</span>
-      </span>
+      <span class="pps-stage-name">${ppsEscapeHtml(label)}</span>
     </button>
   `;
 }
@@ -250,9 +365,8 @@ function ppsStageCellHtml(row) {
 function ppsDueCellHtml(row) {
   const overdue = ppsIsOverdue(row);
   return `
-    <div class="pps-due-cell${overdue ? ' is-overdue' : ''}">
+    <div class="pps-due-cell${overdue ? ' is-overdue' : ''}"${overdue ? ' title="Overdue"' : ''}>
       <span class="pps-due-date">${ppsEscapeHtml(ppsFormatDate(row.due_date))}</span>
-      ${overdue ? '<span class="pps-due-badge">Overdue</span>' : ''}
     </div>
   `;
 }
@@ -372,12 +486,79 @@ function ppsSyncFlagUi(key, flagged) {
   });
 }
 
-function ppsRenderColumns(rows) {
+function ppsColumnHeaderHtml(col) {
+  const align = col.align === 'right' ? ' pps-th-right' : (col.align === 'center' ? ' pps-th-center' : '');
+  const title = col.title || col.label;
+  return `
+    <th class="${align.trim()}" data-col="${ppsEscapeHtml(col.id)}" title="${ppsEscapeHtml(title)}">
+      <div class="pps-th-row">
+        <button type="button" class="pps-sort-btn" data-pps-sort="${ppsEscapeHtml(col.id)}" title="Sort by ${ppsEscapeHtml(title)}">
+          <span>${ppsEscapeHtml(col.label)}</span>
+          <span class="pps-sort-ind" data-sort-ind="${ppsEscapeHtml(col.id)}"></span>
+        </button>
+        <button type="button" class="pps-col-filter-btn" data-pps-open-filter="${ppsEscapeHtml(col.id)}" aria-label="Filter ${ppsEscapeHtml(title)}" aria-expanded="false" title="Filter ${ppsEscapeHtml(title)}">
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <path d="M2 3.5h12l-4.4 5.1V13l-3.2-1.4V8.6L2 3.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </th>
+  `;
+}
+
+function ppsColumnRowHtml(row) {
+  const kind = ppsStageKind(row);
+  const key = ppsRowKey(row);
+  const overdue = ppsIsOverdue(row);
+  const flagged = !!row.pps_flagged;
+  const ps = row.display_ps_id || row.source_ps_id || row.ps_id;
+  const so = row.source_voucher_no;
+  const remaining = ppsIsShippedComplete(row) ? 0 : row.remaining_qty;
+  const remarks = row.pps_remarks || '';
+  const material = row.pps_material_date || '';
+  const delivery = ppsAsDateInput(row.pps_delivery_week);
+  const sales = ppsSalesLabel(row);
+  const rowCls = [
+    flagged ? 'is-flagged' : '',
+    overdue ? 'is-overdue-row' : '',
+    `is-${kind}`,
+  ].filter(Boolean).join(' ');
+  return `
+    <tr class="${rowCls}" data-key="${ppsEscapeHtml(key)}" data-ps-controls>
+      <td class="pps-col-ps">
+        <strong>${ppsEscapeHtml(ppsDisplay(ps))}</strong>
+        <span class="pps-ps-so-line">${so ? ppsEscapeHtml(so) : 'No SO'}</span>
+      </td>
+      <td class="pps-col-sales${sales ? '' : ' is-empty'}" title="${ppsEscapeHtml(sales || 'No sales person')}">${ppsEscapeHtml(sales || '—')}</td>
+      <td class="pps-col-part" title="${ppsEscapeHtml(ppsDisplay(row.part_desc))}">
+        <div class="pps-part-no">${ppsEscapeHtml(ppsDisplay(row.part_no || row.inventory_code))}</div>
+        <div class="pps-part-desc">${ppsEscapeHtml(ppsDisplay(row.part_desc))}</div>
+      </td>
+      <td class="pps-col-stage">${ppsStageCellHtml(row)}</td>
+      <td class="pps-col-due">${ppsDueCellHtml(row)}</td>
+      <td class="pps-col-qty">${ppsEscapeHtml(ppsFormatQty(remaining))}</td>
+      <td class="pps-col-flag">${ppsFlagButtonHtml(flagged)}</td>
+      <td class="pps-col-remarks">
+        <input data-field="remarks" type="text" class="${ppsInputClass(remarks).trim()}" value="${ppsEscapeHtml(remarks)}" placeholder="Note">
+        <span class="pps-op-save" data-save-status aria-live="polite"></span>
+      </td>
+      <td class="pps-col-date">
+        <input data-field="material_date" type="date" class="${ppsInputClass(material).trim()}" value="${ppsEscapeHtml(material)}" title="Material date">
+      </td>
+      <td class="pps-col-week">
+        <input data-field="delivery_week" type="date" class="${ppsInputClass(delivery).trim()}" value="${ppsEscapeHtml(delivery)}" title="Delivery date">
+      </td>
+    </tr>
+  `;
+}
+
+function ppsColumnsFrameHtml() {
   return `
     <div class="pps-table-wrap">
       <table class="pps-grid">
         <colgroup>
           <col class="pps-w-ps">
+          <col class="pps-w-sales">
           <col class="pps-w-part">
           <col class="pps-w-stage">
           <col class="pps-w-due">
@@ -388,70 +569,151 @@ function ppsRenderColumns(rows) {
           <col class="pps-w-week">
         </colgroup>
         <thead>
-          <tr>
-            <th>Job</th>
-            <th>Part</th>
-            <th>Stage</th>
-            <th>Due</th>
-            <th class="pps-th-right" title="Remaining qty">Qty</th>
-            <th class="pps-th-center">Flag</th>
-            <th>Remarks</th>
-            <th>Material</th>
-            <th>Delivery</th>
-          </tr>
+          <tr>${PPS_COLUMNS.map((col) => ppsColumnHeaderHtml(col)).join('')}</tr>
         </thead>
-        <tbody>
-          ${rows.map((row) => {
-            const kind = ppsStageKind(row);
-            const key = ppsRowKey(row);
-            const overdue = ppsIsOverdue(row);
-            const flagged = !!row.pps_flagged;
-            const ps = row.display_ps_id || row.source_ps_id || row.ps_id;
-            const so = row.source_voucher_no;
-            const remaining = ppsIsShippedComplete(row) ? 0 : row.remaining_qty;
-            const remarks = row.pps_remarks || '';
-            const material = row.pps_material_date || '';
-            const delivery = ppsAsDateInput(row.pps_delivery_week);
-            const rowCls = [
-              flagged ? 'is-flagged' : '',
-              overdue ? 'is-overdue-row' : '',
-              `is-${kind}`,
-            ].filter(Boolean).join(' ');
-            return `
-              <tr class="${rowCls}" data-key="${ppsEscapeHtml(key)}" data-ps-controls>
-                <td class="pps-col-ps">
-                  <strong>${ppsEscapeHtml(ppsDisplay(ps))}</strong>
-                  <span class="pps-ps-so-line">${so ? ppsEscapeHtml(so) : 'No SO'}</span>
-                </td>
-                <td class="pps-col-part" title="${ppsEscapeHtml(ppsDisplay(row.part_desc))}">
-                  <div class="pps-part-no">${ppsEscapeHtml(ppsDisplay(row.part_no || row.inventory_code))}</div>
-                  <div class="pps-part-desc">${ppsEscapeHtml(ppsDisplay(row.part_desc))}</div>
-                </td>
-                <td class="pps-col-stage">
-                  ${ppsStageCellHtml(row)}
-                </td>
-                <td class="pps-col-due">
-                  ${ppsDueCellHtml(row)}
-                </td>
-                <td class="pps-col-qty">${ppsEscapeHtml(ppsFormatQty(remaining))}</td>
-                <td class="pps-col-flag">${ppsFlagButtonHtml(flagged)}</td>
-                <td class="pps-col-remarks">
-                  <input data-field="remarks" type="text" class="${ppsInputClass(remarks).trim()}" value="${ppsEscapeHtml(remarks)}" placeholder="Add note">
-                  <span class="pps-op-save" data-save-status aria-live="polite"></span>
-                </td>
-                <td class="pps-col-date">
-                  <input data-field="material_date" type="date" class="${ppsInputClass(material).trim()}" value="${ppsEscapeHtml(material)}" title="Material date">
-                </td>
-                <td class="pps-col-week">
-                  <input data-field="delivery_week" type="date" class="${ppsInputClass(delivery).trim()}" value="${ppsEscapeHtml(delivery)}" title="Delivery date">
-                </td>
-              </tr>
-            `;
-          }).join('')}
-        </tbody>
+        <tbody></tbody>
       </table>
     </div>
   `;
+}
+
+function ppsPaintColumnBody(rows) {
+  const tbody = document.querySelector('#pps-board .pps-grid tbody');
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = `<tr class="pps-filter-empty"><td colspan="${PPS_COLUMNS.length}">No jobs match these column filters.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((row) => ppsColumnRowHtml(row)).join('');
+}
+
+function ppsSyncSortChrome() {
+  const sort = ppsState.sort;
+  document.querySelectorAll('#pps-board [data-col]').forEach((th) => {
+    const id = th.getAttribute('data-col');
+    const active = !!(sort && sort.id === id);
+    th.classList.toggle('is-sorted', active);
+    th.setAttribute('aria-sort', active ? (sort.dir === 'desc' ? 'descending' : 'ascending') : 'none');
+    const ind = th.querySelector('[data-sort-ind]');
+    if (ind) ind.textContent = active ? (sort.dir === 'desc' ? '▼' : '▲') : '';
+  });
+  document.querySelectorAll('#pps-board [data-pps-open-filter]').forEach((btn) => {
+    const id = btn.getAttribute('data-pps-open-filter');
+    const active = ppsFilterActive(id);
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-expanded', ppsState.openFilter === id ? 'true' : 'false');
+  });
+  const clearBtn = document.getElementById('pps-clear-col-filters');
+  if (clearBtn) clearBtn.hidden = !ppsAnyColumnFilter();
+}
+
+function ppsFilterOptionRows(colId) {
+  return ppsBaseRows().filter((row) => ppsPassesColumnFilters(row, colId));
+}
+
+function ppsRenderColPopover() {
+  const pop = document.getElementById('pps-col-popover');
+  const colId = ppsState.openFilter;
+  const col = PPS_COLUMNS.find((item) => item.id === colId);
+  if (!pop || !col) return;
+  const spec = ppsFilterSpec(colId);
+  const title = document.getElementById('pps-col-popover-title');
+  const input = document.getElementById('pps-col-popover-q');
+  const list = document.getElementById('pps-col-popover-list');
+  if (title) title.textContent = col.title || col.label;
+  if (input && document.activeElement !== input) input.value = spec.q || '';
+  const query = String(spec.q || '').trim().toLowerCase();
+  const counts = new Map();
+  ppsFilterOptionRows(colId).forEach((row) => {
+    const text = ppsColFilterText(row, colId);
+    const label = text && text !== '-' ? text : '';
+    counts.set(label, (counts.get(label) || 0) + 1);
+  });
+  const options = Array.from(counts.entries())
+    .filter(([label]) => !query || label.toLowerCase().includes(query))
+    .sort((a, b) => ppsCompareSort(a[0] || null, b[0] || null, 'asc'));
+  if (!list) return;
+  if (!options.length) {
+    list.innerHTML = '<p class="pps-col-popover-empty">No matching values.</p>';
+  } else if (options.length > PPS_FILTER_LIST_LIMIT) {
+    list.innerHTML = `<p class="pps-col-popover-empty">${options.length} values. Type to narrow the column.</p>`;
+  } else {
+    list.innerHTML = options.map(([label, count]) => {
+      const shown = label || '(blank)';
+      const checked = spec.selected.has(label) ? ' checked' : '';
+      return `
+        <label class="pps-filter-opt">
+          <input type="checkbox" data-pps-filter-value="${ppsEscapeHtml(label)}"${checked}>
+          <span>${ppsEscapeHtml(shown)}</span>
+          <em>${count}</em>
+        </label>
+      `;
+    }).join('');
+  }
+  pop.hidden = false;
+  ppsPositionColFilter();
+}
+
+function ppsPositionColFilter() {
+  const pop = document.getElementById('pps-col-popover');
+  if (!pop || pop.hidden || !ppsState.openFilter) return;
+  const btn = document.querySelector(`#pps-board [data-pps-open-filter="${ppsState.openFilter}"]`);
+  if (!btn) {
+    ppsCloseColFilter();
+    return;
+  }
+  const rect = btn.getBoundingClientRect();
+  const width = pop.offsetWidth || 240;
+  const height = pop.offsetHeight || 280;
+  let left = Math.min(rect.right - width, window.innerWidth - width - 8);
+  left = Math.max(8, left);
+  let top = rect.bottom + 6;
+  if (top + height > window.innerHeight - 8) top = Math.max(8, rect.top - height - 6);
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+}
+
+function ppsOpenColFilter(colId) {
+  if (ppsState.openFilter === colId) {
+    ppsCloseColFilter();
+    return;
+  }
+  ppsState.openFilter = colId;
+  ppsRenderColPopover();
+  ppsSyncSortChrome();
+  const input = document.getElementById('pps-col-popover-q');
+  input?.focus({ preventScroll: true });
+}
+
+function ppsCloseColFilter() {
+  ppsState.openFilter = '';
+  const pop = document.getElementById('pps-col-popover');
+  if (pop) pop.hidden = true;
+  ppsSyncSortChrome();
+}
+
+function ppsToggleSort(colId) {
+  const current = ppsState.sort;
+  if (!current || current.id !== colId) ppsState.sort = { id: colId, dir: 'asc' };
+  else if (current.dir === 'asc') current.dir = 'desc';
+  else ppsState.sort = null;
+  ppsRender();
+}
+
+function ppsClearColumnFilter(colId) {
+  const spec = ppsFilterSpec(colId);
+  spec.q = '';
+  spec.selected.clear();
+  const input = document.getElementById('pps-col-popover-q');
+  if (input && ppsState.openFilter === colId) input.value = '';
+  ppsRender();
+}
+
+function ppsClearAllColumnFilters() {
+  ppsState.filters = {};
+  const input = document.getElementById('pps-col-popover-q');
+  if (input) input.value = '';
+  ppsRender();
 }
 
 function ppsRenderCards(rows) {
@@ -463,12 +725,14 @@ function ppsRenderCards(rows) {
     const flagged = !!row.pps_flagged;
     const ps = row.display_ps_id || row.source_ps_id || row.ps_id;
     const so = row.source_voucher_no ? `SO ${row.source_voucher_no}` : '';
+    const sales = ppsSalesLabel(row);
     return `
       <article class="pps-card${isOpen ? ' is-open' : ''}${flagged ? ' is-flagged' : ''}" data-key="${ppsEscapeHtml(key)}">
         <button type="button" class="pps-card-main" aria-expanded="${isOpen ? 'true' : 'false'}">
           <div class="pps-ps">
             <span class="pps-ps-id">${ppsEscapeHtml(ppsDisplay(ps))}${flagged ? '<span class="pps-flag-pill">Flagged</span>' : ''}</span>
             <span class="pps-ps-so">${ppsEscapeHtml(so || 'No sales order')}</span>
+            ${sales ? `<span class="pps-ps-sales">${ppsEscapeHtml(sales)}</span>` : ''}
           </div>
           <div class="pps-part">
             <div class="pps-part-no">${ppsEscapeHtml(ppsDisplay(row.part_no || row.inventory_code))}</div>
@@ -607,6 +871,7 @@ async function ppsOpenStageModal(key) {
       <div><span>Part</span><strong>${ppsEscapeHtml(ppsDisplay(row.part_no || row.inventory_code))}</strong></div>
       <div><span>Description</span><strong>${ppsEscapeHtml(ppsDisplay(row.part_desc))}</strong></div>
       <div><span>SO</span><strong>${ppsEscapeHtml(ppsDisplay(row.source_voucher_no))}</strong></div>
+      <div><span>Sales</span><strong>${ppsEscapeHtml(ppsSalesLabel(row) || '—')}</strong></div>
       <div><span>Due</span><strong class="${ppsIsOverdue(row) ? 'is-overdue' : ''}">${ppsEscapeHtml(ppsFormatDate(row.due_date))}</strong></div>
       <div><span>BOM</span><strong>${ppsEscapeHtml(ppsDisplay(row.erp_bom_code || row.bom_code))}</strong></div>
       <div><span>Status</span><strong>${ppsEscapeHtml(ppsStatusLabel(kind))}</strong></div>
@@ -631,6 +896,7 @@ function ppsRender() {
   if (!board || !empty) return;
   ppsApplyViewChrome();
   ppsUpdateTabCounts();
+  const base = ppsBaseRows();
   const rows = ppsFilteredRows();
   if (stats) {
     const label = ppsState.trackingStatus === 'all'
@@ -640,20 +906,40 @@ function ppsRender() {
       ? `${rows.length} ${label} job${rows.length === 1 ? '' : 's'}`
       : `No ${label} jobs`;
   }
-  if (!rows.length) {
+  if (!base.length) {
+    ppsCloseColFilter();
     board.hidden = true;
     board.innerHTML = '';
     empty.hidden = false;
     empty.textContent = ppsState.trackingRows.length
       ? 'No jobs match these filters.'
       : 'No PPS jobs available.';
+    ppsSyncSortChrome();
     return;
   }
   empty.hidden = true;
   board.hidden = false;
-  board.innerHTML = ppsState.view === 'cards'
-    ? `<div class="pps-list">${ppsRenderCards(rows)}</div>`
-    : ppsRenderColumns(rows);
+  if (ppsState.view === 'cards') {
+    ppsState.openFilter = '';
+    const pop = document.getElementById('pps-col-popover');
+    if (pop) pop.hidden = true;
+    board.innerHTML = `<div class="pps-list">${ppsRenderCards(rows)}</div>`;
+  } else if (!board.querySelector('.pps-grid')) {
+    const wrap = board.querySelector('.pps-table-wrap');
+    const scrollTop = wrap?.scrollTop || 0;
+    const scrollLeft = wrap?.scrollLeft || 0;
+    board.innerHTML = ppsColumnsFrameHtml();
+    ppsPaintColumnBody(rows);
+    const nextWrap = board.querySelector('.pps-table-wrap');
+    if (nextWrap) {
+      nextWrap.scrollTop = scrollTop;
+      nextWrap.scrollLeft = scrollLeft;
+    }
+  } else {
+    ppsPaintColumnBody(rows);
+  }
+  ppsSyncSortChrome();
+  if (ppsState.openFilter) ppsRenderColPopover();
   if (ppsState.view === 'cards' && ppsState.openKey) {
     const openCard = Array.from(board.querySelectorAll('.pps-card'))
       .find((el) => el.getAttribute('data-key') === ppsState.openKey);
@@ -767,6 +1053,19 @@ document.querySelector('.pps-status-tabs')?.addEventListener('click', (event) =>
 });
 
 document.getElementById('pps-board')?.addEventListener('click', (event) => {
+  const sortBtn = event.target.closest('[data-pps-sort]');
+  if (sortBtn) {
+    event.preventDefault();
+    ppsToggleSort(sortBtn.getAttribute('data-pps-sort') || '');
+    return;
+  }
+  const filterBtn = event.target.closest('[data-pps-open-filter]');
+  if (filterBtn) {
+    event.preventDefault();
+    event.stopPropagation();
+    ppsOpenColFilter(filterBtn.getAttribute('data-pps-open-filter') || '');
+    return;
+  }
   const stageBtn = event.target.closest('[data-stage-popup]');
   if (stageBtn) {
     event.preventDefault();
@@ -827,6 +1126,44 @@ document.getElementById('pps-board')?.addEventListener('change', (event) => {
   if (name === 'delivery_week') ppsSaveSheetOverlay(key, { delivery_week: field.value || '' });
 });
 
+document.getElementById('pps-clear-col-filters')?.addEventListener('click', () => {
+  ppsClearAllColumnFilters();
+});
+
+document.getElementById('pps-col-popover-clear')?.addEventListener('click', () => {
+  if (ppsState.openFilter) ppsClearColumnFilter(ppsState.openFilter);
+});
+
+document.getElementById('pps-col-popover-q')?.addEventListener('input', (event) => {
+  if (!ppsState.openFilter) return;
+  ppsFilterSpec(ppsState.openFilter).q = event.target.value || '';
+  ppsRender();
+});
+
+document.getElementById('pps-col-popover')?.addEventListener('change', (event) => {
+  const box = event.target.closest('[data-pps-filter-value]');
+  if (!box || !ppsState.openFilter) return;
+  const spec = ppsFilterSpec(ppsState.openFilter);
+  const value = box.getAttribute('data-pps-filter-value') || '';
+  if (box.checked) spec.selected.add(value);
+  else spec.selected.delete(value);
+  ppsRender();
+});
+
+document.addEventListener('mousedown', (event) => {
+  if (!ppsState.openFilter) return;
+  if (event.target.closest('#pps-col-popover, [data-pps-open-filter]')) return;
+  ppsCloseColFilter();
+});
+
+document.addEventListener('scroll', () => {
+  if (ppsState.openFilter) ppsPositionColFilter();
+}, true);
+
+window.addEventListener('resize', () => {
+  if (ppsState.openFilter) ppsPositionColFilter();
+});
+
 document.getElementById('pps-stage-modal')?.addEventListener('click', (event) => {
   if (event.target.id === 'pps-stage-modal' || event.target.closest('[data-pps-modal-close]')) {
     ppsCloseStageModal();
@@ -834,7 +1171,12 @@ document.getElementById('pps-stage-modal')?.addEventListener('click', (event) =>
 });
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') ppsCloseStageModal();
+  if (event.key !== 'Escape') return;
+  if (ppsState.openFilter) {
+    ppsCloseColFilter();
+    return;
+  }
+  ppsCloseStageModal();
 });
 
 ppsApplyViewChrome();
