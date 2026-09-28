@@ -54,6 +54,161 @@
   align-self: flex-end;
 }
 
+.otd-benchmark {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.otd-benchmark-ref {
+  margin: 0;
+  flex: 1 1 280px;
+  align-self: flex-end;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #475569;
+}
+
+.otd-benchmark-ref .is-active {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.otd-benchmark-sep {
+  margin: 0 6px;
+  color: #94a3b8;
+}
+
+.otd-segments {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.otd-segment {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.otd-segment[hidden] {
+  display: none !important;
+}
+
+.otd-segment.is-active {
+  border-color: #0f172a;
+  background: #f8fafc;
+}
+
+.otd-segment-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.otd-segment-count {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #475569;
+}
+
+.otd-summary,
+.otd-outside,
+.otd-plain {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: #0f172a;
+}
+
+.otd-summary {
+  font-weight: 600;
+}
+
+.otd-outside {
+  color: #7c2d12;
+}
+
+.otd-ps-sentences {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.otd-ps-sentence {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #0f172a;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.otd-month-numbers {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.otd-month-numbers th,
+.otd-month-numbers td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.otd-month-numbers th:first-child,
+.otd-month-numbers td:first-child {
+  text-align: left;
+}
+
+.otd-month-numbers th {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.otd-month-link {
+  border: 0;
+  background: transparent;
+  color: #0f172a;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+
+.otd-month-link.is-active {
+  color: #1d4ed8;
+}
+
+@media (max-width: 900px) {
+  .otd-segments {
+    grid-template-columns: 1fr;
+  }
+}
+
 .otd-page.is-overview .otd-detail-filters,
 .otd-page.is-detail .otd-overview-filters {
   display: none;
@@ -82,7 +237,8 @@
 #otd-alert[hidden],
 #otd-kpis[hidden],
 #otd-charts[hidden],
-#otd-table-wrap[hidden] {
+#otd-table-wrap[hidden],
+#otd-history-panel[hidden] {
   display: none !important;
 }
 
@@ -104,10 +260,79 @@
 .otd-kpi--late { border-top: 3px solid #c2410c; }
 .otd-kpi--count { border-top: 3px solid #0369a1; }
 .otd-kpi--days { border-top: 3px solid #7c3aed; }
+.otd-kpi--new { border-top: 3px solid #b45309; }
+
+.otd-new-badge {
+  display: inline-flex;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #ffedd5;
+  color: #9a3412;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  vertical-align: 1px;
+}
+
+.otd-history {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 14px 16px;
+}
+
+.otd-history-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.otd-history-month {
+  border-top: 1px solid var(--border, #e2e8f0);
+  padding: 8px 0;
+}
+
+.otd-history-month summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #334155;
+}
+
+.otd-history-late,
+.otd-history-empty {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.otd-history-table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.otd-history-table th,
+.otd-history-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  text-align: left;
+}
+
+#otd-history.is-active {
+  background: #0f172a;
+  color: #fff;
+  border-color: #0f172a;
+}
 
 .otd-charts {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -151,7 +376,7 @@
 }
 
 .otd-chart-body--tall {
-  min-height: 260px;
+  min-height: 180px;
 }
 
 .otd-chart-body svg {

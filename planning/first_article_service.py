@@ -94,17 +94,18 @@ _STAGE_STATUS_LABELS = {"I": "In process", "R": "Released", "P": "Pending", "C":
 
 _NEW_PART_ROW_SELECT = """
     process_sheet_no, pp_voucher_no, bom_updated, remarks, program_finish_at,
-    program_pic_ids, is_exception, created_at, updated_at
+    program_pic_ids, is_exception, npi_complete, created_at, updated_at
 """
-_NEW_PART_PATCH_FIELDS = ("bom_updated", "remarks", "program_finish_at", "program_pic_ids")
+_NEW_PART_PATCH_FIELDS = ("bom_updated", "remarks", "program_finish_at", "program_pic_ids", "npi_complete")
 _HISTORY_SOURCES = ("new_part", "flagged")
-_HISTORY_FIELDS_NEW_PART = ("remarks", "program_finish_at", "program_pic_ids")
+_HISTORY_FIELDS_NEW_PART = ("remarks", "program_finish_at", "program_pic_ids", "npi_complete")
 _HISTORY_FIELDS_FLAGGED = ("remarks", "pic_ids")
 _HISTORY_FIELD_LABELS = {
     "remarks": "Remarks",
     "program_finish_at": "Programme estimated finish",
     "program_pic_ids": "Programme PIC",
     "pic_ids": "PIC",
+    "npi_complete": "Done",
 }
 _HISTORY_LIMIT = 200
 _SCHEMA_LOCK_KEY = 874512031
@@ -114,6 +115,7 @@ _REQUIRED_COLUMNS = (
     ("planner_first_article", "quote_part_no"),
     ("planner_first_article_new_part", "program_pic_ids"),
     ("planner_first_article_new_part", "is_exception"),
+    ("planner_first_article_new_part", "npi_complete"),
     ("planner_first_article_change_log", "change_id"),
 )
 _tables_ready = False
@@ -132,7 +134,7 @@ def _schema_complete(con) -> bool:
                  OR (table_name = 'planner_first_article'
                      AND column_name IN ('machine_codes', 'quote_part_no'))
                  OR (table_name = 'planner_first_article_new_part'
-                     AND column_name IN ('program_pic_ids', 'is_exception'))
+                     AND column_name IN ('program_pic_ids', 'is_exception', 'npi_complete'))
                  OR (table_name = 'planner_first_article_change_log' AND column_name = 'change_id')
               )
             """
@@ -265,6 +267,7 @@ def _migrate_first_article_schema(con) -> None:
             program_finish_at  TEXT         NOT NULL DEFAULT '',
             program_pic_ids    BIGINT[]     NOT NULL DEFAULT '{}',
             is_exception       BOOLEAN      NOT NULL DEFAULT FALSE,
+            npi_complete       BOOLEAN      NOT NULL DEFAULT FALSE,
             created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
             updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         )
@@ -292,6 +295,15 @@ def _migrate_first_article_schema(con) -> None:
         """
         ALTER TABLE public.planner_first_article_new_part
             ADD COLUMN IF NOT EXISTS is_exception BOOLEAN NOT NULL DEFAULT FALSE
+        """,
+    )
+    _add_column_if_missing(
+        con,
+        "planner_first_article_new_part",
+        "npi_complete",
+        """
+        ALTER TABLE public.planner_first_article_new_part
+            ADD COLUMN IF NOT EXISTS npi_complete BOOLEAN NOT NULL DEFAULT FALSE
         """,
     )
     _add_column_if_missing(
@@ -1269,6 +1281,11 @@ def history_text(field_name: str, value: Any, pics_by_id: dict[int, dict[str, An
             return _parse_program_finish(value)
         except ValueError:
             return compact_text(value)
+    if field == "npi_complete":
+        try:
+            return "Yes" if _parse_bool(value, field="npi_complete") else "No"
+        except ValueError:
+            return compact_text(value) or "No"
     return compact_text(value)
 
 
@@ -1588,12 +1605,12 @@ def delete_pic(con, pic_id: int) -> dict[str, Any] | None:
         SET pic_ids = COALESCE(
                 ARRAY(
                     SELECT x FROM UNNEST(pic_ids) AS x
-                    WHERE x <> ALL(%s)
+                    WHERE x <> ALL(%s::bigint[])
                 ),
                 '{}'::bigint[]
             ),
             updated_at = NOW()
-        WHERE pic_ids && %s
+        WHERE pic_ids && %s::bigint[]
         """,
         (ids, ids),
     )
@@ -1603,12 +1620,12 @@ def delete_pic(con, pic_id: int) -> dict[str, Any] | None:
         SET program_pic_ids = COALESCE(
                 ARRAY(
                     SELECT x FROM UNNEST(program_pic_ids) AS x
-                    WHERE x <> ALL(%s)
+                    WHERE x <> ALL(%s::bigint[])
                 ),
                 '{}'::bigint[]
             ),
             updated_at = NOW()
-        WHERE program_pic_ids && %s
+        WHERE program_pic_ids && %s::bigint[]
         """,
         (ids, ids),
     )
@@ -1616,7 +1633,7 @@ def delete_pic(con, pic_id: int) -> dict[str, Any] | None:
         """
         UPDATE planner_first_article_pic
         SET active = FALSE
-        WHERE pic_id = ANY(%s) AND active = TRUE
+        WHERE pic_id = ANY(%s::bigint[]) AND active = TRUE
         """,
         (ids,),
     )
@@ -2692,6 +2709,7 @@ def _serialize_new_part_saved(
             "program_pic_ids": [],
             "program_pics": [],
             "is_exception": False,
+            "npi_complete": False,
         }
     out = serialize_row(dict(row))
     pic_ids = _parse_pic_ids(out.get("program_pic_ids"))
@@ -2702,6 +2720,7 @@ def _serialize_new_part_saved(
         "program_pic_ids": pic_ids,
         "program_pics": _pics_for_ids(pics_by_id or {}, pic_ids),
         "is_exception": bool(out.get("is_exception")),
+        "npi_complete": bool(out.get("npi_complete")),
     }
 
 
@@ -3144,6 +3163,7 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
             "program_finish_at": "",
             "program_pic_ids": [],
             "is_exception": False,
+            "npi_complete": False,
         }
         if pp_voucher_no:
             current["pp_voucher_no"] = pp_voucher_no
@@ -3155,12 +3175,15 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
             current["program_finish_at"] = _parse_program_finish(data.get("program_finish_at"))
         if "program_pic_ids" in data:
             current["program_pic_ids"] = _validate_pic_ids(con, _parse_pic_ids(data.get("program_pic_ids")))
+        if "npi_complete" in data:
+            current["npi_complete"] = _parse_bool(data.get("npi_complete"), field="npi_complete")
         pics = _pics_by_id(con)
         changes = diff_tracked_fields(
             dict(existing) if existing else {
                 "remarks": "",
                 "program_finish_at": "",
                 "program_pic_ids": [],
+                "npi_complete": False,
             },
             current,
             _HISTORY_FIELDS_NEW_PART,
@@ -3171,15 +3194,16 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
                 f"""
                 INSERT INTO planner_first_article_new_part (
                     process_sheet_no, pp_voucher_no, bom_updated, remarks,
-                    program_finish_at, program_pic_ids, updated_at
+                    program_finish_at, program_pic_ids, npi_complete, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (process_sheet_no) DO UPDATE
                 SET pp_voucher_no = EXCLUDED.pp_voucher_no,
                     bom_updated = EXCLUDED.bom_updated,
                     remarks = EXCLUDED.remarks,
                     program_finish_at = EXCLUDED.program_finish_at,
                     program_pic_ids = EXCLUDED.program_pic_ids,
+                    npi_complete = EXCLUDED.npi_complete,
                     updated_at = NOW()
                 RETURNING {_NEW_PART_ROW_SELECT}
                 """,
@@ -3190,6 +3214,7 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
                     compact_text(current.get("remarks")),
                     compact_text(current.get("program_finish_at")),
                     current.get("program_pic_ids") or [],
+                    bool(current.get("npi_complete")),
                 ),
             )
         )

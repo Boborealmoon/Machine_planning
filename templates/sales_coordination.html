@@ -6,7 +6,7 @@
 {% block body_class %}sc-view{% endblock %}
 {% block main_class %}app-main--sc{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_coordination.css') }}?v=sc-20260921-col-align">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_coordination.css') }}?v=sc-20260922-date-order">
 {% endblock %}
 {% block content %}
 <div class="sc-page">
@@ -65,12 +65,12 @@
           <col class="sc-col-date">
           <col class="sc-col-date">
           <col class="sc-col-date">
+          <col class="sc-col-date">
+          <col class="sc-col-date">
           <col class="sc-col-buyer">
           <col class="sc-col-status">
           <col class="sc-col-material">
           <col class="sc-col-mtl-status">
-          <col class="sc-col-date">
-          <col class="sc-col-date">
         </colgroup>
         <thead>
           <tr>
@@ -84,15 +84,15 @@
             <th data-sort="part_desc" title="Click to sort">Part description</th>
             <th data-sort="qty" title="Click to sort">Qty</th>
             <th data-sort="partial_qty" title="Click to sort">Partial qty</th>
-            <th data-sort="due_date" title="Click to sort">PO due date</th>
             <th data-sort="posted_date" title="Sales order posted date. Click to sort">Posted date</th>
+            <th data-sort="due_date" title="Click to sort">PO due date</th>
+            <th data-sort="material_need_date" title="Click to sort">Need date</th>
+            <th data-sort="material_in_date" title="Click to sort">Material in date</th>
             <th data-sort="proposed_edd" title="Planner proposed EDD. Click to sort">Proposed EDD</th>
             <th data-sort="buyer" title="Click to sort">Buyer</th>
             <th data-sort="order_status" title="Click to sort">Order status</th>
             <th data-sort="material" title="Click to sort">Material</th>
             <th data-sort="material_status" title="Click to sort">Material status</th>
-            <th data-sort="material_in_date" title="Click to sort">Material in date</th>
-            <th data-sort="material_need_date" title="Click to sort">Need date</th>
           </tr>
         </thead>
         <tbody id="sc-body"></tbody>
@@ -106,5 +106,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/sales_coordination.js') }}?v=sc-20260921-col-align"></script>
+<script src="{{ url_for('static', filename='js/sales_coordination.js') }}?v=sc-20260922-date-order"></script>
 {% endblock %}

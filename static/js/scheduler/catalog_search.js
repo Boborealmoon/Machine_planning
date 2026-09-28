@@ -172,6 +172,67 @@
       : terms.every(matchTerm);
   }
 
+  function trialCatalogPsBareId(value) {
+    return String(value || '').split('::')[0].trim();
+  }
+
+  function trialIsComponentChildPs(psId) {
+    const raw = trialCatalogPsBareId(psId);
+    return (raw.match(/-/g) || []).length >= 2 && /-\d+$/.test(raw);
+  }
+
+  function trialParentPsIdFromChild(psId) {
+    const raw = trialCatalogPsBareId(psId);
+    if (!trialIsComponentChildPs(raw)) return '';
+    return raw.replace(/-\d+$/, '');
+  }
+
+  function trialCatalogRowSourceId(ps) {
+    return trialCatalogPsBareId(ps?.source_ps_id || ps?.ps_id).toUpperCase();
+  }
+
+  function trialCatalogNestedChildIds(ps) {
+    const ids = new Set();
+    const items = Array.isArray(ps?.assembly_line_items) ? ps.assembly_line_items : [];
+    for (const item of items) {
+      for (const value of [
+        item?.process_sheet_no,
+        item?.ps_id,
+        item?.source_ps_id,
+        item?.display_ps_id,
+      ]) {
+        const id = trialCatalogPsBareId(value).toUpperCase();
+        if (id) ids.add(id);
+      }
+    }
+    return ids;
+  }
+
+  /** Drop COMP children that are already nested under a visible parent card. */
+  function trialCatalogExcludeNestedChildren(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    const nestedIds = new Set();
+    for (const ps of list) {
+      for (const id of trialCatalogNestedChildIds(ps)) nestedIds.add(id);
+    }
+    if (!nestedIds.size) return list;
+    return list.filter(ps => {
+      const id = trialCatalogRowSourceId(ps);
+      if (!id || !trialIsComponentChildPs(id)) return true;
+      return !nestedIds.has(id);
+    });
+  }
+
+  /** True when search is aimed at this child sheet, not only the parent family. */
+  function trialCatalogLineItemIsSearchTarget(psNo, rawQuery) {
+    const q = String(rawQuery || '').trim().toLowerCase();
+    const id = trialCatalogPsBareId(psNo).toLowerCase();
+    if (!q || !id) return false;
+    if (id === q) return true;
+    if (id.startsWith(q)) return false;
+    return id.includes(q) && /-\d+$/.test(q);
+  }
+
   const api = {
     trialNormalizeSearchText,
     trialSearchableTokens,
@@ -180,6 +241,10 @@
     trialPsSerialSearchTokens,
     trialCatalogSearchQueryTerms,
     trialQueryMatchesSearchTokens,
+    trialIsComponentChildPs,
+    trialParentPsIdFromChild,
+    trialCatalogExcludeNestedChildren,
+    trialCatalogLineItemIsSearchTarget,
   };
   Object.assign(root, api);
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

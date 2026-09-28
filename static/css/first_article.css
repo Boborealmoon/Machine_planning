@@ -576,6 +576,33 @@ body.fa-view .app-main--first-article {
   background: color-mix(in srgb, #16a34a 20%, #ffffff);
 }
 .fa-col-remarks { min-width: 148px; max-width: 220px; }
+.fa-col-done {
+  width: 56px;
+  min-width: 56px;
+  max-width: 64px;
+  text-align: center;
+  vertical-align: middle;
+  padding: 4px 6px;
+}
+.fa-done-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: 0 auto;
+  cursor: pointer;
+}
+.fa-done-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #16a34a;
+  cursor: pointer;
+}
+.fa-table--new tbody tr.is-npi-complete td.fa-col-done {
+  background: color-mix(in srgb, #16a34a 12%, #ffffff);
+}
 .fa-col-actions {
   width: 72px;
   white-space: nowrap;

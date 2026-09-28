@@ -414,11 +414,49 @@ body.sol-view .app-main--sales-logistics {
 }
 
 .sol-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   padding: 10px 12px;
   background: var(--sol-paper);
   border: 1px solid var(--sol-line);
   border-radius: 14px;
   box-shadow: none;
+}
+
+.sol-sections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  background: var(--sol-paper-2);
+  border: 1px solid var(--sol-line);
+  border-radius: 12px;
+}
+
+.sol-section {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--sol-muted);
+  font-family: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 8px 14px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.sol-section:hover {
+  color: var(--sol-ink);
+  background: rgba(255, 253, 249, 0.7);
+}
+
+.sol-section.is-active {
+  background: var(--sol-paper);
+  color: var(--sol-accent);
+  box-shadow: 0 1px 2px rgba(28, 25, 23, 0.06);
 }
 
 .sol-nav {
@@ -438,6 +476,10 @@ body.sol-view .app-main--sales-logistics {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.sol-nav-group[hidden] {
+  display: none !important;
 }
 
 .sol-chip {
@@ -641,7 +683,8 @@ body.sol-view .app-main--sales-logistics {
   user-select: none;
 }
 
-.sol-table thead th.is-sortable:hover {
+.sol-table thead th.is-sortable:hover,
+.sol-table thead th.is-sorted {
   color: var(--sol-ink);
 }
 
@@ -653,6 +696,133 @@ body.sol-view .app-main--sales-logistics {
 .sol-table thead th.is-sorted[data-sort-dir="desc"]::after {
   content: " ▼";
   font-size: 0.7em;
+}
+
+.sol-table thead th.is-sorted:has(.sol-th-ind)::after {
+  content: none;
+}
+
+.sol-th-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.sol-th-ind {
+  font-size: 0.7em;
+  margin-left: 3px;
+}
+
+.sol-th-filter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--sol-faint);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.sol-th-filter:hover,
+.sol-th-filter[aria-expanded="true"] {
+  background: var(--sol-accent-soft);
+  color: var(--sol-accent);
+}
+
+.sol-th-filter.is-active {
+  background: var(--sol-accent);
+  color: #fff;
+}
+
+.sol-clear-filters {
+  padding: 7px 12px;
+  border-radius: 999px;
+  font-size: 0.8125rem;
+}
+
+.sol-clear-filters[hidden] {
+  display: none !important;
+}
+
+.sol-col-filter {
+  position: fixed;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  width: min(280px, calc(100vw - 16px));
+  max-height: min(360px, calc(100vh - 16px));
+  background: var(--sol-paper);
+  border: 1px solid var(--sol-line);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(28, 25, 23, 0.16);
+  overflow: hidden;
+}
+
+.sol-col-filter[hidden] {
+  display: none !important;
+}
+
+.sol-col-filter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--sol-line);
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--sol-muted);
+}
+
+.sol-col-filter-head button {
+  border: 0;
+  background: transparent;
+  color: var(--sol-accent);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+
+.sol-col-filter-search {
+  display: block;
+  width: calc(100% - 16px);
+  box-sizing: border-box;
+  margin: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--sol-line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.75rem;
+  background: #fff;
+}
+
+.sol-col-filter-list {
+  overflow: auto;
+  padding-bottom: 6px;
+}
+
+.sol-col-filter .filter-dropdown-item {
+  white-space: normal;
+  align-items: flex-start;
+}
+
+.sol-col-filter .filter-dropdown-item[hidden] {
+  display: none !important;
+}
+
+.sol-col-filter-empty {
+  margin: 0;
+  padding: 8px 14px 12px;
+  font-size: 0.75rem;
+  color: var(--sol-faint);
 }
 
 .sol-status-pill {
@@ -1159,7 +1329,9 @@ body.sol-view .app-main--sales-logistics {
 }
 
 .sol-table[data-mode="prpo"],
-.sol-table[data-mode="qc"] {
+.sol-table[data-mode="qc"],
+.sol-table[data-mode="ship-in"],
+.sol-table[data-mode="ship-out"] {
   table-layout: auto;
   width: max(100%, 108rem);
   min-width: 108rem;
@@ -1168,7 +1340,11 @@ body.sol-view .app-main--sales-logistics {
 .sol-table[data-mode="prpo"] th,
 .sol-table[data-mode="prpo"] td,
 .sol-table[data-mode="qc"] th,
-.sol-table[data-mode="qc"] td {
+.sol-table[data-mode="qc"] td,
+.sol-table[data-mode="ship-in"] th,
+.sol-table[data-mode="ship-in"] td,
+.sol-table[data-mode="ship-out"] th,
+.sol-table[data-mode="ship-out"] td {
   box-sizing: border-box;
   vertical-align: top;
   white-space: nowrap;
@@ -1177,7 +1353,11 @@ body.sol-view .app-main--sales-logistics {
 .sol-table[data-mode="prpo"] th.sol-desc,
 .sol-table[data-mode="prpo"] td.sol-desc,
 .sol-table[data-mode="qc"] th.sol-desc,
-.sol-table[data-mode="qc"] td.sol-desc {
+.sol-table[data-mode="qc"] td.sol-desc,
+.sol-table[data-mode="ship-in"] th.sol-desc,
+.sol-table[data-mode="ship-in"] td.sol-desc,
+.sol-table[data-mode="ship-out"] th.sol-desc,
+.sol-table[data-mode="ship-out"] td.sol-desc {
   min-width: 18rem;
   max-width: 32rem;
   white-space: normal;

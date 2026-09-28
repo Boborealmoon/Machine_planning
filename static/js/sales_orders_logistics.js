@@ -10,6 +10,23 @@
   const PR_PO_VIEWS = new Set(['pr-enquiry', 'purchase-order']);
   const REQUEST_VIEW = 'part-requests';
   const QC_VIEW = 'qc-checklist';
+  const SHIP_IN_VIEW = 'logistics-in';
+  const SHIP_OUT_VIEW = 'logistics-out';
+  const SHIP_VIEWS = new Set([SHIP_IN_VIEW, SHIP_OUT_VIEW]);
+  const IN_SHIP_BUCKETS = ['outstanding', 'grn', 'history', 'cancelled'];
+  const OUT_SHIP_BUCKETS = ['outstanding', 'history', 'cancelled'];
+  const SHIP_BUCKET_LABELS = {
+    outstanding: 'Outstanding',
+    grn: 'GRN',
+    history: 'History',
+    cancelled: 'Cancelled',
+  };
+  const SECTION_DEFAULTS = {
+    jobs: 'active',
+    purchasing: 'pr-enquiry',
+    'logistics-in': SHIP_IN_VIEW,
+    'logistics-out': SHIP_OUT_VIEW,
+  };
   const BUCKET_LABELS = { ost: 'Outstanding', new: 'New', hst: 'History' };
   const QC_BUCKET_LABELS = {
     ready_qc: 'Ready for QC',
@@ -61,23 +78,68 @@
       <th class="sol-col-bom">BOM</th>
       <th class="sol-col-actions">Remove</th>
     </tr>`;
-  const QC_TABLE_HEAD = `
-    <tr>
-      <th>Status</th>
-      <th>Shipment</th>
-      <th>PO</th>
-      <th>Supplier</th>
-      <th>Item</th>
-      <th>Description</th>
-      <th class="sol-col-qty">Qty</th>
-      <th class="sol-col-qty">Received</th>
-      <th>UOM</th>
-      <th>GRN</th>
-      <th>GRN date</th>
-      <th>Supplier DO</th>
-      <th>QI</th>
-      <th>Location</th>
-    </tr>`;
+  const QC_COLUMNS = [
+    { key: 'qc_status', label: 'Status', value: row => (String(row.grn_no || '').trim() ? 'Ready for QC' : 'Awaiting GRN') },
+    { key: 'shipment_voucher_no', label: 'Shipment' },
+    { key: 'po_no', label: 'PO' },
+    { key: 'supplier', label: 'Supplier', value: row => String(row.supplier_name || row.supplier_code || '').trim() },
+    { key: 'item', label: 'Item', value: row => String(row.item_code || row.inventory_code || row.service_code || '').trim() },
+    { key: 'description', label: 'Description', value: row => String(row.line_item_description || '').trim() },
+    { key: 'qty', label: 'Qty', type: 'num', cls: 'sol-col-qty' },
+    { key: 'qty_received', label: 'Received', type: 'num', cls: 'sol-col-qty' },
+    { key: 'uom_code', label: 'UOM' },
+    { key: 'grn_no', label: 'GRN' },
+    { key: 'goods_receipt_date', label: 'GRN date', type: 'date' },
+    { key: 'supplier_do_no', label: 'Supplier DO' },
+    {
+      key: 'qi',
+      label: 'QI',
+      value: row => {
+        const qi = String(row.qi_voucher_no || '').trim();
+        const qiStatus = String(row.qi_status || '').trim().toUpperCase();
+        return qi ? `${qi}${qiStatus ? ` · ${qiStatus}` : ''}` : '';
+      },
+    },
+    { key: 'receiving_location_code', label: 'Location' },
+  ];
+  const SHIP_IN_COLUMNS = [
+    { key: 'shipment_voucher_no', label: 'Shipment' },
+    { key: 'grn_no', label: 'GRN' },
+    { key: 'source_voucher_no', label: 'Source' },
+    { key: 'supplier_do_no', label: 'Supplier DO' },
+    { key: 'shipment_date', label: 'ESD', type: 'date' },
+    { key: 'arrival_date', label: 'EAD', type: 'date' },
+    { key: 'goods_receipt_date', label: 'CRD', type: 'date' },
+    { key: 'priority', label: 'Priority' },
+    { key: 'mode', label: 'Mode' },
+    { key: 'subject', label: 'Subject' },
+    { key: 'reference_no', label: 'Reference' },
+    { key: 'location_name', label: 'Receiving location' },
+    { key: 'party_name', label: 'Supplier' },
+    { key: 'created_by_name', label: 'Created by' },
+    { key: 'created_datetime', label: 'Created', type: 'date' },
+    { key: 'last_updated_by_name', label: 'Updated by' },
+    { key: 'last_updated_datetime', label: 'Updated', type: 'date' },
+  ];
+  const SHIP_OUT_COLUMNS = [
+    { key: 'shipment_voucher_no', label: 'Shipment' },
+    { key: 'do_no', label: 'DO' },
+    { key: 'invoice_no', label: 'Invoice' },
+    { key: 'source_voucher_no', label: 'Source' },
+    { key: 'shipment_date', label: 'ESD', type: 'date' },
+    { key: 'arrival_date', label: 'EAD', type: 'date' },
+    { key: 'shipment_date_actual', label: 'Shipped', type: 'date' },
+    { key: 'priority', label: 'Priority' },
+    { key: 'mode', label: 'Mode' },
+    { key: 'subject', label: 'Subject' },
+    { key: 'reference_no', label: 'Reference' },
+    { key: 'location_name', label: 'Ship to' },
+    { key: 'party_name', label: 'Customer' },
+    { key: 'created_by_name', label: 'Created by' },
+    { key: 'created_datetime', label: 'Created', type: 'date' },
+    { key: 'last_updated_by_name', label: 'Updated by' },
+    { key: 'last_updated_datetime', label: 'Updated', type: 'date' },
+  ];
 
   const state = {
     active: [],
@@ -86,7 +148,7 @@
     prPoSource: '',
     prPoKey: '',
     pendingLoad: '',
-    loadControllers: { sales: null, prpo: null, qc: null },
+    loadControllers: { sales: null, prpo: null, qc: null, ship: null },
     view: 'active',
     prPoBucket: 'ost',
     search: '',
@@ -112,6 +174,23 @@
     qcSource: '',
     qcBucket: 'ready_qc',
     qcLoaded: false,
+    qcLoadedBucket: '',
+    shipBucket: 'outstanding',
+    shipRows: [],
+    shipCounts: { in: {}, out: {} },
+    shipSource: '',
+    shipTotal: 0,
+    shipTruncated: false,
+    shipCache: {},
+    shipSortKey: '',
+    shipSortDir: 'asc',
+    shipFilters: {},
+    shipFilterDir: '',
+    qcSortKey: '',
+    qcSortDir: 'asc',
+    qcFilters: {},
+    colFilterKey: '',
+    colFilterKind: '',
     assemblyJobs: new Map(),
     newOrders: [],
     unreadSoKeys: new Set(),
@@ -131,6 +210,22 @@
 
   function isQcView(view) {
     return (view || state.view) === QC_VIEW;
+  }
+
+  function isShipView(view) {
+    return SHIP_VIEWS.has(view || state.view);
+  }
+
+  function shipDirection(view) {
+    return (view || state.view) === SHIP_OUT_VIEW ? 'out' : 'in';
+  }
+
+  function sectionForView(view) {
+    const current = view || state.view;
+    if (isPrPoView(current) || isRequestView(current)) return 'purchasing';
+    if (isQcView(current) || current === SHIP_IN_VIEW) return 'logistics-in';
+    if (current === SHIP_OUT_VIEW) return 'logistics-out';
+    return 'jobs';
   }
 
   function isPsView(view) {
@@ -251,6 +346,10 @@
     if (parsed.date) return formatDate(parsed.date);
     if (parsed.legacy) return parsed.legacy;
     return '';
+  }
+
+  function effectiveMaterialSubcon(pp) {
+    return String(pp?.assembly_material_subcon || pp?.material_subcon || '');
   }
 
   async function requestJson(url, { method = 'GET', body } = {}) {
@@ -633,10 +732,11 @@
       pp.description,
       partial?.inventory_code,
       pp.material_subcon,
+      pp.assembly_material_subcon,
       pp.mtl_part_order,
       pp.material_need_date,
       formatDate(pp.material_need_date),
-      materialSubconDisplay(pp.material_subcon),
+      materialSubconDisplay(effectiveMaterialSubcon(pp)),
       ...assemblySearchBits(pp, assemblyChild),
     ];
     return parts.map(v => String(v == null ? '' : v)).join(' ');
@@ -677,7 +777,7 @@
   }
 
   function passesMaterialFilter(pp) {
-    const parsed = parseMaterialSubcon(pp?.material_subcon);
+    const parsed = parseMaterialSubcon(effectiveMaterialSubcon(pp));
     switch (state.materialFilter) {
       case 'empty':
         return !parsed.arrived && !parsed.date && !parsed.legacy;
@@ -828,8 +928,9 @@
 
   function visibleQcRows() {
     const q = String(state.search || '').trim().toLowerCase();
-    if (!q) return state.qcRows.slice();
-    return state.qcRows.filter(row => qcSearchText(row).includes(q));
+    let rows = q ? state.qcRows.filter(row => qcSearchText(row).includes(q)) : state.qcRows.slice();
+    rows = rows.filter(row => passesColumnFilters(row, QC_COLUMNS, state.qcFilters));
+    return sortRowsByColumn(rows, QC_COLUMNS, state.qcSortKey, state.qcSortDir);
   }
 
   function findPp(ppVoucherNo) {
@@ -940,7 +1041,7 @@
 
   function renderMaterialCell(pp) {
     const ppNo = String(pp.pp_voucher_no || '').trim();
-    const raw = String(pp.material_subcon || '');
+    const raw = effectiveMaterialSubcon(pp);
     const parsed = parseMaterialSubcon(raw);
     const arrivedCls = parsed.arrived ? ' is-active' : '';
     const dateHiddenCls = parsed.arrived ? ' is-hidden' : '';
@@ -1470,6 +1571,223 @@
     `;
   }
 
+  function shipDateCell(value) {
+    return `<td class="sol-date">${escapeHtml(formatDate(value))}</td>`;
+  }
+
+  function renderShipRow(row) {
+    const party = String(row.party_name || '').trim() || EM_DASH;
+    const subject = String(row.subject || '').trim();
+    const location = String(row.location_name || '').trim();
+    if (shipDirection() === 'out') {
+      return `
+        <tr>
+          <td class="sol-mono">${escapeHtml(cellText(row.shipment_voucher_no))}</td>
+          <td class="sol-mono">${escapeHtml(cellText(row.do_no))}</td>
+          <td class="sol-mono">${escapeHtml(cellText(row.invoice_no))}</td>
+          <td class="sol-mono">${escapeHtml(cellText(row.source_voucher_no))}</td>
+          ${shipDateCell(row.shipment_date)}
+          ${shipDateCell(row.arrival_date)}
+          ${shipDateCell(row.shipment_date_actual)}
+          <td>${escapeHtml(cellText(row.priority))}</td>
+          <td>${escapeHtml(cellText(row.mode))}</td>
+          ${renderDescCell(subject)}
+          <td class="sol-mono">${escapeHtml(cellText(row.reference_no))}</td>
+          <td title="${escapeHtml(location)}">${escapeHtml(location || EM_DASH)}</td>
+          <td title="${escapeHtml(party)}">${escapeHtml(party)}</td>
+          <td>${escapeHtml(cellText(row.created_by_name))}</td>
+          ${shipDateCell(row.created_datetime)}
+          <td>${escapeHtml(cellText(row.last_updated_by_name))}</td>
+          ${shipDateCell(row.last_updated_datetime)}
+        </tr>`;
+    }
+    const grn = String(row.grn_no || '').trim();
+    return `
+      <tr>
+        <td class="sol-mono">${escapeHtml(cellText(row.shipment_voucher_no))}</td>
+        <td class="sol-mono">${grn ? `<span class="sol-qc-grn">${escapeHtml(grn)}</span>` : EM_DASH}</td>
+        <td class="sol-mono">${escapeHtml(cellText(row.source_voucher_no))}</td>
+        <td class="sol-mono">${escapeHtml(cellText(row.supplier_do_no))}</td>
+        ${shipDateCell(row.shipment_date)}
+        ${shipDateCell(row.arrival_date)}
+        ${shipDateCell(row.goods_receipt_date)}
+        <td>${escapeHtml(cellText(row.priority))}</td>
+        <td>${escapeHtml(cellText(row.mode))}</td>
+        ${renderDescCell(subject)}
+        <td class="sol-mono">${escapeHtml(cellText(row.reference_no))}</td>
+        <td title="${escapeHtml(location)}">${escapeHtml(location || EM_DASH)}</td>
+        <td title="${escapeHtml(party)}">${escapeHtml(party)}</td>
+        <td>${escapeHtml(cellText(row.created_by_name))}</td>
+        ${shipDateCell(row.created_datetime)}
+        <td>${escapeHtml(cellText(row.last_updated_by_name))}</td>
+        ${shipDateCell(row.last_updated_datetime)}
+      </tr>`;
+  }
+
+  function shipSearchText(row) {
+    return [
+      row.shipment_voucher_no,
+      row.grn_no,
+      row.do_no,
+      row.invoice_no,
+      row.source_voucher_no,
+      row.supplier_do_no,
+      row.subject,
+      row.reference_no,
+      row.location_name,
+      row.party_name,
+      row.created_by_name,
+      row.priority,
+      row.mode,
+      row.sbu_code,
+    ].map(value => String(value == null ? '' : value).toLowerCase()).join(' ');
+  }
+
+  function visibleShipRows() {
+    const columns = shipColumns();
+    const q = String(state.search || '').trim().toLowerCase();
+    let rows = q ? state.shipRows.filter(row => shipSearchText(row).includes(q)) : state.shipRows.slice();
+    rows = rows.filter(row => passesColumnFilters(row, columns, state.shipFilters));
+    return sortRowsByColumn(rows, columns, state.shipSortKey, state.shipSortDir);
+  }
+
+  function shipColumns() {
+    return shipDirection() === 'out' ? SHIP_OUT_COLUMNS : SHIP_IN_COLUMNS;
+  }
+
+  function isBlankDisplay(value) {
+    const text = String(value == null ? '' : value).trim();
+    return !text || text === EM_DASH || text === '—' || text === '-';
+  }
+
+  function columnRaw(row, col) {
+    if (typeof col.value === 'function') return col.value(row);
+    return row[col.key];
+  }
+
+  function columnFilterKey(row, col) {
+    const raw = columnRaw(row, col);
+    if (col.type === 'date') {
+      const shown = formatDate(raw);
+      return isBlankDisplay(shown) ? '' : shown;
+    }
+    if (col.type === 'num') {
+      const shown = formatQty(raw);
+      return isBlankDisplay(shown) ? '' : shown;
+    }
+    const text = String(raw == null ? '' : raw).trim();
+    return isBlankDisplay(text) ? '' : text;
+  }
+
+  function columnSortValue(row, col) {
+    const raw = columnRaw(row, col);
+    if (col.type === 'date') return dateSortValue(raw);
+    if (col.type === 'num') {
+      const num = Number(raw);
+      return Number.isFinite(num) ? num : null;
+    }
+    const text = String(raw == null ? '' : raw).trim();
+    return text ? text.toLowerCase() : '';
+  }
+
+  function passesColumnFilters(row, columns, filters) {
+    return columns.every(col => {
+      const selected = filters[col.key];
+      if (!selected || !selected.size) return true;
+      return selected.has(columnFilterKey(row, col));
+    });
+  }
+
+  function sortRowsByColumn(rows, columns, sortKey, sortDir) {
+    if (!sortKey) return rows;
+    const col = columns.find(item => item.key === sortKey);
+    if (!col) return rows;
+    const dir = sortDir === 'desc' ? -1 : 1;
+    return rows.slice().sort((a, b) => compareSortValues(
+      columnSortValue(a, col),
+      columnSortValue(b, col),
+      dir,
+    ));
+  }
+
+  function columnFiltersActive(filters) {
+    return Object.values(filters || {}).some(selected => selected && selected.size);
+  }
+
+  function columnFilterOptions(rows, col, selected) {
+    const sortOf = new Map();
+    rows.forEach(row => {
+      const key = columnFilterKey(row, col);
+      if (!sortOf.has(key)) sortOf.set(key, columnSortValue(row, col));
+    });
+    if (selected) {
+      selected.forEach(key => {
+        if (sortOf.has(key)) return;
+        sortOf.set(key, col.type === 'num' || col.type === 'date' ? null : String(key || '').toLowerCase());
+      });
+    }
+    return [...sortOf.entries()]
+      .sort((a, b) => compareSortValues(a[1], b[1], 1))
+      .map(entry => entry[0]);
+  }
+
+  function activeColumnContext() {
+    if (isShipView()) {
+      return {
+        kind: 'ship',
+        columns: shipColumns(),
+        rows: state.shipRows,
+        filters: state.shipFilters,
+        sortKey: state.shipSortKey,
+        sortDir: state.shipSortDir,
+      };
+    }
+    if (isQcView()) {
+      return {
+        kind: 'qc',
+        columns: QC_COLUMNS,
+        rows: state.qcRows,
+        filters: state.qcFilters,
+        sortKey: state.qcSortKey,
+        sortDir: state.qcSortDir,
+      };
+    }
+    return null;
+  }
+
+  function resetShipColumnControls() {
+    state.shipSortKey = '';
+    state.shipSortDir = 'asc';
+    state.shipFilters = {};
+  }
+
+  function toggleColumnSort(kind, key) {
+    const columns = kind === 'qc' ? QC_COLUMNS : shipColumns();
+    const col = columns.find(item => item.key === key);
+    if (!col) return;
+    const keyName = kind === 'qc' ? 'qcSortKey' : 'shipSortKey';
+    const dirName = kind === 'qc' ? 'qcSortDir' : 'shipSortDir';
+    if (state[keyName] === key) {
+      state[dirName] = state[dirName] === 'asc' ? 'desc' : 'asc';
+    } else {
+      state[keyName] = key;
+      state[dirName] = col.type === 'date' || col.type === 'num' ? 'desc' : 'asc';
+    }
+  }
+
+  function setColumnFilter(kind, key, values) {
+    const filters = kind === 'qc' ? state.qcFilters : state.shipFilters;
+    if (!values.size) delete filters[key];
+    else filters[key] = values;
+    render();
+  }
+
+  function clearActiveColumnFilters() {
+    if (isShipView()) state.shipFilters = {};
+    if (isQcView()) state.qcFilters = {};
+    render();
+  }
+
   function renderRequestDelayCell(row) {
     const id = Number(row.request_id) || 0;
     const flagged = Boolean(row.material_delay);
@@ -1676,6 +1994,7 @@
       const found = findPp(ppNo);
       if (found.pp) {
         found.pp.material_subcon = saved;
+        found.pp.assembly_material_subcon = saved;
         if (Object.prototype.hasOwnProperty.call(data, 'material_delay')) {
           found.pp.material_delay = Boolean(data.material_delay);
           syncDelayRows(ppNo, found.pp.material_delay);
@@ -1832,6 +2151,18 @@
     setChipCount('sol-qc-count', ready + awaiting);
   }
 
+  function updateShipChipCounts() {
+    const inbound = state.shipCounts.in || {};
+    const outbound = state.shipCounts.out || {};
+    setChipCount('sol-in-ost-count', inbound.outstanding);
+    setChipCount('sol-in-grn-count', inbound.grn);
+    setChipCount('sol-in-hst-count', inbound.history);
+    setChipCount('sol-in-can-count', inbound.cancelled);
+    setChipCount('sol-out-ost-count', outbound.outstanding);
+    setChipCount('sol-out-hst-count', outbound.history);
+    setChipCount('sol-out-can-count', outbound.cancelled);
+  }
+
   function setStatPills(items) {
     const host = document.getElementById('sol-stat-pills');
     if (!host) return;
@@ -1908,7 +2239,10 @@
     const bucketLabel = QC_BUCKET_LABELS[state.qcBucket] || state.qcBucket;
     updateQcChipCounts();
     if (subtitle) {
-      subtitle.textContent = `${rows.length} ${bucketLabel} inbound lines shown`;
+      const total = state.qcRows.length;
+      subtitle.textContent = rows.length === total
+        ? `${rows.length} ${bucketLabel} inbound lines shown`
+        : `${rows.length} of ${total} ${bucketLabel} inbound lines match`;
     }
     setStatPills([
       { label: 'Shown', value: rows.length },
@@ -1921,16 +2255,26 @@
     const prPo = isPrPoView();
     const requests = isRequestView();
     const qc = isQcView();
+    const ship = isShipView();
+    const section = sectionForView();
     const prpoToolbar = document.getElementById('sol-prpo-toolbar');
-    const qcBucketGroup = document.getElementById('sol-qc-bucket-group');
     const newBucketBtn = document.querySelector('[data-sol-bucket="new"]');
     const search = document.getElementById('sol-search');
     const legend = document.getElementById('sol-legend');
     const page = document.querySelector('.sol-page');
     if (page) {
-      page.classList.toggle('sol-page--wide', prPo || qc);
+      page.classList.toggle('sol-page--wide', prPo || qc || ship);
       page.classList.toggle('sol-page--prpo', prPo);
     }
+
+    document.querySelectorAll('[data-sol-section]').forEach(btn => {
+      const active = btn.getAttribute('data-sol-section') === section;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    document.querySelectorAll('[data-sol-section-panel]').forEach(panel => {
+      panel.hidden = panel.getAttribute('data-sol-section-panel') !== section;
+    });
 
     document.querySelectorAll('.sol-ps-only').forEach(el => {
       el.hidden = !isPsView();
@@ -1941,15 +2285,19 @@
       el.hidden = !requests;
     });
     document.querySelectorAll('.sol-edd-filter').forEach(el => {
-      el.hidden = prPo || qc;
+      el.hidden = prPo || qc || ship;
     });
 
     if (prpoToolbar) prpoToolbar.hidden = !prPo;
-    if (qcBucketGroup) qcBucketGroup.hidden = !qc;
     if (newBucketBtn) newBucketBtn.hidden = state.view !== 'purchase-order';
 
     document.querySelectorAll('[data-sol-view]').forEach(btn => {
-      const active = btn.getAttribute('data-sol-view') === state.view;
+      const view = btn.getAttribute('data-sol-view');
+      const shipBucket = btn.getAttribute('data-sol-ship-bucket');
+      const qcBucket = btn.getAttribute('data-sol-qc-bucket');
+      let active = view === state.view;
+      if (active && shipBucket) active = shipBucket === state.shipBucket;
+      if (active && qcBucket) active = qcBucket === state.qcBucket;
       btn.classList.toggle('is-active', active);
       btn.setAttribute('aria-selected', active ? 'true' : 'false');
     });
@@ -1960,30 +2308,41 @@
       btn.setAttribute('aria-selected', active ? 'true' : 'false');
     });
 
-    document.querySelectorAll('[data-sol-qc-bucket]').forEach(btn => {
-      const active = btn.getAttribute('data-sol-qc-bucket') === state.qcBucket;
-      btn.classList.toggle('is-active', active);
-      btn.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
+    const clearFilters = document.getElementById('sol-clear-col-filters');
+    if (clearFilters) {
+      const filtering = (ship && columnFiltersActive(state.shipFilters))
+        || (qc && columnFiltersActive(state.qcFilters));
+      clearFilters.hidden = !filtering;
+    }
 
     if (search) {
+      const shipLabel = shipDirection() === 'out' ? 'DO, invoice, customer' : 'GRN, supplier DO, supplier';
       search.placeholder = prPo
         ? 'Search item, PR, PO, supplier, remarks...'
         : requests
           ? 'Search part no, inventory code, remarks...'
-            : qc
+          : qc
             ? 'Search shipment, PO, GRN, supplier, item...'
-            : state.view === 'sr'
-              ? 'Search [SR] sheet, SO, part, sub-assembly...'
-              : 'Search SO, PP, part, sub-assembly...';
+            : ship
+              ? `Search shipment, source, ${shipLabel}...`
+              : state.view === 'sr'
+                ? 'Search [SR] sheet, SO, part, sub-assembly...'
+                : 'Search SO, PP, part, sub-assembly...';
     }
     if (legend) {
       legend.hidden = prPo;
-      if (qc) {
+      if (ship) {
+        const inbound = shipDirection() === 'in';
+        const sortHint = ' Click a column heading to sort. Use the filter icon to narrow that column.';
+        legend.innerHTML = inbound
+          ? `Inbound shipments from ERP. <strong>Outstanding</strong> has no GRN yet, <strong>GRN</strong> is still open with a receipt, <strong>History</strong> is posted, <strong>Cancelled</strong> is void. Ready for QC and Awaiting GRN are the inspection queues.${sortHint}`
+          : `Outbound shipments from ERP. <strong>Outstanding</strong> is still open, <strong>History</strong> is posted, <strong>Cancelled</strong> is void. History shows the latest 500 vouchers.${sortHint}`;
+      } else if (qc) {
         legend.innerHTML = `
           <span class="sol-legend-item sol-legend-item--qc-ready">Green GRN</span> material ready for QC &middot;
           <span class="sol-legend-item sol-legend-item--qc-awaiting">Amber row</span> received, GRN not generated in ERP &middot;
-          Source: outstanding inbound shipments (<code>lg_in_shm_ost</code>)
+          Source: outstanding inbound shipments (<code>lg_in_shm_ost</code>) &middot;
+          Click a column heading to sort. Use the filter icon to narrow that column.
         `;
       } else if (requests) {
         legend.innerHTML = `
@@ -2008,6 +2367,34 @@
     }
   }
 
+  function columnFilterTitle(col, selected) {
+    if (!selected || !selected.size) return `Filter ${col.label}`;
+    const labels = [...selected].map(value => value || BLANK_SUPPLIER);
+    const shown = labels.length <= 2 ? labels.join(', ') : `${labels.length} selected`;
+    return `${col.label}: ${shown}`;
+  }
+
+  function columnTableHeadHtml(columns, sortKey, sortDir, filters) {
+    return `<tr>${columns.map(col => {
+      const sorted = sortKey === col.key;
+      const selected = filters[col.key];
+      const filtering = Boolean(selected && selected.size);
+      const classes = [col.cls, 'is-sortable', sorted ? 'is-sorted' : '', filtering ? 'has-filter' : '']
+        .filter(Boolean)
+        .join(' ');
+      const dir = sorted ? ` data-sort-dir="${escapeHtml(sortDir)}"` : '';
+      const aria = sorted
+        ? ` aria-sort="${sortDir === 'desc' ? 'descending' : 'ascending'}"`
+        : ' aria-sort="none"';
+      const ind = sorted
+        ? `<span class="sol-th-ind" aria-hidden="true">${sortDir === 'desc' ? '▼' : '▲'}</span>`
+        : '';
+      const title = columnFilterTitle(col, selected);
+      const expanded = state.colFilterKey === col.key ? 'true' : 'false';
+      return `<th class="${classes}" data-sort="${escapeHtml(col.key)}"${dir}${aria} title="Sort by ${escapeHtml(col.label)}"><span class="sol-th-row"><span class="sol-th-label">${escapeHtml(col.label)}${ind}</span><button type="button" class="sol-th-filter${filtering ? ' is-active' : ''}" data-col-filter="${escapeHtml(col.key)}" aria-label="${escapeHtml(title)}" aria-expanded="${expanded}" title="${escapeHtml(title)}"><svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-5 6.1V13.2l-3-1.4V8.6l-5-6.1z"/></svg></button></span></th>`;
+    }).join('')}</tr>`;
+  }
+
   function prPoTableHeadHtml() {
     return `<tr>${PR_PO_COLUMNS.map(col => {
       const sorted = state.sortKey === col.key;
@@ -2025,17 +2412,28 @@
     if (!head) return;
     const mode = isPrPoView()
       ? 'prpo'
-      : (isRequestView() ? 'req' : (isQcView() ? 'qc' : 'ps'));
+      : isRequestView()
+        ? 'req'
+        : isQcView()
+          ? 'qc'
+          : isShipView()
+            ? (shipDirection() === 'out' ? 'ship-out' : 'ship-in')
+            : 'ps';
     if (table) table.dataset.mode = mode;
     const html = mode === 'prpo'
       ? prPoTableHeadHtml()
       : mode === 'req'
         ? REQUEST_TABLE_HEAD
         : mode === 'qc'
-          ? QC_TABLE_HEAD
-          : PS_TABLE_HEAD;
-    if (head.dataset.mode === mode && mode !== 'prpo') return;
+          ? columnTableHeadHtml(QC_COLUMNS, state.qcSortKey, state.qcSortDir, state.qcFilters)
+          : mode === 'ship-in'
+            ? columnTableHeadHtml(SHIP_IN_COLUMNS, state.shipSortKey, state.shipSortDir, state.shipFilters)
+            : mode === 'ship-out'
+              ? columnTableHeadHtml(SHIP_OUT_COLUMNS, state.shipSortKey, state.shipSortDir, state.shipFilters)
+              : PS_TABLE_HEAD;
+    if (head.dataset.mode === mode && head.dataset.headHtml === html) return;
     head.dataset.mode = mode;
+    head.dataset.headHtml = html;
     head.innerHTML = html;
   }
 
@@ -2207,23 +2605,102 @@
       meta.hidden = !state.qcRows.length && !state.qcSource;
       meta.textContent = `${state.qcSource || 'Inbound shipments'} | ${bucketLabel} | cached ${state.cachedAt || EM_DASH}`;
     }
+    rememberColFilter();
+  }
+
+  function updateShipStats(rows) {
+    const subtitle = document.getElementById('sol-subtitle');
+    const direction = shipDirection();
+    const bucketLabel = SHIP_BUCKET_LABELS[state.shipBucket] || state.shipBucket;
+    const counts = (direction === 'out' ? state.shipCounts.out : state.shipCounts.in) || {};
+    updateShipChipCounts();
+    const flow = direction === 'out' ? 'outbound' : 'inbound';
+    const total = state.shipRows.length;
+    const matched = rows.length !== total;
+    if (subtitle) {
+      if (state.shipTruncated && !matched) {
+        subtitle.textContent = `${rows.length} latest ${bucketLabel} ${flow} shipments shown of ${state.shipTotal}`;
+      } else if (matched) {
+        subtitle.textContent = `${rows.length} of ${total} ${bucketLabel} ${flow} shipments match`;
+      } else {
+        subtitle.textContent = `${rows.length} ${bucketLabel} ${flow} shipments shown`;
+      }
+    }
+    const pills = direction === 'out'
+      ? [
+          { label: 'Shown', value: rows.length },
+          { label: 'Outstanding', value: Number(counts.outstanding) || 0 },
+          { label: 'History', value: Number(counts.history) || 0 },
+          { label: 'Cancelled', value: Number(counts.cancelled) || 0 },
+        ]
+      : [
+          { label: 'Shown', value: rows.length },
+          { label: 'Outstanding', value: Number(counts.outstanding) || 0 },
+          { label: 'GRN', value: Number(counts.grn) || 0 },
+          { label: 'History', value: Number(counts.history) || 0 },
+          { label: 'Cancelled', value: Number(counts.cancelled) || 0 },
+        ];
+    setStatPills(pills);
+  }
+
+  function renderShip() {
+    const rows = visibleShipRows();
+    const body = document.getElementById('sol-table-body');
+    const host = document.getElementById('sol-table-host');
+    const empty = document.getElementById('sol-empty');
+    const loading = document.getElementById('sol-loading');
+    const meta = document.getElementById('sol-meta');
+    const bucketLabel = SHIP_BUCKET_LABELS[state.shipBucket] || state.shipBucket;
+
+    if (loading) loading.hidden = true;
+    ensureTableHead();
+    updateShipStats(rows);
+
+    if (!rows.length) {
+      const msg = state.shipRows.length
+        ? 'No rows match your filters.'
+        : `No ${bucketLabel.toLowerCase()} shipments in ERP.`;
+      if (body) body.innerHTML = '';
+      if (host) host.hidden = true;
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = msg;
+      }
+    } else {
+      if (host) host.hidden = false;
+      if (empty) empty.hidden = true;
+      if (body) {
+        body.innerHTML = rows.map(renderShipRow).join('');
+        bindInputs();
+      }
+    }
+
+    if (meta) {
+      const clipped = state.shipTruncated ? ` | latest ${state.shipRows.length} of ${state.shipTotal}` : '';
+      meta.hidden = !state.shipRows.length && !state.shipSource;
+      meta.textContent = `${state.shipSource || 'Shipments'} | ${bucketLabel}${clipped} | cached ${state.cachedAt || EM_DASH}`;
+    }
+    rememberColFilter();
   }
 
   function render() {
     syncNavUi();
     setChipCount('sol-req-count', state.requests.length);
     updateQcChipCounts();
+    updateShipChipCounts();
     if (state.pendingLoad && (
       (state.pendingLoad === 'prpo' && isPrPoView())
       || (state.pendingLoad === 'ps' && isPsView())
       || (state.pendingLoad === 'req' && isRequestView())
       || (state.pendingLoad === 'qc' && isQcView())
+      || (state.pendingLoad === 'ship' && isShipView())
     )) {
       return;
     }
     if (isPrPoView()) renderPrPo();
     else if (isRequestView()) renderRequests();
     else if (isQcView()) renderQc();
+    else if (isShipView()) renderShip();
     else renderPs();
   }
 
@@ -2238,6 +2715,8 @@
     if (isPrPoView(view)) return 'prpo';
     if (isRequestView(view)) return 'req';
     if (isQcView(view)) return 'qc';
+    if ((view || state.view) === SHIP_OUT_VIEW) return 'ship-out';
+    if ((view || state.view) === SHIP_IN_VIEW) return 'ship-in';
     return 'ps';
   }
 
@@ -2248,17 +2727,32 @@
     if (search) search.value = '';
   }
 
+  function normalizeShipBucket(view, bucket) {
+    const allowed = view === SHIP_OUT_VIEW ? OUT_SHIP_BUCKETS : IN_SHIP_BUCKETS;
+    return allowed.includes(bucket) ? bucket : 'outstanding';
+  }
+
   function setView(view) {
-    const next = PR_PO_VIEWS.has(view) || PS_VIEWS.has(view) || view === REQUEST_VIEW || view === QC_VIEW
+    const next = PR_PO_VIEWS.has(view) || PS_VIEWS.has(view) || view === REQUEST_VIEW || view === QC_VIEW || SHIP_VIEWS.has(view)
       ? view
       : 'active';
     const nextIsPrPo = isPrPoView(next);
     const nextIsRequest = isRequestView(next);
     const nextIsQc = isQcView(next);
+    const nextIsShip = isShipView(next);
     clearSearchIfFamilyChanged(next);
+    if (nextIsShip) {
+      const nextDir = shipDirection(next);
+      if (state.shipFilterDir && state.shipFilterDir !== nextDir) resetShipColumnControls();
+      state.shipFilterDir = nextDir;
+    }
+    closeColFilter();
     state.view = next;
     if (nextIsPrPo) {
       state.prPoBucket = normalizeBucketForView(next, state.prPoBucket);
+    }
+    if (nextIsShip) {
+      state.shipBucket = normalizeShipBucket(next, state.shipBucket);
     }
     syncNavUi();
 
@@ -2273,8 +2767,12 @@
       return;
     }
     if (nextIsQc) {
-      if (!state.qcLoaded) loadQcChecklist({ refresh: false });
+      if (!state.qcLoaded || state.qcLoadedBucket !== state.qcBucket) loadQcChecklist({ refresh: false });
       else render();
+      return;
+    }
+    if (nextIsShip) {
+      loadShipments({ refresh: false });
       return;
     }
     if (!state.salesOrdersLoaded) {
@@ -2282,6 +2780,15 @@
       return;
     }
     render();
+  }
+
+  function setSection(section) {
+    if (!SECTION_DEFAULTS[section]) return;
+    if (sectionForView() === section) return;
+    if (section === 'logistics-in' || section === 'logistics-out') {
+      state.shipBucket = 'outstanding';
+    }
+    setView(SECTION_DEFAULTS[section]);
   }
 
   function setBucket(bucket) {
@@ -2476,23 +2983,208 @@
     document.addEventListener('click', () => closePrPoFilterPanels());
   }
 
+  function closeColFilter() {
+    const panel = document.getElementById('sol-col-filter');
+    if (panel) panel.hidden = true;
+    state.colFilterKey = '';
+    state.colFilterKind = '';
+    document.querySelectorAll('.sol-th-filter[aria-expanded="true"]').forEach(btn => {
+      btn.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+  function positionColFilter(anchor) {
+    const panel = document.getElementById('sol-col-filter');
+    if (!panel || panel.hidden || !anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const margin = 8;
+    panel.style.top = '0px';
+    panel.style.left = '0px';
+    const width = panel.offsetWidth;
+    const height = panel.offsetHeight;
+    let left = rect.left;
+    let top = rect.bottom + 4;
+    if (left + width > window.innerWidth - margin) left = window.innerWidth - width - margin;
+    if (left < margin) left = margin;
+    if (top + height > window.innerHeight - margin) top = Math.max(margin, rect.top - height - 4);
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.left = `${Math.round(left)}px`;
+  }
+
+  function fillColFilterPanel(col, rows, selected) {
+    const list = document.getElementById('sol-col-filter-list');
+    const search = document.getElementById('sol-col-filter-search');
+    const count = document.getElementById('sol-col-filter-count');
+    if (!list) return;
+    const options = columnFilterOptions(rows, col, selected);
+    const signature = `${state.colFilterKind}:${col.key}:${options.join('\u0001')}`;
+    if (list.dataset.signature !== signature) {
+      const searchWas = search ? search.value : '';
+      list.dataset.signature = signature;
+      list.innerHTML = options.length
+        ? options.map(value => {
+          const checked = selected && selected.has(value) ? ' checked' : '';
+          const label = value || BLANK_SUPPLIER;
+          return `<label class="filter-dropdown-item"><input type="checkbox" value="${escapeHtml(value)}"${checked}> ${escapeHtml(label)}</label>`;
+        }).join('')
+        : '<p class="sol-col-filter-empty">No values</p>';
+      if (search) {
+        search.value = searchWas;
+        filterPanelItems(list, searchWas);
+      }
+    } else {
+      list.querySelectorAll('input[type="checkbox"]').forEach(input => {
+        input.checked = Boolean(selected && selected.has(input.value));
+      });
+    }
+    if (count) count.textContent = selected && selected.size ? `${selected.size} selected` : 'All values';
+  }
+
+  function rememberColFilter() {
+    if (!state.colFilterKey) return;
+    const ctx = activeColumnContext();
+    const panel = document.getElementById('sol-col-filter');
+    if (!ctx || ctx.kind !== state.colFilterKind || !panel) {
+      closeColFilter();
+      return;
+    }
+    const col = ctx.columns.find(item => item.key === state.colFilterKey);
+    const safeKey = window.CSS && CSS.escape ? CSS.escape(state.colFilterKey) : state.colFilterKey;
+    const btn = document.querySelector(`.sol-th-filter[data-col-filter="${safeKey}"]`);
+    if (!col || !btn) {
+      closeColFilter();
+      return;
+    }
+    panel.hidden = false;
+    fillColFilterPanel(col, ctx.rows, ctx.filters[col.key]);
+    btn.setAttribute('aria-expanded', 'true');
+    positionColFilter(btn);
+  }
+
+  function toggleColFilter(btn) {
+    const key = btn.getAttribute('data-col-filter') || '';
+    const ctx = activeColumnContext();
+    if (!ctx || !key) return;
+    if (state.colFilterKey === key && state.colFilterKind === ctx.kind) {
+      closeColFilter();
+      return;
+    }
+    const col = ctx.columns.find(item => item.key === key);
+    const panel = document.getElementById('sol-col-filter');
+    const list = document.getElementById('sol-col-filter-list');
+    const search = document.getElementById('sol-col-filter-search');
+    if (!col || !panel) return;
+    state.colFilterKey = key;
+    state.colFilterKind = ctx.kind;
+    if (list) delete list.dataset.signature;
+    if (search) search.value = '';
+    panel.hidden = false;
+    fillColFilterPanel(col, ctx.rows, ctx.filters[key]);
+    document.querySelectorAll('.sol-th-filter[aria-expanded="true"]').forEach(el => {
+      if (el !== btn) el.setAttribute('aria-expanded', 'false');
+    });
+    btn.setAttribute('aria-expanded', 'true');
+    positionColFilter(btn);
+    if (search) search.focus();
+  }
+
+  function ensureColFilterDom() {
+    if (!document.getElementById('sol-col-filter')) {
+      const panel = document.createElement('div');
+      panel.id = 'sol-col-filter';
+      panel.className = 'sol-col-filter';
+      panel.hidden = true;
+      panel.innerHTML = `
+        <div class="sol-col-filter-head">
+          <span id="sol-col-filter-count">All values</span>
+          <button type="button" id="sol-col-filter-clear">Clear</button>
+        </div>
+        <input type="search" id="sol-col-filter-search" class="sol-col-filter-search" placeholder="Find a value..." autocomplete="off" aria-label="Find a filter value">
+        <div id="sol-col-filter-list" class="sol-col-filter-list"></div>`;
+      document.body.appendChild(panel);
+    }
+    if (!document.getElementById('sol-clear-col-filters')) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.id = 'sol-clear-col-filters';
+      btn.className = 'sol-btn sol-btn--ghost sol-clear-filters';
+      btn.hidden = true;
+      btn.textContent = 'Clear filters';
+      const search = document.querySelector('.sol-nav .sol-search-wrap');
+      if (search && search.parentElement) search.parentElement.insertBefore(btn, search);
+      else document.querySelector('.sol-nav')?.appendChild(btn);
+    }
+  }
+
+  function bindColFilter() {
+    ensureColFilterDom();
+    const panel = document.getElementById('sol-col-filter');
+    if (!panel || panel.dataset.bound === '1') return;
+    panel.dataset.bound = '1';
+    if (panel.parentElement !== document.body) document.body.appendChild(panel);
+    panel.addEventListener('click', e => e.stopPropagation());
+    panel.addEventListener('change', e => {
+      if (e.target.type !== 'checkbox') return;
+      const selected = new Set(
+        [...panel.querySelectorAll('#sol-col-filter-list input[type="checkbox"]:checked')].map(el => el.value),
+      );
+      setColumnFilter(state.colFilterKind, state.colFilterKey, selected);
+    });
+    document.getElementById('sol-col-filter-search')?.addEventListener('input', e => {
+      filterPanelItems(document.getElementById('sol-col-filter-list'), e.target.value);
+    });
+    document.getElementById('sol-col-filter-clear')?.addEventListener('click', () => {
+      setColumnFilter(state.colFilterKind, state.colFilterKey, new Set());
+    });
+    document.getElementById('sol-clear-col-filters')?.addEventListener('click', () => {
+      clearActiveColumnFilters();
+    });
+    document.addEventListener('click', e => {
+      if (panel.contains(e.target) || e.target.closest('.sol-th-filter')) return;
+      closeColFilter();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') closeColFilter();
+    });
+    document.querySelector('.sol-table-scroll')?.addEventListener('scroll', closeColFilter, { passive: true });
+    window.addEventListener('resize', closeColFilter);
+  }
+
   function bindPrPoSort() {
     const head = document.getElementById('sol-table-head');
     if (!head || head.dataset.sortBound === '1') return;
     head.dataset.sortBound = '1';
     head.addEventListener('click', e => {
-      if (!isPrPoView()) return;
+      const filterBtn = e.target.closest('[data-col-filter]');
+      if (filterBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleColFilter(filterBtn);
+        return;
+      }
       const th = e.target.closest('th[data-sort]');
       if (!th) return;
       const key = th.getAttribute('data-sort');
-      if (state.sortKey === key) {
-        state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
-      } else {
-        state.sortKey = key;
-        const col = PR_PO_COLUMNS.find(c => c.key === key);
-        state.sortDir = col && (col.type === 'date' || col.type === 'num') ? 'desc' : 'asc';
+      if (isPrPoView()) {
+        if (state.sortKey === key) {
+          state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+          state.sortKey = key;
+          const col = PR_PO_COLUMNS.find(c => c.key === key);
+          state.sortDir = col && (col.type === 'date' || col.type === 'num') ? 'desc' : 'asc';
+        }
+        render();
+        return;
       }
-      render();
+      if (isShipView()) {
+        toggleColumnSort('ship', key);
+        render();
+        return;
+      }
+      if (isQcView()) {
+        toggleColumnSort('qc', key);
+        render();
+      }
     });
   }
 
@@ -2829,6 +3521,7 @@
       state.qcSource = payload.source || '';
       state.cachedAt = payload.cached_at || state.cachedAt;
       state.qcLoaded = true;
+      state.qcLoadedBucket = state.qcBucket;
       if (state.pendingLoad === 'qc') state.pendingLoad = '';
       updateQcChipCounts();
       if (isQcView()) render();
@@ -2837,6 +3530,98 @@
       if (showUi) showLoadError(err);
     } finally {
       if (state.loadControllers.qc === ac) state.loadControllers.qc = null;
+    }
+  }
+
+  function shipCacheKey() {
+    return `${shipDirection()}|${state.shipBucket}`;
+  }
+
+  function applyShipPayload(payload) {
+    const direction = payload.direction || shipDirection();
+    state.shipRows = Array.isArray(payload.rows) ? payload.rows : [];
+    state.shipCounts[direction] = payload.counts || {};
+    state.shipSource = payload.source || '';
+    state.shipTotal = Number(payload.total) || state.shipRows.length;
+    state.shipTruncated = Boolean(payload.truncated);
+    state.cachedAt = payload.cached_at || state.cachedAt;
+    state.shipCache[shipCacheKey()] = {
+      rows: state.shipRows,
+      counts: state.shipCounts[direction],
+      source: state.shipSource,
+      total: state.shipTotal,
+      truncated: state.shipTruncated,
+      cachedAt: state.cachedAt,
+    };
+  }
+
+  async function loadShipments({ refresh = false } = {}) {
+    if (!isShipView()) return;
+    const key = shipCacheKey();
+    const cached = state.shipCache[key];
+    if (!refresh && cached) {
+      state.shipRows = cached.rows;
+      state.shipCounts[shipDirection()] = cached.counts || {};
+      state.shipSource = cached.source || '';
+      state.shipTotal = cached.total || 0;
+      state.shipTruncated = Boolean(cached.truncated);
+      state.cachedAt = cached.cachedAt || state.cachedAt;
+      if (state.pendingLoad === 'ship') state.pendingLoad = '';
+      render();
+      return;
+    }
+
+    const bucketLabel = SHIP_BUCKET_LABELS[state.shipBucket] || state.shipBucket;
+    const flow = shipDirection() === 'out' ? 'outbound' : 'inbound';
+    beginViewLoad(
+      'ship',
+      refresh ? `Refreshing ${bucketLabel} ${flow} shipments...` : `Loading ${bucketLabel} ${flow} shipments...`,
+    );
+    abortLoad('ship');
+    const params = new URLSearchParams({
+      direction: shipDirection(),
+      bucket: state.shipBucket,
+    });
+    if (refresh) params.set('refresh', '1');
+    const ac = new AbortController();
+    state.loadControllers.ship = ac;
+    const timeoutId = window.setTimeout(() => ac.abort(), 90000);
+    try {
+      const res = await fetch(`/api/material-tracking/shipments?${params}`, {
+        cache: refresh ? 'no-store' : 'default',
+        signal: ac.signal,
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+      if (state.loadControllers.ship !== ac) return;
+      const responseKey = `${payload.direction}|${payload.bucket}`;
+      if (!isShipView() || shipCacheKey() !== responseKey) {
+        state.shipCache[responseKey] = {
+          rows: Array.isArray(payload.rows) ? payload.rows : [],
+          counts: payload.counts || {},
+          source: payload.source || '',
+          total: Number(payload.total) || 0,
+          truncated: Boolean(payload.truncated),
+          cachedAt: payload.cached_at || '',
+        };
+        if (payload.direction) state.shipCounts[payload.direction] = payload.counts || {};
+        updateShipChipCounts();
+        return;
+      }
+      applyShipPayload(payload);
+      if (state.pendingLoad === 'ship') state.pendingLoad = '';
+      render();
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        if (state.loadControllers.ship === ac && isShipView()) {
+          showLoadError(new Error('Timed out waiting for ERP. Click Refresh to retry.'));
+        }
+        return;
+      }
+      if (isShipView()) showLoadError(err);
+    } finally {
+      if (state.loadControllers.ship === ac) state.loadControllers.ship = null;
+      window.clearTimeout(timeoutId);
     }
   }
 
@@ -2851,6 +3636,11 @@
     }
     if (isQcView()) {
       await loadQcChecklist({ refresh });
+      return;
+    }
+    if (isShipView()) {
+      if (refresh) state.shipCache = {};
+      await loadShipments({ refresh });
       return;
     }
     await loadSalesOrders({ refresh });
@@ -3426,16 +4216,22 @@
   }
 
   function init() {
+    document.querySelectorAll('[data-sol-section]').forEach(btn => {
+      btn.addEventListener('click', () => setSection(btn.getAttribute('data-sol-section')));
+    });
+
     document.querySelectorAll('[data-sol-view]').forEach(btn => {
-      btn.addEventListener('click', () => setView(btn.getAttribute('data-sol-view')));
+      btn.addEventListener('click', () => {
+        const qcBucket = btn.getAttribute('data-sol-qc-bucket');
+        const shipBucket = btn.getAttribute('data-sol-ship-bucket');
+        if (qcBucket) state.qcBucket = qcBucket;
+        if (shipBucket) state.shipBucket = shipBucket;
+        setView(btn.getAttribute('data-sol-view'));
+      });
     });
 
     document.querySelectorAll('[data-sol-bucket]').forEach(btn => {
       btn.addEventListener('click', () => setBucket(btn.getAttribute('data-sol-bucket')));
-    });
-
-    document.querySelectorAll('[data-sol-qc-bucket]').forEach(btn => {
-      btn.addEventListener('click', () => setQcBucket(btn.getAttribute('data-sol-qc-bucket')));
     });
 
     document.getElementById('sol-search')?.addEventListener('input', e => {
@@ -3455,6 +4251,7 @@
     bindPsTypeDropdown();
     bindPrPoFilters();
     bindPrPoSort();
+    bindColFilter();
     bindRequestAdd();
     bindInputs();
     bindDateHistoryModal();

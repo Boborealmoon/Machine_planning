@@ -581,6 +581,36 @@ def _inventory_code_lookup_candidates(*values) -> list[str]:
     return out
 
 
+def _catalog_bom_matches_stage_rows(bom_code, stage_rows) -> bool:
+    key = compact_text(bom_code).upper()
+    if not key:
+        return False
+    return any(compact_text(row.get("bom_code")).upper() == key for row in (stage_rows or []))
+
+
+def _index_bom_stages_by_inventory_alias(stages_by_inv) -> dict[str, list]:
+    stages_index: dict[str, list] = {}
+    for key, rows in (stages_by_inv or {}).items():
+        if not compact_text(key):
+            continue
+        for alias in _inventory_code_lookup_candidates(key):
+            stages_index.setdefault(alias.upper(), list(rows or []))
+    return stages_index
+
+
+def _stage_rows_for_inventory_entry(entry, inventory_code, stages_index):
+    for cand in _inventory_code_lookup_candidates(
+        inventory_code,
+        (entry or {}).get("inventory_code"),
+        (entry or {}).get("part_no"),
+        (entry or {}).get("part_name"),
+    ):
+        rows = stages_index.get(cand.upper()) or []
+        if rows:
+            return rows, cand
+    return [], compact_text(inventory_code)
+
+
 def _entry_has_machining_sidebar_ops(entry) -> bool:
     return bool(_catalog_ops_for_sidebar((entry or {}).get("op_cards") or (entry or {}).get("ops") or []))
 
@@ -636,7 +666,11 @@ def stamp_inventory_bom_ops(entries, *, nested_only=False):
     Read-only — no planner_bom_variation writes. Safe on the search GET path.
     """
     from planning.erp_wo_merge import is_machining_stage_desc
-    from planning.flows import erp_domain_bom_stages_by_inventory, preferred_machining_bom_code
+    from planning.flows import (
+        erp_domain_bom_stages_by_inventory,
+        merge_flow_options,
+        preferred_machining_bom_code,
+    )
 
     rows_in = list(entries or [])
     targets: list[dict] = []
@@ -662,23 +696,14 @@ def stamp_inventory_bom_ops(entries, *, nested_only=False):
         return rows_in
 
     stages_by_inv = erp_domain_bom_stages_by_inventory(candidates)
-    stages_index: dict[str, list[dict]] = {}
-    for key, rows in (stages_by_inv or {}).items():
-        if not compact_text(key):
-            continue
-        for alias in _inventory_code_lookup_candidates(key):
-            stages_index.setdefault(alias.upper(), rows)
+    stages_index = _index_bom_stages_by_inventory_alias(stages_by_inv)
 
     for target in targets:
-        stage_rows: list[dict] = []
-        for cand in _inventory_code_lookup_candidates(
-            target.get("inventory_code"),
-            target.get("part_no"),
-            target.get("part_name"),
-        ):
-            stage_rows = stages_index.get(cand.upper()) or []
-            if stage_rows:
-                break
+        stage_rows, _matched_inv = _stage_rows_for_inventory_entry(
+            target,
+            target.get("inventory_code") or target.get("part_no") or target.get("part_name"),
+            stages_index,
+        )
         bom_code = preferred_machining_bom_code(stage_rows)
         if not bom_code:
             continue
@@ -714,8 +739,21 @@ def stamp_inventory_bom_ops(entries, *, nested_only=False):
         target["all_ops"] = list(cards)
         if not compact_text(target.get("selected_bom_code")):
             target["selected_bom_code"] = bom_code
-        if not compact_text(target.get("erp_bom_code")):
+        voucher = compact_text(target.get("erp_bom_code") or target.get("bom_code"))
+        if not _catalog_bom_matches_stage_rows(voucher, stage_rows):
             target["erp_bom_code"] = bom_code
+        elif not compact_text(target.get("erp_bom_code")):
+            target["erp_bom_code"] = voucher or bom_code
+        extra_codes = [
+            compact_text(row.get("bom_code"))
+            for row in stage_rows
+            if compact_text(row.get("bom_code"))
+        ]
+        target["flow_options"] = merge_flow_options(
+            target.get("flow_options") or [],
+            extra_codes or [bom_code],
+            erp_voucher_bom=compact_text(target.get("erp_bom_code")) or bom_code,
+        )
     return rows_in
 
 
@@ -818,10 +856,40 @@ def enrich_component_child_bom_ops(
 
         master_cache = MasterTimeCache.load(con)
 
-    stages_by_inv = erp_domain_bom_stages_by_inventory(
-        sorted({inv for _entry, _ps, inv in targets})
-    )
-    missing_invs = sorted({inv for _entry, _ps, inv in targets if not (stages_by_inv.get(inv) or [])})
+    lookup_codes: list[str] = []
+    seen_lookup: set[str] = set()
+    for _entry, _ps, inventory_code in targets:
+        for cand in _inventory_code_lookup_candidates(
+            inventory_code,
+            _entry.get("inventory_code"),
+            _entry.get("part_no"),
+            _entry.get("part_name"),
+        ):
+            key = cand.upper()
+            if key in seen_lookup:
+                continue
+            seen_lookup.add(key)
+            lookup_codes.append(cand)
+
+    stages_by_inv = erp_domain_bom_stages_by_inventory(lookup_codes)
+    stages_index = _index_bom_stages_by_inventory_alias(stages_by_inv)
+    missing_invs = []
+    seen_missing: set[str] = set()
+    for entry, _ps, inventory_code in targets:
+        stage_rows, _matched = _stage_rows_for_inventory_entry(entry, inventory_code, stages_index)
+        if stage_rows:
+            continue
+        for cand in _inventory_code_lookup_candidates(
+            inventory_code,
+            entry.get("inventory_code"),
+            entry.get("part_no"),
+            entry.get("part_name"),
+        ):
+            key = cand.upper()
+            if key in seen_missing:
+                continue
+            seen_missing.add(key)
+            missing_invs.append(cand)
     if missing_invs:
         for row in rows(
             con.execute(
@@ -837,17 +905,22 @@ def enrich_component_child_bom_ops(
             inv = compact_text(row.get("inventory_code"))
             if inv:
                 stages_by_inv.setdefault(inv, []).append(dict(row))
+        stages_index = _index_bom_stages_by_inventory_alias(stages_by_inv)
     bom_id_cache: dict[tuple[str, str], int] = {}
     for entry, ps_id, inventory_code in targets:
-        bom_code = preferred_machining_bom_code(stages_by_inv.get(inventory_code) or [])
+        stage_rows, matched_inv = _stage_rows_for_inventory_entry(
+            entry, inventory_code, stages_index
+        )
+        bom_code = preferred_machining_bom_code(stage_rows)
         if not bom_code:
             continue
-        cache_key = (inventory_code.upper(), bom_code.upper())
+        seed_inv = matched_inv or inventory_code
+        cache_key = (seed_inv.upper(), bom_code.upper())
         if cache_key not in bom_id_cache:
             bom_id_cache[cache_key] = int(
                 ensure_planner_bom_from_bom_op_stage(
                     con,
-                    inventory_code,
+                    seed_inv,
                     bom_code,
                     is_default=True,
                 )
@@ -857,17 +930,22 @@ def enrich_component_child_bom_ops(
         if bom_id <= 0:
             continue
         entry["inventory_code"] = inventory_code
-        entry["erp_bom_code"] = compact_text(entry.get("erp_bom_code")) or bom_code
+        voucher = compact_text(entry.get("erp_bom_code") or entry.get("bom_code"))
+        if not _catalog_bom_matches_stage_rows(voucher, stage_rows):
+            entry["erp_bom_code"] = bom_code
+        else:
+            entry["erp_bom_code"] = voucher or bom_code
         entry["selected_bom_id"] = bom_id
         entry["selected_bom_code"] = bom_code
         entry["selected_flow_code"] = bom_code
         extra_codes = [
             compact_text(row.get("bom_code"))
-            for row in (stages_by_inv.get(inventory_code) or [])
+            for row in stage_rows
             if compact_text(row.get("bom_code"))
         ]
         entry["flow_options"] = merge_flow_options(
-            planner_flow_options_for_inventory(con, inventory_code),
+            planner_flow_options_for_inventory(con, seed_inv)
+            or planner_flow_options_for_inventory(con, inventory_code),
             extra_codes or [bom_code],
             erp_voucher_bom=compact_text(entry.get("erp_bom_code")) or bom_code,
         )

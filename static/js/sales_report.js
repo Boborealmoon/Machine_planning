@@ -73,10 +73,18 @@ function salesReportSyncPeriodUI() {
   const hasMonth = Boolean(salesReportState.focusMonth);
   const searchWrap = document.getElementById('sales-report-search-wrap');
   const exportBtn = document.getElementById('sales-report-export');
+  const pdfBtn = document.getElementById('sales-report-export-pdf');
   const monthPanel = document.getElementById('sales-report-month-panel');
   const overview = document.getElementById('sales-report-overview');
   if (searchWrap) searchWrap.hidden = !hasMonth;
   if (exportBtn) exportBtn.hidden = !hasMonth;
+  if (pdfBtn && pdfBtn.dataset.busy !== '1') {
+    const ready = Boolean(salesReportState.ytdData)
+      && !salesReportNoPsTypesSelected()
+      && !salesReportState.loading
+      && (!hasMonth || salesReportState.data);
+    pdfBtn.disabled = !ready;
+  }
   if (monthPanel) monthPanel.hidden = !hasMonth;
   if (overview) overview.classList.toggle('is-compact', hasMonth);
 
@@ -1411,10 +1419,8 @@ function salesReportRenderStats(summary) {
   el.innerHTML = parts.join('');
 }
 
-function salesReportRenderSummary(summary) {
-  const el = document.getElementById('sales-report-summary');
-  if (!el || !summary) return;
-
+function salesReportMonthSummaryCards(summary) {
+  if (!summary) return [];
   const cards = summary.mode === 'past'
     ? (salesReportHidesBacklog()
       ? [
@@ -1440,6 +1446,13 @@ function salesReportRenderSummary(summary) {
       );
       return openCards;
     })();
+  return cards;
+}
+
+function salesReportRenderSummary(summary) {
+  const el = document.getElementById('sales-report-summary');
+  if (!el || !summary) return;
+  const cards = salesReportMonthSummaryCards(summary);
 
   el.innerHTML = cards.map(card => `
     <article class="sales-report-kpi sales-report-kpi--${card.tone}">
@@ -1558,22 +1571,11 @@ function salesReportRenderTypeCards(breakdown, summary) {
   el.hidden = !cards;
 }
 
-function salesReportRenderYtdSummary(grid) {
-  const el = document.getElementById('sales-report-ytd-summary');
-  if (!el) return;
-  if (!grid || salesReportState.focusMonth) {
-    el.hidden = true;
-    el.innerHTML = '';
-    return;
-  }
-
-  const totalRow = grid.rows.find(row => row.emphasis === 'total')
-    || grid.rows.find(row => row.id === 'TOTAL')
-    || grid.rows[grid.rows.length - 1];
-  if (!totalRow) {
-    el.hidden = true;
-    return;
-  }
+function salesReportYtdSummaryCards(grid) {
+  const totalRow = grid?.rows?.find(row => row.emphasis === 'total')
+    || grid?.rows?.find(row => row.id === 'TOTAL')
+    || grid?.rows?.[grid.rows.length - 1];
+  if (!grid || !totalRow) return null;
 
   let ytdShipped = 0;
   let ytdBacklogDel = 0;
@@ -1637,6 +1639,22 @@ function salesReportRenderYtdSummary(grid) {
       hint: `Remaining SO qty × home unit · ${soValue.soLineCount} unique open SO line${soValue.soLineCount === 1 ? '' : 's'}`,
     },
   );
+  return cards;
+}
+
+function salesReportRenderYtdSummary(grid) {
+  const el = document.getElementById('sales-report-ytd-summary');
+  if (!el) return;
+  if (!grid || salesReportState.focusMonth) {
+    el.hidden = true;
+    el.innerHTML = '';
+    return;
+  }
+  const cards = salesReportYtdSummaryCards(grid);
+  if (!cards) {
+    el.hidden = true;
+    return;
+  }
 
   el.innerHTML = `
     <div class="sales-report-ytd-summary-head">
@@ -2361,6 +2379,7 @@ function salesReportBindControls() {
   });
 
   document.getElementById('sales-report-export')?.addEventListener('click', salesReportExportCsv);
+  document.getElementById('sales-report-export-pdf')?.addEventListener('click', salesReportExportPdf);
 
   const details = document.getElementById('sales-report-details');
   details?.addEventListener('click', (e) => {
@@ -2461,6 +2480,684 @@ function salesReportBindControls() {
     }
   });
   salesReportSyncPeriodUI();
+}
+
+function salesReportPdfKpis(cards) {
+  return (cards || []).map(card => ({
+    label: card.title,
+    value: salesReportKpiValueText(card),
+    sub: card.sub || '',
+    tone: card.tone || '',
+  }));
+}
+
+function salesReportPdfClip(value, limit) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit - 3).trim()}...`;
+}
+
+function salesReportPdfDate(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return text.slice(0, 10);
+}
+
+function salesReportPdfPart(row) {
+  const code = salesReportCompactField(row?.inventory_code);
+  const desc = salesReportPdfClip(row?.description, 48);
+  if (code && desc) return `${code} - ${desc}`;
+  return code || desc;
+}
+
+function salesReportPdfPs(row) {
+  return String(row?.process_sheet_no || '').split('::')[0];
+}
+
+function salesReportPdfLineAmount(row, kind) {
+  if (kind === 'shipped') return Number(row?.total_home_amt) || 0;
+  if (kind === 'booked') return Number(row?.line_amount) || 0;
+  return salesReportOpenValue(row);
+}
+
+function salesReportPdfColumns(kind) {
+  if (kind === 'shipped') {
+    return {
+      columns: ['Sales order', 'Line', 'PS', 'Customer', 'Salesperson', 'Due', 'Shipped', 'Qty', 'Home amt', 'Invoice'],
+      numeric: [7, 8],
+      widths: [1.35, 0.55, 1.2, 1.7, 1.4, 0.9, 0.9, 0.65, 1.05, 1.0],
+    };
+  }
+  if (kind === 'booked') {
+    return {
+      columns: ['Sales order', 'Line', 'Part', 'Customer', 'Salesperson', 'Due', 'Qty', 'Home amt'],
+      numeric: [6, 7],
+      widths: [1.35, 0.55, 2.1, 1.7, 1.45, 0.95, 0.7, 1.05],
+    };
+  }
+  return {
+    columns: ['Sales order', 'Line', 'PS', 'Part', 'Customer', 'Salesperson', 'Due', 'Qty', 'Home amt'],
+    numeric: [7, 8],
+    widths: [1.3, 0.5, 1.2, 2.0, 1.6, 1.4, 0.95, 0.65, 1.05],
+  };
+}
+
+function salesReportPdfLineCells(row, kind) {
+  const customer = salesReportCustomerLabel(row);
+  const person = salesReportSalespersonLabel(row);
+  const due = salesReportPdfDate(row?.due_date);
+  if (kind === 'shipped') {
+    return [
+      row?.sales_order_no || '',
+      row?.line_item_no || '',
+      salesReportPdfPs(row),
+      customer,
+      person,
+      due,
+      salesReportPdfDate(row?.shipment_datetime),
+      salesReportFormatQty(row?.qty_issued),
+      salesReportFormatMoney(row?.total_home_amt),
+      row?.invoice_no || '',
+    ];
+  }
+  if (kind === 'booked') {
+    return [
+      row?.sales_order_no || '',
+      row?.line_item_no || '',
+      salesReportPdfPart(row),
+      customer,
+      person,
+      due,
+      salesReportFormatQty(row?.qty),
+      salesReportFormatMoney(row?.line_amount),
+    ];
+  }
+  return [
+    row?.sales_order_no || '',
+    row?.line_item_no || '',
+    salesReportPdfPs(row),
+    salesReportPdfPart(row),
+    customer,
+    person,
+    due,
+    salesReportFormatQty(salesReportOpenQty(row)),
+    salesReportFormatMoney(salesReportOpenValue(row)),
+  ];
+}
+
+function salesReportPdfGroupLines(type, rows, kind) {
+  const sorted = [...(rows || [])].sort((a, b) => (
+    salesReportPdfLineAmount(b, kind) - salesReportPdfLineAmount(a, kind)
+    || String(a?.sales_order_no || '').localeCompare(String(b?.sales_order_no || ''), undefined, { numeric: true })
+  ));
+  const shown = sorted.slice(0, 500);
+  const spec = salesReportPdfColumns(kind);
+  const totals = Array(spec.columns.length).fill('');
+  totals[0] = 'Total';
+  if (kind === 'shipped') {
+    totals[7] = salesReportFormatQty(salesReportSumField(shown, 'qty_issued'));
+    totals[8] = salesReportFormatMoney(salesReportSumField(shown, 'total_home_amt'));
+  } else if (kind === 'booked') {
+    totals[6] = salesReportFormatQty(salesReportSumField(shown, 'qty'));
+    totals[7] = salesReportFormatMoney(salesReportSumField(shown, 'line_amount'));
+  } else {
+    totals[7] = salesReportFormatQty(shown.reduce((sum, row) => sum + salesReportOpenQty(row), 0));
+    totals[8] = salesReportFormatMoney(shown.reduce((sum, row) => sum + salesReportOpenValue(row), 0));
+  }
+  return {
+    type: type === 'SR' ? '[SR]' : type,
+    line_count: sorted.length,
+    rows: shown.map(row => salesReportPdfLineCells(row, kind)),
+    totals,
+  };
+}
+
+function salesReportPdfSectionKind(sectionId, mode) {
+  if (sectionId === 'booked') return 'booked';
+  if (sectionId === 'shipped' || sectionId === 'early_delivered' || mode === 'past') return 'shipped';
+  return 'open';
+}
+
+function salesReportPdfSectionTotal(rows, kind) {
+  if (kind === 'shipped') return salesReportFormatMoney(salesReportSumField(rows, 'total_home_amt'));
+  if (kind === 'booked') return salesReportFormatMoney(salesReportSumField(rows, 'line_amount'));
+  return salesReportFormatMoney((rows || []).reduce((sum, row) => sum + salesReportOpenValue(row), 0));
+}
+
+function salesReportPdfSections(data) {
+  if (!data) return [];
+  let defs = salesReportDetailSectionDefs(data);
+  if (data.summary?.mode === 'past' && !salesReportHidesBacklog()) {
+    defs = defs.filter(section => section.id !== 'shipped');
+  }
+  return defs.filter(section => section.rows.length).map(section => {
+    const kind = salesReportPdfSectionKind(section.id, data.summary?.mode);
+    const spec = salesReportPdfColumns(kind);
+    const typeOrder = [...SALES_REPORT_PS_TYPES];
+    const present = [];
+    section.rows.forEach(row => {
+      const type = salesReportGetPsType(row) || 'Other';
+      if (!present.includes(type)) present.push(type);
+    });
+    present.sort((a, b) => {
+      const ai = typeOrder.indexOf(a);
+      const bi = typeOrder.indexOf(b);
+      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+    });
+    const groups = present.map(type => salesReportPdfGroupLines(
+      type,
+      section.rows.filter(row => (salesReportGetPsType(row) || 'Other') === type),
+      kind,
+    )).filter(group => group.rows.length);
+    return {
+      title: section.title,
+      hint: section.hint,
+      line_count: section.rows.length,
+      total: salesReportPdfSectionTotal(section.rows, kind),
+      columns: spec.columns,
+      numeric: spec.numeric,
+      widths: spec.widths,
+      groups,
+    };
+  });
+}
+
+function salesReportPdfYearTable(grid) {
+  const columns = [];
+  grid.months.forEach((meta, idx) => {
+    let tone = meta.mode === 'past' ? 'past' : 'future';
+    if (meta.is_current) tone = 'current';
+    if (salesReportState.focusMonth === meta.month && !meta.is_current) tone = 'selected';
+    if (meta.mode === 'past') {
+      columns.push({
+        label: meta.label,
+        head: salesReportIsPostedBasis() ? 'Sales' : 'Shipped',
+        tone,
+        value: row => salesReportYtdPastSales(row.cells[idx] || {}),
+      });
+      return;
+    }
+    if (meta.is_current && !salesReportHidesBacklog()) {
+      columns.push({
+        label: meta.label,
+        head: 'Backlog',
+        tone,
+        value: row => Number(row.cells[idx]?.backlog || 0),
+      });
+      columns.push({
+        label: meta.label,
+        head: 'Onhand',
+        tone,
+        value: row => Number(row.cells[idx]?.on_hand || 0),
+      });
+      return;
+    }
+    columns.push({
+      label: meta.label,
+      head: 'Onhand',
+      tone,
+      value: row => Number(row.cells[idx]?.due_this_month ?? row.cells[idx]?.on_hand ?? 0),
+    });
+  });
+  const spans = [];
+  columns.forEach(col => {
+    const last = spans[spans.length - 1];
+    if (last && last.label === col.label) last.span += 1;
+    else spans.push({ label: col.label, span: 1, tone: col.tone });
+  });
+  const showOpen = salesReportYtdShowsOpenRemaining();
+  return {
+    spans,
+    subheads: columns.map(col => col.head),
+    open_remaining: showOpen,
+    open_year_label: `Due ${grid.year}`,
+    open_all_label: 'All years',
+    rows: grid.rows.map(row => ({
+      label: row.id === 'TOTAL' ? 'Total' : (row.id === 'SR' ? '[SR]' : row.label),
+      emphasis: row.emphasis === 'total' || row.id === 'TOTAL' ? 'total' : '',
+      values: columns.map(col => salesReportFormatMoney(col.value(row))),
+      open_year: showOpen ? salesReportFormatMoney(row.open_remaining_year) : '',
+      open_all: showOpen ? salesReportFormatMoney(row.open_remaining) : '',
+    })),
+  };
+}
+
+function salesReportPdfTiming(grid) {
+  if (salesReportIsPostedBasis()) return null;
+  const past = grid.months
+    .map((meta, idx) => ({ meta, idx }))
+    .filter(item => item.meta.mode === 'past');
+  if (!past.length) return null;
+  const headers = ['Month', 'Backlog delivered', 'On-time', 'Early', 'Total shipped'];
+  const blocksFor = (row, label) => {
+    const rows = past.map(({ meta, idx }) => {
+      const cell = row.cells[idx] || {};
+      const backlog = Number(cell.backlog_delivered || 0);
+      const onTime = Number(cell.delivered || 0);
+      const early = Number(cell.early_delivered || 0);
+      return [
+        meta.label,
+        salesReportFormatMoney(backlog),
+        salesReportFormatMoney(onTime),
+        salesReportFormatMoney(early),
+        salesReportFormatMoney(backlog + onTime + early),
+      ];
+    });
+    const sums = [0, 0, 0];
+    past.forEach(({ idx }) => {
+      const cell = row.cells[idx] || {};
+      sums[0] += Number(cell.backlog_delivered || 0);
+      sums[1] += Number(cell.delivered || 0);
+      sums[2] += Number(cell.early_delivered || 0);
+    });
+    return {
+      label,
+      rows,
+      total: ['Total', ...sums.map(salesReportFormatMoney), salesReportFormatMoney(sums[0] + sums[1] + sums[2])],
+    };
+  };
+  const segmentRows = grid.rows.filter(row => row.id !== 'TOTAL');
+  const blocks = segmentRows.map(row => blocksFor(row, row.id === 'SR' ? '[SR]' : row.label));
+  const totalRow = grid.rows.find(row => row.id === 'TOTAL');
+  if (segmentRows.length > 1 && totalRow) blocks.push(blocksFor(totalRow, 'All selected'));
+  return { headers, blocks };
+}
+
+function salesReportPdfBreakdown(data) {
+  if (!data) return null;
+  const mode = data.summary?.mode || 'open';
+  const hides = salesReportHidesBacklog();
+  const headers = mode === 'past'
+    ? (hides
+      ? ['PP type', 'All shipped']
+      : ['PP type', 'Backlog delivered', 'On-time', 'Early', 'All shipped'])
+    : (hides
+      ? ['PP type', 'Onhand', 'Shipped', 'Booked']
+      : ['PP type', 'Backlog', 'Onhand', 'Shipped', 'Booked']);
+  const entries = data.breakdown || [];
+  const money = (value) => salesReportFormatMoney(value);
+  const rows = entries.map(entry => {
+    const s = entry.summary || {};
+    const label = entry.type === 'SR' ? '[SR]' : entry.type;
+    if (mode === 'past') {
+      if (hides) return [label, money(s.shipped?.total_home_amt)];
+      return [
+        label,
+        money(s.backlog_delivered?.total_home_amt),
+        money(s.delivered?.total_home_amt),
+        money(s.early_delivered?.total_home_amt),
+        money(s.shipped?.total_home_amt),
+      ];
+    }
+    if (hides) {
+      return [label, money(s.on_hand?.remaining_value), money(s.shipped?.total_home_amt), money(s.booked?.line_amount)];
+    }
+    return [
+      label,
+      money(s.backlog?.remaining_value),
+      money(s.on_hand?.remaining_value),
+      money(s.shipped?.total_home_amt),
+      money(s.booked?.line_amount),
+    ];
+  });
+  if (!rows.length) return null;
+  const totals = Array(headers.length).fill(0);
+  entries.forEach(entry => {
+    const cells = mode === 'past'
+      ? (hides
+        ? [Number(entry.summary?.shipped?.total_home_amt || 0)]
+        : [
+          Number(entry.summary?.backlog_delivered?.total_home_amt || 0),
+          Number(entry.summary?.delivered?.total_home_amt || 0),
+          Number(entry.summary?.early_delivered?.total_home_amt || 0),
+          Number(entry.summary?.shipped?.total_home_amt || 0),
+        ])
+      : (hides
+        ? [
+          Number(entry.summary?.on_hand?.remaining_value || 0),
+          Number(entry.summary?.shipped?.total_home_amt || 0),
+          Number(entry.summary?.booked?.line_amount || 0),
+        ]
+        : [
+          Number(entry.summary?.backlog?.remaining_value || 0),
+          Number(entry.summary?.on_hand?.remaining_value || 0),
+          Number(entry.summary?.shipped?.total_home_amt || 0),
+          Number(entry.summary?.booked?.line_amount || 0),
+        ]);
+    cells.forEach((value, idx) => {
+      totals[idx + 1] += value;
+    });
+  });
+  rows.push(['Total', ...totals.slice(1).map(money)]);
+  const monthLabel = salesReportFocusMonthLabel();
+  return {
+    title: 'Breakdown by PP type',
+    subtitle: mode === 'past'
+      ? `${monthLabel} shipment outcomes for ${salesReportScopeLabel()}`
+      : `${monthLabel} open position for ${salesReportScopeLabel()}`,
+    headers,
+    rows,
+    numeric: headers.map((_, idx) => idx).slice(1),
+  };
+}
+
+function salesReportPdfBuckets(data) {
+  const mode = data?.summary?.mode || 'open';
+  if (mode === 'past') {
+    if (salesReportHidesBacklog()) {
+      return [{ id: 'shipped', label: 'All shipped', rows: data.shipped || [], amount: row => Number(row.total_home_amt) || 0 }];
+    }
+    return [
+      { id: 'backlog', label: 'Backlog delivered', rows: data.backlog || [], amount: row => Number(row.total_home_amt) || 0 },
+      { id: 'on_time', label: 'On-time', rows: data.on_hand || [], amount: row => Number(row.total_home_amt) || 0 },
+      { id: 'early', label: 'Early', rows: data.early_delivered || [], amount: row => Number(row.total_home_amt) || 0 },
+      { id: 'shipped', label: 'All shipped', rows: data.shipped || [], amount: row => Number(row.total_home_amt) || 0 },
+    ];
+  }
+  const buckets = [];
+  if (!salesReportHidesBacklog()) {
+    buckets.push({ id: 'backlog', label: 'Backlog', rows: data.backlog || [], amount: row => salesReportOpenValue(row) });
+  }
+  buckets.push(
+    { id: 'on_hand', label: 'Onhand', rows: data.on_hand || [], amount: row => salesReportOpenValue(row) },
+    { id: 'shipped', label: 'Shipped', rows: data.shipped || [], amount: row => Number(row.total_home_amt) || 0 },
+    { id: 'booked', label: 'Booked', rows: data.booked || [], amount: row => Number(row.line_amount) || 0 },
+  );
+  return buckets;
+}
+
+function salesReportPdfRanked(data, labelFn) {
+  const buckets = salesReportPdfBuckets(data);
+  const map = new Map();
+  buckets.forEach(bucket => {
+    (bucket.rows || []).forEach(row => {
+      const label = labelFn(row) || '(Blank)';
+      if (!map.has(label)) {
+        const values = {};
+        buckets.forEach(item => { values[item.id] = 0; });
+        map.set(label, { label, values });
+      }
+      const item = map.get(label);
+      item.values[bucket.id] += bucket.amount(row);
+    });
+  });
+  return { buckets, items: [...map.values()] };
+}
+
+function salesReportPdfGroupedTable(title, subtitle, ranked, score, limit) {
+  const { buckets, items } = ranked;
+  if (!items.length) return null;
+  const ordered = [...items].sort((a, b) => score(b) - score(a) || a.label.localeCompare(b.label));
+  let shown = ordered;
+  let other = null;
+  if (limit && ordered.length > limit) {
+    const rest = ordered.slice(limit);
+    shown = ordered.slice(0, limit);
+    const values = {};
+    buckets.forEach(bucket => {
+      values[bucket.id] = rest.reduce((sum, item) => sum + (item.values[bucket.id] || 0), 0);
+    });
+    other = { label: `Other (${rest.length})`, values };
+  }
+  const toRow = item => [item.label, ...buckets.map(bucket => salesReportFormatMoney(item.values[bucket.id] || 0))];
+  const rows = shown.map(toRow);
+  if (other) rows.push(toRow(other));
+  const totals = {};
+  buckets.forEach(bucket => {
+    totals[bucket.id] = ordered.reduce((sum, item) => sum + (item.values[bucket.id] || 0), 0);
+  });
+  rows.push(['Total', ...buckets.map(bucket => salesReportFormatMoney(totals[bucket.id] || 0))]);
+  return {
+    title,
+    subtitle,
+    headers: [title === 'By salesperson' ? 'Salesperson' : title === 'By customer' ? 'Customer' : 'Group', ...buckets.map(bucket => bucket.label)],
+    rows,
+    numeric: buckets.map((_, idx) => idx + 1),
+    items: ordered,
+    score,
+  };
+}
+
+function salesReportPdfShareText(part, whole) {
+  if (!whole) return '0.0%';
+  return salesReportFormatPct((100 * part) / whole);
+}
+
+function salesReportPdfMixSentence(entries, valueFn, subject) {
+  const ranked = (entries || [])
+    .map(entry => ({
+      label: entry.type === 'SR' ? '[SR]' : entry.type,
+      value: valueFn(entry),
+    }))
+    .filter(entry => entry.value > 0.009)
+    .sort((a, b) => b.value - a.value);
+  const total = ranked.reduce((sum, entry) => sum + entry.value, 0);
+  if (!ranked.length || total <= 0) return '';
+  if (ranked.length === 1) {
+    return `${subject} is entirely ${ranked[0].label} (${salesReportFormatMoney(ranked[0].value)}).`;
+  }
+  const rest = ranked.slice(1).map(entry => `${entry.label} ${salesReportFormatMoney(entry.value)}`).join(', ');
+  return `${subject}: ${ranked[0].label} is the largest share at ${salesReportPdfShareText(ranked[0].value, total)} (${salesReportFormatMoney(ranked[0].value)}). ${rest}.`;
+}
+
+function salesReportPdfConcentration(items, score, noun) {
+  const ranked = [...(items || [])].filter(item => score(item) > 0.009).sort((a, b) => score(b) - score(a));
+  const total = ranked.reduce((sum, item) => sum + score(item), 0);
+  if (!ranked.length || total <= 0) return '';
+  const top = ranked[0];
+  if (ranked.length === 1) {
+    return `${top.label} is the only ${noun} in this view (${salesReportFormatMoney(score(top))}).`;
+  }
+  const topCount = Math.min(3, ranked.length);
+  const topSum = ranked.slice(0, topCount).reduce((sum, item) => sum + score(item), 0);
+  return `${top.label} is the largest ${noun} at ${salesReportPdfShareText(score(top), total)} (${salesReportFormatMoney(score(top))}). The top ${topCount} account for ${salesReportPdfShareText(topSum, total)}.`;
+}
+
+function salesReportPdfOpenScore(item) {
+  return Number(item?.values?.backlog || 0) + Number(item?.values?.on_hand || 0);
+}
+
+function salesReportPdfShippedScore(item) {
+  if (item?.values?.shipped != null && salesReportHidesBacklog()) return Number(item.values.shipped || 0);
+  if (item?.values?.backlog != null && item?.values?.on_time != null) {
+    return Number(item.values.backlog || 0) + Number(item.values.on_time || 0) + Number(item.values.early || 0);
+  }
+  return Number(item?.values?.shipped || 0);
+}
+
+function salesReportPdfNotes(grid, data, customers) {
+  const notes = [];
+  const cards = salesReportYtdSummaryCards(grid) || [];
+  const byTitle = Object.fromEntries(cards.map(card => [card.title, card]));
+  const ytd = byTitle['YTD shipped'];
+  const remaining = byTitle['Total open remaining'];
+  const left = byTitle['Sales left to achieve'];
+  if (ytd && remaining) {
+    const cleared = salesReportHidesBacklog()
+      ? ''
+      : ` That includes ${String(ytd.sub || '').replace(/^Includes\s+/i, '')}.`;
+    notes.push(`Year-to-date shipments are ${salesReportKpiValueText(ytd)}.${cleared} Unfinished open value is still ${salesReportKpiValueText(remaining)}.`);
+  }
+  if (left) {
+    notes.push(`${salesReportKpiValueText(left)} of open sales-order value is still outstanding (${left.sub}).`);
+  }
+  const segmentRows = (grid.rows || []).filter(row => row.id !== 'TOTAL');
+  const openMix = salesReportPdfMixSentence(
+    segmentRows.map(row => ({ type: row.id, value: Number(row.open_remaining || 0) })),
+    entry => entry.value,
+    'Of all unfinished value',
+  );
+  if (openMix) notes.push(openMix);
+  if (data?.summary) {
+    const summary = data.summary;
+    if (summary.mode === 'past') {
+      if (salesReportHidesBacklog()) {
+        notes.push(`Shipments in ${salesReportFocusMonthLabel()} total ${salesReportFormatMoney(summary.shipped?.total_home_amt)} across ${summary.shipped?.line_count || 0} lines.`);
+      } else {
+        notes.push(
+          `${salesReportFocusMonthLabel()} shipped ${salesReportFormatMoney(summary.shipped?.total_home_amt)}: `
+          + `${salesReportFormatMoney(summary.delivered?.total_home_amt)} on time, `
+          + `${salesReportFormatMoney(summary.backlog_delivered?.total_home_amt)} clearing backlog, `
+          + `${salesReportFormatMoney(summary.early_delivered?.total_home_amt)} early.`,
+        );
+      }
+    } else if (!salesReportHidesBacklog()) {
+      const backlog = Number(summary.backlog?.remaining_value || 0);
+      const onHand = Number(summary.on_hand?.remaining_value || 0);
+      const open = backlog + onHand;
+      const share = open > 0 ? ` Backlog is ${salesReportPdfShareText(backlog, open)} of that open position.` : '';
+      notes.push(
+        `${salesReportFocusMonthLabel()} still has ${salesReportFormatMoney(backlog)} backlog `
+        + `(${summary.backlog?.line_count || 0} lines) and ${salesReportFormatMoney(onHand)} onhand `
+        + `(${summary.on_hand?.line_count || 0} lines).${share}`,
+      );
+      notes.push(
+        `Shipped this month ${salesReportFormatMoney(summary.shipped?.total_home_amt)} against `
+        + `${salesReportFormatMoney(summary.booked?.line_amount)} booked this month.`,
+      );
+    } else {
+      notes.push(
+        `${salesReportFocusMonthLabel()} onhand is ${salesReportFormatMoney(summary.on_hand?.remaining_value)}. `
+        + `Shipped ${salesReportFormatMoney(summary.shipped?.total_home_amt)}. `
+        + `Booked ${salesReportFormatMoney(summary.booked?.line_amount)}.`,
+      );
+    }
+    const monthMix = salesReportPdfMixSentence(
+      data.breakdown || [],
+      entry => {
+        const s = entry.summary || {};
+        if (summary.mode === 'past') {
+          return salesReportHidesBacklog()
+            ? Number(s.shipped?.total_home_amt || 0)
+            : Number(s.backlog_delivered?.total_home_amt || 0)
+              + Number(s.delivered?.total_home_amt || 0)
+              + Number(s.early_delivered?.total_home_amt || 0);
+        }
+        return Number(s.backlog?.remaining_value || 0) + Number(s.on_hand?.remaining_value || 0);
+      },
+      summary.mode === 'past' ? 'Shipment value this month' : 'Open value this month',
+    );
+    if (monthMix) notes.push(monthMix);
+    const score = summary.mode === 'past' ? salesReportPdfShippedScore : salesReportPdfOpenScore;
+    const noun = summary.mode === 'past' ? 'customer by shipments' : 'customer by open value';
+    const customerNote = salesReportPdfConcentration(customers?.items, score, noun);
+    if (customerNote) notes.push(customerNote);
+  }
+  const integrity = data?.integrity || salesReportFilteredIntegrity(salesReportState.ytdData);
+  if (integrity) {
+    notes.push(integrity.ok
+      ? 'Open remaining reconciles to the sales-order line total for this scope.'
+      : 'Reconciliation needs a review before this pack is treated as final.');
+  }
+  return notes.filter(Boolean).slice(0, 8);
+}
+
+function salesReportPdfFilename() {
+  const segment = salesReportPsTypeLabel().replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'segments';
+  if (salesReportState.focusMonth) {
+    return `Sales-Report-${salesReportState.year}-${String(salesReportState.focusMonth).padStart(2, '0')}-${segment}.pdf`;
+  }
+  return `Sales-Report-${salesReportState.year}-${segment}.pdf`;
+}
+
+function salesReportPdfPayload() {
+  const ytd = salesReportState.ytdData;
+  const openLines = salesReportFilteredSection(ytd.allocated_open_lines || ytd.open_lines || [], { entity: false });
+  const shipments = salesReportFilteredSection(ytd.shipments_attributed || ytd.shipments || [], { entity: false });
+  const grid = salesReportBuildYtdGrid(openLines, shipments, ytd.year);
+  const data = salesReportState.focusMonth ? salesReportFilteredPayload() : null;
+  const peopleRanked = data ? salesReportPdfRanked(data, salesReportSalespersonLabel) : null;
+  const customerRanked = data ? salesReportPdfRanked(data, salesReportCustomerLabel) : null;
+  const score = data?.summary?.mode === 'past' ? salesReportPdfShippedScore : salesReportPdfOpenScore;
+  const monthLabel = salesReportFocusMonthLabel();
+  const people = peopleRanked
+    ? salesReportPdfGroupedTable('By salesperson', `${monthLabel} · ${salesReportScopeLabel()}`, peopleRanked, score, 20)
+    : null;
+  const customers = customerRanked
+    ? salesReportPdfGroupedTable('By customer', `${monthLabel} · ${salesReportScopeLabel()}`, customerRanked, score, 12)
+    : null;
+  const integrity = data?.integrity || salesReportFilteredIntegrity(ytd);
+  const filters = [salesReportEntityFilterPhrase(), String(salesReportState.search || '').trim() ? `search: ${String(salesReportState.search).trim()}` : '']
+    .filter(Boolean)
+    .join(' · ');
+  const generated = new Date().toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+  return {
+    year: salesReportState.year,
+    focus_month: salesReportState.focusMonth || null,
+    focus_label: salesReportState.focusMonth ? monthLabel : `${salesReportState.year} full year`,
+    segment: salesReportPsTypeLabel(),
+    date_basis: salesReportBasisPhrase(),
+    posted_basis: salesReportIsPostedBasis(),
+    filters,
+    generated_at: generated,
+    reconciliation: integrity ? {
+      ok: Boolean(integrity.ok),
+      so_remaining: salesReportFormatMoney(integrity.so_line_remaining_total),
+      pp_allocated: salesReportFormatMoney(integrity.pp_allocated_remaining_total),
+      shipped: salesReportFormatMoney(integrity.shipment_amt_deduped),
+    } : null,
+    notes: salesReportPdfNotes(grid, data, customers),
+    year_kpis: salesReportPdfKpis(salesReportYtdSummaryCards(grid)),
+    month_kpis: data ? salesReportPdfKpis(salesReportMonthSummaryCards(data.summary)) : [],
+    year_table: salesReportPdfYearTable(grid),
+    timing: salesReportPdfTiming(grid),
+    breakdown: salesReportPdfBreakdown(data),
+    groups: [people, customers].filter(Boolean).map(table => ({
+      title: table.title,
+      subtitle: table.subtitle,
+      headers: table.headers,
+      rows: table.rows,
+      numeric: table.numeric,
+    })),
+    sections: salesReportPdfSections(data),
+  };
+}
+
+async function salesReportExportPdf() {
+  const btn = document.getElementById('sales-report-export-pdf');
+  if (!salesReportState.ytdData || salesReportNoPsTypesSelected()) return;
+  if (salesReportState.focusMonth && !salesReportState.data) return;
+  if (btn?.dataset.busy === '1') return;
+  const payload = salesReportPdfPayload();
+  if (btn) {
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    btn.textContent = 'Preparing PDF…';
+  }
+  try {
+    const res = await fetch('/api/sales-report/export-pdf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      let message = 'Could not export the PDF.';
+      try {
+        const body = await res.json();
+        if (body?.error) message = body.error;
+      } catch (err) {
+        /* keep the fallback message */
+      }
+      throw new Error(message);
+    }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = salesReportPdfFilename();
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (err) {
+    const ctx = document.getElementById('sales-report-context');
+    if (ctx) ctx.textContent = err?.message || 'Could not export the PDF.';
+  } finally {
+    if (btn) {
+      btn.dataset.busy = '0';
+      btn.textContent = 'Export PDF';
+    }
+    salesReportSyncPeriodUI();
+  }
 }
 
 function salesReportExportCsv() {

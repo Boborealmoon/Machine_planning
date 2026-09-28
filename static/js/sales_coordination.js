@@ -35,15 +35,15 @@ const SC_EXPORT_COLUMNS = [
   { id: 'part_desc', label: 'Part description', width: 32 },
   { id: 'qty', label: 'Qty', width: 10 },
   { id: 'partial_qty', label: 'Partial qty', width: 12 },
-  { id: 'due_date', label: 'PO due date', width: 14 },
   { id: 'posted_date', label: 'Posted date', width: 14 },
+  { id: 'due_date', label: 'PO due date', width: 14 },
+  { id: 'material_need_date', label: 'Need date', width: 14 },
+  { id: 'material_in_date', label: 'Material in date', width: 16 },
   { id: 'proposed_edd', label: 'Proposed EDD', width: 14 },
   { id: 'buyer', label: 'Buyer', width: 16 },
   { id: 'order_status', label: 'Order status', width: 18 },
   { id: 'material', label: 'Material', width: 18 },
   { id: 'material_status', label: 'Material status', width: 16 },
-  { id: 'material_in_date', label: 'Material in date', width: 16 },
-  { id: 'material_need_date', label: 'Need date', width: 14 },
 ];
 
 function scEscape(value) {
@@ -375,15 +375,15 @@ function scRenderRow(row) {
       <td>${scEscape(row.part_desc || '-')}</td>
       <td class="sc-num">${scEscape(scFormatQty(row.qty))}</td>
       <td class="sc-num">${scEscape(scFormatQty(row.partial_qty))}</td>
-      ${scRenderDateCell(row.due_date)}
       ${scRenderDateCell(row.posted_date)}
+      ${scRenderDateCell(row.due_date)}
+      ${scRenderDateCell(row.material_need_date)}
+      ${scRenderDateCell(row.material_in_date)}
       ${scRenderDateCell(row.proposed_edd)}
       ${scRenderBuyerCell(row)}
       ${scRenderOrderStatus(row)}
       <td class="sc-mono">${scEscape(row.material || '-')}</td>
       ${scRenderMaterialStatus(row)}
-      ${scRenderDateCell(row.material_in_date)}
-      ${scRenderDateCell(row.material_need_date)}
     </tr>`;
 }
 

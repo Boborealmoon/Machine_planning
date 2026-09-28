@@ -73,7 +73,7 @@ from .materials import material_status_map_for_ps_ids, sync_material_requirement
 from .operation_sequence import apply_machine_queue_order, apply_machine_queue_orders
 from .process_sheets import (
     collapse_block_ready_flags_by_source_ps,
-    due_date_map_for_planner_ps_ids,
+    commitment_dates_for_planner_ps_ids,
     ensure_planner_process_sheet,
     format_planner_ps_id,
     is_temp_planner_ps_id,
@@ -283,7 +283,7 @@ def _calendar_window_payload(row):
 
 
 def _attach_board_meta_to_blocks(con, blocks):
-    """Attach planner_ps_id, material_in, tooling_ready, program_ready, and due_date for board / machinist lane cards."""
+    """Attach planner_ps_id, material_in, tooling/program flags, PO due, and proposed EDD for lane cards."""
     if not blocks:
         return
     board_ps_ids = list(dict.fromkeys(
@@ -294,7 +294,7 @@ def _attach_board_meta_to_blocks(con, blocks):
     if not board_ps_ids:
         return
     material_overlay_by_ps = material_in_overlay_for_planner_ps_ids(con, board_ps_ids)
-    due_date_by_ps = due_date_map_for_planner_ps_ids(con, board_ps_ids)
+    due_date_by_ps, coway_edd_by_ps = commitment_dates_for_planner_ps_ids(con, board_ps_ids)
     operation_ids = [
         int(row.get("operation_id") or 0)
         for row in blocks
@@ -319,6 +319,9 @@ def _attach_board_meta_to_blocks(con, blocks):
         due_text = compact_text(due_date_by_ps.get(ps_id))
         if due_text:
             row["due_date"] = due_text
+        edd_text = compact_text(coway_edd_by_ps.get(ps_id))[:10]
+        if edd_text:
+            row["coway_proposed_edd"] = edd_text
     collapse_block_ready_flags_by_source_ps(blocks)
 
 
@@ -343,6 +346,7 @@ def _attach_board_meta_to_blocks_rest(blocks):
         return
     material_in_by_ps = {pid: False for pid in board_ps_ids}
     material_in_date_by_ps = {pid: "" for pid in board_ps_ids}
+    coway_edd_by_ps = {pid: "" for pid in board_ps_ids}
     tooling_by_op = {op_id: True for op_id in operation_ids}
     program_by_op = {op_id: True for op_id in operation_ids}
     try:
@@ -352,7 +356,7 @@ def _attach_board_meta_to_blocks_rest(blocks):
                 f"{supa_url()}/planner_process_sheet",
                 headers={**supa_headers(write=True), "Prefer": "return=representation"},
                 params={
-                    "select": "planner_ps_id,source_ps_id,material_in,material_in_date",
+                    "select": "planner_ps_id,source_ps_id,material_in,material_in_date,coway_proposed_edd",
                     "planner_ps_id": f"in.({quoted})",
                 },
                 timeout=30,
@@ -367,6 +371,9 @@ def _attach_board_meta_to_blocks_rest(blocks):
                     sheet_date = _iso_date_text(row.get("material_in_date"))
                     if sheet_date:
                         material_in_date_by_ps[pid] = sheet_date
+                    edd_text = _iso_date_text(row.get("coway_proposed_edd"))
+                    if edd_text:
+                        coway_edd_by_ps[pid] = edd_text
     except Exception:
         import logging
 
@@ -465,6 +472,9 @@ def _attach_board_meta_to_blocks_rest(blocks):
         mtl_date = compact_text(material_in_date_by_ps.get(ps_id))
         if mtl_date:
             row["material_in_date"] = mtl_date
+        edd_text = compact_text(coway_edd_by_ps.get(ps_id))[:10]
+        if edd_text:
+            row["coway_proposed_edd"] = edd_text
         op_id = int(row.get("operation_id") or 0)
         if op_id > 0:
             row["tooling_ready"] = bool(tooling_by_op.get(op_id, True))

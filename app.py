@@ -55,6 +55,7 @@ from planning.machine_lane_calc_route import machine_lane_calc_bp
 from planning.pr_status_enquiry_route import pr_status_enquiry_bp
 from planning.material_tracking_pr_po_route import material_tracking_pr_po_bp
 from planning.material_tracking_inspection_route import material_tracking_inspection_bp
+from planning.logistics_shipment_route import logistics_shipment_bp
 from planning.material_tracking_requests_route import material_tracking_requests_bp
 from planning.program_tool_tracker_route import program_tool_tracker_bp
 from planning.repeat_orders_route import repeat_orders_bp
@@ -142,6 +143,7 @@ app.register_blueprint(machine_lane_calc_bp)
 app.register_blueprint(pr_status_enquiry_bp)
 app.register_blueprint(material_tracking_pr_po_bp)
 app.register_blueprint(material_tracking_inspection_bp)
+app.register_blueprint(logistics_shipment_bp)
 app.register_blueprint(material_tracking_requests_bp)
 app.register_blueprint(program_tool_tracker_bp)
 app.register_blueprint(repeat_orders_bp)
@@ -386,6 +388,7 @@ REPORTS_TOKEN_MAX_AGE = 8 * 3600
 _REPORTS_PAGE_PREFIXES = (
     "/sales-report",
     "/so-outstanding-balance",
+    "/on-time-delivery",
     "/job-ratio",
     "/production-capacity",
     "/repeat-orders",
@@ -395,6 +398,7 @@ _REPORTS_PAGE_PREFIXES = (
 _REPORTS_API_PREFIXES = (
     "/api/sales-report",
     "/api/so-outstanding-balance",
+    "/api/on-time-delivery",
     "/api/job-ratio",
     "/api/production-capacity",
     "/api/planning-data/repeat-orders",
@@ -2394,9 +2398,19 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
                 planner_rows[key] = row
 
         if inventory_codes:
+            from planning.catalog import _inventory_code_lookup_candidates
             from planning.flows import erp_bom_codes_by_inventory
 
-            erp_bom_codes_map = erp_bom_codes_by_inventory(_con, list(inventory_codes))
+            lookup_codes: list[str] = []
+            seen_lookup: set[str] = set()
+            for inv in inventory_codes:
+                for cand in _inventory_code_lookup_candidates(inv):
+                    key = cand.upper()
+                    if key in seen_lookup:
+                        continue
+                    seen_lookup.add(key)
+                    lookup_codes.append(cand)
+            erp_bom_codes_map = erp_bom_codes_by_inventory(_con, lookup_codes)
             for row in db_rows(
                 _con.execute(
                     """
@@ -2405,7 +2419,7 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
                     WHERE inventory_code = ANY(%s)
                     ORDER BY is_default DESC, bom_id
                     """,
-                    (list(inventory_codes),),
+                    (lookup_codes,),
                 )
             ):
                 inv = compact_text(row["inventory_code"])
@@ -2505,11 +2519,29 @@ def _enrich_pp_vouchers_planner_data(entries, con=None):
         inv = compact_text(entry.get("inventory_code") or entry.get("part_no"))
         entry["inventory_code"] = inv
         erp_bom = compact_text(entry.get("erp_bom_code") or entry.get("bom_code"))
+        from planning.catalog import _inventory_code_lookup_candidates
         from planning.flows import merge_flow_options
 
+        planner_flows = []
+        seen_flow = set()
+        erp_codes = []
+        seen_erp = set()
+        for cand in _inventory_code_lookup_candidates(inv, entry.get("part_no")):
+            for flow in flow_cache.get(cand) or []:
+                marker = int(flow.get("bom_id") or 0) or compact_text(flow.get("bom_code")).upper()
+                if marker in seen_flow:
+                    continue
+                seen_flow.add(marker)
+                planner_flows.append(flow)
+            for code in erp_bom_codes_map.get(cand) or []:
+                key = compact_text(code).upper()
+                if not key or key in seen_erp:
+                    continue
+                seen_erp.add(key)
+                erp_codes.append(code)
         entry["flow_options"] = merge_flow_options(
-            flow_cache.get(inv, entry.get("flow_options") or []),
-            erp_bom_codes_map.get(inv, []),
+            planner_flows or entry.get("flow_options") or [],
+            erp_codes,
             erp_voucher_bom=erp_bom,
         )
         wo_flags = wo_completion.get((source_ps_id, partial_no), {})
@@ -2638,8 +2670,9 @@ def _pp_vouchers_cached_response_rows(
     """Serve PS / Ops from prebuilt cache without blocking on live BOM/WO repair.
 
     Fresh [Temp] rows are merged only for refresh or when search needs them —
-    trial_catalog_items is too slow to run on every sidebar load. Search still
-    seeds missing COMP machining ops for the hit family only.
+    trial_catalog_items is too slow to run on every sidebar load. Missing
+    Turning/Milling cards are stamped from inventory BOM stages in-memory
+    (including REV-suffixed part numbers). Search also seeds the hit family.
     """
     from planning.assembly_classify import attach_catalog_assembly_line_items
 
@@ -2665,9 +2698,9 @@ def _pp_vouchers_cached_response_rows(
     try:
         from planning.catalog import stamp_inventory_bom_ops
 
-        stamp_inventory_bom_ops(cached, nested_only=True)
+        stamp_inventory_bom_ops(cached)
     except Exception as exc:
-        log.warning("catalog nested ops seed failed: %s", exc)
+        log.warning("catalog inventory BOM ops seed failed: %s", exc)
     return cached
 
 

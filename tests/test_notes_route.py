@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -26,13 +27,17 @@ class NotesRouteTests(unittest.TestCase):
         self.assertIn("Screen directory", html)
         self.assertIn("NPI/FA Management", html)
         self.assertIn("SO outstanding balance", html)
-        self.assertIn("RFQ checker / Tracker", html)
+        self.assertIn("RFQ quotes", html)
         self.assertIn("Assembly Parts", html)
         self.assertIn("On-time delivery", html)
         self.assertIn("APS PS material match", html)
         self.assertIn("/archive/aps-ps-match", html)
-        self.assertRegex(html, r'data-group="ops"[\s\S]*On-time delivery')
-        self.assertNotRegex(html, r'data-group="reports"[\s\S]*On-time delivery')
+        ops_group = re.search(r'data-group="ops"(.*?)data-group="sales"', html, re.S)
+        reports_group = re.search(r'data-group="reports"(.*?)data-group="queries"', html, re.S)
+        self.assertIsNotNone(ops_group)
+        self.assertIsNotNone(reports_group)
+        self.assertNotIn("On-time delivery", ops_group.group(1))
+        self.assertIn("On-time delivery", reports_group.group(1))
         self.assertIn("Queries &amp; Master Data", html)
         self.assertIn('id="admin-launch-toggle-all"', html)
         self.assertIn('id="note-cancel"', html)

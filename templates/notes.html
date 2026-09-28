@@ -72,7 +72,6 @@
           {{ launch_link("Assembly Parts", url_for("assembly_parts.assembly_parts_page")) }}
           {{ launch_link("Shift Management", "/Shift-management") }}
           {{ launch_link("ERP scanned output", url_for("erp_scanned_output.erp_scanned_output_page")) }}
-          {{ launch_link("On-time delivery", url_for("on_time_delivery.on_time_delivery_page")) }}
         </div>
       </details>
 
@@ -97,6 +96,7 @@
         <div class="admin-launch-links">
           {{ launch_link("Sales report", url_for("sales_report.sales_report_page")) }}
           {{ launch_link("SO outstanding balance", url_for("so_outstanding_balance.so_outstanding_balance_page")) }}
+          {{ launch_link("On-time delivery", url_for("on_time_delivery.on_time_delivery_page")) }}
           {{ launch_link("Job ratio report", url_for("job_ratio.job_ratio_page")) }}
           {{ launch_link("Machine capacity", url_for("capacity_monthly.production_capacity_page")) }}
           {{ launch_link("Repeat orders", url_for("repeat_orders.repeat_orders_page")) }}
@@ -141,7 +141,7 @@
           <div><h3>Archive</h3><p>History and reference views</p></div>
         </summary>
         <div class="admin-launch-links">
-          {{ launch_link("RFQ checker / Tracker", url_for("rfq_checker.rfq_checker_page")) }}
+          {{ launch_link("RFQ quotes", url_for("rfq_checker.rfq_checker_page")) }}
           {{ launch_link("APS PS material match", "/archive/aps-ps-match") }}
           {{ launch_link("SO line archive", url_for("so_archive.so_archive_page")) }}
           {{ launch_link("Daily output", url_for("daily_output_view")) }}

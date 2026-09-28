@@ -3,7 +3,7 @@
 {% block body_class %}fa-view{% endblock %}
 {% block main_class %}app-main--first-article{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260921-cnc">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-20260922-done">
 {% endblock %}
 {% block content %}
 <div class="fa-page">
@@ -131,15 +131,17 @@
               <th class="fa-col-ps">PS</th>
               <th class="fa-col-part">Part</th>
               <th class="fa-col-desc">Description</th>
-              <th class="fa-col-date">Posted</th>
-              <th class="fa-col-date" title="PO due date">Due</th>
               <th class="fa-col-qty">Qty</th>
-              <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
               <th class="fa-col-bom" title="Opens BOM materials. Green = ERP material lines exist.">BOM</th>
               <th class="fa-col-material">Material</th>
+              <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
+              <th class="fa-col-date">Posted</th>
+              <th class="fa-col-date" title="PO due date">Due</th>
+              <th class="fa-col-finish" title="Programme estimated finish">Finish</th>
+              <th class="fa-col-machine" title="Same Proposed CNC as S/O Management">Proposed CNC</th>
               <th class="fa-col-pic" title="Programme PIC">PIC</th>
               <th class="fa-col-remarks">Remarks</th>
-              <th class="fa-col-finish" title="Programme estimated finish">Finish</th>
+              <th class="fa-col-done" title="Mark this NPI job complete">Done</th>
               <th class="fa-col-actions"></th>
               <th class="fa-col-so">SO</th>
             </tr>
@@ -172,15 +174,17 @@
               <th class="fa-col-ps">PS</th>
               <th class="fa-col-part">Part</th>
               <th class="fa-col-desc">Description</th>
-              <th class="fa-col-date">Posted</th>
-              <th class="fa-col-date" title="PO due date">Due</th>
               <th class="fa-col-qty">Qty</th>
-              <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
               <th class="fa-col-bom" title="Opens BOM materials. Green = ERP material lines exist.">BOM</th>
               <th class="fa-col-material">Material</th>
+              <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
+              <th class="fa-col-date">Posted</th>
+              <th class="fa-col-date" title="PO due date">Due</th>
+              <th class="fa-col-finish" title="Programme estimated finish">Finish</th>
+              <th class="fa-col-machine" title="Same Proposed CNC as S/O Management">Proposed CNC</th>
               <th class="fa-col-pic" title="Programme PIC">PIC</th>
               <th class="fa-col-remarks">Remarks</th>
-              <th class="fa-col-finish" title="Programme estimated finish">Finish</th>
+              <th class="fa-col-done" title="Mark this NPI job complete">Done</th>
               <th class="fa-col-actions"></th>
               <th class="fa-col-so">SO</th>
             </tr>
@@ -320,5 +324,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=fa-20260825-2"></script>
-<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260921-cnc"></script>
+<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-20260922-done"></script>
 {% endblock %}

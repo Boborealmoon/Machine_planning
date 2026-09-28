@@ -56,6 +56,8 @@ FIXED_FIELDS = (
 )
 
 LINE_PATCH_FIELDS = FIXED_FIELDS
+QUOTE_TEXT_FIELDS = ("description", "material_type", "material_spec")
+QUOTE_NUMBER_FIELDS = ("setup_mins", "rm_thk", "rm_width", "rm_length")
 
 FIELD_LABELS = {
     "part_no": "Part No.",
@@ -84,7 +86,7 @@ _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "rfq": ("rfq", "rfq_no", "rfq_number", "quotation", "quote_no", "quote"),
     "customer": ("cust", "customer", "customer_name", "customer_code", "cust_name"),
     "salesperson": ("salesperson", "sales_person", "sales", "ae", "pic_sales"),
-    "qty": ("qty", "quantity", "order_qty", "qty_pcs", "qtypcs"),
+    "qty": ("qty", "quantity", "order_qty", "qty_pcs", "qtypcs", "rfq_qty"),
     "opns": ("opns", "ops", "operations", "op", "process"),
     "assignment": ("assignment", "assign", "assigned", "assigned_mc", "assign_mc"),
     "machines": ("machines", "machine", "mc", "mc_no", "machine_no", "machine_nos"),
@@ -99,9 +101,31 @@ _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "days": ("days", "day"),
     "lead_time": ("lead_time", "lt", "leadtime", "lead_time_wks"),
     "need_tooling": ("need_tooling", "tooling", "need_tool"),
-    "need_fixture": ("need_fixture", "fixture", "need_jig", "jig"),
-    "remark": ("remark", "remarks", "notes", "comment", "comments"),
+    "need_fixture": ("need_fixture", "fixture", "fixture_required", "need_jig", "jig"),
+    "remark": ("remark", "remarks", "notes", "comment", "comments", "engineering_remarks", "engineering_remark"),
 }
+
+FINISHED_GOODS_CLASSES = frozenset({"FG MFG COMMERCIAL", "FG MRO"})
+_OP_FAMILY = {
+    "milling_mins": "ML",
+    "turning_mins": "TN",
+    "edm_mins": "EDM",
+    "backend_mins": "BE",
+}
+_STANDARD_OP_COLUMNS = (
+    ("Milling (mins)", "3 Axis", "ML"),
+    ("Milling (mins)", "4 Axis", "ML"),
+    ("Milling (mins)", "5 Axis", "ML"),
+    ("Milling (mins)", "5 Axis (i-800)", "ML"),
+    ("Turning (mins)", "Quick Turn", "TN"),
+    ("Turning (mins)", "J-200", "TN"),
+    ("Turning (mins)", "i-250", "TN"),
+    ("EDM (mins)", "Wirecut", "EDM"),
+    ("EDM (mins)", "EDM", "EDM"),
+    ("EDM (mins)", "Superdrill", "EDM"),
+    ("Backend (mins)", "Deburring", "BE"),
+    ("Backend (mins)", "Cleaning", "BE"),
+)
 
 _TURN_RE = re.compile(r"\b(turn|turning|tn|lathe)\b", re.I)
 _MILL_RE = re.compile(r"\b(mill|milling|ml|vmc|hmc)\b", re.I)
@@ -316,6 +340,40 @@ def format_lead_time(days: float) -> str:
     return f"{low}-{high}wks"
 
 
+def _quote_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def hours_for_line(
+    qty: Any,
+    total_ct_mins: Any,
+    quote: Any = None,
+    *,
+    total_hours: Any = None,
+) -> dict[str, float]:
+    """Piece minutes scale with qty. Op-sheet setup is added once, not per piece."""
+    payload = _quote_dict(quote)
+    if payload.get("format") == "op_sheet" and total_hours is None:
+        piece = _to_number(total_ct_mins) or 0.0
+        qty_n = _to_number(qty) or 0.0
+        setup = _to_number(payload.get("setup_mins")) or 0.0
+        machine = (qty_n * piece / 60.0) if qty_n and piece else 0.0
+        return {
+            "machine_hours": round(machine, 4),
+            "total_hours": round(machine + (setup / 60.0 if setup else 0.0), 4),
+        }
+    calc = calculate_times(qty, total_ct_mins, total_hours=total_hours)
+    return {"machine_hours": calc["machine_hours"], "total_hours": calc["total_hours"]}
+
+
 def calculate_times(qty: Any, total_ct_mins: Any, *, total_hours: Any = None) -> dict[str, Any]:
     qty_n = _to_number(qty) or 0.0
     ct_n = _to_number(total_ct_mins) or 0.0
@@ -358,27 +416,35 @@ def summarize_opns(op_types: list[str]) -> str:
 
 
 def heuristic_column_map(headers: list[str]) -> dict[str, str]:
-    mapping: dict[str, str] = {}
-    used_fields: set[str] = set()
-    for header in headers:
+    """Longer alias wins, so RFQ QTY maps to qty and not the shorter rfq prefix."""
+    candidates: list[tuple[int, int, str, str]] = []
+    for index, header in enumerate(headers):
         norm = normalize_header(header)
         if not norm:
             continue
-        matched = ""
+        collapsed_norm = norm.replace("_", "")
+        best: tuple[int, str] | None = None
         for field, aliases in _HEADER_ALIASES.items():
-            if field in used_fields:
-                continue
-            collapsed_norm = norm.replace("_", "")
-            collapsed_aliases = {alias.replace("_", "") for alias in aliases}
-            if norm in aliases or collapsed_norm in collapsed_aliases:
-                matched = field
-                break
-            if any(norm == alias or norm.startswith(alias + "_") for alias in aliases):
-                matched = field
-                break
-        if matched:
-            mapping[header] = matched
-            used_fields.add(matched)
+            for alias in aliases:
+                collapsed = alias.replace("_", "")
+                if norm == alias or collapsed_norm == collapsed:
+                    score = 100 + len(alias)
+                elif norm.startswith(alias + "_"):
+                    score = len(alias)
+                else:
+                    continue
+                if best is None or score > best[0]:
+                    best = (score, field)
+        if best:
+            candidates.append((best[0], index, header, best[1]))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    mapping: dict[str, str] = {}
+    used_fields: set[str] = set()
+    for _score, _index, header, field in candidates:
+        if field in used_fields:
+            continue
+        mapping[header] = field
+        used_fields.add(field)
     return mapping
 
 
@@ -613,7 +679,497 @@ def _parse_xls(payload: bytes) -> list[dict[str, Any]]:
     return sheets
 
 
+def parse_part_query(text: str) -> list[str]:
+    raw = compact_text(text)
+    if not raw:
+        return []
+    tokens = re.split(r"[\s,;]+", raw.replace("\n", " ").replace("\t", " "))
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        cleaned = compact_text(token).strip(".,;:|")
+        if len(cleaned) < 2:
+            continue
+        key = normalize_part_no(cleaned)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(cleaned)
+        if len(out) >= 200:
+            break
+    return out
+
+
+def _header_pair(header: str) -> tuple[str, str]:
+    text = compact_text(header)
+    if " / " in text:
+        parent, sub = text.split(" / ", 1)
+        return normalize_header(parent), normalize_header(sub)
+    return normalize_header(text), ""
+
+
+def _cell_text(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value.isoformat()
+    text = compact_text(value)
+    if re.match(r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?$", text):
+        return text[:10]
+    return text
+
+
+def _banner_dates(matrix: list[list[Any]], header_idx: int) -> tuple[str, str]:
+    date_in = ""
+    date_out = ""
+    for row in matrix[:header_idx]:
+        for idx, cell in enumerate(row or []):
+            key = normalize_header(cell).removesuffix("_")
+            if key not in {"date_in", "datein", "date_out", "dateout"}:
+                continue
+            found = ""
+            for nxt in (row or [])[idx + 1 : idx + 4]:
+                found = _cell_text(nxt)
+                if found:
+                    break
+            if key in {"date_in", "datein"} and not date_in:
+                date_in = found
+            if key in {"date_out", "dateout"} and not date_out:
+                date_out = found
+    return date_in, date_out
+
+
+def _is_op_sheet_header(group_row: list[Any], sub_row: list[Any]) -> bool:
+    labels = [normalize_header(cell) for cell in (group_row or [])]
+    subs = [normalize_header(cell) for cell in (sub_row or [])]
+    has_part = any(item in {"part_number", "part_no", "partno"} for item in labels)
+    has_qty = any("rfq_qty" in item or item == "qty" for item in labels)
+    has_process = any(
+        item in {"3_axis", "4_axis", "5_axis", "quick_turn", "j_200", "i_250", "wirecut", "deburring"}
+        or item.startswith("5_axis")
+        for item in subs
+    )
+    return has_part and has_process and (has_qty or has_process)
+
+
+def _find_op_sheet_header(matrix: list[list[Any]]) -> int | None:
+    limit = min(len(matrix), 30)
+    for idx in range(max(0, limit - 1)):
+        if _is_op_sheet_header(matrix[idx] or [], matrix[idx + 1] or []):
+            return idx
+    return None
+
+
+def _compose_op_headers(group_row: list[Any], sub_row: list[Any]) -> list[str]:
+    width = max(len(group_row or []), len(sub_row or []))
+    headers: list[str] = []
+    current_group = ""
+    seen: dict[str, int] = {}
+    for idx in range(width):
+        group = compact_text(group_row[idx] if idx < len(group_row) else None)
+        sub = compact_text(sub_row[idx] if idx < len(sub_row) else None)
+        if group:
+            current_group = group
+        if group and not sub:
+            label = group
+        elif sub:
+            parent = group or current_group
+            label = f"{parent} / {sub}" if parent else sub
+        else:
+            headers.append("")
+            continue
+        count = seen.get(label, 0) + 1
+        seen[label] = count
+        label = re.sub(r"\s+", " ", label).strip()
+        headers.append(label if count == 1 else f"{label} ({count})")
+    return headers
+
+
+def _machine_label(header: str) -> str:
+    raw = header.split(" / ", 1)[1] if " / " in header else header
+    return re.sub(r"\s+", " ", compact_text(raw)).strip()
+
+
+def ensure_op_columns(quote: dict[str, Any]) -> dict[str, Any]:
+    """Give an op-sheet quote the Excel machine columns, including ones left blank."""
+    if quote.get("format") != "op_sheet":
+        return quote
+    columns = [col for col in (quote.get("columns") or []) if isinstance(col, dict) and compact_text(col.get("machine"))]
+    if not columns:
+        columns = [
+            {"group": group, "machine": machine, "header": f"{group} / {machine}", "code": code}
+            for group, machine, code in _STANDARD_OP_COLUMNS
+        ]
+        known = {normalize_header(col["machine"]) for col in columns}
+        for op in quote.get("operations") or []:
+            if not isinstance(op, dict):
+                continue
+            name = re.sub(r"\s+", " ", compact_text(op.get("machine"))).strip()
+            key = normalize_header(name)
+            if not name or key in known:
+                continue
+            group = compact_text(op.get("group")) or "Other (mins)"
+            columns.append({
+                "group": group,
+                "machine": name,
+                "header": f"{group} / {name}",
+                "code": compact_text(op.get("code")),
+            })
+            known.add(key)
+        quote["columns"] = columns
+    times = dict(quote.get("times") or {})
+    by_machine = {normalize_header(col.get("machine")): compact_text(col.get("header")) for col in columns}
+    for op in quote.get("operations") or []:
+        if not isinstance(op, dict):
+            continue
+        header = by_machine.get(normalize_header(op.get("machine")))
+        if header and times.get(header) in (None, ""):
+            times[header] = _to_number(op.get("mins"))
+    for col in columns:
+        header = compact_text(col.get("header"))
+        if header:
+            times.setdefault(header, None)
+    quote["columns"] = columns
+    quote["times"] = times
+    return quote
+
+
+def _process_columns(headers: list[str]) -> list[dict[str, str]]:
+    columns: list[dict[str, str]] = []
+    for header in headers:
+        parent, sub = _header_pair(header)
+        code = _OP_FAMILY.get(parent)
+        if not code or not sub:
+            continue
+        group = header.split(" / ", 1)[0].strip()
+        columns.append({
+            "group": group,
+            "machine": _machine_label(header),
+            "header": header,
+            "code": code,
+        })
+    return columns
+
+
+def _is_explicit_machines_header(header: str) -> bool:
+    parent, sub = _header_pair(header)
+    if sub:
+        return False
+    return parent in {"machines", "machine", "mc", "mc_no", "machine_no", "machine_nos"}
+
+
+def _looks_like_remark(value: Any) -> bool:
+    text = re.sub(r"\s+", " ", compact_text(value)).strip()
+    if not text or re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+        return False
+    return " " in text or len(text) >= 12
+
+
+def _label_blank_remark_columns(
+    headers: list[str],
+    matrix: list[list[Any]],
+    data_start: int,
+) -> list[str]:
+    """A notes column on these sheets often has no title. Name the prose column Remark."""
+    labeled = list(headers)
+    remark_n = 0
+    for idx, header in enumerate(labeled):
+        if compact_text(header):
+            continue
+        remarks = 0
+        other = 0
+        for row in matrix[data_start:]:
+            if idx >= len(row or []):
+                continue
+            cell = row[idx]
+            if cell in (None, ""):
+                continue
+            if _looks_like_remark(cell):
+                remarks += 1
+            else:
+                other += 1
+        if remarks < 1 or remarks < other:
+            continue
+        remark_n += 1
+        labeled[idx] = "Remark" if remark_n == 1 else f"Remark ({remark_n})"
+    return labeled
+
+
+def _split_machine_list(value: Any) -> list[str]:
+    parts = re.split(r"[,;/|]+", compact_text(value))
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        label = re.sub(r"\s+", " ", part).strip()
+        key = normalize_header(label)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(label)
+    return out
+
+
+def op_sheet_math(quote: dict[str, Any], *, qty: Any = None, machines: str = "") -> dict[str, Any]:
+    """Sum piece minutes. A ticked machine list limits the sum to those columns."""
+    payload = dict(_quote_dict(quote))
+    columns = [col for col in (payload.get("columns") or []) if isinstance(col, dict)]
+    times = dict(payload.get("times") or {})
+    by_name = {normalize_header(col.get("machine")): col for col in columns}
+    matched: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for token in _split_machine_list(machines):
+        key = normalize_header(token)
+        col = by_name.get(key)
+        if col and key not in seen:
+            seen.add(key)
+            matched.append(col)
+    use_filter = bool(matched)
+    chosen = matched if use_filter else columns
+    operations: list[dict[str, Any]] = []
+    piece_values: list[float] = []
+    for col in chosen:
+        mins = _to_number(times.get(col.get("header")))
+        if not use_filter and not mins:
+            continue
+        if mins:
+            operations.append({
+                "group": col.get("group") or "",
+                "code": col.get("code") or "",
+                "machine": col.get("machine") or "",
+                "header": col.get("header") or "",
+                "mins": mins,
+            })
+            piece_values.append(float(mins))
+        elif use_filter:
+            piece_values.append(0.0)
+    if use_filter:
+        piece: float | None = round(sum(piece_values), 4)
+    elif piece_values:
+        piece = round(sum(piece_values), 4)
+    else:
+        piece = None
+    counts: dict[str, int] = {}
+    for item in operations:
+        code = compact_text(item.get("code"))
+        if code:
+            counts[code] = counts.get(code, 0) + 1
+    opns = " ".join(
+        f"{counts[code]}{code}" for code in ("ML", "TN", "EDM", "BE") if counts.get(code)
+    )
+    payload["operations"] = operations
+    payload["piece_mins"] = piece
+    payload["opns"] = opns
+    if not use_filter and not payload.get("machines_from_sheet"):
+        payload["machines"] = ""
+    hours = hours_for_line(
+        qty if qty is not None else payload.get("qty"),
+        piece,
+        payload,
+    )
+    return {
+        "quote": payload,
+        "total_ct_mins": piece,
+        "opns": opns,
+        "machine_hours": hours["machine_hours"],
+        "total_hours": hours["total_hours"],
+        "filtered": use_filter,
+    }
+
+
+def _op_quote_from_row(
+    record: dict[str, Any],
+    *,
+    date_in: str,
+    date_out: str,
+    columns: list[dict[str, str]] | None = None,
+    machines_from_sheet: bool = False,
+) -> dict[str, Any]:
+    quote: dict[str, Any] = {
+        "format": "op_sheet",
+        "description": "",
+        "material_type": "",
+        "material_spec": "",
+        "rm_thk": None,
+        "rm_width": None,
+        "rm_length": None,
+        "setup_mins": None,
+        "operations": [],
+        "piece_mins": None,
+        "fixture_required": "",
+        "engineering_remarks": "",
+        "nre_sgd": None,
+        "date_in": date_in,
+        "date_out": date_out,
+        "opns": "",
+        "machines": "",
+    }
+    for header, value in record.items():
+        if str(header).startswith("_"):
+            continue
+        parent, sub = _header_pair(str(header))
+        if parent in {"part_number", "part_no", "partno"}:
+            continue
+        if parent in {"descriptions", "description"} and not sub:
+            quote["description"] = compact_text(value)
+            continue
+        if parent in {"rfq_qty", "qty"} and not sub:
+            quote["qty"] = _to_number(value)
+            continue
+        if parent in {"mat", "material", "material_type"} and not sub:
+            quote["material_type"] = compact_text(value)
+            continue
+        if sub == "type" or parent == "type":
+            quote["material_type"] = compact_text(value)
+            continue
+        if sub in {"specification", "spec"} or parent in {"specification", "spec"}:
+            quote["material_spec"] = _cell_text(value)
+            continue
+        if sub.startswith("thk") or sub in {"dia", "diameter", "od"}:
+            quote["rm_thk"] = _to_number(value)
+            continue
+        if sub == "width" or parent == "width":
+            quote["rm_width"] = _to_number(value)
+            continue
+        if sub == "length" or parent == "length":
+            quote["rm_length"] = _to_number(value)
+            continue
+        if parent.startswith("setup") and not sub:
+            quote["setup_mins"] = _to_number(value)
+            continue
+        if "fixture" in parent and not sub:
+            quote["fixture_required"] = parse_yn(value)
+            continue
+        if parent in {"engineering_remarks", "engineering_remark"} and not sub:
+            quote["engineering_remarks"] = compact_text(value)
+            continue
+        if parent in {"remark", "remarks", "notes", "comment", "comments"} and not sub:
+            if not quote["engineering_remarks"]:
+                quote["engineering_remarks"] = compact_text(value)
+            continue
+        if _is_explicit_machines_header(str(header)):
+            quote["machines"] = compact_text(value)
+            quote["machines_from_sheet"] = True
+            continue
+        if parent.startswith("nre") and not sub:
+            quote["nre_sgd"] = _to_number(value)
+            continue
+    process_columns = columns if columns is not None else _process_columns(list(record.keys()))
+    quote["columns"] = process_columns
+    quote["times"] = {
+        col["header"]: _to_number(record.get(col["header"]))
+        for col in process_columns
+    }
+    quote["machines_from_sheet"] = bool(machines_from_sheet or quote.get("machines_from_sheet"))
+    if not quote["machines_from_sheet"]:
+        quote["machines"] = ""
+    math = op_sheet_math(quote, qty=quote.get("qty"), machines="")
+    merged = math["quote"]
+    merged["machines_from_sheet"] = quote["machines_from_sheet"]
+    merged["machines"] = compact_text(quote.get("machines")) if quote["machines_from_sheet"] else ""
+    return merged
+
+
+def _op_sheet_from_matrix(title: str, matrix: list[list[Any]]) -> dict[str, Any] | None:
+    header_idx = _find_op_sheet_header(matrix)
+    if header_idx is None:
+        return None
+    name = compact_text(title) or "Sheet1"
+    headers = _compose_op_headers(matrix[header_idx] or [], matrix[header_idx + 1] or [])
+    width = max([len(headers), *[len(row or []) for row in matrix]], default=len(headers))
+    if len(headers) < width:
+        headers.extend([""] * (width - len(headers)))
+    headers = _label_blank_remark_columns(headers, matrix, header_idx + 2)
+    named = [(idx, header) for idx, header in enumerate(headers) if header]
+    process_columns = _process_columns([header for _, header in named])
+    machines_from_sheet = any(_is_explicit_machines_header(header) for _, header in named)
+    if not any(normalize_header(header) in {"part_number", "part_no", "partno"} for _, header in named):
+        return None
+    date_in, date_out = _banner_dates(matrix, header_idx)
+    records: list[dict[str, Any]] = []
+    for row in matrix[header_idx + 2 :]:
+        if not any(cell not in (None, "") for cell in (row or [])):
+            continue
+        record: dict[str, Any] = {}
+        for idx, header in named:
+            record[header] = row[idx] if idx < len(row or []) else None
+        part_header = next(
+            (header for _, header in named if normalize_header(header) in {"part_number", "part_no", "partno"}),
+            "",
+        )
+        if not compact_text(record.get(part_header)):
+            continue
+        quote = _op_quote_from_row(
+            record,
+            date_in=date_in,
+            date_out=date_out,
+            columns=process_columns,
+            machines_from_sheet=machines_from_sheet,
+        )
+        record["_op_quote"] = quote
+        if quote.get("piece_mins") is not None:
+            record["Total C/T (mins)"] = quote["piece_mins"]
+        if quote.get("opns"):
+            record["Opns"] = quote["opns"]
+        records.append(record)
+    public_headers = [header for _, header in named]
+    for extra in ("Total C/T (mins)", "Opns"):
+        if any(extra in row for row in records) and extra not in public_headers:
+            public_headers.append(extra)
+    return {
+        "name": name,
+        "headers": public_headers,
+        "rows": records,
+        "row_count": len(records),
+        "template": "op_sheet",
+        "date_in": date_in,
+        "date_out": date_out,
+    }
+
+
+def _apply_op_sheet_line(mapped: dict[str, Any], quote: dict[str, Any]) -> None:
+    payload = _quote_dict(quote)
+    if payload.get("format") != "op_sheet":
+        return
+    mapped["quote"] = payload
+    if payload.get("qty") is not None:
+        mapped["qty"] = _to_number(payload.get("qty"))
+        if compact_text(mapped.get("rfq")) == compact_text(payload.get("qty")):
+            mapped["rfq"] = ""
+    math = op_sheet_math(
+        payload,
+        qty=payload.get("qty") if payload.get("qty") is not None else mapped.get("qty"),
+        machines="",
+    )
+    mapped["quote"] = math["quote"]
+    if math["total_ct_mins"] is not None:
+        mapped["total_ct_mins"] = math["total_ct_mins"]
+    mapped["opns"] = math["opns"]
+    if payload.get("machines_from_sheet"):
+        mapped["machines"] = compact_text(payload.get("machines"))
+    else:
+        mapped["machines"] = ""
+    if compact_text(payload.get("fixture_required")):
+        mapped["need_fixture"] = parse_yn(payload.get("fixture_required"))
+    if compact_text(payload.get("engineering_remarks")):
+        mapped["remark"] = compact_text(payload.get("engineering_remarks"))
+    mapped["machine_hours"] = math["machine_hours"]
+    mapped["total_hours"] = math["total_hours"]
+    filled = [
+        item
+        for item in (mapped.get("filled_from_history") or [])
+        if item not in {"opns", "machines", "total_ct_mins"}
+    ]
+    mapped["filled_from_history"] = filled
+
+
+def _public_source_row(source: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in source.items() if not str(key).startswith("_")}
+
+
 def _sheet_from_matrix(title: str, matrix: list[list[Any]]) -> dict[str, Any]:
+    op_sheet = _op_sheet_from_matrix(title, matrix)
+    if op_sheet is not None:
+        return op_sheet
     name = compact_text(title) or "Sheet1"
     header_idx = _find_header_row(matrix)
     if header_idx is None:
@@ -850,7 +1406,12 @@ def build_mapped_lines(
             mapped["matched_part_no"] = mapped["part_no"]
         mapped["line_no"] = idx
         mapped["filled_from_history"] = filled
-        mapped["source_row"] = source
+        quote = _quote_dict(source.get("_op_quote"))
+        if quote.get("format") == "op_sheet":
+            _apply_op_sheet_line(mapped, quote)
+        else:
+            mapped["quote"] = {}
+        mapped["source_row"] = _public_source_row(source)
         lines.append(mapped)
     return lines
 
@@ -1024,6 +1585,7 @@ def _ensure_tables(con) -> None:
         "ALTER TABLE public.planner_rfq_batch ADD COLUMN IF NOT EXISTS default_days NUMERIC",
         "ALTER TABLE public.planner_rfq_batch ADD COLUMN IF NOT EXISTS default_lead_time TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE public.planner_rfq_line ADD COLUMN IF NOT EXISTS sheet_tag TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE public.planner_rfq_line ADD COLUMN IF NOT EXISTS quote JSONB NOT NULL DEFAULT '{}'::jsonb",
         "CREATE INDEX IF NOT EXISTS idx_rfq_batch_sheet_tag ON public.planner_rfq_batch (UPPER(TRIM(sheet_tag)))",
         "CREATE INDEX IF NOT EXISTS idx_rfq_line_sheet_tag ON public.planner_rfq_line (UPPER(TRIM(sheet_tag)))",
     ):
@@ -1084,6 +1646,7 @@ def serialize_line(row: dict[str, Any] | None, *, include_source: bool = False) 
             out["source_row"] = json.loads(source)
         except json.JSONDecodeError:
             out["source_row"] = {}
+    out["quote"] = ensure_op_columns(_quote_dict(out.get("quote")))
     for field in ("qty", "total_ct_mins", "machine_hours", "total_hours", "days"):
         if out.get(field) is not None:
             out[field] = float(out[field])
@@ -1572,6 +2135,7 @@ def get_batch(batch_id: int, *, line_limit: int | None = None) -> dict[str, Any]
             params.append(max(1, int(line_limit)))
         raw_lines = rows(con.execute(sql, tuple(params)))
         batch["lines"] = [serialize_line(item) for item in raw_lines]
+        _attach_prior_quote_counts(con, batch["lines"], exclude_batch_id=int(batch_id))
         batch["line_count"] = int(counts.get("line_count") or 0)
         batch["new_count"] = int(counts.get("new_count") or 0)
         batch["matched_count"] = int(counts.get("matched_count") or 0)
@@ -1611,6 +2175,7 @@ def _insert_lines(con, batch_id: int, lines: list[dict[str, Any]]) -> None:
             compact_text(line.get("match_status")) or "new",
             compact_text(line.get("matched_part_no")),
             Json(line.get("source_row") or {}),
+            Json(_quote_dict(line.get("quote"))),
         )
         for line in lines
     ]
@@ -1622,7 +2187,7 @@ def _insert_lines(con, batch_id: int, lines: list[dict[str, Any]]) -> None:
             batch_id, line_no, part_no, rfq, customer, salesperson, sheet_tag, qty, opns,
             assignment, machines, total_ct_mins, machine_hours, total_hours, days,
             lead_time, need_tooling, need_fixture, remark, match_status,
-            matched_part_no, source_row
+            matched_part_no, source_row, quote
         ) VALUES %s
         """,
         values,
@@ -1711,7 +2276,7 @@ def list_part_master(query: str = "", *, limit: int = 400) -> dict[str, Any]:
                 )
             """
             params.extend([like, like, like, like, like, like])
-        sql += " ORDER BY updated_at DESC, part_no LIMIT %s"
+        sql += " ORDER BY LOWER(customer), part_no LIMIT %s"
         params.append(limit)
         items = []
         for item in rows(con.execute(sql, tuple(params))):
@@ -1727,7 +2292,7 @@ def create_batch_from_upload(
     filename: str,
     payload: bytes,
     sheet_name: str = "",
-    use_llm: bool = True,
+    use_llm: bool = False,
     sheet_tag: str = "",
     default_rfq: str = "",
     default_customer: str = "",
@@ -1741,8 +2306,20 @@ def create_batch_from_upload(
     if not names:
         raise ValueError("No usable worksheet was found in that workbook.")
     sheet_summaries = [{"name": item, "row_count": 0, "headers": []} for item in names]
-    chosen = compact_text(sheet_name) or pick_default_sheet(sheet_summaries)
+    explicit_sheet = compact_text(sheet_name)
+    chosen = explicit_sheet or pick_default_sheet(sheet_summaries)
     sheet = parse_named_sheet(payload, filename, chosen)
+    if not explicit_sheet and sheet.get("template") != "op_sheet":
+        for name in names:
+            if compact_text(name) == compact_text(sheet.get("name")):
+                continue
+            try:
+                candidate = parse_named_sheet(payload, filename, name)
+            except ValueError:
+                continue
+            if candidate.get("template") == "op_sheet" and int(candidate.get("row_count") or 0) > 0:
+                sheet = candidate
+                break
     for item in sheet_summaries:
         if compact_text(item["name"]) == compact_text(sheet.get("name")):
             item["row_count"] = int(sheet.get("row_count") or 0)
@@ -1757,7 +2334,20 @@ def create_batch_from_upload(
     mapping_notes = "Mapped with header aliases."
     llm_used = False
     llm_model = ""
-    skip_llm = heuristic_covers_core_fields(column_map)
+    op_sheet = sheet.get("template") == "op_sheet"
+    skip_llm = op_sheet or heuristic_covers_core_fields(column_map)
+    if op_sheet:
+        date_in = compact_text(sheet.get("date_in"))
+        date_out = compact_text(sheet.get("date_out"))
+        dated = ""
+        if date_in or date_out:
+            dated = f" Date in {date_in or '-'}; date out {date_out or '-'}."
+        mapping_notes = (
+            "Read as the op sheet. Each machine column stays in its own place. "
+            "Machines stays blank unless the sheet has that column. "
+            "Tick machines after upload to recalculate hours. Setup is added once."
+            + dated
+        )
     if use_llm and _llm_api_key() and not skip_llm:
         try:
             llm = map_columns_with_llm(sheet["headers"], source_rows)
@@ -1769,7 +2359,7 @@ def create_batch_from_upload(
         except Exception as exc:
             mapping_notes = f"LLM mapping failed; used header aliases. {exc}"
             logger.warning("RFQ LLM mapping fell back to heuristic: %s", exc)
-    elif use_llm and skip_llm:
+    elif use_llm and skip_llm and not op_sheet:
         mapping_notes = (
             "Mapped with header aliases. LLM skipped because Part No. and C/T columns were already found."
         )
@@ -1929,6 +2519,8 @@ def update_batch_defaults(batch_id: int, patch: dict[str, Any]) -> dict[str, Any
             ),
         )
         _apply_defaults_sql(con, int(batch_id), merged, changed)
+        if "customer" in changed and compact_text(current.get("status")).lower() == "archived":
+            _refresh_part_master_for_batch(con, int(batch_id))
     result = get_batch(int(batch_id))
     if not result:
         raise ValueError("RFQ batch not found.")
@@ -1944,16 +2536,29 @@ def remap_batch(batch_id: int, column_map: dict[str, str]) -> dict[str, Any]:
         batch = one(con.execute("SELECT * FROM public.planner_rfq_batch WHERE batch_id = %s", (int(batch_id),)))
         if not batch:
             raise ValueError("RFQ batch not found.")
-        source_rows = [
-            item.get("source_row") or {}
-            for item in rows(
-                con.execute(
-                    "SELECT source_row FROM public.planner_rfq_line WHERE batch_id = %s ORDER BY line_no, line_id",
-                    (int(batch_id),),
-                )
+        source_rows = []
+        for item in rows(
+            con.execute(
+                """
+                SELECT source_row, quote
+                FROM public.planner_rfq_line
+                WHERE batch_id = %s
+                ORDER BY line_no, line_id
+                """,
+                (int(batch_id),),
             )
-        ]
-        source_rows = [json.loads(item) if isinstance(item, str) else item for item in source_rows]
+        ):
+            source = item.get("source_row") or {}
+            if isinstance(source, str):
+                try:
+                    source = json.loads(source)
+                except json.JSONDecodeError:
+                    source = {}
+            source = dict(source or {})
+            quote = _quote_dict(item.get("quote"))
+            if quote.get("format") == "op_sheet":
+                source["_op_quote"] = quote
+            source_rows.append(source)
         part_nos = [compact_text(apply_column_map(row, cleaned).get("part_no")) for row in source_rows]
         existing = lookup_existing_parts(con, part_nos)
         lines = build_mapped_lines(source_rows, cleaned, existing)
@@ -1978,9 +2583,37 @@ def remap_batch(batch_id: int, column_map: dict[str, str]) -> dict[str, Any]:
     return result
 
 
+def _quote_from_patch(quote: dict[str, Any], patch: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    if quote.get("format") != "op_sheet":
+        return quote, False
+    quote = ensure_op_columns(quote)
+    changed = False
+    op_times = patch.get("op_times")
+    if isinstance(op_times, dict):
+        times = dict(quote.get("times") or {})
+        known = {compact_text(col.get("header")) for col in (quote.get("columns") or []) if isinstance(col, dict)}
+        for key, value in op_times.items():
+            header = compact_text(key)
+            if known and header not in known:
+                continue
+            times[header] = _to_number(value)
+            changed = True
+        quote["times"] = times
+    for field in QUOTE_TEXT_FIELDS:
+        if field in patch:
+            quote[field] = compact_text(patch.get(field))
+            changed = True
+    for field in QUOTE_NUMBER_FIELDS:
+        if field in patch:
+            quote[field] = _to_number(patch.get(field))
+            changed = True
+    return quote, changed
+
+
 def update_line(line_id: int, patch: dict[str, Any]) -> dict[str, Any]:
     data = {key: patch[key] for key in LINE_PATCH_FIELDS if key in patch}
-    if not data:
+    quote_keys = ("op_times", *QUOTE_TEXT_FIELDS, *QUOTE_NUMBER_FIELDS)
+    if not data and not any(key in patch for key in quote_keys):
         raise ValueError("No editable fields supplied.")
     if "need_tooling" in data:
         data["need_tooling"] = parse_yn(data.get("need_tooling"))
@@ -1997,12 +2630,33 @@ def update_line(line_id: int, patch: dict[str, Any]) -> dict[str, Any]:
         current = one(con.execute("SELECT * FROM public.planner_rfq_line WHERE line_id = %s", (int(line_id),)))
         if not current:
             raise ValueError("RFQ line not found.")
+        quote, quote_changed = _quote_from_patch(_quote_dict(current.get("quote")), patch)
         merged = dict(current)
         merged.update(data)
-        recalc_hours = "qty" in data or "total_ct_mins" in data
-        hours_override = merged.get("total_hours") if "total_hours" in data and not recalc_hours else None
-        calc = calculate_times(merged.get("qty"), merged.get("total_ct_mins"), total_hours=hours_override)
-        if recalc_hours or "total_hours" in data:
+        if "machines" in data and quote.get("format") == "op_sheet":
+            quote["machine_selection"] = True
+            quote_changed = True
+        math_fields: set[str] = set()
+        use_math = quote.get("format") == "op_sheet" and (quote_changed or "machines" in data)
+        if use_math:
+            math = op_sheet_math(quote, qty=merged.get("qty"), machines=merged.get("machines") or "")
+            quote = math["quote"]
+            quote_changed = True
+            if math["filtered"] or math["total_ct_mins"] is not None:
+                merged["total_ct_mins"] = math["total_ct_mins"] if math["total_ct_mins"] is not None else 0
+                merged["opns"] = math["opns"]
+                merged["machine_hours"] = math["machine_hours"]
+                merged["total_hours"] = math["total_hours"]
+                math_fields.update({"total_ct_mins", "opns", "machine_hours", "total_hours"})
+        recalc_hours = ("qty" in data or "total_ct_mins" in data) and not math_fields
+        hours_override = merged.get("total_hours") if "total_hours" in data and not recalc_hours and not math_fields else None
+        calc = hours_for_line(
+            merged.get("qty"),
+            merged.get("total_ct_mins"),
+            quote,
+            total_hours=hours_override,
+        )
+        if not math_fields and (recalc_hours or "total_hours" in data):
             if recalc_hours:
                 merged["machine_hours"] = calc["machine_hours"]
                 merged["total_hours"] = calc["total_hours"]
@@ -2011,10 +2665,10 @@ def update_line(line_id: int, patch: dict[str, Any]) -> dict[str, Any]:
         assignments = []
         values: list[Any] = []
         recalc_fields = set()
-        if recalc_hours or "total_hours" in data:
+        if not math_fields and (recalc_hours or "total_hours" in data):
             recalc_fields.update({"machine_hours", "total_hours"})
         for field in LINE_PATCH_FIELDS:
-            if field in data or field in recalc_fields:
+            if field in data or field in recalc_fields or field in math_fields:
                 assignments.append(f"{field} = %s")
                 values.append(merged.get(field))
         if "part_no" in data:
@@ -2027,6 +2681,9 @@ def update_line(line_id: int, patch: dict[str, Any]) -> dict[str, Any]:
             values.append(merged["match_status"])
             assignments.append("matched_part_no = %s")
             values.append(merged["matched_part_no"])
+        if quote_changed:
+            assignments.append("quote = %s")
+            values.append(Json(quote))
         assignments.append("updated_at = NOW()")
         values.append(int(line_id))
         updated = one(
@@ -2046,6 +2703,54 @@ def update_line(line_id: int, patch: dict[str, Any]) -> dict[str, Any]:
         )
         upsert_part_master(con, [merged], batch_id=int(updated["batch_id"]))
     return serialize_line(updated) or {}
+
+
+def _refresh_part_master_for_batch(con, batch_id: int) -> None:
+    archived_lines = rows(
+        con.execute(
+            "SELECT * FROM public.planner_rfq_line WHERE batch_id = %s",
+            (int(batch_id),),
+        )
+    )
+    upsert_part_master(con, archived_lines, batch_id=int(batch_id))
+
+
+def archive_batch(batch_id: int, customer: str) -> dict[str, Any]:
+    """Save a quote under one customer. Every line in the file is stored under that customer."""
+    customer = compact_text(customer)
+    if not customer:
+        raise ValueError("Choose the customer this quote is for before saving.")
+    with planner_db() as con:
+        _ensure_tables(con)
+        current = one(
+            con.execute(
+                "SELECT batch_id FROM public.planner_rfq_batch WHERE batch_id = %s",
+                (int(batch_id),),
+            )
+        )
+        if not current:
+            raise ValueError("RFQ batch not found.")
+        con.execute(
+            """
+            UPDATE public.planner_rfq_batch
+            SET status = 'archived', default_customer = %s, updated_at = NOW()
+            WHERE batch_id = %s
+            """,
+            (customer, int(batch_id)),
+        )
+        con.execute(
+            """
+            UPDATE public.planner_rfq_line
+            SET customer = %s, updated_at = NOW()
+            WHERE batch_id = %s
+            """,
+            (customer, int(batch_id)),
+        )
+        _refresh_part_master_for_batch(con, int(batch_id))
+    result = get_batch(int(batch_id))
+    if not result:
+        raise ValueError("RFQ batch not found.")
+    return result
 
 
 def set_batch_status(batch_id: int, status: str) -> dict[str, Any]:
@@ -2076,3 +2781,241 @@ def set_batch_status(batch_id: int, status: str) -> dict[str, Any]:
     if not updated:
         raise ValueError("RFQ batch not found.")
     return get_batch(int(batch_id)) or {}
+
+
+def _attach_prior_quote_counts(con, lines: list[dict[str, Any]], *, exclude_batch_id: int) -> None:
+    keys: list[str] = []
+    seen: set[str] = set()
+    for line in lines or []:
+        line["prior_quote_count"] = 0
+        key = compact_text(line.get("part_no")).upper()
+        if key and key not in seen:
+            seen.add(key)
+            keys.append(key)
+    if not keys:
+        return
+    counted = rows(
+        con.execute(
+            """
+            SELECT UPPER(TRIM(part_no)) AS part_no, COUNT(*)::INT AS quote_count
+            FROM public.planner_rfq_line
+            WHERE batch_id <> %s
+              AND UPPER(TRIM(part_no)) = ANY(%s)
+            GROUP BY UPPER(TRIM(part_no))
+            """,
+            (int(exclude_batch_id), keys),
+        )
+    )
+    by_key = {
+        compact_text(item.get("part_no")).upper(): int(item.get("quote_count") or 0)
+        for item in counted
+    }
+    for line in lines:
+        line["prior_quote_count"] = by_key.get(compact_text(line.get("part_no")).upper(), 0)
+
+
+def _rebuild_part_master(con, part_nos: list[str]) -> None:
+    keys: list[str] = []
+    upper_keys: list[str] = []
+    seen: set[str] = set()
+    for part in part_nos:
+        key = normalize_part_no(part)
+        upper = compact_text(part).upper()
+        if key and key not in seen:
+            seen.add(key)
+            keys.append(key)
+        if upper and upper not in upper_keys:
+            upper_keys.append(upper)
+    if not keys and not upper_keys:
+        return
+    con.execute(
+        """
+        DELETE FROM public.planner_rfq_part_master
+        WHERE part_key = ANY(%s) OR UPPER(TRIM(part_no)) = ANY(%s)
+        """,
+        (keys or [""], upper_keys or [""]),
+    )
+    latest = rows(
+        con.execute(
+            """
+            SELECT DISTINCT ON (UPPER(TRIM(part_no)))
+                part_no, assignment, opns, machines, total_ct_mins,
+                rfq, customer, salesperson, sheet_tag, batch_id
+            FROM public.planner_rfq_line
+            WHERE UPPER(TRIM(part_no)) = ANY(%s)
+            ORDER BY UPPER(TRIM(part_no)), updated_at DESC, line_id DESC
+            """,
+            (upper_keys or [""],),
+        )
+    )
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for item in latest:
+        grouped.setdefault(int(item.get("batch_id") or 0), []).append(dict(item))
+    for batch_id, group in grouped.items():
+        upsert_part_master(con, group, batch_id=batch_id or None)
+
+
+def delete_batch(batch_id: int) -> dict[str, Any]:
+    with planner_db() as con:
+        _ensure_tables(con)
+        batch = one(
+            con.execute(
+                "SELECT batch_id, filename FROM public.planner_rfq_batch WHERE batch_id = %s",
+                (int(batch_id),),
+            )
+        )
+        if not batch:
+            raise ValueError("RFQ batch not found.")
+        part_rows = rows(
+            con.execute(
+                "SELECT DISTINCT part_no FROM public.planner_rfq_line WHERE batch_id = %s",
+                (int(batch_id),),
+            )
+        )
+        con.execute("DELETE FROM public.planner_rfq_batch WHERE batch_id = %s", (int(batch_id),))
+        _rebuild_part_master(con, [compact_text(item.get("part_no")) for item in part_rows])
+    return {
+        "ok": True,
+        "batch_id": int(batch_id),
+        "filename": compact_text(batch.get("filename")),
+    }
+
+
+def _part_nos_for_batch(con, batch_id: int) -> list[str]:
+    found = rows(
+        con.execute(
+            """
+            SELECT part_no
+            FROM public.planner_rfq_line
+            WHERE batch_id = %s AND TRIM(part_no) <> ''
+            ORDER BY line_no, line_id
+            """,
+            (int(batch_id),),
+        )
+    )
+    return [compact_text(item.get("part_no")) for item in found if compact_text(item.get("part_no"))]
+
+
+def _slim_inventory_row(row: dict[str, Any]) -> dict[str, Any]:
+    fields = (
+        "inventory_code",
+        "main_desc",
+        "short_desc",
+        "inventory_class_code",
+        "inventory_category_code",
+        "uom_code",
+        "class_key",
+        "total_qoh_available",
+        "total_qty_on_hand",
+        "total_qty_on_order",
+        "total_free_balance_qty",
+        "total_allocated_in_sq",
+        "total_unallocated_qty",
+        "total_qty_back_order",
+    )
+    out: dict[str, Any] = {}
+    for field in fields:
+        value = row.get(field)
+        if field.startswith("total_"):
+            out[field] = _to_number(value) or 0
+        else:
+            out[field] = compact_text(value)
+    if not out.get("class_key"):
+        out["class_key"] = "other"
+    return out
+
+
+def _quote_history(con, part_nos: list[str]) -> dict[str, list[dict[str, Any]]]:
+    keys = [compact_text(part).upper() for part in part_nos if compact_text(part)]
+    if not keys:
+        return {}
+    found = rows(
+        con.execute(
+            """
+            SELECT l.*, b.filename, b.sheet_name, b.status AS batch_status,
+                   b.created_at AS batch_created_at, b.updated_at AS batch_updated_at
+            FROM public.planner_rfq_line l
+            JOIN public.planner_rfq_batch b ON b.batch_id = l.batch_id
+            WHERE UPPER(TRIM(l.part_no)) = ANY(%s)
+            ORDER BY l.updated_at DESC, l.line_id DESC
+            LIMIT 4000
+            """,
+            (keys,),
+        )
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in found:
+        row = serialize_line(item) or {}
+        key = normalize_part_no(row.get("part_no"))
+        bucket = grouped.setdefault(key, [])
+        if len(bucket) < 30:
+            bucket.append(row)
+    return grouped
+
+
+def check_parts(
+    part_nos: list[str] | None = None,
+    *,
+    batch_id: int | None = None,
+    query: str = "",
+) -> dict[str, Any]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add_many(values: list[str]) -> None:
+        for value in values:
+            text = compact_text(value)
+            key = normalize_part_no(text)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            ordered.append(text)
+
+    add_many(list(part_nos or []))
+    add_many(parse_part_query(query))
+    with planner_db() as con:
+        _ensure_tables(con)
+        if batch_id:
+            add_many(_part_nos_for_batch(con, int(batch_id)))
+        if not ordered:
+            raise ValueError("Enter one or more part numbers to check.")
+        history = _quote_history(con, ordered)
+    inventory_error = ""
+    inventory_rows: list[dict[str, Any]] = []
+    try:
+        from .inventory_enquiry_route import lookup_inventory_by_codes
+
+        inventory_rows = lookup_inventory_by_codes(ordered)
+    except Exception as exc:
+        logger.exception("RFQ finished-goods lookup failed")
+        inventory_error = str(exc) or exc.__class__.__name__
+    by_inventory: dict[str, list[dict[str, Any]]] = {}
+    for item in inventory_rows:
+        slim = _slim_inventory_row(item)
+        key = normalize_part_no(slim.get("inventory_code"))
+        if key:
+            by_inventory.setdefault(key, []).append(slim)
+    parts: list[dict[str, Any]] = []
+    for part in ordered:
+        key = normalize_part_no(part)
+        stock = by_inventory.get(key, [])
+        finished = [
+            row for row in stock
+            if compact_text(row.get("inventory_class_code")).upper() in FINISHED_GOODS_CLASSES
+        ]
+        finished_ids = {id(row) for row in finished}
+        other = [row for row in stock if id(row) not in finished_ids]
+        quotes = history.get(key, [])
+        parts.append({
+            "part_no": part,
+            "quote_count": len(quotes),
+            "quotes": quotes,
+            "finished_goods": finished,
+            "other_inventory": other,
+        })
+    return {
+        "ok": True,
+        "count": len(parts),
+        "parts": parts,
+        "inventory_error": inventory_error,
+    }

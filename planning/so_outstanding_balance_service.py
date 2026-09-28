@@ -129,6 +129,78 @@ def stage_label(pp: dict[str, Any], partial: dict[str, Any] | None = None) -> st
     return ""
 
 
+_EXCEPTION_LABELS = {
+    "supply_chain": "Supply Chain",
+    "process_engr": "Process / Engr",
+    "qlty": "Qlty",
+    "sales": "Sales",
+    "others": "Others",
+}
+
+
+def _proposed_cnc_label(pp: dict[str, Any], partial: dict[str, Any] | None) -> str:
+    machines: Any = None
+    if partial is not None and isinstance(partial.get("proposed_cnc"), list):
+        machines = partial.get("proposed_cnc")
+    elif isinstance(pp.get("proposed_cnc"), list):
+        machines = pp.get("proposed_cnc")
+    if not machines:
+        return ""
+    return ", ".join(name for name in (_compact(item) for item in machines) if name)
+
+
+def _exception_label(pp: dict[str, Any], partial: dict[str, Any] | None) -> str:
+    partial_no = _partial_no(partial) or 1
+    issues = pp.get("exception_issues") if isinstance(pp.get("exception_issues"), dict) else {}
+    raw = issues.get(partial_no)
+    if raw is None:
+        raw = issues.get(str(partial_no))
+    items = raw if isinstance(raw, (list, tuple)) else ([raw] if raw else [])
+    seen = {_compact(item) for item in items if _compact(item) in _EXCEPTION_LABELS}
+    labels = [label for key, label in _EXCEPTION_LABELS.items() if key in seen]
+    if labels:
+        return ", ".join(labels)
+    highlighted: set[int] = set()
+    for value in pp.get("highlighted_partials") or []:
+        try:
+            highlighted.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    if partial_no in highlighted:
+        return _EXCEPTION_LABELS["others"]
+    return ""
+
+
+def _planner_export_fields(
+    pp: dict[str, Any],
+    partial: dict[str, Any] | None,
+    *,
+    no_pp: bool,
+) -> dict[str, str]:
+    """S/O management fields copied onto the outstanding-balance export.
+
+    Proposed CNC, exception, and the remark columns are planner edits on the
+    process sheet. The unassigned leftover row is not that sheet, so it stays blank.
+    """
+    if no_pp:
+        return {
+            "proposed_cnc": "",
+            "exception": "",
+            "mtl_part_order": "",
+            "quality_doc": "",
+            "ops_notes": "",
+            "sales_notes": "",
+        }
+    return {
+        "proposed_cnc": _proposed_cnc_label(pp, partial),
+        "exception": _exception_label(pp, partial),
+        "mtl_part_order": _compact(pp.get("mtl_part_order")),
+        "quality_doc": _compact(pp.get("quality_doc")),
+        "ops_notes": _compact(pp.get("ops_notes")),
+        "sales_notes": _compact(pp.get("sales_notes")),
+    }
+
+
 def _money(unit: float | None, qty: float, exch: float | None) -> float:
     if unit is None:
         return 0.0
@@ -166,6 +238,19 @@ def _so_line_pair(sales_order_no: Any, line_item_no: Any) -> tuple[str, str]:
 def _iso_date_text(value: Any) -> str | None:
     text = _compact(value)
     return text[:10] or None
+
+
+def _material_in_fields(pp: dict[str, Any], *, no_pp: bool) -> dict[str, Any]:
+    """Material Tracking in-date for a PP. No PP leftovers have no material row."""
+    if no_pp:
+        return {"material_in_date": None, "material_status": None}
+    from .sales_coordination_service import parse_material_tracking_fields
+
+    view = parse_material_tracking_fields(pp)
+    return {
+        "material_in_date": view.get("material_in_date"),
+        "material_status": _compact(view.get("material_status")) or None,
+    }
 
 
 def _overlay_so_line_on_pp(pp: dict[str, Any], so_line: dict[str, Any]) -> dict[str, Any]:
@@ -377,6 +462,8 @@ def _outstanding_row(
     p_no = _partial_no(partial)
     pp_no = _compact(pp.get("pp_voucher_no"))
     id_token = NOPP_PS_TYPE if ptype == NOPP_PS_TYPE else (pp_no or process_sheet_no or NOPP_PS_TYPE)
+    no_pp = stage_mode == "no_pp" or ptype == NOPP_PS_TYPE
+    material = _material_in_fields(pp, no_pp=no_pp)
     return {
         "row_id": f"{so_no}|{id_token}|{p_no or 1}|{line_no}",
         "sales_order_no": so_no,
@@ -404,9 +491,13 @@ def _outstanding_row(
         )
         or "unassigned",
         "due_date": _compact(pp.get("due_date"))[:10] or None,
+        "material_in_date": material["material_in_date"],
+        "material_status": material["material_status"],
         "coway_edd": coway,
+        "proposed_edd": coway,
         "commitment_date": commit.isoformat() if commit else None,
         "week": week_label(commit),
+        **_planner_export_fields(pp, partial, no_pp=no_pp),
     }
 
 

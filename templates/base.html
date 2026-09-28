@@ -61,7 +61,7 @@
       </a>
 
       {# Ops — shop-floor tracking and operations #}
-      <div class="nav-dropdown {% if nav_path in ('/ops/first-article', '/archive/first-article', '/process-sheets', '/temp-process-sheets', '/assembly-parts', '/erp-scanned-output', '/on-time-delivery') or nav_path.startswith('/Shift-management') or active in ('first_article', 'process_sheets', 'temp_process_sheets', 'assembly_parts', 'shift_management', 'erp_scanned_output', 'on_time_delivery') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/ops/first-article', '/archive/first-article', '/process-sheets', '/temp-process-sheets', '/assembly-parts', '/erp-scanned-output') or nav_path.startswith('/Shift-management') or active in ('first_article', 'process_sheets', 'temp_process_sheets', 'assembly_parts', 'shift_management', 'erp_scanned_output') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="ops" aria-expanded="false" aria-controls="dd-ops">
           OPS <span class="nav-caret">▾</span>
         </button>
@@ -85,10 +85,6 @@
           <a href="/erp-scanned-output"
              class="nav-dropdown-item {% if nav_path == '/erp-scanned-output' or active == 'erp_scanned_output' %}nav-dropdown-item--active{% endif %}">
             ERP scanned output
-          </a>
-          <a href="/on-time-delivery"
-             class="nav-dropdown-item {% if nav_path == '/on-time-delivery' or active == 'on_time_delivery' %}nav-dropdown-item--active{% endif %}">
-            On-time delivery
           </a>
         </div>
       </div>
@@ -121,7 +117,7 @@
       </div>
 
       {# Reports & analytics #}
-      <div class="nav-dropdown {% if nav_path in ('/sales-report', '/so-outstanding-balance', '/job-ratio', '/production-capacity', '/repeat-orders', '/planning-data/repeat-orders', '/pr-status-enquiry') or active in ('sales_report', 'so_outstanding_balance', 'job_ratio', 'production_capacity', 'repeat_orders', 'pr_status_enquiry') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/sales-report', '/so-outstanding-balance', '/on-time-delivery', '/job-ratio', '/production-capacity', '/repeat-orders', '/planning-data/repeat-orders', '/pr-status-enquiry') or active in ('sales_report', 'so_outstanding_balance', 'on_time_delivery', 'job_ratio', 'production_capacity', 'repeat_orders', 'pr_status_enquiry') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="reports" aria-expanded="false" aria-controls="dd-reports">
           REPORTS / ANALYTICS <span class="nav-caret">▾</span>
         </button>
@@ -134,6 +130,10 @@
           <a href="/so-outstanding-balance"
              class="nav-dropdown-item {% if nav_path == '/so-outstanding-balance' or active == 'so_outstanding_balance' %}nav-dropdown-item--active{% endif %}">
             SO outstanding balance
+          </a>
+          <a href="/on-time-delivery"
+             class="nav-dropdown-item {% if nav_path == '/on-time-delivery' or active == 'on_time_delivery' %}nav-dropdown-item--active{% endif %}">
+            On-time delivery
           </a>
           <a href="/job-ratio"
              class="nav-dropdown-item {% if nav_path == '/job-ratio' or active == 'job_ratio' %}nav-dropdown-item--active{% endif %}"
@@ -238,7 +238,7 @@
         <div class="nav-dropdown-menu" id="dd-archive">
           <a href="/archive/rfq-checker"
              class="nav-dropdown-item {% if nav_path.startswith('/archive/rfq-checker') or active == 'rfq_checker' %}nav-dropdown-item--active{% endif %}">
-            RFQ checker / Tracker
+            RFQ quotes
           </a>
           <a href="/archive/aps-ps-match"
              class="nav-dropdown-item {% if nav_path == '/archive/aps-ps-match' or active == 'aps_ps_match' %}nav-dropdown-item--active{% endif %}">
@@ -334,7 +334,7 @@
   {% block content %}{% endblock %}
 </main>
 
-<script src="{{ url_for('static', filename='js/main.js') }}?v=so-notif-updated-20260825"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}?v=otd-reports-20260924"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

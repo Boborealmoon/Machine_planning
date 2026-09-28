@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import os
 import unittest
+from datetime import datetime
 from unittest.mock import Mock, patch
 
 from openpyxl import Workbook
@@ -12,6 +13,7 @@ from app import app
 from planning.rfq_checker_service import (
     GROQ_DEFAULT_BASE_URL,
     GROQ_DEFAULT_MODEL,
+    archive_batch,
     apply_column_map,
     apply_defaults_to_mapped_lines,
     build_mapped_lines,
@@ -21,6 +23,7 @@ from planning.rfq_checker_service import (
     headers_from_source_rows,
     heuristic_column_map,
     heuristic_covers_core_fields,
+    parse_part_query,
     infer_cycle_time_from_source,
     invert_field_map,
     list_workbook_sheets,
@@ -28,7 +31,9 @@ from planning.rfq_checker_service import (
     map_columns_with_llm,
     normalize_part_no,
     normalize_sheet_tag,
+    ensure_op_columns,
     parse_named_sheet,
+    op_sheet_math,
     parse_workbook_bytes,
     parse_yn,
     pick_default_sheet,
@@ -351,6 +356,204 @@ class RfqCheckerServiceTests(unittest.TestCase):
         self.assertEqual(scheduled[0]["days"], 4.0)
         self.assertEqual(scheduled[0]["lead_time"], "1wk")
 
+    def test_op_sheet_template_keeps_quote_and_adds_setup_once(self):
+        book = Workbook()
+        sheet = book.active
+        sheet.title = "Time"
+        sheet["B1"] = "Date In:"
+        sheet["C1"] = datetime(2026, 9, 23)
+        sheet["E1"] = "Date Out:"
+        sheet["F1"] = datetime(2026, 9, 23)
+        sheet["B2"] = "Part Number"
+        sheet["C2"] = "Descriptions"
+        sheet["D2"] = "RFQ QTY"
+        sheet["E2"] = "Material"
+        sheet["G2"] = "Raw Material (mm)"
+        sheet["J2"] = "Setup\n(mins)"
+        sheet["K2"] = "Milling (mins)"
+        sheet["M2"] = "Turning (mins)"
+        sheet["O2"] = "Fixture Required"
+        sheet["P2"] = "Engineering Remarks"
+        sheet["Q2"] = "NRE (SGD)"
+        sheet.merge_cells("E2:F2")
+        sheet.merge_cells("G2:I2")
+        sheet.merge_cells("K2:L2")
+        sheet["E3"] = "Type"
+        sheet["F3"] = "Specification"
+        sheet["G3"] = "Thk/Ø"
+        sheet["H3"] = "Width"
+        sheet["I3"] = "Length"
+        sheet["K3"] = "3 Axis"
+        sheet["L3"] = "4 Axis"
+        sheet["M3"] = "Quick Turn"
+        sheet["B4"] = "BB18-KS1527-43"
+        sheet["C4"] = "ROV SLEEVE"
+        sheet["D4"] = 3
+        sheet["E4"] = "SUS316L"
+        sheet["J4"] = 180
+        sheet["M4"] = 420
+        sheet["P4"] = "Run Before, NPS26-0070"
+        sheet["B5"] = "BB18-KS1042-12"
+        sheet["D5"] = 113
+        sheet["E5"] = "AISI 316 SS"
+        sheet["G5"] = 506
+        sheet["I5"] = 30
+        sheet["J5"] = 180
+        sheet["L5"] = 120
+        sheet["M5"] = 100
+        sheet["O5"] = "Yes"
+        sheet["P5"] = "2 TM 2 ML"
+        sheet["Q5"] = 1500
+        buf = io.BytesIO()
+        book.save(buf)
+        parsed = parse_workbook_bytes(buf.getvalue(), "op-sheet.xlsx")
+        op = sheet_by_name(parsed, "Time")
+        self.assertEqual(op["template"], "op_sheet")
+        self.assertEqual(op["date_in"], "2026-09-23")
+        self.assertEqual(op["row_count"], 2)
+        lines = build_mapped_lines(op["rows"], heuristic_column_map(op["headers"]))
+        first, second = lines
+        self.assertEqual(first["part_no"], "BB18-KS1527-43")
+        self.assertEqual(first["qty"], 3)
+        self.assertEqual(first["total_ct_mins"], 420)
+        self.assertEqual(first["machine_hours"], 21)
+        self.assertEqual(first["total_hours"], 24)
+        self.assertEqual(first["opns"], "1TN")
+        self.assertEqual(first["machines"], "")
+        self.assertEqual(first["remark"], "Run Before, NPS26-0070")
+        self.assertEqual(first["quote"]["times"]["Turning (mins) / Quick Turn"], 420)
+        self.assertIsNone(first["days"])
+        self.assertEqual(first["quote"]["description"], "ROV SLEEVE")
+        self.assertEqual(first["quote"]["setup_mins"], 180)
+        self.assertEqual(first["quote"]["material_type"], "SUS316L")
+        self.assertNotIn("_op_quote", first["source_row"])
+        self.assertEqual(second["opns"], "1ML 1TN")
+        self.assertEqual(second["machines"], "")
+        picked = op_sheet_math(second["quote"], qty=113, machines="4 Axis")
+        self.assertEqual(picked["total_ct_mins"], 120)
+        self.assertEqual(picked["opns"], "1ML")
+        self.assertEqual(picked["machine_hours"], 226)
+        self.assertEqual(picked["total_hours"], 229)
+        cleared = op_sheet_math(second["quote"], qty=113, machines="")
+        self.assertEqual(cleared["total_ct_mins"], 220)
+        self.assertFalse(cleared["filtered"])
+        self.assertEqual(second["need_fixture"], "Y")
+        self.assertEqual(second["total_ct_mins"], 220)
+        self.assertEqual(second["quote"]["nre_sgd"], 1500)
+        self.assertEqual(second["quote"]["rm_thk"], 506)
+        self.assertEqual(second["quote"]["rm_length"], 30)
+        self.assertEqual(parse_part_query("BB18-KS1527-43, BB18-KS1042-12\nBB18-KS1527-43"), [
+            "BB18-KS1527-43",
+            "BB18-KS1042-12",
+        ])
+
+    def test_unlabeled_remark_column_and_blank_machines(self):
+        book = Workbook()
+        sheet = book.active
+        sheet.title = "Time"
+        sheet["B2"] = "Part Number"
+        sheet["C2"] = "Descriptions"
+        sheet["D2"] = "RFQ QTY"
+        sheet["E2"] = "MAT"
+        sheet["F2"] = "Raw Material (mm)"
+        sheet["I2"] = "Setup\n(mins)"
+        sheet["J2"] = "Milling (mins)"
+        sheet["N2"] = "Turning (mins)"
+        sheet["F3"] = "Thk/Ø"
+        sheet["G3"] = "Width"
+        sheet["H3"] = "Length"
+        sheet["J3"] = "3 Axis"
+        sheet["K3"] = "4 Axis"
+        sheet["L3"] = "5 Axis"
+        sheet["M3"] = "5 Axis\n(i-800)"
+        sheet["N3"] = "Quick Turn"
+        sheet["O3"] = "J-200"
+        sheet["P3"] = "i-250"
+        sheet["B4"] = 10405250
+        sheet["C4"] = "ADPTR BW"
+        sheet["D4"] = 126
+        sheet["E4"] = "Super Duplex"
+        sheet["F4"] = 40
+        sheet["H4"] = 105
+        sheet["I4"] = 180
+        sheet["N4"] = 60
+        sheet["W4"] = "2 - 4 weeks for tooling\nSuper Drill Tooling needed\n4 TN"
+        sheet["B5"] = "BB18-KS1249-35"
+        sheet["D5"] = 29
+        sheet["E5"] = "UNS S31803"
+        sheet["L5"] = 150
+        sheet["P5"] = 150
+        sheet["W5"] = "4 - 6 weeks for tooling & fixture\n2 TM 2 ML"
+        buf = io.BytesIO()
+        book.save(buf)
+        parsed = parse_workbook_bytes(buf.getvalue(), "6000374777 OPS Sheet.xlsx")
+        op = sheet_by_name(parsed, "Time")
+        lines = build_mapped_lines(op["rows"], heuristic_column_map(op["headers"]))
+        first, second = lines
+        self.assertEqual(first["part_no"], "10405250")
+        self.assertEqual(first["qty"], 126)
+        self.assertEqual(first["machines"], "")
+        self.assertEqual(first["total_ct_mins"], 60)
+        self.assertEqual(first["machine_hours"], 126)
+        self.assertEqual(first["total_hours"], 129)
+        self.assertIn("Super Drill Tooling needed", first["remark"])
+        self.assertEqual(first["quote"]["material_type"], "Super Duplex")
+        self.assertEqual(first["quote"]["description"], "ADPTR BW")
+        self.assertEqual(first["quote"]["rm_thk"], 40)
+        self.assertEqual(first["quote"]["rm_length"], 105)
+        names = [col["machine"] for col in first["quote"]["columns"]]
+        self.assertIn("Quick Turn", names)
+        self.assertIn("5 Axis (i-800)", names)
+        self.assertIn("i-250", names)
+        self.assertEqual(second["machines"], "")
+        self.assertEqual(second["total_ct_mins"], 300)
+        self.assertIn("2 TM 2 ML", second["remark"])
+        both = op_sheet_math(second["quote"], qty=29, machines="5 Axis, i-250")
+        self.assertEqual(both["total_ct_mins"], 300)
+        self.assertEqual(both["opns"], "1ML 1TN")
+        only_turn = op_sheet_math(second["quote"], qty=29, machines="i-250")
+        self.assertEqual(only_turn["total_ct_mins"], 150)
+        self.assertEqual(only_turn["opns"], "1TN")
+
+    def test_old_op_quote_gains_sheet_columns(self):
+        quote = ensure_op_columns({
+            "format": "op_sheet",
+            "operations": [{"machine": "Quick Turn", "mins": 60, "code": "TN", "group": "Turning (mins)"}],
+        })
+        by_name = {col["machine"]: col["header"] for col in quote["columns"]}
+        self.assertIn("3 Axis", by_name)
+        self.assertIn("Quick Turn", by_name)
+        self.assertEqual(quote["times"][by_name["Quick Turn"]], 60)
+        self.assertIsNone(quote["times"][by_name["J-200"]])
+
+    def test_real_ops_sheet_when_present(self):
+        path = (
+            r"z:\Public\OperationsDoc\0. Manufacturing Progress Report"
+            r"\Shared SOE Attachment Dump\0.RFQ\0.Completed\RFQ OSS 09.09.2026"
+            r"\6000374777  OPS Sheet.xlsx"
+        )
+        if not os.path.exists(path):
+            self.skipTest("OPS sheet is not on this machine")
+        with open(path, "rb") as handle:
+            parsed = parse_workbook_bytes(handle.read(), "6000374777  OPS Sheet.xlsx")
+        op = sheet_by_name(parsed, "Time")
+        lines = build_mapped_lines(op["rows"], heuristic_column_map(op["headers"]))
+        by_part = {line["part_no"]: line for line in lines}
+        first = by_part["10405250"]
+        sleeve = by_part["BB18-KS1249-35"]
+        self.assertEqual(first["machines"], "")
+        self.assertEqual(first["qty"], 126)
+        self.assertIn("Super Drill", first["remark"])
+        self.assertEqual(first["quote"]["material_type"], "Super Duplex")
+        self.assertEqual(sleeve["total_ct_mins"], 300)
+        self.assertEqual(sleeve["machines"], "")
+        self.assertIn("tooling", sleeve["remark"].lower())
+
+    def test_archive_batch_rejects_blank_customer(self):
+        with self.assertRaises(ValueError) as raised:
+            archive_batch(1, "   ")
+        self.assertIn("customer", str(raised.exception).lower())
+
 
 class RfqCheckerRouteTests(unittest.TestCase):
     def setUp(self):
@@ -363,14 +566,21 @@ class RfqCheckerRouteTests(unittest.TestCase):
             library = self.client.get("/archive/rfq-checker")
             upload = self.client.get("/archive/rfq-checker/upload")
         self.assertEqual(library.status_code, 200)
-        self.assertIn("RFQ Checker / Tracker", library.get_data(as_text=True))
-        self.assertIn("Tracker", library.get_data(as_text=True))
-        self.assertIn("By part no.", library.get_data(as_text=True))
+        library_html = library.get_data(as_text=True)
+        self.assertIn("RFQ quotes", library_html)
+        self.assertIn("Quoted parts", library_html)
+        self.assertIn("Grouped by customer", library_html)
+        self.assertIn('class="rfq-nav-btn is-active" data-rfq-tab="master"', library_html)
         self.assertEqual(upload.status_code, 200)
-        self.assertIn("Upload RFQ Excel", upload.get_data(as_text=True))
-        self.assertIn("Sheet defaults", upload.get_data(as_text=True))
-        self.assertIn("Lead time", upload.get_data(as_text=True))
-        self.assertIn("data-rfq-tag=\"APS\"", upload.get_data(as_text=True))
+        self.assertIn("Upload a quote", upload.get_data(as_text=True))
+        upload_html = upload.get_data(as_text=True)
+        self.assertIn("RFQ no.", upload_html)
+        self.assertIn("Salesperson", upload_html)
+        self.assertIn("id=\"rfq-upload-when\"", upload_html)
+        self.assertNotIn("Apply to all lines", upload_html)
+        self.assertNotIn("Lead time", upload_html)
+        self.assertNotIn("data-rfq-tag=\"APS\"", upload_html)
+        self.assertNotIn("Use LLM to map columns", upload_html)
 
     def test_short_path_redirects(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": ""}):
@@ -444,6 +654,55 @@ class RfqCheckerRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(update.call_args.args[0], 3)
         self.assertEqual(update.call_args.args[1]["customer"], "OSS")
+
+    def test_archive_requires_customer(self):
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": ""}):
+            response = self.client.post("/api/rfq-checker/batches/3/archive", json={})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("customer", response.get_json()["error"].lower())
+
+    def test_archive_saves_under_customer(self):
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": ""}):
+            with patch("planning.rfq_checker_route.archive_batch") as archive:
+                archive.return_value = {"batch_id": 3, "default_customer": "OSS", "lines": []}
+                response = self.client.post(
+                    "/api/rfq-checker/batches/3/archive",
+                    json={"customer": "OSS"},
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(archive.call_args.args, (3, "OSS"))
+
+    def test_delete_upload_route(self):
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": ""}):
+            with patch("planning.rfq_checker_route.delete_batch") as delete:
+                delete.return_value = {"ok": True, "batch_id": 4, "filename": "op.xlsx"}
+                response = self.client.delete("/api/rfq-checker/batches/4")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(delete.call_args.args[0], 4)
+        self.assertEqual(response.get_json()["filename"], "op.xlsx")
+
+    def test_check_route_passes_part_list(self):
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": ""}):
+            with patch("planning.rfq_checker_route.check_parts") as check:
+                check.return_value = {
+                    "ok": True,
+                    "count": 1,
+                    "parts": [{
+                        "part_no": "BB18-KS1527-43",
+                        "quotes": [],
+                        "finished_goods": [{"inventory_code": "BB18-KS1527-43", "inventory_class_code": "FG MRO"}],
+                        "other_inventory": [],
+                    }],
+                    "inventory_error": "",
+                }
+                response = self.client.post(
+                    "/api/rfq-checker/check",
+                    json={"parts": ["BB18-KS1527-43"]},
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(check.call_args.args[0], ["BB18-KS1527-43"])
+        body = response.get_json()
+        self.assertEqual(body["parts"][0]["finished_goods"][0]["inventory_class_code"], "FG MRO")
 
 
 if __name__ == "__main__":

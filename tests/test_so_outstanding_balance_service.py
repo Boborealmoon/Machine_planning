@@ -100,6 +100,8 @@ class SoOutstandingBalanceTests(unittest.TestCase):
         self.assertEqual(row["part_desc"], "Widget housing")
         self.assertEqual(row["status"], "Pack - Released")
         self.assertEqual(row["week"], "Week 31 - Sat")
+        self.assertEqual(row["proposed_edd"], "2026-08-01")
+        self.assertEqual(row["coway_edd"], "2026-08-01")
 
         payload = build_outstanding_balance(orders, pricing)
         self.assertEqual(payload["summary"]["line_count"], 1)
@@ -215,6 +217,8 @@ class SoOutstandingBalanceTests(unittest.TestCase):
         self.assertEqual(by_type[NOPP_PS_TYPE]["pp_qty"], 83)
         self.assertEqual(by_type[NOPP_PS_TYPE]["process_sheet_no"], "NPS26-0219")
         self.assertEqual(by_type[NOPP_PS_TYPE]["related_process_sheet_no"], "NPS26-0219")
+        self.assertIsNone(by_type[NOPP_PS_TYPE]["material_in_date"])
+        self.assertIsNone(by_type[NOPP_PS_TYPE]["material_status"])
         self.assertEqual(by_type[NOPP_PS_TYPE]["ps_type"], NOPP_PS_TYPE)
         self.assertEqual(by_type[NOPP_PS_TYPE]["status"], "No PP assigned")
         self.assertEqual(by_type[NOPP_PS_TYPE]["part_no"], "BB15-081483-39 REV 08")
@@ -226,6 +230,105 @@ class SoOutstandingBalanceTests(unittest.TestCase):
             payload["summary"]["outstanding_balance_home"],
             round(175.68 * 100 * 1.27, 2),
         )
+
+    def test_export_includes_so_management_fields_per_partial(self):
+        orders = [
+            {
+                "sales_order_no": "SO/PLAN",
+                "customer_name": "Acme",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "NPS26-0400",
+                        "process_sheet_no": "NPS26-0400",
+                        "source_line_item_no": "1",
+                        "so_det_qty": 10,
+                        "pp_qty": 6,
+                        "qty_shipped": 0,
+                        "unit_selling_price": 10,
+                        "shipped_completed": False,
+                        "proposed_cnc": ["CNC 30", "CNC 31"],
+                        "highlighted_partials": [2],
+                        "exception_issues": {"1": ["supply_chain"], "2": ["qlty", "sales"]},
+                        "mtl_part_order": "NITRONIC 50(HS)*3_D25.4",
+                        "quality_doc": "C of C",
+                        "ops_notes": "Hold for fixture",
+                        "sales_notes": "Customer chasing",
+                        "partials": [
+                            {"pp_partial_no": 1, "partial_qty": 2, "proposed_cnc": ["CNC 28"]},
+                            {"pp_partial_no": 2, "partial_qty": 4},
+                        ],
+                    }
+                ],
+            }
+        ]
+        lines = expand_outstanding_lines(orders, {})
+        by_key = {
+            (row["ps_type"], row["pp_partial_no"]): row
+            for row in lines
+        }
+        first = by_key[("NPS", 1)]
+        second = by_key[("NPS", 2)]
+        leftover = by_key[(NOPP_PS_TYPE, None)]
+        self.assertEqual(first["proposed_cnc"], "CNC 28")
+        self.assertEqual(first["exception"], "Supply Chain")
+        self.assertEqual(second["proposed_cnc"], "CNC 30, CNC 31")
+        self.assertEqual(second["exception"], "Qlty, Sales")
+        self.assertEqual(first["mtl_part_order"], "NITRONIC 50(HS)*3_D25.4")
+        self.assertEqual(first["quality_doc"], "C of C")
+        self.assertEqual(first["ops_notes"], "Hold for fixture")
+        self.assertEqual(first["sales_notes"], "Customer chasing")
+        self.assertEqual(leftover["proposed_cnc"], "")
+        self.assertEqual(leftover["exception"], "")
+        self.assertEqual(leftover["ops_notes"], "")
+        self.assertEqual(leftover["sales_notes"], "")
+
+    def test_material_in_and_proposed_edd(self):
+        orders = [
+            {
+                "sales_order_no": "SO/MTL",
+                "customer_name": "Acme",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "NPS26-0321",
+                        "process_sheet_no": "NPS26-0321",
+                        "source_line_item_no": "1",
+                        "so_det_qty": 2,
+                        "pp_qty": 2,
+                        "qty_shipped": 0,
+                        "unit_selling_price": 10,
+                        "due_date": "2027-01-18",
+                        "coway_proposed_edd": "2026-08-18",
+                        "material_subcon": "2026-09-05",
+                        "assembly_material_subcon": "2027-01-08",
+                        "assembly_material_status": "Expected",
+                        "shipped_completed": False,
+                        "partials": [],
+                    },
+                    {
+                        "pp_voucher_no": "APS-IN",
+                        "process_sheet_no": "APS-IN",
+                        "source_line_item_no": "2",
+                        "so_det_qty": 1,
+                        "pp_qty": 1,
+                        "qty_shipped": 0,
+                        "unit_selling_price": 10,
+                        "material_subcon": "ARRIVED",
+                        "material_in_date": "2026-08-01",
+                        "shipped_completed": False,
+                        "partials": [],
+                    },
+                ],
+            }
+        ]
+        lines = expand_outstanding_lines(orders, {})
+        by_ps = {row["process_sheet_no"]: row for row in lines}
+        rolled = by_ps["NPS26-0321"]
+        self.assertEqual(rolled["proposed_edd"], "2026-08-18")
+        self.assertEqual(rolled["material_status"], "Expected")
+        self.assertEqual(rolled["material_in_date"], "2027-01-08")
+        arrived = by_ps["APS-IN"]
+        self.assertEqual(arrived["material_status"], "Arrived")
+        self.assertEqual(arrived["material_in_date"], "2026-08-01")
 
     def test_remaining_shared_across_pps_then_nopp(self):
         orders = [
@@ -481,7 +584,15 @@ class SoOutstandingBalanceRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
         self.assertIn("includes every currently open line", html)
-        self.assertIn("so_outstanding_balance.js?v=sob-20260827c", html)
+        self.assertIn("so_outstanding_balance.js?v=sob-20260924a", html)
+        self.assertIn("Proposed EDD", html)
+        self.assertIn("Material in", html)
+        self.assertNotIn(">Coway<", html)
+        material_in = html.find('data-sort="material_in_date"')
+        proposed = html.find('data-sort="proposed_edd"')
+        due = html.find('data-sort="due_date"')
+        week = html.find('data-sort="week"')
+        self.assertTrue(due < material_in < proposed < week)
 
     def test_api_drops_closed_and_includes_nopp(self):
         from unittest.mock import patch

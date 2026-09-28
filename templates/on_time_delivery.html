@@ -2,8 +2,8 @@
 {% block title %}On-time delivery{% endblock %}
 {% block main_class %}app-main--new-orders app-main--otd{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=otd-20260910">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/on_time_delivery.css') }}?v=otd-20260910">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=otd-20260924f">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/on_time_delivery.css') }}?v=otd-20260924f">
 {% endblock %}
 {% block content %}
 <div class="new-orders-page otd-page is-detail">
@@ -11,13 +11,15 @@
     <div class="sales-report-header-main">
       <h1 class="new-orders-title">On-time delivery</h1>
       <p class="sales-report-context">
-        Process sheets compared by <strong>PO due date</strong> (SO required shipment date) and
-        <strong>last delivery date</strong>. On time = last delivery on or before the PO due date.
-        Months follow the delivery date. Only fully shipped process sheets are counted.
+        A year means that year only. The main result is sheets whose benchmark date is in the year
+        and which were also shipped in that same year. Shipments from another year stay in their own segment.
+        A blank proposed EDD is compared with the PO due date.
       </p>
     </div>
     <div class="new-orders-header-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="otd-history" aria-expanded="false" aria-controls="otd-history-panel" title="Saved new-part counts from each closed month">New parts history</button>
       <button type="button" class="btn btn-ghost btn-sm" id="otd-export" title="Export process sheets to CSV">Export CSV</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="otd-export-pdf" title="Download the current view as PDF">Export PDF</button>
       <button type="button" class="btn btn-ghost btn-sm" id="otd-refresh">Refresh</button>
     </div>
   </header>
@@ -35,7 +37,31 @@
         <span>Year</span>
         <input id="otd-year" type="number" min="2000" max="2100" step="1">
       </label>
+      <div class="sales-report-segment otd-benchmark">
+        <span class="sales-report-segment-label">Benchmark</span>
+        <div class="sales-report-presets" role="group" aria-label="Delivery benchmark">
+          <button type="button" class="sales-report-preset-btn is-active" data-otd-benchmark="po_due">PO due date</button>
+          <button type="button" class="sales-report-preset-btn" data-otd-benchmark="proposed_edd">Proposed EDD</button>
+        </div>
+      </div>
+      <p class="otd-benchmark-ref" id="otd-benchmark-ref">Both benchmarks, for the sheets in the selected year segment.</p>
     </div>
+    <div class="otd-segments" role="group" aria-label="Year segment">
+      <button type="button" class="otd-segment is-active" data-otd-segment="due">
+        <span class="otd-segment-title">Due in this year</span>
+        <span class="otd-segment-count" data-otd-segment-count>PO due date is in the selected year, and the sheet was shipped in that year.</span>
+      </button>
+      <button type="button" class="otd-segment" data-otd-segment="carried_in">
+        <span class="otd-segment-title">Shipped this year, due earlier</span>
+        <span class="otd-segment-count" data-otd-segment-count>Shipped in the selected year. The due date is a previous year, so it is not in that year's result.</span>
+      </button>
+      <button type="button" class="otd-segment" data-otd-segment="early_ship">
+        <span class="otd-segment-title">Shipped this year, due later</span>
+        <span class="otd-segment-count" data-otd-segment-count>Shipped in the selected year. The due date is a later year.</span>
+      </button>
+    </div>
+    <p class="otd-summary" id="otd-summary"></p>
+    <p class="otd-outside" id="otd-outside" hidden></p>
     <div class="sales-report-period-row sales-report-period-row--filters otd-detail-filters">
       <div class="sales-report-filters-main">
         <div class="sales-report-segment">
@@ -86,40 +112,20 @@
     <section class="sales-report-kpi-grid card otd-kpi-grid" id="otd-kpis" hidden></section>
 
     <section class="otd-charts" id="otd-charts" hidden>
-      <article class="otd-chart-card">
+      <article class="otd-chart-card otd-chart-card--wide">
         <header class="otd-chart-head">
-          <h2 class="otd-chart-title">On time vs late</h2>
-          <p class="otd-chart-sub">Share of process sheets delivered on or before PO due</p>
+          <h2 class="otd-chart-title" id="otd-month-title">Shipped in this year</h2>
+          <p class="otd-chart-sub" id="otd-month-sub">Share of early, on time, and late. Each month adds up to 100%.</p>
         </header>
-        <div class="otd-chart-body" id="otd-donut"></div>
-      </article>
-      <article class="otd-chart-card">
-        <header class="otd-chart-head">
-          <h2 class="otd-chart-title">By month</h2>
-          <p class="otd-chart-sub" id="otd-month-sub">Early / on-time / late counts with OTD % line</p>
-        </header>
+        <div id="otd-month-table"></div>
         <div class="otd-chart-body otd-chart-body--tall" id="otd-month-chart"></div>
       </article>
       <article class="otd-chart-card">
         <header class="otd-chart-head">
-          <h2 class="otd-chart-title">By PS type</h2>
-          <p class="otd-chart-sub">On-time vs late process sheets for each prefix</p>
+          <h2 class="otd-chart-title">By process sheet type</h2>
+          <p class="otd-chart-sub">On-time count for this year only.</p>
         </header>
         <div class="otd-chart-body" id="otd-ps-chart"></div>
-      </article>
-      <article class="otd-chart-card">
-        <header class="otd-chart-head">
-          <h2 class="otd-chart-title">Monthly OTD by PS</h2>
-          <p class="otd-chart-sub">On-time rate each month, one line per PS type</p>
-        </header>
-        <div class="otd-chart-body" id="otd-month-ps-chart"></div>
-      </article>
-      <article class="otd-chart-card otd-chart-card--wide">
-        <header class="otd-chart-head">
-          <h2 class="otd-chart-title">Days vs PO due</h2>
-          <p class="otd-chart-sub" id="otd-hist-sub">Last delivery minus PO due (negative = early)</p>
-        </header>
-        <div class="otd-chart-body" id="otd-hist-chart"></div>
       </article>
     </section>
 
@@ -150,8 +156,9 @@
               <th>Sales person</th>
               <th>Part</th>
               <th>PO due</th>
+              <th>Proposed EDD</th>
               <th>Delivery</th>
-              <th>Days</th>
+              <th id="otd-days-head">Days vs PO</th>
               <th>Status</th>
             </tr>
           </thead>
@@ -166,16 +173,24 @@
     <section class="otd-chart-card otd-overview-trend-card" id="otd-overview-trend-wrap" hidden>
       <header class="otd-chart-head">
         <h2 class="otd-chart-title">Monthly OTD</h2>
-        <p class="otd-chart-sub">On-time rate by delivery month for APS, NPS, and PPS (Alice)</p>
+        <p class="otd-chart-sub" id="otd-overview-trend-sub">On-time rate by delivery month for APS, NPS, and PPS (Alice)</p>
       </header>
       <div class="otd-chart-body" id="otd-overview-trend"></div>
     </section>
     <div id="otd-overview-sections" class="otd-overview-sections"></div>
   </div>
 
+  <section class="otd-history card" id="otd-history-panel" hidden>
+    <header class="otd-history-head">
+      <h2 class="otd-chart-title">New parts history</h2>
+      <p class="otd-chart-sub">Fully shipped process sheets that were labelled NEW when the month was saved. A later repeat order does not change a saved month.</p>
+    </header>
+    <div id="otd-history-body"></div>
+  </section>
+
   <p class="new-orders-meta" id="otd-meta" hidden></p>
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/on_time_delivery.js') }}?v=otd-20260910"></script>
+<script src="{{ url_for('static', filename='js/on_time_delivery.js') }}?v=otd-20260924f"></script>
 {% endblock %}

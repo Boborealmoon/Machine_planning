@@ -52,4 +52,52 @@ assertNoMatch('MPS26-3851', 'NPS26-0385');
 assertNoMatch('MPS26-0385', 'NPS26-0385');
 assertNoMatch('NPS25-0385', 'NPS26-0385');
 
+assert.strictEqual(search.trialIsComponentChildPs('NPS26-0321'), false);
+assert.strictEqual(search.trialIsComponentChildPs('NPS26-0321-1'), true);
+assert.strictEqual(search.trialIsComponentChildPs('NPS26-0321-10'), true);
+assert.strictEqual(search.trialIsComponentChildPs('N26-[SR]22'), false);
+assert.strictEqual(search.trialIsComponentChildPs('N26-[SR]22-1'), true);
+assert.strictEqual(search.trialParentPsIdFromChild('NPS26-0321-5'), 'NPS26-0321');
+assert.strictEqual(search.trialParentPsIdFromChild('NPS26-0321'), '');
+
+{
+  const rows = [
+    {
+      ps_id: 'NPS26-0321',
+      source_ps_id: 'NPS26-0321',
+      assembly_line_items: [
+        { process_sheet_no: 'NPS26-0321-1', ps_id: 'NPS26-0321-1' },
+        { process_sheet_no: 'NPS26-0321-5', ps_id: 'NPS26-0321-5' },
+        { process_sheet_no: 'NPS26-0321-10', ps_id: 'NPS26-0321-10' },
+        { process_sheet_no: 'NPS26-0321-11', ps_id: 'NPS26-0321-11' },
+      ],
+    },
+    { ps_id: 'NPS26-0321-1', source_ps_id: 'NPS26-0321-1' },
+    { ps_id: 'NPS26-0321-5', source_ps_id: 'NPS26-0321-5' },
+    { ps_id: 'NPS26-0321-10', source_ps_id: 'NPS26-0321-10' },
+    { ps_id: 'NPS26-0321-11', source_ps_id: 'NPS26-0321-11' },
+    { ps_id: 'NPS26-0999', source_ps_id: 'NPS26-0999' },
+  ];
+  assert.deepStrictEqual(
+    search.trialCatalogExcludeNestedChildren(rows).map(row => row.ps_id),
+    ['NPS26-0321', 'NPS26-0999'],
+  );
+}
+
+{
+  const orphans = [
+    { ps_id: 'NPS26-0321-5', source_ps_id: 'NPS26-0321-5' },
+    { ps_id: 'NPS26-0321-10', source_ps_id: 'NPS26-0321-10' },
+  ];
+  assert.deepStrictEqual(
+    search.trialCatalogExcludeNestedChildren(orphans).map(row => row.ps_id),
+    ['NPS26-0321-5', 'NPS26-0321-10'],
+  );
+}
+
+assert.strictEqual(search.trialCatalogLineItemIsSearchTarget('NPS26-0321-5', 'NPS26-0321-5'), true);
+assert.strictEqual(search.trialCatalogLineItemIsSearchTarget('NPS26-0321-5', '0321-5'), true);
+assert.strictEqual(search.trialCatalogLineItemIsSearchTarget('NPS26-0321-5', 'NPS26-0321'), false);
+assert.strictEqual(search.trialCatalogLineItemIsSearchTarget('NPS26-0321-1', 'NPS26-0321-5'), false);
+
 console.log('catalog_search.js ok');

@@ -22,16 +22,17 @@
     { id: 'process_sheet_no', label: 'PS', className: 'fa-col-ps', sortable: true, filterable: true },
     { id: 'part_no', label: 'Part', className: 'fa-col-part', filterable: true },
     { id: 'part_description', label: 'Description', className: 'fa-col-desc', filterable: true },
-    { id: 'posted_date', label: 'Posted', className: 'fa-col-date', filterable: true },
-    { id: 'po_due_date', label: 'Due', className: 'fa-col-date', sortable: true, filterable: true, title: 'PO due date' },
     { id: 'total_qty', label: 'Qty', className: 'fa-col-qty', filterable: true },
-    { id: 'stage', label: 'WO / Stage', className: 'fa-col-stage', filterable: true, title: 'Current work-order stage and WO status from ERP' },
-    { id: 'proposed_cnc', label: 'Proposed CNC', className: 'fa-col-machine', filterable: true, title: 'Same Proposed CNC as S/O Management. Pick one or more planner CNC machines.' },
     { id: 'bom', label: 'BOM', className: 'fa-col-bom', filterable: true, title: 'Opens BOM materials. Green = ERP material lines exist.' },
     { id: 'material', label: 'Material', className: 'fa-col-material', filterable: true },
+    { id: 'stage', label: 'WO / Stage', className: 'fa-col-stage', filterable: true, title: 'Current work-order stage and WO status from ERP' },
+    { id: 'posted_date', label: 'Posted', className: 'fa-col-date', filterable: true },
+    { id: 'po_due_date', label: 'Due', className: 'fa-col-date', sortable: true, filterable: true, title: 'PO due date' },
+    { id: 'program_finish_at', label: 'Finish', className: 'fa-col-finish', sortable: true, filterable: true, title: 'Programme estimated finish' },
+    { id: 'proposed_cnc', label: 'Proposed CNC', className: 'fa-col-machine', filterable: true, title: 'Same Proposed CNC as S/O Management. Pick one or more planner CNC machines.' },
     { id: 'pic', label: 'PIC', className: 'fa-col-pic', filterable: true, title: 'Programme PIC' },
     { id: 'remarks', label: 'Remarks', className: 'fa-col-remarks', filterable: true },
-    { id: 'program_finish_at', label: 'Finish', className: 'fa-col-finish', sortable: true, filterable: true, title: 'Programme estimated finish' },
+    { id: 'npi_complete', label: 'Done', className: 'fa-col-done', sortable: true, filterable: true, title: 'Mark this NPI job complete. The tick is saved on this tracker.' },
     { id: '_actions', label: '', className: 'fa-col-actions' },
     { id: 'sales_order_no', label: 'SO', className: 'fa-col-so fa-so-head', sortable: true, filterable: true, side: true, title: 'Grouped by sales order, like S/O Management' },
   ];
@@ -174,6 +175,7 @@
     else if (colId === 'bom') raw = hasBom(row) ? 'Yes' : 'None';
     else if (colId === 'material') raw = materialFilterLabel(row);
     else if (colId === 'remarks') raw = row?.remarks;
+    else if (colId === 'npi_complete') raw = row?.npi_complete ? 'Yes' : 'No';
     else if (colId === 'program_finish_at') raw = formatFinishDate(row?.program_finish_at) || row?.program_finish_at;
     else if (colId === 'sales_order_no') raw = row?.sales_order_no;
     const text = String(raw == null ? '' : raw).trim();
@@ -188,6 +190,7 @@
     if (colId === 'process_sheet_no') return String(row?.process_sheet_no || row?.pp_voucher_no || '').trim();
     if (colId === 'po_due_date') return parseIsoDate(row?.po_due_date) || String(row?.po_due_date || '').trim();
     if (colId === 'program_finish_at') return parseFinishDate(row?.program_finish_at);
+    if (colId === 'npi_complete') return row?.npi_complete ? 1 : 0;
     if (colId === 'sales_order_no') return soGroupKey(row);
     const values = colFilterValues(row, colId).filter((value) => value !== BLANK_FILTER);
     return values[0] || '';
@@ -243,6 +246,7 @@
       row.material_display,
       row.material_subcon,
       row.remarks,
+      row.npi_complete ? 'DONE COMPLETE' : '',
       row.program_finish_at,
       row.current_stage_desc,
       row.current_stage_status_label,
@@ -1249,6 +1253,7 @@
     const rowClass = [
       missing ? 'is-missing' : '',
       complete ? 'is-historical' : '',
+      row.npi_complete ? 'is-npi-complete' : '',
       groupStart ? 'fa-so-group-start' : '',
     ].filter(Boolean).join(' ');
     const missingHint = missing ? ' title="Not found in S/O management or ERP cache"' : '';
@@ -1265,17 +1270,12 @@
         </td>
         <td class="fa-col-part fa-readonly">${escapeHtml(dash(row.part_no))}</td>
         <td class="fa-col-desc" title="${escapeHtml(desc)}">${escapeHtml(dash(row.part_description))}</td>
-        <td class="fa-col-date">${escapeHtml(dash(row.posted_date))}</td>
-        <td class="fa-col-date">${escapeHtml(dash(row.po_due_date))}</td>
         <td class="fa-col-qty">${escapeHtml(dash(row.total_qty))}</td>
-        <td class="fa-col-stage">${stageCell(row)}</td>
-        <td class="fa-col-machine fa-proposed-cnc-cell">${proposedCncPickerHtml(row, 'new')}</td>
         <td class="fa-col-bom${exists ? ' has-bom' : ''}">${bomCell(row)}</td>
         <td class="fa-col-material${row.material_arrived ? ' is-ready' : (row.material_date ? ' has-date' : '')}">${materialCell(row)}</td>
-        <td class="fa-col-pic">${programPicCell(row)}</td>
-        <td class="fa-col-remarks">
-          <textarea class="fa-remarks" data-fa-new-field="remarks" data-ps="${ps}" rows="1" placeholder="Note">${escapeHtml(row.remarks || '')}</textarea>
-        </td>
+        <td class="fa-col-stage">${stageCell(row)}</td>
+        <td class="fa-col-date">${escapeHtml(dash(row.posted_date))}</td>
+        <td class="fa-col-date">${escapeHtml(dash(row.po_due_date))}</td>
         <td class="fa-col-finish">
           <div class="fa-finish-field">
             <input type="text" class="fa-finish-input" data-fa-new-field="program_finish_at" data-ps="${ps}"
@@ -1286,6 +1286,17 @@
                    value="${escapeHtml(parseFinishDate(row.program_finish_at))}"
                    tabindex="-1" aria-label="Pick programme estimated finish date">
           </div>
+        </td>
+        <td class="fa-col-machine fa-proposed-cnc-cell">${proposedCncPickerHtml(row, 'new')}</td>
+        <td class="fa-col-pic">${programPicCell(row)}</td>
+        <td class="fa-col-remarks">
+          <textarea class="fa-remarks" data-fa-new-field="remarks" data-ps="${ps}" rows="1" placeholder="Note">${escapeHtml(row.remarks || '')}</textarea>
+        </td>
+        <td class="fa-col-done">
+          <label class="fa-done-check">
+            <input type="checkbox" data-fa-new-field="npi_complete" data-ps="${ps}"
+                   ${row.npi_complete ? 'checked' : ''} aria-label="Mark NPI job complete">
+          </label>
         </td>
         <td class="fa-col-actions">${historyButton(row, 'new_part')}${remove}</td>
         ${soCell}
@@ -2881,6 +2892,19 @@
       if (!fieldEl || fieldEl.tagName === 'TEXTAREA') return;
       const ps = fieldEl.getAttribute('data-ps');
       const field = fieldEl.getAttribute('data-fa-new-field');
+      if (field === 'npi_complete') {
+        const checked = !!fieldEl.checked;
+        const rowEl = fieldEl.closest('tr');
+        if (rowEl) rowEl.classList.toggle('is-npi-complete', checked);
+        try {
+          await saveNewPatch(ps, { npi_complete: checked }, { render: false });
+        } catch (err) {
+          fieldEl.checked = !checked;
+          if (rowEl) rowEl.classList.toggle('is-npi-complete', !checked);
+          showAlert(err.message || 'Save failed');
+        }
+        return;
+      }
       let value = fieldEl.value || '';
       if (field === 'program_finish_at') {
         const iso = parseFinishDate(value);

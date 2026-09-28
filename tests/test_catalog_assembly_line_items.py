@@ -282,6 +282,67 @@ def test_stamp_inventory_bom_ops_fills_nested_sr_child():
     assert parent["op_cards"][0]["operation_name"] == "Turning 20"
 
 
+def test_stamp_inventory_bom_ops_fills_root_nps_with_rev_and_placeholder_voucher():
+    from unittest.mock import patch
+
+    from planning.catalog import stamp_inventory_bom_ops
+
+    entry = {
+        "ps_id": "NPS26-0465",
+        "source_ps_id": "NPS26-0465",
+        "part_no": "BB18-KS1526-02 REV 03",
+        "inventory_code": "BB18-KS1526-02 REV 03",
+        "bom_code": "PGM & TOOL LIST",
+        "erp_bom_code": "PGM & TOOL LIST",
+        "display_qty": 17,
+        "op_cards": [],
+        "ops": [],
+        "flow_options": [],
+    }
+    stages = {
+        "BB18-KS1526-02": [
+            {
+                "inventory_code": "BB18-KS1526-02",
+                "bom_code": "SMP-MAT-01-REV00",
+                "stage_no": 1,
+                "stage_desc": "Issue/ Verification",
+            },
+            {
+                "inventory_code": "BB18-KS1526-02",
+                "bom_code": "SMP-MAT-01-REV00",
+                "stage_no": 2,
+                "stage_desc": "Turning 20",
+            },
+            {
+                "inventory_code": "BB18-KS1526-02",
+                "bom_code": "SMP-MAT-01-REV00",
+                "stage_no": 3,
+                "stage_desc": "Turning 25",
+            },
+            {
+                "inventory_code": "BB18-KS1526-02",
+                "bom_code": "SMP-MAT-01-REV00",
+                "stage_no": 4,
+                "stage_desc": "Turnmill 30",
+            },
+            {
+                "inventory_code": "BB18-KS1526-02",
+                "bom_code": "SMP-MAT-01-REV00",
+                "stage_no": 5,
+                "stage_desc": "Turnmill 40",
+            },
+        ]
+    }
+    with patch("planning.flows.erp_domain_bom_stages_by_inventory", return_value=stages) as lookup:
+        stamp_inventory_bom_ops([entry])
+    lookup.assert_called_once()
+    names = [card["operation_name"] for card in entry["op_cards"]]
+    assert names == ["Turning 20", "Turning 25", "Turnmill 30", "Turnmill 40"]
+    assert entry["selected_bom_code"] == "SMP-MAT-01-REV00"
+    assert entry["erp_bom_code"] == "SMP-MAT-01-REV00"
+    assert any((flow.get("bom_code") or "") == "SMP-MAT-01-REV00" for flow in entry["flow_options"])
+
+
 def test_preferred_machining_bom_picks_turnmill_route():
     from planning.flows import preferred_machining_bom_code
 

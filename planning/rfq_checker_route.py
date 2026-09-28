@@ -9,7 +9,10 @@ from .rfq_checker_service import (
     FIELD_LABELS,
     MAX_UPLOAD_BYTES,
     SHEET_TAGS,
+    archive_batch,
+    check_parts,
     create_batch_from_upload,
+    delete_batch,
     get_batch,
     get_existing_part,
     json_error,
@@ -18,7 +21,6 @@ from .rfq_checker_service import (
     list_part_master,
     llm_status,
     remap_batch,
-    set_batch_status,
     update_batch_defaults,
     update_line,
 )
@@ -126,7 +128,7 @@ def api_rfq_upload():
     if len(payload) > MAX_UPLOAD_BYTES:
         return jsonify({"error": "Excel file is larger than 12 MB"}), 400
     sheet_name = compact_text(request.form.get("sheet") or request.args.get("sheet"))
-    use_llm_raw = compact_text(request.form.get("use_llm") or request.args.get("use_llm") or "1").lower()
+    use_llm_raw = compact_text(request.form.get("use_llm") or request.args.get("use_llm") or "0").lower()
     use_llm = use_llm_raw not in {"0", "false", "no", "off"}
     try:
         batch = create_batch_from_upload(
@@ -221,10 +223,65 @@ def api_rfq_batch_defaults(batch_id: int):
     return jsonify({"ok": True, "batch": batch})
 
 
+@rfq_checker_bp.delete("/api/rfq-checker/batches/<int:batch_id>")
+def api_rfq_delete_batch(batch_id: int):
+    try:
+        result = delete_batch(batch_id)
+    except ValueError as exc:
+        status = 404 if "not found" in str(exc).lower() else 400
+        return jsonify({"error": str(exc)}), status
+    except Exception as exc:
+        logger.exception("RFQ batch delete failed")
+        body, status = json_error(exc)
+        return jsonify(body), status
+    return jsonify(result)
+
+
+@rfq_checker_bp.post("/api/rfq-checker/check")
+def api_rfq_check():
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
+    raw_parts = data.get("parts") or data.get("part_nos") or []
+    if isinstance(raw_parts, str):
+        raw_parts = [raw_parts]
+    if not isinstance(raw_parts, list):
+        return jsonify({"error": "parts must be a list of part numbers"}), 400
+    query = compact_text(data.get("q") or request.args.get("q"))
+    raw_batch = data.get("batch_id")
+    if raw_batch in (None, ""):
+        raw_batch = request.args.get("batch_id")
+    batch_id = None
+    if raw_batch not in (None, ""):
+        try:
+            batch_id = int(raw_batch)
+        except (TypeError, ValueError):
+            return jsonify({"error": "batch_id must be a number"}), 400
+    try:
+        payload = check_parts(
+            [compact_text(item) for item in raw_parts if compact_text(item)],
+            batch_id=batch_id,
+            query=query,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("RFQ check failed")
+        body, status = json_error(exc, fallback_status=502)
+        return jsonify(body), status
+    return jsonify(payload)
+
+
 @rfq_checker_bp.post("/api/rfq-checker/batches/<int:batch_id>/archive")
 def api_rfq_archive_batch(batch_id: int):
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
+    customer = compact_text(data.get("customer") or data.get("default_customer"))
+    if not customer:
+        return jsonify({"error": "Choose the customer this quote is for before saving."}), 400
     try:
-        batch = set_batch_status(batch_id, "archived")
+        batch = archive_batch(batch_id, customer)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:

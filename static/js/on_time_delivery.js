@@ -55,6 +55,8 @@ const OTD_OVERVIEW_SECTIONS = [
 const otdState = {
   year: new Date().getFullYear(),
   tab: 'detail',
+  benchmark: 'po_due',
+  segment: 'due',
   ppTypes: new Set(['APS', 'NPS']),
   salespersons: new Set(),
   salespersonOptions: [],
@@ -133,6 +135,50 @@ function otdParseDateParts(value) {
 
 function otdDeliveryDate(row) {
   return otdParseDateParts(row?.delivery_date);
+}
+
+function otdBenchmarkName() {
+  return otdState.benchmark === 'proposed_edd' ? 'proposed EDD' : 'PO due';
+}
+
+function otdDaysBetween(delivery, benchmarkDate) {
+  const left = otdParseDateParts(delivery);
+  const right = otdParseDateParts(benchmarkDate);
+  if (!left || !right) return null;
+  const utcLeft = Date.UTC(left.year, left.month - 1, left.day);
+  const utcRight = Date.UTC(right.year, right.month - 1, right.day);
+  return Math.round((utcLeft - utcRight) / 86400000);
+}
+
+function otdStatusFromDays(days) {
+  if (days == null || !Number.isFinite(Number(days))) return 'unclassified';
+  if (days < 0) return 'early';
+  if (days === 0) return 'on_time';
+  return 'late';
+}
+
+function otdBenchmarkDate(row, benchmark) {
+  if (benchmark === 'proposed_edd') {
+    const proposed = row?.proposed_edd || row?.coway_proposed_edd;
+    if (otdCompact(proposed)) return proposed;
+  }
+  return row?.po_due_date;
+}
+
+function otdAsBenchmark(row, benchmark) {
+  const days = otdDaysBetween(row?.delivery_date, otdBenchmarkDate(row, benchmark));
+  const status = otdStatusFromDays(days);
+  return {
+    ...row,
+    days,
+    status,
+    on_time: status === 'early' || status === 'on_time',
+  };
+}
+
+function otdStatusLabel(status) {
+  if (status === 'unclassified' && otdState.benchmark === 'proposed_edd') return 'No EDD';
+  return OTD_STATUS_LABELS[status] || status;
 }
 
 function otdSalesContains(row, needle) {
@@ -262,16 +308,59 @@ function otdCollectSalespeople(rows) {
   });
 }
 
+function otdSegmentOf(row) {
+  const delivery = otdDeliveryDate(row);
+  const bench = otdParseDateParts(otdBenchmarkDate(row, otdState.benchmark));
+  const year = otdState.year;
+  if (bench && bench.year === year) return 'due';
+  if (!delivery || delivery.year !== year) return null;
+  if (!bench) return 'no_benchmark';
+  if (bench.year < year) return 'carried_in';
+  if (bench.year > year) return 'early_ship';
+  return null;
+}
+
+function otdPrepareRow(row) {
+  const segment = otdSegmentOf(row);
+  if (!segment) return null;
+  const delivery = otdDeliveryDate(row);
+  return otdAsBenchmark({
+    ...row,
+    segment,
+    delivery_year: delivery ? delivery.year : null,
+    month: delivery && delivery.year === otdState.year ? delivery.month : null,
+    sales_person_label: otdSalespersonLabel(row),
+  }, otdState.benchmark);
+}
+
+function otdCandidateRows() {
+  return (otdState.sourceRows || []).map(otdPrepareRow).filter(Boolean).filter((row) => {
+    if (!otdAllTypesSelected() && !otdState.ppTypes.has(row.pp_type)) return false;
+    return true;
+  });
+}
+
+function otdInChart(row) {
+  if (row.segment !== otdState.segment) return false;
+  if (otdState.segment === 'due' && row.delivery_year !== otdState.year) return false;
+  return true;
+}
+
 function otdYearRows() {
-  return (otdState.sourceRows || []).map((row) => {
-    const delivery = otdDeliveryDate(row);
-    if (!delivery || delivery.year !== otdState.year) return null;
-    return {
-      ...row,
-      month: delivery.month,
-      sales_person_label: otdSalespersonLabel(row),
-    };
-  }).filter(Boolean);
+  return otdCandidateRows().filter((row) => {
+    if (!otdInChart(row)) return false;
+    if (otdState.salespersons.size && !otdState.salespersons.has(otdSalespersonKey(row))) return false;
+    return true;
+  });
+}
+
+function otdOutsideYearRows() {
+  if (otdState.segment !== 'due') return [];
+  return otdCandidateRows().filter((row) => {
+    if (row.segment !== 'due' || row.delivery_year === otdState.year) return false;
+    if (otdState.salespersons.size && !otdState.salespersons.has(otdSalespersonKey(row))) return false;
+    return true;
+  });
 }
 
 function otdScopedRows({ month = true, ps = true } = {}) {
@@ -287,7 +376,8 @@ function otdScopedRows({ month = true, ps = true } = {}) {
 }
 
 function otdApplyFilters() {
-  const yearRows = otdYearRows();
+  if (otdState.segment === 'no_benchmark') otdState.segment = 'due';
+  const yearRows = otdCandidateRows().filter(otdInChart);
   otdState.salespersonOptions = otdCollectSalespeople(yearRows);
   const validPeople = new Set(otdState.salespersonOptions.map((item) => item.id));
   [...otdState.salespersons].forEach((key) => {
@@ -468,15 +558,37 @@ function otdDonutArc(cx, cy, r, r0, start, end) {
   return `M ${sx} ${sy} A ${r} ${r} 0 ${large} 1 ${ex} ${ey} L ${sx0} ${sy0} A ${r0} ${r0} 0 ${large} 0 ${ex0} ${ey0} Z`;
 }
 
+function otdNewPartsMetric() {
+  const now = new Date();
+  const month = otdState.selectedMonth
+    || (otdState.year === now.getFullYear() ? now.getMonth() + 1 : null);
+  const count = (otdState.sourceRows || []).filter((row) => {
+    if (row.is_new_part !== true) return false;
+    const delivery = otdDeliveryDate(row);
+    if (!delivery || delivery.year !== otdState.year) return false;
+    return month == null || delivery.month === month;
+  }).length;
+  const label = month == null
+    ? String(otdState.year)
+    : `${OTD_MONTH_LABELS[month - 1]} ${otdState.year}`;
+  return { count, label };
+}
+
 function otdRenderKpis(summary, host = otdEl('otd-kpis')) {
   if (!host) return;
   const classified = summary.classified || 0;
   const onTime = (summary.early || 0) + (summary.on_time || 0);
+  const newParts = otdNewPartsMetric();
   host.innerHTML = `
     <article class="sales-report-kpi otd-kpi--rate">
       <p class="sales-report-kpi-label">On-time rate</p>
       <p class="sales-report-kpi-value">${otdEscape(otdPct(summary.on_time_rate))}</p>
       <p class="sales-report-kpi-sub">${otdNum(onTime)} of ${otdNum(classified)} process sheets</p>
+    </article>
+    <article class="sales-report-kpi otd-kpi--new">
+      <p class="sales-report-kpi-label">New parts done</p>
+      <p class="sales-report-kpi-value">${otdNum(newParts.count)}</p>
+      <p class="sales-report-kpi-sub">${otdEscape(newParts.label)} · labelled NEW, all prefixes</p>
     </article>
     <article class="sales-report-kpi otd-kpi--on-time">
       <p class="sales-report-kpi-label">On time / early</p>
@@ -494,7 +606,7 @@ function otdRenderKpis(summary, host = otdEl('otd-kpis')) {
       <p class="sales-report-kpi-sub">${otdNum(summary.qty)} pcs</p>
     </article>
     <article class="sales-report-kpi otd-kpi--days">
-      <p class="sales-report-kpi-label">Avg days vs due</p>
+      <p class="sales-report-kpi-label">${otdState.benchmark === 'proposed_edd' ? 'Avg days vs EDD' : 'Avg days vs PO due'}</p>
       <p class="sales-report-kpi-value">${summary.avg_days == null ? '-' : otdDays(summary.avg_days)}</p>
       <p class="sales-report-kpi-sub">Negative is early</p>
     </article>`;
@@ -539,49 +651,64 @@ function otdRenderDonut(summary, host = otdEl('otd-donut')) {
 
 function otdRenderMonthChart(months, host = otdEl('otd-month-chart'), { interactive = true } = {}) {
   if (!host) return;
-  const max = Math.max(1, ...months.map((row) => (row.early || 0) + (row.on_time || 0) + (row.late || 0)));
   const W = 640;
   const H = 260;
-  const left = 36;
-  const right = 44;
-  const top = 16;
+  const left = 40;
+  const right = 12;
+  const top = 22;
   const bottom = 28;
   const innerW = W - left - right;
   const innerH = H - top - bottom;
   const gap = 6;
   const barW = Math.max(10, (innerW / months.length) - gap);
   const keys = ['early', 'on_time', 'late'];
+  const yForShare = (share) => top + innerH - (share * innerH);
+  const grid = [1, 0.5, 0].map((share) => {
+    const y = yForShare(share);
+    return `<line x1="${left}" y1="${y.toFixed(1)}" x2="${W - right}" y2="${y.toFixed(1)}" stroke="#e2e8f0" stroke-width="1"/>
+      <text x="${left - 6}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#64748b">${Math.round(share * 100)}%</text>`;
+  }).join('');
   const columns = months.map((row, idx) => {
     const x = left + idx * (innerW / months.length) + gap / 2;
-    let y = top + innerH;
-    const stacks = keys.map((key) => {
+    const total = (row.early || 0) + (row.on_time || 0) + (row.late || 0);
+    const rateX = x + barW / 2;
+    const tick = `${row.label} ${String(otdState.year).slice(-2)}`;
+    const tickText = `<text x="${rateX.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="9" fill="#334155">${otdEscape(tick)}</text>`;
+    if (!total) return tickText;
+    let cursor = top + innerH;
+    let remaining = innerH;
+    const present = keys.filter((key) => (row[key] || 0) > 0);
+    const stacks = present.map((key, keyIdx) => {
       const val = row[key] || 0;
-      const h = (val / max) * innerH;
-      y -= h;
+      const h = keyIdx === present.length - 1 ? remaining : (val / total) * innerH;
+      remaining -= h;
+      cursor -= h;
       if (h < 0.4) return '';
       const selected = interactive && otdState.selectedMonth === row.month;
       const chipClass = interactive ? 'otd-month-chip' : '';
       const monthAttr = interactive ? `data-month="${row.month}"` : '';
-      return `<rect class="${chipClass}" ${monthAttr} x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${OTD_STATUS_COLORS[key]}" rx="1" opacity="${!interactive || selected || otdState.selectedMonth == null ? 1 : 0.45}">
-        <title>${otdEscape(row.label)} ${otdEscape(OTD_STATUS_LABELS[key])}: ${val}</title>
+      return `<rect class="${chipClass}" ${monthAttr} x="${x.toFixed(1)}" y="${cursor.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${OTD_STATUS_COLORS[key]}" rx="1" opacity="${!interactive || selected || otdState.selectedMonth == null ? 1 : 0.45}">
+        <title>${otdEscape(row.label)} ${otdEscape(OTD_STATUS_LABELS[key])}: ${otdEscape(otdPct(val / total))} (${val})</title>
       </rect>`;
     }).join('');
-    const rate = row.classified ? row.on_time_rate : null;
-    const rateX = x + barW / 2;
-    const rateDot = rate == null ? '' : `<circle cx="${rateX.toFixed(1)}" cy="${(top + innerH - (rate * innerH)).toFixed(1)}" r="2.4" fill="#0f172a"/>`;
-    return `${stacks}${rateDot}<text x="${rateX.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="#64748b">${otdEscape(row.label)}</text>`;
+    const rate = row.on_time_rate;
+    const rateDot = `<circle cx="${rateX.toFixed(1)}" cy="${yForShare(rate).toFixed(1)}" r="2.4" fill="#0f172a">
+      <title>${otdEscape(row.label)} on time ${otdEscape(otdPct(rate))} (${(row.early || 0) + (row.on_time || 0)} of ${total})</title>
+    </circle>`;
+    const rateLabel = `<text x="${rateX.toFixed(1)}" y="12" text-anchor="middle" font-size="9" font-weight="700" fill="#0f172a">${Math.round(rate * 100)}%</text>`;
+    return `${stacks}${rateDot}${rateLabel}${tickText}`;
   }).join('');
   const linePts = months.map((row, idx) => {
-    if (!row.classified) return null;
+    const total = (row.early || 0) + (row.on_time || 0) + (row.late || 0);
+    if (!total) return null;
     const x = left + idx * (innerW / months.length) + gap / 2 + barW / 2;
-    const y = top + innerH - (row.on_time_rate * innerH);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
+    return `${x.toFixed(1)},${yForShare(row.on_time_rate).toFixed(1)}`;
   }).filter(Boolean).join(' ');
   const line = linePts ? `<polyline fill="none" stroke="#0f172a" stroke-width="1.5" points="${linePts}"/>` : '';
-  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Monthly on-time delivery">
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Monthly on-time delivery share">
+    ${grid}
     ${line}
     ${columns}
-    <text x="${W - 6}" y="14" text-anchor="end" font-size="10" fill="#64748b">OTD %</text>
   </svg>${otdLegend([
     { color: OTD_STATUS_COLORS.early, label: 'Early' },
     { color: OTD_STATUS_COLORS.on_time, label: 'On time' },
@@ -589,43 +716,53 @@ function otdRenderMonthChart(months, host = otdEl('otd-month-chart'), { interact
   ])}`;
 }
 
+function otdResultSentence(summary) {
+  const onTime = (summary.early || 0) + (summary.on_time || 0);
+  const classified = summary.classified || 0;
+  const late = summary.late || 0;
+  const lateBit = summary.avg_late_days == null ? '' : `, late by ${summary.avg_late_days} days on average`;
+  return `${otdNum(onTime)} of ${otdNum(classified)} were on time (${otdPct(summary.on_time_rate)}). ${otdNum(late)} were late${lateBit}.`;
+}
+
 function otdRenderPsChart(rows, host = otdEl('otd-ps-chart')) {
   if (!host) return;
   const items = (rows || []).filter((row) => (row.classified || 0) > 0);
+  const year = otdState.year;
   if (!items.length) {
-    host.innerHTML = otdEmptyChart('No process sheets for the selected PS types.');
+    host.innerHTML = `<p class="otd-plain">No ${year} process sheets in this segment.</p>`;
     return;
   }
-  const rowH = 28;
-  const left = 56;
-  const right = 72;
-  const top = 8;
-  const W = 640;
-  const H = top + items.length * rowH + 16;
-  const innerW = W - left - right;
-  const max = Math.max(1, ...items.map((row) => (row.early || 0) + (row.on_time || 0) + (row.late || 0)));
-  const bars = items.map((row, idx) => {
-    const y = top + idx * rowH;
+  host.innerHTML = `<ul class="otd-ps-sentences">${items.map((row) => {
     const onTime = (row.early || 0) + (row.on_time || 0);
-    const late = row.late || 0;
-    const onW = (onTime / max) * innerW;
-    const lateW = (late / max) * innerW;
-    const selected = otdState.selectedPs === row.id;
-    const opacity = selected || otdState.selectedPs == null ? 1 : 0.45;
-    return `<text x="${left - 8}" y="${y + 16}" text-anchor="end" font-size="12" font-weight="700" fill="#334155">${otdEscape(row.label)}</text>
-      <rect class="otd-month-chip" data-ps="${otdEscape(row.id)}" x="${left}" y="${y + 6}" width="${Math.max(onW, 0).toFixed(1)}" height="14" rx="2" fill="#15803d" opacity="${opacity}">
-        <title>${otdEscape(row.label)} on time: ${onTime}</title>
-      </rect>
-      <rect class="otd-month-chip" data-ps="${otdEscape(row.id)}" x="${(left + onW).toFixed(1)}" y="${y + 6}" width="${Math.max(lateW, 0).toFixed(1)}" height="14" rx="2" fill="#c2410c" opacity="${opacity}">
-        <title>${otdEscape(row.label)} late: ${late}</title>
-      </rect>
-      <text x="${(left + onW + lateW + 8).toFixed(1)}" y="${y + 17}" font-size="11" fill="#64748b">${otdEscape(otdPct(row.on_time_rate))}</text>`;
+    return `<li><button type="button" class="otd-ps-sentence" data-ps="${otdEscape(row.id)}">
+      <strong>${otdEscape(row.label)}</strong> in ${year}: ${otdEscape(otdPct(row.on_time_rate))} on time,
+      ${otdNum(onTime)} of ${otdNum(row.classified)}. ${otdNum(row.late)} late.
+    </button></li>`;
+  }).join('')}</ul>`;
+}
+
+function otdRenderMonthTable(months, host = otdEl('otd-month-table')) {
+  if (!host) return;
+  const filled = (months || []).filter((row) => (row.classified || 0) > 0);
+  if (!filled.length) {
+    host.innerHTML = '';
+    return;
+  }
+  const body = filled.map((row) => {
+    const onTime = (row.early || 0) + (row.on_time || 0);
+    const active = otdState.selectedMonth === row.month ? ' is-active' : '';
+    return `<tr>
+      <td><button type="button" class="otd-month-link${active}" data-month="${row.month}">${otdEscape(row.label)} ${otdState.year}</button></td>
+      <td>${otdNum(onTime)}</td>
+      <td>${otdNum(row.late)}</td>
+      <td>${otdNum(row.classified)}</td>
+      <td>${otdEscape(otdPct(row.on_time_rate))}</td>
+    </tr>`;
   }).join('');
-  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="On-time delivery by PS type">${bars}</svg>
-    ${otdLegend([
-      { color: '#15803d', label: 'On time (incl. early)' },
-      { color: '#c2410c', label: 'Late' },
-    ])}`;
+  host.innerHTML = `<table class="otd-month-numbers">
+    <thead><tr><th>Month</th><th>On time</th><th>Late</th><th>Shipped</th><th>On-time rate</th></tr></thead>
+    <tbody>${body}</tbody>
+  </table>`;
 }
 
 function otdRenderMonthPsChart(blocks, ppTypes, host = otdEl('otd-month-ps-chart')) {
@@ -667,7 +804,8 @@ function otdRenderMonthPsChart(blocks, ppTypes, host = otdEl('otd-month-ps-chart
   }).join('');
   const ticks = months.map((block, idx) => {
     const x = left + (months.length === 1 ? innerW / 2 : (idx / (months.length - 1)) * innerW);
-    return `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="#64748b">${otdEscape(block.label)}</text>`;
+    const tick = `${block.label} ${String(otdState.year).slice(-2)}`;
+    return `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="#64748b">${otdEscape(tick)}</text>`;
   }).join('');
   host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Monthly OTD rate by PS type">
     <line x1="${left}" x2="${W - right}" y1="${top}" y2="${top}" stroke="#e2e8f0"/>
@@ -682,15 +820,16 @@ function otdRenderMonthPsChart(blocks, ppTypes, host = otdEl('otd-month-ps-chart
 
 function otdRenderHist(payload, host = otdEl('otd-hist-chart'), sub = otdEl('otd-hist-sub')) {
   if (!host) return;
+  const phrase = otdBenchmarkName();
   if (sub) {
     sub.textContent = payload.classified
-      ? `On time (delivery on or before PO due): ${otdPct(payload.on_time_rate)} of ${payload.classified} process sheets`
-      : 'Last delivery minus PO due (negative = early)';
+      ? `On time (delivery on or before ${phrase}): ${otdPct(payload.on_time_rate)} of ${payload.classified} process sheets`
+      : `Last delivery minus ${phrase} (negative = early)`;
   }
   const buckets = payload.buckets || [];
   const max = Math.max(0, ...buckets.map((bucket) => bucket.count));
   if (!max) {
-    host.innerHTML = otdEmptyChart('No process sheets with both PO due and delivery dates.');
+    host.innerHTML = otdEmptyChart(`No process sheets with both ${otdBenchmarkName()} and a delivery date.`);
     return;
   }
   const W = 640;
@@ -713,7 +852,7 @@ function otdRenderHist(payload, host = otdEl('otd-hist-chart'), sub = otdEl('otd
       <text x="${(x + barW / 2).toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="10" fill="#64748b">${otdEscape(bucket.label)}</text>
       <text x="${(x + barW / 2).toFixed(1)}" y="${(y - 4).toFixed(1)}" text-anchor="middle" font-size="10" fill="#334155">${bucket.count ? bucket.count : ''}</text>`;
   }).join('');
-  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Days versus PO due">${cols}</svg>`;
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Days versus ${otdEscape(otdBenchmarkName())}">${cols}</svg>`;
 }
 
 function otdVisibleRows() {
@@ -747,10 +886,10 @@ function otdRenderTable() {
     if (otdState.selectedMonth) bits.push(`month ${otdState.selectedMonth}`);
     if (otdState.selectedPs) bits.push(otdPsLabel(otdState.selectedPs));
     if (otdState.statusFilter !== 'all') bits.push(otdState.statusFilter === 'late' ? 'late only' : 'on time only');
-    hint.textContent = `${bits.join(' - ')}. Click a month or PS bar to filter the charts; click again to clear.`;
+    hint.textContent = `${bits.join(' - ')}. Click a month or process sheet type to filter; click again to clear.`;
   }
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="10">No process sheets match this table filter.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="11">No process sheets match this table filter.</td></tr>`;
     return;
   }
   body.innerHTML = rows.map((row) => {
@@ -762,18 +901,20 @@ function otdRenderTable() {
       <td>${otdEscape(row.sales_order_no || '-')}</td>
       <td>${otdEscape(row.customer_name || row.customer_code || '-')}</td>
       <td>${otdEscape(row.sales_person_label || otdSalespersonLabel(row))}</td>
-      <td>${otdEscape(row.inventory_code || '-')}</td>
+      <td>${otdEscape(row.inventory_code || '-')}${row.is_new_part ? ' <span class="otd-new-badge" title="No earlier process sheet for this part on another sales order">NEW</span>' : ''}</td>
       <td>${otdEscape((row.po_due_date || '').slice(0, 10) || '-')}</td>
+      <td>${otdEscape((row.proposed_edd || row.coway_proposed_edd || '').slice(0, 10) || '-')}</td>
       <td>${otdEscape((row.delivery_date || '').slice(0, 10) || '-')}</td>
       <td class="${daysClass}">${otdEscape(otdDays(row.days))}</td>
-      <td><span class="otd-status otd-status--${status}">${otdEscape(OTD_STATUS_LABELS[status] || status)}</span></td>
+      <td><span class="otd-status otd-status--${status}">${otdEscape(otdStatusLabel(status))}</span></td>
     </tr>`;
   }).join('');
 }
 
 function otdOverviewRows(spec) {
   const types = new Set(spec.ppTypes || []);
-  return otdYearRows().filter((row) => {
+  return (otdState.sourceRows || []).map(otdPrepareRow).filter(Boolean).filter((row) => {
+    if (row.segment !== 'due' || row.delivery_year !== otdState.year) return false;
     if (types.size && !types.has(row.pp_type)) return false;
     return otdSalesContains(row, spec.salesContains);
   });
@@ -819,7 +960,7 @@ function otdRenderOverviewCompare(sections) {
       <p class="otd-overview-kpi-label">${otdEscape(section.subtitle)}</p>
       <p class="otd-overview-kpi-title">${otdEscape(section.label)}</p>
       <p class="otd-overview-kpi-value">${otdEscape(otdPct(summary.on_time_rate))}</p>
-      <p class="otd-overview-kpi-sub">${otdNum(onTime)} of ${otdNum(classified)} process sheets · ${otdNum(summary.late)} late</p>
+      <p class="otd-overview-kpi-sub">${otdNum(onTime)} of ${otdNum(classified)} due in ${otdState.year} and shipped in ${otdState.year}. ${otdNum(summary.late)} late.</p>
     </article>`;
   }).join('');
 }
@@ -861,36 +1002,16 @@ function otdRenderOverviewSections(sections) {
   if (!host) return;
   host.innerHTML = sections.map((section) => {
     const classified = section.summary?.classified || 0;
+    const onTime = (section.summary?.early || 0) + (section.summary?.on_time || 0);
     const body = classified
-      ? `<section class="sales-report-kpi-grid card otd-kpi-grid" data-otd-section-kpis></section>
-        <section class="otd-charts otd-charts--overview">
-          <article class="otd-chart-card">
-            <header class="otd-chart-head">
-              <h2 class="otd-chart-title">On time vs late</h2>
-              <p class="otd-chart-sub">Share delivered on or before PO due</p>
-            </header>
-            <div class="otd-chart-body" data-otd-section-donut></div>
-          </article>
-          <article class="otd-chart-card">
-            <header class="otd-chart-head">
-              <h2 class="otd-chart-title">By month</h2>
-              <p class="otd-chart-sub">Early / on-time / late by delivery month</p>
-            </header>
-            <div class="otd-chart-body otd-chart-body--tall" data-otd-section-month></div>
-          </article>
-          <article class="otd-chart-card">
-            <header class="otd-chart-head">
-              <h2 class="otd-chart-title">Days vs PO due</h2>
-              <p class="otd-chart-sub">Last delivery minus PO due</p>
-            </header>
-            <div class="otd-chart-body" data-otd-section-hist></div>
-          </article>
-        </section>`
-      : `<div class="otd-overview-empty">No fully shipped ${otdEscape(section.label)} process sheets${section.salesContains ? ` for ${otdEscape(section.subtitle)}` : ''} in ${otdState.year}.</div>`;
+      ? `<p class="otd-plain">${otdEscape(section.label)} in ${otdState.year}: ${otdNum(onTime)} of ${otdNum(classified)} sheets whose ${otdEscape(otdBenchmarkName())} is in ${otdState.year}, and which were also shipped in ${otdState.year}, were on time (${otdEscape(otdPct(section.summary?.on_time_rate))}). ${otdNum(section.summary?.late)} were late.</p>
+        <div data-otd-section-table></div>
+        <div class="otd-chart-body otd-chart-body--tall" data-otd-section-month></div>`
+      : `<div class="otd-overview-empty">No ${otdEscape(section.label)} sheets were both due in ${otdState.year} and shipped in ${otdState.year}${section.salesContains ? ` for ${otdEscape(section.subtitle)}` : ''}.</div>`;
     return `<section class="otd-overview-block" data-otd-section="${otdEscape(section.id)}">
       <header class="otd-overview-block-head">
         <h2 class="otd-overview-block-title">${otdEscape(section.label)}</h2>
-        <p class="otd-overview-block-sub">${otdEscape(section.subtitle)} · ${otdNum(classified)} process sheets</p>
+        <p class="otd-overview-block-sub">${otdEscape(section.subtitle)} · due in ${otdState.year} and shipped in ${otdState.year} · ${otdNum(classified)} process sheets</p>
       </header>
       ${body}
     </section>`;
@@ -898,10 +1019,8 @@ function otdRenderOverviewSections(sections) {
   host.querySelectorAll('[data-otd-section]').forEach((block) => {
     const section = sections.find((item) => item.id === block.getAttribute('data-otd-section'));
     if (!section || !(section.summary?.classified)) return;
-    otdRenderKpis(section.summary, block.querySelector('[data-otd-section-kpis]'));
-    otdRenderDonut(section.summary, block.querySelector('[data-otd-section-donut]'));
+    otdRenderMonthTable(section.by_month || [], block.querySelector('[data-otd-section-table]'));
     otdRenderMonthChart(section.by_month || [], block.querySelector('[data-otd-section-month]'), { interactive: false });
-    otdRenderHist(section.histogram || {}, block.querySelector('[data-otd-section-hist]'), null);
   });
 }
 
@@ -910,6 +1029,66 @@ function otdRenderOverview() {
   otdRenderOverviewCompare(sections);
   otdRenderOverviewTrend(sections);
   otdRenderOverviewSections(sections);
+}
+
+function otdRenderYearCopy() {
+  const year = otdState.year;
+  const phrase = otdBenchmarkName();
+  const summary = otdState.data?.summary;
+  const summaryEl = otdEl('otd-summary');
+  const outsideEl = otdEl('otd-outside');
+  const monthTitle = otdEl('otd-month-title');
+  const monthSub = otdEl('otd-month-sub');
+  if (monthTitle) {
+    monthTitle.textContent = otdState.segment === 'due'
+      ? `Shipped in ${year}, ${phrase} also in ${year}`
+      : `Shipped in ${year}`;
+  }
+  if (monthSub) {
+    const share = 'Each month is the share of early, on time, and late, so bars with deliveries are the same height. Hover a segment for the count.';
+    monthSub.textContent = otdState.segment === 'due'
+      ? `${share} ${year} shipments only. A sheet whose ${phrase} is in ${year} but which shipped in another year is left out of the bars.`
+      : `${share} These were shipped in ${year}. Their ${phrase} is not in ${year}.`;
+  }
+  if (summaryEl) {
+    if (!summary || !(summary.classified || summary.process_sheet_count)) {
+      summaryEl.textContent = `No sheets in this ${year} segment.`;
+    } else if (otdState.segment === 'due') {
+      summaryEl.textContent = `In ${year}, for sheets whose ${phrase} is in ${year} and which were also shipped in ${year}: ${otdResultSentence(summary)}`;
+    } else {
+      summaryEl.textContent = `Shipped in ${year}, kept separate from the ${year} due-date result. ${otdResultSentence(summary)}`;
+    }
+  }
+  if (outsideEl) {
+    const outside = otdOutsideYearRows();
+    if (!outside.length) {
+      outsideEl.hidden = true;
+      outsideEl.textContent = '';
+    } else {
+      const byYear = new Map();
+      outside.forEach((row) => {
+        const key = row.delivery_year || 'an unknown year';
+        byYear.set(key, (byYear.get(key) || 0) + 1);
+      });
+      const bits = [...byYear.entries()]
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+        .map(([shipYear, count]) => `${count} shipped in ${shipYear}`);
+      outsideEl.hidden = false;
+      outsideEl.textContent = `${outside.length} other sheets have a ${phrase} in ${year} but were last shipped outside ${year} (${bits.join(', ')}). They are not in the chart or the table.`;
+    }
+  }
+  const noBench = document.querySelector('[data-otd-segment="no_benchmark"]');
+  if (noBench) noBench.hidden = true;
+  document.querySelectorAll('[data-otd-segment]').forEach((btn) => {
+    const id = btn.getAttribute('data-otd-segment');
+    btn.classList.toggle('is-active', id === otdState.segment);
+    const countEl = btn.querySelector('[data-otd-segment-count]');
+    if (!countEl) return;
+    const rows = otdCandidateRows().filter((row) => row.segment === id && (id !== 'due' || row.delivery_year === year));
+    const classified = rows.filter((row) => row.status === 'early' || row.status === 'on_time' || row.status === 'late').length;
+    const onTime = rows.filter((row) => row.on_time).length;
+    countEl.textContent = classified ? `${otdPct(onTime / classified)} on time · ${onTime} of ${classified}` : `None in ${year}`;
+  });
 }
 
 function otdRender() {
@@ -937,6 +1116,7 @@ function otdRender() {
   if (kpis) kpis.hidden = !showDetail;
   if (charts) charts.hidden = !showDetail;
   if (table) table.hidden = !showDetail;
+  const phrase = otdBenchmarkName();
   if (context) {
     const types = otdAllTypesSelected()
       ? 'All PS types'
@@ -946,12 +1126,29 @@ function otdRender() {
       : (otdState.salespersons.size === 1
         ? (otdState.salespersonOptions.find((item) => otdState.salespersons.has(item.id))?.label || '1 sales person')
         : `${otdState.salespersons.size} sales people`);
-    context.textContent = people ? `Delivery date vs PO due - ${types} - ${people}` : `Delivery date vs PO due - ${types}`;
+    const segmentText = {
+      due: `${phrase} in ${otdState.year}, shipped in ${otdState.year}`,
+      carried_in: `shipped in ${otdState.year}, ${phrase} before ${otdState.year}`,
+      early_ship: `shipped in ${otdState.year}, ${phrase} after ${otdState.year}`,
+      no_benchmark: `shipped in ${otdState.year}, no ${phrase}`,
+    }[otdState.segment] || phrase;
+    context.textContent = people ? `${segmentText} - ${types} - ${people}` : `${segmentText} - ${types}`;
   }
+  otdRenderYearCopy();
+  const daysHead = otdEl('otd-days-head');
+  if (daysHead) daysHead.textContent = otdState.benchmark === 'proposed_edd' ? 'Days vs EDD' : 'Days vs PO';
+  const donutSub = otdEl('otd-donut-sub');
+  if (donutSub) donutSub.textContent = `Share of process sheets delivered on or before ${phrase}`;
+  const histTitle = otdEl('otd-hist-title');
+  if (histTitle) histTitle.textContent = `Days vs ${phrase}`;
+  const trendSub = otdEl('otd-overview-trend-sub');
+  if (trendSub) trendSub.textContent = `${otdState.year} only. Due in ${otdState.year} and shipped in ${otdState.year}, for APS, NPS, and PPS (Alice).`;
+  otdSyncBenchmark();
+  otdRenderBenchmarkRef();
   if (meta) {
     meta.hidden = !data;
     if (data) {
-      meta.textContent = `${data.year} - last delivery vs PO due - ${otdNum(data.summary?.classified)} classified`;
+      meta.textContent = `${otdState.year} only - ${otdNum(data.summary?.classified)} sheets in this segment`;
     }
   }
   otdSetTab(otdState.tab);
@@ -961,11 +1158,9 @@ function otdRender() {
   }
   if (!hasRows) return;
   otdRenderKpis(data.summary || {});
-  otdRenderDonut(data.summary || {});
   otdRenderMonthChart(data.by_month || []);
+  otdRenderMonthTable(data.by_month || []);
   otdRenderPsChart(data.by_ps || []);
-  otdRenderMonthPsChart(data.by_month_ps || [], data.pp_types || []);
-  otdRenderHist(data.histogram || {});
   otdRenderTable();
 }
 
@@ -1001,17 +1196,56 @@ async function otdFetch(refresh = false) {
   }
 }
 
+function otdSyncBenchmark() {
+  document.querySelectorAll('[data-otd-benchmark]').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.getAttribute('data-otd-benchmark') === otdState.benchmark);
+  });
+}
+
+function otdRenderBenchmarkRef() {
+  const host = otdEl('otd-benchmark-ref');
+  if (!host) return;
+  const population = otdScopedRows();
+  if (!population.length) {
+    host.textContent = `No ${otdState.year} sheets in this segment yet.`;
+    return;
+  }
+  const selected = otdSelectedTypeList();
+  const po = otdAggregate(population.map((row) => otdAsBenchmark(row, 'po_due')), selected).summary;
+  const edd = otdAggregate(population.map((row) => otdAsBenchmark(row, 'proposed_edd')), selected).summary;
+  const missing = population.filter((row) => !otdCompact(row.proposed_edd || row.coway_proposed_edd)).length;
+  const poOn = (po.early || 0) + (po.on_time || 0);
+  const eddOn = (edd.early || 0) + (edd.on_time || 0);
+  const poActive = otdState.benchmark !== 'proposed_edd';
+  const missingNote = missing ? ` · ${otdNum(missing)} blank, scored on PO due` : '';
+  host.innerHTML = `
+    <span class="${poActive ? 'is-active' : ''}"><strong>PO due</strong> ${otdEscape(otdPct(po.on_time_rate))} on time (${otdNum(poOn)} / ${otdNum(po.classified)})</span>
+    <span class="otd-benchmark-sep">·</span>
+    <span class="${poActive ? '' : 'is-active'}"><strong>Proposed EDD</strong> ${otdEscape(otdPct(edd.on_time_rate))} on time (${otdNum(eddOn)} / ${otdNum(edd.classified)})${otdEscape(missingNote)}</span>`;
+}
+
 function otdExportCsv() {
   const rows = otdVisibleRows();
-  const header = ['process_sheet', 'ps_type', 'sales_order', 'customer', 'sales_person', 'part', 'po_due', 'delivery', 'days', 'status'];
+  const header = [
+    'process_sheet', 'ps_type', 'sales_order', 'customer', 'sales_person', 'part',
+    'po_due', 'proposed_edd', 'delivery', 'days_vs_po', 'days_vs_edd', 'benchmark', 'status',
+  ];
   const lines = [header.join(',')];
   rows.forEach((row) => {
+    const poDays = otdDaysBetween(row.delivery_date, row.po_due_date);
+    const eddDays = otdDaysBetween(row.delivery_date, row.proposed_edd || row.coway_proposed_edd);
     const cells = [
       row.process_sheet_no, row.pp_type, row.sales_order_no,
       row.customer_name || row.customer_code,
       row.sales_person_label || row.sales_person_name || row.sales_person_code,
       row.inventory_code,
-      row.po_due_date, row.delivery_date, row.days, row.status,
+      row.po_due_date,
+      row.proposed_edd || row.coway_proposed_edd,
+      row.delivery_date,
+      poDays,
+      eddDays,
+      otdState.benchmark,
+      row.status,
     ].map((value) => `"${String(value ?? '').replace(/"/g, '""')}"`);
     lines.push(cells.join(','));
   });
@@ -1022,6 +1256,109 @@ function otdExportCsv() {
   link.download = `on-time-delivery-${otdState.year}.csv`;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+async function otdExportPdf() {
+  const btn = otdEl('otd-export-pdf');
+  if (btn) btn.disabled = true;
+  otdSetAlert('');
+  const params = new URLSearchParams({
+    year: String(otdState.year),
+    pp_types: otdTypesQuery(),
+    benchmark: otdState.benchmark,
+    view: otdState.tab,
+    segment: otdState.tab === 'overview' ? 'due' : otdState.segment,
+  });
+  if (otdState.salespersons.size) params.set('sales_persons', [...otdState.salespersons].join(','));
+  if (otdState.tab === 'detail') {
+    if (otdState.statusFilter && otdState.statusFilter !== 'all') params.set('status', otdState.statusFilter);
+    if (otdState.search.trim()) params.set('q', otdState.search.trim());
+    if (otdState.selectedMonth) params.set('month', String(otdState.selectedMonth));
+    if (otdState.selectedPs) params.set('ps', otdState.selectedPs);
+  }
+  try {
+    const resp = await (window.reportsApiFetch || fetch)(`/api/on-time-delivery/report.pdf?${params}`);
+    if (!resp.ok) {
+      const payload = await resp.json().catch(() => ({}));
+      throw new Error(payload.error || `PDF failed (${resp.status})`);
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const slug = otdState.benchmark === 'proposed_edd' ? 'proposed-edd' : 'po-due';
+    link.download = `on-time-delivery-${otdState.year}-${slug}.pdf`;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    otdSetAlert(err?.message || 'Failed to export PDF.');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function otdHistorySheetRows(sheets) {
+  if (!sheets.length) {
+    return '<p class="otd-history-empty">No process sheets were labelled NEW in this month.</p>';
+  }
+  const body = sheets.map((row) => `<tr>
+    <td>${otdEscape(row.process_sheet_no || '-')}</td>
+    <td>${otdEscape(row.pp_type || '-')}</td>
+    <td>${otdEscape(row.sales_order_no || '-')}</td>
+    <td>${otdEscape(row.inventory_code || '-')}</td>
+    <td>${otdEscape(row.customer_name || '-')}</td>
+    <td>${otdEscape((row.delivery_date || '').slice(0, 10) || '-')}</td>
+  </tr>`).join('');
+  return `<table class="otd-history-table">
+    <thead><tr><th>Process sheet</th><th>PS</th><th>Sales order</th><th>Part</th><th>Customer</th><th>Delivery</th></tr></thead>
+    <tbody>${body}</tbody>
+  </table>`;
+}
+
+function otdRenderHistory(snapshots) {
+  const body = otdEl('otd-history-body');
+  if (!body) return;
+  if (!snapshots.length) {
+    body.innerHTML = '<p class="otd-history-empty">No month has been saved yet. The previous month is written after it closes, the next time this app is running.</p>';
+    return;
+  }
+  body.innerHTML = snapshots.map((item) => {
+    const saved = item.snapshotted_at ? item.snapshotted_at.slice(0, 10) : '';
+    const late = item.saved_late
+      ? ' Saved after the month had already closed, so a repeat order raised before the save can drop a NEW label.'
+      : '';
+    return `<details class="otd-history-month">
+      <summary>
+        <strong>${otdEscape(item.label)}</strong>
+        <span>${otdNum(item.new_part_count)} new parts</span>
+        <span>${otdNum(item.delivered_count)} delivered</span>
+        ${saved ? `<span>saved ${otdEscape(saved)}</span>` : ''}
+      </summary>
+      ${late ? `<p class="otd-history-late">${otdEscape(late.trim())}</p>` : ''}
+      ${otdHistorySheetRows(item.sheets || [])}
+    </details>`;
+  }).join('');
+}
+
+async function otdToggleHistory() {
+  const panel = otdEl('otd-history-panel');
+  const button = otdEl('otd-history');
+  if (!panel) return;
+  const nextOpen = panel.hidden;
+  panel.hidden = !nextOpen;
+  button?.classList.toggle('is-active', nextOpen);
+  button?.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+  if (!nextOpen) return;
+  const body = otdEl('otd-history-body');
+  if (body) body.innerHTML = '<p class="otd-history-empty">Loading saved months...</p>';
+  try {
+    const resp = await (window.reportsApiFetch || fetch)('/api/on-time-delivery/new-parts/history');
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok || !payload.ok) throw new Error(payload.error || `Request failed (${resp.status})`);
+    otdRenderHistory(payload.snapshots || []);
+  } catch (err) {
+    if (body) body.innerHTML = `<p class="otd-history-empty">${otdEscape(err?.message || 'Could not load saved months.')}</p>`;
+  }
 }
 
 function otdBind() {
@@ -1122,8 +1459,31 @@ function otdBind() {
     otdState.search = event.target.value || '';
     otdRenderTable();
   });
+  document.querySelectorAll('[data-otd-benchmark]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const next = btn.getAttribute('data-otd-benchmark') || 'po_due';
+      if (next === otdState.benchmark) return;
+      otdState.benchmark = next;
+      if (next !== 'proposed_edd' && otdState.segment === 'no_benchmark') otdState.segment = 'due';
+      otdState.selectedMonth = null;
+      otdState.selectedPs = null;
+      otdApplyFilters();
+    });
+  });
+  document.querySelectorAll('[data-otd-segment]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const next = btn.getAttribute('data-otd-segment') || 'due';
+      if (next === otdState.segment) return;
+      otdState.segment = next;
+      otdState.selectedMonth = null;
+      otdState.selectedPs = null;
+      otdApplyFilters();
+    });
+  });
   otdEl('otd-refresh')?.addEventListener('click', () => otdFetch(true));
   otdEl('otd-export')?.addEventListener('click', otdExportCsv);
+  otdEl('otd-export-pdf')?.addEventListener('click', otdExportPdf);
+  otdEl('otd-history')?.addEventListener('click', () => otdToggleHistory());
   document.addEventListener('click', (event) => {
     const monthBtn = event.target.closest?.('[data-month]');
     if (monthBtn) {

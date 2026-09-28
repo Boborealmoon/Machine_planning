@@ -2253,6 +2253,9 @@ def _build_sales_orders(*, scope: str, lite: bool = False) -> dict[str, Any]:
     material_in_overlay = _load_material_in_overlay(process_sheets)
     if material_in_overlay is not None:
         _apply_material_in_overlay(orders, material_in_overlay)
+    from .assembly_material import apply_assembly_material_rollup
+
+    apply_assembly_material_rollup(orders)
     _apply_coway_edd_overlay(orders, _load_coway_edd_overlay(process_sheets))
     program_finish_overlay = _load_program_finish_overlay(process_sheets)
     if program_finish_overlay is not None:
@@ -2331,6 +2334,9 @@ def _overlay_planner_edits(payload: dict[str, Any]) -> dict[str, Any]:
     material_in_overlay = _load_material_in_overlay(process_sheets)
     if material_in_overlay is not None:
         _apply_material_in_overlay(orders, material_in_overlay)
+    from .assembly_material import apply_assembly_material_rollup
+
+    apply_assembly_material_rollup(orders)
     _apply_queued_machines_overlay(orders, _load_queued_machines_by_canonical_ps())
     _apply_proposed_cnc_overlay(orders)
     program_finish_overlay = _load_program_finish_overlay(process_sheets)

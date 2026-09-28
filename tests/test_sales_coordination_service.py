@@ -163,6 +163,16 @@ class SalesCoordinationTests(unittest.TestCase):
         self.assertEqual(empty["material_status"], "")
         self.assertIsNone(empty["material_in_date"])
 
+        rolled = parse_material_tracking_fields(
+            {
+                "material_subcon": "2026-09-05",
+                "assembly_material_subcon": "2027-01-08",
+                "assembly_material_status": "Expected",
+            }
+        )
+        self.assertEqual(rolled["material_status"], "Expected")
+        self.assertEqual(rolled["material_in_date"], "2027-01-08")
+
     def test_includes_qty_buyer_status_and_sorts_aps_before_nps(self):
         orders = [
             {
@@ -213,6 +223,31 @@ class SalesCoordinationTests(unittest.TestCase):
         self.assertEqual(lines[1]["material_status"], "Arrived")
         self.assertIn("CNC", lines[1]["order_status"])
 
+    def test_assembly_parent_uses_tracker_child_arrival(self):
+        orders = [
+            {
+                "sales_order_no": "SO/2602442",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "NPS26-0321",
+                        "process_sheet_no": "NPS26-0321",
+                        "inventory_code": "BB14-KS0188-05 REV 04",
+                        "description": "R.L.M.S LOCKDOWN MECHANISM",
+                        "due_date": "2027-01-18",
+                        "material_subcon": "2026-09-05",
+                        "assembly_material_subcon": "2027-01-08",
+                        "assembly_material_status": "Expected",
+                        "shipped_completed": False,
+                        "partials": [],
+                    }
+                ],
+            }
+        ]
+        row = expand_sales_coordination_lines(orders)[0]
+        self.assertEqual(row["process_sheet_no"], "NPS26-0321")
+        self.assertEqual(row["material_status"], "Expected")
+        self.assertEqual(row["material_in_date"], "2027-01-08")
+
 
 class SalesCoordinationRouteTests(unittest.TestCase):
     def setUp(self):
@@ -233,7 +268,13 @@ class SalesCoordinationRouteTests(unittest.TestCase):
         self.assertIn("sc-col-check", html)
         self.assertIn("Posted date", html)
         self.assertIn("Proposed EDD", html)
-        self.assertIn("sc-20260921-col-align", html)
+        self.assertIn("sc-20260922-date-order", html)
+        posted = html.find('data-sort="posted_date"')
+        due = html.find('data-sort="due_date"')
+        need = html.find('data-sort="material_need_date"')
+        material_in = html.find('data-sort="material_in_date"')
+        proposed = html.find('data-sort="proposed_edd"')
+        self.assertTrue(posted < due < need < material_in < proposed)
 
     def test_api_includes_posted_and_proposed_edd(self):
         payload = {

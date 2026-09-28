@@ -1235,8 +1235,6 @@
     border-radius: 8px;
     background: rgba(14, 165, 233, 0.06);
     border: 1px solid rgba(14, 165, 233, 0.16);
-    max-height: 420px;
-    overflow: auto;
   }
   .trial-catalog-line-items-note {
     font-size: 9px;
@@ -1253,6 +1251,12 @@
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.4);
     border: 1px solid rgba(14, 165, 233, 0.14);
+  }
+  .trial-catalog-line-item-group.is-focused,
+  .trial-catalog-line-item-group.is-search-match {
+    border-color: rgba(14, 165, 233, 0.55);
+    box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.28);
+    background: rgba(14, 165, 233, 0.12);
   }
   .trial-catalog-line-item-ops {
     display: grid;
@@ -3724,6 +3728,9 @@
   }
   .trial-block-compact-date.is-normal {
     color: #157347;
+  }
+  .trial-block-compact-date.is-edd {
+    color: #4338ca;
   }
   .trial-block-compact-date.is-end.green {
     color: #157347;
@@ -9904,8 +9911,8 @@
   }
   .so-proposed-cnc-checks {
     display: grid;
-    gap: 4px;
-    max-height: 180px;
+    gap: 2px;
+    max-height: 240px;
     overflow: auto;
     margin: 0 0 8px;
     padding-right: 2px;
@@ -9930,8 +9937,27 @@
   }
   .so-exception-checks {
     display: grid;
-    gap: 6px;
+    gap: 2px;
     margin: 0 0 8px;
+  }
+  .so-exception-check,
+  .so-proposed-cnc-check {
+    min-height: 28px;
+    margin: 0 -4px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    user-select: none;
+  }
+  .so-exception-check:hover,
+  .so-proposed-cnc-check:hover {
+    background: #f1f5f9;
+  }
+  .so-exception-check input,
+  .so-proposed-cnc-check input {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    flex: none;
   }
   .so-col-filter-empty-only {
     margin-bottom: 8px;

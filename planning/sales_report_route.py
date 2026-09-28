@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import calendar
+import io
 import logging
 import time
 from datetime import date, datetime
@@ -9,8 +10,9 @@ from decimal import Decimal
 from typing import Any
 
 import psycopg2.extras
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, render_template, request, send_file
 
+from .sales_report_pdf import build_sales_report_pdf
 from .sales_report_alloc import (
     attribute_shipments,
     build_allocated_open_lines,
@@ -1111,4 +1113,25 @@ def api_sales_report_ytd():
             "cache_ttl_sec": _CACHE_TTL_SEC,
             **data,
         }
+    )
+
+
+@sales_report_bp.post("/api/sales-report/export-pdf")
+def api_sales_report_export_pdf():
+    """Management pack for the figures currently on the sales report."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Expected a JSON object."}), 400
+    try:
+        pdf_bytes, filename = build_sales_report_pdf(payload)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("sales report PDF failed")
+        return jsonify({"error": f"PDF generation failed: {exc}"}), 500
+    return send_file(
+        io.BytesIO(pdf_bytes),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=filename,
     )

@@ -1,6 +1,7 @@
 """On-time delivery aggregations - process sheet PO due vs last delivery."""
 from __future__ import annotations
 
+import re
 import unittest
 from unittest.mock import patch
 
@@ -8,9 +9,12 @@ from flask import Flask
 
 from planning.on_time_delivery import (
     aggregate_on_time_delivery,
+    apply_benchmark,
     build_overview_sections,
     classify_process_sheets,
     filter_process_sheets,
+    select_year_segment,
+    year_segment,
 )
 from planning.on_time_delivery_route import on_time_delivery_bp
 
@@ -100,6 +104,9 @@ class ClassifyTests(unittest.TestCase):
         )
         self.assertEqual(rows[0]["po_due_date"], "2026-01-29")
         self.assertEqual(rows[0]["days"], 26)
+        self.assertEqual(rows[0]["proposed_edd"], "2026-02-20")
+        self.assertEqual(rows[0]["edd_days"], 4)
+        self.assertEqual(rows[0]["edd_status"], "late")
 
     def test_skips_incomplete_so_lines(self):
         rows = classify_process_sheets(
@@ -128,6 +135,56 @@ class ClassifyTests(unittest.TestCase):
         incomplete = _ps("NPS26-0006", ship="2026-03-01", due="2026-03-10")
         incomplete["po_due_date"] = None
         self.assertEqual(classify_process_sheets([incomplete]), [])
+
+    def test_proposed_edd_is_a_separate_benchmark(self):
+        rows = classify_process_sheets(
+            [
+                _ps("NPS26-0007", ship="2026-03-12", due="2026-03-01", production_due="2026-03-15"),
+                _ps("NPS26-0008", ship="2026-03-09", due="2026-03-20"),
+            ]
+        )
+        by_ps = {row["process_sheet_no"]: row for row in rows}
+        self.assertEqual(by_ps["NPS26-0007"]["status"], "late")
+        self.assertEqual(by_ps["NPS26-0007"]["edd_status"], "early")
+        self.assertIsNone(by_ps["NPS26-0008"]["edd_days"])
+        switched = {row["process_sheet_no"]: row for row in apply_benchmark(rows, "proposed_edd")}
+        self.assertEqual(switched["NPS26-0007"]["status"], "early")
+        self.assertTrue(switched["NPS26-0007"]["on_time"])
+        self.assertEqual(switched["NPS26-0007"]["days"], -3)
+        self.assertEqual(switched["NPS26-0008"]["status"], "early")
+        self.assertTrue(switched["NPS26-0008"]["on_time"])
+        self.assertEqual(switched["NPS26-0008"]["days"], -11)
+        self.assertEqual(year_segment(by_ps["NPS26-0008"], 2026, "proposed_edd"), "due")
+        kept = apply_benchmark(rows, "po_due")
+        self.assertEqual(kept[0]["days"], rows[0]["days"])
+
+    def test_year_segments_keep_other_years_out_of_the_chart(self):
+        rows = classify_process_sheets(
+            [
+                _ps("NPS26-1", ship="2026-03-02", due="2026-03-10"),
+                _ps("NPS25-1", ship="2026-01-06", due="2025-12-17"),
+                _ps("NPS26-2", ship="2026-02-01", due="2027-01-15"),
+                _ps("NPS26-3", ship="2025-12-20", due="2026-01-10"),
+            ]
+        )
+        self.assertEqual(year_segment(rows[0], 2026, "po_due"), "due")
+        by_ps = {row["process_sheet_no"]: year_segment(row, 2026, "po_due") for row in rows}
+        self.assertEqual(by_ps["NPS26-1"], "due")
+        self.assertEqual(by_ps["NPS25-1"], "carried_in")
+        self.assertEqual(by_ps["NPS26-2"], "early_ship")
+        self.assertEqual(by_ps["NPS26-3"], "due")
+        chart = select_year_segment(rows, year=2026, benchmark="po_due", segment="due")
+        in_year = [row for row in chart if row["month"]]
+        outside = [row for row in chart if not row["month"]]
+        self.assertEqual(
+            sorted(row["process_sheet_no"] for row in in_year),
+            ["NPS26-1"],
+        )
+        self.assertEqual(
+            [row["process_sheet_no"] for row in outside],
+            ["NPS26-3"],
+        )
+        self.assertIsNone(outside[0]["month"])
 
 
 class AggregateTests(unittest.TestCase):
@@ -299,8 +356,19 @@ class RouteTests(unittest.TestCase):
         self.assertNotIn("Month basis", html)
         self.assertIn("data-otd-tab=\"overview\"", html)
         self.assertIn("otd-salesperson-btn", html)
-        self.assertRegex(html, r'id="dd-ops"[\s\S]*href="/on-time-delivery"')
-        self.assertNotRegex(html, r'id="dd-reports"[\s\S]*href="/on-time-delivery"')
+        self.assertIn('data-otd-benchmark="po_due"', html)
+        self.assertIn('data-otd-benchmark="proposed_edd"', html)
+        self.assertIn('id="otd-export-pdf"', html)
+        self.assertIn('id="otd-benchmark-ref"', html)
+        self.assertIn('data-otd-segment="due"', html)
+        self.assertIn('id="otd-summary"', html)
+        self.assertIn('id="otd-month-table"', html)
+        ops_menu = re.search(r'id="dd-ops"(.*?)id="dd-sales-prod"', html, re.S)
+        reports_menu = re.search(r'id="dd-reports"(.*?)id="dd-queries-data"', html, re.S)
+        self.assertIsNotNone(ops_menu)
+        self.assertIsNotNone(reports_menu)
+        self.assertNotIn('href="/on-time-delivery"', ops_menu.group(1))
+        self.assertIn('href="/on-time-delivery"', reports_menu.group(1))
 
     @patch("planning.on_time_delivery_route._fetch_delivered_process_sheets")
     def test_report_endpoint_aggregates_process_sheets(self, fetch_rows):
@@ -344,6 +412,26 @@ class RouteTests(unittest.TestCase):
     def test_rejects_bad_year(self):
         response = self.client.get("/api/on-time-delivery/report?year=1999")
         self.assertEqual(response.status_code, 400)
+
+    @patch("planning.on_time_delivery_route._fetch_delivered_process_sheets")
+    def test_pdf_uses_selected_benchmark(self, fetch_rows):
+        fetch_rows.return_value = [
+            _ps(
+                "NPS26-1",
+                ship="2026-06-10",
+                due="2026-06-01",
+                production_due="2026-06-12",
+                pp_type="NPS",
+            ),
+        ]
+        response = self.client.get(
+            "/api/on-time-delivery/report.pdf?year=2026&pp_types=NPS&benchmark=proposed_edd"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/pdf")
+        self.assertTrue(response.data.startswith(b"%PDF"))
+        self.assertIn("proposed-edd", response.headers["Content-Disposition"])
+        fetch_rows.assert_called_once()
 
 
 if __name__ == "__main__":

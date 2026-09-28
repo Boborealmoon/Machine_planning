@@ -951,6 +951,41 @@ def test_overlay_parent_uses_voucher_notes_not_child_sheet(monkeypatch):
     assert pp["mtl_part_order"] == "parent"
 
 
+def test_overlay_parent_rolls_up_assembly_parts_tracker_arrivals(monkeypatch):
+    from planning.sales_orders_route import _overlay_planner_edits
+
+    cached = _pp_payload("PP/1", process_sheet_no="NPS26-0321", material_subcon="")
+    monkeypatch.setattr(
+        "planning.sales_orders_route._load_notes_map",
+        lambda _ids: {
+            "PP/1": {
+                "material_subcon": "2026-09-05",
+                "mtl_part_order": "parent",
+                "material_need_date": "",
+            }
+        },
+    )
+    monkeypatch.setattr("planning.sales_orders_route._load_material_in_overlay", lambda _ids: {})
+    monkeypatch.setattr("planning.sales_orders_route._apply_proposed_cnc_overlay", lambda _orders: None)
+    monkeypatch.setattr("planning.sales_orders_route._load_program_finish_overlay", lambda _ids: {})
+    monkeypatch.setattr(
+        "planning.assembly_material.load_child_arrivals_by_parent",
+        lambda _ids: {
+            "NPS26-0321": [
+                {"process_sheet_no": "NPS26-0321-1", "material_subcon": "2027-01-08"},
+                {"process_sheet_no": "NPS26-0321-3", "material_subcon": "2026-10-31"},
+            ]
+        },
+    )
+
+    payload = _overlay_planner_edits(cached)
+    pp = payload["active"][0]["pp_vouchers"][0]
+    assert pp["material_subcon"] == "2026-09-05"
+    assert pp["assembly_material_subcon"] == "2027-01-08"
+    assert pp["assembly_material_in_date"] == "2027-01-08"
+    assert pp["assembly_material_status"] == "Expected"
+
+
 def test_queued_machines_overlay_matches_sheet_voucher_and_case():
     from planning.sales_orders_route import _apply_queued_machines_overlay
 

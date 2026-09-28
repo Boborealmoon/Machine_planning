@@ -33,6 +33,9 @@ const SOB_CAT_FILTER_COLS = {
 const SOB_SORT_FALLBACK = {
   commitment_date: '9999-12-31',
   due_date: '9999-12-31',
+  material_in_date: '9999-12-31',
+  proposed_edd: '9999-12-31',
+  coway_edd: '9999-12-31',
   week: '9999-12-31',
 };
 
@@ -658,7 +661,8 @@ function sobRenderTable() {
         <td class="sob-num sob-money-strong">${sobEscape(sobFormatMoney(row.outstanding_balance_home))}</td>
         <td class="sob-status-cell">${sobStatusBadge(row.status)}</td>
         <td class="sob-date-cell">${sobEscape(sobFormatDate(row.due_date))}</td>
-        <td class="sob-date-cell">${sobEscape(sobFormatDate(row.coway_edd))}</td>
+        <td class="sob-date-cell">${sobEscape(sobFormatDate(row.material_in_date))}</td>
+        <td class="sob-date-cell">${sobEscape(sobFormatDate(row.proposed_edd))}</td>
         <td class="sob-week-cell">${sobEscape(row.week || '-')}</td>
       </tr>
     `;
@@ -691,37 +695,44 @@ function sobAllActiveLines() {
 }
 
 function sobExportLines(lines, filenameSuffix) {
-  const headers = [
-    'sales_order_no',
-    'customer_name',
-    'process_sheet_no',
-    'related_process_sheet_no',
-    'pp_partial_no',
-    'ps_type',
-    'part_no',
-    'part_desc',
-    'unit_selling_price',
-    'exch_rate',
-    'pp_qty',
-    'so_qty',
-    'qty_shipped',
-    'remaining_qty',
-    'line_value_home',
-    'outstanding_balance_home',
-    'status',
-    'due_date',
-    'coway_edd',
-    'week',
-    'commitment_date',
+  const columns = [
+    ['sales_order_no', 'sales_order_no'],
+    ['customer_name', 'customer_name'],
+    ['process_sheet_no', 'process_sheet_no'],
+    ['pp_partial_no', 'pp_partial_no'],
+    ['ps_type', 'ps_type'],
+    ['part_no', 'part_no'],
+    ['part_desc', 'part_desc'],
+    ['unit_selling_price', 'unit_selling_price'],
+    ['exch_rate', 'exch_rate'],
+    ['pp_qty', 'pp_qty'],
+    ['so_qty', 'so_qty'],
+    ['qty_shipped', 'qty_shipped'],
+    ['remaining_qty', 'remaining_qty'],
+    ['line_value_home', 'line_value_home'],
+    ['outstanding_balance_home', 'outstanding_balance_home'],
+    ['status', 'status'],
+    ['due_date', 'due_date'],
+    ['material_in_date', 'material_in_date'],
+    ['material_status', 'material_status'],
+    ['proposed_edd', 'proposed_edd'],
+    ['week', 'week'],
+    ['commitment_date', 'commitment_date'],
+    ['proposed_cnc', 'Proposed CNC'],
+    ['exception', 'Exception'],
+    ['mtl_part_order', 'Mtl / Part Order'],
+    ['quality_doc', 'Quality Doc'],
+    ['ops_notes', 'Ops remarks'],
+    ['sales_notes', 'Sales remarks'],
   ];
-  const rows = [headers.join(',')];
+  const rows = [columns.map(([, label]) => label).join(',')];
   const seenSoLines = new Set();
   for (const line of lines) {
     const soKey = sobSoLineKey(line);
     const so = String(line?.sales_order_no || '').trim();
     const firstOfLine = Boolean(so) && !seenSoLines.has(soKey);
     if (firstOfLine) seenSoLines.add(soKey);
-    rows.push(headers.map((key) => {
+    rows.push(columns.map(([key]) => {
       if (key === 'line_value_home' && !firstOfLine) return '';
       return sobCsvEscape(line[key] ?? '');
     }).join(','));

@@ -4511,12 +4511,29 @@ def material_in_map_for_planner_ps_ids(con, planner_ps_ids):
     return {pid: bool(meta.get("material_in")) for pid, meta in overlay.items()}
 
 
-def due_date_map_for_planner_ps_ids(con, planner_ps_ids):
-    """Return {planner_ps_id: due_date ISO string} for board lite loads."""
+def _fold_commitment_date_rows(ids, query_rows):
+    """Split ERP PO due and planner proposed EDD. PO due stays the card Due date."""
+    due_out = {pid: "" for pid in ids}
+    coway_out = {pid: "" for pid in ids}
+    for row in query_rows or []:
+        pid = compact_text(row.get("planner_ps_id"))
+        if not pid:
+            continue
+        due_text = compact_text(row.get("due_date"))
+        coway_text = compact_text(row.get("coway_proposed_edd"))
+        # Match catalog sidebar: ERP due date wins; Coway proposed EDD is fallback only.
+        due_out[pid] = due_text or coway_text
+        edd = coway_text[:10]
+        if edd:
+            coway_out[pid] = edd
+    return due_out, coway_out
+
+
+def commitment_dates_for_planner_ps_ids(con, planner_ps_ids):
+    """Return (due_by_ps, coway_proposed_edd_by_ps) for board lane cards."""
     ids = [compact_text(i) for i in (planner_ps_ids or []) if compact_text(i)]
     if not ids:
-        return {}
-    out = {pid: "" for pid in ids}
+        return {}, {}
 
     def _load_due_rows():
         return rows(
@@ -4538,16 +4555,14 @@ def due_date_map_for_planner_ps_ids(con, planner_ps_ids):
 
     query_rows = planner_try_savepoint(con, "due_date_map", _load_due_rows, default=None)
     if query_rows is None:
-        return out
-    for row in query_rows:
-        pid = compact_text(row.get("planner_ps_id"))
-        if not pid:
-            continue
-        due_text = compact_text(row.get("due_date"))
-        coway_text = compact_text(row.get("coway_proposed_edd"))
-        # Match catalog sidebar: ERP due date wins; Coway proposed EDD is fallback only.
-        out[pid] = due_text or coway_text
-    return out
+        return {pid: "" for pid in ids}, {pid: "" for pid in ids}
+    return _fold_commitment_date_rows(ids, query_rows)
+
+
+def due_date_map_for_planner_ps_ids(con, planner_ps_ids):
+    """Return {planner_ps_id: due_date ISO string} for board lite loads."""
+    due_out, _coway_out = commitment_dates_for_planner_ps_ids(con, planner_ps_ids)
+    return due_out
 
 
 def _so_line_pricing_key(sales_order_no, line_item_no) -> str:

@@ -44,12 +44,25 @@ function soSerializeMaterialSubcon({ arrived, date }) {
   return iso || '';
 }
 
+function soEffectiveMaterialSubcon(pp) {
+  return String(pp?.assembly_material_subcon || pp?.material_subcon || '');
+}
+
 function soMaterialSubconDisplay(raw) {
   const parsed = soParseMaterialSubcon(raw);
   if (parsed.arrived) return 'Arrived';
   if (parsed.date) return soFormatDate(parsed.date);
   if (parsed.legacy) return parsed.legacy;
   return '';
+}
+
+function soMaterialSubconTitle(pp) {
+  const pending = Number(pp?.assembly_material_pending_child_count || 0);
+  if (String(pp?.assembly_material_source || '') !== 'assembly_parts') return '';
+  if (pending > 0) {
+    return `Latest Assembly Parts Tracker child arrival (${pending} part${pending === 1 ? '' : 's'} still outstanding)`;
+  }
+  return 'All Assembly Parts Tracker children have arrived';
 }
 
 function soMaterialSubconSortValue(raw) {
@@ -1148,7 +1161,7 @@ function soRenderJobDetailFields(order, pp, partial) {
     soDetailField('PP status', pp?.status),
     ...SO_NOTE_FIELDS.map(field => soDetailField(
       SO_NOTE_LABELS[field],
-      field === 'material_subcon' ? soMaterialSubconDisplay(pp?.[field]) : pp?.[field],
+      field === 'material_subcon' ? soMaterialSubconDisplay(soEffectiveMaterialSubcon(pp)) : pp?.[field],
     )),
   ].join('');
 }
@@ -1199,7 +1212,7 @@ function soRenderPpDetail(order, pp) {
     ...(soProgramFinishDisplay(pp) ? [soDetailField('Programme finish', soFormatDate(soProgramFinishDisplay(pp)))] : []),
     ...SO_NOTE_FIELDS.map(field => soDetailField(
       SO_NOTE_LABELS[field],
-      field === 'material_subcon' ? soMaterialSubconDisplay(pp?.[field]) : pp?.[field],
+      field === 'material_subcon' ? soMaterialSubconDisplay(soEffectiveMaterialSubcon(pp)) : pp?.[field],
     )),
   ].join('');
   const orderHtml = [
@@ -1563,7 +1576,7 @@ function soLeafSearchText(leaf) {
     ...(pp?.queued_machines || []),
     ...(pp?.proposed_cnc || []),
     ...SO_NOTE_FIELDS.map(field => (
-      field === 'material_subcon' ? soMaterialSubconDisplay(pp?.[field]) : pp?.[field]
+      field === 'material_subcon' ? soMaterialSubconDisplay(soEffectiveMaterialSubcon(pp)) : pp?.[field]
     )),
     partial?.pp_partial_no,
     partial?.partial_qty,
@@ -2047,7 +2060,7 @@ function soLeafColumnValue(leaf, colId) {
     case 'amount': return pp?.amount;
     case 'qty': return pp?.pp_qty;
     case 'material_subcon':
-      return soMaterialSubconDisplay(pp?.material_subcon);
+      return soMaterialSubconDisplay(soEffectiveMaterialSubcon(pp));
     default:
       if (SO_NOTE_FIELDS.includes(colId)) return pp?.[colId];
       return '';
@@ -2128,7 +2141,7 @@ function soLeafColumnIsEmpty(leaf, colId) {
     case 'qty':
       return pp?.pp_qty == null || pp?.pp_qty === '';
     case 'material_subcon':
-      return !soMaterialSubconDisplay(pp?.material_subcon);
+      return !soMaterialSubconDisplay(soEffectiveMaterialSubcon(pp));
     default:
       if (SO_NOTE_FIELDS.includes(colId)) return !String(pp?.[colId] || '').trim();
       return false;
@@ -2167,7 +2180,7 @@ function soLeafPassesFilters(leaf) {
 
 function soLeafSortValue(leaf, colId) {
   if (colId === 'erp_stage') return soStageSortValue(leaf.partial);
-  if (colId === 'material_subcon') return soMaterialSubconSortValue(leaf.pp?.material_subcon);
+  if (colId === 'material_subcon') return soMaterialSubconSortValue(soEffectiveMaterialSubcon(leaf.pp));
   if (colId === 'week') return soCommitmentDate(leaf.pp, leaf.partial) || '9999-12-31';
   return soLeafColumnValue(leaf, colId);
 }
@@ -3168,22 +3181,23 @@ function soRenderNeedDateCell(pp) {
 
 function soRenderMaterialSubconCell(pp) {
   const ppNo = String(pp.pp_voucher_no || '').trim();
-  const raw = String(pp.material_subcon || '');
+  const raw = soEffectiveMaterialSubcon(pp);
   const parsed = soParseMaterialSubcon(raw);
   const arrivedCls = parsed.arrived ? ' is-active' : '';
   const dateHiddenCls = parsed.arrived ? ' is-hidden' : '';
   const cellStateCls = soMaterialSubconCellClasses(parsed);
+  const trackerTitle = soMaterialSubconTitle(pp);
   const legacyHtml = parsed.legacy
     ? `<span class="so-material-subcon-legacy" title="Previous note">${escapeHtml(parsed.legacy)}</span>`
     : '';
   return `
-    <td class="so-material-subcon-cell${cellStateCls}" data-pp-voucher-no="${escapeHtml(ppNo)}" data-last-saved="${escapeHtml(raw)}">
+    <td class="so-material-subcon-cell${cellStateCls}" data-pp-voucher-no="${escapeHtml(ppNo)}" data-last-saved="${escapeHtml(raw)}"${trackerTitle ? ` title="${escapeHtml(trackerTitle)}"` : ''}>
       <div class="so-material-subcon-controls">
         <button type="button"
           class="so-material-subcon-arrived${arrivedCls}"
           data-action="toggle-subcon-arrived"
           aria-pressed="${parsed.arrived ? 'true' : 'false'}"
-          title="${parsed.arrived ? 'Material arrived — click to clear (updates planner)' : 'Mark material as arrived (updates planner)'}">
+          title="${trackerTitle || (parsed.arrived ? 'Material arrived — click to clear (updates planner)' : 'Mark material as arrived (updates planner)')}">
           <span class="so-material-subcon-arrived-dot" aria-hidden="true"></span>
           Arrived
         </button>
@@ -3499,6 +3513,7 @@ async function soSaveMaterialSubconCell(cell, nextValue) {
     const found = soFindPp(ppNo);
     if (found.pp) {
       found.pp.material_subcon = saved;
+      found.pp.assembly_material_subcon = saved;
       if (Object.prototype.hasOwnProperty.call(data, 'material_in')) {
         found.pp.material_in = Boolean(data.material_in);
         found.pp.material_in_date = data.material_in_date || null;
@@ -3681,6 +3696,7 @@ function soExceptionPopover() {
 }
 
 function soCloseExceptionPopover() {
+  const key = soState.openExceptionKey;
   const pop = soExceptionPopover();
   if (pop) pop.hidden = true;
   soState.openExceptionKey = '';
@@ -3688,6 +3704,12 @@ function soCloseExceptionPopover() {
     btn.classList.remove('is-open');
     btn.setAttribute('aria-expanded', 'false');
   });
+  if (!key) return;
+  const [ppNo, partialRaw] = key.split('::');
+  const partialNo = Math.max(1, Number(partialRaw) || 1);
+  const found = soFindPp(ppNo);
+  soSyncExceptionButtons(ppNo, partialNo, soPartialExceptionIssues(found?.pp, { pp_partial_no: partialNo }));
+  soFlushExceptionSaveNow(ppNo, partialNo);
 }
 
 function soRepositionExceptionPopover() {
@@ -3734,7 +3756,6 @@ function soSyncExceptionButtons(ppNo, partialNo, issueIds) {
     `.so-exception-btn[data-pp-voucher-no="${CSS.escape(ppNo)}"][data-partial-no="${CSS.escape(String(partialNo))}"]`
   ).forEach(btn => {
     const value = btn.querySelector('.so-exception-btn-value');
-    if (value) value.innerHTML = soExceptionChipsHtml(selected);
     btn.classList.toggle('has-value', flagged);
     btn.classList.toggle('is-open', soState.openExceptionKey === key);
     btn.setAttribute('aria-expanded', soState.openExceptionKey === key ? 'true' : 'false');
@@ -3746,6 +3767,9 @@ function soSyncExceptionButtons(ppNo, partialNo, issueIds) {
     }
     const row = btn.closest('tr');
     if (row) row.classList.toggle('is-so-exception', flagged);
+    if (value && soState.openExceptionKey !== key) {
+      value.innerHTML = soExceptionChipsHtml(selected);
+    }
   });
 }
 
@@ -3797,6 +3821,7 @@ function soOpenExceptionPopover(btn) {
     soCloseExceptionPopover();
     return;
   }
+  if (soState.openExceptionKey) soCloseExceptionPopover();
   soCloseColumnFilter();
   soCloseProposedCncPopover();
   soState.openExceptionKey = key;
@@ -3809,14 +3834,56 @@ function soOpenExceptionPopover(btn) {
   soRenderExceptionPopover();
 }
 
-async function soSaveExceptionIssues(ppNo, partialNo, issueIds) {
+const SO_PICKER_SAVE_DELAY_MS = 140;
+const soExceptionSavePending = new Map();
+const soExceptionSaveTimers = new Map();
+const soExceptionStatusToken = new Map();
+const soProposedCncSavePending = new Map();
+const soProposedCncSaveTimers = new Map();
+const soProposedCncStatusToken = new Map();
+
+function soBumpPickerStatus(tokens, key) {
+  const token = (tokens.get(key) || 0) + 1;
+  tokens.set(key, token);
+  return token;
+}
+
+function soSyncExceptionPopoverChecks(issueIds) {
+  const pop = soExceptionPopover();
+  if (!pop || pop.hidden) return;
+  const selected = new Set(soNormalizeExceptionIssues(issueIds));
+  pop.querySelectorAll('[data-so-exception-issue]').forEach(input => {
+    const on = selected.has(input.getAttribute('data-so-exception-issue'));
+    if (input.checked !== on) input.checked = on;
+  });
+}
+
+function soQueueExceptionSave(ppNo, partialNo, issueIds) {
   const next = soNormalizeExceptionIssues(issueIds);
   const saveKey = `${ppNo}::exception::${partialNo}`;
-  if (!ppNo || soState.saveInFlight.has(saveKey)) return;
+  if (!ppNo) return;
   const found = soFindPp(ppNo);
-  soState.saveInFlight.add(saveKey);
   soSetPartialExceptionIssues(found?.pp, partialNo, next);
   soSyncExceptionButtons(ppNo, partialNo, next);
+  if (soState.openExceptionKey === soExceptionKey(ppNo, partialNo)) {
+    soSyncExceptionPopoverChecks(next);
+  }
+  soExceptionSavePending.set(saveKey, next.slice());
+  const prev = soExceptionSaveTimers.get(saveKey);
+  if (prev) window.clearTimeout(prev);
+  soExceptionSaveTimers.set(saveKey, window.setTimeout(() => {
+    soExceptionSaveTimers.delete(saveKey);
+    soFlushExceptionSave(ppNo, partialNo);
+  }, SO_PICKER_SAVE_DELAY_MS));
+}
+
+async function soFlushExceptionSave(ppNo, partialNo) {
+  const saveKey = `${ppNo}::exception::${partialNo}`;
+  if (soState.saveInFlight.has(saveKey) || !soExceptionSavePending.has(saveKey)) return;
+  const next = soExceptionSavePending.get(saveKey).slice();
+  soExceptionSavePending.delete(saveKey);
+  soState.saveInFlight.add(saveKey);
+  const statusToken = soBumpPickerStatus(soExceptionStatusToken, saveKey);
   soSetExceptionStatus(ppNo, partialNo, 'saving', 'Saving…');
   try {
     const data = await soPostJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
@@ -3826,6 +3893,8 @@ async function soSaveExceptionIssues(ppNo, partialNo, issueIds) {
         issues: next,
       },
     });
+    if (soExceptionSavePending.has(saveKey)) return;
+    const found = soFindPp(ppNo);
     if (found?.pp) {
       found.pp.highlighted_partials = Array.isArray(data.highlighted_partials)
         ? data.highlighted_partials
@@ -3838,14 +3907,36 @@ async function soSaveExceptionIssues(ppNo, partialNo, issueIds) {
     const saved = soSavedExceptionIssues(data, partialNo, next);
     soSetPartialExceptionIssues(found?.pp, partialNo, saved);
     soSyncExceptionButtons(ppNo, partialNo, saved);
-    if (soState.openExceptionKey === soExceptionKey(ppNo, partialNo)) soRenderExceptionPopover();
+    if (soState.openExceptionKey === soExceptionKey(ppNo, partialNo)) {
+      soSyncExceptionPopoverChecks(saved);
+    }
+    if (soExceptionStatusToken.get(saveKey) !== statusToken) return;
     soSetExceptionStatus(ppNo, partialNo, 'saved', saved.length ? soExceptionIssuesLabel(saved) : 'Cleared');
-    window.setTimeout(() => soSetExceptionStatus(ppNo, partialNo, '', ''), 1500);
+    window.setTimeout(() => {
+      if (soExceptionStatusToken.get(saveKey) !== statusToken) return;
+      soSetExceptionStatus(ppNo, partialNo, '', '');
+    }, 1500);
   } catch (err) {
+    if (soExceptionSavePending.has(saveKey) || soExceptionStatusToken.get(saveKey) !== statusToken) return;
     soSetExceptionStatus(ppNo, partialNo, 'error', err.message || 'Save failed');
   } finally {
     soState.saveInFlight.delete(saveKey);
+    if (soExceptionSavePending.has(saveKey)) soFlushExceptionSave(ppNo, partialNo);
   }
+}
+
+function soFlushExceptionSaveNow(ppNo, partialNo) {
+  const saveKey = `${ppNo}::exception::${partialNo}`;
+  const prev = soExceptionSaveTimers.get(saveKey);
+  if (prev) {
+    window.clearTimeout(prev);
+    soExceptionSaveTimers.delete(saveKey);
+  }
+  soFlushExceptionSave(ppNo, partialNo);
+}
+
+function soSaveExceptionIssues(ppNo, partialNo, issueIds) {
+  soQueueExceptionSave(ppNo, partialNo, issueIds);
 }
 
 function soToggleExceptionIssue(ppNo, partialNo, issue, checked) {
@@ -3909,6 +4000,7 @@ function soProposedCncPopover() {
 }
 
 function soCloseProposedCncPopover() {
+  const ppNo = soState.openProposedCncPp;
   const pop = soProposedCncPopover();
   if (pop) pop.hidden = true;
   soState.openProposedCncPp = '';
@@ -3917,6 +4009,10 @@ function soCloseProposedCncPopover() {
     btn.classList.remove('is-open');
     btn.setAttribute('aria-expanded', 'false');
   });
+  if (!ppNo) return;
+  const found = soFindPp(ppNo);
+  soSyncProposedCncButtons(ppNo, soProposedCncMachines(found?.pp));
+  soFlushProposedCncNow(ppNo);
 }
 
 function soRepositionProposedCncPopover() {
@@ -3953,16 +4049,17 @@ function soSetProposedCncStatus(ppNo, state, message) {
 }
 
 function soSyncProposedCncButtons(ppNo, machines) {
+  const menuOpen = soState.openProposedCncPp === ppNo;
   document.querySelectorAll(`.so-proposed-cnc-btn[data-pp-voucher-no="${CSS.escape(ppNo)}"]`).forEach(btn => {
     const value = btn.querySelector('.so-proposed-cnc-btn-value');
-    if (value) {
+    if (value && !menuOpen) {
       value.innerHTML = machines.length
         ? soRenderProposedCncHtml(machines)
         : '<span class="so-dash">—</span>';
     }
     btn.classList.toggle('has-value', machines.length > 0);
-    btn.classList.toggle('is-open', soState.openProposedCncPp === ppNo);
-    btn.setAttribute('aria-expanded', soState.openProposedCncPp === ppNo ? 'true' : 'false');
+    btn.classList.toggle('is-open', menuOpen);
+    btn.setAttribute('aria-expanded', menuOpen ? 'true' : 'false');
   });
 }
 
@@ -4021,6 +4118,7 @@ function soOpenProposedCncPopover(btn) {
     soCloseProposedCncPopover();
     return;
   }
+  if (soState.openProposedCncPp) soCloseProposedCncPopover();
   soCloseColumnFilter();
   soCloseExceptionPopover();
   soState.openProposedCncPp = ppNo;
@@ -4035,26 +4133,96 @@ function soOpenProposedCncPopover(btn) {
   soProposedCncPopover()?.querySelector('.so-proposed-cnc-search')?.focus();
 }
 
-async function soSaveProposedCnc(ppNo, machines) {
+function soSyncProposedCncPopoverChecks(machines) {
+  const pop = soProposedCncPopover();
+  if (!pop || pop.hidden) return;
+  const selected = soProposedCncSelectedSet(machines);
+  pop.querySelectorAll('[data-so-cnc-machine]').forEach(input => {
+    const key = soNormalizeCncMachine(input.getAttribute('data-so-cnc-machine')).toUpperCase();
+    const on = selected.has(key);
+    if (input.checked !== on) input.checked = on;
+  });
+}
+
+function soRevealProposedCncMachine(name) {
+  const pop = soProposedCncPopover();
+  if (!pop || pop.hidden) return;
+  const normalized = soNormalizeCncMachine(name);
+  if (!normalized) return;
+  const query = String(soState.proposedCncQuery || '').trim().toLowerCase();
+  const visible = !query
+    || normalized.toLowerCase().includes(query)
+    || String(soCncMachineNumber(normalized)) === query;
+  const key = normalized.toUpperCase();
+  const exists = [...pop.querySelectorAll('[data-so-cnc-machine]')].some(input => (
+    soNormalizeCncMachine(input.getAttribute('data-so-cnc-machine')).toUpperCase() === key
+  ));
+  if (exists && visible) return;
+  if (!visible) soState.proposedCncQuery = '';
+  soRenderProposedCncPopover();
+}
+
+function soQueueProposedCnc(ppNo, machines, reveal) {
   const next = (machines || []).map(soNormalizeCncMachine).filter(Boolean);
-  if (!ppNo || soState.saveInFlight.has(`${ppNo}::proposed_cnc`)) return;
-  soState.saveInFlight.add(`${ppNo}::proposed_cnc`);
+  const saveKey = `${ppNo}::proposed_cnc`;
+  if (!ppNo) return;
   soApplyProposedCncLocal(ppNo, next);
+  if (soState.openProposedCncPp === ppNo) {
+    soSyncProposedCncPopoverChecks(next);
+    if (reveal) soRevealProposedCncMachine(reveal);
+  }
+  soProposedCncSavePending.set(saveKey, next.slice());
+  const prev = soProposedCncSaveTimers.get(saveKey);
+  if (prev) window.clearTimeout(prev);
+  soProposedCncSaveTimers.set(saveKey, window.setTimeout(() => {
+    soProposedCncSaveTimers.delete(saveKey);
+    soFlushProposedCnc(ppNo);
+  }, SO_PICKER_SAVE_DELAY_MS));
+}
+
+async function soFlushProposedCnc(ppNo) {
+  const saveKey = `${ppNo}::proposed_cnc`;
+  if (soState.saveInFlight.has(saveKey) || !soProposedCncSavePending.has(saveKey)) return;
+  const next = soProposedCncSavePending.get(saveKey).slice();
+  soProposedCncSavePending.delete(saveKey);
+  soState.saveInFlight.add(saveKey);
+  const statusToken = soBumpPickerStatus(soProposedCncStatusToken, saveKey);
   soSetProposedCncStatus(ppNo, 'saving', 'Saving…');
   try {
     const data = await soPostJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
       proposed_cnc: next,
     });
+    if (soProposedCncSavePending.has(saveKey)) return;
     const saved = Array.isArray(data.proposed_cnc) ? data.proposed_cnc.filter(Boolean) : next;
     soApplyProposedCncLocal(ppNo, saved);
-    if (soState.openProposedCncPp === ppNo) soRenderProposedCncPopover();
+    if (soState.openProposedCncPp === ppNo) soSyncProposedCncPopoverChecks(saved);
+    if (soProposedCncStatusToken.get(saveKey) !== statusToken) return;
     soSetProposedCncStatus(ppNo, 'saved', 'Saved');
-    window.setTimeout(() => soSetProposedCncStatus(ppNo, '', ''), 1500);
+    window.setTimeout(() => {
+      if (soProposedCncStatusToken.get(saveKey) !== statusToken) return;
+      soSetProposedCncStatus(ppNo, '', '');
+    }, 1500);
   } catch (err) {
+    if (soProposedCncSavePending.has(saveKey) || soProposedCncStatusToken.get(saveKey) !== statusToken) return;
     soSetProposedCncStatus(ppNo, 'error', err.message || 'Save failed');
   } finally {
-    soState.saveInFlight.delete(`${ppNo}::proposed_cnc`);
+    soState.saveInFlight.delete(saveKey);
+    if (soProposedCncSavePending.has(saveKey)) soFlushProposedCnc(ppNo);
   }
+}
+
+function soFlushProposedCncNow(ppNo) {
+  const saveKey = `${ppNo}::proposed_cnc`;
+  const prev = soProposedCncSaveTimers.get(saveKey);
+  if (prev) {
+    window.clearTimeout(prev);
+    soProposedCncSaveTimers.delete(saveKey);
+  }
+  soFlushProposedCnc(ppNo);
+}
+
+function soSaveProposedCnc(ppNo, machines, reveal) {
+  soQueueProposedCnc(ppNo, machines, reveal);
 }
 
 function soToggleProposedCncMachine(ppNo, machine, checked) {
@@ -4073,11 +4241,10 @@ function soToggleProposedCncMachine(ppNo, machine, checked) {
   const key = added.toUpperCase();
   if (checked && added && !seen.has(key)) next.push(added);
   if (!checked) {
-    const filtered = next.filter(item => item.toUpperCase() !== key);
-    soSaveProposedCnc(ppNo, filtered);
+    soSaveProposedCnc(ppNo, next.filter(item => item.toUpperCase() !== key));
     return;
   }
-  soSaveProposedCnc(ppNo, next);
+  soSaveProposedCnc(ppNo, next, added);
 }
 
 function soBindProposedCncPicker() {

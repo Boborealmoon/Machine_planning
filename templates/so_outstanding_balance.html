@@ -2,7 +2,7 @@
 {% block title %}SO Outstanding Balance{% endblock %}
 {% block main_class %}app-main--sob{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/so_outstanding_balance.css') }}?v=sob-20260827c">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/so_outstanding_balance.css') }}?v=sob-20260923b">
 {% endblock %}
 {% block content %}
 <div class="sob-page">
@@ -18,7 +18,7 @@
         <strong>Open qty</strong> = leftover of that PP partial after shipped qty (not the full S/O remaining on every partial).
         <strong>SO value</strong> = unit x SO qty x exch (shown once per S/O line on export).
         <strong>Outstanding</strong> = unit x that leftover x exch, so summing the column does not double-count split partials.
-        Week from Coway EDD, else PO due.
+        Week from proposed EDD, else PO due.
         <strong>Export all</strong> includes every currently open line, not just the filtered view.
       </p>
     </div>
@@ -125,7 +125,8 @@
               </span>
             </th>
             <th data-sort="due_date">PO due</th>
-            <th data-sort="coway_edd">Coway</th>
+            <th data-sort="material_in_date" title="Date entered on Material in / Sub-con. Assemblies use the latest outstanding child arrival date.">Material in</th>
+            <th data-sort="proposed_edd" title="Planner proposed EDD. Week uses this date when set, otherwise PO due.">Proposed EDD</th>
             <th data-sort="week">Week</th>
           </tr>
         </thead>
@@ -138,5 +139,5 @@
 <div id="sob-col-filter-popover" class="sob-col-filter-popover" hidden></div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/so_outstanding_balance.js') }}?v=sob-20260827c"></script>
+<script src="{{ url_for('static', filename='js/so_outstanding_balance.js') }}?v=sob-20260924a"></script>
 {% endblock %}

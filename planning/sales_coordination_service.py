@@ -114,25 +114,31 @@ def _iso_date(value: Any) -> str | None:
 
 
 def parse_material_tracking_fields(pp: dict[str, Any]) -> dict[str, Any]:
-    """Read-only Material Tracking In / Need fields for one PP voucher."""
-    raw = _compact(pp.get("material_subcon"))
+    """Read-only Material Tracking In / Need fields for one PP voucher.
+
+    Assembly parents prefer the Assembly Parts Tracker child rollup when present.
+    """
+    raw = _compact(pp.get("assembly_material_subcon") or pp.get("material_subcon"))
     need = _iso_date(pp.get("material_need_date"))
+    status_overlay = _compact(pp.get("assembly_material_status"))
     if raw.upper() == "ARRIVED":
         return {
-            "material_status": "Arrived",
-            "material_in_date": _iso_date(pp.get("material_in_date")),
+            "material_status": status_overlay or "Arrived",
+            "material_in_date": _iso_date(
+                pp.get("assembly_material_in_date") or pp.get("material_in_date")
+            ),
             "material_need_date": need,
         }
     expected = _iso_date(raw)
     if expected:
         return {
-            "material_status": "Expected",
+            "material_status": status_overlay or "Expected",
             "material_in_date": expected,
             "material_need_date": need,
         }
     return {
-        "material_status": raw or "",
-        "material_in_date": None,
+        "material_status": status_overlay or raw or "",
+        "material_in_date": _iso_date(pp.get("assembly_material_in_date")),
         "material_need_date": need,
     }
 

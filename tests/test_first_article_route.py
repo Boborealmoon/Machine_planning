@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from app import app
 from planning.first_article_service import (
+    delete_pic,
     diff_tracked_fields,
     flag_process_sheets,
     flatten_sales_order_jobs,
@@ -491,6 +492,7 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertEqual(rows[0]["program_pic_ids"], [])
         self.assertEqual(rows[0]["program_pics"], [])
         self.assertFalse(rows[0]["is_exception"])
+        self.assertFalse(rows[0]["npi_complete"])
 
     def test_list_new_part_rows_has_bom_follows_erp_materials_not_pp_route(self):
         payload = {
@@ -807,6 +809,43 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertEqual(_resolve_machine_codes("CNC 10, 22", catalog), ["CNC 10", "CNC 22"])
         self.assertEqual(_resolve_machine_codes("15", catalog), ["CNC 15"])
 
+    def test_delete_pic_casts_id_array_to_bigint(self):
+        calls = []
+
+        class FakeCur:
+            rowcount = 1
+
+            def fetchone(self):
+                return {"pic_id": 4, "name": "Alice"}
+
+            def fetchall(self):
+                return [{"pic_id": 4}]
+
+        class FakeCon:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                return FakeCur()
+
+        import planning.first_article_service as svc
+
+        previous = svc._tables_ready
+        try:
+            svc._tables_ready = True
+            result = delete_pic(FakeCon(), 4)
+        finally:
+            svc._tables_ready = previous
+
+        self.assertEqual(result["name"], "Alice")
+        self.assertEqual(result["removed_count"], 1)
+        overlap_sql = [sql for sql, _params in calls if "&&" in sql]
+        self.assertEqual(len(overlap_sql), 2)
+        for sql in overlap_sql:
+            self.assertIn("%s::bigint[]", sql)
+            self.assertIn("&& %s::bigint[]", sql)
+            self.assertIn("ALL(%s::bigint[])", sql)
+        deactivate = next(sql for sql, _params in calls if "active = FALSE" in sql)
+        self.assertIn("ANY(%s::bigint[])", deactivate)
+
     def test_history_text_joins_pic_names(self):
         pics = {
             4: {"pic_id": 4, "name": "Ananda"},
@@ -815,6 +854,9 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertEqual(history_text("program_pic_ids", [7, 4], pics), "Chuan Heng, Ananda")
         self.assertEqual(history_text("remarks", "  Complex Programme.  ", pics), "Complex Programme.")
         self.assertEqual(history_text("program_finish_at", "26/08/2026", pics), "2026-08-26")
+        self.assertEqual(history_text("npi_complete", True, pics), "Yes")
+        self.assertEqual(history_text("npi_complete", False, pics), "No")
+        self.assertEqual(history_text("npi_complete", "yes", pics), "Yes")
 
     def test_diff_tracked_fields_skips_unchanged_values(self):
         pics = {4: {"pic_id": 4, "name": "Ananda"}}
@@ -837,6 +879,14 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertEqual(by_field["program_finish_at"]["new_value"], "2026-09-01")
         self.assertEqual(by_field["program_pic_ids"]["new_value"], "Ananda")
         self.assertEqual(by_field["program_pic_ids"]["field_label"], "Programme PIC")
+        complete_change = diff_tracked_fields(
+            {"npi_complete": False},
+            {"npi_complete": True},
+            ("npi_complete",),
+        )
+        self.assertEqual(complete_change[0]["field_label"], "Done")
+        self.assertEqual(complete_change[0]["old_value"], "No")
+        self.assertEqual(complete_change[0]["new_value"], "Yes")
 
     def test_merge_new_part_row_exposes_wo_stage(self):
         job = job_from_sales_order_pp(
@@ -853,6 +903,9 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertEqual(merged["current_stage_status"], "I")
         self.assertEqual(merged["current_stage_status_label"], "In process")
         self.assertEqual(merged["history_count"], 0)
+        self.assertFalse(merged["npi_complete"])
+        ticked = _merge_new_part_row(job, {"npi_complete": True}, pics_by_id={})
+        self.assertTrue(ticked["npi_complete"])
 
     def test_serialize_uses_quote_snapshot_when_live_blank(self):
         row = {
@@ -1211,6 +1264,7 @@ class FirstArticleRouteTests(unittest.TestCase):
             "bom_updated": True,
             "remarks": "Waiting CAM",
             "program_finish_at": "2026-09-01T16:00",
+            "npi_complete": True,
         }
         with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
             with patch(
@@ -1225,17 +1279,20 @@ class FirstArticleRouteTests(unittest.TestCase):
                         "remarks": "Waiting CAM",
                         "program_finish_at": "2026-09-01T16:00",
                         "program_pic_ids": [4],
+                        "npi_complete": True,
                     },
                 )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["row"]["bom_updated"], True)
+        self.assertTrue(response.get_json()["row"]["npi_complete"])
         update_fn.assert_called_once()
         payload = update_fn.call_args.args[0]
         self.assertEqual(payload["process_sheet_no"], "NPS26-0374")
         self.assertTrue(payload["bom_updated"])
         self.assertEqual(payload["program_finish_at"], "2026-09-01T16:00")
         self.assertEqual(payload["program_pic_ids"], [4])
+        self.assertTrue(payload["npi_complete"])
 
     def test_new_parts_patch_accepts_proposed_cnc(self):
         saved = {
@@ -1474,7 +1531,8 @@ class FirstArticleRouteTests(unittest.TestCase):
         self.assertIn("id=\"fa-history-table-body\"", html)
         self.assertIn("id=\"fa-history-modal\"", html)
         self.assertIn("quotations for new parts", html)
-        self.assertIn("fa-20260921-cnc", html)
+        self.assertIn("fa-20260922-done", html)
+        self.assertIn("fa-col-done", html)
         self.assertIn("id=\"fa-new-assigned-pic\"", html)
         self.assertIn("id=\"fa-col-filter-popover\"", html)
         self.assertIn("id=\"fa-proposed-cnc-popover\"", html)

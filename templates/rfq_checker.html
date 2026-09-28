@@ -1,73 +1,82 @@
 {% extends "base.html" %}
-{% block title %}RFQ Checker / Tracker{% endblock %}
+{% block title %}RFQ quotes{% endblock %}
 {% block body_class %}rfq-view{% endblock %}
 {% block main_class %}app-main--rfq-checker{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/rfq_checker.css') }}?v=rfq-20260901-tracker3">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/rfq_checker.css') }}?v=rfq-20260924-customer">
 {% endblock %}
 {% block content %}
 <div class="rfq-page" data-rfq-page="library">
   <header class="rfq-header">
     <div class="rfq-header-text">
       <p class="rfq-kicker">Archive</p>
-      <h1 class="rfq-title">RFQ Checker / Tracker</h1>
-      <p class="rfq-subtitle">Uploads stay grouped. Known parts pull assignment and cycle time; new parts fill C/T from the sheet and convert to hours. Days and lead time stay yours unless the workbook already has them.</p>
+      <h1 class="rfq-title">RFQ quotes</h1>
+      <p class="rfq-subtitle">Parts we have quoted, grouped by the customer the quote was for. Cycle time, machines, and the last RFQ stay with the part so a repeat quote can start from the last one.</p>
     </div>
     <div class="rfq-header-actions">
-      <a class="rfq-btn rfq-btn--primary" href="/archive/rfq-checker/upload">Upload Excel</a>
+      <a class="rfq-btn rfq-btn--primary" href="/archive/rfq-checker/upload">Upload a quote</a>
     </div>
   </header>
 
-  <div class="rfq-tabs" role="tablist" aria-label="RFQ checker / tracker views">
-    <button type="button" class="rfq-tab is-active" data-rfq-tab="archive" aria-selected="true">Tracker</button>
-    <button type="button" class="rfq-tab" data-rfq-tab="master" aria-selected="false">By part no.</button>
-    <button type="button" class="rfq-tab" data-rfq-tab="parts" aria-selected="false">Fabricated parts</button>
-  </div>
+  <nav class="rfq-nav" aria-label="RFQ quote views">
+    <button type="button" class="rfq-nav-btn is-active" data-rfq-tab="master" aria-selected="true">
+      <span class="rfq-nav-label">Quoted parts</span>
+      <span class="rfq-nav-hint">Grouped by customer</span>
+    </button>
+    <button type="button" class="rfq-nav-btn" data-rfq-tab="check" aria-selected="false">
+      <span class="rfq-nav-label">Check a part</span>
+      <span class="rfq-nav-hint">Last quote and stock</span>
+    </button>
+    <button type="button" class="rfq-nav-btn" data-rfq-tab="archive" aria-selected="false">
+      <span class="rfq-nav-label">Excel uploads</span>
+      <span class="rfq-nav-hint">Files you saved</span>
+    </button>
+    <button type="button" class="rfq-nav-link" data-rfq-tab="parts" aria-selected="false">Parts we already make</button>
+  </nav>
+  <p class="rfq-nav-note" id="rfq-nav-note">Each customer is a group. Under it are the part numbers from quotes we saved, with cycle time, machines, and the last RFQ.</p>
 
   <div id="rfq-alert" class="rfq-alert" hidden></div>
   <div id="rfq-loading" class="rfq-loading">
     <span class="rfq-spinner" aria-hidden="true"></span>
-    Loading uploads...
+    <span id="rfq-loading-label">Loading quoted parts...</span>
   </div>
 
-  <section id="rfq-panel-archive" class="rfq-panel">
+  <section id="rfq-panel-archive" class="rfq-panel" hidden>
     <label class="rfq-filter-wrap">
-      <span class="rfq-label">Filter uploads</span>
+      <span class="rfq-label">Find an upload</span>
       <input id="rfq-archive-search" class="rfq-input" type="search" placeholder="Part no, RFQ, customer, filename, tag..." autocomplete="off">
     </label>
     <div id="rfq-archive-groups" class="rfq-batch-list" hidden></div>
-    <p id="rfq-archive-empty" class="rfq-empty" hidden>No RFQ uploads yet. Upload a workbook to start the tracker.</p>
+    <p id="rfq-archive-empty" class="rfq-empty" hidden>No Excel uploads yet. Upload a quote and save it under a customer.</p>
   </section>
 
-  <section id="rfq-panel-master" class="rfq-panel" hidden>
-    <label class="rfq-filter-wrap">
-      <span class="rfq-label">Search RFQ parts</span>
-      <input id="rfq-master-search" class="rfq-input" type="search" placeholder="Part no, assignment, RFQ..." autocomplete="off">
-    </label>
-    <div class="rfq-table-card" id="rfq-master-card" hidden>
-      <div class="rfq-table-scroll">
-        <table class="rfq-table" id="rfq-master-table">
-          <thead>
-            <tr>
-              <th>Part No.</th>
-              <th>Assignment</th>
-              <th>Opns</th>
-              <th>Total C/T (mins)</th>
-              <th>Machines</th>
-              <th>Last RFQ</th>
-              <th>Cust.</th>
-            </tr>
-          </thead>
-          <tbody id="rfq-master-body"></tbody>
-        </table>
+  <section id="rfq-panel-check" class="rfq-panel" hidden>
+    <div class="rfq-check-form">
+      <label class="rfq-filter-wrap rfq-filter-wrap--wide">
+        <span class="rfq-label">Part numbers</span>
+        <textarea id="rfq-check-input" class="rfq-input rfq-check-input" rows="4" placeholder="One part per line, or paste from the RFQ"></textarea>
+      </label>
+      <div class="rfq-check-actions">
+        <button type="button" class="rfq-btn rfq-btn--primary" id="rfq-check-run">Look up these parts</button>
+        <p class="rfq-upload-hint">Shows every earlier quote for these part numbers, and finished goods in inventory enquiry (FG MFG and FG MRO).</p>
       </div>
     </div>
-    <p id="rfq-master-empty" class="rfq-empty" hidden>No RFQ assignment / cycle-time records yet. Upload a workbook to store them by part no.</p>
+    <div id="rfq-check-results" class="rfq-check-list"></div>
+    <p id="rfq-check-empty" class="rfq-empty">No parts checked yet.</p>
+  </section>
+
+  <section id="rfq-panel-master" class="rfq-panel">
+    <label class="rfq-filter-wrap">
+      <span class="rfq-label">Find a quoted part</span>
+      <input id="rfq-master-search" class="rfq-input" type="search" placeholder="Part no, customer, RFQ, machine..." autocomplete="off">
+    </label>
+    <div id="rfq-master-groups" class="rfq-customer-list" hidden></div>
+    <p id="rfq-master-empty" class="rfq-empty" hidden>No quoted parts yet. Upload a quote and save it under a customer.</p>
   </section>
 
   <section id="rfq-panel-parts" class="rfq-panel" hidden>
     <label class="rfq-filter-wrap">
-      <span class="rfq-label">Search fabricated part no.</span>
+      <span class="rfq-label">Search a part we already make</span>
       <input id="rfq-parts-search" class="rfq-input" type="search" placeholder="BB18-KS0526-28" autocomplete="off">
     </label>
     <div class="rfq-table-card" id="rfq-parts-card" hidden>
@@ -103,5 +112,5 @@
 </aside>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/rfq_checker.js') }}?v=rfq-20260901-tracker3"></script>
+<script src="{{ url_for('static', filename='js/rfq_checker.js') }}?v=rfq-20260924-customer"></script>
 {% endblock %}

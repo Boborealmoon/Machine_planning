@@ -1482,6 +1482,10 @@ body.machinist-board.machinist-board--stock-colors .trial-focus-card.is-current.
   color: #b45309;
 }
 
+.trial-focus-date.is-edd {
+  color: #4338ca;
+}
+
 .trial-focus-date.is-end.green {
   color: #157347;
 }

@@ -193,6 +193,49 @@ def _fetch_inventory_live() -> list[dict[str, Any]]:
     return _attach_lot_references(rows_out, _fetch_lot_reference_map())
 
 
+def lookup_inventory_by_codes(codes: list[str]) -> list[dict[str, Any]]:
+    """Inventory enquiry rows for an exact part-number list. Does not load the full catalogue."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for code in codes:
+        key = compact_text(code).upper()
+        if key and key not in seen:
+            seen.add(key)
+            normalized.append(key)
+    if not normalized:
+        return []
+    if use_staging_reads("inventory_enquiry"):
+        with planner_db() as con:
+            raw = db_rows(
+                con.execute(
+                    """
+                    SELECT payload
+                    FROM public.stg_inventory_enquiry
+                    WHERE UPPER(BTRIM(inventory_code)) = ANY(%s)
+                    """,
+                    (normalized,),
+                )
+            )
+        rows_out: list[dict[str, Any]] = []
+        for row in raw:
+            payload = row.get("payload") or {}
+            if isinstance(payload, str):
+                import json
+
+                payload = json.loads(payload)
+            rows_out.append(_enrich_inventory_row(dict(payload)))
+        return rows_out
+    sql = """
+        SELECT *
+        FROM public.ic_inventory_enquiry_summary_view
+        WHERE inventory_code IS NOT NULL
+          AND BTRIM(inventory_code) <> ''
+          AND UPPER(BTRIM(inventory_code)) = ANY(%s)
+        ORDER BY inventory_class_code NULLS LAST, inventory_code
+    """
+    return [_enrich_inventory_row(row) for row in live_query(sql, (normalized,))]
+
+
 def _class_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     counts = {key: 0 for key in _CLASS_KEY_BY_CODE.values()}
     counts["other"] = 0

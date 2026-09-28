@@ -22,6 +22,8 @@
 
     <div class="new-orders-header-actions">
 
+      <button type="button" class="btn btn-ghost btn-sm" id="sales-report-export-pdf" title="Export a management PDF: year summary, grouped analysis, and the month line breakdown" disabled>Export PDF</button>
+
       <button type="button" class="btn btn-ghost btn-sm" id="sales-report-export" title="Export month line lists to CSV" hidden>Export CSV</button>
 
       <button type="button" class="btn btn-ghost btn-sm" id="sales-report-refresh">Refresh</button>
@@ -288,6 +290,6 @@
 
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-report-breakdown-20260622"></script>
 
-<script src="{{ url_for('static', filename='js/sales_report.js') }}?v=sales-report-sp-header-20260901"></script>
+<script src="{{ url_for('static', filename='js/sales_report.js') }}?v=sales-report-pdf-20260924"></script>
 
 {% endblock %}

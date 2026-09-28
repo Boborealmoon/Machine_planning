@@ -1,8 +1,10 @@
-"""On-time delivery for process sheets - PO due date vs last delivery date.
+"""On-time delivery for process sheets - last delivery vs a benchmark date.
 
-One classified row per process sheet (PP voucher). Dates match Sales Orders:
-PO due = SO required shipment date (fallback PP source RSD); delivery = last
-shipment date on that SO line. On time = last delivery on or before PO due.
+One classified row per process sheet (PP voucher). Delivery is the last
+shipment date on that SO line. The default benchmark is PO due (SO required
+shipment date, fallback PP source RSD). Proposed EDD is an alternate benchmark
+stored on the same row. A blank proposed EDD falls back to the PO due date.
+On time = last delivery on or before the benchmark.
 Month charts always follow the delivery date. Component child COMP sheets are
 excluded. Incomplete SO lines are excluded until qty is fully shipped.
 """
@@ -24,6 +26,8 @@ STATUS_ON_TIME = "on_time"
 STATUS_LATE = "late"
 STATUS_UNCLASSIFIED = "unclassified"
 ON_TIME_STATUSES = frozenset({STATUS_EARLY, STATUS_ON_TIME})
+BENCHMARK_PO_DUE = "po_due"
+BENCHMARK_PROPOSED_EDD = "proposed_edd"
 BLANK_SALESPERSON = "(blank)"
 PPS_OVERVIEW_SALESPERSON = "alice"
 
@@ -146,6 +150,147 @@ def _delivery_date(row: dict[str, Any]) -> date | None:
     )
 
 
+def _proposed_edd_date(row: dict[str, Any]) -> date | None:
+    return parse_date_value(row.get("proposed_edd")) or parse_date_value(
+        row.get("coway_proposed_edd")
+    )
+
+
+def normalize_benchmark(raw: str | None) -> str:
+    text = compact_text(raw).lower().replace("-", "_").replace(" ", "_")
+    if text in {"proposed_edd", "edd", "proposed", "coway_edd", "coway_proposed_edd"}:
+        return BENCHMARK_PROPOSED_EDD
+    return BENCHMARK_PO_DUE
+
+
+def benchmark_label(benchmark: str | None) -> str:
+    if normalize_benchmark(benchmark) == BENCHMARK_PROPOSED_EDD:
+        return "Proposed EDD"
+    return "PO due date"
+
+
+def benchmark_date(row: dict[str, Any], benchmark: str | None):
+    """Date used to score and bucket a sheet.
+
+    Proposed EDD uses that date when it is set. A blank proposed EDD uses the
+    PO due date, the same date the PO-due benchmark uses.
+    """
+    if normalize_benchmark(benchmark) == BENCHMARK_PROPOSED_EDD:
+        proposed = _proposed_edd_date(row)
+        if proposed is not None:
+            return proposed
+    return parse_date_value(row.get("po_due_date"))
+
+
+def year_segment(row: dict[str, Any], year: int, benchmark: str | None) -> str | None:
+    """Which selected-year bucket a sheet belongs to.
+
+    ``due`` is the benchmark date inside the year. The other buckets are
+    shipments inside the year whose benchmark date is not.
+    """
+    delivery = parse_date_value(row.get("delivery_date"))
+    bench = benchmark_date(row, benchmark)
+    if bench is not None and bench.year == year:
+        return "due"
+    if delivery is None or delivery.year != year:
+        return None
+    if bench is None:
+        return "no_benchmark"
+    if bench.year < year:
+        return "carried_in"
+    if bench.year > year:
+        return "early_ship"
+    return None
+
+
+def select_year_segment(
+    rows: list[dict[str, Any]],
+    *,
+    year: int,
+    benchmark: str | None,
+    segment: str,
+) -> list[dict[str, Any]]:
+    """Rows for one year segment. ``month`` is set only when delivery is in ``year``."""
+    wanted = compact_text(segment) or "due"
+    scored = apply_benchmark(rows, benchmark)
+    out: list[dict[str, Any]] = []
+    for row in scored:
+        if year_segment(row, year, benchmark) != wanted:
+            continue
+        item = dict(row)
+        item["year_segment"] = wanted
+        delivery = parse_date_value(item.get("delivery_date"))
+        item["delivery_year"] = delivery.year if delivery is not None else None
+        item["month"] = delivery.month if delivery is not None and delivery.year == year else None
+        out.append(item)
+    return out
+
+
+def apply_benchmark(rows: list[dict[str, Any]], benchmark: str | None) -> list[dict[str, Any]]:
+    """Copy rows so ``days`` / ``status`` follow the selected benchmark.
+
+    PO due keeps the classified fields. Proposed EDD uses ``edd_days``. A blank
+    proposed EDD keeps the PO due comparison already stored on the row.
+    """
+    if normalize_benchmark(benchmark) != BENCHMARK_PROPOSED_EDD:
+        return list(rows)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        days = item.get("edd_days")
+        if isinstance(days, int):
+            status = _status_from_days(days)
+            item["days"] = days
+            item["status"] = status
+            item["on_time"] = status in ON_TIME_STATUSES
+        out.append(item)
+    return out
+
+
+def narrow_report_rows(
+    rows: list[dict[str, Any]],
+    *,
+    month: int | None = None,
+    pp_type: str | None = None,
+    status: str | None = None,
+    query: str | None = None,
+) -> list[dict[str, Any]]:
+    """Extra filters applied after year / PS / salesperson scope."""
+    wanted_type = compact_text(pp_type)
+    wanted_status = compact_text(status).lower()
+    needle = compact_text(query).lower()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if month and int(row.get("month") or 0) != month:
+            continue
+        if wanted_type and compact_text(row.get("pp_type")) != wanted_type:
+            continue
+        if wanted_status == "late" and row.get("status") != STATUS_LATE:
+            continue
+        if wanted_status == "on_time" and not row.get("on_time"):
+            continue
+        if needle:
+            hay = " ".join(
+                compact_text(row.get(field))
+                for field in (
+                    "process_sheet_no",
+                    "sales_order_no",
+                    "inventory_code",
+                    "description",
+                    "customer_name",
+                    "customer_code",
+                    "pp_type",
+                    "sales_person_name",
+                    "sales_person_code",
+                    "sales_person_label",
+                )
+            ).lower()
+            if needle not in hay:
+                continue
+        out.append(row)
+    return out
+
+
 def process_sheet_key(row: dict[str, Any]) -> str:
     voucher = compact_text(row.get("pp_voucher_no"))
     if voucher:
@@ -189,7 +334,7 @@ def _line_completed(row: dict[str, Any]) -> bool:
 
 
 def classify_process_sheets(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """One OTD row per process sheet using PO due vs last delivery columns."""
+    """One OTD row per process sheet. ``days`` / ``status`` stay vs PO due."""
     grouped: dict[str, dict[str, Any]] = {}
     for row in rows:
         key = process_sheet_key(row)
@@ -202,6 +347,7 @@ def classify_process_sheets(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         po_due = _po_due_date(row)
         delivery = _delivery_date(row)
+        proposed = _proposed_edd_date(row)
         if po_due is None or delivery is None:
             continue
         so, line = so_line_key(
@@ -221,6 +367,7 @@ def classify_process_sheets(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "sales_person_code": compact_text(row.get("sales_person_code")),
             "sales_person_name": compact_text(row.get("sales_person_name")),
             "po_due_date": po_due,
+            "proposed_edd": proposed,
             "delivery_date": delivery,
             "qty": _float_field(row, "pp_qty", "qty", "qty_issued"),
             "value": _float_field(row, "amount", "value", "total_home_amt", "line_value_home"),
@@ -231,17 +378,24 @@ def classify_process_sheets(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for bucket in grouped.values():
         po_due = bucket["po_due_date"]
         delivery = bucket["delivery_date"]
+        proposed = bucket["proposed_edd"]
         days = (delivery - po_due).days
         status = _status_from_days(days)
+        edd_days = (delivery - proposed).days if proposed is not None else None
+        edd_status = _status_from_days(edd_days)
         out.append(
             {
                 **bucket,
                 "pp_type_label": pp_type_label(bucket["pp_type"]),
                 "po_due_date": po_due.isoformat(),
+                "proposed_edd": proposed.isoformat() if proposed is not None else None,
                 "delivery_date": delivery.isoformat(),
                 "days": days,
                 "status": status,
                 "on_time": status in ON_TIME_STATUSES,
+                "edd_days": edd_days,
+                "edd_status": edd_status,
+                "edd_on_time": edd_status in ON_TIME_STATUSES,
                 "qty": round(bucket["qty"], 4),
                 "value": round(bucket["value"], 2),
             }

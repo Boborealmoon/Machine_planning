@@ -136,6 +136,7 @@ document.addEventListener("click", () => {
 const REPORTS_API_MARKERS = [
   "/api/sales-report",
   "/api/so-outstanding-balance",
+  "/api/on-time-delivery",
   "/api/job-ratio",
   "/api/production-capacity",
   "/api/planning-data/repeat-orders",

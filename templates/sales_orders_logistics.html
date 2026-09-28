@@ -7,7 +7,7 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260917-prpo-layout">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=20260924-col-filter">
 {% endblock %}
 {% block content %}
 <div class="sol-page">
@@ -50,9 +50,15 @@
     </div>
   </header>
 
-  <nav class="sol-toolbar" aria-label="Filters">
+  <nav class="sol-toolbar" aria-label="Supply chain sections">
+    <div class="sol-sections" role="tablist" aria-label="Supply chain sections">
+      <button type="button" class="sol-section is-active" data-sol-section="jobs" role="tab" aria-selected="true">Jobs</button>
+      <button type="button" class="sol-section" data-sol-section="purchasing" role="tab" aria-selected="false">Purchasing</button>
+      <button type="button" class="sol-section" data-sol-section="logistics-in" role="tab" aria-selected="false">Logistics In</button>
+      <button type="button" class="sol-section" data-sol-section="logistics-out" role="tab" aria-selected="false">Logistics Out</button>
+    </div>
     <div class="sol-nav">
-      <div class="sol-nav-group" role="tablist" aria-label="View">
+      <div class="sol-nav-group" data-sol-section-panel="jobs" role="tablist" aria-label="Jobs">
         <button type="button" class="sol-chip is-active" data-sol-view="active" role="tab" aria-selected="true">
           Active <span class="sol-chip-count" id="sol-active-count" hidden>0</span>
         </button>
@@ -64,6 +70,8 @@
                 title="Outstanding [SR] special process sheets (e.g. N26-[SR]22), with each sub-assembly finished good as its own line">
           [SR] <span class="sol-chip-count" id="sol-sr-count" hidden>0</span>
         </button>
+      </div>
+      <div class="sol-nav-group" data-sol-section-panel="purchasing" role="tablist" aria-label="Purchasing" hidden>
         <button type="button" class="sol-chip" data-sol-view="pr-enquiry" role="tab" aria-selected="false"
                 title="Purchase request status enquiry">
           PR Enquiry <span class="sol-chip-count" id="sol-pr-count" hidden>0</span>
@@ -76,19 +84,45 @@
                 title="Track part / inventory material without a process sheet">
           Part requests <span class="sol-chip-count" id="sol-req-count" hidden>0</span>
         </button>
-        <button type="button" class="sol-chip" data-sol-view="qc-checklist" role="tab" aria-selected="false"
-                title="Inbound shipments ready for QC, or received with no GRN yet">
-          QC checklist <span class="sol-chip-count" id="sol-qc-count" hidden>0</span>
-        </button>
       </div>
-      <div class="sol-nav-group sol-qc-bucket-group" id="sol-qc-bucket-group" role="tablist" aria-label="QC checklist bucket" hidden>
-        <button type="button" class="sol-chip sol-chip--bucket is-active" data-sol-qc-bucket="ready_qc" role="tab" aria-selected="true"
-                title="Inbound shipment has a GRN — ready for material inspection">
+      <div class="sol-nav-group" data-sol-section-panel="logistics-in" role="tablist" aria-label="Logistics in" hidden>
+        <button type="button" class="sol-chip" data-sol-view="logistics-in" data-sol-ship-bucket="outstanding" role="tab" aria-selected="false"
+                title="Open inbound shipments without a GRN">
+          Outstanding <span class="sol-chip-count" id="sol-in-ost-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-view="logistics-in" data-sol-ship-bucket="grn" role="tab" aria-selected="false"
+                title="Open inbound shipments that already have a GRN">
+          GRN <span class="sol-chip-count" id="sol-in-grn-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-view="logistics-in" data-sol-ship-bucket="history" role="tab" aria-selected="false"
+                title="Posted inbound shipments">
+          History <span class="sol-chip-count" id="sol-in-hst-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-view="logistics-in" data-sol-ship-bucket="cancelled" role="tab" aria-selected="false"
+                title="Cancelled inbound shipments">
+          Cancelled <span class="sol-chip-count" id="sol-in-can-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-view="qc-checklist" data-sol-qc-bucket="ready_qc" role="tab" aria-selected="false"
+                title="Inbound lines with a GRN, ready for material inspection">
           Ready for QC <span class="sol-chip-count" id="sol-qc-ready-count" hidden>0</span>
         </button>
-        <button type="button" class="sol-chip sol-chip--bucket" data-sol-qc-bucket="awaiting_grn" role="tab" aria-selected="false"
+        <button type="button" class="sol-chip" data-sol-view="qc-checklist" data-sol-qc-bucket="awaiting_grn" role="tab" aria-selected="false"
                 title="Material received on the inbound shipment, but ERP has not generated a GRN">
           Awaiting GRN <span class="sol-chip-count" id="sol-qc-awaiting-count" hidden>0</span>
+        </button>
+      </div>
+      <div class="sol-nav-group" data-sol-section-panel="logistics-out" role="tablist" aria-label="Logistics out" hidden>
+        <button type="button" class="sol-chip" data-sol-view="logistics-out" data-sol-ship-bucket="outstanding" role="tab" aria-selected="false"
+                title="Open outbound shipments">
+          Outstanding <span class="sol-chip-count" id="sol-out-ost-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-view="logistics-out" data-sol-ship-bucket="history" role="tab" aria-selected="false"
+                title="Posted outbound shipments">
+          History <span class="sol-chip-count" id="sol-out-hst-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-view="logistics-out" data-sol-ship-bucket="cancelled" role="tab" aria-selected="false"
+                title="Cancelled outbound shipments">
+          Cancelled <span class="sol-chip-count" id="sol-out-can-count" hidden>0</span>
         </button>
       </div>
       <select id="sol-material-filter" class="sol-select sol-edd-filter" aria-label="Filter by material status">
@@ -108,6 +142,7 @@
           <label class="filter-dropdown-item"><input type="checkbox" value="SR" /> [SR]</label>
         </div>
       </div>
+      <button type="button" class="sol-btn sol-btn--ghost sol-clear-filters" id="sol-clear-col-filters" hidden>Clear filters</button>
       <label class="sol-search-wrap">
         <svg class="sol-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
@@ -197,6 +232,15 @@
     </div>
   </div>
 
+  <div id="sol-col-filter" class="sol-col-filter" hidden>
+    <div class="sol-col-filter-head">
+      <span id="sol-col-filter-count">All values</span>
+      <button type="button" id="sol-col-filter-clear">Clear</button>
+    </div>
+    <input type="search" id="sol-col-filter-search" class="sol-col-filter-search" placeholder="Find a value..." autocomplete="off" aria-label="Find a filter value">
+    <div id="sol-col-filter-list" class="sol-col-filter-list"></div>
+  </div>
+
   <p id="sol-empty" class="sol-empty" hidden>
     <span class="sol-empty-title">No rows match your filters</span>
     <span class="sol-empty-copy">Try another tab, clear search, or refresh from ERP.</span>
@@ -254,5 +298,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260917-prpo-layout"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=20260924-col-filter"></script>
 {% endblock %}
