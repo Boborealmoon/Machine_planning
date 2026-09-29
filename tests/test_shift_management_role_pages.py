@@ -9,22 +9,22 @@ def test_role_homes_and_forbidden_pages():
         "op1": {
             "home": "/Shift-management/jobs",
             "ok": ("/jobs", "/tickets"),
-            "blocked": ("/dashboard", "/ops", "/history"),
+            "blocked": ("/dashboard", "/ops", "/history", "/hoto"),
         },
         "qc1": {
             "home": "/Shift-management/jobs",
             "ok": ("/jobs", "/tickets"),
-            "blocked": ("/dashboard", "/ops", "/history"),
+            "blocked": ("/dashboard", "/ops", "/history", "/hoto"),
         },
         "sup1": {
             "home": "/Shift-management/ops",
-            "ok": ("/ops", "/tickets", "/history"),
-            "blocked": ("/dashboard",),
+            "ok": ("/ops", "/tickets", "/history", "/hoto"),
+            "blocked": ("/dashboard", "/jobs", "/backlog"),
         },
         "adm1": {
             "home": "/Shift-management/dashboard",
-            "ok": ("/dashboard", "/ops", "/history"),
-            "blocked": (),
+            "ok": ("/dashboard", "/ops", "/history", "/hoto", "/backlog"),
+            "blocked": ("/jobs", "/tickets"),
         },
     }
 

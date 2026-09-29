@@ -10,6 +10,7 @@ from planning.anticipated_material_service import (
     apply_anticipated_material_fields,
     build_item,
     iso_week_fields,
+    material_subcon_is_arrived,
     parse_material_subcon_date,
     week_range_label,
 )
@@ -25,6 +26,13 @@ class TestParseMaterialSubconDate(TestCase):
     def test_arrived_is_not_a_date(self):
         assert parse_material_subcon_date("Arrived") is None
         assert parse_material_subcon_date("ARRIVED") is None
+        assert material_subcon_is_arrived("ARRIVED") is True
+        assert material_subcon_is_arrived("Arrived") is True
+
+    def test_arrived_keeps_stored_date(self):
+        assert material_subcon_is_arrived("ARRIVED|2026-09-25") is True
+        assert parse_material_subcon_date("ARRIVED|2026-09-25") == date(2026, 9, 25)
+        assert parse_material_subcon_date("arrived|25/09/2026") == date(2026, 9, 25)
 
     def test_empty_and_legacy_text(self):
         assert parse_material_subcon_date("") is None

@@ -17,6 +17,9 @@ def test_admin_gets_dashboard_home_not_ops():
     assert caps["can_ops_actions"] is False
     assert caps["can_report"] is True
     assert home_path("admin", "/Shift-management") == "/Shift-management/dashboard"
+    labels = [item["label"] for item in nav_items("admin", "/Shift-management")]
+    assert labels == ["Dashboard", "Queue", "HOTO", "Backlog", "History"]
+    assert caps["can_view_hoto_backlog"] is True
 
 
 def test_supervisor_reviews_queue_tickets_history():
@@ -29,7 +32,7 @@ def test_supervisor_reviews_queue_tickets_history():
     assert caps["can_report"] is True
     assert caps["can_view_history"] is True
     labels = [item["label"] for item in nav_items("supervisor", "/Shift-management")]
-    assert labels == ["Queue", "Tickets", "History"]
+    assert labels == ["Queue", "Tickets", "HOTO", "History"]
 
 
 def test_operator_is_jobs_and_create_ticket_only():

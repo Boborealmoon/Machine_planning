@@ -14,6 +14,7 @@ from .shift_management_auth import (
 )
 from .shift_management_report import build_shift_report_pdf
 from .shift_management_roles import capabilities, has_cap, home_path, nav_items
+from .finishing_queue_route import FINISHING_QUEUE_PATH
 from .shift_management_service import (
     acknowledge_handover,
     add_handover_comment,
@@ -37,7 +38,16 @@ from .shift_management_service import (
     patch_ticket,
     pending_ack_count,
     report_payload,
+    save_hoto_checklist,
     submit_handover,
+    submit_hoto_checklist,
+    reopen_hoto_checklist,
+    list_hoto_submissions,
+    get_hoto_submission,
+    HotoSubmitError,
+    HOTO_ATTENDANCE_ROWS,
+    HOTO_CHECKLIST_ITEMS,
+    get_hoto_checklist,
 )
 from .utils import compact_text
 
@@ -108,6 +118,26 @@ def _page_or_home(flag: str, template: str, **extra):
     return render_template(template, **_page_ctx(**extra))
 
 
+def _page_if_in_nav(page_key: str, flag: str, template: str):
+    """Hide pages that are not on this role's tab bar."""
+    user = current_shift_mgmt_user()
+    if not user:
+        return redirect(SHIFT_MGMT_LOGIN_PATH)
+    if page_key not in capabilities(user)["nav"]:
+        return redirect(home_path(user, SHIFT_MGMT_PATH))
+    return _page_or_home(flag, template, page=page_key)
+
+
+def _hoto_checklist_items():
+    items = []
+    for item in HOTO_CHECKLIST_ITEMS:
+        row = dict(item)
+        if row.get("see") == "QAQC view":
+            row["see_href"] = FINISHING_QUEUE_PATH
+        items.append(row)
+    return items
+
+
 # -- Pages ------------------------------------------------------------------
 
 
@@ -126,12 +156,12 @@ def shift_mgmt_ops():
 
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/jobs")
 def shift_mgmt_jobs():
-    return _page_or_home("can_view_jobs", "shift_management_jobs.html", page="jobs")
+    return _page_if_in_nav("jobs", "can_view_jobs", "shift_management_jobs.html")
 
 
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/tickets")
 def shift_mgmt_tickets():
-    return _page_or_home("can_view_tickets", "shift_management_tickets.html", page="tickets")
+    return _page_if_in_nav("tickets", "can_view_tickets", "shift_management_tickets.html")
 
 
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/machines")
@@ -167,6 +197,26 @@ def shift_mgmt_dashboard():
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/history")
 def shift_mgmt_history():
     return _page_or_home("can_view_history", "shift_management_history.html", page="history")
+
+
+@shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/backlog")
+def shift_mgmt_hoto_backlog():
+    return _page_if_in_nav(
+        "backlog",
+        "can_view_hoto_backlog",
+        "shift_management_hoto_backlog.html",
+    )
+
+
+@shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/hoto")
+def shift_mgmt_hoto():
+    return _page_or_home(
+        "can_handover",
+        "shift_management_hoto.html",
+        page="hoto",
+        hoto_items=_hoto_checklist_items(),
+        hoto_attendance_rows=range(1, HOTO_ATTENDANCE_ROWS + 1),
+    )
 
 
 if SHIFT_MGMT_PATH != _DEFAULT_SHIFT_MGMT_PATH:
@@ -559,6 +609,129 @@ def api_history():
         logger.exception("history failed")
         return jsonify({"error": str(exc)}), 500
     return jsonify({"items": items})
+
+
+@shift_mgmt_bp.get("/api/shift-management/hoto")
+def api_get_hoto():
+    user, err, status = _require_cap("can_handover")
+    if err:
+        return err, status
+    work_date = _parse_date(request.args.get("date"))
+    shift_out = normalize_shift(request.args.get("shift") or meta_constants()["guess_shift"])
+    try:
+        with planner_db() as con:
+            ensure_shift_mgmt_schema(con)
+            checklist = get_hoto_checklist(con, work_date, shift_out)
+    except Exception as exc:
+        logger.exception("hoto checklist load failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"checklist": checklist})
+
+
+@shift_mgmt_bp.put("/api/shift-management/hoto")
+def api_save_hoto():
+    user, err, status = _require_cap("can_handover")
+    if err:
+        return err, status
+    data = request.get_json(silent=True) or {}
+    work_date = _parse_date(data.get("work_date") or data.get("date"))
+    shift_out = normalize_shift(data.get("shift_out") or data.get("shift") or "Day")
+    try:
+        with planner_db() as con:
+            ensure_shift_mgmt_schema(con)
+            checklist = save_hoto_checklist(
+                con,
+                work_date=work_date,
+                shift_out=shift_out,
+                data=data,
+                user=user,
+            )
+    except Exception as exc:
+        logger.exception("hoto checklist save failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"checklist": checklist, "saved": True})
+
+
+@shift_mgmt_bp.post("/api/shift-management/hoto/submit")
+def api_submit_hoto():
+    user, err, status = _require_cap("can_handover")
+    if err:
+        return err, status
+    data = request.get_json(silent=True) or {}
+    work_date = _parse_date(data.get("work_date") or data.get("date"))
+    shift_out = normalize_shift(data.get("shift_out") or data.get("shift") or "Day")
+    try:
+        with planner_db() as con:
+            ensure_shift_mgmt_schema(con)
+            checklist = submit_hoto_checklist(
+                con,
+                work_date=work_date,
+                shift_out=shift_out,
+                data=data,
+                user=user,
+            )
+    except HotoSubmitError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("hoto checklist submit failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"checklist": checklist, "submitted": True})
+
+
+@shift_mgmt_bp.post("/api/shift-management/hoto/reopen")
+def api_reopen_hoto():
+    user, err, status = _require_cap("can_view_hoto_backlog")
+    if err:
+        return err, status
+    data = request.get_json(silent=True) or {}
+    work_date = _parse_date(data.get("work_date") or data.get("date"))
+    shift_out = normalize_shift(data.get("shift_out") or data.get("shift") or "Day")
+    try:
+        with planner_db() as con:
+            ensure_shift_mgmt_schema(con)
+            checklist = reopen_hoto_checklist(con, work_date, shift_out)
+    except Exception as exc:
+        logger.exception("hoto checklist reopen failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"checklist": checklist})
+
+
+@shift_mgmt_bp.get("/api/shift-management/hoto/backlog")
+def api_hoto_backlog():
+    user, err, status = _require_cap("can_view_hoto_backlog")
+    if err:
+        return err, status
+    shift = compact_text(request.args.get("shift"))
+    try:
+        with planner_db() as con:
+            ensure_shift_mgmt_schema(con)
+            items = list_hoto_submissions(
+                con,
+                date_from=_parse_date(request.args.get("from")) if request.args.get("from") else None,
+                date_to=_parse_date(request.args.get("to")) if request.args.get("to") else None,
+                shift_out=shift or None,
+            )
+    except Exception as exc:
+        logger.exception("hoto backlog failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"items": items})
+
+
+@shift_mgmt_bp.get("/api/shift-management/hoto/submissions/<int:submission_id>")
+def api_hoto_submission(submission_id: int):
+    user, err, status = _require_cap("can_view_hoto_backlog")
+    if err:
+        return err, status
+    try:
+        with planner_db() as con:
+            ensure_shift_mgmt_schema(con)
+            checklist = get_hoto_submission(con, submission_id)
+    except Exception as exc:
+        logger.exception("hoto submission load failed")
+        return jsonify({"error": str(exc)}), 500
+    if not checklist:
+        return jsonify({"error": "Handover document not found"}), 404
+    return jsonify({"checklist": checklist})
 
 
 @shift_mgmt_bp.get("/api/shift-management/report.pdf")

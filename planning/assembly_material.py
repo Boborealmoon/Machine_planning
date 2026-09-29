@@ -12,7 +12,7 @@ import logging
 from datetime import date
 from typing import Any
 
-from .anticipated_material_service import parse_material_subcon_date
+from .anticipated_material_service import material_subcon_is_arrived, parse_material_subcon_date
 from .assembly_classify import is_component_child_ps, parent_ps_id_from_child
 from .helpers import planner_db, rows
 from .utils import compact_text
@@ -26,9 +26,29 @@ def _iso(value: date | None) -> str | None:
     return value.isoformat() if value else None
 
 
+def _arrived_subcon(when: date | None) -> str:
+    """Arrived flag plus the indicated date, when there is one."""
+    if when is None:
+        return _ARRIVED
+    return f"{_ARRIVED}|{when.isoformat()}"
+
+
+def _indicated_arrival_date(parent_raw: str, children: list[dict[str, Any]]) -> date | None:
+    """Date written on the parent or child note. Ignores the planner stamp."""
+    indicated = parse_material_subcon_date(parent_raw)
+    if indicated:
+        return indicated
+    child_dates = [
+        parsed
+        for child in children
+        if (parsed := parse_material_subcon_date((child or {}).get("material_subcon")))
+    ]
+    return max(child_dates) if child_dates else None
+
+
 def child_is_arrived(child: dict[str, Any] | None) -> bool:
     raw = compact_text((child or {}).get("material_subcon"))
-    if raw.upper() == _ARRIVED:
+    if material_subcon_is_arrived(raw):
         return True
     return bool((child or {}).get("material_in"))
 
@@ -58,7 +78,7 @@ def rollup_assembly_material(
         return None
 
     parent_raw = compact_text(parent_subcon)
-    parent_arrived = parent_raw.upper() == _ARRIVED or bool(parent_material_in)
+    parent_arrived = material_subcon_is_arrived(parent_raw) or bool(parent_material_in)
     parent_date = None if parent_arrived else (
         parse_material_subcon_date(parent_raw)
         or parse_material_subcon_date(parent_material_in_date)
@@ -88,12 +108,12 @@ def rollup_assembly_material(
             "pending_child_count": len(outstanding_dates) + pending_without_date,
         }
 
+    indicated = _indicated_arrival_date(parent_raw, kids)
     if parent_arrived:
-        in_date = _iso(parse_material_subcon_date(parent_material_in_date))
         return {
             "material_status": "Arrived",
-            "material_in_date": in_date,
-            "material_subcon": _ARRIVED,
+            "material_in_date": _iso(indicated),
+            "material_subcon": _arrived_subcon(indicated),
             "source": "assembly_parts",
             "pending_child_count": 0,
         }
@@ -107,8 +127,8 @@ def rollup_assembly_material(
         }
     return {
         "material_status": "Arrived",
-        "material_in_date": _iso(parse_material_subcon_date(parent_material_in_date)),
-        "material_subcon": _ARRIVED,
+        "material_in_date": _iso(indicated),
+        "material_subcon": _arrived_subcon(indicated),
         "source": "assembly_parts",
         "pending_child_count": 0,
     }
@@ -222,6 +242,104 @@ def load_child_arrivals_by_parent(parent_ps_ids: list[str]) -> dict[str, list[di
     return {parent: list(children.values()) for parent, children in by_parent.items()}
 
 
+def _line_sort_key(child: dict[str, Any]) -> tuple[str, int]:
+    ps = compact_text(child.get("process_sheet_no"))
+    head, sep, suffix = ps.rpartition("-")
+    if not sep:
+        return (ps, 0)
+    try:
+        number = int(suffix)
+    except ValueError:
+        return (ps, 0)
+    return (head, number)
+
+
+def load_assembly_line_items(
+    parent_ps_ids: list[str],
+    arrivals: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """APT child lines for a parent process sheet, with that child's own arrival."""
+    parents = sorted({_parent_ps_key(raw) for raw in parent_ps_ids if _parent_ps_key(raw)})
+    if not parents:
+        return {}
+    try:
+        with planner_db() as con:
+            sheets = rows(
+                con.execute(
+                    """
+                    SELECT pp_voucher_no, process_sheet_no, inventory_code, total_qty
+                    FROM mfg_process_sheet_info
+                    WHERE upper(btrim(pp_voucher_no)) = ANY(%s)
+                      AND upper(btrim(coalesce(process_sheet_no, '')))
+                          <> upper(btrim(pp_voucher_no))
+                    """,
+                    (parents,),
+                )
+            )
+            cached = rows(
+                con.execute(
+                    """
+                    SELECT DISTINCT ON (upper(split_part(ps_id, '::', 1)))
+                           ps_id, part_no, description, partial_qty
+                    FROM pp_vouchers_cache
+                    WHERE regexp_replace(upper(split_part(ps_id, '::', 1)), '-[0-9]+$', '') = ANY(%s)
+                      AND upper(split_part(ps_id, '::', 1)) ~ '-[0-9]+$'
+                    ORDER BY upper(split_part(ps_id, '::', 1)), pp_partial_no
+                    """,
+                    (parents,),
+                )
+            )
+    except Exception as exc:
+        logger.warning("assembly line item load skipped: %s", exc)
+        return {}
+
+    cache_by_ps = {
+        _child_ps_key(row.get("ps_id")): row
+        for row in cached
+        if _child_ps_key(row.get("ps_id"))
+    }
+    arrivals = arrivals if arrivals is not None else load_child_arrivals_by_parent(parents)
+    arrival_by_ps: dict[str, dict[str, Any]] = {}
+    for children in arrivals.values():
+        for child in children:
+            child_id = _child_ps_key(child.get("process_sheet_no"))
+            if child_id:
+                arrival_by_ps[child_id] = child
+
+    by_parent: dict[str, list[dict[str, Any]]] = {}
+    seen: set[tuple[str, str]] = set()
+    for row in sheets:
+        parent_id = _parent_ps_key(row.get("pp_voucher_no"))
+        child_id = _child_ps_key(row.get("process_sheet_no"))
+        if not parent_id or not child_id or parent_ps_id_from_child(child_id).upper() != parent_id:
+            continue
+        key = (parent_id, child_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        cache = cache_by_ps.get(child_id, {})
+        arrival = arrival_by_ps.get(child_id, {})
+        qty = row.get("total_qty")
+        if qty in (None, "") and cache.get("partial_qty") not in (None, ""):
+            qty = cache.get("partial_qty")
+        by_parent.setdefault(parent_id, []).append(
+            {
+                "part_no": compact_text(cache.get("part_no") or row.get("inventory_code")),
+                "description": compact_text(cache.get("description")),
+                "qty": qty,
+                "process_sheet_no": child_id,
+                "is_subassembly": True,
+                "material_subcon": compact_text(arrival.get("material_subcon")),
+                "material_need_date": compact_text(arrival.get("material_need_date")),
+                "material_in": bool(arrival.get("material_in")),
+                "material_in_date": arrival.get("material_in_date") or None,
+            }
+        )
+    for children in by_parent.values():
+        children.sort(key=_line_sort_key)
+    return by_parent
+
+
 def apply_assembly_material_rollup(orders: list[dict[str, Any]]) -> None:
     """Attach assembly_material_subcon on parent PP vouchers from APT children."""
     pps = [pp for order in orders for pp in (order.get("pp_vouchers") or [])]
@@ -231,15 +349,18 @@ def apply_assembly_material_rollup(orders: list[dict[str, Any]]) -> None:
         pp.pop("assembly_material_status", None)
         pp.pop("assembly_material_source", None)
         pp.pop("assembly_material_pending_child_count", None)
+        pp.pop("assembly_line_items", None)
     parent_ids = [_parent_ps_key(pp.get("process_sheet_no") or pp.get("pp_voucher_no")) for pp in pps]
     parent_ids = [ps_id for ps_id in parent_ids if ps_id]
     if not parent_ids:
         return
     by_parent = load_child_arrivals_by_parent(parent_ids)
-    if not by_parent:
-        return
+    line_items = load_assembly_line_items(parent_ids, arrivals=by_parent)
     for pp in pps:
         parent_id = _parent_ps_key(pp.get("process_sheet_no") or pp.get("pp_voucher_no"))
+        own_lines = line_items.get(parent_id) or []
+        if own_lines:
+            pp["assembly_line_items"] = own_lines
         children = by_parent.get(parent_id) or []
         rolled = rollup_assembly_material(
             parent_subcon=pp.get("material_subcon"),

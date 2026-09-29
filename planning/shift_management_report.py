@@ -31,6 +31,16 @@ def _yes_no_issue(flag: Any, text: Any) -> str:
     return "Nil"
 
 
+def _qty(value: Any) -> str:
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return "0"
+    if abs(number - round(number)) < 0.001:
+        return str(int(round(number)))
+    return f"{number:.1f}"
+
+
 def build_shift_report_pdf(payload: dict[str, Any]) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -83,7 +93,13 @@ def build_shift_report_pdf(payload: dict[str, Any]) -> bytes:
     story.append(
         Paragraph(
             f"<b>{work_date}</b> &nbsp;|&nbsp; Outgoing: <b>{shift_out}</b>"
-            f" &nbsp;?&nbsp; Incoming: <b>{shift_in}</b>",
+            f" &nbsp;&rarr;&nbsp; Incoming: <b>{shift_in}</b>",
+            body,
+        )
+    )
+    story.append(
+        Paragraph(
+            f"Scanned window: <b>{_txt(payload.get('window_label'))}</b> (shop time)",
             body,
         )
     )
@@ -93,7 +109,11 @@ def build_shift_report_pdf(payload: dict[str, Any]) -> bytes:
     story.append(Spacer(1, 6))
 
     summary_rows = [
-        ["Machines", str(summary.get("machines") or 0)],
+        ["Scans", str(summary.get("scan_count") or 0)],
+        ["Scanned qty", _qty(summary.get("scanned_qty"))],
+        ["Scanned reject", _qty(summary.get("scanned_reject"))],
+        ["Machines scanned", str(summary.get("scanned_machines") or 0)],
+        ["Handovers", str(summary.get("machines") or 0)],
         ["Pending ack", str(summary.get("pending_ack") or 0)],
         ["Open tickets", str(summary.get("open_tickets") or 0)],
         ["Urgent jobs", str(summary.get("urgent_jobs") or 0)],
@@ -117,6 +137,66 @@ def build_shift_report_pdf(payload: dict[str, Any]) -> bytes:
     )
     story.append(summary_table)
 
+    story.append(Paragraph("Scanned output", h2))
+    scan_groups = payload.get("scan_groups") or []
+    if not scan_groups:
+        story.append(
+            Paragraph(
+                "No quantity was scanned in this shift window.",
+                body,
+            )
+        )
+    for group in scan_groups:
+        story.append(
+            Paragraph(
+                f"{_txt(group.get('machine_no'))} &mdash; "
+                f"{_qty(group.get('qty'))} pcs"
+                + (
+                    f", reject {_qty(group.get('reject'))}"
+                    if float(group.get("reject") or 0) > 0
+                    else ""
+                ),
+                h2,
+            )
+        )
+        scan_rows = [["Time", "PS / job", "Op", "Qty", "Reject"]]
+        for scan in group.get("scans") or []:
+            when = _txt(scan.get("scanned_at_label"))
+            if len(when) >= 16:
+                when = when[11:16]
+            op = _txt(scan.get("op_no") or scan.get("stage_desc"))
+            scan_rows.append(
+                [
+                    when,
+                    _txt(scan.get("process_sheet_no") or scan.get("job_no")),
+                    op,
+                    _qty(scan.get("qty_jump")),
+                    _qty(scan.get("rej_jump")),
+                ]
+            )
+        scan_table = Table(
+            scan_rows,
+            colWidths=[22 * mm, 62 * mm, 48 * mm, 22 * mm, 22 * mm],
+        )
+        scan_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e0f2fe")),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("BOX", (0, 0), (-1, -1), 0.4, colors.HexColor("#94a3b8")),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.2, colors.HexColor("#e2e8f0")),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+        story.append(scan_table)
+
+    story.append(Paragraph("Handover notes", h2))
     handovers = payload.get("handovers") or []
     if not handovers:
         story.append(Spacer(1, 10))
@@ -186,7 +266,7 @@ def build_shift_report_pdf(payload: dict[str, Any]) -> bytes:
                 who = _txt(c.get("display_name") or c.get("username"), "User")
                 when = _txt(c.get("created_at"))
                 story.append(
-                    Paragraph(f"? [{when}] {who}: {_txt(c.get('body'))}", small)
+                    Paragraph(f"- [{when}] {who}: {_txt(c.get('body'))}", small)
                 )
 
         machine_tickets = ho.get("machine_tickets") or []
@@ -195,7 +275,7 @@ def build_shift_report_pdf(payload: dict[str, Any]) -> bytes:
             for t in machine_tickets:
                 story.append(
                     Paragraph(
-                        f"? #{_txt(t.get('ticket_id'))} [{_txt(t.get('status'))}/"
+                        f"- #{_txt(t.get('ticket_id'))} [{_txt(t.get('status'))}/"
                         f"{_txt(t.get('priority'))}] {_txt(t.get('category'))}: "
                         f"{_txt(t.get('title'))} - PS {_txt(t.get('process_sheet_no') or t.get('job_no'))}",
                         small,

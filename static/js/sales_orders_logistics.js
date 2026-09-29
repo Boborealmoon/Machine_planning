@@ -41,7 +41,7 @@
       <th class="sol-col-stage">Stage</th>
       <th class="sol-col-part">Part</th>
       <th class="sol-col-due">Due</th>
-      <th class="sol-col-need" title="Same Need date as S/O Management — saved per PP voucher">Need date</th>
+      <th class="sol-col-need" title="Set on S/O Management — read only here">Need date</th>
       <th class="sol-col-bom">BOM</th>
       <th class="sol-col-material" title="Material in">In</th>
       <th class="sol-col-notes" title="Mtl / Part Order">Notes</th>
@@ -317,9 +317,11 @@
   function parseMaterialSubcon(raw) {
     const text = String(raw || '').trim();
     if (!text) return { arrived: false, date: '', legacy: '' };
-    if (/^arrived$/i.test(text)) return { arrived: true, date: '', legacy: '' };
-    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return { arrived: false, date: text, legacy: '' };
-    const dmy = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    const arrived = /^arrived(?:\|(.*))?$/i.exec(text);
+    const body = arrived ? String(arrived[1] || '').trim() : text;
+    if (arrived && !body) return { arrived: true, date: '', legacy: '' };
+    if (/^\d{4}-\d{2}-\d{2}$/.test(body)) return { arrived: Boolean(arrived), date: body, legacy: '' };
+    const dmy = body.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
     if (dmy) {
       const day = Number(dmy[1]);
       const month = Number(dmy[2]);
@@ -328,27 +330,42 @@
       if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
         const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
         if (!Number.isNaN(Date.parse(`${iso}T00:00:00`))) {
-          return { arrived: false, date: iso, legacy: '' };
+          return { arrived: Boolean(arrived), date: iso, legacy: '' };
         }
       }
     }
+    if (arrived) return { arrived: true, date: '', legacy: body };
     return { arrived: false, date: '', legacy: text };
   }
 
   function serializeMaterialSubcon({ arrived, date }) {
+    const iso = String(date || '').trim();
+    if (arrived && iso) return `${MATERIAL_ARRIVED}|${iso}`;
     if (arrived) return MATERIAL_ARRIVED;
-    return String(date || '').trim();
+    return iso;
+  }
+
+  function rowUsesAssemblyRollup(pp) {
+    if (!pp || pp.assembly_synthetic) return false;
+    const ps = psBaseKey(pp.process_sheet_no || pp.pp_voucher_no);
+    if (isComponentChildPs(ps)) return false;
+    return true;
+  }
+
+  function storedMaterialDate(parsed) {
+    return parsed?.date || '';
   }
 
   function materialSubconDisplay(raw) {
     const parsed = parseMaterialSubcon(raw);
-    if (parsed.arrived) return 'Arrived';
     if (parsed.date) return formatDate(parsed.date);
+    if (parsed.arrived) return 'Arrived';
     if (parsed.legacy) return parsed.legacy;
     return '';
   }
 
   function effectiveMaterialSubcon(pp) {
+    if (!rowUsesAssemblyRollup(pp)) return String(pp?.material_subcon || '');
     return String(pp?.assembly_material_subcon || pp?.material_subcon || '');
   }
 
@@ -416,6 +433,7 @@
 
   function assemblyForPp(pp) {
     if (!state.assemblyJobs.size) return null;
+    const ppPs = psBaseKey(pp?.process_sheet_no || pp?.pp_voucher_no);
     for (const key of [pp?.process_sheet_no, pp?.pp_voucher_no]) {
       const id = psBaseKey(key);
       if (!id) continue;
@@ -424,11 +442,18 @@
       if (parent && state.assemblyJobs.has(parent)) return state.assemblyJobs.get(parent);
     }
     const part = partKeyOf(pp?.inventory_code);
-    if (part && state.assemblyJobs.has(`part:${part}`)) return state.assemblyJobs.get(`part:${part}`);
+    if (part && state.assemblyJobs.has(`part:${part}`)) {
+      const job = state.assemblyJobs.get(`part:${part}`);
+      const jobPs = psBaseKey(job?.ps_id);
+      if (!ppPs || !jobPs || jobPs === ppPs) return job;
+    }
     return null;
   }
 
   function assemblyLineItems(pp) {
+    const own = (Array.isArray(pp?.assembly_line_items) ? pp.assembly_line_items : [])
+      .filter(child => String(child?.part_no || child?.process_sheet_no || '').trim());
+    if (own.length) return own;
     const job = assemblyForPp(pp);
     if (!job) return [];
     return (job.children || []).filter(child => String(child.part_no || '').trim());
@@ -438,10 +463,20 @@
     return String(value || '').trim().toUpperCase();
   }
 
+  function clearAssemblyMaterialRollup(pp) {
+    if (!pp) return pp;
+    delete pp.assembly_material_subcon;
+    delete pp.assembly_material_in_date;
+    delete pp.assembly_material_status;
+    delete pp.assembly_material_source;
+    delete pp.assembly_material_pending_child_count;
+    return pp;
+  }
+
   function bomChildPp(parentPp, child) {
     const childPs = String(child?.process_sheet_no || '').trim();
     if (!childPs) return parentPp;
-    return {
+    return clearAssemblyMaterialRollup({
       ...parentPp,
       pp_voucher_no: childPs,
       process_sheet_no: childPs,
@@ -455,7 +490,9 @@
       material_need_date_history_count: Number(child.material_need_date_history_count || 0),
       material_in_date_history_count: Number(child.material_in_date_history_count || 0),
       material_delay: Boolean(child.material_delay),
-    };
+      material_in: Boolean(child.material_in),
+      material_in_date: child.material_in_date || null,
+    });
   }
 
   function asBomChildRow(parentLeaf, child, index, count) {
@@ -1030,12 +1067,17 @@
 
   function applyMaterialCellState(cell, parsed) {
     if (!cell) return;
-    cell.classList.toggle('has-material-date', Boolean(parsed.date) && !parsed.arrived);
+    cell.classList.toggle('has-material-date', Boolean(parsed.date));
     cell.classList.toggle('has-material-arrived', Boolean(parsed.arrived));
     const dateInput = cell.querySelector('.so-material-subcon-date');
     if (dateInput) {
-      dateInput.disabled = Boolean(parsed.arrived);
-      dateInput.classList.toggle('is-hidden', Boolean(parsed.arrived));
+      dateInput.disabled = false;
+      dateInput.classList.remove('is-hidden');
+    }
+    const label = cell.querySelector('.so-material-subcon-date-text');
+    if (label) {
+      const date = parsed?.date || '';
+      label.textContent = parsed?.arrived && date ? formatDate(date) : '';
     }
   }
 
@@ -1043,9 +1085,12 @@
     const ppNo = String(pp.pp_voucher_no || '').trim();
     const raw = effectiveMaterialSubcon(pp);
     const parsed = parseMaterialSubcon(raw);
+    const dateValue = storedMaterialDate(parsed);
     const arrivedCls = parsed.arrived ? ' is-active' : '';
-    const dateHiddenCls = parsed.arrived ? ' is-hidden' : '';
-    const cellStateCls = parsed.arrived ? ' has-material-arrived' : (parsed.date ? ' has-material-date' : '');
+    const cellStateCls = [
+      parsed.arrived ? ' has-material-arrived' : '',
+      dateValue ? ' has-material-date' : '',
+    ].join('');
     const legacyHtml = parsed.legacy
       ? `<span class="so-material-subcon-legacy" title="Previous note">${escapeHtml(parsed.legacy)}</span>`
       : '';
@@ -1064,10 +1109,10 @@
             ${renderDateHistoryButton(pp, 'material_in_date')}
           </div>
           <input type="date"
-            class="so-material-subcon-date${dateHiddenCls}"
-            value="${escapeHtml(parsed.arrived ? '' : parsed.date)}"
-            ${parsed.arrived ? 'disabled' : ''}
+            class="so-material-subcon-date"
+            value="${escapeHtml(dateValue)}"
             aria-label="Material expected / arrival date">
+          <span class="so-material-subcon-date-text">${parsed.arrived && dateValue ? escapeHtml(formatDate(dateValue)) : ''}</span>
           ${legacyHtml}
         </div>
         <span class="so-editable-status" aria-live="polite"></span>
@@ -1251,23 +1296,14 @@
   }
 
   function renderNeedDateCell(pp) {
-    const ppNo = String(pp.pp_voucher_no || '').trim();
     const value = isoDateValue(pp.material_need_date);
     const cellStateCls = value ? ' has-need-date' : '';
     return `
       <td class="sol-need-date-cell${cellStateCls}">
         <div class="sol-date-with-history">
-          <input type="date"
-            class="sol-need-date-input"
-            data-pp-voucher-no="${escapeHtml(ppNo)}"
-            data-field="material_need_date"
-            data-last-saved="${escapeHtml(value)}"
-            value="${escapeHtml(value)}"
-            aria-label="Need date"
-            title="Same Need date as S/O Management — saved per PP voucher">
+          <span class="sol-need-date-static" title="Set on S/O Management — read only here">${escapeHtml(formatDate(value))}</span>
           ${renderDateHistoryButton(pp, 'material_need_date')}
         </div>
-        <span class="so-editable-status" aria-live="polite"></span>
       </td>
     `;
   }
@@ -1319,19 +1355,6 @@
     body.querySelectorAll('.sol-delay-input').forEach(input => {
       if (String(input.dataset.ppVoucherNo || '') !== ppNo) return;
       applyDelayUi(input, flagged);
-    });
-  }
-
-  function syncNeedDateRows(ppNo, value) {
-    const body = document.getElementById('sol-table-body');
-    if (!body || !ppNo) return;
-    const saved = isoDateValue(value);
-    body.querySelectorAll('.sol-need-date-input').forEach(input => {
-      if (String(input.dataset.ppVoucherNo || '') !== ppNo) return;
-      input.value = saved;
-      input.dataset.lastSaved = saved;
-      const cell = input.closest('.sol-need-date-cell');
-      if (cell) cell.classList.toggle('has-need-date', Boolean(saved));
     });
   }
 
@@ -1815,8 +1838,10 @@
     const raw = String(row.material_subcon || '');
     const parsed = parseMaterialSubcon(raw);
     const arrivedCls = parsed.arrived ? ' is-active' : '';
-    const dateHiddenCls = parsed.arrived ? ' is-hidden' : '';
-    const cellStateCls = parsed.arrived ? ' has-material-arrived' : (parsed.date ? ' has-material-date' : '');
+    const cellStateCls = [
+      parsed.arrived ? ' has-material-arrived' : '',
+      parsed.date ? ' has-material-date' : '',
+    ].join('');
     return `
       <td class="so-material-subcon-cell${cellStateCls}" data-request-id="${escapeHtml(String(id))}" data-last-saved="${escapeHtml(raw)}">
         <div class="so-material-subcon-controls">
@@ -1829,10 +1854,10 @@
             Arrived
           </button>
           <input type="date"
-            class="so-material-subcon-date${dateHiddenCls}"
-            value="${escapeHtml(parsed.arrived ? '' : parsed.date)}"
-            ${parsed.arrived ? 'disabled' : ''}
+            class="so-material-subcon-date"
+            value="${escapeHtml(parsed.date)}"
             aria-label="Material EDD date">
+          <span class="so-material-subcon-date-text">${parsed.arrived && parsed.date ? escapeHtml(formatDate(parsed.date)) : ''}</span>
         </div>
         <span class="so-editable-status" aria-live="polite"></span>
       </td>
@@ -1922,10 +1947,9 @@
       btn.setAttribute('aria-pressed', parsed.arrived ? 'true' : 'false');
     }
     if (dateInput) {
-      dateInput.disabled = parsed.arrived;
-      dateInput.classList.toggle('is-hidden', parsed.arrived);
-      if (parsed.date) dateInput.value = parsed.date;
-      else dateInput.value = '';
+      dateInput.disabled = false;
+      dateInput.classList.remove('is-hidden');
+      dateInput.value = parsed.date || '';
     }
   }
 
@@ -2040,31 +2064,22 @@
       return;
     }
     const ppNo = String(control.dataset.ppVoucherNo || '').trim();
-    const saveable = field === 'mtl_part_order' || field === 'material_need_date';
-    if (!ppNo || !saveable) return;
+    if (!ppNo || field !== 'mtl_part_order') return;
     const key = `${ppNo}::${field}`;
     if (state.saveInFlight.has(key)) return;
-    const nextValue = field === 'material_need_date'
-      ? isoDateValue(control.value)
-      : String(control.value || '').trim();
+    const nextValue = String(control.value || '').trim();
     const lastSaved = String(control.dataset.lastSaved || '');
     if (nextValue === lastSaved) return;
 
     state.saveInFlight.add(key);
     setSaveStatus(control, 'saving', 'Saving...');
     try {
-      const payload = field === 'material_need_date'
-        ? { material_need_date: nextValue }
-        : { [field]: nextValue };
-      const data = await postJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, payload);
-      const saved = field === 'material_need_date'
-        ? isoDateValue(data.material_need_date)
-        : String(data[field] || '').trim();
+      const data = await postJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, { [field]: nextValue });
+      const saved = String(data[field] || '').trim();
       const found = findPp(ppNo);
       if (found.pp) found.pp[field] = saved;
       patchAssemblyChildNotes(ppNo, { [field]: saved });
-      if (field === 'material_need_date') syncNeedDateRows(ppNo, saved);
-      else syncNotesRows(ppNo, field, saved);
+      syncNotesRows(ppNo, field, saved);
       applyHistoryCountsFromSave(ppNo, data);
       setSaveStatus(control, 'saved', 'Saved');
       window.setTimeout(() => {
@@ -3236,12 +3251,12 @@
       const parsed = parseMaterialSubcon(cell.dataset.lastSaved);
       const nextArrived = !parsed.arrived;
       const dateInput = cell.querySelector('.so-material-subcon-date');
-      const date = isoDateValue(dateInput?.value);
-      applyMaterialCellState(cell, { arrived: nextArrived, date: nextArrived ? '' : date });
+      const date = isoDateValue(dateInput?.value) || parsed.date;
+      applyMaterialCellState(cell, { arrived: nextArrived, date });
       btn.classList.toggle('is-active', nextArrived);
       btn.setAttribute('aria-pressed', nextArrived ? 'true' : 'false');
       btn.title = nextArrived ? 'Material arrived - click to clear' : 'Mark material as arrived';
-      saveMaterialCell(cell, serializeMaterialSubcon({ arrived: nextArrived, date: nextArrived ? '' : date }));
+      saveMaterialCell(cell, serializeMaterialSubcon({ arrived: nextArrived, date }));
     });
 
     body.addEventListener('change', e => {
@@ -3251,20 +3266,15 @@
         saveDelayFlag(delayInput);
         return;
       }
-      const needDateInput = e.target.closest('.sol-need-date-input');
-      if (needDateInput) {
-        e.stopPropagation();
-        saveNotesField(needDateInput);
-        return;
-      }
       const dateInput = e.target.closest('.so-material-subcon-date');
       if (!dateInput || dateInput.disabled) return;
       e.stopPropagation();
       const cell = dateInput.closest('.so-material-subcon-cell');
       if (!cell) return;
+      const parsed = parseMaterialSubcon(cell.dataset.lastSaved);
       const date = isoDateValue(dateInput.value);
-      applyMaterialCellState(cell, { arrived: false, date });
-      saveMaterialCell(cell, serializeMaterialSubcon({ arrived: false, date }));
+      applyMaterialCellState(cell, { arrived: parsed.arrived, date });
+      saveMaterialCell(cell, serializeMaterialSubcon({ arrived: parsed.arrived, date }));
     });
 
     body.addEventListener('click', e => {
@@ -3279,18 +3289,14 @@
         saveNotesField(textarea);
         return;
       }
-      const needDateInput = e.target.closest('.sol-need-date-input');
-      if (needDateInput) {
-        saveNotesField(needDateInput);
-        return;
-      }
       const dateInput = e.target.closest('.so-material-subcon-date');
       if (dateInput && !dateInput.disabled) {
         const cell = dateInput.closest('.so-material-subcon-cell');
         if (!cell) return;
+        const parsed = parseMaterialSubcon(cell.dataset.lastSaved);
         const date = isoDateValue(dateInput.value);
-        applyMaterialCellState(cell, { arrived: false, date });
-        saveMaterialCell(cell, serializeMaterialSubcon({ arrived: false, date }));
+        applyMaterialCellState(cell, { arrived: parsed.arrived, date });
+        saveMaterialCell(cell, serializeMaterialSubcon({ arrived: parsed.arrived, date }));
         return;
       }
       const qtyInput = e.target.closest('.sol-qty-cell-input');

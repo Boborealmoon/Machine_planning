@@ -183,3 +183,59 @@ CREATE TABLE IF NOT EXISTS public.shift_mgmt_ticket_comments (
 
 CREATE INDEX IF NOT EXISTS idx_shift_mgmt_ticket_comments_tk
     ON public.shift_mgmt_ticket_comments (ticket_id, created_at ASC);
+
+-- One manufacturing HOTO checklist per shift (not per machine).
+CREATE TABLE IF NOT EXISTS public.shift_mgmt_hoto_checklists (
+    checklist_id            BIGSERIAL    PRIMARY KEY,
+    work_date               DATE         NOT NULL,
+    shift_out               TEXT         NOT NULL
+        CHECK (shift_out IN ('Day', 'Night')),
+    handover_at             TIMESTAMPTZ,
+    outgoing_supervisor     TEXT         NOT NULL DEFAULT '',
+    incoming_supervisor     TEXT         NOT NULL DEFAULT '',
+    items                   JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    attendance              JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    outgoing_sign_name      TEXT         NOT NULL DEFAULT '',
+    outgoing_signed_at      TIMESTAMPTZ,
+    incoming_sign_name      TEXT         NOT NULL DEFAULT '',
+    incoming_signed_at      TIMESTAMPTZ,
+    updated_by              BIGINT
+        REFERENCES public.shift_mgmt_users(user_id) ON DELETE SET NULL,
+    created_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (work_date, shift_out)
+);
+
+ALTER TABLE public.shift_mgmt_hoto_checklists
+    ADD COLUMN IF NOT EXISTS doc_status TEXT NOT NULL DEFAULT 'draft';
+ALTER TABLE public.shift_mgmt_hoto_checklists
+    ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ;
+ALTER TABLE public.shift_mgmt_hoto_checklists
+    ADD COLUMN IF NOT EXISTS submitted_by BIGINT
+        REFERENCES public.shift_mgmt_users(user_id) ON DELETE SET NULL;
+
+CREATE TABLE IF NOT EXISTS public.shift_mgmt_hoto_submissions (
+    submission_id           BIGSERIAL    PRIMARY KEY,
+    checklist_id            BIGINT
+        REFERENCES public.shift_mgmt_hoto_checklists(checklist_id) ON DELETE SET NULL,
+    work_date               DATE         NOT NULL,
+    shift_out               TEXT         NOT NULL,
+    handover_at             TIMESTAMPTZ,
+    outgoing_supervisor     TEXT         NOT NULL DEFAULT '',
+    incoming_supervisor     TEXT         NOT NULL DEFAULT '',
+    items                   JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    attendance              JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    outgoing_sign_name      TEXT         NOT NULL DEFAULT '',
+    outgoing_signed_at      TIMESTAMPTZ,
+    incoming_sign_name      TEXT         NOT NULL DEFAULT '',
+    incoming_signed_at      TIMESTAMPTZ,
+    submitted_by            BIGINT
+        REFERENCES public.shift_mgmt_users(user_id) ON DELETE SET NULL,
+    submitted_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_shift_mgmt_hoto_date
+    ON public.shift_mgmt_hoto_checklists (work_date DESC, shift_out);
+
+CREATE INDEX IF NOT EXISTS idx_shift_mgmt_hoto_submissions_at
+    ON public.shift_mgmt_hoto_submissions (submitted_at DESC);

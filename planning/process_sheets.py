@@ -4662,12 +4662,14 @@ def _update_material_in(con, ps_id, material_in, material_in_date=None):
         from .anticipated_material_service import parse_material_subcon_date
 
         parsed_date = parse_material_subcon_date(date_text)
+    # Arrived is a team flag. It must not invent today's date. Keep the
+    # indicated date when one was sent, otherwise leave the stored date as-is.
     if material_in_bool:
         con.execute(
             """
             UPDATE planner_process_sheet
             SET material_in = TRUE,
-                material_in_date = COALESCE(%s, material_in_date, CURRENT_DATE),
+                material_in_date = COALESCE(%s, material_in_date),
                 updated_at = NOW()
             WHERE planner_ps_id = %s
             """,

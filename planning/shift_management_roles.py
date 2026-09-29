@@ -23,7 +23,7 @@ def capabilities(role: Any) -> dict[str, Any]:
         return {
             "role": r,
             "home": "dashboard",
-            "nav": ("dashboard", "ops", "history"),
+            "nav": ("dashboard", "ops", "hoto", "backlog", "history"),
             "can_view_dashboard": True,
             "can_view_ops": True,
             "can_view_machines": True,
@@ -35,6 +35,7 @@ def capabilities(role: Any) -> dict[str, Any]:
             "can_resolve_ticket": True,
             "can_assign_ticket": True,
             "can_handover": True,
+            "can_view_hoto_backlog": True,
             "can_report": True,
             "can_ops_actions": False,
             "fleet_view": True,
@@ -44,7 +45,7 @@ def capabilities(role: Any) -> dict[str, Any]:
         return {
             "role": r,
             "home": "ops",
-            "nav": ("ops", "tickets", "history"),
+            "nav": ("ops", "tickets", "hoto", "history"),
             "can_view_dashboard": False,
             "can_view_ops": True,
             "can_view_machines": False,
@@ -110,6 +111,8 @@ _NAV_META = {
     "tickets": {"label": "Tickets", "suffix": "/tickets"},
     "jobs": {"label": "Jobs", "suffix": "/jobs"},
     "history": {"label": "History", "suffix": "/history"},
+    "hoto": {"label": "HOTO", "suffix": "/hoto"},
+    "backlog": {"label": "Backlog", "suffix": "/backlog"},
     "machines": {"label": "Floor", "suffix": "/machines"},
 }
 

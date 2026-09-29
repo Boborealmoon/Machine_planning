@@ -1,0 +1,411 @@
+/* Manufacturing HOTO checklist  -  spreadsheet layout inside Shift Management. */
+
+body[data-page="hoto"] .sm-main {
+  max-width: 1080px;
+}
+
+.hoto-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.hoto-save-state {
+  margin-left: auto;
+  align-self: center;
+  color: var(--sm-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.hoto-print {
+  min-height: 40px;
+}
+
+.hoto-filed {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #e8f1fa;
+  color: #1a365d;
+  font-weight: 600;
+}
+
+.hoto-book.is-locked input,
+.hoto-book.is-locked select,
+.hoto-book.is-locked textarea {
+  color: #111;
+  opacity: 1;
+}
+
+.hoto-book.is-locked .hoto-sign-actions {
+  display: none;
+}
+
+.hoto-scroll {
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.hoto-book {
+  min-width: 760px;
+  background: #fff;
+  color: #111;
+  font-family: Calibri, "Segoe UI", sans-serif;
+  font-size: 14px;
+  border: 1px solid #000;
+  box-shadow: var(--sm-shadow);
+}
+
+.hoto-title,
+.hoto-section {
+  background: #1f4e79;
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-align: left;
+}
+
+.hoto-title {
+  padding: 8px 10px;
+  font-size: 16px;
+  border-bottom: 1px solid #000;
+}
+
+.hoto-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  table-layout: fixed;
+}
+
+.hoto-book > .hoto-table + .hoto-table {
+  margin-top: -1px;
+}
+
+.hoto-band {
+  caption-side: top;
+  text-align: left;
+  background: #1f4e79;
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  font-size: 13px;
+  padding: 5px 8px;
+  border: 1px solid #000;
+  border-bottom: none;
+}
+
+.hoto-table th,
+.hoto-table td {
+  border: 1px solid #000;
+  padding: 6px 8px;
+  vertical-align: middle;
+  text-align: left;
+  font-weight: 400;
+}
+
+.hoto-section {
+  font-size: 13px;
+  padding: 5px 8px;
+}
+
+.hoto-table th.hoto-label,
+.hoto-table tr.hoto-sign-head th {
+  width: 280px;
+  background: #f3e2b8;
+  color: #111;
+  font-weight: 700;
+  text-align: left;
+}
+
+.hoto-table tr.hoto-sign-head th {
+  width: 50%;
+  text-align: center;
+}
+
+.hoto-table tr.hoto-cols th,
+.hoto-table th.hoto-section {
+  font-weight: 700;
+}
+
+.hoto-cols th {
+  background: #5b9bd5;
+  color: #fff;
+  font-weight: 700;
+  text-align: center;
+}
+
+.hoto-no {
+  width: 42px;
+  background: #f2f2f2;
+  text-align: center;
+  font-weight: 600;
+}
+
+.hoto-item {
+  background: #fff;
+  line-height: 1.35;
+}
+
+.hoto-see {
+  color: #0563c1;
+  text-decoration: underline;
+  font-weight: 600;
+}
+
+.hoto-yellow {
+  background: #fff4cc;
+}
+
+.hoto-check .c-no { width: 42px; }
+.hoto-check .c-item { width: 36%; }
+.hoto-check .c-status { width: 16%; }
+.hoto-check .c-remarks { width: 26%; }
+.hoto-check .c-by { width: 18%; }
+
+.hoto-attend .a-no { width: 42px; }
+.hoto-attend .a-name { width: 28%; }
+.hoto-attend .a-late { width: 90px; }
+
+.hoto-example td {
+  background: #d9d9d9;
+  color: #333;
+  font-style: italic;
+  text-align: center;
+}
+
+.hoto-eg-tick {
+  font-style: normal;
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.hoto-book input[type="text"],
+.hoto-book input[type="datetime-local"],
+.hoto-book select,
+.hoto-book textarea {
+  width: 100%;
+  border: 0;
+  margin: 0;
+  padding: 4px 2px;
+  background: transparent;
+  color: #111;
+  font: inherit;
+  resize: vertical;
+  min-height: 28px;
+}
+
+.hoto-book textarea {
+  min-height: 44px;
+}
+
+.hoto-yellow input,
+.hoto-yellow select,
+.hoto-yellow textarea {
+  background: #fff4cc;
+}
+
+.hoto-status {
+  background: #fff4cc;
+  white-space: nowrap;
+}
+
+.hoto-status-mark {
+  display: inline-block;
+  width: 1.15em;
+  margin-right: 2px;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.hoto-status select {
+  width: calc(100% - 1.5em);
+  font-weight: 700;
+  vertical-align: middle;
+  background: transparent;
+}
+
+.hoto-status.is-ok {
+  background: #c6efce;
+}
+
+.hoto-status.is-ok .hoto-status-mark,
+.hoto-status.is-ok select,
+.hoto-status.is-ok .hoto-status-print {
+  color: #006100;
+}
+
+.hoto-status.is-issue {
+  background: #ffc7ce;
+}
+
+.hoto-status.is-issue .hoto-status-mark,
+.hoto-status.is-issue select,
+.hoto-status.is-issue .hoto-status-print {
+  color: #9c0006;
+}
+
+.hoto-status-print {
+  display: none;
+  font-weight: 700;
+}
+
+.hoto-book input:focus,
+.hoto-book select:focus,
+.hoto-book textarea:focus {
+  outline: 2px solid #1f4e79;
+  outline-offset: -2px;
+}
+
+.hoto-sign-cell {
+  height: 120px;
+  vertical-align: top;
+  background: #fff;
+  position: relative;
+}
+
+.hoto-sign-script {
+  min-height: 48px;
+  padding-top: 8px;
+  font-family: "Segoe Script", "Brush Script MT", cursive;
+  font-size: 28px;
+  line-height: 1.1;
+  color: #1a365d;
+}
+
+.hoto-sign-meta {
+  color: #444;
+  font-size: 12px;
+  min-height: 16px;
+}
+
+.hoto-sign-actions {
+  margin-top: 8px;
+}
+
+.hoto-mini {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid #1f4e79;
+  background: #fff;
+  color: #1f4e79;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.hoto-mini:hover {
+  background: #e8f1fa;
+}
+
+.hoto-late-cell {
+  text-align: center;
+}
+
+.hoto-tick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+}
+
+.hoto-tick input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #1f4e79;
+}
+
+.hoto-tick span {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 8mm;
+  }
+
+  .sm-topbar,
+  .sm-tabbar,
+  .hoto-toolbar,
+  .hoto-sign-actions,
+  #sm-toast {
+    display: none !important;
+  }
+
+  .sm-body {
+    background: #fff;
+    padding: 0;
+  }
+
+  body[data-page="hoto"] .sm-main {
+    max-width: none !important;
+    width: 100% !important;
+    padding: 0 !important;
+  }
+
+  .hoto-book {
+    box-shadow: none;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+
+  .hoto-scroll {
+    overflow: visible;
+  }
+
+  .hoto-book,
+  .hoto-table,
+  .hoto-table th,
+  .hoto-table td,
+  .hoto-title,
+  .hoto-band,
+  .hoto-cols th,
+  .hoto-status,
+  .hoto-status.is-ok,
+  .hoto-status.is-issue,
+  .hoto-yellow,
+  .hoto-label,
+  .hoto-sign-head th {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .hoto-table {
+    width: 100%;
+    table-layout: fixed;
+    page-break-inside: auto;
+    break-inside: auto;
+  }
+
+  .hoto-table thead {
+    display: table-header-group;
+  }
+
+  .hoto-table tr,
+  .hoto-table th,
+  .hoto-table td {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .hoto-status select,
+  .hoto-status-mark {
+    display: none !important;
+  }
+
+  .hoto-status-print {
+    display: inline !important;
+  }
+}

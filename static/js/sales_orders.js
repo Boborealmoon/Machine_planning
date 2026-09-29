@@ -21,9 +21,11 @@ const SO_MATERIAL_SUBCON_ARRIVED = 'ARRIVED';
 function soParseMaterialSubcon(raw) {
   const text = String(raw || '').trim();
   if (!text) return { arrived: false, date: '', legacy: '' };
-  if (/^arrived$/i.test(text)) return { arrived: true, date: '', legacy: '' };
-  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return { arrived: false, date: text, legacy: '' };
-  const dmy = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  const arrived = /^arrived(?:\|(.*))?$/i.exec(text);
+  const body = arrived ? String(arrived[1] || '').trim() : text;
+  if (arrived && !body) return { arrived: true, date: '', legacy: '' };
+  if (/^\d{4}-\d{2}-\d{2}$/.test(body)) return { arrived: Boolean(arrived), date: body, legacy: '' };
+  const dmy = body.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
   if (dmy) {
     const day = Number(dmy[1]);
     const month = Number(dmy[2]);
@@ -32,26 +34,36 @@ function soParseMaterialSubcon(raw) {
     if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
       const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       const parsed = Date.parse(`${iso}T00:00:00`);
-      if (!Number.isNaN(parsed)) return { arrived: false, date: iso, legacy: '' };
+      if (!Number.isNaN(parsed)) return { arrived: Boolean(arrived), date: iso, legacy: '' };
     }
   }
+  if (arrived) return { arrived: true, date: '', legacy: body };
   return { arrived: false, date: '', legacy: text };
 }
 
 function soSerializeMaterialSubcon({ arrived, date }) {
-  if (arrived) return SO_MATERIAL_SUBCON_ARRIVED;
   const iso = String(date || '').trim();
+  if (arrived && iso) return `${SO_MATERIAL_SUBCON_ARRIVED}|${iso}`;
+  if (arrived) return SO_MATERIAL_SUBCON_ARRIVED;
   return iso || '';
 }
 
+function soRowUsesAssemblyRollup(pp) {
+  if (!pp || pp.assembly_synthetic) return false;
+  const ps = soPsBaseKey(pp.process_sheet_no || pp.pp_voucher_no);
+  if (soIsComponentChildPs(ps)) return false;
+  return true;
+}
+
 function soEffectiveMaterialSubcon(pp) {
+  if (!soRowUsesAssemblyRollup(pp)) return String(pp?.material_subcon || '');
   return String(pp?.assembly_material_subcon || pp?.material_subcon || '');
 }
 
 function soMaterialSubconDisplay(raw) {
   const parsed = soParseMaterialSubcon(raw);
-  if (parsed.arrived) return 'Arrived';
   if (parsed.date) return soFormatDate(parsed.date);
+  if (parsed.arrived) return 'Arrived';
   if (parsed.legacy) return parsed.legacy;
   return '';
 }
@@ -67,14 +79,18 @@ function soMaterialSubconTitle(pp) {
 
 function soMaterialSubconSortValue(raw) {
   const parsed = soParseMaterialSubcon(raw);
-  if (parsed.arrived) return '0-arrived';
   if (parsed.date) return `1-${parsed.date}`;
+  if (parsed.arrived) return '0-arrived';
   if (parsed.legacy) return `2-${parsed.legacy.toLowerCase()}`;
   return '9-empty';
 }
 
 function soMaterialSubconHasDate(parsed) {
-  return Boolean(parsed?.date) && !parsed?.arrived;
+  return Boolean(parsed?.date);
+}
+
+function soStoredMaterialDate(_pp, parsed) {
+  return parsed?.date || '';
 }
 
 function soMaterialSubconCellClasses(parsed) {
@@ -88,6 +104,11 @@ function soApplyMaterialSubconCellState(cell, parsed) {
   if (!cell) return;
   cell.classList.toggle('has-material-date', soMaterialSubconHasDate(parsed));
   cell.classList.toggle('has-material-arrived', Boolean(parsed?.arrived));
+  const label = cell.querySelector('.so-material-subcon-date-text');
+  if (label) {
+    const date = parsed?.date || '';
+    label.textContent = parsed?.arrived && date ? soFormatDate(date) : '';
+  }
 }
 
 const SO_EXCEPTION_ISSUES = [
@@ -813,6 +834,27 @@ const SO_EXPORT_COLUMNS = [
 ];
 
 const SO_EXPORT_VIEW_COLUMN = { id: '_view', label: 'View', width: 12 };
+const SO_EXPORT_EXCEPTION_COLUMNS = [
+  SO_EXPORT_VIEW_COLUMN,
+  { id: '_so', label: 'SO', width: 16 },
+  { id: '_customer', label: 'Customer', width: 22 },
+  { id: 'process_sheet_no', label: 'Process sheet', width: 18 },
+  { id: 'partial', label: 'Partial', width: 10 },
+  { id: 'partial_qty', label: 'Partial qty', width: 12 },
+  { id: 'exception', label: 'Exception', width: 22 },
+  { id: 'part', label: 'Part', width: 22 },
+  { id: 'description', label: 'Description', width: 36 },
+  { id: 'due_date', label: 'Due date', width: 14 },
+  { id: 'material_need_date', label: 'Need date', width: 14 },
+  { id: 'material_in_date', label: 'Material in date', width: 16 },
+  { id: 'program_finish_at', label: 'Programme finish', width: 16 },
+  { id: 'proposed_edd', label: 'Proposed EDD', width: 14 },
+  { id: 'ops_notes', label: 'Ops remarks', width: 32 },
+  { id: 'sales_notes', label: 'Sales remarks', width: 32 },
+  { id: 'remarks', label: 'PP remarks', width: 32 },
+  { id: '_so_remarks', label: 'SO remarks', width: 32 },
+  { id: '_external_remarks', label: 'External remarks', width: 32 },
+];
 const SO_EXPORT_WRAP_IDS = new Set([
   'description',
   'exception',
@@ -834,8 +876,16 @@ function soNormalizeExportView(view) {
 }
 
 function soExportColumnsForSheet(view) {
-  if (view === 'exceptions') return [SO_EXPORT_VIEW_COLUMN, ...SO_EXPORT_COLUMNS];
+  if (view === 'exceptions') return SO_EXPORT_EXCEPTION_COLUMNS;
   return SO_EXPORT_COLUMNS;
+}
+
+function soExportMaterialInDate(pp) {
+  const parsed = soParseMaterialSubcon(soEffectiveMaterialSubcon(pp));
+  const stored = soStoredMaterialDate(pp, parsed);
+  if (stored) return soExportDateValue(stored);
+  if (parsed.arrived) return 'Arrived';
+  return soExportBlankDash(parsed.legacy);
 }
 
 function soExportOrderCustomer(order) {
@@ -871,6 +921,8 @@ function soExportCellValue(leaf, colId) {
       return soExportBlankDash(order?.remarks);
     case '_external_remarks':
       return soExportBlankDash(order?.external_remarks);
+    case 'material_in_date':
+      return soExportMaterialInDate(pp);
     case 'order_date':
     case 'due_date':
     case 'material_need_date':
@@ -1702,6 +1754,7 @@ function soIndexAssemblyJobs(items) {
 
 function soAssemblyForPp(pp) {
   if (!soState.assemblyJobs.size) return null;
+  const ppPs = soPsBaseKey(pp?.process_sheet_no || pp?.pp_voucher_no);
   for (const key of [pp?.process_sheet_no, pp?.pp_voucher_no]) {
     const id = soPsBaseKey(key);
     if (!id) continue;
@@ -1710,19 +1763,36 @@ function soAssemblyForPp(pp) {
     if (parent && soState.assemblyJobs.has(parent)) return soState.assemblyJobs.get(parent);
   }
   const part = soPartKeyOf(pp?.inventory_code);
-  if (part && soState.assemblyJobs.has(`part:${part}`)) return soState.assemblyJobs.get(`part:${part}`);
+  if (part && soState.assemblyJobs.has(`part:${part}`)) {
+    const job = soState.assemblyJobs.get(`part:${part}`);
+    const jobPs = soPsBaseKey(job?.ps_id);
+    if (!ppPs || !jobPs || jobPs === ppPs) return job;
+  }
   return null;
 }
 
 function soAssemblyLineItems(pp) {
+  const own = (Array.isArray(pp?.assembly_line_items) ? pp.assembly_line_items : [])
+    .filter(child => String(child?.part_no || child?.process_sheet_no || '').trim());
+  if (own.length) return own;
   const job = soAssemblyForPp(pp);
   if (!job) return [];
   return (job.children || []).filter(child => String(child.part_no || '').trim());
 }
 
+function soClearAssemblyMaterialRollup(pp) {
+  if (!pp) return pp;
+  delete pp.assembly_material_subcon;
+  delete pp.assembly_material_in_date;
+  delete pp.assembly_material_status;
+  delete pp.assembly_material_source;
+  delete pp.assembly_material_pending_child_count;
+  return pp;
+}
+
 function soBomChildPp(parentPp, child, { synthetic = true } = {}) {
   const childPs = String(child?.process_sheet_no || '').trim();
-  const out = {
+  const out = soClearAssemblyMaterialRollup({
     ...parentPp,
     pp_voucher_no: childPs || parentPp?.pp_voucher_no,
     process_sheet_no: childPs || parentPp?.process_sheet_no,
@@ -1730,7 +1800,7 @@ function soBomChildPp(parentPp, child, { synthetic = true } = {}) {
     description: child.description || parentPp?.description,
     pp_qty: child.qty == null ? parentPp?.pp_qty : child.qty,
     bom_code: child.selected_bom_code || child.resolved_bom_code || parentPp?.bom_code || '',
-  };
+  });
   if (childPs) {
     out.material_subcon = child.material_subcon || '';
     out.mtl_part_order = child.mtl_part_order || '';
@@ -1738,11 +1808,15 @@ function soBomChildPp(parentPp, child, { synthetic = true } = {}) {
     out.material_need_date_history_count = Number(child.material_need_date_history_count || 0);
     out.material_in_date_history_count = Number(child.material_in_date_history_count || 0);
     out.material_delay = Boolean(child.material_delay);
+    out.material_in = Boolean(child.material_in);
+    out.material_in_date = child.material_in_date || null;
   } else {
     if (child.material_subcon) out.material_subcon = child.material_subcon;
     if (child.mtl_part_order) out.mtl_part_order = child.mtl_part_order;
     if (child.material_need_date) out.material_need_date = child.material_need_date;
     if (child.material_delay != null) out.material_delay = Boolean(child.material_delay);
+    out.material_in = Boolean(child.material_in);
+    out.material_in_date = child.material_in_date || null;
   }
   if (!synthetic) {
     out.assembly_synthetic = false;
@@ -3190,7 +3264,7 @@ function soRenderNeedDateCell(pp) {
         data-pp-voucher-no="${escapeHtml(ppNo)}"
         data-last-saved="${escapeHtml(value)}"
         aria-label="Need date"
-        title="Same Need date as Supply Chain View — saved per PP voucher">
+        title="Saved per PP voucher. Supply Chain View shows this date read-only.">
       <span class="so-editable-status" aria-live="polite"></span>
     </td>
   `;
@@ -3200,8 +3274,8 @@ function soRenderMaterialSubconCell(pp) {
   const ppNo = String(pp.pp_voucher_no || '').trim();
   const raw = soEffectiveMaterialSubcon(pp);
   const parsed = soParseMaterialSubcon(raw);
+  const dateValue = soStoredMaterialDate(pp, parsed);
   const arrivedCls = parsed.arrived ? ' is-active' : '';
-  const dateHiddenCls = parsed.arrived ? ' is-hidden' : '';
   const cellStateCls = soMaterialSubconCellClasses(parsed);
   const trackerTitle = soMaterialSubconTitle(pp);
   const legacyHtml = parsed.legacy
@@ -3219,10 +3293,10 @@ function soRenderMaterialSubconCell(pp) {
           Arrived
         </button>
         <input type="date"
-          class="so-material-subcon-date${dateHiddenCls}"
-          value="${escapeHtml(parsed.date)}"
-          ${parsed.arrived ? 'disabled' : ''}
+          class="so-material-subcon-date"
+          value="${escapeHtml(dateValue)}"
           aria-label="Material/Sub-con expected date">
+        <span class="so-material-subcon-date-text">${parsed.arrived && dateValue ? escapeHtml(soFormatDate(dateValue)) : ''}</span>
         ${legacyHtml}
       </div>
       <span class="so-editable-status" aria-live="polite"></span>
@@ -3479,7 +3553,8 @@ function soSetSaveStatus(control, state, message) {
 function soSyncMaterialSubconCell(cell, raw) {
   if (!cell) return;
   const parsed = soParseMaterialSubcon(raw);
-  soApplyMaterialSubconCellState(cell, parsed);
+  const date = parsed.date || '';
+  soApplyMaterialSubconCellState(cell, { ...parsed, date });
   cell.dataset.lastSaved = String(raw || '');
   const btn = cell.querySelector('.so-material-subcon-arrived');
   const dateInput = cell.querySelector('.so-material-subcon-date');
@@ -3489,9 +3564,9 @@ function soSyncMaterialSubconCell(cell, raw) {
     btn.title = parsed.arrived ? 'Material arrived — click to clear' : 'Mark material as arrived';
   }
   if (dateInput) {
-    dateInput.value = parsed.date || '';
-    dateInput.disabled = parsed.arrived;
-    dateInput.classList.toggle('is-hidden', parsed.arrived);
+    dateInput.value = date;
+    dateInput.disabled = false;
+    dateInput.classList.remove('is-hidden');
   }
   const controls = cell.querySelector('.so-material-subcon-controls');
   let legacyEl = cell.querySelector('.so-material-subcon-legacy');
@@ -3526,19 +3601,19 @@ async function soSaveMaterialSubconCell(cell, nextValue) {
       material_subcon: savedValue,
     });
     const saved = String(data.material_subcon || '').trim();
-    soSyncMaterialSubconCell(cell, saved);
+    const parsed = soParseMaterialSubcon(saved);
     const found = soFindPp(ppNo);
+    soSyncMaterialSubconCell(cell, saved);
     if (found.pp) {
       found.pp.material_subcon = saved;
       found.pp.assembly_material_subcon = saved;
       if (Object.prototype.hasOwnProperty.call(data, 'material_in')) {
         found.pp.material_in = Boolean(data.material_in);
-        found.pp.material_in_date = data.material_in_date || null;
       } else {
-        const parsed = soParseMaterialSubcon(saved);
         found.pp.material_in = parsed.arrived;
-        if (!parsed.arrived) found.pp.material_in_date = null;
       }
+      found.pp.material_in_date = data.material_in_date || parsed.date || null;
+      if (parsed.date) found.pp.assembly_material_in_date = parsed.date;
     }
     soPatchAssemblyChildNotes(ppNo, { material_subcon: saved });
     soSetSaveStatus(cell, 'saved', 'Saved');
@@ -4416,7 +4491,7 @@ function soBindMaterialSubconInputs() {
     const parsed = soParseMaterialSubcon(cell.dataset.lastSaved);
     const nextArrived = !parsed.arrived;
     const dateInput = cell.querySelector('.so-material-subcon-date');
-    const date = nextArrived ? '' : String(dateInput?.value || '').trim();
+    const date = String(dateInput?.value || parsed.date || '').trim();
     soApplyMaterialSubconCellState(cell, { arrived: nextArrived, date });
     soSaveMaterialSubconCell(cell, soSerializeMaterialSubcon({ arrived: nextArrived, date }));
   });
@@ -4427,10 +4502,11 @@ function soBindMaterialSubconInputs() {
     e.stopPropagation();
     const cell = dateInput.closest('.so-material-subcon-cell');
     if (!cell) return;
+    const parsed = soParseMaterialSubcon(cell.dataset.lastSaved);
     const date = String(dateInput.value || '').trim();
-    soApplyMaterialSubconCellState(cell, { arrived: false, date });
+    soApplyMaterialSubconCellState(cell, { arrived: parsed.arrived, date });
     soSaveMaterialSubconCell(cell, soSerializeMaterialSubcon({
-      arrived: false,
+      arrived: parsed.arrived,
       date,
     }));
   });

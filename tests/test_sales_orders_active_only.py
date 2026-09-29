@@ -501,6 +501,22 @@ def test_date_history_changes_need_and_in_dates():
     )
     assert arrived == []
 
+    arrived_keeps_date = _date_history_changes(
+        {"material_need_date": "", "material_subcon": "2026-11-27"},
+        {"material_need_date": "", "material_subcon": "ARRIVED|2026-11-27"},
+    )
+    assert arrived_keeps_date == []
+
+    arrived_date_edit = _date_history_changes(
+        {"material_need_date": "", "material_subcon": "ARRIVED|2026-11-27"},
+        {"material_need_date": "", "material_subcon": "ARRIVED|2026-12-01"},
+    )
+    assert arrived_date_edit == [{
+        "field_name": "material_in_date",
+        "old_value": "2026-11-27",
+        "new_value": "2026-12-01",
+    }]
+
     unarrive_to_date = _date_history_changes(
         {"material_need_date": "", "material_subcon": "ARRIVED"},
         {"material_need_date": "", "material_subcon": "2026-11-27"},
@@ -1082,6 +1098,7 @@ def test_sales_orders_page_offers_exception_workbook_export():
     html = response.get_data(as_text=True)
     assert 'data-so-export-view="exceptions"' in html
     assert 'data-so-export-view="all"' in html
-    assert "Ops / Sales / PP / SO remarks" in html
-    assert "so-exception-export-remarks-20260921" in html
+    assert "material in date" in html
+    assert "Ops, Sales, PP, SO, External" in html
+    assert "so-exception-detail-20260929" in html
 

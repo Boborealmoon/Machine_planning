@@ -31,10 +31,29 @@ def planner_today() -> date:
     return datetime.now(PLANNER_TZ).date()
 
 
-def parse_material_subcon_date(raw: Any) -> date | None:
-    """ISO or DMY date from Material in / Sub-Con. Ignores Arrived and free text."""
+def material_subcon_is_arrived(raw: Any) -> bool:
+    """True for Arrived, including Arrived plus a kept in-date (``ARRIVED|YYYY-MM-DD``)."""
+    text = compact_text(raw).upper()
+    return text == "ARRIVED" or text.startswith("ARRIVED|")
+
+
+def material_subcon_date_text(raw: Any) -> str:
+    """Date portion of Material in / Sub-Con. Empty for plain Arrived and blank."""
     text = compact_text(raw)
-    if not text or text.upper() == "ARRIVED":
+    if not text:
+        return ""
+    upper = text.upper()
+    if upper == "ARRIVED":
+        return ""
+    if upper.startswith("ARRIVED|"):
+        return compact_text(text.split("|", 1)[1])
+    return text
+
+
+def parse_material_subcon_date(raw: Any) -> date | None:
+    """ISO or DMY date from Material in / Sub-Con. Ignores plain Arrived and free text."""
+    text = material_subcon_date_text(raw)
+    if not text:
         return None
     return _parse_date(text)
 

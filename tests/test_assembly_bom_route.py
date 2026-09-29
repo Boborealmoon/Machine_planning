@@ -569,6 +569,14 @@ def test_api_material_tracking_sr_assemblies(monkeypatch):
 def test_summarize_overlays_child_process_sheet_dates(monkeypatch):
     monkeypatch.setattr(
         assembly,
+        "_load_assembly_line_material_in",
+        lambda _ids: {
+            "NPS26-0321-1": {"material_in": True, "material_in_date": "2026-08-05"},
+            "NPS26-0321-2": {"material_in": False, "material_in_date": None},
+        },
+    )
+    monkeypatch.setattr(
+        assembly,
         "_load_assembly_line_notes",
         lambda _ids: {
             "NPS26-0321-1": {
@@ -620,6 +628,10 @@ def test_summarize_overlays_child_process_sheet_dates(monkeypatch):
     assert children[1]["process_sheet_no"] == "NPS26-0321-2"
     assert children[1]["material_subcon"] == "2026-09-11"
     assert children[1]["mtl_part_order"] == "Seq 2"
+    assert children[0]["material_in"] is True
+    assert children[0]["material_in_date"] == "2026-08-05"
+    assert children[1]["material_in"] is False
+    assert children[1]["material_in_date"] is None
 
 
 def test_overlay_assembly_line_notes_does_not_use_parent_ps(monkeypatch):

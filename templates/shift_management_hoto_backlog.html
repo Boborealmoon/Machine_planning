@@ -1,0 +1,44 @@
+{% extends "shift_management_base.html" %}
+{% block title %}Handover backlog - Shift Management{% endblock %}
+{% block content %}
+<section class="sm-toolbar sm-toolbar-wrap">
+  <h2 class="sm-section-title" style="margin:0">Handover backlog</h2>
+</section>
+<p class="sm-muted">Submitted shift handover sheets. Open a row to read or print that filed copy.</p>
+
+<section class="sm-filters">
+  <label class="sm-field-inline"><span>From</span><input type="date" id="hoto-log-from" /></label>
+  <label class="sm-field-inline"><span>To</span><input type="date" id="hoto-log-to" /></label>
+  <label class="sm-field-inline">
+    <span>Shift</span>
+    <select id="hoto-log-shift">
+      <option value="">All</option>
+      <option value="Day">Day</option>
+      <option value="Night">Night</option>
+    </select>
+  </label>
+  <button type="button" class="sm-btn sm-btn-primary" id="hoto-log-apply">Apply</button>
+</section>
+
+<div class="sm-table-wrap">
+  <table class="sm-table" id="hoto-log-table">
+    <thead>
+      <tr>
+        <th>Submitted</th>
+        <th>Shift date</th>
+        <th>Shift</th>
+        <th>Outgoing</th>
+        <th>Incoming</th>
+        <th>Filed by</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td colspan="7">Loading...</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>SM.page = "backlog";</script>
+{% endblock %}

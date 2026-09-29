@@ -1,0 +1,174 @@
+{% extends "shift_management_base.html" %}
+{% block title %}HOTO Checklist  -  Shift Management{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/shift_management_hoto.css', v='hoto-4') }}" />
+{% endblock %}
+{% block content %}
+<section class="hoto-toolbar">
+  <label class="sm-field-inline" for="hoto-date">Shift date
+    <input type="date" id="hoto-date" />
+  </label>
+  <div class="sm-chip-row" id="hoto-shift-chips" role="group" aria-label="Current shift">
+    <button type="button" class="sm-chip" data-shift="Day">Day</button>
+    <button type="button" class="sm-chip" data-shift="Night">Night</button>
+  </div>
+  <span id="hoto-save-state" class="hoto-save-state">Loading...</span>
+  <button type="button" class="sm-btn sm-btn-primary" id="hoto-submit">Submit</button>
+  <button type="button" class="sm-btn sm-btn-ghost" id="hoto-reopen" hidden>Reopen</button>
+  <button type="button" class="sm-btn sm-btn-ghost hoto-print" id="hoto-print">Print</button>
+</section>
+<p id="hoto-filed" class="hoto-filed" hidden></p>
+
+<div class="hoto-scroll">
+  <div class="hoto-book" id="hoto-book">
+    <div class="hoto-title">SHIFT HANDOVER (HOTO) CHECKLIST - MFG</div>
+
+    <table class="hoto-table hoto-details">
+      <caption class="hoto-band">SHIFT DETAILS</caption>
+      <tbody>
+        <tr>
+          <th class="hoto-label" scope="row">Handover Date/Time</th>
+          <td><input type="datetime-local" id="hoto-when" aria-label="Handover date and time" /></td>
+        </tr>
+        <tr>
+          <th class="hoto-label" scope="row">Outgoing Shift Rep</th>
+          <td><input type="text" id="hoto-outgoing" maxlength="120" aria-label="Outgoing shift rep" autocomplete="name" /></td>
+        </tr>
+        <tr>
+          <th class="hoto-label" scope="row">Incoming Shift Rep</th>
+          <td><input type="text" id="hoto-incoming" maxlength="120" aria-label="Incoming shift rep" autocomplete="name" /></td>
+        </tr>
+        <tr>
+          <th class="hoto-label" scope="row">Current Shift</th>
+          <td>
+            <select id="hoto-shift" aria-label="Current shift">
+              <option>Day</option>
+              <option>Night</option>
+            </select>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <table class="hoto-table hoto-check">
+      <caption class="hoto-band">HANDOVER CHECKLIST</caption>
+      <colgroup>
+        <col class="c-no" />
+        <col class="c-item" />
+        <col class="c-status" />
+        <col class="c-remarks" />
+        <col class="c-by" />
+      </colgroup>
+      <thead>
+        <tr class="hoto-cols">
+          <th scope="col">#</th>
+          <th scope="col">Checklist Item</th>
+          <th scope="col">Status</th>
+          <th scope="col">Remarks</th>
+          <th scope="col">Checked By</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in hoto_items %}
+        <tr>
+          <td class="hoto-no">{{ item.no }}</td>
+          <td class="hoto-item">
+            {{ item.text }}
+            {% if item.see %}
+            <br><a class="hoto-see" href="{% if item.see_external %}{{ item.see_href }}{% else %}{{ app_path }}{{ item.see_href }}{% endif %}"{% if item.see_external %} target="_blank" rel="noopener noreferrer"{% endif %}>(see {{ item.see }})</a>
+            {% endif %}
+          </td>
+          <td class="hoto-status">
+            <span class="hoto-status-mark" aria-hidden="true"></span>
+            <select data-hoto-status="{{ item.no }}" aria-label="Status for item {{ item.no }}">
+              <option value=""></option>
+              <option value="No Issue">No Issue</option>
+              <option value="Issue Raised">Issue Raised</option>
+            </select>
+            <span class="hoto-status-print"></span>
+          </td>
+          <td class="hoto-yellow">
+            <textarea data-hoto-remarks="{{ item.no }}" rows="2" maxlength="500" aria-label="Remarks for item {{ item.no }}"></textarea>
+          </td>
+          <td class="hoto-yellow">
+            <input type="text" data-hoto-by="{{ item.no }}" maxlength="120" aria-label="Checked by for item {{ item.no }}" />
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <table class="hoto-table hoto-signoff">
+      <caption class="hoto-band">SIGN-OFF</caption>
+      <thead>
+        <tr class="hoto-sign-head">
+          <th scope="col">Outgoing Shift Rep (Name &amp; Sign)</th>
+          <th scope="col">Incoming Shift Rep (Name &amp; Sign)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="hoto-sign-cell" data-sign="outgoing">
+            <div class="hoto-sign-script" hidden></div>
+            <div class="hoto-sign-meta"></div>
+            <div class="hoto-sign-actions">
+              <button type="button" class="hoto-mini" data-sign-action="sign">Sign</button>
+              <button type="button" class="hoto-mini" data-sign-action="clear" hidden>Clear</button>
+            </div>
+          </td>
+          <td class="hoto-sign-cell" data-sign="incoming">
+            <div class="hoto-sign-script" hidden></div>
+            <div class="hoto-sign-meta"></div>
+            <div class="hoto-sign-actions">
+              <button type="button" class="hoto-mini" data-sign-action="sign">Sign</button>
+              <button type="button" class="hoto-mini" data-sign-action="clear" hidden>Clear</button>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <table class="hoto-table hoto-attend">
+      <caption class="hoto-band">SHIFT ATTENDANCE</caption>
+      <colgroup>
+        <col class="a-no" />
+        <col class="a-name" />
+        <col class="a-late" />
+        <col class="a-remarks" />
+      </colgroup>
+      <thead>
+        <tr class="hoto-cols">
+          <th scope="col">#</th>
+          <th scope="col">Name</th>
+          <th scope="col">Late?</th>
+          <th scope="col">Remarks</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="hoto-example">
+          <td>E.g.</td>
+          <td>Ah Lim</td>
+          <td class="hoto-eg-tick">&#10003;</td>
+          <td>Early fallout (Medical checkup)</td>
+        </tr>
+        {% for n in hoto_attendance_rows %}
+        <tr>
+          <td class="hoto-no">{{ n }}</td>
+          <td><input type="text" data-hoto-name="{{ n }}" maxlength="120" aria-label="Attendance name {{ n }}" /></td>
+          <td class="hoto-late-cell">
+            <label class="hoto-tick">
+              <input type="checkbox" data-hoto-late="{{ n }}" aria-label="Late {{ n }}" />
+              <span aria-hidden="true"></span>
+            </label>
+          </td>
+          <td><input type="text" data-hoto-att-remarks="{{ n }}" maxlength="300" aria-label="Attendance remarks {{ n }}" /></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/shift_management_hoto.js', v='hoto-3') }}"></script>
+{% endblock %}

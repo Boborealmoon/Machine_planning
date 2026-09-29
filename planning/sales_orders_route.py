@@ -688,10 +688,11 @@ def _pp_history_key(value: Any) -> str:
 
 
 def _in_date_history_value(material_subcon: Any) -> str:
-    """ISO in-date for history. Arrived is not an in-date value."""
-    if _material_subcon_arrived(material_subcon):
-        return ""
-    return _parse_material_need_date(material_subcon)
+    """ISO in-date for history. Plain Arrived has no date; Arrived|date keeps it."""
+    from .anticipated_material_service import parse_material_subcon_date
+
+    parsed = parse_material_subcon_date(material_subcon)
+    return parsed.isoformat() if parsed else ""
 
 
 def _date_history_changes(before: dict[str, Any] | None, after: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -706,16 +707,17 @@ def _date_history_changes(before: dict[str, Any] | None, after: dict[str, Any] |
             "old_value": old_need,
             "new_value": new_need,
         })
-    # Arrived toggles hide the date picker; only log real in-date edits.
-    if not _material_subcon_arrived(current.get("material_subcon")):
-        old_in = _in_date_history_value(previous.get("material_subcon"))
-        new_in = _in_date_history_value(current.get("material_subcon"))
-        if old_in != new_in:
-            changes.append({
-                "field_name": "material_in_date",
-                "old_value": old_in,
-                "new_value": new_in,
-            })
+    # Plain Arrived used to replace the note. That toggle is not a date clear.
+    # Arrived|date keeps the in-date, so a real date edit still gets logged.
+    old_in = _in_date_history_value(previous.get("material_subcon"))
+    new_in = _in_date_history_value(current.get("material_subcon"))
+    legacy_arrived = _material_subcon_arrived(current.get("material_subcon")) and not new_in
+    if not legacy_arrived and old_in != new_in:
+        changes.append({
+            "field_name": "material_in_date",
+            "old_value": old_in,
+            "new_value": new_in,
+        })
     return changes
 
 
@@ -960,7 +962,9 @@ def _apply_process_sheet_overlay(
 
 
 def _material_subcon_arrived(raw: Any) -> bool:
-    return compact_text(raw).upper() == "ARRIVED"
+    from .anticipated_material_service import material_subcon_is_arrived
+
+    return material_subcon_is_arrived(raw)
 
 
 def _process_sheet_for_pp_voucher(con, pp_voucher_no: str) -> str:
@@ -1086,11 +1090,16 @@ def _reconcile_subcon_material_in(orders: list[dict[str, Any]]) -> None:
     if not targets:
         return
     try:
-        from .process_sheets import _update_material_in
+        from .process_sheets import _update_material_in, material_in_date_from_subcon
 
         with planner_db() as con:
             for ps_id, pp in targets:
-                payload, err = _update_material_in(con, ps_id, True)
+                payload, err = _update_material_in(
+                    con,
+                    ps_id,
+                    True,
+                    material_in_date=material_in_date_from_subcon(pp.get("material_subcon")) or None,
+                )
                 if payload and not err:
                     pp["material_in"] = bool(payload.get("material_in"))
                     pp["material_in_date"] = payload.get("material_in_date")

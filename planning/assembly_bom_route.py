@@ -659,6 +659,17 @@ def _load_assembly_line_notes(process_sheet_nos: list[str]) -> dict[str, dict[st
     return out
 
 
+def _load_assembly_line_material_in(process_sheet_nos: list[str]) -> dict[str, dict[str, Any]]:
+    """APT arrival flag and date, keyed by child COMP sheet."""
+    try:
+        from .assembly_parts_route import _load_material_in
+
+        return _load_material_in(process_sheet_nos)
+    except Exception as exc:
+        logger.warning("assembly line material_in overlay skipped: %s", exc)
+        return {}
+
+
 def _overlay_assembly_line_notes(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     child_ids = [
         compact_text(child.get("process_sheet_no"))
@@ -667,16 +678,21 @@ def _overlay_assembly_line_notes(items: list[dict[str, Any]]) -> list[dict[str, 
         if compact_text(child.get("process_sheet_no"))
     ]
     notes = _load_assembly_line_notes(child_ids)
-    if not notes:
+    material_in = _load_assembly_line_material_in(child_ids)
+    if not notes and not material_in:
         return items
     for item in items:
         for child in item.get("children") or []:
             ps_no = compact_text(child.get("process_sheet_no"))
-            overlay = notes.get(_ps_base_id(ps_no), {})
+            key = _ps_base_id(ps_no)
+            overlay = notes.get(key, {})
+            arrival = material_in.get(key, {})
             child["material_subcon"] = compact_text(overlay.get("material_subcon"))
             child["mtl_part_order"] = compact_text(overlay.get("mtl_part_order"))
             child["material_need_date"] = compact_text(overlay.get("material_need_date"))
             child["material_delay"] = bool(overlay.get("material_delay"))
+            child["material_in"] = bool(arrival.get("material_in"))
+            child["material_in_date"] = arrival.get("material_in_date") or None
     return items
 
 

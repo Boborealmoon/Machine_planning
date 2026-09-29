@@ -450,6 +450,8 @@
 
     const dialog = document.getElementById("sm-ticket-dialog");
     const form = document.getElementById("sm-ticket-form");
+    const machineEl = document.getElementById("sm-ops-machine");
+    let selectedBlockId = null;
 
     if (dateEl) dateEl.value = rememberedDate();
 
@@ -459,14 +461,79 @@
       });
     }
 
+    function machineById(id) {
+      const want = String(id || "");
+      for (let i = 0; i < machines.length; i++) {
+        if (String(machines[i].machine_id) === want) return machines[i];
+      }
+      return null;
+    }
+
+    function selectedMachine() {
+      return machineById(machineEl && machineEl.value);
+    }
+
+    function jobLabel(job) {
+      return (
+        "Q" +
+        (job.queue_position != null ? job.queue_position : "?") +
+        " · PS " +
+        (job.process_sheet_no || job.job_no || "-")
+      );
+    }
+
+    function fillDialogMachines(machineId) {
+      const sel = document.getElementById("sm-tk-machine");
+      if (!sel) return;
+      sel.innerHTML = machines
+        .map(function (m) {
+          const idle = (m.jobs || []).length ? "" : " (no queue)";
+          return (
+            '<option value="' +
+            escapeHtml(m.machine_id) +
+            '"' +
+            (String(m.machine_id) === String(machineId) ? " selected" : "") +
+            ">" +
+            escapeHtml(m.machine_no) +
+            idle +
+            "</option>"
+          );
+        })
+        .join("");
+    }
+
+    function fillDialogJobs(machineId, blockId) {
+      const sel = document.getElementById("sm-tk-job");
+      const machine = machineById(machineId);
+      const jobs = (machine && machine.jobs) || [];
+      if (!sel) return;
+      if (!jobs.length) {
+        sel.innerHTML = '<option value="">No queued job</option>';
+        return;
+      }
+      sel.innerHTML = jobs
+        .map(function (job) {
+          return (
+            '<option value="' +
+            escapeHtml(job.block_id) +
+            '" data-ps="' +
+            escapeHtml(job.process_sheet_no || job.source_ps_id || "") +
+            '" data-job="' +
+            escapeHtml(job.job_no || job.process_sheet_no || "") +
+            '"' +
+            (String(job.block_id) === String(blockId) ? " selected" : "") +
+            ">" +
+            escapeHtml(jobLabel(job)) +
+            "</option>"
+          );
+        })
+        .join("");
+    }
+
     function openTicketDialog(machine, job) {
-      const item = Object.assign({ machine_id: machine.machine_id, machine_no: machine.machine_no }, job || {});
-      document.getElementById("sm-tk-machine-id").value = item.machine_id;
-      document.getElementById("sm-tk-block-id").value = item.block_id || "";
-      document.getElementById("sm-tk-ps").value = item.process_sheet_no || item.source_ps_id || "";
-      document.getElementById("sm-tk-job").value = item.job_no || item.process_sheet_no || "";
-      document.getElementById("sm-ticket-context").textContent =
-        (item.machine_no || "") + " · PS " + (item.process_sheet_no || item.job_no || "-");
+      const machineId = machine && machine.machine_id;
+      fillDialogMachines(machineId);
+      fillDialogJobs(machineId, job && job.block_id);
       fillSelect(
         document.getElementById("sm-tk-category"),
         (meta && meta.ticket_categories) || ["Other"],
@@ -499,6 +566,27 @@
       const shown = machines.filter(function (m) {
         return matchesSearch(m, q);
       });
+      if (machineEl) {
+        const current = machineEl.value;
+        machineEl.innerHTML = shown.length
+          ? shown
+              .map(function (m) {
+                const count = (m.jobs || []).length;
+                return (
+                  '<option value="' +
+                  escapeHtml(m.machine_id) +
+                  '">' +
+                  escapeHtml(m.machine_no) +
+                  (count ? " · " + count + " job" + (count === 1 ? "" : "s") : " · idle") +
+                  "</option>"
+                );
+              })
+              .join("")
+          : '<option value="">No machines</option>';
+        if (current && machineById(current) && shown.some(function (m) { return String(m.machine_id) === String(current); })) {
+          machineEl.value = current;
+        }
+      }
       if (!shown.length) {
         list.innerHTML =
           '<div class="sm-ops-empty"><p class="sm-muted">' +
@@ -509,130 +597,127 @@
         return;
       }
 
-      function cardHtml(m, idx) {
-          const jobs = m.jobs || [];
-          const head = jobs[0];
-          const tickets = Number(m.open_ticket_count || 0);
-          const ho = m.handover;
-          const ps = head ? encodeURIComponent(head.process_sheet_no || head.job_no || "") : "";
-          const jobHtml = jobs
-            .map(function (job, jIdx) {
-              const jTickets = Number(job.open_ticket_count || 0);
-              return (
-                '<div class="sm-ops-job" data-machine="' +
-                idx +
-                '" data-job="' +
-                jIdx +
-                '">' +
-                '<div class="sm-ops-job-row">' +
-                "<div>" +
-                '<div class="sm-ops-ps">Q' +
-                escapeHtml(job.queue_position) +
-                " · PS " +
-                escapeHtml(job.process_sheet_no || job.job_no || "-") +
-                "</div>" +
-                '<div class="sm-muted">' +
-                escapeHtml(job.operation_name || "Operation") +
-                (job.source_op_no ? " · Op " + escapeHtml(job.source_op_no) : "") +
-                "</div>" +
-                '<div class="sm-muted">Remaining ' +
-                escapeHtml(job.remaining_qty != null ? job.remaining_qty : "-") +
-                " / planned " +
-                escapeHtml(job.scheduled_qty != null ? job.scheduled_qty : "-") +
-                (job.execution_status || job.block_status
-                  ? " · " + escapeHtml(job.execution_status || job.block_status)
-                  : "") +
-                "</div>" +
-                (jTickets
-                  ? '<span class="sm-badge urgent">' + jTickets + " ticket" + (jTickets === 1 ? "" : "s") + "</span>"
-                  : "") +
-                "</div>" +
-                (can("can_create_ticket") && can("can_ops_actions")
-                  ? '<button type="button" class="sm-btn sm-btn-ghost sm-ops-ticket">Ticket</button>'
-                  : "") +
-                "</div></div>"
-              );
-            })
-            .join("");
-
+      const machine = selectedMachine() || shown[0];
+      if (machineEl && machine) machineEl.value = String(machine.machine_id);
+      const jobs = (machine && machine.jobs) || [];
+      if (selectedBlockId && !jobs.some(function (job) { return String(job.block_id) === String(selectedBlockId); })) {
+        selectedBlockId = null;
+      }
+      const ho = machine && machine.handover;
+      const tickets = Number((machine && machine.open_ticket_count) || 0);
+      const psRaw = (function () {
+        const picked = jobs.filter(function (job) {
+          return String(job.block_id) === String(selectedBlockId);
+        })[0];
+        const head = picked || jobs[0];
+        return head ? head.process_sheet_no || head.job_no || "" : "";
+      })();
+      const link = new URLSearchParams();
+      if (psRaw) link.set("ps", psRaw);
+      if (dateEl && dateEl.value) link.set("date", dateEl.value);
+      link.set("shift", shift);
+      const jobHtml = jobs
+        .map(function (job) {
+          const jTickets = Number(job.open_ticket_count || 0);
+          const selected = String(job.block_id) === String(selectedBlockId);
           return (
-            '<article class="sm-ops-machine' +
-            (jobs.length ? "" : " is-idle") +
-            '" data-machine="' +
-            idx +
+            '<button type="button" class="sm-ops-job' +
+            (selected ? " is-selected" : "") +
+            '" data-block="' +
+            escapeHtml(job.block_id) +
             '">' +
-            '<div class="sm-ops-machine-head">' +
-            '<div class="sm-ops-machine-title">' +
-            "<strong>" +
-            escapeHtml(m.machine_no) +
-            "</strong>" +
-            badgeForHandover(ho) +
-            (tickets
-              ? '<span class="sm-badge urgent">' + tickets + " ticket" + (tickets === 1 ? "" : "s") + "</span>"
+            '<div class="sm-ops-job-row">' +
+            "<div>" +
+            '<div class="sm-ops-ps">' +
+            escapeHtml(jobLabel(job)) +
+            "</div>" +
+            '<div class="sm-muted">' +
+            escapeHtml(job.operation_name || "Operation") +
+            (job.source_op_no ? " · Op " + escapeHtml(job.source_op_no) : "") +
+            "</div>" +
+            '<div class="sm-muted">Remaining ' +
+            escapeHtml(job.remaining_qty != null ? job.remaining_qty : "-") +
+            " / planned " +
+            escapeHtml(job.scheduled_qty != null ? job.scheduled_qty : "-") +
+            (job.execution_status || job.block_status
+              ? " · " + escapeHtml(job.execution_status || job.block_status)
               : "") +
             "</div>" +
-            '<div class="sm-ops-actions">' +
-            (can("can_ops_actions")
-              ? '<a class="sm-btn sm-btn-primary" href="' +
-                SM.appPath +
-                "/entry/" +
-                m.machine_id +
-                (ps ? "?ps=" + ps : "") +
-                '">Handover</a>'
+            (jTickets
+              ? '<span class="sm-badge urgent">' + jTickets + " ticket" + (jTickets === 1 ? "" : "s") + "</span>"
               : "") +
-            "</div></div>" +
-            (jobs.length
-              ? jobHtml +
-                (m.queue_count > jobs.length
-                  ? '<p class="sm-muted sm-ops-more">+' +
-                    (m.queue_count - jobs.length) +
-                    " more on queue</p>"
-                  : "")
-              : '<p class="sm-muted">No active queue job. Still hand over machine status.</p>') +
-            "</article>"
+            "</div></div></button>"
           );
-      }
+        })
+        .join("");
 
-      const busy = [];
-      const idle = [];
-      shown.forEach(function (m, idx) {
-        if ((m.jobs || []).length) busy.push({ m: m, idx: idx });
-        else idle.push({ m: m, idx: idx });
-      });
       list.innerHTML =
-        busy.map(function (row) { return cardHtml(row.m, row.idx); }).join("") +
-        (idle.length
-          ? '<button type="button" class="sm-btn sm-btn-ghost sm-btn-block" id="sm-ops-idle-toggle">Show ' +
-            idle.length +
-            " idle machine" +
-            (idle.length === 1 ? "" : "s") +
-            "</button>" +
-            '<div id="sm-ops-idle" hidden>' +
-            idle.map(function (row) { return cardHtml(row.m, row.idx); }).join("") +
-            "</div>"
-          : "");
+        '<article class="sm-ops-machine' +
+        (jobs.length ? "" : " is-idle") +
+        '">' +
+        '<div class="sm-ops-machine-head">' +
+        '<div class="sm-ops-machine-title">' +
+        "<strong>" +
+        escapeHtml(machine.machine_no) +
+        "</strong>" +
+        badgeForHandover(ho) +
+        (tickets
+          ? '<span class="sm-badge urgent">' + tickets + " ticket" + (tickets === 1 ? "" : "s") + "</span>"
+          : "") +
+        "</div>" +
+        '<div class="sm-ops-actions">' +
+        (can("can_create_ticket") && can("can_ops_actions")
+          ? '<button type="button" class="sm-btn sm-btn-primary" id="sm-ops-raise"' +
+            (selectedBlockId ? "" : " disabled") +
+            ">Raise ticket</button>"
+          : "") +
+        (can("can_ops_actions")
+          ? '<a class="sm-btn sm-btn-ghost" href="' +
+            SM.appPath +
+            "/entry/" +
+            machine.machine_id +
+            "?" +
+            link.toString() +
+            '">Handover</a>'
+          : "") +
+        "</div></div>" +
+        (jobs.length
+          ? jobHtml +
+            (machine.queue_count > jobs.length
+              ? '<p class="sm-muted sm-ops-more">+' +
+                (machine.queue_count - jobs.length) +
+                " more on queue</p>"
+              : "") +
+            (can("can_create_ticket") && can("can_ops_actions")
+              ? '<p class="sm-muted sm-ops-more">Tap a job, then Raise ticket.</p>'
+              : "")
+          : '<p class="sm-muted">No active queue job. You can still hand over machine status.</p>') +
+        "</article>";
 
-      const idleToggle = document.getElementById("sm-ops-idle-toggle");
-      const idleBox = document.getElementById("sm-ops-idle");
-      if (idleToggle && idleBox) {
-        idleToggle.addEventListener("click", function () {
-          idleBox.hidden = !idleBox.hidden;
-          idleToggle.textContent = idleBox.hidden
-            ? "Show " + idle.length + " idle machine" + (idle.length === 1 ? "" : "s")
-            : "Hide idle machines";
-        });
-      }
-
-      list.querySelectorAll(".sm-ops-ticket").forEach(function (btn) {
-        btn.addEventListener("click", function () {
-          const jobEl = btn.closest(".sm-ops-job");
-          const card = btn.closest(".sm-ops-machine");
-          const mIdx = Number((jobEl || card).dataset.machine);
-          const machine = shown[mIdx];
-          const job = jobEl ? machine.jobs[Number(jobEl.dataset.job)] : (machine.jobs || [])[0];
-          openTicketDialog(machine, job);
+      list.querySelectorAll(".sm-ops-job").forEach(function (row) {
+        row.addEventListener("click", function () {
+          selectedBlockId = row.dataset.block;
+          render();
         });
       });
+      const raise = document.getElementById("sm-ops-raise");
+      if (raise) {
+        raise.addEventListener("click", function () {
+          const current = selectedMachine();
+          const job = ((current && current.jobs) || []).filter(function (item) {
+            return String(item.block_id) === String(selectedBlockId);
+          })[0];
+          if (!current) {
+            toast("Choose a machine first");
+            return;
+          }
+          if (!job) {
+            toast("Select a queued job");
+            return;
+          }
+          openTicketDialog(current, job);
+        });
+      }
     }
 
     async function load() {
@@ -669,22 +754,48 @@
     });
     if (dateEl) dateEl.addEventListener("change", load);
     if (searchEl) searchEl.addEventListener("input", render);
+    if (machineEl) {
+      machineEl.addEventListener("change", function () {
+        selectedBlockId = null;
+        render();
+      });
+    }
+    const tkMachine = document.getElementById("sm-tk-machine");
+    if (tkMachine) {
+      tkMachine.addEventListener("change", function () {
+        fillDialogJobs(tkMachine.value, "");
+      });
+    }
+    const reportBtn = document.getElementById("sm-ops-report");
+    if (reportBtn) {
+      reportBtn.addEventListener("click", function () {
+        downloadReportPdf((dateEl && dateEl.value) || rememberedDate(), shift);
+      });
+    }
     document.getElementById("sm-tk-cancel").addEventListener("click", function () {
       if (dialog) dialog.close();
     });
     if (form) form.addEventListener("submit", async function (e) {
       e.preventDefault();
       const status = document.getElementById("sm-tk-status");
+      const jobSel = document.getElementById("sm-tk-job");
+      const opt = jobSel && jobSel.selectedOptions ? jobSel.selectedOptions[0] : null;
+      const machineId = tkMachine ? tkMachine.value : "";
+      if (!machineId || !jobSel || !jobSel.value) {
+        status.hidden = false;
+        status.textContent = "Choose a machine, then a queued job.";
+        return;
+      }
       try {
         status.hidden = false;
         status.textContent = "Creating…";
         await api("/api/shift-management/tickets", {
           method: "POST",
           body: JSON.stringify({
-            machine_id: Number(document.getElementById("sm-tk-machine-id").value),
-            block_id: document.getElementById("sm-tk-block-id").value || null,
-            planner_ps_id: document.getElementById("sm-tk-ps").value,
-            job_no: document.getElementById("sm-tk-job").value,
+            machine_id: Number(machineId),
+            block_id: jobSel.value,
+            planner_ps_id: (opt && opt.dataset.ps) || "",
+            job_no: (opt && opt.dataset.job) || "",
             category: document.getElementById("sm-tk-category").value,
             priority: document.getElementById("sm-tk-priority").value,
             title: document.getElementById("sm-tk-title").value,
@@ -718,6 +829,9 @@
 
     const params = new URLSearchParams(window.location.search);
     const prefPs = params.get("ps") || "";
+    const workDate = params.get("date") || rememberedDate();
+    const shiftOut = normalizeShiftClient(params.get("shift") || rememberedShift());
+    rememberContext(workDate, shiftOut);
 
     function setSave(text) {
       if (saveEl) saveEl.textContent = text;
@@ -1185,8 +1299,8 @@
         method: "POST",
         body: JSON.stringify({
           machine_id: machineId,
-          work_date: rememberedDate(),
-          shift_out: rememberedShift(),
+          work_date: workDate,
+          shift_out: shiftOut,
           job_no: prefPs || undefined,
         }),
       });
@@ -1497,6 +1611,64 @@
     }
     dateEl.addEventListener("change", load);
     paintShift();
+    load();
+  }
+
+  async function initHotoBacklog() {
+    const tbody = document.querySelector("#hoto-log-table tbody");
+    if (!tbody) return;
+    const from = document.getElementById("hoto-log-from");
+    const to = document.getElementById("hoto-log-to");
+    const shiftEl = document.getElementById("hoto-log-shift");
+    to.value = todayISO();
+    const start = new Date();
+    start.setDate(start.getDate() - 30);
+    from.value = start.toISOString().slice(0, 10);
+
+    function stamp(value) {
+      return value ? String(value).replace("T", " ") : "";
+    }
+
+    async function load() {
+      const q = new URLSearchParams();
+      if (from.value) q.set("from", from.value);
+      if (to.value) q.set("to", to.value);
+      if (shiftEl && shiftEl.value) q.set("shift", shiftEl.value);
+      tbody.innerHTML = '<tr><td colspan="7">Loading...</td></tr>';
+      try {
+        const data = await api("/api/shift-management/hoto/backlog?" + q.toString());
+        const items = data.items || [];
+        tbody.innerHTML = items.length
+          ? items
+              .map(function (row) {
+                const href =
+                  SM.appPath +
+                  "/hoto?submission=" +
+                  encodeURIComponent(row.submission_id) +
+                  "&date=" +
+                  encodeURIComponent(row.work_date || "") +
+                  "&shift=" +
+                  encodeURIComponent(row.shift_out || "");
+                return (
+                  "<tr>" +
+                  "<td>" + escapeHtml(stamp(row.submitted_at)) + "</td>" +
+                  "<td>" + escapeHtml(row.work_date || "") + "</td>" +
+                  "<td>" + escapeHtml(row.shift_out || "") + "</td>" +
+                  "<td>" + escapeHtml(row.outgoing_supervisor || row.outgoing_sign_name || "") + "</td>" +
+                  "<td>" + escapeHtml(row.incoming_supervisor || row.incoming_sign_name || "") + "</td>" +
+                  "<td>" + escapeHtml(row.submitted_by_name || "") + "</td>" +
+                  '<td><a href="' + href + '">Open</a></td>' +
+                  "</tr>"
+                );
+              })
+              .join("")
+          : '<tr><td colspan="7">No submitted handovers in this range.</td></tr>';
+      } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="7">' + escapeHtml(err.message) + "</td></tr>";
+      }
+    }
+
+    document.getElementById("hoto-log-apply").addEventListener("click", load);
     load();
   }
 
@@ -1999,6 +2171,7 @@
     else if (page === "ack") initAck();
     else if (page === "dashboard") initDashboard();
     else if (page === "history") initHistory();
+    else if (page === "backlog") initHotoBacklog();
   }
 
   if (document.readyState === "loading") {

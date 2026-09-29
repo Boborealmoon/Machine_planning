@@ -1,15 +1,16 @@
 """Shift Management - Day/Night handover CRUD, ops queue, tickets, KPIs."""
 from __future__ import annotations
 
+import json
 import logging
 import re
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from .helpers import one, rows
-from .utils import compact_text
+from .utils import PLANNER_TZ, compact_text
 
 log = logging.getLogger(__name__)
 
@@ -30,9 +31,11 @@ TICKET_CATEGORIES = (
 )
 TICKET_STATUSES = ("open", "in_progress", "closed")
 
-# Day 07:00-19:00, Night 19:00-07:00
-DAY_START_HOUR = 7
-NIGHT_START_HOUR = 19
+# Day 08:01-20:00, Night 20:01-08:00 (shop wall clock, Asia/Singapore).
+DAY_START = time(8, 1)
+DAY_END = time(20, 1)  # exclusive; 20:00 is still Day
+NIGHT_START = time(20, 1)
+NIGHT_END = time(8, 1)  # exclusive next morning; 08:00 is still Night
 
 EDITABLE_FIELDS = frozenset(
     {
@@ -59,6 +62,7 @@ EDITABLE_FIELDS = frozenset(
 )
 
 _schema_ready = False
+_shift_checks_ready = False
 _MIGRATION_PATH = Path(__file__).resolve().parent.parent / "migrations" / "add_shift_management.sql"
 
 
@@ -151,24 +155,27 @@ def _apply_migration_sql(con) -> None:
 
 
 def ensure_shift_mgmt_schema(con) -> None:
-    global _schema_ready
-    if _schema_ready:
+    global _schema_ready, _shift_checks_ready
+    if _schema_ready and _shift_checks_ready:
         return
     from .shift_management_auth import ensure_shift_mgmt_auth_tables, seed_demo_users_if_empty
 
-    ensure_shift_mgmt_auth_tables(con)
-    try:
-        _apply_migration_sql(con)
-    except Exception:
-        log.warning("shift_mgmt migration apply failed; ensuring tables piecemeal", exc_info=True)
-        _try_migration_step(
-            con, "sm_piecemeal", lambda: _ensure_tables_piecemeal(con), warn=True
-        )
-    _try_migration_step(con, "sm_extra_tables", lambda: _ensure_extra_tables(con), warn=True)
-    _migrate_abc_to_day_night(con)
-    _try_migration_step(con, "sm_seed_demo", lambda: seed_demo_users_if_empty(con))
-    _try_migration_step(con, "sm_cnc41", lambda: _ensure_cnc41_machine(con), warn=True)
-    _schema_ready = True
+    if not _schema_ready:
+        ensure_shift_mgmt_auth_tables(con)
+        try:
+            _apply_migration_sql(con)
+        except Exception:
+            log.warning("shift_mgmt migration apply failed; ensuring tables piecemeal", exc_info=True)
+            _try_migration_step(
+                con, "sm_piecemeal", lambda: _ensure_tables_piecemeal(con), warn=True
+            )
+        _try_migration_step(con, "sm_extra_tables", lambda: _ensure_extra_tables(con), warn=True)
+        _try_migration_step(con, "sm_seed_demo", lambda: seed_demo_users_if_empty(con))
+        _try_migration_step(con, "sm_cnc41", lambda: _ensure_cnc41_machine(con), warn=True)
+        _schema_ready = True
+    if not _shift_checks_ready:
+        _migrate_abc_to_day_night(con)
+        _shift_checks_ready = _day_night_checks_ready(con)
 
 
 def _ensure_cnc41_machine(con) -> None:
@@ -226,58 +233,46 @@ def _drop_checks_on_columns(con, table: str, columns: tuple[str, ...]) -> None:
                 con.execute(f'ALTER TABLE public.{table} DROP CONSTRAINT IF EXISTS "{name}"')
 
 
+def _check_def(con, table: str, name: str) -> str:
+    row = one(
+        con.execute(
+            """
+            SELECT pg_get_constraintdef(c.oid) AS def
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE n.nspname = 'public'
+              AND t.relname = %s
+              AND c.conname = %s
+            """,
+            (table, name),
+        )
+    )
+    return compact_text((row or {}).get("def"))
+
+
+def _day_night_checks_ready(con) -> bool:
+    """True when live CHECKs accept Day/Night rather than legacy A/B/C."""
+    needed = (
+        ("shift_mgmt_handovers", "shift_mgmt_handovers_shift_out_check"),
+        ("shift_mgmt_handovers", "shift_mgmt_handovers_shift_in_check"),
+        ("shift_mgmt_users", "shift_mgmt_users_default_shift_check"),
+        ("shift_mgmt_tickets", "shift_mgmt_tickets_shift_out_check"),
+    )
+    for table, name in needed:
+        text = _check_def(con, table, name)
+        if "Day" not in text or "Night" not in text or "'A'" in text:
+            return False
+    return True
+
+
 def _migrate_abc_to_day_night(con) -> None:
-    """Map legacy A/B/C shifts to Day/Night and refresh CHECK constraints."""
+    """Map legacy A/B/C shifts to Day/Night and refresh CHECK constraints.
 
-    def _update_users():
-        con.execute(
-            """
-            UPDATE public.shift_mgmt_users
-            SET default_shift = CASE
-                WHEN default_shift = 'A' THEN 'Day'
-                WHEN default_shift IN ('B', 'C') THEN 'Night'
-                ELSE default_shift
-            END
-            WHERE default_shift IN ('A', 'B', 'C')
-            """
-        )
-
-    def _update_handovers():
-        con.execute(
-            """
-            UPDATE public.shift_mgmt_handovers
-            SET shift_out = CASE
-                WHEN shift_out = 'A' THEN 'Day'
-                WHEN shift_out IN ('B', 'C') THEN 'Night'
-                ELSE shift_out
-            END
-            WHERE shift_out IN ('A', 'B', 'C')
-            """
-        )
-        con.execute(
-            """
-            UPDATE public.shift_mgmt_handovers
-            SET shift_in = CASE
-                WHEN shift_in = 'A' THEN 'Day'
-                WHEN shift_in IN ('B', 'C') THEN 'Night'
-                ELSE shift_in
-            END
-            WHERE shift_in IN ('A', 'B', 'C')
-            """
-        )
-
-    def _update_tickets():
-        con.execute(
-            """
-            UPDATE public.shift_mgmt_tickets
-            SET shift_out = CASE
-                WHEN shift_out = 'A' THEN 'Day'
-                WHEN shift_out IN ('B', 'C') THEN 'Night'
-                ELSE shift_out
-            END
-            WHERE shift_out IN ('A', 'B', 'C')
-            """
-        )
+    The old check must be dropped before values are rewritten. Updating A to
+    Day while the check still allows only A/B/C fails, the savepoint rolls
+    the drop back, and the next handover insert of 'Day' violates the check.
+    """
 
     def _refresh_users_check():
         con.execute(
@@ -285,6 +280,17 @@ def _migrate_abc_to_day_night(con) -> None:
             "DROP CONSTRAINT IF EXISTS shift_mgmt_users_default_shift_check"
         )
         _drop_checks_on_columns(con, "shift_mgmt_users", ("default_shift",))
+        con.execute(
+            """
+            UPDATE public.shift_mgmt_users
+            SET default_shift = CASE
+                WHEN default_shift IS NULL OR TRIM(default_shift) = '' THEN NULL
+                WHEN default_shift IN ('A', 'Day') THEN 'Day'
+                WHEN default_shift IN ('B', 'C', 'Night') THEN 'Night'
+                ELSE NULL
+            END
+            """
+        )
         con.execute(
             """
             ALTER TABLE public.shift_mgmt_users
@@ -303,6 +309,27 @@ def _migrate_abc_to_day_night(con) -> None:
             "DROP CONSTRAINT IF EXISTS shift_mgmt_handovers_shift_in_check"
         )
         _drop_checks_on_columns(con, "shift_mgmt_handovers", ("shift_out", "shift_in"))
+        con.execute(
+            """
+            UPDATE public.shift_mgmt_handovers
+            SET shift_out = CASE
+                WHEN shift_out IN ('A', 'Day') THEN 'Day'
+                WHEN shift_out IN ('B', 'C', 'Night') THEN 'Night'
+                ELSE 'Day'
+            END
+            """
+        )
+        con.execute(
+            """
+            UPDATE public.shift_mgmt_handovers
+            SET shift_in = CASE
+                WHEN shift_in IS NULL OR TRIM(shift_in) = '' THEN NULL
+                WHEN shift_in IN ('A', 'Day') THEN 'Day'
+                WHEN shift_in IN ('B', 'C', 'Night') THEN 'Night'
+                ELSE NULL
+            END
+            """
+        )
         con.execute(
             """
             ALTER TABLE public.shift_mgmt_handovers
@@ -326,18 +353,26 @@ def _migrate_abc_to_day_night(con) -> None:
         _drop_checks_on_columns(con, "shift_mgmt_tickets", ("shift_out",))
         con.execute(
             """
+            UPDATE public.shift_mgmt_tickets
+            SET shift_out = CASE
+                WHEN shift_out IS NULL OR TRIM(shift_out) = '' THEN NULL
+                WHEN shift_out IN ('A', 'Day') THEN 'Day'
+                WHEN shift_out IN ('B', 'C', 'Night') THEN 'Night'
+                ELSE NULL
+            END
+            """
+        )
+        con.execute(
+            """
             ALTER TABLE public.shift_mgmt_tickets
             ADD CONSTRAINT shift_mgmt_tickets_shift_out_check
             CHECK (shift_out IS NULL OR shift_out IN ('Day', 'Night'))
             """
         )
 
-    _try_migration_step(con, "sm_mig_users_shift", _update_users)
-    _try_migration_step(con, "sm_mig_ho_shift", _update_handovers)
-    _try_migration_step(con, "sm_mig_tk_shift", _update_tickets)
-    _try_migration_step(con, "sm_chk_users_shift", _refresh_users_check)
-    _try_migration_step(con, "sm_chk_ho_shift", _refresh_handovers_check)
-    _try_migration_step(con, "sm_chk_tk_shift", _refresh_tickets_check)
+    _try_migration_step(con, "sm_chk_users_shift", _refresh_users_check, warn=True)
+    _try_migration_step(con, "sm_chk_ho_shift", _refresh_handovers_check, warn=True)
+    _try_migration_step(con, "sm_chk_tk_shift", _refresh_tickets_check, warn=True)
 
 
 def _ensure_extra_tables(con) -> None:
@@ -405,6 +440,88 @@ def _ensure_extra_tables(con) -> None:
             body            TEXT         NOT NULL,
             created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         )
+        """
+    )
+    _ensure_hoto_table(con)
+
+
+def _ensure_hoto_table(con) -> None:
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS public.shift_mgmt_hoto_checklists (
+            checklist_id            BIGSERIAL    PRIMARY KEY,
+            work_date               DATE         NOT NULL,
+            shift_out               TEXT         NOT NULL
+                CHECK (shift_out IN ('Day', 'Night')),
+            handover_at             TIMESTAMPTZ,
+            outgoing_supervisor     TEXT         NOT NULL DEFAULT '',
+            incoming_supervisor     TEXT         NOT NULL DEFAULT '',
+            items                   JSONB        NOT NULL DEFAULT '[]'::jsonb,
+            attendance              JSONB        NOT NULL DEFAULT '[]'::jsonb,
+            outgoing_sign_name      TEXT         NOT NULL DEFAULT '',
+            outgoing_signed_at      TIMESTAMPTZ,
+            incoming_sign_name      TEXT         NOT NULL DEFAULT '',
+            incoming_signed_at      TIMESTAMPTZ,
+            updated_by              BIGINT
+                REFERENCES public.shift_mgmt_users(user_id) ON DELETE SET NULL,
+            created_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            UNIQUE (work_date, shift_out)
+        )
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE public.shift_mgmt_hoto_checklists
+            ADD COLUMN IF NOT EXISTS doc_status TEXT NOT NULL DEFAULT 'draft'
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE public.shift_mgmt_hoto_checklists
+            ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE public.shift_mgmt_hoto_checklists
+            ADD COLUMN IF NOT EXISTS submitted_by BIGINT
+                REFERENCES public.shift_mgmt_users(user_id) ON DELETE SET NULL
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS public.shift_mgmt_hoto_submissions (
+            submission_id           BIGSERIAL    PRIMARY KEY,
+            checklist_id            BIGINT
+                REFERENCES public.shift_mgmt_hoto_checklists(checklist_id) ON DELETE SET NULL,
+            work_date               DATE         NOT NULL,
+            shift_out               TEXT         NOT NULL,
+            handover_at             TIMESTAMPTZ,
+            outgoing_supervisor     TEXT         NOT NULL DEFAULT '',
+            incoming_supervisor     TEXT         NOT NULL DEFAULT '',
+            items                   JSONB        NOT NULL DEFAULT '[]'::jsonb,
+            attendance              JSONB        NOT NULL DEFAULT '[]'::jsonb,
+            outgoing_sign_name      TEXT         NOT NULL DEFAULT '',
+            outgoing_signed_at      TIMESTAMPTZ,
+            incoming_sign_name      TEXT         NOT NULL DEFAULT '',
+            incoming_signed_at      TIMESTAMPTZ,
+            submitted_by            BIGINT
+                REFERENCES public.shift_mgmt_users(user_id) ON DELETE SET NULL,
+            submitted_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_shift_mgmt_hoto_date
+            ON public.shift_mgmt_hoto_checklists (work_date DESC, shift_out)
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_shift_mgmt_hoto_submissions_at
+            ON public.shift_mgmt_hoto_submissions (submitted_at DESC)
         """
     )
 
@@ -504,11 +621,41 @@ def _audit(con, handover_id: int, user_id: int | None, field: str, old: Any, new
 
 
 def _guess_shift(now: datetime | None = None) -> str:
-    now = now or datetime.now()
-    hour = now.hour
-    if DAY_START_HOUR <= hour < NIGHT_START_HOUR:
+    now = now or datetime.now(PLANNER_TZ)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=PLANNER_TZ)
+    else:
+        now = now.astimezone(PLANNER_TZ)
+    clock = time(now.hour, now.minute, now.second)
+    if DAY_START <= clock < DAY_END:
         return "Day"
     return "Night"
+
+
+def shift_scan_bounds(work_date: date, shift_out: str) -> tuple[datetime, datetime]:
+    """Inclusive shop-clock window as a half-open [start, end) pair.
+
+    Day on ``work_date`` is 08:01 through 20:00.
+    Night on ``work_date`` is 20:01 through 08:00 the next morning.
+    """
+    shift = normalize_shift(shift_out)
+    if shift == "Day":
+        start = datetime.combine(work_date, DAY_START, tzinfo=PLANNER_TZ)
+        end = datetime.combine(work_date, DAY_END, tzinfo=PLANNER_TZ)
+    else:
+        start = datetime.combine(work_date, NIGHT_START, tzinfo=PLANNER_TZ)
+        end = datetime.combine(work_date + timedelta(days=1), NIGHT_END, tzinfo=PLANNER_TZ)
+    return start, end
+
+
+def shift_window_label(work_date: date, shift_out: str) -> str:
+    start, end = shift_scan_bounds(work_date, shift_out)
+    shown_end = end - timedelta(minutes=1)
+
+    def _fmt(moment: datetime) -> str:
+        return moment.astimezone(PLANNER_TZ).strftime("%Y-%m-%d %H:%M")
+
+    return f"{_fmt(start)} to {_fmt(shown_end)}"
 
 
 def machine_ids_for_user(con, user: dict[str, Any]) -> list[int] | None:
@@ -877,7 +1024,7 @@ def get_or_create_draft(
         job_no = job_no or compact_text(head.get("process_sheet_no") or head.get("job_no"))
         try:
             remaining = int(float(head.get("remaining_qty") or 0))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             remaining = 0
     if not job_no:
         job_no = last_job_for_machine(con, machine_id)
@@ -890,6 +1037,7 @@ def get_or_create_draft(
                 (work_date, shift_out, shift_in, machine_id, job_no, remaining_qty,
                  outgoing_user_id, status)
             VALUES (%s, %s, %s, %s, %s, %s, %s, 'draft')
+            ON CONFLICT (work_date, shift_out, machine_id) DO NOTHING
             RETURNING *
             """,
             (
@@ -903,14 +1051,21 @@ def get_or_create_draft(
             ),
         )
     )
+    if row is None:
+        return get_or_create_draft(
+            con,
+            work_date=work_date,
+            shift_out=shift_out,
+            machine_id=machine_id,
+            user=user,
+            job_no_pref=job_no_pref,
+        )
     machine = one(
         con.execute(
             "SELECT machine_no FROM public.planner_machines WHERE machine_id = %s",
             (machine_id,),
         )
     )
-    if row is None:
-        raise RuntimeError("Failed to create handover draft")
     row["machine_no"] = machine.get("machine_no") if machine else None
     _audit(con, int(row["handover_id"]), user_id, "_lifecycle", None, "draft_created")
     out = serialize_handover(row)
@@ -1726,8 +1881,107 @@ def history_payload(
     return [serialize_handover(r) for r in data]  # type: ignore[misc]
 
 
+def list_shift_scans(con, work_date: date, shift_out: str) -> list[dict]:
+    """ERP quantity jumps whose scan time falls inside the shift window."""
+    start, end = shift_scan_bounds(work_date, shift_out)
+    ready = one(con.execute("SELECT to_regclass('public.planner_erp_qty_jump') AS reg"))
+    if not ready or not ready.get("reg"):
+        return []
+    data = rows(
+        con.execute(
+            """
+            SELECT jump_id, source_mps_no, pp_partial_no, stage_no, stage_desc, op_no,
+                   part_no, part_desc, job_no, so_no,
+                   qty_jump, rej_jump, scanned_at, machine_id, machine_no
+            FROM public.planner_erp_qty_jump
+            WHERE scanned_at >= %s AND scanned_at < %s
+            ORDER BY machine_no NULLS LAST, scanned_at, jump_id
+            LIMIT 500
+            """,
+            (start, end),
+        )
+    )
+    out: list[dict] = []
+    for raw in data:
+        item = serialize_row(raw) or {}
+        scanned = raw.get("scanned_at")
+        if isinstance(scanned, datetime):
+            if scanned.tzinfo is None:
+                scanned = scanned.replace(tzinfo=PLANNER_TZ)
+            item["scanned_at_label"] = scanned.astimezone(PLANNER_TZ).strftime("%Y-%m-%d %H:%M")
+        else:
+            item["scanned_at_label"] = compact_text(item.get("scanned_at"))[:16]
+        item["process_sheet_no"] = display_ps_id(raw.get("source_mps_no"), raw.get("job_no"))
+        item["machine_no"] = compact_text(item.get("machine_no"))
+        out.append(item)
+    _fill_scan_machines(con, out)
+    for item in out:
+        if not compact_text(item.get("machine_no")):
+            item["machine_no"] = "Unassigned"
+    return out
+
+
+def _fill_scan_machines(con, scans: list[dict]) -> None:
+    """Use the live queue assignment when a scan row has no machine number."""
+    if not any(not compact_text(item.get("machine_no")) for item in scans):
+        return
+    try:
+        from .erp_scanned_output_service import _load_machine_assignments, wo_stage_key
+
+        assigned = _load_machine_assignments(con)
+    except Exception:
+        log.debug("shift scan machine lookup failed", exc_info=True)
+        return
+    for item in scans:
+        if compact_text(item.get("machine_no")):
+            continue
+        key = wo_stage_key(item.get("source_mps_no"), item.get("pp_partial_no"), item.get("stage_no"))
+        machine = assigned.get(key) or {}
+        name = compact_text(machine.get("machine_no"))
+        if name:
+            item["machine_no"] = name
+            if machine.get("machine_id"):
+                item["machine_id"] = machine.get("machine_id")
+
+
+def group_scans_by_machine(scans: list[dict]) -> list[dict]:
+    buckets: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for scan in scans:
+        key = compact_text(scan.get("machine_no")) or "Unassigned"
+        if key not in buckets:
+            order.append(key)
+            buckets[key] = []
+        buckets[key].append(scan)
+    grouped = []
+    for key in order:
+        items = buckets[key]
+        qty = 0.0
+        rej = 0.0
+        for item in items:
+            try:
+                qty += float(item.get("qty_jump") or 0)
+            except (TypeError, ValueError):
+                pass
+            try:
+                rej += float(item.get("rej_jump") or 0)
+            except (TypeError, ValueError):
+                pass
+        grouped.append(
+            {
+                "machine_no": key,
+                "scans": items,
+                "qty": qty,
+                "reject": rej,
+            }
+        )
+    return grouped
+
+
 def report_payload(con, work_date: date, shift_out: str) -> dict[str, Any]:
     shift_out = normalize_shift(shift_out)
+    scans = list_shift_scans(con, work_date, shift_out)
+    scan_groups = group_scans_by_machine(scans)
     handovers = rows(
         con.execute(
             """
@@ -1755,13 +2009,18 @@ def report_payload(con, work_date: date, shift_out: str) -> dict[str, Any]:
             t for t in tickets if int(t.get("machine_id") or 0) == mid
         ]
         enriched.append(item)
+    scanned_qty = sum(float(group.get("qty") or 0) for group in scan_groups)
+    scanned_reject = sum(float(group.get("reject") or 0) for group in scan_groups)
     return {
         "work_date": work_date.isoformat(),
         "shift_out": shift_out,
         "shift_in": opposite_shift(shift_out),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "window_label": shift_window_label(work_date, shift_out),
+        "generated_at": datetime.now(PLANNER_TZ).strftime("%Y-%m-%d %H:%M"),
         "handovers": enriched,
         "tickets": tickets,
+        "scans": scans,
+        "scan_groups": scan_groups,
         "summary": {
             "machines": len(enriched),
             "pending_ack": sum(
@@ -1778,8 +2037,499 @@ def report_payload(con, work_date: date, shift_out: str) -> dict[str, Any]:
             "open_ncrs": sum(
                 1 for h in enriched if compact_text(h.get("ncr_status")) == "Open"
             ),
+            "scan_count": len(scans),
+            "scanned_machines": len(scan_groups),
+            "scanned_qty": scanned_qty,
+            "scanned_reject": scanned_reject,
         },
     }
+
+
+HOTO_STATUSES = ("No Issue", "Issue Raised")
+HOTO_ATTENDANCE_ROWS = 11
+HOTO_CHECKLIST_ITEMS = (
+    {"no": 1, "text": "Work done / production plan for the shift communicated", "see": "", "see_href": "", "see_external": False},
+    {
+        "no": 2,
+        "text": "Qty produced this shift reported",
+        "see": "ERP scanned output",
+        "see_href": "/erp-scanned-output",
+        "see_external": True,
+    },
+    {
+        "no": 3,
+        "text": "Scanned items for this shift logged",
+        "see": "ERP scanned output",
+        "see_href": "/erp-scanned-output",
+        "see_external": True,
+    },
+    {
+        "no": 4,
+        "text": "Open issues reviewed and handed over",
+        "see": "QAQC view",
+        "see_href": "/qaqc-view",
+        "see_external": True,
+    },
+    {
+        "no": 5,
+        "text": "Machines/equipment status and WIP handed over",
+        "see": "",
+        "see_href": "",
+        "see_external": False,
+    },
+    {
+        "no": 6,
+        "text": "Housekeeping, tools, keys, and access handed over",
+        "see": "",
+        "see_href": "",
+        "see_external": False,
+    },
+)
+
+
+def _json_list(value: Any) -> list:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return compact_text(value).lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _parse_handover_at(raw: Any) -> datetime | None:
+    if isinstance(raw, datetime):
+        dt = raw
+    else:
+        text = compact_text(raw).replace("Z", "+00:00")
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=PLANNER_TZ)
+    return dt.astimezone(PLANNER_TZ)
+
+
+def _format_local_dt(value: Any) -> str:
+    dt = _parse_handover_at(value)
+    if not dt:
+        return ""
+    return dt.strftime("%Y-%m-%dT%H:%M")
+
+
+def normalize_hoto_items(raw: Any) -> list[dict[str, Any]]:
+    by_no: dict[int, dict[str, Any]] = {}
+    for row in _json_list(raw):
+        if not isinstance(row, dict):
+            continue
+        try:
+            no = int(row.get("no"))
+        except (TypeError, ValueError):
+            continue
+        status = compact_text(row.get("status"))
+        if status not in HOTO_STATUSES:
+            status = ""
+        by_no[no] = {
+            "no": no,
+            "status": status,
+            "remarks": compact_text(row.get("remarks"))[:500],
+            "checked_by": compact_text(row.get("checked_by"))[:120],
+        }
+    return [
+        by_no.get(item["no"])
+        or {"no": item["no"], "status": "", "remarks": "", "checked_by": ""}
+        for item in HOTO_CHECKLIST_ITEMS
+    ]
+
+
+def normalize_hoto_attendance(raw: Any) -> list[dict[str, Any]]:
+    by_no: dict[int, dict[str, Any]] = {}
+    for row in _json_list(raw):
+        if not isinstance(row, dict):
+            continue
+        try:
+            no = int(row.get("no"))
+        except (TypeError, ValueError):
+            continue
+        if no < 1 or no > HOTO_ATTENDANCE_ROWS:
+            continue
+        by_no[no] = {
+            "no": no,
+            "name": compact_text(row.get("name"))[:120],
+            "late": _as_bool(row.get("late")),
+            "remarks": compact_text(row.get("remarks"))[:300],
+        }
+    return [
+        by_no.get(no) or {"no": no, "name": "", "late": False, "remarks": ""}
+        for no in range(1, HOTO_ATTENDANCE_ROWS + 1)
+    ]
+
+
+def blank_hoto_checklist(work_date: date, shift_out: str) -> dict[str, Any]:
+    shift = normalize_shift(shift_out)
+    return {
+        "checklist_id": None,
+        "work_date": work_date.isoformat(),
+        "shift_out": shift,
+        "handover_at": _format_local_dt(datetime.now(PLANNER_TZ)),
+        "outgoing_supervisor": "",
+        "incoming_supervisor": "",
+        "items": normalize_hoto_items([]),
+        "attendance": normalize_hoto_attendance([]),
+        "outgoing_sign_name": "",
+        "outgoing_signed_at": "",
+        "incoming_sign_name": "",
+        "incoming_signed_at": "",
+        "doc_status": "draft",
+        "submitted_at": "",
+        "submitted_by_name": "",
+        "locked": False,
+        "saved": False,
+    }
+
+
+class HotoSubmitError(ValueError):
+    """The handover sheet is not ready to file."""
+
+
+def hoto_submit_blockers(checklist: dict[str, Any]) -> list[str]:
+    """Return the reasons a sheet cannot be filed. Empty means it can."""
+    missing = []
+    if not compact_text(checklist.get("outgoing_supervisor")):
+        missing.append("outgoing shift rep")
+    if not compact_text(checklist.get("incoming_supervisor")):
+        missing.append("incoming shift rep")
+    if not compact_text(checklist.get("outgoing_sign_name")):
+        missing.append("outgoing signature")
+    if not compact_text(checklist.get("incoming_sign_name")):
+        missing.append("incoming signature")
+    if not missing:
+        return []
+    return ["Add " + ", ".join(missing) + " before submitting."]
+
+
+def _merge_sign(
+    new_name: Any,
+    old_name: Any,
+    old_at: Any,
+    confirm: bool,
+) -> tuple[str, datetime | None]:
+    """Stamp a signature only on confirm. A later name edit keeps that stamp."""
+    name = compact_text(new_name)[:120]
+    if not name:
+        return "", None
+    kept = _parse_handover_at(old_at) if old_at else None
+    same = name == compact_text(old_name)
+    if confirm:
+        return name, kept if same and kept else datetime.now(PLANNER_TZ)
+    if kept:
+        return name, kept
+    return name, None
+
+
+def serialize_hoto(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    data = serialize_row(dict(row)) or {}
+    data["items"] = normalize_hoto_items(row.get("items"))
+    data["attendance"] = normalize_hoto_attendance(row.get("attendance"))
+    data["handover_at"] = _format_local_dt(row.get("handover_at"))
+    data["outgoing_signed_at"] = _format_local_dt(row.get("outgoing_signed_at"))
+    data["incoming_signed_at"] = _format_local_dt(row.get("incoming_signed_at"))
+    data["submitted_at"] = _format_local_dt(row.get("submitted_at"))
+    status = compact_text(row.get("doc_status")) or "draft"
+    if status not in ("draft", "submitted"):
+        status = "draft"
+    data["doc_status"] = status
+    data["submitted_by_name"] = compact_text(row.get("submitted_by_name"))
+    data["locked"] = status == "submitted" or bool(row.get("read_only"))
+    data["work_date"] = compact_text(data.get("work_date"))[:10]
+    data["saved"] = True
+    return data
+
+
+def get_hoto_checklist(con, work_date: date, shift_out: str) -> dict[str, Any]:
+    shift = normalize_shift(shift_out)
+    row = one(
+        con.execute(
+            """
+            SELECT c.*, u.display_name AS submitted_by_name
+            FROM public.shift_mgmt_hoto_checklists c
+            LEFT JOIN public.shift_mgmt_users u ON u.user_id = c.submitted_by
+            WHERE c.work_date = %s AND c.shift_out = %s
+            """,
+            (work_date, shift),
+        )
+    )
+    if not row:
+        return blank_hoto_checklist(work_date, shift)
+    payload = serialize_hoto(row)
+    assert payload is not None
+    return payload
+
+
+def save_hoto_checklist(
+    con,
+    *,
+    work_date: date,
+    shift_out: str,
+    data: dict[str, Any],
+    user: dict[str, Any] | None,
+) -> dict[str, Any]:
+    from psycopg2.extras import Json
+
+    shift = normalize_shift(shift_out)
+    existing = one(
+        con.execute(
+            """
+            SELECT doc_status, outgoing_sign_name, outgoing_signed_at,
+                   incoming_sign_name, incoming_signed_at
+            FROM public.shift_mgmt_hoto_checklists
+            WHERE work_date = %s AND shift_out = %s
+            """,
+            (work_date, shift),
+        )
+    ) or {}
+    if compact_text(existing.get("doc_status")) == "submitted":
+        return get_hoto_checklist(con, work_date, shift)
+    items = normalize_hoto_items(data.get("items"))
+    attendance = normalize_hoto_attendance(data.get("attendance"))
+    outgoing = compact_text(data.get("outgoing_supervisor"))[:120]
+    incoming = compact_text(data.get("incoming_supervisor"))[:120]
+    handover_at = _parse_handover_at(data.get("handover_at")) or datetime.now(PLANNER_TZ)
+    out_name, out_at = _merge_sign(
+        data.get("outgoing_sign_name"),
+        existing.get("outgoing_sign_name"),
+        existing.get("outgoing_signed_at"),
+        _as_bool(data.get("outgoing_sign")),
+    )
+    in_name, in_at = _merge_sign(
+        data.get("incoming_sign_name"),
+        existing.get("incoming_sign_name"),
+        existing.get("incoming_signed_at"),
+        _as_bool(data.get("incoming_sign")),
+    )
+    user_id = None
+    if user and user.get("user_id"):
+        user_id = int(user["user_id"])
+    row = one(
+        con.execute(
+            """
+            INSERT INTO public.shift_mgmt_hoto_checklists (
+                work_date, shift_out, handover_at,
+                outgoing_supervisor, incoming_supervisor,
+                items, attendance,
+                outgoing_sign_name, outgoing_signed_at,
+                incoming_sign_name, incoming_signed_at,
+                updated_by, updated_at
+            ) VALUES (
+                %s, %s, %s,
+                %s, %s,
+                %s::jsonb, %s::jsonb,
+                %s, %s,
+                %s, %s,
+                %s, NOW()
+            )
+            ON CONFLICT (work_date, shift_out) DO UPDATE SET
+                handover_at = EXCLUDED.handover_at,
+                outgoing_supervisor = EXCLUDED.outgoing_supervisor,
+                incoming_supervisor = EXCLUDED.incoming_supervisor,
+                items = EXCLUDED.items,
+                attendance = EXCLUDED.attendance,
+                outgoing_sign_name = EXCLUDED.outgoing_sign_name,
+                outgoing_signed_at = EXCLUDED.outgoing_signed_at,
+                incoming_sign_name = EXCLUDED.incoming_sign_name,
+                incoming_signed_at = EXCLUDED.incoming_signed_at,
+                updated_by = EXCLUDED.updated_by,
+                updated_at = NOW()
+            RETURNING *
+            """,
+            (
+                work_date,
+                shift,
+                handover_at,
+                outgoing,
+                incoming,
+                Json(items),
+                Json(attendance),
+                out_name,
+                out_at,
+                in_name,
+                in_at,
+                user_id,
+            ),
+        )
+    )
+    payload = serialize_hoto(row)
+    assert payload is not None
+    return payload
+
+
+def _hoto_user_id(user: dict[str, Any] | None) -> int | None:
+    if user and user.get("user_id"):
+        return int(user["user_id"])
+    return None
+
+
+def submit_hoto_checklist(
+    con,
+    *,
+    work_date: date,
+    shift_out: str,
+    data: dict[str, Any],
+    user: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """File the current sheet into the handover log and lock it."""
+    shift = normalize_shift(shift_out)
+    current = get_hoto_checklist(con, work_date, shift)
+    if current.get("doc_status") == "submitted":
+        raise HotoSubmitError("This handover is already submitted.")
+    saved = save_hoto_checklist(
+        con,
+        work_date=work_date,
+        shift_out=shift,
+        data=data,
+        user=user,
+    )
+    blockers = hoto_submit_blockers(saved)
+    if blockers:
+        raise HotoSubmitError(blockers[0])
+    user_id = _hoto_user_id(user)
+    submitted_at = datetime.now(PLANNER_TZ)
+    con.execute(
+        """
+        INSERT INTO public.shift_mgmt_hoto_submissions (
+            checklist_id, work_date, shift_out, handover_at,
+            outgoing_supervisor, incoming_supervisor,
+            items, attendance,
+            outgoing_sign_name, outgoing_signed_at,
+            incoming_sign_name, incoming_signed_at,
+            submitted_by, submitted_at
+        )
+        SELECT checklist_id, work_date, shift_out, handover_at,
+               outgoing_supervisor, incoming_supervisor,
+               items, attendance,
+               outgoing_sign_name, outgoing_signed_at,
+               incoming_sign_name, incoming_signed_at,
+               %s, %s
+        FROM public.shift_mgmt_hoto_checklists
+        WHERE work_date = %s AND shift_out = %s
+        """,
+        (user_id, submitted_at, work_date, shift),
+    )
+    con.execute(
+        """
+        UPDATE public.shift_mgmt_hoto_checklists
+        SET doc_status = 'submitted',
+            submitted_at = %s,
+            submitted_by = %s,
+            updated_at = NOW()
+        WHERE work_date = %s AND shift_out = %s
+        """,
+        (submitted_at, user_id, work_date, shift),
+    )
+    filed = get_hoto_checklist(con, work_date, shift)
+    filed["locked"] = True
+    return filed
+
+
+def reopen_hoto_checklist(con, work_date: date, shift_out: str) -> dict[str, Any]:
+    """Unlock a filed sheet so it can be corrected. The log row stays."""
+    shift = normalize_shift(shift_out)
+    con.execute(
+        """
+        UPDATE public.shift_mgmt_hoto_checklists
+        SET doc_status = 'draft', updated_at = NOW()
+        WHERE work_date = %s AND shift_out = %s
+        """,
+        (work_date, shift),
+    )
+    sheet = get_hoto_checklist(con, work_date, shift)
+    sheet["locked"] = False
+    return sheet
+
+
+def list_hoto_submissions(
+    con,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    shift_out: str | None = None,
+    limit: int = 300,
+) -> list[dict[str, Any]]:
+    clauses = ["TRUE"]
+    params: list[Any] = []
+    if date_from:
+        clauses.append("s.work_date >= %s")
+        params.append(date_from)
+    if date_to:
+        clauses.append("s.work_date <= %s")
+        params.append(date_to)
+    if shift_out in ("Day", "Night"):
+        clauses.append("s.shift_out = %s")
+        params.append(shift_out)
+    params.append(max(1, min(int(limit), 500)))
+    found = rows(
+        con.execute(
+            f"""
+            SELECT s.submission_id, s.work_date, s.shift_out, s.handover_at,
+                   s.outgoing_supervisor, s.incoming_supervisor,
+                   s.outgoing_sign_name, s.incoming_sign_name,
+                   s.submitted_at, u.display_name AS submitted_by_name
+            FROM public.shift_mgmt_hoto_submissions s
+            LEFT JOIN public.shift_mgmt_users u ON u.user_id = s.submitted_by
+            WHERE {" AND ".join(clauses)}
+            ORDER BY s.submitted_at DESC, s.submission_id DESC
+            LIMIT %s
+            """,
+            tuple(params),
+        )
+    )
+    items = []
+    for row in found:
+        item = serialize_row(dict(row)) or {}
+        item["work_date"] = compact_text(item.get("work_date"))[:10]
+        item["submitted_at"] = _format_local_dt(row.get("submitted_at"))
+        item["handover_at"] = _format_local_dt(row.get("handover_at"))
+        item["submitted_by_name"] = compact_text(item.get("submitted_by_name"))
+        items.append(item)
+    return items
+
+
+def get_hoto_submission(con, submission_id: int) -> dict[str, Any] | None:
+    row = one(
+        con.execute(
+            """
+            SELECT s.*, u.display_name AS submitted_by_name
+            FROM public.shift_mgmt_hoto_submissions s
+            LEFT JOIN public.shift_mgmt_users u ON u.user_id = s.submitted_by
+            WHERE s.submission_id = %s
+            """,
+            (submission_id,),
+        )
+    )
+    if not row:
+        return None
+    row = dict(row)
+    row["doc_status"] = "submitted"
+    row["read_only"] = True
+    payload = serialize_hoto(row)
+    assert payload is not None
+    payload["locked"] = True
+    payload["read_only"] = True
+    payload["submission_id"] = int(row["submission_id"])
+    return payload
 
 
 def meta_constants() -> dict[str, Any]:
@@ -1793,6 +2543,6 @@ def meta_constants() -> dict[str, Any]:
         "ticket_categories": list(TICKET_CATEGORIES),
         "ticket_statuses": list(TICKET_STATUSES),
         "guess_shift": _guess_shift(),
-        "day_start_hour": DAY_START_HOUR,
-        "night_start_hour": NIGHT_START_HOUR,
+        "day_window": "08:01-20:00",
+        "night_window": "20:01-08:00",
     }

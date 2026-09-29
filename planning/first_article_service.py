@@ -470,23 +470,17 @@ def _parse_program_finish(value: Any) -> str:
 
 
 def _parse_material_subcon(raw: Any) -> tuple[bool, str, str]:
+    from .anticipated_material_service import material_subcon_is_arrived, parse_material_subcon_date
+
     text = compact_text(raw)
     if not text:
         return False, "", ""
-    if text.upper() == "ARRIVED":
+    arrived = material_subcon_is_arrived(text)
+    parsed = parse_material_subcon_date(text)
+    if parsed:
+        return arrived, parsed.isoformat(), ""
+    if arrived:
         return True, "", ""
-    iso = _date_text(text) if len(text) >= 10 and text[4] == "-" else ""
-    if iso and iso == text[:10] and (len(text) == 10 or text[10] in "T "):
-        return False, iso, ""
-    dmy = compact_text(raw)
-    parts = dmy.replace("-", "/").split("/")
-    if len(parts) == 3 and all(part.isdigit() for part in parts):
-        day, month, year = (int(parts[0]), int(parts[1]), int(parts[2]))
-        if year < 100:
-            year += 2000
-        if 1 <= day <= 31 and 1 <= month <= 12:
-            iso = f"{year:04d}-{month:02d}-{day:02d}"
-            return False, iso, ""
     return False, "", text
 
 

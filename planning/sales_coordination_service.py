@@ -118,13 +118,16 @@ def parse_material_tracking_fields(pp: dict[str, Any]) -> dict[str, Any]:
 
     Assembly parents prefer the Assembly Parts Tracker child rollup when present.
     """
+    from .anticipated_material_service import material_subcon_is_arrived, parse_material_subcon_date
+
     raw = _compact(pp.get("assembly_material_subcon") or pp.get("material_subcon"))
     need = _iso_date(pp.get("material_need_date"))
     status_overlay = _compact(pp.get("assembly_material_status"))
-    if raw.upper() == "ARRIVED":
+    if material_subcon_is_arrived(raw):
+        embedded = parse_material_subcon_date(raw)
         return {
             "material_status": status_overlay or "Arrived",
-            "material_in_date": _iso_date(
+            "material_in_date": embedded.isoformat() if embedded else _iso_date(
                 pp.get("assembly_material_in_date") or pp.get("material_in_date")
             ),
             "material_need_date": need,

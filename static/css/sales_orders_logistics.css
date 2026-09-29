@@ -987,7 +987,11 @@ body.sol-view .app-main--sales-logistics {
 }
 
 .sol-table[data-mode="ps"] th.sol-col-need,
-.sol-table[data-mode="ps"] td.sol-need-date-cell,
+.sol-table[data-mode="ps"] td.sol-need-date-cell {
+  min-width: 8.25rem;
+  overflow: visible;
+}
+
 .sol-table[data-mode="ps"] th.sol-col-material,
 .sol-table[data-mode="ps"] td.so-material-subcon-cell {
   min-width: 12rem;
@@ -1184,7 +1188,7 @@ body.sol-view .app-main--sales-logistics {
 .sol-table[data-mode="ps"] .sol-col-stage { width: 9%; }
 .sol-table[data-mode="ps"] .sol-col-part { width: 13%; }
 .sol-table[data-mode="ps"] .sol-col-due { width: 7%; }
-.sol-table[data-mode="ps"] .sol-col-need { width: 12%; }
+.sol-table[data-mode="ps"] .sol-col-need { width: 8%; }
 .sol-table[data-mode="ps"] .sol-col-bom { width: 5%; }
 .sol-table[data-mode="ps"] .sol-col-material { width: 14%; }
 .sol-table[data-mode="ps"] .sol-col-notes { width: 20rem; }
@@ -1414,21 +1418,15 @@ body.sol-view .app-main--sales-logistics {
   min-width: 0;
 }
 
-.sol-need-date-input {
+.sol-need-date-static {
   display: block;
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
-  box-sizing: border-box;
   flex: 1 1 auto;
-  border: 1px solid var(--sol-line);
-  border-radius: 8px;
-  padding: 6px 8px;
-  font: inherit;
+  min-width: 0;
   font-size: 0.78rem;
   line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   color: var(--sol-ink);
-  background: var(--sol-paper);
 }
 
 .sol-date-history-btn {
@@ -1474,11 +1472,6 @@ body.sol-view input[type="date"] {
   box-sizing: border-box;
 }
 
-.sol-need-date-input:focus {
-  outline: none;
-  border-color: var(--sol-accent);
-  box-shadow: 0 0 0 3px rgba(47, 93, 86, 0.12);
-}
 
 .sol-col-qty {
   min-width: 0;
@@ -1603,9 +1596,37 @@ body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  justify-content: center;
+  gap: 2px;
 }
 
-body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-date,
+body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-arrived-row {
+  flex: 0 0 auto;
+}
+
+body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-arrived {
+  flex: 0 0 auto;
+  justify-content: center;
+}
+
+body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-date {
+  display: none;
+}
+
+body.sol-view .so-material-subcon-date-text {
+  display: none;
+}
+
+body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-date-text:not(:empty) {
+  display: block;
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: center;
+  color: var(--sol-arrived);
+}
+
 body.sol-view .so-material-subcon-date.is-hidden {
   display: none;
 }

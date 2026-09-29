@@ -225,7 +225,9 @@ def update_request(request_id: int, data: dict[str, Any]) -> dict[str, Any] | No
             current["qty"] = _parse_qty(data.get("qty"))
         if "material_subcon" in data:
             current["material_subcon"] = compact_text(data.get("material_subcon"))
-            if compact_text(current["material_subcon"]).upper() == "ARRIVED":
+            from .anticipated_material_service import material_subcon_is_arrived
+
+            if material_subcon_is_arrived(current["material_subcon"]):
                 current["material_delay"] = False
         if "remarks" in data:
             current["remarks"] = compact_text(data.get("remarks"))

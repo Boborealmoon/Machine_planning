@@ -1,32 +1,36 @@
 {% extends "shift_management_base.html" %}
 {% block title %}Ops Board — Day/Night HOTO{% endblock %}
 {% block content %}
-<section class="sm-toolbar sm-toolbar-wrap">
-  <h2 class="sm-section-title" style="margin:0">Active queue</h2>
-  <button type="button" class="sm-btn sm-btn-ghost" id="sm-ops-refresh">Refresh</button>
+<section class="sm-ops-head">
+  <h2 class="sm-section-title">Active queue</h2>
+  <div class="sm-ops-head-actions">
+    <button type="button" class="sm-btn sm-btn-ghost" id="sm-ops-refresh">Refresh</button>
+    {% if user_caps and user_caps.can_report %}
+    <button type="button" class="sm-btn sm-btn-ghost" id="sm-ops-report">Report</button>
+    {% endif %}
+  </div>
 </section>
-<p class="sm-muted" id="sm-ops-lead">
+<p class="sm-muted sm-ops-lead" id="sm-ops-lead">
   {% if user_caps and user_caps.can_ops_actions %}
-  Jobs on the machining queue. Raise a ticket, start a handover, or scan remaining qty.
+  Choose a machine, then the queued job, to raise a ticket.
   {% else %}
-  Fleet queue occupancy for this shift. This is a dashboard view — no shop-floor actions.
+  Fleet queue for this shift.
   {% endif %}
 </p>
 
-<section class="sm-toolbar">
-  <label class="sm-field-inline">
-    <span>Date</span>
-    <input type="date" id="sm-ops-date" />
-  </label>
+<section class="sm-ops-filters">
+  <input type="date" id="sm-ops-date" aria-label="Date" />
   <div class="sm-chip-row" id="sm-ops-shift-chips" role="group" aria-label="Shift">
     <button type="button" class="sm-chip" data-shift="Day">Day</button>
     <button type="button" class="sm-chip" data-shift="Night">Night</button>
   </div>
-  <label class="sm-field-inline sm-ops-search-field">
-    <span>Find</span>
-    <input type="search" id="sm-ops-search" placeholder="Machine or PS no." autocomplete="off" />
-  </label>
+  <input type="search" id="sm-ops-search" placeholder="Machine or PS" aria-label="Find machine or PS" autocomplete="off" />
 </section>
+
+<label class="sm-ops-machine-field" for="sm-ops-machine">
+  <span>Machine</span>
+  <select id="sm-ops-machine"></select>
+</label>
 
 <div id="sm-ops-list" class="sm-ops-list">
   <p class="sm-muted">Loading…</p>
@@ -35,11 +39,14 @@
 <dialog id="sm-ticket-dialog" class="sm-dialog">
   <form method="dialog" id="sm-ticket-form" onsubmit="return false;">
     <h3>Raise ticket</h3>
-    <p id="sm-ticket-context" class="sm-muted"></p>
+    <label class="sm-label" for="sm-tk-machine">Machine</label>
+    <select class="sm-input" id="sm-tk-machine" required></select>
+    <label class="sm-label" for="sm-tk-job">Queued job</label>
+    <select class="sm-input" id="sm-tk-job" required></select>
     <input type="hidden" id="sm-tk-machine-id" />
     <input type="hidden" id="sm-tk-block-id" />
     <input type="hidden" id="sm-tk-ps" />
-    <input type="hidden" id="sm-tk-job" />
+    <input type="hidden" id="sm-tk-job-no" />
     <label class="sm-label">Category</label>
     <select class="sm-input" id="sm-tk-category"></select>
     <label class="sm-label">Priority</label>

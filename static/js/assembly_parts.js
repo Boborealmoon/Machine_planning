@@ -60,9 +60,11 @@
   function parseMaterialSubcon(raw) {
     const value = text(raw);
     if (!value) return { arrived: false, date: '', legacy: '' };
-    if (/^arrived$/i.test(value)) return { arrived: true, date: '', legacy: '' };
-    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return { arrived: false, date: value, legacy: '' };
-    const dmy = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    const arrived = /^arrived(?:\|(.*))?$/i.exec(value);
+    const body = arrived ? text(arrived[1]) : value;
+    if (arrived && !body) return { arrived: true, date: '', legacy: '' };
+    if (/^\d{4}-\d{2}-\d{2}$/.test(body)) return { arrived: Boolean(arrived), date: body, legacy: '' };
+    const dmy = body.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
     if (dmy) {
       const day = Number(dmy[1]);
       const month = Number(dmy[2]);
@@ -71,16 +73,23 @@
       if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
         const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
         if (!Number.isNaN(Date.parse(`${iso}T00:00:00`))) {
-          return { arrived: false, date: iso, legacy: '' };
+          return { arrived: Boolean(arrived), date: iso, legacy: '' };
         }
       }
     }
+    if (arrived) return { arrived: true, date: '', legacy: body };
     return { arrived: false, date: '', legacy: value };
   }
 
   function serializeMaterialSubcon({ arrived, date }) {
+    const iso = text(date);
+    if (arrived && iso) return `${MATERIAL_ARRIVED}|${iso}`;
     if (arrived) return MATERIAL_ARRIVED;
-    return text(date);
+    return iso;
+  }
+
+  function visibleArrivalDate(parsed) {
+    return parsed?.date || '';
   }
 
   async function patchNotes(psNo, body) {
@@ -231,6 +240,7 @@
     }
     const parsed = parseMaterialSubcon(child.material_subcon);
     const arrived = parsed.arrived || Boolean(child.material_in);
+    const dateValue = visibleArrivalDate(parsed);
     const raw = text(child.material_subcon) || (arrived ? MATERIAL_ARRIVED : '');
     const legacyHtml = parsed.legacy
       ? `<span class="ap-arrival-legacy" title="Previous note">${escapeHtml(parsed.legacy)}</span>`
@@ -247,10 +257,9 @@
             Arrived
           </button>
           <input type="date"
-            class="ap-arrival-date${arrived ? ' is-hidden' : ''}"
+            class="ap-arrival-date"
             data-action="arrival-date"
-            value="${escapeHtml(arrived ? '' : parsed.date)}"
-            ${arrived ? 'disabled' : ''}
+            value="${escapeHtml(dateValue)}"
             aria-label="Material arrival date">
           ${legacyHtml}
         </div>
@@ -324,7 +333,7 @@
     const expected = child.expected_qty != null ? fmtQty(child.expected_qty) : '-';
     const arrival = parseMaterialSubcon(child.material_subcon);
     const arrivalLabel = arrival.arrived || child.material_in
-      ? `Arrived${child.material_in_date ? ` ${fmtDate(child.material_in_date)}` : ''}`
+      ? `Arrived${arrival.date ? ` ${fmtDate(arrival.date)}` : ''}`
       : (arrival.date || arrival.legacy || '-');
     const partNo = text(child.part_no);
     const bom = childBomCode(child);
@@ -488,9 +497,9 @@
       btn.title = arrived ? 'Material arrived - click to clear' : 'Mark material as arrived';
     }
     if (dateInput) {
-      dateInput.value = arrived ? '' : (parsed.date || '');
-      dateInput.disabled = arrived;
-      dateInput.classList.toggle('is-hidden', arrived);
+      dateInput.value = visibleArrivalDate(parsed);
+      dateInput.disabled = false;
+      dateInput.classList.remove('is-hidden');
     }
   }
 
@@ -693,9 +702,9 @@
         const parsed = parseMaterialSubcon(cell.dataset.lastSaved);
         const nextArrived = !parsed.arrived;
         const dateInput = cell.querySelector('[data-action="arrival-date"]');
-        const date = nextArrived ? '' : text(dateInput?.value);
+        const date = text(dateInput?.value) || parsed.date;
         const nextValue = serializeMaterialSubcon({ arrived: nextArrived, date });
-        applyArrivalCellState(cell, nextValue, { material_in: nextArrived });
+        applyArrivalCellState(cell, nextValue, { material_in: nextArrived, material_in_date: date || null });
         saveArrival(cell, nextValue);
         return;
       }
@@ -714,9 +723,10 @@
       e.stopPropagation();
       const cell = dateInput.closest('.ap-arrival-cell');
       if (!cell) return;
+      const parsed = parseMaterialSubcon(cell.dataset.lastSaved);
       const date = text(dateInput.value);
-      const nextValue = serializeMaterialSubcon({ arrived: false, date });
-      applyArrivalCellState(cell, nextValue, { material_in: false });
+      const nextValue = serializeMaterialSubcon({ arrived: parsed.arrived, date });
+      applyArrivalCellState(cell, nextValue, { material_in: parsed.arrived, material_in_date: date || null });
       saveArrival(cell, nextValue);
     });
 
