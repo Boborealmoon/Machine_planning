@@ -37,16 +37,37 @@
 
   let usersCache = [];
 
-  function setStatus(el, text, ok) {
+  function L(text) {
+    return window.smL ? window.smL(text) : text == null ? '' : String(text);
+  }
+
+  function t(key, vars) {
+    return window.smT ? window.smT(key, vars) : key;
+  }
+
+  function setStatus(el, text, ok, key, vars) {
     if (!el) return;
-    if (!text) {
+    if (!text && !key) {
       el.hidden = true;
       el.textContent = '';
+      el.removeAttribute('data-sm-msg');
+      el.removeAttribute('data-sm-status-key');
+      el.removeAttribute('data-sm-status-vars');
       el.classList.remove('is-ok', 'is-err');
       return;
     }
     el.hidden = false;
-    el.textContent = text;
+    if (key) {
+      el.removeAttribute('data-sm-msg');
+      el.setAttribute('data-sm-status-key', key);
+      el.setAttribute('data-sm-status-vars', JSON.stringify(vars || {}));
+      el.textContent = t(key, vars);
+    } else {
+      el.removeAttribute('data-sm-status-key');
+      el.removeAttribute('data-sm-status-vars');
+      el.setAttribute('data-sm-msg', text);
+      el.textContent = L(text);
+    }
     el.classList.toggle('is-ok', !!ok);
     el.classList.toggle('is-err', !ok);
   }
@@ -56,7 +77,7 @@
     try {
       const d = new Date(value);
       if (Number.isNaN(d.getTime())) return String(value);
-      return d.toLocaleString();
+      return d.toLocaleString(window.smLocale && smLocale() === 'zh' ? 'zh-CN' : undefined);
     } catch (_) {
       return String(value);
     }
@@ -83,26 +104,30 @@
       parts.push(
         '<button type="button" class="mro-admin-approve" data-act="approve" data-id="' +
           user.user_id +
-          '">Approve</button>'
+          '">' +
+          L('Approve') +
+          '</button>'
       );
       parts.push(
-        '<button type="button" data-act="disable" data-id="' + user.user_id + '">Reject</button>'
+        '<button type="button" data-act="disable" data-id="' + user.user_id + '">' + L('Reject') + '</button>'
       );
     }
     if (user.status === 'approved') {
       parts.push(
-        '<button type="button" data-act="disable" data-id="' + user.user_id + '">Disable</button>'
+        '<button type="button" data-act="disable" data-id="' + user.user_id + '">' + L('Disable') + '</button>'
       );
     }
     if (user.status === 'disabled') {
       parts.push(
         '<button type="button" class="mro-admin-approve" data-act="approve" data-id="' +
           user.user_id +
-          '">Re-approve</button>'
+          '">' +
+          L('Re-approve') +
+          '</button>'
       );
     }
     parts.push(
-      '<button type="button" data-act="edit" data-id="' + user.user_id + '">Edit</button>'
+      '<button type="button" data-act="edit" data-id="' + user.user_id + '">' + L('Edit') + '</button>'
     );
     return parts.join(' ');
   }
@@ -114,7 +139,8 @@
       bodyEl.innerHTML = '';
       if (emptyEl) {
         emptyEl.hidden = false;
-        emptyEl.textContent = 'No users match this filter.';
+        emptyEl.setAttribute('data-sm-msg', 'No users match this filter.');
+        emptyEl.textContent = L('No users match this filter.');
       }
       return;
     }
@@ -130,13 +156,13 @@
           escapeHtml(u.display_name || '') +
           '</td>' +
           '<td>' +
-          escapeHtml(u.role || '') +
+          escapeHtml(L(u.role || '')) +
           '</td>' +
           '<td>' +
-          escapeHtml(u.default_shift || '-') +
+          escapeHtml(u.default_shift ? L(u.default_shift) : '-') +
           '</td>' +
           '<td>' +
-          escapeHtml(u.status) +
+          escapeHtml(L(u.status)) +
           '</td>' +
           '<td>' +
           escapeHtml(formatWhen(u.created_at)) +
@@ -164,7 +190,8 @@
       if (!res.ok) {
         if (emptyEl) {
           emptyEl.hidden = false;
-          emptyEl.textContent = data.error || 'Failed to load users.';
+          emptyEl.setAttribute('data-sm-msg', data.error || 'Failed to load users.');
+          emptyEl.textContent = L(data.error || 'Failed to load users.');
         }
         bodyEl.innerHTML = '';
         return;
@@ -175,18 +202,26 @@
       if (!users.length && emptyEl) {
         emptyEl.hidden = false;
         if (status === 'pending') {
-          emptyEl.textContent =
-            'No pending accounts. Switch Status to All or Approved to see existing users.';
+          emptyEl.setAttribute(
+            'data-sm-msg',
+            'No pending accounts. Switch Status to All or Approved to see existing users.'
+          );
+          emptyEl.textContent = L(
+            'No pending accounts. Switch Status to All or Approved to see existing users.'
+          );
         } else if (status) {
-          emptyEl.textContent = 'No users with status "' + status + '".';
+          emptyEl.removeAttribute('data-sm-msg');
+          emptyEl.textContent = t('users_status', { status: L(status) });
         } else {
-          emptyEl.textContent = 'No users yet. Create one above.';
+          emptyEl.setAttribute('data-sm-msg', 'No users yet. Create one above.');
+          emptyEl.textContent = L('No users yet. Create one above.');
         }
       }
     } catch (err) {
       if (emptyEl) {
         emptyEl.hidden = false;
-        emptyEl.textContent = err.message || 'Failed to load users.';
+        emptyEl.setAttribute('data-sm-msg', err.message || 'Failed to load users.');
+        emptyEl.textContent = L(err.message || 'Failed to load users.');
       }
     }
   }
@@ -198,12 +233,12 @@
         return {};
       });
       if (!res.ok) {
-        alert(data.error || 'Action failed');
+        alert(L(data.error || 'Action failed'));
         return;
       }
       await loadUsers();
     } catch (err) {
-      alert(err.message || 'Action failed');
+      alert(L(err.message || 'Action failed'));
     }
   }
 
@@ -214,8 +249,10 @@
     document.getElementById('sm-edit-role').value = user.role || 'operator';
     document.getElementById('sm-edit-shift').value = user.default_shift || '';
     document.getElementById('sm-edit-password').value = '';
-    document.getElementById('sm-edit-subtitle').textContent =
-      user.username + ' | ' + user.status;
+    document.getElementById('sm-edit-subtitle').textContent = t('edit_subtitle', {
+      name: user.username,
+      status: L(user.status),
+    });
     setStatus(editStatus, '', true);
     if (saveApproveBtn) {
       saveApproveBtn.hidden = user.status === 'approved';
@@ -277,11 +314,9 @@
           return {};
         });
         if (!res2.ok) {
-          setStatus(
-            editStatus,
-            'Saved, but approve failed: ' + (data2.error || res2.statusText),
-            false
-          );
+          setStatus(editStatus, '', false, 'approve_failed', {
+            error: data2.error || res2.statusText,
+          });
           await loadUsers();
           return;
         }
@@ -336,8 +371,9 @@
           setStatus(createStatus, data.error || 'Create failed', false);
           return;
         }
-        setStatus(createStatus, 'Created ' + data.user.username + ' (approved)', true);
+        setStatus(createStatus, '', true, 'created_ok', { name: data.user.username });
         createForm.reset();
+        if (window.smApply) smApply();
         if (filterEl) filterEl.value = 'approved';
         await loadUsers();
       } catch (err) {
@@ -369,4 +405,17 @@
   if (refreshBtn) refreshBtn.addEventListener('click', loadUsers);
   if (filterEl) filterEl.addEventListener('change', loadUsers);
   loadUsers();
+
+  document.addEventListener('sm-locale', function () {
+    document.querySelectorAll('[data-sm-status-key]').forEach(function (el) {
+      let vars = {};
+      try {
+        vars = JSON.parse(el.getAttribute('data-sm-status-vars') || '{}');
+      } catch (_) {
+        vars = {};
+      }
+      el.textContent = t(el.getAttribute('data-sm-status-key'), vars);
+    });
+    loadUsers();
+  });
 })();

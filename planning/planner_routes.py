@@ -1744,6 +1744,7 @@ def _apply_delivery_row_flags(con, items: list) -> None:
         item["exception"] = bool(flags.get("exception"))
         item["coc_done"] = bool(flags.get("coc_done"))
         item["qaqc_report_ready"] = bool(flags.get("qaqc_report_ready")) or bool(checklist_map.get(pid))
+        item["proposed_delivery"] = compact_text(flags.get("proposed_delivery"))
 
 
 @trial_bp.get("/api/trial/delivery-schedule")
@@ -1785,6 +1786,13 @@ def api_trial_delivery_schedule_flags_bulk_post():
     from .delivery_planner_service import delivery_flags_bulk_post_response
 
     return delivery_flags_bulk_post_response()
+
+
+@trial_bp.post("/api/trial/delivery-schedule/proposed-delivery")
+def api_trial_delivery_schedule_proposed_delivery_post():
+    from .delivery_planner_service import proposed_delivery_post_response
+
+    return proposed_delivery_post_response()
 
 
 @trial_bp.get("/api/trial/queue-delays")

@@ -13,6 +13,7 @@ from planning.first_article_service import (
     diff_tracked_fields,
     flag_process_sheets,
     flatten_sales_order_jobs,
+    history_field_label,
     history_text,
     job_from_sales_order_pp,
     json_error,
@@ -28,6 +29,7 @@ from planning.first_article_service import (
     _live_job_map,
     _merge_live_job,
     _merge_new_part_row,
+    _parse_priority,
     _parse_check_cell,
     _parse_machine_codes,
     _parse_pic_names,
@@ -858,6 +860,27 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertEqual(history_text("npi_complete", False, pics), "No")
         self.assertEqual(history_text("npi_complete", "yes", pics), "Yes")
 
+    def test_priority_levels_and_commitment_label(self):
+        self.assertEqual(_parse_priority(" High "), "high")
+        self.assertEqual(_parse_priority("CRITICAL"), "critical")
+        self.assertEqual(_parse_priority("med"), "medium")
+        self.assertEqual(_parse_priority(""), "")
+        self.assertEqual(_parse_priority("none"), "")
+        self.assertEqual(history_text("priority", "low", {}), "Low")
+        self.assertEqual(history_text("priority", "", {}), "")
+        self.assertEqual(history_field_label("priority"), "Priority")
+        self.assertEqual(history_field_label("program_finish_at"), "Commitment date")
+        with self.assertRaises(ValueError):
+            _parse_priority("urgent")
+        changed = diff_tracked_fields(
+            {"priority": ""},
+            {"priority": "critical"},
+            ("priority",),
+        )
+        self.assertEqual(changed[0]["field_label"], "Priority")
+        self.assertEqual(changed[0]["old_value"], "")
+        self.assertEqual(changed[0]["new_value"], "Critical")
+
     def test_diff_tracked_fields_skips_unchanged_values(self):
         pics = {4: {"pic_id": 4, "name": "Ananda"}}
         changes = diff_tracked_fields(
@@ -1280,6 +1303,7 @@ class FirstArticleRouteTests(unittest.TestCase):
                         "program_finish_at": "2026-09-01T16:00",
                         "program_pic_ids": [4],
                         "npi_complete": True,
+                        "priority": "high",
                     },
                 )
 
@@ -1293,6 +1317,7 @@ class FirstArticleRouteTests(unittest.TestCase):
         self.assertEqual(payload["program_finish_at"], "2026-09-01T16:00")
         self.assertEqual(payload["program_pic_ids"], [4])
         self.assertTrue(payload["npi_complete"])
+        self.assertEqual(payload["priority"], "high")
 
     def test_new_parts_patch_accepts_proposed_cnc(self):
         saved = {
@@ -1337,6 +1362,80 @@ class FirstArticleRouteTests(unittest.TestCase):
         self.assertEqual(upsert.call_args.args[0], "NPS26-0374")
         self.assertEqual(upsert.call_args.args[1]["proposed_cnc"], ["CNC 20", "CNC 22"])
         patch_cache.assert_called_once()
+
+    def test_child_sheet_proposed_cnc_note_key_is_not_the_parent(self):
+        from planning.first_article_service import _proposed_cnc_note_key
+
+        self.assertEqual(_proposed_cnc_note_key("NPS26-0321-1", "NPS26-0321"), "NPS26-0321-1")
+        self.assertEqual(_proposed_cnc_note_key("NPS26-0321", "NPS26-0321"), "NPS26-0321")
+
+    def test_saved_proposed_cnc_reloads_on_child_sheet(self):
+        from planning.first_article_service import _apply_saved_proposed_cnc
+
+        notes = {
+            "NPS26-0321": {"proposed_cnc_saved": ["CNC 15", "CNC 31"]},
+            "NPS26-0321-1": {"proposed_cnc_saved": ["CNC 22"]},
+        }
+        rows = [
+            {
+                "process_sheet_no": "NPS26-0321-1",
+                "pp_voucher_no": "NPS26-0321",
+                "proposed_cnc": [],
+            },
+            {
+                "process_sheet_no": "NPS26-0321",
+                "pp_voucher_no": "NPS26-0321",
+                "proposed_cnc": [],
+            },
+            {
+                "process_sheet_no": "NPS26-0999",
+                "pp_voucher_no": "NPS26-0999",
+                "proposed_cnc": ["CNC 10"],
+            },
+        ]
+        with patch("planning.sales_orders_route._load_notes_map", return_value=notes):
+            _apply_saved_proposed_cnc(rows)
+
+        self.assertEqual(rows[0]["proposed_cnc"], ["CNC 22"])
+        self.assertEqual(rows[1]["proposed_cnc"], ["CNC 15", "CNC 31"])
+        self.assertEqual(rows[2]["proposed_cnc"], ["CNC 10"])
+
+    def test_child_edit_does_not_save_onto_parent_sheet(self):
+        from planning.first_article_service import _resolve_new_part_edit_target
+
+        def fake_lookup(process_sheet_no, pp_voucher_no=""):
+            if pp_voucher_no == "NPS26-0321" or process_sheet_no == "NPS26-0321":
+                return {
+                    "process_sheet_no": "NPS26-0321",
+                    "pp_voucher_no": "NPS26-0321",
+                    "part_no": "PARENT",
+                }
+            return None
+
+        with patch(
+            "planning.first_article_service.lookup_sales_order_job",
+            side_effect=fake_lookup,
+        ) as lookup:
+            with patch(
+                "planning.first_article_service._lookup_jobs_from_pp_cache",
+                return_value={
+                    "NPS26-0321-1": {
+                        "process_sheet_no": "NPS26-0321-1",
+                        "pp_voucher_no": "",
+                        "part_no": "BB18-KS1209-02 REV 00",
+                    }
+                },
+            ):
+                process_sheet_no, _pp, live, note_key = _resolve_new_part_edit_target({
+                    "process_sheet_no": "NPS26-0321-1",
+                    "pp_voucher_no": "NPS26-0321",
+                })
+
+        self.assertEqual(process_sheet_no, "NPS26-0321-1")
+        self.assertEqual(note_key, "NPS26-0321-1")
+        self.assertEqual(live["part_no"], "BB18-KS1209-02 REV 00")
+        self.assertEqual(lookup.call_args.args[0], "NPS26-0321-1")
+        self.assertEqual(lookup.call_args.args[1], "")
 
     def test_new_parts_exception_requires_process_sheet(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):

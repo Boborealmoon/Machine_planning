@@ -7,32 +7,36 @@
   <meta name="theme-color" content="#e8eef6" />
   <title>{% block title %}Shift Management{% endblock %}</title>
   <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/shift_management.css', v='sm-8') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shift_management.css', v='sm-17') }}" />
   {% block head %}{% endblock %}
 </head>
 <body class="sm-body sm-body--{{ user_role|default('operator') }}" data-app-path="{{ app_path }}" data-page="{{ page|default('') }}" data-role="{{ user_role }}">
   <header class="sm-topbar">
     <div class="sm-topbar-left">
       {% block top_left %}
-      <a class="sm-brand" href="{{ app_path }}">Day/Night HOTO</a>
+      <a class="sm-brand" href="{{ app_path }}" data-sm-t>Day/Night HOTO</a>
       {% endblock %}
     </div>
     <div class="sm-topbar-right">
+      <div class="sm-lang-toggle" role="group" data-sm-aria aria-label="Language">
+        <button type="button" id="sm-lang-en" class="sm-lang-btn" aria-pressed="true">EN</button>
+        <button type="button" id="sm-lang-zh" class="sm-lang-btn" aria-pressed="false">中文</button>
+      </div>
       {% if user_display %}
-      <span class="sm-user-pill" title="{{ user_role }}">{{ user_display }} · {{ user_role }}</span>
-      <a class="sm-link-btn" href="{{ url_for('shift_mgmt_auth.shift_mgmt_logout_get') }}">Out</a>
+      <span class="sm-user-pill" id="sm-user-pill" data-sm-role="{{ user_role }}">{{ user_display }} · {{ user_role }}</span>
+      <a class="sm-link-btn" href="{{ url_for('shift_mgmt_auth.shift_mgmt_logout_get') }}" data-sm-t>Out</a>
       {% endif %}
     </div>
   </header>
 
-  <main class="sm-main {% if page == 'dashboard' %}sm-main--wide{% endif %}">
+  <main class="sm-main {% if page == 'dashboard' %}sm-main--wide{% elif page == 'history' %}sm-main--sheet{% endif %}">
     {% block content %}{% endblock %}
   </main>
 
   {% if nav_items %}
   <nav class="sm-tabbar sm-tabbar--{{ nav_items|length }}" aria-label="App navigation">
     {% for item in nav_items %}
-    <a href="{{ item.href }}" class="sm-tab {% if page == item.page %}is-active{% endif %}">{{ item.label }}</a>
+    <a href="{{ item.href }}" class="sm-tab {% if page == item.page %}is-active{% endif %}" data-sm-nav="{{ item.page }}">{{ item.label }}</a>
     {% endfor %}
   </nav>
   {% endif %}
@@ -47,7 +51,8 @@
     SM.caps = {{ (user_caps or {})|tojson }};
     SM.page = {{ (page|default(''))|tojson }};
   </script>
-  <script src="{{ url_for('static', filename='js/shift_management.js', v='sm-8') }}"></script>
+  <script src="{{ url_for('static', filename='js/shift_management_i18n.js', v='sm-17') }}"></script>
+  <script src="{{ url_for('static', filename='js/shift_management.js', v='sm-17') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

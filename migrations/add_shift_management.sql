@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS public.shift_mgmt_tickets (
     title           TEXT         NOT NULL,
     description     TEXT         NOT NULL DEFAULT '',
     status          TEXT         NOT NULL DEFAULT 'open'
-        CHECK (status IN ('open', 'in_progress', 'closed')),
+        CHECK (status IN ('open', 'in_progress', 'on_hold', 'resolved', 'closed')),
     priority        TEXT         NOT NULL DEFAULT 'Normal'
         CHECK (priority IN ('Normal', 'High', 'Urgent')),
     created_by      BIGINT
@@ -239,3 +239,20 @@ CREATE INDEX IF NOT EXISTS idx_shift_mgmt_hoto_date
 
 CREATE INDEX IF NOT EXISTS idx_shift_mgmt_hoto_submissions_at
     ON public.shift_mgmt_hoto_submissions (submitted_at DESC);
+
+-- Production summary filled by the supervisor on the Queue reporting tab.
+CREATE TABLE IF NOT EXISTS public.shift_mgmt_production_reports (
+    report_id     BIGSERIAL    PRIMARY KEY,
+    work_date     DATE         NOT NULL,
+    shift_out     TEXT         NOT NULL
+        CHECK (shift_out IN ('Day', 'Night')),
+    lines         JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    updated_by    BIGINT
+        REFERENCES public.shift_mgmt_users(user_id) ON DELETE SET NULL,
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (work_date, shift_out)
+);
+
+CREATE INDEX IF NOT EXISTS idx_shift_mgmt_production_reports_date
+    ON public.shift_mgmt_production_reports (work_date DESC, shift_out);

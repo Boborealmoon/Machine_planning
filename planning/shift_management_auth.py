@@ -9,6 +9,7 @@ from typing import Any
 from flask import (
     Blueprint,
     flash,
+    g,
     jsonify,
     redirect,
     render_template,
@@ -165,7 +166,8 @@ def set_shift_mgmt_session(user: dict[str, Any]) -> None:
 def _session_login_fresh() -> bool:
     raw = session.get(SHIFT_MGMT_SESSION_LOGIN_AT)
     if not raw:
-        return False
+        # Cookie from before login_at was stored still belongs to this user.
+        return bool(session.get(SHIFT_MGMT_SESSION_USER_ID))
     try:
         login_at = datetime.fromisoformat(str(raw))
         if login_at.tzinfo is None:
@@ -173,10 +175,42 @@ def _session_login_fresh() -> bool:
         age = (datetime.now(timezone.utc) - login_at).total_seconds()
         return age <= SHIFT_MGMT_SESSION_MAX_AGE_SEC
     except Exception:
-        return False
+        return bool(session.get(SHIFT_MGMT_SESSION_USER_ID))
+
+
+def _remember_session_value(key: str, value: str) -> None:
+    if session.get(key) != value:
+        session[key] = value
+
+
+def _sync_shift_mgmt_session(user: dict[str, Any]) -> None:
+    """Refresh display fields without rewriting an unchanged session cookie."""
+    _remember_session_value(SHIFT_MGMT_SESSION_USERNAME, str(user["username"]))
+    _remember_session_value(
+        SHIFT_MGMT_SESSION_DISPLAY,
+        compact_text(user.get("display_name")) or str(user["username"]),
+    )
+    _remember_session_value(
+        SHIFT_MGMT_SESSION_ROLE,
+        compact_text(user.get("role")) or "operator",
+    )
+    if not session.get(SHIFT_MGMT_SESSION_LOGIN_AT):
+        session[SHIFT_MGMT_SESSION_LOGIN_AT] = datetime.now(timezone.utc).isoformat()
+    if not session.permanent:
+        session.permanent = True
 
 
 def get_approved_shift_mgmt_user_from_session() -> dict[str, Any] | None:
+    if getattr(g, "_shift_mgmt_user_resolved", False):
+        return getattr(g, "_shift_mgmt_user", None)
+
+    user = _load_shift_mgmt_session_user()
+    g._shift_mgmt_user_resolved = True
+    g._shift_mgmt_user = user
+    return user
+
+
+def _load_shift_mgmt_session_user() -> dict[str, Any] | None:
     user_id = session.get(SHIFT_MGMT_SESSION_USER_ID)
     if not user_id or not _session_login_fresh():
         clear_shift_mgmt_session()
@@ -195,17 +229,13 @@ def get_approved_shift_mgmt_user_from_session() -> dict[str, Any] | None:
                 )
             )
     except Exception:
+        # A dropped database connection must not sign the user out.
         logger.exception("Shift Management session user lookup failed")
-        clear_shift_mgmt_session()
         return None
     if not user or compact_text(user.get("status")).lower() != "approved":
         clear_shift_mgmt_session()
         return None
-    session[SHIFT_MGMT_SESSION_USERNAME] = str(user["username"])
-    session[SHIFT_MGMT_SESSION_DISPLAY] = compact_text(user.get("display_name")) or str(
-        user["username"]
-    )
-    session[SHIFT_MGMT_SESSION_ROLE] = compact_text(user.get("role")) or "operator"
+    _sync_shift_mgmt_session(user)
     return user
 
 

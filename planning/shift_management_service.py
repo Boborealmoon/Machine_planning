@@ -29,7 +29,8 @@ TICKET_CATEGORIES = (
     "Urgent",
     "Other",
 )
-TICKET_STATUSES = ("open", "in_progress", "closed")
+TICKET_STATUSES = ("open", "in_progress", "on_hold", "resolved", "closed")
+OPEN_TICKET_STATUSES = ("open", "in_progress", "on_hold")
 
 # Day 08:01-20:00, Night 20:01-08:00 (shop wall clock, Asia/Singapore).
 DAY_START = time(8, 1)
@@ -63,6 +64,7 @@ EDITABLE_FIELDS = frozenset(
 
 _schema_ready = False
 _shift_checks_ready = False
+_ticket_status_ready = False
 _MIGRATION_PATH = Path(__file__).resolve().parent.parent / "migrations" / "add_shift_management.sql"
 
 
@@ -154,9 +156,32 @@ def _apply_migration_sql(con) -> None:
             statement = []
 
 
+def _ensure_ticket_status_values(con) -> None:
+    """Widen the status check. Retry until a committed request sees the new values."""
+    global _ticket_status_ready
+    if _ticket_status_ready:
+        return
+    text = _check_def(con, "shift_mgmt_tickets", "shift_mgmt_tickets_status_check")
+    if "on_hold" in text and "resolved" in text:
+        _ticket_status_ready = True
+        return
+    con.execute(
+        "ALTER TABLE public.shift_mgmt_tickets "
+        "DROP CONSTRAINT IF EXISTS shift_mgmt_tickets_status_check"
+    )
+    _drop_checks_on_columns(con, "shift_mgmt_tickets", ("status",))
+    con.execute(
+        """
+        ALTER TABLE public.shift_mgmt_tickets
+        ADD CONSTRAINT shift_mgmt_tickets_status_check
+        CHECK (status IN ('open', 'in_progress', 'on_hold', 'resolved', 'closed'))
+        """
+    )
+
+
 def ensure_shift_mgmt_schema(con) -> None:
     global _schema_ready, _shift_checks_ready
-    if _schema_ready and _shift_checks_ready:
+    if _schema_ready and _shift_checks_ready and _ticket_status_ready:
         return
     from .shift_management_auth import ensure_shift_mgmt_auth_tables, seed_demo_users_if_empty
 
@@ -176,6 +201,8 @@ def ensure_shift_mgmt_schema(con) -> None:
     if not _shift_checks_ready:
         _migrate_abc_to_day_night(con)
         _shift_checks_ready = _day_night_checks_ready(con)
+    if not _ticket_status_ready:
+        _try_migration_step(con, "sm_tk_status", lambda: _ensure_ticket_status_values(con), warn=True)
 
 
 def _ensure_cnc41_machine(con) -> None:
@@ -431,6 +458,29 @@ def _ensure_extra_tables(con) -> None:
     )
     con.execute(
         """
+        ALTER TABLE public.shift_mgmt_tickets
+            ADD COLUMN IF NOT EXISTS submitter_name TEXT NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS submitter_username TEXT NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS submitter_role TEXT NOT NULL DEFAULT ''
+        """
+    )
+    con.execute(
+        """
+        UPDATE public.shift_mgmt_tickets t
+        SET submitter_name = COALESCE(NULLIF(BTRIM(u.display_name), ''), u.username, ''),
+            submitter_username = COALESCE(u.username, ''),
+            submitter_role = COALESCE(u.role, '')
+        FROM public.shift_mgmt_users u
+        WHERE u.user_id = t.created_by
+          AND (
+            COALESCE(BTRIM(t.submitter_name), '') = ''
+            OR COALESCE(BTRIM(t.submitter_username), '') = ''
+            OR COALESCE(BTRIM(t.submitter_role), '') = ''
+          )
+        """
+    )
+    con.execute(
+        """
         CREATE TABLE IF NOT EXISTS public.shift_mgmt_ticket_comments (
             comment_id      BIGSERIAL    PRIMARY KEY,
             ticket_id       BIGINT       NOT NULL
@@ -443,6 +493,7 @@ def _ensure_extra_tables(con) -> None:
         """
     )
     _ensure_hoto_table(con)
+    _ensure_production_report_table(con)
 
 
 def _ensure_hoto_table(con) -> None:
@@ -792,7 +843,7 @@ def queue_blocks_for_machines(
 
 
 def open_ticket_counts(con, machine_ids: list[int] | None = None) -> dict[tuple[int, str], int]:
-    clauses = ["status IN ('open', 'in_progress')"]
+    clauses = ["status IN ('open', 'in_progress', 'on_hold')"]
     params: list[Any] = []
     if machine_ids is not None:
         if not machine_ids:
@@ -819,7 +870,7 @@ def open_ticket_counts(con, machine_ids: list[int] | None = None) -> dict[tuple[
 
 
 def open_ticket_count_by_machine(con, machine_ids: list[int] | None = None) -> dict[int, int]:
-    clauses = ["status IN ('open', 'in_progress')"]
+    clauses = ["status IN ('open', 'in_progress', 'on_hold')"]
     params: list[Any] = []
     if machine_ids is not None:
         if not machine_ids:
@@ -1013,7 +1064,7 @@ def get_or_create_draft(
         out["queue_jobs"] = queue_blocks_for_machines(con, [machine_id])
         out["comments"] = list_handover_comments(con, int(out["handover_id"]))
         out["tickets"] = list_tickets(
-            con, machine_id=machine_id, status="open,in_progress", limit=50
+            con, machine_id=machine_id, status=",".join(OPEN_TICKET_STATUSES), limit=50
         )
         return out
 
@@ -1073,7 +1124,7 @@ def get_or_create_draft(
     out["queue_jobs"] = queue_blocks_for_machines(con, [machine_id])
     out["comments"] = []
     out["tickets"] = list_tickets(
-        con, machine_id=machine_id, status="open,in_progress", limit=50
+        con, machine_id=machine_id, status=",".join(OPEN_TICKET_STATUSES), limit=50
     )
     return out
 
@@ -1100,7 +1151,7 @@ def get_handover(con, handover_id: int, *, enrich: bool = False) -> dict[str, An
         out["queue_jobs"] = queue_blocks_for_machines(con, [mid])
         out["comments"] = list_handover_comments(con, handover_id)
         out["tickets"] = list_tickets(
-            con, machine_id=mid, status="open,in_progress", limit=50
+            con, machine_id=mid, status=",".join(OPEN_TICKET_STATUSES), limit=50
         )
     return out
 
@@ -1435,6 +1486,33 @@ def list_pending_ack(con, work_date: date | None = None) -> list[dict]:
     return [serialize_handover(r) for r in data]  # type: ignore[misc]
 
 
+def stamp_ticket_submitter(item: dict[str, Any]) -> dict[str, Any]:
+    """Keep the raiser's name, username, and role on the ticket payload."""
+    name = compact_text(item.get("submitter_name")) or compact_text(item.get("created_by_name"))
+    username = compact_text(item.get("submitter_username")) or compact_text(
+        item.get("created_by_username")
+    )
+    role = compact_text(item.get("submitter_role")) or compact_text(item.get("created_by_role"))
+    item["submitter_name"] = name
+    item["submitter_username"] = username
+    item["submitter_role"] = role
+    if name:
+        item["created_by_name"] = name
+    return item
+
+
+def user_may_view_ticket(user: dict[str, Any], ticket: dict[str, Any]) -> bool:
+    """Reviewers see the floor queue. Everyone else sees only tickets they raised."""
+    from .shift_management_roles import has_cap
+
+    if has_cap(user, "can_review_ticket"):
+        return True
+    try:
+        return int(ticket.get("created_by") or 0) == int(user.get("user_id") or 0)
+    except (TypeError, ValueError):
+        return False
+
+
 def list_tickets(
     con,
     *,
@@ -1474,6 +1552,8 @@ def list_tickets(
             f"""
             SELECT t.*, m.machine_no,
                    cb.display_name AS created_by_name,
+                   cb.username AS created_by_username,
+                   cb.role AS created_by_role,
                    asg.display_name AS assigned_to_name
             FROM public.shift_mgmt_tickets t
             JOIN public.planner_machines m ON m.machine_id = t.machine_id
@@ -1494,7 +1574,7 @@ def list_tickets(
         item = serialize_row(r)
         assert item is not None
         item["process_sheet_no"] = display_ps_id(item.get("planner_ps_id"), item.get("job_no"))
-        out.append(item)
+        out.append(stamp_ticket_submitter(item))
     return out
 
 
@@ -1504,6 +1584,8 @@ def get_ticket(con, ticket_id: int, *, with_comments: bool = True) -> dict[str, 
             """
             SELECT t.*, m.machine_no,
                    cb.display_name AS created_by_name,
+                   cb.username AS created_by_username,
+                   cb.role AS created_by_role,
                    asg.display_name AS assigned_to_name
             FROM public.shift_mgmt_tickets t
             JOIN public.planner_machines m ON m.machine_id = t.machine_id
@@ -1517,6 +1599,7 @@ def get_ticket(con, ticket_id: int, *, with_comments: bool = True) -> dict[str, 
     out = serialize_row(row)
     if out:
         out["process_sheet_no"] = display_ps_id(out.get("planner_ps_id"), out.get("job_no"))
+        stamp_ticket_submitter(out)
         if with_comments:
             out["comments"] = list_ticket_comments(con, ticket_id)
     return out
@@ -1569,13 +1652,17 @@ def create_ticket(con, user: dict[str, Any], data: dict[str, Any]) -> dict[str, 
         assigned_to_int = None
 
     user_id = int(user["user_id"])
+    submitter_name = compact_text(user.get("display_name")) or compact_text(user.get("username"))
+    submitter_username = compact_text(user.get("username"))
+    submitter_role = compact_text(user.get("role")) or "operator"
     row = one(
         con.execute(
             """
             INSERT INTO public.shift_mgmt_tickets
                 (machine_id, planner_ps_id, job_no, block_id, category, title, description,
-                 status, priority, created_by, assigned_to, handover_id, work_date, shift_out)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'open', %s, %s, %s, %s, %s, %s)
+                 status, priority, created_by, assigned_to, handover_id, work_date, shift_out,
+                 submitter_name, submitter_username, submitter_role)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'open', %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING ticket_id
             """,
             (
@@ -1592,6 +1679,9 @@ def create_ticket(con, user: dict[str, Any], data: dict[str, Any]) -> dict[str, 
                 handover_id_int,
                 work_date,
                 shift_out,
+                submitter_name,
+                submitter_username,
+                submitter_role,
             ),
         )
     )
@@ -1605,7 +1695,7 @@ def patch_ticket(
     con, ticket_id: int, user: dict[str, Any], patch: dict[str, Any]
 ) -> dict[str, Any]:
     ticket = get_ticket(con, ticket_id, with_comments=False)
-    if not ticket:
+    if not ticket or not user_may_view_ticket(user, ticket):
         raise LookupError("Ticket not found")
     from .shift_management_roles import has_cap
 
@@ -1702,7 +1792,7 @@ def add_ticket_comment(
     con, ticket_id: int, user: dict[str, Any], body: str
 ) -> dict[str, Any]:
     ticket = get_ticket(con, ticket_id, with_comments=False)
-    if not ticket:
+    if not ticket or not user_may_view_ticket(user, ticket):
         raise LookupError("Ticket not found")
     text = compact_text(body)
     if not text:
@@ -1755,7 +1845,7 @@ def dashboard_payload(con, work_date: date, shift_out: str | None = None) -> dic
         )
     ) or {}
 
-    ticket_clauses = ["work_date = %s", "status IN ('open', 'in_progress')"]
+    ticket_clauses = ["work_date = %s", "status IN ('open', 'in_progress', 'on_hold')"]
     ticket_params: list[Any] = [work_date]
     if shift_out:
         ticket_clauses.append("shift_out = %s")
@@ -1795,7 +1885,7 @@ def dashboard_payload(con, work_date: date, shift_out: str | None = None) -> dic
         con,
         work_date=work_date,
         shift_out=normalize_shift(shift_out) if shift_out else None,
-        status="open,in_progress",
+        status=",".join(OPEN_TICKET_STATUSES),
         limit=80,
     )
     fleet = list_active_machines(con, None)
@@ -2532,6 +2622,581 @@ def get_hoto_submission(con, submission_id: int) -> dict[str, Any] | None:
     return payload
 
 
+PRODUCTION_REPORT_MIN_ROWS = 8
+PRODUCTION_REPORT_MAX_ROWS = 24
+
+
+def _ensure_production_report_table(con) -> None:
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS public.shift_mgmt_production_reports (
+            report_id     BIGSERIAL    PRIMARY KEY,
+            work_date     DATE         NOT NULL,
+            shift_out     TEXT         NOT NULL
+                CHECK (shift_out IN ('Day', 'Night')),
+            lines         JSONB        NOT NULL DEFAULT '[]'::jsonb,
+            updated_by    BIGINT
+                REFERENCES public.shift_mgmt_users(user_id) ON DELETE SET NULL,
+            created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            UNIQUE (work_date, shift_out)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_shift_mgmt_production_reports_date
+            ON public.shift_mgmt_production_reports (work_date DESC, shift_out)
+        """
+    )
+
+
+def _optional_qty(value: Any) -> int | float | None:
+    if value is None:
+        return None
+    text = compact_text(value)
+    if not text:
+        return None
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return None
+    if number < 0:
+        return None
+    if abs(number - round(number)) < 0.001:
+        return int(round(number))
+    return round(number, 3)
+
+
+def _blank_production_line() -> dict[str, Any]:
+    return {
+        "no": 0,
+        "process_sheet_no": "",
+        "description": "",
+        "target_qty": None,
+        "produced_qty": None,
+        "rejected_qty": None,
+        "cnc": "",
+        "scanned_erp": "",
+    }
+
+
+def _production_line_has_data(line: dict[str, Any]) -> bool:
+    return bool(
+        line.get("process_sheet_no")
+        or line.get("description")
+        or line.get("cnc")
+        or line.get("scanned_erp")
+        or line.get("target_qty") is not None
+        or line.get("produced_qty") is not None
+        or line.get("rejected_qty") is not None
+    )
+
+
+def _normalize_production_line(raw: Any) -> dict[str, Any]:
+    row = raw if isinstance(raw, dict) else {}
+    scanned = compact_text(row.get("scanned_erp")).upper()
+    if scanned not in {"Y", "N"}:
+        scanned = ""
+    line = _blank_production_line()
+    line.update(
+        {
+            "process_sheet_no": compact_text(row.get("process_sheet_no")).upper()[:80],
+            "description": compact_text(row.get("description"))[:200],
+            "target_qty": _optional_qty(row.get("target_qty")),
+            "produced_qty": _optional_qty(row.get("produced_qty")),
+            "rejected_qty": _optional_qty(row.get("rejected_qty")),
+            "cnc": compact_text(row.get("cnc"))[:40],
+            "scanned_erp": scanned,
+        }
+    )
+    return line
+
+
+def normalize_production_lines(raw: Any) -> list[dict[str, Any]]:
+    parsed = [
+        _normalize_production_line(row)
+        for row in _json_list(raw)[:PRODUCTION_REPORT_MAX_ROWS]
+    ]
+    while (
+        parsed
+        and not _production_line_has_data(parsed[-1])
+        and len(parsed) > PRODUCTION_REPORT_MIN_ROWS
+    ):
+        parsed.pop()
+    while len(parsed) < PRODUCTION_REPORT_MIN_ROWS:
+        parsed.append(_blank_production_line())
+    for index, line in enumerate(parsed, 1):
+        line["no"] = index
+    return parsed
+
+
+def blank_production_report(work_date: date, shift_out: str) -> dict[str, Any]:
+    return {
+        "work_date": work_date.isoformat(),
+        "shift_out": normalize_shift(shift_out),
+        "lines": normalize_production_lines([]),
+        "saved": False,
+        "updated_at": "",
+    }
+
+
+def list_cnc_machine_names(con) -> list[str]:
+    data = rows(
+        con.execute(
+            """
+            SELECT machine_no
+            FROM public.planner_machines
+            WHERE COALESCE(active, TRUE) = TRUE
+              AND NULLIF(TRIM(machine_no), '') IS NOT NULL
+              AND (
+                UPPER(TRIM(COALESCE(machine_category, ''))) IN ('TURNING', 'MILLING', 'TURNMILL', 'MPP')
+                OR UPPER(TRIM(machine_no)) LIKE '%CNC%'
+              )
+            ORDER BY machine_no
+            """
+        )
+    )
+    names: list[str] = []
+    seen: set[str] = set()
+    for row in data:
+        name = compact_text(row.get("machine_no"))
+        key = name.upper()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
+def _ps_lookup_key(raw: Any) -> str:
+    text = compact_text(raw).upper()
+    if "::" in text:
+        text = text.split("::", 1)[0].strip()
+    return text
+
+
+def lookup_process_sheet_summary(con, process_sheet_no: str) -> dict[str, Any]:
+    """Description and order qty for a process sheet number typed on the report."""
+    from .helpers import planner_try_savepoint
+
+    typed = compact_text(process_sheet_no)
+    key = _ps_lookup_key(typed)
+    empty = {
+        "process_sheet_no": key or typed.upper(),
+        "description": "",
+        "target_qty": None,
+        "found": False,
+    }
+    if not key:
+        return empty
+
+    def _from_cache():
+        return one(
+            con.execute(
+                """
+                SELECT
+                    MAX(split_part(ps_id, '::', 1)) AS process_sheet_no,
+                    MAX(NULLIF(TRIM(description), '')) AS description,
+                    MAX(NULLIF(TRIM(part_no), '')) AS part_no,
+                    MAX(total_qty) AS total_qty
+                FROM pp_vouchers_cache
+                WHERE UPPER(TRIM(split_part(ps_id, '::', 1))) = %s
+                """,
+                (key,),
+            )
+        )
+
+    def _from_sheet_info():
+        return one(
+            con.execute(
+                """
+                SELECT
+                    MAX(process_sheet_no) AS process_sheet_no,
+                    '' AS description,
+                    MAX(NULLIF(TRIM(inventory_code), '')) AS part_no,
+                    MAX(total_qty) AS total_qty
+                FROM mfg_process_sheet_info
+                WHERE UPPER(TRIM(process_sheet_no)) = %s
+                """,
+                (key,),
+            )
+        )
+
+    row = planner_try_savepoint(con, "sm_ps_cache", _from_cache, default=None)
+    if not row or not compact_text(row.get("process_sheet_no")):
+        row = planner_try_savepoint(con, "sm_ps_info", _from_sheet_info, default=None)
+    if not row or not compact_text(row.get("process_sheet_no")):
+        return empty
+
+    description = compact_text(row.get("description"))
+    part_no = compact_text(row.get("part_no"))
+    if not description and part_no:
+        def _from_part_desc():
+            return one(
+                con.execute(
+                    """
+                    SELECT main_desc
+                    FROM part_desc
+                    WHERE inventory_code = %s
+                    """,
+                    (part_no,),
+                )
+            )
+
+        part = planner_try_savepoint(con, "sm_ps_desc", _from_part_desc, default=None)
+        description = compact_text((part or {}).get("main_desc"))
+
+    return {
+        "process_sheet_no": compact_text(row.get("process_sheet_no")).upper() or key,
+        "description": description[:200],
+        "target_qty": _optional_qty(row.get("total_qty")),
+        "found": True,
+    }
+
+
+def _like_literal(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _suggest_rank(row: dict[str, Any], needle: str) -> tuple[int, str]:
+    key = compact_text(row.get("ps_key") or row.get("process_sheet_no")).upper()
+    compact_key = key.replace("-", "").replace(" ", "")
+    compact_needle = needle.replace("-", "").replace(" ", "")
+    prefix = key.startswith(needle) or (compact_needle and compact_key.startswith(compact_needle))
+    return (0 if prefix else 1, key)
+
+
+def _suggest_search_sql(source: str) -> str:
+    if source == "cache":
+        key_expr = "UPPER(TRIM(split_part(ps_id, '::', 1)))"
+        sheet_expr = "MAX(split_part(ps_id, '::', 1))"
+        desc_expr = "MAX(NULLIF(TRIM(description), ''))"
+        part_expr = "MAX(NULLIF(TRIM(part_no), ''))"
+        qty_expr = "MAX(total_qty)"
+        table = "pp_vouchers_cache"
+    else:
+        key_expr = "UPPER(TRIM(process_sheet_no))"
+        sheet_expr = "MAX(process_sheet_no)"
+        desc_expr = "''"
+        part_expr = "MAX(NULLIF(TRIM(inventory_code), ''))"
+        qty_expr = "MAX(total_qty)"
+        table = "mfg_process_sheet_info"
+    return f"""
+        SELECT ps_key, process_sheet_no, description, part_no, total_qty
+        FROM (
+            SELECT
+                {key_expr} AS ps_key,
+                {sheet_expr} AS process_sheet_no,
+                {desc_expr} AS description,
+                {part_expr} AS part_no,
+                {qty_expr} AS total_qty
+            FROM {table}
+            WHERE {key_expr} LIKE %s ESCAPE '\\'
+               OR REPLACE({key_expr}, '-', '') LIKE %s ESCAPE '\\'
+            GROUP BY 1
+        ) matches
+        ORDER BY
+            CASE
+                WHEN ps_key LIKE %s ESCAPE '\\' THEN 0
+                WHEN REPLACE(ps_key, '-', '') LIKE %s ESCAPE '\\' THEN 0
+                ELSE 1
+            END,
+            ps_key
+        LIMIT %s
+    """
+
+
+def suggest_process_sheets(con, query: str, *, limit: int = 8) -> list[dict[str, Any]]:
+    """Process-sheet matches for the reporting typeahead."""
+    from .helpers import planner_try_savepoint
+
+    needle = _ps_lookup_key(query)
+    if len(needle) < 2:
+        return []
+    cap = max(1, min(int(limit or 8), 12))
+    escaped = _like_literal(needle)
+    compact = _like_literal(needle.replace("-", "").replace(" ", ""))
+    params = (f"%{escaped}%", f"%{compact}%", f"{escaped}%", f"{compact}%", cap)
+
+    def _search(source: str):
+        return rows(con.execute(_suggest_search_sql(source), params))
+
+    cached = planner_try_savepoint(con, "sm_ps_suggest_cache", lambda: _search("cache"), default=None) or []
+    extra = planner_try_savepoint(con, "sm_ps_suggest_info", lambda: _search("info"), default=None) or []
+
+    merged: dict[str, dict[str, Any]] = {}
+    for row in list(cached) + list(extra):
+        key = compact_text((row or {}).get("ps_key") or (row or {}).get("process_sheet_no")).upper()
+        if not key or key in merged:
+            continue
+        merged[key] = row
+    picked = sorted(merged.values(), key=lambda row: _suggest_rank(row, needle))[:cap]
+    if not picked:
+        return []
+
+    missing_parts = sorted({
+        compact_text(row.get("part_no"))
+        for row in picked
+        if compact_text(row.get("part_no")) and not compact_text(row.get("description"))
+    })
+    descriptions: dict[str, str] = {}
+    if missing_parts:
+        def _part_descs():
+            return rows(
+                con.execute(
+                    """
+                    SELECT inventory_code, main_desc
+                    FROM part_desc
+                    WHERE inventory_code = ANY(%s)
+                    """,
+                    (missing_parts,),
+                )
+            )
+
+        fetched = planner_try_savepoint(con, "sm_ps_suggest_desc", _part_descs, default=None) or []
+        descriptions = {
+            compact_text(row.get("inventory_code")): compact_text(row.get("main_desc"))
+            for row in fetched
+            if compact_text(row.get("inventory_code"))
+        }
+
+    hits: list[dict[str, Any]] = []
+    for row in picked:
+        description = compact_text(row.get("description")) or descriptions.get(compact_text(row.get("part_no")), "")
+        sheet = compact_text(row.get("process_sheet_no")).upper()
+        if not sheet:
+            continue
+        hits.append(
+            {
+                "process_sheet_no": sheet,
+                "description": description[:200],
+                "target_qty": _optional_qty(row.get("total_qty")),
+            }
+        )
+    return hits
+
+
+def get_production_report(con, work_date: date, shift_out: str) -> dict[str, Any]:
+    shift = normalize_shift(shift_out)
+    row = one(
+        con.execute(
+            """
+            SELECT lines, updated_at
+            FROM public.shift_mgmt_production_reports
+            WHERE work_date = %s AND shift_out = %s
+            """,
+            (work_date, shift),
+        )
+    )
+    if not row:
+        sheet = blank_production_report(work_date, shift)
+    else:
+        sheet = {
+            "work_date": work_date.isoformat(),
+            "shift_out": shift,
+            "lines": normalize_production_lines(row.get("lines")),
+            "saved": True,
+            "updated_at": _jsonable(row.get("updated_at")) or "",
+        }
+    sheet["cnc_machines"] = list_cnc_machine_names(con)
+    return sheet
+
+
+def save_production_report(
+    con,
+    *,
+    work_date: date,
+    shift_out: str,
+    data: dict[str, Any],
+    user: dict[str, Any] | None,
+) -> dict[str, Any]:
+    from psycopg2.extras import Json
+
+    shift = normalize_shift(shift_out)
+    lines = normalize_production_lines(data.get("lines"))
+    user_id = int(user["user_id"]) if user and user.get("user_id") else None
+    one(
+        con.execute(
+            """
+            INSERT INTO public.shift_mgmt_production_reports (
+                work_date, shift_out, lines, updated_by, updated_at
+            ) VALUES (%s, %s, %s::jsonb, %s, NOW())
+            ON CONFLICT (work_date, shift_out) DO UPDATE SET
+                lines = EXCLUDED.lines,
+                updated_by = EXCLUDED.updated_by,
+                updated_at = NOW()
+            RETURNING report_id
+            """,
+            (work_date, shift, Json(lines), user_id),
+        )
+    )
+    return get_production_report(con, work_date, shift)
+
+
+def _record_date(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return compact_text(value)[:10]
+
+
+def _record_shift(value: Any) -> str:
+    text = compact_text(value)
+    if text in {"A", "Day"}:
+        return "Day"
+    if text in {"B", "C", "Night"}:
+        return "Night"
+    return ""
+
+
+def _filled_report_count(lines: Any) -> int:
+    count = 0
+    for raw in _json_list(lines)[:PRODUCTION_REPORT_MAX_ROWS]:
+        if _production_line_has_data(_normalize_production_line(raw)):
+            count += 1
+    return count
+
+
+def merge_shift_records(
+    reports: list[dict] | None,
+    checklists: list[dict] | None,
+    tickets: list[dict] | None,
+) -> list[dict[str, Any]]:
+    """One row per date and shift that has a report, a HOTO sheet, or tickets."""
+    slots: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def slot(work_date: Any, shift_out: Any) -> dict[str, Any] | None:
+        day = _record_date(work_date)
+        shift = _record_shift(shift_out)
+        if not day or not shift:
+            return None
+        key = (day, shift)
+        if key not in slots:
+            slots[key] = {
+                "work_date": day,
+                "shift_out": shift,
+                "report_filed": False,
+                "report_line_count": 0,
+                "hoto_status": "",
+                "hoto_submitted_at": "",
+                "outgoing_supervisor": "",
+                "incoming_supervisor": "",
+                "submitted_by_name": "",
+                "ticket_count": 0,
+                "open_ticket_count": 0,
+            }
+        return slots[key]
+
+    for row in reports or []:
+        filled = _filled_report_count(row.get("lines"))
+        if filled <= 0:
+            continue
+        item = slot(row.get("work_date"), row.get("shift_out"))
+        if not item:
+            continue
+        item["report_filed"] = True
+        item["report_line_count"] = filled
+
+    for row in checklists or []:
+        item = slot(row.get("work_date"), row.get("shift_out"))
+        if not item:
+            continue
+        status = compact_text(row.get("doc_status")) or "draft"
+        if status not in ("draft", "submitted"):
+            status = "draft"
+        item["hoto_status"] = status
+        submitted = row.get("submitted_at")
+        item["hoto_submitted_at"] = _format_local_dt(submitted) if submitted else ""
+        item["outgoing_supervisor"] = compact_text(row.get("outgoing_supervisor"))
+        item["incoming_supervisor"] = compact_text(row.get("incoming_supervisor"))
+        item["submitted_by_name"] = compact_text(row.get("submitted_by_name"))
+
+    for row in tickets or []:
+        count = int(row.get("ticket_count") or 0)
+        if count <= 0:
+            continue
+        item = slot(row.get("work_date"), row.get("shift_out"))
+        if not item:
+            continue
+        item["ticket_count"] = count
+        item["open_ticket_count"] = int(row.get("open_ticket_count") or 0)
+
+    items = [
+        row
+        for row in slots.values()
+        if row["report_filed"] or row["hoto_status"] or row["ticket_count"]
+    ]
+    items.sort(
+        key=lambda row: (row["work_date"], 1 if row["shift_out"] == "Night" else 0),
+        reverse=True,
+    )
+    return items
+
+
+def list_shift_records(
+    con,
+    *,
+    date_from: date,
+    date_to: date,
+    shift_out: str | None = None,
+) -> list[dict[str, Any]]:
+    """Index of filed shifts: production report, HOTO, and ticket counts."""
+    shift = shift_out if shift_out in ("Day", "Night") else None
+    params: list[Any] = [date_from, date_to]
+    shift_sql = ""
+    hoto_shift_sql = ""
+    if shift:
+        shift_sql = " AND shift_out = %s"
+        hoto_shift_sql = " AND c.shift_out = %s"
+        params.append(shift)
+    bound = tuple(params)
+    reports = rows(
+        con.execute(
+            f"""
+            SELECT work_date, shift_out, lines
+            FROM public.shift_mgmt_production_reports
+            WHERE work_date >= %s AND work_date <= %s
+            {shift_sql}
+            """,
+            bound,
+        )
+    )
+    checklists = rows(
+        con.execute(
+            f"""
+            SELECT c.work_date, c.shift_out, c.doc_status, c.submitted_at,
+                   c.outgoing_supervisor, c.incoming_supervisor,
+                   u.display_name AS submitted_by_name
+            FROM public.shift_mgmt_hoto_checklists c
+            LEFT JOIN public.shift_mgmt_users u ON u.user_id = c.submitted_by
+            WHERE c.work_date >= %s AND c.work_date <= %s
+            {hoto_shift_sql}
+            """,
+            bound,
+        )
+    )
+    ticket_rows = rows(
+        con.execute(
+            f"""
+            SELECT work_date, shift_out,
+                   COUNT(*) AS ticket_count,
+                   COUNT(*) FILTER (
+                       WHERE status IN ('open', 'in_progress', 'on_hold')
+                   ) AS open_ticket_count
+            FROM public.shift_mgmt_tickets
+            WHERE work_date >= %s AND work_date <= %s
+              AND work_date IS NOT NULL
+            {shift_sql}
+            GROUP BY work_date, shift_out
+            """,
+            bound,
+        )
+    )
+    return merge_shift_records(reports, checklists, ticket_rows)
+
+
 def meta_constants() -> dict[str, Any]:
     return {
         "machine_statuses": list(MACHINE_STATUSES),
@@ -2542,6 +3207,7 @@ def meta_constants() -> dict[str, Any]:
         "shifts": list(SHIFTS),
         "ticket_categories": list(TICKET_CATEGORIES),
         "ticket_statuses": list(TICKET_STATUSES),
+        "open_ticket_statuses": list(OPEN_TICKET_STATUSES),
         "guess_shift": _guess_shift(),
         "day_window": "08:01-20:00",
         "night_window": "20:01-08:00",

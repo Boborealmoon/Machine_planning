@@ -5,34 +5,41 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shift Management - Register</title>
   <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-shift.svg') }}" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/shift_management.css', v='sm-6') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shift_management.css', v='sm-17') }}" />
 </head>
-<body class="sm-auth-body">
+<body class="sm-auth-body" data-page="register">
   <main class="sm-auth-card">
+    <div class="sm-auth-lang">
+      <div class="sm-lang-toggle" role="group" data-sm-aria aria-label="Language">
+        <button type="button" id="sm-lang-en" class="sm-lang-btn" aria-pressed="true">EN</button>
+        <button type="button" id="sm-lang-zh" class="sm-lang-btn" aria-pressed="false">中文</button>
+      </div>
+    </div>
     <div class="sm-auth-brand">
       <span class="sm-auth-logo">SM</span>
       <div>
-        <h1>Create account</h1>
-        <p>Pending approval after signup</p>
+        <h1 data-sm-t>Create account</h1>
+        <p data-sm-t>Pending approval after signup</p>
       </div>
     </div>
     {% if error %}
-    <div class="sm-auth-error" role="alert">{{ error }}</div>
+    <div class="sm-auth-error" role="alert" data-sm-t>{{ error }}</div>
     {% endif %}
     <form method="post" action="{{ url_for('shift_mgmt_auth.shift_mgmt_register') }}">
-      <label for="username">Username</label>
+      <label for="username" data-sm-t>Username</label>
       <input id="username" name="username" type="text" required autofocus />
-      <label for="display_name">Display name</label>
+      <label for="display_name" data-sm-t>Display name</label>
       <input id="display_name" name="display_name" type="text" />
-      <label for="password">Password / PIN (min 4)</label>
+      <label for="password" data-sm-t>Password / PIN (min 4)</label>
       <input id="password" name="password" type="password" required />
-      <label for="password_confirm">Confirm</label>
+      <label for="password_confirm" data-sm-t>Confirm</label>
       <input id="password_confirm" name="password_confirm" type="password" required />
-      <button type="submit" class="sm-btn sm-btn-primary sm-btn-block">Register</button>
+      <button type="submit" class="sm-btn sm-btn-primary sm-btn-block" data-sm-t>Register</button>
     </form>
     <nav class="sm-auth-links">
-      <a href="{{ url_for('shift_mgmt_auth.shift_mgmt_login') }}">Back to sign in</a>
+      <a href="{{ url_for('shift_mgmt_auth.shift_mgmt_login') }}" data-sm-t>Back to sign in</a>
     </nav>
   </main>
+  <script src="{{ url_for('static', filename='js/shift_management_i18n.js', v='sm-17') }}"></script>
 </body>
 </html>

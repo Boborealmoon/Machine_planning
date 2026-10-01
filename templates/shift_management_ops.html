@@ -2,65 +2,118 @@
 {% block title %}Ops Board — Day/Night HOTO{% endblock %}
 {% block content %}
 <section class="sm-ops-head">
-  <h2 class="sm-section-title">Active queue</h2>
+  <h2 class="sm-section-title" data-sm-t>Active queue</h2>
   <div class="sm-ops-head-actions">
-    <button type="button" class="sm-btn sm-btn-ghost" id="sm-ops-refresh">Refresh</button>
+    <button type="button" class="sm-btn sm-btn-ghost" id="sm-ops-refresh" data-sm-t>Refresh</button>
     {% if user_caps and user_caps.can_report %}
-    <button type="button" class="sm-btn sm-btn-ghost" id="sm-ops-report">Report</button>
+    <button type="button" class="sm-btn sm-btn-ghost" id="sm-ops-report" data-sm-title title="Download the end-of-shift PDF" data-sm-t>Shift PDF</button>
     {% endif %}
   </div>
 </section>
-<p class="sm-muted sm-ops-lead" id="sm-ops-lead">
+
+<div class="sm-subtabs" role="tablist" aria-label="Queue views">
+  <button type="button" class="sm-subtab is-active" id="sm-ops-tab-queue" data-ops-tab="queue" role="tab" aria-selected="true" data-sm-t>Queue</button>
+  <button type="button" class="sm-subtab" id="sm-ops-tab-reporting" data-ops-tab="reporting" role="tab" aria-selected="false" data-sm-t>Reporting</button>
+</div>
+
+<section class="sm-ops-filters" id="sm-ops-context">
+  <input type="date" id="sm-ops-date" data-sm-aria aria-label="Date" />
+  <div class="sm-chip-row" id="sm-ops-shift-chips" role="group" data-sm-aria aria-label="Shift">
+    <button type="button" class="sm-chip" data-shift="Day" data-sm-t>Day</button>
+    <button type="button" class="sm-chip" data-shift="Night" data-sm-t>Night</button>
+  </div>
+</section>
+
+<div id="sm-ops-queue-panel">
+<p class="sm-muted sm-ops-lead" id="sm-ops-lead" data-sm-t>
   {% if user_caps and user_caps.can_ops_actions %}
-  Choose a machine, then the queued job, to raise a ticket.
+  Select up to 4 machines. Tap a job, then Raise ticket.
   {% else %}
-  Fleet queue for this shift.
+  Select machines to see their queues.
   {% endif %}
 </p>
 
 <section class="sm-ops-filters">
-  <input type="date" id="sm-ops-date" aria-label="Date" />
-  <div class="sm-chip-row" id="sm-ops-shift-chips" role="group" aria-label="Shift">
-    <button type="button" class="sm-chip" data-shift="Day">Day</button>
-    <button type="button" class="sm-chip" data-shift="Night">Night</button>
-  </div>
-  <input type="search" id="sm-ops-search" placeholder="Machine or PS" aria-label="Find machine or PS" autocomplete="off" />
+  <input type="search" id="sm-ops-search" data-sm-ph data-sm-aria placeholder="Machine or PS" aria-label="Find machine or PS" autocomplete="off" />
 </section>
 
-<label class="sm-ops-machine-field" for="sm-ops-machine">
-  <span>Machine</span>
-  <select id="sm-ops-machine"></select>
-</label>
+<div id="sm-ops-picker" class="sm-ops-picker"></div>
 
-<div id="sm-ops-list" class="sm-ops-list">
-  <p class="sm-muted">Loading…</p>
+<div id="sm-ops-list" class="sm-ops-lanes">
+  <p class="sm-muted" data-sm-t>Loading…</p>
+</div>
+</div>
+
+<div id="sm-ops-report-panel" class="sm-prod" hidden>
+  <div class="sm-prod-sheet" id="sm-prod-sheet">
+    <div class="sm-prod-banner" data-sm-t>PRODUCTION SUMMARY &amp; SCANNED ITEMS</div>
+    <div class="sm-prod-sub" data-sm-t>Qty Produced</div>
+    <div class="sm-prod-scroll">
+      <table class="sm-prod-table" id="sm-prod-table">
+        <thead>
+          <tr>
+            <th class="sm-prod-no" scope="col">#</th>
+            <th scope="col" data-sm-t>Process Sheet</th>
+            <th scope="col" data-sm-t>Description</th>
+            <th scope="col" data-sm-t>Target Qty</th>
+            <th scope="col" data-sm-t>Produced Qty</th>
+            <th scope="col" data-sm-t>Rejected Qty</th>
+            <th scope="col" data-sm-t>CNC</th>
+            <th scope="col" data-sm-t>Scanned ERP? (Y/N)</th>
+          </tr>
+        </thead>
+        <tbody id="sm-prod-body"></tbody>
+        <tfoot>
+          <tr>
+            <td class="sm-prod-no"></td>
+            <td colspan="2" class="sm-prod-total-label" data-sm-t>TOTAL</td>
+            <td id="sm-prod-total-target"></td>
+            <td id="sm-prod-total-produced"></td>
+            <td id="sm-prod-total-rejected"></td>
+            <td></td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+  <div class="sm-prod-actions">
+    <span id="sm-prod-save" class="sm-muted"></span>
+    {% if user_caps and user_caps.can_report %}
+    <button type="button" class="sm-btn sm-btn-ghost" id="sm-prod-add" data-sm-t>Add line</button>
+    {% endif %}
+    <button type="button" class="sm-btn sm-btn-ghost" id="sm-prod-print" data-sm-t>Print</button>
+  </div>
+  <p class="sm-muted sm-prod-hint" data-sm-t>Start typing a process sheet number and pick a suggestion. Description and target quantity fill in. Then enter the produced and rejected quantity, the CNC, and Y or N for scanned ERP. When the shift is finished, submit HOTO. History keeps this report, the checklist, and the shift's tickets together.</p>
 </div>
 
 <dialog id="sm-ticket-dialog" class="sm-dialog">
   <form method="dialog" id="sm-ticket-form" onsubmit="return false;">
-    <h3>Raise ticket</h3>
-    <label class="sm-label" for="sm-tk-machine">Machine</label>
+    <h3 data-sm-t>Raise ticket</h3>
+    <label class="sm-label" for="sm-tk-machine" data-sm-t>Machine</label>
     <select class="sm-input" id="sm-tk-machine" required></select>
-    <label class="sm-label" for="sm-tk-job">Queued job</label>
+    <label class="sm-label" for="sm-tk-job" data-sm-t>Queued job</label>
     <select class="sm-input" id="sm-tk-job" required></select>
     <input type="hidden" id="sm-tk-machine-id" />
     <input type="hidden" id="sm-tk-block-id" />
     <input type="hidden" id="sm-tk-ps" />
     <input type="hidden" id="sm-tk-job-no" />
-    <label class="sm-label">Category</label>
+    <label class="sm-label" data-sm-t>Category</label>
     <select class="sm-input" id="sm-tk-category"></select>
-    <label class="sm-label">Priority</label>
+    <label class="sm-label" data-sm-t>Priority</label>
     <select class="sm-input" id="sm-tk-priority">
-      <option>Normal</option><option>High</option><option>Urgent</option>
+      <option value="Normal" data-sm-t>Normal</option>
+      <option value="High" data-sm-t>High</option>
+      <option value="Urgent" data-sm-t>Urgent</option>
     </select>
-    <label class="sm-label" for="sm-tk-title">Title</label>
+    <label class="sm-label" for="sm-tk-title" data-sm-t>Title</label>
     <input class="sm-input" id="sm-tk-title" type="text" required maxlength="200" />
-    <label class="sm-label" for="sm-tk-desc">Details</label>
-    <textarea class="sm-textarea" id="sm-tk-desc" rows="3" placeholder="What needs attention?"></textarea>
+    <label class="sm-label" for="sm-tk-desc" data-sm-t>Details</label>
+    <textarea class="sm-textarea" id="sm-tk-desc" rows="3" data-sm-ph placeholder="What needs attention?"></textarea>
     <p id="sm-tk-status" class="sm-muted" hidden></p>
     <div class="sm-dialog-actions">
-      <button type="button" class="sm-btn sm-btn-ghost" id="sm-tk-cancel">Cancel</button>
-      <button type="submit" class="sm-btn sm-btn-primary" id="sm-tk-save">Create ticket</button>
+      <button type="button" class="sm-btn sm-btn-ghost" id="sm-tk-cancel" data-sm-t>Cancel</button>
+      <button type="submit" class="sm-btn sm-btn-primary" id="sm-tk-save" data-sm-t>Create ticket</button>
     </div>
   </form>
 </dialog>

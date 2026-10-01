@@ -1,42 +1,36 @@
 {% extends "shift_management_base.html" %}
-{% block title %}History — Day/Night HOTO{% endblock %}
+{% block title %}Shift record — Day/Night HOTO{% endblock %}
 {% block content %}
-<section class="sm-filters">
-  <label class="sm-field-inline"><span>From</span><input type="date" id="sm-hist-from" /></label>
-  <label class="sm-field-inline"><span>To</span><input type="date" id="sm-hist-to" /></label>
-  <label class="sm-field-inline">
-    <span>Shift</span>
-    <select id="sm-hist-shift">
-      <option value="">All</option>
-      <option value="Day">Day</option>
-      <option value="Night">Night</option>
-    </select>
-  </label>
-  <label class="sm-field-inline">
-    <span>Status</span>
-    <select id="sm-hist-status">
-      <option value="">All</option>
-      <option value="draft">draft</option>
-      <option value="pending_ack">pending_ack</option>
-      <option value="acknowledged">acknowledged</option>
-      <option value="disputed">disputed</option>
-    </select>
-  </label>
-  <button type="button" class="sm-btn sm-btn-primary" id="sm-hist-apply">Apply</button>
-  <button type="button" class="sm-btn sm-btn-ghost" id="sm-hist-report">PDF report</button>
+<section class="sm-record-head">
+  <h2 class="sm-section-title" data-sm-t>Shift record</h2>
+  <p class="sm-muted" data-sm-t>The production report, HOTO checklist, and tickets filed for one shift.</p>
 </section>
-<div class="sm-table-wrap">
-  <table class="sm-table" id="sm-hist-table">
-    <thead>
-      <tr>
-        <th>Date</th><th>Machine</th><th>Shift</th><th>Status</th>
-        <th>Priority</th><th>Job</th><th>Out</th><th>In</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  </table>
+
+<section class="sm-record-bar">
+  <label class="sm-field-inline" for="sm-record-date"><span data-sm-t>Date</span>
+    <input type="date" id="sm-record-date" />
+  </label>
+  <div class="sm-chip-row" id="sm-record-shift" role="group" data-sm-aria aria-label="Shift">
+    <button type="button" class="sm-chip" data-shift="Day" data-sm-t>Day</button>
+    <button type="button" class="sm-chip" data-shift="Night" data-sm-t>Night</button>
+  </div>
+</section>
+
+<div class="sm-record-recent" id="sm-record-recent" data-sm-aria aria-label="Recent shifts"></div>
+
+<div class="sm-subtabs" id="sm-record-views" role="tablist" data-sm-aria aria-label="Shift record">
+  <button type="button" class="sm-subtab is-active" data-record-view="report" role="tab" aria-selected="true" data-sm-t>Report</button>
+  <button type="button" class="sm-subtab" data-record-view="hoto" role="tab" aria-selected="false" data-sm-t>HOTO</button>
+  <button type="button" class="sm-subtab" data-record-view="tickets" role="tab" aria-selected="false" data-sm-t>Tickets</button>
+</div>
+
+<div id="sm-record-panel">
+  <p class="sm-muted" data-sm-t>Loading…</p>
 </div>
 {% endblock %}
 {% block scripts %}
-<script>SM.page = "history";</script>
+<script>
+  SM.page = "history";
+  SM.hotoLabels = {{ (hoto_labels or [])|tojson }};
+</script>
 {% endblock %}

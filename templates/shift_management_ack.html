@@ -1,11 +1,11 @@
 {% extends "shift_management_base.html" %}
 {% block title %}Acknowledge — Shift Management{% endblock %}
 {% block top_left %}
-<a class="sm-back" href="{{ app_path }}">← Back</a>
+<a class="sm-back" href="{{ app_path }}" data-sm-t>← Back</a>
 {% endblock %}
 {% block content %}
 <div id="sm-ack-root" data-handover-id="{{ handover_id }}">
-  <p class="sm-muted">Loading handover…</p>
+  <p class="sm-muted" data-sm-t>Loading handover…</p>
 </div>
 {% endblock %}
 {% block scripts %}

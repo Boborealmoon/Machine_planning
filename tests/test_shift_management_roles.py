@@ -7,7 +7,13 @@ from planning.shift_management_roles import (
     nav_items,
     normalize_role,
 )
-from planning.shift_management_service import group_ops_machines
+from planning.shift_management_service import (
+    OPEN_TICKET_STATUSES,
+    TICKET_STATUSES,
+    group_ops_machines,
+    stamp_ticket_submitter,
+    user_may_view_ticket,
+)
 
 
 def test_admin_gets_dashboard_home_not_ops():
@@ -98,3 +104,33 @@ def test_group_ops_machines_still_groups_jobs():
     busy, idle = grouped
     assert busy["queue_count"] == 2
     assert idle["jobs"] == []
+
+
+def test_ticket_keeps_submitter_identity_and_status_codes():
+    item = stamp_ticket_submitter(
+        {
+            "submitter_name": "",
+            "submitter_username": "",
+            "submitter_role": "",
+            "created_by_name": "Operator One",
+            "created_by_username": "op1",
+            "created_by_role": "operator",
+        }
+    )
+    assert item["submitter_name"] == "Operator One"
+    assert item["submitter_username"] == "op1"
+    assert item["submitter_role"] == "operator"
+    assert item["created_by_name"] == "Operator One"
+    assert TICKET_STATUSES == ("open", "in_progress", "on_hold", "resolved", "closed")
+    assert OPEN_TICKET_STATUSES == ("open", "in_progress", "on_hold")
+
+
+def test_operator_sees_only_own_ticket():
+    own = {"created_by": 4}
+    other = {"created_by": 9}
+    operator = {"user_id": 4, "role": "operator"}
+    supervisor = {"user_id": 1, "role": "supervisor"}
+    assert user_may_view_ticket(operator, own) is True
+    assert user_may_view_ticket(operator, other) is False
+    assert user_may_view_ticket(supervisor, other) is True
+    assert capabilities("operator")["can_resolve_ticket"] is False

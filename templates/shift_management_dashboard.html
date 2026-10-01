@@ -2,29 +2,29 @@
 {% block title %}Dashboard — Day/Night HOTO{% endblock %}
 {% block content %}
 <section class="sm-toolbar sm-toolbar-wrap">
-  <h2 class="sm-section-title" style="margin:0">Shift dashboard</h2>
+  <h2 class="sm-section-title" style="margin:0" data-sm-t>Shift dashboard</h2>
   <label class="sm-field-inline">
-    <span>Date</span>
+    <span data-sm-t>Date</span>
     <input type="date" id="sm-dash-date" />
   </label>
-  <div class="sm-chip-row" id="sm-dash-shift-chips" role="group" aria-label="Shift">
-    <button type="button" class="sm-chip" data-shift="">All</button>
-    <button type="button" class="sm-chip" data-shift="Day">Day</button>
-    <button type="button" class="sm-chip" data-shift="Night">Night</button>
+  <div class="sm-chip-row" id="sm-dash-shift-chips" role="group" data-sm-aria aria-label="Shift">
+    <button type="button" class="sm-chip" data-shift="" data-sm-t>All</button>
+    <button type="button" class="sm-chip" data-shift="Day" data-sm-t>Day</button>
+    <button type="button" class="sm-chip" data-shift="Night" data-sm-t>Night</button>
   </div>
   {% if user_caps and user_caps.can_report %}
-  <button type="button" class="sm-btn sm-btn-primary" id="sm-dash-report">Download PDF report</button>
+  <button type="button" class="sm-btn sm-btn-primary" id="sm-dash-report" data-sm-t>Download PDF report</button>
   {% endif %}
 </section>
 <div id="sm-kpi-grid" class="sm-kpi-grid"></div>
 
-<h2 class="sm-section-title">Queued jobs per CNC</h2>
+<h2 class="sm-section-title" data-sm-t>Queued jobs per CNC</h2>
 <div id="sm-dash-queue" class="sm-dash-queue"></div>
 
-<h2 class="sm-section-title">Open tickets</h2>
+<h2 class="sm-section-title" data-sm-t>Open tickets</h2>
 <div id="sm-dash-tickets" class="sm-list"></div>
 
-<h2 class="sm-section-title">Handover status</h2>
+<h2 class="sm-section-title" data-sm-t>Handover status</h2>
 <div id="sm-dash-list" class="sm-list"></div>
 {% endblock %}
 {% block scripts %}

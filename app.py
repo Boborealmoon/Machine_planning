@@ -230,6 +230,14 @@ def api_delivery_schedule_flags_bulk():
 
     return delivery_flags_bulk_post_response()
 
+
+@app.post("/api/process-sheets/delivery-proposed-delivery")
+@app.post("/api/trial/delivery-schedule/proposed-delivery")
+def api_delivery_schedule_proposed_delivery():
+    from planning.delivery_planner_service import proposed_delivery_post_response
+
+    return proposed_delivery_post_response()
+
 # Shop-floor machinist board (public — no passcode). Override via MACHINIST_BOARD_PATH in .env.
 _DEFAULT_MACHINIST_BOARD_PATH = "/machine-queue"
 _MACHINIST_BOARD_DECOY_PATHS = frozenset({

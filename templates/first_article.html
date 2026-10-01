@@ -3,7 +3,7 @@
 {% block body_class %}fa-view{% endblock %}
 {% block main_class %}app-main--first-article{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-proposed-non-cnc-20260928">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-edd-row-20261001">
 {% endblock %}
 {% block content %}
 <div class="fa-page">
@@ -14,6 +14,7 @@
       <p class="fa-subtitle" id="fa-subtitle" aria-live="polite">Import quotations for new parts. When the job posts as a PO, details carry to New parts.</p>
     </div>
     <div class="fa-header-actions">
+      <button type="button" class="fa-btn fa-btn--ghost" id="fa-export-excel" title="Download the current list as Excel">Export Excel</button>
       <button type="button" class="fa-btn fa-btn--ghost" id="fa-manage-pics" title="Add or remove PIC names">Manage PIC</button>
       <button type="button" class="fa-btn fa-btn--primary" id="fa-refresh">Refresh</button>
     </div>
@@ -32,9 +33,9 @@
     </button>
   </div>
 
-  <div id="fa-loading" class="fa-loading">
+  <div id="fa-loading" class="fa-loading" hidden>
     <div class="fa-spinner" aria-hidden="true"></div>
-    Loading first article tracker...
+    <span data-fa-loading-label>Loading NPI tracker...</span>
   </div>
   <div id="fa-alert" class="fa-alert" hidden></div>
 
@@ -123,6 +124,7 @@
       </div>
       <p class="fa-add-status" id="fa-new-exception-status" aria-live="polite"></p>
     </section>
+    <div id="fa-new-active-filters" class="fa-active-filters" hidden></div>
     <div id="fa-new-table-host" class="fa-table-card" hidden>
       <div class="fa-table-scroll">
         <table class="fa-table fa-table--new" id="fa-new-table">
@@ -131,19 +133,17 @@
               <th class="fa-col-ps">PS</th>
               <th class="fa-col-part">Part</th>
               <th class="fa-col-desc">Description</th>
-              <th class="fa-col-qty">Qty</th>
               <th class="fa-col-bom" title="Opens BOM materials. Green = ERP material lines exist.">BOM</th>
-              <th class="fa-col-material">Material</th>
               <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
-              <th class="fa-col-date">Posted</th>
               <th class="fa-col-date" title="PO due date">Due</th>
-              <th class="fa-col-finish" title="Programme estimated finish">Finish</th>
+              <th class="fa-col-date fa-col-edd" title="Coway proposed EDD from S/O management">Coway proposed EDD</th>
+              <th class="fa-col-finish" title="Commitment date">Commitment date</th>
               <th class="fa-col-machine" title="Same Proposed CNC as S/O Management">Proposed CNC</th>
+              <th class="fa-col-priority" title="Critical, High, Medium, or Low">Priority</th>
               <th class="fa-col-pic" title="Programme PIC">PIC</th>
               <th class="fa-col-remarks">Remarks</th>
               <th class="fa-col-done" title="Mark this NPI job complete">Done</th>
               <th class="fa-col-actions"></th>
-              <th class="fa-col-so">SO</th>
             </tr>
           </thead>
           <tbody id="fa-new-table-body"></tbody>
@@ -166,6 +166,7 @@
                 title="Show only completed process sheets with an assigned programme PIC">Assigned PIC</button>
       </div>
     </section>
+    <div id="fa-history-active-filters" class="fa-active-filters" hidden></div>
     <div id="fa-history-table-host" class="fa-table-card" hidden>
       <div class="fa-table-scroll">
         <table class="fa-table fa-table--new" id="fa-history-table">
@@ -174,26 +175,24 @@
               <th class="fa-col-ps">PS</th>
               <th class="fa-col-part">Part</th>
               <th class="fa-col-desc">Description</th>
-              <th class="fa-col-qty">Qty</th>
               <th class="fa-col-bom" title="Opens BOM materials. Green = ERP material lines exist.">BOM</th>
-              <th class="fa-col-material">Material</th>
               <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
-              <th class="fa-col-date">Posted</th>
               <th class="fa-col-date" title="PO due date">Due</th>
-              <th class="fa-col-finish" title="Programme estimated finish">Finish</th>
+              <th class="fa-col-date fa-col-edd" title="Coway proposed EDD from S/O management">Coway proposed EDD</th>
+              <th class="fa-col-finish" title="Commitment date">Commitment date</th>
               <th class="fa-col-machine" title="Same Proposed CNC as S/O Management">Proposed CNC</th>
+              <th class="fa-col-priority" title="Critical, High, Medium, or Low">Priority</th>
               <th class="fa-col-pic" title="Programme PIC">PIC</th>
               <th class="fa-col-remarks">Remarks</th>
               <th class="fa-col-done" title="Mark this NPI job complete">Done</th>
               <th class="fa-col-actions"></th>
-              <th class="fa-col-so">SO</th>
             </tr>
           </thead>
           <tbody id="fa-history-table-body"></tbody>
         </table>
       </div>
     </div>
-    <p id="fa-completed-empty" class="fa-empty" hidden>No completed NEW process sheets yet. When WO / S/O status is complete, the row moves here with PIC, remarks, and finish date kept.</p>
+    <p id="fa-completed-empty" class="fa-empty" hidden>No completed NEW process sheets yet. When WO / S/O status is complete, the row moves here with PIC, remarks, and commitment date kept.</p>
   </div>
 </div>
 
@@ -300,7 +299,7 @@
       Loading history...
     </div>
     <ol id="fa-history-list" class="fa-history-list"></ol>
-    <p id="fa-change-history-empty" class="fa-empty" hidden>No changes recorded yet. Edits to PIC, remarks, and estimated finish will appear here.</p>
+    <p id="fa-change-history-empty" class="fa-empty" hidden>No changes recorded yet. Edits to priority, PIC, remarks, and commitment date will appear here.</p>
   </div>
 </div>
 
@@ -321,8 +320,9 @@
 
 <div id="fa-col-filter-popover" class="fa-col-filter-popover" hidden></div>
 <div id="fa-proposed-cnc-popover" class="fa-col-filter-popover fa-proposed-cnc-popover" hidden></div>
+<div id="fa-priority-popover" class="fa-priority-popover" role="listbox" aria-label="Priority" hidden></div>
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=fa-20260825-2"></script>
-<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-proposed-non-cnc-20260928"></script>
+<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-cnc-save-20261001"></script>
 {% endblock %}

@@ -2,65 +2,83 @@
 {% block title %}Tickets - Day/Night HOTO{% endblock %}
 {% block content %}
 <section class="sm-toolbar sm-toolbar-wrap">
-  <h2 class="sm-section-title" style="margin:0">Tickets</h2>
+  <h2 class="sm-section-title" style="margin:0" data-sm-t>Tickets</h2>
   {% if user_caps and user_caps.can_create_ticket %}
-  <button type="button" class="sm-btn sm-btn-primary" id="sm-tickets-new">New ticket</button>
+  <button type="button" class="sm-btn sm-btn-primary" id="sm-tickets-new" data-sm-t>New ticket</button>
   {% endif %}
 </section>
-<p class="sm-muted" id="sm-tickets-hint">
+<p class="sm-muted" id="sm-tickets-hint" data-sm-t>
   {% if user_caps and user_caps.can_review_ticket %}
-  Review, assign priority, and resolve tickets across the floor.
+  Review who raised each ticket, set its status, and sort the queue.
   {% else %}
-  Raise a ticket from a job. You can see tickets you created here.
+  You only see tickets you submitted. A supervisor sets the status.
   {% endif %}
 </p>
 
 <section class="sm-toolbar">
   <label class="sm-field-inline">
-    <span>Status</span>
+    <span data-sm-t>Status</span>
     <select id="sm-tickets-status" class="sm-input">
-      <option value="open,in_progress">Open</option>
-      <option value="open">open</option>
-      <option value="in_progress">in_progress</option>
-      <option value="closed">closed</option>
-      <option value="">All</option>
+      <option value="open,in_progress,on_hold" data-sm-t>Open</option>
+      <option value="open" data-sm-t>Open only</option>
+      <option value="in_progress" data-sm-t>In progress</option>
+      <option value="on_hold" data-sm-t>On hold</option>
+      <option value="resolved" data-sm-t>Resolved</option>
+      <option value="closed" data-sm-t>Closed</option>
+      <option value="" data-sm-t>All</option>
     </select>
   </label>
+  {% if user_caps and user_caps.can_review_ticket %}
   <label class="sm-field-inline">
-    <span>Date</span>
+    <span data-sm-t>Sort</span>
+    <select id="sm-tickets-sort" class="sm-input">
+      <option value="priority" data-sm-t>Priority</option>
+      <option value="newest" data-sm-t>Newest</option>
+      <option value="oldest" data-sm-t>Oldest</option>
+      <option value="status" data-sm-t>Status</option>
+      <option value="machine" data-sm-t>Machine</option>
+      <option value="submitter" data-sm-t>Submitted by</option>
+      <option value="category" data-sm-t>Category</option>
+    </select>
+  </label>
+  {% endif %}
+  <label class="sm-field-inline">
+    <span data-sm-t>Date</span>
     <input type="date" id="sm-tickets-date" />
   </label>
-  <button type="button" class="sm-btn sm-btn-ghost" id="sm-tickets-refresh">Refresh</button>
+  <button type="button" class="sm-btn sm-btn-ghost" id="sm-tickets-refresh" data-sm-t>Refresh</button>
 </section>
 
 <div id="sm-tickets-list" class="sm-list">
-  <p class="sm-muted">Loading...</p>
+  <p class="sm-muted" data-sm-t>Loading...</p>
 </div>
 
 <dialog id="sm-ticket-dialog" class="sm-dialog">
   <form method="dialog" id="sm-ticket-form" onsubmit="return false;">
-    <h3>Raise ticket</h3>
-    <p id="sm-ticket-context" class="sm-muted">Pick a machine from today's queue.</p>
-    <label class="sm-label" for="sm-tk-machine-select">Machine / job</label>
+    <h3 data-sm-t>Raise ticket</h3>
+    <p id="sm-ticket-context" class="sm-muted" data-sm-t>Pick a machine from today's queue.</p>
+    <label class="sm-label" for="sm-tk-machine-select" data-sm-t>Machine / job</label>
     <select class="sm-input" id="sm-tk-machine-select"></select>
     <input type="hidden" id="sm-tk-machine-id" />
     <input type="hidden" id="sm-tk-block-id" />
     <input type="hidden" id="sm-tk-ps" />
     <input type="hidden" id="sm-tk-job" />
-    <label class="sm-label">Category</label>
+    <label class="sm-label" data-sm-t>Category</label>
     <select class="sm-input" id="sm-tk-category"></select>
-    <label class="sm-label">Priority</label>
+    <label class="sm-label" data-sm-t>Priority</label>
     <select class="sm-input" id="sm-tk-priority">
-      <option>Normal</option><option>High</option><option>Urgent</option>
+      <option value="Normal" data-sm-t>Normal</option>
+      <option value="High" data-sm-t>High</option>
+      <option value="Urgent" data-sm-t>Urgent</option>
     </select>
-    <label class="sm-label" for="sm-tk-title">Title</label>
+    <label class="sm-label" for="sm-tk-title" data-sm-t>Title</label>
     <input class="sm-input" id="sm-tk-title" type="text" required maxlength="200" />
-    <label class="sm-label" for="sm-tk-desc">Details</label>
+    <label class="sm-label" for="sm-tk-desc" data-sm-t>Details</label>
     <textarea class="sm-textarea" id="sm-tk-desc" rows="3"></textarea>
     <p id="sm-tk-status" class="sm-muted" hidden></p>
     <div class="sm-dialog-actions">
-      <button type="button" class="sm-btn sm-btn-ghost" id="sm-tk-cancel">Cancel</button>
-      <button type="submit" class="sm-btn sm-btn-primary">Create ticket</button>
+      <button type="button" class="sm-btn sm-btn-ghost" id="sm-tk-cancel" data-sm-t>Cancel</button>
+      <button type="submit" class="sm-btn sm-btn-primary" data-sm-t>Create ticket</button>
     </div>
   </form>
 </dialog>

@@ -94,18 +94,38 @@ _STAGE_STATUS_LABELS = {"I": "In process", "R": "Released", "P": "Pending", "C":
 
 _NEW_PART_ROW_SELECT = """
     process_sheet_no, pp_voucher_no, bom_updated, remarks, program_finish_at,
-    program_pic_ids, is_exception, npi_complete, created_at, updated_at
+    program_pic_ids, is_exception, npi_complete, priority, created_at, updated_at
 """
-_NEW_PART_PATCH_FIELDS = ("bom_updated", "remarks", "program_finish_at", "program_pic_ids", "npi_complete")
+_NEW_PART_PATCH_FIELDS = ("bom_updated", "remarks", "program_finish_at", "program_pic_ids", "npi_complete", "priority")
 _HISTORY_SOURCES = ("new_part", "flagged")
-_HISTORY_FIELDS_NEW_PART = ("remarks", "program_finish_at", "program_pic_ids", "npi_complete")
+_HISTORY_FIELDS_NEW_PART = ("remarks", "program_finish_at", "program_pic_ids", "npi_complete", "priority")
 _HISTORY_FIELDS_FLAGGED = ("remarks", "pic_ids")
+_PRIORITY_LEVELS = ("critical", "high", "medium", "low")
+_PRIORITY_LABELS = {
+    "critical": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+}
+_PRIORITY_ALIASES = {
+    "critical": "critical",
+    "crit": "critical",
+    "c": "critical",
+    "high": "high",
+    "h": "high",
+    "medium": "medium",
+    "med": "medium",
+    "m": "medium",
+    "low": "low",
+    "l": "low",
+}
 _HISTORY_FIELD_LABELS = {
     "remarks": "Remarks",
-    "program_finish_at": "Programme estimated finish",
+    "program_finish_at": "Commitment date",
     "program_pic_ids": "Programme PIC",
     "pic_ids": "PIC",
     "npi_complete": "Done",
+    "priority": "Priority",
 }
 _HISTORY_LIMIT = 200
 _SCHEMA_LOCK_KEY = 874512031
@@ -116,6 +136,7 @@ _REQUIRED_COLUMNS = (
     ("planner_first_article_new_part", "program_pic_ids"),
     ("planner_first_article_new_part", "is_exception"),
     ("planner_first_article_new_part", "npi_complete"),
+    ("planner_first_article_new_part", "priority"),
     ("planner_first_article_change_log", "change_id"),
 )
 _tables_ready = False
@@ -134,7 +155,7 @@ def _schema_complete(con) -> bool:
                  OR (table_name = 'planner_first_article'
                      AND column_name IN ('machine_codes', 'quote_part_no'))
                  OR (table_name = 'planner_first_article_new_part'
-                     AND column_name IN ('program_pic_ids', 'is_exception', 'npi_complete'))
+                     AND column_name IN ('program_pic_ids', 'is_exception', 'npi_complete', 'priority'))
                  OR (table_name = 'planner_first_article_change_log' AND column_name = 'change_id')
               )
             """
@@ -268,6 +289,7 @@ def _migrate_first_article_schema(con) -> None:
             program_pic_ids    BIGINT[]     NOT NULL DEFAULT '{}',
             is_exception       BOOLEAN      NOT NULL DEFAULT FALSE,
             npi_complete       BOOLEAN      NOT NULL DEFAULT FALSE,
+            priority           TEXT         NOT NULL DEFAULT '',
             created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
             updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         )
@@ -304,6 +326,15 @@ def _migrate_first_article_schema(con) -> None:
         """
         ALTER TABLE public.planner_first_article_new_part
             ADD COLUMN IF NOT EXISTS npi_complete BOOLEAN NOT NULL DEFAULT FALSE
+        """,
+    )
+    _add_column_if_missing(
+        con,
+        "planner_first_article_new_part",
+        "priority",
+        """
+        ALTER TABLE public.planner_first_article_new_part
+            ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT ''
         """,
     )
     _add_column_if_missing(
@@ -467,6 +498,24 @@ def _parse_program_finish(value: Any) -> str:
         except ValueError as exc:
             raise ValueError("program_finish_at must be a valid date") from exc
     raise ValueError("program_finish_at must be YYYY-MM-DD or DD/MM/YYYY")
+
+
+def _parse_priority(value: Any) -> str:
+    text = compact_text(value).lower()
+    if text in {"", "-", "—", "–", "none", "nil", "null", "blank", "n/a", "na"}:
+        return ""
+    key = _PRIORITY_ALIASES.get(text)
+    if key not in _PRIORITY_LEVELS:
+        raise ValueError("priority must be Critical, High, Medium, or Low")
+    return key
+
+
+def _priority_label(value: Any) -> str:
+    try:
+        key = _parse_priority(value)
+    except ValueError:
+        return compact_text(value)
+    return _PRIORITY_LABELS.get(key, "")
 
 
 def _parse_material_subcon(raw: Any) -> tuple[bool, str, str]:
@@ -1280,6 +1329,8 @@ def history_text(field_name: str, value: Any, pics_by_id: dict[int, dict[str, An
             return "Yes" if _parse_bool(value, field="npi_complete") else "No"
         except ValueError:
             return compact_text(value) or "No"
+    if field == "priority":
+        return _priority_label(value)
     return compact_text(value)
 
 
@@ -2704,9 +2755,14 @@ def _serialize_new_part_saved(
             "program_pics": [],
             "is_exception": False,
             "npi_complete": False,
+            "priority": "",
         }
     out = serialize_row(dict(row))
     pic_ids = _parse_pic_ids(out.get("program_pic_ids"))
+    try:
+        priority = _parse_priority(out.get("priority"))
+    except ValueError:
+        priority = ""
     return {
         "bom_updated": bool(out.get("bom_updated")),
         "remarks": compact_text(out.get("remarks")),
@@ -2715,6 +2771,7 @@ def _serialize_new_part_saved(
         "program_pics": _pics_for_ids(pics_by_id or {}, pic_ids),
         "is_exception": bool(out.get("is_exception")),
         "npi_complete": bool(out.get("npi_complete")),
+        "priority": priority,
     }
 
 
@@ -3076,6 +3133,7 @@ def list_new_part_rows(*, allow_rebuild: bool = True, scope: str = "active") -> 
             row["list_scope"] = "active"
         else:
             row["list_scope"] = "history"
+    _apply_saved_proposed_cnc(out)
 
     remembered = [row for row in out if row.get("list_scope") == "history"]
     missing = [
@@ -3102,6 +3160,102 @@ def list_new_part_rows(*, allow_rebuild: bool = True, scope: str = "active") -> 
     return scoped
 
 
+def _proposed_cnc_note_key(process_sheet_no: str, pp_voucher_no: str = "") -> str:
+    """Notes key for this NPI/FA row.
+
+    Component children such as NPS26-0321-1 keep their own key. Saving them
+    must not overwrite the parent PP's Proposed CNC.
+    """
+    from .assembly_classify import is_component_child_ps
+
+    ps = _ps_base(process_sheet_no)
+    pp = compact_text(pp_voucher_no)
+    if is_component_child_ps(ps):
+        return ps
+    return pp or ps
+
+
+def _saved_proposed_cnc_from_notes(
+    row: dict[str, Any],
+    notes_map: dict[str, dict[str, Any]] | None,
+) -> list[str] | None:
+    from .assembly_classify import is_component_child_ps
+
+    notes = notes_map or {}
+    ps = _ps_base(row.get("process_sheet_no"))
+    pp = compact_text(row.get("pp_voucher_no"))
+    keys = [ps] if is_component_child_ps(ps) else [pp, ps]
+    for key in keys:
+        if not key:
+            continue
+        found = notes.get(key) or notes.get(key.upper())
+        if not found:
+            continue
+        saved = found.get("proposed_cnc_saved")
+        if saved is not None:
+            return _parse_machine_codes(saved)
+    return None
+
+
+def _apply_saved_proposed_cnc(rows: list[dict[str, Any]]) -> None:
+    """Reload Proposed CNC from planner notes so a stale S/O cache cannot drop it."""
+    keys: list[str] = []
+    for row in rows or []:
+        ps = _ps_base(row.get("process_sheet_no"))
+        pp = compact_text(row.get("pp_voucher_no"))
+        if ps:
+            keys.append(ps)
+        if pp and pp != ps:
+            keys.append(pp)
+    if not keys:
+        return
+    try:
+        from .sales_orders_route import _load_notes_map
+
+        notes = _load_notes_map(keys) or {}
+    except Exception:
+        logger.exception("first article proposed CNC notes load failed")
+        return
+    for row in rows:
+        saved = _saved_proposed_cnc_from_notes(row, notes)
+        if saved is None:
+            continue
+        row["proposed_cnc"] = saved
+
+
+def _resolve_new_part_edit_target(
+    data: dict[str, Any],
+) -> tuple[str, str, dict[str, Any], str]:
+    """Return process sheet, PP voucher, live job, and Proposed CNC note key.
+
+    A component child must stay on its own sheet even when the request also
+    carries the parent PP voucher.
+    """
+    from .assembly_classify import is_component_child_ps
+
+    requested = _ps_base(data.get("process_sheet_no") or data.get("pp_voucher_no"))
+    sent_pp = compact_text(data.get("pp_voucher_no"))
+    lookup_pp = "" if is_component_child_ps(requested) else sent_pp
+    live = lookup_sales_order_job(requested, lookup_pp) or {}
+    live_key = _ps_key(live.get("process_sheet_no") or live.get("pp_voucher_no"))
+    if live and live_key != _ps_key(requested):
+        live = {}
+    if not live:
+        cached = _lookup_jobs_from_pp_cache([requested]).get(_ps_key(requested)) or {}
+        cached_key = _ps_key(cached.get("process_sheet_no") or requested)
+        if cached and cached_key == _ps_key(requested):
+            live = cached
+    if live and _ps_key(live.get("process_sheet_no") or requested) == _ps_key(requested):
+        process_sheet_no = compact_text(live.get("process_sheet_no")) or requested
+        pp_voucher_no = compact_text(live.get("pp_voucher_no")) or sent_pp
+    else:
+        process_sheet_no = requested
+        pp_voucher_no = sent_pp
+        live = {}
+    note_key = _proposed_cnc_note_key(process_sheet_no, pp_voucher_no)
+    return process_sheet_no, pp_voucher_no, live, note_key
+
+
 def _save_proposed_cnc_to_so(pp_voucher_no: str, raw: Any) -> list[str]:
     """Persist Proposed CNC onto the same S/O notes field used by S/O Management."""
     note_key = compact_text(pp_voucher_no)
@@ -3117,19 +3271,14 @@ def _save_proposed_cnc_to_so(pp_voucher_no: str, raw: Any) -> list[str]:
 
 
 def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
-    process_sheet_no = _ps_base(data.get("process_sheet_no") or data.get("pp_voucher_no"))
+    process_sheet_no, pp_voucher_no, live, note_key = _resolve_new_part_edit_target(data)
     if not process_sheet_no:
         raise ValueError("process_sheet_no is required")
-    pp_voucher_no = compact_text(data.get("pp_voucher_no"))
-    live = lookup_sales_order_job(process_sheet_no, pp_voucher_no) or {}
-    if live:
-        process_sheet_no = compact_text(live.get("process_sheet_no")) or process_sheet_no
-        pp_voucher_no = compact_text(live.get("pp_voucher_no")) or pp_voucher_no
 
     saved_cnc = None
     if "proposed_cnc" in data:
         saved_cnc = _save_proposed_cnc_to_so(
-            pp_voucher_no or process_sheet_no,
+            note_key,
             data.get("proposed_cnc"),
         )
         if live:
@@ -3158,6 +3307,7 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
             "program_pic_ids": [],
             "is_exception": False,
             "npi_complete": False,
+            "priority": "",
         }
         if pp_voucher_no:
             current["pp_voucher_no"] = pp_voucher_no
@@ -3171,6 +3321,8 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
             current["program_pic_ids"] = _validate_pic_ids(con, _parse_pic_ids(data.get("program_pic_ids")))
         if "npi_complete" in data:
             current["npi_complete"] = _parse_bool(data.get("npi_complete"), field="npi_complete")
+        if "priority" in data:
+            current["priority"] = _parse_priority(data.get("priority"))
         pics = _pics_by_id(con)
         changes = diff_tracked_fields(
             dict(existing) if existing else {
@@ -3178,6 +3330,7 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
                 "program_finish_at": "",
                 "program_pic_ids": [],
                 "npi_complete": False,
+                "priority": "",
             },
             current,
             _HISTORY_FIELDS_NEW_PART,
@@ -3188,9 +3341,9 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
                 f"""
                 INSERT INTO planner_first_article_new_part (
                     process_sheet_no, pp_voucher_no, bom_updated, remarks,
-                    program_finish_at, program_pic_ids, npi_complete, updated_at
+                    program_finish_at, program_pic_ids, npi_complete, priority, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (process_sheet_no) DO UPDATE
                 SET pp_voucher_no = EXCLUDED.pp_voucher_no,
                     bom_updated = EXCLUDED.bom_updated,
@@ -3198,6 +3351,7 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
                     program_finish_at = EXCLUDED.program_finish_at,
                     program_pic_ids = EXCLUDED.program_pic_ids,
                     npi_complete = EXCLUDED.npi_complete,
+                    priority = EXCLUDED.priority,
                     updated_at = NOW()
                 RETURNING {_NEW_PART_ROW_SELECT}
                 """,
@@ -3209,6 +3363,7 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
                     compact_text(current.get("program_finish_at")),
                     current.get("program_pic_ids") or [],
                     bool(current.get("npi_complete")),
+                    compact_text(current.get("priority")),
                 ),
             )
         )

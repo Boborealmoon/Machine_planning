@@ -277,7 +277,9 @@ def build_shift_report_pdf(payload: dict[str, Any]) -> bytes:
                     Paragraph(
                         f"- #{_txt(t.get('ticket_id'))} [{_txt(t.get('status'))}/"
                         f"{_txt(t.get('priority'))}] {_txt(t.get('category'))}: "
-                        f"{_txt(t.get('title'))} - PS {_txt(t.get('process_sheet_no') or t.get('job_no'))}",
+                        f"{_txt(t.get('title'))} - PS {_txt(t.get('process_sheet_no') or t.get('job_no'))}"
+                        f" - submitted by {_txt(t.get('submitter_name') or t.get('created_by_name'), 'unknown')}"
+                        f" ({_txt(t.get('submitter_username') or t.get('created_by_username'), '-')})",
                         small,
                     )
                 )
@@ -290,7 +292,9 @@ def build_shift_report_pdf(payload: dict[str, Any]) -> bytes:
                 Paragraph(
                     f"#{_txt(t.get('ticket_id'))} | {_txt(t.get('machine_no'))} | "
                     f"{_txt(t.get('status'))} | {_txt(t.get('category'))} | "
-                    f"{_txt(t.get('title'))}",
+                    f"{_txt(t.get('title'))} | submitted by "
+                    f"{_txt(t.get('submitter_name') or t.get('created_by_name'), 'unknown')}"
+                    f" ({_txt(t.get('submitter_username') or t.get('created_by_username'), '-')})",
                     body,
                 )
             )

@@ -15,6 +15,7 @@ const DELIVERY_EXPORT_COLUMNS = [
   { id: 'pp_partial_qty', label: 'PP partial qty', value: item => deliveryScheduleFormatQty(item.pp_partial_qty) },
   { id: 'due_date', label: 'PO due date', value: item => deliveryScheduleFormatDate(item.due_date) },
   { id: 'coway_edd', label: 'Coway EDD', value: item => deliveryScheduleFormatDate(item.coway_edd) },
+  { id: 'proposed_delivery', label: 'Proposed delivery', value: item => deliveryScheduleFormatDate(item.proposed_delivery) },
   { id: 'week', label: 'Week', value: item => deliveryScheduleWeekLabel(item) },
   { id: 'exception', label: 'Exception', value: item => (deliveryScheduleIsException(deliverySchedulePlannerPsId(item)) ? 'Yes' : '') },
   { id: 'coc_done', label: 'COC done', value: item => (item.coc_done ? 'Yes' : '') },
@@ -957,7 +958,8 @@ function deliveryScheduleFormatWeekGroupRange(minDate, maxDate) {
 
 function deliveryScheduleCommitmentDate(itemOrValue) {
   if (itemOrValue && typeof itemOrValue === 'object') {
-    return deliveryScheduleDateInputValue(itemOrValue.coway_edd)
+    return deliveryScheduleDateInputValue(itemOrValue.proposed_delivery)
+      || deliveryScheduleDateInputValue(itemOrValue.coway_edd)
       || deliveryScheduleDateInputValue(itemOrValue.due_date);
   }
   return deliveryScheduleDateInputValue(itemOrValue);
@@ -1029,6 +1031,8 @@ function deliveryScheduleSortValue(item, sortBy) {
       return deliveryScheduleDateInputValue(item.due_date) || '9999-12-31';
     case 'week':
       return deliveryScheduleCommitmentDate(item) || '9999-12-31';
+    case 'proposed_delivery':
+      return deliveryScheduleDateInputValue(item.proposed_delivery) || '9999-12-31';
     case 'remarks':
       return String(item.remarks || '').toLowerCase();
     case 'coway_edd':
@@ -1122,12 +1126,12 @@ function deliveryScheduleRepositionRow(plannerPsId) {
   }
 }
 
-function deliveryScheduleAfterCowaySave(plannerPsId, updated) {
+function deliveryScheduleAfterCommitmentChange(plannerPsId, updated) {
   const editedWeekKey = updated ? deliveryScheduleItemWeekKey(updated) : '';
   deliveryScheduleRefreshWeekGroups({ addWeekKey: editedWeekKey });
   deliveryScheduleUpdateWeekCell(plannerPsId, updated);
 
-  if (deliveryScheduleState.sortBy === 'coway_edd' || deliveryScheduleState.sortBy === 'week') {
+  if (deliveryScheduleState.sortBy === 'proposed_delivery' || deliveryScheduleState.sortBy === 'week') {
     deliveryScheduleRepositionRow(plannerPsId);
   }
 
@@ -1242,20 +1246,21 @@ function deliveryScheduleSelectCheckboxHtml(item) {
   `;
 }
 
-function deliveryScheduleCowayInputHtml(item) {
+function deliveryScheduleProposedInputHtml(item) {
   const psId = escapeHtml(item.planner_ps_id || '');
-  const value = escapeHtml(deliveryScheduleDateInputValue(item.coway_edd));
+  const value = escapeHtml(deliveryScheduleDateInputValue(item.proposed_delivery));
   return `
-    <div class="delivery-schedule-coway-wrap" data-action="coway-edd-wrap">
+    <div class="delivery-schedule-proposed-wrap" data-action="proposed-delivery-wrap">
       <input
         type="date"
-        class="delivery-schedule-coway-input"
-        data-action="coway-edd"
+        class="delivery-schedule-proposed-input"
+        data-action="proposed-delivery"
         data-ps-id="${psId}"
         value="${value}"
         data-last-saved="${value}"
+        aria-label="Proposed delivery"
       >
-      <span class="delivery-schedule-field-status delivery-schedule-coway-status" hidden></span>
+      <span class="delivery-schedule-field-status delivery-schedule-proposed-status" hidden></span>
     </div>
   `;
 }
@@ -1318,7 +1323,8 @@ function deliveryScheduleRowHtml(item) {
       <td class="delivery-schedule-num">${escapeHtml(deliveryScheduleFormatQty(item.so_qty))}</td>
       <td class="delivery-schedule-num">${escapeHtml(deliveryScheduleFormatQty(item.pp_partial_qty))}</td>
       <td class="delivery-schedule-date">${escapeHtml(deliveryScheduleFormatDate(item.due_date))}</td>
-      <td class="delivery-schedule-coway">${deliveryScheduleCowayInputHtml(item)}</td>
+      <td class="delivery-schedule-date delivery-schedule-coway" title="Coway EDD is read-only on Delivery schedule">${escapeHtml(deliveryScheduleFormatDate(item.coway_edd))}</td>
+      <td class="delivery-schedule-proposed">${deliveryScheduleProposedInputHtml(item)}</td>
       <td class="delivery-schedule-week" data-week-for="${escapeHtml(item.planner_ps_id || '')}">${escapeHtml(deliveryScheduleWeekLabel(item))}</td>
       <td class="delivery-schedule-flag-cell">${deliveryScheduleFlagToggleHtml(item, 'coc_done', 'COC done')}</td>
       <td class="delivery-schedule-flag-cell">${deliveryScheduleFlagToggleHtml(item, 'qaqc_report_ready', 'QAQC report ready')}</td>
@@ -1359,43 +1365,43 @@ function deliveryScheduleUpdateWeekCell(plannerPsId, item) {
   cell.textContent = deliveryScheduleWeekLabel(rowItem || {});
 }
 
-async function deliveryScheduleSaveCoway(plannerPsId, value, inputEl) {
+async function deliveryScheduleSaveProposed(plannerPsId, value, inputEl) {
   const psId = String(plannerPsId || '').trim();
   if (!psId) return;
   const nextValue = deliveryScheduleDateInputValue(value);
   if (inputEl && inputEl.dataset.lastSaved === nextValue) return;
 
-  const wrap = inputEl?.closest('[data-action="coway-edd-wrap"]') || null;
+  const wrap = inputEl?.closest('[data-action="proposed-delivery-wrap"]') || null;
   if (inputEl) {
     inputEl.disabled = true;
     deliveryScheduleSetFieldStatus(wrap, 'is-saving', 'Saving…');
   }
 
   try {
-    const res = await fetch('/api/process-sheets/coway-proposed-edd', {
+    const res = await fetch('/api/trial/delivery-schedule/proposed-delivery', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        ps_id: psId,
-        coway_proposed_edd: nextValue || null,
+        planner_ps_id: psId,
+        proposed_delivery: nextValue || null,
       }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
 
-    const saved = deliveryScheduleDateInputValue(data.coway_proposed_edd);
-    const savedPsId = String(data.ps_id || psId).trim() || psId;
-    const updated = deliveryScheduleUpdateItem(savedPsId, { coway_edd: saved, planner_ps_id: savedPsId });
-    deliveryScheduleAfterCowaySave(savedPsId, updated);
+    const saved = deliveryScheduleDateInputValue(data.proposed_delivery);
+    const savedPsId = String(data.planner_ps_id || psId).trim() || psId;
+    const updated = deliveryScheduleUpdateItem(savedPsId, { proposed_delivery: saved, planner_ps_id: savedPsId });
+    deliveryScheduleAfterCommitmentChange(savedPsId, updated);
     const liveInput = inputEl || document.querySelector(
-      `[data-action="coway-edd"][data-ps-id="${CSS.escape(savedPsId)}"]`,
+      `[data-action="proposed-delivery"][data-ps-id="${CSS.escape(savedPsId)}"]`,
     );
-    const liveWrap = liveInput?.closest('[data-action="coway-edd-wrap"]') || wrap;
+    const liveWrap = liveInput?.closest('[data-action="proposed-delivery-wrap"]') || wrap;
     if (liveInput) {
       liveInput.value = saved;
       liveInput.dataset.lastSaved = saved;
       liveInput.disabled = false;
-      deliveryScheduleSetFieldStatus(liveWrap, 'is-saved', 'Saved');
+      deliveryScheduleSetFieldStatus(liveWrap, 'is-saved', saved ? 'Saved' : 'Cleared');
       window.setTimeout(() => {
         if (liveInput.dataset.lastSaved === saved) {
           deliveryScheduleSetFieldStatus(liveWrap, '', '');
@@ -1409,7 +1415,7 @@ async function deliveryScheduleSaveCoway(plannerPsId, value, inputEl) {
       inputEl.disabled = false;
       deliveryScheduleSetFieldStatus(wrap, 'is-error', 'Save failed');
     }
-    toast('Could not save Coway EDD: ' + err.message, 'error');
+    toast('Could not save proposed delivery: ' + err.message, 'error');
   }
 }
 
@@ -1486,9 +1492,9 @@ function deliveryScheduleBindInputs() {
       );
       return;
     }
-    const cowayInput = event.target.closest('[data-action="coway-edd"]');
-    if (cowayInput) {
-      deliveryScheduleSaveCoway(cowayInput.dataset.psId || '', cowayInput.value, cowayInput);
+    const proposedInput = event.target.closest('[data-action="proposed-delivery"]');
+    if (proposedInput) {
+      deliveryScheduleSaveProposed(proposedInput.dataset.psId || '', proposedInput.value, proposedInput);
       return;
     }
     const remarksInput = event.target.closest('[data-action="remarks"]');

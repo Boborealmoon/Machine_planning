@@ -26,6 +26,7 @@
   const confirmSign = { outgoing: false, incoming: false };
   const pageParams = new URLSearchParams(window.location.search);
   let filingId = pageParams.get("submission") || "";
+  let lastFiled = null;
 
   function todayISO() {
     const d = new Date();
@@ -72,14 +73,24 @@
     } catch (_) {}
   }
 
+  function L(text) {
+    return window.smL ? window.smL(text) : text == null ? "" : String(text);
+  }
+
+  function t(key, vars) {
+    return window.smT ? window.smT(key, vars) : key;
+  }
+
   function setState(text) {
-    if (stateEl) stateEl.textContent = text;
+    if (!stateEl) return;
+    stateEl.setAttribute("data-sm-msg", text == null ? "" : String(text));
+    stateEl.textContent = L(text);
   }
 
   function toast(msg) {
     const el = document.getElementById("sm-toast");
     if (!el) return;
-    el.textContent = msg;
+    el.textContent = L(msg);
     el.hidden = false;
     clearTimeout(toast._t);
     toast._t = setTimeout(function () {
@@ -143,7 +154,7 @@
     cell.setAttribute("data-signed-at", signed ? String(signedAt) : "");
     script.hidden = !signed;
     script.textContent = signed ? name : "";
-    meta.textContent = signed ? "Signed " + String(signedAt).replace("T", " ") : "";
+    meta.textContent = signed ? t("signed_meta", { when: String(signedAt).replace("T", " ") }) : "";
     signBtn.hidden = signed;
     clearBtn.hidden = !signed;
   }
@@ -178,7 +189,7 @@
     const printed = cell.querySelector(".hoto-status-print");
     const symbol = ok ? "\u2713" : issue ? "\u2715" : "";
     if (mark) mark.textContent = symbol;
-    if (printed) printed.textContent = symbol ? symbol + "  " + value : "";
+    if (printed) printed.textContent = symbol ? symbol + "  " + L(value) : "";
   }
 
   function paintAllStatuses() {
@@ -280,6 +291,7 @@
   function paintFiled(checklist) {
     const el = document.getElementById("hoto-filed");
     if (!el) return;
+    lastFiled = checklist;
     const submitted = checklist.doc_status === "submitted" || !!checklist.read_only;
     if (!submitted) {
       el.hidden = true;
@@ -287,11 +299,11 @@
       return;
     }
     const when = checklist.submitted_at ? String(checklist.submitted_at).replace("T", " ") : "";
-    const who = checklist.submitted_by_name ? " by " + checklist.submitted_by_name : "";
+    const who = checklist.submitted_by_name ? t("by_person", { name: checklist.submitted_by_name }) : "";
     el.hidden = false;
     el.textContent = checklist.read_only
-      ? "Filed handover" + (when ? " ù " + when : "") + who + ". This is the logged copy."
-      : "Submitted" + (when ? " " + when : "") + who + ". This sheet is locked.";
+      ? t("filed_handover", { when: when ? " - " + when : "", who: who })
+      : t("submitted_locked", { when: when ? " " + when : "", who: who });
   }
 
   function leaveFiling() {
@@ -478,7 +490,7 @@
     if (!name) {
       const input = repEl(which);
       if (input) input.focus();
-      toast("Enter the " + (which === "incoming" ? "incoming" : "outgoing") + " shift rep name first");
+      toast(t("enter_rep", { which: L(which) }));
       return;
     }
     confirmSign[which] = true;
@@ -514,7 +526,14 @@
         });
         apply(data.checklist || {});
         setState("Submitted");
-        toast("Handover submitted");
+        window.location.href =
+          (SM.appPath || "/Shift-management") +
+          "/history?date=" +
+          encodeURIComponent(loaded.date || dateEl.value || "") +
+          "&shift=" +
+          encodeURIComponent(loaded.shift || shiftEl.value || "Day") +
+          "&view=hoto&filed=1";
+        return;
       } catch (err) {
         setState("Not submitted");
         toast(err.message || "Could not submit");
@@ -544,6 +563,17 @@
     });
   }
 
-  if (filingId) load(pageParams.get("date") || rememberedDate(), pageParams.get("shift") || rememberedShift());
-  else load(rememberedDate(), rememberedShift());
+  load(pageParams.get("date") || rememberedDate(), pageParams.get("shift") || rememberedShift());
+
+  document.addEventListener("sm-locale", function () {
+    paintAllStatuses();
+    if (lastFiled) paintFiled(lastFiled);
+    ["outgoing", "incoming"].forEach(function (which) {
+      const cell = signCell(which);
+      if (!cell) return;
+      const name = cell.getAttribute("data-signed-name") || "";
+      const at = cell.getAttribute("data-signed-at") || "";
+      if (name && at) paintSign(which, name, at);
+    });
+  });
 })();

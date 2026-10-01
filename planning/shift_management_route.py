@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date
+from datetime import date, timedelta
 
 from flask import Blueprint, jsonify, redirect, render_template, request, send_file
 
@@ -30,8 +30,10 @@ from .shift_management_service import (
     history_payload,
     list_machines_for_user,
     list_pending_ack,
+    list_shift_records,
     list_tickets,
     meta_constants,
+    user_may_view_ticket,
     normalize_shift,
     ops_queue_payload,
     patch_handover,
@@ -48,6 +50,10 @@ from .shift_management_service import (
     HOTO_ATTENDANCE_ROWS,
     HOTO_CHECKLIST_ITEMS,
     get_hoto_checklist,
+    get_production_report,
+    lookup_process_sheet_summary,
+    save_production_report,
+    suggest_process_sheets,
 )
 from .utils import compact_text
 
@@ -161,7 +167,15 @@ def shift_mgmt_jobs():
 
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/tickets")
 def shift_mgmt_tickets():
-    return _page_if_in_nav("tickets", "can_view_tickets", "shift_management_tickets.html")
+    user = current_shift_mgmt_user()
+    if not user:
+        return redirect(SHIFT_MGMT_LOGIN_PATH)
+    caps = capabilities(user)
+    if "tickets" not in caps["nav"]:
+        if "history" in caps["nav"]:
+            return redirect(SHIFT_MGMT_PATH + "/history?view=tickets")
+        return redirect(home_path(user, SHIFT_MGMT_PATH))
+    return _page_or_home("can_view_tickets", "shift_management_tickets.html", page="tickets")
 
 
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/machines")
@@ -196,7 +210,14 @@ def shift_mgmt_dashboard():
 
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/history")
 def shift_mgmt_history():
-    return _page_or_home("can_view_history", "shift_management_history.html", page="history")
+    return _page_or_home(
+        "can_view_history",
+        "shift_management_history.html",
+        page="history",
+        hoto_labels=[
+            {"no": item["no"], "text": item["text"]} for item in HOTO_CHECKLIST_ITEMS
+        ],
+    )
 
 
 @shift_mgmt_bp.get(f"{SHIFT_MGMT_PATH}/backlog")
@@ -290,6 +311,83 @@ def api_ops_queue():
         logger.exception("ops queue failed")
         return jsonify({"error": str(exc)}), 500
     return jsonify(payload)
+
+
+@shift_mgmt_bp.get("/api/shift-management/process-sheet-lookup")
+def api_process_sheet_lookup():
+    _user, err, status = _require_cap("can_view_ops")
+    if err:
+        return err, status
+    process_sheet_no = compact_text(request.args.get("ps") or request.args.get("process_sheet_no"))
+    if not process_sheet_no:
+        return jsonify({"error": "process sheet number required"}), 400
+    try:
+        with planner_db() as con:
+            summary = lookup_process_sheet_summary(con, process_sheet_no)
+    except Exception as exc:
+        logger.exception("process sheet lookup failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(summary)
+
+
+@shift_mgmt_bp.get("/api/shift-management/process-sheet-suggest")
+def api_process_sheet_suggest():
+    _user, err, status = _require_cap("can_view_ops")
+    if err:
+        return err, status
+    query = compact_text(request.args.get("q") or request.args.get("ps") or "")
+    try:
+        with planner_db() as con:
+            suggestions = suggest_process_sheets(con, query)
+    except Exception as exc:
+        logger.exception("process sheet suggest failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({"suggestions": suggestions})
+
+
+@shift_mgmt_bp.get("/api/shift-management/production-report")
+def api_get_production_report():
+    user, err, status = _require_cap("can_view_ops")
+    if err:
+        return err, status
+    work_date = _parse_date(request.args.get("date"))
+    shift_out = normalize_shift(
+        request.args.get("shift") or user.get("default_shift") or meta_constants()["guess_shift"]
+    )
+    try:
+        with planner_db() as con:
+            ensure_shift_mgmt_schema(con)
+            sheet = get_production_report(con, work_date, shift_out)
+    except Exception as exc:
+        logger.exception("production report load failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(sheet)
+
+
+@shift_mgmt_bp.put("/api/shift-management/production-report")
+def api_save_production_report():
+    user, err, status = _require_cap("can_report")
+    if err:
+        return err, status
+    data = request.get_json(silent=True) or {}
+    work_date = _parse_date(data.get("work_date") or data.get("date"))
+    shift_out = normalize_shift(
+        data.get("shift_out") or data.get("shift") or user.get("default_shift") or "Day"
+    )
+    try:
+        with planner_db() as con:
+            ensure_shift_mgmt_schema(con)
+            sheet = save_production_report(
+                con,
+                work_date=work_date,
+                shift_out=shift_out,
+                data=data,
+                user=user,
+            )
+    except Exception as exc:
+        logger.exception("production report save failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(sheet)
 
 
 @shift_mgmt_bp.post("/api/shift-management/handovers")
@@ -511,11 +609,7 @@ def api_get_ticket(ticket_id: int):
     except Exception as exc:
         logger.exception("get ticket failed")
         return jsonify({"error": str(exc)}), 500
-    if not ticket:
-        return jsonify({"error": "not found"}), 404
-    if not has_cap(user, "can_review_ticket") and int(ticket.get("created_by") or 0) != int(
-        user["user_id"]
-    ):
+    if not ticket or not user_may_view_ticket(user, ticket):
         return jsonify({"error": "not found"}), 404
     return jsonify({"ticket": ticket})
 
@@ -609,6 +703,41 @@ def api_history():
         logger.exception("history failed")
         return jsonify({"error": str(exc)}), 500
     return jsonify({"items": items})
+
+
+@shift_mgmt_bp.get("/api/shift-management/shift-records")
+def api_shift_records():
+    user, err, status = _require_cap("can_view_history")
+    if err:
+        return err, status
+    date_to = _parse_date(request.args.get("to")) if request.args.get("to") else date.today()
+    date_from = (
+        _parse_date(request.args.get("from"))
+        if request.args.get("from")
+        else date_to - timedelta(days=30)
+    )
+    if date_from > date_to:
+        date_from, date_to = date_to, date_from
+    shift = compact_text(request.args.get("shift"))
+    try:
+        with planner_db() as con:
+            ensure_shift_mgmt_schema(con)
+            items = list_shift_records(
+                con,
+                date_from=date_from,
+                date_to=date_to,
+                shift_out=shift if shift in ("Day", "Night") else None,
+            )
+    except Exception as exc:
+        logger.exception("shift records failed")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(
+        {
+            "items": items,
+            "from": date_from.isoformat(),
+            "to": date_to.isoformat(),
+        }
+    )
 
 
 @shift_mgmt_bp.get("/api/shift-management/hoto")

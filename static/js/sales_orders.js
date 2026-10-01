@@ -3355,7 +3355,7 @@ function soRenderProgramFinishCell(pp, _partial) {
         data-ps-base="${escapeHtml(psBase)}"
         data-last-saved="${escapeHtml(value)}"
         aria-label="Programme finish"
-        title="Same date as Finish on NPI/FA Management — New parts">
+        title="Same date as Commitment date on NPI/FA Management — New parts">
       <span class="so-editable-status" aria-live="polite"></span>
     </td>
   `;

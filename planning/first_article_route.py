@@ -75,6 +75,7 @@ _NEW_PART_PATCH_FIELDS = (
     "program_pic_ids",
     "proposed_cnc",
     "npi_complete",
+    "priority",
 )
 
 

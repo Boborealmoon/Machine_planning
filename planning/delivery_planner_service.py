@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from flask import jsonify, request
@@ -56,6 +57,12 @@ def ensure_delivery_planner_table(con) -> None:
         ADD COLUMN IF NOT EXISTS qaqc_report_ready BOOLEAN NOT NULL DEFAULT FALSE
         """
     )
+    con.execute(
+        """
+        ALTER TABLE planner_delivery_row
+        ADD COLUMN IF NOT EXISTS proposed_delivery DATE
+        """
+    )
 
 
 def _canonical_planner_ps_id(planner_ps_id: str) -> str:
@@ -63,23 +70,48 @@ def _canonical_planner_ps_id(planner_ps_id: str) -> str:
     return compact_text(canonical)
 
 
-def _row_to_flags(row: dict[str, Any] | None) -> dict[str, bool]:
+def _proposed_delivery_text(value) -> str:
+    text = compact_text(value)
+    return text[:10] if text else ""
+
+
+def _parse_proposed_delivery(value) -> date | None:
+    if value is None:
+        return None
+    text = compact_text(value)
+    if not text:
+        return None
+    if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
+        text = text[:10]
+    try:
+        return date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError("proposed_delivery must be YYYY-MM-DD") from exc
+
+
+def _empty_delivery_flags() -> dict[str, Any]:
+    return {
+        "dismissed": False,
+        "exception": False,
+        "coc_done": False,
+        "qaqc_report_ready": False,
+        "proposed_delivery": "",
+    }
+
+
+def _row_to_flags(row: dict[str, Any] | None) -> dict[str, Any]:
     if not row:
-        return {
-            "dismissed": False,
-            "exception": False,
-            "coc_done": False,
-            "qaqc_report_ready": False,
-        }
+        return _empty_delivery_flags()
     return {
         "dismissed": bool(row.get("dismissed")),
         "exception": bool(row.get("exception_flag")),
         "coc_done": bool(row.get("coc_done")),
         "qaqc_report_ready": bool(row.get("qaqc_report_ready")),
+        "proposed_delivery": _proposed_delivery_text(row.get("proposed_delivery")),
     }
 
 
-def load_delivery_row_flags(con, planner_ps_ids: list[str]) -> dict[str, dict[str, bool]]:
+def load_delivery_row_flags(con, planner_ps_ids: list[str]) -> dict[str, dict[str, Any]]:
     ensure_delivery_planner_table(con)
     ids = []
     seen = set()
@@ -90,19 +122,12 @@ def load_delivery_row_flags(con, planner_ps_ids: list[str]) -> dict[str, dict[st
             ids.append(canonical)
     if not ids:
         return {}
-    out = {
-        pid: {
-            "dismissed": False,
-            "exception": False,
-            "coc_done": False,
-            "qaqc_report_ready": False,
-        }
-        for pid in ids
-    }
+    out = {pid: _empty_delivery_flags() for pid in ids}
     for row in rows(
         con.execute(
             """
-            SELECT planner_ps_id, dismissed, exception_flag, coc_done, qaqc_report_ready
+            SELECT planner_ps_id, dismissed, exception_flag, coc_done, qaqc_report_ready,
+                   proposed_delivery
             FROM planner_delivery_row
             WHERE planner_ps_id = ANY(%s)
             """,
@@ -119,17 +144,14 @@ def get_delivery_row_flags(con, planner_ps_id: str) -> dict[str, Any]:
     ensure_delivery_planner_table(con)
     canonical = _canonical_planner_ps_id(planner_ps_id)
     if not canonical:
-        return {
-            "planner_ps_id": "",
-            "dismissed": False,
-            "exception": False,
-            "coc_done": False,
-            "qaqc_report_ready": False,
-        }
+        empty = _empty_delivery_flags()
+        empty["planner_ps_id"] = ""
+        return empty
     row = one(
         con.execute(
             """
-            SELECT planner_ps_id, dismissed, exception_flag, coc_done, qaqc_report_ready
+            SELECT planner_ps_id, dismissed, exception_flag, coc_done, qaqc_report_ready,
+                   proposed_delivery
             FROM planner_delivery_row
             WHERE planner_ps_id = %s
             """,
@@ -143,6 +165,7 @@ def get_delivery_row_flags(con, planner_ps_id: str) -> dict[str, Any]:
         "exception": flags["exception"],
         "coc_done": flags["coc_done"],
         "qaqc_report_ready": flags["qaqc_report_ready"],
+        "proposed_delivery": flags["proposed_delivery"],
     }
 
 
@@ -206,6 +229,35 @@ def upsert_delivery_row_flags(
         "exception": next_exception,
         "coc_done": next_coc_done,
         "qaqc_report_ready": next_qaqc_report_ready,
+        "proposed_delivery": current.get("proposed_delivery") or "",
+    }
+
+
+def upsert_proposed_delivery(con, planner_ps_id: str, proposed_delivery: date | None) -> dict[str, Any]:
+    """Delivery-schedule-only date. Does not change Coway EDD."""
+    ensure_delivery_planner_table(con)
+    canonical = _canonical_planner_ps_id(planner_ps_id)
+    if not canonical:
+        raise ValueError("planner_ps_id is required")
+
+    row = one(
+        con.execute(
+            """
+            INSERT INTO planner_delivery_row (planner_ps_id, proposed_delivery, updated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (planner_ps_id) DO UPDATE SET
+                proposed_delivery = EXCLUDED.proposed_delivery,
+                updated_at = NOW()
+            RETURNING planner_ps_id, proposed_delivery
+            """,
+            (canonical, proposed_delivery),
+        )
+    )
+    saved = _proposed_delivery_text((row or {}).get("proposed_delivery"))
+    _clear_delivery_schedule_cache()
+    return {
+        "planner_ps_id": canonical,
+        "proposed_delivery": saved,
     }
 
 
@@ -264,6 +316,33 @@ def delivery_flags_post_response():
                 qaqc_report_ready=qaqc_report_ready,
                 stage_desc=stage_desc or None,
             )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        friendly = planner_db_connect_error(exc)
+        if friendly:
+            return jsonify({"error": friendly}), 503
+        return jsonify({"error": str(exc)}), 500
+
+    _clear_delivery_schedule_cache()
+    return jsonify(payload)
+
+
+def proposed_delivery_post_response():
+    data = request.get_json(force=True, silent=True) or {}
+    planner_ps_id = compact_text(data.get("planner_ps_id") or data.get("ps_id"))
+    if not planner_ps_id:
+        return jsonify({"error": "planner_ps_id is required"}), 400
+    if "proposed_delivery" not in data:
+        return jsonify({"error": "proposed_delivery is required"}), 400
+    try:
+        proposed = _parse_proposed_delivery(data.get("proposed_delivery"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    try:
+        with planner_db() as con:
+            payload = upsert_proposed_delivery(con, planner_ps_id, proposed)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:

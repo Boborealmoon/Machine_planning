@@ -5375,6 +5375,14 @@ def api_delivery_schedule_flags_bulk_post():
     return delivery_flags_bulk_post_response()
 
 
+@process_sheets_bp.post("/api/trial/delivery-schedule/proposed-delivery")
+@process_sheets_bp.post("/api/process-sheets/delivery-proposed-delivery")
+def api_delivery_schedule_proposed_delivery_post():
+    from .delivery_planner_service import proposed_delivery_post_response
+
+    return proposed_delivery_post_response()
+
+
 @process_sheets_bp.post("/api/trial/process-sheets/so-line-pricing")
 @process_sheets_bp.post("/api/process-sheets/so-line-pricing")
 def api_process_sheets_so_line_pricing():

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Delivery{% endblock %}
 {% block main_class %}app-main--delivery{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=delivery-opaque-rows-20260703">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=delivery-proposed-20260930">{% endblock %}
 {% block content %}
 <div class="delivery-page">
   <div class="delivery-header">
@@ -121,13 +121,19 @@
                 <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
               </button>
             </th>
-            <th class="delivery-schedule-sort-head" data-sort-col="coway_edd">
+            <th class="delivery-schedule-sort-head" data-sort-col="coway_edd" title="Read-only on Delivery schedule">
               <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="coway_edd">
                 <span class="delivery-schedule-sort-label">Coway EDD</span>
                 <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
               </button>
             </th>
-            <th class="delivery-schedule-sort-head" data-sort-col="week">
+            <th class="delivery-schedule-sort-head" data-sort-col="proposed_delivery" title="Sets the week for this row. When empty, Week uses Coway EDD.">
+              <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="proposed_delivery">
+                <span class="delivery-schedule-sort-label">Proposed delivery</span>
+                <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
+              </button>
+            </th>
+            <th class="delivery-schedule-sort-head" data-sort-col="week" title="Week from Proposed delivery. Uses Coway EDD when Proposed delivery is empty.">
               <button type="button" class="delivery-schedule-sort-btn" data-action="sort-col" data-sort-col="week">
                 <span class="delivery-schedule-sort-label">Week</span>
                 <span class="delivery-schedule-sort-icon" aria-hidden="true"></span>
@@ -222,7 +228,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=delivery-unified-20260619"></script>
-<script src="{{ url_for('static', filename='js/delivery_schedule.js') }}?v=delivery-coway-incremental-20260710"></script>
+<script src="{{ url_for('static', filename='js/delivery_schedule.js') }}?v=delivery-proposed-20260930"></script>
 <script src="{{ url_for('static', filename='js/queue_delays.js') }}?v=delivery-unified-20260619"></script>
 <script src="{{ url_for('static', filename='js/delivery.js') }}?v=delivery-client-search-20260623"></script>
 {% endblock %}

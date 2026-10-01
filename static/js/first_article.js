@@ -18,30 +18,42 @@
   const PS_TYPE_ORDER = ['APS', 'NPS', 'MPS', 'PPS', 'CPS', 'SR', 'OTHER'];
   const BLANK_FILTER = '';
   const BLANK_FILTER_LABEL = '(Blank)';
+  const PRIORITIES = [
+    { id: 'critical', label: 'Critical', aliases: ['critical', 'crit', 'c'] },
+    { id: 'high', label: 'High', aliases: ['high', 'h'] },
+    { id: 'medium', label: 'Medium', aliases: ['medium', 'med', 'm'] },
+    { id: 'low', label: 'Low', aliases: ['low', 'l'] },
+  ];
+  const PRIORITY_RANK = { critical: 1, high: 2, medium: 3, low: 4 };
+  const grid = {
+    tableId: '',
+    anchor: null,
+    focus: null,
+    pending: null,
+    dragging: false,
+    suppressClick: false,
+  };
   const NEW_PART_COLUMNS = [
     { id: 'process_sheet_no', label: 'PS', className: 'fa-col-ps', sortable: true, filterable: true },
-    { id: 'part_no', label: 'Part', className: 'fa-col-part', filterable: true },
-    { id: 'part_description', label: 'Description', className: 'fa-col-desc', filterable: true },
-    { id: 'total_qty', label: 'Qty', className: 'fa-col-qty', filterable: true },
-    { id: 'bom', label: 'BOM', className: 'fa-col-bom', filterable: true, title: 'Opens BOM materials. Green = ERP material lines exist.' },
-    { id: 'material', label: 'Material', className: 'fa-col-material', filterable: true },
-    { id: 'stage', label: 'WO / Stage', className: 'fa-col-stage', filterable: true, title: 'Current work-order stage and WO status from ERP' },
-    { id: 'posted_date', label: 'Posted', className: 'fa-col-date', filterable: true },
+    { id: 'part_no', label: 'Part', className: 'fa-col-part', sortable: true, filterable: true },
+    { id: 'part_description', label: 'Description', className: 'fa-col-desc', sortable: true, filterable: true },
+    { id: 'bom', label: 'BOM', className: 'fa-col-bom', sortable: true, filterable: true, title: 'Opens BOM materials. Green = ERP material lines exist.' },
+    { id: 'stage', label: 'WO / Stage', className: 'fa-col-stage', sortable: true, filterable: true, title: 'Current work-order stage and WO status from ERP' },
     { id: 'po_due_date', label: 'Due', className: 'fa-col-date', sortable: true, filterable: true, title: 'PO due date' },
-    { id: 'program_finish_at', label: 'Finish', className: 'fa-col-finish', sortable: true, filterable: true, title: 'Programme estimated finish' },
-    { id: 'proposed_cnc', label: 'Proposed CNC', className: 'fa-col-machine', filterable: true, title: 'Same Proposed CNC as S/O Management. Pick one or more planner CNC machines.' },
-    { id: 'pic', label: 'PIC', className: 'fa-col-pic', filterable: true, title: 'Programme PIC' },
-    { id: 'remarks', label: 'Remarks', className: 'fa-col-remarks', filterable: true },
+    { id: 'coway_proposed_edd', label: 'Coway proposed EDD', className: 'fa-col-date fa-col-edd', sortable: true, filterable: true, title: 'Coway proposed EDD from S/O management' },
+    { id: 'program_finish_at', label: 'Commitment date', className: 'fa-col-finish', sortable: true, filterable: true, title: 'Commitment date. Drag cells, then paste dates as dd/mm/yyyy.' },
+    { id: 'proposed_cnc', label: 'Proposed CNC', className: 'fa-col-machine', sortable: true, filterable: true, title: 'Same Proposed CNC as S/O Management. Pick one or more planner CNC machines.' },
+    { id: 'priority', label: 'Priority', className: 'fa-col-priority', sortable: true, filterable: true, title: 'Critical, High, Medium, or Low. Drag cells, then paste.' },
+    { id: 'pic', label: 'PIC', className: 'fa-col-pic', sortable: true, filterable: true, title: 'Programme PIC. Drag cells, then paste names.' },
+    { id: 'remarks', label: 'Remarks', className: 'fa-col-remarks', sortable: true, filterable: true },
     { id: 'npi_complete', label: 'Done', className: 'fa-col-done', sortable: true, filterable: true, title: 'Mark this NPI job complete. The tick is saved on this tracker.' },
     { id: '_actions', label: '', className: 'fa-col-actions' },
-    { id: 'sales_order_no', label: 'SO', className: 'fa-col-so fa-so-head', sortable: true, filterable: true, side: true, title: 'Grouped by sales order, like S/O Management' },
   ];
-  const NEW_PART_DATA_COLSPAN = NEW_PART_COLUMNS.filter((col) => !col.side).length;
-
   function makeTableView() {
     return {
-      sortCol: 'sales_order_no',
+      sortCol: 'po_due_date',
       sortDir: 'asc',
+      sorts: [{ col: 'po_due_date', dir: 'asc' }],
       assignedPicOnly: false,
       colFilters: {},
       collapsedGroups: new Set(),
@@ -64,6 +76,7 @@
     openFilterCol: '',
     openFilterTable: '',
     filterQuery: '',
+    openPriorityPs: '',
     openProposedCncKey: '',
     proposedCncQuery: '',
     proposedCncSource: '',
@@ -160,12 +173,17 @@
       const names = (row?.program_pics || []).map((pic) => String(pic?.name || '').trim()).filter(Boolean);
       return names.length ? names : [BLANK_FILTER];
     }
+    if (colId === 'priority') {
+      const label = priorityLabel(row?.priority);
+      return [label || BLANK_FILTER];
+    }
     let raw = '';
     if (colId === 'process_sheet_no') raw = row?.process_sheet_no || row?.pp_voucher_no || '';
     else if (colId === 'part_no') raw = row?.part_no;
     else if (colId === 'part_description') raw = row?.part_description;
-    else if (colId === 'posted_date') raw = row?.posted_date;
-    else if (colId === 'po_due_date') raw = row?.po_due_date;
+    else if (colId === 'posted_date') raw = compactDate(row?.posted_date);
+    else if (colId === 'po_due_date') raw = compactDate(row?.po_due_date);
+    else if (colId === 'coway_proposed_edd') raw = compactDate(row?.coway_proposed_edd);
     else if (colId === 'total_qty') raw = row?.total_qty;
     else if (colId === 'stage') raw = stageFilterLabel(row);
     else if (colId === 'proposed_cnc') {
@@ -188,8 +206,11 @@
 
   function colSortValue(row, colId) {
     if (colId === 'process_sheet_no') return String(row?.process_sheet_no || row?.pp_voucher_no || '').trim();
-    if (colId === 'po_due_date') return parseIsoDate(row?.po_due_date) || String(row?.po_due_date || '').trim();
+    if (colId === 'po_due_date') return parseIsoDate(row?.po_due_date) || parseFinishDate(row?.po_due_date) || String(row?.po_due_date || '').trim();
+    if (colId === 'coway_proposed_edd') return parseIsoDate(row?.coway_proposed_edd) || parseFinishDate(row?.coway_proposed_edd) || String(row?.coway_proposed_edd || '').trim();
+    if (colId === 'posted_date') return parseIsoDate(row?.posted_date) || parseFinishDate(row?.posted_date) || String(row?.posted_date || '').trim();
     if (colId === 'program_finish_at') return parseFinishDate(row?.program_finish_at);
+    if (colId === 'priority') return PRIORITY_RANK[normalizePriority(row?.priority)] || '';
     if (colId === 'npi_complete') return row?.npi_complete ? 1 : 0;
     if (colId === 'sales_order_no') return soGroupKey(row);
     const values = colFilterValues(row, colId).filter((value) => value !== BLANK_FILTER);
@@ -243,11 +264,13 @@
       row.part_description,
       row.posted_date,
       row.po_due_date,
+      row.coway_proposed_edd,
       row.material_display,
       row.material_subcon,
       row.remarks,
       row.npi_complete ? 'DONE COMPLETE' : '',
       row.program_finish_at,
+      priorityLabel(row.priority),
       row.current_stage_desc,
       row.current_stage_status_label,
       row.erp_last_stage_desc,
@@ -278,8 +301,16 @@
       }
       return rowMatchesColumnFilters(row, view);
     });
-    const sortCol = view.sortCol || 'sales_order_no';
-    const sortDir = view.sortDir === 'desc' ? 'desc' : 'asc';
+    const sorts = activeSorts(view);
+    if (sorts[0].col !== 'sales_order_no') {
+      out.sort((a, b) => compareBySorts(a, b, sorts));
+      const groups = out.map((row) => ({
+        so: soGroupKey(row),
+        customer: String(row.customer_name || '').trim(),
+        rows: [row],
+      }));
+      return { rows: out, groups };
+    }
     const groups = [];
     const map = new Map();
     out.forEach((row) => {
@@ -299,20 +330,15 @@
         group.customer = String(row.customer_name).trim();
       }
     });
+    const inner = sorts.slice(1);
     groups.forEach((group) => {
-      group.rows.sort((a, b) => {
-        const cmp = compareSortValues(colSortValue(a, sortCol), colSortValue(b, sortCol), sortCol === 'sales_order_no' ? 'asc' : sortDir);
-        if (cmp) return cmp;
-        return compareSortValues(colSortValue(a, 'process_sheet_no'), colSortValue(b, 'process_sheet_no'), 'asc');
-      });
+      group.rows.sort((a, b) => (
+        inner.length
+          ? compareBySorts(a, b, inner)
+          : compareSortValues(colSortValue(a, 'process_sheet_no'), colSortValue(b, 'process_sheet_no'), 'asc')
+      ));
     });
-    groups.sort((a, b) => {
-      const av = colSortValue(a.rows[0], sortCol);
-      const bv = colSortValue(b.rows[0], sortCol);
-      const cmp = compareSortValues(av, bv, sortDir);
-      if (cmp) return cmp;
-      return compareSortValues(a.so, b.so, 'asc');
-    });
+    groups.sort((a, b) => compareSortValues(a.so, b.so, sorts[0].dir));
     return { rows: groups.flatMap((group) => group.rows), groups };
   }
 
@@ -334,9 +360,70 @@
     return values;
   }
 
+  function activeSorts(view) {
+    if (Array.isArray(view?.sorts) && view.sorts.length) {
+      return view.sorts.map((sort) => ({
+        col: sort.col,
+        dir: sort.dir === 'desc' ? 'desc' : 'asc',
+      }));
+    }
+    return [{
+      col: view?.sortCol || 'po_due_date',
+      dir: view?.sortDir === 'desc' ? 'desc' : 'asc',
+    }];
+  }
+
+  function compareBySorts(a, b, sorts) {
+    for (let i = 0; i < sorts.length; i += 1) {
+      const sort = sorts[i];
+      const cmp = compareSortValues(colSortValue(a, sort.col), colSortValue(b, sort.col), sort.dir);
+      if (cmp) return cmp;
+    }
+    return compareSortValues(
+      colSortValue(a, 'process_sheet_no'),
+      colSortValue(b, 'process_sheet_no'),
+      'asc',
+    );
+  }
+
+  function isDefaultSort(view) {
+    const sorts = activeSorts(view);
+    return sorts.length === 1 && sorts[0].col === 'po_due_date' && sorts[0].dir === 'asc';
+  }
+
+  function setColumnSort(view, colId, { additive = false, dir = '' } = {}) {
+    const sorts = activeSorts(view);
+    if (additive) {
+      const existing = sorts.find((sort) => sort.col === colId);
+      if (existing) existing.dir = dir || (existing.dir === 'asc' ? 'desc' : 'asc');
+      else sorts.push({ col: colId, dir: dir || 'asc' });
+      view.sorts = sorts;
+    } else if (dir) {
+      view.sorts = [{ col: colId, dir: dir === 'desc' ? 'desc' : 'asc' }];
+    } else if (sorts.length === 1 && sorts[0].col === colId) {
+      view.sorts = [{ col: colId, dir: sorts[0].dir === 'asc' ? 'desc' : 'asc' }];
+    } else {
+      view.sorts = [{ col: colId, dir: 'asc' }];
+    }
+    view.sortCol = view.sorts[0].col;
+    view.sortDir = view.sorts[0].dir;
+  }
+
   function sortIcon(view, colId) {
-    if (view.sortCol !== colId) return '↕';
-    return view.sortDir === 'desc' ? '↓' : '↑';
+    const sorts = activeSorts(view);
+    const index = sorts.findIndex((sort) => sort.col === colId);
+    if (index < 0) return '↕';
+    const arrow = sorts[index].dir === 'desc' ? '↓' : '↑';
+    return sorts.length > 1 ? `${arrow}${index + 1}` : arrow;
+  }
+
+  function sortSummary(view) {
+    return activeSorts(view).map((sort, index) => {
+      const col = NEW_PART_COLUMNS.find((item) => item.id === sort.col);
+      const label = col?.label || sort.col;
+      const arrow = sort.dir === 'desc' ? '↓' : '↑';
+      return index === 0 ? `${label} ${arrow}` : `${label} ${arrow}`;
+    }).join(', then ');
   }
 
   function renderNewPartHead(tableId, view) {
@@ -347,10 +434,10 @@
       if (!col.sortable && !col.filterable) {
         return `<th class="${escapeHtml(col.className || '')}"${title}>${escapeHtml(col.label)}</th>`;
       }
-      const sorted = view.sortCol === col.id ? ' is-sorted' : '';
+      const sorted = activeSorts(view).some((sort) => sort.col === col.id) ? ' is-sorted' : '';
       const filterOn = columnFilterActive(view, col.id) ? ' is-active' : '';
       const sortBtn = col.sortable
-        ? `<button type="button" class="fa-col-sort-btn" data-fa-sort-col="${escapeHtml(col.id)}" title="Sort">
+        ? `<button type="button" class="fa-col-sort-btn" data-fa-sort-col="${escapeHtml(col.id)}" title="Sort this column. Shift-click to add another sort. Filters stay on.">
             <span class="fa-col-label">${escapeHtml(col.label)}</span>
             <span class="fa-col-sort-icon">${sortIcon(view, col.id)}</span>
           </button>`
@@ -420,8 +507,15 @@
         <span title="${escapeHtml(colFilterLabel(value))}">${escapeHtml(colFilterLabel(value))}</span>
       </label>`;
     }).join('') || '<p class="fa-col-filter-empty">No values</p>';
+    const sorts = activeSorts(view);
+    const current = sorts.find((sort) => sort.col === colId);
     return `
       <div class="fa-col-filter-title">Filter: ${escapeHtml(col.label)}</div>
+      <div class="fa-col-filter-sort">
+        <button type="button" class="fa-btn fa-btn--ghost${current && current.dir === 'asc' ? ' is-on' : ''}" data-fa-sort-dir="asc">Sort A → Z</button>
+        <button type="button" class="fa-btn fa-btn--ghost${current && current.dir === 'desc' ? ' is-on' : ''}" data-fa-sort-dir="desc">Sort Z → A</button>
+      </div>
+      <p class="fa-col-filter-hint">Filters on other columns stay on. Shift-click a heading to sort by more than one column.</p>
       <input type="search" class="fa-col-filter-search" value="${escapeHtml(state.filterQuery || '')}" placeholder="Search values..." autocomplete="off">
       <label class="fa-col-filter-check fa-col-filter-all">
         <input type="checkbox" data-fa-filter-all${allChecked ? ' checked' : ''}>
@@ -486,7 +580,9 @@
   async function api(url, options) {
     const opts = { ...(options || {}) };
     const timeoutMs = Number(opts.timeoutMs) || 0;
+    const timeoutMessage = opts.timeoutMessage || 'Request timed out';
     delete opts.timeoutMs;
+    delete opts.timeoutMessage;
     let timer = 0;
     if (timeoutMs > 0) {
       const ctrl = new AbortController();
@@ -500,7 +596,7 @@
       return data;
     } catch (err) {
       if (err && err.name === 'AbortError') {
-        throw new Error('Timed out loading first article tracker');
+        throw new Error(timeoutMessage);
       }
       throw err;
     } finally {
@@ -621,7 +717,7 @@
   }
 
   function proposedCncMachines(row) {
-    if (Array.isArray(row?.proposed_cnc) && row.proposed_cnc.some(Boolean)) {
+    if (Array.isArray(row?.proposed_cnc)) {
       return row.proposed_cnc.filter(Boolean);
     }
     if (Array.isArray(row?.machine_codes) && row.machine_codes.some(Boolean)) {
@@ -679,6 +775,16 @@
     return out;
   }
 
+  function proposedCncValueHtml(machines, source) {
+    const list = Array.isArray(machines) ? machines.filter(Boolean) : [];
+    if (!list.length) return '<span class="fa-muted">\u2014</span>';
+    if (source === 'new') {
+      const text = list.join(', ');
+      return `<span class="fa-cnc-compact" title="${escapeHtml(text)}">${escapeHtml(text)}</span>`;
+    }
+    return faRenderCncPills(list);
+  }
+
   function faRenderCncPills(machines) {
     const list = Array.isArray(machines) ? machines.filter(Boolean) : [];
     if (!list.length) return '<span class="fa-muted">\u2014</span>';
@@ -710,9 +816,7 @@
         aria-haspopup="listbox"
         aria-expanded="${open ? 'true' : 'false'}"
         title="Choose proposed CNC machines — same field as S/O Management">
-        <span class="fa-proposed-cnc-btn-value">${
-          machines.length ? faRenderCncPills(machines) : '<span class="fa-muted">\u2014</span>'
-        }</span>
+        <span class="fa-proposed-cnc-btn-value">${proposedCncValueHtml(machines, source)}</span>
         <span class="fa-proposed-cnc-btn-caret" aria-hidden="true">▾</span>
       </button>
       <span class="fa-proposed-cnc-status" aria-live="polite"></span>
@@ -802,6 +906,13 @@
     return `<span class="fa-mono">${escapeHtml(dash(row.process_sheet_no))}</span>`;
   }
 
+  function compactDate(value) {
+    const iso = parseFinishDate(value) || parseIsoDate(value);
+    if (!iso) return String(value || '').trim();
+    const [year, month, day] = iso.split('-');
+    return `${day}/${month}/${year.slice(2)}`;
+  }
+
   function formatDmy(iso) {
     const text = String(iso || '').trim();
     const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -862,6 +973,51 @@
       <select class="fa-pic-select${filled}" data-fa-set-pic data-ps="${ps}" aria-label="Programme PIC">
         ${picOptions(currentId)}
       </select>
+    `;
+  }
+
+  function normalizePriority(value) {
+    const text = String(value == null ? '' : value).trim().toLowerCase();
+    if (!text || text === '-' || text === '\u2014' || text === 'none') return '';
+    const hit = PRIORITIES.find((item) => item.id === text || item.aliases.includes(text));
+    return hit ? hit.id : '';
+  }
+
+  function priorityLabel(value) {
+    const key = normalizePriority(value);
+    const hit = PRIORITIES.find((item) => item.id === key);
+    return hit ? hit.label : '';
+  }
+
+  function priorityIcon(kind) {
+    if (kind === 'critical') {
+      return '<svg class="fa-priority-icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.15 14.35 8 8 14.85 1.65 8 8 1.15z"/><path fill="#fff" d="M7.2 4.15h1.6v5.05H7.2zM7.2 10.35h1.6V12H7.2z"/></svg>';
+    }
+    if (kind === 'high') {
+      return '<svg class="fa-priority-icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" d="M8 2.1 13.7 13.2H2.3z"/></svg>';
+    }
+    if (kind === 'medium') {
+      return '<svg class="fa-priority-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.15" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>';
+    }
+    if (kind === 'low') {
+      return '<svg class="fa-priority-icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" d="M2.3 2.8h11.4L8 13.9z"/></svg>';
+    }
+    return '';
+  }
+
+  function priorityButtonHtml(row) {
+    const ps = escapeHtml(row.process_sheet_no || row.pp_voucher_no || '');
+    const key = normalizePriority(row.priority);
+    const label = priorityLabel(key) || '\u2014';
+    const open = state.openPriorityPs && state.openPriorityPs === String(row.process_sheet_no || row.pp_voucher_no || '').trim();
+    return `
+      <button type="button" class="fa-priority-btn${key ? ` is-${key}` : ''}${open ? ' is-open' : ''}"
+              data-fa-priority="${ps}" data-fa-priority-value="${escapeHtml(key)}"
+              aria-haspopup="listbox" aria-expanded="${open ? 'true' : 'false'}"
+              aria-label="Priority${key ? `: ${priorityLabel(key)}` : ''}">
+        ${key ? priorityIcon(key) : '<span class="fa-priority-empty" aria-hidden="true">\u2014</span>'}
+        <span class="fa-priority-label">${escapeHtml(label)}</span>
+      </button>
     `;
   }
 
@@ -1046,7 +1202,7 @@
     const text = wrap?.querySelector('.fa-finish-input');
     const picker = wrap?.querySelector('[data-fa-finish-picker]');
     if (text) {
-      text.value = iso ? formatFinishDate(iso) : '';
+      text.value = iso ? compactDate(iso) : '';
       text.classList.remove('is-invalid');
     }
     if (picker) picker.value = iso || '';
@@ -1057,7 +1213,7 @@
       return `<span class="fa-mat-status is-ready" title="From S/O Material in / Sub-con">In</span>`;
     }
     if (row.material_date) {
-      return `<span class="fa-material-date" title="From S/O Material in / Sub-con">${escapeHtml(row.material_date)}</span>`;
+      return `<span class="fa-material-date" title="${escapeHtml(row.material_date)}">${escapeHtml(compactDate(row.material_date))}</span>`;
     }
     if (row.material_legacy) {
       return `<span title="From S/O Material in / Sub-con">${escapeHtml(row.material_legacy)}</span>`;
@@ -1246,15 +1402,7 @@
     return bits.join('');
   }
 
-  function newPartRowHtml(row, {
-    allowRemove,
-    includeSoRail,
-    soRowSpan,
-    shadeAlt,
-    groupStart,
-    groupSo,
-    groupCustomer,
-  } = {}) {
+  function newPartRowHtml(row, { allowRemove } = {}) {
     const ps = escapeHtml(row.process_sheet_no || row.pp_voucher_no || '');
     const exists = hasBom(row);
     const exception = isExceptionRow(row);
@@ -1269,14 +1417,10 @@
       missing ? 'is-missing' : '',
       complete ? 'is-historical' : '',
       row.npi_complete ? 'is-npi-complete' : '',
-      groupStart ? 'fa-so-group-start' : '',
     ].filter(Boolean).join(' ');
     const missingHint = missing ? ' title="Not found in S/O management or ERP cache"' : '';
-    const soCell = includeSoRail
-      ? soRailHtml({ so: groupSo || soGroupKey(row), customer: groupCustomer || row.customer_name || '' }, soRowSpan || 1, { shadeAlt, collapsed: false })
-      : '';
     return `
-      <tr class="${rowClass}" data-ps="${escapeHtml(row.process_sheet_no || '')}" data-pp="${escapeHtml(row.pp_voucher_no || '')}" data-so="${escapeHtml(groupSo || soGroupKey(row))}"${missingHint}>
+      <tr class="${rowClass}" data-ps="${escapeHtml(row.process_sheet_no || '')}" data-pp="${escapeHtml(row.pp_voucher_no || '')}" data-so="${escapeHtml(soGroupKey(row))}"${missingHint}>
         <td class="fa-col-ps">
           <div class="fa-id-cell">
             <span class="fa-mono">${escapeHtml(dash(row.process_sheet_no))}</span>
@@ -1285,62 +1429,41 @@
         </td>
         <td class="fa-col-part fa-readonly">${escapeHtml(dash(row.part_no))}</td>
         <td class="fa-col-desc" title="${escapeHtml(desc)}">${escapeHtml(dash(row.part_description))}</td>
-        <td class="fa-col-qty">${escapeHtml(dash(row.total_qty))}</td>
         <td class="fa-col-bom${exists ? ' has-bom' : ''}">${bomCell(row)}</td>
-        <td class="fa-col-material${row.material_arrived ? ' is-ready' : (row.material_date ? ' has-date' : '')}">${materialCell(row)}</td>
         <td class="fa-col-stage">${stageCell(row)}</td>
-        <td class="fa-col-date">${escapeHtml(dash(row.posted_date))}</td>
-        <td class="fa-col-date">${escapeHtml(dash(row.po_due_date))}</td>
-        <td class="fa-col-finish">
+        <td class="fa-col-date" title="${escapeHtml(row.po_due_date || '')}">${escapeHtml(dash(compactDate(row.po_due_date)))}</td>
+        <td class="fa-col-date fa-col-edd" title="${escapeHtml(row.coway_proposed_edd || 'Coway proposed EDD')}">${escapeHtml(dash(compactDate(row.coway_proposed_edd)))}</td>
+        <td class="fa-col-finish fa-grid-cell" data-fa-grid="commitment">
           <div class="fa-finish-field">
             <input type="text" class="fa-finish-input" data-fa-new-field="program_finish_at" data-ps="${ps}"
-                   value="${escapeHtml(formatFinishDate(row.program_finish_at))}"
-                   placeholder="dd/mm/yyyy" autocomplete="off" spellcheck="false"
-                   aria-label="Programme estimated finish">
+                   value="${escapeHtml(compactDate(row.program_finish_at))}"
+                   placeholder="dd/mm/yy" autocomplete="off" spellcheck="false"
+                   aria-label="Commitment date">
             <input type="date" class="fa-finish-picker" data-fa-finish-picker data-ps="${ps}"
                    value="${escapeHtml(parseFinishDate(row.program_finish_at))}"
-                   tabindex="-1" aria-label="Pick programme estimated finish date">
+                   tabindex="-1" aria-label="Pick commitment date">
           </div>
         </td>
         <td class="fa-col-machine fa-proposed-cnc-cell">${proposedCncPickerHtml(row, 'new')}</td>
-        <td class="fa-col-pic">${programPicCell(row)}</td>
+        <td class="fa-col-priority fa-grid-cell" data-fa-grid="priority">${priorityButtonHtml(row)}</td>
+        <td class="fa-col-pic fa-grid-cell" data-fa-grid="pic">${programPicCell(row)}</td>
         <td class="fa-col-remarks">
           <textarea class="fa-remarks" data-fa-new-field="remarks" data-ps="${ps}" rows="1" placeholder="Note">${escapeHtml(row.remarks || '')}</textarea>
         </td>
-        <td class="fa-col-done">
+        <td class="fa-col-done${row.npi_complete ? ' is-done' : ''}">
           <label class="fa-done-check">
             <input type="checkbox" data-fa-new-field="npi_complete" data-ps="${ps}"
                    ${row.npi_complete ? 'checked' : ''} aria-label="Mark NPI job complete">
           </label>
         </td>
         <td class="fa-col-actions">${historyButton(row, 'new_part')}${remove}</td>
-        ${soCell}
       </tr>
     `;
   }
 
-  function groupedTableBodyHtml(groups, view, { allowRemove }) {
+  function groupedTableBodyHtml(groups, _view, { allowRemove }) {
     if (!groups.length) return '';
-    return groups.map((group, gi) => {
-      const shadeAlt = gi % 2 === 1;
-      const collapsed = view.collapsedGroups.has(group.so);
-      if (collapsed) {
-        const label = `${group.rows.length} process sheet${group.rows.length === 1 ? '' : 's'} — expand to view`;
-        return `<tr class="fa-so-group-row" data-so="${escapeHtml(group.so)}">
-          <td colspan="${NEW_PART_DATA_COLSPAN}" class="fa-so-collapsed">${escapeHtml(label)}</td>
-          ${soRailHtml(group, 1, { shadeAlt, collapsed: true })}
-        </tr>`;
-      }
-      return group.rows.map((row, i) => newPartRowHtml(row, {
-        allowRemove,
-        includeSoRail: i === 0,
-        soRowSpan: group.rows.length,
-        shadeAlt,
-        groupStart: i === 0,
-        groupSo: group.so,
-        groupCustomer: group.customer,
-      })).join('');
-    }).join('');
+    return groups.map((group) => group.rows.map((row) => newPartRowHtml(row, { allowRemove })).join('')).join('');
   }
 
   function filterEmptyMessage(view, { typeSelected, history }) {
@@ -1360,7 +1483,54 @@
       : 'No NEW parts match this type or search filter.';
   }
 
+  function activeFiltersHost(which) {
+    const id = which === 'history' ? 'fa-history-active-filters' : 'fa-new-active-filters';
+    let host = $(id);
+    if (host) return host;
+    const tableHost = $(which === 'history' ? 'fa-history-table-host' : 'fa-new-table-host');
+    if (!tableHost || !tableHost.parentElement) return null;
+    host = document.createElement('div');
+    host.id = id;
+    host.className = 'fa-active-filters';
+    host.hidden = true;
+    tableHost.parentElement.insertBefore(host, tableHost);
+    return host;
+  }
+
+  function renderActiveFilters(which) {
+    const host = activeFiltersHost(which);
+    if (!host) return;
+    const view = tableView(which);
+    const filters = NEW_PART_COLUMNS.filter((col) => columnFilterActive(view, col.id)).map((col) => {
+      const selected = view.colFilters[col.id] || [];
+      const labels = selected.map((value) => colFilterLabel(value)).filter(Boolean);
+      let text = labels.slice(0, 2).join(', ');
+      if (labels.length > 2) text += ` +${labels.length - 2}`;
+      if (!text) text = 'none';
+      return { id: col.id, label: col.label, text };
+    });
+    const showSort = !isDefaultSort(view);
+    if (!filters.length && !showSort) {
+      host.hidden = true;
+      host.innerHTML = '';
+      return;
+    }
+    const sortChip = showSort
+      ? `<button type="button" class="fa-filter-chip is-sort" data-fa-clear-sort data-fa-filter-table="${which}" title="Reset sort">Sorted by ${escapeHtml(sortSummary(view))} <span aria-hidden="true">×</span></button>`
+      : '';
+    const filterChips = filters.map((item) => (
+      `<button type="button" class="fa-filter-chip" data-fa-clear-filter="${escapeHtml(item.id)}" data-fa-filter-table="${which}" title="Remove this filter">${escapeHtml(item.label)}: ${escapeHtml(item.text)} <span aria-hidden="true">×</span></button>`
+    )).join('');
+    const clear = filters.length
+      ? `<button type="button" class="fa-filter-chip is-clear" data-fa-clear-all-filters data-fa-filter-table="${which}">Clear filters</button>`
+      : '';
+    host.hidden = false;
+    host.innerHTML = `${sortChip}${filterChips}${clear}`;
+  }
+
   function renderNewTable() {
+    closePriorityMenu();
+    resetGridSelection();
     const host = $('fa-new-table-host');
     const empty = $('fa-new-empty');
     const body = $('fa-new-table-body');
@@ -1369,6 +1539,7 @@
     renderNewTypeChips();
     syncAssignedPicChip('new');
     renderNewPartHead('fa-new-table', state.newView);
+    renderActiveFilters('new');
     updateNewCount();
     if (state.tab === 'new') {
       if (!state.newLoaded) {
@@ -1413,6 +1584,8 @@
   }
 
   function renderHistoryTable() {
+    closePriorityMenu();
+    resetGridSelection();
     const host = $('fa-history-table-host');
     const empty = $('fa-completed-empty');
     const body = $('fa-history-table-body');
@@ -1421,6 +1594,7 @@
     renderCompletedTypeChips();
     syncAssignedPicChip('history');
     renderNewPartHead('fa-history-table', state.completedView);
+    renderActiveFilters('history');
     updateHistoryCount();
     if (state.tab === 'history') {
       if (!state.completedLoaded) {
@@ -1440,7 +1614,7 @@
       if (host) host.hidden = true;
       if (empty) {
         empty.hidden = false;
-        empty.textContent = 'No completed NEW process sheets yet. When WO / S/O status is complete, the row moves here with PIC, remarks, and finish date kept.';
+        empty.textContent = 'No completed NEW process sheets yet. When WO / S/O status is complete, the row moves here with PIC, remarks, and commitment date kept.';
       }
       if (body) body.innerHTML = '';
       return;
@@ -1495,6 +1669,8 @@
     } else {
       renderTable();
     }
+    syncExportButton();
+    syncLoading();
   }
 
   function renderPicList() {
@@ -1553,97 +1729,123 @@
     if (options && options.render) renderTable();
   }
 
-  async function loadTracker() {
+  const loadsInFlight = { flagged: 0, new: 0, history: 0 };
+
+  function loadingLabel(tab) {
+    if (tab === 'new') return 'Loading new parts...';
+    if (tab === 'history') return 'Loading history...';
+    return 'Loading NPI tracker...';
+  }
+
+  function syncLoading() {
     const loading = $('fa-loading');
-    const empty = $('fa-empty');
-    if (state.tab === 'flagged') {
-      if (loading) loading.hidden = false;
-      if (empty) empty.hidden = true;
-    }
-    showAlert('');
+    if (!loading) return;
+    const tab = state.tab === 'new' || state.tab === 'history' ? state.tab : 'flagged';
+    const busy = (loadsInFlight[tab] || 0) > 0;
+    loading.hidden = !busy;
+    const label = loading.querySelector('[data-fa-loading-label]');
+    if (label) label.textContent = loadingLabel(tab);
+  }
+
+  async function withTabLoad(tab, work) {
+    loadsInFlight[tab] = (loadsInFlight[tab] || 0) + 1;
+    syncLoading();
     try {
-      const data = await api(API.list, { timeoutMs: 30000 });
-      state.rows = data.rows || [];
-      state.pics = data.pics || [];
-      state.machines = data.machines || state.machines || [];
-      renderPicList();
-      renderTable();
-    } catch (err) {
-      showAlert(err.message || 'Could not load first article tracker');
-      if (!state.rows.length && empty) {
-        empty.hidden = false;
-        empty.textContent = 'Could not load the tracker. Try Refresh.';
-      }
+      return await work();
     } finally {
-      if (loading && state.tab === 'flagged') loading.hidden = true;
+      loadsInFlight[tab] = Math.max(0, (loadsInFlight[tab] || 1) - 1);
+      syncLoading();
     }
+  }
+
+  async function loadTracker() {
+    const empty = $('fa-empty');
+    if (state.tab === 'flagged' && empty) empty.hidden = true;
+    showAlert('');
+    return withTabLoad('flagged', async () => {
+      try {
+        const data = await api(API.list, {
+          timeoutMs: 30000,
+          timeoutMessage: 'Timed out loading NPI tracker',
+        });
+        state.rows = data.rows || [];
+        state.pics = data.pics || [];
+        state.machines = data.machines || state.machines || [];
+        renderPicList();
+        renderTable();
+      } catch (err) {
+        showAlert(err.message || 'Could not load first article tracker');
+        if (!state.rows.length && empty) {
+          empty.hidden = false;
+          empty.textContent = 'Could not load the tracker. Try Refresh.';
+        }
+      }
+    });
   }
 
   async function loadNewParts() {
-    const loading = $('fa-loading');
     const empty = $('fa-new-empty');
-    if (state.tab === 'new') {
-      if (loading) loading.hidden = false;
-      if (empty) empty.hidden = true;
-    }
+    if (state.tab === 'new' && empty) empty.hidden = true;
     showAlert('');
-    try {
-      const data = await api(API.newParts, { timeoutMs: 45000 });
-      state.newRows = data.rows || [];
-      if (Array.isArray(data.pics)) {
-        state.pics = data.pics;
-        renderPicList();
+    return withTabLoad('new', async () => {
+      try {
+        const data = await api(API.newParts, {
+          timeoutMs: 45000,
+          timeoutMessage: 'Timed out loading new parts',
+        });
+        state.newRows = data.rows || [];
+        if (Array.isArray(data.pics)) {
+          state.pics = data.pics;
+          renderPicList();
+        }
+        if (Array.isArray(data.machines) && data.machines.length) {
+          state.machines = data.machines;
+        }
+        state.newLoaded = true;
+        renderNewTable();
+      } catch (err) {
+        showAlert(err.message || 'Could not load NEW parts');
+        state.newLoaded = true;
+        if (!state.newRows.length && empty) {
+          empty.hidden = false;
+          empty.textContent = 'Could not load NEW parts. Open S/O management once, then Refresh.';
+        }
+        updateNewCount();
       }
-      if (Array.isArray(data.machines) && data.machines.length) {
-        state.machines = data.machines;
-      }
-      state.newLoaded = true;
-      renderNewTable();
-    } catch (err) {
-      showAlert(err.message || 'Could not load NEW parts');
-      state.newLoaded = true;
-      if (!state.newRows.length && empty) {
-        empty.hidden = false;
-        empty.textContent = 'Could not load NEW parts. Open S/O management once, then Refresh.';
-      }
-      updateNewCount();
-    } finally {
-      if (loading && state.tab === 'new') loading.hidden = true;
-    }
+    });
   }
 
   async function loadCompletedParts() {
-    const loading = $('fa-loading');
     const empty = $('fa-completed-empty');
-    if (state.tab === 'history') {
-      if (loading) loading.hidden = false;
-      if (empty) empty.hidden = true;
-    }
+    if (state.tab === 'history' && empty) empty.hidden = true;
     showAlert('');
-    try {
-      const data = await api(`${API.newParts}?scope=history`, { timeoutMs: 120000 });
-      state.completedRows = data.rows || [];
-      if (Array.isArray(data.pics)) {
-        state.pics = data.pics;
-        renderPicList();
+    return withTabLoad('history', async () => {
+      try {
+        const data = await api(`${API.newParts}?scope=history`, {
+          timeoutMs: 120000,
+          timeoutMessage: 'Timed out loading history',
+        });
+        state.completedRows = data.rows || [];
+        if (Array.isArray(data.pics)) {
+          state.pics = data.pics;
+          renderPicList();
+        }
+        if (Array.isArray(data.machines) && data.machines.length) {
+          state.machines = data.machines;
+        }
+        state.completedLoaded = true;
+        if (!state.completedTypes.size) ensureCompletedTypes();
+        renderHistoryTable();
+      } catch (err) {
+        showAlert(err.message || 'Could not load completed process sheets');
+        state.completedLoaded = true;
+        if (!state.completedRows.length && empty) {
+          empty.hidden = false;
+          empty.textContent = 'Could not load completed process sheets. Try Refresh.';
+        }
+        updateHistoryCount();
       }
-      if (Array.isArray(data.machines) && data.machines.length) {
-        state.machines = data.machines;
-      }
-      state.completedLoaded = true;
-      if (!state.completedTypes.size) ensureCompletedTypes();
-      renderHistoryTable();
-    } catch (err) {
-      showAlert(err.message || 'Could not load completed process sheets');
-      state.completedLoaded = true;
-      if (!state.completedRows.length && empty) {
-        empty.hidden = false;
-        empty.textContent = 'Could not load completed process sheets. Try Refresh.';
-      }
-      updateHistoryCount();
-    } finally {
-      if (loading && state.tab === 'history') loading.hidden = true;
-    }
+    });
   }
 
   function newRowByPs(ps) {
@@ -1677,7 +1879,7 @@
     }
   }
 
-  async function saveNewPatch(ps, patch, { render } = {}) {
+  async function saveNewPatch(ps, patch, { render, apply } = {}) {
     const row = newRowByPs(ps);
     const data = await api(API.newParts, {
       method: 'PATCH',
@@ -1688,7 +1890,7 @@
         ...patch,
       }),
     });
-    applyNewRow(data.row, { render });
+    if (apply !== false) applyNewRow(data.row, { render });
     return data.row;
   }
 
@@ -2008,7 +2210,7 @@
       list.innerHTML = '';
       if (empty) {
         empty.hidden = false;
-        empty.textContent = 'No changes recorded yet. Edits to PIC, remarks, and estimated finish will appear here.';
+        empty.textContent = 'No changes recorded yet. Edits to priority, PIC, remarks, and commitment date will appear here.';
       }
       return;
     }
@@ -2383,9 +2585,7 @@
     document.querySelectorAll(`.fa-proposed-cnc-btn[data-fa-cnc-key="${CSS.escape(key)}"]`).forEach((btn) => {
       const value = btn.querySelector('.fa-proposed-cnc-btn-value');
       if (value) {
-        value.innerHTML = machines.length
-          ? faRenderCncPills(machines)
-          : '<span class="fa-muted">\u2014</span>';
+        value.innerHTML = proposedCncValueHtml(machines, btn.getAttribute('data-fa-cnc-source') || '');
       }
       btn.classList.toggle('has-value', machines.length > 0);
       btn.classList.toggle('is-open', state.openProposedCncKey === key);
@@ -2488,33 +2688,72 @@
     proposedCncPopover()?.querySelector('.fa-proposed-cnc-search')?.focus();
   }
 
-  async function saveProposedCnc(row, source, machines) {
+  const proposedCncPending = new Map();
+
+  function syncProposedCncChecks(machines) {
+    const pop = proposedCncPopover();
+    if (!pop || pop.hidden) return;
+    const selected = new Set(
+      (machines || []).map((item) => faNormalizeCncMachine(item).toUpperCase()).filter(Boolean),
+    );
+    pop.querySelectorAll('[data-fa-cnc-machine]').forEach((input) => {
+      const name = faNormalizeCncMachine(input.getAttribute('data-fa-cnc-machine')).toUpperCase();
+      input.checked = selected.has(name);
+    });
+  }
+
+  function queueProposedCncSave(row, source, machines) {
     const next = (machines || []).map(faNormalizeCncMachine).filter(Boolean);
     if (!row) return;
     const key = proposedCncOpenKey(row, source);
-    const flight = `${key}::save`;
-    if (state.saveInFlight.has(flight)) return;
-    state.saveInFlight.add(flight);
     applyProposedCncLocal(row, source, next);
+    if (state.openProposedCncKey === key) syncProposedCncChecks(next);
+    proposedCncPending.set(key, next);
+    flushProposedCncSave(key);
+  }
+
+  async function flushProposedCncSave(key) {
+    const flight = `${key}::save`;
+    if (state.saveInFlight.has(flight) || !proposedCncPending.has(key)) return;
+    const next = proposedCncPending.get(key).slice();
+    proposedCncPending.delete(key);
+    const row = rowForProposedCncKey(key);
+    const source = String(key || '').startsWith('tracker:') ? 'tracker' : 'new';
+    if (!row) return;
+    state.saveInFlight.add(flight);
     setProposedCncStatus(key, 'saving', 'Saving…');
     try {
-      let saved = row;
+      let saved = null;
       if (source === 'tracker') {
         saved = await savePatch(row.first_article_id, { machine_codes: next });
       } else {
-        saved = await saveNewPatch(row.process_sheet_no || row.pp_voucher_no, { proposed_cnc: next }, { render: false });
+        saved = await saveNewPatch(
+          row.process_sheet_no || row.pp_voucher_no,
+          { proposed_cnc: next },
+          { render: false, apply: false },
+        );
       }
-      const machinesSaved = proposedCncMachines(saved || { proposed_cnc: next, machine_codes: next });
-      applyProposedCncLocal(saved || row, source, machinesSaved);
-      if (state.openProposedCncKey === key) renderProposedCncPopover();
+      if (proposedCncPending.has(key)) return;
+      const sameSheet = !saved || source === 'tracker' || newRowKey(saved) === newRowKey(row);
+      const machinesSaved = source === 'tracker'
+        ? (Array.isArray(saved?.machine_codes) ? saved.machine_codes.filter(Boolean) : next)
+        : (sameSheet && Array.isArray(saved?.proposed_cnc) ? saved.proposed_cnc.filter(Boolean) : next);
+      applyProposedCncLocal(rowForProposedCncKey(key) || row, source, machinesSaved);
+      if (state.openProposedCncKey === key) syncProposedCncChecks(machinesSaved);
       setProposedCncStatus(key, 'saved', 'Saved');
       window.setTimeout(() => setProposedCncStatus(key, '', ''), 1500);
     } catch (err) {
+      if (proposedCncPending.has(key)) return;
       setProposedCncStatus(key, 'error', err.message || 'Save failed');
       showAlert(err.message || 'Save failed');
     } finally {
       state.saveInFlight.delete(flight);
+      if (proposedCncPending.has(key)) flushProposedCncSave(key);
     }
+  }
+
+  function saveProposedCnc(row, source, machines) {
+    queueProposedCncSave(row, source, machines);
   }
 
   function toggleProposedCncMachine(row, source, machine, checked) {
@@ -2615,7 +2854,624 @@
     });
   }
 
+  function closePriorityMenu() {
+    state.openPriorityPs = '';
+    const pop = $('fa-priority-popover');
+    if (!pop) return;
+    pop.hidden = true;
+    pop.innerHTML = '';
+    document.querySelectorAll('.fa-priority-btn.is-open').forEach((btn) => {
+      btn.classList.remove('is-open');
+      btn.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+  function resetGridSelection() {
+    grid.tableId = '';
+    grid.anchor = null;
+    grid.focus = null;
+    grid.pending = null;
+    grid.dragging = false;
+    document.body.classList.remove('fa-grid-dragging');
+  }
+
+  function gridRows(table) {
+    if (!table) return [];
+    return [...table.querySelectorAll('tbody tr[data-ps]')];
+  }
+
+  function cellPos(td) {
+    const tr = td.closest('tr');
+    const table = td.closest('table');
+    const row = gridRows(table).indexOf(tr);
+    const col = [...tr.querySelectorAll('td[data-fa-grid]')].indexOf(td);
+    return { row, col };
+  }
+
+  function selectedCells() {
+    const table = $(grid.tableId);
+    if (!table || !grid.anchor || !grid.focus) return [];
+    const rows = gridRows(table);
+    const r1 = Math.min(grid.anchor.row, grid.focus.row);
+    const r2 = Math.max(grid.anchor.row, grid.focus.row);
+    const c1 = Math.min(grid.anchor.col, grid.focus.col);
+    const c2 = Math.max(grid.anchor.col, grid.focus.col);
+    const out = [];
+    for (let r = r1; r <= r2; r += 1) {
+      const cells = [...(rows[r]?.querySelectorAll('td[data-fa-grid]') || [])];
+      for (let c = c1; c <= c2; c += 1) {
+        if (cells[c]) out.push(cells[c]);
+      }
+    }
+    return out;
+  }
+
+  function paintGridSelection() {
+    document.querySelectorAll('td.fa-grid-cell.is-selected, td.fa-grid-cell.is-active').forEach((td) => {
+      td.classList.remove('is-selected', 'is-active');
+    });
+    const cells = selectedCells();
+    cells.forEach((td) => td.classList.add('is-selected'));
+    const table = $(grid.tableId);
+    const rows = gridRows(table);
+    const focusTd = rows[grid.focus?.row]?.querySelectorAll('td[data-fa-grid]')[grid.focus?.col];
+    if (focusTd) focusTd.classList.add('is-active');
+  }
+
+  function gridCellText(td) {
+    const col = td.getAttribute('data-fa-grid');
+    if (col === 'priority') return priorityLabel(td.querySelector('.fa-priority-btn')?.getAttribute('data-fa-priority-value') || td.querySelector('.fa-priority-label')?.textContent);
+    if (col === 'commitment') return String(td.querySelector('[data-fa-new-field="program_finish_at"]')?.value || '').trim();
+    if (col === 'pic') {
+      const select = td.querySelector('[data-fa-set-pic]');
+      const option = select?.selectedOptions?.[0];
+      const value = select?.value || '';
+      if (!value || value === '__new') return '';
+      return String(option?.textContent || '').trim();
+    }
+    return '';
+  }
+
+  function cellsToTsv(cells) {
+    const byRow = new Map();
+    cells.forEach((td) => {
+      const pos = cellPos(td);
+      if (!byRow.has(pos.row)) byRow.set(pos.row, []);
+      byRow.get(pos.row).push({ col: pos.col, text: gridCellText(td) });
+    });
+    const rowIndexes = [...byRow.keys()].sort((a, b) => a - b);
+    return rowIndexes.map((rowIndex) => {
+      const items = byRow.get(rowIndex).sort((a, b) => a.col - b.col);
+      const minCol = items[0].col;
+      const maxCol = items[items.length - 1].col;
+      const line = [];
+      for (let col = minCol; col <= maxCol; col += 1) {
+        const found = items.find((item) => item.col === col);
+        line.push(found ? found.text : '');
+      }
+      return line.join('\t');
+    }).join('\n');
+  }
+
+  function clipboardMatrix(text) {
+    let raw = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    if (raw.endsWith('\n')) raw = raw.slice(0, -1);
+    if (!raw) return [['']];
+    return raw.split('\n').map((line) => line.split('\t'));
+  }
+
+  function interpretGridCell(col, raw) {
+    const text = String(raw == null ? '' : raw).trim();
+    const blank = !text || /^[-–—−]+$/.test(text) || /^(none|n\/a|na|blank|pic\.\.\.)$/i.test(text);
+    if (col === 'priority') {
+      if (blank) return { priority: '' };
+      const key = normalizePriority(text);
+      if (!key) throw new Error(`"${text}" is not a priority (Critical, High, Medium, Low)`);
+      return { priority: key };
+    }
+    if (col === 'commitment') {
+      if (blank) return { program_finish_at: '' };
+      const iso = parseFinishDate(text);
+      if (!iso) throw new Error(`"${text}" is not a date (dd/mm/yyyy)`);
+      return { program_finish_at: iso };
+    }
+    if (col === 'pic') {
+      if (blank) return { program_pic_ids: [] };
+      const pic = state.pics.find((item) => String(item.name || '').trim().toLowerCase() === text.toLowerCase());
+      if (!pic) throw new Error(`No PIC named "${text}"`);
+      return { program_pic_ids: [Number(pic.pic_id)] };
+    }
+    throw new Error('That column cannot be pasted');
+  }
+
+  function paintGridCell(td, patch) {
+    if ('priority' in patch) {
+      const key = normalizePriority(patch.priority);
+      const btn = td.querySelector('[data-fa-priority]');
+      if (!btn) return;
+      btn.className = `fa-priority-btn${key ? ` is-${key}` : ''}`;
+      btn.setAttribute('data-fa-priority-value', key);
+      btn.setAttribute('aria-label', key ? `Priority: ${priorityLabel(key)}` : 'Priority');
+      btn.innerHTML = `${key ? priorityIcon(key) : '<span class="fa-priority-empty" aria-hidden="true">\u2014</span>'}<span class="fa-priority-label">${escapeHtml(priorityLabel(key) || '\u2014')}</span>`;
+    }
+    if ('program_finish_at' in patch) syncFinishField(td.querySelector('.fa-finish-field'), patch.program_finish_at || '');
+    if ('program_pic_ids' in patch) {
+      const select = td.querySelector('[data-fa-set-pic]');
+      if (!select) return;
+      const id = Number((patch.program_pic_ids || [])[0] || 0);
+      select.value = id ? String(id) : '';
+      select.classList.toggle('has-value', !!id);
+    }
+  }
+
+  function pasteTargets(matrix) {
+    const table = $(grid.tableId);
+    const rows = gridRows(table);
+    const selected = selectedCells();
+    const single = matrix.length === 1 && matrix[0].length === 1;
+    if (single && selected.length > 1) {
+      return selected.map((td) => ({ td, raw: matrix[0][0] }));
+    }
+    const originRow = Math.min(grid.anchor.row, grid.focus.row);
+    const originCol = Math.min(grid.anchor.col, grid.focus.col);
+    const out = [];
+    matrix.forEach((line, r) => {
+      line.forEach((raw, c) => {
+        const cells = [...(rows[originRow + r]?.querySelectorAll('td[data-fa-grid]') || [])];
+        const td = cells[originCol + c];
+        if (td) out.push({ td, raw });
+      });
+    });
+    return out;
+  }
+
+  async function applyGridValues(pairs) {
+    const errors = [];
+    const byPs = new Map();
+    pairs.forEach(({ td, raw }) => {
+      const col = td.getAttribute('data-fa-grid');
+      let patch;
+      try {
+        patch = interpretGridCell(col, raw);
+      } catch (err) {
+        errors.push(err.message || 'Could not paste');
+        return;
+      }
+      paintGridCell(td, patch);
+      const ps = td.closest('tr')?.getAttribute('data-ps') || '';
+      if (!ps) return;
+      const merged = byPs.get(ps) || {};
+      Object.assign(merged, patch);
+      byPs.set(ps, merged);
+    });
+    const uniqueErrors = [...new Set(errors)];
+    if (!byPs.size) {
+      if (uniqueErrors.length) showAlert(gridPasteAlert(uniqueErrors));
+      return;
+    }
+    const results = await Promise.allSettled(
+      [...byPs.entries()].map(([ps, patch]) => saveNewPatch(ps, patch, { render: false })),
+    );
+    const failed = results.filter((item) => item.status === 'rejected').length;
+    if (failed || uniqueErrors.length) {
+      const which = grid.tableId === 'fa-history-table' ? 'history' : 'new';
+      rerenderTable(which);
+      const message = gridPasteAlert(uniqueErrors);
+      showAlert(failed ? `${message} ${failed} row${failed === 1 ? '' : 's'} could not be saved.`.trim() : message);
+      return;
+    }
+    showAlert('');
+    paintGridSelection();
+  }
+
+  function gridPasteAlert(errors) {
+    const sample = String(errors[0] || '');
+    if (/not a date/i.test(sample)) return 'Paste not saved. Commitment dates need to look like 30/09/2026.';
+    if (/not a priority/i.test(sample)) return 'Paste not saved. Priority must be Critical, High, Medium, or Low.';
+    if (/No PIC named/i.test(sample)) return 'Paste not saved. Copy a PIC name that is already in the list, such as Ananda, then paste it onto the selected PIC cells.';
+    return 'Paste not saved.';
+  }
+
+  function editorHasTextSelection() {
+    const el = document.activeElement;
+    if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) return false;
+    if (el.type === 'date') return false;
+    return typeof el.selectionStart === 'number' && el.selectionStart !== el.selectionEnd;
+  }
+
+  function shouldGridPaste(event) {
+    const origin = event.target?.closest?.('td[data-fa-grid]');
+    const table = $(grid.tableId);
+    const active = document.activeElement;
+    const inGrid = !!(table && active && (active === table || table.contains(active)));
+    if (!grid.anchor || !table) return false;
+    if (!inGrid && !origin) return false;
+    if (origin && origin.closest('table')?.id !== grid.tableId) return false;
+    const text = event.clipboardData?.getData('text/plain') ?? '';
+    const multi = selectedCells().length > 1;
+    const structured = /[\t\n]/.test(String(text));
+    if (multi || structured) return true;
+    const col = (origin || selectedCells()[0])?.getAttribute('data-fa-grid');
+    if (col === 'pic' || col === 'priority') return true;
+    if (col === 'commitment' && event.target?.closest?.('[data-fa-new-field="program_finish_at"]')) return false;
+    return !!col;
+  }
+
+  function openPriorityMenu(ps, anchor) {
+    const pop = $('fa-priority-popover');
+    if (!pop || !anchor) return;
+    state.openPriorityPs = ps;
+    document.querySelectorAll('.fa-priority-btn.is-open').forEach((btn) => {
+      btn.classList.remove('is-open');
+      btn.setAttribute('aria-expanded', 'false');
+    });
+    anchor.classList.add('is-open');
+    anchor.setAttribute('aria-expanded', 'true');
+    const current = normalizePriority(anchor.getAttribute('data-fa-priority-value') || newRowByPs(ps)?.priority);
+    const options = [{ id: '', label: 'None' }].concat(PRIORITIES);
+    pop.innerHTML = options.map((item) => {
+      const selected = item.id === current ? ' is-selected' : '';
+      const tone = item.id ? ` is-${item.id}` : '';
+      return `<button type="button" class="fa-priority-option${tone}${selected}" role="option" data-fa-priority-pick="${escapeHtml(item.id)}" data-ps="${escapeHtml(ps)}">${item.id ? priorityIcon(item.id) : '<span class="fa-priority-empty" aria-hidden="true">\u2014</span>'}<span>${escapeHtml(item.label)}</span></button>`;
+    }).join('');
+    pop.hidden = false;
+    const rect = anchor.getBoundingClientRect();
+    const width = Math.max(rect.width, 156);
+    pop.style.width = `${width}px`;
+    let top = rect.bottom + 4;
+    let left = rect.left;
+    pop.style.top = `${top}px`;
+    pop.style.left = `${left}px`;
+    const box = pop.getBoundingClientRect();
+    if (box.bottom > window.innerHeight - 8) top = Math.max(8, rect.top - box.height - 4);
+    if (left + box.width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - box.width - 8);
+    pop.style.top = `${top}px`;
+    pop.style.left = `${left}px`;
+  }
+
+  function bindGrid() {
+    document.addEventListener('mousedown', (event) => {
+      if (event.button !== 0) return;
+      const inPopover = event.target.closest?.('#fa-priority-popover');
+      const cell = event.target.closest?.('td[data-fa-grid]');
+      if (!cell) {
+        if (!inPopover) closePriorityMenu();
+        if (!inPopover && !event.target.closest?.('.fa-col-filter-popover, .fa-modal-backdrop')) {
+          resetGridSelection();
+          paintGridSelection();
+        }
+        return;
+      }
+      if (event.target.closest?.('a')) return;
+      const table = cell.closest('table');
+      const pos = cellPos(cell);
+      if (pos.row < 0 || pos.col < 0) return;
+      if (event.shiftKey && grid.tableId === table.id && grid.anchor) {
+        event.preventDefault();
+        grid.focus = pos;
+        paintGridSelection();
+        closePriorityMenu();
+        return;
+      }
+      grid.tableId = table.id;
+      grid.anchor = pos;
+      grid.focus = pos;
+      grid.pending = { x: event.clientX, y: event.clientY };
+      grid.dragging = false;
+      paintGridSelection();
+    });
+
+    document.addEventListener('mousemove', (event) => {
+      if (!grid.pending || !grid.anchor) return;
+      const dx = Math.abs(event.clientX - grid.pending.x);
+      const dy = Math.abs(event.clientY - grid.pending.y);
+      if (!grid.dragging && dx + dy < 5) return;
+      grid.dragging = true;
+      document.body.classList.add('fa-grid-dragging');
+      closePriorityMenu();
+      const under = document.elementFromPoint(event.clientX, event.clientY);
+      const cell = under?.closest?.('td[data-fa-grid]');
+      if (!cell || cell.closest('table')?.id !== grid.tableId) return;
+      const pos = cellPos(cell);
+      if (pos.row < 0 || pos.col < 0) return;
+      grid.focus = pos;
+      paintGridSelection();
+      const selection = window.getSelection?.();
+      if (selection && selection.rangeCount) selection.removeAllRanges();
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (!grid.pending) return;
+      if (grid.dragging) {
+        grid.suppressClick = true;
+        window.setTimeout(() => { grid.suppressClick = false; }, 0);
+        const active = document.activeElement;
+        if (active && active.closest?.('td[data-fa-grid]')) active.blur();
+        $(grid.tableId)?.focus({ preventScroll: true });
+      }
+      grid.pending = null;
+      grid.dragging = false;
+      document.body.classList.remove('fa-grid-dragging');
+    });
+
+    document.addEventListener('copy', (event) => {
+      if (editorHasTextSelection()) return;
+      const cells = selectedCells();
+      if (!cells.length) return;
+      const active = document.activeElement;
+      if (active && !active.closest?.('td[data-fa-grid], #' + grid.tableId) && active !== $(grid.tableId)) return;
+      event.preventDefault();
+      event.clipboardData?.setData('text/plain', cellsToTsv(cells));
+    }, true);
+
+    document.addEventListener('paste', (event) => {
+      if (!shouldGridPaste(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const text = event.clipboardData?.getData('text/plain') ?? '';
+      applyGridValues(pasteTargets(clipboardMatrix(text))).catch((err) => {
+        showAlert(err.message || 'Paste failed');
+      });
+    }, true);
+
+    document.addEventListener('keydown', (event) => {
+      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedCells().length && grid.tableId) {
+        const active = document.activeElement;
+        if (active && active.closest?.('input, textarea, select') && active.closest('td[data-fa-grid]') && selectedCells().length < 2) return;
+        if (active && !active.closest?.('td[data-fa-grid], #' + grid.tableId) && active !== $(grid.tableId)) return;
+        event.preventDefault();
+        applyGridValues(selectedCells().map((td) => ({ td, raw: '' }))).catch((err) => {
+          showAlert(err.message || 'Could not clear cells');
+        });
+      }
+    });
+
+    ['fa-new-table', 'fa-history-table'].forEach((id) => {
+      const table = $(id);
+      if (table) table.tabIndex = -1;
+    });
+
+    $('fa-priority-popover')?.addEventListener('click', async (event) => {
+      const pick = event.target.closest('[data-fa-priority-pick]');
+      if (!pick) return;
+      const ps = pick.getAttribute('data-ps') || '';
+      const key = pick.getAttribute('data-fa-priority-pick') || '';
+      closePriorityMenu();
+      try {
+        await saveNewPatch(ps, { priority: key });
+      } catch (err) {
+        showAlert(err.message || 'Could not save priority');
+      }
+    });
+
+    document.querySelectorAll('.fa-table-scroll').forEach((el) => {
+      el.addEventListener('scroll', () => closePriorityMenu(), { passive: true });
+    });
+  }
+
+  const NEW_PART_EXPORT_COLUMNS = [
+    { id: 'process_sheet_no', label: 'PS', width: 16 },
+    { id: 'part_no', label: 'Part', width: 22 },
+    { id: 'part_description', label: 'Description', width: 36 },
+    { id: 'bom', label: 'BOM', width: 10 },
+    { id: 'stage', label: 'WO / Stage', width: 28 },
+    { id: 'po_due_date', label: 'Due', width: 12 },
+    { id: 'coway_proposed_edd', label: 'Coway proposed EDD', width: 20 },
+    { id: 'program_finish_at', label: 'Commitment date', width: 18 },
+    { id: 'proposed_cnc', label: 'Proposed CNC', width: 18 },
+    { id: 'priority', label: 'Priority', width: 12 },
+    { id: 'pic', label: 'PIC', width: 16 },
+    { id: 'remarks', label: 'Remarks', width: 28 },
+    { id: 'npi_complete', label: 'Done', width: 10 },
+    { id: 'customer_name', label: 'Customer', width: 28 },
+    { id: 'exception', label: 'Exception', width: 12 },
+  ];
+  const TRACKER_EXPORT_COLUMNS = [
+    { id: 'process_sheet_no', label: 'PS no.', width: 16 },
+    { id: 'part_no', label: 'Part No.', width: 22 },
+    { id: 'part_description', label: 'Part Description', width: 36 },
+    { id: 'total_qty', label: 'Total Qty', width: 12 },
+    { id: 'po_due_date', label: 'PO Due Date', width: 14 },
+    { id: 'posted_date', label: 'Posted', width: 12 },
+    { id: 'stage', label: 'WO / Stage', width: 28 },
+    { id: 'proposed_cnc', label: 'Proposed CNC', width: 18 },
+    { id: 'coway_proposed_edd', label: 'Stipulated Coway EDD', width: 22 },
+    { id: 'pic', label: 'PIC', width: 16 },
+    { id: 'tooling', label: 'Tooling', width: 14 },
+    { id: 'fixture', label: 'Fixture/Jig', width: 14 },
+    { id: 'gauges', label: 'Gauges/CMM', width: 14 },
+    { id: 'remarks', label: 'Remark', width: 28 },
+    { id: 'status', label: 'Status', width: 12 },
+  ];
+
+  function exportStamp() {
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${now.getFullYear()}-${month}-${day}`;
+  }
+
+  function exportQty(value) {
+    if (value == null || String(value).trim() === '') return '';
+    const text = String(value).trim().replace(/,/g, '');
+    const num = Number(text);
+    return Number.isFinite(num) ? num : String(value).trim();
+  }
+
+  function exportPicNames(pics) {
+    return (pics || []).map((pic) => String(pic?.name || '').trim()).filter(Boolean).join(' / ');
+  }
+
+  function newPartExportValue(row, colId) {
+    if (colId === 'process_sheet_no') return String(row.process_sheet_no || row.pp_voucher_no || '').trim();
+    if (colId === 'part_no') return String(row.part_no || '').trim();
+    if (colId === 'part_description') return String(row.part_description || '').trim();
+    if (colId === 'total_qty') return exportQty(row.total_qty);
+    if (colId === 'bom') return hasBom(row) ? 'Yes' : 'None';
+    if (colId === 'material') {
+      if (row.material_arrived) return 'In';
+      if (row.material_date) return compactDate(row.material_date);
+      return String(row.material_legacy || row.material_display || '').trim();
+    }
+    if (colId === 'stage') return stageFilterLabel(row);
+    if (colId === 'posted_date') return compactDate(row.posted_date);
+    if (colId === 'po_due_date') return compactDate(row.po_due_date);
+    if (colId === 'coway_proposed_edd') return compactDate(row.coway_proposed_edd) || String(row.coway_proposed_edd || '').trim();
+    if (colId === 'program_finish_at') return compactDate(row.program_finish_at);
+    if (colId === 'proposed_cnc') return proposedCncMachines(row).join(', ');
+    if (colId === 'priority') return priorityLabel(row.priority);
+    if (colId === 'pic') return exportPicNames(row.program_pics);
+    if (colId === 'remarks') return String(row.remarks || '').trim();
+    if (colId === 'npi_complete') return row.npi_complete ? 'Yes' : 'No';
+    if (colId === 'sales_order_no') return String(row.sales_order_no || '').trim();
+    if (colId === 'customer_name') return String(row.customer_name || '').trim();
+    if (colId === 'exception') return isExceptionRow(row) ? 'Yes' : '';
+    return '';
+  }
+
+  function trackerExportValue(row, colId) {
+    if (colId === 'process_sheet_no') return String(row.process_sheet_no || row.pp_voucher_no || '').trim();
+    if (colId === 'part_no') return String(row.part_no || '').trim();
+    if (colId === 'part_description') return String(row.part_description || '').trim();
+    if (colId === 'total_qty') return exportQty(row.total_qty);
+    if (colId === 'po_due_date') return compactDate(row.po_due_date);
+    if (colId === 'posted_date') return compactDate(row.posted_date);
+    if (colId === 'stage') return stageFilterLabel(row);
+    if (colId === 'proposed_cnc') return proposedCncMachines(row).join(', ');
+    if (colId === 'coway_proposed_edd') return compactDate(row.coway_proposed_edd) || String(row.coway_proposed_edd || '').trim();
+    if (colId === 'pic') return exportPicNames(row.pics);
+    if (colId === 'tooling' || colId === 'fixture' || colId === 'gauges') return checkDisplayValue(row, colId);
+    if (colId === 'remarks') return String(row.remarks || '').trim();
+    if (colId === 'status') {
+      if (row.on_new_parts || row.is_new_part) return 'PO';
+      if (row.from_quotation && !row.in_sales_orders) return 'QUOTE';
+    }
+    return '';
+  }
+
+  function exportListSpec() {
+    const stamp = exportStamp();
+    if (state.tab === 'new') {
+      if (!state.newLoaded) return { error: 'New parts are still loading.' };
+      return {
+        rows: filteredNewRows(),
+        columns: NEW_PART_EXPORT_COLUMNS,
+        sheetName: 'New parts',
+        filename: `npi-new-parts-${stamp}.xlsx`,
+        value: newPartExportValue,
+      };
+    }
+    if (state.tab === 'history') {
+      if (!state.completedLoaded) return { error: 'History is still loading.' };
+      return {
+        rows: filteredCompletedRows(),
+        columns: NEW_PART_EXPORT_COLUMNS,
+        sheetName: 'History',
+        filename: `npi-history-${stamp}.xlsx`,
+        value: newPartExportValue,
+      };
+    }
+    return {
+      rows: filteredRows(),
+      columns: TRACKER_EXPORT_COLUMNS,
+      sheetName: 'NPI Tracker',
+      filename: `npi-tracker-${stamp}.xlsx`,
+      value: trackerExportValue,
+    };
+  }
+
+  function syncExportButton() {
+    const btn = $('fa-export-excel');
+    if (!btn) return;
+    const label = state.tab === 'new' ? 'New parts' : (state.tab === 'history' ? 'History' : 'NPI Tracker');
+    btn.title = `Download the visible ${label} list as Excel`;
+  }
+
+  async function ensureExcelJs() {
+    if (window.ExcelJS) return window.ExcelJS;
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+      script.async = true;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('Could not load Excel export library'));
+      document.head.appendChild(script);
+    });
+    return window.ExcelJS;
+  }
+
+  async function exportCurrentList() {
+    const spec = exportListSpec();
+    if (spec.error) {
+      showAlert(spec.error);
+      return;
+    }
+    if (!spec.rows.length) {
+      showAlert('Nothing on this list to export.');
+      return;
+    }
+    const btn = $('fa-export-excel');
+    if (btn) btn.disabled = true;
+    showAlert('');
+    try {
+      const ExcelJS = await ensureExcelJs();
+      const workbook = new ExcelJS.Workbook();
+      workbook.creator = 'NPI/FA Management';
+      workbook.created = new Date();
+      const sheet = workbook.addWorksheet(spec.sheetName);
+      const header = sheet.addRow(spec.columns.map((col) => col.label));
+      header.font = { bold: true, size: 11, color: { argb: 'FF0F172A' } };
+      header.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F1FE' } };
+      header.alignment = { vertical: 'middle' };
+      spec.rows.forEach((row) => {
+        const added = sheet.addRow(spec.columns.map((col) => spec.value(row, col.id)));
+        added.alignment = { vertical: 'top', wrapText: true };
+      });
+      spec.columns.forEach((col, index) => {
+        sheet.getColumn(index + 1).width = col.width;
+      });
+      sheet.views = [{ state: 'frozen', ySplit: 1, activeCell: 'A2' }];
+      sheet.autoFilter = {
+        from: { row: 1, column: 1 },
+        to: { row: 1, column: spec.columns.length },
+      };
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = spec.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      showAlert(err.message || 'Could not export Excel.');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
   function bind() {
+    $('fa-export-excel')?.addEventListener('click', () => exportCurrentList());
+    document.addEventListener('click', (e) => {
+      const chip = e.target.closest('[data-fa-clear-filter], [data-fa-clear-all-filters], [data-fa-clear-sort]');
+      if (!chip) return;
+      const which = chip.getAttribute('data-fa-filter-table') || 'new';
+      const view = tableView(which);
+      if (chip.hasAttribute('data-fa-clear-sort')) {
+        setColumnSort(view, 'po_due_date', { dir: 'asc' });
+      } else if (chip.hasAttribute('data-fa-clear-all-filters')) {
+        view.colFilters = {};
+      } else {
+        const colId = chip.getAttribute('data-fa-clear-filter');
+        if (colId) delete view.colFilters[colId];
+      }
+      closeColumnFilter();
+      rerenderTable(which);
+    });
     $('fa-refresh')?.addEventListener('click', () => {
       if (state.tab === 'new') loadNewParts();
       else if (state.tab === 'history') loadCompletedParts();
@@ -2780,6 +3636,10 @@
     }
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
+      if (!$('fa-priority-popover')?.hidden) {
+        closePriorityMenu();
+        return;
+      }
       if (!$('fa-col-filter-popover')?.hidden) {
         closeColumnFilter();
         return;
@@ -2824,6 +3684,19 @@
     }
 
     onNewPartBodies('click', async (e) => {
+      if (grid.suppressClick) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      const priorityBtn = e.target.closest('[data-fa-priority]');
+      if (priorityBtn && !e.shiftKey) {
+        e.preventDefault();
+        const ps = priorityBtn.closest('tr')?.getAttribute('data-ps') || '';
+        if (state.openPriorityPs && state.openPriorityPs === ps) closePriorityMenu();
+        else openPriorityMenu(ps, priorityBtn);
+        return;
+      }
       const toggleSo = e.target.closest('[data-fa-toggle-so]');
       if (toggleSo) {
         e.preventDefault();
@@ -2923,12 +3796,15 @@
       if (field === 'npi_complete') {
         const checked = !!fieldEl.checked;
         const rowEl = fieldEl.closest('tr');
+        const doneCell = fieldEl.closest('td');
         if (rowEl) rowEl.classList.toggle('is-npi-complete', checked);
+        if (doneCell) doneCell.classList.toggle('is-done', checked);
         try {
           await saveNewPatch(ps, { npi_complete: checked }, { render: false });
         } catch (err) {
           fieldEl.checked = !checked;
           if (rowEl) rowEl.classList.toggle('is-npi-complete', !checked);
+          if (doneCell) doneCell.classList.toggle('is-done', !checked);
           showAlert(err.message || 'Save failed');
         }
         return;
@@ -3150,12 +4026,7 @@
             const view = tableView(which);
             const colId = sortBtn.getAttribute('data-fa-sort-col');
             if (!colId) return;
-            if (view.sortCol === colId) {
-              view.sortDir = view.sortDir === 'asc' ? 'desc' : 'asc';
-            } else {
-              view.sortCol = colId;
-              view.sortDir = 'asc';
-            }
+            setColumnSort(view, colId, { additive: e.shiftKey });
             closeColumnFilter();
             rerenderTable(which);
             return;
@@ -3181,6 +4052,15 @@
 
       const pop = $('fa-col-filter-popover');
       pop?.addEventListener('click', (e) => {
+        const which = state.openFilterTable || 'new';
+        const view = tableView(which);
+        const sortDirBtn = e.target.closest('[data-fa-sort-dir]');
+        if (sortDirBtn && state.openFilterCol) {
+          setColumnSort(view, state.openFilterCol, { dir: sortDirBtn.getAttribute('data-fa-sort-dir') });
+          closeColumnFilter();
+          rerenderTable(which);
+          return;
+        }
         const clearBtn = e.target.closest('[data-fa-clear-col-filter]');
         if (clearBtn) {
           const which = state.openFilterTable || 'new';
@@ -3243,9 +4123,11 @@
 
     bindColumnControls();
     bindProposedCncPicker();
+    bindGrid();
   }
 
   bind();
+  syncExportButton();
   ensureMaterialModalShell();
   loadMaterialModalScript();
   const bootHash = String(window.location.hash || '').toLowerCase();

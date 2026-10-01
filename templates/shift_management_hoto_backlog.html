@@ -2,39 +2,39 @@
 {% block title %}Handover backlog - Shift Management{% endblock %}
 {% block content %}
 <section class="sm-toolbar sm-toolbar-wrap">
-  <h2 class="sm-section-title" style="margin:0">Handover backlog</h2>
+  <h2 class="sm-section-title" style="margin:0" data-sm-t>Handover backlog</h2>
 </section>
-<p class="sm-muted">Submitted shift handover sheets. Open a row to read or print that filed copy.</p>
+<p class="sm-muted" data-sm-t>Submitted shift handover sheets. Open a row to read or print that filed copy.</p>
 
 <section class="sm-filters">
-  <label class="sm-field-inline"><span>From</span><input type="date" id="hoto-log-from" /></label>
-  <label class="sm-field-inline"><span>To</span><input type="date" id="hoto-log-to" /></label>
+  <label class="sm-field-inline"><span data-sm-t>From</span><input type="date" id="hoto-log-from" /></label>
+  <label class="sm-field-inline"><span data-sm-t>To</span><input type="date" id="hoto-log-to" /></label>
   <label class="sm-field-inline">
-    <span>Shift</span>
+    <span data-sm-t>Shift</span>
     <select id="hoto-log-shift">
-      <option value="">All</option>
-      <option value="Day">Day</option>
-      <option value="Night">Night</option>
+      <option value="" data-sm-t>All</option>
+      <option value="Day" data-sm-t>Day</option>
+      <option value="Night" data-sm-t>Night</option>
     </select>
   </label>
-  <button type="button" class="sm-btn sm-btn-primary" id="hoto-log-apply">Apply</button>
+  <button type="button" class="sm-btn sm-btn-primary" id="hoto-log-apply" data-sm-t>Apply</button>
 </section>
 
 <div class="sm-table-wrap">
   <table class="sm-table" id="hoto-log-table">
     <thead>
       <tr>
-        <th>Submitted</th>
-        <th>Shift date</th>
-        <th>Shift</th>
-        <th>Outgoing</th>
-        <th>Incoming</th>
-        <th>Filed by</th>
+        <th data-sm-t="submitted_col">Submitted</th>
+        <th data-sm-t>Shift date</th>
+        <th data-sm-t>Shift</th>
+        <th data-sm-t>Outgoing</th>
+        <th data-sm-t>Incoming</th>
+        <th data-sm-t>Filed by</th>
         <th></th>
       </tr>
     </thead>
     <tbody>
-      <tr><td colspan="7">Loading...</td></tr>
+      <tr><td colspan="7" data-sm-t>Loading...</td></tr>
     </tbody>
   </table>
 </div>

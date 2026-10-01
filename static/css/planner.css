@@ -6689,7 +6689,7 @@
   }
   .delivery-schedule-table {
     width: 100%;
-    min-width: 980px;
+    min-width: 1140px;
     border-collapse: collapse;
     font-size: 13px;
   }
@@ -6794,14 +6794,14 @@
     font-weight: 700;
     color: var(--text2);
   }
-  .delivery-schedule-coway-wrap,
+  .delivery-schedule-proposed-wrap,
   .delivery-schedule-remarks-wrap {
     display: flex;
     align-items: center;
     gap: 6px;
     min-width: 0;
   }
-  .delivery-schedule-coway-input,
+  .delivery-schedule-proposed-input,
   .delivery-schedule-remarks-input {
     width: 100%;
     min-width: 0;
@@ -6812,22 +6812,22 @@
     font: inherit;
     color: var(--text);
   }
-  .delivery-schedule-coway-input {
+  .delivery-schedule-proposed-input {
     max-width: 150px;
   }
   .delivery-schedule-remarks-input {
     min-width: 180px;
   }
-  .delivery-schedule-coway-input:focus,
+  .delivery-schedule-proposed-input:focus,
   .delivery-schedule-remarks-input:focus {
     outline: 2px solid rgba(59, 130, 246, 0.35);
     border-color: rgba(59, 130, 246, 0.65);
   }
-  .delivery-schedule-coway-wrap.is-saving .delivery-schedule-coway-input,
+  .delivery-schedule-proposed-wrap.is-saving .delivery-schedule-proposed-input,
   .delivery-schedule-remarks-wrap.is-saving .delivery-schedule-remarks-input {
     opacity: 0.7;
   }
-  .delivery-schedule-coway-wrap.is-error .delivery-schedule-coway-input,
+  .delivery-schedule-proposed-wrap.is-error .delivery-schedule-proposed-input,
   .delivery-schedule-remarks-wrap.is-error .delivery-schedule-remarks-input {
     border-color: rgba(239, 68, 68, 0.75);
   }
@@ -6837,11 +6837,11 @@
     color: var(--text3);
     white-space: nowrap;
   }
-  .delivery-schedule-coway-wrap.is-saved .delivery-schedule-coway-status,
+  .delivery-schedule-proposed-wrap.is-saved .delivery-schedule-proposed-status,
   .delivery-schedule-remarks-wrap.is-saved .delivery-schedule-remarks-status {
     color: rgba(34, 197, 94, 0.95);
   }
-  .delivery-schedule-coway-wrap.is-error .delivery-schedule-coway-status,
+  .delivery-schedule-proposed-wrap.is-error .delivery-schedule-proposed-status,
   .delivery-schedule-remarks-wrap.is-error .delivery-schedule-remarks-status {
     color: rgba(239, 68, 68, 0.95);
   }
@@ -7076,7 +7076,7 @@
   .delivery-schedule-row.is-dismissed .delivery-schedule-stage {
     color: #94a3b8;
   }
-  .delivery-schedule-row.is-dismissed .delivery-schedule-coway-input,
+  .delivery-schedule-row.is-dismissed .delivery-schedule-proposed-input,
   .delivery-schedule-row.is-dismissed .delivery-schedule-remarks-input {
     background: rgba(241, 245, 249, 0.5);
     color: #94a3b8;

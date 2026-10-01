@@ -3,25 +3,25 @@
 {% block content %}
 <section class="sm-toolbar">
   <label class="sm-field-inline">
-    <span>Date</span>
+    <span data-sm-t>Date</span>
     <input type="date" id="sm-date" />
   </label>
-  <div class="sm-chip-row" id="sm-shift-chips" role="group" aria-label="Shift">
-    <button type="button" class="sm-chip" data-shift="Day">Day</button>
-    <button type="button" class="sm-chip" data-shift="Night">Night</button>
+  <div class="sm-chip-row" id="sm-shift-chips" role="group" data-sm-aria aria-label="Shift">
+    <button type="button" class="sm-chip" data-shift="Day" data-sm-t>Day</button>
+    <button type="button" class="sm-chip" data-shift="Night" data-sm-t>Night</button>
   </div>
 </section>
 
 <div id="sm-pending-banner" class="sm-banner sm-banner-warn" hidden></div>
 
 <section>
-  <h2 class="sm-section-title">My Machines</h2>
+  <h2 class="sm-section-title" data-sm-t>My Machines</h2>
   <div id="sm-floor-legend" class="sm-floor-legend" aria-hidden="true"></div>
   <div id="sm-machine-grid" class="sm-floor-wrap">
-    <p class="sm-muted">Loading…</p>
+    <p class="sm-muted" data-sm-t>Loading…</p>
   </div>
   <div id="sm-machine-cards" class="sm-machine-cards"></div>
-  <p class="sm-muted sm-floor-hint">Tap a machine on the floor or card to open handover entry.</p>
+  <p class="sm-muted sm-floor-hint" data-sm-t>Tap a machine on the floor or card to open handover entry.</p>
 </section>
 {% endblock %}
 {% block scripts %}
