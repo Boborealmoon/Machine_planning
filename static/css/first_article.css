@@ -770,6 +770,16 @@ body.fa-view .app-main--first-article {
 .fa-priority-option.is-medium { color: #4c9a2a; }
 .fa-priority-option.is-low { color: #4c6ef5; }
 .fa-table--new td.fa-grid-cell { cursor: cell; }
+.fa-table--new td.fa-grid-cell.is-selected .fa-proposed-cnc-btn,
+.fa-table--new td.fa-grid-cell.is-active .fa-proposed-cnc-btn {
+  background: transparent;
+}
+.fa-table--new td.fa-grid-cell.is-selected .fa-proposed-cnc-btn:hover,
+.fa-table--new td.fa-grid-cell.is-selected .fa-proposed-cnc-btn.is-open,
+.fa-table--new td.fa-grid-cell.is-active .fa-proposed-cnc-btn:hover,
+.fa-table--new td.fa-grid-cell.is-active .fa-proposed-cnc-btn.is-open {
+  background: #f5f3ff;
+}
 .fa-table--new td.fa-grid-cell.is-selected,
 .fa-table--new tbody tr:hover td.fa-grid-cell.is-selected,
 .fa-table--new tbody tr.is-npi-complete td.fa-grid-cell.is-selected {

@@ -34,9 +34,11 @@ $Action = New-ScheduledTaskAction `
 
 # Every 5 minutes. The Python poll itself no-ops on nights and weekends
 # (weekdays 07:00-19:00) so we never hit COMAIN off-shift.
-$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date)
-$Trigger.RepetitionInterval = (New-TimeSpan -Minutes 5)
-$Trigger.RepetitionDuration = (New-TimeSpan -Days 9999)
+# Pass repetition on the cmdlet. Setting .RepetitionInterval afterwards fails
+# on current Windows PowerShell 5.1 (the property is not on the trigger object).
+$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5) `
+    -RepetitionDuration (New-TimeSpan -Days 9999)
 
 $Settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `

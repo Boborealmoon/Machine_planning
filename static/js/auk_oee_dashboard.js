@@ -10,12 +10,13 @@
   const presetButtons = Array.from(document.querySelectorAll('.auk-oee-preset'));
 
   const LIVE_REFRESH_MS = 60 * 1000;
-  let activePreset = 'shift';
+  let activePreset = 'day';
   let syncingRange = false;
   let refreshTimer = null;
   let hasLoadedOnce = false;
 
   const PRESET_LABELS = {
+    day: '1 day',
     shift: 'Shift (live)',
     last_1h: 'Last 1 hour',
     last_24h: 'Last 24 hours',
@@ -157,7 +158,7 @@
         <div class="auk-oee-hero-card__body">
           <div class="auk-oee-hero-card__text">
             <h2 class="auk-oee-hero-card__title">${escapeHtml(title)}</h2>
-            <p class="auk-oee-hero-card__sub">Live plant OEE from Auk Pareto</p>
+            <p class="auk-oee-hero-card__sub">Factory dashboard OEE</p>
           </div>
           ${renderDonut(card.oee_pct, 'auk-oee-donut--hero')}
         </div>
@@ -551,8 +552,8 @@
       if (fromIso) params.set('from', fromIso);
       if (toIso) params.set('to', toIso);
     }
-    params.set('res_x', '1');
-    params.set('res_period', 'hours');
+    params.set('res_x', '15');
+    params.set('res_period', 'minutes');
     return params.toString();
   }
 
@@ -694,7 +695,7 @@
   });
 
   refreshBtn.addEventListener('click', loadDashboard);
-  setActivePreset('shift');
+  setActivePreset('day');
   scheduleRefresh();
   loadDashboard();
 })();

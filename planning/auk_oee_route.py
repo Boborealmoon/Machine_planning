@@ -10,6 +10,7 @@ from .auk_oee_service import (
     fetch_asset_detail,
     fetch_canvas_dashboard,
     format_auk_http_error,
+    load_dashboard_snapshot,
     parse_range_from_request,
     validate_pareto_dashboard,
 )
@@ -34,8 +35,8 @@ def api_auk_oee_dashboard():
         ), 503
 
     lower, upper, range_preset = parse_range_from_request(request.args)
-    res_x = int(request.args.get("res_x") or 1)
-    res_period = (request.args.get("res_period") or "hours").strip() or "hours"
+    res_x = int(request.args.get("res_x") or 15)
+    res_period = (request.args.get("res_period") or "minutes").strip() or "minutes"
 
     try:
         payload = fetch_canvas_dashboard(
@@ -46,10 +47,22 @@ def api_auk_oee_dashboard():
         )
         payload["configured"] = True
         payload["range_preset"] = range_preset
-        payload["shift_window"] = "08:30-20:30"
+        payload["shift_window"] = "00:00-24:00" if range_preset == "day" else "08:30-20:30"
         return jsonify(payload)
     except requests.HTTPError as exc:
         message, status = format_auk_http_error(exc)
+        if status == 401:
+            cached = load_dashboard_snapshot()
+            if cached:
+                cached["configured"] = True
+                cached["range_preset"] = cached.get("range_preset") or "day"
+                cached["stale"] = True
+                cached["warning"] = (
+                    "Showing the Factory Dashboard read from the signed-in Auk session. "
+                    "The saved AUK_ACCESS_TOKEN has expired, so this view will not auto-update "
+                    "until that token is replaced."
+                )
+                return jsonify(cached)
         return jsonify({"error": message, "configured": True}), status
     except requests.RequestException as exc:
         return jsonify({"error": str(exc), "configured": True}), 502

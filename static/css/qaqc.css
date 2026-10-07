@@ -1376,6 +1376,10 @@ body.qaqc-view {
   max-width: 260px;
 }
 
+.fq-col-lot-ref {
+  white-space: nowrap;
+}
+
 .fq-table-card--qc-queue {
   margin-top: 0.5rem;
 }

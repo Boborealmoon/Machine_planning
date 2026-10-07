@@ -177,29 +177,21 @@ def record_erp_wo_qty_snapshots(con, mfg_rows, synced_at=None, columns=None) -> 
     if not mfg_rows:
         return 0
 
-    from psycopg2.extras import execute_values
-
     ensure_erp_snapshot_table(con)
     when = synced_at or datetime.now(timezone.utc)
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     snapshot_date = when.astimezone().date()
 
+    from .erp_scanned_output_service import collapse_wo_qty_rows
+
+    collapsed = collapse_wo_qty_rows(mfg_rows, columns=columns)
     batch: list[tuple] = []
-    for raw in mfg_rows:
-        if isinstance(raw, dict):
-            row = raw
-        elif columns and isinstance(raw, (list, tuple)):
-            row = dict(zip(columns, raw))
-        else:
-            continue
+    for row in collapsed:
         source_mps_no = compact_text(row.get("source_mps_no"))
-        stage_no = row.get("stage_no")
-        if not source_mps_no or stage_no is None:
-            continue
         try:
             pp_partial_no = max(1, int(row.get("pp_partial_no") or 1))
-            stage_no = int(stage_no)
+            stage_no = int(row.get("stage_no"))
         except (TypeError, ValueError):
             continue
         batch.append(
@@ -209,8 +201,8 @@ def record_erp_wo_qty_snapshots(con, mfg_rows, synced_at=None, columns=None) -> 
                 stage_no,
                 snapshot_date,
                 when,
-                _float(row.get("total_acc_qty_produced")),
-                _float(row.get("total_rej_qty_produced")),
+                _float(row.get("total_acc_qty_produced") or row.get("acc_qty_produced")),
+                _float(row.get("total_rej_qty_produced") or row.get("acc_rej_qty_produced")),
             )
         )
 
@@ -220,12 +212,11 @@ def record_erp_wo_qty_snapshots(con, mfg_rows, synced_at=None, columns=None) -> 
     try:
         from .erp_scanned_output_service import record_erp_qty_jumps
 
-        record_erp_qty_jumps(con, mfg_rows, synced_at=when, columns=columns)
+        record_erp_qty_jumps(con, collapsed, synced_at=when, columns=columns)
     except Exception:
         logger.exception("ERP accepted-qty jump capture failed")
 
-    execute_values(
-        con,
+    con.execute_values(
         """
         INSERT INTO planner_erp_wo_qty_snapshot (
           source_mps_no, pp_partial_no, stage_no, snapshot_date, snapshot_at,

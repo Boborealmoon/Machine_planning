@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='so-notif-updated-20260825') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='kpi-nav-20261006') }}" />
   {% block extra_css %}{% endblock %}
   <script>
     (function () {
@@ -117,11 +117,15 @@
       </div>
 
       {# Reports & analytics #}
-      <div class="nav-dropdown {% if nav_path in ('/sales-report', '/so-outstanding-balance', '/on-time-delivery', '/job-ratio', '/production-capacity', '/repeat-orders', '/planning-data/repeat-orders', '/pr-status-enquiry') or active in ('sales_report', 'so_outstanding_balance', 'on_time_delivery', 'job_ratio', 'production_capacity', 'repeat_orders', 'pr_status_enquiry') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/sales-report', '/so-outstanding-balance', '/on-time-delivery', '/job-ratio', '/production-capacity', '/repeat-orders', '/planning-data/repeat-orders', '/pr-status-enquiry', '/kpi') or active in ('sales_report', 'so_outstanding_balance', 'on_time_delivery', 'job_ratio', 'production_capacity', 'repeat_orders', 'pr_status_enquiry', 'kpi') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="reports" aria-expanded="false" aria-controls="dd-reports">
           REPORTS / ANALYTICS <span class="nav-caret">▾</span>
         </button>
         <div class="nav-dropdown-menu" id="dd-reports">
+          <a href="/kpi"
+             class="nav-dropdown-item {% if nav_path == '/kpi' or active == 'kpi' %}nav-dropdown-item--active{% endif %}">
+            KPI
+          </a>
           <a href="/sales-report"
              class="nav-dropdown-item {% if nav_path == '/sales-report' or active == 'sales_report' %}nav-dropdown-item--active{% endif %}"
              target="_blank" rel="noopener noreferrer">
@@ -334,7 +338,7 @@
   {% block content %}{% endblock %}
 </main>
 
-<script src="{{ url_for('static', filename='js/main.js') }}?v=otd-reports-20260924"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}?v=kpi-qc-20261006"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

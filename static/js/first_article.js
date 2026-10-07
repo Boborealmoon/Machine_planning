@@ -42,7 +42,7 @@
     { id: 'po_due_date', label: 'Due', className: 'fa-col-date', sortable: true, filterable: true, title: 'PO due date' },
     { id: 'coway_proposed_edd', label: 'Coway proposed EDD', className: 'fa-col-date fa-col-edd', sortable: true, filterable: true, title: 'Coway proposed EDD from S/O management' },
     { id: 'program_finish_at', label: 'Commitment date', className: 'fa-col-finish', sortable: true, filterable: true, title: 'Commitment date. Drag cells, then paste dates as dd/mm/yyyy.' },
-    { id: 'proposed_cnc', label: 'Proposed CNC', className: 'fa-col-machine', sortable: true, filterable: true, title: 'Same Proposed CNC as S/O Management. Pick one or more planner CNC machines.' },
+    { id: 'proposed_cnc', label: 'Proposed CNC', className: 'fa-col-machine', sortable: true, filterable: true, title: 'Same Proposed CNC as S/O Management. Drag cells, then paste machine names such as CNC 40. Separate several machines with commas.' },
     { id: 'priority', label: 'Priority', className: 'fa-col-priority', sortable: true, filterable: true, title: 'Critical, High, Medium, or Low. Drag cells, then paste.' },
     { id: 'pic', label: 'PIC', className: 'fa-col-pic', sortable: true, filterable: true, title: 'Programme PIC. Drag cells, then paste names.' },
     { id: 'remarks', label: 'Remarks', className: 'fa-col-remarks', sortable: true, filterable: true },
@@ -815,7 +815,7 @@
         ${extraAttr}
         aria-haspopup="listbox"
         aria-expanded="${open ? 'true' : 'false'}"
-        title="Choose proposed CNC machines — same field as S/O Management">
+        title="Choose proposed CNC machines. Drag cells, then paste names such as CNC 40.">
         <span class="fa-proposed-cnc-btn-value">${proposedCncValueHtml(machines, source)}</span>
         <span class="fa-proposed-cnc-btn-caret" aria-hidden="true">▾</span>
       </button>
@@ -1444,7 +1444,7 @@
                    tabindex="-1" aria-label="Pick commitment date">
           </div>
         </td>
-        <td class="fa-col-machine fa-proposed-cnc-cell">${proposedCncPickerHtml(row, 'new')}</td>
+        <td class="fa-col-machine fa-proposed-cnc-cell fa-grid-cell" data-fa-grid="proposed_cnc">${proposedCncPickerHtml(row, 'new')}</td>
         <td class="fa-col-priority fa-grid-cell" data-fa-grid="priority">${priorityButtonHtml(row)}</td>
         <td class="fa-col-pic fa-grid-cell" data-fa-grid="pic">${programPicCell(row)}</td>
         <td class="fa-col-remarks">
@@ -2685,7 +2685,9 @@
     btn.classList.add('is-open');
     btn.setAttribute('aria-expanded', 'true');
     renderProposedCncPopover();
-    proposedCncPopover()?.querySelector('.fa-proposed-cnc-search')?.focus();
+    if (!btn.closest('td[data-fa-grid="proposed_cnc"]')) {
+      proposedCncPopover()?.querySelector('.fa-proposed-cnc-search')?.focus();
+    }
   }
 
   const proposedCncPending = new Map();
@@ -2781,6 +2783,11 @@
     const onOpen = (e) => {
       const btn = e.target.closest('.fa-proposed-cnc-btn');
       if (!btn) return;
+      if (grid.suppressClick || e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       e.stopPropagation();
       openProposedCncPopover(btn);
     };
@@ -2929,6 +2936,12 @@
       if (!value || value === '__new') return '';
       return String(option?.textContent || '').trim();
     }
+    if (col === 'proposed_cnc') {
+      const compact = td.querySelector('.fa-cnc-compact');
+      if (compact) return String(compact.textContent || '').replace(/\s+/g, ' ').trim();
+      const pills = [...td.querySelectorAll('.fa-cnc-pill')].map((el) => String(el.textContent || '').trim()).filter(Boolean);
+      return pills.join(', ');
+    }
     return '';
   }
 
@@ -2960,6 +2973,65 @@
     return raw.split('\n').map((line) => line.split('\t'));
   }
 
+  function proposedCncLookup() {
+    const extra = [];
+    [state.newRows, state.completedRows, state.rows].forEach((list) => {
+      (list || []).forEach((row) => {
+        proposedCncMachines(row).forEach((name) => extra.push(name));
+      });
+    });
+    const catalog = faCncMachineCatalog(extra);
+    const byUpper = new Map();
+    const byCompact = new Map();
+    const byNum = new Map();
+    catalog.forEach((name) => {
+      const upper = name.toUpperCase();
+      byUpper.set(upper, name);
+      byCompact.set(upper.replace(/[\s_-]+/g, ''), name);
+      const num = faCncMachineNumber(name);
+      if (Number.isFinite(num) && !byNum.has(num)) byNum.set(num, name);
+    });
+    return { byUpper, byCompact, byNum };
+  }
+
+  function proposedCncToken(raw, lookup) {
+    const normalized = faNormalizeCncMachine(raw);
+    if (!normalized) return '';
+    if (faIsNonCncOption(normalized)) return normalized;
+    const upper = normalized.toUpperCase();
+    if (lookup.byUpper.has(upper)) return lookup.byUpper.get(upper);
+    const compact = upper.replace(/[\s_-]+/g, '');
+    if (lookup.byCompact.has(compact)) return lookup.byCompact.get(compact);
+    if (/^(CNC)?\d+$/.test(compact)) {
+      const num = Number(compact.replace(/^CNC/, ''));
+      if (lookup.byNum.has(num)) return lookup.byNum.get(num);
+      return `CNC ${num}`;
+    }
+    return '';
+  }
+
+  function proposedCncPasteMachines(raw) {
+    let text = String(raw == null ? '' : raw).trim();
+    if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
+      text = text.slice(1, -1).replace(/""/g, '"').trim();
+    }
+    const blank = !text || /^[-–—−]+$/.test(text) || /^(none|n\/a|na|blank|pic\.\.\.)$/i.test(text);
+    if (blank) return [];
+    const lookup = proposedCncLookup();
+    const parts = text.split(/[,;/|]+/).map((part) => part.trim()).filter(Boolean);
+    const machines = [];
+    const seen = new Set();
+    parts.forEach((part) => {
+      const name = proposedCncToken(part, lookup);
+      if (!name) throw new Error(`"${part}" is not a CNC machine`);
+      const key = name.toUpperCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      machines.push(name);
+    });
+    return machines;
+  }
+
   function interpretGridCell(col, raw) {
     const text = String(raw == null ? '' : raw).trim();
     const blank = !text || /^[-–—−]+$/.test(text) || /^(none|n\/a|na|blank|pic\.\.\.)$/i.test(text);
@@ -2981,6 +3053,9 @@
       if (!pic) throw new Error(`No PIC named "${text}"`);
       return { program_pic_ids: [Number(pic.pic_id)] };
     }
+    if (col === 'proposed_cnc') {
+      return { proposed_cnc: proposedCncPasteMachines(text) };
+    }
     throw new Error('That column cannot be pasted');
   }
 
@@ -3001,6 +3076,11 @@
       const id = Number((patch.program_pic_ids || [])[0] || 0);
       select.value = id ? String(id) : '';
       select.classList.toggle('has-value', !!id);
+    }
+    if ('proposed_cnc' in patch) {
+      const btn = td.querySelector('.fa-proposed-cnc-btn');
+      if (!btn) return;
+      syncProposedCncButtons(btn.getAttribute('data-fa-cnc-key') || '', patch.proposed_cnc || []);
     }
   }
 
@@ -3069,6 +3149,7 @@
     if (/not a date/i.test(sample)) return 'Paste not saved. Commitment dates need to look like 30/09/2026.';
     if (/not a priority/i.test(sample)) return 'Paste not saved. Priority must be Critical, High, Medium, or Low.';
     if (/No PIC named/i.test(sample)) return 'Paste not saved. Copy a PIC name that is already in the list, such as Ananda, then paste it onto the selected PIC cells.';
+    if (/not a CNC machine/i.test(sample)) return 'Paste not saved. Proposed CNC needs a machine such as CNC 40, Subcon, or Wirecut. Separate several machines with commas.';
     return 'Paste not saved.';
   }
 
@@ -3092,7 +3173,7 @@
     const structured = /[\t\n]/.test(String(text));
     if (multi || structured) return true;
     const col = (origin || selectedCells()[0])?.getAttribute('data-fa-grid');
-    if (col === 'pic' || col === 'priority') return true;
+    if (col === 'pic' || col === 'priority' || col === 'proposed_cnc') return true;
     if (col === 'commitment' && event.target?.closest?.('[data-fa-new-field="program_finish_at"]')) return false;
     return !!col;
   }
@@ -3169,6 +3250,7 @@
       grid.dragging = true;
       document.body.classList.add('fa-grid-dragging');
       closePriorityMenu();
+      closeProposedCncPopover();
       const under = document.elementFromPoint(event.clientX, event.clientY);
       const cell = under?.closest?.('td[data-fa-grid]');
       if (!cell || cell.closest('table')?.id !== grid.tableId) return;

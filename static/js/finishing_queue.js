@@ -1634,7 +1634,7 @@ function fqMiRowSearchText(row) {
   return [
     row.inspection_voucher_no, row.po_no, row.supplier_name, row.shipment_voucher_no,
     row.shipment_line_item_no, row.grn_no, row.inspector_code, row.inspector_name,
-    row.inventory_code, row.inventory_desc, row.assigned_inspector_name,
+    row.inventory_code, row.inventory_desc, row.lot_reference_no, row.assigned_inspector_name,
   ].map((v) => String(v == null ? '' : v).toLowerCase()).join(' ');
 }
 
@@ -1678,6 +1678,7 @@ function fqMiRenderRow(row) {
     ? ''
     : `<button type="button" class="fq-icon-btn fq-icon-btn--done${done ? ' is-on' : ''}" data-fq-mi-toggle="done" data-fq-mi-voucher="${escapeHtml(voucher)}" aria-pressed="${done ? 'true' : 'false'}" title="${done ? ((typeof fqT === 'function') ? fqT('mark_not_done') : 'Mark not done') : ((typeof fqT === 'function') ? fqT('mark_inspection_done') : 'Mark inspection done')}">✓</button>`;
   const desc = String(row.inventory_desc || '').trim();
+  const lotRef = String(row.lot_reference_no || '').trim();
   return `
     <tr class="fq-row fq-row--mi${!isHistorical && done ? ' fq-row--done' : ''}" data-mi-key="${escapeHtml(fqMiRowKey(row))}">
       <td class="fq-col-sticky fq-col-sticky--mi fq-col-mono">${escapeHtml(voucher || '—')}</td>
@@ -1687,6 +1688,7 @@ function fqMiRenderRow(row) {
       <td class="fq-col-mono">${escapeHtml(String(row.grn_no || '—'))}</td>
       <td class="fq-col-date">${escapeHtml(fqMiFormatDate(fqMiReceivedDate(row)))}</td>
       <td class="fq-col-mono">${escapeHtml(String(row.inventory_code || '—'))}</td>
+      <td class="fq-col-mono fq-col-lot-ref" title="${escapeHtml(lotRef)}">${escapeHtml(lotRef || '—')}</td>
       <td class="fq-col-desc" title="${escapeHtml(desc)}">${escapeHtml(desc || '—')}</td>
       <td class="fq-col-num">${escapeHtml(row.receiving_qty == null ? '—' : String(row.receiving_qty))}</td>
       <td>${fqMiStatusPill(row.status)}</td>

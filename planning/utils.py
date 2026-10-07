@@ -107,6 +107,19 @@ def compact_text(value):
     return str(value).strip()
 
 
+def sheet_category(process_sheet_no) -> str:
+    """Process-sheet family: NPS, APS, PPS, and [SR] sheets such as M24-[SR]08."""
+    raw = compact_text(process_sheet_no).split("::", 1)[0].strip()
+    if not raw:
+        return "Other"
+    if re.search(r"\[temp\]", raw, re.I):
+        return "TEMP"
+    if re.search(r"\[sr\]|\(sr\)", raw, re.I):
+        return "SR"
+    match = re.match(r"^([A-Z]+)", raw.upper())
+    return match.group(1) if match else "Other"
+
+
 def parse_number(value, default=0.0):
     try:
         if value is None or value == "":

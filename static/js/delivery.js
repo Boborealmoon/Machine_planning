@@ -53,6 +53,8 @@ function deliverySetView(view, options = {}) {
     queueBtn.setAttribute('aria-selected', showQueue ? 'true' : 'false');
   }
   if (subtitle) subtitle.textContent = DELIVERY_SUBTITLES[nextView] || DELIVERY_SUBTITLES.schedule;
+  const exportBtn = document.getElementById('delivery-export-excel');
+  if (exportBtn) exportBtn.hidden = !showSchedule;
 
   if (!options.skipUrl) deliveryUpdateUrl(nextView);
 

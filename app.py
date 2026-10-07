@@ -113,6 +113,7 @@ from planning.shift_management_auth import (
 from planning.pps_route import PPS_PATH, pps_bp
 from planning.accounts_route import ACCOUNTS_PATH, accounts_bp
 from planning.notes_route import notes_bp
+from planning.qc_dwell_kpi_route import qc_dwell_kpi_bp
 from planning.utils import pending_delivery_order, shipped_quantity_completed
 
 app.register_blueprint(process_sheets_bp)
@@ -183,6 +184,7 @@ app.register_blueprint(shift_mgmt_auth_bp)
 app.register_blueprint(pps_bp)
 app.register_blueprint(accounts_bp)
 app.register_blueprint(notes_bp)
+app.register_blueprint(qc_dwell_kpi_bp)
 from planning.api_json_errors import register_api_json_error_handlers
 
 register_api_json_error_handlers(app)
@@ -401,6 +403,7 @@ _REPORTS_PAGE_PREFIXES = (
     "/production-capacity",
     "/repeat-orders",
     "/planning-data/repeat-orders",
+    "/kpi",
 )
 # API URLs that feed those pages — locked too so the data can't be fetched directly.
 _REPORTS_API_PREFIXES = (
@@ -410,6 +413,7 @@ _REPORTS_API_PREFIXES = (
     "/api/job-ratio",
     "/api/production-capacity",
     "/api/planning-data/repeat-orders",
+    "/api/kpi",
 )
 
 

@@ -2091,6 +2091,7 @@ def _mpp_job_context(job_id: str, job_row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Distinct from auto-unschedule (915_042_001) and ERP sync (915_042_003).
 _MPP_AUTO_DEQUEUE_LOCK_KEY = 915_042_002
 
 

@@ -733,12 +733,7 @@ def record_erp_qty_jumps(con, mfg_rows, synced_at=None, columns=None) -> int:
     ensure_erp_qty_jump_table(con)
     if not _SCHEMA_READY:
         return 0
-    current: list[dict] = []
-    for raw in mfg_rows:
-        if isinstance(raw, dict):
-            current.append(raw)
-        elif columns and isinstance(raw, (list, tuple)):
-            current.append(dict(zip(columns, raw)))
+    current = collapse_wo_qty_rows(mfg_rows, columns=columns)
     keys = []
     for row in current:
         source_mps_no = compact_text(row.get("source_mps_no"))
@@ -772,6 +767,35 @@ def _mfg_rows_as_dicts(mfg_rows, columns=None) -> list[dict]:
         elif columns and isinstance(raw, (list, tuple)):
             current.append(dict(zip(columns, raw)))
     return current
+
+
+def collapse_wo_qty_rows(mfg_rows, columns=None) -> list[dict]:
+    """One row per WO stage. Staging/COMAIN can repeat a stage; keep the higher accepted qty.
+
+    Postgres rejects an upsert when the same unique key appears twice in one INSERT.
+    """
+    best: dict[tuple[str, int, int], dict] = {}
+    order: list[tuple[str, int, int]] = []
+    for row in _mfg_rows_as_dicts(mfg_rows, columns=columns):
+        source_mps_no = compact_text(row.get("source_mps_no"))
+        if not source_mps_no or row.get("stage_no") is None:
+            continue
+        try:
+            key = wo_stage_key(source_mps_no, row.get("pp_partial_no"), row.get("stage_no"))
+        except (TypeError, ValueError):
+            continue
+        acc = _float(row.get("total_acc_qty_produced") or row.get("acc_qty_produced"))
+        rej = _float(row.get("total_rej_qty_produced") or row.get("acc_rej_qty_produced"))
+        current = best.get(key)
+        if current is None:
+            order.append(key)
+            best[key] = row
+            continue
+        prev_acc = _float(current.get("total_acc_qty_produced") or current.get("acc_qty_produced"))
+        prev_rej = _float(current.get("total_rej_qty_produced") or current.get("acc_rej_qty_produced"))
+        if acc > prev_acc or (acc == prev_acc and rej > prev_rej):
+            best[key] = row
+    return [best[key] for key in order]
 
 
 def poll_qty_changes(
@@ -934,6 +958,14 @@ def _seed_latest_if_empty(con) -> int:
     return _latest_row_count(con)
 
 
+def _qty_stamp(value) -> str:
+    """UTC ISO timestamp so latest-table and jump-table times compare in order."""
+    if isinstance(value, datetime):
+        stamp = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return stamp.astimezone(timezone.utc).isoformat()
+    return compact_text(value)
+
+
 def _load_latest_qty_map(con) -> dict[tuple[str, int, int], dict]:
     latest_rows = rows(
         con.execute(
@@ -950,7 +982,38 @@ def _load_latest_qty_map(con) -> dict[tuple[str, int, int], dict]:
         previous[key] = {
             "acc_qty_produced": _float(row.get("acc_qty_produced")),
             "acc_rej_qty_produced": _float(row.get("acc_rej_qty_produced")),
-            "snapshot_at": compact_text(row.get("seen_at")),
+            "snapshot_at": _qty_stamp(row.get("seen_at")),
+        }
+    # The compact latest table can lag the jump table when a snapshot write fails.
+    # Prefer the newer jump so the 5-minute poll does not record that increase again.
+    jump_rows = planner_try_savepoint(
+        con,
+        "erp_jump_latest_overlay",
+        lambda: rows(
+            con.execute(
+                """
+                SELECT DISTINCT ON (source_mps_no, pp_partial_no, stage_no)
+                       source_mps_no, pp_partial_no, stage_no,
+                       new_acc_qty AS acc_qty_produced,
+                       new_rej_qty AS acc_rej_qty_produced,
+                       scanned_at AS seen_at
+                FROM planner_erp_qty_jump
+                ORDER BY source_mps_no, pp_partial_no, stage_no, scanned_at DESC
+                """
+            )
+        ),
+        default=[],
+    ) or []
+    for row in jump_rows:
+        key = wo_stage_key(row.get("source_mps_no"), row.get("pp_partial_no"), row.get("stage_no"))
+        stamp = _qty_stamp(row.get("seen_at"))
+        existing = previous.get(key)
+        if existing is not None and stamp <= compact_text(existing.get("snapshot_at")):
+            continue
+        previous[key] = {
+            "acc_qty_produced": _float(row.get("acc_qty_produced")),
+            "acc_rej_qty_produced": _float(row.get("acc_rej_qty_produced")),
+            "snapshot_at": stamp,
         }
     return previous
 
@@ -1021,7 +1084,7 @@ def poll_erp_qty_jumps(con, mfg_rows, scanned_at=None, columns=None) -> dict:
     ensure_erp_wo_qty_latest_table(con)
     logger.info("WO qty poll seeding latest-qty baseline if empty")
     seeded = _seed_latest_if_empty(con)
-    current = _mfg_rows_as_dicts(mfg_rows, columns=columns)
+    current = collapse_wo_qty_rows(mfg_rows, columns=columns)
     when = scanned_at or datetime.now(timezone.utc)
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)

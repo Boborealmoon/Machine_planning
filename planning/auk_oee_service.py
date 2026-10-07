@@ -13,11 +13,13 @@ from .utils import PLANNER_TZ
 
 import requests
 
-_DEFAULT_API_BASE = "https://api.prod.auk.industries/v1"
+_DEFAULT_API_BASE = "https://bff.auk.industries"
 _DEFAULT_ENTITY_ID = 383
 _DEFAULT_PARETO_BLOCK_ID = 5462
 _DEFAULT_CANVAS_ID = 426
-_DEFAULT_FRONTEND_URL = "https://ops.auk.industries/pareto_analysis/5462"
+_DEFAULT_FRONTEND_URL = "https://ops.auk.industries/dashboard?entity_id=383"
+_OEE_SUMMARY_WIDGET_TYPE = 2
+_SITE_OEE_CHUNK = 50
 _MAX_WORKERS = 8
 _CNC_RE = re.compile(r"CNC\s+(\d+)", re.IGNORECASE)
 
@@ -74,7 +76,9 @@ def _api_base() -> str:
 
 
 def _access_token() -> str:
-    return (os.getenv("AUK_ACCESS_TOKEN") or "").strip()
+    from .auk_auth import current_access_token
+
+    return current_access_token()
 
 
 def _entity_id() -> int:
@@ -89,8 +93,18 @@ def _pareto_block_id() -> int:
     return int(os.getenv("AUK_PARETO_BLOCK_ID") or _DEFAULT_PARETO_BLOCK_ID)
 
 
+def _use_factory_dashboard() -> bool:
+    """Factory dashboard (ops.auk.industries/dashboard) is the live source.
+
+    Pareto block routes were removed from the BFF. Set AUK_DATA_SOURCE=pareto
+    only to force the legacy path.
+    """
+    source = (os.getenv("AUK_DATA_SOURCE") or "dashboard").strip().lower()
+    return source not in ("pareto", "legacy")
+
+
 def _use_canvas_source() -> bool:
-    return (os.getenv("AUK_DATA_SOURCE") or "pareto").strip().lower() == "canvas"
+    return _use_factory_dashboard()
 
 
 def auk_configured() -> bool:
@@ -105,8 +119,15 @@ def _headers() -> dict[str, str]:
 
 
 def _get(path: str, params: dict[str, Any] | None = None) -> Any:
+    from .auk_auth import refresh_auk_token
+
     url = f"{_api_base()}/{path.lstrip('/')}"
     response = requests.get(url, headers=_headers(), params=params or {}, timeout=45)
+    if response.status_code == 401:
+        previous = _access_token()
+        fresh = refresh_auk_token(force=True)
+        if fresh and fresh != previous:
+            response = requests.get(url, headers=_headers(), params=params or {}, timeout=45)
     response.raise_for_status()
     return response.json()
 
@@ -130,6 +151,25 @@ def _auk_range_params(
         "res_x": res_x,
         "res_period": res_period,
         "date_range": json.dumps({"lower": lower, "upper": upper}, separators=(",", ":")),
+        "sku_oee": "true" if sku else "false",
+    }
+
+
+def _auk_v2_range_params(
+    lower: str,
+    upper: str,
+    *,
+    res_x: int = 15,
+    res_period: str = "minutes",
+    sku_oee: bool | None = None,
+) -> dict[str, Any]:
+    """Query params used by the ops.auk.industries factory dashboard (BFF v2)."""
+    sku = _sku_oee_enabled() if sku_oee is None else sku_oee
+    return {
+        "res_x": res_x,
+        "res_period": res_period,
+        "lower": lower,
+        "upper": upper,
         "sku_oee": "true" if sku else "false",
     }
 
@@ -202,6 +242,11 @@ def range_for_preset(preset: str, *, now: datetime | None = None) -> tuple[str, 
         lower = _clamp_lower_to_shift_window(lower, upper)
         return _to_utc_z(lower), _to_utc_z(upper), "last_24h"
 
+    if preset_key in ("day", "1d", "1day", "today"):
+        # Same window as the factory dashboard "1d" control: local midnight → now.
+        lower = datetime.combine(now.date(), time(0, 0), tzinfo=PLANNER_TZ)
+        return _to_utc_z(lower), _to_utc_z(now), "day"
+
     shift_day = _active_shift_day(now)
     lower = _shift_start_for_day(shift_day)
     if upper < lower:
@@ -261,8 +306,8 @@ def format_auk_http_error(exc: requests.HTTPError) -> tuple[str, int]:
 
     if status == 401:
         return (
-            "Auk access token rejected — copy a fresh AUK_ACCESS_TOKEN from ops.auk.industries "
-            "localStorage, update .env, and restart the app.",
+            "Auk access token rejected. Set AUK_USERNAME and AUK_PASSWORD in .env "
+            "so the planner can sign in and replace it every 6 hours.",
             401,
         )
     if status == 400:
@@ -314,11 +359,26 @@ def fetch_entity_dashboard(
     return data if isinstance(data, dict) else {}
 
 
+def _as_record_list(data: Any) -> list[dict[str, Any]]:
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)]
+    if isinstance(data, dict):
+        for key in ("data", "results", "items", "canvases", "widgets", "oee"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [row for row in value if isinstance(row, dict)]
+    return []
+
+
+def fetch_canvases(entity_id: int | None = None) -> list[dict[str, Any]]:
+    entity = entity_id if entity_id is not None else _entity_id()
+    return _as_record_list(_get(f"v2/entity/{entity}/canvas"))
+
+
 def fetch_widgets(entity_id: int | None = None, canvas_id: int | None = None) -> list[dict[str, Any]]:
     entity = entity_id if entity_id is not None else _entity_id()
     canvas = canvas_id if canvas_id is not None else _canvas_id()
-    data = _get(f"entity/{entity}/canvas/{canvas}/widget")
-    return data if isinstance(data, list) else []
+    return _as_record_list(_get(f"v2/entity/{entity}/canvas/{canvas}/widget"))
 
 
 def fetch_block_oee(
@@ -1244,6 +1304,427 @@ def _fetch_canvas_dashboard(
     }
 
 
+_CAT_KEYS = ("ef", "rw", "rj", "sl", "ms", "st", "bd", "uu", "pd", "us", "na")
+_WATERFALL = (
+    ("time", "ct"),
+    ("loss", "na"),
+    ("loss", "us"),
+    ("loss", "pd"),
+    ("time", "pt"),
+    ("loss", "uu"),
+    ("loss", "bd"),
+    ("loss", "st"),
+    ("time", "gt"),
+    ("loss", "ms"),
+    ("loss", "sl"),
+    ("time", "nt"),
+    ("loss", "rj"),
+    ("loss", "rw"),
+    ("time", "ef"),
+)
+
+
+def overall_from_oee_slots(slots: list[dict[str, Any]] | None) -> dict[str, float] | None:
+    """Match the factory-dashboard donut: OEE2 = Availability x Performance x Quality.
+
+    Auk's client aggregates 15-minute buckets with the waterfall in
+    ops.auk.industries (calendar → scheduled → gross → net → effective).
+    """
+    durations = {key: 0.0 for key in _CAT_KEYS}
+    total = 0.0
+    for slot in slots or []:
+        if not isinstance(slot, dict):
+            continue
+        oee = slot.get("oee") if isinstance(slot.get("oee"), dict) else {}
+        try:
+            interval = float(slot.get("int") or 0)
+        except (TypeError, ValueError):
+            interval = 0.0
+        if interval <= 0:
+            interval = 1.0
+        seconds = interval / 1000.0
+        total += seconds
+        for key in _CAT_KEYS:
+            try:
+                pct = float(oee.get(key) or 0)
+            except (TypeError, ValueError):
+                pct = 0.0
+            durations[key] += (pct / 100.0) * seconds
+
+    if total <= 0:
+        return None
+
+    remaining = total
+    percents: dict[str, float] = {}
+    for kind, key in _WATERFALL:
+        if kind == "loss":
+            duration = durations.get(key, 0.0)
+            remaining -= duration
+        else:
+            duration = remaining
+        percents[key] = round(duration / total * 100.0, 2)
+
+    ct = percents["ct"]
+    pt = percents["pt"]
+    gt = percents["gt"]
+    nt = percents["nt"]
+    ef = percents["ef"]
+    loading = (pt / ct) if ct else 0.0
+    availability = (gt / pt) if pt else 0.0
+    performance = (nt / gt) if gt else 0.0
+    quality = (ef / nt) if nt else 0.0
+    loading_pct = 100.0 * loading
+    availability_pct = 100.0 * availability
+    performance_pct = 100.0 * performance
+    quality_pct = 100.0 * quality
+    return {
+        "loading": round(loading_pct, 2),
+        "availability": round(availability_pct, 2),
+        "performance": round(performance_pct, 2),
+        "quality": round(quality_pct, 2),
+        "final_effective": round(availability_pct * performance_pct * quality_pct / 10000.0, 2),
+    }
+
+
+def _widget_type_id(widget: dict[str, Any]) -> int | None:
+    for key in ("widget_type_id", "type_id"):
+        value = widget.get(key)
+        if isinstance(value, dict):
+            value = value.get("widget_type_id") or value.get("id")
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _widget_binding(widget: dict[str, Any]) -> dict[str, Any]:
+    binding = widget.get("binding") or {}
+    if isinstance(binding, str):
+        try:
+            parsed = json.loads(binding)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return binding if isinstance(binding, dict) else {}
+
+
+def _widget_equipment_id(widget: dict[str, Any]) -> int | None:
+    binding = _widget_binding(widget)
+    for source in (binding, widget):
+        value = source.get("equipment_id")
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _canvas_id_of(canvas: dict[str, Any]) -> int | None:
+    for key in ("canvas_id", "id"):
+        value = canvas.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _canvas_name(canvas: dict[str, Any]) -> str:
+    for key in ("name", "canvas_name", "label", "title"):
+        value = canvas.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _floor_range_to_resolution(lower: str, upper: str, *, res_x: int, res_period: str) -> tuple[str, str]:
+    """Floor the end time the way the Auk dashboard does before it calls the API."""
+    upper_dt = _parse_iso(upper)
+    lower_dt = _parse_iso(lower)
+    if upper_dt is None or lower_dt is None:
+        return lower, upper
+    upper_dt = _floor_to_minute(upper_dt.astimezone(PLANNER_TZ))
+    lower_dt = _floor_to_minute(lower_dt.astimezone(PLANNER_TZ))
+    period = (res_period or "minutes").strip().lower()
+    step = max(1, int(res_x or 1))
+    if period.startswith("minute"):
+        upper_dt = upper_dt.replace(minute=(upper_dt.minute // step) * step, second=0, microsecond=0)
+    elif period.startswith("hour"):
+        upper_dt = upper_dt.replace(minute=0, second=0, microsecond=0)
+    if lower_dt >= upper_dt:
+        return lower, upper
+    return _to_utc_z(lower_dt), _to_utc_z(upper_dt)
+
+
+def _oee_widgets(widgets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    typed = [widget for widget in widgets if _widget_type_id(widget) == _OEE_SUMMARY_WIDGET_TYPE]
+    pool = typed or widgets
+    best: dict[int, dict[str, Any]] = {}
+    for widget in pool:
+        equipment_id = _widget_equipment_id(widget)
+        if equipment_id is None:
+            continue
+        current = best.get(equipment_id)
+        candidate = (int(widget.get("position_y") or 0), int(widget.get("position_x") or 0))
+        if current is None:
+            best[equipment_id] = widget
+            continue
+        existing = (int(current.get("position_y") or 0), int(current.get("position_x") or 0))
+        if candidate < existing:
+            best[equipment_id] = widget
+    return list(best.values())
+
+
+def _pick_dashboard_canvas(
+    canvases: list[dict[str, Any]],
+    *,
+    entity: int,
+    preferred_id: int | None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    if not canvases:
+        return None, []
+
+    ordered = sorted(
+        canvases,
+        key=lambda canvas: (
+            0 if preferred_id is not None and _canvas_id_of(canvas) == preferred_id else 1,
+            0 if "factory" in _canvas_name(canvas).lower() else 1,
+            0 if "dashboard" in _canvas_name(canvas).lower() else 1,
+            _canvas_name(canvas).lower(),
+        ),
+    )
+    best_canvas: dict[str, Any] | None = None
+    best_widgets: list[dict[str, Any]] = []
+    for canvas in ordered[:8]:
+        canvas_id = _canvas_id_of(canvas)
+        if canvas_id is None:
+            continue
+        try:
+            widgets = fetch_widgets(entity_id=entity, canvas_id=canvas_id)
+        except requests.HTTPError:
+            raise
+        except requests.RequestException:
+            continue
+        oee_widgets = _oee_widgets(widgets)
+        if len(oee_widgets) > len(best_widgets):
+            best_canvas = canvas
+            best_widgets = oee_widgets
+        if preferred_id is not None and canvas_id == preferred_id and oee_widgets:
+            return canvas, oee_widgets
+        if oee_widgets and "factory" in _canvas_name(canvas).lower():
+            return canvas, oee_widgets
+    return best_canvas, best_widgets
+
+
+def fetch_site_oee(
+    equipment_ids: list[int],
+    *,
+    lower: str,
+    upper: str,
+    res_x: int = 15,
+    res_period: str = "minutes",
+    entity_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Batch OEE used by the factory dashboard (v2/site/{entity}/oee)."""
+    entity = entity_id if entity_id is not None else _entity_id()
+    if not equipment_ids:
+        return []
+    params = _auk_v2_range_params(lower, upper, res_x=res_x, res_period=res_period)
+    rows: list[dict[str, Any]] = []
+    for start in range(0, len(equipment_ids), _SITE_OEE_CHUNK):
+        chunk = equipment_ids[start : start + _SITE_OEE_CHUNK]
+        params["equipment_ids"] = ",".join(str(equipment_id) for equipment_id in chunk)
+        payload = _get(f"v2/site/{entity}/oee", params)
+        rows.extend(_as_record_list(payload))
+    return rows
+
+
+def _slots_for_site_row(row: dict[str, Any]) -> list[dict[str, Any]]:
+    data = row.get("data")
+    if isinstance(data, list):
+        return [slot for slot in data if isinstance(slot, dict)]
+    oee = row.get("oee")
+    if isinstance(oee, list):
+        return [slot for slot in oee if isinstance(slot, dict)]
+    return []
+
+
+def _card_from_dashboard_widget(
+    widget: dict[str, Any],
+    row: dict[str, Any] | None,
+) -> dict[str, Any]:
+    label = (widget.get("label") or widget.get("title") or "Untitled").strip()
+    classification = _classify_card(label)
+    if not classification.get("group_id"):
+        classification = {
+            "group_id": "other",
+            "is_group_summary": False,
+            "is_machine": True,
+            "cnc_number": None,
+        }
+    slots = _slots_for_site_row(row or {})
+    overall = overall_from_oee_slots(slots) or {}
+    if not overall and isinstance((row or {}).get("overall"), dict):
+        overall = row["overall"]
+    title, machine_type = _parse_card_title(label)
+    equipment_id = _widget_equipment_id(widget)
+    losses = _loss_averages([{"oee": slot.get("oee") or {}} for slot in slots])
+    return {
+        "widget_id": widget.get("widget_id"),
+        "label": label,
+        "title": title,
+        "machine_type": machine_type,
+        "group_id": classification["group_id"],
+        "is_group_summary": classification["is_group_summary"],
+        "is_machine": classification["is_machine"],
+        "cnc_number": classification["cnc_number"],
+        "position_x": int(widget.get("position_x") or 0),
+        "position_y": int(widget.get("position_y") or 0),
+        "block_id": None,
+        "asset_id": equipment_id,
+        "equipment_id": equipment_id,
+        "oee_pct": _round_pct(overall.get("final_effective")),
+        "loading_pct": _round_pct(overall.get("loading")),
+        "availability_pct": _round_pct(overall.get("availability")),
+        "performance_pct": _round_pct(overall.get("performance")),
+        "quality_pct": _round_pct(overall.get("quality")),
+        "unutilised_pct": losses.get("uu"),
+        "effective_pct": losses.get("ef"),
+        "losses": losses,
+        "hourly_slots": len(slots),
+        "source": "dashboard",
+        "error": (
+            None
+            if overall
+            else ("No OEE returned for this equipment" if row is None else "No OEE samples in this time range")
+        ),
+    }
+
+
+def fetch_factory_dashboard(
+    *,
+    lower: str | None = None,
+    upper: str | None = None,
+    res_x: int = 15,
+    res_period: str = "minutes",
+    entity_id: int | None = None,
+    canvas_id: int | None = None,
+) -> dict[str, Any]:
+    """OEE cards from the same factory dashboard as ops.auk.industries/dashboard."""
+    if not auk_configured():
+        raise RuntimeError("AUK_ACCESS_TOKEN is not configured")
+
+    if not lower or not upper:
+        lower, upper = _default_range()
+    lower, upper = _floor_range_to_resolution(lower, upper, res_x=res_x, res_period=res_period)
+
+    entity = entity_id if entity_id is not None else _entity_id()
+    preferred = canvas_id if canvas_id is not None else _canvas_id()
+    canvases = fetch_canvases(entity_id=entity)
+    canvas, widgets = _pick_dashboard_canvas(canvases, entity=entity, preferred_id=preferred)
+    if canvas is None or not widgets:
+        raise RuntimeError(
+            f"No OEE widgets found for entity {entity}. "
+            "Check that the Factory Dashboard is shared with this Auk user."
+        )
+
+    equipment_ids = [equipment_id for equipment_id in (_widget_equipment_id(widget) for widget in widgets) if equipment_id]
+    site_rows = fetch_site_oee(
+        equipment_ids,
+        lower=lower,
+        upper=upper,
+        res_x=res_x,
+        res_period=res_period,
+        entity_id=entity,
+    )
+    rows_by_equipment = {}
+    for row in site_rows:
+        equipment_id = row.get("equipment_id")
+        if equipment_id is None:
+            continue
+        try:
+            rows_by_equipment[int(equipment_id)] = row
+        except (TypeError, ValueError):
+            continue
+
+    cards = [
+        _card_from_dashboard_widget(widget, rows_by_equipment.get(_widget_equipment_id(widget) or -1))
+        for widget in widgets
+    ]
+    cards = [card for card in cards if card.get("group_id")]
+    groups = _group_cards(cards)
+    machine_count = sum(1 for card in cards if card.get("is_machine"))
+    missing = [card for card in cards if card.get("error")]
+    warning = None
+    if machine_count == 0 and not any(card.get("is_group_summary") for card in cards):
+        warning = f"Factory dashboard for entity {entity} returned no OEE cards."
+    elif missing and len(missing) == len(cards):
+        warning = "Auk returned the dashboard widgets but no OEE values. Check the time range."
+
+    selected_id = _canvas_id_of(canvas)
+    payload = {
+        "entity_id": entity,
+        "canvas_id": selected_id,
+        "canvas_name": _canvas_name(canvas),
+        "pareto_block_id": None,
+        "source": "dashboard",
+        "from": lower,
+        "to": upper,
+        "res_x": res_x,
+        "res_period": res_period,
+        "cards": cards,
+        "groups": groups,
+        "widget_count": len(widgets),
+        "block_count": 0,
+        "asset_count": len(equipment_ids),
+        "machine_count": machine_count,
+        "asset_error_count": len(missing),
+        "card_count": len(cards),
+        "warning": warning,
+        "auk_block_oee_url": (
+            f"{_api_base()}/v2/site/{entity}/oee"
+            f"?{requests.compat.urlencode(_auk_v2_range_params(lower, upper, res_x=res_x, res_period=res_period))}"
+        ),
+        "fetched_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    try:
+        save_dashboard_snapshot(payload)
+    except OSError:
+        pass
+    return payload
+
+
+def _snapshot_path() -> str:
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(root, "cache", "auk_oee_dashboard.json")
+
+
+def save_dashboard_snapshot(payload: dict[str, Any]) -> None:
+    path = _snapshot_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+
+
+def load_dashboard_snapshot() -> dict[str, Any] | None:
+    path = _snapshot_path()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("cards") else None
+
+
 def fetch_canvas_dashboard(
     *,
     lower: str | None = None,
@@ -1253,8 +1734,8 @@ def fetch_canvas_dashboard(
     entity_id: int | None = None,
     canvas_id: int | None = None,
 ) -> dict[str, Any]:
-    if _use_canvas_source():
-        return _fetch_canvas_dashboard(
+    if _use_factory_dashboard():
+        return fetch_factory_dashboard(
             lower=lower,
             upper=upper,
             res_x=res_x,

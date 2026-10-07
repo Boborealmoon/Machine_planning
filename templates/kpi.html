@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block title %}KPI{% endblock %}
+{% block main_class %}app-main--kpi{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/kpi.css') }}?v=kpi-material-dates-20261006">
+{% endblock %}
+{% block content %}
+<div class="kpi-page" data-screen="qc">
+  <header class="kpi-header">
+    <div class="kpi-header-lead">
+      <h1 class="kpi-title">KPI</h1>
+      <div class="kpi-tabs" role="tablist">
+        <button type="button" class="kpi-tab kpi-tab--qc is-active" data-kpi-tab="qc" aria-selected="true">QC dwell</button>
+        <button type="button" class="kpi-tab kpi-tab--material" data-kpi-tab="material" aria-selected="false">Material dates</button>
+        <button type="button" class="kpi-tab kpi-tab--exceptions" data-kpi-tab="exceptions" aria-selected="false">Exceptions</button>
+      </div>
+    </div>
+    <div class="kpi-header-actions">
+      <button type="button" class="btn btn-light btn-sm" id="kpi-export" disabled>Export CSV</button>
+      <button type="button" class="btn btn-dark btn-sm" id="kpi-refresh">Refresh</button>
+    </div>
+  </header>
+
+  <div class="kpi-screenbar">
+    <p class="kpi-subtitle" id="kpi-subtitle"></p>
+    <div class="kpi-screenbar-tools">
+      <div class="kpi-typebar" id="kpi-typebar" role="group" aria-label="Process sheet type"></div>
+      <div class="kpi-colbar">
+        <label class="kpi-hide">
+          <input type="checkbox" id="kpi-hide-resolved">
+          <span>Hide resolved</span>
+        </label>
+        <label class="kpi-colpick">
+          <span>Filter column</span>
+          <select id="kpi-col-key"></select>
+          <input type="search" id="kpi-col-value" placeholder="Contains..." autocomplete="off">
+        </label>
+        <div id="kpi-col-chips" class="kpi-col-chips"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="kpi-loading" class="kpi-loading" hidden>
+    <div class="kpi-spinner" role="status" aria-label="Loading"></div>
+    <span id="kpi-loading-text">Loading...</span>
+  </div>
+  <div id="kpi-alert" class="kpi-alert" hidden></div>
+
+  <div id="kpi-panel-qc" class="kpi-panel" data-kpi-panel="qc">
+  <section class="kpi-toolbar card">
+    <label class="kpi-field">
+      <span>Pushed from</span>
+      <input type="date" id="kpi-from">
+    </label>
+    <label class="kpi-field">
+      <span>Pushed to</span>
+      <input type="date" id="kpi-to">
+    </label>
+    <label class="kpi-field">
+      <span>State</span>
+      <select id="kpi-status">
+        <option value="all">All</option>
+        <option value="in_qc">In QC</option>
+        <option value="left_qc">Left QC</option>
+        <option value="left_unstamped">Left QC, time not recorded</option>
+        <option value="before_qc">Still at Deburring</option>
+      </select>
+    </label>
+    <label class="kpi-field">
+      <span>Min days</span>
+      <input type="number" id="kpi-min-days" min="0" step="0.5" placeholder="Any">
+    </label>
+    <label class="kpi-field kpi-field--search">
+      <span>Search</span>
+      <input type="search" id="kpi-search" placeholder="Job, part, customer, S/O, inspector" autocomplete="off">
+    </label>
+    <label class="kpi-check">
+      <input type="checkbox" id="kpi-include-open" checked>
+      <span>Keep jobs still in Final Inspection, even if pushed before this range</span>
+    </label>
+  </section>
+
+  <section id="kpi-summary" class="kpi-summary" hidden></section>
+
+  <section class="card kpi-table-card" id="kpi-table-card" hidden>
+    <div class="kpi-table-meta" id="kpi-meta"></div>
+    <div class="kpi-table-wrap">
+      <table class="kpi-table" id="kpi-table">
+        <thead>
+          <tr>
+            <th class="kpi-resolved-col">Resolved</th>
+            <th><button type="button" data-kpi-sort="ps_id">Job</button></th>
+            <th><button type="button" data-kpi-sort="part_no">Part</button></th>
+            <th><button type="button" data-kpi-sort="customer_name">Customer</button></th>
+            <th><button type="button" data-kpi-sort="current_stage_desc">Stage</button></th>
+            <th><button type="button" data-kpi-sort="pushed_at">Pushed to QC</button></th>
+            <th><button type="button" data-kpi-sort="left_at">Left QC</button></th>
+            <th class="kpi-num"><button type="button" data-kpi-sort="days_at_qc">Days at QC</button></th>
+            <th><button type="button" data-kpi-sort="qc_state">State</button></th>
+            <th><button type="button" data-kpi-sort="inspector_name">Inspector</button></th>
+          </tr>
+        </thead>
+        <tbody id="kpi-body"></tbody>
+      </table>
+    </div>
+    <div id="kpi-empty" class="kpi-empty" hidden>No Pushed to QC stamps match these filters.</div>
+  </section>
+  </div>
+
+  <div id="kpi-panel-material" class="kpi-panel" data-kpi-panel="material" hidden>
+    <section class="kpi-toolbar card">
+      <label class="kpi-field kpi-field--search">
+        <span>Search</span>
+        <input type="search" id="kpi-material-search" placeholder="Job, part, customer, S/O, remarks" autocomplete="off">
+      </label>
+    </section>
+    <section id="kpi-material-summary" class="kpi-summary" hidden></section>
+    <section class="card kpi-table-card" id="kpi-material-card" hidden>
+      <div class="kpi-table-meta" id="kpi-material-meta"></div>
+      <div class="kpi-table-wrap">
+        <table class="kpi-table">
+          <thead>
+            <tr>
+              <th class="kpi-resolved-col">Resolved</th>
+              <th><button type="button" data-so-sort="process_sheet_no">Process sheet</button></th>
+              <th><button type="button" data-so-sort="part_no">Part</button></th>
+              <th><button type="button" data-so-sort="description">Description</button></th>
+              <th class="kpi-datehead kpi-datehead--need" title="Date the material was needed">
+                <button type="button" data-so-sort="material_need_date"><span class="kpi-datehead-tag">Need</span><span class="kpi-datehead-name">Material need date</span></button>
+              </th>
+              <th class="kpi-datehead kpi-datehead--arrival" title="Material in date from S/O management">
+                <button type="button" data-so-sort="material_arrival_date"><span class="kpi-datehead-tag">Arrived</span><span class="kpi-datehead-name">Material arrival</span></button>
+              </th>
+              <th class="kpi-datehead kpi-datehead--gap kpi-num" title="How many days after the need date the material arrived">
+                <button type="button" data-so-sort="day_gap"><span class="kpi-datehead-tag">Gap</span><span class="kpi-datehead-name">Days late</span></button>
+              </th>
+              <th class="kpi-datehead kpi-datehead--due" title="Customer PO due date">
+                <button type="button" data-so-sort="due_date"><span class="kpi-datehead-tag">PO due</span><span class="kpi-datehead-name">PO due date</span></button>
+              </th>
+              <th class="kpi-datehead kpi-datehead--edd" title="Planner proposed EDD from S/O management">
+                <button type="button" data-so-sort="edd_date"><span class="kpi-datehead-tag">EDD</span><span class="kpi-datehead-name">Proposed EDD</span></button>
+              </th>
+              <th><button type="button" data-so-sort="mtl_part_order">Mtl / Part Order</button></th>
+              <th><button type="button" data-so-sort="quality_doc">Quality Doc</button></th>
+              <th><button type="button" data-so-sort="ops_notes">Ops</button></th>
+              <th><button type="button" data-so-sort="sales_notes">Sales</button></th>
+            </tr>
+          </thead>
+          <tbody id="kpi-material-body"></tbody>
+        </table>
+      </div>
+      <div id="kpi-material-empty" class="kpi-empty" hidden>No process sheets arrived after the material need date.</div>
+    </section>
+  </div>
+
+  <div id="kpi-panel-exceptions" class="kpi-panel" data-kpi-panel="exceptions" hidden>
+    <section class="kpi-toolbar card">
+      <label class="kpi-field kpi-field--search">
+        <span>Search</span>
+        <input type="search" id="kpi-exception-search" placeholder="Job, part, customer, exception, remarks" autocomplete="off">
+      </label>
+    </section>
+    <section id="kpi-exception-summary" class="kpi-summary" hidden></section>
+    <section class="card kpi-table-card" id="kpi-exception-card" hidden>
+      <div class="kpi-table-meta" id="kpi-exception-meta"></div>
+      <div class="kpi-table-wrap">
+        <table class="kpi-table">
+          <thead>
+            <tr>
+              <th class="kpi-resolved-col">Resolved</th>
+              <th><button type="button" data-so-sort="process_sheet_no">Process sheet</button></th>
+              <th><button type="button" data-so-sort="partial_no">Partial</button></th>
+              <th><button type="button" data-so-sort="part_no">Part</button></th>
+              <th><button type="button" data-so-sort="description">Description</button></th>
+              <th><button type="button" data-so-sort="posted_date">Posted</button></th>
+              <th><button type="button" data-so-sort="due_date">Due</button></th>
+              <th><button type="button" data-so-sort="edd_date">EDD</button></th>
+              <th><button type="button" data-so-sort="exception_label">Exception</button></th>
+              <th><button type="button" data-so-sort="delivery_date">Delivered</button></th>
+              <th><button type="button" data-so-sort="mtl_part_order">Mtl / Part Order</button></th>
+              <th><button type="button" data-so-sort="quality_doc">Quality Doc</button></th>
+              <th><button type="button" data-so-sort="ops_notes">Ops</button></th>
+              <th><button type="button" data-so-sort="sales_notes">Sales</button></th>
+            </tr>
+          </thead>
+          <tbody id="kpi-exception-body"></tbody>
+        </table>
+      </div>
+      <div id="kpi-exception-empty" class="kpi-empty" hidden>No active S/O lines are flagged with an exception.</div>
+    </section>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/kpi.js') }}?v=kpi-material-dates-20261006"></script>
+{% endblock %}

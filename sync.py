@@ -122,7 +122,8 @@ RELOAD_REST_DELETE_INSERT = "rest_delete_insert"
 
 PLANNER_STATEMENT_TIMEOUT_MS = int(os.getenv("PLANNER_STATEMENT_TIMEOUT_MS", "600000"))
 PLANNER_LOCK_TIMEOUT_MS = int(os.getenv("PLANNER_LOCK_TIMEOUT_MS", "30000"))
-_ERP_SYNC_ADVISORY_LOCK_KEY = 915_042_002
+# Distinct from MPP auto-dequeue (915_042_002) and auto-unschedule (915_042_001).
+_ERP_SYNC_ADVISORY_LOCK_KEY = 915_042_003
 
 
 def _planner_db_available() -> bool:

@@ -807,6 +807,55 @@ def test_proposed_cnc_overlay_uses_saved_override(monkeypatch):
     assert second["proposed_cnc"] == ["CNC 20", "CNC 22"]
 
 
+def test_assembly_line_items_keep_own_queue_and_proposed_cnc(monkeypatch):
+    from planning.sales_orders_route import _apply_assembly_line_machine_visibility
+
+    monkeypatch.setattr(
+        "planning.sales_orders_route._machines_for_planner_ps_id",
+        lambda by_canonical, ps_id: list(by_canonical.get(ps_id, [])),
+    )
+    monkeypatch.setattr(
+        "planning.sales_orders_route._load_notes_map",
+        lambda ids: {
+            "NPS26-0321-1": {"proposed_cnc_saved": ["CNC 40"]},
+            "NPS26-0321-2": {"proposed_cnc_saved": []},
+        },
+    )
+    orders = [
+        {
+            "pp_vouchers": [
+                {
+                    "pp_voucher_no": "NPS26-0321",
+                    "process_sheet_no": "NPS26-0321",
+                    "proposed_cnc": ["CNC 15", "CNC 31", "CNC 39"],
+                    "assembly_line_items": [
+                        {"process_sheet_no": "NPS26-0321-1", "part_no": "PART-A"},
+                        {"process_sheet_no": "NPS26-0321-2", "part_no": "PART-B"},
+                        {"process_sheet_no": "NPS26-0999-1", "part_no": "PART-C"},
+                        {"process_sheet_no": "", "part_no": "PART-A"},
+                    ],
+                }
+            ]
+        }
+    ]
+    _apply_assembly_line_machine_visibility(
+        orders,
+        {"NPS26-0321-1": ["CNC 39"], "NPS26-0999-1": ["CNC 15"]},
+        {"PART-C": ["CNC 22"], "PART-A": ["CNC 31"]},
+    )
+    parent = orders[0]["pp_vouchers"][0]
+    lines = parent["assembly_line_items"]
+    assert parent["proposed_cnc"] == ["CNC 15", "CNC 31", "CNC 39"]
+    assert lines[0]["queued_machines"] == ["CNC 39"]
+    assert lines[0]["proposed_cnc"] == ["CNC 40"]
+    assert lines[1]["queued_machines"] == []
+    assert lines[1]["proposed_cnc"] == []
+    assert lines[2]["queued_machines"] == ["CNC 15"]
+    assert lines[2]["proposed_cnc"] == ["CNC 22"]
+    assert lines[3]["queued_machines"] == []
+    assert lines[3]["proposed_cnc"] == ["CNC 31"]
+
+
 def test_notes_from_row_parses_proposed_cnc():
     from planning.sales_orders_route import _empty_notes, _format_proposed_cnc, _notes_from_row, _parse_proposed_cnc
 

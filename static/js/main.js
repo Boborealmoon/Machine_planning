@@ -140,6 +140,7 @@ const REPORTS_API_MARKERS = [
   "/api/job-ratio",
   "/api/production-capacity",
   "/api/planning-data/repeat-orders",
+  "/api/kpi",
 ];
 
 function isReportsApiUrl(url) {

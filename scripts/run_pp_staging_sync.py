@@ -120,7 +120,18 @@ def main():
 
         from planning.erp_cache_refresh import refresh_after_erp_sync
 
-        refresh_after_erp_sync(warm=True, background=False)
+        try:
+            refresh_result = refresh_after_erp_sync(warm=True, background=False)
+        except Exception as exc:
+            progress.emit(f"  post-sync refresh failed: {exc}")
+            raise
+        reconcile = refresh_result.get("queue_reconcile") or {}
+        progress.emit(
+            "  post-sync: "
+            f"snapshots={refresh_result.get('erp_snapshot_count', 0)} "
+            f"queue_updated={reconcile.get('updated', 0)} "
+            f"queue_errors={reconcile.get('errors', reconcile.get('error', 0))}"
+        )
 
         notify_result = None
         try:

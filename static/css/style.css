@@ -75,7 +75,7 @@ input, select, textarea, button { max-width: 100%; }
   border-bottom: 1px solid #e0e0e0;
   position: sticky;
   top: 0;
-  z-index: 100;
+  z-index: 4000;
 }
 
 .navbar-inner {
@@ -638,9 +638,11 @@ input, select, textarea, button { max-width: 100%; }
   border: 1px solid #e0e0e0;
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0,0,0,.1);
-  min-width: 160px;
-  overflow: hidden;
-  z-index: 200;
+  min-width: 180px;
+  max-height: min(70vh, 28rem);
+  overflow-x: hidden;
+  overflow-y: auto;
+  z-index: 4001;
 }
 
 .nav-dropdown-menu.open { display: block; }

@@ -73,18 +73,26 @@ function trialMaterialInLaneClass(leader) {
   return trialMaterialInForBlockLeader(leader) ? 'material-in-yes' : 'material-in-no';
 }
 
-function trialMaterialInDateForLeader(leader) {
-  const fromLeader = String(leader?.material_in_date || '').trim();
+function trialSheetDateForLeader(leader, field) {
+  const fromLeader = String(leader?.[field] || '').trim();
   if (fromLeader) return fromLeader.slice(0, 10);
   const candidates = [leader?.planner_ps_id, leader?.source_ps_id, leader?.job_no]
     .map(v => String(v || '').trim())
     .filter(Boolean);
   for (const key of candidates) {
     const ps = typeof trialCatalogPsRecord === 'function' ? trialCatalogPsRecord(key) : null;
-    const fromPs = String(ps?.material_in_date || '').trim();
+    const fromPs = String(ps?.[field] || '').trim();
     if (fromPs) return fromPs.slice(0, 10);
   }
   return '';
+}
+
+function trialMaterialInDateForLeader(leader) {
+  return trialSheetDateForLeader(leader, 'material_in_date');
+}
+
+function trialProposedEddForLeader(leader) {
+  return trialSheetDateForLeader(leader, 'coway_proposed_edd');
 }
 
 function trialMaterialInCardMeta(leader) {
@@ -1032,6 +1040,28 @@ function trialCatalogFindNestedAssemblyLineItemPs(psId, partialNo = '') {
   return null;
 }
 
+/** Planner-facing child sheet id: NPS26-0321-7 → 0321-7. */
+function trialCatalogCompactChildPsLabel(psId) {
+  const raw = String(psId || '').split('::')[0].trim();
+  if (!raw) return '';
+  const match = raw.match(/(\d{3,})-(\d+)$/);
+  if (match) return `${match[1]}-${match[2]}`;
+  return raw;
+}
+
+function trialCatalogLineItemIdentity(item, childPs, hostedPsNo) {
+  const donor = String(item?.donor_ps_id || childPs?.donor_ps_id || '').trim();
+  const hosted = String(
+    hostedPsNo || childPs?.ps_id || item?.process_sheet_no || item?.ps_id || '',
+  ).trim();
+  const source = donor || hosted;
+  let label = trialCatalogCompactChildPsLabel(source);
+  const partial = Number(item?.pp_partial_no ?? childPs?.pp_partial_no ?? 1);
+  if (label && Number.isFinite(partial) && partial > 1) label = `${label} · P${partial}`;
+  const title = [...new Set([label, hosted, donor].filter(Boolean))].join(' · ');
+  return { label: label || hosted, donor, hosted, title };
+}
+
 function trialCatalogLineItemBadgeHtml(ps) {
   const items = trialCatalogAssemblyLineItems(ps);
   if (!items.length) return '';
@@ -1100,6 +1130,7 @@ function trialCatalogAssemblyLineItemOpCardsHtml(item, parentPs) {
         ? trialCatalogOpVisibleInList(card, isOpAllocated, childPs)
         : trialCatalogOpIsRelevant(card)
     ));
+  const identity = trialCatalogLineItemIdentity(item, childPs, childPs.ps_id);
   if (!cards.length) {
     return '<div class="trial-catalog-line-item-empty">No machining BOM ops</div>';
   }
@@ -1111,6 +1142,8 @@ function trialCatalogAssemblyLineItemOpCardsHtml(item, parentPs) {
       ...ctx,
       is_allocated: isOpAllocated(card),
       part_no: ctx.part_no || childPs.part_no || childPs.part_name || '',
+      assembly_line_label: identity.label,
+      assembly_line_title: identity.title,
     }, childPs);
   }).join('');
 }
@@ -1130,6 +1163,7 @@ function trialCatalogAssemblyLineItemsHtml(ps) {
     const childPs = trialCatalogAssemblyLineItemPs(item, ps);
     const psNo = String(childPs?.ps_id || item.process_sheet_no || item.ps_id || '').trim();
     const childPsId = String(childPs?.ps_id || psNo).trim();
+    const identity = trialCatalogLineItemIdentity(item, childPs, psNo);
     const part = String(item.part_no || '').trim();
     const desc = String(item.part_desc || '').trim();
     const line = String(item.source_line_item_no || '').replace(/\.0+$/, '').trim();
@@ -1140,10 +1174,15 @@ function trialCatalogAssemblyLineItemsHtml(ps) {
     const bomHtml = bom
       ? `<span class="trial-catalog-line-item-bom">${escapeHtml(bom)}</span>`
       : '';
+    const metaHtml = (lineHtml || bomHtml)
+      ? `<span class="trial-catalog-line-item-meta">${lineHtml}${bomHtml}</span>`
+      : '';
     const cardsHtml = trialCatalogAssemblyLineItemOpCardsHtml(item, ps);
     const parentId = String(ps?.source_ps_id || ps?.ps_id || '').split('::')[0].trim();
     const focusId = related && parentId ? parentId : psNo;
-    const matchClass = isSearchTarget(psNo, query) || isSearchTarget(item.donor_ps_id, query)
+    const matchClass = isSearchTarget(psNo, query)
+      || isSearchTarget(item.donor_ps_id, query)
+      || isSearchTarget(identity.label, query)
       ? ' is-search-match'
       : '';
     return `
@@ -1151,12 +1190,13 @@ function trialCatalogAssemblyLineItemsHtml(ps) {
         data-ps-id="${escapeHtml(childPsId)}"
         data-pp-partial-no="${escapeHtml(childPs?.pp_partial_no || item.pp_partial_no || 1)}">
         <button type="button" class="trial-catalog-line-item"
-          title="${escapeHtml([psNo, part, desc].filter(Boolean).join(' · '))}"
+          title="${escapeHtml([identity.title, part, desc].filter(Boolean).join(' · '))}"
           onclick="event.preventDefault(); event.stopPropagation(); trialFocusCatalogLineItem('${escapeHtml(focusId)}')">
-          <span class="trial-catalog-line-item-ps">${escapeHtml(psNo)}</span>
-          <span class="trial-catalog-line-item-part">${escapeHtml(part)}</span>
-          ${lineHtml}
-          ${bomHtml}
+          <span class="trial-catalog-line-item-id">
+            <span class="trial-catalog-line-item-ps">${escapeHtml(identity.label)}</span>
+            ${part ? `<span class="trial-catalog-line-item-part">${escapeHtml(part)}</span>` : ''}
+          </span>
+          ${metaHtml}
         </button>
         <div class="trial-catalog-line-item-ops">${cardsHtml}</div>
       </div>`;
@@ -1174,6 +1214,7 @@ function trialCatalogAssemblyLineItemsDetailHtml(ps) {
   const rows = items.map(item => {
     const childPs = trialCatalogAssemblyLineItemPs(item, ps);
     const psNo = String(childPs?.ps_id || item.process_sheet_no || item.ps_id || '').trim();
+    const identity = trialCatalogLineItemIdentity(item, childPs, psNo);
     const part = String(item.part_no || '').trim();
     const desc = String(item.part_desc || '').trim();
     const qty = Number(item.qty || 0);
@@ -1191,9 +1232,9 @@ function trialCatalogAssemblyLineItemsDetailHtml(ps) {
     return `
       <button type="button" class="trial-ps-detail-op-row trial-catalog-line-item-detail"
         onclick="trialFocusCatalogLineItem('${escapeHtml(focusId)}')">
-        <span class="trial-ps-detail-op-label">${escapeHtml(psNo)}</span>
+        <span class="trial-ps-detail-op-label" title="${escapeHtml(identity.title)}">${escapeHtml(identity.label)}</span>
         <span class="trial-ps-detail-op-meta">
-          <span>${escapeHtml([part, desc].filter(Boolean).join(' · '))}</span>
+          <span>${escapeHtml([part, desc, identity.hosted && identity.hosted !== identity.label ? identity.hosted : ''].filter(Boolean).join(' · '))}</span>
           ${qtyText ? `<span class="trial-ps-detail-op-qty">${escapeHtml(qtyText)}</span>` : ''}
         </span>
       </button>
@@ -3519,6 +3560,11 @@ function renderTrialOpCardHtml(card, ps) {
   }
   const opLabel = String(card.operation_label || '').trim();
   const showOpName = opName && opName !== opLabel;
+  const assemblyLineLabel = String(card.assembly_line_label || '').trim();
+  const assemblyLineTitle = String(card.assembly_line_title || assemblyLineLabel).trim();
+  const assemblyLineHtml = assemblyLineLabel
+    ? `<span class="trial-catalog-op-assembly-label" title="${escapeHtml(assemblyLineTitle)}">${escapeHtml(assemblyLineLabel)}</span>`
+    : '';
   const isManualBom = trialCatalogOpIsManualBom(card);
   const canDragFinal = Boolean(canDrag);
   const dragBlockReasonFinal = String(dragBlockReason || '').trim();
@@ -3575,6 +3621,7 @@ function renderTrialOpCardHtml(card, ps) {
     >
       <div class="trial-catalog-op-line">
         <div class="trial-catalog-op-lead">
+          ${assemblyLineHtml}
           <span class="trial-catalog-op-label">${escapeHtml(opLabel)}</span>
           ${execStatusHtml}
         </div>
@@ -4089,6 +4136,11 @@ function trialRenderQueueDetailRow(group, displaySequenceNo = 0) {
   const blockId = leader?.block_id || 0;
   const dueDate = String(trialDueDateForPs(vm.psDueKey) || '').trim() || '—';
   const dueClass = trialQueueDueClass(vm.psDueKey);
+  const proposedEdd = trialProposedEddForLeader(leader) || '—';
+  const mtl = vm.materialInCard || trialMaterialInCardMeta(leader);
+  const materialArrival = mtl.stateClass === 'is-mtl-avail' && mtl.text === 'Mtl Avail'
+    ? 'Avail'
+    : (mtl.text || '—');
   const partialNote = vm.psDisplay.partial
     ? `<span class="trial-queue-partial">P${escapeHtml(vm.psDisplay.partial)}</span>`
     : '';
@@ -4119,24 +4171,24 @@ function trialRenderQueueDetailRow(group, displaySequenceNo = 0) {
       <div class="trial-queue-qty" title="Qty / Output">
         <span>${vm.targetQty}</span><span class="trial-queue-qty-sep">/</span><span>${vm.pairedOutput}</span>
       </div>
-      <div class="trial-queue-dates">
-        <span class="trial-queue-date ${dueClass}" title="Due ${escapeHtml(dueDate)}">${escapeHtml(dueDate)}</span>
-        <button type="button" class="trial-queue-date is-queued is-clickable ${vm.anchored ? 'is-anchored' : ''}"
-          onclick="editTrialAnchor(${blockId})" title="${escapeHtml(vm.queuedTitle)}">
-          <span class="trial-anchor-time-value">${escapeHtml(vm.scheduleTimeText || '—')}</span>
-          <span class="trial-anchor-edit-icon" aria-hidden="true">✎</span>
-        </button>
-        <span class="trial-queue-date is-end ${vm.outputPillClass}" title="${escapeHtml(vm.outputTitle)}">
-          ${escapeHtml(vm.outputText)}
-        </span>
-      </div>
+      <span class="trial-queue-date trial-queue-due ${dueClass}" title="PO due ${escapeHtml(dueDate)}">${escapeHtml(dueDate)}</span>
+      <span class="trial-queue-date trial-queue-edd is-edd" title="Proposed EDD ${escapeHtml(proposedEdd)}">${escapeHtml(proposedEdd)}</span>
+      <span class="trial-queue-date trial-queue-arrival is-mtl ${escapeHtml(mtl.stateClass)}" title="${escapeHtml(mtl.title)}">${escapeHtml(materialArrival)}</span>
+      <button type="button" class="trial-queue-date trial-queue-queued is-queued is-clickable ${vm.anchored ? 'is-anchored' : ''}"
+        onclick="editTrialAnchor(${blockId})" title="${escapeHtml(vm.queuedTitle)}">
+        <span class="trial-anchor-time-value">${escapeHtml(vm.scheduleTimeText || '—')}</span>
+        <span class="trial-anchor-edit-icon" aria-hidden="true">✎</span>
+      </button>
+      <span class="trial-queue-date trial-queue-end is-end ${vm.outputPillClass}" title="${escapeHtml(vm.outputTitle)}">
+        ${escapeHtml(vm.outputText)}
+      </span>
       <div class="trial-queue-actions">
-        <button type="button" class="trial-queue-act" onclick="openTrialBlockEditor(${blockId})">Edit</button>
-        <button type="button" class="trial-queue-act" onclick="openTrialSplitModal(${blockId})">Split</button>
-        <button type="button" class="trial-queue-act" onclick="${actualOnClick}">Actual</button>
-        <button type="button" class="trial-queue-act trial-queue-act-setup ${vm.setupOn ? 'is-on' : ''}"
+        <button type="button" class="trial-queue-act" onclick="openTrialBlockEditor(${blockId})" title="Edit">Edit</button>
+        <button type="button" class="trial-queue-act" onclick="openTrialSplitModal(${blockId})" title="Split quantity">Split</button>
+        <button type="button" class="trial-queue-act" onclick="${actualOnClick}" title="Actual output">Actual</button>
+        <button type="button" class="trial-queue-act trial-queue-act-setup ${vm.setupOn ? 'is-on' : 'is-off'}"
           onclick="toggleTrialSetup(${blockId})" aria-pressed="${vm.setupOn ? 'true' : 'false'}"
-          title="${escapeHtml(vm.setupTitle)}">${vm.setupOn ? 'Setup' : 'No setup'}</button>
+          title="${escapeHtml(vm.setupTitle)}">${vm.setupOn ? 'Setup' : 'Off'}</button>
         <button type="button" class="trial-queue-act is-danger"
           onclick="removeTrialBlock(${blockId}, ${Number(vm.group.group_id || 0)})"
           title="Remove from machine">Del</button>
@@ -4147,17 +4199,17 @@ function trialRenderQueueDetailRow(group, displaySequenceNo = 0) {
 
 function trialRenderQueueListHeader() {
   return `
-    <div class="trial-queue-list-head" aria-hidden="true">
+    <div class="trial-queue-list-head">
       <span></span>
-      <span>#</span>
-      <span>Job</span>
-      <span>Qty/Out</span>
-      <span class="trial-queue-dates-head">
-        <span>Due</span>
-        <span>Queued</span>
-        <span>End</span>
-      </span>
-      <span>Actions</span>
+      <span class="trial-queue-head-stack" title="Position in this machine queue"><span>#</span></span>
+      <span class="trial-queue-head-job" title="Process sheet and operation">Job</span>
+      <span class="trial-queue-head-stack" title="Scheduled quantity / output reported"><span>Qty</span><span>output</span></span>
+      <span class="trial-queue-head-stack" title="Customer PO due date"><span>PO due</span></span>
+      <span class="trial-queue-head-stack" title="Proposed estimated delivery date"><span>Proposed</span><span>EDD</span></span>
+      <span class="trial-queue-head-stack" title="Date material arrives, or has arrived"><span>Material</span><span>arrival</span></span>
+      <span class="trial-queue-head-stack" title="When this job is queued to start. Use the pencil to set an anchor."><span>Queued</span><span>start</span></span>
+      <span class="trial-queue-head-stack" title="Scheduled finish time"><span>Planned</span><span>end</span></span>
+      <span class="trial-queue-head-stack" title="Edit, split, record actual output, toggle setup, or remove from this machine"><span>Actions</span></span>
     </div>
   `;
 }
@@ -5571,6 +5623,7 @@ function trialCatalogLineItemSearchValues(item) {
     item?.process_sheet_no,
     item?.ps_id,
     item?.donor_ps_id,
+    trialCatalogCompactChildPsLabel(item?.donor_ps_id || item?.process_sheet_no || item?.ps_id),
     item?.part_no,
     item?.part_desc,
     item?.related_from,

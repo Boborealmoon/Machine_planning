@@ -9,6 +9,7 @@ from planning.erp_scanned_output_service import (
     UNASSIGNED_MACHINE,
     _SNAPSHOT_LOOKBACK_DAYS,
     _fetch_snapshot_jump_rows,
+    collapse_wo_qty_rows,
     compute_qty_jumps,
     fetch_scanned_output,
     group_jumps_by_machine,
@@ -247,3 +248,14 @@ class ErpScannedOutputServiceTests(TestCase):
         self.assertEqual(jumps[0]["qty_jump"], 15)
         self.assertEqual(len(upserts), 1)
         self.assertEqual(upserts[0]["acc_qty_produced"], 25)
+
+    def test_collapse_wo_qty_rows_keeps_higher_accepted_qty(self):
+        collapsed = collapse_wo_qty_rows([
+            {"source_mps_no": "NPS26-0193", "pp_partial_no": 1, "stage_no": 7, "total_acc_qty_produced": 4},
+            {"source_mps_no": "NPS26-0193", "pp_partial_no": 1, "stage_no": 7, "total_acc_qty_produced": 12},
+            {"source_mps_no": "NPS26-0193", "pp_partial_no": 1, "stage_no": 8, "total_acc_qty_produced": 3},
+        ])
+        self.assertEqual(len(collapsed), 2)
+        by_stage = {row["stage_no"]: row["total_acc_qty_produced"] for row in collapsed}
+        self.assertEqual(by_stage[7], 12)
+        self.assertEqual(by_stage[8], 3)

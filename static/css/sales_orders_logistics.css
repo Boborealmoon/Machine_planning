@@ -42,8 +42,9 @@ body.sol-view .app-main--sales-logistics {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  width: min(100%, 1540px);
-  margin: 0 auto;
+  width: 100%;
+  max-width: none;
+  margin: 0;
   min-height: calc(100dvh - 48px);
 }
 
@@ -974,7 +975,8 @@ body.sol-view .app-main--sales-logistics {
 
 .sol-table[data-mode="ps"] {
   table-layout: fixed;
-  width: max(100%, 102rem);
+  width: 100%;
+  min-width: 80rem;
   max-width: none;
 }
 
@@ -987,37 +989,29 @@ body.sol-view .app-main--sales-logistics {
 }
 
 .sol-table[data-mode="ps"] th.sol-col-need,
-.sol-table[data-mode="ps"] td.sol-need-date-cell {
-  min-width: 8.25rem;
-  overflow: visible;
-}
-
+.sol-table[data-mode="ps"] td.sol-need-date-cell,
 .sol-table[data-mode="ps"] th.sol-col-material,
-.sol-table[data-mode="ps"] td.so-material-subcon-cell {
-  min-width: 12rem;
-  overflow: visible;
-}
-
+.sol-table[data-mode="ps"] td.so-material-subcon-cell,
 .sol-table[data-mode="ps"] th.sol-col-due,
 .sol-table[data-mode="ps"] td.sol-col-due {
-  min-width: 6rem;
+  overflow: hidden;
 }
 
 .sol-table[data-mode="ps"] th.sol-col-ps,
 .sol-table[data-mode="ps"] td.sol-col-ps {
-  min-width: 14rem;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .sol-table[data-mode="ps"] th.sol-col-notes,
 .sol-table[data-mode="ps"] td.sol-col-notes,
 .sol-table[data-mode="ps"] td.so-editable-cell {
-  min-width: 20rem;
+  min-width: 0;
 }
 
-.sol-table[data-mode="ps"] th.sol-col-bom,
-.sol-table[data-mode="ps"] td.sol-col-bom {
-  min-width: 3.75rem;
+.sol-table[data-mode="ps"] th.sol-col-order,
+.sol-table[data-mode="ps"] td.sol-order {
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 .sol-table thead th {
@@ -1181,17 +1175,26 @@ body.sol-view .app-main--sales-logistics {
   text-align: center;
 }
 
-.sol-table[data-mode="ps"] .sol-col-delay { width: 3%; }
-.sol-table[data-mode="ps"] .sol-col-order { width: 12%; }
-.sol-table[data-mode="ps"] .sol-col-ps { width: 14rem; }
-.sol-table[data-mode="ps"] .sol-col-qty { width: 5%; }
+.sol-table[data-mode="ps"] .sol-col-delay {
+  width: 4.5%;
+  min-width: 0;
+  max-width: none;
+}
+.sol-table[data-mode="ps"] th.sol-col-delay,
+.sol-table[data-mode="ps"] td.sol-delay-cell {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.sol-table[data-mode="ps"] .sol-col-order { width: 7%; }
+.sol-table[data-mode="ps"] .sol-col-ps { width: 11.5%; }
+.sol-table[data-mode="ps"] .sol-col-qty { width: 5.5%; }
 .sol-table[data-mode="ps"] .sol-col-stage { width: 9%; }
-.sol-table[data-mode="ps"] .sol-col-part { width: 13%; }
-.sol-table[data-mode="ps"] .sol-col-due { width: 7%; }
-.sol-table[data-mode="ps"] .sol-col-need { width: 8%; }
-.sol-table[data-mode="ps"] .sol-col-bom { width: 5%; }
+.sol-table[data-mode="ps"] .sol-col-part { width: 12.5%; }
+.sol-table[data-mode="ps"] .sol-col-due { width: 6.5%; }
+.sol-table[data-mode="ps"] .sol-col-need { width: 10.5%; }
+.sol-table[data-mode="ps"] .sol-col-bom { width: 4%; }
 .sol-table[data-mode="ps"] .sol-col-material { width: 14%; }
-.sol-table[data-mode="ps"] .sol-col-notes { width: 20rem; }
+.sol-table[data-mode="ps"] .sol-col-notes { width: 15%; }
 
 .sol-delay-cell {
   text-align: center;
@@ -1398,8 +1401,9 @@ body.sol-view .app-main--sales-logistics {
 }
 
 .sol-need-date-cell {
-  padding: 8px 10px !important;
+  padding: 8px 8px !important;
   vertical-align: middle;
+  white-space: nowrap;
 }
 
 .sol-need-date-cell.has-need-date {
@@ -1415,13 +1419,17 @@ body.sol-view .app-main--sales-logistics {
   display: flex;
   align-items: center;
   gap: 4px;
+  width: 100%;
   min-width: 0;
+  max-width: 100%;
 }
 
 .sol-need-date-static {
   display: block;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 0.78rem;
   line-height: 1.25;
   font-variant-numeric: tabular-nums;
@@ -1497,24 +1505,34 @@ body.sol-view input[type="date"] {
 }
 
 .sol-col-notes {
-  min-width: 20rem;
+  min-width: 0;
 }
 
 .sol-ps-line {
   display: flex;
   align-items: center;
   gap: 4px;
-  min-width: max-content;
-  overflow: visible;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   white-space: nowrap;
 }
 
-.sol-ps-line .so-type-tag,
-.sol-ps-line span {
+.sol-ps-line .so-type-tag {
   flex-shrink: 0;
+}
+
+.sol-ps-line span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sol-ps-line .sol-subasm-pill {
+  flex: 0 0 auto;
   overflow: visible;
   text-overflow: unset;
-  white-space: nowrap;
 }
 
 .sol-materials-btn {
@@ -1550,7 +1568,7 @@ body.sol-view input[type="date"] {
 body.sol-view .so-material-subcon-cell {
   min-width: 0;
   max-width: none;
-  padding: 8px 10px !important;
+  padding: 8px 8px !important;
   vertical-align: middle;
 }
 
@@ -1575,38 +1593,39 @@ body.sol-view tr:hover .so-material-subcon-cell.has-material-arrived {
 body.sol-view .so-material-subcon-controls {
   display: flex;
   flex-direction: column;
-  flex-wrap: nowrap;
   align-items: stretch;
-  gap: 6px;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 body.sol-view .so-material-subcon-arrived-row {
   display: flex;
+  flex-direction: row;
   align-items: center;
+  justify-content: flex-start;
   gap: 4px;
   min-width: 0;
+  max-width: 100%;
 }
 
 body.sol-view .so-material-subcon-arrived-row .so-material-subcon-arrived {
   width: auto;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
-body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-controls {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: center;
-  gap: 2px;
-}
-
-body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-arrived-row {
-  flex: 0 0 auto;
+body.sol-view .so-material-subcon-date-slot {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-arrived {
-  flex: 0 0 auto;
-  justify-content: center;
+  flex: 0 1 auto;
+  justify-content: flex-start;
 }
 
 body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-date {
@@ -1619,11 +1638,15 @@ body.sol-view .so-material-subcon-date-text {
 
 body.sol-view .so-material-subcon-cell.has-material-arrived .so-material-subcon-date-text:not(:empty) {
   display: block;
-  flex: 0 0 auto;
-  font-size: 0.72rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.75rem;
   font-weight: 700;
-  line-height: 1.15;
-  text-align: center;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  white-space: nowrap;
   color: var(--sol-arrived);
 }
 
@@ -1638,7 +1661,8 @@ body.sol-view .so-material-subcon-arrived {
   align-items: center;
   justify-content: flex-start;
   gap: 6px;
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
   flex: 0 0 auto;
@@ -1703,12 +1727,26 @@ body.sol-view .so-material-subcon-arrived.is-active .so-material-subcon-arrived-
 }
 
 body.sol-view .so-material-subcon-date {
+  display: block;
   width: 100%;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
-  padding: 5px 6px;
-  font-size: 0.78rem;
+  padding: 4px 6px;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+body.sol-view .so-material-subcon-date::-webkit-datetime-edit,
+body.sol-view .so-material-subcon-date::-webkit-datetime-edit-fields-wrapper {
+  min-width: 0;
+  padding: 0;
+}
+
+body.sol-view .so-material-subcon-date::-webkit-calendar-picker-indicator {
+  margin: 0;
+  padding: 0 0 0 2px;
 }
 
 body.sol-view .so-material-subcon-date:disabled {
@@ -1759,9 +1797,14 @@ body.sol-view .so-stage-cell .mi-status-pill {
 }
 
 body.sol-view .so-editable-cell {
-  min-width: 20rem;
+  min-width: 0;
   max-width: none;
   padding: 8px 10px !important;
+}
+
+body.sol-view .sol-table[data-mode="req"] .so-editable-cell,
+body.sol-view .sol-table[data-mode="req"] .sol-col-notes {
+  min-width: 12rem;
 }
 
 body.sol-view .so-editable-input {

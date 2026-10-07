@@ -1373,11 +1373,29 @@ function soFindByKey(key) {
   return { order, pp, partial };
 }
 
+function soFindAssemblyLineChild(ppVoucherNo) {
+  const key = soPsBaseKey(ppVoucherNo);
+  if (!key) return null;
+  for (const order of soAllOrders()) {
+    for (const pp of order.pp_vouchers || []) {
+      const child = (pp.assembly_line_items || []).find(
+        item => soPsBaseKey(item.process_sheet_no) === key
+      );
+      if (child) return { order, pp, child };
+    }
+  }
+  return null;
+}
+
 function soFindPp(ppVoucherNo) {
   const target = String(ppVoucherNo || '').trim();
   for (const order of soAllOrders()) {
     const pp = (order.pp_vouchers || []).find(row => String(row.pp_voucher_no || '').trim() === target);
     if (pp) return { order, pp };
+  }
+  const line = soFindAssemblyLineChild(target);
+  if (line) {
+    return { order: line.order, pp: soBomChildPp(line.pp, line.child, { synthetic: true }) };
   }
   const asm = soFindAssemblyChild(target);
   if (!asm) return { order: null, pp: null };
@@ -1790,6 +1808,10 @@ function soClearAssemblyMaterialRollup(pp) {
   return pp;
 }
 
+function soMachineList(value) {
+  return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
 function soBomChildPp(parentPp, child, { synthetic = true } = {}) {
   const childPs = String(child?.process_sheet_no || '').trim();
   const out = soClearAssemblyMaterialRollup({
@@ -1818,16 +1840,25 @@ function soBomChildPp(parentPp, child, { synthetic = true } = {}) {
     out.material_in = Boolean(child.material_in);
     out.material_in_date = child.material_in_date || null;
   }
+  const childQueued = soMachineList(child?.queued_machines);
+  const childProposed = soMachineList(child?.proposed_cnc);
   if (!synthetic) {
     out.assembly_synthetic = false;
+    if (!soMachineList(out.queued_machines).length && childQueued.length) {
+      out.queued_machines = childQueued.slice();
+      out.queued_machines_by_partial = { '1': childQueued.slice() };
+    }
+    if (!soMachineList(out.proposed_cnc).length && childProposed.length) {
+      out.proposed_cnc = childProposed.slice();
+    }
     return out;
   }
   out.assembly_synthetic = true;
   out.partials = [];
   out.partial_count = 0;
-  out.queued_machines = [];
-  out.queued_machines_by_partial = {};
-  out.proposed_cnc = [];
+  out.queued_machines = childQueued.slice();
+  out.queued_machines_by_partial = childQueued.length ? { '1': childQueued.slice() } : {};
+  out.proposed_cnc = childProposed.slice();
   out.current_stage_no = null;
   out.current_stage_desc = '';
   out.current_stage_status = '';
@@ -1862,8 +1893,8 @@ function soAsBomChildRow(parentLeaf, child, index, count) {
       pp_partial_no: 1,
       partial_qty: child.qty == null ? parentLeaf.partial?.partial_qty : child.qty,
       inventory_code: child.part_no || parentLeaf.partial?.inventory_code,
-      queued_machines: [],
-      proposed_cnc: [],
+      queued_machines: soMachineList(child.queued_machines),
+      proposed_cnc: soMachineList(child.proposed_cnc),
       erp_stage_mode: 'subassembly',
       erp_wo_stage_count: 0,
       current_stage_desc: '',
@@ -1893,14 +1924,21 @@ function soAsNestedChildRow(parentLeaf, childLeaf, child, index, count) {
       material_need_date: childLeaf.pp?.material_need_date || '',
       material_delay: Boolean(childLeaf.pp?.material_delay),
     };
+  const partial = {
+    ...(childLeaf.partial || {}),
+    inventory_code: assemblyChild.part_no || childLeaf.partial?.inventory_code,
+    partial_qty: assemblyChild.qty == null ? childLeaf.partial?.partial_qty : assemblyChild.qty,
+  };
+  if (!soMachineList(partial.queued_machines).length) {
+    partial.queued_machines = soMachineList(assemblyChild.queued_machines);
+  }
+  if (!soMachineList(partial.proposed_cnc).length) {
+    partial.proposed_cnc = soMachineList(assemblyChild.proposed_cnc);
+  }
   return {
     ...childLeaf,
     pp: soBomChildPp(childLeaf.pp, assemblyChild, { synthetic: false }),
-    partial: {
-      ...(childLeaf.partial || {}),
-      inventory_code: assemblyChild.part_no || childLeaf.partial?.inventory_code,
-      partial_qty: assemblyChild.qty == null ? childLeaf.partial?.partial_qty : assemblyChild.qty,
-    },
+    partial,
     assemblyChild,
     assemblyChildIndex: index,
     assemblyChildCount: count,
@@ -2694,12 +2732,18 @@ function soRenderQueuedCncCell(pp, partial) {
   `;
 }
 
+function soProposedCncVoucherNo(pp) {
+  const id = String(pp?.pp_voucher_no || '').trim();
+  if (!id || id.includes('#fg')) return '';
+  return id;
+}
+
 function soRenderProposedCncCell(pp, partial) {
-  if (pp?.assembly_synthetic) {
-    return `<td class="so-queued-cnc-cell so-proposed-cnc-cell"><span class="so-dash">—</span></td>`;
-  }
-  const ppNo = String(pp?.pp_voucher_no || '').trim();
+  const ppNo = soProposedCncVoucherNo(pp);
   const machines = soProposedCncMachines(pp, partial);
+  if (!ppNo) {
+    return `<td class="so-queued-cnc-cell so-proposed-cnc-cell">${soRenderProposedCncHtml(machines)}</td>`;
+  }
   const open = soState.openProposedCncPp === ppNo;
   return `
     <td class="so-queued-cnc-cell so-proposed-cnc-cell">
@@ -4155,16 +4199,39 @@ function soSyncProposedCncButtons(ppNo, machines) {
   });
 }
 
+function soWriteProposedCncSources(ppNo, machines) {
+  const key = soPsBaseKey(ppNo);
+  if (!key) return;
+  const next = machines.slice();
+  soAllOrders().forEach(order => {
+    (order.pp_vouchers || []).forEach(pp => {
+      if (soPsBaseKey(pp.pp_voucher_no) === key || soPsBaseKey(pp.process_sheet_no) === key) {
+        pp.proposed_cnc = next.slice();
+        pp.proposed_cnc_saved = next.slice();
+        (pp.partials || []).forEach(partial => {
+          partial.proposed_cnc = next.slice();
+        });
+      }
+      (pp.assembly_line_items || []).forEach(child => {
+        if (soPsBaseKey(child.process_sheet_no) === key) child.proposed_cnc = next.slice();
+      });
+    });
+  });
+  soPatchAssemblyChildNotes(ppNo, { proposed_cnc: next.slice() });
+}
+
 function soApplyProposedCncLocal(ppNo, machines) {
+  const next = machines.slice();
   const found = soFindPp(ppNo);
   if (found?.pp) {
-    found.pp.proposed_cnc = machines;
-    found.pp.proposed_cnc_saved = machines;
+    found.pp.proposed_cnc = next;
+    found.pp.proposed_cnc_saved = next;
     (found.pp.partials || []).forEach(partial => {
-      partial.proposed_cnc = [...machines];
+      partial.proposed_cnc = next.slice();
     });
   }
-  soSyncProposedCncButtons(ppNo, machines);
+  soWriteProposedCncSources(ppNo, next);
+  soSyncProposedCncButtons(ppNo, next);
 }
 
 function soProposedCncCheckHtml(name, selectedSet) {

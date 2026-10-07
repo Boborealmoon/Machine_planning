@@ -474,10 +474,16 @@ function deliveryScheduleExportCsv(items, columns, filename) {
   URL.revokeObjectURL(url);
 }
 
+let deliveryExcelExportKeydown = null;
+
 function deliveryScheduleCloseModal() {
   const shell = document.getElementById('delivery-schedule-modal-shell');
   if (shell) shell.innerHTML = '';
   document.body.classList.remove('trial-modal-open');
+  if (deliveryExcelExportKeydown) {
+    document.removeEventListener('keydown', deliveryExcelExportKeydown);
+    deliveryExcelExportKeydown = null;
+  }
 }
 
 function deliveryScheduleOpenExportModal() {
@@ -552,6 +558,380 @@ function deliveryScheduleOpenExportModal() {
       const slug = colId.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'column';
       deliveryScheduleExportCsv(items, [column], `delivery-${slug}-${items.length}.csv`);
     });
+  });
+}
+
+const DELIVERY_EXCEL_COLUMNS = [
+  { header: 'OK', width: 6, align: 'center', value: item => (deliveryScheduleIsDismissed(deliverySchedulePlannerPsId(item)) ? 'Yes' : '') },
+  { header: 'PS no.', width: 16, value: item => String(item.ps_display || item.ps_id || '') },
+  { header: 'Part no.', width: 20, value: item => String(item.part_no || '') },
+  { header: 'Part description', width: 28, wrap: true, value: item => String(item.part_desc || '') },
+  { header: 'Stage', width: 14, wrap: true, value: item => deliveryScheduleExcelText(deliveryScheduleStageLabel(item)) },
+  { header: 'SO qty', width: 10, align: 'right', num: true, value: item => deliveryScheduleExcelQty(item.so_qty) },
+  { header: 'PP partial qty', width: 11, align: 'right', num: true, value: item => deliveryScheduleExcelQty(item.pp_partial_qty) },
+  { header: 'PO due date', width: 13, align: 'center', value: item => deliveryScheduleExcelText(deliveryScheduleFormatDate(item.due_date)) },
+  { header: 'Coway EDD', width: 13, align: 'center', value: item => deliveryScheduleExcelText(deliveryScheduleFormatDate(item.coway_edd)) },
+  { header: 'Proposed delivery', width: 15, align: 'center', value: item => deliveryScheduleExcelText(deliveryScheduleFormatDate(item.proposed_delivery)) },
+  { header: 'Week', width: 18, value: item => deliveryScheduleExcelText(deliveryScheduleWeekLabel(item)) },
+  { header: 'COC', width: 7, align: 'center', value: item => (item.coc_done ? 'Yes' : '') },
+  { header: 'QAQC', width: 8, align: 'center', value: item => (item.qaqc_report_ready ? 'Yes' : '') },
+  { header: 'Remarks', width: 22, wrap: true, value: item => String(item.remarks || '').trim() },
+];
+
+function deliveryScheduleExcelText(value) {
+  const text = String(value ?? '');
+  return text === '—' ? '' : text;
+}
+
+function deliveryScheduleExcelQty(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function deliveryScheduleExcelCandidateItems() {
+  return (deliveryScheduleState.items || []).filter(deliveryScheduleMatchesPsType);
+}
+
+function deliveryScheduleSortItems(items) {
+  const sortBy = deliveryScheduleState.sortBy;
+  const dir = deliveryScheduleState.sortDir === 'desc' ? -1 : 1;
+  items.sort((left, right) => {
+    const a = deliveryScheduleSortValue(left, sortBy);
+    const b = deliveryScheduleSortValue(right, sortBy);
+    if (a < b) return -1 * dir;
+    if (a > b) return 1 * dir;
+    return String(left.ps_display || '').localeCompare(String(right.ps_display || ''));
+  });
+  return items;
+}
+
+function deliveryScheduleItemsForWeekKeys(weekKeys) {
+  const keys = weekKeys instanceof Set ? weekKeys : new Set(weekKeys || []);
+  const items = deliveryScheduleExcelCandidateItems().filter(item => keys.has(deliveryScheduleItemWeekKey(item)));
+  return deliveryScheduleSortItems(items);
+}
+
+function deliveryScheduleExcelWeekSummary(groups) {
+  if (!groups.length) return 'No weeks';
+  const allCount = deliveryScheduleState.weekGroups.length;
+  if (allCount && groups.length >= allCount) return 'All weeks';
+  const labels = groups.map(group => group.label);
+  if (labels.length <= 6) return labels.join(', ');
+  return `${labels.length} weeks (${labels[0]} – ${labels[labels.length - 1]})`;
+}
+
+function deliveryScheduleExcelFilename(groups) {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const weeks = groups.map(group => group.weekNo).filter(weekNo => Number.isFinite(weekNo));
+  let weekPart = '';
+  if (weeks.length === 1) weekPart = `-wk${weeks[0]}`;
+  else if (weeks.length > 1 && weeks.length <= 4) weekPart = `-wk${weeks.join('-')}`;
+  else if (weeks.length > 4) weekPart = `-wk${weeks[0]}-to-${weeks[weeks.length - 1]}`;
+  return `delivery-schedule${weekPart}-${stamp}.xlsx`;
+}
+
+function deliveryScheduleExcelRowHeight(values) {
+  let lines = 1;
+  DELIVERY_EXCEL_COLUMNS.forEach((col, index) => {
+    if (!col.wrap) return;
+    const text = String(values[index] ?? '');
+    if (!text) return;
+    const width = Math.max(8, Number(col.width) - 1);
+    let count = 0;
+    text.split(/\r?\n/).forEach((chunk) => {
+      count += Math.max(1, Math.ceil(chunk.length / width));
+    });
+    if (count > lines) lines = count;
+  });
+  return Math.min(48, 6 + (lines * 12));
+}
+
+async function deliveryScheduleEnsureExcelJs() {
+  if (window.ExcelJS) return window.ExcelJS;
+  await new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error('Could not load Excel export library'));
+    document.head.appendChild(script);
+  });
+  return window.ExcelJS;
+}
+
+async function deliveryScheduleExportExcel(weekKeys) {
+  const groups = deliveryScheduleState.weekGroups.filter(group => weekKeys.has(group.key));
+  const items = deliveryScheduleItemsForWeekKeys(weekKeys);
+  if (!items.length) {
+    toast('No deliveries in the selected weeks to export.', 'error');
+    return;
+  }
+
+  const exportBtn = document.getElementById('delivery-export-excel');
+  const confirmBtn = document.querySelector('[data-delivery-excel-confirm="1"]');
+  if (exportBtn) exportBtn.disabled = true;
+  if (confirmBtn) {
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = 'Exporting…';
+  }
+
+  try {
+    const ExcelJS = await deliveryScheduleEnsureExcelJs();
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Production Planner';
+    workbook.created = new Date();
+    const sheet = workbook.addWorksheet('Delivery schedule', {
+      views: [{ state: 'frozen', ySplit: 3, activeCell: 'A4', showGridLines: false }],
+      properties: { defaultRowHeight: 16 },
+      pageSetup: {
+        paperSize: 9,
+        orientation: 'landscape',
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 0,
+        horizontalCentered: true,
+        printTitlesRow: '1:3',
+        margins: {
+          left: 0.35,
+          right: 0.35,
+          top: 0.55,
+          bottom: 0.45,
+          header: 0.22,
+          footer: 0.22,
+        },
+      },
+      headerFooter: {
+        oddHeader: '&L&BDelivery schedule&R&D',
+        oddFooter: '&LDelivery schedule&CPage &P of &N&R&T',
+        evenHeader: '&L&BDelivery schedule&R&D',
+        evenFooter: '&LDelivery schedule&CPage &P of &N&R&T',
+      },
+    });
+
+    const colCount = DELIVERY_EXCEL_COLUMNS.length;
+    const lastCol = sheet.getColumn(colCount).letter;
+    const exportedOn = new Date().toLocaleDateString(undefined, {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+    const typeLabel = deliverySchedulePsTypeLabel();
+    const lineLabel = `${items.length} line${items.length === 1 ? '' : 's'}`;
+
+    sheet.mergeCells(1, 1, 1, colCount);
+    const titleCell = sheet.getCell(1, 1);
+    titleCell.value = 'Delivery schedule';
+    titleCell.font = { name: 'Calibri', size: 16, bold: true, color: { argb: 'FF0F172A' } };
+    titleCell.alignment = { vertical: 'middle', horizontal: 'left' };
+    sheet.getRow(1).height = 24;
+
+    sheet.mergeCells(2, 1, 2, colCount);
+    const subtitleCell = sheet.getCell(2, 1);
+    subtitleCell.value = `${deliveryScheduleExcelWeekSummary(groups)}   ·   PP type: ${typeLabel}   ·   ${lineLabel}   ·   Exported ${exportedOn}`;
+    subtitleCell.font = { name: 'Calibri', size: 9, color: { argb: 'FF475569' } };
+    subtitleCell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+    sheet.getRow(2).height = 18;
+
+    const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A5F' } };
+    const headerBorder = {
+      top: { style: 'thin', color: { argb: 'FF1E3A5F' } },
+      left: { style: 'thin', color: { argb: 'FF1E3A5F' } },
+      bottom: { style: 'thin', color: { argb: 'FF1E3A5F' } },
+      right: { style: 'thin', color: { argb: 'FF1E3A5F' } },
+    };
+    const headerRow = sheet.getRow(3);
+    headerRow.height = 30;
+    DELIVERY_EXCEL_COLUMNS.forEach((col, index) => {
+      const cell = headerRow.getCell(index + 1);
+      cell.value = col.header;
+      cell.font = { name: 'Calibri', size: 8, bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = headerFill;
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      cell.border = headerBorder;
+    });
+
+    const grid = {
+      top: { style: 'thin', color: { argb: 'FFD6DEE8' } },
+      left: { style: 'thin', color: { argb: 'FFD6DEE8' } },
+      bottom: { style: 'thin', color: { argb: 'FFD6DEE8' } },
+      right: { style: 'thin', color: { argb: 'FFD6DEE8' } },
+    };
+    const dismissedFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+
+    items.forEach((item) => {
+      const values = DELIVERY_EXCEL_COLUMNS.map(col => col.value(item));
+      const row = sheet.addRow(values);
+      const dismissed = deliveryScheduleIsDismissed(deliverySchedulePlannerPsId(item));
+      row.height = deliveryScheduleExcelRowHeight(values);
+      values.forEach((value, index) => {
+        const col = DELIVERY_EXCEL_COLUMNS[index];
+        const cell = row.getCell(index + 1);
+        cell.font = {
+          name: 'Calibri',
+          size: 8,
+          color: { argb: dismissed ? 'FF64748B' : 'FF0F172A' },
+        };
+        cell.alignment = {
+          vertical: col.wrap ? 'top' : 'middle',
+          horizontal: col.align || 'left',
+          wrapText: Boolean(col.wrap),
+        };
+        cell.border = grid;
+        if (dismissed) cell.fill = dismissedFill;
+        if (col.num && value !== null && value !== '') cell.numFmt = '#,##0.##';
+      });
+    });
+
+    DELIVERY_EXCEL_COLUMNS.forEach((col, index) => {
+      sheet.getColumn(index + 1).width = col.width;
+    });
+
+    const lastRow = 3 + items.length;
+    sheet.autoFilter = `A3:${lastCol}${lastRow}`;
+    sheet.pageSetup.printArea = `A1:${lastCol}${lastRow}`;
+    sheet.pageSetup.fitToWidth = 1;
+    sheet.pageSetup.fitToHeight = 0;
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = deliveryScheduleExcelFilename(groups);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    deliveryScheduleCloseModal();
+    toast(`Exported ${items.length} line${items.length === 1 ? '' : 's'}.`);
+  } catch (err) {
+    console.error(err);
+    toast(`Export failed: ${err.message}`, 'error');
+    if (confirmBtn) {
+      confirmBtn.disabled = false;
+      const count = deliveryScheduleItemsForWeekKeys(weekKeys).length;
+      confirmBtn.textContent = count ? `Export ${count} line${count === 1 ? '' : 's'}` : 'Export Excel';
+    }
+  } finally {
+    if (exportBtn) exportBtn.disabled = false;
+  }
+}
+
+function deliveryScheduleExcelSelection(shell) {
+  return new Set(
+    [...shell.querySelectorAll('.delivery-excel-week-input:checked')].map(input => input.value),
+  );
+}
+
+function deliveryScheduleSyncExcelExportModal(shell) {
+  const keys = deliveryScheduleExcelSelection(shell);
+  const count = keys.size ? deliveryScheduleItemsForWeekKeys(keys).length : 0;
+  const countEl = shell.querySelector('[data-delivery-excel-count]');
+  const confirmBtn = shell.querySelector('[data-delivery-excel-confirm="1"]');
+  if (countEl) {
+    const weekLabel = `${keys.size} week${keys.size === 1 ? '' : 's'}`;
+    const lineLabel = `${count} line${count === 1 ? '' : 's'}`;
+    countEl.textContent = keys.size ? `${weekLabel} · ${lineLabel}` : 'Select at least one week';
+  }
+  if (confirmBtn) {
+    confirmBtn.disabled = count === 0;
+    confirmBtn.textContent = count ? `Export ${count} line${count === 1 ? '' : 's'}` : 'Export Excel';
+  }
+}
+
+function deliveryScheduleOpenExcelExport() {
+  if (deliveryScheduleState.loading || !deliveryScheduleState.loaded) {
+    toast('Delivery schedule is still loading.', 'error');
+    return;
+  }
+
+  const groups = deliveryScheduleState.weekGroups || [];
+  const shell = document.getElementById('delivery-schedule-modal-shell');
+  if (!shell) return;
+
+  const weekHtml = groups.length
+    ? groups.map((group) => {
+      const range = deliveryScheduleFormatWeekGroupRange(group.minDate, group.maxDate);
+      const checked = deliveryScheduleState.weekKeys.has(group.key) ? 'checked' : '';
+      const meta = range ? `<span class="delivery-excel-week-meta">${escapeHtml(range)}</span>` : '';
+      const countLabel = `${group.count} line${group.count === 1 ? '' : 's'}`;
+      return `
+        <label class="delivery-excel-week">
+          <input type="checkbox" class="delivery-excel-week-input" value="${escapeHtml(group.key)}" ${checked}>
+          <span class="delivery-excel-week-copy">
+            <span class="delivery-excel-week-title">${escapeHtml(group.label)}</span>
+            ${meta}
+          </span>
+          <span class="delivery-excel-week-count">${escapeHtml(countLabel)}</span>
+        </label>
+      `;
+    }).join('')
+    : '<p class="delivery-excel-empty">No weeks to export for the current PP type filter.</p>';
+
+  shell.innerHTML = `
+    <div class="trial-modal-backdrop" data-delivery-modal-backdrop="1">
+      <div class="trial-modal-panel delivery-excel-modal" role="dialog" aria-modal="true" aria-labelledby="delivery-excel-title">
+        <div class="trial-modal-head">
+          <div id="delivery-excel-title" class="trial-modal-title">Export Excel</div>
+          <button type="button" class="trial-modal-close" aria-label="Close" data-delivery-modal-close="1">×</button>
+        </div>
+        <div class="trial-modal-body delivery-excel-body">
+          <p class="delivery-excel-lead">Select the weeks to include. The file uses every column on this screen except the exception flag, and is set up to print landscape on A4.</p>
+          <div class="delivery-excel-week-actions">
+            <button type="button" class="delivery-week-filter-action" data-delivery-excel-weeks="all">Select all</button>
+            <button type="button" class="delivery-week-filter-action" data-delivery-excel-weeks="none">Clear</button>
+          </div>
+          <div class="delivery-excel-weeks">${weekHtml}</div>
+          <div class="delivery-excel-footer">
+            <span class="delivery-excel-count" data-delivery-excel-count></span>
+            <div class="delivery-excel-footer-actions">
+              <button type="button" class="btn btn-light btn-sm" data-delivery-modal-close="1">Cancel</button>
+              <button type="button" class="delivery-export-excel-btn" data-delivery-excel-confirm="1">Export Excel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.classList.add('trial-modal-open');
+  deliveryScheduleSyncExcelExportModal(shell);
+
+  deliveryExcelExportKeydown = (event) => {
+    if (event.key === 'Escape') deliveryScheduleCloseModal();
+  };
+  document.addEventListener('keydown', deliveryExcelExportKeydown);
+  shell.querySelectorAll('[data-delivery-modal-close="1"]').forEach((button) => {
+    button.addEventListener('click', deliveryScheduleCloseModal);
+  });
+  shell.querySelector('[data-delivery-modal-backdrop="1"]')?.addEventListener('click', (event) => {
+    if (event.target?.dataset?.deliveryModalBackdrop === '1') deliveryScheduleCloseModal();
+  });
+
+  shell.querySelector('[data-delivery-excel-weeks="all"]')?.addEventListener('click', () => {
+    shell.querySelectorAll('.delivery-excel-week-input').forEach((input) => {
+      input.checked = true;
+    });
+    deliveryScheduleSyncExcelExportModal(shell);
+  });
+  shell.querySelector('[data-delivery-excel-weeks="none"]')?.addEventListener('click', () => {
+    shell.querySelectorAll('.delivery-excel-week-input').forEach((input) => {
+      input.checked = false;
+    });
+    deliveryScheduleSyncExcelExportModal(shell);
+  });
+  shell.querySelector('.delivery-excel-weeks')?.addEventListener('change', () => {
+    deliveryScheduleSyncExcelExportModal(shell);
+  });
+  shell.querySelector('[data-delivery-excel-confirm="1"]')?.addEventListener('click', () => {
+    const keys = deliveryScheduleExcelSelection(shell);
+    if (!keys.size) {
+      toast('Select at least one week to export.', 'error');
+      return;
+    }
+    deliveryScheduleExportExcel(keys);
   });
 }
 
@@ -1581,6 +1961,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('delivery-schedule-view-selected')?.addEventListener('click', () => {
     deliveryScheduleOpenExportModal();
+  });
+
+  document.getElementById('delivery-export-excel')?.addEventListener('click', () => {
+    deliveryScheduleOpenExcelExport();
   });
 
   document.getElementById('delivery-schedule-hide-dismissed')?.addEventListener('change', (event) => {

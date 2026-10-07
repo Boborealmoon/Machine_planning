@@ -23,56 +23,90 @@ logger = logging.getLogger(__name__)
 material_inspection_bp = Blueprint("material_inspection", __name__)
 
 _CACHE_TTL_SEC = 300
-_CACHE_VERSION = 4  # bump when bucket / voucher filter logic changes
+_CACHE_VERSION = 5  # bump when bucket / voucher filter logic changes
 _cache: dict[str, tuple[float, int, dict[str, list[dict[str, Any]]]]] = {}
 
+# Lot reference (M/04430/26) is the inventory batch string. QI stores only lot_no.
+# Open receipts often leave lg_in_shm_*_det_lot.reference_no blank, so inventory
+# is the source and the posted inbound lot row is the fallback.
+_LOT_REFERENCE_JOIN = """
+LEFT JOIN LATERAL (
+    SELECT string_agg(DISTINCT ref, ', ' ORDER BY ref) AS lot_reference_no
+    FROM (
+        SELECT COALESCE(
+            NULLIF(BTRIM(o.reference_no), ''),
+            NULLIF(BTRIM(ost.reference_no), ''),
+            NULLIF(BTRIM(hst.reference_no), '')
+        ) AS ref
+        FROM public.qc_quality_inspection_lot ql
+        LEFT JOIN public.ic_inventory_ost_lot o
+          ON o.inventory_code = ql.inventory_code
+         AND o.lot_no = ql.lot_no
+        LEFT JOIN public.lg_in_shm_ost_det_lot ost
+          ON ost.shipment_voucher_no = h.source_voucher_no
+         AND ost.line_item_no = h.item_no
+         AND ost.lot_no = ql.lot_no
+        LEFT JOIN public.lg_in_shm_hst_det_lot hst
+          ON hst.shipment_voucher_no = h.source_voucher_no
+         AND hst.line_item_no = h.item_no
+         AND hst.lot_no = ql.lot_no
+        WHERE ql.inspection_voucher_no = h.inspection_voucher_no
+          AND BTRIM(COALESCE(ql.inventory_code, '')) = BTRIM(COALESCE(h.inventory_code, ''))
+          AND COALESCE(ql.lot_no, 0) <> 0
+    ) refs
+    WHERE ref IS NOT NULL
+) lot ON TRUE
+"""
+
 # ERP jasper view used by the QC inspection control screen (logistic shipment + QI lines).
-_MATERIAL_INSPECTION_SELECT = """
+_MATERIAL_INSPECTION_SELECT = f"""
 SELECT
-    inspection_voucher_no,
-    status,
-    inspector_code,
-    inspector_name,
-    po_no,
-    supplier_code,
-    supplier_name,
-    source_voucher_no AS shipment_voucher_no,
-    grn_no,
-    item_no AS shipment_line_item_no,
-    inventory_code,
-    inventory_desc,
-    uom,
-    receiving_qty,
-    inspected_qty,
-    accepted_qty,
-    rejected_qty,
-    actual_arrival_date,
-    goods_receipt_date,
-    created_by_employee_code,
-    created_by_employee_name,
-    last_udpated_by_employee_code AS last_updated_by_employee_code,
-    last_udpated_by_employee_name AS last_updated_by_employee_name,
-    created_datetime,
-    last_updated_datetime,
-    internal_remarks,
-    line_item_remarks,
-    ncr_voucher_no,
-    shipment_supplier_name,
-    shipment_receiving_location_name,
-    contact_person_name,
-    generate_ncr
-FROM public.zz_jasper_th5_quality_inspection_control_header
+    h.inspection_voucher_no,
+    h.status,
+    h.inspector_code,
+    h.inspector_name,
+    h.po_no,
+    h.supplier_code,
+    h.supplier_name,
+    h.source_voucher_no AS shipment_voucher_no,
+    h.grn_no,
+    h.item_no AS shipment_line_item_no,
+    h.inventory_code,
+    h.inventory_desc,
+    h.uom,
+    h.receiving_qty,
+    h.inspected_qty,
+    h.accepted_qty,
+    h.rejected_qty,
+    h.actual_arrival_date,
+    h.goods_receipt_date,
+    h.created_by_employee_code,
+    h.created_by_employee_name,
+    h.last_udpated_by_employee_code AS last_updated_by_employee_code,
+    h.last_udpated_by_employee_name AS last_updated_by_employee_name,
+    h.created_datetime,
+    h.last_updated_datetime,
+    h.internal_remarks,
+    h.line_item_remarks,
+    h.ncr_voucher_no,
+    h.shipment_supplier_name,
+    h.shipment_receiving_location_name,
+    h.contact_person_name,
+    h.generate_ncr,
+    lot.lot_reference_no
+FROM public.zz_jasper_th5_quality_inspection_control_header h
+{_LOT_REFERENCE_JOIN}
 """
 
 _MATERIAL_INSPECTION_FILTERS = {
     "with_shipment": (
-        "WHERE source_voucher_no IS NOT NULL"
-        "  AND BTRIM(source_voucher_no) <> ''"
-        "  AND inspection_voucher_no ~ '^QI[0-9]+$'"
+        "WHERE h.source_voucher_no IS NOT NULL"
+        "  AND BTRIM(h.source_voucher_no) <> ''"
+        "  AND h.inspection_voucher_no ~ '^QI[0-9]+$'"
     ),
     "no_shipment": (
-        "WHERE (source_voucher_no IS NULL OR BTRIM(source_voucher_no) = '')"
-        "  AND inspection_voucher_no ~ '^QI[0-9]+$'"
+        "WHERE (h.source_voucher_no IS NULL OR BTRIM(h.source_voucher_no) = '')"
+        "  AND h.inspection_voucher_no ~ '^QI[0-9]+$'"
     ),
 }
 
@@ -118,7 +152,7 @@ FROM public.stg_qc_inspection
 def _material_inspection_sql(variant: str) -> tuple[str, str]:
     where = "WHERE has_shipment = true" if variant == "with_shipment" else "WHERE has_shipment = false"
     staged = f"{_STAGED_MI_SELECT}{where}\nORDER BY created_datetime DESC NULLS LAST"
-    live = f"{_MATERIAL_INSPECTION_SELECT}{_MATERIAL_INSPECTION_FILTERS[variant]}\nORDER BY created_datetime DESC NULLS LAST"
+    live = f"{_MATERIAL_INSPECTION_SELECT}{_MATERIAL_INSPECTION_FILTERS[variant]}\nORDER BY h.created_datetime DESC NULLS LAST"
     return staged, live
 
 

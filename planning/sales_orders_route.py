@@ -1934,10 +1934,11 @@ def _set_pp_proposed_cnc(pp: dict[str, Any], machines: list[str]) -> None:
         partial["proposed_cnc"] = list(values)
 
 
-def _apply_proposed_cnc_overlay(orders: list[dict[str, Any]]) -> None:
+def _apply_proposed_cnc_overlay(orders: list[dict[str, Any]]) -> dict[str, list[str]]:
     """Copy NPI/FA Machine (CNC) onto S/O rows that share the same part number.
 
     A saved Proposed CNC on planner_so_pp_notes overrides the NPI/FA default.
+    Returns the part → machine map so sub-assembly lines can use the same default.
     """
     from .first_article_service import _part_key, load_proposed_cnc_by_part
 
@@ -1958,6 +1959,52 @@ def _apply_proposed_cnc_overlay(orders: list[dict[str, Any]]) -> None:
             for partial in pp.get("partials") or []:
                 part = compact_text(partial.get("inventory_code")) or pp_part
                 partial["proposed_cnc"] = list(by_part.get(_part_key(part), npi))
+    return by_part
+
+
+def _apply_assembly_line_machine_visibility(
+    orders: list[dict[str, Any]],
+    by_canonical: dict[str, list[str]],
+    by_part: dict[str, list[str]] | None = None,
+) -> None:
+    """Give each sub-assembly line its own Queued CNC and Proposed CNC.
+
+    Parent rows keep the assembly's machines. Child COMP sheets such as
+    NPS26-0321-1 are queued and proposed on their own, and every later
+    process sheet with sub-assembly lines uses the same fields.
+    """
+    from .first_article_service import _part_key
+    from .process_sheets import format_planner_ps_id
+
+    children: list[dict[str, Any]] = []
+    for order in orders:
+        for pp in order.get("pp_vouchers") or []:
+            for child in pp.get("assembly_line_items") or []:
+                if isinstance(child, dict):
+                    children.append(child)
+    if not children:
+        return
+
+    child_ids = _unique_texts(
+        _ps_base_id(child.get("process_sheet_no"))
+        for child in children
+        if compact_text(child.get("process_sheet_no"))
+    )
+    notes_map = _load_notes_map(child_ids) or {}
+    part_map = by_part or {}
+    for child in children:
+        ps_id = _ps_base_id(child.get("process_sheet_no"))
+        queued: list[str] = []
+        if ps_id:
+            planner_id = format_planner_ps_id(ps_id, 1)
+            queued = _machines_for_planner_ps_id(by_canonical, planner_id)
+        child["queued_machines"] = queued
+        note = notes_map.get(ps_id) or notes_map.get(ps_id.upper()) if ps_id else None
+        saved = None if not note else note.get("proposed_cnc_saved")
+        if saved is not None:
+            child["proposed_cnc"] = _parse_proposed_cnc(saved)
+        else:
+            child["proposed_cnc"] = list(part_map.get(_part_key(child.get("part_no")), []))
 
 
 def _apply_new_part_overlay(orders: list[dict[str, Any]]) -> None:
@@ -2317,9 +2364,10 @@ def _overlay_planner_edits(payload: dict[str, Any]) -> dict[str, Any]:
 
     Material dates live in planner_so_pp_notes. Queued CNC is the live planner
     queue. NPI Machine (CNC) is keyed by part number. Programme finish is the
-    NPI/FA New parts date. The ERP snapshot is cached, so without this overlay
-    a reload shows empty Material in / Queued CNC / Proposed CNC / Programme
-    finish cells until rebuild.
+    NPI/FA New parts date. Sub-assembly lines get the same Queued CNC and
+    Proposed CNC from their own process sheet. The ERP snapshot is cached, so
+    without this overlay a reload shows empty Material in / Queued CNC /
+    Proposed CNC / Programme finish cells until rebuild.
     """
     if not isinstance(payload, dict):
         return payload
@@ -2346,8 +2394,10 @@ def _overlay_planner_edits(payload: dict[str, Any]) -> dict[str, Any]:
     from .assembly_material import apply_assembly_material_rollup
 
     apply_assembly_material_rollup(orders)
-    _apply_queued_machines_overlay(orders, _load_queued_machines_by_canonical_ps())
-    _apply_proposed_cnc_overlay(orders)
+    queued_by_ps = _load_queued_machines_by_canonical_ps()
+    _apply_queued_machines_overlay(orders, queued_by_ps)
+    proposed_by_part = _apply_proposed_cnc_overlay(orders)
+    _apply_assembly_line_machine_visibility(orders, queued_by_ps, proposed_by_part)
     program_finish_overlay = _load_program_finish_overlay(process_sheets)
     if program_finish_overlay is not None:
         _apply_program_finish_overlay(orders, program_finish_overlay)

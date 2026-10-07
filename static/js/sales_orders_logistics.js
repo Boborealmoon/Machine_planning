@@ -1108,11 +1108,13 @@
             </button>
             ${renderDateHistoryButton(pp, 'material_in_date')}
           </div>
-          <input type="date"
-            class="so-material-subcon-date"
-            value="${escapeHtml(dateValue)}"
-            aria-label="Material expected / arrival date">
-          <span class="so-material-subcon-date-text">${parsed.arrived && dateValue ? escapeHtml(formatDate(dateValue)) : ''}</span>
+          <div class="so-material-subcon-date-slot">
+            <input type="date"
+              class="so-material-subcon-date"
+              value="${escapeHtml(dateValue)}"
+              aria-label="Material expected / arrival date">
+            <span class="so-material-subcon-date-text">${parsed.arrived && dateValue ? escapeHtml(formatDate(dateValue)) : ''}</span>
+          </div>
           ${legacyHtml}
         </div>
         <span class="so-editable-status" aria-live="polite"></span>
@@ -1853,11 +1855,13 @@
             <span class="so-material-subcon-arrived-dot" aria-hidden="true"></span>
             Arrived
           </button>
-          <input type="date"
-            class="so-material-subcon-date"
-            value="${escapeHtml(parsed.date)}"
-            aria-label="Material EDD date">
-          <span class="so-material-subcon-date-text">${parsed.arrived && parsed.date ? escapeHtml(formatDate(parsed.date)) : ''}</span>
+          <div class="so-material-subcon-date-slot">
+            <input type="date"
+              class="so-material-subcon-date"
+              value="${escapeHtml(parsed.date)}"
+              aria-label="Material EDD date">
+            <span class="so-material-subcon-date-text">${parsed.arrived && parsed.date ? escapeHtml(formatDate(parsed.date)) : ''}</span>
+          </div>
         </div>
         <span class="so-editable-status" aria-live="polite"></span>
       </td>

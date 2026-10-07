@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Delivery{% endblock %}
 {% block main_class %}app-main--delivery{% endblock %}
-{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=delivery-proposed-20260930">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=delivery-excel-20261006">{% endblock %}
 {% block content %}
 <div class="delivery-page">
   <div class="delivery-header">
@@ -14,6 +14,13 @@
         <button type="button" class="delivery-view-btn is-active" id="delivery-view-schedule" data-delivery-view="schedule" role="tab" aria-selected="true">Delivery schedule</button>
         <button type="button" class="delivery-view-btn" id="delivery-view-queue" data-delivery-view="queue" role="tab" aria-selected="false">Queue delays</button>
       </div>
+      <button type="button" class="delivery-export-excel-btn" id="delivery-export-excel" title="Choose weeks, then download a print-ready Excel file">
+        <svg class="delivery-export-excel-icon" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 1.75v8.1M5 7.2 8 10.3l3-3.1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M2.75 13.25h10.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+        Export Excel
+      </button>
       <a class="btn btn-ghost btn-sm" href="{{ planner_path }}">Open Planner</a>
       <button type="button" class="btn btn-ghost btn-sm" id="delivery-refresh">Refresh</button>
     </div>
@@ -228,7 +235,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=delivery-unified-20260619"></script>
-<script src="{{ url_for('static', filename='js/delivery_schedule.js') }}?v=delivery-proposed-20260930"></script>
+<script src="{{ url_for('static', filename='js/delivery_schedule.js') }}?v=delivery-excel-20261006"></script>
 <script src="{{ url_for('static', filename='js/queue_delays.js') }}?v=delivery-unified-20260619"></script>
-<script src="{{ url_for('static', filename='js/delivery.js') }}?v=delivery-client-search-20260623"></script>
+<script src="{{ url_for('static', filename='js/delivery.js') }}?v=delivery-excel-20261006"></script>
 {% endblock %}

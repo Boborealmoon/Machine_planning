@@ -96,6 +96,18 @@ def main() -> None:
         target=_warm_sales_orders_lite, daemon=True, name="so-lite-warm"
     ).start()
 
+    def _refresh_auk_token() -> None:
+        try:
+            from planning.auk_auth import refresh_loop
+
+            refresh_loop()
+        except Exception as exc:
+            log.warning("Auk token refresh loop stopped: %s", exc)
+
+    threading.Thread(
+        target=_refresh_auk_token, daemon=True, name="auk-token-refresh"
+    ).start()
+
     serve(
         app,
         host=host,
