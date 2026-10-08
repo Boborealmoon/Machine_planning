@@ -1,6 +1,6 @@
 """Factory-dashboard OEE aggregation, without calling Auk."""
 
-from planning.auk_oee_service import overall_from_oee_slots, range_for_preset
+from planning.auk_oee_service import overall_from_oee_slots, range_for_preset, segments_from_slots
 
 
 def test_overall_matches_auk_waterfall():
@@ -29,6 +29,19 @@ def test_overall_matches_auk_waterfall():
     assert overall["quality"] == 100.0
     # OEE2 = availability x performance x quality, which is what the donut shows.
     assert overall["final_effective"] == 83.33
+
+
+def test_each_time_slice_keeps_its_own_oee():
+    slots = [
+        {"time": "2026-10-08T00:00:00.000Z", "int": 3600000, "oee": {"ef": 100, "pd": 0}},
+        {"time": "2026-10-08T01:00:00.000Z", "int": 3600000, "oee": {"ef": 33, "pd": 40, "us": 27}},
+    ]
+    segments = segments_from_slots(slots)
+    assert len(segments) == 2
+    assert segments[0]["start"].startswith("2026-10-08T00:00:00")
+    assert segments[0]["oee_pct"] == 100.0
+    assert segments[1]["loading_pct"] < segments[0]["loading_pct"]
+    assert segments[1]["losses"]["pd"] == 40.0
 
 
 def test_day_preset_starts_at_local_midnight():

@@ -2,7 +2,7 @@
 {% block title %}KPI{% endblock %}
 {% block main_class %}app-main--kpi{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/kpi.css') }}?v=kpi-material-dates-20261006">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/kpi.css') }}?v=kpi-board-20261007">
 {% endblock %}
 {% block content %}
 <div class="kpi-page" data-screen="qc">
@@ -49,38 +49,38 @@
   <div id="kpi-panel-qc" class="kpi-panel" data-kpi-panel="qc">
   <section class="kpi-toolbar card">
     <label class="kpi-field">
-      <span>Pushed from</span>
+      <span>Arrived from</span>
       <input type="date" id="kpi-from">
     </label>
     <label class="kpi-field">
-      <span>Pushed to</span>
+      <span>Arrived to</span>
       <input type="date" id="kpi-to">
     </label>
     <label class="kpi-field">
-      <span>State</span>
+      <span>Status</span>
       <select id="kpi-status">
         <option value="all">All</option>
-        <option value="in_qc">In QC</option>
-        <option value="left_qc">Left QC</option>
-        <option value="left_unstamped">Left QC, time not recorded</option>
-        <option value="before_qc">Still at Deburring</option>
+        <option value="in_qc">Still in QC</option>
+        <option value="left_qc">TAT complete</option>
+        <option value="left_unstamped">No out time</option>
+        <option value="before_qc">Not in QC yet</option>
       </select>
     </label>
     <label class="kpi-field">
-      <span>Min days</span>
+      <span>Min TAT (days)</span>
       <input type="number" id="kpi-min-days" min="0" step="0.5" placeholder="Any">
     </label>
     <label class="kpi-field kpi-field--search">
       <span>Search</span>
-      <input type="search" id="kpi-search" placeholder="Job, part, customer, S/O, inspector" autocomplete="off">
+      <input type="search" id="kpi-search" placeholder="Job or part" autocomplete="off">
     </label>
     <label class="kpi-check">
       <input type="checkbox" id="kpi-include-open" checked>
-      <span>Keep jobs still in Final Inspection, even if pushed before this range</span>
+      <span>Include jobs still in QC that arrived before this range</span>
     </label>
   </section>
 
-  <section id="kpi-summary" class="kpi-summary" hidden></section>
+  <section id="kpi-summary" class="kpi-summary kpi-board" hidden></section>
 
   <section class="card kpi-table-card" id="kpi-table-card" hidden>
     <div class="kpi-table-meta" id="kpi-meta"></div>
@@ -91,19 +91,16 @@
             <th class="kpi-resolved-col">Resolved</th>
             <th><button type="button" data-kpi-sort="ps_id">Job</button></th>
             <th><button type="button" data-kpi-sort="part_no">Part</button></th>
-            <th><button type="button" data-kpi-sort="customer_name">Customer</button></th>
-            <th><button type="button" data-kpi-sort="current_stage_desc">Stage</button></th>
-            <th><button type="button" data-kpi-sort="pushed_at">Pushed to QC</button></th>
+            <th><button type="button" data-kpi-sort="pushed_at">Arrived at QC</button></th>
             <th><button type="button" data-kpi-sort="left_at">Left QC</button></th>
-            <th class="kpi-num"><button type="button" data-kpi-sort="days_at_qc">Days at QC</button></th>
-            <th><button type="button" data-kpi-sort="qc_state">State</button></th>
-            <th><button type="button" data-kpi-sort="inspector_name">Inspector</button></th>
+            <th class="kpi-num"><button type="button" data-kpi-sort="days_at_qc">QC TAT</button></th>
+            <th><button type="button" data-kpi-sort="qc_state">Status</button></th>
           </tr>
         </thead>
         <tbody id="kpi-body"></tbody>
       </table>
     </div>
-    <div id="kpi-empty" class="kpi-empty" hidden>No Pushed to QC stamps match these filters.</div>
+    <div id="kpi-empty" class="kpi-empty" hidden>No jobs match.</div>
   </section>
   </div>
 
@@ -192,5 +189,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/kpi.js') }}?v=kpi-material-dates-20261006"></script>
+<script src="{{ url_for('static', filename='js/kpi.js') }}?v=kpi-board-20261007"></script>
 {% endblock %}

@@ -1,4 +1,4 @@
-"""5-minute WO qty poll: COMAIN Postgres read + jump inserts only.
+"""Hourly WO qty poll: COMAIN Postgres read + jump inserts only.
 
 Does not reload mfg_wo_status, rebuild caches, or start the Flask app.
 

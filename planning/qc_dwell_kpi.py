@@ -24,10 +24,10 @@ QC_STATE_UNSTAMPED = "left_unstamped"
 QC_STATE_BEFORE = "before_qc"
 
 QC_STATE_LABELS = {
-    QC_STATE_IN: "In QC",
-    QC_STATE_LEFT: "Left QC",
-    QC_STATE_UNSTAMPED: "Left QC (time not recorded)",
-    QC_STATE_BEFORE: "Still at Deburring",
+    QC_STATE_IN: "Still in QC",
+    QC_STATE_LEFT: "TAT complete",
+    QC_STATE_UNSTAMPED: "No out time",
+    QC_STATE_BEFORE: "Not in QC yet",
 }
 
 _STATUS_LABELS = {

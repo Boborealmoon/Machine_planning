@@ -1386,6 +1386,72 @@ def overall_from_oee_slots(slots: list[dict[str, Any]] | None) -> dict[str, floa
     }
 
 
+def segments_from_slots(slots: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """One OEE breakdown per time slice, in the order Auk returns them."""
+    segments: list[dict[str, Any]] = []
+    for slot in slots or []:
+        if not isinstance(slot, dict):
+            continue
+        overall = overall_from_oee_slots([slot])
+        if not overall:
+            continue
+        raw_oee = slot.get("oee") if isinstance(slot.get("oee"), dict) else {}
+        losses = {
+            key: round(float(raw_oee.get(key) or 0), 2)
+            for key in _LOSS_KEYS
+            if key in raw_oee or raw_oee
+        }
+        start = slot.get("time")
+        segments.append(
+            {
+                "start": start if isinstance(start, str) else None,
+                "oee_pct": overall["final_effective"],
+                "loading_pct": overall["loading"],
+                "availability_pct": overall["availability"],
+                "performance_pct": overall["performance"],
+                "quality_pct": overall["quality"],
+                "losses": losses,
+            }
+        )
+    return segments
+
+
+def fetch_equipment_timeline(
+    equipment_id: int,
+    *,
+    lower: str,
+    upper: str,
+    res_x: int = 1,
+    res_period: str = "hours",
+    entity_id: int | None = None,
+) -> dict[str, Any]:
+    """Hourly (or finer) OEE slices for one machine, from the factory site feed."""
+    lower, upper = _floor_range_to_resolution(lower, upper, res_x=res_x, res_period=res_period)
+    rows = fetch_site_oee(
+        [int(equipment_id)],
+        lower=lower,
+        upper=upper,
+        res_x=res_x,
+        res_period=res_period,
+        entity_id=entity_id,
+    )
+    slots = _slots_for_site_row(rows[0]) if rows else []
+    overall = overall_from_oee_slots(slots) or {}
+    return {
+        "equipment_id": int(equipment_id),
+        "from": lower,
+        "to": upper,
+        "res_x": res_x,
+        "res_period": res_period,
+        "oee_pct": overall.get("final_effective"),
+        "loading_pct": overall.get("loading"),
+        "availability_pct": overall.get("availability"),
+        "performance_pct": overall.get("performance"),
+        "quality_pct": overall.get("quality"),
+        "segments": segments_from_slots(slots),
+    }
+
+
 def _widget_type_id(widget: dict[str, Any]) -> int | None:
     for key in ("widget_type_id", "type_id"):
         value = widget.get(key)
@@ -1694,11 +1760,42 @@ def fetch_factory_dashboard(
         ),
         "fetched_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
+    if _should_record_history(upper, res_x, res_period):
+        _record_history(
+            cards=cards,
+            site_rows=list(rows_by_equipment.values()),
+            upper=upper,
+            entity_id=entity,
+        )
     try:
         save_dashboard_snapshot(payload)
     except OSError:
         pass
     return payload
+
+
+def _should_record_history(upper: str, res_x: int, res_period: str) -> bool:
+    """Record only the live 15-minute factory view, not a historical browse."""
+    if int(res_x) != 15 or not str(res_period or "").lower().startswith("minute"):
+        return False
+    upper_dt = _parse_iso(upper)
+    if upper_dt is None:
+        return False
+    age = (datetime.now(timezone.utc) - upper_dt.astimezone(timezone.utc)).total_seconds()
+    # The dashboard floors "to" onto the open 15-minute bucket, so that
+    # timestamp can sit almost 15 minutes behind the clock.
+    return -60 <= age < (15 * 60 + 90)
+
+
+def _record_history(*, cards: list[dict[str, Any]], site_rows: list[dict[str, Any]], upper: str, entity_id: int) -> None:
+    try:
+        from .auk_oee_history import record_live_oee
+
+        record_live_oee(cards=cards, site_rows=site_rows, upper=upper, entity_id=entity_id)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("OEE history record failed")
 
 
 def _snapshot_path() -> str:

@@ -1,6 +1,6 @@
 (function () {
   const SUBTITLES = {
-    qc: "Days at QC start from the QAQC Pushed to QC stamp (the Deburring scan into Final Inspection). The clock stops at the first Packing scan after that stamp. Jobs still in Final Inspection keep counting through today. A job that has left Final Inspection without a Packing scan is listed with the stay time blank.",
+    qc: "Time in QC, from the Final Inspection scan to the packing scan.",
     material: "Active S/O lines where the material arrived after the need date. Need is the material need date. Arrival is the Material in date. Gap is how many days late. PO due is the customer due date. Proposed EDD is the planner date from S/O management.",
     exceptions: "Active S/O lines flagged with an exception. Each row is one partial, with the part description, posted date, due date, proposed EDD, and the remarks from S/O management.",
   };
@@ -29,13 +29,10 @@
     qc: [
       ["ps_id", "Job"],
       ["part_no", "Part"],
-      ["customer_name", "Customer"],
-      ["current_stage_desc", "Stage"],
-      ["pushed_at", "Pushed to QC"],
+      ["pushed_at", "Arrived at QC"],
       ["left_at", "Left QC"],
-      ["days_at_qc", "Days at QC"],
-      ["qc_state", "State"],
-      ["inspector_name", "Inspector"],
+      ["days_at_qc", "QC TAT"],
+      ["qc_state", "Status"],
     ],
     material: [
       ["process_sheet_no", "Process sheet"],
@@ -73,14 +70,11 @@
   const COLUMN_FIELDS = {
     qc: {
       ps_id: ["ps_id", "ps_type"],
-      part_no: ["part_no", "part_desc", "sales_order_no"],
-      customer_name: ["customer_name", "customer_code"],
-      current_stage_desc: ["current_stage_desc", "stage_status_label"],
+      part_no: ["part_no", "part_desc"],
       pushed_at: ["pushed_at"],
-      left_at: ["left_at", "left_stage_desc"],
+      left_at: ["left_at"],
       days_at_qc: ["days_at_qc", "elapsed_label"],
       qc_state: ["qc_state_label", "qc_state"],
-      inspector_name: ["inspector_name"],
     },
     material: {
       process_sheet_no: ["process_sheet_no", "sales_order_no", "ps_type"],
@@ -137,10 +131,6 @@
     return text;
   }
 
-  function customerLabel(row) {
-    return row.customer_name || row.customer_code || "";
-  }
-
   function dash(value) {
     const text = value == null ? "" : String(value).trim();
     return text || "—";
@@ -195,29 +185,51 @@
     alert.textContent = message;
   }
 
+  function countText(value) {
+    if (value == null || value === "") return "\u2014";
+    return String(value);
+  }
+
+  function dayText(value) {
+    if (value == null || value === "") return "\u2014";
+    return value + " days";
+  }
+
+  function boardFact(label, value, cls) {
+    return (
+      '<span class="' + (cls || "") + '">' + esc(label) + " <b>" + esc(value) + "</b></span>"
+    );
+  }
+
+  function boardGroup(tone, count, title, facts) {
+    return (
+      '<article class="kpi-board-group kpi-board-group--' + tone + '">' +
+        '<div class="kpi-board-n">' + esc(countText(count)) + "</div>" +
+        '<div class="kpi-board-copy">' +
+          '<div class="kpi-board-k">' + esc(title) + "</div>" +
+          '<div class="kpi-board-facts">' + facts + "</div>" +
+        "</div>" +
+      "</article>"
+    );
+  }
+
   function renderSummary(summary) {
     const host = $("kpi-summary");
     if (!host) return;
     const s = summary || {};
-    const cards = [
-      ["In QC now", s.in_qc, ""],
-      ["Avg days still in QC", s.avg_days_in_qc, ""],
-      ["Left QC", s.left_qc, ""],
-      ["Avg days at QC", s.avg_days_left, ""],
-      ["Median days (left QC)", s.median_days_left, ""],
-      ["In QC 3 days or more", s.in_qc_3d, s.in_qc_3d ? "kpi-stat--alert" : ""],
-      ["In QC 7 days or more", s.in_qc_7d, s.in_qc_7d ? "kpi-stat--hot" : ""],
-      ["Left, time not recorded", s.left_unstamped, ""],
-    ];
-    host.innerHTML = cards.map(([label, value, cls]) => {
-      const shown = value == null || value === "" ? "—" : value;
-      return (
-        '<article class="kpi-stat ' + cls + '">' +
-          '<div class="kpi-stat-value">' + esc(shown) + '</div>' +
-          '<div class="kpi-stat-label">' + esc(label) + '</div>' +
-        '</article>'
-      );
-    }).join("");
+    const aged = Number(s.in_qc_7d) > 0 ? "kpi-board-hot" : "";
+    host.innerHTML = [
+      boardGroup("open", s.in_qc, "Still in QC", [
+        boardFact("Avg", dayText(s.avg_days_in_qc)),
+        boardFact("7+ days", countText(s.in_qc_7d), aged),
+      ].join("")),
+      boardGroup("done", s.left_qc, "Left QC", [
+        boardFact("Avg", dayText(s.avg_days_left)),
+        boardFact("Median", dayText(s.median_days_left)),
+      ].join("")),
+      boardGroup("gap", s.left_unstamped, "No out time",
+        "<span>Left inspection, no packing scan</span>"),
+    ].join("");
     host.hidden = false;
   }
 
@@ -544,32 +556,22 @@
     if (empty) empty.hidden = true;
     body.innerHTML = rows.map((row) => {
       const partial = Number(row.pp_partial_no) > 1 ? "Partial " + row.pp_partial_no : "";
-      const partSub = [row.part_desc, row.sales_order_no].filter(Boolean).join(" · ");
-      const stageSub = row.stage_status_label || "";
-      const days = row.days_at_qc == null
-        ? "—"
-        : (row.elapsed_label ? row.elapsed_label : String(row.days_at_qc));
+      const days = row.days_at_qc == null ? "" : (row.elapsed_label || String(row.days_at_qc));
       const daysTitle = row.days_at_qc == null ? "" : String(row.days_at_qc) + " days";
+      const tat = days || (row.qc_state === "left_unstamped" ? "No out time" : row.qc_state === "before_qc" ? "Not started" : "—");
       return (
         '<tr class="' + rowClass(row) + '">' +
           resolvedCell("qc", row) +
           '<td>' + typePill(row) + '<span class="kpi-job">' + esc(row.ps_id || "—") + '</span>' +
             (partial ? '<span class="kpi-sub">' + esc(partial) + '</span>' : '') +
           '</td>' +
-          '<td class="kpi-wrap"><span>' + esc(dash(row.part_no)) + '</span>' +
-            (partSub ? '<span class="kpi-sub">' + esc(partSub) + '</span>' : '') +
-          '</td>' +
-          '<td class="kpi-wrap">' + esc(dash(customerLabel(row))) + '</td>' +
-          '<td><span>' + esc(dash(row.current_stage_desc)) + '</span>' +
-            (stageSub ? '<span class="kpi-sub">' + esc(stageSub) + '</span>' : '') +
+          '<td class="kpi-wrap"><span class="kpi-job">' + esc(dash(row.part_no)) + '</span>' +
+            (row.part_desc ? '<span class="kpi-sub">' + esc(row.part_desc) + '</span>' : '') +
           '</td>' +
           '<td>' + esc(dash(row.pushed_at)) + '</td>' +
-          '<td>' + esc(dash(row.left_at)) +
-            (row.left_stage_desc ? '<span class="kpi-sub">' + esc(row.left_stage_desc) + '</span>' : '') +
-          '</td>' +
-          '<td class="kpi-num kpi-days" title="' + esc(daysTitle) + '">' + esc(days) + '</td>' +
+          '<td>' + esc(dash(row.left_at)) + '</td>' +
+          '<td class="kpi-num kpi-days" title="' + esc(daysTitle) + '">' + esc(tat) + '</td>' +
           '<td><span class="kpi-pill kpi-pill--' + esc(row.qc_state) + '">' + esc(row.qc_state_label || "—") + '</span></td>' +
-          '<td>' + esc(dash(row.inspector_name)) + '</td>' +
         '</tr>'
       );
     }).join("");
@@ -686,28 +688,18 @@
       );
       return;
     }
-    const columns =         [
-          ["resolved", "Resolved"],
-          ["ps_type", "PS type"],
-          ["ps_id", "Job"],
+    const columns = [
+      ["resolved", "Resolved"],
+      ["ps_type", "PS type"],
+      ["ps_id", "Job"],
       ["pp_partial_no", "Partial"],
       ["part_no", "Part no"],
       ["part_desc", "Description"],
-      ["sales_order_no", "Sales order"],
-      ["customer_name", "Customer"],
-      ["customer_code", "Customer code"],
-      ["qty", "Qty"],
-      ["due_date", "PO due"],
-      ["current_stage_desc", "Current stage"],
-      ["stage_status_label", "Stage status"],
-      ["pushed_at", "Pushed to QC"],
+      ["pushed_at", "Arrived at QC"],
       ["left_at", "Left QC"],
-      ["left_stage_desc", "Left via"],
-      ["days_at_qc", "Days at QC"],
-      ["elapsed_label", "Elapsed"],
-      ["qc_state_label", "QC state"],
-      ["inspector_name", "Inspector"],
-      ["qty_jump", "Deburr qty increase"],
+      ["days_at_qc", "QC TAT days"],
+      ["elapsed_label", "QC TAT"],
+      ["qc_state_label", "Status"],
     ];
     downloadCsv("qc-dwell-kpi-" + day + ".csv", columns, withResolved("qc", sortedRows()));
   }

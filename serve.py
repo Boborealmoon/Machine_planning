@@ -108,6 +108,18 @@ def main() -> None:
         target=_refresh_auk_token, daemon=True, name="auk-token-refresh"
     ).start()
 
+    def _sample_auk_oee() -> None:
+        try:
+            from planning.auk_oee_history import sample_loop
+
+            sample_loop()
+        except Exception as exc:
+            log.warning("Auk OEE sample loop stopped: %s", exc)
+
+    threading.Thread(
+        target=_sample_auk_oee, daemon=True, name="auk-oee-sample"
+    ).start()
+
     serve(
         app,
         host=host,

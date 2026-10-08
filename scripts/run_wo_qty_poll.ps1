@@ -36,9 +36,10 @@ try {
     Write-Host $header
     Add-Content -Path $DayLog -Value $header -Encoding utf8
 
-    & $VenvPython -u (Join-Path $RepoRoot "scripts\run_wo_qty_poll.py") 2>&1 |
-        Tee-Object -FilePath $DayLog -Append
-
+    # Python writes the same day log itself. Tee-ing stderr into that file
+    # locks it and aborts the run under ErrorAction Stop, so the poll never
+    # gets past its first log line.
+    & $VenvPython -u (Join-Path $RepoRoot "scripts\run_wo_qty_poll.py")
     if ($LASTEXITCODE -ne 0) {
         $fail = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] WO qty poll FAILED (exit $LASTEXITCODE)"
         Write-Host $fail

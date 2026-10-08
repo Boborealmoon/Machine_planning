@@ -3,7 +3,7 @@
 {% block body_class %}auk-oee-page{% endblock %}
 {% block main_class %}app-main--planner{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/auk_oee_dashboard.css') }}?v=auk-oee-20261007a">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/auk_oee_dashboard.css') }}?v=auk-oee-20261008b">
 {% endblock %}
 {% block content %}
 <div class="auk-oee-shell">
@@ -11,7 +11,7 @@
     <div class="auk-oee-head-row">
       <div>
         <h1 class="auk-oee-title">Seletar OEE</h1>
-        <p class="auk-oee-subtitle">Live from the Auk factory dashboard · 15-minute buckets · auto-refresh</p>
+        <p class="auk-oee-subtitle">Live factory dashboard · refreshes every minute · drag the board to match the floor</p>
       </div>
       <div class="auk-oee-controls">
         <div class="auk-oee-presets" role="group" aria-label="Time range preset">
@@ -32,8 +32,25 @@
         <button type="button" class="auk-oee-btn" id="auk-oee-refresh">Refresh</button>
       </div>
     </div>
+    <div class="auk-oee-board-tools">
+      <button type="button" class="auk-oee-btn" id="auk-oee-arrange">Arrange</button>
+      <button type="button" class="auk-oee-btn auk-oee-btn--primary" id="auk-oee-done" hidden>Done</button>
+      <button type="button" class="auk-oee-btn" id="auk-oee-cancel" hidden>Cancel</button>
+      <label class="auk-oee-field auk-oee-field--inline">
+        <span>Low OEE after</span>
+        <select id="auk-oee-alert-minutes">
+          <option value="5">5 min</option>
+          <option value="10" selected>10 min</option>
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+        </select>
+      </label>
+      <button type="button" class="auk-oee-btn" id="auk-oee-add" hidden>Add widget</button>
+    </div>
     <div class="auk-oee-meta" id="auk-oee-meta"></div>
     <div class="auk-oee-alert" id="auk-oee-alert" hidden></div>
+    <div class="auk-oee-low" id="auk-oee-low" hidden></div>
+    <div class="auk-oee-palette" id="auk-oee-palette" hidden></div>
   </header>
 
   <div id="auk-oee-refresh-toast" class="auk-oee-refresh-toast" hidden aria-live="polite">
@@ -43,6 +60,26 @@
 
   <div id="auk-oee-grid" class="auk-oee-grid" hidden></div>
 </div>
+
+<div id="auk-oee-modal" class="auk-oee-modal" hidden>
+  <div class="auk-oee-modal__backdrop" data-close-modal></div>
+  <div class="auk-oee-modal__panel" role="dialog" aria-modal="true" aria-labelledby="auk-oee-modal-title">
+    <header class="auk-oee-modal__head">
+      <div>
+        <h2 id="auk-oee-modal-title" class="auk-oee-modal__title">Machine</h2>
+        <p id="auk-oee-modal-sub" class="auk-oee-modal__sub"></p>
+      </div>
+      <div class="auk-oee-modal__tools">
+        <div class="auk-oee-presets" role="group" aria-label="Segment size">
+          <button type="button" class="auk-oee-preset" data-segment="15">15 min</button>
+          <button type="button" class="auk-oee-preset is-active" data-segment="60">1 hour</button>
+        </div>
+        <button type="button" class="auk-oee-btn" data-close-modal>Close</button>
+      </div>
+    </header>
+    <div id="auk-oee-modal-body" class="auk-oee-modal__body"></div>
+  </div>
+</div>
 {% endblock %}
 {% block scripts %}
 <script>
@@ -50,5 +87,5 @@
     configured: {{ auk_configured | tojson }},
   };
 </script>
-<script src="{{ url_for('static', filename='js/auk_oee_dashboard.js') }}?v=auk-oee-20261007a"></script>
+<script src="{{ url_for('static', filename='js/auk_oee_dashboard.js') }}?v=auk-oee-20261008b"></script>
 {% endblock %}

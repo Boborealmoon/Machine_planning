@@ -1,4 +1,4 @@
-# Register Windows Task Scheduler job: WO qty poll every 5 minutes.
+# Register Windows Task Scheduler job: WO qty poll every hour.
 # The Python job no-ops outside weekdays 07:00-19:00 so COMAIN is not hit off-shift.
 # Run from repo root (Admin NOT required if using current user only):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_wo_qty_poll_scheduler.ps1
@@ -32,12 +32,12 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PollScript`"" `
     -WorkingDirectory $RepoRoot
 
-# Every 5 minutes. The Python poll itself no-ops on nights and weekends
+# Every hour. The Python poll itself no-ops on nights and weekends
 # (weekdays 07:00-19:00) so we never hit COMAIN off-shift.
 # Pass repetition on the cmdlet. Setting .RepetitionInterval afterwards fails
 # on current Windows PowerShell 5.1 (the property is not on the trigger object).
 $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
-    -RepetitionInterval (New-TimeSpan -Minutes 5) `
+    -RepetitionInterval (New-TimeSpan -Hours 1) `
     -RepetitionDuration (New-TimeSpan -Days 9999)
 
 $Settings = New-ScheduledTaskSettingsSet `
@@ -55,11 +55,11 @@ Register-ScheduledTask `
     -Trigger $Trigger `
     -Settings $Settings `
     -Principal $Principal `
-    -Description "COMAIN WO qty poll for ERP Scanned Output (every 5 min; Python skips nights/weekends)" | Out-Null
+    -Description "COMAIN WO qty poll for ERP Scanned Output (every hour; Python skips nights/weekends)" | Out-Null
 
 Write-Host ""
 Write-Host "Scheduled task registered: $TaskName"
-Write-Host "  Interval:       every 5 minutes (Python skips nights and weekends)"
+Write-Host "  Interval:       every hour (Python skips nights and weekends)"
 Write-Host "  Script:         $PollScript"
 Write-Host "  Logs:           $RepoRoot\logs\wo-qty-poll-YYYY-MM-DD.log"
 Write-Host ""
