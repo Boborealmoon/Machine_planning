@@ -86,6 +86,7 @@ from planning.queue_exit_history_route import queue_exit_history_bp
 from planning.erp_scanned_output_route import erp_scanned_output_bp
 from planning.mpp_planner_route import mpp_planner_bp
 from planning.inventory_enquiry_route import inventory_enquiry_bp
+from planning.process_sheet_trace_route import process_sheet_trace_bp
 from planning.excel_local_route import excel_local_bp
 from planning.frame_agreement_route import frame_agreement_bp
 from planning.mro_route import MRO_PATH, mro_bp
@@ -165,6 +166,7 @@ app.register_blueprint(queue_exit_history_bp)
 app.register_blueprint(erp_scanned_output_bp)
 app.register_blueprint(mpp_planner_bp)
 app.register_blueprint(inventory_enquiry_bp)
+app.register_blueprint(process_sheet_trace_bp)
 app.register_blueprint(excel_local_bp)
 app.register_blueprint(frame_agreement_bp)
 app.register_blueprint(mro_bp)

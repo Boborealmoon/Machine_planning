@@ -9,6 +9,7 @@ from planning.delivery_commitment_service import (
     _sql_statements,
     join_delivery_lines,
     month_totals,
+    plan_whole_month_assign,
     prepare_adds,
     propose_set,
 )
@@ -32,6 +33,8 @@ def _line(**overrides):
         "due_date": "2026-12-01",
         "coway_edd": "2026-11-02",
         "week": "Week 45",
+        "material_need_date": "2026-07-20",
+        "material_in_date": "2026-08-01",
     }
     row.update(overrides)
     return row
@@ -88,6 +91,8 @@ class DeliveryCommitmentTests(unittest.TestCase):
         self.assertFalse(row["over_allocated"])
         self.assertFalse(row["no_longer_open"])
         self.assertEqual(row["amount"], 300.0)
+        self.assertEqual(row["material_need_date"], "2026-07-20")
+        self.assertEqual(row["material_in_date"], "2026-08-01")
 
         september_totals = month_totals(joined, "2026-09")
         self.assertEqual(september_totals["line_count"], 1)
@@ -149,6 +154,25 @@ class DeliveryCommitmentTests(unittest.TestCase):
         self.assertEqual(row["amount"], 90.0)
         self.assertEqual(month_totals(joined, "2026-10")["qty"], 3.0)
         self.assertEqual(month_totals(joined, "unassigned")["line_count"], 0)
+
+    def test_assign_puts_the_whole_open_qty_in_one_month(self):
+        month, qty, drop = plan_whole_month_assign(
+            _line(remaining_qty=10),
+            [_slice("2026-09", 4, 1), _slice("2026-11", 6, 2)],
+            "2026-10",
+        )
+        self.assertEqual(month.isoformat(), "2026-10-01")
+        self.assertEqual(qty, 10.0)
+        self.assertEqual(drop, [1, 2])
+
+        same_month, same_qty, kept = plan_whole_month_assign(
+            _line(remaining_qty=10),
+            [_slice("2026-10", 4, 7)],
+            "2026-10",
+        )
+        self.assertEqual(same_month.isoformat(), "2026-10-01")
+        self.assertEqual(same_qty, 10.0)
+        self.assertEqual(kept, [])
 
     def test_migration_sql_has_table_and_indexes(self):
         sql = Path("migrations/add_delivery_commitment.sql").read_text(encoding="utf-8")

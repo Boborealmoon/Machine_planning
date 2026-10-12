@@ -2,7 +2,7 @@
 {% block title %}KPI{% endblock %}
 {% block main_class %}app-main--kpi{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/kpi.css') }}?v=kpi-board-20261007">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/kpi.css') }}?v=kpi-board-20261012">
 {% endblock %}
 {% block content %}
 <div class="kpi-page" data-screen="qc">
@@ -91,6 +91,8 @@
             <th class="kpi-resolved-col">Resolved</th>
             <th><button type="button" data-kpi-sort="ps_id">Job</button></th>
             <th><button type="button" data-kpi-sort="part_no">Part</button></th>
+            <th><button type="button" data-kpi-sort="current_stage_desc">Stage</button></th>
+            <th><button type="button" data-kpi-sort="due_date">Due</button></th>
             <th><button type="button" data-kpi-sort="pushed_at">Arrived at QC</button></th>
             <th><button type="button" data-kpi-sort="left_at">Left QC</button></th>
             <th class="kpi-num"><button type="button" data-kpi-sort="days_at_qc">QC TAT</button></th>
@@ -189,5 +191,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/kpi.js') }}?v=kpi-board-20261007"></script>
+<script src="{{ url_for('static', filename='js/kpi.js') }}?v=kpi-board-20261012"></script>
 {% endblock %}

@@ -24,6 +24,28 @@ def _row(**overrides):
     return row
 
 
+def test_missing_cycle_defaults_to_20_minutes_on_new_schedule():
+    from planning.cycle_time_service import resolve_schedule_times
+
+    missing = resolve_schedule_times(
+        None,
+        source_ps_id="",
+        cycle_minutes_per_qty=0,
+        setup_minutes=0,
+    )
+    assert missing["cycle_minutes_per_qty"] == 20.0
+    assert missing["source"] == "default"
+
+    explicit = resolve_schedule_times(
+        None,
+        source_ps_id="",
+        cycle_minutes_per_qty=7.5,
+        setup_minutes=30,
+    )
+    assert explicit["cycle_minutes_per_qty"] == 7.5
+    assert explicit["source"] == "bom_step"
+
+
 def test_part_candidates_strip_rev_suffix():
     assert "BB18-KS1214-02" in _part_no_lookup_candidates("BB18-KS1214-02 REV 02")
     assert "BB18-KS1214-02 REV 02" in _part_no_lookup_candidates("BB18-KS1214-02 REV 02")

@@ -651,7 +651,7 @@ function soProposedCncSelectedSet(machines) {
 }
 
 function soIsPartialQueued(pp, partial) {
-  if (soState.view !== 'active' || pp?.shipped_completed) return false;
+  if ((soState.view !== 'active' && soState.view !== 'attention') || pp?.shipped_completed) return false;
   return soPartialQueuedMachines(pp, partial).length > 0;
 }
 
@@ -725,6 +725,29 @@ function soStageFilterText(partial) {
   if (stage.mode === 'completed') parts.push('All complete');
   if (stage.mode === 'unassigned') parts.push('No WO');
   return parts.filter(Boolean).join(' ');
+}
+
+/** Deburring, Final inspection, Packing (incl. Engraving & Packing), or All complete. */
+function soStageDescIsFinal(desc) {
+  const lowered = String(desc || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  if (!lowered) return false;
+  if (lowered === 'deburring') return true;
+  if (/^final\s+(?:insp|ispection)/.test(lowered)) return true;
+  if (lowered === 'packing') return true;
+  return lowered.includes('engraving') && lowered.includes('packing');
+}
+
+function soStageIsClearedFinal(partial) {
+  const stage = soPartialStage(partial);
+  if (stage.mode === 'completed') return true;
+  return soStageDescIsFinal(stage.desc);
+}
+
+/** Exception, or not on a CNC queue and not yet cleared to a final stage. */
+function soLeafMatchesAttention(pp, partial) {
+  if (soPartialExceptionIssues(pp, partial).length) return true;
+  if (soPartialQueuedMachines(pp, partial).length > 0) return false;
+  return !soStageIsClearedFinal(partial);
 }
 
 /** SO-linked PP with qty still awaiting WO voucher issuance (incl. partial batches). */
@@ -2302,6 +2325,7 @@ function soLeafPassesColumnFilters(leaf) {
 function soLeafPassesFilters(leaf) {
   if (leaf.assemblyChild && soState.view === 'no-wo') return false;
   if (soState.view === 'no-wo' && !soPpIsNoWo(leaf.pp)) return false;
+  if (soState.view === 'attention' && !soLeafMatchesAttention(leaf.pp, leaf.partial)) return false;
   if (!soLeafPassesPrefixFilter(leaf.pp)) return false;
   if (!soLeafPassesSearch(leaf)) return false;
   return soLeafPassesColumnFilters(leaf);
@@ -4662,15 +4686,31 @@ function soFilteredNoWoJobCount(orders) {
   return seen.size;
 }
 
+/** Needs-action row count — active partials matching the attention filter (PP prefix only). */
+function soFilteredAttentionCount(orders) {
+  const seen = new Set();
+  (orders || []).forEach(order => {
+    soLeafRows(order).forEach(leaf => {
+      if (!soLeafPassesPrefixFilter(leaf.pp)) return;
+      if (!soLeafMatchesAttention(leaf.pp, leaf.partial)) return;
+      const key = `${order.sales_order_no || ''}::${leaf.pp?.pp_voucher_no || ''}::${soPartialNo(leaf.partial)}`;
+      seen.add(key);
+    });
+  });
+  return seen.size;
+}
+
 function soUpdateTabCounts() {
   const activeEl = document.getElementById('so-active-tab-count');
   const completeEl = document.getElementById('so-complete-tab-count');
   const noWoEl = document.getElementById('so-no-wo-tab-count');
+  const attentionEl = document.getElementById('so-attention-tab-count');
   const activeJobs = soFilteredJobCount(soState.active);
   const completeJobs = soState.completeLoaded
     ? soFilteredJobCount(soState.complete)
     : (Number(soState.completeJobCount) || 0);
   const noWoJobs = soFilteredNoWoJobCount(soState.active);
+  const attentionRows = soFilteredAttentionCount(soState.active);
   if (activeEl) {
     activeEl.textContent = String(activeJobs);
     activeEl.hidden = activeJobs === 0;
@@ -4683,10 +4723,14 @@ function soUpdateTabCounts() {
     noWoEl.textContent = String(noWoJobs);
     noWoEl.hidden = noWoJobs === 0;
   }
+  if (attentionEl) {
+    attentionEl.textContent = String(attentionRows);
+    attentionEl.hidden = attentionRows === 0;
+  }
 }
 
 function soSetView(view) {
-  const next = ['complete', 'no-wo'].includes(view) ? view : 'active';
+  const next = ['complete', 'no-wo', 'attention'].includes(view) ? view : 'active';
   soState.view = next;
   soCloseDetail();
   soCloseMaterialModal();
@@ -4714,7 +4758,7 @@ function soUpdateStats() {
   const completeN = soVisibleOrders(soState.complete).length;
   const viewLabel = soState.view === 'complete'
     ? 'Complete'
-    : (soState.view === 'no-wo' ? 'No WO' : 'Active');
+    : (soState.view === 'no-wo' ? 'No WO' : (soState.view === 'attention' ? 'Needs action' : 'Active'));
   const { typeCounts, ppCount } = soVisibleTypeCounts();
   const hasLoaded = (soState.active?.length || 0) + (soState.complete?.length || 0) > 0;
   if (!hasLoaded) {
@@ -4750,6 +4794,8 @@ function soRender() {
       emptyMsg = 'Select at least one PP prefix (APS, NPS, …).';
     } else if (soState.view === 'no-wo') {
       emptyMsg = 'No PP vouchers have qty awaiting WO issuance — every process sheet in view is fully issued.';
+    } else if (soState.view === 'attention') {
+      emptyMsg = 'No rows have an exception, or are unqueued and still before Deburring, Final inspection, Packing, or All complete.';
     } else {
       emptyMsg = 'No rows match your search or column filters — adjust filters in the column headers above.';
     }

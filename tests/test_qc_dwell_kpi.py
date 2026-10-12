@@ -217,6 +217,8 @@ class QcDwellRouteTests(unittest.TestCase):
         self.assertIn(">KPI<", html)
         self.assertIn("Arrived at QC", html)
         self.assertIn("QC TAT", html)
+        self.assertIn(">Stage<", html)
+        self.assertIn(">Due<", html)
         self.assertIn("kpi-board", html)
         self.assertNotIn(">Customer<", html)
         self.assertIn('id="kpi-export"', html)

@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 from db import planner_db_connect_error
@@ -84,6 +84,7 @@ _ROW_SELECT = """
     fixture_mode, fixture_tick, fixture_text,
     gauges_mode, gauges_tick, gauges_text,
     remarks, quote_part_no, quote_part_description, quote_qty, quote_po_due_date,
+    review_timestamp, queue_order, program_due_date,
     created_at, updated_at
 """
 _HISTORY_STATUSES = frozenset({
@@ -94,7 +95,10 @@ _STAGE_STATUS_LABELS = {"I": "In process", "R": "Released", "P": "Pending", "C":
 
 _NEW_PART_ROW_SELECT = """
     process_sheet_no, pp_voucher_no, bom_updated, remarks, program_finish_at,
-    program_pic_ids, is_exception, npi_complete, priority, created_at, updated_at
+    program_pic_ids, is_exception, npi_complete, priority,
+    review_timestamp, queue_order, program_due_date,
+    gauges_tick, gauges_text, gauges_edited,
+    created_at, updated_at
 """
 _NEW_PART_PATCH_FIELDS = ("bom_updated", "remarks", "program_finish_at", "program_pic_ids", "npi_complete", "priority")
 _HISTORY_SOURCES = ("new_part", "flagged")
@@ -133,10 +137,17 @@ _REQUIRED_COLUMNS = (
     ("planner_first_article_pic", "pic_id"),
     ("planner_first_article", "machine_codes"),
     ("planner_first_article", "quote_part_no"),
+    ("planner_first_article", "review_timestamp"),
+    ("planner_first_article", "queue_order"),
+    ("planner_first_article", "program_due_date"),
     ("planner_first_article_new_part", "program_pic_ids"),
     ("planner_first_article_new_part", "is_exception"),
     ("planner_first_article_new_part", "npi_complete"),
     ("planner_first_article_new_part", "priority"),
+    ("planner_first_article_new_part", "review_timestamp"),
+    ("planner_first_article_new_part", "queue_order"),
+    ("planner_first_article_new_part", "program_due_date"),
+    ("planner_first_article_new_part", "gauges_edited"),
     ("planner_first_article_change_log", "change_id"),
 )
 _tables_ready = False
@@ -153,9 +164,15 @@ def _schema_complete(con) -> bool:
               AND (
                     (table_name = 'planner_first_article_pic' AND column_name = 'pic_id')
                  OR (table_name = 'planner_first_article'
-                     AND column_name IN ('machine_codes', 'quote_part_no'))
+                     AND column_name IN (
+                         'machine_codes', 'quote_part_no',
+                         'review_timestamp', 'queue_order', 'program_due_date'
+                     ))
                  OR (table_name = 'planner_first_article_new_part'
-                     AND column_name IN ('program_pic_ids', 'is_exception', 'npi_complete', 'priority'))
+                     AND column_name IN (
+                         'program_pic_ids', 'is_exception', 'npi_complete', 'priority',
+                         'review_timestamp', 'queue_order', 'program_due_date', 'gauges_edited'
+                     ))
                  OR (table_name = 'planner_first_article_change_log' AND column_name = 'change_id')
               )
             """
@@ -255,6 +272,9 @@ def _migrate_first_article_schema(con) -> None:
             quote_part_description  TEXT         NOT NULL DEFAULT '',
             quote_qty               TEXT         NOT NULL DEFAULT '',
             quote_po_due_date       TEXT         NOT NULL DEFAULT '',
+            review_timestamp        TIMESTAMPTZ,
+            queue_order             INTEGER,
+            program_due_date        TEXT         NOT NULL DEFAULT '',
             created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
             updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
             CONSTRAINT planner_first_article_tooling_mode_chk
@@ -290,6 +310,12 @@ def _migrate_first_article_schema(con) -> None:
             is_exception       BOOLEAN      NOT NULL DEFAULT FALSE,
             npi_complete       BOOLEAN      NOT NULL DEFAULT FALSE,
             priority           TEXT         NOT NULL DEFAULT '',
+            review_timestamp   TIMESTAMPTZ,
+            queue_order        INTEGER,
+            program_due_date   TEXT         NOT NULL DEFAULT '',
+            gauges_tick        BOOLEAN      NOT NULL DEFAULT FALSE,
+            gauges_text        TEXT         NOT NULL DEFAULT '',
+            gauges_edited      BOOLEAN      NOT NULL DEFAULT FALSE,
             created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
             updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         )
@@ -339,6 +365,66 @@ def _migrate_first_article_schema(con) -> None:
     )
     _add_column_if_missing(
         con,
+        "planner_first_article_new_part",
+        "review_timestamp",
+        """
+        ALTER TABLE public.planner_first_article_new_part
+            ADD COLUMN IF NOT EXISTS review_timestamp TIMESTAMPTZ
+        """,
+    )
+    _add_column_if_missing(
+        con,
+        "planner_first_article_new_part",
+        "queue_order",
+        """
+        ALTER TABLE public.planner_first_article_new_part
+            ADD COLUMN IF NOT EXISTS queue_order INTEGER
+        """,
+    )
+    _add_column_if_missing(
+        con,
+        "planner_first_article_new_part",
+        "program_due_date",
+        """
+        ALTER TABLE public.planner_first_article_new_part
+            ADD COLUMN IF NOT EXISTS program_due_date TEXT NOT NULL DEFAULT ''
+        """,
+    )
+    _add_column_if_missing(
+        con,
+        "planner_first_article_new_part",
+        "gauges_tick",
+        """
+        ALTER TABLE public.planner_first_article_new_part
+            ADD COLUMN IF NOT EXISTS gauges_tick BOOLEAN NOT NULL DEFAULT FALSE
+        """,
+    )
+    _add_column_if_missing(
+        con,
+        "planner_first_article_new_part",
+        "gauges_text",
+        """
+        ALTER TABLE public.planner_first_article_new_part
+            ADD COLUMN IF NOT EXISTS gauges_text TEXT NOT NULL DEFAULT ''
+        """,
+    )
+    _add_column_if_missing(
+        con,
+        "planner_first_article_new_part",
+        "gauges_edited",
+        """
+        ALTER TABLE public.planner_first_article_new_part
+            ADD COLUMN IF NOT EXISTS gauges_edited BOOLEAN NOT NULL DEFAULT FALSE
+        """,
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_fa_new_part_queue_order
+            ON public.planner_first_article_new_part (queue_order, process_sheet_no)
+        """
+    )
+    _add_column_if_missing(
+        con,
         "planner_first_article",
         "machine_codes",
         """
@@ -381,6 +467,54 @@ def _migrate_first_article_schema(con) -> None:
         ALTER TABLE public.planner_first_article
             ADD COLUMN IF NOT EXISTS quote_po_due_date TEXT NOT NULL DEFAULT ''
         """,
+    )
+    _add_column_if_missing(
+        con,
+        "planner_first_article",
+        "review_timestamp",
+        """
+        ALTER TABLE public.planner_first_article
+            ADD COLUMN IF NOT EXISTS review_timestamp TIMESTAMPTZ
+        """,
+    )
+    _add_column_if_missing(
+        con,
+        "planner_first_article",
+        "queue_order",
+        """
+        ALTER TABLE public.planner_first_article
+            ADD COLUMN IF NOT EXISTS queue_order INTEGER
+        """,
+    )
+    _add_column_if_missing(
+        con,
+        "planner_first_article",
+        "program_due_date",
+        """
+        ALTER TABLE public.planner_first_article
+            ADD COLUMN IF NOT EXISTS program_due_date TEXT NOT NULL DEFAULT ''
+        """,
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_fa_queue_order
+            ON public.planner_first_article (queue_order, first_article_id)
+        """
+    )
+    con.execute(
+        """
+        WITH ranked AS (
+            SELECT first_article_id,
+                   ROW_NUMBER() OVER (ORDER BY updated_at DESC, first_article_id DESC)
+                     + COALESCE((SELECT MAX(queue_order) FROM public.planner_first_article), 0) AS n
+            FROM public.planner_first_article
+            WHERE queue_order IS NULL
+        )
+        UPDATE public.planner_first_article AS fa
+        SET queue_order = ranked.n
+        FROM ranked
+        WHERE fa.first_article_id = ranked.first_article_id
+        """
     )
     con.execute(
         """
@@ -473,7 +607,7 @@ def _parse_bool(value: Any, *, field: str) -> bool:
     raise ValueError(f"{field} must be a boolean")
 
 
-def _parse_program_finish(value: Any) -> str:
+def _parse_stored_date(value: Any, *, field: str) -> str:
     text = compact_text(value)
     if not text:
         return ""
@@ -483,7 +617,7 @@ def _parse_program_finish(value: Any) -> str:
         try:
             return date.fromisoformat(candidate).isoformat()
         except ValueError as exc:
-            raise ValueError("program_finish_at must be a valid date") from exc
+            raise ValueError(f"{field} must be a valid date") from exc
     token = text.split()[0].split("T")[0]
     for sep in ("/", "-", "."):
         parts = token.split(sep)
@@ -496,8 +630,12 @@ def _parse_program_finish(value: Any) -> str:
         try:
             return date(year, int(month_s), int(day_s)).isoformat()
         except ValueError as exc:
-            raise ValueError("program_finish_at must be a valid date") from exc
-    raise ValueError("program_finish_at must be YYYY-MM-DD or DD/MM/YYYY")
+            raise ValueError(f"{field} must be a valid date") from exc
+    raise ValueError(f"{field} must be YYYY-MM-DD or DD/MM/YYYY")
+
+
+def _parse_program_finish(value: Any) -> str:
+    return _parse_stored_date(value, field="program_finish_at")
 
 
 def _parse_priority(value: Any) -> str:
@@ -508,6 +646,44 @@ def _parse_priority(value: Any) -> str:
     if key not in _PRIORITY_LEVELS:
         raise ValueError("priority must be Critical, High, Medium, or Low")
     return key
+
+
+def _parse_queue_order(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("queue_order must be a positive integer")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if not text.isdigit():
+            raise ValueError("queue_order must be a positive integer")
+        number = int(text)
+    elif isinstance(value, int):
+        number = value
+    elif isinstance(value, float) and value.is_integer():
+        number = int(value)
+    else:
+        raise ValueError("queue_order must be a positive integer")
+    if number < 1:
+        raise ValueError("queue_order must be a positive integer")
+    return number
+
+
+def _review_timestamp_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    return compact_text(value)
+
+
+def _review_timestamp_db(value: Any):
+    if isinstance(value, datetime):
+        return value
+    text = _review_timestamp_text(value)
+    return text or None
 
 
 def _priority_label(value: Any) -> str:
@@ -1532,6 +1708,15 @@ def _serialize_tracker_row(
     out["erp_wo_stage_count"] = stage["erp_wo_stage_count"]
     out["current_stage_status_label"] = _stage_status_label(stage["current_stage_status"])
     out["history_count"] = int(out.get("history_count") or 0)
+    review_stamp = _review_timestamp_text(out.get("review_timestamp"))
+    out["review_timestamp"] = review_stamp or None
+    out["review_checked"] = bool(review_stamp)
+    order = out.get("queue_order")
+    try:
+        out["queue_order"] = int(order) if order not in (None, "") else None
+    except (TypeError, ValueError):
+        out["queue_order"] = None
+    out["program_due_date"] = _date_text(out.get("program_due_date"))
     return out
 
 
@@ -2347,8 +2532,14 @@ def _upsert_flagged_row(
     row = one(
         con.execute(
             f"""
-            INSERT INTO planner_first_article (process_sheet_no, pp_voucher_no, machine_codes, updated_at)
-            VALUES (%s, %s, %s, NOW())
+            INSERT INTO planner_first_article (
+                process_sheet_no, pp_voucher_no, machine_codes, queue_order, updated_at
+            )
+            VALUES (
+                %s, %s, %s,
+                (SELECT COALESCE(MAX(queue_order), 0) + 1 FROM planner_first_article),
+                NOW()
+            )
             RETURNING {_ROW_SELECT}
             """,
             (process_sheet_no, pp_voucher_no, machine_codes),
@@ -2479,6 +2670,20 @@ def _apply_tracker_patch(
         current["quote_po_due_date"] = _parse_flexible_date(
             data.get("po_due_date", data.get("quote_po_due_date"))
         ) or compact_text(data.get("po_due_date", data.get("quote_po_due_date")))
+    if "review_checked" in data:
+        checked = _parse_bool(data.get("review_checked"), field="review_checked")
+        if checked:
+            if not _review_timestamp_text(current.get("review_timestamp")):
+                current["review_timestamp"] = datetime.now(timezone.utc)
+        else:
+            current["review_timestamp"] = None
+    if "program_due_date" in data:
+        current["program_due_date"] = _parse_stored_date(
+            data.get("program_due_date"),
+            field="program_due_date",
+        )
+    if "queue_order" in data:
+        current["queue_order"] = _parse_queue_order(data.get("queue_order"))
     for prefix in CHECK_TEXT_FIELDS:
         if prefix in data:
             parsed = _parse_check_cell(data.get(prefix))
@@ -2519,6 +2724,9 @@ def _write_tracker_row(con, first_article_id: int, current: dict[str, Any]):
                 quote_part_description = %s,
                 quote_qty = %s,
                 quote_po_due_date = %s,
+                review_timestamp = %s,
+                queue_order = %s,
+                program_due_date = %s,
                 updated_at = NOW()
             WHERE first_article_id = %s
             RETURNING {_ROW_SELECT}
@@ -2540,6 +2748,9 @@ def _write_tracker_row(con, first_article_id: int, current: dict[str, Any]):
                 compact_text(current.get("quote_part_description")),
                 compact_text(current.get("quote_qty")),
                 _date_text(current.get("quote_po_due_date")),
+                _review_timestamp_db(current.get("review_timestamp")),
+                _parse_queue_order(current.get("queue_order")) if current.get("queue_order") not in (None, "") else None,
+                _date_text(current.get("program_due_date")),
                 int(first_article_id),
             ),
         )
@@ -2725,6 +2936,131 @@ def update_tracker_row(first_article_id: int, data: dict[str, Any]) -> dict[str,
     return serialized
 
 
+def _normalize_queue_ids(ordered_ids: list[Any]) -> list[int]:
+    clean: list[int] = []
+    seen: set[int] = set()
+    for raw in ordered_ids:
+        if isinstance(raw, bool) or raw is None:
+            raise ValueError("ids must be tracker row ids")
+        if isinstance(raw, float):
+            if not raw.is_integer():
+                raise ValueError("ids must be tracker row ids")
+            item_id = int(raw)
+        elif isinstance(raw, str):
+            text = raw.strip()
+            if not text.isdigit():
+                raise ValueError("ids must be tracker row ids")
+            item_id = int(text)
+        elif isinstance(raw, int):
+            item_id = raw
+        else:
+            raise ValueError("ids must be tracker row ids")
+        if item_id < 1:
+            raise ValueError("ids must be tracker row ids")
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        clean.append(item_id)
+    if not clean:
+        raise ValueError("ids must be a list of tracker rows")
+    return clean
+
+
+def plan_queue_order(existing_ids: list[int], ordered_ids: list[int]) -> list[int]:
+    """Apply a dragged order.
+
+    Requested ids take the slots of the rows that were visible, in the new
+    order. Rows left out of the request keep their place in the queue.
+    """
+    existing = [int(item) for item in existing_ids]
+    known = set(existing)
+    requested: list[int] = []
+    seen: set[int] = set()
+    for raw in ordered_ids:
+        item_id = int(raw)
+        if item_id in seen:
+            continue
+        if item_id not in known:
+            raise ValueError("queue contains an unknown tracker row")
+        seen.add(item_id)
+        requested.append(item_id)
+    if not requested:
+        return existing
+    visible = set(requested)
+    cursor = 0
+    out: list[int] = []
+    for item_id in existing:
+        if item_id in visible:
+            out.append(requested[cursor])
+            cursor += 1
+        else:
+            out.append(item_id)
+    return out
+
+
+def reorder_tracker_queue(ordered_ids: list[Any]) -> list[dict[str, int]]:
+    requested = _normalize_queue_ids(ordered_ids)
+    with planner_db() as con:
+        _ensure_tables(con)
+        fetched = rows(
+            con.execute(
+                """
+                SELECT first_article_id
+                FROM planner_first_article
+                ORDER BY queue_order NULLS LAST, first_article_id
+                """
+            )
+        )
+        existing = [int(row["first_article_id"]) for row in fetched]
+        final = plan_queue_order(existing, requested)
+        for index, item_id in enumerate(final, start=1):
+            con.execute(
+                """
+                UPDATE planner_first_article
+                SET queue_order = %s
+                WHERE first_article_id = %s
+                """,
+                (index, int(item_id)),
+            )
+    return [
+        {"first_article_id": int(item_id), "queue_order": index}
+        for index, item_id in enumerate(final, start=1)
+    ]
+
+
+def reorder_new_part_queue(ordered_sheets: list[Any]) -> list[dict[str, Any]]:
+    """Store the technician queue for active new parts that need a programme."""
+    clean: list[str] = []
+    seen: set[str] = set()
+    for raw in ordered_sheets or []:
+        process_sheet_no = _ps_base(raw)
+        key = _ps_key(process_sheet_no)
+        if not process_sheet_no or key in seen:
+            continue
+        seen.add(key)
+        clean.append(process_sheet_no)
+    if not clean:
+        raise ValueError("process_sheet_nos is required")
+    orders: list[dict[str, Any]] = []
+    with planner_db() as con:
+        _ensure_tables(con)
+        for index, process_sheet_no in enumerate(clean, start=1):
+            con.execute(
+                """
+                INSERT INTO planner_first_article_new_part (process_sheet_no, queue_order)
+                VALUES (%s, %s)
+                ON CONFLICT (process_sheet_no) DO UPDATE
+                SET queue_order = EXCLUDED.queue_order
+                """,
+                (process_sheet_no, index),
+            )
+            orders.append({
+                "process_sheet_no": process_sheet_no,
+                "queue_order": index,
+            })
+    return orders
+
+
 def unflag_process_sheet(first_article_id: int) -> bool:
     with planner_db() as con:
         _ensure_tables(con)
@@ -2756,6 +3092,13 @@ def _serialize_new_part_saved(
             "is_exception": False,
             "npi_complete": False,
             "priority": "",
+            "review_timestamp": None,
+            "review_checked": False,
+            "queue_order": None,
+            "program_due_date": "",
+            "gauges_tick": False,
+            "gauges_text": "",
+            "gauges_edited": False,
         }
     out = serialize_row(dict(row))
     pic_ids = _parse_pic_ids(out.get("program_pic_ids"))
@@ -2763,6 +3106,12 @@ def _serialize_new_part_saved(
         priority = _parse_priority(out.get("priority"))
     except ValueError:
         priority = ""
+    review_stamp = _review_timestamp_text(out.get("review_timestamp"))
+    order = out.get("queue_order")
+    try:
+        queue_order = int(order) if order not in (None, "") else None
+    except (TypeError, ValueError):
+        queue_order = None
     return {
         "bom_updated": bool(out.get("bom_updated")),
         "remarks": compact_text(out.get("remarks")),
@@ -2772,6 +3121,13 @@ def _serialize_new_part_saved(
         "is_exception": bool(out.get("is_exception")),
         "npi_complete": bool(out.get("npi_complete")),
         "priority": priority,
+        "review_timestamp": review_stamp or None,
+        "review_checked": bool(review_stamp),
+        "queue_order": queue_order,
+        "program_due_date": _date_text(out.get("program_due_date")),
+        "gauges_tick": bool(out.get("gauges_tick")),
+        "gauges_text": compact_text(out.get("gauges_text")),
+        "gauges_edited": bool(out.get("gauges_edited")),
     }
 
 
@@ -2900,7 +3256,11 @@ def _apply_npi_tracker_to_new_part(
         if not _parse_machine_codes(out.get("proposed_cnc")):
             out["proposed_cnc"] = list(machines)
 
+    keep_gauges = bool(out.get("gauges_edited"))
     for prefix in CHECK_TEXT_FIELDS:
+        if prefix == "gauges" and keep_gauges:
+            out.setdefault("gauges_mode", "tick")
+            continue
         out[f"{prefix}_mode"] = compact_text(flagged.get(f"{prefix}_mode")).lower() or "tick"
         out[f"{prefix}_tick"] = bool(flagged.get(f"{prefix}_tick"))
         out[f"{prefix}_text"] = compact_text(flagged.get(f"{prefix}_text"))
@@ -3308,6 +3668,12 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
             "is_exception": False,
             "npi_complete": False,
             "priority": "",
+            "review_timestamp": None,
+            "queue_order": None,
+            "program_due_date": "",
+            "gauges_tick": False,
+            "gauges_text": "",
+            "gauges_edited": False,
         }
         if pp_voucher_no:
             current["pp_voucher_no"] = pp_voucher_no
@@ -3323,6 +3689,26 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
             current["npi_complete"] = _parse_bool(data.get("npi_complete"), field="npi_complete")
         if "priority" in data:
             current["priority"] = _parse_priority(data.get("priority"))
+        if "review_checked" in data:
+            checked = _parse_bool(data.get("review_checked"), field="review_checked")
+            if checked:
+                if not _review_timestamp_text(current.get("review_timestamp")):
+                    current["review_timestamp"] = datetime.now(timezone.utc)
+            else:
+                current["review_timestamp"] = None
+        if "program_due_date" in data:
+            current["program_due_date"] = _parse_stored_date(
+                data.get("program_due_date"),
+                field="program_due_date",
+            )
+        if "queue_order" in data:
+            current["queue_order"] = _parse_queue_order(data.get("queue_order"))
+        if "gauges_tick" in data or "gauges_text" in data:
+            if "gauges_tick" in data:
+                current["gauges_tick"] = _parse_bool(data.get("gauges_tick"), field="gauges_tick")
+            if "gauges_text" in data:
+                current["gauges_text"] = compact_text(data.get("gauges_text"))
+            current["gauges_edited"] = True
         pics = _pics_by_id(con)
         changes = diff_tracked_fields(
             dict(existing) if existing else {
@@ -3341,9 +3727,11 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
                 f"""
                 INSERT INTO planner_first_article_new_part (
                     process_sheet_no, pp_voucher_no, bom_updated, remarks,
-                    program_finish_at, program_pic_ids, npi_complete, priority, updated_at
+                    program_finish_at, program_pic_ids, npi_complete, priority,
+                    review_timestamp, queue_order, program_due_date,
+                    gauges_tick, gauges_text, gauges_edited, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (process_sheet_no) DO UPDATE
                 SET pp_voucher_no = EXCLUDED.pp_voucher_no,
                     bom_updated = EXCLUDED.bom_updated,
@@ -3352,6 +3740,12 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
                     program_pic_ids = EXCLUDED.program_pic_ids,
                     npi_complete = EXCLUDED.npi_complete,
                     priority = EXCLUDED.priority,
+                    review_timestamp = EXCLUDED.review_timestamp,
+                    queue_order = EXCLUDED.queue_order,
+                    program_due_date = EXCLUDED.program_due_date,
+                    gauges_tick = EXCLUDED.gauges_tick,
+                    gauges_text = EXCLUDED.gauges_text,
+                    gauges_edited = EXCLUDED.gauges_edited,
                     updated_at = NOW()
                 RETURNING {_NEW_PART_ROW_SELECT}
                 """,
@@ -3364,6 +3758,12 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
                     current.get("program_pic_ids") or [],
                     bool(current.get("npi_complete")),
                     compact_text(current.get("priority")),
+                    _review_timestamp_db(current.get("review_timestamp")),
+                    _parse_queue_order(current.get("queue_order")) if current.get("queue_order") not in (None, "") else None,
+                    _date_text(current.get("program_due_date")),
+                    bool(current.get("gauges_tick")),
+                    compact_text(current.get("gauges_text")),
+                    bool(current.get("gauges_edited")),
                 ),
             )
         )

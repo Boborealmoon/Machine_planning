@@ -90,7 +90,7 @@
       </div>
 
       {# Sales / production workflow #}
-      <div class="nav-dropdown {% if nav_path in ('/new-orders', '/sales-orders', '/delivery', '/queue-delays', '/delivery-schedule', '/planning-data/materials') or active in ('new_orders', 'sales_orders', 'delivery', 'queue_delays', 'delivery_schedule', 'materials') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/new-orders', '/sales-orders', '/delivery', '/queue-delays', '/delivery-schedule', '/monthly-delivery-plan', '/planning-data/materials') or active in ('new_orders', 'sales_orders', 'delivery', 'queue_delays', 'delivery_schedule', 'monthly_delivery_plan', 'materials') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="sales-prod" aria-expanded="false" aria-controls="dd-sales-prod">
           SALES / PROD <span class="nav-caret">▾</span>
         </button>
@@ -107,6 +107,10 @@
           <a href="/delivery"
              class="nav-dropdown-item {% if nav_path in ('/delivery', '/queue-delays', '/delivery-schedule') or active in ('delivery', 'queue_delays', 'delivery_schedule') %}nav-dropdown-item--active{% endif %}">
             Delivery schedule
+          </a>
+          <a href="/monthly-delivery-plan"
+             class="nav-dropdown-item {% if nav_path == '/monthly-delivery-plan' or active == 'monthly_delivery_plan' %}nav-dropdown-item--active{% endif %}">
+            Monthly delivery plan
           </a>
           <span class="nav-dropdown-section">MATERIAL</span>
           <a href="/planning-data/materials"
@@ -177,6 +181,10 @@
              class="nav-dropdown-item {% if nav_path == '/planning-data/inventory-enquiry' %}nav-dropdown-item--active{% endif %}">
             Inventory enquiry
           </a>
+          <a href="/planning-data/process-sheet-trace"
+             class="nav-dropdown-item {% if nav_path == '/planning-data/process-sheet-trace' %}nav-dropdown-item--active{% endif %}">
+            Process sheet trace
+          </a>
           <a href="/planning-data/inventory-bom"
              class="nav-dropdown-item {% if nav_path == '/planning-data/inventory-bom' %}nav-dropdown-item--active{% endif %}">
             Inventory BOM
@@ -239,7 +247,7 @@
       </div>
 
       {# Archive — historical / reference views #}
-      <div class="nav-dropdown {% if nav_path in ('/preferred-machines', '/floor-plan', '/monthly-delivery-plan', '/archive/rfq-checker', '/archive/rfq-checker/upload', '/archive/aps-ps-match') or active in ('preferred_machines', 'floor_plan', 'monthly_delivery_plan', 'rfq_checker', 'aps_ps_match') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/preferred-machines', '/floor-plan', '/archive/rfq-checker', '/archive/rfq-checker/upload', '/archive/aps-ps-match') or active in ('preferred_machines', 'floor_plan', 'rfq_checker', 'aps_ps_match') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="archive" aria-expanded="false" aria-controls="dd-archive">
           ARCHIVE <span class="nav-caret">▾</span>
         </button>
@@ -259,10 +267,6 @@
           <a href="/floor-plan"
              class="nav-dropdown-item {% if nav_path == '/floor-plan' or active == 'floor_plan' %}nav-dropdown-item--active{% endif %}">
             Factory floor plan
-          </a>
-          <a href="/monthly-delivery-plan"
-             class="nav-dropdown-item {% if nav_path == '/monthly-delivery-plan' or active == 'monthly_delivery_plan' %}nav-dropdown-item--active{% endif %}">
-            Monthly delivery plan
           </a>
         </div>
       </div>

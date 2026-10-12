@@ -85,6 +85,7 @@
     pics: [],
     machines: [],
     filter: '',
+    qaFilter: '',
     searchHits: [],
     searchTimer: 0,
     exceptionHits: [],
@@ -1117,6 +1118,188 @@
     repositionProposedCncPopover();
   }
 
+  function queueRank(row) {
+    const value = row?.queue_order;
+    const number = Number(value);
+    if (value == null || value === '' || !Number.isFinite(number) || number < 1) return Number.POSITIVE_INFINITY;
+    return number;
+  }
+
+  function compareQueue(a, b) {
+    const diff = queueRank(a) - queueRank(b);
+    if (diff) return diff;
+    return qaSheet(a).localeCompare(qaSheet(b));
+  }
+
+  function qaSheet(row) {
+    return String(row?.process_sheet_no || row?.pp_voucher_no || '').trim();
+  }
+
+  function qaPicText(row) {
+    return (row?.program_pics || []).map((pic) => pic.name).filter(Boolean).join(' / ');
+  }
+
+  function formatReviewStamp(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    const date = new Date(text.replace(' ', 'T'));
+    if (Number.isNaN(date.getTime())) return text;
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  function qaFilteredRows() {
+    const needle = state.qaFilter.trim().toUpperCase();
+    const rows = state.newRows.filter((row) => {
+      if (!needle) return true;
+      const blob = [
+        row.process_sheet_no,
+        row.pp_voucher_no,
+        row.part_no,
+        row.part_description,
+        row.machine_cnc,
+        ...(row.proposed_cnc || []),
+        ...(row.machine_codes || []),
+        row.current_stage_desc,
+        row.erp_last_stage_desc,
+        row.po_due_date,
+        row.posted_date,
+        row.program_due_date,
+        row.remarks,
+        row.gauges_text,
+        row.review_timestamp,
+        qaPicText(row),
+      ].join(' ').toUpperCase();
+      return blob.includes(needle);
+    });
+    rows.sort(compareQueue);
+    return rows;
+  }
+
+  function qaQueueHandle(row) {
+    const order = queueRank(row);
+    const label = order === Number.POSITIVE_INFINITY ? '\u2014' : String(order);
+    return `
+      <div class="fa-qa-op-card" draggable="true" role="button" tabindex="0"
+           data-fa-qa-drag="${escapeHtml(qaSheet(row))}"
+           title="Drag this card to set the technician queue"
+           aria-label="Drag to set queue position ${escapeHtml(label)}">
+        <span class="fa-qa-grip" aria-hidden="true"></span>
+        <span class="fa-qa-order">${escapeHtml(label)}</span>
+      </div>
+    `;
+  }
+
+  function qaReviewCell(row) {
+    const checked = row.review_timestamp ? ' checked' : '';
+    const stamp = formatReviewStamp(row.review_timestamp);
+    return `
+      <div class="fa-review-cell">
+        <label class="fa-review-check">
+          <input type="checkbox" data-fa-qa-field="review_checked" data-ps="${escapeHtml(qaSheet(row))}"${checked}
+                 aria-label="Review status">
+          <span>Reviewed</span>
+        </label>
+        <span class="fa-review-stamp">${escapeHtml(stamp)}</span>
+      </div>
+    `;
+  }
+
+  function qaProgrammeDueCell(row) {
+    const iso = parseFinishDate(row.program_due_date);
+    const ps = escapeHtml(qaSheet(row));
+    return `
+      <div class="fa-finish-field">
+        <input type="text" class="fa-finish-input" data-fa-qa-field="program_due_date" data-ps="${ps}"
+               value="${escapeHtml(iso ? compactDate(iso) : '')}"
+               placeholder="dd/mm/yy" autocomplete="off" spellcheck="false"
+               aria-label="Programme due date">
+        <input type="date" class="fa-finish-picker" data-fa-qa-date data-ps="${ps}"
+               value="${escapeHtml(iso)}"
+               tabindex="-1" aria-label="Pick programme due date">
+      </div>
+    `;
+  }
+
+  function qaGaugesCell(row) {
+    const checked = row.gauges_tick ? ' checked' : '';
+    return `
+      <div class="fa-gauge-cell">
+        <label class="fa-gauge-check" title="Mark the gauge requirement complete">
+          <input type="checkbox" data-fa-qa-field="gauges_tick" data-ps="${escapeHtml(qaSheet(row))}"${checked}
+                 aria-label="Gauges complete">
+        </label>
+        <input type="text" class="fa-cell-input fa-gauge-input" data-fa-qa-field="gauges_text"
+               data-ps="${escapeHtml(qaSheet(row))}"
+               value="${escapeHtml(row.gauges_text || '')}"
+               placeholder="Remarks" autocomplete="off" aria-label="Gauges remarks">
+      </div>
+    `;
+  }
+
+  function renderQaTable() {
+    const host = $('fa-qa-table-host');
+    const empty = $('fa-qa-empty');
+    const body = $('fa-qa-table-body');
+    const rows = qaFilteredRows();
+    if (state.tab === 'qa') {
+      const count = state.newRows.length;
+      $('fa-subtitle').textContent = count
+        ? `${count} new part${count === 1 ? '' : 's'} needing a programme`
+        : 'Review new parts that need a programme, set a deadline, and order the technician queue.';
+    }
+    if (!state.newRows.length) {
+      if (host) host.hidden = true;
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = state.newLoaded
+          ? 'No NEW parts in active S/O management that need a programme.'
+          : 'Loading new parts that need a programme...';
+      }
+      if (body) body.innerHTML = '';
+      return;
+    }
+    if (!rows.length) {
+      if (host) host.hidden = true;
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = 'No jobs match this filter.';
+      }
+      if (body) body.innerHTML = '';
+      return;
+    }
+    if (host) host.hidden = false;
+    if (empty) empty.hidden = true;
+    if (!body) return;
+    body.innerHTML = rows.map((row) => {
+      const gaugesReady = row.gauges_tick ? ' is-ready' : '';
+      return `
+        <tr data-ps="${escapeHtml(qaSheet(row))}">
+          <td class="fa-col-review">${qaReviewCell(row)}</td>
+          <td>${psCell(row)}</td>
+          <td class="fa-readonly">${escapeHtml(dash(row.part_no))}${npiStatusBadge(row)}</td>
+          <td>${escapeHtml(dash(row.part_description))}</td>
+          <td class="fa-col-qty">${escapeHtml(dash(row.total_qty))}</td>
+          <td class="fa-col-date">${escapeHtml(dash(row.po_due_date))}</td>
+          <td class="fa-col-date">${escapeHtml(dash(row.posted_date))}</td>
+          <td class="fa-col-stage">${stageCell(row)}</td>
+          <td class="fa-col-machine">${faRenderCncPills(proposedCncMachines(row))}</td>
+          <td class="fa-edd">${escapeHtml(dash(row.coway_proposed_edd))}</td>
+          <td class="fa-col-pic">${escapeHtml(dash(qaPicText(row)))}</td>
+          <td class="fa-col-finish">${qaProgrammeDueCell(row)}</td>
+          <td class="fa-col-check">${checkReadout(row, 'tooling')}</td>
+          <td class="fa-col-check">${checkReadout(row, 'fixture')}</td>
+          <td class="fa-col-gauges${gaugesReady}">${qaGaugesCell(row)}</td>
+          <td class="fa-col-remarks">
+            <textarea class="fa-cell-input fa-remarks" data-fa-qa-field="remarks" data-ps="${escapeHtml(qaSheet(row))}" placeholder="Remarks">${escapeHtml(row.remarks || '')}</textarea>
+          </td>
+          <td class="fa-col-actions">${historyButton(row, 'new_part')}</td>
+          <td class="fa-col-queue">${qaQueueHandle(row)}</td>
+        </tr>
+      `;
+    }).join('');
+  }
+
   function newRowKey(row) {
     return String(row?.process_sheet_no || row?.pp_voucher_no || '').trim().toUpperCase();
   }
@@ -1200,7 +1383,7 @@
 
   function syncFinishField(wrap, iso) {
     const text = wrap?.querySelector('.fa-finish-input');
-    const picker = wrap?.querySelector('[data-fa-finish-picker]');
+    const picker = wrap?.querySelector('[data-fa-finish-picker], .fa-finish-picker');
     if (text) {
       text.value = iso ? compactDate(iso) : '';
       text.classList.remove('is-invalid');
@@ -1637,7 +1820,7 @@
 
   function setTab(tab, options) {
     const persistHash = options && options.persistHash;
-    const next = tab === 'new' ? 'new' : (tab === 'history' ? 'history' : 'flagged');
+    const next = tab === 'new' ? 'new' : (tab === 'history' ? 'history' : (tab === 'qa' ? 'qa' : 'flagged'));
     if (next !== state.tab) {
       closeColumnFilter();
       closeProposedCncPopover();
@@ -1649,13 +1832,15 @@
       btn.setAttribute('aria-selected', active ? 'true' : 'false');
     });
     const flagged = $('fa-panel-flagged');
+    const qa = $('fa-panel-qa');
     const neu = $('fa-panel-new');
     const hist = $('fa-panel-history');
     if (flagged) flagged.hidden = next !== 'flagged';
+    if (qa) qa.hidden = next !== 'qa';
     if (neu) neu.hidden = next !== 'new';
     if (hist) hist.hidden = next !== 'history';
     if (persistHash !== false) {
-      const hash = next === 'new' ? '#new' : (next === 'history' ? '#history' : '#flagged');
+      const hash = next === 'new' ? '#new' : (next === 'history' ? '#history' : (next === 'qa' ? '#qa' : '#flagged'));
       if (window.location.hash !== hash) {
         history.replaceState(null, '', `${window.location.pathname}${window.location.search}${hash}`);
       }
@@ -1666,6 +1851,9 @@
     } else if (next === 'history') {
       renderHistoryTable();
       if (!state.completedLoaded) loadCompletedParts();
+    } else if (next === 'qa') {
+      renderQaTable();
+      if (!state.newLoaded) loadNewParts();
     } else {
       renderTable();
     }
@@ -1734,14 +1922,16 @@
   function loadingLabel(tab) {
     if (tab === 'new') return 'Loading new parts...';
     if (tab === 'history') return 'Loading history...';
+    if (tab === 'qa') return 'Loading QA review...';
     return 'Loading NPI tracker...';
   }
 
   function syncLoading() {
     const loading = $('fa-loading');
     if (!loading) return;
-    const tab = state.tab === 'new' || state.tab === 'history' ? state.tab : 'flagged';
-    const busy = (loadsInFlight[tab] || 0) > 0;
+    const tab = state.tab === 'new' || state.tab === 'history' || state.tab === 'qa' ? state.tab : 'flagged';
+    const key = tab === 'qa' ? 'new' : tab;
+    const busy = (loadsInFlight[key] || 0) > 0;
     loading.hidden = !busy;
     const label = loading.querySelector('[data-fa-loading-label]');
     if (label) label.textContent = loadingLabel(tab);
@@ -1785,7 +1975,9 @@
 
   async function loadNewParts() {
     const empty = $('fa-new-empty');
+    const qaEmpty = $('fa-qa-empty');
     if (state.tab === 'new' && empty) empty.hidden = true;
+    if (state.tab === 'qa' && qaEmpty) qaEmpty.hidden = true;
     showAlert('');
     return withTabLoad('new', async () => {
       try {
@@ -1803,9 +1995,11 @@
         }
         state.newLoaded = true;
         renderNewTable();
+        renderQaTable();
       } catch (err) {
         showAlert(err.message || 'Could not load NEW parts');
         state.newLoaded = true;
+        renderQaTable();
         if (!state.newRows.length && empty) {
           empty.hidden = false;
           empty.textContent = 'Could not load NEW parts. Open S/O management once, then Refresh.';
@@ -3365,6 +3559,27 @@
     { id: 'remarks', label: 'Remark', width: 28 },
     { id: 'status', label: 'Status', width: 12 },
   ];
+  const QA_EXPORT_COLUMNS = [
+    { id: 'queue_order', label: 'Queue', width: 10 },
+    { id: 'review_status', label: 'Review status', width: 14 },
+    { id: 'review_timestamp', label: 'Reviewed at', width: 20 },
+    { id: 'process_sheet_no', label: 'PS no.', width: 16 },
+    { id: 'part_no', label: 'Part No.', width: 22 },
+    { id: 'part_description', label: 'Part Description', width: 36 },
+    { id: 'total_qty', label: 'Total Qty', width: 12 },
+    { id: 'po_due_date', label: 'PO Due Date', width: 14 },
+    { id: 'posted_date', label: 'Posted', width: 12 },
+    { id: 'stage', label: 'WO / Stage', width: 28 },
+    { id: 'proposed_cnc', label: 'Proposed CNC', width: 18 },
+    { id: 'coway_proposed_edd', label: 'Stipulated Coway EDD', width: 22 },
+    { id: 'pic', label: 'PIC', width: 16 },
+    { id: 'program_due_date', label: 'Programme Due Date', width: 18 },
+    { id: 'tooling', label: 'Tooling', width: 14 },
+    { id: 'fixture', label: 'Fixture/Jig', width: 14 },
+    { id: 'gauges_tick', label: 'Gauges complete', width: 16 },
+    { id: 'gauges_text', label: 'Gauges remarks', width: 24 },
+    { id: 'remarks', label: 'Remark', width: 28 },
+  ];
 
   function exportStamp() {
     const now = new Date();
@@ -3424,11 +3639,22 @@
     if (colId === 'pic') return exportPicNames(row.pics);
     if (colId === 'tooling' || colId === 'fixture' || colId === 'gauges') return checkDisplayValue(row, colId);
     if (colId === 'remarks') return String(row.remarks || '').trim();
+    if (colId === 'queue_order') return row.queue_order == null || row.queue_order === '' ? '' : Number(row.queue_order);
+    if (colId === 'review_status') return row.review_timestamp ? 'Reviewed' : '';
+    if (colId === 'review_timestamp') return formatReviewStamp(row.review_timestamp);
+    if (colId === 'program_due_date') return compactDate(row.program_due_date);
+    if (colId === 'gauges_tick') return row.gauges_tick ? 'Yes' : 'No';
+    if (colId === 'gauges_text') return String(row.gauges_text || '').trim();
     if (colId === 'status') {
       if (row.on_new_parts || row.is_new_part) return 'PO';
       if (row.from_quotation && !row.in_sales_orders) return 'QUOTE';
     }
     return '';
+  }
+
+  function qaExportValue(row, colId) {
+    if (colId === 'pic') return exportPicNames(row.program_pics);
+    return trackerExportValue(row, colId);
   }
 
   function exportListSpec() {
@@ -3453,6 +3679,16 @@
         value: newPartExportValue,
       };
     }
+    if (state.tab === 'qa') {
+      if (!state.newLoaded) return { error: 'New parts are still loading.' };
+      return {
+        rows: qaFilteredRows(),
+        columns: QA_EXPORT_COLUMNS,
+        sheetName: 'QA Review',
+        filename: `npi-qa-review-${stamp}.xlsx`,
+        value: qaExportValue,
+      };
+    }
     return {
       rows: filteredRows(),
       columns: TRACKER_EXPORT_COLUMNS,
@@ -3465,7 +3701,9 @@
   function syncExportButton() {
     const btn = $('fa-export-excel');
     if (!btn) return;
-    const label = state.tab === 'new' ? 'New parts' : (state.tab === 'history' ? 'History' : 'NPI Tracker');
+    const label = state.tab === 'new'
+      ? 'New parts'
+      : (state.tab === 'history' ? 'History' : (state.tab === 'qa' ? 'QA Review' : 'NPI Tracker'));
     btn.title = `Download the visible ${label} list as Excel`;
   }
 
@@ -3536,6 +3774,229 @@
     }
   }
 
+  const qaDrag = { id: '', order: '', dropped: false };
+
+  function qaBodyIds() {
+    const body = $('fa-qa-table-body');
+    if (!body) return [];
+    return [...body.querySelectorAll('tr[data-ps]')]
+      .map((tr) => tr.getAttribute('data-ps') || '')
+      .filter(Boolean);
+  }
+
+  function qaFullQueueSheets() {
+    const visible = qaBodyIds();
+    const visibleKeys = new Set(visible.map((ps) => ps.toUpperCase()));
+    const full = state.newRows.slice().sort(compareQueue);
+    let index = 0;
+    return full.map((row) => {
+      const sheet = qaSheet(row);
+      if (!visibleKeys.has(sheet.toUpperCase())) return sheet;
+      const next = visible[index];
+      index += 1;
+      return next || sheet;
+    }).filter(Boolean);
+  }
+
+  async function persistQaQueue() {
+    const sheets = qaFullQueueSheets();
+    const data = await api(`${API.newParts}/queue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ process_sheet_nos: sheets }),
+    });
+    const orders = new Map((data.orders || []).map((item) => [
+      String(item.process_sheet_no || '').trim().toUpperCase(),
+      Number(item.queue_order),
+    ]));
+    state.newRows.forEach((row) => {
+      const order = orders.get(qaSheet(row).toUpperCase());
+      if (order) row.queue_order = order;
+    });
+    $('fa-qa-table-body')?.querySelectorAll('tr[data-ps]').forEach((tr) => {
+      const badge = tr.querySelector('.fa-qa-order');
+      const order = orders.get(String(tr.getAttribute('data-ps') || '').trim().toUpperCase());
+      if (badge && order) {
+        badge.textContent = String(order);
+        const handle = tr.querySelector('[data-fa-qa-drag]');
+        if (handle) handle.setAttribute('aria-label', `Drag to set queue position ${order}`);
+      }
+    });
+    setStatus('fa-qa-status', 'Queue saved', 'saved');
+    window.setTimeout(() => {
+      const el = $('fa-qa-status');
+      if (el && el.textContent === 'Queue saved') {
+        setStatus('fa-qa-status', 'Drag the queue card on the right of a row to set the order technicians work.');
+      }
+    }, 1600);
+  }
+
+  async function saveQaField(fieldEl) {
+    const field = fieldEl.getAttribute('data-fa-qa-field');
+    const ps = fieldEl.getAttribute('data-ps');
+    if (!field || !ps) return;
+    if (field === 'review_checked') {
+      try {
+        const saved = await saveNewPatch(ps, { review_checked: fieldEl.checked }, { render: false });
+        const stamp = fieldEl.closest('td')?.querySelector('.fa-review-stamp');
+        if (stamp) stamp.textContent = formatReviewStamp(saved?.review_timestamp);
+        fieldEl.checked = !!(saved && saved.review_timestamp);
+      } catch (err) {
+        fieldEl.checked = !fieldEl.checked;
+        showAlert(err.message || 'Save failed');
+      }
+      return;
+    }
+    if (field === 'gauges_tick') {
+      const cell = fieldEl.closest('td');
+      if (cell) cell.classList.toggle('is-ready', fieldEl.checked);
+      try {
+        await saveNewPatch(ps, { gauges_tick: fieldEl.checked }, { render: false });
+      } catch (err) {
+        fieldEl.checked = !fieldEl.checked;
+        if (cell) cell.classList.toggle('is-ready', fieldEl.checked);
+        showAlert(err.message || 'Save failed');
+      }
+      return;
+    }
+    if (field === 'program_due_date') {
+      const raw = fieldEl.value || '';
+      const iso = raw.trim() ? parseFinishDate(raw) : '';
+      if (raw.trim() && !iso) {
+        fieldEl.classList.add('is-invalid');
+        showAlert('Programme due date must be dd/mm/yyyy');
+        return;
+      }
+      fieldEl.classList.remove('is-invalid');
+      showAlert('');
+      syncFinishField(fieldEl.parentElement, iso);
+      try {
+        await saveNewPatch(ps, { program_due_date: iso }, { render: false });
+      } catch (err) {
+        showAlert(err.message || 'Save failed');
+      }
+    }
+  }
+
+  function bindQaReview() {
+    const body = $('fa-qa-table-body');
+    if (!body || body.dataset.qaBound === '1') return;
+    body.dataset.qaBound = '1';
+
+    $('fa-qa-filter')?.addEventListener('input', (e) => {
+      state.qaFilter = e.target.value || '';
+      renderQaTable();
+    });
+
+    body.addEventListener('click', async (e) => {
+      const picker = e.target.closest('[data-fa-qa-date]');
+      if (picker && typeof picker.showPicker === 'function') {
+        try { picker.showPicker(); } catch (_) { /* native click still opens the picker */ }
+      }
+      const historyBtn = e.target.closest('[data-fa-history]');
+      if (!historyBtn) return;
+      await openHistoryModal(
+        historyBtn.getAttribute('data-fa-history') || 'flagged',
+        historyBtn.getAttribute('data-ps') || '',
+        historyBtn.getAttribute('data-part') || '',
+      );
+    });
+
+    body.addEventListener('change', async (e) => {
+      const picker = e.target.closest('[data-fa-qa-date]');
+      if (picker) {
+        const iso = picker.value || '';
+        syncFinishField(picker.parentElement, iso);
+        try {
+          await saveNewPatch(picker.getAttribute('data-ps'), { program_due_date: iso }, { render: false });
+          showAlert('');
+        } catch (err) {
+          showAlert(err.message || 'Save failed');
+        }
+        return;
+      }
+      const fieldEl = e.target.closest('[data-fa-qa-field]');
+      if (!fieldEl) return;
+      await saveQaField(fieldEl);
+    });
+
+    body.addEventListener('input', (e) => {
+      const fieldEl = e.target.closest('[data-fa-qa-field]');
+      if (!fieldEl) return;
+      const field = fieldEl.getAttribute('data-fa-qa-field');
+      if (field !== 'gauges_text' && field !== 'remarks') return;
+      const ps = fieldEl.getAttribute('data-ps');
+      const key = `qa:${ps}:${field}`;
+      clearTimeout(state.saveTimers[key]);
+      state.saveTimers[key] = setTimeout(() => {
+        saveNewPatch(ps, { [field]: fieldEl.value || '' }, { render: false })
+          .catch((err) => showAlert(err.message || 'Save failed'));
+      }, 450);
+    });
+
+    body.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const fieldEl = e.target.closest('[data-fa-qa-field="program_due_date"]');
+      if (!fieldEl) return;
+      e.preventDefault();
+      fieldEl.blur();
+    });
+
+    body.addEventListener('dragstart', (e) => {
+      const handle = e.target.closest('[data-fa-qa-drag]');
+      if (!handle) return;
+      const tr = handle.closest('tr');
+      qaDrag.id = tr?.getAttribute('data-ps') || '';
+      qaDrag.order = qaBodyIds().join(',');
+      qaDrag.dropped = false;
+      tr?.classList.add('is-dragging');
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', qaDrag.id);
+      }
+    });
+
+    body.addEventListener('dragover', (e) => {
+      const tr = e.target.closest('tr[data-ps]');
+      if (!tr || !qaDrag.id) return;
+      e.preventDefault();
+      const dragging = body.querySelector('tr.is-dragging');
+      if (!dragging || dragging === tr) return;
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      const rect = tr.getBoundingClientRect();
+      const after = e.clientY > rect.top + rect.height / 2;
+      body.querySelectorAll('tr.fa-qa-over').forEach((el) => el.classList.remove('fa-qa-over'));
+      tr.classList.add('fa-qa-over');
+      if (after) tr.after(dragging);
+      else tr.before(dragging);
+    });
+
+    body.addEventListener('drop', async (e) => {
+      if (!qaDrag.id) return;
+      e.preventDefault();
+      qaDrag.dropped = true;
+      body.querySelectorAll('tr.fa-qa-over').forEach((el) => el.classList.remove('fa-qa-over'));
+      const next = qaBodyIds().join(',');
+      if (next === qaDrag.order) return;
+      try {
+        await persistQaQueue();
+      } catch (err) {
+        showAlert(err.message || 'Could not save the queue');
+        renderQaTable();
+      }
+    });
+
+    body.addEventListener('dragend', () => {
+      body.querySelectorAll('tr.is-dragging, tr.fa-qa-over').forEach((el) => {
+        el.classList.remove('is-dragging');
+        el.classList.remove('fa-qa-over');
+      });
+      if (!qaDrag.dropped && qaDrag.id && qaBodyIds().join(',') !== qaDrag.order) renderQaTable();
+      qaDrag.id = '';
+      qaDrag.dropped = false;
+    });
+  }
+
   function bind() {
     $('fa-export-excel')?.addEventListener('click', () => exportCurrentList());
     document.addEventListener('click', (e) => {
@@ -3555,7 +4016,7 @@
       rerenderTable(which);
     });
     $('fa-refresh')?.addEventListener('click', () => {
-      if (state.tab === 'new') loadNewParts();
+      if (state.tab === 'new' || state.tab === 'qa') loadNewParts();
       else if (state.tab === 'history') loadCompletedParts();
       else loadTracker();
     });
@@ -4206,6 +4667,7 @@
     bindColumnControls();
     bindProposedCncPicker();
     bindGrid();
+    bindQaReview();
   }
 
   bind();
@@ -4217,6 +4679,8 @@
     setTab('new', { persistHash: false });
   } else if (bootHash === '#history') {
     setTab('history', { persistHash: false });
+  } else if (bootHash === '#qa') {
+    setTab('qa', { persistHash: false });
   }
   loadTracker();
 })();

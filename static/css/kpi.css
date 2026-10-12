@@ -657,82 +657,30 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
   line-height: 1.3;
+  background: #e2e8f0;
+  color: #334155;
 }
 
 .kpi-datehead-name {
   display: inline;
   font-size: 0.74rem;
   font-weight: 750;
+  color: #334155;
 }
-
-.kpi-table th.kpi-datehead--need {
-  background: #ffedd5;
-  box-shadow: inset 0 -3px 0 #ea580c;
-}
-.kpi-datehead--need .kpi-datehead-tag { background: #ea580c; color: #fff; }
-.kpi-datehead--need .kpi-datehead-name { color: #9a3412; }
-
-.kpi-table th.kpi-datehead--arrival {
-  background: #d1fae5;
-  box-shadow: inset 0 -3px 0 #059669;
-}
-.kpi-datehead--arrival .kpi-datehead-tag { background: #059669; color: #fff; }
-.kpi-datehead--arrival .kpi-datehead-name { color: #065f46; }
-
-.kpi-table th.kpi-datehead--gap {
-  background: #fee2e2;
-  box-shadow: inset 0 -3px 0 #dc2626;
-}
-.kpi-datehead--gap .kpi-datehead-tag { background: #dc2626; color: #fff; }
-.kpi-datehead--gap .kpi-datehead-name { color: #991b1b; }
-
-.kpi-table th.kpi-datehead--due {
-  background: #dbeafe;
-  box-shadow: inset 0 -3px 0 #2563eb;
-}
-.kpi-datehead--due .kpi-datehead-tag { background: #2563eb; color: #fff; }
-.kpi-datehead--due .kpi-datehead-name { color: #1e3a8a; }
-
-.kpi-table th.kpi-datehead--edd {
-  background: #ede9fe;
-  box-shadow: inset 0 -3px 0 #7c3aed;
-}
-.kpi-datehead--edd .kpi-datehead-tag { background: #7c3aed; color: #fff; }
-.kpi-datehead--edd .kpi-datehead-name { color: #5b21b6; }
 
 .kpi-table td.kpi-datecell {
-  font-weight: 750;
+  font-weight: 650;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
-}
-
-.kpi-table td.kpi-datecell--need {
-  background: #fff7ed;
-  color: #9a3412;
-  box-shadow: inset 3px 0 0 #ea580c;
-}
-
-.kpi-table td.kpi-datecell--arrival {
-  background: #ecfdf5;
-  color: #065f46;
-  box-shadow: inset 3px 0 0 #059669;
+  color: #0f172a;
 }
 
 .kpi-table td.kpi-datecell--gap {
-  background: #fef2f2;
-  box-shadow: inset 3px 0 0 #dc2626;
-}
-
-.kpi-table td.kpi-datecell--due {
-  background: #eff6ff;
-  color: #1e3a8a;
-  box-shadow: inset 3px 0 0 #2563eb;
+  color: #b91c1c;
+  font-weight: 750;
 }
 
 .kpi-table td.kpi-datecell--edd {
-  background: #f5f3ff;
-  color: #5b21b6;
-  box-shadow: inset 3px 0 0 #7c3aed;
   white-space: normal;
   min-width: 7.2rem;
 }
@@ -777,6 +725,107 @@
 
 .kpi-row--hot .kpi-days {
   color: #b91c1c;
+}
+
+.kpi-days--idle {
+  color: #94a3b8;
+  font-weight: 650;
+}
+
+.kpi-row--live td {
+  background: #f0f9ff;
+}
+
+.kpi-row--watch.kpi-row--live td {
+  background: #fffbeb;
+}
+
+.kpi-row--hot.kpi-row--live td {
+  background: #fef2f2;
+}
+
+.kpi-row--live td:first-child {
+  box-shadow: inset 3px 0 0 #0284c7;
+}
+
+.kpi-row--watch.kpi-row--live td:first-child {
+  box-shadow: inset 3px 0 0 #d97706;
+}
+
+.kpi-row--hot.kpi-row--live td:first-child {
+  box-shadow: inset 3px 0 0 #dc2626;
+}
+
+.kpi-tat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.32rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+  color: #0369a1;
+}
+
+.kpi-tat-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+.kpi-tat--live .kpi-tat-dot {
+  box-shadow: 0 0 0 0 rgba(2, 132, 199, 0.55);
+  animation: kpi-tat-pulse 1.4s ease-out infinite;
+}
+
+.kpi-tat-flag {
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.kpi-tat-clock {
+  min-width: 7.4rem;
+  text-align: right;
+}
+
+.kpi-tat--watch {
+  color: #b45309;
+}
+
+.kpi-tat--watch .kpi-tat-dot {
+  box-shadow: 0 0 0 0 rgba(180, 83, 9, 0.45);
+}
+
+.kpi-tat--hot {
+  color: #b91c1c;
+}
+
+.kpi-tat--hot .kpi-tat-dot {
+  box-shadow: 0 0 0 0 rgba(185, 28, 28, 0.45);
+}
+
+@keyframes kpi-tat-pulse {
+  70% { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.kpi-row--resolved.kpi-row--live td,
+.kpi-row--resolved.kpi-row--live td:first-child {
+  background: #f8fafc;
+  box-shadow: none;
+}
+
+.kpi-row--resolved .kpi-tat,
+.kpi-row--resolved .kpi-tat-flag,
+.kpi-row--resolved .kpi-tat-clock {
+  color: #94a3b8;
+}
+
+.kpi-row--resolved .kpi-tat-dot {
+  animation: none;
 }
 
 .kpi-pill {

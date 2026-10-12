@@ -314,6 +314,7 @@ class SoOutstandingBalanceTests(unittest.TestCase):
                         "unit_selling_price": 10,
                         "material_subcon": "ARRIVED",
                         "material_in_date": "2026-08-01",
+                        "material_need_date": "2026-07-20",
                         "shipped_completed": False,
                         "partials": [],
                     },
@@ -329,6 +330,7 @@ class SoOutstandingBalanceTests(unittest.TestCase):
         arrived = by_ps["APS-IN"]
         self.assertEqual(arrived["material_status"], "Arrived")
         self.assertEqual(arrived["material_in_date"], "2026-08-01")
+        self.assertEqual(arrived["material_need_date"], "2026-07-20")
 
     def test_remaining_shared_across_pps_then_nopp(self):
         orders = [

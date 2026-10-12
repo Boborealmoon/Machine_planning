@@ -35,6 +35,8 @@ _LINE_FIELDS = (
     "coway_edd",
     "week",
     "commitment_date",
+    "material_need_date",
+    "material_in_date",
 )
 
 
@@ -655,6 +657,25 @@ def _line_for_commitment(
     return _snapshot_source(commitment), 0.0
 
 
+def plan_whole_month_assign(
+    line: dict[str, Any],
+    slices: list[dict[str, Any]],
+    plan_month: Any,
+) -> tuple[date, float, list[int]]:
+    """Put the line's full open qty in one month and drop every other month."""
+    month = plan_month_date(plan_month)
+    month_key = plan_month_key(month)
+    open_qty = _round_qty(line.get("remaining_qty") or 0)
+    if open_qty <= QTY_TOLERANCE:
+        _fail(line, "nothing left to assign.")
+    drop = [
+        int(item["commitment_id"])
+        for item in slices
+        if item.get("plan_month") != month_key and item.get("commitment_id") is not None
+    ]
+    return month, open_qty, drop
+
+
 def save_adds(
     con,
     lines_by_id: dict[str, dict[str, Any]],
@@ -664,6 +685,34 @@ def save_adds(
     commitments = load_commitments(con)
     planned = prepare_adds(lines_by_id, commitments, plan_month, items)
     for line, month, qty in planned:
+        upsert_commitment(con, line, month, qty)
+
+
+def save_assign_month(
+    con,
+    lines_by_id: dict[str, dict[str, Any]],
+    plan_month: Any,
+    items: list[dict[str, Any]],
+) -> None:
+    """Assign each line's full open qty to one month."""
+    if not items:
+        raise AllocationError("Select at least one line.")
+    commitments = load_commitments(con)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in commitments:
+        grouped.setdefault(_compact(item.get("row_id")), []).append(item)
+    for item in items:
+        row_id = _compact(item.get("row_id"))
+        if not row_id:
+            raise AllocationError("Missing line.")
+        line = lines_by_id.get(row_id)
+        if line is None:
+            raise AllocationError("That line is no longer open.")
+        month, qty, drop_ids = plan_whole_month_assign(
+            line, grouped.get(row_id, []), plan_month
+        )
+        for commitment_id in drop_ids:
+            delete_commitment(con, commitment_id)
         upsert_commitment(con, line, month, qty)
 
 

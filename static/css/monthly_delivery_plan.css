@@ -250,6 +250,52 @@
   margin-bottom: 0.85rem;
 }
 
+.mdp-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  position: relative;
+}
+
+.mdp-columns-panel {
+  right: 0;
+  left: auto;
+  min-width: 12rem;
+  max-height: 18rem;
+  overflow: auto;
+}
+
+.mdp-columns-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.15rem 0.35rem 0.35rem;
+}
+
+.mdp-col--hidden { display: none !important; }
+
+.mdp-date-range {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem;
+  margin-bottom: 0.55rem;
+}
+
+.mdp-date-range label {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  color: #64748b;
+}
+
+.mdp-date-range input {
+  width: 100%;
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.3rem;
+  border: 1px solid #dbe2ea;
+  border-radius: 6px;
+}
+
 .mdp-section-title { margin: 0; font-size: 1.05rem; }
 
 .mdp-section-sub {
@@ -315,44 +361,10 @@
   color: #334155;
 }
 
-.mdp-slices {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  min-width: 11rem;
-}
-
-.mdp-slice {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-}
-
-.mdp-slice-label {
-  font-size: 0.78rem;
+.mdp-plan-month {
   font-weight: 650;
+  white-space: nowrap;
 }
-
-.mdp-slice-qty {
-  width: 4.2rem;
-  padding: 0.15rem 0.3rem;
-  border: 1px solid #dbe2ea;
-  border-radius: 5px;
-  font: inherit;
-  font-size: 0.8rem;
-}
-
-.mdp-slice-remove {
-  border: none;
-  background: transparent;
-  color: #94a3b8;
-  cursor: pointer;
-  font-size: 1rem;
-  line-height: 1;
-  padding: 0 0.15rem;
-}
-
-.mdp-slice-remove:hover { color: #b91c1c; }
 
 .mdp-flag {
   display: inline-block;

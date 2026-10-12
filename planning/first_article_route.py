@@ -23,7 +23,9 @@ from .first_article_service import (
     load_pics,
     parse_npi_import_workbook,
     remove_new_part_exception,
+    reorder_new_part_queue,
     search_flag_candidates,
+    reorder_tracker_queue,
     unflag_process_sheet,
     update_new_part_row,
     update_tracker_row,
@@ -66,6 +68,9 @@ _PATCH_FIELDS = (
     "gauges_mode",
     "gauges_tick",
     "gauges_text",
+    "review_checked",
+    "program_due_date",
+    "queue_order",
 )
 
 _NEW_PART_PATCH_FIELDS = (
@@ -76,6 +81,11 @@ _NEW_PART_PATCH_FIELDS = (
     "proposed_cnc",
     "npi_complete",
     "priority",
+    "review_checked",
+    "program_due_date",
+    "queue_order",
+    "gauges_tick",
+    "gauges_text",
 )
 
 
@@ -236,6 +246,25 @@ def api_update_first_article(first_article_id: int):
     return jsonify({"ok": True, "row": row})
 
 
+@first_article_bp.post("/api/first-article/queue")
+def api_reorder_first_article_queue():
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "A JSON object is required"}), 400
+    ids = data.get("ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "ids must be a list of tracker rows"}), 400
+    try:
+        orders = reorder_tracker_queue(ids)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("first article queue reorder failed")
+        payload, status = json_error(exc)
+        return jsonify(payload), status
+    return jsonify({"ok": True, "orders": orders})
+
+
 @first_article_bp.delete("/api/first-article/<int:first_article_id>")
 def api_unflag_first_article(first_article_id: int):
     try:
@@ -341,6 +370,27 @@ def api_update_first_article_new_part():
         payload, status = json_error(exc)
         return jsonify(payload), status
     return jsonify({"ok": True, "row": row})
+
+
+@first_article_bp.post("/api/first-article/new-parts/queue")
+def api_reorder_new_part_queue():
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "A JSON object is required"}), 400
+    sheets = data.get("process_sheet_nos")
+    if sheets is None:
+        sheets = data.get("ids")
+    if not isinstance(sheets, list) or not sheets:
+        return jsonify({"error": "process_sheet_nos is required"}), 400
+    try:
+        orders = reorder_new_part_queue(sheets)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("first article new-part queue reorder failed")
+        payload, status = json_error(exc)
+        return jsonify(payload), status
+    return jsonify({"ok": True, "orders": orders})
 
 
 @first_article_bp.get("/api/first-article/history")

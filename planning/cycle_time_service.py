@@ -15,6 +15,10 @@ SOURCE_PLANNER_JOB = "PLANNER_JOB"
 SOURCE_PLANNER_HARVEST = "PLANNER_HARVEST"
 SOURCE_ACTUAL_AVG = "ACTUAL_AVG"
 SOURCE_SHEET = "SHEET"
+SOURCE_DEFAULT = "default"
+
+# Used only when a new schedule has no master time and no BOM cycle yet.
+DEFAULT_INITIAL_CYCLE_MINUTES = 20.0
 
 _VALID_SOURCES = {
     SOURCE_MANUAL,
@@ -110,6 +114,22 @@ def schedule_time_lookup_keys(
     return primary_part, primary_bom, parts, boms
 
 
+def apply_initial_cycle_default(times: dict[str, Any]) -> dict[str, Any]:
+    """Fill a missing cycle with 20 min/pc for a brand-new schedule.
+
+    Master times and any positive BOM or payload cycle are left alone.
+    Later edits go through the block update path and are not passed back here.
+    """
+    cycle = parse_number(times.get("cycle_minutes_per_qty"), 0)
+    if cycle > 0:
+        return times
+    out = dict(times)
+    out["cycle_minutes_per_qty"] = DEFAULT_INITIAL_CYCLE_MINUTES
+    if compact_text(out.get("source")) in {"", "none", "bom_step"}:
+        out["source"] = SOURCE_DEFAULT
+    return out
+
+
 def resolve_schedule_times(
     con,
     *,
@@ -128,11 +148,11 @@ def resolve_schedule_times(
     fallback_cycle = max(0.0, float(cycle_minutes_per_qty or 0))
     fallback_setup = max(0.0, float(setup_minutes or 0))
     source_ps_id = compact_text(source_ps_id)
-    empty = {
+    empty = apply_initial_cycle_default({
         "cycle_minutes_per_qty": fallback_cycle,
         "setup_minutes": fallback_setup,
         "source": "bom_step" if fallback_cycle > 0 else "none",
-    }
+    })
     if not source_ps_id:
         return empty
 
@@ -185,7 +205,7 @@ def resolve_schedule_times(
         extra_bom_codes=extra_bom_codes,
     )
     if not part_no:
-        return empty
+        return apply_initial_cycle_default(empty)
 
     master_cache = MasterTimeCache.load(con)
     resolved = resolve_step_times(
@@ -204,12 +224,12 @@ def resolve_schedule_times(
     cycle = parse_number(resolved.get("cycle_time"), fallback_cycle)
     setup = parse_number(resolved.get("set_up_time"), fallback_setup)
     if resolved.get("source") == "master" and (cycle > 0 or setup > 0):
-        return {
+        return apply_initial_cycle_default({
             "cycle_minutes_per_qty": cycle if cycle > 0 else fallback_cycle,
             "setup_minutes": setup if setup > 0 else fallback_setup,
             "source": "master",
             "master_id": resolved.get("master_id"),
-        }
+        })
 
     if part_no and (resolved.get("source") != "master" or cycle <= 0):
         op_no, op_type = normalize_op_identity(
@@ -232,18 +252,18 @@ def resolve_schedule_times(
             cycle = production if production > 0 else ideal
             setup = parse_number(master.get("set_up_time"), 0)
             if cycle > 0 or setup > 0:
-                return {
+                return apply_initial_cycle_default({
                     "cycle_minutes_per_qty": cycle if cycle > 0 else fallback_cycle,
                     "setup_minutes": setup if setup > 0 else fallback_setup,
                     "source": "master",
                     "master_id": int(master.get("id") or 0),
-                }
+                })
 
-    return {
+    return apply_initial_cycle_default({
         "cycle_minutes_per_qty": fallback_cycle,
         "setup_minutes": fallback_setup,
         "source": "bom_step" if fallback_cycle > 0 else "none",
-    }
+    })
 
 
 def ensure_cycle_time_snapshot_table(con) -> None:

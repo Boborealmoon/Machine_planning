@@ -3,7 +3,7 @@
 {% block body_class %}fa-view{% endblock %}
 {% block main_class %}app-main--first-article{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-cnc-paste-20261005">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-qa-queue-card-20261012">
 {% endblock %}
 {% block content %}
 <div class="fa-page">
@@ -23,6 +23,8 @@
   <div class="fa-tabs" role="tablist" aria-label="NPI/FA views">
     <button type="button" class="fa-tab is-active" id="fa-tab-flagged" data-fa-tab="flagged"
             role="tab" aria-selected="true" aria-controls="fa-panel-flagged">NPI Tracker</button>
+    <button type="button" class="fa-tab" id="fa-tab-qa" data-fa-tab="qa"
+            role="tab" aria-selected="false" aria-controls="fa-panel-qa">QA Review</button>
     <button type="button" class="fa-tab" id="fa-tab-new" data-fa-tab="new"
             role="tab" aria-selected="false" aria-controls="fa-panel-new">
       New parts <span class="fa-tab-count" id="fa-new-count" hidden>0</span>
@@ -96,6 +98,49 @@
     </div>
   </div>
     <p id="fa-empty" class="fa-empty" hidden>No quotations flagged yet. Search a PS number, use Bulk flag, or import an Excel sheet.</p>
+  </div>
+
+  <div id="fa-panel-qa" class="fa-panel" role="tabpanel" aria-labelledby="fa-tab-qa" hidden>
+    <section class="fa-toolbar" aria-label="Filter QA review">
+      <div class="fa-toolbar-group fa-toolbar-group--filter">
+        <label class="fa-filter-wrap">
+          <span class="fa-add-label">Filter</span>
+          <input id="fa-qa-filter" class="fa-search-input" type="search"
+                 placeholder="Search this queue..." autocomplete="off">
+        </label>
+      </div>
+      <p class="fa-add-status" id="fa-qa-status" aria-live="polite">Drag the queue card on the right of a row to set the order technicians work.</p>
+    </section>
+    <div id="fa-qa-table-host" class="fa-table-card" hidden>
+      <div class="fa-table-scroll">
+        <table class="fa-table" id="fa-qa-table">
+          <thead>
+            <tr>
+              <th class="fa-col-review" title="Checked rows store the review date and time">Review</th>
+              <th class="fa-col-ps">PS no.</th>
+              <th>Part No.</th>
+              <th>Part Description</th>
+              <th class="fa-col-qty">Total Qty</th>
+              <th class="fa-col-date">PO Due Date</th>
+              <th class="fa-col-date" title="S/O posted date when the quotation becomes our PO">Posted</th>
+              <th class="fa-col-stage" title="Current work-order stage and WO status from ERP">WO / Stage</th>
+              <th class="fa-col-machine" title="Same Proposed CNC as S/O Management">Proposed CNC</th>
+              <th class="fa-col-edd" title="Read-only from S/O management">Stipulated Coway EDD</th>
+              <th class="fa-col-pic">PIC</th>
+              <th class="fa-col-finish" title="Deadline assigned by QA">Programme Due Date</th>
+              <th class="fa-col-check">Tooling</th>
+              <th class="fa-col-check">Fixture/Jig</th>
+              <th class="fa-col-gauges" title="Tick when gauges are complete. The text box is the remark.">Gauges</th>
+              <th class="fa-col-remarks">Remark</th>
+              <th class="fa-col-actions"></th>
+              <th class="fa-col-queue" title="Drag the card in the top-right of a row to set the technician queue">Queue</th>
+            </tr>
+          </thead>
+          <tbody id="fa-qa-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <p id="fa-qa-empty" class="fa-empty" hidden>No NEW parts in active S/O management that need a programme.</p>
   </div>
 
   <div id="fa-panel-new" class="fa-panel" role="tabpanel" aria-labelledby="fa-tab-new" hidden>
@@ -324,5 +369,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=fa-20260825-2"></script>
-<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-cnc-paste-20261005"></script>
+<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-qa-queue-card-20261012"></script>
 {% endblock %}

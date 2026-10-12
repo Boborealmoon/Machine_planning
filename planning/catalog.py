@@ -2573,6 +2573,8 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
     if queue_position <= 0:
         queue_position = max_position + 1
 
+    from .cycle_time_service import DEFAULT_INITIAL_CYCLE_MINUTES
+
     created_block_ids = []
     for idx, op in enumerate(ops, 1):
         op_ps_id = compact_text(op["source_ps_id"])
@@ -2628,6 +2630,9 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
                 pass
 
         op_name = f"{step['op_no'] or ''} {step['op_type'] or ''}".strip()
+        cycle_minutes = parse_number(resolved_times.get("cycle_time"), parse_number(step["cycle_time"], 0))
+        if cycle_minutes <= 0:
+            cycle_minutes = DEFAULT_INITIAL_CYCLE_MINUTES
         op_cur = con.execute(
             """
             INSERT INTO planner_operation (
@@ -2642,7 +2647,7 @@ def schedule_planning_card(con, card_id, machine_id, queue_position=0):
                 op_name,
                 float(card["target_qty"] or 0),
                 parse_number(resolved_times.get("set_up_time"), parse_number(step["setup_time"], 0)),
-                parse_number(resolved_times.get("cycle_time"), parse_number(step["cycle_time"], 0)),
+                cycle_minutes,
                 compact_text(step["machine_category"]) or compact_text(machine["machine_category"]) or "UNKNOWN",
                 op_ps_id,
                 int(step["op_seq_id"] or 0),

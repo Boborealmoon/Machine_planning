@@ -7468,6 +7468,48 @@
   .new-orders-page--sales-orders .new-orders-header {
     margin-bottom: 8px;
   }
+  .new-orders-page--sales-orders .so-view-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .new-orders-page--sales-orders .so-attention-view-btn {
+    border: 1px solid #fdba74;
+    background: #fff7ed;
+    color: #9a3412;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1;
+    min-height: 36px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+  .new-orders-page--sales-orders .so-attention-view-btn:hover {
+    background: #ffedd5;
+    color: #7c2d12;
+  }
+  .new-orders-page--sales-orders .so-attention-view-btn .ps-view-tab-count {
+    margin-left: 0;
+    background: rgba(194, 65, 12, 0.14);
+    color: #9a3412;
+  }
+  .new-orders-page--sales-orders .so-attention-view-btn.is-active {
+    background: #c2410c;
+    border-color: #c2410c;
+    color: #fff;
+    box-shadow: 0 1px 2px rgba(194, 65, 12, 0.35);
+  }
+  .new-orders-page--sales-orders .so-attention-view-btn.is-active .ps-view-tab-count {
+    background: rgba(255, 255, 255, 0.22);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+  }
   .new-orders-page--sales-orders .new-orders-header-actions {
     align-items: center;
     justify-content: flex-end;

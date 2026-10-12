@@ -1,6 +1,6 @@
 (function () {
   const SUBTITLES = {
-    qc: "Time in QC, from the Final Inspection scan to the packing scan.",
+    qc: "Time in QC, from the Final Inspection scan to the packing scan. Jobs still at QC stay at the top, and their TAT clock keeps running.",
     material: "Active S/O lines where the material arrived after the need date. Need is the material need date. Arrival is the Material in date. Gap is how many days late. PO due is the customer due date. Proposed EDD is the planner date from S/O management.",
     exceptions: "Active S/O lines flagged with an exception. Each row is one partial, with the part description, posted date, due date, proposed EDD, and the remarks from S/O management.",
   };
@@ -21,6 +21,7 @@
     psTypes: new Set(),
     colFilters: { qc: {}, material: {}, exceptions: {} },
     filterTimer: 0,
+    tatTicker: 0,
     resolved: { qc: {}, material: {}, exceptions: {} },
     hideResolved: false,
   };
@@ -29,6 +30,8 @@
     qc: [
       ["ps_id", "Job"],
       ["part_no", "Part"],
+      ["current_stage_desc", "Stage"],
+      ["due_date", "Due"],
       ["pushed_at", "Arrived at QC"],
       ["left_at", "Left QC"],
       ["days_at_qc", "QC TAT"],
@@ -70,9 +73,11 @@
   const COLUMN_FIELDS = {
     qc: {
       ps_id: ["ps_id", "ps_type"],
-      part_no: ["part_no", "part_desc"],
+      part_no: ["part_no", "part_desc", "qty"],
+      current_stage_desc: ["current_stage_desc", "stage_status_label"],
+      due_date: ["due_date"],
       pushed_at: ["pushed_at"],
-      left_at: ["left_at"],
+      left_at: ["left_at", "left_stage_desc"],
       days_at_qc: ["days_at_qc", "elapsed_label"],
       qc_state: ["qc_state_label", "qc_state"],
     },
@@ -514,13 +519,92 @@
     };
   }
 
+  function missingSortValue(value) {
+    return value == null || value === "";
+  }
+
   function sortedRows() {
     const dir = state.sortDir === "asc" ? 1 : -1;
+    const key = state.sortKey;
     return state.rows.filter((row) => passesView(row, "qc")).slice().sort((a, b) => {
-      const base = compare(a, b, state.sortKey);
+      if (key === "days_at_qc") {
+        const group = (row) => (row.qc_state === "in_qc" ? 0 : 1);
+        const grouped = group(a) - group(b);
+        if (grouped) return grouped;
+      }
+      if (missingSortValue(a[key]) || missingSortValue(b[key])) {
+        if (missingSortValue(a[key]) && missingSortValue(b[key])) {
+          return String(a.ps_id || "").localeCompare(String(b.ps_id || ""));
+        }
+        return missingSortValue(a[key]) ? 1 : -1;
+      }
+      const base = compare(a, b, key);
       if (base) return base * dir;
       return String(a.ps_id || "").localeCompare(String(b.ps_id || ""));
     });
+  }
+
+  function stampMs(value) {
+    const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+    if (!match) return null;
+    const utc = Date.UTC(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], +(match[6] || 0));
+    return utc - (8 * 60 * 60 * 1000);
+  }
+
+  function pad2(value) {
+    return String(value).padStart(2, "0");
+  }
+
+  function formatRunning(ms) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const days = Math.floor(total / 86400);
+    const hours = Math.floor((total % 86400) / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const seconds = total % 60;
+    const clock = pad2(hours) + ":" + pad2(minutes) + ":" + pad2(seconds);
+    return days > 0 ? days + "d " + clock : clock;
+  }
+
+  function tickTatClocks() {
+    const now = Date.now();
+    document.querySelectorAll("[data-tat-start]").forEach((node) => {
+      const start = stampMs(node.getAttribute("data-tat-start"));
+      const clock = node.querySelector(".kpi-tat-clock");
+      if (start == null || !clock) return;
+      clock.textContent = formatRunning(now - start);
+    });
+  }
+
+  function ensureTatTicker() {
+    if (state.tatTicker) return;
+    state.tatTicker = window.setInterval(tickTatClocks, 1000);
+  }
+
+  function tatCell(row) {
+    if (row.qc_state === "in_qc" && row.pushed_at) {
+      const start = stampMs(row.pushed_at);
+      const label = start == null ? (row.elapsed_label || "—") : formatRunning(Date.now() - start);
+      const days = Number(row.days_at_qc);
+      let tone = "";
+      if (days >= 7) tone = " kpi-tat--hot";
+      else if (days >= 3) tone = " kpi-tat--watch";
+      return (
+        '<td class="kpi-num">' +
+          '<span class="kpi-tat kpi-tat--live' + tone + '" data-tat-start="' + esc(row.pushed_at) + '" title="Still at QC. Clock running from arrival.">' +
+            '<span class="kpi-tat-dot" aria-hidden="true"></span>' +
+            '<span class="kpi-tat-flag">Live</span>' +
+            '<span class="kpi-tat-clock">' + esc(label) + "</span>" +
+          "</span>" +
+        "</td>"
+      );
+    }
+    if (row.qc_state === "left_qc" && (row.elapsed_label || row.days_at_qc != null)) {
+      const days = row.elapsed_label || String(row.days_at_qc);
+      const title = row.days_at_qc == null ? "" : String(row.days_at_qc) + " days";
+      return '<td class="kpi-num kpi-days" title="' + esc(title) + '">' + esc(days) + "</td>";
+    }
+    const idle = row.qc_state === "left_unstamped" ? "No out time" : row.qc_state === "before_qc" ? "Not started" : "—";
+    return '<td class="kpi-num kpi-days kpi-days--idle">' + esc(idle) + "</td>";
   }
 
   function rowClass(row) {
@@ -556,11 +640,10 @@
     if (empty) empty.hidden = true;
     body.innerHTML = rows.map((row) => {
       const partial = Number(row.pp_partial_no) > 1 ? "Partial " + row.pp_partial_no : "";
-      const days = row.days_at_qc == null ? "" : (row.elapsed_label || String(row.days_at_qc));
-      const daysTitle = row.days_at_qc == null ? "" : String(row.days_at_qc) + " days";
-      const tat = days || (row.qc_state === "left_unstamped" ? "No out time" : row.qc_state === "before_qc" ? "Not started" : "—");
+      const qty = row.qty == null || row.qty === "" ? "" : "Qty " + row.qty;
+      const stageBits = [row.stage_status_label, qty].filter(Boolean).join(" · ");
       return (
-        '<tr class="' + rowClass(row) + '">' +
+        '<tr class="' + rowClass(row) + (row.qc_state === "in_qc" ? " kpi-row--live" : "") + '">' +
           resolvedCell("qc", row) +
           '<td>' + typePill(row) + '<span class="kpi-job">' + esc(row.ps_id || "—") + '</span>' +
             (partial ? '<span class="kpi-sub">' + esc(partial) + '</span>' : '') +
@@ -568,13 +651,21 @@
           '<td class="kpi-wrap"><span class="kpi-job">' + esc(dash(row.part_no)) + '</span>' +
             (row.part_desc ? '<span class="kpi-sub">' + esc(row.part_desc) + '</span>' : '') +
           '</td>' +
+          '<td class="kpi-wrap"><span class="kpi-job">' + esc(dash(row.current_stage_desc)) + '</span>' +
+            (stageBits ? '<span class="kpi-sub">' + esc(stageBits) + '</span>' : '') +
+          '</td>' +
+          '<td>' + esc(dash(row.due_date)) + '</td>' +
           '<td>' + esc(dash(row.pushed_at)) + '</td>' +
-          '<td>' + esc(dash(row.left_at)) + '</td>' +
-          '<td class="kpi-num kpi-days" title="' + esc(daysTitle) + '">' + esc(tat) + '</td>' +
+          '<td>' + esc(dash(row.left_at)) +
+            (row.left_stage_desc ? '<span class="kpi-sub">' + esc(row.left_stage_desc) + '</span>' : '') +
+          '</td>' +
+          tatCell(row) +
           '<td><span class="kpi-pill kpi-pill--' + esc(row.qc_state) + '">' + esc(row.qc_state_label || "—") + '</span></td>' +
         '</tr>'
       );
     }).join("");
+    ensureTatTicker();
+    tickTatClocks();
   }
 
   function render(payload) {
@@ -695,8 +786,13 @@
       ["pp_partial_no", "Partial"],
       ["part_no", "Part no"],
       ["part_desc", "Description"],
+      ["qty", "Qty"],
+      ["current_stage_desc", "Stage"],
+      ["stage_status_label", "Stage status"],
+      ["due_date", "Due"],
       ["pushed_at", "Arrived at QC"],
       ["left_at", "Left QC"],
+      ["left_stage_desc", "Left stage"],
       ["days_at_qc", "QC TAT days"],
       ["elapsed_label", "QC TAT"],
       ["qc_state_label", "Status"],

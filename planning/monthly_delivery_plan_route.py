@@ -12,6 +12,7 @@ from .delivery_commitment_service import (
     delete_commitment,
     load_commitments,
     save_adds,
+    save_assign_month,
     save_move,
     save_qty,
 )
@@ -95,7 +96,10 @@ def api_add_delivery_slices():
     try:
         lines, _job_count = _load_outstanding(refresh=False)
         with planner_db() as con:
-            save_adds(con, _lines_by_id(lines), plan_month, items)
+            if body.get("whole"):
+                save_assign_month(con, _lines_by_id(lines), plan_month, items)
+            else:
+                save_adds(con, _lines_by_id(lines), plan_month, items)
         return jsonify({"ok": True})
     except AllocationError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400

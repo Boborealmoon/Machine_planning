@@ -2418,3 +2418,140 @@ body.so-material-modal-open {
   margin-bottom: 0;
   flex: 1;
 }
+
+#fa-qa-table .fa-col-queue {
+  position: sticky;
+  right: 0;
+  width: 84px;
+  min-width: 84px;
+  vertical-align: top;
+  text-align: right;
+  background: #fff;
+  box-shadow: -10px 0 10px -10px rgba(15, 23, 42, 0.28);
+}
+
+#fa-qa-table th.fa-col-queue {
+  z-index: 4;
+  background: #f8fafc;
+}
+
+#fa-qa-table td.fa-col-queue {
+  z-index: 1;
+}
+
+#fa-qa-table tbody tr:hover td.fa-col-queue {
+  background: #f8fafc;
+}
+
+#fa-qa-table tbody tr.is-dragging td.fa-col-queue {
+  background: #fff;
+}
+
+.fa-col-review {
+  min-width: 132px;
+}
+
+.fa-col-gauges {
+  min-width: 188px;
+  vertical-align: middle;
+}
+
+.fa-col-gauges.is-ready {
+  background: color-mix(in srgb, #16a34a 12%, #ffffff);
+}
+
+.fa-qa-op-card {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 52px;
+  min-height: 28px;
+  margin-top: 2px;
+  padding: 3px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+  color: #0f172a;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  cursor: grab;
+  user-select: none;
+}
+
+.fa-qa-op-card:hover {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.fa-qa-op-card:active,
+.fa-table tbody tr.is-dragging .fa-qa-op-card {
+  cursor: grabbing;
+  border-color: #2563eb;
+  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.18);
+}
+
+.fa-qa-grip {
+  width: 10px;
+  height: 14px;
+  flex: 0 0 auto;
+  background: radial-gradient(circle, #94a3b8 1.15px, transparent 1.25px) 0 0 / 5px 5px;
+}
+
+.fa-qa-order {
+  min-width: 1.4em;
+}
+
+.fa-table tbody tr.is-dragging {
+  opacity: 0.55;
+}
+
+.fa-table tbody tr.fa-qa-over td {
+  box-shadow: inset 0 2px 0 #2563eb;
+}
+
+.fa-review-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.fa-review-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #0f172a;
+  cursor: pointer;
+}
+
+.fa-review-stamp {
+  min-height: 1em;
+  color: #475569;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.fa-gauge-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fa-gauge-check {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.fa-gauge-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}

@@ -243,12 +243,13 @@ def _iso_date_text(value: Any) -> str | None:
 def _material_in_fields(pp: dict[str, Any], *, no_pp: bool) -> dict[str, Any]:
     """Material Tracking in-date for a PP. No PP leftovers have no material row."""
     if no_pp:
-        return {"material_in_date": None, "material_status": None}
+        return {"material_in_date": None, "material_need_date": None, "material_status": None}
     from .sales_coordination_service import parse_material_tracking_fields
 
     view = parse_material_tracking_fields(pp)
     return {
         "material_in_date": view.get("material_in_date"),
+        "material_need_date": view.get("material_need_date"),
         "material_status": _compact(view.get("material_status")) or None,
     }
 
@@ -492,6 +493,7 @@ def _outstanding_row(
         or "unassigned",
         "due_date": _compact(pp.get("due_date"))[:10] or None,
         "material_in_date": material["material_in_date"],
+        "material_need_date": material["material_need_date"],
         "material_status": material["material_status"],
         "coway_edd": coway,
         "proposed_edd": coway,

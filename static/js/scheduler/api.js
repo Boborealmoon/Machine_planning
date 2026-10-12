@@ -798,6 +798,9 @@ async function trialResolveQueueCycleTimes(body, catalogCard) {
   } catch (err) {
     console.warn('queue cycle-time resolve failed:', err);
   }
+  if (Number(payload.cycle_minutes_per_qty || 0) <= 0) {
+    payload.cycle_minutes_per_qty = 20;
+  }
   return payload;
 }
 

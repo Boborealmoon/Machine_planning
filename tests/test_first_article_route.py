@@ -4,7 +4,7 @@ from __future__ import annotations
 import io
 import os
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from unittest.mock import patch
 
 from app import app
@@ -24,11 +24,13 @@ from planning.first_article_service import (
     parse_npi_import_workbook,
     search_flag_candidates,
     search_jobs,
+    _apply_tracker_patch,
     _ensure_tables,
     _job_from_pp_cache_row,
     _live_job_map,
     _merge_live_job,
     _merge_new_part_row,
+    plan_queue_order,
     _parse_priority,
     _parse_check_cell,
     _parse_machine_codes,
@@ -805,6 +807,78 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertEqual(_parse_check_cell(date(2026, 7, 31))["text"], "2026-07-31")
         self.assertFalse(_parse_check_cell("")["tick"])
 
+    def test_review_check_stores_timestamp_until_cleared(self):
+        stamped = _apply_tracker_patch(None, {"review_timestamp": None}, {"review_checked": True})
+        self.assertIsInstance(stamped["review_timestamp"], datetime)
+        self.assertEqual(stamped["review_timestamp"].tzinfo, timezone.utc)
+        again = _apply_tracker_patch(
+            None,
+            dict(stamped),
+            {"review_checked": True, "review_timestamp": "2000-01-01 00:00:00"},
+        )
+        self.assertEqual(again["review_timestamp"], stamped["review_timestamp"])
+        cleared = _apply_tracker_patch(None, dict(stamped), {"review_checked": False})
+        self.assertIsNone(cleared["review_timestamp"])
+
+    def test_qa_gauges_tick_keeps_remarks(self):
+        row = _apply_tracker_patch(
+            None,
+            {"gauges_mode": "tick", "gauges_tick": False, "gauges_text": ""},
+            {"gauges_tick": True},
+        )
+        self.assertTrue(row["gauges_tick"])
+        self.assertEqual(row["gauges_text"], "")
+        noted = _apply_tracker_patch(None, row, {"gauges_text": "pin gauge"})
+        self.assertTrue(noted["gauges_tick"])
+        self.assertEqual(noted["gauges_text"], "pin gauge")
+
+    def test_program_due_date_and_queue_order(self):
+        row = _apply_tracker_patch(None, {}, {"program_due_date": "12/10/2026", "queue_order": "4"})
+        self.assertEqual(row["program_due_date"], "2026-10-12")
+        self.assertEqual(row["queue_order"], 4)
+        cleared = _apply_tracker_patch(None, row, {"program_due_date": "", "queue_order": ""})
+        self.assertEqual(cleared["program_due_date"], "")
+        self.assertIsNone(cleared["queue_order"])
+        with self.assertRaises(ValueError):
+            _apply_tracker_patch(None, {}, {"program_due_date": "nope"})
+        with self.assertRaises(ValueError):
+            _apply_tracker_patch(None, {}, {"queue_order": 0})
+
+    def test_plan_queue_order_reorders_visible_slots(self):
+        self.assertEqual(plan_queue_order([1, 2, 3, 4], [4, 3, 2, 1]), [4, 3, 2, 1])
+        self.assertEqual(plan_queue_order([1, 2, 3, 4], [4, 1, 3]), [4, 2, 1, 3])
+        with self.assertRaises(ValueError):
+            plan_queue_order([1, 2], [9])
+
+    def test_serialize_exposes_qa_review_fields(self):
+        row = {
+            "first_article_id": 8,
+            "process_sheet_no": "APS-8",
+            "pp_voucher_no": "",
+            "pic_ids": [],
+            "machine_codes": [],
+            "tooling_mode": "tick",
+            "tooling_tick": False,
+            "tooling_text": "",
+            "fixture_mode": "tick",
+            "fixture_tick": False,
+            "fixture_text": "",
+            "gauges_mode": "tick",
+            "gauges_tick": True,
+            "gauges_text": "pin",
+            "remarks": "",
+            "review_timestamp": datetime(2026, 10, 12, 2, 51, tzinfo=timezone.utc),
+            "queue_order": 2,
+            "program_due_date": "2026-10-20",
+        }
+        saved = _serialize_tracker_row(row, live={}, pics_by_id={})
+        self.assertTrue(saved["review_checked"])
+        self.assertIn("2026-10-12", saved["review_timestamp"])
+        self.assertEqual(saved["queue_order"], 2)
+        self.assertEqual(saved["program_due_date"], "2026-10-20")
+        self.assertTrue(saved["gauges_tick"])
+        self.assertEqual(saved["gauges_text"], "pin")
+
     def test_resolve_machine_numbers_against_catalog(self):
         catalog = ["CNC 10", "CNC 22", "CNC 30"]
         self.assertEqual(_resolve_machine_codes("22, 30", catalog), ["CNC 22", "CNC 30"])
@@ -1017,6 +1091,52 @@ class FirstArticleServiceTests(unittest.TestCase):
         self.assertFalse(kept["program_pic_from_tracker"])
         self.assertTrue(kept["from_npi_tracker"])
         self.assertTrue(kept["tooling_tick"])
+
+    def test_merge_new_part_keeps_qa_gauges_after_edit(self):
+        job = job_from_sales_order_pp(
+            {"sales_order_no": "SO-9", "first_posted_datetime": "2026-08-12"},
+            _pp(is_new_part=True, inventory_code="BB18-KS", description="BRACKET"),
+        )
+        flagged = {
+            "first_article_id": 44,
+            "process_sheet_no": "APS-1001",
+            "gauges_mode": "tick",
+            "gauges_tick": False,
+            "gauges_text": "",
+            "tooling_mode": "tick",
+            "tooling_tick": True,
+            "tooling_text": "",
+            "fixture_mode": "tick",
+            "fixture_tick": False,
+            "fixture_text": "",
+        }
+        edited = _merge_new_part_row(
+            job,
+            {
+                "remarks": "",
+                "program_pic_ids": [],
+                "gauges_tick": True,
+                "gauges_text": "pin gauge",
+                "gauges_edited": True,
+            },
+            flagged=flagged,
+        )
+        self.assertTrue(edited["gauges_tick"])
+        self.assertEqual(edited["gauges_text"], "pin gauge")
+        self.assertTrue(edited["tooling_tick"])
+        copied = _merge_new_part_row(
+            job,
+            {
+                "remarks": "Planner note",
+                "program_pic_ids": [],
+                "gauges_tick": True,
+                "gauges_text": "pin gauge",
+                "gauges_edited": False,
+            },
+            flagged=flagged,
+        )
+        self.assertFalse(copied["gauges_tick"])
+        self.assertEqual(copied["gauges_text"], "")
 
     def test_match_flagged_npi_falls_back_to_unique_part(self):
         from planning.first_article_service import _match_flagged_npi
@@ -1561,6 +1681,112 @@ class FirstArticleRouteTests(unittest.TestCase):
         self.assertEqual(payload["pic_names"], "Chang Peng/Anand")
         self.assertEqual(payload["tooling"], "OK")
 
+    def test_patch_accepts_qa_review_fields(self):
+        saved = {"first_article_id": 3, "review_checked": True, "queue_order": 2}
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+            with patch(
+                "planning.first_article_route.update_tracker_row",
+                return_value=saved,
+            ) as update_fn:
+                response = self.client.patch(
+                    "/api/first-article/3",
+                    json={
+                        "review_checked": True,
+                        "program_due_date": "2026-10-20",
+                        "queue_order": 2,
+                        "gauges_tick": True,
+                        "gauges_text": "pin gauge",
+                        "review_timestamp": "2000-01-01 00:00:00",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        sent = update_fn.call_args.args[1]
+        self.assertTrue(sent["review_checked"])
+        self.assertEqual(sent["program_due_date"], "2026-10-20")
+        self.assertEqual(sent["queue_order"], 2)
+        self.assertTrue(sent["gauges_tick"])
+        self.assertEqual(sent["gauges_text"], "pin gauge")
+        self.assertNotIn("review_timestamp", sent)
+
+    def test_queue_reorder_posts_ids(self):
+        orders = [
+            {"first_article_id": 2, "queue_order": 1},
+            {"first_article_id": 1, "queue_order": 2},
+        ]
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+            with patch(
+                "planning.first_article_route.reorder_tracker_queue",
+                return_value=orders,
+            ) as reorder:
+                response = self.client.post("/api/first-article/queue", json={"ids": [2, 1]})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["orders"], orders)
+        reorder.assert_called_once_with([2, 1])
+
+    def test_queue_reorder_requires_ids(self):
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+            response = self.client.post("/api/first-article/queue", json={"ids": []})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("ids", response.get_json()["error"])
+
+    def test_new_part_patch_accepts_qa_review_fields(self):
+        saved = {"process_sheet_no": "NPS26-0402", "review_checked": True}
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+            with patch(
+                "planning.first_article_route.update_new_part_row",
+                return_value=saved,
+            ) as update_fn:
+                response = self.client.patch(
+                    "/api/first-article/new-parts",
+                    json={
+                        "process_sheet_no": "NPS26-0402",
+                        "review_checked": True,
+                        "program_due_date": "2026-10-20",
+                        "queue_order": 2,
+                        "gauges_tick": True,
+                        "gauges_text": "pin gauge",
+                        "review_timestamp": "2000-01-01 00:00:00",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        sent = update_fn.call_args.args[0]
+        self.assertTrue(sent["review_checked"])
+        self.assertEqual(sent["program_due_date"], "2026-10-20")
+        self.assertEqual(sent["queue_order"], 2)
+        self.assertTrue(sent["gauges_tick"])
+        self.assertEqual(sent["gauges_text"], "pin gauge")
+        self.assertNotIn("review_timestamp", sent)
+
+    def test_new_part_queue_posts_process_sheets(self):
+        orders = [{"process_sheet_no": "NPS26-0402", "queue_order": 1}]
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+            with patch(
+                "planning.first_article_route.reorder_new_part_queue",
+                return_value=orders,
+            ) as reorder:
+                response = self.client.post(
+                    "/api/first-article/new-parts/queue",
+                    json={"process_sheet_nos": ["NPS26-0402"]},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["orders"], orders)
+        reorder.assert_called_once_with(["NPS26-0402"])
+
+    def test_new_part_queue_requires_sheets(self):
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+            response = self.client.post(
+                "/api/first-article/new-parts/queue",
+                json={"process_sheet_nos": []},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("process_sheet_nos", response.get_json()["error"])
+
     def test_import_requires_file(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
             response = self.client.post("/api/first-article/import")
@@ -1619,6 +1845,12 @@ class FirstArticleRouteTests(unittest.TestCase):
         html = response.get_data(as_text=True)
         self.assertIn("NPI/FA Management", html)
         self.assertIn("NPI Tracker", html)
+        self.assertIn("QA Review", html)
+        self.assertIn("id=\"fa-tab-qa\"", html)
+        self.assertIn("id=\"fa-panel-qa\"", html)
+        self.assertIn("id=\"fa-qa-table\"", html)
+        self.assertIn("Programme Due Date", html)
+        self.assertIn("fa-qa-queue-card-20261012", html)
         self.assertIn("id=\"fa-flag-one\"", html)
         self.assertIn("id=\"fa-import-excel\"", html)
         self.assertIn("fa-bulk-scopes", html)
@@ -1630,12 +1862,11 @@ class FirstArticleRouteTests(unittest.TestCase):
         self.assertIn("id=\"fa-history-table-body\"", html)
         self.assertIn("id=\"fa-history-modal\"", html)
         self.assertIn("quotations for new parts", html)
-        self.assertIn("fa-20260922-done", html)
+        self.assertIn("fa-qa-queue-card-20261012", html)
         self.assertIn("fa-col-done", html)
         self.assertIn("id=\"fa-new-assigned-pic\"", html)
         self.assertIn("id=\"fa-col-filter-popover\"", html)
         self.assertIn("id=\"fa-proposed-cnc-popover\"", html)
-        self.assertIn("fa-col-so", html)
         self.assertNotIn("From NPI Tracker", html)
         self.assertNotIn("First Article Tracker", html)
         self.assertNotIn("Flagged jobs", html)

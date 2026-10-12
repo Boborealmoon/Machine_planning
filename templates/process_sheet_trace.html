@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Process sheet trace{% endblock %}
+{% block main_class %}app-main--process-sheet-trace{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=ps-trace-20261012">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/process_sheet_trace.css') }}?v=ps-trace-20261012">
+{% endblock %}
+{% block content %}
+<div class="mi-page pst-page" data-initial-ps="{{ initial_ps }}">
+  <div class="mi-header">
+    <div>
+      <h1 class="mi-title">Process sheet trace</h1>
+      <p class="mi-subtitle">Look up a process sheet and follow the pushed BOM to the inventory code and the allocated batch or heat number. Special BOMs list each sub-part as its own line under the process sheet.</p>
+    </div>
+  </div>
+
+  <form class="pst-search card" id="pst-form">
+    <label class="pst-search-label" for="pst-input">Process sheet no.</label>
+    <input id="pst-input" class="pst-input" type="search" name="ps" placeholder="NPS26-0321 or NPS26-0321-2" autocomplete="off" value="{{ initial_ps }}" required>
+    <button type="submit" class="btn btn-sm pst-submit" id="pst-submit">Trace</button>
+  </form>
+
+  <p class="pst-status" id="pst-status" role="status"></p>
+  <div id="pst-result" hidden></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/process_sheet_trace.js') }}?v=ps-trace-20261012"></script>
+{% endblock %}
